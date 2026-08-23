@@ -108,7 +108,7 @@ func newDeleteAllTxSizeEnv(t *testing.T) (svc *CloudEventsServiceImpl, ctx conte
 	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), rtm)
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
 	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)
-	entityHandler := entity.New(factory, rtm, common.NewDefaultUUIDGenerator(), engine, txgate.New(), searchService)
+	entityHandler := entity.New(factory, rtm, common.NewDefaultUUIDGenerator(), engine, txgate.New())
 	modelHandler := model.New(factory)
 
 	svc = &CloudEventsServiceImpl{
@@ -407,7 +407,7 @@ func TestRPC_EntityDeleteAll_TransactionSize_Batched_ErrorsByID(t *testing.T) {
 	engineSeed := workflow.NewEngine(realFactory, common.NewDefaultUUIDGenerator(), realTxMgr)
 	searchStoreSeed, _ := realFactory.AsyncSearchStore(context.Background())
 	searchServiceSeed := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStoreSeed)
-	entityHandlerSeed := entity.New(realFactory, realTxMgr, common.NewDefaultUUIDGenerator(), engineSeed, txgate.New(), searchServiceSeed)
+	entityHandlerSeed := entity.New(realFactory, realTxMgr, common.NewDefaultUUIDGenerator(), engineSeed, txgate.New())
 	svcSeed := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
 		txMgr:         realTxMgr,
@@ -435,7 +435,7 @@ func TestRPC_EntityDeleteAll_TransactionSize_Batched_ErrorsByID(t *testing.T) {
 	engineDelete := workflow.NewEngine(realFactory, common.NewDefaultUUIDGenerator(), failMgr)
 	searchStoreDelete, _ := realFactory.AsyncSearchStore(context.Background())
 	searchServiceDelete := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStoreDelete)
-	entityHandlerDelete := entity.New(realFactory, failMgr, common.NewDefaultUUIDGenerator(), engineDelete, txgate.New(), searchServiceDelete)
+	entityHandlerDelete := entity.New(realFactory, failMgr, common.NewDefaultUUIDGenerator(), engineDelete, txgate.New())
 	svcDelete := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
 		txMgr:         failMgr,

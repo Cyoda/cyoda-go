@@ -18,7 +18,6 @@ import (
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
@@ -171,7 +170,7 @@ func newReqTimeoutHandler(t *testing.T, factory spi.StoreFactory, txMgr spi.Tran
 	})
 
 	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
-	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), nil)
+	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
 
 	node := schema.NewObjectNode()
 	node.SetChild("name", schema.NewLeafNode(schema.String))
@@ -713,29 +712,6 @@ func (f *cancelingEntityFactory) EntityStore(_ context.Context) (spi.EntityStore
 	return f.store, nil
 }
 
-// searchStubEntityStore wraps a real spi.EntityStore and implements
-// spi.Searcher by returning a fixed result set, standing in for the search
-// service's normal query path (mirrors the package's searcherEntityStore
-// pattern in service_test.go, duplicated here since that one lives in
-// entity_test and this file needs a same-package handle on unexported types).
-type searchStubEntityStore struct {
-	spi.EntityStore
-	results []*spi.Entity
-}
-
-func (s *searchStubEntityStore) Search(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) {
-	return s.results, nil
-}
-
-type searchStubEntityFactory struct {
-	spi.StoreFactory
-	store *searchStubEntityStore
-}
-
-func (f *searchStubEntityFactory) EntityStore(_ context.Context) (spi.EntityStore, error) {
-	return f.store, nil
-}
-
 // TestDeleteEntitiesConditional_CtxCancelledMidLoop_RollsBackFailClosed pins
 // the brief's explicit fail-closed requirement: on a ctx error inside the
 // per-id delete loop, the enclosing IIFE must fail with the error (so the
@@ -772,14 +748,6 @@ func TestDeleteEntitiesConditional_CtxCancelledMidLoop_RollsBackFailClosed(t *te
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	matched := make([]*spi.Entity, 0, len(ids))
-	for _, id := range ids {
-		e, err := realEntityStore.Get(ctx, id)
-		if err != nil {
-			t.Fatalf("Get(%s): %v", id, err)
-		}
-		matched = append(matched, e)
-	}
 
 	cancelCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -790,15 +758,7 @@ func TestDeleteEntitiesConditional_CtxCancelledMidLoop_RollsBackFailClosed(t *te
 	cancelingStore := &cancelingEntityStore{EntityStore: realEntityStore, cancel: cancel, cancelAt: 1}
 	deleteFactory := &cancelingEntityFactory{StoreFactory: realFactory, store: cancelingStore}
 
-	searchStubStore := &searchStubEntityStore{EntityStore: realEntityStore, results: matched}
-	searchFactory := &searchStubEntityFactory{StoreFactory: realFactory, store: searchStubStore}
-	searchStore, err := realFactory.AsyncSearchStore(ctx)
-	if err != nil {
-		t.Fatalf("AsyncSearchStore: %v", err)
-	}
-	searchSvc := search.NewSearchService(searchFactory, common.NewDefaultUUIDGenerator(), searchStore)
-
-	hDelete := New(deleteFactory, realTxMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New(), searchSvc)
+	hDelete := New(deleteFactory, realTxMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New())
 
 	cond := []byte(`{"type":"simple","jsonPath":"$.age","operatorType":"GREATER_OR_EQUAL","value":0}`)
 	_, delErr := hDelete.DeleteEntitiesConditional(cancelCtx, "Person", "1", cond, nil, true, 0)
@@ -954,7 +914,7 @@ func TestCreateEntityCollection_CtxCancelledAfterFirstItem_StopsEarlyFailClosed(
 	saveStore := &cancelAfterNSaves{EntityStore: realEntityStore, cancel: cancel, cancelAt: 1}
 	instrumented := &instrumentedEngineFactory{StoreFactory: realFactory, entityStore: saveStore}
 	engine := wfengine.NewEngine(instrumented, common.NewDefaultUUIDGenerator(), realTxMgr)
-	h := New(instrumented, realTxMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), nil)
+	h := New(instrumented, realTxMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
 
 	items := []CollectionItem{
 		{ModelName: "Person", ModelVersion: 1, Payload: json.RawMessage(`{"name":"A","age":1}`)},
@@ -1027,7 +987,7 @@ func TestUpdateEntityCollection_CtxCancelledAfterFirstItem_StopsEarlyFailClosed(
 	saveStore := &cancelAfterNSaves{EntityStore: realEntityStore, cancel: cancel, cancelAt: 1}
 	instrumented := &instrumentedEngineFactory{StoreFactory: realFactory, entityStore: saveStore}
 	engine := wfengine.NewEngine(instrumented, common.NewDefaultUUIDGenerator(), realTxMgr)
-	hUpdate := New(instrumented, realTxMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), nil)
+	hUpdate := New(instrumented, realTxMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
 
 	items := []UpdateCollectionItem{
 		{EntityID: ids[0], Payload: json.RawMessage(`{"name":"X"}`)},

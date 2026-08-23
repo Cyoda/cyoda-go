@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 234 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 235 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -80,6 +80,12 @@ var allTests = []NamedTest{
 	{"AuditEntityHistory", RunAuditEntityHistory},
 	{"AuditWorkflowEvents", RunAuditWorkflowEvents},
 	{"AuditPostTxIdMatchesWorkflowFinished", RunAuditPostTxIdMatchesWorkflowFinished},
+
+	// History reads (task E6, #472): getEntityChangesMetadata's
+	// newest-first/Version-DESC-tiebreak/tombstone-HasEntity contract and
+	// getOneEntity's by-transaction lookup, both now backed by
+	// spi.EntityStore.GetVersionMetadata / GetVersionByTransaction.
+	{"HistoryReadsChangesMetadataAndTransactionLookup", RunHistoryReadsChangesMetadataAndTransactionLookup},
 
 	// Phase 4a — tenant isolation (Task 4a.5)
 	{"TenantIsolationEntities", RunTenantIsolationEntities},

@@ -18,7 +18,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
@@ -734,14 +733,8 @@ func newTrackingHandlerFor(t *testing.T, backend string) *rollbackHarness {
 	engine := wfengine.NewEngine(engineCAS, common.NewDefaultUUIDGenerator(), tracker,
 		wfengine.WithExternalProcessing(proc))
 
-	searchStore, err := raw.AsyncSearchStore(ctx)
-	if err != nil {
-		t.Fatalf("AsyncSearchStore: %v", err)
-	}
-	searchSvc := search.NewSearchService(raw, common.NewDefaultUUIDGenerator(), searchStore)
-
 	armed := &armedFactory{StoreFactory: raw}
-	h := New(armed, tracker, common.NewDefaultUUIDGenerator(), engine, txgate.New(), searchSvc)
+	h := New(armed, tracker, common.NewDefaultUUIDGenerator(), engine, txgate.New())
 
 	hn := &rollbackHarness{h: h, tracker: tracker, raw: raw, armed: armed, engineCAS: engineCAS, proc: proc, ctx: ctx}
 	hn.registerModel(t, rollbackModel)

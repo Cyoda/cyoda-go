@@ -362,6 +362,29 @@ func (c *Client) DeleteEntity(t *testing.T, entityID uuid.UUID) error {
 	return err
 }
 
+// DeleteEntityWithTxID issues DELETE /api/entity/{entityId} and returns the
+// transactionId from the delete response envelope (internal/domain/entity.
+// Handler.DeleteSingleEntity: {id, modelKey, transactionId}). Used by
+// history-read parity scenarios that need the delete's own transaction ID —
+// e.g. to assert GetEntityByTransactionID 404s on a tombstone's txID (a
+// DELETED tombstone carries no entity payload, so it never matches).
+// Canonical: docs/cyoda/openapi.yml:1147 (deleteSingleEntity).
+func (c *Client) DeleteEntityWithTxID(t *testing.T, entityID uuid.UUID) (string, error) {
+	t.Helper()
+	path := "/api/entity/" + entityID.String()
+	raw, err := c.doRaw(t, http.MethodDelete, path, "")
+	if err != nil {
+		return "", err
+	}
+	var resp struct {
+		TransactionID string `json:"transactionId"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return "", fmt.Errorf("decode DeleteEntityWithTxID response: %w", err)
+	}
+	return resp.TransactionID, nil
+}
+
 // GetEntityChanges issues GET /api/entity/{entityId}/changes.
 // Returns the change history as []EntityChangeMeta.
 // Canonical: docs/cyoda/openapi.yml:1207 (getEntityChangesMetadata).
@@ -625,6 +648,25 @@ func (c *Client) UpdateEntity(t *testing.T, entityID uuid.UUID, transition, body
 	path := fmt.Sprintf("/api/entity/JSON/%s/%s", entityID.String(), transition)
 	_, err := c.doRaw(t, http.MethodPut, path, body)
 	return err
+}
+
+// UpdateEntityWithTxID issues PUT /api/entity/JSON/{entityId}/{transition}
+// and returns the transactionId from the EntityTransactionInfo response
+// envelope. Used by history-read parity scenarios that need each save's own
+// transaction ID to drive GetEntityByTransactionID lookups.
+// Canonical: docs/cyoda/openapi.yml:2037 (updateOne / transition).
+func (c *Client) UpdateEntityWithTxID(t *testing.T, entityID uuid.UUID, transition, body string) (string, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/JSON/%s/%s", entityID.String(), transition)
+	raw, err := c.doRaw(t, http.MethodPut, path, body)
+	if err != nil {
+		return "", err
+	}
+	var info EntityTransactionInfo
+	if err := json.Unmarshal(raw, &info); err != nil {
+		return "", fmt.Errorf("decode UpdateEntityWithTxID response: %w", err)
+	}
+	return info.TransactionID, nil
 }
 
 // CollectionItem is one entry in a POST /api/entity/{format} body for

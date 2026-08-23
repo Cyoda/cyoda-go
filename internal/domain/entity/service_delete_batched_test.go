@@ -14,7 +14,6 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
@@ -72,19 +71,13 @@ func newDeleteBatchedCtx(t *testing.T, factory spi.StoreFactory) context.Context
 	return ctx
 }
 
-// buildDeleteBatchedHandler wires a Handler to factory/txMgr with a real
-// search.SearchService, so condition-based deletes exercise the production
-// selection path rather than a stub.
+// buildDeleteBatchedHandler wires a Handler to factory/txMgr so
+// condition-based deletes exercise the production selection path (a
+// spi.Iterable drain, since #472) rather than a stub.
 func buildDeleteBatchedHandler(t *testing.T, factory spi.StoreFactory, txMgr spi.TransactionManager) *Handler {
 	t.Helper()
-	bg := context.Background()
-	searchStore, err := factory.AsyncSearchStore(bg)
-	if err != nil {
-		t.Fatalf("AsyncSearchStore: %v", err)
-	}
-	searchSvc := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)
 	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
-	return New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), searchSvc)
+	return New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
 }
 
 // seedPersons creates n Person entities (ages 0..n-1) via h and returns their

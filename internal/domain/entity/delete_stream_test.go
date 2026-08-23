@@ -10,7 +10,6 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
@@ -131,19 +130,12 @@ func newDeleteStreamCtx(t *testing.T, factory spi.StoreFactory, ref spi.ModelRef
 	return ctx
 }
 
-// buildDeleteStreamHandler wires a Handler to factory/txMgr with a real
-// search.SearchService, mirroring buildDeleteBatchedHandler
-// (service_delete_batched_test.go).
+// buildDeleteStreamHandler wires a Handler to factory/txMgr, mirroring
+// buildDeleteBatchedHandler (service_delete_batched_test.go).
 func buildDeleteStreamHandler(t *testing.T, factory spi.StoreFactory, txMgr spi.TransactionManager) *Handler {
 	t.Helper()
-	bg := context.Background()
-	searchStore, err := factory.AsyncSearchStore(bg)
-	if err != nil {
-		t.Fatalf("AsyncSearchStore: %v", err)
-	}
-	searchSvc := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)
 	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
-	return New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), searchSvc)
+	return New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
 }
 
 // seedKind creates n entities of ref's model with {"kind": kind} and returns

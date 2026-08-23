@@ -15,7 +15,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -37,7 +36,6 @@ func TestGetEntity_InfrastructureErrorReturns500(t *testing.T) {
 		common.NewDefaultUUIDGenerator(),
 		nil,
 		txgate.New(),
-		nil,
 	)
 
 	ctx := context.Background()
@@ -96,7 +94,6 @@ func TestCreateEntity_ClassifiesModelStoreErrors(t *testing.T) {
 			common.NewDefaultUUIDGenerator(),
 			nil,
 			txgate.New(),
-			nil,
 		)
 
 		_, err := h.CreateEntity(ctx, input)
@@ -120,7 +117,6 @@ func TestCreateEntity_ClassifiesModelStoreErrors(t *testing.T) {
 			common.NewDefaultUUIDGenerator(),
 			nil,
 			txgate.New(),
-			nil,
 		)
 
 		_, err := h.CreateEntity(ctx, input)
@@ -152,7 +148,6 @@ func TestGetEntity_NotFoundReturns404(t *testing.T) {
 		common.NewDefaultUUIDGenerator(),
 		nil,
 		txgate.New(),
-		nil,
 	)
 
 	ctx := context.Background()
@@ -199,7 +194,7 @@ func statsTestCtx(tenantID spi.TenantID) context.Context {
 func TestGetStatisticsByState_UsesCountByState(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := statsTestCtx("tenant-stats")
-	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New(), nil)
+	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New())
 
 	mref := spi.ModelRef{EntityName: "stats-model", ModelVersion: "1"}
 
@@ -278,7 +273,7 @@ func TestGetStatisticsByState_UsesCountByState(t *testing.T) {
 func TestGetStatisticsByStateForModel_UsesCountByState(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := statsTestCtx("tenant-stats-m")
-	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New(), nil)
+	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New())
 
 	mref := spi.ModelRef{EntityName: "model-m", ModelVersion: "1"}
 
@@ -553,7 +548,7 @@ func TestDeleteAllEntities_EmptyModel_ReturnsZeroCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	h := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New(), nil)
+	h := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New())
 
 	// Register a LOCKED model with zero entities.
 	mref := spi.ModelRef{EntityName: "EmptyModel", ModelVersion: "1"}
@@ -675,15 +670,14 @@ func TestUpdateEntity_WorkflowFailed_FallbackCode(t *testing.T) {
 // expectStatus.
 var _ = strconv.Itoa // ensure strconv is not flagged as unused
 
-// newDeleteFixtureWithSchema builds a Handler wired to a real
-// search.SearchService and a model registered with a schema declaring
-// "status" as a String field, so DeleteEntitiesConditional's own selection
-// validation (planDeleteSelection, internal/domain/entity/service.go) has a
-// real FieldsMap to check a condition's path against. Since #472, delete
-// selects entities via its own spi.Iterable drain rather than through
-// SearchService.Search, so a classified-4xx-forwarding test needs a
-// selection-validation failure (an unknown field path) rather than a
-// stubbed Searcher failure.
+// newDeleteFixtureWithSchema builds a Handler and a model registered with a
+// schema declaring "status" as a String field, so DeleteEntitiesConditional's
+// own selection validation (planDeleteSelection,
+// internal/domain/entity/service.go) has a real FieldsMap to check a
+// condition's path against. Since #472, delete selects entities via its own
+// spi.Iterable drain rather than through SearchService.Search, so a
+// classified-4xx-forwarding test needs a selection-validation failure (an
+// unknown field path) rather than a stubbed Searcher failure.
 func newDeleteFixtureWithSchema(t *testing.T) (h *entity.Handler, ctx context.Context, entityName, modelVersion string) {
 	t.Helper()
 	base := memory.NewStoreFactory()
@@ -707,17 +701,11 @@ func newDeleteFixtureWithSchema(t *testing.T) (h *entity.Handler, ctx context.Co
 		t.Fatalf("Save model: %v", err)
 	}
 
-	searchStore, err := base.AsyncSearchStore(ctx)
-	if err != nil {
-		t.Fatalf("AsyncSearchStore: %v", err)
-	}
-	searchSvc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore)
-
 	txMgr, err := base.TransactionManager(ctx)
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	h = entity.New(base, txMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New(), searchSvc)
+	h = entity.New(base, txMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New())
 
 	return h, ctx, ref.EntityName, ref.ModelVersion
 }

@@ -52,14 +52,20 @@ func (h *Handler) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// TODO(search-spi-surface-E6): GetVersionMetadata call is a minimal
-	// mechanical swap for the deleted GetVersionHistory — it compiles
-	// internal/domain/audit against the new SPI but does not yet push the
-	// request's time window down (opts.From/Until), apply the 1000-row
-	// cap, or map TransactionID/actor attribution the way task E6 (history
-	// read rewires, docs/superpowers/plans/2026-08-22-472-search-spi-surface.md)
-	// specifies. Full behavior lands with that task.
-	versions, err := store.GetVersionMetadata(ctx, entityId.String(), spi.VersionMetadataOptions{})
+	// Push the request's time window down to the store rather than fetching
+	// the whole history and relying solely on the post-merge in-memory
+	// filter below. The in-memory From/To filter still runs afterward
+	// (unchanged) because it also has to cover StateMachine events, which
+	// this store call cannot bound — GetVersionMetadata only ever sees the
+	// EntityChange side of the merge.
+	opts := spi.VersionMetadataOptions{}
+	if params.FromUtcTime != nil {
+		opts.From = params.FromUtcTime
+	}
+	if params.ToUtcTime != nil {
+		opts.Until = params.ToUtcTime
+	}
+	versions, err := store.GetVersionMetadata(ctx, entityId.String(), opts)
 	if err != nil {
 		if errors.Is(err, spi.ErrNotFound) {
 			common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, "entity not found"))

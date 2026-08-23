@@ -19,7 +19,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
@@ -41,16 +40,15 @@ func deterministicModelID(ref spi.ModelRef) uuid.UUID {
 }
 
 type Handler struct {
-	factory   spi.StoreFactory
-	txMgr     spi.TransactionManager
-	uuids     spi.UUIDGenerator
-	engine    *wfengine.Engine
-	gate      *txgate.Registry
-	searchSvc *search.SearchService
+	factory spi.StoreFactory
+	txMgr   spi.TransactionManager
+	uuids   spi.UUIDGenerator
+	engine  *wfengine.Engine
+	gate    *txgate.Registry
 }
 
-func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDGenerator, engine *wfengine.Engine, gate *txgate.Registry, searchSvc *search.SearchService) *Handler {
-	return &Handler{factory: factory, txMgr: txMgr, uuids: uuids, engine: engine, gate: gate, searchSvc: searchSvc}
+func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDGenerator, engine *wfengine.Engine, gate *txgate.Registry) *Handler {
+	return &Handler{factory: factory, txMgr: txMgr, uuids: uuids, engine: engine, gate: gate}
 }
 
 // beginOrJoin decides whether this inbound request OWNS a fresh transaction or

@@ -90,7 +90,7 @@ func newListEntitiesFixture(t *testing.T, tenantID spi.TenantID, ref spi.ModelRe
 
 	wrapped := &noWholeModelEntityStore{EntityStore: realStore}
 	factory := &noWholeModelStoreFactory{StoreFactory: base, store: wrapped}
-	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New(), nil)
+	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New())
 	return ctx, h, wrapped
 }
 
