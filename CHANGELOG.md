@@ -216,6 +216,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **Cancelling an async search job no longer leaves it permanently un-reapable.**
+  `CancelAsync` called the generic status-update path instead of the store's
+  `Cancel`, which never stamped a finish time on the job — and the background
+  reaper only ever removes terminal jobs that have one, so every cancelled job
+  accumulated in storage for the life of the process. `CancelAsync` now
+  dispatches through `Cancel`, and all three storage backends (memory, SQLite,
+  PostgreSQL) stamp the finish time as part of the same transition that marks
+  the job `CANCELLED`, so it is reaped on the same schedule as a completed or
+  failed job.
+
 - **`POST /api/oauth/oidc/providers/reload` no longer destroys the JWKS key cache
   it is documented to refresh.** The reload rebuilt the provider list but installed
   empty key sources and never re-warmed them, so every federated token failed with
