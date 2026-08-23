@@ -489,54 +489,88 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		return nil, fmt.Errorf("failed to get entity store: %w", err)
 	}
 
-	// Delegate to the plugin Searcher whenever it's available. Searcher.Search
-	// is transaction-aware on every OSS backend (RYW), so this is safe with or
-	// without an active transaction in ctx — see the Search doc comment.
-	// opts.Limit <= 0 ("no explicit limit" — async submit's internal caller,
-	// or a scoped conditional delete's Limit:-1) cannot be pushed down:
-	// Searcher.Search's contract requires Limit >= 1 and treats anything
-	// else as a caller error, not "unbounded" — there is no zero-means-
-	// unbounded sentinel at that interface. The engine is the one place
-	// that resolves a bound before calling it (see the Searcher doc
-	// comment), so an unbounded request skips the pushdown attempt
-	// entirely (including its FieldsMap load — the fallback below loads
-	// its own) and takes the same GetAll + in-memory-match fallback a
-	// translate failure does, which already tolerates opts.Limit <= 0 (see
-	// the bounded-or-fail comment below).
-	if searcher, ok := store.(spi.Searcher); ok && opts.Limit > 0 {
+	// Delegate to the plugin for predicate pushdown whenever a translatable
+	// filter and a capable store are both available — tx or not; every OSS
+	// backend's Searcher and Iterable are transaction-aware (RYW), see the
+	// Search doc comment. Two capabilities cover the two shapes a pushdown
+	// request can take:
+	//
+	//   - opts.Limit > 0: spi.Searcher.Search, bounded-or-fail. Its contract
+	//     requires Limit >= 1 and treats anything else as a caller error —
+	//     there is no zero-means-unbounded sentinel at that interface.
+	//   - opts.Limit <= 0 ("no explicit limit" — an internal caller that
+	//     genuinely wants every match, unbounded: e.g. this Search entry
+	//     point called directly rather than through an HTTP/gRPC handler,
+	//     both of which resolve a default before reaching here): the
+	//     matched entities are still read via the plugin's predicate
+	//     pushdown, but streamed through spi.Iterable.Iterate instead of
+	//     Searcher (which would reject the sub-1 Limit). This is the same
+	//     capability the streaming async executor and streamed-delete paths
+	//     already use for the identical "unbounded, want every match" shape
+	//     — not a special case invented here. Iterate's TrackingRead gate
+	//     records each entity into the tx read-set per-YIELD as it streams
+	//     (see the Iterate doc comment), so a Limit<=0 tracked search still
+	//     tracks exactly its matched set, never the whole model the way the
+	//     GetAll fallback below would.
+	//
+	// Both shapes need the same FieldsMap-driven condition->filter
+	// translation; a translate failure (untranslatable condition) falls
+	// through to the GetAll + in-memory-match fallback below either way.
+	searcher, storeIsSearcher := store.(spi.Searcher)
+	iterableStore, storeIsIterable := store.(spi.Iterable)
+	if (storeIsSearcher && opts.Limit > 0) || (storeIsIterable && opts.Limit <= 0) {
 		fields, _ := loadFieldsMap(ctx, modelStore, modelRef) // best-effort; nil-tolerant
 		filter, translateErr := spi.ConditionToFilter(cond, fields)
 		if translateErr == nil {
-			res, sErr := searcher.Search(ctx, filter, spi.SearchOptions{
-				ModelName:    modelRef.EntityName,
-				ModelVersion: modelRef.ModelVersion,
-				PointInTime:  opts.PointInTime,
-				Limit:        opts.Limit,
-				OrderBy:      orderBy,
-				TrackingRead: opts.TrackingRead,
-			})
-			switch {
-			case errors.Is(sErr, spi.ErrSearchResultLimitExceeded):
-				return nil, common.Operational(http.StatusBadRequest,
-					common.ErrCodeSearchResultLimit,
-					"matched result count exceeds the configured limit").WithCause(sErr)
-			case errors.Is(sErr, spi.ErrScanBudgetExhausted):
-				return nil, common.Operational(http.StatusBadRequest,
-					common.ErrCodeScanBudgetExhausted,
-					"search scan budget exhausted; narrow the query or add an indexable predicate").WithCause(sErr)
+			if opts.Limit > 0 {
+				res, sErr := searcher.Search(ctx, filter, spi.SearchOptions{
+					ModelName:    modelRef.EntityName,
+					ModelVersion: modelRef.ModelVersion,
+					PointInTime:  opts.PointInTime,
+					Limit:        opts.Limit,
+					OrderBy:      orderBy,
+					TrackingRead: opts.TrackingRead,
+				})
+				switch {
+				case errors.Is(sErr, spi.ErrSearchResultLimitExceeded):
+					return nil, common.Operational(http.StatusBadRequest,
+						common.ErrCodeSearchResultLimit,
+						"matched result count exceeds the configured limit").WithCause(sErr)
+				case errors.Is(sErr, spi.ErrScanBudgetExhausted):
+					return nil, common.Operational(http.StatusBadRequest,
+						common.ErrCodeScanBudgetExhausted,
+						"search scan budget exhausted; narrow the query or add an indexable predicate").WithCause(sErr)
+				}
+				return res, sErr
 			}
-			return res, sErr
+
+			// Unbounded (Limit <= 0): stream every match via Iterate. OrderBy
+			// is deliberately NOT threaded into IterateOptions here — Iterate
+			// treats a non-empty OrderBy inside a transaction as an error
+			// (its stronger "honour explicitly or refuse" contract, unlike
+			// Searcher/GetAll), and this fallback has always sorted in Go
+			// after the fact instead (see sortEntities below); leaving
+			// IterateOptions.OrderBy empty keeps an in-tx ordered unbounded
+			// search working exactly as it did through the GetAll fallback.
+			matches, iErr := drainIterate(ctx, iterableStore, modelRef, filter, opts)
+			if iErr != nil {
+				return nil, iErr
+			}
+			sortEntities(matches, orderBy)
+			return matches, nil
 		}
 		// Fall through to in-memory filtering if translation fails.
 		slog.Debug("condition-to-filter translation failed, falling back to in-memory",
 			"pkg", "search", "error", translateErr)
 	}
 
-	// Fallback: GetAll/GetAllAsAt + in-memory filtering. In-tx, this path is a
-	// rare edge (a store without Searcher, or a translate-failure condition):
-	// GetAll unconditionally records every returned entity into the
-	// transaction's read-set (unlike the Searcher's TrackingRead-gated
-	// pushdown path above), so a translate-failure search conservatively
+	// Fallback: GetAll/GetAllAsAt + in-memory filtering. This path is reached
+	// only when no capability fits the request shape (a store without
+	// Searcher for a bounded request, or without Iterable for an unbounded
+	// one) or the condition doesn't translate to a pushdownable filter. In-tx,
+	// this is a rare edge: GetAll unconditionally records every returned
+	// entity into the transaction's read-set (unlike the TrackingRead-gated
+	// pushdown paths above), so a translate-failure search conservatively
 	// widens the read-set to the whole model regardless of opts.TrackingRead.
 	// The GetAllAsAt (point-in-time) branch of this same fallback records no
 	// read-set at all, matching GetAsAt/GetAllAsAt's historical-read semantics.
@@ -642,6 +676,46 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 			"matched result count exceeds the configured limit").WithCause(spi.ErrSearchResultLimitExceeded)
 	}
 
+	return matches, nil
+}
+
+// drainIterate runs an unbounded (Limit <= 0) pushdown search via
+// spi.Iterable.Iterate, draining the iterator fully into a slice for
+// Search's synchronous return contract. TrackingRead and PointInTime forward
+// unchanged; OrderBy is intentionally omitted (see the call site's comment)
+// — the caller sorts the drained slice itself, matching the GetAll
+// fallback's own sort-after-collect shape.
+//
+// Err() is read after Close(), not before: some Iterator implementations
+// only surface a sticky scan error at Close (mirrors the same ordering the
+// streaming async executor uses at its own drain site).
+func drainIterate(ctx context.Context, store spi.Iterable, modelRef spi.ModelRef, filter spi.Filter, opts SearchOptions) ([]*spi.Entity, error) {
+	it, err := store.Iterate(ctx, modelRef, filter, spi.IterateOptions{
+		PointInTime:  opts.PointInTime,
+		TrackingRead: opts.TrackingRead,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to iterate entities: %w", err)
+	}
+
+	var matches []*spi.Entity
+	var scanErr error
+	func() {
+		defer func() {
+			if closeErr := it.Close(); closeErr != nil && scanErr == nil {
+				scanErr = closeErr
+			}
+			if errErr := it.Err(); errErr != nil {
+				scanErr = errErr
+			}
+		}()
+		for it.Next() {
+			matches = append(matches, it.Entity())
+		}
+	}()
+	if scanErr != nil {
+		return nil, fmt.Errorf("failed to iterate entities: %w", scanErr)
+	}
 	return matches, nil
 }
 

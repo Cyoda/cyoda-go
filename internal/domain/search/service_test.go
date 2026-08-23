@@ -2068,11 +2068,13 @@ func TestSearch_ThreadsFieldsMapIntoConditionToFilter(t *testing.T) {
 // spi.Searcher.Search requires Limit >= 1 (Limit <= 0 is a documented
 // contract violation every backend now enforces — see the Searcher doc
 // comment: "the engine resolves the direct-search default before calling,
-// so Search itself never needs to guess a bound"). opts.Limit <= 0 reaching
-// the service therefore means an unbounded internal caller (async submit's
-// old contract, a scoped conditional delete's Limit:-1) — Search must route
-// it to the GetAll + in-memory-match fallback (which already tolerates
-// Limit <= 0 unbounded) rather than ever forwarding 0 to the Searcher.
+// so Search itself never needs to guess a bound"). opts.Limit <= 0 must
+// never be forwarded to the Searcher. This fixture's store (searcherEntityStore)
+// implements only spi.Searcher, not spi.Iterable, so Search's Limit<=0 branch
+// has no pushdown capability to use and falls all the way through to the
+// GetAll + in-memory-match fallback — see TestSearch_LimitZeroUsesIterablePushdown
+// below for the (now more common) case where the store also implements
+// spi.Iterable and Limit<=0 pushes down via Iterate instead of GetAll.
 // Renamed from TestSearch_LimitZeroPassesUnboundedToSearcher, whose
 // assertion (0 forwarded to the Searcher) was the pre-tightening contract.
 func TestSearch_LimitZeroSkipsSearcherPushdown(t *testing.T) {
@@ -2109,6 +2111,109 @@ func TestSearch_LimitZeroSkipsSearcherPushdown(t *testing.T) {
 	}
 	if len(results) != 1 || results[0].Meta.ID != "e1" {
 		t.Fatalf("expected 1 result (e1) from the unbounded fallback, got %d", len(results))
+	}
+}
+
+// searcherIterableEntityStore wraps a searcherEntityStore and additionally
+// implements spi.Iterable, so a test can assert which pushdown capability
+// Search's Limit<=0 branch reaches for when a store offers both — the
+// question at the heart of the over-recording regression this file's
+// TestSearch_LimitZeroUsesIterablePushdown pins: does Limit<=0 correctly
+// prefer Iterate (per-yielded-entity TrackingRead recording), or does it
+// (as the bug did) fall through to GetAll (unconditional whole-model
+// recording, regardless of TrackingRead)?
+type searcherIterableEntityStore struct {
+	*searcherEntityStore
+	iterateFn           func(ctx context.Context, model spi.ModelRef, filter spi.Filter, opts spi.IterateOptions) (spi.Iterator, error)
+	iterateCalls        int
+	capturedIterateOpts spi.IterateOptions
+}
+
+func (s *searcherIterableEntityStore) Iterate(ctx context.Context, model spi.ModelRef, filter spi.Filter, opts spi.IterateOptions) (spi.Iterator, error) {
+	s.iterateCalls++
+	s.capturedIterateOpts = opts
+	return s.iterateFn(ctx, model, filter, opts)
+}
+
+// searcherIterableFactory wraps a StoreFactory and returns a
+// searcherIterableEntityStore, delegating everything else (notably
+// ModelStore, so schema/path validation runs against the real registered
+// model) to the wrapped StoreFactory.
+type searcherIterableFactory struct {
+	spi.StoreFactory
+	entityStore *searcherIterableEntityStore
+}
+
+func (f *searcherIterableFactory) EntityStore(context.Context) (spi.EntityStore, error) {
+	return f.entityStore, nil
+}
+
+// TestSearch_LimitZeroUsesIterablePushdown is the regression test for the
+// over-recording bug: Search's Limit<=0 branch used to skip ALL pushdown
+// capability and fall through unconditionally to GetAll + in-memory-match,
+// which records every entity in the model into the transaction's read-set
+// regardless of TrackingRead (see the GetAll fallback's own doc comment).
+// Once a store also implements spi.Iterable, Limit<=0 must prefer Iterate
+// over that fallback: Iterate's TrackingRead gate records only the entities
+// it actually yields, per entity, as it streams — matching Search's
+// contract ("records only entities it returns, only when tracking is on")
+// even though the request can't be bounded. This is asserted here purely as
+// a call-routing/opts-threading question (no store implements both
+// Searcher and Iterable in production without also honouring both
+// contracts correctly — that per-entity correctness is covered where it's
+// implemented, e.g. plugins/postgres's TestIterateTx_TrackingReadRecordsOnlyYieldedIds).
+func TestSearch_LimitZeroUsesIterablePushdown(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveModelWithFields(t, ctx, base, ref, map[string]schema.DataType{"name": schema.String})
+	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
+	saveEntity(t, ctx, base, ref, "e2", []byte(`{"name":"Bob"}`))
+
+	realStore, _ := base.EntityStore(ctx)
+	realIterable, ok := realStore.(spi.Iterable)
+	if !ok {
+		t.Fatal("memory EntityStore must implement spi.Iterable for this test to be meaningful")
+	}
+	ses := &searcherEntityStore{
+		EntityStore: realStore,
+		searchFn: func(_ context.Context, _ spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+			t.Fatal("Searcher.Search must not be called for an unbounded (Limit<=0) request")
+			return nil, nil
+		},
+	}
+	sies := &searcherIterableEntityStore{
+		searcherEntityStore: ses,
+		iterateFn:           realIterable.Iterate,
+	}
+	factory := &searcherIterableFactory{StoreFactory: base, entityStore: sies}
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
+	results, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 0, TrackingRead: true})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if ses.searchCalls != 0 {
+		t.Errorf("searchCalls = %d, want 0 (Limit<=0 must not use Searcher)", ses.searchCalls)
+	}
+	if ses.getAllCalls != 0 {
+		t.Errorf("getAllCalls = %d, want 0 (Limit<=0 must prefer Iterate over the GetAll fallback when the store implements spi.Iterable)", ses.getAllCalls)
+	}
+	if sies.iterateCalls != 1 {
+		t.Fatalf("iterateCalls = %d, want 1", sies.iterateCalls)
+	}
+	if !sies.capturedIterateOpts.TrackingRead {
+		t.Error("IterateOptions.TrackingRead = false, want true (opts.TrackingRead must thread through)")
+	}
+	if sies.capturedIterateOpts.PointInTime != nil {
+		t.Errorf("IterateOptions.PointInTime = %v, want nil", sies.capturedIterateOpts.PointInTime)
+	}
+	if len(results) != 1 || results[0].Meta.ID != "e1" {
+		t.Fatalf("expected exactly 1 result (e1), got %d (%v)", len(results), results)
 	}
 }
 
