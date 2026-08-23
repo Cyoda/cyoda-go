@@ -3,6 +3,7 @@ package memory_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -161,7 +162,7 @@ func TestMemorySearchStore_UpdateJobStatus(t *testing.T) {
 	}
 
 	finishTime := now.Add(5 * time.Second)
-	err := store.UpdateJobStatus(ctx, "job-upd", "SUCCESSFUL", 42, "", finishTime, 1234)
+	err := store.UpdateJobStatus(ctx, "job-upd", 1, "SUCCESSFUL", 42, "", finishTime, 1234)
 	if err != nil {
 		t.Fatalf("UpdateJobStatus() error: %v", err)
 	}
@@ -186,17 +187,35 @@ func TestMemorySearchStore_UpdateJobStatus(t *testing.T) {
 		t.Errorf("Error = %q, want empty", got.Error)
 	}
 
-	// Test update with error message
-	err = store.UpdateJobStatus(ctx, "job-upd", "FAILED", 0, "something broke", finishTime, 999)
+	// A second UpdateJobStatus against the now-terminal job must be refused
+	// (terminal statuses are write-once) — a separate, still-RUNNING job is
+	// used to exercise the error-message path.
+	failJob := &spi.SearchJob{
+		ID:         "job-upd-2",
+		TenantID:   "test-tenant",
+		Status:     "RUNNING",
+		ModelRef:   spi.ModelRef{EntityName: "Y", ModelVersion: "1"},
+		CreateTime: now,
+	}
+	if err := store.CreateJob(ctx, failJob); err != nil {
+		t.Fatalf("CreateJob(failJob) error: %v", err)
+	}
+	err = store.UpdateJobStatus(ctx, "job-upd-2", 1, "FAILED", 0, "something broke", finishTime, 999)
 	if err != nil {
 		t.Fatalf("UpdateJobStatus(FAILED) error: %v", err)
 	}
-	got, _ = store.GetJob(ctx, "job-upd")
+	got, _ = store.GetJob(ctx, "job-upd-2")
 	if got.Status != "FAILED" {
 		t.Errorf("Status = %q, want FAILED", got.Status)
 	}
 	if got.Error != "something broke" {
 		t.Errorf("Error = %q, want 'something broke'", got.Error)
+	}
+
+	// The original job-upd, now terminal, must reject a further write.
+	err = store.UpdateJobStatus(ctx, "job-upd", 1, "FAILED", 0, "should be refused", finishTime, 1)
+	if !errors.Is(err, spi.ErrAlreadyTerminal) {
+		t.Errorf("UpdateJobStatus() on terminal job: err = %v, want ErrAlreadyTerminal", err)
 	}
 }
 
@@ -217,7 +236,7 @@ func TestMemorySearchStore_SaveAndGetResults(t *testing.T) {
 	}
 
 	ids := []string{"e1", "e2", "e3", "e4", "e5"}
-	if err := store.SaveResults(ctx, "job-res", ids); err != nil {
+	if err := store.SaveResults(ctx, "job-res", 1, slices.Values(ids)); err != nil {
 		t.Fatalf("SaveResults() error: %v", err)
 	}
 
@@ -269,15 +288,20 @@ func TestMemorySearchStore_DeleteJob(t *testing.T) {
 	job := &spi.SearchJob{
 		ID:         "job-del",
 		TenantID:   "test-tenant",
-		Status:     "SUCCESSFUL",
+		Status:     "RUNNING",
 		ModelRef:   spi.ModelRef{EntityName: "W", ModelVersion: "1"},
 		CreateTime: now,
 	}
 	if err := store.CreateJob(ctx, job); err != nil {
 		t.Fatalf("CreateJob() error: %v", err)
 	}
-	if err := store.SaveResults(ctx, "job-del", []string{"e1", "e2"}); err != nil {
+	if err := store.SaveResults(ctx, "job-del", 1, slices.Values([]string{"e1", "e2"})); err != nil {
 		t.Fatalf("SaveResults() error: %v", err)
+	}
+	// Terminal statuses are write-once; results must be saved before the
+	// job transitions to SUCCESSFUL.
+	if err := store.UpdateJobStatus(ctx, "job-del", 1, "SUCCESSFUL", 2, "", now, 0); err != nil {
+		t.Fatalf("UpdateJobStatus() error: %v", err)
 	}
 
 	if err := store.DeleteJob(ctx, "job-del"); err != nil {
