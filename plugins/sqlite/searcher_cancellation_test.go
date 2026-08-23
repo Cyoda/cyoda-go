@@ -66,6 +66,7 @@ func TestSearch_PreExpiredCtxAborts(t *testing.T) {
 	got, err := searcher.Search(deadCtx, spi.Filter{}, spi.SearchOptions{
 		ModelName:    ref.EntityName,
 		ModelVersion: ref.ModelVersion,
+		Limit:        100,
 	})
 	if err == nil {
 		t.Fatalf("Search with pre-expired ctx: expected error, got %d results", len(got))
@@ -121,6 +122,7 @@ func TestSearch_PreExpiredCtxAborts_InTx(t *testing.T) {
 	got, err := searcher.Search(deadTxCtx, spi.Filter{}, spi.SearchOptions{
 		ModelName:    ref.EntityName,
 		ModelVersion: ref.ModelVersion,
+		Limit:        100,
 	})
 	if err == nil {
 		t.Fatalf("in-tx Search with pre-expired ctx: expected error, got %d results", len(got))
@@ -178,6 +180,7 @@ func TestSearch_MidScanTimeoutChainsDeadlineExceeded(t *testing.T) {
 	got, err := searcher.Search(timeoutCtx, spi.Filter{}, spi.SearchOptions{
 		ModelName:    ref.EntityName,
 		ModelVersion: ref.ModelVersion,
+		Limit:        n + 1,
 	})
 	if err == nil {
 		t.Fatalf("Search with mid-scan-expiring ctx over %d rows: expected error, got %d results (deadline too generous for this scan size — increase n)", n, len(got))
@@ -269,6 +272,7 @@ func TestSearch_TxOverlayBufferLoop_AbortsEarly(t *testing.T) {
 	got, err := searcher.Search(probedTxCtx, cityBerlinFilter, spi.SearchOptions{
 		ModelName:    ref.EntityName,
 		ModelVersion: ref.ModelVersion,
+		Limit:        n + 1,
 	})
 	elapsed := time.Since(start)
 

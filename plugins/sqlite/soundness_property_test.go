@@ -329,7 +329,7 @@ func TestSqlitePushdownSoundnessProperty(t *testing.T) {
 			// Assertion 2: full pipeline (WHERE + postFilter re-check) == kernel
 			// matches exactly — the "backend result == memory backend result"
 			// equality proxy.
-			results, err := searcher.Search(ctx, tc.f, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion})
+			results, err := searcher.Search(ctx, tc.f, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion, Limit: 100})
 			if err != nil {
 				t.Fatalf("Search: %v", err)
 			}
@@ -366,7 +366,7 @@ func TestSqlitePushdownSoundness_PolymorphicIntStringUnderSelects(t *testing.T) 
 	filter := fPoly(spi.FilterEq, "code", "30")
 
 	searcher := store.(spi.Searcher)
-	results, err := searcher.Search(ctx, filter, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion})
+	results, err := searcher.Search(ctx, filter, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion, Limit: 100})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -399,7 +399,7 @@ func TestSqlitePushdownSoundness_MonomorphicStringNumericOperand(t *testing.T) {
 	}
 
 	searcher := store.(spi.Searcher)
-	results, err := searcher.Search(ctx, filter, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion})
+	results, err := searcher.Search(ctx, filter, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion, Limit: 100})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -439,7 +439,7 @@ func TestSqlitePushdownSoundness_LikeWildcardUnderSelects_KNOWNBUG(t *testing.T)
 	}
 
 	searcher := store.(spi.Searcher)
-	results, err := searcher.Search(ctx, filter, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion})
+	results, err := searcher.Search(ctx, filter, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion, Limit: 100})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}

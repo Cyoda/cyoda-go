@@ -17,6 +17,7 @@ import (
 // non-transactional reads query the entities table (current state).
 type entityStore struct {
 	db       *sql.DB
+	readDB   *sql.DB
 	tenantID spi.TenantID
 	tm       *transactionManager
 	clock    Clock
@@ -520,7 +521,9 @@ func (s *entityStore) GetAll(ctx context.Context, modelRef spi.ModelRef) ([]*spi
 		if tx.RolledBack {
 			return nil, fmt.Errorf("GetAll: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
-		return s.getAllTx(ctx, tx, modelRef)
+		// GetAll records unconditionally — unlike Search/Iterate, it has no
+		// TrackingRead knob (see searchTxOverlay's doc comment).
+		return s.getAllTx(ctx, tx, modelRef, true)
 	}
 
 	return s.getAllDirect(ctx, modelRef)
@@ -552,7 +555,10 @@ func (s *entityStore) getAllDirect(ctx context.Context, modelRef spi.ModelRef) (
 	return result, nil
 }
 
-func (s *entityStore) getAllTx(ctx context.Context, tx *spi.TransactionState, modelRef spi.ModelRef) ([]*spi.Entity, error) {
+// trackRead gates read-set recording: GetAll always passes true (unconditional,
+// no TrackingRead knob of its own); Iterate's in-tx branch passes
+// opts.TrackingRead, so a plain snapshot read (the default) records nothing.
+func (s *entityStore) getAllTx(ctx context.Context, tx *spi.TransactionState, modelRef spi.ModelRef, trackRead bool) ([]*spi.Entity, error) {
 	// Get snapshot from entity_versions.
 	snapshotMicro := timeToMicro(tx.SnapshotTime)
 	rows, err := s.db.QueryContext(ctx,
@@ -581,7 +587,9 @@ func (s *entityStore) getAllTx(ctx context.Context, tx *spi.TransactionState, mo
 		}
 		if !tx.Deletes[e.Meta.ID] {
 			result[e.Meta.ID] = e
-			tx.ReadSet[e.Meta.ID] = true
+			if trackRead {
+				tx.ReadSet[e.Meta.ID] = true
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -592,7 +600,9 @@ func (s *entityStore) getAllTx(ctx context.Context, tx *spi.TransactionState, mo
 	for id, e := range tx.Buffer {
 		if e.Meta.ModelRef == modelRef {
 			result[id] = copyEntity(e)
-			tx.ReadSet[id] = true
+			if trackRead {
+				tx.ReadSet[id] = true
+			}
 		}
 	}
 

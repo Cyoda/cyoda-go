@@ -14,10 +14,13 @@ var _ spi.Searcher = (*entityStore)(nil)
 
 // Search implements spi.Searcher for the SQLite entity store.
 //
-// Search is bounded-or-fail: opts.Limit > 0 is a cap on the matched set, not a
-// page size. A matched set larger than Limit is spi.ErrSearchResultLimitExceeded,
-// never a truncated prefix; exactly-at-limit succeeds. opts.Limit <= 0 is
-// unbounded and must never raise — no default is substituted for it.
+// Search is bounded-or-fail: opts.Limit >= 1 is REQUIRED, a cap on the matched
+// set, not a page size. A matched set larger than Limit is
+// spi.ErrSearchResultLimitExceeded, never a truncated prefix; exactly-at-limit
+// succeeds. opts.Limit <= 0 is a contract violation — Search returns an error
+// rather than treating it as "unbounded" or substituting a default of its own
+// (see spi.Searcher's doc comment; the engine resolves the direct-search
+// default before calling, so Search itself never needs to guess a bound).
 //
 // Three branches, all producing the same result set that
 // GetAll + spi.Prepare(filter).Match would for the same transaction state:
@@ -35,6 +38,9 @@ var _ spi.Searcher = (*entityStore)(nil)
 //     opts.TrackingRead is set — under bounded-or-fail that is exactly the
 //     matched set, since there is no page smaller than it.
 func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+	if opts.Limit <= 0 {
+		return nil, fmt.Errorf("search: limit must be >= 1, got %d", opts.Limit)
+	}
 	if err := validateFilterPaths(filter); err != nil {
 		return nil, err
 	}
@@ -88,15 +94,16 @@ func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, op
 	}
 
 	if opts.PointInTime != nil {
-		baseQuery += orderByClause(opts, "ev")
+		baseQuery += orderByClause(opts.OrderBy, "ev")
 	} else {
-		baseQuery += orderByClause(opts, "")
+		baseQuery += orderByClause(opts.OrderBy, "")
 	}
 
 	// When there is no residual, push the bound into SQL. Ask for limit+1: the
 	// extra row is the proof that the matched set does not fit, which is what
-	// bounded-or-fail must report instead of truncating to limit.
-	if plan.postFilter == nil && opts.Limit > 0 {
+	// bounded-or-fail must report instead of truncating to limit. opts.Limit is
+	// guaranteed >= 1 here — Search rejects Limit <= 0 before this is reached.
+	if plan.postFilter == nil {
 		baseQuery += " LIMIT ?"
 		baseArgs = append(baseArgs, opts.Limit+1)
 	}
@@ -141,7 +148,7 @@ func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, op
 		}
 
 		results = append(results, e)
-		if opts.Limit > 0 && len(results) > opts.Limit {
+		if len(results) > opts.Limit {
 			return nil, fmt.Errorf("search: more than %d matches: %w", opts.Limit, spi.ErrSearchResultLimitExceeded)
 		}
 	}
@@ -259,7 +266,7 @@ func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionSt
 		baseQuery += " AND (" + plan.where + ")"
 		baseArgs = append(baseArgs, plan.args...)
 	}
-	baseQuery += orderByClause(opts, "ev")
+	baseQuery += orderByClause(opts.OrderBy, "ev")
 
 	var results []*spi.Entity
 	err := func() error {
@@ -398,24 +405,29 @@ func jsonExtract(col, key string) string {
 	return fmt.Sprintf("json_extract(json(%s), '$.%s')", col, key)
 }
 
-// orderByClause builds a SQL ORDER BY clause from opts.OrderBy.
+// orderByClause builds a SQL ORDER BY clause from order. Shared by Search
+// (SearchOptions.OrderBy) and Iterate (IterateOptions.OrderBy) — both fields
+// are the same []spi.OrderSpec type.
 //
-//   - When OrderBy is empty, defaults to "ORDER BY entity_id".
+//   - When order is empty, defaults to "ORDER BY entity_id". For Search this
+//     is the documented canonical default; for Iterate an empty OrderBy means
+//     "unspecified" per the Iterable doc, and a deterministic order is a
+//     conformant (if stronger-than-required) choice within "unspecified".
 //   - Each clause gets NULLS LAST so absent/null values sort after real values
 //     regardless of ASC/DESC.
 //   - A entity_id tiebreaker is appended unless the last OrderSpec already
 //     resolves to entity_id (Source=SourceMeta, Path="id"), avoiding duplicates.
 //   - tablePrefix is prepended to column references (e.g., "ev" for PIT queries).
-func orderByClause(opts spi.SearchOptions, tablePrefix string) string {
+func orderByClause(order []spi.OrderSpec, tablePrefix string) string {
 	idCol := "entity_id"
 	if tablePrefix != "" {
 		idCol = tablePrefix + ".entity_id"
 	}
-	if len(opts.OrderBy) == 0 {
+	if len(order) == 0 {
 		return " ORDER BY " + idCol
 	}
-	clauses := make([]string, 0, len(opts.OrderBy)+1)
-	for _, spec := range opts.OrderBy {
+	clauses := make([]string, 0, len(order)+1)
+	for _, spec := range order {
 		expr := orderByFieldExpr(spec, tablePrefix)
 		if spec.Desc {
 			expr += " DESC"
@@ -423,7 +435,7 @@ func orderByClause(opts spi.SearchOptions, tablePrefix string) string {
 		clauses = append(clauses, expr+" NULLS LAST")
 	}
 	// Append entity_id tiebreaker unless the last spec already IS entity_id.
-	if last := opts.OrderBy[len(opts.OrderBy)-1]; !(last.Source == spi.SourceMeta && last.Path == "id") {
+	if last := order[len(order)-1]; !(last.Source == spi.SourceMeta && last.Path == "id") {
 		clauses = append(clauses, idCol)
 	}
 	return " ORDER BY " + strings.Join(clauses, ", ")

@@ -56,6 +56,7 @@ func (f *StoreFactory) SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) 
 // StoreFactory implements spi.StoreFactory backed by SQLite.
 type StoreFactory struct {
 	db        *sql.DB
+	readDB    *sql.DB
 	fileLock  *flock.Flock
 	clock     Clock
 	cfg       config
@@ -122,8 +123,34 @@ func newStoreFactory(ctx context.Context, cfg config, opts ...Option) (*StoreFac
 		}
 	}
 
+	// readDB is a second, dedicated *sql.DB against the same file, also
+	// capped to a single connection. It is used exclusively by non-tx
+	// Iterate: WAL journal mode (set on db above, a database-level, not
+	// per-connection, property) lets an independent reader connection
+	// stream rows concurrently with writer-side activity on db without
+	// contending for the same one-connection pool. Without a separate
+	// connection, a long-lived, undrained Iterate cursor checks out the
+	// sole connection in db's pool for the life of the iterator, starving
+	// any concurrent write (e.g. a streamed async-search SaveResults
+	// chunk) until the iterator is closed. No migration run — db above
+	// already owns schema setup, and readDB is opened after it succeeds.
+	readDB, err := sql.Open("sqlite3", dsn)
+	if err != nil {
+		db.Close()
+		_ = fl.Unlock()
+		return nil, fmt.Errorf("open sqlite reader connection: %w", err)
+	}
+	readDB.SetMaxOpenConns(1)
+	if err := applyPragmas(readDB, cfg); err != nil {
+		db.Close()
+		readDB.Close()
+		_ = fl.Unlock()
+		return nil, fmt.Errorf("apply reader pragmas: %w", err)
+	}
+
 	f := &StoreFactory{
 		db:       db,
+		readDB:   readDB,
 		fileLock: fl,
 		clock:    wallClock{},
 		cfg:      cfg,
@@ -204,7 +231,7 @@ func (f *StoreFactory) EntityStore(ctx context.Context) (spi.EntityStore, error)
 	if err != nil {
 		return nil, err
 	}
-	return &entityStore{db: f.db, tenantID: tid, tm: f.tm, clock: f.clock, cfg: f.cfg}, nil
+	return &entityStore{db: f.db, readDB: f.readDB, tenantID: tid, tm: f.tm, clock: f.clock, cfg: f.cfg}, nil
 }
 
 func (f *StoreFactory) ModelStore(ctx context.Context) (spi.ModelStore, error) {
@@ -282,6 +309,9 @@ func (f *StoreFactory) Close() error {
 	}
 	var firstErr error
 	if err := f.db.Close(); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	if err := f.readDB.Close(); err != nil && firstErr == nil {
 		firstErr = err
 	}
 	if err := f.fileLock.Unlock(); err != nil && firstErr == nil {

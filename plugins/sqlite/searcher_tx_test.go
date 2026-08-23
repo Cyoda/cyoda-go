@@ -116,7 +116,7 @@ func TestSearchTx_RYWParity_CreateUpdateDelete(t *testing.T) {
 		t.Fatalf("Delete e3: %v", err)
 	}
 
-	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1"}
+	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 20}
 	got := assertSearchEqualsGetAllMatch(t, store, searcher, txCtx, cityBerlin, opts)
 
 	ids := idSetTx(got)
@@ -138,7 +138,7 @@ func TestSearchTx_DeletedInTxAbsent(t *testing.T) {
 	if err := store.Delete(txCtx, "e1"); err != nil {
 		t.Fatalf("Delete e1: %v", err)
 	}
-	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1"}
+	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 20}
 	got := assertSearchEqualsGetAllMatch(t, store, searcher, txCtx, cityBerlin, opts)
 	ids := idSetTx(got)
 	if ids["e1"] {
@@ -173,7 +173,7 @@ func TestSearchTx_DeleteThenSave_ReturnedOnceAsBuffered(t *testing.T) {
 		t.Errorf("Save-after-Delete must clear tx.Deletes for e1")
 	}
 
-	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1"}
+	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 20}
 	got := assertSearchEqualsGetAllMatch(t, store, searcher, txCtx, cityBerlin, opts)
 
 	count := 0
@@ -205,7 +205,7 @@ func TestSearchTx_BufferedSupersedesCommitted(t *testing.T) {
 		t.Fatalf("Save e1: %v", err)
 	}
 
-	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1"}
+	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 20}
 	got := assertSearchEqualsGetAllMatch(t, store, searcher, txCtx, cityBerlin, opts)
 
 	count := 0
@@ -235,7 +235,7 @@ func TestSearchTx_OrderAcrossOverlay(t *testing.T) {
 	// Committed Berlin: e1, e3. Buffered Berlin: e2b. id-asc order: e1, e2b, e3.
 	order := []spi.OrderSpec{{Path: "id", Source: spi.SourceMeta, Kind: spi.OrderText}}
 	got, err := searcher.Search(txCtx, cityBerlin, spi.SearchOptions{
-		ModelName: "person", ModelVersion: "1", OrderBy: order,
+		ModelName: "person", ModelVersion: "1", OrderBy: order, Limit: 20,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -281,7 +281,7 @@ func TestSearchTx_TrackingRead_RecordsReturnedCommittedOnly(t *testing.T) {
 
 	// TrackingRead=true: committed Berlin (e1, e3) recorded; buffered e6 NOT.
 	got, err := searcher.Search(txCtx, cityBerlin, spi.SearchOptions{
-		ModelName: "person", ModelVersion: "1", TrackingRead: true,
+		ModelName: "person", ModelVersion: "1", TrackingRead: true, Limit: 20,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -383,7 +383,7 @@ func TestSearchTx_TrackingRead_RecordsMatchedSet(t *testing.T) {
 func TestSearchTx_TrackingReadFalse_RecordsNothing(t *testing.T) {
 	_, txCtx, searcher := beginTxSearcher(t)
 	_, err := searcher.Search(txCtx, cityBerlin, spi.SearchOptions{
-		ModelName: "person", ModelVersion: "1", TrackingRead: false,
+		ModelName: "person", ModelVersion: "1", TrackingRead: false, Limit: 20,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -438,7 +438,7 @@ func TestSearchTx_NarrowPredicateStaysWithinScanBudget(t *testing.T) {
 		cityBerlin,
 		{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: ".*"},
 	}}
-	got, err := searcher.Search(txCtx, mixed, spi.SearchOptions{ModelName: "person", ModelVersion: "1"})
+	got, err := searcher.Search(txCtx, mixed, spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 10})
 	if err != nil {
 		t.Fatalf("narrow in-tx search must stay within budget, got: %v", err)
 	}
@@ -448,7 +448,7 @@ func TestSearchTx_NarrowPredicateStaysWithinScanBudget(t *testing.T) {
 
 	// Broad residual over the whole model still exhausts the budget.
 	broad := spi.Filter{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: ".*"}
-	_, err = searcher.Search(txCtx, broad, spi.SearchOptions{ModelName: "person", ModelVersion: "1"})
+	_, err = searcher.Search(txCtx, broad, spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 50})
 	if !errors.Is(err, spi.ErrScanBudgetExhausted) {
 		t.Fatalf("broad in-tx post-filter must exhaust budget, got: %v", err)
 	}
@@ -520,7 +520,7 @@ func TestSearchTxPIT_CommittedOnly_ExcludesBufferedWrite(t *testing.T) {
 	}
 
 	got, err := searcher.Search(txCtx, cityBerlin, spi.SearchOptions{
-		ModelName: "person", ModelVersion: "1", PointInTime: &pit, TrackingRead: true,
+		ModelName: "person", ModelVersion: "1", PointInTime: &pit, TrackingRead: true, Limit: 20,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -614,7 +614,7 @@ func TestSearchTxPIT_NarrowPredicateStaysWithinScanBudget(t *testing.T) {
 		{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: ".*"},
 	}}
 	got, err := searcher.Search(txCtx, mixed, spi.SearchOptions{
-		ModelName: "person", ModelVersion: "1", PointInTime: &pit,
+		ModelName: "person", ModelVersion: "1", PointInTime: &pit, Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("narrow in-tx PIT search must stay within budget, got: %v", err)
@@ -626,7 +626,7 @@ func TestSearchTxPIT_NarrowPredicateStaysWithinScanBudget(t *testing.T) {
 	// Broad residual over the whole model still exhausts the budget.
 	broad := spi.Filter{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: ".*"}
 	_, err = searcher.Search(txCtx, broad, spi.SearchOptions{
-		ModelName: "person", ModelVersion: "1", PointInTime: &pit,
+		ModelName: "person", ModelVersion: "1", PointInTime: &pit, Limit: 50,
 	})
 	if !errors.Is(err, spi.ErrScanBudgetExhausted) {
 		t.Fatalf("broad in-tx PIT post-filter must exhaust budget, got: %v", err)

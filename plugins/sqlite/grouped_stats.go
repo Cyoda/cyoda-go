@@ -65,6 +65,13 @@ var (
 // the tx-buffer overlay. PIT semantics are historical-read by definition,
 // so the in-flight buffer is a tier-2 concern; documented in the
 // grouped-stats help-topic (cmd/cyoda/help/content/crud.md).
+//
+// OrderBy: empty means order is unspecified (a deterministic entity_id
+// order is still emitted — a conformant choice within "unspecified"); a
+// non-empty OrderBy is honoured via orderByClause (shared with Search) on
+// the non-tx/PIT SQL paths. A non-empty OrderBy with an ambient transaction
+// is unsupported per the Iterable doc — rejected up front, before either
+// tx branch below runs.
 func (s *entityStore) Iterate(
 	ctx context.Context,
 	model spi.ModelRef,
@@ -74,16 +81,24 @@ func (s *entityStore) Iterate(
 	if err := validateFilterPaths(filter); err != nil {
 		return nil, err
 	}
+	if err := validateOrderSpecs(opts.OrderBy); err != nil {
+		return nil, err
+	}
+
+	tx := spi.GetTransaction(ctx)
+	if len(opts.OrderBy) > 0 && tx != nil {
+		return nil, fmt.Errorf("Iterate: ordered iteration inside a transaction is unsupported")
+	}
 
 	// In-tx, non-PIT: materialize via tx-overlay then iterate the slice.
 	// Mirrors plugins/memory/grouped_stats.go's buildSnapshot pattern.
-	if tx := spi.GetTransaction(ctx); tx != nil && opts.PointInTime == nil {
+	if tx != nil && opts.PointInTime == nil {
 		tx.OpMu.RLock()
 		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return nil, fmt.Errorf("Iterate: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
-		entities, err := s.getAllTx(ctx, tx, model)
+		entities, err := s.getAllTx(ctx, tx, model, opts.TrackingRead)
 		if err != nil {
 			return nil, err
 		}
@@ -121,8 +136,18 @@ func (s *entityStore) Iterate(
 		baseQuery += " AND (" + plan.where + ")"
 		baseArgs = append(baseArgs, plan.args...)
 	}
+	if pointInTime {
+		baseQuery += orderByClause(opts.OrderBy, "ev")
+	} else {
+		baseQuery += orderByClause(opts.OrderBy, "")
+	}
 
-	rows, err := s.db.QueryContext(ctx, baseQuery, baseArgs...)
+	// Non-tx iteration streams from the dedicated reader connection (readDB),
+	// not the writer db: an Iterate caller may hold rows open across an
+	// arbitrary number of Next() calls, and pinning that to the writer's
+	// single-connection pool would starve concurrent writes (e.g. a streamed
+	// async-search SaveResults chunk) for as long as the iterator stays open.
+	rows, err := s.readDB.QueryContext(ctx, baseQuery, baseArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("iterate query: %w", err)
 	}

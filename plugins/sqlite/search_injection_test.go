@@ -40,6 +40,7 @@ func TestSearcher_RejectsMaliciousFilterPath(t *testing.T) {
 		}, spi.SearchOptions{
 			ModelName:    "person",
 			ModelVersion: "1",
+			Limit:        10,
 		})
 		if err == nil {
 			t.Errorf("Search with malicious Filter.Path %q returned nil error (injection not blocked)", payload)
@@ -66,6 +67,7 @@ func TestSearcher_RejectsMaliciousOrderByPath(t *testing.T) {
 	}, spi.SearchOptions{
 		ModelName:    "person",
 		ModelVersion: "1",
+		Limit:        10,
 		OrderBy: []spi.OrderSpec{{
 			Path:   "name') --",
 			Source: spi.SourceData,
