@@ -139,6 +139,12 @@ func asyncScanSearch(t *testing.T, callerCtx context.Context, f *postgres.StoreF
 	}
 	_, err = searcher.Search(scoper.AsyncScanContext(callerCtx), spi.Filter{}, spi.SearchOptions{
 		ModelName: "Widget", ModelVersion: "1",
+		// Limit must be >= 1 (Search is bounded-or-fail) so this reaches the
+		// acquire-saturation branch under test — a rejected Limit would
+		// short-circuit before any pooling logic runs at all, and the value
+		// itself is otherwise irrelevant here (the acquire fails before any
+		// SQL, let alone a bound check on rows, runs).
+		Limit: 1,
 	})
 	return err
 }

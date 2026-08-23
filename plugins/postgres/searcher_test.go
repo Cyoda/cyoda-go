@@ -53,8 +53,15 @@ func searcherOf(t *testing.T, store spi.EntityStore) spi.Searcher {
 	return sr
 }
 
+// searcherBaseLimit is generously above every baseOpts() caller's expected
+// match count (setupSearcher seeds 5, the largest seed among them) — these
+// tests exercise filtering/ordering, not the bounded-or-fail cap itself
+// (that is boundedOpts's job below), so the Limit here only needs to never
+// be the thing that trips.
+const searcherBaseLimit = 100
+
 func baseOpts() spi.SearchOptions {
-	return spi.SearchOptions{ModelName: "person", ModelVersion: "1"}
+	return spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: searcherBaseLimit}
 }
 
 func TestPGSearcher_Eq(t *testing.T) {
@@ -296,6 +303,7 @@ func TestPGSearcher_OrderByNumericData(t *testing.T) {
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
+			Limit:        searcherBaseLimit,
 			OrderBy:      []spi.OrderSpec{{Path: "n", Source: spi.SourceData, Kind: spi.OrderNumeric}},
 		})
 	if err != nil {
@@ -353,6 +361,7 @@ func TestPGSearcher_OrderByCreationDateMeta(t *testing.T) {
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
+			Limit:        searcherBaseLimit,
 			OrderBy:      []spi.OrderSpec{{Path: "creationDate", Source: spi.SourceMeta, Kind: spi.OrderTemporal}},
 		})
 	if err != nil {
@@ -394,6 +403,7 @@ func TestPGSearcher_OrderByStateMeta(t *testing.T) {
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
+			Limit:        searcherBaseLimit,
 			OrderBy:      []spi.OrderSpec{{Path: "state", Source: spi.SourceMeta, Kind: spi.OrderText}},
 		})
 	if err != nil {
@@ -452,6 +462,7 @@ func TestPGSearcher_OrderByMetaEmptyTransitionLast(t *testing.T) {
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
+			Limit:        searcherBaseLimit,
 			OrderBy:      []spi.OrderSpec{{Path: "transitionForLatestSave", Source: spi.SourceMeta, Kind: spi.OrderText}},
 		})
 	if err != nil {
@@ -493,6 +504,7 @@ func TestPGSearcher_OrderByNullsLast(t *testing.T) {
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
+			Limit:        searcherBaseLimit,
 			OrderBy:      []spi.OrderSpec{{Path: "score", Source: spi.SourceData, Kind: spi.OrderText}},
 		})
 	if err != nil {
@@ -528,6 +540,7 @@ func TestPGSearcher_OrderByTiebreaker(t *testing.T) {
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
+			Limit:        searcherBaseLimit,
 			OrderBy:      []spi.OrderSpec{{Path: "city", Source: spi.SourceData, Kind: spi.OrderText}},
 		})
 	if err != nil {
@@ -581,6 +594,7 @@ func TestPGSearcher_OrderByPointInTime(t *testing.T) {
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
+			Limit:        searcherBaseLimit,
 			PointInTime:  &pit,
 			OrderBy:      []spi.OrderSpec{{Path: "creationDate", Source: spi.SourceMeta, Kind: spi.OrderTemporal}},
 		})
@@ -602,6 +616,7 @@ func TestPGSearcher_ValidateOrderSpecsRejectsUnknownMetaPath(t *testing.T) {
 		spi.SearchOptions{
 			ModelName:    "person",
 			ModelVersion: "1",
+			Limit:        searcherBaseLimit,
 			OrderBy:      []spi.OrderSpec{{Path: "unknownMetaField", Source: spi.SourceMeta}},
 		})
 	if err == nil {
@@ -623,6 +638,7 @@ func TestPGSearcher_OrderByMetaIDNoTiebreaker(t *testing.T) {
 		spi.SearchOptions{
 			ModelName:    "person",
 			ModelVersion: "1",
+			Limit:        searcherBaseLimit,
 			OrderBy:      []spi.OrderSpec{{Path: "id", Source: spi.SourceMeta, Kind: spi.OrderText}},
 		})
 	if err != nil {
@@ -826,7 +842,7 @@ func pitSearchSetup(t *testing.T) (spi.EntityStore, context.Context, time.Time) 
 // ORDER BY entity_id over a derived table that only projected doc).
 func TestPGSearcher_PointInTimeDefaultOrder(t *testing.T) {
 	store, ctx, base := pitSearchSetup(t)
-	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1", PointInTime: &base}
+	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1", PointInTime: &base, Limit: searcherBaseLimit}
 
 	active, err := store.(spi.Searcher).Search(ctx,
 		spi.Filter{Op: spi.FilterEq, Path: "status", Source: spi.SourceData, Value: "active", Declared: []spi.DataType{spi.String}}, opts)
@@ -880,6 +896,7 @@ func TestPGSearcher_OrderByNullsLastDesc(t *testing.T) {
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
+			Limit:        searcherBaseLimit,
 			OrderBy:      []spi.OrderSpec{{Path: "score", Source: spi.SourceData, Desc: true, Kind: spi.OrderText}},
 		})
 	if err != nil {
@@ -919,6 +936,7 @@ func TestPGSearcher_OrderByBool(t *testing.T) {
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
+			Limit:        searcherBaseLimit,
 			OrderBy:      []spi.OrderSpec{{Path: "active", Source: spi.SourceData, Kind: spi.OrderBool}},
 		})
 	if err != nil {
@@ -932,6 +950,7 @@ func TestPGSearcher_OrderByBool(t *testing.T) {
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
+			Limit:        searcherBaseLimit,
 			OrderBy:      []spi.OrderSpec{{Path: "active", Source: spi.SourceData, Desc: true, Kind: spi.OrderBool}},
 		})
 	if err != nil {
@@ -1048,17 +1067,36 @@ func TestPGSearcher_AtLimitSucceeds(t *testing.T) {
 	}
 }
 
-// TestPGSearcher_UnboundedReturnsAll: Limit<=0 must never raise, and must
-// never substitute a default cap.
-func TestPGSearcher_UnboundedReturnsAll(t *testing.T) {
+// TestPGSearcher_ZeroLimitRejected and TestPGSearcher_NegativeLimitRejected:
+// Limit <= 0 is a contract violation, not "unbounded" — Search must reject it
+// with an error rather than substituting a default cap of its own. Exercised
+// here through the SQL-pushdown branch (boundedPushdownFilter has no
+// residual) specifically, on top of the generic coverage the shared spitest
+// conformance suite (spitest/searcher.go's BoundedOrFail/ZeroLimitRejected
+// and /NegativeLimitRejected) already provides, so the rejection is proven to
+// happen before runSearch builds any SQL at all — not merely somewhere along
+// the residual path.
+func TestPGSearcher_ZeroLimitRejected(t *testing.T) {
 	store, ctx := newBoundedSearchStore(t)
 	seedBoundedMatching(t, store, ctx, 3)
 	got, err := searcherOf(t, store).Search(ctx, boundedPushdownFilter, boundedOpts(0))
-	if err != nil {
-		t.Fatalf("limit 0 must be unbounded: unexpected err %v", err)
+	if err == nil {
+		t.Fatal("limit 0 is a contract violation, not \"unbounded\": expected an error, got nil")
 	}
-	if len(got) != 3 {
-		t.Fatalf("got %d, want 3", len(got))
+	if len(got) != 0 {
+		t.Fatalf("a rejected Limit must not also return a result: got %d entities", len(got))
+	}
+}
+
+func TestPGSearcher_NegativeLimitRejected(t *testing.T) {
+	store, ctx := newBoundedSearchStore(t)
+	seedBoundedMatching(t, store, ctx, 3)
+	got, err := searcherOf(t, store).Search(ctx, boundedPushdownFilter, boundedOpts(-1))
+	if err == nil {
+		t.Fatal("negative limit is a contract violation: expected an error, got nil")
+	}
+	if len(got) != 0 {
+		t.Fatalf("a rejected Limit must not also return a result: got %d entities", len(got))
 	}
 }
 

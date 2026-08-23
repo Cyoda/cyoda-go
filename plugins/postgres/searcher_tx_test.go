@@ -39,8 +39,14 @@ import (
 
 var searchTxModel = spi.ModelRef{EntityName: "txperson", ModelVersion: "1"}
 
+// searchTxLimit is generously above every seed+buffered-write count this file
+// exercises — these tests are about RYW/TrackingRead behaviour, not the
+// bounded-or-fail cap itself, so the Limit only needs to never be the thing
+// that trips.
+const searchTxLimit = 100
+
 func searchTxOpts() spi.SearchOptions {
-	return spi.SearchOptions{ModelName: searchTxModel.EntityName, ModelVersion: searchTxModel.ModelVersion}
+	return spi.SearchOptions{ModelName: searchTxModel.EntityName, ModelVersion: searchTxModel.ModelVersion, Limit: searchTxLimit}
 }
 
 // setupSearchTx wires a factory+TM (so transactions are available), seeds the
