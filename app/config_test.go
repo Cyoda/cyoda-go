@@ -94,6 +94,42 @@ func TestSearchAsyncConfig_ValidateAcceptsValid(t *testing.T) {
 	}
 }
 
+// TestDefaultConfig_SearchJobHeartbeatInterval asserts the
+// CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL default (15s) under an empty
+// environment, and that an env override binds through envDuration.
+func TestDefaultConfig_SearchJobHeartbeatInterval(t *testing.T) {
+	t.Setenv("CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL", "")
+	os.Unsetenv("CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL")
+
+	if got := DefaultConfig().SearchJobHeartbeatInterval; got != 15*time.Second {
+		t.Errorf("default SearchJobHeartbeatInterval = %s, want 15s", got)
+	}
+
+	t.Setenv("CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL", "3s")
+	if got := DefaultConfig().SearchJobHeartbeatInterval; got != 3*time.Second {
+		t.Errorf("env SearchJobHeartbeatInterval = %s, want 3s", got)
+	}
+}
+
+// TestValidateSearchJobHeartbeat_RejectsNonPositive asserts the hard
+// startup failure for a zero or negative interval — time.NewTicker panics
+// on such a value, so this guards a startup crash, not just a slow default.
+func TestValidateSearchJobHeartbeat_RejectsNonPositive(t *testing.T) {
+	for _, d := range []time.Duration{0, -1 * time.Second} {
+		if err := ValidateSearchJobHeartbeat(d); err == nil {
+			t.Errorf("ValidateSearchJobHeartbeat(%s) = nil, want an error", d)
+		}
+	}
+}
+
+func TestValidateSearchJobHeartbeat_AcceptsPositive(t *testing.T) {
+	for _, d := range []time.Duration{time.Millisecond, 15 * time.Second, time.Hour} {
+		if err := ValidateSearchJobHeartbeat(d); err != nil {
+			t.Errorf("ValidateSearchJobHeartbeat(%s) = %v, want nil", d, err)
+		}
+	}
+}
+
 func TestDefaultConfig_OIDCDefaults(t *testing.T) {
 	cfg := DefaultConfig()
 	if !cfg.IAM.OIDC.RequireHTTPS {

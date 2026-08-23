@@ -96,6 +96,10 @@ func main() {
 		slog.Error("search async config validation failed", "error", err)
 		os.Exit(1)
 	}
+	if err := app.ValidateSearchJobHeartbeat(cfg.SearchJobHeartbeatInterval); err != nil {
+		slog.Error("search job heartbeat config validation failed", "error", err)
+		os.Exit(1)
+	}
 	logCORSMode(cfg.CORS)
 
 	printBanner(cfg)

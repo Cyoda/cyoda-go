@@ -92,12 +92,13 @@ func defaultFor(c app.Config) map[string]string {
 		"CYODA_OTEL_ENABLED":         strconv.FormatBool(c.OTelEnabled),
 
 		// --- search ---
-		"CYODA_SEARCH_SNAPSHOT_TTL":  renderDuration(c.SearchSnapshotTTL),
-		"CYODA_SEARCH_REAP_INTERVAL": renderDuration(c.SearchReapInterval),
-		"CYODA_SEARCH_MAX_SORT_KEYS": strconv.Itoa(c.SearchMaxSortKeys),
-		"CYODA_STATS_GROUP_MAX":      strconv.Itoa(c.StatsGroupMax),
-		"CYODA_SEARCH_ASYNC_WORKERS": strconv.Itoa(c.SearchAsync.Workers),
-		"CYODA_SEARCH_ASYNC_QUEUE":   strconv.Itoa(c.SearchAsync.QueueLen),
+		"CYODA_SEARCH_SNAPSHOT_TTL":           renderDuration(c.SearchSnapshotTTL),
+		"CYODA_SEARCH_REAP_INTERVAL":          renderDuration(c.SearchReapInterval),
+		"CYODA_SEARCH_MAX_SORT_KEYS":          strconv.Itoa(c.SearchMaxSortKeys),
+		"CYODA_STATS_GROUP_MAX":               strconv.Itoa(c.StatsGroupMax),
+		"CYODA_SEARCH_ASYNC_WORKERS":          strconv.Itoa(c.SearchAsync.Workers),
+		"CYODA_SEARCH_ASYNC_QUEUE":            strconv.Itoa(c.SearchAsync.QueueLen),
+		"CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL": renderDuration(c.SearchJobHeartbeatInterval),
 
 		// --- cluster ---
 		"CYODA_CLUSTER_ENABLED":          strconv.FormatBool(c.Cluster.Enabled),

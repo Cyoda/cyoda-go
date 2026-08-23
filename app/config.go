@@ -57,6 +57,15 @@ type Config struct {
 	// submit queue and how deep that queue is before Submit starts
 	// rejecting new jobs with a retryable 503. See SearchAsyncConfig.
 	SearchAsync SearchAsyncConfig
+	// SearchJobHeartbeatInterval is how often a running async-search
+	// executor stamps its job's liveness (spi.AsyncSearchStore.Heartbeat)
+	// and polls for a cross-node cancel/terminal status — starting the
+	// moment the job is submitted (it heartbeats while queued, not only
+	// while scanning), independent of scan progress.
+	// CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL, default 15s. Must be > 0
+	// (time.NewTicker panics on a non-positive duration); validated at
+	// startup by ValidateSearchJobHeartbeat.
+	SearchJobHeartbeatInterval time.Duration
 	// Scheduler configures the coordinator-only scan loop that fires due
 	// ScheduledTasks (scheduled-transition runtime). See SchedulerConfig.
 	Scheduler SchedulerConfig
@@ -284,6 +293,7 @@ func DefaultConfig() Config {
 			Workers:  envInt("CYODA_SEARCH_ASYNC_WORKERS", 8),
 			QueueLen: envInt("CYODA_SEARCH_ASYNC_QUEUE", 256),
 		},
+		SearchJobHeartbeatInterval: envDuration("CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL", 15*time.Second),
 		Admin: AdminConfig{
 			Port:               envInt("CYODA_ADMIN_PORT", 9091),
 			BindAddress:        envString("CYODA_ADMIN_BIND_ADDRESS", "127.0.0.1"),
@@ -640,6 +650,22 @@ func ValidateSearchAsync(c SearchAsyncConfig) error {
 	}
 	if c.QueueLen < 0 {
 		return fmt.Errorf("CYODA_SEARCH_ASYNC_QUEUE must be >= 0, got %d", c.QueueLen)
+	}
+	return nil
+}
+
+// ValidateSearchJobHeartbeat enforces startup-time correctness for
+// CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL. Called once at startup (from
+// cmd/cyoda/main.go); a non-nil return causes the binary to slog the error
+// and os.Exit(1).
+//
+// Config is a QA'd artefact, not runtime input: a non-positive interval is a
+// hard startup error rather than silently clamped to the default, matching
+// ValidateSearchAsync's policy. time.NewTicker panics on a non-positive
+// duration, so this guards a startup crash, not just a slow default.
+func ValidateSearchJobHeartbeat(interval time.Duration) error {
+	if interval <= 0 {
+		return fmt.Errorf("CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL must be > 0, got %s", interval)
 	}
 	return nil
 }

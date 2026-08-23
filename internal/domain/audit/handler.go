@@ -52,7 +52,14 @@ func (h *Handler) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	versions, err := store.GetVersionHistory(ctx, entityId.String())
+	// TODO(#472-E6): GetVersionMetadata call is a minimal mechanical swap for
+	// the deleted GetVersionHistory — it compiles internal/domain/audit
+	// against the new SPI but does not yet push the request's time window
+	// down (opts.From/Until), apply the 1000-row cap, or map
+	// TransactionID/actor attribution the way task E6 (history read
+	// rewires, docs/superpowers/plans/2026-08-22-472-search-spi-surface.md)
+	// specifies. Full behavior lands with that task.
+	versions, err := store.GetVersionMetadata(ctx, entityId.String(), spi.VersionMetadataOptions{})
 	if err != nil {
 		if errors.Is(err, spi.ErrNotFound) {
 			common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, "entity not found"))
@@ -71,6 +78,7 @@ func (h *Handler) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request
 
 	// EntityChange events from version history.
 	if includeEntityChange {
+		callerTenant := common.TenantFromContext(ctx)
 		for _, v := range versions {
 			event := map[string]any{
 				"auditEventType": "EntityChange",
@@ -79,20 +87,18 @@ func (h *Handler) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request
 				"utcTime":        v.Timestamp.UTC().Format(time.RFC3339Nano),
 				"microsTime":     v.Timestamp.UnixMicro(),
 				"system":         false,
+				"entityId":       entityId.String(),
 			}
-			if v.Entity != nil {
-				event["entityId"] = v.Entity.Meta.ID
-				if v.Entity.Meta.TransactionID != "" {
-					event["transactionId"] = v.Entity.Meta.TransactionID
-				}
+			if v.TransactionID != "" {
+				event["transactionId"] = v.TransactionID
 			}
 			if v.User != "" {
 				actor := map[string]any{
 					"id":   v.User,
 					"name": v.User,
 				}
-				if v.Entity != nil {
-					actor["legalId"] = string(v.Entity.Meta.TenantID)
+				if callerTenant != "" {
+					actor["legalId"] = callerTenant
 				}
 				event["actor"] = actor
 			}

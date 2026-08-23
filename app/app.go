@@ -68,7 +68,12 @@ type App struct {
 	nodeRegistry       contract.NodeRegistry
 	scheduler          *scheduler.Service
 	stopSearchReaper   chan struct{}
-	grpcStopOnce       sync.Once
+	// searchPool is the bounded worker pool async-search submissions run
+	// on, sized from cfg.SearchAsync. Shutdown drains it (bounded by
+	// searchDrainBudget) before aborting whatever async jobs are still
+	// registered on this node.
+	searchPool   *search.WorkerPool
+	grpcStopOnce sync.Once
 	// healthFlag starts true and is latched false by the first recovered
 	// panic at any of the four sites that run engine or store work: the HTTP
 	// recovery middleware, the gRPC recovery interceptors, the async-search
@@ -438,11 +443,16 @@ func New(cfg Config) *App {
 	// cross-tenant eviction (issue #175).
 	pathValidationCache := search.NewPathValidationCache()
 	cachingStoreFactory.SubscribeLocal(pathValidationCache.InvalidateRef)
+	// Bounded async-search worker pool, sized from config (validated at
+	// startup by app.ValidateSearchAsync — see cmd/cyoda/main.go).
+	a.searchPool = search.NewWorkerPool(cfg.SearchAsync.Workers, cfg.SearchAsync.QueueLen)
 	a.searchService = search.
 		NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore).
 		WithPathValidationCache(pathValidationCache).
 		WithMaxSortKeys(a.config.SearchMaxSortKeys).
-		WithHealthFlag(a.healthFlag)
+		WithHealthFlag(a.healthFlag).
+		WithAsyncPool(a.searchPool).
+		WithHeartbeat(cfg.SearchJobHeartbeatInterval)
 
 	// Search snapshot TTL reaper (uses stopSearchReaper for graceful shutdown)
 	a.stopSearchReaper = make(chan struct{})
@@ -855,6 +865,13 @@ func (a *App) NodeRegistry() contract.NodeRegistry          { return a.nodeRegis
 // caller can predict total stop time as ~max(http, grpc) drain budgets.
 const gRPCGracefulStopBudget = 10 * time.Second
 
+// searchDrainBudget bounds how long Shutdown waits for in-flight async
+// search jobs to finish naturally before forcing whatever is still
+// registered to FAILED. Jobs run their own context (not the pool's — see
+// search.WithAsyncPool's doc comment), so pool.Drain's own ctx cancellation
+// does not itself abort them; this budget is what actually bounds the wait.
+const searchDrainBudget = 5 * time.Second
+
 // Close performs graceful shutdown of all backend resources.
 //
 // Close is the single teardown path for storeFactory and the gRPC server;
@@ -912,6 +929,21 @@ func (a *App) StopGRPC() {
 func (a *App) Shutdown() {
 	if a.stopSearchReaper != nil {
 		close(a.stopSearchReaper)
+	}
+	if a.searchPool != nil {
+		drainCtx, cancel := context.WithTimeout(context.Background(), searchDrainBudget)
+		a.searchPool.Drain(drainCtx)
+		cancel()
+	}
+	if a.searchService != nil {
+		// Interim disposition (see the task E2 note this mirrors): a job
+		// still registered here did not finish within the drain budget —
+		// mark it FAILED with the safe fallback message rather than leave
+		// it RUNNING against a process that is going away. Re-executing an
+		// aborted job elsewhere is a follow-up, not handled by this call.
+		if n := a.searchService.AbortRegisteredJobs(context.Background()); n > 0 {
+			slog.Warn("aborted in-flight async search jobs at shutdown", "pkg", "search", "count", n)
+		}
 	}
 	if a.scheduler != nil {
 		a.scheduler.Stop()

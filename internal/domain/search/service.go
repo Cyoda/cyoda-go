@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -166,12 +168,61 @@ type SearchService struct {
 
 	// healthFlag is the process-wide node-health flag the HTTP and gRPC
 	// recovery paths latch false on a recovered panic. The async-search
-	// goroutine latches the same one: a panic there runs the same engine
+	// executor latches the same one: a panic there runs the same engine
 	// and store code, so it is the same evidence of unverified state.
 	// nil-safe — unit tests that do not care about node health leave it
 	// unset.
 	healthFlag *atomic.Bool
+
+	// pool is the bounded worker pool async submissions run on. Set via
+	// WithAsyncPool; when unset, asyncPool() lazily constructs a small
+	// built-in pool so callers that never wire one (most unit tests, and
+	// packages across the tree that only care about async-job outcomes,
+	// not pool sizing) still work. Production wires a config-sized pool
+	// via app.go.
+	pool     *WorkerPool
+	poolOnce sync.Once
+
+	// heartbeatInterval is the cadence WithHeartbeat sets. <= 0 (including
+	// the zero value when WithHeartbeat is never called) falls back to
+	// defaultHeartbeatInterval via heartbeatEvery().
+	heartbeatInterval time.Duration
+
+	// registryMu guards registry, the jobID -> in-process cancel handle map
+	// used by CancelRunning (in-process immediate cancel) and
+	// AbortRegisteredJobs (shutdown drain). An entry exists for the
+	// lifetime of a job on this node: from registerJob at submit time
+	// (queued or executing) to deregisterJob in the executor's own defer.
+	registryMu sync.Mutex
+	registry   map[string]*asyncJobHandle
 }
+
+// asyncJobHandle is what the cancel registry keeps per in-flight (queued or
+// executing) job on this node.
+type asyncJobHandle struct {
+	// cancel cancels the job's own context (jobCtx), which is what the
+	// heartbeat ticker and the executor's scan/save loop both observe —
+	// NOT the worker pool's lifetime context (see WithAsyncPool's doc
+	// comment on why the two are independent).
+	cancel context.CancelFunc
+	// uc is the submitting user's tenant context, needed to build a fresh
+	// (non-cancelled) ctx for a shutdown-time fenced write after cancel has
+	// already been called on jobCtx.
+	uc *spi.UserContext
+}
+
+// defaultAsyncPoolWorkers/defaultAsyncPoolQueue size the built-in pool
+// asyncPool() lazily constructs when no WithAsyncPool call ever wires one in
+// — deliberately small since it only exists so library callers (tests,
+// other packages) that don't care about pool sizing keep working; production
+// always wires app.SearchAsyncConfig via WithAsyncPool.
+const (
+	defaultAsyncPoolWorkers = 4
+	defaultAsyncPoolQueue   = 64
+	// defaultHeartbeatInterval is heartbeatEvery()'s fallback when
+	// WithHeartbeat is never called or is called with a non-positive value.
+	defaultHeartbeatInterval = 5 * time.Second
+)
 
 // NewSearchService creates a SearchService backed by the given store factory.
 func NewSearchService(factory spi.StoreFactory, uuids spi.UUIDGenerator, searchStore spi.AsyncSearchStore) *SearchService {
@@ -208,6 +259,120 @@ func (s *SearchService) WithHealthFlag(f *atomic.Bool) *SearchService {
 func (s *SearchService) WithMaxSortKeys(n int) *SearchService {
 	s.maxSortKeys = n
 	return s
+}
+
+// WithAsyncPool wires the bounded worker pool async submissions run on.
+// Chain immediately after NewSearchService (before any SubmitAsync call) —
+// asyncPool() lazily constructs a built-in default pool on first use if this
+// is never called, and that default is discarded (its workers leak, parked
+// forever on an empty channel) if WithAsyncPool is called afterward. Returns
+// the receiver for chaining.
+func (s *SearchService) WithAsyncPool(p *WorkerPool) *SearchService {
+	s.pool = p
+	return s
+}
+
+// WithHeartbeat sets the interval the async executor stamps job liveness on
+// (spi.AsyncSearchStore.Heartbeat) and polls for cross-node cancel/terminal
+// status, starting at submit time. interval <= 0 restores the built-in
+// default (defaultHeartbeatInterval) via heartbeatEvery(). Returns the
+// receiver for chaining after NewSearchService.
+func (s *SearchService) WithHeartbeat(interval time.Duration) *SearchService {
+	s.heartbeatInterval = interval
+	return s
+}
+
+// asyncPool returns the wired pool, lazily constructing a small built-in
+// default (defaultAsyncPoolWorkers/defaultAsyncPoolQueue) the first time it
+// is needed if WithAsyncPool was never called. sync.Once-guarded so a
+// WithAsyncPool call racing the very first SubmitAsync can't leave two pools
+// half-installed.
+func (s *SearchService) asyncPool() *WorkerPool {
+	s.poolOnce.Do(func() {
+		if s.pool == nil {
+			s.pool = NewWorkerPool(defaultAsyncPoolWorkers, defaultAsyncPoolQueue)
+		}
+	})
+	return s.pool
+}
+
+// heartbeatEvery returns the configured heartbeat interval, or
+// defaultHeartbeatInterval when WithHeartbeat was never called (or was
+// called with a non-positive value).
+func (s *SearchService) heartbeatEvery() time.Duration {
+	if s.heartbeatInterval > 0 {
+		return s.heartbeatInterval
+	}
+	return defaultHeartbeatInterval
+}
+
+// registerJob records jobID's in-process cancel handle so CancelRunning and
+// AbortRegisteredJobs can find it. Called once at submit time, before the
+// job is handed to the pool — the submitter owns the queue entry, so the
+// registration (and the heartbeat ticker) span the queued state too, not
+// just execution.
+func (s *SearchService) registerJob(jobID string, cancel context.CancelFunc, uc *spi.UserContext) {
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
+	if s.registry == nil {
+		s.registry = make(map[string]*asyncJobHandle)
+	}
+	s.registry[jobID] = &asyncJobHandle{cancel: cancel, uc: uc}
+}
+
+// deregisterJob removes jobID's entry. Idempotent — a missing entry is a
+// no-op, so both the queue-full submit path and the executor's own defer can
+// call it without coordinating who runs first.
+func (s *SearchService) deregisterJob(jobID string) {
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
+	delete(s.registry, jobID)
+}
+
+// CancelRunning cancels jobID's in-process context if this node currently
+// has it registered (queued or executing), returning true. Returns false
+// when the job is not registered here — not yet started on this node,
+// already finished, or owned by a different node in the cluster. Used by
+// CancelAsync for an immediate in-process abort that does not wait for the
+// next heartbeat poll to observe the store's CANCELLED write.
+func (s *SearchService) CancelRunning(jobID string) bool {
+	s.registryMu.Lock()
+	entry, ok := s.registry[jobID]
+	s.registryMu.Unlock()
+	if !ok {
+		return false
+	}
+	entry.cancel()
+	return true
+}
+
+// AbortRegisteredJobs cancels every job still registered on this node (queued
+// or executing) and marks each FAILED via an epoch-1 fenced write carrying
+// the safe fallback message — called from App.Shutdown after pool.Drain, so
+// a job that did not finish in the drain budget is not left RUNNING forever
+// against a process that is going away. Interim disposition: the job is not
+// re-queued for another node to pick up (see the shutdown re-execution
+// follow-up noted in the caller). A lost race against the job's own terminal
+// write (ErrAlreadyTerminal/ErrStaleClaim) is expected and logged at Warn,
+// not treated as a failure of this call. Returns the number of jobs this
+// call attempted to abort.
+func (s *SearchService) AbortRegisteredJobs(ctx context.Context) int {
+	s.registryMu.Lock()
+	entries := make(map[string]*asyncJobHandle, len(s.registry))
+	for id, e := range s.registry {
+		entries[id] = e
+	}
+	s.registryMu.Unlock()
+
+	for jobID, entry := range entries {
+		entry.cancel()
+		writeCtx := ctx
+		if entry.uc != nil {
+			writeCtx = spi.WithUserContext(ctx, entry.uc)
+		}
+		s.writeAsyncFailure(writeCtx, jobID, jobFailureFallback, time.Now(), 0)
+	}
+	return len(entries)
 }
 
 // structuralConditionErrCode classifies a ValidateCondition error for the
@@ -295,21 +460,26 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 	// Delegate to the plugin Searcher whenever it's available. Searcher.Search
 	// is transaction-aware on every OSS backend (RYW), so this is safe with or
 	// without an active transaction in ctx — see the Search doc comment.
-	if searcher, ok := store.(spi.Searcher); ok {
+	// opts.Limit <= 0 ("no explicit limit" — async submit's internal caller,
+	// or a scoped conditional delete's Limit:-1) cannot be pushed down:
+	// Searcher.Search's contract requires Limit >= 1 and treats anything
+	// else as a caller error, not "unbounded" — there is no zero-means-
+	// unbounded sentinel at that interface. The engine is the one place
+	// that resolves a bound before calling it (see the Searcher doc
+	// comment), so an unbounded request skips the pushdown attempt
+	// entirely (including its FieldsMap load — the fallback below loads
+	// its own) and takes the same GetAll + in-memory-match fallback a
+	// translate failure does, which already tolerates opts.Limit <= 0 (see
+	// the bounded-or-fail comment below).
+	if searcher, ok := store.(spi.Searcher); ok && opts.Limit > 0 {
 		fields, _ := loadFieldsMap(ctx, modelStore, modelRef) // best-effort; nil-tolerant
 		filter, translateErr := spi.ConditionToFilter(cond, fields)
 		if translateErr == nil {
-			// Map Limit < 0 (unbounded) to 0 for the SPI; SPI Limit==0 means
-			// "no explicit limit" in all store implementations.
-			spiLimit := opts.Limit
-			if spiLimit < 0 {
-				spiLimit = 0
-			}
 			res, sErr := searcher.Search(ctx, filter, spi.SearchOptions{
 				ModelName:    modelRef.EntityName,
 				ModelVersion: modelRef.ModelVersion,
 				PointInTime:  opts.PointInTime,
-				Limit:        spiLimit,
+				Limit:        opts.Limit,
 				OrderBy:      orderBy,
 				TrackingRead: opts.TrackingRead,
 			})
@@ -566,90 +736,257 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 		bgCtx = scoper.AsyncScanContext(bgCtx)
 	}
 
+	// jobCtx (not the pool's own lifetime ctx — see WithAsyncPool) is what
+	// the heartbeat ticker and the executor's scan/save loop observe.
+	// Registered — and the heartbeat ticker started — before the job is
+	// handed to the pool: the submitter owns the queue entry, so both span
+	// the queued state, not just execution.
+	jobCtx, cancel := context.WithCancel(bgCtx)
+	s.registerJob(jobID, cancel, uc)
+	s.startHeartbeat(jobCtx, cancel, jobID)
+
+	submitErr := s.asyncPool().Submit(func(context.Context) {
+		s.runAsyncJob(jobCtx, cancel, jobID, modelRef, cond, opts, orderBy)
+	})
+	if submitErr != nil {
+		// The job never entered the queue, so there was never a claim to
+		// fence a terminal write against — delete the row rather than
+		// writing FAILED, so it does not linger RUNNING.
+		cancel()
+		s.deregisterJob(jobID)
+		if delErr := s.searchStore.DeleteJob(bgCtx, jobID); delErr != nil {
+			slog.Error("failed to delete search job after queue rejection", "pkg", "search", "jobID", jobID, "err", delErr)
+		}
+		return "", submitErr
+	}
+
+	return jobID, nil
+}
+
+// startHeartbeat runs the dedicated heartbeat ticker goroutine for a job,
+// from submit time (queued or executing) until jobCtx is done. Every tick it
+// stamps liveness (Heartbeat) and polls GetJob for any terminal status —
+// cross-node cancel and terminal abort in one poll — cancelling jobCtx (and
+// so stopping itself) on either a Heartbeat error (fenced out — a stale
+// claim or an already-terminal job) or an observed non-RUNNING status.
+func (s *SearchService) startHeartbeat(jobCtx context.Context, cancel context.CancelFunc, jobID string) {
+	interval := s.heartbeatEvery()
 	go func() {
-		// A panic in Search (or anything it calls) runs on context.Background()
-		// with no HTTP handler above it to recover it — net/http's per-connection
-		// recover has nothing to do with this goroutine. Left unrecovered, it
-		// takes the whole process down, the same class of gap the gRPC and HTTP
-		// mux doors had. Mirrors the scheduler's own dispatch goroutine
-		// (internal/scheduler/service.go), which already recovers: log the full
-		// panic detail (value + stack) and record the job FAILED with a
-		// non-revealing message — a job left RUNNING forever after its
-		// goroutine died would be its own defect (Gate 3: no panic value or
-		// stack leaves the log).
-		defer func() {
-			if rec := recover(); rec != nil {
-				slog.Error("panic recovered in async search job", "pkg", "search",
-					"jobID", jobID, "err", fmt.Errorf("panic: %v", rec),
-					"stack", string(debug.Stack()))
-				// Same latch as the HTTP and gRPC doors: this goroutine runs
-				// the same engine and store code, so a panic here is the same
-				// evidence that the node's state is unverified. Nothing
-				// resets it — the node reports 503 on /health and /readyz and
-				// stops taking client traffic.
-				if s.healthFlag != nil {
-					s.healthFlag.Store(false)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-jobCtx.Done():
+				return
+			case <-ticker.C:
+				if err := s.searchStore.Heartbeat(jobCtx, jobID, 1); err != nil {
+					slog.Warn("async search heartbeat failed; aborting job", "pkg", "search", "jobID", jobID, "err", err)
+					cancel()
+					return
 				}
-				if err := s.searchStore.UpdateJobStatus(bgCtx, jobID, "FAILED", 0,
-					jobFailureFallback, time.Now(), 0); err != nil {
-					slog.Error("failed to update search job status after recovered panic", "pkg", "search", "jobID", jobID, "err", err)
+				job, err := s.searchStore.GetJob(jobCtx, jobID)
+				if err != nil {
+					slog.Warn("async search heartbeat status poll failed", "pkg", "search", "jobID", jobID, "err", err)
+					continue
+				}
+				if job.Status != "RUNNING" {
+					cancel()
+					return
 				}
 			}
-		}()
-		start := time.Now()
-		results, searchErr := s.Search(bgCtx, modelRef, cond, opts)
-		elapsed := time.Since(start)
-		finishTime := time.Now()
-		calcTimeMs := elapsed.Milliseconds()
-
-		// Check if cancelled before saving results.
-		currentJob, getErr := s.searchStore.GetJob(bgCtx, jobID)
-		if getErr != nil {
-			slog.Error("failed to get search job for status check", "pkg", "search", "jobID", jobID, "err", getErr)
-			return
 		}
-		if currentJob.Status == "CANCELLED" {
-			return
-		}
+	}()
+}
 
-		if searchErr != nil {
-			if err := s.searchStore.UpdateJobStatus(bgCtx, jobID, "FAILED", 0, jobFailureMessage(searchErr), finishTime, calcTimeMs); err != nil {
-				slog.Error("failed to update search job status", "pkg", "search", "jobID", jobID, "err", err)
+// runAsyncJob is the executor: it runs once a worker picks jobID up off the
+// pool (or, for a test driving it directly, whenever called). It streams
+// matches through Iterate → SaveResults instead of materializing the full
+// result set first, and records a single epoch-1-fenced terminal write.
+// cancel stops the heartbeat ticker (via jobCtx) on every exit path.
+func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.CancelFunc, jobID string, modelRef spi.ModelRef, cond predicate.Condition, opts SearchOptions, resolvedOrderBy []spi.OrderSpec) {
+	defer cancel()
+	defer s.deregisterJob(jobID)
+
+	const epoch = 1
+	start := time.Now()
+
+	// A panic anywhere in this function (or anything it calls) runs with no
+	// HTTP handler above it to recover it — net/http's per-connection
+	// recover has nothing to do with a pool worker goroutine. Left
+	// unrecovered, it takes the whole process down, the same class of gap
+	// the gRPC and HTTP mux doors had. Mirrors the scheduler's own dispatch
+	// goroutine (internal/scheduler/service.go): log the full panic detail
+	// (value + stack) and record the job FAILED with a non-revealing
+	// message — a job left RUNNING forever after its executor died would be
+	// its own defect (Gate 3: no panic value or stack leaves the log).
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("panic recovered in async search job", "pkg", "search",
+				"jobID", jobID, "err", fmt.Errorf("panic: %v", rec),
+				"stack", string(debug.Stack()))
+			// Same latch as the HTTP and gRPC doors: this executor runs the
+			// same engine and store code, so a panic here is the same
+			// evidence that the node's state is unverified. Nothing resets
+			// it — the node reports 503 on /health and /readyz and stops
+			// taking client traffic.
+			if s.healthFlag != nil {
+				s.healthFlag.Store(false)
 			}
-			// Full detail stays server-side.
-			slog.Warn("async search job failed", "pkg", "search", "jobID", jobID, "err", searchErr)
-			return
-		}
-
-		var ids []string
-		for _, e := range results {
-			ids = append(ids, e.Meta.ID)
-		}
-
-		if err := s.searchStore.SaveResults(bgCtx, jobID, ids); err != nil {
-			slog.Error("failed to save search results", "pkg", "search", "jobID", jobID, "err", err)
-			_ = s.searchStore.UpdateJobStatus(bgCtx, jobID, "FAILED", 0, jobFailureMessage(err), finishTime, calcTimeMs)
-			return
-		}
-
-		// Re-check status after SaveResults to guard against cancel race:
-		// CancelAsync may have set CANCELLED between the first check and here.
-		currentJob, getErr = s.searchStore.GetJob(bgCtx, jobID)
-		if getErr != nil {
-			slog.Error("failed to re-check search job status", "pkg", "search", "jobID", jobID, "err", getErr)
-			return
-		}
-		if currentJob.Status != "RUNNING" {
-			slog.Debug("search job status changed during execution, skipping update", "pkg", "search", "jobID", jobID, "status", currentJob.Status)
-			return
-		}
-
-		if err := s.searchStore.UpdateJobStatus(bgCtx, jobID, "SUCCESSFUL", len(ids), "", finishTime, calcTimeMs); err != nil {
-			slog.Error("failed to update search job status", "pkg", "search", "jobID", jobID, "err", err)
+			// context.WithoutCancel: jobCtx may or may not be cancelled at
+			// this point, but the write must land regardless — stripping
+			// cancellation while keeping the UserContext value lets a store
+			// that aborts in-flight work on ctx.Err() still accept it.
+			s.writeAsyncFailure(context.WithoutCancel(jobCtx), jobID, jobFailureFallback, time.Now(), 0)
 		}
 	}()
 
-	return jobID, nil
+	modelStore, err := s.factory.ModelStore(jobCtx)
+	if err != nil {
+		s.writeAsyncFailure(jobCtx, jobID, jobFailureMessage(err), time.Now(), time.Since(start).Milliseconds())
+		return
+	}
+	fields, _ := loadFieldsMap(jobCtx, modelStore, modelRef) // best-effort; nil-tolerant, mirrors Search
+	filter, translateErr := spi.ConditionToFilter(cond, fields)
+
+	var (
+		count   int
+		prodErr error
+		saveErr error
+	)
+
+	if translateErr != nil {
+		// Untranslatable condition: unchanged interim fallback. Search's own
+		// Searcher-pushdown branch independently attempts (and, for the same
+		// reason, fails) the same translation, so calling it here reaches
+		// its GetAll + in-memory-match branch — the same code, not a
+		// duplicate of it — and the resulting IDs are streamed through the
+		// same SaveResults call as the Iterate path below.
+		results, searchErr := s.Search(jobCtx, modelRef, cond, opts)
+		if searchErr != nil {
+			prodErr = searchErr
+		} else {
+			ids := make([]string, len(results))
+			for i, e := range results {
+				ids[i] = e.Meta.ID
+			}
+			count = len(ids)
+			saveErr = s.searchStore.SaveResults(jobCtx, jobID, epoch, slices.Values(ids))
+		}
+	} else {
+		entityStore, err := s.factory.EntityStore(jobCtx)
+		if err != nil {
+			s.writeAsyncFailure(jobCtx, jobID, jobFailureMessage(err), time.Now(), time.Since(start).Milliseconds())
+			return
+		}
+		iterableStore, ok := entityStore.(spi.Iterable)
+		if !ok {
+			// Fail closed (correctness-over-availability): every in-house
+			// store implements spi.Iterable; a store that implements only
+			// Searcher cannot serve the engine-executed streaming async
+			// path, and there is no lesser-quality answer to fall back to.
+			slog.Error("async search store does not implement spi.Iterable", "pkg", "search", "jobID", jobID)
+			s.writeAsyncFailure(jobCtx, jobID, jobFailureFallback, time.Now(), time.Since(start).Milliseconds())
+			return
+		}
+
+		orderBy := resolvedOrderBy
+		if len(orderBy) == 0 {
+			// Iterate's own empty-OrderBy contract is merely "unspecified"
+			// (unlike Search/Searcher, where empty already means the
+			// engine's canonical entity-ID order) — request that order
+			// explicitly so async results keep today's default order.
+			orderBy = []spi.OrderSpec{{Source: spi.SourceMeta, Path: "id"}}
+		}
+
+		it, iterErr := iterableStore.Iterate(jobCtx, modelRef, filter, spi.IterateOptions{
+			PointInTime: opts.PointInTime,
+			OrderBy:     orderBy,
+		})
+		if iterErr != nil {
+			prodErr = iterErr
+		} else {
+			// IIFE so `defer it.Close()` fires at the end of THIS scope —
+			// before the terminal write below, and unconditionally
+			// (including if SaveResults or the scan loop panics: the
+			// defer still runs during the panic unwind, ahead of the
+			// panic-recovery defer above) — rather than at runAsyncJob's
+			// own return, which would run after the terminal write.
+			count, saveErr, prodErr = func() (n int, sErr, pErr error) {
+				// Named returns: the deferred closure sets pErr AFTER
+				// Close() runs — some implementations only surface a
+				// sticky scan error at Close, not at the last Next(), so
+				// reading it.Err() in the function body (before Close)
+				// would miss it.
+				defer func() {
+					if closeErr := it.Close(); closeErr != nil {
+						slog.Warn("failed to close async search iterator", "pkg", "search", "jobID", jobID, "err", closeErr)
+					}
+					pErr = it.Err()
+				}()
+				seq := func(yield func(string) bool) {
+					for it.Next() {
+						n++
+						if !yield(it.Entity().Meta.ID) {
+							return
+						}
+					}
+				}
+				sErr = s.searchStore.SaveResults(jobCtx, jobID, epoch, seq)
+				return
+			}()
+		}
+	}
+
+	finishTime := time.Now()
+	calcTimeMs := time.Since(start).Milliseconds()
+
+	switch {
+	case jobCtx.Err() != nil:
+		// Cancelled — in-process CancelRunning, a cross-node cancel or
+		// terminal status the heartbeat poll observed, or a heartbeat
+		// fencing failure. context.WithoutCancel so the recovery read/write
+		// below is not itself aborted by the same cancellation.
+		recoveryCtx := context.WithoutCancel(jobCtx)
+		job, getErr := s.searchStore.GetJob(recoveryCtx, jobID)
+		if getErr == nil && job.Status == "CANCELLED" {
+			// The store already stamped the terminal write (Cancel, or a
+			// takeover's own terminal write) — nothing left to record.
+			return
+		}
+		s.writeAsyncFailure(recoveryCtx, jobID, jobFailureFallback, finishTime, calcTimeMs)
+		return
+	case prodErr != nil:
+		slog.Warn("async search job failed", "pkg", "search", "jobID", jobID, "err", prodErr)
+		s.writeAsyncFailure(jobCtx, jobID, jobFailureMessage(prodErr), finishTime, calcTimeMs)
+		return
+	case saveErr != nil:
+		slog.Error("failed to save search results", "pkg", "search", "jobID", jobID, "err", saveErr)
+		s.writeAsyncFailure(jobCtx, jobID, jobFailureMessage(saveErr), finishTime, calcTimeMs)
+		return
+	}
+
+	if err := s.searchStore.UpdateJobStatus(jobCtx, jobID, epoch, "SUCCESSFUL", count, "", finishTime, calcTimeMs); err != nil {
+		if errors.Is(err, spi.ErrAlreadyTerminal) || errors.Is(err, spi.ErrStaleClaim) {
+			slog.Warn("async search terminal write lost the race; state already settled", "pkg", "search", "jobID", jobID, "err", err)
+			return
+		}
+		slog.Error("failed to update search job status", "pkg", "search", "jobID", jobID, "err", err)
+	}
+}
+
+// writeAsyncFailure records jobID FAILED via an epoch-1 fenced write. A lost
+// race against the job's own (or a takeover's) terminal write
+// (ErrAlreadyTerminal/ErrStaleClaim) is expected and logged at Warn, not
+// treated as a failure of the caller — the correct state is already
+// recorded.
+func (s *SearchService) writeAsyncFailure(ctx context.Context, jobID, msg string, finishTime time.Time, calcTimeMs int64) {
+	if err := s.searchStore.UpdateJobStatus(ctx, jobID, 1, "FAILED", 0, msg, finishTime, calcTimeMs); err != nil {
+		if errors.Is(err, spi.ErrAlreadyTerminal) || errors.Is(err, spi.ErrStaleClaim) {
+			slog.Warn("async search terminal write lost the race; state already settled", "pkg", "search", "jobID", jobID, "err", err)
+			return
+		}
+		slog.Error("failed to update search job status", "pkg", "search", "jobID", jobID, "err", err)
+	}
 }
 
 // GetAsyncStatus returns the current status of an async search job.
@@ -759,6 +1096,14 @@ func (s *SearchService) CancelAsync(ctx context.Context, jobID string) (CancelRe
 	if err := s.searchStore.Cancel(ctx, jobID, finishTime); err != nil {
 		return CancelResult{}, fmt.Errorf("failed to cancel job: %w", err)
 	}
+
+	// Best-effort in-process abort: if this node happens to be running (or
+	// still has queued) the job, stop it immediately rather than waiting up
+	// to one heartbeat interval for its own poll to observe the CANCELLED
+	// write above. A cross-node cancel (the job runs on a different node)
+	// still lands — that node's own heartbeat poll picks up the terminal
+	// status within one interval.
+	s.CancelRunning(jobID)
 
 	return CancelResult{Cancelled: true, CurrentStatus: "CANCELLED"}, nil
 }

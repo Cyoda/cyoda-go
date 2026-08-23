@@ -388,27 +388,20 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 }
 
 // getEntityByTransactionID returns the entity version whose meta.TransactionID
-// matches txID. It scans the version history (which carries the full Entity
-// payload per version) and returns the matching snapshot. spi.ErrNotFound is
-// returned both when the entity itself is unknown to the store and when no
-// version matches the supplied transactionId — the caller maps both to
-// ENTITY_NOT_FOUND (404), which mirrors Cyoda Cloud's contract for issue #150
-// (and matches dictionary scenario 12/neg/05). The caller treats other errors
-// as infrastructure failures (5xx).
+// matches txID, via the store's purposed by-transaction lookup (earliest
+// matching version; tombstones never match — see GetVersionByTransaction's
+// doc comment). spi.ErrNotFound is returned both when the entity itself is
+// unknown to the store and when no version matches the supplied
+// transactionId — the caller maps both to ENTITY_NOT_FOUND (404), which
+// mirrors Cyoda Cloud's contract for issue #150 (and matches dictionary
+// scenario 12/neg/05). The caller treats other errors as infrastructure
+// failures (5xx).
 func getEntityByTransactionID(ctx context.Context, store spi.EntityStore, entityID, txID string) (*spi.Entity, error) {
-	versions, err := store.GetVersionHistory(ctx, entityID)
+	v, err := store.GetVersionByTransaction(ctx, entityID, txID)
 	if err != nil {
 		return nil, err
 	}
-	for _, v := range versions {
-		if v.Entity == nil {
-			continue
-		}
-		if v.Entity.Meta.TransactionID == txID {
-			return v.Entity, nil
-		}
-	}
-	return nil, spi.ErrNotFound
+	return v.Entity, nil
 }
 
 // GetEntity retrieves a single entity, optionally at a point in time or
@@ -739,7 +732,15 @@ func (h *Handler) GetChangesMetadata(ctx context.Context, entityID string, point
 		return nil, common.Internal("failed to access entity store", err)
 	}
 
-	versions, err := entityStore.GetVersionHistory(ctx, entityID)
+	// Hard cap to prevent unbounded response size, pushed down to the store
+	// rather than fetched-then-truncated.
+	const maxChangesMetadata = 1000
+	opts := spi.VersionMetadataOptions{Limit: maxChangesMetadata}
+	if pointInTime != nil && !pointInTime.IsZero() {
+		opts.Until = pointInTime
+	}
+
+	versions, err := entityStore.GetVersionMetadata(ctx, entityID, opts)
 	if err != nil {
 		if errors.Is(err, spi.ErrNotFound) {
 			appErr := common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, fmt.Sprintf("entity id=%s not found", entityID))
@@ -751,43 +752,20 @@ func (h *Handler) GetChangesMetadata(ctx context.Context, entityID string, point
 		return nil, common.Internal("failed to get version history", err)
 	}
 
-	// Truncate to versions at-or-before pointInTime when set.
-	if pointInTime != nil && !pointInTime.IsZero() {
-		cutoff := *pointInTime
-		filtered := versions[:0]
-		for _, v := range versions {
-			if !v.Timestamp.After(cutoff) {
-				filtered = append(filtered, v)
-			}
-		}
-		versions = filtered
-	}
-
-	// Sort newest first (descending by timestamp)
-	sort.Slice(versions, func(i, j int) bool {
-		return versions[i].Timestamp.After(versions[j].Timestamp)
-	})
-
-	// Hard cap to prevent unbounded response size.
-	const maxChangesMetadata = 1000
-	if len(versions) > maxChangesMetadata {
-		versions = versions[:maxChangesMetadata]
-	}
+	// GetVersionMetadata already returns newest first, ties broken by
+	// Version DESC — no further sort needed.
 
 	result := make([]EntityChangeEntry, 0, len(versions))
 	for _, v := range versions {
-		entry := EntityChangeEntry{
+		result = append(result, EntityChangeEntry{
 			ChangeType:     v.ChangeType,
 			TimeOfChange:   v.Timestamp.UTC().Format(time.RFC3339Nano),
 			User:           v.User,
-			HasEntity:      v.Entity != nil,
+			HasEntity:      !v.Deleted,
 			AttributedKind: string(v.AttributedKind),
 			Executor:       v.Executor,
-		}
-		if v.Entity != nil {
-			entry.TransactionID = v.Entity.Meta.TransactionID
-		}
-		result = append(result, entry)
+			TransactionID:  v.TransactionID,
+		})
 	}
 
 	return result, nil

@@ -56,6 +56,7 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_STATS_GROUP_MAX", Topic: "search", Type: "int", Default: "10000", Description: "Cardinality ceiling for grouped-stats results; also caps the request limit parameter. Values <= 0 clamp to the default."},
 	{Name: "CYODA_SEARCH_ASYNC_WORKERS", Topic: "search", Type: "int", Default: "8", Description: "Async-search worker pool size. Must be >= 1; startup fails otherwise."},
 	{Name: "CYODA_SEARCH_ASYNC_QUEUE", Topic: "search", Type: "int", Default: "256", Description: "Async-search submit queue capacity beyond the running workers; Submit returns SEARCH_QUEUE_FULL (retryable 503) once exhausted. Must be >= 0; startup fails otherwise."},
+	{Name: "CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL", Topic: "search", Type: "duration", Default: "15s", Description: "How often a running async-search executor stamps job liveness and polls for cross-node cancel/terminal status, starting at submit time (while queued, not only while scanning). Must be > 0; startup fails otherwise."},
 
 	// --- cluster ---
 	{Name: "CYODA_CLUSTER_ENABLED", Topic: "cluster", Type: "bool", Default: "false", Description: "Enable multi-node clustering."},
