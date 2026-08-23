@@ -96,6 +96,11 @@ type TransactionManager struct {
 	// check becomes committed.seq > txSnapshotSeq[txID]: a committedTx
 	// whose seq was assigned strictly after my Begin is a real conflict
 	// candidate, with no clock-resolution gap. Both fields protected by mu.
+	//
+	// Begin MUST read commitSeq (into txSnapshotSeq) in the SAME mu
+	// critical section where it captures SnapshotTime — see Begin's
+	// in-line comment for the missed-conflict window that opens up if
+	// they are captured separately (or either one outside mu).
 	commitSeq     int64
 	txSnapshotSeq map[string]int64 // txID → commitSeq at Begin time; cleaned up after commit or rollback (no leak)
 
@@ -112,6 +117,19 @@ type TransactionManager struct {
 	// later Save in the same tx overwrote. Commit flushes each entityID's
 	// superseded values (in order) followed by the final tx.Buffer value
 	// as consecutive entityVersion rows sharing the transaction's txID.
+	//
+	// Behavior change this introduces: an entity Saved N times inside one
+	// transaction now consumes N version numbers (one entityVersion row
+	// per Save call) instead of 1 (one row for the final state only).
+	// This is a backend-divergence FIX, not a new side effect: postgres
+	// already behaves this way — it writes a row per Save call with no
+	// buffering, since each Save is an immediate DML statement inside the
+	// SQL transaction — so memory's prior single-row-per-commit collapse
+	// was the odd one out. Per the project's "a backend differing on the
+	// same contract is a defect" policy, aligning memory with postgres
+	// here is correct, not merely a means to satisfy the new conformance
+	// test.
+	//
 	// Protected by mu. Savepoint-scoped like tx.Buffer (length recorded at
 	// Savepoint, truncated at RollbackToSavepoint — see
 	// savepointSnapshot.supersededLens). Cleaned up after commit or
@@ -216,12 +234,10 @@ func (m *TransactionManager) Begin(ctx context.Context) (string, context.Context
 	}
 
 	txID := uuid.UUID(m.uuids.NewTimeUUID()).String()
-	now := m.factory.clock.Now()
 
 	tx := &spi.TransactionState{
 		ID:                txID,
 		TenantID:          uc.Tenant.ID,
-		SnapshotTime:      now,
 		Origin:            spi.ResolveOrigin(ctx),
 		ReadSet:           make(map[string]bool),
 		WriteSet:          make(map[string]bool),
@@ -229,13 +245,36 @@ func (m *TransactionManager) Begin(ctx context.Context) (string, context.Context
 		Deletes:           make(map[string]bool),
 		DeleteAttribution: make(map[string]spi.WriteAttribution),
 	}
+	// tx has not been published anywhere yet (not in m.active, not
+	// returned), so mutating its SnapshotTime field below — before the
+	// first read of it by any other goroutine — is safe.
 
-	m.mu.Lock()
-	m.active[txID] = tx
-	// Record the current commit count as this tx's FCW ordering baseline —
-	// see commitSeq's doc comment.
-	m.txSnapshotSeq[txID] = m.commitSeq
-	m.mu.Unlock()
+	// SnapshotTime (the read-visibility boundary) and txSnapshotSeq (the
+	// FCW conflict-detection baseline) MUST be captured atomically, in the
+	// SAME mu critical section — not as two reads from separate sections,
+	// and not with the clock read taken outside mu. If a concurrent Commit
+	// X could interleave between the two captures, X could be excluded
+	// from this tx's later FCW check (seq_X <= txSnapshotSeq, because X's
+	// mu-protected seq assignment ran before this tx read txSnapshotSeq)
+	// while X's submitTime — captured earlier, before X's own mu section —
+	// is chronologically AFTER this tx's SnapshotTime — captured even
+	// later still, outside any lock. That would make X's write invisible
+	// to this tx's reads (SnapshotTime-gated) yet silently un-checked by
+	// FCW: a missed conflict, i.e. failing open. Capturing both under one
+	// Lock closes the window: mu totally orders every Begin/Commit
+	// critical section, so "X's seq excluded from this tx's baseline"
+	// (X's section ran first) provably implies "X's submitTime precedes
+	// this tx's SnapshotTime" (submitTime was read even before X's own,
+	// earlier-ordered section, and the clock is monotonic non-decreasing —
+	// see clock.go: wallClock uses Go's monotonic time.Now(), TestClock's
+	// virtual time only ever advances forward).
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		tx.SnapshotTime = m.factory.clock.Now()
+		m.active[txID] = tx
+		m.txSnapshotSeq[txID] = m.commitSeq
+	}()
 
 	txCtx := spi.WithTransaction(ctx, tx)
 	return txID, txCtx, nil
