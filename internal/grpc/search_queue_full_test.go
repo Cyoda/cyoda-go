@@ -7,14 +7,17 @@ package grpc
 // a retryable SEARCH_QUEUE_FULL rather than falling through buildErrorFields'
 // raw-error branch to an unclassified, non-retryable SERVER_ERROR.
 //
-// This task (E1) adds the pool and the mapping but does not yet wire
-// SubmitAsync's execution through it — that lands in a later engine task —
-// so there is no code path that makes a real SearchService return
-// ErrQueueFull from SubmitAsyncSearch today. This test pins the classifier
-// the handler already delegates to (buildErrorFields, shared with every
-// other envelope on this door) against the exact value the handler now
-// produces, matching TestBuildErrorFields_RawStorageUnavailableMarker's
-// pattern for the sibling STORAGE_UNAVAILABLE case.
+// Task E1 added the pool and the mapping before SubmitAsync's execution was
+// routed through it, so at the time this test was written there was no code
+// path that made a real SearchService return ErrQueueFull from
+// SubmitAsyncSearch — this test pinned the classifier the handler delegates
+// to (buildErrorFields, shared with every other envelope on this door)
+// against the exact value the handler produces, matching
+// TestBuildErrorFields_RawStorageUnavailableMarker's pattern for the sibling
+// STORAGE_UNAVAILABLE case. SubmitAsync's execution is wired through the
+// pool now (#472); TestEntitySearch_SnapshotSearch_QueueFull_Envelope in
+// search_test.go covers the real end-to-end path — this test stays as the
+// narrower classifier-level pin.
 
 import (
 	"strings"

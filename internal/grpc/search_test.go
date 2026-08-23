@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -881,5 +882,149 @@ func TestDirectSearch_LimitOneAccepted(t *testing.T) {
 	resp := directSearch(t, withLimit(1))
 	if !resp.Success {
 		t.Fatalf("limit=1: got Success=false (Error=%+v), want a successful search", resp.Error)
+	}
+}
+
+// --- Async envelope tests (task E7): queue-full and cancel through the real
+// wired pool + executor, not just the classifier unit test
+// (search_queue_full_test.go pinned buildErrorFields before SubmitAsync's
+// execution was routed through the pool; this exercises the real path). ---
+
+// occupySoleWorker submits a blocking dummy job directly to pool and waits
+// for it to start running, so the pool's one worker is busy and its queue
+// (given capacity 0) is immediately full for the next real Submit. Returns a
+// release func the caller must call (directly or via defer) to let the
+// worker go and the pool Drain cleanly.
+//
+// The very first Submit against a freshly constructed pool races the
+// spawned worker goroutine reaching its channel receive — Submit's
+// non-blocking contract means a logically-free worker not yet "parked" can
+// spuriously see ErrQueueFull for a few microseconds, mirroring
+// internal/domain/search/pool_test.go's mustSubmitEventually. Retry past
+// that narrow startup window rather than failing on it.
+func occupySoleWorker(t *testing.T, pool *search.WorkerPool) (release func()) {
+	t.Helper()
+	started := make(chan struct{})
+	releaseCh := make(chan struct{})
+	job := func(context.Context) {
+		close(started)
+		<-releaseCh
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		err := pool.Submit(job)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, search.ErrQueueFull) || time.Now().After(deadline) {
+			t.Fatalf("occupy sole worker: %v", err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	<-started
+	return func() { close(releaseCh) }
+}
+
+// TestEntitySearch_SnapshotSearch_QueueFull_Envelope pins the real gRPC
+// door's queue-full behavior end-to-end: with the async pool's sole worker
+// occupied and its queue at capacity (0), a snapshot submit gets a
+// CLIENT_ERROR envelope carrying SEARCH_QUEUE_FULL — not the unclassified
+// SERVER_ERROR buildErrorFields' raw-error branch would otherwise produce.
+func TestEntitySearch_SnapshotSearch_QueueFull_Envelope(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"surname": "Smith"})
+
+	pool := search.NewWorkerPool(1, 0)
+	svc.searchService.WithAsyncPool(pool)
+	release := occupySoleWorker(t, pool)
+	defer func() {
+		release()
+		drainCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		pool.Drain(drainCtx)
+	}()
+
+	ce := makeCE(EntitySnapshotSearchRequest, map[string]any{
+		"id":    "snap-queuefull-1",
+		"model": map[string]any{"name": "person", "version": 1},
+		"condition": map[string]any{
+			"type": "group", "operator": "AND", "conditions": []any{},
+		},
+	})
+	resp, err := svc.EntitySearch(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var typed events.EntitySnapshotSearchResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success {
+		t.Fatal("expected success=false when the async queue is full")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error block in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("code = %q, want CLIENT_ERROR", typed.Error.Code)
+	}
+	if !strings.Contains(typed.Error.Message, common.ErrCodeSearchQueueFull) {
+		t.Errorf("message = %q, want it to contain %s", typed.Error.Message, common.ErrCodeSearchQueueFull)
+	}
+}
+
+// TestEntitySearch_SnapshotCancel_Envelope pins the cancel envelope's happy
+// path against a genuinely RUNNING (still-queued, not yet executed) job: the
+// sole worker is occupied so the submitted job cannot execute and settle
+// before cancel arrives, closing the race a fast in-memory backend would
+// otherwise create. Success:true and Status.Status:CANCELLED.
+func TestEntitySearch_SnapshotCancel_Envelope(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"surname": "Smith"})
+
+	pool := search.NewWorkerPool(1, 1)
+	svc.searchService.WithAsyncPool(pool)
+	release := occupySoleWorker(t, pool)
+	defer func() {
+		release()
+		drainCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		pool.Drain(drainCtx)
+	}()
+
+	submitCE := makeCE(EntitySnapshotSearchRequest, map[string]any{
+		"id":    "snap-cancel-1",
+		"model": map[string]any{"name": "person", "version": 1},
+		"condition": map[string]any{
+			"type": "group", "operator": "AND", "conditions": []any{},
+		},
+	})
+	submitResp, err := svc.EntitySearch(ctx, submitCE)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	var submitTyped events.EntitySnapshotSearchResponseJson
+	validateResponse(t, submitResp, &submitTyped)
+	if !submitTyped.Success {
+		t.Fatalf("submit expected success=true, got error=%+v", submitTyped.Error)
+	}
+	snapshotID := submitTyped.Status.SnapshotID
+	if snapshotID == "" {
+		t.Fatal("expected non-empty snapshotId")
+	}
+
+	cancelCE := makeCE(SnapshotCancelRequest, map[string]any{
+		"id":         "cancel-req-1",
+		"snapshotId": snapshotID,
+	})
+	cancelResp, err := svc.EntitySearch(ctx, cancelCE)
+	if err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	var cancelTyped events.EntitySnapshotSearchResponseJson
+	validateResponse(t, cancelResp, &cancelTyped)
+	if !cancelTyped.Success {
+		t.Fatalf("expected success=true on cancel, got error=%+v", cancelTyped.Error)
+	}
+	if cancelTyped.Status.Status != events.SearchSnapshotStatusJsonStatusCANCELLED {
+		t.Errorf("status = %v, want CANCELLED", cancelTyped.Status.Status)
 	}
 }

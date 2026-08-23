@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 235 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 236 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -440,6 +440,12 @@ var allTests = []NamedTest{
 	// resolves that same operand to `> 2024` (imprecise-floor op mutation) —
 	// matching 2025, not 2024. See search_type_directed.go.
 	{"SearchDataFieldTemporalResolution", RunSearchDataFieldTemporalResolution},
+
+	// Async-search result ordering (task E7.2, design §9 row 19): per-backend
+	// deterministic order respecting the requested sort key, with entity-ID
+	// tie-break — set+pairwise-key assertions, no cross-engine sequence
+	// compare (see async_ordering.go's doc comment).
+	{"AsyncOrderingRespected", RunAsyncOrderingRespected},
 }
 
 // Register appends additional NamedTests to the canonical list at init time.

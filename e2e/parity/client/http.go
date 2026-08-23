@@ -1173,6 +1173,34 @@ func (c *Client) SubmitAsyncSearch(t *testing.T, modelName string, modelVersion 
 	return jobID, nil
 }
 
+// SubmitAsyncSearchSorted is SubmitAsyncSearch with one or more `sort` query
+// keys, so a caller can drive the async job's requested-order contract
+// (design §9 row 19: async result ordering respected end-to-end) the same
+// way SyncSearchSorted drives the direct-search equivalent.
+func (c *Client) SubmitAsyncSearchSorted(t *testing.T, modelName string, modelVersion int, condition string, sortKeys []string) (string, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/async/%s/%d", modelName, modelVersion)
+	if len(sortKeys) > 0 {
+		vals := url.Values{}
+		for _, k := range sortKeys {
+			vals.Add("sort", k)
+		}
+		path += "?" + vals.Encode()
+	}
+	raw, err := c.doRaw(t, http.MethodPost, path, condition)
+	if err != nil {
+		return "", err
+	}
+	var jobID string
+	if err := json.Unmarshal(raw, &jobID); err != nil {
+		return "", fmt.Errorf("decode SubmitAsyncSearchSorted response: %w (body=%s)", err, string(raw))
+	}
+	if jobID == "" {
+		return "", fmt.Errorf("SubmitAsyncSearchSorted returned empty jobId (body=%s)", string(raw))
+	}
+	return jobID, nil
+}
+
 // GetAsyncSearchStatus issues GET /api/search/async/{jobId}/status.
 // Returns the searchJobStatus field only: one of RUNNING, SUCCESSFUL,
 // FAILED, CANCELLED, NOT_FOUND.
