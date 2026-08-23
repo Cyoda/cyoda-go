@@ -61,14 +61,22 @@ type entityTenantKey struct {
 }
 
 type StoreFactory struct {
-	clock       Clock
-	entityMu    sync.RWMutex
-	modelMu     sync.RWMutex
-	kvMu        sync.RWMutex
-	msgMu       sync.RWMutex
-	wfMu        sync.RWMutex
-	smAuditMu   sync.RWMutex
-	entityData  map[spi.TenantID]map[string][]entityVersion
+	clock      Clock
+	entityMu   sync.RWMutex
+	modelMu    sync.RWMutex
+	kvMu       sync.RWMutex
+	msgMu      sync.RWMutex
+	wfMu       sync.RWMutex
+	smAuditMu  sync.RWMutex
+	entityData map[spi.TenantID]map[string][]entityVersion
+	// txIndex maps (tenant, entityID, txID) to the earliest NON-DELETED
+	// version that transaction txID wrote for that entity — the index
+	// GetVersionByTransaction reads. Deletes never enter it (a DELETED
+	// tombstone never matches GetVersionByTransaction — see its SPI doc
+	// comment). Guarded by entityMu (same mutex as entityData: maintained
+	// inside the same write-lock critical section as every entityData
+	// append).
+	txIndex     map[spi.TenantID]map[string]map[string]int64
 	modelData   map[spi.TenantID]map[spi.ModelRef]*spi.ModelDescriptor
 	kvData      map[spi.TenantID]map[string]map[string][]byte
 	msgData     map[spi.TenantID]map[string]*messageEntry
@@ -100,6 +108,7 @@ func NewStoreFactory(opts ...Option) *StoreFactory {
 	f := &StoreFactory{
 		clock:          wallClock{},
 		entityData:     make(map[spi.TenantID]map[string][]entityVersion),
+		txIndex:        make(map[spi.TenantID]map[string]map[string]int64),
 		modelData:      make(map[spi.TenantID]map[spi.ModelRef]*spi.ModelDescriptor),
 		kvData:         make(map[spi.TenantID]map[string]map[string][]byte),
 		msgData:        make(map[spi.TenantID]map[string]*messageEntry),
@@ -219,6 +228,24 @@ func (f *StoreFactory) insertClaims(entityID, tenant, model, version string, cla
 	}
 	etk := entityTenantKey{tenant: tenant, id: entityID}
 	f.claimsByEntity[etk] = keys
+}
+
+// recordTxIndex records eid's version under txID in the per-tenant
+// tx-index that GetVersionByTransaction reads. Caller must hold entityMu
+// (write lock). No-op for a non-transactional write (empty txID): an
+// empty txID must never match via GetVersionByTransaction (see its SPI
+// doc comment), so it is never indexed.
+func (f *StoreFactory) recordTxIndex(tid spi.TenantID, entityID, txID string, version int64) {
+	if txID == "" {
+		return
+	}
+	if f.txIndex[tid] == nil {
+		f.txIndex[tid] = make(map[string]map[string]int64)
+	}
+	if f.txIndex[tid][entityID] == nil {
+		f.txIndex[tid][entityID] = make(map[string]int64)
+	}
+	f.txIndex[tid][entityID][txID] = version
 }
 
 // TransactionManager implements spi.StoreFactory.

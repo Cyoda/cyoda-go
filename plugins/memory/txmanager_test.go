@@ -744,13 +744,13 @@ func TestCommitDeleteAttribution_StagerNotCommitter(t *testing.T) {
 		t.Fatalf("Commit failed: %v", err)
 	}
 
-	history, err := store.GetVersionHistory(rootCtx, "e-del")
+	metas, err := store.GetVersionMetadata(rootCtx, "e-del", spi.VersionMetadataOptions{})
 	if err != nil {
-		t.Fatalf("GetVersionHistory failed: %v", err)
+		t.Fatalf("GetVersionMetadata failed: %v", err)
 	}
-	tomb := history[len(history)-1]
+	tomb := metas[0]
 	if !tomb.Deleted {
-		t.Fatal("expected last version to be the DELETE tombstone")
+		t.Fatal("expected the newest version to be the DELETE tombstone")
 	}
 	if tomb.User != wantOrigin.ID {
 		t.Errorf("tombstone User = %q, want origin user %q", tomb.User, wantOrigin.ID)
@@ -801,13 +801,13 @@ func TestCommitFlushesDeletes_FallbackAttribution(t *testing.T) {
 		t.Fatalf("Commit failed: %v", err)
 	}
 
-	history, err := store.GetVersionHistory(ctx, "e-del-fallback")
+	metas, err := store.GetVersionMetadata(ctx, "e-del-fallback", spi.VersionMetadataOptions{})
 	if err != nil {
-		t.Fatalf("GetVersionHistory failed: %v", err)
+		t.Fatalf("GetVersionMetadata failed: %v", err)
 	}
-	tomb := history[len(history)-1]
+	tomb := metas[0]
 	if !tomb.Deleted {
-		t.Fatal("expected last version to be the DELETE tombstone")
+		t.Fatal("expected the newest version to be the DELETE tombstone")
 	}
 	want := spi.Principal{ID: "test-user", Kind: spi.PrincipalUser}
 	if tomb.User != want.ID {

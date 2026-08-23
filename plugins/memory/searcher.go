@@ -16,9 +16,9 @@ var _ spi.Searcher = (*EntityStore)(nil)
 // same transaction state, but filters/orders/bounds with the canonical SPI
 // helpers (spi.Prepare/PreparedFilter.Match, spi.LessByOrder,
 // spi.MergeBounded) so every backend agrees. Search is bounded-or-fail:
-// opts.Limit > 0 caps the matched set, and a matched set larger than the
-// limit is spi.ErrSearchResultLimitExceeded, never a truncated prefix.
-// opts.Limit <= 0 is unbounded.
+// opts.Limit >= 1 is REQUIRED and caps the matched set; a matched set larger
+// than the limit is spi.ErrSearchResultLimitExceeded, never a truncated
+// prefix. opts.Limit <= 0 is a contract violation, rejected up front.
 //
 // Three branches:
 //   - non-tx: iterate the current committed model (or the PIT snapshot when
@@ -31,6 +31,10 @@ var _ spi.Searcher = (*EntityStore)(nil)
 //     ids enter tx.ReadSet ONLY when opts.TrackingRead is set (unlike GetAll,
 //     which records every read unconditionally).
 func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+	if opts.Limit <= 0 {
+		return nil, fmt.Errorf("search: limit must be >= 1")
+	}
+
 	modelRef := spi.ModelRef{EntityName: opts.ModelName, ModelVersion: opts.ModelVersion}
 	tx := spi.GetTransaction(ctx)
 
@@ -222,10 +226,11 @@ func (s *EntityStore) currentStateMatchesUnlocked(ctx context.Context, modelRef 
 }
 
 // matchSortBounded filters rows with a prepared filter, orders with
-// spi.LessByOrder, and enforces the bounded-or-fail cap: limit > 0 means the
-// whole matched set must fit, and a larger match set is an error rather than a
-// truncated prefix. limit <= 0 is unbounded. Used by the non-tx and in-tx PIT
-// branches; the RYW overlay branch gets the same bound from spi.MergeBounded.
+// spi.LessByOrder, and enforces the bounded-or-fail cap: the whole matched
+// set must fit within limit (>= 1, validated by the caller), or the result
+// is spi.ErrSearchResultLimitExceeded rather than a truncated prefix. Used
+// by the non-tx and in-tx PIT branches; the RYW overlay branch gets the same
+// bound from spi.MergeBounded.
 //
 // It takes an already-prepared filter so the caller pays the operand parse,
 // type bucketing and regex compilation once per query rather than once per row.
@@ -244,7 +249,7 @@ func matchSortBounded(ctx context.Context, pf spi.PreparedFilter, rows []*spi.En
 		if pf.Match(e.Data, e.Meta) {
 			filtered = append(filtered, e)
 			// Short-circuit before sorting: the result is an error either way.
-			if limit > 0 && len(filtered) > limit {
+			if len(filtered) > limit {
 				return nil, fmt.Errorf("search: more than %d matches: %w", limit, spi.ErrSearchResultLimitExceeded)
 			}
 		}

@@ -73,7 +73,7 @@ func TestMemorySearch_NonTx_ParityWithGetAllMatch(t *testing.T) {
 	}
 
 	got, err := searcher.Search(ctx, activeFilter, spi.SearchOptions{
-		ModelName: "Order", ModelVersion: "1",
+		ModelName: "Order", ModelVersion: "1", Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search failed: %v", err)
@@ -104,13 +104,13 @@ func TestMemorySearch_NonTx_Order(t *testing.T) {
 
 	order := []spi.OrderSpec{{Path: "n", Source: spi.SourceData, Kind: spi.OrderNumeric}}
 	got, err := searcher.Search(ctx, spi.Filter{}, spi.SearchOptions{
-		ModelName: "Order", ModelVersion: "1", OrderBy: order,
+		ModelName: "Order", ModelVersion: "1", OrderBy: order, Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search failed: %v", err)
 	}
 	if len(got) != 3 {
-		t.Fatalf("expected 3 entities (unbounded), got %d", len(got))
+		t.Fatalf("expected 3 entities, got %d", len(got))
 	}
 	wantOrder := []string{"e-a", "e-b", "e-c"}
 	for i, id := range wantOrder {
@@ -138,7 +138,7 @@ func TestMemorySearch_InTx_CreatedInTxMatchPresent(t *testing.T) {
 	store.Save(txCtx, mkEntity("e-buf", "ACTIVE", `{"n": 1}`, modelRef))
 
 	got, err := searcher.Search(txCtx, activeFilter, spi.SearchOptions{
-		ModelName: "Order", ModelVersion: "1",
+		ModelName: "Order", ModelVersion: "1", Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search failed: %v", err)
@@ -171,7 +171,7 @@ func TestMemorySearch_InTx_DeletedInTxAbsent(t *testing.T) {
 	}
 
 	got, err := searcher.Search(txCtx, activeFilter, spi.SearchOptions{
-		ModelName: "Order", ModelVersion: "1",
+		ModelName: "Order", ModelVersion: "1", Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search failed: %v", err)
@@ -207,7 +207,7 @@ func TestMemorySearch_InTx_BufferedNoLongerMatchesAbsent(t *testing.T) {
 	store.Save(txCtx, mkEntity("e-flip", "INACTIVE", `{"n": 1}`, modelRef))
 
 	got, err := searcher.Search(txCtx, activeFilter, spi.SearchOptions{
-		ModelName: "Order", ModelVersion: "1",
+		ModelName: "Order", ModelVersion: "1", Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search failed: %v", err)
@@ -241,7 +241,7 @@ func TestMemorySearch_InTx_PIT_CommittedOnly(t *testing.T) {
 	store.Save(txCtx, mkEntity("e-buffered", "ACTIVE", `{"n": 2}`, modelRef))
 
 	got, err := searcher.Search(txCtx, activeFilter, spi.SearchOptions{
-		ModelName: "Order", ModelVersion: "1", PointInTime: &pit,
+		ModelName: "Order", ModelVersion: "1", PointInTime: &pit, Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search failed: %v", err)
@@ -281,7 +281,7 @@ func TestMemorySearch_TrackingRead_RecordsReturnedOnly(t *testing.T) {
 		t.Fatalf("begin failed: %v", err)
 	}
 	_, err = searcher.Search(txCtx, activeFilter, spi.SearchOptions{
-		ModelName: "Order", ModelVersion: "1", TrackingRead: true,
+		ModelName: "Order", ModelVersion: "1", TrackingRead: true, Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search failed: %v", err)
@@ -297,7 +297,7 @@ func TestMemorySearch_TrackingRead_RecordsReturnedOnly(t *testing.T) {
 		t.Fatalf("begin failed: %v", err)
 	}
 	_, err = searcher.Search(txCtx2, activeFilter, spi.SearchOptions{
-		ModelName: "Order", ModelVersion: "1", TrackingRead: false,
+		ModelName: "Order", ModelVersion: "1", TrackingRead: false, Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search failed: %v", err)
@@ -350,7 +350,7 @@ func TestMemorySearch_InTx_DeleteThenSave_AllViewsAgree(t *testing.T) {
 		t.Errorf("GetAll must contain e-dts after Save-after-Delete, got %v", idSet(all))
 	}
 	got, err := searcher.Search(txCtx, activeFilter, spi.SearchOptions{
-		ModelName: "Order", ModelVersion: "1",
+		ModelName: "Order", ModelVersion: "1", Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search failed: %v", err)
@@ -404,7 +404,7 @@ func TestMemorySearch_InTx_BufferedSupersedesCommitted(t *testing.T) {
 	store.Save(txCtx, mkEntity("e-sup", "ACTIVE", `{"note": "buffered"}`, modelRef))
 
 	got, err := searcher.Search(txCtx, activeFilter, spi.SearchOptions{
-		ModelName: "Order", ModelVersion: "1",
+		ModelName: "Order", ModelVersion: "1", Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search failed: %v", err)
@@ -444,7 +444,7 @@ func TestMemorySearch_NonTx_PIT_CommittedAsAt(t *testing.T) {
 	store.Save(ctx, mkEntity("e-late", "ACTIVE", `{"n": 2}`, modelRef))
 
 	got, err := searcher.Search(ctx, activeFilter, spi.SearchOptions{
-		ModelName: "Order", ModelVersion: "1", PointInTime: &pit,
+		ModelName: "Order", ModelVersion: "1", PointInTime: &pit, Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search failed: %v", err)
@@ -500,7 +500,7 @@ func TestMemorySearch_TrackingRead_BufferedNotInReadSet(t *testing.T) {
 	store.Save(txCtx, mkEntity("e-own", "ACTIVE", `{"n": 2}`, modelRef))
 
 	_, err = searcher.Search(txCtx, activeFilter, spi.SearchOptions{
-		ModelName: "Order", ModelVersion: "1", TrackingRead: true,
+		ModelName: "Order", ModelVersion: "1", TrackingRead: true, Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search failed: %v", err)
@@ -561,9 +561,10 @@ func TestMemorySearch_AtLimitSucceeds(t *testing.T) {
 	}
 }
 
-// TestMemorySearch_UnboundedReturnsAll: Limit <= 0 means unbounded and must
-// never raise, even with a match count that would exceed a positive limit.
-func TestMemorySearch_UnboundedReturnsAll(t *testing.T) {
+// TestMemorySearch_ZeroLimitRejected: Limit <= 0 is a contract violation —
+// the implementation must reject it rather than treating it as "unbounded"
+// or substituting a default of its own.
+func TestMemorySearch_ZeroLimitRejected(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	defer factory.Close()
 	ctx := ctxWithTenant("tenant-A")
@@ -572,17 +573,15 @@ func TestMemorySearch_UnboundedReturnsAll(t *testing.T) {
 	searcher := asSearcher(t, store)
 
 	store.Save(ctx, mkEntity("e-1", "ACTIVE", `{"n": 1}`, modelRef))
-	store.Save(ctx, mkEntity("e-2", "ACTIVE", `{"n": 2}`, modelRef))
-	store.Save(ctx, mkEntity("e-3", "ACTIVE", `{"n": 3}`, modelRef))
 
 	got, err := searcher.Search(ctx, spi.Filter{}, spi.SearchOptions{
 		ModelName: "Order", ModelVersion: "1", Limit: 0,
 	})
-	if err != nil {
-		t.Fatalf("limit 0 must be unbounded: unexpected err %v", err)
+	if err == nil {
+		t.Fatalf("Limit=0 must be rejected as a contract violation, got %d results", len(got))
 	}
-	if len(got) != 3 {
-		t.Fatalf("got %d, want 3", len(got))
+	if len(got) != 0 {
+		t.Errorf("Limit=0 rejection must not also return a partial result, got %d", len(got))
 	}
 }
 
@@ -649,7 +648,7 @@ func TestSearch_PreExpiredCtxAborts(t *testing.T) {
 	deadCtx := expiredCtx(t, ctx)
 
 	got, err := searcher.Search(deadCtx, spi.Filter{}, spi.SearchOptions{
-		ModelName: "Order", ModelVersion: "1",
+		ModelName: "Order", ModelVersion: "1", Limit: 100,
 	})
 	if err == nil {
 		t.Fatalf("Search with pre-expired ctx: expected error, got %d results", len(got))
@@ -703,7 +702,7 @@ func TestSearch_PreExpiredCtxAborts_InTx(t *testing.T) {
 	deadTxCtx := spi.WithTransaction(expiredCtx(t, ctx), tx)
 
 	got, err := searcher.Search(deadTxCtx, spi.Filter{}, spi.SearchOptions{
-		ModelName: "Order", ModelVersion: "1",
+		ModelName: "Order", ModelVersion: "1", Limit: 100,
 	})
 	if err == nil {
 		t.Fatalf("in-tx Search with pre-expired ctx: expected error, got %d results", len(got))

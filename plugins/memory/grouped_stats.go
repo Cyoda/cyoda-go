@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"sort"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -61,9 +62,21 @@ func (s *EntityStore) Iterate(
 	filter spi.Filter,
 	opts spi.IterateOptions,
 ) (spi.Iterator, error) {
-	snapshot, err := s.buildSnapshot(ctx, model, opts.PointInTime)
+	// A non-empty OrderBy with an ambient transaction is unsupported (see
+	// the spi.Iterable doc comment) — reject up front rather than silently
+	// ignoring the requested order.
+	if len(opts.OrderBy) > 0 && spi.GetTransaction(ctx) != nil {
+		return nil, fmt.Errorf("iterate: ordered iteration inside a transaction is unsupported")
+	}
+
+	snapshot, err := s.buildSnapshot(ctx, model, opts.PointInTime, opts.TrackingRead)
 	if err != nil {
 		return nil, err
+	}
+	if len(opts.OrderBy) > 0 {
+		sort.SliceStable(snapshot, func(i, j int) bool {
+			return spi.LessByOrder(snapshot[i], snapshot[j], opts.OrderBy)
+		})
 	}
 	return &memoryIter{
 		snapshot: snapshot,
@@ -81,7 +94,13 @@ func (s *EntityStore) Iterate(
 // PIT (opts.PointInTime, when non-nil) reads the historical snapshot at
 // the requested instant, ignoring any in-flight tx — consistent with the
 // rest of the SPI's historical-read semantics.
-func (s *EntityStore) buildSnapshot(ctx context.Context, model spi.ModelRef, pit *time.Time) ([]*spi.Entity, error) {
+//
+// trackingRead gates in-tx read-set recording, matching
+// IterateOptions.TrackingRead's "no-op unless true" contract (see the
+// spi.IterateOptions doc comment). GroupedAggregate has no such knob in its
+// options and always passes true, preserving its pre-existing unconditional
+// recording behavior.
+func (s *EntityStore) buildSnapshot(ctx context.Context, model spi.ModelRef, pit *time.Time, trackingRead bool) ([]*spi.Entity, error) {
 	// PIT path: historical read, bypass tx overlay.
 	if pit != nil {
 		var snapshot []*spi.Entity
@@ -116,7 +135,9 @@ func (s *EntityStore) buildSnapshot(ctx context.Context, model spi.ModelRef, pit
 		for _, e := range mainEntities {
 			if !tx.Deletes[e.Meta.ID] {
 				merged[e.Meta.ID] = e
-				tx.ReadSet[e.Meta.ID] = true
+				if trackingRead {
+					tx.ReadSet[e.Meta.ID] = true
+				}
 			}
 		}
 		// Overlay tx.Buffer. The buffered *spi.Entity is owned by the tx
@@ -125,7 +146,9 @@ func (s *EntityStore) buildSnapshot(ctx context.Context, model spi.ModelRef, pit
 		for id, e := range tx.Buffer {
 			if e.Meta.ModelRef == model {
 				merged[id] = copyEntity(e)
-				tx.ReadSet[id] = true
+				if trackingRead {
+					tx.ReadSet[id] = true
+				}
 			}
 		}
 
@@ -255,7 +278,10 @@ func (s *EntityStore) GroupedAggregate(
 	filter spi.Filter,
 	opts spi.GroupedAggregationsOptions,
 ) ([]spi.GroupedAggregateBucket, error) {
-	snapshot, err := s.buildSnapshot(ctx, model, opts.PointInTime)
+	// GroupedAggregationsOptions has no TrackingRead knob — always record,
+	// preserving this method's pre-existing unconditional behavior (see
+	// buildSnapshot's doc comment).
+	snapshot, err := s.buildSnapshot(ctx, model, opts.PointInTime, true)
 	if err != nil {
 		return nil, err
 	}
