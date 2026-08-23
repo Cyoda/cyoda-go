@@ -508,7 +508,7 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 		toFlush = append(toFlush, superseded...)
 		toFlush = append(toFlush, entity)
 
-		hasPrior := !isNew
+		curIsNew := isNew
 		var metaJSON []byte
 		for _, staged := range toFlush {
 			nextVersion := baseVersion + 1
@@ -517,9 +517,13 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 			// DERIVE ChangeType from row-existence, like the non-tx save
 			// path (see deriveChangeType) — never trust it verbatim from
 			// the staged entity, which may carry a stale value fetched
-			// before this transaction began.
-			changeType := deriveChangeType(staged.Meta.ChangeType, hasPrior)
-			hasPrior = true
+			// before this transaction began. curIsNew tracks the SAME
+			// "no prior row" semantics deriveChangeType's isNew parameter
+			// expects — only the first staged item (if the entity itself
+			// is new) is true; every subsequent same-tx superseded save
+			// finds a prior row from the iteration before it.
+			changeType := deriveChangeType(staged.Meta.ChangeType, curIsNew)
+			curIsNew = false
 
 			staged.Meta.Version = nextVersion
 			staged.Meta.LastModifiedDate = submitTime
