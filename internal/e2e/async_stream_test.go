@@ -1,7 +1,7 @@
 package e2e_test
 
 // async_stream_test.go — isolated single-backend (postgres) e2e coverage for
-// the #472 search-SPI-surface milestone's async-search executor: requested-
+// the search-SPI-surface milestone's async-search executor: requested-
 // order results across pages, worker-pool queue-full backpressure, shutdown
 // drain, and the stale-job reaper. These are process-local/timing-sensitive
 // scenarios and so belong here, NOT in the shared e2e/parity suite (see
@@ -192,13 +192,11 @@ func (g *iterateGate) Resumed() <-chan struct{} {
 }
 
 func (g *iterateGate) wait(ctx context.Context) {
-	g.mu.Lock()
-	blocked := g.blocked
-	enteredCh := g.entered
-	releaseCh := g.release
-	resumedCh := g.resumed
-	once := g.once
-	g.mu.Unlock()
+	blocked, enteredCh, releaseCh, resumedCh, once := func() (bool, chan struct{}, chan struct{}, chan struct{}, *sync.Once) {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		return g.blocked, g.entered, g.release, g.resumed, g.once
+	}()
 	if !blocked {
 		return
 	}

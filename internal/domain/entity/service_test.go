@@ -674,7 +674,7 @@ var _ = strconv.Itoa // ensure strconv is not flagged as unused
 // schema declaring "status" as a String field, so DeleteEntitiesConditional's
 // own selection validation (planDeleteSelection,
 // internal/domain/entity/service.go) has a real FieldsMap to check a
-// condition's path against. Since #472, delete selects entities via its own
+// condition's path against. Since the streamed-selection rework, delete selects entities via its own
 // spi.Iterable drain rather than through SearchService.Search, so a
 // classified-4xx-forwarding test needs a selection-validation failure (an
 // unknown field path) rather than a stubbed Searcher failure.
@@ -718,7 +718,7 @@ func newDeleteFixtureWithSchema(t *testing.T) (h *entity.Handler, ctx context.Co
 // common.Internal only unwraps ErrUniqueViolation / ErrPartialUniqueKey /
 // ErrConflict (internal/common/errors.go) — none of which this validation
 // error is — so before the fix (this test's original Search-forwarding
-// version, superseded by #472's streamed selection) it fell through to the
+// version, superseded by the streamed selection) it fell through to the
 // generic "detail redacted" 500 branch, and the caller could not tell a bad
 // request from a server fault.
 func TestDeleteEntitiesConditional_ForwardsSelection4xx(t *testing.T) {
@@ -745,10 +745,10 @@ func TestDeleteEntitiesConditional_ForwardsSelection4xx(t *testing.T) {
 // SearchService.Search — via the same exported search.StructuralConditionErrCode
 // — rather than collapsing every structural failure under one code.
 //
-// Before #472, DeleteEntitiesConditional selected via Search and forwarded
+// Before the streamed-selection rework, DeleteEntitiesConditional selected via Search and forwarded
 // its classified *common.AppError verbatim, so an unknown operatorType
 // (BAD_REQUEST) and an object-shaped operand (INVALID_CONDITION) stayed
-// distinct on the delete path exactly as they are on the search path. #472's
+// distinct on the delete path exactly as they are on the search path. That rework's
 // first cut collapsed both under entity.ErrInvalidCondition (patterned on
 // GroupedStatsService, which never routed through Search and so had no such
 // contract to preserve) — this test is the regression guard for that fix.

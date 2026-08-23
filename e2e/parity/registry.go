@@ -81,7 +81,7 @@ var allTests = []NamedTest{
 	{"AuditWorkflowEvents", RunAuditWorkflowEvents},
 	{"AuditPostTxIdMatchesWorkflowFinished", RunAuditPostTxIdMatchesWorkflowFinished},
 
-	// History reads (task E6, #472): getEntityChangesMetadata's
+	// History reads (task E6): getEntityChangesMetadata's
 	// newest-first/Version-DESC-tiebreak/tombstone-HasEntity contract and
 	// getOneEntity's by-transaction lookup, both now backed by
 	// spi.EntityStore.GetVersionMetadata / GetVersionByTransaction.

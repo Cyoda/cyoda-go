@@ -721,7 +721,7 @@ func ptrInt64(v int64) *int64 { return &v }
 // --- Attribution: durable ArmedBy seed, verify-or-abort, anchor stamp ---
 
 // latestVersion returns the most recently persisted version's metadata for
-// entityID — GetVersionHistory (deleted, #472) returned the full
+// entityID — GetVersionHistory (now removed) returned the full
 // spi.EntityVersion oldest-first; its replacement, GetVersionMetadata,
 // returns spi.EntityVersionMeta (no Entity payload) newest-first, so the
 // anchor write this test suite asserts against is versions[0]. Callers here

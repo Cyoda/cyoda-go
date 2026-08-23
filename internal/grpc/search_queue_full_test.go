@@ -15,7 +15,7 @@ package grpc
 // against the exact value the handler produces, matching
 // TestBuildErrorFields_RawStorageUnavailableMarker's pattern for the sibling
 // STORAGE_UNAVAILABLE case. SubmitAsync's execution is wired through the
-// pool now (#472); TestEntitySearch_SnapshotSearch_QueueFull_Envelope in
+// pool now; TestEntitySearch_SnapshotSearch_QueueFull_Envelope in
 // search_test.go covers the real end-to-end path — this test stays as the
 // narrower classifier-level pin.
 

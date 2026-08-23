@@ -15,7 +15,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
-// --- Task E4.1: RED tests for the streamed delete selection (#472) ---
+// --- Task E4.1: RED tests for the streamed delete selection ---
 //
 // These tests pin that DeleteEntitiesConditional (single-tx and batched) and
 // DeleteAllEntities select entities via a spi.Iterable drain instead of
@@ -43,13 +43,13 @@ type searchForbiddenStore struct {
 
 func (s *searchForbiddenStore) Search(context.Context, spi.Filter, spi.SearchOptions) ([]*spi.Entity, error) {
 	s.t.Helper()
-	s.t.Fatal("Search must not be called by a delete path (#472 streams selection via spi.Iterable)")
+	s.t.Fatal("Search must not be called by a delete path: selection streams via spi.Iterable")
 	return nil, fmt.Errorf("unreachable")
 }
 
 func (s *searchForbiddenStore) GetAll(context.Context, spi.ModelRef) ([]*spi.Entity, error) {
 	s.t.Helper()
-	s.t.Fatal("GetAll must not be called by a delete path (#472 streams selection via spi.Iterable)")
+	s.t.Fatal("GetAll must not be called by a delete path: selection streams via spi.Iterable")
 	return nil, fmt.Errorf("unreachable")
 }
 
@@ -311,8 +311,8 @@ func TestDeleteAllEntities_StreamsSelection(t *testing.T) {
 // entity is removed — via spi.Iterable plus a client-side residual
 // match.Prepare re-check (planDeleteSelection), never falling back to
 // Search or GetAll. This is the streaming replacement for the brief's
-// originally-anticipated "interim materialising fallback": #472's design
-// keeps the untranslatable path streamed too (see deleteSelectionPlan's doc
+// originally-anticipated "interim materialising fallback": the streamed-
+// selection design keeps the untranslatable path streamed too (see deleteSelectionPlan's doc
 // comment), so the spy's Search/GetAll-forbidding assertions apply
 // unconditionally here as well.
 func TestDeleteEntitiesConditional_SingleTx_UntranslatableConditionStreams(t *testing.T) {

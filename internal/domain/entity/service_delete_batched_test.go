@@ -73,7 +73,7 @@ func newDeleteBatchedCtx(t *testing.T, factory spi.StoreFactory) context.Context
 
 // buildDeleteBatchedHandler wires a Handler to factory/txMgr so
 // condition-based deletes exercise the production selection path (a
-// spi.Iterable drain, since #472) rather than a stub.
+// spi.Iterable drain, since the streamed-selection rework) rather than a stub.
 func buildDeleteBatchedHandler(t *testing.T, factory spi.StoreFactory, txMgr spi.TransactionManager) *Handler {
 	t.Helper()
 	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
@@ -243,7 +243,7 @@ func (f *deleteAllSpyFactory) EntityStore(_ context.Context) (spi.EntityStore, e
 
 // TestDeleteEntitiesConditional_Batched_HappyPath pins the batched path's
 // basic shape: 5 matching entities, batchSize=2 removes all 5 with an empty
-// IDToError. Since #472 the selection streams via a fresh spi.Iterable
+// IDToError. Since the streamed-selection rework, the selection streams via a fresh spi.Iterable
 // iterator per cycle instead of one upfront resolution transaction — a live
 // re-scan naturally shrinks as each cycle's deletes land, so there is no
 // separate resolution Begin/Commit any more, just one Begin per batch (3
@@ -290,8 +290,8 @@ func TestDeleteEntitiesConditional_Batched_HappyPath(t *testing.T) {
 // fire right after the streamed cycle that selected the target id closes
 // its iterator — after that cycle's baseline-version capture, before
 // deleteOneBatch opens its own transaction and re-reads it — rather than a
-// transaction-count-based hook like the pre-#472 afterNthCommitTxMgr: the
-// streamed selection design (#472) no longer has a distinct "resolution"
+// transaction-count-based hook like the pre-streaming afterNthCommitTxMgr: the
+// streamed selection design no longer has a distinct "resolution"
 // transaction to count from.
 func TestDeleteEntitiesConditional_Batched_VersionGuard(t *testing.T) {
 	realFactory := memory.NewStoreFactory()
@@ -351,7 +351,7 @@ func TestDeleteEntitiesConditional_Batched_VersionGuard(t *testing.T) {
 // TestDeleteEntitiesConditional_Batched_FailedBatchContinues pins that a
 // single batch's commit failure isolates to that batch's ids: 6 matching
 // entities, batchSize=2 means 3 batches; the middle batch's commit
-// (recorded-commit index 2 — the streamed selection design (#472) has no
+// (recorded-commit index 2 — the streamed selection design has no
 // separate resolution transaction any more, so commit indices run
 // batch1, batch2, batch3) is forced to fail. Its ids all land in IDToError
 // with no RemovedCount credit, while the first and third batches commit

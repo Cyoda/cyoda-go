@@ -939,7 +939,7 @@ func mintDeleteTicket(entityID string, err error) string {
 
 // deleteSelectionPlan is how a conditional delete selects entities once
 // DeleteEntitiesConditional/deleteBatched stopped routing through
-// SearchService.Search (#472): either a pushdown spi.Filter (cond
+// SearchService.Search: either a pushdown spi.Filter (cond
 // translated cleanly via spi.ConditionToFilter) that a spi.Iterable store
 // applies natively, or a zero-value Filter (matches everything at the
 // store) paired with a prepared residual matcher re-applied to each
@@ -995,7 +995,7 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 	// exported search.ValidateCondition call grouped-stats reuses. Unlike
 	// grouped-stats (which never routed through Search and so had no prior
 	// contract to preserve), delete DID forward Search's classified
-	// *common.AppError verbatim before #472 — an unknown operatorType and
+	// *common.AppError verbatim before the streaming rework — an unknown operatorType and
 	// an operand-shape violation are documented as two DIFFERENT codes
 	// (search.structuralConditionErrCode: BAD_REQUEST vs INVALID_CONDITION,
 	// per its own doc comment). Collapsing both under entity.ErrInvalidCondition
