@@ -287,22 +287,28 @@ func (s *entityStore) GroupedAggregate(
 	filter spi.Filter,
 	opts spi.GroupedAggregationsOptions,
 ) ([]spi.GroupedAggregateBucket, error) {
-	// D9: sqlite has no native STDDEV and the single-pass formula is
-	// numerically unsafe. Decline so service layer uses Welford in-memory.
-	for _, a := range opts.Aggregations {
-		if a.Op == spi.AggStdev {
-			return nil, spi.ErrAggregationNotPushdownable
-		}
-	}
-
 	// PIT pushdown is out of scope for v1 — streaming tally over Iterate
 	// (which does support PIT) handles it without per-query SQL plumbing.
 	if opts.PointInTime != nil {
 		return nil, spi.ErrAggregationNotPushdownable
 	}
 
+	// Path validation runs BEFORE the stdev decline below, matching postgres,
+	// which validates immediately after its own PIT early-return. A malformed
+	// path is a client error and must be classified the same way on every
+	// backend; declining first would report an invalid path as
+	// ErrAggregationNotPushdownable whenever the request also asked for stdev,
+	// and the service layer would then stream a filter it should have refused.
 	if err := validateFilterPaths(filter); err != nil {
 		return nil, err
+	}
+
+	// D9: sqlite has no native STDDEV and the single-pass formula is
+	// numerically unsafe. Decline so service layer uses Welford in-memory.
+	for _, a := range opts.Aggregations {
+		if a.Op == spi.AggStdev {
+			return nil, spi.ErrAggregationNotPushdownable
+		}
 	}
 	// Zero-value Filter means "match all" (same convention as Iterable).
 	var plan sqlPlan

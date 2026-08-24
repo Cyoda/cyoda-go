@@ -42,12 +42,15 @@ package e2e_test
 //     (TestFailStaleJobs_* in internal/domain/search/reaper_test.go,
 //     TestExecutor_HeartbeatRecordedWhileQueuedAndScanning /
 //     TestExecutor_HeartbeatFencingAborts in executor_test.go); e2e
-//     TestE2E_AsyncSearch_StaleJobReaper_FailsOrphan (this file) — backdates
-//     a genuinely-blocked job's created_at past a short SearchJobStaleAfter
-//     and asserts app.New's wired reaper ticker (app.go's stopSearchReaper
-//     loop) claims and fails it, independent of the executor's own
-//     heartbeat/terminal-write path (which stays blocked throughout via the
-//     same blocking-Iterate backend used by (d)/(e) below).
+//     TestE2E_AsyncSearch_StaleJobReaper_FailsOrphan (this file) — synthesises
+//     the owner-is-gone shape (a RUNNING row with no executor behind it,
+//     created_at backdated past SearchJobStaleAfter) and asserts app.New's
+//     wired reaper ticker (app.go's stopSearchReaper loop) claims and fails
+//     it; and its inverse TestE2E_AsyncSearch_StaleJobReaper_SparesLiveExecutor
+//     (this file) — a job blocked inside Iterate for longer than
+//     SearchJobStaleAfter is NOT claimed, because its executor's heartbeat
+//     ticker runs independent of scan progress. Both run under a
+//     production-valid cadence (staleAfter == the enforced 4x floor).
 //  9. Epoch fencing (stale-epoch Heartbeat/SaveResults/UpdateJobStatus
 //     refused; ClearResults idempotent): spitest only.
 // 10. Shutdown drain (no RUNNING left, FAILED safe message): engine
@@ -60,11 +63,17 @@ package e2e_test
 //     against WORKERS=1/QUEUE=1 and a store whose Iterate blocks, asserting
 //     the third submit gets HTTP 503 SEARCH_QUEUE_FULL end-to-end.
 // 12. GetResultIDs degenerate inputs (no panic): spitest only.
-// 13. GetPage ordering/limit/offset; fail-fast: spitest; e2e
+// 13. GetPage ordering/limit/offset; fail-fast: spitest; unit (NOT a running
+//     backend — memory.NewStoreFactory in-process)
 //     TestListEntities_PagesViaGetPage / TestListEntities_PagePastEnd_ReturnsEmpty
-//     (internal/domain/entity/service_list_test.go); parity
+//     (internal/domain/entity/service_list_test.go); running-backend e2e
+//     TestListIntxReadSet_* (internal/e2e/list_intx_readset_test.go — real
+//     postgres, pins GetPage's read-set FOOTPRINT: only the returned page
+//     enters the transaction's conflict read-set, the behaviour change the
+//     CHANGELOG advertises and design §5 states); parity
 //     ListEntitiesPagingConsistency (e2e/parity/list_paging.go, extended by
-//     task E7 with the offset-past-end assertion sqlite/postgres lacked);
+//     task E7 with the offset-past-end assertion sqlite/postgres lacked) —
+//     the paging/ordering cell's genuine running-backend coverage;
 //     gRPC TestRPC_EntityGetAll / TestRPC_EntityGetAll_Page*ExceedsCap
 //     (internal/grpc/rpc_test.go, search_pagination_test.go).
 // 14. ?pageSize=1 latency bounded by page, not N (query-shape assert): e2e —
@@ -74,30 +83,53 @@ package e2e_test
 //     TestGetPage_NonTx_UsesModelIDIndex (plugins/sqlite/entity_page_plan_test.go)
 //     and TestGetPage_NonTx_UsesModelEntityIDIndex (plugins/postgres/entity_page_plan_test.go).
 // 15. GetVersionByTransaction earliest-wins / empty txID rejected / 404:
-//     spitest; e2e TestEntityLifecycle_TemporalByTransactionID
-//     (internal/e2e/entity_lifecycle_test.go); parity
-//     HistoryReadsChangesMetadataAndTransactionLookup (e2e/parity/history_reads.go);
-//     no gRPC surface (design note).
+//     spitest — the sole home of earliest-wins and of empty-txID rejection.
+//     ?transactionId= never reaches the store as "": genapi types the
+//     query parameter *openapi_types.UUID (api/generated.go,
+//     GetOneEntityParams), so an empty value fails parameter binding and
+//     the handler never runs.
+//     Earliest-wins needs two versions sharing one transaction id, which
+//     spitest arranges at the store; e2e
+//     TestEntityLifecycle_TemporalByTransactionID
+//     (internal/e2e/entity_lifecycle_test.go) covers the wire half only —
+//     200 for the create transaction's id, 404 for an unknown one; parity
+//     HistoryReadsChangesMetadataAndTransactionLookup (e2e/parity/history_reads.go)
+//     adds per-transaction resolution with no cross-transaction bleed and
+//     404 on the tombstone's transaction id; no gRPC surface (design note).
 // 16. GetVersionByTransaction pushdown latency (query-shape assert): e2e —
 //     same WAIVER as row 14. Already present:
 //     TestGetVersionByTransaction_StaysWithinEntityVersions
 //     (plugins/sqlite/entity_page_plan_test.go) and
 //     TestGetVersionByTransaction_StaysWithinEntityVersionsPK
 //     (plugins/postgres/entity_page_plan_test.go).
-// 17. GetVersionMetadata window/limit/order; Deleted canonical: spitest; e2e
+// 17. GetVersionMetadata window/limit/order; Deleted canonical: spitest
+//     (sole home of the Version DESC tie-break — no wire payload carries a
+//     version, so no transport-level test can observe a tie); e2e
 //     TestGetEntityChanges_NewestFirst (internal/e2e/entity_changes_order_test.go);
-//     parity HistoryReadsChangesMetadataAndTransactionLookup; gRPC changes-
-//     metadata coverage in internal/grpc/search_test.go.
+//     parity HistoryReadsChangesMetadataAndTransactionLookup
+//     (e2e/parity/history_reads.go — newest-first change-type sequence plus
+//     the tombstone's omitted transactionId); gRPC TestRPC_EntityChangesMetadata
+//     (internal/grpc/rpc_test.go — create+update+delete over the gRPC door,
+//     asserting newest-first order and canonical Deleted, i.e. DELETE
+//     changeType with transactionId omitted).
 // 18. Conditional delete over large model (O(IDs) atomic / O(page) batched):
 //     engine TestDeleteEntitiesConditional_Batched_* (internal/domain/entity/service_delete_batched_test.go);
 //     e2e TestTransactionControl_DeleteEntities_BatchedHappyPath
 //     (internal/e2e/transaction_control_test.go); parity
 //     EntityConditionalDeleteInTx (e2e/parity/entity_slice.go).
 // 19. Async result ordering respected end-to-end: e2e
-//     TestE2E_AsyncSearch_OrderedAcrossPages (this file); parity
-//     AsyncOrderingRespected (e2e/parity/async_ordering.go, task E7.2); gRPC
-//     TestEntitySearch_SnapshotSearch_OrderBy_SourceMeta /
-//     TestEntitySearch_SnapshotSearch_OrderBy_ValidField (internal/grpc/search_test.go).
+//     TestE2E_AsyncSearch_OrderedAcrossPages (this file — also the ONLY home
+//     of the byte-wise entity-id tie-break assertion, which is a per-engine
+//     contract, not a cross-engine one); parity AsyncOrderingRespected
+//     (e2e/parity/async_ordering.go, task E7.2 — asserts the requested
+//     user-field key order, set equality, no duplicates, and repeat-run
+//     order stability; deliberately NOT the byte-wise tie-break, which a
+//     conforming timeuuid-ordered backend would fail); gRPC
+//     TestEntitySearch_SnapshotSearch_OrderBy_ResultsOrdered
+//     (internal/grpc/search_test.go — submit -> poll -> SnapshotGetRequest,
+//     asserting the streamed result order asc AND desc; the sibling
+//     _OrderBy_SourceMeta / _OrderBy_ValidField tests assert only that the
+//     orderBy payload is ACCEPTED and are not the ordering cell).
 //
 // No row has a silently-missing cell as of this task.
 // -----------------------------------------------------------------------
@@ -280,6 +312,14 @@ func newBlockingIterateBackend(t *testing.T) (backendName string, gate *iterateG
 // tie-breaks), waits for SUCCESSFUL, and walks every result page asserting:
 // ascending "amount", ascending entity-id within a tied "amount", and
 // totalPages/totalElements arithmetic consistent with pageSize.
+//
+// This is the ONLY home for the byte-wise entity-id tie-break assertion.
+// Canonical entity-ID order is per-engine (postgres pins it to COLLATE "C"
+// via getPageCurrent; the commercial backend's is native timeuuid order —
+// docs/cloud-parity/2026-08-22-async-ordering-and-list-order.md §2), so the
+// cross-backend parity scenario (e2e/parity/async_ordering.go) deliberately
+// asserts only the engine-independent part. Byte-wise ordering belongs
+// here, scoped to the one engine that contracts for it.
 func TestE2E_AsyncSearch_OrderedAcrossPages(t *testing.T) {
 	h := newCallbackHarness(t)
 	const model = "async-ordering-e2e"
@@ -353,13 +393,25 @@ func TestE2E_AsyncSearch_OrderedAcrossPages(t *testing.T) {
 	if len(amounts) != total {
 		t.Fatalf("collected %d results across pages, want %d", len(amounts), total)
 	}
+	ties := 0
 	for i := 1; i < len(amounts); i++ {
 		if amounts[i] < amounts[i-1] {
 			t.Fatalf("amount not ascending at index %d: %v then %v", i, amounts[i-1], amounts[i])
 		}
-		if amounts[i] == amounts[i-1] && ids[i] <= ids[i-1] {
-			t.Fatalf("tie-break not ascending id at index %d: %s then %s (amount=%v)", i, ids[i-1], ids[i], amounts[i])
+		if amounts[i] == amounts[i-1] {
+			ties++
+			if ids[i] <= ids[i-1] {
+				t.Fatalf("tie-break not ascending id at index %d: %s then %s (amount=%v)", i, ids[i-1], ids[i], amounts[i])
+			}
 		}
+	}
+	// The seeding (amount = i%3 over 9 entities) guarantees 3 groups of 3,
+	// i.e. 6 adjacent tied pairs. Assert the tie-break assertion above was
+	// actually exercised — otherwise a change to the seeding could silently
+	// make it vacuous.
+	if wantTies := total - 3; ties != wantTies {
+		t.Fatalf("observed %d adjacent tied pairs, want %d — the tie-break assertion was not exercised as intended (amounts=%v)",
+			ties, wantTies, amounts)
 	}
 }
 
@@ -534,25 +586,82 @@ func TestE2E_AsyncSearch_ShutdownDrain_FailsInFlightJob(t *testing.T) {
 // (row 8) stale-job reaper
 // ---------------------------------------------------------------------------
 
-// TestE2E_AsyncSearch_StaleJobReaper_FailsOrphan pins app.New's wired
-// reaper ticker (app.go's stopSearchReaper loop calling search.FailStaleJobs)
-// as a genuinely running e2e path, not just the engine unit tests: a job
-// whose Iterate call is blocked (so it can never complete or heartbeat
-// naturally) has its created_at backdated past a short SearchJobStaleAfter;
-// the reaper claims and fails it independent of the still-blocked executor.
+// Reaper cadence both stale-job tests below run app.New under. It is a
+// production-VALID configuration — app.Config.Validate (called at the top of
+// app.New) enforces SearchJobStaleAfter >= 4 x SearchJobHeartbeatInterval,
+// the mechanical form of spi.AsyncSearchStore.ClaimStale's "interval must be
+// dominated by staleAfter" contract — just scaled down so a whole staleness
+// window fits inside a test's budget. reaperStaleAfter sits exactly ON the
+// enforced floor, so these tests also fail loudly if the floor is ever
+// raised without them being revisited.
+const (
+	reaperHeartbeat    = 500 * time.Millisecond
+	reaperStaleAfter   = 4 * reaperHeartbeat // exactly app.ValidateSearchJobStaleAfter's floor
+	reaperReapInterval = 250 * time.Millisecond
+)
+
+func reaperFastCadence(cfg *app.Config) {
+	cfg.SearchJobHeartbeatInterval = reaperHeartbeat
+	cfg.SearchJobStaleAfter = reaperStaleAfter
+	cfg.SearchReapInterval = reaperReapInterval
+}
+
+// TestE2E_AsyncSearch_StaleJobReaper_FailsOrphan pins app.New's wired reaper
+// ticker (app.go's stopSearchReaper loop calling search.FailStaleJobs) as a
+// genuinely running e2e path, not just the engine unit tests.
+//
+// The subject is the case ClaimStale exists for: a RUNNING job whose owning
+// executor is GONE — the node holding it crashed or was killed — so nothing
+// will ever heartbeat it, complete it, or write its terminal status. That
+// shape is synthesised directly, by writing the job row the postgres store's
+// CreateJob writes (RUNNING, epoch 1, heartbeat_time NULL) with no executor
+// behind it and a created_at backdated far past SearchJobStaleAfter. Nothing
+// in this process owns the job, so the ONLY thing that can move it off
+// RUNNING is the app-wired reaper — which is exactly the assertion.
+//
+// Deliberately NOT a job whose Iterate call is blocked: such a job's owner is
+// alive and heartbeating, ClaimStale correctly refuses to claim it, and the
+// only way to make one look orphaned is to switch its heartbeat off with a
+// heartbeat interval no production deployment would run. That configuration
+// is now rejected at startup, and the test it supported was asserting an
+// artefact of it. The live-but-blocked executor is the INVERSE guarantee and
+// gets its own test below.
 func TestE2E_AsyncSearch_StaleJobReaper_FailsOrphan(t *testing.T) {
+	h := newCallbackHarnessConfigured(t, reaperFastCadence)
+
+	const model = "stalereaper-e2e"
+	h.setupModelSampleWithWorkflow(t, model, `{"name":"Alice","amount":1,"status":"new"}`, secondaryWorkflow)
+
+	jobID := insertOrphanRunningJob(t, model)
+	backdateJobCreatedAt(t, jobID, time.Hour)
+
+	if status := h.waitForAsyncTerminal(t, jobID, 15*time.Second); status != "FAILED" {
+		t.Fatalf("status = %s, want FAILED (reaper never claimed the orphaned job)", status)
+	}
+	msg := persistedJobErrorFor(t, jobID)
+	if msg != "search failed unexpectedly" {
+		t.Errorf("persisted error = %q, want the safe fallback message", msg)
+	}
+}
+
+// TestE2E_AsyncSearch_StaleJobReaper_SparesLiveExecutor is the inverse
+// guarantee, and the one a false positive in the reaper would violate: a job
+// whose executor is ALIVE but making no scan progress — blocked inside
+// Iterate for longer than SearchJobStaleAfter — must never be claimed and
+// failed. The executor's heartbeat runs on its own ticker, independent of
+// scan progress (service.go's startHeartbeat), so the job stays fresh and
+// ClaimStale keeps skipping it while the reaper ticks throughout.
+//
+// Without this, "the reaper fails stale jobs" would be satisfied just as well
+// by a reaper that fails every RUNNING job it sees.
+func TestE2E_AsyncSearch_StaleJobReaper_SparesLiveExecutor(t *testing.T) {
 	backend, gate := newBlockingIterateBackend(t)
 	h := newCallbackHarnessConfigured(t, func(cfg *app.Config) {
 		cfg.StorageBackend = backend
-		// Long enough that this job's own heartbeat ticker never ticks
-		// during the test, so only the backdated created_at drives
-		// staleness — no race with the executor's own liveness stamp.
-		cfg.SearchJobHeartbeatInterval = time.Hour
-		cfg.SearchJobStaleAfter = 500 * time.Millisecond
-		cfg.SearchReapInterval = 200 * time.Millisecond
+		reaperFastCadence(cfg)
 	})
 
-	const model = "stalereaper-e2e"
+	const model = "stalereaper-live-e2e"
 	h.setupModelSampleWithWorkflow(t, model, `{"name":"Alice","amount":1,"status":"new"}`, secondaryWorkflow)
 	if _, status, body := h.CreateEntity(t, model, 1, `{"name":"Alice","amount":1,"status":"new"}`); status != http.StatusOK {
 		t.Fatalf("seed: %d %s", status, body)
@@ -575,20 +684,60 @@ func TestE2E_AsyncSearch_StaleJobReaper_FailsOrphan(t *testing.T) {
 		t.Fatal("worker never reached the blocked Iterate call")
 	}
 
-	backdateJobCreatedAt(t, jobID, time.Hour)
-
-	if status := h.waitForAsyncTerminal(t, jobID, 5*time.Second); status != "FAILED" {
-		t.Fatalf("status = %s, want FAILED (reaper never claimed the backdated job)", status)
-	}
-	msg := persistedJobErrorFor(t, jobID)
-	if msg != "search failed unexpectedly" {
-		t.Errorf("persisted error = %q, want the safe fallback message", msg)
+	// Watch across two full staleness windows (≈8 heartbeat ticks, ≈16 reaper
+	// ticks) with the executor making zero scan progress the whole time.
+	deadline := time.Now().Add(2 * reaperStaleAfter)
+	for time.Now().Before(deadline) {
+		if status := h.asyncJobStatus(t, jobID); status != "RUNNING" {
+			t.Fatalf("status = %s, want RUNNING: the reaper claimed a job whose executor is alive and heartbeating", status)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Shared small helpers (used by this file and async_cancel_multinode_test.go)
+// Small helpers for this file's scenarios. (The blocking-Iterate backend and
+// iterateGate above ARE shared with async_cancel_multinode_test.go; the direct
+// job-row helpers below are not.)
 // ---------------------------------------------------------------------------
+
+// insertOrphanRunningJob writes a RUNNING search-job row with no executor
+// behind it — the crashed-or-killed-node shape spi.AsyncSearchStore.ClaimStale
+// exists to recover — straight into the shared testcontainer. The column set
+// and values mirror the postgres store's CreateJob exactly (epoch persisted
+// as 1 per its contract, heartbeat_time left NULL so staleness is measured
+// from created_at, the SPI's documented baseline), so the row is
+// indistinguishable from one a real submit produced; what is missing is only
+// the executor, which is the point.
+//
+// The row is written under the callback harness's bootstrap tenant, so it is
+// visible to that stack's authenticated status reads. Returns the job id.
+func insertOrphanRunningJob(t *testing.T, model string) string {
+	t.Helper()
+	const tenantID = "test-tenant" // callbackHarness's cfg.Bootstrap.TenantID
+	jobID := uuid.NewString()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, withAppName(t, pgURLFromEnv(t), "stale-reaper-orphan-writer"))
+	if err != nil {
+		t.Fatalf("open orphan-writer pool: %v", err)
+	}
+	defer pool.Close()
+
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO search_jobs (id, tenant_id, status, model_name, model_ver, condition, point_in_time, result_count, error, created_at, calc_ms, epoch)
+		 VALUES ($1, $2, 'RUNNING', $3, '1', $4, $5, 0, '', now(), 0, 1)`,
+		jobID, tenantID, model,
+		[]byte(`{"type":"group","operator":"AND","conditions":[]}`),
+		// CreateJob always writes job.PointInTime, and the column is scanned
+		// back into a non-pointer time.Time — an unset PIT is the zero time,
+		// never SQL NULL.
+		time.Time{}); err != nil {
+		t.Fatalf("insert orphan search job: %v", err)
+	}
+	return jobID
+}
 
 // backdateJobCreatedAt pushes a search job's created_at back by age via a
 // direct connection to the shared testcontainer, so the reaper's staleness

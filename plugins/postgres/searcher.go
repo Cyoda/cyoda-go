@@ -104,9 +104,18 @@ func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 // see, losing read-your-own-writes and holding a second pooled connection. An
 // async job never runs in a transaction, so this is a guard, not a branch the
 // production path takes.
+//
+// A point-in-time search is the other exception, and the opposite one: it is
+// committed-only, so it deliberately runs OFF any ambient transaction, through
+// committedQuerier (search_base.go). The ceiling branch above already satisfies
+// that by construction — it opens a transaction of its own — so the routing only
+// needs stating on the ordinary path.
 func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
 	if ceiling, ok := searchScanCeiling(ctx); ok && s.pool != nil && spi.GetTransaction(ctx) == nil {
 		return s.searchUnderOwnCeiling(ctx, ceiling, filter, opts)
+	}
+	if opts.PointInTime != nil {
+		return s.runSearch(ctx, s.committedQuerier(), filter, opts)
 	}
 	return s.runSearch(ctx, s.q, filter, opts)
 }

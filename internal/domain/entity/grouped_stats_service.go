@@ -156,6 +156,14 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 	// instead of failing with 400.
 	if parsedCond != nil {
 		if cErr := search.ValidateCondition(parsedCond); cErr != nil {
+			// A jsonPath outside JSON Path nomenclature is propagated
+			// unwrapped so classifyGroupedStatsError sees the
+			// search.ErrInvalidFieldPath sentinel and emits INVALID_FIELD_PATH
+			// — the same code /search returns for the same input. Re-wrapping
+			// in ErrInvalidCondition would shadow it: that arm is tested first.
+			if errors.Is(cErr, search.ErrInvalidFieldPath) {
+				return nil, cErr
+			}
 			return nil, fmt.Errorf("%w: %v", ErrInvalidCondition, cErr)
 		}
 	}

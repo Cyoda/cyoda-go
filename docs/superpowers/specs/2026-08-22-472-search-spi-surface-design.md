@@ -527,7 +527,7 @@ status code" statement, which predates the pool's queue-bound decision.
 | `POST /search/async/{entityName}/{modelVersion}` | 200 submit; 400 invalid condition; 401; 404 model; 503 `SEARCH_QUEUE_FULL` (retryable) when the worker pool's queue is full (the submit endpoint has no limit parameter — the service-level limit>max guard is unreachable over HTTP) |
 | `GET /search/async/{jobId}` | 200 page; 400 job not complete / pagination over max; 401; 404 job |
 | `GET /search/async/{jobId}/status` | 200; 401; 404 |
-| `PUT /search/async/{jobId}/cancel` | 200 cancelled=true (RUNNING) / false (terminal); 401; 404 — **now actually stops the scan** |
+| `PUT /search/async/{jobId}/cancel` | 200 cancelled=true (RUNNING); 400 `SEARCH_JOB_ALREADY_TERMINAL` (job already SUCCESSFUL/FAILED/CANCELLED); 401; 404 — **now actually stops the scan** |
 | `POST /search/direct/{entityName}/{modelVersion}` | 200 NDJSON; 400 incl. limit ≤ 0 rejected; 404; 408 timeoutMillis; `SEARCH_RESULT_LIMIT` over-limit error (status per existing contract) |
 | `DELETE /entity/{entityName}/{modelVersion}` (conditional) | 200 report; 400; 401; 404 |
 | `GET /entity/{entityName}/{modelVersion}` (list) | 200; 400 pagination; 401; 404 |
@@ -554,11 +554,11 @@ status code" statement, which predates the pool's queue-bound decision.
 | GetResultIDs degenerate inputs error (no panic) | spitest | — | — | — |
 | GetPage ordering/limit/offset; fail-fast | spitest | ✓ list endpoint | ✓ | ✓ ListEntities |
 | `?pageSize=1` latency bounded by page, not N | — | ✓ (assert query shape / plan, not wall-clock) | — | — |
-| GetVersionByTransaction earliest-wins; empty txID rejected; 404 | spitest | ✓ | ✓ | — (no gRPC surface) |
+| GetVersionByTransaction earliest-wins; empty txID rejected; 404 | spitest — sole home of earliest-wins and empty-txID rejection (`transactionId` binds as `*openapi_types.UUID`, so an empty value fails parameter binding and `""` never reaches the store) | ✓ wire half only: 200 at the create tx, 404 unknown tx | ✓ per-tx resolution, no cross-tx bleed, 404 on the tombstone's tx | — (no gRPC surface) |
 | GetVersionByTransaction pushdown: long-history latency bounded (query-shape assert) | — | ✓ | — | — |
 | GetVersionMetadata window/limit/order; Deleted canonical | spitest | ✓ changes endpoint | ✓ | ✓ changes |
 | Conditional delete over large model: O(IDs) atomic / O(page) batched | ✓ engine | ✓ isolated | ✓ behaviour | — |
-| Async result ordering respected end-to-end | — | ✓ | ✓ (order asserted per backend) | ✓ |
+| Async result ordering respected end-to-end | — | ✓ (incl. the byte-wise entity-id tiebreak, a postgres-only contract) | ✓ (requested key order, set equality, repeat-run stability — NOT the entity-id tiebreak, which is per-engine) | ✓ (submit → poll → results, asc and desc) |
 
 Concurrency scenarios stay in isolated single-backend e2e, never the shared
 parity suite. A missing cell at implementation time blocks merge unless

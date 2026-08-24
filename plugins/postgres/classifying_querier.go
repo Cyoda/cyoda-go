@@ -97,18 +97,26 @@ func wrapRows(rows pgx.Rows, classify func(error) error) pgx.Rows {
 // one classifyFor uses for a non-transactional statement — to a fixed
 // inner Querier, with no context-based transaction resolution.
 //
-// Two callers pin an inner querier this way. The async-search job store
-// pins the pool (via StoreFactory.poolQuerier): its job record outlives
-// the request that submitted it — the goroutine that fills it in runs on
-// a context of its own — and the submit path's context can carry a
-// joined transaction, because the TxJoin middleware wraps the whole API
-// mux and the gRPC tx-route interceptor covers the snapshot RPCs.
-// Resolving that transaction would bind the job record to it: invisible
-// to the goroutine that must update it, and gone if the caller rolls
-// back. ExtendSchema's self-wrap pins its own pgx.Tx: the transaction is
-// private by construction, and the funnel is what keeps its errors — a
+// Two kinds of caller pin an inner querier this way.
+//
+// A private transaction pins its own pgx.Tx: ExtendSchema's self-wrap and
+// SaveResults' per-chunk transaction. Neither is the caller's, both are
+// private by construction, and the funnel is what keeps their errors — a
 // serialization abort on the write-claim, a reclaimed session — carrying
 // the same sentinels the ambient path gets from ctxQuerier.
+//
+// unjoinedQuerier pins the pool for the statements that must not join the
+// caller's transaction at all: every point-in-time read, and every
+// async-search job-record statement. The job record outlives the request
+// that submitted it — the goroutine that fills it in runs on a context of
+// its own — and the submit path's context can carry a joined transaction,
+// because the TxJoin middleware wraps the whole API mux and the gRPC
+// tx-route interceptor covers the snapshot RPCs. Resolving that
+// transaction would bind the job record to it: invisible to the goroutine
+// that must update it, and gone if the caller rolls back. classifiedQuerier
+// is the OUTSIDE-a-transaction half of that path; the in-transaction half
+// takes its connection explicitly, under an acquire deadline, but
+// classifies the statement identically.
 type classifiedQuerier struct{ inner Querier }
 
 func (c classifiedQuerier) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {

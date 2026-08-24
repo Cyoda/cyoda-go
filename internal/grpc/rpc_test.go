@@ -1034,6 +1034,28 @@ func TestRPC_EntityStats(t *testing.T) {
 	}
 }
 
+// TestRPC_EntityChangesMetadata is the gRPC cell of design §9 row 17
+// ("GetVersionMetadata window/limit/order; Deleted canonical"). It drives a
+// create + update + delete through the gRPC door and asserts, over that same
+// door, the two properties the row names that ARE observable in the
+// EntityChangeMetaJson payload:
+//
+//   - newest-first order (the DELETE tombstone first, the CREATE last, with
+//     non-increasing timeOfChange), and
+//   - canonical Deleted: the tombstone is reported as changeType DELETE and
+//     carries NO transactionId — HasEntity is derived as !v.Deleted from the
+//     metadata DTO (internal/domain/entity/service.go), replacing the old
+//     backend-divergent "entity is nil" probe, and an omitted transactionId
+//     is how HasEntity=false is observed on the wire (same signal the parity
+//     scenario RunHistoryReadsChangesMetadataAndTransactionLookup asserts
+//     over HTTP).
+//
+// The row's third property, the Version DESC tie-break, is NOT asserted here
+// and cannot be: EntityChangeMetaJson carries no version field, so a tie is
+// unobservable at this layer, and forcing two versions onto one timestamp
+// would need clock control this env does not have. It is pinned by the
+// cyoda-go-spi conformance suite (row 17's "spitest" cell), which reads
+// GetVersionMetadata directly.
 func TestRPC_EntityChangesMetadata(t *testing.T) {
 	svc, ctx := newTestEnv(t)
 
@@ -1056,6 +1078,38 @@ func TestRPC_EntityChangesMetadata(t *testing.T) {
 	txInfo := createPayload["transactionInfo"].(map[string]any)
 	entityID := txInfo["entityIds"].([]any)[0].(string)
 
+	// Update, then delete — three changes, each its own transaction, so the
+	// ordering assertion below has something to order.
+	updateResp, err := svc.EntityManage(ctx, makeCE(EntityUpdateRequest, map[string]any{
+		"id":         "test",
+		"dataFormat": "JSON",
+		"payload": map[string]any{
+			"entityId": entityID,
+			"data":     map[string]any{"name": "Alicia"},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("update failed: %v", err)
+	}
+	var updated events.EntityTransactionResponseJson
+	validateResponse(t, updateResp, &updated)
+	if !updated.Success {
+		t.Fatalf("update: success=false; error: %v", updated.Error)
+	}
+
+	deleteResp, err := svc.EntityManage(ctx, makeCE(EntityDeleteRequest, map[string]any{
+		"id":       "test",
+		"entityId": entityID,
+	}))
+	if err != nil {
+		t.Fatalf("delete failed: %v", err)
+	}
+	var deleted events.EntityDeleteResponseJson
+	validateResponse(t, deleteResp, &deleted)
+	if !deleted.Success {
+		t.Fatalf("delete: success=false; error: %v", deleted.Error)
+	}
+
 	changesCE := makeCE(EntityChangesMetadataGetRequest, map[string]any{
 		"id":       "test",
 		"entityId": entityID,
@@ -1066,17 +1120,49 @@ func TestRPC_EntityChangesMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(stream.sent) < 1 {
-		t.Fatal("expected at least 1 change metadata response")
-	}
-	if stream.sent[0].Type != EntityChangesMetadataResponse {
-		t.Errorf("expected type %s, got %s", EntityChangesMetadataResponse, stream.sent[0].Type)
+	if len(stream.sent) != 3 {
+		t.Fatalf("expected exactly 3 change metadata responses (create+update+delete), got %d", len(stream.sent))
 	}
 
-	var typed events.EntityChangesMetadataResponseJson
-	validateResponse(t, stream.sent[0], &typed)
-	if typed.RequestID == "" {
-		t.Error("missing requestId")
+	metas := make([]events.EntityChangeMetaJson, 0, len(stream.sent))
+	for i, sent := range stream.sent {
+		if sent.Type != EntityChangesMetadataResponse {
+			t.Fatalf("response[%d]: expected type %s, got %s", i, EntityChangesMetadataResponse, sent.Type)
+		}
+		var typed events.EntityChangesMetadataResponseJson
+		validateResponse(t, sent, &typed)
+		if !typed.Success {
+			t.Fatalf("response[%d]: success=false; error: %v", i, typed.Error)
+		}
+		if typed.RequestID == "" {
+			t.Errorf("response[%d]: missing requestId", i)
+		}
+		metas = append(metas, typed.ChangeMeta)
+	}
+
+	// Newest-first: the tombstone leads, the create trails.
+	wantOrder := []string{"DELETE", "UPDATE", "CREATE"}
+	for i, want := range wantOrder {
+		if got := string(metas[i].ChangeType); got != want {
+			t.Errorf("change[%d].changeType = %q, want %q (newest-first): %+v", i, got, want, metas)
+		}
+	}
+	for i := 1; i < len(metas); i++ {
+		if metas[i].TimeOfChange.After(metas[i-1].TimeOfChange) {
+			t.Errorf("change[%d].timeOfChange %v is after change[%d] %v — not newest-first",
+				i, metas[i].TimeOfChange, i-1, metas[i-1].TimeOfChange)
+		}
+	}
+
+	// Canonical Deleted: the tombstone carries no transactionId; every
+	// non-tombstone row does.
+	if metas[0].TransactionID != nil {
+		t.Errorf("DELETE (tombstone): transactionId = %q, want omitted (HasEntity=false)", *metas[0].TransactionID)
+	}
+	for i := 1; i < len(metas); i++ {
+		if metas[i].TransactionID == nil || *metas[i].TransactionID == "" {
+			t.Errorf("change[%d] (%s): transactionId omitted/empty, want non-empty (HasEntity=true)", i, metas[i].ChangeType)
+		}
 	}
 }
 

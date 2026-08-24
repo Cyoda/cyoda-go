@@ -55,7 +55,9 @@ var (
 //
 // PointInTime (when non-nil) walks entity_versions at the requested snapshot
 // using DISTINCT ON to surface only the latest visible version per entity,
-// then excludes deletion-marker versions.
+// then excludes deletion-marker versions. It is committed-only — it ignores any
+// ambient transaction and runs through committedQuerier (search_base.go), like
+// GetAsAt/GetAllAsAt/GetPage(asAt) and Search with a PointInTime.
 //
 // Ordering: empty OrderBy means unspecified (a deterministic entity_id
 // COLLATE "C" order is still emitted — a conformant, if stronger-than-
@@ -131,7 +133,17 @@ func (s *entityStore) Iterate(
 		return s.iterateUnderOwnCeiling(ctx, ceiling, baseQuery, baseArgs, plan.preparedPostFilter)
 	}
 
-	rows, err := s.q.Query(ctx, baseQuery, baseArgs...)
+	// A point-in-time iteration is committed-only, so it runs OFF any ambient
+	// transaction through committedQuerier (search_base.go) — s.q would resolve
+	// the caller's pgx.Tx and yield that transaction's own uncommitted writes.
+	// The ceiling branch above already reads committed-only by construction (it
+	// opens a transaction of its own, and only ever when none is active).
+	q := s.q
+	if opts.PointInTime != nil {
+		q = s.committedQuerier()
+	}
+
+	rows, err := q.Query(ctx, baseQuery, baseArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("iterate query: %w", err)
 	}

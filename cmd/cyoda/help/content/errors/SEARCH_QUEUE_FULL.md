@@ -1,6 +1,6 @@
 ---
 topic: errors.SEARCH_QUEUE_FULL
-title: "SEARCH_QUEUE_FULL — the async-search worker pool's queue is full"
+title: "SEARCH_QUEUE_FULL — async-search submission was refused for capacity"
 stability: stable
 see_also:
   - errors
@@ -13,7 +13,7 @@ see_also:
 
 ## NAME
 
-SEARCH_QUEUE_FULL — the async-search worker pool has no free worker and its submit queue is at capacity.
+SEARCH_QUEUE_FULL — the node refused an async-search submission because its capacity for one is already committed.
 
 ## SYNOPSIS
 
@@ -21,16 +21,16 @@ HTTP: `503` `Service Unavailable`. Retryable: `yes`.
 
 ## DESCRIPTION
 
-`POST /api/search/async/{entityName}/{modelVersion}` runs on a bounded worker pool: a fixed number of workers drain a fixed-capacity queue. Submission fails fast with this error the instant both are exhausted, rather than blocking the request or spawning an unbounded goroutine per submission.
+`POST /api/search/async/{entityName}/{modelVersion}` runs on a bounded worker pool: a fixed number of workers drain a fixed-capacity queue. Submission fails fast with this error rather than blocking the request or spawning an unbounded goroutine per submission. The rejected submit leaves nothing behind — no job row, no id to poll.
 
-The pool is sized by two variables:
+Two guards raise it, both retryable, both meaning "back off and retry":
 
-- `CYODA_SEARCH_ASYNC_WORKERS` (default `8`) — number of workers.
-- `CYODA_SEARCH_ASYNC_QUEUE` (default `256`) — submit queue capacity beyond the running workers.
+- **Node capacity** — no free worker and the submit queue at capacity. Sized by `CYODA_SEARCH_ASYNC_WORKERS` (default `8`) and `CYODA_SEARCH_ASYNC_QUEUE` (default `256`).
+- **Tenant share** — your tenant already holds its full share of this node's in-flight jobs. Sized by `CYODA_SEARCH_ASYNC_MAX_PER_TENANT` (default: the worker count; `0` disables the cap). This bound keeps one tenant from consuming the whole pool.
 
-Retryable. The queue drains as in-flight jobs complete; a client that backs off and retries will typically succeed. Frequent occurrences mean sustained submission volume exceeds what the pool is sized to absorb — raise `CYODA_SEARCH_ASYNC_QUEUE` for burst tolerance, or `CYODA_SEARCH_ASYNC_WORKERS` for sustained throughput (bounded by the storage backend's connection budget: each running job holds a scan connection plus, per chunk, a save connection).
+The queue drains as in-flight jobs complete; a client that backs off and retries will typically succeed. Frequent occurrences mean sustained submission volume exceeds what the pool is sized to absorb — raise `CYODA_SEARCH_ASYNC_QUEUE` for burst tolerance, or `CYODA_SEARCH_ASYNC_WORKERS` for sustained throughput (bounded by the storage backend's connection budget: each running job holds a scan connection plus, per chunk, a save connection).
 
-See `cyoda help config` (Search internals) for the two variables.
+See `cyoda help config` (Search internals) for the variables.
 
 ## SEE ALSO
 

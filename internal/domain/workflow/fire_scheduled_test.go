@@ -10,7 +10,6 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -382,7 +381,7 @@ func TestFireScheduled_GuardEntityMovedOn(t *testing.T) {
 // row.
 //
 // This mirrors the real dispatch shape exactly: the ctx is built via
-// scheduler.SystemUserContext(task.TenantID) — precisely what both
+// common.SystemUserContext(task.TenantID) — precisely what both
 // LocalExecutor.Execute and the peer RPC handler do with the (here,
 // attacker-controlled) task.TenantID field — scoping every tenant-aware
 // store the engine opens (EntityStore, WorkflowStore, ...) to testTenantB.
@@ -434,7 +433,7 @@ func TestFireScheduled_TenantMismatch_DropsWithoutDeletingVictimTask(t *testing.
 	// Forged dispatch: real task.ID, but task.TenantID asserts testTenantB.
 	// The ctx is built exactly as the real dispatch paths build it — scoped
 	// to the (attacker-controlled) task.TenantID.
-	forgedCtx := scheduler.SystemUserContext(testTenantB)
+	forgedCtx := common.SystemUserContext(testTenantB)
 	forgedTask := spi.ScheduledTask{ID: id, TenantID: testTenantB}
 
 	outcome, err := engine.FireScheduledTransition(forgedCtx, forgedTask)
@@ -763,7 +762,7 @@ func chronologicalVersionMetas(t *testing.T, es spi.EntityStore, ctx context.Con
 // TestFireScheduled_AttributesToArmedByUser_IncludingCascade covers Task
 // 13's core positive case: a task whose durable row carries a user ArmedBy
 // fires under a plain system dispatch ctx (mirroring the real
-// scheduler.SystemUserContext dispatch — no user identity on ctx at all),
+// common.SystemUserContext dispatch — no user identity on ctx at all),
 // yet the anchor write attributes to the ARMING user, executed by system.
 // The workflow cascades automatically past an intermediate state
 // (OPEN->MID->DONE) before the single anchor persist, proving the
@@ -808,7 +807,7 @@ func TestFireScheduled_AttributesToArmedByUser_IncludingCascade(t *testing.T) {
 	// The real dispatch ctx carries no user identity at all — just the
 	// synthesised system UserContext scheduler.LocalExecutor/the peer RPC
 	// handler build. Attribution must come from the durable row, not ctx.
-	dispatchCtx := scheduler.SystemUserContext(testTenant)
+	dispatchCtx := common.SystemUserContext(testTenant)
 	outcome, err := engine.FireScheduledTransition(dispatchCtx, spi.ScheduledTask{ID: id, TenantID: testTenant})
 	if err != nil {
 		t.Fatalf("FireScheduledTransition: %v", err)
@@ -835,8 +834,8 @@ func TestFireScheduled_AttributesToArmedByUser_IncludingCascade(t *testing.T) {
 	if entity.Meta.ChangeUserKind != wantUser.Kind {
 		t.Errorf("ChangeUserKind = %v, want %v", entity.Meta.ChangeUserKind, wantUser.Kind)
 	}
-	if entity.Meta.ChangeExecutor != scheduler.SystemPrincipal() {
-		t.Errorf("ChangeExecutor = %+v, want %+v", entity.Meta.ChangeExecutor, scheduler.SystemPrincipal())
+	if entity.Meta.ChangeExecutor != common.SystemPrincipal() {
+		t.Errorf("ChangeExecutor = %+v, want %+v", entity.Meta.ChangeExecutor, common.SystemPrincipal())
 	}
 
 	// Anchor version, independently of Entity — matches the EntityVersion
@@ -848,8 +847,8 @@ func TestFireScheduled_AttributesToArmedByUser_IncludingCascade(t *testing.T) {
 	if v.AttributedKind != wantUser.Kind {
 		t.Errorf("version AttributedKind = %v, want %v", v.AttributedKind, wantUser.Kind)
 	}
-	if v.Executor != scheduler.SystemPrincipal() {
-		t.Errorf("version Executor = %+v, want %+v", v.Executor, scheduler.SystemPrincipal())
+	if v.Executor != common.SystemPrincipal() {
+		t.Errorf("version Executor = %+v, want %+v", v.Executor, common.SystemPrincipal())
 	}
 }
 
@@ -903,8 +902,8 @@ func TestFireScheduled_LegacyZeroArmedBy_AttributesToSystem_NeverSchedulerString
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if entity.Meta.ChangeUser != scheduler.SystemPrincipal().ID {
-		t.Errorf("ChangeUser = %q, want %q", entity.Meta.ChangeUser, scheduler.SystemPrincipal().ID)
+	if entity.Meta.ChangeUser != common.SystemPrincipal().ID {
+		t.Errorf("ChangeUser = %q, want %q", entity.Meta.ChangeUser, common.SystemPrincipal().ID)
 	}
 	if entity.Meta.ChangeUser == "scheduler" {
 		t.Error("ChangeUser must never be the bare string \"scheduler\"")
@@ -912,8 +911,8 @@ func TestFireScheduled_LegacyZeroArmedBy_AttributesToSystem_NeverSchedulerString
 	if entity.Meta.ChangeUserKind != spi.PrincipalSystem {
 		t.Errorf("ChangeUserKind = %v, want %v", entity.Meta.ChangeUserKind, spi.PrincipalSystem)
 	}
-	if entity.Meta.ChangeExecutor != scheduler.SystemPrincipal() {
-		t.Errorf("ChangeExecutor = %+v, want %+v", entity.Meta.ChangeExecutor, scheduler.SystemPrincipal())
+	if entity.Meta.ChangeExecutor != common.SystemPrincipal() {
+		t.Errorf("ChangeExecutor = %+v, want %+v", entity.Meta.ChangeExecutor, common.SystemPrincipal())
 	}
 }
 
@@ -1768,9 +1767,9 @@ func TestFireScheduled_SiblingEntityWrite_AttributesToArmingUser_ViaAmbientOrigi
 	advance(delayMs)
 
 	// Dispatch ctx carries no user identity at all, exactly like the real
-	// scheduler dispatch (scheduler.SystemUserContext) — attribution must
+	// scheduler dispatch (common.SystemUserContext) — attribution must
 	// come entirely from the ambient origin seeded from the durable row.
-	dispatchCtx := scheduler.SystemUserContext(testTenant)
+	dispatchCtx := common.SystemUserContext(testTenant)
 	outcome, err := engine.FireScheduledTransition(dispatchCtx, spi.ScheduledTask{ID: id, TenantID: testTenant})
 	if err != nil {
 		t.Fatalf("FireScheduledTransition: %v", err)
@@ -1793,8 +1792,8 @@ func TestFireScheduled_SiblingEntityWrite_AttributesToArmingUser_ViaAmbientOrigi
 	if sibling.Meta.ChangeUserKind != armingUser.Kind {
 		t.Errorf("sibling ChangeUserKind = %v, want %v", sibling.Meta.ChangeUserKind, armingUser.Kind)
 	}
-	if sibling.Meta.ChangeExecutor != scheduler.SystemPrincipal() {
-		t.Errorf("sibling ChangeExecutor = %+v, want %+v (system: the dispatch ctx's UserContext)", sibling.Meta.ChangeExecutor, scheduler.SystemPrincipal())
+	if sibling.Meta.ChangeExecutor != common.SystemPrincipal() {
+		t.Errorf("sibling ChangeExecutor = %+v, want %+v (system: the dispatch ctx's UserContext)", sibling.Meta.ChangeExecutor, common.SystemPrincipal())
 	}
 }
 

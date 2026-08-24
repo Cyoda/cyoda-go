@@ -312,6 +312,23 @@ func TestAsyncSearch_Cancel_AlreadyCompleted(t *testing.T) {
 	if !strings.Contains(body, "SUCCESSFUL") {
 		t.Errorf("expected 400 body to contain current status 'SUCCESSFUL'; body: %s", body)
 	}
+	// ...and carry the documented errorCode / props (cmd/cyoda/help/content/
+	// errors/SEARCH_JOB_ALREADY_TERMINAL.md, search.md ERRORS).
+	var pd struct {
+		Props map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(body), &pd); err != nil {
+		t.Fatalf("problem detail is not JSON: %v; body=%s", err, body)
+	}
+	if code, _ := pd.Props["errorCode"].(string); code != "SEARCH_JOB_ALREADY_TERMINAL" {
+		t.Errorf("errorCode = %q, want SEARCH_JOB_ALREADY_TERMINAL; body=%s", code, body)
+	}
+	if got, _ := pd.Props["currentStatus"].(string); got != "SUCCESSFUL" {
+		t.Errorf("properties.currentStatus = %q, want SUCCESSFUL; body=%s", got, body)
+	}
+	if got, _ := pd.Props["snapshotId"].(string); got != jobID {
+		t.Errorf("properties.snapshotId = %q, want %s; body=%s", got, jobID, body)
+	}
 }
 
 // TestAsyncSearch_Cancel_NotFound verifies that cancelling a non-existent job

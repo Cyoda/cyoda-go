@@ -8,7 +8,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 // StaleClaimBatch caps how many stale jobs a single FailStaleJobs call
@@ -38,7 +38,7 @@ const StaleClaimBatch = 100
 // use); the jobs it returns carry TenantID, but every store write after
 // that goes through the tenant-scoped store. So each claimed job's
 // follow-up write runs under a context reconstructed from that job's own
-// TenantID via scheduler.SystemUserContext — the same system-principal
+// TenantID via common.SystemUserContext — the same system-principal
 // construction the scheduler's background fire path already uses, not a
 // second bespoke one — which also keeps one tenant's claimed job from ever
 // being written under another tenant's (or no tenant's) context.
@@ -78,7 +78,7 @@ func FailStaleJobs(ctx context.Context, store spi.AsyncSearchStore, staleAfter t
 	now := time.Now()
 	failed := 0
 	for _, job := range jobs {
-		tenantCtx := scheduler.SystemUserContext(job.TenantID)
+		tenantCtx := common.SystemUserContext(job.TenantID)
 		writeErr := store.UpdateJobStatus(tenantCtx, job.ID, job.Epoch, "FAILED", 0, jobFailureFallback, now, 0)
 		if writeErr == nil {
 			failed++

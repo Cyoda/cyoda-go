@@ -99,10 +99,13 @@ const (
 	// timeoutMillis expires before the search result set was collected. No
 	// partial results are returned.
 	ErrCodeSearchTimeout = "SEARCH_TIMEOUT"
-	// ErrCodeSearchQueueFull is returned when the async-search worker
-	// pool's submit queue is at capacity (CYODA_SEARCH_ASYNC_WORKERS
-	// workers, CYODA_SEARCH_ASYNC_QUEUE queue slots, both exhausted).
-	// Retryable: the queue drains as in-flight jobs complete.
+	// ErrCodeSearchQueueFull is returned when an async-search submission is
+	// refused for capacity — either the node's own bounds are exhausted
+	// (CYODA_SEARCH_ASYNC_WORKERS workers and CYODA_SEARCH_ASYNC_QUEUE queue
+	// slots both full) or the submitting tenant already holds its share of
+	// this node (CYODA_SEARCH_ASYNC_MAX_PER_TENANT). One code for both: the
+	// caller's action is identical, and which bound bit is operator
+	// information. Retryable: capacity frees as in-flight jobs complete.
 	ErrCodeSearchQueueFull = "SEARCH_QUEUE_FULL"
 )
 
@@ -125,6 +128,20 @@ const (
 	// UniqueKey definition is structurally invalid (e.g. empty field list,
 	// unknown field path, or duplicate key name).
 	ErrCodeInvalidUniqueKeyDefinition = "INVALID_UNIQUE_KEY_DEFINITION"
+)
+
+// Batched conditional delete
+const (
+	// ErrCodeDeleteNotConverged is returned when a batched delete
+	// (transactionSize set, no pointInTime) used up its selection-cycle
+	// budget without the matching set ever running dry — entities matching
+	// the condition are being created at least as fast as they are removed.
+	// Batches committed before the failure stay durable; the response fails
+	// closed rather than reporting a partial pass as the complete requested
+	// set. Retryable: the condition clears as soon as the concurrent writers
+	// stop. Distinct from ErrCodeConflict, which is entity-level optimistic
+	// concurrency (a version guard lost its race) and has a different remedy.
+	ErrCodeDeleteNotConverged = "DELETE_NOT_CONVERGED"
 )
 
 // Help subsystem

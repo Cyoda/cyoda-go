@@ -21,7 +21,9 @@ import (
 type asyncSearchStore struct {
 	// q is the pool-pinned funnel: every statement here is classified, and none
 	// of them joins a transaction the caller may be holding. See poolQuerier for
-	// why the job record must stay independent of the submitting transaction.
+	// why the job record must stay independent of the submitting transaction,
+	// and unjoinedQuerier for why a statement issued from INSIDE a caller's
+	// transaction bounds its connection acquire — it holds two at once.
 	q Querier
 
 	// pool is kept for the operations Querier does not carry: SaveResults
@@ -240,6 +242,14 @@ const saveResultsBatchSize = 1000
 // would starve the pool's small connection budget. seq is a running counter
 // across the whole call, so chunk boundaries never repeat or skip a sequence
 // position.
+//
+// The final flush runs even when it has nothing to write, so an empty
+// iter.Seq — an ordinary search matching zero rows — is fenced like any other:
+// a missing job is ErrNotFound, a terminal one ErrAlreadyTerminal, and a
+// reclaimed claim ErrStaleClaim. spi.AsyncSearchStore states the fence
+// unconditionally, and the memory plugin already reads it that way
+// (guardAndAppend(nil)); returning nil here for a zero-result set would leave a
+// dispossessed executor believing its write landed.
 func (s *asyncSearchStore) SaveResults(ctx context.Context, jobID string, epoch int64, entityIDs iter.Seq[string]) error {
 	tid, err := s.tenant(ctx)
 	if err != nil {
@@ -250,9 +260,6 @@ func (s *asyncSearchStore) SaveResults(ctx context.Context, jobID string, epoch 
 	batch := make([]string, 0, saveResultsBatchSize)
 
 	flush := func() error {
-		if len(batch) == 0 {
-			return nil
-		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -270,31 +277,53 @@ func (s *asyncSearchStore) SaveResults(ctx context.Context, jobID string, epoch 
 		// Rollback is idempotent in pgx: a no-op once Commit has landed, and
 		// this is the only path a probeFenced failure or a CopyFrom failure
 		// takes — releasing the row lock either way.
-		defer func() { _ = tx.Rollback(ctx) }()
+		//
+		// On a context derived WithoutCancel, matching searcher.go and
+		// grouped_stats.go. SaveResults IS the cancellation path — CancelAsync
+		// cancels the very context the streaming write runs under — so the
+		// caller's context is routinely the thing that expired by the time this
+		// runs. A rollback issued on an expired context never reaches the
+		// server, leaving the transaction status non-idle, and pgxpool.Release
+		// then destroys the connection instead of returning it: every
+		// submit-then-cancel cycle would burn one of the pool's connections and
+		// pay a fresh TCP+auth handshake to replace it.
+		defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 
 		// classifiedQuerier keeps this statement on the same error
 		// classification every other statement in this store gets from the
 		// pool-pinned s.q, even though it runs on our own private tx.
+		//
+		// The caller's own ctx, NOT WithoutCancel: this is work whose result the
+		// caller is waiting for, so a cancellation must abort it. Only the
+		// rollback above outlives the cancellation, because its whole job is to
+		// clean up after one.
 		if err := s.probeFenced(ctx, classifiedQuerier{inner: tx}, jobID, tid, epoch, true); err != nil {
 			return err
 		}
 
-		rows := make([][]any, len(batch))
-		for i, eid := range batch {
-			rows[i] = []any{jobID, string(tid), seq, eid}
-			seq++
+		if len(batch) > 0 {
+			rows := make([][]any, len(batch))
+			for i, eid := range batch {
+				rows[i] = []any{jobID, string(tid), seq, eid}
+				seq++
+			}
+
+			// CopyFrom is not on Querier, so this batch classifies at the call
+			// site rather than inside the funnel. Same classification, applied
+			// by hand.
+			if _, err := tx.CopyFrom(ctx,
+				pgx.Identifier{"search_job_results"},
+				[]string{"job_id", "tenant_id", "seq", "entity_id"},
+				pgx.CopyFromRows(rows)); err != nil {
+				return fmt.Errorf("failed to save results batch for job %s: %w", jobID, classifyError(err))
+			}
 		}
 
-		// CopyFrom is not on Querier, so this batch classifies at the call
-		// site rather than inside the funnel. Same classification, applied by
-		// hand.
-		if _, err := tx.CopyFrom(ctx,
-			pgx.Identifier{"search_job_results"},
-			[]string{"job_id", "tenant_id", "seq", "entity_id"},
-			pgx.CopyFromRows(rows)); err != nil {
-			return fmt.Errorf("failed to save results batch for job %s: %w", jobID, classifyError(err))
-		}
-
+		// Also the caller's own ctx, and deliberately so: commit semantics are
+		// not rollback semantics. A cancelled call must not make its work
+		// durable — the abandoned chunk fails here and the deferred rollback
+		// (which does outlive the cancellation) both discards it and returns
+		// the connection to the pool.
 		if err := tx.Commit(ctx); err != nil {
 			return fmt.Errorf("failed to commit results batch for job %s: %w", jobID, classifyError(err))
 		}
@@ -313,6 +342,36 @@ func (s *asyncSearchStore) SaveResults(ctx context.Context, jobID string, epoch 
 	return flush()
 }
 
+// getResultIDsQuery reads the job's existence, its total result count and one
+// page of result IDs in ONE statement, so all three describe a single snapshot.
+//
+// Reading a non-terminal job is explicitly supported (spi.AsyncSearchStore:
+// "reading a non-terminal job answers with the results saved so far"), so a
+// concurrent SaveResults chunk landing between separate count and page
+// statements is reachable — and would report a total that does not describe the
+// page returned with it. The memory plugin takes both under one RLock; under
+// READ COMMITTED a single statement is postgres's equivalent, since every row
+// it reads comes from the same statement snapshot.
+//
+// Shape: `total` is a one-row CTE, so the LEFT JOIN LATERAL always yields at
+// least one row even when the page is empty (offset past the end, or no results
+// yet) — that row carries the count with a NULL entity_id. A plain
+// `count(*) OVER ()` would lose the total exactly when the page is empty.
+const getResultIDsQuery = `
+WITH total AS (
+    SELECT count(*) AS n FROM search_job_results WHERE job_id = $1 AND tenant_id = $2
+)
+SELECT EXISTS(SELECT 1 FROM search_jobs WHERE id = $1 AND tenant_id = $2) AS job_exists,
+       total.n,
+       page.entity_id
+FROM total
+LEFT JOIN LATERAL (
+    SELECT entity_id FROM search_job_results
+    WHERE job_id = $1 AND tenant_id = $2
+    ORDER BY seq
+    OFFSET $3 LIMIT $4
+) page ON true`
+
 func (s *asyncSearchStore) GetResultIDs(ctx context.Context, jobID string, offset, limit int) ([]string, int, error) {
 	if offset < 0 {
 		return nil, 0, fmt.Errorf("get result ids for job %s: offset must be >= 0, got %d", jobID, offset)
@@ -326,49 +385,30 @@ func (s *asyncSearchStore) GetResultIDs(ctx context.Context, jobID string, offse
 		return nil, 0, err
 	}
 
-	// Verify job exists and belongs to this tenant.
-	var exists bool
-	err = s.q.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM search_jobs WHERE id = $1 AND tenant_id = $2)`,
-		jobID, string(tid)).Scan(&exists)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to check job existence: %w", err)
-	}
-	if !exists {
-		return nil, 0, fmt.Errorf("search job %q not found: %w", jobID, spi.ErrNotFound)
-	}
-
-	// Get total count.
-	var total int
-	err = s.q.QueryRow(ctx,
-		`SELECT COUNT(*) FROM search_job_results WHERE job_id = $1 AND tenant_id = $2`,
-		jobID, string(tid)).Scan(&total)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to count results for job %s: %w", jobID, err)
-	}
-
-	// Get paginated results.
-	rows, err := s.q.Query(ctx,
-		`SELECT entity_id FROM search_job_results WHERE job_id = $1 AND tenant_id = $2 ORDER BY seq OFFSET $3 LIMIT $4`,
-		jobID, string(tid), offset, limit)
+	rows, err := s.q.Query(ctx, getResultIDsQuery, jobID, string(tid), offset, limit)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to query results for job %s: %w", jobID, err)
 	}
 	defer rows.Close()
 
-	var ids []string
+	ids := []string{}
+	total := 0
+	exists := false
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var id *string
+		if err := rows.Scan(&exists, &total, &id); err != nil {
 			return nil, 0, fmt.Errorf("failed to scan result row: %w", err)
 		}
-		ids = append(ids, id)
+		// NULL entity_id is the LATERAL's no-page-row marker, not a result.
+		if id != nil {
+			ids = append(ids, *id)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, 0, fmt.Errorf("row iteration error: %w", err)
 	}
-	if ids == nil {
-		ids = []string{}
+	if !exists {
+		return nil, 0, fmt.Errorf("search job %q not found: %w", jobID, spi.ErrNotFound)
 	}
 
 	return ids, total, nil
@@ -495,7 +535,10 @@ func (s *asyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 	}
 	defer rows.Close()
 
-	claimed := []*spi.SearchJob{}
+	// nil, not an empty slice, when nothing was claimed — the shape the memory
+	// and sqlite plugins already return (spi.AsyncSearchStore.ClaimStale's
+	// godoc specifies neither, so the other two decide it).
+	var claimed []*spi.SearchJob
 	for rows.Next() {
 		job, err := scanSearchJobRow(rows.Scan)
 		if err != nil {

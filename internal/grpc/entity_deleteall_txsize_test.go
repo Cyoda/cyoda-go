@@ -488,3 +488,54 @@ func TestRPC_EntityDeleteAll_TransactionSize_Batched_ErrorsByID(t *testing.T) {
 		}
 	}
 }
+
+// --- (f) non-converging batched delete -> CLIENT_ERROR DELETE_NOT_CONVERGED ---
+
+// TestRPC_EntityDeleteAll_NonConvergence_Envelope pins the gRPC door's
+// envelope for the streamed batched delete's progress guard: the delete is
+// stopped at its cycle cap and answers CLIENT_ERROR with a
+// DELETE_NOT_CONVERGED: prefixed message and Retryable:true — never Success
+// carrying the partial counts, and never an opaque SERVER_ERROR.
+//
+// The cap is lowered to a single cycle rather than staging a real insert
+// storm: with three entities and transactionSize 1, the first cycle deletes
+// one and the re-scan still has matches, which is exactly the state the guard
+// exists to stop — reached deterministically instead of by winning a race.
+// The storm shape itself is covered at domain level
+// (internal/domain/entity/delete_progress_guard_test.go).
+func TestRPC_EntityDeleteAll_NonConvergence_Envelope(t *testing.T) {
+	svc, ctx, _, _ := newDeleteAllTxSizeEnv(t)
+	seedDeleteAllTxSizePersons(t, svc, ctx, 3)
+	svc.entityHandler.WithMaxDeleteCycles(1)
+
+	ce := makeCE(EntityDeleteAllRequest, map[string]any{
+		"id":              "test",
+		"model":           map[string]any{"name": "person", "version": 1},
+		"transactionSize": 1,
+	})
+	stream := &mockManageStream{ctx: ctx}
+	if err := svc.EntityManageCollection(ce, stream); err != nil {
+		t.Fatalf("unexpected gRPC error: %v", err)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(stream.sent))
+	}
+
+	var typed events.EntityDeleteAllResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if typed.Success {
+		t.Fatal("expected success=false: a delete stopped at its cycle cap must not report the partial pass as the complete one")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error field to be populated")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("code = %q, want CLIENT_ERROR", typed.Error.Code)
+	}
+	if !strings.HasPrefix(typed.Error.Message, common.ErrCodeDeleteNotConverged+":") {
+		t.Errorf("message = %q, want prefix %q", typed.Error.Message, common.ErrCodeDeleteNotConverged+":")
+	}
+	if typed.Error.Retryable == nil || !*typed.Error.Retryable {
+		t.Errorf("Retryable = %v, want true (the condition clears once the concurrent writers stop)", typed.Error.Retryable)
+	}
+}

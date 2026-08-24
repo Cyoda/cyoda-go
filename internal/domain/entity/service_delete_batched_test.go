@@ -173,12 +173,43 @@ func (s *deleteAllSpyStore) Iterate(ctx context.Context, model spi.ModelRef, fil
 // (rather than hooking Get by id) also sidesteps depending on which
 // streamed cycle happens to contain targetID — unspecified per the
 // spi.Iterable contract.
+//
+// hookOnFirstGet switches the trigger from "that cycle's Close" to "the
+// first EntityStore.Get of targetID", which is what the pointInTime branch
+// needs: resolveBatchTargetsOnePass reads its version-guard baselines AFTER
+// the selection iterator has closed (a Get issued mid-drain would hold the
+// iterator's connection while acquiring a second — see its doc comment), so
+// a Close-triggered mutation would land BEFORE the baseline capture and the
+// guard would then legitimately see, and delete, the mutated version. The
+// first Get of targetID through this spy IS that baseline read: seeding and
+// the mutation itself both run through the unwrapped real factory, and
+// deleteOneBatch's own re-read comes later, so the mutation still lands
+// exactly in the window the guard exists for.
 type mutateAfterSelectionStore struct {
 	spi.EntityStore
-	mu       sync.Mutex
-	fired    bool
-	targetID string
-	mutate   func()
+	mu             sync.Mutex
+	fired          bool
+	targetID       string
+	hookOnFirstGet bool
+	mutate         func()
+}
+
+// Get fires the mutation once, right after targetID's first read, when
+// hookOnFirstGet is set; otherwise it is a plain passthrough and the
+// iterator's Close is the trigger.
+func (s *mutateAfterSelectionStore) Get(ctx context.Context, id string) (*spi.Entity, error) {
+	e, err := s.EntityStore.Get(ctx, id)
+	if !s.hookOnFirstGet || id != s.targetID {
+		return e, err
+	}
+	s.mu.Lock()
+	fire := !s.fired
+	s.fired = true
+	s.mu.Unlock()
+	if fire {
+		s.mutate()
+	}
+	return e, err
 }
 
 func (s *mutateAfterSelectionStore) Iterate(ctx context.Context, model spi.ModelRef, filter spi.Filter, opts spi.IterateOptions) (spi.Iterator, error) {
@@ -205,7 +236,7 @@ func (it *mutateAfterSelectionIterator) Next() bool {
 
 func (it *mutateAfterSelectionIterator) Close() error {
 	err := it.Iterator.Close()
-	if it.sawTargetID {
+	if it.sawTargetID && !it.store.hookOnFirstGet {
 		it.store.mu.Lock()
 		fire := !it.store.fired
 		it.store.fired = true
@@ -638,12 +669,11 @@ func TestDeleteEntitiesConditional_Batched_PointInTime_SinglePassSelection(t *te
 // feeds deleteOneBatch's per-id version guard correctly: a concurrent
 // mutation after selection captures its baseline must exclude that id from
 // the delete, exactly as TestDeleteEntitiesConditional_Batched_VersionGuard
-// pins for the nil-pointInTime streamed path. mutateAfterSelectionStore
-// fires the mutation once the (single, for pointInTime != nil) selection
-// pass's iterator — which is guaranteed to have already read targetID's
-// fresh baseline via resolveBatchTargetsOnePass's own entityStore.Get,
-// since that happens per-entity inside the drain, before the iterator
-// closes — has closed, and before any batch's deleteOneBatch re-reads it.
+// pins for the nil-pointInTime streamed path. mutateAfterSelectionStore's
+// hookOnFirstGet mode (see its doc comment) fires the mutation immediately
+// after resolveBatchTargetsOnePass captures targetID's fresh baseline —
+// which it does after the selection iterator closes, not inside the drain —
+// and before any batch's deleteOneBatch re-reads the row.
 func TestDeleteEntitiesConditional_Batched_PointInTime_VersionGuard(t *testing.T) {
 	realFactory := memory.NewStoreFactory()
 	t.Cleanup(func() { realFactory.Close() })
@@ -659,7 +689,7 @@ func TestDeleteEntitiesConditional_Batched_PointInTime_VersionGuard(t *testing.T
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	spyStore := &mutateAfterSelectionStore{EntityStore: realStoreForMutate, targetID: ids[2]}
+	spyStore := &mutateAfterSelectionStore{EntityStore: realStoreForMutate, targetID: ids[2], hookOnFirstGet: true}
 	spyStore.mutate = func() {
 		if _, err := hSeed.UpdateEntity(ctx, UpdateEntityInput{
 			EntityID: ids[2],

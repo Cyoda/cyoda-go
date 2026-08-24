@@ -14,6 +14,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/peeraddr"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
@@ -268,7 +269,7 @@ func (h *SchedulerRPCHandler) handle(w http.ResponseWriter, r *http.Request) {
 	// The system identity — not the caller's — drives the fire; the peer
 	// identity is attached alongside it purely for audit/tracing parity
 	// with dispatch.DispatchHandler.buildContext.
-	sysCtx := dispatch.WithPeerIdentity(scheduler.SystemUserContext(req.Task.TenantID), identity)
+	sysCtx := dispatch.WithPeerIdentity(common.SystemUserContext(req.Task.TenantID), identity)
 
 	outcome, fireErr := h.engine.FireScheduledTransition(sysCtx, req.Task)
 	if fireErr != nil {

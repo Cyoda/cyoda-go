@@ -6,6 +6,75 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **A field path must now be written as JSON Path — the `$.` leader is required.**
+  A bare `amount` is not a path and is rejected; it is no longer read as `$.amount`.
+  So are bracket-quoted property access (`$['x']`, `$.['x']`), an empty or trailing
+  segment (`$..a`, `$.a.`), and any character outside
+  `1*( ALPHA / DIGIT / "_" / "-" )`.
+
+  ```diff
+  - {"type":"simple","jsonPath":"amount",      "operatorType":"GREATER_THAN","value":50}
+  + {"type":"simple","jsonPath":"$.amount",    "operatorType":"GREATER_THAN","value":50}
+  -   "groupBy": ["variantId"]
+  +   "groupBy": ["$.variantId"]
+  ```
+
+  Affected surfaces and codes: a condition `jsonPath` → **400 `INVALID_FIELD_PATH`**
+  on `/search/direct`, `/search/async`, conditional `DELETE /entity/{name}/{version}`
+  and the grouped-stats `condition`; a grouped-stats `groupBy` entry → **400
+  `INVALID_GROUP_BY_PATH`**; an aggregation `field` → **400
+  `INVALID_AGGREGATION_FIELD`**. HTTP and gRPC both reject (gRPC as an envelope
+  error, not an empty stream).
+
+  Before, a bare condition path returned **200 with correct-looking results**: the
+  pushdown translator refused it, but every call site treats a translate failure as
+  "fall back to in-memory evaluation", and that evaluator resolves a bare path
+  happily — so the query silently ran as a full scan. Bracket-quoted access was
+  worse: nothing in the stack resolves it, so it answered an empty page for a field
+  that exists. A bare `groupBy` entry was rewritten to `$.`-form, and the response
+  echoed a group-key path the client never sent.
+
+  Still accepted: array-subscripted condition paths (`$.tags[*].name`, `$.arr[0]`)
+  — valid JSON Path, evaluated in memory rather than pushed down. Grouped-stats
+  `groupBy`/`field` still reject them, because a group key must be a single scalar.
+  The reserved `groupBy` token `state` is a token, not a path, and needs no leader;
+  it is groupBy-only, so `state` as an aggregation `field` is now rejected.
+  Workflow criteria obey the same grammar, enforced at workflow import — see the
+  next entry.
+
+  Fix for callers: prefix the path with `$.`, and replace bracket access with dotted
+  access. See `docs/cloud-parity/condition-jsonpath-grammar.md`.
+
+- **A workflow or transition `criterion` `jsonPath` must now be JSON Path too, and
+  is rejected at workflow import.**
+  A criterion uses the same model syntax as a search condition, but it evaluates
+  through the in-process predicate evaluator and never through the pushdown
+  translator — so nothing rejected a bare path, and a criterion on `amount`
+  imported cleanly and fired transitions. One syntax, two spellings of what a
+  path is.
+
+  ```diff
+    "criterion": {
+  -   "type": "simple", "jsonPath": "amount",   "operatorType": "GREATER_THAN", "value": 50
+  +   "type": "simple", "jsonPath": "$.amount", "operatorType": "GREATER_THAN", "value": 50
+    }
+  ```
+
+  Before: `POST /api/model/{entityName}/{modelVersion}/workflow/import` accepted it
+  with **200** and the transition fired. After: **400 `VALIDATION_FAILED`**, with the
+  offending workflow / state / transition named in `detail` — the same code and shape
+  every other import-time criterion rejection uses. Checked on `simple` and `array`
+  clauses at any nesting depth; a `lifecycle` clause names a meta field rather than a
+  path and a `function` clause carries none, so both stay exempt. Array subscripts
+  (`$.tags[*].name`, `$.arr[0]`) stay valid — criteria are evaluated in memory, which
+  resolves them.
+
+  Validation runs on the incoming request only, so an already-stored workflow keeps
+  evaluating; it fails on its next re-import, which is where the fix gets made.
+
+  Fix for callers: prefix the path with `$.`. See
+  `docs/cloud-parity/workflow-criterion-jsonpath-grammar.md`.
+
 - **`CYODA_TX_TTL`, `CYODA_TX_REAP_INTERVAL` and `CYODA_TX_OUTCOME_TTL` are removed.**
   They configured a transaction reaper that never ran — nothing ever registered a
   transaction with it — so the TTL they advertised was never enforced. The reaper and
@@ -57,6 +126,25 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   client-supplied input. Both now reject it at the shared validation boundary
   with **400**. This is case-sensitive — lowercase `"or"` is rejected too,
   matching the parser and the evaluator, neither of which ever accepted it.
+
+- **A grouped-stats `groupBy` path or aggregation `field` must now be a plain
+  dotted identifier.** Validation checked only for an empty path and for
+  array-projection brackets, so `$.variant';x`, `$.first name`, `$..name`,
+  `$.café`, `.leading`, `trailing.` and `$` all passed and reached the storage
+  layer. What happened next depended on how the query was executed: on the
+  pushdown path the backend refused the path and the request failed **500**,
+  while any request the backend declined to push down — a residual filter, a
+  point-in-time query, sqlite declining `stdev` — fell through to the
+  in-process tally, where the lookup simply missed and every entity landed in
+  one `null` bucket. That answered **200** with plausible-looking, wrong
+  groups. The path is now checked at the API boundary against the grammar
+  every backend already enforces — an optional `$.` leader, then
+  dot-separated segments of ASCII letters, digits, `_` and `-` — so both
+  execution paths reject identically, with **400 `INVALID_GROUP_BY_PATH`** or
+  **400 `INVALID_AGGREGATION_FIELD`**. Bracket-quoted property access
+  (`$['country']`, `$['x']['y']`) is still accepted and still normalizes to
+  the dotted form; the reserved `state` token is unaffected. Address an array
+  position as a numeric segment (`$.items.0`). `cyoda help crud`.
 
 ### Added
 
@@ -143,6 +231,21 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   and `CYODA_SEARCH_JOB_STALE_AFTER` (default `5m`, must be at least 4x the
   heartbeat interval). `cyoda help config` (Search internals) and
   `cyoda help errors SEARCH_QUEUE_FULL`.
+
+- **A batched delete that can never finish now fails instead of running
+  forever**, with a new retryable **409 `DELETE_NOT_CONVERGED`**.
+  `DELETE /api/entity/{entityName}/{modelVersion}` with `transactionSize` set
+  and no `pointInTime` re-selects the matching entities before every batch and
+  stops when a pass finds nothing left; if entities matching the condition are
+  created at least as fast as they are removed, that pass never comes up empty
+  and the request previously never returned. It is now capped at a fixed
+  number of selection cycles — sized to be unreachable by any converging
+  delete — and fails at the cap. This is a caller-visible change: a request in
+  that state used to hang, and now gets a 409 it must handle. Batches
+  committed before the cap stay deleted, and the response fails rather than
+  reporting the partial pass as the complete requested set. The gRPC mirror
+  (`EntityDeleteAllRequest` with `transactionSize`) returns the same code in a
+  `CLIENT_ERROR` envelope. `cyoda help errors DELETE_NOT_CONVERGED`.
 
 - **Streamed async search results.** Results are saved to storage
   incrementally as the scan runs, instead of being fully materialized in
@@ -299,6 +402,35 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   gap this leaves for any future same-shaped migration.
 
 ### Fixed
+
+- **A path addressing one array element by position (`$.arr[0]`) now resolves,
+  instead of answering an empty page for a field that holds the value.** It is
+  valid JSON Path, it is accepted at the API boundary, and no pushdown filter
+  can express it — so the in-memory evaluator is the only one that ever serves
+  it, and it did not. Three lookups missed, each independently enough to make
+  the leaf false for every entity: the evaluator handed gjson a path it has no
+  syntax for (`arr[0]`, where gjson wants `arr.0`); the declared-type lookup
+  probed a schema key that cannot exist (`$.arr[0]` — the schema records an
+  array's element once, under `$.arr[*]`), and a comparison with no declared
+  type expands into nothing; and search's field-existence check rejected the
+  path **400** as naming a field the model does not declare. The wildcard
+  spelling of the same path worked throughout, so two spellings of one path
+  disagreed. Affects a search `condition`, a conditional delete, a grouped-stats
+  residual, and a workflow criterion alike.
+
+  One consequence is a new rejection: a positional path now type-checks like
+  its wildcard twin, so `{"jsonPath":"$.arr[0]","operatorType":"EQUALS","value":"abc"}`
+  against an integer array is **400 `CONDITION_TYPE_MISMATCH`** rather than an
+  empty page. Negative indices, slices, unions and filter expressions are
+  unchanged — no evaluator in the stack resolves them.
+
+- **The gRPC changes-metadata read no longer reports a `transactionId` for a
+  deleted entity's tombstone.** `transactionId` is present only when
+  `hasEntity` is true; the HTTP handler gates on it, the gRPC handler did
+  not, so `EntityChangesMetadataGetRequest` surfaced the delete
+  transaction's id over gRPC while `GET /entity/{id}/changes` omitted it for
+  the same entity. The two doors now agree, matching the documented
+  contract.
 
 - **Cancelling an async search job no longer leaves it permanently un-reapable.**
   `CancelAsync` called the generic status-update path instead of the store's

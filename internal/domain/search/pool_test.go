@@ -49,7 +49,7 @@ func TestWorkerPool_BoundedQueue_QueueFull(t *testing.T) {
 
 	started := make(chan struct{}, 2)
 	release := make(chan struct{})
-	blockingJob := func(ctx context.Context) {
+	blockingJob := func() {
 		started <- struct{}{}
 		<-release
 	}
@@ -86,10 +86,10 @@ func TestWorkerPool_Submit_NeverBlocks(t *testing.T) {
 
 	release := make(chan struct{})
 	defer close(release)
-	mustSubmitEventually(t, pool, func(ctx context.Context) { <-release }, time.Second)
+	mustSubmitEventually(t, pool, func() { <-release }, time.Second)
 
 	done := make(chan error, 1)
-	go func() { done <- pool.Submit(func(context.Context) {}) }()
+	go func() { done <- pool.Submit(func() {}) }()
 
 	select {
 	case err := <-done:
@@ -111,7 +111,7 @@ func TestWorkerPool_ConcurrencyBound(t *testing.T) {
 
 	var current, highWater int64
 	var wg sync.WaitGroup
-	job := func(ctx context.Context) {
+	job := func() {
 		defer wg.Done()
 		n := atomic.AddInt64(&current, 1)
 		for {
@@ -144,21 +144,19 @@ func TestWorkerPool_ConcurrencyBound(t *testing.T) {
 	}
 }
 
-// TestWorkerPool_Drain_WaitsAndCancelsContext asserts Drain (1) cancels the
-// ctx observed by in-flight jobs and (2) does not return until the
-// in-flight job has actually finished — not merely until it noticed
-// cancellation.
-func TestWorkerPool_Drain_WaitsAndCancelsContext(t *testing.T) {
+// TestWorkerPool_Drain_WaitsForInFlightJob asserts Drain lets an in-flight
+// job run to completion and does not return until it has actually finished.
+// Drain deliberately has no way to interrupt it (see jobFunc): the drain
+// budget is the job's chance to finish, and App.Shutdown cancels whatever
+// is still running only afterwards, via AbortRegisteredJobs.
+func TestWorkerPool_Drain_WaitsForInFlightJob(t *testing.T) {
 	pool := NewWorkerPool(1, 1)
 
 	started := make(chan struct{})
-	ctxCancelled := make(chan struct{})
 	jobFinished := make(chan struct{})
-	job := func(ctx context.Context) {
+	job := func() {
 		close(started)
-		<-ctx.Done()
-		close(ctxCancelled)
-		time.Sleep(30 * time.Millisecond) // simulated post-cancellation cleanup
+		time.Sleep(30 * time.Millisecond)
 		close(jobFinished)
 	}
 	if err := pool.Submit(job); err != nil {
@@ -175,12 +173,6 @@ func TestWorkerPool_Drain_WaitsAndCancelsContext(t *testing.T) {
 		pool.Drain(context.Background())
 		close(drainDone)
 	}()
-
-	select {
-	case <-ctxCancelled:
-	case <-time.After(time.Second):
-		t.Fatal("Drain did not cancel the in-flight job's ctx")
-	}
 
 	select {
 	case <-drainDone:
@@ -205,7 +197,7 @@ func TestWorkerPool_Drain_NoGoroutineLeak(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
-		if err := pool.Submit(func(context.Context) {
+		if err := pool.Submit(func() {
 			atomic.AddInt64(&ran, 1)
 			wg.Done()
 		}); err != nil {
@@ -220,7 +212,7 @@ func TestWorkerPool_Drain_NoGoroutineLeak(t *testing.T) {
 	// every worker's defer p.wg.Done() fire — i.e. every worker goroutine
 	// has returned from p.worker and exited. Submit after Drain must not
 	// resurrect a worker or panic on the closed channel.
-	if err := pool.Submit(func(context.Context) {}); !errors.Is(err, ErrQueueFull) {
+	if err := pool.Submit(func() {}); !errors.Is(err, ErrQueueFull) {
 		t.Fatalf("Submit after Drain: got %v, want ErrQueueFull", err)
 	}
 	if got := atomic.LoadInt64(&ran); got != 8 {

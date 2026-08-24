@@ -1,7 +1,6 @@
 package sqlite
 
 import (
-	"errors"
 	"fmt"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -11,7 +10,11 @@ import (
 // contains characters that could break out of a JSON-path literal in a
 // json_extract expression. Sentinel for callers that want to distinguish
 // input validation errors from storage errors.
-var ErrInvalidFilterPath = errors.New("invalid filter path")
+//
+// It wraps [spi.ErrInvalidFilterPath], the cross-backend sentinel, so
+// errors.Is matches against either this one or the SPI one. The "%w"-only
+// wrap adds no prefix, leaving the message text unchanged.
+var ErrInvalidFilterPath = fmt.Errorf("%w", spi.ErrInvalidFilterPath)
 
 // validateJSONPath enforces an extended dotted-identifier grammar on paths
 // that are interpolated into json_extract(..., '$.<path>') expressions.

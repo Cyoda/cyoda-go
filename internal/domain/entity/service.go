@@ -1377,15 +1377,32 @@ type batchTarget struct {
 // baselineVersion) deleteOneBatch always needed to do its version guard,
 // just now sourced from the streamed drain instead of a Search() result
 // slice.
+//
+// The baseline reads run AFTER the drain, never from inside its visit
+// callback: a backend holds the iterator's own connection for the
+// iterator's whole lifetime (postgres pins a pooled connection per
+// Iterate), so a Get issued mid-drain acquires a SECOND connection while
+// still holding the first — hold-and-wait, which wedges the pool outright
+// once as many point-in-time batched deletes run concurrently as the pool
+// has connections. Collecting ids first costs nothing extra: this function
+// already retains one O(matches) slice, and ids are the same shape as the
+// targets they become.
 func (h *Handler) resolveBatchTargetsOnePass(ctx context.Context, entityStore spi.EntityStore, iterableStore spi.Iterable, ref spi.ModelRef, plan deleteSelectionPlan, pointInTime *time.Time, verbose bool, result *DeleteResult) ([]batchTarget, error) {
-	var targets []batchTarget
+	var ids []string
 	err := drainDeleteSelection(ctx, iterableStore, ref, plan, pointInTime, func(e *spi.Entity) {
 		result.MatchedCount++
 		id := e.Meta.ID
 		if verbose {
 			result.IDs = append(result.IDs, id)
 		}
+		ids = append(ids, id)
+	})
+	if err != nil {
+		return nil, common.Internal("failed to select entities for delete", err)
+	}
 
+	targets := make([]batchTarget, 0, len(ids))
+	for _, id := range ids {
 		// The matched envelope is itself historical (as-at pointInTime), so
 		// the version-guard baseline must be read fresh off the CURRENT
 		// row — otherwise a since-superseded snapshot version would never
@@ -1398,12 +1415,9 @@ func (h *Handler) resolveBatchTargetsOnePass(ctx context.Context, entityStore sp
 			// this id's problem alone, not the whole request's; the
 			// resolution pass continues with the remaining ids.
 			result.IDToError[id] = perIDDeleteError(id, gErr)
-			return
+			continue
 		}
 		targets = append(targets, batchTarget{id: id, baselineVersion: cur.Meta.Version})
-	})
-	if err != nil {
-		return nil, common.Internal("failed to select entities for delete", err)
 	}
 	return targets, nil
 }
@@ -1532,10 +1546,39 @@ func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond pred
 
 	// --- Streamed batch phase (pointInTime == nil): see the function doc
 	// comment for why this shrinks on its own without an upfront resolve. ---
+	//
+	// Read amplification: every cycle re-opens Iterate from offset zero with
+	// no cursor, so selection costs O(cycles x scan). On a pushdown-capable
+	// backend the scan is filtered server-side and each cycle only pays for
+	// the still-matching rows, which shrink as the delete progresses. On the
+	// untranslatable-condition plan (plan.filter zero-valued, the residual
+	// applied client-side by plan.matches) there is nothing to push down and
+	// every cycle rescans the whole model — quadratic in the match count.
+	// Accepted deliberately: a cursor would have to be stable across the
+	// deletes it is interleaved with, which the spi.Iterable contract does
+	// not offer.
+	//
+	// cycleBudget is the termination guarantee. `seen` only remembers ids
+	// whose delete FAILED, so the loop's own exit condition — a cycle that
+	// yields no new id — is never reached while entities matching the
+	// condition keep being created. Left unbounded, such a request runs
+	// forever, growing MatchedCount and result.IDs without limit, with
+	// nothing but a client-supplied deadline to stop it.
 	seen := make(map[string]struct{})
-	for {
+	cycleBudget := h.deleteCycleBudget()
+	for cycles := 0; ; cycles++ {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, fmt.Errorf("delete aborted between batches: %w", ctxErr)
+		}
+		if cycles >= cycleBudget {
+			// Fail closed: earlier batches committed and stay durable, but
+			// the RESPONSE must not describe a partial pass as the complete
+			// requested set. Retryable — the condition clears as soon as the
+			// concurrent writers stop.
+			return nil, common.Operational(http.StatusConflict, common.ErrCodeDeleteNotConverged,
+				fmt.Sprintf("delete did not converge after %d batches: entities matching the condition are being created "+
+					"as fast as they are removed; stop the concurrent writers, narrow the condition, or retry", cycleBudget),
+			).AsRetryable()
 		}
 
 		it, iterErr := iterableStore.Iterate(ctx, ref, plan.filter, spi.IterateOptions{})

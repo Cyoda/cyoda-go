@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -86,6 +87,14 @@ type App struct {
 }
 
 func New(cfg Config) *App {
+	// Invariants this function's own wiring depends on (worker-pool sizing,
+	// heartbeat/stale-after cadence). Checked here rather than only in the
+	// binary so an in-process embedder gets them too — see Config.Validate.
+	if err := cfg.Validate(); err != nil {
+		slog.Error("startup failure", "phase", "config-validation", "error", err.Error())
+		os.Exit(1)
+	}
+
 	// Validate and normalise bootstrap config before any auth wiring.
 	validatedCfg, err := validateBootstrapConfig(&cfg)
 	if err != nil {
@@ -443,8 +452,8 @@ func New(cfg Config) *App {
 	// cross-tenant eviction (issue #175).
 	pathValidationCache := search.NewPathValidationCache()
 	cachingStoreFactory.SubscribeLocal(pathValidationCache.InvalidateRef)
-	// Bounded async-search worker pool, sized from config (validated at
-	// startup by app.ValidateSearchAsync — see cmd/cyoda/main.go).
+	// Bounded async-search worker pool, sized from config (validated by
+	// cfg.Validate at the top of New).
 	a.searchPool = search.NewWorkerPool(cfg.SearchAsync.Workers, cfg.SearchAsync.QueueLen)
 	a.searchService = search.
 		NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore).
@@ -452,6 +461,7 @@ func New(cfg Config) *App {
 		WithMaxSortKeys(a.config.SearchMaxSortKeys).
 		WithHealthFlag(a.healthFlag).
 		WithAsyncPool(a.searchPool).
+		WithAsyncMaxPerTenant(cfg.SearchAsync.MaxPerTenant).
 		WithHeartbeat(cfg.SearchJobHeartbeatInterval)
 
 	// Search snapshot TTL reaper (uses stopSearchReaper for graceful shutdown)
@@ -462,24 +472,7 @@ func New(cfg Config) *App {
 		for {
 			select {
 			case <-ticker.C:
-				reaped, err := searchStore.ReapExpired(context.Background(), cfg.SearchSnapshotTTL)
-				if err != nil {
-					slog.Error("search snapshot reaper error", "pkg", "search", "err", err)
-				} else if reaped > 0 {
-					slog.Info("reaped expired search snapshots", "pkg", "search", "count", reaped)
-				}
-				// Stale-job claim-then-FAIL reaper (interim disposition —
-				// see search.FailStaleJobs' doc comment): a RUNNING job
-				// whose owner stopped heartbeating (crashed/killed node) is
-				// claimed and marked FAILED rather than left RUNNING
-				// forever. Same ticker as the snapshot reaper above, not a
-				// second loop.
-				failed, err := search.FailStaleJobs(context.Background(), searchStore, cfg.SearchJobStaleAfter, search.StaleClaimBatch)
-				if err != nil {
-					slog.Error("stale search job reaper error", "pkg", "search", "err", err)
-				} else if failed > 0 {
-					slog.Warn("failed stale async search jobs", "pkg", "search", "count", failed)
-				}
+				searchReaperTick(context.Background(), searchStore, cfg.SearchSnapshotTTL, cfg.SearchJobStaleAfter, a.healthFlag)
 			case <-a.stopSearchReaper:
 				return
 			}
@@ -813,6 +806,46 @@ func New(cfg Config) *App {
 	a.grpcServer = internalgrpc.NewServer(a.authService, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, a.healthFlag)
 
 	return a
+}
+
+// searchReaperTick runs one pass of the two search reapers: the snapshot-TTL
+// sweep, then the stale-job claim-then-FAIL sweep (interim disposition — see
+// search.FailStaleJobs' doc comment: a RUNNING job whose owner stopped
+// heartbeating, most likely a crashed node, is failed rather than left
+// RUNNING forever). One ticker drives both, not two loops.
+//
+// A panic beneath either sweep is recovered here and latches healthFlag
+// false, exactly as the async-search executor's own recovery does: this
+// goroutine has no HTTP handler above it, so an unrecovered panic takes the
+// process down, and a node that has panicked has state nothing has verified.
+// Recovering also keeps the ticker alive, so one bad tick does not silently
+// end snapshot reaping for the rest of the process's life. No plugin
+// currently returns the shapes that would panic (a nil element from
+// ClaimStale, say), so this is hardening rather than a fix for a live defect.
+func searchReaperTick(ctx context.Context, store spi.AsyncSearchStore, snapshotTTL, staleAfter time.Duration, healthFlag *atomic.Bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("panic recovered in search reaper", "pkg", "search",
+				"err", fmt.Errorf("panic: %v", rec), "stack", string(debug.Stack()))
+			if healthFlag != nil {
+				healthFlag.Store(false)
+			}
+		}
+	}()
+
+	reaped, err := store.ReapExpired(ctx, snapshotTTL)
+	if err != nil {
+		slog.Error("search snapshot reaper error", "pkg", "search", "err", err)
+	} else if reaped > 0 {
+		slog.Info("reaped expired search snapshots", "pkg", "search", "count", reaped)
+	}
+
+	failed, err := search.FailStaleJobs(ctx, store, staleAfter, search.StaleClaimBatch)
+	if err != nil {
+		slog.Error("stale search job reaper error", "pkg", "search", "err", err)
+	} else if failed > 0 {
+		slog.Warn("failed stale async search jobs", "pkg", "search", "count", failed)
+	}
 }
 
 func (a *App) Handler() http.Handler { return a.handler }

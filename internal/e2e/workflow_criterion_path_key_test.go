@@ -3,22 +3,29 @@ package e2e_test
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"testing"
+
+	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 )
 
 // ---------------------------------------------------------------------------
-// Workflow-criterion field-path coverage.
+// Workflow-criterion field-path coverage, through the full HTTP stack.
 //
-// A criterion's jsonPath may legitimately be written without the "$." prefix —
-// nothing rejects it, at import or at evaluation. But the declared-type lookup
-// indexes a FieldsMap whose keys always carry the prefix, so a prefix-less path
-// resolved to no declared type. The kernel is type-directed: a comparison leaf
-// with no declared type expands into nothing and never matches.
+// A criterion's jsonPath is JSON Path nomenclature, the same model syntax a
+// search condition uses. Search rejects a path outside the grammar at its API
+// boundary; a criterion evaluates through the in-process predicate evaluator
+// and never through the pushdown translator, so nothing rejected one — a bare
+// "amount" imported cleanly and fired transitions, and the two spellings of one
+// syntax disagreed on which paths exist.
 //
-// Workflow criteria always evaluate through internal/match and never through
-// the pushdown translator, so this arm was strictly worse than the search one —
-// not an empty result page, but a transition that silently never fired for any
-// entity. This is the e2e proof through the full HTTP stack.
+// Import is now the boundary that refuses it: 400 VALIDATION_FAILED, the same
+// code and shape every other import-time criterion rejection uses. Import is
+// the only boundary a criterion crosses; failing at evaluation time instead
+// would fail a save, repeatedly, long after the workflow was accepted.
+//
+// Array subscripts stay valid — criteria evaluate in memory, which resolves
+// them — so the accept control below covers "$.tags[*].name" and "$.arr[0]".
 // ---------------------------------------------------------------------------
 
 // dataCriterionWorkflow builds a workflow whose CREATED state has one automated
@@ -51,25 +58,54 @@ func dataCriterionWorkflow(t *testing.T, wfName, jsonPath string) string {
 	}`, wfName, string(criterion))
 }
 
-// TestCriterionPathKey_PrefixlessPathFiresTransition is the regression guard.
-// The criterion names "amount" rather than "$.amount"; the entity's amount is
-// 100, comfortably over the threshold, so the transition must fire. Before the
-// fix the leaf resolved to no declared type, evaluated false, and the entity
-// stayed at CREATED — for every entity, forever, with no error anywhere.
-func TestCriterionPathKey_PrefixlessPathFiresTransition(t *testing.T) {
-	const model = "e2e-crit-path-prefixless"
+// setupCriterionPathModel imports and locks a model carrying the fields the
+// criterion spellings below address, without importing a workflow — the tests
+// import their own.
+func setupCriterionPathModel(t *testing.T, model string) {
+	t.Helper()
+	importModelSampleE2E(t, model, 1,
+		`{"name":"Sample","amount":0,"nested":{"inner":"x"},"tags":["a"],"arr":[1,2]}`)
+	lockModelE2E(t, model, 1)
+}
 
-	setupModelWithWorkflow(t, model, dataCriterionWorkflow(t, "crit-path-prefixless-wf", "amount"))
-	entityID := createEntityE2E(t, model, 1, `{"name":"X","amount":100}`)
+// TestCriterionPath_NonJSONPathRejectedAtImport is the core proof: a criterion
+// path outside the grammar is refused when the workflow is imported, with the
+// status and error code the import endpoint documents for a validation
+// failure. Each spelling addresses a field that genuinely exists in the model —
+// the point is that the SPELLING is not JSON Path, so "the field is there" is
+// not a reason to accept it.
+func TestCriterionPath_NonJSONPathRejectedAtImport(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
 
-	if state := getEntityState(t, entityID); state != "ADVANCED" {
-		t.Errorf("criterion on prefix-less path \"amount\" with amount=100 > 50: expected ADVANCED, got %q — the leaf resolved to no declared type and evaluated false", state)
+	const model = "e2e-crit-path-reject"
+	setupCriterionPathModel(t, model)
+
+	for _, tc := range nonJSONPathSpellings {
+		t.Run(tc.name, func(t *testing.T) {
+			wf := dataCriterionWorkflow(t, "crit-path-reject-wf", tc.path)
+			path := fmt.Sprintf("/api/model/%s/1/workflow/import", model)
+			resp := doAuth(t, http.MethodPost, path, wf)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("criterion jsonPath %q: expected 400, got %d: %s",
+					tc.path, resp.StatusCode, readBody(t, resp))
+			}
+			commontest.ExpectErrorCode(t, resp, "VALIDATION_FAILED")
+		})
 	}
 }
 
-// The prefixed spelling must behave identically — it always worked, and is the
-// control proving the test above measures the spelling and not something else.
-func TestCriterionPathKey_PrefixedPathFiresTransition(t *testing.T) {
+// TestCriterionPath_ValidPathImportsAndFiresTransition is the positive control
+// that keeps the tightening honest, and preserves what the pre-tightening test
+// pinned: a criterion on a well-formed path imports AND fires the transition
+// for an entity that satisfies it.
+func TestCriterionPath_ValidPathImportsAndFiresTransition(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+
 	const model = "e2e-crit-path-prefixed"
 
 	setupModelWithWorkflow(t, model, dataCriterionWorkflow(t, "crit-path-prefixed-wf", "$.amount"))
@@ -80,16 +116,78 @@ func TestCriterionPathKey_PrefixedPathFiresTransition(t *testing.T) {
 	}
 }
 
-// And the criterion must still be able to evaluate FALSE on a prefix-less path.
-// Without this, a fix that made every prefix-less leaf match unconditionally
-// would pass the guard above.
-func TestCriterionPathKey_PrefixlessPathDoesNotFireBelowThreshold(t *testing.T) {
-	const model = "e2e-crit-path-prefixless-false"
+// And the criterion must still be able to evaluate FALSE. Without this, a
+// change that made every leaf match unconditionally would pass the guard above.
+func TestCriterionPath_ValidPathDoesNotFireBelowThreshold(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
 
-	setupModelWithWorkflow(t, model, dataCriterionWorkflow(t, "crit-path-prefixless-false-wf", "amount"))
+	const model = "e2e-crit-path-prefixed-false"
+
+	setupModelWithWorkflow(t, model, dataCriterionWorkflow(t, "crit-path-prefixed-false-wf", "$.amount"))
 	entityID := createEntityE2E(t, model, 1, `{"name":"X","amount":10}`)
 
 	if state := getEntityState(t, entityID); state != "CREATED" {
-		t.Errorf("criterion on prefix-less path with amount=10 < 50: expected CREATED (criterion false, transition does not fire), got %q", state)
+		t.Errorf("criterion on \"$.amount\" with amount=10 < 50: expected CREATED (criterion false, transition does not fire), got %q", state)
+	}
+}
+
+// TestCriterionPath_ArraySubscriptPathAcceptedAtImport pins that the
+// tightening uses the CONDITION grammar, not the scalar one. An array
+// subscript is valid JSON Path that no pushdown filter expresses — and a
+// criterion is only ever served by the in-process evaluator, which resolves
+// it — so rejecting it here would break working workflows.
+func TestCriterionPath_ArraySubscriptPathAcceptedAtImport(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+
+	const model = "e2e-crit-path-subscript"
+	setupCriterionPathModel(t, model)
+
+	for _, path := range []string{"$.tags[*]", "$.arr[0]", "$.nested.inner"} {
+		t.Run(path, func(t *testing.T) {
+			status, body := importWorkflowE2E(t, model, 1,
+				dataCriterionWorkflow(t, "crit-path-subscript-wf", path))
+			if status != http.StatusOK {
+				t.Fatalf("criterion jsonPath %q: expected 200, got %d: %s", path, status, body)
+			}
+		})
+	}
+}
+
+// TestCriterionPath_NumericSubscriptFiresTransition closes the loop with the
+// in-memory evaluator: a numeric subscript is accepted at import AND resolves
+// to the value the entity actually holds, so the transition fires. It used to
+// import and then silently never fire — the evaluator handed gjson a path it
+// has no syntax for ("arr[0]" rather than "arr.0") and resolved the declared
+// type against a FieldsMap key that does not exist ("$.arr[0]" rather than
+// "$.arr[*]"), so the leaf was false for every entity.
+func TestCriterionPath_NumericSubscriptFiresTransition(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+
+	const model = "e2e-crit-path-subscript-fires"
+	importModelSampleE2E(t, model, 1, `{"name":"Sample","amount":0,"arr":[0,0]}`)
+	lockModelE2E(t, model, 1)
+
+	status, body := importWorkflowE2E(t, model, 1,
+		dataCriterionWorkflow(t, "crit-path-subscript-fires-wf", "$.arr[1]"))
+	if status != http.StatusOK {
+		t.Fatalf("workflow import: expected 200, got %d: %s", status, body)
+	}
+
+	// arr[1] is 100, comfortably over the threshold of 50; arr[0] is 1, under
+	// it — so a rewrite that addressed the wrong element would not pass either.
+	entityID := createEntityE2E(t, model, 1, `{"name":"X","amount":0,"arr":[1,100]}`)
+	if state := getEntityState(t, entityID); state != "ADVANCED" {
+		t.Errorf(`criterion on "$.arr[1]" with arr=[1,100] and threshold 50: expected ADVANCED, got %q`, state)
+	}
+
+	below := createEntityE2E(t, model, 1, `{"name":"Y","amount":0,"arr":[100,1]}`)
+	if state := getEntityState(t, below); state != "CREATED" {
+		t.Errorf(`criterion on "$.arr[1]" with arr=[100,1]: expected CREATED (element 1 is 1, under the threshold), got %q`, state)
 	}
 }

@@ -62,6 +62,7 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.CLUSTER_NODE_NOT_REGISTERED` — `503` — retryable — target cluster node is not present in the gossip registry
 - `errors.COMPUTE_MEMBER_DISCONNECTED` — `503` — retryable — compute member holding a processor assignment has disconnected
 - `errors.CONFLICT` — `409` — retryable — generic 409 used by storage-level transaction serialization aborts (`RetryableConflict`); permanent business-logic conflicts use a specific code instead (e.g. `MODEL_ALREADY_LOCKED`, `ENTITY_MODIFIED`)
+- `errors.DELETE_NOT_CONVERGED` — `409` — retryable — batched delete (`transactionSize`) kept finding newly created matching entities and was stopped at its batch cap; earlier batches stay deleted
 - `errors.DISPATCH_FORWARD_FAILED` — `503` — retryable — HTTP forwarding call to peer node failed
 - `errors.DISPATCH_TIMEOUT` — `503` — retryable (see note) — compute member did not respond within the dispatch timeout; completion on the remote node is not guaranteed
 - `errors.ENTITY_MODIFIED` — `412` — not retryable — `If-Match`-guarded entity update rejected; supplied transaction ID does not match the entity's current version
@@ -86,7 +87,7 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.NOT_IMPLEMENTED` — `501` — not retryable — endpoint is defined but has no functional implementation in this version
 - `errors.POLYMORPHIC_SLOT` — `400` — not retryable — payload discriminator selects an unrecognised variant or fails the variant schema
 - `errors.SCAN_BUDGET_EXHAUSTED` — `400` — not retryable — a non-indexable condition forced a residual scan that examined more rows than the backend's configured scan budget
-- `errors.SEARCH_JOB_ALREADY_TERMINAL` — `409` — not retryable — operation attempted on a search job that has already completed, failed, or been cancelled
+- `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — not retryable — operation attempted on a search job that has already completed, failed, or been cancelled
 - `errors.SEARCH_JOB_NOT_FOUND` — `404` — not retryable — referenced search job does not exist in the current tenant
 - `errors.SEARCH_QUEUE_FULL` — `503` — retryable — async-search worker pool has no free worker and its submit queue is at capacity
 - `errors.SEARCH_RESULT_LIMIT` — `400` — not retryable — direct search's matched entity count exceeded the requested `limit` (a cap on the matched set, not a page size)

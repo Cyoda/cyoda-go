@@ -5,8 +5,11 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -84,8 +87,7 @@ func newStoreFactory(ctx context.Context, cfg config, opts ...Option) (*StoreFac
 		return nil, fmt.Errorf("another cyoda-go instance is using %s", cfg.Path)
 	}
 
-	dsn := fmt.Sprintf("file:%s?_txlock=immediate&_busy_timeout=%d",
-		cfg.Path, cfg.BusyTimeout.Milliseconds())
+	dsn := fmt.Sprintf("file:%s?_txlock=immediate", cfg.Path)
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		_ = fl.Unlock()
@@ -123,29 +125,48 @@ func newStoreFactory(ctx context.Context, cfg config, opts ...Option) (*StoreFac
 		}
 	}
 
-	// readDB is a second, dedicated *sql.DB against the same file, also
-	// capped to a single connection. It is used exclusively by non-tx
-	// Iterate: WAL journal mode (set on db above, a database-level, not
-	// per-connection, property) lets an independent reader connection
-	// stream rows concurrently with writer-side activity on db without
-	// contending for the same one-connection pool. Without a separate
-	// connection, a long-lived, undrained Iterate cursor checks out the
-	// sole connection in db's pool for the life of the iterator, starving
-	// any concurrent write (e.g. a streamed async-search SaveResults
-	// chunk) until the iterator is closed. No migration run — db above
-	// already owns schema setup, and readDB is opened after it succeeds.
-	readDB, err := sql.Open("sqlite3", dsn)
+	// readDB is a second, dedicated *sql.DB against the same file, used
+	// exclusively for reads (GetPage, GetVersionMetadata,
+	// GetVersionByTransaction, non-tx Iterate). It never opens a
+	// transaction, so _txlock never applies to it.
+	//
+	// Why a separate pool at all: a long-lived, undrained Iterate cursor
+	// checks out its connection for the life of the iterator. Sharing db's
+	// sole connection would starve every concurrent write (e.g. a streamed
+	// async-search SaveResults chunk) until the iterator is closed.
+	//
+	// Why more than one connection: WAL journal mode (a database-level
+	// property set on db above) allows readers to run concurrently with
+	// each other and with the writer. Capping the reader at one connection
+	// would just move the starvation inside the reader pool — the async
+	// search pool alone runs CYODA_SEARCH_ASYNC_WORKERS (8 by default)
+	// scans, and every interactive GetPage would queue behind whichever
+	// long scan currently held the connection.
+	//
+	// No migration run — db above already owns schema setup, and readDB is
+	// opened after it succeeds.
+	readerDSN := dsn + readerPragmaParams(cfg)
+	readDB, err := sql.Open("sqlite3", readerDSN)
 	if err != nil {
 		db.Close()
 		_ = fl.Unlock()
 		return nil, fmt.Errorf("open sqlite reader connection: %w", err)
 	}
-	readDB.SetMaxOpenConns(1)
-	if err := applyPragmas(readDB, cfg); err != nil {
+	readers := readerPoolSize()
+	readDB.SetMaxOpenConns(readers)
+	// Idle == open so a burst of concurrent scans does not reopen (and
+	// re-PRAGMA) connections on every wave; ConnMaxIdleTime returns the
+	// per-connection page cache after a quiet period.
+	readDB.SetMaxIdleConns(readers)
+	readDB.SetConnMaxIdleTime(5 * time.Minute)
+	// Fail fast on a bad DSN/pragma here rather than at the first read:
+	// the reader's PRAGMAs travel in the DSN (see readerPragmaParams), so
+	// they are applied by the driver at connect time, not by applyPragmas.
+	if err := readDB.PingContext(ctx); err != nil {
 		db.Close()
 		readDB.Close()
 		_ = fl.Unlock()
-		return nil, fmt.Errorf("apply reader pragmas: %w", err)
+		return nil, fmt.Errorf("open sqlite reader connection: %w", err)
 	}
 
 	f := &StoreFactory{
@@ -160,6 +181,64 @@ func newStoreFactory(ctx context.Context, cfg config, opts ...Option) (*StoreFac
 	}
 	f.startWALMaintenance()
 	return f, nil
+}
+
+// readerPoolSize returns how many connections readDB may hold open.
+//
+// Sized by GOMAXPROCS: SQLite reads execute in-process (the driver is a
+// wasm build of SQLite, not a network client), so reader concurrency past
+// the number of runnable threads buys no throughput.
+//
+// Floored at 4 so a one- or two-CPU container still keeps an interactive
+// GetPage off the back of a long streaming scan — the starvation this pool
+// exists to prevent.
+//
+// Ceilinged at 8 because PRAGMA cache_size is per-connection: each pooled
+// reader owns its own page cache (cfg.CacheSizeKiB, 64 MiB by default), so
+// an uncapped pool would scale resident memory with core count. 8 is also
+// the default async-search worker count (CYODA_SEARCH_ASYNC_WORKERS) — the
+// largest number of simultaneous long scans the engine issues out of the box.
+func readerPoolSize() int {
+	n := runtime.GOMAXPROCS(0)
+	if n < 4 {
+		return 4
+	}
+	if n > 8 {
+		return 8
+	}
+	return n
+}
+
+// readerPragmaParams returns the "&_pragma=..." DSN suffix that configures
+// every connection readDB opens.
+//
+// applyPragmas (below) issues its statements over the pool, so with more
+// than one connection it would configure only whichever connection happened
+// to serve them; the rest would silently run on SQLite's defaults (2 MiB
+// page cache, foreign keys off, the driver's 1-minute busy timeout). The
+// driver applies "_pragma" DSN parameters on every connection it opens, in
+// order, which is the only per-connection hook available here.
+//
+// Only the per-connection settings are repeated. journal_mode and
+// auto_vacuum are persistent database-level properties already established
+// on db, and re-issuing journal_mode on a reader would contend with an
+// active writer for no gain.
+func readerPragmaParams(cfg config) string {
+	// busy_timeout first, per the driver's documented PRAGMA ordering.
+	pragmas := []string{
+		fmt.Sprintf("busy_timeout(%d)", cfg.BusyTimeout.Milliseconds()),
+		"synchronous(NORMAL)",
+		fmt.Sprintf("cache_size(-%d)", cfg.CacheSizeKiB),
+		"foreign_keys(ON)",
+		"mmap_size(268435456)",
+		"journal_size_limit(67108864)",
+	}
+	var sb strings.Builder
+	for _, p := range pragmas {
+		sb.WriteString("&_pragma=")
+		sb.WriteString(url.QueryEscape(p))
+	}
+	return sb.String()
 }
 
 func applyPragmas(db *sql.DB, cfg config) error {

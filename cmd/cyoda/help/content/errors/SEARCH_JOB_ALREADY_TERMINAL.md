@@ -16,11 +16,13 @@ SEARCH_JOB_ALREADY_TERMINAL — an operation was attempted on a search job that 
 
 ## SYNOPSIS
 
-HTTP: `409` `Conflict`. Retryable: `no`.
+HTTP: `400` `Bad Request`. Retryable: `no`.
 
 ## DESCRIPTION
 
-Search jobs are long-running asynchronous operations. Once a job reaches a terminal state it cannot be cancelled, resumed, or otherwise modified. This error is returned when such an operation is attempted on a finished job.
+Search jobs are long-running asynchronous operations. Once a job reaches a terminal state it cannot be cancelled, resumed, or otherwise modified. This error is returned when such an operation is attempted on a finished job — `PUT /search/async/{jobId}/cancel` is the only endpoint that raises it.
+
+The response body carries `currentStatus` (`SUCCESSFUL`, `FAILED`, or `CANCELLED`) and `snapshotId`.
 
 Not retryable on the same job. Results from a successfully completed job remain available for retrieval.
 

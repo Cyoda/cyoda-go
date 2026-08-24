@@ -29,6 +29,15 @@ conflict-detection state and silently corrupt each other.
 `flock` does not work on NFS, but SQLite itself is unreliable on NFS,
 so the restriction is implicit in choosing SQLite at all.
 
+Reads run on a second connection pool, separate from the writer. The
+writer holds a single connection (SQLite is single-writer); the reader
+pool holds between 4 and `GOMAXPROCS` connections, capped at 8. WAL
+journal mode is what makes this safe — readers run concurrently with
+each other and with the writer. Without the split, one long streaming
+scan holding its cursor open would block every concurrent write and
+every interactive read behind it. WAL is therefore a hard requirement,
+not a tuning choice.
+
 ## Transaction manager
 
 Application-layer SI+FCW `TransactionManager`; SQLite is the
@@ -73,7 +82,7 @@ public-API-facing statement of this rule.
 | `CYODA_SQLITE_PATH` | `$XDG_DATA_HOME/cyoda/cyoda.db` on Linux/macOS (fallback `~/.local/share/cyoda/cyoda.db`); `%LocalAppData%\cyoda\cyoda.db` on Windows | Database file path |
 | `CYODA_SQLITE_AUTO_MIGRATE` | `true` | Run embedded SQL migrations on startup |
 | `CYODA_SQLITE_BUSY_TIMEOUT` | `5s` | Wait time for write lock before returning `SQLITE_BUSY` |
-| `CYODA_SQLITE_CACHE_SIZE` | `64000` (KiB) | Page cache size in KiB |
+| `CYODA_SQLITE_CACHE_SIZE` | `64000` (KiB) | Page cache size in KiB, **per connection** (one writer plus up to 8 readers) |
 | `CYODA_SQLITE_SEARCH_SCAN_LIMIT` | `100000` | Max rows examined per search when a residual filter applies |
 
 ## Operational notes and limits
@@ -86,6 +95,10 @@ public-API-facing statement of this rule.
 - **Single-process, single-node.** See concurrency model for the flock
   requirement.
 - **NFS unsupported.**
+- **Reader connections cost memory and file handles.** `CYODA_SQLITE_CACHE_SIZE`
+  is a *per-connection* page cache, so peak page-cache use is that value times
+  the number of open reader connections (up to 8) plus the writer. Idle reader
+  connections are closed after 5 minutes of inactivity.
 
 ## When to use / when not to use
 

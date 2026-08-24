@@ -69,6 +69,11 @@ func idForPlanTest(i int) string { return "plan-entity-" + strconv.Itoa(i) }
 // model_entity_id (migrations/000008_entities_model_entity_id_index.up.sql)
 // must serve BOTH the tenant/model/model-version equality filter AND the
 // ORDER BY entity_id COLLATE "C", without a separate sort step.
+//
+// It EXPLAINs postgres.GetPageCurrentQueryForTest — the production constant
+// itself, not a copy of it — so the plan asserted here is necessarily the plan
+// of the query that runs. A re-typed copy kept passing after the production
+// ORDER BY was changed underneath it, which is exactly the rot this guards.
 func TestGetPage_NonTx_UsesModelEntityIDIndex(t *testing.T) {
 	factory := setupEntityTest(t)
 	tenant := spi.TenantID("plan-tenant")
@@ -97,11 +102,7 @@ func TestGetPage_NonTx_UsesModelEntityIDIndex(t *testing.T) {
 		t.Fatalf("SET enable_seqscan: %v", err)
 	}
 
-	plan := explainPlan(t, ctx, conn,
-		`SELECT doc FROM entities
-		 WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted
-		 ORDER BY entity_id COLLATE "C"
-		 LIMIT $4 OFFSET $5`,
+	plan := explainPlan(t, ctx, conn, postgres.GetPageCurrentQueryForTest,
 		string(tenant), mref.EntityName, mref.ModelVersion, 10, 0)
 
 	if !strings.Contains(plan, "idx_entities_model_entity_id") {
@@ -116,6 +117,9 @@ func TestGetPage_NonTx_UsesModelEntityIDIndex(t *testing.T) {
 // evidence that GetVersionByTransaction's lookup scopes to the target
 // entity's own version range via entity_versions' PRIMARY KEY (tenant_id,
 // entity_id, version), rather than scanning the whole table.
+//
+// Like the test above, it EXPLAINs the production constant
+// (postgres.GetVersionByTransactionQueryForTest) rather than a re-typed copy.
 func TestGetVersionByTransaction_StaysWithinEntityVersionsPK(t *testing.T) {
 	factory := setupEntityTest(t)
 	tenant := spi.TenantID("plan-tenant-gvbt")
@@ -140,13 +144,7 @@ func TestGetVersionByTransaction_StaysWithinEntityVersionsPK(t *testing.T) {
 		t.Fatalf("SET enable_seqscan: %v", err)
 	}
 
-	plan := explainPlan(t, ctx, conn,
-		`SELECT doc, version, valid_time FROM entity_versions
-		 WHERE tenant_id = $1 AND entity_id = $2
-		   AND doc->'_meta'->>'transaction_id' = $3
-		   AND (doc->'_meta'->>'deleted')::boolean IS NOT TRUE
-		 ORDER BY version ASC
-		 LIMIT 1`,
+	plan := explainPlan(t, ctx, conn, postgres.GetVersionByTransactionQueryForTest,
 		string(tenant), idForPlanTest(0), "tx-does-not-matter")
 
 	if !strings.Contains(plan, "entity_versions_pkey") {

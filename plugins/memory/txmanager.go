@@ -291,9 +291,13 @@ func (m *TransactionManager) Begin(ctx context.Context) (string, context.Context
 // tx.OpMu.RLock to be synchronised against the Closed-write — m.mu alone
 // is not sufficient because Commit's defer runs outside the m.mu region.
 func (m *TransactionManager) Join(ctx context.Context, txID string) (context.Context, error) {
-	m.mu.Lock()
-	tx, ok := m.active[txID]
-	m.mu.Unlock()
+	var tx *spi.TransactionState
+	var ok bool
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		tx, ok = m.active[txID]
+	}()
 
 	if !ok {
 		return nil, fmt.Errorf("Join: %w (txID=%s)", spi.ErrTxNotFound, txID)
@@ -329,22 +333,26 @@ func (m *TransactionManager) Join(ctx context.Context, txID string) (context.Con
 func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 	// 1. Look up the active transaction and mark as committing (TOCTOU guard).
 	uc := spi.GetUserContext(ctx)
-	m.mu.Lock()
-	tx, ok := m.active[txID]
-	if !ok {
-		m.mu.Unlock()
-		return fmt.Errorf("Commit: %w (txID=%s)", spi.ErrTxNotFound, txID)
+	var tx *spi.TransactionState
+	if err := func() error {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		var ok bool
+		tx, ok = m.active[txID]
+		if !ok {
+			return fmt.Errorf("Commit: %w (txID=%s)", spi.ErrTxNotFound, txID)
+		}
+		if uc == nil || uc.Tenant.ID != tx.TenantID {
+			return fmt.Errorf("Commit: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
+		}
+		if m.committing[txID] {
+			return fmt.Errorf("Commit: %w (txID=%s)", spi.ErrTxCommitInProgress, txID)
+		}
+		m.committing[txID] = true
+		return nil
+	}(); err != nil {
+		return err
 	}
-	if uc == nil || uc.Tenant.ID != tx.TenantID {
-		m.mu.Unlock()
-		return fmt.Errorf("Commit: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
-	}
-	if m.committing[txID] {
-		m.mu.Unlock()
-		return fmt.Errorf("Commit: %w (txID=%s)", spi.ErrTxCommitInProgress, txID)
-	}
-	m.committing[txID] = true
-	m.mu.Unlock()
 
 	// 1b. Acquire transaction operation write lock — waits for in-flight operations.
 	tx.OpMu.Lock()
@@ -675,17 +683,22 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 // Rollback discards an active transaction without committing any changes.
 func (m *TransactionManager) Rollback(ctx context.Context, txID string) error {
 	uc := spi.GetUserContext(ctx)
-	m.mu.Lock()
-	tx, ok := m.active[txID]
-	if !ok {
-		m.mu.Unlock()
-		return fmt.Errorf("Rollback: %w (txID=%s)", spi.ErrTxNotFound, txID)
+	var tx *spi.TransactionState
+	if err := func() error {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		var ok bool
+		tx, ok = m.active[txID]
+		if !ok {
+			return fmt.Errorf("Rollback: %w (txID=%s)", spi.ErrTxNotFound, txID)
+		}
+		if uc == nil || uc.Tenant.ID != tx.TenantID {
+			return fmt.Errorf("Rollback: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
+		}
+		return nil
+	}(); err != nil {
+		return err
 	}
-	if uc == nil || uc.Tenant.ID != tx.TenantID {
-		m.mu.Unlock()
-		return fmt.Errorf("Rollback: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
-	}
-	m.mu.Unlock()
 
 	// Acquire transaction operation write lock — waits for in-flight operations.
 	tx.OpMu.Lock()
@@ -694,16 +707,18 @@ func (m *TransactionManager) Rollback(ctx context.Context, txID string) error {
 		tx.OpMu.Unlock()
 	}()
 
-	m.mu.Lock()
-	tx.RolledBack = true
-	delete(m.active, txID)
-	delete(m.committing, txID)
-	delete(m.savepoints, txID)
-	delete(m.txUniqueKeys, txID)
-	delete(m.txSnapshotSeq, txID)
-	delete(m.supersededSaves, txID)  // discard staged superseded values unapplied — see field doc
-	delete(m.scheduledTaskOps, txID) // discard staged ops unapplied — see field doc
-	m.mu.Unlock()
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		tx.RolledBack = true
+		delete(m.active, txID)
+		delete(m.committing, txID)
+		delete(m.savepoints, txID)
+		delete(m.txUniqueKeys, txID)
+		delete(m.txSnapshotSeq, txID)
+		delete(m.supersededSaves, txID)  // discard staged superseded values unapplied — see field doc
+		delete(m.scheduledTaskOps, txID) // discard staged ops unapplied — see field doc
+	}()
 	return nil
 }
 
@@ -766,9 +781,13 @@ func (m *TransactionManager) CommittedLogLen() int {
 // tx-state.
 func (m *TransactionManager) Savepoint(ctx context.Context, txID string) (string, error) {
 	uc := spi.GetUserContext(ctx)
-	m.mu.Lock()
-	tx, ok := m.active[txID]
-	m.mu.Unlock()
+	var tx *spi.TransactionState
+	var ok bool
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		tx, ok = m.active[txID]
+	}()
 	if !ok {
 		return "", fmt.Errorf("Savepoint: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
@@ -858,9 +877,13 @@ func (m *TransactionManager) Savepoint(ctx context.Context, txID string) (string
 // callers — RollbackToSavepoint is destructive on tx-state.
 func (m *TransactionManager) RollbackToSavepoint(ctx context.Context, txID string, savepointID string) error {
 	uc := spi.GetUserContext(ctx)
-	m.mu.Lock()
-	tx, ok := m.active[txID]
-	m.mu.Unlock()
+	var tx *spi.TransactionState
+	var ok bool
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		tx, ok = m.active[txID]
+	}()
 	if !ok {
 		return fmt.Errorf("RollbackToSavepoint: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}

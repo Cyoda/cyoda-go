@@ -119,11 +119,18 @@ func (s *asyncSearchStore) SaveResults(ctx context.Context, jobID string, epoch 
 	chunk := make([]string, 0, searchResultsChunkSize)
 
 	flush := func() error {
-		if len(chunk) == 0 {
-			return nil
-		}
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+
+		if len(chunk) == 0 {
+			// Nothing to insert, but the fence still runs: a missing,
+			// terminal, or stale-epoch job must fail even against an empty
+			// result set — a search matching zero rows is an ordinary
+			// outcome, and the AsyncSearchStore contract fences on epoch and
+			// terminal status regardless of payload. No transaction is
+			// needed with no rows to make the fence atomic with.
+			return fencedUpdate(ctx, s.db, tid, jobID, epoch, "epoch = epoch")
 		}
 
 		tx, err := s.db.BeginTx(ctx, nil)
@@ -160,6 +167,15 @@ func (s *asyncSearchStore) SaveResults(ctx context.Context, jobID string, epoch 
 		return nil
 	}
 
+	// Fence before draining entityIDs so a reclaimed, terminal, or missing
+	// job fails immediately instead of after the caller's whole scan has
+	// been consumed. Mirrors the memory backend's guardAndAppend(nil)
+	// preflight; the trailing flush() below re-fences, so a claim lost
+	// mid-stream is caught too.
+	if err := fencedUpdate(ctx, s.db, tid, jobID, epoch, "epoch = epoch"); err != nil {
+		return err
+	}
+
 	for eid := range entityIDs {
 		chunk = append(chunk, eid)
 		if len(chunk) == searchResultsChunkSize {
@@ -181,8 +197,21 @@ func (s *asyncSearchStore) GetResultIDs(ctx context.Context, jobID string, offse
 		return nil, 0, err
 	}
 
+	// One read transaction for all three statements. Reading a non-terminal
+	// job is contract-supported, so a SaveResults chunk can commit at any
+	// moment; without a shared snapshot the count would describe a different
+	// state than the page returned alongside it. A read-only transaction is
+	// DEFERRED (per the driver's _txlock rules), so it takes no write lock —
+	// it just pins one WAL read snapshot for the duration. The memory
+	// backend gets the same property from a single RLock.
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to begin read tx for job %s: %w", jobID, err)
+	}
+	defer tx.Rollback()
+
 	var exists bool
-	err = s.db.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM search_jobs WHERE tenant_id = ? AND job_id = ?)`,
 		string(tid), jobID).Scan(&exists)
 	if err != nil {
@@ -193,14 +222,14 @@ func (s *asyncSearchStore) GetResultIDs(ctx context.Context, jobID string, offse
 	}
 
 	var total int
-	err = s.db.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM search_job_results WHERE tenant_id = ? AND job_id = ?`,
 		string(tid), jobID).Scan(&total)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to count results for job %s: %w", jobID, err)
 	}
 
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := tx.QueryContext(ctx,
 		`SELECT entity_id FROM search_job_results WHERE tenant_id = ? AND job_id = ? ORDER BY seq LIMIT ? OFFSET ?`,
 		string(tid), jobID, limit, offset)
 	if err != nil {
@@ -345,9 +374,12 @@ func (s *asyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 	// Cross-tenant by design (search_store.go interface doc): a reclaim
 	// sweep runs on behalf of the whole cluster, not one tenant, so no
 	// tenant filter here — see spi.AsyncSearchStore.ClaimStale.
+	// ORDER BY create_time so a limit-capped sweep takes the OLDEST stale
+	// jobs, not an arbitrary subset — matching postgres's ORDER BY created_at.
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT tenant_id, job_id, epoch FROM search_jobs
 		 WHERE status = 'RUNNING' AND COALESCE(heartbeat_time, create_time) < ?
+		 ORDER BY create_time
 		 LIMIT ?`,
 		cutoffMicro, limit)
 	if err != nil {

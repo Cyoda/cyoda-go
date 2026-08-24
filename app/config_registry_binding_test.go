@@ -98,6 +98,7 @@ func defaultFor(c app.Config) map[string]string {
 		"CYODA_STATS_GROUP_MAX":               strconv.Itoa(c.StatsGroupMax),
 		"CYODA_SEARCH_ASYNC_WORKERS":          strconv.Itoa(c.SearchAsync.Workers),
 		"CYODA_SEARCH_ASYNC_QUEUE":            strconv.Itoa(c.SearchAsync.QueueLen),
+		"CYODA_SEARCH_ASYNC_MAX_PER_TENANT":   strconv.Itoa(c.SearchAsync.MaxPerTenant),
 		"CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL": renderDuration(c.SearchJobHeartbeatInterval),
 		"CYODA_SEARCH_JOB_STALE_AFTER":        renderDuration(c.SearchJobStaleAfter),
 

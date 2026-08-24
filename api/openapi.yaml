@@ -1153,7 +1153,10 @@ paths:
 
         Error responses use RFC 9457 problem+json with the cyoda-go
         `properties.errorCode` extension carrying the stable machine-readable
-        code (`MALFORMED_REQUEST`, `INVALID_CONDITION`, `INVALID_FIELD_PATH`,
+        code (`MALFORMED_REQUEST`, `MISSING_GROUP_BY`, `INVALID_GROUP_BY_PATH`,
+        `DUPLICATE_GROUP_BY`, `INVALID_AGGREGATION_OP`,
+        `INVALID_AGGREGATION_FIELD`, `DUPLICATE_AGGREGATION_ALIAS`,
+        `INVALID_LIMIT`, `INVALID_CONDITION`, `INVALID_FIELD_PATH`,
         `CONDITION_TYPE_MISMATCH`, `GROUP_CARDINALITY_EXCEEDED`,
         `SCAN_BUDGET_EXHAUSTED`, `NOT_IMPLEMENTED_BY_BACKEND`).
       operationId: queryGroupedEntityStatisticsForModel
@@ -1227,9 +1230,15 @@ paths:
                     avg_amount: null
         "400":
           description: >-
-            Bad request — malformed JSON body, validation failure (empty
-            `groupBy`, unknown aggregation `op`, `limit` out of range, invalid
-            JSONPath, etc.), or invalid Condition DSL predicate.
+            Bad request — malformed JSON body, or a validation failure:
+            empty `groupBy` (`MISSING_GROUP_BY`), unknown aggregation `op`
+            (`INVALID_AGGREGATION_OP`), `limit` out of range
+            (`INVALID_LIMIT`), a `groupBy` entry or aggregation `field`
+            outside the JSONPath grammar (`INVALID_GROUP_BY_PATH` /
+            `INVALID_AGGREGATION_FIELD` — most often a missing `$.` leader),
+            a `condition` `jsonPath` outside that grammar
+            (`INVALID_FIELD_PATH`), or an otherwise invalid Condition DSL
+            predicate (`INVALID_CONDITION`).
           content:
             application/problem+json:
               schema:
@@ -2050,6 +2059,33 @@ paths:
                     properties:
                       entityName: submarine
                       entityVersion: 1
+        "409":
+          description: >-
+            Batched delete did not converge (`DELETE_NOT_CONVERGED`). Only
+            reachable with `transactionSize` set and no `pointInTime`: the
+            delete re-selects matching entities before each batch, and
+            entities matching the condition were created at least as fast as
+            they were removed, so it was stopped at its batch cap. Batches
+            committed before the failure stay deleted. Retryable — stop the
+            concurrent writers, narrow the condition, or retry.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              examples:
+                Delete Not Converged:
+                  description: Delete Not Converged
+                  value:
+                    type: about:blank
+                    title: Conflict
+                    status: 409
+                    detail: "DELETE_NOT_CONVERGED: delete did not converge after 1000000 batches:
+                      entities matching the condition are being created as fast as they are
+                      removed; stop the concurrent writers, narrow the condition, or retry"
+                    instance: /api/entity/my-model/1
+                    properties:
+                      errorCode: DELETE_NOT_CONVERGED
+                      retryable: true
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -9289,6 +9325,18 @@ components:
           properties:
             jsonPath:
               type: string
+              description: >-
+                JSON Path addressing a data field. The `$.` leader is
+                REQUIRED: `jsonPath = "$." segment ( "." segment )*` where
+                `segment = 1*( ALPHA / DIGIT / "_" / "-" )` (ASCII only).
+                A bare `amount` is not a path and is rejected 400
+                `INVALID_FIELD_PATH`, as are an empty path, an empty or
+                trailing segment (`$..a`, `$.a.`), bracket-quoted property
+                access (`$['x']` — write `$.x`), and any character outside
+                the segment set. Array subscripts (`$.tags[*].name`,
+                `$.arr[0]`) are valid and accepted; they are evaluated in
+                memory rather than pushed into the storage query.
+              example: $.amount
             operatorType:
               type: string
               enum:
@@ -9550,6 +9598,18 @@ components:
           properties:
             jsonPath:
               type: string
+              description: >-
+                JSON Path addressing a data field. The `$.` leader is
+                REQUIRED: `jsonPath = "$." segment ( "." segment )*` where
+                `segment = 1*( ALPHA / DIGIT / "_" / "-" )` (ASCII only).
+                A bare `amount` is not a path and is rejected 400
+                `INVALID_FIELD_PATH`, as are an empty path, an empty or
+                trailing segment (`$..a`, `$.a.`), bracket-quoted property
+                access (`$['x']` — write `$.x`), and any character outside
+                the segment set. Array subscripts (`$.tags[*].name`,
+                `$.arr[0]`) are valid and accepted; they are evaluated in
+                memory rather than pushed into the storage query.
+              example: $.amount
             operatorType:
               type: string
               enum:
@@ -10954,7 +11014,13 @@ components:
           $ref: "#/components/schemas/AggregateOp"
         field:
           type: string
-          description: JSONPath of the field to aggregate (e.g. `$.amount`).
+          description: >-
+            Scalar JSONPath of the field to aggregate (e.g. `$.amount`).
+            Same grammar as a `groupBy` JSONPath, including the required
+            `$.` leader; a path outside it is rejected with 400
+            `INVALID_AGGREGATION_FIELD`. The `state` token is groupBy-only —
+            there is no aggregate over lifecycle state — so it is rejected
+            here too.
           example: $.amount
           minLength: 1
         as:
@@ -10968,16 +11034,23 @@ components:
       type: object
       description: >-
         Request body for the grouped-stats query endpoint. `groupBy`
-        dimensions may be either the literal string `state` (the workflow
-        state) or a JSONPath expression starting with `$.` over the entity
-        payload.
+        dimensions may be either the reserved token `state` (the workflow
+        state) or a JSONPath expression over the entity payload, which must
+        start with `$.`.
       properties:
         groupBy:
           type: array
           description: >-
             Ordered list of group-by dimensions. Each entry is either the
-            literal `state` or a JSONPath expression. At least one entry
-            is required.
+            reserved token `state` (a token, not a path — no leader) or a
+            scalar JSONPath. At least one entry is required. A JSONPath is a
+            REQUIRED `$.` leader followed by dot-separated segments of ASCII
+            letters, digits, `_` and `-`. Anything else — a missing leader
+            (`country`), bracket-quoted property access (`$['country']`),
+            array projections, recursive descent, whitespace, quotes,
+            non-ASCII — is rejected with 400 `INVALID_GROUP_BY_PATH`. Paths
+            are validated, never rewritten: the response `groupKey` path
+            echoes exactly what the request sent.
           minItems: 1
           items:
             type: string

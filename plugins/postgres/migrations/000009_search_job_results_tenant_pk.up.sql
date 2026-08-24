@@ -14,3 +14,17 @@
 ALTER TABLE search_job_results DROP CONSTRAINT search_job_results_pkey;
 ALTER TABLE search_job_results ADD CONSTRAINT search_job_results_pkey
     PRIMARY KEY (tenant_id, job_id, seq);
+
+-- idx_search_job_results_tenant (tenant_id, job_id) was created by 000001 to
+-- serve tenant-scoped lookups back when the PK was (job_id, seq) and nothing
+-- else could. It is now a strict PREFIX of the new PK, so every lookup it could
+-- answer — the paged read, the count, the ClearResults DELETE, the ON DELETE
+-- CASCADE probe from search_jobs, and the RLS tenant_id predicate — plans on
+-- search_job_results_pkey instead (verified by EXPLAIN, see
+-- search_job_results_index_test.go). All it still costs is a second B-tree
+-- write per row on SaveResults' CopyFrom.
+--
+-- Plain DROP INDEX, not CONCURRENTLY, matching the deliberate choice recorded
+-- in migration_index_guard_test.go: the concurrent forms deadlock this
+-- project's multi-node boot path, and this table is small and per-job.
+DROP INDEX IF EXISTS idx_search_job_results_tenant;

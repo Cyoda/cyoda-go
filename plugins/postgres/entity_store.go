@@ -20,12 +20,24 @@ type entityStore struct {
 	tenantID spi.TenantID
 	tm       *TransactionManager
 
-	// pool and acquireTimeout serve exactly one path: the async-search scan,
-	// which runs in a transaction of its own so it can raise its statement
-	// ceiling with SET LOCAL (searcher.go). Every other statement goes through
-	// q, which resolves the active transaction or the pool per call. Both are
-	// zero on the test-only construction in export_test.go, which never takes
-	// that path.
+	// pool is for the two kinds of statement that must NOT join the caller's
+	// transaction, and so cannot go through q (which resolves it per call):
+	//
+	//   - every point-in-time read, which is committed-only by contract and
+	//     therefore runs pool-pinned via committedQuerier (search_base.go);
+	//   - the async-search scan, which runs in a transaction of its own so it
+	//     can raise its statement ceiling with SET LOCAL (searcher.go,
+	//     grouped_stats.go).
+	//
+	// acquireTimeout bounds the wait for a connection on both: the
+	// ceiling-scoped Begin, and the second connection an IN-TRANSACTION
+	// point-in-time read takes while the caller still holds the transaction's
+	// (the hold-and-wait unjoinedQuerier documents). It bounds getting the
+	// connection only, never using it.
+	//
+	// Every other statement goes through q. acquireTimeout is zero on the
+	// test-only construction in export_test.go, which opens no ceiling-scoped
+	// transaction and issues no point-in-time read.
 	pool           *pgxpool.Pool
 	acquireTimeout time.Duration
 }
@@ -196,10 +208,15 @@ func (s *entityStore) Get(ctx context.Context, entityID string) (*spi.Entity, er
 	return entity, nil
 }
 
+// GetAsAt is committed-only: it runs through committedQuerier (pool-pinned)
+// rather than s.q, so an ambient transaction's own uncommitted writes are
+// invisible to it — see committedQuerier's doc comment for why the query's
+// transaction_time guard cannot achieve that on its own.
+//
 // Deliberately not tracked in readSet: historical reads target immutable versions. See spec §Known limitation.
 func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Time) (*spi.Entity, error) {
 	var doc []byte
-	err := s.q.QueryRow(ctx,
+	err := s.committedQuerier().QueryRow(ctx,
 		`SELECT doc FROM entity_versions
 		 WHERE tenant_id = $1 AND entity_id = $2
 		   AND valid_time <= $3
@@ -253,9 +270,12 @@ func (s *entityStore) GetAll(ctx context.Context, modelRef spi.ModelRef) ([]*spi
 	return entities, nil
 }
 
+// GetAllAsAt is committed-only, through committedQuerier — the collection form
+// of GetAsAt's routing, and for the same reason.
+//
 // Deliberately not tracked in readSet: historical reads target immutable versions. See spec §Known limitation.
 func (s *entityStore) GetAllAsAt(ctx context.Context, modelRef spi.ModelRef, asAt time.Time) ([]*spi.Entity, error) {
-	rows, err := s.q.Query(ctx,
+	rows, err := s.committedQuerier().Query(ctx,
 		`SELECT v.doc
 		 FROM entities e
 		 CROSS JOIN LATERAL (
@@ -535,18 +555,28 @@ func (s *entityStore) GetPage(ctx context.Context, modelRef spi.ModelRef, limit,
 	return s.getPageCurrent(ctx, modelRef, limit, offset)
 }
 
+// getPageCurrentQuery is the SQL getPageCurrent runs. It is a named constant
+// rather than an inline literal for one reason: entity_page_plan_test.go's
+// EXPLAIN assertion must plan the query that ACTUALLY runs. A test that
+// re-types the SQL keeps passing after the production query changes underneath
+// it — a dropped COLLATE "C", a reordered ORDER BY — and the plan guarantee it
+// exists to protect silently stops being checked. Sharing the constant makes
+// that impossible: any edit here moves the test with it.
+//
+// $1 tenant, $2 model name, $3 model version, $4 limit, $5 offset.
+const getPageCurrentQuery = `SELECT doc FROM entities
+	 WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted
+	 ORDER BY entity_id COLLATE "C"
+	 LIMIT $4 OFFSET $5`
+
 // getPageCurrent is GetPage's asAt==nil path (see GetPage's doc comment for
 // why tx and non-tx share this one query): idx_entities_model_entity_id
 // (migrations/000008_entities_model_entity_id_index.up.sql) serves both the
 // WHERE equality filter and the ORDER BY entity_id COLLATE "C" from one
 // index, so the plan needs no separate sort step — asserted by
-// entity_page_plan_test.go via EXPLAIN.
+// entity_page_plan_test.go via EXPLAIN over getPageCurrentQuery itself.
 func (s *entityStore) getPageCurrent(ctx context.Context, modelRef spi.ModelRef, limit, offset int) ([]*spi.Entity, error) {
-	rows, err := s.q.Query(ctx,
-		`SELECT doc FROM entities
-		 WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted
-		 ORDER BY entity_id COLLATE "C"
-		 LIMIT $4 OFFSET $5`,
+	rows, err := s.q.Query(ctx, getPageCurrentQuery,
 		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("GetPage: query: %w", err)
@@ -575,7 +605,7 @@ func (s *entityStore) getPageCurrent(ctx context.Context, modelRef spi.ModelRef,
 // use), paged via ORDER BY entity_id COLLATE "C" LIMIT/OFFSET.
 //
 // Deliberately bypasses s.q (which would resolve an ambient transaction)
-// and issues the query through a pool-pinned classifiedQuerier instead —
+// and issues the query through the pool-pinned committedQuerier instead —
 // GetPage's SPI contract requires asAt!=nil to "ignore any ambient
 // transaction and read committed-only state as of that instant", and s.q
 // would otherwise see this transaction's own uncommitted writes on its own
@@ -586,8 +616,7 @@ func (s *entityStore) getPageAsAt(ctx context.Context, modelRef spi.ModelRef, li
 	query += fmt.Sprintf(` ORDER BY entity_id COLLATE "C" LIMIT $%d OFFSET $%d`, len(args)+1, len(args)+2)
 	args = append(args, limit, offset)
 
-	q := classifiedQuerier{inner: s.pool}
-	rows, err := q.Query(ctx, query, args...)
+	rows, err := s.committedQuerier().Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("GetPage: asAt query: %w", err)
 	}
@@ -599,6 +628,18 @@ func (s *entityStore) getPageAsAt(ctx context.Context, modelRef spi.ModelRef, li
 	}
 	return page, nil
 }
+
+// getVersionByTransactionQuery is the SQL GetVersionByTransaction runs, named
+// for the same reason as getPageCurrentQuery: the EXPLAIN test that guards its
+// index usage must plan the query that actually runs, not a copy of it.
+//
+// $1 tenant, $2 entity id, $3 transaction id.
+const getVersionByTransactionQuery = `SELECT doc, version, valid_time FROM entity_versions
+	 WHERE tenant_id = $1 AND entity_id = $2
+	   AND doc->'_meta'->>'transaction_id' = $3
+	   AND (doc->'_meta'->>'deleted')::boolean IS NOT TRUE
+	 ORDER BY version ASC
+	 LIMIT 1`
 
 // GetVersionByTransaction returns the earliest (lowest-Version) version of
 // entityID written by transaction txID. DELETED tombstones never match —
@@ -612,9 +653,9 @@ func (s *entityStore) getPageAsAt(ctx context.Context, modelRef spi.ModelRef, li
 //
 // tenant_id/entity_id scope the scan to entity_versions' own PRIMARY KEY
 // partition (tenant_id, entity_id, version) rather than a full table scan
-// — asserted by entity_page_plan_test.go via EXPLAIN. Deliberately not
-// tracked in readSet: historical reads target immutable versions, matching
-// GetAsAt/GetAllAsAt.
+// — asserted by entity_page_plan_test.go via EXPLAIN over
+// getVersionByTransactionQuery itself. Deliberately not tracked in readSet:
+// historical reads target immutable versions, matching GetAsAt/GetAllAsAt.
 func (s *entityStore) GetVersionByTransaction(ctx context.Context, entityID, txID string) (*spi.EntityVersion, error) {
 	if txID == "" {
 		return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
@@ -623,13 +664,7 @@ func (s *entityStore) GetVersionByTransaction(ctx context.Context, entityID, txI
 	var doc []byte
 	var version int64
 	var validTime time.Time
-	err := s.q.QueryRow(ctx,
-		`SELECT doc, version, valid_time FROM entity_versions
-		 WHERE tenant_id = $1 AND entity_id = $2
-		   AND doc->'_meta'->>'transaction_id' = $3
-		   AND (doc->'_meta'->>'deleted')::boolean IS NOT TRUE
-		 ORDER BY version ASC
-		 LIMIT 1`,
+	err := s.q.QueryRow(ctx, getVersionByTransactionQuery,
 		string(s.tenantID), entityID, txID).Scan(&doc, &version, &validTime)
 	if err != nil {
 		if err == pgx.ErrNoRows {

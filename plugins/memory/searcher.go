@@ -34,6 +34,16 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 	if opts.Limit <= 0 {
 		return nil, fmt.Errorf("search: limit must be >= 1")
 	}
+	// Same path checks the sqlite and postgres backends run at their Search
+	// boundary, in the same order, so a malformed filter path, an unknown
+	// meta sort path or a malformed data sort path is classified identically
+	// on every backend rather than degrading to an empty page here.
+	if err := validateFilterPaths(filter); err != nil {
+		return nil, err
+	}
+	if err := validateOrderSpecs(opts.OrderBy); err != nil {
+		return nil, err
+	}
 
 	modelRef := spi.ModelRef{EntityName: opts.ModelName, ModelVersion: opts.ModelVersion}
 	tx := spi.GetTransaction(ctx)

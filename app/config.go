@@ -100,6 +100,26 @@ type SearchAsyncConfig struct {
 	// surfaced as a retryable 503 SEARCH_QUEUE_FULL.
 	// CYODA_SEARCH_ASYNC_QUEUE, default 256.
 	QueueLen int
+	// MaxPerTenant caps how many async-search jobs one tenant may have in
+	// flight on this node — queued and executing together. Over-cap
+	// submissions get the same retryable 503 SEARCH_QUEUE_FULL as pool
+	// backpressure. CYODA_SEARCH_ASYNC_MAX_PER_TENANT, default: Workers.
+	//
+	// The pool is shared by every tenant, so without this one tenant's
+	// burst takes every worker AND fills the queue, and every other tenant
+	// is answered 503 until those jobs finish — for an async search, up to
+	// the backend's whole async-scan ceiling.
+	//
+	// Defaulting to Workers (rather than a fraction of it) is deliberate: a
+	// tenant may still saturate the RUNNING set, so a single-tenant
+	// deployment never idles workers it paid for, but it can never hold
+	// more than Workers queue slots, so the remaining QueueLen always
+	// belongs to other tenants and their submissions are accepted and
+	// served as workers free up.
+	//
+	// 0 disables the cap entirely, restoring first-come-first-served across
+	// tenants. Negative is a hard startup error (ValidateSearchAsync).
+	MaxPerTenant int
 }
 
 // SchedulerConfig controls the scheduled-transition scan loop: cadence,
@@ -264,6 +284,11 @@ func DefaultConfig() Config {
 	if maxSortKeys <= 0 {
 		maxSortKeys = 16
 	}
+	// Resolved ahead of the literal because the per-tenant in-flight cap
+	// defaults to it (see SearchAsyncConfig.MaxPerTenant), so resizing the
+	// pool resizes the cap with it. No clamp: an out-of-range value is a
+	// hard startup error via ValidateSearchAsync, not something to guess at.
+	asyncWorkers := envInt("CYODA_SEARCH_ASYNC_WORKERS", 8)
 
 	return Config{
 		HTTPPort:          envInt("CYODA_HTTP_PORT", 8080),
@@ -300,8 +325,9 @@ func DefaultConfig() Config {
 		StatsGroupMax:      statsGroupMax,
 		SearchMaxSortKeys:  maxSortKeys,
 		SearchAsync: SearchAsyncConfig{
-			Workers:  envInt("CYODA_SEARCH_ASYNC_WORKERS", 8),
-			QueueLen: envInt("CYODA_SEARCH_ASYNC_QUEUE", 256),
+			Workers:      asyncWorkers,
+			QueueLen:     envInt("CYODA_SEARCH_ASYNC_QUEUE", 256),
+			MaxPerTenant: envInt("CYODA_SEARCH_ASYNC_MAX_PER_TENANT", asyncWorkers),
 		},
 		SearchJobHeartbeatInterval: envDuration("CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL", 15*time.Second),
 		SearchJobStaleAfter:        envDuration("CYODA_SEARCH_JOB_STALE_AFTER", 5*time.Minute),
@@ -643,6 +669,31 @@ func isASCII(s string) bool {
 	return true
 }
 
+// Validate enforces the config invariants App.New's own wiring depends on.
+//
+// It lives here, and is called by New itself, because the dependency is
+// New's: it builds the async-search worker pool straight from
+// cfg.SearchAsync, and NewWorkerPool deliberately does not validate (a
+// negative QueueLen panics inside make(chan jobFunc, n)), while
+// cfg.SearchJobHeartbeatInterval reaches a time.NewTicker that panics on a
+// non-positive duration. Checking only in cmd/cyoda/main.go left every
+// in-process embedder of app.New — internal/e2e included — outside the
+// guard. Config is a QA'd artefact rather than untrusted input, so this is
+// an invariant held where it is relied on, not input hardening.
+//
+// The binary keeps its own per-setting calls so its startup diagnostics
+// name the offending setting; it exits before New is ever reached, so the
+// same error is never reported twice.
+func (c Config) Validate() error {
+	if err := ValidateSearchAsync(c.SearchAsync); err != nil {
+		return err
+	}
+	if err := ValidateSearchJobHeartbeat(c.SearchJobHeartbeatInterval); err != nil {
+		return err
+	}
+	return ValidateSearchJobStaleAfter(c.SearchJobStaleAfter, c.SearchJobHeartbeatInterval)
+}
+
 // ValidateSearchAsync enforces startup-time correctness for the
 // async-search worker pool sizing. Called once at startup (from
 // cmd/cyoda/main.go); a non-nil return causes the binary to slog the error
@@ -654,13 +705,17 @@ func isASCII(s string) bool {
 // this policy). Workers < 1 would start a pool with zero goroutines
 // draining the queue — every Submit would eventually return ErrQueueFull
 // once the buffer fills, with nothing ever running. QueueLen < 0 panics
-// inside make(chan jobFunc, n).
+// inside make(chan jobFunc, n). MaxPerTenant < 0 is neither a cap nor the
+// documented disable sentinel (0), so it is rejected rather than guessed at.
 func ValidateSearchAsync(c SearchAsyncConfig) error {
 	if c.Workers < 1 {
 		return fmt.Errorf("CYODA_SEARCH_ASYNC_WORKERS must be >= 1, got %d", c.Workers)
 	}
 	if c.QueueLen < 0 {
 		return fmt.Errorf("CYODA_SEARCH_ASYNC_QUEUE must be >= 0, got %d", c.QueueLen)
+	}
+	if c.MaxPerTenant < 0 {
+		return fmt.Errorf("CYODA_SEARCH_ASYNC_MAX_PER_TENANT must be >= 0 (0 disables the cap), got %d", c.MaxPerTenant)
 	}
 	return nil
 }

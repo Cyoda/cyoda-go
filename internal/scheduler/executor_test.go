@@ -12,7 +12,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
-// TestSystemUserContext_HasTenant proves SystemUserContext synthesises a
+// TestSystemUserContext_HasTenant proves common.SystemUserContext synthesises a
 // real identity — not just a struct that happens to have a Tenant field —
 // by driving it through the actual TransactionManager.Begin gate that
 // rejects a missing tenant (plugins/memory/txmanager.go Begin). Without
@@ -24,11 +24,11 @@ func TestSystemUserContext_HasTenant(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
 
-	ctx := SystemUserContext(spi.TenantID("tenant-x"))
+	ctx := common.SystemUserContext(spi.TenantID("tenant-x"))
 
 	uc := spi.GetUserContext(ctx)
 	if uc == nil {
-		t.Fatal("SystemUserContext must attach a UserContext")
+		t.Fatal("common.SystemUserContext must attach a UserContext")
 	}
 	if uc.UserID != "system" {
 		t.Errorf("UserID = %q, want %q", uc.UserID, "system")
@@ -42,7 +42,7 @@ func TestSystemUserContext_HasTenant(t *testing.T) {
 
 	txID, _, err := txMgr.Begin(ctx)
 	if err != nil {
-		t.Fatalf("Begin(SystemUserContext(...)) failed: %v", err)
+		t.Fatalf("Begin(common.SystemUserContext(...)) failed: %v", err)
 	}
 	if txID == "" {
 		t.Error("expected a non-empty txID")

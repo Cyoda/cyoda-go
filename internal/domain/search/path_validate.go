@@ -72,11 +72,8 @@ func addPath(raw string, seen map[string]struct{}, out *[]string) {
 func normalisePath(raw string) string { return spi.NormalisePath(raw) }
 
 // findUnknownPaths returns the subset of paths absent from the supplied
-// FieldsMap. Paths whose direct key is missing are also probed with a
-// trailing "[*]" segment stripped, so a condition naming an array field
-// (e.g. "$.tags[*]") still matches a leaf descriptor recorded as
-// "$.tags[*]" — both representations are accepted to stay compatible
-// with the matcher's input shapes.
+// FieldsMap, in the caller's own spelling. See [isPathKnown] for what counts
+// as present.
 func findUnknownPaths(paths []string, fields map[string]schema.FieldDescriptor) []string {
 	var unknown []string
 	for _, p := range paths {
@@ -92,7 +89,27 @@ func findUnknownPaths(paths []string, fields map[string]schema.FieldDescriptor) 
 // a structural field) appears in fields. Wildcard suffixes are tolerated
 // so "$.tags[*]" matches a leaf described as "$.tags[*]" exactly, and
 // nested wildcards such as "$.tags[*].name" also resolve.
+//
+// A POSITIONAL subscript ("$.arr[0]") resolves too. It is valid JSON Path, the
+// boundary grammar accepts it, and the in-memory evaluator serves it — but the
+// schema records an array's element once under the wildcard key and has no
+// per-index entry to find, so a raw comparison rejected the condition 400 for a
+// field the model declares. Only the LOOKUP is canonicalised; the caller's
+// original spelling is what gets reported, so a diagnostic names the path the
+// request actually sent.
 func isPathKnown(p string, fields map[string]schema.FieldDescriptor) bool {
+	if pathOrContainerKnown(p, fields) {
+		return true
+	}
+	if canon := schema.CanonicalFieldPath(p); canon != p {
+		return pathOrContainerKnown(canon, fields)
+	}
+	return false
+}
+
+// pathOrContainerKnown reports whether p is a recorded leaf, or an interior
+// object with at least one recorded leaf beneath it.
+func pathOrContainerKnown(p string, fields map[string]schema.FieldDescriptor) bool {
 	if _, ok := fields[p]; ok {
 		return true
 	}

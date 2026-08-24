@@ -394,7 +394,7 @@ Four of the five are set on the server side, so PostgreSQL enforces them whether
 
 How an abort surfaces depends on whether retrying could plausibly work:
 
-- **Transient contention → `503 STORAGE_UNAVAILABLE`, retryable.** A write that cannot get a connection within `CYODA_POSTGRES_ACQUIRE_TIMEOUT`, and an operation whose transaction PostgreSQL already aborted for exceeding `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`. A second attempt may well succeed.
+- **Transient contention → `503 STORAGE_UNAVAILABLE`, retryable.** An operation that cannot get a connection within `CYODA_POSTGRES_ACQUIRE_TIMEOUT` — a write, or a read needing a second connection while the caller's transaction holds one — and an operation whose transaction PostgreSQL already aborted for exceeding `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`. A second attempt may well succeed.
 - **Statement ceiling exceeded → `500` with a ticket, not retryable.** A statement cancelled by `CYODA_POSTGRES_STATEMENT_TIMEOUT`. Re-running work that just exceeded its ceiling will exceed it again, so advertising a retry would be a lie.
 - **Async scan ceiling exceeded → recorded on the job, never an HTTP status.** A scan cancelled by `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` fails the job it belongs to: the job goes `FAILED` with a fixed message, and `GetJob` serves that back verbatim. No ticket is minted, because there is no response to attach one to.
 
@@ -986,6 +986,16 @@ within the default 25-connection pool. Once both the running workers and
 the queue are exhausted, submission fails fast with a retryable
 **503 `SEARCH_QUEUE_FULL`** instead of queuing indefinitely.
 
+**Per-tenant share.** The pool is per node and shared by all tenants, so a
+single tenant submitting long scans could otherwise occupy every worker and
+fill the queue, denying async search to every other tenant on that node.
+`CYODA_SEARCH_ASYNC_MAX_PER_TENANT` (default 8, matching the worker count)
+caps how many jobs one tenant may hold in flight — queued and running
+together — and rejects the excess with the same retryable
+**503 `SEARCH_QUEUE_FULL`**. `0` disables the cap. At the default a single
+tenant can still saturate the running set, but its queue occupancy is bounded,
+so the remaining queue capacity always belongs to other tenants.
+
 **Cancellation and shutdown.** A jobID→`CancelFunc` registry in the engine
 lets `CancelAsync` cancel in-process work and dispatch the store's
 `Cancel(ctx, jobID, finishTime)` for cross-node visibility; the executor's
@@ -1573,6 +1583,7 @@ These variables apply globally to all tenant-registered OIDC providers. Per-prov
 | `CYODA_SEARCH_MAX_SORT_KEYS` | `16` | Max `sort`/`orderBy` keys per search request |
 | `CYODA_SEARCH_ASYNC_WORKERS` | `8` | Async-search worker pool size; startup fails if `< 1` |
 | `CYODA_SEARCH_ASYNC_QUEUE` | `256` | Async-search submit queue capacity beyond running workers; startup fails if `< 0` |
+| `CYODA_SEARCH_ASYNC_MAX_PER_TENANT` | `8` | Max async-search jobs one tenant may hold in flight (queued + running) per node; `0` disables; startup fails if `< 0` |
 | `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL` | `15s` | How often a running async-search executor stamps liveness and polls for cross-node cancel/terminal status |
 | `CYODA_SEARCH_JOB_STALE_AFTER` | `5m` | How long a `RUNNING` job may go without a heartbeat before the reaper claims and fails it; must be `>= 4x` the heartbeat interval |
 
@@ -1806,7 +1817,7 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 |------------|-------|-------------|
 | **PG statement timeout** | Default 5m (`CYODA_POSTGRES_STATEMENT_TIMEOUT`) | PostgreSQL aborts any single statement that exceeds it. The abort is **not** retryable — re-running the statement would exceed the same ceiling — so it surfaces as a `500` with a ticket, not a `503` (§3.4). |
 | **PG idle-in-transaction timeout** | Default 5m (`CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`) | PostgreSQL aborts a transaction whose connection sits idle past it — which is what a transaction waiting on an external callout is doing. This is the authoritative bound on transaction lifetime; a processor's `responseTimeoutMs` must fit under it. |
-| **Pool acquire timeout** | Default 10s (`CYODA_POSTGRES_ACQUIRE_TIMEOUT`) | A write that cannot get a connection within it fails fast with `503 STORAGE_UNAVAILABLE` rather than queueing behind a saturated pool. |
+| **Pool acquire timeout** | Default 10s (`CYODA_POSTGRES_ACQUIRE_TIMEOUT`) | An operation that cannot get a connection within it fails fast with `503 STORAGE_UNAVAILABLE` rather than queueing behind a saturated pool. Applies to writes, and to reads needing a *second* connection while the caller's transaction holds one — a point-in-time read or an async-search submit issued inside a transaction. Unbounded otherwise, so ordinary pool contention on a non-transactional read does not fail spuriously. |
 | **Connection hold time** | Duration of entire flow chain (BEGIN → workflow → compute dispatch → callbacks → COMMIT) | Each in-flight transaction consumes one PG connection for its full lifetime. With 25 connections per node and 10 nodes, the cluster supports ~250 concurrent transactions. |
 | **Proxy timeout** | Default 30s (configurable) | Cross-node proxy hops for CRUD callbacks must complete within this window. |
 | **Dispatch forward timeout** | Default 30s (configurable) | Cross-node compute dispatch forwarding must complete within this window. |

@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 236 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 240 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -138,13 +138,23 @@ var allTests = []NamedTest{
 	{"SearchTemporalLastUpdateTime", RunSearchTemporalLastUpdateTime},
 	{"SearchUnknownMetaField400", RunSearchUnknownMetaField400},
 
-	// Path-key resolution (PR #490). A field path spelled with and without
-	// the "$." prefix names the same field, and the storage layer's own
-	// _meta block is not addressable as entity data. Both were
-	// backend-visible before the fix, so both belong here rather than in a
-	// single-backend test.
-	{"SearchPrefixlessPathResolvesDeclaredType", RunSearchPrefixlessPathResolvesDeclaredType},
-	{"SearchPrefixlessPathTypeMismatch400", RunSearchPrefixlessPathTypeMismatch400},
+	// Field-path spelling and resolution. A jsonPath is JSON Path
+	// nomenclature — the "$." leader is required on every path surface a
+	// request carries — while an array-subscripted path stays served by the
+	// in-memory fallback; and the storage layer's own _meta block is not
+	// addressable as entity data. All were backend-visible, so all belong
+	// here rather than in a single-backend test.
+	{"SearchPathRequiresJSONPathLeader", RunSearchPathRequiresJSONPathLeader},
+	{"SearchArraySubscriptPathStillServed", RunSearchArraySubscriptPathStillServed},
+	{"SearchPathTypeMismatch400", RunSearchPathTypeMismatch400},
+	// The same grammar governs a workflow/transition criterion, enforced at
+	// workflow import; and a path addressing one array element by position
+	// resolves to that element on every surface. Both are per-backend claims:
+	// a criterion is stored per backend and re-read on every write, and which
+	// plan a subscripted query takes differs per backend.
+	{"WorkflowCriterionPathRequiresJSONPathLeader", RunWorkflowCriterionPathRequiresJSONPathLeader},
+	{"PositionalSubscriptPathResolves", RunPositionalSubscriptPathResolves},
+	{"GroupedStatsPathRequiresJSONPathLeader", RunGroupedStatsPathRequiresJSONPathLeader},
 	{"SearchMetaBlockNotMatchableAsDataPath", RunSearchMetaBlockNotMatchableAsDataPath},
 	{"SearchStringMetaVocabulary", RunSearchStringMetaVocabulary},
 	{"SearchBetweenArity400", RunSearchBetweenArity400},

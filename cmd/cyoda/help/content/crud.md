@@ -326,7 +326,7 @@ Response: `200 OK`, `application/json`:
 
 - `entityName` (path): string
 - `modelVersion` (path): int32
-- `transactionSize` (query, optional): int32 — when set, matched entities (including a delete-all with no condition) are deleted in version-guarded batches of this size instead of one transaction. Batches already committed stay durable if a later batch fails. A per-id version mismatch (the entity changed after selection) or a batch's commit failure is reported per-id in `deleteResult.idToError`, not retried. Rejected with `400` on a request that joins an open transaction. Absent means a single transaction.
+- `transactionSize` (query, optional): int32 — when set, matched entities (including a delete-all with no condition) are deleted in version-guarded batches of this size instead of one transaction. Batches already committed stay durable if a later batch fails. A per-id version mismatch (the entity changed after selection) or a batch's commit failure is reported per-id in `deleteResult.idToError`, not retried. Rejected with `400` on a request that joins an open transaction. Absent means a single transaction. Without `pointInTime`, the batched delete re-selects before each batch; if matching entities keep being created it is stopped at its batch cap and fails `409 DELETE_NOT_CONVERGED` (retryable), with the batches already committed left deleted.
 - `pointInTime` (query, optional): RFC 3339 — select entities for deletion as at this instant
 - `verbose` (query, optional): boolean, default `false` — when `true`, the response `ids` array lists every deleted entity ID; for a delete-all (empty body) `ids` is always empty
 
@@ -470,7 +470,7 @@ Request body: `application/json`. Body size limit: 10 MiB (shared with `/search/
 
 Request fields:
 
-- `groupBy` (required, 1..N entries): each entry is the reserved token `"state"` or a scalar JSONPath. Order in the request determines order in the response's `groupKey` array. Duplicate entries (after normalization) → 400 `DUPLICATE_GROUP_BY`. Array projections (`[*]`, `[0]`) → 400 `INVALID_GROUP_BY_PATH`.
+- `groupBy` (required, 1..N entries): each entry is the reserved token `"state"` or a scalar JSONPath (with the required `$.` leader). Order in the request determines order in the response's `groupKey` array. Duplicate entries → 400 `DUPLICATE_GROUP_BY`. A path outside the grammar below → 400 `INVALID_GROUP_BY_PATH`.
 - `condition` (optional): the existing search `Condition` DSL (SimpleCondition, LifecycleCondition, GroupCondition with `AND`/`OR`, ArrayCondition). Omitted → match-all. A FunctionCondition at any depth → 400 `INVALID_CONDITION`; it is a criterion shape, not a search shape. See the `search` topic for the full DSL.
 - `aggregations` (optional, 0..N): per entry, `op` ∈ {`sum`, `avg`, `min`, `max`, `stdev`}; `field` is a scalar JSONPath into the entity payload; optional `as` alias for the response key. When `as` is omitted the server synthesizes `<op>_<field>` with the leading `$.` stripped from the field (for example, `field: "$.costPrice"` → alias `sum_costPrice`). The server dedupes identical `(op, field)` pairs. Two aliases colliding on distinct `(op, field)` pairs → 400 `DUPLICATE_AGGREGATION_ALIAS`.
 - `pointInTime` (optional RFC 3339): historical snapshot; default = now.
@@ -503,7 +503,18 @@ Each bucket's `aggregations` map is keyed by either the explicit `as` alias or t
 
 Sort order is backend-independent: primary key is `count` descending; tiebreaker is `groupKey` lex order (element-wise; `null` sorts before any string; strings compared bytes-wise).
 
-**JSONPath restrictions.** Every JSONPath in `groupBy` and aggregation `field` is scalar-only. Bracket-quoted property access (`$['my.field']`) is accepted. Array projections (`$.items[*]`, `$.items[0]`) are rejected at validation time with 400 `INVALID_GROUP_BY_PATH` (for `groupBy`) or 400 `INVALID_AGGREGATION_FIELD` (for aggregations). The reserved token `"state"` is accepted in `groupBy` only; it has no leading `$.` and refers to lifecycle state.
+**JSONPath grammar.** Every JSONPath in `groupBy` and aggregation `field` is scalar-only, and is checked at the API boundary — before any storage backend runs — against:
+
+```
+path    = "$." segment ( "." segment )*
+segment = 1*( ALPHA / DIGIT / "_" / "-" )      ; ASCII only
+```
+
+The `$.` leader is **required**: these are JSON Paths, and a bare `variantId` is not one. Everything outside the grammar is rejected with 400 `INVALID_GROUP_BY_PATH` (for `groupBy`) or 400 `INVALID_AGGREGATION_FIELD` (for aggregations): a missing leader, bracket-quoted property access (`$['country']`, `$.['country']` — write `$.country`), array projections (`$.items[*]`, `$.items[0]`), recursive descent (`$..name`), filter expressions, leading/trailing/doubled dots, `$` on its own, whitespace, quotes, control bytes, and non-ASCII characters. Address an array position as an ordinary numeric segment (`$.items.0`).
+
+This is the same grammar every storage backend enforces on its own query paths, so a request is accepted or rejected identically whichever execution path it takes. It is also the grammar a `condition`'s `jsonPath` obeys — that one additionally permits array subscripts, which it evaluates in memory. A path is validated, never rewritten: the response's `groupKey` path echoes exactly what the request sent.
+
+The reserved token `"state"` is accepted in `groupBy` only; it is a token, not a path, so it has no leading `$.` and refers to lifecycle state. There is no defined aggregate over lifecycle state, so `"state"` as an aggregation `field` is just an identifier missing its leader and is rejected.
 
 **Aggregation operators.** Five operators: `sum`, `avg`, `min`, `max`, `stdev`. `stdev` is the sample standard deviation (divisor `n − 1`); when `n < 2`, the value is `null` on both the pushdown and streaming paths. `sum`, `avg`, and `stdev` treat non-numeric and absent field values as NULL (the value is skipped, not zero). `min` and `max` are lexicographic over text values and numeric over numeric values; the comparison ordering matches the underlying backend's collation for the pushed-down path.
 
@@ -555,13 +566,14 @@ Error codes (response carries RFC 9457 problem+json with `properties.errorCode` 
 - `MODEL_NOT_FOUND` — `404` — model not registered for the calling tenant
 - `MALFORMED_REQUEST` — `400` — JSON parse failed
 - `MISSING_GROUP_BY` — `400` — `groupBy` empty or missing
-- `INVALID_GROUP_BY_PATH` — `400` — empty entry, or array projection in a `groupBy` JSONPath
-- `DUPLICATE_GROUP_BY` — `400` — duplicate entries after normalization
+- `INVALID_GROUP_BY_PATH` — `400` — `groupBy` JSONPath outside the grammar above (missing `$.` leader, bracket-quoted access, array projection, recursive descent, disallowed character)
+- `DUPLICATE_GROUP_BY` — `400` — duplicate `groupBy` entries
 - `INVALID_AGGREGATION_OP` — `400` — `op` outside the set {`sum`, `avg`, `min`, `max`, `stdev`}
-- `INVALID_AGGREGATION_FIELD` — `400` — aggregation `field` empty or contains array projection
+- `INVALID_AGGREGATION_FIELD` — `400` — aggregation `field` outside the same JSONPath grammar
 - `DUPLICATE_AGGREGATION_ALIAS` — `400` — two aliases collide on distinct `(op, field)` pairs
 - `INVALID_OPERATOR` — `400` — `condition` operator outside the canonical list (propagated from search validator)
 - `INVALID_CONDITION` — `400` — `condition` malformed or unknown `type` (propagated from search validator)
+- `INVALID_FIELD_PATH` — `400` — a `condition` `jsonPath` is not valid JSON Path, or names an unknown meta field (propagated from search validator)
 - `INVALID_FIELD_PATH` — `400` — `condition` JSONPath absent from the locked schema (propagated from search validator)
 - `CONDITION_TYPE_MISMATCH` — `400` — `condition` value type incompatible with the locked DataType (propagated from search validator)
 - `INVALID_POINT_IN_TIME` — `400` — `pointInTime` not parseable as RFC 3339

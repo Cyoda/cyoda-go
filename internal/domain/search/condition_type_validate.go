@@ -81,11 +81,15 @@ func walkConditionTypes(fm map[string]schema.FieldDescriptor, cond predicate.Con
 }
 
 func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predicate.SimpleCondition) error {
-	// FieldsMap keys carry the "$." prefix; a condition may legitimately omit it
-	// and still name a known field. Looking it up raw made the type check silently
-	// skip such a leaf, so an operand that should be rejected 400
-	// CONDITION_TYPE_MISMATCH was accepted and evaluated to an empty page instead.
-	key := normalisePath(c.JsonPath)
+	// FieldsMap keys carry the "$." prefix and spell every array hop "[*]"; a
+	// condition may legitimately omit the prefix, and may address one array
+	// element positionally ("$.arr[0]"). Looking either up raw made the type
+	// check silently skip such a leaf, so an operand that should be rejected 400
+	// CONDITION_TYPE_MISMATCH was accepted and evaluated to an empty page
+	// instead — and the wildcard and positional spellings of one path
+	// disagreed. Only the LOOKUP is canonicalised: every diagnostic below names
+	// c.JsonPath, the spelling the request actually sent.
+	key := schema.CanonicalFieldPath(normalisePath(c.JsonPath))
 	fd, ok := fm[key]
 	if !ok {
 		// Not a leaf. In a schema'd model (non-empty FieldsMap), a path that is

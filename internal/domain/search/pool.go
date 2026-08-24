@@ -15,11 +15,18 @@ import (
 // a retryable 503; see QueueFullError).
 var ErrQueueFull = errors.New("async search queue is full")
 
-// jobFunc is a unit of work a WorkerPool runs. It receives the pool's
-// lifetime context, which is cancelled when Drain runs — a long-running job
-// must select on ctx.Done() to stop promptly instead of running to
-// completion regardless.
-type jobFunc func(ctx context.Context)
+// jobFunc is a unit of work a WorkerPool runs.
+//
+// It takes no context on purpose. The pool used to hand each job a lifetime
+// context cancelled by Drain, but no submitter ever observed it: the async
+// executor runs on its own per-job context (the one the cancel registry and
+// the heartbeat ticker share), and cancelling in-flight jobs the moment
+// Drain starts would defeat what Drain is for — App.Shutdown drains first,
+// giving a job the chance to finish inside the drain budget, and only then
+// calls AbortRegisteredJobs to cancel whatever is left. A parameter no
+// caller can act on, documented as a cancellation promise the pool does not
+// keep, is worse than none.
+type jobFunc func()
 
 // WorkerPool is a bounded pool of goroutines draining a fixed-capacity
 // queue of jobFunc. It backs the async-search submit path: SubmitAsync
@@ -33,11 +40,14 @@ type jobFunc func(ctx context.Context)
 // connection — so the worker count is bounded by the postgres connection
 // budget: 8 workers <= (default 25 max conns - reserve) / 2 connections
 // held at a job's peak.
+//
+// The pool is tenant-blind by design. Fairness between tenants is enforced
+// one level up, at the submit boundary, by SearchService's per-tenant
+// in-flight cap (WithAsyncMaxPerTenant).
 type WorkerPool struct {
 	mu     sync.RWMutex // guards closed; see Submit/Drain
 	closed bool
 	jobs   chan jobFunc
-	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
 
@@ -47,22 +57,18 @@ type WorkerPool struct {
 // does not, so a misconfigured value fails visibly at the validation step
 // (app.ValidateSearchAsync) rather than silently here.
 func NewWorkerPool(workers, queueLen int) *WorkerPool {
-	ctx, cancel := context.WithCancel(context.Background())
-	p := &WorkerPool{
-		jobs:   make(chan jobFunc, queueLen),
-		cancel: cancel,
-	}
+	p := &WorkerPool{jobs: make(chan jobFunc, queueLen)}
 	p.wg.Add(workers)
 	for i := 0; i < workers; i++ {
-		go p.worker(ctx)
+		go p.worker()
 	}
 	return p
 }
 
-func (p *WorkerPool) worker(ctx context.Context) {
+func (p *WorkerPool) worker() {
 	defer p.wg.Done()
 	for job := range p.jobs {
-		job(ctx)
+		job()
 	}
 }
 
@@ -83,13 +89,14 @@ func (p *WorkerPool) Submit(job jobFunc) error {
 	}
 }
 
-// Drain stops intake, cancels the pool's lifetime context (observable by
-// every in-flight job via its ctx argument), and waits for every worker to
-// finish its current job and exit — or for ctx to expire, whichever comes
-// first. After Drain returns with every worker exited, no pool goroutines
-// remain running. Idempotent: a second Drain call is a no-op. Submit calls
-// racing a concurrent Drain observe ErrQueueFull instead of panicking on a
-// closed channel.
+// Drain stops intake and waits for every worker to finish its current job
+// and exit — or for ctx to expire, whichever comes first. It does NOT
+// cancel in-flight jobs: giving them the drain budget to finish is the
+// point (see jobFunc), and App.Shutdown cancels whatever is still running
+// afterwards via AbortRegisteredJobs. After Drain returns with every worker
+// exited, no pool goroutines remain running. Idempotent: a second Drain
+// call is a no-op. Submit calls racing a concurrent Drain observe
+// ErrQueueFull instead of panicking on a closed channel.
 func (p *WorkerPool) Drain(ctx context.Context) {
 	alreadyClosed := func() bool {
 		p.mu.Lock()
@@ -104,8 +111,6 @@ func (p *WorkerPool) Drain(ctx context.Context) {
 	if alreadyClosed {
 		return
 	}
-
-	p.cancel()
 
 	done := make(chan struct{})
 	go func() {

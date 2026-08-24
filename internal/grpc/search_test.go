@@ -340,6 +340,138 @@ func TestEntitySearch_DirectSearch_OrderBy_InvalidField(t *testing.T) {
 	}
 }
 
+// TestEntitySearch_SnapshotSearch_OrderBy_ResultsOrdered is the gRPC cell of
+// design §9 row 19 ("Async result ordering respected end-to-end"): it drives
+// the whole async round-trip over the gRPC door — EntitySnapshotSearchRequest
+// (submit) -> SnapshotGetStatusRequest (poll to SUCCESSFUL) ->
+// SnapshotGetRequest (stream results) — and asserts the STREAMED RESULT ORDER
+// matches the requested orderBy.
+//
+// The sibling _OrderBy_ValidField / _OrderBy_SourceMeta tests assert only
+// that the orderBy payload is ACCEPTED (success + a snapshot id); neither
+// reads a single result back, so neither can tell an honoured orderBy from
+// an ignored one. This one can.
+//
+// Non-vacuous by construction: the same seeded model is searched twice, asc
+// and desc, and both directions are asserted. The seed order ("bbb","ccc",
+// "aaa") matches neither, so an implementation that dropped orderBy on the
+// floor — returning canonical entity-ID or insertion order — fails at least
+// one of the two assertions whatever that canonical order happens to be.
+func TestEntitySearch_SnapshotSearch_OrderBy_ResultsOrdered(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"surname": "Smith"})
+
+	for _, surname := range []string{"bbb", "ccc", "aaa"} {
+		if _, err := svc.EntityManage(ctx, makeCE(EntityCreateRequest, map[string]any{
+			"id": "c-snap-ord-" + surname, "dataFormat": "JSON",
+			"payload": map[string]any{
+				"model": map[string]any{"name": "person", "version": 1},
+				"data":  map[string]any{"surname": surname},
+			},
+		})); err != nil {
+			t.Fatalf("create %q failed: %v", surname, err)
+		}
+	}
+
+	// snapshotSurnames runs one full submit/poll/read round-trip and returns
+	// the surnames in the order the results stream delivered them.
+	snapshotSurnames := func(t *testing.T, desc bool) []string {
+		t.Helper()
+		tag := fmt.Sprintf("snap-ord-%v", desc)
+
+		submitResp, err := svc.EntitySearch(ctx, makeCE(EntitySnapshotSearchRequest, map[string]any{
+			"id":    tag,
+			"model": map[string]any{"name": "person", "version": 1},
+			"condition": map[string]any{
+				"type": "group", "operator": "AND", "conditions": []any{},
+			},
+			"orderBy": []any{
+				map[string]any{"path": "surname", "desc": desc},
+			},
+		}))
+		if err != nil {
+			t.Fatalf("submit (desc=%v): %v", desc, err)
+		}
+		var submitted events.EntitySnapshotSearchResponseJson
+		validateResponse(t, submitResp, &submitted)
+		if !submitted.Success {
+			t.Fatalf("submit (desc=%v): success=false; error: %v", desc, submitted.Error)
+		}
+		snapshotID := submitted.Status.SnapshotID
+		if snapshotID == "" {
+			t.Fatalf("submit (desc=%v): empty snapshotId", desc)
+		}
+
+		// Poll the real status surface — no fixed sleep; async means async.
+		deadline := time.Now().Add(10 * time.Second)
+		for settled := false; !settled; {
+			statusResp, err := svc.EntitySearch(ctx, makeCE(SnapshotGetStatusRequest, map[string]any{
+				"id": tag, "snapshotId": snapshotID,
+			}))
+			if err != nil {
+				t.Fatalf("status (desc=%v): %v", desc, err)
+			}
+			var st events.EntitySnapshotSearchResponseJson
+			validateResponse(t, statusResp, &st)
+			if !st.Success {
+				t.Fatalf("status (desc=%v): success=false; error: %v", desc, st.Error)
+			}
+			switch string(st.Status.Status) {
+			case "SUCCESSFUL":
+				settled = true
+			case "FAILED", "CANCELLED":
+				t.Fatalf("status (desc=%v): job settled %s, want SUCCESSFUL", desc, st.Status.Status)
+			default:
+				if time.Now().After(deadline) {
+					t.Fatalf("status (desc=%v): timed out waiting for SUCCESSFUL (last=%s)", desc, st.Status.Status)
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+
+		stream := &mockEntityStream{ctx: ctx}
+		if err := svc.EntitySearchCollection(makeCE(SnapshotGetRequest, map[string]any{
+			"id": tag, "snapshotId": snapshotID, "pageNumber": 0, "pageSize": 100,
+		}), stream); err != nil {
+			t.Fatalf("results (desc=%v): unexpected stream error: %v", desc, err)
+		}
+		surnames := make([]string, 0, len(stream.sent))
+		for i, sent := range stream.sent {
+			var typed events.EntityResponseJson
+			validateResponse(t, sent, &typed)
+			if !typed.Success {
+				t.Fatalf("results (desc=%v)[%d]: success=false; error: %v", desc, i, typed.Error)
+			}
+			dataMap, ok := typed.Payload.Data.(map[string]interface{})
+			if !ok {
+				t.Fatalf("results (desc=%v)[%d]: Payload.Data is not a map: %T", desc, i, typed.Payload.Data)
+			}
+			surname, ok := dataMap["surname"].(string)
+			if !ok {
+				t.Fatalf("results (desc=%v)[%d]: surname is not a string: %v", desc, i, dataMap["surname"])
+			}
+			surnames = append(surnames, surname)
+		}
+		return surnames
+	}
+
+	assertOrder := func(t *testing.T, desc bool, want []string) {
+		t.Helper()
+		got := snapshotSurnames(t, desc)
+		if len(got) != len(want) {
+			t.Fatalf("desc=%v: got %d results %v, want %d %v", desc, len(got), got, len(want), want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("desc=%v: result order %v, want %v", desc, got, want)
+			}
+		}
+	}
+
+	assertOrder(t, false, []string{"aaa", "bbb", "ccc"})
+	assertOrder(t, true, []string{"ccc", "bbb", "aaa"})
+}
+
 // TestEntitySearch_SnapshotSearch_OrderBy_ValidField verifies that an async
 // snapshot search with a valid orderBy is accepted and returns a snapshot ID.
 func TestEntitySearch_SnapshotSearch_OrderBy_ValidField(t *testing.T) {
@@ -906,7 +1038,7 @@ func occupySoleWorker(t *testing.T, pool *search.WorkerPool) (release func()) {
 	t.Helper()
 	started := make(chan struct{})
 	releaseCh := make(chan struct{})
-	job := func(context.Context) {
+	job := func() {
 		close(started)
 		<-releaseCh
 	}

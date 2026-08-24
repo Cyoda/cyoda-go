@@ -76,6 +76,17 @@ type StoreFactory struct {
 	// comment). Guarded by entityMu (same mutex as entityData: maintained
 	// inside the same write-lock critical section as every entityData
 	// append).
+	//
+	// Lifetime: this is a derived index over entityData's version history
+	// and lives exactly as long as it. It holds at most one entry per
+	// version, so it adds a constant factor to entityData's own footprint,
+	// not a new growth class. It deliberately has no delete hook and no TTL
+	// eviction: Delete/DeleteAll append a tombstone and KEEP the preceding
+	// versions (as the SQL backends keep their entity_versions rows), so
+	// GetVersionByTransaction still answers for a deleted entity on every
+	// backend — dropping the index entry there would lose an answer the
+	// others still give. submitTimes' TTL is not a precedent: that map is a
+	// lookup cache for in-flight/recent transactions, not durable history.
 	txIndex     map[spi.TenantID]map[string]map[string]int64
 	modelData   map[spi.TenantID]map[spi.ModelRef]*spi.ModelDescriptor
 	kvData      map[spi.TenantID]map[string]map[string][]byte
@@ -235,6 +246,14 @@ func (f *StoreFactory) insertClaims(entityID, tenant, model, version string, cla
 // (write lock). No-op for a non-transactional write (empty txID): an
 // empty txID must never match via GetVersionByTransaction (see its SPI
 // doc comment), so it is never indexed.
+//
+// First write wins: the index holds the EARLIEST version recorded for
+// (tenant, entity, txID), so the invariant holds structurally rather than
+// by caller discipline. The transactional path already passes the commit's
+// first version once, but saveUnlocked calls this per non-transactional
+// save with entity.Meta.TransactionID taken verbatim — two such saves
+// sharing a txID would otherwise record the latest version, where the SQL
+// backends' ORDER BY version ASC LIMIT 1 returns the earliest.
 func (f *StoreFactory) recordTxIndex(tid spi.TenantID, entityID, txID string, version int64) {
 	if txID == "" {
 		return
@@ -244,6 +263,9 @@ func (f *StoreFactory) recordTxIndex(tid spi.TenantID, entityID, txID string, ve
 	}
 	if f.txIndex[tid][entityID] == nil {
 		f.txIndex[tid][entityID] = make(map[string]int64)
+	}
+	if existing, ok := f.txIndex[tid][entityID][txID]; ok && existing <= version {
+		return
 	}
 	f.txIndex[tid][entityID][txID] = version
 }

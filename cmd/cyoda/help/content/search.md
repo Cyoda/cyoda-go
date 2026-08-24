@@ -67,13 +67,28 @@ All search requests accept a `Condition` JSON document as the POST body. Conditi
 ```
 
 - `type`: `"simple"`
-- `jsonPath`: JSONPath string (e.g., `"$.year"`, `"$.laureates[0].firstname"`)
+- `jsonPath`: JSON Path string, `$.` leader **required** (e.g., `"$.year"`, `"$.laureates[0].firstname"`) — see **JSONPath grammar** below
 - `operatorType` (also accepted as `operator` or `operation`): operator string (see valid values below)
 - `value`: any JSON scalar
 
 **Valid `operatorType` values** (exhaustive): `EQUALS`, `NOT_EQUAL`, `GREATER_THAN`, `GREATER_OR_EQUAL`, `LESS_THAN`, `LESS_OR_EQUAL`, `CONTAINS`, `NOT_CONTAINS`, `STARTS_WITH`, `NOT_STARTS_WITH`, `ENDS_WITH`, `NOT_ENDS_WITH`, `LIKE`, `IS_NULL`, `NOT_NULL`, `BETWEEN`, `BETWEEN_INCLUSIVE`, `MATCHES_PATTERN`, `IEQUALS`, `INOT_EQUAL`, `ICONTAINS`, `INOT_CONTAINS`, `ISTARTS_WITH`, `INOT_STARTS_WITH`, `IENDS_WITH`, `INOT_ENDS_WITH`. `BETWEEN`/`BETWEEN_INCLUSIVE` require `value` to be a two-element array `[low, high]`. Comparison is type-directed and same-type only (a JSON number and a numeric-looking string are treated identically); a missing/null field never matches any binary operator, including the `NOT_*`/`INOT_*` negatives. Full per-operator semantics, LIKE grammar, and validation rules are in the `predicates` topic.
 
 `IS_CHANGED`/`IS_UNCHANGED` are not supported.
+
+**JSONPath grammar.** A condition's `jsonPath` is JSON Path nomenclature, checked at the API boundary before anything executes:
+
+```
+jsonPath = "$." segment ( "." segment )*
+segment  = 1*( ALPHA / DIGIT / "_" / "-" )   ; ASCII only
+```
+
+The `$.` leader is **required**. A bare `amount` is not a path and is rejected `400 errors.INVALID_FIELD_PATH` — it is not a tolerated alias for `$.amount`. So are an empty path, an empty or trailing segment (`$..a`, `$.a.`), bracket-quoted property access (`$['x']`, `$.['x']` — write `$.x`), and any character outside the segment set.
+
+Array subscripts (`$.tags[*].name`, `$.arr[0]`) **are** valid and accepted. They cannot be pushed into the storage query, so they are evaluated in memory; results are identical, throughput is lower.
+
+Metadata is not addressed through `jsonPath` at all — a `lifecycle` condition names a meta field directly (see **LifecycleCondition**) and is not subject to this grammar. A *data* path that happens to spell `$._meta.state` is an ordinary dotted path.
+
+The same grammar governs grouped statistics (`groupBy`, aggregation `field`), which additionally rejects array subscripts because a group key must be a single scalar — see the `crud` topic. It also governs workflow and transition `criterion` paths, rejected at workflow import with `400 errors.VALIDATION_FAILED` — see the `workflows` topic.
 
 Operator strings outside this list are rejected with `errors.BAD_REQUEST` at request time; the error detail includes the canonical list.
 
@@ -127,7 +142,7 @@ Operator strings outside this list are rejected with `errors.BAD_REQUEST` at req
 ```
 
 - `type`: `"array"`
-- `jsonPath`: path to the array field
+- `jsonPath`: JSON Path to the array field, `$.` leader required (see **JSONPath grammar** below)
 - `values`: positional values; `null` entries match any value at that index
 
 **FunctionCondition** — server-side function predicate dispatched to a compute member. **Criteria only — search requests reject it.** Documented here because criteria and search share the one `Condition` DSL; a search, async-search, grouped-stats or conditional-delete body carrying a `function` clause at any depth is rejected `400 INVALID_CONDITION`. Use it in a workflow or transition `criterion` (see `workflows`).
@@ -325,13 +340,13 @@ Synchronous search neither paginates nor truncates: the matched set must fit wit
 
 - `errors.MODEL_NOT_FOUND` — `404` — model not registered for the calling tenant (search, async submit)
 - `errors.SEARCH_JOB_NOT_FOUND` — `404` — async job UUID does not exist.
-- `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — cancel attempted on a job that is already `SUCCESSFUL`, `FAILED`, or `CANCELLED`; error code in response is `BAD_REQUEST`
+- `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — cancel attempted on a job that is already `SUCCESSFUL`, `FAILED`, or `CANCELLED`; body carries `currentStatus` and `snapshotId`
 - `errors.SEARCH_RESULT_LIMIT` — `400` — direct search's matched entity count exceeded the requested `limit`; enforced on every direct-search code path (Searcher pushdown and in-memory fallback alike). Async search never returns this code — an oversized `pageSize`/`pageNumber` on result retrieval is `errors.BAD_REQUEST` instead
 - `errors.SCAN_BUDGET_EXHAUSTED` — `400` — a non-indexable condition (e.g. a regex or wildcard path) forced a residual scan that examined more rows than the backend's configured scan budget; narrow the query or add an indexable predicate
 - `errors.SEARCH_TIMEOUT` — `408` — direct search's client-supplied `timeoutMillis` elapsed before the result set was collected; retryable, and nothing partial is returned
 - `errors.SEARCH_SHARD_TIMEOUT` — per-shard search timeout exceeded (relevant for distributed backends)
-- `errors.SEARCH_QUEUE_FULL` — `503` — async submit's worker pool has no free worker and its submit queue is at capacity; retryable, tune via `CYODA_SEARCH_ASYNC_WORKERS`/`CYODA_SEARCH_ASYNC_QUEUE`
-- `errors.INVALID_FIELD_PATH` — `400` — condition references one or more JSONPath field paths absent from the model's locked schema, or a `lifecycle` condition names an unknown meta filter field; the response detail names each offending path
+- `errors.SEARCH_QUEUE_FULL` — `503` — async submit refused for capacity: either the node's worker pool and submit queue are both exhausted, or the tenant is at its in-flight share of this node; retryable, tune via `CYODA_SEARCH_ASYNC_WORKERS`/`CYODA_SEARCH_ASYNC_QUEUE`/`CYODA_SEARCH_ASYNC_MAX_PER_TENANT`
+- `errors.INVALID_FIELD_PATH` — `400` — a `jsonPath` is not valid JSON Path syntax (missing `$.` leader, bracket-quoted access, empty/trailing segment, disallowed character), or references field paths absent from the model's locked schema, or a `lifecycle` condition names an unknown meta filter field; the response detail names each offending path and why
 - `errors.CONDITION_TYPE_MISMATCH` — `400` — condition value type is incompatible with the target field's locked DataType, e.g. a string/pattern operator or a non-timestamp value on a temporal meta field (`creationDate`/`lastUpdateTime`)
 - `errors.BAD_REQUEST` — `400` — malformed condition JSON, invalid limit/pageSize/pageNumber, result retrieval on non-SUCCESSFUL job, unknown async job ID in result retrieval
 

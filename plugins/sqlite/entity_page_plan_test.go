@@ -41,6 +41,11 @@ func explainQueryPlan(t *testing.T, db *sql.DB, query string, args ...any) strin
 // must serve BOTH the tenant/model/model-version equality filter AND the
 // entity_id ORDER BY, without a separate sort step (no "USE TEMP B-TREE
 // FOR ORDER BY" in the plan).
+//
+// The query comes from the production constant, not a copy of it: this test
+// backs a coverage waiver (see internal/e2e/async_stream_test.go), so it must
+// fail when the production query drifts rather than keep asserting the plan
+// of a query nothing executes any more.
 func TestGetPage_NonTx_UsesModelIDIndex(t *testing.T) {
 	dir := t.TempDir()
 	factory, err := sqlite.NewStoreFactoryForTest(context.Background(), filepath.Join(dir, "plan.db"))
@@ -50,13 +55,7 @@ func TestGetPage_NonTx_UsesModelIDIndex(t *testing.T) {
 	defer factory.Close()
 
 	db := sqlite.DBForTest(factory)
-	plan := explainQueryPlan(t, db,
-		`SELECT entity_id, model_name, model_version, version,
-		        json(data), json(meta), created_at, updated_at
-		 FROM entities
-		 WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND NOT deleted
-		 ORDER BY entity_id
-		 LIMIT ? OFFSET ?`,
+	plan := explainQueryPlan(t, db, sqlite.GetPageDirectQueryForTest,
 		"t1", "m1", "v1", 10, 0)
 
 	if !strings.Contains(plan, "idx_entities_model_id") {
@@ -71,6 +70,9 @@ func TestGetPage_NonTx_UsesModelIDIndex(t *testing.T) {
 // evidence that GetVersionByTransaction's lookup scopes to the target
 // entity's own version range (via entity_versions' PRIMARY KEY
 // (tenant_id, entity_id, version)) rather than scanning the whole table.
+//
+// As above, the query comes from the production constant so the assertion
+// cannot outlive the query it describes.
 func TestGetVersionByTransaction_StaysWithinEntityVersions(t *testing.T) {
 	dir := t.TempDir()
 	factory, err := sqlite.NewStoreFactoryForTest(context.Background(), filepath.Join(dir, "plan.db"))
@@ -80,15 +82,7 @@ func TestGetVersionByTransaction_StaysWithinEntityVersions(t *testing.T) {
 	defer factory.Close()
 
 	db := sqlite.DBForTest(factory)
-	plan := explainQueryPlan(t, db,
-		`SELECT ev.entity_id, ev.model_name, ev.model_version, ev.version,
-		        json(ev.data), json(ev.meta), ev.submit_time,
-		        ev.change_type, ev.user_id, ev.transaction_id
-		 FROM entity_versions ev
-		 WHERE ev.tenant_id = ? AND ev.entity_id = ? AND ev.transaction_id = ?
-		   AND ev.change_type != 'DELETED'
-		 ORDER BY ev.version ASC
-		 LIMIT 1`,
+	plan := explainQueryPlan(t, db, sqlite.GetVersionByTransactionQueryForTest,
 		"t1", "e1", "tx1")
 
 	if !strings.Contains(plan, "USING PRIMARY KEY") || !strings.Contains(plan, "entity_id") {

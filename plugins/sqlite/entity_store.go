@@ -1089,18 +1089,23 @@ func (s *entityStore) GetPage(ctx context.Context, modelRef spi.ModelRef, limit,
 	return s.getPageTx(ctx, tx, modelRef, limit, offset)
 }
 
+// getPageDirectQuery is the SQL getPageDirect executes. Declared as a const
+// so the EXPLAIN QUERY PLAN coverage in entity_page_plan_test.go asserts the
+// plan of THIS query — a hand-copied transcription there would keep passing
+// against a stale plan after the production query drifted.
+const getPageDirectQuery = `SELECT entity_id, model_name, model_version, version,
+		        json(data), json(meta), created_at, updated_at
+		 FROM entities
+		 WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND NOT deleted
+		 ORDER BY entity_id
+		 LIMIT ? OFFSET ?`
+
 // getPageDirect is the non-tx, asAt==nil path: the entities table's current
 // state, paged in SQL via ORDER BY entity_id LIMIT/OFFSET (idx_entities_model_id
 // serves both the WHERE equality and the ORDER BY without a separate sort —
 // see migrations/000006_search_epoch.up.sql).
 func (s *entityStore) getPageDirect(ctx context.Context, modelRef spi.ModelRef, limit, offset int) ([]*spi.Entity, error) {
-	rows, err := s.readDB.QueryContext(ctx,
-		`SELECT entity_id, model_name, model_version, version,
-		        json(data), json(meta), created_at, updated_at
-		 FROM entities
-		 WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND NOT deleted
-		 ORDER BY entity_id
-		 LIMIT ? OFFSET ?`,
+	rows, err := s.readDB.QueryContext(ctx, getPageDirectQuery,
 		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("GetPage: query: %w", err)
@@ -1257,25 +1262,36 @@ func (s *entityStore) getPageTx(ctx context.Context, tx *spi.TransactionState, m
 	return page, nil
 }
 
-// GetVersionByTransaction returns the earliest (lowest-Version) version of
-// entityID written by transaction txID. DELETED tombstones never match — see
-// spi.EntityStore.GetVersionByTransaction's doc comment — and an empty txID
-// never matches, even a stored-empty one from a non-transactional write, so
-// it is rejected pre-query rather than reaching SQL at all.
-func (s *entityStore) GetVersionByTransaction(ctx context.Context, entityID, txID string) (*spi.EntityVersion, error) {
-	if txID == "" {
-		return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
-	}
-
-	row := s.db.QueryRowContext(ctx,
-		`SELECT ev.entity_id, ev.model_name, ev.model_version, ev.version,
+// getVersionByTransactionQuery is the SQL GetVersionByTransaction executes.
+// Declared as a const for the same reason as getPageDirectQuery: the EXPLAIN
+// QUERY PLAN coverage asserts the plan of THIS query, not a copy of it.
+const getVersionByTransactionQuery = `SELECT ev.entity_id, ev.model_name, ev.model_version, ev.version,
 		        json(ev.data), json(ev.meta), ev.submit_time,
 		        ev.change_type, ev.user_id, ev.transaction_id
 		 FROM entity_versions ev
 		 WHERE ev.tenant_id = ? AND ev.entity_id = ? AND ev.transaction_id = ?
 		   AND ev.change_type != 'DELETED'
 		 ORDER BY ev.version ASC
-		 LIMIT 1`,
+		 LIMIT 1`
+
+// GetVersionByTransaction returns the earliest (lowest-Version) version of
+// entityID written by transaction txID. DELETED tombstones never match — see
+// spi.EntityStore.GetVersionByTransaction's doc comment — and an empty txID
+// never matches, even a stored-empty one from a non-transactional write, so
+// it is rejected pre-query rather than reaching SQL at all.
+//
+// Reads on the dedicated reader connection (readDB), not the writer db, for
+// the reason GetPage states: entity_versions rows only become visible on
+// commit (the transaction manager buffers writes in memory and flushes them
+// in one sqlTx — see txmanager.go), so there is no ambient SQL transaction
+// for this read to join, and holding the writer's single connection for an
+// audit read starves concurrent writes.
+func (s *entityStore) GetVersionByTransaction(ctx context.Context, entityID, txID string) (*spi.EntityVersion, error) {
+	if txID == "" {
+		return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
+	}
+
+	row := s.readDB.QueryRowContext(ctx, getVersionByTransactionQuery,
 		string(s.tenantID), entityID, txID)
 
 	var (
@@ -1358,6 +1374,10 @@ func (s *entityStore) GetVersionByTransaction(ctx context.Context, entityID, txI
 // all" before filtering): an entity with versions, none of which fall
 // inside the requested window, returns an empty slice with a nil error —
 // ErrNotFound is reserved for an entity with no version rows whatsoever.
+//
+// Reads on the dedicated reader connection (readDB) — see
+// GetVersionByTransaction for why an audit read never needs the writer's
+// single connection.
 func (s *entityStore) GetVersionMetadata(ctx context.Context, entityID string, opts spi.VersionMetadataOptions) ([]spi.EntityVersionMeta, error) {
 	query := `SELECT version, change_type, submit_time, json(meta), user_id, transaction_id
 	          FROM entity_versions
@@ -1378,7 +1398,7 @@ func (s *entityStore) GetVersionMetadata(ctx context.Context, entityID string, o
 		args = append(args, opts.Limit)
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.readDB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("GetVersionMetadata: query: %w", err)
 	}
@@ -1424,7 +1444,7 @@ func (s *entityStore) GetVersionMetadata(ctx context.Context, entityID string, o
 		// error) with a second, window-less existence probe — paid only on
 		// this already-empty path, never on the common non-empty one.
 		var exists bool
-		if err := s.db.QueryRowContext(ctx,
+		if err := s.readDB.QueryRowContext(ctx,
 			"SELECT EXISTS(SELECT 1 FROM entity_versions WHERE tenant_id = ? AND entity_id = ?)",
 			string(s.tenantID), entityID).Scan(&exists); err != nil {
 			return nil, fmt.Errorf("GetVersionMetadata: existence check: %w", err)

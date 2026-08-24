@@ -152,8 +152,14 @@ func (f *StoreFactory) querier() Querier {
 // transaction resolution. Used by the async-search job store alone; see
 // classifiedQuerier's godoc for why that record must not join the
 // caller's transaction.
+//
+// Not joining is exactly what makes a submit issued INSIDE a transaction hold
+// two connections at once, so the acquire is bounded on that path — the shared
+// mechanism in unjoinedQuerier, the same one every point-in-time read takes.
+// Outside a transaction (the reaper, the heartbeat, the job goroutine's own
+// writes) it is the plain unbounded pool, unchanged.
 func (f *StoreFactory) poolQuerier() Querier {
-	return classifiedQuerier{inner: f.pool}
+	return unjoinedQuerier{pool: f.pool, acquireTimeout: f.cfg.AcquireTimeout, what: "async search job"}
 }
 
 // classifyFor classifies a statement error against whichever transaction the

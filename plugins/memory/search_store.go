@@ -36,6 +36,30 @@ func newAsyncSearchStore(clock Clock) *AsyncSearchStore {
 	}
 }
 
+// copySearchJob returns a deep copy of job: the Condition and SearchOpts
+// byte slices and the FinishTime/HeartbeatTime pointers are reallocated, so
+// nothing a caller holds aliases store state (and nothing the store holds
+// aliases a caller's value). The SQL backends get this for free by rebuilding
+// every job from freshly-scanned rows; this is the in-memory equivalent.
+func copySearchJob(job spi.SearchJob) spi.SearchJob {
+	cp := job
+	if job.Condition != nil {
+		cp.Condition = append([]byte(nil), job.Condition...)
+	}
+	if job.SearchOpts != nil {
+		cp.SearchOpts = append([]byte(nil), job.SearchOpts...)
+	}
+	if job.FinishTime != nil {
+		ft := *job.FinishTime
+		cp.FinishTime = &ft
+	}
+	if job.HeartbeatTime != nil {
+		hb := *job.HeartbeatTime
+		cp.HeartbeatTime = &hb
+	}
+	return cp
+}
+
 func (s *AsyncSearchStore) resolveTenant(ctx context.Context) (spi.TenantID, error) {
 	uc := spi.GetUserContext(ctx)
 	if uc == nil {
@@ -64,7 +88,7 @@ func (s *AsyncSearchStore) CreateJob(ctx context.Context, job *spi.SearchJob) er
 
 	// Defensive copy. Epoch is always persisted as 1, regardless of the
 	// value set on job.Epoch by the caller.
-	copied := *job
+	copied := copySearchJob(*job)
 	copied.Epoch = 1
 	tenantJobs[job.ID] = &searchJobEntry{job: copied}
 	return nil
@@ -89,7 +113,7 @@ func (s *AsyncSearchStore) GetJob(ctx context.Context, jobID string) (*spi.Searc
 	}
 
 	// Return a defensive copy
-	copied := entry.job
+	copied := copySearchJob(entry.job)
 	return &copied, nil
 }
 
@@ -349,7 +373,7 @@ func (s *AsyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 			hb := now
 			entry.job.HeartbeatTime = &hb
 
-			copied := entry.job
+			copied := copySearchJob(entry.job)
 			claimed = append(claimed, &copied)
 		}
 	}

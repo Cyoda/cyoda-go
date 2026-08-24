@@ -31,7 +31,7 @@ import (
 // see ErrQueueFull for a few microseconds — see pool_test.go's
 // mustSubmitEventually, unavailable here since it's unexported in a
 // different test package).
-func mustOccupyPool(t *testing.T, pool *search.WorkerPool, job func(context.Context)) {
+func mustOccupyPool(t *testing.T, pool *search.WorkerPool, job func()) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for {
@@ -409,7 +409,7 @@ func TestExecutor_HeartbeatRecordedWhileQueuedAndScanning(t *testing.T) {
 	t.Cleanup(func() { pool.Drain(context.Background()) })
 	release := make(chan struct{})
 	started := make(chan struct{})
-	if err := pool.Submit(func(context.Context) {
+	if err := pool.Submit(func() {
 		close(started)
 		<-release
 	}); err != nil {
@@ -638,7 +638,7 @@ func TestExecutor_SubmitAsync_QueueFullCleansUp(t *testing.T) {
 	t.Cleanup(func() { pool.Drain(context.Background()) })
 	release := make(chan struct{})
 	started := make(chan struct{})
-	mustOccupyPool(t, pool, func(context.Context) {
+	mustOccupyPool(t, pool, func() {
 		close(started)
 		<-release
 	})
