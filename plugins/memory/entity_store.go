@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"sort"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -21,7 +22,13 @@ import (
 // invariant doc here AND audit the memory plugin's Iterable/GroupedAggregator
 // implementations.
 type entityVersion struct {
-	entity        *spi.Entity
+	entity *spi.Entity
+	// version is this row's version number, populated for EVERY row
+	// including DELETED tombstones (entity is nil there, so Meta.Version
+	// is unavailable — this field is the single source of truth GetVersionMetadata
+	// and GetVersionByTransaction read, fixing a prior zero-Version tombstone
+	// bug where a deleted row's version was unrecoverable).
+	version       int64
 	transactionID string
 	submitTime    time.Time // set at save time (or at transaction commit time later)
 	deleted       bool
@@ -30,7 +37,7 @@ type entityVersion struct {
 	// changeUserKind and executor carry the follow-on-action attribution
 	// (see docs/superpowers/plans/2026-07-23-attribute-followon-actions.md).
 	// Populated independently of entity — entity is nil for DELETED
-	// versions, but attribution must not be (see GetVersionHistory).
+	// versions, but attribution must not be (see GetVersionMetadata).
 	changeUserKind spi.PrincipalKind
 	executor       spi.Principal
 }
@@ -163,8 +170,12 @@ func (s *EntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		if tx.RolledBack {
 			return 0, fmt.Errorf("Save: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
-		// Transaction mode: write to buffer, not main store.
+		// Transaction mode: write to buffer, not main store. Stage any
+		// value this overwrites (see stageSuperseded's godoc) BEFORE
+		// overwriting tx.Buffer, so a same-tx double-save of the same
+		// entity can still flush both versions at Commit.
 		cp := copyEntity(entity)
+		s.factory.txManager.stageSuperseded(tx.ID, entity.Meta.ID, tx.Buffer[entity.Meta.ID])
 		tx.Buffer[entity.Meta.ID] = cp
 		tx.WriteSet[entity.Meta.ID] = true
 		// If the entity was previously marked for deletion in this tx, unmark it
@@ -218,8 +229,10 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 					}
 				}
 			}
-			// Write to buffer under the same lock hold.
+			// Write to buffer under the same lock hold. Stage any value
+			// this overwrites (see stageSuperseded's godoc) first.
 			cp := copyEntity(entity)
+			s.factory.txManager.stageSuperseded(tx.ID, entity.Meta.ID, tx.Buffer[entity.Meta.ID])
 			tx.Buffer[entity.Meta.ID] = cp
 			tx.WriteSet[entity.Meta.ID] = true
 		}()
@@ -324,6 +337,7 @@ func (s *EntityStore) saveUnlocked(ctx context.Context, entity *spi.Entity) (int
 	// invariant: appended versions are immutable post-publish; see entityVersion godoc.
 	s.factory.entityData[tid][eid] = append(versions, entityVersion{
 		entity:         saved,
+		version:        nextVersion,
 		transactionID:  entity.Meta.TransactionID,
 		submitTime:     now,
 		changeType:     changeType,
@@ -331,6 +345,7 @@ func (s *EntityStore) saveUnlocked(ctx context.Context, entity *spi.Entity) (int
 		changeUserKind: entity.Meta.ChangeUserKind,
 		executor:       entity.Meta.ChangeExecutor,
 	})
+	s.factory.recordTxIndex(tid, eid, entity.Meta.TransactionID, nextVersion)
 
 	// Apply unique-key claims: release old (handles update-moves-key) then insert new.
 	s.factory.releaseClaims(string(tid), eid)
@@ -621,8 +636,11 @@ func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 		return fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
 	}
 	attributed, executor := spi.AttributionFor(ctx)
+	// latest.deleted was already checked false above, so latest.entity is
+	// guaranteed non-nil here.
 	s.factory.entityData[s.tenant][entityID] = append(versions, entityVersion{
 		entity:         nil,
+		version:        latest.entity.Meta.Version + 1,
 		transactionID:  "",
 		submitTime:     s.factory.clock.Now(),
 		deleted:        true,
@@ -709,6 +727,7 @@ func (s *EntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 		if latest.entity.Meta.ModelRef == modelRef {
 			s.factory.entityData[s.tenant][eid] = append(versions, entityVersion{
 				entity:         nil,
+				version:        latest.entity.Meta.Version + 1,
 				transactionID:  "",
 				submitTime:     now,
 				deleted:        true,
@@ -853,37 +872,220 @@ func (s *EntityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, s
 	return result, nil
 }
 
-func (s *EntityStore) GetVersionHistory(ctx context.Context, entityID string) ([]spi.EntityVersion, error) {
+// currentStatePointersUnlocked returns the latest non-deleted *spi.Entity
+// pointer (uncopied — see copyEntity call sites for where copies are made)
+// per entity matching modelRef. Caller must hold at least
+// s.factory.entityMu.RLock().
+func (s *EntityStore) currentStatePointersUnlocked(ctx context.Context, modelRef spi.ModelRef) ([]*spi.Entity, error) {
+	result := make([]*spi.Entity, 0)
+	i := 0
+	for _, versions := range s.factory.entityData[s.tenant] {
+		if i&1023 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		i++
+		if len(versions) == 0 {
+			continue
+		}
+		latest := versions[len(versions)-1]
+		if latest.deleted {
+			continue
+		}
+		if latest.entity.Meta.ModelRef == modelRef {
+			result = append(result, latest.entity)
+		}
+	}
+	return result, nil
+}
+
+// pageSlice sorts rows byte-wise by entity ID — memory's documented
+// canonical order (see spi.OrderSpec's doc comment on Source=SourceMeta,
+// Path="id") — and returns a copied [offset:offset+limit) window. rows are
+// NOT copied before this call; only the entities that end up on the
+// returned page are copied, per GetPage's efficiency contract.
+func pageSlice(rows []*spi.Entity, limit, offset int) []*spi.Entity {
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Meta.ID < rows[j].Meta.ID })
+	if offset >= len(rows) {
+		return []*spi.Entity{}
+	}
+	end := offset + limit
+	if end > len(rows) {
+		end = len(rows)
+	}
+	page := rows[offset:end]
+	out := make([]*spi.Entity, len(page))
+	for i, e := range page {
+		out[i] = copyEntity(e)
+	}
+	return out
+}
+
+// GetPage returns a page of modelRef's entities in memory's canonical
+// byte-wise entity-ID order. See the spi.EntityStore.GetPage doc comment
+// for the full contract: limit>=1 && offset>=0 is required; asAt==nil
+// reads the live (in-tx overlay when a transaction is ambient) view and,
+// in-tx, unconditionally records every returned entity in the
+// transaction's read-set (unlike Search/Iterate's opt-in TrackingRead);
+// asAt!=nil ignores any ambient transaction and reads committed-only
+// state as of that instant.
+func (s *EntityStore) GetPage(ctx context.Context, modelRef spi.ModelRef, limit, offset int, asAt *time.Time) ([]*spi.Entity, error) {
+	if limit < 1 {
+		return nil, fmt.Errorf("GetPage: limit must be >= 1")
+	}
+	if offset < 0 {
+		return nil, fmt.Errorf("GetPage: offset must be >= 0")
+	}
+
+	if asAt != nil {
+		// Committed-only PIT snapshot — ignores any ambient transaction's
+		// overlay, mirroring GetAllAsAt.
+		s.factory.entityMu.RLock()
+		defer s.factory.entityMu.RUnlock()
+		rows := s.getAllSnapshotPointersUnlocked(modelRef, *asAt)
+		return pageSlice(rows, limit, offset), nil
+	}
+
+	tx := spi.GetTransaction(ctx)
+	if tx == nil {
+		s.factory.entityMu.RLock()
+		defer s.factory.entityMu.RUnlock()
+		rows, err := s.currentStatePointersUnlocked(ctx, modelRef)
+		if err != nil {
+			return nil, fmt.Errorf("GetPage: %w", err)
+		}
+		return pageSlice(rows, limit, offset), nil
+	}
+
+	// In-tx: merged committed ∪ write-set view. Hold tx.OpMu.RLock for the
+	// duration so Commit/Rollback (tx.OpMu.Lock) cannot race with our reads
+	// of tx.Buffer/tx.Deletes and our write to tx.ReadSet. Lock order:
+	// tx.OpMu before factory.entityMu (matches Save/GetAll).
+	tx.OpMu.RLock()
+	defer tx.OpMu.RUnlock()
+	if tx.RolledBack {
+		return nil, fmt.Errorf("GetPage: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
+	}
+
+	var mainEntities []*spi.Entity
+	func() {
+		s.factory.entityMu.RLock()
+		defer s.factory.entityMu.RUnlock()
+		mainEntities = s.getAllSnapshotPointersUnlocked(modelRef, tx.SnapshotTime)
+	}()
+
+	merged := make(map[string]*spi.Entity, len(mainEntities))
+	for _, e := range mainEntities {
+		if !tx.Deletes[e.Meta.ID] {
+			merged[e.Meta.ID] = e
+		}
+	}
+	for id, e := range tx.Buffer {
+		if e.Meta.ModelRef == modelRef {
+			merged[id] = e
+		}
+	}
+	rows := make([]*spi.Entity, 0, len(merged))
+	for _, e := range merged {
+		rows = append(rows, e)
+	}
+	page := pageSlice(rows, limit, offset)
+	// Unconditional: every entity on the returned page enters the
+	// transaction's read-set — no TrackingRead knob, per GetPage's SPI doc
+	// comment (unlike Search/Iterate's opt-in TrackingRead).
+	for _, e := range page {
+		tx.ReadSet[e.Meta.ID] = true
+	}
+	return page, nil
+}
+
+// GetVersionByTransaction returns the earliest (lowest-Version) version of
+// entityID written by transaction txID. DELETED tombstones never match
+// (they carry no entity payload — see the SPI doc comment) and an empty
+// txID never matches, even a stored-empty one from a non-transactional
+// write.
+func (s *EntityStore) GetVersionByTransaction(ctx context.Context, entityID, txID string) (*spi.EntityVersion, error) {
+	if txID == "" {
+		return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
+	}
+
 	s.factory.entityMu.RLock()
 	defer s.factory.entityMu.RUnlock()
 
-	// Historical query: always reads committed data.
+	version, ok := s.factory.txIndex[s.tenant][entityID][txID]
+	if !ok {
+		return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
+	}
+	for _, v := range s.factory.entityData[s.tenant][entityID] {
+		if v.deleted || v.entity == nil {
+			continue
+		}
+		if v.entity.Meta.Version != version {
+			continue
+		}
+		return &spi.EntityVersion{
+			Entity:         copyEntity(v.entity),
+			ChangeType:     v.changeType,
+			User:           v.user,
+			Timestamp:      v.submitTime,
+			Version:        v.entity.Meta.Version,
+			AttributedKind: v.changeUserKind,
+			Executor:       v.executor,
+		}, nil
+	}
+	// The index points at a version that is no longer present as a live
+	// row (should not happen — txIndex only ever records non-deleted
+	// saves). Treat defensively as not found rather than panicking.
+	return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
+}
+
+// GetVersionMetadata returns entityID's version metadata — no entity
+// payload — newest first, ties broken by Version DESC. opts.From/
+// opts.Until bound the window inclusively (nil side unbounded); opts.Limit
+// caps the row count (0 means all). Deleted is true only on the DELETED
+// tombstone row, and Version is populated on every returned row, including
+// the tombstone (entityVersion.version is the source of truth for this —
+// see its doc comment).
+func (s *EntityStore) GetVersionMetadata(ctx context.Context, entityID string, opts spi.VersionMetadataOptions) ([]spi.EntityVersionMeta, error) {
+	s.factory.entityMu.RLock()
+	defer s.factory.entityMu.RUnlock()
+
 	versions, ok := s.factory.entityData[s.tenant][entityID]
 	if !ok || len(versions) == 0 {
 		return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
 	}
 
-	// NOTE: optimization opportunity — both current consumers (audit handler and
-	// entity changes metadata) only use metadata, never Entity.Data. When performance
-	// matters, consider a metadata-only variant that skips copying Data bytes.
-	result := make([]spi.EntityVersion, 0, len(versions))
+	result := make([]spi.EntityVersionMeta, 0, len(versions))
 	for _, v := range versions {
-		ev := spi.EntityVersion{
-			ChangeType: v.changeType,
-			User:       v.user,
-			Timestamp:  v.submitTime,
-			Deleted:    v.deleted,
-			// AttributedKind/Executor are populated independently of Entity
-			// below — Entity is nil for DELETED versions, but attribution
-			// must not be (see entityVersion godoc).
+		if opts.From != nil && v.submitTime.Before(*opts.From) {
+			continue
+		}
+		if opts.Until != nil && v.submitTime.After(*opts.Until) {
+			continue
+		}
+		result = append(result, spi.EntityVersionMeta{
+			Version:        v.version,
+			ChangeType:     v.changeType,
+			Timestamp:      v.submitTime,
+			User:           v.user,
 			AttributedKind: v.changeUserKind,
 			Executor:       v.executor,
+			TransactionID:  v.transactionID,
+			Deleted:        v.changeType == "DELETED",
+		})
+	}
+
+	// Newest first, ties broken by Version DESC.
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].Timestamp.Equal(result[j].Timestamp) {
+			return result[i].Timestamp.After(result[j].Timestamp)
 		}
-		if v.entity != nil {
-			ev.Entity = copyEntity(v.entity)
-			ev.Version = v.entity.Meta.Version
-		}
-		result = append(result, ev)
+		return result[i].Version > result[j].Version
+	})
+
+	if opts.Limit > 0 && len(result) > opts.Limit {
+		result = result[:opts.Limit]
 	}
 	return result, nil
 }

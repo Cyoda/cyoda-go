@@ -81,7 +81,7 @@ func (h *GroupedStatsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		}
 		common.WriteError(w, r, common.Operational(
 			http.StatusBadRequest,
-			"MALFORMED_REQUEST",
+			common.ErrCodeMalformedRequest,
 			"failed to read request body",
 		))
 		return
@@ -96,7 +96,7 @@ func (h *GroupedStatsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	if err := dec.Decode(&req); err != nil {
 		common.WriteError(w, r, common.Operational(
 			http.StatusBadRequest,
-			"MALFORMED_REQUEST",
+			common.ErrCodeMalformedRequest,
 			"invalid JSON: "+err.Error(),
 		))
 		return
@@ -118,7 +118,7 @@ func (h *GroupedStatsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		// is a programming error — report as 400 MALFORMED_REQUEST so
 		// the client can still inspect the message.
 		common.WriteError(w, r, common.Operational(
-			http.StatusBadRequest, "MALFORMED_REQUEST", err.Error(),
+			http.StatusBadRequest, common.ErrCodeMalformedRequest, err.Error(),
 		))
 		return
 	}

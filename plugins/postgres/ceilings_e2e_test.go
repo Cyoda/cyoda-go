@@ -390,7 +390,11 @@ func searchCeilingStores(t *testing.T, dsn string, overrides map[string]string) 
 }
 
 // searchCeilingScan runs the scan an async search job runs: a point-in-time read
-// over the seeded model, matching everything.
+// over the seeded model, matching everything. Limit is exactly the seeded
+// count (searchCeilingSeedRows+1, including the original "seed" entity) —
+// Search is bounded-or-fail (opts.Limit >= 1 is required; exactly-at-limit
+// succeeds), so an unbounded Limit is no longer available to ask for
+// "everything" with.
 func searchCeilingScan(t *testing.T, es spi.EntityStore, ctx context.Context) ([]*spi.Entity, error) {
 	t.Helper()
 	now := time.Now()
@@ -398,6 +402,7 @@ func searchCeilingScan(t *testing.T, es spi.EntityStore, ctx context.Context) ([
 		ModelName:    searchCeilingModel,
 		ModelVersion: "1",
 		PointInTime:  &now,
+		Limit:        searchCeilingSeedRows + 1,
 	})
 }
 
@@ -483,5 +488,79 @@ func TestE2E_SearchCeiling_FiresOnTheScanAndNowhereElse(t *testing.T) {
 	}
 	if len(got) != searchCeilingSeedRows+1 {
 		t.Fatalf("interactive scan returned %d entities, want %d", len(got), searchCeilingSeedRows+1)
+	}
+}
+
+// searchCeilingIterate runs the scan an async search job's Iterate path
+// runs: a point-in-time read over the seeded model, matching everything,
+// drained the same way spitest's drainIterator does (Next/Entity, then a
+// sticky Err(), then Close()) — because Iterate hands back an Iterator
+// rather than a slice, the 57014 the ceiling raises surfaces from Err()
+// after the drain, not from the call that opens the iterator.
+func searchCeilingIterate(t *testing.T, es spi.EntityStore, ctx context.Context) ([]*spi.Entity, error) {
+	t.Helper()
+	now := time.Now()
+	it, err := es.(spi.Iterable).Iterate(ctx, spi.ModelRef{EntityName: searchCeilingModel, ModelVersion: "1"},
+		spi.Filter{}, spi.IterateOptions{PointInTime: &now})
+	if err != nil {
+		return nil, err
+	}
+	var got []*spi.Entity
+	for it.Next() {
+		got = append(got, it.Entity())
+	}
+	iterErr := it.Err()
+	if closeErr := it.Close(); closeErr != nil {
+		t.Fatalf("Close: %v", closeErr)
+	}
+	return got, iterErr
+}
+
+// TestE2E_SearchCeiling_Iterate_FiresOnTheScanAndNowhereElse is Iterate's
+// mirror of TestE2E_SearchCeiling_FiresOnTheScanAndNowhereElse above. Iterate
+// carries its own copy of the three-way ceiling gate (grouped_stats.go's
+// iterateUnderOwnCeiling) because the async-search scan may run through
+// either entry point, and the 57014 has to reach the caller through a
+// different channel: Search returns the classified error directly, while
+// Iterate's scan runs on a transaction the returned Iterator now owns, so the
+// cancellation surfaces later, from Err() after Next() stops — proving that
+// postgresIter's mid-iteration classification path (not just the one at
+// Search's single return point) names the ceiling correctly.
+func TestE2E_SearchCeiling_Iterate_FiresOnTheScanAndNowhereElse(t *testing.T) {
+	dsn := skipIfNoLiveDB(t)
+	seedSearchCeilingModel(t, dsn)
+
+	// The 1ms is safe on this side: the scan's preamble runs under the generous
+	// interactive ceiling, and the search ceiling only takes effect from the
+	// SET LOCAL onwards — so the scan itself is the first statement it bounds.
+	es, ass := searchCeilingStores(t, dsn, map[string]string{
+		"CYODA_POSTGRES_STATEMENT_TIMEOUT":        searchCeilingGenerous,
+		"CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT": "1ms",
+	})
+	marker, ok := ass.(asyncScanMarker)
+	if !ok {
+		t.Fatal("the postgres AsyncSearchStore does not mark a context as an async scan")
+	}
+
+	_, err := searchCeilingIterate(t, es, marker.AsyncScanContext(searchCeilingCtx()))
+	if err == nil {
+		t.Fatal("the async iterate completed under a 1ms search ceiling; nothing bounded it")
+	}
+	var exceeded interface{ SearchCeilingExceeded() bool }
+	if !errors.As(err, &exceeded) || !exceeded.SearchCeilingExceeded() {
+		t.Fatalf("iterate failed with %v, which the domain cannot recognise as the search ceiling firing", err)
+	}
+
+	// The interactive path is unaffected: the same store, on an unmarked
+	// context, iterates the same scan to completion under the pool's
+	// generous ceiling — proving the ceiling did not leak onto ordinary
+	// Iterate callers, and that Close()'s rollback did not corrupt the
+	// pool connection the next Iterate call acquires.
+	got, err := searchCeilingIterate(t, es, searchCeilingCtx())
+	if err != nil {
+		t.Fatalf("the search ceiling leaked onto the interactive path: %v", err)
+	}
+	if len(got) != searchCeilingSeedRows+1 {
+		t.Fatalf("interactive iterate returned %d entities, want %d", len(got), searchCeilingSeedRows+1)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"net/http"
 	"strings"
 	"sync"
@@ -550,9 +551,9 @@ type blockingSearchStore struct {
 	saveResultsGate chan struct{} // close to unblock SaveResults
 }
 
-func (b *blockingSearchStore) SaveResults(ctx context.Context, jobID string, entityIDs []string) error {
+func (b *blockingSearchStore) SaveResults(ctx context.Context, jobID string, epoch int64, entityIDs iter.Seq[string]) error {
 	<-b.saveResultsGate // block until gate is opened
-	return b.AsyncSearchStore.SaveResults(ctx, jobID, entityIDs)
+	return b.AsyncSearchStore.SaveResults(ctx, jobID, epoch, entityIDs)
 }
 
 func TestCancelRaceDoesNotOverwriteCancelled(t *testing.T) {
@@ -615,6 +616,110 @@ func TestCancelRaceDoesNotOverwriteCancelled(t *testing.T) {
 	}
 }
 
+// cancelDispatchCaptureStore wraps spi.AsyncSearchStore, blocks SaveResults
+// until released (so the job is deterministically still RUNNING when the
+// test calls CancelAsync), and records Cancel/UpdateJobStatus calls so the
+// test can assert which method CancelAsync dispatches through.
+type cancelDispatchCaptureStore struct {
+	spi.AsyncSearchStore
+	saveResultsGate chan struct{} // close to unblock SaveResults
+
+	mu                sync.Mutex
+	cancelCalls       int
+	cancelFinishTime  time.Time
+	updateStatusCalls int
+}
+
+func (c *cancelDispatchCaptureStore) SaveResults(ctx context.Context, jobID string, epoch int64, entityIDs iter.Seq[string]) error {
+	<-c.saveResultsGate // block until gate is opened
+	return c.AsyncSearchStore.SaveResults(ctx, jobID, epoch, entityIDs)
+}
+
+func (c *cancelDispatchCaptureStore) Cancel(ctx context.Context, jobID string, finishTime time.Time) error {
+	c.mu.Lock()
+	c.cancelCalls++
+	c.cancelFinishTime = finishTime
+	c.mu.Unlock()
+	return c.AsyncSearchStore.Cancel(ctx, jobID, finishTime)
+}
+
+func (c *cancelDispatchCaptureStore) UpdateJobStatus(ctx context.Context, jobID string, epoch int64, status string, resultCount int, errMsg string, finishTime time.Time, calcTimeMs int64) error {
+	c.mu.Lock()
+	c.updateStatusCalls++
+	c.mu.Unlock()
+	return c.AsyncSearchStore.UpdateJobStatus(ctx, jobID, epoch, status, resultCount, errMsg, finishTime, calcTimeMs)
+}
+
+// TestCancelAsync_DispatchesStoreCancel verifies that CancelAsync on a
+// RUNNING job calls the store's Cancel with a non-zero finishTime, and does
+// NOT call UpdateJobStatus — CancelAsync must dispatch through Cancel, not
+// reimplement the transition via the generic status-update path (which
+// leaves cancelled jobs unreapable if the store's UpdateJobStatus path
+// diverges from Cancel's terminal-state handling).
+func TestCancelAsync_DispatchesStoreCancel(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	uuids := common.NewTestUUIDGenerator()
+	realStore, _ := factory.AsyncSearchStore(context.Background())
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, factory, ref)
+
+	gate := make(chan struct{})
+	capture := &cancelDispatchCaptureStore{
+		AsyncSearchStore: realStore,
+		saveResultsGate:  gate,
+	}
+
+	svc := search.NewSearchService(factory, uuids, capture)
+
+	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
+
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.name",
+		OperatorType: "EQUALS",
+		Value:        "Alice",
+	}
+
+	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{})
+	if err != nil {
+		t.Fatalf("SubmitAsync: %v", err)
+	}
+
+	// Wait for the goroutine to reach SaveResults (it will block on the
+	// gate), so the job is guaranteed still RUNNING when CancelAsync runs.
+	time.Sleep(50 * time.Millisecond)
+
+	result, err := svc.CancelAsync(ctx, jobID)
+	if err != nil {
+		t.Fatalf("CancelAsync: %v", err)
+	}
+	if !result.Cancelled {
+		t.Fatal("expected cancel to succeed while goroutine is blocked")
+	}
+
+	capture.mu.Lock()
+	cancelCalls := capture.cancelCalls
+	cancelFinishTime := capture.cancelFinishTime
+	updateStatusCalls := capture.updateStatusCalls
+	capture.mu.Unlock()
+
+	if cancelCalls != 1 {
+		t.Errorf("Cancel calls = %d, want 1", cancelCalls)
+	}
+	if cancelFinishTime.IsZero() {
+		t.Error("Cancel must be called with a non-zero finishTime")
+	}
+	if updateStatusCalls != 0 {
+		t.Errorf("CancelAsync must not call UpdateJobStatus, got %d calls", updateStatusCalls)
+	}
+
+	// Release the blocked goroutine so it doesn't leak past the test.
+	close(gate)
+	time.Sleep(100 * time.Millisecond)
+}
+
 // captureSearchStore is an in-memory AsyncSearchStore that records which
 // methods get called. Used by TestSubmitAsync_SelfExecutingStore_SkipsGoroutine.
 type captureSearchStore struct {
@@ -637,18 +742,18 @@ func (c *captureSearchStore) CreateJob(ctx context.Context, job *spi.SearchJob) 
 	return c.AsyncSearchStore.CreateJob(ctx, job)
 }
 
-func (c *captureSearchStore) SaveResults(ctx context.Context, jobID string, ids []string) error {
+func (c *captureSearchStore) SaveResults(ctx context.Context, jobID string, epoch int64, ids iter.Seq[string]) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.saveResultsCalls++
-	return c.AsyncSearchStore.SaveResults(ctx, jobID, ids)
+	return c.AsyncSearchStore.SaveResults(ctx, jobID, epoch, ids)
 }
 
-func (c *captureSearchStore) UpdateJobStatus(ctx context.Context, jobID string, status string, resultCount int, errMsg string, finishTime time.Time, calcTimeMs int64) error {
+func (c *captureSearchStore) UpdateJobStatus(ctx context.Context, jobID string, epoch int64, status string, resultCount int, errMsg string, finishTime time.Time, calcTimeMs int64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.updateStatusCalls++
-	return c.AsyncSearchStore.UpdateJobStatus(ctx, jobID, status, resultCount, errMsg, finishTime, calcTimeMs)
+	return c.AsyncSearchStore.UpdateJobStatus(ctx, jobID, epoch, status, resultCount, errMsg, finishTime, calcTimeMs)
 }
 
 // selfExecutingCaptureStore wraps captureSearchStore and implements the
@@ -797,7 +902,11 @@ func TestSearchDelegatesToSearcher(t *testing.T) {
 		Value:        "Alice",
 	}
 
-	results, err := svc.Search(ctx, ref, cond, search.SearchOptions{})
+	// Limit must be > 0: opts.Limit <= 0 now skips Searcher pushdown
+	// entirely (see TestSearch_LimitZeroPassesUnboundedToSearcher) — real
+	// callers always resolve a positive limit before reaching Search, and a
+	// bounded request is what this test means to exercise delegation with.
+	results, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -846,7 +955,9 @@ func TestSearch_TrackingReadPushedToSearcher(t *testing.T) {
 		Value:        "Alice",
 	}
 
-	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{TrackingRead: true})
+	// Limit: 10 — see TestSearchDelegatesToSearcher's comment: opts.Limit <=
+	// 0 skips Searcher pushdown entirely now.
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10, TrackingRead: true})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -988,7 +1099,9 @@ func TestSearchDelegatesToSearcherInTransaction(t *testing.T) {
 		Value:        "Alice",
 	}
 
-	results, err := svc.Search(txCtx, ref, cond, search.SearchOptions{})
+	// Limit: 10 — see TestSearchDelegatesToSearcher's comment: opts.Limit <=
+	// 0 skips Searcher pushdown entirely now.
+	results, err := svc.Search(txCtx, ref, cond, search.SearchOptions{Limit: 10})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -1141,7 +1254,10 @@ func TestSearch_SortByDataField_PushesOrderSpecToSearcher(t *testing.T) {
 		Value:        "Smith",
 	}
 
+	// Limit: 10 — see TestSearchDelegatesToSearcher's comment: opts.Limit <=
+	// 0 skips Searcher pushdown entirely now.
 	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{
+		Limit:   10,
 		OrderBy: []search.OrderKey{{Path: "surname", Source: spi.SourceData, Desc: true}},
 	})
 	if err != nil {
@@ -1555,12 +1671,40 @@ func TestAsyncSuccessfulWhenNotCancelled(t *testing.T) {
 	}
 }
 
+// iterableEntityStore wraps a real EntityStore and overrides Iterate. The
+// streaming async executor calls spi.Iterable.Iterate directly for a
+// translatable condition — it never reaches the plugin's Searcher.Search at
+// all (see searcherEntityStore, used by the *synchronous* Search() tests
+// above) — so this is the injection point for async-executor failure
+// scenarios (panics, sentinel/classified errors) that the pre-streaming
+// architecture used to drive through searchFn.
+type iterableEntityStore struct {
+	spi.EntityStore
+	iterateFn func(ctx context.Context, model spi.ModelRef, filter spi.Filter, opts spi.IterateOptions) (spi.Iterator, error)
+}
+
+func (s *iterableEntityStore) Iterate(ctx context.Context, model spi.ModelRef, filter spi.Filter, opts spi.IterateOptions) (spi.Iterator, error) {
+	return s.iterateFn(ctx, model, filter, opts)
+}
+
+// iterableFactory wraps a StoreFactory and returns an iterableEntityStore,
+// delegating everything else (notably ModelStore, so schema/path validation
+// runs against the real registered model) to the wrapped StoreFactory.
+type iterableFactory struct {
+	spi.StoreFactory
+	entityStore *iterableEntityStore
+}
+
+func (f *iterableFactory) EntityStore(context.Context) (spi.EntityStore, error) {
+	return f.entityStore, nil
+}
+
 // TestAsyncSearchJob_PanicIsRecovered is coverage for Task 7 (tx-lifecycle
 // safety): the async search job goroutine runs on context.Background() with
 // no HTTP handler above it to recover a panic — net/http's per-connection
 // recover has nothing to do with a background goroutine, so an unrecovered
 // panic here takes the whole process down (the search analogue of the
-// scheduler's own dispatch goroutine, which already recovers). searchFn
+// scheduler's own dispatch goroutine, which already recovers). iterateFn
 // panics to simulate a store-layer panic reaching the job; if the
 // goroutine's own recover did not exist or did not fire, this test binary
 // would already be gone rather than reaching the FAILED assertion below.
@@ -1574,13 +1718,13 @@ func TestAsyncSearchJob_PanicIsRecovered(t *testing.T) {
 	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
 
 	realStore, _ := base.EntityStore(ctx)
-	ses := &searcherEntityStore{
+	ies := &iterableEntityStore{
 		EntityStore: realStore,
-		searchFn: func(context.Context, spi.Filter, spi.SearchOptions) ([]*spi.Entity, error) {
+		iterateFn: func(context.Context, spi.ModelRef, spi.Filter, spi.IterateOptions) (spi.Iterator, error) {
 			panic("injected panic in async search execution")
 		},
 	}
-	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
+	factory := &iterableFactory{StoreFactory: base, entityStore: ies}
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
@@ -1644,13 +1788,13 @@ func TestAsyncSearchJob_PanicMarksNodeUnhealthy(t *testing.T) {
 	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
 
 	realStore, _ := base.EntityStore(ctx)
-	ses := &searcherEntityStore{
+	ies := &iterableEntityStore{
 		EntityStore: realStore,
-		searchFn: func(context.Context, spi.Filter, spi.SearchOptions) ([]*spi.Entity, error) {
+		iterateFn: func(context.Context, spi.ModelRef, spi.Filter, spi.IterateOptions) (spi.Iterator, error) {
 			panic("injected panic in async search execution")
 		},
 	}
-	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
+	factory := &iterableFactory{StoreFactory: base, entityStore: ies}
 
 	healthFlag := &atomic.Bool{}
 	healthFlag.Store(true)
@@ -1920,18 +2064,33 @@ func TestSearch_ThreadsFieldsMapIntoConditionToFilter(t *testing.T) {
 	}
 }
 
-func TestSearch_LimitZeroPassesUnboundedToSearcher(t *testing.T) {
+// TestSearch_LimitZeroSkipsSearcherPushdown pins the corrected contract:
+// spi.Searcher.Search requires Limit >= 1 (Limit <= 0 is a documented
+// contract violation every backend now enforces — see the Searcher doc
+// comment: "the engine resolves the direct-search default before calling,
+// so Search itself never needs to guess a bound"). opts.Limit <= 0 must
+// never be forwarded to the Searcher. This fixture's store (searcherEntityStore)
+// implements only spi.Searcher, not spi.Iterable, so Search's Limit<=0 branch
+// has no pushdown capability to use and falls all the way through to the
+// GetAll + in-memory-match fallback — see TestSearch_LimitZeroUsesIterablePushdown
+// below for the (now more common) case where the store also implements
+// spi.Iterable and Limit<=0 pushes down via Iterate instead of GetAll.
+// Renamed from TestSearch_LimitZeroPassesUnboundedToSearcher, whose
+// assertion (0 forwarded to the Searcher) was the pre-tightening contract.
+func TestSearch_LimitZeroSkipsSearcherPushdown(t *testing.T) {
 	base := memory.NewStoreFactory()
 	defer base.Close()
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
-	saveMinimalModel(t, ctx, base, ref)
+	saveModelWithFields(t, ctx, base, ref, map[string]schema.DataType{"name": schema.String})
+	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
 
 	realStore, _ := base.EntityStore(ctx)
 	ses := &searcherEntityStore{
 		EntityStore: realStore,
 		searchFn: func(_ context.Context, _ spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
-			return nil, nil // result set irrelevant here
+			t.Fatal("Searcher.Search must not be called for an unbounded (Limit<=0) request")
+			return nil, nil
 		},
 	}
 	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
@@ -1940,11 +2099,121 @@ func TestSearch_LimitZeroPassesUnboundedToSearcher(t *testing.T) {
 	svc := search.NewSearchService(factory, uuids, searchStore)
 
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
-	if _, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 0}); err != nil {
+	results, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 0})
+	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	if ses.capturedOpts.Limit != 0 {
-		t.Errorf("spiLimit = %d, want 0 (unbounded); service must not inject 1000", ses.capturedOpts.Limit)
+	if ses.searchCalls != 0 {
+		t.Errorf("searchCalls = %d, want 0 (Limit<=0 must skip Searcher pushdown)", ses.searchCalls)
+	}
+	if ses.getAllCalls != 1 {
+		t.Errorf("getAllCalls = %d, want 1 (Limit<=0 must use the GetAll fallback)", ses.getAllCalls)
+	}
+	if len(results) != 1 || results[0].Meta.ID != "e1" {
+		t.Fatalf("expected 1 result (e1) from the unbounded fallback, got %d", len(results))
+	}
+}
+
+// searcherIterableEntityStore wraps a searcherEntityStore and additionally
+// implements spi.Iterable, so a test can assert which pushdown capability
+// Search's Limit<=0 branch reaches for when a store offers both — the
+// question at the heart of the over-recording regression this file's
+// TestSearch_LimitZeroUsesIterablePushdown pins: does Limit<=0 correctly
+// prefer Iterate (per-yielded-entity TrackingRead recording), or does it
+// (as the bug did) fall through to GetAll (unconditional whole-model
+// recording, regardless of TrackingRead)?
+type searcherIterableEntityStore struct {
+	*searcherEntityStore
+	iterateFn           func(ctx context.Context, model spi.ModelRef, filter spi.Filter, opts spi.IterateOptions) (spi.Iterator, error)
+	iterateCalls        int
+	capturedIterateOpts spi.IterateOptions
+}
+
+func (s *searcherIterableEntityStore) Iterate(ctx context.Context, model spi.ModelRef, filter spi.Filter, opts spi.IterateOptions) (spi.Iterator, error) {
+	s.iterateCalls++
+	s.capturedIterateOpts = opts
+	return s.iterateFn(ctx, model, filter, opts)
+}
+
+// searcherIterableFactory wraps a StoreFactory and returns a
+// searcherIterableEntityStore, delegating everything else (notably
+// ModelStore, so schema/path validation runs against the real registered
+// model) to the wrapped StoreFactory.
+type searcherIterableFactory struct {
+	spi.StoreFactory
+	entityStore *searcherIterableEntityStore
+}
+
+func (f *searcherIterableFactory) EntityStore(context.Context) (spi.EntityStore, error) {
+	return f.entityStore, nil
+}
+
+// TestSearch_LimitZeroUsesIterablePushdown is the regression test for the
+// over-recording bug: Search's Limit<=0 branch used to skip ALL pushdown
+// capability and fall through unconditionally to GetAll + in-memory-match,
+// which records every entity in the model into the transaction's read-set
+// regardless of TrackingRead (see the GetAll fallback's own doc comment).
+// Once a store also implements spi.Iterable, Limit<=0 must prefer Iterate
+// over that fallback: Iterate's TrackingRead gate records only the entities
+// it actually yields, per entity, as it streams — matching Search's
+// contract ("records only entities it returns, only when tracking is on")
+// even though the request can't be bounded. This is asserted here purely as
+// a call-routing/opts-threading question (no store implements both
+// Searcher and Iterable in production without also honouring both
+// contracts correctly — that per-entity correctness is covered where it's
+// implemented, e.g. plugins/postgres's TestIterateTx_TrackingReadRecordsOnlyYieldedIds).
+func TestSearch_LimitZeroUsesIterablePushdown(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveModelWithFields(t, ctx, base, ref, map[string]schema.DataType{"name": schema.String})
+	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
+	saveEntity(t, ctx, base, ref, "e2", []byte(`{"name":"Bob"}`))
+
+	realStore, _ := base.EntityStore(ctx)
+	realIterable, ok := realStore.(spi.Iterable)
+	if !ok {
+		t.Fatal("memory EntityStore must implement spi.Iterable for this test to be meaningful")
+	}
+	ses := &searcherEntityStore{
+		EntityStore: realStore,
+		searchFn: func(_ context.Context, _ spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+			t.Fatal("Searcher.Search must not be called for an unbounded (Limit<=0) request")
+			return nil, nil
+		},
+	}
+	sies := &searcherIterableEntityStore{
+		searcherEntityStore: ses,
+		iterateFn:           realIterable.Iterate,
+	}
+	factory := &searcherIterableFactory{StoreFactory: base, entityStore: sies}
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
+	results, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 0, TrackingRead: true})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if ses.searchCalls != 0 {
+		t.Errorf("searchCalls = %d, want 0 (Limit<=0 must not use Searcher)", ses.searchCalls)
+	}
+	if ses.getAllCalls != 0 {
+		t.Errorf("getAllCalls = %d, want 0 (Limit<=0 must prefer Iterate over the GetAll fallback when the store implements spi.Iterable)", ses.getAllCalls)
+	}
+	if sies.iterateCalls != 1 {
+		t.Fatalf("iterateCalls = %d, want 1", sies.iterateCalls)
+	}
+	if !sies.capturedIterateOpts.TrackingRead {
+		t.Error("IterateOptions.TrackingRead = false, want true (opts.TrackingRead must thread through)")
+	}
+	if sies.capturedIterateOpts.PointInTime != nil {
+		t.Errorf("IterateOptions.PointInTime = %v, want nil", sies.capturedIterateOpts.PointInTime)
+	}
+	if len(results) != 1 || results[0].Meta.ID != "e1" {
+		t.Fatalf("expected exactly 1 result (e1), got %d (%v)", len(results), results)
 	}
 }
 
@@ -2209,13 +2478,17 @@ func runFailingAsyncJob(t *testing.T, searchErr error) *spi.SearchJob {
 	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
 
 	realStore, _ := base.EntityStore(ctx)
-	ses := &searcherEntityStore{
+	// The streaming async executor calls Iterate directly for a
+	// translatable condition (see iterableEntityStore's doc comment) — the
+	// injection point for an async-job-failure scenario is Iterate
+	// returning the error, not Searcher.Search.
+	ies := &iterableEntityStore{
 		EntityStore: realStore,
-		searchFn: func(context.Context, spi.Filter, spi.SearchOptions) ([]*spi.Entity, error) {
+		iterateFn: func(context.Context, spi.ModelRef, spi.Filter, spi.IterateOptions) (spi.Iterator, error) {
 			return nil, searchErr
 		},
 	}
-	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
+	factory := &iterableFactory{StoreFactory: base, entityStore: ies}
 
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore)

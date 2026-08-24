@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -54,7 +55,35 @@ var (
 //
 // PointInTime (when non-nil) walks entity_versions at the requested snapshot
 // using DISTINCT ON to surface only the latest visible version per entity,
-// then excludes deletion-marker versions.
+// then excludes deletion-marker versions. It is committed-only — it ignores any
+// ambient transaction and runs through committedQuerier (search_base.go), like
+// GetAsAt/GetAllAsAt/GetPage(asAt) and Search with a PointInTime.
+//
+// Ordering: empty OrderBy means unspecified (a deterministic entity_id
+// COLLATE "C" order is still emitted — a conformant, if stronger-than-
+// required, choice within "unspecified"); a non-empty OrderBy is honoured via
+// orderByClause, shared with Search. A non-empty OrderBy with an ambient
+// transaction is unsupported per the spi.Iterable doc — rejected up front,
+// before any query is built. Postgres runs every transaction as a real
+// pgx.Tx and could technically order an in-tx scan natively, but the SPI
+// contract draws this line uniformly across backends, so it is honoured here
+// even though this backend does not need the restriction for correctness.
+//
+// TrackingRead: when set, current-state (PointInTime == nil) iteration
+// records each yielded entity's observed version into the ambient
+// transaction's read-set via recordReadIfInTx, exactly like Search's
+// TrackingRead block — but recorded per-entity as Next() yields it, since
+// Iterate streams rather than collecting a slice up front.
+// recordReadIfInTx no-ops when no transaction is active, so this is a plain
+// no-op outside a transaction (including the async-search ceiling path
+// below, which never runs inside one).
+//
+// Ceiling: under the same three-way gate searchCommitted uses (a context the
+// AsyncSearchStore marked, a pool to open a dedicated transaction on, and no
+// transaction already active — an async job never runs in one, so this is a
+// guard, not a branch the production path takes), the scan runs in its own
+// transaction with the async-search statement ceiling raised via SET LOCAL.
+// See iterateUnderOwnCeiling.
 func (s *entityStore) Iterate(
 	ctx context.Context,
 	model spi.ModelRef,
@@ -64,6 +93,13 @@ func (s *entityStore) Iterate(
 	if err := validateFilterPaths(filter); err != nil {
 		return nil, err
 	}
+	if err := validateOrderSpecs(opts.OrderBy); err != nil {
+		return nil, err
+	}
+	if len(opts.OrderBy) > 0 && spi.GetTransaction(ctx) != nil {
+		return nil, fmt.Errorf("Iterate: ordered iteration inside a transaction is unsupported")
+	}
+
 	// Zero-value Filter means "match all" per the spi.Iterable contract.
 	// Skip planQuery — it would treat the empty Op as non-pushable and
 	// install the zero filter as a residual.
@@ -81,8 +117,33 @@ func (s *entityStore) Iterate(
 		baseQuery += " AND (" + shifted + ")"
 		baseArgs = append(baseArgs, plan.args...)
 	}
+	baseQuery += orderByClause(opts.OrderBy)
 
-	rows, err := s.q.Query(ctx, baseQuery, baseArgs...)
+	// TrackingRead is gated exactly like Search's: current-state only
+	// (PointInTime == nil — an in-tx point-in-time read is committed-only and
+	// tracks nothing, consistent with GetAsAt/GetAllAsAt), and only when
+	// requested. Bound as a closure so postgresIter's Next() can call it
+	// per-entity without knowing about entityStore/TransactionManager.
+	var recordRead func(id string, version int64)
+	if opts.TrackingRead && opts.PointInTime == nil && s.tm != nil {
+		recordRead = func(id string, version int64) { s.tm.recordReadIfInTx(ctx, id, version) }
+	}
+
+	if ceiling, ok := searchScanCeiling(ctx); ok && s.pool != nil && spi.GetTransaction(ctx) == nil {
+		return s.iterateUnderOwnCeiling(ctx, ceiling, baseQuery, baseArgs, plan.preparedPostFilter)
+	}
+
+	// A point-in-time iteration is committed-only, so it runs OFF any ambient
+	// transaction through committedQuerier (search_base.go) — s.q would resolve
+	// the caller's pgx.Tx and yield that transaction's own uncommitted writes.
+	// The ceiling branch above already reads committed-only by construction (it
+	// opens a transaction of its own, and only ever when none is active).
+	q := s.q
+	if opts.PointInTime != nil {
+		q = s.committedQuerier()
+	}
+
+	rows, err := q.Query(ctx, baseQuery, baseArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("iterate query: %w", err)
 	}
@@ -90,6 +151,79 @@ func (s *entityStore) Iterate(
 		ctx:                ctx,
 		rows:               rows,
 		preparedPostFilter: plan.preparedPostFilter,
+		recordRead:         recordRead,
+	}, nil
+}
+
+// iterateUnderOwnCeiling runs the scan in a transaction whose first
+// statement replaces the interactive statement ceiling with the
+// async-search one — the Iterate mirror of searchUnderOwnCeiling
+// (searcher.go). SET LOCAL, never SET, for the same reason: the ceiling must
+// die with the transaction rather than riding the pooled connection back to
+// cap or uncap whatever interactive statement borrows it next.
+//
+// Unlike searchUnderOwnCeiling, the scan here does not run to completion
+// before returning: Iterate hands back an Iterator the caller drives with
+// its own Next() calls, so the transaction — and its rollback — must outlive
+// this function. Ownership of tx passes to the returned postgresIter, whose
+// Close() performs the rollback (mirroring searcher.go's rollback-on-
+// WithoutCancel reasoning: Close may run after the caller's own context has
+// been cancelled or expired, and rolling back on an expired context destroys
+// the pooled connection instead of returning it). Every early-exit path
+// below — before an iterator exists to own that responsibility — rolls the
+// transaction back itself, so the transaction is rolled back exactly once on
+// every exit: early failure here, or Close() once an iterator is handed out.
+//
+// A statement_timeout cancellation (57014) reached mid-iteration surfaces
+// through pgx.Rows.Err() during Next(), not here — postgresIter classifies
+// that error through classifyScanErr (set below) so it comes back as
+// searchCeilingError the same way a same-shaped Search failure does.
+func (s *entityStore) iterateUnderOwnCeiling(
+	ctx context.Context,
+	ceiling time.Duration,
+	baseQuery string,
+	baseArgs []any,
+	preparedPostFilter *spi.PreparedFilter,
+) (spi.Iterator, error) {
+	// Acquire-only deadline, cancelled the moment Begin has returned — see
+	// newAcquireContext. A deadline that reached the transaction handle would
+	// cancel the scan when the acquire window closed, which is the opposite of
+	// giving it room to run.
+	acquireCtx, cancelAcquire := newAcquireContext(ctx, s.acquireTimeout)
+	tx, err := s.pool.Begin(acquireCtx)
+	cancelAcquire()
+	if err != nil {
+		return nil, classifyAcquireErr(ctx, acquireCtx, "begin async search iterate", err)
+	}
+
+	// The tenant RLS policies read, matching what TransactionManager.Begin does
+	// for every other transaction this plugin opens. set_config rather than SET
+	// LOCAL because PostgreSQL's SET takes no bound parameters.
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.current_tenant', $1, true)", string(s.tenantID)); err != nil {
+		_ = tx.Rollback(context.WithoutCancel(ctx))
+		return nil, fmt.Errorf("set tenant for async search iterate: %w", classifyError(err))
+	}
+
+	// pgDurationMillis, never a Go duration string: PostgreSQL's time units are
+	// us/ms/s/min/h/d — "m" is not among them — and Go renders 30 minutes as
+	// "30m0s", which is invalid twice over.
+	if _, err := tx.Exec(ctx, "SET LOCAL statement_timeout = "+pgDurationMillis(ceiling)); err != nil {
+		_ = tx.Rollback(context.WithoutCancel(ctx))
+		return nil, fmt.Errorf("set search iterate ceiling: %w", classifyError(err))
+	}
+
+	rows, err := tx.Query(ctx, baseQuery, baseArgs...)
+	if err != nil {
+		_ = tx.Rollback(context.WithoutCancel(ctx))
+		return nil, s.classifyScanError(fmt.Errorf("iterate query: %w", err))
+	}
+
+	return &postgresIter{
+		ctx:                ctx,
+		rows:               rows,
+		preparedPostFilter: preparedPostFilter,
+		tx:                 tx,
+		classifyScanErr:    s.classifyScanError,
 	}, nil
 }
 
@@ -140,6 +274,23 @@ type postgresIter struct {
 	rows               pgx.Rows
 	preparedPostFilter *spi.PreparedFilter
 
+	// recordRead, when non-nil, is called with the id and observed version of
+	// every entity Next() yields — Iterate's TrackingRead read-set recording.
+	// nil when TrackingRead was not requested, PointInTime narrowed the read
+	// to committed-only, or this iterator is the ceiling-scoped async-search
+	// scan (which never runs inside a transaction, so recording would be a
+	// no-op anyway). See Iterate's doc comment (grouped_stats.go).
+	recordRead func(id string, version int64)
+
+	// tx and classifyScanErr are set only by iterateUnderOwnCeiling — the
+	// async-search ceiling-scoped scan opens its own transaction, and because
+	// this iterator outlives that function, ownership of both the rollback
+	// and the mid-scan error classification moves here. tx is nil for every
+	// other Iterate call, which runs through the context-resolving Querier
+	// and never owns a transaction to close.
+	tx              pgx.Tx
+	classifyScanErr func(error) error
+
 	cur    *spi.Entity
 	err    error
 	closed bool
@@ -171,11 +322,24 @@ func (it *postgresIter) Next() bool {
 		if it.preparedPostFilter != nil && !evalPostFilter(*it.preparedPostFilter, e) {
 			continue
 		}
+		if it.recordRead != nil {
+			it.recordRead(e.Meta.ID, e.Meta.Version)
+		}
 		it.cur = e
 		return true
 	}
 	if err := it.rows.Err(); err != nil {
-		it.err = fmt.Errorf("row iteration: %w", err)
+		wrapped := fmt.Errorf("row iteration: %w", err)
+		// A statement_timeout cancellation (57014) reaching the ceiling-scoped
+		// scan mid-iteration must be classified the same way a same-shaped
+		// Search failure is (searcher.go's classifyScanError) — otherwise the
+		// caller sees a raw driver error rather than searchCeilingError, and
+		// an operator's log names the wrong knob or none at all.
+		if it.classifyScanErr != nil {
+			it.err = it.classifyScanErr(wrapped)
+		} else {
+			it.err = wrapped
+		}
 	}
 	return false
 }
@@ -191,6 +355,19 @@ func (it *postgresIter) Close() error {
 	it.cur = nil
 	if it.rows != nil {
 		it.rows.Close()
+	}
+	if it.tx != nil {
+		// Rollback on a context derived WithoutCancel: mirrors
+		// searchUnderOwnCeiling (searcher.go). Close may run after the
+		// caller's own context has been cancelled or has expired — including
+		// via the ceiling itself firing mid-scan — and a rollback issued on an
+		// already-expired context destroys the pooled connection instead of
+		// returning it. Idempotent via the it.closed guard above: this runs
+		// at most once per iterator regardless of how many times Close() is
+		// called, and every early-error exit in iterateUnderOwnCeiling rolls
+		// back itself without ever handing out an iterator, so the
+		// transaction is rolled back exactly once on every code path.
+		_ = it.tx.Rollback(context.WithoutCancel(it.ctx))
 	}
 	return nil
 }
@@ -213,6 +390,20 @@ func (s *entityStore) GroupedAggregate(
 	}
 
 	if err := validateFilterPaths(filter); err != nil {
+		return nil, err
+	}
+	// Group-by and aggregation paths are held to the same grammar, and
+	// validated HERE rather than only inside groupExprToSQL /
+	// aggregateExprToSQL: those run after the residual-filter decline below, so
+	// a request that carried a residual filter had its malformed path reported
+	// as ErrAggregationNotPushdownable. The service layer takes that as "stream
+	// it instead" and the streaming tally resolves the malformed path to
+	// nothing, bucketing every entity as null — a wrong-but-available answer,
+	// and the same input classified differently per backend (memory validates
+	// both unconditionally). The checks inside the two translators stay: they
+	// are the injection guard at the point of interpolation, not the
+	// client-error classification.
+	if err := validateGroupAndAggregatePaths(groupBy, opts.Aggregations); err != nil {
 		return nil, err
 	}
 	// Zero-value Filter means "match all" (same convention as Iterable).

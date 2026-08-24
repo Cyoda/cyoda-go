@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 )
 
 // GroupedStatsValidationError is returned by ValidateGroupedStatsRequest.
@@ -60,24 +63,32 @@ const (
 // enforce `limit <= max`.
 func ValidateGroupedStatsRequest(r GroupedStatsRequest, maxBuckets int) (*ValidatedGroupedStatsRequest, error) {
 	if len(r.GroupBy) == 0 {
-		return nil, &GroupedStatsValidationError{Code: "MISSING_GROUP_BY", Message: "groupBy is required"}
+		return nil, &GroupedStatsValidationError{Code: common.ErrCodeMissingGroupBy, Message: "groupBy is required"}
 	}
 	seen := make(map[string]struct{}, len(r.GroupBy))
 	groups := make([]GroupExprValidated, 0, len(r.GroupBy))
 	for _, raw := range r.GroupBy {
+		// "state" is a reserved TOKEN naming the entity's lifecycle state, not
+		// a path into its data — so it is matched before the path grammar runs
+		// and is exempt from the "$." leader. A groupBy on the DATA field
+		// spelled "state" is written "$.state" and is an ordinary path.
+		if raw == stateGroupToken {
+			if _, dup := seen[raw]; dup {
+				return nil, &GroupedStatsValidationError{Code: common.ErrCodeDuplicateGroupBy, Message: "duplicate groupBy entry: " + raw}
+			}
+			seen[raw] = struct{}{}
+			groups = append(groups, GroupExprValidated{IsState: true})
+			continue
+		}
 		norm, err := normalizeScalarPath(raw)
 		if err != nil {
-			return nil, &GroupedStatsValidationError{Code: "INVALID_GROUP_BY_PATH", Message: err.Error()}
+			return nil, &GroupedStatsValidationError{Code: common.ErrCodeInvalidGroupByPath, Message: err.Error()}
 		}
 		if _, dup := seen[norm]; dup {
-			return nil, &GroupedStatsValidationError{Code: "DUPLICATE_GROUP_BY", Message: "duplicate groupBy entry: " + norm}
+			return nil, &GroupedStatsValidationError{Code: common.ErrCodeDuplicateGroupBy, Message: "duplicate groupBy entry: " + norm}
 		}
 		seen[norm] = struct{}{}
-		if norm == "state" {
-			groups = append(groups, GroupExprValidated{IsState: true})
-		} else {
-			groups = append(groups, GroupExprValidated{Path: norm})
-		}
+		groups = append(groups, GroupExprValidated{Path: norm})
 	}
 
 	// Aggregations: dedupe identical (op, field); reject distinct-(op,field)
@@ -89,11 +100,15 @@ func ValidateGroupedStatsRequest(r GroupedStatsRequest, maxBuckets int) (*Valida
 		switch AggregateOp(a.Op) {
 		case AggSum, AggAvg, AggMin, AggMax, AggStdev:
 		default:
-			return nil, &GroupedStatsValidationError{Code: "INVALID_AGGREGATION_OP", Message: "unknown op: " + a.Op}
+			return nil, &GroupedStatsValidationError{Code: common.ErrCodeInvalidAggregationOp, Message: "unknown op: " + a.Op}
 		}
 		field, err := normalizeScalarPath(a.Field)
 		if err != nil {
-			return nil, &GroupedStatsValidationError{Code: "INVALID_AGGREGATION_FIELD", Message: a.Field}
+			// Carry the reason, not just the offending field — symmetric with
+			// INVALID_GROUP_BY_PATH, and the reasons are no longer guessable
+			// from the input alone now that the full path grammar is enforced.
+			// err already echoes the raw field.
+			return nil, &GroupedStatsValidationError{Code: common.ErrCodeInvalidAggregationField, Message: err.Error()}
 		}
 		pair := [2]string{a.Op, field}
 		alias := a.As
@@ -114,7 +129,7 @@ func ValidateGroupedStatsRequest(r GroupedStatsRequest, maxBuckets int) (*Valida
 			continue
 		}
 		if owner, taken := aliasOwner[alias]; taken && owner != pair {
-			return nil, &GroupedStatsValidationError{Code: "DUPLICATE_AGGREGATION_ALIAS", Message: alias}
+			return nil, &GroupedStatsValidationError{Code: common.ErrCodeDuplicateAggregationAlias, Message: alias}
 		}
 		seenPair[pair] = alias
 		aliasOwner[alias] = pair
@@ -128,7 +143,7 @@ func ValidateGroupedStatsRequest(r GroupedStatsRequest, maxBuckets int) (*Valida
 	if r.Limit != nil {
 		if *r.Limit <= 0 || *r.Limit > maxBuckets {
 			return nil, &GroupedStatsValidationError{
-				Code:    "INVALID_LIMIT",
+				Code:    common.ErrCodeInvalidLimit,
 				Message: fmt.Sprintf("limit must be positive and <= %d", maxBuckets),
 			}
 		}
@@ -143,37 +158,29 @@ func ValidateGroupedStatsRequest(r GroupedStatsRequest, maxBuckets int) (*Valida
 	}, nil
 }
 
-// normalizeScalarPath canonicalizes a JSONPath. Accepts dotted notation
-// and bracket-quoted property access. Rejects array projections.
+// stateGroupToken is the reserved groupBy entry that buckets by the entity's
+// lifecycle state. It is a token, not a path, so it is recognised only where
+// it means something — the groupBy list. An aggregation over it is not
+// defined, so as an aggregation field it is just a path missing its leader.
+const stateGroupToken = "state"
+
+// normalizeScalarPath validates a groupBy entry or aggregation field against
+// the wire JSON Path grammar ([search.ValidateScalarJSONPath]): the "$."
+// leader is required, and array subscripts/projections are rejected because
+// the path must denote a single scalar.
 //
-// Returns the reserved token "state" unchanged when seen.
+// It is a validator, not a rewriter: a path that passes is returned unchanged.
+// Bracket-quoted property access ("$['x']", "$.['x']") used to be folded into
+// dotted form here; it is now rejected, because the condition surface rejects
+// it too — accepting it in groupBy while 400ing it in condition would answer
+// one request inconsistently across two of its own fields, and the response's
+// group-key path would echo a spelling the request never sent.
 func normalizeScalarPath(s string) (string, error) {
 	if s == "" {
 		return "", fmt.Errorf("path is empty")
 	}
-	if s == "state" {
-		return s, nil
+	if err := search.ValidateScalarJSONPath(s); err != nil {
+		return "", err
 	}
-	// Normalize $['x']['y'] / $.['x'].['y'] to $.x.y.
-	norm := s
-	for {
-		before := norm
-		norm = strings.ReplaceAll(norm, "['", ".")
-		norm = strings.ReplaceAll(norm, "']", "")
-		norm = strings.ReplaceAll(norm, "..", ".")
-		if norm == before {
-			break
-		}
-	}
-	if strings.ContainsAny(norm, "[]") {
-		return "", fmt.Errorf("array projection not supported: %s", s)
-	}
-	// A non-empty input that collapses to "" after bracket-stripping (e.g.
-	// "']" → "") is rejected — empty paths are not valid scalar paths.
-	// This keeps the entry-time empty check and normalization output
-	// consistent: any success-path output is itself a valid input.
-	if norm == "" {
-		return "", fmt.Errorf("path is empty after normalization: %s", s)
-	}
-	return norm, nil
+	return s, nil
 }

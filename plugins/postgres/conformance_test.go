@@ -177,6 +177,20 @@ func TestConformance(t *testing.T) {
 			if d < 5*time.Millisecond {
 				d = 5 * time.Millisecond
 			}
+			// Cap the ceiling too. Some subtests advance by an arbitrarily large
+			// duration on purpose — e.g. AsyncSearch's Claim/TerminalNeverClaimed
+			// advances 365 days "to rule out any staleAfter/limit edge case
+			// masking a store that claims terminal jobs" (spitest/asyncsearch.go)
+			// — not because the assertion needs real time to actually pass that
+			// far. Postgres has no virtual clock to fast-forward: it can only
+			// honour AdvanceClock by sleeping, and the harness's own contract
+			// (spitest.Harness.AdvanceClock godoc) only requires every subsequent
+			// DB timestamp to strictly dominate every earlier one — a requirement
+			// any positive sleep already satisfies. Sleeping the literal 365 days
+			// would hang the suite for a year for no correctness benefit.
+			if d > 100*time.Millisecond {
+				d = 100 * time.Millisecond
+			}
 			time.Sleep(d)
 		},
 		Skip: map[string]string{

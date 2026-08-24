@@ -362,6 +362,29 @@ func (c *Client) DeleteEntity(t *testing.T, entityID uuid.UUID) error {
 	return err
 }
 
+// DeleteEntityWithTxID issues DELETE /api/entity/{entityId} and returns the
+// transactionId from the delete response envelope (internal/domain/entity.
+// Handler.DeleteSingleEntity: {id, modelKey, transactionId}). Used by
+// history-read parity scenarios that need the delete's own transaction ID —
+// e.g. to assert GetEntityByTransactionID 404s on a tombstone's txID (a
+// DELETED tombstone carries no entity payload, so it never matches).
+// Canonical: docs/cyoda/openapi.yml:1147 (deleteSingleEntity).
+func (c *Client) DeleteEntityWithTxID(t *testing.T, entityID uuid.UUID) (string, error) {
+	t.Helper()
+	path := "/api/entity/" + entityID.String()
+	raw, err := c.doRaw(t, http.MethodDelete, path, "")
+	if err != nil {
+		return "", err
+	}
+	var resp struct {
+		TransactionID string `json:"transactionId"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return "", fmt.Errorf("decode DeleteEntityWithTxID response: %w", err)
+	}
+	return resp.TransactionID, nil
+}
+
 // GetEntityChanges issues GET /api/entity/{entityId}/changes.
 // Returns the change history as []EntityChangeMeta.
 // Canonical: docs/cyoda/openapi.yml:1207 (getEntityChangesMetadata).
@@ -395,6 +418,22 @@ func (c *Client) GetEntityChangesAt(t *testing.T, entityID uuid.UUID, pointInTim
 func (c *Client) ListEntitiesByModel(t *testing.T, modelName string, modelVersion int) ([]EntityResult, error) {
 	t.Helper()
 	path := fmt.Sprintf("/api/entity/%s/%d", modelName, modelVersion)
+	var entities []EntityResult
+	if _, err := c.doJSON(t, http.MethodGet, path, nil, &entities); err != nil {
+		return nil, err
+	}
+	return entities, nil
+}
+
+// ListEntitiesByModelPaged issues GET
+// /api/entity/{name}/{version}?pageSize=<size>&pageNumber=<number>. Returns
+// the requested page — used by parity scenarios that assert paging behaviour
+// (determinism, self-consistency, set-equality with the full model) rather
+// than a single unpaged listing.
+// Canonical: docs/cyoda/openapi.yml:1326 (getAllEntities).
+func (c *Client) ListEntitiesByModelPaged(t *testing.T, modelName string, modelVersion, pageSize, pageNumber int) ([]EntityResult, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s/%d?pageSize=%d&pageNumber=%d", modelName, modelVersion, pageSize, pageNumber)
 	var entities []EntityResult
 	if _, err := c.doJSON(t, http.MethodGet, path, nil, &entities); err != nil {
 		return nil, err
@@ -609,6 +648,25 @@ func (c *Client) UpdateEntity(t *testing.T, entityID uuid.UUID, transition, body
 	path := fmt.Sprintf("/api/entity/JSON/%s/%s", entityID.String(), transition)
 	_, err := c.doRaw(t, http.MethodPut, path, body)
 	return err
+}
+
+// UpdateEntityWithTxID issues PUT /api/entity/JSON/{entityId}/{transition}
+// and returns the transactionId from the EntityTransactionInfo response
+// envelope. Used by history-read parity scenarios that need each save's own
+// transaction ID to drive GetEntityByTransactionID lookups.
+// Canonical: docs/cyoda/openapi.yml:2037 (updateOne / transition).
+func (c *Client) UpdateEntityWithTxID(t *testing.T, entityID uuid.UUID, transition, body string) (string, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/JSON/%s/%s", entityID.String(), transition)
+	raw, err := c.doRaw(t, http.MethodPut, path, body)
+	if err != nil {
+		return "", err
+	}
+	var info EntityTransactionInfo
+	if err := json.Unmarshal(raw, &info); err != nil {
+		return "", fmt.Errorf("decode UpdateEntityWithTxID response: %w", err)
+	}
+	return info.TransactionID, nil
 }
 
 // CollectionItem is one entry in a POST /api/entity/{format} body for
@@ -1111,6 +1169,34 @@ func (c *Client) SubmitAsyncSearch(t *testing.T, modelName string, modelVersion 
 	}
 	if jobID == "" {
 		return "", fmt.Errorf("SubmitAsyncSearch returned empty jobId (body=%s)", string(raw))
+	}
+	return jobID, nil
+}
+
+// SubmitAsyncSearchSorted is SubmitAsyncSearch with one or more `sort` query
+// keys, so a caller can drive the async job's requested-order contract
+// (design §9 row 19: async result ordering respected end-to-end) the same
+// way SyncSearchSorted drives the direct-search equivalent.
+func (c *Client) SubmitAsyncSearchSorted(t *testing.T, modelName string, modelVersion int, condition string, sortKeys []string) (string, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/async/%s/%d", modelName, modelVersion)
+	if len(sortKeys) > 0 {
+		vals := url.Values{}
+		for _, k := range sortKeys {
+			vals.Add("sort", k)
+		}
+		path += "?" + vals.Encode()
+	}
+	raw, err := c.doRaw(t, http.MethodPost, path, condition)
+	if err != nil {
+		return "", err
+	}
+	var jobID string
+	if err := json.Unmarshal(raw, &jobID); err != nil {
+		return "", fmt.Errorf("decode SubmitAsyncSearchSorted response: %w (body=%s)", err, string(raw))
+	}
+	if jobID == "" {
+		return "", fmt.Errorf("SubmitAsyncSearchSorted returned empty jobId (body=%s)", string(raw))
 	}
 	return jobID, nil
 }

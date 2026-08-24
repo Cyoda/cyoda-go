@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
 // ParseSortParam parses repeatable `sort` query values into OrderKeys.
@@ -76,23 +77,14 @@ func parseSortToken(raw string) (OrderKey, error) {
 	return OrderKey{Path: tok, Source: source, Desc: desc}, nil
 }
 
-// isValidSortPath allows dotted identifiers (letters/digits/_/-), no empty
-// segments — same dotted-identifier charset the search filter path parser accepts.
+// isValidSortPath allows dotted segments, no empty ones, each drawn from the
+// one segment charset [schema.IsSegmentName] defines — the same charset the
+// jsonPath grammar and model import hold field names to, so a field is
+// sortable exactly when it is addressable.
 func isValidSortPath(p string) bool {
-	if p == "" {
-		return false
-	}
 	for _, seg := range strings.Split(p, ".") {
-		if seg == "" {
+		if !schema.IsSegmentName(seg) {
 			return false
-		}
-		for _, c := range seg {
-			switch {
-			case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z',
-				c >= '0' && c <= '9', c == '_', c == '-':
-			default:
-				return false
-			}
 		}
 	}
 	return true

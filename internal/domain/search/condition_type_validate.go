@@ -81,11 +81,15 @@ func walkConditionTypes(fm map[string]schema.FieldDescriptor, cond predicate.Con
 }
 
 func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predicate.SimpleCondition) error {
-	// FieldsMap keys carry the "$." prefix; a condition may legitimately omit it
-	// and still name a known field. Looking it up raw made the type check silently
-	// skip such a leaf, so an operand that should be rejected 400
-	// CONDITION_TYPE_MISMATCH was accepted and evaluated to an empty page instead.
-	key := normalisePath(c.JsonPath)
+	// FieldsMap keys carry the "$." prefix and spell every array hop "[*]"; a
+	// condition may legitimately omit the prefix, and may address one array
+	// element positionally ("$.arr[0]"). Looking either up raw made the type
+	// check silently skip such a leaf, so an operand that should be rejected 400
+	// CONDITION_TYPE_MISMATCH was accepted and evaluated to an empty page
+	// instead — and the wildcard and positional spellings of one path
+	// disagreed. Only the LOOKUP is canonicalised: every diagnostic below names
+	// c.JsonPath, the spelling the request actually sent.
+	key := schema.CanonicalFieldPath(normalisePath(c.JsonPath))
 	fd, ok := fm[key]
 	if !ok {
 		// Not a leaf. In a schema'd model (non-empty FieldsMap), a path that is
@@ -183,11 +187,17 @@ func carriesScalarOperand(op spi.FilterOp) bool {
 }
 
 // isKnownContainerPath reports whether p names a KNOWN CONTAINER in fm — a
-// strict prefix of one or more leaf paths, without being a leaf itself. It
-// mirrors the prefix probe in path_validate.go's isPathKnown, but is used to
-// REJECT a scalar comparison on the interior node rather than to accept the
-// path. p is assumed absent from fm as a direct leaf (the caller checks that
-// first). Both dot- and wildcard-delimited descents count as substructure.
+// strict prefix of one or more leaf paths, without being a leaf itself. Both
+// dot- and wildcard-delimited descents count as substructure: FieldsMap
+// records an array's element under the "[*]" key and never the container, so
+// omitting the "[" form would miss every array container. p is assumed absent
+// from fm as a direct leaf (both callers check that first).
+//
+// It is the single container predicate for the two questions that need it, and
+// they read the answer oppositely: path_validate.go's pathOrContainerKnown
+// ACCEPTS the path (the structural field exists), while the caller above
+// REJECTS a scalar comparison ON the interior node. One predicate, so the two
+// cannot disagree about what a container is.
 func isKnownContainerPath(p string, fm map[string]schema.FieldDescriptor) bool {
 	dotPrefix := p + "."
 	arrPrefix := p + "["

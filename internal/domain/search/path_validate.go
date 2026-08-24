@@ -3,7 +3,6 @@ package search
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
@@ -72,11 +71,8 @@ func addPath(raw string, seen map[string]struct{}, out *[]string) {
 func normalisePath(raw string) string { return spi.NormalisePath(raw) }
 
 // findUnknownPaths returns the subset of paths absent from the supplied
-// FieldsMap. Paths whose direct key is missing are also probed with a
-// trailing "[*]" segment stripped, so a condition naming an array field
-// (e.g. "$.tags[*]") still matches a leaf descriptor recorded as
-// "$.tags[*]" — both representations are accepted to stay compatible
-// with the matcher's input shapes.
+// FieldsMap, in the caller's own spelling. See [isPathKnown] for what counts
+// as present.
 func findUnknownPaths(paths []string, fields map[string]schema.FieldDescriptor) []string {
 	var unknown []string
 	for _, p := range paths {
@@ -92,21 +88,59 @@ func findUnknownPaths(paths []string, fields map[string]schema.FieldDescriptor) 
 // a structural field) appears in fields. Wildcard suffixes are tolerated
 // so "$.tags[*]" matches a leaf described as "$.tags[*]" exactly, and
 // nested wildcards such as "$.tags[*].name" also resolve.
+//
+// A POSITIONAL subscript ("$.arr[0]") resolves too. It is valid JSON Path, the
+// boundary grammar accepts it, and the in-memory evaluator serves it — but the
+// schema records an array's element once under the wildcard key and has no
+// per-index entry to find, so a raw comparison rejected the condition 400 for a
+// field the model declares. Only the LOOKUP is canonicalised; the caller's
+// original spelling is what gets reported, so a diagnostic names the path the
+// request actually sent.
 func isPathKnown(p string, fields map[string]schema.FieldDescriptor) bool {
+	if pathOrContainerKnown(p, fields) {
+		return true
+	}
+	if canon := schema.CanonicalFieldPath(p); canon != p {
+		return pathOrContainerKnown(canon, fields)
+	}
+	return false
+}
+
+// pathOrContainerKnown reports whether p is a recorded leaf, or an interior
+// node — object OR array — with at least one recorded leaf beneath it.
+//
+// Both descent forms count, via the shared [isKnownContainerPath] predicate.
+// Testing only the dotted one missed the ARRAY container: FieldsMap records an
+// array's element under the "[*]" key and never the container itself, so for
+// `tags: ["red","blue"]` the only entry is "$.tags[*]" and a condition on
+// "$.tags" — the natural spelling for an ArrayCondition — was reported unknown
+// and answered 400 INVALID_FIELD_PATH for a field the model declares.
+func pathOrContainerKnown(p string, fields map[string]schema.FieldDescriptor) bool {
 	if _, ok := fields[p]; ok {
 		return true
 	}
-	// Prefix-match: a condition path may address an interior object that
-	// itself is not a leaf in FieldsMap (which only records leaves). We
-	// accept it when at least one recorded leaf descends from the same
-	// prefix — evidence that the structural field exists in the schema.
-	prefix := p + "."
-	for known := range fields {
-		if strings.HasPrefix(known, prefix) {
-			return true
-		}
-	}
-	return false
+	// Prefix-match: a condition path may address an interior node that itself
+	// is not a leaf in FieldsMap (which only records leaves). We accept it when
+	// at least one recorded leaf descends from it — evidence that the
+	// structural field exists in the schema.
+	return isKnownContainerPath(p, fields)
+}
+
+// FindUnknownFieldPaths returns the data-field JSONPaths cond references
+// that are absent from fields (typically obtained via LoadFieldsMap).
+// Exported so a caller outside this package that selects entities via its
+// own spi.Iterable drain instead of Search — currently entity.Handler's
+// delete paths, which reuse the search condition primitive per design §6.1
+// but cannot call Search's unexported validateConditionPaths directly —
+// can still reject a condition naming an unknown schema field before
+// ConditionToFilter would otherwise silently under-match it (see
+// ConditionToFilter's doc comment on why an unknown path degrades instead
+// of erroring). Mirrors validateConditionPaths' path-existence check
+// without its negative-cache/refresh-retry optimisation, which is a
+// Search-hot-path concern; a caller that also needs the refresh-retry
+// behaviour should route through Search instead.
+func FindUnknownFieldPaths(cond predicate.Condition, fields map[string]schema.FieldDescriptor) []string {
+	return findUnknownPaths(extractFieldPaths(cond), fields)
 }
 
 // LoadFieldsMap is the exported entry point that resolves a model's declared
@@ -157,6 +191,21 @@ func loadFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) 
 // again. Same optional-interface shape as the RefreshAndGet probe below.
 type schemaNodeProvider interface {
 	SchemaNode(context.Context, spi.ModelRef) (*schema.ModelNode, error)
+}
+
+// RefreshFieldsMap is the exported entry point for refreshFieldsMap, mirroring
+// LoadFieldsMap's exported-wrapper pattern. Callers outside this package that
+// reuse the search condition primitive on their own spi.Iterable drain
+// (currently entity.Handler's delete path) need the same bounded
+// single-refresh-then-fail behaviour validateConditionPaths gives Search,
+// rather than declaring a field unknown against a possibly-stale cached
+// descriptor — see FindUnknownFieldPaths' doc comment for why the caller
+// can't reach validateConditionPaths directly. Returns (nil, false, nil)
+// when the store has no refresh capability; the caller should then treat the
+// pre-refresh unknown-paths result as authoritative, exactly as
+// validateConditionPaths does.
+func RefreshFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (map[string]schema.FieldDescriptor, bool, error) {
+	return refreshFieldsMap(ctx, store, ref)
 }
 
 // refreshFieldsMap forces a cache refresh via RefreshAndGet (when the

@@ -1,7 +1,6 @@
 package sqlite
 
 import (
-	"errors"
 	"fmt"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -11,7 +10,11 @@ import (
 // contains characters that could break out of a JSON-path literal in a
 // json_extract expression. Sentinel for callers that want to distinguish
 // input validation errors from storage errors.
-var ErrInvalidFilterPath = errors.New("invalid filter path")
+//
+// It wraps [spi.ErrInvalidFilterPath], the cross-backend sentinel, so
+// errors.Is matches against either this one or the SPI one. The "%w"-only
+// wrap adds no prefix, leaving the message text unchanged.
+var ErrInvalidFilterPath = fmt.Errorf("%w", spi.ErrInvalidFilterPath)
 
 // validateJSONPath enforces an extended dotted-identifier grammar on paths
 // that are interpolated into json_extract(..., '$.<path>') expressions.
@@ -91,6 +94,32 @@ func validateFilterPaths(f spi.Filter) error {
 		return nil
 	}
 	return validateJSONPath(f.Path)
+}
+
+// validateGroupAndAggregatePaths holds GroupExpr.Path and AggregateExpr.Field
+// to the same grammar as filter paths. GroupExpr kinds that carry no path
+// (GroupExprState) are exempt.
+//
+// Called at the top of GroupedAggregate, next to validateFilterPaths, so a
+// malformed path is classified as a client error on every backend regardless
+// of which pushdown decline the request would otherwise have hit. The
+// duplicate checks inside groupExprToSQL / aggregateExprToSQL remain as the
+// injection guard at the point of interpolation.
+func validateGroupAndAggregatePaths(groupBy []spi.GroupExpr, aggs []spi.AggregateExpr) error {
+	for _, g := range groupBy {
+		if g.Kind != spi.GroupExprDataPath {
+			continue
+		}
+		if err := validateJSONPath(g.Path); err != nil {
+			return err
+		}
+	}
+	for _, a := range aggs {
+		if err := validateJSONPath(a.Field); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // validateOrderSpecs checks every OrderSpec path. For SourceMeta paths,

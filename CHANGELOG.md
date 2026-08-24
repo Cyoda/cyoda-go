@@ -6,6 +6,157 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **A path whose last hop is an array wildcard now addresses the array's
+  ELEMENTS. It used to resolve to the array's length.**
+  `$.tags[*]` means "some element of `tags`". It was resolved to the *count* of
+  `tags`, so a comparison on it compared the operand against a number:
+  `{"jsonPath":"$.tags[*]","operatorType":"EQUALS","value":"red"}` compared
+  `"red"` against `2` and never matched.
+
+  **This changes results for any caller using such a path.** A search that
+  returned an empty page now returns the matching entities. A workflow criterion
+  that silently never fired now fires — so entities that sat in the state before
+  a guarded transition will start advancing through it on their next save. In the
+  other direction, a comparison that happened to hold against the *length*
+  (`$.tags[*] GREATER_THAN 1` on a three-element array; `NOT_NULL` on an **empty**
+  array, whose length `0` is a present number) no longer matches. Presence tests
+  are existential and therefore vacuously false on an empty array: neither
+  `NOT_NULL` nor `IS_NULL` matches `{"tags": []}` on `$.tags[*]`.
+
+  Affected surfaces: every one that takes a condition — `/search/direct`,
+  `/search/async`, conditional `DELETE /entity/{name}/{version}`, the
+  grouped-stats `condition`, and a workflow or transition `criterion`. HTTP and
+  gRPC alike.
+
+  Multiple array hops were broken by the same arithmetic and are fixed with it,
+  including paths with **no** trailing wildcard: `$.matrix[*][*]`,
+  `$.a[*].b[*]` and `$.orders[*].lines[*].sku` all compared against a nested
+  array rather than the values they address, and never matched.
+
+  Newly rejected: a trailing wildcard on an array of **pure objects**
+  (`$.items[*]` where every element is `{"sku": …}`) with a scalar operand is
+  **400 `INVALID_FIELD_PATH`** — the element has substructure and no scalar form,
+  so the comparison could only ever be false. Navigate to the leaf sub-path
+  (`$.items[*].sku`). An array of scalars, and an array whose elements were also
+  observed as bare scalars, stay valid; so do `IS_NULL` / `NOT_NULL` on any of
+  them, which carry no scalar operand.
+
+  ```diff
+  - {"type":"simple","jsonPath":"$.items[*]",     "operatorType":"EQUALS","value":"A1"}
+  + {"type":"simple","jsonPath":"$.items[*].sku", "operatorType":"EQUALS","value":"A1"}
+  ```
+
+  Remedy for a caller who was relying on the length: there is no path spelling for
+  it. Address the elements, or filter on a field that carries the count.
+  See `docs/cloud-parity/trailing-wildcard-path.md`.
+
+- **A field path must now be written as JSON Path — the `$.` leader is required,
+  and the whole path is validated.**
+  A bare `amount` is not a path and is rejected; it is no longer read as `$.amount`.
+  So are bracket-quoted property access (`$['x']`, `$.['x']`, `$.a["b"]`), an empty
+  or trailing segment (`$..a`, `$.a.`), and any character outside
+  `1*( ALPHA / DIGIT / "_" / "-" )`. The grammar is now:
+
+  ```
+  jsonPath  = "$." segment ( "." segment )*
+  segment   = name subscript*
+  name      = 1*( ALPHA / DIGIT / "_" / "-" )   ; ASCII only
+  subscript = "[" ( "*" / 1*DIGIT ) "]"
+  ```
+
+  ```diff
+  - {"type":"simple","jsonPath":"amount",      "operatorType":"GREATER_THAN","value":50}
+  + {"type":"simple","jsonPath":"$.amount",    "operatorType":"GREATER_THAN","value":50}
+  -   "groupBy": ["variantId"]
+  +   "groupBy": ["$.variantId"]
+  ```
+
+  Affected surfaces and codes: a condition `jsonPath` → **400 `INVALID_FIELD_PATH`**
+  on `/search/direct`, `/search/async`, conditional `DELETE /entity/{name}/{version}`
+  and the grouped-stats `condition`; a grouped-stats `groupBy` entry → **400
+  `INVALID_GROUP_BY_PATH`**; an aggregation `field` → **400
+  `INVALID_AGGREGATION_FIELD`**. HTTP and gRPC both reject (gRPC as an envelope
+  error, not an empty stream).
+
+  Before, a bare condition path returned **200 with correct-looking results**: the
+  pushdown translator refused it, but every call site treats a translate failure as
+  "fall back to in-memory evaluation", and that evaluator resolves a bare path
+  happily — so the query silently ran as a full scan. Bracket-quoted access was
+  worse: nothing in the stack resolves it, so it answered an empty page for a field
+  that exists. A bare `groupBy` entry was rewritten to `$.`-form, and the response
+  echoed a group-key path the client never sent; anything else malformed
+  (`$.first name`, `$..name`, `$.café`, `.leading`, `trailing.`, a bare `$`)
+  reached the storage layer, and what happened there depended on how the query
+  ran — the pushdown path failed **500**, while any request the backend declined
+  to push down (a residual filter, a point-in-time query, sqlite declining
+  `stdev`) fell through to the in-process tally, where the lookup missed and
+  every entity landed in one `null` bucket: a plausible-looking, wrong **200**.
+
+  **Malformed array subscripts are newly rejected, and this is the class most
+  likely to bite.** The path used to be scanned only as far as the first `[`;
+  everything after it went unread, so `$.a[-1]`, `$.a[0:2]`, `$.a[0,1]`,
+  `$.a[?(@.x)]`, `$.a[]`, `$.[0]`, `$.a[ 0]`, an unclosed or unmatched bracket
+  (`$.a[`, `$.a[0`, `$.a]`) and even trailing junk after a valid subscript
+  (`$.a[0]b`, `$.a[0];DROP`, `$.a[*]..b`) all classified as "not pushdownable"
+  and fell back to the in-memory evaluator — which resolves none of them. The
+  answer was **200 with an empty page** for a field that exists, or on the two
+  surfaces with no schema backstop behind them, worse: a grouped-stats
+  `condition` (validated against a nil model) returned **200 with wrong
+  buckets**, and a workflow criterion imported cleanly and then **silently never
+  fired**. All are now rejected at the boundary, each with its own surface's
+  code — `INVALID_FIELD_PATH` on a condition, `INVALID_GROUP_BY_PATH` /
+  `INVALID_AGGREGATION_FIELD` on grouped stats, and `VALIDATION_FAILED` at
+  workflow import (see the next entry).
+
+  Still accepted: condition paths with a **well-formed** subscript — the wildcard
+  `[*]` or a non-negative index (`$.tags[*].name`, `$.arr[0]`, `$.matrix[*][*]`,
+  `$.orders[*].lines[*].sku`) — valid JSON Path, evaluated in memory rather than
+  pushed down. Grouped-stats `groupBy`/`field` still reject every subscript,
+  well-formed or not, because a group key must be a single scalar.
+  The reserved `groupBy` token `state` is a token, not a path, and needs no leader;
+  it is groupBy-only, so `state` as an aggregation `field` is now rejected.
+  Workflow criteria obey the same grammar, enforced at workflow import — see the
+  next entry.
+
+  Fix for callers: prefix the path with `$.`, and replace bracket access with dotted
+  access. Replace a malformed subscript with `[*]` or a non-negative index — there
+  is no rewrite for a slice, union, filter expression or negative index, because no
+  evaluator ever resolved them, so a query using one was already returning an empty
+  page. On grouped-stats `groupBy`/`field`, address an array position as a numeric
+  segment instead (`$.items.0`). See
+  `docs/cloud-parity/condition-jsonpath-grammar.md` and
+  `docs/cloud-parity/grouped-stats-path-grammar.md`, or `cyoda help crud`.
+
+- **A workflow or transition `criterion` `jsonPath` must now be JSON Path too, and
+  is rejected at workflow import.**
+  A criterion uses the same model syntax as a search condition, but it evaluates
+  through the in-process predicate evaluator and never through the pushdown
+  translator — so nothing rejected a bare path, and a criterion on `amount`
+  imported cleanly and fired transitions. One syntax, two spellings of what a
+  path is.
+
+  ```diff
+    "criterion": {
+  -   "type": "simple", "jsonPath": "amount",   "operatorType": "GREATER_THAN", "value": 50
+  +   "type": "simple", "jsonPath": "$.amount", "operatorType": "GREATER_THAN", "value": 50
+    }
+  ```
+
+  Before: `POST /api/model/{entityName}/{modelVersion}/workflow/import` accepted it
+  with **200** and the transition fired. After: **400 `VALIDATION_FAILED`**, with the
+  offending workflow / state / transition named in `detail` — the same code and shape
+  every other import-time criterion rejection uses. Checked on `simple` and `array`
+  clauses at any nesting depth; a `lifecycle` clause names a meta field rather than a
+  path and a `function` clause carries none, so both stay exempt. Array subscripts
+  (`$.tags[*].name`, `$.arr[0]`) stay valid — criteria are evaluated in memory, which
+  resolves them.
+
+  Validation runs on the incoming request only, so an already-stored workflow keeps
+  evaluating; it fails on its next re-import, which is where the fix gets made.
+
+  Fix for callers: prefix the path with `$.`. See
+  `docs/cloud-parity/workflow-criterion-jsonpath-grammar.md`.
+
 - **`CYODA_TX_TTL`, `CYODA_TX_REAP_INTERVAL` and `CYODA_TX_OUTCOME_TTL` are removed.**
   They configured a transaction reaper that never ran — nothing ever registered a
   transaction with it — so the TTL they advertised was never enforced. The reaper and
@@ -22,14 +173,34 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `responseTimeoutMs` of 30s sits well under it. The idle ceiling applies per gap, not
   per transaction, so a long cascade that writes between callouts is unaffected.
 
-- **Opening a transaction now waits at most `CYODA_POSTGRES_ACQUIRE_TIMEOUT`
-  (default `10s`) for a pooled connection** and then fails with **503
+- **Acquiring a pooled connection now waits at most
+  `CYODA_POSTGRES_ACQUIRE_TIMEOUT` (default `10s`)** and then fails with **503
   `STORAGE_UNAVAILABLE`**, retryable, instead of queueing behind a saturated pool.
-  This covers both client-facing paths that open a transaction: entity writes,
-  and the schema extension an auto-evolving model performs — which previously
-  reported the same saturated pool as a `500` with a ticket. (The async-search
+  Two classes are covered. Opening a transaction: entity writes, and the schema
+  extension an auto-evolving model performs — which previously reported the same
+  saturated pool as a `500` with a ticket. And needing a *second* connection
+  while the caller's transaction already holds one: a point-in-time read or an
+  async-search submit issued inside a transaction, both of which deliberately
+  run off the transaction. The timeout does not bound a plain non-transactional
+  read, which waits on the pool without a deadline. (The async-search
   scan is classified the same way now, but its job record already reported a
   fixed message and is unchanged.)
+
+- **The SQLite backend now opens a dedicated read connection pool, raising its
+  memory ceiling.** Reads (paged lists, change history, by-transaction lookups,
+  non-transactional iteration, async-search result pages) move off the single
+  writer connection onto a second pool, so a long undrained scan can no longer
+  starve concurrent writes or queue an interactive read behind itself.
+  `CYODA_SQLITE_CACHE_SIZE` (default `64000` KiB) is a **per-connection** page
+  cache, so the resident ceiling is now `(readers + 1) × CYODA_SQLITE_CACHE_SIZE`
+  rather than one cache: on an 8-CPU host with the defaults, ≈ 562 MiB where it
+  was ≈ 62.5 MiB.
+  The new `CYODA_SQLITE_READER_POOL_SIZE` sizes the pool (default `GOMAXPROCS`
+  clamped to `4`..`8`; minimum 1, and a value below it falls back to the
+  default). `GOMAXPROCS` follows the CPU quota and is
+  blind to the memory limit, so a container generous on cores and tight on
+  memory must lower this — not `CYODA_SQLITE_CACHE_SIZE`, which shrinks the
+  writer's cache along with the readers'. `cyoda help config database`.
 
 - **With `CYODA_POSTGRES_AUTO_MIGRATE=true`, migrations now run before the
   schema-compatibility check.** A node booting alongside a peer's in-flight migration
@@ -57,6 +228,66 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   client-supplied input. Both now reject it at the shared validation boundary
   with **400**. This is case-sensitive — lowercase `"or"` is rejected too,
   matching the parser and the evaluator, neither of which ever accepted it.
+
+- **Model field names must be addressable by a search `jsonPath`.** A field name
+  is now accepted only if it is a valid `jsonPath` segment: one or more ASCII
+  letters, digits, `_` or `-`. Anything else — spaces, dots, quotes, brackets,
+  `$`, `@`, `:`, or any non-ASCII character — and the empty name are rejected
+  with **400 `VALIDATION_FAILED`**, naming the offending key and the object that
+  declares it. The rule is enforced on both paths that establish a model's field
+  set: the sample-data model import, and the ChangeLevel-driven schema extension
+  performed by an entity write (single, collection, transition, and
+  processor-returned data), over HTTP and gRPC alike.
+
+  Previously the model layer recorded any JSON key while the query layer could
+  address only this charset, so a document could establish a field that nothing
+  could ever search. Ingestion that previously succeeded will now fail.
+
+  No migration is provided: rename the key in the source data and re-establish
+  the model. See `docs/cloud-parity/model-field-name-grammar.md`.
+
+- **A storage backend rejecting a malformed field path now answers 400, not a
+  500 with a support ticket.** Each plugin keeps its own path check as a
+  backstop behind the API boundary; when one fired, the engine had no
+  classification for it, so malformed input surfaced as an internal error with a
+  ticket UUID — inviting an operator to investigate a server fault that was
+  really just bad input. The `spi.ErrInvalidFilterPath` sentinel is now mapped to
+  **400 `INVALID_FIELD_PATH`** (with a server-side WARN, since reaching the
+  backstop means the boundary grammar and a plugin's check disagree). The
+  mapping is applied on both store branches — the bounded `Search` call and the
+  unbounded `Iterate` drain, the latter of which had no classification at all —
+  so the same input no longer answers 400 or 500 depending on whether the
+  request carried a positive `limit`.
+
+- **On PostgreSQL, a `pointInTime` read issued inside a joined transaction is
+  now committed-only.** It ran on the caller's own transaction connection, so a
+  snapshot read answered with that transaction's *uncommitted* writes: an entity
+  the transaction had just created was returned by a read taken "as at" an
+  instant before it existed, and one it had updated came back at the uncommitted
+  payload. It now ignores the ambient transaction and answers from committed
+  state. **Memory and sqlite already behaved this way** — they buffer
+  in-transaction writes off the store, so a point-in-time query never saw them —
+  so this closes a backend divergence rather than changing a cross-backend
+  contract. Only PostgreSQL deployments see a difference, and PostgreSQL is the
+  production backend, so treat it as breaking.
+
+  Five read families change — the single-entity read (`GET
+  /api/entity/{entityId}?pointInTime=` and `.../transitions?pointInTime=`), the
+  model-scoped list (`GET /api/entity/{entityName}/{modelVersion}?pointInTime=`),
+  direct search and conditional `DELETE /api/entity/{entityName}/{modelVersion}`
+  with `pointInTime`, the streamed scan behind grouped stats
+  (`POST /api/entity/stats/{entityName}/{modelVersion}/query` with
+  `pointInTime`), and the gRPC mirrors of all of them.
+
+  This is reachable over the wire, not just through the SPI: the `X-Tx-Token`
+  join middleware wraps the whole API mux (`internal/httpmw/txjoin_mw.go`), so
+  a compute-node callback running inside a transition's transaction takes
+  exactly this path and now gets `404 ENTITY_NOT_FOUND` where it previously got
+  the entity.
+
+  Fix for callers: omit `pointInTime`. A current-state read inside a transaction
+  is read-your-own-writes correct, and is the read a caller wanting its own
+  writes back should be using. See `docs/cloud-parity/tx-aware-search.md`.
 
 ### Added
 
@@ -132,6 +363,68 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   open transaction. Enforced uniformly across memory, sqlite and postgres.
   `cyoda help errors SEARCH_TIMEOUT`.
   ([#379](https://github.com/Cyoda-platform/cyoda-go/issues/379))
+
+- **`POST /api/search/async/{entityName}/{modelVersion}` now runs on a
+  bounded worker pool instead of one goroutine per submission**, with a
+  retryable **503 `SEARCH_QUEUE_FULL`** once both the running workers and
+  the submit queue are exhausted. Five new env vars, all validated at
+  startup rather than silently clamped:
+  `CYODA_SEARCH_ASYNC_WORKERS` (default `8`), `CYODA_SEARCH_ASYNC_QUEUE`
+  (default `256`), `CYODA_SEARCH_ASYNC_MAX_PER_TENANT` (default `8`, tracking
+  the worker count; `0` disables),
+  `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL` (default `15s`),
+  and `CYODA_SEARCH_JOB_STALE_AFTER` (default `5m`, must be at least 4x the
+  heartbeat interval). `cyoda help config` (Search internals) and
+  `cyoda help errors SEARCH_QUEUE_FULL`.
+
+  **`CYODA_SEARCH_ASYNC_MAX_PER_TENANT` is on by default and lowers the
+  accepted-in-flight ceiling — plan for it.** It caps how many jobs *one*
+  tenant may have in flight (queued **and** running are counted together) on a
+  node, so a single-tenant deployment's ceiling drops from `workers + queue`
+  (8 + 256 = 264) to **8**: a 50-submission burst that was previously accepted
+  in full now gets 8 accepted and 42 answered `503 SEARCH_QUEUE_FULL`. That is
+  the point — the cap is what stops one tenant filling the shared queue and
+  locking every other tenant out — but a single-tenant deployment sees only the
+  cost. Raise it, or set `0` to restore first-come-first-served across tenants.
+  Clients must already handle `503` here; a submitter that did not retry now
+  notices.
+
+- **A batched delete that can never finish now fails instead of running
+  forever**, with a new retryable **409 `DELETE_NOT_CONVERGED`**.
+  `DELETE /api/entity/{entityName}/{modelVersion}` with `transactionSize` set
+  and no `pointInTime` re-selects the matching entities before every batch and
+  stops when a pass finds nothing left; if entities matching the condition are
+  created at least as fast as they are removed, that pass never comes up empty
+  and the request previously never returned. It is now capped at a fixed
+  number of selection cycles — sized to be unreachable by any converging
+  delete — and fails at the cap. This is a caller-visible change: a request in
+  that state used to hang, and now gets a 409 it must handle. Batches
+  committed before the cap stay deleted, and the response fails rather than
+  reporting the partial pass as the complete requested set. The gRPC mirror
+  (`EntityDeleteAllRequest` with `transactionSize`) returns the same code in a
+  `CLIENT_ERROR` envelope. `cyoda help errors DELETE_NOT_CONVERGED`.
+
+- **Streamed async search results.** Results are saved to storage
+  incrementally as the scan runs, instead of being fully materialized in
+  memory and saved once at the end. A running job stamps its own liveness
+  on `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`, starting the moment it is
+  submitted (including while still queued, not only while scanning); the
+  same poll picks up a cross-node cancel or an externally-recorded terminal
+  status.
+
+- **Paged entity-list reads.** `GET /entity/{entityName}/{modelVersion}`
+  now pages at the store instead of loading the whole model and slicing in
+  Go — no O(model) materialisation for a request that only asked for one
+  page. Order is stable and deterministic within a given storage engine;
+  the specific order is storage-engine-specific (entity-ID based) — see
+  each backend's "Canonical entity-ID order" section in `docs/plugins/`.
+
+- **Purposed history reads.** `GET /entity/{entityId}/changes` and the
+  audit-event transaction lookup now use metadata-only, purpose-built
+  reads instead of the general-purpose full-history-with-payloads read
+  they previously shared — bounded by one entity's own version history,
+  never a model-wide scan for what only needs one field's worth of audit
+  metadata.
 
 ### Changed
 
@@ -214,7 +507,114 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   peer-forwarded dispatch.
   ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
 
+- **The sqlite plugin now numbers a new entity's first version 1, matching
+  memory and postgres.** It previously started at 0, which was
+  indistinguishable from an unset version wherever a caller checks "is
+  Version populated." Only entities created from now on are affected — an
+  entity that already exists on a running sqlite instance keeps its stored
+  version numbers exactly as they are and its next save simply continues
+  that same sequence (no renumbering or migration happens).
+
+- **Reading an async search job's results before it finishes now answers
+  with what has been saved so far**, instead of only becoming readable once
+  the job reaches a terminal status internally and then being served all at
+  once. Client-visible behavior is unchanged — results still only surface
+  through the API once the job is `SUCCESSFUL` — but the underlying
+  `GetResultIDs` contract is now explicit about mid-run reads instead of
+  leaving it undefined.
+
+- **Conditional delete (`DELETE /entity/{entityName}/{modelVersion}` with a
+  condition body, and the unconditional delete-all) now streams its
+  selection phase** instead of loading every matching entity into memory
+  first. The batched mode (`transactionSize` set) stays O(page) per batch
+  when deleting live state, but a request pinned to a `pointInTime` is
+  O(matched IDs) even in batched mode — deleting a live row cannot change
+  what a historical snapshot matched, so the live-state re-scan trick that
+  keeps the streamed mode's memory bounded would never converge there;
+  a single streamed drain (still never materializing full entity rows) is
+  used instead.
+
+- **Listing entities from inside a joined transaction (a compute-node
+  callback calling back into `GET /entity/{entityName}/{modelVersion}`) now
+  records only the returned page into the transaction's conflict read-set,
+  not the whole model.** The commit-time first-committer-wins check
+  therefore no longer aborts a transaction over a concurrent write to an
+  entity of the same model that never appeared on the page it listed. This
+  is a deliberate narrowing from the previous whole-model behaviour, not an
+  accidental relaxation: a processor that lists a page and then saves
+  within the same transaction is still protected against a conflicting
+  write to anything it actually read.
+
+- **Upgrading a populated PostgreSQL deployment to this release briefly
+  blocks writers to `entities`.** Migration `000008` adds the index that
+  backs paged entity-list reads with a plain `CREATE INDEX` rather than
+  `CREATE INDEX CONCURRENTLY` — `CONCURRENTLY` provably deadlocks this
+  project's concurrent multi-node boot path (a genuine lock cycle between
+  golang-migrate's advisory lock and `CONCURRENTLY`'s own multi-phase wait,
+  `SQLSTATE 40P01`). A plain `CREATE INDEX` avoids that deadlock at the
+  cost of a writer-blocking window for the duration of the build. Size the
+  maintenance window to the `entities` table's row count before upgrading;
+  see `docs/plugins/POSTGRES.md` ("Canonical entity-ID order" /
+  "Operational notes and limits") for the full mechanism and the structural
+  gap this leaves for any future same-shaped migration.
+
 ### Fixed
+
+- **The grouped-statistics endpoint's error codes are now documented.** All ten
+  codes the endpoint raises — `MALFORMED_REQUEST`, `MISSING_GROUP_BY`,
+  `DUPLICATE_GROUP_BY`, `INVALID_GROUP_BY_PATH`, `INVALID_AGGREGATION_OP`,
+  `INVALID_AGGREGATION_FIELD`, `DUPLICATE_AGGREGATION_ALIAS`, `INVALID_LIMIT`,
+  `GROUP_CARDINALITY_EXCEEDED` and `NOT_IMPLEMENTED_BY_BACKEND` — were inline
+  string literals with no constant and no help topic, so `cyoda help errors
+  <CODE>` answered 404 for every one of them and the error-code parity test
+  could not see them. Each now has a constant and a topic.
+
+  Two codes are removed from the `crud` topic's grouped-stats table:
+  `INVALID_POINT_IN_TIME` and `INVALID_OPERATOR`. Neither is emitted anywhere
+  in the server — an unparseable `pointInTime` is part of strict body decoding
+  and answers `MALFORMED_REQUEST`, which the table now says. `SCAN_BUDGET_EXHAUSTED`
+  was missing and is added: a non-pushdownable `condition` can force a residual
+  scan past the backend's budget. `api/openapi.yaml` was also wrong on one
+  point — an out-of-range `limit` is `INVALID_LIMIT`, not `MALFORMED_REQUEST`.
+
+- **A path addressing one array element by position (`$.arr[0]`) now resolves,
+  instead of answering an empty page for a field that holds the value.** It is
+  valid JSON Path, it is accepted at the API boundary, and no pushdown filter
+  can express it — so the in-memory evaluator is the only one that ever serves
+  it, and it did not. Three lookups missed, each independently enough to make
+  the leaf false for every entity: the evaluator handed gjson a path it has no
+  syntax for (`arr[0]`, where gjson wants `arr.0`); the declared-type lookup
+  probed a schema key that cannot exist (`$.arr[0]` — the schema records an
+  array's element once, under `$.arr[*]`), and a comparison with no declared
+  type expands into nothing; and search's field-existence check rejected the
+  path **400** as naming a field the model does not declare. The wildcard
+  spelling of the same path worked throughout, so two spellings of one path
+  disagreed. Affects a search `condition`, a conditional delete, a grouped-stats
+  residual, and a workflow criterion alike.
+
+  One consequence is a new rejection: a positional path now type-checks like
+  its wildcard twin, so `{"jsonPath":"$.arr[0]","operatorType":"EQUALS","value":"abc"}`
+  against an integer array is **400 `CONDITION_TYPE_MISMATCH`** rather than an
+  empty page. Negative indices, slices, unions and filter expressions are
+  unchanged — no evaluator in the stack resolves them.
+
+- **The gRPC changes-metadata read no longer reports a `transactionId` for a
+  deleted entity's tombstone.** `transactionId` is present only when
+  `hasEntity` is true; the HTTP handler gates on it, the gRPC handler did
+  not, so `EntityChangesMetadataGetRequest` surfaced the delete
+  transaction's id over gRPC while `GET /entity/{id}/changes` omitted it for
+  the same entity. The two doors now agree, matching the documented
+  contract.
+
+- **Cancelling an async search job no longer leaves it permanently un-reapable.**
+  `CancelAsync` called the generic status-update path instead of the store's
+  `Cancel`, which never stamped a finish time on the job — and the background
+  reaper only ever removes terminal jobs that have one, so every cancelled job
+  accumulated in storage for the life of the process. `CancelAsync` now
+  dispatches through `Cancel`, and all three storage backends (memory, SQLite,
+  PostgreSQL) stamp the finish time as part of the same transition that marks
+  the job `CANCELLED`, so it is reaped on the same schedule as a completed or
+  failed job.
 
 - **`POST /api/oauth/oidc/providers/reload` no longer destroys the JWKS key cache
   it is documented to refresh.** The reload rebuilt the provider list but installed
@@ -504,6 +904,37 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   non-transactional, so the chunking is not user-visible beyond no longer
   failing.
   ([#379](https://github.com/Cyoda-platform/cyoda-go/issues/379))
+
+- **An async search job whose owning node crashed no longer stays `RUNNING`
+  forever with stale partial results.** Nothing previously reclaimed an
+  orphaned job — the reaper only ever removed *terminal* jobs past their
+  TTL. A background reaper now claims any `RUNNING` job whose heartbeat has
+  gone silent for `CYODA_SEARCH_JOB_STALE_AFTER` and marks it `FAILED` with
+  a safe generic message. This milestone's disposition fails the job
+  outright rather than re-executing it elsewhere in the cluster (a
+  re-execution follow-up is tracked separately); the important behavior
+  change is that a crashed node's async jobs now reach a terminal state at
+  all.
+
+- **An async search job's results are no longer subject to a torn write
+  from two nodes believing they both own it.** Every job now carries a
+  claim epoch: `Heartbeat`, streamed result saves, and the terminal status
+  write are all fenced against it, so an executor that was reaped and later
+  recovers has its next write rejected instead of silently corrupting a
+  result set another node has since taken over.
+
+- **`GET /entity/{entityId}/changes` no longer returns an unstable order
+  for two versions sharing the same timestamp.** The sort was
+  timestamp-only; entries with an identical timestamp could reorder between
+  otherwise-identical requests. Newest-first is now tie-broken by version
+  number descending, which is stable.
+
+- **A tombstone's `hasEntity` in the changes/audit response is now
+  consistent across storage backends.** It was derived from "is the
+  returned entity payload non-nil," which some backends left non-nil on a
+  DELETED row and others did not; `hasEntity` is now the canonical,
+  change-type-derived `Deleted` flag, so a delete's history entry reports
+  the same `hasEntity` value regardless of which backend served it.
 
 ## [0.8.3] — 2026-07-27
 

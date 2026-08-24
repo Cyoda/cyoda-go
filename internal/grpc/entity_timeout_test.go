@@ -356,7 +356,7 @@ func TestRPC_EntityCreate_TransactionTimeoutMs_BlockingStore_408(t *testing.T) {
 	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
 	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)
-	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), searchService)
+	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
 
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
@@ -430,7 +430,7 @@ func TestRPC_EntityCreate_TransactionTimeoutMs_CommitWins_Success(t *testing.T) 
 	engine := workflow.NewEngine(realFactory, common.NewDefaultUUIDGenerator(), rtm)
 	searchStore, _ := realFactory.AsyncSearchStore(context.Background())
 	searchService := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStore)
-	entityHandler := entity.New(realFactory, rtm, common.NewDefaultUUIDGenerator(), engine, txgate.New(), searchService)
+	entityHandler := entity.New(realFactory, rtm, common.NewDefaultUUIDGenerator(), engine, txgate.New())
 
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
@@ -491,7 +491,7 @@ func TestRPC_EntityUpdateCollection_TransactionTimeoutMs_LoopHeadStopsSecondItem
 	engine := workflow.NewEngine(realFactory, common.NewDefaultUUIDGenerator(), rtm)
 	searchStore, _ := realFactory.AsyncSearchStore(context.Background())
 	searchService := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStore)
-	entityHandler := entity.New(realFactory, rtm, common.NewDefaultUUIDGenerator(), engine, txgate.New(), searchService)
+	entityHandler := entity.New(realFactory, rtm, common.NewDefaultUUIDGenerator(), engine, txgate.New())
 
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),

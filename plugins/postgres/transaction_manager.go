@@ -157,8 +157,8 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 	// EntityStore.Delete and Search's documented assumption in searcher.go)
 	// — real row visibility is governed by PostgreSQL's own transaction/
 	// SAVEPOINT machinery, not an in-process buffer. The SPI conformance
-	// contract is the committed outcome (GetVersionHistory), never these
-	// maps' contents.
+	// contract is the committed outcome (GetPage, GetVersionByTransaction,
+	// GetVersionMetadata), never these maps' contents.
 	txSpiState := &spi.TransactionState{
 		ID:       txID,
 		TenantID: tenantID,

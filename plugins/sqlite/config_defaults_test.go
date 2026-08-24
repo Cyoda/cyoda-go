@@ -6,16 +6,21 @@ import (
 	"time"
 )
 
-// pathDescribedNotLiteral holds ConfigVars() names whose Default field
-// documents a formula ("$XDG_DATA_HOME/cyoda/cyoda.db (Windows:
-// %LocalAppData%\cyoda\cyoda.db)") rather than a single literal value, so it
-// cannot be compared against one parseConfig() run with a plain string/
-// duration comparison — the real default is host- and OS-dependent. Skipped
-// here, not uncovered: the formula itself is exercised per-branch by
-// TestDefaultDBPathResolved_* in config_test.go, which pins each OS/env
-// combination against the exact join the description promises.
-var pathDescribedNotLiteral = map[string]bool{
-	"CYODA_SQLITE_PATH": true,
+// describedNotLiteral holds ConfigVars() names whose Default field documents a
+// formula rather than a single literal value, so it cannot be compared against
+// one parseConfig() run with a plain string/duration comparison — the real
+// default is host- or OS-dependent. Skipped here, not uncovered: each formula
+// is pinned by its own test.
+//
+//   - CYODA_SQLITE_PATH ("$XDG_DATA_HOME/cyoda/cyoda.db (Windows:
+//     %LocalAppData%\cyoda\cyoda.db)") — TestDefaultDBPathResolved_* in
+//     config_test.go pins every OS/env branch against the exact join.
+//   - CYODA_SQLITE_READER_POOL_SIZE ("GOMAXPROCS clamped to 4..8") —
+//     TestReaderPoolSize_ConfiguredFromEnv in reader_pool_size_test.go pins the
+//     unset case against defaultReaderPoolSize() itself.
+var describedNotLiteral = map[string]bool{
+	"CYODA_SQLITE_PATH":             true,
+	"CYODA_SQLITE_READER_POOL_SIZE": true,
 }
 
 // TestConfigVars_DefaultsMatchParseConfig asserts every default advertised in
@@ -41,7 +46,7 @@ func TestConfigVars_DefaultsMatchParseConfig(t *testing.T) {
 	}
 
 	for _, v := range (&plugin{}).ConfigVars() {
-		if v.Required || pathDescribedNotLiteral[v.Name] {
+		if v.Required || describedNotLiteral[v.Name] {
 			continue
 		}
 		got, ok := actual[v.Name]

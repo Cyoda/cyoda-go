@@ -52,9 +52,74 @@ type Config struct {
 	// SearchMaxSortKeys caps the number of sort keys per search request.
 	// Defaults to 16; tune via CYODA_SEARCH_MAX_SORT_KEYS.
 	SearchMaxSortKeys int
+	// SearchAsync bounds the async-search worker pool
+	// (internal/domain/search.WorkerPool): how many workers drain the
+	// submit queue and how deep that queue is before Submit starts
+	// rejecting new jobs with a retryable 503. See SearchAsyncConfig.
+	SearchAsync SearchAsyncConfig
+	// SearchJobHeartbeatInterval is how often a running async-search
+	// executor stamps its job's liveness (spi.AsyncSearchStore.Heartbeat)
+	// and polls for a cross-node cancel/terminal status — starting the
+	// moment the job is submitted (it heartbeats while queued, not only
+	// while scanning), independent of scan progress.
+	// CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL, default 15s. Must be > 0
+	// (time.NewTicker panics on a non-positive duration); validated at
+	// startup by ValidateSearchJobHeartbeat.
+	SearchJobHeartbeatInterval time.Duration
+	// SearchJobStaleAfter is how long a RUNNING async-search job may go
+	// without a heartbeat (spi.AsyncSearchStore.ClaimStale's staleness
+	// baseline — HeartbeatTime, or CreateTime when never heartbeated)
+	// before the reaper (internal/domain/search.FailStaleJobs, wired into
+	// the same ticker as the snapshot-TTL reaper in app.go) claims it and
+	// marks it FAILED. Must dominate SearchJobHeartbeatInterval by a wide
+	// margin so a merely slow heartbeat tick is never mistaken for a dead
+	// executor — see ValidateSearchJobStaleAfter.
+	// CYODA_SEARCH_JOB_STALE_AFTER, default 5m.
+	SearchJobStaleAfter time.Duration
 	// Scheduler configures the coordinator-only scan loop that fires due
 	// ScheduledTasks (scheduled-transition runtime). See SchedulerConfig.
 	Scheduler SchedulerConfig
+}
+
+// SearchAsyncConfig bounds the async-search worker pool
+// (internal/domain/search.WorkerPool). Validated by ValidateSearchAsync at
+// startup — config is a QA'd artefact, so an invalid value is a hard error,
+// not silently clamped to the default.
+type SearchAsyncConfig struct {
+	// Workers is the number of goroutines draining the async-search submit
+	// queue. CYODA_SEARCH_ASYNC_WORKERS, default 8.
+	//
+	// Documented default, not computed: a streaming search job holds its
+	// scan connection for the run's duration plus, per chunk, a save
+	// connection — so the worker count must stay within the postgres
+	// connection budget. 8 workers <= (default 25 max conns - reserve) / 2
+	// connections held at a job's peak.
+	Workers int
+	// QueueLen is the submit queue's capacity beyond the workers already
+	// running. Once both are exhausted, Submit returns ErrQueueFull,
+	// surfaced as a retryable 503 SEARCH_QUEUE_FULL.
+	// CYODA_SEARCH_ASYNC_QUEUE, default 256.
+	QueueLen int
+	// MaxPerTenant caps how many async-search jobs one tenant may have in
+	// flight on this node — queued and executing together. Over-cap
+	// submissions get the same retryable 503 SEARCH_QUEUE_FULL as pool
+	// backpressure. CYODA_SEARCH_ASYNC_MAX_PER_TENANT, default: Workers.
+	//
+	// The pool is shared by every tenant, so without this one tenant's
+	// burst takes every worker AND fills the queue, and every other tenant
+	// is answered 503 until those jobs finish — for an async search, up to
+	// the backend's whole async-scan ceiling.
+	//
+	// Defaulting to Workers (rather than a fraction of it) is deliberate: a
+	// tenant may still saturate the RUNNING set, so a single-tenant
+	// deployment never idles workers it paid for, but it can never hold
+	// more than Workers queue slots, so the remaining QueueLen always
+	// belongs to other tenants and their submissions are accepted and
+	// served as workers free up.
+	//
+	// 0 disables the cap entirely, restoring first-come-first-served across
+	// tenants. Negative is a hard startup error (ValidateSearchAsync).
+	MaxPerTenant int
 }
 
 // SchedulerConfig controls the scheduled-transition scan loop: cadence,
@@ -219,6 +284,11 @@ func DefaultConfig() Config {
 	if maxSortKeys <= 0 {
 		maxSortKeys = 16
 	}
+	// Resolved ahead of the literal because the per-tenant in-flight cap
+	// defaults to it (see SearchAsyncConfig.MaxPerTenant), so resizing the
+	// pool resizes the cap with it. No clamp: an out-of-range value is a
+	// hard startup error via ValidateSearchAsync, not something to guess at.
+	asyncWorkers := envInt("CYODA_SEARCH_ASYNC_WORKERS", 8)
 
 	return Config{
 		HTTPPort:          envInt("CYODA_HTTP_PORT", 8080),
@@ -254,6 +324,13 @@ func DefaultConfig() Config {
 		StorageBackend:     envString("CYODA_STORAGE_BACKEND", "memory"),
 		StatsGroupMax:      statsGroupMax,
 		SearchMaxSortKeys:  maxSortKeys,
+		SearchAsync: SearchAsyncConfig{
+			Workers:      asyncWorkers,
+			QueueLen:     envInt("CYODA_SEARCH_ASYNC_QUEUE", 256),
+			MaxPerTenant: envInt("CYODA_SEARCH_ASYNC_MAX_PER_TENANT", asyncWorkers),
+		},
+		SearchJobHeartbeatInterval: envDuration("CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL", 15*time.Second),
+		SearchJobStaleAfter:        envDuration("CYODA_SEARCH_JOB_STALE_AFTER", 5*time.Minute),
 		Admin: AdminConfig{
 			Port:               envInt("CYODA_ADMIN_PORT", 9091),
 			BindAddress:        envString("CYODA_ADMIN_BIND_ADDRESS", "127.0.0.1"),
@@ -590,6 +667,100 @@ func isASCII(s string) bool {
 		}
 	}
 	return true
+}
+
+// Validate enforces the config invariants App.New's own wiring depends on.
+//
+// It lives here, and is called by New itself, because the dependency is
+// New's: it builds the async-search worker pool straight from
+// cfg.SearchAsync, and NewWorkerPool deliberately does not validate (a
+// negative QueueLen panics inside make(chan jobFunc, n)), while
+// cfg.SearchJobHeartbeatInterval reaches a time.NewTicker that panics on a
+// non-positive duration. Checking only in cmd/cyoda/main.go left every
+// in-process embedder of app.New — internal/e2e included — outside the
+// guard. Config is a QA'd artefact rather than untrusted input, so this is
+// an invariant held where it is relied on, not input hardening.
+//
+// The binary keeps its own per-setting calls so its startup diagnostics
+// name the offending setting; it exits before New is ever reached, so the
+// same error is never reported twice.
+func (c Config) Validate() error {
+	if err := ValidateSearchAsync(c.SearchAsync); err != nil {
+		return err
+	}
+	if err := ValidateSearchJobHeartbeat(c.SearchJobHeartbeatInterval); err != nil {
+		return err
+	}
+	return ValidateSearchJobStaleAfter(c.SearchJobStaleAfter, c.SearchJobHeartbeatInterval)
+}
+
+// ValidateSearchAsync enforces startup-time correctness for the
+// async-search worker pool sizing. Called once at startup (from
+// cmd/cyoda/main.go); a non-nil return causes the binary to slog the error
+// and os.Exit(1).
+//
+// Config is a QA'd artefact, not runtime input: an invalid value is a hard
+// error here rather than silently clamped to the default the way
+// CYODA_STATS_GROUP_MAX / CYODA_SEARCH_MAX_SORT_KEYS are (those predate
+// this policy). Workers < 1 would start a pool with zero goroutines
+// draining the queue — every Submit would eventually return ErrQueueFull
+// once the buffer fills, with nothing ever running. QueueLen < 0 panics
+// inside make(chan jobFunc, n). MaxPerTenant < 0 is neither a cap nor the
+// documented disable sentinel (0), so it is rejected rather than guessed at.
+func ValidateSearchAsync(c SearchAsyncConfig) error {
+	if c.Workers < 1 {
+		return fmt.Errorf("CYODA_SEARCH_ASYNC_WORKERS must be >= 1, got %d", c.Workers)
+	}
+	if c.QueueLen < 0 {
+		return fmt.Errorf("CYODA_SEARCH_ASYNC_QUEUE must be >= 0, got %d", c.QueueLen)
+	}
+	if c.MaxPerTenant < 0 {
+		return fmt.Errorf("CYODA_SEARCH_ASYNC_MAX_PER_TENANT must be >= 0 (0 disables the cap), got %d", c.MaxPerTenant)
+	}
+	return nil
+}
+
+// ValidateSearchJobHeartbeat enforces startup-time correctness for
+// CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL. Called once at startup (from
+// cmd/cyoda/main.go); a non-nil return causes the binary to slog the error
+// and os.Exit(1).
+//
+// Config is a QA'd artefact, not runtime input: a non-positive interval is a
+// hard startup error rather than silently clamped to the default, matching
+// ValidateSearchAsync's policy. time.NewTicker panics on a non-positive
+// duration, so this guards a startup crash, not just a slow default.
+func ValidateSearchJobHeartbeat(interval time.Duration) error {
+	if interval <= 0 {
+		return fmt.Errorf("CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL must be > 0, got %s", interval)
+	}
+	return nil
+}
+
+// staleAfterMinMultiple is the minimum multiple of the heartbeat interval
+// CYODA_SEARCH_JOB_STALE_AFTER must dominate by. A stale-job claim is a
+// takeover: it fails a job whose owning executor may simply be about to
+// heartbeat again. Requiring several missed ticks' worth of headroom before
+// staleness kicks in keeps ordinary scheduling jitter (GC pause, a busy
+// worker pool, a slow ticker) from reading as a dead executor.
+const staleAfterMinMultiple = 4
+
+// ValidateSearchJobStaleAfter enforces startup-time correctness for
+// CYODA_SEARCH_JOB_STALE_AFTER against CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL.
+// Called once at startup (from cmd/cyoda/main.go), after both
+// ValidateSearchJobHeartbeat has already rejected a non-positive interval;
+// a non-nil return causes the binary to slog the error and os.Exit(1).
+//
+// Config is a QA'd artefact: the interval « staleAfter invariant
+// (spi.AsyncSearchStore.ClaimStale's doc comment) is made mechanically
+// checkable here rather than left as a documentation-only convention —
+// staleAfter < 4×interval is a hard startup error, not silently accepted.
+func ValidateSearchJobStaleAfter(staleAfter, interval time.Duration) error {
+	minStale := staleAfterMinMultiple * interval
+	if staleAfter < minStale {
+		return fmt.Errorf("CYODA_SEARCH_JOB_STALE_AFTER must be >= %d x CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL (%s, given interval=%s), got %s",
+			staleAfterMinMultiple, minStale, interval, staleAfter)
+	}
+	return nil
 }
 
 // ValidateIAM enforces startup-time IAM correctness. When CYODA_REQUIRE_JWT

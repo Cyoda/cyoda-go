@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 233 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 243 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -62,6 +62,11 @@ var allTests = []NamedTest{
 	{"EntityListByModel", RunEntityListByModel},
 	{"EntityMetaShape", RunEntityMetaShape},
 	{"GetAllEntitiesAsAt", RunGetAllEntitiesAsAt},
+	// GetPage paging contract (task E5): determinism, page0++page1 ==
+	// double-wide page, and set-equality with the full model — deliberately
+	// NOT a specific cross-engine id sequence, since GetPage's canonical
+	// order is per-engine (documented on spi.EntityStore.GetPage).
+	{"ListEntitiesPagingConsistency", RunListEntitiesPagingConsistency},
 	{"EntityConditionalDeleteInTx", RunEntityConditionalDeleteInTx},
 	{"EntityUpdateCollectionHappyPath", RunEntityUpdateCollectionHappyPath},
 	{"EntityUpdateCollectionRollback", RunEntityUpdateCollectionRollback},
@@ -75,6 +80,12 @@ var allTests = []NamedTest{
 	{"AuditEntityHistory", RunAuditEntityHistory},
 	{"AuditWorkflowEvents", RunAuditWorkflowEvents},
 	{"AuditPostTxIdMatchesWorkflowFinished", RunAuditPostTxIdMatchesWorkflowFinished},
+
+	// History reads (task E6): getEntityChangesMetadata's
+	// newest-first/Version-DESC-tiebreak/tombstone-HasEntity contract and
+	// getOneEntity's by-transaction lookup, both now backed by
+	// spi.EntityStore.GetVersionMetadata / GetVersionByTransaction.
+	{"HistoryReadsChangesMetadataAndTransactionLookup", RunHistoryReadsChangesMetadataAndTransactionLookup},
 
 	// Phase 4a — tenant isolation (Task 4a.5)
 	{"TenantIsolationEntities", RunTenantIsolationEntities},
@@ -127,13 +138,26 @@ var allTests = []NamedTest{
 	{"SearchTemporalLastUpdateTime", RunSearchTemporalLastUpdateTime},
 	{"SearchUnknownMetaField400", RunSearchUnknownMetaField400},
 
-	// Path-key resolution (PR #490). A field path spelled with and without
-	// the "$." prefix names the same field, and the storage layer's own
-	// _meta block is not addressable as entity data. Both were
-	// backend-visible before the fix, so both belong here rather than in a
-	// single-backend test.
-	{"SearchPrefixlessPathResolvesDeclaredType", RunSearchPrefixlessPathResolvesDeclaredType},
-	{"SearchPrefixlessPathTypeMismatch400", RunSearchPrefixlessPathTypeMismatch400},
+	// Field-path spelling and resolution. A jsonPath is JSON Path
+	// nomenclature — the "$." leader is required on every path surface a
+	// request carries — while an array-subscripted path stays served by the
+	// in-memory fallback; and the storage layer's own _meta block is not
+	// addressable as entity data. All were backend-visible, so all belong
+	// here rather than in a single-backend test.
+	{"SearchPathRequiresJSONPathLeader", RunSearchPathRequiresJSONPathLeader},
+	{"SearchArraySubscriptPathStillServed", RunSearchArraySubscriptPathStillServed},
+	{"SearchPathTypeMismatch400", RunSearchPathTypeMismatch400},
+	// The same grammar governs a workflow/transition criterion, enforced at
+	// workflow import; and a path addressing one array element by position
+	// resolves to that element on every surface. Both are per-backend claims:
+	// a criterion is stored per backend and re-read on every write, and which
+	// plan a subscripted query takes differs per backend.
+	{"WorkflowCriterionPathRequiresJSONPathLeader", RunWorkflowCriterionPathRequiresJSONPathLeader},
+	{"PositionalSubscriptPathResolves", RunPositionalSubscriptPathResolves},
+	// ...and a path whose LAST hop is a wildcard addresses the array's
+	// ELEMENTS, not its length, on both surfaces.
+	{"SearchTrailingWildcardPathResolves", RunSearchTrailingWildcardPathResolves},
+	{"GroupedStatsPathRequiresJSONPathLeader", RunGroupedStatsPathRequiresJSONPathLeader},
 	{"SearchMetaBlockNotMatchableAsDataPath", RunSearchMetaBlockNotMatchableAsDataPath},
 	{"SearchStringMetaVocabulary", RunSearchStringMetaVocabulary},
 	{"SearchBetweenArity400", RunSearchBetweenArity400},
@@ -168,6 +192,7 @@ var allTests = []NamedTest{
 	{"CallbackTxJoin_EmptyTokenStandalone", RunCallbackEmptyTokenStandalone},
 	{"CallbackTxJoin_CBDPostJoinsTxPost", RunCallback_CBDPostJoinsTxPost},
 	{"CallbackTxJoin_AsyncNewTxDiscardOnFailure", RunCallback_AsyncNewTxDiscardOnFailure},
+	{"CallbackTxJoin_PITCommittedOnly", RunPITCommittedOnlyInJoinedTx},
 
 	// A.1 — numeric classifier parity (HTTP round-trip)
 	{"NumericClassification18DigitDecimal", RunNumericClassification18DigitDecimal},
@@ -184,6 +209,7 @@ var allTests = []NamedTest{
 	{"SchemaExtensionSavepointOnLockFoldEquivalence", RunSchemaExtensionSavepointOnLockFoldEquivalence},
 	{"SchemaExtensionLocalCacheInvalidationOnCommit", RunSchemaExtensionLocalCacheInvalidationOnCommit},
 	{"SchemaExtensionByteIdentityProperty", RunSchemaExtensionByteIdentityProperty},
+	{"ModelFieldNameRejected", RunModelFieldNameRejected},
 
 	// Phase 9.2 — OIDC CRUD + authz (#284)
 	// Rows 1-6: CRUD happy-path.
@@ -429,6 +455,12 @@ var allTests = []NamedTest{
 	// resolves that same operand to `> 2024` (imprecise-floor op mutation) —
 	// matching 2025, not 2024. See search_type_directed.go.
 	{"SearchDataFieldTemporalResolution", RunSearchDataFieldTemporalResolution},
+
+	// Async-search result ordering (task E7.2, design §9 row 19): per-backend
+	// deterministic order respecting the requested sort key, with entity-ID
+	// tie-break — set+pairwise-key assertions, no cross-engine sequence
+	// compare (see async_ordering.go's doc comment).
+	{"AsyncOrderingRespected", RunAsyncOrderingRespected},
 }
 
 // Register appends additional NamedTests to the canonical list at init time.

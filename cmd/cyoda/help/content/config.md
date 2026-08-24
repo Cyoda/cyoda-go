@@ -86,8 +86,13 @@ loads `cyoda.postgres.env` and `cyoda.otel.env` from the working directory.
 ### Search internals
 
 - `CYODA_SEARCH_SNAPSHOT_TTL` (duration, default: `1h`) — search snapshot TTL.
-- `CYODA_SEARCH_REAP_INTERVAL` (duration, default: `5m`) — search snapshot reap interval.
+- `CYODA_SEARCH_REAP_INTERVAL` (duration, default: `5m`) — search snapshot reap interval. The stale async-search-job reaper (see `CYODA_SEARCH_JOB_STALE_AFTER`) shares this same ticker rather than running on its own — it is not purely a snapshot-cleanup cadence.
 - `CYODA_SEARCH_MAX_SORT_KEYS` (int, default: `16`) — maximum number of `sort` keys per search request. Requests exceeding this cap are rejected with `400 INVALID_FIELD_PATH`. Values `<= 0` are clamped to the default.
+- `CYODA_SEARCH_ASYNC_WORKERS` (int, default: `8`) — async-search worker pool size. Config is a QA'd artefact: values `< 1` fail startup rather than being clamped.
+- `CYODA_SEARCH_ASYNC_QUEUE` (int, default: `256`) — async-search submit queue capacity beyond the running workers. Once both are exhausted, submission fails with `503 SEARCH_QUEUE_FULL` (retryable). Values `< 0` fail startup.
+- `CYODA_SEARCH_ASYNC_MAX_PER_TENANT` (int, default: `8` — tracks `CYODA_SEARCH_ASYNC_WORKERS`) — maximum async-search jobs one tenant may have in flight (queued or running) on a node. Over-cap submissions get the same retryable `503 SEARCH_QUEUE_FULL`, so one tenant's burst cannot fill the shared queue and lock every other tenant out. A tenant may still occupy every worker; it just cannot hold more than this many queue slots. `0` disables the cap. Values `< 0` fail startup.
+- `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL` (duration, default: `15s`) — how often a running async-search executor stamps job liveness and polls for a cross-node cancel/terminal status, starting at submit time (queued or scanning). Config is a QA'd artefact: values `<= 0` fail startup rather than being clamped.
+- `CYODA_SEARCH_JOB_STALE_AFTER` (duration, default: `5m`) — how long a `RUNNING` async-search job may go without a heartbeat before the reaper claims it and marks it `FAILED` (its owning executor most likely crashed or was killed). Config is a QA'd artefact: values below `4 x CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL` fail startup rather than being clamped. The reaper only actually checks on `CYODA_SEARCH_REAP_INTERVAL`'s ticker (default `5m`, same ticker the snapshot reaper uses) — real detection latency is up to `CYODA_SEARCH_JOB_STALE_AFTER + CYODA_SEARCH_REAP_INTERVAL` (worst case ~10m at defaults), not `CYODA_SEARCH_JOB_STALE_AFTER` alone. Lowering `CYODA_SEARCH_JOB_STALE_AFTER` without also lowering `CYODA_SEARCH_REAP_INTERVAL` does not shrink detection time below the reap interval's cadence.
 
 ### Cluster and dispatch
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -159,6 +160,13 @@ func (s *CloudEventsServiceImpl) handleSnapshotSearchRequest(ctx context.Context
 
 	snapshotID, err := s.searchService.SubmitAsyncSearch(ctx, modelRef, cond, opts)
 	if err != nil {
+		// ErrQueueFull (the async-search worker pool's queue is at capacity)
+		// is a bare sentinel, not an *common.AppError — map it to the shared
+		// retryable 503 before handing off to snapshotSearchError, whose
+		// buildErrorFields only classifies *common.AppError specially.
+		if errors.Is(err, search.ErrQueueFull) {
+			err = search.QueueFullError()
+		}
 		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearch", "type", EntitySnapshotSearchRequest, "ceId", ce.Id, "error", err.Error())
 		return snapshotSearchError(ctx, ce.Id, err)
 	}
@@ -590,7 +598,12 @@ func (s *CloudEventsServiceImpl) handleEntityChangesMetadataGetRequest(ctx conte
 			TimeOfChange: t,
 			User:         entry.User,
 		}
-		if entry.TransactionID != "" {
+		// transactionId is present only when hasEntity is true — the
+		// documented contract (cmd/cyoda/help/content/crud.md) and the way
+		// HasEntity=false is observed on the wire. The HTTP handler already
+		// gates on it (internal/domain/entity/handler.go); this door must
+		// not surface a tombstone's transaction id when that one does not.
+		if entry.HasEntity && entry.TransactionID != "" {
 			txID := entry.TransactionID
 			changeMeta.TransactionID = &txID
 		}

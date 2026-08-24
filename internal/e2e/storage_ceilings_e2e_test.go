@@ -827,21 +827,31 @@ func (h *callbackHarness) submitAsyncSearchOn(t *testing.T, model string) string
 	return jobID
 }
 
+// asyncJobStatus reads one job's current searchJobStatus over the real HTTP
+// door. Split out of waitForAsyncTerminal so tests that assert a job STAYS
+// RUNNING (the stale-reaper false-positive guard) read it the same way as
+// tests waiting for it to leave.
+func (h *callbackHarness) asyncJobStatus(t *testing.T, jobID string) string {
+	t.Helper()
+	resp := h.DoAuth(t, http.MethodGet, "/api/search/async/"+jobID+"/status", "", "")
+	body := h.readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("async search status: %d %s", resp.StatusCode, body)
+	}
+	var st map[string]any
+	if err := json.Unmarshal([]byte(body), &st); err != nil {
+		t.Fatalf("async search status is not JSON: %v; body: %s", err, body)
+	}
+	s, _ := st["searchJobStatus"].(string)
+	return s
+}
+
 // waitForAsyncTerminal polls the status endpoint until the job leaves RUNNING.
 func (h *callbackHarness) waitForAsyncTerminal(t *testing.T, jobID string, timeout time.Duration) string {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		resp := h.DoAuth(t, http.MethodGet, "/api/search/async/"+jobID+"/status", "", "")
-		body := h.readBody(t, resp)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("async search status: %d %s", resp.StatusCode, body)
-		}
-		var st map[string]any
-		if err := json.Unmarshal([]byte(body), &st); err != nil {
-			t.Fatalf("async search status is not JSON: %v; body: %s", err, body)
-		}
-		if s, _ := st["searchJobStatus"].(string); s != "RUNNING" {
+		if s := h.asyncJobStatus(t, jobID); s != "RUNNING" {
 			return s
 		}
 		time.Sleep(50 * time.Millisecond)

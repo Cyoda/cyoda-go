@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -337,6 +338,138 @@ func TestEntitySearch_DirectSearch_OrderBy_InvalidField(t *testing.T) {
 	if !strings.Contains(typed.Error.Message, "INVALID_FIELD_PATH") {
 		t.Errorf("expected INVALID_FIELD_PATH in message, got %q", typed.Error.Message)
 	}
+}
+
+// TestEntitySearch_SnapshotSearch_OrderBy_ResultsOrdered is the gRPC cell of
+// design §9 row 19 ("Async result ordering respected end-to-end"): it drives
+// the whole async round-trip over the gRPC door — EntitySnapshotSearchRequest
+// (submit) -> SnapshotGetStatusRequest (poll to SUCCESSFUL) ->
+// SnapshotGetRequest (stream results) — and asserts the STREAMED RESULT ORDER
+// matches the requested orderBy.
+//
+// The sibling _OrderBy_ValidField / _OrderBy_SourceMeta tests assert only
+// that the orderBy payload is ACCEPTED (success + a snapshot id); neither
+// reads a single result back, so neither can tell an honoured orderBy from
+// an ignored one. This one can.
+//
+// Non-vacuous by construction: the same seeded model is searched twice, asc
+// and desc, and both directions are asserted. The seed order ("bbb","ccc",
+// "aaa") matches neither, so an implementation that dropped orderBy on the
+// floor — returning canonical entity-ID or insertion order — fails at least
+// one of the two assertions whatever that canonical order happens to be.
+func TestEntitySearch_SnapshotSearch_OrderBy_ResultsOrdered(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"surname": "Smith"})
+
+	for _, surname := range []string{"bbb", "ccc", "aaa"} {
+		if _, err := svc.EntityManage(ctx, makeCE(EntityCreateRequest, map[string]any{
+			"id": "c-snap-ord-" + surname, "dataFormat": "JSON",
+			"payload": map[string]any{
+				"model": map[string]any{"name": "person", "version": 1},
+				"data":  map[string]any{"surname": surname},
+			},
+		})); err != nil {
+			t.Fatalf("create %q failed: %v", surname, err)
+		}
+	}
+
+	// snapshotSurnames runs one full submit/poll/read round-trip and returns
+	// the surnames in the order the results stream delivered them.
+	snapshotSurnames := func(t *testing.T, desc bool) []string {
+		t.Helper()
+		tag := fmt.Sprintf("snap-ord-%v", desc)
+
+		submitResp, err := svc.EntitySearch(ctx, makeCE(EntitySnapshotSearchRequest, map[string]any{
+			"id":    tag,
+			"model": map[string]any{"name": "person", "version": 1},
+			"condition": map[string]any{
+				"type": "group", "operator": "AND", "conditions": []any{},
+			},
+			"orderBy": []any{
+				map[string]any{"path": "surname", "desc": desc},
+			},
+		}))
+		if err != nil {
+			t.Fatalf("submit (desc=%v): %v", desc, err)
+		}
+		var submitted events.EntitySnapshotSearchResponseJson
+		validateResponse(t, submitResp, &submitted)
+		if !submitted.Success {
+			t.Fatalf("submit (desc=%v): success=false; error: %v", desc, submitted.Error)
+		}
+		snapshotID := submitted.Status.SnapshotID
+		if snapshotID == "" {
+			t.Fatalf("submit (desc=%v): empty snapshotId", desc)
+		}
+
+		// Poll the real status surface — no fixed sleep; async means async.
+		deadline := time.Now().Add(10 * time.Second)
+		for settled := false; !settled; {
+			statusResp, err := svc.EntitySearch(ctx, makeCE(SnapshotGetStatusRequest, map[string]any{
+				"id": tag, "snapshotId": snapshotID,
+			}))
+			if err != nil {
+				t.Fatalf("status (desc=%v): %v", desc, err)
+			}
+			var st events.EntitySnapshotSearchResponseJson
+			validateResponse(t, statusResp, &st)
+			if !st.Success {
+				t.Fatalf("status (desc=%v): success=false; error: %v", desc, st.Error)
+			}
+			switch string(st.Status.Status) {
+			case "SUCCESSFUL":
+				settled = true
+			case "FAILED", "CANCELLED":
+				t.Fatalf("status (desc=%v): job settled %s, want SUCCESSFUL", desc, st.Status.Status)
+			default:
+				if time.Now().After(deadline) {
+					t.Fatalf("status (desc=%v): timed out waiting for SUCCESSFUL (last=%s)", desc, st.Status.Status)
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+
+		stream := &mockEntityStream{ctx: ctx}
+		if err := svc.EntitySearchCollection(makeCE(SnapshotGetRequest, map[string]any{
+			"id": tag, "snapshotId": snapshotID, "pageNumber": 0, "pageSize": 100,
+		}), stream); err != nil {
+			t.Fatalf("results (desc=%v): unexpected stream error: %v", desc, err)
+		}
+		surnames := make([]string, 0, len(stream.sent))
+		for i, sent := range stream.sent {
+			var typed events.EntityResponseJson
+			validateResponse(t, sent, &typed)
+			if !typed.Success {
+				t.Fatalf("results (desc=%v)[%d]: success=false; error: %v", desc, i, typed.Error)
+			}
+			dataMap, ok := typed.Payload.Data.(map[string]interface{})
+			if !ok {
+				t.Fatalf("results (desc=%v)[%d]: Payload.Data is not a map: %T", desc, i, typed.Payload.Data)
+			}
+			surname, ok := dataMap["surname"].(string)
+			if !ok {
+				t.Fatalf("results (desc=%v)[%d]: surname is not a string: %v", desc, i, dataMap["surname"])
+			}
+			surnames = append(surnames, surname)
+		}
+		return surnames
+	}
+
+	assertOrder := func(t *testing.T, desc bool, want []string) {
+		t.Helper()
+		got := snapshotSurnames(t, desc)
+		if len(got) != len(want) {
+			t.Fatalf("desc=%v: got %d results %v, want %d %v", desc, len(got), got, len(want), want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("desc=%v: result order %v, want %v", desc, got, want)
+			}
+		}
+	}
+
+	assertOrder(t, false, []string{"aaa", "bbb", "ccc"})
+	assertOrder(t, true, []string{"ccc", "bbb", "aaa"})
 }
 
 // TestEntitySearch_SnapshotSearch_OrderBy_ValidField verifies that an async
@@ -881,5 +1014,149 @@ func TestDirectSearch_LimitOneAccepted(t *testing.T) {
 	resp := directSearch(t, withLimit(1))
 	if !resp.Success {
 		t.Fatalf("limit=1: got Success=false (Error=%+v), want a successful search", resp.Error)
+	}
+}
+
+// --- Async envelope tests (task E7): queue-full and cancel through the real
+// wired pool + executor, not just the classifier unit test
+// (search_queue_full_test.go pinned buildErrorFields before SubmitAsync's
+// execution was routed through the pool; this exercises the real path). ---
+
+// occupySoleWorker submits a blocking dummy job directly to pool and waits
+// for it to start running, so the pool's one worker is busy and its queue
+// (given capacity 0) is immediately full for the next real Submit. Returns a
+// release func the caller must call (directly or via defer) to let the
+// worker go and the pool Drain cleanly.
+//
+// The very first Submit against a freshly constructed pool races the
+// spawned worker goroutine reaching its channel receive — Submit's
+// non-blocking contract means a logically-free worker not yet "parked" can
+// spuriously see ErrQueueFull for a few microseconds, mirroring
+// internal/domain/search/pool_test.go's mustSubmitEventually. Retry past
+// that narrow startup window rather than failing on it.
+func occupySoleWorker(t *testing.T, pool *search.WorkerPool) (release func()) {
+	t.Helper()
+	started := make(chan struct{})
+	releaseCh := make(chan struct{})
+	job := func() {
+		close(started)
+		<-releaseCh
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		err := pool.Submit(job)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, search.ErrQueueFull) || time.Now().After(deadline) {
+			t.Fatalf("occupy sole worker: %v", err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	<-started
+	return func() { close(releaseCh) }
+}
+
+// TestEntitySearch_SnapshotSearch_QueueFull_Envelope pins the real gRPC
+// door's queue-full behavior end-to-end: with the async pool's sole worker
+// occupied and its queue at capacity (0), a snapshot submit gets a
+// CLIENT_ERROR envelope carrying SEARCH_QUEUE_FULL — not the unclassified
+// SERVER_ERROR buildErrorFields' raw-error branch would otherwise produce.
+func TestEntitySearch_SnapshotSearch_QueueFull_Envelope(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"surname": "Smith"})
+
+	pool := search.NewWorkerPool(1, 0)
+	svc.searchService.WithAsyncPool(pool)
+	release := occupySoleWorker(t, pool)
+	defer func() {
+		release()
+		drainCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		pool.Drain(drainCtx)
+	}()
+
+	ce := makeCE(EntitySnapshotSearchRequest, map[string]any{
+		"id":    "snap-queuefull-1",
+		"model": map[string]any{"name": "person", "version": 1},
+		"condition": map[string]any{
+			"type": "group", "operator": "AND", "conditions": []any{},
+		},
+	})
+	resp, err := svc.EntitySearch(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var typed events.EntitySnapshotSearchResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success {
+		t.Fatal("expected success=false when the async queue is full")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error block in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("code = %q, want CLIENT_ERROR", typed.Error.Code)
+	}
+	if !strings.Contains(typed.Error.Message, common.ErrCodeSearchQueueFull) {
+		t.Errorf("message = %q, want it to contain %s", typed.Error.Message, common.ErrCodeSearchQueueFull)
+	}
+}
+
+// TestEntitySearch_SnapshotCancel_Envelope pins the cancel envelope's happy
+// path against a genuinely RUNNING (still-queued, not yet executed) job: the
+// sole worker is occupied so the submitted job cannot execute and settle
+// before cancel arrives, closing the race a fast in-memory backend would
+// otherwise create. Success:true and Status.Status:CANCELLED.
+func TestEntitySearch_SnapshotCancel_Envelope(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"surname": "Smith"})
+
+	pool := search.NewWorkerPool(1, 1)
+	svc.searchService.WithAsyncPool(pool)
+	release := occupySoleWorker(t, pool)
+	defer func() {
+		release()
+		drainCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		pool.Drain(drainCtx)
+	}()
+
+	submitCE := makeCE(EntitySnapshotSearchRequest, map[string]any{
+		"id":    "snap-cancel-1",
+		"model": map[string]any{"name": "person", "version": 1},
+		"condition": map[string]any{
+			"type": "group", "operator": "AND", "conditions": []any{},
+		},
+	})
+	submitResp, err := svc.EntitySearch(ctx, submitCE)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	var submitTyped events.EntitySnapshotSearchResponseJson
+	validateResponse(t, submitResp, &submitTyped)
+	if !submitTyped.Success {
+		t.Fatalf("submit expected success=true, got error=%+v", submitTyped.Error)
+	}
+	snapshotID := submitTyped.Status.SnapshotID
+	if snapshotID == "" {
+		t.Fatal("expected non-empty snapshotId")
+	}
+
+	cancelCE := makeCE(SnapshotCancelRequest, map[string]any{
+		"id":         "cancel-req-1",
+		"snapshotId": snapshotID,
+	})
+	cancelResp, err := svc.EntitySearch(ctx, cancelCE)
+	if err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	var cancelTyped events.EntitySnapshotSearchResponseJson
+	validateResponse(t, cancelResp, &cancelTyped)
+	if !cancelTyped.Success {
+		t.Fatalf("expected success=true on cancel, got error=%+v", cancelTyped.Error)
+	}
+	if cancelTyped.Status.Status != events.SearchSnapshotStatusJsonStatusCANCELLED {
+		t.Errorf("status = %v, want CANCELLED", cancelTyped.Status.Status)
 	}
 }

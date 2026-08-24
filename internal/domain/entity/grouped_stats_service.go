@@ -73,10 +73,10 @@ func (s *GroupedStatsService) QueryGroupedStats(
 func classifyGroupedStatsError(err error) error {
 	switch {
 	case errors.Is(err, ErrBackendNotSupported):
-		return common.Operational(http.StatusNotImplemented, "NOT_IMPLEMENTED_BY_BACKEND",
+		return common.Operational(http.StatusNotImplemented, common.ErrCodeNotImplementedByBackend,
 			"backend does not support grouped stats").WithCause(err)
 	case errors.Is(err, spi.ErrGroupCardinalityExceeded):
-		return common.Operational(http.StatusUnprocessableEntity, "GROUP_CARDINALITY_EXCEEDED",
+		return common.Operational(http.StatusUnprocessableEntity, common.ErrCodeGroupCardinalityExceeded,
 			"group cardinality exceeds the configured maximum").WithCause(err)
 	case errors.Is(err, spi.ErrScanBudgetExhausted):
 		return common.Operational(http.StatusBadRequest, common.ErrCodeScanBudgetExhausted,
@@ -85,6 +85,12 @@ func classifyGroupedStatsError(err error) error {
 		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, err.Error()).WithCause(err)
 	case errors.Is(err, search.ErrInvalidFieldPath):
 		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, err.Error()).WithCause(err)
+	case errors.Is(err, spi.ErrInvalidFilterPath):
+		// The PLUGIN-side twin of the arm above: a backend's own backstop
+		// rejecting a path outside the model's syntax. Same disposition (400
+		// INVALID_FIELD_PATH) because the input is what is wrong; delegated so
+		// the mapping is not maintained twice.
+		return search.ClassifyStoreQueryError(err)
 	case errors.Is(err, search.ErrConditionTypeMismatch):
 		return common.Operational(http.StatusBadRequest, common.ErrCodeConditionTypeMismatch, err.Error()).WithCause(err)
 	}
@@ -156,6 +162,14 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 	// instead of failing with 400.
 	if parsedCond != nil {
 		if cErr := search.ValidateCondition(parsedCond); cErr != nil {
+			// A jsonPath outside JSON Path nomenclature is propagated
+			// unwrapped so classifyGroupedStatsError sees the
+			// search.ErrInvalidFieldPath sentinel and emits INVALID_FIELD_PATH
+			// — the same code /search returns for the same input. Re-wrapping
+			// in ErrInvalidCondition would shadow it: that arm is tested first.
+			if errors.Is(cErr, search.ErrInvalidFieldPath) {
+				return nil, cErr
+			}
 			return nil, fmt.Errorf("%w: %v", ErrInvalidCondition, cErr)
 		}
 	}
@@ -277,28 +291,54 @@ func (s *GroupedStatsService) tallyStreaming(
 	if err != nil {
 		return nil, err
 	}
-	defer iter.Close()
 
 	acc := newAccumulators(req)
-	for iter.Next() {
-		e := iter.Entity()
+	// bucketErr (a definitive business-logic stop, not a scan fault) takes
+	// priority over scanErr when both are set — it mirrors the pre-fix
+	// code's immediate `return nil, spi.ErrGroupCardinalityExceeded`, which
+	// never consulted iter.Err() at all.
+	var bucketErr, scanErr error
+	func() {
+		// Close() before Err(), inside a defer so both run even on the
+		// early return below (bucketErr) — the trap this reorders away
+		// from: some iterator implementations only surface a sticky scan
+		// error at Close, not at the last Next(), so reading Err() before
+		// Close() runs (the previous shape here, with a bare
+		// `defer iter.Close()` registered ahead of a same-function
+		// `iter.Err()` call that executed first) can miss it. Mirrors
+		// drainIterate's ordering (internal/domain/search/service.go).
+		defer func() {
+			if closeErr := iter.Close(); closeErr != nil {
+				scanErr = closeErr
+			}
+			if errErr := iter.Err(); errErr != nil {
+				scanErr = errErr
+			}
+		}()
+		for iter.Next() {
+			e := iter.Entity()
 
-		// Residual predicate evaluation: only when the original condition
-		// was not pushable and we therefore need to filter per entity.
-		if !pushable && parsedCond != nil && !residual.Match(e.Data, e.Meta) {
-			continue
-		}
+			// Residual predicate evaluation: only when the original condition
+			// was not pushable and we therefore need to filter per entity.
+			if !pushable && parsedCond != nil && !residual.Match(e.Data, e.Meta) {
+				continue
+			}
 
-		keyValues, groupKey := buildGroupKeyFromEntity(req.GroupBy, e)
-		k := buildGroupKey(keyValues)
-		if !acc.has(k) && acc.len() >= s.maxBuckets {
-			return nil, spi.ErrGroupCardinalityExceeded
+			keyValues, groupKey := buildGroupKeyFromEntity(req.GroupBy, e)
+			k := buildGroupKey(keyValues)
+			if !acc.has(k) && acc.len() >= s.maxBuckets {
+				bucketErr = spi.ErrGroupCardinalityExceeded
+				return
+			}
+			numerics := extractNumerics(req.Aggregations, e.Data)
+			acc.observe(k, groupKey, numerics)
 		}
-		numerics := extractNumerics(req.Aggregations, e.Data)
-		acc.observe(k, groupKey, numerics)
+	}()
+	if bucketErr != nil {
+		return nil, bucketErr
 	}
-	if err := iter.Err(); err != nil {
-		return nil, err
+	if scanErr != nil {
+		return nil, scanErr
 	}
 	return acc.materialize(), nil
 }

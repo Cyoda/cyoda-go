@@ -254,7 +254,7 @@ func TestPostgresPushdownSoundnessProperty(t *testing.T) {
 			// Assertion 2: full pipeline (WHERE + postFilter re-check) == kernel
 			// matches exactly — the "backend result == memory backend result"
 			// equality proxy.
-			results, err := searcher.Search(ctx, tc.f, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion})
+			results, err := searcher.Search(ctx, tc.f, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion, Limit: len(soundnessCorpusRows) + 1})
 			if err != nil {
 				t.Fatalf("Search: %v", err)
 			}
@@ -308,7 +308,7 @@ func TestPostgresPushdownSoundness_EndsWithUnderSelects_KNOWNBUG(t *testing.T) {
 	}
 
 	searcher := store.(spi.Searcher)
-	results, err := searcher.Search(ctx, filter, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion})
+	results, err := searcher.Search(ctx, filter, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion, Limit: len(soundnessCorpusRows) + 1})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -343,7 +343,7 @@ func TestPostgresPushdownSoundness_LikeWildcardUnderSelects_KNOWNBUG(t *testing.
 	}
 
 	searcher := store.(spi.Searcher)
-	results, err := searcher.Search(ctx, filter, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion})
+	results, err := searcher.Search(ctx, filter, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion, Limit: len(soundnessCorpusRows) + 1})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}

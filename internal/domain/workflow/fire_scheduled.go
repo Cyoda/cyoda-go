@@ -36,8 +36,8 @@ const (
 
 // firePrincipalSystemID identifies the platform system principal the fire
 // path executes as and attributes legacy (zero-ArmedBy) rows to. Deliberately
-// the same identity (ID and Kind) as scheduler.SystemPrincipal()/
-// scheduler.SystemUserContext() — attribution must see one system principal
+// the same identity (ID and Kind) as common.SystemPrincipal()/
+// common.SystemUserContext() — attribution must see one system principal
 // regardless of which subsystem drove the write — but defined locally rather
 // than imported: internal/domain/workflow must not import internal/scheduler.
 const firePrincipalSystemID = "system"
@@ -137,7 +137,7 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 			// common.RollbackContext for the same reason every other rollback
 			// site uses it: the caller's values without the caller's
 			// cancellation, under the shared 5s budget. Both callers of this
-			// path derive from scheduler.SystemUserContext on
+			// path derive from common.SystemUserContext on
 			// context.Background(), so the cancelled-context hazard is not
 			// reachable here — but a rollback that runs on an unbounded context
 			// is one dependency change away from hanging the scan loop, and one

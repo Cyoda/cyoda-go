@@ -3,6 +3,7 @@ package memory_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -161,7 +162,7 @@ func TestMemorySearchStore_UpdateJobStatus(t *testing.T) {
 	}
 
 	finishTime := now.Add(5 * time.Second)
-	err := store.UpdateJobStatus(ctx, "job-upd", "SUCCESSFUL", 42, "", finishTime, 1234)
+	err := store.UpdateJobStatus(ctx, "job-upd", 1, "SUCCESSFUL", 42, "", finishTime, 1234)
 	if err != nil {
 		t.Fatalf("UpdateJobStatus() error: %v", err)
 	}
@@ -186,17 +187,35 @@ func TestMemorySearchStore_UpdateJobStatus(t *testing.T) {
 		t.Errorf("Error = %q, want empty", got.Error)
 	}
 
-	// Test update with error message
-	err = store.UpdateJobStatus(ctx, "job-upd", "FAILED", 0, "something broke", finishTime, 999)
+	// A second UpdateJobStatus against the now-terminal job must be refused
+	// (terminal statuses are write-once) — a separate, still-RUNNING job is
+	// used to exercise the error-message path.
+	failJob := &spi.SearchJob{
+		ID:         "job-upd-2",
+		TenantID:   "test-tenant",
+		Status:     "RUNNING",
+		ModelRef:   spi.ModelRef{EntityName: "Y", ModelVersion: "1"},
+		CreateTime: now,
+	}
+	if err := store.CreateJob(ctx, failJob); err != nil {
+		t.Fatalf("CreateJob(failJob) error: %v", err)
+	}
+	err = store.UpdateJobStatus(ctx, "job-upd-2", 1, "FAILED", 0, "something broke", finishTime, 999)
 	if err != nil {
 		t.Fatalf("UpdateJobStatus(FAILED) error: %v", err)
 	}
-	got, _ = store.GetJob(ctx, "job-upd")
+	got, _ = store.GetJob(ctx, "job-upd-2")
 	if got.Status != "FAILED" {
 		t.Errorf("Status = %q, want FAILED", got.Status)
 	}
 	if got.Error != "something broke" {
 		t.Errorf("Error = %q, want 'something broke'", got.Error)
+	}
+
+	// The original job-upd, now terminal, must reject a further write.
+	err = store.UpdateJobStatus(ctx, "job-upd", 1, "FAILED", 0, "should be refused", finishTime, 1)
+	if !errors.Is(err, spi.ErrAlreadyTerminal) {
+		t.Errorf("UpdateJobStatus() on terminal job: err = %v, want ErrAlreadyTerminal", err)
 	}
 }
 
@@ -217,7 +236,7 @@ func TestMemorySearchStore_SaveAndGetResults(t *testing.T) {
 	}
 
 	ids := []string{"e1", "e2", "e3", "e4", "e5"}
-	if err := store.SaveResults(ctx, "job-res", ids); err != nil {
+	if err := store.SaveResults(ctx, "job-res", 1, slices.Values(ids)); err != nil {
 		t.Fatalf("SaveResults() error: %v", err)
 	}
 
@@ -269,15 +288,20 @@ func TestMemorySearchStore_DeleteJob(t *testing.T) {
 	job := &spi.SearchJob{
 		ID:         "job-del",
 		TenantID:   "test-tenant",
-		Status:     "SUCCESSFUL",
+		Status:     "RUNNING",
 		ModelRef:   spi.ModelRef{EntityName: "W", ModelVersion: "1"},
 		CreateTime: now,
 	}
 	if err := store.CreateJob(ctx, job); err != nil {
 		t.Fatalf("CreateJob() error: %v", err)
 	}
-	if err := store.SaveResults(ctx, "job-del", []string{"e1", "e2"}); err != nil {
+	if err := store.SaveResults(ctx, "job-del", 1, slices.Values([]string{"e1", "e2"})); err != nil {
 		t.Fatalf("SaveResults() error: %v", err)
+	}
+	// Terminal statuses are write-once; results must be saved before the
+	// job transitions to SUCCESSFUL.
+	if err := store.UpdateJobStatus(ctx, "job-del", 1, "SUCCESSFUL", 2, "", now, 0); err != nil {
+		t.Fatalf("UpdateJobStatus() error: %v", err)
 	}
 
 	if err := store.DeleteJob(ctx, "job-del"); err != nil {
@@ -358,7 +382,7 @@ func TestMemorySearchStore_Cancel_NotFound(t *testing.T) {
 	store := newSearchStore(t)
 	ctx := tenantCtx("test-tenant")
 
-	err := store.Cancel(ctx, "no-such-job")
+	err := store.Cancel(ctx, "no-such-job", time.Now().UTC())
 	if err == nil {
 		t.Fatal("Cancel() expected error for missing job, got nil")
 	}
@@ -383,12 +407,13 @@ func TestMemorySearchStore_Cancel_Idempotent(t *testing.T) {
 		t.Fatalf("CreateJob() error: %v", err)
 	}
 
-	// First cancel should succeed.
-	if err := store.Cancel(ctx, "job-cancel"); err != nil {
+	// First cancel should succeed and stamp the finish time.
+	firstFinish := now.Add(1 * time.Minute)
+	if err := store.Cancel(ctx, "job-cancel", firstFinish); err != nil {
 		t.Fatalf("first Cancel() error: %v", err)
 	}
 
-	// Job should now be CANCELLED.
+	// Job should now be CANCELLED with the stamped finish time.
 	got, err := store.GetJob(ctx, "job-cancel")
 	if err != nil {
 		t.Fatalf("GetJob() after cancel error: %v", err)
@@ -396,10 +421,25 @@ func TestMemorySearchStore_Cancel_Idempotent(t *testing.T) {
 	if got.Status != "CANCELLED" {
 		t.Errorf("Status = %q, want CANCELLED", got.Status)
 	}
+	if got.FinishTime == nil {
+		t.Fatal("FinishTime should be set after Cancel")
+	}
+	if !got.FinishTime.Equal(firstFinish) {
+		t.Errorf("FinishTime = %v, want %v", got.FinishTime, firstFinish)
+	}
 
-	// Second cancel should be idempotent (return nil).
-	if err := store.Cancel(ctx, "job-cancel"); err != nil {
+	// Second cancel with a LATER time should be idempotent (return nil) and
+	// must not overwrite the original finish time.
+	laterFinish := firstFinish.Add(1 * time.Hour)
+	if err := store.Cancel(ctx, "job-cancel", laterFinish); err != nil {
 		t.Errorf("second Cancel() should be idempotent, got error: %v", err)
+	}
+	got2, err := store.GetJob(ctx, "job-cancel")
+	if err != nil {
+		t.Fatalf("GetJob() after second cancel error: %v", err)
+	}
+	if got2.FinishTime == nil || !got2.FinishTime.Equal(firstFinish) {
+		t.Errorf("re-cancel must not overwrite FinishTime: got %v, want %v", got2.FinishTime, firstFinish)
 	}
 }
 
@@ -420,8 +460,9 @@ func TestMemorySearchStore_Cancel_AlreadyTerminal(t *testing.T) {
 			t.Fatalf("CreateJob(%s) error: %v", terminalStatus, err)
 		}
 
-		// Cancel on terminal job should be idempotent (return nil).
-		if err := store.Cancel(ctx, "job-terminal-"+terminalStatus); err != nil {
+		// Cancel on terminal job should be idempotent (return nil) and must
+		// not stamp a finish time onto a job that never had one.
+		if err := store.Cancel(ctx, "job-terminal-"+terminalStatus, now.Add(1*time.Hour)); err != nil {
 			t.Errorf("Cancel(%s) expected nil (idempotent), got: %v", terminalStatus, err)
 		}
 
@@ -432,6 +473,9 @@ func TestMemorySearchStore_Cancel_AlreadyTerminal(t *testing.T) {
 		}
 		if got.Status != terminalStatus {
 			t.Errorf("Status = %q, want %q (should not change terminal status)", got.Status, terminalStatus)
+		}
+		if got.FinishTime != nil {
+			t.Errorf("FinishTime = %v, want nil (Cancel on already-terminal job must not stamp a finish time)", got.FinishTime)
 		}
 	}
 }

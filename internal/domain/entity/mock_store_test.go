@@ -84,7 +84,13 @@ func (s *failingEntityStore) Count(_ context.Context, _ spi.ModelRef) (int64, er
 func (s *failingEntityStore) CountByState(_ context.Context, _ spi.ModelRef, _ []string) (map[string]int64, error) {
 	return nil, s.err
 }
-func (s *failingEntityStore) GetVersionHistory(_ context.Context, _ string) ([]spi.EntityVersion, error) {
+func (s *failingEntityStore) GetPage(_ context.Context, _ spi.ModelRef, _, _ int, _ *time.Time) ([]*spi.Entity, error) {
+	return nil, s.err
+}
+func (s *failingEntityStore) GetVersionByTransaction(_ context.Context, _, _ string) (*spi.EntityVersion, error) {
+	return nil, s.err
+}
+func (s *failingEntityStore) GetVersionMetadata(_ context.Context, _ string, _ spi.VersionMetadataOptions) ([]spi.EntityVersionMeta, error) {
 	return nil, s.err
 }
 
@@ -156,30 +162,3 @@ func (f *modelGetErrFactory) Close() error { return nil }
 // errUnusedEntity is a sentinel for store accessors the CreateEntity-path
 // tests never reach because the ModelStore.Get error short-circuits.
 var errUnusedEntity = errors.New("store not used by this test")
-
-// searcherEntityStore wraps a real spi.EntityStore and implements
-// spi.Searcher, delegating Search calls to a caller-supplied function. This
-// lets a test drive the delete-selection search's error path exactly the
-// way a production sqlite/postgres backend would (search.SearchService
-// delegates to the plugin Searcher whenever the store implements it),
-// without standing up a real bounded-scan backend just to trip a
-// SCAN_BUDGET_EXHAUSTED (or any other classified) error.
-type searcherEntityStore struct {
-	spi.EntityStore
-	searchFn func(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error)
-}
-
-func (s *searcherEntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
-	return s.searchFn(ctx, filter, opts)
-}
-
-// searcherFactory wraps a StoreFactory and returns a Searcher-implementing
-// EntityStore, delegating every other accessor to the wrapped factory.
-type searcherFactory struct {
-	spi.StoreFactory
-	entityStore *searcherEntityStore
-}
-
-func (f *searcherFactory) EntityStore(_ context.Context) (spi.EntityStore, error) {
-	return f.entityStore, nil
-}

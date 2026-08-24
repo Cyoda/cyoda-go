@@ -419,7 +419,9 @@ fire time. Use only for workflows whose cyclicity is intentional.
 
 Criteria on workflows and transitions use the same `Condition` DSL as search — five condition types are supported: `simple`, `lifecycle`, `group`, `array`, `function`. All but `function` are evaluated in-memory against the entity's JSON payload and lifecycle metadata; a `function` criterion is dispatched to a compute member and must be the whole criterion — one nested inside a `group` fails the evaluation. See `cyoda help search` for the per-type JSON shapes.
 
-`simple` criteria match entity data fields via JSONPath. `lifecycle` criteria match entity metadata fields: `state`, `creationDate`, `lastUpdateTime`, `transitionForLatestSave` (alias `previousTransition`), `transactionId`, `id`. `creationDate` and `lastUpdateTime` are temporal — compared chronologically, exactly as in search.
+`simple` and `array` criteria address entity data fields by `jsonPath`, under the same grammar a search condition obeys — the `$.` leader is required, and a path outside it is rejected at **import** with `400 VALIDATION_FAILED` rather than at every later evaluation. Write `$.amount`, not `amount`. **Well-formed** array subscripts — the wildcard `[*]` or a non-negative index `[0]` — are valid (`$.tags[*].name`, `$.arr[0]`): criteria are evaluated in memory, which resolves them. A path ending in `[*]` addresses every element, so the criterion fires when **some** element satisfies it (`$.arr[*] GREATER_THAN 50`), and never on an empty array. Any other bracket spelling (`$.a[-1]`, `$.a[0:2]`, `$.a[?(@.x)]`, `$.a[`, `$.a[0]b`) is malformed and is rejected at import with the same `400 VALIDATION_FAILED` — previously it imported cleanly and the criterion then silently never fired, because no evaluator resolves those spellings. See `cyoda help search` for the grammar.
+
+`lifecycle` criteria match entity metadata fields: `state`, `creationDate`, `lastUpdateTime`, `transitionForLatestSave` (alias `previousTransition`), `transactionId`, `id`. `creationDate` and `lastUpdateTime` are temporal — compared chronologically, exactly as in search.
 
 A `null` criterion on a workflow means the workflow matches any entity. A `null` criterion on a transition means the transition always fires (automated) or is always available (manual). When multiple automated transitions are eligible, the engine selects the first one by declaration order whose criterion matches. A `null` criterion matches unconditionally, so a `null`-criterion automated transition must be the last automated transition in declaration order; any automated transitions declared after a `null`-criterion transition are unreachable.
 
@@ -483,6 +485,9 @@ Static validation runs on the incoming request before saving. Any of the followi
 - Unknown `retryPolicy` value on any processor (allowed: `NONE`, `FIXED`, or empty).
 - `startNewTxOnDispatch=true` on a processor whose `executionMode` is not `COMMIT_BEFORE_DISPATCH`.
 - Empty `workflows` array (or a missing `workflows` key) when `importMode` is `REPLACE` or `ACTIVATE`. `MERGE` with an empty array is a legitimate no-op.
+- A criterion `jsonPath` (on a `simple` or `array` clause, at any nesting depth) that is not JSON Path — see CRITERIA below.
+- A criterion `MATCHES_PATTERN` value that is not a compilable regex.
+- A criterion `lifecycle` clause naming an unknown metadata field, or comparing a temporal field (`creationDate`, `lastUpdateTime`) against a non-timestamp operand.
 
 The new structural rules (state graph, name uniqueness, `executionMode` enum, `retryPolicy` enum) run on the incoming request only — existing stored workflows are not retroactively re-checked against them. The cycle-detection and `startNewTxOnDispatch` coherence checks continue to run against the merged result, so a legacy stored cycle or incoherent flag still surfaces at any subsequent import.
 

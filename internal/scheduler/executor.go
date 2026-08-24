@@ -5,44 +5,8 @@ import (
 	"log/slog"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
-
-// systemPrincipalID identifies the platform system principal (same identity
-// as the app-level system context). Never a real end-user; kind=system.
-const systemPrincipalID = "system"
-
-// SystemPrincipal returns the platform system principal the scheduler fires
-// tasks as — the same identity (ID and Kind) the app layer's system context
-// uses (app/app.go), not a scheduler-specific fake identity. Attribution
-// downstream (audit trails, ChangeUser/ChangeUserKind) must see one system
-// principal regardless of which subsystem drove the write.
-func SystemPrincipal() spi.Principal {
-	return spi.Principal{ID: systemPrincipalID, Kind: spi.PrincipalSystem}
-}
-
-// SystemUserContext derives, from context.Background(), a context.Context
-// carrying a synthesised system UserContext scoped to tenant. It exists
-// because TransactionManager.Begin rejects any context whose UserContext
-// has no tenant (plugins/memory/txmanager.go Begin), and the scheduler's
-// background fire path — the scan loop's own goroutine, and the peer RPC
-// handler on the receiving node — has no caller-derived UserContext at
-// all: there is no inbound HTTP/gRPC request to inherit one from.
-//
-// Always builds from context.Background(), not a caller-supplied parent,
-// so no request-scoped values (deadlines, trace IDs) a caller didn't
-// intend to share leak into the background fire. Exported because both
-// LocalExecutor (this package) and the peer RPC client/handler
-// (internal/cluster) need the identical identity — the system principal
-// firing a task must look the same regardless of which node does it.
-func SystemUserContext(tenant spi.TenantID) context.Context {
-	uc := &spi.UserContext{
-		UserID:   systemPrincipalID,
-		UserName: systemPrincipalID,
-		Kind:     spi.PrincipalSystem,
-		Tenant:   spi.Tenant{ID: tenant},
-	}
-	return spi.WithUserContext(context.Background(), uc)
-}
 
 // Engine is the minimal seam LocalExecutor needs to fire a ScheduledTask.
 // The outcome is widened to a plain string (rather than
@@ -74,11 +38,11 @@ func NewLocalExecutor(engine Engine) *LocalExecutor {
 // Execute fires task locally. ctx and target are accepted to satisfy the
 // Executor interface: target is not consulted (routing by target is
 // ClusterExecutor's job — LocalExecutor always fires), and ctx is not used
-// to build the engine call's context — see SystemUserContext's doc comment
+// to build the engine call's context — see common.SystemUserContext's doc comment
 // on why the system identity always derives from context.Background()
 // rather than any caller-supplied ctx.
 func (l *LocalExecutor) Execute(_ context.Context, task spi.ScheduledTask, _ string) {
-	sysCtx := SystemUserContext(task.TenantID)
+	sysCtx := common.SystemUserContext(task.TenantID)
 	outcome, err := l.engine.FireScheduledTransition(sysCtx, task)
 	if err != nil {
 		// ERROR, not WARN: a fire failure here most commonly means the

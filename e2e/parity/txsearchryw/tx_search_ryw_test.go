@@ -92,8 +92,19 @@ func ent(id, data string) *spi.Entity {
 	}
 }
 
+// testSearchLimit bounds every plugin Searcher.Search call this suite makes
+// directly (bypassing search.SearchService.Search, which normally resolves
+// a caller-omitted limit before calling). spi.Searcher.Search's contract
+// requires Limit >= 1 — Limit <= 0 is a contract violation the
+// implementation MUST reject (see the Searcher doc comment) — so every
+// scenario needs an explicit bound. Comfortably above the largest seeded
+// set any scenario in this file uses (a handful of rows) without being
+// close enough to the bounded-or-fail assertions (runTiebreakOrder's
+// Limit: 3/4 over 4 matches) to interact with them.
+const testSearchLimit = 1000
+
 func opts() spi.SearchOptions {
-	return spi.SearchOptions{ModelName: personRef.EntityName, ModelVersion: personRef.ModelVersion}
+	return spi.SearchOptions{ModelName: personRef.EntityName, ModelVersion: personRef.ModelVersion, Limit: testSearchLimit}
 }
 
 // idsSorted returns the entity ids of a result slice, sorted (for id-set
@@ -334,7 +345,7 @@ func runTiebreakOrder(t *testing.T, b backend) {
 
 	// Full ordered set: all rank=5 → pure entity_id-asc tiebreak.
 	full, err := sr.Search(txCtx, cityBerlin, spi.SearchOptions{
-		ModelName: personRef.EntityName, ModelVersion: personRef.ModelVersion, OrderBy: order,
+		ModelName: personRef.EntityName, ModelVersion: personRef.ModelVersion, OrderBy: order, Limit: testSearchLimit,
 	})
 	if err != nil {
 		t.Fatalf("Search(full): %v", err)
@@ -388,7 +399,7 @@ func runNullsLastOrder(t *testing.T, b backend) {
 
 	asc := []spi.OrderSpec{{Path: "score", Source: spi.SourceData, Kind: spi.OrderNumeric}}
 	got, err := sr.Search(txCtx, cityBerlin, spi.SearchOptions{
-		ModelName: personRef.EntityName, ModelVersion: personRef.ModelVersion, OrderBy: asc,
+		ModelName: personRef.EntityName, ModelVersion: personRef.ModelVersion, OrderBy: asc, Limit: testSearchLimit,
 	})
 	if err != nil {
 		t.Fatalf("Search(asc): %v", err)
@@ -399,7 +410,7 @@ func runNullsLastOrder(t *testing.T, b backend) {
 
 	desc := []spi.OrderSpec{{Path: "score", Source: spi.SourceData, Desc: true, Kind: spi.OrderNumeric}}
 	gotDesc, err := sr.Search(txCtx, cityBerlin, spi.SearchOptions{
-		ModelName: personRef.EntityName, ModelVersion: personRef.ModelVersion, OrderBy: desc,
+		ModelName: personRef.EntityName, ModelVersion: personRef.ModelVersion, OrderBy: desc, Limit: testSearchLimit,
 	})
 	if err != nil {
 		t.Fatalf("Search(desc): %v", err)

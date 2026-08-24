@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"sort"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -61,9 +62,29 @@ func (s *EntityStore) Iterate(
 	filter spi.Filter,
 	opts spi.IterateOptions,
 ) (spi.Iterator, error) {
-	snapshot, err := s.buildSnapshot(ctx, model, opts.PointInTime)
+	// Same path checks the sqlite and postgres backends run at their Iterate
+	// boundary, in the same order — see validateFilterPaths/validateOrderSpecs.
+	if err := validateFilterPaths(filter); err != nil {
+		return nil, err
+	}
+	if err := validateOrderSpecs(opts.OrderBy); err != nil {
+		return nil, err
+	}
+	// A non-empty OrderBy with an ambient transaction is unsupported (see
+	// the spi.Iterable doc comment) — reject up front rather than silently
+	// ignoring the requested order.
+	if len(opts.OrderBy) > 0 && spi.GetTransaction(ctx) != nil {
+		return nil, fmt.Errorf("iterate: ordered iteration inside a transaction is unsupported")
+	}
+
+	snapshot, err := s.buildSnapshot(ctx, model, opts.PointInTime, opts.TrackingRead)
 	if err != nil {
 		return nil, err
+	}
+	if len(opts.OrderBy) > 0 {
+		sort.SliceStable(snapshot, func(i, j int) bool {
+			return spi.LessByOrder(snapshot[i], snapshot[j], opts.OrderBy)
+		})
 	}
 	return &memoryIter{
 		snapshot: snapshot,
@@ -81,7 +102,13 @@ func (s *EntityStore) Iterate(
 // PIT (opts.PointInTime, when non-nil) reads the historical snapshot at
 // the requested instant, ignoring any in-flight tx — consistent with the
 // rest of the SPI's historical-read semantics.
-func (s *EntityStore) buildSnapshot(ctx context.Context, model spi.ModelRef, pit *time.Time) ([]*spi.Entity, error) {
+//
+// trackingRead gates in-tx read-set recording, matching
+// IterateOptions.TrackingRead's "no-op unless true" contract (see the
+// spi.IterateOptions doc comment). GroupedAggregate has no such knob in its
+// options and always passes true, preserving its pre-existing unconditional
+// recording behavior.
+func (s *EntityStore) buildSnapshot(ctx context.Context, model spi.ModelRef, pit *time.Time, trackingRead bool) ([]*spi.Entity, error) {
 	// PIT path: historical read, bypass tx overlay.
 	if pit != nil {
 		var snapshot []*spi.Entity
@@ -116,7 +143,9 @@ func (s *EntityStore) buildSnapshot(ctx context.Context, model spi.ModelRef, pit
 		for _, e := range mainEntities {
 			if !tx.Deletes[e.Meta.ID] {
 				merged[e.Meta.ID] = e
-				tx.ReadSet[e.Meta.ID] = true
+				if trackingRead {
+					tx.ReadSet[e.Meta.ID] = true
+				}
 			}
 		}
 		// Overlay tx.Buffer. The buffered *spi.Entity is owned by the tx
@@ -125,7 +154,9 @@ func (s *EntityStore) buildSnapshot(ctx context.Context, model spi.ModelRef, pit
 		for id, e := range tx.Buffer {
 			if e.Meta.ModelRef == model {
 				merged[id] = copyEntity(e)
-				tx.ReadSet[id] = true
+				if trackingRead {
+					tx.ReadSet[id] = true
+				}
 			}
 		}
 
@@ -255,7 +286,46 @@ func (s *EntityStore) GroupedAggregate(
 	filter spi.Filter,
 	opts spi.GroupedAggregationsOptions,
 ) ([]spi.GroupedAggregateBucket, error) {
-	snapshot, err := s.buildSnapshot(ctx, model, opts.PointInTime)
+	// Filter-path check, as sqlite and postgres run at their GroupedAggregate
+	// boundary. They validate after their ErrAggregationNotPushdownable
+	// early-returns (PIT, and stdev on sqlite); memory declines nothing and
+	// always evaluates the filter itself, so the check belongs up front. The
+	// caller-visible outcome still converges: where the SQL backends decline,
+	// the service layer streams the same filter through Iterate, which
+	// validates it there.
+	if err := validateFilterPaths(filter); err != nil {
+		return nil, err
+	}
+
+	// Group-by and aggregation paths are held to the same grammar, as sqlite
+	// and postgres hold them in groupExprToSQL / aggregateExprToSQL. Memory
+	// resolves them with gjson rather than interpolating them into SQL, so
+	// this is not an injection guard here — it exists because gjson answers a
+	// malformed path by finding nothing, which silently buckets every entity
+	// as null and reports the empty aggregate. That is a wrong-but-available
+	// answer to a question the caller never asked, and the same input
+	// classified differently per backend.
+	//
+	// GroupExprState carries no path and is exempt, matching both SQL
+	// backends' state arm.
+	for _, g := range groupBy {
+		if g.Kind != spi.GroupExprDataPath {
+			continue
+		}
+		if err := validateJSONPath(g.Path); err != nil {
+			return nil, err
+		}
+	}
+	for _, a := range opts.Aggregations {
+		if err := validateJSONPath(a.Field); err != nil {
+			return nil, err
+		}
+	}
+
+	// GroupedAggregationsOptions has no TrackingRead knob — always record,
+	// preserving this method's pre-existing unconditional behavior (see
+	// buildSnapshot's doc comment).
+	snapshot, err := s.buildSnapshot(ctx, model, opts.PointInTime, true)
 	if err != nil {
 		return nil, err
 	}
@@ -323,7 +393,9 @@ type memAcc struct {
 func (b *memBucket) observe(data []byte) {
 	b.count++
 	for _, a := range b.aggs {
-		res := gjson.GetBytes(data, gjsonPath(a.field))
+		// a.field passed validateJSONPath at the GroupedAggregate boundary, so
+		// it is already the bare dotted-identifier form gjson expects.
+		res := gjson.GetBytes(data, a.field)
 		if !res.Exists() || res.Type != gjson.Number {
 			continue
 		}
@@ -426,7 +498,8 @@ func extractGroupKey(groups []spi.GroupExpr, e *spi.Entity) ([]any, []spi.GroupK
 			}
 		} else {
 			path = g.Path
-			res := gjson.GetBytes(e.Data, gjsonPath(g.Path))
+			// g.Path passed validateJSONPath at the GroupedAggregate boundary.
+			res := gjson.GetBytes(e.Data, g.Path)
 			switch {
 			case !res.Exists():
 				val = nil
@@ -486,14 +559,4 @@ func encodeGroupKey(values []any) string {
 		buf = append(buf, s...)
 	}
 	return string(buf)
-}
-
-// gjsonPath converts our normalized JSONPath ("$.foo.bar" or "foo.bar")
-// to gjson syntax ("foo.bar"). Parity with the service-layer helper of
-// the same name.
-func gjsonPath(p string) string {
-	if len(p) >= 2 && p[0] == '$' && p[1] == '.' {
-		return p[2:]
-	}
-	return p
 }

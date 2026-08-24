@@ -430,6 +430,75 @@ func TestSqliteGroupedAggregate_DeclinesStdev(t *testing.T) {
 	}
 }
 
+// TestSqliteGroupedAggregate_StdevClassification pins the ORDER in which
+// GroupedAggregate's two pre-checks fire when a stdev aggregation and a
+// malformed filter path arrive together.
+//
+// A malformed path is a client error and must be classified identically on
+// every backend. postgres validates the filter paths before it looks at the
+// aggregations (it has native STDDEV and declines nothing on that axis), so
+// sqlite must validate first too — otherwise the same request answers
+// "not pushdownable" here and "invalid filter path" there, and the service
+// layer's ErrAggregationNotPushdownable fallthrough would go on to stream a
+// filter it should have rejected outright.
+//
+// The valid-path half is the control: with a well-formed path, AggStdev must
+// still decline, because sqlite has no numerically-safe native STDDEV.
+func TestSqliteGroupedAggregate_StdevClassification(t *testing.T) {
+	stdev := []spi.AggregateExpr{{Op: spi.AggStdev, Field: "price", Alias: "stdev_price"}}
+
+	t.Run("MalformedPathBeatsStdevDecline", func(t *testing.T) {
+		_, store, ctx := gsNewStore(t)
+		gsSave(t, ctx, store, "a", "available", map[string]any{"price": 1.0})
+
+		ga := store.(spi.GroupedAggregator)
+		_, err := ga.GroupedAggregate(ctx, gsModel,
+			[]spi.GroupExpr{{Kind: spi.GroupExprState}},
+			spi.Filter{Op: spi.FilterEq, Source: spi.SourceData, Path: "foo';x", Value: "y"},
+			spi.GroupedAggregationsOptions{MaxBuckets: 10, Aggregations: stdev},
+		)
+		if !errors.Is(err, spi.ErrInvalidFilterPath) {
+			t.Fatalf("got %v, want ErrInvalidFilterPath", err)
+		}
+		if errors.Is(err, spi.ErrAggregationNotPushdownable) {
+			t.Errorf("a malformed path must not be reported as a pushdown decline: %v", err)
+		}
+	})
+
+	t.Run("ValidPathStillDeclinesStdev", func(t *testing.T) {
+		_, store, ctx := gsNewStore(t)
+		gsSave(t, ctx, store, "a", "available", map[string]any{"price": 1.0, "tag": "x"})
+
+		ga := store.(spi.GroupedAggregator)
+		_, err := ga.GroupedAggregate(ctx, gsModel,
+			[]spi.GroupExpr{{Kind: spi.GroupExprState}},
+			spi.Filter{Op: spi.FilterEq, Source: spi.SourceData, Path: "tag", Value: "x"},
+			spi.GroupedAggregationsOptions{MaxBuckets: 10, Aggregations: stdev},
+		)
+		if !errors.Is(err, spi.ErrAggregationNotPushdownable) {
+			t.Fatalf("got %v, want ErrAggregationNotPushdownable", err)
+		}
+	})
+
+	// PIT keeps precedence over path validation, matching postgres, which
+	// returns early on PointInTime before it validates.
+	t.Run("PointInTimeBeatsMalformedPath", func(t *testing.T) {
+		_, store, ctx := gsNewStore(t)
+		gsSave(t, ctx, store, "a", "available", map[string]any{"price": 1.0})
+
+		at := time.Now()
+		ga := store.(spi.GroupedAggregator)
+		_, err := ga.GroupedAggregate(ctx, gsModel,
+			[]spi.GroupExpr{{Kind: spi.GroupExprState}},
+			spi.Filter{Op: spi.FilterEq, Source: spi.SourceData, Path: "foo';x", Value: "y"},
+			spi.GroupedAggregationsOptions{MaxBuckets: 10, PointInTime: &at},
+		)
+		if !errors.Is(err, spi.ErrAggregationNotPushdownable) {
+			t.Fatalf("got %v, want ErrAggregationNotPushdownable", err)
+		}
+	})
+}
+
 func TestSqliteGroupedAggregate_DeclinesOnResidualFilter(t *testing.T) {
 	_, store, ctx := gsNewStore(t)
 	gsSave(t, ctx, store, "a", "available", map[string]any{"tag": "x"})
@@ -809,5 +878,57 @@ func TestSqliteGroupedAggregate_NonScalarNestedPathCoercesToNull(t *testing.T) {
 	}
 	if nullCount != 1 {
 		t.Errorf("null count = %d, want 1 (object at nested path coerces to nil)", nullCount)
+	}
+}
+
+// TestSqliteGroupedAggregate_GroupAndAggregatePathsValidatedBeforeDeclines:
+// GroupExpr.Path and AggregateExpr.Field were validated inside
+// groupExprToSQL / aggregateExprToSQL, which the stdev and residual-filter
+// declines return before ever reaching. So a malformed group path plus a stdev
+// aggregation (or a residual filter) answered ErrAggregationNotPushdownable,
+// while the memory backend — which validates both unconditionally — answered
+// ErrInvalidFilterPath for the same request. The service layer then streams a
+// request it should have refused, and gjson resolves the malformed path to
+// nothing, bucketing every entity as null: a wrong-but-available answer to a
+// question the caller never asked.
+//
+// Validation now sits with validateFilterPaths, after the PIT early-return
+// (PointInTimeBeatsMalformedPath above pins that precedence) and before every
+// other decline.
+func TestSqliteGroupedAggregate_GroupAndAggregatePathsValidatedBeforeDeclines(t *testing.T) {
+	badGroup := []spi.GroupExpr{{Kind: spi.GroupExprDataPath, Path: "foo';x"}}
+	goodGroup := []spi.GroupExpr{{Kind: spi.GroupExprState}}
+	stdev := []spi.AggregateExpr{{Op: spi.AggStdev, Field: "price", Alias: "s"}}
+	badAgg := []spi.AggregateExpr{{Op: spi.AggSum, Field: "pri ce", Alias: "s"}}
+	// Gt is pushable but only a SOUND SUPERSET, so planQuery installs a
+	// residual postFilter — the other decline that skipped validation.
+	residual := spi.Filter{Op: spi.FilterGt, Source: spi.SourceData, Path: "price", Value: 100.0, Declared: []spi.DataType{spi.Double}}
+
+	cases := []struct {
+		name   string
+		group  []spi.GroupExpr
+		filter spi.Filter
+		aggs   []spi.AggregateExpr
+	}{
+		{"malformed group path behind the stdev decline", badGroup, spi.Filter{}, stdev},
+		{"malformed group path behind the residual-filter decline", badGroup, residual, nil},
+		{"malformed aggregate field behind the stdev decline", goodGroup, spi.Filter{}, append(append([]spi.AggregateExpr{}, badAgg...), stdev...)},
+		{"malformed aggregate field behind the residual-filter decline", goodGroup, residual, badAgg},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, store, ctx := gsNewStore(t)
+			gsSave(t, ctx, store, "a", "available", map[string]any{"price": 150.0})
+
+			ga := store.(spi.GroupedAggregator)
+			_, err := ga.GroupedAggregate(ctx, gsModel, tc.group, tc.filter,
+				spi.GroupedAggregationsOptions{MaxBuckets: 10, Aggregations: tc.aggs})
+			if !errors.Is(err, spi.ErrInvalidFilterPath) {
+				t.Fatalf("got %v, want ErrInvalidFilterPath", err)
+			}
+			if errors.Is(err, spi.ErrAggregationNotPushdownable) {
+				t.Errorf("a malformed path must not be reported as a pushdown decline: %v", err)
+			}
+		})
 	}
 }

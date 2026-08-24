@@ -1153,7 +1153,10 @@ paths:
 
         Error responses use RFC 9457 problem+json with the cyoda-go
         `properties.errorCode` extension carrying the stable machine-readable
-        code (`MALFORMED_REQUEST`, `INVALID_CONDITION`, `INVALID_FIELD_PATH`,
+        code (`MALFORMED_REQUEST`, `MISSING_GROUP_BY`, `INVALID_GROUP_BY_PATH`,
+        `DUPLICATE_GROUP_BY`, `INVALID_AGGREGATION_OP`,
+        `INVALID_AGGREGATION_FIELD`, `DUPLICATE_AGGREGATION_ALIAS`,
+        `INVALID_LIMIT`, `INVALID_CONDITION`, `INVALID_FIELD_PATH`,
         `CONDITION_TYPE_MISMATCH`, `GROUP_CARDINALITY_EXCEEDED`,
         `SCAN_BUDGET_EXHAUSTED`, `NOT_IMPLEMENTED_BY_BACKEND`).
       operationId: queryGroupedEntityStatisticsForModel
@@ -1227,9 +1230,22 @@ paths:
                     avg_amount: null
         "400":
           description: >-
-            Bad request — malformed JSON body, validation failure (empty
-            `groupBy`, unknown aggregation `op`, `limit` out of range, invalid
-            JSONPath, etc.), or invalid Condition DSL predicate.
+            Bad request — an undecodable body (`MALFORMED_REQUEST`: invalid
+            JSON, an unrecognised top-level field, or a `pointInTime` that is
+            not RFC 3339), or a validation failure: empty `groupBy`
+            (`MISSING_GROUP_BY`), a repeated `groupBy` dimension
+            (`DUPLICATE_GROUP_BY`), unknown aggregation `op`
+            (`INVALID_AGGREGATION_OP`), two aggregations claiming the same
+            response key (`DUPLICATE_AGGREGATION_ALIAS`), `limit` out of range
+            (`INVALID_LIMIT`), a `groupBy` entry or aggregation `field`
+            outside the JSONPath grammar (`INVALID_GROUP_BY_PATH` /
+            `INVALID_AGGREGATION_FIELD` — most often a missing `$.` leader),
+            a `condition` `jsonPath` outside that grammar
+            (`INVALID_FIELD_PATH`), a `condition` value type incompatible with
+            the field's locked DataType (`CONDITION_TYPE_MISMATCH`), an
+            otherwise invalid Condition DSL predicate (`INVALID_CONDITION`),
+            or a non-pushdownable `condition` whose residual scan exceeded the
+            backend's row budget (`SCAN_BUDGET_EXHAUSTED`).
           content:
             application/problem+json:
               schema:
@@ -1252,7 +1268,8 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "422":
           description: >-
-            Group cardinality exceeds the configured `CYODA_STATS_GROUP_MAX`.
+            Group cardinality exceeds the configured `CYODA_STATS_GROUP_MAX`
+            (`GROUP_CARDINALITY_EXCEEDED`). No partial result is returned.
             Retry with a more selective `condition` or fewer `groupBy`
             dimensions.
           content:
@@ -1262,7 +1279,7 @@ paths:
         "501":
           description: >-
             The configured storage backend does not implement the
-            grouped-stats SPI capability.
+            grouped-stats SPI capability (`NOT_IMPLEMENTED_BY_BACKEND`).
           content:
             application/problem+json:
               schema:
@@ -1715,6 +1732,9 @@ paths:
         - To find out how many entities there are, use the entity statistics
         endpoints.
 
+        - Order is stable and deterministic; the specific order is
+        storage-engine-specific (entity-ID based).
+
         \        "
       operationId: getAllEntities
       parameters:
@@ -2047,6 +2067,33 @@ paths:
                     properties:
                       entityName: submarine
                       entityVersion: 1
+        "409":
+          description: >-
+            Batched delete did not converge (`DELETE_NOT_CONVERGED`). Only
+            reachable with `transactionSize` set and no `pointInTime`: the
+            delete re-selects matching entities before each batch, and
+            entities matching the condition were created at least as fast as
+            they were removed, so it was stopped at its batch cap. Batches
+            committed before the failure stay deleted. Retryable — stop the
+            concurrent writers, narrow the condition, or retry.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              examples:
+                Delete Not Converged:
+                  description: Delete Not Converged
+                  value:
+                    type: about:blank
+                    title: Conflict
+                    status: 409
+                    detail: "DELETE_NOT_CONVERGED: delete did not converge after 1000000 batches:
+                      entities matching the condition are being created as fast as they are
+                      removed; stop the concurrent writers, narrow the condition, or retry"
+                    instance: /api/entity/my-model/1
+                    properties:
+                      errorCode: DELETE_NOT_CONVERGED
+                      retryable: true
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -7044,7 +7091,38 @@ paths:
         "403":
           $ref: '#/components/responses/Forbidden'
         "503":
-          $ref: '#/components/responses/ServiceUnavailable'
+          description: >
+            Service temporarily unavailable. Retryable. Two distinct causes
+            share this status: the storage layer could not serve the
+            request (no connection within the acquire timeout, an
+            idle-in-transaction reclaim, or a lost connection), or the
+            async-search worker pool's submit queue is full (bounded by
+            CYODA_SEARCH_ASYNC_WORKERS / CYODA_SEARCH_ASYNC_QUEUE).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+              examples:
+                Storage Unavailable:
+                  description: Storage Unavailable
+                  value:
+                    type: about:blank
+                    title: Service Unavailable
+                    status: 503
+                    detail: "STORAGE_UNAVAILABLE: storage is temporarily unavailable — retry"
+                    properties:
+                      errorCode: STORAGE_UNAVAILABLE
+                      retryable: true
+                Search Queue Full:
+                  description: Search Queue Full
+                  value:
+                    type: about:blank
+                    title: Service Unavailable
+                    status: 503
+                    detail: "SEARCH_QUEUE_FULL: async search queue is full — retry later"
+                    properties:
+                      errorCode: SEARCH_QUEUE_FULL
+                      retryable: true
         default:
           $ref: '#/components/responses/InternalServerError'
       security:
@@ -9255,6 +9333,43 @@ components:
           properties:
             jsonPath:
               type: string
+              description: >-
+                JSON Path addressing a data field. The `$.` leader is
+                REQUIRED:
+                `jsonPath = "$." segment ( "." segment )*`,
+                `segment = name subscript*`,
+                `name = 1*( ALPHA / DIGIT / "_" / "-" )` (ASCII only),
+                `subscript = "[" ( "*" / 1*DIGIT ) "]"`.
+                A bare `amount` is not a path and is rejected 400
+                `INVALID_FIELD_PATH`, as are an empty path, an empty or
+                trailing segment (`$..a`, `$.a.`), bracket-quoted property
+                access (`$['x']`, `$.a["b"]` — write `$.x`), and any
+                character outside the segment set. A WELL-FORMED subscript —
+                the wildcard `[*]` or a non-negative index `[0]` — is valid
+                and accepted (`$.tags[*].name`, `$.arr[0]`,
+                `$.matrix[*][*]`); it is evaluated in memory rather than
+                pushed into the storage query. A positional subscript
+                resolves to that element's value; a path ending in `[*]`
+                addresses EVERY element, so the leaf holds when SOME element
+                satisfies it and nothing matches an empty array. A trailing
+                `[*]` whose elements are pure objects is rejected 400
+                `INVALID_FIELD_PATH` under a scalar operator — navigate to
+                the leaf (`$.items[*].sku`). Every other bracket
+                spelling is rejected 400: unclosed or unmatched (`$.a[`,
+                `$.a]`), no field name before it (`$.[0]`), empty (`$.a[]`),
+                negative or signed (`$.a[-1]`), a slice (`$.a[0:2]`), a
+                union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), or
+                whitespace inside (`$.a[ 0]`). The whole path is scanned, so
+                trailing junk after a valid subscript is rejected too
+                (`$.a[0]b`, `$.a[*]..b`).
+                `INVALID_FIELD_PATH` is the code on the search-shaped
+                surfaces (search, async submit, conditional delete,
+                grouped-stats `condition`). This schema is also a member of
+                the workflow/transition `criterion` union, where the same
+                grammar is enforced at workflow import and the code is
+                `VALIDATION_FAILED` instead — the import-time code every
+                other criterion rejection uses.
+              example: $.amount
             operatorType:
               type: string
               enum:
@@ -9516,6 +9631,43 @@ components:
           properties:
             jsonPath:
               type: string
+              description: >-
+                JSON Path addressing a data field. The `$.` leader is
+                REQUIRED:
+                `jsonPath = "$." segment ( "." segment )*`,
+                `segment = name subscript*`,
+                `name = 1*( ALPHA / DIGIT / "_" / "-" )` (ASCII only),
+                `subscript = "[" ( "*" / 1*DIGIT ) "]"`.
+                A bare `amount` is not a path and is rejected 400
+                `INVALID_FIELD_PATH`, as are an empty path, an empty or
+                trailing segment (`$..a`, `$.a.`), bracket-quoted property
+                access (`$['x']`, `$.a["b"]` — write `$.x`), and any
+                character outside the segment set. A WELL-FORMED subscript —
+                the wildcard `[*]` or a non-negative index `[0]` — is valid
+                and accepted (`$.tags[*].name`, `$.arr[0]`,
+                `$.matrix[*][*]`); it is evaluated in memory rather than
+                pushed into the storage query. A positional subscript
+                resolves to that element's value; a path ending in `[*]`
+                addresses EVERY element, so the leaf holds when SOME element
+                satisfies it and nothing matches an empty array. A trailing
+                `[*]` whose elements are pure objects is rejected 400
+                `INVALID_FIELD_PATH` under a scalar operator — navigate to
+                the leaf (`$.items[*].sku`). Every other bracket
+                spelling is rejected 400: unclosed or unmatched (`$.a[`,
+                `$.a]`), no field name before it (`$.[0]`), empty (`$.a[]`),
+                negative or signed (`$.a[-1]`), a slice (`$.a[0:2]`), a
+                union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), or
+                whitespace inside (`$.a[ 0]`). The whole path is scanned, so
+                trailing junk after a valid subscript is rejected too
+                (`$.a[0]b`, `$.a[*]..b`).
+                `INVALID_FIELD_PATH` is the code on the search-shaped
+                surfaces (search, async submit, conditional delete,
+                grouped-stats `condition`). This schema is also a member of
+                the workflow/transition `criterion` union, where the same
+                grammar is enforced at workflow import and the code is
+                `VALIDATION_FAILED` instead — the import-time code every
+                other criterion rejection uses.
+              example: $.amount
             operatorType:
               type: string
               enum:
@@ -10920,7 +11072,13 @@ components:
           $ref: "#/components/schemas/AggregateOp"
         field:
           type: string
-          description: JSONPath of the field to aggregate (e.g. `$.amount`).
+          description: >-
+            Scalar JSONPath of the field to aggregate (e.g. `$.amount`).
+            Same grammar as a `groupBy` JSONPath, including the required
+            `$.` leader; a path outside it is rejected with 400
+            `INVALID_AGGREGATION_FIELD`. The `state` token is groupBy-only —
+            there is no aggregate over lifecycle state — so it is rejected
+            here too.
           example: $.amount
           minLength: 1
         as:
@@ -10934,16 +11092,23 @@ components:
       type: object
       description: >-
         Request body for the grouped-stats query endpoint. `groupBy`
-        dimensions may be either the literal string `state` (the workflow
-        state) or a JSONPath expression starting with `$.` over the entity
-        payload.
+        dimensions may be either the reserved token `state` (the workflow
+        state) or a JSONPath expression over the entity payload, which must
+        start with `$.`.
       properties:
         groupBy:
           type: array
           description: >-
             Ordered list of group-by dimensions. Each entry is either the
-            literal `state` or a JSONPath expression. At least one entry
-            is required.
+            reserved token `state` (a token, not a path — no leader) or a
+            scalar JSONPath. At least one entry is required. A JSONPath is a
+            REQUIRED `$.` leader followed by dot-separated segments of ASCII
+            letters, digits, `_` and `-`. Anything else — a missing leader
+            (`country`), bracket-quoted property access (`$['country']`),
+            array projections, recursive descent, whitespace, quotes,
+            non-ASCII — is rejected with 400 `INVALID_GROUP_BY_PATH`. Paths
+            are validated, never rewritten: the response `groupKey` path
+            echoes exactly what the request sent.
           minItems: 1
           items:
             type: string
@@ -10976,8 +11141,8 @@ components:
           description: >-
             Optional cap on the number of buckets returned. Must be
             positive and less than or equal to the server-configured
-            `CYODA_STATS_GROUP_MAX` (default 10000); requests exceeding
-            the cap are rejected with 400 `MALFORMED_REQUEST`.
+            `CYODA_STATS_GROUP_MAX` (default 10000); a value outside that
+            range is rejected with 400 `INVALID_LIMIT` rather than clamped.
           example: 5000
       required:
         - groupBy

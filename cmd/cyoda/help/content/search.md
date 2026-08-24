@@ -12,6 +12,7 @@ see_also:
   - errors.SEARCH_RESULT_LIMIT
   - errors.SCAN_BUDGET_EXHAUSTED
   - errors.SEARCH_SHARD_TIMEOUT
+  - errors.SEARCH_QUEUE_FULL
   - errors.INVALID_FIELD_PATH
   - errors.CONDITION_TYPE_MISMATCH
   - errors.INVALID_CONDITION
@@ -66,13 +67,34 @@ All search requests accept a `Condition` JSON document as the POST body. Conditi
 ```
 
 - `type`: `"simple"`
-- `jsonPath`: JSONPath string (e.g., `"$.year"`, `"$.laureates[0].firstname"`)
+- `jsonPath`: JSON Path string, `$.` leader **required** (e.g., `"$.year"`, `"$.laureates[0].firstname"`) — see **JSONPath grammar** below
 - `operatorType` (also accepted as `operator` or `operation`): operator string (see valid values below)
 - `value`: any JSON scalar
 
 **Valid `operatorType` values** (exhaustive): `EQUALS`, `NOT_EQUAL`, `GREATER_THAN`, `GREATER_OR_EQUAL`, `LESS_THAN`, `LESS_OR_EQUAL`, `CONTAINS`, `NOT_CONTAINS`, `STARTS_WITH`, `NOT_STARTS_WITH`, `ENDS_WITH`, `NOT_ENDS_WITH`, `LIKE`, `IS_NULL`, `NOT_NULL`, `BETWEEN`, `BETWEEN_INCLUSIVE`, `MATCHES_PATTERN`, `IEQUALS`, `INOT_EQUAL`, `ICONTAINS`, `INOT_CONTAINS`, `ISTARTS_WITH`, `INOT_STARTS_WITH`, `IENDS_WITH`, `INOT_ENDS_WITH`. `BETWEEN`/`BETWEEN_INCLUSIVE` require `value` to be a two-element array `[low, high]`. Comparison is type-directed and same-type only (a JSON number and a numeric-looking string are treated identically); a missing/null field never matches any binary operator, including the `NOT_*`/`INOT_*` negatives. Full per-operator semantics, LIKE grammar, and validation rules are in the `predicates` topic.
 
 `IS_CHANGED`/`IS_UNCHANGED` are not supported.
+
+**JSONPath grammar.** A condition's `jsonPath` is JSON Path nomenclature, checked at the API boundary before anything executes:
+
+```
+jsonPath  = "$." segment ( "." segment )*
+segment   = name subscript*
+name      = 1*( ALPHA / DIGIT / "_" / "-" )   ; ASCII only
+subscript = "[" ( "*" / 1*DIGIT ) "]"
+```
+
+The `$.` leader is **required**. A bare `amount` is not a path and is rejected `400 errors.INVALID_FIELD_PATH` — it is not a tolerated alias for `$.amount`. So are an empty path, an empty or trailing segment (`$..a`, `$.a.`), bracket-quoted property access (`$['x']`, `$.['x']`, `$.a["b"]` — write `$.x`), and any character outside the segment set.
+
+**Well-formed** array subscripts — the wildcard `[*]` or a non-negative index `[0]` — **are** valid and accepted (`$.tags[*].name`, `$.arr[0]`, `$.matrix[*][*]`, `$.orders[*].lines[*].sku`). They cannot be pushed into the storage query, so they are evaluated in memory; results are identical, throughput is lower.
+
+`[*]` addresses **every** element, so a leaf on it holds when **some** element satisfies it: `$.tags[*] EQUALS "red"` selects the entities whose `tags` contains `"red"`. It is existential, so nothing matches an empty array — neither `IS_NULL` nor `NOT_NULL` holds on `{"tags": []}`. `[0]` addresses that one element. A trailing `[*]` on an array of **pure objects** is rejected `400 errors.INVALID_FIELD_PATH` under a scalar operator — the element has no scalar form, so navigate to the leaf (`$.items[*].sku`, not `$.items[*]`).
+
+Every other bracket spelling is rejected `400 errors.INVALID_FIELD_PATH`: unclosed or unmatched (`$.a[`, `$.a[0`, `$.a]`), no field name before it (`$.[0]`), empty (`$.a[]`), negative or signed (`$.a[-1]`, `$.a[+1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), or whitespace inside (`$.a[ 0]`). The path is scanned to the end, so trailing junk after a valid subscript is caught too (`$.a[0]b`, `$.a[0];DROP`, `$.a[*]..b`). These used to go unvalidated and return `200` with an empty page.
+
+Metadata is not addressed through `jsonPath` at all — a `lifecycle` condition names a meta field directly (see **LifecycleCondition**) and is not subject to this grammar. A *data* path that happens to spell `$._meta.state` is an ordinary dotted path.
+
+The same grammar governs grouped statistics (`groupBy`, aggregation `field`), which additionally rejects array subscripts because a group key must be a single scalar — see the `crud` topic. It also governs workflow and transition `criterion` paths, rejected at workflow import with `400 errors.VALIDATION_FAILED` — see the `workflows` topic.
 
 Operator strings outside this list are rejected with `errors.BAD_REQUEST` at request time; the error detail includes the canonical list.
 
@@ -126,7 +148,7 @@ Operator strings outside this list are rejected with `errors.BAD_REQUEST` at req
 ```
 
 - `type`: `"array"`
-- `jsonPath`: path to the array field
+- `jsonPath`: JSON Path to the array field, `$.` leader required (see **JSONPath grammar** below)
 - `values`: positional values; `null` entries match any value at that index
 
 **FunctionCondition** — server-side function predicate dispatched to a compute member. **Criteria only — search requests reject it.** Documented here because criteria and search share the one `Condition` DSL; a search, async-search, grouped-stats or conditional-delete body carrying a `function` clause at any depth is rejected `400 INVALID_CONDITION`. Use it in a workflow or transition `criterion` (see `workflows`).
@@ -194,6 +216,12 @@ Response: `200 OK`, `application/json` — bare UUID string (job ID):
 ```
 
 The job is stored with status `RUNNING`. For non-`SelfExecutingSearchStore` backends, a goroutine begins the search immediately using a background context derived from the submitting user's tenant context.
+
+Submission is bounded by a fixed-size worker pool (`CYODA_SEARCH_ASYNC_WORKERS`, `CYODA_SEARCH_ASYNC_QUEUE`); once both the running workers and the queue are exhausted, submission fails `503 SEARCH_QUEUE_FULL` (retryable) instead of blocking or spawning an unbounded goroutine per request.
+
+Results stream incrementally as the scan runs rather than being materialized in memory and saved all at once. A running job stamps its own liveness on a fixed cadence (`CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`, default 15s) starting from the moment it is submitted — including while it is still queued, not only while it is scanning — and the same poll also picks up a cancellation or an externally-recorded terminal status.
+
+If a job's owning node dies without ever reaching a terminal status, a background reaper claims it once its heartbeat has gone silent for `CYODA_SEARCH_JOB_STALE_AFTER` (default 5m, enforced to be at least 4x the heartbeat interval) and marks it `FAILED` with a generic message. This milestone fails the job outright rather than re-executing it elsewhere in the cluster. The reaper runs on `CYODA_SEARCH_REAP_INTERVAL`'s ticker (default 5m, shared with the snapshot reaper), not continuously, so actual detection latency is up to `CYODA_SEARCH_JOB_STALE_AFTER + CYODA_SEARCH_REAP_INTERVAL` — worst case ~10m at the defaults.
 
 **GET /api/search/async/{jobId}/status** — Get async job status
 
@@ -318,12 +346,13 @@ Synchronous search neither paginates nor truncates: the matched set must fit wit
 
 - `errors.MODEL_NOT_FOUND` — `404` — model not registered for the calling tenant (search, async submit)
 - `errors.SEARCH_JOB_NOT_FOUND` — `404` — async job UUID does not exist.
-- `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — cancel attempted on a job that is already `SUCCESSFUL`, `FAILED`, or `CANCELLED`; error code in response is `BAD_REQUEST`
+- `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — cancel attempted on a job that is already `SUCCESSFUL`, `FAILED`, or `CANCELLED`; body carries `currentStatus` and `snapshotId`
 - `errors.SEARCH_RESULT_LIMIT` — `400` — direct search's matched entity count exceeded the requested `limit`; enforced on every direct-search code path (Searcher pushdown and in-memory fallback alike). Async search never returns this code — an oversized `pageSize`/`pageNumber` on result retrieval is `errors.BAD_REQUEST` instead
 - `errors.SCAN_BUDGET_EXHAUSTED` — `400` — a non-indexable condition (e.g. a regex or wildcard path) forced a residual scan that examined more rows than the backend's configured scan budget; narrow the query or add an indexable predicate
 - `errors.SEARCH_TIMEOUT` — `408` — direct search's client-supplied `timeoutMillis` elapsed before the result set was collected; retryable, and nothing partial is returned
 - `errors.SEARCH_SHARD_TIMEOUT` — per-shard search timeout exceeded (relevant for distributed backends)
-- `errors.INVALID_FIELD_PATH` — `400` — condition references one or more JSONPath field paths absent from the model's locked schema, or a `lifecycle` condition names an unknown meta filter field; the response detail names each offending path
+- `errors.SEARCH_QUEUE_FULL` — `503` — async submit refused for capacity: either the node's worker pool and submit queue are both exhausted, or the tenant is at its in-flight share of this node; retryable, tune via `CYODA_SEARCH_ASYNC_WORKERS`/`CYODA_SEARCH_ASYNC_QUEUE`/`CYODA_SEARCH_ASYNC_MAX_PER_TENANT`
+- `errors.INVALID_FIELD_PATH` — `400` — a `jsonPath` is not valid JSON Path syntax (missing `$.` leader, bracket-quoted access, empty/trailing segment, disallowed character), or references field paths absent from the model's locked schema, or a `lifecycle` condition names an unknown meta filter field; the response detail names each offending path and why
 - `errors.CONDITION_TYPE_MISMATCH` — `400` — condition value type is incompatible with the target field's locked DataType, e.g. a string/pattern operator or a non-timestamp value on a temporal meta field (`creationDate`/`lastUpdateTime`)
 - `errors.BAD_REQUEST` — `400` — malformed condition JSON, invalid limit/pageSize/pageNumber, result retrieval on non-SUCCESSFUL job, unknown async job ID in result retrieval
 
@@ -420,6 +449,7 @@ curl -s -X PUT \
 - errors.SEARCH_JOB_ALREADY_TERMINAL
 - errors.SEARCH_RESULT_LIMIT
 - errors.SEARCH_SHARD_TIMEOUT
+- errors.SEARCH_QUEUE_FULL
 - errors.INVALID_FIELD_PATH
 - errors.CONDITION_TYPE_MISMATCH
 - errors.INVALID_CONDITION

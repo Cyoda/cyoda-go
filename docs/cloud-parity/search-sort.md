@@ -117,9 +117,14 @@ Two rules apply to every sort, regardless of direction:
 
 1. **NULLS-LAST** — absent or JSON-`null` values always sort after all present
    values, for both `asc` and `desc` directions.
-2. **`entity_id` tiebreaker** — `entity_id` ascending is appended as the final
-   sort key unless the last explicit key already targets `entity_id`. This makes
-   result order deterministic across repeated calls and backends.
+2. **`entity_id` tiebreaker** — `entity_id` ascending, in the engine's own
+   canonical entity-ID order (see `2026-08-22-async-ordering-and-list-order.md`),
+   is appended as the final sort key unless the last explicit key already
+   targets `entity_id`. This makes result order deterministic across
+   repeated calls **on a given backend**; the canonical order itself is
+   engine-specific (each in-house backend orders byte-wise; the commercial
+   backend orders by its native clustering key), so the tiebreaker does
+   **not** make cross-backend order identical when explicit sort keys tie.
 
 These rules are not configurable; Cloud must apply them unconditionally.
 

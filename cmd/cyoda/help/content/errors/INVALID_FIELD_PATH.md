@@ -13,7 +13,7 @@ see_also:
 
 ## NAME
 
-INVALID_FIELD_PATH — a search condition references one or more JSONPath field paths that are absent from the target model's locked schema.
+INVALID_FIELD_PATH — a condition's `jsonPath` is not valid JSON Path syntax, or names a field absent from the target model's locked schema.
 
 ## SYNOPSIS
 
@@ -21,9 +21,30 @@ HTTP: `400` `Bad Request`. Retryable: `no` (unless the model schema is then exte
 
 ## DESCRIPTION
 
-Before executing a search, the server validates that every data-field path referenced by the condition (e.g. `$.price`, `$.profile.email`) resolves against the target model's locked schema. Lifecycle paths (`state`, `previousTransition`, etc.) bypass this check.
+Two checks emit this code.
+
+**1. Syntax.** A condition's `jsonPath` is JSON Path nomenclature, so the `$.` leader is required:
+
+```
+jsonPath  = "$." segment ( "." segment )*
+segment   = name subscript*
+name      = 1*( ALPHA / DIGIT / "_" / "-" )   ; ASCII only
+subscript = "[" ( "*" / 1*DIGIT ) "]"
+```
+
+`$.amount` and `$.address.city` are paths. A bare `amount` is **not** one and is rejected — it is not a tolerated alias. So are an empty path, an empty or trailing segment (`$..a`, `$.a.`), bracket-quoted property access (`$['x']`, `$.['x']`, `$.a["b"]` — use dotted access instead), and any character outside the segment set.
+
+A **well-formed** array subscript — the wildcard `[*]` or a non-negative index `[0]` — is valid JSON Path and is **accepted** (`$.tags[*].name`, `$.arr[0]`, `$.matrix[*][*]`, `$.orders[*].lines[*].sku`); it cannot be pushed into the storage query, so it is evaluated in memory.
+
+Any other bracket spelling is rejected with this code: an unclosed or unmatched bracket (`$.a[`, `$.a[0`, `$.a]`), a subscript with no field name before it (`$.[0]`), an empty subscript (`$.a[]`), a negative or signed index (`$.a[-1]`, `$.a[+1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), and whitespace inside one (`$.a[ 0]`). Characters after a well-formed subscript are checked too — `$.a[0]b`, `$.a[0];DROP` and `$.a[*]..b` are all rejected. These previously slipped through unvalidated and answered `200` with an empty page (or, on the grouped-stats `condition` and workflow-criterion surfaces, wrong buckets and a criterion that silently never fired).
+
+This check is syntactic and runs on every search-shaped surface regardless of whether a schema is loaded: `/search` (sync and async), conditional delete, and the `condition` of a grouped-statistics query.
+
+**2. Schema.** Before executing a search, the server validates that every data-field path referenced by the condition (e.g. `$.price`, `$.profile.email`) resolves against the target model's locked schema. Lifecycle paths (`state`, `previousTransition`, etc.) bypass this check.
 
 A path that is a **pure container** — a known structural interior with substructure (an object with child fields) but no scalar observation of its own — is also rejected this way when compared with a scalar operator: a container has no scalar value to compare against, so the client must navigate to a leaf sub-path. `IS_NULL`/`NOT_NULL` are exempt (they test presence, not a value) and remain valid on a container path. A path observed as **both** an object and a bare scalar across different entities is not a pure container — it is searchable via its scalar type, and the object-valued entities remain reachable through their child leaves.
+
+A path ending in `[*]` addresses the array's **elements**, so the same rule applies to them: an array of scalars (`$.tags[*]`) and an array whose elements were also observed as bare scalars are comparable, while an array of **pure objects** (`$.items[*]`) is a container — write `$.items[*].sku`.
 
 If any referenced path is unknown, the server performs at most one bounded `RefreshAndGet` against the model store to recover from a stale cached schema. If the path is still unknown after the refresh, the request is rejected with HTTP 400 and `errorCode: "INVALID_FIELD_PATH"`. The response detail names every offending path so clients can correct the request without round-tripping to the support team.
 
@@ -33,11 +54,15 @@ Programmatic clients should branch on `errorCode == "INVALID_FIELD_PATH"` (not o
 
 Common causes:
 
+- The `$.` leader is missing (`amount` instead of `$.amount`).
+- Bracket-quoted access (`$['amount']`) instead of dotted access (`$.amount`).
 - The condition references a field that has not been declared in the model schema.
 - The model has been re-imported with a different shape and the client's condition uses an old field name.
 - The path is misspelled (e.g. `$.Name` vs `$.name`).
 
-To resolve: verify the field path against the model's schema (`GET /api/model/.../export`), or extend the model schema and re-lock it before retrying.
+To resolve: write the path as JSON Path with the `$.` leader, then verify the field against the model's schema (`GET /api/model/.../export`), or extend the model schema and re-lock it before retrying.
+
+The same grammar applies to a grouped-statistics `groupBy` entry and aggregation `field`, but those report `INVALID_GROUP_BY_PATH` / `INVALID_AGGREGATION_FIELD` instead, and additionally reject array subscripts (a group key must be a single scalar). The reserved `groupBy` token `state` is a token, not a path, and needs no leader.
 
 ## SEE ALSO
 

@@ -16,6 +16,11 @@ exactly one active plugin, selected at startup via `CYODA_STORAGE_BACKEND`.
   the same SI+FCW contract as the other plugins; works against any
   managed PostgreSQL 14+ platform.
 
+Paged entity listing (`GET /entity/{entityName}/{modelVersion}`) and
+entity-ID ordering are deterministic and stable within a given engine, but
+**not identical across engines** — each plugin doc above has a "Canonical
+entity-ID order" section stating its own order.
+
 ## Commercial plugin
 
 A **`cassandra`** plugin is available as a commercial offering from Cyoda

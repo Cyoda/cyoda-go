@@ -207,19 +207,10 @@ func TestCrashRecovery_VersionHistoryPreserved(t *testing.T) {
 			t.Fatalf("EntityStore: %v", err)
 		}
 
-		// v0: create
+		// v1: create
 		_, err = store.Save(ctx, &spi.Entity{
 			Meta: spi.EntityMeta{ID: "doc-1", ModelRef: ref},
 			Data: []byte(`{"title":"draft"}`),
-		})
-		if err != nil {
-			t.Fatalf("Save v0: %v", err)
-		}
-
-		// v1: update
-		_, err = store.Save(ctx, &spi.Entity{
-			Meta: spi.EntityMeta{ID: "doc-1", ModelRef: ref},
-			Data: []byte(`{"title":"review"}`),
 		})
 		if err != nil {
 			t.Fatalf("Save v1: %v", err)
@@ -228,10 +219,19 @@ func TestCrashRecovery_VersionHistoryPreserved(t *testing.T) {
 		// v2: update
 		_, err = store.Save(ctx, &spi.Entity{
 			Meta: spi.EntityMeta{ID: "doc-1", ModelRef: ref},
-			Data: []byte(`{"title":"published"}`),
+			Data: []byte(`{"title":"review"}`),
 		})
 		if err != nil {
 			t.Fatalf("Save v2: %v", err)
+		}
+
+		// v3: update
+		_, err = store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: "doc-1", ModelRef: ref},
+			Data: []byte(`{"title":"published"}`),
+		})
+		if err != nil {
+			t.Fatalf("Save v3: %v", err)
 		}
 	}()
 
@@ -248,19 +248,23 @@ func TestCrashRecovery_VersionHistoryPreserved(t *testing.T) {
 			t.Fatalf("EntityStore: %v", err)
 		}
 
-		history, err := store.GetVersionHistory(ctx, "doc-1")
+		// GetVersionMetadata is newest-first (tie-break Version DESC), unlike
+		// GetVersionHistory's oldest-first order — versions 1,2,3 come back
+		// as metas[0]=3, metas[1]=2, metas[2]=1.
+		metas, err := store.GetVersionMetadata(ctx, "doc-1", spi.VersionMetadataOptions{})
 		if err != nil {
-			t.Fatalf("GetVersionHistory: %v", err)
+			t.Fatalf("GetVersionMetadata: %v", err)
 		}
 
-		if len(history) != 3 {
-			t.Fatalf("expected 3 versions, got %d", len(history))
+		if len(metas) != 3 {
+			t.Fatalf("expected 3 versions, got %d", len(metas))
 		}
 
-		// Verify version ordering.
-		for i, v := range history {
-			if v.Version != int64(i) {
-				t.Errorf("version[%d]: expected version %d, got %d", i, i, v.Version)
+		// Verify version ordering (newest-first).
+		for i, m := range metas {
+			want := int64(len(metas) - i)
+			if m.Version != want {
+				t.Errorf("version[%d]: expected version %d, got %d", i, want, m.Version)
 			}
 		}
 

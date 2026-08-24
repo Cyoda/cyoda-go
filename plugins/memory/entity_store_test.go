@@ -342,7 +342,7 @@ func TestSoftDeleteGetAllExcludes(t *testing.T) {
 	}
 }
 
-func TestGetVersionHistory(t *testing.T) {
+func TestGetVersionMetadata(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
@@ -365,36 +365,37 @@ func TestGetVersionHistory(t *testing.T) {
 	entity.Data = []byte(`{"v": 2}`)
 	store.Save(ctx, entity)
 
-	history, err := store.GetVersionHistory(ctx, "e-hist")
+	metas, err := store.GetVersionMetadata(ctx, "e-hist", spi.VersionMetadataOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(history) != 2 {
-		t.Fatalf("expected 2 versions, got %d", len(history))
+	if len(metas) != 2 {
+		t.Fatalf("expected 2 versions, got %d", len(metas))
 	}
 
-	if history[0].ChangeType != "CREATED" {
-		t.Errorf("expected CREATED, got %s", history[0].ChangeType)
+	// Newest first: metas[0] is UPDATED (v2), metas[1] is CREATED (v1).
+	if metas[0].ChangeType != "UPDATED" {
+		t.Errorf("expected UPDATED, got %s", metas[0].ChangeType)
 	}
-	if history[0].User != "user-1" {
-		t.Errorf("expected user-1, got %s", history[0].User)
+	if metas[0].User != "user-2" {
+		t.Errorf("expected user-2, got %s", metas[0].User)
 	}
-	if history[0].Version != 1 {
-		t.Errorf("expected version 1, got %d", history[0].Version)
+	if metas[0].Version != 2 {
+		t.Errorf("expected version 2, got %d", metas[0].Version)
 	}
 
-	if history[1].ChangeType != "UPDATED" {
-		t.Errorf("expected UPDATED, got %s", history[1].ChangeType)
+	if metas[1].ChangeType != "CREATED" {
+		t.Errorf("expected CREATED, got %s", metas[1].ChangeType)
 	}
-	if history[1].User != "user-2" {
-		t.Errorf("expected user-2, got %s", history[1].User)
+	if metas[1].User != "user-1" {
+		t.Errorf("expected user-1, got %s", metas[1].User)
 	}
-	if history[1].Version != 2 {
-		t.Errorf("expected version 2, got %d", history[1].Version)
+	if metas[1].Version != 1 {
+		t.Errorf("expected version 1, got %d", metas[1].Version)
 	}
 }
 
-func TestGetVersionHistoryWithDelete(t *testing.T) {
+func TestGetVersionMetadataWithDelete(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
@@ -412,29 +413,33 @@ func TestGetVersionHistoryWithDelete(t *testing.T) {
 	time.Sleep(time.Millisecond)
 	store.Delete(ctx, "e-hist-del")
 
-	history, err := store.GetVersionHistory(ctx, "e-hist-del")
+	metas, err := store.GetVersionMetadata(ctx, "e-hist-del", spi.VersionMetadataOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(history) != 2 {
-		t.Fatalf("expected 2 versions, got %d", len(history))
+	if len(metas) != 2 {
+		t.Fatalf("expected 2 versions, got %d", len(metas))
 	}
 
-	if history[0].ChangeType != "CREATED" {
-		t.Errorf("expected CREATED, got %s", history[0].ChangeType)
+	// Newest first: metas[0] is the DELETE tombstone, metas[1] is CREATED.
+	if metas[1].ChangeType != "CREATED" {
+		t.Errorf("expected CREATED, got %s", metas[1].ChangeType)
 	}
-	if history[0].Deleted {
-		t.Error("expected first version not deleted")
+	if metas[1].Deleted {
+		t.Error("expected the CREATE version not deleted")
 	}
 
-	if history[1].ChangeType != "DELETED" {
-		t.Errorf("expected DELETED, got %s", history[1].ChangeType)
+	if metas[0].ChangeType != "DELETED" {
+		t.Errorf("expected DELETED, got %s", metas[0].ChangeType)
 	}
-	if !history[1].Deleted {
-		t.Error("expected second version to be deleted")
+	if !metas[0].Deleted {
+		t.Error("expected the newest version to be deleted")
 	}
-	if history[1].User != "test-user" {
-		t.Errorf("expected test-user from context, got %s", history[1].User)
+	if metas[0].User != "test-user" {
+		t.Errorf("expected test-user from context, got %s", metas[0].User)
+	}
+	if metas[0].Version == 0 {
+		t.Error("expected the DELETE tombstone's Version to be populated, got 0")
 	}
 }
 
@@ -543,12 +548,12 @@ func TestGetAllAsAtWithDelete(t *testing.T) {
 	}
 }
 
-func TestGetVersionHistoryNotFound(t *testing.T) {
+func TestGetVersionMetadataNotFound(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 
-	_, err := store.GetVersionHistory(ctx, "nonexistent")
+	_, err := store.GetVersionMetadata(ctx, "nonexistent", spi.VersionMetadataOptions{})
 	if err == nil {
 		t.Fatal("expected error for nonexistent entity")
 	}
@@ -1081,8 +1086,10 @@ func TestGetAllAsAtReturnsNonNilOnEmptyModel(t *testing.T) {
 
 // TestSaveAndDelete_ExecutorRoundTrip verifies that Meta.ChangeUser/
 // ChangeUserKind/ChangeExecutor stamped by the caller before Save round-trip
-// through GetVersionHistory as EntityVersion.AttributedKind/Executor, and
-// that a DELETED version's Executor is populated even though Entity is nil.
+// through GetVersionMetadata as EntityVersionMeta.AttributedKind/Executor,
+// including for a DELETED version — EntityVersionMeta carries no entity
+// payload at all, so Executor is readable directly, with nothing to
+// dereference.
 func TestSaveAndDelete_ExecutorRoundTrip(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
@@ -1113,15 +1120,16 @@ func TestSaveAndDelete_ExecutorRoundTrip(t *testing.T) {
 		t.Fatalf("Delete failed: %v", err)
 	}
 
-	history, err := store.GetVersionHistory(ctx, "e-exec-1")
+	metas, err := store.GetVersionMetadata(ctx, "e-exec-1", spi.VersionMetadataOptions{})
 	if err != nil {
-		t.Fatalf("GetVersionHistory failed: %v", err)
+		t.Fatalf("GetVersionMetadata failed: %v", err)
 	}
-	if len(history) != 2 {
-		t.Fatalf("expected 2 versions (CREATE + DELETE), got %d", len(history))
+	if len(metas) != 2 {
+		t.Fatalf("expected 2 versions (CREATE + DELETE), got %d", len(metas))
 	}
 
-	created := history[0]
+	// Newest first: metas[0] is the DELETE tombstone, metas[1] is CREATE.
+	created := metas[1]
 	if created.AttributedKind != spi.PrincipalUser {
 		t.Errorf("CREATE version AttributedKind = %v, want %v", created.AttributedKind, spi.PrincipalUser)
 	}
@@ -1129,12 +1137,9 @@ func TestSaveAndDelete_ExecutorRoundTrip(t *testing.T) {
 		t.Errorf("CREATE version Executor = %+v, want %+v", created.Executor, wantExecutor)
 	}
 
-	tomb := history[len(history)-1]
+	tomb := metas[0]
 	if !tomb.Deleted {
-		t.Fatal("expected last version to be the DELETE tombstone")
-	}
-	if tomb.Entity != nil {
-		t.Errorf("expected nil Entity on a DELETED version, got %+v", tomb.Entity)
+		t.Fatal("expected the newest version to be the DELETE tombstone")
 	}
 	wantDel := spi.Principal{ID: "del-user", Kind: spi.PrincipalUser}
 	if tomb.Executor != wantDel {
@@ -1172,13 +1177,13 @@ func TestDelete_NonTx_AttributionIsCaller(t *testing.T) {
 		t.Fatalf("Delete failed: %v", err)
 	}
 
-	history, err := store.GetVersionHistory(ctx, "e-del-nontx")
+	metas, err := store.GetVersionMetadata(ctx, "e-del-nontx", spi.VersionMetadataOptions{})
 	if err != nil {
-		t.Fatalf("GetVersionHistory failed: %v", err)
+		t.Fatalf("GetVersionMetadata failed: %v", err)
 	}
-	tomb := history[len(history)-1]
+	tomb := metas[0]
 	if !tomb.Deleted {
-		t.Fatal("expected last version to be the DELETE tombstone")
+		t.Fatal("expected the newest version to be the DELETE tombstone")
 	}
 	want := spi.Principal{ID: "alice", Kind: spi.PrincipalUser}
 	if tomb.User != want.ID {
@@ -1219,13 +1224,13 @@ func TestDeleteAll_NonTx_Attribution(t *testing.T) {
 
 	want := spi.Principal{ID: "bob", Kind: spi.PrincipalUser}
 	for _, id := range []string{"e-da-1", "e-da-2"} {
-		history, err := store.GetVersionHistory(ctx, id)
+		metas, err := store.GetVersionMetadata(ctx, id, spi.VersionMetadataOptions{})
 		if err != nil {
-			t.Fatalf("GetVersionHistory(%s) failed: %v", id, err)
+			t.Fatalf("GetVersionMetadata(%s) failed: %v", id, err)
 		}
-		tomb := history[len(history)-1]
+		tomb := metas[0]
 		if !tomb.Deleted {
-			t.Fatalf("expected %s's last version to be the DELETE tombstone", id)
+			t.Fatalf("expected %s's newest version to be the DELETE tombstone", id)
 		}
 		if tomb.Executor != want {
 			t.Errorf("%s tombstone Executor = %+v, want %+v", id, tomb.Executor, want)
@@ -1289,13 +1294,13 @@ func TestDeleteAll_Tx_AttributionStaged(t *testing.T) {
 	}
 
 	for _, id := range []string{"e-dat-1", "e-dat-2"} {
-		history, err := store.GetVersionHistory(ctx, id)
+		metas, err := store.GetVersionMetadata(ctx, id, spi.VersionMetadataOptions{})
 		if err != nil {
-			t.Fatalf("GetVersionHistory(%s) failed: %v", id, err)
+			t.Fatalf("GetVersionMetadata(%s) failed: %v", id, err)
 		}
-		tomb := history[len(history)-1]
+		tomb := metas[0]
 		if !tomb.Deleted {
-			t.Fatalf("expected %s's last version to be the DELETE tombstone", id)
+			t.Fatalf("expected %s's newest version to be the DELETE tombstone", id)
 		}
 		if tomb.Executor != want {
 			t.Errorf("%s tombstone Executor = %+v, want %+v", id, tomb.Executor, want)

@@ -36,3 +36,35 @@ func (s *entityStore) searchBaseQuery(entityName, modelVersion string, pit *time
 		             WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted`
 	return baseQuery, []any{tid, entityName, modelVersion}
 }
+
+// committedQuerier is the querier EVERY point-in-time read runs through:
+// GetAsAt, GetAllAsAt, GetPage(asAt), and Search/Iterate with a PointInTime.
+//
+// A point-in-time read is committed-only — it ignores any ambient transaction
+// and answers from committed state as of the requested instant. s.q would
+// resolve the caller's pgx.Tx and hand back that transaction's own uncommitted
+// writes, and the `transaction_time <= CURRENT_TIMESTAMP` guard in the PIT
+// queries cannot filter them out: Save stamps valid_time/transaction_time from
+// CURRENT_TIMESTAMP, which PostgreSQL fixes at transaction START, so inside the
+// writing transaction the comparison reduces to T_start <= T_start. Pinning the
+// pool is the only thing that actually reads committed state.
+//
+// Classification is the plain funnel rather than ctxQuerier's transaction-scoped
+// one, for the same reason: the statement does not belong to the caller's
+// transaction, so an error it raises must not reclaim that transaction's
+// bookkeeping.
+//
+// No app.current_tenant GUC is set here, and none is needed: set_config's
+// is_local flag scopes that setting to a transaction, so NO non-transactional
+// statement this plugin issues has ever carried it — every pool-routed read
+// (which is what a read outside a transaction already is) is in exactly this
+// position. Tenant isolation on this path is the `WHERE tenant_id = $1`
+// predicate the PIT queries all carry, which migration 000001 names as the
+// primary mechanism; RLS is enabled-not-forced defence-in-depth on top.
+//
+// Not joining the caller's transaction makes an in-transaction read hold two
+// connections at once, so the acquire is bounded: see unjoinedQuerier, which is
+// the shared mechanism this and the async-search job store both take.
+func (s *entityStore) committedQuerier() Querier {
+	return unjoinedQuerier{pool: s.pool, acquireTimeout: s.acquireTimeout, what: "committed-only"}
+}

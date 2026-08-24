@@ -1652,7 +1652,7 @@ type AggregationExpr struct {
 	// As Optional result alias.
 	As *string `json:"as,omitempty"`
 
-	// Field JSONPath of the field to aggregate (e.g. `$.amount`).
+	// Field Scalar JSONPath of the field to aggregate (e.g. `$.amount`). Same grammar as a `groupBy` JSONPath, including the required `$.` leader; a path outside it is rejected with 400 `INVALID_AGGREGATION_FIELD`. The `state` token is groupBy-only — there is no aggregate over lifecycle state — so it is rejected here too.
 	Field string `json:"field"`
 
 	// Op Aggregation operator. `sum`, `avg`, `min`, `max`, and `stdev` apply to scalar numeric fields; non-numeric or missing values are skipped per spec §3 (D4 semantics — see grouped-stats design doc).
@@ -1661,6 +1661,7 @@ type AggregationExpr struct {
 
 // ArrayConditionDto defines model for ArrayConditionDto.
 type ArrayConditionDto struct {
+	// JsonPath JSON Path addressing a data field. The `$.` leader is REQUIRED: `jsonPath = "$." segment ( "." segment )*`, `segment = name subscript*`, `name = 1*( ALPHA / DIGIT / "_" / "-" )` (ASCII only), `subscript = "[" ( "*" / 1*DIGIT ) "]"`. A bare `amount` is not a path and is rejected 400 `INVALID_FIELD_PATH`, as are an empty path, an empty or trailing segment (`$..a`, `$.a.`), bracket-quoted property access (`$['x']`, `$.a["b"]` — write `$.x`), and any character outside the segment set. A WELL-FORMED subscript — the wildcard `[*]` or a non-negative index `[0]` — is valid and accepted (`$.tags[*].name`, `$.arr[0]`, `$.matrix[*][*]`); it is evaluated in memory rather than pushed into the storage query. A positional subscript resolves to that element's value; a path ending in `[*]` addresses EVERY element, so the leaf holds when SOME element satisfies it and nothing matches an empty array. A trailing `[*]` whose elements are pure objects is rejected 400 `INVALID_FIELD_PATH` under a scalar operator — navigate to the leaf (`$.items[*].sku`). Every other bracket spelling is rejected 400: unclosed or unmatched (`$.a[`, `$.a]`), no field name before it (`$.[0]`), empty (`$.a[]`), negative or signed (`$.a[-1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), or whitespace inside (`$.a[ 0]`). The whole path is scanned, so trailing junk after a valid subscript is rejected too (`$.a[0]b`, `$.a[*]..b`). `INVALID_FIELD_PATH` is the code on the search-shaped surfaces (search, async submit, conditional delete, grouped-stats `condition`). This schema is also a member of the workflow/transition `criterion` union, where the same grammar is enforced at workflow import and the code is `VALIDATION_FAILED` instead — the import-time code every other criterion rejection uses.
 	JsonPath     *string                        `json:"jsonPath,omitempty"`
 	OperatorType *ArrayConditionDtoOperatorType `json:"operatorType,omitempty"`
 	Type         string                         `json:"type"`
@@ -2310,7 +2311,7 @@ type GroupedStatsBucket struct {
 	GroupKey []GroupKeyEntry `json:"groupKey"`
 }
 
-// GroupedStatsRequest Request body for the grouped-stats query endpoint. `groupBy` dimensions may be either the literal string `state` (the workflow state) or a JSONPath expression starting with `$.` over the entity payload.
+// GroupedStatsRequest Request body for the grouped-stats query endpoint. `groupBy` dimensions may be either the reserved token `state` (the workflow state) or a JSONPath expression over the entity payload, which must start with `$.`.
 type GroupedStatsRequest struct {
 	// Aggregations Optional per-group aggregations.
 	Aggregations *[]AggregationExpr `json:"aggregations,omitempty"`
@@ -2318,10 +2319,10 @@ type GroupedStatsRequest struct {
 	// Condition Optional Condition DSL predicate restricting the population. Uses the same union shape as the async-search endpoint.
 	Condition *GroupedStatsRequest_Condition `json:"condition,omitempty"`
 
-	// GroupBy Ordered list of group-by dimensions. Each entry is either the literal `state` or a JSONPath expression. At least one entry is required.
+	// GroupBy Ordered list of group-by dimensions. Each entry is either the reserved token `state` (a token, not a path — no leader) or a scalar JSONPath. At least one entry is required. A JSONPath is a REQUIRED `$.` leader followed by dot-separated segments of ASCII letters, digits, `_` and `-`. Anything else — a missing leader (`country`), bracket-quoted property access (`$['country']`), array projections, recursive descent, whitespace, quotes, non-ASCII — is rejected with 400 `INVALID_GROUP_BY_PATH`. Paths are validated, never rewritten: the response `groupKey` path echoes exactly what the request sent.
 	GroupBy []string `json:"groupBy"`
 
-	// Limit Optional cap on the number of buckets returned. Must be positive and less than or equal to the server-configured `CYODA_STATS_GROUP_MAX` (default 10000); requests exceeding the cap are rejected with 400 `MALFORMED_REQUEST`.
+	// Limit Optional cap on the number of buckets returned. Must be positive and less than or equal to the server-configured `CYODA_STATS_GROUP_MAX` (default 10000); a value outside that range is rejected with 400 `INVALID_LIMIT` rather than clamped.
 	Limit *int32 `json:"limit,omitempty"`
 
 	// PointInTime Optional point-in-time for the query in ISO 8601 / RFC 3339 format. Defaults to the current consistency time.
@@ -2678,6 +2679,7 @@ type SetUniqueKeysRequest struct {
 
 // SimpleConditionDto defines model for SimpleConditionDto.
 type SimpleConditionDto struct {
+	// JsonPath JSON Path addressing a data field. The `$.` leader is REQUIRED: `jsonPath = "$." segment ( "." segment )*`, `segment = name subscript*`, `name = 1*( ALPHA / DIGIT / "_" / "-" )` (ASCII only), `subscript = "[" ( "*" / 1*DIGIT ) "]"`. A bare `amount` is not a path and is rejected 400 `INVALID_FIELD_PATH`, as are an empty path, an empty or trailing segment (`$..a`, `$.a.`), bracket-quoted property access (`$['x']`, `$.a["b"]` — write `$.x`), and any character outside the segment set. A WELL-FORMED subscript — the wildcard `[*]` or a non-negative index `[0]` — is valid and accepted (`$.tags[*].name`, `$.arr[0]`, `$.matrix[*][*]`); it is evaluated in memory rather than pushed into the storage query. A positional subscript resolves to that element's value; a path ending in `[*]` addresses EVERY element, so the leaf holds when SOME element satisfies it and nothing matches an empty array. A trailing `[*]` whose elements are pure objects is rejected 400 `INVALID_FIELD_PATH` under a scalar operator — navigate to the leaf (`$.items[*].sku`). Every other bracket spelling is rejected 400: unclosed or unmatched (`$.a[`, `$.a]`), no field name before it (`$.[0]`), empty (`$.a[]`), negative or signed (`$.a[-1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), or whitespace inside (`$.a[ 0]`). The whole path is scanned, so trailing junk after a valid subscript is rejected too (`$.a[0]b`, `$.a[*]..b`). `INVALID_FIELD_PATH` is the code on the search-shaped surfaces (search, async submit, conditional delete, grouped-stats `condition`). This schema is also a member of the workflow/transition `criterion` union, where the same grammar is enforced at workflow import and the code is `VALIDATION_FAILED` instead — the import-time code every other criterion rejection uses.
 	JsonPath     *string                         `json:"jsonPath,omitempty"`
 	OperatorType *SimpleConditionDtoOperatorType `json:"operatorType,omitempty"`
 	Type         string                          `json:"type"`

@@ -15,9 +15,20 @@ import (
 const submitTimeTTL = 1 * time.Hour
 
 // committedTx records a committed transaction for SI+FCW conflict detection.
+//
+// seq is the tie-breaker that actually drives the FCW ordering comparison
+// (see TransactionManager.commitSeq's doc comment) — submitTime is retained
+// for GetSubmitTime/pruning and stays wall-clock-derived, which is fine for
+// those uses but not safe as the FCW ordering key: a clock with coarse
+// resolution, or a deterministic/frozen clock (as conformance tests use),
+// can produce two real, causally-ordered commits with an IDENTICAL
+// submitTime, and a strict submitTime.After() comparison would silently
+// miss the conflict. seq has no such gap — it is incremented exactly once
+// per successful commit under mu, so it is a genuine total order.
 type committedTx struct {
 	id         string
 	submitTime time.Time
+	seq        int64
 	writeSet   map[string]bool
 }
 
@@ -44,6 +55,14 @@ type savepointSnapshot struct {
 	// deep-copied and restored wholesale — RollbackToSavepoint restores it by
 	// truncating back to this recorded length instead of snapshotting it.
 	scheduledTaskOpsLen int
+
+	// supersededLens is the per-entityID length of supersededSaves[txID]
+	// at the moment this savepoint was taken, mirroring
+	// scheduledTaskOpsLen's truncate-back-to-length approach (append-only,
+	// so length is enough to restore). An entityID absent here had no
+	// superseded entries yet at savepoint time; RollbackToSavepoint clears
+	// it entirely rather than truncating to zero explicitly recorded.
+	supersededLens map[string]int
 }
 
 // TransactionManager implements spi.TransactionManager using Snapshot Isolation
@@ -66,6 +85,56 @@ type TransactionManager struct {
 	// different key set in its context. Protected by mu. Cleaned up after commit
 	// or rollback (no leak).
 	txUniqueKeys map[string]map[string][]spi.UniqueKey // txID → entityID → keys
+
+	// commitSeq is a monotonic counter, incremented exactly once per
+	// successful Commit under mu, used as the FCW conflict-detection
+	// ordering key instead of wall-clock submitTime (see committedTx.seq's
+	// doc comment for why: submitTime can tie under a coarse or frozen
+	// clock even for genuinely causally-ordered commits). txSnapshotSeq
+	// records each active transaction's commitSeq value AT BEGIN — "this
+	// many commits already happened before my snapshot" — so Commit's FCW
+	// check becomes committed.seq > txSnapshotSeq[txID]: a committedTx
+	// whose seq was assigned strictly after my Begin is a real conflict
+	// candidate, with no clock-resolution gap. Both fields protected by mu.
+	//
+	// Begin MUST read commitSeq (into txSnapshotSeq) in the SAME mu
+	// critical section where it captures SnapshotTime — see Begin's
+	// in-line comment for the missed-conflict window that opens up if
+	// they are captured separately (or either one outside mu).
+	commitSeq     int64
+	txSnapshotSeq map[string]int64 // txID → commitSeq at Begin time; cleaned up after commit or rollback (no leak)
+
+	// supersededSaves records, per (txID, entityID), each buffered
+	// *spi.Entity value overwritten by a later same-entity Save/
+	// CompareAndSave within the same open transaction, oldest first.
+	// tx.Buffer (a shared spi.TransactionState field) only ever holds the
+	// FINAL value per entity — read-your-own-writes only needs the latest —
+	// so without this side channel a same-tx double-save would flush as a
+	// single commit row and GetVersionByTransaction's earliest-wins
+	// contract (see its SPI doc comment: "a transaction that saved the
+	// same entity more than once before committing... the earliest is
+	// returned") could never be satisfied for the intermediate value a
+	// later Save in the same tx overwrote. Commit flushes each entityID's
+	// superseded values (in order) followed by the final tx.Buffer value
+	// as consecutive entityVersion rows sharing the transaction's txID.
+	//
+	// Behavior change this introduces: an entity Saved N times inside one
+	// transaction now consumes N version numbers (one entityVersion row
+	// per Save call) instead of 1 (one row for the final state only).
+	// This is a backend-divergence FIX, not a new side effect: postgres
+	// already behaves this way — it writes a row per Save call with no
+	// buffering, since each Save is an immediate DML statement inside the
+	// SQL transaction — so memory's prior single-row-per-commit collapse
+	// was the odd one out. Per the project's "a backend differing on the
+	// same contract is a defect" policy, aligning memory with postgres
+	// here is correct, not merely a means to satisfy the new conformance
+	// test.
+	//
+	// Protected by mu. Savepoint-scoped like tx.Buffer (length recorded at
+	// Savepoint, truncated at RollbackToSavepoint — see
+	// savepointSnapshot.supersededLens). Cleaned up after commit or
+	// rollback (no leak).
+	supersededSaves map[string]map[string][]*spi.Entity // txID -> entityID -> superseded snapshots, oldest first
 
 	// scheduledTaskOps holds ScheduledTaskStore ops staged while the
 	// transaction is open (mirrors txUniqueKeys's staging pattern — it
@@ -96,6 +165,8 @@ func (f *StoreFactory) NewTransactionManager(uuids spi.UUIDGenerator) *Transacti
 		submitTimes:      make(map[string]submitTimeEntry),
 		savepoints:       make(map[string]map[string]savepointSnapshot),
 		txUniqueKeys:     make(map[string]map[string][]spi.UniqueKey),
+		txSnapshotSeq:    make(map[string]int64),
+		supersededSaves:  make(map[string]map[string][]*spi.Entity),
 		scheduledTaskOps: make(map[string][]scheduledTaskOp),
 	}
 	f.txManager = tm
@@ -112,6 +183,23 @@ func (m *TransactionManager) recordUniqueKeys(txID, entityID string, keys []spi.
 		m.txUniqueKeys[txID] = make(map[string][]spi.UniqueKey)
 	}
 	m.txUniqueKeys[txID][entityID] = keys
+}
+
+// stageSuperseded appends prior — the tx.Buffer value a Save/CompareAndSave
+// call is about to overwrite — to txID's superseded list for entityID, in
+// overwrite order. No-op when prior is nil (the entity's first Save in this
+// transaction: nothing superseded yet). See the supersededSaves field
+// godoc for why this exists. Protected by mu.
+func (m *TransactionManager) stageSuperseded(txID, entityID string, prior *spi.Entity) {
+	if prior == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.supersededSaves[txID] == nil {
+		m.supersededSaves[txID] = make(map[string][]*spi.Entity)
+	}
+	m.supersededSaves[txID][entityID] = append(m.supersededSaves[txID][entityID], prior)
 }
 
 // stageScheduledTaskOp appends a staged ScheduledTaskStore op for txID.
@@ -146,12 +234,10 @@ func (m *TransactionManager) Begin(ctx context.Context) (string, context.Context
 	}
 
 	txID := uuid.UUID(m.uuids.NewTimeUUID()).String()
-	now := m.factory.clock.Now()
 
 	tx := &spi.TransactionState{
 		ID:                txID,
 		TenantID:          uc.Tenant.ID,
-		SnapshotTime:      now,
 		Origin:            spi.ResolveOrigin(ctx),
 		ReadSet:           make(map[string]bool),
 		WriteSet:          make(map[string]bool),
@@ -159,10 +245,36 @@ func (m *TransactionManager) Begin(ctx context.Context) (string, context.Context
 		Deletes:           make(map[string]bool),
 		DeleteAttribution: make(map[string]spi.WriteAttribution),
 	}
+	// tx has not been published anywhere yet (not in m.active, not
+	// returned), so mutating its SnapshotTime field below — before the
+	// first read of it by any other goroutine — is safe.
 
-	m.mu.Lock()
-	m.active[txID] = tx
-	m.mu.Unlock()
+	// SnapshotTime (the read-visibility boundary) and txSnapshotSeq (the
+	// FCW conflict-detection baseline) MUST be captured atomically, in the
+	// SAME mu critical section — not as two reads from separate sections,
+	// and not with the clock read taken outside mu. If a concurrent Commit
+	// X could interleave between the two captures, X could be excluded
+	// from this tx's later FCW check (seq_X <= txSnapshotSeq, because X's
+	// mu-protected seq assignment ran before this tx read txSnapshotSeq)
+	// while X's submitTime — captured earlier, before X's own mu section —
+	// is chronologically AFTER this tx's SnapshotTime — captured even
+	// later still, outside any lock. That would make X's write invisible
+	// to this tx's reads (SnapshotTime-gated) yet silently un-checked by
+	// FCW: a missed conflict, i.e. failing open. Capturing both under one
+	// Lock closes the window: mu totally orders every Begin/Commit
+	// critical section, so "X's seq excluded from this tx's baseline"
+	// (X's section ran first) provably implies "X's submitTime precedes
+	// this tx's SnapshotTime" (submitTime was read even before X's own,
+	// earlier-ordered section, and the clock is monotonic non-decreasing —
+	// see clock.go: wallClock uses Go's monotonic time.Now(), TestClock's
+	// virtual time only ever advances forward).
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		tx.SnapshotTime = m.factory.clock.Now()
+		m.active[txID] = tx
+		m.txSnapshotSeq[txID] = m.commitSeq
+	}()
 
 	txCtx := spi.WithTransaction(ctx, tx)
 	return txID, txCtx, nil
@@ -179,9 +291,13 @@ func (m *TransactionManager) Begin(ctx context.Context) (string, context.Context
 // tx.OpMu.RLock to be synchronised against the Closed-write — m.mu alone
 // is not sufficient because Commit's defer runs outside the m.mu region.
 func (m *TransactionManager) Join(ctx context.Context, txID string) (context.Context, error) {
-	m.mu.Lock()
-	tx, ok := m.active[txID]
-	m.mu.Unlock()
+	var tx *spi.TransactionState
+	var ok bool
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		tx, ok = m.active[txID]
+	}()
 
 	if !ok {
 		return nil, fmt.Errorf("Join: %w (txID=%s)", spi.ErrTxNotFound, txID)
@@ -217,22 +333,26 @@ func (m *TransactionManager) Join(ctx context.Context, txID string) (context.Con
 func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 	// 1. Look up the active transaction and mark as committing (TOCTOU guard).
 	uc := spi.GetUserContext(ctx)
-	m.mu.Lock()
-	tx, ok := m.active[txID]
-	if !ok {
-		m.mu.Unlock()
-		return fmt.Errorf("Commit: %w (txID=%s)", spi.ErrTxNotFound, txID)
+	var tx *spi.TransactionState
+	if err := func() error {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		var ok bool
+		tx, ok = m.active[txID]
+		if !ok {
+			return fmt.Errorf("Commit: %w (txID=%s)", spi.ErrTxNotFound, txID)
+		}
+		if uc == nil || uc.Tenant.ID != tx.TenantID {
+			return fmt.Errorf("Commit: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
+		}
+		if m.committing[txID] {
+			return fmt.Errorf("Commit: %w (txID=%s)", spi.ErrTxCommitInProgress, txID)
+		}
+		m.committing[txID] = true
+		return nil
+	}(); err != nil {
+		return err
 	}
-	if uc == nil || uc.Tenant.ID != tx.TenantID {
-		m.mu.Unlock()
-		return fmt.Errorf("Commit: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
-	}
-	if m.committing[txID] {
-		m.mu.Unlock()
-		return fmt.Errorf("Commit: %w (txID=%s)", spi.ErrTxCommitInProgress, txID)
-	}
-	m.committing[txID] = true
-	m.mu.Unlock()
 
 	// 1b. Acquire transaction operation write lock — waits for in-flight operations.
 	tx.OpMu.Lock()
@@ -256,17 +376,24 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 		// can read them without re-acquiring m.mu.
 		var capturedKeys map[string][]spi.UniqueKey
 		var capturedScheduledTaskOps []scheduledTaskOp
+		var capturedSuperseded map[string][]*spi.Entity
 		if err := func() error {
 			m.mu.Lock()
 			defer m.mu.Unlock()
+			// FCW ordering uses commitSeq, not submitTime — see commitSeq's
+			// doc comment: a wall-clock comparison can tie under a coarse or
+			// frozen clock even for genuinely causally-ordered commits.
+			snapshotSeq := m.txSnapshotSeq[txID]
 			for _, committed := range m.committedLog {
-				if committed.submitTime.After(tx.SnapshotTime) {
+				if committed.seq > snapshotSeq {
 					for entityID := range committed.writeSet {
 						if tx.ReadSet[entityID] || tx.WriteSet[entityID] {
 							delete(m.committing, txID)
 							delete(m.active, txID)
 							delete(m.savepoints, txID)
 							delete(m.txUniqueKeys, txID)
+							delete(m.txSnapshotSeq, txID)
+							delete(m.supersededSaves, txID)
 							delete(m.scheduledTaskOps, txID)
 							return spi.ErrConflict
 						}
@@ -275,6 +402,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			}
 			capturedKeys = m.txUniqueKeys[txID]                 // safe: tx.OpMu.Lock() prevents new recordUniqueKeys
 			capturedScheduledTaskOps = m.scheduledTaskOps[txID] // safe: tx.OpMu.Lock() prevents new stageScheduledTaskOp
+			capturedSuperseded = m.supersededSaves[txID]        // safe: tx.OpMu.Lock() prevents new stageSuperseded
 			return nil
 		}(); err != nil {
 			return err
@@ -295,6 +423,8 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 				delete(m.active, txID)
 				delete(m.savepoints, txID)
 				delete(m.txUniqueKeys, txID)
+				delete(m.txSnapshotSeq, txID)
+				delete(m.supersededSaves, txID)
 				delete(m.scheduledTaskOps, txID)
 			}()
 			return err
@@ -364,45 +494,73 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			}
 
 			versions := m.factory.entityData[tid][entityID]
-			var nextVersion int64 = 1
+			var baseVersion int64
 			for i := len(versions) - 1; i >= 0; i-- {
 				if !versions[i].deleted && versions[i].entity != nil {
-					nextVersion = versions[i].entity.Meta.Version + 1
+					baseVersion = versions[i].entity.Meta.Version
 					break
 				}
 			}
-
-			// DERIVE ChangeType from row-existence, like the non-tx save path
-			// (see deriveChangeType) — never trust it verbatim from the
-			// buffered entity, which may carry a stale value fetched before
-			// this transaction began (e.g. a scheduled-transition fire
-			// re-saving an already-existing entity read with its original
-			// "CREATED" Meta still attached).
-			changeType := deriveChangeType(entity.Meta.ChangeType, len(versions) > 0)
-
-			saved := copyEntity(entity)
-			saved.Meta.Version = nextVersion
-			saved.Meta.LastModifiedDate = submitTime
-			saved.Meta.TransactionID = txID
-			saved.Meta.TenantID = tid
-			saved.Meta.ChangeType = changeType
-
-			// Preserve CreationDate from existing versions.
+			hasPrior := len(versions) > 0
+			var creationDate time.Time
 			if len(versions) > 0 && versions[0].entity != nil {
-				saved.Meta.CreationDate = versions[0].entity.Meta.CreationDate
-			} else if saved.Meta.CreationDate.IsZero() {
-				saved.Meta.CreationDate = submitTime
+				creationDate = versions[0].entity.Meta.CreationDate
 			}
 
-			m.factory.entityData[tid][entityID] = append(versions, entityVersion{
-				entity:         saved,
-				transactionID:  txID,
-				submitTime:     submitTime,
-				changeType:     changeType,
-				user:           entity.Meta.ChangeUser,
-				changeUserKind: entity.Meta.ChangeUserKind,
-				executor:       entity.Meta.ChangeExecutor,
-			})
+			// Flush this entity's superseded intra-tx saves (oldest first),
+			// then the final tx.Buffer value, as consecutive entityVersion
+			// rows sharing txID — see supersededSaves's field godoc: this
+			// is what lets GetVersionByTransaction's earliest-wins contract
+			// hold for a same-tx double-save on memory's buffer-coalescing
+			// transaction model, where tx.Buffer itself only ever holds the
+			// final value.
+			toFlush := append(append([]*spi.Entity{}, capturedSuperseded[entityID]...), entity)
+			var firstVersion int64
+			for i, staged := range toFlush {
+				nextVersion := baseVersion + 1
+				baseVersion = nextVersion
+
+				// DERIVE ChangeType from row-existence, like the non-tx save
+				// path (see deriveChangeType) — never trust it verbatim from
+				// the staged entity, which may carry a stale value fetched
+				// before this transaction began (e.g. a scheduled-transition
+				// fire re-saving an already-existing entity read with its
+				// original "CREATED" Meta still attached).
+				changeType := deriveChangeType(staged.Meta.ChangeType, hasPrior)
+				hasPrior = true
+
+				saved := copyEntity(staged)
+				saved.Meta.Version = nextVersion
+				saved.Meta.LastModifiedDate = submitTime
+				saved.Meta.TransactionID = txID
+				saved.Meta.TenantID = tid
+				saved.Meta.ChangeType = changeType
+
+				// Preserve CreationDate from existing versions.
+				if !creationDate.IsZero() {
+					saved.Meta.CreationDate = creationDate
+				} else if saved.Meta.CreationDate.IsZero() {
+					saved.Meta.CreationDate = submitTime
+				}
+
+				m.factory.entityData[tid][entityID] = append(m.factory.entityData[tid][entityID], entityVersion{
+					entity:         saved,
+					version:        nextVersion,
+					transactionID:  txID,
+					submitTime:     submitTime,
+					changeType:     changeType,
+					user:           staged.Meta.ChangeUser,
+					changeUserKind: staged.Meta.ChangeUserKind,
+					executor:       staged.Meta.ChangeExecutor,
+				})
+				if i == 0 {
+					firstVersion = nextVersion
+				}
+			}
+			// Earliest-wins: index the FIRST row this commit wrote for
+			// entityID, not the final one — see GetVersionByTransaction's
+			// SPI doc comment.
+			m.factory.recordTxIndex(tid, entityID, txID, firstVersion)
 
 			// Apply unique-key claims: release any prior claims for this entity
 			// (handles the update-moves-key case), then insert the new claim set.
@@ -436,8 +594,16 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 				m.factory.entityData[tid] = make(map[string][]entityVersion)
 			}
 			versions := m.factory.entityData[tid][entityID]
+			var nextVersion int64 = 1
+			for i := len(versions) - 1; i >= 0; i-- {
+				if !versions[i].deleted && versions[i].entity != nil {
+					nextVersion = versions[i].entity.Meta.Version + 1
+					break
+				}
+			}
 			m.factory.entityData[tid][entityID] = append(versions, entityVersion{
 				entity:         nil,
+				version:        nextVersion,
 				transactionID:  txID,
 				submitTime:     submitTime,
 				deleted:        true,
@@ -461,9 +627,14 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 		func() {
 			m.mu.Lock()
 			defer m.mu.Unlock()
+			// Assign this commit's FCW ordering sequence — see commitSeq's
+			// doc comment. Incremented exactly once per successful commit,
+			// under this same mu section.
+			m.commitSeq++
 			m.committedLog = append(m.committedLog, committedTx{
 				id:         txID,
 				submitTime: submitTime,
+				seq:        m.commitSeq,
 				writeSet:   tx.WriteSet,
 			})
 			m.submitTimes[txID] = submitTimeEntry{submitTime: submitTime, tenantID: tid}
@@ -479,6 +650,8 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			delete(m.committing, txID)
 			delete(m.savepoints, txID)
 			delete(m.txUniqueKeys, txID)
+			delete(m.txSnapshotSeq, txID)
+			delete(m.supersededSaves, txID)
 			delete(m.scheduledTaskOps, txID)
 			var oldest time.Time
 			for _, activeTx := range m.active {
@@ -510,17 +683,22 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 // Rollback discards an active transaction without committing any changes.
 func (m *TransactionManager) Rollback(ctx context.Context, txID string) error {
 	uc := spi.GetUserContext(ctx)
-	m.mu.Lock()
-	tx, ok := m.active[txID]
-	if !ok {
-		m.mu.Unlock()
-		return fmt.Errorf("Rollback: %w (txID=%s)", spi.ErrTxNotFound, txID)
+	var tx *spi.TransactionState
+	if err := func() error {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		var ok bool
+		tx, ok = m.active[txID]
+		if !ok {
+			return fmt.Errorf("Rollback: %w (txID=%s)", spi.ErrTxNotFound, txID)
+		}
+		if uc == nil || uc.Tenant.ID != tx.TenantID {
+			return fmt.Errorf("Rollback: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
+		}
+		return nil
+	}(); err != nil {
+		return err
 	}
-	if uc == nil || uc.Tenant.ID != tx.TenantID {
-		m.mu.Unlock()
-		return fmt.Errorf("Rollback: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
-	}
-	m.mu.Unlock()
 
 	// Acquire transaction operation write lock — waits for in-flight operations.
 	tx.OpMu.Lock()
@@ -529,14 +707,18 @@ func (m *TransactionManager) Rollback(ctx context.Context, txID string) error {
 		tx.OpMu.Unlock()
 	}()
 
-	m.mu.Lock()
-	tx.RolledBack = true
-	delete(m.active, txID)
-	delete(m.committing, txID)
-	delete(m.savepoints, txID)
-	delete(m.txUniqueKeys, txID)
-	delete(m.scheduledTaskOps, txID) // discard staged ops unapplied — see field doc
-	m.mu.Unlock()
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		tx.RolledBack = true
+		delete(m.active, txID)
+		delete(m.committing, txID)
+		delete(m.savepoints, txID)
+		delete(m.txUniqueKeys, txID)
+		delete(m.txSnapshotSeq, txID)
+		delete(m.supersededSaves, txID)  // discard staged superseded values unapplied — see field doc
+		delete(m.scheduledTaskOps, txID) // discard staged ops unapplied — see field doc
+	}()
 	return nil
 }
 
@@ -599,9 +781,13 @@ func (m *TransactionManager) CommittedLogLen() int {
 // tx-state.
 func (m *TransactionManager) Savepoint(ctx context.Context, txID string) (string, error) {
 	uc := spi.GetUserContext(ctx)
-	m.mu.Lock()
-	tx, ok := m.active[txID]
-	m.mu.Unlock()
+	var tx *spi.TransactionState
+	var ok bool
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		tx, ok = m.active[txID]
+	}()
 	if !ok {
 		return "", fmt.Errorf("Savepoint: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
@@ -655,6 +841,13 @@ func (m *TransactionManager) Savepoint(ctx context.Context, txID string) (string
 	if m.savepoints[txID] == nil {
 		m.savepoints[txID] = make(map[string]savepointSnapshot)
 	}
+	// supersededLens records each entityID's current supersededSaves[txID]
+	// length, mirroring scheduledTaskOpsLen's approach — see
+	// savepointSnapshot.supersededLens godoc.
+	supersededLens := make(map[string]int, len(m.supersededSaves[txID]))
+	for eid, s := range m.supersededSaves[txID] {
+		supersededLens[eid] = len(s)
+	}
 	m.savepoints[txID][spID] = savepointSnapshot{
 		buffer:              bufCopy,
 		readSet:             readCopy,
@@ -662,6 +855,7 @@ func (m *TransactionManager) Savepoint(ctx context.Context, txID string) (string
 		deletes:             delCopy,
 		deleteAttribution:   delAttrCopy,
 		scheduledTaskOpsLen: len(m.scheduledTaskOps[txID]),
+		supersededLens:      supersededLens,
 	}
 	return spID, nil
 }
@@ -683,9 +877,13 @@ func (m *TransactionManager) Savepoint(ctx context.Context, txID string) (string
 // callers — RollbackToSavepoint is destructive on tx-state.
 func (m *TransactionManager) RollbackToSavepoint(ctx context.Context, txID string, savepointID string) error {
 	uc := spi.GetUserContext(ctx)
-	m.mu.Lock()
-	tx, ok := m.active[txID]
-	m.mu.Unlock()
+	var tx *spi.TransactionState
+	var ok bool
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		tx, ok = m.active[txID]
+	}()
 	if !ok {
 		return fmt.Errorf("RollbackToSavepoint: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
@@ -732,6 +930,22 @@ func (m *TransactionManager) RollbackToSavepoint(ctx context.Context, txID strin
 	// mode to mirror here.
 	if opsLen := snap.scheduledTaskOpsLen; opsLen < len(m.scheduledTaskOps[txID]) {
 		m.scheduledTaskOps[txID] = m.scheduledTaskOps[txID][:opsLen]
+	}
+
+	// Truncate supersededSaves per entityID back to its recorded length —
+	// same append-only truncate-back-to-length approach as
+	// scheduledTaskOps above (see savepointSnapshot.supersededLens godoc).
+	// An entityID with no recorded length had no superseded entries yet at
+	// savepoint time, so any it accumulated since must be discarded
+	// entirely, not merely truncated to zero.
+	if cur, ok := m.supersededSaves[txID]; ok {
+		for eid, entries := range cur {
+			if l, existed := snap.supersededLens[eid]; existed {
+				cur[eid] = entries[:l]
+			} else {
+				delete(cur, eid)
+			}
+		}
 	}
 
 	delete(txSavepoints, savepointID)

@@ -19,7 +19,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
@@ -41,16 +40,50 @@ func deterministicModelID(ref spi.ModelRef) uuid.UUID {
 }
 
 type Handler struct {
-	factory   spi.StoreFactory
-	txMgr     spi.TransactionManager
-	uuids     spi.UUIDGenerator
-	engine    *wfengine.Engine
-	gate      *txgate.Registry
-	searchSvc *search.SearchService
+	factory spi.StoreFactory
+	txMgr   spi.TransactionManager
+	uuids   spi.UUIDGenerator
+	engine  *wfengine.Engine
+	gate    *txgate.Registry
+	// maxDeleteCycles overrides deleteCycleBudget's built-in bound on how
+	// many selection cycles one streamed batched delete may run. Zero (the
+	// normal case) means the built-in default; tests lower it so the
+	// non-convergence path is reachable in milliseconds.
+	maxDeleteCycles int
 }
 
-func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDGenerator, engine *wfengine.Engine, gate *txgate.Registry, searchSvc *search.SearchService) *Handler {
-	return &Handler{factory: factory, txMgr: txMgr, uuids: uuids, engine: engine, gate: gate, searchSvc: searchSvc}
+// defaultMaxDeleteCycles bounds how many streamed selection cycles a single
+// batched delete may run before it gives up (see deleteBatched's streamed
+// branch). Sized to be unreachable by any converging delete — even a
+// 10-million-row wipe at the smallest sane transactionSize of 100 needs
+// 100k cycles — while still bounding a request that would otherwise never
+// terminate because entities matching the condition keep being created.
+const defaultMaxDeleteCycles = 1_000_000
+
+// WithMaxDeleteCycles overrides this handler's streamed batched-delete cycle
+// bound and returns the handler, in the builder style of
+// search.Handler.WithMaxSortKeys. A non-positive n restores the built-in
+// default.
+//
+// The default is sized to be unreachable by any converging delete, which also
+// puts the non-convergence path out of reach of a test that does not lower it:
+// this is the seam the door-level tests (gRPC envelope, HTTP status/code) use
+// to reach that path in milliseconds. Production wiring leaves it alone.
+func (h *Handler) WithMaxDeleteCycles(n int) *Handler {
+	h.maxDeleteCycles = n
+	return h
+}
+
+// deleteCycleBudget returns this handler's streamed-delete cycle bound.
+func (h *Handler) deleteCycleBudget() int {
+	if h.maxDeleteCycles > 0 {
+		return h.maxDeleteCycles
+	}
+	return defaultMaxDeleteCycles
+}
+
+func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDGenerator, engine *wfengine.Engine, gate *txgate.Registry) *Handler {
+	return &Handler{factory: factory, txMgr: txMgr, uuids: uuids, engine: engine, gate: gate}
 }
 
 // beginOrJoin decides whether this inbound request OWNS a fresh transaction or

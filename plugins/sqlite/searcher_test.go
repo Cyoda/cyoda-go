@@ -90,7 +90,7 @@ func TestSearcher_EqFilter(t *testing.T) {
 		Declared: []spi.DataType{spi.String},
 	}, spi.SearchOptions{
 		ModelName:    "person",
-		ModelVersion: "1",
+		ModelVersion: "1", Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -114,7 +114,7 @@ func TestSearcher_GtFilter(t *testing.T) {
 		Declared: []spi.DataType{spi.Integer},
 	}, spi.SearchOptions{
 		ModelName:    "person",
-		ModelVersion: "1",
+		ModelVersion: "1", Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -138,7 +138,7 @@ func TestSearcher_ContainsFilter(t *testing.T) {
 		Value:  "li",
 	}, spi.SearchOptions{
 		ModelName:    "person",
-		ModelVersion: "1",
+		ModelVersion: "1", Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -163,7 +163,7 @@ func TestSearcher_ANDFilter(t *testing.T) {
 		},
 	}, spi.SearchOptions{
 		ModelName:    "person",
-		ModelVersion: "1",
+		ModelVersion: "1", Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -191,7 +191,7 @@ func TestSearcher_ORFilter(t *testing.T) {
 		},
 	}, spi.SearchOptions{
 		ModelName:    "person",
-		ModelVersion: "1",
+		ModelVersion: "1", Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -219,7 +219,7 @@ func TestSearcher_PostFilterRegex(t *testing.T) {
 		Value:  "[A-C].*",
 	}, spi.SearchOptions{
 		ModelName:    "person",
-		ModelVersion: "1",
+		ModelVersion: "1", Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -247,7 +247,7 @@ func TestSearcher_MixedPushAndPostFilter(t *testing.T) {
 		},
 	}, spi.SearchOptions{
 		ModelName:    "person",
-		ModelVersion: "1",
+		ModelVersion: "1", Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -265,8 +265,9 @@ func TestSearcher_MixedPushAndPostFilter(t *testing.T) {
 // installs no residual, so the query planner takes the LIMIT-in-SQL (LIMIT
 // limit+1) pushdown path — mutation-verified to actually reach that branch,
 // not merely share its name. Covers the full bounded-or-fail contract for it:
-// unbounded returns everything, exactly-at-limit succeeds, and a matched set
-// over the limit fails rather than truncating.
+// Limit <= 0 is rejected (a contract violation, not "unbounded"),
+// exactly-at-limit succeeds, and a matched set over the limit fails rather
+// than truncating.
 func TestSearcher_Bounded_NoResidual(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 	store, _ := factory.EntityStore(ctx)
@@ -275,15 +276,27 @@ func TestSearcher_Bounded_NoResidual(t *testing.T) {
 	// Pushable, leaf-exact filter matching all 5 seeded persons.
 	filter := spi.Filter{Op: spi.FilterNotNull, Path: "name", Source: spi.SourceData}
 
-	t.Run("Unbounded", func(t *testing.T) {
+	t.Run("ZeroLimitRejected", func(t *testing.T) {
 		got, err := searcher.Search(ctx, filter, spi.SearchOptions{
 			ModelName: "person", ModelVersion: "1",
 		})
-		if err != nil {
-			t.Fatalf("limit 0 must be unbounded: unexpected err %v", err)
+		if err == nil {
+			t.Fatal("Limit <= 0 is a contract violation, not \"unbounded\"")
 		}
-		if len(got) != 5 {
-			t.Fatalf("got %d, want 5", len(got))
+		if len(got) != 0 {
+			t.Fatalf("got %d results, want none on a rejected search", len(got))
+		}
+	})
+
+	t.Run("NegativeLimitRejected", func(t *testing.T) {
+		got, err := searcher.Search(ctx, filter, spi.SearchOptions{
+			ModelName: "person", ModelVersion: "1", Limit: -1,
+		})
+		if err == nil {
+			t.Fatal("Limit <= 0 is a contract violation, not \"unbounded\"")
+		}
+		if len(got) != 0 {
+			t.Fatalf("got %d results, want none on a rejected search", len(got))
 		}
 	})
 
@@ -321,15 +334,27 @@ func TestSearcher_Bounded_Residual(t *testing.T) {
 	// Non-pushable filter matching all 5 seeded persons.
 	filter := spi.Filter{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: ".*"}
 
-	t.Run("Unbounded", func(t *testing.T) {
+	t.Run("ZeroLimitRejected", func(t *testing.T) {
 		got, err := searcher.Search(ctx, filter, spi.SearchOptions{
 			ModelName: "person", ModelVersion: "1",
 		})
-		if err != nil {
-			t.Fatalf("limit 0 must be unbounded: unexpected err %v", err)
+		if err == nil {
+			t.Fatal("Limit <= 0 is a contract violation, not \"unbounded\"")
 		}
-		if len(got) != 5 {
-			t.Fatalf("got %d, want 5", len(got))
+		if len(got) != 0 {
+			t.Fatalf("got %d results, want none on a rejected search", len(got))
+		}
+	})
+
+	t.Run("NegativeLimitRejected", func(t *testing.T) {
+		got, err := searcher.Search(ctx, filter, spi.SearchOptions{
+			ModelName: "person", ModelVersion: "1", Limit: -1,
+		})
+		if err == nil {
+			t.Fatal("Limit <= 0 is a contract violation, not \"unbounded\"")
+		}
+		if len(got) != 0 {
+			t.Fatalf("got %d results, want none on a rejected search", len(got))
 		}
 	})
 
@@ -395,7 +420,7 @@ func TestSearcher_ScanBudgetExhausted(t *testing.T) {
 		Value:  ".*",
 	}, spi.SearchOptions{
 		ModelName:    "item",
-		ModelVersion: "1",
+		ModelVersion: "1", Limit: 10,
 	})
 
 	if err == nil {
@@ -538,7 +563,7 @@ func TestSearcher_TenantIsolation(t *testing.T) {
 	searcherB := storeB.(spi.Searcher)
 
 	filter := spi.Filter{Op: spi.FilterNotNull, Path: "name", Source: spi.SourceData}
-	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1"}
+	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 10}
 
 	resultsA, err := searcherA.Search(ctxA, filter, opts)
 	if err != nil {
@@ -612,8 +637,8 @@ func TestSearcher_OrderByNumericData(t *testing.T) {
 		spi.Filter{Op: spi.FilterNotNull, Path: "n", Source: spi.SourceData},
 		spi.SearchOptions{
 			ModelName:    "item",
-			ModelVersion: "1",
-			OrderBy:      []spi.OrderSpec{{Path: "n", Source: spi.SourceData, Kind: spi.OrderNumeric}},
+			ModelVersion: "1", Limit: 10,
+			OrderBy: []spi.OrderSpec{{Path: "n", Source: spi.SourceData, Kind: spi.OrderNumeric}},
 		})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -663,8 +688,8 @@ func TestSearcher_OrderByCreationDateMeta(t *testing.T) {
 		spi.Filter{Op: spi.FilterNotNull, Path: "v", Source: spi.SourceData},
 		spi.SearchOptions{
 			ModelName:    "item",
-			ModelVersion: "1",
-			OrderBy:      []spi.OrderSpec{{Path: "creationDate", Source: spi.SourceMeta, Kind: spi.OrderTemporal}},
+			ModelVersion: "1", Limit: 10,
+			OrderBy: []spi.OrderSpec{{Path: "creationDate", Source: spi.SourceMeta, Kind: spi.OrderTemporal}},
 		})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -711,8 +736,8 @@ func TestSearcher_OrderByStateMeta(t *testing.T) {
 		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "x", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
 			ModelName:    "item",
-			ModelVersion: "1",
-			OrderBy:      []spi.OrderSpec{{Path: "state", Source: spi.SourceMeta, Kind: spi.OrderText}},
+			ModelVersion: "1", Limit: 10,
+			OrderBy: []spi.OrderSpec{{Path: "state", Source: spi.SourceMeta, Kind: spi.OrderText}},
 		})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -758,8 +783,8 @@ func TestSearcher_OrderByNullsLast(t *testing.T) {
 		spi.Filter{Op: spi.FilterEq, Path: "present", Source: spi.SourceData, Value: true, Declared: []spi.DataType{spi.Boolean}},
 		spi.SearchOptions{
 			ModelName:    "item",
-			ModelVersion: "1",
-			OrderBy:      []spi.OrderSpec{{Path: "score", Source: spi.SourceData, Kind: spi.OrderText}},
+			ModelVersion: "1", Limit: 10,
+			OrderBy: []spi.OrderSpec{{Path: "score", Source: spi.SourceData, Kind: spi.OrderText}},
 		})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -801,8 +826,8 @@ func TestSearcher_OrderByTiebreaker(t *testing.T) {
 		spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
 			ModelName:    "item",
-			ModelVersion: "1",
-			OrderBy:      []spi.OrderSpec{{Path: "city", Source: spi.SourceData, Kind: spi.OrderText}},
+			ModelVersion: "1", Limit: 10,
+			OrderBy: []spi.OrderSpec{{Path: "city", Source: spi.SourceData, Kind: spi.OrderText}},
 		})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -851,9 +876,9 @@ func TestSearcher_OrderByPointInTime(t *testing.T) {
 		spi.Filter{Op: spi.FilterNotNull, Path: "v", Source: spi.SourceData},
 		spi.SearchOptions{
 			ModelName:    "item",
-			ModelVersion: "1",
-			PointInTime:  &t2,
-			OrderBy:      []spi.OrderSpec{{Path: "creationDate", Source: spi.SourceMeta, Kind: spi.OrderTemporal}},
+			ModelVersion: "1", Limit: 10,
+			PointInTime: &t2,
+			OrderBy:     []spi.OrderSpec{{Path: "creationDate", Source: spi.SourceMeta, Kind: spi.OrderTemporal}},
 		})
 	if err != nil {
 		t.Fatalf("Search PIT: %v", err)
@@ -874,8 +899,8 @@ func TestSearcher_ValidateOrderSpecsRejectsUnknownMetaPath(t *testing.T) {
 		spi.Filter{Op: spi.FilterNotNull, Path: "name", Source: spi.SourceData},
 		spi.SearchOptions{
 			ModelName:    "person",
-			ModelVersion: "1",
-			OrderBy:      []spi.OrderSpec{{Path: "unknownMetaField", Source: spi.SourceMeta}},
+			ModelVersion: "1", Limit: 10,
+			OrderBy: []spi.OrderSpec{{Path: "unknownMetaField", Source: spi.SourceMeta}},
 		})
 	if err == nil {
 		t.Fatal("expected error for unknown meta sort path, got nil")
@@ -897,8 +922,8 @@ func TestSearcher_OrderByMetaIDNoTiebreaker(t *testing.T) {
 		spi.Filter{Op: spi.FilterNotNull, Path: "name", Source: spi.SourceData},
 		spi.SearchOptions{
 			ModelName:    "person",
-			ModelVersion: "1",
-			OrderBy:      []spi.OrderSpec{{Path: "id", Source: spi.SourceMeta}},
+			ModelVersion: "1", Limit: 10,
+			OrderBy: []spi.OrderSpec{{Path: "id", Source: spi.SourceMeta}},
 		})
 	if err != nil {
 		t.Fatalf("Search by meta id: %v", err)
@@ -923,8 +948,8 @@ func TestSearcher_OrderByDesc(t *testing.T) {
 		spi.Filter{Op: spi.FilterNotNull, Path: "name", Source: spi.SourceData},
 		spi.SearchOptions{
 			ModelName:    "person",
-			ModelVersion: "1",
-			OrderBy:      []spi.OrderSpec{{Path: "name", Source: spi.SourceData, Desc: true, Kind: spi.OrderText}},
+			ModelVersion: "1", Limit: 10,
+			OrderBy: []spi.OrderSpec{{Path: "name", Source: spi.SourceData, Desc: true, Kind: spi.OrderText}},
 		})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -974,8 +999,8 @@ func TestSearcher_OrderByBool(t *testing.T) {
 		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "x", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
 			ModelName:    "item",
-			ModelVersion: "1",
-			OrderBy:      []spi.OrderSpec{{Path: "active", Source: spi.SourceData, Kind: spi.OrderBool}},
+			ModelVersion: "1", Limit: 10,
+			OrderBy: []spi.OrderSpec{{Path: "active", Source: spi.SourceData, Kind: spi.OrderBool}},
 		})
 	if err != nil {
 		t.Fatalf("Search asc: %v", err)
@@ -987,8 +1012,8 @@ func TestSearcher_OrderByBool(t *testing.T) {
 		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "x", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
 			ModelName:    "item",
-			ModelVersion: "1",
-			OrderBy:      []spi.OrderSpec{{Path: "active", Source: spi.SourceData, Desc: true, Kind: spi.OrderBool}},
+			ModelVersion: "1", Limit: 10,
+			OrderBy: []spi.OrderSpec{{Path: "active", Source: spi.SourceData, Desc: true, Kind: spi.OrderBool}},
 		})
 	if err != nil {
 		t.Fatalf("Search desc: %v", err)

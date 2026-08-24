@@ -5,14 +5,15 @@ import (
 	"testing"
 )
 
-// FuzzNormalizeScalarPath ensures the path normalizer doesn't panic on
-// adversarial inputs and that the normalize-then-reject contract holds:
+// FuzzNormalizeScalarPath ensures the path validator doesn't panic on
+// adversarial inputs and that its contract holds:
 //
-//   - any output that returns nil error has no [ or ] remaining (no array
-//     projections survive normalization)
-//   - normalization is idempotent (renormalizing the output yields the
-//     same string)
-//   - error path returns "" for the normalized form (no half-state leak)
+//   - any accepted path has no [ or ] in it (no array projection or
+//     subscript is accepted on a surface that needs a single scalar)
+//   - accepting is idempotent: an accepted path is itself valid input and
+//     comes back unchanged. The validator does not rewrite — that is what
+//     lets the response's group-key path echo the request verbatim.
+//   - error path returns "" (no half-state leak)
 //
 // Seeds cover happy paths, edge cases, and known SQL-injection /
 // JSONPath-shape adversarial inputs.

@@ -46,6 +46,26 @@ func TestParseSortParam_Errors(t *testing.T) {
 		{"@a.b.c"},                      // nested meta
 		{"surname", "surname"},          // duplicate
 		{"surname:asc", "surname:desc"}, // duplicate (conflicting dir)
+
+		// A sort path names fields by the same segment charset the jsonPath
+		// grammar admits, so anything outside it is refused here too rather
+		// than reaching a backend that would sort by a field it cannot
+		// resolve. Pinned explicitly because the charset now has ONE
+		// definition ([schema.IsSegmentName]) that this validator shares.
+		{"$."},          // leader only
+		{"a..b"},        // empty segment
+		{"a."},          // trailing dot
+		{".a"},          // leading dot
+		{"first name"},  // space
+		{"café"},        // non-ascii
+		{"日本"},          // non-ascii multibyte
+		{"a[0]"},        // subscript
+		{"a['x']"},      // bracket-quoted
+		{"a/b"},         // slash
+		{"a*"},          // asterisk
+		{"a'; --"},      // sql tail
+		{"a\x00"},       // nul byte
+		{"@first name"}, // meta path, same charset
 	}
 	for _, in := range bad {
 		if _, err := ParseSortParam(in, 16); err == nil {

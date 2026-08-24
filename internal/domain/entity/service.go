@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -21,9 +20,11 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/match"
 )
 
 // --- Input/Output types ---
@@ -388,27 +389,36 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 }
 
 // getEntityByTransactionID returns the entity version whose meta.TransactionID
-// matches txID. It scans the version history (which carries the full Entity
-// payload per version) and returns the matching snapshot. spi.ErrNotFound is
-// returned both when the entity itself is unknown to the store and when no
-// version matches the supplied transactionId — the caller maps both to
-// ENTITY_NOT_FOUND (404), which mirrors Cyoda Cloud's contract for issue #150
-// (and matches dictionary scenario 12/neg/05). The caller treats other errors
-// as infrastructure failures (5xx).
+// matches txID, via the store's purposed by-transaction lookup (earliest
+// matching version; tombstones never match — see GetVersionByTransaction's
+// doc comment). spi.ErrNotFound is returned both when the entity itself is
+// unknown to the store and when no version matches the supplied
+// transactionId — the caller maps both to ENTITY_NOT_FOUND (404), which
+// mirrors Cyoda Cloud's contract for issue #150 (and matches dictionary
+// scenario 12/neg/05). The caller treats other errors as infrastructure
+// failures (5xx).
 func getEntityByTransactionID(ctx context.Context, store spi.EntityStore, entityID, txID string) (*spi.Entity, error) {
-	versions, err := store.GetVersionHistory(ctx, entityID)
+	v, err := store.GetVersionByTransaction(ctx, entityID, txID)
 	if err != nil {
 		return nil, err
 	}
-	for _, v := range versions {
-		if v.Entity == nil {
-			continue
-		}
-		if v.Entity.Meta.TransactionID == txID {
-			return v.Entity, nil
-		}
+	// GetVersionByTransaction's contract says a DELETED tombstone (no
+	// payload) never matches, so v.Entity is documented as always
+	// populated on a nil-error return. Trust that contract and dereference
+	// unchecked anyway would let a backend that violates it (a plausible
+	// implementation slip — e.g. a sqlite pushdown querying the
+	// transaction-ID column directly and returning a tombstone row) panic
+	// this request and, via the handler's unrecovered-panic path, latch
+	// healthFlag false and take the node out of service. Pre-branch, the
+	// equivalent linear scan over versions skipped nil-entity versions
+	// structurally, so this can't have regressed silently before. Guard
+	// defensively instead of trusting the contract: treat a payload-less
+	// version the same as "no matching version" (spi.ErrNotFound), which
+	// callers already map to 404 ENTITY_NOT_FOUND.
+	if v == nil || v.Entity == nil {
+		return nil, spi.ErrNotFound
 	}
-	return nil, spi.ErrNotFound
+	return v.Entity, nil
 }
 
 // GetEntity retrieves a single entity, optionally at a point in time or
@@ -739,7 +749,15 @@ func (h *Handler) GetChangesMetadata(ctx context.Context, entityID string, point
 		return nil, common.Internal("failed to access entity store", err)
 	}
 
-	versions, err := entityStore.GetVersionHistory(ctx, entityID)
+	// Hard cap to prevent unbounded response size, pushed down to the store
+	// rather than fetched-then-truncated.
+	const maxChangesMetadata = 1000
+	opts := spi.VersionMetadataOptions{Limit: maxChangesMetadata}
+	if pointInTime != nil && !pointInTime.IsZero() {
+		opts.Until = pointInTime
+	}
+
+	versions, err := entityStore.GetVersionMetadata(ctx, entityID, opts)
 	if err != nil {
 		if errors.Is(err, spi.ErrNotFound) {
 			appErr := common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, fmt.Sprintf("entity id=%s not found", entityID))
@@ -751,43 +769,20 @@ func (h *Handler) GetChangesMetadata(ctx context.Context, entityID string, point
 		return nil, common.Internal("failed to get version history", err)
 	}
 
-	// Truncate to versions at-or-before pointInTime when set.
-	if pointInTime != nil && !pointInTime.IsZero() {
-		cutoff := *pointInTime
-		filtered := versions[:0]
-		for _, v := range versions {
-			if !v.Timestamp.After(cutoff) {
-				filtered = append(filtered, v)
-			}
-		}
-		versions = filtered
-	}
-
-	// Sort newest first (descending by timestamp)
-	sort.Slice(versions, func(i, j int) bool {
-		return versions[i].Timestamp.After(versions[j].Timestamp)
-	})
-
-	// Hard cap to prevent unbounded response size.
-	const maxChangesMetadata = 1000
-	if len(versions) > maxChangesMetadata {
-		versions = versions[:maxChangesMetadata]
-	}
+	// GetVersionMetadata already returns newest first, ties broken by
+	// Version DESC — no further sort needed.
 
 	result := make([]EntityChangeEntry, 0, len(versions))
 	for _, v := range versions {
-		entry := EntityChangeEntry{
+		result = append(result, EntityChangeEntry{
 			ChangeType:     v.ChangeType,
 			TimeOfChange:   v.Timestamp.UTC().Format(time.RFC3339Nano),
 			User:           v.User,
-			HasEntity:      v.Entity != nil,
+			HasEntity:      !v.Deleted,
 			AttributedKind: string(v.AttributedKind),
 			Executor:       v.Executor,
-		}
-		if v.Entity != nil {
-			entry.TransactionID = v.Entity.Meta.TransactionID
-		}
-		result = append(result, entry)
+			TransactionID:  v.TransactionID,
+		})
 	}
 
 	return result, nil
@@ -837,10 +832,27 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 		return nil, common.Internal("failed to load model", err)
 	}
 
-	// Get all entities before deleting (for verbose response and IDs).
-	entities, err := entityStore.GetAll(txCtx, ref)
-	if err != nil {
-		return nil, common.Internal("failed to get entities", err)
+	iterableStore, ok := entityStore.(spi.Iterable)
+	if !ok {
+		// Fail closed (correctness-over-availability): every in-house store
+		// implements spi.Iterable (mirrors the async search executor's own
+		// stance); there is no lesser-quality answer to degrade to.
+		return nil, common.Internal("entity store does not support streamed selection",
+			fmt.Errorf("store does not implement spi.Iterable"))
+	}
+
+	// Count entities before deleting (for the response) without
+	// materialising them — DeleteAllResult carries only a count, never ids
+	// (enumerating a whole-model wipe is impractical at scale). Draining
+	// and Close()ing the iterator BEFORE DeleteAll below is mandatory, not
+	// stylistic: DeleteAll mutates this SAME ambient transaction (txCtx),
+	// and the SPI forbids mutating a transaction while its own iterator is
+	// still open.
+	count := 0
+	if scanErr := drainDeleteSelection(txCtx, iterableStore, ref, deleteSelectionPlan{}, nil, func(*spi.Entity) {
+		count++
+	}); scanErr != nil {
+		return nil, common.Internal("failed to count entities for delete", scanErr)
 	}
 
 	// Finalize: gate the OWNER's DeleteAll+Commit against a concurrent joined
@@ -866,7 +878,7 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 
 	modelID := deterministicModelID(ref)
 	return &DeleteAllResult{
-		TotalCount:    len(entities),
+		TotalCount:    count,
 		ModelID:       modelID.String(),
 		EntityModelID: modelID.String(),
 	}, nil
@@ -941,16 +953,264 @@ func mintDeleteTicket(entityID string, err error) string {
 	return fmt.Sprintf("%s: internal error [ticket: %s]", common.ErrCodeServerError, ticket)
 }
 
+// deleteSelectionPlan is how a conditional delete selects entities once
+// DeleteEntitiesConditional/deleteBatched stopped routing through
+// SearchService.Search: either a pushdown spi.Filter (cond
+// translated cleanly via spi.ConditionToFilter) that a spi.Iterable store
+// applies natively, or a zero-value Filter (matches everything at the
+// store) paired with a prepared residual matcher re-applied to each
+// streamed entity client-side. The residual branch mirrors
+// GroupedStatsService.tallyStreaming's design (grouped_stats_service.go),
+// so an untranslatable condition (a function condition, an array-wildcard
+// leaf) still selects via spi.Iterable instead of falling back to a
+// whole-model materialising read.
+type deleteSelectionPlan struct {
+	filter   spi.Filter
+	residual *match.Prepared
+}
+
+// matches reports whether e satisfies the plan. When residual is nil the
+// store-level filter alone is authoritative (translated cleanly, or the
+// zero-value "everything" plan) and every yielded entity already matches;
+// otherwise the prepared predicate is re-checked client-side.
+func (p deleteSelectionPlan) matches(e *spi.Entity) bool {
+	if p.residual == nil {
+		return true
+	}
+	return p.residual.Match(e.Data, e.Meta)
+}
+
+// planDeleteSelection validates cond and resolves how DeleteEntitiesConditional
+// / deleteBatched select matching entities. Delete reuses the search
+// condition primitive so no special engine rights are claimed (design
+// §6.1), but — now that selection streams via the delete path's own
+// spi.Iterable drain rather than through SearchService.Search — the
+// validation Search enforces along the way (structural condition shape,
+// regex compilability, unknown data-field paths, type soundness) has to be
+// replicated here instead of arriving as a side effect of that call. Same
+// checks, same error codes, via the same exported search.* helpers
+// GroupedStatsService already established this pattern with
+// (grouped_stats_service.go). A nil cond selects everything (zero-value
+// plan, no validation to do).
+func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelStore, ref spi.ModelRef, cond predicate.Condition) (deleteSelectionPlan, error) {
+	if cond == nil {
+		return deleteSelectionPlan{}, nil
+	}
+
+	// Reject a malformed MATCHES_PATTERN regex before any selection runs —
+	// mirrors SearchService.Search's ValidateRegexPatterns call. Left
+	// unvalidated, the residual match.Prepare kernel treats an uncompilable
+	// pattern as a silent non-match rather than an error.
+	if rErr := search.ValidateRegexPatterns(cond); rErr != nil {
+		return deleteSelectionPlan{}, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
+			fmt.Sprintf("invalid regex pattern in condition: %v", rErr))
+	}
+
+	// Structural condition validation (canonical operator set, BETWEEN
+	// arity) — mirrors SearchService.Search's single boundary via the same
+	// exported search.ValidateCondition call grouped-stats reuses. Unlike
+	// grouped-stats (which never routed through Search and so had no prior
+	// contract to preserve), delete DID forward Search's classified
+	// *common.AppError verbatim before the streaming rework — an unknown operatorType and
+	// an operand-shape violation are documented as two DIFFERENT codes
+	// (search.structuralConditionErrCode: BAD_REQUEST vs INVALID_CONDITION,
+	// per its own doc comment). Collapsing both under entity.ErrInvalidCondition
+	// (as grouped-stats does, and as an earlier version of this function
+	// did) would have silently reclassified every unknown-operatorType
+	// delete from BAD_REQUEST to INVALID_CONDITION. Returning a
+	// *common.AppError directly — classified via the same exported
+	// search.StructuralConditionErrCode Search itself uses — instead of
+	// wrapping under ErrInvalidCondition preserves that distinction:
+	// DeleteEntitiesConditional/deleteBatched's errors.As(&appErr) picks
+	// this up and returns it unchanged, the same path a Search-forwarded
+	// error already took.
+	if cErr := search.ValidateCondition(cond); cErr != nil {
+		return deleteSelectionPlan{}, common.Operational(http.StatusBadRequest,
+			search.StructuralConditionErrCode(cErr), cErr.Error())
+	}
+
+	fields, ffErr := search.LoadFieldsMap(ctx, modelStore, ref)
+	if ffErr != nil {
+		return deleteSelectionPlan{}, fmt.Errorf("failed to load model field types: %w", ffErr)
+	}
+
+	// Unknown data-field paths (TestDeleteEntities_UnknownFieldPath, error
+	// matrix row deleteEntities/INVALID_FIELD_PATH) — mirrors SearchService's
+	// unexported validateConditionPaths via the exported
+	// search.FindUnknownFieldPaths, minus its negative-cache (a Search
+	// hot-path concern this lower-volume endpoint doesn't need). It DOES
+	// keep the bounded single-refresh-then-fail retry: that refresh is the
+	// correctness half, not the optimisation. On a cluster, node A can
+	// extend a model with a new field and node B's cached descriptor map
+	// won't see it until the schema-change event arrives; without a refresh
+	// here, a condition on that field would 400 INVALID_FIELD_PATH on node B
+	// while the identical /search/direct condition succeeds via
+	// validateConditionPaths' own refresh — a cross-node false rejection.
+	// fields == nil means no schema is bound at all — same as
+	// validateConditionPaths, skip the check rather than flagging every path
+	// "unknown" against an empty map.
+	if fields != nil {
+		if unknown := search.FindUnknownFieldPaths(cond, fields); len(unknown) > 0 {
+			freshFields, refreshed, refreshErr := search.RefreshFieldsMap(ctx, modelStore, ref)
+			switch {
+			case !refreshed:
+				// Store has no cache layer to refresh — the pre-refresh
+				// miss is authoritative, same as validateConditionPaths.
+			case refreshErr != nil:
+				if errors.Is(refreshErr, spi.ErrNotFound) {
+					// Model was deleted between the earlier load and
+					// RefreshAndGet — the miss is authoritative, there is
+					// no schema left to consult.
+					break
+				}
+				slog.Debug("schema refresh failed while validating delete condition paths",
+					"pkg", "entity", "entityName", ref.EntityName, "modelVersion", ref.ModelVersion, "error", refreshErr)
+			case freshFields != nil:
+				unknown = search.FindUnknownFieldPaths(cond, freshFields)
+			}
+			if len(unknown) > 0 {
+				return deleteSelectionPlan{}, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath,
+					fmt.Sprintf("condition references unknown field path(s): %s", strings.Join(unknown, ", ")))
+			}
+			if freshFields != nil {
+				fields = freshFields
+			}
+		}
+	}
+
+	// Condition type-soundness — mirrors SearchService.Search's
+	// validateConditionTypes boundary. A schema-load hiccup degrades to
+	// "skip this check" exactly like Search's own loadModelNode does,
+	// rather than 5xx-ing on an infra flake.
+	if node := deleteModelSchemaNode(ctx, modelStore, ref); node != nil {
+		if tErr := search.ValidateConditionValueTypes(node, cond); tErr != nil {
+			code := common.ErrCodeConditionTypeMismatch
+			if errors.Is(tErr, search.ErrInvalidFieldPath) {
+				code = common.ErrCodeInvalidFieldPath
+			}
+			return deleteSelectionPlan{}, common.Operational(http.StatusBadRequest, code, tErr.Error())
+		}
+	}
+
+	filter, translateErr := spi.ConditionToFilter(cond, fields)
+	if translateErr == nil {
+		return deleteSelectionPlan{filter: filter}, nil
+	}
+
+	// Untranslatable: select everything at the store and re-apply the same
+	// predicate client-side per streamed entity — never a whole-model
+	// materialising fallback (see the type's doc comment).
+	fieldTypes := func(p string) []spi.DataType {
+		if fd, ok := fields[p]; ok {
+			return fd.Types
+		}
+		return nil
+	}
+	prepared, prepErr := match.Prepare(cond, fieldTypes)
+	if prepErr != nil {
+		return deleteSelectionPlan{}, fmt.Errorf("predicate match failed: %w", prepErr)
+	}
+	return deleteSelectionPlan{residual: &prepared}, nil
+}
+
+// deleteModelSchemaNode loads and parses ref's schema for
+// planDeleteSelection's type-soundness check, mirroring search's
+// unexported loadModelNode. Returns nil (skip the check) on any load/parse
+// hiccup or an unbound schema; the caller has already gated model
+// existence separately.
+func deleteModelSchemaNode(ctx context.Context, modelStore spi.ModelStore, ref spi.ModelRef) *schema.ModelNode {
+	desc, err := modelStore.Get(ctx, ref)
+	if err != nil || desc == nil || len(desc.Schema) == 0 {
+		return nil
+	}
+	node, err := schema.Unmarshal(desc.Schema)
+	if err != nil {
+		return nil
+	}
+	return node
+}
+
+// drainDeleteSelection opens a spi.Iterable iterator scoped to ctx (pass a
+// transaction-bearing ctx — e.g. txCtx — to select that transaction's
+// overlaid view, a plain ctx for a committed-only read), fully drains it,
+// invoking visit once for every entity plan.matches, and closes it before
+// returning — draining is the ONLY thing done with the iterator here.
+// Closing before the caller does anything else with ctx's transaction (if
+// any) honours the SPI's no-interleave rule: mutating a transaction while
+// its own iterator is still open is forbidden. visit must not retain e
+// beyond the call — its payload is discarded once visit returns, so only
+// what visit itself copies out (an id, a version, ...) survives the drain.
+func drainDeleteSelection(ctx context.Context, iterableStore spi.Iterable, ref spi.ModelRef, plan deleteSelectionPlan, pointInTime *time.Time, visit func(e *spi.Entity)) error {
+	it, err := iterableStore.Iterate(ctx, ref, plan.filter, spi.IterateOptions{PointInTime: pointInTime})
+	if err != nil {
+		return err
+	}
+	var scanErr error
+	func() {
+		defer func() {
+			// Some implementations only surface a sticky scan error at
+			// Close, not at the last Next() — read Err() AFTER Close()
+			// (mirrors the async search executor's own iterator drain).
+			//
+			// Close()'s own error is fatal here too, not merely logged:
+			// for database/sql-backed iterators (e.g. sqliteIter), Close()
+			// returns rows.Close()'s error and that error is NOT folded
+			// into Rows.Err() — so it.Err() alone can stay nil while a
+			// mid-scan driver error truncated the selection. Treating
+			// Close's error as advisory would let this delete report
+			// success (HTTP 200) for a partial selection, indistinguishable
+			// from a complete one.
+			if closeErr := it.Close(); closeErr != nil {
+				slog.Warn("failed to close delete-selection iterator", "pkg", "entity", "err", closeErr)
+				scanErr = closeErr
+			}
+			if errErr := it.Err(); errErr != nil {
+				scanErr = errErr
+			}
+		}()
+		for it.Next() {
+			e := it.Entity()
+			if !plan.matches(e) {
+				continue
+			}
+			visit(e)
+		}
+	}()
+	return scanErr
+}
+
+// selectDeleteIDs resolves the ids matching plan (as-at pointInTime, when
+// set) via a streamed drainDeleteSelection — only ids are ever retained, so
+// a match set of any size never materialises full entities. No OrderBy is
+// requested: deletion needs no order, and asking for one would make a
+// backend pay for a sort it doesn't need.
+func selectDeleteIDs(ctx context.Context, entityStore spi.EntityStore, ref spi.ModelRef, plan deleteSelectionPlan, pointInTime *time.Time) ([]string, error) {
+	iterableStore, ok := entityStore.(spi.Iterable)
+	if !ok {
+		// Fail closed (correctness-over-availability): every in-house store
+		// implements spi.Iterable; there is no lesser-quality answer to
+		// degrade to.
+		return nil, fmt.Errorf("entity store does not support streamed selection (spi.Iterable)")
+	}
+	var ids []string
+	if err := drainDeleteSelection(ctx, iterableStore, ref, plan, pointInTime, func(e *spi.Entity) {
+		ids = append(ids, e.Meta.ID)
+	}); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
 // DeleteEntitiesConditional deletes entities of a model. An empty condBody
 // deletes all (backward-compatible). A present condBody is parsed and only
 // matching entities (as-at pointInTime, when supplied) are deleted — reusing
 // the search condition primitive so no special engine rights are claimed
-// (design §6.1). Selection and deletion run inside one transaction; in-tx
-// Search is tx-aware (overlay/native-pgx.Tx pushdown) and returns
-// read-your-own-writes results, so buffered writes are visible to the
-// selection. TrackingRead is left default-false: the deleted ids are already
-// conflict-protected via the write-set, so the selection need not also record
-// a read-set — that would widen the conflict footprint beyond what's needed.
+// (design §6.1). Selection and deletion run inside one transaction; the
+// selection drains a spi.Iterable iterator scoped to that SAME transaction
+// (txCtx), so buffered writes already made in it are visible to the
+// selection exactly as the removed Searcher-backed selection saw them — and,
+// per the SPI's no-interleave rule, the iterator is fully drained and closed
+// BEFORE the first delete, never interleaved with one.
 //
 // batchSize<=0 keeps the single-tx behaviour above byte-for-byte. batchSize>0
 // switches to deleteBatched (spec D4): a read-only resolution tx selects the
@@ -1027,13 +1287,19 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 		return nil, common.Internal("failed to access entity store", err)
 	}
 
-	// Select ALL matching ids (tx-visible; honours pointInTime). Limit=-1 maps to
-	// spiLimit=0 (unbounded) in the tx-aware Searcher path, so a scoped delete is
-	// never silently capped regardless of match-set size.
-	matched, err := h.searchSvc.Search(txCtx, ref, cond, search.SearchOptions{PointInTime: pointInTime, Limit: -1})
+	plan, planErr := h.planDeleteSelection(txCtx, modelStore, ref, cond)
+	if planErr != nil {
+		return nil, planErr
+	}
+
+	// Select ALL matching ids via a streamed spi.Iterable drain, scoped to
+	// txCtx (tx-visible; honours pointInTime) — see selectDeleteIDs/
+	// drainDeleteSelection for why only ids are ever retained and why the
+	// iterator is fully closed before the delete loop below starts.
+	ids, err := selectDeleteIDs(txCtx, entityStore, ref, plan, pointInTime)
 	if err != nil {
-		// A classified 4xx from the selection search (scan budget exhausted,
-		// unknown field path, invalid condition) is the caller's error, not a
+		// A classified 4xx from planDeleteSelection/selection (unknown
+		// field path, invalid condition) is the caller's error, not a
 		// server fault — common.Internal would bury it as a 500 + ticket.
 		var appErr *common.AppError
 		if errors.As(err, &appErr) {
@@ -1044,7 +1310,7 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 
 	result := &DeleteResult{
 		EntityModelID: deterministicModelID(ref).String(),
-		MatchedCount:  len(matched),
+		MatchedCount:  len(ids),
 		IDToError:     map[string]string{},
 		IDs:           []string{},
 	}
@@ -1055,7 +1321,7 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 		if owned {
 			defer h.gate.Acquire(txID)()
 		}
-		for _, e := range matched {
+		for _, id := range ids {
 			// Generic cancellation check at the iteration head (spec D9) —
 			// fires on ANY ctx cancellation, not only our own feature
 			// deadline. Fails the IIFE (not break-and-commit) so the tx
@@ -1064,7 +1330,6 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 			if err := ctx.Err(); err != nil {
 				return classifyError(fmt.Errorf("operation aborted: %w", err))
 			}
-			id := e.Meta.ID
 			if verbose {
 				result.IDs = append(result.IDs, id)
 			}
@@ -1102,15 +1367,95 @@ type batchTarget struct {
 	baselineVersion int64
 }
 
-// deleteBatched implements spec D4: resolution tx reads matched ids + their
-// CURRENT versions (condition evaluated as-at pointInTime; guard baseline is
-// the current row), then successive owned transactions of ≤batchSize ids
-// re-read each version and delete only unchanged ids. A failed batch commit
-// maps its ids into IDToError; later batches still run. Joined requests never
-// reach here (handler rejects the param).
+// resolveBatchTargetsOnePass drains a spi.Iterable selection in ONE full
+// pass, recording each match's id and version-guard baseline — used by
+// deleteBatched's pointInTime!=nil branch (see its own doc comment for why
+// PIT can't use the per-cycle re-scan the nil-PIT streamed branch does).
+// Only ids and int64 versions survive the drain, never a full entity, so
+// even this single-pass path never materialises the matched entities
+// themselves — the O(matches) state it keeps is the same shape (id +
+// baselineVersion) deleteOneBatch always needed to do its version guard,
+// just now sourced from the streamed drain instead of a Search() result
+// slice.
+//
+// The baseline reads run AFTER the drain, never from inside its visit
+// callback: a backend holds the iterator's own connection for the
+// iterator's whole lifetime (postgres pins a pooled connection per
+// Iterate), so a Get issued mid-drain acquires a SECOND connection while
+// still holding the first — hold-and-wait, which wedges the pool outright
+// once as many point-in-time batched deletes run concurrently as the pool
+// has connections. Collecting ids first costs nothing extra: this function
+// already retains one O(matches) slice, and ids are the same shape as the
+// targets they become.
+func (h *Handler) resolveBatchTargetsOnePass(ctx context.Context, entityStore spi.EntityStore, iterableStore spi.Iterable, ref spi.ModelRef, plan deleteSelectionPlan, pointInTime *time.Time, verbose bool, result *DeleteResult) ([]batchTarget, error) {
+	var ids []string
+	err := drainDeleteSelection(ctx, iterableStore, ref, plan, pointInTime, func(e *spi.Entity) {
+		result.MatchedCount++
+		id := e.Meta.ID
+		if verbose {
+			result.IDs = append(result.IDs, id)
+		}
+		ids = append(ids, id)
+	})
+	if err != nil {
+		return nil, common.Internal("failed to select entities for delete", err)
+	}
+
+	targets := make([]batchTarget, 0, len(ids))
+	for _, id := range ids {
+		// The matched envelope is itself historical (as-at pointInTime), so
+		// the version-guard baseline must be read fresh off the CURRENT
+		// row — otherwise a since-superseded snapshot version would never
+		// equal any future current version and every matched id would
+		// spuriously fail the guard.
+		cur, gErr := entityStore.Get(ctx, id)
+		if gErr != nil {
+			// A per-id read failure (including ErrNotFound — the entity
+			// was already removed between the as-at match and now) is
+			// this id's problem alone, not the whole request's; the
+			// resolution pass continues with the remaining ids.
+			result.IDToError[id] = perIDDeleteError(id, gErr)
+			continue
+		}
+		targets = append(targets, batchTarget{id: id, baselineVersion: cur.Meta.Version})
+	}
+	return targets, nil
+}
+
+// deleteBatched implements spec D4: successive owned transactions of
+// ≤batchSize ids each re-check the matched entity's version before
+// deleting — so a concurrent modification after selection excludes that id
+// rather than destroying a version the caller never saw. A failed batch
+// commit maps its ids into IDToError; later batches still run. Joined
+// requests never reach here (handler rejects the param).
+//
+// Selection has two shapes, chosen by pointInTime:
+//
+//   - pointInTime == nil: streamed, no O(matches) buffer. Each cycle
+//     re-opens a fresh committed-only spi.Iterable iterator (plain ctx, no
+//     ambient transaction) and pulls up to batchSize NEW ids. Because a
+//     cycle's successful deletes are durable before the NEXT cycle's
+//     Iterate call, a live re-scan of the same filter naturally excludes
+//     them — the match set shrinks on its own as the delete progresses.
+//     seen guards only against re-attempting an id whose batch failed to
+//     commit (or whose own delete failed): such an id is still live and
+//     would otherwise resurface on the next cycle's re-scan. It stays
+//     empty on the common all-succeed path (a successfully deleted id
+//     never resurfaces, so there's nothing to remember) and grows only by
+//     the — small, atypical — failure count, never by the full match
+//     count.
+//   - pointInTime != nil: one full pass via resolveBatchTargetsOnePass.
+//     PIT selection is immune to live-state changes (deleting the CURRENT
+//     row doesn't change what an as-at query sees), so the streamed
+//     branch's re-scan-to-shrink trick doesn't terminate here — the same
+//     historical ids would resurface on every cycle. A single drained pass
+//     (still via spi.Iterable, still never materialising entities) avoids
+//     that.
 func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond predicate.Condition, pointInTime *time.Time, verbose bool, batchSize int) (*DeleteResult, error) {
-	// --- Resolution phase: one read-only tx selects the matched ids and
-	// their current versions, then commits before any batch begins. ---
+	// --- Setup phase: a short-lived, committed tx checks the model exists
+	// and resolves the selection plan. Nothing is written here, so it
+	// commits immediately rather than staying open for the whole
+	// (possibly long, multi-cycle) selection/batching that follows. ---
 	scope, err := h.beginScope(ctx)
 	if err != nil {
 		return nil, classifyBeginErr(err)
@@ -1142,64 +1487,23 @@ func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond pred
 	if err != nil {
 		return nil, common.Internal("failed to access entity store", err)
 	}
-
-	// Select the matched set. An empty condition still batches (unlike the
-	// single-tx path's DeleteAll fast path) so a caller who asked for
-	// transactionSize on a whole-model wipe gets version-guarded, chunked
-	// deletes rather than one unbounded DeleteAll.
-	var matched []*spi.Entity
-	if cond == nil {
-		matched, err = entityStore.GetAll(txCtx, ref)
-		if err != nil {
-			return nil, common.Internal("failed to get entities", err)
-		}
-	} else {
-		matched, err = h.searchSvc.Search(txCtx, ref, cond, search.SearchOptions{PointInTime: pointInTime, Limit: -1})
-		if err != nil {
-			// A classified 4xx from the selection search is the caller's
-			// error, not a server fault — mirrors the single-tx path.
-			var appErr *common.AppError
-			if errors.As(err, &appErr) {
-				return nil, appErr
-			}
-			return nil, common.Internal("failed to select entities for delete", err)
-		}
+	iterableStore, ok := entityStore.(spi.Iterable)
+	if !ok {
+		// Fail closed (correctness-over-availability): every in-house store
+		// implements spi.Iterable; there is no lesser-quality answer to
+		// degrade to.
+		return nil, common.Internal("entity store does not support streamed selection",
+			fmt.Errorf("store does not implement spi.Iterable"))
 	}
 
-	result := &DeleteResult{
-		EntityModelID: deterministicModelID(ref).String(),
-		MatchedCount:  len(matched),
-		IDToError:     map[string]string{},
-		IDs:           []string{},
-	}
-
-	targets := make([]batchTarget, 0, len(matched))
-	for _, e := range matched {
-		id := e.Meta.ID
-		if verbose {
-			result.IDs = append(result.IDs, id)
-		}
-
-		// pointInTime==nil: the matched envelope's version IS the current
-		// version (Search with no pointInTime reads the live row). A
-		// pointInTime search can match a HISTORICAL version, so the guard
-		// baseline must instead be read fresh — otherwise a since-superseded
-		// snapshot version would never equal any future current version and
-		// every matched id would spuriously fail the guard.
-		baseline := e.Meta.Version
-		if pointInTime != nil {
-			cur, gErr := entityStore.Get(txCtx, id)
-			if gErr != nil {
-				// A per-id read failure (including ErrNotFound — the entity
-				// was already removed between the as-at match and now) is
-				// this id's problem alone, not the whole request's; the
-				// resolution pass continues with the remaining ids.
-				result.IDToError[id] = perIDDeleteError(id, gErr)
-				continue
-			}
-			baseline = cur.Meta.Version
-		}
-		targets = append(targets, batchTarget{id: id, baselineVersion: baseline})
+	// An empty condition still batches (unlike the single-tx path's
+	// DeleteAll fast path) so a caller who asked for transactionSize on a
+	// whole-model wipe gets version-guarded, chunked deletes rather than
+	// one unbounded DeleteAll. planDeleteSelection's zero-value plan for a
+	// nil cond selects everything, same as before.
+	plan, planErr := h.planDeleteSelection(txCtx, modelStore, ref, cond)
+	if planErr != nil {
+		return nil, planErr
 	}
 
 	if err := scope.Commit(); err != nil {
@@ -1209,25 +1513,152 @@ func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond pred
 		return nil, common.Internal("failed to commit transaction", err)
 	}
 
-	// --- Batch phase: each chunk runs in its own owned transaction. ---
-	for start := 0; start < len(targets); start += batchSize {
-		// Generic cancellation check between batches (spec D9) — fires on
-		// ANY ctx cancellation, not only our own feature deadline. Earlier
-		// batches already committed and stay durable (fail-closed applies to
-		// the RESPONSE, not to work already done); this only stops further
-		// batches from starting.
+	result := &DeleteResult{
+		EntityModelID: deterministicModelID(ref).String(),
+		IDToError:     map[string]string{},
+		IDs:           []string{},
+	}
+
+	if pointInTime != nil {
+		targets, err := h.resolveBatchTargetsOnePass(ctx, entityStore, iterableStore, ref, plan, pointInTime, verbose, result)
+		if err != nil {
+			return nil, err
+		}
+		for start := 0; start < len(targets); start += batchSize {
+			// Generic cancellation check between batches (spec D9) — fires
+			// on ANY ctx cancellation, not only our own feature deadline.
+			// Earlier batches already committed and stay durable
+			// (fail-closed applies to the RESPONSE, not to work already
+			// done); this only stops further batches from starting.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, fmt.Errorf("delete aborted between batches: %w", ctxErr)
+			}
+			end := min(start+batchSize, len(targets))
+			if err := h.deleteOneBatch(ctx, targets[start:end], result); err != nil {
+				// Only a begin failure reaches here — a batch's per-id or
+				// commit failures are folded into result.IDToError inside
+				// deleteOneBatch so later batches still run.
+				return nil, err
+			}
+		}
+		return result, nil
+	}
+
+	// --- Streamed batch phase (pointInTime == nil): see the function doc
+	// comment for why this shrinks on its own without an upfront resolve. ---
+	//
+	// Read amplification: every cycle re-opens Iterate from offset zero with
+	// no cursor, so selection costs O(cycles x scan). On a pushdown-capable
+	// backend the scan is filtered server-side and each cycle only pays for
+	// the still-matching rows, which shrink as the delete progresses. On the
+	// untranslatable-condition plan (plan.filter zero-valued, the residual
+	// applied client-side by plan.matches) there is nothing to push down and
+	// every cycle rescans the whole model — quadratic in the match count.
+	// Accepted deliberately: a cursor would have to be stable across the
+	// deletes it is interleaved with, which the spi.Iterable contract does
+	// not offer.
+	//
+	// cycleBudget is the termination guarantee. `seen` only remembers ids
+	// whose delete FAILED, so the loop's own exit condition — a cycle that
+	// yields no new id — is never reached while entities matching the
+	// condition keep being created. Left unbounded, such a request runs
+	// forever, growing MatchedCount and result.IDs without limit, with
+	// nothing but a client-supplied deadline to stop it.
+	seen := make(map[string]struct{})
+	cycleBudget := h.deleteCycleBudget()
+	for cycles := 0; ; cycles++ {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, fmt.Errorf("delete aborted between batches: %w", ctxErr)
 		}
-		end := min(start+batchSize, len(targets))
-		if err := h.deleteOneBatch(ctx, targets[start:end], result); err != nil {
-			// Only a begin failure reaches here — a batch's per-id or commit
-			// failures are folded into result.IDToError inside deleteOneBatch
-			// so later batches still run.
+		if cycles >= cycleBudget {
+			// Fail closed: earlier batches committed and stay durable, but
+			// the RESPONSE must not describe a partial pass as the complete
+			// requested set. Retryable — the condition clears as soon as the
+			// concurrent writers stop.
+			return nil, common.Operational(http.StatusConflict, common.ErrCodeDeleteNotConverged,
+				fmt.Sprintf("delete did not converge after %d batches: entities matching the condition are being created "+
+					"as fast as they are removed; stop the concurrent writers, narrow the condition, or retry", cycleBudget),
+			).AsRetryable()
+		}
+
+		it, iterErr := iterableStore.Iterate(ctx, ref, plan.filter, spi.IterateOptions{})
+		if iterErr != nil {
+			return nil, common.Internal("failed to select entities for delete", iterErr)
+		}
+		var (
+			chunk         []batchTarget
+			scanExhausted = true
+			scanErr       error
+		)
+		func() {
+			defer func() {
+				// Close()'s own error is fatal here, not merely logged: for
+				// database/sql-backed iterators (e.g. sqliteIter), Close()
+				// returns rows.Close()'s error and that error is NOT folded
+				// into Rows.Err() — so it.Err() alone can stay nil while a
+				// mid-scan driver error truncated this batch's selection.
+				// Treating Close's error as advisory would let deleteBatched
+				// report success for a partial batch, indistinguishable from
+				// a complete one.
+				if closeErr := it.Close(); closeErr != nil {
+					slog.Warn("failed to close delete-selection iterator", "pkg", "entity", "err", closeErr)
+					scanErr = closeErr
+				}
+				if errErr := it.Err(); errErr != nil {
+					scanErr = errErr
+				}
+			}()
+			for it.Next() {
+				e := it.Entity()
+				if !plan.matches(e) {
+					continue
+				}
+				id := e.Meta.ID
+				if _, dup := seen[id]; dup {
+					continue
+				}
+				chunk = append(chunk, batchTarget{id: id, baselineVersion: e.Meta.Version})
+				if len(chunk) == batchSize {
+					// More MIGHT remain beyond this exact-batchSize pull —
+					// one more cycle confirms either way. A short pull
+					// below (chunk < batchSize) instead proves the scan
+					// itself ran out, so that extra confirming cycle is
+					// unnecessary — see scanExhausted's use below.
+					scanExhausted = false
+					return
+				}
+			}
+		}()
+		if scanErr != nil {
+			return nil, common.Internal("failed to select entities for delete", scanErr)
+		}
+		if len(chunk) == 0 {
+			break
+		}
+
+		if verbose {
+			for _, t := range chunk {
+				result.IDs = append(result.IDs, t.id)
+			}
+		}
+		result.MatchedCount += len(chunk)
+
+		if err := h.deleteOneBatch(ctx, chunk, result); err != nil {
 			return nil, err
 		}
-	}
+		// Only ids THIS batch failed to remove need remembering: a
+		// successfully deleted id is gone and can never resurface in a
+		// later cycle's re-scan.
+		for _, t := range chunk {
+			if _, failed := result.IDToError[t.id]; failed {
+				seen[t.id] = struct{}{}
+			}
+		}
 
+		if scanExhausted {
+			break
+		}
+	}
 	return result, nil
 }
 
@@ -1333,15 +1764,16 @@ func (h *Handler) deleteOneBatch(ctx context.Context, chunk []batchTarget, resul
 	return nil
 }
 
-// ListEntities retrieves all entities for a model with pagination.
-// When pointInTime is non-nil the read is issued against the as-at snapshot
-// via GetAllAsAt, and meta.pointInTime is stamped on every envelope.
+// ListEntities pages entities for a model at the store via
+// spi.EntityStore.GetPage rather than materialising the whole model. When
+// pointInTime is non-nil, GetPage's asAt branch reads the committed-only
+// as-at snapshot instead of the live/in-tx view, and meta.pointInTime is
+// stamped on every envelope.
 func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVersion string, page PaginationParams, pointInTime *time.Time) ([]EntityEnvelope, error) {
 	// Defense-in-depth: HTTP and gRPC handlers SHOULD validate before
-	// reaching the service, but enforce the same caps here so the
-	// `start := int(PageNumber * PageSize)` multiplication below cannot
-	// be reached with attacker-supplied values that overflow on 32-bit
-	// platforms or yield negative slice indices.
+	// reaching the service, but enforce the same caps here so the offset
+	// computed below cannot be reached with attacker-supplied values that
+	// overflow on 32-bit platforms or yield a negative GetPage offset.
 	if appErr := pagination.ValidateOffset(int64(page.PageNumber), int64(page.PageSize)); appErr != nil {
 		return nil, appErr
 	}
@@ -1364,35 +1796,22 @@ func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVers
 		return nil, appErr
 	}
 
+	// GetPage requires limit >= 1 (a contract violation is a store-level
+	// error, not an empty page). ValidateOffset above accepts pageSize==0
+	// — it rejects only negative sizes — so a caller-supplied pageSize of
+	// 0 is short-circuited to an empty page here, matching the pre-GetPage
+	// behaviour (entities[start:start] was always empty) without handing
+	// the store a limit it must reject.
 	var entities []*spi.Entity
-	if pointInTime != nil {
-		entities, err = entityStore.GetAllAsAt(ctx, ref, *pointInTime)
-	} else {
-		entities, err = entityStore.GetAll(ctx, ref)
-	}
-	if err != nil {
-		return nil, common.Internal("failed to get entities", err)
+	if page.PageSize > 0 {
+		entities, err = entityStore.GetPage(ctx, ref, int(page.PageSize), int(page.PageNumber)*int(page.PageSize), pointInTime)
+		if err != nil {
+			return nil, common.Internal("failed to get entities", err)
+		}
 	}
 
-	// Sort by entity ID for deterministic pagination
-	sort.Slice(entities, func(i, j int) bool {
-		return entities[i].Meta.ID < entities[j].Meta.ID
-	})
-
-	// Apply pagination — caps above guarantee start/end are non-negative
-	// and within int range.
-	start := int(page.PageNumber) * int(page.PageSize)
-	if start > len(entities) {
-		start = len(entities)
-	}
-	end := start + int(page.PageSize)
-	if end > len(entities) {
-		end = len(entities)
-	}
-	pageSlice := entities[start:end]
-
-	result := make([]EntityEnvelope, 0, len(pageSlice))
-	for _, ent := range pageSlice {
+	result := make([]EntityEnvelope, 0, len(entities))
+	for _, ent := range entities {
 		var data any
 		if err := ingest.DecodeStoredJSON(ent.Data, &data); err != nil {
 			return nil, common.Internal("failed to parse entity data", err)

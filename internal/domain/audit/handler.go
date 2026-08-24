@@ -52,7 +52,24 @@ func (h *Handler) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	versions, err := store.GetVersionHistory(ctx, entityId.String())
+	// Push the request's time window down to the store rather than fetching
+	// the whole history and relying solely on the post-merge in-memory
+	// filter below. The in-memory From/To filter still runs afterward
+	// (unchanged) because it also has to cover StateMachine events, which
+	// this store call cannot bound — GetVersionMetadata only ever sees the
+	// EntityChange side of the merge. It also stays load-bearing for a
+	// subtler reason: spi.VersionMetadataOptions.Until is documented
+	// INCLUSIVE, while this endpoint's toUtcTime contract is
+	// EXCLUSIVE-upper — dropping the in-memory filter would silently flip
+	// an event stamped exactly at toUtcTime from excluded to included.
+	opts := spi.VersionMetadataOptions{}
+	if params.FromUtcTime != nil {
+		opts.From = params.FromUtcTime
+	}
+	if params.ToUtcTime != nil {
+		opts.Until = params.ToUtcTime
+	}
+	versions, err := store.GetVersionMetadata(ctx, entityId.String(), opts)
 	if err != nil {
 		if errors.Is(err, spi.ErrNotFound) {
 			common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, "entity not found"))
@@ -71,6 +88,7 @@ func (h *Handler) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request
 
 	// EntityChange events from version history.
 	if includeEntityChange {
+		callerTenant := common.TenantFromContext(ctx)
 		for _, v := range versions {
 			event := map[string]any{
 				"auditEventType": "EntityChange",
@@ -79,20 +97,18 @@ func (h *Handler) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request
 				"utcTime":        v.Timestamp.UTC().Format(time.RFC3339Nano),
 				"microsTime":     v.Timestamp.UnixMicro(),
 				"system":         false,
+				"entityId":       entityId.String(),
 			}
-			if v.Entity != nil {
-				event["entityId"] = v.Entity.Meta.ID
-				if v.Entity.Meta.TransactionID != "" {
-					event["transactionId"] = v.Entity.Meta.TransactionID
-				}
+			if v.TransactionID != "" {
+				event["transactionId"] = v.TransactionID
 			}
 			if v.User != "" {
 				actor := map[string]any{
 					"id":   v.User,
 					"name": v.User,
 				}
-				if v.Entity != nil {
-					actor["legalId"] = string(v.Entity.Meta.TenantID)
+				if callerTenant != "" {
+					actor["legalId"] = callerTenant
 				}
 				event["actor"] = actor
 			}

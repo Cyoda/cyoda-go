@@ -73,8 +73,16 @@ var canonicalOperators = map[string]struct{}{
 }
 
 // ValidateCondition walks a parsed condition tree and returns an error
-// identifying any unknown operator. The returned error text lists the
-// canonical set so callers can self-correct.
+// identifying any unknown operator, malformed operand shape/arity, or
+// jsonPath that is not JSON Path nomenclature. The returned error text lists
+// the canonical set (operators) or the offending path and reason so callers
+// can self-correct.
+//
+// A jsonPath failure wraps [ErrInvalidFieldPath] — see
+// [ValidateConditionJSONPath] for the grammar and for why array-subscripted
+// paths are deliberately accepted here. Callers classify it via
+// [StructuralConditionErrCode], which maps it to
+// INVALID_FIELD_PATH rather than the coarser INVALID_CONDITION/BAD_REQUEST.
 func ValidateCondition(cond predicate.Condition) error {
 	return validateConditionAtDepth(cond, 0)
 }
@@ -88,6 +96,9 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 	}
 	switch c := cond.(type) {
 	case *predicate.SimpleCondition:
+		if err := ValidateConditionJSONPath(c.JsonPath); err != nil {
+			return err
+		}
 		if err := validateOperator(c.OperatorType); err != nil {
 			return err
 		}
@@ -105,9 +116,10 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 		return validateBetweenArity(c.OperatorType, c.Value)
 	case *predicate.ArrayCondition:
 		// ArrayCondition doesn't carry an operator — each positional value
-		// becomes an equality check in arrayToFilter. Nothing to validate.
-		_ = c
-		return nil
+		// becomes an equality check in arrayToFilter. Its jsonPath goes through
+		// the same wire grammar as a SimpleCondition's (arrayToFilter strips the
+		// leader with the identical helper), so it is validated identically.
+		return ValidateConditionJSONPath(c.JsonPath)
 	case *predicate.GroupCondition:
 		// A group operator other than exactly "AND"/"OR" previously cleared
 		// validation and then behaved differently depending on which

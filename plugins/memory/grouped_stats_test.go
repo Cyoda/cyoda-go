@@ -371,7 +371,11 @@ func TestMemoryGroupedAggregate_CardinalityExceeded(t *testing.T) {
 
 func TestMemoryGroupedAggregate_DataPathGrouping(t *testing.T) {
 	_, store, ctx := gsNewStore(t)
-	// Group by data path "$.region" with mixed scalar types.
+	// Group by data path "region" with mixed scalar types. The path is BARE:
+	// the service layer strips the wire form's "$." before any plugin sees it
+	// (grouped_stats_service.go translateGroupBy) and re-decorates the
+	// response path from the request afterwards (restoreJSONPathPrefix), so
+	// the plugin's echo is never what the caller reads.
 	gsSave(t, ctx, store, "e-1", "available", map[string]any{"region": "us-east"})
 	gsSave(t, ctx, store, "e-2", "available", map[string]any{"region": "us-east"})
 	gsSave(t, ctx, store, "e-3", "available", map[string]any{"region": "eu-west"})
@@ -380,7 +384,7 @@ func TestMemoryGroupedAggregate_DataPathGrouping(t *testing.T) {
 
 	ga := store.(spi.GroupedAggregator)
 	res, err := ga.GroupedAggregate(ctx, gsModel,
-		[]spi.GroupExpr{{Kind: spi.GroupExprDataPath, Path: "$.region"}},
+		[]spi.GroupExpr{{Kind: spi.GroupExprDataPath, Path: "region"}},
 		spi.Filter{},
 		spi.GroupedAggregationsOptions{MaxBuckets: 10},
 	)
@@ -390,8 +394,8 @@ func TestMemoryGroupedAggregate_DataPathGrouping(t *testing.T) {
 	counts := map[any]int64{}
 	for _, b := range res {
 		counts[b.GroupKey[0].Value] = b.Count
-		if b.GroupKey[0].Path != "$.region" {
-			t.Errorf("group key path = %q; want $.region", b.GroupKey[0].Path)
+		if b.GroupKey[0].Path != "region" {
+			t.Errorf("group key path = %q; want region", b.GroupKey[0].Path)
 		}
 	}
 	if counts["us-east"] != 2 {

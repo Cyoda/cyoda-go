@@ -29,6 +29,17 @@ conflict-detection state and silently corrupt each other.
 `flock` does not work on NFS, but SQLite itself is unreliable on NFS,
 so the restriction is implicit in choosing SQLite at all.
 
+Reads run on a second connection pool, separate from the writer. The
+writer holds a single connection (SQLite is single-writer); the reader
+pool defaults to `GOMAXPROCS` clamped to 4..8 and is tunable via
+`CYODA_SQLITE_READER_POOL_SIZE` — see the operational notes below for
+why a memory-constrained container should lower it. WAL
+journal mode is what makes this safe — readers run concurrently with
+each other and with the writer. Without the split, one long streaming
+scan holding its cursor open would block every concurrent write and
+every interactive read behind it. WAL is therefore a hard requirement,
+not a tuning choice.
+
 ## Transaction manager
 
 Application-layer SI+FCW `TransactionManager`; SQLite is the
@@ -53,6 +64,19 @@ Migrations via `golang-migrate` with embedded SQL files — same pattern
 as the postgres plugin. Runs automatically on startup when
 `CYODA_SQLITE_AUTO_MIGRATE=true` (the default).
 
+## Canonical entity-ID order
+
+`GetPage` (paged entity listing), the entity-ID tie-break under a
+user-field `OrderBy`, and an explicit entity-ID `OrderBy` all order by the
+sqlite plugin's canonical entity-ID order: **byte-wise ascending** — SQLite's
+default `BINARY` collation, which agrees with Go's native `<` string
+comparison. This order is stable and deterministic but is **not**
+guaranteed identical to another storage engine's canonical order — each
+in-house backend documents byte-wise ascending as its native behaviour, but
+a client that depends on cross-backend identical list order is relying on
+an accident, not a contract. See `docs/cloud-parity/` for the
+public-API-facing statement of this rule.
+
 ## Configuration (env vars)
 
 | Var | Default | Purpose |
@@ -60,7 +84,8 @@ as the postgres plugin. Runs automatically on startup when
 | `CYODA_SQLITE_PATH` | `$XDG_DATA_HOME/cyoda/cyoda.db` on Linux/macOS (fallback `~/.local/share/cyoda/cyoda.db`); `%LocalAppData%\cyoda\cyoda.db` on Windows | Database file path |
 | `CYODA_SQLITE_AUTO_MIGRATE` | `true` | Run embedded SQL migrations on startup |
 | `CYODA_SQLITE_BUSY_TIMEOUT` | `5s` | Wait time for write lock before returning `SQLITE_BUSY` |
-| `CYODA_SQLITE_CACHE_SIZE` | `64000` (KiB) | Page cache size in KiB |
+| `CYODA_SQLITE_CACHE_SIZE` | `64000` (KiB) | Page cache size in KiB, **per connection** (one writer plus the reader pool) |
+| `CYODA_SQLITE_READER_POOL_SIZE` | `GOMAXPROCS` clamped to `4`..`8` | Max concurrent reader connections. Minimum 1; a value below it falls back to the default |
 | `CYODA_SQLITE_SEARCH_SCAN_LIMIT` | `100000` | Max rows examined per search when a residual filter applies |
 
 ## Operational notes and limits
@@ -73,6 +98,15 @@ as the postgres plugin. Runs automatically on startup when
 - **Single-process, single-node.** See concurrency model for the flock
   requirement.
 - **NFS unsupported.**
+- **Reader connections cost memory and file handles.** `CYODA_SQLITE_CACHE_SIZE`
+  is a *per-connection* page cache, so peak page-cache use is
+  `(CYODA_SQLITE_READER_POOL_SIZE + 1) × CYODA_SQLITE_CACHE_SIZE` — the writer
+  holds one too. With the defaults on an 8-CPU host that is ≈ 562 MiB. The pool
+  size derives from `GOMAXPROCS`, which follows the CPU quota and is blind to the
+  memory limit, so a container generous on cores and tight on memory should lower
+  `CYODA_SQLITE_READER_POOL_SIZE` — not `CYODA_SQLITE_CACHE_SIZE`, which shrinks
+  the writer's cache along with the readers'. Idle reader connections are closed
+  after 5 minutes of inactivity, and the pool is read-only (`PRAGMA query_only`).
 
 ## When to use / when not to use
 

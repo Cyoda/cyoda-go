@@ -2,6 +2,7 @@ package memory_test
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -744,13 +745,13 @@ func TestCommitDeleteAttribution_StagerNotCommitter(t *testing.T) {
 		t.Fatalf("Commit failed: %v", err)
 	}
 
-	history, err := store.GetVersionHistory(rootCtx, "e-del")
+	metas, err := store.GetVersionMetadata(rootCtx, "e-del", spi.VersionMetadataOptions{})
 	if err != nil {
-		t.Fatalf("GetVersionHistory failed: %v", err)
+		t.Fatalf("GetVersionMetadata failed: %v", err)
 	}
-	tomb := history[len(history)-1]
+	tomb := metas[0]
 	if !tomb.Deleted {
-		t.Fatal("expected last version to be the DELETE tombstone")
+		t.Fatal("expected the newest version to be the DELETE tombstone")
 	}
 	if tomb.User != wantOrigin.ID {
 		t.Errorf("tombstone User = %q, want origin user %q", tomb.User, wantOrigin.ID)
@@ -801,13 +802,13 @@ func TestCommitFlushesDeletes_FallbackAttribution(t *testing.T) {
 		t.Fatalf("Commit failed: %v", err)
 	}
 
-	history, err := store.GetVersionHistory(ctx, "e-del-fallback")
+	metas, err := store.GetVersionMetadata(ctx, "e-del-fallback", spi.VersionMetadataOptions{})
 	if err != nil {
-		t.Fatalf("GetVersionHistory failed: %v", err)
+		t.Fatalf("GetVersionMetadata failed: %v", err)
 	}
-	tomb := history[len(history)-1]
+	tomb := metas[0]
 	if !tomb.Deleted {
-		t.Fatal("expected last version to be the DELETE tombstone")
+		t.Fatal("expected the newest version to be the DELETE tombstone")
 	}
 	want := spi.Principal{ID: "test-user", Kind: spi.PrincipalUser}
 	if tomb.User != want.ID {
@@ -815,5 +816,145 @@ func TestCommitFlushesDeletes_FallbackAttribution(t *testing.T) {
 	}
 	if tomb.Executor != want {
 		t.Errorf("tombstone Executor = %+v, want fallback %+v", tomb.Executor, want)
+	}
+}
+
+// gatedClock is a memory.Clock whose Now() call, once armed, blocks until
+// the test releases it via the returned unblock channel — signaling entry
+// first via the returned entered channel. It exists to deterministically
+// force a specific lock interleaving for TestBegin_SnapshotTimeAndSeqCapturedAtomically
+// rather than hoping a plain concurrent test happens to hit a
+// nanosecond-scale race (which review flagged as unreliable — see that
+// test's doc comment).
+type gatedClock struct {
+	mu      sync.Mutex
+	t       time.Time
+	armed   bool
+	entered chan struct{}
+	unblock chan struct{}
+}
+
+func newGatedClock(t time.Time) *gatedClock {
+	return &gatedClock{t: t}
+}
+
+func (c *gatedClock) Now() time.Time {
+	// IIFE so the lock releases via defer before the potentially-blocking
+	// <-unblock below — same pattern the go-mutex-discipline rule requires
+	// for early-release cases, fixed here for the same bare Lock/Unlock
+	// violation already fixed twice elsewhere on this branch.
+	armed, entered, unblock := func() (bool, chan struct{}, chan struct{}) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		armed := c.armed
+		c.armed = false
+		return armed, c.entered, c.unblock
+	}()
+	if armed {
+		close(entered)
+		<-unblock
+	}
+	return c.t
+}
+
+// arm gates exactly the NEXT Now() call: that call will close the returned
+// entered channel just before blocking on the returned unblock channel.
+// Every subsequent call (until arm is called again) returns immediately.
+func (c *gatedClock) arm() (entered, unblock chan struct{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entered = make(chan struct{})
+	c.unblock = make(chan struct{})
+	c.armed = true
+	return c.entered, c.unblock
+}
+
+// TestBegin_SnapshotTimeAndSeqCapturedAtomically pins, by construction, the
+// fix-round-1 CRITICAL finding: Begin must capture SnapshotTime and
+// txSnapshotSeq in the SAME mu critical section — not as two reads from
+// separate sections, and not with the clock read taken outside mu. If they
+// were captured separately, a concurrent Commit could interleave between
+// the two reads: it could be excluded from a later FCW check (its seq
+// already counted in txSnapshotSeq) while its submitTime is chronologically
+// AFTER SnapshotTime (so its write is invisible to this tx's reads) — a
+// silently missed conflict, i.e. failing open.
+//
+// This interleaving is nanosecond-scale in real execution and cannot be
+// reliably forced by ordinary goroutine scheduling — a test that just spawns
+// concurrent Begin/Commit calls and hopes to observe the gap would pass
+// whether or not the bug is present, which is not an honest test. Instead
+// this test forces the interleaving deterministically with a gated Clock:
+// while a Begin call is blocked INSIDE its clock read, a concurrent Commit
+// that needs mu for its own bookkeeping must ALSO be blocked if — and only
+// if — the clock read runs under the same lock as the rest of Begin's
+// mu-protected section. That is a structural property of the code, provable
+// without hitting any specific timing window: under the pre-fix code
+// (SnapshotTime read outside mu, txSnapshotSeq read in a later, separate mu
+// section), gating the clock call does NOT block mu at all, because Begin
+// has not yet reached its Lock() call — so the concurrent Commit below would
+// complete near-instantly and this test would fail.
+func TestBegin_SnapshotTimeAndSeqCapturedAtomically(t *testing.T) {
+	clk := newGatedClock(time.Now())
+	factory := memory.NewStoreFactory(memory.WithClock(clk))
+	ctx := ctxWithTenant("tenant-atomic")
+
+	tm, err := factory.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+
+	// An unrelated, already-open transaction B, committed later while A's
+	// Begin is gated. Its Commit needs mu in its final bookkeeping section
+	// regardless of write content, so an empty transaction is enough to
+	// exercise the mu contention this test is built around.
+	txIDB, txCtxB, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin(B) failed: %v", err)
+	}
+
+	entered, unblock := clk.arm()
+
+	g1Done := make(chan error, 1)
+	go func() {
+		_, _, err := tm.Begin(ctx)
+		g1Done <- err
+	}()
+
+	select {
+	case <-entered:
+		// Begin(A) is now inside its gated clock read.
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Begin(A) to enter the gated clock read")
+	}
+
+	g2Done := make(chan error, 1)
+	go func() {
+		g2Done <- tm.Commit(txCtxB, txIDB)
+	}()
+
+	// Commit(B) needs mu in its final bookkeeping section. If Begin(A)
+	// truly holds mu across its clock read (the fix), Commit(B) cannot
+	// finish until the gate below is released — assert it hasn't finished
+	// within a generous window. This is the one inherently timing-based
+	// step; the window (100ms) is far larger than any real mu hold time,
+	// so the only failure mode it risks is a false PASS on an extremely
+	// slow/loaded CI runner where Commit(B) simply hasn't been scheduled
+	// yet — never a false FAIL of a correct fix.
+	select {
+	case err := <-g2Done:
+		t.Fatalf("Commit(B) completed while Begin(A) was still inside its gated "+
+			"clock read (err=%v) — SnapshotTime and txSnapshotSeq are not being "+
+			"captured under the same mu critical section", err)
+	case <-time.After(100 * time.Millisecond):
+		// Expected: Commit(B) is blocked on mu, held by the gated Begin(A).
+	}
+
+	close(unblock)
+
+	if err := <-g1Done; err != nil {
+		t.Fatalf("Begin(A) failed: %v", err)
+	}
+	if err := <-g2Done; err != nil {
+		t.Fatalf("Commit(B) failed: %v", err)
 	}
 }

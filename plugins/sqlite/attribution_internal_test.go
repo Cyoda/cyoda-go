@@ -77,7 +77,7 @@ func TestTombstone_HasMetaBlobWithAttribution(t *testing.T) {
 
 // TestLegacyNullMetaTombstone_ReadsBackZeroValues verifies backward
 // compatibility: a tombstone row written before this change (meta = NULL,
-// per the old hardcoded insert) must still read back via GetVersionHistory
+// per the old hardcoded insert) must still read back via GetVersionMetadata
 // with a zero Executor and empty AttributedKind — never an error.
 func TestLegacyNullMetaTombstone_ReadsBackZeroValues(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "legacy-tombstone.db")
@@ -110,13 +110,13 @@ func TestLegacyNullMetaTombstone_ReadsBackZeroValues(t *testing.T) {
 		t.Fatalf("insert legacy tombstone row: %v", err)
 	}
 
-	history, err := store.GetVersionHistory(ctx, "e-legacy-1")
+	metas, err := store.GetVersionMetadata(ctx, "e-legacy-1", spi.VersionMetadataOptions{})
 	if err != nil {
-		t.Fatalf("GetVersionHistory failed: %v", err)
+		t.Fatalf("GetVersionMetadata failed: %v", err)
 	}
-	tomb := history[len(history)-1]
+	tomb := metas[0]
 	if !tomb.Deleted {
-		t.Fatalf("expected last version to be the legacy DELETE tombstone")
+		t.Fatalf("expected the newest version to be the legacy DELETE tombstone")
 	}
 	if tomb.AttributedKind != "" {
 		t.Errorf("legacy tombstone AttributedKind = %q, want empty (zero value)", tomb.AttributedKind)

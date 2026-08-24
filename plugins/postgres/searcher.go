@@ -17,16 +17,19 @@ var _ spi.Searcher = (*entityStore)(nil)
 // predicates go into the SQL WHERE via planQuery; the residual (regex /
 // case-insensitive ops) is evaluated in Go by postgresIter/evalPostFilter.
 //
-// Bounding: Search is bounded-or-fail. opts.Limit > 0 is a cap on the matched
-// set, not a page size — a matched set larger than Limit is
+// Bounding: Search is bounded-or-fail. opts.Limit >= 1 is REQUIRED: it is a
+// cap on the matched set, not a page size. A matched set larger than Limit is
 // spi.ErrSearchResultLimitExceeded, never a truncated prefix; exactly-at-limit
-// succeeds. opts.Limit <= 0 is unbounded and must never raise; no default is
-// substituted for it. When there is no residual, the bound is pushed into SQL
-// as "LIMIT limit+1": the extra row, if returned, is the proof that the
-// matched set does not fit, which Search reports instead of truncating to
-// limit. With a residual, rows are streamed and post-filtered in Go, and
-// Search raises the moment the running count exceeds Limit — there is no page
-// to gather, so it stops as soon as the matched set is known not to fit.
+// succeeds. opts.Limit <= 0 is a contract violation — Search returns an error
+// rather than treating it as "unbounded" or substituting a default of its own
+// (see spi.Searcher's doc comment; the engine resolves the direct-search
+// default before calling, so Search itself never needs to guess a bound).
+// When there is no residual, the bound is pushed into SQL as "LIMIT limit+1":
+// the extra row, if returned, is the proof that the matched set does not fit,
+// which Search reports instead of truncating to limit. With a residual, rows
+// are streamed and post-filtered in Go, and Search raises the moment the
+// running count exceeds Limit — there is no page to gather, so it stops as
+// soon as the matched set is known not to fit.
 //
 // No scan budget (unlike sqlite): the production engine streams in SQL order
 // and bounds memory via the limit+1 probe / early-raise above. An unbounded
@@ -48,6 +51,9 @@ var _ spi.Searcher = (*entityStore)(nil)
 // The one tx-specific behaviour Search adds over the committed pushdown
 // is read-set recording — see the TrackingRead block at the end of the function.
 func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+	if opts.Limit <= 0 {
+		return nil, fmt.Errorf("search: limit must be >= 1, got %d", opts.Limit)
+	}
 	if err := validateFilterPaths(filter); err != nil {
 		return nil, err
 	}
@@ -98,9 +104,18 @@ func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 // see, losing read-your-own-writes and holding a second pooled connection. An
 // async job never runs in a transaction, so this is a guard, not a branch the
 // production path takes.
+//
+// A point-in-time search is the other exception, and the opposite one: it is
+// committed-only, so it deliberately runs OFF any ambient transaction, through
+// committedQuerier (search_base.go). The ceiling branch above already satisfies
+// that by construction — it opens a transaction of its own — so the routing only
+// needs stating on the ordinary path.
 func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
 	if ceiling, ok := searchScanCeiling(ctx); ok && s.pool != nil && spi.GetTransaction(ctx) == nil {
 		return s.searchUnderOwnCeiling(ctx, ceiling, filter, opts)
+	}
+	if opts.PointInTime != nil {
+		return s.runSearch(ctx, s.committedQuerier(), filter, opts)
 	}
 	return s.runSearch(ctx, s.q, filter, opts)
 }
@@ -187,6 +202,10 @@ func (s *entityStore) classifyScanError(err error) error {
 // moment the running count exceeds the bound. With the context-resolving
 // Querier, inside a transaction it observes the tx's own writes
 // (read-your-own-writes) natively; outside a transaction it reads committed data.
+//
+// opts.Limit is guaranteed >= 1 here — Search rejects Limit <= 0 before
+// runSearch is ever reached, so the LIMIT pushdown and the overflow checks
+// below are unconditional.
 func (s *entityStore) runSearch(ctx context.Context, q Querier, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
 	// Zero-value Filter means "match all" — skip planQuery (it would treat the
 	// empty Op as non-pushable and install the zero filter as a residual).
@@ -203,12 +222,12 @@ func (s *entityStore) runSearch(ctx context.Context, q Querier, filter spi.Filte
 		baseArgs = append(baseArgs, plan.args...)
 	}
 
-	baseQuery += orderByClause(opts)
+	baseQuery += orderByClause(opts.OrderBy)
 
 	// No residual → push the bound into SQL. Ask for limit+1: the extra row is
 	// the proof that the matched set does not fit, which bounded-or-fail must
 	// report instead of truncating to limit.
-	if plan.postFilter == nil && opts.Limit > 0 {
+	if plan.postFilter == nil {
 		baseQuery += fmt.Sprintf(" LIMIT $%d", len(baseArgs)+1)
 		baseArgs = append(baseArgs, opts.Limit+1)
 	}
@@ -230,7 +249,7 @@ func (s *entityStore) runSearch(ctx context.Context, q Querier, filter spi.Filte
 		if err := it.Err(); err != nil {
 			return nil, err
 		}
-		if opts.Limit > 0 && len(results) > opts.Limit {
+		if len(results) > opts.Limit {
 			return nil, fmt.Errorf("search: more than %d matches: %w", opts.Limit, spi.ErrSearchResultLimitExceeded)
 		}
 		return results, nil
@@ -240,7 +259,7 @@ func (s *entityStore) runSearch(ctx context.Context, q Querier, filter spi.Filte
 	// moment the matched set is known not to fit — there is no page to gather.
 	for it.Next() {
 		results = append(results, it.Entity())
-		if opts.Limit > 0 && len(results) > opts.Limit {
+		if len(results) > opts.Limit {
 			return nil, fmt.Errorf("search: more than %d matches: %w", opts.Limit, spi.ErrSearchResultLimitExceeded)
 		}
 	}
@@ -263,9 +282,15 @@ var metaJSONKey = map[string]string{
 	"transactionId":           "transaction_id",
 }
 
-// orderByClause builds the SQL ORDER BY from opts.OrderBy.
+// orderByClause builds the SQL ORDER BY from order. Shared by Search
+// (SearchOptions.OrderBy) and Iterate (IterateOptions.OrderBy) — both fields
+// are the same []spi.OrderSpec type.
 //
 //   - Empty → default `ORDER BY entity_id COLLATE "C"` (unique, deterministic).
+//     For Search this is the documented canonical default; for Iterate an
+//     empty OrderBy means "unspecified" per the Iterable doc, and a
+//     deterministic order is a conformant (if stronger-than-required) choice
+//     within "unspecified".
 //   - Every key gets NULLS LAST so absent/null values sort after real values
 //     regardless of ASC/DESC.
 //   - An entity_id tiebreaker is appended unless the terminal key already
@@ -279,14 +304,14 @@ var metaJSONKey = map[string]string{
 // entity_id and other bare column names resolve against the entities table
 // (current-state) or the `latest` derived table (point-in-time), both of
 // which expose entity_id in their outer SELECT.
-func orderByClause(opts spi.SearchOptions) string {
-	if len(opts.OrderBy) == 0 {
+func orderByClause(order []spi.OrderSpec) string {
+	if len(order) == 0 {
 		// COLLATE "C": byte-order semantics, consistent with @id sort key and
 		// sqlite/memory paths; guards against nondeterministic ICU DB collation.
 		return ` ORDER BY entity_id COLLATE "C"`
 	}
-	clauses := make([]string, 0, len(opts.OrderBy)+1)
-	for _, spec := range opts.OrderBy {
+	clauses := make([]string, 0, len(order)+1)
+	for _, spec := range order {
 		expr := orderByFieldExpr(spec)
 		if spec.Desc {
 			expr += " DESC"
@@ -296,7 +321,7 @@ func orderByClause(opts spi.SearchOptions) string {
 	// Append entity_id tiebreaker unless the last spec already IS entity_id.
 	// COLLATE "C": byte-order semantics consistent with @id sort key and
 	// sqlite/memory paths; guards against nondeterministic ICU DB collation.
-	if last := opts.OrderBy[len(opts.OrderBy)-1]; !(last.Source == spi.SourceMeta && last.Path == "id") {
+	if last := order[len(order)-1]; !(last.Source == spi.SourceMeta && last.Path == "id") {
 		clauses = append(clauses, `entity_id COLLATE "C"`)
 	}
 	return " ORDER BY " + strings.Join(clauses, ", ")

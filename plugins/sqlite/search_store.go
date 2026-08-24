@@ -4,13 +4,25 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"iter"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 type asyncSearchStore struct {
-	db    *sql.DB
+	// db is the writer pool — SetMaxOpenConns(1). Every write in this file
+	// runs on it, as do the short single-row job reads (GetJob, the fence
+	// probes, ClaimStale's post-claim re-read), which check a connection out
+	// only for the duration of one statement.
+	db *sql.DB
+
+	// readDB is the dedicated reader pool, used by GetResultIDs alone: it is
+	// the one read here that holds its connection across a caller-controlled
+	// number of rows. See GetResultIDs for why that must not be the writer's
+	// sole connection.
+	readDB *sql.DB
+
 	clock Clock
 }
 
@@ -43,6 +55,10 @@ func (s *asyncSearchStore) CreateJob(ctx context.Context, job *spi.SearchJob) er
 		finishMicro = &v
 	}
 
+	// epoch is deliberately not in the column list: the schema's
+	// `DEFAULT 1` supplies it, so CreateJob always persists 1 regardless
+	// of the value the caller set on job.Epoch. heartbeat_time is
+	// likewise omitted — it defaults to NULL (never stamped).
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO search_jobs
 		 (tenant_id, job_id, status, model_name, model_version, condition, point_in_time, search_opts, result_count, error, create_time, finish_time, calc_time_ms)
@@ -58,21 +74,27 @@ func (s *asyncSearchStore) CreateJob(ctx context.Context, job *spi.SearchJob) er
 	return nil
 }
 
+// searchJobColumns is the column list shared by every full-row read of
+// search_jobs (GetJob and ClaimStale's post-claim re-read), so the scan
+// order in scanSearchJob only has to be kept in step with one place.
+const searchJobColumns = `job_id, tenant_id, status, model_name, model_version,
+	        condition, point_in_time, search_opts, result_count,
+	        error, create_time, finish_time, calc_time_ms,
+	        heartbeat_time, epoch`
+
 func (s *asyncSearchStore) GetJob(ctx context.Context, jobID string) (*spi.SearchJob, error) {
 	tid, err := s.tenant(ctx)
 	if err != nil {
 		return nil, err
 	}
 	row := s.db.QueryRowContext(ctx,
-		`SELECT job_id, tenant_id, status, model_name, model_version,
-		        condition, point_in_time, search_opts, result_count,
-		        error, create_time, finish_time, calc_time_ms
+		`SELECT `+searchJobColumns+`
 		 FROM search_jobs WHERE tenant_id = ? AND job_id = ?`,
 		string(tid), jobID)
 	return scanSearchJob(row)
 }
 
-func (s *asyncSearchStore) UpdateJobStatus(ctx context.Context, jobID string, status string, resultCount int, errMsg string, finishTime time.Time, calcTimeMs int64) error {
+func (s *asyncSearchStore) UpdateJobStatus(ctx context.Context, jobID string, epoch int64, status string, resultCount int, errMsg string, finishTime time.Time, calcTimeMs int64) error {
 	tid, err := s.tenant(ctx)
 	if err != nil {
 		return err
@@ -84,93 +106,151 @@ func (s *asyncSearchStore) UpdateJobStatus(ctx context.Context, jobID string, st
 		finishMicro = &v
 	}
 
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE search_jobs SET status = ?, result_count = ?, error = ?, finish_time = ?, calc_time_ms = ?
-		 WHERE tenant_id = ? AND job_id = ?`,
-		status, resultCount, errMsg, finishMicro, calcTimeMs,
-		string(tid), jobID)
-	if err != nil {
-		return fmt.Errorf("failed to update search job %s: %w", jobID, err)
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return fmt.Errorf("search job %q not found", jobID)
-	}
-	return nil
+	return fencedUpdate(ctx, s.db, tid, jobID, epoch,
+		"status = ?, result_count = ?, error = ?, finish_time = ?, calc_time_ms = ?",
+		status, resultCount, errMsg, finishMicro, calcTimeMs)
 }
 
-func (s *asyncSearchStore) SaveResults(ctx context.Context, jobID string, entityIDs []string) error {
+// searchResultsChunkSize bounds each SaveResults write-tx so a large result
+// set is streamed in bounded-size commits rather than one unbounded
+// transaction.
+const searchResultsChunkSize = 500
+
+func (s *asyncSearchStore) SaveResults(ctx context.Context, jobID string, epoch int64, entityIDs iter.Seq[string]) error {
 	tid, err := s.tenant(ctx)
 	if err != nil {
 		return err
 	}
 
-	var exists bool
-	err = s.db.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM search_jobs WHERE tenant_id = ? AND job_id = ?)`,
-		string(tid), jobID).Scan(&exists)
-	if err != nil {
-		return fmt.Errorf("failed to verify job ownership: %w", err)
-	}
-	if !exists {
-		return fmt.Errorf("search job %q not found", jobID)
-	}
+	// seq is a running in-call counter, not read back from the DB: rows
+	// are always empty at the start of a claim epoch (ClearResults runs
+	// before a reclaimed job's writer resumes), so starting at 0 every
+	// call never collides with a prior epoch's rows.
+	seq := 0
+	chunk := make([]string, 0, searchResultsChunkSize)
 
-	if len(entityIDs) == 0 {
+	flush := func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		if len(chunk) == 0 {
+			// Nothing to insert, but the fence still runs: a missing,
+			// terminal, or stale-epoch job must fail even against an empty
+			// result set — a search matching zero rows is an ordinary
+			// outcome, and the AsyncSearchStore contract fences on epoch and
+			// terminal status regardless of payload. No transaction is
+			// needed with no rows to make the fence atomic with.
+			return fencedUpdate(ctx, s.db, tid, jobID, epoch, "epoch = epoch")
+		}
+
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("failed to begin tx for saving results of job %s: %w", jobID, err)
+		}
+		defer tx.Rollback()
+
+		// Fence before writing anything: a no-op SET so the shared
+		// conditional-write+probe shape stays uniform across every
+		// fenced write, with no side effect of its own.
+		if err := fencedUpdate(ctx, tx, tid, jobID, epoch, "epoch = epoch"); err != nil {
+			return err
+		}
+
+		stmt, err := tx.PrepareContext(ctx,
+			`INSERT INTO search_job_results (tenant_id, job_id, seq, entity_id) VALUES (?, ?, ?, ?)`)
+		if err != nil {
+			return fmt.Errorf("failed to prepare insert statement for job %s: %w", jobID, err)
+		}
+		defer stmt.Close()
+
+		for _, eid := range chunk {
+			if _, err := stmt.ExecContext(ctx, string(tid), jobID, seq, eid); err != nil {
+				return fmt.Errorf("failed to save result %d for job %s: %w", seq, jobID, err)
+			}
+			seq++
+		}
+
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("failed to commit results chunk for job %s: %w", jobID, err)
+		}
+		chunk = chunk[:0]
 		return nil
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin tx for saving results: %w", err)
+	// Fence before draining entityIDs so a reclaimed, terminal, or missing
+	// job fails immediately instead of after the caller's whole scan has
+	// been consumed. Mirrors the memory backend's guardAndAppend(nil)
+	// preflight; the trailing flush() below re-fences, so a claim lost
+	// mid-stream is caught too.
+	if err := fencedUpdate(ctx, s.db, tid, jobID, epoch, "epoch = epoch"); err != nil {
+		return err
 	}
-	defer tx.Rollback()
 
-	stmt, err := tx.PrepareContext(ctx,
-		`INSERT INTO search_job_results (tenant_id, job_id, seq, entity_id) VALUES (?, ?, ?, ?)`)
-	if err != nil {
-		return fmt.Errorf("failed to prepare insert statement: %w", err)
-	}
-	defer stmt.Close()
-
-	for i, eid := range entityIDs {
-		if _, err := stmt.ExecContext(ctx, string(tid), jobID, i, eid); err != nil {
-			return fmt.Errorf("failed to save result %d for job %s: %w", i, jobID, err)
+	for eid := range entityIDs {
+		chunk = append(chunk, eid)
+		if len(chunk) == searchResultsChunkSize {
+			if err := flush(); err != nil {
+				return err
+			}
 		}
 	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit results for job %s: %w", jobID, err)
-	}
-	return nil
+	return flush()
 }
 
 func (s *asyncSearchStore) GetResultIDs(ctx context.Context, jobID string, offset, limit int) ([]string, int, error) {
+	if offset < 0 || limit < 1 {
+		return nil, 0, fmt.Errorf("invalid pagination: offset=%d limit=%d (offset must be >= 0, limit must be >= 1)", offset, limit)
+	}
+
 	tid, err := s.tenant(ctx)
 	if err != nil {
 		return nil, 0, err
 	}
 
+	// One read transaction for all three statements. Reading a non-terminal
+	// job is contract-supported, so a SaveResults chunk can commit at any
+	// moment; without a shared snapshot the count would describe a different
+	// state than the page returned alongside it. A read-only transaction is
+	// DEFERRED (per the driver's _txlock rules), so it takes no write lock —
+	// it just pins one WAL read snapshot for the duration. The memory
+	// backend gets the same property from a single RLock.
+	//
+	// On readDB, NOT the writer pool: holding one connection across all three
+	// statements means holding it for the whole page scan, whose size the
+	// caller picks (`limit` comes off the results request). The writer pool is
+	// capped at a single connection, so running this there would park the one
+	// connection every SaveResults commit, Heartbeat and entity write needs
+	// behind an arbitrarily long read — the starvation GetPage and the version
+	// reads were moved onto readDB to escape. WAL lets this snapshot coexist
+	// with a concurrent writer, so the consistency the transaction buys is
+	// unaffected by the move.
+	tx, err := s.readDB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to begin read tx for job %s: %w", jobID, err)
+	}
+	defer tx.Rollback()
+
 	var exists bool
-	err = s.db.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM search_jobs WHERE tenant_id = ? AND job_id = ?)`,
 		string(tid), jobID).Scan(&exists)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to check job existence: %w", err)
 	}
 	if !exists {
-		return nil, 0, fmt.Errorf("search job %q not found", jobID)
+		return nil, 0, fmt.Errorf("search job %q not found: %w", jobID, spi.ErrNotFound)
 	}
 
 	var total int
-	err = s.db.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM search_job_results WHERE tenant_id = ? AND job_id = ?`,
 		string(tid), jobID).Scan(&total)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to count results for job %s: %w", jobID, err)
 	}
 
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := tx.QueryContext(ctx,
 		`SELECT entity_id FROM search_job_results WHERE tenant_id = ? AND job_id = ? ORDER BY seq LIMIT ? OFFSET ?`,
 		string(tid), jobID, limit, offset)
 	if err != nil {
@@ -223,16 +303,16 @@ func (s *asyncSearchStore) DeleteJob(ctx context.Context, jobID string) error {
 	return tx.Commit()
 }
 
-func (s *asyncSearchStore) Cancel(ctx context.Context, jobID string) error {
+func (s *asyncSearchStore) Cancel(ctx context.Context, jobID string, finishTime time.Time) error {
 	tid, err := s.tenant(ctx)
 	if err != nil {
 		return err
 	}
 
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE search_jobs SET status = 'CANCELLED'
+		`UPDATE search_jobs SET status = 'CANCELLED', finish_time = ?
 		 WHERE tenant_id = ? AND job_id = ? AND status NOT IN ('SUCCESSFUL', 'FAILED', 'CANCELLED')`,
-		string(tid), jobID)
+		finishTime.UnixMicro(), string(tid), jobID)
 	if err != nil {
 		return fmt.Errorf("failed to cancel search job %s: %w", jobID, err)
 	}
@@ -290,20 +370,195 @@ func (s *asyncSearchStore) ReapExpired(ctx context.Context, ttl time.Duration) (
 	return int(n), nil
 }
 
-// scanSearchJob reads a single SearchJob from a *sql.Row.
+func (s *asyncSearchStore) Heartbeat(ctx context.Context, jobID string, epoch int64) error {
+	tid, err := s.tenant(ctx)
+	if err != nil {
+		return err
+	}
+
+	now := s.clock.Now().UnixMicro()
+	return fencedUpdate(ctx, s.db, tid, jobID, epoch, "heartbeat_time = ?", now)
+}
+
+// staleClaimCandidate is the shape of one row scanned from the ClaimStale
+// staleness scan, before the per-candidate CAS decides whether it was
+// actually won.
+type staleClaimCandidate struct {
+	tenantID string
+	jobID    string
+	epoch    int64
+}
+
+func (s *asyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Duration, limit int) ([]*spi.SearchJob, error) {
+	// "Up to limit jobs" has no meaning below 1, and passing it through would
+	// be actively unsafe here: SQLite defines `LIMIT -1` as UNBOUNDED, so a
+	// negative limit claims EVERY stale RUNNING job — epoch-bumping and so
+	// dispossessing every live executor in the cluster in one sweep. Rejected
+	// on all three backends alike, the same way GetResultIDs rejects limit < 1.
+	if limit < 1 {
+		return nil, fmt.Errorf("claim stale search jobs: limit must be >= 1, got %d", limit)
+	}
+
+	cutoffMicro := s.clock.Now().Add(-staleAfter).UnixMicro()
+
+	// Cross-tenant by design (search_store.go interface doc): a reclaim
+	// sweep runs on behalf of the whole cluster, not one tenant, so no
+	// tenant filter here — see spi.AsyncSearchStore.ClaimStale.
+	// ORDER BY create_time so a limit-capped sweep takes the OLDEST stale
+	// jobs, not an arbitrary subset — matching postgres's ORDER BY created_at.
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT tenant_id, job_id, epoch FROM search_jobs
+		 WHERE status = 'RUNNING' AND COALESCE(heartbeat_time, create_time) < ?
+		 ORDER BY create_time
+		 LIMIT ?`,
+		cutoffMicro, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan for stale search jobs: %w", err)
+	}
+
+	var candidates []staleClaimCandidate
+	for rows.Next() {
+		var c staleClaimCandidate
+		if err := rows.Scan(&c.tenantID, &c.jobID, &c.epoch); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("failed to scan stale search job row: %w", err)
+		}
+		candidates = append(candidates, c)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("row iteration error scanning stale search jobs: %w", err)
+	}
+	rows.Close()
+
+	// Rows must be fully drained and closed above before any further
+	// query runs against s.db: the sqlite factory pins the connection
+	// pool to a single connection, so an open *Rows on this goroutine
+	// would otherwise deadlock the CAS updates below.
+	now := s.clock.Now().UnixMicro()
+	var claimed []*spi.SearchJob
+	for _, c := range candidates {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		res, err := s.db.ExecContext(ctx,
+			`UPDATE search_jobs SET epoch = epoch + 1, heartbeat_time = ?
+			 WHERE tenant_id = ? AND job_id = ? AND epoch = ? AND status = 'RUNNING'`,
+			now, c.tenantID, c.jobID, c.epoch)
+		if err != nil {
+			return nil, fmt.Errorf("failed to claim search job %s: %w", c.jobID, err)
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			// Lost the CAS: another claimer (or a status change) got
+			// there first. Not our job to claim.
+			continue
+		}
+
+		row := s.db.QueryRowContext(ctx,
+			`SELECT `+searchJobColumns+`
+			 FROM search_jobs WHERE tenant_id = ? AND job_id = ?`,
+			c.tenantID, c.jobID)
+		job, err := scanSearchJob(row)
+		if err != nil {
+			return nil, fmt.Errorf("failed to re-read claimed search job %s: %w", c.jobID, err)
+		}
+		claimed = append(claimed, job)
+	}
+
+	return claimed, nil
+}
+
+func (s *asyncSearchStore) ClearResults(ctx context.Context, jobID string) error {
+	tid, err := s.tenant(ctx)
+	if err != nil {
+		return err
+	}
+
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM search_job_results WHERE tenant_id = ? AND job_id = ?`,
+		string(tid), jobID); err != nil {
+		return fmt.Errorf("failed to clear results for job %s: %w", jobID, err)
+	}
+	return nil
+}
+
+// dbExecer is satisfied by both *sql.DB and *sql.Tx, letting fencedUpdate
+// run inside an explicit transaction (SaveResults chunks) or directly against
+// the pool (UpdateJobStatus, Heartbeat) with the same code path.
+type dbExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// isTerminalSearchStatus reports whether status is a terminal SearchJob
+// status (SUCCESSFUL/FAILED/CANCELLED) — write-once per the AsyncSearchStore
+// contract.
+func isTerminalSearchStatus(status string) bool {
+	switch status {
+	case "SUCCESSFUL", "FAILED", "CANCELLED":
+		return true
+	}
+	return false
+}
+
+// fencedUpdate is the shared shape for every epoch-fenced write against
+// search_jobs (UpdateJobStatus, Heartbeat, and each SaveResults chunk): a
+// single conditional UPDATE guarded by tenant, job, epoch, and non-terminal
+// status. Zero rows affected is classified by a follow-up probe: no row ->
+// ErrNotFound, a terminal status -> ErrAlreadyTerminal, anything else ->
+// ErrStaleClaim (the epoch didn't match).
+func fencedUpdate(ctx context.Context, ex dbExecer, tid spi.TenantID, jobID string, epoch int64, setClause string, setArgs ...any) error {
+	args := make([]any, 0, len(setArgs)+3)
+	args = append(args, setArgs...)
+	args = append(args, string(tid), jobID, epoch)
+
+	res, err := ex.ExecContext(ctx,
+		`UPDATE search_jobs SET `+setClause+`
+		 WHERE tenant_id = ? AND job_id = ? AND epoch = ?
+		   AND status NOT IN ('SUCCESSFUL', 'FAILED', 'CANCELLED')`,
+		args...)
+	if err != nil {
+		return fmt.Errorf("failed to update search job %s: %w", jobID, err)
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		return nil
+	}
+
+	var status string
+	var actualEpoch int64
+	err = ex.QueryRowContext(ctx,
+		`SELECT status, epoch FROM search_jobs WHERE tenant_id = ? AND job_id = ?`,
+		string(tid), jobID).Scan(&status, &actualEpoch)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("search job %q not found: %w", jobID, spi.ErrNotFound)
+		}
+		return fmt.Errorf("failed to probe search job %s: %w", jobID, err)
+	}
+	if isTerminalSearchStatus(status) {
+		return fmt.Errorf("search job %q is in terminal status %s: %w", jobID, status, spi.ErrAlreadyTerminal)
+	}
+	return fmt.Errorf("search job %q: caller epoch %d does not match current epoch %d: %w", jobID, epoch, actualEpoch, spi.ErrStaleClaim)
+}
+
+// scanSearchJob reads a single SearchJob from a *sql.Row, matching the
+// searchJobColumns projection.
 func scanSearchJob(row *sql.Row) (*spi.SearchJob, error) {
 	var job spi.SearchJob
 	var modelName, modelVer string
 	var condition, searchOpts []byte
-	var pitMicro, finishMicro sql.NullInt64
-	var createMicro, calcTimeMs int64
+	var pitMicro, finishMicro, heartbeatMicro sql.NullInt64
+	var createMicro, calcTimeMs, epoch int64
 
 	err := row.Scan(
 		&job.ID, &job.TenantID, &job.Status,
 		&modelName, &modelVer,
 		&condition, &pitMicro,
 		&searchOpts, &job.ResultCount,
-		&job.Error, &createMicro, &finishMicro, &calcTimeMs)
+		&job.Error, &createMicro, &finishMicro, &calcTimeMs,
+		&heartbeatMicro, &epoch)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("search job not found: %w", spi.ErrNotFound)
@@ -316,6 +571,7 @@ func scanSearchJob(row *sql.Row) (*spi.SearchJob, error) {
 	job.SearchOpts = searchOpts
 	job.CreateTime = time.UnixMicro(createMicro)
 	job.CalcTimeMs = calcTimeMs
+	job.Epoch = epoch
 
 	if pitMicro.Valid {
 		job.PointInTime = time.UnixMicro(pitMicro.Int64)
@@ -323,6 +579,10 @@ func scanSearchJob(row *sql.Row) (*spi.SearchJob, error) {
 	if finishMicro.Valid {
 		ft := time.UnixMicro(finishMicro.Int64)
 		job.FinishTime = &ft
+	}
+	if heartbeatMicro.Valid {
+		ht := time.UnixMicro(heartbeatMicro.Int64)
+		job.HeartbeatTime = &ht
 	}
 
 	return &job, nil

@@ -31,11 +31,33 @@ import (
 // run. 000002_grouped_stats.up.sql is the proof — a function plus an index in
 // one file — and is the sole grandfathered entry.
 func TestMigrations_IndexesOnExistingTablesAreConcurrent(t *testing.T) {
-	// The only pre-existing violation. Adding to this list is a decision, not a
-	// convenience: it means shipping a migration that locks writers out of a
-	// populated table for the duration of an index build.
+	// Adding to this list is a decision, not a convenience: it means shipping
+	// a migration that locks writers out of a populated table for the
+	// duration of an index build.
 	grandfathered := map[string]bool{
 		"000002_grouped_stats.up.sql": true,
+		// idx_entities_model_entity_id (GetPage's non-tx query index):
+		// CREATE INDEX CONCURRENTLY was tried first, per clause (a)'s own
+		// rule, and it deterministically DEADLOCKS this project's concurrent
+		// multi-node boot path — reproduced via
+		// TestRunMigrateWithDSN_ConcurrentWithNodeBoot every run, not a
+		// flake. Mechanism: golang-migrate holds one session-level advisory
+		// lock for a migrator's ENTIRE Up() run; CONCURRENTLY's own
+		// multi-phase build then waits for every OTHER backend's in-flight
+		// statement to finish, including a second node's migrator merely
+		// BLOCKED trying to acquire that very advisory lock (a blocked
+		// SELECT pg_advisory_lock(...) still holds an active snapshot from
+		// Postgres's point of view) — a genuine lock cycle, not a test
+		// artifact, since two nodes racing to auto-migrate a fresh database
+		// is this project's primary deployment scenario (see
+		// .claude/rules/multi-node-primary.md). A plain CREATE INDEX has no
+		// such cross-session wait phase and passes the same concurrent-boot
+		// test cleanly, at the cost of briefly locking out writers during
+		// the build — acceptable pre-1.0, with no production entities
+		// tables at meaningful scale yet. Revisit once the migration runner
+		// can retry a deadlock-killed Lock() attempt (a structural change to
+		// migrate.go, out of scope for the migration itself).
+		"000008_entities_model_entity_id_index.up.sql": true,
 	}
 
 	for _, v := range checkIndexRules(upMigrations(t), grandfathered) {

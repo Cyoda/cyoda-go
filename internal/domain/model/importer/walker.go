@@ -24,19 +24,24 @@ func Walk(data any) (*schema.ModelNode, error) {
 // WalkWithConfig applies the default walk.
 func WalkWithConfig(data any, cfg WalkConfig) (*schema.ModelNode, error) {
 	w := &walker{cfg: cfg}
-	return w.walkValue(data)
+	return w.walkValue(data, rootPath)
 }
+
+// rootPath is the canonical path of the document root — the same "$" prefix
+// ModelNode.FieldsMap keys its entries by, so a walk-time diagnostic names a
+// location in the vocabulary the rest of the stack uses.
+const rootPath = "$"
 
 type walker struct {
 	cfg WalkConfig
 }
 
-func (w *walker) walkValue(v any) (*schema.ModelNode, error) {
+func (w *walker) walkValue(v any, path string) (*schema.ModelNode, error) {
 	switch val := v.(type) {
 	case map[string]any:
-		return w.walkObject(val)
+		return w.walkObject(val, path)
 	case []any:
-		return w.walkArray(val)
+		return w.walkArray(val, path)
 	case string:
 		// Delegate string classification to the shared inference used by
 		// validation so discovery and validation never diverge. This
@@ -46,22 +51,29 @@ func (w *walker) walkValue(v any) (*schema.ModelNode, error) {
 	case json.Number:
 		return classifyNumber(val)
 	case float64:
-		return nil, fmt.Errorf("walker received float64 value; callers must use json.UseNumber() decoding")
+		return nil, fmt.Errorf("%s: walker received float64 value; callers must use json.UseNumber() decoding", path)
 	case bool:
 		return schema.NewLeafNode(schema.Boolean), nil
 	case nil:
 		return schema.NewLeafNode(schema.Null), nil
 	default:
-		return nil, fmt.Errorf("unsupported type: %T", v)
+		return nil, fmt.Errorf("%s: unsupported type: %T", path, v)
 	}
 }
 
-func (w *walker) walkObject(m map[string]any) (*schema.ModelNode, error) {
+func (w *walker) walkObject(m map[string]any, path string) (*schema.ModelNode, error) {
 	node := schema.NewObjectNode()
 	for k, v := range m {
-		child, err := w.walkValue(v)
+		// Refuse the key before it can become a schema field. This is the one
+		// point both field-set-establishing ingresses share, so enforcing here
+		// covers the explicit model import and the ChangeLevel-driven
+		// extension on an entity write alike — see ErrInvalidFieldName.
+		if err := validateFieldName(path, k); err != nil {
+			return nil, err
+		}
+		child, err := w.walkValue(v, path+"."+k)
 		if err != nil {
-			return nil, fmt.Errorf("field %q: %w", k, err)
+			return nil, err
 		}
 		node.SetChild(k, child)
 	}
@@ -93,13 +105,15 @@ func classifyNumber(n json.Number) (*schema.ModelNode, error) {
 	return schema.NewLeafNode(schema.ClassifyDecimal(stripped)), nil
 }
 
-func (w *walker) walkArray(arr []any) (*schema.ModelNode, error) {
+func (w *walker) walkArray(arr []any, path string) (*schema.ModelNode, error) {
 	if len(arr) == 0 {
 		return schema.NewArrayNode(schema.NewLeafNode(schema.Null)), nil
 	}
+	// One "[*]" hop per array level, matching the FieldsMap key spelling.
+	elemPath := path + "[*]"
 	var element *schema.ModelNode
 	for _, item := range arr {
-		child, err := w.walkValue(item)
+		child, err := w.walkValue(item, elemPath)
 		if err != nil {
 			return nil, err
 		}

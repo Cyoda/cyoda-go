@@ -65,6 +65,13 @@ var (
 // the tx-buffer overlay. PIT semantics are historical-read by definition,
 // so the in-flight buffer is a tier-2 concern; documented in the
 // grouped-stats help-topic (cmd/cyoda/help/content/crud.md).
+//
+// OrderBy: empty means order is unspecified (a deterministic entity_id
+// order is still emitted — a conformant choice within "unspecified"); a
+// non-empty OrderBy is honoured via orderByClause (shared with Search) on
+// the non-tx/PIT SQL paths. A non-empty OrderBy with an ambient transaction
+// is unsupported per the Iterable doc — rejected up front, before either
+// tx branch below runs.
 func (s *entityStore) Iterate(
 	ctx context.Context,
 	model spi.ModelRef,
@@ -74,16 +81,24 @@ func (s *entityStore) Iterate(
 	if err := validateFilterPaths(filter); err != nil {
 		return nil, err
 	}
+	if err := validateOrderSpecs(opts.OrderBy); err != nil {
+		return nil, err
+	}
+
+	tx := spi.GetTransaction(ctx)
+	if len(opts.OrderBy) > 0 && tx != nil {
+		return nil, fmt.Errorf("Iterate: ordered iteration inside a transaction is unsupported")
+	}
 
 	// In-tx, non-PIT: materialize via tx-overlay then iterate the slice.
 	// Mirrors plugins/memory/grouped_stats.go's buildSnapshot pattern.
-	if tx := spi.GetTransaction(ctx); tx != nil && opts.PointInTime == nil {
+	if tx != nil && opts.PointInTime == nil {
 		tx.OpMu.RLock()
 		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return nil, fmt.Errorf("Iterate: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
-		entities, err := s.getAllTx(ctx, tx, model)
+		entities, err := s.getAllTx(ctx, tx, model, opts.TrackingRead)
 		if err != nil {
 			return nil, err
 		}
@@ -121,8 +136,18 @@ func (s *entityStore) Iterate(
 		baseQuery += " AND (" + plan.where + ")"
 		baseArgs = append(baseArgs, plan.args...)
 	}
+	if pointInTime {
+		baseQuery += orderByClause(opts.OrderBy, "ev")
+	} else {
+		baseQuery += orderByClause(opts.OrderBy, "")
+	}
 
-	rows, err := s.db.QueryContext(ctx, baseQuery, baseArgs...)
+	// Non-tx iteration streams from the dedicated reader connection (readDB),
+	// not the writer db: an Iterate caller may hold rows open across an
+	// arbitrary number of Next() calls, and pinning that to the writer's
+	// single-connection pool would starve concurrent writes (e.g. a streamed
+	// async-search SaveResults chunk) for as long as the iterator stays open.
+	rows, err := s.readDB.QueryContext(ctx, baseQuery, baseArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("iterate query: %w", err)
 	}
@@ -262,22 +287,42 @@ func (s *entityStore) GroupedAggregate(
 	filter spi.Filter,
 	opts spi.GroupedAggregationsOptions,
 ) ([]spi.GroupedAggregateBucket, error) {
-	// D9: sqlite has no native STDDEV and the single-pass formula is
-	// numerically unsafe. Decline so service layer uses Welford in-memory.
-	for _, a := range opts.Aggregations {
-		if a.Op == spi.AggStdev {
-			return nil, spi.ErrAggregationNotPushdownable
-		}
-	}
-
 	// PIT pushdown is out of scope for v1 — streaming tally over Iterate
 	// (which does support PIT) handles it without per-query SQL plumbing.
 	if opts.PointInTime != nil {
 		return nil, spi.ErrAggregationNotPushdownable
 	}
 
+	// Path validation runs BEFORE the stdev decline below, matching postgres,
+	// which validates immediately after its own PIT early-return. A malformed
+	// path is a client error and must be classified the same way on every
+	// backend; declining first would report an invalid path as
+	// ErrAggregationNotPushdownable whenever the request also asked for stdev,
+	// and the service layer would then stream a filter it should have refused.
 	if err := validateFilterPaths(filter); err != nil {
 		return nil, err
+	}
+	// Group-by and aggregation paths are held to the same grammar, and
+	// validated HERE rather than only inside groupExprToSQL /
+	// aggregateExprToSQL: those run after the declines below, so a request
+	// that also asked for stdev or carried a residual filter had its malformed
+	// path reported as ErrAggregationNotPushdownable. The service layer takes
+	// that as "stream it instead" and the streaming tally resolves the
+	// malformed path to nothing, bucketing every entity as null — a
+	// wrong-but-available answer, and the same input classified differently per
+	// backend (memory validates both unconditionally). The checks inside the
+	// two translators stay: they are the injection guard at the point of
+	// interpolation, not the client-error classification.
+	if err := validateGroupAndAggregatePaths(groupBy, opts.Aggregations); err != nil {
+		return nil, err
+	}
+
+	// D9: sqlite has no native STDDEV and the single-pass formula is
+	// numerically unsafe. Decline so service layer uses Welford in-memory.
+	for _, a := range opts.Aggregations {
+		if a.Op == spi.AggStdev {
+			return nil, spi.ErrAggregationNotPushdownable
+		}
 	}
 	// Zero-value Filter means "match all" (same convention as Iterable).
 	var plan sqlPlan

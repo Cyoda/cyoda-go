@@ -66,6 +66,19 @@ func (s *deleteAllTxSizeSpyStore) wasCalled() bool {
 	return s.called
 }
 
+// Iterate passes through to the embedded real store. spi.EntityStore is
+// embedded by interface value, which does NOT promote spi.Iterable's Iterate
+// method onto *deleteAllTxSizeSpyStore even though the underlying concrete
+// store implements it — an explicit passthrough is required so the batched
+// delete-all path's own entityStore.(spi.Iterable) capability check succeeds
+// against this spy the same way it does against the real store, and the
+// streamed selection actually yields the seeded entities instead of the spy
+// silently failing the capability check. Mirrors
+// internal/domain/entity's deleteAllSpyStore.Iterate.
+func (s *deleteAllTxSizeSpyStore) Iterate(ctx context.Context, model spi.ModelRef, filter spi.Filter, opts spi.IterateOptions) (spi.Iterator, error) {
+	return s.EntityStore.(spi.Iterable).Iterate(ctx, model, filter, opts)
+}
+
 // deleteAllTxSizeSpyFactory wraps a real spi.StoreFactory but always hands
 // out the given spy EntityStore; every other accessor delegates unchanged.
 type deleteAllTxSizeSpyFactory struct {
@@ -108,7 +121,7 @@ func newDeleteAllTxSizeEnv(t *testing.T) (svc *CloudEventsServiceImpl, ctx conte
 	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), rtm)
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
 	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)
-	entityHandler := entity.New(factory, rtm, common.NewDefaultUUIDGenerator(), engine, txgate.New(), searchService)
+	entityHandler := entity.New(factory, rtm, common.NewDefaultUUIDGenerator(), engine, txgate.New())
 	modelHandler := model.New(factory)
 
 	svc = &CloudEventsServiceImpl{
@@ -407,7 +420,7 @@ func TestRPC_EntityDeleteAll_TransactionSize_Batched_ErrorsByID(t *testing.T) {
 	engineSeed := workflow.NewEngine(realFactory, common.NewDefaultUUIDGenerator(), realTxMgr)
 	searchStoreSeed, _ := realFactory.AsyncSearchStore(context.Background())
 	searchServiceSeed := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStoreSeed)
-	entityHandlerSeed := entity.New(realFactory, realTxMgr, common.NewDefaultUUIDGenerator(), engineSeed, txgate.New(), searchServiceSeed)
+	entityHandlerSeed := entity.New(realFactory, realTxMgr, common.NewDefaultUUIDGenerator(), engineSeed, txgate.New())
 	svcSeed := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
 		txMgr:         realTxMgr,
@@ -435,7 +448,7 @@ func TestRPC_EntityDeleteAll_TransactionSize_Batched_ErrorsByID(t *testing.T) {
 	engineDelete := workflow.NewEngine(realFactory, common.NewDefaultUUIDGenerator(), failMgr)
 	searchStoreDelete, _ := realFactory.AsyncSearchStore(context.Background())
 	searchServiceDelete := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStoreDelete)
-	entityHandlerDelete := entity.New(realFactory, failMgr, common.NewDefaultUUIDGenerator(), engineDelete, txgate.New(), searchServiceDelete)
+	entityHandlerDelete := entity.New(realFactory, failMgr, common.NewDefaultUUIDGenerator(), engineDelete, txgate.New())
 	svcDelete := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
 		txMgr:         failMgr,
@@ -473,5 +486,56 @@ func TestRPC_EntityDeleteAll_TransactionSize_Batched_ErrorsByID(t *testing.T) {
 		if !ok || msg == "" {
 			t.Errorf("ErrorsByID[%s] = %v (%T), want a non-empty string failure message", id, v, v)
 		}
+	}
+}
+
+// --- (f) non-converging batched delete -> CLIENT_ERROR DELETE_NOT_CONVERGED ---
+
+// TestRPC_EntityDeleteAll_NonConvergence_Envelope pins the gRPC door's
+// envelope for the streamed batched delete's progress guard: the delete is
+// stopped at its cycle cap and answers CLIENT_ERROR with a
+// DELETE_NOT_CONVERGED: prefixed message and Retryable:true — never Success
+// carrying the partial counts, and never an opaque SERVER_ERROR.
+//
+// The cap is lowered to a single cycle rather than staging a real insert
+// storm: with three entities and transactionSize 1, the first cycle deletes
+// one and the re-scan still has matches, which is exactly the state the guard
+// exists to stop — reached deterministically instead of by winning a race.
+// The storm shape itself is covered at domain level
+// (internal/domain/entity/delete_progress_guard_test.go).
+func TestRPC_EntityDeleteAll_NonConvergence_Envelope(t *testing.T) {
+	svc, ctx, _, _ := newDeleteAllTxSizeEnv(t)
+	seedDeleteAllTxSizePersons(t, svc, ctx, 3)
+	svc.entityHandler.WithMaxDeleteCycles(1)
+
+	ce := makeCE(EntityDeleteAllRequest, map[string]any{
+		"id":              "test",
+		"model":           map[string]any{"name": "person", "version": 1},
+		"transactionSize": 1,
+	})
+	stream := &mockManageStream{ctx: ctx}
+	if err := svc.EntityManageCollection(ce, stream); err != nil {
+		t.Fatalf("unexpected gRPC error: %v", err)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(stream.sent))
+	}
+
+	var typed events.EntityDeleteAllResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if typed.Success {
+		t.Fatal("expected success=false: a delete stopped at its cycle cap must not report the partial pass as the complete one")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error field to be populated")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("code = %q, want CLIENT_ERROR", typed.Error.Code)
+	}
+	if !strings.HasPrefix(typed.Error.Message, common.ErrCodeDeleteNotConverged+":") {
+		t.Errorf("message = %q, want prefix %q", typed.Error.Message, common.ErrCodeDeleteNotConverged+":")
+	}
+	if typed.Error.Retryable == nil || !*typed.Error.Retryable {
+		t.Errorf("Retryable = %v, want true (the condition clears once the concurrent writers stop)", typed.Error.Retryable)
 	}
 }

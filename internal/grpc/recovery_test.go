@@ -469,7 +469,7 @@ func startRecoveryTestServer(t *testing.T, healthFlag *atomic.Bool) *recoveryTes
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
 	searchSvc := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)
-	entityHandler := entity.New(factory, tracker, common.NewDefaultUUIDGenerator(), engine, txgate.New(), searchSvc)
+	entityHandler := entity.New(factory, tracker, common.NewDefaultUUIDGenerator(), engine, txgate.New())
 	modelHandler := model.New(factory)
 
 	uc := &spi.UserContext{

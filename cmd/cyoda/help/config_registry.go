@@ -54,6 +54,11 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_SEARCH_REAP_INTERVAL", Topic: "search", Type: "duration", Default: "5m", Description: "Search snapshot reap interval."},
 	{Name: "CYODA_SEARCH_MAX_SORT_KEYS", Topic: "search", Type: "int", Default: "16", Description: "Maximum number of sort keys per search request; values <= 0 clamp to the default."},
 	{Name: "CYODA_STATS_GROUP_MAX", Topic: "search", Type: "int", Default: "10000", Description: "Cardinality ceiling for grouped-stats results; also caps the request limit parameter. Values <= 0 clamp to the default."},
+	{Name: "CYODA_SEARCH_ASYNC_WORKERS", Topic: "search", Type: "int", Default: "8", Description: "Async-search worker pool size. Must be >= 1; startup fails otherwise."},
+	{Name: "CYODA_SEARCH_ASYNC_QUEUE", Topic: "search", Type: "int", Default: "256", Description: "Async-search submit queue capacity beyond the running workers; Submit returns SEARCH_QUEUE_FULL (retryable 503) once exhausted. Must be >= 0; startup fails otherwise."},
+	{Name: "CYODA_SEARCH_ASYNC_MAX_PER_TENANT", Topic: "search", Type: "int", Default: "8", Description: "Maximum async-search jobs one tenant may have in flight (queued or running) on a node; further submissions get SEARCH_QUEUE_FULL (retryable 503), so one tenant cannot fill the shared queue. Defaults to CYODA_SEARCH_ASYNC_WORKERS, so it tracks a resized pool. 0 disables the cap. Must be >= 0; startup fails otherwise."},
+	{Name: "CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL", Topic: "search", Type: "duration", Default: "15s", Description: "How often a running async-search executor stamps job liveness and polls for cross-node cancel/terminal status, starting at submit time (while queued, not only while scanning). Must be > 0; startup fails otherwise."},
+	{Name: "CYODA_SEARCH_JOB_STALE_AFTER", Topic: "search", Type: "duration", Default: "5m", Description: "How long a RUNNING async-search job may go without a heartbeat before the reaper claims it and marks it FAILED. Must be >= 4x CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL; startup fails otherwise."},
 
 	// --- cluster ---
 	{Name: "CYODA_CLUSTER_ENABLED", Topic: "cluster", Type: "bool", Default: "false", Description: "Enable multi-node clustering."},

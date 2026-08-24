@@ -37,6 +37,12 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 		{Status: 400, Code: "INVALID_FIELD_PATH"}, // TestDeleteEntities_UnknownFieldPath: selection-search 4xx forwarded, not buried as 500
 		{Status: 400, Code: "BAD_REQUEST"},        // TestTransactionControl_InvalidParams400/DeleteEntities: invalid/joined transactionSize
 		{Status: 404, Code: "MODEL_NOT_FOUND"},
+		// TestDeleteEntities_Batched_NonConvergence_409: the batched delete's
+		// progress guard. Produced on that test's own mount of this endpoint
+		// (the cycle budget has to be lowered to reach it), behind the same
+		// conformance validator — so the triple is recorded here like any
+		// other.
+		{Status: 409, Code: "DELETE_NOT_CONVERGED"},
 	},
 	// Stats / list / search ops (stats-audit-search slice, §7). Three read ops
 	// have a bounded, bidirectionally-checkable error surface — only
@@ -77,8 +83,11 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 	// abort emitted non-deterministically by any write op under concurrency and
 	// is therefore not a per-endpoint documented code (see universalCrossCuttingCodes).
 	"create": {
-		{Status: 400, Code: "BAD_REQUEST"},        // invalid payload, transactionWindow out of range
-		{Status: 400, Code: "INCOMPATIBLE_TYPE"},  // payload type mismatches the model
+		{Status: 400, Code: "BAD_REQUEST"},       // invalid payload, transactionWindow out of range
+		{Status: 400, Code: "INCOMPATIBLE_TYPE"}, // payload type mismatches the model
+		// TestEntityCreate_UnaddressableFieldName_400: a write that would extend
+		// the model with a field name the wire jsonPath grammar cannot address.
+		{Status: 400, Code: "VALIDATION_FAILED"},
 		{Status: 400, Code: "WORKFLOW_FAILED"},    // workflow processor rejected the entity
 		{Status: 404, Code: "MODEL_NOT_FOUND"},    // model not registered
 		{Status: 409, Code: "UNIQUE_VIOLATION"},   // TestUniqueKeys_CreateDuplicate et al.
