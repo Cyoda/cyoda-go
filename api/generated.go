@@ -1652,7 +1652,7 @@ type AggregationExpr struct {
 	// As Optional result alias.
 	As *string `json:"as,omitempty"`
 
-	// Field JSONPath of the field to aggregate (e.g. `$.amount`).
+	// Field Scalar JSONPath of the field to aggregate (e.g. `$.amount`). Same grammar as a `groupBy` JSONPath, including the required `$.` leader; a path outside it is rejected with 400 `INVALID_AGGREGATION_FIELD`. The `state` token is groupBy-only — there is no aggregate over lifecycle state — so it is rejected here too.
 	Field string `json:"field"`
 
 	// Op Aggregation operator. `sum`, `avg`, `min`, `max`, and `stdev` apply to scalar numeric fields; non-numeric or missing values are skipped per spec §3 (D4 semantics — see grouped-stats design doc).
@@ -1661,6 +1661,7 @@ type AggregationExpr struct {
 
 // ArrayConditionDto defines model for ArrayConditionDto.
 type ArrayConditionDto struct {
+	// JsonPath JSON Path addressing a data field. The `$.` leader is REQUIRED: `jsonPath = "$." segment ( "." segment )*` where `segment = 1*( ALPHA / DIGIT / "_" / "-" )` (ASCII only). A bare `amount` is not a path and is rejected 400 `INVALID_FIELD_PATH`, as are an empty path, an empty or trailing segment (`$..a`, `$.a.`), bracket-quoted property access (`$['x']` — write `$.x`), and any character outside the segment set. Array subscripts (`$.tags[*].name`, `$.arr[0]`) are valid and accepted; they are evaluated in memory rather than pushed into the storage query.
 	JsonPath     *string                        `json:"jsonPath,omitempty"`
 	OperatorType *ArrayConditionDtoOperatorType `json:"operatorType,omitempty"`
 	Type         string                         `json:"type"`
@@ -2310,7 +2311,7 @@ type GroupedStatsBucket struct {
 	GroupKey []GroupKeyEntry `json:"groupKey"`
 }
 
-// GroupedStatsRequest Request body for the grouped-stats query endpoint. `groupBy` dimensions may be either the literal string `state` (the workflow state) or a JSONPath expression starting with `$.` over the entity payload.
+// GroupedStatsRequest Request body for the grouped-stats query endpoint. `groupBy` dimensions may be either the reserved token `state` (the workflow state) or a JSONPath expression over the entity payload, which must start with `$.`.
 type GroupedStatsRequest struct {
 	// Aggregations Optional per-group aggregations.
 	Aggregations *[]AggregationExpr `json:"aggregations,omitempty"`
@@ -2318,7 +2319,7 @@ type GroupedStatsRequest struct {
 	// Condition Optional Condition DSL predicate restricting the population. Uses the same union shape as the async-search endpoint.
 	Condition *GroupedStatsRequest_Condition `json:"condition,omitempty"`
 
-	// GroupBy Ordered list of group-by dimensions. Each entry is either the literal `state` or a JSONPath expression. At least one entry is required.
+	// GroupBy Ordered list of group-by dimensions. Each entry is either the reserved token `state` (a token, not a path — no leader) or a scalar JSONPath. At least one entry is required. A JSONPath is a REQUIRED `$.` leader followed by dot-separated segments of ASCII letters, digits, `_` and `-`. Anything else — a missing leader (`country`), bracket-quoted property access (`$['country']`), array projections, recursive descent, whitespace, quotes, non-ASCII — is rejected with 400 `INVALID_GROUP_BY_PATH`. Paths are validated, never rewritten: the response `groupKey` path echoes exactly what the request sent.
 	GroupBy []string `json:"groupBy"`
 
 	// Limit Optional cap on the number of buckets returned. Must be positive and less than or equal to the server-configured `CYODA_STATS_GROUP_MAX` (default 10000); requests exceeding the cap are rejected with 400 `MALFORMED_REQUEST`.
@@ -2678,6 +2679,7 @@ type SetUniqueKeysRequest struct {
 
 // SimpleConditionDto defines model for SimpleConditionDto.
 type SimpleConditionDto struct {
+	// JsonPath JSON Path addressing a data field. The `$.` leader is REQUIRED: `jsonPath = "$." segment ( "." segment )*` where `segment = 1*( ALPHA / DIGIT / "_" / "-" )` (ASCII only). A bare `amount` is not a path and is rejected 400 `INVALID_FIELD_PATH`, as are an empty path, an empty or trailing segment (`$..a`, `$.a.`), bracket-quoted property access (`$['x']` — write `$.x`), and any character outside the segment set. Array subscripts (`$.tags[*].name`, `$.arr[0]`) are valid and accepted; they are evaluated in memory rather than pushed into the storage query.
 	JsonPath     *string                         `json:"jsonPath,omitempty"`
 	OperatorType *SimpleConditionDtoOperatorType `json:"operatorType,omitempty"`
 	Type         string                          `json:"type"`
