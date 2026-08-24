@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
@@ -189,5 +190,50 @@ func TestCriterionPath_NumericSubscriptFiresTransition(t *testing.T) {
 	below := createEntityE2E(t, model, 1, `{"name":"Y","amount":0,"arr":[100,1]}`)
 	if state := getEntityState(t, below); state != "CREATED" {
 		t.Errorf(`criterion on "$.arr[1]" with arr=[100,1]: expected CREATED (element 1 is 1, under the threshold), got %q`, state)
+	}
+}
+
+// TestCriterionPath_TrailingWildcardFiresTransition is the criterion half of the
+// trailing-wildcard defect. "$.arr[*]" addresses the array's ELEMENTS, so the
+// criterion asks "does SOME element exceed the threshold". It resolved to the
+// array's COUNT instead — a two-element array compared 2 against the threshold —
+// so the transition silently never fired, whatever the entity held. A criterion
+// has no result page to look wrong: the entity simply sits in the state before
+// the guard, which is why this needs its own end-to-end assertion.
+func TestCriterionPath_TrailingWildcardFiresTransition(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+
+	const model = "e2e-crit-path-trailing-wildcard"
+	// The sample declares a 60-wide array so the "no element matches" entity
+	// below can be 60 elements long without widening a locked model.
+	sixty := "[" + strings.TrimSuffix(strings.Repeat("1,", 60), ",") + "]"
+	importModelSampleE2E(t, model, 1,
+		fmt.Sprintf(`{"name":"Sample","amount":0,"arr":%s}`, sixty))
+	lockModelE2E(t, model, 1)
+
+	status, body := importWorkflowE2E(t, model, 1,
+		dataCriterionWorkflow(t, "crit-path-trailing-wildcard-wf", "$.arr[*]"))
+	if status != http.StatusOK {
+		t.Fatalf("workflow import: expected 200, got %d: %s", status, body)
+	}
+
+	// One element is over the threshold of 50, so the criterion is true. The
+	// array's LENGTH is 2 — under the threshold — so a count-valued leaf leaves
+	// the entity in CREATED.
+	fires := createEntityE2E(t, model, 1, `{"name":"X","amount":0,"arr":[1,100]}`)
+	if state := getEntityState(t, fires); state != "ADVANCED" {
+		t.Errorf(`criterion on "$.arr[*]" with arr=[1,100] and threshold 50: expected ADVANCED, got %q`, state)
+	}
+
+	// And it must still be able to evaluate FALSE: no element exceeds 50.
+	// Sixty elements make the LENGTH exceed the threshold, so a count-valued
+	// leaf fires here — the inverse of the case above, which is what makes the
+	// pair evidence rather than a single-sided guard.
+	quiet := createEntityE2E(t, model, 1,
+		fmt.Sprintf(`{"name":"Y","amount":0,"arr":%s}`, sixty))
+	if state := getEntityState(t, quiet); state != "CREATED" {
+		t.Errorf(`criterion on "$.arr[*]" with 60 elements all equal to 1: expected CREATED (no element exceeds 50), got %q`, state)
 	}
 }

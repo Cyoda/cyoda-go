@@ -88,6 +88,8 @@ The `$.` leader is **required**. A bare `amount` is not a path and is rejected `
 
 **Well-formed** array subscripts — the wildcard `[*]` or a non-negative index `[0]` — **are** valid and accepted (`$.tags[*].name`, `$.arr[0]`, `$.matrix[*][*]`, `$.orders[*].lines[*].sku`). They cannot be pushed into the storage query, so they are evaluated in memory; results are identical, throughput is lower.
 
+`[*]` addresses **every** element, so a leaf on it holds when **some** element satisfies it: `$.tags[*] EQUALS "red"` selects the entities whose `tags` contains `"red"`. It is existential, so nothing matches an empty array — neither `IS_NULL` nor `NOT_NULL` holds on `{"tags": []}`. `[0]` addresses that one element. A trailing `[*]` on an array of **pure objects** is rejected `400 errors.INVALID_FIELD_PATH` under a scalar operator — the element has no scalar form, so navigate to the leaf (`$.items[*].sku`, not `$.items[*]`).
+
 Every other bracket spelling is rejected `400 errors.INVALID_FIELD_PATH`: unclosed or unmatched (`$.a[`, `$.a[0`, `$.a]`), no field name before it (`$.[0]`), empty (`$.a[]`), negative or signed (`$.a[-1]`, `$.a[+1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), or whitespace inside (`$.a[ 0]`). The path is scanned to the end, so trailing junk after a valid subscript is caught too (`$.a[0]b`, `$.a[0];DROP`, `$.a[*]..b`). These used to go unvalidated and return `200` with an empty page.
 
 Metadata is not addressed through `jsonPath` at all — a `lifecycle` condition names a meta field directly (see **LifecycleCondition**) and is not subject to this grammar. A *data* path that happens to spell `$._meta.state` is an ordinary dotted path.

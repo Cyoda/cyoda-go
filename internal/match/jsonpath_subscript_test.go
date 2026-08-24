@@ -34,11 +34,13 @@ func TestConvertJSONPath_Subscripts(t *testing.T) {
 		{"dollar only leader", "$name", "name"},
 		{"already gjson index", "$.arr.0", "arr.0"},
 
-		// Wildcards — the pre-existing behaviour, pinned so the numeric
-		// rewrite cannot regress it.
-		{"wildcard leaf", "$.tags[*]", "tags.#"},
+		// Wildcards — pinned so the numeric rewrite cannot regress them. A
+		// TRAILING "[*]" names the array itself and a multi-hop projection is
+		// flattened back to one level; both are pinned in full, with the
+		// reasoning, by TestConvertJSONPath_TrailingWildcard.
+		{"wildcard leaf", "$.tags[*]", "tags"},
 		{"wildcard mid", "$.laureates[*].motivation", "laureates.#.motivation"},
-		{"wildcard twice", "$.a[*].b[*].c", "a.#.b.#.c"},
+		{"wildcard twice", "$.a[*].b[*].c", "a.#.b.#.c|@flatten"},
 
 		// Numeric subscripts — the fix.
 		{"index leaf", "$.arr[0]", "arr.0"},
@@ -46,7 +48,7 @@ func TestConvertJSONPath_Subscripts(t *testing.T) {
 		{"index mid", "$.arr[0].name", "arr.0.name"},
 		{"index nested", "$.a[0].b[1]", "a.0.b.1"},
 		{"index chained", "$.a[0][1]", "a.0.1"},
-		{"index then wildcard", "$.a[0].b[*]", "a.0.b.#"},
+		{"index then wildcard", "$.a[0].b[*]", "a.0.b"},
 		{"wildcard then index", "$.a[*].b[0]", "a.#.b.0"},
 		{"index at root segment", "$.0", "0"},
 
@@ -96,14 +98,15 @@ func TestPrepare_NumericSubscriptResolves(t *testing.T) {
 		// mid-path "#" maps over the array, and prepLeaf's IsArray branch
 		// short-circuits on the first element that matches.
 		{"wildcard then index other element", "$.a[*].b[1]", "y", []spi.DataType{spi.String}, true},
+		// A path ENDING in "[*]" behind a positional hop: "$.a[0].b[*]"
+		// addresses the ELEMENTS of that one sub-array. It used to convert to
+		// "a.0.b.#" — a trailing gjson "#" is the array's COUNT — so an equality
+		// on it compared against a number and never matched. The trailing-
+		// wildcard family is covered in full by
+		// TestPrepare_TrailingWildcardIteratesElements; this row is here because
+		// it is the numeric-subscript combination.
+		{"index then trailing wildcard", "$.a[0].b[*]", "y", []spi.DataType{spi.String}, true},
 	}
-	// Deliberately absent: a path ENDING in "[*]" ("$.a[0].b[*]"). It converts
-	// to "a.0.b.#", and a trailing gjson "#" yields the array's COUNT, not its
-	// elements — so an equality on it compares against a number. That is
-	// pre-existing trailing-wildcard behaviour, unrelated to numeric
-	// subscripts, and load-bearing for TestSearchSort_PushdownFallbackAgree
-	// (which relies on "$.tags[*] NOT_NULL" being true via the count). The
-	// conversion itself is pinned in TestConvertJSONPath_Subscripts.
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cond := &predicate.SimpleCondition{

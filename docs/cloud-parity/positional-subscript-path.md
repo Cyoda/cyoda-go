@@ -39,9 +39,14 @@ wildcard `[*]` and a non-negative index are resolvable subscripts, and this
 document covers the index form.
 
 **A trailing wildcard is a different operation.** `$.arr[*]` with no following
-segment resolves to the array's *count*, not its elements, so a comparison on
-it compares against the length. That is the defined meaning of the spelling,
-not a positional subscript, and this document does not change it.
+segment addresses *all* the elements, not one of them, so a leaf on it holds
+when *some* element satisfies it. That is a separate contract with its own
+document — `trailing-wildcard-path.md`.
+
+> This paragraph previously stated that `$.arr[*]` resolves to the array's
+> **count**, and called that the defined meaning of the spelling. It was not a
+> contract; it was a description of a defect, and Cloud must not mirror it. See
+> `trailing-wildcard-path.md` for what replaced it.
 
 ## Why this is a Cloud obligation, not a shared-code guarantee
 

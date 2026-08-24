@@ -9348,8 +9348,13 @@ components:
                 the wildcard `[*]` or a non-negative index `[0]` — is valid
                 and accepted (`$.tags[*].name`, `$.arr[0]`,
                 `$.matrix[*][*]`); it is evaluated in memory rather than
-                pushed into the storage query, and a positional subscript
-                resolves to that element's value. Every other bracket
+                pushed into the storage query. A positional subscript
+                resolves to that element's value; a path ending in `[*]`
+                addresses EVERY element, so the leaf holds when SOME element
+                satisfies it and nothing matches an empty array. A trailing
+                `[*]` whose elements are pure objects is rejected 400
+                `INVALID_FIELD_PATH` under a scalar operator — navigate to
+                the leaf (`$.items[*].sku`). Every other bracket
                 spelling is rejected 400: unclosed or unmatched (`$.a[`,
                 `$.a]`), no field name before it (`$.[0]`), empty (`$.a[]`),
                 negative or signed (`$.a[-1]`), a slice (`$.a[0:2]`), a
@@ -9641,8 +9646,13 @@ components:
                 the wildcard `[*]` or a non-negative index `[0]` — is valid
                 and accepted (`$.tags[*].name`, `$.arr[0]`,
                 `$.matrix[*][*]`); it is evaluated in memory rather than
-                pushed into the storage query, and a positional subscript
-                resolves to that element's value. Every other bracket
+                pushed into the storage query. A positional subscript
+                resolves to that element's value; a path ending in `[*]`
+                addresses EVERY element, so the leaf holds when SOME element
+                satisfies it and nothing matches an empty array. A trailing
+                `[*]` whose elements are pure objects is rejected 400
+                `INVALID_FIELD_PATH` under a scalar operator — navigate to
+                the leaf (`$.items[*].sku`). Every other bracket
                 spelling is rejected 400: unclosed or unmatched (`$.a[`,
                 `$.a]`), no field name before it (`$.[0]`), empty (`$.a[]`),
                 negative or signed (`$.a[-1]`), a slice (`$.a[0:2]`), a

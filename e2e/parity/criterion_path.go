@@ -173,12 +173,9 @@ func RunPositionalSubscriptPathResolves(t *testing.T, fixture BackendFixture) {
 	// read the wrong element, changes the expected set rather than merely
 	// weakening the assertion.
 	//
-	// Deliberately not asserted: the trailing-wildcard spelling "$.arr[*]". It
-	// converts to a gjson path whose "#" in final position yields the array's
-	// COUNT rather than its elements, so a comparison on it compares against 2.
-	// That is pre-existing trailing-wildcard behaviour, a separate question
-	// from positional subscripts, and changing what "$.tags[*]" means would
-	// change results for callers using it today.
+	// The trailing-wildcard spelling of the same path ("$.arr[*]") is a
+	// separate question — it addresses ALL the elements rather than one — and
+	// has its own scenario, RunSearchTrailingWildcardPathResolves.
 	for _, tc := range []struct {
 		label string
 		cond  string

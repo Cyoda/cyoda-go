@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 242 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 243 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -154,6 +154,9 @@ var allTests = []NamedTest{
 	// plan a subscripted query takes differs per backend.
 	{"WorkflowCriterionPathRequiresJSONPathLeader", RunWorkflowCriterionPathRequiresJSONPathLeader},
 	{"PositionalSubscriptPathResolves", RunPositionalSubscriptPathResolves},
+	// ...and a path whose LAST hop is a wildcard addresses the array's
+	// ELEMENTS, not its length, on both surfaces.
+	{"SearchTrailingWildcardPathResolves", RunSearchTrailingWildcardPathResolves},
 	{"GroupedStatsPathRequiresJSONPathLeader", RunGroupedStatsPathRequiresJSONPathLeader},
 	{"SearchMetaBlockNotMatchableAsDataPath", RunSearchMetaBlockNotMatchableAsDataPath},
 	{"SearchStringMetaVocabulary", RunSearchStringMetaVocabulary},

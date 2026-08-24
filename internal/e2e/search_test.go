@@ -750,8 +750,14 @@ func setupSortModelWithAmountAndArray(t *testing.T, model string) {
 //	    array-field models);
 //	(2) fails ConditionToFilter (stripDollarDot rejects '[');
 //	(3) match.Prepare/(Prepared).Match handles it correctly:
-//	    convertJSONPath("$.tags[*]") → gjson path "tags.#" (array count),
-//	    which is NOT_NULL for any entity that carries the tags field.
+//	    convertJSONPath("$.tags[*]") → gjson path "tags", the array itself,
+//	    whose elements the leaf then tests one by one — NOT_NULL is true for
+//	    any entity carrying a NON-EMPTY tags array.
+//
+// That last point is load-bearing for the seeding below: the wildcard used to
+// resolve to the array's COUNT, for which NOT_NULL was true even for an EMPTY
+// array. Every entity must now carry at least one tag or the fallback path
+// selects fewer than four entities and the comparison has nothing to compare.
 //
 // This is an isolated single-backend e2e test (Postgres only). It is not in
 // the shared cross-backend parity suite because it asserts Postgres-specific
@@ -768,7 +774,8 @@ func TestSearchSort_PushdownFallbackAgree(t *testing.T) {
 	// lexical order: numeric asc = 9,10,20,100; lexical asc = "10","100","20","9".
 	// Any path that sorts by string comparison rather than numeric value will
 	// produce a different sequence and fail the wantIDs assertion below.
-	// All carry tags so that NOT_NULL on $.tags[*] returns true for each.
+	// All carry a NON-EMPTY tags array so that NOT_NULL on $.tags[*] — which
+	// tests the elements, not the array's length — returns true for each.
 	id1 := createEntityE2E(t, model, 1, `{"name":"D","amount":100,"tags":["x"]}`)
 	id2 := createEntityE2E(t, model, 1, `{"name":"B","amount":9,"tags":["x"]}`)
 	id3 := createEntityE2E(t, model, 1, `{"name":"C","amount":20,"tags":["x"]}`)
@@ -791,7 +798,8 @@ func TestSearchSort_PushdownFallbackAgree(t *testing.T) {
 	// --- Fallback path ---
 	// "$.tags[*] NOT_NULL" passes path validation ($.tags[*] is in the
 	// FieldsMap) but fails ConditionToFilter (stripDollarDot rejects '['),
-	// forcing the GetAll + in-memory sortEntities path.
+	// forcing the GetAll + in-memory sortEntities path. It selects all four
+	// entities because each holds a non-empty tags array.
 	const fallbackCond = `{"type":"simple","jsonPath":"$.tags[*]","operatorType":"NOT_NULL","value":null}`
 	status, fallbackResults := directSearchSorted(t, model, 1, fallbackCond, sortKeys)
 	if status != http.StatusOK {

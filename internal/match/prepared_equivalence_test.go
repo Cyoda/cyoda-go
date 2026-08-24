@@ -274,6 +274,11 @@ var genMetaFields = []string{
 var genJSONPaths = []string{
 	"$.name", "$.qty", "$.price", "$.flag", "$.uid", "$.when",
 	"$.missing", "$.nested.inner", "name", "$.laureates[*].motivation", "$.tags",
+	// A TRAILING wildcard now resolves to the array itself, so it takes
+	// prepLeaf's array branch — the routing this gate freezes — for a much
+	// wider set of paths than before. The corpus docs cover a populated, an
+	// empty and an absent "tags" so the branch is exercised at all three.
+	"$.tags[*]",
 }
 
 var genValues = []any{

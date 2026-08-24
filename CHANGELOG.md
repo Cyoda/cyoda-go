@@ -6,6 +6,50 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **A path whose last hop is an array wildcard now addresses the array's
+  ELEMENTS. It used to resolve to the array's length.**
+  `$.tags[*]` means "some element of `tags`". It was resolved to the *count* of
+  `tags`, so a comparison on it compared the operand against a number:
+  `{"jsonPath":"$.tags[*]","operatorType":"EQUALS","value":"red"}` compared
+  `"red"` against `2` and never matched.
+
+  **This changes results for any caller using such a path.** A search that
+  returned an empty page now returns the matching entities. A workflow criterion
+  that silently never fired now fires — so entities that sat in the state before
+  a guarded transition will start advancing through it on their next save. In the
+  other direction, a comparison that happened to hold against the *length*
+  (`$.tags[*] GREATER_THAN 1` on a three-element array; `NOT_NULL` on an **empty**
+  array, whose length `0` is a present number) no longer matches. Presence tests
+  are existential and therefore vacuously false on an empty array: neither
+  `NOT_NULL` nor `IS_NULL` matches `{"tags": []}` on `$.tags[*]`.
+
+  Affected surfaces: every one that takes a condition — `/search/direct`,
+  `/search/async`, conditional `DELETE /entity/{name}/{version}`, the
+  grouped-stats `condition`, and a workflow or transition `criterion`. HTTP and
+  gRPC alike.
+
+  Multiple array hops were broken by the same arithmetic and are fixed with it,
+  including paths with **no** trailing wildcard: `$.matrix[*][*]`,
+  `$.a[*].b[*]` and `$.orders[*].lines[*].sku` all compared against a nested
+  array rather than the values they address, and never matched.
+
+  Newly rejected: a trailing wildcard on an array of **pure objects**
+  (`$.items[*]` where every element is `{"sku": …}`) with a scalar operand is
+  **400 `INVALID_FIELD_PATH`** — the element has substructure and no scalar form,
+  so the comparison could only ever be false. Navigate to the leaf sub-path
+  (`$.items[*].sku`). An array of scalars, and an array whose elements were also
+  observed as bare scalars, stay valid; so do `IS_NULL` / `NOT_NULL` on any of
+  them, which carry no scalar operand.
+
+  ```diff
+  - {"type":"simple","jsonPath":"$.items[*]",     "operatorType":"EQUALS","value":"A1"}
+  + {"type":"simple","jsonPath":"$.items[*].sku", "operatorType":"EQUALS","value":"A1"}
+  ```
+
+  Remedy for a caller who was relying on the length: there is no path spelling for
+  it. Address the elements, or filter on a field that carries the count.
+  See `docs/cloud-parity/trailing-wildcard-path.md`.
+
 - **A field path must now be written as JSON Path — the `$.` leader is required,
   and the whole path is validated.**
   A bare `amount` is not a path and is rejected; it is no longer read as `$.amount`.
