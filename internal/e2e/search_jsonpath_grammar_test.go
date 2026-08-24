@@ -45,6 +45,27 @@ var nonJSONPathSpellings = []struct {
 	{"empty segment", "$..amount"},
 	{"space", "$.am ount"},
 	{"sql tail", "$.amount'; --"},
+
+	// Malformed BRACKET spellings. The grammar used to stop scanning at the
+	// first '[' and accept everything after it unread, so each of these
+	// classified as "valid but unpushdownable" — which every engine call site
+	// reads as "fall back to in-memory evaluation", where gjson resolves none
+	// of them. Over real HTTP that is an empty page for a field that exists,
+	// which is exactly the shape of wrong-but-available answer this file's
+	// header describes for a bare path.
+	{"unclosed subscript", "$.tags["},
+	{"unmatched close", "$.tags]"},
+	{"subscript without field", "$.[0]"},
+	{"wildcard without field", "$.[*]"},
+	{"empty subscript", "$.tags[]"},
+	{"negative index", "$.tags[-1]"},
+	{"slice", "$.tags[0:2]"},
+	{"union", "$.tags[0,1]"},
+	{"filter expression", "$.tags[?(@.x)]"},
+	{"double-quoted subscript", `$.tags["x"]`},
+	{"sql tail after subscript", "$.tags[0];DROP"},
+	{"name glued to subscript", "$.tags[0]x"},
+	{"trailing dot after subscript", "$.tags[*]."},
 }
 
 // setupGrammarModel imports a model with a numeric "amount", a nested object,

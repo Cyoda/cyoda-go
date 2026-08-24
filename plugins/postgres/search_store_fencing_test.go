@@ -417,3 +417,61 @@ func TestPGSearchStore_ClaimStale_EmptyReturnsNil(t *testing.T) {
 		t.Fatalf("ClaimStale with no stale jobs = %#v, want nil (memory and sqlite both return nil)", claimed)
 	}
 }
+
+// TestPGSearchStore_GetResultIDs_PaginationCheckedBeforeTenantResolution pins
+// the order the three backends share: offset/limit are pure argument
+// validation, decidable without touching any state, so they are rejected before
+// the tenant is resolved. memory checked the tenant first, so a request with
+// both inputs bad reported a different error there than here.
+func TestPGSearchStore_GetResultIDs_PaginationCheckedBeforeTenantResolution(t *testing.T) {
+	factory := setupSearchTest(t)
+	store := getSearchStore(t, factory, "validation-order-tenant")
+
+	// No user context at all AND invalid pagination.
+	_, _, err := store.GetResultIDs(context.Background(), "job-x", -1, 0)
+	if err == nil {
+		t.Fatal("GetResultIDs with no user context and invalid pagination returned no error")
+	}
+	if !strings.Contains(err.Error(), "offset") && !strings.Contains(err.Error(), "limit") {
+		t.Errorf("GetResultIDs reported %q, want the pagination error", err)
+	}
+}
+
+// TestPGSearchStore_ClaimStale_RejectsNonPositiveLimit: "up to limit jobs" has
+// no meaning below 1, and the three backends disagreed about what it meant —
+// memory silently claimed nothing, postgres raised a raw driver error
+// ("LIMIT must not be negative"), and sqlite passed the value straight into
+// `LIMIT ?`, where SQLite defines LIMIT -1 as UNBOUNDED. All three now reject
+// it up front, matching GetResultIDs' documented "limit >= 1; a violation
+// returns an error".
+func TestPGSearchStore_ClaimStale_RejectsNonPositiveLimit(t *testing.T) {
+	factory := setupSearchTest(t)
+	store := getSearchStore(t, factory, "claim-limit-tenant")
+	ctx := ctxWithTenant("claim-limit-tenant")
+
+	stale := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+	if err := store.CreateJob(ctx, newRunningJob("job-live", "claim-limit-tenant", stale)); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	for _, limit := range []int{0, -1} {
+		claimed, err := store.ClaimStale(context.Background(), time.Minute, limit)
+		if err == nil {
+			t.Errorf("ClaimStale(limit=%d) returned %d jobs and no error, want an error", limit, len(claimed))
+		}
+		if len(claimed) != 0 {
+			t.Errorf("ClaimStale(limit=%d) claimed %d jobs, want none", limit, len(claimed))
+		}
+	}
+
+	job, err := store.GetJob(ctx, "job-live")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if job.Epoch != 1 {
+		t.Errorf("a rejected ClaimStale bumped the epoch to %d, want 1", job.Epoch)
+	}
+	if job.HeartbeatTime != nil {
+		t.Error("a rejected ClaimStale stamped HeartbeatTime")
+	}
+}

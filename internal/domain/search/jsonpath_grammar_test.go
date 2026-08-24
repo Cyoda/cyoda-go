@@ -44,6 +44,44 @@ var invalidJSONPaths = []struct {
 	{"colon", "$.foo:bar"},
 	{"at sign", "$.@"},
 	{"nul byte", "$.foo\x00"},
+
+	// Malformed BRACKET spellings. These are the ones the grammar used to let
+	// through: it stopped scanning at the first '[' and accepted whatever
+	// followed, so each classified as "valid but unpushdownable" — which every
+	// engine caller reads as "fall back to in-memory evaluation", where gjson
+	// resolves none of them. The result was an empty page (or a criterion that
+	// never fires) for a field that exists, and on the two surfaces with no
+	// downstream schema backstop — grouped-stats conditions and workflow
+	// criterion import — a 200 with wrong buckets.
+	{"unclosed subscript", "$.a["},
+	{"unclosed subscript with index", "$.a[0"},
+	{"unmatched close", "$.a]"},
+	{"unmatched close mid-path", "$.a].b"},
+	{"subscript without field", "$.[0]"},
+	{"wildcard without field", "$.[*]"},
+	{"empty subscript", "$.a[]"},
+	{"negative index", "$.a[-1]"},
+	{"signed index", "$.a[+1]"},
+	{"exponent index", "$.a[1e2]"},
+	{"slice", "$.a[0:2]"},
+	{"union", "$.a[0,1]"},
+	{"filter expression subscript", "$.a[?(@.x)]"},
+	{"filter expression in later segment", "$.a[*].b[?(x)]"},
+	{"double-quoted subscript", `$.a["x"]`},
+	{"single-quoted subscript", "$.a['x']"},
+	{"bracket quoted chained onto index", "$.a[0]['x']"},
+	{"whitespace in subscript", "$.a[ 0]"},
+	{"whitespace after index", "$.a[0 ]"},
+	{"sql tail after subscript", "$.a[0];DROP"},
+	{"sql comment after subscript", "$.a[0]'; --"},
+	{"non-ascii after subscript", "$.a[0].xé"},
+	{"name glued to subscript", "$.a[0]b"},
+	{"slash after subscript", "$.a[0]/etc"},
+	{"nul after subscript", "$.a[0]\x00"},
+	{"empty segment after subscript", "$.a[*]..b"},
+	{"trailing dot after subscript", "$.a[*]."},
+	{"non-index chained subscript", "$.tags[*][x]"},
+	{"negative chained index", "$.a[0][-1]"},
 }
 
 // validJSONPaths must keep working. Two classes are folded together
@@ -66,6 +104,11 @@ var validJSONPaths = []struct {
 	{"array wildcard", "$.tags[*].name"},
 	{"array index", "$.arr[0]"},
 	{"array wildcard leaf", "$.tags[*]"},
+	{"multi-digit index", "$.arr[12].a.b"},
+	{"chained wildcards", "$.matrix[*][*]"},
+	{"chained indices", "$.matrix[0][1]"},
+	{"mixed chained subscripts", "$.a[0][*].b"},
+	{"nested array hops", "$.orders[*].lines[*].sku"},
 }
 
 // TestValidateCondition_RejectsNonJSONPath is the reject table. jsonPath is

@@ -44,6 +44,33 @@ func TestFindUnknownFieldPaths_PositionalSubscriptIsKnown(t *testing.T) {
 	}
 }
 
+// TestFindUnknownFieldPaths_ArrayContainerIsKnown pins the ARRAY-CONTAINER
+// form: a path naming the array itself, with no subscript.
+//
+// The schema records an array's element once, under the "[*]" key, and never
+// records the container as a leaf — so for `tags: ["red","blue"]` the only
+// FieldsMap entry is "$.tags[*]". The existence probe accepted a path either
+// as a leaf or as a prefix of some leaf under "p + \".\"", but never under
+// "p + \"[\"" — so "$.tags", the natural spelling for an ArrayCondition, was
+// reported unknown and answered 400 INVALID_FIELD_PATH for a field the model
+// declares. The sibling probe in condition_type_validate.go
+// (isKnownContainerPath) already tested both delimiters.
+func TestFindUnknownFieldPaths_ArrayContainerIsKnown(t *testing.T) {
+	fields := subscriptSchemaFields()
+	t.Run("array condition on the container", func(t *testing.T) {
+		cond := &predicate.ArrayCondition{JsonPath: "$.arr", Values: []any{1}}
+		if unknown := search.FindUnknownFieldPaths(cond, fields); len(unknown) != 0 {
+			t.Errorf("FindUnknownFieldPaths($.arr) = %v, want none — the model declares $.arr[*]", unknown)
+		}
+	})
+	t.Run("simple condition on the container", func(t *testing.T) {
+		cond := &predicate.SimpleCondition{JsonPath: "$.items", OperatorType: "NOT_NULL"}
+		if unknown := search.FindUnknownFieldPaths(cond, fields); len(unknown) != 0 {
+			t.Errorf("FindUnknownFieldPaths($.items) = %v, want none — the model declares $.items[*].name", unknown)
+		}
+	})
+}
+
 // The canonicalisation must not turn the check into a rubber stamp: a path the
 // model genuinely does not declare is still unknown, and a subscript on a
 // non-array field is still unknown.
@@ -55,6 +82,12 @@ func TestFindUnknownFieldPaths_StillRejectsGenuinelyUnknown(t *testing.T) {
 		"$.items[0].missing",
 		"$.arr[-1]",
 		"$.arr[0:2]",
+		// Container spellings for containers that do not exist. The
+		// "p + \"[\"" probe must widen the check by exactly one prefix
+		// form, not turn it into a rubber stamp.
+		"$.nope",
+		"$.ar",
+		"$.items[0].nam",
 	} {
 		t.Run(path, func(t *testing.T) {
 			cond := &predicate.SimpleCondition{JsonPath: path, OperatorType: "EQUALS", Value: 1}

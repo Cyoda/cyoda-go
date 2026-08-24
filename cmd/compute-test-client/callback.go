@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
@@ -172,6 +173,16 @@ func (c *callbackClient) createSecondary(ctx context.Context, cfg cbConfig, txTo
 // transaction (read-your-own-writes).
 func (c *callbackClient) getEntity(ctx context.Context, entityID, txToken string) (cbResult, error) {
 	return c.do(ctx, http.MethodGet, "/api/entity/"+entityID, "", txToken, "")
+}
+
+// getEntityAt issues a GET /api/entity/{id}?pointInTime=… callback within the
+// joined transaction. A point-in-time read is committed-only: it must ignore
+// the ambient transaction, so an entity created but not yet committed in T is
+// NOT found even at an instant after its creation. getEntity above is the
+// control for the same id in the same transaction.
+func (c *callbackClient) getEntityAt(ctx context.Context, entityID string, at time.Time, txToken string) (cbResult, error) {
+	path := fmt.Sprintf("/api/entity/%s?pointInTime=%s", entityID, url.QueryEscape(at.UTC().Format(time.RFC3339Nano)))
+	return c.do(ctx, http.MethodGet, path, "", txToken, "")
 }
 
 // createSecondaryWithQuery is createSecondary's negative-path sibling: it
@@ -482,6 +493,49 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			}
 			data["readbackFound"] = got.Status == http.StatusOK
 			data["readbackMarker"] = entityDataStatus(got.Body)
+			data["secondaryId"] = secID
+			return withData(entity, data)
+		},
+
+		// cb-pit-committed-only — creates a secondary inside T (uncommitted),
+		// then reads that same id back twice through joined callbacks: once
+		// plainly (control — must be found, read-your-own-writes) and once with
+		// ?pointInTime= set to an instant AFTER the create (must NOT be found).
+		//
+		// A point-in-time read is committed-only: it ignores the ambient
+		// transaction and answers from committed state, so the uncommitted
+		// secondary is invisible to it however far forward the instant is. The
+		// plain read is what makes the assertion sharp — a scenario asserting
+		// only the 404 would also pass if the callback had failed to join T at
+		// all, or if the create had silently not happened.
+		"cb-pit-committed-only": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			res, secID, _, err := cb.createSecondary(ctx, cfg, token, cfg.Marker)
+			if err != nil {
+				return nil, fmt.Errorf("callback create: %w", err)
+			}
+			if res.Status != http.StatusOK {
+				return nil, fmt.Errorf("callback create status=%d body=%s", res.Status, res.Body)
+			}
+			plain, err := cb.getEntity(ctx, secID, token)
+			if err != nil {
+				return nil, fmt.Errorf("callback plain read: %w", err)
+			}
+			// One hour ahead: strictly after the uncommitted create, and far
+			// enough clear of it that no clock skew between this process and
+			// the server can make the instant precede the write.
+			pit, err := cb.getEntityAt(ctx, secID, time.Now().Add(time.Hour), token)
+			if err != nil {
+				return nil, fmt.Errorf("callback point-in-time read: %w", err)
+			}
+			data, err := decodeData(entity)
+			if err != nil {
+				return nil, err
+			}
+			data["plainReadStatus"] = float64(plain.Status)
+			data["pitReadStatus"] = float64(pit.Status)
 			data["secondaryId"] = secID
 			return withData(entity, data)
 		},

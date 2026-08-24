@@ -51,6 +51,10 @@ Models have two lifecycle states: `UNLOCKED` and `LOCKED`. A `LOCKED` model bloc
 
 Schema inference is additive: importing sample data against an existing model merges the incoming schema with the stored one. The model's `changeLevel` field controls which structural changes are allowed during entity ingestion on a locked model.
 
+**Field names must be searchable.** A field name is accepted only if it is a valid `jsonPath` segment: one or more ASCII letters, digits, `_` or `-`. Spaces, dots, quotes, brackets, `$`, `@`, `:`, any non-ASCII character, and the empty name are rejected with `400 VALIDATION_FAILED`, naming the offending key and the object that declares it. Search addresses a field by a `jsonPath` built from exactly this charset and offers no escape hatch, so a field outside it could be written and never queried — it is refused at the door instead.
+
+This applies to both paths that establish a model's field set: sample-data import, and the `changeLevel`-driven schema extension an entity write performs. Strict validation (a model with no `changeLevel`, and PATCH) does not establish fields, so the rule does not apply there. A model that already carries a non-conforming field is not migrated and there is no compatibility path: rename the key in the source data and re-establish the model.
+
 ## ENDPOINTS
 
 **GET /api/model/**

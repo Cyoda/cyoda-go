@@ -63,6 +63,29 @@ var invalidCriterionPaths = []string{
 	"$.amount.",
 	"$..amount",
 	"$.foo bar",
+	// Malformed BRACKET spellings. Criterion import is grammar-ONLY — no
+	// schema check runs behind it — so while the grammar stopped scanning at
+	// the first '[', a criterion on "$.a[" imported 200 and then silently
+	// never fired, because the in-process evaluator resolves none of these.
+	"$.a[",
+	"$.a[0",
+	"$.a]",
+	"$.[0]",
+	"$.[*]",
+	"$.a[]",
+	"$.a[-1]",
+	"$.a[0:2]",
+	"$.a[0,1]",
+	"$.a[?(@.x)]",
+	// JSON-escaped: these tables are spliced into a criterion JSON literal
+	// verbatim, so the double quotes must survive into the parsed jsonPath
+	// rather than terminating it.
+	`$.a[\"x\"]`,
+	"$.a['x']",
+	"$.a[0];DROP",
+	"$.a[0]b",
+	"$.a[*].",
+	"$.a[*]..b",
 }
 
 // validCriterionPaths must keep importing. Array subscripts are in the list on
@@ -75,6 +98,9 @@ var validCriterionPaths = []string{
 	"$.foo-bar",
 	"$.tags[*].name",
 	"$.arr[0]",
+	"$.arr[12].a.b",
+	"$.matrix[*][*]",
+	"$.orders[*].lines[*].sku",
 }
 
 func TestValidateImportRequest_RejectsNonJSONPathCriterionPath(t *testing.T) {

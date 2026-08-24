@@ -74,6 +74,23 @@ func RunSearchPathRequiresJSONPathLeader(t *testing.T, fixture BackendFixture) {
 		{"bracket quoted after leader", "$.['name']"},
 		{"trailing dot", "$.name."},
 		{"empty segment", "$..name"},
+		// Malformed BRACKET spellings. The grammar used to stop scanning at
+		// the first '[' and accept whatever followed, so each of these
+		// classified as "valid but unpushdownable" and fell back to the
+		// in-memory evaluator — which resolves none of them, answering an
+		// empty page for a field that exists. Backend-agnostic: the rejection
+		// is the engine boundary's, so every backend must answer identically
+		// whether or not it would have attempted pushdown.
+		{"unclosed subscript", "$.tags["},
+		{"unmatched close", "$.tags]"},
+		{"subscript without field", "$.[0]"},
+		{"empty subscript", "$.tags[]"},
+		{"negative index", "$.tags[-1]"},
+		{"slice", "$.tags[0:2]"},
+		{"union", "$.tags[0,1]"},
+		{"double-quoted subscript", `$.tags[\"x\"]`},
+		{"sql tail after subscript", "$.tags[0];DROP"},
+		{"name glued to subscript", "$.tags[0]x"},
 	} {
 		cond := `{"type":"simple","jsonPath":"` + tc.path + `","operatorType":"EQUALS","value":"Alice"}`
 		status, body, err := c.SyncSearchRaw(t, modelName, modelVersion, cond)
@@ -347,6 +364,21 @@ func RunGroupedStatsPathRequiresJSONPathLeader(t *testing.T, fixture BackendFixt
 			GroupBy:   []string{"$.status"},
 			Condition: &client.AggregationCond{"type": "simple", "jsonPath": "status", "operatorType": "EQUALS", "value": "active"},
 		}, "INVALID_FIELD_PATH"},
+		// A grouped-stats `condition` has NO downstream schema backstop — it
+		// is validated against a nil model — so a malformed path the grammar
+		// waved through was not merely un-pushed-down: it answered 200 with
+		// buckets computed from a leaf that resolved to nothing.
+		{"unclosed subscript condition path", client.GroupedStatsRequest{
+			GroupBy:   []string{"$.status"},
+			Condition: &client.AggregationCond{"type": "simple", "jsonPath": "$.status[", "operatorType": "EQUALS", "value": "active"},
+		}, "INVALID_FIELD_PATH"},
+		{"slice condition path", client.GroupedStatsRequest{
+			GroupBy:   []string{"$.status"},
+			Condition: &client.AggregationCond{"type": "simple", "jsonPath": "$.status[0:2]", "operatorType": "EQUALS", "value": "active"},
+		}, "INVALID_FIELD_PATH"},
+		{"unclosed subscript groupBy", client.GroupedStatsRequest{
+			GroupBy: []string{"$.status["},
+		}, "INVALID_GROUP_BY_PATH"},
 	} {
 		status, body, err := c.QueryGroupedStatsRaw(t, modelName, modelVersion, tc.req)
 		if err != nil {

@@ -112,9 +112,16 @@ var Catalog = []Fixture{
 
 	// --- Unicode + edge cases ---
 	{
-		Name:          "UnicodeKey4ByteCodepoint",
+		// A 4-byte-codepoint key can no longer ENTER a schema — importer.Walk
+		// refuses any name the wire jsonPath grammar cannot address. One
+		// already stored by a deployment that predates the rule still has to
+		// survive every schema operation unchanged, though: codec round-trip,
+		// Extend, Diff and Apply all carry it through untouched, and only the
+		// NEW field has to be addressable. That upgrade-path contract is what
+		// this fixture pins.
+		Name:          "LegacyUnicodeKeySurvivesExtension",
 		Old:           objNode(map[string]*schema.ModelNode{"🐙": leaf(schema.String)}),
-		Incoming:      map[string]any{"🐙": "tentacle", "🦊": "fox"},
+		Incoming:      map[string]any{"fox": "fox"},
 		Level:         spi.ChangeLevelStructural,
 		ExpectedKinds: []schema.SchemaOpKind{schema.KindAddProperty},
 	},

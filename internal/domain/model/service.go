@@ -127,6 +127,19 @@ func (h *Handler) ImportModel(ctx context.Context, input ImportModelInput) (*Imp
 	newNode, err := importer.NewSampleDataImporter().Import(
 		bytes.NewReader(input.Data), input.Format)
 	if err != nil {
+		// A field name outside the wire jsonPath grammar is a content-level
+		// contract violation, not a parse failure: the document is well-formed
+		// and the remedy is to rename the named key. It gets the same
+		// 400 VALIDATION_FAILED the workflow importer answers for its own
+		// content rules, so one class of import rejection reads one way.
+		if errors.Is(err, importer.ErrInvalidFieldName) {
+			appErr := common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error())
+			appErr.Props = map[string]any{
+				"entityName":    input.EntityName,
+				"entityVersion": ver,
+			}
+			return nil, appErr
+		}
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error())
 	}
 

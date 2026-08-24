@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"sort"
 	"sync"
 	"time"
 
@@ -228,12 +229,17 @@ func (s *AsyncSearchStore) SaveResults(ctx context.Context, jobID string, epoch 
 }
 
 func (s *AsyncSearchStore) GetResultIDs(ctx context.Context, jobID string, offset, limit int) ([]string, int, error) {
+	// Pagination before tenant resolution, matching sqlite and postgres:
+	// offset/limit are pure argument validation, decidable without touching
+	// any state, and a caller who gets both wrong must be told the same thing
+	// on every backend.
+	if offset < 0 || limit < 1 {
+		return nil, 0, fmt.Errorf("search job %q: offset must be >= 0 and limit must be >= 1, got offset=%d limit=%d", jobID, offset, limit)
+	}
+
 	tid, err := s.resolveTenant(ctx)
 	if err != nil {
 		return nil, 0, err
-	}
-	if offset < 0 || limit < 1 {
-		return nil, 0, fmt.Errorf("search job %q: offset must be >= 0 and limit must be >= 1, got offset=%d limit=%d", jobID, offset, limit)
 	}
 
 	s.mu.RLock()
@@ -343,19 +349,34 @@ func (s *AsyncSearchStore) Heartbeat(ctx context.Context, jobID string, epoch in
 // claimed job has its Epoch bumped and HeartbeatTime refreshed to now, so a
 // concurrent or immediately-following claim cannot re-take it. Terminal
 // jobs are never claimed, regardless of staleness.
+//
+// A limit-capped sweep takes the OLDEST candidates by CreateTime, matching
+// sqlite's and postgres's ORDER BY on the same column. Cutting an unordered
+// walk of the tenant maps at limit would claim a nondeterministic subset —
+// Go randomises map iteration — so with more stale jobs than the reaper's
+// batch (search.StaleClaimBatch) the oldest crashed job could be passed over
+// on every sweep, indefinitely, which is precisely the job the reaper exists
+// to recover. Equal CreateTime tie-breaks on job ID so the claimed set is
+// reproducible rather than merely ordered.
 func (s *AsyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Duration, limit int) ([]*spi.SearchJob, error) {
+	// "Up to limit jobs" has no meaning below 1. Rejected rather than treated
+	// as "claim nothing": sqlite would otherwise hand -1 to `LIMIT ?`, where
+	// SQLite defines it as UNBOUNDED, and an unbounded claim epoch-bumps every
+	// RUNNING job in the cluster at once. All three backends reject it, the
+	// same way GetResultIDs rejects limit < 1.
+	if limit < 1 {
+		return nil, fmt.Errorf("claim stale search jobs: limit must be >= 1, got %d", limit)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := s.clock.Now()
 	cutoff := now.Add(-staleAfter)
 
-	var claimed []*spi.SearchJob
+	var candidates []*searchJobEntry
 	for _, tenantJobs := range s.data {
 		for _, entry := range tenantJobs {
-			if len(claimed) >= limit {
-				return claimed, nil
-			}
 			// RUNNING is the only non-terminal status; this also excludes
 			// terminal jobs from ever being claimed.
 			if entry.job.Status != "RUNNING" {
@@ -368,14 +389,28 @@ func (s *AsyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 			if !baseline.Before(cutoff) {
 				continue
 			}
-
-			entry.job.Epoch++
-			hb := now
-			entry.job.HeartbeatTime = &hb
-
-			copied := copySearchJob(entry.job)
-			claimed = append(claimed, &copied)
+			candidates = append(candidates, entry)
 		}
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		if !candidates[i].job.CreateTime.Equal(candidates[j].job.CreateTime) {
+			return candidates[i].job.CreateTime.Before(candidates[j].job.CreateTime)
+		}
+		return candidates[i].job.ID < candidates[j].job.ID
+	})
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+
+	var claimed []*spi.SearchJob
+	for _, entry := range candidates {
+		entry.job.Epoch++
+		hb := now
+		entry.job.HeartbeatTime = &hb
+
+		copied := copySearchJob(entry.job)
+		claimed = append(claimed, &copied)
 	}
 	return claimed, nil
 }

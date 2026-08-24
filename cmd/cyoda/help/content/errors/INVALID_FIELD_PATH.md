@@ -26,13 +26,17 @@ Two checks emit this code.
 **1. Syntax.** A condition's `jsonPath` is JSON Path nomenclature, so the `$.` leader is required:
 
 ```
-jsonPath = "$." segment ( "." segment )*
-segment  = 1*( ALPHA / DIGIT / "_" / "-" )   ; ASCII only
+jsonPath  = "$." segment ( "." segment )*
+segment   = name subscript*
+name      = 1*( ALPHA / DIGIT / "_" / "-" )   ; ASCII only
+subscript = "[" ( "*" / 1*DIGIT ) "]"
 ```
 
-`$.amount` and `$.address.city` are paths. A bare `amount` is **not** one and is rejected — it is not a tolerated alias. So are an empty path, an empty or trailing segment (`$..a`, `$.a.`), bracket-quoted property access (`$['x']`, `$.['x']` — use dotted access instead), and any character outside the segment set.
+`$.amount` and `$.address.city` are paths. A bare `amount` is **not** one and is rejected — it is not a tolerated alias. So are an empty path, an empty or trailing segment (`$..a`, `$.a.`), bracket-quoted property access (`$['x']`, `$.['x']`, `$.a["b"]` — use dotted access instead), and any character outside the segment set.
 
-An array-subscripted path (`$.tags[*].name`, `$.arr[0]`) is valid JSON Path and is **accepted**; it cannot be pushed into the storage query, so it is evaluated in memory.
+A **well-formed** array subscript — the wildcard `[*]` or a non-negative index `[0]` — is valid JSON Path and is **accepted** (`$.tags[*].name`, `$.arr[0]`, `$.matrix[*][*]`, `$.orders[*].lines[*].sku`); it cannot be pushed into the storage query, so it is evaluated in memory.
+
+Any other bracket spelling is rejected with this code: an unclosed or unmatched bracket (`$.a[`, `$.a[0`, `$.a]`), a subscript with no field name before it (`$.[0]`), an empty subscript (`$.a[]`), a negative or signed index (`$.a[-1]`, `$.a[+1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), and whitespace inside one (`$.a[ 0]`). Characters after a well-formed subscript are checked too — `$.a[0]b`, `$.a[0];DROP` and `$.a[*]..b` are all rejected. These previously slipped through unvalidated and answered `200` with an empty page (or, on the grouped-stats `condition` and workflow-criterion surfaces, wrong buckets and a criterion that silently never fired).
 
 This check is syntactic and runs on every search-shaped surface regardless of whether a schema is loaded: `/search` (sync and async), conditional delete, and the `condition` of a grouped-statistics query.
 

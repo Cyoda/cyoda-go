@@ -6,11 +6,19 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
-- **A field path must now be written as JSON Path — the `$.` leader is required.**
+- **A field path must now be written as JSON Path — the `$.` leader is required,
+  and the whole path is validated.**
   A bare `amount` is not a path and is rejected; it is no longer read as `$.amount`.
-  So are bracket-quoted property access (`$['x']`, `$.['x']`), an empty or trailing
-  segment (`$..a`, `$.a.`), and any character outside
-  `1*( ALPHA / DIGIT / "_" / "-" )`.
+  So are bracket-quoted property access (`$['x']`, `$.['x']`, `$.a["b"]`), an empty
+  or trailing segment (`$..a`, `$.a.`), and any character outside
+  `1*( ALPHA / DIGIT / "_" / "-" )`. The grammar is now:
+
+  ```
+  jsonPath  = "$." segment ( "." segment )*
+  segment   = name subscript*
+  name      = 1*( ALPHA / DIGIT / "_" / "-" )   ; ASCII only
+  subscript = "[" ( "*" / 1*DIGIT ) "]"
+  ```
 
   ```diff
   - {"type":"simple","jsonPath":"amount",      "operatorType":"GREATER_THAN","value":50}
@@ -32,18 +40,48 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   happily — so the query silently ran as a full scan. Bracket-quoted access was
   worse: nothing in the stack resolves it, so it answered an empty page for a field
   that exists. A bare `groupBy` entry was rewritten to `$.`-form, and the response
-  echoed a group-key path the client never sent.
+  echoed a group-key path the client never sent; anything else malformed
+  (`$.first name`, `$..name`, `$.café`, `.leading`, `trailing.`, a bare `$`)
+  reached the storage layer, and what happened there depended on how the query
+  ran — the pushdown path failed **500**, while any request the backend declined
+  to push down (a residual filter, a point-in-time query, sqlite declining
+  `stdev`) fell through to the in-process tally, where the lookup missed and
+  every entity landed in one `null` bucket: a plausible-looking, wrong **200**.
 
-  Still accepted: array-subscripted condition paths (`$.tags[*].name`, `$.arr[0]`)
-  — valid JSON Path, evaluated in memory rather than pushed down. Grouped-stats
-  `groupBy`/`field` still reject them, because a group key must be a single scalar.
+  **Malformed array subscripts are newly rejected, and this is the class most
+  likely to bite.** The path used to be scanned only as far as the first `[`;
+  everything after it went unread, so `$.a[-1]`, `$.a[0:2]`, `$.a[0,1]`,
+  `$.a[?(@.x)]`, `$.a[]`, `$.[0]`, `$.a[ 0]`, an unclosed or unmatched bracket
+  (`$.a[`, `$.a[0`, `$.a]`) and even trailing junk after a valid subscript
+  (`$.a[0]b`, `$.a[0];DROP`, `$.a[*]..b`) all classified as "not pushdownable"
+  and fell back to the in-memory evaluator — which resolves none of them. The
+  answer was **200 with an empty page** for a field that exists, or on the two
+  surfaces with no schema backstop behind them, worse: a grouped-stats
+  `condition` (validated against a nil model) returned **200 with wrong
+  buckets**, and a workflow criterion imported cleanly and then **silently never
+  fired**. All are now rejected at the boundary, each with its own surface's
+  code — `INVALID_FIELD_PATH` on a condition, `INVALID_GROUP_BY_PATH` /
+  `INVALID_AGGREGATION_FIELD` on grouped stats, and `VALIDATION_FAILED` at
+  workflow import (see the next entry).
+
+  Still accepted: condition paths with a **well-formed** subscript — the wildcard
+  `[*]` or a non-negative index (`$.tags[*].name`, `$.arr[0]`, `$.matrix[*][*]`,
+  `$.orders[*].lines[*].sku`) — valid JSON Path, evaluated in memory rather than
+  pushed down. Grouped-stats `groupBy`/`field` still reject every subscript,
+  well-formed or not, because a group key must be a single scalar.
   The reserved `groupBy` token `state` is a token, not a path, and needs no leader;
   it is groupBy-only, so `state` as an aggregation `field` is now rejected.
   Workflow criteria obey the same grammar, enforced at workflow import — see the
   next entry.
 
   Fix for callers: prefix the path with `$.`, and replace bracket access with dotted
-  access. See `docs/cloud-parity/condition-jsonpath-grammar.md`.
+  access. Replace a malformed subscript with `[*]` or a non-negative index — there
+  is no rewrite for a slice, union, filter expression or negative index, because no
+  evaluator ever resolved them, so a query using one was already returning an empty
+  page. On grouped-stats `groupBy`/`field`, address an array position as a numeric
+  segment instead (`$.items.0`). See
+  `docs/cloud-parity/condition-jsonpath-grammar.md` and
+  `docs/cloud-parity/grouped-stats-path-grammar.md`, or `cyoda help crud`.
 
 - **A workflow or transition `criterion` `jsonPath` must now be JSON Path too, and
   is rejected at workflow import.**
@@ -91,14 +129,34 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `responseTimeoutMs` of 30s sits well under it. The idle ceiling applies per gap, not
   per transaction, so a long cascade that writes between callouts is unaffected.
 
-- **Opening a transaction now waits at most `CYODA_POSTGRES_ACQUIRE_TIMEOUT`
-  (default `10s`) for a pooled connection** and then fails with **503
+- **Acquiring a pooled connection now waits at most
+  `CYODA_POSTGRES_ACQUIRE_TIMEOUT` (default `10s`)** and then fails with **503
   `STORAGE_UNAVAILABLE`**, retryable, instead of queueing behind a saturated pool.
-  This covers both client-facing paths that open a transaction: entity writes,
-  and the schema extension an auto-evolving model performs — which previously
-  reported the same saturated pool as a `500` with a ticket. (The async-search
+  Two classes are covered. Opening a transaction: entity writes, and the schema
+  extension an auto-evolving model performs — which previously reported the same
+  saturated pool as a `500` with a ticket. And needing a *second* connection
+  while the caller's transaction already holds one: a point-in-time read or an
+  async-search submit issued inside a transaction, both of which deliberately
+  run off the transaction. The timeout does not bound a plain non-transactional
+  read, which waits on the pool without a deadline. (The async-search
   scan is classified the same way now, but its job record already reported a
   fixed message and is unchanged.)
+
+- **The SQLite backend now opens a dedicated read connection pool, raising its
+  memory ceiling.** Reads (paged lists, change history, by-transaction lookups,
+  non-transactional iteration, async-search result pages) move off the single
+  writer connection onto a second pool, so a long undrained scan can no longer
+  starve concurrent writes or queue an interactive read behind itself.
+  `CYODA_SQLITE_CACHE_SIZE` (default `64000` KiB) is a **per-connection** page
+  cache, so the resident ceiling is now `(readers + 1) × CYODA_SQLITE_CACHE_SIZE`
+  rather than one cache: on an 8-CPU host with the defaults, ≈ 562 MiB where it
+  was ≈ 62.5 MiB.
+  The new `CYODA_SQLITE_READER_POOL_SIZE` sizes the pool (default `GOMAXPROCS`
+  clamped to `4`..`8`; minimum 1, and a value below it falls back to the
+  default). `GOMAXPROCS` follows the CPU quota and is
+  blind to the memory limit, so a container generous on cores and tight on
+  memory must lower this — not `CYODA_SQLITE_CACHE_SIZE`, which shrinks the
+  writer's cache along with the readers'. `cyoda help config database`.
 
 - **With `CYODA_POSTGRES_AUTO_MIGRATE=true`, migrations now run before the
   schema-compatibility check.** A node booting alongside a peer's in-flight migration
@@ -127,24 +185,65 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   with **400**. This is case-sensitive — lowercase `"or"` is rejected too,
   matching the parser and the evaluator, neither of which ever accepted it.
 
-- **A grouped-stats `groupBy` path or aggregation `field` must now be a plain
-  dotted identifier.** Validation checked only for an empty path and for
-  array-projection brackets, so `$.variant';x`, `$.first name`, `$..name`,
-  `$.café`, `.leading`, `trailing.` and `$` all passed and reached the storage
-  layer. What happened next depended on how the query was executed: on the
-  pushdown path the backend refused the path and the request failed **500**,
-  while any request the backend declined to push down — a residual filter, a
-  point-in-time query, sqlite declining `stdev` — fell through to the
-  in-process tally, where the lookup simply missed and every entity landed in
-  one `null` bucket. That answered **200** with plausible-looking, wrong
-  groups. The path is now checked at the API boundary against the grammar
-  every backend already enforces — an optional `$.` leader, then
-  dot-separated segments of ASCII letters, digits, `_` and `-` — so both
-  execution paths reject identically, with **400 `INVALID_GROUP_BY_PATH`** or
-  **400 `INVALID_AGGREGATION_FIELD`**. Bracket-quoted property access
-  (`$['country']`, `$['x']['y']`) is still accepted and still normalizes to
-  the dotted form; the reserved `state` token is unaffected. Address an array
-  position as a numeric segment (`$.items.0`). `cyoda help crud`.
+- **Model field names must be addressable by a search `jsonPath`.** A field name
+  is now accepted only if it is a valid `jsonPath` segment: one or more ASCII
+  letters, digits, `_` or `-`. Anything else — spaces, dots, quotes, brackets,
+  `$`, `@`, `:`, or any non-ASCII character — and the empty name are rejected
+  with **400 `VALIDATION_FAILED`**, naming the offending key and the object that
+  declares it. The rule is enforced on both paths that establish a model's field
+  set: the sample-data model import, and the ChangeLevel-driven schema extension
+  performed by an entity write (single, collection, transition, and
+  processor-returned data), over HTTP and gRPC alike.
+
+  Previously the model layer recorded any JSON key while the query layer could
+  address only this charset, so a document could establish a field that nothing
+  could ever search. Ingestion that previously succeeded will now fail.
+
+  No migration is provided: rename the key in the source data and re-establish
+  the model. See `docs/cloud-parity/model-field-name-grammar.md`.
+
+- **A storage backend rejecting a malformed field path now answers 400, not a
+  500 with a support ticket.** Each plugin keeps its own path check as a
+  backstop behind the API boundary; when one fired, the engine had no
+  classification for it, so malformed input surfaced as an internal error with a
+  ticket UUID — inviting an operator to investigate a server fault that was
+  really just bad input. The `spi.ErrInvalidFilterPath` sentinel is now mapped to
+  **400 `INVALID_FIELD_PATH`** (with a server-side WARN, since reaching the
+  backstop means the boundary grammar and a plugin's check disagree). The
+  mapping is applied on both store branches — the bounded `Search` call and the
+  unbounded `Iterate` drain, the latter of which had no classification at all —
+  so the same input no longer answers 400 or 500 depending on whether the
+  request carried a positive `limit`.
+
+- **On PostgreSQL, a `pointInTime` read issued inside a joined transaction is
+  now committed-only.** It ran on the caller's own transaction connection, so a
+  snapshot read answered with that transaction's *uncommitted* writes: an entity
+  the transaction had just created was returned by a read taken "as at" an
+  instant before it existed, and one it had updated came back at the uncommitted
+  payload. It now ignores the ambient transaction and answers from committed
+  state. **Memory and sqlite already behaved this way** — they buffer
+  in-transaction writes off the store, so a point-in-time query never saw them —
+  so this closes a backend divergence rather than changing a cross-backend
+  contract. Only PostgreSQL deployments see a difference, and PostgreSQL is the
+  production backend, so treat it as breaking.
+
+  Five read families change — the single-entity read (`GET
+  /api/entity/{entityId}?pointInTime=` and `.../transitions?pointInTime=`), the
+  model-scoped list (`GET /api/entity/{entityName}/{modelVersion}?pointInTime=`),
+  direct search and conditional `DELETE /api/entity/{entityName}/{modelVersion}`
+  with `pointInTime`, the streamed scan behind grouped stats
+  (`POST /api/entity/stats/{entityName}/{modelVersion}/query` with
+  `pointInTime`), and the gRPC mirrors of all of them.
+
+  This is reachable over the wire, not just through the SPI: the `X-Tx-Token`
+  join middleware wraps the whole API mux (`internal/httpmw/txjoin_mw.go`), so
+  a compute-node callback running inside a transition's transaction takes
+  exactly this path and now gets `404 ENTITY_NOT_FOUND` where it previously got
+  the entity.
+
+  Fix for callers: omit `pointInTime`. A current-state read inside a transaction
+  is read-your-own-writes correct, and is the read a caller wanting its own
+  writes back should be using. See `docs/cloud-parity/tx-aware-search.md`.
 
 ### Added
 
@@ -224,13 +323,27 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **`POST /api/search/async/{entityName}/{modelVersion}` now runs on a
   bounded worker pool instead of one goroutine per submission**, with a
   retryable **503 `SEARCH_QUEUE_FULL`** once both the running workers and
-  the submit queue are exhausted. Four new env vars, all validated at
+  the submit queue are exhausted. Five new env vars, all validated at
   startup rather than silently clamped:
   `CYODA_SEARCH_ASYNC_WORKERS` (default `8`), `CYODA_SEARCH_ASYNC_QUEUE`
-  (default `256`), `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL` (default `15s`),
+  (default `256`), `CYODA_SEARCH_ASYNC_MAX_PER_TENANT` (default `8`, tracking
+  the worker count; `0` disables),
+  `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL` (default `15s`),
   and `CYODA_SEARCH_JOB_STALE_AFTER` (default `5m`, must be at least 4x the
   heartbeat interval). `cyoda help config` (Search internals) and
   `cyoda help errors SEARCH_QUEUE_FULL`.
+
+  **`CYODA_SEARCH_ASYNC_MAX_PER_TENANT` is on by default and lowers the
+  accepted-in-flight ceiling — plan for it.** It caps how many jobs *one*
+  tenant may have in flight (queued **and** running are counted together) on a
+  node, so a single-tenant deployment's ceiling drops from `workers + queue`
+  (8 + 256 = 264) to **8**: a 50-submission burst that was previously accepted
+  in full now gets 8 accepted and 42 answered `503 SEARCH_QUEUE_FULL`. That is
+  the point — the cap is what stops one tenant filling the shared queue and
+  locking every other tenant out — but a single-tenant deployment sees only the
+  cost. Raise it, or set `0` to restore first-come-first-served across tenants.
+  Clients must already handle `503` here; a submitter that did not retry now
+  notices.
 
 - **A batched delete that can never finish now fails instead of running
   forever**, with a new retryable **409 `DELETE_NOT_CONVERGED`**.
@@ -402,6 +515,23 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   gap this leaves for any future same-shaped migration.
 
 ### Fixed
+
+- **The grouped-statistics endpoint's error codes are now documented.** All ten
+  codes the endpoint raises — `MALFORMED_REQUEST`, `MISSING_GROUP_BY`,
+  `DUPLICATE_GROUP_BY`, `INVALID_GROUP_BY_PATH`, `INVALID_AGGREGATION_OP`,
+  `INVALID_AGGREGATION_FIELD`, `DUPLICATE_AGGREGATION_ALIAS`, `INVALID_LIMIT`,
+  `GROUP_CARDINALITY_EXCEEDED` and `NOT_IMPLEMENTED_BY_BACKEND` — were inline
+  string literals with no constant and no help topic, so `cyoda help errors
+  <CODE>` answered 404 for every one of them and the error-code parity test
+  could not see them. Each now has a constant and a topic.
+
+  Two codes are removed from the `crud` topic's grouped-stats table:
+  `INVALID_POINT_IN_TIME` and `INVALID_OPERATOR`. Neither is emitted anywhere
+  in the server — an unparseable `pointInTime` is part of strict body decoding
+  and answers `MALFORMED_REQUEST`, which the table now says. `SCAN_BUDGET_EXHAUSTED`
+  was missing and is added: a non-pushdownable `condition` can force a residual
+  scan past the backend's budget. `api/openapi.yaml` was also wrong on one
+  point — an out-of-range `limit` is `INVALID_LIMIT`, not `MALFORMED_REQUEST`.
 
 - **A path addressing one array element by position (`$.arr[0]`) now resolves,
   instead of answering an empty page for a field that holds the value.** It is

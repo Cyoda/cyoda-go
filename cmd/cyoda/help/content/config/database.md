@@ -35,10 +35,21 @@ Used when `CYODA_STORAGE_BACKEND=sqlite`.
 - `CYODA_SQLITE_PATH` — path to the SQLite database file (default: `~/.local/share/cyoda/cyoda.db` on Linux/macOS XDG; `%LocalAppData%\cyoda\cyoda.db` on Windows)
 - `CYODA_SQLITE_AUTO_MIGRATE` — run embedded SQL migrations on startup (default: `true`)
 - `CYODA_SQLITE_BUSY_TIMEOUT` — busy timeout for lock contention (default: `5s`)
-- `CYODA_SQLITE_CACHE_SIZE` — SQLite page cache size in KiB (default: `64000`)
+- `CYODA_SQLITE_CACHE_SIZE` — SQLite page cache size in KiB, **per connection** (default: `64000`)
+- `CYODA_SQLITE_READER_POOL_SIZE` — max concurrent read connections (default: `GOMAXPROCS` clamped to `4`..`8`; minimum 1, and a value below it falls back to the default)
 - `CYODA_SQLITE_SEARCH_SCAN_LIMIT` — max rows scanned per search query (default: `100000`)
 
 The prefix `CYODA_SQLITE_` is used to namespace all SQLite configuration variables.
+
+**Reader pool and memory.** The page cache is per connection, so resident memory
+scales with the pool: the ceiling is `(readers + 1) × CYODA_SQLITE_CACHE_SIZE`
+(the writer holds one too) — with the defaults on an 8-CPU host that is
+9 × 62.5 MiB ≈ 562 MiB. The pool size derives from `GOMAXPROCS`, which follows
+the CPU quota and is blind to the memory limit, so a container that is generous
+on cores and tight on memory must set `CYODA_SQLITE_READER_POOL_SIZE` down.
+Lower it, not `CYODA_SQLITE_CACHE_SIZE` — that shrinks the writer's cache along
+with the readers'. The floor of 4 exists so a small container still keeps an
+interactive read off the back of a long streaming scan.
 
 ### PostgreSQL backend (`CYODA_POSTGRES_*`)
 

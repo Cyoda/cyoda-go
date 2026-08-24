@@ -83,8 +83,11 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 	// abort emitted non-deterministically by any write op under concurrency and
 	// is therefore not a per-endpoint documented code (see universalCrossCuttingCodes).
 	"create": {
-		{Status: 400, Code: "BAD_REQUEST"},        // invalid payload, transactionWindow out of range
-		{Status: 400, Code: "INCOMPATIBLE_TYPE"},  // payload type mismatches the model
+		{Status: 400, Code: "BAD_REQUEST"},       // invalid payload, transactionWindow out of range
+		{Status: 400, Code: "INCOMPATIBLE_TYPE"}, // payload type mismatches the model
+		// TestEntityCreate_UnaddressableFieldName_400: a write that would extend
+		// the model with a field name the wire jsonPath grammar cannot address.
+		{Status: 400, Code: "VALIDATION_FAILED"},
 		{Status: 400, Code: "WORKFLOW_FAILED"},    // workflow processor rejected the entity
 		{Status: 404, Code: "MODEL_NOT_FOUND"},    // model not registered
 		{Status: 409, Code: "UNIQUE_VIOLATION"},   // TestUniqueKeys_CreateDuplicate et al.

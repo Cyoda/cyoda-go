@@ -392,6 +392,20 @@ func (s *entityStore) GroupedAggregate(
 	if err := validateFilterPaths(filter); err != nil {
 		return nil, err
 	}
+	// Group-by and aggregation paths are held to the same grammar, and
+	// validated HERE rather than only inside groupExprToSQL /
+	// aggregateExprToSQL: those run after the residual-filter decline below, so
+	// a request that carried a residual filter had its malformed path reported
+	// as ErrAggregationNotPushdownable. The service layer takes that as "stream
+	// it instead" and the streaming tally resolves the malformed path to
+	// nothing, bucketing every entity as null — a wrong-but-available answer,
+	// and the same input classified differently per backend (memory validates
+	// both unconditionally). The checks inside the two translators stay: they
+	// are the injection guard at the point of interpolation, not the
+	// client-error classification.
+	if err := validateGroupAndAggregatePaths(groupBy, opts.Aggregations); err != nil {
+		return nil, err
+	}
 	// Zero-value Filter means "match all" (same convention as Iterable).
 	var plan sqlPlan
 	if filter.Op != "" {

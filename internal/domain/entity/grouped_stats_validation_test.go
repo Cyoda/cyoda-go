@@ -121,7 +121,8 @@ func TestValidateGroupedStatsRequest(t *testing.T) {
 //
 // The "$." leader is REQUIRED (a bare identifier is not a JSON Path),
 // bracket-quoted property access is not the model's syntax, and an array
-// subscript cannot denote the single scalar a group key or aggregand needs.
+// subscript — well-formed or not — cannot denote the single scalar a group key
+// or aggregand needs.
 func TestValidateGroupedStatsRequest_PathGrammar_Rejects(t *testing.T) {
 	bad := []struct {
 		name string
@@ -164,6 +165,20 @@ func TestValidateGroupedStatsRequest_PathGrammar_Rejects(t *testing.T) {
 		// Array subscripts: valid JSON Path, but no single scalar to group on.
 		{"array projection", "$.items[*]"},
 		{"positional index", "$.items[0]"},
+		// Malformed bracket spellings. These were already rejected on THIS
+		// surface (which refuses every subscript), but they are listed so the
+		// scalar table stays a superset of the condition table — a future
+		// loosening here cannot silently admit a spelling no evaluator
+		// resolves.
+		{"unclosed subscript", "$.items["},
+		{"unmatched close", "$.items]"},
+		{"subscript without field", "$.[0]"},
+		{"empty subscript", "$.items[]"},
+		{"negative index", "$.items[-1]"},
+		{"slice", "$.items[0:2]"},
+		{"union", "$.items[0,1]"},
+		{"sql tail after subscript", "$.items[0];DROP"},
+		{"name glued to subscript", "$.items[0]x"},
 	}
 	for _, tc := range bad {
 		t.Run("groupBy/"+tc.name, func(t *testing.T) {

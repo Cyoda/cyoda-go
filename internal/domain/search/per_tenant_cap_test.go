@@ -146,10 +146,14 @@ func TestSubmitAsync_PerTenantCap_RejectsOverCapAndSparesOtherTenants(t *testing
 		t.Fatalf("tenant-b submit was rejected because tenant-a filled the node: %v", err)
 	}
 
-	// A rejected submission must leave no RUNNING job row behind — the same
-	// cleanup the pool's own queue-full rejection does.
-	if got := store.deletes.Load(); got != 1 {
-		t.Errorf("DeleteJob calls = %d, want 1 (the rejected submission's job row must be removed, not left RUNNING)", got)
+	// A rejected submission must leave no RUNNING job row behind. The cheap
+	// pre-check ahead of CreateJob makes that hold by never creating one, so
+	// there is nothing to compensate — no INSERT, and therefore no DELETE.
+	// The compensating-delete path itself is still reachable (the pre-check is
+	// non-authoritative) and is pinned by
+	// TestSubmitAsync_PerTenantCap_RegisterStaysTheAuthority.
+	if got := store.deletes.Load(); got != 0 {
+		t.Errorf("DeleteJob calls = %d, want 0 (a submit the cap rejects must not reach the store at all)", got)
 	}
 }
 

@@ -52,10 +52,11 @@ func convertJSONPath(jsonPath string) string {
 	// Convert array subscripts to gjson notation: [*] → .#, [N] → .N.
 	path = rewriteSubscripts(path)
 
-	// Clean up any double dots from the conversion. "$.a.[*]" and "$.a.[0]"
-	// are both inside the boundary grammar (it short-circuits at the first
-	// '['), and each rewrites to a leading-dot segment on an already-dotted
-	// prefix.
+	// Clean up any double dots from the conversion: a "[...]" rewritten to a
+	// dotted gjson segment leaves "a..#" when the caller wrote "a.[*]". The
+	// boundary grammar now rejects that spelling, but convertJSONPath is also
+	// reached from callers that never passed one (prepared criteria built
+	// in-process, FieldsMap keys), so the normalisation stays.
 	for strings.Contains(path, "..") {
 		path = strings.ReplaceAll(path, "..", ".")
 	}
@@ -72,14 +73,13 @@ func convertJSONPath(jsonPath string) string {
 // ("[0:2]"), a union ("[0,1]") and a filter expression ("[?(@.x)]") — have no
 // gjson equivalent, so there is nothing to translate them into; emitting a
 // guess would answer with the wrong element, which is worse than not answering.
-// They resolve to nothing today and continue to, which is the same treatment
-// the pushdown translator gives them. They are out of scope here because
-// admitting them is a boundary-grammar decision, not an evaluator one: the
-// grammar short-circuits at the first '[' and accepts whatever follows, in
-// deliberate lock-step with spi.ConditionToFilter (pinned by
-// TestValidateCondition_PathGrammarMatchesSPI). Narrowing what the boundary
-// accepts to exactly what an evaluator can resolve has to be decided and
-// changed on both sides together.
+//
+// The boundary grammar no longer admits any of them: it scans the whole path
+// and accepts only "[*]" and a non-negative decimal index, in lock-step with
+// spi.ConditionToFilter (pinned by
+// TestValidateCondition_PathGrammarMatchesSPI). So this arm is unreachable for
+// a path that came through a condition surface, and remains only as the
+// total-function answer for an internally constructed path.
 func rewriteSubscripts(path string) string {
 	if !strings.ContainsRune(path, '[') {
 		return path

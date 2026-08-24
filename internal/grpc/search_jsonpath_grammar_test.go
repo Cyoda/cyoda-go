@@ -22,6 +22,19 @@ var grpcNonJSONPathSpellings = []struct {
 	{"bracket quoted", "$['amount']"},
 	{"trailing dot", "$.amount."},
 	{"empty segment", "$..amount"},
+	// Malformed BRACKET spellings. The grammar used to stop scanning at the
+	// first '[', so these classified as "valid but unpushdownable" and the
+	// engine fell back to in-memory evaluation — which resolves none of them.
+	// On this surface that is an empty stream, which a client reads as "no
+	// matches" rather than "your path is malformed".
+	{"unclosed subscript", "$.amount["},
+	{"unmatched close", "$.amount]"},
+	{"subscript without field", "$.[0]"},
+	{"empty subscript", "$.amount[]"},
+	{"negative index", "$.amount[-1]"},
+	{"slice", "$.amount[0:2]"},
+	{"double-quoted subscript", `$.amount["x"]`},
+	{"sql tail after subscript", "$.amount[0];DROP"},
 }
 
 // TestEntitySearch_DirectSearch_NonJSONPathCondition_InvalidFieldPath pins the

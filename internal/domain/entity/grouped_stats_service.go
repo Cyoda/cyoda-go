@@ -73,10 +73,10 @@ func (s *GroupedStatsService) QueryGroupedStats(
 func classifyGroupedStatsError(err error) error {
 	switch {
 	case errors.Is(err, ErrBackendNotSupported):
-		return common.Operational(http.StatusNotImplemented, "NOT_IMPLEMENTED_BY_BACKEND",
+		return common.Operational(http.StatusNotImplemented, common.ErrCodeNotImplementedByBackend,
 			"backend does not support grouped stats").WithCause(err)
 	case errors.Is(err, spi.ErrGroupCardinalityExceeded):
-		return common.Operational(http.StatusUnprocessableEntity, "GROUP_CARDINALITY_EXCEEDED",
+		return common.Operational(http.StatusUnprocessableEntity, common.ErrCodeGroupCardinalityExceeded,
 			"group cardinality exceeds the configured maximum").WithCause(err)
 	case errors.Is(err, spi.ErrScanBudgetExhausted):
 		return common.Operational(http.StatusBadRequest, common.ErrCodeScanBudgetExhausted,
@@ -85,6 +85,12 @@ func classifyGroupedStatsError(err error) error {
 		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, err.Error()).WithCause(err)
 	case errors.Is(err, search.ErrInvalidFieldPath):
 		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, err.Error()).WithCause(err)
+	case errors.Is(err, spi.ErrInvalidFilterPath):
+		// The PLUGIN-side twin of the arm above: a backend's own backstop
+		// rejecting a path outside the model's syntax. Same disposition (400
+		// INVALID_FIELD_PATH) because the input is what is wrong; delegated so
+		// the mapping is not maintained twice.
+		return search.ClassifyStoreQueryError(err)
 	case errors.Is(err, search.ErrConditionTypeMismatch):
 		return common.Operational(http.StatusBadRequest, common.ErrCodeConditionTypeMismatch, err.Error()).WithCause(err)
 	}

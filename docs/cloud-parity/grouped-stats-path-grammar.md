@@ -15,6 +15,16 @@ segment = 1*( ALPHA / DIGIT / "_" / "-" )      ; ASCII only
 The `$.` leader is **REQUIRED**. The validator does not rewrite: an accepted
 path is echoed back verbatim in the response `groupKey[].path`.
 
+This is the **scalar** variant of the shared condition grammar in
+`condition-jsonpath-grammar.md` — the same scan, with the `subscript`
+production removed. Implementations should share one scanner between the two
+surfaces and vary only whether a well-formed subscript is admitted; the accept
+sets differ on exactly that one point, and maintaining two scanners is how they
+drift. The scalar accept/reject set here is **unchanged** by the 2026-08
+subscript tightening: every bracket spelling, well-formed or not, was rejected
+on this surface before and still is. Only the *reason* splits — `$.items[0]`
+fails the scalar rule, `$.items[0:2]` fails the grammar itself.
+
 The reserved `groupBy` token `state` (lifecycle state, never `$.`-prefixed) is
 exempt and unchanged — it is a token, not a path. It is groupBy-only: there is
 no defined aggregate over lifecycle state, so `state` as an aggregation `field`

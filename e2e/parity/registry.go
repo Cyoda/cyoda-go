@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 240 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 242 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -189,6 +189,7 @@ var allTests = []NamedTest{
 	{"CallbackTxJoin_EmptyTokenStandalone", RunCallbackEmptyTokenStandalone},
 	{"CallbackTxJoin_CBDPostJoinsTxPost", RunCallback_CBDPostJoinsTxPost},
 	{"CallbackTxJoin_AsyncNewTxDiscardOnFailure", RunCallback_AsyncNewTxDiscardOnFailure},
+	{"CallbackTxJoin_PITCommittedOnly", RunPITCommittedOnlyInJoinedTx},
 
 	// A.1 — numeric classifier parity (HTTP round-trip)
 	{"NumericClassification18DigitDecimal", RunNumericClassification18DigitDecimal},
@@ -205,6 +206,7 @@ var allTests = []NamedTest{
 	{"SchemaExtensionSavepointOnLockFoldEquivalence", RunSchemaExtensionSavepointOnLockFoldEquivalence},
 	{"SchemaExtensionLocalCacheInvalidationOnCommit", RunSchemaExtensionLocalCacheInvalidationOnCommit},
 	{"SchemaExtensionByteIdentityProperty", RunSchemaExtensionByteIdentityProperty},
+	{"ModelFieldNameRejected", RunModelFieldNameRejected},
 
 	// Phase 9.2 — OIDC CRUD + authz (#284)
 	// Rows 1-6: CRUD happy-path.

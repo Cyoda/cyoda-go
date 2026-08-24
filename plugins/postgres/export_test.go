@@ -138,6 +138,13 @@ const (
 	GetVersionByTransactionQueryForTest = getVersionByTransactionQuery
 )
 
+// GetResultIDsQueryForTest is the exact SQL GetResultIDs executes, exported
+// for the same reason as the two above: search_job_results_index_test.go's
+// EXPLAIN assertion must plan the query that ACTUALLY runs, not a simplified
+// re-typing of it — the real one is a CTE feeding a LEFT JOIN LATERAL, whose
+// plan shape a hand-copied flat SELECT cannot stand in for.
+const GetResultIDsQueryForTest = getResultIDsQuery
+
 // SearchCandidateIDsForTest returns the entity IDs the SQL WHERE fragment
 // planQuery(filter) produces BEFORE any Go-side postFilter re-check — i.e.
 // the raw pushdown candidate set exactly as searchCommitted would scan it,

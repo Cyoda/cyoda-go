@@ -357,6 +357,13 @@ func (s *asyncSearchStore) SaveResults(ctx context.Context, jobID string, epoch 
 // least one row even when the page is empty (offset past the end, or no results
 // yet) — that row carries the count with a NULL entity_id. A plain
 // `count(*) OVER ()` would lose the total exactly when the page is empty.
+//
+// It is a named constant, like getPageCurrentQuery, so
+// search_job_results_index_test.go can EXPLAIN the query that ACTUALLY runs:
+// both arms must probe search_job_results_pkey on (tenant_id, job_id), which is
+// migration 000009's whole justification for widening the PK and dropping
+// idx_search_job_results_tenant. A test that re-typed this SQL would keep
+// passing after the query changed underneath it.
 const getResultIDsQuery = `
 WITH total AS (
     SELECT count(*) AS n FROM search_job_results WHERE job_id = $1 AND tenant_id = $2
@@ -516,6 +523,16 @@ func (s *asyncSearchStore) ReapExpired(ctx context.Context, ttl time.Duration) (
 // now() — the same clock domain, per the Heartbeat doc comment — so a
 // concurrent claim can never race the stamp it is judged against.
 func (s *asyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Duration, limit int) ([]*spi.SearchJob, error) {
+	// "Up to limit jobs" has no meaning below 1. Rejected here rather than
+	// left to the server (which answers a negative LIMIT with a raw
+	// "LIMIT must not be negative" SQLSTATE) so all three backends classify
+	// the same caller error identically — sqlite in particular must not pass
+	// it through, since SQLite reads LIMIT -1 as UNBOUNDED. Same rule as
+	// GetResultIDs' documented limit >= 1.
+	if limit < 1 {
+		return nil, fmt.Errorf("claim stale search jobs: limit must be >= 1, got %d", limit)
+	}
+
 	rows, err := s.q.Query(ctx,
 		`WITH claimed AS (
 		   SELECT tenant_id, id FROM search_jobs

@@ -26,9 +26,13 @@ func ReadDBForTest(f *StoreFactory) *sql.DB {
 	return f.readDB
 }
 
-// ReaderPoolSizeForTest exposes readerPoolSize so tests can assert the pool
-// is sized the way the factory intends without duplicating the formula.
-var ReaderPoolSizeForTest = readerPoolSize
+// ReaderPoolSizeForTest reports the reader-pool size THIS factory was built
+// with, so tests can walk every pooled connection without duplicating the
+// sizing rule — which is now config-driven (CYODA_SQLITE_READER_POOL_SIZE)
+// rather than a single global formula.
+func ReaderPoolSizeForTest(f *StoreFactory) int {
+	return f.cfg.readerPoolSize()
+}
 
 // GetPageDirectQueryForTest is the exact SQL getPageDirect executes. Exported
 // so the EXPLAIN QUERY PLAN test asserts the plan of the production query

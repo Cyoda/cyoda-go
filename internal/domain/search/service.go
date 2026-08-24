@@ -358,11 +358,21 @@ func (s *SearchService) heartbeatEvery() time.Duration {
 // just execution.
 //
 // Returns false when uc's tenant already holds maxPerTenant in-flight jobs
-// on this node; nothing is registered in that case and the caller must
-// reject the submission (SubmitAsync answers the shared QueueFullError, the
-// same 503 the pool's own backpressure produces). The check and the
-// increment happen under one acquisition of registryMu, so concurrent
-// submissions from one tenant cannot both observe a free slot.
+// on this node, or when jobID is already registered; nothing is registered in
+// either case and the caller must reject the submission (SubmitAsync answers
+// the shared QueueFullError, the same 503 the pool's own backpressure
+// produces). The check and the increment happen under one acquisition of
+// registryMu, so concurrent submissions from one tenant cannot both observe a
+// free slot — this is the AUTHORITY on the cap; [SearchService.SubmitAsync]'s
+// pre-check ahead of CreateJob is only a cheap filter.
+//
+// The duplicate-jobID guard exists so the accounting is sound structurally
+// rather than by call-site discipline. Assigning unconditionally would drop
+// the first handle — leaking its cancel func, so nothing could cancel that job
+// — while charging the tenant twice for one map entry; the single matching
+// deregister then leaves the tenant permanently one slot short. Submit's fresh
+// time-UUIDs make that unreachable today, which is a property of the caller,
+// not of this function.
 func (s *SearchService) registerJob(jobID string, cancel context.CancelFunc, uc *spi.UserContext) bool {
 	s.registryMu.Lock()
 	defer s.registryMu.Unlock()
@@ -372,6 +382,9 @@ func (s *SearchService) registerJob(jobID string, cancel context.CancelFunc, uc 
 	if s.tenantInFlight == nil {
 		s.tenantInFlight = make(map[spi.TenantID]int)
 	}
+	if _, dup := s.registry[jobID]; dup {
+		return false
+	}
 	tenant := tenantOf(uc)
 	if s.maxPerTenant > 0 && s.tenantInFlight[tenant] >= s.maxPerTenant {
 		return false
@@ -379,6 +392,28 @@ func (s *SearchService) registerJob(jobID string, cancel context.CancelFunc, uc 
 	s.registry[jobID] = &asyncJobHandle{cancel: cancel, uc: uc}
 	s.tenantInFlight[tenant]++
 	return true
+}
+
+// tenantAtCap reports whether tenant currently holds its full share of this
+// node's async capacity. It is a CHEAP, NON-AUTHORITATIVE pre-check: the
+// answer can go stale the instant registryMu is released, so a false here
+// promises nothing and [SearchService.registerJob]'s atomic
+// check-and-register remains the decision.
+//
+// It exists because the authoritative check runs after CreateJob, so a tenant
+// hammering a node it is already capped on otherwise paid a full validation
+// pass, an INSERT and a DELETE per rejected submit — write churn every other
+// tenant on the node contends with, on precisely the axis the cap exists to
+// sever. Skipping that work when the tenant is visibly at its cap is free and
+// cannot produce a wrong ACCEPT: it only ever short-circuits to the same
+// rejection registerJob would have reached.
+func (s *SearchService) tenantAtCap(uc *spi.UserContext) bool {
+	if s.maxPerTenant <= 0 {
+		return false
+	}
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
+	return s.tenantInFlight[tenantOf(uc)] >= s.maxPerTenant
 }
 
 // deregisterJob removes jobID's entry and releases its tenant's in-flight
@@ -619,15 +654,8 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 					OrderBy:      orderBy,
 					TrackingRead: opts.TrackingRead,
 				})
-				switch {
-				case errors.Is(sErr, spi.ErrSearchResultLimitExceeded):
-					return nil, common.Operational(http.StatusBadRequest,
-						common.ErrCodeSearchResultLimit,
-						"matched result count exceeds the configured limit").WithCause(sErr)
-				case errors.Is(sErr, spi.ErrScanBudgetExhausted):
-					return nil, common.Operational(http.StatusBadRequest,
-						common.ErrCodeScanBudgetExhausted,
-						"search scan budget exhausted; narrow the query or add an indexable predicate").WithCause(sErr)
+				if appErr := ClassifyStoreQueryError(sErr); appErr != nil {
+					return nil, appErr
 				}
 				return res, sErr
 			}
@@ -642,6 +670,14 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 			// search working exactly as it did through the GetAll fallback.
 			matches, iErr := drainIterate(ctx, iterableStore, modelRef, filter, opts)
 			if iErr != nil {
+				// Same sentinel classification the bounded branch above
+				// applies: the store is reached through a different method
+				// here, but a plugin rejecting the request answers with the
+				// same cross-backend sentinels and the caller-facing status
+				// must not depend on which branch the request took.
+				if appErr := ClassifyStoreQueryError(iErr); appErr != nil {
+					return nil, appErr
+				}
 				return nil, iErr
 			}
 			sortEntities(matches, orderBy)
@@ -767,6 +803,50 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 	return matches, nil
 }
 
+// ClassifyStoreQueryError maps the cross-backend sentinels a storage plugin
+// may return from a pushdown query (Searcher.Search, Iterable.Iterate,
+// GroupedAggregator.GroupedAggregate) onto operational AppErrors, and returns
+// nil for anything it does not recognise so the caller can pass the error
+// through — an unrecognised store error is genuinely a 500.
+//
+// Each mapping preserves the sentinel via WithCause, so an errors.Is check
+// further up still holds.
+//
+// spi.ErrInvalidFilterPath is the one that is easy to omit and expensive to
+// get wrong. It is a plugin's BACKSTOP against a path outside the model's
+// syntax — input the engine boundary should already have rejected 400. Left
+// unclassified it surfaced as a 500 plus a support ticket for input that is
+// simply malformed, and it contradicted the contract COMPATIBILITY.md
+// documents: the engine uses the sentinel to tell "invalid input, 400" from
+// "valid but unpushdownable, fall back". Reaching it means the boundary grammar
+// and a plugin's own check disagree, which is worth a WARN — but the caller's
+// answer is still 400, because the input is what is wrong.
+//
+// Exported so callers outside this package that drive a store with an
+// engine-translated Filter (entity's grouped-stats service) classify
+// identically instead of maintaining a second copy of the table.
+func ClassifyStoreQueryError(err error) *common.AppError {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, spi.ErrSearchResultLimitExceeded):
+		return common.Operational(http.StatusBadRequest,
+			common.ErrCodeSearchResultLimit,
+			"matched result count exceeds the configured limit").WithCause(err)
+	case errors.Is(err, spi.ErrScanBudgetExhausted):
+		return common.Operational(http.StatusBadRequest,
+			common.ErrCodeScanBudgetExhausted,
+			"search scan budget exhausted; narrow the query or add an indexable predicate").WithCause(err)
+	case errors.Is(err, spi.ErrInvalidFilterPath):
+		slog.Warn("storage backend rejected a path the boundary grammar accepted",
+			"pkg", "search", "err", err)
+		return common.Operational(http.StatusBadRequest,
+			common.ErrCodeInvalidFieldPath,
+			"condition or sort references an invalid field path").WithCause(err)
+	}
+	return nil
+}
+
 // drainIterate runs an unbounded (Limit <= 0) pushdown search via
 // spi.Iterable.Iterate, draining the iterator fully into a slice for
 // Search's synchronous return contract. TrackingRead and PointInTime forward
@@ -869,6 +949,20 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	if opts.PointInTime == nil {
 		now := time.Now()
 		opts.PointInTime = &now
+	}
+
+	// Cheap non-authoritative cap pre-check, placed here so that a tenant
+	// already at its cap costs the store NOTHING: without it every rejected
+	// submit still ran an INSERT and a compensating DELETE, write churn every
+	// other tenant on the node contends with — on precisely the axis the cap
+	// exists to sever. It is sequenced AFTER the 4xx validation above so a
+	// malformed request still gets its actionable 400 rather than a 503 that
+	// hides it. registerJob below remains the authority; this can only
+	// short-circuit to the same rejection it would have reached.
+	if s.tenantAtCap(uc) {
+		slog.Warn("async search submission rejected: tenant at its in-flight cap",
+			"pkg", "search", "tenant", uc.Tenant.ID, "maxPerTenant", s.maxPerTenant)
+		return "", QueueFullError()
 	}
 
 	jobID := uuid.UUID(s.uuids.NewTimeUUID()).String()
@@ -1038,11 +1132,11 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 			if s.healthFlag != nil {
 				s.healthFlag.Store(false)
 			}
-			// context.WithoutCancel: jobCtx may or may not be cancelled at
-			// this point, but the write must land regardless — stripping
-			// cancellation while keeping the UserContext value lets a store
-			// that aborts in-flight work on ctx.Err() still accept it.
-			s.writeAsyncFailure(context.WithoutCancel(jobCtx), jobID, jobFailureFallback, time.Now(), 0)
+			// jobCtx may or may not be cancelled at this point, but the write
+			// must land regardless — writeAsyncFailure strips cancellation
+			// itself (keeping the UserContext value), so a store that aborts
+			// in-flight work on ctx.Err() still accepts it.
+			s.writeAsyncFailure(jobCtx, jobID, jobFailureFallback, time.Now(), 0)
 		}
 	}()
 
@@ -1168,8 +1262,9 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 	case jobCtx.Err() != nil:
 		// Cancelled — in-process CancelRunning, a cross-node cancel or
 		// terminal status the heartbeat poll observed, or a heartbeat
-		// fencing failure. context.WithoutCancel so the recovery read/write
-		// below is not itself aborted by the same cancellation.
+		// fencing failure. context.WithoutCancel so the recovery READ below
+		// is not itself aborted by the same cancellation (the write that
+		// follows strips cancellation on its own).
 		recoveryCtx := context.WithoutCancel(jobCtx)
 		job, getErr := s.searchStore.GetJob(recoveryCtx, jobID)
 		if getErr == nil && job.Status == "CANCELLED" {
@@ -1210,7 +1305,21 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 // (ErrAlreadyTerminal/ErrStaleClaim) is expected and logged at Warn, not
 // treated as a failure of the caller — the correct state is already
 // recorded.
+//
+// The write runs on context.WithoutCancel(ctx), and that is decided HERE
+// rather than at each of the six call sites: this is a terminal write by
+// definition, so no caller wants it cancellable. Two of the call sites are
+// reached only after `jobCtx.Err() != nil` evaluated false, which makes them a
+// TOCTOU — the heartbeat goroutine cancels jobCtx from another goroutine (a
+// fenced-out Heartbeat, or a poll that observes a terminal status), and a
+// cancel landing between the check and the write aborts it, leaving a finished
+// job RUNNING until the stale-job reaper fails it with a generic message
+// instead of the real reason recorded here. Stripping cancellation keeps the
+// UserContext (and so the tenant scope) intact; wrapping an already-stripped
+// context again is a no-op, so the cancellation-recovery call site loses
+// nothing by it.
 func (s *SearchService) writeAsyncFailure(ctx context.Context, jobID, msg string, finishTime time.Time, calcTimeMs int64) {
+	ctx = context.WithoutCancel(ctx)
 	if err := s.searchStore.UpdateJobStatus(ctx, jobID, initialEpoch, "FAILED", 0, msg, finishTime, calcTimeMs); err != nil {
 		if errors.Is(err, spi.ErrAlreadyTerminal) || errors.Is(err, spi.ErrStaleClaim) {
 			slog.Warn("async search terminal write lost the race; state already settled", "pkg", "search", "jobID", jobID, "err", err)

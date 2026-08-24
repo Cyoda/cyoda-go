@@ -144,6 +144,59 @@ func TestReadDB_GetPageNotStarvedByOpenIterator(t *testing.T) {
 	}
 }
 
+// TestReadDB_IsStructurallyReadOnly: three separate comments in this package
+// assert that readDB "never writes" and "never opens a transaction" — but
+// nothing enforced it. A CREATE TABLE issued on the reader pool succeeded, and
+// a write there is not merely a layering slip: it contends with the writer for
+// the database lock, from a pool the busy-timeout budget was never sized for.
+// PRAGMA query_only makes the invariant structural, so the next read path added
+// to readDB cannot quietly acquire write rights.
+func TestReadDB_IsStructurallyReadOnly(t *testing.T) {
+	factory, ctx, ref, store := seedReaderPoolFixture(t, "reader_pool_readonly.db")
+	readDB := sqlite.ReadDBForTest(factory)
+	bg := context.Background()
+
+	if _, err := readDB.ExecContext(bg, `CREATE TABLE reader_scratch (x INTEGER)`); err == nil {
+		t.Error("CREATE TABLE succeeded on the reader pool — readDB is not read-only")
+	}
+	// WHERE matches nothing, so a reader that DOES accept the write leaves the
+	// fixture intact for the read assertions below — the statement is rejected
+	// (or not) on write rights alone, not on rows affected.
+	if _, err := readDB.ExecContext(bg,
+		`UPDATE entities SET deleted = 1 WHERE entity_id = 'no-such-entity'`); err == nil {
+		t.Error("UPDATE succeeded on the reader pool — readDB is not read-only")
+	}
+
+	// The legitimate reader statements must be unaffected: a plain read, the
+	// read-only transaction GetResultIDs opens, and a streaming Iterate.
+	var n int
+	if err := readDB.QueryRowContext(bg, `SELECT count(*) FROM entities`).Scan(&n); err != nil {
+		t.Fatalf("SELECT on the reader pool: %v", err)
+	}
+	tx, err := readDB.BeginTx(bg, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatalf("read-only tx on the reader pool: %v", err)
+	}
+	if err := tx.QueryRowContext(bg, `SELECT count(*) FROM entities`).Scan(&n); err != nil {
+		t.Fatalf("SELECT inside a read-only tx on the reader pool: %v", err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("rollback read-only tx: %v", err)
+	}
+	iterable, ok := store.(spi.Iterable)
+	if !ok {
+		t.Fatal("entityStore does not implement spi.Iterable")
+	}
+	it, err := iterable.Iterate(ctx, ref, spi.Filter{}, spi.IterateOptions{})
+	if err != nil {
+		t.Fatalf("Iterate: %v", err)
+	}
+	defer it.Close()
+	if !it.Next() {
+		t.Fatalf("Iterate: expected a row, got none (err=%v)", it.Err())
+	}
+}
+
 // TestReadDB_EveryPooledConnectionIsConfigured: PRAGMA cache_size,
 // foreign_keys and busy_timeout are per-connection settings. Now that readDB
 // runs a real pool, configuring it by executing PRAGMAs over the *sql.DB
@@ -157,7 +210,7 @@ func TestReadDB_EveryPooledConnectionIsConfigured(t *testing.T) {
 	factory, _, _, _ := seedReaderPoolFixture(t, "reader_pool_pragmas.db")
 
 	readDB := sqlite.ReadDBForTest(factory)
-	n := sqlite.ReaderPoolSizeForTest()
+	n := sqlite.ReaderPoolSizeForTest(factory)
 	ctx := context.Background()
 
 	// Hold every connection at once so each check lands on a distinct one.

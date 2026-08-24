@@ -145,14 +145,22 @@ func newStoreFactory(ctx context.Context, cfg config, opts ...Option) (*StoreFac
 	//
 	// No migration run — db above already owns schema setup, and readDB is
 	// opened after it succeeds.
-	readerDSN := dsn + readerPragmaParams(cfg)
+	//
+	// _txlock=deferred, not the writer DSN's immediate: a transaction opened
+	// here must never take the write lock. GetResultIDs asks for a read-only
+	// transaction, which the driver already begins DEFERRED, but a future
+	// caller passing nil TxOptions would inherit immediate from a shared DSN
+	// and start contending with the writer from a pool sized for readers.
+	// query_only(1) in readerPragmaParams makes the same guarantee at the
+	// statement level.
+	readerDSN := fmt.Sprintf("file:%s?_txlock=deferred", cfg.Path) + readerPragmaParams(cfg)
 	readDB, err := sql.Open("sqlite3", readerDSN)
 	if err != nil {
 		db.Close()
 		_ = fl.Unlock()
 		return nil, fmt.Errorf("open sqlite reader connection: %w", err)
 	}
-	readers := readerPoolSize()
+	readers := cfg.readerPoolSize()
 	readDB.SetMaxOpenConns(readers)
 	// Idle == open so a burst of concurrent scans does not reopen (and
 	// re-PRAGMA) connections on every wave; ConnMaxIdleTime returns the
@@ -183,7 +191,8 @@ func newStoreFactory(ctx context.Context, cfg config, opts ...Option) (*StoreFac
 	return f, nil
 }
 
-// readerPoolSize returns how many connections readDB may hold open.
+// defaultReaderPoolSize returns how many connections readDB holds open when
+// CYODA_SQLITE_READER_POOL_SIZE is not set.
 //
 // Sized by GOMAXPROCS: SQLite reads execute in-process (the driver is a
 // wasm build of SQLite, not a network client), so reader concurrency past
@@ -198,7 +207,14 @@ func newStoreFactory(ctx context.Context, cfg config, opts ...Option) (*StoreFac
 // an uncapped pool would scale resident memory with core count. 8 is also
 // the default async-search worker count (CYODA_SEARCH_ASYNC_WORKERS) — the
 // largest number of simultaneous long scans the engine issues out of the box.
-func readerPoolSize() int {
+//
+// GOMAXPROCS follows the CPU quota and is blind to the memory cgroup, so this
+// derivation alone cannot serve a container that is generous on cores and
+// tight on memory — a 512 MiB limit with 8 CPUs gets a ~562 MiB page-cache
+// ceiling (writer + 8 readers × 64 MiB). CYODA_SQLITE_READER_POOL_SIZE is the
+// lever for that case; CYODA_SQLITE_CACHE_SIZE is not, because it shrinks the
+// writer's cache along with the readers'.
+func defaultReaderPoolSize() int {
 	n := runtime.GOMAXPROCS(0)
 	if n < 4 {
 		return 4
@@ -207,6 +223,18 @@ func readerPoolSize() int {
 		return 8
 	}
 	return n
+}
+
+// readerPoolSize returns the reader-pool size this config asks for, falling
+// back to the derived default. The fallback covers a config struct built in
+// code without the field (an internal caller, a test helper): database/sql
+// reads SetMaxOpenConns(0) as UNLIMITED, which would uncap the page-cache
+// ceiling this knob exists to bound. parseConfig already floors env input at 1.
+func (c config) readerPoolSize() int {
+	if c.ReaderPoolSize < 1 {
+		return defaultReaderPoolSize()
+	}
+	return c.ReaderPoolSize
 }
 
 // readerPragmaParams returns the "&_pragma=..." DSN suffix that configures
@@ -223,6 +251,13 @@ func readerPoolSize() int {
 // auto_vacuum are persistent database-level properties already established
 // on db, and re-issuing journal_mode on a reader would contend with an
 // active writer for no gain.
+//
+// query_only(1) turns "readDB is only ever read from" from a convention three
+// comments in this package assert into something SQLite enforces: every write
+// statement on a reader connection fails outright. A write here would contend
+// with the writer for the database lock from a pool whose busy-timeout budget
+// was never sized for it, so the next read path added to readDB must not be
+// able to acquire write rights by accident.
 func readerPragmaParams(cfg config) string {
 	// busy_timeout first, per the driver's documented PRAGMA ordering.
 	pragmas := []string{
@@ -232,6 +267,7 @@ func readerPragmaParams(cfg config) string {
 		"foreign_keys(ON)",
 		"mmap_size(268435456)",
 		"journal_size_limit(67108864)",
+		"query_only(1)",
 	}
 	var sb strings.Builder
 	for _, p := range pragmas {
@@ -355,7 +391,7 @@ func (f *StoreFactory) StateMachineAuditStore(ctx context.Context) (spi.StateMac
 }
 
 func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore, error) {
-	return &asyncSearchStore{db: f.db, clock: f.clock}, nil
+	return &asyncSearchStore{db: f.db, readDB: f.readDB, clock: f.clock}, nil
 }
 
 // ScheduledTaskStore returns the durable ScheduledTask store. Unlike the
@@ -418,6 +454,7 @@ func NewStoreFactoryForTest(ctx context.Context, dbPath string, opts ...Option) 
 		AutoMigrate:            true,
 		BusyTimeout:            5 * time.Second,
 		CacheSizeKiB:           64000,
+		ReaderPoolSize:         defaultReaderPoolSize(),
 		SearchScanLimit:        100_000,
 		SchemaExtendMaxRetries: 8,
 	}
@@ -437,6 +474,7 @@ func NewStoreFactoryForTestWithScanLimit(ctx context.Context, dbPath string, sca
 		AutoMigrate:            true,
 		BusyTimeout:            5 * time.Second,
 		CacheSizeKiB:           64000,
+		ReaderPoolSize:         defaultReaderPoolSize(),
 		SearchScanLimit:        scanLimit,
 		SchemaExtendMaxRetries: 8,
 	}

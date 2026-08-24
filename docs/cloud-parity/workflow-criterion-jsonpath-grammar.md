@@ -19,13 +19,24 @@ Unchanged from the search condition surface — see
 `condition-jsonpath-grammar.md` for the production and the full reject list:
 
 ```
-jsonPath = "$." segment ( "." segment )*
-segment  = 1*( ALPHA / DIGIT / "_" / "-" )   ; ASCII only
+jsonPath  = "$." segment ( "." segment )*
+segment   = name subscript*
+name      = 1*( ALPHA / DIGIT / "_" / "-" )   ; ASCII only
+subscript = "[" ( "*" / 1*DIGIT ) "]"
 ```
 
-The **condition** variant applies, not the scalar one: array subscripts
-(`$.tags[*].name`, `$.arr[0]`) are ACCEPTED. A criterion is only ever served by
-the in-process predicate evaluator, which resolves them.
+The **condition** variant applies, not the scalar one: a **well-formed** array
+subscript — the wildcard `[*]` or a non-negative index — is ACCEPTED
+(`$.tags[*].name`, `$.arr[0]`). A criterion is only ever served by the
+in-process predicate evaluator, which resolves them.
+
+A **malformed** bracket spelling (`$.tags[-1]`, `$.tags[0:2]`, `$.a[?(@.x)]`,
+`$.a[`, `$.a[0]b`) is rejected at import like any other syntax error. This
+surface is where that matters most: import validation is grammar-only — there
+is no schema check behind it to catch a bad path later — so a malformed
+subscript used to import cleanly and then evaluate to false for every entity,
+and the transition it guarded **silently never fired**. There was no error
+anywhere to notice.
 
 Which clauses carry a path:
 
@@ -108,3 +119,8 @@ Add the leader. Replace bracket-quoted access with dotted access.
   table so the two surfaces cannot drift on what they reject; plus the
   array-subscript accept control and the fires/does-not-fire pair proving a
   valid path still works.
+- `e2e/parity/criterion_path.go` —
+  `RunWorkflowCriterionPathRequiresJSONPathLeader` carries the malformed-bracket
+  cases (`$.tags[-1]`, `$.tags[0:2]`) on every backend, and
+  `RunPositionalSubscriptPathResolves` is the accept-side control that a
+  well-formed positional subscript still guards a transition.

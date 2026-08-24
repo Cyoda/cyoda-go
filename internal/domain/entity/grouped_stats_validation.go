@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 )
 
@@ -62,7 +63,7 @@ const (
 // enforce `limit <= max`.
 func ValidateGroupedStatsRequest(r GroupedStatsRequest, maxBuckets int) (*ValidatedGroupedStatsRequest, error) {
 	if len(r.GroupBy) == 0 {
-		return nil, &GroupedStatsValidationError{Code: "MISSING_GROUP_BY", Message: "groupBy is required"}
+		return nil, &GroupedStatsValidationError{Code: common.ErrCodeMissingGroupBy, Message: "groupBy is required"}
 	}
 	seen := make(map[string]struct{}, len(r.GroupBy))
 	groups := make([]GroupExprValidated, 0, len(r.GroupBy))
@@ -73,7 +74,7 @@ func ValidateGroupedStatsRequest(r GroupedStatsRequest, maxBuckets int) (*Valida
 		// spelled "state" is written "$.state" and is an ordinary path.
 		if raw == stateGroupToken {
 			if _, dup := seen[raw]; dup {
-				return nil, &GroupedStatsValidationError{Code: "DUPLICATE_GROUP_BY", Message: "duplicate groupBy entry: " + raw}
+				return nil, &GroupedStatsValidationError{Code: common.ErrCodeDuplicateGroupBy, Message: "duplicate groupBy entry: " + raw}
 			}
 			seen[raw] = struct{}{}
 			groups = append(groups, GroupExprValidated{IsState: true})
@@ -81,10 +82,10 @@ func ValidateGroupedStatsRequest(r GroupedStatsRequest, maxBuckets int) (*Valida
 		}
 		norm, err := normalizeScalarPath(raw)
 		if err != nil {
-			return nil, &GroupedStatsValidationError{Code: "INVALID_GROUP_BY_PATH", Message: err.Error()}
+			return nil, &GroupedStatsValidationError{Code: common.ErrCodeInvalidGroupByPath, Message: err.Error()}
 		}
 		if _, dup := seen[norm]; dup {
-			return nil, &GroupedStatsValidationError{Code: "DUPLICATE_GROUP_BY", Message: "duplicate groupBy entry: " + norm}
+			return nil, &GroupedStatsValidationError{Code: common.ErrCodeDuplicateGroupBy, Message: "duplicate groupBy entry: " + norm}
 		}
 		seen[norm] = struct{}{}
 		groups = append(groups, GroupExprValidated{Path: norm})
@@ -99,7 +100,7 @@ func ValidateGroupedStatsRequest(r GroupedStatsRequest, maxBuckets int) (*Valida
 		switch AggregateOp(a.Op) {
 		case AggSum, AggAvg, AggMin, AggMax, AggStdev:
 		default:
-			return nil, &GroupedStatsValidationError{Code: "INVALID_AGGREGATION_OP", Message: "unknown op: " + a.Op}
+			return nil, &GroupedStatsValidationError{Code: common.ErrCodeInvalidAggregationOp, Message: "unknown op: " + a.Op}
 		}
 		field, err := normalizeScalarPath(a.Field)
 		if err != nil {
@@ -107,7 +108,7 @@ func ValidateGroupedStatsRequest(r GroupedStatsRequest, maxBuckets int) (*Valida
 			// INVALID_GROUP_BY_PATH, and the reasons are no longer guessable
 			// from the input alone now that the full path grammar is enforced.
 			// err already echoes the raw field.
-			return nil, &GroupedStatsValidationError{Code: "INVALID_AGGREGATION_FIELD", Message: err.Error()}
+			return nil, &GroupedStatsValidationError{Code: common.ErrCodeInvalidAggregationField, Message: err.Error()}
 		}
 		pair := [2]string{a.Op, field}
 		alias := a.As
@@ -128,7 +129,7 @@ func ValidateGroupedStatsRequest(r GroupedStatsRequest, maxBuckets int) (*Valida
 			continue
 		}
 		if owner, taken := aliasOwner[alias]; taken && owner != pair {
-			return nil, &GroupedStatsValidationError{Code: "DUPLICATE_AGGREGATION_ALIAS", Message: alias}
+			return nil, &GroupedStatsValidationError{Code: common.ErrCodeDuplicateAggregationAlias, Message: alias}
 		}
 		seenPair[pair] = alias
 		aliasOwner[alias] = pair
@@ -142,7 +143,7 @@ func ValidateGroupedStatsRequest(r GroupedStatsRequest, maxBuckets int) (*Valida
 	if r.Limit != nil {
 		if *r.Limit <= 0 || *r.Limit > maxBuckets {
 			return nil, &GroupedStatsValidationError{
-				Code:    "INVALID_LIMIT",
+				Code:    common.ErrCodeInvalidLimit,
 				Message: fmt.Sprintf("limit must be positive and <= %d", maxBuckets),
 			}
 		}

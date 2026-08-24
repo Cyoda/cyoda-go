@@ -90,6 +90,18 @@ func RunWorkflowCriterionPathRequiresJSONPathLeader(t *testing.T, fixture Backen
 		{"bracket quoted", "$['amount']"},
 		{"trailing dot", "$.amount."},
 		{"empty segment", "$..amount"},
+		// Malformed BRACKET spellings. Criterion import is grammar-only —
+		// there is no schema check behind it — so before the grammar scanned
+		// past the first '[', a criterion on "$.tags[" imported 200 and then
+		// silently never fired.
+		{"unclosed subscript", "$.tags["},
+		{"unmatched close", "$.tags]"},
+		{"subscript without field", "$.[0]"},
+		{"empty subscript", "$.tags[]"},
+		{"negative index", "$.tags[-1]"},
+		{"slice", "$.tags[0:2]"},
+		{"double-quoted subscript", `$.tags["x"]`},
+		{"sql tail after subscript", "$.tags[0];DROP"},
 	} {
 		status, body, err := c.ImportWorkflowRaw(t, modelName, modelVersion,
 			criterionPathWorkflow("criterion-path-wf", tc.path))
@@ -111,8 +123,8 @@ func RunWorkflowCriterionPathRequiresJSONPathLeader(t *testing.T, fixture Backen
 // element by position resolves to the value that element holds, on both the
 // search surface and the workflow-criterion surface.
 //
-// No backend can push a subscripted path into its query, so every one of them
-// falls back to the shared in-process evaluator — and that evaluator answered
+// No IN-TREE backend can push a subscripted path into its query, so each of
+// them falls back to the shared in-process evaluator — and that evaluator answered
 // nothing: it handed gjson a path it has no syntax for ("arr[0]", where gjson
 // wants "arr.0") and looked the declared type up under a schema key that
 // cannot exist ("$.arr[0]" — an array's element type is recorded once, under
@@ -123,6 +135,14 @@ func RunWorkflowCriterionPathRequiresJSONPathLeader(t *testing.T, fixture Backen
 // WHICH plan a query takes is per-backend: the wildcard spelling of the same
 // query pushes down on some backends and not others, so "positional and
 // wildcard agree" is a claim about all of them at once.
+//
+// The shared-evaluator argument above does NOT extend to the commercial
+// backend, which self-executes search with an evaluator of its own
+// (COMPATIBILITY.md, v0.8.4 row). It owes its own implementation of
+// positional-subscript resolution — path resolution, declared-type lookup off
+// the "$.arr[*]" schema entry, and the field-existence check — and this
+// scenario is what surfaces the gap on its next dependency update rather than
+// letting it pass silently. See docs/cloud-parity/positional-subscript-path.md.
 func RunPositionalSubscriptPathResolves(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)

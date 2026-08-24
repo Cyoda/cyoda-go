@@ -3,7 +3,6 @@ package search
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
@@ -108,22 +107,23 @@ func isPathKnown(p string, fields map[string]schema.FieldDescriptor) bool {
 }
 
 // pathOrContainerKnown reports whether p is a recorded leaf, or an interior
-// object with at least one recorded leaf beneath it.
+// node — object OR array — with at least one recorded leaf beneath it.
+//
+// Both descent forms count, via the shared [isKnownContainerPath] predicate.
+// Testing only the dotted one missed the ARRAY container: FieldsMap records an
+// array's element under the "[*]" key and never the container itself, so for
+// `tags: ["red","blue"]` the only entry is "$.tags[*]" and a condition on
+// "$.tags" — the natural spelling for an ArrayCondition — was reported unknown
+// and answered 400 INVALID_FIELD_PATH for a field the model declares.
 func pathOrContainerKnown(p string, fields map[string]schema.FieldDescriptor) bool {
 	if _, ok := fields[p]; ok {
 		return true
 	}
-	// Prefix-match: a condition path may address an interior object that
-	// itself is not a leaf in FieldsMap (which only records leaves). We
-	// accept it when at least one recorded leaf descends from the same
-	// prefix — evidence that the structural field exists in the schema.
-	prefix := p + "."
-	for known := range fields {
-		if strings.HasPrefix(known, prefix) {
-			return true
-		}
-	}
-	return false
+	// Prefix-match: a condition path may address an interior node that itself
+	// is not a leaf in FieldsMap (which only records leaves). We accept it when
+	// at least one recorded leaf descends from it — evidence that the
+	// structural field exists in the schema.
+	return isKnownContainerPath(p, fields)
 }
 
 // FindUnknownFieldPaths returns the data-field JSONPaths cond references

@@ -1,8 +1,44 @@
 package search
 
+import (
+	"context"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+)
+
 // Test-only accessors. The build tag `*_test.go` keeps these out of
 // the production binary while making them visible to external tests
 // in the search_test package.
+
+// RegisterJobForTest exposes registerJob so an external test can drive the
+// per-tenant registry directly, without a submit round-trip. Used to pin the
+// accounting invariants (one slot per registered job, no double-count on a
+// duplicate jobID) structurally rather than through the single call site that
+// happens to guarantee unique ids today.
+func (s *SearchService) RegisterJobForTest(jobID string, cancel context.CancelFunc, uc *spi.UserContext) bool {
+	return s.registerJob(jobID, cancel, uc)
+}
+
+// DeregisterJobForTest exposes deregisterJob, the release half of the pair
+// above.
+func (s *SearchService) DeregisterJobForTest(jobID string) {
+	s.deregisterJob(jobID)
+}
+
+// TenantInFlightForTest returns tenant's current in-flight count, the quantity
+// the per-tenant cap is enforced against.
+func (s *SearchService) TenantInFlightForTest(tenant spi.TenantID) int {
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
+	return s.tenantInFlight[tenant]
+}
+
+// RegisteredJobCountForTest returns the number of live cancel handles.
+func (s *SearchService) RegisteredJobCountForTest() int {
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
+	return len(s.registry)
+}
 
 // PathValidationBucketMapCap returns the configured maximum number of
 // (tenant, ref) buckets the path-validation cache will retain. Issue

@@ -647,6 +647,34 @@ func TestQueryGroupedStats_PushdownPropagatesCardinalityError(t *testing.T) {
 	}
 }
 
+// TestQueryGroupedStats_InvalidFilterPathMapsTo400 pins the missing arm of
+// classifyGroupedStatsError. spi.ErrInvalidFilterPath is the cross-backend
+// sentinel a plugin returns when a path it was handed is not the model's path
+// syntax — malformed CLIENT input, reaching the plugin's backstop. Returned
+// unclassified it became a 500 plus a support ticket, on the same input
+// /search answers 400 INVALID_FIELD_PATH for.
+func TestQueryGroupedStats_InvalidFilterPathMapsTo400(t *testing.T) {
+	agg := &fakeAggregator{err: fmt.Errorf("plugin detail: %w", spi.ErrInvalidFilterPath)}
+	iter := &fakeIterable{}
+	dual := dualBackend{fakeIterable: iter, fakeAggregator: agg}
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy: []entity.GroupExprValidated{{IsState: true}},
+	}
+	_, err := svc.QueryGroupedStats(context.Background(), dual, spi.ModelRef{}, nil, req)
+
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("want *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeInvalidFieldPath {
+		t.Errorf("got %d/%q, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeInvalidFieldPath)
+	}
+	if !errors.Is(err, spi.ErrInvalidFilterPath) {
+		t.Errorf("errors.Is(err, ErrInvalidFilterPath) = false; WithCause must preserve the sentinel")
+	}
+}
+
 // TestQueryGroupedStats_MalformedRegexRejected is a regression test for a
 // fail-open bug: the plugin residual filter evaluators
 // (plugins/sqlite/post_filter.go evaluateFilter, plugins/postgres/grouped_stats.go

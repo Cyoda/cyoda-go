@@ -524,17 +524,36 @@ status code" statement, which predates the pool's queue-bound decision.
 
 | Endpoint | Codes to re-verify |
 |---|---|
-| `POST /search/async/{entityName}/{modelVersion}` | 200 submit; 400 invalid condition; 401; 404 model; 503 `SEARCH_QUEUE_FULL` (retryable) when the worker pool's queue is full (the submit endpoint has no limit parameter — the service-level limit>max guard is unreachable over HTTP) |
+| `POST /search/async/{entityName}/{modelVersion}` | 200 submit; 400 invalid condition; 401; 404 model; 503 `SEARCH_QUEUE_FULL` (retryable) from **either** trigger — the worker pool's queue is full, or the submitting tenant is already at `CYODA_SEARCH_ASYNC_MAX_PER_TENANT` in-flight jobs (queued + running) on this node (the submit endpoint has no limit parameter — the service-level limit>max guard is unreachable over HTTP) |
 | `GET /search/async/{jobId}` | 200 page; 400 job not complete / pagination over max; 401; 404 job |
 | `GET /search/async/{jobId}/status` | 200; 401; 404 |
 | `PUT /search/async/{jobId}/cancel` | 200 cancelled=true (RUNNING); 400 `SEARCH_JOB_ALREADY_TERMINAL` (job already SUCCESSFUL/FAILED/CANCELLED); 401; 404 — **now actually stops the scan** |
 | `POST /search/direct/{entityName}/{modelVersion}` | 200 NDJSON; 400 incl. limit ≤ 0 rejected; 404; 408 timeoutMillis; `SEARCH_RESULT_LIMIT` over-limit error (status per existing contract) |
-| `DELETE /entity/{entityName}/{modelVersion}` (conditional) | 200 report; 400; 401; 404 |
+| `DELETE /entity/{entityName}/{modelVersion}` (conditional) | 200 report; 400; 401; 404; 409 `DELETE_NOT_CONVERGED` (retryable) when `transactionSize` is set, `pointInTime` is absent, and the selection cycle cap is reached — batches already committed stay deleted |
 | `GET /entity/{entityName}/{modelVersion}` (list) | 200; 400 pagination; 401; 404 |
 | `GET /entity/{entityId}?transactionId=` | 200; 400 mutual-exclusion; 404 no matching version |
 | `GET /entity/{entityId}/changes` | 200; 400; 404 |
 | `GET /audit/entity/{entityId}` search | 200; 400; 404 |
 | gRPC snapshot search / status / cancel / get | existing envelope codes per class |
+
+Cutting across the condition-bearing rows above (`/search/direct`,
+`/search/async`, conditional `DELETE`, and the `condition` of
+`POST /entity/stats/…/query`): a `jsonPath` outside the wire grammar is
+**400 `INVALID_FIELD_PATH`** before anything executes. The grammar now
+validates the whole path rather than stopping at the first `[`, so the
+malformed-subscript class (`$.a[-1]`, `$.a[0:2]`, `$.a[0,1]`, `$.a[?(@.x)]`,
+`$.a[]`, `$.[0]`, `$.a[`, `$.a]`, `$.a[ 0]`, and trailing junk after a valid
+subscript such as `$.a[0]b` or `$.a[*]..b`) moved from a silent 200 to 400.
+Well-formed subscripts (`[*]`, non-negative index) are unchanged: accepted, and
+served by the in-memory fallback. The grouped-stats `groupBy`/`field` surface
+answers `INVALID_GROUP_BY_PATH` / `INVALID_AGGREGATION_FIELD` for the same
+input, and workflow-criterion import answers `VALIDATION_FAILED`. On gRPC every
+one of these is an envelope error, never an empty stream.
+
+Separately, a plugin backstop raising `spi.ErrInvalidFilterPath` maps to
+**400 `INVALID_FIELD_PATH`** on both store branches (bounded `Search`,
+unbounded `Iterate` drain), where the `Iterate` branch previously returned 500
+with a ticket.
 
 ## 9. Coverage matrix
 
@@ -559,10 +578,39 @@ status code" statement, which predates the pool's queue-bound decision.
 | GetVersionMetadata window/limit/order; Deleted canonical | spitest | ✓ changes endpoint | ✓ | ✓ changes |
 | Conditional delete over large model: O(IDs) atomic / O(page) batched | ✓ engine | ✓ isolated | ✓ behaviour | — |
 | Async result ordering respected end-to-end | — | ✓ (incl. the byte-wise entity-id tiebreak, a postgres-only contract) | ✓ (requested key order, set equality, repeat-run stability — NOT the entity-id tiebreak, which is per-engine) | ✓ (submit → poll → results, asc and desc) |
+| Malformed subscript → `400 INVALID_FIELD_PATH` on a condition (sync search, async submit, conditional delete) | ✓ `internal/domain/search/jsonpath_grammar_test.go` reject table | ✓ `internal/e2e/search_jsonpath_grammar_test.go` (`nonJSONPathSpellings`, applied at all three sites) | ✓ `RunSearchPathRequiresJSONPathLeader` (`e2e/parity/search_path_key.go`) | ✓ `internal/grpc/search_jsonpath_grammar_test.go` (envelope, never an empty stream) |
+| Malformed subscript on a grouped-stats `condition` → `400 INVALID_FIELD_PATH`, and on `groupBy` → `400 INVALID_GROUP_BY_PATH` | ✓ same reject table via `ValidateScalarJSONPath` | ✓ | ✓ `RunGroupedStatsPathRequiresJSONPathLeader` — the surface with no schema backstop, so it previously answered 200 with wrong buckets | — (no gRPC surface) |
+| Malformed subscript in a workflow/transition `criterion` → `400 VALIDATION_FAILED` at import | ✓ `internal/domain/workflow/criterion_path_test.go` | ✓ `internal/e2e/workflow_criterion_path_key_test.go` (shares `nonJSONPathSpellings`, so the two surfaces cannot drift) | ✓ `RunWorkflowCriterionPathRequiresJSONPathLeader` (`e2e/parity/criterion_path.go`) | — (import is HTTP-only) |
+| Well-formed subscript still accepted and served (accept-side control) | ✓ positive-control table incl. chained/nested forms | ✓ array-subscript accept control | ✓ `RunSearchArraySubscriptPathStillServed`, `RunPositionalSubscriptPathResolves` | ✓ |
+| `spi.ErrInvalidFilterPath` from a plugin backstop → `400`, both store branches | ✓ `internal/domain/search/invalid_filter_path_test.go` | — | — | — |
+| `409 DELETE_NOT_CONVERGED` on a capped batched delete | — | ✓ `internal/e2e/entity_delete_nonconvergence_test.go` | **waived** (below) | ✓ `internal/grpc/entity_deleteall_txsize_test.go` (`CLIENT_ERROR`, prefixed message, `Retryable:true`) |
+| `503 SEARCH_QUEUE_FULL` from the per-tenant in-flight cap | ✓ engine (`registerJob`) | ✓ isolated | — (concurrency shape) | — |
+| In-transaction point-in-time reads are committed-only | spitest | ✓ per-plugin (`plugins/postgres/pit_committed_only_test.go`) | ✓ `CallbackTxJoin_PITCommittedOnly` (`e2e/parity/pit_committed_only.go`) | — |
+| `ClaimStale` takes the oldest jobs first, ties broken by ID | per-plugin (`plugins/{memory,sqlite}/search_store_claim_order_test.go`) | — | **waived** (below) | — |
 
 Concurrency scenarios stay in isolated single-backend e2e, never the shared
 parity suite. A missing cell at implementation time blocks merge unless
-waived with a one-line reason. The two query-shape cells need a named test
+waived with a one-line reason.
+
+Waivers:
+
+- **`409 DELETE_NOT_CONVERGED` — no parity cell.** Inducing it needs an insert
+  storm racing the delete, which `.claude/rules/test-coverage.md` bars from the
+  shared parity suite; the e2e instead reaches it deterministically through the
+  `entity.Handler.WithMaxDeleteCycles` seam, which is in-process and not
+  reachable from a parity fixture (API-only, no handler handle).
+- **`ClaimStale` ordering — no parity cell.** `ClaimStale` is a store method
+  with no HTTP surface, and observing it end-to-end would need a job to go
+  stale (`CYODA_SEARCH_JOB_STALE_AFTER`, default `5m`). `BackendFixture` is
+  API-only by design (`e2e/parity/fixture.go` — "no storage handle"), so no
+  parity scenario can reach it. **Open**: spitest is the correct
+  cross-backend home — it reaches the store directly on every backend
+  including the commercial one — but its `Claim/*` subtests all call
+  `ClaimStale(…, 1000)`, a limit no fixture exceeds, so none of them exercise
+  ordering. The SPI's `ClaimStale` doc does not state an ordering rule either,
+  which is why the in-tree backends could disagree about it. Both need fixing
+  in the SPI; until then the contract rests on the two per-plugin tests above
+  and is unenforced for any out-of-tree backend. The two query-shape cells need a named test
 hook (query capture or plan inspection) — the plan defines its mechanism; it
 is not wall-clock assertion.
 

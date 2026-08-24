@@ -11,7 +11,18 @@ import (
 )
 
 type asyncSearchStore struct {
-	db    *sql.DB
+	// db is the writer pool — SetMaxOpenConns(1). Every write in this file
+	// runs on it, as do the short single-row job reads (GetJob, the fence
+	// probes, ClaimStale's post-claim re-read), which check a connection out
+	// only for the duration of one statement.
+	db *sql.DB
+
+	// readDB is the dedicated reader pool, used by GetResultIDs alone: it is
+	// the one read here that holds its connection across a caller-controlled
+	// number of rows. See GetResultIDs for why that must not be the writer's
+	// sole connection.
+	readDB *sql.DB
+
 	clock Clock
 }
 
@@ -204,7 +215,17 @@ func (s *asyncSearchStore) GetResultIDs(ctx context.Context, jobID string, offse
 	// DEFERRED (per the driver's _txlock rules), so it takes no write lock —
 	// it just pins one WAL read snapshot for the duration. The memory
 	// backend gets the same property from a single RLock.
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	//
+	// On readDB, NOT the writer pool: holding one connection across all three
+	// statements means holding it for the whole page scan, whose size the
+	// caller picks (`limit` comes off the results request). The writer pool is
+	// capped at a single connection, so running this there would park the one
+	// connection every SaveResults commit, Heartbeat and entity write needs
+	// behind an arbitrarily long read — the starvation GetPage and the version
+	// reads were moved onto readDB to escape. WAL lets this snapshot coexist
+	// with a concurrent writer, so the consistency the transaction buys is
+	// unaffected by the move.
+	tx, err := s.readDB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to begin read tx for job %s: %w", jobID, err)
 	}
@@ -369,6 +390,15 @@ type staleClaimCandidate struct {
 }
 
 func (s *asyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Duration, limit int) ([]*spi.SearchJob, error) {
+	// "Up to limit jobs" has no meaning below 1, and passing it through would
+	// be actively unsafe here: SQLite defines `LIMIT -1` as UNBOUNDED, so a
+	// negative limit claims EVERY stale RUNNING job — epoch-bumping and so
+	// dispossessing every live executor in the cluster in one sweep. Rejected
+	// on all three backends alike, the same way GetResultIDs rejects limit < 1.
+	if limit < 1 {
+		return nil, fmt.Errorf("claim stale search jobs: limit must be >= 1, got %d", limit)
+	}
+
 	cutoffMicro := s.clock.Now().Add(-staleAfter).UnixMicro()
 
 	// Cross-tenant by design (search_store.go interface doc): a reclaim
