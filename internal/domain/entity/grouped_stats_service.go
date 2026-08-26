@@ -145,7 +145,7 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 	// identically, matching the search path's ValidatePatterns call.
 	if parsedCond != nil {
 		if rErr := search.ValidatePatterns(parsedCond); rErr != nil {
-			return nil, fmt.Errorf("%w: invalid pattern in condition: %v", ErrInvalidCondition, rErr)
+			return nil, fmt.Errorf("%w: %v", ErrInvalidCondition, rErr)
 		}
 	}
 

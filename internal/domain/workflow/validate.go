@@ -204,8 +204,9 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 //     the search API boundary enforces: a criterion and a search condition are
 //     one model syntax and must agree on which paths exist.
 //   - a MATCHES_PATTERN or LIKE operand the kernel cannot compile. Delegates
-//     to spi.ValidateConditionPatterns, the kernel's own derivation, so
-//     import accepts exactly the operands evaluation accepts.
+//     to search.ValidatePatterns — the kernel's own derivation, the same call
+//     the search API boundary makes — so import accepts exactly the operands
+//     evaluation accepts. Checked last, so a bad path wins over a bad operand.
 //   - a lifecycle/meta clause that is type-unsound: an unknown meta field
 //     path, or a non-offset-RFC3339 operand on a temporal field
 //     (creationDate, lastUpdateTime). Delegates to
@@ -240,15 +241,16 @@ func validateCriterion(criterion json.RawMessage, location string) error {
 	if err != nil {
 		return nil
 	}
-	// Pattern operands are validated against the kernel's own derivation
-	// (spi.ValidateConditionPatterns routes through the same compileLeafPattern
-	// ExpandLeaf evaluates with), so import cannot accept a MATCHES_PATTERN or
-	// LIKE operand a later evaluation would refuse. Do not hand-roll the
-	// grammar here: one derivation, in one place, is the whole point.
-	if err := spi.ValidateConditionPatterns(cond); err != nil {
+	// Paths and lifecycle type-soundness first, then pattern operands — a
+	// criterion naming a field that does not exist is reported as the path
+	// problem it is, not shadowed by a complaint about its operand.
+	if err := walkCriterion(cond, location); err != nil {
+		return err
+	}
+	if err := search.ValidatePatterns(cond); err != nil {
 		return fmt.Errorf("%s: %w", location, err)
 	}
-	return walkCriterion(cond, location)
+	return nil
 }
 
 // walkCriterion recurses into GroupCondition.Conditions and checks every
@@ -261,8 +263,8 @@ func validateCriterion(criterion json.RawMessage, location string) error {
 //     closed meta vocabulary directly, not a path, so the path grammar does
 //     not apply to it.
 //
-// Pattern operands are not checked here — validateCriterion has already run
-// the kernel's own derivation over the whole tree.
+// Pattern operands are not checked here — validateCriterion runs them over the
+// whole tree afterwards, via search.ValidatePatterns.
 //
 // FunctionCondition carries neither a path nor an operator and is silently
 // skipped — that is how a FUNCTION criterion is exempted from these checks.

@@ -374,6 +374,64 @@ func TestWorkflow_Import_MalformedCriterionRegex_ValidationFailed(t *testing.T) 
 	}
 }
 
+// TestWorkflow_Import_MalformedCriterionPattern_ValidationFailed covers the
+// pattern operands import used to let through. A LIKE operand was not checked
+// at all, and a MATCHES_PATTERN operand that compiles standalone but not once
+// the kernel anchors it (`\Q` swallows the appended `)\z`) was accepted and
+// then failed on every evaluation of the transition. Both are import-time
+// rejections now, with the offending transition named.
+func TestWorkflow_Import_MalformedCriterionPattern_ValidationFailed(t *testing.T) {
+	for name, criterion := range map[string]string{
+		"malformedLike":   `{"type":"simple","jsonPath":"$.orderId","operatorType":"LIKE","value":"abc\\"}`,
+		"anchorSkewRegex": `{"type":"simple","jsonPath":"$.orderId","operatorType":"MATCHES_PATTERN","value":"\\Q"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			entityName := "e2e-wf-badpattern-" + name
+			importModelE2E(t, entityName, 1)
+
+			body := `{
+				"importMode": "REPLACE",
+				"workflows": [{
+					"version": "1.1",
+					"name": "wf-badpattern",
+					"initialState": "S1",
+					"active": true,
+					"states": {
+						"S1": {
+							"transitions": [{
+								"name": "go",
+								"next": "S2",
+								"manual": false,
+								"criterion": ` + criterion + `
+							}]
+						},
+						"S2": {}
+					}
+				}]
+			}`
+			status, respBody := importWorkflowE2E(t, entityName, 1, body)
+			if status != http.StatusBadRequest {
+				t.Fatalf("expected 400 VALIDATION_FAILED; got %d: %s", status, respBody)
+			}
+			var errBody struct {
+				Detail     string `json:"detail"`
+				Properties struct {
+					ErrorCode string `json:"errorCode"`
+				} `json:"properties"`
+			}
+			if err := json.Unmarshal([]byte(respBody), &errBody); err != nil {
+				t.Fatalf("decode error body: %v; raw: %s", err, respBody)
+			}
+			if errBody.Properties.ErrorCode != "VALIDATION_FAILED" {
+				t.Fatalf("errorCode = %q; want VALIDATION_FAILED; body: %s", errBody.Properties.ErrorCode, respBody)
+			}
+			if !strings.Contains(errBody.Detail, "go") {
+				t.Errorf("detail %q does not name the offending transition", errBody.Detail)
+			}
+		})
+	}
+}
+
 // TestWorkflow_ExportEmpty verifies that exporting a workflow for a model
 // that has no imported workflows returns 404 WORKFLOW_NOT_FOUND. A properly
 // structured GET on a non-existent resource should return NOT FOUND, not

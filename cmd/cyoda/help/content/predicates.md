@@ -71,8 +71,8 @@ is literal text compared bytewise, so an operand carrying invalid UTF-8 matches
 the byte-identical stored value rather than being transcoded.
 
 A pattern that ends with an unpaired `\` has nothing to escape and is invalid.
-The request is rejected with `400 INVALID_CONDITION`. Use `\\` for a literal
-trailing backslash.
+The request is rejected — see VALIDATION below. Use `\\` for a literal trailing
+backslash.
 
 ## MATCHES_PATTERN
 
@@ -82,7 +82,7 @@ The operand must parse **on its own** as well as compile anchored. Anchoring wra
 
 ## VALIDATION
 
-Validation is **parse-based**, evaluated at request time against the target model:
+Validation is **parse-based**, evaluated at request time against the target model. The codes below are search's; a workflow or transition criterion is validated identically at import and surfaces the same rejections as `400 VALIDATION_FAILED` (see `workflows`).
 
 - `400 CONDITION_TYPE_MISMATCH` — the operand parses into **none** of the field's declared types, or the operator does not apply to the field's type: string and pattern operators require a text field; ordering and range operators require an ordered type (number, text, timestamp). `IS_NULL`/`NOT_NULL` carry no operand-type constraint.
 - `400 INVALID_FIELD_PATH` — the field path is unknown to the model, **or** it names a pure-container (object) path: a scalar operator cannot compare against structure — navigate to a scalar leaf sub-path instead. (A path observed as both an object and a scalar across entities remains searchable via its scalar type — see `cyoda help search`.) `IS_NULL`/`NOT_NULL` are exempt from the container-path rejection since they test presence, not a value.

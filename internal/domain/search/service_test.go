@@ -2554,7 +2554,7 @@ func TestAsyncSearchJob_StorageError_IsNotPersistedVerbatim(t *testing.T) {
 // caller cannot act on.
 func TestAsyncSearchJob_ClientErrorIsPreservedVerbatim(t *testing.T) {
 	appErr := common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
-		"invalid regex pattern in condition")
+		"invalid pattern in condition")
 	job := runFailingAsyncJob(t, appErr)
 
 	if job.Error != appErr.Error() {

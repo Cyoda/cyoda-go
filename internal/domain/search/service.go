@@ -596,7 +596,7 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 	}
 	if rErr := ValidatePatterns(cond); rErr != nil {
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
-			fmt.Sprintf("invalid pattern in condition: %v", rErr))
+			rErr.Error())
 	}
 	// Condition type-soundness (correctness-over-availability): every
 	// transport funnels through Search, so this is the single boundary that
@@ -930,7 +930,7 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	}
 	if rErr := ValidatePatterns(cond); rErr != nil {
 		return "", common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
-			fmt.Sprintf("invalid pattern in condition: %v", rErr))
+			rErr.Error())
 	}
 	// Condition type-soundness (correctness-over-availability): same
 	// single-boundary guard as Search, so an async job is never created for

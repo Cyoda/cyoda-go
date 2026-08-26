@@ -84,11 +84,15 @@ parse **and** an anchored compile — a pattern that parses bare but fails once
 anchored is rejected at the boundary rather than at evaluation time.
 
 cyoda-go's own boundary validator is wired onto these exports. Every surface
-that takes a condition — sync search, async submit, grouped statistics,
-conditional delete, and a workflow or transition `criterion` at import — calls
-`ValidateConditionPatterns` and rejects a malformed `LIKE` or `MATCHES_PATTERN`
-operand with `400 INVALID_CONDITION`, on HTTP and gRPC alike. An async submit
-rejects synchronously: no job is created.
+that takes a condition calls `ValidateConditionPatterns` and rejects a malformed
+`LIKE` or `MATCHES_PATTERN` operand, on HTTP and gRPC alike:
+
+- sync search, async submit, grouped statistics and conditional delete —
+  `400 INVALID_CONDITION`. An async submit rejects synchronously: no job is
+  created.
+- workflow import, for a workflow or transition `criterion` —
+  `400 VALIDATION_FAILED`, the code that import already uses for every other
+  structural rule. Workflows already stored are not re-validated.
 
 The two layers are complements, not duplicates, and Cloud needs both. The
 boundary rejects; the evaluator still treats an unexpandable operand as a leaf

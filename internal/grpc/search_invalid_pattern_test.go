@@ -267,3 +267,43 @@ func TestRPC_SnapshotSearch_MalformedLike_400_InvalidCondition(t *testing.T) {
 		t.Errorf("expected no snapshot job to be created, got snapshotId=%s", typed.Status.SnapshotID)
 	}
 }
+
+// TestRPC_SnapshotSearch_AnchorSkewPattern_400_InvalidCondition completes the
+// snapshot-submit cell for the other malformed class: an operand that compiles
+// standalone but not once the kernel anchors it must not create a job either.
+func TestRPC_SnapshotSearch_AnchorSkewPattern_400_InvalidCondition(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Bob"})
+
+	ce := makeCE(EntitySnapshotSearchRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "person", "version": 1},
+		"condition": map[string]any{
+			"type":         "simple",
+			"jsonPath":     "$.name",
+			"operatorType": "MATCHES_PATTERN",
+			"value":        `\Q`,
+		},
+	})
+
+	resp, err := svc.EntitySearch(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+
+	var typed events.EntitySnapshotSearchResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success {
+		t.Error(`expected success=false for MATCHES_PATTERN operand "\Q"`)
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error in response")
+	}
+	if !strings.Contains(typed.Error.Message, "INVALID_CONDITION") {
+		t.Errorf("expected message to contain INVALID_CONDITION, got %s", typed.Error.Message)
+	}
+	if typed.Status.SnapshotID != nilUUID {
+		t.Errorf("expected no snapshot job to be created, got snapshotId=%s", typed.Status.SnapshotID)
+	}
+}

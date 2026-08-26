@@ -1005,7 +1005,7 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 	// nothing.
 	if rErr := search.ValidatePatterns(cond); rErr != nil {
 		return deleteSelectionPlan{}, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
-			fmt.Sprintf("invalid pattern in condition: %v", rErr))
+			rErr.Error())
 	}
 
 	// Structural condition validation (canonical operator set, BETWEEN

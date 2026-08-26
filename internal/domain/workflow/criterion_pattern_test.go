@@ -109,3 +109,19 @@ func TestValidateWorkflowStructure_ValidLikeCriterionAccepted(t *testing.T) {
 		})
 	}
 }
+
+// (h) a criterion carrying BOTH a malformed jsonPath and a malformed pattern
+// reports the path problem. Pattern validation runs over the whole tree after
+// walkCriterion, precisely so a field that does not exist is not reported as a
+// complaint about its operand — pin the order so it cannot flip back silently.
+func TestValidateWorkflowStructure_BadPathWinsOverBadPattern(t *testing.T) {
+	criterion := json.RawMessage(`{"type":"simple","jsonPath":"orderId","operatorType":"LIKE","value":"abc\\"}`)
+	wf := wfWithTransitionCriterion(criterion)
+	err := validateWorkflowStructure(wf)
+	if err == nil {
+		t.Fatal("expected error for a criterion with both a bad path and a bad pattern, got nil")
+	}
+	if !strings.Contains(err.Error(), "JSON Path") {
+		t.Errorf("expected the jsonPath error to win, got: %v", err)
+	}
+}
