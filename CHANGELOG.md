@@ -6,6 +6,41 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **An invalid `LIKE` or `MATCHES_PATTERN` operand is now rejected at the
+  request boundary instead of being accepted.** The boundary used to compile
+  the operand on its own, while every evaluator compiles the *anchored* form,
+  `\A(?:operand)\z` — two derivations of one rule, in two repositories. They
+  disagreed, and the request went through anyway:
+
+  - **`MATCHES_PATTERN` was accepted and then failed.** An unterminated `\Q`
+    quotes whatever follows it, so `\Q` compiles standalone but swallows the
+    anchor wrapper's own `)\z`. The caller got a `200` and a job id, and the
+    job went `FAILED` — an error surface they had been told at the boundary
+    they would not hit.
+  - **`LIKE` was not validated at all.** A trailing unpaired escape (`abc\`)
+    reached the evaluator, where an operand that cannot be expanded becomes a
+    leaf that never matches: a `200` and an empty page. It was also a
+    cross-backend divergence — the in-tree evaluators returned empty where the
+    commercial async evaluator failed every shard of the job.
+
+  Both surfaces now call the kernel's own derivation, so the boundary accepts
+  exactly what the evaluator accepts. Those two classes are the whole of the
+  change: **a request carrying one of them returned `200` before and returns
+  `400` now**. Nothing that was rejected before is accepted now, and a
+  well-formed pattern is unaffected. An async submit rejects synchronously — no
+  job is created.
+
+  Affected surfaces and codes: `400 INVALID_CONDITION` on `/search/direct`,
+  `/search/async`, conditional `DELETE /entity/{name}/{version}` and the
+  grouped-stats `condition`; `400 VALIDATION_FAILED` on workflow import, where a
+  workflow or transition `criterion` carrying such an operand is now rejected
+  rather than misbehaving on every later evaluation of the transition. HTTP and
+  gRPC alike.
+
+  Workflows already stored are not re-validated: a criterion imported before
+  this release keeps evaluating as a leaf that never matches until it is
+  re-imported. That matches how the other import-time structural rules behave.
+
 - **`LIKE` is now matched as a glob, not translated into a regular expression.
   Two caller-visible behaviours change.** `LIKE` used to be rewritten into a
   regex and handed to the regex engine; it is now matched directly by a glob
@@ -26,12 +61,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
      character changes meaning. Escaping `%`, `_` and `\` is unaffected: `\%`
      was a literal `%` before and still is.
 
-  Unchanged in effect, though it is now a named condition rather than an
-  accident: a pattern ending in an **unpaired `\`** matches nothing. It used to
-  produce a regex that failed to compile, and a leaf whose pattern will not
-  compile never matches; it is now rejected as invalid, and an invalid pattern is
-  likewise a leaf that never matches. Either way the search succeeds with an
-  empty result. Spell a literal trailing backslash `\\`.
+  A pattern ending in an **unpaired `\`** is now a named error condition rather
+  than an accident. It used to produce a regex that failed to compile, and a
+  leaf whose pattern will not compile never matches, so the search succeeded
+  with an empty result. It is now invalid, and the request is rejected at the
+  boundary — see the entry above. Below the boundary the evaluator still treats
+  it as a leaf that never matches, but no caller reaches that. Spell a literal
+  trailing backslash `\\`.
 
   Literal text is compared bytewise, so an operand carrying invalid UTF-8 now
   matches the byte-identical stored value instead of being transcoded to U+FFFD;
@@ -40,9 +76,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   Affected surfaces: every one that takes a condition — `/search/direct`,
   `/search/async`, conditional `DELETE /entity/{name}/{version}`, the
   grouped-stats `condition`, and a workflow or transition `criterion`. HTTP and
-  gRPC alike. Rejecting an invalid pattern at the API boundary with a `400`,
-  rather than letting it match nothing, is a separate change and is not in this
-  release.
+  gRPC alike. An invalid pattern is now rejected at the API boundary — see the
+  entry above.
 
 - **A path whose last hop is an array wildcard now addresses the array's
   ELEMENTS. It used to resolve to the array's length.**

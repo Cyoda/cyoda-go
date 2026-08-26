@@ -571,7 +571,7 @@ Error codes (response carries RFC 9457 problem+json with `properties.errorCode` 
 - `INVALID_AGGREGATION_OP` — `400` — `op` outside the set {`sum`, `avg`, `min`, `max`, `stdev`}
 - `INVALID_AGGREGATION_FIELD` — `400` — aggregation `field` outside the same JSONPath grammar
 - `DUPLICATE_AGGREGATION_ALIAS` — `400` — two aliases collide on distinct `(op, field)` pairs
-- `INVALID_CONDITION` — `400` — `condition` malformed, unknown `type`, `operatorType` outside the canonical list, malformed `MATCHES_PATTERN` regex, or bad `BETWEEN` arity (propagated from search validator)
+- `INVALID_CONDITION` — `400` — `condition` malformed, unknown `type`, `operatorType` outside the canonical list, malformed `LIKE` or `MATCHES_PATTERN` operand, or bad `BETWEEN` arity (propagated from search validator)
 - `INVALID_FIELD_PATH` — `400` — a `condition` `jsonPath` is not valid JSON Path, names an unknown meta field, or is absent from the locked schema (propagated from search validator)
 - `CONDITION_TYPE_MISMATCH` — `400` — `condition` value type incompatible with the locked DataType (propagated from search validator)
 - `INVALID_LIMIT` — `400` — `limit` non-positive or `> CYODA_STATS_GROUP_MAX`

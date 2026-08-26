@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -204,7 +203,10 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 //     a path. Delegates to search.ValidateConditionJSONPath, the same grammar
 //     the search API boundary enforces: a criterion and a search condition are
 //     one model syntax and must agree on which paths exist.
-//   - a MATCHES_PATTERN operator carrying a regex that fails to compile.
+//   - a MATCHES_PATTERN or LIKE operand the kernel cannot compile. Delegates
+//     to search.ValidatePatterns — the kernel's own derivation, the same call
+//     the search API boundary makes — so import accepts exactly the operands
+//     evaluation accepts. Checked last, so a bad path wins over a bad operand.
 //   - a lifecycle/meta clause that is type-unsound: an unknown meta field
 //     path, or a non-offset-RFC3339 operand on a temporal field
 //     (creationDate, lastUpdateTime). Delegates to
@@ -239,21 +241,30 @@ func validateCriterion(criterion json.RawMessage, location string) error {
 	if err != nil {
 		return nil
 	}
-	return walkCriterion(cond, location)
+	// Paths and lifecycle type-soundness first, then pattern operands — a
+	// criterion naming a field that does not exist is reported as the path
+	// problem it is, not shadowed by a complaint about its operand.
+	if err := walkCriterion(cond, location); err != nil {
+		return err
+	}
+	if err := search.ValidatePatterns(cond); err != nil {
+		return fmt.Errorf("%s: %w", location, err)
+	}
+	return nil
 }
 
 // walkCriterion recurses into GroupCondition.Conditions and checks every
 // leaf condition:
 //
-//   - SimpleCondition — jsonPath grammar, plus a non-compiling
-//     MATCHES_PATTERN regex.
-//   - ArrayCondition — jsonPath grammar. It carries no OperatorType, so the
-//     regex check is inapplicable by construction, and it is not a lifecycle
-//     clause.
-//   - LifecycleCondition — the regex check, plus type-soundness
+//   - SimpleCondition — jsonPath grammar.
+//   - ArrayCondition — jsonPath grammar. It is not a lifecycle clause.
+//   - LifecycleCondition — type-soundness
 //     (search.ValidateLifecycleCondition). Its Field names a member of the
 //     closed meta vocabulary directly, not a path, so the path grammar does
 //     not apply to it.
+//
+// Pattern operands are not checked here — validateCriterion runs them over the
+// whole tree afterwards, via search.ValidatePatterns.
 //
 // FunctionCondition carries neither a path nor an operator and is silently
 // skipped — that is how a FUNCTION criterion is exempted from these checks.
@@ -270,16 +281,13 @@ func walkCriterion(cond predicate.Condition, location string) error {
 		if err := search.ValidateConditionJSONPath(c.JsonPath); err != nil {
 			return fmt.Errorf("%s: %w", location, err)
 		}
-		return compileMatchesPattern(c.OperatorType, c.Value, location)
+		return nil
 	case *predicate.ArrayCondition:
 		if err := search.ValidateConditionJSONPath(c.JsonPath); err != nil {
 			return fmt.Errorf("%s: %w", location, err)
 		}
 		return nil
 	case *predicate.LifecycleCondition:
-		if err := compileMatchesPattern(c.OperatorType, c.Value, location); err != nil {
-			return err
-		}
 		if err := search.ValidateLifecycleCondition(c); err != nil {
 			return fmt.Errorf("%s: %w", location, err)
 		}
@@ -290,38 +298,6 @@ func walkCriterion(cond predicate.Condition, location string) error {
 				return err
 			}
 		}
-	}
-	return nil
-}
-
-// compileMatchesPattern compiles value as a regex the same way
-// internal/domain/search/regex_validate.go's compileRegexPattern does for ad
-// hoc search conditions: it derives the pattern the same way the kernel does
-// — fmt.Sprintf("%v", value) — but compiles it bare (regexp.Compile(pattern)),
-// not anchored the way the kernel's ExpandLeaf does (cyoda-go-spi
-// eval_leaf.go: regexp.Compile(anchor(pattern)), i.e. `\A(?:pattern)\z`). The
-// two compile calls are NOT guaranteed to agree — see the accept/reject-skew
-// note on ValidateRegexPatterns in internal/domain/search/regex_validate.go.
-// One direction (accept-then-fail, e.g. "\Q") is still reachable; the other
-// closed when the kernel started parsing the operand standalone as well as
-// anchored.
-//
-// The resolution is decided there too, and the blocker it named is gone:
-// cyoda-go-spi now EXPORTS the derivation — ValidateLeafPattern,
-// ValidateConditionPatterns and the ErrInvalidPattern sentinel — so this
-// function should ask the kernel rather than compile bare. Still do not
-// hand-roll the anchor wrapper here: the point of the export is that exactly
-// one implementation of the grammar exists. Note the pending change covers LIKE
-// as well, which this function does not validate at all today — a malformed
-// LIKE operand reaches the evaluator, where an unexpandable operand becomes a
-// leaf that never matches.
-func compileMatchesPattern(operatorType string, value any, location string) error {
-	if operatorType != "MATCHES_PATTERN" {
-		return nil
-	}
-	pattern := fmt.Sprintf("%v", value)
-	if _, err := regexp.Compile(pattern); err != nil {
-		return fmt.Errorf("%s: invalid MATCHES_PATTERN regex %q: %v", location, pattern, err)
 	}
 	return nil
 }

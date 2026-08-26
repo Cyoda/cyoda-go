@@ -33,8 +33,8 @@ func TestSearch_Sync_MalformedRegex_Returns400_InvalidCondition(t *testing.T) {
 	// ExpectErrorCode re-buffers the body, so it's safe to read again after.
 	commontest.ExpectErrorCode(t, resp, "INVALID_CONDITION")
 	body := readBody(t, resp)
-	if !strings.Contains(body, "regex") {
-		t.Errorf("expected response detail to mention the regex problem; body: %s", body)
+	if !strings.Contains(body, "MATCHES_PATTERN") {
+		t.Errorf("expected response detail to name the offending operator; body: %s", body)
 	}
 }
 
@@ -108,6 +108,89 @@ func TestSearch_Sync_MalformedRegex_NestedInGroup_Returns400_InvalidCondition(t 
 	if resp.StatusCode != http.StatusBadRequest {
 		body := readBody(t, resp)
 		t.Fatalf("expected 400, got %d; body: %s", resp.StatusCode, body)
+	}
+	commontest.ExpectErrorCode(t, resp, "INVALID_CONDITION")
+}
+
+// TestSearch_Sync_AnchorSkewPattern_Returns400_InvalidCondition covers the
+// operand class the boundary used to wave through: "\Q" compiles standalone,
+// so a bare compile accepted it, but the kernel evaluates the ANCHORED form
+// and the unterminated \Q swallows the appended `)\z`. The client got a 200
+// and then a failure they had been told at the boundary they would not hit.
+func TestSearch_Sync_AnchorSkewPattern_Returns400_InvalidCondition(t *testing.T) {
+	const model = "e2e-search-pattern-anchor-skew"
+	setupSearchModel(t, model)
+	createEntityE2E(t, model, 1, `{"name":"Alice","amount":100,"status":"active"}`)
+
+	const badCondition = `{"type":"simple","jsonPath":"$.name","operatorType":"MATCHES_PATTERN","value":"\\Q"}`
+	path := fmt.Sprintf("/api/search/direct/%s/%d", model, 1)
+	resp := doAuth(t, http.MethodPost, path, badCondition)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d; body: %s", resp.StatusCode, readBody(t, resp))
+	}
+	commontest.ExpectErrorCode(t, resp, "INVALID_CONDITION")
+}
+
+// TestSearch_Sync_MalformedLike_Returns400_InvalidCondition extends boundary
+// validation to LIKE. A trailing unpaired escape is the one malformed operand
+// the glob grammar admits; unvalidated it became a leaf that never matches, so
+// the caller saw a 200 and an empty page — and the backends disagreed about it,
+// the in-tree evaluators returning empty where the commercial async evaluator
+// failed the job.
+func TestSearch_Sync_MalformedLike_Returns400_InvalidCondition(t *testing.T) {
+	const model = "e2e-search-like-malformed"
+	setupSearchModel(t, model)
+	createEntityE2E(t, model, 1, `{"name":"Alice","amount":100,"status":"active"}`)
+
+	const badCondition = `{"type":"simple","jsonPath":"$.name","operatorType":"LIKE","value":"abc\\"}`
+	path := fmt.Sprintf("/api/search/direct/%s/%d", model, 1)
+	resp := doAuth(t, http.MethodPost, path, badCondition)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d; body: %s", resp.StatusCode, readBody(t, resp))
+	}
+	commontest.ExpectErrorCode(t, resp, "INVALID_CONDITION")
+	body := readBody(t, resp)
+	if !strings.Contains(body, "LIKE") {
+		t.Errorf("expected response detail to name the offending operator; body: %s", body)
+	}
+}
+
+// TestSearch_Sync_ValidLike_Returns200 is the accept-side counterpart for
+// LIKE: a well-formed glob must still search normally.
+func TestSearch_Sync_ValidLike_Returns200(t *testing.T) {
+	const model = "e2e-search-like-valid"
+	setupSearchModel(t, model)
+	createEntityE2E(t, model, 1, `{"name":"Alice","amount":100,"status":"active"}`)
+	createEntityE2E(t, model, 1, `{"name":"Bob","amount":50,"status":"active"}`)
+
+	const goodCondition = `{"type":"simple","jsonPath":"$.name","operatorType":"LIKE","value":"A_ic%"}`
+	status, results := directSearch(t, model, 1, goodCondition)
+	if status != http.StatusOK {
+		t.Fatalf("expected 200, got %d", status)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected 1 match for A_ic%%, got %d", len(results))
+	}
+}
+
+// TestSearch_AsyncSubmit_MalformedLike_Returns400_InvalidCondition mirrors the
+// sync case: no job is created for a LIKE operand the kernel cannot expand.
+func TestSearch_AsyncSubmit_MalformedLike_Returns400_InvalidCondition(t *testing.T) {
+	const model = "e2e-search-like-malformed-async"
+	setupSearchModel(t, model)
+	createEntityE2E(t, model, 1, `{"name":"Bob","amount":42,"status":"active"}`)
+
+	const badCondition = `{"type":"simple","jsonPath":"$.name","operatorType":"LIKE","value":"abc\\"}`
+	path := fmt.Sprintf("/api/search/async/%s/1", model)
+	resp := doAuth(t, http.MethodPost, path, badCondition)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d; body: %s", resp.StatusCode, readBody(t, resp))
 	}
 	commontest.ExpectErrorCode(t, resp, "INVALID_CONDITION")
 }

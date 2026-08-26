@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 )
 
@@ -29,7 +30,11 @@ var ErrInvalidCondition = errors.New("invalid condition")
 // constructions) bypass that cap and can otherwise pass an arbitrarily
 // nested tree directly to the walkers. 256 is well above any realistic
 // query nesting and well below the goroutine stack-blow threshold.
-const MaxConditionDepth = 256
+//
+// Taken from the kernel rather than restated, so the boundary's walkers and
+// the SPI's own (ValidateConditionOperators, ValidateConditionPatterns) cannot
+// drift to different caps.
+const MaxConditionDepth = spi.MaxConditionDepth
 
 // canonicalOperators is the single source of truth for the valid
 // `operatorType` values accepted by Simple / Lifecycle / Array conditions.
