@@ -880,9 +880,11 @@ func persistedJobError(t *testing.T, jobID string) string {
 
 // TestE2E_AsyncSearch_CeilingExceeded_RecordsSanitizedFailure — the persisted
 // job message is the one deliberate exception to output sanitization: the job is
-// the caller's own work, so it is told which ceiling it hit. That message is
-// fixed and names nothing else — a raw driver string here would put SQL, a
-// SQLSTATE and connection detail in a record GetJob serves straight back.
+// the caller's own work, so it is told what happened and what to do about it.
+// The async status response carries no error-code field, so this string is the
+// caller's entire report. It stays fixed and backend-neutral — a raw driver
+// string here would put SQL, a SQLSTATE and connection detail in a record GetJob
+// serves straight back.
 func TestE2E_AsyncSearch_CeilingExceeded_RecordsSanitizedFailure(t *testing.T) {
 	h, model := newSearchCeilingHarness(t)
 
@@ -892,10 +894,12 @@ func TestE2E_AsyncSearch_CeilingExceeded_RecordsSanitizedFailure(t *testing.T) {
 	}
 
 	msg := persistedJobError(t, jobID)
-	if !strings.Contains(msg, "search statement ceiling") {
-		t.Fatalf("job error %q does not name the ceiling the caller hit", msg)
+	const want = "search exceeded the backend's async search ceiling — narrow the query, " +
+		"or have the operator raise or disable the ceiling (see the config.database help topic)"
+	if msg != want {
+		t.Fatalf("job error =\n  %q\nwant\n  %q", msg, want)
 	}
-	for _, leak := range []string{"pgx", "SELECT", "SQLSTATE", "57014", "statement_timeout", "host=", "password"} {
+	for _, leak := range []string{"pgx", "postgres", "SELECT", "SQLSTATE", "57014", "statement_timeout", "host=", "password"} {
 		if strings.Contains(msg, leak) {
 			t.Fatalf("job error leaked internals (%q): %s", leak, msg)
 		}
