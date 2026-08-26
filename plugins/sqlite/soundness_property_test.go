@@ -415,7 +415,7 @@ func TestSqlitePushdownSoundness_MonomorphicStringNumericOperand(t *testing.T) {
 // EVERY '%'/'_' in the operand via escapeLike before binding it to SQL
 // `LIKE ? ESCAPE '\'` — turning a genuine wildcard pattern into a literal
 // string match at the SQL layer. The kernel (spi.Prepare/PreparedFilter.Match
-// -> eval_leaf.go likeToRegex) does the opposite: it treats an unescaped '%'
+// -> like_pattern.go) does the opposite: it treats an unescaped '%'
 // as "match any run of characters" and '_' as "match any one character" —
 // the standard LIKE-wildcard reading.
 //

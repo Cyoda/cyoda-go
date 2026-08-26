@@ -40,7 +40,6 @@ func TestConfigVars_DefaultsMatchParseConfig(t *testing.T) {
 		"CYODA_SQLITE_AUTO_MIGRATE":       strconv.FormatBool(cfg.AutoMigrate),
 		"CYODA_SQLITE_BUSY_TIMEOUT":       cfg.BusyTimeout.String(),
 		"CYODA_SQLITE_CACHE_SIZE":         strconv.Itoa(cfg.CacheSizeKiB),
-		"CYODA_SQLITE_SEARCH_SCAN_LIMIT":  strconv.Itoa(cfg.SearchScanLimit),
 		"CYODA_SCHEMA_SAVEPOINT_INTERVAL": strconv.Itoa(cfg.SchemaSavepointInterval),
 		"CYODA_SCHEMA_EXTEND_MAX_RETRIES": strconv.Itoa(cfg.SchemaExtendMaxRetries),
 	}

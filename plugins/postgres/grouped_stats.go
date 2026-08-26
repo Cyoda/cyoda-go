@@ -17,7 +17,7 @@ import (
 // (POST /api/entity/stats/{name}/{version}/query).
 //
 // Design (spec §6.2, postgres variant):
-//   - Iterate reuses the planQuery() WHERE-pushdown machinery from
+//   - Iterate reuses the planFor()/planQuery() WHERE-pushdown machinery from
 //     query_planner.go (Task 14). The residual filter is applied inside
 //     Next() via an in-plugin evaluator (evalPostFilter below) — the same
 //     pre-filter + post-filter pattern sqlite uses, kept self-contained
@@ -101,12 +101,7 @@ func (s *entityStore) Iterate(
 	}
 
 	// Zero-value Filter means "match all" per the spi.Iterable contract.
-	// Skip planQuery — it would treat the empty Op as non-pushable and
-	// install the zero filter as a residual.
-	var plan sqlPlan
-	if filter.Op != "" {
-		plan = planQuery(filter)
-	}
+	plan := planFor(filter)
 
 	baseQuery, baseArgs := s.searchBaseQuery(model.EntityName, model.ModelVersion, opts.PointInTime)
 
@@ -407,10 +402,7 @@ func (s *entityStore) GroupedAggregate(
 		return nil, err
 	}
 	// Zero-value Filter means "match all" (same convention as Iterable).
-	var plan sqlPlan
-	if filter.Op != "" {
-		plan = planQuery(filter)
-	}
+	plan := planFor(filter)
 	if plan.postFilter != nil {
 		// A SQL GROUP BY can't safely apply a residual filter after the
 		// fact — it would corrupt per-bucket counts/aggregates. Defer to

@@ -6,6 +6,44 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **`LIKE` is now matched as a glob, not translated into a regular expression.
+  Two caller-visible behaviours change.** `LIKE` used to be rewritten into a
+  regex and handed to the regex engine; it is now matched directly by a glob
+  matcher in the shared kernel. The change is that the regex engine no longer
+  sees the operand at all, so nothing can leak through to it:
+
+  1. **`%` and `_` now match a newline.** They were rewritten to `.*?` and `.`,
+     which do not match `\n` without the dot-all flag. A stored value containing
+     a newline silently failed to match a pattern that should have matched it;
+     it now matches.
+  2. **A backslash escape is now literal, where the regex engine used to
+     interpret it.** The rewriter passed `\` through untouched, so a regex
+     escape survived into the compiled pattern: **`LIKE "\d"` matched any
+     digit** — `"7"` matched it — and `\w`, `\s`, `\b`, `\n`, `\t` behaved as
+     their regex selves too. `\` now escapes the character after it to its
+     literal form, whatever that character is, so `\d` matches the single
+     character `d`. Any operand carrying a backslash before an ordinary
+     character changes meaning. Escaping `%`, `_` and `\` is unaffected: `\%`
+     was a literal `%` before and still is.
+
+  Unchanged in effect, though it is now a named condition rather than an
+  accident: a pattern ending in an **unpaired `\`** matches nothing. It used to
+  produce a regex that failed to compile, and a leaf whose pattern will not
+  compile never matches; it is now rejected as invalid, and an invalid pattern is
+  likewise a leaf that never matches. Either way the search succeeds with an
+  empty result. Spell a literal trailing backslash `\\`.
+
+  Literal text is compared bytewise, so an operand carrying invalid UTF-8 now
+  matches the byte-identical stored value instead of being transcoded to U+FFFD;
+  and `_` advances by one UTF-8 rune rather than one byte.
+
+  Affected surfaces: every one that takes a condition — `/search/direct`,
+  `/search/async`, conditional `DELETE /entity/{name}/{version}`, the
+  grouped-stats `condition`, and a workflow or transition `criterion`. HTTP and
+  gRPC alike. Rejecting an invalid pattern at the API boundary with a `400`,
+  rather than letting it match nothing, is a separate change and is not in this
+  release.
+
 - **A path whose last hop is an array wildcard now addresses the array's
   ELEMENTS. It used to resolve to the array's length.**
   `$.tags[*]` means "some element of `tags`". It was resolved to the *count* of
@@ -428,6 +466,41 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Changed
 
+- **The server no longer imposes a scan budget on search. sqlite's
+  residual-scan budget and its `CYODA_SQLITE_SEARCH_SCAN_LIMIT` are removed,
+  along with the `SCAN_BUDGET_EXHAUSTED` error code.** A non-indexable condition
+  (a regex, a wildcard path) forces a residual scan; sqlite used to meter its
+  examined rows and fail the search with `400 SCAN_BUDGET_EXHAUSTED` once the
+  budget was passed. Such a search now runs to completion and returns its
+  matches, closing the divergence with memory and postgres, which never had a
+  budget.
+
+  This is a relaxation — requests that used to fail now succeed, and no request
+  that used to succeed changes — so no caller has to act. A caller that matched
+  on `SCAN_BUDGET_EXHAUSTED` can drop that arm; the code is gone from the error
+  table, the help topics and the OpenAPI document.
+
+  Bounding search *time* is the caller's, and it has the levers: `timeoutMillis`
+  on direct search (`408 SEARCH_TIMEOUT`), and job cancellation on async, which
+  takes effect mid-flight. Omitting them means unbounded, by choice. Bounding
+  search *memory* remains the server's, and every search path streams. Operators
+  who set `CYODA_SQLITE_SEARCH_SCAN_LIMIT` should remove it: it is no longer
+  read, and an unknown `CYODA_*` variable is otherwise inert.
+
+- **A postgres async search job that exceeds the backend ceiling now says what
+  to do about it.** The async status response carries no error-code field, so the
+  job record's message is the caller's entire report, and it read only
+  `search exceeded the search statement ceiling`. It now names both ways out:
+
+  > `search exceeded the backend's async search ceiling — narrow the query, or
+  > have the operator raise or disable the ceiling (see the config.database help
+  > topic)`
+
+  Backend-neutral as before — no driver detail, no SQL, no backend name — and
+  the `config.database` help topic now states that `0` disables the ceiling.
+  `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` (default `30m`) itself is unchanged:
+  it is deliberate operator configuration, not a per-request principle guard.
+
 - **Commits are now shielded from a client disconnect or an expired
   `transactionTimeoutMillis`/`timeoutMillis` deadline arriving mid-commit.**
   Every commit call (the final commit, each commit-before-dispatch segment
@@ -572,10 +645,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   Two codes are removed from the `crud` topic's grouped-stats table:
   `INVALID_POINT_IN_TIME` and `INVALID_OPERATOR`. Neither is emitted anywhere
   in the server — an unparseable `pointInTime` is part of strict body decoding
-  and answers `MALFORMED_REQUEST`, which the table now says. `SCAN_BUDGET_EXHAUSTED`
-  was missing and is added: a non-pushdownable `condition` can force a residual
-  scan past the backend's budget. `api/openapi.yaml` was also wrong on one
-  point — an out-of-range `limit` is `INVALID_LIMIT`, not `MALFORMED_REQUEST`.
+  and answers `MALFORMED_REQUEST`, which the table now says. `api/openapi.yaml`
+  was also wrong on one point — an out-of-range `limit` is `INVALID_LIMIT`, not
+  `MALFORMED_REQUEST`.
 
 - **A path addressing one array element by position (`$.arr[0]`) now resolves,
   instead of answering an empty page for a field that holds the value.** It is
@@ -676,8 +748,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   tracked separately.
 
 - **SQLite treats a zero-value filter as "match all", like the other backends.** It was
-  installed as a residual post-filter instead, which disabled `LIMIT` pushdown and armed
-  `CYODA_SQLITE_SEARCH_SCAN_LIMIT`. No cyoda-go request reaches this — every route
+  installed as a residual post-filter instead, which disabled `LIMIT` pushdown and native
+  `GROUP BY`. No cyoda-go request reaches this — every route
   spells "match everything" as an empty `AND`, which already worked — so this is storage
   contract conformance rather than a user-visible fix, and it matters to anything driving
   the storage interface directly.

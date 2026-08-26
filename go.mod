@@ -4,7 +4,7 @@ go 1.26.7
 
 require (
 	github.com/charmbracelet/glamour v1.0.0
-	github.com/cyoda-platform/cyoda-go-spi v0.8.4-0.20260824175950-f91541a8d97f
+	github.com/cyoda-platform/cyoda-go-spi v0.8.4-0.20260826145234-eeb1c7209c32
 	github.com/getkin/kin-openapi v0.144.0
 	github.com/go-chi/chi/v5 v5.3.1
 	github.com/google/uuid v1.6.0
@@ -102,9 +102,9 @@ require (
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/containerd/platforms v0.2.1 // indirect
 	github.com/cpuguy83/dockercfg v0.3.2 // indirect
-	github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.4-0.20260824181134-dbdd562828c5
-	github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.4-0.20260824181134-dbdd562828c5
-	github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.4-0.20260824181134-dbdd562828c5
+	github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.4-0.20260826173325-6624cea90671
+	github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.4-0.20260826173325-6624cea90671
+	github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.4-0.20260826173325-6624cea90671
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/go-connections v0.6.0 // indirect
@@ -129,15 +129,15 @@ require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
-	github.com/klauspost/compress v1.18.5 // indirect
+	github.com/klauspost/compress v1.18.7 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/magiconair/properties v1.8.10 // indirect
 	github.com/miekg/dns v1.1.72 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
-	github.com/moby/go-archive v0.2.0 // indirect
+	github.com/moby/go-archive v0.3.0 // indirect
 	github.com/moby/patternmatcher v0.6.1 // indirect
-	github.com/moby/sys/sequential v0.6.0 // indirect
-	github.com/moby/sys/user v0.4.0 // indirect
+	github.com/moby/sys/sequential v0.7.0 // indirect
+	github.com/moby/sys/user v0.4.1 // indirect
 	github.com/moby/sys/userns v0.1.0 // indirect
 	github.com/moby/term v0.5.2 // indirect
 	github.com/oapi-codegen/oapi-codegen/v2 v2.7.1 // indirect

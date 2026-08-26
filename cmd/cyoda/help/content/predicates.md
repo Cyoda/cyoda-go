@@ -55,12 +55,25 @@ A missing (absent) or JSON-`null` leaf **never matches any binary operator — i
 
 ## LIKE GRAMMAR
 
-`LIKE` compiles its operand to an anchored regular expression:
+`LIKE` is a glob matched directly — not translated into a regular expression, so
+no regex metacharacter has any meaning in a `LIKE` operand. Only these three
+characters are special:
 
-- `%` — matches any sequence of characters (including empty).
-- `_` — matches exactly one character.
-- `\` — escapes a following `%`, `_`, or `\` to its literal form.
-- The match is **whole-string anchored** (the entire stored value must match, not a substring) and **case-sensitive**.
+- `%` — matches any sequence of characters, including empty and including newlines.
+- `_` — matches exactly one character (one UTF-8 rune, not one byte), including a newline.
+- `\` — escapes the character after it to its literal form. It escapes **any**
+  character, not only `%`, `_` and `\`: `\a` matches a literal `a`, and `\\`
+  matches a single backslash.
+
+The match is **whole-string anchored** (the entire stored value must match, not a
+substring) and **case-sensitive**. Everything outside the three characters above
+is literal text compared bytewise, so an operand carrying invalid UTF-8 matches
+the byte-identical stored value rather than being transcoded.
+
+A pattern that ends with an unpaired `\` has nothing to escape and is invalid.
+It matches nothing — it does **not** match a trailing backslash, and the search
+succeeds with an empty result rather than failing. Use `\\` for a literal
+trailing backslash.
 
 ## MATCHES_PATTERN
 

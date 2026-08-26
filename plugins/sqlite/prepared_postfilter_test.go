@@ -11,9 +11,9 @@ import (
 // postFilter is non-nil.
 //
 // Absence must stay a nil pointer. A zero spi.PreparedFilter means match-all,
-// not "no filter", so collapsing the two would silently cost LIMIT pushdown,
-// disable native GROUP BY, and arm the scan budget on every query — with every
-// returned result still correct, so nothing would fail loudly.
+// not "no filter", so collapsing the two would silently cost LIMIT pushdown and
+// disable native GROUP BY on every query — with every returned result still
+// correct, so nothing would fail loudly.
 func TestPlanQuery_PreparedPostFilterMatchesNilness(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -56,48 +56,18 @@ func TestPlanQuery_PreparedPostFilterMatchesNilness(t *testing.T) {
 	}
 }
 
-// TestSearch_MatchAllLeavesNoResidual pins the precondition that opens the
-// three gates postFilter absence controls: a non-nil residual is what would
-// cost LIMIT pushdown, disable native GROUP BY, and arm the scan budget, so
-// asserting absence here is asserting those gates stay open.
+// The match-all guard that keeps those gates open is asserted in
+// plan_for_test.go, not here. It lives in planFor — the helper searchCommitted,
+// searchTxOverlay, Iterate and GroupedAggregate all plan through — and
+// TestPlanFor_MatchAllLeavesNoResidual covers BOTH spellings of match-all (the
+// zero spi.Filter{} and the explicit empty AND), while
+// TestPlanFor_EmptyOrIsNotMatchAll pins the asymmetry that makes the guard
+// non-obvious: an empty AND is match-all, an empty OR is the false identity and
+// must keep its residual.
 //
-// This covers only the explicit empty AND that ConditionToFilter emits for a
-// nil condition — planQuery is called directly with it below, so a broken
-// dissect()/planQuery would actually fail this test.
-//
-// The other spelling of match-all, the zero Filter{}, is deliberately NOT
-// exercised here: production never passes it to planQuery at all (searchCommitted,
-// Iterate, and GroupedAggregate all guard the call behind `filter.Op != ""`
-// precisely because dissect treats an empty Op as a non-pushable leaf and would
-// install the zero filter as its own residual). Reconstructing that guard
-// in-test and then calling planQuery only on the other branch — as an earlier
-// version of this test did — asserted against a zero sqlPlan{} literal, not
-// against anything planQuery or production code computed; it could not fail.
-// The zero-filter spelling's guard is instead pinned through real production
-// entry points, where breaking it changes externally observable behaviour:
-//   - TestSearch_ZeroValueFilterDoesNotArmScanBudget (searcher_zero_filter_test.go)
-//     drives spi.Filter{} through Search and fails with ErrScanBudgetExhausted
-//     if the guard is removed.
-//   - TestSqliteGroupedAggregate_PushesCountByState (grouped_stats_test.go)
-//     drives spi.Filter{} through GroupedAggregate and fails with
-//     ErrAggregationNotPushdownable if the guard is removed.
-func TestSearch_MatchAllLeavesNoResidual(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		filter spi.Filter
-	}{
-		{"explicit empty AND", spi.Filter{Op: spi.FilterAnd}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			plan := planQuery(tc.filter)
-			if plan.postFilter != nil {
-				t.Fatalf("postFilter = %+v, want nil: a match-all query has nothing to post-filter, "+
-					"and a non-nil residual costs LIMIT pushdown, disables native GROUP BY, "+
-					"and arms the scan budget", plan.postFilter)
-			}
-			if plan.preparedPostFilter != nil {
-				t.Fatalf("preparedPostFilter = %+v, want nil", plan.preparedPostFilter)
-			}
-		})
-	}
-}
+// A version of that assertion used to live here, restricted to the empty AND,
+// because the zero Filter{} never reaches planQuery in production and
+// reconstructing the guard in-test asserted against a zero sqlPlan{} literal
+// rather than anything production computed — it could not fail. Naming the
+// guard removed that problem: planFor IS the production code, so the test
+// exercises it directly.

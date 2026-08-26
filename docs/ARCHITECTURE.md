@@ -132,7 +132,7 @@ Three importable packages:
   - `TransactionManager` interface (Begin/Commit/Rollback/Join/GetSubmitTime/Savepoint/RollbackToSavepoint/ReleaseSavepoint)
   - Value types: `Entity`, `EntityMeta`, `EntityVersion`, `ModelRef`, `ModelDescriptor`, `WorkflowDefinition`, `StateDefinition`, `TransitionDefinition`, `TransitionSchedule`, `ScheduleFunction`, `ScheduledTask`, `StateMachineEvent`, `TransactionState`, `MessageHeader`, `MessageMetaData`, `ProcessorDefinition`, `SearchJob`, `Principal`, `WriteAttribution`
   - Context: `UserContext`, `Tenant`, `TenantID`, `WithUserContext`/`GetUserContext`, `WithTransaction`/`GetTransaction`
-  - Sentinel errors, including `ErrNotFound`, `ErrConflict`, `ErrEpochMismatch`, the transaction-state family (`ErrTxNotFound`, `ErrTxRolledBack`, `ErrTxAlreadyCommitted`, `ErrTxTenantMismatch`, …) and the search-budget family (`ErrScanBudgetExhausted`, `ErrSearchResultLimitExceeded`, …)
+  - Sentinel errors, including `ErrNotFound`, `ErrConflict`, `ErrEpochMismatch`, the transaction-state family (`ErrTxNotFound`, `ErrTxRolledBack`, `ErrTxAlreadyCommitted`, `ErrTxTenantMismatch`, …) and `ErrSearchResultLimitExceeded`
   - `UUIDGenerator` interface — returns `[16]byte` so plugins are not bound to a particular UUID package (callers use the zero-cost `uuid.UUID(x)` conversion if they want the google/uuid type)
   - `ClusterBroadcaster` interface — fire-and-forget, best-effort topic broadcast
   - Plugin machinery: `Plugin`, `DescribablePlugin`, `Startable`, `ConfigVar`, `FactoryOption`, `FactoryConfig`, `WithClusterBroadcaster`, `ApplyFactoryOptions`, `Register`, `GetPlugin`, `RegisteredPlugins`
@@ -1512,7 +1512,6 @@ Advertised via `DescribablePlugin.ConfigVars()`; rendered in the binary's `--hel
 | `CYODA_SQLITE_BUSY_TIMEOUT` | `5s` | SQLite `busy_timeout` pragma. |
 | `CYODA_SQLITE_CACHE_SIZE` | `64000` | SQLite `cache_size` pragma (KiB), **per connection** — one writer plus the reader pool. |
 | `CYODA_SQLITE_READER_POOL_SIZE` | `GOMAXPROCS` clamped to `4`..`8` | Max concurrent reader connections. Minimum 1; a value below it falls back to the default. Peak page-cache use is `(this + 1) × CYODA_SQLITE_CACHE_SIZE`. |
-| `CYODA_SQLITE_SEARCH_SCAN_LIMIT` | `100000` | Max rows scanned by a predicate-pushed search before it falls back to post-filter. |
 | `CYODA_SCHEMA_SAVEPOINT_INTERVAL` | `64` | Rows between plugin-internal savepoints when folding schema extensions. Shared with the postgres plugin — not plugin-namespaced. |
 
 Default `CYODA_SQLITE_PATH`: on Linux / macOS, `$XDG_DATA_HOME/cyoda/cyoda.db` with fallback to `~/.local/share/cyoda/cyoda.db`; on Windows, `%LocalAppData%\cyoda\cyoda.db`.

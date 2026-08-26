@@ -10,7 +10,6 @@ see_also:
   - errors.SEARCH_JOB_NOT_FOUND
   - errors.SEARCH_JOB_ALREADY_TERMINAL
   - errors.SEARCH_RESULT_LIMIT
-  - errors.SCAN_BUDGET_EXHAUSTED
   - errors.SEARCH_SHARD_TIMEOUT
   - errors.SEARCH_QUEUE_FULL
   - errors.INVALID_FIELD_PATH
@@ -48,6 +47,18 @@ Search operates against a specific entity model `(entityName, modelVersion)`. Tw
 **Asynchronous search**: `POST /search/async/{entityName}/{modelVersion}`. Submits a search job and returns a job UUID immediately. The search executes in a background goroutine (or in the plugin's own executor for `SelfExecutingSearchStore` plugins). Results are retrieved by polling status and then fetching pages.
 
 Both modes accept the same `Condition` DSL as the request body. When the storage plugin implements `spi.Searcher`, the condition is translated to a plugin-level predicate and pushed down to the backend — including inside an active transaction, where the pushdown is read-your-own-writes correct against the transaction's own uncommitted writes (see `trackingRead` below and `docs/CONSISTENCY.md` §3c). Only when translation fails (unsupported condition type) does the service fall back to in-memory filtering after a full `GetAll` scan. The pushdown is a narrowing optimization only — the in-process kernel is authoritative for every match decision, so results never diverge by backend.
+
+**Bounding.** The server bounds search *results*, never search *time*. Direct search is
+bounded-or-fail on `limit`; async search caps neither duration nor result count. No
+backend meters examined rows or applies a scan budget, so a non-indexable condition
+forcing a residual scan runs to completion however long it takes.
+
+Time is the caller's to bound, and it has the levers: `timeoutMillis` on direct search
+(`408 SEARCH_TIMEOUT`, nothing partial returned), and job cancellation on async, which
+takes effect mid-flight. Omitting them means unbounded, by choice. The one server-side
+exception is an operator-configured backend ceiling on the async scan
+(`CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT`, see the `config.database` topic); a job that
+hits it fails with a message naming both ways out.
 
 Operator semantics (type-directed comparison, null handling, LIKE/regex grammar, validation) are documented in the `predicates` topic; workflow and transition criteria use the identical predicate semantics (see `workflows`).
 
@@ -348,7 +359,6 @@ Synchronous search neither paginates nor truncates: the matched set must fit wit
 - `errors.SEARCH_JOB_NOT_FOUND` — `404` — async job UUID does not exist.
 - `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — cancel attempted on a job that is already `SUCCESSFUL`, `FAILED`, or `CANCELLED`; body carries `currentStatus` and `snapshotId`
 - `errors.SEARCH_RESULT_LIMIT` — `400` — direct search's matched entity count exceeded the requested `limit`; enforced on every direct-search code path (Searcher pushdown and in-memory fallback alike). Async search never returns this code — an oversized `pageSize`/`pageNumber` on result retrieval is `errors.BAD_REQUEST` instead
-- `errors.SCAN_BUDGET_EXHAUSTED` — `400` — a non-indexable condition (e.g. a regex or wildcard path) forced a residual scan that examined more rows than the backend's configured scan budget; narrow the query or add an indexable predicate
 - `errors.SEARCH_TIMEOUT` — `408` — direct search's client-supplied `timeoutMillis` elapsed before the result set was collected; retryable, and nothing partial is returned
 - `errors.SEARCH_SHARD_TIMEOUT` — per-shard search timeout exceeded (relevant for distributed backends)
 - `errors.SEARCH_QUEUE_FULL` — `503` — async submit refused for capacity: either the node's worker pool and submit queue are both exhausted, or the tenant is at its in-flight share of this node; retryable, tune via `CYODA_SEARCH_ASYNC_WORKERS`/`CYODA_SEARCH_ASYNC_QUEUE`/`CYODA_SEARCH_ASYNC_MAX_PER_TENANT`

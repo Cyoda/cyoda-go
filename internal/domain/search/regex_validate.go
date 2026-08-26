@@ -25,12 +25,16 @@ import (
 // This validator compiles the pattern bare (regexp.Compile(pattern)); the
 // kernel compiles it anchored — regexp.Compile(anchor(pattern)), i.e.
 // `\A(?:pattern)\z` — inside ExpandLeaf (cyoda-go-spi eval_leaf.go). The two
-// compile calls are NOT guaranteed to agree, and the skew runs both ways.
-// Reject-though-valid: the anchor wrapper's own parentheses can rebalance a
-// pattern whose parens are unmatched on their own (e.g. ")|(" fails bare but
-// compiles once wrapped), so a narrow class of patterns is rejected here even
-// though the kernel would accept them. Accept-then-fail — the more serious
-// direction, and the one this validator exists to prevent — an unterminated
+// compile calls are NOT guaranteed to agree.
+//
+// Only ONE direction of skew is still reachable. Reject-though-valid used to be
+// the other: the anchor wrapper's own parentheses can rebalance a pattern whose
+// parens are unmatched on their own (")|(" fails bare but compiles once
+// wrapped), so this validator rejected a narrow class the kernel accepted. The
+// kernel now parses the operand STANDALONE before compiling it anchored, so it
+// rejects ")|(" too and that direction is closed. Accept-then-fail — the more
+// serious direction, and the one this validator exists to prevent — an
+// unterminated
 // \Q...\E literal-quote escape (e.g. the bare pattern "\Q") compiles fine
 // here, but the wrapper's appended `)\z` gets swallowed by that same
 // unterminated \Q, so ExpandLeaf's anchored compile fails: the client gets a
@@ -38,14 +42,21 @@ import (
 // failure — the in-tree evaluators leave the compiled regex nil and return
 // an empty (non-matching) result, while the commercial backend's async
 // evaluator propagates the compile error and fails the job. The resolution
-// is decided, not open: the validator should compile the anchored form too,
-// since anchoring is the correct full-value-match semantics (mirroring
-// Cloud's Pattern.matcher(x).matches()) and every evaluator — including the
-// commercial one — already applies it; this validator is the outlier. It
-// isn't done here because the wrapper (anchor, and likeToRegex for LIKE) is
-// unexported in cyoda-go-spi, and hand-copying the grammar into this package
-// would create a second copy that must not drift from the kernel's — the fix
-// belongs in the SPI, not in a hand-rolled wrapper here.
+// is decided, not open: the validator should derive its accept/reject set from
+// the kernel, since anchoring is the correct full-value-match semantics
+// (mirroring Cloud's Pattern.matcher(x).matches()) and every evaluator —
+// including the commercial one — already applies it; this validator is the
+// outlier.
+//
+// The blocker that kept that fix out of this package is gone. cyoda-go-spi now
+// EXPORTS the derivation — ValidateLeafPattern, ValidateConditionPatterns and
+// the ErrInvalidPattern sentinel — precisely so a boundary validator asks the
+// kernel instead of hand-rolling a second copy of the grammar. Replacing the
+// bare compile below with one ValidateConditionPatterns call is the pending
+// step, and it covers LIKE as well: LIKE is a glob (see the kernel's
+// like_pattern.go), it is NOT validated here at all today, and a malformed LIKE
+// operand therefore reaches the evaluator, where Prepare's contract turns it
+// into a leaf that never matches — a 200 and an empty page where a 400 belongs.
 func ValidateRegexPatterns(cond predicate.Condition) error {
 	return walkRegexPatterns(cond, 0)
 }

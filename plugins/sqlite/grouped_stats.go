@@ -15,7 +15,7 @@ import (
 // (POST /api/entity/stats/{name}/{version}/query).
 //
 // Design (spec §6.2):
-//   - Iterate reuses the existing planQuery() WHERE-pushdown machinery and
+//   - Iterate reuses the existing planFor()/planQuery() WHERE-pushdown machinery and
 //     evaluateFilter() residual evaluator from searcher.go, exactly mirroring
 //     Search's pre-filter + post-filter pattern. The only structural
 //     difference is that results are streamed through an Iterator wrapper
@@ -110,12 +110,7 @@ func (s *entityStore) Iterate(
 	}
 
 	// Zero-value Filter means "match all" per the spi.Iterable contract.
-	// Skip planQuery — it would treat the empty Op as non-pushable and
-	// install the zero filter as a residual, breaking evaluateFilter.
-	var plan sqlPlan
-	if filter.Op != "" {
-		plan = planQuery(filter)
-	}
+	plan := planFor(filter)
 
 	searchOpts := spi.SearchOptions{
 		ModelName:    model.EntityName,
@@ -325,10 +320,7 @@ func (s *entityStore) GroupedAggregate(
 		}
 	}
 	// Zero-value Filter means "match all" (same convention as Iterable).
-	var plan sqlPlan
-	if filter.Op != "" {
-		plan = planQuery(filter)
-	}
+	plan := planFor(filter)
 	if plan.postFilter != nil {
 		// A SQL GROUP BY can't safely apply a residual filter after the
 		// fact — it would corrupt per-bucket counts/aggregates. Defer to

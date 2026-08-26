@@ -56,11 +56,19 @@ func jobLookupErr(jobID string, err error) error {
 }
 
 // searchCeilingMessage is what a caller sees when their own async job exceeded
-// the backend's search statement ceiling. Fixed and non-revealing: GetJob serves
+// the backend's async search ceiling. Fixed and non-revealing: GetJob serves
 // this string straight back, so a raw driver error here would put SQL, a
 // SQLSTATE and connection detail in a caller-facing record. Which ceiling and
 // which setting stays in the log.
-const searchCeilingMessage = "search exceeded the search statement ceiling"
+//
+// The async status response carries no error-code field, so this string is the
+// caller's entire report — it names both ways out (narrow the query, or have the
+// operator change the ceiling) rather than only stating that a limit fired.
+// Backend-neutral by design: any backend that bounds its async scan returns the
+// same marker, so nothing here may name postgres or a driver.
+const searchCeilingMessage = "search exceeded the backend's async search ceiling — " +
+	"narrow the query, or have the operator raise or disable the ceiling " +
+	"(see the config.database help topic)"
 
 // jobFailureFallback replaces any failure described in terms the caller has no
 // business seeing — a driver error, a recovered panic. That text is operator
@@ -833,10 +841,6 @@ func ClassifyStoreQueryError(err error) *common.AppError {
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeSearchResultLimit,
 			"matched result count exceeds the configured limit").WithCause(err)
-	case errors.Is(err, spi.ErrScanBudgetExhausted):
-		return common.Operational(http.StatusBadRequest,
-			common.ErrCodeScanBudgetExhausted,
-			"search scan budget exhausted; narrow the query or add an indexable predicate").WithCause(err)
 	case errors.Is(err, spi.ErrInvalidFilterPath):
 		slog.Warn("storage backend rejected a path the boundary grammar accepted",
 			"pkg", "search", "err", err)

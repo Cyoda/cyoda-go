@@ -1158,7 +1158,7 @@ paths:
         `INVALID_AGGREGATION_FIELD`, `DUPLICATE_AGGREGATION_ALIAS`,
         `INVALID_LIMIT`, `INVALID_CONDITION`, `INVALID_FIELD_PATH`,
         `CONDITION_TYPE_MISMATCH`, `GROUP_CARDINALITY_EXCEEDED`,
-        `SCAN_BUDGET_EXHAUSTED`, `NOT_IMPLEMENTED_BY_BACKEND`).
+        `NOT_IMPLEMENTED_BY_BACKEND`).
       operationId: queryGroupedEntityStatisticsForModel
       parameters:
         - name: entityName
@@ -1242,10 +1242,8 @@ paths:
             `INVALID_AGGREGATION_FIELD` — most often a missing `$.` leader),
             a `condition` `jsonPath` outside that grammar
             (`INVALID_FIELD_PATH`), a `condition` value type incompatible with
-            the field's locked DataType (`CONDITION_TYPE_MISMATCH`), an
-            otherwise invalid Condition DSL predicate (`INVALID_CONDITION`),
-            or a non-pushdownable `condition` whose residual scan exceeded the
-            backend's row budget (`SCAN_BUDGET_EXHAUSTED`).
+            the field's locked DataType (`CONDITION_TYPE_MISMATCH`), or an
+            otherwise invalid Condition DSL predicate (`INVALID_CONDITION`).
           content:
             application/problem+json:
               schema:
@@ -7358,8 +7356,8 @@ paths:
         Error responses use RFC 9457 problem+json with the cyoda-go
         `properties.errorCode` extension. A storage backend that enforces a
         bounded result set returns 400 `SEARCH_RESULT_LIMIT` when the matched
-        count exceeds `limit`; a non-indexable condition that forces an
-        over-budget residual scan returns 400 `SCAN_BUDGET_EXHAUSTED`.
+        count exceeds `limit`. A non-indexable condition forces a residual scan,
+        which carries no backend-imposed budget; bound it with `timeoutMillis`.
       operationId: searchEntities
       parameters:
         - name: entityName
