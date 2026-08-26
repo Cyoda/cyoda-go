@@ -77,19 +77,6 @@ func allPushedExact(f spi.Filter) bool {
 	}
 }
 
-// planQuery translates a spi.Filter tree into a SQL WHERE clause and an
-// optional residual filter for post-processing in Go.
-//
-// Dissection strategy (must match sqlite's planQuery exactly so parity tests
-// see the same pushable/residual split given the same input):
-//   - Greedy AND: extract pushable children into SQL, collect non-pushable as residual
-//   - Conservative OR: only push down if ALL children are pushable, otherwise entire OR is residual
-//   - Leaf nodes: pushable ops produce SQL fragments; non-pushable become residual
-//
-// Soundness gate: unless the plan is fully EXACT — no residual AND every pushed
-// leaf satisfies leafExact — the FULL original filter is installed as postFilter
-// so the kernel re-checks every candidate the narrowing SQL returns. This also
-// disables the SQL LIMIT/OFFSET/GROUP-BY fast path (gated on postFilter == nil).
 // planFor is the entry point every search path plans through. It adds the
 // match-all guard planQuery cannot make on its own: a zero-value spi.Filter
 // means "match all", but planQuery treats the empty Op as a non-pushable leaf
@@ -103,7 +90,21 @@ func planFor(filter spi.Filter) sqlPlan {
 	return planQuery(filter)
 }
 
-// planQuery has no match-all guard — callers go through planFor, not here.
+// planQuery translates a spi.Filter tree into a SQL WHERE clause and an
+// optional residual filter for post-processing in Go.
+//
+// Dissection strategy (must match sqlite's planQuery exactly so parity tests
+// see the same pushable/residual split given the same input):
+//   - Greedy AND: extract pushable children into SQL, collect non-pushable as residual
+//   - Conservative OR: only push down if ALL children are pushable, otherwise entire OR is residual
+//   - Leaf nodes: pushable ops produce SQL fragments; non-pushable become residual
+//
+// Soundness gate: unless the plan is fully EXACT — no residual AND every pushed
+// leaf satisfies leafExact — the FULL original filter is installed as postFilter
+// so the kernel re-checks every candidate the narrowing SQL returns. This also
+// disables the SQL LIMIT/OFFSET/GROUP-BY fast path (gated on postFilter == nil).
+//
+// Callers go through planFor, not here: planQuery has no match-all guard.
 func planQuery(filter spi.Filter) sqlPlan {
 	pushed, residual := dissect(filter)
 	plan := sqlPlan{postFilter: residual}

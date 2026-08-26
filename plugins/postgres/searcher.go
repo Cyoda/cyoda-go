@@ -31,8 +31,10 @@ var _ spi.Searcher = (*entityStore)(nil)
 // running count exceeds Limit — there is no page to gather, so it stops as
 // soon as the matched set is known not to fit.
 //
-// No scan budget (unlike sqlite): the production engine streams in SQL order
-// and bounds memory via the limit+1 probe / early-raise above. An unbounded
+// No scan budget — no backend has one: bounding search TIME is the caller's,
+// via the direct-search timeout or async job cancellation. What the engine
+// bounds is memory: it streams in SQL order and uses the limit+1 probe /
+// early-raise above. An unbounded
 // request with a residual is O(n) memory — the same profile as the in-memory
 // fallback it replaces. Time is bounded server-side by statement_timeout, and
 // on the async-search scan by that workload's own ceiling — see searchCommitted.

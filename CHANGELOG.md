@@ -7,24 +7,31 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 ### Breaking
 
 - **`LIKE` is now matched as a glob, not translated into a regular expression.
-  Three caller-visible behaviours change.** `LIKE` used to be compiled into a
-  regex and evaluated by the regex engine; it is now matched directly by a glob
-  matcher in the shared kernel. No regex metacharacter has ever been meaningful
-  in a `LIKE` operand and still is not — what changes is where the translation
-  leaked:
+  Two caller-visible behaviours change.** `LIKE` used to be rewritten into a
+  regex and handed to the regex engine; it is now matched directly by a glob
+  matcher in the shared kernel. The change is that the regex engine no longer
+  sees the operand at all, so nothing can leak through to it:
 
-  1. **`%` and `_` now match a newline.** They were translated to `.*?` and `.`,
+  1. **`%` and `_` now match a newline.** They were rewritten to `.*?` and `.`,
      which do not match `\n` without the dot-all flag. A stored value containing
      a newline silently failed to match a pattern that should have matched it;
      it now matches.
-  2. **`\` escapes ANY following character, not only `%`, `_` and `\`.** `\d`
-     was translated to the regex `\\d` and matched the two-character literal
-     `\d`; it now matches the single character `d`. Any pattern relying on a
-     backslash before an ordinary character changes meaning.
-  3. **A pattern ending in an unpaired `\` matches nothing.** It used to compile
-     to `\\` and match a trailing literal backslash. It is now invalid, and an
-     invalid pattern is a leaf that never matches — the search still succeeds,
-     with an empty result. Spell a literal trailing backslash `\\`.
+  2. **A backslash escape is now literal, where the regex engine used to
+     interpret it.** The rewriter passed `\` through untouched, so a regex
+     escape survived into the compiled pattern: **`LIKE "\d"` matched any
+     digit** — `"7"` matched it — and `\w`, `\s`, `\b`, `\n`, `\t` behaved as
+     their regex selves too. `\` now escapes the character after it to its
+     literal form, whatever that character is, so `\d` matches the single
+     character `d`. Any operand carrying a backslash before an ordinary
+     character changes meaning. Escaping `%`, `_` and `\` is unaffected: `\%`
+     was a literal `%` before and still is.
+
+  Unchanged in effect, though it is now a named condition rather than an
+  accident: a pattern ending in an **unpaired `\`** matches nothing. It used to
+  produce a regex that failed to compile, and a leaf whose pattern will not
+  compile never matches; it is now rejected as invalid, and an invalid pattern is
+  likewise a leaf that never matches. Either way the search succeeds with an
+  empty result. Spell a literal trailing backslash `\\`.
 
   Literal text is compared bytewise, so an operand carrying invalid UTF-8 now
   matches the byte-identical stored value instead of being transcoded to U+FFFD;
@@ -638,10 +645,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   Two codes are removed from the `crud` topic's grouped-stats table:
   `INVALID_POINT_IN_TIME` and `INVALID_OPERATOR`. Neither is emitted anywhere
   in the server — an unparseable `pointInTime` is part of strict body decoding
-  and answers `MALFORMED_REQUEST`, which the table now says. `SCAN_BUDGET_EXHAUSTED`
-  was missing and is added: a non-pushdownable `condition` can force a residual
-  scan past the backend's budget. `api/openapi.yaml` was also wrong on one
-  point — an out-of-range `limit` is `INVALID_LIMIT`, not `MALFORMED_REQUEST`.
+  and answers `MALFORMED_REQUEST`, which the table now says. `api/openapi.yaml`
+  was also wrong on one point — an out-of-range `limit` is `INVALID_LIMIT`, not
+  `MALFORMED_REQUEST`.
 
 - **A path addressing one array element by position (`$.arr[0]`) now resolves,
   instead of answering an empty page for a field that holds the value.** It is
@@ -742,8 +748,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   tracked separately.
 
 - **SQLite treats a zero-value filter as "match all", like the other backends.** It was
-  installed as a residual post-filter instead, which disabled `LIMIT` pushdown and armed
-  `CYODA_SQLITE_SEARCH_SCAN_LIMIT`. No cyoda-go request reaches this — every route
+  installed as a residual post-filter instead, which disabled `LIMIT` pushdown and native
+  `GROUP BY`. No cyoda-go request reaches this — every route
   spells "match everything" as an empty `AND`, which already worked — so this is storage
   contract conformance rather than a user-visible fix, and it matters to anything driving
   the storage interface directly.

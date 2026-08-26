@@ -81,3 +81,34 @@ func TestPlanFor_DelegatesToPlanQuery(t *testing.T) {
 		t.Errorf("postFilter nil-ness = %v, want %v", got.postFilter == nil, want.postFilter == nil)
 	}
 }
+
+// TestPlanFor_MixedFilterPushesTheEqLeaf mirrors sqlite's test of the same name.
+// A mixed AND — a pushable eq(city) beside a non-pushable regex — must push the
+// eq leaf into SQL and keep only the regex work in Go. If the eq stopped being
+// pushed, `where` would come back empty and this filter shape would scan the
+// whole model.
+//
+// That is invisible from Search's own results: the soundness gate installs the
+// FULL original filter as the residual whenever a plan is not provably exact, so
+// a full scan re-checked in Go returns exactly the same rows as a narrowed one.
+func TestPlanFor_MixedFilterPushesTheEqLeaf(t *testing.T) {
+	mixed := spi.Filter{Op: spi.FilterAnd, Children: []spi.Filter{
+		{Op: spi.FilterEq, Path: "city", Source: spi.SourceData,
+			Value: "Berlin", Declared: []spi.DataType{spi.String}},
+		{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: ".*"},
+	}}
+
+	plan := planFor(mixed)
+	if plan.where == "" {
+		t.Fatal("where is empty: the pushable eq(city) leaf was not pushed, so this " +
+			"filter shape now full-scans the model")
+	}
+	if len(plan.args) == 0 {
+		t.Errorf("args = %v, want the bound operand alongside the WHERE fragment", plan.args)
+	}
+	// The regex half is not expressible in SQL, so the plan is not exact and the
+	// kernel must re-check every candidate the narrowing SQL returns.
+	if plan.postFilter == nil {
+		t.Error("postFilter = nil: a non-pushable regex leaf must leave a residual")
+	}
+}

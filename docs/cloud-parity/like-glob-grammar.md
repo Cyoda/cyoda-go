@@ -38,8 +38,12 @@ matches only if it consumes the entire stored value.
    `spi.ErrInvalidPattern`. The *evaluator* does not fail on it: `Prepare`'s
    contract is that a leaf whose operand cannot be expanded becomes a leaf that
    never matches, so an unvalidated malformed pattern yields an empty result,
-   not an error. A translation that compiled it to a literal trailing backslash
-   matched rows; it must not.
+   not an error. Note this one is unchanged in effect for cyoda-go: the old
+   translation emitted a regex ending in a bare `\`, which failed to compile,
+   and a leaf whose pattern will not compile never matches either. What changes
+   is that the condition is now named rather than accidental. A translation that
+   instead compiled it to a literal trailing backslash would have matched rows —
+   that is the divergence to check for.
 4. **Literal text is compared bytewise.** An operand carrying invalid UTF-8
    matches the byte-identical stored value; it must not be transcoded to
    U+FFFD. Otherwise `LIKE "\xff"` fails against a stored `"\xff"` while

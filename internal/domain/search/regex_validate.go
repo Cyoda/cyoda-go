@@ -25,12 +25,16 @@ import (
 // This validator compiles the pattern bare (regexp.Compile(pattern)); the
 // kernel compiles it anchored — regexp.Compile(anchor(pattern)), i.e.
 // `\A(?:pattern)\z` — inside ExpandLeaf (cyoda-go-spi eval_leaf.go). The two
-// compile calls are NOT guaranteed to agree, and the skew runs both ways.
-// Reject-though-valid: the anchor wrapper's own parentheses can rebalance a
-// pattern whose parens are unmatched on their own (e.g. ")|(" fails bare but
-// compiles once wrapped), so a narrow class of patterns is rejected here even
-// though the kernel would accept them. Accept-then-fail — the more serious
-// direction, and the one this validator exists to prevent — an unterminated
+// compile calls are NOT guaranteed to agree.
+//
+// Only ONE direction of skew is still reachable. Reject-though-valid used to be
+// the other: the anchor wrapper's own parentheses can rebalance a pattern whose
+// parens are unmatched on their own (")|(" fails bare but compiles once
+// wrapped), so this validator rejected a narrow class the kernel accepted. The
+// kernel now parses the operand STANDALONE before compiling it anchored, so it
+// rejects ")|(" too and that direction is closed. Accept-then-fail — the more
+// serious direction, and the one this validator exists to prevent — an
+// unterminated
 // \Q...\E literal-quote escape (e.g. the bare pattern "\Q") compiles fine
 // here, but the wrapper's appended `)\z` gets swallowed by that same
 // unterminated \Q, so ExpandLeaf's anchored compile fails: the client gets a

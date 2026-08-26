@@ -168,13 +168,17 @@ func likeCond(t *testing.T, jsonPath, value string) string {
 }
 
 // RunSearchLikeAnchoredEscapedGlob pins spec §10's LIKE row at the HTTP layer:
-// the glob grammar (`%` -> any run including newlines, `_` -> any single rune
-// including a newline, `\` escapes ANY following character to its literal
-// form), whole-string anchored and case-sensitive (cyoda-go-spi
-// like_pattern.go). Same result on every backend.
+// the glob grammar (`%` -> any run including newlines, `_` -> any single rune,
+// `\` escapes ANY following character to its literal form), whole-string
+// anchored and case-sensitive (cyoda-go-spi like_pattern.go). Same result on
+// every backend.
 //
-// spitest's Searcher/Pattern/LikeGrammar covers the same grammar one layer
-// down, at the Searcher SPI; this is the cross-backend view through the API.
+// The last two assertions are the cross-backend guard for the switch from a
+// regex translation to a direct glob matcher, which moved two caller-visible
+// behaviours: `%` now spans a newline, and a backslash escape is literal rather
+// than something the regex engine interprets. spitest's
+// Searcher/Pattern/LikeGrammar covers the whole grammar one layer down at the
+// Searcher SPI; this is the view through the API, across every backend.
 func RunSearchLikeAnchoredEscapedGlob(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)
@@ -206,6 +210,20 @@ func RunSearchLikeAnchoredEscapedGlob(t *testing.T, fixture BackendFixture) {
 	if _, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Xabcx","label":"xabcx"}`); err != nil {
 		t.Fatalf("CreateEntity Xabcx (control): %v", err)
 	}
+	// A value carrying a newline, and a value carrying a literal "d". Both
+	// exist to pin behaviours that changed when LIKE stopped being translated
+	// into a regex; see the two assertions at the end of this scenario.
+	multilineID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Multiline","label":"line1\nline2"}`)
+	if err != nil {
+		t.Fatalf("CreateEntity Multiline: %v", err)
+	}
+	literalDID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"LiteralD","label":"d"}`)
+	if err != nil {
+		t.Fatalf("CreateEntity LiteralD: %v", err)
+	}
+	if _, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Digit","label":"7"}`); err != nil {
+		t.Fatalf("CreateEntity Digit (control): %v", err)
+	}
 
 	// "foo%" -> anchored prefix match; only "foobar" qualifies.
 	prefixResults, err := c.SyncSearch(t, modelName, modelVersion, likeCond(t, "$.label", "foo%"))
@@ -229,6 +247,28 @@ func RunSearchLikeAnchoredEscapedGlob(t *testing.T, fixture BackendFixture) {
 		t.Fatalf(`SyncSearch LIKE 50\%%: %v`, err)
 	}
 	assertResultIDSet(t, `label LIKE 50\%`, escapedResults, []string{percentID.String()})
+
+	// "%" reaches a newline. A regex translation emits ".*?", which does not
+	// match "\n" without the dot-all flag, so a multi-line value silently
+	// failed to match a pattern that plainly should match it. Every backend
+	// must return the multi-line row.
+	newlineResults, err := c.SyncSearch(t, modelName, modelVersion, likeCond(t, "$.label", "line1%line2"))
+	if err != nil {
+		t.Fatalf("SyncSearch LIKE line1%%line2: %v", err)
+	}
+	assertResultIDSet(t, "label LIKE line1%line2 (% spans a newline)",
+		newlineResults, []string{multilineID.String()})
+
+	// `\d` is a LITERAL "d", not the regex digit class. A translation that
+	// passed the backslash through to the regex engine matched "7" here and
+	// missed "d" — the escape is the one place a regex metacharacter could
+	// still reach the engine. Backslash escapes ANY following character.
+	escapedLetterResults, err := c.SyncSearch(t, modelName, modelVersion, likeCond(t, "$.label", `\d`))
+	if err != nil {
+		t.Fatalf(`SyncSearch LIKE \d: %v`, err)
+	}
+	assertResultIDSet(t, `label LIKE \d (literal "d", not the digit class)`,
+		escapedLetterResults, []string{literalDID.String()})
 }
 
 // RunSearchStringOpsCaseSensitivityAndNonTextual pins spec §10's string-ops

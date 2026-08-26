@@ -17,7 +17,7 @@ import (
 // (POST /api/entity/stats/{name}/{version}/query).
 //
 // Design (spec §6.2, postgres variant):
-//   - Iterate reuses the planQuery() WHERE-pushdown machinery from
+//   - Iterate reuses the planFor()/planQuery() WHERE-pushdown machinery from
 //     query_planner.go (Task 14). The residual filter is applied inside
 //     Next() via an in-plugin evaluator (evalPostFilter below) — the same
 //     pre-filter + post-filter pattern sqlite uses, kept self-contained

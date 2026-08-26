@@ -300,16 +300,21 @@ func walkCriterion(cond predicate.Condition, location string) error {
 // — fmt.Sprintf("%v", value) — but compiles it bare (regexp.Compile(pattern)),
 // not anchored the way the kernel's ExpandLeaf does (cyoda-go-spi
 // eval_leaf.go: regexp.Compile(anchor(pattern)), i.e. `\A(?:pattern)\z`). The
-// two compile calls are NOT guaranteed to agree, and the skew runs both
-// ways — see the accept/reject-skew note on ValidateRegexPatterns in
-// internal/domain/search/regex_validate.go for the full explanation and
-// examples (reject-though-valid: ")|("; accept-then-fail: "\Q"). The
-// resolution is decided there too: the validator side — this function
-// included — should adopt the kernel's anchored form, since anchoring is the
-// correct semantics and every evaluator already applies it; but the wrapper
-// is unexported in cyoda-go-spi, so it isn't done here. Don't hand-roll the
-// wrapper in this package to close the gap — that would duplicate a grammar
-// that must not drift from the kernel's.
+// two compile calls are NOT guaranteed to agree — see the accept/reject-skew
+// note on ValidateRegexPatterns in internal/domain/search/regex_validate.go.
+// One direction (accept-then-fail, e.g. "\Q") is still reachable; the other
+// closed when the kernel started parsing the operand standalone as well as
+// anchored.
+//
+// The resolution is decided there too, and the blocker it named is gone:
+// cyoda-go-spi now EXPORTS the derivation — ValidateLeafPattern,
+// ValidateConditionPatterns and the ErrInvalidPattern sentinel — so this
+// function should ask the kernel rather than compile bare. Still do not
+// hand-roll the anchor wrapper here: the point of the export is that exactly
+// one implementation of the grammar exists. Note the pending change covers LIKE
+// as well, which this function does not validate at all today — a malformed
+// LIKE operand reaches the evaluator, where an unexpandable operand becomes a
+// leaf that never matches.
 func compileMatchesPattern(operatorType string, value any, location string) error {
 	if operatorType != "MATCHES_PATTERN" {
 		return nil

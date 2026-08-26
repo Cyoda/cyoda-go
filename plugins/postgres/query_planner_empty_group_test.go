@@ -7,7 +7,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// The SPI filter contract (spi.MatchFilter): an explicit empty AND is the AND
+// The SPI filter contract (spi.Prepare/PreparedFilter.Match): an explicit empty AND is the AND
 // identity (true, matches everything); an explicit empty OR is the OR identity
 // (false, matches nothing). SQL cannot express either shape — joining zero
 // fragments yields no predicate at all (i.e. TRUE) at the top level and a
