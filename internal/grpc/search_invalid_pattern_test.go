@@ -142,3 +142,128 @@ func TestRPC_SnapshotSearch_MalformedRegex_400_InvalidCondition(t *testing.T) {
 		t.Errorf("expected no snapshot job to be created, got snapshotId=%s", typed.Status.SnapshotID)
 	}
 }
+
+// TestRPC_DirectSearch_MalformedLike_400_InvalidCondition covers the gRPC
+// entry point for the operator the boundary did not validate at all. A LIKE
+// operand ending in an unpaired escape became a leaf that never matches, so
+// the caller got a successful, empty result set instead of a rejection.
+func TestRPC_DirectSearch_MalformedLike_400_InvalidCondition(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Bob"})
+
+	ce := makeCE(EntitySearchRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "person", "version": 1},
+		"condition": map[string]any{
+			"type":         "simple",
+			"jsonPath":     "$.name",
+			"operatorType": "LIKE",
+			"value":        `abc\`,
+		},
+	})
+
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(ce, stream); err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("expected exactly 1 response sent, got %d", len(stream.sent))
+	}
+
+	var typed events.EntityResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if typed.Success {
+		t.Error("expected success=false for malformed LIKE pattern")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected envelope code CLIENT_ERROR, got %s", typed.Error.Code)
+	}
+	if !strings.Contains(typed.Error.Message, "INVALID_CONDITION") {
+		t.Errorf("expected message to contain INVALID_CONDITION, got %s", typed.Error.Message)
+	}
+}
+
+// TestRPC_DirectSearch_AnchorSkewPattern_400_InvalidCondition covers the
+// accept-then-fail skew over gRPC: `\Q` compiles standalone but not once the
+// kernel anchors it, so a bare compile at the boundary accepted an operand the
+// evaluator could not compile.
+func TestRPC_DirectSearch_AnchorSkewPattern_400_InvalidCondition(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Bob"})
+
+	ce := makeCE(EntitySearchRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "person", "version": 1},
+		"condition": map[string]any{
+			"type":         "simple",
+			"jsonPath":     "$.name",
+			"operatorType": "MATCHES_PATTERN",
+			"value":        `\Q`,
+		},
+	})
+
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(ce, stream); err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("expected exactly 1 response sent, got %d", len(stream.sent))
+	}
+
+	var typed events.EntityResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if typed.Success {
+		t.Error(`expected success=false for MATCHES_PATTERN operand "\Q"`)
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error in response")
+	}
+	if !strings.Contains(typed.Error.Message, "INVALID_CONDITION") {
+		t.Errorf("expected message to contain INVALID_CONDITION, got %s", typed.Error.Message)
+	}
+}
+
+// TestRPC_SnapshotSearch_MalformedLike_400_InvalidCondition mirrors the
+// direct-search LIKE case for the async snapshot-submit path: no snapshot job
+// is created for an operand the kernel cannot expand.
+func TestRPC_SnapshotSearch_MalformedLike_400_InvalidCondition(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Bob"})
+
+	ce := makeCE(EntitySnapshotSearchRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "person", "version": 1},
+		"condition": map[string]any{
+			"type":         "simple",
+			"jsonPath":     "$.name",
+			"operatorType": "LIKE",
+			"value":        `abc\`,
+		},
+	})
+
+	resp, err := svc.EntitySearch(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+
+	var typed events.EntitySnapshotSearchResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success {
+		t.Error("expected success=false for malformed LIKE pattern")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error in response")
+	}
+	if !strings.Contains(typed.Error.Message, "INVALID_CONDITION") {
+		t.Errorf("expected message to contain INVALID_CONDITION, got %s", typed.Error.Message)
+	}
+	if typed.Status.SnapshotID != nilUUID {
+		t.Errorf("expected no snapshot job to be created, got snapshotId=%s", typed.Status.SnapshotID)
+	}
+}

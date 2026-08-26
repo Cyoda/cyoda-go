@@ -83,7 +83,15 @@ instead of hand-rolling a bare compile. `MATCHES_PATTERN` requires a standalone
 parse **and** an anchored compile — a pattern that parses bare but fails once
 anchored is rejected at the boundary rather than at evaluation time.
 
-Wiring cyoda-go's own boundary validator onto these exports — so a malformed
-`LIKE` is rejected as `400` at the API boundary rather than silently matching
-nothing — is tracked separately as cyoda-go#479, and is not yet in place. Until
-it is, a malformed `LIKE` returns `200` and an empty page.
+cyoda-go's own boundary validator is wired onto these exports. Every surface
+that takes a condition — sync search, async submit, grouped statistics,
+conditional delete, and a workflow or transition `criterion` at import — calls
+`ValidateConditionPatterns` and rejects a malformed `LIKE` or `MATCHES_PATTERN`
+operand with `400 INVALID_CONDITION`, on HTTP and gRPC alike. An async submit
+rejects synchronously: no job is created.
+
+The two layers are complements, not duplicates, and Cloud needs both. The
+boundary rejects; the evaluator still treats an unexpandable operand as a leaf
+that never matches, because it is reached by paths that never crossed the
+boundary. Do not make the evaluator fail on a malformed pattern — that is the
+divergence `MalformedLike` exists to catch.

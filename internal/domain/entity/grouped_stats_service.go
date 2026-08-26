@@ -133,18 +133,19 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 		parsedCond = c
 	}
 
-	// Reject a malformed MATCHES_PATTERN regex before any backend runs.
+	// Reject a MATCHES_PATTERN or LIKE operand the kernel cannot compile,
+	// before any backend runs.
 	// Every plugin's residual filter evaluator (sqlite's evaluateFilter,
 	// postgres's evalPostFilter) delegates to the error-free
 	// spi.PreparedFilter.Match kernel, which returns false (non-match)
 	// rather than erroring on a bad pattern
-	// — so an unvalidated malformed regex would silently under-include
+	// — so an unvalidated malformed pattern would silently under-include
 	// buckets instead of failing the request. Validating here, in the
 	// backend-independent domain layer, makes every backend reject
-	// identically, matching the search path's ValidateRegexPatterns call.
+	// identically, matching the search path's ValidatePatterns call.
 	if parsedCond != nil {
-		if rErr := search.ValidateRegexPatterns(parsedCond); rErr != nil {
-			return nil, fmt.Errorf("%w: invalid regex pattern in condition: %v", ErrInvalidCondition, rErr)
+		if rErr := search.ValidatePatterns(parsedCond); rErr != nil {
+			return nil, fmt.Errorf("%w: invalid pattern in condition: %v", ErrInvalidCondition, rErr)
 		}
 	}
 

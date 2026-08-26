@@ -997,13 +997,15 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 		return deleteSelectionPlan{}, nil
 	}
 
-	// Reject a malformed MATCHES_PATTERN regex before any selection runs —
-	// mirrors SearchService.Search's ValidateRegexPatterns call. Left
-	// unvalidated, the residual match.Prepare kernel treats an uncompilable
-	// pattern as a silent non-match rather than an error.
-	if rErr := search.ValidateRegexPatterns(cond); rErr != nil {
+	// Reject a MATCHES_PATTERN or LIKE operand the kernel cannot compile,
+	// before any selection runs — mirrors SearchService.Search's
+	// ValidatePatterns call. Left unvalidated, the residual match.Prepare
+	// kernel treats an uncompilable pattern as a silent non-match rather
+	// than an error, so the delete would report success having selected
+	// nothing.
+	if rErr := search.ValidatePatterns(cond); rErr != nil {
 		return deleteSelectionPlan{}, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
-			fmt.Sprintf("invalid regex pattern in condition: %v", rErr))
+			fmt.Sprintf("invalid pattern in condition: %v", rErr))
 	}
 
 	// Structural condition validation (canonical operator set, BETWEEN

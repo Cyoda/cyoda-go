@@ -44,8 +44,8 @@ func TestGroupedStats_MalformedRegex_Returns400_InvalidCondition(t *testing.T) {
 	// ExpectErrorCode re-buffers the body, so it's safe to read again after.
 	commontest.ExpectErrorCode(t, resp, "INVALID_CONDITION")
 	body := readBody(t, resp)
-	if !strings.Contains(body, "regex") {
-		t.Errorf("expected response detail to mention the regex problem; body: %s", body)
+	if !strings.Contains(body, "MATCHES_PATTERN") {
+		t.Errorf("expected response detail to name the offending operator; body: %s", body)
 	}
 }
 
@@ -84,4 +84,30 @@ func TestGroupedStats_ValidRegex_Returns200(t *testing.T) {
 	if got, _ := b["count"].(float64); got != 1 {
 		t.Errorf("count: got %v, want 1", got)
 	}
+}
+
+// TestGroupedStats_MalformedLike_Returns400_InvalidCondition extends the
+// grouped-stats boundary to LIKE, which it did not validate at all: a trailing
+// unpaired escape became a leaf that never matches, so buckets were silently
+// under-included behind an HTTP 200.
+func TestGroupedStats_MalformedLike_Returns400_InvalidCondition(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+
+	const model = "e2e-grouped-stats-like-malformed"
+	setupStatsModel(t, model)
+	createEntityE2E(t, model, 1, `{"variantId":"v1","price":10.0}`)
+
+	reqBody := `{
+		"groupBy": ["$.variantId"],
+		"condition": {"type":"simple","jsonPath":"$.variantId","operatorType":"LIKE","value":"abc\\"}
+	}`
+	path := fmt.Sprintf("/api/entity/stats/%s/1/query", model)
+	resp := doAuth(t, http.MethodPost, path, reqBody)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+	commontest.ExpectErrorCode(t, resp, "INVALID_CONDITION")
 }

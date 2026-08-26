@@ -6,6 +6,36 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **An invalid `LIKE` or `MATCHES_PATTERN` operand is now rejected with `400
+  INVALID_CONDITION` instead of being accepted.** The boundary used to compile
+  the operand on its own, while every evaluator compiles the *anchored* form,
+  `\A(?:operand)\z` — two derivations of one rule, in two repositories. They
+  disagreed, and the request went through anyway:
+
+  - **`MATCHES_PATTERN` was accepted and then failed.** An unterminated `\Q`
+    quotes whatever follows it, so `\Q` compiles standalone but swallows the
+    anchor wrapper's own `)\z`. The caller got a `200` and a job id, and the
+    job went `FAILED` — an error surface they had been told at the boundary
+    they would not hit.
+  - **`LIKE` was not validated at all.** A trailing unpaired escape (`abc\`)
+    reached the evaluator, where an operand that cannot be expanded becomes a
+    leaf that never matches: a `200` and an empty page. It was also a
+    cross-backend divergence — the in-tree evaluators returned empty where the
+    commercial async evaluator failed every shard of the job.
+
+  Both surfaces now call the kernel's own derivation, so the boundary accepts
+  exactly what the evaluator accepts. Those two classes are the whole of the
+  change: **a request carrying one of them returned `200` before and returns
+  `400` now**. Nothing that was rejected before is accepted now, and a
+  well-formed pattern is unaffected. A workflow or transition `criterion`
+  carrying such an operand is rejected at import rather than misbehaving on
+  every later evaluation, and an async submit rejects synchronously — no job is
+  created.
+
+  Affected surfaces: `/search/direct`, `/search/async`, conditional
+  `DELETE /entity/{name}/{version}`, the grouped-stats `condition`, and
+  workflow import. HTTP and gRPC alike.
+
 - **`LIKE` is now matched as a glob, not translated into a regular expression.
   Two caller-visible behaviours change.** `LIKE` used to be rewritten into a
   regex and handed to the regex engine; it is now matched directly by a glob
@@ -40,9 +70,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   Affected surfaces: every one that takes a condition — `/search/direct`,
   `/search/async`, conditional `DELETE /entity/{name}/{version}`, the
   grouped-stats `condition`, and a workflow or transition `criterion`. HTTP and
-  gRPC alike. Rejecting an invalid pattern at the API boundary with a `400`,
-  rather than letting it match nothing, is a separate change and is not in this
-  release.
+  gRPC alike. An invalid pattern is now rejected at the API boundary with a
+  `400` — see the next entry.
 
 - **A path whose last hop is an array wildcard now addresses the array's
   ELEMENTS. It used to resolve to the array's length.**

@@ -163,3 +163,32 @@ func TestDeleteEntities_Conditional_OverThousandMatches(t *testing.T) {
 		t.Errorf("numberOfEntititesRemoved = %v, want %d", got, total)
 	}
 }
+
+// TestDeleteEntities_MalformedPattern asserts the conditional-delete boundary
+// rejects a pattern operand the kernel cannot evaluate, for MATCHES_PATTERN
+// and LIKE alike. Left unvalidated, an uncompilable operand is a leaf that
+// never matches, so the delete would report success having selected nothing —
+// the fail-open shape that matters most on a destructive endpoint.
+func TestDeleteEntities_MalformedPattern(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+	const model = "e2e-delcond-badpattern"
+	importModelWithSample(t, model, 1, `{"status":"sample"}`)
+	lockModelE2E(t, model, 1)
+	createEntityE2E(t, model, 1, `{"status":"keep"}`)
+
+	for name, cond := range map[string]string{
+		"anchorSkewRegex": `{"type":"simple","jsonPath":"$.status","operatorType":"MATCHES_PATTERN","value":"\\Q"}`,
+		"malformedLike":   `{"type":"simple","jsonPath":"$.status","operatorType":"LIKE","value":"abc\\"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp := doAuth(t, http.MethodDelete, fmt.Sprintf("/api/entity/%s/1", model), cond)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", resp.StatusCode, readBody(t, resp))
+			}
+			commontest.ExpectErrorCode(t, resp, "INVALID_CONDITION")
+		})
+	}
+}
