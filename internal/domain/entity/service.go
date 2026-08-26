@@ -997,17 +997,6 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 		return deleteSelectionPlan{}, nil
 	}
 
-	// Reject a MATCHES_PATTERN or LIKE operand the kernel cannot compile,
-	// before any selection runs — mirrors SearchService.Search's
-	// ValidatePatterns call. Left unvalidated, the residual match.Prepare
-	// kernel treats an uncompilable pattern as a silent non-match rather
-	// than an error, so the delete would report success having selected
-	// nothing.
-	if rErr := search.ValidatePatterns(cond); rErr != nil {
-		return deleteSelectionPlan{}, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
-			rErr.Error())
-	}
-
 	// Structural condition validation (canonical operator set, BETWEEN
 	// arity) — mirrors SearchService.Search's single boundary via the same
 	// exported search.ValidateCondition call grouped-stats reuses. Unlike
@@ -1029,6 +1018,19 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 	if cErr := search.ValidateCondition(cond); cErr != nil {
 		return deleteSelectionPlan{}, common.Operational(http.StatusBadRequest,
 			search.StructuralConditionErrCode(cErr), cErr.Error())
+	}
+
+	// Reject a MATCHES_PATTERN or LIKE operand the kernel cannot compile,
+	// before any selection runs — mirrors SearchService.Search's
+	// ValidatePatterns call. Left unvalidated, the residual match.Prepare
+	// kernel treats an uncompilable pattern as a silent non-match rather
+	// than an error, so the delete would report success having selected
+	// nothing. Runs after the structural check, as it does on the search
+	// path: the pattern error names the leaf by the jsonPath the caller
+	// wrote, and that string should have cleared the path grammar first.
+	if rErr := search.ValidatePatterns(cond); rErr != nil {
+		return deleteSelectionPlan{}, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
+			rErr.Error())
 	}
 
 	fields, ffErr := search.LoadFieldsMap(ctx, modelStore, ref)

@@ -133,28 +133,12 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 		parsedCond = c
 	}
 
-	// Reject a MATCHES_PATTERN or LIKE operand the kernel cannot compile,
-	// before any backend runs.
-	// Every plugin's residual filter evaluator (sqlite's evaluateFilter,
-	// postgres's evalPostFilter) delegates to the error-free
-	// spi.PreparedFilter.Match kernel, which returns false (non-match)
-	// rather than erroring on a bad pattern
-	// — so an unvalidated malformed pattern would silently under-include
-	// buckets instead of failing the request. Validating here, in the
-	// backend-independent domain layer, makes every backend reject
-	// identically, matching the search path's ValidatePatterns call.
-	if parsedCond != nil {
-		if rErr := search.ValidatePatterns(parsedCond); rErr != nil {
-			return nil, fmt.Errorf("%w: %v", ErrInvalidCondition, rErr)
-		}
-	}
-
 	// Structural condition validation (canonical operator set, BETWEEN
 	// arity) — model-independent, mirrors the single boundary the search
 	// path enforces in SearchService.Search/SubmitAsync via the same
 	// search.ValidateCondition call. Without this, a malformed-arity
 	// BETWEEN (or an unknown operatorType) slips past every downstream
-	// layer here exactly as the regex case above did: ConditionToFilter and
+	// layer here exactly as a malformed pattern would: ConditionToFilter and
 	// match.Prepare both fail closed (never matching) rather than erroring,
 	// so the request would silently degrade to an empty/wrong result
 	// instead of failing with 400.
@@ -169,6 +153,23 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 				return nil, cErr
 			}
 			return nil, fmt.Errorf("%w: %v", ErrInvalidCondition, cErr)
+		}
+	}
+
+	// Reject a MATCHES_PATTERN or LIKE operand the kernel cannot compile,
+	// before any backend runs. Every plugin's residual filter evaluator
+	// (sqlite's evaluateFilter, postgres's evalPostFilter) delegates to the
+	// error-free spi.PreparedFilter.Match kernel, which returns false
+	// (non-match) rather than erroring on a bad pattern — so an unvalidated
+	// malformed pattern would silently under-include buckets instead of
+	// failing the request. Validating here, in the backend-independent domain
+	// layer, makes every backend reject identically. It runs after the
+	// structural validation above, as it does on the search path: the pattern
+	// error names the leaf by the jsonPath the caller wrote, and that string
+	// should have cleared the path grammar first.
+	if parsedCond != nil {
+		if rErr := search.ValidatePatterns(parsedCond); rErr != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidCondition, rErr)
 		}
 	}
 
