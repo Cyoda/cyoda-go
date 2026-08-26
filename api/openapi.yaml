@@ -1242,9 +1242,8 @@ paths:
             `INVALID_AGGREGATION_FIELD` — most often a missing `$.` leader),
             a `condition` `jsonPath` outside that grammar
             (`INVALID_FIELD_PATH`), a `condition` value type incompatible with
-            the field's locked DataType (`CONDITION_TYPE_MISMATCH`), an
-            or an otherwise invalid Condition DSL predicate
-            (`INVALID_CONDITION`).
+            the field's locked DataType (`CONDITION_TYPE_MISMATCH`), or an
+            otherwise invalid Condition DSL predicate (`INVALID_CONDITION`).
           content:
             application/problem+json:
               schema:

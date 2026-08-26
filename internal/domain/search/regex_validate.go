@@ -38,14 +38,21 @@ import (
 // failure — the in-tree evaluators leave the compiled regex nil and return
 // an empty (non-matching) result, while the commercial backend's async
 // evaluator propagates the compile error and fails the job. The resolution
-// is decided, not open: the validator should compile the anchored form too,
-// since anchoring is the correct full-value-match semantics (mirroring
-// Cloud's Pattern.matcher(x).matches()) and every evaluator — including the
-// commercial one — already applies it; this validator is the outlier. It
-// isn't done here because the wrapper (anchor, and likeToRegex for LIKE) is
-// unexported in cyoda-go-spi, and hand-copying the grammar into this package
-// would create a second copy that must not drift from the kernel's — the fix
-// belongs in the SPI, not in a hand-rolled wrapper here.
+// is decided, not open: the validator should derive its accept/reject set from
+// the kernel, since anchoring is the correct full-value-match semantics
+// (mirroring Cloud's Pattern.matcher(x).matches()) and every evaluator —
+// including the commercial one — already applies it; this validator is the
+// outlier.
+//
+// The blocker that kept that fix out of this package is gone. cyoda-go-spi now
+// EXPORTS the derivation — ValidateLeafPattern, ValidateConditionPatterns and
+// the ErrInvalidPattern sentinel — precisely so a boundary validator asks the
+// kernel instead of hand-rolling a second copy of the grammar. Replacing the
+// bare compile below with one ValidateConditionPatterns call is the pending
+// step, and it covers LIKE as well: LIKE is a glob (see the kernel's
+// like_pattern.go), it is NOT validated here at all today, and a malformed LIKE
+// operand therefore reaches the evaluator, where Prepare's contract turns it
+// into a leaf that never matches — a 200 and an empty page where a 400 belongs.
 func ValidateRegexPatterns(cond predicate.Condition) error {
 	return walkRegexPatterns(cond, 0)
 }

@@ -34,8 +34,12 @@ matches only if it consumes the entire stored value.
    through to the regex engine either changes its meaning (`\d`, `\b`, `\w`
    become regex classes) or fails to compile.
 3. **A pattern ending in an unpaired `\` is invalid.** It has nothing to
-   escape. The kernel rejects it with an error wrapping `spi.ErrInvalidPattern`
-   rather than matching, guessing, or compiling a trailing literal backslash.
+   escape. `ValidateLeafPattern` rejects it with an error wrapping
+   `spi.ErrInvalidPattern`. The *evaluator* does not fail on it: `Prepare`'s
+   contract is that a leaf whose operand cannot be expanded becomes a leaf that
+   never matches, so an unvalidated malformed pattern yields an empty result,
+   not an error. A translation that compiled it to a literal trailing backslash
+   matched rows; it must not.
 4. **Literal text is compared bytewise.** An operand carrying invalid UTF-8
    matches the byte-identical stored value; it must not be transcoded to
    U+FFFD. Otherwise `LIKE "\xff"` fails against a stored `"\xff"` while
@@ -54,8 +58,14 @@ number of wildcards.
 `Searcher/Pattern/LikeGrammar` (with `EscapedLetterIsLiteral`,
 `EscapedPercentIsLiteral`, `DoubledEscapeIsOneBackslash`,
 `AnyRunReachesNewline`, `OneCharReachesNewline`, `AnyRunMatchesEverything`,
-`WholeStringAnchored`, `CaseSensitive`) and `Searcher/Pattern/MalformedLike`.
-The in-tree memory, sqlite and postgres backends pass all of them.
+`WholeStringAnchored`, `CaseSensitive`, `RegexIsAnchored`, `RegexWholeString`)
+and `Searcher/Pattern/MalformedLike`. The in-tree memory, sqlite and postgres
+backends pass all of them.
+
+`MalformedLike` is the one to read closely: it requires `Search` to return **no
+error and no rows** for a trailing unpaired escape. Failing the search there
+instead is a divergence — rejecting the pattern is the request boundary's job,
+above the `Searcher`.
 
 A backend carrying its own `LIKE`→regex implementation fails these subtests. It
 must adopt the kernel rather than align its translation: two implementations of
@@ -70,5 +80,6 @@ parse **and** an anchored compile — a pattern that parses bare but fails once
 anchored is rejected at the boundary rather than at evaluation time.
 
 Wiring cyoda-go's own boundary validator onto these exports — so a malformed
-`LIKE` is rejected as `400` at the API boundary rather than failing during
-evaluation — is tracked separately as cyoda-go#479, and is not yet in place.
+`LIKE` is rejected as `400` at the API boundary rather than silently matching
+nothing — is tracked separately as cyoda-go#479, and is not yet in place. Until
+it is, a malformed `LIKE` returns `200` and an empty page.

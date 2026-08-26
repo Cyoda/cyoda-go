@@ -207,12 +207,8 @@ func (s *entityStore) classifyScanError(err error) error {
 // runSearch is ever reached, so the LIMIT pushdown and the overflow checks
 // below are unconditional.
 func (s *entityStore) runSearch(ctx context.Context, q Querier, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
-	// Zero-value Filter means "match all" — skip planQuery (it would treat the
-	// empty Op as non-pushable and install the zero filter as a residual).
-	var plan sqlPlan
-	if filter.Op != "" {
-		plan = planQuery(filter)
-	}
+	// Zero-value Filter means "match all".
+	plan := planFor(filter)
 
 	baseQuery, baseArgs := s.searchBaseQuery(opts.ModelName, opts.ModelVersion, opts.PointInTime)
 

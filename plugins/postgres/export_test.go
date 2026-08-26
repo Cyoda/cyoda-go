@@ -156,10 +156,7 @@ const GetResultIDsQueryForTest = getResultIDsQuery
 // provides.
 func SearchCandidateIDsForTest(pool *pgxpool.Pool, ctx context.Context, tenantID spi.TenantID, entityName, modelVersion string, filter spi.Filter) ([]string, error) {
 	s := &entityStore{q: pool, pool: pool, tenantID: tenantID}
-	var plan sqlPlan
-	if filter.Op != "" {
-		plan = planQuery(filter)
-	}
+	plan := planFor(filter)
 	baseQuery, baseArgs := s.searchBaseQuery(entityName, modelVersion, nil)
 	if plan.where != "" {
 		shifted := shiftPlaceholders(plan.where, len(baseArgs))

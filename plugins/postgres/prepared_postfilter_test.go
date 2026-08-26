@@ -67,27 +67,22 @@ func TestPlanQuery_PreparedPostFilterMatchesNilness(t *testing.T) {
 // dissect()/planQuery would actually fail this test.
 //
 // The other spelling of match-all, the zero Filter{}, is deliberately NOT
-// exercised here: production never passes it to planQuery at all
-// (searchCommitted → runSearch and GroupedAggregate both guard the call
-// behind `filter.Op != ""` precisely because dissect treats an empty Op as a
-// non-pushable leaf and would install the zero filter as its own residual).
-// Reconstructing that guard in-test and then calling planQuery only on the
-// other branch — as an earlier version of this test did — asserted against a
-// zero sqlPlan{} literal, not against anything planQuery or production code
-// computed; it could not fail.
+// exercised here: production never passes it to planQuery at all. The guard
+// lives in planFor, which every search path plans through, and is asserted
+// directly by TestPlanFor_MatchAllLeavesNoResidual (plan_for_test.go) —
+// together with TestPlanFor_EmptyOrIsNotMatchAll, which pins the asymmetry that
+// makes the guard non-obvious: an empty AND is match-all, an empty OR is the
+// false identity and must keep its residual.
 //
-// The zero-filter spelling's guard is pinned for GroupedAggregate through a
-// real production entry point instead: TestPostgresGroupedAggregate_PushesCountByState
-// (grouped_stats_test.go) drives spi.Filter{} through GroupedAggregate and
-// fails with ErrAggregationNotPushdownable if the guard is removed. Search's
-// LIMIT-pushdown branch has no equivalent black-box proof on postgres: unlike
-// sqlite, postgres has no scan budget, and (per TestPGSearcher_PushdownOverLimitFails
-// / TestPGSearcher_ResidualOverLimitFails in searcher_test.go) the pushdown and
-// residual branches return the identical ErrSearchResultLimitExceeded from
-// Search's perspective — the only way to tell them apart is to trace
-// planQuery's output or inspect the SQL text, neither of which this
-// table-driven unit test does. That gap is not filled by restoring the old
-// row: a trivially-true assertion is not evidence.
+// Naming the guard is what made it assertable. It used to be four inline
+// copies, pinned only indirectly: GroupedAggregate through
+// TestPostgresGroupedAggregate_PushesCountByState (grouped_stats_test.go), and
+// Search's LIMIT-pushdown branch not at all — the pushdown and residual
+// branches return the identical ErrSearchResultLimitExceeded (per
+// TestPGSearcher_PushdownOverLimitFails / TestPGSearcher_ResidualOverLimitFails
+// in searcher_test.go), so no black-box observation could tell them apart. That
+// gap is now closed at the planner, not worked around with a trivially-true
+// assertion here.
 func TestSearch_MatchAllLeavesNoResidual(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

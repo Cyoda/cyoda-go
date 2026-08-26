@@ -324,7 +324,7 @@ func TestPostgresPushdownSoundness_EndsWithUnderSelects_KNOWNBUG(t *testing.T) {
 // escapeLike() call escaping every '%'/'_' before binding to
 // `LIKE $N ESCAPE '\'` — turning a genuine wildcard pattern into a literal
 // string match at the SQL layer, while the kernel
-// (spi.Prepare/PreparedFilter.Match -> eval_leaf.go likeToRegex) treats those
+// (spi.Prepare/PreparedFilter.Match -> like_pattern.go) treats those
 // characters as real wildcards.
 //
 // Fixed identically to sqlite: FilterLike removed from isPushable, so Like

@@ -167,10 +167,14 @@ func likeCond(t *testing.T, jsonPath, value string) string {
 	return string(b)
 }
 
-// RunSearchLikeAnchoredEscapedGlob pins spec §10's LIKE row: Cloud's glob
-// grammar (`%` -> any run, `_` -> any single char, `\` escapes a literal `%`
-// or `_`), whole-string anchored and case-sensitive
-// (cyoda-go-spi eval_leaf.go likeToRegex). Same result on every backend.
+// RunSearchLikeAnchoredEscapedGlob pins spec §10's LIKE row at the HTTP layer:
+// the glob grammar (`%` -> any run including newlines, `_` -> any single rune
+// including a newline, `\` escapes ANY following character to its literal
+// form), whole-string anchored and case-sensitive (cyoda-go-spi
+// like_pattern.go). Same result on every backend.
+//
+// spitest's Searcher/Pattern/LikeGrammar covers the same grammar one layer
+// down, at the Searcher SPI; this is the cross-backend view through the API.
 func RunSearchLikeAnchoredEscapedGlob(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)

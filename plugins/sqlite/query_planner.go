@@ -223,16 +223,20 @@ func isFullyPushable(f spi.Filter) bool {
 // is residual-only (kernel-evaluated). BetweenInclusive IS pushable: SQL BETWEEN
 // is inclusive [lo,hi], a sound superset of the inclusive kernel between.
 //
-// Like is deliberately NOT pushable (as of this commit): SQL LIKE's '%'/'_'
-// wildcards do not line up with Cloud's LIKE grammar (the kernel's
-// likeToRegex, cyoda-go-spi eval_leaf.go), so a naive pushdown either escapes
-// the wildcards into a literal match (under-selecting real wildcard patterns)
-// or pushes them through unescaped (over-selecting/misinterpreting
-// SQL-LIKE-specific escaping). A sound SQL-LIKE translation that aligns SQL
-// LIKE to Cloud's grammar is deferred to a dedicated follow-up; until then
-// Like is residual-only so the kernel evaluates it correctly. leafToSQL's LIKE
-// branch is kept below (unreachable via isPushable, like Ne) for mirror
-// totality with postgres.
+// Like is deliberately NOT pushable (as of this commit), but the ORIGINAL reason
+// no longer holds and is recorded here so it is not repeated: the kernel used to
+// translate LIKE into a regex, whose grammar SQL LIKE could not be aligned to.
+// The kernel now matches LIKE as a glob whose grammar IS SQL's — see
+// cyoda-go-spi like_pattern.go and the FilterLike godoc, which names
+// `LIKE ... ESCAPE '\'` as the reference. What still blocks a pushdown is
+// collation, not grammar: SQLite's LIKE is ASCII-case-INsensitive by default
+// while the kernel is case-sensitive (an over-select, so sound, but only if
+// the residual re-check is kept), and postgres's LIKE is case-sensitive but
+// differs on non-ASCII folding. Enabling it needs its own soundness argument
+// per backend; until one exists Like stays residual-only so the kernel
+// evaluates it correctly. leafToSQL's LIKE branch is kept
+// below (unreachable via isPushable, like Ne) for mirror totality with
+// postgres.
 //
 // IMPORTANT: this OP-LEVEL set MUST match postgres's isPushable exactly.
 // Adding or removing an op here without doing the same in postgres breaks the

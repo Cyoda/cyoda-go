@@ -70,8 +70,10 @@ substring) and **case-sensitive**. Everything outside the three characters above
 is literal text compared bytewise, so an operand carrying invalid UTF-8 matches
 the byte-identical stored value rather than being transcoded.
 
-A pattern that ends with an unpaired `\` has nothing to escape and is invalid;
-the search fails rather than matching. Use `\\` for a trailing literal backslash.
+A pattern that ends with an unpaired `\` has nothing to escape and is invalid.
+It matches nothing — it does **not** match a trailing backslash, and the search
+succeeds with an empty result rather than failing. Use `\\` for a literal
+trailing backslash.
 
 ## MATCHES_PATTERN
 

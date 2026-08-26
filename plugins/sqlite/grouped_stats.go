@@ -15,7 +15,7 @@ import (
 // (POST /api/entity/stats/{name}/{version}/query).
 //
 // Design (spec §6.2):
-//   - Iterate reuses the existing planQuery() WHERE-pushdown machinery and
+//   - Iterate reuses the existing planFor()/planQuery() WHERE-pushdown machinery and
 //     evaluateFilter() residual evaluator from searcher.go, exactly mirroring
 //     Search's pre-filter + post-filter pattern. The only structural
 //     difference is that results are streamed through an Iterator wrapper

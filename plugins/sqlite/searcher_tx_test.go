@@ -394,13 +394,20 @@ func TestSearchTx_TrackingReadFalse_RecordsNothing(t *testing.T) {
 	}
 }
 
-// TestSearchTx_MixedFilterOverLargeModel: in-tx, a mixed filter whose pushable
-// part narrows the committed candidate set returns exactly the narrowed
-// matches, and a broad residual over the whole model runs to completion.
+// TestSearchTx_MixedFilterOverLargeModel: in-tx, a mixed filter (pushable
+// eq(city) AND a non-pushable regex) returns exactly the matching rows, and a
+// broad residual over the whole model runs to completion.
 //
 // The broad half is the in-tx regression guard for the removed scan budget: 50
 // rows all reached through a residual post-filter used to fail the search
 // outright, and must now return all 50.
+//
+// Note what this does NOT assert: that the pushable half actually narrows the
+// SQL candidate set. It cannot — the residual re-checks the FULL original
+// filter, so a full scan returns the same two rows as a narrowed one. Rows
+// examined was observable only through the scan budget, which is gone. The
+// narrowing is pinned at the planner instead, by
+// TestPlanFor_MixedFilterPushesTheEqLeaf (plan_for_test.go).
 func TestSearchTx_MixedFilterOverLargeModel(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "tx_broad_residual.db")
@@ -568,9 +575,10 @@ func TestSearchTxPIT_CommittedOnly_ExcludesBufferedWrite(t *testing.T) {
 }
 
 // TestSearchTxPIT_MixedFilterOverLargeModel is the point-in-time counterpart of
-// TestSearchTx_MixedFilterOverLargeModel: the narrow predicate is served by the
-// pushdown rather than a GetAllAsAt-style full materialisation, and a broad
-// residual over the whole model runs to completion unmetered.
+// TestSearchTx_MixedFilterOverLargeModel: the mixed filter returns exactly the
+// matching rows at the snapshot, and a broad residual over the whole model runs
+// to completion unmetered. The same caveat applies — it does not assert that
+// the pushable half narrows; see the sibling's note.
 func TestSearchTxPIT_MixedFilterOverLargeModel(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "tx_pit_broad_residual.db")

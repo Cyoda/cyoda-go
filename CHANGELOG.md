@@ -6,6 +6,37 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **`LIKE` is now matched as a glob, not translated into a regular expression.
+  Three caller-visible behaviours change.** `LIKE` used to be compiled into a
+  regex and evaluated by the regex engine; it is now matched directly by a glob
+  matcher in the shared kernel. No regex metacharacter has ever been meaningful
+  in a `LIKE` operand and still is not — what changes is where the translation
+  leaked:
+
+  1. **`%` and `_` now match a newline.** They were translated to `.*?` and `.`,
+     which do not match `\n` without the dot-all flag. A stored value containing
+     a newline silently failed to match a pattern that should have matched it;
+     it now matches.
+  2. **`\` escapes ANY following character, not only `%`, `_` and `\`.** `\d`
+     was translated to the regex `\\d` and matched the two-character literal
+     `\d`; it now matches the single character `d`. Any pattern relying on a
+     backslash before an ordinary character changes meaning.
+  3. **A pattern ending in an unpaired `\` matches nothing.** It used to compile
+     to `\\` and match a trailing literal backslash. It is now invalid, and an
+     invalid pattern is a leaf that never matches — the search still succeeds,
+     with an empty result. Spell a literal trailing backslash `\\`.
+
+  Literal text is compared bytewise, so an operand carrying invalid UTF-8 now
+  matches the byte-identical stored value instead of being transcoded to U+FFFD;
+  and `_` advances by one UTF-8 rune rather than one byte.
+
+  Affected surfaces: every one that takes a condition — `/search/direct`,
+  `/search/async`, conditional `DELETE /entity/{name}/{version}`, the
+  grouped-stats `condition`, and a workflow or transition `criterion`. HTTP and
+  gRPC alike. Rejecting an invalid pattern at the API boundary with a `400`,
+  rather than letting it match nothing, is a separate change and is not in this
+  release.
+
 - **A path whose last hop is an array wildcard now addresses the array's
   ELEMENTS. It used to resolve to the array's length.**
   `$.tags[*]` means "some element of `tags`". It was resolved to the *count* of
