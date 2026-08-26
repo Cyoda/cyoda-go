@@ -35,13 +35,15 @@ matches only if it consumes the entire stored value.
    become regex classes) or fails to compile.
 3. **A pattern ending in an unpaired `\` is invalid.** It has nothing to
    escape. `ValidateLeafPattern` rejects it with an error wrapping
-   `spi.ErrInvalidPattern`. The *evaluator* does not fail on it: `Prepare`'s
-   contract is that a leaf whose operand cannot be expanded becomes a leaf that
-   never matches, so an unvalidated malformed pattern yields an empty result,
-   not an error. Note this one is unchanged in effect for cyoda-go: the old
-   translation emitted a regex ending in a bare `\`, which failed to compile,
-   and a leaf whose pattern will not compile never matches either. What changes
-   is that the condition is now named rather than accidental. A translation that
+   `spi.ErrInvalidPattern`, and the request boundary turns that into a `400`
+   (see Validation). The *evaluator* does not fail on it: `Prepare`'s contract
+   is that a leaf whose operand cannot be expanded becomes a leaf that never
+   matches, so a malformed pattern reaching it yields an empty result, not an
+   error. **Both halves are required** — the boundary rejects, the evaluator
+   never-matches — and a backend must implement each in its own layer. At the
+   evaluator alone the behaviour is unchanged from the old translation, which
+   emitted a regex ending in a bare `\` that failed to compile, and a leaf
+   whose pattern will not compile never matches either. A translation that
    instead compiled it to a literal trailing backslash would have matched rows —
    that is the divergence to check for.
 4. **Literal text is compared bytewise.** An operand carrying invalid UTF-8
