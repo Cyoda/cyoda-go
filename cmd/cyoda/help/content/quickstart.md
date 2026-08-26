@@ -38,7 +38,6 @@ Without any environment variables, after `cyoda init`:
 - `CYODA_SQLITE_AUTO_MIGRATE` = `true`
 - `CYODA_SQLITE_BUSY_TIMEOUT` = `5s`
 - `CYODA_SQLITE_CACHE_SIZE` = `64000` (KiB)
-- `CYODA_SQLITE_SEARCH_SCAN_LIMIT` = `100000`
 - `CYODA_IAM_MODE` = `mock` (all requests accepted without authentication)
 - `CYODA_IAM_MOCK_ROLES` = `ROLE_ADMIN,ROLE_M2M`
 - `CYODA_HTTP_PORT` = `8080`

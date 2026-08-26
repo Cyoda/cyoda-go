@@ -78,9 +78,6 @@ func classifyGroupedStatsError(err error) error {
 	case errors.Is(err, spi.ErrGroupCardinalityExceeded):
 		return common.Operational(http.StatusUnprocessableEntity, common.ErrCodeGroupCardinalityExceeded,
 			"group cardinality exceeds the configured maximum").WithCause(err)
-	case errors.Is(err, spi.ErrScanBudgetExhausted):
-		return common.Operational(http.StatusBadRequest, common.ErrCodeScanBudgetExhausted,
-			"scan budget exhausted; narrow the query or add an indexable predicate").WithCause(err)
 	case errors.Is(err, ErrInvalidCondition):
 		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, err.Error()).WithCause(err)
 	case errors.Is(err, search.ErrInvalidFieldPath):

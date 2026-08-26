@@ -455,27 +455,6 @@ func NewStoreFactoryForTest(ctx context.Context, dbPath string, opts ...Option) 
 		BusyTimeout:            5 * time.Second,
 		CacheSizeKiB:           64000,
 		ReaderPoolSize:         defaultReaderPoolSize(),
-		SearchScanLimit:        100_000,
-		SchemaExtendMaxRetries: 8,
-	}
-	f, err := newStoreFactory(ctx, cfg, opts...)
-	if err != nil {
-		return nil, err
-	}
-	f.initTransactionManager(&defaultUUIDGenerator{})
-	return f, nil
-}
-
-// NewStoreFactoryForTestWithScanLimit creates a factory with a custom scan
-// limit for testing scan budget exhaustion. Intended for test use only.
-func NewStoreFactoryForTestWithScanLimit(ctx context.Context, dbPath string, scanLimit int, opts ...Option) (*StoreFactory, error) {
-	cfg := config{
-		Path:                   dbPath,
-		AutoMigrate:            true,
-		BusyTimeout:            5 * time.Second,
-		CacheSizeKiB:           64000,
-		ReaderPoolSize:         defaultReaderPoolSize(),
-		SearchScanLimit:        scanLimit,
 		SchemaExtendMaxRetries: 8,
 	}
 	f, err := newStoreFactory(ctx, cfg, opts...)

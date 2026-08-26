@@ -11,9 +11,9 @@ import (
 // postFilter is non-nil.
 //
 // Absence must stay a nil pointer. A zero spi.PreparedFilter means match-all,
-// not "no filter", so collapsing the two would silently cost LIMIT pushdown,
-// disable native GROUP BY, and arm the scan budget on every query — with every
-// returned result still correct, so nothing would fail loudly.
+// not "no filter", so collapsing the two would silently cost LIMIT pushdown and
+// disable native GROUP BY on every query — with every returned result still
+// correct, so nothing would fail loudly.
 func TestPlanQuery_PreparedPostFilterMatchesNilness(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -57,9 +57,9 @@ func TestPlanQuery_PreparedPostFilterMatchesNilness(t *testing.T) {
 }
 
 // TestSearch_MatchAllLeavesNoResidual pins the precondition that opens the
-// three gates postFilter absence controls: a non-nil residual is what would
-// cost LIMIT pushdown, disable native GROUP BY, and arm the scan budget, so
-// asserting absence here is asserting those gates stay open.
+// two gates postFilter absence controls: a non-nil residual is what would cost
+// LIMIT pushdown and disable native GROUP BY, so asserting absence here is
+// asserting those gates stay open.
 //
 // This covers only the explicit empty AND that ConditionToFilter emits for a
 // nil condition — planQuery is called directly with it below, so a broken
@@ -75,9 +75,8 @@ func TestPlanQuery_PreparedPostFilterMatchesNilness(t *testing.T) {
 // against anything planQuery or production code computed; it could not fail.
 // The zero-filter spelling's guard is instead pinned through real production
 // entry points, where breaking it changes externally observable behaviour:
-//   - TestSearch_ZeroValueFilterDoesNotArmScanBudget (searcher_zero_filter_test.go)
-//     drives spi.Filter{} through Search and fails with ErrScanBudgetExhausted
-//     if the guard is removed.
+//   - TestPlanFor_MatchAllLeavesNoResidual (plan_for_test.go) asserts the
+//     guard on planFor, the helper every search path plans through.
 //   - TestSqliteGroupedAggregate_PushesCountByState (grouped_stats_test.go)
 //     drives spi.Filter{} through GroupedAggregate and fails with
 //     ErrAggregationNotPushdownable if the guard is removed.
@@ -92,8 +91,8 @@ func TestSearch_MatchAllLeavesNoResidual(t *testing.T) {
 			plan := planQuery(tc.filter)
 			if plan.postFilter != nil {
 				t.Fatalf("postFilter = %+v, want nil: a match-all query has nothing to post-filter, "+
-					"and a non-nil residual costs LIMIT pushdown, disables native GROUP BY, "+
-					"and arms the scan budget", plan.postFilter)
+					"and a non-nil residual costs LIMIT pushdown and disables native GROUP BY",
+					plan.postFilter)
 			}
 			if plan.preparedPostFilter != nil {
 				t.Fatalf("preparedPostFilter = %+v, want nil", plan.preparedPostFilter)

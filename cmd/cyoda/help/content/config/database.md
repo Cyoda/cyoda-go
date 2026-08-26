@@ -37,7 +37,6 @@ Used when `CYODA_STORAGE_BACKEND=sqlite`.
 - `CYODA_SQLITE_BUSY_TIMEOUT` — busy timeout for lock contention (default: `5s`)
 - `CYODA_SQLITE_CACHE_SIZE` — SQLite page cache size in KiB, **per connection** (default: `64000`)
 - `CYODA_SQLITE_READER_POOL_SIZE` — max concurrent read connections (default: `GOMAXPROCS` clamped to `4`..`8`; minimum 1, and a value below it falls back to the default)
-- `CYODA_SQLITE_SEARCH_SCAN_LIMIT` — max rows scanned per search query (default: `100000`)
 
 The prefix `CYODA_SQLITE_` is used to namespace all SQLite configuration variables.
 
@@ -82,7 +81,14 @@ The other three each bound one path:
 
 - `CYODA_POSTGRES_ACQUIRE_TIMEOUT` — deadline on the wait for a free pooled connection, after which the request fails with `503 STORAGE_UNAVAILABLE`. Applied by the pool, not the server (default: `10s`)
 - `CYODA_POSTGRES_MIGRATE_LOCK_TIMEOUT` — maximum lock wait on the migration connection. That connection disables the two ceilings above, so a long index build is not cancelled mid-flight; what stays bounded is waiting (default: `5m`)
-- `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` — statement ceiling applied per async search scan, which legitimately runs far longer than an interactive statement (default: `30m`)
+- `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` — statement ceiling applied per async search scan, which legitimately runs far longer than an interactive statement (default: `30m`; `0` disables it, leaving the scan unbounded)
+
+A job that hits the async search ceiling fails with `search exceeded the backend's
+async search ceiling — narrow the query, or have the operator raise or disable the
+ceiling (see the config.database help topic)`. That ceiling is deliberate operator
+configuration and the only bound the server puts on search work: no backend meters
+rows or imposes a scan budget of its own. Bounding search **time** is the caller's —
+`timeoutMillis` on direct search, job cancellation on async.
 
 `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` reclaims a transaction nothing is driving any more.
 It must clear the longest legitimate idle gap, which is a compute-node callout bounded by

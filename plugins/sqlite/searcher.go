@@ -61,23 +61,12 @@ func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 // bounded-or-fail cap. Used by the non-tx path and the in-tx point-in-time
 // path (committed-only).
 //
-// The scan budget (SearchScanLimit, metered only while a residual post-filter
-// is active) and the result bound (opts.Limit) are independent checks over
-// the same streamed rows — neither subsumes the other, and whichever trips
-// first wins. A dense match rate trips the result bound
-// (spi.ErrSearchResultLimitExceeded) well before the scan budget is
-// threatened; a sparse match rate over a long scan trips the scan budget
-// (spi.ErrScanBudgetExhausted) first, regardless of how few matches were
-// found.
+// The result bound (opts.Limit) is the only bound over the streamed rows. The
+// residual scan itself is unmetered: time-unbounded work is the caller's to
+// bound, via the direct-search timeout or async job cancellation, never the
+// backend's.
 func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
-	// Zero-value Filter means "match all". Skip planQuery — it would treat the
-	// empty Op as non-pushable and install the zero filter as a residual, which
-	// costs LIMIT pushdown and arms the scan budget on a query with nothing to
-	// post-filter. Mirrors the guard in the postgres plugin.
-	var plan sqlPlan
-	if filter.Op != "" {
-		plan = planQuery(filter)
-	}
+	plan := planFor(filter)
 
 	var baseQuery string
 	var baseArgs []any
@@ -126,9 +115,6 @@ func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, op
 			if err := ctx.Err(); err != nil {
 				return nil, fmt.Errorf("Search: %w", err)
 			}
-		}
-		if plan.postFilter != nil && scanned >= s.cfg.SearchScanLimit {
-			return nil, fmt.Errorf("%w: examined %d rows", spi.ErrScanBudgetExhausted, s.cfg.SearchScanLimit)
 		}
 		scanned++
 
@@ -234,12 +220,10 @@ func sortEntitiesByOrder(ctx context.Context, rows []*spi.Entity, order []spi.Or
 // Committed candidates are streamed in ORDER BY order WITHOUT SQL LIMIT (the
 // bound is enforced by MergeBounded over the merged committed+buffered
 // sequence, not by SQL alone, since a buffered own-write can itself be what
-// pushes the total over the cap). The residual post-filter and SearchScanLimit
-// still apply to the committed stream, so a filter whose pushable part narrows
-// the candidate set does not full-scan; a broad residual can still exhaust the
-// budget as in the non-tx path. The scan budget and the result bound
-// (opts.Limit) are independent: whichever trips first over the streamed rows
-// wins, exactly as in searchCommitted.
+// pushes the total over the cap). The residual post-filter still applies to the
+// committed stream, so a filter whose pushable part narrows the candidate set
+// does not full-scan. The scan itself is unmetered and opts.Limit is the only
+// bound, exactly as in searchCommitted.
 //
 // The whole operation runs under tx.OpMu.RLock (fail fast on tx.RolledBack) so
 // Commit/Rollback (which take tx.OpMu.Lock) cannot race our reads of
@@ -247,14 +231,7 @@ func sortEntitiesByOrder(ctx context.Context, rows []*spi.Entity, order []spi.Or
 // the sql.DB query — identical to Save/GetAll/getAllTx in this package.
 func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionState, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
 	modelRef := spi.ModelRef{EntityName: opts.ModelName, ModelVersion: opts.ModelVersion}
-	// Zero-value Filter means "match all". Skip planQuery — it would treat the
-	// empty Op as non-pushable and install the zero filter as a residual, which
-	// costs LIMIT pushdown and arms the scan budget on a query with nothing to
-	// post-filter. Mirrors the guard in the postgres plugin.
-	var plan sqlPlan
-	if filter.Op != "" {
-		plan = planQuery(filter)
-	}
+	plan := planFor(filter)
 	// The buffered own-writes are matched against the FULL original filter (not
 	// the residual), so they need their own prepared value. Prepared once,
 	// above the loop.
@@ -283,7 +260,7 @@ func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionSt
 		defer rows.Close()
 
 		// Lazy committed source: scan one row per call, apply the residual
-		// post-filter, honour the scan budget. Never drains into a slice.
+		// post-filter. Never drains into a slice.
 		scanned := 0
 		next := func() (*spi.Entity, bool, error) {
 			for rows.Next() {
@@ -294,9 +271,6 @@ func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionSt
 					if err := ctx.Err(); err != nil {
 						return nil, false, fmt.Errorf("Search: %w", err)
 					}
-				}
-				if plan.postFilter != nil && scanned >= s.cfg.SearchScanLimit {
-					return nil, false, fmt.Errorf("%w: examined %d rows", spi.ErrScanBudgetExhausted, s.cfg.SearchScanLimit)
 				}
 				scanned++
 				e, scanErr := scanVersionEntity(rows)

@@ -59,7 +59,6 @@ func TestReadDB_HonoursConfiguredReaderPoolSize(t *testing.T) {
 		AutoMigrate:            true,
 		BusyTimeout:            5 * time.Second,
 		CacheSizeKiB:           64000,
-		SearchScanLimit:        100_000,
 		SchemaExtendMaxRetries: 8,
 		ReaderPoolSize:         2,
 	}
@@ -89,7 +88,6 @@ func TestReadDB_ZeroConfiguredPoolIsNotUnlimited(t *testing.T) {
 		AutoMigrate:            true,
 		BusyTimeout:            5 * time.Second,
 		CacheSizeKiB:           64000,
-		SearchScanLimit:        100_000,
 		SchemaExtendMaxRetries: 8,
 		// ReaderPoolSize deliberately left at its zero value.
 	}

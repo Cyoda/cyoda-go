@@ -380,12 +380,17 @@ func TestSearcher_Bounded_Residual(t *testing.T) {
 	})
 }
 
-func TestSearcher_ScanBudgetExhausted(t *testing.T) {
+// TestSearcher_ResidualScanIsUnbounded_SparseMatches is the regression guard
+// for the removed residual-scan budget. Three decoys sort (by entity_id)
+// before two matches, so the scan examines every decoy before the first match
+// accumulates — the shape that used to fail the search outright. The residual
+// path now meters nothing: the scan runs to completion and returns both
+// matches.
+func TestSearcher_ResidualScanIsUnbounded_SparseMatches(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "budget_test.db")
+	dbPath := filepath.Join(dir, "sparse_residual_test.db")
 
-	// Create factory with a very low scan limit.
-	factory, err := sqlite.NewStoreFactoryForTestWithScanLimit(context.Background(), dbPath, 3)
+	factory, err := sqlite.NewStoreFactoryForTest(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("create factory: %v", err)
 	}
@@ -395,111 +400,8 @@ func TestSearcher_ScanBudgetExhausted(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
 	store, _ := factory.EntityStore(ctx)
 
-	// Save 10 entities.
-	for i := 0; i < 10; i++ {
-		_, err := store.Save(ctx, &spi.Entity{
-			Meta: spi.EntityMeta{
-				ID:       fmt.Sprintf("e%d", i),
-				ModelRef: ref,
-				State:    "NEW",
-			},
-			Data: []byte(fmt.Sprintf(`{"val":%d}`, i)),
-		})
-		if err != nil {
-			t.Fatalf("Save: %v", err)
-		}
-	}
-
-	searcher := store.(spi.Searcher)
-
-	// Use a non-pushable filter to force post-filtering (triggering scan budget).
-	_, err = searcher.Search(ctx, spi.Filter{
-		Op:     spi.FilterMatchesRegex,
-		Path:   "val",
-		Source: spi.SourceData,
-		Value:  ".*",
-	}, spi.SearchOptions{
-		ModelName:    "item",
-		ModelVersion: "1", Limit: 10,
-	})
-
-	if err == nil {
-		t.Fatal("expected spi.ErrScanBudgetExhausted, got nil")
-	}
-	if !errors.Is(err, spi.ErrScanBudgetExhausted) {
-		t.Fatalf("expected spi.ErrScanBudgetExhausted, got: %v", err)
-	}
-}
-
-// TestSearcher_ResultBoundTripsBeforeScanBudget_DenseMatches: the scan budget
-// and the result bound are independent checks over the residual path's
-// streamed rows, and whichever trips first wins. With matches dense enough to
-// exceed Limit long before SearchScanLimit rows have been examined, the
-// result bound must win: spi.ErrSearchResultLimitExceeded, not
-// spi.ErrScanBudgetExhausted, even though the scan budget is active.
-func TestSearcher_ResultBoundTripsBeforeScanBudget_DenseMatches(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "dense_bound_test.db")
-
-	// Scan budget of 5, comfortably above the 3 rows needed to exceed Limit=2.
-	factory, err := sqlite.NewStoreFactoryForTestWithScanLimit(context.Background(), dbPath, 5)
-	if err != nil {
-		t.Fatalf("create factory: %v", err)
-	}
-	defer factory.Close()
-
-	ctx := testCtx("tenant-1")
-	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
-	store, _ := factory.EntityStore(ctx)
-
-	// 5 matching rows, no decoys: the 3rd match already exceeds Limit=2,
-	// well before the scan budget (5) could be threatened.
-	for i := 0; i < 5; i++ {
-		if _, err := store.Save(ctx, &spi.Entity{
-			Meta: spi.EntityMeta{ID: fmt.Sprintf("d%d", i), ModelRef: ref, State: "NEW"},
-			Data: []byte(`{"val":"match"}`),
-		}); err != nil {
-			t.Fatalf("Save: %v", err)
-		}
-	}
-
-	searcher := store.(spi.Searcher)
-	// Non-pushable filter forces the residual path, where the scan budget is
-	// metered alongside the result bound.
-	_, err = searcher.Search(ctx, spi.Filter{
-		Op:     spi.FilterMatchesRegex,
-		Path:   "val",
-		Source: spi.SourceData,
-		Value:  ".*",
-	}, spi.SearchOptions{ModelName: "item", ModelVersion: "1", Limit: 2})
-	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
-		t.Fatalf("dense matches must trip the result bound first: got err %v, want ErrSearchResultLimitExceeded", err)
-	}
-}
-
-// TestSearcher_ScanBudgetTripsBeforeResultBound_SparseMatches: the converse
-// ordering — matches sparse enough (interleaved with decoys) that
-// SearchScanLimit rows are examined before enough matches accumulate to
-// threaten Limit. The scan budget must win: spi.ErrScanBudgetExhausted, not
-// spi.ErrSearchResultLimitExceeded, even though Limit has slack remaining.
-func TestSearcher_ScanBudgetTripsBeforeResultBound_SparseMatches(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "sparse_bound_test.db")
-
-	// Scan budget of 3: exhausted scanning the 3 decoys, before the scan ever
-	// reaches a match.
-	factory, err := sqlite.NewStoreFactoryForTestWithScanLimit(context.Background(), dbPath, 3)
-	if err != nil {
-		t.Fatalf("create factory: %v", err)
-	}
-	defer factory.Close()
-
-	ctx := testCtx("tenant-1")
-	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
-	store, _ := factory.EntityStore(ctx)
-
-	// 3 decoys, scanned (in entity_id order) before 2 matches. "decoyN" sorts
-	// before "matchN" lexically, so the decoys are examined first.
+	// "decoyN" sorts before "matchN" lexically, so the decoys are examined
+	// first and the scan is deep before anything matches.
 	for i := 0; i < 3; i++ {
 		if _, err := store.Save(ctx, &spi.Entity{
 			Meta: spi.EntityMeta{ID: fmt.Sprintf("decoy%d", i), ModelRef: ref, State: "NEW"},
@@ -518,17 +420,57 @@ func TestSearcher_ScanBudgetTripsBeforeResultBound_SparseMatches(t *testing.T) {
 	}
 
 	searcher := store.(spi.Searcher)
-	// "match" is a whole-string regex (MATCHES_PATTERN semantics), so it
-	// selects the 2 match rows and excludes the "no-match" decoys. Limit=5
-	// has ample slack over the 2 real matches.
-	_, err = searcher.Search(ctx, spi.Filter{
+	// FilterMatchesRegex is never pushed down, so this runs the residual path.
+	ids, err := searcher.Search(ctx, spi.Filter{
 		Op:     spi.FilterMatchesRegex,
 		Path:   "val",
 		Source: spi.SourceData,
 		Value:  "match",
 	}, spi.SearchOptions{ModelName: "item", ModelVersion: "1", Limit: 5})
-	if !errors.Is(err, spi.ErrScanBudgetExhausted) {
-		t.Fatalf("sparse matches must trip the scan budget first: got err %v, want ErrScanBudgetExhausted", err)
+	if err != nil {
+		t.Fatalf("residual scan must not be metered: got err %v, want nil", err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("got %d matches (%v), want 2", len(ids), ids)
+	}
+}
+
+// TestSearcher_ResultBoundStillTripsOnResidualPath: removing the scan budget
+// leaves the intrinsic bounded-or-fail result limit as the residual path's
+// only bound. Five matching rows against Limit=2 must still fail with
+// spi.ErrSearchResultLimitExceeded.
+func TestSearcher_ResultBoundStillTripsOnResidualPath(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "dense_bound_test.db")
+
+	factory, err := sqlite.NewStoreFactoryForTest(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("create factory: %v", err)
+	}
+	defer factory.Close()
+
+	ctx := testCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	store, _ := factory.EntityStore(ctx)
+
+	for i := 0; i < 5; i++ {
+		if _, err := store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: fmt.Sprintf("d%d", i), ModelRef: ref, State: "NEW"},
+			Data: []byte(`{"val":"match"}`),
+		}); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+	}
+
+	searcher := store.(spi.Searcher)
+	_, err = searcher.Search(ctx, spi.Filter{
+		Op:     spi.FilterMatchesRegex,
+		Path:   "val",
+		Source: spi.SourceData,
+		Value:  ".*",
+	}, spi.SearchOptions{ModelName: "item", ModelVersion: "1", Limit: 2})
+	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
+		t.Fatalf("result bound must still trip: got err %v, want ErrSearchResultLimitExceeded", err)
 	}
 }
 

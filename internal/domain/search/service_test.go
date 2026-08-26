@@ -2254,22 +2254,6 @@ func TestSearch_SearcherResultLimitSentinel_MapsTo400(t *testing.T) {
 	}
 }
 
-func TestSearch_SearcherScanBudgetSentinel_MapsTo400(t *testing.T) {
-	svc, ctx, ref := newStubSearcherService(t, func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) {
-		return nil, fmt.Errorf("examined N rows: %w", spi.ErrScanBudgetExhausted)
-	})
-	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
-	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
-
-	var appErr *common.AppError
-	if !errors.As(err, &appErr) {
-		t.Fatalf("want *common.AppError, got %T: %v", err, err)
-	}
-	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeScanBudgetExhausted {
-		t.Errorf("got %d/%q, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeScanBudgetExhausted)
-	}
-}
-
 // --- GetAll + in-memory fallback bounded-or-fail tests ---
 
 // newFallbackFixture builds a SearchService whose EntityStore is wrapped so
@@ -2520,19 +2504,27 @@ func runFailingAsyncJob(t *testing.T, searchErr error) *spi.SearchJob {
 	return job
 }
 
-// TestAsyncSearchJob_SearchCeiling_RecordsFixedMessage — the job record is the
-// one place a failure message is persisted and served back, so the backend's
-// search ceiling firing must land there as a fixed, non-revealing string naming
-// the ceiling and nothing else. The driver's own text stays in the log.
-func TestAsyncSearchJob_SearchCeiling_RecordsFixedMessage(t *testing.T) {
+// TestAsyncSearchJob_SearchCeiling_RecordsActionableMessage — the job record is
+// the one place a failure message is persisted and served back, and the async
+// API has no error-code field, so this string is the caller's ENTIRE report.
+// It must therefore be actionable: name what happened and both ways out (narrow
+// the query, or have the operator raise or disable the ceiling), while staying
+// backend-neutral and revealing no driver detail. The driver's own text stays
+// in the log.
+//
+// Pinned exactly: the wording is the contract, not an implementation detail.
+func TestAsyncSearchJob_SearchCeiling_RecordsActionableMessage(t *testing.T) {
 	job := runFailingAsyncJob(t, &ceilingErr{
 		cause: errors.New("ERROR: canceling statement due to statement timeout (SQLSTATE 57014)"),
 	})
 
-	if !strings.Contains(job.Error, "search statement ceiling") {
-		t.Fatalf("job error %q does not name the ceiling the caller hit", job.Error)
+	const want = "search exceeded the backend's async search ceiling — narrow the query, " +
+		"or have the operator raise or disable the ceiling (see the config.database help topic)"
+	if job.Error != want {
+		t.Fatalf("job error =\n  %q\nwant\n  %q", job.Error, want)
 	}
-	for _, leak := range []string{"pgx", "SELECT", "SQLSTATE", "57014", "statement timeout", "host=", "password"} {
+	// Backend-neutral: nothing names postgres, the driver, or the SQL.
+	for _, leak := range []string{"pgx", "postgres", "SELECT", "SQLSTATE", "57014", "statement timeout", "host=", "password"} {
 		if strings.Contains(job.Error, leak) {
 			t.Fatalf("job error leaked internals (%q): %s", leak, job.Error)
 		}

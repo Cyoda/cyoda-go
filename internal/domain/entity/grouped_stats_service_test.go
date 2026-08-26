@@ -143,7 +143,7 @@ type dualBackend struct {
 // newStreamingStatsFixture builds a service + streaming-only (Iterable)
 // store whose iterator's Err() returns iterErr once Next() runs dry —
 // used to exercise sentinel classification for errors surfaced from the
-// streaming fallback path (e.g. spi.ErrScanBudgetExhausted).
+// streaming fallback path.
 func newStreamingStatsFixture(t *testing.T, iterErr error) (
 	svc *entity.GroupedStatsService,
 	ctx context.Context,
@@ -273,29 +273,6 @@ func TestQueryGroupedStats_PushdownArbitraryErrorPropagates(t *testing.T) {
 	var appErr *common.AppError
 	if errors.As(err, &appErr) {
 		t.Errorf("arbitrary storage error must NOT be wrapped as AppError (would become 4xx): %v", err)
-	}
-}
-
-// TestQueryGroupedStats_ScanBudgetMapsTo400 verifies that
-// spi.ErrScanBudgetExhausted surfacing from the streaming path is
-// classified by QueryGroupedStats into a 400 AppError with
-// common.ErrCodeScanBudgetExhausted, while remaining reachable via
-// errors.Is(err, spi.ErrScanBudgetExhausted) (WithCause preserves the
-// sentinel in the chain).
-func TestQueryGroupedStats_ScanBudgetMapsTo400(t *testing.T) {
-	// Iterable whose iter.Err() returns the scan-budget sentinel.
-	svc, ctx, store, model, req := newStreamingStatsFixture(t, spi.ErrScanBudgetExhausted)
-	_, err := svc.QueryGroupedStats(ctx, store, model, nil, req)
-
-	var appErr *common.AppError
-	if !errors.As(err, &appErr) {
-		t.Fatalf("want *common.AppError, got %T: %v", err, err)
-	}
-	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeScanBudgetExhausted {
-		t.Errorf("got %d/%q, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeScanBudgetExhausted)
-	}
-	if !errors.Is(err, spi.ErrScanBudgetExhausted) {
-		t.Errorf("WithCause must preserve the sentinel")
 	}
 }
 

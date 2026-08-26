@@ -428,6 +428,41 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Changed
 
+- **The server no longer imposes a scan budget on search. sqlite's
+  residual-scan budget and its `CYODA_SQLITE_SEARCH_SCAN_LIMIT` are removed,
+  along with the `SCAN_BUDGET_EXHAUSTED` error code.** A non-indexable condition
+  (a regex, a wildcard path) forces a residual scan; sqlite used to meter its
+  examined rows and fail the search with `400 SCAN_BUDGET_EXHAUSTED` once the
+  budget was passed. Such a search now runs to completion and returns its
+  matches, closing the divergence with memory and postgres, which never had a
+  budget.
+
+  This is a relaxation — requests that used to fail now succeed, and no request
+  that used to succeed changes — so no caller has to act. A caller that matched
+  on `SCAN_BUDGET_EXHAUSTED` can drop that arm; the code is gone from the error
+  table, the help topics and the OpenAPI document.
+
+  Bounding search *time* is the caller's, and it has the levers: `timeoutMillis`
+  on direct search (`408 SEARCH_TIMEOUT`), and job cancellation on async, which
+  takes effect mid-flight. Omitting them means unbounded, by choice. Bounding
+  search *memory* remains the server's, and every search path streams. Operators
+  who set `CYODA_SQLITE_SEARCH_SCAN_LIMIT` should remove it: it is no longer
+  read, and an unknown `CYODA_*` variable is otherwise inert.
+
+- **A postgres async search job that exceeds the backend ceiling now says what
+  to do about it.** The async status response carries no error-code field, so the
+  job record's message is the caller's entire report, and it read only
+  `search exceeded the search statement ceiling`. It now names both ways out:
+
+  > `search exceeded the backend's async search ceiling — narrow the query, or
+  > have the operator raise or disable the ceiling (see the config.database help
+  > topic)`
+
+  Backend-neutral as before — no driver detail, no SQL, no backend name — and
+  the `config.database` help topic now states that `0` disables the ceiling.
+  `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` (default `30m`) itself is unchanged:
+  it is deliberate operator configuration, not a per-request principle guard.
+
 - **Commits are now shielded from a client disconnect or an expired
   `transactionTimeoutMillis`/`timeoutMillis` deadline arriving mid-commit.**
   Every commit call (the final commit, each commit-before-dispatch segment

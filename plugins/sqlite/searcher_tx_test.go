@@ -394,15 +394,17 @@ func TestSearchTx_TrackingReadFalse_RecordsNothing(t *testing.T) {
 	}
 }
 
-// TestSearchTx_NarrowPredicateStaysWithinScanBudget: a mixed filter whose
-// pushable part narrows the committed candidate set must NOT exhaust the scan
-// budget over a large model (no full scan), while a broad post-filter over the
-// same model still errors spi.ErrScanBudgetExhausted.
-func TestSearchTx_NarrowPredicateStaysWithinScanBudget(t *testing.T) {
+// TestSearchTx_MixedFilterOverLargeModel: in-tx, a mixed filter whose pushable
+// part narrows the committed candidate set returns exactly the narrowed
+// matches, and a broad residual over the whole model runs to completion.
+//
+// The broad half is the in-tx regression guard for the removed scan budget: 50
+// rows all reached through a residual post-filter used to fail the search
+// outright, and must now return all 50.
+func TestSearchTx_MixedFilterOverLargeModel(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "tx_budget.db")
-	// Scan budget of 5: far below the 50-row model size.
-	factory, err := sqlite.NewStoreFactoryForTestWithScanLimit(context.Background(), dbPath, 5)
+	dbPath := filepath.Join(dir, "tx_broad_residual.db")
+	factory, err := sqlite.NewStoreFactoryForTest(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("create factory: %v", err)
 	}
@@ -431,26 +433,28 @@ func TestSearchTx_NarrowPredicateStaysWithinScanBudget(t *testing.T) {
 	}
 	searcher := store.(spi.Searcher)
 
-	// Mixed filter: pushable eq(city=Berlin) narrows to 2 rows; residual regex
-	// on name then post-filters those 2 — scanned (2) <= budget (5). If the
-	// pushdown were dropped (full scan), 50 > 5 would trip the budget.
+	// Mixed filter: pushable eq(city=Berlin) narrows to 2 rows; the residual
+	// regex on name then post-filters those 2.
 	mixed := spi.Filter{Op: spi.FilterAnd, Children: []spi.Filter{
 		cityBerlin,
 		{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: ".*"},
 	}}
 	got, err := searcher.Search(txCtx, mixed, spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 10})
 	if err != nil {
-		t.Fatalf("narrow in-tx search must stay within budget, got: %v", err)
+		t.Fatalf("narrow in-tx search: %v", err)
 	}
 	if len(got) != 2 {
 		t.Fatalf("expected 2 Berlin matches, got %d", len(got))
 	}
 
-	// Broad residual over the whole model still exhausts the budget.
+	// Broad residual over the whole model: unmetered, so all 50 come back.
 	broad := spi.Filter{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: ".*"}
-	_, err = searcher.Search(txCtx, broad, spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 50})
-	if !errors.Is(err, spi.ErrScanBudgetExhausted) {
-		t.Fatalf("broad in-tx post-filter must exhaust budget, got: %v", err)
+	all, err := searcher.Search(txCtx, broad, spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 50})
+	if err != nil {
+		t.Fatalf("broad in-tx residual must not be metered: %v", err)
+	}
+	if len(all) != 50 {
+		t.Fatalf("expected all 50 rows through the residual, got %d", len(all))
 	}
 }
 
@@ -563,16 +567,15 @@ func TestSearchTxPIT_CommittedOnly_ExcludesBufferedWrite(t *testing.T) {
 	}
 }
 
-// TestSearchTxPIT_NarrowPredicateStaysWithinScanBudget: an in-tx PIT search
-// with a narrow pushable predicate over a large model must stay within
-// SearchScanLimit (the pushdown, not a GetAllAsAt-style full scan), while a
-// broad residual over the same model still exhausts the budget.
-func TestSearchTxPIT_NarrowPredicateStaysWithinScanBudget(t *testing.T) {
+// TestSearchTxPIT_MixedFilterOverLargeModel is the point-in-time counterpart of
+// TestSearchTx_MixedFilterOverLargeModel: the narrow predicate is served by the
+// pushdown rather than a GetAllAsAt-style full materialisation, and a broad
+// residual over the whole model runs to completion unmetered.
+func TestSearchTxPIT_MixedFilterOverLargeModel(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "tx_pit_budget.db")
+	dbPath := filepath.Join(dir, "tx_pit_broad_residual.db")
 	clock := sqlite.NewTestClockAt(pitBase)
-	// Scan budget of 5: far below the 50-row model size.
-	factory, err := sqlite.NewStoreFactoryForTestWithScanLimit(context.Background(), dbPath, 5, sqlite.WithClock(clock))
+	factory, err := sqlite.NewStoreFactoryForTest(context.Background(), dbPath, sqlite.WithClock(clock))
 	if err != nil {
 		t.Fatalf("create factory: %v", err)
 	}
@@ -606,9 +609,8 @@ func TestSearchTxPIT_NarrowPredicateStaysWithinScanBudget(t *testing.T) {
 	}
 	searcher := store.(spi.Searcher)
 
-	// Mixed filter: pushable eq(city=Berlin) narrows to 2 rows; residual regex
-	// on name then post-filters those 2 — scanned (2) <= budget (5). If the
-	// pushdown were dropped (full scan), 50 > 5 would trip the budget.
+	// Mixed filter: pushable eq(city=Berlin) narrows to 2 rows; the residual
+	// regex on name then post-filters those 2.
 	mixed := spi.Filter{Op: spi.FilterAnd, Children: []spi.Filter{
 		cityBerlin,
 		{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: ".*"},
@@ -617,18 +619,21 @@ func TestSearchTxPIT_NarrowPredicateStaysWithinScanBudget(t *testing.T) {
 		ModelName: "person", ModelVersion: "1", PointInTime: &pit, Limit: 10,
 	})
 	if err != nil {
-		t.Fatalf("narrow in-tx PIT search must stay within budget, got: %v", err)
+		t.Fatalf("narrow in-tx PIT search: %v", err)
 	}
 	if len(got) != 2 {
 		t.Fatalf("expected 2 Berlin matches, got %d", len(got))
 	}
 
-	// Broad residual over the whole model still exhausts the budget.
+	// Broad residual over the whole model: unmetered, so all 50 come back.
 	broad := spi.Filter{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: ".*"}
-	_, err = searcher.Search(txCtx, broad, spi.SearchOptions{
+	all, err := searcher.Search(txCtx, broad, spi.SearchOptions{
 		ModelName: "person", ModelVersion: "1", PointInTime: &pit, Limit: 50,
 	})
-	if !errors.Is(err, spi.ErrScanBudgetExhausted) {
-		t.Fatalf("broad in-tx PIT post-filter must exhaust budget, got: %v", err)
+	if err != nil {
+		t.Fatalf("broad in-tx PIT residual must not be metered: %v", err)
+	}
+	if len(all) != 50 {
+		t.Fatalf("expected all 50 rows through the residual, got %d", len(all))
 	}
 }

@@ -86,7 +86,6 @@ public-API-facing statement of this rule.
 | `CYODA_SQLITE_BUSY_TIMEOUT` | `5s` | Wait time for write lock before returning `SQLITE_BUSY` |
 | `CYODA_SQLITE_CACHE_SIZE` | `64000` (KiB) | Page cache size in KiB, **per connection** (one writer plus the reader pool) |
 | `CYODA_SQLITE_READER_POOL_SIZE` | `GOMAXPROCS` clamped to `4`..`8` | Max concurrent reader connections. Minimum 1; a value below it falls back to the default |
-| `CYODA_SQLITE_SEARCH_SCAN_LIMIT` | `100000` | Max rows examined per search when a residual filter applies |
 
 ## Operational notes and limits
 

@@ -30,11 +30,11 @@ type sqlPlan struct {
 	// non-nil EXACTLY when postFilter is non-nil.
 	//
 	// postFilter itself stays a *spi.Filter and stays the field the planner's
-	// own predicates read, because its NIL-NESS is what gates LIMIT pushdown,
-	// native GROUP BY and the scan budget. A zero spi.PreparedFilter means
-	// match-all, not absent, so replacing the field outright — or pairing a
-	// value with a bool — would put that invariant back in play at every
-	// consumer. Row loops read this field; planner decisions read postFilter.
+	// own predicates read, because its NIL-NESS is what gates LIMIT pushdown and
+	// native GROUP BY. A zero spi.PreparedFilter means match-all, not absent, so
+	// replacing the field outright — or pairing a value with a bool — would put
+	// that invariant back in play at every consumer. Row loops read this field;
+	// planner decisions read postFilter.
 	preparedPostFilter *spi.PreparedFilter
 }
 
@@ -72,6 +72,19 @@ func allPushedExact(f spi.Filter) bool {
 	}
 }
 
+// planFor is the entry point every search path plans through. It adds the
+// match-all guard planQuery cannot make on its own: a zero-value spi.Filter
+// means "match all", but planQuery treats the empty Op as a non-pushable leaf
+// and would install the zero filter as its own residual. That residual matches
+// everything, so results stay correct while LIMIT pushdown and native GROUP BY
+// are silently lost. Mirrors the guard in the postgres plugin.
+func planFor(filter spi.Filter) sqlPlan {
+	if filter.Op == "" {
+		return sqlPlan{}
+	}
+	return planQuery(filter)
+}
+
 // planQuery translates a spi.Filter tree into a SQL WHERE clause and an
 // optional residual filter for post-processing in Go.
 //
@@ -84,6 +97,8 @@ func allPushedExact(f spi.Filter) bool {
 // leaf satisfies leafExact — the FULL original filter is installed as postFilter
 // so the kernel re-checks every candidate the narrowing SQL returns. This also
 // disables the SQL LIMIT/OFFSET/GROUP-BY fast path (gated on postFilter == nil).
+//
+// Callers go through planFor, not here: planQuery has no match-all guard.
 func planQuery(filter spi.Filter) sqlPlan {
 	pushed, residual := dissect(filter)
 	plan := sqlPlan{postFilter: residual}
