@@ -6,6 +6,39 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **A search, conditional delete or grouped-stats query whose model schema
+  cannot be loaded now fails instead of answering.** Field-path validation
+  consults the model's schema to decide whether a condition's paths exist. When
+  that load failed — the model store unreachable, or the stored schema
+  unparseable — validation was skipped and the query ran anyway, returning
+  `200` with a result set.
+
+  The result set was not merely unvalidated, it was **wrong**. With no fields
+  map the translator stamps an empty declared-type set on every leaf, and that
+  does not degrade leaves uniformly: the eight comparison and ordering
+  operators (`EQUALS`, `NOT_EQUAL`, the four inequalities, `BETWEEN`,
+  `BETWEEN_INCLUSIVE`) collapse to a non-match while the other eighteen — the
+  presence tests, the string and pattern operators, and the case-insensitive
+  family — keep matching. Rows that should have matched were dropped, silently,
+  and the short page was indistinguishable from a complete one. An async job
+  recorded the same short page as `SUCCESSFUL`.
+
+  A schema-load failure is now `500` with a ticket id, on `/search/direct`,
+  `/search/async`, conditional `DELETE /entity/{name}/{version}` and
+  grouped stats, over HTTP and gRPC alike. An async job whose schema becomes
+  unreadable between submit and execution ends `FAILED` rather than
+  `SUCCESSFUL` with a truncated result set.
+
+- **A condition naming a data path on a model that declares no fields is now
+  rejected.** Such a model was previously treated as "nothing to validate
+  against", so any path at all was accepted and the query answered. It is
+  instead a model in which the named path does not exist, and the request is
+  `400 INVALID_FIELD_PATH` — the same answer any other unknown path already
+  received. A path's shape is held to the model: `$.items[*].sku` asserts
+  `items` is an array and `$.items.sku` asserts it is an object, and the
+  spelling that contradicts the model is an error rather than something to
+  reinterpret.
+
 - **An invalid `LIKE` or `MATCHES_PATTERN` operand is now rejected at the
   request boundary instead of being accepted.** The boundary used to compile
   the operand on its own, while every evaluator compiles the *anchored* form,

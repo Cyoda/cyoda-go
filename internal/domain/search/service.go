@@ -18,6 +18,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 	"github.com/cyoda-platform/cyoda-go/internal/match"
 
@@ -596,7 +597,8 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		return nil, appErr
 	}
 
-	if vErr := s.validateConditionPaths(ctx, modelRef, cond); vErr != nil {
+	validatedFields, vErr := s.validateConditionPaths(ctx, modelStore, modelRef, cond)
+	if vErr != nil {
 		return nil, vErr
 	}
 	if rErr := ValidatePatterns(cond); rErr != nil {
@@ -655,8 +657,13 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 	searcher, storeIsSearcher := store.(spi.Searcher)
 	iterableStore, storeIsIterable := store.(spi.Iterable)
 	if (storeIsSearcher && opts.Limit > 0) || (storeIsIterable && opts.Limit <= 0) {
-		fields, _ := loadFieldsMap(ctx, modelStore, modelRef) // best-effort; nil-tolerant
-		filter, translateErr := spi.ConditionToFilter(cond, fields)
+		// Reuse the map validateConditionPaths already loaded and validated
+		// the condition's paths against. Loading it a second time here both
+		// repeated the work and discarded its error, so a schema that became
+		// unreadable between the two loads translated against nil — which is
+		// not "no types", it is a filter whose comparison leaves annihilate
+		// while its string leaves keep matching.
+		filter, translateErr := spi.ConditionToFilter(cond, validatedFields)
 		if translateErr == nil {
 			if opts.Limit > 0 {
 				res, sErr := searcher.Search(ctx, filter, spi.SearchOptions{
@@ -930,7 +937,7 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 		return "", appErr
 	}
 
-	if vErr := s.validateConditionPaths(ctx, modelRef, cond); vErr != nil {
+	if _, vErr := s.validateConditionPaths(ctx, modelStore, modelRef, cond); vErr != nil {
 		return "", vErr
 	}
 	if rErr := ValidatePatterns(cond); rErr != nil {
@@ -1159,7 +1166,18 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		s.writeAsyncFailure(jobCtx, jobID, jobFailureMessage(err), time.Now(), time.Since(start).Milliseconds())
 		return
 	}
-	fields, _ := loadFieldsMap(jobCtx, modelStore, modelRef) // best-effort; nil-tolerant, mirrors Search
+	// Fail the job rather than answering without the schema. This load is
+	// SEPARATE from the one submit-time validation performed, so the schema
+	// can become unreadable in between — and a nil fields map does not make
+	// the condition unevaluable, it makes it evaluate WRONGLY: empty Declared
+	// annihilates the eight comparison and ordering leaves to a non-match
+	// while the other eighteen keep matching (see spi.ConditionToFilter), so
+	// the job would record a short result set as SUCCESSFUL.
+	fields, fieldsErr := loadFieldsMap(jobCtx, modelStore, modelRef)
+	if fieldsErr != nil {
+		s.writeAsyncFailure(jobCtx, jobID, jobFailureMessage(fieldsErr), time.Now(), time.Since(start).Milliseconds())
+		return
+	}
 	filter, translateErr := spi.ConditionToFilter(cond, fields)
 
 	var (
@@ -1543,10 +1561,14 @@ func (s *SearchService) CancelAsyncSearch(ctx context.Context, snapshotID string
 // Returns nil when validation passes or when no data-field paths are
 // addressed (lifecycle-only conditions). Validator failures surface as a
 // 4xx common.AppError with the missing paths listed.
-func (s *SearchService) validateConditionPaths(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition) error {
+func (s *SearchService) validateConditionPaths(ctx context.Context, modelStore spi.ModelStore, modelRef spi.ModelRef, cond predicate.Condition) (map[string]schema.FieldDescriptor, error) {
 	paths := extractFieldPaths(cond)
 	if len(paths) == 0 {
-		return nil
+		// A lifecycle-only condition addresses no schema path, so there is
+		// nothing to check — but the caller still needs the fields map to
+		// type its leaves, and loading it HERE rather than again downstream
+		// is what keeps the load (and its failure handling) in one place.
+		return loadFieldsMap(ctx, modelStore, modelRef)
 	}
 
 	// Negative cache fast-path: if any path is recorded as confirmed
@@ -1556,40 +1578,36 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelRef spi
 	// per (tenant, modelRef, path) tuple between schema events.
 	tenant := common.TenantFromContext(ctx)
 	if cachedMissing := s.cachedAbsentPaths(tenant, modelRef, paths); len(cachedMissing) > 0 {
-		return invalidPathError(cachedMissing)
-	}
-
-	modelStore, err := s.factory.ModelStore(ctx)
-	if err != nil {
-		// A factory that cannot produce a ModelStore cannot validate;
-		// log and proceed so the search itself can still surface a
-		// useful error from the matcher.
-		slog.Debug("model store unavailable; skipping pre-execution path validation",
-			"pkg", "search", "error", err)
-		return nil
+		return nil, invalidPathError(cachedMissing)
 	}
 
 	fields, err := loadFieldsMap(ctx, modelStore, modelRef)
 	if err != nil {
-		// Model existence is guaranteed by EnsureModelRegistered before we
-		// reach here; a schema-decode failure is upstream — log and proceed
-		// so the matcher's own error path can still surface a useful error.
-		slog.Debug("failed to load schema for pre-execution validation",
-			"pkg", "search",
-			"entityName", modelRef.EntityName,
-			"modelVersion", modelRef.ModelVersion,
-			"error", err)
-		return nil
+		// Fail closed. The schema is what decides whether this condition's
+		// paths exist, and nothing downstream re-asks: the matcher has no
+		// field-path check, so an unvalidated search answers an empty page
+		// for a path that is wrong and for a path that simply matched
+		// nothing, identically. Worse, translating against a nil fields map
+		// stamps an empty Declared on every leaf, which annihilates the
+		// eight comparison and ordering operators to a non-match while the
+		// other eighteen keep evaluating (see spi.ConditionToFilter) — so
+		// the result set is not merely unvalidated, it is short.
+		//
+		// Per .claude/rules/correctness-over-availability.md, a dependency a
+		// correct result requires fails the operation rather than
+		// downgrading it.
+		return nil, common.Internal("failed to load model schema for condition validation", err)
 	}
-	if fields == nil {
-		// Descriptor returned nil — no schema bound to validate against.
-		return nil
-	}
-
+	// A nil fields map is NOT "nothing to validate against" — it is a model
+	// declaring no fields, against which every data path the condition names
+	// is unknown. findUnknownPaths reports exactly that, and the bounded
+	// single-refresh retry below still gets its chance to discover a schema
+	// this node has not yet seen. Returning early here accepted any path at
+	// all on such a model.
 	missing := findUnknownPaths(paths, fields)
 	if len(missing) == 0 {
 		s.markPathsPresent(tenant, modelRef, paths)
-		return nil
+		return fields, nil
 	}
 
 	// Some paths are unknown to the cached schema. Refresh exactly once
@@ -1600,7 +1618,7 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelRef spi
 	if !refreshed {
 		// Store has no cache layer — the cached miss is authoritative.
 		s.markPathsAbsent(tenant, modelRef, missing)
-		return invalidPathError(missing)
+		return nil, invalidPathError(missing)
 	}
 	if refreshErr != nil {
 		if errors.Is(refreshErr, spi.ErrNotFound) {
@@ -1608,26 +1626,28 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelRef spi
 			// back to the cached fields outcome (paths are unknown
 			// because there is no model). Do NOT populate the negative
 			// cache: there is no schema authority to invalidate against.
-			return invalidPathError(missing)
+			return nil, invalidPathError(missing)
 		}
 		slog.Debug("schema refresh failed during pre-execution validation",
 			"pkg", "search",
 			"entityName", modelRef.EntityName,
 			"modelVersion", modelRef.ModelVersion,
 			"error", refreshErr)
-		return invalidPathError(missing)
+		return nil, invalidPathError(missing)
 	}
 	if freshFields == nil {
-		return invalidPathError(missing)
+		return nil, invalidPathError(missing)
 	}
 
 	stillMissing := findUnknownPaths(missing, freshFields)
 	if len(stillMissing) == 0 {
 		s.markPathsPresent(tenant, modelRef, paths)
-		return nil
+		// The refresh is authoritative — hand back the schema the paths
+		// actually validated against, not the stale one.
+		return freshFields, nil
 	}
 	s.markPathsAbsent(tenant, modelRef, stillMissing)
-	return invalidPathError(stillMissing)
+	return nil, invalidPathError(stillMissing)
 }
 
 // cachedAbsentPaths returns the subset of paths recorded as confirmed

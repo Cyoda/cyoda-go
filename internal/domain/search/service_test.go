@@ -35,15 +35,27 @@ func tenantCtx(tenantID string) context.Context {
 }
 
 // helper: register a minimal model descriptor so EnsureModelRegistered passes.
-func saveMinimalModel(t *testing.T, ctx context.Context, factory *memory.StoreFactory, ref spi.ModelRef) {
+// saveMinimalModel registers a model for tests whose subject is something
+// other than the schema — limits, cancellation, sentinel mapping, transport
+// plumbing. It still declares the leaves those tests address, because a model
+// declaring NO fields is a state production cannot reach: every entity write
+// goes through validateOrExtend, which extends the model's schema before the
+// data lands. Saving a bare descriptor and then writing entities straight to
+// the entity store fabricated a model with data but no schema, and search
+// answered such a model by skipping field-path validation entirely.
+//
+// Defaults to a String "name" leaf, which is what most of these tests query.
+// Pass explicit names when the test addresses something else.
+func saveMinimalModel(t *testing.T, ctx context.Context, factory *memory.StoreFactory, ref spi.ModelRef, fields ...string) {
 	t.Helper()
-	ms, err := factory.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
+	if len(fields) == 0 {
+		fields = []string{"name"}
 	}
-	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref}); err != nil {
-		t.Fatalf("Save model: %v", err)
+	typed := make(map[string]schema.DataType, len(fields))
+	for _, f := range fields {
+		typed[f] = schema.String
 	}
+	saveModelWithFields(t, ctx, factory, ref, typed)
 }
 
 // helper: register a model whose schema declares the given top-level leaf
@@ -780,7 +792,7 @@ func TestSubmitAsync_SelfExecutingStore_SkipsGoroutine(t *testing.T) {
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	saveMinimalModel(t, ctx, factory, ref)
+	saveMinimalModel(t, ctx, factory, ref, "x")
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.x",
 		OperatorType: "EQUALS",

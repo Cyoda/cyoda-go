@@ -121,6 +121,35 @@ identically. On gRPC the refusal is an envelope error (`success=false`,
 `Error.Code = CLIENT_ERROR`, `INVALID_FIELD_PATH` in the message) — never an
 empty stream, which a client would read as "no matches".
 
+## Path validation must run, or the request fails
+
+Grammar is checked without the model; **existence** is checked against it. The
+model's schema decides whether a condition's paths are real, so a schema that
+cannot be loaded is not a reason to skip the check — it is a reason to fail the
+request, per `.claude/rules/correctness-over-availability.md`.
+
+- **Schema load fails** (model store unreachable, stored schema unparseable):
+  **5xx with a ticket id.** Never a result set. An async job whose schema
+  becomes unreadable between submit and execution ends `FAILED`, not
+  `SUCCESSFUL` with a short page.
+- **Model declares no fields:** every data path the condition names is unknown
+  → **400 `INVALID_FIELD_PATH`**. A schema-less model is a model in which
+  nothing is declared, not a model that accepts anything.
+
+Answering without the schema is a *wrong* answer, not merely an unvalidated
+one. With no fields map the translator stamps an empty declared-type set on
+every leaf, which collapses the eight comparison and ordering operators to a
+non-match while the other eighteen keep matching — so rows that should have
+matched are dropped and the short page looks complete.
+
+**Path shape is held to the model.** `$.items[*].sku` asserts `items` is an
+array (or polymorphic with an array member); `$.items.sku` asserts `items` is
+an object. The fields-map keys carry the `[*]` hops, so the two spellings are
+distinct lookups and the one contradicting the model is rejected
+`400 INVALID_FIELD_PATH`. A positional subscript canonicalises to the wildcard
+key (`$.arr[0]` resolves against `$.arr[*]`) — see
+`positional-subscript-path.md`.
+
 **Workflow criteria are out of scope of this document.** Criteria evaluate
 through the in-process predicate evaluator, never through `ConditionToFilter`,
 so a bare criterion `jsonPath` is unaffected by this change. They are covered by

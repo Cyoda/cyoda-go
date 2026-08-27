@@ -321,30 +321,27 @@ func operandElements(v any) []any {
 }
 
 // loadModelNode fetches and parses the model schema for ref, returning the
-// *schema.ModelNode used for condition-type validation. Returns nil when
-// the store lookup fails, the descriptor has no schema bound, or the schema
-// fails to parse — callers treat this as "no type constraints available"
-// rather than failing the search on a schema-load hiccup. EnsureModelRegistered
-// has already confirmed the model exists by the time this runs, so in the
-// normal case the node is present.
-func loadModelNode(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) *schema.ModelNode {
+// *schema.ModelNode used for condition-type validation.
+//
+// A load or parse FAILURE is an error, not an absent node: the schema is what
+// the check needs, and answering the request without it is the fail-open this
+// function used to perform. A (nil, nil) return means something different and
+// benign — the descriptor carries no schema, so the model declares no typed
+// fields and there is no constraint to apply. EnsureModelRegistered has
+// already confirmed the model exists by the time this runs.
+func loadModelNode(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (*schema.ModelNode, error) {
 	// Reuse the store's cached parse when it has one; see loadFieldsMap.
 	if p, ok := store.(schemaNodeProvider); ok {
-		node, err := p.SchemaNode(ctx, ref)
-		if err != nil {
-			return nil
-		}
-		return node
+		return p.SchemaNode(ctx, ref)
 	}
 	desc, err := store.Get(ctx, ref)
-	if err != nil || desc == nil || len(desc.Schema) == 0 {
-		return nil
-	}
-	node, err := schema.Unmarshal(desc.Schema)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return node
+	if desc == nil || len(desc.Schema) == 0 {
+		return nil, nil
+	}
+	return schema.Unmarshal(desc.Schema)
 }
 
 // validateConditionTypes is the single boundary enforcing condition
@@ -356,16 +353,23 @@ func loadModelNode(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) 
 // anything else → CONDITION_TYPE_MISMATCH (the value is type-incompatible
 // with a known field/operator).
 //
-// A schema-load hiccup (see loadModelNode) returns nil — the search proceeds
-// without pre-rejecting type-unsound conditions rather than 5xx-ing on an infra
-// flake. This is safe, not a wrong-but-available result: with no model the eval
-// path stamps empty Declared too, so comparison leaves degrade to non-match
-// (empty results, never a wrong match), and existence is already gated upstream
-// by EnsureModelRegistered. It is deliberately more lenient here than the
-// workflow engine (which fails closed on the same load error) — a search
-// prefers empty-on-flake to a 5xx.
+// A schema-load failure fails the request. The previous behaviour — skip the
+// check and search anyway — was justified in a comment here as "empty results,
+// never a wrong match", on the reasoning that a missing model leaves every leaf
+// with an empty Declared and so degrades uniformly. That reasoning is wrong,
+// and spi.ConditionToFilter's own godoc says why: an empty declared set
+// annihilates the eight comparison and ordering leaves to a non-match while the
+// other eighteen — the presence tests, the string and pattern operators, and
+// the whole case-insensitive family — keep evaluating normally. The result set
+// is skewed, not empty, and it is returned as though it were complete.
+//
+// The workflow engine already fails closed on the same load error; search now
+// matches it, per .claude/rules/correctness-over-availability.md.
 func (s *SearchService) validateConditionTypes(ctx context.Context, modelStore spi.ModelStore, modelRef spi.ModelRef, cond predicate.Condition) *common.AppError {
-	node := loadModelNode(ctx, modelStore, modelRef)
+	node, err := loadModelNode(ctx, modelStore, modelRef)
+	if err != nil {
+		return common.Internal("failed to load model schema for condition type validation", err)
+	}
 	if node == nil {
 		return nil
 	}

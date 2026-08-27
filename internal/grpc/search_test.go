@@ -11,6 +11,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -783,15 +784,29 @@ func grpcTenantCtx() context.Context {
 	return spi.WithUserContext(context.Background(), uc)
 }
 
-// saveMinimalModelGRPC registers a minimal model descriptor so
-// EnsureModelRegistered passes.
-func saveMinimalModelGRPC(t *testing.T, ctx context.Context, factory *memory.StoreFactory, ref spi.ModelRef) {
+// saveMinimalModelGRPC registers a model descriptor so EnsureModelRegistered
+// passes AND the conditions these tests send have declared paths to resolve
+// against. A descriptor with no schema is not a lighter version of a real
+// model — it is a model declaring no fields, which a search now rejects rather
+// than answering unvalidated.
+func saveMinimalModelGRPC(t *testing.T, ctx context.Context, factory *memory.StoreFactory, ref spi.ModelRef, fields ...string) {
 	t.Helper()
 	ms, err := factory.ModelStore(ctx)
 	if err != nil {
 		t.Fatalf("ModelStore: %v", err)
 	}
-	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref}); err != nil {
+	if len(fields) == 0 {
+		fields = []string{"name"}
+	}
+	node := schema.NewObjectNode()
+	for _, f := range fields {
+		node.SetChild(f, schema.NewLeafNode(schema.String))
+	}
+	raw, err := schema.Marshal(node)
+	if err != nil {
+		t.Fatalf("schema.Marshal: %v", err)
+	}
+	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, State: spi.ModelLocked, Schema: raw}); err != nil {
 		t.Fatalf("Save model: %v", err)
 	}
 }

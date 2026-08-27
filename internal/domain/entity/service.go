@@ -1083,10 +1083,15 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 	}
 
 	// Condition type-soundness — mirrors SearchService.Search's
-	// validateConditionTypes boundary. A schema-load hiccup degrades to
-	// "skip this check" exactly like Search's own loadModelNode does,
-	// rather than 5xx-ing on an infra flake.
-	if node := deleteModelSchemaNode(ctx, modelStore, ref); node != nil {
+	// validateConditionTypes boundary, including its failure policy: a schema
+	// that cannot be loaded fails the request. A conditional delete decided
+	// against a condition nobody could type-check is the last place to prefer
+	// an available answer to a correct one.
+	node, nodeErr := deleteModelSchemaNode(ctx, modelStore, ref)
+	if nodeErr != nil {
+		return deleteSelectionPlan{}, fmt.Errorf("failed to load model schema for condition validation: %w", nodeErr)
+	}
+	if node != nil {
 		if tErr := search.ValidateConditionValueTypes(node, cond); tErr != nil {
 			code := common.ErrCodeConditionTypeMismatch
 			if errors.Is(tErr, search.ErrInvalidFieldPath) {
@@ -1118,20 +1123,22 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 }
 
 // deleteModelSchemaNode loads and parses ref's schema for
-// planDeleteSelection's type-soundness check, mirroring search's
-// unexported loadModelNode. Returns nil (skip the check) on any load/parse
-// hiccup or an unbound schema; the caller has already gated model
-// existence separately.
-func deleteModelSchemaNode(ctx context.Context, modelStore spi.ModelStore, ref spi.ModelRef) *schema.ModelNode {
+// planDeleteSelection's type-soundness check, mirroring search's unexported
+// loadModelNode — failure policy included. A load or parse failure is an
+// ERROR: the schema is what the check needs. A (nil, nil) return means the
+// descriptor carries no schema, so there is no type constraint to apply. The
+// caller has already gated model existence separately.
+func deleteModelSchemaNode(ctx context.Context, modelStore spi.ModelStore, ref spi.ModelRef) (*schema.ModelNode, error) {
 	desc, err := modelStore.Get(ctx, ref)
-	if err != nil || desc == nil || len(desc.Schema) == 0 {
-		return nil
-	}
-	node, err := schema.Unmarshal(desc.Schema)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return node
+	if desc == nil || len(desc.Schema) == 0 {
+		// No schema bound: the model declares no typed fields, so there is no
+		// constraint to apply. Distinct from a failure to read it.
+		return nil, nil
+	}
+	return schema.Unmarshal(desc.Schema)
 }
 
 // drainDeleteSelection opens a spi.Iterable iterator scoped to ctx (pass a
