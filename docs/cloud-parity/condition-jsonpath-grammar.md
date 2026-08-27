@@ -135,6 +135,10 @@ request, per `.claude/rules/correctness-over-availability.md`.
 - **Model declares no fields:** every data path the condition names is unknown
   → **400 `INVALID_FIELD_PATH`**. A schema-less model is a model in which
   nothing is declared, not a model that accepts anything.
+- **Lifecycle-only conditions are exempt.** A meta leaf takes its type from the
+  static meta vocabulary, not from the model schema, so such a request is
+  answerable without the schema and must not be failed when it cannot be
+  loaded.
 
 Answering without the schema is a *wrong* answer, not merely an unvalidated
 one. With no fields map the translator stamps an empty declared-type set on
@@ -149,6 +153,26 @@ distinct lookups and the one contradicting the model is rejected
 `400 INVALID_FIELD_PATH`. A positional subscript canonicalises to the wildcard
 key (`$.arr[0]` resolves against `$.arr[*]`) — see
 `positional-subscript-path.md`.
+
+### Where cyoda-go implements this today
+
+Stated precisely, because a contract this document overstates is one Cloud
+would build in more places than cyoda-go has it.
+
+| surface | grammar | path existence | schema-load failure |
+|---|---|---|---|
+| `POST /search/direct/…` | yes | yes | 5xx |
+| `POST /search/async/…` | yes | yes | 5xx (submit), job `FAILED` (execution) |
+| `DELETE /entity/{entityName}/{modelVersion}` | yes | yes | 5xx |
+| `POST /entity/stats/…/query` | yes | **no** | 5xx |
+
+Grouped stats validates the condition's grammar, its patterns and its
+model-independent operand types, but performs **no schema-membership check** —
+on the condition, the `groupBy` paths or the aggregate fields. A condition
+naming a field the model does not declare is accepted there and answered from a
+filter whose comparison leaves annihilate. Cloud should not read the rows above
+as licence to skip it; cyoda-go intends to close it, and the gap is recorded
+here rather than papered over.
 
 **Workflow criteria are out of scope of this document.** Criteria evaluate
 through the in-process predicate evaluator, never through `ConditionToFilter`,

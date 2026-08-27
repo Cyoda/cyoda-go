@@ -6,12 +6,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
-- **A search, conditional delete or grouped-stats query whose model schema
-  cannot be loaded now fails instead of answering.** Field-path validation
-  consults the model's schema to decide whether a condition's paths exist. When
-  that load failed — the model store unreachable, or the stored schema
-  unparseable — validation was skipped and the query ran anyway, returning
-  `200` with a result set.
+- **A search whose model schema cannot be loaded now fails instead of
+  answering.** Field-path validation consults the model's schema to decide
+  whether a condition's paths exist. When that load failed — the model store
+  unreachable, or the stored schema unparseable — validation was skipped and
+  the query ran anyway, returning `200` with a result set.
 
   The result set was not merely unvalidated, it was **wrong**. With no fields
   map the translator stamps an empty declared-type set on every leaf, and that
@@ -20,24 +19,46 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `BETWEEN_INCLUSIVE`) collapse to a non-match while the other eighteen — the
   presence tests, the string and pattern operators, and the case-insensitive
   family — keep matching. Rows that should have matched were dropped, silently,
-  and the short page was indistinguishable from a complete one. An async job
-  recorded the same short page as `SUCCESSFUL`.
+  and the short page was indistinguishable from a complete one.
 
-  A schema-load failure is now `500` with a ticket id, on `/search/direct`,
-  `/search/async`, conditional `DELETE /entity/{name}/{version}` and
-  grouped stats, over HTTP and gRPC alike. An async job whose schema becomes
-  unreadable between submit and execution ends `FAILED` rather than
-  `SUCCESSFUL` with a truncated result set.
+  A schema-load failure is now `500` with a ticket id on `/search/direct` and
+  `/search/async`, over HTTP and gRPC alike. An async job whose schema becomes
+  unreadable between submit and execution — a load separate from the one submit
+  performed — ends `FAILED` rather than recording the same short page as
+  `SUCCESSFUL`.
+
+  Conditional `DELETE /entity/{name}/{version}` and grouped stats already
+  failed closed on this and are unchanged.
+
+  A **lifecycle-only** condition is unaffected and still succeeds: a meta leaf
+  takes its type from the static meta vocabulary, not from the model schema, so
+  the schema is not a dependency of that request.
 
 - **A condition naming a data path on a model that declares no fields is now
-  rejected.** Such a model was previously treated as "nothing to validate
-  against", so any path at all was accepted and the query answered. It is
+  rejected**, on `/search/direct`, `/search/async` and conditional
+  `DELETE /entity/{name}/{version}`. Such a model was previously treated as
+  "nothing to validate against", so any path at all was accepted and the query
+  answered — and on the delete path that decided which rows were removed. It is
   instead a model in which the named path does not exist, and the request is
-  `400 INVALID_FIELD_PATH` — the same answer any other unknown path already
-  received. A path's shape is held to the model: `$.items[*].sku` asserts
-  `items` is an array and `$.items.sku` asserts it is an object, and the
-  spelling that contradicts the model is an error rather than something to
-  reinterpret.
+  `400 INVALID_FIELD_PATH`, the same answer any other unknown path already
+  received.
+
+  This state is **not reachable through the public API**: model import always
+  stores a marshalled schema, and a schema declaring no fields still yields a
+  non-empty fields map, which already rejected unknown paths. The change closes
+  it against an out-of-band or legacy row rather than against a request anyone
+  can send today, which is why no E2E test accompanies it.
+
+  Grouped stats is **not** included: it performs no schema-membership
+  validation of any kind today — not for the condition, the `groupBy` paths, or
+  the aggregate fields — and adding it needs model-store plumbing the endpoint
+  does not have, so that a stale cached schema does not falsely reject a field
+  a peer node has already extended the model with. Tracked separately.
+
+  A path's shape is held to the model on the endpoints that validate:
+  `$.items[*].sku` asserts `items` is an array and `$.items.sku` asserts it is
+  an object, and the spelling that contradicts the model is rejected rather
+  than reinterpreted.
 
 - **An invalid `LIKE` or `MATCHES_PATTERN` operand is now rejected at the
   request boundary instead of being accepted.** The boundary used to compile

@@ -3,6 +3,7 @@ package search_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -106,6 +107,18 @@ func TestSearch_SchemaLoadFails_FailsClosedInsteadOfAnswering(t *testing.T) {
 	if appErr.Status < 500 {
 		t.Errorf("appErr.Status = %d, want 5xx: an unloadable schema is a dependency "+
 			"failure, not client fault", appErr.Status)
+	}
+	// Pin WHICH guard refused. validateConditionTypes loads the same schema
+	// immediately afterwards and now also fails closed, so a test asserting
+	// only "some error" passes with the path-validation guard reverted — it
+	// would be satisfied by the downstream one and the primary fix would be
+	// unprotected. These two messages are the only thing that tells them
+	// apart at the boundary.
+	if !strings.Contains(appErr.Message, "for condition validation") {
+		t.Errorf("appErr.Message = %q, want the path-validation guard "+
+			"(%q); the type-validation guard firing instead means "+
+			"validateConditionPaths let the request through",
+			appErr.Message, "failed to load model schema for condition validation")
 	}
 }
 
@@ -268,4 +281,43 @@ func goodStringSchema(t *testing.T, fields ...string) []byte {
 		t.Fatalf("schema.Marshal: %v", err)
 	}
 	return raw
+}
+
+// TestSearch_LifecycleOnlyCondition_DoesNotNeedTheSchema guards against paying
+// for a schema load a condition cannot use. A lifecycle condition names a
+// member of the closed meta vocabulary; spi.ConditionToFilter's godoc is
+// explicit that "Meta leaves are unaffected: their types come from the static
+// meta vocabulary, not from fields, so a nil map does not degrade them at
+// all." Failing such a search because the schema is unreadable trades an
+// answer that was correct for a 500 that buys nothing.
+func TestSearch_LifecycleOnlyCondition_DoesNotNeedTheSchema(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+
+	ctx := tenantCtx("tenant-lifecycle-only")
+	ref := spi.ModelRef{EntityName: "lifecycleonly", ModelVersion: "1"}
+	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
+
+	factory := &modelStoreFactory{
+		StoreFactory: base,
+		modelStore:   &brokenSchemaModelStore{ref: ref, schema: []byte(`{"this is": not valid json`)},
+	}
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore)
+
+	cond := &predicate.LifecycleCondition{
+		Field:        "state",
+		OperatorType: "EQUALS",
+		Value:        "NEW",
+	}
+
+	results, err := svc.Search(ctx, ref, cond, search.SearchOptions{})
+	if err != nil {
+		t.Fatalf("lifecycle-only search failed on an unreadable schema: %v. "+
+			"A meta leaf takes its type from the static vocabulary, so the model "+
+			"schema is not a dependency of this request.", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("got %d result(s), want 1", len(results))
+	}
 }

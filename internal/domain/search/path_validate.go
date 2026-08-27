@@ -16,10 +16,14 @@ import (
 //
 // Returned paths are normalised so they line up with the FieldsMap keys
 // produced by *schema.ModelNode.FieldsMap (paths begin with "$." and use
-// "[*]" to mark array-wildcard hops). Unrecognised path syntax is
-// dropped — pre-execution validation is best-effort and the matcher
-// will still fail the request downstream if the path is genuinely
-// inaccessible.
+// "[*]" to mark array-wildcard hops).
+//
+// Nothing downstream re-checks what this misses. The matcher has no
+// field-path check at all: an inaccessible path resolves to nothing and
+// answers an empty page, which the caller cannot tell from a legitimate
+// empty result. Path syntax is grammar-checked at the model-independent
+// condition boundary (ValidateCondition) before this walk runs, so a
+// surviving path is well-formed and the walk drops nothing.
 //
 // Duplicate paths are folded out so callers can rely on the slice as a
 // set without further work.
@@ -160,9 +164,12 @@ func LoadFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) 
 // loadFieldsMap fetches and parses the cached schema for ref, returning
 // the path → FieldDescriptor view used by pre-execution validation.
 //
-// Returns (nil, nil) when the descriptor has no schema bound. Other errors
-// propagate so the caller can log and skip validation rather than
-// mistakenly reject the search.
+// Returns (nil, nil) when the descriptor has no schema bound — a model
+// declaring no fields, which is a real answer and not a failure. Every other
+// error propagates and every caller FAILS the request on it: the schema is
+// what decides whether a condition's paths exist, so proceeding without it
+// answers with a filter whose comparison leaves annihilate while its string
+// leaves keep matching (see spi.ConditionToFilter).
 func loadFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (map[string]schema.FieldDescriptor, error) {
 	// Prefer the cached derived parse when the store offers one. Rebuilding it
 	// per call is 80-99% of a criterion evaluation and scales with schema size;

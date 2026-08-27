@@ -1050,35 +1050,39 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 	// here, a condition on that field would 400 INVALID_FIELD_PATH on node B
 	// while the identical /search/direct condition succeeds via
 	// validateConditionPaths' own refresh — a cross-node false rejection.
-	// fields == nil means no schema is bound at all — same as
-	// validateConditionPaths, skip the check rather than flagging every path
-	// "unknown" against an empty map.
-	if fields != nil {
-		if unknown := search.FindUnknownFieldPaths(cond, fields); len(unknown) > 0 {
-			freshFields, refreshed, refreshErr := search.RefreshFieldsMap(ctx, modelStore, ref)
-			switch {
-			case !refreshed:
-				// Store has no cache layer to refresh — the pre-refresh
-				// miss is authoritative, same as validateConditionPaths.
-			case refreshErr != nil:
-				if errors.Is(refreshErr, spi.ErrNotFound) {
-					// Model was deleted between the earlier load and
-					// RefreshAndGet — the miss is authoritative, there is
-					// no schema left to consult.
-					break
-				}
-				slog.Debug("schema refresh failed while validating delete condition paths",
-					"pkg", "entity", "entityName", ref.EntityName, "modelVersion", ref.ModelVersion, "error", refreshErr)
-			case freshFields != nil:
-				unknown = search.FindUnknownFieldPaths(cond, freshFields)
+	// A nil fields map — no schema bound — is NOT a reason to skip the check.
+	// It is a model declaring no fields, in which every data path the
+	// condition names is unknown, and that is what /search/direct answers via
+	// validateConditionPaths. Guarding this block on `fields != nil` let a
+	// conditional DELETE proceed on an unvalidated path and then translate
+	// against a nil map, which does not make the filter inert but skewed:
+	// empty declared types annihilate the comparison operators while the
+	// string operators keep matching. That skew decides which rows are
+	// deleted.
+	if unknown := search.FindUnknownFieldPaths(cond, fields); len(unknown) > 0 {
+		freshFields, refreshed, refreshErr := search.RefreshFieldsMap(ctx, modelStore, ref)
+		switch {
+		case !refreshed:
+			// Store has no cache layer to refresh — the pre-refresh
+			// miss is authoritative, same as validateConditionPaths.
+		case refreshErr != nil:
+			if errors.Is(refreshErr, spi.ErrNotFound) {
+				// Model was deleted between the earlier load and
+				// RefreshAndGet — the miss is authoritative, there is
+				// no schema left to consult.
+				break
 			}
-			if len(unknown) > 0 {
-				return deleteSelectionPlan{}, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath,
-					fmt.Sprintf("condition references unknown field path(s): %s", strings.Join(unknown, ", ")))
-			}
-			if freshFields != nil {
-				fields = freshFields
-			}
+			slog.Debug("schema refresh failed while validating delete condition paths",
+				"pkg", "entity", "entityName", ref.EntityName, "modelVersion", ref.ModelVersion, "error", refreshErr)
+		case freshFields != nil:
+			unknown = search.FindUnknownFieldPaths(cond, freshFields)
+		}
+		if len(unknown) > 0 {
+			return deleteSelectionPlan{}, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath,
+				fmt.Sprintf("condition references unknown field path(s): %s", strings.Join(unknown, ", ")))
+		}
+		if freshFields != nil {
+			fields = freshFields
 		}
 	}
 

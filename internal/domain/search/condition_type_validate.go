@@ -368,6 +368,13 @@ func loadModelNode(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) 
 func (s *SearchService) validateConditionTypes(ctx context.Context, modelStore spi.ModelStore, modelRef spi.ModelRef, cond predicate.Condition) *common.AppError {
 	node, err := loadModelNode(ctx, modelStore, modelRef)
 	if err != nil {
+		// Same dependency rule as validateConditionPaths: the schema is
+		// required only for a condition that addresses a data path. A
+		// lifecycle-only condition is answerable without it, so an
+		// unreadable schema must not fail it.
+		if len(extractFieldPaths(cond)) == 0 {
+			return nil
+		}
 		return common.Internal("failed to load model schema for condition type validation", err)
 	}
 	if node == nil {

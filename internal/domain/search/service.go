@@ -1175,7 +1175,15 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 	// the job would record a short result set as SUCCESSFUL.
 	fields, fieldsErr := loadFieldsMap(jobCtx, modelStore, modelRef)
 	if fieldsErr != nil {
-		s.writeAsyncFailure(jobCtx, jobID, jobFailureMessage(fieldsErr), time.Now(), time.Since(start).Milliseconds())
+		// Classify before recording. A raw error falls through
+		// jobFailureMessage to the generic fallback, so a tenant whose model
+		// store is down would read an actionable code on /search/direct and
+		// "search failed unexpectedly" here, for one and the same outage.
+		msg := jobFailureMessage(fieldsErr)
+		if appErr := common.Internal("failed to load model schema for condition validation", fieldsErr); appErr != nil {
+			msg = jobFailureMessage(appErr)
+		}
+		s.writeAsyncFailure(jobCtx, jobID, msg, time.Now(), time.Since(start).Milliseconds())
 		return
 	}
 	filter, translateErr := spi.ConditionToFilter(cond, fields)
@@ -1564,11 +1572,15 @@ func (s *SearchService) CancelAsyncSearch(ctx context.Context, snapshotID string
 func (s *SearchService) validateConditionPaths(ctx context.Context, modelStore spi.ModelStore, modelRef spi.ModelRef, cond predicate.Condition) (map[string]schema.FieldDescriptor, error) {
 	paths := extractFieldPaths(cond)
 	if len(paths) == 0 {
-		// A lifecycle-only condition addresses no schema path, so there is
-		// nothing to check — but the caller still needs the fields map to
-		// type its leaves, and loading it HERE rather than again downstream
-		// is what keeps the load (and its failure handling) in one place.
-		return loadFieldsMap(ctx, modelStore, modelRef)
+		// The model schema is a dependency of a condition exactly when the
+		// condition addresses a DATA path. This one addresses none — it is
+		// lifecycle-only — so there is nothing to validate and nothing the
+		// caller needs the fields map for: a meta leaf takes its type from
+		// the static meta vocabulary, not from the map (see
+		// spi.ConditionToFilter, "Meta leaves are unaffected"). Loading the
+		// schema here anyway would fail requests that are answerable, which
+		// is availability spent for no correctness.
+		return nil, nil
 	}
 
 	// Negative cache fast-path: if any path is recorded as confirmed
