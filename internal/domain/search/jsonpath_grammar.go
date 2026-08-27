@@ -37,7 +37,7 @@ const jsonPathLeader = "$."
 // "$.a[0].xé"). All of these wrap [errInvalidFieldPath], which every transport
 // maps to 400 INVALID_FIELD_PATH.
 //
-// Two surfaces share this grammar and differ on ONE point — a WELL-FORMED
+// The surfaces share this grammar and differ on ONE point — a WELL-FORMED
 // array subscript ("$.tags[*].name", "$.arr[0]", "$.matrix[*][*]"):
 //
 //   - [ValidateConditionJSONPath], the condition jsonPath surface, ACCEPTS
@@ -45,9 +45,13 @@ const jsonPathLeader = "$."
 //     spi.ConditionToFilter refuses them with a PLAIN error that does not wrap
 //     spi.ErrInvalidFilterPath, precisely so the caller falls back to the
 //     in-memory evaluator, which serves them.
-//   - [ValidateScalarJSONPath], the groupBy / aggregation-field surface,
-//     REJECTS them. Those paths must denote a single scalar; a projection has
-//     no fallback that could produce one.
+//   - [ValidateScalarJSONPath] — the groupBy, aggregation-field and SORT-key
+//     surfaces — REJECTS them. Those paths must denote a single scalar; a
+//     projection has no fallback that could produce one.
+//
+// A sort key differs from the other two scalar surfaces on the leader alone:
+// it is spelled bare over HTTP ("price"), so resolveOrderBy normalises before
+// validating rather than requiring "$." of the caller.
 //
 // Both scan the WHOLE path, subscripts included — the same scan spi's
 // stripDollarDot performs — and only differ in what they do with a well-formed
@@ -78,10 +82,10 @@ func ValidateConditionJSONPath(path string) error {
 	return validateJSONPath(path, true)
 }
 
-// ValidateScalarJSONPath checks a path that must denote a single scalar —
-// a grouped-stats groupBy entry or aggregation field — against the same
-// grammar, additionally rejecting array projections and subscripts. Errors
-// wrap [ErrInvalidFieldPath].
+// ValidateScalarJSONPath checks a path that must denote a single scalar — a
+// grouped-stats groupBy entry, an aggregation field, or a sort key — against
+// the same grammar, additionally rejecting array projections and subscripts.
+// Errors wrap [ErrInvalidFieldPath].
 //
 // Without it a malformed path is caught only when pushdown is actually used:
 // the grouped-stats service falls through to the in-process streaming tally
@@ -90,6 +94,11 @@ func ValidateConditionJSONPath(path string) error {
 // misses, and buckets every entity as null — a wrong-but-available 200 rather
 // than an error. Validating at the boundary makes both execution paths reject
 // identically and leaves each plugin's own check as a backstop.
+//
+// resolveOrderBy applies it to a SORT key for the same reason, and there the
+// in-memory branch has no plugin backstop at all: the engine sorts the drained
+// slice itself, so an unvalidated projection was answered as an unsorted page
+// rather than refused.
 func ValidateScalarJSONPath(path string) error {
 	return validateJSONPath(path, false)
 }

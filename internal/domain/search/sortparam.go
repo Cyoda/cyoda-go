@@ -11,8 +11,11 @@ import (
 // ParseSortParam parses repeatable `sort` query values into OrderKeys.
 // Grammar: [@]path[:asc|:desc]. Bare ⇒ data; leading '@' ⇒ meta (flat name).
 // A leading "$." on a data path is tolerated. Direction defaults to asc.
-// Duplicate paths and >maxKeys keys are rejected. Semantic validation
-// (schema scalar-leaf, meta allowlist) happens later in the service.
+// Duplicate paths and >maxKeys keys are rejected. The path GRAMMAR is checked
+// here too, but it is not this parser's to own: resolveOrderBy applies it to
+// every key whatever the transport, because gRPC builds an OrderKey without
+// passing through here. Semantic validation (schema scalar-leaf, meta
+// allowlist) happens there as well.
 func ParseSortParam(values []string, maxKeys int) ([]OrderKey, error) {
 	keys := make([]OrderKey, 0, len(values))
 	for _, raw := range values {

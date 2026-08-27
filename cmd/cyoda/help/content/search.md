@@ -345,7 +345,7 @@ Both sync and async search accept one or more `sort` query parameters. Repeat th
 
 **Key cap:** configurable via `CYODA_SEARCH_MAX_SORT_KEYS` (default 16); exceeding the cap returns `errors.INVALID_FIELD_PATH` (`400`), like any other malformed `sort` value.
 
-**Invalid paths:** unsortable, unknown, array, or non-scalar paths return `errors.INVALID_FIELD_PATH` (`400`).
+**Invalid paths:** unsortable, unknown, array, or non-scalar paths return `errors.INVALID_FIELD_PATH` (`400`). A path segment is drawn from `A-Za-z0-9_-`, and an array subscript or projection (`items[*].name`, `items[0].name`) is rejected — an ordering needs a single scalar, and being a recorded field is not enough: a scalar leaf inside an array of objects is one. The gRPC `orderBy.path` is held to the same grammar in the same resolver, so both transports answer a given path identically.
 
 ## PAGINATION
 
