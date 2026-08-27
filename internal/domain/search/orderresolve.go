@@ -47,9 +47,14 @@ func resolveOrderBy(keys []OrderKey, fields map[string]schema.FieldDescriptor) (
 		// wrong-but-available answer is the one outcome this engine does not
 		// give.
 		//
-		// ValidateScalarJSONPath is the same check groupBy and aggregation
-		// fields take, for the same reason: a projection cannot denote the
-		// single scalar an ordering needs.
+		// ValidateScalarJSONPath is the check groupBy and aggregation fields
+		// take, for the same reason: a projection cannot denote the single
+		// scalar an ordering needs. It is applied to the NORMALISED path, so
+		// a sort key keeps its bare spelling ("price") where those surfaces
+		// require the "$." leader — the leader is the one point on which a
+		// sort key differs, and normalisePath supplies it. The diagnostic
+		// therefore names the "$."-prefixed form; only a gRPC caller can
+		// reach this arm, and HTTP's own parser refuses these paths earlier.
 		if err := ValidateScalarJSONPath(key); err != nil {
 			return nil, err
 		}

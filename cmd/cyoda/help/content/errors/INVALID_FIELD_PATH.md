@@ -13,7 +13,7 @@ see_also:
 
 ## NAME
 
-INVALID_FIELD_PATH — a condition's `jsonPath` is not valid JSON Path syntax, or names a field absent from the target model's locked schema.
+INVALID_FIELD_PATH — a condition's `jsonPath`, or a sort key, is not valid JSON Path syntax, or names a field absent from the target model's locked schema.
 
 ## SYNOPSIS
 
@@ -21,7 +21,7 @@ HTTP: `400` `Bad Request`. Retryable: `no` (unless the model schema is then exte
 
 ## DESCRIPTION
 
-Two checks emit this code.
+Three checks emit this code.
 
 **1. Syntax.** A condition's `jsonPath` is JSON Path nomenclature, so the `$.` leader is required:
 
@@ -63,6 +63,8 @@ Common causes:
 To resolve: write the path as JSON Path with the `$.` leader, then verify the field against the model's schema (`GET /api/model/.../export`), or extend the model schema and re-lock it before retrying.
 
 The same grammar applies to a grouped-statistics `groupBy` entry and aggregation `field`, but those report `INVALID_GROUP_BY_PATH` / `INVALID_AGGREGATION_FIELD` instead, and additionally reject array subscripts (a group key must be a single scalar). The reserved `groupBy` token `state` is a token, not a path, and needs no leader.
+
+**3. Sort paths.** A sort key — the HTTP `sort` query parameter or a gRPC `orderBy.path` — reports this code too, and is held to the grammar above with one addition and one relaxation. It **rejects array subscripts and projections** (`items[*].name`, `items[0].name`), for the same reason a `groupBy` entry does: an ordering needs a single scalar, and a projection denotes none. Schema membership is not a substitute — a scalar leaf inside an array of objects is a recorded field. And the `$.` leader is **optional** on a sort key: `price` and `$.price` are both accepted, since a bare dotted path is the parameter's own spelling. Sort keys are also rejected with this code when the path is absent from the locked schema, names an array field, names an unknown meta field, duplicates another key, or exceeds `CYODA_SEARCH_MAX_SORT_KEYS`.
 
 ## SEE ALSO
 

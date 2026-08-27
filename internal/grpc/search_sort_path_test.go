@@ -40,42 +40,70 @@ var sortPathModel = map[string]any{
 	"items":   []any{map[string]any{"name": "widget"}},
 }
 
-// TestEntitySearch_DirectSearch_NonScalarSortPath_InvalidFieldPath pins the
-// envelope on the streaming (direct) search door.
-func TestEntitySearch_DirectSearch_NonScalarSortPath_InvalidFieldPath(t *testing.T) {
-	for _, tc := range grpcNonScalarSortPaths {
-		t.Run(tc.name, func(t *testing.T) {
-			svc, ctx := newTestEnv(t)
-			importAndLockModel(t, svc, ctx, "sortitem", "1", sortPathModel)
+// searchConditions are the two shapes a direct search can take, because they
+// are served by different branches and only one of them has a backstop.
+//
+//   - A translatable condition is pushed down, where each plugin's own path
+//     validator refuses a bracket independently of anything the engine does.
+//   - A condition carrying a well-formed array subscript is valid JSON Path
+//     that no pushdown filter can express, so spi.ConditionToFilter declines
+//     it and the in-memory evaluator serves the whole request — sort included.
+//     There is no plugin in that path at all. It is the branch where an
+//     unchecked sort path stopped being an error and became a wrong answer:
+//     gjson has no bracket syntax, so every entity misses, all compare equal,
+//     and the caller receives a 200 whose order is not the one they asked for.
+//
+// A table that only exercises the first branch cannot fail if the boundary
+// check is removed — the plugin answers 400 either way.
+var searchConditions = []struct {
+	name string
+	cond map[string]any
+}{
+	{"pushdown", map[string]any{"type": "group", "operator": "AND", "conditions": []any{}}},
+	{"in-memory fallback", map[string]any{
+		"type": "simple", "jsonPath": "$.items[*].name",
+		"operatorType": "EQUALS", "value": "widget",
+	}},
+}
 
-			ce := makeCE(EntitySearchRequest, map[string]any{
-				"id":    "sort-badpath",
-				"model": map[string]any{"name": "sortitem", "version": 1},
-				"condition": map[string]any{
-					"type": "group", "operator": "AND", "conditions": []any{},
-				},
-				"orderBy": []any{map[string]any{"path": tc.path}},
-			})
-			stream := &mockEntityStream{ctx: ctx}
-			if err := svc.EntitySearchCollection(ce, stream); err != nil {
-				t.Fatalf("unexpected stream error (errors should be envelope responses): %v", err)
-			}
-			if len(stream.sent) == 0 {
-				t.Fatal("expected an error response on the stream")
-			}
-			var typed events.EntityResponseJson
-			validateResponse(t, stream.sent[0], &typed)
-			if typed.Success {
-				t.Fatalf("sort path %q was accepted; it cannot denote the single scalar an ordering needs, and the in-memory branch would answer an unsorted page rather than refuse", tc.path)
-			}
-			if typed.Error == nil {
-				t.Fatal("expected error block in response")
-			}
-			if typed.Error.Code != "CLIENT_ERROR" {
-				t.Errorf("expected code=CLIENT_ERROR, got %q", typed.Error.Code)
-			}
-			if !strings.Contains(typed.Error.Message, "INVALID_FIELD_PATH") {
-				t.Errorf("expected INVALID_FIELD_PATH in message, got %q", typed.Error.Message)
+// TestEntitySearch_DirectSearch_NonScalarSortPath_InvalidFieldPath pins the
+// envelope on the streaming (direct) search door, on both branches.
+func TestEntitySearch_DirectSearch_NonScalarSortPath_InvalidFieldPath(t *testing.T) {
+	for _, sc := range searchConditions {
+		t.Run(sc.name, func(t *testing.T) {
+			for _, tc := range grpcNonScalarSortPaths {
+				t.Run(tc.name, func(t *testing.T) {
+					svc, ctx := newTestEnv(t)
+					importAndLockModel(t, svc, ctx, "sortitem", "1", sortPathModel)
+
+					ce := makeCE(EntitySearchRequest, map[string]any{
+						"id":        "sort-badpath",
+						"model":     map[string]any{"name": "sortitem", "version": 1},
+						"condition": sc.cond,
+						"orderBy":   []any{map[string]any{"path": tc.path}},
+					})
+					stream := &mockEntityStream{ctx: ctx}
+					if err := svc.EntitySearchCollection(ce, stream); err != nil {
+						t.Fatalf("unexpected stream error (errors should be envelope responses): %v", err)
+					}
+					if len(stream.sent) == 0 {
+						t.Fatal("expected an error response on the stream")
+					}
+					var typed events.EntityResponseJson
+					validateResponse(t, stream.sent[0], &typed)
+					if typed.Success {
+						t.Fatalf("sort path %q was accepted; it cannot denote the single scalar an ordering needs, and this branch would answer an unsorted page rather than refuse", tc.path)
+					}
+					if typed.Error == nil {
+						t.Fatal("expected error block in response")
+					}
+					if typed.Error.Code != "CLIENT_ERROR" {
+						t.Errorf("expected code=CLIENT_ERROR, got %q", typed.Error.Code)
+					}
+					if !strings.Contains(typed.Error.Message, "INVALID_FIELD_PATH") {
+						t.Errorf("expected INVALID_FIELD_PATH in message, got %q", typed.Error.Message)
+					}
+				})
 			}
 		})
 	}

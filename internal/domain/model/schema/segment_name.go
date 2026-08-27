@@ -30,9 +30,13 @@ package schema
 // over an object and "how many elements" over an array, and a backslash is the
 // escape, so an unescaped one addresses a different key.
 //
-// Every one of those is a silent wrong answer rather than a miss, which is why
-// the class refuses them at the model door instead of leaving each
-// path-building site to escape them. Widening it is therefore not a charset
+// None of them merely fails to find the field. "|" and the backslash resolve
+// to a different node outright; "*" and "?" do whenever a sibling key matches
+// the glob; "!" ignores the document; and "#" is answered correctly over an
+// object and as a count over an array, so one name means two things. A silent
+// wrong answer is possible in every case, which is why the class refuses them
+// at the model door instead of leaving each path-building site to escape
+// them. Widening it is therefore not a charset
 // edit: it obliges an escape at each such site, in both SQL plugins' path
 // literals, and a wire syntax able to spell the segment at all.
 
