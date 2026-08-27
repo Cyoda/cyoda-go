@@ -94,11 +94,16 @@ type asyncScanScoper interface {
 // jobFailureMessage is what gets written into the job record when an async
 // search fails.
 //
-// The record is the only report a caller of the async API ever gets, and GetJob
-// serves it back verbatim, so it follows the same 4xx/5xx split as every other
-// response: a classified client error carries its own already-safe text, and
-// everything else — a storage failure, a driver error, an unclassified
-// wrapper — collapses to a fixed string with the detail left in the log.
+// It follows the same 4xx/5xx split as every other response: a classified
+// client error carries its own already-safe text, and everything else — a
+// storage failure, a driver error, an unclassified wrapper — collapses to a
+// fixed string with the detail left in the log.
+//
+// No status surface serves this string today: neither SearchJobStatus nor
+// SnapshotStatus carries a failure message, so an async caller sees FAILED and
+// no reason. Hold it to the response contract regardless — it is a persisted,
+// servable artefact, and the day a status surface does carry it must not be
+// the day its sanitisation is first considered.
 func jobFailureMessage(err error) string {
 	var ceiling searchCeilingExceeded
 	if errors.As(err, &ceiling) && ceiling.SearchCeilingExceeded() {

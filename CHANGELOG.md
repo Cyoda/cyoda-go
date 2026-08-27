@@ -690,14 +690,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   character outside the segment charset, refusing at submit rather than
   failing a job later. HTTP behaviour is unchanged.
 
-- **An async search job now reports a storage backend's rejection of the
+- **An async search job now records a storage backend's rejection of the
   request as the client error it is.** The synchronous path classifies the
   cross-backend sentinels — a refused filter path, an exceeded result limit —
-  into a `400`; the async executor assigned the store's error straight through,
-  so the job record, which is the only report an async caller ever gets, read
-  `search failed unexpectedly` for input that was simply malformed. The same
-  classification now runs on both doors, for the iterate error and for a
-  sticky scan error surfaced at `Close`.
+  into a `400`; the async executor assigned the store's error straight
+  through, so the persisted job record read `search failed unexpectedly` for
+  input that was simply malformed, while the same cause on the synchronous
+  door read as a client error. The same classification now runs on both, for
+  the iterate error and for a sticky scan error surfaced at `Close`. Note the
+  record is not served to callers today — no status surface carries a failure
+  message — so this is an operator-facing and forward-looking fix, not a
+  change to any response.
 
 - **The grouped-statistics endpoint's error codes are now documented.** All ten
   codes the endpoint raises — `MALFORMED_REQUEST`, `MISSING_GROUP_BY`,
