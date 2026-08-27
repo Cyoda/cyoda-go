@@ -978,14 +978,10 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	now := time.Now()
 
 	// The job record carries the client's condition in DOMAIN wire syntax,
-	// untranslated, and that is settled rather than provisional: a
-	// SelfExecutingSearchStore translates it itself with spi.ConditionToFilter
-	// over spi.FieldsMapFromSchema, which is why both live in the SPI.
-	// Persisting an already-translated spi.Filter here was considered and
-	// rejected (cyoda-go-spi#31, closed not-planned) — it would need a
-	// persisted filter format, exact numeric round-tripping through save and
-	// reload, and a defined answer for a condition that does not translate, at
-	// the one point this engine has already handed execution away.
+	// untranslated, by design. A SelfExecutingSearchStore is its only reader
+	// and MUST translate it itself through the SPI's own ConditionToFilter
+	// over FieldsMapFromSchema — which is why both live there. Persisting an
+	// already-translated spi.Filter here was considered and rejected.
 	condJSON, err := json.Marshal(cond)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal search condition: %w", err)
