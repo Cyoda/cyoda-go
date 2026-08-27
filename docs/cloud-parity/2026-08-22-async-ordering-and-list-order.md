@@ -23,10 +23,11 @@ on the Cloud side, not an accepted difference. Achieving it does not require
 a schema addition: storing result rows keyed by sort-value byte encodings
 makes read-back order native storage order (prior art exists in Cyoda
 Cloud's own distributed-reporting service; details shared with the Cloud
-backend maintainers directly). Sequencing note: this overlaps
-`spi#31`'s async wire-syntax translation work — implement ordering support
-against whatever request representation that work lands, rather than
-building a second parser over the raw blob it replaces.
+backend maintainers directly). Sequencing note: nothing blocks this.
+The job record's persisted request representation — the client's raw,
+untranslated condition — is settled; a proposal to replace it with a
+pre-translated filter (`cyoda-go-spi#31`) is closed as not-planned. Implement
+ordering against the representation as it stands.
 
 ## 2. List order is per-engine canonical, not cross-backend identical
 
