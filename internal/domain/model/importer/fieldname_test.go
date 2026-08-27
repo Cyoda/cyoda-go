@@ -48,6 +48,21 @@ func TestWalk_RejectsUnaddressableFieldName(t *testing.T) {
 		{"at sign", `{"@type": 1}`, []string{`"@type"`}},
 		{"xml namespace colon", `{"ns:field": 1}`, []string{`"ns:field"`}},
 		{"slash", `{"a/b": 1}`, []string{`"a/b"`}},
+		// The five characters below are the in-memory evaluator's own
+		// metacharacters. gjson reads "*" and "?" as key wildcards (they would
+		// match a DIFFERENT key than the one written), "#" as the array
+		// count-or-projection segment, "|" as the pipe that introduces a
+		// modifier, and a backslash as its own escape. A field so named would
+		// need escaping at every path-building site to address the key
+		// literally, and would silently address something else at any site that
+		// forgot.
+		// They are excluded DELIBERATELY, not as a side effect of the charset
+		// being an allowlist — see schema.IsSegmentNameByte.
+		{"gjson key wildcard star", `{"a*b": 1}`, []string{`"a*b"`}},
+		{"gjson key wildcard question", `{"a?b": 1}`, []string{`"a?b"`}},
+		{"gjson array-count segment", `{"#": 1}`, []string{`"#"`}},
+		{"gjson modifier pipe", `{"a|b": 1}`, []string{`"a|b"`}},
+		{"gjson escape backslash", `{"a\\b": 1}`, []string{`a\\b`}},
 		{"nested object", `{"ok": {"bad name": 1}}`, []string{`"bad name"`, `"$.ok"`}},
 		{"inside array element", `{"arr": [{"bad name": 1}]}`, []string{`"bad name"`, `"$.arr[*]"`}},
 		{"deep nesting", `{"a": {"b": [[{"c d": 1}]]}}`, []string{`"c d"`, `"$.a.b[*][*]"`}},
