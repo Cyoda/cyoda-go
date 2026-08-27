@@ -659,6 +659,16 @@ func TestSearchSort_Sync_InvalidSort_Returns400(t *testing.T) {
 		// Deduplication and cap errors (ParseSortParam).
 		{"duplicate_key", model, []string{"name:asc", "name:desc"}},
 		{"too_many_keys", model, tooManyKeys},
+		// Path grammar. HTTP refuses these in the query-string parser, before
+		// the shared resolver ever sees them; the gRPC door builds its
+		// OrderKey from the client's path verbatim and is held to the same
+		// grammar by resolveOrderBy (internal/grpc/search_sort_path_test.go).
+		// The rows are here so the transports cannot drift apart again: a
+		// path that is not a dotted scalar is 400 on both.
+		{"array_projection", arrayModel, []string{"tags[*]"}},
+		{"positional_subscript", arrayModel, []string{"tags[0]"}},
+		{"space_in_path", model, []string{"first name"}},
+		{"pipe_in_path", model, []string{"na|me"}},
 	}
 
 	for _, tc := range tests {

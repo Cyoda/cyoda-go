@@ -44,6 +44,20 @@ var invalidJSONPaths = []struct {
 	{"colon", "$.foo:bar"},
 	{"at sign", "$.@"},
 	{"nul byte", "$.foo\x00"},
+	// The in-memory evaluator's own metacharacters, excluded deliberately. Two
+	// of them do not merely fail to name a field, they name a DIFFERENT one:
+	// gjson reads "|" as an alternative segment separator (so "$.foo|bar"
+	// resolves nested foo→bar, the "." collision respelled) and "*"/"?" as key
+	// wildcards. "!" introduces a literal, "#" is the array count/projection
+	// segment, and a backslash is the escape. None can appear in a field name —
+	// schema.IsSegmentNameByte refuses them at the model door — so admitting
+	// one here could only reach gjson as an instruction.
+	{"gjson key wildcard question", "$.foo?bar"},
+	{"gjson count-or-projection segment", "$.#"},
+	{"gjson count-or-projection in segment", "$.foo#"},
+	{"gjson segment separator pipe", "$.foo|bar"},
+	{"gjson literal bang", "$.!true"},
+	{"gjson escape backslash", `$.foo\bar`},
 
 	// Malformed BRACKET spellings. These are the ones the grammar used to let
 	// through: it stopped scanning at the first '[' and accepted whatever

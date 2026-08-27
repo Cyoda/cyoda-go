@@ -67,7 +67,12 @@ field — structured, not a query-string grammar.
 ```
 
 - `path` — required; a dotted scalar path (data) or a canonical meta field name
-  (meta).
+  (meta). Held to the same grammar as the HTTP `sort` key, in the shared
+  resolver rather than per transport: an array projection or subscript
+  (`items[*].name`, `items[0].name`) and any character outside the segment
+  charset are `INVALID_FIELD_PATH`. Schema membership is not a substitute — a
+  scalar leaf inside an array of objects is a recorded field, and sorting by it
+  denotes no single value.
 - `source` — `"data"` (default when absent) or `"meta"`.
 - `desc` — `false` when absent (ascending).
 

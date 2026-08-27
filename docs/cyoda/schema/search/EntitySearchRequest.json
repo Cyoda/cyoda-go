@@ -34,7 +34,7 @@
       "items": {
         "type": "object",
         "properties": {
-          "path":   { "type": "string" },
+          "path":   { "type": "string", "description": "A dotted scalar path in the entity data (`price`, `address.city`; the `$.` leader is optional) or, with `source: \"meta\"`, a canonical meta field name. Array subscripts and projections (`items[*].name`, `items[0].name`) are rejected — an ordering needs a single scalar — as is any character outside `A-Za-z0-9_-`. Refused paths answer `INVALID_FIELD_PATH`." },
           "source": { "type": "string", "enum": ["data", "meta"], "default": "data" },
           "desc":   { "type": "boolean", "default": false }
         },

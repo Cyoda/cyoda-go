@@ -65,6 +65,26 @@ guarantee data that can be written and never queried. cyoda-go fails closed: the
 field is refused at the door rather than accepted into a model that has already
 guaranteed it cannot serve it.
 
+The charset's exclusions are deliberate, not incidental to writing it as an
+allowlist. Two spellings collapse a field name onto a *nested path*: `.`, and —
+in the evaluator cyoda-go uses in memory — `|`, which is read as an alternative
+segment separator, so `a|b` is answered by a nested `a`→`b` where the document
+has one. The others are read as instructions rather than names: `*` and `?`
+(key wildcards, matching a different key than the one written), `@` (modifier),
+`!` (literal), `#` (array count/projection, so the same name means "this key"
+over an object and "how many elements" over an array), and `\` (escape).
+
+None of these merely fails to find the field: `|` and `\` resolve to a
+different node outright, `*` and `?` do whenever a sibling key matches the
+glob, `!` ignores the document, and `#` means one thing over an object and
+another over an array. A silent wrong answer is possible in every case, which
+is why the name is refused at the door instead of being escaped at each
+path-building site. An
+implementer whose evaluator has a different metacharacter set still holds to
+this charset: it is the contract, not a local convenience — and its own
+metacharacters must be a subset of what the charset already excludes, or it has
+the same defect under a different spelling.
+
 ## Pre-existing data
 
 A model carrying a non-conforming field is not migrated, and no compatibility
