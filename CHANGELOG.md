@@ -305,7 +305,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **Model field names must be addressable by a search `jsonPath`.** A field name
   is now accepted only if it is a valid `jsonPath` segment: one or more ASCII
   letters, digits, `_` or `-`. Anything else — spaces, dots, quotes, brackets,
-  `$`, `@`, `:`, or any non-ASCII character — and the empty name are rejected
+  `$`, `@`, `:`, the evaluator's own metacharacters (`*`, `?`, `#`, `|`, `!`,
+  `\`), or any non-ASCII character — and the empty name are rejected
   with **400 `VALIDATION_FAILED`**, naming the offending key and the object that
   declares it. The rule is enforced on both paths that establish a model's field
   set: the sample-data model import, and the ChangeLevel-driven schema extension
@@ -667,6 +668,36 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   gap this leaves for any future same-shaped migration.
 
 ### Fixed
+
+- **A gRPC `orderBy` path is now held to the same grammar as an HTTP `sort`
+  key, instead of being taken at face value.** The HTTP parser refuses a path
+  that is not a dotted scalar; gRPC built its sort key from the client's path
+  verbatim and relied on the path being present in the model schema. That is
+  not the same check: a scalar leaf inside an array of objects is recorded
+  under the wildcard key (`$.items[*].name`) and is *not* flagged as an array,
+  so schema lookup and the array guard both admitted it.
+
+  Where such a key ended up depended on which branch served the request. The
+  pushdown branch was refused by each plugin's own path validator — a `400`,
+  with a warning that the boundary and the plugin disagreed. The in-memory
+  branch had no such backstop: the path went to the evaluator, which has no
+  bracket syntax, so every entity missed, all compared equal, and the caller
+  received `200` with results that were simply not sorted. A request the engine
+  could not honour was answered rather than refused.
+
+  Both gRPC search doors — direct and async submit — now answer `400
+  INVALID_FIELD_PATH` for an array projection, a positional subscript, or any
+  character outside the segment charset, refusing at submit rather than
+  failing a job later. HTTP behaviour is unchanged.
+
+- **An async search job now reports a storage backend's rejection of the
+  request as the client error it is.** The synchronous path classifies the
+  cross-backend sentinels — a refused filter path, an exceeded result limit —
+  into a `400`; the async executor assigned the store's error straight through,
+  so the job record, which is the only report an async caller ever gets, read
+  `search failed unexpectedly` for input that was simply malformed. The same
+  classification now runs on both doors, for the iterate error and for a
+  sticky scan error surfaced at `Close`.
 
 - **The grouped-statistics endpoint's error codes are now documented.** All ten
   codes the endpoint raises — `MALFORMED_REQUEST`, `MISSING_GROUP_BY`,

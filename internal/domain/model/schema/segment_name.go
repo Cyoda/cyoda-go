@@ -19,16 +19,22 @@ package schema
 // alone, so it depends on this package alone.
 //
 // What the class EXCLUDES is deliberate, not a by-product of writing it as an
-// allowlist. Beyond "." — which would spell two segments and name a field no
-// lookup could tell from a nested one — it refuses the in-memory evaluator's
-// own metacharacters: gjson reads "*" and "?" as key wildcards, "#" as the
-// array count-or-projection segment, "|" as the pipe introducing a modifier,
-// and a backslash as its escape. A field so named would have to be escaped at
-// every site that builds a gjson path, and any site that forgot would address
-// a DIFFERENT key rather than miss — the silent-wrong-answer failure this
-// class exists to make impossible. Widening it is therefore not a charset
-// edit: it obliges an escape at each path-building site, in both SQL plugins'
-// path literals, and a wire syntax able to spell such a segment.
+// allowlist. Two spellings collapse a name onto a nested path: "." and — in
+// the in-memory evaluator — "|", which gjson reads as an alternative segment
+// separator, so a field named "a|b" is answered by a nested a→b if the
+// document has one and by nothing if it does not. The rest are read as
+// instructions rather than names: "*" and "?" are key wildcards that match a
+// DIFFERENT key than the one written, "@" introduces a modifier, "!"
+// introduces a literal ("!true" yields true whatever the document holds), "#"
+// is the array count/projection segment, so the same name means "this key"
+// over an object and "how many elements" over an array, and a backslash is the
+// escape, so an unescaped one addresses a different key.
+//
+// Every one of those is a silent wrong answer rather than a miss, which is why
+// the class refuses them at the model door instead of leaving each
+// path-building site to escape them. Widening it is therefore not a charset
+// edit: it obliges an escape at each such site, in both SQL plugins' path
+// literals, and a wire syntax able to spell the segment at all.
 
 // IsSegmentNameByte reports whether b is admissible inside a path segment name.
 func IsSegmentNameByte(b byte) bool {

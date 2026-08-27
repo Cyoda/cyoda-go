@@ -30,10 +30,39 @@ func resolveOrderBy(keys []OrderKey, fields map[string]schema.FieldDescriptor) (
 		// a 400 for a field that exists — the two transports disagreeing on the
 		// same request.
 		key := normalisePath(k.Path)
+		// Hold the path to the SCALAR grammar before asking the schema about
+		// it. Schema membership alone is not the boundary: a scalar leaf
+		// inside an array of objects is recorded under the wildcard key with
+		// IsArray FALSE (schema.collectFields recurses into an array's object
+		// element with inArray=false), so "$.items[*].name" passed both the
+		// lookup and the array guard below. The HTTP parser cannot spell it —
+		// isValidSortPath refuses "[" — but gRPC builds an OrderKey from the
+		// client's path verbatim, so the two transports answered the same
+		// request differently. And an accepted projection has nowhere good to
+		// go: the pushdown branch is refused by each plugin's own path
+		// validator (400, plus a WARN that the boundary and the plugin
+		// disagree), while the in-memory branch hands it to gjson, which has
+		// no bracket syntax — every entity misses, all compare equal, and the
+		// caller gets 200 with results that are simply not sorted. A
+		// wrong-but-available answer is the one outcome this engine does not
+		// give.
+		//
+		// ValidateScalarJSONPath is the same check groupBy and aggregation
+		// fields take, for the same reason: a projection cannot denote the
+		// single scalar an ordering needs.
+		if err := ValidateScalarJSONPath(key); err != nil {
+			return nil, err
+		}
 		fd, ok := fields[key]
 		if !ok {
 			return nil, fmt.Errorf("unknown sort field: %q", k.Path)
 		}
+		// Backstop. Every IsArray:true descriptor is keyed "...[*]"
+		// (schema.collectFields sets the flag only for an array of leaves),
+		// so the grammar check above already refused that spelling. It stays
+		// because the flag, not the spelling, is what "you cannot sort by this
+		// field" means — a future FieldsMap that keys an array some other way
+		// must not become sortable by omission.
 		if fd.IsArray {
 			return nil, fmt.Errorf("cannot sort by array field: %q", k.Path)
 		}

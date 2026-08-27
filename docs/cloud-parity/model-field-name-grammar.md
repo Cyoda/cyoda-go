@@ -66,13 +66,20 @@ field is refused at the door rather than accepted into a model that has already
 guaranteed it cannot serve it.
 
 The charset's exclusions are deliberate, not incidental to writing it as an
-allowlist. Besides `.`, it refuses the characters the in-memory evaluator reads
-as instructions — `*` and `?` (key wildcards), `#` (array count/projection),
-`|` (modifier pipe) and `\` (escape). A field so named would have to be escaped
-at every site that builds an evaluator path, and a site that forgot would
-address a *different* key rather than miss. An implementer whose evaluator has
-a different metacharacter set still holds to this charset: it is the contract,
-not a local convenience.
+allowlist. Two spellings collapse a field name onto a *nested path*: `.`, and —
+in the evaluator cyoda-go uses in memory — `|`, which is read as an alternative
+segment separator, so `a|b` is answered by a nested `a`→`b` where the document
+has one. The others are read as instructions rather than names: `*` and `?`
+(key wildcards, matching a different key than the one written), `@` (modifier),
+`!` (literal), `#` (array count/projection, so the same name means "this key"
+over an object and "how many elements" over an array), and `\` (escape).
+
+Each is a silently wrong answer rather than a miss, which is why the name is
+refused at the door instead of being escaped at each path-building site. An
+implementer whose evaluator has a different metacharacter set still holds to
+this charset: it is the contract, not a local convenience — and its own
+metacharacters must be a subset of what the charset already excludes, or it has
+the same defect under a different spelling.
 
 ## Pre-existing data
 

@@ -1207,7 +1207,18 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 			OrderBy:     orderBy,
 		})
 		if iterErr != nil {
+			// Classify exactly as the synchronous door does. The job record
+			// is the only report an async caller gets, and jobFailureMessage
+			// renders an *AppError's client-safe text while collapsing
+			// anything else to the generic fallback — so an unclassified
+			// sentinel turned a client's own malformed request into
+			// "search failed unexpectedly". Reaching a plugin's path
+			// rejection at all means the boundary grammar and that plugin
+			// disagree; the caller is still owed the 400.
 			prodErr = iterErr
+			if appErr := ClassifyStoreQueryError(iterErr); appErr != nil {
+				prodErr = appErr
+			}
 		} else {
 			// IIFE so `defer it.Close()` fires at the end of THIS scope —
 			// before the terminal write below, and unconditionally
@@ -1237,6 +1248,13 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 					}
 					if errErr := it.Err(); errErr != nil {
 						pErr = errErr
+						// A sticky scan error carries the same
+						// cross-backend sentinels Iterate's own error
+						// does — classify it identically rather than
+						// letting the door it surfaced on decide.
+						if appErr := ClassifyStoreQueryError(errErr); appErr != nil {
+							pErr = appErr
+						}
 					}
 				}()
 				seq := func(yield func(string) bool) {
