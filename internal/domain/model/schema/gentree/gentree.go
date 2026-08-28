@@ -26,6 +26,11 @@ type GenConfig struct {
 	PrimitiveWeights map[schema.DataType]float64
 	AllowNulls       bool
 	TargetLevel      spi.ChangeLevel
+	// KindMutationRate is the probability that mutateToValue emits a value of
+	// a kind the node does NOT declare, which is what drives an
+	// add_kind_branch out of the pipeline. Zero — the default — reproduces the
+	// same-kind-at-every-position generator the roundtrip suite was built on.
+	KindMutationRate float64
 }
 
 // KindWeights controls the relative probability of generating a leaf,
@@ -212,6 +217,13 @@ func mutateToValue(r *rand.Rand, n *schema.ModelNode, depth int, cfg GenConfig) 
 	if n == nil || depth > cfg.MaxDepth {
 		return genLeafValue(r, cfg)
 	}
+	// Occasionally propose a kind the node does not declare. That is an
+	// additive change too — the path gains a branch — and it is the only way
+	// the property suites ever exercise add_kind_branch.
+	if cfg.KindMutationRate > 0 && r.Float64() < cfg.KindMutationRate {
+		return genForeignKindValue(r, n, cfg)
+	}
+
 	// A node declares a SET of kinds; emit a value of one it declares, so the
 	// extension stays additive. GenModelNode builds monomorphic nodes, so the
 	// order below only matters for a tree that was merged.
@@ -237,6 +249,26 @@ func mutateToValue(r *rand.Rand, n *schema.ModelNode, depth int, cfg GenConfig) 
 	// Emit a value compatible with the widest type in the set, plus
 	// occasionally broaden to trigger a broaden_type op.
 	return genLeafValue(r, cfg)
+}
+
+// genForeignKindValue emits a value whose kind n does not declare, so the walk
+// of it proposes a new branch at this path. When n somehow declares all three,
+// it falls back to a conforming scalar rather than inventing a fourth kind.
+func genForeignKindValue(r *rand.Rand, n *schema.ModelNode, cfg GenConfig) any {
+	scalar := n.Scalar() != nil
+	object := n.Object() != nil
+	array := n.Array() != nil
+
+	switch {
+	case !scalar:
+		return genLeafValue(r, cfg)
+	case !object:
+		return map[string]any{"k" + strconv.Itoa(r.IntN(100)): genLeafValue(r, cfg)}
+	case !array:
+		return []any{genLeafValue(r, cfg)}
+	default:
+		return genLeafValue(r, cfg)
+	}
 }
 
 func sortedChildNames(n *schema.ModelNode) []string {

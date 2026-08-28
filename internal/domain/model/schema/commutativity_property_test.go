@@ -16,6 +16,10 @@ import (
 func TestCommutativityPaired(t *testing.T) {
 	cfg := gentree.DefaultConfig()
 	cfg.TargetLevel = spi.ChangeLevelStructural
+	// Let the generator propose a kind the node does not declare, so this
+	// property covers add_kind_branch and not only the three ops that
+	// existed when it was written.
+	cfg.KindMutationRate = 0.3
 	const N = 500
 	for i := 0; i < N; i++ {
 		seed := int64(i + 10_000)

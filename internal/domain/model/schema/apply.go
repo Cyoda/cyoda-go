@@ -137,8 +137,14 @@ func applyAddArrayItemType(root *ModelNode, op SchemaOp) error {
 		target.SetElement(elem)
 		return nil
 	}
-	if elem.Object() != nil || elem.Array() != nil {
-		return fmt.Errorf("array element at %q declares %s, not a scalar", op.Path, kindNames(elem))
+	// The op widens the element's SCALAR types, so what it needs is a scalar
+	// branch — not the absence of every other branch. An element observed as
+	// both a scalar and a container still takes the widening, and must: ops
+	// commute, so the branch that made it a union may well have been replayed
+	// first. Only an element that declares a kind but no scalar is refused,
+	// because giving it one would be adding a branch, which has its own op.
+	if elem.Scalar() == nil && len(elem.Kinds()) > 0 {
+		return fmt.Errorf("array element at %q declares %s and no scalar", op.Path, kindNames(elem))
 	}
 	elem.AddScalarTypes(types...)
 	return nil
