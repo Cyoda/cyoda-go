@@ -4196,6 +4196,11 @@ paths:
 
         Returns the UUID of the created/updated entity model.
 
+
+        For SAMPLE_DATA, the body is one sample document (a JSON object) or a
+        collection of them (a JSON array of objects), whose derived models are
+        merged. Any other body is rejected with 400 VALIDATION_FAILED.
+
         \        "
       operationId: importEntityModel
       security:
@@ -4241,7 +4246,17 @@ paths:
         content:
           application/json:
             schema:
-              type: object
+              description: |
+                One sample document (a JSON object), or a collection of sample
+                documents (a JSON array of objects) whose derived models are
+                merged. Any other body is rejected with 400 VALIDATION_FAILED.
+              oneOf:
+                - type: object
+                  additionalProperties: true
+                - type: array
+                  items:
+                    type: object
+                    additionalProperties: true
             examples:
               Nobel Prize Model:
                 summary: Example of a Nobel Prize entity model

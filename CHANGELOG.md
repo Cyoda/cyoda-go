@@ -433,6 +433,30 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   is read-your-own-writes correct, and is the read a caller wanting its own
   writes back should be using. See `docs/cloud-parity/tx-aware-search.md`.
 
+- **A value whose kind the field does not declare is now rejected.** A field
+  declared `STRING` accepted an array or an object on write and stored it,
+  while correctly refusing a number or a boolean in the same field. Validation
+  asked what `DataType` a value has before asking whether its JSON kind was
+  admissible at all, and the classifier answers `STRING` for anything it does
+  not recognise — so a container matched a `STRING` declaration. The reverse
+  direction was always enforced (`expected array, got string`), so the hole was
+  one-directional.
+
+  A leaf declaration now checks kind first, and answers `400 BAD_REQUEST`
+  with `expected scalar, got array` — the mirror of the check a container
+  declaration already made. `null` is still accepted everywhere: it is the
+  absence of a value, not a kind. A genuinely polymorphic field — one observed
+  in more than one kind across imports while `UNLOCKED` — declares each kind
+  and still admits all of them.
+
+  This closes the only door through which an array reached a field whose
+  declared type says it cannot hold one, and with it a class of stored value no
+  predicate on that field could address consistently.
+
+  Kind mismatches also name the offending kind in the wire vocabulary now
+  (`expected array, got object`) rather than leaking a Go type name
+  (`got map[string]interface {}`).
+
 ### Added
 
 - **`STORAGE_UNAVAILABLE` — 503, retryable.** Raised when the pool cannot supply a
@@ -738,6 +762,38 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   gap this leaves for any future same-shaped migration.
 
 ### Fixed
+
+- **A JSON array posted to the sample-data import is read as a collection of
+  sample documents.** It previously returned `200` and registered a model
+  describing an array at the *root*: `SIMPLE_VIEW` rendered it as `{}`, which
+  reads as an empty model, and the model then refused the very documents it was
+  derived from. The entity ingress already reads an array body as "a collection
+  of items of the same type", so an array of documents now derives their merge
+  — the same result successive imports onto an `UNLOCKED` model produce. A body
+  that is neither a document nor a collection of them (a scalar root, a
+  non-object element) is refused with `400 VALIDATION_FAILED`, naming the
+  offending element, and leaves no model behind.
+
+- **The model export describes every branch a field declares.** Both exporters
+  described a node by its dominant kind, which dropped two things. An array of
+  arrays rendered as `.m[*]: NULL` — the type of the intermediate array, which
+  has none — instead of naming the elements at `.m[*][*]`, the same `jsonPath`
+  a search uses to address them. And a field observed as both a scalar and a
+  container showed only the container branch, so two models that enforce
+  differently rendered identically and an operator inspecting the export was
+  told something false. `SIMPLE_VIEW` now spells one `[*]` hop per array level
+  and names the scalar branch alongside the structural one; `JSON_SCHEMA`
+  renders a kind union as a `oneOf` over its branches.
+
+- **A search now finds the declared types of every branch of a polymorphic
+  field.** The walk backing the fields map emitted the scalar branch of an
+  object-or-scalar union but not of an array-or-scalar one, and never followed
+  the array branch of an object-and-array union. Both unions admit values of
+  both kinds on a write, so a predicate on the missing branch found no declared
+  type: per the filter contract that does not degrade operators uniformly — the
+  comparison and ordering operators collapse to a non-match while the string
+  and presence operators keep evaluating — and the field looked as though it
+  simply held no matching data.
 
 - **A gRPC `orderBy` path is now held to the same grammar as an HTTP `sort`
   key, instead of being taken at face value.** The HTTP parser refuses a path

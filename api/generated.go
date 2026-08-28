@@ -3685,13 +3685,21 @@ type NewMessageParams struct {
 type ExportMetadataParamsConverter string
 
 // ImportEntityModelJSONBody defines parameters for ImportEntityModel.
-type ImportEntityModelJSONBody = map[string]interface{}
+type ImportEntityModelJSONBody struct {
+	union json.RawMessage
+}
 
 // ImportEntityModelParamsDataFormat defines parameters for ImportEntityModel.
 type ImportEntityModelParamsDataFormat string
 
 // ImportEntityModelParamsConverter defines parameters for ImportEntityModel.
 type ImportEntityModelParamsConverter string
+
+// ImportEntityModelJSONBody0 defines parameters for ImportEntityModel.
+type ImportEntityModelJSONBody0 map[string]interface{}
+
+// ImportEntityModelJSONBody1 defines parameters for ImportEntityModel.
+type ImportEntityModelJSONBody1 = []map[string]interface{}
 
 // ValidateEntityModelJSONBody defines parameters for ValidateEntityModel.
 type ValidateEntityModelJSONBody = map[string]interface{}
@@ -3834,7 +3842,7 @@ type DeleteMessagesJSONRequestBody = DeleteMessagesJSONBody
 type NewMessageJSONRequestBody = NewMessageRequest
 
 // ImportEntityModelJSONRequestBody defines body for ImportEntityModel for application/json ContentType.
-type ImportEntityModelJSONRequestBody = ImportEntityModelJSONBody
+type ImportEntityModelJSONRequestBody ImportEntityModelJSONBody
 
 // ValidateEntityModelJSONRequestBody defines body for ValidateEntityModel for application/json ContentType.
 type ValidateEntityModelJSONRequestBody = ValidateEntityModelJSONBody
@@ -4685,6 +4693,68 @@ func (t CreateJSONBody) MarshalJSON() ([]byte, error) {
 }
 
 func (t *CreateJSONBody) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsImportEntityModelJSONBody0 returns the union data inside the ImportEntityModelJSONBody as a ImportEntityModelJSONBody0
+func (t ImportEntityModelJSONBody) AsImportEntityModelJSONBody0() (ImportEntityModelJSONBody0, error) {
+	var body ImportEntityModelJSONBody0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromImportEntityModelJSONBody0 overwrites any union data inside the ImportEntityModelJSONBody as the provided ImportEntityModelJSONBody0
+func (t *ImportEntityModelJSONBody) FromImportEntityModelJSONBody0(v ImportEntityModelJSONBody0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeImportEntityModelJSONBody0 performs a merge with any union data inside the ImportEntityModelJSONBody, using the provided ImportEntityModelJSONBody0
+func (t *ImportEntityModelJSONBody) MergeImportEntityModelJSONBody0(v ImportEntityModelJSONBody0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsImportEntityModelJSONBody1 returns the union data inside the ImportEntityModelJSONBody as a ImportEntityModelJSONBody1
+func (t ImportEntityModelJSONBody) AsImportEntityModelJSONBody1() (ImportEntityModelJSONBody1, error) {
+	var body ImportEntityModelJSONBody1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromImportEntityModelJSONBody1 overwrites any union data inside the ImportEntityModelJSONBody as the provided ImportEntityModelJSONBody1
+func (t *ImportEntityModelJSONBody) FromImportEntityModelJSONBody1(v ImportEntityModelJSONBody1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeImportEntityModelJSONBody1 performs a merge with any union data inside the ImportEntityModelJSONBody, using the provided ImportEntityModelJSONBody1
+func (t *ImportEntityModelJSONBody) MergeImportEntityModelJSONBody1(v ImportEntityModelJSONBody1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ImportEntityModelJSONBody) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ImportEntityModelJSONBody) UnmarshalJSON(b []byte) error {
 	err := t.union.UnmarshalJSON(b)
 	return err
 }
