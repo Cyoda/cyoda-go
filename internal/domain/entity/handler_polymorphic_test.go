@@ -15,7 +15,7 @@ import (
 // schema.ErrPolymorphicSlot-wrapped error is classified as an operational
 // 4xx with the dedicated POLYMORPHIC_SLOT code — NOT a generic BAD_REQUEST
 // and NOT a 5xx internal error. SDKs detect this code to display the
-// "normalize the field" guidance instead of the misleading
+// send-the-declared-kind guidance instead of the misleading
 // "change level violation" text previously exposed.
 func TestClassifyValidateOrExtendErr_PolymorphicSlot(t *testing.T) {
 	// Wrap the sentinel the same way schema.Extend does at its call site.
@@ -40,10 +40,12 @@ func TestClassifyValidateOrExtendErr_PolymorphicSlot(t *testing.T) {
 	}
 }
 
-// TestClassifyValidateOrExtendErr_ChangeLevelViolation_StillGetsBadRequest
-// — genuine change-level violations keep the existing classification path:
-// 4xx BAD_REQUEST, with the message still describing the level mismatch.
-func TestClassifyValidateOrExtendErr_ChangeLevelViolation_StillGetsBadRequest(t *testing.T) {
+// TestClassifyValidateOrExtendErr_ChangeLevelViolation_GetsValidationFailed
+// — a genuine change-level violation is not a polymorphic slot, and it is not
+// a malformed request either: the payload parsed and then failed against the
+// registered model's evolution policy. It gets 400 VALIDATION_FAILED, with the
+// message still describing the level mismatch.
+func TestClassifyValidateOrExtendErr_ChangeLevelViolation_GetsValidationFailed(t *testing.T) {
 	underlying := fmt.Errorf("change level violation: new field %q at %s requires STRUCTURAL level, but level is %q",
 		"b", ".b", "TYPE")
 
@@ -54,8 +56,8 @@ func TestClassifyValidateOrExtendErr_ChangeLevelViolation_StillGetsBadRequest(t 
 	if appErr.Status != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", appErr.Status)
 	}
-	if appErr.Code != common.ErrCodeBadRequest {
-		t.Errorf("code = %q, want %q (not polymorphic)", appErr.Code, common.ErrCodeBadRequest)
+	if appErr.Code != common.ErrCodeValidationFailed {
+		t.Errorf("code = %q, want %q (not polymorphic, not a malformed request)", appErr.Code, common.ErrCodeValidationFailed)
 	}
 }
 
@@ -108,9 +110,10 @@ func TestClassifyValidateOrExtendErr_InternalSentinel_Is5xx(t *testing.T) {
 
 // TestClassifyValidateOrExtendErr_UntaggedError_Is4xx — an error NOT
 // wrapping either ErrPolymorphicSlot or ingest.ErrInternalSchema classifies as
-// 4xx BAD_REQUEST. Represents e.g. a change-level violation, a validation
-// failure, or an importer.Walk error from malformed user input — all
-// client-contract issues, not server faults.
+// 4xx VALIDATION_FAILED. Represents e.g. a change-level violation, a validation
+// failure, or an importer.Walk error from malformed user input — all payloads
+// that parsed and then failed against the model: client-contract issues, not
+// server faults, and not unparseable requests.
 func TestClassifyValidateOrExtendErr_UntaggedError_Is4xx(t *testing.T) {
 	underlying := fmt.Errorf("validation failed: field .foo must be a string")
 
@@ -121,8 +124,8 @@ func TestClassifyValidateOrExtendErr_UntaggedError_Is4xx(t *testing.T) {
 	if appErr.Status != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", appErr.Status)
 	}
-	if appErr.Code != common.ErrCodeBadRequest {
-		t.Errorf("code = %q, want %q", appErr.Code, common.ErrCodeBadRequest)
+	if appErr.Code != common.ErrCodeValidationFailed {
+		t.Errorf("code = %q, want %q", appErr.Code, common.ErrCodeValidationFailed)
 	}
 }
 

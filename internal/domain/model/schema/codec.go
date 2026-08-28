@@ -41,34 +41,26 @@ func toWire(n *ModelNode) *wireNode {
 }
 
 // fromWire converts a wireNode tree back into a ModelNode tree.
+//
+// Every branch the wire form carries is restored, independently of the node's
+// Kind: Merge records a field observed as both an object and an array as a
+// KindObject node that KEPT its element, and toWire writes that element out.
+// Restoring only the children would drop the array branch on the first read
+// back — silently narrowing a stored model until it refused a document it was
+// derived from.
 func fromWire(w *wireNode) (*ModelNode, error) {
 	var n *ModelNode
 
 	switch w.Kind {
 	case "OBJECT":
 		n = NewObjectNode()
-		for name, wChild := range w.Children {
-			child, err := fromWire(wChild)
-			if err != nil {
-				return nil, fmt.Errorf("child %q: %w", name, err)
-			}
-			n.SetChild(name, child)
-		}
 
 	case "ARRAY":
-		var elem *ModelNode
-		if w.Element != nil {
-			var err error
-			elem, err = fromWire(w.Element)
-			if err != nil {
-				return nil, fmt.Errorf("array element: %w", err)
-			}
-		}
 		// When the wire form has no element, preserve that: an
 		// unobserved-element ARRAY round-trips to an ARRAY with
 		// Element()==nil. Diff/Apply handle this as the empty-array
 		// seed case (see diffArray/applyAddArrayItemType).
-		n = NewArrayNode(elem)
+		n = NewArrayNode(nil)
 
 	case "LEAF":
 		n = &ModelNode{
@@ -78,6 +70,28 @@ func fromWire(w *wireNode) (*ModelNode, error) {
 
 	default:
 		return nil, fmt.Errorf("unknown node kind %q", w.Kind)
+	}
+
+	for name, wChild := range w.Children {
+		child, err := fromWire(wChild)
+		if err != nil {
+			return nil, fmt.Errorf("child %q: %w", name, err)
+		}
+		n.SetChild(name, child)
+	}
+
+	if w.Element != nil {
+		elem, err := fromWire(w.Element)
+		if err != nil {
+			return nil, fmt.Errorf("array element: %w", err)
+		}
+		n.element = elem
+		if n.info == nil {
+			// A node that carries an array branch carries its ArrayInfo too,
+			// so a union restored from the wire has the same shape the
+			// in-memory Merge produces.
+			n.info = NewArrayInfo()
+		}
 	}
 
 	// Restore types.

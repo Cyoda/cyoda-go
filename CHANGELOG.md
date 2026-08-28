@@ -433,6 +433,76 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   is read-your-own-writes correct, and is the read a caller wanting its own
   writes back should be using. See `docs/cloud-parity/tx-aware-search.md`.
 
+- **A value whose kind the field does not declare is now rejected.** A field
+  declared `STRING` accepted an array or an object on write and stored it,
+  while correctly refusing a number or a boolean in the same field. Validation
+  asked what `DataType` a value has before asking whether its JSON kind was
+  admissible at all, and the classifier answers `STRING` for anything it does
+  not recognise — so a container matched a `STRING` declaration. The reverse
+  direction was always enforced (`expected array, got string`), so the hole was
+  one-directional.
+
+  A leaf declaration now checks kind first, and answers `400 VALIDATION_FAILED`
+  with `expected scalar, got array` — the mirror of the check a container
+  declaration already made. `null` is unchanged: it follows the declaration —
+  always admissible on a scalar field, and on a container field where the model
+  observed one — and is not a kind of its own.
+
+  A genuinely polymorphic field — one observed in more than one kind while the
+  model is `UNLOCKED` — declares each kind and admits all of them. Validation
+  now selects the branch by the value's own kind rather than by the node's
+  dominant one, which is what makes the array branch of an object-and-array
+  union admissible; and the persisted schema carries every branch back, where it
+  used to restore only the children of such a node and silently narrow the model
+  on the first read back.
+
+  This closes the only door through which an array reached a field whose
+  declared type says it cannot hold one, and with it a class of stored value no
+  predicate on that field could address consistently.
+
+  Kind mismatches also name the offending kind in the wire vocabulary now, and
+  name every kind the field does declare (`expected object or array, got
+  string`), rather than leaking a Go type name (`got map[string]interface {}`).
+
+  Not changed here: with a `changeLevel` set, the extension path compares one
+  kind per path, so it still refuses a write matching a declared but
+  non-dominant branch with `POLYMORPHIC_SLOT`. Leave `changeLevel` unset on a
+  model with multi-kind fields.
+
+- **A payload that fails against the model now answers `400 VALIDATION_FAILED`,
+  not `400 BAD_REQUEST`.** The error dictionary already drew the line here:
+  `VALIDATION_FAILED` is "the payload parses but violates the registered model
+  schema", and `BAD_REQUEST` is "the server cannot parse the request". The
+  entity handler did not follow it — its catch-all answered `BAD_REQUEST` for
+  every generic validation failure, so both codes' documented meanings were
+  wrong and an SDK could not branch on them.
+
+  The catch-all now answers `VALIDATION_FAILED`, on every entity ingress. It
+  covers an undeclared field, a value whose kind the field does not declare, a
+  change the `changeLevel` does not permit, and an unaddressable field name.
+  `INCOMPATIBLE_TYPE` (a leaf's DataType) and `POLYMORPHIC_SLOT` (a proposed
+  kind change) are unchanged, and so is every `BAD_REQUEST` raised before
+  validation — an unparseable body, a parameter out of range, unstorable bytes.
+  The status stays `400` throughout, so only a client that branches on the code
+  is affected. See `docs/cloud-parity/validation-failure-code.md`.
+
+- **A JSON array posted to the sample-data import registers a different model,
+  and some previously-accepted bodies are now refused.** See the entry under
+  Fixed: an array body used to register a model describing an array at the root,
+  and a scalar body used to register a model rooted at a scalar — both `200`,
+  both unusable. The array body now derives the merge of its documents; a body
+  that is neither a document nor a collection of documents is `400
+  VALIDATION_FAILED`.
+
+- **`SIMPLE_VIEW` and `JSON_SCHEMA` emit different keys for two shapes.** Also
+  detailed under Fixed. An array of arrays moves from `.m[*]` to `.m[*][*]`; a
+  field declaring more than one kind gains a second entry for its other branch;
+  an array whose elements were never observed is named `.a[*]: NULL` instead of
+  being omitted; and `JSON_SCHEMA` unions render as `anyOf` rather than `oneOf`
+  (`oneOf` requires exactly one branch to match, so it rejected values the model
+  admits whenever two branches rendered the same JSON Schema shape). Consumers
+  that parse the exported model see the new keys.
+
 ### Added
 
 - **`STORAGE_UNAVAILABLE` — 503, retryable.** Raised when the pool cannot supply a
@@ -738,6 +808,49 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   gap this leaves for any future same-shaped migration.
 
 ### Fixed
+
+- **A JSON array posted to the sample-data import is read as a collection of
+  sample documents.** It previously returned `200` and registered a model
+  describing an array at the *root*: `SIMPLE_VIEW` rendered it as `{}`, which
+  reads as an empty model, and the model then refused the very documents it was
+  derived from. The entity ingress already reads an array body as "a collection
+  of items of the same type", so an array of documents now derives their merge
+  — the same result successive imports onto an `UNLOCKED` model produce. A body
+  that is neither a document nor a collection of them (a scalar root, a
+  non-object element) is refused with `400 VALIDATION_FAILED`, naming the
+  offending element, and leaves no model behind.
+
+- **The model export describes every branch a field declares.** Both exporters
+  described a node by its dominant kind, which dropped two things. An array of
+  arrays rendered as `.m[*]: NULL` — the type of the intermediate array, which
+  has none — instead of naming the elements at `.m[*][*]`, the same `jsonPath`
+  a search uses to address them. And a field observed as both a scalar and a
+  container showed only the container branch, so two models that enforce
+  differently rendered identically and an operator inspecting the export was
+  told something false. `SIMPLE_VIEW` now spells one `[*]` hop per array level
+  and names every branch a field declares — including the elements' own branches
+  and an array whose elements were never observed (`.a[*]: NULL`, previously
+  omitted entirely). `JSON_SCHEMA` renders a kind union as an `anyOf` over its
+  branches: it used `oneOf`, which requires exactly one branch to match and so
+  rejected values the model admits whenever two branches rendered the same JSON
+  Schema shape (`Integer` and `Long` both render `{"type":"integer"}`).
+
+- **A stored model no longer loses the array branch of an object-and-array
+  union.** `Merge` records a field observed as both an object and an array as a
+  single node that keeps its element, but the schema codec restored only the
+  children of such a node — so the array branch vanished on the first read back
+  and the model refused a document it had just been derived from. Every branch
+  the wire form carries is now restored, independently of the node's kind.
+
+- **A search now finds the declared types of every branch of a polymorphic
+  field.** The walk backing the fields map emitted the scalar branch of an
+  object-or-scalar union but not of an array-or-scalar one, and never followed
+  the array branch of an object-and-array union. Both unions admit values of
+  both kinds on a write, so a predicate on the missing branch found no declared
+  type: per the filter contract that does not degrade operators uniformly — the
+  comparison and ordering operators collapse to a non-match while the string
+  and presence operators keep evaluating — and the field looked as though it
+  simply held no matching data.
 
 - **A gRPC `orderBy` path is now held to the same grammar as an HTTP `sort`
   key, instead of being taken at face value.** The HTTP parser refuses a path

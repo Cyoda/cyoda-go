@@ -33,7 +33,8 @@ func (e *SimpleViewExporter) Export(node *schema.ModelNode) ([]byte, error) {
 	return json.Marshal(result)
 }
 
-// walk recursively builds the path-based node map for an object node.
+// walk builds the descriptor bucket for one object node at path, recursing
+// into the substructure that needs buckets of its own.
 func (e *SimpleViewExporter) walk(node *schema.ModelNode, path string, model map[string]map[string]any) {
 	if node.Kind() != schema.KindObject {
 		return
@@ -50,81 +51,102 @@ func (e *SimpleViewExporter) walk(node *schema.ModelNode, path string, model map
 	sort.Strings(keys)
 
 	for _, name := range keys {
-		child := children[name]
-		switch child.Kind() {
-		case schema.KindLeaf:
-			descriptor["."+name] = typeDescriptor(child.Types())
-
-		case schema.KindArray:
-			elem := child.Element()
-			if elem == nil {
-				continue
-			}
-			if elem.Kind() == schema.KindObject {
-				// Array of objects: structural reference + recurse
-				descriptor["#."+name] = "OBJECT"
-				childPath := path + "." + name + "[*]"
-				elemDesc := make(map[string]any)
-				elemDesc["#"] = "ARRAY_ELEMENT"
-				// Walk the element's children into this descriptor
-				elemChildren := elem.Children()
-				elemKeys := make([]string, 0, len(elemChildren))
-				for k := range elemChildren {
-					elemKeys = append(elemKeys, k)
-				}
-				sort.Strings(elemKeys)
-				for _, ek := range elemKeys {
-					ec := elemChildren[ek]
-					switch ec.Kind() {
-					case schema.KindLeaf:
-						elemDesc["."+ek] = typeDescriptor(ec.Types())
-					case schema.KindArray:
-						e.handleArrayChild(ec, ek, childPath, elemDesc, model)
-					case schema.KindObject:
-						elemDesc["#."+ek] = "OBJECT"
-						e.walk(ec, childPath+"."+ek, model)
-					}
-				}
-				model[childPath] = elemDesc
-			} else {
-				// Array of primitives
-				descriptor["."+name+"[*]"] = arrayTypeDescriptor(child)
-			}
-
-		case schema.KindObject:
-			descriptor["#."+name] = "OBJECT"
-			e.walk(child, path+"."+name, model)
-		}
+		e.describeChild(children[name], name, path, descriptor, model)
 	}
 
 	model[path] = descriptor
 }
 
-// handleArrayChild handles an array child within an array-of-objects element.
-func (e *SimpleViewExporter) handleArrayChild(
+// describeChild writes the entries describing one named child into its parent's
+// bucket.
+//
+// A node is described by the branches it actually carries, not by its dominant
+// Kind: a field observed as both a scalar and a container declares — and
+// enforces — both kinds, and Merge records that as scalar types sitting on a
+// structural node. Rendering only the structural branch made two models that
+// enforce differently render identically.
+func (e *SimpleViewExporter) describeChild(
 	child *schema.ModelNode, name, parentPath string,
-	parentDesc map[string]any, model map[string]map[string]any,
+	desc map[string]any, model map[string]map[string]any,
 ) {
-	elem := child.Element()
-	if elem == nil {
+	if child.Kind() == schema.KindLeaf {
+		desc["."+name] = typeDescriptor(child.Types())
 		return
 	}
+
+	// Scalar branch of a kind union. NULL alone is the nullable marker, not a
+	// scalar observation, so it does not open one.
+	if concrete := schema.ConcreteTypes(child.Types()); len(concrete) > 0 {
+		desc["."+name] = typeNames(concrete)
+	}
+
+	if child.Kind() == schema.KindObject {
+		desc["#."+name] = "OBJECT"
+		e.walk(child, parentPath+"."+name, model)
+	}
+
+	// Array branch. Present independently of Kind: Merge promotes an
+	// object-and-array union to KindObject while keeping the element.
+	switch {
+	case child.Element() != nil:
+		e.describeElements(child, name, parentPath, "[*]", desc, model)
+	case child.Kind() == schema.KindArray:
+		// An array whose elements were never observed — the empty-array seed
+		// the codec preserves. The level is declared and enforced, so it is
+		// named; its element type is not known.
+		desc["."+name+"[*]"] = "NULL"
+	}
+}
+
+// describeElements describes the elements of arr — a node carrying an array
+// branch — under the accumulated wildcard suffix. One "[*]" per array level,
+// so an array of arrays is addressed the way the field paths and the search
+// surface address it, and the elements are themselves described by the
+// branches they carry.
+func (e *SimpleViewExporter) describeElements(
+	arr *schema.ModelNode, name, parentPath, suffix string,
+	desc map[string]any, model map[string]map[string]any,
+) {
+	elem := arr.Element()
+	if elem.Kind() == schema.KindLeaf {
+		// The width is this array's: it is the one these elements belong to.
+		desc["."+name+suffix] = widthDescriptor(typeDescriptor(elem.Types()), arr)
+		return
+	}
+
+	// Scalar branch of elements observed as both a scalar and a container.
+	if concrete := schema.ConcreteTypes(elem.Types()); len(concrete) > 0 {
+		desc["."+name+suffix] = widthDescriptor(typeNames(concrete), arr)
+	}
+
 	if elem.Kind() == schema.KindObject {
-		parentDesc["#."+name] = "OBJECT"
-		childPath := parentPath + "." + name + "[*]"
-		e.walk(elem, childPath, model)
-		// Add ARRAY_ELEMENT marker
-		if desc, ok := model[childPath]; ok {
-			desc["#"] = "ARRAY_ELEMENT"
+		// The elements carry a structure, so they get a bucket of their own.
+		desc["#."+name] = "OBJECT"
+		elemPath := parentPath + "." + name + suffix
+		e.walk(elem, elemPath, model)
+		if bucket, ok := model[elemPath]; ok {
+			bucket["#"] = "ARRAY_ELEMENT"
 		}
-	} else {
-		parentDesc["."+name+"[*]"] = arrayTypeDescriptor(child)
+	}
+
+	if elem.Element() != nil {
+		e.describeElements(elem, name, parentPath, suffix+"[*]", desc, model)
+		return
+	}
+	if elem.Kind() == schema.KindArray {
+		// An array level whose own elements were never observed: the level is
+		// declared, its element type is not.
+		desc["."+name+suffix+"[*]"] = "NULL"
 	}
 }
 
 // typeDescriptor formats a TypeSet as a SIMPLE_VIEW type descriptor string.
 func typeDescriptor(ts *schema.TypeSet) string {
-	types := ts.Types()
+	return typeNames(ts.Types())
+}
+
+// typeNames formats DataTypes as a SIMPLE_VIEW type descriptor string.
+func typeNames(types []schema.DataType) string {
 	if len(types) == 0 {
 		return "NULL"
 	}
@@ -139,15 +161,10 @@ func typeDescriptor(ts *schema.TypeSet) string {
 	return "[" + strings.Join(names, ", ") + "]"
 }
 
-// arrayTypeDescriptor formats an array node as a SIMPLE_VIEW array type string.
-func arrayTypeDescriptor(arr *schema.ModelNode) string {
-	elem := arr.Element()
-	if elem == nil {
-		return "NULL"
-	}
-	td := typeDescriptor(elem.Types())
-	info := arr.Info()
-	if info != nil && info.MaxWidth() > 0 {
+// widthDescriptor decorates an element type descriptor with the widest array
+// observed at that level, when one was recorded.
+func widthDescriptor(td string, arr *schema.ModelNode) string {
+	if info := arr.Info(); info != nil && info.MaxWidth() > 0 {
 		return fmt.Sprintf("(%s x %d)", td, info.MaxWidth())
 	}
 	return td

@@ -32,5 +32,5 @@ func (i *SampleDataImporter) Import(r io.Reader, dataFormat string) (*schema.Mod
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", dataFormat, err)
 	}
-	return Walk(parsed)
+	return walkSampleData(parsed)
 }

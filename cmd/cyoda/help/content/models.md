@@ -51,6 +51,14 @@ Models have two lifecycle states: `UNLOCKED` and `LOCKED`. A `LOCKED` model bloc
 
 Schema inference is additive: importing sample data against an existing model merges the incoming schema with the stored one. The model's `changeLevel` field controls which structural changes are allowed during entity ingestion on a locked model.
 
+**Sample data is a document, or a collection of documents.** A JSON object is one sample document. A JSON array is several — each element must itself be an object, and the derived model is their merge, the same result successive imports produce. Any other body (a scalar, an array holding a non-object) is rejected with `400 VALIDATION_FAILED`, naming the offending element.
+
+**A value's kind must be one the field declares.** A field declared as a scalar accepts a scalar; declared as an array, an array; declared as an object, an object. A value of any other kind is rejected with `400`, at every depth including array elements. On a model with no `changeLevel` (and on PATCH) that is `VALIDATION_FAILED` — `expected scalar, got array`, naming every kind the field does declare. With a `changeLevel` set the write also proposes a schema change, and the extension refuses the kind change at every level, including the most permissive, with `POLYMORPHIC_SLOT`.
+
+A field may declare more than one kind, by being observed in each while the model is `UNLOCKED` — successive imports, or one import of several sample documents. Every declared kind is then admissible on a model with no `changeLevel`, and the export names each branch. **With a `changeLevel` set, a write matching any but the field's dominant kind is still refused** with `POLYMORPHIC_SLOT`: the extension path compares one kind per path. Leave `changeLevel` unset on a model with multi-kind fields.
+
+`null` follows the declaration like any other value: a scalar field always accepts it, and a container field accepts it only where the model observed one (the sample data had `null` there). It is not a kind of its own, so it never widens the model.
+
 **Field names must be searchable.** A field name is accepted only if it is a valid `jsonPath` segment: one or more ASCII letters, digits, `_` or `-`. Spaces, dots, quotes, brackets, `$`, `@`, `:`, the evaluator's own metacharacters (`*`, `?`, `#`, `|`, `!`, `\`), any non-ASCII character, and the empty name are rejected with `400 VALIDATION_FAILED`, naming the offending key and the object that declares it. Search addresses a field by a `jsonPath` built from exactly this charset and offers no escape hatch, so a field outside it could be written and never queried — it is refused at the door instead.
 
 This applies to both paths that establish a model's field set: sample-data import, and the `changeLevel`-driven schema extension an entity write performs. Strict validation (a model with no `changeLevel`, and PATCH) does not establish fields, so the rule does not apply there. A model that already carries a non-conforming field is not migrated and there is no compatibility path: rename the key in the source data and re-establish the model.
@@ -235,7 +243,7 @@ Import or replace workflow configurations for the model. See `workflows` topic.
 }
 ```
 
-The importer walks the JSON structure and infers a typed schema. Subsequent imports are merged additively.
+The importer walks the JSON structure and infers a typed schema. Subsequent imports are merged additively. A JSON array body is read as several sample documents and merged the same way.
 
 **Export — SIMPLE_VIEW format**:
 
@@ -264,6 +272,10 @@ The importer walks the JSON structure and infers a typed schema. Subsequent impo
 ```
 
 The `"$"` bucket includes a `"#.fieldname": "OBJECT"` entry for each array field in the root object. The `"$.fieldname[*]"` bucket contains the array element schema with `"#": "ARRAY_ELEMENT"` as a type marker. `uniqueKeys` is omitted when the model declares no composite unique keys.
+
+An array of arrays is spelled one `[*]` hop per level — `".m[*][*]": "STRING"`, and `"$.m[*][*]"` for the bucket when its elements are objects — matching the `jsonPath` a search uses to address them.
+
+A field declared in more than one kind names each branch it declares: `".poly": "STRING"` alongside `".poly[*]": "STRING"`, or `".o": "STRING"` alongside `"#.o": "OBJECT"`. Both are enforced, so both are shown.
 
 **Export — JSON_SCHEMA format**:
 
@@ -319,8 +331,8 @@ Entity ingestion here includes data returned by a workflow processor, not just d
 - `errors.MODEL_ALREADY_UNLOCKED` — `409` — unlock attempted on a model already in `UNLOCKED` state
 - `errors.MODEL_HAS_ENTITIES` — `409` — unlock or delete blocked because entities of the model exist (`entityCount` in `properties`)
 - `errors.INVALID_CHANGE_LEVEL` — `400` — `POST /model/{name}/{version}/changeLevel/{changeLevel}` supplied a value that is not one of `ARRAY_LENGTH`, `ARRAY_ELEMENTS`, `TYPE`, `STRUCTURAL` (`entityName`, `entityVersion`, `suppliedValue`, `validValues` in `properties`)
-- `errors.VALIDATION_FAILED` — `400` — workflow import validation failed (static analysis)
-- `errors.BAD_REQUEST` — `400` — unsupported converter, malformed body
+- `errors.VALIDATION_FAILED` — `400` — workflow import validation failed (static analysis); sample data that is neither a document nor a collection of documents; a field name that is not addressable
+- `errors.BAD_REQUEST` — `400` — unsupported converter, or a malformed body
 - `errors.UNIQUE_VIOLATION` — `409` — entity write rejected because it would duplicate a composite unique key value-set held by another live entity
 - `errors.INVALID_UNIQUE_KEY` — `422` — entity write rejected because a key is partially filled (all-or-nothing rule), the numeric value exceeded the allowed precision bound, or a key field path resolves to a non-scalar value
 - `errors.COMPOSITE_KEY_UNSUPPORTED` — `422` — composite unique key declared on a backend that does not support the feature

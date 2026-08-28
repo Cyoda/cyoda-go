@@ -3412,7 +3412,7 @@ paths:
                   entityIds:
                     - cdcff600-bab1-11ee-a357-ae468cd3ed16
         "400":
-          description: "Bad request — BAD_REQUEST: invalid payload, parameter, or transactionWindow out of range; INCOMPATIBLE_TYPE: payload type mismatches the model; WORKFLOW_FAILED: workflow processor rejected the entity."
+          description: "Bad request — BAD_REQUEST: invalid payload or parameter, or transactionWindow out of range; VALIDATION_FAILED: the payload parsed but failed against the model — a value whose kind the field does not declare, an undeclared field, a field name the jsonPath grammar cannot address, or a change the changeLevel does not permit; INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType; POLYMORPHIC_SLOT: with a changeLevel set, the payload proposes a kind change at a declared path; WORKFLOW_FAILED: workflow processor rejected the entity."
           content:
             application/problem+json:
               schema:
@@ -4196,6 +4196,11 @@ paths:
 
         Returns the UUID of the created/updated entity model.
 
+
+        For SAMPLE_DATA, the body is one sample document (a JSON object) or a
+        collection of them (a JSON array of objects), whose derived models are
+        merged. Any other body is rejected with 400 VALIDATION_FAILED.
+
         \        "
       operationId: importEntityModel
       security:
@@ -4241,7 +4246,17 @@ paths:
         content:
           application/json:
             schema:
-              type: object
+              description: |
+                One sample document (a JSON object), or a collection of sample
+                documents (a JSON array of objects) whose derived models are
+                merged. Any other body is rejected with 400 VALIDATION_FAILED.
+              oneOf:
+                - type: object
+                  additionalProperties: true
+                - type: array
+                  items:
+                    type: object
+                    additionalProperties: true
             examples:
               Nobel Prize Model:
                 summary: Example of a Nobel Prize entity model

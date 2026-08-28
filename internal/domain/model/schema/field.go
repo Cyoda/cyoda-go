@@ -41,6 +41,13 @@ func (n *ModelNode) buildFieldCache() *cachedFields {
 	return &cachedFields{list: list, byPath: byPath}
 }
 
+// ConcreteTypes returns ts's DataTypes with the NULL marker removed — the
+// scalar observations a node carries in its own right. On a container node a
+// non-empty result is the scalar branch of a kind union: the field was also
+// observed holding a bare scalar. Exporters share it with the field walk so
+// "was a scalar observed here" has one answer.
+func ConcreteTypes(ts *TypeSet) []DataType { return concreteTypes(ts) }
+
 // concreteTypes returns ts's DataTypes with the NULL marker removed. A TypeSet
 // is either the NULL-only marker or a set of concrete types (TypeSet.Add drops
 // NULL when a concrete type is present), so this yields nil for a nil/empty set
@@ -64,63 +71,68 @@ func concreteTypes(ts *TypeSet) []DataType {
 }
 
 // collectFields walks the ModelNode tree recursively, appending leaf descriptors.
+//
+// A node is walked by the branches it carries, not by its dominant kind: a
+// field observed as both a scalar and a container declares both, and Merge
+// records that as scalar types sitting on a structural node — or, for an
+// object-and-array union, as a KindObject node that kept its element. Every
+// branch a write may take must be reachable here, since this is where search
+// looks up a path's declared types.
 func collectFields(n *ModelNode, prefix string, inArray bool, out *[]FieldDescriptor) {
-	switch n.kind {
-	case KindLeaf:
+	if n.kind == KindLeaf {
 		*out = append(*out, FieldDescriptor{
 			Path:    prefix,
 			Types:   n.types.Types(), // returns a copy
 			IsArray: inArray,
 		})
-	case KindObject:
-		// A node observed as BOTH an object and a bare CONCRETE scalar (a
-		// polymorphic object-or-scalar shape that Merge unions onto a KindObject
-		// node) carries a concrete scalar TypeSet in addition to its children.
-		// Emit a leaf descriptor for the object node's OWN path so the
-		// scalar-valued observations are directly searchable with a scalar
-		// operand — in ADDITION to recursing into its children below (the
-		// object-valued observations are reached via the child leaves). A PURE
-		// object (substructure only, empty TypeSet) emits no self descriptor:
-		// it has no scalar to compare against. A NULL-only TypeSet is the
-		// nullable marker, not a concrete scalar observation — it likewise emits
-		// no self descriptor, so an object node that was merely also seen as
-		// null stays a pure container (and, e.g., a unique key over it is still
-		// rejected as non-scalar-leaf).
-		if concrete := concreteTypes(n.types); len(concrete) > 0 {
+		return
+	}
+
+	// Scalar branch: a container node that also carries CONCRETE scalar types
+	// was observed holding a bare scalar, so its own path is a searchable leaf
+	// — in ADDITION to the structural branches below, which reach the
+	// container-valued observations. A PURE container (empty TypeSet) has no
+	// scalar to compare against and emits no self descriptor. A NULL-only
+	// TypeSet is the nullable marker, not a concrete scalar observation — it
+	// likewise emits none, so a container that was merely also seen as null
+	// stays a pure container (and, e.g., a unique key over it is still rejected
+	// as non-scalar-leaf).
+	if concrete := concreteTypes(n.types); len(concrete) > 0 {
+		*out = append(*out, FieldDescriptor{
+			Path:    prefix,
+			Types:   concrete,
+			IsArray: inArray,
+		})
+	}
+
+	// Object branch. Sort child keys for deterministic order.
+	keys := make([]string, 0, len(n.children))
+	for k := range n.children {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		collectFields(n.children[k], prefix+"."+k, false, out)
+	}
+
+	// Array branch.
+	if n.element != nil {
+		arrayPath := prefix + "[*]"
+		maxW := 0
+		if n.info != nil {
+			maxW = n.info.MaxWidth()
+		}
+		if n.element.kind == KindLeaf {
 			*out = append(*out, FieldDescriptor{
-				Path:    prefix,
-				Types:   concrete,
-				IsArray: inArray,
+				Path:     arrayPath,
+				Types:    n.element.types.Types(),
+				IsArray:  true,
+				MaxWidth: maxW,
 			})
-		}
-		// Sort child keys for deterministic order.
-		keys := make([]string, 0, len(n.children))
-		for k := range n.children {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			collectFields(n.children[k], prefix+"."+k, false, out)
-		}
-	case KindArray:
-		if n.element != nil {
-			arrayPath := prefix + "[*]"
-			maxW := 0
-			if n.info != nil {
-				maxW = n.info.MaxWidth()
-			}
-			if n.element.kind == KindLeaf {
-				*out = append(*out, FieldDescriptor{
-					Path:     arrayPath,
-					Types:    n.element.types.Types(),
-					IsArray:  true,
-					MaxWidth: maxW,
-				})
-			} else {
-				// For arrays of objects/arrays, recurse with the array path prefix.
-				// The inArray flag is false for nested fields inside array objects.
-				collectFields(n.element, arrayPath, false, out)
-			}
+		} else {
+			// For arrays of objects/arrays, recurse with the array path prefix.
+			// The inArray flag is false for nested fields inside array objects.
+			collectFields(n.element, arrayPath, false, out)
 		}
 	}
 }
