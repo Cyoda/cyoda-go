@@ -5,7 +5,6 @@ stability: stable
 see_also:
   - errors
   - errors.BAD_REQUEST
-  - errors.POLYMORPHIC_SLOT
 ---
 
 # errors.VALIDATION_FAILED
@@ -37,4 +36,3 @@ Correct the payload to match the model, or extend the model — export it and co
 
 - errors
 - errors.BAD_REQUEST
-- errors.POLYMORPHIC_SLOT

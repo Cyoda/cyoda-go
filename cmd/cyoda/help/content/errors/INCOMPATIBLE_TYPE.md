@@ -5,7 +5,6 @@ stability: stable
 see_also:
   - errors
   - errors.VALIDATION_FAILED
-  - errors.POLYMORPHIC_SLOT
   - errors.BAD_REQUEST
   - crud
 ---
@@ -39,13 +38,12 @@ Not retryable. The caller must either correct the payload (cast/format the value
 This code is distinct from:
 
 - `errors.CONDITION_TYPE_MISMATCH` — search-side equivalent, raised when a search condition's literal value does not match the field's locked DataType.
-- `errors.POLYMORPHIC_SLOT` — payload selects a structural variant the schema does not declare (object vs leaf, or one variant of a polymorphic union).
+- `errors.VALIDATION_FAILED` — payload holds a value whose KIND the field does not declare (an object where a scalar is declared, say). That is a kind mismatch, not a type mismatch: there is no `DataType` to report for an object or an array, so it carries no `expectedType`/`actualType`.
 - `errors.VALIDATION_FAILED` — generic validation failure that is not a leaf type mismatch (e.g. a missing required field, a structural shape mismatch).
 
 ## SEE ALSO
 
 - errors
 - errors.VALIDATION_FAILED
-- errors.POLYMORPHIC_SLOT
 - errors.BAD_REQUEST
 - crud

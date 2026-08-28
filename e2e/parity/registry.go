@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 246 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 247 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -211,6 +211,7 @@ var allTests = []NamedTest{
 	{"SchemaExtensionByteIdentityProperty", RunSchemaExtensionByteIdentityProperty},
 	{"ModelFieldNameRejected", RunModelFieldNameRejected},
 	{"ModelKindEnforcementRejected", RunModelKindEnforcementRejected},
+	{"ModelKindBranchExtension", RunModelKindBranchExtension},
 	{"ModelSampleDataCollectionImport", RunModelSampleDataCollectionImport},
 
 	// Phase 9.2 — OIDC CRUD + authz (#284)
