@@ -137,6 +137,24 @@ func TestSimpleView_ArrayOnlyFieldHasNoScalarBranch(t *testing.T) {
 	}
 }
 
+// Elements observed in more than one kind are described by every branch they
+// carry, exactly as a named field is — the rule does not stop at an array hop.
+func TestSimpleView_ArrayElementUnionShowsBothBranches(t *testing.T) {
+	union := schema.Merge(derive(t, `{"m":[{"k":"v"}]}`), derive(t, `{"m":["A"]}`))
+	model := exportSimpleView(t, union)
+	rootBucket := bucket(t, model, "$")
+
+	if got, want := rootBucket[".m[*]"], "(STRING x 1)"; got != want {
+		t.Errorf(".m[*] = %v, want %v (the scalar-element branch)", got, want)
+	}
+	if got := rootBucket["#.m"]; got != "OBJECT" {
+		t.Errorf(`$["#.m"] = %v, want OBJECT (the object-element branch)`, got)
+	}
+	if got := bucket(t, model, "$.m[*]")[".k"]; got != "STRING" {
+		t.Errorf("$.m[*].k = %v, want STRING", got)
+	}
+}
+
 // The JSON Schema rendering owes the same faithfulness: a union of kinds is a
 // oneOf over them.
 func TestJSONSchema_KindUnionShowsBothBranches(t *testing.T) {

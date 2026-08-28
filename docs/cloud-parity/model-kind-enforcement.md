@@ -43,6 +43,14 @@ Notes:
 - **This is not a ban on polymorphic fields.** A field that declares both a
   scalar and an array admits both. Only a kind outside the declared set is
   refused.
+- **Both write doors reject; the codes differ deliberately.** With no
+  `changeLevel` (and on PATCH) the model is fixed and the answer is
+  `BAD_REQUEST` — the value simply does not fit. With a `changeLevel` set the
+  write additionally proposes a schema change, and the extension path refuses
+  the kind change at every level including `STRUCTURAL`, with
+  `POLYMORPHIC_SLOT`. Whether an entity write should be able to *create* a
+  multi-kind declaration (the sample-data import merge can) is a separate,
+  open question and is not settled here.
 
 Why it matters beyond the write: search comparison is type-directed off these
 declarations. A value admitted against a declaration that forbids its kind is a

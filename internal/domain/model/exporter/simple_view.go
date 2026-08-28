@@ -88,27 +88,31 @@ func (e *SimpleViewExporter) describeChild(
 	// Array branch. Present independently of Kind: Merge promotes an
 	// object-and-array union to KindObject while keeping the element.
 	if child.Element() != nil {
-		e.describeArrayBranch(child, name, parentPath, desc, model)
+		e.describeElements(child, name, parentPath, "[*]", desc, model)
 	}
 }
 
-// describeArrayBranch describes the array branch of a child node, hopping
-// through consecutive array levels so an array of arrays is addressed one
-// "[*]" per level — the spelling the field paths and the search surface use.
-func (e *SimpleViewExporter) describeArrayBranch(
-	child *schema.ModelNode, name, parentPath string,
+// describeElements describes the elements of arr — a node carrying an array
+// branch — under the accumulated wildcard suffix. One "[*]" per array level,
+// so an array of arrays is addressed the way the field paths and the search
+// surface address it, and the elements are themselves described by the
+// branches they carry.
+func (e *SimpleViewExporter) describeElements(
+	arr *schema.ModelNode, name, parentPath, suffix string,
 	desc map[string]any, model map[string]map[string]any,
 ) {
-	arr, suffix := child, "[*]"
-	for {
-		elem := arr.Element()
-		if elem.Kind() != schema.KindArray || elem.Element() == nil {
-			break
-		}
-		arr, suffix = elem, suffix+"[*]"
+	elem := arr.Element()
+	if elem.Kind() == schema.KindLeaf {
+		// The width is this array's: it is the one these elements belong to.
+		desc["."+name+suffix] = widthDescriptor(typeDescriptor(elem.Types()), arr)
+		return
 	}
 
-	elem := arr.Element()
+	// Scalar branch of elements observed as both a scalar and a container.
+	if concrete := schema.ConcreteTypes(elem.Types()); len(concrete) > 0 {
+		desc["."+name+suffix] = widthDescriptor(typeNames(concrete), arr)
+	}
+
 	if elem.Kind() == schema.KindObject {
 		// The elements carry a structure, so they get a bucket of their own.
 		desc["#."+name] = "OBJECT"
@@ -117,12 +121,17 @@ func (e *SimpleViewExporter) describeArrayBranch(
 		if bucket, ok := model[elemPath]; ok {
 			bucket["#"] = "ARRAY_ELEMENT"
 		}
+	}
+
+	if elem.Element() != nil {
+		e.describeElements(elem, name, parentPath, suffix+"[*]", desc, model)
 		return
 	}
-	// Scalar elements (or an array whose elements were never observed, whose
-	// empty TypeSet renders NULL). The width is the innermost array's: it is
-	// the one these elements belong to.
-	desc["."+name+suffix] = widthDescriptor(typeDescriptor(elem.Types()), arr)
+	if elem.Kind() == schema.KindArray {
+		// An array level whose own elements were never observed: the level is
+		// declared, its element type is not.
+		desc["."+name+suffix+"[*]"] = "NULL"
+	}
 }
 
 // typeDescriptor formats a TypeSet as a SIMPLE_VIEW type descriptor string.

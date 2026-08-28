@@ -126,6 +126,30 @@ func TestModelKindEnforcement_PatchRejectsKindMismatch(t *testing.T) {
 	}
 }
 
+// The other door of the same question: with a changeLevel set, the write also
+// proposes a schema change, and the extension path refuses the kind change at
+// every level — the most permissive included. Both doors reject; they differ
+// only in which code they carry, because only one of them is being asked to
+// change the model.
+func TestModelKindEnforcement_ChangeLevelRejectsKindMismatch(t *testing.T) {
+	const model = "e2e-kind-enforce-changelevel"
+	importModelSampleE2E(t, model, 1, `{"s":"x"}`)
+	lockModelE2E(t, model, 1)
+
+	for _, level := range []string{"ARRAY_LENGTH", "ARRAY_ELEMENTS", "TYPE", "STRUCTURAL"} {
+		t.Run(level, func(t *testing.T) {
+			setChangeLevelE2E(t, model, 1, level)
+			status, body := createEntityRawE2E(t, model, 1, `{"s":["A"]}`)
+			if status != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body: %s", status, body)
+			}
+			if !strings.Contains(body, "POLYMORPHIC_SLOT") {
+				t.Errorf("body must carry POLYMORPHIC_SLOT; body: %s", body)
+			}
+		})
+	}
+}
+
 // TestModelImport_ArrayBodyIsADocumentCollection drives the sample-data import
 // door: an array body registers the merge of the documents, and the registered
 // model admits each of them.
