@@ -118,3 +118,111 @@ Search predicate evaluation is supported identically by memory, sqlite, and
 postgres. The commercial backend must implement the same type-directed
 semantics — the cross-backend parity suite validates predicate-evaluation
 consistency across backends.
+
+## 10. What a path addresses — the model decides, not the data
+
+A condition's `jsonPath` addresses a set of values. **Which values is decided by
+the field's DECLARED shape, never by the shape the stored value happens to
+have.** Two entities of the same model must have the same predicate mean the
+same thing about both.
+
+| Path form | Addresses | A valid statement when the declaration has |
+| --- | --- | --- |
+| `$.a` | the value at `a` | any branch |
+| `$.a[*]` | each element of the array at `a` | an array branch |
+| `$.a[0]` | the element at index 0 | an array branch |
+| `$.a.b` | the value at `b` within the object at `a` | an object branch |
+
+**A path form that is a valid statement for no declared branch is rejected**
+`400 INVALID_FIELD_PATH`. A path form valid for at least one branch is accepted
+— this is §3's union rule, and it applies to array branches exactly as it
+applies to object branches.
+
+**Per entity, the predicate is applied against the branch that entity's data
+actually is.** Where the predicate is not a valid statement for that branch, the
+entity does not match. That is a non-match, not an error.
+
+Worked, for a field declared `string | array-of-string`:
+
+| Condition | Matches `{"a":"A"}` | Matches `{"a":["A","B"]}` |
+| --- | --- | --- |
+| `$.a EQUALS "A"` | yes — valid for the string branch | no — not a valid statement for the array branch |
+| `$.a[*] EQUALS "A"` | no — `[*]` is not a valid statement for the string branch | yes |
+| `$.a NOT_NULL` | yes | yes — valid for both |
+
+Neither condition is rejected: each is valid for one branch.
+
+### Deliberate divergence from SQL/JSON `lax`
+
+SQL/JSON's default `lax` mode routes on the DATA: it auto-wraps a scalar so that
+`$.a[*]` matches a scalar value, and auto-unwraps an array so that a bare `$.a`
+compares against elements. Measured on PostgreSQL 17: `lax $.tags[*]` over
+`{"tags":"A"}` yields `["A"]`, and `lax $.tags ? (@ == "A")` is true for
+`{"tags":["A","B"]}`.
+
+**cyoda-go does neither.** The declaration is the contract; the shape of an
+individual row is not. Cloud must implement the model-driven rule, not the `lax`
+default.
+
+## 11. Vacuity — empty arrays, absent fields, absent keys
+
+The two presence tests are the only operators reaching a container path (§3), so
+this is where the addressing rule of §10 becomes observable.
+
+Field `a` declared array-of-string:
+
+| Stored | `$.a` NOT_NULL | `$.a` IS_NULL | `$.a[*]` NOT_NULL | `$.a[*]` IS_NULL | `$.a[0]` IS_NULL |
+| --- | --- | --- | --- | --- | --- |
+| `{"a":["A"]}` | true | false | true | false | false |
+| `{"a":[]}` | **true** | false | **false** | **false** | true |
+| `{"a":null}` | false | true | false | false | true |
+| absent | false | true | **false** | **false** | true |
+
+The bare path addresses the array itself, which **exists** when empty — so
+`NOT_NULL` holds. Measured prior art agrees: PostgreSQL `jsonb_path_exists(d,
+'lax $.tags')` and SQLite `json_extract(d,'$.tags') IS NOT NULL` are both **true**
+for `{"tags":[]}` and **false** for an absent field.
+
+Two corners of this are worth stating outright, because both surprise on first
+reading and both follow from §10 rather than from any special case.
+
+**A wildcard path never answers the array's own nullness.** `$.a[*]` addresses
+elements and nothing else. An empty array, an explicit `null`, and an absent
+field are three different states of the array, and all three present the same
+thing to a wildcard path — no elements — so both presence tests answer **false**
+for all three. Ask about the array itself with the bare path `$.a`, which
+distinguishes them: `[]` is present, `null` is null, absent is absent.
+
+A consequence: on a wildcard path `IS_NULL` and `NOT_NULL` are **not
+complements**. Over an empty sequence neither holds. They are complements only
+where at least one element exists.
+
+**A positional path behaves differently from a wildcard one, deliberately.**
+`$.a[0]` addresses exactly one position, which may be absent; `$.a[*]` addresses
+a set, which may be empty. An absent single value is null, so `$.a[0] IS_NULL`
+holds over `[]`. An empty set has nothing to satisfy either test, so
+`$.a[*] IS_NULL` does not. The two spellings are asking different questions and
+are expected to differ here.
+
+**Elements missing the key.** For `$.items[*].sku` over
+`[{"sku":"A"},{}]`, every element is evaluated; the element without `sku`
+supplies an absent value, and the kernel's standing rule that absent is null
+applies. So `IS_NULL` holds on that element. Elements are not silently dropped
+before the operator sees them.
+
+## 12. There is exactly one path resolver
+
+§8 makes the kernel the sole authority for match/no-match. That authority covers
+**leaf comparison and path resolution alike**, and the following is normative:
+
+- **A predicate's answer MUST NOT depend on which execution path served it.**
+  Pushdown narrows; it never decides. The in-process evaluator that serves
+  workflow criteria and the untranslatable-condition fallback MUST resolve paths
+  identically to the kernel that performs the residual re-check.
+- A condition MUST be answered identically whether or not some **other** leaf in
+  the same condition happens to be translatable. Translatability is a property
+  of the query plan and carries no semantics.
+- Two resolvers with different array handling is a defect, not an accepted
+  divergence, and it is not made acceptable by both being individually
+  defensible.
+
