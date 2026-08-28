@@ -78,10 +78,9 @@ func TestClassifyValidateOrExtendErr_InternalSentinel_Is5xx(t *testing.T) {
 	}
 }
 
-// TestClassifyValidateOrExtendErr_UntaggedError_Is4xx — an error NOT
-// wrapping either ErrPolymorphicSlot or ingest.ErrInternalSchema classifies as
-// 4xx VALIDATION_FAILED. Represents e.g. a change-level violation, a validation
-// failure, or an importer.Walk error from malformed user input — all payloads
+// TestClassifyValidateOrExtendErr_UntaggedError_Is4xx — an error that does
+// NOT wrap ingest.ErrInternalSchema classifies as 4xx VALIDATION_FAILED.
+// Represents e.g. a change-level violation, a validation failure, or an importer.Walk error from malformed user input — all payloads
 // that parsed and then failed against the model: client-contract issues, not
 // server faults, and not unparseable requests.
 func TestClassifyValidateOrExtendErr_UntaggedError_Is4xx(t *testing.T) {

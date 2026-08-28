@@ -49,7 +49,7 @@ info:
 
     - TYPE: Allows type modifications
 
-    - STRUCTURAL: Permits fundamental model changes
+    - STRUCTURAL: Permits fundamental model changes — new fields, and giving a path a kind it does not yet declare
 
 
     When a change level is set, all less impactful changes are automatically
@@ -254,7 +254,7 @@ tags:
 
       - TYPE: Allows type modifications
 
-      - STRUCTURAL: Permits fundamental model changes
+      - STRUCTURAL: Permits fundamental model changes — new fields, and giving a path a kind it does not yet declare
 
 
       When a change level is set, all less impactful changes are automatically
@@ -4517,7 +4517,7 @@ paths:
 
         3. TYPE: Permits modifications to existing types
 
-        4. STRUCTURAL: Allows fundamental model changes
+        4. STRUCTURAL: Allows fundamental model changes — new fields, and giving a path a kind it does not yet declare
 
 
         Note: Setting a change level is only meaningful for locked models. An

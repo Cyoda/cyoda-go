@@ -6,6 +6,24 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **The `POLYMORPHIC_SLOT` error code is retired.** It meant "raising
+  `changeLevel` will not help you". Giving a path a kind it does not declare is
+  a `STRUCTURAL` change now, so raising the level is exactly what resolves it,
+  and the extension path has no rejection left that the code described. Below
+  `STRUCTURAL` such a write answers `400 VALIDATION_FAILED` like any other
+  change-level violation, with the level named in the message. The help topic
+  `errors.POLYMORPHIC_SLOT` goes with it.
+
+- **A model's schema node holds the set of kinds it was observed as.** The
+  persisted form gains `"kinds"`; a node with at most one branch still writes
+  `"kind"`, so every monomorphic node — nullable or not — serialises
+  byte-identically to before and no model needs migrating. Both spellings are
+  accepted on read, and a node stored under the old single-label form restores
+  every branch its payload carries rather than the one the label happened to
+  name. `cyoda-go-spi` carries the node, the codec and the field walk now, and
+  its `ModelNode` API changed accordingly: an out-of-tree plugin that decodes a
+  schema itself needs the new pin.
+
 - **A search whose model schema cannot be loaded now fails instead of
   answering.** Field-path validation consults the model's schema to decide
   whether a condition's paths exist. When that load failed — the model store
@@ -464,10 +482,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   name every kind the field does declare (`expected object or array, got
   string`), rather than leaking a Go type name (`got map[string]interface {}`).
 
-  Not changed here: with a `changeLevel` set, the extension path compares one
-  kind per path, so it still refuses a write matching a declared but
-  non-dominant branch with `POLYMORPHIC_SLOT`. Leave `changeLevel` unset on a
-  model with multi-kind fields.
+  With a `changeLevel` set, every declared kind is writable and a new kind is
+  added at `STRUCTURAL` — see the entries below, which land in this same
+  release.
 
 - **A payload that fails against the model now answers `400 VALIDATION_FAILED`,
   not `400 BAD_REQUEST`.** The error dictionary already drew the line here:
@@ -480,9 +497,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   The catch-all now answers `VALIDATION_FAILED`, on every entity ingress. It
   covers an undeclared field, a value whose kind the field does not declare, a
   change the `changeLevel` does not permit, and an unaddressable field name.
-  `INCOMPATIBLE_TYPE` (a leaf's DataType) and `POLYMORPHIC_SLOT` (a proposed
-  kind change) are unchanged, and so is every `BAD_REQUEST` raised before
-  validation — an unparseable body, a parameter out of range, unstorable bytes.
+  `INCOMPATIBLE_TYPE` (a leaf's DataType) is unchanged, and so is every
+  `BAD_REQUEST` raised before validation — an unparseable body, a parameter out
+  of range, unstorable bytes. A payload that proposes a kind change now answers
+  `VALIDATION_FAILED` too; see the `POLYMORPHIC_SLOT` entry under Breaking.
   The status stays `400` throughout, so only a client that branches on the code
   is affected. See `docs/cloud-parity/validation-failure-code.md`.
 
@@ -808,6 +826,37 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   gap this leaves for any future same-shaped migration.
 
 ### Fixed
+
+- **A write matching a kind the model declares is accepted with a `changeLevel`
+  set.** The extension gate compared one kind per path, so a model with a
+  multi-kind field refused half of its own declared data at every level — with a
+  message telling the client to send the declared kind, which is what the client
+  had sent. Such a model was unusable with a `changeLevel` set.
+
+- **An entity write can establish a second kind for a field, at `STRUCTURAL`.**
+  Previously only a sample-data import could, so a model could describe a shape
+  no write was able to record.
+
+- **Three schema widenings that reached the client as a `500` are now
+  expressible.** Each was accepted by the extension and then could not be turned
+  into a delta: a field first written as `[]` and later holding object elements
+  (the commonest), a field observed only as `null` and later holding an object
+  or an array, and an array whose element was never observed at all. The last
+  also never widened: an array observed with no content did not notice it was
+  gaining an element, so the model kept declaring nothing there.
+
+- **Writing `null` to a field declared as a scalar no longer requires `TYPE`
+  level.** A scalar declaration already admits null, so the write proposes no
+  schema change and the delta it produced was empty; it was refused below `TYPE`
+  as a "type change" regardless.
+
+- **A search against a field observed as more than one kind no longer silently
+  returns fewer rows on a backend that executes searches itself.** That
+  executor's own schema decoder dispatched on a single kind label and dropped
+  the other branches a union's payload carried, so a predicate on a dropped path
+  found no declared type and matched nothing — no error, just a narrower answer.
+  The node, its decoder and the field walk have one implementation now, shared
+  by the engine and every executor.
 
 - **A JSON array posted to the sample-data import is read as a collection of
   sample documents.** It previously returned `200` and registered a model
