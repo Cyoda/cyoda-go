@@ -58,7 +58,7 @@ func (e *JSONSchemaExporter) convert(node *schema.ModelNode) map[string]any {
 	case 1:
 		return branches[0].(map[string]any)
 	default:
-		return map[string]any{"oneOf": branches}
+		return map[string]any{"anyOf": branches}
 	}
 }
 
@@ -100,12 +100,15 @@ func (e *JSONSchemaExporter) convertLeaf(node *schema.ModelNode) map[string]any 
 	if len(types) == 1 {
 		return jsonSchemaType(types[0])
 	}
-	// Polymorphic: use oneOf
-	oneOf := make([]any, 0, len(types))
+	// Polymorphic: any of the observed types is acceptable. NOT oneOf —
+	// two DataTypes can render the same JSON Schema shape (Integer and Long
+	// both map to {"type":"integer"}), and oneOf requires EXACTLY one branch
+	// to match, so it would reject a value the model admits.
+	anyOf := make([]any, 0, len(types))
 	for _, dt := range types {
-		oneOf = append(oneOf, jsonSchemaType(dt))
+		anyOf = append(anyOf, jsonSchemaType(dt))
 	}
-	return map[string]any{"oneOf": oneOf}
+	return map[string]any{"anyOf": anyOf}
 }
 
 // jsonSchemaType maps a DataType to a JSON Schema type descriptor.

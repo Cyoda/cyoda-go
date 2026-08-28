@@ -50,6 +50,12 @@ func derive(t *testing.T, doc string) *schema.ModelNode {
 // the field paths and the search surface use ($.m[*][*]). Rendering it as
 // `.m[*]: NULL` said the elements have no type at all, when what has no type of
 // its own is the intermediate array.
+//
+// The "(T x N)" width decoration these tests see comes from ArrayInfo, which is
+// carried on the in-memory tree only — the schema codec does not persist it —
+// so an export served from the store shows the bare type. The e2e tests assert
+// that form; the width assertions here pin the descriptor's composition, not a
+// guarantee to callers.
 func TestSimpleView_NestedArrayOfPrimitives(t *testing.T) {
 	root := exportSimpleView(t, derive(t, `{"m":[["A"],["B","C"],["D"]]}`))
 	rootBucket := bucket(t, root, "$")
@@ -137,6 +143,19 @@ func TestSimpleView_ArrayOnlyFieldHasNoScalarBranch(t *testing.T) {
 	}
 }
 
+// An array whose elements were never observed is still a declared array —
+// validation enforces it — so the export names it rather than omitting the
+// field entirely. The same shape one level down already rendered this way.
+func TestSimpleView_UnobservedElementArrayIsNamed(t *testing.T) {
+	node := schema.NewObjectNode()
+	node.SetChild("a", schema.NewArrayNode(nil))
+
+	rootBucket := bucket(t, exportSimpleView(t, node), "$")
+	if got, want := rootBucket[".a[*]"], "NULL"; got != want {
+		t.Errorf(".a[*] = %v, want %v; bucket: %v", got, want, rootBucket)
+	}
+}
+
 // Elements observed in more than one kind are described by every branch they
 // carry, exactly as a named field is — the rule does not stop at an array hop.
 func TestSimpleView_ArrayElementUnionShowsBothBranches(t *testing.T) {
@@ -156,7 +175,7 @@ func TestSimpleView_ArrayElementUnionShowsBothBranches(t *testing.T) {
 }
 
 // The JSON Schema rendering owes the same faithfulness: a union of kinds is a
-// oneOf over them.
+// an anyOf over them.
 func TestJSONSchema_KindUnionShowsBothBranches(t *testing.T) {
 	union := schema.Merge(derive(t, `{"poly":"x"}`), derive(t, `{"poly":["A","B"]}`))
 	data, err := exporter.NewJSONSchemaExporter("LOCKED").Export(union)
@@ -167,7 +186,7 @@ func TestJSONSchema_KindUnionShowsBothBranches(t *testing.T) {
 		Model struct {
 			Properties struct {
 				Poly struct {
-					OneOf []map[string]any `json:"oneOf"`
+					AnyOf []map[string]any `json:"anyOf"`
 				} `json:"poly"`
 			} `json:"properties"`
 		} `json:"model"`
@@ -175,7 +194,7 @@ func TestJSONSchema_KindUnionShowsBothBranches(t *testing.T) {
 	if err := json.Unmarshal(data, &doc); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	branches := doc.Model.Properties.Poly.OneOf
+	branches := doc.Model.Properties.Poly.AnyOf
 	if len(branches) != 2 {
 		t.Fatalf("poly branches = %v, want an array branch and a string branch; body: %s", branches, data)
 	}

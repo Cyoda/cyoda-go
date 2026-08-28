@@ -87,8 +87,14 @@ func (e *SimpleViewExporter) describeChild(
 
 	// Array branch. Present independently of Kind: Merge promotes an
 	// object-and-array union to KindObject while keeping the element.
-	if child.Element() != nil {
+	switch {
+	case child.Element() != nil:
 		e.describeElements(child, name, parentPath, "[*]", desc, model)
+	case child.Kind() == schema.KindArray:
+		// An array whose elements were never observed — the empty-array seed
+		// the codec preserves. The level is declared and enforced, so it is
+		// named; its element type is not known.
+		desc["."+name+"[*]"] = "NULL"
 	}
 }
 

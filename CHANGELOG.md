@@ -444,18 +444,47 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
   A leaf declaration now checks kind first, and answers `400 BAD_REQUEST`
   with `expected scalar, got array` — the mirror of the check a container
-  declaration already made. `null` is still accepted everywhere: it is the
-  absence of a value, not a kind. A genuinely polymorphic field — one observed
-  in more than one kind across imports while `UNLOCKED` — declares each kind
-  and still admits all of them.
+  declaration already made. `null` is unchanged: it follows the declaration —
+  always admissible on a scalar field, and on a container field where the model
+  observed one — and is not a kind of its own.
+
+  A genuinely polymorphic field — one observed in more than one kind while the
+  model is `UNLOCKED` — declares each kind and admits all of them. Validation
+  now selects the branch by the value's own kind rather than by the node's
+  dominant one, which is what makes the array branch of an object-and-array
+  union admissible; and the persisted schema carries every branch back, where it
+  used to restore only the children of such a node and silently narrow the model
+  on the first read back.
 
   This closes the only door through which an array reached a field whose
   declared type says it cannot hold one, and with it a class of stored value no
   predicate on that field could address consistently.
 
-  Kind mismatches also name the offending kind in the wire vocabulary now
-  (`expected array, got object`) rather than leaking a Go type name
-  (`got map[string]interface {}`).
+  Kind mismatches also name the offending kind in the wire vocabulary now, and
+  name every kind the field does declare (`expected object or array, got
+  string`), rather than leaking a Go type name (`got map[string]interface {}`).
+
+  Not changed here: with a `changeLevel` set, the extension path compares one
+  kind per path, so it still refuses a write matching a declared but
+  non-dominant branch with `POLYMORPHIC_SLOT`. Leave `changeLevel` unset on a
+  model with multi-kind fields.
+
+- **A JSON array posted to the sample-data import registers a different model,
+  and some previously-accepted bodies are now refused.** See the entry under
+  Fixed: an array body used to register a model describing an array at the root,
+  and a scalar body used to register a model rooted at a scalar — both `200`,
+  both unusable. The array body now derives the merge of its documents; a body
+  that is neither a document nor a collection of documents is `400
+  VALIDATION_FAILED`.
+
+- **`SIMPLE_VIEW` and `JSON_SCHEMA` emit different keys for two shapes.** Also
+  detailed under Fixed. An array of arrays moves from `.m[*]` to `.m[*][*]`; a
+  field declaring more than one kind gains a second entry for its other branch;
+  an array whose elements were never observed is named `.a[*]: NULL` instead of
+  being omitted; and `JSON_SCHEMA` unions render as `anyOf` rather than `oneOf`
+  (`oneOf` requires exactly one branch to match, so it rejected values the model
+  admits whenever two branches rendered the same JSON Schema shape). Consumers
+  that parse the exported model see the new keys.
 
 ### Added
 
@@ -782,8 +811,19 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   container showed only the container branch, so two models that enforce
   differently rendered identically and an operator inspecting the export was
   told something false. `SIMPLE_VIEW` now spells one `[*]` hop per array level
-  and names the scalar branch alongside the structural one; `JSON_SCHEMA`
-  renders a kind union as a `oneOf` over its branches.
+  and names every branch a field declares — including the elements' own branches
+  and an array whose elements were never observed (`.a[*]: NULL`, previously
+  omitted entirely). `JSON_SCHEMA` renders a kind union as an `anyOf` over its
+  branches: it used `oneOf`, which requires exactly one branch to match and so
+  rejected values the model admits whenever two branches rendered the same JSON
+  Schema shape (`Integer` and `Long` both render `{"type":"integer"}`).
+
+- **A stored model no longer loses the array branch of an object-and-array
+  union.** `Merge` records a field observed as both an object and an array as a
+  single node that keeps its element, but the schema codec restored only the
+  children of such a node — so the array branch vanished on the first read back
+  and the model refused a document it had just been derived from. Every branch
+  the wire form carries is now restored, independently of the node's kind.
 
 - **A search now finds the declared types of every branch of a polymorphic
   field.** The walk backing the fields map emitted the scalar branch of an

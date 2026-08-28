@@ -88,7 +88,12 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 		// TestEntityCreate_UnaddressableFieldName_400: a write that would extend
 		// the model with a field name the wire jsonPath grammar cannot address.
 		{Status: 400, Code: "VALIDATION_FAILED"},
-		{Status: 400, Code: "WORKFLOW_FAILED"},    // workflow processor rejected the entity
+		{Status: 400, Code: "WORKFLOW_FAILED"}, // workflow processor rejected the entity
+		// TestModelKindEnforcement_ChangeLevelRejectsKindMismatch: with a
+		// changeLevel set, a value whose kind differs from the declared one
+		// proposes a kind change, which the extension path refuses at every
+		// level.
+		{Status: 400, Code: "POLYMORPHIC_SLOT"},
 		{Status: 404, Code: "MODEL_NOT_FOUND"},    // model not registered
 		{Status: 409, Code: "UNIQUE_VIOLATION"},   // TestUniqueKeys_CreateDuplicate et al.
 		{Status: 422, Code: "INVALID_UNIQUE_KEY"}, // TestUniqueKeys_PartialKeyCreate, TestUniqueKeys_OverBoundNumeric

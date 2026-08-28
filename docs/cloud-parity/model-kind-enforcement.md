@@ -31,9 +31,10 @@ model: { ".s": "STRING", ".a[*]": "STRING", ".o": OBJECT }
 
 Notes:
 
-- **`null` is always admissible.** It is the absence of a value, not a kind, and
-  a `NULL`-only declaration is the nullable marker rather than an observation of
-  a scalar.
+- **`null` follows the declaration.** A scalar declaration always admits it. A
+  container declaration admits it only where the model observed one — a
+  `NULL`-only declaration is the nullable marker, not an observation of a
+  scalar. Null never widens the model and is not a kind of its own.
 - **A kind mismatch is not a type incompatibility.** There is no `DataType` to
   report for an array or an object, so it does not carry
   `INCOMPATIBLE_TYPE`/`expectedType`/`actualType`. cyoda-go answers
@@ -42,15 +43,26 @@ Notes:
   the container-vs-scalar direction has always given.
 - **This is not a ban on polymorphic fields.** A field that declares both a
   scalar and an array admits both. Only a kind outside the declared set is
-  refused.
+  refused. Every layer has to hold the union for this to be true — Merge folds
+  the branches onto one node, the persisted schema must carry all of them back,
+  validation dispatches on the branch the value's kind selects, and the export
+  names each. In cyoda-go the object-and-array union is the one Merge folds onto
+  a node whose *dominant* kind is OBJECT, so any layer that dispatches on the
+  dominant kind alone silently drops the array branch.
 - **Both write doors reject; the codes differ deliberately.** With no
   `changeLevel` (and on PATCH) the model is fixed and the answer is
   `BAD_REQUEST` — the value simply does not fit. With a `changeLevel` set the
   write additionally proposes a schema change, and the extension path refuses
   the kind change at every level including `STRUCTURAL`, with
-  `POLYMORPHIC_SLOT`. Whether an entity write should be able to *create* a
-  multi-kind declaration (the sample-data import merge can) is a separate,
-  open question and is not settled here.
+  `POLYMORPHIC_SLOT`.
+- **Known limitation of the `changeLevel` door in cyoda-go.** That path compares
+  one kind per path, so on a model with a multi-kind field it also refuses a
+  write matching a *declared* but non-dominant branch. The two doors therefore
+  disagree about a conforming value: strict validation admits it, the extension
+  path does not. This is the same gap as "an entity write cannot create a
+  multi-kind declaration, while the sample-data import merge can" — a separate,
+  open question, not settled here. Cloud, which implements polymorphic slots
+  natively, is not expected to reproduce the limitation.
 
 Why it matters beyond the write: search comparison is type-directed off these
 declarations. A value admitted against a declaration that forbids its kind is a
@@ -86,16 +98,23 @@ empty document does.
   with the element bucket at `"$.m[*][*]"`. This is the same `jsonPath` spelling
   search uses to address those elements.
 - A field declaring more than one kind names each branch: `".poly": "STRING"`
-  alongside `".poly[*]": "STRING"`, or `".o": "STRING"` alongside
-  `"#.o": "OBJECT"`. Rendering only one branch makes two models that enforce
-  differently render identically.
+  alongside `".poly[*]": "STRING"`, `".o": "STRING"` alongside
+  `"#.o": "OBJECT"`, or `"#.f": "OBJECT"` alongside `".f[*]": "INTEGER"`.
+  Rendering only one branch makes two models that enforce differently render
+  identically. The rule applies to array elements too, and at every level.
+- An array whose elements were never observed is still a declared array and is
+  named — `".a[*]": "NULL"` — rather than omitted.
 
-`JSON_SCHEMA`: a kind union renders as a `oneOf` over its branches.
+`JSON_SCHEMA`: a kind union renders as an `anyOf` over its branches — *not*
+`oneOf`, which requires exactly one branch to match and would reject a value the
+model admits whenever two branches render the same JSON Schema shape (`Integer`
+and `Long` both render `{"type":"integer"}`).
 
 The same completeness applies to the internal field walk that resolves a path's
-declared types for search: every branch a write may take must be reachable
-there, or a predicate on the missing branch silently evaluates as though the
-field held nothing.
+declared types for search, and to the persisted schema itself: every branch a
+write may take must survive storage and be reachable in the field walk, or a
+predicate on the missing branch silently evaluates as though the field held
+nothing — and the model quietly stops admitting a document it was derived from.
 
 ## Coverage
 

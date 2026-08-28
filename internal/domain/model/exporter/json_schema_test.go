@@ -99,13 +99,14 @@ func TestJSONSchemaPolymorphic(t *testing.T) {
 	model := s["model"].(map[string]any)
 	props := model["properties"].(map[string]any)
 	valueProp := props["value"].(map[string]any)
-	// Polymorphic types should use oneOf
-	oneOf, ok := valueProp["oneOf"].([]any)
+	// Polymorphic types should use anyOf — two DataTypes can render the same
+	// JSON Schema shape, and oneOf would then reject a value the model admits.
+	anyOf, ok := valueProp["anyOf"].([]any)
 	if !ok {
-		t.Fatal("expected oneOf array for polymorphic field")
+		t.Fatal("expected anyOf array for polymorphic field")
 	}
-	if len(oneOf) != 2 {
-		t.Errorf("expected 2 types in oneOf, got %d", len(oneOf))
+	if len(anyOf) != 2 {
+		t.Errorf("expected 2 types in anyOf, got %d", len(anyOf))
 	}
 }
 
