@@ -1179,11 +1179,10 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		// jobFailureMessage to the generic fallback, so a tenant whose model
 		// store is down would read an actionable code on /search/direct and
 		// "search failed unexpectedly" here, for one and the same outage.
-		msg := jobFailureMessage(fieldsErr)
-		if appErr := common.Internal("failed to load model schema for condition validation", fieldsErr); appErr != nil {
-			msg = jobFailureMessage(appErr)
-		}
-		s.writeAsyncFailure(jobCtx, jobID, msg, time.Now(), time.Since(start).Milliseconds())
+		// common.Internal always returns a non-nil *AppError, and only its
+		// Message reaches the persisted job record — never its Detail.
+		appErr := common.Internal("failed to load model schema for condition validation", fieldsErr)
+		s.writeAsyncFailure(jobCtx, jobID, jobFailureMessage(appErr), time.Now(), time.Since(start).Milliseconds())
 		return
 	}
 	filter, translateErr := spi.ConditionToFilter(cond, fields)
@@ -1648,6 +1647,16 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelStore s
 		return nil, invalidPathError(missing)
 	}
 	if freshFields == nil {
+		// The refresh produced no schema, so the descriptor carries none.
+		// Deliberately NOT negative-cached, for the same reason as the
+		// ErrNotFound branch above: the cache records "this path is absent
+		// from a schema we read", and here there is no schema to have read
+		// it from. The cost is a Get + RefreshAndGet per repeat request on
+		// such a model. Unreachable through the model API — every Save
+		// writes marshalled schema bytes, and an empty schema still yields a
+		// non-nil fields map that takes the cached route above — so this is
+		// a bound on an out-of-band or legacy row, not on anything a caller
+		// can provoke.
 		return nil, invalidPathError(missing)
 	}
 
