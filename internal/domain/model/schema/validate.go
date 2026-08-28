@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"strings"
 )
 
 // MaxValidationDepth caps recursion in Validate to defend against stack
@@ -101,31 +102,86 @@ func validateNode(model *ModelNode, data any, path string, depth int) []Validati
 			Kind:    ErrKindGeneric,
 		}}
 	}
-	switch model.Kind() {
-	case KindObject:
-		return validateObject(model, data, path, depth)
-	case KindArray:
-		return validateArray(model, data, path, depth)
-	case KindLeaf:
+	if model.Kind() == KindLeaf {
 		return validateLeaf(model, data, path)
-	default:
-		return []ValidationError{{Path: path, Message: fmt.Sprintf("unknown node kind %v", model.Kind())}}
 	}
+
+	// A container node is validated against the branch the value's own kind
+	// selects. A node can carry more than one: a field observed in several
+	// kinds is recorded by Merge as children and/or an element and/or scalar
+	// types on a single node, and every branch it carries is a kind the field
+	// declares. Dispatching on the node's dominant Kind alone would refuse a
+	// value the model does declare — the array branch of an object-and-array
+	// union, which Merge folds onto a KindObject node.
+	switch v := data.(type) {
+	case nil:
+		// Null against a container is admissible where the model observed one:
+		// the nullable marker, and any node that also carries scalar types.
+		if !model.Types().IsEmpty() {
+			return nil
+		}
+	case map[string]any:
+		if model.Kind() == KindObject {
+			return validateObject(model, v, path, depth)
+		}
+	case []any:
+		if hasArrayBranch(model) {
+			return validateArray(model, v, path, depth)
+		}
+	default:
+		if matchesScalarBranch(model, data) {
+			return nil
+		}
+	}
+	return []ValidationError{{
+		Path:    path,
+		Message: "expected " + declaredKindNames(model) + ", got " + JSONKindName(data),
+		Kind:    ErrKindGeneric,
+	}}
 }
 
-func validateObject(model *ModelNode, data any, path string, depth int) []ValidationError {
-	// Polymorphic guard: when the node's TypeSet contains more than one type
-	// (i.e. the schema was built from merging structurally-different elements),
-	// accept data whose Go/JSON shape matches any participating type rather than
-	// requiring the dominant structural Kind.
-	if validatePolymorphicFallback(model, data) {
-		return nil
-	}
-	obj, ok := data.(map[string]any)
-	if !ok {
-		return []ValidationError{{Path: path, Message: "expected object, got " + JSONKindName(data)}}
-	}
+// hasArrayBranch reports whether node declares the array kind. An ARRAY node
+// whose element was never observed — the empty-array seed the codec preserves —
+// declares it just the same.
+func hasArrayBranch(node *ModelNode) bool {
+	return node.Kind() == KindArray || node.Element() != nil
+}
 
+// matchesScalarBranch reports whether a scalar value is assignable to one of
+// the scalar types a container node carries — the record of the same field
+// having been observed holding a bare scalar.
+func matchesScalarBranch(node *ModelNode, data any) bool {
+	dataType := inferDataType(data)
+	for _, mt := range node.Types().Types() {
+		if IsAssignableTo(dataType, mt) {
+			return true
+		}
+	}
+	return false
+}
+
+// declaredKindNames names the kinds a container node declares, so a rejection tells
+// the caller what the field does accept rather than only what it does not.
+func declaredKindNames(node *ModelNode) string {
+	kinds := make([]string, 0, 3)
+	if node.Kind() == KindObject {
+		kinds = append(kinds, "object")
+	}
+	if hasArrayBranch(node) {
+		kinds = append(kinds, "array")
+	}
+	if len(ConcreteTypes(node.Types())) > 0 {
+		kinds = append(kinds, "scalar")
+	}
+	if len(kinds) == 0 {
+		return "no value"
+	}
+	return strings.Join(kinds, " or ")
+}
+
+// validateObject validates the object branch of model. The caller selected it
+// by the value's kind.
+func validateObject(model *ModelNode, obj map[string]any, path string, depth int) []ValidationError {
 	var errs []ValidationError
 	children := model.Children()
 	for name, childModel := range children {
@@ -150,16 +206,9 @@ func validateObject(model *ModelNode, data any, path string, depth int) []Valida
 	return errs
 }
 
-func validateArray(model *ModelNode, data any, path string, depth int) []ValidationError {
-	// Polymorphic guard: identical rationale as validateObject.
-	if validatePolymorphicFallback(model, data) {
-		return nil
-	}
-	arr, ok := data.([]any)
-	if !ok {
-		return []ValidationError{{Path: path, Message: "expected array, got " + JSONKindName(data)}}
-	}
-
+// validateArray validates the array branch of model. The caller selected it by
+// the value's kind.
+func validateArray(model *ModelNode, arr []any, path string, depth int) []ValidationError {
 	elem := model.Element()
 	if elem == nil {
 		return nil
@@ -302,41 +351,4 @@ func joinPath(parent, child string) string {
 		return child
 	}
 	return parent + "." + child
-}
-
-// validatePolymorphicFallback returns true (accept) when a structural node
-// (KindObject or KindArray) has a non-empty TypeSet — evidence that a leaf
-// branch participated in a Merge — AND the data's Go/JSON shape matches one
-// of the leaf types in that TypeSet.
-//
-// Background: when an array element node is built by merging an object element
-// with a string element (e.g. some-array[0]={obj}, some-array[1]="abc"),
-// schema.Merge promotes Kind to KindObject and adds the String type from the
-// leaf into the merged node's TypeSet.  The TypeSet is therefore a record of
-// "which leaf types participated alongside the structural branches".  At
-// validation time, if a data value matches one of those leaf types it is a
-// valid polymorphic branch and must be accepted.
-func validatePolymorphicFallback(node *ModelNode, data any) bool {
-	types := node.Types().Types()
-	if len(types) == 0 {
-		// Pure structural node (no leaf participants) — normal dispatch applies.
-		return false
-	}
-	if data == nil {
-		return true // null is compatible with any type
-	}
-	// map/slice values belong to the structural branch — don't short-circuit;
-	// let the normal validateObject / validateArray path handle them.
-	switch data.(type) {
-	case map[string]any, []any:
-		return false
-	}
-	// Scalar values: accept if the inferred DataType matches any participating type.
-	dataType := inferDataType(data)
-	for _, mt := range types {
-		if IsAssignableTo(dataType, mt) {
-			return true
-		}
-	}
-	return false
 }

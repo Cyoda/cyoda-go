@@ -204,6 +204,43 @@ func TestModelImport_NonDocumentBodyRejected(t *testing.T) {
 	}
 }
 
+// A field observed as both an object and an array is the union that survives
+// only if every layer keeps it: Merge folds it onto one node, the codec must
+// carry both branches through storage, validation must admit both, and the
+// export must name both. One import registers it, so this runs the whole path
+// in a single request.
+func TestModelKindEnforcement_ObjectOrArrayUnionSurvivesStorage(t *testing.T) {
+	const model = "e2e-object-or-array-union"
+	importModelSampleE2E(t, model, 1, `[{"f":{"k":"v"}},{"f":[1]}]`)
+	lockModelE2E(t, model, 1)
+
+	root := rootBucketE2E(t, model, 1)
+	if got := root["#.f"]; got != "OBJECT" {
+		t.Errorf(`$["#.f"] = %v, want OBJECT (the object branch); bucket: %v`, got, root)
+	}
+	if got := root[".f[*]"]; got != "INTEGER" {
+		t.Errorf(".f[*] = %v, want INTEGER (the array branch); bucket: %v", got, root)
+	}
+
+	// The model admits both documents it was derived from.
+	for _, payload := range []string{`{"f":{"k":"v"}}`, `{"f":[1]}`} {
+		status, body := createEntityRawE2E(t, model, 1, payload)
+		if status != http.StatusOK {
+			t.Errorf("write %s: status = %d, want 200; body: %s", payload, status, body)
+		}
+	}
+
+	// A kind outside the declared set is still refused, and the rejection names
+	// the kinds the field does declare.
+	status, body := createEntityRawE2E(t, model, 1, `{"f":"x"}`)
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", status, body)
+	}
+	if !strings.Contains(body, "expected object or array, got string") {
+		t.Errorf("rejection must name the declared kinds; body: %s", body)
+	}
+}
+
 // TestModelExport_DescribesEveryDeclaredBranch pins the export as a faithful
 // description of what the model enforces: one wildcard hop per array level, and
 // both branches of a field observed as a scalar and as an array.
