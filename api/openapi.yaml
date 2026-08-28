@@ -3412,7 +3412,7 @@ paths:
                   entityIds:
                     - cdcff600-bab1-11ee-a357-ae468cd3ed16
         "400":
-          description: "Bad request — BAD_REQUEST: invalid payload or parameter, transactionWindow out of range, or a value whose kind the field does not declare; INCOMPATIBLE_TYPE: payload type mismatches the model; VALIDATION_FAILED: a field name the jsonPath grammar cannot address; POLYMORPHIC_SLOT: with a changeLevel set, the payload proposes a kind change at a declared path; WORKFLOW_FAILED: workflow processor rejected the entity."
+          description: "Bad request — BAD_REQUEST: invalid payload or parameter, or transactionWindow out of range; VALIDATION_FAILED: the payload parsed but failed against the model — a value whose kind the field does not declare, an undeclared field, a field name the jsonPath grammar cannot address, or a change the changeLevel does not permit; INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType; POLYMORPHIC_SLOT: with a changeLevel set, the payload proposes a kind change at a declared path; WORKFLOW_FAILED: workflow processor rejected the entity."
           content:
             application/problem+json:
               schema:

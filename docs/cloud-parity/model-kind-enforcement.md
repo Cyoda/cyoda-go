@@ -38,9 +38,13 @@ Notes:
 - **A kind mismatch is not a type incompatibility.** There is no `DataType` to
   report for an array or an object, so it does not carry
   `INCOMPATIBLE_TYPE`/`expectedType`/`actualType`. cyoda-go answers
-  `400 BAD_REQUEST` with the offending kind named in the wire vocabulary
-  (`expected scalar, got array`) — the same answer, and the same wording shape,
-  the container-vs-scalar direction has always given.
+  `400 VALIDATION_FAILED` with the offending kind named in the wire vocabulary
+  (`expected scalar, got array`), and every kind the field does declare. The
+  code is the dictionary's own definition — the payload parsed and then failed
+  against the registered model — and it is the answer every generic validation
+  failure on a write now carries, the container-vs-scalar direction included.
+  `BAD_REQUEST` stays for what the server cannot parse: a malformed body, a bad
+  parameter, unstorable bytes.
 - **This is not a ban on polymorphic fields.** A field that declares both a
   scalar and an array admits both. Only a kind outside the declared set is
   refused. Every layer has to hold the union for this to be true — Merge folds
@@ -51,7 +55,7 @@ Notes:
   dominant kind alone silently drops the array branch.
 - **Both write doors reject; the codes differ deliberately.** With no
   `changeLevel` (and on PATCH) the model is fixed and the answer is
-  `BAD_REQUEST` — the value simply does not fit. With a `changeLevel` set the
+  `VALIDATION_FAILED` — the value simply does not fit. With a `changeLevel` set the
   write additionally proposes a schema change, and the extension path refuses
   the kind change at every level including `STRUCTURAL`, with
   `POLYMORPHIC_SLOT`.

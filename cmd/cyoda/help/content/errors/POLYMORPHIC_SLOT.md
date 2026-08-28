@@ -4,7 +4,6 @@ title: "POLYMORPHIC_SLOT — the write proposes a new kind at a declared path"
 stability: stable
 see_also:
   - errors
-  - errors.BAD_REQUEST
   - errors.VALIDATION_FAILED
   - models
 ---
@@ -25,11 +24,10 @@ Raised on a write against a model with a `changeLevel` set, where the write also
 
 Raising the `changeLevel` does not help: this is not a change-level violation. Send the kind the path declares, or re-establish the model from sample data that covers both kinds while it is `UNLOCKED` — a model can declare more than one kind for a path, and then admits all of them.
 
-On a model with no `changeLevel` the same payload is a plain validation failure (`BAD_REQUEST`, `expected scalar, got array`): nothing is being proposed, the value simply does not fit.
+On a model with no `changeLevel` the same payload is a plain validation failure (`VALIDATION_FAILED`, `expected scalar, got array`): nothing is being proposed, the value simply does not fit.
 
 ## SEE ALSO
 
 - errors
-- errors.BAD_REQUEST
 - errors.VALIDATION_FAILED
 - models

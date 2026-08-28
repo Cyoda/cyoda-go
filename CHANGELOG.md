@@ -442,7 +442,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   direction was always enforced (`expected array, got string`), so the hole was
   one-directional.
 
-  A leaf declaration now checks kind first, and answers `400 BAD_REQUEST`
+  A leaf declaration now checks kind first, and answers `400 VALIDATION_FAILED`
   with `expected scalar, got array` — the mirror of the check a container
   declaration already made. `null` is unchanged: it follows the declaration —
   always admissible on a scalar field, and on a container field where the model
@@ -468,6 +468,23 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   kind per path, so it still refuses a write matching a declared but
   non-dominant branch with `POLYMORPHIC_SLOT`. Leave `changeLevel` unset on a
   model with multi-kind fields.
+
+- **A payload that fails against the model now answers `400 VALIDATION_FAILED`,
+  not `400 BAD_REQUEST`.** The error dictionary already drew the line here:
+  `VALIDATION_FAILED` is "the payload parses but violates the registered model
+  schema", and `BAD_REQUEST` is "the server cannot parse the request". The
+  entity handler did not follow it — its catch-all answered `BAD_REQUEST` for
+  every generic validation failure, so both codes' documented meanings were
+  wrong and an SDK could not branch on them.
+
+  The catch-all now answers `VALIDATION_FAILED`, on every entity ingress. It
+  covers an undeclared field, a value whose kind the field does not declare, a
+  change the `changeLevel` does not permit, and an unaddressable field name.
+  `INCOMPATIBLE_TYPE` (a leaf's DataType) and `POLYMORPHIC_SLOT` (a proposed
+  kind change) are unchanged, and so is every `BAD_REQUEST` raised before
+  validation — an unparseable body, a parameter out of range, unstorable bytes.
+  The status stays `400` throughout, so only a client that branches on the code
+  is affected. See `docs/cloud-parity/validation-failure-code.md`.
 
 - **A JSON array posted to the sample-data import registers a different model,
   and some previously-accepted bodies are now refused.** See the entry under

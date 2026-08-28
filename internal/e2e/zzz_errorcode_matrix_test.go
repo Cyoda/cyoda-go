@@ -121,7 +121,11 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 		{Status: 422, Code: "INVALID_UNIQUE_KEY"},   // TestUniqueKeys_TransitionUpdatePartialKey
 	},
 	"patchSingleWithLoopback": {
-		{Status: 400, Code: "BAD_REQUEST"},            // TestTransactionControl_InvalidParams400/PatchSingleWithLoopback: invalid/joined transactionTimeoutMillis
+		{Status: 400, Code: "BAD_REQUEST"}, // TestTransactionControl_InvalidParams400/PatchSingleWithLoopback: invalid/joined transactionTimeoutMillis
+		// TestModelKindEnforcement_PatchRejectsKindMismatch: a patch is validated
+		// strictly — it must never widen the model — so a value whose kind the
+		// field does not declare fails against the registered model.
+		{Status: 400, Code: "VALIDATION_FAILED"},
 		{Status: 409, Code: "UNIQUE_VIOLATION"},       // TestUniqueKeys_LoopbackPatchDuplicate
 		{Status: 412, Code: "ENTITY_MODIFIED"},        // If-Match transactionId no longer matches
 		{Status: 415, Code: "UNSUPPORTED_MEDIA_TYPE"}, // non-JSON format or unrecognised Content-Type

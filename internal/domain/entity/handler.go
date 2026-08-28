@@ -227,8 +227,17 @@ func classifyBeginErr(err error) *common.AppError {
 //     (fieldPath, expectedType, actualType) — Cloud's
 //     FoundIncompatibleTypeWithEntityModelException equivalent
 //   - ingest.ErrInternalSchema       → 5xx with logged ticket (codec/diff/store failure)
-//   - anything else           → 4xx BAD_REQUEST (change-level violation,
+//   - anything else           → 4xx VALIDATION_FAILED (change-level violation,
 //     other validation failure, malformed walk input)
+//
+// The catch-all is VALIDATION_FAILED, not BAD_REQUEST: everything that reaches
+// it is a payload that PARSED and then failed against the registered model —
+// an undeclared field, a value whose kind or type the model does not admit, a
+// change the configured ChangeLevel does not permit. That is the error
+// dictionary's definition of VALIDATION_FAILED, while BAD_REQUEST is for a
+// request the server cannot parse or whose parameters are wrong. Those keep
+// BAD_REQUEST, and they are raised before this function is reached (unparseable
+// body, bad transactionWindow, unstorable bytes).
 //
 // The catch-all puts err.Error() in the response body verbatim — a 4xx carries
 // full domain detail by contract. That makes it a leak the moment a feeder
@@ -270,7 +279,7 @@ func classifyValidateOrExtendErr(err error) *common.AppError {
 	if errors.Is(err, ingest.ErrInternalSchema) {
 		return common.Internal("failed to process model schema", err)
 	}
-	return common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error())
+	return common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error())
 }
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request, format genapi.CreateParamsFormat, entityName string, modelVersion int32, params genapi.CreateParams) {
