@@ -149,7 +149,20 @@ func checkBranch(k NodeKind, existing, incoming *ModelNode, level spi.ChangeLeve
 		changed := false
 		exArr, inArr := existing.Array(), incoming.Array()
 
-		if exArr.Element() != nil && inArr.Element() != nil {
+		switch {
+		case exArr.Element() == nil && inArr.Element() != nil:
+			// The array was observed, but never with any content, so it
+			// declares no element type at all. Learning one is the same
+			// promotion a node that declares no kind undergoes, at the level
+			// an array element's changes cost. Without this the model kept
+			// declaring nothing here and silently never learned the type.
+			if !levelPermits(level, spi.ChangeLevelArrayElements) {
+				return false, fmt.Errorf("array element type at %s requires ARRAY_ELEMENTS level, but level is %q",
+					displayPath(path), level)
+			}
+			changed = true
+
+		case exArr.Element() != nil && inArr.Element() != nil:
 			// The element of an array is where ARRAY_ELEMENTS applies, and it
 			// keeps applying through further array levels.
 			elemChanged, err := checkAndExtend(exArr.Element(), inArr.Element(), level,

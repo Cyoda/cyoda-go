@@ -50,6 +50,20 @@ var catalogCoverage = map[SchemaOpKind]struct {
 			return n
 		},
 	},
+	KindAddKindBranch: {
+		old: func() *ModelNode {
+			n := NewObjectNode()
+			n.SetChild("poly", NewLeafNode(String))
+			return n
+		},
+		new: func() *ModelNode {
+			n := NewObjectNode()
+			// The same path observed as an array too: a second kind, which is
+			// what this op records.
+			n.SetChild("poly", Merge(NewLeafNode(String), NewArrayNode(NewLeafNode(String))))
+			return n
+		},
+	},
 }
 
 // TestDiffCoversCatalog asserts that every declared SchemaOpKind has
@@ -113,5 +127,6 @@ func declaredKinds() []SchemaOpKind {
 		KindAddProperty,
 		KindBroadenType,
 		KindAddArrayItemType,
+		KindAddKindBranch,
 	}
 }

@@ -53,6 +53,8 @@ func applyOp(root *ModelNode, op SchemaOp) error {
 		return applyBroadenType(root, op)
 	case KindAddArrayItemType:
 		return applyAddArrayItemType(root, op)
+	case KindAddKindBranch:
+		return applyAddKindBranch(root, op)
 	default:
 		return fmt.Errorf("unknown op kind %q", op.Kind)
 	}
@@ -139,6 +141,48 @@ func applyAddArrayItemType(root *ModelNode, op SchemaOp) error {
 		return fmt.Errorf("array element at %q declares %s, not a scalar", op.Path, kindNames(elem))
 	}
 	elem.AddScalarTypes(types...)
+	return nil
+}
+
+// applyAddKindBranch merges one encoded branch into the target node's branch
+// set, in place. Merging rather than assigning is what makes replay idempotent
+// and order-insensitive: a branch already present unions with itself, and the
+// same op applied twice leaves the same model.
+func applyAddKindBranch(root *ModelNode, op SchemaOp) error {
+	target, err := resolvePath(root, op.Path)
+	if err != nil {
+		return fmt.Errorf("resolve target: %w", err)
+	}
+	incoming, err := Unmarshal(op.Payload)
+	if err != nil {
+		return fmt.Errorf("decode branch: %w", err)
+	}
+	kinds := incoming.Kinds()
+	if len(kinds) != 1 {
+		return fmt.Errorf("add_kind_branch carries exactly one branch, got %s", kindNames(incoming))
+	}
+
+	// Declared first, so a branch that carries no payload — an object observed
+	// with no children, an array observed with no content — still lands.
+	k := kinds[0]
+	target.DeclareKind(k)
+	switch k {
+	case KindLeaf:
+		target.AddScalarTypes(incoming.Scalar().Types()...)
+	case KindObject:
+		for name, child := range incoming.Object().Children() {
+			if existing := target.Object().Child(name); existing != nil {
+				child = Merge(existing, child)
+			}
+			target.SetChild(name, child)
+		}
+	case KindArray:
+		a := incoming.Array()
+		if a.Element() != nil {
+			target.SetElement(Merge(target.Array().Element(), a.Element()))
+		}
+		target.ObserveArrayWidth(a.MaxWidth())
+	}
 	return nil
 }
 

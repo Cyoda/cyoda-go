@@ -35,38 +35,100 @@ func diffNode(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
 				displayPath(path), k)
 		}
 	}
-	// A node declares its own types: a scalar branch holds the primitive data
-	// types, and a node with no scalar branch holds the nullable marker when
-	// the structural position has been observed as nil. Diffing DeclaredTypes
-	// covers both, so nullable-marker growth on a container surfaces as a
-	// KindBroadenType op rather than being silently dropped.
-	if added := typeDifference(newN.DeclaredTypes(), oldN.DeclaredTypes()); len(added) > 0 {
-		op, err := NewBroadenType(path, added)
+	// Nullability first: a structural position newly observed as nil records
+	// the marker, which is a broaden_type of NULL on the node itself.
+	if newN.Nullable() && !oldN.Nullable() {
+		op, err := NewBroadenType(path, []DataType{Null})
 		if err != nil {
 			return fmt.Errorf("broaden_type at %q: %w", displayPath(path), err)
 		}
 		*ops = append(*ops, op)
 	}
+	// Then the scalar branch. Widening one that already exists is a
+	// broaden_type, and so is establishing the first kind on a node that
+	// declares none — that is how a null-only path widening to a scalar has
+	// always been spelled, and applyBroadenType accepts concrete types in
+	// exactly those two cases. A node that already declares another kind is
+	// gaining a BRANCH, which is handled below.
+	if ns := newN.Scalar(); ns != nil {
+		var added []DataType
+		switch os := oldN.Scalar(); {
+		case os != nil:
+			added = typeDifference(ns.Types(), os.Types())
+		case len(oldN.Kinds()) == 0:
+			added = ns.Types()
+		}
+		if len(added) > 0 {
+			op, err := NewBroadenType(path, added)
+			if err != nil {
+				return fmt.Errorf("broaden_type at %q: %w", displayPath(path), err)
+			}
+			*ops = append(*ops, op)
+		}
+	}
 	if newN.Object() != nil {
 		if oldN.Object() == nil {
-			return fmt.Errorf("adding an %s branch at %q is not yet expressible", KindObject, displayPath(path))
-		}
-		if err := diffObject(path, oldN, newN, ops); err != nil {
+			if err := emitAddKindBranch(path, KindObject, newN, ops); err != nil {
+				return err
+			}
+		} else if err := diffObject(path, oldN, newN, ops); err != nil {
 			return err
 		}
 	}
 	if newN.Array() != nil {
 		if oldN.Array() == nil {
-			return fmt.Errorf("adding an %s branch at %q is not yet expressible", KindArray, displayPath(path))
-		}
-		if err := diffArray(path, oldN, newN, ops); err != nil {
+			if err := emitAddKindBranch(path, KindArray, newN, ops); err != nil {
+				return err
+			}
+		} else if err := diffArray(path, oldN, newN, ops); err != nil {
 			return err
 		}
 	}
+	// The scalar branch is the one case broaden_type already covers: on a node
+	// that declares no kind at all, adding concrete types establishes it, and
+	// that is how a null-only path widening to a scalar has always been
+	// spelled. Only a node that already declares another kind needs the branch
+	// op.
 	if newN.Scalar() != nil && oldN.Scalar() == nil && len(oldN.Kinds()) > 0 {
-		return fmt.Errorf("adding a %s branch at %q is not yet expressible", KindLeaf, displayPath(path))
+		if err := emitAddKindBranch(path, KindLeaf, newN, ops); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// emitAddKindBranch appends an op carrying exactly the one branch `k` that
+// newN declares at this path, so replay merges that branch and nothing else.
+func emitAddKindBranch(path string, k NodeKind, newN *ModelNode, ops *[]SchemaOp) error {
+	raw, err := Marshal(isolateBranch(newN, k))
+	if err != nil {
+		return fmt.Errorf("marshal %s branch at %q: %w", k, displayPath(path), err)
+	}
+	*ops = append(*ops, NewAddKindBranch(path, raw))
+	return nil
+}
+
+// isolateBranch returns a node carrying only n's branch of kind k. The
+// nullable marker is deliberately not carried: nullability is diffed at the
+// node level, so copying it here would record it twice.
+func isolateBranch(n *ModelNode, k NodeKind) *ModelNode {
+	out := &ModelNode{}
+	out.DeclareKind(k)
+	switch k {
+	case KindLeaf:
+		out.AddScalarTypes(n.Scalar().Types()...)
+	case KindObject:
+		for name, child := range n.Object().Children() {
+			out.SetChild(name, child)
+		}
+	case KindArray:
+		a := n.Array()
+		if a.Element() != nil {
+			out.SetElement(a.Element())
+		}
+		out.ObserveArrayWidth(a.MaxWidth())
+	}
+	return out
 }
 
 func diffObject(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
@@ -112,9 +174,12 @@ func diffArray(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
 	// needs a new op kind beyond add_array_item_type. Tracked in Sub-project
 	// A.3 (polymorphic-slot kind conflicts).
 	if oldElem == nil {
+		// A scalar element uses the dedicated, cheaper op. Anything else is
+		// carried as the array branch itself: Apply materialises the element
+		// by merging the branch, because resolvePath cannot descend a "[]"
+		// segment into an element that does not exist yet.
 		if newElem.Object() != nil || newElem.Array() != nil {
-			return fmt.Errorf("array element materialization at %q requires a scalar element; got %s (extend to a scalar element first)",
-				displayPath(path), kindNames(newElem))
+			return emitAddKindBranch(path, KindArray, newN, ops)
 		}
 		op, err := NewAddArrayItemType(path, newElem.DeclaredTypes())
 		if err != nil {
