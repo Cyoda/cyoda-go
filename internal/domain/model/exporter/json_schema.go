@@ -30,16 +30,35 @@ func (e *JSONSchemaExporter) Export(node *schema.ModelNode) ([]byte, error) {
 	return json.Marshal(envelope)
 }
 
+// convert renders a node as the union of the branches it carries. A field
+// observed as both a scalar and a container declares — and enforces — both
+// kinds, so describing it by its dominant Kind alone would drop one of them.
 func (e *JSONSchemaExporter) convert(node *schema.ModelNode) map[string]any {
-	switch node.Kind() {
-	case schema.KindObject:
-		return e.convertObject(node)
-	case schema.KindArray:
-		return e.convertArray(node)
-	case schema.KindLeaf:
+	if node.Kind() == schema.KindLeaf {
 		return e.convertLeaf(node)
-	default:
+	}
+
+	branches := make([]any, 0, 3)
+	if node.Kind() == schema.KindObject {
+		branches = append(branches, e.convertObject(node))
+	}
+	// Merge promotes an object-and-array union to KindObject while keeping the
+	// element, so the array branch is looked for independently of Kind.
+	if node.Kind() == schema.KindArray || node.Element() != nil {
+		branches = append(branches, e.convertArray(node))
+	}
+	// NULL alone is the nullable marker, not a scalar observation.
+	for _, dt := range schema.ConcreteTypes(node.Types()) {
+		branches = append(branches, jsonSchemaType(dt))
+	}
+
+	switch len(branches) {
+	case 0:
 		return map[string]any{}
+	case 1:
+		return branches[0].(map[string]any)
+	default:
+		return map[string]any{"oneOf": branches}
 	}
 }
 

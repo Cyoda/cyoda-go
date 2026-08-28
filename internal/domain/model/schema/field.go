@@ -41,6 +41,13 @@ func (n *ModelNode) buildFieldCache() *cachedFields {
 	return &cachedFields{list: list, byPath: byPath}
 }
 
+// ConcreteTypes returns ts's DataTypes with the NULL marker removed — the
+// scalar observations a node carries in its own right. On a container node a
+// non-empty result is the scalar branch of a kind union: the field was also
+// observed holding a bare scalar. Exporters share it with the field walk so
+// "was a scalar observed here" has one answer.
+func ConcreteTypes(ts *TypeSet) []DataType { return concreteTypes(ts) }
+
 // concreteTypes returns ts's DataTypes with the NULL marker removed. A TypeSet
 // is either the NULL-only marker or a set of concrete types (TypeSet.Add drops
 // NULL when a concrete type is present), so this yields nil for a nil/empty set
