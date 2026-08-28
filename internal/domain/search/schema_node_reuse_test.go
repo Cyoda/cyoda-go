@@ -77,7 +77,10 @@ func TestLoadModelNode_UsesCachedParseWhenOffered(t *testing.T) {
 	store := &countingSchemaStore{node: testNode(t)}
 	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
-	node := loadModelNode(context.Background(), store, ref)
+	node, err := loadModelNode(context.Background(), store, ref)
+	if err != nil {
+		t.Fatalf("loadModelNode: %v", err)
+	}
 	if node == nil {
 		t.Fatal("expected a node")
 	}

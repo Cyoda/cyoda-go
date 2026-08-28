@@ -9,6 +9,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -24,7 +25,14 @@ func newPatternTestService(t *testing.T, tenant string, ref spi.ModelRef) (*sear
 	svc := search.NewSearchService(factory, uuids, searchStore)
 
 	ctx := tenantCtx(tenant)
-	saveMinimalModel(t, ctx, factory, ref)
+	// These tests address $.name (string operators) and $.age (a numeric
+	// comparison), so both must be declared with the types they are compared
+	// against — an undeclared path now fails the request before any pattern
+	// is examined, and a String "age" would fail on the operand's type.
+	saveModelWithFields(t, ctx, factory, ref, map[string]schema.DataType{
+		"name": schema.String,
+		"age":  schema.Integer,
+	})
 	return svc, ctx
 }
 

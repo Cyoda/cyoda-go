@@ -8,8 +8,10 @@ import (
 	"net/http"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 )
 
 // maxGroupedStatsBodySize bounds the request body for the grouped-stats
@@ -28,12 +30,18 @@ const maxGroupedStatsBodySize = 10 * 1024 * 1024
 // the model is not found for the calling tenant — the handler maps that to
 // 404 MODEL_NOT_FOUND.
 //
+// modelStore is returned alongside so the handler can hold the condition,
+// groupBy and aggregate paths to the model the way /search/direct and
+// conditional delete do — including their bounded single RefreshAndGet, which
+// is what stops a stale cached schema from falsely rejecting a field a peer
+// node has already extended the model with (.claude/rules/multi-node-primary.md).
+//
 // The handler holds a StoreResolver rather than (factory, modelStore)
 // directly so it can be unit-tested in isolation: tests inject a
 // closure that returns the desired fake store + model. Production
 // wiring at app construction supplies a closure that uses the existing
 // StoreFactory + ModelStore plumbing (see app/app.go).
-type StoreResolver func(r *http.Request, entityName, modelVersion string) (store any, model spi.ModelRef, fields map[string]schema.FieldDescriptor, ok bool, err error)
+type StoreResolver func(r *http.Request, entityName, modelVersion string) (store any, model spi.ModelRef, fields map[string]schema.FieldDescriptor, modelStore spi.ModelStore, ok bool, err error)
 
 // GroupedStatsHandler is the HTTP handler for
 // POST /api/entity/stats/{entityName}/{modelVersion}/query.
@@ -133,7 +141,7 @@ func (h *GroupedStatsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	}
 	entityName := r.PathValue("entityName")
 	modelVersion := r.PathValue("modelVersion")
-	store, model, fields, ok, err := h.resolve(r, entityName, modelVersion)
+	store, model, fields, modelStore, ok, err := h.resolve(r, entityName, modelVersion)
 	if err != nil {
 		common.WriteError(w, r, common.Internal("failed to resolve store", err))
 		return
@@ -144,6 +152,55 @@ func (h *GroupedStatsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			"model not found",
 		))
 		return
+	}
+
+	// Hold every path this request names to the model, the way /search/direct
+	// and conditional DELETE do. Grouped stats used to check none of them, so
+	// a condition, a groupBy or an aggregate naming a field the model does not
+	// declare was answered rather than refused — and the numbers came back
+	// looking like a real answer: an undeclared condition leaf annihilates to
+	// a non-match, an undeclared groupBy buckets every entity under "absent",
+	// and an undeclared SUM reports 0 as though it were the total.
+	//
+	// modelStore may be nil only from a test resolver that supplies none; a
+	// request that reached here in production always carries one.
+	if modelStore != nil {
+		refreshed, pErr := search.ValidateKnownPaths(
+			r.Context(), modelStore, model, requestFieldPaths(validated), fields)
+		if pErr != nil {
+			var appErr *common.AppError
+			if !errors.As(pErr, &appErr) {
+				appErr = common.Internal("field-path validation failed", pErr)
+			}
+			common.WriteError(w, r, appErr)
+			return
+		}
+		fields = refreshed
+
+		// Type-soundness against the REAL model. The service layer also calls
+		// ValidateConditionValueTypes, but with a nil model, so only its
+		// model-independent arm (meta fields, temporal operands) ran and an
+		// operand parsing into none of a declared field's types was accepted
+		// where /search/direct returns 400 CONDITION_TYPE_MISMATCH.
+		if len(validated.Condition) > 0 {
+			node, nErr := search.LoadModelNode(r.Context(), modelStore, model)
+			if nErr != nil {
+				common.WriteError(w, r, common.Internal("failed to load model schema for condition validation", nErr))
+				return
+			}
+			if node != nil {
+				if cond, pErr := predicate.ParseCondition(validated.Condition); pErr == nil {
+					if tErr := search.ValidateConditionValueTypes(node, cond); tErr != nil {
+						code := common.ErrCodeConditionTypeMismatch
+						if errors.Is(tErr, search.ErrInvalidFieldPath) {
+							code = common.ErrCodeInvalidFieldPath
+						}
+						common.WriteError(w, r, common.Operational(http.StatusBadRequest, code, tErr.Error()))
+						return
+					}
+				}
+			}
+		}
 	}
 
 	// Dispatch to the service layer. QueryGroupedStats already classifies
@@ -162,4 +219,48 @@ func (h *GroupedStatsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	}
 
 	common.WriteJSON(w, http.StatusOK, buckets)
+}
+
+// requestFieldPaths collects every data path a grouped-stats request names —
+// the condition's leaves, the groupBy entries and the aggregate fields — as one
+// set for [search.ValidateKnownPaths].
+//
+// The groupBy "state" entry addresses entity metadata, not a schema field, and
+// is excluded; validateGroupedStatsRequest has already marked it IsState. Both
+// remaining kinds are stored in wire form ("$.x"), which is the fields-map key
+// convention, so they need no rewriting.
+//
+// A condition that will not parse contributes nothing rather than failing here:
+// the service layer parses it too and produces the classified INVALID_CONDITION
+// this handler would otherwise pre-empt with a worse diagnostic.
+func requestFieldPaths(req *ValidatedGroupedStatsRequest) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	add := func(p string) {
+		if p == "" {
+			return
+		}
+		if _, dup := seen[p]; dup {
+			return
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+
+	if len(req.Condition) > 0 {
+		if cond, err := predicate.ParseCondition(req.Condition); err == nil {
+			for _, p := range search.ConditionFieldPaths(cond) {
+				add(p)
+			}
+		}
+	}
+	for _, g := range req.GroupBy {
+		if !g.IsState {
+			add(g.Path)
+		}
+	}
+	for _, a := range req.Aggregations {
+		add(a.Field)
+	}
+	return out
 }

@@ -13,6 +13,7 @@ import (
 
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
@@ -26,7 +27,15 @@ func saveMinimalModelSqlite(t *testing.T, ctx context.Context, factory *sqlite.S
 	if err != nil {
 		t.Fatalf("ModelStore: %v", err)
 	}
-	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref}); err != nil {
+	node := schema.NewObjectNode()
+	// The residual scan drives MATCHES_PATTERN over $.val; an undeclared path
+	// is now rejected before the scan is reached.
+	node.SetChild("val", schema.NewLeafNode(schema.String))
+	raw, err := schema.Marshal(node)
+	if err != nil {
+		t.Fatalf("schema.Marshal: %v", err)
+	}
+	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
 		t.Fatalf("Save model: %v", err)
 	}
 }

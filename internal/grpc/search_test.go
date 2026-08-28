@@ -11,6 +11,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -783,15 +784,29 @@ func grpcTenantCtx() context.Context {
 	return spi.WithUserContext(context.Background(), uc)
 }
 
-// saveMinimalModelGRPC registers a minimal model descriptor so
-// EnsureModelRegistered passes.
-func saveMinimalModelGRPC(t *testing.T, ctx context.Context, factory *memory.StoreFactory, ref spi.ModelRef) {
+// saveMinimalModelGRPC registers a model descriptor so EnsureModelRegistered
+// passes AND the conditions these tests send have declared paths to resolve
+// against. A descriptor with no schema is not a lighter version of a real
+// model — it is a model declaring no fields, which a search now rejects rather
+// than answering unvalidated.
+func saveMinimalModelGRPC(t *testing.T, ctx context.Context, factory *memory.StoreFactory, ref spi.ModelRef, fields ...string) {
 	t.Helper()
 	ms, err := factory.ModelStore(ctx)
 	if err != nil {
 		t.Fatalf("ModelStore: %v", err)
 	}
-	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref}); err != nil {
+	if len(fields) == 0 {
+		fields = []string{"name"}
+	}
+	node := schema.NewObjectNode()
+	for _, f := range fields {
+		node.SetChild(f, schema.NewLeafNode(schema.String))
+	}
+	raw, err := schema.Marshal(node)
+	if err != nil {
+		t.Fatalf("schema.Marshal: %v", err)
+	}
+	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, State: spi.ModelLocked, Schema: raw}); err != nil {
 		t.Fatalf("Save model: %v", err)
 	}
 }
@@ -1119,5 +1134,75 @@ func TestEntitySearch_SnapshotCancel_Envelope(t *testing.T) {
 	}
 	if cancelTyped.Status.Status != events.SearchSnapshotStatusJsonStatusCANCELLED {
 		t.Errorf("status = %v, want CANCELLED", cancelTyped.Status.Status)
+	}
+}
+
+// brokenSchemaModelStoreG answers Get with a descriptor whose schema blob does
+// not parse: model existence still resolves, every schema-derived view fails.
+type brokenSchemaModelStoreG struct{ ref spi.ModelRef }
+
+func (s *brokenSchemaModelStoreG) Get(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error) {
+	return &spi.ModelDescriptor{Ref: s.ref, State: spi.ModelLocked, Schema: []byte(`{"x": not json`)}, nil
+}
+func (s *brokenSchemaModelStoreG) Save(context.Context, *spi.ModelDescriptor) error { return nil }
+func (s *brokenSchemaModelStoreG) GetAll(context.Context) ([]spi.ModelRef, error)   { return nil, nil }
+func (s *brokenSchemaModelStoreG) Delete(context.Context, spi.ModelRef) error       { return nil }
+func (s *brokenSchemaModelStoreG) Lock(context.Context, spi.ModelRef) error         { return nil }
+func (s *brokenSchemaModelStoreG) Unlock(context.Context, spi.ModelRef) error       { return nil }
+func (s *brokenSchemaModelStoreG) IsLocked(context.Context, spi.ModelRef) (bool, error) {
+	return true, nil
+}
+func (s *brokenSchemaModelStoreG) SetChangeLevel(context.Context, spi.ModelRef, spi.ChangeLevel) error {
+	return nil
+}
+func (s *brokenSchemaModelStoreG) ExtendSchema(context.Context, spi.ModelRef, spi.SchemaDelta) error {
+	return nil
+}
+
+var _ spi.ModelStore = (*brokenSchemaModelStoreG)(nil)
+
+// brokenModelFactoryG serves the broken model store while delegating everything
+// else to the embedded factory.
+type brokenModelFactoryG struct {
+	spi.StoreFactory
+	ms spi.ModelStore
+}
+
+func (f *brokenModelFactoryG) ModelStore(context.Context) (spi.ModelStore, error) { return f.ms, nil }
+
+// TestDirectSearch_SchemaLoadFails_ServerErrorEnvelope covers the gRPC half of
+// the fail-closed rule. HTTP and gRPC are separate entry points
+// (.claude/rules/test-coverage.md), and the failure mode this guards against is
+// gRPC-specific: an empty stream reads to a client as "no matches", which is
+// exactly the wrong-but-available answer the fix exists to prevent.
+func TestDirectSearch_SchemaLoadFails_ServerErrorEnvelope(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+	ctx := grpcTenantCtx()
+	ref := spi.ModelRef{EntityName: "brokenschema", ModelVersion: "1"}
+
+	factory := &brokenModelFactoryG{StoreFactory: base, ms: &brokenSchemaModelStoreG{ref: ref}}
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)}
+
+	ce := makeCE(EntitySearchRequest, map[string]any{
+		"id":        "s-brokenschema-1",
+		"model":     map[string]any{"name": "brokenschema", "version": 1},
+		"condition": map[string]any{"type": "simple", "jsonPath": "$.name", "operatorType": "EQUALS", "value": "Alice"},
+	})
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(ce, stream); err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	if len(stream.sent) == 0 {
+		t.Fatal("no envelope sent; a schema-load failure must be reported, never an empty stream")
+	}
+	var typed events.EntityResponseJson
+	validateResponse(t, stream.sent[len(stream.sent)-1], &typed)
+	if typed.Success {
+		t.Fatalf("got Success=true for an unloadable schema; want a refusal")
+	}
+	if typed.Error == nil || typed.Error.Code != "SERVER_ERROR" {
+		t.Fatalf("Error = %+v, want Code=SERVER_ERROR", typed.Error)
 	}
 }

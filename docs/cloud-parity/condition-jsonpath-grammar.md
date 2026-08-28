@@ -121,6 +121,63 @@ identically. On gRPC the refusal is an envelope error (`success=false`,
 `Error.Code = CLIENT_ERROR`, `INVALID_FIELD_PATH` in the message) — never an
 empty stream, which a client would read as "no matches".
 
+## Path validation must run, or the request fails
+
+Grammar is checked without the model; **existence** is checked against it. The
+model's schema decides whether a condition's paths are real, so a schema that
+cannot be loaded is not a reason to skip the check — it is a reason to fail the
+request, per `.claude/rules/correctness-over-availability.md`.
+
+- **Schema load fails** (model store unreachable, stored schema unparseable):
+  **5xx with a ticket id.** Never a result set. An async job whose schema
+  becomes unreadable between submit and execution ends `FAILED`, not
+  `SUCCESSFUL` with a short page.
+- **Model declares no fields:** every data path the condition names is unknown
+  → **400 `INVALID_FIELD_PATH`**. A schema-less model is a model in which
+  nothing is declared, not a model that accepts anything.
+- **Lifecycle-only conditions are exempt.** A meta leaf takes its type from the
+  static meta vocabulary, not from the model schema, so such a request is
+  answerable without the schema and must not be failed when it cannot be
+  loaded.
+
+Answering without the schema is a *wrong* answer, not merely an unvalidated
+one. With no fields map the translator stamps an empty declared-type set on
+every leaf, which collapses the eight comparison and ordering operators to a
+non-match while the other eighteen keep matching — so rows that should have
+matched are dropped and the short page looks complete.
+
+**Path shape is held to the model.** `$.items[*].sku` asserts `items` is an
+array (or polymorphic with an array member); `$.items.sku` asserts `items` is
+an object. The fields-map keys carry the `[*]` hops, so the two spellings are
+distinct lookups and the one contradicting the model is rejected
+`400 INVALID_FIELD_PATH`. A positional subscript canonicalises to the wildcard
+key (`$.arr[0]` resolves against `$.arr[*]`) — see
+`positional-subscript-path.md`.
+
+### Where cyoda-go implements this today
+
+Stated precisely, because a contract this document overstates is one Cloud
+would build in more places than cyoda-go has it.
+
+| surface | grammar | path existence | schema-load failure |
+|---|---|---|---|
+| `POST /search/direct/…` | yes | yes | 5xx |
+| `POST /search/async/…` | yes | yes | 5xx (submit), job `FAILED` (execution) |
+| `DELETE /entity/{entityName}/{modelVersion}` | yes | yes | 5xx |
+| `POST /entity/stats/…/query` | yes | yes | 5xx |
+
+Grouped stats holds **three** path surfaces to the model, not one: the
+condition's leaves, the `groupBy` entries and the aggregate fields. All three
+answer `400 INVALID_FIELD_PATH` for a path the model does not declare. Cloud
+must reject on all three — a partial implementation returns an answer that
+looks real rather than an obvious failure: an undeclared condition leaf yields
+no buckets, an undeclared `groupBy` buckets every entity under a `null` key, and
+an undeclared `SUM` reports a `null` total beside a correct `count`.
+
+All four surfaces apply one bounded `RefreshAndGet` before refusing, so a field
+a peer node has just added is not falsely rejected on a node whose cached
+descriptor predates the schema-change event.
+
 **Workflow criteria are out of scope of this document.** Criteria evaluate
 through the in-process predicate evaluator, never through `ConditionToFilter`,
 so a bare criterion `jsonPath` is unaffected by this change. They are covered by

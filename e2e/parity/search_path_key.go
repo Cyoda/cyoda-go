@@ -1,7 +1,9 @@
 package parity
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
@@ -220,25 +222,35 @@ func RunSearchPathTypeMismatch400(t *testing.T, fixture BackendFixture) {
 // no other backend — a divergence, and storage internals exposed as a
 // queryable surface.
 //
-// It probes through grouped stats, NOT /search, and that choice is the whole
-// point: /search validates every data-field path against the model first, so
-// "$._meta.state" is rejected 400 INVALID_FIELD_PATH before any evaluator runs
-// and the probe would pass vacuously on a leaking backend. Grouped stats runs
-// no data-field path validation, so the condition reaches the residual
-// evaluator — which is the code this guards. Verified by reverting the fix:
-// through /search the scenario passes either way; through grouped stats it
-// fails.
+// # This scenario changed shape when grouped stats gained path validation
+//
+// It used to probe the residual EVALUATOR through grouped stats, because
+// grouped stats was the one condition surface that validated no data-field
+// path: /search rejects "$._meta.state" as an unknown field before any
+// evaluator runs, so the same probe there would pass vacuously on a leaking
+// backend.
+//
+// Grouped stats now validates its condition, groupBy and aggregate paths
+// against the model like every other surface, so that route is closed and no
+// client-supplied path can reach the evaluator with "_meta" in it. What this
+// scenario can still pin is the boundary: every surface rejects the path
+// identically.
+//
+// **The underlying leak is unreachable, not fixed.** PostgreSQL still stores
+// the domain data and the storage "_meta" block merged into one document, so
+// the residual evaluator would still resolve a "_meta" path if one ever
+// reached it — as would the groupBy / ORDER BY / aggregate arms and the
+// IS_NULL / NOT_NULL operators, which compile straight to SQL with no kernel
+// re-check. Nesting the domain data rather than merging it (cyoda-go#489)
+// removes the shared namespace outright. Until then the only thing standing
+// between a client and storage internals is the boundary check asserted below,
+// and a model that legitimately DECLARES a field named "_meta" would collide
+// with the storage block on PostgreSQL and reach the evaluator through a path
+// the model knows — the probe #489 should carry when it lands.
 //
 // Every path here carries the "$." leader. That is not cosmetic: without it
 // the request is rejected as malformed at the boundary and the probe would
-// again pass vacuously, testing the path grammar instead of the meta block.
-//
-// DELIBERATELY NOT COVERED: the groupBy / ORDER BY / aggregate arms, and the
-// IS_NULL / NOT_NULL operators. Those are compiled straight to SQL against the
-// merged document with no kernel re-check, so they still resolve _meta on
-// PostgreSQL. The fix for that (nesting the domain data rather than merging
-// it) removes the shared namespace outright and closes all of them at once.
-// When it lands, extend this scenario and delete this note.
+// pass vacuously, testing the path grammar instead of the meta block.
 func RunSearchMetaBlockNotMatchableAsDataPath(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)
@@ -277,27 +289,40 @@ func RunSearchMetaBlockNotMatchableAsDataPath(t *testing.T, fixture BackendFixtu
 	//
 	// Verified by reverting the fix: with EQUALS the scenario passes either way;
 	// with CONTAINS all three probes fail.
+	// The storage meta block is not a declared field, so naming it is naming an
+	// unknown path — rejected identically on grouped stats and on /search. Each
+	// operand is a value the entity's metadata ACTUALLY holds, so a backend
+	// that leaked would return a non-empty result rather than an empty one if
+	// the boundary check were ever removed.
 	for _, tc := range []struct {
 		label string
-		cond  client.AggregationCond
+		path  string
+		value string
 	}{
-		{"$._meta.state", client.AggregationCond{"type": "simple", "jsonPath": "$._meta.state", "operatorType": "CONTAINS", "value": "CREATE"}},
-		{"$._meta.tenant_id", client.AggregationCond{"type": "simple", "jsonPath": "$._meta.tenant_id", "operatorType": "CONTAINS", "value": tenant.ID}},
-		{"$._meta.model_name", client.AggregationCond{"type": "simple", "jsonPath": "$._meta.model_name", "operatorType": "CONTAINS", "value": modelName}},
+		{"$._meta.state", "$._meta.state", "CREATE"},
+		{"$._meta.tenant_id", "$._meta.tenant_id", tenant.ID},
+		{"$._meta.model_name", "$._meta.model_name", modelName},
 	} {
-		buckets, err := c.QueryGroupedStats(t, modelName, modelVersion, client.GroupedStatsRequest{
+		cond := client.AggregationCond{"type": "simple", "jsonPath": tc.path, "operatorType": "CONTAINS", "value": tc.value}
+		_, err := c.QueryGroupedStats(t, modelName, modelVersion, client.GroupedStatsRequest{
 			GroupBy:   []string{"$.status"},
-			Condition: &tc.cond,
+			Condition: &cond,
 		})
-		if err != nil {
-			t.Fatalf("[%s] QueryGroupedStats: %v", tc.label, err)
+		if err == nil {
+			t.Errorf("[%s] grouped stats accepted a condition on the storage meta block; "+
+				"it is not a declared field and every surface must reject it", tc.label)
+		} else if !strings.Contains(err.Error(), "INVALID_FIELD_PATH") {
+			t.Errorf("[%s] grouped stats rejected with %v, want INVALID_FIELD_PATH", tc.label, err)
 		}
-		total := int64(0)
-		for _, b := range buckets {
-			total += b.Count
+
+		// The same path on /search, so the two surfaces cannot drift apart.
+		raw := fmt.Sprintf(`{"type":"simple","jsonPath":%q,"operatorType":"CONTAINS","value":%q}`, tc.path, tc.value)
+		status, body, sErr := c.SyncSearchRaw(t, modelName, modelVersion, raw)
+		if sErr != nil {
+			t.Fatalf("[%s] SyncSearchRaw: %v", tc.label, sErr)
 		}
-		if total != 0 {
-			t.Errorf("[%s] matched %d entities: the storage meta block is addressable as entity data on this backend", tc.label, total)
+		if status != http.StatusBadRequest || !containsErrorCode(body, "INVALID_FIELD_PATH") {
+			t.Errorf("[%s] /search returned %d body=%s, want 400 INVALID_FIELD_PATH", tc.label, status, body)
 		}
 	}
 

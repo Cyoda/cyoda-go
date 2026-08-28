@@ -79,3 +79,43 @@ func TestPlanDeleteSelection_GenuinelyUnknownPath_StillRejects(t *testing.T) {
 		t.Errorf("expected exactly 1 refresh (bounded), got %d", ms.RefreshCount())
 	}
 }
+
+// TestPlanDeleteSelection_SchemaLessModel_RejectsTheDataPath closes a
+// divergence between conditional delete and /search/direct.
+//
+// planDeleteSelection guarded its whole path check with `if fields != nil`,
+// citing validateConditionPaths as doing the same. It no longer does: a model
+// declaring no fields is a model in which the named path does not exist, and
+// search answers 400 INVALID_FIELD_PATH. Delete accepted the path and then
+// translated the condition against a nil fields map — which does not make the
+// filter inert, it makes it SKEWED, because an empty declared-type set
+// annihilates the comparison operators while the string operators keep
+// matching.
+//
+// That skew decides which rows get DELETED. Of the three endpoints sharing
+// this contract, this is the one where guessing is least acceptable.
+func TestPlanDeleteSelection_SchemaLessModel_RejectsTheDataPath(t *testing.T) {
+	h := &Handler{}
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+	// A descriptor carrying no schema at all — not an empty schema.
+	bare := &spi.ModelDescriptor{Ref: ref, State: spi.ModelLocked}
+	ms := &refreshingStore{
+		getQueue:     []*spi.ModelDescriptor{bare},
+		refreshQueue: []*spi.ModelDescriptor{bare},
+	}
+
+	cond, err := predicate.ParseCondition([]byte(`{"type":"simple","jsonPath":"$.name","operatorType":"EQUALS","value":"x"}`))
+	if err != nil {
+		t.Fatalf("ParseCondition: %v", err)
+	}
+
+	_, planErr := h.planDeleteSelection(context.Background(), ms, ref, cond)
+	var appErr *common.AppError
+	if !errors.As(planErr, &appErr) {
+		t.Fatalf("conditional delete accepted a data path against a model declaring "+
+			"no fields (err = %v); /search/direct rejects it 400 INVALID_FIELD_PATH", planErr)
+	}
+	if appErr.Code != common.ErrCodeInvalidFieldPath {
+		t.Errorf("code = %q, want %q", appErr.Code, common.ErrCodeInvalidFieldPath)
+	}
+}

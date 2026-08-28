@@ -1039,54 +1039,33 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 	}
 
 	// Unknown data-field paths (TestDeleteEntities_UnknownFieldPath, error
-	// matrix row deleteEntities/INVALID_FIELD_PATH) — mirrors SearchService's
-	// unexported validateConditionPaths via the exported
-	// search.FindUnknownFieldPaths, minus its negative-cache (a Search
-	// hot-path concern this lower-volume endpoint doesn't need). It DOES
-	// keep the bounded single-refresh-then-fail retry: that refresh is the
-	// correctness half, not the optimisation. On a cluster, node A can
-	// extend a model with a new field and node B's cached descriptor map
-	// won't see it until the schema-change event arrives; without a refresh
-	// here, a condition on that field would 400 INVALID_FIELD_PATH on node B
-	// while the identical /search/direct condition succeeds via
-	// validateConditionPaths' own refresh — a cross-node false rejection.
-	// fields == nil means no schema is bound at all — same as
-	// validateConditionPaths, skip the check rather than flagging every path
-	// "unknown" against an empty map.
-	if fields != nil {
-		if unknown := search.FindUnknownFieldPaths(cond, fields); len(unknown) > 0 {
-			freshFields, refreshed, refreshErr := search.RefreshFieldsMap(ctx, modelStore, ref)
-			switch {
-			case !refreshed:
-				// Store has no cache layer to refresh — the pre-refresh
-				// miss is authoritative, same as validateConditionPaths.
-			case refreshErr != nil:
-				if errors.Is(refreshErr, spi.ErrNotFound) {
-					// Model was deleted between the earlier load and
-					// RefreshAndGet — the miss is authoritative, there is
-					// no schema left to consult.
-					break
-				}
-				slog.Debug("schema refresh failed while validating delete condition paths",
-					"pkg", "entity", "entityName", ref.EntityName, "modelVersion", ref.ModelVersion, "error", refreshErr)
-			case freshFields != nil:
-				unknown = search.FindUnknownFieldPaths(cond, freshFields)
-			}
-			if len(unknown) > 0 {
-				return deleteSelectionPlan{}, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath,
-					fmt.Sprintf("condition references unknown field path(s): %s", strings.Join(unknown, ", ")))
-			}
-			if freshFields != nil {
-				fields = freshFields
-			}
-		}
+	// matrix row deleteEntities/INVALID_FIELD_PATH). Shared with
+	// /search/direct and grouped stats through search.ValidateKnownPaths, so
+	// the three endpoints cannot drift on what counts as a known path — this
+	// block was previously a hand-copied twin of validateConditionPaths and
+	// had already drifted once, guarding itself on `fields != nil` and so
+	// accepting any path at all against a model declaring no fields.
+	//
+	// The bounded single refresh lives in the shared helper: it is the
+	// correctness half, not the optimisation, because on a cluster node A can
+	// extend a model with a new field before node B's cached descriptor sees
+	// the schema-change event. Search's negative cache stays Search's own — a
+	// hot-path concern this lower-volume endpoint does not need.
+	fields, pathErr := search.ValidateKnownPaths(ctx, modelStore, ref, search.ConditionFieldPaths(cond), fields)
+	if pathErr != nil {
+		return deleteSelectionPlan{}, pathErr
 	}
 
 	// Condition type-soundness — mirrors SearchService.Search's
-	// validateConditionTypes boundary. A schema-load hiccup degrades to
-	// "skip this check" exactly like Search's own loadModelNode does,
-	// rather than 5xx-ing on an infra flake.
-	if node := deleteModelSchemaNode(ctx, modelStore, ref); node != nil {
+	// validateConditionTypes boundary, including its failure policy: a schema
+	// that cannot be loaded fails the request. A conditional delete decided
+	// against a condition nobody could type-check is the last place to prefer
+	// an available answer to a correct one.
+	node, nodeErr := deleteModelSchemaNode(ctx, modelStore, ref)
+	if nodeErr != nil {
+		return deleteSelectionPlan{}, fmt.Errorf("failed to load model schema for condition validation: %w", nodeErr)
+	}
+	if node != nil {
 		if tErr := search.ValidateConditionValueTypes(node, cond); tErr != nil {
 			code := common.ErrCodeConditionTypeMismatch
 			if errors.Is(tErr, search.ErrInvalidFieldPath) {
@@ -1118,20 +1097,22 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 }
 
 // deleteModelSchemaNode loads and parses ref's schema for
-// planDeleteSelection's type-soundness check, mirroring search's
-// unexported loadModelNode. Returns nil (skip the check) on any load/parse
-// hiccup or an unbound schema; the caller has already gated model
-// existence separately.
-func deleteModelSchemaNode(ctx context.Context, modelStore spi.ModelStore, ref spi.ModelRef) *schema.ModelNode {
+// planDeleteSelection's type-soundness check, mirroring search's unexported
+// loadModelNode — failure policy included. A load or parse failure is an
+// ERROR: the schema is what the check needs. A (nil, nil) return means the
+// descriptor carries no schema, so there is no type constraint to apply. The
+// caller has already gated model existence separately.
+func deleteModelSchemaNode(ctx context.Context, modelStore spi.ModelStore, ref spi.ModelRef) (*schema.ModelNode, error) {
 	desc, err := modelStore.Get(ctx, ref)
-	if err != nil || desc == nil || len(desc.Schema) == 0 {
-		return nil
-	}
-	node, err := schema.Unmarshal(desc.Schema)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return node
+	if desc == nil || len(desc.Schema) == 0 {
+		// No schema bound: the model declares no typed fields, so there is no
+		// constraint to apply. Distinct from a failure to read it.
+		return nil, nil
+	}
+	return schema.Unmarshal(desc.Schema)
 }
 
 // drainDeleteSelection opens a spi.Iterable iterator scoped to ctx (pass a
