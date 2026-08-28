@@ -57,6 +57,48 @@ func TestValidate_ObjectOrArrayUnionValidatesTheSelectedBranch(t *testing.T) {
 	}
 }
 
+// A value whose KIND the field declares but whose TYPE it does not is a type
+// incompatibility, not a kind mismatch — and it answers identically whether the
+// scalar was observed alone or alongside a container. Reporting it as a kind
+// mismatch would name the value's own kind as the expected one ("expected array
+// or scalar, got number") and would drop the code and the expected/actual types
+// an SDK branches on.
+func TestValidate_ScalarBranchTypeMismatchIsIncompatibleType(t *testing.T) {
+	model := NewObjectNode()
+	model.SetChild("poly", Merge(NewLeafNode(String), NewArrayNode(NewLeafNode(String))))
+	objectOrScalar := NewObjectNode()
+	objectOrScalar.SetChild("k", NewLeafNode(String))
+	objectOrScalar.Types().Add(String)
+	model.SetChild("os", objectOrScalar)
+	model.SetChild("s", NewLeafNode(String))
+
+	for _, path := range []string{"poly", "os", "s"} {
+		errs := Validate(model, decodeJSON(t, `{"`+path+`":1}`))
+		if len(errs) != 1 {
+			t.Fatalf("%s: got %d errors %v, want exactly 1", path, len(errs), errs)
+		}
+		got := errs[0]
+		if got.Kind != ErrKindIncompatibleType {
+			t.Errorf("%s: Kind = %v, want ErrKindIncompatibleType (%v)", path, got.Kind, got)
+		}
+		if want := path + ": value of type INTEGER is not compatible with [STRING]"; got.Error() != want {
+			t.Errorf("%s: message = %q, want %q", path, got.Error(), want)
+		}
+		if len(got.ExpectedTypes) != 1 || got.ExpectedTypes[0] != String || got.ActualType != Integer {
+			t.Errorf("%s: expected=%v actual=%v, want [STRING] / INTEGER", path, got.ExpectedTypes, got.ActualType)
+		}
+	}
+
+	// A container with no scalar branch keeps answering with the kind mismatch:
+	// there is no declared type to be incompatible with.
+	pure := NewObjectNode()
+	pure.SetChild("a", NewArrayNode(NewLeafNode(String)))
+	errs := Validate(pure, decodeJSON(t, `{"a":1}`))
+	if len(errs) != 1 || errs[0].Kind != ErrKindGeneric || errs[0].Error() != "a: expected array, got number" {
+		t.Errorf("got %v, want a single generic \"a: expected array, got number\"", errs)
+	}
+}
+
 // Persistence must not lose a branch. The model is stored as its wire form and
 // read back on every write, so a branch the codec drops is a branch the model
 // stops declaring — and the model then refuses a document it was derived from.

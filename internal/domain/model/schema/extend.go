@@ -9,9 +9,15 @@ import (
 
 // ErrPolymorphicSlot is returned by Extend when the incoming payload
 // carries a different node kind at the same path as the registered schema
-// (LEAF vs OBJECT, OBJECT vs ARRAY, etc.). Cyoda Cloud represents such
-// slots via a tagged-union; cyoda-go does not yet implement that
-// representation.
+// (LEAF vs OBJECT, OBJECT vs ARRAY, etc.).
+//
+// It is about CREATING such a slot, not about having one. A model may declare
+// several kinds for a path — sample-data import merges them, Validate admits
+// every declared kind, and the exports name each branch. What a schema
+// extension cannot do is add a kind to a path, at any ChangeLevel: Extend
+// compares one kind per path, so it also refuses a write matching a declared
+// but non-dominant branch. That is why a model with multi-kind fields is used
+// with ChangeLevel unset.
 //
 // The sentinel lets handler layers distinguish polymorphic-slot rejections
 // — which the caller cannot resolve by raising ChangeLevel — from genuine
@@ -27,7 +33,7 @@ import (
 // the isNullOnlyLeaf carve-outs in checkAndExtend/checkElementWidening
 // once Sub-project A.3 lands Cloud-parity polymorphic-slot semantics.
 // Grep this identifier to find all transitional surfaces that must go.
-var ErrPolymorphicSlot = errors.New("polymorphic slot not yet supported")
+var ErrPolymorphicSlot = errors.New("a schema extension cannot create a polymorphic slot")
 
 // changeLevelRank maps each ChangeLevel to its position in the permission hierarchy.
 // Higher rank means more permissive. Empty string maps to -1 (nothing allowed).
@@ -91,7 +97,7 @@ func checkAndExtend(existing, incoming *ModelNode, level spi.ChangeLevel, path s
 			}
 			return true, nil
 		}
-		return false, fmt.Errorf("%w at %q: existing %s, incoming %s — cyoda-go does not yet support polymorphic slots (Cyoda Cloud does); normalize the field to one kind per record (e.g. always use an array, or always a scalar) until parity ships",
+		return false, fmt.Errorf("%w at %q: the model declares %s here, the payload carries %s. Send the declared kind, or re-establish the model from sample data covering both kinds while it is UNLOCKED (a model may declare several kinds for a path; leave changeLevel unset to write them)",
 			ErrPolymorphicSlot, path, existing.Kind(), incoming.Kind())
 	}
 
@@ -186,7 +192,7 @@ func checkElementWidening(existingElem, incomingElem *ModelNode, level spi.Chang
 			}
 			return true, nil
 		}
-		return false, fmt.Errorf("%w at %s[]: existing %s, incoming %s — cyoda-go does not yet support polymorphic slots (Cyoda Cloud does); normalize the array elements to one kind per record until parity ships",
+		return false, fmt.Errorf("%w at %s[]: the model declares %s elements here, the payload carries %s. Send the declared kind, or re-establish the model from sample data covering both kinds while it is UNLOCKED",
 			ErrPolymorphicSlot, path, existingElem.Kind(), incomingElem.Kind())
 	}
 

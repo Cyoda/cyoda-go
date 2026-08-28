@@ -132,6 +132,13 @@ func validateNode(model *ModelNode, data any, path string, depth int) []Validati
 		if matchesScalarBranch(model, data) {
 			return nil
 		}
+		// The scalar KIND is declared here, so the value's kind is not the
+		// complaint — its type is. Answer exactly as a leaf declaration does,
+		// so identical input gets the identical code and Props whether the
+		// scalar was observed alone or alongside a container.
+		if concrete := ConcreteTypes(model.Types()); len(concrete) > 0 {
+			return []ValidationError{incompatibleType(concrete, data, path)}
+		}
 	}
 	return []ValidationError{{
 		Path:    path,
@@ -241,23 +248,27 @@ func validateLeaf(model *ModelNode, data any, path string) []ValidationError {
 			Kind:    ErrKindGeneric,
 		}}
 	}
-	dataType := inferDataType(data)
-	modelTypes := model.Types().Types()
-	for _, mt := range modelTypes {
-		if IsAssignableTo(dataType, mt) {
-			return nil
-		}
+	if matchesScalarBranch(model, data) {
+		return nil
 	}
-	// Copy modelTypes to detach from the model node's internal slice.
-	expected := make([]DataType, len(modelTypes))
-	copy(expected, modelTypes)
-	return []ValidationError{{
+	return []ValidationError{incompatibleType(model.Types().Types(), data, path)}
+}
+
+// incompatibleType builds the "kind is right, type is wrong" failure — the
+// dictionary-aligned INCOMPATIBLE_TYPE signal, carrying the structured context
+// the entity handler renders into problem-detail Props.
+func incompatibleType(declared []DataType, data any, path string) ValidationError {
+	dataType := inferDataType(data)
+	// Copy declared to detach from the model node's internal slice.
+	expected := make([]DataType, len(declared))
+	copy(expected, declared)
+	return ValidationError{
 		Path:          path,
-		Message:       fmt.Sprintf("value of type %s is not compatible with %v", dataType, modelTypes),
+		Message:       fmt.Sprintf("value of type %s is not compatible with %v", dataType, declared),
 		Kind:          ErrKindIncompatibleType,
 		ExpectedTypes: expected,
 		ActualType:    dataType,
-	}}
+	}
 }
 
 // InferDataType maps a Go value (typically from JSON decoding with

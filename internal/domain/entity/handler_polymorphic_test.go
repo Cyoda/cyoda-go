@@ -15,7 +15,7 @@ import (
 // schema.ErrPolymorphicSlot-wrapped error is classified as an operational
 // 4xx with the dedicated POLYMORPHIC_SLOT code — NOT a generic BAD_REQUEST
 // and NOT a 5xx internal error. SDKs detect this code to display the
-// "normalize the field" guidance instead of the misleading
+// send-the-declared-kind guidance instead of the misleading
 // "change level violation" text previously exposed.
 func TestClassifyValidateOrExtendErr_PolymorphicSlot(t *testing.T) {
 	// Wrap the sentinel the same way schema.Extend does at its call site.
