@@ -164,15 +164,19 @@ would build in more places than cyoda-go has it.
 | `POST /search/direct/…` | yes | yes | 5xx |
 | `POST /search/async/…` | yes | yes | 5xx (submit), job `FAILED` (execution) |
 | `DELETE /entity/{entityName}/{modelVersion}` | yes | yes | 5xx |
-| `POST /entity/stats/…/query` | yes | **no** | 5xx |
+| `POST /entity/stats/…/query` | yes | yes | 5xx |
 
-Grouped stats validates the condition's grammar, its patterns and its
-model-independent operand types, but performs **no schema-membership check** —
-on the condition, the `groupBy` paths or the aggregate fields. A condition
-naming a field the model does not declare is accepted there and answered from a
-filter whose comparison leaves annihilate. Cloud should not read the rows above
-as licence to skip it; cyoda-go intends to close it, and the gap is recorded
-here rather than papered over.
+Grouped stats holds **three** path surfaces to the model, not one: the
+condition's leaves, the `groupBy` entries and the aggregate fields. All three
+answer `400 INVALID_FIELD_PATH` for a path the model does not declare. Cloud
+must reject on all three — a partial implementation returns an answer that
+looks real rather than an obvious failure: an undeclared condition leaf yields
+no buckets, an undeclared `groupBy` buckets every entity under a `null` key, and
+an undeclared `SUM` reports a `null` total beside a correct `count`.
+
+All four surfaces apply one bounded `RefreshAndGet` before refusing, so a field
+a peer node has just added is not falsely rejected on a node whose cached
+descriptor predates the schema-change event.
 
 **Workflow criteria are out of scope of this document.** Criteria evaluate
 through the in-process predicate evaluator, never through `ConditionToFilter`,

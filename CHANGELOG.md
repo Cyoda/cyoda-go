@@ -35,8 +35,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   the schema is not a dependency of that request.
 
 - **A condition naming a data path on a model that declares no fields is now
-  rejected**, on `/search/direct`, `/search/async` and conditional
-  `DELETE /entity/{name}/{version}`. Such a model was previously treated as
+  rejected**, on `/search/direct`, `/search/async`, conditional
+  `DELETE /entity/{name}/{version}` and grouped stats. Such a model was previously treated as
   "nothing to validate against", so any path at all was accepted and the query
   answered — and on the delete path that decided which rows were removed. It is
   instead a model in which the named path does not exist, and the request is
@@ -49,11 +49,27 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   it against an out-of-band or legacy row rather than against a request anyone
   can send today, which is why no E2E test accompanies it.
 
-  Grouped stats is **not** included: it performs no schema-membership
-  validation of any kind today — not for the condition, the `groupBy` paths, or
-  the aggregate fields — and adding it needs model-store plumbing the endpoint
-  does not have, so that a stale cached schema does not falsely reject a field
-  a peer node has already extended the model with. Tracked separately.
+- **Grouped stats now validates its paths against the model.** It previously
+  performed no schema-membership check of any kind — not on the condition, the
+  `groupBy` paths, or the aggregate fields — while `/search/direct` and
+  conditional delete both rejected an undeclared path with
+  `400 INVALID_FIELD_PATH`.
+
+  What made this worse than a missing check is that the answer looked real. A
+  condition leaf on an undeclared field annihilates to a non-match and returns
+  no buckets; an undeclared `groupBy` path buckets every entity together under
+  `"value": null`; and an undeclared `SUM` reports `"total": null` alongside a
+  correct `count`. All three returned `200`.
+
+  Its condition type check was schema-blind for the same reason — the service
+  passed a nil model, so only the model-independent arm ran. An operand parsing
+  into none of a declared field's types is now `400 CONDITION_TYPE_MISMATCH`,
+  matching `/search/direct`.
+
+  All three surfaces get the same bounded single schema refresh search and
+  delete already had, so a field a peer node has just added to the model is not
+  falsely rejected on a node whose cached descriptor predates the schema-change
+  event.
 
   A path's shape is held to the model on the endpoints that validate:
   `$.items[*].sku` asserts `items` is an array and `$.items.sku` asserts it is

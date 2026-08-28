@@ -2,7 +2,9 @@ package search
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
@@ -266,4 +268,71 @@ func fieldsFromDescriptor(desc *spi.ModelDescriptor) (map[string]schema.FieldDes
 		return nil, fmt.Errorf("failed to unmarshal model schema: %w", err)
 	}
 	return node.FieldsMap(), nil
+}
+
+// ConditionFieldPaths returns every data-field JSONPath cond names, normalised
+// to the FieldsMap key convention. Lifecycle, function and nil sub-conditions
+// contribute nothing. Duplicates are folded out.
+//
+// Exported so a caller outside this package can assemble a path set spanning
+// more than a condition — grouped stats also holds its groupBy paths and
+// aggregate fields to the model — and hand the whole set to
+// [ValidateKnownPaths] in one call.
+func ConditionFieldPaths(cond predicate.Condition) []string {
+	return extractFieldPaths(cond)
+}
+
+// ValidateKnownPaths holds every path in paths to the fields the model
+// declares, returning the fields map they validated against.
+//
+// A path absent from fields triggers exactly ONE RefreshAndGet before the
+// request is refused, and the recheck decides. That refresh is the correctness
+// half, not an optimisation: on a cluster, node A can extend a model with a new
+// field while node B's cached descriptor still predates the schema-change
+// event, and without it node B answers 400 for a field the model genuinely has
+// while the identical request succeeds on node A. Bounded to one attempt so a
+// misconfigured client cannot amplify into a refresh storm.
+//
+// A nil fields map is not "nothing to check against": it is a model declaring
+// no fields, in which every path is unknown.
+//
+// The returned error is a 400 INVALID_FIELD_PATH *common.AppError naming the
+// paths that remain unknown. On success the returned map is the refreshed one
+// when a refresh happened, so the caller types its leaves against the schema
+// the paths were actually validated against rather than the stale one.
+func ValidateKnownPaths(
+	ctx context.Context,
+	modelStore spi.ModelStore,
+	ref spi.ModelRef,
+	paths []string,
+	fields map[string]schema.FieldDescriptor,
+) (map[string]schema.FieldDescriptor, error) {
+	if len(paths) == 0 {
+		return fields, nil
+	}
+	unknown := findUnknownPaths(paths, fields)
+	if len(unknown) == 0 {
+		return fields, nil
+	}
+
+	freshFields, refreshed, refreshErr := RefreshFieldsMap(ctx, modelStore, ref)
+	switch {
+	case !refreshed:
+		// No cache layer to refresh — the miss is authoritative.
+	case refreshErr != nil:
+		if !errors.Is(refreshErr, spi.ErrNotFound) {
+			slog.Debug("schema refresh failed during field-path validation",
+				"pkg", "search", "entityName", ref.EntityName,
+				"modelVersion", ref.ModelVersion, "error", refreshErr)
+		}
+		// ErrNotFound: the model was deleted between the two reads, so there
+		// is no schema authority left and the miss stands.
+	case freshFields != nil:
+		unknown = findUnknownPaths(unknown, freshFields)
+		fields = freshFields
+	}
+	if len(unknown) > 0 {
+		return nil, invalidPathError(unknown)
+	}
+	return fields, nil
 }

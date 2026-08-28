@@ -245,3 +245,75 @@ func TestGroupedStats_NonJSONPathCondition_Returns400(t *testing.T) {
 		})
 	}
 }
+
+// --- Schema membership, not just grammar ---
+//
+// The tests above cover paths outside the path GRAMMAR. A grammatically
+// perfect path naming a field the model does not declare was a different
+// matter: grouped stats performed no schema-membership check at all, on any of
+// its three path surfaces, where /search/direct and conditional DELETE both
+// answer 400 INVALID_FIELD_PATH. The answer it gave looked real — an
+// undeclared condition leaf annihilates to a non-match, an undeclared groupBy
+// buckets every entity together, and an undeclared SUM reports 0 as the total.
+
+// TestGroupedStats_UnknownGroupByField_Returns400 groups by a well-formed path
+// the model does not declare.
+func TestGroupedStats_UnknownGroupByField_Returns400(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+
+	const model = "e2e-grouped-stats-unknown-groupby"
+	setupStatsModel(t, model)
+	createEntityE2E(t, model, 1, `{"variantId":"v1","price":10.0}`)
+
+	path := fmt.Sprintf("/api/entity/stats/%s/1/query", model)
+	resp := doAuth(t, http.MethodPost, path, `{"groupBy": ["$.noSuchField"]}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+	commontest.ExpectErrorCode(t, resp, "INVALID_FIELD_PATH")
+}
+
+// TestGroupedStats_UnknownConditionField_Returns400 filters on a well-formed
+// path the model does not declare — the same condition /search/direct refuses.
+func TestGroupedStats_UnknownConditionField_Returns400(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+
+	const model = "e2e-grouped-stats-unknown-cond"
+	setupStatsModel(t, model)
+	createEntityE2E(t, model, 1, `{"variantId":"v1","price":10.0}`)
+
+	body := `{"groupBy": ["$.variantId"], "condition": {"type":"simple","jsonPath":"$.noSuchField","operatorType":"EQUALS","value":"x"}}`
+	path := fmt.Sprintf("/api/entity/stats/%s/1/query", model)
+	resp := doAuth(t, http.MethodPost, path, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+	commontest.ExpectErrorCode(t, resp, "INVALID_FIELD_PATH")
+}
+
+// TestGroupedStats_UnknownAggregationField_Returns400 sums a well-formed path
+// the model does not declare. Pre-fix this answered 200 with 0 as the total.
+func TestGroupedStats_UnknownAggregationField_Returns400(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+
+	const model = "e2e-grouped-stats-unknown-agg"
+	setupStatsModel(t, model)
+	createEntityE2E(t, model, 1, `{"variantId":"v1","price":10.0}`)
+
+	body := `{"groupBy": ["$.variantId"], "aggregations": [{"op":"sum","field":"$.noSuchField","as":"total"}]}`
+	path := fmt.Sprintf("/api/entity/stats/%s/1/query", model)
+	resp := doAuth(t, http.MethodPost, path, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+	commontest.ExpectErrorCode(t, resp, "INVALID_FIELD_PATH")
+}

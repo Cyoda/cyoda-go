@@ -389,3 +389,16 @@ func (s *SearchService) validateConditionTypes(ctx context.Context, modelStore s
 	}
 	return nil
 }
+
+// LoadModelNode fetches and parses the model schema for ref.
+//
+// Exported for callers outside this package that must run
+// [ValidateConditionValueTypes] against the real model rather than against nil
+// — currently the grouped-stats handler, whose type check was schema-blind
+// while every other condition surface's was not. Failure policy is the one
+// stated on the unexported loader: a load or parse failure is an error, while
+// (nil, nil) means the descriptor carries no schema and there is no type
+// constraint to apply.
+func LoadModelNode(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (*schema.ModelNode, error) {
+	return loadModelNode(ctx, store, ref)
+}

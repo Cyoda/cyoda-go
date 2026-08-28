@@ -2,6 +2,7 @@ package entity_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -93,8 +94,8 @@ func TestGroupedStatsHandler_RejectsUnknownTopLevelField(t *testing.T) {
 }
 
 func TestGroupedStatsHandler_Returns404OnUnknownModel(t *testing.T) {
-	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, bool, error) {
-		return nil, spi.ModelRef{}, nil, false, nil
+	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+		return nil, spi.ModelRef{}, nil, nil, false, nil
 	}
 	h := entity.NewGroupedStatsHandler(resolver, 10000)
 	body := strings.NewReader(`{"groupBy":["state"]}`)
@@ -114,8 +115,8 @@ func TestGroupedStatsHandler_Returns404OnUnknownModel(t *testing.T) {
 func TestGroupedStatsHandler_BackendNotSupportedReturns501(t *testing.T) {
 	// "store" satisfies neither Iterable nor GroupedAggregator.
 	type empty struct{}
-	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, bool, error) {
-		return empty{}, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, true, nil
+	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+		return empty{}, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, nil, true, nil
 	}
 	h := entity.NewGroupedStatsHandler(resolver, 10000)
 	body := strings.NewReader(`{"groupBy":["state"]}`)
@@ -139,8 +140,8 @@ func TestGroupedStatsHandler_GroupCardinalityExceededReturns422(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "allocated"}, Data: []byte(`{}`)},
 	}
 	store := &fakeIterable{entities: rows}
-	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, bool, error) {
-		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, true, nil
+	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, nil, true, nil
 	}
 	h := entity.NewGroupedStatsHandler(resolver, 1)
 	body := strings.NewReader(`{"groupBy":["state"]}`)
@@ -162,8 +163,8 @@ func TestGroupedStatsHandler_InvalidConditionReturns400(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
 	}
 	store := &fakeIterable{entities: rows}
-	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, bool, error) {
-		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, true, nil
+	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, nil, true, nil
 	}
 	h := entity.NewGroupedStatsHandler(resolver, 10000)
 	// Condition with bogus "type" — predicate.ParseCondition rejects it.
@@ -186,8 +187,8 @@ func TestGroupedStatsHandler_LifecycleTemporalTypeMismatchReturns400(t *testing.
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
 	}
 	store := &fakeIterable{entities: rows}
-	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, bool, error) {
-		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, true, nil
+	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, nil, true, nil
 	}
 	h := entity.NewGroupedStatsHandler(resolver, 10000)
 	// Parse-based (spec §6): a comparison operand that parses into no temporal
@@ -212,8 +213,8 @@ func TestGroupedStatsHandler_UnknownMetaFieldReturns400(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
 	}
 	store := &fakeIterable{entities: rows}
-	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, bool, error) {
-		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, true, nil
+	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, nil, true, nil
 	}
 	h := entity.NewGroupedStatsHandler(resolver, 10000)
 	// "bogus" is not a recognized meta filter field — parity with /search's
@@ -237,8 +238,8 @@ func TestGroupedStatsHandler_MalformedBetweenArityReturns400(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"price":10}`)},
 	}
 	store := &fakeIterable{entities: rows}
-	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, bool, error) {
-		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, true, nil
+	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, nil, true, nil
 	}
 	h := entity.NewGroupedStatsHandler(resolver, 10000)
 	body := strings.NewReader(`{"groupBy":["state"],"condition":{"type":"simple","jsonPath":"$.price","operatorType":"BETWEEN","value":[10]}}`)
@@ -262,8 +263,8 @@ func TestGroupedStatsHandler_HappyPathReturns200(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "allocated"}, Data: []byte(`{}`)},
 	}
 	store := &fakeIterable{entities: rows}
-	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, bool, error) {
-		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, true, nil
+	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, nil, true, nil
 	}
 	h := entity.NewGroupedStatsHandler(resolver, 10000)
 	body := strings.NewReader(`{"groupBy":["state"]}`)
@@ -292,8 +293,8 @@ func TestGroupedStatsHandler_HappyPathReturns200(t *testing.T) {
 }
 
 func TestGroupedStatsHandler_ResolverError_Returns500(t *testing.T) {
-	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, bool, error) {
-		return nil, spi.ModelRef{}, nil, false, errors.New("boom")
+	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+		return nil, spi.ModelRef{}, nil, nil, false, errors.New("boom")
 	}
 	h := entity.NewGroupedStatsHandler(resolver, 10000)
 	body := strings.NewReader(`{"groupBy":["state"]}`)
@@ -309,6 +310,136 @@ func TestGroupedStatsHandler_ResolverError_Returns500(t *testing.T) {
 
 // Compile-time sanity: confirm the StoreResolver signature is what the
 // router-wiring site expects.
-var _ entity.StoreResolver = func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, bool, error) {
-	return nil, spi.ModelRef{}, nil, false, nil
+var _ entity.StoreResolver = func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+	return nil, spi.ModelRef{}, nil, nil, false, nil
+}
+
+// --- Schema-membership validation (grouped stats) ---
+//
+// /search/direct and conditional DELETE both reject a condition naming a field
+// the model does not declare, with 400 INVALID_FIELD_PATH. Grouped stats did
+// not check at all — not the condition, not the groupBy paths, not the
+// aggregate fields — so such a request was answered from a filter whose
+// comparison leaves annihilate while its string leaves keep matching. The
+// numbers came back looking like a real answer.
+
+// declaredFieldsModelStore serves a descriptor declaring the given String
+// leaves. It implements no RefreshAndGet: the cached miss is authoritative,
+// which is the same shape validateConditionPaths treats as final.
+type declaredFieldsModelStore struct {
+	ref    spi.ModelRef
+	fields []string
+}
+
+func (s *declaredFieldsModelStore) Get(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error) {
+	node := schema.NewObjectNode()
+	for _, f := range s.fields {
+		dt := schema.String
+		if f == "age" {
+			dt = schema.Integer
+		}
+		node.SetChild(f, schema.NewLeafNode(dt))
+	}
+	raw, err := schema.Marshal(node)
+	if err != nil {
+		return nil, err
+	}
+	return &spi.ModelDescriptor{Ref: s.ref, State: spi.ModelLocked, Schema: raw}, nil
+}
+
+func (s *declaredFieldsModelStore) Save(context.Context, *spi.ModelDescriptor) error { return nil }
+func (s *declaredFieldsModelStore) GetAll(context.Context) ([]spi.ModelRef, error)   { return nil, nil }
+func (s *declaredFieldsModelStore) Delete(context.Context, spi.ModelRef) error       { return nil }
+func (s *declaredFieldsModelStore) Lock(context.Context, spi.ModelRef) error         { return nil }
+func (s *declaredFieldsModelStore) Unlock(context.Context, spi.ModelRef) error       { return nil }
+func (s *declaredFieldsModelStore) IsLocked(context.Context, spi.ModelRef) (bool, error) {
+	return true, nil
+}
+func (s *declaredFieldsModelStore) SetChangeLevel(context.Context, spi.ModelRef, spi.ChangeLevel) error {
+	return nil
+}
+func (s *declaredFieldsModelStore) ExtendSchema(context.Context, spi.ModelRef, spi.SchemaDelta) error {
+	return nil
+}
+
+var _ spi.ModelStore = (*declaredFieldsModelStore)(nil)
+
+// groupedStatsPathReq drives one request against a model declaring "name",
+// returning the recorder.
+func groupedStatsPathReq(t *testing.T, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	ref := spi.ModelRef{EntityName: "X", ModelVersion: "1"}
+	ms := &declaredFieldsModelStore{ref: ref, fields: []string{"name", "age"}}
+	fields := map[string]schema.FieldDescriptor{
+		"$.name": {Path: "$.name", Types: []spi.DataType{spi.String}},
+		"$.age":  {Path: "$.age", Types: []spi.DataType{spi.Integer}},
+	}
+	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+		return &fakeIterable{}, ref, fields, ms, true, nil
+	}
+	h := entity.NewGroupedStatsHandler(resolver, 10000)
+	req := httptest.NewRequest(http.MethodPost, "/api/entity/stats/X/1/query", strings.NewReader(body))
+	req.SetPathValue("entityName", "X")
+	req.SetPathValue("modelVersion", "1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestGroupedStatsHandler_UnknownConditionPath_Rejected(t *testing.T) {
+	rec := groupedStatsPathReq(t, `{"groupBy":["state"],"condition":{"type":"simple","jsonPath":"$.nope","operatorType":"EQUALS","value":"x"}}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400 — /search/direct rejects this condition (body: %s)", rec.Code, rec.Body.String())
+	}
+	if got := decodeProblemErrorCode(t, rec.Body.Bytes()); got != "INVALID_FIELD_PATH" {
+		t.Fatalf("errorCode=%s, want INVALID_FIELD_PATH", got)
+	}
+}
+
+func TestGroupedStatsHandler_UnknownGroupByPath_Rejected(t *testing.T) {
+	rec := groupedStatsPathReq(t, `{"groupBy":["$.nope"]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400: grouping by a field the model does not declare "+
+			"buckets every entity under \"absent\" and reports it as a result (body: %s)",
+			rec.Code, rec.Body.String())
+	}
+	if got := decodeProblemErrorCode(t, rec.Body.Bytes()); got != "INVALID_FIELD_PATH" {
+		t.Fatalf("errorCode=%s, want INVALID_FIELD_PATH", got)
+	}
+}
+
+func TestGroupedStatsHandler_UnknownAggregateField_Rejected(t *testing.T) {
+	rec := groupedStatsPathReq(t, `{"groupBy":["state"],"aggregations":[{"op":"sum","field":"$.nope","as":"s"}]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400: summing a field the model does not declare "+
+			"reports 0 as though it were the total (body: %s)", rec.Code, rec.Body.String())
+	}
+	if got := decodeProblemErrorCode(t, rec.Body.Bytes()); got != "INVALID_FIELD_PATH" {
+		t.Fatalf("errorCode=%s, want INVALID_FIELD_PATH", got)
+	}
+}
+
+// The accept side: a declared path on every surface still runs.
+func TestGroupedStatsHandler_DeclaredPaths_StillAccepted(t *testing.T) {
+	rec := groupedStatsPathReq(t, `{"groupBy":["$.name"],"condition":{"type":"simple","jsonPath":"$.name","operatorType":"EQUALS","value":"x"}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200 for paths the model declares (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestGroupedStatsHandler_ConditionTypeMismatch_Rejected closes the other half
+// of grouped stats' schema blindness. The service deliberately passed a nil
+// model to ValidateConditionValueTypes — commented as "grouped-stats has no
+// model-schema plumbing" — so the schema-DEPENDENT arm of that check was
+// skipped and an operand that parses into none of a declared field's types was
+// accepted. /search/direct answers 400 CONDITION_TYPE_MISMATCH for the same
+// condition. The plumbing exists now.
+func TestGroupedStatsHandler_ConditionTypeMismatch_Rejected(t *testing.T) {
+	rec := groupedStatsPathReq(t, `{"groupBy":["state"],"condition":{"type":"simple","jsonPath":"$.age","operatorType":"GREATER_THAN","value":"not-a-number"}}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if got := decodeProblemErrorCode(t, rec.Body.Bytes()); got != "CONDITION_TYPE_MISMATCH" {
+		t.Fatalf("errorCode=%s, want CONDITION_TYPE_MISMATCH", got)
+	}
 }

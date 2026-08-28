@@ -175,16 +175,19 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 
 	// Condition type-soundness (correctness-over-availability): mirrors the
 	// search path's validateConditionTypes boundary for its model-independent
-	// parts. A nil model is passed deliberately — grouped-stats has no
-	// model-schema plumbing (a separate, unflagged concern), but the
-	// lifecycle/temporal/meta-field rules validateLifecycleType enforces
-	// (known meta field; valid operator + RFC3339 operand on temporal
-	// fields) don't need the schema at all, and ValidateConditionValueTypes
-	// gracefully skips the schema-dependent data-field check when model is
-	// nil. Without this, e.g. a CONTAINS operator against the temporal
-	// creationDate meta field would silently produce an empty result here
-	// (never matching in ConditionToFilter/match.Prepare) instead of the 400
-	// CONDITION_TYPE_MISMATCH the equivalent /search request returns.
+	// parts — the lifecycle/temporal/meta-field rules validateLifecycleType
+	// enforces (known meta field; valid operator + RFC3339 operand on temporal
+	// fields), which need no schema. Without this, e.g. a CONTAINS operator
+	// against the temporal creationDate meta field would silently produce an
+	// empty result here instead of the 400 CONDITION_TYPE_MISMATCH the
+	// equivalent /search request returns.
+	//
+	// A nil model is passed because this layer has none. The SCHEMA-dependent
+	// arm — an operand parsing into none of a declared field's types — runs at
+	// the handler, which holds the model store and validates the condition's,
+	// groupBy's and aggregates' paths against the model in the same place. A
+	// direct caller of this service that bypasses the handler gets only the
+	// model-independent half, which is why the handler is the boundary.
 	if parsedCond != nil {
 		if tErr := search.ValidateConditionValueTypes(nil, parsedCond); tErr != nil {
 			// Propagate tErr directly (not re-wrapped): it already wraps
