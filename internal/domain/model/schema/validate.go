@@ -123,7 +123,7 @@ func validateObject(model *ModelNode, data any, path string, depth int) []Valida
 	}
 	obj, ok := data.(map[string]any)
 	if !ok {
-		return []ValidationError{{Path: path, Message: fmt.Sprintf("expected object, got %T", data)}}
+		return []ValidationError{{Path: path, Message: "expected object, got " + jsonKindName(data)}}
 	}
 
 	var errs []ValidationError
@@ -157,7 +157,7 @@ func validateArray(model *ModelNode, data any, path string, depth int) []Validat
 	}
 	arr, ok := data.([]any)
 	if !ok {
-		return []ValidationError{{Path: path, Message: fmt.Sprintf("expected array, got %T", data)}}
+		return []ValidationError{{Path: path, Message: "expected array, got " + jsonKindName(data)}}
 	}
 
 	elem := model.Element()
@@ -177,6 +177,20 @@ func validateLeaf(model *ModelNode, data any, path string) []ValidationError {
 	if data == nil {
 		// Null is compatible with any type.
 		return nil
+	}
+	// Kind before type. A leaf declares a scalar and nothing else, so a
+	// container value is inadmissible whatever its contents — the mirror of
+	// the "expected object/array, got …" checks a container declaration
+	// makes. Asking inferDataType first would classify a container as String
+	// (its default for anything it does not recognise) and a STRING field
+	// would then admit any array or object.
+	switch data.(type) {
+	case map[string]any, []any:
+		return []ValidationError{{
+			Path:    path,
+			Message: "expected scalar, got " + jsonKindName(data),
+			Kind:    ErrKindGeneric,
+		}}
 	}
 	dataType := inferDataType(data)
 	modelTypes := model.Types().Types()
@@ -256,6 +270,30 @@ func inferDataType(v any) DataType {
 		// No float64/int/int64 fallbacks. Callers must use json.UseNumber.
 		// If something leaks through, map to String so validation fails noisily.
 		return String
+	}
+}
+
+// jsonKindName names a decoded value's JSON kind in the wire vocabulary, so a
+// rejection tells the caller what they sent in the terms their document is
+// written in rather than in Go's type names.
+func jsonKindName(data any) string {
+	switch data.(type) {
+	case map[string]any:
+		return "object"
+	case []any:
+		return "array"
+	case string:
+		return "string"
+	case json.Number:
+		return "number"
+	case bool:
+		return "boolean"
+	case nil:
+		return "null"
+	default:
+		// Unreachable for json.Decoder output with UseNumber; naming the kind
+		// generically keeps a leaked type out of the response.
+		return "value"
 	}
 }
 
