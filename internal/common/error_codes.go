@@ -31,7 +31,6 @@ const (
 	ErrCodeIncompatibleType          = "INCOMPATIBLE_TYPE"
 	ErrCodeInvalidChangeLevel        = "INVALID_CHANGE_LEVEL"
 	ErrCodeInvalidFieldPath          = "INVALID_FIELD_PATH"
-	ErrCodePolymorphicSlot           = "POLYMORPHIC_SLOT"
 	ErrCodeUnauthorized              = "UNAUTHORIZED"
 	ErrCodeForbidden                 = "FORBIDDEN"
 	ErrCodeFeatureDisabled           = "FEATURE_DISABLED"

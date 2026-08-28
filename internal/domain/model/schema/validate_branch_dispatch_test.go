@@ -68,7 +68,7 @@ func TestValidate_ScalarBranchTypeMismatchIsIncompatibleType(t *testing.T) {
 	model.SetChild("poly", Merge(NewLeafNode(String), NewArrayNode(NewLeafNode(String))))
 	objectOrScalar := NewObjectNode()
 	objectOrScalar.SetChild("k", NewLeafNode(String))
-	objectOrScalar.Types().Add(String)
+	objectOrScalar.AddScalarTypes(String)
 	model.SetChild("os", objectOrScalar)
 	model.SetChild("s", NewLeafNode(String))
 
@@ -140,7 +140,7 @@ func TestValidate_NullFollowsTheDeclaration(t *testing.T) {
 
 	nullableObj := NewObjectNode()
 	nullableObj.SetChild("k", NewLeafNode(String))
-	nullableObj.Types().Add(Null)
+	nullableObj.AddScalarTypes(Null)
 	model.SetChild("no", nullableObj)
 
 	model.SetChild("s", NewLeafNode(String))

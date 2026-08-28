@@ -26,8 +26,8 @@ func TestImport_TopLevelArrayWalksAsDocumentCollection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Import: %v", err)
 	}
-	if node.Kind() != schema.KindObject {
-		t.Fatalf("root kind = %v, want OBJECT", node.Kind())
+	if node.Object() == nil {
+		t.Fatalf("root kinds = %v, want the object branch", node.Kinds())
 	}
 
 	want := map[string][]schema.DataType{
@@ -88,8 +88,8 @@ func TestImport_EmptyArrayDerivesEmptyObjectModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Import: %v", err)
 	}
-	if node.Kind() != schema.KindObject {
-		t.Fatalf("root kind = %v, want OBJECT", node.Kind())
+	if node.Object() == nil {
+		t.Fatalf("root kinds = %v, want the object branch", node.Kinds())
 	}
 	if fields := node.Fields(); len(fields) != 0 {
 		t.Errorf("fields = %v, want none", fields)

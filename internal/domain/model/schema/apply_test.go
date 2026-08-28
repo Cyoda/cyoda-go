@@ -38,12 +38,12 @@ func TestApply_EmptyDelta_ReturnsCloneNotSameRef(t *testing.T) {
 	if out == base {
 		t.Error("Apply with empty delta must return a fresh tree, not the same pointer")
 	}
-	if _, ok := out.Children()["name"]; !ok {
+	if _, ok := out.Object().Children()["name"]; !ok {
 		t.Error("expected child 'name' preserved in clone")
 	}
 	// Mutating clone must not affect base.
 	out.SetChild("extra", NewLeafNode(Integer))
-	if base.Child("extra") != nil {
+	if base.Object().Child("extra") != nil {
 		t.Error("mutating clone altered base")
 	}
 }
@@ -57,14 +57,14 @@ func TestApply_AddProperty_InsertsIntoObjectRoot(t *testing.T) {
 	op := NewAddProperty("", "email", sub)
 
 	out := mustApply(t, base, []SchemaOp{op})
-	if out.Child("email") == nil {
+	if out.Object().Child("email") == nil {
 		t.Fatal("email child missing")
 	}
-	if out.Child("email").Kind() != KindLeaf {
-		t.Errorf("email kind: got %v", out.Child("email").Kind())
+	if out.Object().Child("email").Scalar() == nil {
+		t.Errorf("email kinds: got %v", out.Object().Child("email").Kinds())
 	}
 	// Base must be untouched.
-	if base.Child("email") != nil {
+	if base.Object().Child("email") != nil {
 		t.Error("Apply mutated input")
 	}
 }
@@ -79,7 +79,7 @@ func TestApply_AddProperty_NestedPath(t *testing.T) {
 	op := NewAddProperty("address", "zip", mustMarshalNode(t, zip))
 	out := mustApply(t, root, []SchemaOp{op})
 
-	if out.Child("address").Child("zip") == nil {
+	if out.Object().Child("address").Object().Child("zip") == nil {
 		t.Fatal("address/zip missing")
 	}
 }
@@ -94,7 +94,7 @@ func TestApply_AddProperty_ExistingChildMerges(t *testing.T) {
 	op := NewAddProperty("", "age", mustMarshalNode(t, incoming))
 	out := mustApply(t, root, []SchemaOp{op})
 
-	got := out.Child("age").Types().Types()
+	got := out.Object().Child("age").DeclaredTypes()
 	if len(got) != 2 {
 		t.Fatalf("expected merged TypeSet len 2, got %d (%v)", len(got), got)
 	}
@@ -123,7 +123,7 @@ func TestApply_BroadenType_UnionsPrimitives(t *testing.T) {
 	}
 	out := mustApply(t, root, []SchemaOp{op})
 
-	types := out.Child("age").Types().Types()
+	types := out.Object().Child("age").DeclaredTypes()
 	names := []string{}
 	for _, d := range types {
 		names = append(names, d.String())
@@ -147,22 +147,22 @@ func TestApply_BroadenType_OnObjectAddsNullableMarker(t *testing.T) {
 	}
 	out := mustApply(t, root, []SchemaOp{op})
 
-	addr := out.Child("addr")
+	addr := out.Object().Child("addr")
 	if addr == nil {
 		t.Fatalf("addr child missing after apply")
 	}
-	if addr.Kind() != KindObject {
-		t.Fatalf("addr kind changed: got %s, want OBJECT", addr.Kind())
+	if addr.Object() == nil {
+		t.Fatalf("addr lost its object branch: got %v", addr.Kinds())
 	}
 	found := false
-	for _, dt := range addr.Types().Types() {
+	for _, dt := range addr.DeclaredTypes() {
 		if dt == Null {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected NULL in addr.Types(), got %v", addr.Types().Types())
+		t.Errorf("expected NULL in addr.Types(), got %v", addr.DeclaredTypes())
 	}
 }
 
@@ -193,8 +193,8 @@ func TestApply_AddArrayItemType_WidensElementLeaf(t *testing.T) {
 	}
 	out := mustApply(t, root, []SchemaOp{op})
 
-	elem := out.Child("tags").Element()
-	names := typeNames(elem.Types().Types())
+	elem := out.Object().Child("tags").Array().Element()
+	names := typeNames(elem.DeclaredTypes())
 	if !sliceContains(names, "INTEGER") || !sliceContains(names, "STRING") {
 		t.Errorf("expected INTEGER+STRING in element TypeSet, got %v", names)
 	}
@@ -251,10 +251,10 @@ func TestApply_MultipleOps_Replays(t *testing.T) {
 	op3, _ := NewBroadenType("age", []DataType{Integer})
 	out := mustApply(t, root, []SchemaOp{op1, op2, op3})
 
-	if out.Child("email") == nil {
+	if out.Object().Child("email") == nil {
 		t.Error("email missing after multi-op Apply")
 	}
-	names := typeNames(out.Child("age").Types().Types())
+	names := typeNames(out.Object().Child("age").DeclaredTypes())
 	// After broadening with NULL and INTEGER (on a STRING leaf), NULL drops
 	// because concrete types are present. STRING and INTEGER are preserved
 	// (cross-kind polymorphism).

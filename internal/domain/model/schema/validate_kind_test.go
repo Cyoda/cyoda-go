@@ -168,10 +168,10 @@ func TestValidationError_ErrKindIncompatibleType_UnionExpectedTypes(t *testing.T
 	// are non-numeric so the collapse rule preserves both members; the
 	// TypeSet sorts by DataType-iota order (STRING=7 < BOOLEAN=17).
 	leaf := NewLeafNode(String)
-	leaf.Types().Add(Boolean)
-	if !leaf.Types().IsPolymorphic() {
-		t.Fatalf("precondition: expected polymorphic TypeSet, got %v",
-			leaf.Types().Types())
+	leaf.AddScalarTypes(Boolean)
+	if len(leaf.DeclaredTypes()) != 2 {
+		t.Fatalf("precondition: expected two declared types, got %v",
+			leaf.DeclaredTypes())
 	}
 
 	model := NewObjectNode()

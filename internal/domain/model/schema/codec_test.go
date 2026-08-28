@@ -19,14 +19,14 @@ func TestRoundTripFlatObject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if restored.Child("name") == nil {
+	if restored.Object().Child("name") == nil {
 		t.Error("expected 'name' child after round-trip")
 	}
-	nameTypes := restored.Child("name").Types().Types()
+	nameTypes := restored.Object().Child("name").DeclaredTypes()
 	if len(nameTypes) != 1 || nameTypes[0] != schema.String {
 		t.Errorf("expected [STRING], got %v", nameTypes)
 	}
-	if restored.Child("age") == nil {
+	if restored.Object().Child("age") == nil {
 		t.Error("expected 'age' child after round-trip")
 	}
 }
@@ -50,15 +50,15 @@ func TestRoundTripNestedWithArray(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	tags := restored.Child("tags")
-	if tags == nil || tags.Kind() != schema.KindArray {
+	tags := restored.Object().Child("tags")
+	if tags == nil || tags.Array() == nil {
 		t.Fatal("expected 'tags' as ARRAY")
 	}
-	if tags.Element() == nil {
+	if tags.Array().Element() == nil {
 		t.Fatal("expected element descriptor for tags")
 	}
-	addr := restored.Child("address")
-	if addr == nil || addr.Child("city") == nil {
+	addr := restored.Object().Child("address")
+	if addr == nil || addr.Object().Child("city") == nil {
 		t.Fatal("expected 'address.city'")
 	}
 }
@@ -73,18 +73,18 @@ func TestRoundTripEmptyArrayElementNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if decoded.Kind() != schema.KindArray {
-		t.Fatalf("decoded kind = %v, want KindArray", decoded.Kind())
+	if decoded.Array() == nil {
+		t.Fatalf("decoded kinds = %v, want the array branch", decoded.Kinds())
 	}
-	if decoded.Element() != nil {
-		t.Fatalf("decoded.Element() = %v, want nil (preserved across round-trip)", decoded.Element())
+	if decoded.Array().Element() != nil {
+		t.Fatalf("decoded.Array().Element() = %v, want nil (preserved across round-trip)", decoded.Array().Element())
 	}
 }
 
 func TestRoundTripPolymorphic(t *testing.T) {
 	node := schema.NewObjectNode()
 	leaf := schema.NewLeafNode(schema.Integer)
-	leaf.Types().Add(schema.String)
+	leaf.AddScalarTypes(schema.String)
 	node.SetChild("score", leaf)
 
 	data, err := schema.Marshal(node)
@@ -95,7 +95,7 @@ func TestRoundTripPolymorphic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	types := restored.Child("score").Types().Types()
+	types := restored.Object().Child("score").DeclaredTypes()
 	if len(types) != 2 {
 		t.Fatalf("expected 2 polymorphic types, got %d", len(types))
 	}

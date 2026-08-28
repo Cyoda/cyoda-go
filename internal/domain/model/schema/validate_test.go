@@ -58,7 +58,7 @@ func TestValidateNestedObject(t *testing.T) {
 
 func TestValidatePolymorphicAcceptsBothTypes(t *testing.T) {
 	leaf := schema.NewLeafNode(schema.Integer)
-	leaf.Types().Add(schema.String)
+	leaf.AddScalarTypes(schema.String)
 	model := schema.NewObjectNode()
 	model.SetChild("value", leaf)
 

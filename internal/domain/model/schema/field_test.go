@@ -107,7 +107,7 @@ func TestFieldsCachedOnSecondCall(t *testing.T) {
 func TestFieldsPolymorphic(t *testing.T) {
 	root := NewObjectNode()
 	leaf := NewLeafNode(String)
-	leaf.Types().Add(Integer)
+	leaf.AddScalarTypes(Integer)
 	root.SetChild("val", leaf)
 
 	m := root.FieldsMap()
@@ -131,7 +131,7 @@ func TestFieldsMixedObjectOrScalar(t *testing.T) {
 	// STRING.
 	mixed := NewObjectNode()
 	mixed.SetChild("some-key", NewLeafNode(String))
-	mixed.Types().Add(String)
+	mixed.AddScalarTypes(String)
 	root.SetChild("some-object", mixed)
 
 	m := root.FieldsMap()
@@ -183,7 +183,7 @@ func TestFieldsNullOnlyObjectNoLeaf(t *testing.T) {
 	root := NewObjectNode()
 	obj := NewObjectNode()
 	obj.SetChild("sub", NewLeafNode(String))
-	obj.Types().Add(Null) // observed as null too, but no concrete scalar
+	obj.AddScalarTypes(Null) // observed as null too, but no concrete scalar
 	root.SetChild("score", obj)
 
 	m := root.FieldsMap()
@@ -217,7 +217,7 @@ func TestFieldsMap(t *testing.T) {
 func TestFieldsArrayMaxWidth(t *testing.T) {
 	root := NewObjectNode()
 	arrNode := NewArrayNode(NewLeafNode(Integer))
-	arrNode.Info().Observe(5)
+	arrNode.ObserveArrayWidth(5)
 	root.SetChild("nums", arrNode)
 
 	m := root.FieldsMap()

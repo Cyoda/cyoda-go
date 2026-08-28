@@ -36,12 +36,12 @@ func (e *SimpleViewExporter) Export(node *schema.ModelNode) ([]byte, error) {
 // walk builds the descriptor bucket for one object node at path, recursing
 // into the substructure that needs buckets of its own.
 func (e *SimpleViewExporter) walk(node *schema.ModelNode, path string, model map[string]map[string]any) {
-	if node.Kind() != schema.KindObject {
+	if node.Object() == nil {
 		return
 	}
 
 	descriptor := make(map[string]any)
-	children := node.Children()
+	children := node.Object().Children()
 
 	// Sort child keys for deterministic output.
 	keys := make([]string, 0, len(children))
@@ -69,18 +69,18 @@ func (e *SimpleViewExporter) describeChild(
 	child *schema.ModelNode, name, parentPath string,
 	desc map[string]any, model map[string]map[string]any,
 ) {
-	if child.Kind() == schema.KindLeaf {
-		desc["."+name] = typeDescriptor(child.Types())
+	if child.Object() == nil && child.Array() == nil {
+		desc["."+name] = typeNames(child.DeclaredTypes())
 		return
 	}
 
 	// Scalar branch of a kind union. NULL alone is the nullable marker, not a
 	// scalar observation, so it does not open one.
-	if concrete := schema.ConcreteTypes(child.Types()); len(concrete) > 0 {
-		desc["."+name] = typeNames(concrete)
+	if sc := child.Scalar(); sc != nil {
+		desc["."+name] = typeNames(sc.Types())
 	}
 
-	if child.Kind() == schema.KindObject {
+	if child.Object() != nil {
 		desc["#."+name] = "OBJECT"
 		e.walk(child, parentPath+"."+name, model)
 	}
@@ -88,9 +88,9 @@ func (e *SimpleViewExporter) describeChild(
 	// Array branch. Present independently of Kind: Merge promotes an
 	// object-and-array union to KindObject while keeping the element.
 	switch {
-	case child.Element() != nil:
+	case child.Array() != nil && child.Array().Element() != nil:
 		e.describeElements(child, name, parentPath, "[*]", desc, model)
-	case child.Kind() == schema.KindArray:
+	case child.Array() != nil:
 		// An array whose elements were never observed — the empty-array seed
 		// the codec preserves. The level is declared and enforced, so it is
 		// named; its element type is not known.
@@ -107,19 +107,19 @@ func (e *SimpleViewExporter) describeElements(
 	arr *schema.ModelNode, name, parentPath, suffix string,
 	desc map[string]any, model map[string]map[string]any,
 ) {
-	elem := arr.Element()
-	if elem.Kind() == schema.KindLeaf {
+	elem := arr.Array().Element()
+	if elem.Object() == nil && elem.Array() == nil {
 		// The width is this array's: it is the one these elements belong to.
-		desc["."+name+suffix] = widthDescriptor(typeDescriptor(elem.Types()), arr)
+		desc["."+name+suffix] = widthDescriptor(typeNames(elem.DeclaredTypes()), arr)
 		return
 	}
 
 	// Scalar branch of elements observed as both a scalar and a container.
-	if concrete := schema.ConcreteTypes(elem.Types()); len(concrete) > 0 {
-		desc["."+name+suffix] = widthDescriptor(typeNames(concrete), arr)
+	if sc := elem.Scalar(); sc != nil {
+		desc["."+name+suffix] = widthDescriptor(typeNames(sc.Types()), arr)
 	}
 
-	if elem.Kind() == schema.KindObject {
+	if elem.Object() != nil {
 		// The elements carry a structure, so they get a bucket of their own.
 		desc["#."+name] = "OBJECT"
 		elemPath := parentPath + "." + name + suffix
@@ -129,20 +129,15 @@ func (e *SimpleViewExporter) describeElements(
 		}
 	}
 
-	if elem.Element() != nil {
+	if elem.Array() != nil && elem.Array().Element() != nil {
 		e.describeElements(elem, name, parentPath, suffix+"[*]", desc, model)
 		return
 	}
-	if elem.Kind() == schema.KindArray {
+	if elem.Array() != nil {
 		// An array level whose own elements were never observed: the level is
 		// declared, its element type is not.
 		desc["."+name+suffix+"[*]"] = "NULL"
 	}
-}
-
-// typeDescriptor formats a TypeSet as a SIMPLE_VIEW type descriptor string.
-func typeDescriptor(ts *schema.TypeSet) string {
-	return typeNames(ts.Types())
 }
 
 // typeNames formats DataTypes as a SIMPLE_VIEW type descriptor string.
@@ -164,8 +159,8 @@ func typeNames(types []schema.DataType) string {
 // widthDescriptor decorates an element type descriptor with the widest array
 // observed at that level, when one was recorded.
 func widthDescriptor(td string, arr *schema.ModelNode) string {
-	if info := arr.Info(); info != nil && info.MaxWidth() > 0 {
-		return fmt.Sprintf("(%s x %d)", td, info.MaxWidth())
+	if a := arr.Array(); a != nil && a.MaxWidth() > 0 {
+		return fmt.Sprintf("(%s x %d)", td, a.MaxWidth())
 	}
 	return td
 }

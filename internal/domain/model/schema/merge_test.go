@@ -14,10 +14,10 @@ func TestMergeDisjointChildren(t *testing.T) {
 	b.SetChild("age", schema.NewLeafNode(schema.Integer))
 
 	merged := schema.Merge(a, b)
-	if merged.Child("name") == nil {
+	if merged.Object().Child("name") == nil {
 		t.Error("expected 'name' child after merge")
 	}
-	if merged.Child("age") == nil {
+	if merged.Object().Child("age") == nil {
 		t.Error("expected 'age' child after merge")
 	}
 }
@@ -30,11 +30,11 @@ func TestMergeOverlappingChildrenUnionTypes(t *testing.T) {
 	b.SetChild("score", schema.NewLeafNode(schema.String))
 
 	merged := schema.Merge(a, b)
-	score := merged.Child("score")
+	score := merged.Object().Child("score")
 	if score == nil {
 		t.Fatal("expected 'score' child after merge")
 	}
-	types := score.Types().Types()
+	types := score.DeclaredTypes()
 	if len(types) != 2 {
 		t.Fatalf("expected 2 types (polymorphic), got %d: %v", len(types), types)
 	}
@@ -52,14 +52,14 @@ func TestMergeNestedObjects(t *testing.T) {
 	b.SetChild("address", addr2)
 
 	merged := schema.Merge(a, b)
-	mergedAddr := merged.Child("address")
+	mergedAddr := merged.Object().Child("address")
 	if mergedAddr == nil {
 		t.Fatal("expected 'address' child")
 	}
-	if mergedAddr.Child("city") == nil {
+	if mergedAddr.Object().Child("city") == nil {
 		t.Error("expected 'city' under address")
 	}
-	if mergedAddr.Child("zip") == nil {
+	if mergedAddr.Object().Child("zip") == nil {
 		t.Error("expected 'zip' under address")
 	}
 }
@@ -74,14 +74,14 @@ func TestMergeArrayElementTypes(t *testing.T) {
 	b.SetChild("tags", schema.NewArrayNode(elemB))
 
 	merged := schema.Merge(a, b)
-	tags := merged.Child("tags")
+	tags := merged.Object().Child("tags")
 	if tags == nil {
 		t.Fatal("expected 'tags' child")
 	}
-	if tags.Element() == nil {
+	if tags.Array().Element() == nil {
 		t.Fatal("expected array element descriptor")
 	}
-	types := tags.Element().Types().Types()
+	types := tags.Array().Element().DeclaredTypes()
 	if len(types) != 2 {
 		t.Fatalf("expected 2 element types, got %d", len(types))
 	}
@@ -97,53 +97,36 @@ func TestMergeKindConflict(t *testing.T) {
 
 	merged := schema.Merge(obj, arr)
 
-	if merged.Kind() != schema.KindObject {
-		t.Errorf("expected KindObject after object+array merge, got %v", merged.Kind())
+	// The merged node declares BOTH kinds. It used to claim one label —
+	// OBJECT, by an arbitrary tiebreak — while carrying both payloads, which
+	// is what made every reader that dispatched on the label lose a branch.
+	if merged.Object() == nil || merged.Array() == nil {
+		t.Errorf("object+array merge declares both kinds, got %v", merged.Kinds())
 	}
-	if merged.Element() == nil {
+	if !merged.IsPolymorphic() {
+		t.Error("a node carrying two branches is polymorphic")
+	}
+	if merged.Array().Element() == nil {
 		t.Error("expected element to be preserved after object+array merge")
 	}
-	if merged.Child("x") == nil {
+	if merged.Object().Child("x") == nil {
 		t.Error("expected child 'x' to be preserved after object+array merge")
 	}
 }
 
-func TestMergeArrayInfo(t *testing.T) {
-	// First array: width 3, position 0=Integer, position 1=String.
+func TestMergeKeepsTheWidestObservedWidth(t *testing.T) {
 	a := schema.NewArrayNode(schema.NewLeafNode(schema.Integer))
-	a.Info().Observe(3)
-	a.Info().ObserveElement(0, schema.Integer)
-	a.Info().ObserveElement(1, schema.String)
+	a.ObserveArrayWidth(3)
 
-	// Second array: width 5, position 0=String, position 2=Boolean.
 	b := schema.NewArrayNode(schema.NewLeafNode(schema.Integer))
-	b.Info().Observe(5)
-	b.Info().ObserveElement(0, schema.String)
-	b.Info().ObserveElement(2, schema.Boolean)
+	b.ObserveArrayWidth(5)
 
 	merged := schema.Merge(a, b)
-	info := merged.Info()
-	if info == nil {
-		t.Fatal("expected merged ArrayInfo to be non-nil")
+	if merged.Array() == nil {
+		t.Fatal("the merged node declares the array branch")
 	}
-	if info.MaxWidth() != 5 {
-		t.Errorf("expected maxWidth 5, got %d", info.MaxWidth())
-	}
-	elems := info.Elements()
-	if len(elems) != 3 {
-		t.Fatalf("expected 3 per-position type sets, got %d", len(elems))
-	}
-	// Position 0: union of Integer and String → 2 types.
-	if len(elems[0].Types()) != 2 {
-		t.Errorf("position 0: expected 2 types, got %d: %v", len(elems[0].Types()), elems[0].Types())
-	}
-	// Position 1: String only (from a).
-	if len(elems[1].Types()) != 1 {
-		t.Errorf("position 1: expected 1 type, got %d: %v", len(elems[1].Types()), elems[1].Types())
-	}
-	// Position 2: Boolean only (from b).
-	if len(elems[2].Types()) != 1 {
-		t.Errorf("position 2: expected 1 type, got %d: %v", len(elems[2].Types()), elems[2].Types())
+	if got := merged.Array().MaxWidth(); got != 5 {
+		t.Errorf("expected maxWidth 5, got %d", got)
 	}
 }
 
@@ -151,10 +134,10 @@ func TestMergeNilInputs(t *testing.T) {
 	node := schema.NewObjectNode()
 	node.SetChild("x", schema.NewLeafNode(schema.String))
 
-	if got := schema.Merge(nil, node); got.Child("x") == nil {
+	if got := schema.Merge(nil, node); got.Object().Child("x") == nil {
 		t.Error("Merge(nil, node) should return node's structure")
 	}
-	if got := schema.Merge(node, nil); got.Child("x") == nil {
+	if got := schema.Merge(node, nil); got.Object().Child("x") == nil {
 		t.Error("Merge(node, nil) should return node's structure")
 	}
 	if got := schema.Merge(nil, nil); got != nil {

@@ -29,40 +29,50 @@ func Diff(oldN, newN *ModelNode) (spi.SchemaDelta, error) {
 }
 
 func diffNode(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
-	if oldN.Kind() != newN.Kind() {
-		return fmt.Errorf("kind change at %q: %s -> %s (not additive)",
-			displayPath(path), oldN.Kind(), newN.Kind())
+	for _, k := range oldN.Kinds() {
+		if newN.Branch(k) == nil {
+			return fmt.Errorf("kind removal at %q: %s is no longer declared (not additive)",
+				displayPath(path), k)
+		}
 	}
-	// Every kind carries its own TypeSet. LEAF uses it for the primitive
-	// data types; OBJECT and ARRAY use it for nullable markers (NULL
-	// added when the structural position is observed as nil). Diff the
-	// node-level TypeSet uniformly here so nullable-marker growth on
-	// OBJECT/ARRAY surfaces as a KindBroadenType op rather than being
-	// silently dropped.
-	if added := typeSetDifference(newN.Types(), oldN.Types()); len(added) > 0 {
+	// A node declares its own types: a scalar branch holds the primitive data
+	// types, and a node with no scalar branch holds the nullable marker when
+	// the structural position has been observed as nil. Diffing DeclaredTypes
+	// covers both, so nullable-marker growth on a container surfaces as a
+	// KindBroadenType op rather than being silently dropped.
+	if added := typeDifference(newN.DeclaredTypes(), oldN.DeclaredTypes()); len(added) > 0 {
 		op, err := NewBroadenType(path, added)
 		if err != nil {
 			return fmt.Errorf("broaden_type at %q: %w", displayPath(path), err)
 		}
 		*ops = append(*ops, op)
 	}
-	switch newN.Kind() {
-	case KindLeaf:
-		// LEAF types already diffed above.
-		return nil
-	case KindObject:
-		return diffObject(path, oldN, newN, ops)
-	case KindArray:
-		return diffArray(path, oldN, newN, ops)
-	default:
-		return fmt.Errorf("unknown kind at %q: %v", displayPath(path), newN.Kind())
+	if newN.Object() != nil {
+		if oldN.Object() == nil {
+			return fmt.Errorf("adding an %s branch at %q is not yet expressible", KindObject, displayPath(path))
+		}
+		if err := diffObject(path, oldN, newN, ops); err != nil {
+			return err
+		}
 	}
+	if newN.Array() != nil {
+		if oldN.Array() == nil {
+			return fmt.Errorf("adding an %s branch at %q is not yet expressible", KindArray, displayPath(path))
+		}
+		if err := diffArray(path, oldN, newN, ops); err != nil {
+			return err
+		}
+	}
+	if newN.Scalar() != nil && oldN.Scalar() == nil && len(oldN.Kinds()) > 0 {
+		return fmt.Errorf("adding a %s branch at %q is not yet expressible", KindLeaf, displayPath(path))
+	}
+	return nil
 }
 
 func diffObject(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
-	newChildren := newN.Children()
+	newChildren := newN.Object().Children()
 	for name, newChild := range newChildren {
-		oldChild := oldN.Child(name)
+		oldChild := oldN.Object().Child(name)
 		if oldChild == nil {
 			raw, err := Marshal(newChild)
 			if err != nil {
@@ -75,7 +85,7 @@ func diffObject(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
 			return err
 		}
 	}
-	for name := range oldN.Children() {
+	for name := range oldN.Object().Children() {
 		if _, ok := newChildren[name]; !ok {
 			return fmt.Errorf("property removal at %q is not additive", joinSchemaPath(path, name))
 		}
@@ -84,8 +94,8 @@ func diffObject(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
 }
 
 func diffArray(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
-	oldElem := oldN.Element()
-	newElem := newN.Element()
+	oldElem := oldN.Array().Element()
+	newElem := newN.Array().Element()
 	// Both nil: no element ever observed — nothing to emit.
 	if oldElem == nil && newElem == nil {
 		return nil
@@ -102,11 +112,11 @@ func diffArray(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
 	// needs a new op kind beyond add_array_item_type. Tracked in Sub-project
 	// A.3 (polymorphic-slot kind conflicts).
 	if oldElem == nil {
-		if newElem.Kind() != KindLeaf {
-			return fmt.Errorf("array element materialization at %q requires LEAF element; got %s (extend to a LEAF element first)",
-				displayPath(path), newElem.Kind())
+		if newElem.Object() != nil || newElem.Array() != nil {
+			return fmt.Errorf("array element materialization at %q requires a scalar element; got %s (extend to a scalar element first)",
+				displayPath(path), kindNames(newElem))
 		}
-		op, err := NewAddArrayItemType(path, newElem.Types().Types())
+		op, err := NewAddArrayItemType(path, newElem.DeclaredTypes())
 		if err != nil {
 			return fmt.Errorf("add_array_item_type at %q: %w", displayPath(path), err)
 		}
@@ -115,8 +125,8 @@ func diffArray(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
 	}
 	// LEAF-element arrays use the dedicated widening op (cheapest and
 	// most common shape from schema.Extend at ChangeLevelArrayElements).
-	if oldElem.Kind() == KindLeaf && newElem.Kind() == KindLeaf {
-		added := typeSetDifference(newElem.Types(), oldElem.Types())
+	if isScalarOnly(oldElem) && isScalarOnly(newElem) {
+		added := typeDifference(newElem.DeclaredTypes(), oldElem.DeclaredTypes())
 		if len(added) == 0 {
 			return nil
 		}
@@ -134,21 +144,26 @@ func diffArray(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
 	return diffNode(joinSchemaPath(path, "[]"), oldElem, newElem, ops)
 }
 
-// typeSetDifference returns the DataTypes present in `b` but not in `a`,
-// in stable canonical-name order (so the resulting op payload is
-// deterministic).
-func typeSetDifference(b, a *TypeSet) []DataType {
-	in := make(map[DataType]struct{})
-	for _, dt := range a.Types() {
+// typeDifference returns the DataTypes present in `b` but not in `a`, in
+// stable canonical order (so the resulting op payload is deterministic).
+func typeDifference(b, a []DataType) []DataType {
+	in := make(map[DataType]struct{}, len(a))
+	for _, dt := range a {
 		in[dt] = struct{}{}
 	}
 	var added []DataType
-	for _, dt := range b.Types() {
+	for _, dt := range b {
 		if _, ok := in[dt]; !ok {
 			added = append(added, dt)
 		}
 	}
 	return added
+}
+
+// isScalarOnly reports whether a node declares a scalar and no container — the
+// shape the dedicated element-widening op covers.
+func isScalarOnly(n *ModelNode) bool {
+	return n.Object() == nil && n.Array() == nil
 }
 
 // joinSchemaPath returns the slash-joined child path used by the op

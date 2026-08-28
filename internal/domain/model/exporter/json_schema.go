@@ -34,22 +34,24 @@ func (e *JSONSchemaExporter) Export(node *schema.ModelNode) ([]byte, error) {
 // observed as both a scalar and a container declares — and enforces — both
 // kinds, so describing it by its dominant Kind alone would drop one of them.
 func (e *JSONSchemaExporter) convert(node *schema.ModelNode) map[string]any {
-	if node.Kind() == schema.KindLeaf {
+	if node.Object() == nil && node.Array() == nil {
 		return e.convertLeaf(node)
 	}
 
 	branches := make([]any, 0, 3)
-	if node.Kind() == schema.KindObject {
+	if node.Object() != nil {
 		branches = append(branches, e.convertObject(node))
 	}
-	// Merge promotes an object-and-array union to KindObject while keeping the
-	// element, so the array branch is looked for independently of Kind.
-	if node.Kind() == schema.KindArray || node.Element() != nil {
+	if node.Array() != nil {
 		branches = append(branches, e.convertArray(node))
 	}
-	// NULL alone is the nullable marker, not a scalar observation.
-	for _, dt := range schema.ConcreteTypes(node.Types()) {
-		branches = append(branches, jsonSchemaType(dt))
+	// A node carrying a scalar branch alongside a container was also observed
+	// holding a bare scalar. NULL alone is the nullable marker, not a scalar
+	// observation, and it opens no scalar branch to render.
+	if sc := node.Scalar(); sc != nil {
+		for _, dt := range sc.Types() {
+			branches = append(branches, jsonSchemaType(dt))
+		}
 	}
 
 	switch len(branches) {
@@ -65,7 +67,7 @@ func (e *JSONSchemaExporter) convert(node *schema.ModelNode) map[string]any {
 func (e *JSONSchemaExporter) convertObject(node *schema.ModelNode) map[string]any {
 	props := make(map[string]any)
 	// Sort children keys for deterministic output.
-	children := node.Children()
+	children := node.Object().Children()
 	keys := make([]string, 0, len(children))
 	for k := range children {
 		keys = append(keys, k)
@@ -85,15 +87,14 @@ func (e *JSONSchemaExporter) convertArray(node *schema.ModelNode) map[string]any
 	result := map[string]any{
 		"type": "array",
 	}
-	if elem := node.Element(); elem != nil {
+	if elem := node.Array().Element(); elem != nil {
 		result["items"] = e.convert(elem)
 	}
 	return result
 }
 
 func (e *JSONSchemaExporter) convertLeaf(node *schema.ModelNode) map[string]any {
-	ts := node.Types()
-	types := ts.Types()
+	types := node.DeclaredTypes()
 	if len(types) == 0 {
 		return map[string]any{}
 	}

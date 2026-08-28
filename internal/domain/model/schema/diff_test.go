@@ -60,7 +60,7 @@ func TestDiff_ArrayOfObjects_BroadenLeafInElement(t *testing.T) {
 
 	newElem := NewObjectNode()
 	newA := NewLeafNode(String)
-	newA.Types().Add(Null)
+	newA.AddScalarTypes(Null)
 	newElem.SetChild("a", newA)
 	newRoot := NewObjectNode()
 	newRoot.SetChild("items", NewArrayNode(newElem))
@@ -76,7 +76,7 @@ func TestDiff_ArrayOfArray_WidenInnerLeaf(t *testing.T) {
 	oldRoot.SetChild("grid", NewArrayNode(NewArrayNode(NewLeafNode(Integer))))
 
 	innerLeaf := NewLeafNode(Integer)
-	innerLeaf.Types().Add(Null)
+	innerLeaf.AddScalarTypes(Null)
 	newRoot := NewObjectNode()
 	newRoot.SetChild("grid", NewArrayNode(NewArrayNode(innerLeaf)))
 
@@ -124,7 +124,7 @@ func TestDiff_BroadenType(t *testing.T) {
 	oldN.SetChild("age", NewLeafNode(String))
 	newN := NewObjectNode()
 	ageNew := NewLeafNode(String)
-	ageNew.Types().Add(Null)
+	ageNew.AddScalarTypes(Null)
 	newN.SetChild("age", ageNew)
 	roundTrip(t, oldN, newN)
 }
@@ -134,7 +134,7 @@ func TestDiff_AddArrayItemType(t *testing.T) {
 	oldN.SetChild("tags", NewArrayNode(NewLeafNode(Integer)))
 	newN := NewObjectNode()
 	elem := NewLeafNode(Integer)
-	elem.Types().Add(String)
+	elem.AddScalarTypes(String)
 	newN.SetChild("tags", NewArrayNode(elem))
 	roundTrip(t, oldN, newN)
 }
@@ -176,10 +176,10 @@ func TestDiff_MultipleOps(t *testing.T) {
 
 	newN := NewObjectNode()
 	aNew := NewLeafNode(String)
-	aNew.Types().Add(Boolean) // broaden with concrete type (NULL would drop)
+	aNew.AddScalarTypes(Boolean) // broaden with concrete type (NULL would drop)
 	newN.SetChild("a", aNew)
 	bElem := NewLeafNode(Integer)
-	bElem.Types().Add(String) // array-widen
+	bElem.AddScalarTypes(String) // array-widen
 	newN.SetChild("b", NewArrayNode(bElem))
 	newN.SetChild("c", NewLeafNode(Boolean)) // add_property
 	roundTrip(t, oldN, newN)

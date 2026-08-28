@@ -212,34 +212,35 @@ func mutateToValue(r *rand.Rand, n *schema.ModelNode, depth int, cfg GenConfig) 
 	if n == nil || depth > cfg.MaxDepth {
 		return genLeafValue(r, cfg)
 	}
-	switch n.Kind() {
-	case schema.KindLeaf:
-		// Emit a value compatible with the widest type in the set, plus
-		// occasionally broaden to trigger a broaden_type op.
-		return genLeafValue(r, cfg)
-	case schema.KindObject:
+	// A node declares a SET of kinds; emit a value of one it declares, so the
+	// extension stays additive. GenModelNode builds monomorphic nodes, so the
+	// order below only matters for a tree that was merged.
+	if o := n.Object(); o != nil {
 		out := make(map[string]any)
 		for _, name := range sortedChildNames(n) {
-			out[name] = mutateToValue(r, n.Child(name), depth+1, cfg)
+			out[name] = mutateToValue(r, o.Child(name), depth+1, cfg)
 		}
 		// ~30% of the time add a new field to drive AddProperty.
 		if r.Float64() < 0.3 {
 			out["extra_"+strconv.Itoa(r.IntN(1000))] = genLeafValue(r, cfg)
 		}
 		return out
-	case schema.KindArray:
+	}
+	if a := n.Array(); a != nil {
 		m := r.IntN(cfg.MaxWidth + 1)
 		out := make([]any, m)
 		for i := 0; i < m; i++ {
-			out[i] = mutateToValue(r, n.Element(), depth+1, cfg)
+			out[i] = mutateToValue(r, a.Element(), depth+1, cfg)
 		}
 		return out
 	}
+	// Emit a value compatible with the widest type in the set, plus
+	// occasionally broaden to trigger a broaden_type op.
 	return genLeafValue(r, cfg)
 }
 
 func sortedChildNames(n *schema.ModelNode) []string {
-	children := n.Children() // returns map[string]*ModelNode (shallow copy)
+	children := n.Object().Children() // returns map[string]*ModelNode (shallow copy)
 	names := make([]string, 0, len(children))
 	for k := range children {
 		names = append(names, k)

@@ -125,13 +125,13 @@ func TestCoverageDistribution(t *testing.T) {
 	var leaves, objects, arrays int
 	for i := 0; i < N; i++ {
 		n := GenModelNode(r, cfg.MaxDepth, cfg.MaxWidth, cfg)
-		switch n.Kind() {
-		case schema.KindLeaf:
-			leaves++
-		case schema.KindObject:
+		switch {
+		case n.Object() != nil:
 			objects++
-		case schema.KindArray:
+		case n.Array() != nil:
 			arrays++
+		default:
+			leaves++
 		}
 	}
 	// Each class must be at least 1 in 50 (= 200 in 10k).

@@ -1,19 +1,22 @@
 package schema
 
 import (
-	"errors"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// TestExtend_RejectsLeafToObjectKindMismatch asserts that attempting to
-// extend a LEAF node at path P with an OBJECT node at the same path
-// returns an error, rather than silently producing an OBJECT-with-
-// primitive-types that Apply cannot replay. The error wraps the
-// ErrPolymorphicSlot sentinel so the handler can surface a clear
-// polymorphism-specific message.
-func TestExtend_RejectsLeafToObjectKindMismatch(t *testing.T) {
+// These two cases used to assert that a path declaring one kind REFUSED a
+// payload of another at every level, STRUCTURAL included. That was the
+// limitation: only a sample-data import could establish a second kind for a
+// path, so an entity write could never record what the model was perfectly
+// able to describe.
+//
+// A write can add a kind now, at STRUCTURAL. The concern the original cases
+// guarded — that a node holding both a container and primitive types must not
+// be something Apply cannot replay — is what they assert instead, end to end.
+
+func TestExtend_ScalarPathGainsAnObjectBranch(t *testing.T) {
 	existing := NewObjectNode()
 	existing.SetChild("f0", NewLeafNode(Integer))
 
@@ -22,17 +25,10 @@ func TestExtend_RejectsLeafToObjectKindMismatch(t *testing.T) {
 	incomingF0.SetChild("k0", NewLeafNode(Double))
 	incoming.SetChild("f0", incomingF0)
 
-	_, err := Extend(existing, incoming, spi.ChangeLevelStructural)
-	if err == nil {
-		t.Fatal("Extend accepted LEAF->OBJECT kind change without error")
-	}
-	if !errors.Is(err, ErrPolymorphicSlot) {
-		t.Errorf("unexpected error: %v; want ErrPolymorphicSlot", err)
-	}
+	assertDeclaresBothKinds(t, existing, incoming, "f0")
 }
 
-// TestExtend_RejectsObjectToLeafKindMismatch — inverse case.
-func TestExtend_RejectsObjectToLeafKindMismatch(t *testing.T) {
+func TestExtend_ObjectPathGainsAScalarBranch(t *testing.T) {
 	existingF0 := NewObjectNode()
 	existingF0.SetChild("k0", NewLeafNode(Double))
 	existing := NewObjectNode()
@@ -41,11 +37,22 @@ func TestExtend_RejectsObjectToLeafKindMismatch(t *testing.T) {
 	incoming := NewObjectNode()
 	incoming.SetChild("f0", NewLeafNode(Integer))
 
-	_, err := Extend(existing, incoming, spi.ChangeLevelStructural)
-	if err == nil {
-		t.Fatal("Extend accepted OBJECT->LEAF kind change without error")
+	assertDeclaresBothKinds(t, existing, incoming, "f0")
+}
+
+// assertDeclaresBothKinds checks that the extension is accepted at STRUCTURAL
+// and that the named child ends up declaring both kinds. That the delta then
+// replays to exactly this model — the property the original rejection was
+// protecting — is asserted end to end in add_kind_branch_test.go.
+func assertDeclaresBothKinds(t *testing.T, existing, incoming *ModelNode, child string) {
+	t.Helper()
+
+	extended, err := Extend(existing, incoming, spi.ChangeLevelStructural)
+	if err != nil {
+		t.Fatalf("Extend at STRUCTURAL: %v", err)
 	}
-	if !errors.Is(err, ErrPolymorphicSlot) {
-		t.Errorf("unexpected error: %v; want ErrPolymorphicSlot", err)
+	got := extended.Object().Child(child)
+	if got.Object() == nil || got.Scalar() == nil {
+		t.Fatalf("%q must declare both kinds; kinds=%v", child, got.Kinds())
 	}
 }

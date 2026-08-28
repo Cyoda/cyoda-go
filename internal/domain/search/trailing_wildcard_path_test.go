@@ -44,7 +44,7 @@ func buildTrailingWildcardModel() *schema.ModelNode {
 
 	mixed := schema.NewObjectNode()
 	mixed.SetChild("k", schema.NewLeafNode(schema.Integer))
-	mixed.Types().Add(schema.String)
+	mixed.AddScalarTypes(schema.String)
 	root.SetChild("mixed", schema.NewArrayNode(mixed))
 
 	item := schema.NewObjectNode()

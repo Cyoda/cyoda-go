@@ -94,21 +94,15 @@ func ValidateOrExtend(ctx context.Context, modelStore spi.ModelStore, desc *spi.
 	}
 	extended, err := schema.Extend(modelNode, incomingModel, desc.ChangeLevel)
 	if err != nil {
-		// Polymorphic-slot rejections cannot be resolved by raising ChangeLevel
-		// and so must not wear the "change level violation" prefix — the phrase
-		// misleads clients into tuning a setting that wouldn't help.
-		if errors.Is(err, schema.ErrPolymorphicSlot) {
-			return err
-		}
 		return fmt.Errorf("change level violation: %w", err)
 	}
 
 	// Guard: if any unique key field would become non-scalar in the extended
-	// schema, reject the write now. This catches the null-only-leaf → object/array
-	// widening case (a TYPE-level change permitted by Structural ChangeLevel)
-	// that would otherwise surface as an opaque Diff "kind change" 5xx. The
-	// unique keys were valid when declared; the schema extension must not
-	// silently invalidate them.
+	// schema, reject the write now. A write may add a kind to a path — a
+	// unique-key leaf gaining an object or array branch is the reachable case
+	// — and the unique keys were valid when declared, so the extension must
+	// not silently invalidate them. The answer is a 422 naming the key, not a
+	// write that leaves the model unable to enforce it.
 	if len(desc.UniqueKeys) > 0 {
 		if vErr := schema.ValidateUniqueKeys(extended, desc.UniqueKeys); vErr != nil {
 			var de *schema.UniqueKeyDefError

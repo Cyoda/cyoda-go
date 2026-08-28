@@ -1,7 +1,7 @@
 package schema
 
 import (
-	"errors"
+	"strings"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -46,12 +46,15 @@ func TestExtend_ArrayElementKindMismatch_Rejected(t *testing.T) {
 			incoming := NewObjectNode()
 			incoming.SetChild("items", NewArrayNode(tc.incomingElem))
 
+			// Below STRUCTURAL, adding a kind to the element is refused —
+			// as a level violation that names the level which resolves it,
+			// not as a shape the model can never hold.
 			_, err := Extend(existing, incoming, spi.ChangeLevelType)
 			if err == nil {
-				t.Fatal("array element kind mismatch must reject, not silently absorb")
+				t.Fatal("array element gaining a kind must reject below STRUCTURAL, not silently absorb")
 			}
-			if !errors.Is(err, ErrPolymorphicSlot) {
-				t.Errorf("unexpected error: %v; want ErrPolymorphicSlot", err)
+			if !strings.Contains(err.Error(), "STRUCTURAL") {
+				t.Errorf("the rejection must name the level that resolves it: %v", err)
 			}
 		})
 	}
@@ -72,25 +75,25 @@ func TestExtend_ArrayElementNullableMarker_Accepted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ARRAY[OBJECT] + ARRAY[LEAF[NULL]] must succeed (nullable marker): %v", err)
 	}
-	items := got.Child("items")
-	if items == nil || items.Kind() != KindArray {
+	items := got.Object().Child("items")
+	if items == nil || items.Array() == nil {
 		t.Fatalf("items child missing or wrong kind: %v", items)
 	}
-	elem := items.Element()
+	elem := items.Array().Element()
 	if elem == nil {
 		t.Fatal("array element nil after merge")
 	}
-	if elem.Kind() != KindObject {
-		t.Errorf("merged element kind = %s, want %s", elem.Kind(), KindObject)
+	if elem.Object() == nil {
+		t.Errorf("merged element kinds = %v, want the object branch", elem.Kinds())
 	}
 	hasNull := false
-	for _, dt := range elem.Types().Types() {
+	for _, dt := range elem.DeclaredTypes() {
 		if dt == Null {
 			hasNull = true
 			break
 		}
 	}
 	if !hasNull {
-		t.Errorf("element TypeSet = %v, want NULL after nullable-marker merge", elem.Types().Types())
+		t.Errorf("element TypeSet = %v, want NULL after nullable-marker merge", elem.DeclaredTypes())
 	}
 }

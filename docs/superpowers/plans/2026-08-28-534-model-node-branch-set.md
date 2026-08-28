@@ -224,7 +224,12 @@ because `kind:"LEAF"` alone is ambiguous and the ambiguity must be resolved
 explicitly:
 
 1. `names` = `Kinds` when non-empty, else `[Kind]` when non-empty, else the node
-   is rejected.
+   is **rejected** with `unknown node kind ""`. The payload can only *add*
+   branches to the ones a node names; it cannot stand in for the record
+   entirely. A node naming no kind was not written by the engine, and guessing
+   its shape from whichever keys happen to be present would accept a schema
+   nobody defined. (`TestFieldsMapFromSchemaMalformed/missing_kind` already
+   pinned this; rules 3-5 must not loosen it.)
 2. `nullable` = `"NULL" ∈ Types`. `concrete` = `Types \ {"NULL"}`.
 3. **Scalar branch** present iff `len(concrete) > 0`, **or** `"LEAF" ∈ names`
    and not (`concrete` is empty and `nullable`). Its types are `concrete`.

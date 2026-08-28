@@ -63,8 +63,8 @@ func applyAddProperty(root *ModelNode, op SchemaOp) error {
 	if err != nil {
 		return fmt.Errorf("resolve parent: %w", err)
 	}
-	if parent.Kind() != KindObject {
-		return fmt.Errorf("parent at %q is not an object (kind=%s)", op.Path, parent.Kind())
+	if parent.Object() == nil {
+		return fmt.Errorf("parent at %q does not declare an object (kinds=%s)", op.Path, kindNames(parent))
 	}
 	if op.Name == "" {
 		return fmt.Errorf("add_property requires a non-empty Name")
@@ -73,7 +73,7 @@ func applyAddProperty(root *ModelNode, op SchemaOp) error {
 	if err != nil {
 		return fmt.Errorf("decode subtree: %w", err)
 	}
-	if existing := parent.Child(op.Name); existing != nil {
+	if existing := parent.Object().Child(op.Name); existing != nil {
 		parent.SetChild(op.Name, Merge(existing, incoming))
 		return nil
 	}
@@ -94,17 +94,19 @@ func applyBroadenType(root *ModelNode, op SchemaOp) error {
 	if err != nil {
 		return fmt.Errorf("decode payload: %w", err)
 	}
-	if target.Kind() != KindLeaf {
+	// A node carrying a scalar branch — or none at all, the nullable marker,
+	// where one is being established — takes concrete types. Anywhere else the
+	// only meaningful addition is NULL: adding a scalar KIND to a node that
+	// already declares another is a branch addition, which has its own op.
+	if target.Scalar() == nil && len(target.Kinds()) > 0 {
 		for _, dt := range types {
 			if dt != Null {
-				return fmt.Errorf("broaden_type on %s target at %q may only add NULL, got %s",
-					target.Kind(), op.Path, dt)
+				return fmt.Errorf("broaden_type on a %s target at %q may only add NULL, got %s",
+					kindNames(target), op.Path, dt)
 			}
 		}
 	}
-	for _, dt := range types {
-		target.Types().Add(dt)
-	}
+	target.AddScalarTypes(types...)
 	return nil
 }
 
@@ -113,14 +115,14 @@ func applyAddArrayItemType(root *ModelNode, op SchemaOp) error {
 	if err != nil {
 		return fmt.Errorf("resolve array: %w", err)
 	}
-	if target.Kind() != KindArray {
-		return fmt.Errorf("target at %q is not an array (kind=%s)", op.Path, target.Kind())
+	if target.Array() == nil {
+		return fmt.Errorf("target at %q does not declare an array (kinds=%s)", op.Path, kindNames(target))
 	}
 	types, err := DecodeTypeNames(op.Payload)
 	if err != nil {
 		return fmt.Errorf("decode payload: %w", err)
 	}
-	elem := target.Element()
+	elem := target.Array().Element()
 	if elem == nil {
 		// Target was an empty-array seed (no observed element yet).
 		// Materialize a fresh LEAF element seeded with the first
@@ -129,18 +131,14 @@ func applyAddArrayItemType(root *ModelNode, op SchemaOp) error {
 			return fmt.Errorf("array at %q has no element and payload is empty", op.Path)
 		}
 		elem = NewLeafNode(types[0])
-		target.element = elem
-		for _, dt := range types[1:] {
-			elem.Types().Add(dt)
-		}
+		elem.AddScalarTypes(types[1:]...)
+		target.SetElement(elem)
 		return nil
 	}
-	if elem.Kind() != KindLeaf {
-		return fmt.Errorf("array element at %q is not a leaf (kind=%s)", op.Path, elem.Kind())
+	if elem.Object() != nil || elem.Array() != nil {
+		return fmt.Errorf("array element at %q declares %s, not a scalar", op.Path, kindNames(elem))
 	}
-	for _, dt := range types {
-		elem.Types().Add(dt)
-	}
+	elem.AddScalarTypes(types...)
 	return nil
 }
 
@@ -162,20 +160,20 @@ func resolvePath(root *ModelNode, path string) (*ModelNode, error) {
 		// an additive change lives inside an array-of-objects or a
 		// nested array.
 		if part == "[]" {
-			if cur.Kind() != KindArray {
-				return nil, fmt.Errorf("cannot descend into element of non-array at segment %q (kind=%s)", part, cur.Kind())
+			if cur.Array() == nil {
+				return nil, fmt.Errorf("cannot descend into the element of a node that declares %s at segment %q", kindNames(cur), part)
 			}
-			elem := cur.Element()
+			elem := cur.Array().Element()
 			if elem == nil {
 				return nil, fmt.Errorf("array has no element at segment %q", part)
 			}
 			cur = elem
 			continue
 		}
-		if cur.Kind() != KindObject {
-			return nil, fmt.Errorf("cannot descend through non-object at segment %q (kind=%s)", part, cur.Kind())
+		if cur.Object() == nil {
+			return nil, fmt.Errorf("cannot descend through a node that declares %s at segment %q", kindNames(cur), part)
 		}
-		next := cur.Child(part)
+		next := cur.Object().Child(part)
 		if next == nil {
 			return nil, fmt.Errorf("missing segment %q under %q", part, path)
 		}

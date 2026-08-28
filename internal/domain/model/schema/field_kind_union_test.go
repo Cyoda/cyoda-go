@@ -39,7 +39,7 @@ func TestFieldsPureArrayNoScalarLeaf(t *testing.T) {
 	root := NewObjectNode()
 	root.SetChild("tags", NewArrayNode(NewLeafNode(String)))
 	nullable := NewArrayNode(NewLeafNode(String))
-	nullable.Types().Add(Null)
+	nullable.AddScalarTypes(Null)
 	root.SetChild("maybe", nullable)
 
 	m := root.FieldsMap()

@@ -102,30 +102,28 @@ func validateNode(model *ModelNode, data any, path string, depth int) []Validati
 			Kind:    ErrKindGeneric,
 		}}
 	}
-	if model.Kind() == KindLeaf {
+	if model.Object() == nil && model.Array() == nil {
 		return validateLeaf(model, data, path)
 	}
 
 	// A container node is validated against the branch the value's own kind
 	// selects. A node can carry more than one: a field observed in several
-	// kinds is recorded by Merge as children and/or an element and/or scalar
-	// types on a single node, and every branch it carries is a kind the field
-	// declares. Dispatching on the node's dominant Kind alone would refuse a
-	// value the model does declare — the array branch of an object-and-array
-	// union, which Merge folds onto a KindObject node.
+	// kinds records a branch for each, and every branch it carries is a kind
+	// the field declares. Asking for one label instead would refuse a value the
+	// model does declare, since a label can only name one of the three.
 	switch v := data.(type) {
 	case nil:
 		// Null against a container is admissible where the model observed one:
-		// the nullable marker, and any node that also carries scalar types.
-		if !model.Types().IsEmpty() {
+		// the nullable marker, and any node that also declares a scalar.
+		if model.Nullable() || model.Scalar() != nil {
 			return nil
 		}
 	case map[string]any:
-		if model.Kind() == KindObject {
+		if model.Object() != nil {
 			return validateObject(model, v, path, depth)
 		}
 	case []any:
-		if hasArrayBranch(model) {
+		if model.Array() != nil {
 			return validateArray(model, v, path, depth)
 		}
 	default:
@@ -136,8 +134,8 @@ func validateNode(model *ModelNode, data any, path string, depth int) []Validati
 		// complaint — its type is. Answer exactly as a leaf declaration does,
 		// so identical input gets the identical code and Props whether the
 		// scalar was observed alone or alongside a container.
-		if concrete := ConcreteTypes(model.Types()); len(concrete) > 0 {
-			return []ValidationError{incompatibleType(concrete, data, path)}
+		if s := model.Scalar(); s != nil {
+			return []ValidationError{incompatibleType(s.Types(), data, path)}
 		}
 	}
 	return []ValidationError{{
@@ -147,19 +145,12 @@ func validateNode(model *ModelNode, data any, path string, depth int) []Validati
 	}}
 }
 
-// hasArrayBranch reports whether node declares the array kind. An ARRAY node
-// whose element was never observed — the empty-array seed the codec preserves —
-// declares it just the same.
-func hasArrayBranch(node *ModelNode) bool {
-	return node.Kind() == KindArray || node.Element() != nil
-}
-
 // matchesScalarBranch reports whether a scalar value is assignable to one of
-// the scalar types a container node carries — the record of the same field
-// having been observed holding a bare scalar.
+// the types the node's scalar branch carries — the record of the field having
+// been observed holding a bare scalar.
 func matchesScalarBranch(node *ModelNode, data any) bool {
 	dataType := inferDataType(data)
-	for _, mt := range node.Types().Types() {
+	for _, mt := range node.DeclaredTypes() {
 		if IsAssignableTo(dataType, mt) {
 			return true
 		}
@@ -167,30 +158,30 @@ func matchesScalarBranch(node *ModelNode, data any) bool {
 	return false
 }
 
-// declaredKindNames names the kinds a container node declares, so a rejection tells
-// the caller what the field does accept rather than only what it does not.
+// declaredKindNames names the kinds a container node declares, so a rejection
+// tells the caller what the field does accept rather than only what it does not.
 func declaredKindNames(node *ModelNode) string {
-	kinds := make([]string, 0, 3)
-	if node.Kind() == KindObject {
-		kinds = append(kinds, "object")
+	names := make([]string, 0, len(node.Kinds()))
+	if node.Object() != nil {
+		names = append(names, "object")
 	}
-	if hasArrayBranch(node) {
-		kinds = append(kinds, "array")
+	if node.Array() != nil {
+		names = append(names, "array")
 	}
-	if len(ConcreteTypes(node.Types())) > 0 {
-		kinds = append(kinds, "scalar")
+	if node.Scalar() != nil {
+		names = append(names, "scalar")
 	}
-	if len(kinds) == 0 {
+	if len(names) == 0 {
 		return "no value"
 	}
-	return strings.Join(kinds, " or ")
+	return strings.Join(names, " or ")
 }
 
 // validateObject validates the object branch of model. The caller selected it
 // by the value's kind.
 func validateObject(model *ModelNode, obj map[string]any, path string, depth int) []ValidationError {
 	var errs []ValidationError
-	children := model.Children()
+	children := model.Object().Children()
 	for name, childModel := range children {
 		childPath := joinPath(path, name)
 		val, exists := obj[name]
@@ -216,7 +207,7 @@ func validateObject(model *ModelNode, obj map[string]any, path string, depth int
 // validateArray validates the array branch of model. The caller selected it by
 // the value's kind.
 func validateArray(model *ModelNode, arr []any, path string, depth int) []ValidationError {
-	elem := model.Element()
+	elem := model.Array().Element()
 	if elem == nil {
 		return nil
 	}
@@ -251,7 +242,7 @@ func validateLeaf(model *ModelNode, data any, path string) []ValidationError {
 	if matchesScalarBranch(model, data) {
 		return nil
 	}
-	return []ValidationError{incompatibleType(model.Types().Types(), data, path)}
+	return []ValidationError{incompatibleType(model.DeclaredTypes(), data, path)}
 }
 
 // incompatibleType builds the "kind is right, type is wrong" failure — the
