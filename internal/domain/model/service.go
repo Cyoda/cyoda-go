@@ -132,7 +132,10 @@ func (h *Handler) ImportModel(ctx context.Context, input ImportModelInput) (*Imp
 		// and the remedy is to rename the named key. It gets the same
 		// 400 VALIDATION_FAILED the workflow importer answers for its own
 		// content rules, so one class of import rejection reads one way.
-		if errors.Is(err, importer.ErrInvalidFieldName) {
+		// A body that is neither a document nor a collection of documents is
+		// the same class of violation: it parsed, and the remedy is to send a
+		// different shape.
+		if errors.Is(err, importer.ErrInvalidFieldName) || errors.Is(err, importer.ErrNonDocumentSampleData) {
 			appErr := common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error())
 			appErr.Props = map[string]any{
 				"entityName":    input.EntityName,

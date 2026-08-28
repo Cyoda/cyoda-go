@@ -123,7 +123,7 @@ func validateObject(model *ModelNode, data any, path string, depth int) []Valida
 	}
 	obj, ok := data.(map[string]any)
 	if !ok {
-		return []ValidationError{{Path: path, Message: "expected object, got " + jsonKindName(data)}}
+		return []ValidationError{{Path: path, Message: "expected object, got " + JSONKindName(data)}}
 	}
 
 	var errs []ValidationError
@@ -157,7 +157,7 @@ func validateArray(model *ModelNode, data any, path string, depth int) []Validat
 	}
 	arr, ok := data.([]any)
 	if !ok {
-		return []ValidationError{{Path: path, Message: "expected array, got " + jsonKindName(data)}}
+		return []ValidationError{{Path: path, Message: "expected array, got " + JSONKindName(data)}}
 	}
 
 	elem := model.Element()
@@ -188,7 +188,7 @@ func validateLeaf(model *ModelNode, data any, path string) []ValidationError {
 	case map[string]any, []any:
 		return []ValidationError{{
 			Path:    path,
-			Message: "expected scalar, got " + jsonKindName(data),
+			Message: "expected scalar, got " + JSONKindName(data),
 			Kind:    ErrKindGeneric,
 		}}
 	}
@@ -273,10 +273,10 @@ func inferDataType(v any) DataType {
 	}
 }
 
-// jsonKindName names a decoded value's JSON kind in the wire vocabulary, so a
+// JSONKindName names a decoded value's JSON kind in the wire vocabulary, so a
 // rejection tells the caller what they sent in the terms their document is
 // written in rather than in Go's type names.
-func jsonKindName(data any) string {
+func JSONKindName(data any) string {
 	switch data.(type) {
 	case map[string]any:
 		return "object"
