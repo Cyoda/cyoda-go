@@ -172,13 +172,8 @@ func diffArray(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
 	if newElem == nil {
 		return fmt.Errorf("array element removed at %q", displayPath(path))
 	}
-	// Old was an empty array (no observed element yet). Treat this as an
-	// "unobserved element" transitioning to a concrete one. Only the
-	// LEAF case is expressible via the current op catalog.
-	// TODO(A.3 / issue #85): when oldElem is nil and newElem is non-LEAF
-	// (OBJECT/ARRAY element first seen via polymorphic write), the transition
-	// needs a new op kind beyond add_array_item_type. Tracked in Sub-project
-	// A.3 (polymorphic-slot kind conflicts).
+	// Old was an array observed with no content, so it declared no element
+	// type at all; the incoming one is establishing it.
 	if oldElem == nil {
 		// A scalar element uses the dedicated, cheaper op. Anything else is
 		// carried as the array branch itself: Apply materialises the element
