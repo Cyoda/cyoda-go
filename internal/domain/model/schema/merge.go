@@ -5,6 +5,13 @@ package schema
 // When one input is nil, the non-nil input is returned directly. The caller must
 // not retain a separate reference to the input, per Ownership Rule 7.
 // Returns nil if both inputs are nil.
+//
+// A node holds the set of kinds it has been observed as, so merging is set
+// union: each branch merges with its counterpart, and a branch only one side
+// carries is kept. There is no tiebreak to make — the predecessor had to pick
+// one label when two kinds met, and the branch it did not name was invisible to
+// every reader that dispatched on the label, though the payload held it all
+// along. Union is also commutative by construction rather than by accident.
 func Merge(a, b *ModelNode) *ModelNode {
 	if a == nil && b == nil {
 		return nil
@@ -16,77 +23,60 @@ func Merge(a, b *ModelNode) *ModelNode {
 		return a
 	}
 
-	result := NewObjectNode()
-	result.kind = mergeKind(a.kind, b.kind)
-	result.types = Union(a.types, b.types)
+	result := &ModelNode{}
 
-	for name, child := range a.children {
-		result.children[name] = child
-	}
-	for name, child := range b.children {
-		if existing, ok := result.children[name]; ok {
-			result.children[name] = Merge(existing, child)
-		} else {
-			result.children[name] = child
+	if as, bs := a.Scalar(), b.Scalar(); as != nil || bs != nil {
+		result.DeclareKind(KindLeaf)
+		if as != nil {
+			result.AddScalarTypes(as.Types()...)
+		}
+		if bs != nil {
+			result.AddScalarTypes(bs.Types()...)
 		}
 	}
 
-	// Merge array elements
-	result.element = Merge(a.element, b.element)
-
-	// Merge array info
-	result.info = mergeArrayInfo(a.info, b.info)
-
-	return result
-}
-
-func mergeKind(a, b NodeKind) NodeKind {
-	if a == b {
-		return a
-	}
-	if a == KindLeaf {
-		return b
-	}
-	if b == KindLeaf {
-		return a
-	}
-	// Object + Array (or vice-versa): we promote to KindObject but the merged
-	// node preserves both children and element. Downstream exporters should
-	// check element != nil independently of Kind().
-	return KindObject
-}
-
-func mergeArrayInfo(a, b *ArrayInfo) *ArrayInfo {
-	if a == nil && b == nil {
-		return nil
-	}
-	if a == nil {
-		return b
-	}
-	if b == nil {
-		return a
-	}
-	result := NewArrayInfo()
-	if a.maxWidth > b.maxWidth {
-		result.maxWidth = a.maxWidth
-	} else {
-		result.maxWidth = b.maxWidth
-	}
-	maxLen := len(a.elements)
-	if len(b.elements) > maxLen {
-		maxLen = len(b.elements)
-	}
-	for i := 0; i < maxLen; i++ {
-		var merged *TypeSet
-		switch {
-		case i < len(a.elements) && i < len(b.elements):
-			merged = Union(a.elements[i], b.elements[i])
-		case i < len(a.elements):
-			merged = a.elements[i]
-		default:
-			merged = b.elements[i]
+	if ao, bo := a.Object(), b.Object(); ao != nil || bo != nil {
+		result.DeclareKind(KindObject)
+		if ao != nil {
+			for name, child := range ao.Children() {
+				result.SetChild(name, child)
+			}
 		}
-		result.elements = append(result.elements, merged)
+		if bo != nil {
+			for name, child := range bo.Children() {
+				if existing := result.Object().Child(name); existing != nil {
+					child = Merge(existing, child)
+				}
+				result.SetChild(name, child)
+			}
+		}
 	}
+
+	if aa, ba := a.Array(), b.Array(); aa != nil || ba != nil {
+		result.DeclareKind(KindArray)
+		var elem *ModelNode
+		width := 0
+		if aa != nil {
+			elem = aa.Element()
+			width = aa.MaxWidth()
+		}
+		if ba != nil {
+			elem = Merge(elem, ba.Element())
+			if w := ba.MaxWidth(); w > width {
+				width = w
+			}
+		}
+		if elem != nil {
+			result.SetElement(elem)
+		}
+		result.ObserveArrayWidth(width)
+	}
+
+	// A concrete scalar observation on either side collapses the marker, which
+	// AddScalarTypes has already applied; SetNullable is a no-op there.
+	if a.Nullable() || b.Nullable() {
+		result.SetNullable()
+	}
+
 	return result
 }

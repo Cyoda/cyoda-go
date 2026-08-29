@@ -14,8 +14,8 @@ import (
 //
 // Apply does not mutate base — a fresh tree is produced via the
 // codec's Marshal/Unmarshal round-trip. Note that this round-trip
-// drops transient observability state (ArrayInfo) in accordance with
-// the persistence format.
+// drops the observed array widths, which the persistence format does
+// not carry.
 //
 // base must be non-nil. An empty delta yields a clean clone of base.
 func Apply(base *ModelNode, delta spi.SchemaDelta) (*ModelNode, error) {
@@ -53,6 +53,8 @@ func applyOp(root *ModelNode, op SchemaOp) error {
 		return applyBroadenType(root, op)
 	case KindAddArrayItemType:
 		return applyAddArrayItemType(root, op)
+	case KindAddKindBranch:
+		return applyAddKindBranch(root, op)
 	default:
 		return fmt.Errorf("unknown op kind %q", op.Kind)
 	}
@@ -63,8 +65,8 @@ func applyAddProperty(root *ModelNode, op SchemaOp) error {
 	if err != nil {
 		return fmt.Errorf("resolve parent: %w", err)
 	}
-	if parent.Kind() != KindObject {
-		return fmt.Errorf("parent at %q is not an object (kind=%s)", op.Path, parent.Kind())
+	if parent.Object() == nil {
+		return fmt.Errorf("parent at %q does not declare an object (kinds=%s)", op.Path, kindNames(parent))
 	}
 	if op.Name == "" {
 		return fmt.Errorf("add_property requires a non-empty Name")
@@ -73,7 +75,7 @@ func applyAddProperty(root *ModelNode, op SchemaOp) error {
 	if err != nil {
 		return fmt.Errorf("decode subtree: %w", err)
 	}
-	if existing := parent.Child(op.Name); existing != nil {
+	if existing := parent.Object().Child(op.Name); existing != nil {
 		parent.SetChild(op.Name, Merge(existing, incoming))
 		return nil
 	}
@@ -86,25 +88,23 @@ func applyBroadenType(root *ModelNode, op SchemaOp) error {
 	if err != nil {
 		return fmt.Errorf("resolve target: %w", err)
 	}
-	// broaden_type widens the target node's own TypeSet. For LEAF
-	// targets this widens the primitive data types; for OBJECT/ARRAY
-	// targets it adds nullable markers (typically NULL). Both
-	// semantics are additive and handled identically by TypeSet.Add.
+	// broaden_type widens the target node's scalar declaration: the primitive
+	// types where the node already declares a scalar, the nullable marker where
+	// it declares none, and the scalar branch itself where the node so far
+	// declares only a container.
+	//
+	// That last case is not a malformed delta, and it must not be refused. Ops
+	// in this catalog commute — two deltas diffed from the SAME model version
+	// are folded in whatever order they arrive — so an add_kind_branch that
+	// gave this path a container may already have been replayed. The end state
+	// is one a commuted add_kind_branch(LEAF) reaches anyway, so accepting it
+	// forfeits nothing: it is the same model either way, which is exactly what
+	// commutativity means.
 	types, err := DecodeTypeNames(op.Payload)
 	if err != nil {
 		return fmt.Errorf("decode payload: %w", err)
 	}
-	if target.Kind() != KindLeaf {
-		for _, dt := range types {
-			if dt != Null {
-				return fmt.Errorf("broaden_type on %s target at %q may only add NULL, got %s",
-					target.Kind(), op.Path, dt)
-			}
-		}
-	}
-	for _, dt := range types {
-		target.Types().Add(dt)
-	}
+	target.AddScalarTypes(types...)
 	return nil
 }
 
@@ -113,14 +113,14 @@ func applyAddArrayItemType(root *ModelNode, op SchemaOp) error {
 	if err != nil {
 		return fmt.Errorf("resolve array: %w", err)
 	}
-	if target.Kind() != KindArray {
-		return fmt.Errorf("target at %q is not an array (kind=%s)", op.Path, target.Kind())
+	if target.Array() == nil {
+		return fmt.Errorf("target at %q does not declare an array (kinds=%s)", op.Path, kindNames(target))
 	}
 	types, err := DecodeTypeNames(op.Payload)
 	if err != nil {
 		return fmt.Errorf("decode payload: %w", err)
 	}
-	elem := target.Element()
+	elem := target.Array().Element()
 	if elem == nil {
 		// Target was an empty-array seed (no observed element yet).
 		// Materialize a fresh LEAF element seeded with the first
@@ -129,17 +129,58 @@ func applyAddArrayItemType(root *ModelNode, op SchemaOp) error {
 			return fmt.Errorf("array at %q has no element and payload is empty", op.Path)
 		}
 		elem = NewLeafNode(types[0])
-		target.element = elem
-		for _, dt := range types[1:] {
-			elem.Types().Add(dt)
-		}
+		elem.AddScalarTypes(types[1:]...)
+		target.SetElement(elem)
 		return nil
 	}
-	if elem.Kind() != KindLeaf {
-		return fmt.Errorf("array element at %q is not a leaf (kind=%s)", op.Path, elem.Kind())
+	// The op widens the element's SCALAR declaration, and it does so whatever
+	// else the element declares. An element already observed as a container
+	// takes the widening for the same reason the node-level broaden_type does:
+	// ops commute, so the branch that made it a union may already have been
+	// replayed, and refusing here would make the fold order decide whether a
+	// legal pair of deltas applies.
+	elem.AddScalarTypes(types...)
+	return nil
+}
+
+// applyAddKindBranch merges one encoded branch into the target node's branch
+// set, in place. Merging rather than assigning is what makes replay idempotent
+// and order-insensitive: a branch already present unions with itself, and the
+// same op applied twice leaves the same model.
+func applyAddKindBranch(root *ModelNode, op SchemaOp) error {
+	target, err := resolvePath(root, op.Path)
+	if err != nil {
+		return fmt.Errorf("resolve target: %w", err)
 	}
-	for _, dt := range types {
-		elem.Types().Add(dt)
+	incoming, err := Unmarshal(op.Payload)
+	if err != nil {
+		return fmt.Errorf("decode branch: %w", err)
+	}
+	kinds := incoming.Kinds()
+	if len(kinds) != 1 {
+		return fmt.Errorf("add_kind_branch carries exactly one branch, got %s", kindNames(incoming))
+	}
+
+	// Declared first, so a branch that carries no payload — an object observed
+	// with no children, an array observed with no content — still lands.
+	k := kinds[0]
+	target.DeclareKind(k)
+	switch k {
+	case KindLeaf:
+		target.AddScalarTypes(incoming.Scalar().Types()...)
+	case KindObject:
+		for name, child := range incoming.Object().Children() {
+			if existing := target.Object().Child(name); existing != nil {
+				child = Merge(existing, child)
+			}
+			target.SetChild(name, child)
+		}
+	case KindArray:
+		a := incoming.Array()
+		if a.Element() != nil {
+			target.SetElement(Merge(target.Array().Element(), a.Element()))
+		}
+		target.ObserveArrayWidth(a.MaxWidth())
 	}
 	return nil
 }
@@ -162,20 +203,20 @@ func resolvePath(root *ModelNode, path string) (*ModelNode, error) {
 		// an additive change lives inside an array-of-objects or a
 		// nested array.
 		if part == "[]" {
-			if cur.Kind() != KindArray {
-				return nil, fmt.Errorf("cannot descend into element of non-array at segment %q (kind=%s)", part, cur.Kind())
+			if cur.Array() == nil {
+				return nil, fmt.Errorf("cannot descend into the element of a node that declares %s at segment %q", kindNames(cur), part)
 			}
-			elem := cur.Element()
+			elem := cur.Array().Element()
 			if elem == nil {
 				return nil, fmt.Errorf("array has no element at segment %q", part)
 			}
 			cur = elem
 			continue
 		}
-		if cur.Kind() != KindObject {
-			return nil, fmt.Errorf("cannot descend through non-object at segment %q (kind=%s)", part, cur.Kind())
+		if cur.Object() == nil {
+			return nil, fmt.Errorf("cannot descend through a node that declares %s at segment %q", kindNames(cur), part)
 		}
-		next := cur.Child(part)
+		next := cur.Object().Child(part)
 		if next == nil {
 			return nil, fmt.Errorf("missing segment %q under %q", part, path)
 		}
@@ -185,8 +226,8 @@ func resolvePath(root *ModelNode, path string) (*ModelNode, error) {
 }
 
 // cloneNode produces an independent copy of node via the codec
-// round-trip. ArrayInfo is not preserved (mirrors the persistence
-// format).
+// round-trip. Observed array widths are not preserved (mirrors the
+// persistence format).
 func cloneNode(node *ModelNode) (*ModelNode, error) {
 	raw, err := Marshal(node)
 	if err != nil {

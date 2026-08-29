@@ -18,14 +18,14 @@ func TestWalkFlatObject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if node.Kind() != schema.KindObject {
-		t.Fatalf("expected OBJECT, got %v", node.Kind())
+	if node.Object() == nil {
+		t.Fatalf("expected the object branch, got %v", node.Kinds())
 	}
-	nameChild := node.Child("name")
+	nameChild := node.Object().Child("name")
 	if nameChild == nil {
 		t.Fatal("expected 'name' child")
 	}
-	types := nameChild.Types().Types()
+	types := nameChild.DeclaredTypes()
 	if len(types) != 1 || types[0] != schema.String {
 		t.Errorf("expected [STRING], got %v", types)
 	}
@@ -42,14 +42,14 @@ func TestWalkNestedObject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	addr := node.Child("address")
+	addr := node.Object().Child("address")
 	if addr == nil {
 		t.Fatal("expected 'address' child")
 	}
-	if addr.Kind() != schema.KindObject {
-		t.Errorf("expected OBJECT, got %v", addr.Kind())
+	if addr.Object() == nil {
+		t.Errorf("expected the object branch, got %v", addr.Kinds())
 	}
-	if addr.Child("city") == nil {
+	if addr.Object().Child("city") == nil {
 		t.Error("expected 'city' under address")
 	}
 }
@@ -62,17 +62,17 @@ func TestWalkArray(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	tags := node.Child("tags")
+	tags := node.Object().Child("tags")
 	if tags == nil {
 		t.Fatal("expected 'tags' child")
 	}
-	if tags.Kind() != schema.KindArray {
-		t.Errorf("expected ARRAY, got %v", tags.Kind())
+	if tags.Array() == nil {
+		t.Errorf("expected the array branch, got %v", tags.Kinds())
 	}
-	if tags.Element() == nil {
+	if tags.Array().Element() == nil {
 		t.Fatal("expected element descriptor")
 	}
-	elemTypes := tags.Element().Types().Types()
+	elemTypes := tags.Array().Element().DeclaredTypes()
 	if len(elemTypes) != 1 || elemTypes[0] != schema.String {
 		t.Errorf("expected [STRING] elements, got %v", elemTypes)
 	}
@@ -89,18 +89,18 @@ func TestWalkArrayOfObjects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	items := node.Child("items")
-	if items == nil || items.Kind() != schema.KindArray {
+	items := node.Object().Child("items")
+	if items == nil || items.Array() == nil {
 		t.Fatal("expected 'items' as ARRAY")
 	}
-	elem := items.Element()
-	if elem == nil || elem.Kind() != schema.KindObject {
+	elem := items.Array().Element()
+	if elem == nil || elem.Object() == nil {
 		t.Fatal("expected element to be OBJECT")
 	}
-	if elem.Child("name") == nil {
+	if elem.Object().Child("name") == nil {
 		t.Error("expected 'name' in array element")
 	}
-	if elem.Child("price") == nil {
+	if elem.Object().Child("price") == nil {
 		t.Error("expected 'price' in array element (merged from second item)")
 	}
 }
@@ -111,8 +111,8 @@ func TestWalkBoolean(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	active := node.Child("active")
-	types := active.Types().Types()
+	active := node.Object().Child("active")
+	types := active.DeclaredTypes()
 	if len(types) != 1 || types[0] != schema.Boolean {
 		t.Errorf("expected [BOOLEAN], got %v", types)
 	}
@@ -143,7 +143,7 @@ func TestWalkNumericInference(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			types := node.Child("v").Types().Types()
+			types := node.Object().Child("v").DeclaredTypes()
 			if len(types) != 1 || types[0] != tc.expected {
 				t.Errorf("expected [%v], got %v", tc.expected, types)
 			}
@@ -157,15 +157,15 @@ func TestWalkEmptyArray(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	items := node.Child("items")
-	if items == nil || items.Kind() != schema.KindArray {
+	items := node.Object().Child("items")
+	if items == nil || items.Array() == nil {
 		t.Fatal("expected 'items' as ARRAY")
 	}
-	elem := items.Element()
+	elem := items.Array().Element()
 	if elem == nil {
 		t.Fatal("expected element descriptor")
 	}
-	elemTypes := elem.Types().Types()
+	elemTypes := elem.DeclaredTypes()
 	if len(elemTypes) != 1 || elemTypes[0] != schema.Null {
 		t.Errorf("expected [NULL] element type, got %v", elemTypes)
 	}
@@ -178,7 +178,7 @@ func TestWalkJsonNumber(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	types := node.Child("v").Types().Types()
+	types := node.Object().Child("v").DeclaredTypes()
 	if len(types) != 1 || types[0] != schema.Integer {
 		t.Errorf("expected [INTEGER], got %v", types)
 	}
@@ -191,7 +191,7 @@ func TestWalkJsonNumberLarge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	types := node.Child("v").Types().Types()
+	types := node.Object().Child("v").DeclaredTypes()
 	if len(types) != 1 || types[0] != schema.Long {
 		t.Errorf("expected [LONG], got %v", types)
 	}
@@ -204,7 +204,7 @@ func TestWalkJsonNumberBigInteger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	types := node.Child("v").Types().Types()
+	types := node.Object().Child("v").DeclaredTypes()
 	if len(types) != 1 || types[0] != schema.BigInteger {
 		t.Errorf("expected [BIG_INTEGER], got %v", types)
 	}
@@ -216,7 +216,7 @@ func TestWalkJsonNumberDecimal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	types := node.Child("v").Types().Types()
+	types := node.Object().Child("v").DeclaredTypes()
 	if len(types) != 1 || types[0] != schema.Double {
 		t.Errorf("expected [DOUBLE], got %v", types)
 	}
@@ -266,10 +266,10 @@ func TestWalker_ValueBasedClassification(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Walk: %v", err)
 			}
-			if node.Kind() != schema.KindLeaf {
-				t.Fatalf("expected leaf, got %s", node.Kind())
+			if node.Scalar() == nil {
+				t.Fatalf("expected a scalar branch, got %v", node.Kinds())
 			}
-			types := node.Types().Types()
+			types := node.DeclaredTypes()
 			if len(types) != 1 {
 				t.Fatalf("expected single type, got %v", types)
 			}
@@ -286,8 +286,8 @@ func TestWalkNull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	missing := node.Child("missing")
-	types := missing.Types().Types()
+	missing := node.Object().Child("missing")
+	types := missing.DeclaredTypes()
 	if len(types) != 1 || types[0] != schema.Null {
 		t.Errorf("expected [NULL], got %v", types)
 	}

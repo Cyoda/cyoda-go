@@ -53,9 +53,11 @@ Schema inference is additive: importing sample data against an existing model me
 
 **Sample data is a document, or a collection of documents.** A JSON object is one sample document. A JSON array is several — each element must itself be an object, and the derived model is their merge, the same result successive imports produce. Any other body (a scalar, an array holding a non-object) is rejected with `400 VALIDATION_FAILED`, naming the offending element.
 
-**A value's kind must be one the field declares.** A field declared as a scalar accepts a scalar; declared as an array, an array; declared as an object, an object. A value of any other kind is rejected with `400`, at every depth including array elements. On a model with no `changeLevel` (and on PATCH) that is `VALIDATION_FAILED` — `expected scalar, got array`, naming every kind the field does declare. With a `changeLevel` set the write also proposes a schema change, and the extension refuses the kind change at every level, including the most permissive, with `POLYMORPHIC_SLOT`.
+**A value's kind must be one the field declares.** A field declared as a scalar accepts a scalar; declared as an array, an array; declared as an object, an object. A value of any other kind is rejected with `400`, at every depth including array elements. On a model with no `changeLevel` (and on PATCH) that is `VALIDATION_FAILED` — `expected scalar, got array`, naming every kind the field does declare. With a `changeLevel` set the write also proposes a schema change, so the answer turns on the level: giving a path a kind it does not declare is a `STRUCTURAL` change, refused below that level and accepted at it.
 
-A field may declare more than one kind, by being observed in each while the model is `UNLOCKED` — successive imports, or one import of several sample documents. Every declared kind is then admissible on a model with no `changeLevel`, and the export names each branch. **With a `changeLevel` set, a write matching any but the field's dominant kind is still refused** with `POLYMORPHIC_SLOT`: the extension path compares one kind per path. Leave `changeLevel` unset on a model with multi-kind fields.
+A field may declare more than one kind — observed in each while the model is `UNLOCKED` (successive imports, or one import of several sample documents), or added by a write at `STRUCTURAL`. Every declared kind is admissible at every `changeLevel`, and the export names each branch.
+
+A path that declares no kind at all is the exception worth knowing: a field observed only as `null`, or an array observed with no content, has nothing to conflict with, so it learns its first kind at `TYPE` (or `ARRAY_ELEMENTS` for an array's element) rather than at `STRUCTURAL`.
 
 `null` follows the declaration like any other value: a scalar field always accepts it, and a container field accepts it only where the model observed one (the sample data had `null` there). It is not a kind of its own, so it never widens the model.
 
@@ -122,7 +124,7 @@ Change levels are hierarchical (most restrictive to most permissive):
 - `ARRAY_LENGTH` — permits only increases in uni-type array width
 - `ARRAY_ELEMENTS` — allows multi-type array changes without adding new types
 - `TYPE` — permits modifications to existing types
-- `STRUCTURAL` — allows fundamental model changes including new fields
+- `STRUCTURAL` — allows fundamental model changes: new fields, and giving a path a kind it does not yet declare
 
 Response: `200 OK`, `application/json`, `EntityModelActionResultDto`.
 

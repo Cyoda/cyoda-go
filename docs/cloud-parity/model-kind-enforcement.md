@@ -47,26 +47,29 @@ Notes:
   parameter, unstorable bytes.
 - **This is not a ban on polymorphic fields.** A field that declares both a
   scalar and an array admits both. Only a kind outside the declared set is
-  refused. Every layer has to hold the union for this to be true — Merge folds
-  the branches onto one node, the persisted schema must carry all of them back,
-  validation dispatches on the branch the value's kind selects, and the export
-  names each. In cyoda-go the object-and-array union is the one Merge folds onto
-  a node whose *dominant* kind is OBJECT, so any layer that dispatches on the
-  dominant kind alone silently drops the array branch.
-- **Both write doors reject; the codes differ deliberately.** With no
-  `changeLevel` (and on PATCH) the model is fixed and the answer is
-  `VALIDATION_FAILED` — the value simply does not fit. With a `changeLevel` set the
-  write additionally proposes a schema change, and the extension path refuses
-  the kind change at every level including `STRUCTURAL`, with
-  `POLYMORPHIC_SLOT`.
-- **Known limitation of the `changeLevel` door in cyoda-go.** That path compares
-  one kind per path, so on a model with a multi-kind field it also refuses a
-  write matching a *declared* but non-dominant branch. The two doors therefore
-  disagree about a conforming value: strict validation admits it, the extension
-  path does not. This is the same gap as "an entity write cannot create a
-  multi-kind declaration, while the sample-data import merge can" — a separate,
-  open question, not settled here. Cloud, which implements polymorphic slots
-  natively, is not expected to reproduce the limitation.
+  refused. Every layer has to hold the union for this to be true: a node records
+  the SET of kinds the field has been observed as, the persisted schema carries
+  every one of them back, validation dispatches on the branch the value's kind
+  selects, and both exports name each. There is no dominant kind and no single
+  label — a label can only name one of three independent observations, so any
+  layer that reads one silently drops the others.
+- **The two write doors ask different questions.** With no `changeLevel` (and
+  on PATCH) the model is fixed: the only question is whether the value fits, and
+  a kind outside the declared set is `VALIDATION_FAILED`. With a `changeLevel`
+  set the write additionally proposes a schema change, so the question is
+  whether the level permits it. Giving a path a kind it does not declare is a
+  `STRUCTURAL` change — a new kind is strictly more fundamental than a new
+  field — refused below that level as an ordinary change-level violation and
+  accepted at it. Raising the level therefore resolves it, which is why there is
+  no separate error code for the case.
+- **A write can establish a second kind, and every declared kind is writable.**
+  Both follow from the node holding a set. A field that declares a scalar and an
+  array admits either at any `changeLevel`; a third kind is admitted at
+  `STRUCTURAL` and refused below it. The one asymmetry worth stating: a path that
+  declares NO kind — observed only as `null`, or an array observed with no
+  content — has nothing to conflict with, so establishing its first kinds keeps
+  the level that promotion has always had (`TYPE`, or `ARRAY_ELEMENTS` on an
+  array's element) rather than requiring `STRUCTURAL`.
 
 Why it matters beyond the write: search comparison is type-directed off these
 declarations. A value admitted against a declaration that forbids its kind is a
@@ -114,11 +117,19 @@ empty document does.
 model admits whenever two branches render the same JSON Schema shape (`Integer`
 and `Long` both render `{"type":"integer"}`).
 
-The same completeness applies to the internal field walk that resolves a path's
-declared types for search, and to the persisted schema itself: every branch a
-write may take must survive storage and be reachable in the field walk, or a
-predicate on the missing branch silently evaluates as though the field held
-nothing — and the model quietly stops admitting a document it was derived from.
+The same completeness applies to the field walk that resolves a path's declared
+types for search, and to the persisted schema itself: every branch a write may
+take must survive storage and be reachable in the field walk, or a predicate on
+the missing branch silently evaluates as though the field held nothing — and the
+model quietly stops admitting a document it was derived from.
+
+That walk has exactly one implementation, in `cyoda-go-spi`, and the engine uses
+it. A backend that executes a search itself reads the same bytes through the
+same code, so it cannot resolve a path's declared types differently. This is
+load-bearing rather than tidiness: the failure mode of a second implementation
+is not an error but a narrower answer — the path misses in the fields map, the
+leaf comparison matches nothing, and the query returns fewer rows with nothing
+reported.
 
 ## Coverage
 
@@ -128,6 +139,14 @@ nothing — and the model quietly stops admitting a document it was derived from
 - HTTP e2e: `internal/e2e/model_kind_enforcement_test.go` — write and PATCH
   rejections, no widening under a rejected write, collection import, rejected
   bodies, export branches.
+  `internal/e2e/model_kind_branch_extension_test.go` — the `changeLevel` door:
+  every declared kind accepted at every level, a new kind refused below
+  `STRUCTURAL` and accepted at it, and the export naming both branches after.
+- gRPC: `internal/grpc/model_kind_enforcement_test.go`,
+  `internal/grpc/model_kind_branch_test.go` — a separate entry point, so the
+  same rules are asserted on the envelope.
 - Cross-backend parity: `ModelKindEnforcementRejected`,
-  `ModelSampleDataCollectionImport` in `e2e/parity/`. Both rules run above the
-  SPI, so no backend may answer differently.
+  `ModelSampleDataCollectionImport`, `ModelKindBranchExtension` in
+  `e2e/parity/`. The rules run above the SPI, so no backend may answer
+  differently — and the last one additionally checks that the delta survives the
+  plugin's own extension log and is folded back on read.

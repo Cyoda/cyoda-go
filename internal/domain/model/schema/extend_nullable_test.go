@@ -1,7 +1,7 @@
 package schema
 
 import (
-	"errors"
+	"strings"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -28,22 +28,22 @@ func TestExtend_IncomingLeafNull_AgainstExistingArray_IsNullableMarker(t *testin
 	if err != nil {
 		t.Fatalf("Extend with LEAF[NULL] against ARRAY must succeed (nullable marker); got: %v", err)
 	}
-	child := got.Child("custom_permissions")
+	child := got.Object().Child("custom_permissions")
 	if child == nil {
 		t.Fatal("extended child is nil")
 	}
-	if child.Kind() != KindArray {
-		t.Errorf("extended child kind = %s, want %s (nullable marker must not change kind)", child.Kind(), KindArray)
+	if child.Array() == nil {
+		t.Errorf("extended child kinds = %v, want the array branch (a nullable marker adds no kind)", child.Kinds())
 	}
 	hasNull := false
-	for _, dt := range child.Types().Types() {
+	for _, dt := range child.DeclaredTypes() {
 		if dt == Null {
 			hasNull = true
 			break
 		}
 	}
 	if !hasNull {
-		t.Errorf("ARRAY node types = %v, want to include NULL after nullable extension", child.Types().Types())
+		t.Errorf("ARRAY node types = %v, want to include NULL after nullable extension", child.DeclaredTypes())
 	}
 }
 
@@ -62,19 +62,19 @@ func TestExtend_IncomingLeafNull_AgainstExistingObject_IsNullableMarker(t *testi
 	if err != nil {
 		t.Fatalf("Extend with LEAF[NULL] against OBJECT must succeed (nullable marker); got: %v", err)
 	}
-	child := got.Child("roles_and_permissions")
-	if child.Kind() != KindObject {
-		t.Errorf("extended child kind = %s, want %s", child.Kind(), KindObject)
+	child := got.Object().Child("roles_and_permissions")
+	if child.Object() == nil {
+		t.Errorf("extended child kinds = %v, want the object branch", child.Kinds())
 	}
 	hasNull := false
-	for _, dt := range child.Types().Types() {
+	for _, dt := range child.DeclaredTypes() {
 		if dt == Null {
 			hasNull = true
 			break
 		}
 	}
 	if !hasNull {
-		t.Errorf("OBJECT node types = %v, want to include NULL", child.Types().Types())
+		t.Errorf("OBJECT node types = %v, want to include NULL", child.DeclaredTypes())
 	}
 }
 
@@ -93,9 +93,9 @@ func TestExtend_ExistingLeafNull_AgainstIncomingArray_PromotesToArray(t *testing
 	if err != nil {
 		t.Fatalf("Extend with ARRAY against LEAF[NULL] must succeed (nullable promoted); got: %v", err)
 	}
-	child := got.Child("tags")
-	if child.Kind() != KindArray {
-		t.Errorf("extended child kind = %s, want %s (NULL promotes to concrete kind)", child.Kind(), KindArray)
+	child := got.Object().Child("tags")
+	if child.Array() == nil {
+		t.Errorf("extended child kinds = %v, want the array branch (the marker promotes to the observed kind)", child.Kinds())
 	}
 }
 
@@ -136,12 +136,16 @@ func TestExtend_GenuineKindMismatch_StillRejected(t *testing.T) {
 			incoming := NewObjectNode()
 			incoming.SetChild("f", tc.incoming)
 
+			// A concrete kind meeting another concrete kind is a new branch:
+			// refused below STRUCTURAL, and the message names that level.
+			// This is what separates it from the nullable marker above, which
+			// adds no kind and stays a TYPE-level change.
 			_, err := Extend(existing, incoming, spi.ChangeLevelType)
 			if err == nil {
-				t.Fatal("genuine kind mismatch must still be rejected after nullable-marker exception")
+				t.Fatal("adding a kind must still be refused at TYPE, unlike the nullable marker")
 			}
-			if !errors.Is(err, ErrPolymorphicSlot) {
-				t.Errorf("unexpected error (want ErrPolymorphicSlot): %v", err)
+			if !strings.Contains(err.Error(), "STRUCTURAL") {
+				t.Errorf("the rejection must name the level that resolves it: %v", err)
 			}
 		})
 	}
@@ -150,16 +154,13 @@ func TestExtend_GenuineKindMismatch_StillRejected(t *testing.T) {
 // TestExtend_NullableMarker_AtLowerChangeLevel_RejectedAsLevelViolation pins
 // the intersection of two behaviors that interact non-obviously:
 //
-//  1. isNullOnlyLeaf carve-out: LEAF[NULL] against non-LEAF is a nullable
-//     marker, not a kind mismatch (commit d3159bd).
-//  2. Nullable markers add NULL to the target's TypeSet, which is a
-//     TYPE-level operation and requires ChangeLevelType or higher.
+//  1. A payload of null against a container adds no kind — the node was
+//     observed as null, which is a marker, not a kind of its own.
+//  2. Recording that marker is still a TYPE-level change, so a caller below
+//     TYPE must not smuggle it through.
 //
-// A caller operating at ChangeLevelArrayLength (or any level below TYPE)
-// must NOT smuggle a TypeSet widening through via the nullable path. The
-// carve-out returns a clear "nullable marker requires TYPE level" error
-// rather than silently accepting the change OR falsely reporting a kind
-// mismatch — both of which would be wrong.
+// The rejection names TYPE, the level that resolves it, rather than reporting
+// a shape problem the caller cannot act on.
 //
 // Runs for the three sub-TYPE levels (ArrayLength, ArrayElements, and the
 // empty level that permits nothing) to cover the full matrix of "below TYPE"
@@ -185,12 +186,10 @@ func TestExtend_NullableMarker_AtLowerChangeLevel_RejectedAsLevelViolation(t *te
 			if err == nil {
 				t.Fatal("nullable marker below TYPE level must reject")
 			}
-			// Must NOT be classified as polymorphic — this is a level
-			// issue, solvable by raising the level. Treating it as
-			// polymorphic would mislead clients into thinking their
-			// payload shape is at fault.
-			if errors.Is(err, ErrPolymorphicSlot) {
-				t.Errorf("level-below-TYPE nullable must NOT wrap ErrPolymorphicSlot; got: %v", err)
+			// It is a level issue, solvable by raising the level, and the
+			// message must say so rather than blaming the payload's shape.
+			if !strings.Contains(err.Error(), "TYPE") {
+				t.Errorf("the rejection must name TYPE, the level that resolves it; got: %v", err)
 			}
 		})
 	}

@@ -18,7 +18,7 @@ func TestExtendStructuralNewField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Child("age") == nil {
+	if result.Object().Child("age") == nil {
 		t.Error("expected 'age' field")
 	}
 }
@@ -45,7 +45,7 @@ func TestExtendTypeAllowsTypeWidening(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	types := result.Child("value").Types().Types()
+	types := result.Object().Child("value").DeclaredTypes()
 	if len(types) != 2 {
 		t.Errorf("expected polymorphic, got %v", types)
 	}
@@ -62,7 +62,7 @@ func TestExtendArrayElementsAllowsElementWidening(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	elemTypes := result.Child("scores").Element().Types().Types()
+	elemTypes := result.Object().Child("scores").Array().Element().DeclaredTypes()
 	if len(elemTypes) != 2 {
 		t.Errorf("expected widened, got %v", elemTypes)
 	}
@@ -81,18 +81,18 @@ func TestExtendArrayElementsRejectsLeafTypeWidening(t *testing.T) {
 
 func TestExtendArrayLengthAllowsWidthChange(t *testing.T) {
 	existingArr := schema.NewArrayNode(schema.NewLeafNode(schema.String))
-	existingArr.Info().Observe(3)
+	existingArr.ObserveArrayWidth(3)
 	existing := schema.NewObjectNode()
 	existing.SetChild("tags", existingArr)
 	incomingArr := schema.NewArrayNode(schema.NewLeafNode(schema.String))
-	incomingArr.Info().Observe(5)
+	incomingArr.ObserveArrayWidth(5)
 	incoming := schema.NewObjectNode()
 	incoming.SetChild("tags", incomingArr)
 	result, err := schema.Extend(existing, incoming, spi.ChangeLevelArrayLength)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Child("tags").Info().MaxWidth() != 5 {
+	if result.Object().Child("tags").Array().MaxWidth() != 5 {
 		t.Error("expected width 5")
 	}
 }
@@ -131,7 +131,7 @@ func TestExtendConformingDataNoChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Child("name") == nil {
+	if result.Object().Child("name") == nil {
 		t.Error("expected 'name' preserved")
 	}
 }

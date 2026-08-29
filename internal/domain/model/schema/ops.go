@@ -14,10 +14,13 @@ import (
 // STRUCTURAL). Every kind satisfies both commutativity and
 // validation-monotonicity (property tests in properties_test.go).
 //
-// Wire-format note: the kind strings are persisted in plugin extension
-// logs and gossiped between cyoda-go versions. Adding a kind is a
-// forward-incompatible change across versions — handle in
-// coordination with the plugin migration story.
+// Wire-format note: the kind strings are persisted in an extension log
+// that a plugin owns the table for, but they are cyoda-go's vocabulary,
+// not the plugin's. A plugin keeps a SchemaDelta opaque — it is []byte
+// on the SPI — and never parses an op kind, so adding one needs no
+// coordination with any plugin. Apply already fails closed on a kind it
+// does not know, which is what makes a log written by a newer version
+// refuse to be half-applied by an older one.
 type SchemaOpKind string
 
 const (
@@ -42,6 +45,23 @@ const (
 	// Element() is nil at the time of Apply gains a fresh LEAF element
 	// with the payload types. ChangeLevel: ARRAY_ELEMENTS.
 	KindAddArrayItemType SchemaOpKind = "add_array_item_type"
+
+	// KindAddKindBranch records a path being observed as a kind it did
+	// not declare before. The op's Path targets the node; the Payload
+	// carries a node holding EXACTLY that one branch, in the same
+	// encoding as schema.Marshal, and Apply merges it into the target's
+	// branch set. The kind is not stored a second time beside the
+	// payload — the payload names it, and a derived value stored twice
+	// is what made a node's kind label disagree with its contents in
+	// the first place.
+	//
+	// ChangeLevel: STRUCTURAL — a new kind is strictly more fundamental
+	// than a new field. The exception is a node that declares NO kind
+	// at all (a path observed only as null, an array element never
+	// observed with content): establishing its first kind creates no
+	// union, and keeps the level that promotion has always had — TYPE,
+	// or ARRAY_ELEMENTS directly on an array's element.
+	KindAddKindBranch SchemaOpKind = "add_kind_branch"
 )
 
 // SchemaOp is one entry in a serialized SchemaDelta.
@@ -99,6 +119,17 @@ func NewAddArrayItemType(arrayPath string, added []DataType) (SchemaOp, error) {
 		return SchemaOp{}, fmt.Errorf("NewAddArrayItemType: %w", err)
 	}
 	return SchemaOp{Kind: KindAddArrayItemType, Path: arrayPath, Payload: payload}, nil
+}
+
+// NewAddKindBranch builds an op that adds one kind branch to the node
+// at `targetPath`. `branch` must be a non-nil encoded ModelNode produced
+// by schema.Marshal, carrying exactly one branch.
+func NewAddKindBranch(targetPath string, branch []byte) SchemaOp {
+	return SchemaOp{
+		Kind:    KindAddKindBranch,
+		Path:    targetPath,
+		Payload: append(json.RawMessage(nil), branch...),
+	}
 }
 
 // encodeTypeNames serializes a set of DataType values to a stable,

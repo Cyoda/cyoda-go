@@ -14,10 +14,10 @@ func TestSampleDataImporterJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if node.Child("name") == nil {
+	if node.Object().Child("name") == nil {
 		t.Error("expected 'name' field")
 	}
-	if node.Child("age") == nil {
+	if node.Object().Child("age") == nil {
 		t.Error("expected 'age' field")
 	}
 }
@@ -28,7 +28,7 @@ func TestSampleDataImporterXML(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if node.Child("name") == nil {
+	if node.Object().Child("name") == nil {
 		t.Error("expected 'name' field")
 	}
 }
@@ -46,10 +46,10 @@ func TestSampleDataImporterSuccessiveMerge(t *testing.T) {
 	first, _ := imp.Import(strings.NewReader(`{"name": "Alice"}`), "JSON")
 	second, _ := imp.Import(strings.NewReader(`{"age": 30}`), "JSON")
 	merged := schema.Merge(first, second)
-	if merged.Child("name") == nil {
+	if merged.Object().Child("name") == nil {
 		t.Error("expected 'name' from first import")
 	}
-	if merged.Child("age") == nil {
+	if merged.Object().Child("age") == nil {
 		t.Error("expected 'age' from second import")
 	}
 }

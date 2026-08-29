@@ -74,7 +74,7 @@ func TestSimpleViewNestedObject(t *testing.T) {
 func TestSimpleViewArrayOfPrimitives(t *testing.T) {
 	elem := schema.NewLeafNode(schema.String)
 	arr := schema.NewArrayNode(elem)
-	arr.Info().Observe(3)
+	arr.ObserveArrayWidth(3)
 
 	node := schema.NewObjectNode()
 	node.SetChild("tags", arr)
@@ -135,7 +135,7 @@ func TestSimpleViewArrayOfObjects(t *testing.T) {
 
 func TestSimpleViewPolymorphicField(t *testing.T) {
 	leaf := schema.NewLeafNode(schema.Integer)
-	leaf.Types().Add(schema.String)
+	leaf.AddScalarTypes(schema.String)
 	node := schema.NewObjectNode()
 	node.SetChild("value", leaf)
 

@@ -26,6 +26,11 @@ type GenConfig struct {
 	PrimitiveWeights map[schema.DataType]float64
 	AllowNulls       bool
 	TargetLevel      spi.ChangeLevel
+	// KindMutationRate is the probability that mutateToValue emits a value of
+	// a kind the node does NOT declare, which is what drives an
+	// add_kind_branch out of the pipeline. Zero — the default — reproduces the
+	// same-kind-at-every-position generator the roundtrip suite was built on.
+	KindMutationRate float64
 }
 
 // KindWeights controls the relative probability of generating a leaf,
@@ -212,34 +217,80 @@ func mutateToValue(r *rand.Rand, n *schema.ModelNode, depth int, cfg GenConfig) 
 	if n == nil || depth > cfg.MaxDepth {
 		return genLeafValue(r, cfg)
 	}
-	switch n.Kind() {
-	case schema.KindLeaf:
-		// Emit a value compatible with the widest type in the set, plus
-		// occasionally broaden to trigger a broaden_type op.
-		return genLeafValue(r, cfg)
-	case schema.KindObject:
+	// Occasionally propose a kind the node does not declare. That is an
+	// additive change too — the path gains a branch — and it is the only way
+	// the property suites ever exercise add_kind_branch.
+	if cfg.KindMutationRate > 0 && r.Float64() < cfg.KindMutationRate {
+		return genForeignKindValue(r, n, cfg)
+	}
+
+	// A node declares a SET of kinds; emit a value of one it declares, so the
+	// extension stays additive. GenModelNode builds monomorphic nodes, so the
+	// order below only matters for a tree that was merged.
+	if o := n.Object(); o != nil {
 		out := make(map[string]any)
 		for _, name := range sortedChildNames(n) {
-			out[name] = mutateToValue(r, n.Child(name), depth+1, cfg)
+			out[name] = mutateToValue(r, o.Child(name), depth+1, cfg)
 		}
 		// ~30% of the time add a new field to drive AddProperty.
 		if r.Float64() < 0.3 {
 			out["extra_"+strconv.Itoa(r.IntN(1000))] = genLeafValue(r, cfg)
 		}
 		return out
-	case schema.KindArray:
+	}
+	if a := n.Array(); a != nil {
 		m := r.IntN(cfg.MaxWidth + 1)
 		out := make([]any, m)
 		for i := 0; i < m; i++ {
-			out[i] = mutateToValue(r, n.Element(), depth+1, cfg)
+			out[i] = mutateToValue(r, a.Element(), depth+1, cfg)
 		}
 		return out
 	}
+	// Emit a value compatible with the widest type in the set, plus
+	// occasionally broaden to trigger a broaden_type op.
 	return genLeafValue(r, cfg)
 }
 
+// genForeignKindValue emits a value of a kind n does NOT declare, so the walk of
+// it proposes a new branch at this path. It picks uniformly among the kinds the
+// node is missing; when n declares all three it falls back to a conforming
+// scalar rather than inventing a fourth kind.
+//
+// Picking uniformly matters for a node that declares NO kind — the nullable
+// marker, which GenModelNode produces whenever it rolls Null. Asking only "does
+// it have a scalar branch" would hand such a node a scalar every time, and the
+// marker-to-container promotion would never be generated at all. That is a
+// reachable transition with an op of its own, so the property suites have to be
+// able to reach it.
+func genForeignKindValue(r *rand.Rand, n *schema.ModelNode, cfg GenConfig) any {
+	// A slice, not a map: generator paths must stay deterministic under a seed
+	// (see TestGeneratorIsMapFree).
+	missing := make([]schema.NodeKind, 0, 3)
+	if n.Scalar() == nil {
+		missing = append(missing, schema.KindLeaf)
+	}
+	if n.Object() == nil {
+		missing = append(missing, schema.KindObject)
+	}
+	if n.Array() == nil {
+		missing = append(missing, schema.KindArray)
+	}
+	if len(missing) == 0 {
+		return genLeafValue(r, cfg)
+	}
+
+	switch missing[r.IntN(len(missing))] {
+	case schema.KindObject:
+		return map[string]any{"k" + strconv.Itoa(r.IntN(100)): genLeafValue(r, cfg)}
+	case schema.KindArray:
+		return []any{genLeafValue(r, cfg)}
+	default:
+		return genLeafValue(r, cfg)
+	}
+}
+
 func sortedChildNames(n *schema.ModelNode) []string {
-	children := n.Children() // returns map[string]*ModelNode (shallow copy)
+	children := n.Object().Children() // returns map[string]*ModelNode (shallow copy)
 	names := make([]string, 0, len(children))
 	for k := range children {
 		names = append(names, k)

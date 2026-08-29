@@ -12,19 +12,14 @@ import (
 
 // axis2Cell describes one cell of the (existingKind, incomingKind) matrix.
 // Action: "roundtrip" asserts I1; "extendContract" asserts Extend is a no-op
-// (silent-drop); "skip" marks polymorphic-slot cells deferred to A.3.
+// (silent-drop).
 type axis2Cell struct {
-	Name    string
-	Old     *schema.ModelNode
-	Value   any
-	Level   spi.ChangeLevel
-	Action  string // roundtrip | extendContract | skip
-	SkipMsg string
+	Name   string
+	Old    *schema.ModelNode
+	Value  any
+	Level  spi.ChangeLevel
+	Action string // roundtrip | extendContract
 }
-
-// polymorphicSlotIssue references the A.3 tracking issue for kind-conflict
-// (LEAF↔OBJECT, LEAF↔ARRAY, OBJECT↔ARRAY) Extend/Diff/Apply semantics.
-const polymorphicSlotIssue = "polymorphic-slot semantics pending — see issue #85"
 
 func TestAxis2KindMatrix(t *testing.T) {
 	leaf := func(dt schema.DataType) *schema.ModelNode { return schema.NewLeafNode(dt) }
@@ -37,30 +32,28 @@ func TestAxis2KindMatrix(t *testing.T) {
 
 	cells := []axis2Cell{
 		// Same-kind: round-trip properly.
-		{"LL_same_type", leaf(schema.Integer), json.Number("1"), spi.ChangeLevelStructural, "roundtrip", ""},
-		{"LL_broaden", leaf(schema.Integer), json.Number("1.5"), spi.ChangeLevelType, "roundtrip", ""},
-		{"OO_add_field", obj(), map[string]any{"k": json.Number("1"), "new": "s"}, spi.ChangeLevelStructural, "roundtrip", ""},
-		{"AA_same_element", arr(), []any{json.Number("1")}, spi.ChangeLevelStructural, "roundtrip", ""},
+		{"LL_same_type", leaf(schema.Integer), json.Number("1"), spi.ChangeLevelStructural, "roundtrip"},
+		{"LL_broaden", leaf(schema.Integer), json.Number("1.5"), spi.ChangeLevelType, "roundtrip"},
+		{"OO_add_field", obj(), map[string]any{"k": json.Number("1"), "new": "s"}, spi.ChangeLevelStructural, "roundtrip"},
+		{"AA_same_element", arr(), []any{json.Number("1")}, spi.ChangeLevelStructural, "roundtrip"},
 
-		// Kind-conflict cells (6 cells × whatever levels are in scope) — skip to A.3.
-		{"LO_leaf_to_object", leaf(schema.Integer), map[string]any{"x": json.Number("1")}, spi.ChangeLevelStructural, "skip", polymorphicSlotIssue},
-		{"LA_leaf_to_array", leaf(schema.Integer), []any{json.Number("1")}, spi.ChangeLevelStructural, "skip", polymorphicSlotIssue},
-		{"OL_object_to_leaf", obj(), json.Number("1"), spi.ChangeLevelStructural, "skip", polymorphicSlotIssue},
-		{"OA_object_to_array", obj(), []any{json.Number("1")}, spi.ChangeLevelStructural, "skip", polymorphicSlotIssue},
-		{"AL_array_to_leaf", arr(), json.Number("1"), spi.ChangeLevelStructural, "skip", polymorphicSlotIssue},
-		{"AO_array_to_object", arr(), map[string]any{"k": json.Number("1")}, spi.ChangeLevelStructural, "skip", polymorphicSlotIssue},
+		// Kind-union cells: at STRUCTURAL the write adds the kind, and the
+		// delta must replay to exactly the model Extend produced.
+		{"LO_leaf_to_object", leaf(schema.Integer), map[string]any{"x": json.Number("1")}, spi.ChangeLevelStructural, "roundtrip"},
+		{"LA_leaf_to_array", leaf(schema.Integer), []any{json.Number("1")}, spi.ChangeLevelStructural, "roundtrip"},
+		{"OL_object_to_leaf", obj(), json.Number("1"), spi.ChangeLevelStructural, "roundtrip"},
+		{"OA_object_to_array", obj(), []any{json.Number("1")}, spi.ChangeLevelStructural, "roundtrip"},
+		{"AL_array_to_leaf", arr(), json.Number("1"), spi.ChangeLevelStructural, "roundtrip"},
+		{"AO_array_to_object", arr(), map[string]any{"k": json.Number("1")}, spi.ChangeLevelStructural, "roundtrip"},
 
 		// Silent-drop Extend-contract cells: verify Extend returns old unchanged
 		// when confronted with incompatible kinds at restricted levels.
-		{"LO_restricted_levelType_no_op", leaf(schema.Integer), map[string]any{"k": json.Number("1")}, spi.ChangeLevelType, "extendContract", ""},
+		{"LO_restricted_levelType_no_op", leaf(schema.Integer), map[string]any{"k": json.Number("1")}, spi.ChangeLevelType, "extendContract"},
 	}
 
 	for _, c := range cells {
 		c := c
 		t.Run(c.Name, func(t *testing.T) {
-			if c.Action == "skip" {
-				t.Skip(c.SkipMsg)
-			}
 			incomingNode, err := importer.Walk(c.Value)
 			if err != nil {
 				t.Fatalf("Walk: %v", err)

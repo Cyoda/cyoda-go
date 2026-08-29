@@ -11,7 +11,6 @@ Two codes, split by whether the request was understood:
 | the server cannot parse or structurally process the request — malformed JSON/XML, unsupported format, a parameter outside its range, mutually exclusive parameters, unstorable bytes (U+0000, invalid UTF-8) | `400 BAD_REQUEST` |
 | the payload parsed, and then failed against the registered model | `400 VALIDATION_FAILED` |
 | …except a leaf value whose DataType is not assignable to the declared one | `400 INCOMPATIBLE_TYPE` (+ `fieldPath`, `expectedType`, `actualType`) |
-| …except a payload that, with a `changeLevel` set, proposes a new kind at a declared path | `400 POLYMORPHIC_SLOT` |
 
 `VALIDATION_FAILED` therefore covers, on every entity ingress (create, update,
 PATCH, collection writes, processor output):

@@ -124,6 +124,6 @@ func (w *walker) walkArray(arr []any, path string) (*schema.ModelNode, error) {
 		element = schema.Merge(element, child)
 	}
 	node := schema.NewArrayNode(element)
-	node.Info().Observe(len(arr))
+	node.ObserveArrayWidth(len(arr))
 	return node, nil
 }

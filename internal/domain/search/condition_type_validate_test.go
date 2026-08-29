@@ -182,7 +182,7 @@ func TestValidateConditionTypes_MixedObjectOrScalar_Accepts(t *testing.T) {
 	root := schema.NewObjectNode()
 	mixed := schema.NewObjectNode()
 	mixed.SetChild("some-key", schema.NewLeafNode(schema.String))
-	mixed.Types().Add(schema.String) // observed as a bare string too
+	mixed.AddScalarTypes(schema.String) // observed as a bare string too
 	root.SetChild("some-object", mixed)
 
 	cond := &predicate.SimpleCondition{

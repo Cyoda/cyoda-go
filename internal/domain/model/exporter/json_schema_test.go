@@ -84,7 +84,7 @@ func TestJSONSchemaArray(t *testing.T) {
 
 func TestJSONSchemaPolymorphic(t *testing.T) {
 	leaf := schema.NewLeafNode(schema.Integer)
-	leaf.Types().Add(schema.String)
+	leaf.AddScalarTypes(schema.String)
 	node := schema.NewObjectNode()
 	node.SetChild("value", leaf)
 

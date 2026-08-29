@@ -222,7 +222,6 @@ func classifyBeginErr(err error) *common.AppError {
 // Classification is sentinel-based to keep it robust against wording drift
 // in the wrap strings:
 //
-//   - ErrPolymorphicSlot      → 4xx POLYMORPHIC_SLOT (client normalizes payload)
 //   - *ingest.IncompatibleTypeError  → 4xx INCOMPATIBLE_TYPE with structured Props
 //     (fieldPath, expectedType, actualType) — Cloud's
 //     FoundIncompatibleTypeWithEntityModelException equivalent
@@ -251,9 +250,6 @@ func classifyValidateOrExtendErr(err error) *common.AppError {
 	var preClassified *common.AppError
 	if errors.As(err, &preClassified) {
 		return preClassified
-	}
-	if errors.Is(err, schema.ErrPolymorphicSlot) {
-		return common.Operational(http.StatusBadRequest, common.ErrCodePolymorphicSlot, err.Error())
 	}
 	var incompatErr *ingest.IncompatibleTypeError
 	if errors.As(err, &incompatErr) {

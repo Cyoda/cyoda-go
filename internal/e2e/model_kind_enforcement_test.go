@@ -126,27 +126,72 @@ func TestModelKindEnforcement_PatchRejectsKindMismatch(t *testing.T) {
 	}
 }
 
-// The other door of the same question: with a changeLevel set, the write also
-// proposes a schema change, and the extension path refuses the kind change at
-// every level — the most permissive included. Both doors reject; they differ
-// only in which code they carry, because only one of them is being asked to
-// change the model.
-func TestModelKindEnforcement_ChangeLevelRejectsKindMismatch(t *testing.T) {
+// The other door of the same question. With a changeLevel set the write also
+// proposes a schema change, so the answer turns on whether the level permits
+// it: giving a declared path a second kind is a STRUCTURAL change, refused
+// below that level and accepted at it. The strict door above never changes the
+// model, so it rejects the same payload at every level.
+func TestModelKindEnforcement_ChangeLevelBelowStructuralRejectsANewKind(t *testing.T) {
 	const model = "e2e-kind-enforce-changelevel"
 	importModelSampleE2E(t, model, 1, `{"s":"x"}`)
 	lockModelE2E(t, model, 1)
 
-	for _, level := range []string{"ARRAY_LENGTH", "ARRAY_ELEMENTS", "TYPE", "STRUCTURAL"} {
+	for _, level := range []string{"ARRAY_LENGTH", "ARRAY_ELEMENTS", "TYPE"} {
 		t.Run(level, func(t *testing.T) {
 			setChangeLevelE2E(t, model, 1, level)
 			status, body := createEntityRawE2E(t, model, 1, `{"s":["A"]}`)
 			if status != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400; body: %s", status, body)
 			}
-			if !strings.Contains(body, "POLYMORPHIC_SLOT") {
-				t.Errorf("body must carry POLYMORPHIC_SLOT; body: %s", body)
+			if !strings.Contains(body, "VALIDATION_FAILED") {
+				t.Errorf("body must carry VALIDATION_FAILED; body: %s", body)
+			}
+			// The remedy is to raise the level, so the message has to name it.
+			if !strings.Contains(body, "STRUCTURAL") {
+				t.Errorf("body must name the level that resolves it; body: %s", body)
 			}
 		})
+	}
+}
+
+// At STRUCTURAL the write is accepted and the path declares BOTH kinds
+// afterwards. Only a sample-data import could establish that before, which
+// made a model with a multi-kind field unusable with a changeLevel set.
+func TestModelKindEnforcement_StructuralWriteAddsAKind(t *testing.T) {
+	const model = "e2e-kind-enforce-structural-add"
+	importModelSampleE2E(t, model, 1, `{"s":"x"}`)
+	lockModelE2E(t, model, 1)
+	setChangeLevelE2E(t, model, 1, "STRUCTURAL")
+
+	status, body := createEntityRawE2E(t, model, 1, `{"s":["A"]}`)
+	if status != http.StatusCreated && status != http.StatusOK {
+		t.Fatalf("status = %d, want 2xx; body: %s", status, body)
+	}
+
+	// The export names every branch the field declares.
+	root := rootBucketE2E(t, model, 1)
+	for key, want := range map[string]string{
+		".s":    "STRING",
+		".s[*]": "STRING",
+	} {
+		got, ok := root[key]
+		if !ok {
+			t.Errorf("export must name the %q branch; bucket: %v", key, root)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s = %v, want %q", key, got, want)
+		}
+	}
+
+	// And both kinds are admissible afterwards, at a level that permits no
+	// schema change at all: neither proposes one any more.
+	setChangeLevelE2E(t, model, 1, "TYPE")
+	for _, payload := range []string{`{"s":"plain"}`, `{"s":["A","B"]}`} {
+		status, body := createEntityRawE2E(t, model, 1, payload)
+		if status != http.StatusCreated && status != http.StatusOK {
+			t.Errorf("%s: status = %d, want 2xx; body: %s", payload, status, body)
+		}
 	}
 }
 
