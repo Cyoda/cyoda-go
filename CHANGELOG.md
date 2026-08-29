@@ -855,6 +855,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   schema change and the delta it produced was empty; it was refused below `TYPE`
   as a "type change" regardless.
 
+- **A unique key can no longer end up over a field that admits more than one
+  kind.** A claim is computed by tokenizing the value at the keyed path, and
+  tokenizing refuses an object or an array — so such a key could be enforced for
+  only half the values the field declares, and the model would declare a kind no
+  write could ever supply. The check only noticed a keyed path leaving the
+  model's field list, which a path gaining a second kind does not do. A second
+  sample-data import could therefore union an object onto a keyed field and be
+  accepted (`200`); it now answers `422 INVALID_UNIQUE_KEY_DEFINITION` and
+  registers nothing. The same rule guards the unique-key declaration and the
+  schema extension an entity write performs.
+
 - **A search against a field observed as more than one kind no longer silently
   returns fewer rows on a backend that executes searches itself.** That
   executor's own schema decoder dispatched on a single kind label and dropped

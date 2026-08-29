@@ -62,3 +62,41 @@ func TestValidateUniqueKeys_AcceptsAPureScalarLeaf(t *testing.T) {
 		t.Errorf("a pure scalar leaf is a valid key field: %v", err)
 	}
 }
+
+// The rule stated directly: a keyed path must not be polymorphic. The check is
+// written as "declares no container kind" because there are only three kinds
+// and one of them is the scalar — so a polymorphic node always declares a
+// container. This test pins the two formulations together, so a later edit to
+// either cannot drift from the invariant.
+func TestValidateUniqueKeys_APolymorphicKeyedPathIsAlwaysRejected(t *testing.T) {
+	keys := []spi.UniqueKey{{ID: "k", Fields: []string{"$.f"}}}
+
+	object := func() *ModelNode {
+		o := NewObjectNode()
+		o.SetChild("sub", NewLeafNode(String))
+		return o
+	}
+	array := func() *ModelNode { return NewArrayNode(NewLeafNode(String)) }
+
+	for _, c := range []struct {
+		name string
+		node *ModelNode
+	}{
+		{"scalar and object", Merge(NewLeafNode(String), object())},
+		{"scalar and array", Merge(NewLeafNode(String), array())},
+		{"object and array", Merge(object(), array())},
+		{"all three", Merge(Merge(NewLeafNode(String), object()), array())},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if !c.node.IsPolymorphic() {
+				t.Fatalf("precondition: this node is polymorphic; kinds=%v", c.node.Kinds())
+			}
+			root := NewObjectNode()
+			root.SetChild("f", c.node)
+
+			if err := ValidateUniqueKeys(root, keys); err == nil {
+				t.Errorf("a polymorphic keyed path must be rejected; kinds=%v", c.node.Kinds())
+			}
+		})
+	}
+}

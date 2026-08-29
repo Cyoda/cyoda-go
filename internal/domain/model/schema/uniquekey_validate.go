@@ -21,17 +21,24 @@ func (e *UniqueKeyDefError) Error() string {
 // scalar leaf fields in n, and that key IDs and per-key field lists are
 // internally consistent (non-empty, no duplicates).
 //
-// A "scalar leaf" is a path whose node declares NO container kind — not merely
-// one that has a scalar branch. A path observed as both a scalar and an object
-// is not keyable: computing a claim tokenizes the value, and it refuses an
-// object or an array, so the key could not be enforced for half the values the
-// path admits.
+// A KEYED PATH MUST NOT BE POLYMORPHIC. A "scalar leaf" is therefore a path
+// whose node declares no container kind — not merely one that carries a scalar
+// branch alongside others. (There are only three kinds and one of them is the
+// scalar, so a polymorphic node always declares a container: the test below
+// covers the invariant and additionally rejects a pure container.)
 //
-// That distinction is load-bearing rather than pedantic. A write may add a kind
-// to a path, and the schema extension is committed BEFORE the write's own
-// transaction opens — so admitting the widening here would leave the model
-// permanently declaring a kind that every later write of that kind is then
-// refused for. Rejecting it up front means nothing is committed at all.
+// The reason is that a claim is computed by tokenizing the value at the path,
+// and tokenizing refuses an object or an array. A key over a path that admits
+// both a string and an object could be enforced for only half the values the
+// path declares — so the model would declare a kind that no write can ever
+// supply.
+//
+// This is checked on every door that can change either side of the pair: the
+// sample-data import (a second import can union a new kind onto a keyed path),
+// the unique-key declaration itself, and the schema extension an entity write
+// performs. The last one matters most, because it commits the schema change
+// BEFORE the write's own transaction opens — there would be nothing left to
+// roll back.
 //
 // Returns *UniqueKeyDefError on first violation; nil on success.
 func ValidateUniqueKeys(n *ModelNode, keys []spi.UniqueKey) error {

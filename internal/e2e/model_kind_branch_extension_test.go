@@ -205,3 +205,35 @@ func TestModelKindBranch_KeyedPathCannotGainAContainer(t *testing.T) {
 		t.Errorf("the declared kind must still write: status = %d; body: %s", status, body)
 	}
 }
+
+// A keyed path must not be polymorphic, and the sample-data import is a door
+// that can make one: a second import while the model is UNLOCKED unions a new
+// kind onto the path. Before the branch set the import was accepted, and the
+// model was left carrying a key over a path admitting a value no claim can be
+// computed from.
+func TestModelKindBranch_ImportCannotMakeAKeyedPathPolymorphic(t *testing.T) {
+	const model = "e2e-kind-branch-import-keyed"
+	importModelSampleE2E(t, model, 1, `{"sku":"x"}`)
+
+	if status, body := setUniqueKeysE2E(t, model, 1,
+		`{"uniqueKeys":[{"id":"sku-key","fields":["$.sku"]}]}`); status != http.StatusOK {
+		t.Fatalf("setUniqueKeys: status = %d; body: %s", status, body)
+	}
+
+	// Still UNLOCKED, so the import would ordinarily merge and be accepted.
+	status, body := importModelRawE2E(t, model, 1, `{"sku":{"a":1}}`)
+	if status != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body: %s", status, body)
+	}
+	if !strings.Contains(body, "INVALID_UNIQUE_KEY_DEFINITION") {
+		t.Errorf("body must carry INVALID_UNIQUE_KEY_DEFINITION; body: %s", body)
+	}
+
+	root := rootBucketE2E(t, model, 1)
+	if _, ok := root["#.sku"]; ok {
+		t.Errorf("the rejected import must not add the object branch; bucket: %v", root)
+	}
+	if got := root[".sku"]; got != "STRING" {
+		t.Errorf(".sku = %v, want STRING (unchanged)", got)
+	}
+}
