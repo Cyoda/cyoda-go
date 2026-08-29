@@ -159,3 +159,49 @@ func TestModelKindBranch_StrictDoorStillRejects(t *testing.T) {
 		t.Errorf("body must name the kind that was sent; body: %s", body)
 	}
 }
+
+// A unique key can only be enforced over a path that holds a scalar and
+// nothing else, so a STRUCTURAL write that would give a KEYED path a container
+// branch is refused — and refused before anything is written.
+//
+// The ordering is what makes this matter: the schema extension is committed
+// before the write's own transaction is opened. Letting the widening through
+// would leave the model permanently declaring a kind that every later write of
+// that kind is then refused for, with nothing left to roll it back.
+func TestModelKindBranch_KeyedPathCannotGainAContainer(t *testing.T) {
+	const model = "e2e-kind-branch-keyed"
+	importModelSampleE2E(t, model, 1, `{"sku":"x"}`)
+
+	if status, body := setUniqueKeysE2E(t, model, 1,
+		`{"uniqueKeys":[{"id":"sku-key","fields":["$.sku"]}]}`); status != http.StatusOK {
+		t.Fatalf("setUniqueKeys: status = %d; body: %s", status, body)
+	}
+	lockModelE2E(t, model, 1)
+	setChangeLevelE2E(t, model, 1, "STRUCTURAL")
+
+	before := rootBucketE2E(t, model, 1)
+
+	status, body := createEntityRawE2E(t, model, 1, `{"sku":{"sub":"val"}}`)
+	if status != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body: %s", status, body)
+	}
+	if !strings.Contains(body, "INVALID_UNIQUE_KEY_DEFINITION") {
+		t.Errorf("body must carry INVALID_UNIQUE_KEY_DEFINITION; body: %s", body)
+	}
+
+	// Nothing was recorded: the model still declares exactly what it did.
+	after := rootBucketE2E(t, model, 1)
+	if len(before) != len(after) {
+		t.Fatalf("the rejected write changed the model\n  before: %v\n  after:  %v", before, after)
+	}
+	for k, v := range before {
+		if after[k] != v {
+			t.Errorf("the rejected write changed %q: %v -> %v", k, v, after[k])
+		}
+	}
+
+	// And the declared kind still writes.
+	if status, body := createEntityRawE2E(t, model, 1, `{"sku":"plain"}`); !created(status) {
+		t.Errorf("the declared kind must still write: status = %d; body: %s", status, body)
+	}
+}

@@ -21,8 +21,17 @@ func (e *UniqueKeyDefError) Error() string {
 // scalar leaf fields in n, and that key IDs and per-key field lists are
 // internally consistent (non-empty, no duplicates).
 //
-// A "scalar leaf" is a FieldDescriptor from n.Fields() that is NOT marked
-// IsArray and whose path does not contain "[" or "*".
+// A "scalar leaf" is a path whose node declares NO container kind — not merely
+// one that has a scalar branch. A path observed as both a scalar and an object
+// is not keyable: computing a claim tokenizes the value, and it refuses an
+// object or an array, so the key could not be enforced for half the values the
+// path admits.
+//
+// That distinction is load-bearing rather than pedantic. A write may add a kind
+// to a path, and the schema extension is committed BEFORE the write's own
+// transaction opens — so admitting the widening here would leave the model
+// permanently declaring a kind that every later write of that kind is then
+// refused for. Rejecting it up front means nothing is committed at all.
 //
 // Returns *UniqueKeyDefError on first violation; nil on success.
 func ValidateUniqueKeys(n *ModelNode, keys []spi.UniqueKey) error {
@@ -37,6 +46,10 @@ func ValidateUniqueKeys(n *ModelNode, keys []spi.UniqueKey) error {
 		}
 		scalarLeafs[f.Path] = struct{}{}
 	}
+	// Fields() reports a path once per node, so a node carrying a scalar branch
+	// ALONGSIDE a container appears here exactly as a pure scalar does. Remove
+	// those: the walk below is the only thing that can tell them apart.
+	dropContainerPaths(n, "$", scalarLeafs)
 
 	// Validate each key.
 	seenIDs := make(map[string]struct{}, len(keys))
@@ -71,4 +84,21 @@ func ValidateUniqueKeys(n *ModelNode, keys []spi.UniqueKey) error {
 	}
 
 	return nil
+}
+
+// dropContainerPaths removes from paths every path whose node declares a
+// container kind, walking object branches with the same spelling
+// [ModelNode.Fields] uses. An array branch is not descended: anything under one
+// is spelled with "[*]" and has already been filtered out.
+func dropContainerPaths(n *ModelNode, prefix string, paths map[string]struct{}) {
+	if n.Object() != nil || n.Array() != nil {
+		delete(paths, prefix)
+	}
+	o := n.Object()
+	if o == nil {
+		return
+	}
+	for name, child := range o.Children() {
+		dropContainerPaths(child, prefix+"."+name, paths)
+	}
 }

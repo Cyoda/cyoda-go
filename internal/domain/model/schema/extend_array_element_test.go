@@ -16,7 +16,7 @@ import (
 // and its TypeSet without any error or change-level check.
 //
 // Expected: same contract as root-level kind mismatch — reject with a
-// clear error, with the same isNullOnlyLeaf carve-out.
+// clear error, with the same nullable-marker carve-out.
 func TestExtend_ArrayElementKindMismatch_Rejected(t *testing.T) {
 	cases := []struct {
 		name         string

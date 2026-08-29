@@ -214,6 +214,42 @@ func TestValidateOrExtend_WideningKeyedNullLeaf_Returns422(t *testing.T) {
 	}
 }
 
+// TestValidateOrExtend_WideningKeyedScalarLeaf_Returns422 is the case that
+// matters most, because the schema extension is committed BEFORE the write's
+// own transaction is opened (see CreateEntity: ValidateOrExtend runs, then
+// withUniqueKeys, and only then beginScope). A keyed path that gains a
+// container branch keeps its scalar branch, so it still looks like a scalar
+// leaf — but a claim cannot be computed for an object value, so the write is
+// refused anyway. If the widening were let through, the model would be left
+// permanently declaring a kind that every later write of that kind is refused
+// for, with nothing to roll it back.
+func TestValidateOrExtend_WideningKeyedScalarLeaf_Returns422(t *testing.T) {
+	node := schema.NewObjectNode()
+	node.SetChild("score", schema.NewLeafNode(schema.String))
+	desc := descriptorWithChangeLevelAndKeys(t, node, spi.ChangeLevelStructural, []spi.UniqueKey{
+		{ID: "uk-score", Fields: []string{"$.score"}},
+	})
+	ms := &recordingModelStore{descriptor: desc}
+
+	data := map[string]any{"score": map[string]any{"sub": "val"}}
+
+	err := ingest.ValidateOrExtend(context.Background(), ms, desc, data)
+	if err == nil {
+		t.Fatal("expected error for a keyed field gaining a container branch, got nil")
+	}
+	appErr := classifyValidateOrExtendErr(err)
+	if appErr.Status != http.StatusUnprocessableEntity {
+		t.Errorf("status: got %d want %d", appErr.Status, http.StatusUnprocessableEntity)
+	}
+	if appErr.Code != common.ErrCodeInvalidUniqueKeyDefinition {
+		t.Errorf("code: got %q want %q", appErr.Code, common.ErrCodeInvalidUniqueKeyDefinition)
+	}
+	// The whole point: nothing was persisted.
+	if ms.extendCalls != 0 {
+		t.Errorf("ExtendSchema must not be called when the write is rejected; got %d calls", ms.extendCalls)
+	}
+}
+
 // TestValidateOrExtend_AddNewField_NotTouchingKeyedField_Succeeds verifies that
 // a normal additive extension (new field added, keyed field untouched) is
 // accepted and ExtendSchema is called exactly once.

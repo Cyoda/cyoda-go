@@ -38,8 +38,7 @@ Not retryable. The caller must either correct the payload (cast/format the value
 This code is distinct from:
 
 - `errors.CONDITION_TYPE_MISMATCH` — search-side equivalent, raised when a search condition's literal value does not match the field's locked DataType.
-- `errors.VALIDATION_FAILED` — payload holds a value whose KIND the field does not declare (an object where a scalar is declared, say). That is a kind mismatch, not a type mismatch: there is no `DataType` to report for an object or an array, so it carries no `expectedType`/`actualType`.
-- `errors.VALIDATION_FAILED` — generic validation failure that is not a leaf type mismatch (e.g. a missing required field, a structural shape mismatch).
+- `errors.VALIDATION_FAILED` — every validation failure that is not a leaf type mismatch: a value whose KIND the field does not declare (an object where a scalar is declared), an undeclared field, a structural shape mismatch, or a change the `changeLevel` does not permit. A kind mismatch carries no `expectedType`/`actualType` — there is no `DataType` to report for an object or an array.
 
 ## SEE ALSO
 

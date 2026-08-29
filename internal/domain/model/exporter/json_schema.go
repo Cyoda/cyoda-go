@@ -32,7 +32,7 @@ func (e *JSONSchemaExporter) Export(node *schema.ModelNode) ([]byte, error) {
 
 // convert renders a node as the union of the branches it carries. A field
 // observed as both a scalar and a container declares — and enforces — both
-// kinds, so describing it by its dominant Kind alone would drop one of them.
+// kinds, so describing it by any one of them would drop the others.
 func (e *JSONSchemaExporter) convert(node *schema.ModelNode) map[string]any {
 	if node.Object() == nil && node.Array() == nil {
 		return e.convertLeaf(node)

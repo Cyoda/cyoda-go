@@ -843,7 +843,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   (the commonest), a field observed only as `null` and later holding an object
   or an array, and an array whose element was never observed at all. The last
   also never widened: an array observed with no content did not notice it was
-  gaining an element, so the model kept declaring nothing there.
+  gaining an element, so the model kept declaring nothing there. That last one
+  is a tightening as well as a fix — such a write used to be accepted at any
+  level precisely because nothing was recorded, and it now costs
+  `ARRAY_ELEMENTS` like any other element-type change. The walker never
+  produces an array with no element, so only a model stored that way is
+  affected.
 
 - **Writing `null` to a field declared as a scalar no longer requires `TYPE`
   level.** A scalar declaration already admits null, so the write proposes no
