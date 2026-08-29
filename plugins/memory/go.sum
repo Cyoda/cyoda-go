@@ -1,6 +1,6 @@
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
-github.com/cyoda-platform/cyoda-go-spi v0.8.4-0.20260826145234-eeb1c7209c32 h1:lJHbBNEcreju6j6JEeBIgRSSHLPJ1R36wYSnAjdcjbY=
-github.com/cyoda-platform/cyoda-go-spi v0.8.4-0.20260826145234-eeb1c7209c32/go.mod h1:QkBUv0Fws88BNWNivUlUb07QS2kkOekoFzuMa590XV8=
+github.com/cyoda-platform/cyoda-go-spi v0.8.4-0.20260829143258-5eaaf2572858 h1:DFEissaVDT9xWoT+8eRX1/OkldDodEkJ2EKgiJygQNw=
+github.com/cyoda-platform/cyoda-go-spi v0.8.4-0.20260829143258-5eaaf2572858/go.mod h1:QkBUv0Fws88BNWNivUlUb07QS2kkOekoFzuMa590XV8=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
