@@ -76,7 +76,11 @@ func (e *SimpleViewExporter) describeChild(
 
 	// Scalar branch of a kind union. NULL alone is the nullable marker, not a
 	// scalar observation, so it does not open one.
-	if sc := child.Scalar(); sc != nil {
+	// An empty scalar branch declares no type, so it names no scalar here. The
+	// field walk makes the same call for the same node, and the two readers of
+	// one node must not disagree — that disagreement is the whole defect this
+	// representation removes.
+	if sc := child.Scalar(); sc != nil && len(sc.Types()) > 0 {
 		desc["."+name] = typeNames(sc.Types())
 	}
 
@@ -115,7 +119,7 @@ func (e *SimpleViewExporter) describeElements(
 	}
 
 	// Scalar branch of elements observed as both a scalar and a container.
-	if sc := elem.Scalar(); sc != nil {
+	if sc := elem.Scalar(); sc != nil && len(sc.Types()) > 0 {
 		desc["."+name+suffix] = widthDescriptor(typeNames(sc.Types()), arr)
 	}
 

@@ -251,20 +251,38 @@ func mutateToValue(r *rand.Rand, n *schema.ModelNode, depth int, cfg GenConfig) 
 	return genLeafValue(r, cfg)
 }
 
-// genForeignKindValue emits a value whose kind n does not declare, so the walk
-// of it proposes a new branch at this path. When n somehow declares all three,
-// it falls back to a conforming scalar rather than inventing a fourth kind.
+// genForeignKindValue emits a value of a kind n does NOT declare, so the walk of
+// it proposes a new branch at this path. It picks uniformly among the kinds the
+// node is missing; when n declares all three it falls back to a conforming
+// scalar rather than inventing a fourth kind.
+//
+// Picking uniformly matters for a node that declares NO kind — the nullable
+// marker, which GenModelNode produces whenever it rolls Null. Asking only "does
+// it have a scalar branch" would hand such a node a scalar every time, and the
+// marker-to-container promotion would never be generated at all. That is a
+// reachable transition with an op of its own, so the property suites have to be
+// able to reach it.
 func genForeignKindValue(r *rand.Rand, n *schema.ModelNode, cfg GenConfig) any {
-	scalar := n.Scalar() != nil
-	object := n.Object() != nil
-	array := n.Array() != nil
-
-	switch {
-	case !scalar:
+	// A slice, not a map: generator paths must stay deterministic under a seed
+	// (see TestGeneratorIsMapFree).
+	missing := make([]schema.NodeKind, 0, 3)
+	if n.Scalar() == nil {
+		missing = append(missing, schema.KindLeaf)
+	}
+	if n.Object() == nil {
+		missing = append(missing, schema.KindObject)
+	}
+	if n.Array() == nil {
+		missing = append(missing, schema.KindArray)
+	}
+	if len(missing) == 0 {
 		return genLeafValue(r, cfg)
-	case !object:
+	}
+
+	switch missing[r.IntN(len(missing))] {
+	case schema.KindObject:
 		return map[string]any{"k" + strconv.Itoa(r.IntN(100)): genLeafValue(r, cfg)}
-	case !array:
+	case schema.KindArray:
 		return []any{genLeafValue(r, cfg)}
 	default:
 		return genLeafValue(r, cfg)

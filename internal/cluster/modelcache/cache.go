@@ -284,6 +284,11 @@ func (c *CachingModelStore) lookupEntry(key cacheKey) (cacheEntry, bool) {
 //
 // An UNLOCKED descriptor is never cached — its schema can still change — so its
 // parse is produced fresh and not retained, exactly as its bytes are not.
+//
+// The returned node is SHARED: for a cached entry every reader gets the same
+// tree, and a ModelNode is not safe for concurrent mutation. Treat it as
+// read-only. The type carries exported mutators because the engine builds trees
+// with them, not because a reader may edit one it was handed.
 func (c *CachingModelStore) SchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
 	key := cacheKey{tenant: common.TenantFromContext(ctx), ref: ref}
 	if e, ok := c.lookupEntry(key); ok {

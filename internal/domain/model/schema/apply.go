@@ -88,25 +88,21 @@ func applyBroadenType(root *ModelNode, op SchemaOp) error {
 	if err != nil {
 		return fmt.Errorf("resolve target: %w", err)
 	}
-	// broaden_type widens the target node's own TypeSet. For LEAF
-	// targets this widens the primitive data types; for OBJECT/ARRAY
-	// targets it adds nullable markers (typically NULL). Both
-	// semantics are additive and handled identically by TypeSet.Add.
+	// broaden_type widens the target node's scalar declaration: the primitive
+	// types where the node already declares a scalar, the nullable marker where
+	// it declares none, and the scalar branch itself where the node so far
+	// declares only a container.
+	//
+	// That last case is not a malformed delta, and it must not be refused. Ops
+	// in this catalog commute — two deltas diffed from the SAME model version
+	// are folded in whatever order they arrive — so an add_kind_branch that
+	// gave this path a container may already have been replayed. The end state
+	// is one a commuted add_kind_branch(LEAF) reaches anyway, so accepting it
+	// forfeits nothing: it is the same model either way, which is exactly what
+	// commutativity means.
 	types, err := DecodeTypeNames(op.Payload)
 	if err != nil {
 		return fmt.Errorf("decode payload: %w", err)
-	}
-	// A node carrying a scalar branch — or none at all, the nullable marker,
-	// where one is being established — takes concrete types. Anywhere else the
-	// only meaningful addition is NULL: adding a scalar KIND to a node that
-	// already declares another is a branch addition, which has its own op.
-	if target.Scalar() == nil && len(target.Kinds()) > 0 {
-		for _, dt := range types {
-			if dt != Null {
-				return fmt.Errorf("broaden_type on a %s target at %q may only add NULL, got %s",
-					kindNames(target), op.Path, dt)
-			}
-		}
 	}
 	target.AddScalarTypes(types...)
 	return nil
@@ -137,15 +133,12 @@ func applyAddArrayItemType(root *ModelNode, op SchemaOp) error {
 		target.SetElement(elem)
 		return nil
 	}
-	// The op widens the element's SCALAR types, so what it needs is a scalar
-	// branch — not the absence of every other branch. An element observed as
-	// both a scalar and a container still takes the widening, and must: ops
-	// commute, so the branch that made it a union may well have been replayed
-	// first. Only an element that declares a kind but no scalar is refused,
-	// because giving it one would be adding a branch, which has its own op.
-	if elem.Scalar() == nil && len(elem.Kinds()) > 0 {
-		return fmt.Errorf("array element at %q declares %s and no scalar", op.Path, kindNames(elem))
-	}
+	// The op widens the element's SCALAR declaration, and it does so whatever
+	// else the element declares. An element already observed as a container
+	// takes the widening for the same reason the node-level broaden_type does:
+	// ops commute, so the branch that made it a union may already have been
+	// replayed, and refusing here would make the fold order decide whether a
+	// legal pair of deltas applies.
 	elem.AddScalarTypes(types...)
 	return nil
 }

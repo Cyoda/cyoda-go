@@ -53,6 +53,9 @@ func (e *JSONSchemaExporter) convert(node *schema.ModelNode) map[string]any {
 			branches = append(branches, jsonSchemaType(dt))
 		}
 	}
+	// A scalar branch with no types contributes no branch, so a node carrying
+	// only that beside a container renders as the container alone — the same
+	// answer the field walk gives.
 
 	switch len(branches) {
 	case 0:

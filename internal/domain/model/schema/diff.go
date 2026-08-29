@@ -35,6 +35,12 @@ func diffNode(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
 				displayPath(path), k)
 		}
 	}
+	// Losing the nullable marker is the same class of change, and just as
+	// unreachable through Merge — stated here so the two halves of what a node
+	// declares are checked in one place rather than one of them silently.
+	if oldN.Nullable() && !newN.Nullable() && newN.Scalar() == nil {
+		return fmt.Errorf("nullable removal at %q is not additive", displayPath(path))
+	}
 	// Nullability first: a structural position newly observed as nil records
 	// the marker, which is a broaden_type of NULL on the node itself.
 	if newN.Nullable() && !oldN.Nullable() {

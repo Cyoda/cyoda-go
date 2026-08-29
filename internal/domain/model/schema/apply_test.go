@@ -166,10 +166,47 @@ func TestApply_BroadenType_OnObjectAddsNullableMarker(t *testing.T) {
 	}
 }
 
-func TestApply_BroadenType_RejectsNonNullOnObject(t *testing.T) {
+// A concrete type on a node that so far declares only a container used to be
+// refused as malformed. It is not malformed: a path can be observed as both an
+// object and a string, and this op establishes the scalar branch — the same end
+// state a commuted add_kind_branch(LEAF) reaches.
+//
+// Refusing it made the FOLD ORDER decide whether a legal pair of deltas
+// applied, which is the one thing an additive op catalog must never do.
+func TestApply_BroadenType_EstablishesTheScalarBranchOnAContainer(t *testing.T) {
 	root := NewObjectNode()
 	root.SetChild("addr", NewObjectNode())
-	op, err := NewBroadenType("addr", []DataType{String}) // non-NULL on OBJECT
+
+	op, err := NewBroadenType("addr", []DataType{String})
+	if err != nil {
+		t.Fatalf("NewBroadenType: %v", err)
+	}
+	delta, err := MarshalDelta([]SchemaOp{op})
+	if err != nil {
+		t.Fatalf("MarshalDelta: %v", err)
+	}
+	out, err := Apply(root, delta)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	addr := out.Object().Child("addr")
+	if addr.Scalar() == nil || addr.Object() == nil {
+		t.Fatalf("addr must declare both kinds; kinds=%v", addr.Kinds())
+	}
+	if got := addr.Scalar().Types(); len(got) != 1 || got[0] != String {
+		t.Errorf("scalar branch types = %v, want [STRING]", got)
+	}
+}
+
+// What IS still malformed: an op naming a path the model does not have. That is
+// the stale-delta signal, and it must stay an error rather than silently
+// creating the path.
+func TestApply_BroadenType_RejectsAMissingPath(t *testing.T) {
+	root := NewObjectNode()
+	root.SetChild("addr", NewObjectNode())
+
+	op, err := NewBroadenType("nope", []DataType{String})
 	if err != nil {
 		t.Fatalf("NewBroadenType: %v", err)
 	}
@@ -178,7 +215,7 @@ func TestApply_BroadenType_RejectsNonNullOnObject(t *testing.T) {
 		t.Fatalf("MarshalDelta: %v", err)
 	}
 	if _, err := Apply(root, delta); err == nil {
-		t.Fatalf("expected error, got nil")
+		t.Fatal("broaden_type against a missing path must be rejected")
 	}
 }
 

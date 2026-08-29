@@ -94,7 +94,7 @@ type Branch    = spi.Branch
 type ScalarBranch = spi.ScalarBranch
 type ObjectBranch = spi.ObjectBranch
 type ArrayBranch  = spi.ArrayBranch
-type ArrayInfo    = spi.ArrayInfo
+// ArrayInfo is NOT aliased: see the correction under D10.
 
 var (
 	NewObjectNode = spi.NewObjectNode
@@ -232,9 +232,17 @@ explicitly:
    pinned this; rules 3-5 must not loosen it.)
 2. `nullable` = `"NULL" ∈ Types`. `concrete` = `Types \ {"NULL"}`.
 3. **Scalar branch** present iff `len(concrete) > 0`, **or** `"LEAF" ∈ names`
-   and not (`concrete` is empty and `nullable`). Its types are `concrete`.
-   The second clause is what separates the two `kind:"LEAF"` spellings, and it
-   is sound because D2 guarantees a scalar branch never holds NULL.
+   and not (`concrete` is empty and `nullable` **and LEAF is the only named
+   kind**). Its types are `concrete`. The second clause is what separates the
+   two `kind:"LEAF"` spellings, and it is sound because D2 guarantees a scalar
+   branch never holds NULL.
+
+   > **Corrected during implementation.** The rule as first written omitted the
+   > "only named kind" condition, which made `{"kinds":["LEAF","OBJECT"],"types":["NULL"]}`
+   > drop the explicitly named LEAF — against the codec's own contract that
+   > nothing is dropped silently. The disambiguation is only needed where the
+   > label is genuinely ambiguous, which is when LEAF stands alone. Pinned by
+   > `TestCodec_ANamedKindIsNeverDropped`.
 4. **Object branch** present iff `"OBJECT" ∈ names` or `len(Children) > 0`.
 5. **Array branch** present iff `"ARRAY" ∈ names` or `Element != nil`.
 6. A node that ends with no branch and is not nullable is **rejected**. The
@@ -354,8 +362,13 @@ boundary into a public SPI surface is not on, so `ArrayInfo` reduces to
 `maxWidth int` and `mergeArrayInfo` to a max. Gate 6, bounded, surfaced by this
 work.
 
-`ArrayInfo` is still not persisted (a separate known gap); the restructure gives
-it a home in `ArrayBranch`, nothing more. The SPI already owns the concept —
+> **Corrected during implementation.** `ArrayInfo` was not given a home in
+> `ArrayBranch` — the type was removed outright and its one live field became
+> `ArrayBranch.maxWidth`, reached through `ObserveArrayWidth` and `MaxWidth()`.
+> Carrying a vestigial one-field type across a repository boundary into a public
+> SPI surface was not worth it. The D0 alias list above is corrected to match.
+>
+> It is still not persisted (a separate known gap). The SPI already owns the concept —
 `FieldDescriptor.MaxWidth`, documented there as "a discovery-time statistic that
 the wire format does not carry".
 
