@@ -209,7 +209,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
   Remedy for a caller who was relying on the length: there is no path spelling for
   it. Address the elements, or filter on a field that carries the count.
-  See `docs/cloud-parity/trailing-wildcard-path.md`.
+  See `docs/cloud-parity/path-grammar.md`.
 
 - **A field path must now be written as JSON Path — the `$.` leader is required,
   and the whole path is validated.**
@@ -285,8 +285,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   evaluator ever resolved them, so a query using one was already returning an empty
   page. On grouped-stats `groupBy`/`field`, address an array position as a numeric
   segment instead (`$.items.0`). See
-  `docs/cloud-parity/condition-jsonpath-grammar.md` and
-  `docs/cloud-parity/grouped-stats-path-grammar.md`, or `cyoda help crud`.
+  `docs/cloud-parity/path-grammar.md`, or `cyoda help crud`.
 
 - **A workflow or transition `criterion` `jsonPath` must now be JSON Path too, and
   is rejected at workflow import.**
@@ -316,7 +315,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   evaluating; it fails on its next re-import, which is where the fix gets made.
 
   Fix for callers: prefix the path with `$.`. See
-  `docs/cloud-parity/workflow-criterion-jsonpath-grammar.md`.
+  `docs/cloud-parity/path-grammar.md`.
 
 - **`CYODA_TX_TTL`, `CYODA_TX_REAP_INTERVAL` and `CYODA_TX_OUTCOME_TTL` are removed.**
   They configured a transaction reaper that never ran — nothing ever registered a
@@ -1508,7 +1507,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 - **Search/criteria predicate evaluation is now type-directed and same-type
   only**, aligning cyoda-go with Cyoda Cloud's evaluation model (see
-  `cyoda help predicates`, `docs/cloud-parity/431-search-semantics.md`).
+  `cyoda help predicates`, `docs/cloud-parity/operator-semantics.md`).
   Observable changes:
   - Comparison is same-type: an operand is parsed against the field's
     declared type(s), so a numeric-looking string and a JSON number are

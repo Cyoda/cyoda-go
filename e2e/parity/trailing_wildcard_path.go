@@ -33,7 +33,7 @@ import (
 // v0.8.4 row). It owes its own element-wise resolution of a trailing wildcard,
 // and this scenario is what surfaces the gap on its next dependency update
 // rather than letting it pass silently. See
-// docs/cloud-parity/positional-subscript-path.md.
+// docs/cloud-parity/path-grammar.md.
 func RunSearchTrailingWildcardPathResolves(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)
