@@ -8,31 +8,32 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// The one client-visible behaviour change of the prepare/execute split.
+// Two superseded client-visible behaviour changes, in sequence.
 //
-// Workflow import validates regex patterns but NOT operator names, so a
-// criterion carrying an unsupported operator stores cleanly. Before the split,
-// the tree walk was lazy: AND[state == "X", $.amount FROBNICATE 1] short-
-// circuited on the first conjunct for any entity outside state X and never
-// reached the bad operator, so the transition silently did not fire and the
-// save returned 2xx.
+// Originally (the prepare/execute split): workflow import validated regex
+// patterns but not operator names, so a criterion carrying an unsupported
+// operator stored cleanly. Before THAT split, the tree walk was lazy:
+// AND[state == "X", $.amount FROBNICATE 1] short-circuited on the first
+// conjunct for any entity outside state X and never reached the bad
+// operator, so the transition silently did not fire and the save returned
+// 2xx. The split fixed that: preparation walks the whole condition, so the
+// fault was reported from the criterion's own shape at SAVE time instead —
+// a criterion that cannot be evaluated must not be silently read as "not
+// satisfied".
 //
-// Preparation walks the whole condition, so the fault is now reported from the
-// criterion's own shape. A criterion that cannot be evaluated must not be
-// silently read as "not satisfied".
+// A later change (workflow import now checks criterion operators against the
+// same canonical set search.ValidateCondition enforces) moved the fault
+// earlier again, to IMPORT time: an unsupported operator name — the one
+// structural fault category Prepare could still raise from otherwise
+// well-formed, already-imported input — is now rejected 400
+// VALIDATION_FAILED before the workflow is ever stored, so the "fails the
+// save" behaviour below is no longer reachable through an unknown operator
+// name. TestCriterion_UnevaluableOperator_RejectedAtImport is this file's
+// regression guard for THAT boundary, in the same AND-short-circuit shape
+// this file has always used: the validator walks the whole tree structurally
+// and must catch the bad operator regardless of what any particular entity's
+// state would make the sibling conjunct do.
 // ---------------------------------------------------------------------------
-
-// countEntitiesInModel returns the number of entities in a model matching
-// every row (matchAllCond), reusing the suite's existing direct-search
-// helper and match-all condition rather than inventing a new HTTP idiom.
-func countEntitiesInModel(t *testing.T, entityName string, modelVersion int) int {
-	t.Helper()
-	status, results := directSearch(t, entityName, modelVersion, matchAllCond)
-	if status != 200 {
-		t.Fatalf("count search for %s: expected 200, got %d", entityName, status)
-	}
-	return len(results)
-}
 
 // unevaluableCriterionWorkflow builds a workflow whose CREATED state has one
 // automated transition guarded by AND[state == "NEVER_REACHED", $.amount
@@ -73,53 +74,32 @@ func unevaluableCriterionWorkflow(t *testing.T, wfName string) string {
 	}`, wfName, string(criterion))
 }
 
-// TestCriterion_UnevaluableOperator_FailsTheSave pins the declared change: a
-// criterion carrying an unsupported operator name fails the save with 400
-// WORKFLOW_FAILED and rolls the transaction back, even for an entity whose
-// state makes the sibling conjunct false.
-//
-// Before the split this returned 2xx and left the entity at CREATED.
-func TestCriterion_UnevaluableOperator_FailsTheSave(t *testing.T) {
+// TestCriterion_UnevaluableOperator_RejectedAtImport pins the current
+// boundary: a criterion carrying an unsupported operator name fails the
+// WORKFLOW IMPORT itself with 400 VALIDATION_FAILED, naming the offending
+// operator — before the workflow is ever stored, so no entity created
+// against this model can ever reach the old "unevaluable operator fails the
+// save" behaviour through this path. The operator is nested as the SECOND
+// conjunct of an AND whose first conjunct names a state no entity created
+// here will ever be in, proving the validator walks the whole condition tree
+// structurally rather than depending on what any particular entity's data
+// would make the first conjunct evaluate to.
+func TestCriterion_UnevaluableOperator_RejectedAtImport(t *testing.T) {
 	const model = "e2e-criterion-unevaluable"
+	importModelSampleE2E(t, model, 1, `{"name":"Sample","amount":0}`)
+	lockModelE2E(t, model, 1)
 
-	// Import must SUCCEED — this is the premise. Workflow import does not check
-	// operator names, which is why the criterion is storable at all.
-	setupModelWithWorkflow(t, model, unevaluableCriterionWorkflow(t, "criterion-unevaluable-wf"))
-
-	status, body := createEntityRaw(t, model, 1, `{"name":"X","amount":1}`)
-
+	status, body := importWorkflowE2E(t, model, 1, unevaluableCriterionWorkflow(t, "criterion-unevaluable-wf"))
 	if status != 400 {
-		t.Fatalf("create with an unevaluable criterion: status = %d, want 400\n  body: %s\n"+
-			"a criterion that cannot be evaluated must fail the save, not be read as 'not satisfied'",
+		t.Fatalf("workflow import with an unsupported criterion operator: status = %d, want 400\n  body: %s",
 			status, body)
 	}
-	if !strings.Contains(body, "WORKFLOW_FAILED") {
-		t.Errorf("create response body = %s, want it to carry error code WORKFLOW_FAILED", body)
+	if !strings.Contains(body, "VALIDATION_FAILED") {
+		t.Errorf("import response body = %s, want it to carry error code VALIDATION_FAILED", body)
 	}
 	if !strings.Contains(body, "FROBNICATE") {
-		t.Errorf("create response body = %s, want it to name the unsupported operator "+
+		t.Errorf("import response body = %s, want it to name the unsupported operator "+
 			"(4xx responses carry full domain detail)", body)
-	}
-}
-
-// TestCriterion_UnevaluableOperator_RollsBackTheWrite pins that the failed save
-// leaves nothing behind: a criterion evaluation failure rolls the whole
-// transaction back, so the entity write is discarded rather than committed with
-// the transition skipped.
-func TestCriterion_UnevaluableOperator_RollsBackTheWrite(t *testing.T) {
-	const model = "e2e-criterion-unevaluable-rollback"
-
-	setupModelWithWorkflow(t, model, unevaluableCriterionWorkflow(t, "criterion-unevaluable-rollback-wf"))
-
-	status, _ := createEntityRaw(t, model, 1, `{"name":"X","amount":1}`)
-	if status != 400 {
-		t.Fatalf("precondition: create status = %d, want 400", status)
-	}
-
-	// Nothing was persisted. Search the model and require an empty result set.
-	found := countEntitiesInModel(t, model, 1)
-	if found != 0 {
-		t.Errorf("model holds %d entities after a rolled-back save, want 0", found)
 	}
 }
 

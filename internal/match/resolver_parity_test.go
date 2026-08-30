@@ -53,21 +53,37 @@ func TestEvaluatorsAgree(t *testing.T) {
 	}
 }
 
-// TestEvaluatorsAgree_TemporalMetaField_StringOperator pins that a string or
-// pattern operator applied to a temporal meta field (creationDate,
-// lastUpdateTime) is evaluated IDENTICALLY by both resolvers.
+// TestMatch_TemporalMetaField_StringOperatorNeverMatches pins the REAL
+// contract for a string or pattern operator applied to a temporal meta field
+// (creationDate, lastUpdateTime): this evaluator never-matches it,
+// unconditionally, for every caller — it does NOT align with the SPI
+// kernel's lexical RFC3339-text match, and the two evaluators' disagreement
+// here is deliberate and permanent, not a gap to close.
 //
-// Before this test, prepareLifecycle guarded a non-temporal operator on a
-// temporal field to a never-match on field identity, while the SPI kernel
-// bridges the field to its RFC3339 text and applies the operator lexically —
-// the divergence both evaluators' own "KNOWN DIVERGENCE" comments named. The
-// two evaluators already share the expansion (spi.ExpandLeaf, via leafNode)
-// and the evaluation (spi.EvalLeaf, called from Match's prepMetaTemporal
-// arm) for every OTHER operator on this field; the guard was the one place
-// this evaluator stopped delegating and substituted its own answer instead.
-// Removing it completes the delegation match.Prepare already performs for
-// prepMetaString and prepLeaf.
-func TestEvaluatorsAgree_TemporalMetaField_StringOperator(t *testing.T) {
+// Why this evaluator cannot align with the kernel: a workflow criterion is
+// validated once at import and then stored verbatim; every subsequent save
+// calls this package's Prepare directly with NO revalidation
+// (workflow/engine.go). Every OTHER match.Prepare call site is preceded by
+// the shared validation boundary (search.validateLifecycleType), which now
+// rejects this predicate on every validated surface — but that one call site
+// is not, so a criterion imported before the boundary existed still reaches
+// this evaluator with the predicate the system has since declared
+// unsupported. Never-match is the fail-closed answer required here
+// (.claude/rules/correctness-over-availability.md); a lexical match would
+// silently reactivate that criterion's dormant transition on a binary
+// upgrade alone, with no import and no operator action.
+//
+// There is also no "two doors" problem to reconcile for a criterion the way
+// there is for a search condition: a criterion never routes through the SPI
+// kernel at all, so path-grammar.md section 10's "one resolver" requirement
+// — which governs cases reachable through EITHER of two query plans for the
+// SAME request — does not describe this caller.
+//
+// hasKnownTemporalMetaDivergence (prepared_equivalence_test.go) excludes
+// exactly this case from the property-test corpus for the same reason: the
+// corpus deliberately bypasses the validation boundary, and the two
+// evaluators are not required to agree on an unvalidated predicate.
+func TestMatch_TemporalMetaField_StringOperatorNeverMatches(t *testing.T) {
 	meta := spi.EntityMeta{
 		CreationDate:     time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
 		LastModifiedDate: time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC),
@@ -91,22 +107,20 @@ func TestEvaluatorsAgree_TemporalMetaField_StringOperator(t *testing.T) {
 
 	for _, field := range fields {
 		for _, tc := range cases {
+			// Each operand is deliberately chosen so it WOULD lexically
+			// match the field's RFC3339 rendering (creationDate is
+			// 2024-01-01T00:00:00Z, lastUpdateTime is 2024-06-01T00:00:00Z)
+			// — a false "match=false" from a value that could never have
+			// matched anyway would not distinguish never-match from a real
+			// evaluation that happens to disagree.
 			cond := &predicate.LifecycleCondition{Field: field, OperatorType: tc.op, Value: tc.value}
 
 			prep, err := Prepare(cond, nil)
 			if err != nil {
 				t.Fatalf("match.Prepare(%s %s): %v", field, tc.op, err)
 			}
-			gotMatch := prep.Match(nil, meta)
-
-			f, err := spi.ConditionToFilter(cond, nil)
-			if err != nil {
-				t.Fatalf("spi.ConditionToFilter(%s %s): %v", field, tc.op, err)
-			}
-			gotKernel := spi.Prepare(f).Match(nil, meta)
-
-			if gotMatch != gotKernel {
-				t.Errorf("field=%s op=%s: match=%v kernel=%v", field, tc.op, gotMatch, gotKernel)
+			if got := prep.Match(nil, meta); got {
+				t.Errorf("field=%s op=%s: match=%v, want false (never-match, unconditionally)", field, tc.op, got)
 			}
 		}
 	}
