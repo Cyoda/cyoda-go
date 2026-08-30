@@ -100,13 +100,23 @@ var invalidJSONPaths = []struct {
 
 	// Overflowing digit runs. A digit-class-only check admits any run of
 	// digits regardless of magnitude; spi.ParseFilterPath, which the boundary
-	// now delegates to directly, additionally requires the run to fit an int
-	// (strconv.Atoi). No entity array is ever long enough for these indices
-	// to be meaningful, so rejecting is the correct, fail-closed answer — see
-	// path-grammar.md §9 and §10.
+	// now delegates to directly, additionally requires the run to fit an
+	// int32 (strconv.ParseInt with bitSize 32) — the intersection every
+	// in-tree backend can address, narrower than Go's int (int64 on every
+	// supported platform). No entity array is ever long enough for these
+	// indices to be meaningful, so rejecting is the correct, fail-closed
+	// answer — see path-grammar.md §9 and §10.
 	{"overflowing index", "$.tags[99999999999999999999]"},
 	{"overflowing index mid-path", "$.items[99999999999999999999].name"},
 	{"overflowing chained index", "$.matrix[0][99999999999999999999]"},
+
+	// int32-overflowing index. Bounded to int32 rather than Go's int
+	// (int64 on every supported platform) because int32 is the
+	// intersection every in-tree backend can address: PostgreSQL renders a
+	// positional index as a jsonb operand that must fit int32, or the
+	// query fails to parse and the caller sees a 500 instead of a 400. See
+	// path-grammar.md §2 and §9.
+	{"index overflowing int32", "$.tags[2147483648]"},
 }
 
 // validJSONPaths must keep working. Two classes are folded together
@@ -134,6 +144,7 @@ var validJSONPaths = []struct {
 	{"chained indices", "$.matrix[0][1]"},
 	{"mixed chained subscripts", "$.a[0][*].b"},
 	{"nested array hops", "$.orders[*].lines[*].sku"},
+	{"index at int32 max", "$.tags[2147483647]"},
 }
 
 // TestValidateCondition_RejectsNonJSONPath is the reject table. jsonPath is

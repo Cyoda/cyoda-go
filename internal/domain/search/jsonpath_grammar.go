@@ -15,7 +15,7 @@ const jsonPathLeader = "$."
 //	jsonPath  = "$." segment ( "." segment )*
 //	segment   = name subscript*
 //	name      = 1*( ALPHA / DIGIT / "_" / "-" )   ; ASCII only
-//	subscript = "[" ( "*" / 1*DIGIT ) "]"          ; the digit run must fit an int
+//	subscript = "[" ( "*" / 1*DIGIT ) "]"          ; the digit run must fit an int32
 //
 // This is exactly [spi.ParseFilterPath]'s grammar for the leader-stripped
 // remainder, so validateJSONPath strips the "$." leader and its own
@@ -33,8 +33,8 @@ const jsonPathLeader = "$."
 // segment ("$..a", "$.a."), bracket-quoted property access ("$['x']",
 // "$.['x']", `$.a["b"]`), a bracket spelling outside the two supported
 // subscript forms ("$.a[", "$.a]", "$.[0]", "$.a[-1]", "$.a[0:2]",
-// "$.a[0,1]", "$.a[?(@.x)]"), an index too large to fit an int
-// ("$.tags[99999999999999999999]"), and any character outside the segment
+// "$.a[0,1]", "$.a[?(@.x)]"), an index too large to fit an int32
+// ("$.tags[2147483648]", "$.tags[99999999999999999999]"), and any character outside the segment
 // set — including one that FOLLOWS a well-formed subscript ("$.a[0];DROP",
 // "$.a[0].xé"). All of these wrap [errInvalidFieldPath], which every transport
 // maps to 400 INVALID_FIELD_PATH.

@@ -26,7 +26,7 @@ import (
 //
 // Bracket content that names no single element — a negative index ("[-1]"), a
 // slice ("[0:2]"), a union ("[0,1]"), an unclosed bracket, or a digit run too
-// large to fit an int — is left verbatim. There is no key it could
+// large to fit an int32 — is left verbatim. There is no key it could
 // canonicalise to, and no evaluator in the stack resolves it.
 //
 // The path is canonicalised for LOOKUP only. Callers must keep the caller's
@@ -36,7 +36,7 @@ import (
 // Built on [spi.ParseFilterPath] — the SPI's one parser for this grammar —
 // rather than a byte-scan with its own copy of "what counts as a well-formed
 // subscript". A second, independent copy of that predicate is exactly what
-// let a subscript's digit run overflow an int and still fold to "[*]" here
+// let a subscript's digit run overflow int32 and still fold to "[*]" here
 // while [spi.ParseFilterPath] rejected the same string outright: two
 // definitions of "well-formed" that disagreed, the same C1 defect class
 // path-grammar.md §9 and §10 close everywhere else. A leader is optional: a

@@ -66,6 +66,16 @@ var nonJSONPathSpellings = []struct {
 	{"sql tail after subscript", "$.tags[0];DROP"},
 	{"name glued to subscript", "$.tags[0]x"},
 	{"trailing dot after subscript", "$.tags[*]."},
+
+	// An index above int32 (2^31 - 1) has no bounded representation any
+	// in-tree backend can address. On PostgreSQL specifically this used to
+	// reach the SQL renderer unrejected: doc->'tags'->>2147483648 fails to
+	// parse ("operator does not exist: jsonb ->> bigint"), and since
+	// ClassifyStoreQueryError does not recognise that pgx error, the request
+	// answered 500 SERVER_ERROR + ticket instead of 400. This is the
+	// running-backend proof that the boundary now refuses it before it ever
+	// reaches a store.
+	{"index overflowing int32", "$.tags[2147483648]"},
 }
 
 // setupGrammarModel imports a model with a numeric "amount", a nested object,

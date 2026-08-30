@@ -29,12 +29,18 @@ addressable by a path. `model-field-name-grammar.md` defines that door.
 jsonPath  = "$." segment ( "." segment )*
 segment   = name subscript*
 name      = 1*( ALPHA / DIGIT / "_" / "-" )   ; ASCII only
-subscript = "[" ( "*" / 1*DIGIT ) "]"          ; the digit run must fit an int
+subscript = "[" ( "*" / 1*DIGIT ) "]"          ; the digit run must fit an int32
 ```
 
 The `$.` leader is required. A path without it is not a path.
 
-A positional index's digit run is bounded to what fits an `int`. No entity
+A positional index's digit run is bounded to what fits an `int32` — not a
+Go `int` (`int64` on every supported platform), and deliberately narrower:
+int32 is the intersection every in-tree backend can address a position
+through. PostgreSQL renders a positional index as a jsonb operand, and
+`jsonb -> bigint` does not exist — an index above `int32` fails to parse
+rather than answering a result, which without a backend-specific error
+classifier surfaces as an unclassified `5xx` instead of a `400`. No entity
 array is ever long enough for a larger index to address a real position, so a
 digit run that overflows is rejected, not truncated or wrapped.
 
@@ -59,7 +65,7 @@ Rejected:
 | no name before a subscript | `$.[0]`, `$.[*]` |
 | empty subscript | `$.a[]` |
 | negative or signed index | `$.a[-1]`, `$.a[+1]` |
-| index too large to fit an int | `$.a[99999999999999999999]` |
+| index too large to fit an int32 | `$.a[2147483648]`, `$.a[99999999999999999999]` |
 | exponent index | `$.a[1e2]` |
 | slice | `$.a[0:2]` |
 | union | `$.a[0,1]` |
@@ -378,14 +384,14 @@ the same grammar with the leader removed.
 filterPath = segment ( "." segment )*
 segment    = name subscript*
 name       = 1*( ALPHA / DIGIT / "_" / "-" )   ; ASCII only
-subscript  = "[" ( "*" / 1*DIGIT ) "]"          ; the digit run must fit an int
+subscript  = "[" ( "*" / 1*DIGIT ) "]"          ; the digit run must fit an int32
 ```
 
 `$.tags[0]` becomes `tags[0]`. `$.obj.0` becomes `obj.0`. An empty filter path is
 legal and carries no field: `AND` and `OR` nodes hold one.
 
 The magnitude bound on a positional index carries through unchanged: a digit
-run that does not fit an `int` is rejected here exactly as it is at the wire
+run that does not fit an `int32` is rejected here exactly as it is at the wire
 boundary in section 2, because this is the same grammar with the leader
 removed.
 
