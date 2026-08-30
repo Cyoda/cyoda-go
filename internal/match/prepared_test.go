@@ -196,9 +196,13 @@ func TestPrepare_ArrayConditionOneExpansionPerPosition(t *testing.T) {
 	}
 }
 
-// TestPrepare_ArrayWildcardRoutesPerRow pins that array-vs-scalar routing stays
-// PER ROW: matchSimple routed on the DATA's shape, not the condition's, so the
-// same prepared leaf must handle both an array and a scalar stored value.
+// TestPrepare_ArrayWildcardRoutesPerRow pins that a "[*]" hop is resolved
+// PER ROW: the parsed hops are fixed at Prepare time, but spi.ResolvePath
+// walks them against each row's own data, so the same prepared leaf answers
+// correctly whether that row's "laureates" array is populated or empty. This
+// is syntax-driven (the "[*]" in the path), never data-driven — a bare path
+// with no wildcard would NOT iterate an array's elements, however the stored
+// value is shaped.
 func TestPrepare_ArrayWildcardRoutesPerRow(t *testing.T) {
 	cond := &predicate.SimpleCondition{
 		JsonPath: "$.laureates[*].motivation", OperatorType: "CONTAINS", Value: "peace",

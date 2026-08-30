@@ -8,65 +8,24 @@ import (
 )
 
 // A path whose LAST hop is an array wildcard ("$.tags[*]") addresses the array's
-// ELEMENTS. The rewrite mapped every "[*]" to gjson's "#", which is correct
-// mid-path (gjson projects "#" across elements) but wrong at the end: a trailing
-// "#" yields the array's LENGTH. So `$.tags[*] EQUALS "red"` compared "red"
-// against 2 and never matched — an empty page on search, and a workflow
-// criterion that silently never fires. A wrong-but-available answer, which the
-// project forbids.
+// ELEMENTS, and every array hop counts, wherever it sits in the path
+// (docs/cloud-parity/path-grammar.md section 3):
 //
-// The same arithmetic broke every path that ends in an array VALUE rather than
-// a scalar, however it gets there:
+//   - "$.matrix[*][*]" — each element of each inner array.
+//   - "$.a[*].b[*]" — each element of each "b".
+//   - "$.orders[*].lines[*].sku" — each "sku", across both hops.
 //
-//   - "$.matrix[*][*]" — two trailing wildcards; "matrix.#.#" yielded the inner
-//     arrays' lengths ([2,2]).
-//   - "$.a[*].b[*]" — a wildcard behind a projection; "a.#.b.#" likewise.
-//   - "$.orders[*].lines[*].sku" — NO trailing wildcard at all, but two
-//     projections, so gjson nests one array per hop ([[ "S1","S2" ],["S3"]])
-//     and the per-element comparison compared a scalar against an ARRAY.
-//
-// All three are the same defect: the gjson result must be a FLAT array of the
-// values the path addresses, because prepLeaf iterates it exactly once.
-
-// TestConvertJSONPath_TrailingWildcard pins the rewrite itself.
-func TestConvertJSONPath_TrailingWildcard(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
-		// A trailing "[*]" addresses the ARRAY; prepLeaf's array branch
-		// iterates it with existential (ANY) semantics.
-		{"trailing wildcard", "$.tags[*]", "tags"},
-		{"trailing wildcard after dots", "$.a.b[*]", "a.b"},
-		{"trailing wildcard after index", "$.a[0].b[*]", "a.0.b"},
-
-		// Mid-path "[*]" keeps projecting.
-		{"mid-path wildcard", "$.laureates[*].motivation", "laureates.#.motivation"},
-		{"wildcard then index", "$.a[*].b[0]", "a.#.b.0"},
-		{"wildcard then index segment", "$.a[*][0]", "a.#.0"},
-
-		// One "@flatten" per array level beyond the first, so the result is a
-		// flat array of the addressed values.
-		{"nested trailing wildcards", "$.matrix[*][*]", "matrix|@flatten"},
-		{"projection then trailing wildcard", "$.a[*].b[*]", "a.#.b|@flatten"},
-		{"projection then dotted trailing wildcard", "$.a[*].b.c[*]", "a.#.b.c|@flatten"},
-		{"two projections, scalar leaf", "$.orders[*].lines[*].sku", "orders.#.lines.#.sku|@flatten"},
-		{"two projections and a trailing wildcard", "$.a[*].b[*].c[*]", "a.#.b.#.c|@flatten|@flatten"},
-
-		// Degenerate spellings the boundary grammar rejects but internally
-		// constructed paths may still reach: the rewrite stays total.
-		{"dotted bracket", "$.a.[*]", "a"},
-		{"wildcard only", "$.[*]", ""},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := convertJSONPath(tc.in); got != tc.want {
-				t.Errorf("convertJSONPath(%q) = %q, want %q", tc.in, got, tc.want)
-			}
-		})
-	}
-}
+// spi.ResolvePath is the one resolver both evaluators share, and it never
+// nests its result once per hop the way a naive gjson path-string rewrite
+// does: it keeps one flat slice of the addressed values at every step, so
+// there is no "flatten the extra nesting back out" arithmetic to get wrong
+// here at all — see that function's doc comment. Before this evaluator
+// delegated to it, the deleted convertJSONPath rewrite got this wrong in
+// exactly the ways listed above (a trailing "#" is gjson's array LENGTH, not
+// its elements, and two "#" projections nest one array per hop): an empty
+// page on search, and a workflow criterion that silently never fired. The
+// unit table that pinned that rewrite's output is gone along with it — the
+// behavioural proof below is what remains.
 
 // trailingWildcardDoc holds a value at every shape the behavioural table below
 // addresses.
@@ -120,14 +79,19 @@ func TestPrepare_TrailingWildcardIteratesElements(t *testing.T) {
 		{"mid-path unchanged", "$.items[*].price", "EQUALS", 20, num, true},
 		{"index behind trailing wildcard", "$.a[0].b[*]", "EQUALS", "y", str, true},
 
-		// An EMPTY array has no element to satisfy either presence test —
-		// existential semantics, vacuously false. Under the count rewrite
-		// NOT_NULL was TRUE here, because the length 0 is a present number.
+		// A "[*]" path never answers the array's own nullness — it addresses
+		// ELEMENTS and nothing else (docs/cloud-parity/path-grammar.md
+		// section 5). An empty array, an explicit null and an absent field
+		// are three states of the array, and all three present no elements
+		// to a wildcard path, so both presence tests answer false for all
+		// three: on a wildcard path IS_NULL and NOT_NULL are NOT complements.
+		// Ask about the array itself with a bare "$.empty" / "$.nope", which
+		// separates them.
 		{"empty array NOT_NULL", "$.empty[*]", "NOT_NULL", nil, nil, false},
 		{"empty array IS_NULL", "$.empty[*]", "IS_NULL", nil, nil, false},
 		{"non-empty array NOT_NULL", "$.tags[*]", "NOT_NULL", nil, nil, true},
 		{"missing array NOT_NULL", "$.nope[*]", "NOT_NULL", nil, nil, false},
-		{"missing array IS_NULL", "$.nope[*]", "IS_NULL", nil, nil, true},
+		{"missing array IS_NULL", "$.nope[*]", "IS_NULL", nil, nil, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -146,10 +110,11 @@ func TestPrepare_TrailingWildcardIteratesElements(t *testing.T) {
 }
 
 // TestPrepareArray_TrailingWildcardBase pins that an ArrayCondition whose
-// container path is spelled with a trailing wildcard still addresses the array's
-// positions. arrayElementFieldPath already treats "$.tags" and "$.tags[*]" as
-// naming the same element type; prepArray appends ".N" to the converted base, so
-// the two spellings must converge on the same gjson base too.
+// container path is spelled with a trailing wildcard still addresses the
+// array's positions. spi.DesugarCondition treats "$.tags" and "$.tags[*]" as
+// naming the same container (see desugarArrayElementPath: a trailing "[*]"
+// is REPLACED by "[i]"; a bare path has "[i]" APPENDED), so the two spellings
+// must converge on the same positional leaves too.
 func TestPrepareArray_TrailingWildcardBase(t *testing.T) {
 	for _, path := range []string{"$.tags", "$.tags[*]"} {
 		t.Run(path, func(t *testing.T) {

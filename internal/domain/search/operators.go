@@ -120,10 +120,12 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 		}
 		return validateBetweenArity(c.OperatorType, c.Value)
 	case *predicate.ArrayCondition:
-		// ArrayCondition doesn't carry an operator — each positional value
-		// becomes an equality check in arrayToFilter. Its jsonPath goes through
-		// the same wire grammar as a SimpleCondition's (arrayToFilter strips the
-		// leader with the identical helper), so it is validated identically.
+		// ArrayCondition doesn't carry an operator — each non-null positional
+		// value becomes an EQUALS leaf once spi.DesugarCondition rewrites it,
+		// which every evaluator (this validator's own condition surface, the
+		// pushdown translator, and internal/match) calls before it ever sees
+		// the condition's real shape. Its jsonPath goes through the same wire
+		// grammar as a SimpleCondition's, so it is validated identically.
 		return ValidateConditionJSONPath(c.JsonPath)
 	case *predicate.GroupCondition:
 		// A group operator other than exactly "AND"/"OR" previously cleared

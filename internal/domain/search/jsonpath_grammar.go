@@ -201,17 +201,18 @@ func scanJSONPathBody(body string, mkInvalid func(reason string) error) (bool, e
 // isSupportedSubscript reports whether the text between "[" and "]" is one of
 // the two forms the stack can resolve: the wildcard, or a non-negative decimal
 // index. Everything else (a slice, a union, a filter expression, a negative or
-// signed index, whitespace) has no equivalent in either evaluator — pushdown
-// cannot express it and gjson, which internal/match rewrites subscripts for,
-// has no notation for it.
+// signed index, whitespace) has no equivalent in either evaluator — neither
+// pushdown nor spi.ResolvePath, the one in-memory resolver both
+// internal/match and the SPI kernel share, has any notation for it.
 //
-// The index arm delegates to [schema.IsArrayIndex], which is the predicate
-// internal/match's own rewriteSubscripts consults to decide whether a
-// subscript becomes a gjson segment. Sharing it is what makes "the boundary
-// accepts it" and "an evaluator resolves it" the same question: a second
-// spelling of the test could admit a subscript the rewriter then copies
-// verbatim, which resolves to nothing — the exact failure this grammar
-// tightening exists to close.
+// The index arm delegates to [schema.IsArrayIndex], which itself delegates to
+// spi.IsArrayIndex — the SPI's single definition of a well-formed subscript,
+// the same one spi.ParseFilterPath consults when it parses the hops
+// spi.ResolvePath then walks. Sharing it is what makes "the boundary accepts
+// it" and "the resolver resolves it" the same question: a second spelling of
+// the test could admit a subscript the resolver then never matches, which
+// resolves to nothing — the exact failure this grammar tightening exists to
+// close.
 func isSupportedSubscript(inner string) bool {
 	return inner == "*" || schema.IsArrayIndex(inner)
 }

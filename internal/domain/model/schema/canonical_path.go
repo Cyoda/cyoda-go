@@ -1,6 +1,10 @@
 package schema
 
-import "strings"
+import (
+	"strings"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+)
 
 // CanonicalFieldPath rewrites a wire jsonPath into the form [ModelNode.FieldsMap]
 // keys it by: every array hop spelled "[*]".
@@ -55,19 +59,13 @@ func CanonicalFieldPath(path string) string {
 	return b.String()
 }
 
-// IsArrayIndex reports whether s is the content of a subscript that addresses a
-// single array element: a non-negative decimal integer. Exported so the
-// in-process predicate evaluator, which performs its own subscript rewrite into
-// gjson's syntax, decides what counts as a positional subscript from this one
-// definition rather than a second copy that could drift from it.
+// IsArrayIndex reports whether s is the content of a subscript that addresses
+// a single array element: a non-negative decimal integer. It delegates to
+// [spi.IsArrayIndex] — the SPI's single definition of a well-formed array
+// index (see that function's doc comment) — rather than keeping a second copy
+// that could drift from it. This is the digit-class check only, the same
+// contract spi.IsArrayIndex documents: it says nothing about whether the run
+// fits an int, which is spi.ParseFilterPath's concern where magnitude matters.
 func IsArrayIndex(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		if s[i] < '0' || s[i] > '9' {
-			return false
-		}
-	}
-	return true
+	return spi.IsArrayIndex(s)
 }

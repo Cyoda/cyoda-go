@@ -14,8 +14,11 @@ import (
 
 // prepared.go is the prepare/execute split of the predicate-tree evaluator.
 // Prepare resolves everything that depends only on the query — declared types,
-// operand parsing, type bucketing, regex compilation, and the gjson path
-// conversion — into an immutable tree. Match then walks that tree per row.
+// operand parsing, type bucketing, regex compilation, and the filter-path
+// parse (spi.ParseFilterPath) — into an immutable tree. Match then walks that
+// tree per row, resolving each leaf's parsed hops against the row's own data
+// through spi.ResolvePath — the one resolver the SPI kernel's PreparedFilter
+// also calls (docs/cloud-parity/path-grammar.md section 10).
 //
 // Prepare returns an error where the Filter-side spi.Prepare does not, because
 // the two consume different input types: spi.FilterOp is a closed enum, while
@@ -40,10 +43,9 @@ const (
 	// zero Prepared that Prepare returns alongside an error, must fail closed.
 	prepNever prepKind = iota
 	prepGroup
-	prepLeaf         // data leaf, addressed by a gjson path
+	prepLeaf         // data leaf, addressed by a parsed filter path
 	prepMetaString   // lifecycle leaf on a string-valued meta field
 	prepMetaTemporal // lifecycle leaf on creationDate / lastUpdateTime
-	prepArray
 )
 
 // Prepared is a predicate.Condition compiled for repeated evaluation. Build it
@@ -63,24 +65,12 @@ type prepNode struct {
 	children []prepNode
 
 	// prepLeaf
-	gjsonPath string
+	hops []spi.PathHop
 
 	// prepMetaString / prepMetaTemporal
 	metaField string
 
 	// prepLeaf / prepMetaString / prepMetaTemporal
-	exp spi.Expansion
-
-	// prepArray
-	arrayBase string
-	positions []arrayPos
-}
-
-// arrayPos is one positional EQUALS of an ArrayCondition. Each position has
-// its own operand and therefore its own expansion — one expansion per leaf
-// would be wrong here.
-type arrayPos struct {
-	idx int
 	exp spi.Expansion
 }
 
@@ -105,16 +95,20 @@ func Prepare(cond predicate.Condition, fieldTypes FieldTypes) (Prepared, error) 
 	return Prepared{root: n}, nil
 }
 
+// prepare desugars cond before dispatching on its shape, so no evaluator
+// below this point ever sees a *predicate.ArrayCondition — spi.DesugarCondition
+// rewrites it into an AND of positional EQUALS leaves (see that function's
+// doc). This is the same call spi.ConditionToFilter makes at its own entry
+// point; one implementation, two entry points, so a bracket-indexed array
+// clause means the same thing under a pushdown and under this evaluator.
 func prepare(cond predicate.Condition, fieldTypes FieldTypes) (prepNode, error) {
-	switch c := cond.(type) {
+	switch c := spi.DesugarCondition(cond).(type) {
 	case *predicate.SimpleCondition:
 		return prepareSimple(c, fieldTypes)
 	case *predicate.LifecycleCondition:
 		return prepareLifecycle(c)
 	case *predicate.GroupCondition:
 		return prepareGroup(c, fieldTypes)
-	case *predicate.ArrayCondition:
-		return prepareArray(c, fieldTypes)
 	case *predicate.FunctionCondition:
 		return prepNode{}, fmt.Errorf("function conditions not implemented")
 	default:
@@ -163,7 +157,18 @@ func prepareSimple(c *predicate.SimpleCondition, fieldTypes FieldTypes) (prepNod
 		return prepNode{}, err
 	}
 	if n.kind == prepLeaf {
-		n.gjsonPath = convertJSONPath(c.JsonPath)
+		hops, err := spi.ParseFilterPath(stripLeader(c.JsonPath))
+		if err != nil {
+			// A path outside the grammar never resolves to anything — the
+			// same "never matches" a leaf whose expansion failed already
+			// produces, and the same answer the SPI kernel gives a malformed
+			// SourceData path (prepareNode in prepared_filter.go). Do not
+			// promote this to a Prepare error: only a structural property of
+			// the CONDITION does that, and the path is validated at the
+			// boundary before a condition ever reaches this evaluator.
+			return prepNode{kind: prepNever}, nil
+		}
+		n.hops = hops
 	}
 	return n, nil
 }
@@ -246,30 +251,6 @@ func prepareGroup(c *predicate.GroupCondition, fieldTypes FieldTypes) (prepNode,
 	return n, nil
 }
 
-func prepareArray(c *predicate.ArrayCondition, fieldTypes FieldTypes) (prepNode, error) {
-	var declared []spi.DataType
-	if fieldTypes != nil {
-		declared = fieldTypes(arrayElementFieldPath(c.JsonPath))
-	}
-
-	n := prepNode{kind: prepArray, arrayBase: convertJSONPath(c.JsonPath)}
-	for i, expected := range c.Values {
-		if expected == nil {
-			continue // nil positions are skipped
-		}
-		// EQUALS always maps to a kernel op, so expandNamed can only fail here
-		// with an expansion error — which made the whole array condition false
-		// for every row, since matchArray returned on the first failing
-		// position regardless of data.
-		exp, err := expandNamed("EQUALS", expected, declared)
-		if err != nil {
-			return prepNode{kind: prepNever}, nil
-		}
-		n.positions = append(n.positions, arrayPos{idx: i, exp: exp})
-	}
-	return n, nil
-}
-
 // Match reports whether the entity satisfies the prepared condition. It cannot
 // fail: every way this evaluation could error is a structural property of the
 // condition and was already reported by Prepare.
@@ -296,38 +277,27 @@ func (n *prepNode) match(data []byte, meta spi.EntityMeta) bool {
 		return true
 
 	case prepLeaf:
-		result := gjson.GetBytes(data, n.gjsonPath)
-		// Routing on the DATA's shape, not the condition's, stays per row: an
-		// array-wildcard path yields an array for one entity and nothing for
-		// the next. Both branches consume the same expansion, which is why
-		// hoisting the expansion is safe while the routing is not.
-		if result.IsArray() {
-			matched := false
-			result.ForEach(func(_, v gjson.Result) bool {
-				if spi.EvalLeaf(n.exp, v) {
-					matched = true
-					return false // short-circuit
-				}
+		// The path's SYNTAX decides what it addresses, never the stored
+		// value's shape (docs/cloud-parity/path-grammar.md section 3): a bare
+		// hop resolves to the value there, whatever its shape, unwrapped
+		// never; a "[*]" hop resolves to that array's elements, and to
+		// nothing when the value there is not an array. ResolvePath is the
+		// one resolver that encodes this — the same one the SPI kernel's
+		// PreparedFilter.Match calls — so this evaluator cannot answer a
+		// bare-vs-wildcard path differently than a pushed-down query would.
+		// A leaf holds when SOME addressed value satisfies it (existential).
+		for _, r := range spi.ResolvePath(data, n.hops) {
+			if spi.EvalLeaf(n.exp, r) {
 				return true
-			})
-			return matched
+			}
 		}
-		return spi.EvalLeaf(n.exp, result)
+		return false
 
 	case prepMetaString:
 		return spi.EvalLeaf(n.exp, metaStringResult(n.metaField, meta))
 
 	case prepMetaTemporal:
 		return spi.EvalLeaf(n.exp, metaTemporalResult(n.metaField, meta))
-
-	case prepArray:
-		for _, pos := range n.positions {
-			r := gjson.GetBytes(data, fmt.Sprintf("%s.%d", n.arrayBase, pos.idx))
-			if !spi.EvalLeaf(pos.exp, r) {
-				return false
-			}
-		}
-		return true
 	}
 
 	// prepNever, and any unpopulated node.
