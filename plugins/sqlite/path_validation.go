@@ -16,65 +16,31 @@ import (
 // wrap adds no prefix, leaving the message text unchanged.
 var ErrInvalidFilterPath = fmt.Errorf("%w", spi.ErrInvalidFilterPath)
 
-// validateJSONPath enforces an extended dotted-identifier grammar on paths
-// that are interpolated into json_extract(..., '$.<path>') expressions.
+// validateJSONPath enforces the one SPI filter-path grammar
+// (spi.ValidateFilterPath, docs/cloud-parity/path-grammar.md section 9) on
+// paths that are interpolated into json_extract(..., '$.<path>')
+// expressions: dotted name segments, ASCII letters/digits/underscore/hyphen,
+// each optionally followed by one or more "[N]" or "[*]" array subscripts.
 //
-// Allowed: segments of ASCII letters, digits, underscore, and hyphen ('-'),
-// separated by single '.' characters. At least one segment, no empty
-// segments, no leading/trailing dots. This rejects every character that
-// could terminate the surrounding single-quoted SQL literal or otherwise
-// inject SQL — notably ', ", \, ;, /, *, whitespace, and control bytes.
+// This rejects every character that could terminate the surrounding
+// single-quoted SQL literal or otherwise inject SQL — notably ', ", \, ;,
+// /, whitespace, and control bytes — which is also why the grammar is the
+// injection guard for fieldExpr's interpolation, not just a syntax check.
 //
 // Hyphens are safe inside single-quoted SQLite JSON-path literals: SQL
 // comments ('--') and other hyphen sequences only have special meaning
 // outside of string literals, so they cannot inject SQL through this path.
 //
-// The grammar is intentionally narrower than the full SQLite JSON path
-// grammar (which accepts bracketed indices and Unicode identifiers). If a
-// genuine use case ever needs those forms, extend this validator rather
-// than bypassing it.
+// Deliberately delegates to spi.ValidateFilterPath rather than scanning its
+// own copy of the grammar: two independent scanners drift (this repo has
+// already spent one fix round collapsing exactly that drift), and the SPI
+// definition is the single source of truth every plugin and the engine's
+// own resolver share.
 func validateJSONPath(path string) error {
-	if path == "" {
-		return fmt.Errorf("%w: empty", ErrInvalidFilterPath)
-	}
-	segmentStart := 0
-	for i := 0; i < len(path); i++ {
-		c := path[i]
-		if c == '.' {
-			if i == segmentStart {
-				return fmt.Errorf("%w: empty segment", ErrInvalidFilterPath)
-			}
-			segmentStart = i + 1
-			continue
-		}
-		if !isIdentByte(c) {
-			return fmt.Errorf("%w: disallowed character %q at offset %d", ErrInvalidFilterPath, c, i)
-		}
-	}
-	if segmentStart == len(path) {
-		return fmt.Errorf("%w: trailing dot", ErrInvalidFilterPath)
+	if err := spi.ValidateFilterPath(path); err != nil {
+		return fmt.Errorf("%w: %s", ErrInvalidFilterPath, err)
 	}
 	return nil
-}
-
-func isIdentByte(c byte) bool {
-	switch {
-	case c >= 'a' && c <= 'z':
-		return true
-	case c >= 'A' && c <= 'Z':
-		return true
-	case c >= '0' && c <= '9':
-		return true
-	case c == '_':
-		return true
-	case c == '-':
-		// Hyphens are valid JSON key characters and safe inside single-quoted
-		// SQLite json_extract path literals — they cannot break out of the
-		// surrounding quote. SQL comments ('--') only have special meaning
-		// outside of string literals.
-		return true
-	}
-	return false
 }
 
 // validateFilterPaths walks a Filter tree and returns the first invalid path
@@ -100,6 +66,16 @@ func validateFilterPaths(f spi.Filter) error {
 // to the same grammar as filter paths. GroupExpr kinds that carry no path
 // (GroupExprState) are exempt.
 //
+// Unlike a filter leaf's Path — where an empty string is the legitimate
+// "no field" shape the AND/OR tree operators carry, and validateFilterPaths
+// skips it before ever reaching validateJSONPath — a GroupExpr.Path or
+// AggregateExpr.Field always names a real field to group or aggregate by;
+// there is no operator-node reading for it. validateJSONPath alone now
+// admits "" (it delegates to the one grammar, which is right for a filter
+// leaf), so this function rejects the empty case itself before delegating,
+// rather than silently letting a meaningless "group by nothing" request
+// through.
+//
 // Called at the top of GroupedAggregate, next to validateFilterPaths, so a
 // malformed path is classified as a client error on every backend regardless
 // of which pushdown decline the request would otherwise have hit. The
@@ -110,13 +86,56 @@ func validateGroupAndAggregatePaths(groupBy []spi.GroupExpr, aggs []spi.Aggregat
 		if g.Kind != spi.GroupExprDataPath {
 			continue
 		}
+		if g.Path == "" {
+			return fmt.Errorf("%w: empty group-by path", ErrInvalidFilterPath)
+		}
 		if err := validateJSONPath(g.Path); err != nil {
+			return err
+		}
+		if err := rejectSubscript(g.Path, "group-by path"); err != nil {
 			return err
 		}
 	}
 	for _, a := range aggs {
+		if a.Field == "" {
+			return fmt.Errorf("%w: empty aggregate field", ErrInvalidFilterPath)
+		}
 		if err := validateJSONPath(a.Field); err != nil {
 			return err
+		}
+		if err := rejectSubscript(a.Field, "aggregate field"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// rejectSubscript rejects a path that carries an array subscript ("[N]" or
+// "[*]") anywhere along its hops. docs/cloud-parity/path-grammar.md section
+// 7: "An array position is therefore not a grouping dimension, an
+// aggregation field or a sort key. Those three surfaces admit no
+// subscript... The three surfaces that reject subscripts use the grammar of
+// section 2 with the subscript production removed." A subscripted path is
+// legal on a FILTER leaf (validateFilterPaths / validateJSONPath alone) but
+// illegal here — the same string, two different verdicts depending on which
+// surface it names.
+//
+// path is assumed already grammar-valid: every call site runs validateJSONPath
+// first, so a parse error here is not expected in practice. But should this
+// ever be reached defensively with an unvalidated path, the fail-closed
+// answer is rejection, not silent acceptance: per
+// .claude/rules/correctness-over-availability.md, a dependency (here, a
+// successful parse) a correct "no subscript" answer requires must fail the
+// check, not be treated as satisfying it.
+func rejectSubscript(path, what string) error {
+	hops, err := spi.ParseFilterPath(path)
+	if err != nil {
+		return fmt.Errorf("%w: %s %q: %s", ErrInvalidFilterPath, what, path, err)
+	}
+	for _, hop := range hops {
+		if len(hop.Subs) > 0 {
+			return fmt.Errorf("%w: %s %q carries an array subscript, which is not a grouping dimension, aggregation field, or sort key",
+				ErrInvalidFilterPath, what, path)
 		}
 	}
 	return nil
@@ -140,6 +159,9 @@ func validateOrderSpecs(specs []spi.OrderSpec) error {
 			continue
 		}
 		if err := validateJSONPath(s.Path); err != nil {
+			return err
+		}
+		if err := rejectSubscript(s.Path, "sort path"); err != nil {
 			return err
 		}
 	}

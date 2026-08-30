@@ -409,6 +409,42 @@ func TestMemoryGroupedAggregate_DataPathGrouping(t *testing.T) {
 	}
 }
 
+// TestMemoryGroupedAggregate_NumericSegmentIsNotAnIndex pins path-grammar.md
+// §3/§10's addressing rule on the memory plugin's grouping and aggregation
+// surfaces: a bare hop named "0" is a field-name lookup, never an
+// array-index shortcut, regardless of what shape the stored value turns out
+// to be. gjson.GetBytes's own path syntax disagrees — it resolves an
+// all-digit segment against an ARRAY receiver as a positional index — so a
+// groupBy/aggregation field that went through gjson.GetBytes directly saw
+// "obj.0" over {"obj":["X","Y"]} as "X", diverging from spi.ResolvePath and
+// both SQL backends (which return NULL/non-existent for the same shape).
+func TestMemoryGroupedAggregate_NumericSegmentIsNotAnIndex(t *testing.T) {
+	_, store, ctx := gsNewStore(t)
+	gsSave(t, ctx, store, "e-1", "available", map[string]any{"obj": []any{"X", "Y"}})
+
+	ga := store.(spi.GroupedAggregator)
+	res, err := ga.GroupedAggregate(ctx, gsModel,
+		[]spi.GroupExpr{{Kind: spi.GroupExprDataPath, Path: "obj.0"}},
+		spi.Filter{},
+		spi.GroupedAggregationsOptions{
+			MaxBuckets:   10,
+			Aggregations: []spi.AggregateExpr{{Op: spi.AggSum, Field: "obj.0", Alias: "sum_obj_0"}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("GroupedAggregate: %v", err)
+	}
+	if len(res) != 1 {
+		t.Fatalf("buckets = %d, want 1", len(res))
+	}
+	if res[0].GroupKey[0].Value != nil {
+		t.Errorf("group key value = %v, want nil (absent, not array element 0)", res[0].GroupKey[0].Value)
+	}
+	if got := res[0].Aggregations["sum_obj_0"]; got != nil {
+		t.Errorf("sum_obj_0 = %v, want nil (no numeric samples observed, not array element \"X\")", got)
+	}
+}
+
 // TestMemoryGroupedAggregate_TemporalFilterOnCreationDate pins grouped-stats
 // filtering to the shared spi.Prepare/PreparedFilter.Match temporal kernel: a
 // filter with Coercion: CoerceTemporal on the canonical meta path

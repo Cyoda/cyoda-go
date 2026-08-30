@@ -14,8 +14,10 @@ import (
 // prepareSimple (née matchSimple) looked the path up raw, so a criterion or
 // condition written without the prefix resolved to no declared type. A
 // type-directed comparison with no declared type expands into nothing and
-// never matches, so the leaf evaluated false for every entity. prepareArray
-// already normalised via arrayElementFieldPath; prepareSimple did not.
+// never matches, so the leaf evaluated false for every entity. The
+// ArrayCondition path (now desugared by spi.DesugarCondition into ordinary
+// SimpleCondition leaves before prepare ever sees it) already normalised the
+// prefix through this same fieldMapKey; prepareSimple did not.
 //
 // This is the same defect fixed in filter_translate.go, on the path workflow
 // criteria actually take: criteria always go through match.Prepare /

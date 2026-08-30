@@ -999,22 +999,16 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 
 	// Structural condition validation (canonical operator set, BETWEEN
 	// arity) — mirrors SearchService.Search's single boundary via the same
-	// exported search.ValidateCondition call grouped-stats reuses. Unlike
-	// grouped-stats (which never routed through Search and so had no prior
-	// contract to preserve), delete DID forward Search's classified
-	// *common.AppError verbatim before the streaming rework — an unknown operatorType and
-	// an operand-shape violation are documented as two DIFFERENT codes
-	// (search.structuralConditionErrCode: BAD_REQUEST vs INVALID_CONDITION,
-	// per its own doc comment). Collapsing both under entity.ErrInvalidCondition
-	// (as grouped-stats does, and as an earlier version of this function
-	// did) would have silently reclassified every unknown-operatorType
-	// delete from BAD_REQUEST to INVALID_CONDITION. Returning a
-	// *common.AppError directly — classified via the same exported
+	// exported search.ValidateCondition call grouped-stats reuses. Returning
+	// a *common.AppError directly — classified via the same exported
 	// search.StructuralConditionErrCode Search itself uses — instead of
-	// wrapping under ErrInvalidCondition preserves that distinction:
-	// DeleteEntitiesConditional/deleteBatched's errors.As(&appErr) picks
-	// this up and returns it unchanged, the same path a Search-forwarded
-	// error already took.
+	// wrapping under entity.ErrInvalidCondition preserves the field-path vs
+	// condition-shape distinction: DeleteEntitiesConditional/deleteBatched's
+	// errors.As(&appErr) picks this up and returns it unchanged, the same
+	// path a Search-forwarded error already took. An unknown or missing
+	// operatorType and an operand-shape violation both classify as
+	// INVALID_CONDITION (operator-semantics.md §4) — they no longer split
+	// across two codes the way an earlier version of this comment described.
 	if cErr := search.ValidateCondition(cond); cErr != nil {
 		return deleteSelectionPlan{}, common.Operational(http.StatusBadRequest,
 			search.StructuralConditionErrCode(cErr), cErr.Error())
@@ -1067,10 +1061,7 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 	}
 	if node != nil {
 		if tErr := search.ValidateConditionValueTypes(node, cond); tErr != nil {
-			code := common.ErrCodeConditionTypeMismatch
-			if errors.Is(tErr, search.ErrInvalidFieldPath) {
-				code = common.ErrCodeInvalidFieldPath
-			}
+			code := search.ClassifyConditionTypeErrCode(tErr)
 			return deleteSelectionPlan{}, common.Operational(http.StatusBadRequest, code, tErr.Error())
 		}
 	}

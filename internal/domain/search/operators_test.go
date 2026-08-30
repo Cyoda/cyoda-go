@@ -1,10 +1,33 @@
 package search
 
 import (
+	"errors"
+	"reflect"
+	"sort"
 	"testing"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 )
+
+// TestCanonicalOperators_MatchesSPI is the anti-drift guard for I5:
+// canonicalOperators is built directly from spi.OperatorNames() (see
+// operators.go), so this holds by construction today — but it stays as a
+// live guard against a future change that reintroduces an independent copy
+// of the operator table, which is exactly the drift class this deliverable
+// exists to close (see TestValidateCondition_PathGrammarMatchesSPI for the
+// path-grammar analogue).
+func TestCanonicalOperators_MatchesSPI(t *testing.T) {
+	want := spi.OperatorNames()
+	got := make([]string, 0, len(canonicalOperators))
+	for k := range canonicalOperators {
+		got = append(got, k)
+	}
+	sort.Strings(got)
+	if !reflect.DeepEqual(want, got) {
+		t.Fatalf("canonicalOperators = %v, want %v (spi.OperatorNames())", got, want)
+	}
+}
 
 // C1/M4 regression tests — a malformed BETWEEN operand (a scalar, or a 1- or
 // 3-element array instead of the required 2-element [lo, hi] pair) previously
@@ -127,5 +150,40 @@ func TestValidateCondition_NonBetweenOperator_ArityCheckSkipped(t *testing.T) {
 	}
 	if err := ValidateCondition(c); err != nil {
 		t.Errorf("EQUALS should not be subject to BETWEEN arity check, got: %v", err)
+	}
+}
+
+// TestValidateCondition_UnknownOperatorIsInvalidCondition pins
+// operator-semantics.md §4: "An operator name outside this set is 400
+// INVALID_CONDITION, on every surface that carries a condition." Before this
+// test, validateOperator's error did not wrap ErrInvalidCondition, so
+// structuralConditionErrCode fell through to its BAD_REQUEST default for an
+// unknown operator while an object-operand shape violation on the very same
+// condition surface answered INVALID_CONDITION — two codes for one error
+// class.
+func TestValidateCondition_UnknownOperatorIsInvalidCondition(t *testing.T) {
+	err := ValidateCondition(&predicate.SimpleCondition{
+		JsonPath: "$.a", OperatorType: "NOT_EQUALS", Value: "x",
+	})
+	if err == nil {
+		t.Fatal("expected an error for an unknown operatorType")
+	}
+	if !errors.Is(err, ErrInvalidCondition) {
+		t.Errorf("want ErrInvalidCondition, got %v", err)
+	}
+}
+
+// TestValidateCondition_MissingOperatorIsInvalidCondition covers the sibling
+// branch of validateOperator — an empty operatorType — which must classify
+// identically to an unknown one.
+func TestValidateCondition_MissingOperatorIsInvalidCondition(t *testing.T) {
+	err := ValidateCondition(&predicate.SimpleCondition{
+		JsonPath: "$.a", OperatorType: "", Value: "x",
+	})
+	if err == nil {
+		t.Fatal("expected an error for a missing operatorType")
+	}
+	if !errors.Is(err, ErrInvalidCondition) {
+		t.Errorf("want ErrInvalidCondition, got %v", err)
 	}
 }

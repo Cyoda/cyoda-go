@@ -111,12 +111,16 @@ func RunSearchPathRequiresJSONPathLeader(t *testing.T, fixture BackendFixture) {
 // RunSearchArraySubscriptPathStillServed is the other side of the leader rule
 // and the reason it cannot be enforced by rejecting every translate failure.
 //
-// "$.tags[*]" is valid JSON Path that no pushdown filter can express. The
-// translator refuses it, and that refusal MUST remain the "fall back to
-// in-memory evaluation" signal rather than a 400 — otherwise the tightening
-// turns working queries into client errors. Backend-agnostic: the fallback is
-// the engine's, but whether pushdown was even attempted is per-backend, so
-// every backend has to answer the same.
+// "$.tags[*]" is valid JSON Path, and the kernel now resolves a subscripted
+// path directly (see spi.ResolvePath): a positional index pushes down as a
+// JSON array access on every backend, while a wildcard leaf has no SQL form
+// on either backend until a quantifier node exists and is served by the
+// in-memory evaluator instead. It must answer 200 with the correct rows
+// regardless — the tightening this scenario guards against is a regression
+// that turns this working query into a client error, not a check on WHICH
+// evaluator serves it. Backend-agnostic: the resolution rule is the
+// engine's, but whether a given backend can actually push it down as SQL is
+// per-backend, so every backend has to answer the same rows either way.
 func RunSearchArraySubscriptPathStillServed(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)
@@ -158,7 +162,7 @@ func RunSearchArraySubscriptPathStillServed(t *testing.T, fixture BackendFixture
 			t.Fatalf("[%s] SyncSearchRaw: %v", tc.label, err)
 		}
 		if status != http.StatusOK {
-			t.Fatalf("[%s] array-subscript path answered %d, want 200 — it is valid JSON Path and must reach the in-memory fallback; body=%s",
+			t.Fatalf("[%s] array-subscript path answered %d, want 200 — it is valid JSON Path and the kernel resolves it directly; body=%s",
 				tc.label, status, body)
 		}
 		results, err := c.SyncSearch(t, modelName, modelVersion, cond)

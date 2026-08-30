@@ -9,6 +9,8 @@ package search_test
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -44,11 +46,20 @@ func saveScalarArrayModel(t *testing.T, ctx context.Context, factory *memory.Sto
 	}
 }
 
-// TestSearch_ArrayConditionOnContainerPath_IsAccepted is the service-level
-// regression proof: "$.tags" names a field the model declares (as
-// "$.tags[*]"), so the request must be served, not rejected 400
-// INVALID_FIELD_PATH.
-func TestSearch_ArrayConditionOnContainerPath_IsAccepted(t *testing.T) {
+// TestSearch_ArrayConditionOnContainerPath_IsRejected is the service-level
+// proof of path-grammar.md §8: an `array` clause tests elements by position,
+// so its jsonPath must carry a trailing wildcard. "$.tags" addresses the
+// array itself, not its elements, and cannot carry a positional test — it is
+// rejected 400 INVALID_FIELD_PATH even though the model declares the field
+// (as "$.tags[*]").
+//
+// This inverts what used to be
+// TestSearch_ArrayConditionOnContainerPath_IsAccepted: that test predated the
+// wildcard requirement and pinned the opposite (wrong) behavior. See the
+// companion below — TestSearch_SimpleConditionOnContainerPath_NotNull_IsAccepted
+// — for why the bare path itself must stay valid; only the `array` clause's
+// requirement changed.
+func TestSearch_ArrayConditionOnContainerPath_IsRejected(t *testing.T) {
 	base := memory.NewStoreFactory()
 	defer base.Close()
 	ctx := tenantCtx("tenant-array")
@@ -65,9 +76,44 @@ func TestSearch_ArrayConditionOnContainerPath_IsAccepted(t *testing.T) {
 	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore)
 
 	cond := &predicate.ArrayCondition{JsonPath: "$.tags", Values: []any{"red"}}
+	_, err = svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("Search on an array clause's bare container path: got err %v, want *common.AppError", err)
+	}
+	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeInvalidFieldPath {
+		t.Errorf("got %d/%s, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeInvalidFieldPath)
+	}
+}
+
+// TestSearch_SimpleConditionOnContainerPath_NotNull_IsAccepted guards the
+// container acceptance path_validate.go's pathOrContainerKnown implements:
+// only the `array` clause gained the trailing-wildcard requirement. A
+// `simple` clause's bare path still addresses the array itself, and
+// "$.tags NOT_NULL" — one of the two presence tests section 5 requires to
+// stay answerable on a container path — must keep working. Without this
+// companion, the container acceptance in path_validate.go could be removed
+// by mistake in a future change to satisfy the array clause's new
+// requirement, silently breaking "$.tags IS_NULL"/"NOT_NULL".
+func TestSearch_SimpleConditionOnContainerPath_NotNull_IsAccepted(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+	ctx := tenantCtx("tenant-array-simple-notnull")
+	ref := spi.ModelRef{EntityName: "tagged3", ModelVersion: "1"}
+	saveScalarArrayModel(t, ctx, base, ref)
+
+	saveEntity(t, ctx, base, ref, "e1", []byte(`{"tags":["red","blue"]}`))
+
+	searchStore, err := base.AsyncSearchStore(context.Background())
+	if err != nil {
+		t.Fatalf("AsyncSearchStore: %v", err)
+	}
+	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore)
+
+	cond := &predicate.SimpleCondition{JsonPath: "$.tags", OperatorType: "NOT_NULL"}
 	results, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	if err != nil {
-		t.Fatalf("Search on the array container path: %v — the model declares $.tags[*], so $.tags names a field it knows", err)
+		t.Fatalf("Search on \"$.tags NOT_NULL\": %v — the bare path must stay valid for a simple clause", err)
 	}
 	if len(results) != 1 || results[0].Meta.ID != "e1" {
 		t.Fatalf("got %d results, want exactly e1", len(results))

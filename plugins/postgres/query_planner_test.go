@@ -1110,3 +1110,95 @@ func TestSoundness_NeNonPushable(t *testing.T) {
 		t.Fatalf("postFilter should be the Ne residual, got %+v", plan.postFilter)
 	}
 }
+
+// TestJsonbExtract_RendersSubscript checks jsonbExtractText renders a "[N]"
+// hop as an INTEGER accessor (doc->'tags'->>0), never a text key
+// (doc->>'tags[0]'). A text key against a JSONB array yields null, which is
+// the defect this closes — see docs/cloud-parity/path-grammar.md section 9.
+func TestJsonbExtract_RendersSubscript(t *testing.T) {
+	cases := []struct{ path, want string }{
+		{"amount", "doc->>'amount'"},
+		{"obj.0", "doc->'obj'->>'0'"},
+		{"tags[0]", "doc->'tags'->>0"},
+		{"items[2].sku", "doc->'items'->2->>'sku'"},
+		{"m[0][1]", "doc->'m'->0->>1"},
+	}
+	for _, tc := range cases {
+		got := jsonbExtractText("doc", tc.path)
+		if got != tc.want {
+			t.Errorf("jsonbExtractText(%q) = %q, want %q", tc.path, got, tc.want)
+		}
+	}
+}
+
+// TestJsonbExtract_WildcardIsRejectedNotDropped is M10: pathAccessors used to
+// silently DROP a "[*]" subscript, keeping the hop's name — so
+// jsonbExtractText("doc", "tags[*]") rendered doc->>'tags', a real but WRONG
+// value (the whole array's text form, not "no value"). This surface is
+// guarded at every legitimate caller (isLeafPushable for the WHERE clause,
+// validateGroupAndAggregatePaths/validateOrderSpecs for group-by/aggregate/
+// sort paths all refuse a wildcard leaf before it can reach here), so a
+// defensively-reached wildcard must degrade the same safe way an unparseable
+// path already does — root->>"" — never render the container as if the
+// wildcard were not there.
+func TestJsonbExtract_WildcardIsRejectedNotDropped(t *testing.T) {
+	cases := []struct{ path, want string }{
+		{"tags[*]", "doc->>''"},
+		{"items[*].sku", "doc->>''"},
+		{"m[0][*]", "doc->>''"},
+	}
+	for _, tc := range cases {
+		got := jsonbExtractText("doc", tc.path)
+		if got != tc.want {
+			t.Errorf("jsonbExtractText(%q) = %q, want %q (safe non-match, not the container)", tc.path, got, tc.want)
+		}
+	}
+}
+
+// TestPlanQuery_WildcardIsResidual: a wildcard leaf has no SQL form until a
+// quantifier node exists. Pushing it as a scalar comparison would drop every
+// matching row, and a narrowing WHERE cannot be recovered by the residual
+// re-check, so the wildcard leaf must be installed as a residual instead.
+func TestPlanQuery_WildcardIsResidual(t *testing.T) {
+	plan := planQuery(spi.Filter{
+		Op: spi.FilterEq, Path: "tags[*]", Source: spi.SourceData,
+		Value: "A", Declared: []spi.DataType{spi.String},
+	})
+	if plan.where != "" {
+		t.Errorf("wildcard leaf must not narrow; got WHERE %q", plan.where)
+	}
+	if plan.postFilter == nil {
+		t.Error("wildcard leaf must be installed as a residual")
+	}
+}
+
+// TestPathHasWildcard_ParseFailureIsTreatedAsWildcard pins pathHasWildcard's
+// default on a path spi.ParseFilterPath cannot parse. f.Path reaching this
+// function has already passed validateFilterPaths, so this is unreachable in
+// practice with a well-formed caller — but the DEFAULT direction still
+// matters, for exactly the reason TestPlanQuery_WildcardIsResidual states:
+// treating an unparseable path as "definitely not a wildcard" would let
+// isLeafPushable push it down as a scalar comparison, which for an ACTUAL
+// wildcard drops every matching row with no way for the residual re-check to
+// recover them. Returning true (fail closed: "might be a wildcard, don't
+// push") is the safe default, matching
+// .claude/rules/correctness-over-availability.md.
+func TestPathHasWildcard_ParseFailureIsTreatedAsWildcard(t *testing.T) {
+	for _, p := range []string{"a[", "a]", "a[-1]", "a[?(@.x)]"} {
+		if !pathHasWildcard(p) {
+			t.Errorf("pathHasWildcard(%q): want true (fail-closed, not pushable) on a path that fails to parse", p)
+		}
+	}
+}
+
+// TestPlanQuery_PositionalIsPushed: a positional subscript is a sound,
+// pushable leaf and renders postgres's integer-accessor spelling.
+func TestPlanQuery_PositionalIsPushed(t *testing.T) {
+	plan := planQuery(spi.Filter{
+		Op: spi.FilterEq, Path: "tags[0]", Source: spi.SourceData,
+		Value: "A", Declared: []spi.DataType{spi.String},
+	})
+	if !strings.Contains(plan.where, "doc->'tags'->>0") {
+		t.Errorf("positional leaf must push its dialect index; got WHERE %q", plan.where)
+	}
+}

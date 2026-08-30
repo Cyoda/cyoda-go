@@ -86,50 +86,57 @@ func validateOrderSpecs(specs []spi.OrderSpec) error {
 		if err := validateJSONPath(s.Path); err != nil {
 			return err
 		}
+		if err := rejectSubscript(s.Path, "sort path"); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-// validateJSONPath enforces the same extended dotted-identifier grammar the
-// SQL backends apply: segments of ASCII letters, digits, underscore and
-// hyphen, separated by single dots; at least one segment, no empty segments,
-// no leading or trailing dot.
+// rejectSubscript rejects a path that carries an array subscript ("[N]" or
+// "[*]") anywhere along its hops. docs/cloud-parity/path-grammar.md section
+// 7: "An array position is therefore not a grouping dimension, an
+// aggregation field or a sort key. Those three surfaces admit no
+// subscript... The three surfaces that reject subscripts use the grammar of
+// section 2 with the subscript production removed." A subscripted path is
+// legal on a FILTER leaf (validateFilterPaths / validateJSONPath alone) but
+// illegal here — the same string, two different verdicts depending on which
+// surface it names. Mirrors sqlite's and postgres's rejectSubscript.
+//
+// path is assumed already grammar-valid: every call site runs validateJSONPath
+// first, so a parse error here is not expected in practice. But should this
+// ever be reached defensively with an unvalidated path, the fail-closed
+// answer is rejection, not silent acceptance: per
+// .claude/rules/correctness-over-availability.md, a dependency (here, a
+// successful parse) a correct "no subscript" answer requires must fail the
+// check, not be treated as satisfying it.
+func rejectSubscript(path, what string) error {
+	hops, err := spi.ParseFilterPath(path)
+	if err != nil {
+		return fmt.Errorf("%w: %s %q: %s", ErrInvalidFilterPath, what, path, err)
+	}
+	for _, hop := range hops {
+		if len(hop.Subs) > 0 {
+			return fmt.Errorf("%w: %s %q carries an array subscript, which is not a grouping dimension, aggregation field, or sort key",
+				ErrInvalidFilterPath, what, path)
+		}
+	}
+	return nil
+}
+
+// validateJSONPath enforces the one SPI filter-path grammar
+// (spi.ValidateFilterPath, docs/cloud-parity/path-grammar.md section 9):
+// dotted name segments of ASCII letters/digits/underscore/hyphen, each
+// optionally followed by one or more "[N]" or "[*]" array subscripts.
+//
+// Deliberately delegates to spi.ValidateFilterPath rather than scanning its
+// own copy of the grammar: two independent scanners drift (this repo has
+// already spent one fix round collapsing exactly that drift), and the SPI
+// definition is the single source of truth every plugin and the engine's
+// own resolver share.
 func validateJSONPath(path string) error {
-	if path == "" {
-		return fmt.Errorf("%w: empty", ErrInvalidFilterPath)
-	}
-	segmentStart := 0
-	for i := 0; i < len(path); i++ {
-		c := path[i]
-		if c == '.' {
-			if i == segmentStart {
-				return fmt.Errorf("%w: empty segment", ErrInvalidFilterPath)
-			}
-			segmentStart = i + 1
-			continue
-		}
-		if !isIdentByte(c) {
-			return fmt.Errorf("%w: disallowed character %q at offset %d", ErrInvalidFilterPath, c, i)
-		}
-	}
-	if segmentStart == len(path) {
-		return fmt.Errorf("%w: trailing dot", ErrInvalidFilterPath)
+	if err := spi.ValidateFilterPath(path); err != nil {
+		return fmt.Errorf("%w: %s", ErrInvalidFilterPath, err)
 	}
 	return nil
-}
-
-func isIdentByte(c byte) bool {
-	switch {
-	case c >= 'a' && c <= 'z':
-		return true
-	case c >= 'A' && c <= 'Z':
-		return true
-	case c >= '0' && c <= '9':
-		return true
-	case c == '_':
-		return true
-	case c == '-':
-		return true
-	}
-	return false
 }

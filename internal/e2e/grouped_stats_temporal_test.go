@@ -18,12 +18,19 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 )
 
-// TestGroupedStats_TemporalStringOp_Returns200 verifies that CONTAINS — a
-// string operator on the temporal creationDate meta field — is now ACCEPTED
-// (parse-based, spec §6): it carries no operand-type constraint and evaluates
-// to a non-match, so the grouped-stats query succeeds, matching the equivalent
-// /search request.
-func TestGroupedStats_TemporalStringOp_Returns200(t *testing.T) {
+// TestGroupedStats_TemporalStringOp_Returns400_InvalidCondition verifies
+// that CONTAINS — a string operator on the temporal creationDate meta field
+// — is REJECTED as 400 INVALID_CONDITION, matching the equivalent /search
+// request.
+//
+// This reverses an earlier deliberate acceptance: the two evaluators this
+// endpoint's fallback path can reach answer a temporal-field string operator
+// two different ways depending on the query plan — the SPI kernel's pushdown
+// re-check bridges the field to RFC3339 text and matches CONTAINS lexically,
+// while internal/match's prepareLifecycle guards the identical case to a
+// never-match on field identity. Rejecting the predicate at this shared
+// boundary makes both evaluators' conflicting behaviour unreachable.
+func TestGroupedStats_TemporalStringOp_Returns400_InvalidCondition(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
@@ -39,10 +46,11 @@ func TestGroupedStats_TemporalStringOp_Returns200(t *testing.T) {
 	path := fmt.Sprintf("/api/entity/stats/%s/1/query", model)
 	resp := doAuth(t, http.MethodPost, path, reqBody)
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusBadRequest {
 		body := readBody(t, resp)
-		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
+		t.Fatalf("expected 400, got %d: %s", resp.StatusCode, body)
 	}
+	commontest.ExpectErrorCode(t, resp, "INVALID_CONDITION")
 }
 
 // TestGroupedStats_TemporalBadOperand_Returns400 verifies that a

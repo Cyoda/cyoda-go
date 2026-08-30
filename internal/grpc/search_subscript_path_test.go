@@ -9,9 +9,10 @@ import (
 
 // gRPC is a separate entry point from HTTP and gets its own coverage per
 // .claude/rules/test-coverage.md. A path addressing one array element by
-// position is valid JSON Path that no pushdown filter can express, so the
-// in-memory evaluator is the only one that ever serves it — and it did not
-// resolve it, so the stream came back empty for a field holding the value. An
+// position is valid JSON Path, and the kernel resolves it directly (see
+// spi.ResolvePath) — but before that, the boundary check rejected the
+// well-formed subscript outright, so the stream came back empty for a field
+// holding the value regardless of which evaluator would have served it. An
 // empty stream is exactly what a client reads as "no matches", which is why
 // this needs an envelope-level assertion rather than a unit test.
 

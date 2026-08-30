@@ -66,7 +66,7 @@ func (s *GroupedStatsService) QueryGroupedStats(
 	return buckets, nil
 }
 
-// classifyGroupedStatsError maps the six known sentinels to operational
+// classifyGroupedStatsError maps the seven known sentinels to operational
 // AppErrors (each wrapping the sentinel via WithCause so errors.Is still
 // holds); any other error is returned unchanged (surfaces as 500 at the
 // transport).
@@ -79,6 +79,15 @@ func classifyGroupedStatsError(err error) error {
 		return common.Operational(http.StatusUnprocessableEntity, common.ErrCodeGroupCardinalityExceeded,
 			"group cardinality exceeds the configured maximum").WithCause(err)
 	case errors.Is(err, ErrInvalidCondition):
+		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, err.Error()).WithCause(err)
+	case errors.Is(err, search.ErrInvalidCondition):
+		// The queryGroupedStatsInner ValidateConditionValueTypes call
+		// (below) propagates this sentinel unwrapped, not re-wrapped under
+		// this package's own ErrInvalidCondition above — same disposition
+		// (400 INVALID_CONDITION) via the search package's own sentinel, for
+		// an operator that is not a supported predicate for the field it's
+		// applied to (e.g. a string/pattern operator on a temporal meta
+		// field, operator-semantics.md §4/§7).
 		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, err.Error()).WithCause(err)
 	case errors.Is(err, search.ErrInvalidFieldPath):
 		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, err.Error()).WithCause(err)
@@ -176,10 +185,10 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 	// Condition type-soundness (correctness-over-availability): mirrors the
 	// search path's validateConditionTypes boundary for its model-independent
 	// parts — the lifecycle/temporal/meta-field rules validateLifecycleType
-	// enforces (known meta field; valid operator + RFC3339 operand on temporal
-	// fields), which need no schema. Without this, e.g. a CONTAINS operator
-	// against the temporal creationDate meta field would silently produce an
-	// empty result here instead of the 400 CONDITION_TYPE_MISMATCH the
+	// enforces (known meta field; a supported operator + RFC3339 operand on
+	// temporal fields), which need no schema. Without this, e.g. a CONTAINS
+	// operator against the temporal creationDate meta field would silently
+	// produce an empty result here instead of the 400 INVALID_CONDITION the
 	// equivalent /search request returns.
 	//
 	// A nil model is passed because this layer has none. The SCHEMA-dependent
@@ -191,20 +200,29 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 	if parsedCond != nil {
 		if tErr := search.ValidateConditionValueTypes(nil, parsedCond); tErr != nil {
 			// Propagate tErr directly (not re-wrapped): it already wraps
-			// search.ErrConditionTypeMismatch or search.ErrInvalidFieldPath,
-			// so the handler classifies it via errors.Is against those same
-			// exported sentinels — the identical classification the search
-			// path's validateConditionTypes performs — and maps to the
-			// matching CONDITION_TYPE_MISMATCH / INVALID_FIELD_PATH code.
+			// search.ErrConditionTypeMismatch, search.ErrInvalidCondition or
+			// search.ErrInvalidFieldPath, so classifyGroupedStatsError
+			// classifies it via errors.Is against those same exported
+			// sentinels — the identical classification the search path's
+			// validateConditionTypes performs — and maps to the matching
+			// CONDITION_TYPE_MISMATCH / INVALID_CONDITION / INVALID_FIELD_PATH
+			// code.
 			return nil, tErr
 		}
 	}
 
 	// Try to translate to a pushdown-friendly Filter. A nil parsedCond
 	// yields the zero-value Filter ("match all"); a parsedCond that the
-	// translator can't handle (e.g. function conditions, wildcard paths)
+	// translator can't handle (a function condition — the kernel now
+	// resolves a subscripted/wildcard path directly, see spi.ResolvePath, so
+	// that shape TRANSLATES like any other rather than erroring here)
 	// returns an error — in that case the streaming branch will re-apply the
 	// prepared predicate (match.Prepare/(Prepared).Match) per entity.
+	// Translating is not the same as pushing down: a wildcard leaf still has
+	// no SQL form on either backend (each SQL planner's isLeafPushable
+	// routes it to the residual, see spi.ErrAggregationNotPushdownable
+	// below), so a successfully-translated wildcard Filter can still fall
+	// through to the streaming branch below.
 	var pushFilter spi.Filter
 	pushable := true
 	if parsedCond != nil {
@@ -367,7 +385,7 @@ func buildGroupKeyFromEntity(groups []GroupExprValidated, e *spi.Entity) ([]any,
 			}
 		} else {
 			path = g.Path
-			res := gjson.GetBytes(e.Data, gjsonPath(g.Path))
+			res := resolveScalarPath(e.Data, g.Path)
 			switch {
 			case !res.Exists():
 				val = nil
@@ -399,7 +417,7 @@ func buildGroupKeyFromEntity(groups []GroupExprValidated, e *spi.Entity) ([]any,
 func extractNumerics(aggs []AggregationExprValidated, data []byte) []float64 {
 	out := make([]float64, len(aggs))
 	for i, a := range aggs {
-		res := gjson.GetBytes(data, gjsonPath(a.Field))
+		res := resolveScalarPath(data, a.Field)
 		if !res.Exists() || res.Type != gjson.Number {
 			out[i] = math.NaN()
 			continue
@@ -409,14 +427,32 @@ func extractNumerics(aggs []AggregationExprValidated, data []byte) []float64 {
 	return out
 }
 
-// gjsonPath converts our normalized JSONPath ("$.foo.bar" or "foo.bar")
-// to gjson syntax ("foo.bar"). The reserved token "state" is handled by
-// callers via IsState and never reaches here.
-func gjsonPath(p string) string {
+// resolveScalarPath resolves a normalized groupBy/aggregation JSONPath
+// ("$.foo.bar" or "foo.bar") against data through [spi.ParseFilterPath] and
+// [spi.ResolvePath] — the same addressing rule every other resolver in the
+// stack applies — rather than gjson's own path syntax, which resolves an
+// all-digit segment against an ARRAY receiver as a positional index. That
+// divergence let "$.obj.0" over {"obj":["X","Y"]} return "X" here while
+// spi.ResolvePath, and both SQL backends, correctly report it absent (a
+// field literally named "0" is not the same address as element 0).
+//
+// ValidateScalarJSONPath has already rejected any subscript on this surface,
+// so this is always a 0-or-1-value resolution: absent, or the single value
+// the path names. The reserved token "state" is handled by callers via
+// IsState and never reaches here.
+func resolveScalarPath(data []byte, p string) gjson.Result {
 	if len(p) >= 2 && p[0] == '$' && p[1] == '.' {
-		return p[2:]
+		p = p[2:]
 	}
-	return p
+	hops, err := spi.ParseFilterPath(p)
+	if err != nil {
+		return gjson.Result{}
+	}
+	results := spi.ResolvePath(data, hops)
+	if len(results) != 1 {
+		return gjson.Result{}
+	}
+	return results[0]
 }
 
 // translateGroupBy maps the validation-layer types to the SPI types used
@@ -425,7 +461,7 @@ func gjsonPath(p string) string {
 // plugin's validateJSONPath rejects "$" as a disallowed character — the
 // SPI contract is a bare dotted-identifier path ("foo.bar"), and the
 // "$." prefix lives only at the public surface (response GroupKeyEntry.Path
-// and the in-process gjson lookup, which strips it via gjsonPath).
+// and the in-process resolveScalarPath call, which strips it the same way).
 func translateGroupBy(groups []GroupExprValidated) []spi.GroupExpr {
 	out := make([]spi.GroupExpr, len(groups))
 	for i, g := range groups {
@@ -454,13 +490,15 @@ func translateAggregations(aggs []AggregationExprValidated) []spi.AggregateExpr 
 }
 
 // stripJSONPathPrefix removes the leading "$." that normalizeScalarPath
-// preserves for the wire-shape group-key. Plugins (memory's own gjsonPath
-// helper in plugins/memory/grouped_stats.go, sqlite/postgres's
-// validateJSONPath) all expect bare dotted-identifier paths — plugins/memory
-// is a separate Go module with no dependency on the root module, so it
-// cannot import internal/match at all; its group-by path handling is
-// entirely local. A path without the prefix is returned unchanged so the
-// helper is idempotent — re-applying it is safe.
+// preserves for the wire-shape group-key. Plugins (memory's own
+// resolveScalarPath helper in plugins/memory/grouped_stats.go, sqlite/
+// postgres's validateJSONPath) all expect bare dotted-identifier paths —
+// plugins/memory is a separate Go module with no dependency on the root
+// module, so it cannot import internal/match at all; its group-by path
+// handling is entirely local (built on spi.ParseFilterPath/spi.ResolvePath,
+// the same SPI both this package and plugins/memory already depend on). A
+// path without the prefix is returned unchanged so the helper is idempotent
+// — re-applying it is safe.
 func stripJSONPathPrefix(p string) string {
 	if len(p) >= 2 && p[0] == '$' && p[1] == '.' {
 		return p[2:]

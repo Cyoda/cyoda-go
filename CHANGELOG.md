@@ -209,7 +209,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
   Remedy for a caller who was relying on the length: there is no path spelling for
   it. Address the elements, or filter on a field that carries the count.
-  See `docs/cloud-parity/trailing-wildcard-path.md`.
+  See `docs/cloud-parity/path-grammar.md`.
 
 - **A field path must now be written as JSON Path — the `$.` leader is required,
   and the whole path is validated.**
@@ -222,8 +222,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   jsonPath  = "$." segment ( "." segment )*
   segment   = name subscript*
   name      = 1*( ALPHA / DIGIT / "_" / "-" )   ; ASCII only
-  subscript = "[" ( "*" / 1*DIGIT ) "]"
+  subscript = "[" ( "*" / 1*DIGIT ) "]"          ; the digit run must fit an int32
   ```
+
+  The digit-run bound is `int32`, not Go's `int` (`int64` on every supported
+  platform): `int32` is the intersection every in-tree backend can address —
+  PostgreSQL renders a positional index as a `jsonb` operand, and an index
+  above `int32` fails to parse there (`jsonb ->> bigint` does not exist) rather
+  than answering a result, which without a backend-specific error classifier
+  surfaced as an unclassified `500` instead of a `400`. `$.tags[2147483647]`
+  (`int32` max) stays accepted; `$.tags[2147483648]` is rejected the same as
+  any other malformed subscript.
 
   ```diff
   - {"type":"simple","jsonPath":"amount",      "operatorType":"GREATER_THAN","value":50}
@@ -271,9 +280,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
   Still accepted: condition paths with a **well-formed** subscript — the wildcard
   `[*]` or a non-negative index (`$.tags[*].name`, `$.arr[0]`, `$.matrix[*][*]`,
-  `$.orders[*].lines[*].sku`) — valid JSON Path, evaluated in memory rather than
-  pushed down. Grouped-stats `groupBy`/`field` still reject every subscript,
-  well-formed or not, because a group key must be a single scalar.
+  `$.orders[*].lines[*].sku`) — valid JSON Path. A positional index now pushes
+  down like any other field; a wildcard leaf still evaluates in memory, because
+  no backend has a wildcard accessor. Grouped-stats `groupBy`/`field` still
+  reject every subscript, well-formed or not, because a group key must be a
+  single scalar.
   The reserved `groupBy` token `state` is a token, not a path, and needs no leader;
   it is groupBy-only, so `state` as an aggregation `field` is now rejected.
   Workflow criteria obey the same grammar, enforced at workflow import — see the
@@ -285,8 +296,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   evaluator ever resolved them, so a query using one was already returning an empty
   page. On grouped-stats `groupBy`/`field`, address an array position as a numeric
   segment instead (`$.items.0`). See
-  `docs/cloud-parity/condition-jsonpath-grammar.md` and
-  `docs/cloud-parity/grouped-stats-path-grammar.md`, or `cyoda help crud`.
+  `docs/cloud-parity/path-grammar.md`, or `cyoda help crud`.
 
 - **A workflow or transition `criterion` `jsonPath` must now be JSON Path too, and
   is rejected at workflow import.**
@@ -316,7 +326,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   evaluating; it fails on its next re-import, which is where the fix gets made.
 
   Fix for callers: prefix the path with `$.`. See
-  `docs/cloud-parity/workflow-criterion-jsonpath-grammar.md`.
+  `docs/cloud-parity/path-grammar.md`.
 
 - **`CYODA_TX_TTL`, `CYODA_TX_REAP_INTERVAL` and `CYODA_TX_OUTCOME_TTL` are removed.**
   They configured a transaction reaper that never ran — nothing ever registered a
@@ -520,6 +530,69 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   (`oneOf` requires exactly one branch to match, so it rejected values the model
   admits whenever two branches rendered the same JSON Schema shape). Consumers
   that parse the exported model see the new keys.
+
+- **One path grammar and one resolver now govern every surface that carries a
+  `jsonPath`** — search conditions, workflow criteria, `groupBy`, aggregation
+  fields and sort keys. See `docs/cloud-parity/path-grammar.md` and
+  `docs/cloud-parity/operator-semantics.md`. Caller-visible consequences:
+
+  - **An `array` clause's `jsonPath` must now carry a trailing `[*]`.** A bare
+    path (`{"type":"array","jsonPath":"$.tags","values":["A"]}`) addresses the
+    array itself, not its elements, and cannot carry a positional test. It is
+    `400 INVALID_FIELD_PATH` on the search surface and `400 VALIDATION_FAILED`
+    at workflow import — both doors now enforce the same rule; before this
+    fix the criterion door accepted a clause the search door already refused.
+
+  - **An `array` clause's `values` are now type- and shape-checked**, the same
+    checks a `simple` clause already had. An object entry (`{"a":1}`) is now
+    `400 INVALID_CONDITION` instead of reaching the evaluator and being
+    compared as the literal text `map[a:1]`.
+
+  - **An unknown `operatorType` now answers `400 INVALID_CONDITION` on every
+    surface that carries a condition, not just some of them.** It previously
+    answered `400 INVALID_CONDITION` on grouped stats but fell through to the
+    coarser `400 BAD_REQUEST` on `/search/direct`, `/search/async` and
+    conditional `DELETE /entity/{name}/{version}` — one error class, two codes
+    depending only on which endpoint served the request. The status stays
+    `400` throughout; only the code changes.
+
+  - **A workflow or transition criterion carrying an unknown `operatorType`
+    now fails import**, `400 VALIDATION_FAILED`, naming the offending
+    operator, workflow and transition. It previously imported cleanly — the
+    operator table was never consulted at this door — and the transition it
+    guarded then silently never fired on every later evaluation, with no
+    result page to look wrong.
+
+  - **A string or pattern operator (`CONTAINS`, `MATCHES_PATTERN`, the
+    case-insensitive family, …) on `creationDate` or `lastUpdateTime` is now
+    `400 INVALID_CONDITION`.** It previously answered `200`, and which rows
+    came back depended on which evaluator served the request: a pushdown
+    route bridges the field to its RFC3339 text and matches lexically, while
+    the in-memory evaluator and every workflow criterion refused the operator
+    and never matched. The same condition and the same data answered two ways
+    depending only on the query plan; rejecting it at the shared boundary
+    makes both answers unreachable rather than picking one.
+
+  - **A bare path no longer matches an array's elements, and a `[*]` path no
+    longer matches a scalar value.** The in-memory evaluator (the memory
+    backend, the SQL backends' residual re-check, and every workflow
+    criterion) used to route on the *stored value's* shape: a bare path over
+    an array matched existentially across its elements, and reaching a scalar
+    behind a `[*]` hop fell through to comparing the scalar directly. What a
+    path addresses is now decided by the path's syntax alone, matching the
+    pushdown kernel — see section 3's union rule. A field that is
+    consistently one shape across every entity is unaffected; a polymorphic
+    field observed as both a scalar and an array may see fewer matches on a
+    bare or wildcard path than before, and more on the path that was already
+    the well-formed spelling for that entity's branch.
+
+  - **A subscripted path (`tags[0]`, `tags[*]`) is rejected on `groupBy`, an
+    aggregation field and a sort key**, `400`, on every backend. These three
+    surfaces name one scalar value per entity; a subscript names an array
+    position or a set, neither of which is a grouping dimension, an
+    aggregation field or a sort key. `path-grammar.md` section 7 states the
+    rule; the three surfaces share one scanner with the filter-path grammar
+    minus the subscript production, so they cannot drift from it again.
 
 ### Added
 
@@ -968,11 +1041,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 - **A path addressing one array element by position (`$.arr[0]`) now resolves,
   instead of answering an empty page for a field that holds the value.** It is
-  valid JSON Path, it is accepted at the API boundary, and no pushdown filter
-  can express it — so the in-memory evaluator is the only one that ever serves
-  it, and it did not. Three lookups missed, each independently enough to make
-  the leaf false for every entity: the evaluator handed gjson a path it has no
-  syntax for (`arr[0]`, where gjson wants `arr.0`); the declared-type lookup
+  valid JSON Path and is accepted at the API boundary. The in-memory evaluator
+  is the resolver of last resort — every leaf a backend does not push down
+  still falls through to it — and it did not resolve this one. Three lookups
+  missed, each independently enough to make the leaf false for every entity:
+  the evaluator handed gjson a path it has no syntax for (`arr[0]`, where
+  gjson wants `arr.0`); the declared-type lookup
   probed a schema key that cannot exist (`$.arr[0]` — the schema records an
   array's element once, under `$.arr[*]`), and a comparison with no declared
   type expands into nothing; and search's field-existence check rejected the
@@ -1325,6 +1399,37 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   change-type-derived `Deleted` flag, so a delete's history entry reports
   the same `hasEntity` value regardless of which backend served it.
 
+- **A repeated unknown sort field now costs one authoritative schema read,
+  not one per request.** `resolveSortKeys` refreshes a `DATA` sort key
+  absent from the cached schema exactly once before refusing it (mirroring
+  the condition-path bound issue #77 established), but it never consulted
+  the field-path negative cache that bound already applies to, so a
+  serially repeated bogus sort key paid a full `RefreshAndGet` — an
+  authoritative model-store read plus a full schema re-parse, which also
+  repopulates the shared model-descriptor cache — on every single request.
+  It now routes through the same `PathValidationCache` a condition path
+  uses, bounding it per `(tenant, model, path)`.
+
+- **Translating a condition tree no longer re-desugars every subtree at
+  every level.** `spi.ConditionToFilter` desugars the whole tree once, but
+  `groupToFilter` recursed back through `ConditionToFilter` for each child,
+  re-running the desugar pass on that child's already-desugared subtree —
+  O(n·depth) instead of O(n), measured at ~36× for 500 leaves at depth 250.
+  `internal/match.Prepare`'s `prepareGroup` had the identical defect. Both
+  now recurse into a desugar-free dispatch instead.
+
+- **Three permissive defaults on an unreachable parse error are now
+  fail-closed.** `rejectSubscript` (group-by/aggregate-field/sort-path
+  subscript rejection) and `pathHasWildcard` (pushdown-safety wildcard
+  detection), in each of `plugins/memory`, `plugins/sqlite` and
+  `plugins/postgres`, defaulted to the permissive outcome — accept, or
+  "not a wildcard" (pushable) — when `spi.ParseFilterPath` failed on their
+  input. Every call site validates the path first, so this was unreachable
+  in practice, but the default direction violated
+  `.claude/rules/correctness-over-availability.md`: a dependency (a
+  successful parse) a correct "no subscript" / "not pushable" answer
+  requires now fails the check instead of being treated as satisfying it.
+
 ## [0.8.3] — 2026-07-27
 
 ### Added
@@ -1508,7 +1613,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 - **Search/criteria predicate evaluation is now type-directed and same-type
   only**, aligning cyoda-go with Cyoda Cloud's evaluation model (see
-  `cyoda help predicates`, `docs/cloud-parity/431-search-semantics.md`).
+  `cyoda help predicates`, `docs/cloud-parity/operator-semantics.md`).
   Observable changes:
   - Comparison is same-type: an operand is parsed against the field's
     declared type(s), so a numeric-looking string and a JSON number are

@@ -806,10 +806,19 @@ func TestPostgresGroupedAggregate_StateIdxUsed(t *testing.T) {
 func TestPostgresGroupedStats_PathValidation(t *testing.T) {
 	// Inputs that MUST be rejected by the SQL-boundary validator. These are
 	// the characters that could break out of the single-quoted JSONB key
-	// literal, plus empty / leading-trailing-dot / double-dot grammar
-	// violations.
+	// literal, plus leading-trailing-dot / double-dot grammar violations.
+	//
+	// "" and "a[0]" are deliberately NOT here (they used to be): the
+	// validator now delegates to spi.ValidateFilterPath, the one filter-path
+	// grammar (docs/cloud-parity/path-grammar.md section 9), which accepts
+	// both — "" is the legal empty path the AND/OR tree operators carry, and
+	// "a[0]" is a legal positional array subscript, exactly the form this
+	// change teaches jsonbExtractText/jsonbExtractJSONB to render as an
+	// integer accessor. See TestJsonbExtract_RendersSubscript in
+	// query_planner_test.go for the rendering, and
+	// TestValidateJSONPath_AcceptsEmpty in path_validation_test.go for why
+	// "" is not an injection surface despite being grammar-legal.
 	bad := []string{
-		"",
 		".",
 		"foo.",
 		".bar",
@@ -818,7 +827,8 @@ func TestPostgresGroupedStats_PathValidation(t *testing.T) {
 		"a'b",        // single quote (literal terminator)
 		"a\"b",       // double quote
 		"a;b",        // semicolon
-		"a[0]",       // brackets
+		"a[-1]",      // negative index — outside the grammar
+		"a[",         // unclosed bracket
 		"foo\x00bar", // NUL byte
 	}
 	for _, p := range bad {
@@ -829,14 +839,18 @@ func TestPostgresGroupedStats_PathValidation(t *testing.T) {
 
 	// Inputs that should be accepted. Hyphens are deliberately permitted —
 	// '--' is harmless INSIDE a single-quoted literal (SQL comments only
-	// have meaning outside string context).
+	// have meaning outside string context). "" and "a[0]"/"a[*]" are
+	// accepted per the one filter-path grammar (see the "bad" comment above).
 	good := []string{
+		"",
 		"variantId",
 		"a.b.c",
 		"foo_bar",
 		"foo-bar",
 		"a--b", // hyphens allowed; safe inside the quoted literal
 		"a123.b456",
+		"a[0]",
+		"a[*]",
 	}
 	for _, p := range good {
 		if err := postgres.ValidateJSONPathForTest(p); err != nil {

@@ -1,6 +1,7 @@
 package match_test
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -80,9 +81,10 @@ func TestPrepare_StructuralErrors(t *testing.T) {
 	}
 }
 
-// TestPrepare_NeverMatchIsNotAnError pins the two cases that sit in FRONT of
-// the error path: they are deliberate never-match behaviour and turning either
-// into a Prepare error would reject conditions that evaluate cleanly today.
+// TestPrepare_NeverMatchIsNotAnError pins the four cases that sit in FRONT of
+// the error path: they are deliberate never-match behaviour and turning any
+// of them into a Prepare error would reject conditions that evaluate cleanly
+// today.
 func TestPrepare_NeverMatchIsNotAnError(t *testing.T) {
 	meta := spi.EntityMeta{
 		State:        "active",
@@ -196,9 +198,13 @@ func TestPrepare_ArrayConditionOneExpansionPerPosition(t *testing.T) {
 	}
 }
 
-// TestPrepare_ArrayWildcardRoutesPerRow pins that array-vs-scalar routing stays
-// PER ROW: matchSimple routed on the DATA's shape, not the condition's, so the
-// same prepared leaf must handle both an array and a scalar stored value.
+// TestPrepare_ArrayWildcardRoutesPerRow pins that a "[*]" hop is resolved
+// PER ROW: the parsed hops are fixed at Prepare time, but spi.ResolvePath
+// walks them against each row's own data, so the same prepared leaf answers
+// correctly whether that row's "laureates" array is populated or empty. This
+// is syntax-driven (the "[*]" in the path), never data-driven — a bare path
+// with no wildcard would NOT iterate an array's elements, however the stored
+// value is shaped.
 func TestPrepare_ArrayWildcardRoutesPerRow(t *testing.T) {
 	cond := &predicate.SimpleCondition{
 		JsonPath: "$.laureates[*].motivation", OperatorType: "CONTAINS", Value: "peace",
@@ -215,5 +221,106 @@ func TestPrepare_ArrayWildcardRoutesPerRow(t *testing.T) {
 	}
 	if p.Match([]byte(`{"laureates":[]}`), spi.EntityMeta{}) {
 		t.Error("Match() = true for an empty array, want false")
+	}
+}
+
+// unknownCondition implements predicate.Condition without being one of the
+// four kinds prepare() recognises (SimpleCondition, LifecycleCondition,
+// GroupCondition, FunctionCondition) — the one structural fault
+// TestPrepare_StructuralErrors does not cover, since every real
+// predicate.Condition implementation in this repo falls into one of those
+// four. spi.DesugarCondition, which prepare() calls first, passes an
+// unrecognised type through unchanged (its own switch only rewrites
+// ArrayCondition and recurses into GroupCondition), so this reaches
+// prepare()'s default: arm exactly as if DesugarCondition were not called.
+type unknownCondition struct{}
+
+func (unknownCondition) Type() string { return "unknown" }
+
+// TestPrepare_UnknownConditionType pins the fifth structural fault: a
+// Condition implementation outside the four kinds prepare()'s type switch
+// recognises.
+func TestPrepare_UnknownConditionType(t *testing.T) {
+	cond := unknownCondition{}
+	want := fmt.Sprintf("unknown condition type: %T", cond)
+
+	_, err := match.Prepare(cond, nil)
+	if err == nil {
+		t.Fatalf("Prepare() = nil error, want %q", want)
+	}
+	if err.Error() != want {
+		t.Errorf("Prepare() error = %q, want %q", err.Error(), want)
+	}
+}
+
+// TestPrepare_MalformedPathNeverMatches pins prepareSimple's
+// spi.ParseFilterPath failure branch: a jsonPath outside the filter-path
+// grammar becomes a never-match leaf, not a Prepare error — the same
+// "never matches" answer an expansion failure already produces.
+//
+// This is defense in depth, not a reachable production path: both boundaries
+// a condition passes through before reaching match.Prepare —
+// search.ValidateConditionJSONPath for a search/delete condition, and the
+// workflow criterion importer for a criterion — already reject a malformed
+// jsonPath before it gets here. The branch is pinned anyway because it is
+// live code with its own failure mode, not because a malformed path is
+// expected to arrive.
+func TestPrepare_MalformedPathNeverMatches(t *testing.T) {
+	cond := &predicate.SimpleCondition{JsonPath: "$.arr[", OperatorType: "NOT_NULL"}
+	p, err := match.Prepare(cond, typed(spi.String))
+	if err != nil {
+		t.Fatalf("Prepare() error = %v, want nil (never-match, not an error)", err)
+	}
+	if p.Match([]byte(`{"arr":[1,2,3]}`), spi.EntityMeta{}) {
+		t.Error("Match() = true, want false: a malformed path must never match")
+	}
+}
+
+// TestPrepare_EmptyLeafPathNeverMatches mirrors the SPI kernel's own guard
+// (prepareNode in prepared_filter.go): a SourceData LEAF with an empty path
+// addresses no field and must never resolve to anything. Without this guard,
+// stripLeader("$") / stripLeader("$.") / stripLeader("") all yield "",
+// spi.ParseFilterPath("") legitimately returns (nil, nil) — the shape a TREE
+// operator's absent path is allowed to take — and spi.ResolvePath(data, nil)
+// resolves that nil hop slice to the parsed ROOT DOCUMENT, so a presence
+// test (NOT_NULL) matches every entity regardless of its shape.
+//
+// The CONTAINS sub-test additionally pins the string-operator hazard, but
+// only reproduces it against a document whose raw bytes ARE a bare JSON
+// string at the root: spi.EvalLeaf's string-op branch requires
+// stored.Type == gjson.String, so against the normal, object-rooted entity
+// shape a string operator on the unguarded root is already a non-match —
+// asserting against `{"a":1}` here would pass whether or not the guard
+// exists, and would not be pinning anything.
+func TestPrepare_EmptyLeafPathNeverMatches(t *testing.T) {
+	paths := []string{"", "$", "$."}
+	for _, path := range paths {
+		t.Run(fmt.Sprintf("path=%q/NOT_NULL", path), func(t *testing.T) {
+			cond := &predicate.SimpleCondition{JsonPath: path, OperatorType: "NOT_NULL"}
+			p, err := match.Prepare(cond, typed(spi.String))
+			if err != nil {
+				t.Fatalf("Prepare() error = %v, want nil (never-match, not an error)", err)
+			}
+			if p.Match([]byte(`{"a":1}`), spi.EntityMeta{}) {
+				t.Error("Match() = true, want false: an empty leaf path must never match")
+			}
+		})
+		t.Run(fmt.Sprintf("path=%q/CONTAINS", path), func(t *testing.T) {
+			cond := &predicate.SimpleCondition{JsonPath: path, OperatorType: "CONTAINS", Value: "needle"}
+			p, err := match.Prepare(cond, typed(spi.String))
+			if err != nil {
+				t.Fatalf("Prepare() error = %v, want nil (never-match, not an error)", err)
+			}
+			// A bare JSON string at the document root — not the normal
+			// object-rooted entity shape, but the one shape where
+			// spi.ResolvePath(data, nil)'s resolved "field" is itself a
+			// gjson string, so spi.EvalLeaf's string-op branch actually
+			// runs the comparison rather than short-circuiting on
+			// stored.Type != gjson.String. Without the guard this
+			// substring-matches the root scalar directly.
+			if p.Match([]byte(`"a needle in a haystack"`), spi.EntityMeta{}) {
+				t.Error("Match() = true, want false: an empty leaf path must never match, not substring-match a scalar-rooted document")
+			}
+		})
 	}
 }

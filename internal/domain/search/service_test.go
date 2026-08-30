@@ -108,7 +108,7 @@ func saveModelWithArrayOfStringField(t *testing.T, ctx context.Context, factory 
 
 // helper: register a model declaring an Integer leaf `val` alongside an
 // `items` array of objects carrying a String leaf `name`. The array member
-// exists purely so untranslatableCondition's wildcard path resolves against a
+// exists purely so matchAllFixtureCondition's wildcard path resolves against a
 // declared field and survives pre-execution path validation.
 func saveModelWithValAndItemsArray(t *testing.T, ctx context.Context, factory *memory.StoreFactory, ref spi.ModelRef) {
 	t.Helper()
@@ -2272,7 +2272,7 @@ func TestSearch_SearcherResultLimitSentinel_MapsTo400(t *testing.T) {
 // it does NOT implement spi.Searcher (the nonSearcherEntityStore/
 // nonSearcherFactory pair defined above, also used by
 // TestSearchFallsBackWhenNotSearcher), then registers n entities that all
-// satisfy untranslatableCondition(t)'s always-true first branch. Every Search call
+// satisfy matchAllFixtureCondition(t)'s always-true first branch. Every Search call
 // against this fixture is forced through the GetAll + in-memory match
 // branch — there is no Searcher to even attempt pushdown against.
 func newFallbackFixture(t *testing.T, n int) (*search.SearchService, context.Context, spi.ModelRef) {
@@ -2299,29 +2299,32 @@ func newFallbackFixture(t *testing.T, n int) (*search.SearchService, context.Con
 	return svc, ctx, ref
 }
 
-// untranslatableCondition returns a condition tree that ConditionToFilter
-// cannot push down, so any request carrying it always travels through the
-// GetAll + in-memory fallback — independent of whether the store also happens
-// to lack a Searcher, as in newFallbackFixture.
-// TestSearch_FallbackBranchIsBounded_TranslateFailureRoute pins that
-// translate-failure property directly, against a real Searcher-implementing
-// store, rather than relying on newFallbackFixture's belt-and-braces (no
-// Searcher AND untranslatable) setup to demonstrate it.
+// matchAllFixtureCondition returns a condition tree that matches every entity
+// newFallbackFixture and TestSearch_FallbackBranchIsBounded_TranslateFailureRoute
+// save ($.val > -1 is true for every row those fixtures write), OR'd with a
+// second member on a wildcard array path ($.items[*].name — a declared field
+// in saveModelWithValAndItemsArray, so the tree still clears pre-execution
+// path validation).
 //
-// The untranslatable member is a wildcard array path: stripDollarDot rejects
-// the "[" as non-pushdownable syntax, and groupToFilter propagates that
-// failure, so the whole tree fails translation. It is a declared field
-// ($.items[*].name in saveModelWithValAndItemsArray) so the tree still clears
-// pre-execution path validation, and it is OR'd with an always-true
-// SimpleCondition ($.val > -1, true for every entity the fixtures save) so the
-// fallback's match loop still yields every entity and reaches the bound check
-// these tests exist to exercise.
+// It is NOT untranslatable, despite the name this function used to have.
+// spi.ConditionToFilter now pushes a wildcard array path down like any other
+// (see path-grammar.md §2/§8), so both members translate, and a request
+// carrying this tree against a real Searcher-capable store takes the
+// pushdown path, not the GetAll fallback.
 //
-// This used to be a FunctionCondition, which is untranslatable for the same
-// reason. It no longer can be: a function clause is a criterion shape and
-// ValidateCondition now rejects it at the search boundary, so it never reaches
-// translation at all (see function_condition_reject_test.go).
-func untranslatableCondition(t *testing.T) predicate.Condition {
+// TestSearch_FallbackBranchIsBounded and
+// TestSearch_FallbackBranchUnboundedReturnsAll still use it correctly: their
+// fixture wraps the store to remove spi.Searcher (newFallbackFixture), so
+// they reach the GetAll fallback via missing CAPABILITY, never via translate
+// failure, and never needed an untranslatable condition — any condition that
+// matches every saved row would do. This one is kept only because splitting
+// it into a second, capability-only-tailored helper is not worth the
+// duplication for two call sites.
+//
+// It is no longer usable to pin translate-failure specifically — see
+// TestSearch_FallbackBranchIsBounded_TranslateFailureRoute's doc comment for
+// what replaced it and why no predicate.Condition can do this anymore.
+func matchAllFixtureCondition(t *testing.T) predicate.Condition {
 	t.Helper()
 	return &predicate.GroupCondition{
 		Operator: "OR",
@@ -2347,7 +2350,7 @@ func untranslatableCondition(t *testing.T) predicate.Condition {
 // one backend that this change removes across backends.
 func TestSearch_FallbackBranchIsBounded(t *testing.T) {
 	svc, ctx, ref := newFallbackFixture(t, 3) // 3 matching entities, no Searcher
-	_, err := svc.Search(ctx, ref, untranslatableCondition(t), search.SearchOptions{Limit: 2})
+	_, err := svc.Search(ctx, ref, matchAllFixtureCondition(t), search.SearchOptions{Limit: 2})
 
 	var appErr *common.AppError
 	if !errors.As(err, &appErr) {
@@ -2377,7 +2380,7 @@ func TestSearch_FallbackBranchUnboundedReturnsAll(t *testing.T) {
 	for _, limit := range []int{0, -1} {
 		t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
 			svc, ctx, ref := newFallbackFixture(t, 3)
-			got, err := svc.Search(ctx, ref, untranslatableCondition(t), search.SearchOptions{Limit: limit})
+			got, err := svc.Search(ctx, ref, matchAllFixtureCondition(t), search.SearchOptions{Limit: limit})
 			if err != nil {
 				t.Fatalf("limit %d must be unbounded: unexpected err %v", limit, err)
 			}
@@ -2399,6 +2402,61 @@ func TestSearch_FallbackBranchUnboundedReturnsAll(t *testing.T) {
 // to observe calls (not to suppress the interface) — so a passing result
 // here proves translate failure alone, independent of Searcher
 // availability, routes to the bounded fallback and is bounded there too.
+//
+// The condition that drives translate failure is nil, not a malformed
+// SimpleCondition/GroupCondition tree — this is deliberate, and the only
+// remaining way to reach this branch with a bounded match set to check.
+// Enumerating predicate.Condition's closed five-clause set against
+// spi.ConditionToFilter's switch (path-grammar.md §8 desugars ArrayCondition
+// away before the switch runs; a FunctionCondition is rejected upstream by
+// ValidateCondition, at every one of ConditionToFilter's four callers in this
+// module — Search here, planDeleteSelection, and grouped stats' pushdown
+// attempt — so it never reaches the switch either): SimpleCondition,
+// LifecycleCondition and GroupCondition's only translate-failure causes are
+// an out-of-grammar path or an unrecognised operator name, and both are
+// rejected by the identical grammar/operator-set check ValidateCondition
+// already ran — not merely a parallel implementation kept in agreement by a
+// test, but the SAME function call: ValidateConditionJSONPath
+// (jsonpath_grammar.go) delegates to spi.ParseFilterPath directly, and
+// canonicalOperators (operators.go) is built from spi.OperatorNames()
+// directly, so the two checks cannot independently drift. So once a
+// condition has cleared ValidateCondition, every reachable shape now also
+// clears ConditionToFilter — this used to be false in two ways: a wildcard
+// array path translated to a plain, non-sentinel error precisely so the
+// fallback would serve it (see matchAllFixtureCondition's doc comment),
+// which is the asymmetry this test used to exploit; and, independently and
+// unnoticed until this deliverable's C1 fix, an overflowing subscript index
+// ("$.tags[99999999999999999999]") cleared the boundary's digit-class-only
+// subscript check while spi.ParseFilterPath's magnitude bound rejected the
+// same string, which TestValidateCondition_PathGrammarMatchesSPI's corpus
+// did not exercise and so did not catch.
+// TestValidateCondition_ClearingImpliesTranslates (operators_test.go's
+// sibling, validate_translate_agreement_test.go) is the direct empirical
+// check of this claim: every operator name, on both a data path and a meta
+// field, plus group/array nesting, a positional index, and a wildcard
+// mid-path all clear ValidateCondition and then ConditionToFilter.
+//
+// A caller-constructed predicate.Condition outside the five-clause set
+// (predicate.Condition is a one-method interface, open to any type) is NOT
+// a defense-in-depth substitute: ValidateCondition's own switch defaults to
+// ACCEPTING an unrecognised type, so it does clear validation and does fail
+// ConditionToFilter — but internal/match.Prepare's switch has the identical
+// default-reject behaviour (both switches exist to recognise exactly this
+// module's five clause types and nothing else), so the fallback's own
+// residual-match step fails too, before the bound check this test exists to
+// exercise ever runs — it does not produce a bounded match set, it produces
+// a different, unclassified error.
+//
+// A nil condition is the one input that reaches ConditionToFilter's own
+// "condition is nil" guard (translateErr != nil, same as any other translate
+// failure) while still being served correctly by the fallback: the fallback
+// special-cases cond == nil as "matches every entity" and never calls
+// match.Prepare for it (see the Search doc comment on that branch), so the
+// bound check downstream still runs against a real match set instead of
+// failing first on an unpreparable predicate. It is also a legitimate,
+// commonly-issued request shape (an unconditional "list everything" search
+// with an explicit page size) — not a synthetic construction — so this is a
+// meaningful regression test, not a technicality.
 func TestSearch_FallbackBranchIsBounded_TranslateFailureRoute(t *testing.T) {
 	base := memory.NewStoreFactory()
 	defer base.Close()
@@ -2429,7 +2487,7 @@ func TestSearch_FallbackBranchIsBounded_TranslateFailureRoute(t *testing.T) {
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 	svc := search.NewSearchService(factory, uuids, searchStore)
 
-	_, err := svc.Search(ctx, ref, untranslatableCondition(t), search.SearchOptions{Limit: 2})
+	_, err := svc.Search(ctx, ref, nil, search.SearchOptions{Limit: 2})
 
 	if ses.searchCalls != 0 {
 		t.Errorf("searchCalls = %d, want 0 (translate failure must not reach the Searcher)", ses.searchCalls)
@@ -2444,6 +2502,9 @@ func TestSearch_FallbackBranchIsBounded_TranslateFailureRoute(t *testing.T) {
 	}
 	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeSearchResultLimit {
 		t.Fatalf("got %d/%s, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeSearchResultLimit)
+	}
+	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
+		t.Errorf("errors.Is(err, ErrSearchResultLimitExceeded) = false; WithCause must preserve the sentinel")
 	}
 }
 

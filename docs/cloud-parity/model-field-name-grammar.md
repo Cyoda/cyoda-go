@@ -17,7 +17,7 @@ segment character class, which the query-side path grammar is built from too, so
 the model side and the query side cannot drift on which names are addressable.
 A whole-segment check is exactly the rule a bare field name needs: it admits no
 subscript (a field name must denote one node) and no `.`. See
-`condition-jsonpath-grammar.md` for the path grammar that consumes it.
+`path-grammar.md` for the path grammar that consumes it.
 
 ## Where it is enforced
 

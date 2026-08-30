@@ -308,16 +308,39 @@ func (s *EntityStore) GroupedAggregate(
 	//
 	// GroupExprState carries no path and is exempt, matching both SQL
 	// backends' state arm.
+	//
+	// A GroupExpr.Path or AggregateExpr.Field is checked against "" before
+	// validateJSONPath: unlike a filter leaf's Path, where empty is the
+	// legitimate "no field" shape the AND/OR tree operators carry (and
+	// validateFilterPaths skips it before ever reaching validateJSONPath),
+	// a group-by or aggregate path always names a real field — there is no
+	// operator-node reading for it. validateJSONPath alone now admits ""
+	// (it delegates to the one grammar, which is right for a filter leaf),
+	// so this catches the empty case itself rather than silently letting a
+	// meaningless "group by nothing" request through. Mirrors sqlite's and
+	// postgres's validateGroupAndAggregatePaths.
 	for _, g := range groupBy {
 		if g.Kind != spi.GroupExprDataPath {
 			continue
 		}
+		if g.Path == "" {
+			return nil, fmt.Errorf("%w: empty group-by path", ErrInvalidFilterPath)
+		}
 		if err := validateJSONPath(g.Path); err != nil {
+			return nil, err
+		}
+		if err := rejectSubscript(g.Path, "group-by path"); err != nil {
 			return nil, err
 		}
 	}
 	for _, a := range opts.Aggregations {
+		if a.Field == "" {
+			return nil, fmt.Errorf("%w: empty aggregate field", ErrInvalidFilterPath)
+		}
 		if err := validateJSONPath(a.Field); err != nil {
+			return nil, err
+		}
+		if err := rejectSubscript(a.Field, "aggregate field"); err != nil {
 			return nil, err
 		}
 	}
@@ -394,8 +417,9 @@ func (b *memBucket) observe(data []byte) {
 	b.count++
 	for _, a := range b.aggs {
 		// a.field passed validateJSONPath at the GroupedAggregate boundary, so
-		// it is already the bare dotted-identifier form gjson expects.
-		res := gjson.GetBytes(data, a.field)
+		// it is already the bare dotted-identifier form spi.ParseFilterPath
+		// expects.
+		res := resolveScalarPath(data, a.field)
 		if !res.Exists() || res.Type != gjson.Number {
 			continue
 		}
@@ -477,6 +501,31 @@ func (a *memAcc) result() any {
 	return nil
 }
 
+// resolveScalarPath resolves a bare dotted-identifier groupBy/aggregation
+// field (the plugin-facing form validateJSONPath admits — no "$." leader,
+// no subscript) against data through [spi.ParseFilterPath] and
+// [spi.ResolvePath] — the same addressing rule every other resolver in the
+// stack applies — rather than gjson.GetBytes's own path syntax, which
+// resolves an all-digit segment against an ARRAY receiver as a positional
+// index. That divergence let "obj.0" over {"obj":["X","Y"]} return "X" here
+// while spi.ResolvePath, and both SQL backends, correctly report it absent (a
+// field literally named "0" is not the same address as element 0).
+//
+// The GroupedAggregate boundary has already rejected any subscript on this
+// surface, so this is always a 0-or-1-value resolution: absent, or the
+// single value the path names.
+func resolveScalarPath(data []byte, path string) gjson.Result {
+	hops, err := spi.ParseFilterPath(path)
+	if err != nil {
+		return gjson.Result{}
+	}
+	results := spi.ResolvePath(data, hops)
+	if len(results) != 1 {
+		return gjson.Result{}
+	}
+	return results[0]
+}
+
 // extractGroupKey returns the raw key values (for map-key encoding) and
 // the response group-key entries. D4 coercion: scalar values become
 // strings (using res.Raw for numbers/booleans so the canonical JSON text
@@ -499,7 +548,7 @@ func extractGroupKey(groups []spi.GroupExpr, e *spi.Entity) ([]any, []spi.GroupK
 		} else {
 			path = g.Path
 			// g.Path passed validateJSONPath at the GroupedAggregate boundary.
-			res := gjson.GetBytes(e.Data, g.Path)
+			res := resolveScalarPath(e.Data, g.Path)
 			switch {
 			case !res.Exists():
 				val = nil

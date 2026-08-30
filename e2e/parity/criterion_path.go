@@ -142,7 +142,7 @@ func RunWorkflowCriterionPathRequiresJSONPathLeader(t *testing.T, fixture Backen
 // positional-subscript resolution — path resolution, declared-type lookup off
 // the "$.arr[*]" schema entry, and the field-existence check — and this
 // scenario is what surfaces the gap on its next dependency update rather than
-// letting it pass silently. See docs/cloud-parity/positional-subscript-path.md.
+// letting it pass silently. See docs/cloud-parity/path-grammar.md.
 func RunPositionalSubscriptPathResolves(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)

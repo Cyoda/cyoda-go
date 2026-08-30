@@ -2,6 +2,7 @@ package search_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -96,6 +97,26 @@ var invalidJSONPaths = []struct {
 	{"trailing dot after subscript", "$.a[*]."},
 	{"non-index chained subscript", "$.tags[*][x]"},
 	{"negative chained index", "$.a[0][-1]"},
+
+	// Overflowing digit runs. A digit-class-only check admits any run of
+	// digits regardless of magnitude; spi.ParseFilterPath, which the boundary
+	// now delegates to directly, additionally requires the run to fit an
+	// int32 (strconv.ParseInt with bitSize 32) — the intersection every
+	// in-tree backend can address, narrower than Go's int (int64 on every
+	// supported platform). No entity array is ever long enough for these
+	// indices to be meaningful, so rejecting is the correct, fail-closed
+	// answer — see path-grammar.md §9 and §10.
+	{"overflowing index", "$.tags[99999999999999999999]"},
+	{"overflowing index mid-path", "$.items[99999999999999999999].name"},
+	{"overflowing chained index", "$.matrix[0][99999999999999999999]"},
+
+	// int32-overflowing index. Bounded to int32 rather than Go's int
+	// (int64 on every supported platform) because int32 is the
+	// intersection every in-tree backend can address: PostgreSQL renders a
+	// positional index as a jsonb operand that must fit int32, or the
+	// query fails to parse and the caller sees a 500 instead of a 400. See
+	// path-grammar.md §2 and §9.
+	{"index overflowing int32", "$.tags[2147483648]"},
 }
 
 // validJSONPaths must keep working. Two classes are folded together
@@ -123,6 +144,7 @@ var validJSONPaths = []struct {
 	{"chained indices", "$.matrix[0][1]"},
 	{"mixed chained subscripts", "$.a[0][*].b"},
 	{"nested array hops", "$.orders[*].lines[*].sku"},
+	{"index at int32 max", "$.tags[2147483647]"},
 }
 
 // TestValidateCondition_RejectsNonJSONPath is the reject table. jsonPath is
@@ -181,21 +203,41 @@ func TestValidateCondition_AcceptsValidJSONPath(t *testing.T) {
 			}
 		})
 		t.Run("array/"+tc.name, func(t *testing.T) {
-			if err := search.ValidateCondition(&predicate.ArrayCondition{
+			// validJSONPaths pins GRAMMAR validity, which every entry here
+			// has. The `array` clause layers one more requirement on top of
+			// the grammar (path-grammar.md §8): the jsonPath must carry a
+			// trailing "[*]", since the clause tests elements by position and
+			// a path that does not address elements cannot. So a grammar-valid
+			// path here is accepted for the array clause only when it also
+			// ends in "[*]" — everything else in this table is still
+			// GRAMMATICALLY fine (that's what makes it a member of
+			// validJSONPaths) but rejected for THIS clause specifically, the
+			// same rejection TestValidateCondition_ArrayClauseRequiresWildcard
+			// pins directly.
+			err := search.ValidateCondition(&predicate.ArrayCondition{
 				JsonPath: tc.path, Values: []any{"v"},
-			}); err != nil {
-				t.Fatalf("ValidateCondition(array jsonPath=%q) = %v, want accepted", tc.path, err)
+			})
+			if strings.HasSuffix(tc.path, "[*]") {
+				if err != nil {
+					t.Fatalf("ValidateCondition(array jsonPath=%q) = %v, want accepted", tc.path, err)
+				}
+				return
+			}
+			if !errors.Is(err, search.ErrInvalidFieldPath) {
+				t.Fatalf("ValidateCondition(array jsonPath=%q) = %v, want rejected (no trailing \"[*]\")", tc.path, err)
 			}
 		})
 	}
 }
 
 // TestValidateCondition_PathGrammarMatchesSPI is the anti-drift guard. The
-// boundary check is a port of spi.ConditionToFilter's own path grammar, and
-// the two must classify identically: whatever the translator refuses with
-// spi.ErrInvalidFilterPath the boundary must reject 400, and whatever it
-// refuses as merely non-pushdownable the boundary must accept so the
-// in-memory fallback still serves it.
+// boundary check is built directly on spi.ParseFilterPath (the same
+// function spi.ConditionToFilter's translator consults), so the two classify
+// identically by construction — this pins that against the translator
+// itself: whatever it refuses with spi.ErrInvalidFilterPath the boundary
+// must reject 400, and every well-formed path (subscripts included, since
+// the kernel now resolves them directly — see spi.ResolvePath) the boundary
+// must accept.
 func TestValidateCondition_PathGrammarMatchesSPI(t *testing.T) {
 	all := append(append([]struct{ name, path string }{}, invalidJSONPaths...), validJSONPaths...)
 	for _, tc := range all {
@@ -210,6 +252,62 @@ func TestValidateCondition_PathGrammarMatchesSPI(t *testing.T) {
 					tc.path, spiRejects, boundaryRejects)
 			}
 		})
+	}
+}
+
+// TestValidateCondition_GrammarFailureMessageDoesNotNestPrefixes pins that
+// the 400 body carries ONE error prefix, not the SPI's already-formatted
+// "invalid filter path: filter path %q ..." embedded inside this package's
+// own "invalid field path: jsonPath %q ..." wrapper. Before this fix,
+// invalidJSONPathError(path, err.Error()) passed spi.ParseFilterPath's whole
+// formatted Error() through as the "reason", so the wire message doubled
+// both the sentinel phrase and the path, quoted twice under two different
+// names (jsonPath vs. filter path, "$.a[" vs. "a[").
+func TestValidateCondition_GrammarFailureMessageDoesNotNestPrefixes(t *testing.T) {
+	err := search.ValidateCondition(&predicate.SimpleCondition{
+		JsonPath: "$.a[", OperatorType: "EQUALS", Value: "v",
+	})
+	if err == nil {
+		t.Fatalf("expected an error for an unclosed array subscript")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "invalid filter path") {
+		t.Errorf("message %q embeds the SPI's own sentinel phrase; want the reason only", msg)
+	}
+	if strings.Contains(msg, "filter path") {
+		t.Errorf("message %q embeds a second, differently-named quoting of the path (\"filter path %%q\"); want it named once", msg)
+	}
+	if !strings.Contains(msg, "unclosed array subscript") {
+		t.Errorf("message %q lost the actual reason", msg)
+	}
+	if strings.Count(msg, `"$.a["`) != 1 {
+		t.Errorf("message %q must quote the offending path exactly once, got %q", msg, msg)
+	}
+}
+
+// TestValidateCondition_OverflowingIndexNamesTheBound pins Finding 3's
+// second half: an index too large to fit an int32 is not "unsupported"
+// syntax — 2147483648 IS a well-formed non-negative index — so the
+// diagnostic must say what is actually wrong (the int32 magnitude bound)
+// rather than reusing the generic "only the wildcard [*] and a non-negative
+// index... are supported" message the grammar package's own doc comment
+// already documents this bound existing to explain.
+func TestValidateCondition_OverflowingIndexNamesTheBound(t *testing.T) {
+	err := search.ValidateCondition(&predicate.SimpleCondition{
+		JsonPath: "$.tags[2147483648]", OperatorType: "EQUALS", Value: "v",
+	})
+	if err == nil {
+		t.Fatalf("expected an error for an index overflowing int32")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "non-negative index (e.g. [0]) are supported") {
+		t.Errorf("message %q reuses the generic malformed-subscript wording; an overflowing index is well-formed, just out of range", msg)
+	}
+	if !strings.Contains(msg, "2147483648") {
+		t.Errorf("message %q must name the offending index", msg)
+	}
+	if !strings.Contains(msg, "2147483647") {
+		t.Errorf("message %q must name the int32 bound (2147483647)", msg)
 	}
 }
 

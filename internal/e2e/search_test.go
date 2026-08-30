@@ -759,10 +759,11 @@ func setupSortModelWithAmountAndArray(t *testing.T, model string) {
 //	(1) passes path validation ($.tags[*] is in the schema FieldsMap for
 //	    array-field models);
 //	(2) fails ConditionToFilter (stripDollarDot rejects '[');
-//	(3) match.Prepare/(Prepared).Match handles it correctly:
-//	    convertJSONPath("$.tags[*]") → gjson path "tags", the array itself,
-//	    whose elements the leaf then tests one by one — NOT_NULL is true for
-//	    any entity carrying a NON-EMPTY tags array.
+//	(3) match.Prepare/(Prepared).Match handles it correctly: it parses
+//	    "$.tags[*]" into hops via spi.ParseFilterPath and resolves them
+//	    against each row via spi.ResolvePath, which addresses the array's
+//	    elements (never the array itself) for a "[*]" hop — NOT_NULL is true
+//	    for any entity carrying a NON-EMPTY tags array.
 //
 // That last point is load-bearing for the seeding below: the wildcard used to
 // resolve to the array's COUNT, for which NOT_NULL was true even for an EMPTY

@@ -10,13 +10,14 @@ package schema
 //   - The QUERY side admits a wire jsonPath only if every segment is drawn
 //     from it, so a path the grammar accepts is one an evaluator resolves.
 //
-// It lives here, beside [CanonicalFieldPath] and [IsArrayIndex], because it is
-// a property of a field path — not of searching. The path GRAMMAR (the "$."
-// leader, dotted segments, subscripts, and their diagnostics) stays in
-// internal/domain/search, which owns the wire surface and pins its agreement
-// with the SPI translator; that grammar consults these predicates the same way
-// it consults [IsArrayIndex]. Model import depends on the character class
-// alone, so it depends on this package alone.
+// It lives here, beside [CanonicalFieldPath], because it is a property of a
+// field path — not of searching. The path GRAMMAR (the "$." leader, dotted
+// segments, subscripts, and their diagnostics) stays in internal/domain/search,
+// which owns the wire surface and validates it directly against
+// [spi.ParseFilterPath] rather than against a local copy of the segment or
+// subscript predicates, so a future grammar change cannot drift between the
+// two packages. Model import depends on the character class alone, so it
+// depends on this package alone.
 //
 // What the class EXCLUDES is deliberate, not a by-product of writing it as an
 // allowlist. Two spellings collapse a name onto a nested path: "." and — in

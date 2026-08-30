@@ -594,6 +594,14 @@ func TestMatchLifecycleStateNoMatch(t *testing.T) {
 // a temporal field (spec §6.4 — rejected at validation on validated entry
 // points), and matchLifecycle degrades safely to no-match rather than falling
 // back to substring matching on the formatted date string.
+//
+// This guard is unconditional, for every caller — not only ones reachable
+// from the validation boundary. A workflow criterion is validated once at
+// import and then stored verbatim; every subsequent save calls this
+// package's Prepare directly with no revalidation (workflow/engine.go). A
+// criterion imported before the boundary existed must still never-match
+// here, not lexically substring-match, or the binary upgrade alone would
+// silently reactivate a dormant transition.
 func TestMatchLifecycleCreationDate_ContainsIsNotTemporal(t *testing.T) {
 	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "CONTAINS", Value: "2026-01-15"}
 	prepared, err := Prepare(cond, sampleTypes)

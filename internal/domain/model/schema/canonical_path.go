@@ -1,6 +1,10 @@
 package schema
 
-import "strings"
+import (
+	"strings"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+)
 
 // CanonicalFieldPath rewrites a wire jsonPath into the form [ModelNode.FieldsMap]
 // keys it by: every array hop spelled "[*]".
@@ -21,53 +25,60 @@ import "strings"
 // for a field that holds the value.
 //
 // Bracket content that names no single element — a negative index ("[-1]"), a
-// slice ("[0:2]"), a union ("[0,1]"), or an unclosed bracket — is left
-// verbatim. There is no key it could canonicalise to, and no evaluator in the
-// stack resolves it.
+// slice ("[0:2]"), a union ("[0,1]"), an unclosed bracket, or a digit run too
+// large to fit an int32 — is left verbatim. There is no key it could
+// canonicalise to, and no evaluator in the stack resolves it.
 //
 // The path is canonicalised for LOOKUP only. Callers must keep the caller's
 // original spelling for anything they echo back or report, so a diagnostic
 // names the path the request actually sent.
+//
+// Built on [spi.ParseFilterPath] — the SPI's one parser for this grammar —
+// rather than a byte-scan with its own copy of "what counts as a well-formed
+// subscript". A second, independent copy of that predicate is exactly what
+// let a subscript's digit run overflow int32 and still fold to "[*]" here
+// while [spi.ParseFilterPath] rejected the same string outright: two
+// definitions of "well-formed" that disagreed, the same C1 defect class
+// path-grammar.md §9 and §10 close everywhere else. A leader is optional: a
+// "$."-prefixed path folds after the leader; a bare, leader-less path (the
+// [Filter.Path] convention) folds directly. Either way a parse failure —
+// which should not happen in practice, since every caller has already run the
+// path through the wire grammar — fails safe by returning path unfolded
+// rather than panicking.
 func CanonicalFieldPath(path string) string {
 	if !strings.ContainsRune(path, '[') {
 		return path
 	}
-	var b strings.Builder
-	b.Grow(len(path))
-	for i := 0; i < len(path); {
-		if path[i] != '[' {
-			b.WriteByte(path[i])
-			i++
-			continue
-		}
-		rel := strings.IndexByte(path[i:], ']')
-		if rel < 0 {
-			b.WriteString(path[i:])
-			break
-		}
-		if IsArrayIndex(path[i+1 : i+rel]) {
-			b.WriteString("[*]")
-		} else {
-			b.WriteString(path[i : i+rel+1])
-		}
-		i += rel + 1
+	prefix, rest := "", path
+	if strings.HasPrefix(path, jsonPathLeader) {
+		prefix, rest = jsonPathLeader, path[len(jsonPathLeader):]
 	}
-	return b.String()
+	hops, err := spi.ParseFilterPath(rest)
+	if err != nil {
+		return path
+	}
+	return prefix + foldHopsToWildcard(hops)
 }
 
-// IsArrayIndex reports whether s is the content of a subscript that addresses a
-// single array element: a non-negative decimal integer. Exported so the
-// in-process predicate evaluator, which performs its own subscript rewrite into
-// gjson's syntax, decides what counts as a positional subscript from this one
-// definition rather than a second copy that could drift from it.
-func IsArrayIndex(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		if s[i] < '0' || s[i] > '9' {
-			return false
+// jsonPathLeader is the mandatory prefix of a wire jsonPath. CanonicalFieldPath
+// tolerates both forms it is called with: a full wire jsonPath ("$.arr[0]")
+// and the bare, leader-less [Filter.Path] convention ("arr[0]").
+const jsonPathLeader = "$."
+
+// foldHopsToWildcard renders parsed hops back into the dotted "name[sub][sub]"
+// form, folding every subscript — positional or wildcard — to "[*]": the
+// schema records an array's element type once, under the wildcard key, never
+// once per index.
+func foldHopsToWildcard(hops []spi.PathHop) string {
+	var b strings.Builder
+	for i, hop := range hops {
+		if i > 0 {
+			b.WriteByte('.')
+		}
+		b.WriteString(hop.Name)
+		for range hop.Subs {
+			b.WriteString("[*]")
 		}
 	}
-	return true
+	return b.String()
 }
