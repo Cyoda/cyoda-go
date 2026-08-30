@@ -166,7 +166,7 @@ func TestSearch_FallbackLoop_PreExpiredCtx_ReturnsDeadlineExceeded(t *testing.T)
 	defer cancel()
 	<-opCtx.Done()
 
-	results, err := svc.Search(opCtx, ref, untranslatableCondition(t), search.SearchOptions{Limit: 1000})
+	results, err := svc.Search(opCtx, ref, matchAllFixtureCondition(t), search.SearchOptions{Limit: 1000})
 	if err == nil {
 		t.Fatal("expected an error for a pre-expired deadline, got nil")
 	}

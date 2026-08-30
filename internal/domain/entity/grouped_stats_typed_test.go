@@ -10,19 +10,33 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
-// TestQueryGroupedStats_ResidualTypeDirectedWithFields proves the Task-8 wiring
-// on the grouped-stats streaming residual (tallyStreaming): the residual match
-// path is reached only for a non-pushable condition, so we wrap a plain-leaf
-// numeric comparison in an OR group alongside a wildcard leaf (the wildcard
-// makes ConditionToFilter reject the whole group, forcing the per-entity
-// match.Prepare residual). A non-nil fields map declaring `$.age` Integer makes the
-// GREATER_THAN comparison type-directed — only the entity whose age exceeds the
-// operand is tallied. The nil-fields companion (untyped leaf → comparison
-// degrades to non-match) yields no buckets, proving the loaded fields — not
-// lexical comparison — drove the residual closure.
-func TestQueryGroupedStats_ResidualTypeDirectedWithFields(t *testing.T) {
-	// The wildcard child makes the group non-pushdownable, forcing the residual;
-	// the plain-leaf `$.age` child is what type-directs inside the residual.
+// TestQueryGroupedStats_PushdownTypeDirectedWithFields proves the fields map
+// threaded into the grouped-stats pushdown (spi.ConditionToFilter) makes a
+// comparison type-directed the same way it does on the residual path: we
+// wrap a plain-leaf numeric comparison in an OR group alongside a wildcard
+// leaf. A non-nil fields map declaring `$.age` Integer makes the
+// GREATER_THAN comparison type-directed — only the entity whose age exceeds
+// the operand is tallied. The nil-fields companion (untyped leaf →
+// comparison degrades to non-match) yields no buckets, proving the loaded
+// fields — not lexical comparison — drove the match.
+//
+// This used to be named …ResidualTypeDirectedWithFields and exercise the
+// per-entity match.Prepare residual specifically: the wildcard child used to
+// make ConditionToFilter reject the whole group (non-pushdownable),
+// forcing tallyStreaming's residual guard. That premise is dead —
+// spi.ConditionToFilter now pushes a wildcard array path down like any
+// other (path-grammar.md §2/§8), so this whole OR group is pushable and the
+// SAME type-directed comparison now runs inside the pushed-down Filter
+// instead — see fakeIterable's doc comment for why that distinction is
+// visible to this test at all (a store that doesn't enforce the filter it's
+// handed can't tell the two mechanisms apart, and used to mask exactly this
+// kind of premise rot). The observable property this test pins — fields
+// determine whether the comparison type-directs or degrades — holds
+// identically either way, so its assertions are unchanged.
+func TestQueryGroupedStats_PushdownTypeDirectedWithFields(t *testing.T) {
+	// The wildcard child no longer forces a residual — spi.ConditionToFilter
+	// pushes it down like any other path — but $.age is still what
+	// type-directs the match, now inside the pushed-down Filter.
 	cond := json.RawMessage(`{
 		"type": "group",
 		"operator": "OR",
@@ -52,7 +66,7 @@ func TestQueryGroupedStats_ResidualTypeDirectedWithFields(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(buckets) != 1 || buckets[0].Count != 1 {
-		t.Fatalf("typed residual: buckets = %+v, want one bucket count=1", buckets)
+		t.Fatalf("typed pushdown: buckets = %+v, want one bucket count=1", buckets)
 	}
 
 	// Untyped control: identical request with nil fields → comparison degrades
@@ -62,7 +76,7 @@ func TestQueryGroupedStats_ResidualTypeDirectedWithFields(t *testing.T) {
 		t.Fatalf("unexpected error (nil fields): %v", err)
 	}
 	if len(buckets) != 0 {
-		t.Fatalf("untyped residual must degrade to non-match: buckets = %+v, want none", buckets)
+		t.Fatalf("untyped pushdown must degrade to non-match: buckets = %+v, want none", buckets)
 	}
 }
 

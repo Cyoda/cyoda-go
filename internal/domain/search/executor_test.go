@@ -536,9 +536,19 @@ func TestExecutor_HeartbeatFencingAborts(t *testing.T) {
 	}
 }
 
-// (f) untranslatable condition still completes via the existing GetAll
-// fallback, with results saved through the same streaming SaveResults call.
-func TestExecutor_UntranslatableCondition_FallsBackAndSaves(t *testing.T) {
+// (f) an OR condition (one always-true member, one on a wildcard array path)
+// still completes and saves its results correctly, whichever route it takes.
+// This used to name and pin a translate-FAILURE route specifically — the
+// wildcard-array-path member was untranslatable, forcing the GetAll
+// fallback. It no longer is (spi.ConditionToFilter pushes a wildcard array
+// path down like any other; see matchAllFixtureCondition's doc comment), so
+// this condition now clears translation and the pushdown path executes it
+// instead. The assertions below (job SUCCESSFUL, Total==5, 5 result IDs)
+// never depended on which route ran — both must produce the same
+// correct answer — so this test still holds, just no longer as a fallback
+// pin specifically; TestSearch_FallbackBranchIsBounded_TranslateFailureRoute
+// is now the one that isolates a genuine translate failure.
+func TestExecutor_OrConditionCompletesAndSaves(t *testing.T) {
 	base := memory.NewStoreFactory()
 	defer base.Close()
 	ctx := tenantCtx("tenant-1")
@@ -555,7 +565,7 @@ func TestExecutor_UntranslatableCondition_FallsBackAndSaves(t *testing.T) {
 		WithAsyncPool(pool).
 		WithHeartbeat(50 * time.Millisecond)
 
-	jobID, err := svc.SubmitAsync(ctx, ref, untranslatableCondition(t), search.SearchOptions{})
+	jobID, err := svc.SubmitAsync(ctx, ref, matchAllFixtureCondition(t), search.SearchOptions{})
 	if err != nil {
 		t.Fatalf("SubmitAsync: %v", err)
 	}

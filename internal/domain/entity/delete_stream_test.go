@@ -98,10 +98,12 @@ func (f *searchForbiddenFactory) EntityStore(_ context.Context) (spi.EntityStore
 // locked with a schema declaring "kind" (String) and an "items" array of
 // {name: String} objects, against factory. The items[*].name leaf exists so
 // TestDeleteEntitiesConditional_SingleTx_UntranslatableConditionStreams's
-// wildcard-array condition clears path validation while still being
-// unpushdownable to spi.ConditionToFilter — mirrors search's own
-// untranslatableCondition fixture (saveModelWithValAndItemsArray,
-// internal/domain/search/service_test.go).
+// wildcard-array condition clears path validation — mirrors search's own
+// matchAllFixtureCondition fixture (saveModelWithValAndItemsArray,
+// internal/domain/search/service_test.go). spi.ConditionToFilter now pushes a
+// wildcard array path down like any other (path-grammar.md §2/§8), so this
+// no longer forces the untranslatable route specifically — see the test's
+// own doc comment for what property this still pins.
 func newDeleteStreamCtx(t *testing.T, factory spi.StoreFactory, ref spi.ModelRef) context.Context {
 	t.Helper()
 	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
@@ -305,16 +307,20 @@ func TestDeleteAllEntities_StreamsSelection(t *testing.T) {
 }
 
 // TestDeleteEntitiesConditional_SingleTx_UntranslatableConditionStreams is
-// E4.1(d): a condition ConditionToFilter cannot push down (an
-// array-wildcard leaf, mirroring search's own untranslatable-condition
-// fixture) still deletes correctly — decoys survive, only the matching
-// entity is removed — via spi.Iterable plus a client-side residual
-// match.Prepare re-check (planDeleteSelection), never falling back to
-// Search or GetAll. This is the streaming replacement for the brief's
-// originally-anticipated "interim materialising fallback": the streamed-
-// selection design keeps the untranslatable path streamed too (see deleteSelectionPlan's doc
-// comment), so the spy's Search/GetAll-forbidding assertions apply
-// unconditionally here as well.
+// E4.1(d): a condition carrying an array-wildcard leaf (mirroring search's
+// own matchAllFixtureCondition fixture) still deletes correctly — decoys
+// survive, only the matching entity is removed — via spi.Iterable, never
+// falling back to Search or GetAll.
+//
+// The name and the "Untranslatable" framing below predate
+// spi.ConditionToFilter learning to push a wildcard array path down like any
+// other (path-grammar.md §2/§8): this condition now translates, so
+// planDeleteSelection takes the TRANSLATABLE branch and hands Iterate a real
+// pushdown Filter rather than a zero-value one plus a residual re-check. The
+// property this test actually pins — streamed selection via spi.Iterable,
+// never Search or GetAll, decoys survive, matches are removed — holds
+// identically on both branches (see deleteSelectionPlan's doc comment), so
+// the assertions below did not need to change; only this comment was wrong.
 func TestDeleteEntitiesConditional_SingleTx_UntranslatableConditionStreams(t *testing.T) {
 	realFactory := memory.NewStoreFactory()
 	t.Cleanup(func() { realFactory.Close() })
@@ -334,11 +340,12 @@ func TestDeleteEntitiesConditional_SingleTx_UntranslatableConditionStreams(t *te
 	dropIDs := seedKind(t, h, ctx, ref, 3, "drop")
 	keepIDs := seedKind(t, h, ctx, ref, 3, "keep")
 
-	// Untranslatable: an array-wildcard leaf inside an OR forces
-	// spi.ConditionToFilter to fail (see condition_filter.go's rejection of
-	// "[*]" paths), same shape as search's own untranslatableCondition test
-	// fixture. The wildcard disjunct never matches these entities (no
-	// "items" field at all), so only the "kind" disjunct decides the match.
+	// An array-wildcard leaf inside an OR, same shape as search's own
+	// matchAllFixtureCondition test fixture — it now translates and pushes
+	// down like any other path (path-grammar.md §2/§8), rather than forcing
+	// planDeleteSelection's untranslatable branch. The wildcard disjunct
+	// never matches these entities (no "items" field at all) either way, so
+	// only the "kind" disjunct decides the match.
 	cond := []byte(`{
 		"type": "group",
 		"operator": "OR",
