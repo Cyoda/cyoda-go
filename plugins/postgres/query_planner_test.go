@@ -1110,3 +1110,52 @@ func TestSoundness_NeNonPushable(t *testing.T) {
 		t.Fatalf("postFilter should be the Ne residual, got %+v", plan.postFilter)
 	}
 }
+
+// TestJsonbExtract_RendersSubscript checks jsonbExtractText renders a "[N]"
+// hop as an INTEGER accessor (doc->'tags'->>0), never a text key
+// (doc->>'tags[0]'). A text key against a JSONB array yields null, which is
+// the defect this closes — see docs/cloud-parity/path-grammar.md section 9.
+func TestJsonbExtract_RendersSubscript(t *testing.T) {
+	cases := []struct{ path, want string }{
+		{"amount", "doc->>'amount'"},
+		{"obj.0", "doc->'obj'->>'0'"},
+		{"tags[0]", "doc->'tags'->>0"},
+		{"items[2].sku", "doc->'items'->2->>'sku'"},
+		{"m[0][1]", "doc->'m'->0->>1"},
+	}
+	for _, tc := range cases {
+		got := jsonbExtractText("doc", tc.path)
+		if got != tc.want {
+			t.Errorf("jsonbExtractText(%q) = %q, want %q", tc.path, got, tc.want)
+		}
+	}
+}
+
+// TestPlanQuery_WildcardIsResidual: a wildcard leaf has no SQL form until a
+// quantifier node exists. Pushing it as a scalar comparison would drop every
+// matching row, and a narrowing WHERE cannot be recovered by the residual
+// re-check, so the wildcard leaf must be installed as a residual instead.
+func TestPlanQuery_WildcardIsResidual(t *testing.T) {
+	plan := planQuery(spi.Filter{
+		Op: spi.FilterEq, Path: "tags[*]", Source: spi.SourceData,
+		Value: "A", Declared: []spi.DataType{spi.String},
+	})
+	if plan.where != "" {
+		t.Errorf("wildcard leaf must not narrow; got WHERE %q", plan.where)
+	}
+	if plan.postFilter == nil {
+		t.Error("wildcard leaf must be installed as a residual")
+	}
+}
+
+// TestPlanQuery_PositionalIsPushed: a positional subscript is a sound,
+// pushable leaf and renders postgres's integer-accessor spelling.
+func TestPlanQuery_PositionalIsPushed(t *testing.T) {
+	plan := planQuery(spi.Filter{
+		Op: spi.FilterEq, Path: "tags[0]", Source: spi.SourceData,
+		Value: "A", Declared: []spi.DataType{spi.String},
+	})
+	if !strings.Contains(plan.where, "doc->'tags'->>0") {
+		t.Errorf("positional leaf must push its dialect index; got WHERE %q", plan.where)
+	}
+}

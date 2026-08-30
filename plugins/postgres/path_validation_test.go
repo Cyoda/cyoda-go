@@ -1,0 +1,113 @@
+package postgres
+
+import (
+	"errors"
+	"testing"
+)
+
+// TestValidateJSONPath_Accepts ensures well-formed dotted-identifier paths pass.
+func TestValidateJSONPath_Accepts(t *testing.T) {
+	valid := []string{
+		"state",
+		"city",
+		"name",
+		"nested.field",
+		"a.b.c",
+		"field_1",
+		"UserID",
+		"order42",
+		"_private",
+	}
+	for _, p := range valid {
+		if err := validateJSONPath(p); err != nil {
+			t.Errorf("validateJSONPath(%q) returned unexpected error: %v", p, err)
+		}
+	}
+}
+
+// TestValidateJSONPath_AcceptsHyphenatedSegments ensures field names that
+// contain hyphens (e.g. "some-array", "some-object") are accepted. Hyphens
+// are safe inside single-quoted postgres JSONB key literals — they cannot
+// break out of the surrounding quote.
+func TestValidateJSONPath_AcceptsHyphenatedSegments(t *testing.T) {
+	valid := []string{
+		"some-array",
+		"some-array.some-object",
+		"some-array.some-object.some-key",
+		"field-name",
+		"a-b-c",
+	}
+	for _, p := range valid {
+		if err := validateJSONPath(p); err != nil {
+			t.Errorf("validateJSONPath(%q) returned unexpected error: %v", p, err)
+		}
+	}
+}
+
+// TestValidateJSONPath_RejectsInjection ensures classic SQL-injection
+// payloads are rejected before they can reach doc->'a'->>'b' interpolation.
+func TestValidateJSONPath_RejectsInjection(t *testing.T) {
+	malicious := []string{
+		// Single-quote escape — the core injection vector.
+		"state')--",
+		"state') UNION SELECT 1 --",
+		"a'b",
+		// Block-comment sequences (/* breaks the string context).
+		"a/*b*/c",
+		// SQL statement terminators.
+		"a;b",
+		";DROP TABLE entities",
+		// Whitespace and control characters.
+		"a b",
+		"a\nb",
+		"a\tb",
+		// Empty segments / malformed dotting. The empty path itself is NOT
+		// here: see TestValidateJSONPath_AcceptsEmpty for why.
+		".",
+		".foo",
+		"foo.",
+		"a..b",
+		// Backslash / quote characters outright.
+		`a"b`,
+		`a\b`,
+	}
+	for _, p := range malicious {
+		err := validateJSONPath(p)
+		if err == nil {
+			t.Errorf("validateJSONPath(%q) = nil, want non-nil (injection payload accepted)", p)
+			continue
+		}
+		if !errors.Is(err, ErrInvalidFilterPath) {
+			t.Errorf("validateJSONPath(%q) = %v, want wraps ErrInvalidFilterPath", p, err)
+		}
+	}
+}
+
+// TestValidateJSONPath_AcceptsEmpty documents a deliberate behaviour: the
+// empty filter path is legal per the one grammar
+// (docs/cloud-parity/path-grammar.md section 9) — the tree operators (AND/OR)
+// carry one instead of a leaf condition. This is not a new injection
+// surface: validateFilterPaths, the only caller that reaches SQL
+// interpolation, skips f.Path == "" before ever calling validateJSONPath.
+func TestValidateJSONPath_AcceptsEmpty(t *testing.T) {
+	if err := validateJSONPath(""); err != nil {
+		t.Errorf("validateJSONPath(\"\") = %v, want nil (empty filter path is legal)", err)
+	}
+}
+
+// TestValidateJSONPath_AcceptsSubscripts checks the validator against the
+// one SPI grammar (spi.ValidateFilterPath): a bracketed wildcard or
+// non-negative index is a legitimate array subscript, and every rejection
+// the grammar states stays rejected here too.
+func TestValidateJSONPath_AcceptsSubscripts(t *testing.T) {
+	for _, p := range []string{"tags[0]", "tags[*]", "items[*].sku", "obj.0", "m[0][1]"} {
+		if err := validateJSONPath(p); err != nil {
+			t.Errorf("validateJSONPath(%q): unexpected error %v", p, err)
+		}
+	}
+	for _, p := range []string{"a'b", "a;DROP", "a[-1]", "a[0:2]", "a[", "a[0]b"} {
+		if err := validateJSONPath(p); err == nil {
+			t.Errorf("validateJSONPath(%q): want rejection", p)
+		}
+	}
+}

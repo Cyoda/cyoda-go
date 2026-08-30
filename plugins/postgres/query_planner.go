@@ -240,10 +240,42 @@ func isLeafPushable(f spi.Filter) bool {
 	if !isPushable(f.Op) {
 		return false
 	}
+	if pathHasWildcard(f.Path) {
+		return false
+	}
 	if f.Coercion == spi.CoerceTemporal && f.Source == spi.SourceData && isComparisonOp(f.Op) {
 		return false
 	}
 	return true
+}
+
+// pathHasWildcard reports whether path contains a "[*]" array subscript
+// anywhere along its hops. There is no SQL form for a wildcard leaf until a
+// quantifier node exists — pushing it as a scalar comparison would silently
+// drop every matching row, and a narrowing WHERE cannot be recovered by the
+// residual re-check. Detected structurally via spi.ParseFilterPath and
+// PathSub.Wildcard, never by matching the literal "[*]" substring: the parse
+// is the one place that knows what is a subscript versus what merely looks
+// like one. Mirrors sqlite's pathHasWildcard.
+//
+// f.Path reaching isLeafPushable has already passed validateFilterPaths at
+// the Search()/GroupedAggregate() boundary, so a parse error here cannot
+// occur in practice; an error is treated as "no wildcard" (falls through to
+// the existing pushability rules) rather than panicking, keeping this helper
+// total.
+func pathHasWildcard(path string) bool {
+	hops, err := spi.ParseFilterPath(path)
+	if err != nil {
+		return false
+	}
+	for _, hop := range hops {
+		for _, sub := range hop.Subs {
+			if sub.Wildcard {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isComparisonOp reports whether op is a scalar comparison (Eq/Ne/Gt/Lt/Gte/
@@ -387,38 +419,88 @@ func fieldExpr(f spi.Filter) string {
 	return jsonbExtractText("doc", f.Path)
 }
 
-// jsonbExtractText returns a SQL expression that extracts the dotted path as
-// text from a JSONB root expression. For a single segment, uses ->>; for
-// multiple segments, uses -> for all but the last and ->> for the last.
+// jsonbExtractText returns a SQL expression that extracts the filter path as
+// text from a JSONB root expression, rendered hop by hop over
+// spi.ParseFilterPath rather than a "." split: a name hop renders as
+// ->'name', and a "[N]" subscript renders as an INTEGER accessor ->N — never
+// ->>'N' — because a text key against a JSONB array yields null (see
+// docs/cloud-parity/path-grammar.md section 9). Every accessor but the final
+// one uses ->; the final one uses ->> so the result comes back as text.
+//
+// path is assumed already validated by validateJSONPath (or
+// validateFilterPaths/validateGroupAndAggregatePaths/validateOrderSpecs) at
+// the Search()/GroupedAggregate() boundary, so the parse below cannot
+// practically fail; an unparseable path renders as root->>"" (an empty text
+// key, == no path was given) rather than panicking, keeping this function
+// total for a defensively-reached unvalidated caller.
 func jsonbExtractText(root, path string) string {
-	segments := strings.Split(path, ".")
-	if len(segments) == 1 {
-		return fmt.Sprintf("%s->>'%s'", root, segments[0])
+	hops, err := spi.ParseFilterPath(path)
+	if err != nil {
+		return fmt.Sprintf("%s->>''", root)
+	}
+	steps := pathAccessors(hops)
+	if len(steps) == 0 {
+		return fmt.Sprintf("%s->>''", root)
 	}
 	var b strings.Builder
 	b.WriteString(root)
-	for i, seg := range segments {
-		if i == len(segments)-1 {
-			fmt.Fprintf(&b, "->>'%s'", seg)
-		} else {
-			fmt.Fprintf(&b, "->'%s'", seg)
+	for i, step := range steps {
+		op := "->"
+		if i == len(steps)-1 {
+			op = "->>"
 		}
+		b.WriteString(op)
+		b.WriteString(step)
 	}
 	return b.String()
 }
 
-// jsonbExtractJSONB returns a SQL expression that extracts the dotted path
-// as JSONB (NOT text) from a JSONB root expression — every segment uses ->.
-// Used to feed jsonb_typeof for D4 non-scalar coercion in grouped-stats
-// group-key expressions; jsonb_typeof needs a jsonb input, not text.
+// jsonbExtractJSONB returns a SQL expression that extracts the filter path
+// as JSONB (NOT text) from a JSONB root expression — every accessor uses ->,
+// including the final one. Used to feed jsonb_typeof for D4 non-scalar
+// coercion in grouped-stats group-key expressions; jsonb_typeof needs a
+// jsonb input, not text. Hop rendering mirrors jsonbExtractText: a "[N]"
+// subscript is an INTEGER accessor, never a quoted text key.
 func jsonbExtractJSONB(root, path string) string {
-	segments := strings.Split(path, ".")
+	hops, err := spi.ParseFilterPath(path)
+	if err != nil {
+		return root
+	}
 	var b strings.Builder
 	b.WriteString(root)
-	for _, seg := range segments {
-		fmt.Fprintf(&b, "->'%s'", seg)
+	for _, step := range pathAccessors(hops) {
+		b.WriteString("->")
+		b.WriteString(step)
 	}
 	return b.String()
+}
+
+// pathAccessors flattens a parsed filter path's hops into the ordered
+// sequence of "->" accessor operands jsonbExtractText/jsonbExtractJSONB
+// chain together: a hop's name contributes a single-quoted text-key operand,
+// and each of its "[N]" subscripts contributes an unquoted integer operand.
+// The grammar guarantees a name holds no quote, so the single-quoting here
+// is never escaped and never needs to be.
+//
+// A "[*]" subscript has no accessor form — postgres's -> operator has no
+// wildcard spelling — so it is not expected to reach here: isLeafPushable
+// (query_planner.go) refuses a wildcard filter leaf before it can be pushed,
+// which is the only caller path this function is on. A caller that reaches
+// this with a wildcard hop anyway gets it silently dropped from the operand
+// chain, which is out of scope for this change (group-by/aggregate paths
+// carry no wildcard usage yet — see the withdrawn array-quantifier design).
+func pathAccessors(hops []spi.PathHop) []string {
+	var steps []string
+	for _, hop := range hops {
+		steps = append(steps, "'"+hop.Name+"'")
+		for _, sub := range hop.Subs {
+			if sub.Wildcard {
+				continue
+			}
+			steps = append(steps, strconv.Itoa(sub.Index))
+		}
+	}
+	return steps
 }
 
 // isNumericValue reports whether v is a Go numeric type (int*/uint*/float*)
