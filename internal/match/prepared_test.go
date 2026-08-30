@@ -282,9 +282,16 @@ func TestPrepare_MalformedPathNeverMatches(t *testing.T) {
 // stripLeader("$") / stripLeader("$.") / stripLeader("") all yield "",
 // spi.ParseFilterPath("") legitimately returns (nil, nil) — the shape a TREE
 // operator's absent path is allowed to take — and spi.ResolvePath(data, nil)
-// resolves that nil hop slice to the parsed ROOT DOCUMENT, so a presence test
-// matches every entity and a string operator substring-matches the entity's
-// raw JSON text.
+// resolves that nil hop slice to the parsed ROOT DOCUMENT, so a presence
+// test (NOT_NULL) matches every entity regardless of its shape.
+//
+// The CONTAINS sub-test additionally pins the string-operator hazard, but
+// only reproduces it against a document whose raw bytes ARE a bare JSON
+// string at the root: spi.EvalLeaf's string-op branch requires
+// stored.Type == gjson.String, so against the normal, object-rooted entity
+// shape a string operator on the unguarded root is already a non-match —
+// asserting against `{"a":1}` here would pass whether or not the guard
+// exists, and would not be pinning anything.
 func TestPrepare_EmptyLeafPathNeverMatches(t *testing.T) {
 	paths := []string{"", "$", "$."}
 	for _, path := range paths {
@@ -299,15 +306,20 @@ func TestPrepare_EmptyLeafPathNeverMatches(t *testing.T) {
 			}
 		})
 		t.Run(fmt.Sprintf("path=%q/CONTAINS", path), func(t *testing.T) {
-			cond := &predicate.SimpleCondition{JsonPath: path, OperatorType: "CONTAINS", Value: "a"}
+			cond := &predicate.SimpleCondition{JsonPath: path, OperatorType: "CONTAINS", Value: "needle"}
 			p, err := match.Prepare(cond, typed(spi.String))
 			if err != nil {
 				t.Fatalf("Prepare() error = %v, want nil (never-match, not an error)", err)
 			}
-			// The raw document text contains "a" (the field name), which is
-			// exactly the false-positive substring match the guard prevents.
-			if p.Match([]byte(`{"a":1}`), spi.EntityMeta{}) {
-				t.Error("Match() = true, want false: an empty leaf path must never match, not substring-match the raw document")
+			// A bare JSON string at the document root — not the normal
+			// object-rooted entity shape, but the one shape where
+			// spi.ResolvePath(data, nil)'s resolved "field" is itself a
+			// gjson string, so spi.EvalLeaf's string-op branch actually
+			// runs the comparison rather than short-circuiting on
+			// stored.Type != gjson.String. Without the guard this
+			// substring-matches the root scalar directly.
+			if p.Match([]byte(`"a needle in a haystack"`), spi.EntityMeta{}) {
+				t.Error("Match() = true, want false: an empty leaf path must never match, not substring-match a scalar-rooted document")
 			}
 		})
 	}

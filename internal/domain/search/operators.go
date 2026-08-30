@@ -174,25 +174,20 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 // predicate (see the FunctionCondition arm of validateConditionAtDepth for
 // why search itself must reject it).
 //
-// operator-semantics.md §4: "An operator name outside this set is 400
-// INVALID_CONDITION, on every surface that carries a condition, workflow
-// import included." Both branches wrap ErrInvalidCondition so every caller —
-// structuralConditionErrCode here, and ValidateCriterionCondition's sibling
-// entry point for workflow import — classifies an unknown or missing
-// operator identically to the other structural condition failures
-// (object-operand shape, malformed BETWEEN arity) this file already routes
-// to INVALID_CONDITION, rather than falling through to a coarser BAD_REQUEST.
+// Shares canonicalOperators/validateOperator/validateOperandShape/
+// validateBetweenArity with ValidateCondition — one operator table for both
+// entry points, per operator-semantics.md §4: "An operator name outside
+// this set is 400 INVALID_CONDITION, on every surface that carries a
+// condition, workflow import included." structuralConditionErrCode
+// classifies an unknown or missing operator from either entry point
+// identically to the other structural condition failures (object-operand
+// shape, malformed BETWEEN arity) this file already routes to
+// INVALID_CONDITION, rather than falling through to a coarser BAD_REQUEST.
 //
 // Path grammar is deliberately not checked here. workflow.walkCriterion runs
 // its own path check first (ValidateConditionJSONPath / lifecycle field
 // check), because a criterion accepts a path shape (the wildcard subscript)
 // a search condition's scalar surfaces do not — see path-grammar.md §7.
-//
-// Shares canonicalOperators/validateOperator/validateOperandShape/
-// validateBetweenArity with ValidateCondition — one operator table for both
-// entry points, per operator-semantics.md §4: "An operator name outside
-// this set is 400 INVALID_CONDITION, on every surface that carries a
-// condition, workflow import included."
 func ValidateCriterionCondition(cond predicate.Condition) error {
 	return validateCriterionConditionAtDepth(cond, 0)
 }

@@ -190,8 +190,15 @@ func prepareSimple(c *predicate.SimpleCondition, fieldTypes FieldTypes) (prepNod
 			// spi.ParseFilterPath("") legitimately returns (nil, nil) — the
 			// shape the tree-operator case is allowed to take — and
 			// spi.ResolvePath(data, nil) resolves that nil hop slice to the
-			// parsed ROOT DOCUMENT, so a presence test would match every row
-			// and a string operator would substring-match the row's raw JSON.
+			// parsed ROOT DOCUMENT, so a presence test (IS_NULL/NOT_NULL)
+			// would match every row regardless of its shape. A STRING
+			// operator's exposure is narrower — spi.EvalLeaf's kindStringOp
+			// branch requires stored.Type == gjson.String, which an
+			// object- or array-rooted document (the normal entity shape)
+			// never is, so it stays a non-match there — but for a document
+			// whose raw bytes parse to a bare JSON string at the root, the
+			// resolved "field" IS that root scalar, and a string operator
+			// substring-matches it directly.
 			return prepNode{kind: prepNever}, nil
 		}
 		hops, err := spi.ParseFilterPath(stripped)
