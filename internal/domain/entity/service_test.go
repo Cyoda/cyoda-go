@@ -745,15 +745,13 @@ func TestDeleteEntitiesConditional_ForwardsSelection4xx(t *testing.T) {
 // SearchService.Search — via the same exported search.StructuralConditionErrCode
 // — rather than collapsing every structural failure under one code.
 //
-// Before the streamed-selection rework, DeleteEntitiesConditional selected via Search and forwarded
-// its classified *common.AppError verbatim, so an unknown operatorType
-// (BAD_REQUEST) and an object-shaped operand (INVALID_CONDITION) stayed
-// distinct on the delete path exactly as they are on the search path. That rework's
-// first cut collapsed both under entity.ErrInvalidCondition (patterned on
-// GroupedStatsService, which never routed through Search and so had no such
-// contract to preserve) — this test is the regression guard for that fix.
+// An unknown operatorType and an object-shaped operand both map to
+// INVALID_CONDITION (operator-semantics.md §4: "An operator name outside
+// this set is 400 INVALID_CONDITION, on every surface that carries a
+// condition"). They previously split across BAD_REQUEST and INVALID_CONDITION
+// respectively — this test pins the unified classification, not the split.
 func TestDeleteEntitiesConditional_StructuralErrorClassification(t *testing.T) {
-	t.Run("unknown operatorType maps to BAD_REQUEST", func(t *testing.T) {
+	t.Run("unknown operatorType maps to INVALID_CONDITION", func(t *testing.T) {
 		h, ctx, entityName, modelVersion := newDeleteFixtureWithSchema(t)
 
 		cond := []byte(`{"type":"simple","jsonPath":"$.status","operatorType":"NOT_A_REAL_OPERATOR","value":"x"}`)
@@ -766,8 +764,8 @@ func TestDeleteEntitiesConditional_StructuralErrorClassification(t *testing.T) {
 		if appErr.Status != http.StatusBadRequest {
 			t.Fatalf("got status %d, want %d", appErr.Status, http.StatusBadRequest)
 		}
-		if appErr.Code != common.ErrCodeBadRequest {
-			t.Fatalf("got code %s, want %s (unknown operatorType is a shape violation, not an INVALID_CONDITION operand issue)", appErr.Code, common.ErrCodeBadRequest)
+		if appErr.Code != common.ErrCodeInvalidCondition {
+			t.Fatalf("got code %s, want %s (an unknown operatorType is an invalid-condition shape violation)", appErr.Code, common.ErrCodeInvalidCondition)
 		}
 	})
 

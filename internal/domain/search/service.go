@@ -524,10 +524,12 @@ func (s *SearchService) AbortRegisteredJobs(ctx context.Context) int {
 // Search/SubmitAsync boundary: a jsonPath outside JSON Path nomenclature
 // (errInvalidFieldPath) maps to INVALID_FIELD_PATH — the same code the
 // schema-driven path check emits, because both mean "that is not a field this
-// request can address"; an object-operand shape violation (ErrInvalidCondition,
-// spec §6/§8) maps to INVALID_CONDITION; every other structural failure
-// (unknown operatorType, malformed BETWEEN arity) keeps the existing
-// BAD_REQUEST classification these two entry points have always used.
+// request can address"; an object-operand shape violation, an unknown or
+// missing operatorType (operator-semantics.md §4: "on every surface that
+// carries a condition"), and an unknown group operator all wrap
+// ErrInvalidCondition and map to INVALID_CONDITION; any other structural
+// failure (e.g. condition depth exceeded) keeps the BAD_REQUEST default —
+// nothing in the current validator set reaches it besides that one guard.
 func structuralConditionErrCode(cErr error) string {
 	if errors.Is(cErr, errInvalidFieldPath) {
 		return common.ErrCodeInvalidFieldPath

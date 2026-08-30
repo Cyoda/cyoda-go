@@ -1,6 +1,7 @@
 package search
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
@@ -127,5 +128,40 @@ func TestValidateCondition_NonBetweenOperator_ArityCheckSkipped(t *testing.T) {
 	}
 	if err := ValidateCondition(c); err != nil {
 		t.Errorf("EQUALS should not be subject to BETWEEN arity check, got: %v", err)
+	}
+}
+
+// TestValidateCondition_UnknownOperatorIsInvalidCondition pins
+// operator-semantics.md §4: "An operator name outside this set is 400
+// INVALID_CONDITION, on every surface that carries a condition." Before this
+// test, validateOperator's error did not wrap ErrInvalidCondition, so
+// structuralConditionErrCode fell through to its BAD_REQUEST default for an
+// unknown operator while an object-operand shape violation on the very same
+// condition surface answered INVALID_CONDITION — two codes for one error
+// class.
+func TestValidateCondition_UnknownOperatorIsInvalidCondition(t *testing.T) {
+	err := ValidateCondition(&predicate.SimpleCondition{
+		JsonPath: "$.a", OperatorType: "NOT_EQUALS", Value: "x",
+	})
+	if err == nil {
+		t.Fatal("expected an error for an unknown operatorType")
+	}
+	if !errors.Is(err, ErrInvalidCondition) {
+		t.Errorf("want ErrInvalidCondition, got %v", err)
+	}
+}
+
+// TestValidateCondition_MissingOperatorIsInvalidCondition covers the sibling
+// branch of validateOperator — an empty operatorType — which must classify
+// identically to an unknown one.
+func TestValidateCondition_MissingOperatorIsInvalidCondition(t *testing.T) {
+	err := ValidateCondition(&predicate.SimpleCondition{
+		JsonPath: "$.a", OperatorType: "", Value: "x",
+	})
+	if err == nil {
+		t.Fatal("expected an error for a missing operatorType")
+	}
+	if !errors.Is(err, ErrInvalidCondition) {
+		t.Errorf("want ErrInvalidCondition, got %v", err)
 	}
 }

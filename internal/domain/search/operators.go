@@ -193,12 +193,21 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 	}
 }
 
+// validateOperator rejects an operatorType outside canonicalOperators.
+// operator-semantics.md §4: "An operator name outside this set is 400
+// INVALID_CONDITION, on every surface that carries a condition, workflow
+// import included." Both branches wrap ErrInvalidCondition so every caller —
+// structuralConditionErrCode here, and ValidateCriterionCondition's sibling
+// entry point for workflow import — classifies an unknown or missing
+// operator identically to the other structural condition failures
+// (object-operand shape, malformed BETWEEN arity) this file already routes
+// to INVALID_CONDITION, rather than falling through to a coarser BAD_REQUEST.
 func validateOperator(op string) error {
 	if op == "" {
-		return fmt.Errorf("missing operatorType; valid: %s", canonicalOperatorList())
+		return fmt.Errorf("%w: missing operatorType; valid: %s", ErrInvalidCondition, canonicalOperatorList())
 	}
 	if _, ok := canonicalOperators[op]; !ok {
-		return fmt.Errorf("unknown operatorType %q; valid: %s", op, canonicalOperatorList())
+		return fmt.Errorf("%w: unknown operatorType %q; valid: %s", ErrInvalidCondition, op, canonicalOperatorList())
 	}
 	return nil
 }

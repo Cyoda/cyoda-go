@@ -12,8 +12,13 @@ import (
 // match path (via mapOperator's default branch) instead of being rejected.
 // AI agents and developers could not tell their search was broken —
 // queries with typo'd operators produced zero or wrong results with no
-// diagnostic. All 22 canonical operators must be accepted; everything
-// else must yield HTTP 400 BAD_REQUEST.
+// diagnostic. All 26 canonical operators must be accepted; everything
+// else must yield HTTP 400 INVALID_CONDITION.
+//
+// The error code was originally BAD_REQUEST here (and INVALID_CONDITION on
+// grouped stats for the identical input — two codes for one error class).
+// operator-semantics.md §4 settles it: "An operator name outside this set
+// is 400 INVALID_CONDITION, on every surface that carries a condition."
 
 func TestSyncSearch_UnknownOperator_Returns400(t *testing.T) {
 	srv := newTestServer(t)
@@ -31,8 +36,8 @@ func TestSyncSearch_UnknownOperator_Returns400(t *testing.T) {
 		t.Fatalf("status = %d, want 400; body: %s", resp.StatusCode, respBody)
 	}
 	bs := string(respBody)
-	if !strings.Contains(bs, "BAD_REQUEST") {
-		t.Errorf("body missing BAD_REQUEST code: %s", bs)
+	if !strings.Contains(bs, "INVALID_CONDITION") {
+		t.Errorf("body missing INVALID_CONDITION code: %s", bs)
 	}
 	// The valid operator list should be surfaced so callers can self-correct.
 	if !strings.Contains(bs, "EQUALS") {
