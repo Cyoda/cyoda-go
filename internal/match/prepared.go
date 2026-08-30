@@ -102,7 +102,28 @@ func Prepare(cond predicate.Condition, fieldTypes FieldTypes) (Prepared, error) 
 // point; one implementation, two entry points, so a bracket-indexed array
 // clause means the same thing under a pushdown and under this evaluator.
 func prepare(cond predicate.Condition, fieldTypes FieldTypes) (prepNode, error) {
-	switch c := spi.DesugarCondition(cond).(type) {
+	return prepareDesugared(spi.DesugarCondition(cond), fieldTypes)
+}
+
+// prepareDesugared is prepare's dispatch, factored out so prepareGroup can
+// recurse into it directly for each already-desugared child rather than
+// calling prepare again.
+//
+// spi.DesugarCondition fully recurses into every descendant of a
+// *predicate.GroupCondition in ONE call (its own GroupCondition case walks
+// Conditions and desugars each), so by the time prepare reaches this switch,
+// cond's WHOLE tree is already desugared — every descendant, not just the
+// direct children. A prepareGroup child is therefore always
+// already-desugared, and re-running spi.DesugarCondition on it (as calling
+// prepare again would) is pure redundant work: it re-walks and
+// re-allocates a children slice for every group node in that child's
+// subtree, and because this happened once per ancestor level, a depth-D
+// chain paid D + (D-1) + ... + 1 = O(D²) group-node revisits instead of
+// O(D). Mirrors spi.desugaredToFilter (condition_filter.go), the identical
+// fix for spi.ConditionToFilter/groupToFilter. See
+// TestPrepare_DesugarIsNotReappliedPerLevel.
+func prepareDesugared(cond predicate.Condition, fieldTypes FieldTypes) (prepNode, error) {
+	switch c := cond.(type) {
 	case *predicate.SimpleCondition:
 		return prepareSimple(c, fieldTypes)
 	case *predicate.LifecycleCondition:
@@ -254,7 +275,10 @@ func prepareGroup(c *predicate.GroupCondition, fieldTypes FieldTypes) (prepNode,
 	if len(c.Conditions) > 0 {
 		n.children = make([]prepNode, 0, len(c.Conditions))
 		for _, child := range c.Conditions {
-			cn, err := prepare(child, fieldTypes)
+			// child is already desugared — see prepareDesugared's doc — so
+			// this calls the dispatch directly rather than prepare, which
+			// would re-run spi.DesugarCondition on it.
+			cn, err := prepareDesugared(child, fieldTypes)
 			if err != nil {
 				return prepNode{}, err
 			}
