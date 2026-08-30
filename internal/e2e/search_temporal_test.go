@@ -276,24 +276,31 @@ func TestSearchTemporal_Accepted200(t *testing.T) {
 
 // --- 400 error table ---
 
-// TestSearchTemporal_200_StringOpOnTemporalField verifies that a string
-// operator (CONTAINS) on a temporal meta field is now ACCEPTED (parse-based,
-// spec §6): it carries no operand-type constraint and the kernel evaluates it
-// to a non-match, so the request succeeds with no matching results — it is not
-// an operator-class rejection.
-func TestSearchTemporal_200_StringOpOnTemporalField(t *testing.T) {
-	const model = "e2e-search-temporal-200-string-op"
+// TestSearchTemporal_400_StringOpOnTemporalField verifies that a string
+// operator (CONTAINS) on a temporal meta field is REJECTED as 400
+// INVALID_CONDITION.
+//
+// This reverses an earlier deliberate acceptance: served by the SPI kernel
+// on a pushdown route, the field bridges to its RFC3339 text and CONTAINS
+// matches lexically; served by internal/match on the fallback route (and by
+// every workflow criterion), prepareLifecycle refuses the operator and
+// never-matches. The same condition and the same data answered two ways
+// depending only on the query plan. Rejecting at this shared boundary makes
+// both evaluators' conflicting behaviour unreachable.
+func TestSearchTemporal_400_StringOpOnTemporalField(t *testing.T) {
+	const model = "e2e-search-temporal-400-string-op"
 	setupSearchModel(t, model)
 	createEntityE2E(t, model, 1, `{"name":"A","amount":1,"status":"new"}`)
 
 	cond := lifecycleCond(t, "creationDate", "CONTAINS", "2021")
-	status, results := directSearch(t, model, 1, cond)
-	if status != http.StatusOK {
-		t.Fatalf("expected 200, got %d", status)
+	resp := doAuth(t, http.MethodPost, fmt.Sprintf("/api/search/direct/%s/%d", model, 1), cond)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		body := readBody(t, resp)
+		t.Fatalf("expected 400, got %d; body: %s", resp.StatusCode, body)
 	}
-	if len(results) != 0 {
-		t.Fatalf("expected 0 results (string op non-match on temporal field), got %d", len(results))
-	}
+	commontest.ExpectErrorCode(t, resp, "INVALID_CONDITION")
 }
 
 func TestSearchTemporal_400_BadOperand(t *testing.T) {

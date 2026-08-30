@@ -66,7 +66,7 @@ func (s *GroupedStatsService) QueryGroupedStats(
 	return buckets, nil
 }
 
-// classifyGroupedStatsError maps the six known sentinels to operational
+// classifyGroupedStatsError maps the seven known sentinels to operational
 // AppErrors (each wrapping the sentinel via WithCause so errors.Is still
 // holds); any other error is returned unchanged (surfaces as 500 at the
 // transport).
@@ -79,6 +79,15 @@ func classifyGroupedStatsError(err error) error {
 		return common.Operational(http.StatusUnprocessableEntity, common.ErrCodeGroupCardinalityExceeded,
 			"group cardinality exceeds the configured maximum").WithCause(err)
 	case errors.Is(err, ErrInvalidCondition):
+		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, err.Error()).WithCause(err)
+	case errors.Is(err, search.ErrInvalidCondition):
+		// The queryGroupedStatsInner ValidateConditionValueTypes call
+		// (below) propagates this sentinel unwrapped, not re-wrapped under
+		// this package's own ErrInvalidCondition above — same disposition
+		// (400 INVALID_CONDITION) via the search package's own sentinel, for
+		// an operator that is not a supported predicate for the field it's
+		// applied to (e.g. a string/pattern operator on a temporal meta
+		// field, operator-semantics.md §4/§7).
 		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, err.Error()).WithCause(err)
 	case errors.Is(err, search.ErrInvalidFieldPath):
 		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, err.Error()).WithCause(err)
@@ -176,10 +185,10 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 	// Condition type-soundness (correctness-over-availability): mirrors the
 	// search path's validateConditionTypes boundary for its model-independent
 	// parts — the lifecycle/temporal/meta-field rules validateLifecycleType
-	// enforces (known meta field; valid operator + RFC3339 operand on temporal
-	// fields), which need no schema. Without this, e.g. a CONTAINS operator
-	// against the temporal creationDate meta field would silently produce an
-	// empty result here instead of the 400 CONDITION_TYPE_MISMATCH the
+	// enforces (known meta field; a supported operator + RFC3339 operand on
+	// temporal fields), which need no schema. Without this, e.g. a CONTAINS
+	// operator against the temporal creationDate meta field would silently
+	// produce an empty result here instead of the 400 INVALID_CONDITION the
 	// equivalent /search request returns.
 	//
 	// A nil model is passed because this layer has none. The SCHEMA-dependent
@@ -191,11 +200,13 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 	if parsedCond != nil {
 		if tErr := search.ValidateConditionValueTypes(nil, parsedCond); tErr != nil {
 			// Propagate tErr directly (not re-wrapped): it already wraps
-			// search.ErrConditionTypeMismatch or search.ErrInvalidFieldPath,
-			// so the handler classifies it via errors.Is against those same
-			// exported sentinels — the identical classification the search
-			// path's validateConditionTypes performs — and maps to the
-			// matching CONDITION_TYPE_MISMATCH / INVALID_FIELD_PATH code.
+			// search.ErrConditionTypeMismatch, search.ErrInvalidCondition or
+			// search.ErrInvalidFieldPath, so classifyGroupedStatsError
+			// classifies it via errors.Is against those same exported
+			// sentinels — the identical classification the search path's
+			// validateConditionTypes performs — and maps to the matching
+			// CONDITION_TYPE_MISMATCH / INVALID_CONDITION / INVALID_FIELD_PATH
+			// code.
 			return nil, tErr
 		}
 	}

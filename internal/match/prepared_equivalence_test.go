@@ -225,50 +225,6 @@ func genFieldsMap(types []spi.DataType) map[string]spi.FieldDescriptor {
 	}
 }
 
-// hasKnownTemporalMetaDivergence reports whether cond, anywhere in its tree,
-// carries a LifecycleCondition on a temporal meta field (creationDate /
-// lastUpdateTime, or previousTransition/state's canonicalised equivalents —
-// only the two temporal fields matter here) paired with a NON-temporal
-// operator (a string/pattern operator outside isTemporalOperator's set).
-//
-// This is a PRE-EXISTING, documented, deliberately-unresolved divergence —
-// not a defect this task introduces or owns. Both prepareLifecycle
-// (prepared.go) and the SPI kernel's storedAll (cyoda-go-spi
-// prepared_filter.go) carry a "KNOWN DIVERGENCE, deliberately not resolved
-// here" comment, present before this task touched either file: this
-// evaluator guards a temporal meta field to a never-match leaf for any
-// non-temporal operator (field-identity routing), while the kernel bridges
-// the field to its RFC3339 string and applies the operator to that string
-// LEXICALLY. Both comments agree the fix is refusing the predicate at the
-// shared validation boundary, not aligning either evaluator — a cross-cutting
-// change outside "internal/match delegates to the one resolver". Excluded
-// from comparison for the same reason a spi.ConditionToFilter translate
-// error is (see below): no meaningful "the resolver disagreed" comparison
-// exists for a predicate already known to answer differently depending on
-// its query plan, for reasons that have nothing to do with path resolution.
-func hasKnownTemporalMetaDivergence(cond predicate.Condition) bool {
-	switch c := cond.(type) {
-	case *predicate.LifecycleCondition:
-		field := c.Field
-		if field == "previousTransition" {
-			field = "transitionForLatestSave"
-		}
-		if field != "creationDate" && field != "lastUpdateTime" {
-			return false
-		}
-		return !isTemporalOperator(c.OperatorType)
-	case *predicate.GroupCondition:
-		for _, child := range c.Conditions {
-			if hasKnownTemporalMetaDivergence(child) {
-				return true
-			}
-		}
-		return false
-	default:
-		return false
-	}
-}
-
 // TestPrepare_EquivalentToKernel is the fuzz-corpus merge gate: exact answer
 // agreement between match.Prepare and the SPI kernel
 // (spi.ConditionToFilter + spi.Prepare) on every well-formed condition the
@@ -278,23 +234,26 @@ func hasKnownTemporalMetaDivergence(cond predicate.Condition) bool {
 // structural faults are covered by the hand-written cases in
 // prepared_test.go (TestPrepare_StructuralErrors,
 // TestPrepare_UnknownConditionType) — so a Prepare error here is a generator
-// bug or a real defect, never a case to skip. Two kinds of case ARE skipped,
-// both for a documented "no kernel answer to compare against" reason, never
-// to dodge a genuine resolver disagreement:
+// bug or a real defect, never a case to skip. One kind of case IS skipped,
+// for a documented "no kernel answer to compare against" reason, never to
+// dodge a genuine resolver disagreement:
 //
 //   - A spi.ConditionToFilter TRANSLATE error: expected for the leader-less
 //     "name" path (see genJSONPaths).
-//   - hasKnownTemporalMetaDivergence: the pre-existing, documented
-//     text-operator-on-temporal-meta-field divergence (see that function).
-//     This was found by this very corpus once it was pointed at the real
-//     kernel oracle instead of a frozen copy of match's own old behaviour —
-//     it could never have been caught before, and it is real, but it is not
-//     a path-resolution defect and predates this task.
+//
+// A text-operator-on-temporal-meta-field divergence (a string or pattern
+// operator applied to creationDate/lastUpdateTime) was skipped here until
+// search.validateLifecycleType started rejecting that predicate at the
+// shared validation boundary — the fix both prepareLifecycle's and the SPI
+// kernel's own "KNOWN DIVERGENCE" comments named. This corpus generates
+// well-formed conditions and calls Prepare directly, bypassing that
+// boundary, so this test alone cannot tell whether the corpus still
+// produces a genuinely-diverging case; if it does, the DIVERGENCE fatal
+// above still fires.
 func TestPrepare_EquivalentToKernel(t *testing.T) {
 	cases := equivCases()
 	r := rand.New(rand.NewSource(equivSeed()))
 	skippedTranslate := 0
-	skippedTemporal := 0
 
 	for i := 0; i < cases; i++ {
 		cond := genValidCondition(r, 3)
@@ -310,11 +269,6 @@ func TestPrepare_EquivalentToKernel(t *testing.T) {
 		}
 		gotMatch := prepared.Match(data, meta)
 
-		if hasKnownTemporalMetaDivergence(cond) {
-			skippedTemporal++
-			continue
-		}
-
 		filter, translateErr := spi.ConditionToFilter(cond, genFieldsMap(types))
 		if translateErr != nil {
 			skippedTranslate++
@@ -328,6 +282,6 @@ func TestPrepare_EquivalentToKernel(t *testing.T) {
 		}
 	}
 
-	t.Logf("TestPrepare_EquivalentToKernel: %d cases, %d skipped (untranslatable leader-less path), %d skipped (known temporal-meta divergence)",
-		cases, skippedTranslate, skippedTemporal)
+	t.Logf("TestPrepare_EquivalentToKernel: %d cases, %d skipped (untranslatable leader-less path)",
+		cases, skippedTranslate)
 }

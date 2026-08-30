@@ -255,14 +255,21 @@ func TestSearchTemporal_GRPC_CreationDate_Equals_MixedPrecision(t *testing.T) {
 	}
 }
 
-// TestSearchTemporal_GRPC_StringOpOnTemporalField_Accepted verifies that a
-// string operator (CONTAINS) applied to the temporal creationDate field is now
-// ACCEPTED over the gRPC envelope (parse-based, spec §6): it carries no
-// operand-type constraint and evaluates to a non-match, so the search succeeds
-// with no results — not a CLIENT_ERROR rejection.
-func TestSearchTemporal_GRPC_StringOpOnTemporalField_Accepted(t *testing.T) {
+// TestSearchTemporal_GRPC_StringOpOnTemporalField_Rejected verifies that a
+// string operator (CONTAINS) applied to the temporal creationDate field is
+// REJECTED over the gRPC envelope as a CLIENT_ERROR carrying
+// INVALID_CONDITION in the message — the same classification HTTP uses.
+//
+// This reverses an earlier deliberate acceptance: served by the SPI kernel
+// on a pushdown route, the field bridges to its RFC3339 text and CONTAINS
+// matches lexically; served by internal/match on the fallback route,
+// prepareLifecycle refuses the operator and never-matches. Rejecting at the
+// shared validation boundary — which both HTTP and gRPC funnel through —
+// makes both evaluators' conflicting behaviour unreachable on either
+// transport.
+func TestSearchTemporal_GRPC_StringOpOnTemporalField_Rejected(t *testing.T) {
 	svc, ctx := newTestEnv(t)
-	const model = "grpc-search-temporal-200-string-op"
+	const model = "grpc-search-temporal-400-string-op"
 	importAndLockModel(t, svc, ctx, model, "1", map[string]any{"name": "A"})
 
 	_, err := svc.EntityManage(ctx, makeCE(EntityCreateRequest, map[string]any{
@@ -284,15 +291,24 @@ func TestSearchTemporal_GRPC_StringOpOnTemporalField_Accepted(t *testing.T) {
 	})
 	stream := &mockEntityStream{ctx: ctx}
 	if err := svc.EntitySearchCollection(ce, stream); err != nil {
-		t.Fatalf("unexpected stream-level error: %v", err)
+		t.Fatalf("unexpected stream-level error (errors should be envelope responses): %v", err)
 	}
-	// Accepted, non-match: the stream carries no error envelope and no results.
-	for _, sent := range stream.sent {
-		var typed events.EntityResponseJson
-		validateResponse(t, sent, &typed)
-		if !typed.Success {
-			t.Fatalf("expected success=true (string op accepted, non-match), got error: %v", typed.Error)
-		}
+	if len(stream.sent) == 0 {
+		t.Fatal("expected an error response on the stream, got empty stream")
+	}
+	var typed events.EntityResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if typed.Success {
+		t.Fatal("expected success=false for a string operator on a temporal meta field")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error block in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected code=CLIENT_ERROR, got %q", typed.Error.Code)
+	}
+	if !strings.Contains(typed.Error.Message, "INVALID_CONDITION") {
+		t.Errorf("expected message to contain INVALID_CONDITION, got %s", typed.Error.Message)
 	}
 }
 

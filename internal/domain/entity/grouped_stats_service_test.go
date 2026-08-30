@@ -740,6 +740,47 @@ func TestQueryGroupedStats_LifecycleTemporalTypeMismatchRejected(t *testing.T) {
 	}
 }
 
+// TestQueryGroupedStats_LifecycleTemporalStringOpRejected is the fifth
+// defect this batch closes: a string or pattern operator on a temporal meta
+// field (creationDate, lastUpdateTime) previously produced two different
+// answers depending on the query plan — the SPI kernel's pushdown re-check
+// bridges the field to RFC3339 text and matches CONTAINS lexically, while
+// internal/match's fallback route guarded the same case to a never-match.
+// classifyGroupedStatsError must classify the shared boundary's rejection as
+// search.ErrInvalidCondition (400 INVALID_CONDITION), the same code /search
+// now answers for the identical condition.
+func TestQueryGroupedStats_LifecycleTemporalStringOpRejected(t *testing.T) {
+	cond := json.RawMessage(`{
+		"type": "lifecycle",
+		"field": "creationDate",
+		"operatorType": "CONTAINS",
+		"value": "2021"
+	}`)
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
+	}
+	iter := &fakeIterable{entities: rows}
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
+		Condition: []byte(cond),
+	}
+	_, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, nil, req)
+	if err == nil {
+		t.Fatal("expected error for CONTAINS against temporal field creationDate, got nil")
+	}
+	if !errors.Is(err, search.ErrInvalidCondition) {
+		t.Fatalf("want search.ErrInvalidCondition (parity with /search's INVALID_CONDITION), got %v", err)
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("want *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Code != common.ErrCodeInvalidCondition {
+		t.Fatalf("got code %s, want %s", appErr.Code, common.ErrCodeInvalidCondition)
+	}
+}
+
 // TestQueryGroupedStats_MalformedBetweenArityRejected is a regression test
 // for the same validation-consistency gap: a BETWEEN condition with the
 // wrong number of operands must be rejected up front (search.ValidateCondition),

@@ -787,3 +787,29 @@ func TestDeleteEntitiesConditional_StructuralErrorClassification(t *testing.T) {
 		}
 	})
 }
+
+// TestDeleteEntitiesConditional_TemporalStringOp_InvalidCondition covers the
+// conditional-delete surface for the fifth defect this batch closes: a
+// string or pattern operator on a temporal meta field (creationDate,
+// lastUpdateTime) is 400 INVALID_CONDITION, not a silent under- or
+// over-selection decided by which evaluator happened to serve the delete.
+// planDeleteSelection classifies via search.ClassifyConditionTypeErrCode —
+// the same function search.validateConditionTypes and grouped stats use —
+// so a regression in that shared classifier surfaces here too.
+func TestDeleteEntitiesConditional_TemporalStringOp_InvalidCondition(t *testing.T) {
+	h, ctx, entityName, modelVersion := newDeleteFixtureWithSchema(t)
+
+	cond := []byte(`{"type":"lifecycle","field":"creationDate","operatorType":"CONTAINS","value":"2021"}`)
+	_, err := h.DeleteEntitiesConditional(ctx, entityName, modelVersion, cond, nil, false, 0)
+
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("got err %v, want *common.AppError", err)
+	}
+	if appErr.Status != http.StatusBadRequest {
+		t.Fatalf("got status %d, want %d", appErr.Status, http.StatusBadRequest)
+	}
+	if appErr.Code != common.ErrCodeInvalidCondition {
+		t.Fatalf("got code %s, want %s (a string operator on a temporal meta field is a shape violation, not a type mismatch)", appErr.Code, common.ErrCodeInvalidCondition)
+	}
+}

@@ -1061,10 +1061,7 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 	}
 	if node != nil {
 		if tErr := search.ValidateConditionValueTypes(node, cond); tErr != nil {
-			code := common.ErrCodeConditionTypeMismatch
-			if errors.Is(tErr, search.ErrInvalidFieldPath) {
-				code = common.ErrCodeInvalidFieldPath
-			}
+			code := search.ClassifyConditionTypeErrCode(tErr)
 			return deleteSelectionPlan{}, common.Operational(http.StatusBadRequest, code, tErr.Error())
 		}
 	}

@@ -183,25 +183,20 @@ func prepareLifecycle(c *predicate.LifecycleCondition) (prepNode, error) {
 
 	switch field {
 	case "creationDate", "lastUpdateTime":
-		// Field-identity guard, sitting in FRONT of the operator check: a
-		// temporal field admits only comparison, range and null operators, and
-		// anything else is a never-match leaf rather than an error. It must
-		// never lexically substring-match the formatted RFC3339 rendering.
-		//
-		// KNOWN DIVERGENCE, deliberately not resolved here. The Filter-side
-		// evaluator has no such guard: a text or pattern operator on a temporal
-		// meta field reaches its string branch there and matches against the
-		// RFC3339 rendering, so the same request answers differently depending
-		// on whether the query pushes down.
-		//
-		// Do NOT resolve this by aligning either evaluator. A text or pattern
-		// operator on a temporal field is not a supported predicate, and the
-		// resolution is to refuse it at the shared validation boundary, which
-		// makes both evaluators' behaviour unreachable. Aligning here would
-		// specify semantics for a predicate that is being withdrawn.
-		if !isTemporalOperator(c.OperatorType) {
-			return prepNode{kind: prepNever}, nil
-		}
+		// A string or pattern operator on a temporal field is rejected at
+		// the shared validation boundary (search.validateLifecycleType) —
+		// operator-semantics.md §4/§7 — so this evaluator is never reached
+		// with one from validated input. There is deliberately no
+		// operator-class guard here: every operator, including the sixteen
+		// string/pattern ones, flows through the same leafNode ->
+		// spi.ExpandLeaf expansion and, at Match time, the same
+		// spi.EvalLeaf comparison against the RFC3339-bridged value
+		// (metaTemporalResult) that prepMetaString and the SPI kernel's own
+		// pushdown re-check already use. This is what makes a bypass of the
+		// validation boundary (this package's own resolver-parity tests
+		// deliberately construct one) answer identically to the kernel
+		// rather than diverging on a predicate the boundary was supposed to
+		// have already refused.
 		n, err := leafNode(prepMetaTemporal, c.OperatorType, c.Value, []spi.DataType{spi.ZonedDateTime})
 		if err != nil {
 			return prepNode{}, err

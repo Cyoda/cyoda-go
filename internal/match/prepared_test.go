@@ -66,6 +66,16 @@ func TestPrepare_StructuralErrors(t *testing.T) {
 			&predicate.LifecycleCondition{Field: "state", OperatorType: "IS_CHANGED"},
 			"unsupported operator: IS_CHANGED",
 		},
+		{
+			// Now field-independent: prepareLifecycle no longer intercepts
+			// a temporal field's operator before expansion, so an
+			// unsupported operator NAME (not merely one outside the
+			// temporal allowlist) errors here exactly as it does on
+			// "state" above, rather than being swallowed to a never-match.
+			"IS_CHANGED on a temporal meta field",
+			&predicate.LifecycleCondition{Field: "creationDate", OperatorType: "IS_CHANGED"},
+			"unsupported operator: IS_CHANGED",
+		},
 	}
 
 	for _, tc := range tests {
@@ -81,9 +91,19 @@ func TestPrepare_StructuralErrors(t *testing.T) {
 	}
 }
 
-// TestPrepare_NeverMatchIsNotAnError pins the two cases that sit in FRONT of
-// the error path: they are deliberate never-match behaviour and turning either
-// into a Prepare error would reject conditions that evaluate cleanly today.
+// TestPrepare_NeverMatchIsNotAnError pins the two data-leaf expansion
+// failures that sit in FRONT of the error path: they are deliberate
+// never-match behaviour (an operand that parses into no declared type is a
+// leaf that never matches, not a structural fault) and turning either into a
+// Prepare error would reject conditions that evaluate cleanly today.
+//
+// A temporal meta field's operator no longer has a case here: prepareLifecycle
+// no longer intercepts before expansion (see TestEvaluatorsAgree_TemporalMetaField_StringOperator),
+// so a string/pattern operator now genuinely evaluates against the
+// RFC3339-bridged value instead of degrading to never-match, and an
+// unsupported operator NAME is now a structural error
+// (TestPrepare_StructuralErrors' "IS_CHANGED on a temporal meta field" case)
+// exactly as it already was for every other meta field.
 func TestPrepare_NeverMatchIsNotAnError(t *testing.T) {
 	meta := spi.EntityMeta{
 		State:        "active",
@@ -96,20 +116,6 @@ func TestPrepare_NeverMatchIsNotAnError(t *testing.T) {
 		fieldTypes match.FieldTypes
 		data       []byte
 	}{
-		{
-			// Field-dependent, not operator-dependent: the same operator on
-			// `state` IS an error (covered above).
-			"IS_CHANGED on a temporal meta field",
-			&predicate.LifecycleCondition{Field: "creationDate", OperatorType: "IS_CHANGED"},
-			nil,
-			[]byte(`{}`),
-		},
-		{
-			"CONTAINS on a temporal meta field",
-			&predicate.LifecycleCondition{Field: "creationDate", OperatorType: "CONTAINS", Value: "2026"},
-			nil,
-			[]byte(`{}`),
-		},
 		{
 			"comparison leaf on an untyped path",
 			&predicate.SimpleCondition{JsonPath: "$.unknown", OperatorType: "GREATER_THAN", Value: 5},

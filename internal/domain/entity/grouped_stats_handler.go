@@ -191,10 +191,7 @@ func (h *GroupedStatsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			if node != nil {
 				if cond, pErr := predicate.ParseCondition(validated.Condition); pErr == nil {
 					if tErr := search.ValidateConditionValueTypes(node, cond); tErr != nil {
-						code := common.ErrCodeConditionTypeMismatch
-						if errors.Is(tErr, search.ErrInvalidFieldPath) {
-							code = common.ErrCodeInvalidFieldPath
-						}
+						code := search.ClassifyConditionTypeErrCode(tErr)
 						common.WriteError(w, r, common.Operational(http.StatusBadRequest, code, tErr.Error()))
 						return
 					}

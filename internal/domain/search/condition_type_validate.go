@@ -11,6 +11,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda-platform/cyoda-go/internal/match"
 )
 
 // ValidateConditionValueTypes walks a condition tree and checks that each
@@ -272,11 +273,21 @@ var metaTemporalDeclared = []spi.DataType{spi.ZonedDateTime}
 //   - the field must be a known meta filter field (sortableMetaFields key,
 //     or the previousTransition alias) — otherwise errInvalidFieldPath.
 //   - for fields the meta vocabulary classifies as temporal (creationDate,
-//     lastUpdateTime), a comparison/range operand must parse into a temporal
-//     type — otherwise errConditionTypeMismatch. There is NO operator-class
-//     rejection: a string operator (CONTAINS, ...) on a temporal field parses
-//     and is accepted (the kernel evaluates it to a non-match), and a coarse
-//     operand upscales rather than being rejected.
+//     lastUpdateTime), the operator must be one of the ten
+//     match.IsTemporalOperator admits (the eight comparison/range operators
+//     plus the two null tests) — otherwise ErrInvalidCondition. A string or
+//     pattern operator on a temporal field answered two ways depending on
+//     the query plan: the SPI kernel's pushdown re-check bridges the field
+//     to its RFC3339 text and matches lexically, while internal/match's
+//     prepareLifecycle guards the identical case to a never-match on field
+//     identity. Both evaluators' own "KNOWN DIVERGENCE" comments name this
+//     exact fix — reject the predicate here, at the boundary every surface
+//     funnels through, which makes both evaluators' behaviour unreachable
+//     rather than aligning them (operator-semantics.md §7,
+//     path-grammar.md §10).
+//   - for an operator that survives that check, a comparison/range operand
+//     must parse into a temporal type — otherwise errConditionTypeMismatch.
+//     A coarse operand upscales rather than being rejected.
 //
 // Non-temporal meta fields (state, transitionForLatestSave, transactionId,
 // id) carry no further constraint here: they compare as their stored
@@ -302,8 +313,18 @@ func validateLifecycleType(c *predicate.LifecycleCondition) error {
 	if !isTemporalMetaField(field) {
 		return nil
 	}
-	// String operators and null-presence tests on a temporal meta field parse
-	// any operand and are accepted (eval decides a non-match) — spec §6.
+	// A string or pattern operator on a temporal field is not a supported
+	// predicate — reject it here rather than letting either evaluator answer
+	// it two different ways (see the doc comment above). Reuses
+	// match.IsTemporalOperator's set rather than a second copy.
+	if !match.IsTemporalOperator(c.OperatorType) {
+		return fmt.Errorf(
+			"operator %q is not valid on temporal meta field %q; only comparison, range and null-presence operators are supported: %w",
+			c.OperatorType, c.Field, ErrInvalidCondition)
+	}
+	// The two null tests skip operand parsing (the value is unused); every
+	// other operator that survived the check above is one of the eight
+	// comparison/range operators and requires a temporal-parsing operand.
 	if !isParseConstrainedOp(spi.MapOperator(c.OperatorType)) {
 		return nil
 	}
@@ -353,14 +374,48 @@ func loadModelNode(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) 
 	return schema.Unmarshal(desc.Schema)
 }
 
+// classifyConditionTypeErrCode maps a ValidateConditionValueTypes error to
+// its 400 error code: errInvalidFieldPath → INVALID_FIELD_PATH (the field
+// itself is unknown), ErrInvalidCondition → INVALID_CONDITION (an operator
+// that is not a supported predicate for the field it's applied to — e.g. a
+// string/pattern operator on a temporal meta field, operator-semantics.md
+// §4/§7), anything else → CONDITION_TYPE_MISMATCH (the value is
+// type-incompatible with a known field/operator).
+//
+// Shared by every caller of ValidateConditionValueTypes —
+// validateConditionTypes below (SearchService), and grouped stats' handler
+// and service layers (internal/domain/entity) via ClassifyConditionTypeErrCode
+// — so the four call sites cannot drift on what code an operator-class
+// rejection answers the way they had before this function existed.
+func classifyConditionTypeErrCode(err error) string {
+	switch {
+	case errors.Is(err, errInvalidFieldPath):
+		return common.ErrCodeInvalidFieldPath
+	case errors.Is(err, ErrInvalidCondition):
+		return common.ErrCodeInvalidCondition
+	default:
+		return common.ErrCodeConditionTypeMismatch
+	}
+}
+
+// ClassifyConditionTypeErrCode is the exported entry point for
+// classifyConditionTypeErrCode, for callers outside this package that
+// validate a condition via the exported ValidateConditionValueTypes —
+// currently entity.Handler's grouped-stats and conditional-delete paths,
+// which hold their own model/schema plumbing and so call
+// ValidateConditionValueTypes directly rather than through Search. Mirrors
+// the StructuralConditionErrCode/structuralConditionErrCode exported-wrapper
+// shape already used in this package (service.go).
+func ClassifyConditionTypeErrCode(err error) string {
+	return classifyConditionTypeErrCode(err)
+}
+
 // validateConditionTypes is the single boundary enforcing condition
 // type-soundness for every SearchService entry point (HTTP, gRPC, and any
 // future transport funnel through Search/SubmitAsync). It loads the model
 // schema and delegates to ValidateConditionValueTypes, mapping the returned
-// sentinel error to the appropriate 400-classified *common.AppError:
-// errInvalidFieldPath → INVALID_FIELD_PATH (the field itself is unknown),
-// anything else → CONDITION_TYPE_MISMATCH (the value is type-incompatible
-// with a known field/operator).
+// sentinel error to the appropriate 400-classified *common.AppError via
+// classifyConditionTypeErrCode.
 //
 // A schema-load failure fails the request. The previous behaviour — skip the
 // check and search anyway — was justified in a comment here as "empty results,
@@ -390,11 +445,7 @@ func (s *SearchService) validateConditionTypes(ctx context.Context, modelStore s
 		return nil
 	}
 	if err := ValidateConditionValueTypes(node, cond); err != nil {
-		code := common.ErrCodeConditionTypeMismatch
-		if errors.Is(err, errInvalidFieldPath) {
-			code = common.ErrCodeInvalidFieldPath
-		}
-		return common.Operational(http.StatusBadRequest, code, err.Error())
+		return common.Operational(http.StatusBadRequest, classifyConditionTypeErrCode(err), err.Error())
 	}
 	return nil
 }

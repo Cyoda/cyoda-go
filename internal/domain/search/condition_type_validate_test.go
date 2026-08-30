@@ -349,14 +349,48 @@ func TestValidateConditionTypes_ArrayCondition_Accepted(t *testing.T) {
 // unknown-meta-field rejection (Task 7).
 // ---------------------------------------------------------------------------
 
-// TestValidate_TemporalAcceptsStringOp verifies that a string-comparison
-// operator (CONTAINS) against a temporal meta field (creationDate) is now
-// ACCEPTED (parse-based, spec §6): string operators parse any operand and the
-// kernel evaluates them to a non-match — there is no operator-class rejection.
-func TestValidate_TemporalAcceptsStringOp(t *testing.T) {
+// TestValidate_TemporalRejectsStringOp verifies that a string or pattern
+// operator (CONTAINS) against a temporal meta field (creationDate) is
+// REJECTED as 400 INVALID_CONDITION.
+//
+// This reverses an earlier deliberate acceptance (see git history): the SPI
+// kernel's pushdown re-check bridges a temporal field to its RFC3339 text
+// and matches CONTAINS lexically, while internal/match's prepareLifecycle
+// guards the same case to a never-match on field identity — the same
+// request answering two ways depending only on which query plan served it
+// (a pushdown narrowing vs. the in-memory fallback). Both evaluators' own
+// "KNOWN DIVERGENCE" comments name this exact fix: reject the predicate here,
+// at the one boundary every condition surface — search, conditional delete,
+// grouped stats, and workflow-criterion import — funnels through, which
+// makes both evaluators' now-conflicting behaviour unreachable.
+func TestValidate_TemporalRejectsStringOp(t *testing.T) {
 	c := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "CONTAINS", Value: "2021"}
-	if err := validateLifecycleType(c); err != nil {
-		t.Errorf("CONTAINS on creationDate should be accepted (parse-based), got %v", err)
+	err := validateLifecycleType(c)
+	if !errors.Is(err, ErrInvalidCondition) {
+		t.Errorf("CONTAINS on creationDate must be rejected as ErrInvalidCondition, got %v", err)
+	}
+}
+
+// TestValidate_TemporalRejectsPatternOp is the MATCHES_PATTERN sibling of
+// the string-operator rejection above — the pattern family is one of the
+// sixteen string-and-pattern operators operator-semantics.md §4 excludes
+// from the temporal-field allowlist.
+func TestValidate_TemporalRejectsPatternOp(t *testing.T) {
+	c := &predicate.LifecycleCondition{Field: "lastUpdateTime", OperatorType: "MATCHES_PATTERN", Value: "^2021.*"}
+	err := validateLifecycleType(c)
+	if !errors.Is(err, ErrInvalidCondition) {
+		t.Errorf("MATCHES_PATTERN on lastUpdateTime must be rejected as ErrInvalidCondition, got %v", err)
+	}
+}
+
+// TestValidate_TemporalRejectsCaseInsensitiveStringOp covers the
+// case-insensitive string family (ICONTAINS), the other half of the sixteen
+// excluded operators.
+func TestValidate_TemporalRejectsCaseInsensitiveStringOp(t *testing.T) {
+	c := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "ICONTAINS", Value: "2021"}
+	err := validateLifecycleType(c)
+	if !errors.Is(err, ErrInvalidCondition) {
+		t.Errorf("ICONTAINS on creationDate must be rejected as ErrInvalidCondition, got %v", err)
 	}
 }
 

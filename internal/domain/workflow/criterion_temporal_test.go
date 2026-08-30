@@ -19,8 +19,8 @@ import (
 
 // (a) a comparison operand that parses into no temporal type on a temporal
 // field is rejected, and the error names the offending workflow/transition.
-// (Parse-based, spec §6: a string operator such as CONTAINS is now accepted, so
-// a genuinely-unparseable operand drives this rejection.)
+// GREATER_THAN is used rather than a string operator so this test isolates
+// the operand-type rejection from the operator-class rejection (a2) covers.
 func TestValidateWorkflowStructure_RejectsBadTemporalOperandOnTemporalField(t *testing.T) {
 	wf := wfWithTransitionCriterion(lifecycleCriterion("creationDate", "GREATER_THAN", "not-a-date"))
 	err := validateWorkflowStructure(wf)
@@ -32,13 +32,26 @@ func TestValidateWorkflowStructure_RejectsBadTemporalOperandOnTemporalField(t *t
 	}
 }
 
-// (a2) a string operator (CONTAINS) on a temporal field is now ACCEPTED
-// (parse-based): it carries no temporal-parse constraint and the engine
-// evaluates it to a non-match — there is no operator-class rejection.
-func TestValidateWorkflowStructure_AcceptsStringOperatorOnTemporalField(t *testing.T) {
+// (a2) a string operator (CONTAINS) on a temporal field is REJECTED at
+// import. This reverses an earlier deliberate acceptance: the runtime
+// evaluator (internal/match's prepareLifecycle) has always guarded this case
+// to a never-match on field identity, while the SPI kernel's own pushdown
+// re-check bridges the field to its RFC3339 text and matches CONTAINS
+// lexically — so the identical criterion answered two ways depending on
+// which query plan served the search request it happened to share
+// validation with. Rejecting at import (the one boundary a criterion
+// crosses) makes both evaluators' conflicting behaviour unreachable.
+func TestValidateWorkflowStructure_RejectsStringOperatorOnTemporalField(t *testing.T) {
 	wf := wfWithTransitionCriterion(lifecycleCriterion("creationDate", "CONTAINS", "2021"))
-	if err := validateWorkflowStructure(wf); err != nil {
-		t.Errorf("CONTAINS on temporal field should be accepted (parse-based), got %v", err)
+	err := validateWorkflowStructure(wf)
+	if err == nil {
+		t.Fatalf("expected error for CONTAINS on temporal field creationDate, got nil")
+	}
+	if !strings.Contains(err.Error(), "wf-regex") || !strings.Contains(err.Error(), "go") {
+		t.Errorf("error must name the offending workflow/transition, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "CONTAINS") {
+		t.Errorf("error must name the offending operator, got: %v", err)
 	}
 }
 

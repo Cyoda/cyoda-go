@@ -54,11 +54,17 @@ func fieldMapKey(raw string) string {
 	return schema.CanonicalFieldPath(p)
 }
 
-// isTemporalOperator reports whether op is a valid operator on a temporal
+// IsTemporalOperator reports whether op is a valid operator on a temporal
 // field: the six comparisons, the two range ops, and the two null tests.
 // String operators are excluded so a temporal field never substring-matches
 // its formatted representation.
-func isTemporalOperator(op string) bool {
+//
+// Exported so search.validateLifecycleType can reuse this exact set at the
+// shared validation boundary (operator-semantics.md §7: pushdown narrows, it
+// does not decide — a string or pattern operator on a temporal meta field
+// must be rejected before either evaluator ever sees it, rather than each
+// evaluator maintaining its own copy of "which operators are valid here").
+func IsTemporalOperator(op string) bool {
 	switch op {
 	case "EQUALS", "NOT_EQUAL",
 		"GREATER_THAN", "LESS_THAN", "GREATER_OR_EQUAL", "LESS_OR_EQUAL",

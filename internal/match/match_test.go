@@ -589,20 +589,24 @@ func TestMatchLifecycleStateNoMatch(t *testing.T) {
 	}
 }
 
-// TestMatchLifecycleCreationDate_ContainsIsNotTemporal proves creationDate is
-// no longer lexically matched: CONTAINS is not a valid comparison operator for
-// a temporal field (spec §6.4 — rejected at validation on validated entry
-// points), and matchLifecycle degrades safely to no-match rather than falling
-// back to substring matching on the formatted date string.
-func TestMatchLifecycleCreationDate_ContainsIsNotTemporal(t *testing.T) {
+// TestMatchLifecycleCreationDate_ContainsMatchesRFC3339Text proves creationDate
+// IS lexically matched by CONTAINS: this evaluator no longer special-cases a
+// string operator on a temporal field, so it bridges to the same RFC3339
+// rendering the SPI kernel's own pushdown re-check compares against and
+// matches lexically. CONTAINS on a temporal meta field is rejected at the
+// shared validation boundary (search.validateLifecycleType,
+// operator-semantics.md §4/§7) on every validated entry point; this test
+// exercises the evaluator directly, bypassing that boundary, to pin that it
+// answers the SAME way the kernel does rather than diverging silently.
+func TestMatchLifecycleCreationDate_ContainsMatchesRFC3339Text(t *testing.T) {
 	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "CONTAINS", Value: "2026-01-15"}
 	prepared, err := Prepare(cond, sampleTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := prepared.Match(sampleData, meta())
-	if got {
-		t.Error("expected false: CONTAINS is not a valid temporal comparison operator")
+	if !got {
+		t.Error("expected true: CONTAINS matches the RFC3339 rendering of creationDate lexically")
 	}
 }
 
