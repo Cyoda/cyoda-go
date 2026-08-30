@@ -255,6 +255,62 @@ func TestValidateCondition_PathGrammarMatchesSPI(t *testing.T) {
 	}
 }
 
+// TestValidateCondition_GrammarFailureMessageDoesNotNestPrefixes pins that
+// the 400 body carries ONE error prefix, not the SPI's already-formatted
+// "invalid filter path: filter path %q ..." embedded inside this package's
+// own "invalid field path: jsonPath %q ..." wrapper. Before this fix,
+// invalidJSONPathError(path, err.Error()) passed spi.ParseFilterPath's whole
+// formatted Error() through as the "reason", so the wire message doubled
+// both the sentinel phrase and the path, quoted twice under two different
+// names (jsonPath vs. filter path, "$.a[" vs. "a[").
+func TestValidateCondition_GrammarFailureMessageDoesNotNestPrefixes(t *testing.T) {
+	err := search.ValidateCondition(&predicate.SimpleCondition{
+		JsonPath: "$.a[", OperatorType: "EQUALS", Value: "v",
+	})
+	if err == nil {
+		t.Fatalf("expected an error for an unclosed array subscript")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "invalid filter path") {
+		t.Errorf("message %q embeds the SPI's own sentinel phrase; want the reason only", msg)
+	}
+	if strings.Contains(msg, "filter path") {
+		t.Errorf("message %q embeds a second, differently-named quoting of the path (\"filter path %%q\"); want it named once", msg)
+	}
+	if !strings.Contains(msg, "unclosed array subscript") {
+		t.Errorf("message %q lost the actual reason", msg)
+	}
+	if strings.Count(msg, `"$.a["`) != 1 {
+		t.Errorf("message %q must quote the offending path exactly once, got %q", msg, msg)
+	}
+}
+
+// TestValidateCondition_OverflowingIndexNamesTheBound pins Finding 3's
+// second half: an index too large to fit an int32 is not "unsupported"
+// syntax — 2147483648 IS a well-formed non-negative index — so the
+// diagnostic must say what is actually wrong (the int32 magnitude bound)
+// rather than reusing the generic "only the wildcard [*] and a non-negative
+// index... are supported" message the grammar package's own doc comment
+// already documents this bound existing to explain.
+func TestValidateCondition_OverflowingIndexNamesTheBound(t *testing.T) {
+	err := search.ValidateCondition(&predicate.SimpleCondition{
+		JsonPath: "$.tags[2147483648]", OperatorType: "EQUALS", Value: "v",
+	})
+	if err == nil {
+		t.Fatalf("expected an error for an index overflowing int32")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "non-negative index (e.g. [0]) are supported") {
+		t.Errorf("message %q reuses the generic malformed-subscript wording; an overflowing index is well-formed, just out of range", msg)
+	}
+	if !strings.Contains(msg, "2147483648") {
+		t.Errorf("message %q must name the offending index", msg)
+	}
+	if !strings.Contains(msg, "2147483647") {
+		t.Errorf("message %q must name the int32 bound (2147483647)", msg)
+	}
+}
+
 // TestValidateCondition_LifecycleFieldIsNotAPath pins that the meta
 // vocabulary is untouched by the jsonPath grammar: a LifecycleCondition names
 // a member of the closed meta set directly, so a bare "state" stays valid.

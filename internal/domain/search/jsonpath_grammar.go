@@ -2,6 +2,8 @@ package search
 
 import (
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -44,11 +46,13 @@ const jsonPathLeader = "$."
 //
 //   - [ValidateConditionJSONPath], the condition jsonPath surface, ACCEPTS
 //     them. They are valid JSON Path, and the kernel resolves a subscripted
-//     path directly (see [spi.ResolvePath]) — a wildcard pushes down as a SQL
-//     array unnest and a positional index pushes down as a JSON array access
-//     on every backend, and a shape neither backend can push down (a
-//     [predicate.FunctionCondition]) falls back to the same in-memory
-//     evaluator. Either way the request is served, not refused.
+//     path directly (see [spi.ResolvePath]) — a positional index pushes down
+//     as a JSON array access on every backend, while a wildcard leaf has no
+//     SQL form on either backend until a quantifier node exists (each SQL
+//     planner's isLeafPushable routes it to the residual, same as a shape
+//     neither backend can push down at all, e.g. a
+//     [predicate.FunctionCondition]) and falls back to the in-memory
+//     evaluator instead. Either way the request is served, not refused.
 //   - [ValidateScalarJSONPath] — the groupBy, aggregation-field and SORT-key
 //     surfaces — REJECTS them. Those paths must denote a single scalar; a
 //     projection or a positional element has no single-value meaning there.
@@ -181,7 +185,7 @@ func validateJSONPath(path string, allowSubscript bool) error {
 	// resolver, always rejected).
 	hops, err := spi.ParseFilterPath(rest)
 	if err != nil {
-		return invalidJSONPathError(path, err.Error())
+		return invalidJSONPathError(path, filterPathFailureReason(rest, err))
 	}
 	hasSubscript := false
 	for _, hop := range hops {
@@ -202,4 +206,67 @@ func validateJSONPath(path string, allowSubscript bool) error {
 // the caller can correct it.
 func invalidJSONPathError(path, reason string) error {
 	return fmt.Errorf("%w: jsonPath %q %s", errInvalidFieldPath, path, reason)
+}
+
+// filterPathFailureReason extracts the REASON half of a spi.ParseFilterPath
+// failure rather than passing its whole formatted Error() through as the
+// reason. err.Error() already carries the SPI's own wrapper
+// (invalidFilterPathError, filter_path.go): "invalid filter path: filter
+// path %q <reason>". Embedding that inside invalidJSONPathError's "invalid
+// field path: jsonPath %q <reason>" doubled both the sentinel phrase and the
+// path — quoted twice, under two different names ("jsonPath" vs. "filter
+// path") and two different spellings (the wire "$."-led path here, the
+// leader-stripped rest inside the SPI's own message). Stripping the known
+// prefix leaves just the reason, so the wire body carries ONE prefix and
+// ONE quoted path.
+//
+// It also retargets one specific reason shape: see
+// [overflowingIndexReason].
+func filterPathFailureReason(rest string, err error) string {
+	prefix := fmt.Sprintf("%s: filter path %q ", spi.ErrInvalidFilterPath, rest)
+	reason := err.Error()
+	if strings.HasPrefix(reason, prefix) {
+		reason = reason[len(prefix):]
+	}
+	if bound, ok := overflowingIndexReason(reason); ok {
+		return bound
+	}
+	return reason
+}
+
+// overflowingIndexReason detects the one "unsupported array subscript"
+// shape that is not actually a syntax error: a subscript that is a
+// well-formed run of decimal digits too large to fit the int32 magnitude
+// bound spi.ParseFilterPath enforces (this file's doc comment, and
+// path-grammar.md §2/§9 — int32 is the intersection every in-tree backend
+// can address). spi.ParseFilterPath reports that shape with the same
+// generic wording a genuinely malformed subscript ("[-1]", "[0:2]",
+// "[?(@.x)]") gets, which is actively misleading for an overflow:
+// 2147483648 IS a non-negative index, so telling the caller only the
+// wildcard and a non-negative index are supported names a rule the input
+// already satisfies without ever stating the real reason — the bound.
+//
+// Returns the replacement diagnostic and true when reason matches that
+// shape; otherwise ok is false and the caller keeps the original reason,
+// which is correct for every other malformed-subscript spelling.
+func overflowingIndexReason(reason string) (string, bool) {
+	const prefix, suffix = `has an unsupported array subscript "[`,
+		`]"; only the wildcard [*] and a non-negative index (e.g. [0]) are supported`
+	if !strings.HasPrefix(reason, prefix) || !strings.HasSuffix(reason, suffix) {
+		return "", false
+	}
+	digits := reason[len(prefix) : len(reason)-len(suffix)]
+	if !spi.IsArrayIndex(digits) {
+		return "", false
+	}
+	if _, err := strconv.ParseInt(digits, 10, 32); err == nil {
+		// A digit run that DOES fit int32 is not this failure — spi.ParseFilterPath
+		// would have accepted it. Stays defensive rather than mis-attributing
+		// some other "unsupported array subscript" cause to a range overflow.
+		return "", false
+	}
+	return fmt.Sprintf(
+		"has an array index %q too large to be supported; the index must fit a 32-bit signed integer (maximum %d)",
+		digits, math.MaxInt32,
+	), true
 }

@@ -215,9 +215,14 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 	// yields the zero-value Filter ("match all"); a parsedCond that the
 	// translator can't handle (a function condition — the kernel now
 	// resolves a subscripted/wildcard path directly, see spi.ResolvePath, so
-	// that shape translates like any other) returns an error — in that case
-	// the streaming branch will re-apply the prepared predicate
-	// (match.Prepare/(Prepared).Match) per entity.
+	// that shape TRANSLATES like any other rather than erroring here)
+	// returns an error — in that case the streaming branch will re-apply the
+	// prepared predicate (match.Prepare/(Prepared).Match) per entity.
+	// Translating is not the same as pushing down: a wildcard leaf still has
+	// no SQL form on either backend (each SQL planner's isLeafPushable
+	// routes it to the residual, see spi.ErrAggregationNotPushdownable
+	// below), so a successfully-translated wildcard Filter can still fall
+	// through to the streaming branch below.
 	var pushFilter spi.Filter
 	pushable := true
 	if parsedCond != nil {
