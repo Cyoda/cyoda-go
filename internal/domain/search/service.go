@@ -1590,7 +1590,7 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelStore s
 	// a serial flood of bad requests into one inner-store round-trip
 	// per (tenant, modelRef, path) tuple between schema events.
 	tenant := common.TenantFromContext(ctx)
-	if cachedMissing := s.cachedAbsentPaths(tenant, modelRef, paths); len(cachedMissing) > 0 {
+	if cachedMissing := s.cachedAbsentPaths(tenant, modelRef, surfaceCondition, paths); len(cachedMissing) > 0 {
 		return nil, invalidPathError(cachedMissing)
 	}
 
@@ -1619,7 +1619,7 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelStore s
 	// all on such a model.
 	missing := findUnknownPaths(paths, fields)
 	if len(missing) == 0 {
-		s.markPathsPresent(tenant, modelRef, paths)
+		s.markPathsPresent(tenant, modelRef, surfaceCondition, paths)
 		return fields, nil
 	}
 
@@ -1630,7 +1630,7 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelStore s
 	freshFields, refreshed, refreshErr := refreshFieldsMap(ctx, modelStore, modelRef)
 	if !refreshed {
 		// Store has no cache layer — the cached miss is authoritative.
-		s.markPathsAbsent(tenant, modelRef, missing)
+		s.markPathsAbsent(tenant, modelRef, surfaceCondition, missing)
 		return nil, invalidPathError(missing)
 	}
 	if refreshErr != nil {
@@ -1664,25 +1664,74 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelStore s
 
 	stillMissing := findUnknownPaths(missing, freshFields)
 	if len(stillMissing) == 0 {
-		s.markPathsPresent(tenant, modelRef, paths)
+		s.markPathsPresent(tenant, modelRef, surfaceCondition, paths)
 		// The refresh is authoritative — hand back the schema the paths
 		// actually validated against, not the stale one.
 		return freshFields, nil
 	}
-	s.markPathsAbsent(tenant, modelRef, stillMissing)
+	s.markPathsAbsent(tenant, modelRef, surfaceCondition, stillMissing)
 	return nil, invalidPathError(stillMissing)
 }
 
+// pathSurface discriminates WHICH validation surface asked the negative
+// cache about a path. The condition surface (validateConditionPaths) and
+// the sort-key surface (resolveSortKeys) share one *PathValidationCache
+// instance, but they do NOT agree on what "absent" means for the same
+// spelling: a sort key must denote an exact scalar leaf, so resolveOrderBy
+// (via findUnknownSortPaths) rejects a container path ("$.address" when
+// only "$.address.street" is declared) or an array-container path
+// ("$.tags" when the schema records only "$.tags[*]") that the CONDITION
+// surface deliberately ACCEPTS (a bare path may legitimately address a
+// container or array field for a condition — see isPathKnown /
+// TestSearch_SimpleConditionOnContainerPath_NotNull_IsAccepted).
+//
+// Without a namespace, a rejected sort key on "$.tags" would call
+// markPathsAbsent("$.tags"), and the very next legitimate condition on
+// "$.tags" would hit cachedAbsentPaths and 400 — a valid search
+// permanently broken by an unrelated sort request on a stable schema,
+// until a schema change fires InvalidateRef or otter evicts. Namespacing
+// the cache KEY (not the underlying otter cache/bucket — one instance,
+// one bucket per (tenant, ref), namespaced keys within it) keeps each
+// surface reading back only what it wrote. sort→sort and condition→sort
+// need no isolation (resolveOrderBy can never reject a key
+// findUnknownPaths would also reject, and condition→sort is a strict
+// subset), so ONLY the sort surface needs its own namespace; the
+// condition surface keeps the bare, unnamespaced spelling other callers
+// (see FindUnknownFieldPaths) already reason about.
+type pathSurface string
+
+const (
+	// surfaceCondition is validateConditionPaths' namespace — the bare
+	// path spelling, unchanged from before this type existed.
+	surfaceCondition pathSurface = ""
+	// surfaceSort is resolveSortKeys' namespace.
+	surfaceSort pathSurface = "sort"
+)
+
+// namespacedCacheKey prefixes path with surface's discriminator so the
+// condition and sort surfaces can never read back an entry the other
+// wrote. surfaceCondition's empty discriminator keeps its keys identical
+// to the path itself — no behavior change for the surface that owned this
+// cache before resolveSortKeys started using it.
+func namespacedCacheKey(surface pathSurface, path string) string {
+	if surface == surfaceCondition {
+		return path
+	}
+	return string(surface) + "\x00" + path
+}
+
 // cachedAbsentPaths returns the subset of paths recorded as confirmed
-// absent in the negative cache for (tenant, modelRef) at the current
-// generation. Returns nil when the cache is unset or no path matches.
-func (s *SearchService) cachedAbsentPaths(tenant string, ref spi.ModelRef, paths []string) []string {
+// absent in the negative cache for (tenant, modelRef, surface) at the
+// current generation. Returns nil when the cache is unset or no path
+// matches. Returned paths keep the caller's own spelling — only the
+// cache KEY is namespaced.
+func (s *SearchService) cachedAbsentPaths(tenant string, ref spi.ModelRef, surface pathSurface, paths []string) []string {
 	if s.pathCache == nil {
 		return nil
 	}
 	var out []string
 	for _, p := range paths {
-		if s.pathCache.IsAbsent(tenant, ref, p) {
+		if s.pathCache.IsAbsent(tenant, ref, namespacedCacheKey(surface, p)) {
 			out = append(out, p)
 		}
 	}
@@ -1690,26 +1739,26 @@ func (s *SearchService) cachedAbsentPaths(tenant string, ref spi.ModelRef, paths
 }
 
 // markPathsAbsent records each path as confirmed absent for (tenant,
-// modelRef). No-op when the cache is unset.
-func (s *SearchService) markPathsAbsent(tenant string, ref spi.ModelRef, paths []string) {
+// modelRef, surface). No-op when the cache is unset.
+func (s *SearchService) markPathsAbsent(tenant string, ref spi.ModelRef, surface pathSurface, paths []string) {
 	if s.pathCache == nil {
 		return
 	}
 	for _, p := range paths {
-		s.pathCache.MarkAbsent(tenant, ref, p)
+		s.pathCache.MarkAbsent(tenant, ref, namespacedCacheKey(surface, p))
 	}
 }
 
 // markPathsPresent removes each path from the negative cache for
-// (tenant, modelRef). Defensive: ensures a path that previously
+// (tenant, modelRef, surface). Defensive: ensures a path that previously
 // resolved as absent and now resolves as present is reflected without
 // waiting for an invalidation event. No-op when the cache is unset.
-func (s *SearchService) markPathsPresent(tenant string, ref spi.ModelRef, paths []string) {
+func (s *SearchService) markPathsPresent(tenant string, ref spi.ModelRef, surface pathSurface, paths []string) {
 	if s.pathCache == nil {
 		return
 	}
 	for _, p := range paths {
-		s.pathCache.MarkPresent(tenant, ref, p)
+		s.pathCache.MarkPresent(tenant, ref, namespacedCacheKey(surface, p))
 	}
 }
 
@@ -1760,7 +1809,7 @@ func (s *SearchService) resolveSortKeys(ctx context.Context, modelRef spi.ModelR
 	// negative-cached and never gates this fast path.
 	tenant := common.TenantFromContext(ctx)
 	dataPaths := normalisedDataSortPaths(keys)
-	if cachedMissing := s.cachedAbsentPaths(tenant, modelRef, dataPaths); len(cachedMissing) > 0 {
+	if cachedMissing := s.cachedAbsentPaths(tenant, modelRef, surfaceSort, dataPaths); len(cachedMissing) > 0 {
 		return nil, unknownSortFieldError(cachedMissing)
 	}
 
@@ -1774,7 +1823,7 @@ func (s *SearchService) resolveSortKeys(ctx context.Context, modelRef spi.ModelR
 	}
 	specs, rerr := resolveOrderBy(keys, fields)
 	if rerr == nil {
-		s.markPathsPresent(tenant, modelRef, dataPaths)
+		s.markPathsPresent(tenant, modelRef, surfaceSort, dataPaths)
 		return specs, nil
 	}
 	if !errors.Is(rerr, errUnknownSortField) {
@@ -1798,7 +1847,7 @@ func (s *SearchService) resolveSortKeys(ctx context.Context, modelRef spi.ModelR
 	if !refreshed {
 		// Store has no cache layer — the cached miss is authoritative,
 		// exactly the validateConditionPaths case of the same name.
-		s.markPathsAbsent(tenant, modelRef, missing)
+		s.markPathsAbsent(tenant, modelRef, surfaceSort, missing)
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, rerr.Error())
 	}
 	if refreshErr != nil || freshFields == nil {
@@ -1810,11 +1859,11 @@ func (s *SearchService) resolveSortKeys(ctx context.Context, modelRef spi.ModelR
 	specs, rerr = resolveOrderBy(keys, freshFields)
 	if rerr != nil {
 		if errors.Is(rerr, errUnknownSortField) {
-			s.markPathsAbsent(tenant, modelRef, findUnknownSortPaths(missing, freshFields))
+			s.markPathsAbsent(tenant, modelRef, surfaceSort, findUnknownSortPaths(missing, freshFields))
 		}
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, rerr.Error())
 	}
-	s.markPathsPresent(tenant, modelRef, dataPaths)
+	s.markPathsPresent(tenant, modelRef, surfaceSort, dataPaths)
 	return specs, nil
 }
 
