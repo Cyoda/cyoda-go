@@ -308,15 +308,32 @@ func (s *EntityStore) GroupedAggregate(
 	//
 	// GroupExprState carries no path and is exempt, matching both SQL
 	// backends' state arm.
+	//
+	// A GroupExpr.Path or AggregateExpr.Field is checked against "" before
+	// validateJSONPath: unlike a filter leaf's Path, where empty is the
+	// legitimate "no field" shape the AND/OR tree operators carry (and
+	// validateFilterPaths skips it before ever reaching validateJSONPath),
+	// a group-by or aggregate path always names a real field — there is no
+	// operator-node reading for it. validateJSONPath alone now admits ""
+	// (it delegates to the one grammar, which is right for a filter leaf),
+	// so this catches the empty case itself rather than silently letting a
+	// meaningless "group by nothing" request through. Mirrors sqlite's and
+	// postgres's validateGroupAndAggregatePaths.
 	for _, g := range groupBy {
 		if g.Kind != spi.GroupExprDataPath {
 			continue
+		}
+		if g.Path == "" {
+			return nil, fmt.Errorf("%w: empty group-by path", ErrInvalidFilterPath)
 		}
 		if err := validateJSONPath(g.Path); err != nil {
 			return nil, err
 		}
 	}
 	for _, a := range opts.Aggregations {
+		if a.Field == "" {
+			return nil, fmt.Errorf("%w: empty aggregate field", ErrInvalidFilterPath)
+		}
 		if err := validateJSONPath(a.Field); err != nil {
 			return nil, err
 		}

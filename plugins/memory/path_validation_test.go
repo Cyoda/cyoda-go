@@ -78,10 +78,11 @@ func runAllFilterEntryPoints(t *testing.T, store spi.EntityStore, ref spi.ModelR
 // wrong-but-available answer, which the correctness-over-availability rule
 // forbids, and it is the same input answered differently per backend.
 //
-// The shapes below are exactly the ones the shared dotted-identifier grammar
-// rejects. "$.v" is included deliberately: the SPI contract for Filter.Path is
-// a BARE dotted identifier — spi.ConditionToFilter strips the "$." prefix via
-// stripDollarDot before a filter ever reaches a plugin, and the match kernel
+// The shapes below are exactly the ones the one filter-path grammar
+// (spi.ValidateFilterPath) rejects. "$.v" is included deliberately: the SPI
+// contract for Filter.Path is a BARE dotted identifier — spi.ConditionToFilter
+// strips the "$." prefix via stripDollarDot before a filter ever reaches a
+// plugin, and the match kernel
 // (prepared_filter.go: gjson.GetBytes(data, n.path)) does no stripping of its
 // own, so "$.v" never matched anything on memory either. Memory's gjsonPath
 // "$." strip applies to GroupExpr.Path / AggregateExpr.Field only, never to
@@ -98,7 +99,9 @@ func TestFilterPathValidation_RejectsMalformedPath(t *testing.T) {
 		"a\"b",     // double quote
 		"a/b",      // slash
 		"a*b",      // star
-		"a[0]",     // bracketed index — outside the pushdown subset
+		"a[-1]",    // negative index — outside the one grammar
+		"a[",       // unclosed bracket
+		"a[0]b",    // trailing character after a well-formed subscript
 		"$.v",      // "$."-prefixed: not the SPI's bare-path contract
 		"a\\b",     // backslash
 		"a\x00b",   // control byte
@@ -147,7 +150,16 @@ func TestFilterPathValidation_RejectsMalformedPathInTree(t *testing.T) {
 func TestFilterPathValidation_AcceptsContractShapes(t *testing.T) {
 	store, ref, ctx := filterPathStore(t, "tenant-filterpath-ok", "m-filterpath-ok")
 
-	dataPaths := []string{"v", "a.b", "a-b", "a_b", "A1", "a.b.c", "x-y_z9.q"}
+	dataPaths := []string{
+		"v", "a.b", "a-b", "a_b", "A1", "a.b.c", "x-y_z9.q",
+		// Array subscripts: a positional index, a wildcard, and a field
+		// literally named "0" are three different addresses the one grammar
+		// admits (docs/cloud-parity/path-grammar.md section 9); none of them
+		// is malformed. The filter matches nothing on the seeded entity
+		// (which has no such array/field), which is fine — this test only
+		// asserts the validator does not reject the shape.
+		"tags[0]", "tags[*]", "items[*].sku", "obj.0", "m[0][1]",
+	}
 	for _, path := range dataPaths {
 		filter := spi.Filter{Op: spi.FilterEq, Path: path, Source: spi.SourceData, Value: "x"}
 		for name, err := range runAllFilterEntryPoints(t, store, ref, ctx, filter) {
@@ -378,10 +390,19 @@ func TestOrderSpecValidation_RejectsMalformedDataPath(t *testing.T) {
 	}
 }
 
-// groupPathRejects are the shapes the shared dotted-identifier grammar
-// refuses. Reused by the GroupExpr.Path and AggregateExpr.Field tests below —
-// sqlite and postgres run the SAME validateJSONPath over both fields
-// (groupExprToSQL / aggregateExprToSQL), so the two must reject identically.
+// groupPathRejects are the shapes GroupExpr.Path / AggregateExpr.Field
+// reject. Reused by the GroupExpr.Path and AggregateExpr.Field tests below —
+// sqlite and postgres run the SAME checks over both fields
+// (validateGroupAndAggregatePaths / groupExprToSQL / aggregateExprToSQL), so
+// the two must reject identically.
+//
+// "a[0]" is NOT here: it is a legal positional array subscript under the one
+// filter-path grammar (spi.ValidateFilterPath) — see groupPathAcceptsSubscript
+// in TestGroupExprAndAggregateFieldValidation_AcceptsWellFormed. "" IS still
+// here even though validateJSONPath alone now admits it: a group-by path or
+// aggregate field always names a real field, so grouped_stats.go rejects ""
+// explicitly before delegating, the same reasoning
+// validateGroupAndAggregatePaths documents on sqlite/postgres.
 var groupPathRejects = []string{
 	"foo';x",   // injection-shaped: quote + statement separator
 	"a..b",     // empty segment
@@ -391,12 +412,13 @@ var groupPathRejects = []string{
 	"a\"b",     // double quote
 	"a/b",      // slash
 	"a*b",      // star
-	"a[0]",     // bracketed index — outside the pushdown subset
+	"a[-1]",    // negative index — outside the one grammar
+	"a[",       // unclosed bracket
 	"$.v",      // "$."-prefixed: not the SPI's bare-path contract
 	"a\\b",     // backslash
 	"a\x00b",   // control byte
 	"a;DROP--", // semicolon
-	"",         // empty — sqlite/postgres reject it as "empty"
+	"",         // empty — always rejected: a group/aggregate path names a real field
 }
 
 // TestGroupExprPathValidation_RejectsMalformedPath: sqlite (grouped_stats.go
@@ -498,5 +520,30 @@ func TestGroupExprAndAggregateFieldValidation_AcceptsWellFormed(t *testing.T) {
 		spi.GroupedAggregationsOptions{MaxBuckets: 10},
 	); err != nil {
 		t.Errorf("GroupedAggregate grouped by state = %v, want success", err)
+	}
+}
+
+// TestGroupExprAndAggregateFieldValidation_AcceptsSubscripts checks that a
+// "[N]" or "[*]" array subscript in a GroupExpr.Path / AggregateExpr.Field is
+// grammar-valid and does not trip ErrInvalidFilterPath, mirroring the filter
+// path coverage in TestFilterPathValidation_AcceptsContractShapes. The seeded
+// entity (filterPathStore) has no array fields, so — unlike
+// TestGroupExprAndAggregateFieldValidation_AcceptsWellFormed — this only
+// asserts the validator does not reject the shape, not that a value resolves.
+func TestGroupExprAndAggregateFieldValidation_AcceptsSubscripts(t *testing.T) {
+	store, ref, ctx := filterPathStore(t, "tenant-grouppath-subscript", "m-grouppath-subscript")
+	ga := store.(spi.GroupedAggregator)
+
+	for _, path := range []string{"tags[0]", "tags[*]", "items[*].sku", "obj.0"} {
+		if _, err := ga.GroupedAggregate(ctx, ref,
+			[]spi.GroupExpr{{Kind: spi.GroupExprDataPath, Path: path}},
+			spi.Filter{},
+			spi.GroupedAggregationsOptions{
+				MaxBuckets:   10,
+				Aggregations: []spi.AggregateExpr{{Op: spi.AggSum, Field: path, Alias: "s"}},
+			},
+		); err != nil {
+			t.Errorf("GroupedAggregate with subscript path %q = %v, want success", path, err)
+		}
 	}
 }
