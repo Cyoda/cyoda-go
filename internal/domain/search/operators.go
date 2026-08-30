@@ -166,7 +166,14 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 	}
 }
 
-// validateOperator rejects an operatorType outside canonicalOperators.
+// ValidateCriterionCondition performs the operator, operand-shape and
+// BETWEEN-arity checks ValidateCondition performs on a search condition —
+// WITHOUT the FunctionCondition rejection, because a criterion legitimately
+// carries a FUNCTION clause: the workflow engine dispatches it to a compute
+// member at evaluation time rather than evaluating it as a search
+// predicate (see the FunctionCondition arm of validateConditionAtDepth for
+// why search itself must reject it).
+//
 // operator-semantics.md §4: "An operator name outside this set is 400
 // INVALID_CONDITION, on every surface that carries a condition, workflow
 // import included." Both branches wrap ErrInvalidCondition so every caller —
@@ -175,13 +182,6 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 // operator identically to the other structural condition failures
 // (object-operand shape, malformed BETWEEN arity) this file already routes
 // to INVALID_CONDITION, rather than falling through to a coarser BAD_REQUEST.
-// ValidateCriterionCondition performs the operator, operand-shape and
-// BETWEEN-arity checks ValidateCondition performs on a search condition —
-// WITHOUT the FunctionCondition rejection, because a criterion legitimately
-// carries a FUNCTION clause: the workflow engine dispatches it to a compute
-// member at evaluation time rather than evaluating it as a search
-// predicate (see the FunctionCondition arm of validateConditionAtDepth for
-// why search itself must reject it).
 //
 // Path grammar is deliberately not checked here. workflow.walkCriterion runs
 // its own path check first (ValidateConditionJSONPath / lifecycle field
@@ -254,6 +254,11 @@ func validateCriterionConditionAtDepth(cond predicate.Condition, depth int) erro
 	}
 }
 
+// validateOperator rejects an operatorType outside canonicalOperators — a
+// missing operatorType and an unrecognised one both wrap ErrInvalidCondition,
+// per operator-semantics.md §4. Shared by ValidateCondition (the search
+// entry point) and validateCriterionConditionAtDepth (ValidateCriterionCondition's
+// recursive walk), so both surfaces reject the same operator set identically.
 func validateOperator(op string) error {
 	if op == "" {
 		return fmt.Errorf("%w: missing operatorType; valid: %s", ErrInvalidCondition, canonicalOperatorList())
