@@ -2,6 +2,7 @@ package search_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -181,10 +182,28 @@ func TestValidateCondition_AcceptsValidJSONPath(t *testing.T) {
 			}
 		})
 		t.Run("array/"+tc.name, func(t *testing.T) {
-			if err := search.ValidateCondition(&predicate.ArrayCondition{
+			// validJSONPaths pins GRAMMAR validity, which every entry here
+			// has. The `array` clause layers one more requirement on top of
+			// the grammar (path-grammar.md §8): the jsonPath must carry a
+			// trailing "[*]", since the clause tests elements by position and
+			// a path that does not address elements cannot. So a grammar-valid
+			// path here is accepted for the array clause only when it also
+			// ends in "[*]" — everything else in this table is still
+			// GRAMMATICALLY fine (that's what makes it a member of
+			// validJSONPaths) but rejected for THIS clause specifically, the
+			// same rejection TestValidateCondition_ArrayClauseRequiresWildcard
+			// pins directly.
+			err := search.ValidateCondition(&predicate.ArrayCondition{
 				JsonPath: tc.path, Values: []any{"v"},
-			}); err != nil {
-				t.Fatalf("ValidateCondition(array jsonPath=%q) = %v, want accepted", tc.path, err)
+			})
+			if strings.HasSuffix(tc.path, "[*]") {
+				if err != nil {
+					t.Fatalf("ValidateCondition(array jsonPath=%q) = %v, want accepted", tc.path, err)
+				}
+				return
+			}
+			if !errors.Is(err, search.ErrInvalidFieldPath) {
+				t.Fatalf("ValidateCondition(array jsonPath=%q) = %v, want rejected (no trailing \"[*]\")", tc.path, err)
 			}
 		})
 	}

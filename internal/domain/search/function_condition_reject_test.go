@@ -64,7 +64,7 @@ func TestValidateCondition_NonFunctionTreeStillAccepted(t *testing.T) {
 		Conditions: []predicate.Condition{
 			&predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"},
 			&predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "APPROVED"},
-			&predicate.ArrayCondition{JsonPath: "$.tags", Values: []any{"go"}},
+			&predicate.ArrayCondition{JsonPath: "$.tags[*]", Values: []any{"go"}},
 		},
 	}
 	if err := ValidateCondition(cond); err != nil {

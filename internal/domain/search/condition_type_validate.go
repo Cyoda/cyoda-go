@@ -73,7 +73,16 @@ func walkConditionTypes(fm map[string]schema.FieldDescriptor, cond predicate.Con
 		return nil
 	case *predicate.LifecycleCondition:
 		return validateLifecycleType(c)
-	case *predicate.ArrayCondition, *predicate.FunctionCondition:
+	case *predicate.ArrayCondition:
+		// An array clause's positional values become EQUALS leaves once
+		// desugared, each folding back to the wildcard key
+		// validateSimpleConditionType already resolves declared types
+		// through (schema.CanonicalFieldPath). Routing through the same
+		// desugar spi.ConditionToFilter uses, rather than writing a second
+		// type check here, keeps the two definitions of the clause's
+		// semantics from drifting apart.
+		return walkConditionTypes(fm, spi.DesugarCondition(c), depth+1)
+	case *predicate.FunctionCondition:
 		return nil
 	default:
 		return nil

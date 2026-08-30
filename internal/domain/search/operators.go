@@ -126,7 +126,35 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 		// pushdown translator, and internal/match) calls before it ever sees
 		// the condition's real shape. Its jsonPath goes through the same wire
 		// grammar as a SimpleCondition's, so it is validated identically.
-		return ValidateConditionJSONPath(c.JsonPath)
+		if err := ValidateConditionJSONPath(c.JsonPath); err != nil {
+			return err
+		}
+		// path-grammar.md §8: the clause tests elements by position, so its
+		// path must address elements, not the array itself. A bare path
+		// ("$.tags") addresses the container and carries no positional test —
+		// the spelling and the meaning disagreed. This requirement is
+		// specific to the array clause: a `simple` clause's bare path still
+		// legitimately addresses the container (see path_validate.go's
+		// container acceptance, which "$.tags NOT_NULL" relies on).
+		if !strings.HasSuffix(c.JsonPath, "[*]") {
+			return fmt.Errorf(
+				"%w: jsonPath %q must end in a trailing array wildcard \"[*]\"; "+
+					"an array clause tests elements by position and a bare path addresses the array itself",
+				errInvalidFieldPath, c.JsonPath)
+		}
+		// Each non-null value becomes an EQUALS leaf's operand once desugared
+		// — run the same shape check a SimpleCondition's operand gets, so an
+		// object value doesn't reach the kernel and get stringified into a
+		// spuriously "matching" literal.
+		for _, v := range c.Values {
+			if v == nil {
+				continue
+			}
+			if err := validateOperandShape(v); err != nil {
+				return err
+			}
+		}
+		return nil
 	case *predicate.GroupCondition:
 		// A group operator other than exactly "AND"/"OR" previously cleared
 		// validation and then behaved differently depending on which

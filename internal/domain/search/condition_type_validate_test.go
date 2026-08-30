@@ -304,6 +304,47 @@ func TestValidateConditionTypes_ArrayWithNullElement_Accepted(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// ArrayCondition — routed through spi.DesugarCondition rather than a second
+// type check, so it gets the SAME declared-type check a simple clause's
+// positional leaf gets.
+// ---------------------------------------------------------------------------
+
+// TestValidateConditionTypes_ArrayCondition_TypeMismatch verifies that an
+// array clause tested against an integer-declared array field rejects a
+// string value the same way a positional SimpleCondition would —
+// walkConditionTypes' ArrayCondition arm desugars into SimpleCondition
+// EQUALS leaves and recurses, rather than skipping the check entirely.
+func TestValidateConditionTypes_ArrayCondition_TypeMismatch(t *testing.T) {
+	node := schema.NewObjectNode()
+	node.SetChild("nums", schema.NewArrayNode(schema.NewLeafNode(schema.Integer)))
+	cond := &predicate.ArrayCondition{
+		JsonPath: "$.nums[*]",
+		Values:   []any{"not-a-number"},
+	}
+	err := ValidateConditionValueTypes(node, cond)
+	if err == nil {
+		t.Fatal("expected error for string value against an INTEGER array element, got nil")
+	}
+	if !errors.Is(err, errConditionTypeMismatch) {
+		t.Errorf("expected errConditionTypeMismatch sentinel, got: %v", err)
+	}
+}
+
+// TestValidateConditionTypes_ArrayCondition_Accepted is the positive control:
+// a value that parses into the declared element type is accepted.
+func TestValidateConditionTypes_ArrayCondition_Accepted(t *testing.T) {
+	node := schema.NewObjectNode()
+	node.SetChild("nums", schema.NewArrayNode(schema.NewLeafNode(schema.Integer)))
+	cond := &predicate.ArrayCondition{
+		JsonPath: "$.nums[*]",
+		Values:   []any{float64(3)},
+	}
+	if err := ValidateConditionValueTypes(node, cond); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Lifecycle (meta) conditions — temporal operator/operand validation and
 // unknown-meta-field rejection (Task 7).
 // ---------------------------------------------------------------------------
