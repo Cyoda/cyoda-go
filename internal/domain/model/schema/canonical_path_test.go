@@ -32,6 +32,15 @@ func TestCanonicalFieldPath(t *testing.T) {
 		{"slice", "$.arr[0:2]", "$.arr[0:2]"},
 		{"union", "$.arr[0,1]", "$.arr[0,1]"},
 		{"unclosed", "$.arr[0", "$.arr[0"},
+
+		// An overflowing digit run is not a well-formed index at all — it is
+		// the same C1 axis path-grammar.md §9/§10 close everywhere else: the
+		// digit class alone says nothing about whether the run fits an int,
+		// and spi.ParseFilterPath (which this now delegates to, rather than a
+		// byte-scan with its own copy of the digit-class check) rejects it.
+		// Left verbatim, matching every other shape this function cannot
+		// canonicalise to a FieldsMap key.
+		{"overflowing index", "$.tags[99999999999999999999]", "$.tags[99999999999999999999]"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

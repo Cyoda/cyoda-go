@@ -125,10 +125,11 @@ func TestEntitySearch_SnapshotSearch_NonJSONPathCondition_InvalidFieldPath(t *te
 }
 
 // TestEntitySearch_DirectSearch_ArraySubscriptPath_NotRejected is the
-// gRPC-side positive control: an array-subscripted path is valid JSON Path
-// that no pushdown filter can express, and must still be served through the
-// in-memory fallback rather than rejected alongside the malformed spellings
-// above.
+// gRPC-side positive control: an array-subscripted path is valid JSON Path,
+// and the kernel resolves it directly (see spi.ResolvePath) — a wildcard
+// pushes down as an array unnest on every backend — so it must still be
+// served with a matching result rather than rejected alongside the malformed
+// spellings above.
 func TestEntitySearch_DirectSearch_ArraySubscriptPath_NotRejected(t *testing.T) {
 	svc, ctx := newTestEnv(t)
 	importAndLockModel(t, svc, ctx, "gadget", "1", map[string]any{"amount": 0, "tags": []any{"a"}})
@@ -149,7 +150,7 @@ func TestEntitySearch_DirectSearch_ArraySubscriptPath_NotRejected(t *testing.T) 
 		var typed events.EntityResponseJson
 		validateResponse(t, sent, &typed)
 		if !typed.Success && typed.Error != nil && strings.Contains(typed.Error.Message, "INVALID_FIELD_PATH") {
-			t.Fatalf("array-subscript path was rejected as an invalid path: %q; it is valid JSON Path and must reach the in-memory fallback",
+			t.Fatalf("array-subscript path was rejected as an invalid path: %q; it is valid JSON Path and the kernel resolves it directly",
 				typed.Error.Message)
 		}
 	}

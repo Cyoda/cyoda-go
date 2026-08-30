@@ -213,9 +213,11 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 
 	// Try to translate to a pushdown-friendly Filter. A nil parsedCond
 	// yields the zero-value Filter ("match all"); a parsedCond that the
-	// translator can't handle (e.g. function conditions, wildcard paths)
-	// returns an error — in that case the streaming branch will re-apply the
-	// prepared predicate (match.Prepare/(Prepared).Match) per entity.
+	// translator can't handle (a function condition — the kernel now
+	// resolves a subscripted/wildcard path directly, see spi.ResolvePath, so
+	// that shape translates like any other) returns an error — in that case
+	// the streaming branch will re-apply the prepared predicate
+	// (match.Prepare/(Prepared).Match) per entity.
 	var pushFilter spi.Filter
 	pushable := true
 	if parsedCond != nil {
@@ -378,7 +380,7 @@ func buildGroupKeyFromEntity(groups []GroupExprValidated, e *spi.Entity) ([]any,
 			}
 		} else {
 			path = g.Path
-			res := gjson.GetBytes(e.Data, gjsonPath(g.Path))
+			res := resolveScalarPath(e.Data, g.Path)
 			switch {
 			case !res.Exists():
 				val = nil
@@ -410,7 +412,7 @@ func buildGroupKeyFromEntity(groups []GroupExprValidated, e *spi.Entity) ([]any,
 func extractNumerics(aggs []AggregationExprValidated, data []byte) []float64 {
 	out := make([]float64, len(aggs))
 	for i, a := range aggs {
-		res := gjson.GetBytes(data, gjsonPath(a.Field))
+		res := resolveScalarPath(data, a.Field)
 		if !res.Exists() || res.Type != gjson.Number {
 			out[i] = math.NaN()
 			continue
@@ -420,14 +422,32 @@ func extractNumerics(aggs []AggregationExprValidated, data []byte) []float64 {
 	return out
 }
 
-// gjsonPath converts our normalized JSONPath ("$.foo.bar" or "foo.bar")
-// to gjson syntax ("foo.bar"). The reserved token "state" is handled by
-// callers via IsState and never reaches here.
-func gjsonPath(p string) string {
+// resolveScalarPath resolves a normalized groupBy/aggregation JSONPath
+// ("$.foo.bar" or "foo.bar") against data through [spi.ParseFilterPath] and
+// [spi.ResolvePath] — the same addressing rule every other resolver in the
+// stack applies — rather than gjson's own path syntax, which resolves an
+// all-digit segment against an ARRAY receiver as a positional index. That
+// divergence let "$.obj.0" over {"obj":["X","Y"]} return "X" here while
+// spi.ResolvePath, and both SQL backends, correctly report it absent (a
+// field literally named "0" is not the same address as element 0).
+//
+// ValidateScalarJSONPath has already rejected any subscript on this surface,
+// so this is always a 0-or-1-value resolution: absent, or the single value
+// the path names. The reserved token "state" is handled by callers via
+// IsState and never reaches here.
+func resolveScalarPath(data []byte, p string) gjson.Result {
 	if len(p) >= 2 && p[0] == '$' && p[1] == '.' {
-		return p[2:]
+		p = p[2:]
 	}
-	return p
+	hops, err := spi.ParseFilterPath(p)
+	if err != nil {
+		return gjson.Result{}
+	}
+	results := spi.ResolvePath(data, hops)
+	if len(results) != 1 {
+		return gjson.Result{}
+	}
+	return results[0]
 }
 
 // translateGroupBy maps the validation-layer types to the SPI types used
@@ -436,7 +456,7 @@ func gjsonPath(p string) string {
 // plugin's validateJSONPath rejects "$" as a disallowed character — the
 // SPI contract is a bare dotted-identifier path ("foo.bar"), and the
 // "$." prefix lives only at the public surface (response GroupKeyEntry.Path
-// and the in-process gjson lookup, which strips it via gjsonPath).
+// and the in-process resolveScalarPath call, which strips it the same way).
 func translateGroupBy(groups []GroupExprValidated) []spi.GroupExpr {
 	out := make([]spi.GroupExpr, len(groups))
 	for i, g := range groups {
@@ -465,13 +485,15 @@ func translateAggregations(aggs []AggregationExprValidated) []spi.AggregateExpr 
 }
 
 // stripJSONPathPrefix removes the leading "$." that normalizeScalarPath
-// preserves for the wire-shape group-key. Plugins (memory's own gjsonPath
-// helper in plugins/memory/grouped_stats.go, sqlite/postgres's
-// validateJSONPath) all expect bare dotted-identifier paths — plugins/memory
-// is a separate Go module with no dependency on the root module, so it
-// cannot import internal/match at all; its group-by path handling is
-// entirely local. A path without the prefix is returned unchanged so the
-// helper is idempotent — re-applying it is safe.
+// preserves for the wire-shape group-key. Plugins (memory's own
+// resolveScalarPath helper in plugins/memory/grouped_stats.go, sqlite/
+// postgres's validateJSONPath) all expect bare dotted-identifier paths —
+// plugins/memory is a separate Go module with no dependency on the root
+// module, so it cannot import internal/match at all; its group-by path
+// handling is entirely local (built on spi.ParseFilterPath/spi.ResolvePath,
+// the same SPI both this package and plugins/memory already depend on). A
+// path without the prefix is returned unchanged so the helper is idempotent
+// — re-applying it is safe.
 func stripJSONPathPrefix(p string) string {
 	if len(p) >= 2 && p[0] == '$' && p[1] == '.' {
 		return p[2:]

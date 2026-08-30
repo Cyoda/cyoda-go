@@ -2415,14 +2415,26 @@ func TestSearch_FallbackBranchUnboundedReturnsAll(t *testing.T) {
 // LifecycleCondition and GroupCondition's only translate-failure causes are
 // an out-of-grammar path or an unrecognised operator name, and both are
 // rejected by the identical grammar/operator-set check ValidateCondition
-// already ran (TestValidateCondition_PathGrammarMatchesSPI pins the path
-// agreement; the operator sets — search's canonicalOperators and spi's
-// canonicalOperatorNames — are the same 26 names). So once a condition has
-// cleared ValidateCondition, every reachable shape now also clears
-// ConditionToFilter — this used to be false (a wildcard array path
-// translated to a plain, non-sentinel error precisely so the fallback would
-// serve it; see matchAllFixtureCondition's doc comment), which is exactly
-// the asymmetry this test used to exploit.
+// already ran — not merely a parallel implementation kept in agreement by a
+// test, but the SAME function call: ValidateConditionJSONPath
+// (jsonpath_grammar.go) delegates to spi.ParseFilterPath directly, and
+// canonicalOperators (operators.go) is built from spi.OperatorNames()
+// directly, so the two checks cannot independently drift. So once a
+// condition has cleared ValidateCondition, every reachable shape now also
+// clears ConditionToFilter — this used to be false in two ways: a wildcard
+// array path translated to a plain, non-sentinel error precisely so the
+// fallback would serve it (see matchAllFixtureCondition's doc comment),
+// which is the asymmetry this test used to exploit; and, independently and
+// unnoticed until this deliverable's C1 fix, an overflowing subscript index
+// ("$.tags[99999999999999999999]") cleared the boundary's digit-class-only
+// subscript check while spi.ParseFilterPath's magnitude bound rejected the
+// same string, which TestValidateCondition_PathGrammarMatchesSPI's corpus
+// did not exercise and so did not catch.
+// TestValidateCondition_ClearingImpliesTranslates (operators_test.go's
+// sibling, validate_translate_agreement_test.go) is the direct empirical
+// check of this claim: every operator name, on both a data path and a meta
+// field, plus group/array nesting, a positional index, and a wildcard
+// mid-path all clear ValidateCondition and then ConditionToFilter.
 //
 // A caller-constructed predicate.Condition outside the five-clause set
 // (predicate.Condition is a one-method interface, open to any type) is NOT

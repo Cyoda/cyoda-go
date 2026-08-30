@@ -571,7 +571,7 @@ func StructuralConditionErrCode(cErr error) string {
 // schema cache is refreshed exactly once via RefreshAndGet (mirroring
 // entity.Handler.ValidateWithRefresh's bounded-retry contract) so a
 // search referencing a peer's freshly-extended path succeeds after one
-// authoritative read. Truly-unknown paths surface as 4xx BAD_REQUEST.
+// authoritative read. Truly-unknown paths surface as 400 INVALID_FIELD_PATH.
 // Unregistered models surface as 404 MODEL_NOT_FOUND.
 func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition, opts SearchOptions) ([]*spi.Entity, error) {
 	// Defense-in-depth: enforce the limit cap at the service layer so every

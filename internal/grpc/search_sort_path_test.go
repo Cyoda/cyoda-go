@@ -40,27 +40,36 @@ var sortPathModel = map[string]any{
 	"items":   []any{map[string]any{"name": "widget"}},
 }
 
-// searchConditions are the two shapes a direct search can take, because they
-// are served by different branches and only one of them has a backstop.
+// searchConditions are two condition shapes a direct search can carry,
+// probing sort-path validation against both a trivial and a
+// subscript-carrying condition.
 //
-//   - A translatable condition is pushed down, where each plugin's own path
-//     validator refuses a bracket independently of anything the engine does.
-//   - A condition carrying a well-formed array subscript is valid JSON Path
-//     that no pushdown filter can express, so spi.ConditionToFilter declines
-//     it and the in-memory evaluator serves the whole request — sort included.
-//     There is no plugin in that path at all. It is the branch where an
-//     unchecked sort path stopped being an error and became a wrong answer:
-//     gjson has no bracket syntax, so every entity misses, all compare equal,
-//     and the caller receives a 200 whose order is not the one they asked for.
+// A well-formed array-subscripted condition ("$.items[*].name EQUALS
+// "widget"") used to be the one shape spi.ConditionToFilter declined to
+// translate, routing the WHOLE request — sort included — through
+// SearchService's own GetAll+in-memory-evaluator fallback, which is where an
+// unchecked sort path stopped being an error and became a wrong answer:
+// gjson has no bracket syntax, so every entity missed, all compared equal,
+// and the caller received a 200 whose order was not the one they asked for.
 //
-// A table that only exercises the first branch cannot fail if the boundary
-// check is removed — the plugin answers 400 either way.
+// That is no longer true: the kernel resolves a subscripted path directly
+// (see spi.ResolvePath), so this condition now translates and clears through
+// the store's Searcher exactly like the trivial one — search.ValidateCondition
+// rejects every input shape that could still fail translation (a
+// FunctionCondition), so SearchService's own fallback branch is unreachable
+// from a valid direct-search condition at all (see
+// TestValidateCondition_ClearingImpliesTranslates in internal/domain/search).
+// Both rows below therefore exercise the same Searcher-backed code path
+// today; they are kept as two rows because sort-path validation must hold
+// for either condition shape, not because they still probe different
+// mechanisms — a table that only exercised one shape would say nothing about
+// the other, even if both now resolve identically.
 var searchConditions = []struct {
 	name string
 	cond map[string]any
 }{
-	{"pushdown", map[string]any{"type": "group", "operator": "AND", "conditions": []any{}}},
-	{"in-memory fallback", map[string]any{
+	{"trivial condition", map[string]any{"type": "group", "operator": "AND", "conditions": []any{}}},
+	{"subscript-carrying condition", map[string]any{
 		"type": "simple", "jsonPath": "$.items[*].name",
 		"operatorType": "EQUALS", "value": "widget",
 	}},

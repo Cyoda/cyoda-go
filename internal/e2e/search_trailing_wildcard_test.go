@@ -10,11 +10,12 @@ package e2e_test
 // for an entity that holds the tag, and a workflow criterion on such a path
 // silently never fired. A wrong-but-available answer, which the project forbids.
 //
-// This needs a running backend rather than a unit test for the same reason the
-// grammar tightening did: a subscripted path is refused by spi.ConditionToFilter
-// with a PLAIN error, which every call site reads as "not pushdownable, evaluate
-// in memory", so the request answered 200 with the wrong rows rather than
-// failing anywhere a unit test would see.
+// This needs a running backend rather than a unit test because the bug lived
+// in the in-memory evaluator's own path rewrite, not in a boundary check a
+// unit test on the validator alone would exercise — and the kernel now
+// resolves a subscripted path directly (see spi.ResolvePath), so this pins
+// the CORRECT resolution end to end, on a real SQL backend, rather than
+// merely the absence of the old miscount.
 
 import (
 	"fmt"

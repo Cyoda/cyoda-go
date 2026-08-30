@@ -97,6 +97,16 @@ var invalidJSONPaths = []struct {
 	{"trailing dot after subscript", "$.a[*]."},
 	{"non-index chained subscript", "$.tags[*][x]"},
 	{"negative chained index", "$.a[0][-1]"},
+
+	// Overflowing digit runs. A digit-class-only check admits any run of
+	// digits regardless of magnitude; spi.ParseFilterPath, which the boundary
+	// now delegates to directly, additionally requires the run to fit an int
+	// (strconv.Atoi). No entity array is ever long enough for these indices
+	// to be meaningful, so rejecting is the correct, fail-closed answer — see
+	// path-grammar.md §9 and §10.
+	{"overflowing index", "$.tags[99999999999999999999]"},
+	{"overflowing index mid-path", "$.items[99999999999999999999].name"},
+	{"overflowing chained index", "$.matrix[0][99999999999999999999]"},
 }
 
 // validJSONPaths must keep working. Two classes are folded together
@@ -210,11 +220,13 @@ func TestValidateCondition_AcceptsValidJSONPath(t *testing.T) {
 }
 
 // TestValidateCondition_PathGrammarMatchesSPI is the anti-drift guard. The
-// boundary check is a port of spi.ConditionToFilter's own path grammar, and
-// the two must classify identically: whatever the translator refuses with
-// spi.ErrInvalidFilterPath the boundary must reject 400, and whatever it
-// refuses as merely non-pushdownable the boundary must accept so the
-// in-memory fallback still serves it.
+// boundary check is built directly on spi.ParseFilterPath (the same
+// function spi.ConditionToFilter's translator consults), so the two classify
+// identically by construction — this pins that against the translator
+// itself: whatever it refuses with spi.ErrInvalidFilterPath the boundary
+// must reject 400, and every well-formed path (subscripts included, since
+// the kernel now resolves them directly — see spi.ResolvePath) the boundary
+// must accept.
 func TestValidateCondition_PathGrammarMatchesSPI(t *testing.T) {
 	all := append(append([]struct{ name, path string }{}, invalidJSONPaths...), validJSONPaths...)
 	for _, tc := range all {

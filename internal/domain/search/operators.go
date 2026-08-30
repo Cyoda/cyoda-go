@@ -42,40 +42,27 @@ const MaxConditionDepth = spi.MaxConditionDepth
 // OpenAPI schema (api/generated.go `*OperatorType` enum values). Any
 // change to one must be reflected in the others.
 //
+// Built from [spi.OperatorNames] rather than a second, hand-maintained
+// literal: the SPI already exports its operator table for exactly this
+// reason (see that function's doc comment), and an independent copy here is
+// the same drift class path-grammar.md and operator-semantics.md exist to
+// close everywhere else — nothing would notice the two silently diverging.
+// TestCanonicalOperators_MatchesSPI pins this by construction.
+//
 // The set must include every operator the runtime matcher
 // (internal/match/operators.go) accepts — otherwise previously-valid
 // requests that would have matched correctly in-memory are rejected at
 // the API boundary. Issue #90 closed the "silently falls through to
 // regex" gap at the default; the set must still admit every operator
 // the system actually supports.
-var canonicalOperators = map[string]struct{}{
-	"EQUALS":            {},
-	"NOT_EQUAL":         {},
-	"GREATER_THAN":      {},
-	"LESS_THAN":         {},
-	"GREATER_OR_EQUAL":  {},
-	"LESS_OR_EQUAL":     {},
-	"CONTAINS":          {},
-	"NOT_CONTAINS":      {},
-	"STARTS_WITH":       {},
-	"NOT_STARTS_WITH":   {},
-	"ENDS_WITH":         {},
-	"NOT_ENDS_WITH":     {},
-	"LIKE":              {},
-	"IS_NULL":           {},
-	"NOT_NULL":          {},
-	"BETWEEN":           {},
-	"BETWEEN_INCLUSIVE": {},
-	"MATCHES_PATTERN":   {},
-	"IEQUALS":           {},
-	"INOT_EQUAL":        {},
-	"ICONTAINS":         {},
-	"INOT_CONTAINS":     {},
-	"ISTARTS_WITH":      {},
-	"INOT_STARTS_WITH":  {},
-	"IENDS_WITH":        {},
-	"INOT_ENDS_WITH":    {},
-}
+var canonicalOperators = func() map[string]struct{} {
+	names := spi.OperatorNames()
+	m := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		m[n] = struct{}{}
+	}
+	return m
+}()
 
 // ValidateCondition walks a parsed condition tree and returns an error
 // identifying any unknown operator, malformed operand shape/arity, or

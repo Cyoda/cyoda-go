@@ -2,10 +2,32 @@ package search
 
 import (
 	"errors"
+	"reflect"
+	"sort"
 	"testing"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 )
+
+// TestCanonicalOperators_MatchesSPI is the anti-drift guard for I5:
+// canonicalOperators is built directly from spi.OperatorNames() (see
+// operators.go), so this holds by construction today — but it stays as a
+// live guard against a future change that reintroduces an independent copy
+// of the operator table, which is exactly the drift class this deliverable
+// exists to close (see TestValidateCondition_PathGrammarMatchesSPI for the
+// path-grammar analogue).
+func TestCanonicalOperators_MatchesSPI(t *testing.T) {
+	want := spi.OperatorNames()
+	got := make([]string, 0, len(canonicalOperators))
+	for k := range canonicalOperators {
+		got = append(got, k)
+	}
+	sort.Strings(got)
+	if !reflect.DeepEqual(want, got) {
+		t.Fatalf("canonicalOperators = %v, want %v (spi.OperatorNames())", got, want)
+	}
+}
 
 // C1/M4 regression tests — a malformed BETWEEN operand (a scalar, or a 1- or
 // 3-element array instead of the required 2-element [lo, hi] pair) previously

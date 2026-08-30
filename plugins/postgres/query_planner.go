@@ -485,17 +485,27 @@ func jsonbExtractJSONB(root, path string) string {
 // A "[*]" subscript has no accessor form — postgres's -> operator has no
 // wildcard spelling — so it is not expected to reach here: isLeafPushable
 // (query_planner.go) refuses a wildcard filter leaf before it can be pushed,
-// which is the only caller path this function is on. A caller that reaches
-// this with a wildcard hop anyway gets it silently dropped from the operand
-// chain, which is out of scope for this change (group-by/aggregate paths
-// carry no wildcard usage yet — see the withdrawn array-quantifier design).
+// and validateGroupAndAggregatePaths/validateOrderSpecs refuse one on the
+// group-by/aggregate/sort surfaces, so every legitimate caller path is
+// guarded before this function ever sees a wildcard hop.
+//
+// A defensively-reached wildcard returns nil (steps so far discarded, not
+// just the subscript) rather than continuing with the name it belongs to:
+// jsonbExtractText/jsonbExtractJSONB treat nil the same safe way they treat
+// an unparseable path (root->>” / root unchanged) — a non-match, not a
+// value. Dropping only the subscript used to leave the hop's name in the
+// chain, so jsonbExtractText("doc", "tags[*]") rendered doc->>'tags' — the
+// whole array's text form, a real but WRONG value, exactly the
+// wrong-but-available answer class path-grammar.md §9/§10 close everywhere
+// else. A rejection (degrading to "no path") is the safe response here; a
+// silent drop that renders the container is not.
 func pathAccessors(hops []spi.PathHop) []string {
 	var steps []string
 	for _, hop := range hops {
 		steps = append(steps, "'"+hop.Name+"'")
 		for _, sub := range hop.Subs {
 			if sub.Wildcard {
-				continue
+				return nil
 			}
 			steps = append(steps, strconv.Itoa(sub.Index))
 		}

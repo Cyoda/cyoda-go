@@ -107,7 +107,7 @@ Metadata is not addressed through `jsonPath` at all — a `lifecycle` condition 
 
 The same grammar governs grouped statistics (`groupBy`, aggregation `field`), which additionally rejects array subscripts because a group key must be a single scalar — see the `crud` topic. It also governs workflow and transition `criterion` paths, rejected at workflow import with `400 errors.VALIDATION_FAILED` — see the `workflows` topic.
 
-Operator strings outside this list are rejected with `errors.BAD_REQUEST` at request time; the error detail includes the canonical list.
+Operator strings outside this list are rejected with `errors.INVALID_CONDITION` at request time; the error detail includes the canonical list.
 
 **LifecycleCondition** — match entity lifecycle metadata:
 
@@ -141,7 +141,7 @@ Operator strings outside this list are rejected with `errors.BAD_REQUEST` at req
 ```
 
 - `type`: `"group"`
-- `operator`: `"AND"` or `"OR"` — these are the only supported values; any other string produces `errors.BAD_REQUEST` at match time ("unknown group operator")
+- `operator`: `"AND"` or `"OR"` — these are the only supported values; any other string is rejected `400 errors.INVALID_CONDITION` at validation time ("unknown group operator")
 - `conditions`: array of `Condition` objects (recursive; maximum nesting depth 50)
 
 `"NOT"` is not supported. An `AND` group with an empty `conditions` array evaluates to `true` (vacuous conjunction). An `OR` group with an empty `conditions` array evaluates to `false` (vacuous disjunction).

@@ -164,11 +164,12 @@ func TestSearch_NonJSONPathCondition_NestedInGroup_Returns400(t *testing.T) {
 }
 
 // TestSearch_ArraySubscriptPath_Still200 is the positive control that keeps
-// the tightening honest. "$.tags[*]" is valid JSON Path that no pushdown
-// filter can express; spi.ConditionToFilter refuses it with a PLAIN error
-// (not ErrInvalidFilterPath) precisely so the engine falls back to in-memory
-// evaluation. Rejecting every translate failure would have turned this working
-// query into a 400 — the exact regression this test exists to catch.
+// the tightening honest. "$.tags[*]" is valid JSON Path, and the kernel
+// resolves it directly (see spi.ResolvePath): a wildcard pushes down as an
+// array unnest on a real SQL backend. Rejecting a well-formed subscript at
+// the boundary — which the historical grammar bug's fix could plausibly have
+// over-corrected into — would have turned this working query into a 400,
+// the exact regression this test exists to catch.
 func TestSearch_ArraySubscriptPath_Still200(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
@@ -193,7 +194,7 @@ func TestSearch_ArraySubscriptPath_Still200(t *testing.T) {
 				`{"type":"simple","jsonPath":"$.tags[*]","operatorType":%q,"value":null}`, tc.op)
 			status, results := directSearch(t, model, 1, cond)
 			if status != http.StatusOK {
-				t.Fatalf("array-subscript path answered %d, want 200 — it is valid JSON Path and must reach the in-memory fallback", status)
+				t.Fatalf("array-subscript path answered %d, want 200 — it is valid JSON Path and the kernel resolves it directly", status)
 			}
 			if len(results) != tc.want {
 				t.Fatalf("%s on $.tags[*]: got %d results, want %d", tc.op, len(results), tc.want)

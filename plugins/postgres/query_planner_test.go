@@ -1131,6 +1131,30 @@ func TestJsonbExtract_RendersSubscript(t *testing.T) {
 	}
 }
 
+// TestJsonbExtract_WildcardIsRejectedNotDropped is M10: pathAccessors used to
+// silently DROP a "[*]" subscript, keeping the hop's name — so
+// jsonbExtractText("doc", "tags[*]") rendered doc->>'tags', a real but WRONG
+// value (the whole array's text form, not "no value"). This surface is
+// guarded at every legitimate caller (isLeafPushable for the WHERE clause,
+// validateGroupAndAggregatePaths/validateOrderSpecs for group-by/aggregate/
+// sort paths all refuse a wildcard leaf before it can reach here), so a
+// defensively-reached wildcard must degrade the same safe way an unparseable
+// path already does — root->>” — never render the container as if the
+// wildcard were not there.
+func TestJsonbExtract_WildcardIsRejectedNotDropped(t *testing.T) {
+	cases := []struct{ path, want string }{
+		{"tags[*]", "doc->>''"},
+		{"items[*].sku", "doc->>''"},
+		{"m[0][*]", "doc->>''"},
+	}
+	for _, tc := range cases {
+		got := jsonbExtractText("doc", tc.path)
+		if got != tc.want {
+			t.Errorf("jsonbExtractText(%q) = %q, want %q (safe non-match, not the container)", tc.path, got, tc.want)
+		}
+	}
+}
+
 // TestPlanQuery_WildcardIsResidual: a wildcard leaf has no SQL form until a
 // quantifier node exists. Pushing it as a scalar comparison would drop every
 // matching row, and a narrowing WHERE cannot be recovered by the residual

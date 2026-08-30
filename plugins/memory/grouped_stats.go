@@ -417,8 +417,9 @@ func (b *memBucket) observe(data []byte) {
 	b.count++
 	for _, a := range b.aggs {
 		// a.field passed validateJSONPath at the GroupedAggregate boundary, so
-		// it is already the bare dotted-identifier form gjson expects.
-		res := gjson.GetBytes(data, a.field)
+		// it is already the bare dotted-identifier form spi.ParseFilterPath
+		// expects.
+		res := resolveScalarPath(data, a.field)
 		if !res.Exists() || res.Type != gjson.Number {
 			continue
 		}
@@ -500,6 +501,31 @@ func (a *memAcc) result() any {
 	return nil
 }
 
+// resolveScalarPath resolves a bare dotted-identifier groupBy/aggregation
+// field (the plugin-facing form validateJSONPath admits — no "$." leader,
+// no subscript) against data through [spi.ParseFilterPath] and
+// [spi.ResolvePath] — the same addressing rule every other resolver in the
+// stack applies — rather than gjson.GetBytes's own path syntax, which
+// resolves an all-digit segment against an ARRAY receiver as a positional
+// index. That divergence let "obj.0" over {"obj":["X","Y"]} return "X" here
+// while spi.ResolvePath, and both SQL backends, correctly report it absent (a
+// field literally named "0" is not the same address as element 0).
+//
+// The GroupedAggregate boundary has already rejected any subscript on this
+// surface, so this is always a 0-or-1-value resolution: absent, or the
+// single value the path names.
+func resolveScalarPath(data []byte, path string) gjson.Result {
+	hops, err := spi.ParseFilterPath(path)
+	if err != nil {
+		return gjson.Result{}
+	}
+	results := spi.ResolvePath(data, hops)
+	if len(results) != 1 {
+		return gjson.Result{}
+	}
+	return results[0]
+}
+
 // extractGroupKey returns the raw key values (for map-key encoding) and
 // the response group-key entries. D4 coercion: scalar values become
 // strings (using res.Raw for numbers/booleans so the canonical JSON text
@@ -522,7 +548,7 @@ func extractGroupKey(groups []spi.GroupExpr, e *spi.Entity) ([]any, []spi.GroupK
 		} else {
 			path = g.Path
 			// g.Path passed validateJSONPath at the GroupedAggregate boundary.
-			res := gjson.GetBytes(e.Data, g.Path)
+			res := resolveScalarPath(e.Data, g.Path)
 			switch {
 			case !res.Exists():
 				val = nil
