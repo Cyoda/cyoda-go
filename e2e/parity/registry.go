@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 247 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 250 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -171,6 +171,19 @@ var allTests = []NamedTest{
 	// is rejected with HTTP 400 INVALID_FIELD_PATH uniformly across backends —
 	// fail-closed rather than the pre-fix silent empty-result degradation.
 	{"SearchScalarOnContainerPath400", RunSearchScalarOnContainerPath400},
+
+	// Path grammar — addressing rules (docs/cloud-parity/path-grammar.md
+	// §§3-5, 8). ArrayClausePositional reproduces the original defect: an
+	// "array" clause's positional leaf resolved to a DOTTED index, which a
+	// dotted numeric segment is a field name (not an index) for — memory's
+	// evaluator matched anyway, both SQL backends did not. Only a scenario
+	// asserting an exact count across all three backends catches that
+	// asymmetry. PathAddressingByDeclaredShape and PathVacuity are the
+	// union rule and the presence/nullness table, which apply to the array
+	// clause's desugared form the same as to every other path.
+	{"ArrayClausePositional", RunArrayClausePositional},
+	{"PathAddressingByDeclaredShape", RunPathAddressingByDeclaredShape},
+	{"PathVacuity", RunPathVacuity},
 
 	// Phase 4b — workflow selection (Task 4b.7). Selection applies on every
 	// engine door, so the post-creation doors are pinned alongside creation.
