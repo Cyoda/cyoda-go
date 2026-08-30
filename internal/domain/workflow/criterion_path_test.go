@@ -143,18 +143,18 @@ func assertRejectedPath(t *testing.T, err error, path string) {
 	}
 }
 
+// validCriterionPaths is exercised against the "simple" clause shape only.
+// Most of these entries (a bare path, a positional-only subscript, a path
+// whose trailing segment follows a wildcard rather than being one) are NOT
+// valid for the "array" clause — see invalidArrayCriterionPaths and
+// TestValidateImportRequest_RejectsBareArrayCriterionPath, which own that
+// clause's acceptance/rejection coverage specifically.
 func TestValidateImportRequest_AcceptsJSONPathCriterionPath(t *testing.T) {
 	for _, path := range validCriterionPaths {
 		t.Run("transition/simple/"+path, func(t *testing.T) {
 			if err := validateImportRequest([]spi.WorkflowDefinition{
 				wfWithTransitionCriterion(simplePathCriterion(path))}); err != nil {
 				t.Errorf("criterion jsonPath %q: expected accepted, got %v", path, err)
-			}
-		})
-		t.Run("transition/array/"+path, func(t *testing.T) {
-			if err := validateImportRequest([]spi.WorkflowDefinition{
-				wfWithTransitionCriterion(arrayPathCriterion(path))}); err != nil {
-				t.Errorf("array criterion jsonPath %q: expected accepted, got %v", path, err)
 			}
 		})
 		t.Run("workflow/simple/"+path, func(t *testing.T) {
@@ -202,4 +202,80 @@ func TestValidateImportRequest_ArrayCriterionNestedInGroup(t *testing.T) {
 	}`)
 	err := validateImportRequest([]spi.WorkflowDefinition{wfWithTransitionCriterion(crit)})
 	assertRejectedPath(t, err, "tags")
+}
+
+// invalidArrayCriterionPaths are grammar-valid paths that a "simple" or
+// "lifecycle" clause would accept, but that path-grammar.md §8 refuses for
+// the "array" clause specifically: a bare path addresses the container, not
+// its elements, and a positional-only path names one element rather than
+// testing by position across the whole array — neither carries the trailing
+// "[*]" an array clause's positional test requires.
+//
+// This is the same "$.tags" / "$.arr[0]" bare-vs-positional distinction
+// section 8's "array" clause table draws on the search-condition surface
+// (operators.go's ArrayCondition arm) — until this fix, walkCriterion never
+// applied it, so a clause the search API rejects with 400 INVALID_FIELD_PATH
+// still imported cleanly as a criterion: two doors, two answers for the
+// identical clause.
+var invalidArrayCriterionPaths = []string{
+	"$.tags",         // bare — addresses the container, not its elements
+	"$.arr[0]",       // positional-only — one element, not a positional test
+	"$.tags[*].name", // trailing segment after the wildcard, not itself a wildcard
+	"$.matrix[*][0]", // trailing subscript is a positional index, not "[*]"
+	"$._meta.state",  // bare, non-array-shaped path
+}
+
+// validArrayCriterionPaths carry a genuine trailing "[*]" and must keep
+// importing as an array clause.
+var validArrayCriterionPaths = []string{
+	"$.tags[*]",
+	"$.matrix[*][*]",
+	"$.orders[*].lines[*]",
+}
+
+// TestValidateImportRequest_RejectsBareArrayCriterionPath is the RED-phase
+// proof for the sixth defect this batch closes: an array clause missing its
+// trailing "[*]" imported cleanly as a criterion even though the identical
+// clause is 400 INVALID_FIELD_PATH on the search surface.
+func TestValidateImportRequest_RejectsBareArrayCriterionPath(t *testing.T) {
+	for _, path := range invalidArrayCriterionPaths {
+		t.Run("transition/"+path, func(t *testing.T) {
+			err := validateImportRequest([]spi.WorkflowDefinition{
+				wfWithTransitionCriterion(arrayPathCriterion(path))})
+			assertRejectedPath(t, err, path)
+		})
+		t.Run("nested-in-group/"+path, func(t *testing.T) {
+			crit := json.RawMessage(`{
+				"type": "group",
+				"operator": "AND",
+				"conditions": [` + string(arrayPathCriterion(path)) + `]
+			}`)
+			err := validateImportRequest([]spi.WorkflowDefinition{wfWithTransitionCriterion(crit)})
+			assertRejectedPath(t, err, path)
+		})
+		// The identical path is still valid for a "simple" criterion — the
+		// trailing-"[*]" requirement is specific to the array clause
+		// (path-grammar.md §8: a simple clause's bare path legitimately
+		// addresses the container).
+		t.Run("simple-clause-still-accepted/"+path, func(t *testing.T) {
+			if err := validateImportRequest([]spi.WorkflowDefinition{
+				wfWithTransitionCriterion(simplePathCriterion(path))}); err != nil {
+				t.Errorf("path %q on a simple clause: expected accepted, got %v", path, err)
+			}
+		})
+	}
+}
+
+// TestValidateImportRequest_AcceptsTrailingWildcardArrayCriterionPath is the
+// positive control: an array clause whose path genuinely ends in "[*]"
+// keeps importing.
+func TestValidateImportRequest_AcceptsTrailingWildcardArrayCriterionPath(t *testing.T) {
+	for _, path := range validArrayCriterionPaths {
+		t.Run(path, func(t *testing.T) {
+			if err := validateImportRequest([]spi.WorkflowDefinition{
+				wfWithTransitionCriterion(arrayPathCriterion(path))}); err != nil {
+				t.Errorf("array criterion jsonPath %q: expected accepted, got %v", path, err)
+			}
+		})
+	}
 }

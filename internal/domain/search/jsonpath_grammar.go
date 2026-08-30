@@ -82,6 +82,41 @@ func ValidateConditionJSONPath(path string) error {
 	return validateJSONPath(path, true)
 }
 
+// ValidateArrayClauseJSONPath checks an `array` clause's jsonPath: the wire
+// grammar ([ValidateConditionJSONPath]) plus the clause-shape rule
+// path-grammar.md §8 adds on top of it — the path must carry a trailing
+// array wildcard ("[*]"). The clause tests elements by position, so its path
+// must address elements, not the array itself: a bare path ("$.tags")
+// addresses the container and carries no positional test, and a
+// positional-only path ("$.tags[0]") names one element rather than testing
+// by position across the whole array. Errors wrap [ErrInvalidFieldPath].
+//
+// This requirement is specific to the array clause: a `simple` clause's bare
+// path still legitimately addresses the container (see path_validate.go's
+// container acceptance, which "$.tags NOT_NULL" relies on).
+//
+// Exported so every surface that carries an array clause enforces the same
+// shape rule from one implementation: the search condition boundary
+// (ValidateCondition's ArrayCondition arm) and workflow-criterion import
+// (workflow.walkCriterion) both call this rather than each independently
+// deciding what "ends in a trailing wildcard" means. Section 7's
+// "grammar only" exemption for a criterion is about the MODEL check — a
+// criterion is not validated against the model — not this clause-shape rule,
+// which is checkable without the model and belongs with the operator and
+// pattern checks workflow import already runs.
+func ValidateArrayClauseJSONPath(path string) error {
+	if err := ValidateConditionJSONPath(path); err != nil {
+		return err
+	}
+	if !strings.HasSuffix(path, "[*]") {
+		return fmt.Errorf(
+			"%w: jsonPath %q must end in a trailing array wildcard \"[*]\"; "+
+				"an array clause tests elements by position and a bare path addresses the array itself",
+			errInvalidFieldPath, path)
+	}
+	return nil
+}
+
 // ValidateScalarJSONPath checks a path that must denote a single scalar — a
 // grouped-stats groupBy entry, an aggregation field, or a sort key — against
 // the same grammar, additionally rejecting array projections and subscripts.

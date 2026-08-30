@@ -270,8 +270,10 @@ func validateCriterion(criterion json.RawMessage, location string) error {
 // walkCriterion recurses into GroupCondition.Conditions and checks every
 // leaf condition:
 //
-//   - SimpleCondition — jsonPath grammar.
-//   - ArrayCondition — jsonPath grammar. It is not a lifecycle clause.
+//   - SimpleCondition — jsonPath grammar (search.ValidateConditionJSONPath).
+//   - ArrayCondition — jsonPath grammar PLUS the array clause's trailing-"[*]"
+//     shape rule (search.ValidateArrayClauseJSONPath). It is not a lifecycle
+//     clause.
 //   - LifecycleCondition — type-soundness
 //     (search.ValidateLifecycleCondition). Its Field names a member of the
 //     closed meta vocabulary directly, not a path, so the path grammar does
@@ -283,12 +285,16 @@ func validateCriterion(criterion json.RawMessage, location string) error {
 // FunctionCondition carries neither a path nor an operator and is silently
 // skipped — that is how a FUNCTION criterion is exempted from these checks.
 //
-// The path check uses search.ValidateConditionJSONPath, the same grammar and
-// the same implementation the search API boundary enforces on an ad-hoc query.
-// A criterion and a search condition are one model syntax, so both entry points
-// accept and reject the same paths. The CONDITION variant is used, not the
-// scalar one: a criterion evaluates in memory (match.Prepare), which resolves
-// an array subscript, so "$.tags[*].name" and "$.arr[0]" stay valid here.
+// SimpleCondition's path check uses search.ValidateConditionJSONPath, the
+// same grammar and the same implementation the search API boundary enforces
+// on an ad-hoc query. A criterion and a search condition are one model
+// syntax, so both entry points accept and reject the same paths. The
+// CONDITION variant is used, not the scalar one: a criterion evaluates in
+// memory (match.Prepare), which resolves an array subscript, so
+// "$.tags[*].name" and "$.arr[0]" stay valid for a SimpleCondition here.
+// ArrayCondition is narrower — path-grammar.md §8 restricts ITS path to a
+// trailing wildcard regardless of surface, so "$.arr[0]" (valid for a
+// SimpleCondition) is not valid as an ArrayCondition's path.
 func walkCriterion(cond predicate.Condition, location string) error {
 	switch c := cond.(type) {
 	case *predicate.SimpleCondition:
@@ -297,7 +303,15 @@ func walkCriterion(cond predicate.Condition, location string) error {
 		}
 		return nil
 	case *predicate.ArrayCondition:
-		if err := search.ValidateConditionJSONPath(c.JsonPath); err != nil {
+		// ValidateArrayClauseJSONPath adds path-grammar.md §8's trailing-"[*]"
+		// clause-shape rule on top of the wire grammar — the same check
+		// search.ValidateCondition's ArrayCondition arm applies on the search
+		// surface, so a bare or positional-only array-clause path is rejected
+		// here too rather than importing cleanly and never resolving at
+		// evaluation. Section 7's "grammar only" exemption for a criterion is
+		// about the MODEL check, not this model-independent clause-shape
+		// rule.
+		if err := search.ValidateArrayClauseJSONPath(c.JsonPath); err != nil {
 			return fmt.Errorf("%s: %w", location, err)
 		}
 		return nil
