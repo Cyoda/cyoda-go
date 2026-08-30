@@ -390,15 +390,49 @@ func TestOrderSpecValidation_RejectsMalformedDataPath(t *testing.T) {
 	}
 }
 
+// TestOrderSpecValidation_RejectsSubscript pins
+// docs/cloud-parity/path-grammar.md section 7: a SourceData sort key is a
+// scalar surface that admits no subscript, so "tags[0]" / "tags[*]" — legal
+// FILTER paths (TestFilterPathValidation_AcceptsContractShapes accepts the
+// same strings) — must be rejected as an OrderSpec.Path.
+func TestOrderSpecValidation_RejectsSubscript(t *testing.T) {
+	f := memory.NewStoreFactory()
+	t.Cleanup(func() { _ = f.Close() })
+
+	ctx := txIndexCtx("tenant-orderpath-subscript")
+	store, err := f.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	ref := spi.ModelRef{EntityName: "m-orderpath-subscript", ModelVersion: "1"}
+	searcher := store.(spi.Searcher)
+
+	for _, path := range []string{"tags[0]", "tags[*]"} {
+		_, err := searcher.Search(ctx, spi.Filter{}, spi.SearchOptions{
+			ModelName:    ref.EntityName,
+			ModelVersion: ref.ModelVersion,
+			Limit:        10,
+			OrderBy:      []spi.OrderSpec{{Source: spi.SourceData, Path: path}},
+		})
+		if !errors.Is(err, memory.ErrInvalidFilterPath) {
+			t.Errorf("Search ordered by subscript path %q = %v, want ErrInvalidFilterPath", path, err)
+		}
+	}
+}
+
 // groupPathRejects are the shapes GroupExpr.Path / AggregateExpr.Field
 // reject. Reused by the GroupExpr.Path and AggregateExpr.Field tests below —
 // sqlite and postgres run the SAME checks over both fields
 // (validateGroupAndAggregatePaths / groupExprToSQL / aggregateExprToSQL), so
 // the two must reject identically.
 //
-// "a[0]" is NOT here: it is a legal positional array subscript under the one
-// filter-path grammar (spi.ValidateFilterPath) — see groupPathAcceptsSubscript
-// in TestGroupExprAndAggregateFieldValidation_AcceptsWellFormed. "" IS still
+// "a[0]" and "a[*]" ARE here, even though both are legal FILTER paths under
+// the one grammar (spi.ValidateFilterPath): docs/cloud-parity/path-grammar.md
+// section 7 holds a GroupExpr.Path / AggregateExpr.Field to the grammar of
+// section 2 with the subscript production removed, so a subscript legal on a
+// filter leaf is illegal here — see
+// TestGroupExprAndAggregateFieldValidation_RejectsSubscript for the fuller
+// contrast against the same strings accepted as filter paths. "" IS still
 // here even though validateJSONPath alone now admits it: a group-by path or
 // aggregate field always names a real field, so grouped_stats.go rejects ""
 // explicitly before delegating, the same reasoning
@@ -414,6 +448,8 @@ var groupPathRejects = []string{
 	"a*b",      // star
 	"a[-1]",    // negative index — outside the one grammar
 	"a[",       // unclosed bracket
+	"a[0]",     // subscript — not a grouping dimension / aggregation field
+	"a[*]",     // wildcard subscript — same rule
 	"$.v",      // "$."-prefixed: not the SPI's bare-path contract
 	"a\\b",     // backslash
 	"a\x00b",   // control byte
@@ -523,27 +559,64 @@ func TestGroupExprAndAggregateFieldValidation_AcceptsWellFormed(t *testing.T) {
 	}
 }
 
-// TestGroupExprAndAggregateFieldValidation_AcceptsSubscripts checks that a
-// "[N]" or "[*]" array subscript in a GroupExpr.Path / AggregateExpr.Field is
-// grammar-valid and does not trip ErrInvalidFilterPath, mirroring the filter
-// path coverage in TestFilterPathValidation_AcceptsContractShapes. The seeded
-// entity (filterPathStore) has no array fields, so — unlike
+// TestGroupExprAndAggregateFieldValidation_AcceptsNonSubscriptDigitField
+// checks that "obj.0" — a field literally NAMED "0", dotted access with no
+// "[...]" bracket at all — is grammar-valid and does not trip
+// ErrInvalidFilterPath as a GroupExpr.Path / AggregateExpr.Field. This is
+// NOT a subscript (see TestGroupExprAndAggregateFieldValidation_RejectsSubscript
+// for the actual bracket forms), so section 7's "these three surfaces admit
+// no subscript" rule does not apply to it. The seeded entity
+// (filterPathStore) has no such field, so — unlike
 // TestGroupExprAndAggregateFieldValidation_AcceptsWellFormed — this only
 // asserts the validator does not reject the shape, not that a value resolves.
-func TestGroupExprAndAggregateFieldValidation_AcceptsSubscripts(t *testing.T) {
+func TestGroupExprAndAggregateFieldValidation_AcceptsNonSubscriptDigitField(t *testing.T) {
+	store, ref, ctx := filterPathStore(t, "tenant-grouppath-digitfield", "m-grouppath-digitfield")
+	ga := store.(spi.GroupedAggregator)
+
+	const path = "obj.0"
+	if _, err := ga.GroupedAggregate(ctx, ref,
+		[]spi.GroupExpr{{Kind: spi.GroupExprDataPath, Path: path}},
+		spi.Filter{},
+		spi.GroupedAggregationsOptions{
+			MaxBuckets:   10,
+			Aggregations: []spi.AggregateExpr{{Op: spi.AggSum, Field: path, Alias: "s"}},
+		},
+	); err != nil {
+		t.Errorf("GroupedAggregate with digit-named field %q = %v, want success", path, err)
+	}
+}
+
+// TestGroupExprAndAggregateFieldValidation_RejectsSubscript pins
+// docs/cloud-parity/path-grammar.md section 7: "An array position is
+// therefore not a grouping dimension, an aggregation field or a sort key.
+// Those three surfaces admit no subscript... The three surfaces that reject
+// subscripts use the grammar of section 2 with the subscript production
+// removed." "tags[0]" and "tags[*]" are legal FILTER paths (see
+// TestFilterPathValidation_AcceptsContractShapes, which asserts the SAME
+// strings succeed as a Filter.Path) but must be REJECTED as a GroupExpr.Path
+// or AggregateExpr.Field — the same string is legal in one position and
+// illegal in another.
+func TestGroupExprAndAggregateFieldValidation_RejectsSubscript(t *testing.T) {
 	store, ref, ctx := filterPathStore(t, "tenant-grouppath-subscript", "m-grouppath-subscript")
 	ga := store.(spi.GroupedAggregator)
 
-	for _, path := range []string{"tags[0]", "tags[*]", "items[*].sku", "obj.0"} {
+	for _, path := range []string{"tags[0]", "tags[*]", "items[*].sku", "m[0][1]"} {
 		if _, err := ga.GroupedAggregate(ctx, ref,
 			[]spi.GroupExpr{{Kind: spi.GroupExprDataPath, Path: path}},
+			spi.Filter{},
+			spi.GroupedAggregationsOptions{MaxBuckets: 10},
+		); !errors.Is(err, memory.ErrInvalidFilterPath) {
+			t.Errorf("GroupedAggregate grouped by subscript path %q = %v, want ErrInvalidFilterPath", path, err)
+		}
+		if _, err := ga.GroupedAggregate(ctx, ref,
+			[]spi.GroupExpr{{Kind: spi.GroupExprState}},
 			spi.Filter{},
 			spi.GroupedAggregationsOptions{
 				MaxBuckets:   10,
 				Aggregations: []spi.AggregateExpr{{Op: spi.AggSum, Field: path, Alias: "s"}},
 			},
-		); err != nil {
-			t.Errorf("GroupedAggregate with subscript path %q = %v, want success", path, err)
+		); !errors.Is(err, memory.ErrInvalidFilterPath) {
+			t.Errorf("GroupedAggregate aggregating subscript field %q = %v, want ErrInvalidFilterPath", path, err)
 		}
 	}
 }

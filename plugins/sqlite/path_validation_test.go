@@ -147,11 +147,50 @@ func TestValidateGroupAndAggregatePaths_RejectsEmpty(t *testing.T) {
 	); err != nil {
 		t.Errorf("GroupExprState: err = %v, want nil", err)
 	}
-	// A well-formed non-empty path/field must still pass.
+	// A well-formed, subscript-free non-empty path/field must still pass.
 	if err := validateGroupAndAggregatePaths(
-		[]spi.GroupExpr{{Kind: spi.GroupExprDataPath, Path: "tags[0]"}},
+		[]spi.GroupExpr{{Kind: spi.GroupExprDataPath, Path: "amount"}},
 		[]spi.AggregateExpr{{Op: spi.AggSum, Field: "amount", Alias: "s"}},
 	); err != nil {
 		t.Errorf("well-formed group/aggregate paths: err = %v, want nil", err)
+	}
+}
+
+// TestValidateGroupAndAggregatePaths_RejectsSubscript pins
+// docs/cloud-parity/path-grammar.md section 7: "An array position is
+// therefore not a grouping dimension, an aggregation field or a sort key.
+// Those three surfaces admit no subscript... The three surfaces that reject
+// subscripts use the grammar of section 2 with the subscript production
+// removed." "tags[0]" and "tags[*]" are legal FILTER paths (see
+// TestValidateJSONPath_AcceptsSubscripts) but must be REJECTED here — the
+// same string is legal in one position and illegal in another.
+func TestValidateGroupAndAggregatePaths_RejectsSubscript(t *testing.T) {
+	for _, p := range []string{"tags[0]", "tags[*]", "items[0].sku", "m[0][1]"} {
+		if err := validateGroupAndAggregatePaths(
+			[]spi.GroupExpr{{Kind: spi.GroupExprDataPath, Path: p}}, nil,
+		); !errors.Is(err, ErrInvalidFilterPath) {
+			t.Errorf("group-by path %q: err = %v, want ErrInvalidFilterPath", p, err)
+		}
+		if err := validateGroupAndAggregatePaths(
+			nil, []spi.AggregateExpr{{Op: spi.AggSum, Field: p, Alias: "s"}},
+		); !errors.Is(err, ErrInvalidFilterPath) {
+			t.Errorf("aggregate field %q: err = %v, want ErrInvalidFilterPath", p, err)
+		}
+	}
+}
+
+// TestValidateOrderSpecs_RejectsSubscript: a SourceData sort key is a scalar
+// surface too (docs/cloud-parity/path-grammar.md section 7) and must reject
+// the same subscripted paths a filter accepts.
+func TestValidateOrderSpecs_RejectsSubscript(t *testing.T) {
+	for _, p := range []string{"tags[0]", "tags[*]"} {
+		err := validateOrderSpecs([]spi.OrderSpec{{Path: p, Source: spi.SourceData}})
+		if !errors.Is(err, ErrInvalidFilterPath) {
+			t.Errorf("order-by path %q: err = %v, want ErrInvalidFilterPath", p, err)
+		}
+	}
+	// Subscript-free order-by paths are unaffected.
+	if err := validateOrderSpecs([]spi.OrderSpec{{Path: "amount", Source: spi.SourceData}}); err != nil {
+		t.Errorf("order-by path %q: err = %v, want nil", "amount", err)
 	}
 }

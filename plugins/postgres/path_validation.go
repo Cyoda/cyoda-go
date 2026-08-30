@@ -97,6 +97,9 @@ func validateGroupAndAggregatePaths(groupBy []spi.GroupExpr, aggs []spi.Aggregat
 		if err := validateJSONPath(g.Path); err != nil {
 			return err
 		}
+		if err := rejectSubscript(g.Path, "group-by path"); err != nil {
+			return err
+		}
 	}
 	for _, a := range aggs {
 		if a.Field == "" {
@@ -104,6 +107,37 @@ func validateGroupAndAggregatePaths(groupBy []spi.GroupExpr, aggs []spi.Aggregat
 		}
 		if err := validateJSONPath(a.Field); err != nil {
 			return err
+		}
+		if err := rejectSubscript(a.Field, "aggregate field"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// rejectSubscript rejects a path that carries an array subscript ("[N]" or
+// "[*]") anywhere along its hops. docs/cloud-parity/path-grammar.md section
+// 7: "An array position is therefore not a grouping dimension, an
+// aggregation field or a sort key. Those three surfaces admit no
+// subscript... The three surfaces that reject subscripts use the grammar of
+// section 2 with the subscript production removed." A subscripted path is
+// legal on a FILTER leaf (validateFilterPaths / validateJSONPath alone) but
+// illegal here — the same string, two different verdicts depending on which
+// surface it names. Mirrors sqlite's rejectSubscript.
+//
+// path is assumed already grammar-valid: every call site runs validateJSONPath
+// first. A parse error here is therefore not expected in practice and is
+// treated as "no subscript" (falls through) rather than duplicating the
+// grammar error, keeping this helper total.
+func rejectSubscript(path, what string) error {
+	hops, err := spi.ParseFilterPath(path)
+	if err != nil {
+		return nil
+	}
+	for _, hop := range hops {
+		if len(hop.Subs) > 0 {
+			return fmt.Errorf("%w: %s %q carries an array subscript, which is not a grouping dimension, aggregation field, or sort key",
+				ErrInvalidFilterPath, what, path)
 		}
 	}
 	return nil
@@ -137,6 +171,9 @@ func validateOrderSpecs(specs []spi.OrderSpec) error {
 			continue
 		}
 		if err := validateJSONPath(sp.Path); err != nil {
+			return err
+		}
+		if err := rejectSubscript(sp.Path, "sort path"); err != nil {
 			return err
 		}
 	}

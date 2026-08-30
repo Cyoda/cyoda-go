@@ -329,12 +329,18 @@ func (s *EntityStore) GroupedAggregate(
 		if err := validateJSONPath(g.Path); err != nil {
 			return nil, err
 		}
+		if err := rejectSubscript(g.Path, "group-by path"); err != nil {
+			return nil, err
+		}
 	}
 	for _, a := range opts.Aggregations {
 		if a.Field == "" {
 			return nil, fmt.Errorf("%w: empty aggregate field", ErrInvalidFilterPath)
 		}
 		if err := validateJSONPath(a.Field); err != nil {
+			return nil, err
+		}
+		if err := rejectSubscript(a.Field, "aggregate field"); err != nil {
 			return nil, err
 		}
 	}
