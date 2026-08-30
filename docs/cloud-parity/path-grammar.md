@@ -509,3 +509,33 @@ that a self-executing backend does not run:
 The cross-backend parity suite runs against every backend wired into it, so a
 backend that has not implemented these fails on its next dependency update rather
 than diverging silently.
+
+## Test surface
+
+- The filter-path model and its resolver, in `cyoda-go-spi`: `filter_path_test.go`
+  (the grammar — sections 1, 2 and 9), `filter_path_resolve_test.go` (`ResolvePath`
+  against section 3's addressing table and section 5's vacuity table),
+  `prepared_filter_test.go` and `condition_filter_test.go` (the `array` clause's
+  desugaring into positional comparisons, section 8).
+- The engine's own resolver, kept aligned to the SPI kernel it must agree with:
+  `internal/match/resolver_parity_test.go` and
+  `internal/match/prepared_equivalence_test.go`.
+- Each plugin's path validator and query planner, against the grammar and the
+  bracket-versus-dot rendering of section 9: `plugins/memory/path_validation_test.go`,
+  `plugins/sqlite/path_validation_test.go`, `plugins/sqlite/query_planner_test.go`,
+  `plugins/postgres/path_validation_test.go`, `plugins/postgres/query_planner_test.go`.
+- The domain-layer surfaces of section 7 — search conditions, `groupBy`,
+  aggregation fields and sort keys: `internal/domain/search/jsonpath_grammar_test.go`,
+  `internal/domain/search/sortparam_test.go`,
+  `internal/domain/search/sortkey_refresh_test.go`,
+  `internal/domain/search/condition_type_validate_test.go`,
+  `internal/domain/search/array_condition_validate_test.go`, and, for the
+  workflow-criterion door of section 7's second row,
+  `internal/domain/workflow/criterion_path_test.go`.
+- Cross-backend parity, run through the full HTTP stack on every wired backend:
+  `e2e/parity/path_addressing.go` (`RunArrayClausePositional`,
+  `RunPathAddressingByDeclaredShape`, `RunPathVacuity`), registered in
+  `e2e/parity/registry.go`.
+- End to end, on a running backend: `internal/e2e/workflow_criterion_array_clause_test.go`
+  (the trailing-`[*]` requirement at import) and `internal/e2e/criterion_prepare_test.go`
+  (a criterion's path resolved the same way a search condition's is).

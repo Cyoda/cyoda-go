@@ -97,7 +97,7 @@ subscript = "[" ( "*" / 1*DIGIT ) "]"
 
 The `$.` leader is **required**. A bare `amount` is not a path and is rejected `400 errors.INVALID_FIELD_PATH` — it is not a tolerated alias for `$.amount`. So are an empty path, an empty or trailing segment (`$..a`, `$.a.`), bracket-quoted property access (`$['x']`, `$.['x']`, `$.a["b"]` — write `$.x`), and any character outside the segment set.
 
-**Well-formed** array subscripts — the wildcard `[*]` or a non-negative index `[0]` — **are** valid and accepted (`$.tags[*].name`, `$.arr[0]`, `$.matrix[*][*]`, `$.orders[*].lines[*].sku`). They cannot be pushed into the storage query, so they are evaluated in memory; results are identical, throughput is lower.
+**Well-formed** array subscripts — the wildcard `[*]` or a non-negative index `[0]` — **are** valid and accepted (`$.tags[*].name`, `$.arr[0]`, `$.matrix[*][*]`, `$.orders[*].lines[*].sku`). A positional index pushes into the storage query on a backend that supports it. A wildcard cannot be pushed into a scalar comparison — it addresses a set, not one value — so it is always evaluated by re-checking the candidate rows; results are identical either way, only throughput differs.
 
 `[*]` addresses **every** element, so a leaf on it holds when **some** element satisfies it: `$.tags[*] EQUALS "red"` selects the entities whose `tags` contains `"red"`. It is existential, so nothing matches an empty array — neither `IS_NULL` nor `NOT_NULL` holds on `{"tags": []}`. `[0]` addresses that one element. A trailing `[*]` on an array of **pure objects** is rejected `400 errors.INVALID_FIELD_PATH` under a scalar operator — the element has no scalar form, so navigate to the leaf (`$.items[*].sku`, not `$.items[*]`).
 
@@ -125,7 +125,7 @@ Operator strings outside this list are rejected with `errors.BAD_REQUEST` at req
 - `operatorType` (also accepted as `operator` or `operation`): operator string — same valid values as for `SimpleCondition`
 - `value`: any JSON scalar
 
-`creationDate`/`lastUpdateTime` are temporal: compared chronologically at millisecond resolution. A comparison/range operand (`EQUALS`, `NOT_EQUAL`, `GREATER_THAN`, `LESS_THAN`, `GREATER_OR_EQUAL`, `LESS_OR_EQUAL`, `BETWEEN`, `BETWEEN_INCLUSIVE`) must parse as a temporal value — an offset-bearing RFC3339 instant, or a **coarser** value (`"2024"`, `"2024-09"`, an offset-less date-time) which **upscales** to an instant; only an operand that parses into no temporal form is rejected `400 CONDITION_TYPE_MISMATCH`. String and pattern operators do not apply to these fields. `IS_NULL`/`NOT_NULL` test presence and carry no type constraint. An unknown meta filter field is rejected `400 INVALID_FIELD_PATH`.
+`creationDate`/`lastUpdateTime` are temporal: compared chronologically at millisecond resolution. A comparison/range operand (`EQUALS`, `NOT_EQUAL`, `GREATER_THAN`, `LESS_THAN`, `GREATER_OR_EQUAL`, `LESS_OR_EQUAL`, `BETWEEN`, `BETWEEN_INCLUSIVE`) must parse as a temporal value — an offset-bearing RFC3339 instant, or a **coarser** value (`"2024"`, `"2024-09"`, an offset-less date-time) which **upscales** to an instant; only an operand that parses into no temporal form is rejected `400 CONDITION_TYPE_MISMATCH`. String and pattern operators (`CONTAINS`, `LIKE`, `MATCHES_PATTERN`, the case-insensitive family, …) do not apply to these fields and are rejected `400 INVALID_CONDITION` — not a type mismatch, since no operand could make the operator valid here. `IS_NULL`/`NOT_NULL` test presence and carry no type constraint. An unknown meta filter field is rejected `400 INVALID_FIELD_PATH`.
 
 **GroupCondition** — combine conditions with a logical operator:
 
@@ -153,14 +153,16 @@ Operator strings outside this list are rejected with `errors.BAD_REQUEST` at req
 ```json
 {
   "type": "array",
-  "jsonPath": "$.laureates",
+  "jsonPath": "$.laureates[*]",
   "values": ["John", null, "Hopfield"]
 }
 ```
 
 - `type`: `"array"`
-- `jsonPath`: JSON Path to the array field, `$.` leader required (see **JSONPath grammar** below)
-- `values`: positional values; `null` entries match any value at that index
+- `jsonPath`: JSON Path to the array's elements, and **must carry a trailing `[*]`** (see **JSONPath grammar** below) — a bare path (`$.laureates`) addresses the array itself, not its elements, and is rejected `400 errors.INVALID_FIELD_PATH`
+- `values`: positional values, one per array index in order; a `null` entry tests nothing at that index and is skipped
+
+Each non-null entry is a positional test: `values[i]` compared against element `i`. The clause is read as an `AND` of those positional comparisons — `["John", null, "Hopfield"]` means element 0 equals `"John"` and element 2 equals `"Hopfield"`. `values` made entirely of `null` matches every entity.
 
 **FunctionCondition** — server-side function predicate dispatched to a compute member. **Criteria only — search requests reject it.** Documented here because criteria and search share the one `Condition` DSL; a search, async-search, grouped-stats or conditional-delete body carrying a `function` clause at any depth is rejected `400 INVALID_CONDITION`. Use it in a workflow or transition `criterion` (see `workflows`).
 
@@ -363,7 +365,8 @@ Synchronous search neither paginates nor truncates: the matched set must fit wit
 - `errors.SEARCH_SHARD_TIMEOUT` — per-shard search timeout exceeded (relevant for distributed backends)
 - `errors.SEARCH_QUEUE_FULL` — `503` — async submit refused for capacity: either the node's worker pool and submit queue are both exhausted, or the tenant is at its in-flight share of this node; retryable, tune via `CYODA_SEARCH_ASYNC_WORKERS`/`CYODA_SEARCH_ASYNC_QUEUE`/`CYODA_SEARCH_ASYNC_MAX_PER_TENANT`
 - `errors.INVALID_FIELD_PATH` — `400` — a `jsonPath` is not valid JSON Path syntax (missing `$.` leader, bracket-quoted access, empty/trailing segment, disallowed character), or references field paths absent from the model's locked schema, or a `lifecycle` condition names an unknown meta filter field; the response detail names each offending path and why
-- `errors.CONDITION_TYPE_MISMATCH` — `400` — condition value type is incompatible with the target field's locked DataType, e.g. a string/pattern operator or a non-timestamp value on a temporal meta field (`creationDate`/`lastUpdateTime`)
+- `errors.CONDITION_TYPE_MISMATCH` — `400` — condition value type is incompatible with the target field's locked DataType, e.g. an operand that parses into no temporal form on a temporal meta field (`creationDate`/`lastUpdateTime`); a string or pattern operator on one of those fields is `INVALID_CONDITION` instead, see **LifecycleCondition** above
+- `errors.INVALID_CONDITION` — `400` — a condition fails a structural or shape check rather than a path or type check: an unknown or missing `operatorType`, a `null`/object/complex operand on a binary or range operator, a malformed `LIKE`/`MATCHES_PATTERN` operand, a string or pattern operator on a temporal meta field, an `array` clause on a bare path or with a badly-shaped `values` entry, or a `function` clause at any depth (criteria only — see `predicates`)
 - `errors.BAD_REQUEST` — `400` — malformed condition JSON, invalid limit/pageSize/pageNumber, result retrieval on non-SUCCESSFUL job, unknown async job ID in result retrieval
 
 ## EXAMPLES

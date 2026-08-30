@@ -166,3 +166,28 @@ branches" this way.
 Memory, SQLite and PostgreSQL evaluate predicates identically. The commercial
 backend implements the same rules. The cross-backend parity suite checks
 predicate-evaluation consistency across every backend wired into it.
+
+## Test surface
+
+- The operator table and the type/operand-shape checks it drives:
+  `internal/domain/search/operators_test.go` and
+  `internal/domain/search/handler_unknown_operator_test.go` (an unknown operator
+  answers `INVALID_CONDITION`, section 2).
+- The `array` clause's own type and operand-shape checks, section 8 of
+  `path-grammar.md` folded into this document's operator rules:
+  `internal/domain/search/array_condition_validate_test.go`.
+- The temporal meta fields, section 3 — a string or pattern operator on
+  `creationDate` or `lastUpdateTime` rejected before either evaluator sees it, so
+  the two evaluators cannot answer it two ways:
+  `internal/domain/workflow/criterion_temporal_test.go` and the exclusion this
+  boundary made unreachable, still pinned in
+  `internal/match/prepared_equivalence_test.go`.
+- The workflow-criterion door, which enforces the same operator table at import
+  rather than at evaluation: `internal/domain/workflow/criterion_operator_test.go`.
+- End to end, on a running backend and over both entry points:
+  `internal/e2e/search_unknown_operator_test.go`,
+  `internal/e2e/workflow_criterion_operator_test.go`,
+  `internal/e2e/search_temporal_test.go`,
+  `internal/e2e/grouped_stats_temporal_test.go`,
+  `internal/grpc/search_unknown_operator_test.go` and
+  `internal/grpc/search_temporal_test.go`.

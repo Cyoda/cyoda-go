@@ -520,6 +520,69 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   admits whenever two branches rendered the same JSON Schema shape). Consumers
   that parse the exported model see the new keys.
 
+- **One path grammar and one resolver now govern every surface that carries a
+  `jsonPath`** — search conditions, workflow criteria, `groupBy`, aggregation
+  fields and sort keys. See `docs/cloud-parity/path-grammar.md` and
+  `docs/cloud-parity/operator-semantics.md`. Caller-visible consequences:
+
+  - **An `array` clause's `jsonPath` must now carry a trailing `[*]`.** A bare
+    path (`{"type":"array","jsonPath":"$.tags","values":["A"]}`) addresses the
+    array itself, not its elements, and cannot carry a positional test. It is
+    `400 INVALID_FIELD_PATH` on the search surface and `400 VALIDATION_FAILED`
+    at workflow import — both doors now enforce the same rule; before this
+    fix the criterion door accepted a clause the search door already refused.
+
+  - **An `array` clause's `values` are now type- and shape-checked**, the same
+    checks a `simple` clause already had. An object entry (`{"a":1}`) is now
+    `400 INVALID_CONDITION` instead of reaching the evaluator and being
+    compared as the literal text `map[a:1]`.
+
+  - **An unknown `operatorType` now answers `400 INVALID_CONDITION` on every
+    surface that carries a condition, not just some of them.** It previously
+    answered `400 INVALID_CONDITION` on grouped stats but fell through to the
+    coarser `400 BAD_REQUEST` on `/search/direct`, `/search/async` and
+    conditional `DELETE /entity/{name}/{version}` — one error class, two codes
+    depending only on which endpoint served the request. The status stays
+    `400` throughout; only the code changes.
+
+  - **A workflow or transition criterion carrying an unknown `operatorType`
+    now fails import**, `400 VALIDATION_FAILED`, naming the offending
+    operator, workflow and transition. It previously imported cleanly — the
+    operator table was never consulted at this door — and the transition it
+    guarded then silently never fired on every later evaluation, with no
+    result page to look wrong.
+
+  - **A string or pattern operator (`CONTAINS`, `MATCHES_PATTERN`, the
+    case-insensitive family, …) on `creationDate` or `lastUpdateTime` is now
+    `400 INVALID_CONDITION`.** It previously answered `200`, and which rows
+    came back depended on which evaluator served the request: a pushdown
+    route bridges the field to its RFC3339 text and matches lexically, while
+    the in-memory evaluator and every workflow criterion refused the operator
+    and never matched. The same condition and the same data answered two ways
+    depending only on the query plan; rejecting it at the shared boundary
+    makes both answers unreachable rather than picking one.
+
+  - **A bare path no longer matches an array's elements, and a `[*]` path no
+    longer matches a scalar value.** The in-memory evaluator (the memory
+    backend, the SQL backends' residual re-check, and every workflow
+    criterion) used to route on the *stored value's* shape: a bare path over
+    an array matched existentially across its elements, and reaching a scalar
+    behind a `[*]` hop fell through to comparing the scalar directly. What a
+    path addresses is now decided by the path's syntax alone, matching the
+    pushdown kernel — see section 3's union rule. A field that is
+    consistently one shape across every entity is unaffected; a polymorphic
+    field observed as both a scalar and an array may see fewer matches on a
+    bare or wildcard path than before, and more on the path that was already
+    the well-formed spelling for that entity's branch.
+
+  - **A subscripted path (`tags[0]`, `tags[*]`) is rejected on `groupBy`, an
+    aggregation field and a sort key**, `400`, on every backend. These three
+    surfaces name one scalar value per entity; a subscript names an array
+    position or a set, neither of which is a grouping dimension, an
+    aggregation field or a sort key. `path-grammar.md` section 7 states the
+    rule; the three surfaces share one scanner with the filter-path grammar
+    minus the subscript production, so they cannot drift from it again.
+
 ### Added
 
 - **`STORAGE_UNAVAILABLE` — 503, retryable.** Raised when the pool cannot supply a
