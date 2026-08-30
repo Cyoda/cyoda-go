@@ -222,8 +222,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   jsonPath  = "$." segment ( "." segment )*
   segment   = name subscript*
   name      = 1*( ALPHA / DIGIT / "_" / "-" )   ; ASCII only
-  subscript = "[" ( "*" / 1*DIGIT ) "]"          ; the digit run must fit an int
+  subscript = "[" ( "*" / 1*DIGIT ) "]"          ; the digit run must fit an int32
   ```
+
+  The digit-run bound is `int32`, not Go's `int` (`int64` on every supported
+  platform): `int32` is the intersection every in-tree backend can address —
+  PostgreSQL renders a positional index as a `jsonb` operand, and an index
+  above `int32` fails to parse there (`jsonb ->> bigint` does not exist) rather
+  than answering a result, which without a backend-specific error classifier
+  surfaced as an unclassified `500` instead of a `400`. `$.tags[2147483647]`
+  (`int32` max) stays accepted; `$.tags[2147483648]` is rejected the same as
+  any other malformed subscript.
 
   ```diff
   - {"type":"simple","jsonPath":"amount",      "operatorType":"GREATER_THAN","value":50}
@@ -1389,6 +1398,37 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   DELETED row and others did not; `hasEntity` is now the canonical,
   change-type-derived `Deleted` flag, so a delete's history entry reports
   the same `hasEntity` value regardless of which backend served it.
+
+- **A repeated unknown sort field now costs one authoritative schema read,
+  not one per request.** `resolveSortKeys` refreshes a `DATA` sort key
+  absent from the cached schema exactly once before refusing it (mirroring
+  the condition-path bound issue #77 established), but it never consulted
+  the field-path negative cache that bound already applies to, so a
+  serially repeated bogus sort key paid a full `RefreshAndGet` — an
+  authoritative model-store read plus a full schema re-parse, which also
+  repopulates the shared model-descriptor cache — on every single request.
+  It now routes through the same `PathValidationCache` a condition path
+  uses, bounding it per `(tenant, model, path)`.
+
+- **Translating a condition tree no longer re-desugars every subtree at
+  every level.** `spi.ConditionToFilter` desugars the whole tree once, but
+  `groupToFilter` recursed back through `ConditionToFilter` for each child,
+  re-running the desugar pass on that child's already-desugared subtree —
+  O(n·depth) instead of O(n), measured at ~36× for 500 leaves at depth 250.
+  `internal/match.Prepare`'s `prepareGroup` had the identical defect. Both
+  now recurse into a desugar-free dispatch instead.
+
+- **Three permissive defaults on an unreachable parse error are now
+  fail-closed.** `rejectSubscript` (group-by/aggregate-field/sort-path
+  subscript rejection) and `pathHasWildcard` (pushdown-safety wildcard
+  detection), in each of `plugins/memory`, `plugins/sqlite` and
+  `plugins/postgres`, defaulted to the permissive outcome — accept, or
+  "not a wildcard" (pushable) — when `spi.ParseFilterPath` failed on their
+  input. Every call site validates the path first, so this was unreachable
+  in practice, but the default direction violated
+  `.claude/rules/correctness-over-availability.md`: a dependency (a
+  successful parse) a correct "no subscript" / "not pushable" answer
+  requires now fails the check instead of being treated as satisfying it.
 
 ## [0.8.3] — 2026-07-27
 
