@@ -3,6 +3,8 @@ package sqlite
 import (
 	"errors"
 	"testing"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // TestValidateJSONPath_Accepts ensures well-formed dotted-identifier paths pass.
@@ -118,5 +120,38 @@ func TestValidateJSONPath_AcceptsSubscripts(t *testing.T) {
 		if err := validateJSONPath(p); err == nil {
 			t.Errorf("validateJSONPath(%q): want rejection", p)
 		}
+	}
+}
+
+// TestValidateGroupAndAggregatePaths_RejectsEmpty: unlike a filter leaf's
+// Path (where "" is the legitimate "no field" shape the AND/OR tree
+// operators carry), a GroupExpr.Path or AggregateExpr.Field always names a
+// real field. validateJSONPath alone now admits "" (spi.ValidateFilterPath
+// is right to, for a filter leaf), so validateGroupAndAggregatePaths must
+// catch the empty case itself rather than silently accepting a meaningless
+// "group by nothing" / "aggregate nothing" request.
+func TestValidateGroupAndAggregatePaths_RejectsEmpty(t *testing.T) {
+	if err := validateGroupAndAggregatePaths(
+		[]spi.GroupExpr{{Kind: spi.GroupExprDataPath, Path: ""}}, nil,
+	); !errors.Is(err, ErrInvalidFilterPath) {
+		t.Errorf("empty GroupExpr.Path: err = %v, want ErrInvalidFilterPath", err)
+	}
+	if err := validateGroupAndAggregatePaths(
+		nil, []spi.AggregateExpr{{Op: spi.AggSum, Field: "", Alias: "s"}},
+	); !errors.Is(err, ErrInvalidFilterPath) {
+		t.Errorf("empty AggregateExpr.Field: err = %v, want ErrInvalidFilterPath", err)
+	}
+	// GroupExprState carries no path and must stay exempt.
+	if err := validateGroupAndAggregatePaths(
+		[]spi.GroupExpr{{Kind: spi.GroupExprState}}, nil,
+	); err != nil {
+		t.Errorf("GroupExprState: err = %v, want nil", err)
+	}
+	// A well-formed non-empty path/field must still pass.
+	if err := validateGroupAndAggregatePaths(
+		[]spi.GroupExpr{{Kind: spi.GroupExprDataPath, Path: "tags[0]"}},
+		[]spi.AggregateExpr{{Op: spi.AggSum, Field: "amount", Alias: "s"}},
+	); err != nil {
+		t.Errorf("well-formed group/aggregate paths: err = %v, want nil", err)
 	}
 }

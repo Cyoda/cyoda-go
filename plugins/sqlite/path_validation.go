@@ -66,6 +66,16 @@ func validateFilterPaths(f spi.Filter) error {
 // to the same grammar as filter paths. GroupExpr kinds that carry no path
 // (GroupExprState) are exempt.
 //
+// Unlike a filter leaf's Path — where an empty string is the legitimate
+// "no field" shape the AND/OR tree operators carry, and validateFilterPaths
+// skips it before ever reaching validateJSONPath — a GroupExpr.Path or
+// AggregateExpr.Field always names a real field to group or aggregate by;
+// there is no operator-node reading for it. validateJSONPath alone now
+// admits "" (it delegates to the one grammar, which is right for a filter
+// leaf), so this function rejects the empty case itself before delegating,
+// rather than silently letting a meaningless "group by nothing" request
+// through.
+//
 // Called at the top of GroupedAggregate, next to validateFilterPaths, so a
 // malformed path is classified as a client error on every backend regardless
 // of which pushdown decline the request would otherwise have hit. The
@@ -76,11 +86,17 @@ func validateGroupAndAggregatePaths(groupBy []spi.GroupExpr, aggs []spi.Aggregat
 		if g.Kind != spi.GroupExprDataPath {
 			continue
 		}
+		if g.Path == "" {
+			return fmt.Errorf("%w: empty group-by path", ErrInvalidFilterPath)
+		}
 		if err := validateJSONPath(g.Path); err != nil {
 			return err
 		}
 	}
 	for _, a := range aggs {
+		if a.Field == "" {
+			return fmt.Errorf("%w: empty aggregate field", ErrInvalidFilterPath)
+		}
 		if err := validateJSONPath(a.Field); err != nil {
 			return err
 		}
