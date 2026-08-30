@@ -1237,3 +1237,52 @@ func verifyResidualOps(t *testing.T, f spi.Filter) {
 		}
 	}
 }
+
+// TestFieldExpr_RendersSubscript is a CHARACTERIZATION test: SQLite's own
+// JSON path syntax already spells a positional subscript "$.tags[0]", which
+// is exactly what fieldExpr emits once validateJSONPath admits the bracket
+// form — fieldExpr needs no rewrite for SQLite. Do not "fix" this into a
+// hop-by-hop rewrite; the postgres plugin needs that, SQLite does not.
+func TestFieldExpr_RendersSubscript(t *testing.T) {
+	cases := []struct{ path, want string }{
+		{"amount", "json_extract(data, '$.amount')"},
+		{"obj.0", "json_extract(data, '$.obj.0')"},
+		{"tags[0]", "json_extract(data, '$.tags[0]')"},
+		{"items[2].sku", "json_extract(data, '$.items[2].sku')"},
+	}
+	for _, tc := range cases {
+		got := fieldExpr(spi.Filter{Source: spi.SourceData, Path: tc.path})
+		if got != tc.want {
+			t.Errorf("fieldExpr(%q) = %q, want %q", tc.path, got, tc.want)
+		}
+	}
+}
+
+// TestPlanQuery_WildcardIsResidual: a wildcard leaf has no SQL form until a
+// quantifier node exists. Pushing it as a scalar comparison would drop every
+// matching row, and a narrowing WHERE cannot be recovered by the residual
+// re-check, so the wildcard leaf must be installed as a residual instead.
+func TestPlanQuery_WildcardIsResidual(t *testing.T) {
+	plan := planQuery(spi.Filter{
+		Op: spi.FilterEq, Path: "tags[*]", Source: spi.SourceData,
+		Value: "A", Declared: []spi.DataType{spi.String},
+	})
+	if plan.where != "" {
+		t.Errorf("wildcard leaf must not narrow; got WHERE %q", plan.where)
+	}
+	if plan.postFilter == nil {
+		t.Error("wildcard leaf must be installed as a residual")
+	}
+}
+
+// TestPlanQuery_PositionalIsPushed: a positional subscript is a sound,
+// pushable leaf and renders SQLite's own bracket-index spelling.
+func TestPlanQuery_PositionalIsPushed(t *testing.T) {
+	plan := planQuery(spi.Filter{
+		Op: spi.FilterEq, Path: "tags[0]", Source: spi.SourceData,
+		Value: "A", Declared: []spi.DataType{spi.String},
+	})
+	if !strings.Contains(plan.where, "'$.tags[0]'") {
+		t.Errorf("positional leaf must push its dialect index; got WHERE %q", plan.where)
+	}
+}

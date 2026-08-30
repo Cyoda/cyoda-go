@@ -16,65 +16,31 @@ import (
 // wrap adds no prefix, leaving the message text unchanged.
 var ErrInvalidFilterPath = fmt.Errorf("%w", spi.ErrInvalidFilterPath)
 
-// validateJSONPath enforces an extended dotted-identifier grammar on paths
-// that are interpolated into json_extract(..., '$.<path>') expressions.
+// validateJSONPath enforces the one SPI filter-path grammar
+// (spi.ValidateFilterPath, docs/cloud-parity/path-grammar.md section 9) on
+// paths that are interpolated into json_extract(..., '$.<path>')
+// expressions: dotted name segments, ASCII letters/digits/underscore/hyphen,
+// each optionally followed by one or more "[N]" or "[*]" array subscripts.
 //
-// Allowed: segments of ASCII letters, digits, underscore, and hyphen ('-'),
-// separated by single '.' characters. At least one segment, no empty
-// segments, no leading/trailing dots. This rejects every character that
-// could terminate the surrounding single-quoted SQL literal or otherwise
-// inject SQL — notably ', ", \, ;, /, *, whitespace, and control bytes.
+// This rejects every character that could terminate the surrounding
+// single-quoted SQL literal or otherwise inject SQL — notably ', ", \, ;,
+// /, whitespace, and control bytes — which is also why the grammar is the
+// injection guard for fieldExpr's interpolation, not just a syntax check.
 //
 // Hyphens are safe inside single-quoted SQLite JSON-path literals: SQL
 // comments ('--') and other hyphen sequences only have special meaning
 // outside of string literals, so they cannot inject SQL through this path.
 //
-// The grammar is intentionally narrower than the full SQLite JSON path
-// grammar (which accepts bracketed indices and Unicode identifiers). If a
-// genuine use case ever needs those forms, extend this validator rather
-// than bypassing it.
+// Deliberately delegates to spi.ValidateFilterPath rather than scanning its
+// own copy of the grammar: two independent scanners drift (this repo has
+// already spent one fix round collapsing exactly that drift), and the SPI
+// definition is the single source of truth every plugin and the engine's
+// own resolver share.
 func validateJSONPath(path string) error {
-	if path == "" {
-		return fmt.Errorf("%w: empty", ErrInvalidFilterPath)
-	}
-	segmentStart := 0
-	for i := 0; i < len(path); i++ {
-		c := path[i]
-		if c == '.' {
-			if i == segmentStart {
-				return fmt.Errorf("%w: empty segment", ErrInvalidFilterPath)
-			}
-			segmentStart = i + 1
-			continue
-		}
-		if !isIdentByte(c) {
-			return fmt.Errorf("%w: disallowed character %q at offset %d", ErrInvalidFilterPath, c, i)
-		}
-	}
-	if segmentStart == len(path) {
-		return fmt.Errorf("%w: trailing dot", ErrInvalidFilterPath)
+	if err := spi.ValidateFilterPath(path); err != nil {
+		return fmt.Errorf("%w: %s", ErrInvalidFilterPath, err)
 	}
 	return nil
-}
-
-func isIdentByte(c byte) bool {
-	switch {
-	case c >= 'a' && c <= 'z':
-		return true
-	case c >= 'A' && c <= 'Z':
-		return true
-	case c >= '0' && c <= '9':
-		return true
-	case c == '_':
-		return true
-	case c == '-':
-		// Hyphens are valid JSON key characters and safe inside single-quoted
-		// SQLite json_extract path literals — they cannot break out of the
-		// surrounding quote. SQL comments ('--') only have special meaning
-		// outside of string literals.
-		return true
-	}
-	return false
 }
 
 // validateFilterPaths walks a Filter tree and returns the first invalid path

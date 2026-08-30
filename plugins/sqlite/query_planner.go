@@ -293,6 +293,9 @@ func isLeafPushable(f spi.Filter) bool {
 	if !isPushable(f.Op) {
 		return false
 	}
+	if pathHasWildcard(f.Path) {
+		return false
+	}
 	if f.Coercion == spi.CoerceTemporal {
 		// Meta temporal fields store a single full instant (a µs-integer here /
 		// an offset-bearing RFC3339 string on postgres) that the epoch-ms push
@@ -313,6 +316,35 @@ func isLeafPushable(f spi.Filter) bool {
 		return false
 	}
 	return true
+}
+
+// pathHasWildcard reports whether path contains a "[*]" array subscript
+// anywhere along its hops. There is no SQL form for a wildcard leaf until a
+// quantifier node exists — pushing it as a scalar comparison would silently
+// drop every matching row, and a narrowing WHERE cannot be recovered by the
+// residual re-check. Detected structurally via spi.ParseFilterPath and
+// PathSub.Wildcard, never by matching the literal "[*]" substring: the parse
+// is the one place that knows what is a subscript versus what merely looks
+// like one.
+//
+// f.Path reaching isLeafPushable has already passed validateFilterPaths at
+// the Search()/GroupedAggregate() boundary, so a parse error here cannot
+// occur in practice; an error is treated as "no wildcard" (falls through to
+// the existing pushability rules) rather than panicking, keeping this helper
+// total.
+func pathHasWildcard(path string) bool {
+	hops, err := spi.ParseFilterPath(path)
+	if err != nil {
+		return false
+	}
+	for _, hop := range hops {
+		for _, sub := range hop.Subs {
+			if sub.Wildcard {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // comparisonBind returns the operand-binding form for a NON-temporal

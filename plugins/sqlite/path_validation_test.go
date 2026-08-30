@@ -25,6 +25,20 @@ func TestValidateJSONPath_Accepts(t *testing.T) {
 	}
 }
 
+// TestValidateJSONPath_AcceptsEmpty documents a deliberate behaviour change
+// from the pre-SPI-grammar validator, which used to reject "" outright.
+// docs/cloud-parity/path-grammar.md section 9 states the empty filter path
+// is legal — the tree operators (AND/OR) carry one instead of a leaf
+// condition — and spi.ValidateFilterPath (the one grammar this validator now
+// delegates to) accepts it accordingly. This is not a new injection surface:
+// validateFilterPaths, the only caller that reaches SQL interpolation, skips
+// f.Path == "" before ever calling validateJSONPath.
+func TestValidateJSONPath_AcceptsEmpty(t *testing.T) {
+	if err := validateJSONPath(""); err != nil {
+		t.Errorf("validateJSONPath(\"\") = %v, want nil (empty filter path is legal)", err)
+	}
+}
+
 // TestValidateJSONPath_AcceptsHyphenatedSegments ensures field names that
 // contain hyphens (e.g. "some-array", "some-object") are accepted.
 // Hyphens are safe inside single-quoted SQLite JSON-path literals — they
@@ -68,8 +82,8 @@ func TestValidateJSONPath_RejectsInjection(t *testing.T) {
 		"a b",
 		"a\nb",
 		"a\tb",
-		// Empty segments / malformed dotting.
-		"",
+		// Empty segments / malformed dotting. The empty path itself is NOT
+		// here: see TestValidateJSONPath_AcceptsEmpty for why.
 		".",
 		".foo",
 		"foo.",
@@ -86,6 +100,23 @@ func TestValidateJSONPath_RejectsInjection(t *testing.T) {
 		}
 		if !errors.Is(err, ErrInvalidFilterPath) {
 			t.Errorf("validateJSONPath(%q) = %v, want wraps ErrInvalidFilterPath", p, err)
+		}
+	}
+}
+
+// TestValidateJSONPath_AcceptsSubscripts checks the validator against the
+// one SPI grammar (spi.ValidateFilterPath): a bracketed wildcard or
+// non-negative index is a legitimate array subscript, and every rejection
+// the grammar states stays rejected here too.
+func TestValidateJSONPath_AcceptsSubscripts(t *testing.T) {
+	for _, p := range []string{"tags[0]", "tags[*]", "items[*].sku", "obj.0", "m[0][1]"} {
+		if err := validateJSONPath(p); err != nil {
+			t.Errorf("validateJSONPath(%q): unexpected error %v", p, err)
+		}
+	}
+	for _, p := range []string{"a'b", "a;DROP", "a[-1]", "a[0:2]", "a[", "a[0]b"} {
+		if err := validateJSONPath(p); err == nil {
+			t.Errorf("validateJSONPath(%q): want rejection", p)
 		}
 	}
 }
