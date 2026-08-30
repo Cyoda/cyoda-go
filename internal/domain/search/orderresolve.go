@@ -1,12 +1,25 @@
 package search
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
+
+// errUnknownSortField is the sentinel for a DATA sort key absent from the
+// fields map passed to resolveOrderBy. resolveSortKeys checks it via
+// errors.Is to decide whether one bounded schema refresh (mirroring
+// validateConditionPaths' contract for condition paths) might resolve it —
+// a field a peer node has just added can be absent from this node's cached
+// schema without being genuinely unknown. No other resolveOrderBy failure
+// (grammar, an unknown META field, an array field, an unresolvable sort
+// kind) wraps this sentinel, because a refresh cannot fix any of those: the
+// grammar and the meta allowlist are static, and IsArray/kind come from the
+// same descriptor a refresh would only reconfirm.
+var errUnknownSortField = errors.New("unknown sort field")
 
 // resolveOrderBy validates each OrderKey and attaches its ordering class,
 // producing the typed OrderSpecs the plugins/comparator consume. Data keys
@@ -60,7 +73,7 @@ func resolveOrderBy(keys []OrderKey, fields map[string]schema.FieldDescriptor) (
 		}
 		fd, ok := fields[key]
 		if !ok {
-			return nil, fmt.Errorf("unknown sort field: %q", k.Path)
+			return nil, fmt.Errorf("%w: %q", errUnknownSortField, k.Path)
 		}
 		// Backstop. Every IsArray:true descriptor is keyed "...[*]"
 		// (schema.collectFields sets the flag only for an array of leaves),

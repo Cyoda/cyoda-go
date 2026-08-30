@@ -1716,6 +1716,15 @@ func (s *SearchService) markPathsPresent(tenant string, ref spi.ModelRef, paths 
 // resolveSortKeys turns the request OrderKeys into typed OrderSpecs, validating
 // scalar-leaf data paths and the meta allowlist. Returns a 400-classified
 // AppError on bad input.
+//
+// A DATA sort key absent from the cached schema is refreshed exactly once
+// before it is refused — mirroring validateConditionPaths' bounded-refresh
+// contract (issue #77) for condition paths. Without this, a field a peer
+// node had just added sorted successfully on the node that already saw the
+// extension and 400'd on one still running the stale cache — the same field
+// answering two ways depending only on which node's cache happened to be
+// warm. The bound is required: an unbounded refresh turns a misconfigured
+// client naming a field that will never exist into a refresh storm.
 func (s *SearchService) resolveSortKeys(ctx context.Context, modelRef spi.ModelRef, keys []OrderKey) ([]spi.OrderSpec, error) {
 	if len(keys) == 0 {
 		return nil, nil
@@ -1742,6 +1751,22 @@ func (s *SearchService) resolveSortKeys(ctx context.Context, modelRef spi.ModelR
 		return nil, fmt.Errorf("failed to load schema for sort validation: %w", err)
 	}
 	specs, rerr := resolveOrderBy(keys, fields)
+	if rerr == nil {
+		return specs, nil
+	}
+	if !errors.Is(rerr, errUnknownSortField) {
+		// Grammar, an unknown META field, an array field or an unresolvable
+		// sort kind — none of these can change on refresh.
+		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, rerr.Error())
+	}
+
+	freshFields, refreshed, refreshErr := refreshFieldsMap(ctx, modelStore, modelRef)
+	if !refreshed || refreshErr != nil || freshFields == nil {
+		// No refresh capability, the refresh itself failed, or it produced
+		// no schema — the original miss is authoritative.
+		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, rerr.Error())
+	}
+	specs, rerr = resolveOrderBy(keys, freshFields)
 	if rerr != nil {
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, rerr.Error())
 	}

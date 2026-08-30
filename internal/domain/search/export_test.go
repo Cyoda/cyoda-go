@@ -56,6 +56,14 @@ func PathValidationCacheBucketCount(c *PathValidationCache) int {
 	return len(c.buckets)
 }
 
+// ResolveSortKeysForTest exposes resolveSortKeys so an external test can
+// drive its bounded-refresh contract directly, the same way
+// TestSearch_StaleSchema_RefreshesOnceAndSucceeds (path_validate_test.go)
+// drives Search's condition-path validation.
+func (s *SearchService) ResolveSortKeysForTest(ctx context.Context, modelRef spi.ModelRef, keys []OrderKey) ([]spi.OrderSpec, error) {
+	return s.resolveSortKeys(ctx, modelRef, keys)
+}
+
 // JobFailureFallback returns the sanitised message written into a job
 // record on an unattributable failure — the same constant FailStaleJobs
 // (reaper.go) and the executor's own failure paths (service.go) both use.
