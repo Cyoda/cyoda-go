@@ -202,6 +202,85 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 // operator identically to the other structural condition failures
 // (object-operand shape, malformed BETWEEN arity) this file already routes
 // to INVALID_CONDITION, rather than falling through to a coarser BAD_REQUEST.
+// ValidateCriterionCondition performs the operator, operand-shape and
+// BETWEEN-arity checks ValidateCondition performs on a search condition —
+// WITHOUT the FunctionCondition rejection, because a criterion legitimately
+// carries a FUNCTION clause: the workflow engine dispatches it to a compute
+// member at evaluation time rather than evaluating it as a search
+// predicate (see the FunctionCondition arm of validateConditionAtDepth for
+// why search itself must reject it).
+//
+// Path grammar is deliberately not checked here. workflow.walkCriterion runs
+// its own path check first (ValidateConditionJSONPath / lifecycle field
+// check), because a criterion accepts a path shape (the wildcard subscript)
+// a search condition's scalar surfaces do not — see path-grammar.md §7.
+//
+// Shares canonicalOperators/validateOperator/validateOperandShape/
+// validateBetweenArity with ValidateCondition — one operator table for both
+// entry points, per operator-semantics.md §4: "An operator name outside
+// this set is 400 INVALID_CONDITION, on every surface that carries a
+// condition, workflow import included."
+func ValidateCriterionCondition(cond predicate.Condition) error {
+	return validateCriterionConditionAtDepth(cond, 0)
+}
+
+func validateCriterionConditionAtDepth(cond predicate.Condition, depth int) error {
+	if cond == nil {
+		return nil
+	}
+	if depth >= MaxConditionDepth {
+		return fmt.Errorf("condition depth exceeded (max %d)", MaxConditionDepth)
+	}
+	switch c := cond.(type) {
+	case *predicate.SimpleCondition:
+		if err := validateOperator(c.OperatorType); err != nil {
+			return err
+		}
+		if err := validateOperandShape(c.Value); err != nil {
+			return err
+		}
+		return validateBetweenArity(c.OperatorType, c.Value)
+	case *predicate.LifecycleCondition:
+		if err := validateOperator(c.OperatorType); err != nil {
+			return err
+		}
+		if err := validateOperandShape(c.Value); err != nil {
+			return err
+		}
+		return validateBetweenArity(c.OperatorType, c.Value)
+	case *predicate.ArrayCondition:
+		// ArrayCondition doesn't carry an operator (see the mirroring
+		// comment in validateConditionAtDepth) — only the operand shape of
+		// each non-null positional value is checked here.
+		for _, v := range c.Values {
+			if v == nil {
+				continue
+			}
+			if err := validateOperandShape(v); err != nil {
+				return err
+			}
+		}
+		return nil
+	case *predicate.GroupCondition:
+		if c.Operator != "AND" && c.Operator != "OR" {
+			return fmt.Errorf("%w: unknown group operator %q; valid: AND, OR", ErrInvalidCondition, c.Operator)
+		}
+		for _, child := range c.Conditions {
+			if err := validateCriterionConditionAtDepth(child, depth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	case *predicate.FunctionCondition:
+		// A criterion legitimately carries a FUNCTION clause — nothing to
+		// check here; this is the one arm that differs from
+		// validateConditionAtDepth.
+		return nil
+	default:
+		return nil
+	}
+}
+
 func validateOperator(op string) error {
 	if op == "" {
 		return fmt.Errorf("%w: missing operatorType; valid: %s", ErrInvalidCondition, canonicalOperatorList())

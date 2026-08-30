@@ -197,12 +197,18 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 	return nil
 }
 
-// validateCriterion rejects a criterion that is malformed in any of three
+// validateCriterion rejects a criterion that is malformed in any of four
 // ways:
 //   - a jsonPath that is not JSON Path nomenclature — a bare "amount" is not
 //     a path. Delegates to search.ValidateConditionJSONPath, the same grammar
 //     the search API boundary enforces: a criterion and a search condition are
 //     one model syntax and must agree on which paths exist.
+//   - an operatorType outside the canonical set, or an operand shape/arity
+//     violation (an object operand, or a BETWEEN with other than two
+//     entries). Delegates to search.ValidateCriterionCondition — the same
+//     operator table search.ValidateCondition enforces, minus the
+//     FUNCTION-clause rejection a criterion is exempt from (spec §4: "on
+//     every surface that carries a condition, workflow import included").
 //   - a MATCHES_PATTERN or LIKE operand the kernel cannot compile. Delegates
 //     to search.ValidatePatterns — the kernel's own derivation, the same call
 //     the search API boundary makes — so import accepts exactly the operands
@@ -222,9 +228,13 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 // compilation — happens inside spi.ExpandLeaf), so a malformed criterion
 // imported successfully and then errored (or silently misbehaved) on every
 // subsequent evaluation of that transition. A bad path was worse still: it
-// errored nowhere and simply resolved, so the criterion worked. Import is the
-// only boundary a criterion crosses, which is why all three are checked here
-// rather than at evaluation, where the failure would land on a save.
+// errored nowhere and simply resolved, so the criterion worked. An unknown
+// operator is worse again: it fails closed on every subsequent evaluation
+// with no error surfaced anywhere, so the transition it guards silently
+// never fires. Import is the only boundary a criterion crosses, which is why
+// all four are checked here rather than at evaluation, where the failure
+// would land on a save (or, for the unknown-operator case, never surface at
+// all).
 //
 // location names the workflow/state/transition the criterion belongs to, for
 // the error message. Empty/null criteria are skipped. A criterion that does
@@ -241,11 +251,15 @@ func validateCriterion(criterion json.RawMessage, location string) error {
 	if err != nil {
 		return nil
 	}
-	// Paths and lifecycle type-soundness first, then pattern operands — a
-	// criterion naming a field that does not exist is reported as the path
-	// problem it is, not shadowed by a complaint about its operand.
+	// Paths and lifecycle type-soundness first, then operator/operand shape,
+	// then pattern operands — a criterion naming a field that does not exist
+	// is reported as the path problem it is, not shadowed by a complaint
+	// about its operator or operand.
 	if err := walkCriterion(cond, location); err != nil {
 		return err
+	}
+	if err := search.ValidateCriterionCondition(cond); err != nil {
+		return fmt.Errorf("%s: %w", location, err)
 	}
 	if err := search.ValidatePatterns(cond); err != nil {
 		return fmt.Errorf("%s: %w", location, err)
