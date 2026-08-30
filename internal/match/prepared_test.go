@@ -275,3 +275,40 @@ func TestPrepare_MalformedPathNeverMatches(t *testing.T) {
 		t.Error("Match() = true, want false: a malformed path must never match")
 	}
 }
+
+// TestPrepare_EmptyLeafPathNeverMatches mirrors the SPI kernel's own guard
+// (prepareNode in prepared_filter.go): a SourceData LEAF with an empty path
+// addresses no field and must never resolve to anything. Without this guard,
+// stripLeader("$") / stripLeader("$.") / stripLeader("") all yield "",
+// spi.ParseFilterPath("") legitimately returns (nil, nil) — the shape a TREE
+// operator's absent path is allowed to take — and spi.ResolvePath(data, nil)
+// resolves that nil hop slice to the parsed ROOT DOCUMENT, so a presence test
+// matches every entity and a string operator substring-matches the entity's
+// raw JSON text.
+func TestPrepare_EmptyLeafPathNeverMatches(t *testing.T) {
+	paths := []string{"", "$", "$."}
+	for _, path := range paths {
+		t.Run(fmt.Sprintf("path=%q/NOT_NULL", path), func(t *testing.T) {
+			cond := &predicate.SimpleCondition{JsonPath: path, OperatorType: "NOT_NULL"}
+			p, err := match.Prepare(cond, typed(spi.String))
+			if err != nil {
+				t.Fatalf("Prepare() error = %v, want nil (never-match, not an error)", err)
+			}
+			if p.Match([]byte(`{"a":1}`), spi.EntityMeta{}) {
+				t.Error("Match() = true, want false: an empty leaf path must never match")
+			}
+		})
+		t.Run(fmt.Sprintf("path=%q/CONTAINS", path), func(t *testing.T) {
+			cond := &predicate.SimpleCondition{JsonPath: path, OperatorType: "CONTAINS", Value: "a"}
+			p, err := match.Prepare(cond, typed(spi.String))
+			if err != nil {
+				t.Fatalf("Prepare() error = %v, want nil (never-match, not an error)", err)
+			}
+			// The raw document text contains "a" (the field name), which is
+			// exactly the false-positive substring match the guard prevents.
+			if p.Match([]byte(`{"a":1}`), spi.EntityMeta{}) {
+				t.Error("Match() = true, want false: an empty leaf path must never match, not substring-match the raw document")
+			}
+		})
+	}
+}

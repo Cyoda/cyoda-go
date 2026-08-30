@@ -178,7 +178,23 @@ func prepareSimple(c *predicate.SimpleCondition, fieldTypes FieldTypes) (prepNod
 		return prepNode{}, err
 	}
 	if n.kind == prepLeaf {
-		hops, err := spi.ParseFilterPath(stripLeader(c.JsonPath))
+		stripped := stripLeader(c.JsonPath)
+		if stripped == "" {
+			// An empty path is legal ONLY for a tree operator (AND/OR,
+			// handled by prepareGroup and never reaching this function) — it
+			// is how a condition spells "addresses no field at all". A LEAF
+			// with an empty path (raw "", "$", or "$." — stripLeader collapses
+			// all three) addresses no field either, so it must never resolve
+			// to anything. Mirrors the SPI kernel's own guard for exactly
+			// this case (prepareNode in prepared_filter.go): without it,
+			// spi.ParseFilterPath("") legitimately returns (nil, nil) — the
+			// shape the tree-operator case is allowed to take — and
+			// spi.ResolvePath(data, nil) resolves that nil hop slice to the
+			// parsed ROOT DOCUMENT, so a presence test would match every row
+			// and a string operator would substring-match the row's raw JSON.
+			return prepNode{kind: prepNever}, nil
+		}
+		hops, err := spi.ParseFilterPath(stripped)
 		if err != nil {
 			// A path outside the grammar never resolves to anything — the
 			// same "never matches" a leaf whose expansion failed already
