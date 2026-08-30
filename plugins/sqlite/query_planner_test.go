@@ -1275,6 +1275,25 @@ func TestPlanQuery_WildcardIsResidual(t *testing.T) {
 	}
 }
 
+// TestPathHasWildcard_ParseFailureIsTreatedAsWildcard pins pathHasWildcard's
+// default on a path spi.ParseFilterPath cannot parse. f.Path reaching this
+// function has already passed validateFilterPaths, so this is unreachable in
+// practice with a well-formed caller — but the DEFAULT direction still
+// matters, for exactly the reason TestPlanQuery_WildcardIsResidual states:
+// treating an unparseable path as "definitely not a wildcard" would let
+// isLeafPushable push it down as a scalar comparison, which for an ACTUAL
+// wildcard drops every matching row with no way for the residual re-check to
+// recover them. Returning true (fail closed: "might be a wildcard, don't
+// push") is the safe default, matching
+// .claude/rules/correctness-over-availability.md.
+func TestPathHasWildcard_ParseFailureIsTreatedAsWildcard(t *testing.T) {
+	for _, p := range []string{"a[", "a]", "a[-1]", "a[?(@.x)]"} {
+		if !pathHasWildcard(p) {
+			t.Errorf("pathHasWildcard(%q): want true (fail-closed, not pushable) on a path that fails to parse", p)
+		}
+	}
+}
+
 // TestPlanQuery_PositionalIsPushed: a positional subscript is a sound,
 // pushable leaf and renders SQLite's own bracket-index spelling.
 func TestPlanQuery_PositionalIsPushed(t *testing.T) {

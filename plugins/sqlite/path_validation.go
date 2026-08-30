@@ -121,13 +121,16 @@ func validateGroupAndAggregatePaths(groupBy []spi.GroupExpr, aggs []spi.Aggregat
 // surface it names.
 //
 // path is assumed already grammar-valid: every call site runs validateJSONPath
-// first. A parse error here is therefore not expected in practice and is
-// treated as "no subscript" (falls through) rather than duplicating the
-// grammar error, keeping this helper total.
+// first, so a parse error here is not expected in practice. But should this
+// ever be reached defensively with an unvalidated path, the fail-closed
+// answer is rejection, not silent acceptance: per
+// .claude/rules/correctness-over-availability.md, a dependency (here, a
+// successful parse) a correct "no subscript" answer requires must fail the
+// check, not be treated as satisfying it.
 func rejectSubscript(path, what string) error {
 	hops, err := spi.ParseFilterPath(path)
 	if err != nil {
-		return nil
+		return fmt.Errorf("%w: %s %q: %s", ErrInvalidFilterPath, what, path, err)
 	}
 	for _, hop := range hops {
 		if len(hop.Subs) > 0 {

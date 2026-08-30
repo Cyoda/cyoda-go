@@ -259,14 +259,18 @@ func isLeafPushable(f spi.Filter) bool {
 // like one. Mirrors sqlite's pathHasWildcard.
 //
 // f.Path reaching isLeafPushable has already passed validateFilterPaths at
-// the Search()/GroupedAggregate() boundary, so a parse error here cannot
-// occur in practice; an error is treated as "no wildcard" (falls through to
-// the existing pushability rules) rather than panicking, keeping this helper
-// total.
+// the Search()/GroupedAggregate() boundary, so a parse error here is not
+// expected in practice. But the default direction still matters: treating
+// an unparseable path as "definitely not a wildcard" would let
+// isLeafPushable push it down as a scalar comparison, which for an ACTUAL
+// wildcard drops every matching row with no way for the residual re-check
+// to recover them (the exact hazard this function's own doc above
+// describes). true — "might be a wildcard, don't push" — is the fail-closed
+// default, matching .claude/rules/correctness-over-availability.md.
 func pathHasWildcard(path string) bool {
 	hops, err := spi.ParseFilterPath(path)
 	if err != nil {
-		return false
+		return true
 	}
 	for _, hop := range hops {
 		for _, sub := range hop.Subs {
