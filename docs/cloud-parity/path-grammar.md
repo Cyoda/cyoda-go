@@ -29,10 +29,14 @@ addressable by a path. `model-field-name-grammar.md` defines that door.
 jsonPath  = "$." segment ( "." segment )*
 segment   = name subscript*
 name      = 1*( ALPHA / DIGIT / "_" / "-" )   ; ASCII only
-subscript = "[" ( "*" / 1*DIGIT ) "]"
+subscript = "[" ( "*" / 1*DIGIT ) "]"          ; the digit run must fit an int
 ```
 
 The `$.` leader is required. A path without it is not a path.
+
+A positional index's digit run is bounded to what fits an `int`. No entity
+array is ever long enough for a larger index to address a real position, so a
+digit run that overflows is rejected, not truncated or wrapped.
 
 Accepted, including every well-formed subscript and every chain of them:
 
@@ -55,6 +59,7 @@ Rejected:
 | no name before a subscript | `$.[0]`, `$.[*]` |
 | empty subscript | `$.a[]` |
 | negative or signed index | `$.a[-1]`, `$.a[+1]` |
+| index too large to fit an int | `$.a[99999999999999999999]` |
 | exponent index | `$.a[1e2]` |
 | slice | `$.a[0:2]` |
 | union | `$.a[0,1]` |
@@ -373,11 +378,16 @@ the same grammar with the leader removed.
 filterPath = segment ( "." segment )*
 segment    = name subscript*
 name       = 1*( ALPHA / DIGIT / "_" / "-" )   ; ASCII only
-subscript  = "[" ( "*" / 1*DIGIT ) "]"
+subscript  = "[" ( "*" / 1*DIGIT ) "]"          ; the digit run must fit an int
 ```
 
 `$.tags[0]` becomes `tags[0]`. `$.obj.0` becomes `obj.0`. An empty filter path is
 legal and carries no field: `AND` and `OR` nodes hold one.
+
+The magnitude bound on a positional index carries through unchanged: a digit
+run that does not fit an `int` is rejected here exactly as it is at the wire
+boundary in section 2, because this is the same grammar with the leader
+removed.
 
 **The filter path keeps the distinction the wire form makes.** A bracket is an
 array index. A dot and a number is a field name. A plugin that collapses the two
@@ -503,8 +513,8 @@ that a self-executing backend does not run:
 - **The declared-type lookup**, including the fold from a positional path to the
   wildcard model key.
 - **The field-existence check** of section 6, including the container rules.
-- **The filter-path grammar**, including the bracket forms and the rejection
-  sentinel of section 9.
+- **The filter-path grammar**, including the bracket forms, the magnitude
+  bound on a positional index, and the rejection sentinel of section 9.
 
 The cross-backend parity suite runs against every backend wired into it, so a
 backend that has not implemented these fails on its next dependency update rather

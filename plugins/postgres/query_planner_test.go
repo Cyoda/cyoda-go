@@ -1139,7 +1139,7 @@ func TestJsonbExtract_RendersSubscript(t *testing.T) {
 // validateGroupAndAggregatePaths/validateOrderSpecs for group-by/aggregate/
 // sort paths all refuse a wildcard leaf before it can reach here), so a
 // defensively-reached wildcard must degrade the same safe way an unparseable
-// path already does — root->>” — never render the container as if the
+// path already does — root->>"" — never render the container as if the
 // wildcard were not there.
 func TestJsonbExtract_WildcardIsRejectedNotDropped(t *testing.T) {
 	cases := []struct{ path, want string }{

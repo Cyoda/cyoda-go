@@ -492,7 +492,7 @@ func jsonbExtractJSONB(root, path string) string {
 // A defensively-reached wildcard returns nil (steps so far discarded, not
 // just the subscript) rather than continuing with the name it belongs to:
 // jsonbExtractText/jsonbExtractJSONB treat nil the same safe way they treat
-// an unparseable path (root->>” / root unchanged) — a non-match, not a
+// an unparseable path (root->>"" / root unchanged) — a non-match, not a
 // value. Dropping only the subscript used to leave the hop's name in the
 // chain, so jsonbExtractText("doc", "tags[*]") rendered doc->>'tags' — the
 // whole array's text form, a real but WRONG value, exactly the

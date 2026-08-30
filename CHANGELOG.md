@@ -222,7 +222,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   jsonPath  = "$." segment ( "." segment )*
   segment   = name subscript*
   name      = 1*( ALPHA / DIGIT / "_" / "-" )   ; ASCII only
-  subscript = "[" ( "*" / 1*DIGIT ) "]"
+  subscript = "[" ( "*" / 1*DIGIT ) "]"          ; the digit run must fit an int
   ```
 
   ```diff
@@ -271,9 +271,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
   Still accepted: condition paths with a **well-formed** subscript — the wildcard
   `[*]` or a non-negative index (`$.tags[*].name`, `$.arr[0]`, `$.matrix[*][*]`,
-  `$.orders[*].lines[*].sku`) — valid JSON Path, evaluated in memory rather than
-  pushed down. Grouped-stats `groupBy`/`field` still reject every subscript,
-  well-formed or not, because a group key must be a single scalar.
+  `$.orders[*].lines[*].sku`) — valid JSON Path. A positional index now pushes
+  down like any other field; a wildcard leaf still evaluates in memory, because
+  no backend has a wildcard accessor. Grouped-stats `groupBy`/`field` still
+  reject every subscript, well-formed or not, because a group key must be a
+  single scalar.
   The reserved `groupBy` token `state` is a token, not a path, and needs no leader;
   it is groupBy-only, so `state` as an aggregation `field` is now rejected.
   Workflow criteria obey the same grammar, enforced at workflow import — see the
@@ -1030,11 +1032,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 - **A path addressing one array element by position (`$.arr[0]`) now resolves,
   instead of answering an empty page for a field that holds the value.** It is
-  valid JSON Path, it is accepted at the API boundary, and no pushdown filter
-  can express it — so the in-memory evaluator is the only one that ever serves
-  it, and it did not. Three lookups missed, each independently enough to make
-  the leaf false for every entity: the evaluator handed gjson a path it has no
-  syntax for (`arr[0]`, where gjson wants `arr.0`); the declared-type lookup
+  valid JSON Path and is accepted at the API boundary. The in-memory evaluator
+  is the resolver of last resort — every leaf a backend does not push down
+  still falls through to it — and it did not resolve this one. Three lookups
+  missed, each independently enough to make the leaf false for every entity:
+  the evaluator handed gjson a path it has no syntax for (`arr[0]`, where
+  gjson wants `arr.0`); the declared-type lookup
   probed a schema key that cannot exist (`$.arr[0]` — the schema records an
   array's element once, under `$.arr[*]`), and a comparison with no declared
   type expands into nothing; and search's field-existence check rejected the
