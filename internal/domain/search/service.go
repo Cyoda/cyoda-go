@@ -1785,9 +1785,14 @@ func (s *SearchService) resolveSortKeys(ctx context.Context, modelRef spi.ModelR
 	}
 
 	// The exact missing subset, independent of resolveOrderBy's
-	// first-error short-circuit — findUnknownPaths is the same helper
-	// validateConditionPaths uses to compute what to negative-cache.
-	missing := findUnknownPaths(dataPaths, fields)
+	// first-error short-circuit. findUnknownSortPaths — not
+	// validateConditionPaths' findUnknownPaths — applies resolveOrderBy's
+	// own exact-key membership test: a sort key must denote a single
+	// scalar leaf, so the CONDITION-path predicate's container/array
+	// widening (correct there, where a bare path may legitimately address
+	// a container) would silently under-report what is actually missing
+	// here and leave the negative cache never engaging for those shapes.
+	missing := findUnknownSortPaths(dataPaths, fields)
 
 	freshFields, refreshed, refreshErr := refreshFieldsMap(ctx, modelStore, modelRef)
 	if !refreshed {
@@ -1805,7 +1810,7 @@ func (s *SearchService) resolveSortKeys(ctx context.Context, modelRef spi.ModelR
 	specs, rerr = resolveOrderBy(keys, freshFields)
 	if rerr != nil {
 		if errors.Is(rerr, errUnknownSortField) {
-			s.markPathsAbsent(tenant, modelRef, findUnknownPaths(missing, freshFields))
+			s.markPathsAbsent(tenant, modelRef, findUnknownSortPaths(missing, freshFields))
 		}
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, rerr.Error())
 	}

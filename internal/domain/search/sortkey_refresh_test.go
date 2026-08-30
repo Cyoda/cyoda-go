@@ -7,6 +7,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -172,5 +173,105 @@ func TestResolveSortKeys_MetaFieldUnknown_NoRefresh(t *testing.T) {
 	}
 	if got := ms.RefreshCount(); got != 0 {
 		t.Errorf("an unknown meta field must not trigger a schema refresh, got %d", got)
+	}
+}
+
+// TestResolveSortKeys_NegativeCache_EngagesForContainerPath is
+// TestResolveSortKeys_NegativeCache_CollapsesRepeatedRequests' container
+// counterpart. The schema declares only "$.address.street" — a sort key
+// naming the interior node "$.address" itself is rejected by resolveOrderBy
+// (it is not a scalar leaf), but before this fix the negative-cache
+// membership check (isPathKnown) is the CONDITION-path predicate, which
+// treats "$.address" as known because a leaf descends from it. That mismatch
+// made missing (and therefore markPathsAbsent) a no-op, so the negative
+// cache never engaged and every repeat request paid a full authoritative
+// model-store read plus a schema re-parse.
+func TestResolveSortKeys_NegativeCache_EngagesForContainerPath(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	root := schema.NewObjectNode()
+	addr := schema.NewObjectNode()
+	addr.SetChild("street", schema.NewLeafNode(schema.String))
+	root.SetChild("address", addr)
+	raw, err := schema.Marshal(root)
+	if err != nil {
+		t.Fatalf("schema.Marshal: %v", err)
+	}
+	desc := &spi.ModelDescriptor{Ref: ref, State: spi.ModelLocked, Schema: raw}
+	ms := &countingModelStore{descriptor: desc}
+
+	base := memory.NewStoreFactory()
+	defer base.Close()
+	factory := &modelStoreFactory{StoreFactory: base, modelStore: ms}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+
+	cache := search.NewPathValidationCache()
+	svc := search.NewSearchService(factory, uuids, searchStore).
+		WithPathValidationCache(cache)
+
+	ctx := tenantCtx("tenant-1")
+	keys := []search.OrderKey{{Path: "$.address", Source: spi.SourceData}}
+
+	const reqCount = 20
+	for i := 0; i < reqCount; i++ {
+		if _, err := svc.ResolveSortKeysForTest(ctx, ref, keys); err == nil {
+			t.Fatalf("iter %d: expected error sorting by a non-scalar container path, got nil", i)
+		}
+	}
+
+	if got := ms.getCount.Load(); got > 1 {
+		t.Errorf("inner Get count: want <=1 (negative cache short-circuits every repeat), got %d", got)
+	}
+	if got := ms.refreshCount.Load(); got > 1 {
+		t.Errorf("inner RefreshAndGet count: want exactly 1 (bounded, then negative-cached), got %d", got)
+	}
+}
+
+// TestResolveSortKeys_NegativeCache_EngagesForArrayPath is the array-path
+// sibling of TestResolveSortKeys_NegativeCache_EngagesForContainerPath: the
+// schema records the array's element once, under the wildcard key
+// "$.tags[*]", and never the bare container "$.tags". resolveOrderBy
+// rejects "$.tags" as an unknown sort field (it is not a scalar leaf key),
+// but isPathKnown's container-prefix matching considers "$.tags" known
+// because "$.tags[*]" descends from it, so the negative cache never engaged
+// for this shape either.
+func TestResolveSortKeys_NegativeCache_EngagesForArrayPath(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	root := schema.NewObjectNode()
+	root.SetChild("tags", schema.NewArrayNode(schema.NewLeafNode(schema.String)))
+	raw, err := schema.Marshal(root)
+	if err != nil {
+		t.Fatalf("schema.Marshal: %v", err)
+	}
+	desc := &spi.ModelDescriptor{Ref: ref, State: spi.ModelLocked, Schema: raw}
+	ms := &countingModelStore{descriptor: desc}
+
+	base := memory.NewStoreFactory()
+	defer base.Close()
+	factory := &modelStoreFactory{StoreFactory: base, modelStore: ms}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+
+	cache := search.NewPathValidationCache()
+	svc := search.NewSearchService(factory, uuids, searchStore).
+		WithPathValidationCache(cache)
+
+	ctx := tenantCtx("tenant-1")
+	keys := []search.OrderKey{{Path: "$.tags", Source: spi.SourceData}}
+
+	const reqCount = 20
+	for i := 0; i < reqCount; i++ {
+		if _, err := svc.ResolveSortKeysForTest(ctx, ref, keys); err == nil {
+			t.Fatalf("iter %d: expected error sorting by an array container path, got nil", i)
+		}
+	}
+
+	if got := ms.getCount.Load(); got > 1 {
+		t.Errorf("inner Get count: want <=1 (negative cache short-circuits every repeat), got %d", got)
+	}
+	if got := ms.refreshCount.Load(); got > 1 {
+		t.Errorf("inner RefreshAndGet count: want exactly 1 (bounded, then negative-cached), got %d", got)
 	}
 }

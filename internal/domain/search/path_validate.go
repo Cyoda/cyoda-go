@@ -132,6 +132,51 @@ func pathOrContainerKnown(p string, fields map[string]schema.FieldDescriptor) bo
 	return isKnownContainerPath(p, fields)
 }
 
+// findUnknownSortPaths is [findUnknownPaths]' SORT-key counterpart: it
+// applies resolveOrderBy's own membership test — an EXACT key in fields,
+// with no container or array-wildcard widening — rather than isPathKnown's
+// permissive CONDITION-path test.
+//
+// A sort key must denote a single scalar leaf (resolveOrderBy rejects a
+// container or an array path with errUnknownSortField), so the negative
+// cache resolveSortKeys populates from this result must agree with that
+// exactly. Using findUnknownPaths/isPathKnown here instead — as this
+// function replaced — silently no-ops the cache for those two shapes: a
+// sort key naming an interior node ("$.address" when only
+// "$.address.street" is declared) or an array container ("$.tags" when the
+// schema records only the wildcard leaf "$.tags[*]") is "known" under the
+// condition-path predicate's prefix matching, so the computed missing set
+// is empty, markPathsAbsent is a no-op, and every repeat request pays a
+// full authoritative model-store read plus a schema re-parse instead of
+// short-circuiting on the negative cache.
+func findUnknownSortPaths(paths []string, fields map[string]schema.FieldDescriptor) []string {
+	var unknown []string
+	for _, p := range paths {
+		if isSortPathKnown(p, fields) {
+			continue
+		}
+		unknown = append(unknown, p)
+	}
+	return unknown
+}
+
+// isSortPathKnown reports whether p is recorded in fields as an exact key —
+// the same lookup resolveOrderBy performs (`fields[key]`) before it ever
+// checks IsArray or resolves an ordering kind. Canonicalisation still
+// applies, matching resolveOrderBy's own normalisePath call on the key, but
+// no container or array-container widening: a sort key names a leaf field
+// exactly, or it is unknown to this predicate.
+func isSortPathKnown(p string, fields map[string]schema.FieldDescriptor) bool {
+	if _, ok := fields[p]; ok {
+		return true
+	}
+	if canon := schema.CanonicalFieldPath(p); canon != p {
+		_, ok := fields[canon]
+		return ok
+	}
+	return false
+}
+
 // FindUnknownFieldPaths returns the data-field JSONPaths cond references
 // that are absent from fields (typically obtained via LoadFieldsMap).
 // Exported so a caller outside this package that selects entities via its
