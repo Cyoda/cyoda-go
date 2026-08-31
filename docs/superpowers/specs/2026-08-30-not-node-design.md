@@ -102,31 +102,65 @@ today:
 
 ### 4.2 An unsatisfiable comparison is an answer, and it is currently wrong
 
-`Expansion.void` means: **at least one declared type accepted the operand, but no
-comparison survived for any declared type.** The natural-language reading is *no
-value of this field's type can satisfy this comparison* — which is a determinate
-answer about every entity, not a failure.
+When an operand cannot be satisfied by the type of the value actually stored,
+the comparison is **unsatisfiable for that value** — *no value of this type can
+satisfy this comparison*. That is a determinate answer about the entity, not a
+failure to evaluate.
 
-`EvalLeaf` answers **false** for a void expansion, whatever the operator. That is
-right for a positive operator and wrong for a negative one. Measured:
+`EvalLeaf` answers **false** in that situation whatever the operator. That is
+right for a positive operator and wrong for a negative one. Measured, field
+declared `INTEGER`, entity `{"n":5}`:
 
-| Leaf, field declared `INTEGER` | Entity | Answers | Correct |
-|---|---|---|---|
-| `$.n EQUALS 12.5` | `{"n":5}` | false | false ✓ |
-| `$.n NOT_EQUAL 12.5` | `{"n":5}` | **false** | **true** ✗ |
+| Leaf | Answers | Correct |
+|---|---|---|
+| `$.n EQUALS 12.5` | false | false ✓ |
+| `$.n NOT_EQUAL 12.5` | **false** | **true** ✗ |
 
 `$.n NOT_EQUAL 12.5` returns no rows. It should return every entity holding a
 number there, because 5 is not 12.5. PostgreSQL agrees: `select 5::int <> 12.5`
-is `t`. This is a live wrong answer with no `NOT` involved, and it is the same
-silent-wrong-answer class as the rest of this rollout.
+is `t`. A live wrong answer with no `NOT` involved.
 
-**Fix.** A void expansion evaluates as an unsatisfiable comparison: false for a
-positive operator, true for a negative one — subject to the unchanged rule of
-`operator-semantics.md` § 2, that a null or absent value never matches any binary
-operator, negatives included. The eight negative operators are `NOT_EQUAL`,
-`INOT_EQUAL`, `NOT_CONTAINS`, `INOT_CONTAINS`, `NOT_STARTS_WITH`,
-`INOT_STARTS_WITH`, `NOT_ENDS_WITH`, `INOT_ENDS_WITH`. The two presence tests
-take no operand and never produce a void expansion.
+**The fix must be per stored-value type family, not per expansion.** The obvious
+place to hang it — `Expansion.void` — is the wrong granularity, and an earlier
+revision of this spec made exactly that mistake. `void` is set only when **every**
+declared type dropped the operand (`eval_leaf.go:208`). A field declared
+`[INTEGER, String]` is not void for the operand `12.5`, because the string branch
+accepts it — yet the numeric branch still dropped, and the same wrong answer
+survives. Measured:
+
+| Declared | `$.n EQUALS 12.5` | `$.n NOT_EQUAL 12.5` | void? |
+|---|---|---|---|
+| `[INTEGER]` | false | **false** ✗ | yes |
+| `[INTEGER, String]` | false | **false** ✗ | **no** |
+
+Polymorphic declared sets are ordinary here — the model grows a type set from
+written data, the sqlite planner has a rule keyed on `len(f.Declared) > 1`, and
+the equivalence corpus already generates `{Integer, String}`.
+
+So the rule is: **at evaluation, when the stored value's own type family has no
+surviving sub-condition, answer by operator polarity** — false for a positive
+operator, true for a negative one. That subsumes the whole-expansion case, since
+a void expansion is one where every family dropped.
+
+Unchanged and load-bearing: `operator-semantics.md` § 2 still applies first — a
+null or absent value never matches any binary operator, negatives included. The
+two presence tests carry no operand and are unaffected.
+
+**Which operators this reaches is settled by test, not asserted here.** Only the
+six comparison operators can currently produce a whole-expansion `void`
+(`expandCompare` is the sole writer; the string and pattern operators take a
+different path and `expandBetween` errors rather than voiding). At per-family
+granularity the negative string operators come into scope as well. The
+implementation determines the reachable set operator by operator, with a test per
+operator, rather than working from a list written in advance.
+
+**Not a rejection.** An earlier revision proposed `400` here. That was wrong:
+`$.n EQUALS 12.5` is a well-formed question whose answer is simply "no", and
+PostgreSQL answers `f` rather than erroring. That revision's worked example —
+`EQUALS "2024"` on a date-declared field — is not affected at all: the operand
+floors to `2024-01-01` and the comparison runs. The imprecise-`EQUALS` drop
+applies in the other direction, to a precise operand against a coarser declared
+field such as `Year EQUALS "2024-09-09"`.
 
 **Not a rejection.** An earlier revision of this spec proposed `400` for a void
 expansion. That was wrong twice over: `$.n EQUALS 12.5` is a well-formed question
@@ -166,7 +200,7 @@ and § 14 carries it as a backend obligation.
 
 | Request | Today | After |
 |---|---|---|
-| `$.n NOT_EQUAL 12.5`, `n` declared `INTEGER` | no rows | every entity with a number at `n` |
+| `$.n NOT_EQUAL 12.5`, `n` declared `INTEGER` | no rows | every entity holding a non-null value at `n` whose type family cannot satisfy the operand |
 | `$.n EQUALS 12.5`, `n` declared `INTEGER` | no rows | unchanged |
 | `$.d EQUALS "2024"`, `d` declared `LocalDate` | matches `2024-01-01` | unchanged |
 | criterion naming a field the model does not declare | transition silently does not fire | save aborted and rolled back (§ 5) |
@@ -340,9 +374,16 @@ fields map `evaluateCriterion` already builds, so the criterion path needs the
 same second model read conditional delete performs. `ValidateKnownPaths` issues
 one bounded refresh on a miss, inside the write transaction. Two rules follow:
 
-- **Gate the model read on the criterion carrying a data path at all.** A
-  lifecycle-only criterion stays answerable without the schema
-  (`path-grammar.md` § 6). `ConditionFieldPaths` returning empty is the gate.
+- **Gate the model READ, never the validation call.** A lifecycle-only criterion
+  stays answerable without the schema (`path-grammar.md` § 6), so
+  `ConditionFieldPaths` returning empty skips the model load. It must **not** skip
+  `ValidateConditionValueTypes`, which is called with a nil model in that case —
+  the pattern grouped stats already uses. Skipping the call outright would leave
+  `validateLifecycleType` unreached, and that is the one check that refuses a
+  text operator on a temporal meta field. `NOT( creationDate CONTAINS "2024" )`
+  carries no data path, so a gate on the whole block would let it through to the
+  § 11 guard's never-match and let the `NOT` invert it into matches-everything —
+  reintroducing precisely the fail-open this section closes.
 - **Preserve the existing precedence.** `evaluateCriterion` documents that an
   infra failure wins over a structural fault. The new reads must not reorder
   that; an infra failure on either read stays an infra failure.
@@ -378,9 +419,16 @@ return validateJSONPath(f.Path)
 `plugins/memory/path_validation.go`. A `FilterNot` carries an empty `Path`, so
 it returns `nil` and **its child is never validated**.
 
-`path-grammar.md` § 9 makes whole-tree rejection mandatory: *"a malformed path
-nested under an and/or branch is still malformed"*, and a backend must reject
-rather than answer an empty page. The consequence is worse under `NOT` than
+`path-grammar.md` § 9 requires a backend to reject a filter path outside the
+grammar rather than answer an empty result set — but it does **not** state that
+validation must walk the whole `Filter` tree. That sentence is not in the
+document; an earlier revision of this spec quoted it as if it were. The nearest
+written rule is § 8's clause table, which is about the wire boundary, not a
+plugin's `spi.Filter` tree.
+
+So the normative gap is wider than a wording tweak: **§ 9 must add the
+whole-tree rule**, not merely note that it covers `NOT`. § 13 carries that as an
+addition rather than an edit. The consequence is worse under `NOT` than
 under `AND`: an unvalidated malformed path becomes a never-match leaf, and `NOT`
 inverts that into matches-everything — a superset on search, and on
 `DELETE /entity/...` a destructive one.
@@ -429,6 +477,14 @@ child turns a superset into a subset and drops rows a narrowing `WHERE` never
 returns for re-checking — would authorise almost nothing, because `leafExact` is
 `IS_NULL` and `NOT_NULL` alone on both backends.
 
+**The cost is real and is named rather than left implicit.** A residual filter is
+also what gates the SQL `LIMIT` fast path — it is pushed only when the plan has no
+post-filter. So a query containing a `NOT` streams the model through the kernel
+and stops only once enough *matches* accumulate, rather than bounding in SQL. It
+stays bounded by the result-limit sentinel, not unbounded, but given this
+milestone's search-bounding history it is stated here and in the help topic
+rather than discovered. It matters most on `DELETE /entity/...`.
+
 A planner test pins that `NOT` stays residual, so a later change to `isPushable`
 cannot silently make it pushable without the soundness rule being written first.
 
@@ -448,14 +504,37 @@ failure into a never-match leaf return it instead:
   calls `ValidateLeafPattern` itself rather than changing `ExpandLeaf`'s
   contract, which has other callers.
 
-`Expansion.void` is **not** in this list. It is a determinate answer, not a
-failure, and § 4.2 fixes how it is evaluated rather than rejecting it.
+An unsatisfiable comparison is **not** in this list. It is a determinate answer,
+not a failure, and § 4.2 fixes how it is evaluated rather than rejecting it.
+
+**`internal/match` carries the same swallows and gets the same treatment.**
+Hardening only the SPI kernel would leave the evaluator that serves every
+workflow criterion and every residual, which is where a `NOT` arm is also being
+added. It has four:
+
+| Site | Swallow |
+|---|---|
+| `leafNode` | operand parses into no declared type, or a malformed range arity |
+| `prepareSimple` | empty path |
+| `prepareSimple` | path outside the grammar |
+| `prepareLifecycle` | the temporal-meta guard (§ 11) |
+
+The first three become errors, exactly as their SPI counterparts do. The fourth
+is different in kind — it is a deliberate semantic non-match, not a failure — and
+§ 5 is what stops a `NOT` inverting it, by refusing the predicate before
+evaluation.
+
+The third site's own comment justifies the swallow as *"the path is validated at
+the boundary before a condition ever reaches this evaluator"*. That is the same
+reasoning § 4.3 rejects for `spitest`: the boundary already refusing something is
+a reason the case should be unreachable, not a reason to require the wrong answer
+underneath it. The asymmetry is removed rather than explained.
 
 This is a breaking SPI signature change, and the ripple is wider than the
-signature: `spi.Prepare` has eight non-test call sites across the three plugins —
-`memory/searcher.go`, `memory/grouped_stats.go` (×2), `sqlite/searcher.go`,
-`sqlite/query_planner.go`, `sqlite/grouped_stats.go`, `postgres/query_planner.go`
-— all inside functions that return no error today. `planFor`, `planQuery` and the
+signature: `spi.Prepare` has **seven** non-test call sites across the three
+plugins — `memory/searcher.go`, `memory/grouped_stats.go` (×2),
+`sqlite/searcher.go`, `sqlite/query_planner.go`, `sqlite/grouped_stats.go`,
+`postgres/query_planner.go` — all inside functions that return no error today. `planFor`, `planQuery` and the
 grouped-aggregator constructors each grow an error return, and their callers with
 them. Pre-1.0 this ships in a patch tag, declared in `COMPATIBILITY.md` and the
 SPI `CHANGELOG.md`.
@@ -555,7 +634,7 @@ needs the quantifier node, and this is the argument to reopen.
 | `docs/cloud-parity/path-grammar.md` | § 7 — the criterion row moves from "no model check" to checked at evaluation, and the subsection arguing against it is rewritten (§ 5); § 8 clause table gains `NOT`; § 9 states that whole-tree path validation includes it; § 11 gains the criterion-at-evaluation error row |
 | `docs/cloud-parity/README.md` | its contents table indexes every file in the folder, and this change adds one |
 | `cmd/cyoda/help/content/predicates.md` | states that everything in it applies identically to search and criteria; carries the negative-operator null rule § 4.7 now qualifies, and the `INVALID_CONDITION` cause list |
-| `docs/workflow-schema-versioning.md` | **Gate 4, mandatory**: `NOT` inside a `criterion` changes the `WorkflowConfigurationDto` accepted-input set, and § 5 changes the outcome of saves that succeed today. Record the bump decision and its rationale, as `unevaluable-criterion-fails-save.md` did |
+| `docs/workflow-schema-versioning.md` | **Gate 4, mandatory, and two separate answers.** `NOT` inside a `criterion` widens the `WorkflowConfigurationDto` accepted-input set — the doc names "new condition operator" as a MINOR example, so it is a bump. § 5 is evaluation-time only and changes no import validation, acceptance rule or export shape, so it is **not** a bump; record that the way `unevaluable-criterion-fails-save.md` recorded its own non-bump. Do not merge the two under one precedent |
 | `docs/cyoda/cloud-divergences.md` | exists for fields cyoda-go declares in OpenAPI but does not implement. It has **no** `GroupConditionDto` / `NOT` row today, so there is nothing to remove — the omission is itself the gap, and the row is added and then struck by this change |
 | `internal/domain/workflow/validate.go` | its doc comment repeats the "import is the only boundary a criterion crosses" rationale § 5 reverses |
 | `cyoda-go-spi/CHANGELOG.md` | `FilterNot`, the breaking `Prepare` error return, `groupToFilter` strictness, the inverted `MalformedLike` case |
@@ -570,6 +649,12 @@ The specification documents are written to stand on their own. Cloud publishes
 (`docs/cyoda/openapi.yml`); cyoda-go leads this contract, so the alignment
 document states the one-condition rule as the contract and names it as a
 narrowing Cloud must adopt.
+
+**One fact is owed before that document is written: what Cloud does today with a
+multi-child `NOT`** — "not both", "neither", or reject. It decides whether the
+narrowing refuses a shape nobody sends or silently changes results for payloads
+Cloud accepts now. Establish it with cyoda-cloud rather than assuming; Gate 7
+requires the reconciliation either way.
 
 ## 14. Commercial-backend obligations
 
@@ -624,7 +709,8 @@ some leaves, which is where they can differ.
 | **unsatisfiable comparison, negative operator**: `$.n NOT_EQUAL 12.5` on `INTEGER` returns rows (§ 4.2) | ✓ | ✓ | ✓ | — |
 | — the positive twin `$.n EQUALS 12.5` still returns none (§ 4.2) | ✓ | ✓ | ✓ | — |
 | — null and absent still match neither (§ 4.2, `operator-semantics.md` § 2) | ✓ | — | ✓ | — |
-| — each of the eight negative operators (§ 4.2) | ✓ | — | — | — |
+| — a **polymorphic** declared set, e.g. `[INTEGER, String]`, gets the same fix (§ 4.2) | ✓ | ✓ | ✓ | — |
+| — the reachable operator set, one test per operator (§ 4.2) | ✓ | — | — | — |
 | — `EQUALS "2024"` on a `LocalDate` field is unchanged, not rejected (§ 4.4) | ✓ | ✓ | — | — |
 | `ALL(P)` via the negative twin is wrong on a null element (§ 4.6) — pinned so the recipe is not published later | ✓ | — | — | — |
 | operand fits no declared type in a criterion → save aborted (§ 5) | ✓ | ✓ | — | — |
@@ -632,7 +718,8 @@ some leaves, which is where they can differ.
 | `Search` **errors** on an unevaluable operand — `spitest`, inverted (§ 4.3) | ✓ | — | ✓ | — |
 | — and the error classifies as `400`, not `500` (§ 14.4) | ✓ | ✓ | — | ✓ |
 | `spi.Prepare` returns an error rather than a never-match leaf (§ 9) | ✓ | — | — | — |
-| — all eight plugin call sites propagate it (§ 9) | ✓ | — | — | — |
+| — all seven plugin call sites propagate it (§ 9) | ✓ | — | — | — |
+| `internal/match`'s three failure swallows become errors (§ 9) | ✓ | ✓ | — | — |
 | `conditions` = 0 → `400 INVALID_CONDITION`, **each of the four condition surfaces** | ✓ | ✓ | — | ✓ |
 | `conditions` ≥ 2 → `400 INVALID_CONDITION`, **each of the four condition surfaces** | ✓ | ✓ | — | ✓ |
 | unrecognised group operator → `400 INVALID_CONDITION` | ✓ | ✓ | — | ✓ |
@@ -650,7 +737,7 @@ some leaves, which is where they can differ.
 | criterion comparing a container path to a scalar fails the save (§ 5) | ✓ | ✓ | — | — |
 | criterion on a path a peer just added is **not** rejected (§ 5 refresh) | ✓ | ✓ | — | — |
 | malformed `FilterNot` from a backend fails `Prepare` (§ 9) | ✓ | — | — | — |
-| `NOT` stays residual on both planners (§ 8) | ✓ | — | — | — |
+| `NOT` stays residual on both planners, and `LIMIT` is not pushed (§ 8) | ✓ | — | — | — |
 | malformed path under `NOT` rejected — `spitest` | ✓ | — | ✓ | — |
 | `FilterNot` **evaluated** through every search entry point — `spitest` (§ 14.2) | ✓ | — | ✓ | — |
 | equivalence corpus emits `NOT` groups, and its temporal-meta skip propagates through the new node (§ 11) | ✓ | — | — | — |
