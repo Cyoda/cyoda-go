@@ -524,8 +524,12 @@ plugins — `memory/searcher.go`, `memory/grouped_stats.go` (×2),
 `sqlite/searcher.go`, `sqlite/query_planner.go`, `sqlite/grouped_stats.go`,
 `postgres/query_planner.go` — all inside functions that return no error today. `planFor`, `planQuery` and the
 grouped-aggregator constructors each grow an error return, and their callers with
-them. Pre-1.0 this ships in a patch tag, declared in `COMPATIBILITY.md` and the
-SPI `CHANGELOG.md`.
+them. **No SPI tag is cut for it.** `MAINTAINING.md` tags at end-of-milestone
+only; while `v0.8.4` is in flight cyoda-go pins a pseudo-version against SPI
+`main`, so each SPI change merges and the four `go.mod` pins advance. The change
+is recorded in the SPI `CHANGELOG.md`'s `[Unreleased]` section and narrated in
+`COMPATIBILITY.md`'s `v0.8.4` row when the pin moves. #516 row 14 cuts the single
+tag once every `v0.8.4` SPI change has merged.
 
 **A malformed `FilterNot` is an error, not a false.** `Filter` is a public struct
 any backend may build. A `FilterNot` whose `Children` length is not exactly 1, or
@@ -637,33 +641,25 @@ at, no record of what a document previously said.
 
 ## 14. Commercial-backend obligations
 
-1. **Validate filter paths through a `NOT` node.** A backend walking only
-   `AND`/`OR` skips a `NOT`'s subtree. Enforced by the new `spitest` case, so it
-   fails conformance at the next pin bump.
+Tracked as an issue in the commercial backend's own repository, per the
+cross-repo rule. `spitest` is what enforces them: each fails conformance at that
+backend's next pin bump.
+
+1. **Validate filter paths through a `NOT` node** (§ 6). A backend walking only
+   `AND`/`OR` skips a `NOT`'s subtree.
 2. **Evaluate `FilterNot`** if it self-executes searches: exactly one child,
-   inverting a two-valued result, and failing rather than matching for a
-   malformed node. `Filter.Op` is an open string, so a backend with no
-   `FilterNot` arm treats the node as a leaf with an empty path and answers a
-   silent empty page — which `path-grammar.md` § 9 forbids. `spitest` therefore
-   grows **evaluation** cases, not only the path-validation case of § 6:
-   a `FilterNot` over known data through every search entry point, asserting the
-   ∀ reading, and a malformed `FilterNot` that never matches. Without them this
-   obligation is advice rather than conformance.
+   inverting a two-valued result, failing rather than matching for a malformed
+   node.
 3. **Do not push a `NOT` into a query** unless every leaf beneath it translates
    exactly. Leaving it residual is always correct.
-4. **`Search` must fail on an unevaluable operand, not return an empty page.**
-   `spitest`'s `Searcher/Pattern/MalformedLike` is inverted by this change
-   (§ 4.3): it previously required no error and no rows. A backend that returns
-   an empty page for a malformed operand now fails conformance.
+4. **`Search` fails on an unevaluable operand** rather than returning an empty
+   page (§ 4.3), and the refusal carries a sentinel
+   `search.ClassifyStoreQueryError` maps — otherwise it surfaces as `500` and
+   contradicts § 10.
+5. **Answer an unsatisfiable comparison by operator polarity** (§ 4.2), per
+   stored-value type family, rather than false for every operator.
 
-   **The refusal must carry a classifiable sentinel.**
-   `search.ClassifyStoreQueryError` maps exactly two sentinels today and returns
-   nil for everything else, which surfaces as `500` with a ticket id. A bare
-   error from a backend would therefore contradict § 10's `400`. The pattern half
-   uses the existing `spi.ErrInvalidPattern`; the type half needs a sentinel
-   added alongside it, and both are added to the classifier.
-5. **Answer an unsatisfiable comparison by operator polarity** (§ 4.2) if it
-   self-executes searches, rather than false for every operator.
+`COMPATIBILITY.md`'s `v0.8.4` row carries the same list.
 
 ## 15. Test coverage
 
@@ -763,14 +759,13 @@ malformed `NOT` criterion import with `200` and then fail every subsequent save
 on that transition, permanently, instead of being refused at import as § 10
 states.
 
-**Two SPI waves, and the ordering between them is the whole point.** Step 1 is
-itself an SPI change — it alters `spi.Prepare`'s signature and inverts a
-`spitest` case — so it tags and the engine pins it before step 4 exists. A
-backend pinning that first tag receives the `Prepare` error and the inverted
-conformance case, and no `FilterNot`: it cannot yet be asked to negate anything,
-so there is nothing to answer wrongly. Step 4's tag then adds `FilterNot`
-together with the § 14.1 and § 14.2 conformance cases, so a backend cannot pin
-the node without also pinning the cases that fail it if unimplemented.
+**Two SPI merges, no tags.** Steps 1–2 and step 5 each merge to SPI `main` and
+each advance cyoda-go's pseudo-pin; neither cuts a tag. Ordering still matters
+for a consumer that re-pins between them: the earlier pin carries the `Prepare`
+error and the inverted conformance case but no `FilterNot`, so nothing can yet
+ask it to negate anything. Step 5's pin adds `FilterNot` together with the § 14
+conformance cases, so the node and the cases that fail an unimplemented backend
+arrive in the same pin.
 
 The guarantee is not that no window exists, but that the window contains no
 negation.
