@@ -38,10 +38,10 @@ supported"* and the server answers `400`. Three sources, three answers.
 In scope:
 
 1. `NOT` in the condition language, end to end.
-2. **Stop swallowing unevaluable conditions** (§ 4.2, § 4.3) — `Prepare` gains
-   an error and the boundary reports it. This is what makes `NOT` sound, and it
-   is a defect in its own right: a junk query answers `200` with an empty page
-   today.
+2. **An unsatisfiable comparison answers correctly** (§ 4.2) — today
+   `$.n NOT_EQUAL 12.5` on an integer field returns no rows where it should
+   return every entity holding a number. A wrong answer in its own right, and one
+   `NOT` would compound.
 3. **Criterion validation at evaluation** (§ 5) — a defect in its own right:
    today a misspelled field in a criterion silently never fires the transition.
 4. **Filter-path validation through a `NOT` node** in all three storage plugins
@@ -90,98 +90,90 @@ requester writes the group they meant.
 
 ### 4.1 The rule
 
-`NOT(c)` is **true exactly when `c` is false**. Two-valued. There is no third
-truth value and no uncertainty to propagate.
+`NOT(c)` is **true exactly when `c` is false**. Two-valued. No third truth value.
 
-That holds because a condition we cannot evaluate is **not an answer about an
-entity — it is an invalid request**, and it is refused before any entity is
-read. § 4.2 establishes that; § 4.3 lists what has to change to make it true.
+Two separate things have to be true for that to be sound, and neither is true
+today:
 
-### 4.2 An unevaluable condition is a rejected request, not a non-match
+- Every leaf that reaches evaluation must give a **correct** answer, not merely
+  an answer. § 4.2 fixes a class where the answer is wrong.
+- A leaf that cannot be evaluated at all must never reach evaluation. § 4.3 lists
+  those and where each is refused.
 
-Three things can leave a leaf unable to answer. **All three are decided when the
-query is prepared, from the condition alone, before a single entity is
-examined** — the operand is parsed once, the declared types resolved once, the
-pattern compiled once. None of them depends on any entity's data.
+### 4.2 An unsatisfiable comparison is an answer, and it is currently wrong
 
-| Cause | Today | Must be |
-|---|---|---|
-| operand fits no declared type of the field (`ExpandLeaf` errors) | swallowed → leaf never matches | `400 CONDITION_TYPE_MISMATCH` |
-| operand fits a declared type but **no comparison survives** for any of them (`Expansion.void`) | no error at all → leaf never matches | `400 CONDITION_TYPE_MISMATCH` |
-| pattern operand will not compile | swallowed (`eval_leaf.go:141-146`) → leaf never matches | `400 INVALID_CONDITION` |
+`Expansion.void` means: **at least one declared type accepted the operand, but no
+comparison survived for any declared type.** The natural-language reading is *no
+value of this field's type can satisfy this comparison* — which is a determinate
+answer about every entity, not a failure.
 
-The second is the one worth spelling out, because it looks like a working query.
+`EvalLeaf` answers **false** for a void expansion, whatever the operator. That is
+right for a positive operator and wrong for a negative one. Measured:
 
-Temporal values are held at several precisions — year, year-month, date,
-date-time — and comparisons convert between them. That conversion is deliberate
-and useful: `$.d GREATER_THAN "2024"` on a date field means "later than 2024",
-and the operator is adjusted so the boundary stays correct (`>=` against a
-floored value becomes `>`). But `$.d EQUALS "2024"` on a date field is
-meaningless — a specific date is never equal to a whole year — so the conversion
-drops it (`temporal_subtype.go`, the imprecise-`EQUALS` drop, ported from
-Cloud's `PolymorphicTemporalConversions`).
+| Leaf, field declared `INTEGER` | Entity | Answers | Correct |
+|---|---|---|---|
+| `$.n EQUALS 12.5` | `{"n":5}` | false | false ✓ |
+| `$.n NOT_EQUAL 12.5` | `{"n":5}` | **false** | **true** ✗ |
 
-The drop is per declared type, and that must not change: for a field declared
-`year | date`, `EQUALS "2024"` is meaningful for the year branch and dropped for
-the date branch, so the query is good. Only when **every** declared type drops it
-is there nothing left to ask. `Expansion.void` already computes exactly that
-condition. It is a junk query, and it must say so.
+`$.n NOT_EQUAL 12.5` returns no rows. It should return every entity holding a
+number there, because 5 is not 12.5. PostgreSQL agrees: `select 5::int <> 12.5`
+is `t`. This is a live wrong answer with no `NOT` involved, and it is the same
+silent-wrong-answer class as the rest of this rollout.
 
-**This is what SQL does.** Measured on PostgreSQL 17:
+**Fix.** A void expansion evaluates as an unsatisfiable comparison: false for a
+positive operator, true for a negative one — subject to the unchanged rule of
+`operator-semantics.md` § 2, that a null or absent value never matches any binary
+operator, negatives included. The eight negative operators are `NOT_EQUAL`,
+`INOT_EQUAL`, `NOT_CONTAINS`, `INOT_CONTAINS`, `NOT_STARTS_WITH`,
+`INOT_STARTS_WITH`, `NOT_ENDS_WITH`, `INOT_ENDS_WITH`. The two presence tests
+take no operand and never produce a void expansion.
 
-```
-select '2024-05-01'::date = '2024';   ERROR:  invalid input syntax for type date: "2024"
-```
+**Not a rejection.** An earlier revision of this spec proposed `400` for a void
+expansion. That was wrong twice over: `$.n EQUALS 12.5` is a well-formed question
+whose answer is simply "no", and PostgreSQL answers `f` rather than erroring. The
+worked example that revision used — `EQUALS "2024"` on a date-declared field —
+is not void at all: the operand floors to `2024-01-01` and the comparison runs.
+The imprecise-`EQUALS` drop applies in the other direction, to a precise operand
+against a coarser declared field such as `Year EQUALS "2024-09-09"`.
 
-A hard error, not an empty result set.
+### 4.3 What genuinely cannot be evaluated, and where each is refused
 
-**A missing field is a different thing and stays a plain `false`.** That is data,
-not a broken query. `NOT($.x EQUALS "A")` on an entity with no `x` is genuinely
-**true**, and SQL/JSON agrees — `jsonb_path_match('{"a":1}', '!($.x == "A")')`
-returns `t`, measured. See § 4.7.
+Three things leave a leaf unable to answer at all. Each is decided when the query
+is prepared, from the condition alone, before any entity is read.
 
-### 4.3 What has to change, and the conformance rule that is wrong
+| Cause | Refused where |
+|---|---|
+| the operand fits no declared type of the field | `400 CONDITION_TYPE_MISMATCH` at the condition boundary — already the case for search; § 5 adds it for criteria |
+| the path is not declared by the model | `400 INVALID_FIELD_PATH` at the condition boundary — already the case for search; § 5 adds it for criteria |
+| a pattern operand will not compile | `400 INVALID_CONDITION` — already the case for search; § 5 adds it for criteria |
 
-`spi.Prepare` returns no error by contract, and swallows every failure above
-into a leaf that never matches. That is the mechanism to remove: **`Prepare`
-gains an error**, and the request boundary reports it.
+So the whole gap is the **criterion** surface, and § 5 closes it. The search
+surfaces already refuse all three.
 
-One existing conformance rule has to be inverted, not accommodated.
-`spitest`'s `Searcher/Pattern/MalformedLike` requires a backend's `Search` to
-return **no error and no rows** for a malformed `LIKE` operand, justified as
-*"rejecting it with a 400 is the request boundary's job, above the Searcher."*
+**One conformance rule is wrong and must be inverted.** `spitest`'s
+`Searcher/Pattern/MalformedLike` requires a backend's `Search` to return **no
+error and no rows** for a malformed `LIKE` operand, justified as *"rejecting it
+with a 400 is the request boundary's job, above the Searcher."*
 
-That reasoning is wrong. "The boundary already rejects this" is a reason the
-case should be unreachable — it is not a licence to pin the wrong answer
-underneath, and pinning it makes an empty page the *required* behaviour on the
-one path where something slipped through. Query execution is not the place for
-leniency: an empty page for a junk query is a wrong answer wearing the costume
-of a valid one, which is the exact defect class this rollout exists to close.
-
-Leniency belongs at **import**, and only there: a stored criterion may name a
-field the model has not grown yet, because a model extends on write. That is a
-statement about *when* a workflow is checked, not about what an evaluator may
-answer. Applying it to execution was an over-generalisation.
-
-`Searcher/Pattern/MalformedLike` therefore inverts: `Search` **must** return an
-error. That is a commercial-backend obligation (§ 14).
+That reasoning does not hold. "The boundary already refuses this" is a reason the
+case should be unreachable. It is not a reason to require the wrong answer
+underneath, which is what pinning an empty page does. Leniency belongs at
+workflow **import**, where a criterion is stored before it is checked against a
+model. Nothing about query execution is lenient. `Search` must return an error,
+and § 14 carries it as a backend obligation.
 
 ### 4.4 What callers see change
 
-A request that is junk today returns `200` with an empty page; it will return
-`400` naming the fault. Nothing that returns rows today returns different rows.
-
 | Request | Today | After |
 |---|---|---|
-| `$.d EQUALS "2024"`, `d` declared date-only | `200`, empty | `400 CONDITION_TYPE_MISMATCH` |
-| `$.d GREATER_THAN "2024"`, `d` declared date-only | rows later than 2024 | unchanged |
-| `$.d EQUALS "2024"`, `d` declared `year \| date` | rows in 2024 | unchanged |
-| `LIKE "a\\"` (trailing unpaired escape) | `200`, empty | `400 INVALID_CONDITION` |
-| criterion carrying any of the above, at save | transition silently does not fire | save fails, rolled back |
+| `$.n NOT_EQUAL 12.5`, `n` declared `INTEGER` | no rows | every entity with a number at `n` |
+| `$.n EQUALS 12.5`, `n` declared `INTEGER` | no rows | unchanged |
+| `$.d EQUALS "2024"`, `d` declared `LocalDate` | matches `2024-01-01` | unchanged |
+| criterion naming a field the model does not declare | transition silently does not fire | save aborted and rolled back (§ 5) |
+| malformed `LIKE` reaching a backend `Search` | empty page | error |
 
-Declared `### Breaking`. Both directions are the correct one: a caller who wrote
-a query that cannot mean anything is told, instead of being handed an empty page
-they will read as "no such entities".
+Declared `### Breaking`: the first row returns rows where it returned none, and
+the fourth stops a save that succeeds today.
 
 ### 4.5 Truth table
 
@@ -210,8 +202,23 @@ NOT( $.tags[*] EQUALS "red" )     =  NO element equals "red"
 
 For `{"tags":["red","blue"]}` the first is **false** and the second is **true**.
 They are different questions, both useful, and neither is a spelling of the
-other. `ALL(P)` is written `NOT(some element satisfies ¬P)`, which is available
-for the 22 operators that have a negative twin.
+other.
+
+**`ALL(P)` has no correct spelling, and this document does not offer one.** The
+obvious construction — `NOT(some element satisfies ¬P)` — is unsound whenever the
+list may hold a null. Measured, for `NOT($.tags[*] NOT_EQUAL "red")`:
+
+| Stored | Reports "every tag is red" | Correct |
+|---|---|---|
+| `["red","blue"]` | false | ✓ |
+| `["red"]` | true | ✓ |
+| `["red",null]` | **true** | ✗ |
+| `[null]` | **true** | ✗ |
+
+The cause is § 4.7's asymmetry seen from the inside: a negative operator does not
+match a null element either, so the null is invisible to the inner test and the
+outer `NOT` reads its absence as success. `NOT` sits above the existential and
+cannot negate the element predicate, so no rearrangement fixes it. See § 12.
 
 ### 4.7 The absent-field asymmetry
 
@@ -256,95 +263,102 @@ already states. Search rejects `FUNCTION` outright on every surface.
 A `NOT` is one level, counting against `MaxConditionDepth` and the parser's own
 depth cap like any group.
 
-## 5. Prerequisite: a criterion must check its paths against the model
+## 5. A criterion is checked against the model before it is evaluated
 
-**Defect, pre-existing, independent of `NOT`.** A workflow criterion's paths are
-never checked for membership in the model — at either end.
+**Ruled by @pschleger.** A query never executes against a field the model does
+not declare. There is no such thing as an undeclared field to query. A criterion
+is imported without asserting model compliance, because a model may legitimately
+be declared later; but when that criterion is **evaluated** and the model does
+not declare its field, the workflow transaction is **aborted and rolled back**.
 
-- At **import**, `walkCriterion` checks path *grammar*, operator names,
-  lifecycle type-soundness and regex operands. Not membership.
-- At **execution**, `evaluateCriterion` **does** load the model, and a load
-  failure fails the save closed. But the model is consulted only for *typing*:
-  `if fd, ok := fields[p]; ok { return fd.Types }; return nil`. An undeclared
-  path silently yields no declared types.
+This applies to **all 26 operators**, not only the eight that need a declared
+type. The eight are merely where the current behaviour is visibly wrong; the rule
+is about what may execute, not about which operators happen to misbehave.
 
-`operator-semantics.md` § 4 then has the eight comparison and ordering operators
-answer non-match with no declared type. Measured, with no `NOT` involved:
+### The defect today
+
+A criterion's paths are never checked for membership in the model, at either end.
+
+- At **import**, `walkCriterion` checks path grammar, operator names, lifecycle
+  type-soundness and regex operands. Not membership. This part is correct and
+  stays: a criterion may name a field the model has not been given yet.
+- At **evaluation**, `evaluateCriterion` loads the model, and a load failure
+  already fails the save closed. But the model is consulted only for *typing*:
+  `if fd, ok := fields[p]; ok { return fd.Types }; return nil`. An undeclared path
+  silently yields no declared types and the criterion answers non-match.
+
+Measured, with no `NOT` involved:
 
 | Model | `$.amount GREATER_THAN 3` over `{"amount":5}` | Truth |
 |---|---|---|
 | declares `amount` | true | true |
 | does not declare `amount` | **false** | true |
 
-So a misspelled field in a criterion means the transition silently never fires.
-This is the defect class `unevaluable-criterion-fails-save.md` was written to
-close for a bad *operator* — *"a criterion that cannot be evaluated must never be
-read as 'condition not met'"* — left open for a bad *path*. Under `NOT` it
-inverts from silently-never to silently-always.
+So a misspelled field name in a criterion means the transition silently never
+fires, and the save reports success. This is the defect class
+`unevaluable-criterion-fails-save.md` closed for an unrecognised *operator* and
+left open for everything else.
 
-**Fix.** Criterion evaluation applies the **same pair of checks every other
-condition surface applies**, against the model it already loads, and fails the
-save when either refuses — `400 WORKFLOW_FAILED`, rolled back, matching the
-existing unevaluable-criterion contract:
+### The fix
 
-- `search.ValidateKnownPaths` — the path is declared by the model. It carries
-  the single bounded schema refresh `path-grammar.md` § 6 requires, so a field a
-  peer node has just added is not falsely rejected by a node holding an older
-  cached schema (`.claude/rules/multi-node-primary.md`).
+Criterion evaluation applies the checks the other condition surfaces already
+apply, and aborts the transaction when any of them refuses:
+
+- `search.ValidateKnownPaths` — every data path is declared by the model. It
+  carries the single bounded schema refresh `path-grammar.md` § 6 requires, so a
+  field a peer node has just added is not falsely refused by a node holding an
+  older cached schema (`.claude/rules/multi-node-primary.md`).
 - `search.ValidateConditionValueTypes` — the operand fits a declared type, and a
-  **container path is not compared to a scalar** (`path-grammar.md` § 6). This
-  second check is load-bearing for § 4.1's invariant and not merely symmetry: a
-  declared container path carries no scalar type either, so without it a
-  comparison on one still reaches evaluation with an empty declared-type set and
-  answers non-match, which `NOT` would invert into matches-everything. Membership
-  alone does not close the hole.
+  container path is not compared to a scalar.
+- `search.ValidatePatterns` — pattern operands compile. Import-time validation
+  does not reach a workflow stored before that validation existed, and
+  `ExpandLeaf` swallows a compile failure.
 
-- `search.ValidatePatterns` — the operands compile. A workflow stored before
-  pattern validation existed can still carry an uncompilable one, because a
-  stored workflow is never re-validated and `ExpandLeaf` deliberately swallows a
-  compile failure (`eval_leaf.go:141-146`). Import-time validation does not
-  reach an already-stored criterion.
+Failure is `400 WORKFLOW_FAILED`, rolled back — no entity write, no state
+transition, no partial effect — matching the existing unevaluable-criterion
+contract.
 
-Conditional delete already calls the first pair
-(`internal/domain/entity/service.go:1048`, `:1063`); the criterion path is the
-one condition surface that calls none of the three.
+### Consequences, stated rather than discovered
 
-**This reverses a normative decision, and says so.** `path-grammar.md` § 7
-records that a criterion is checked at import and *not* at evaluation, on the
-grounds that "a rejection at evaluation time would fail a save, repeatedly, for
-every entity, long after the workflow was accepted, and it would report the
-fault to a caller who cannot fix it". The same rationale is written into
-`internal/domain/workflow/validate.go`. That reasoning is sound about *cost* and
-wrong about *correctness*: the alternative it chose is not "no rejection" but
-"silently answer the wrong thing", which
-`unevaluable-criterion-fails-save.md` already forbids for the operator case. The
-model check moves to evaluation, `path-grammar.md` § 7 is rewritten rather than
-contradicted, and § 13 carries the edit.
+**A field that no entity has written must be declared in the model.** The model
+grows automatically from written data, so an optional field that nothing has ever
+carried is not declared by that route. It is declared explicitly through
+`POST /model/import/...`, which sets the schema directly. A criterion on such a
+field is supported; declaring the field is the modelling step that makes it so.
 
-**Cost, stated rather than discovered.** `ValidateConditionValueTypes` takes a
-`*schema.ModelNode`, not the fields map `evaluateCriterion` already builds, so
-the criterion path needs a second model read per criterion per save — the same
-one conditional delete performs. `ValidateKnownPaths` additionally issues one
-bounded `RefreshAndGet` on a miss, inside the write transaction. Two
-consequences the implementation must honour:
+**This reverses `path-grammar.md` § 7.** That section records that a criterion is
+checked at import and not at evaluation, arguing that an evaluation-time
+rejection "would fail a save, repeatedly, for every entity … and report the fault
+to a caller who cannot fix it". The same rationale sits in
+`internal/domain/workflow/validate.go`. It is right that leniency belongs at
+import and wrong that it extends to evaluation: the alternative it chose is not
+"no rejection" but "silently answer the wrong thing". § 7's table row and its
+subsection are rewritten, not contradicted; § 13 carries the edit.
 
-- **Gate the model read on the criterion actually carrying a data path.** A
-  lifecycle-only criterion must stay answerable without the schema
+**Cost.** `ValidateConditionValueTypes` takes a `*schema.ModelNode`, not the
+fields map `evaluateCriterion` already builds, so the criterion path needs the
+same second model read conditional delete performs. `ValidateKnownPaths` issues
+one bounded refresh on a miss, inside the write transaction. Two rules follow:
+
+- **Gate the model read on the criterion carrying a data path at all.** A
+  lifecycle-only criterion stays answerable without the schema
   (`path-grammar.md` § 6). `ConditionFieldPaths` returning empty is the gate.
 - **Preserve the existing precedence.** `evaluateCriterion` documents that an
-  infra failure wins over a structural fault, with a stated tree-order caveat.
-  The new reads must not reorder that; an infra failure on either read stays an
-  infra failure.
+  infra failure wins over a structural fault. The new reads must not reorder
+  that; an infra failure on either read stays an infra failure.
 
-Import keeps checking grammar only. A criterion may legitimately be imported
-before the model declares the field, since a model extends on write; at
-execution the field either exists or it does not.
+**It closes a fail-open that § 11's permanent guard would otherwise create.**
+`internal/match` deliberately answers never-match for a text or pattern operator
+on a temporal meta field. That is a semantic non-match, not a failure — and a
+`NOT` above it would invert it into matches-everything. The predicate is refused
+by `validateLifecycleType`, which every *validated* entry point already crosses
+and which a stored criterion did not. Once criterion evaluation runs these
+checks, the guard becomes unreachable rather than invertible, and § 11's
+divergence stays pinned without becoming a hole.
 
-**Behaviour change to declare.** A stored criterion naming an undeclared field
-currently evaluates to "not satisfied" and the save succeeds. It will fail the
-save. That is the correct direction — loud over silent — and it is the same
-change of shape the operator fix already made, but it changes the outcome of
-saves that succeed today and belongs in `### Breaking`.
+**Behaviour change to declare.** A stored criterion naming a field the model does
+not declare evaluates to "not satisfied" today and the save succeeds. It will
+abort the save. `### Breaking`.
 
 ## 6. Prerequisite: plugins must validate paths through a `NOT`
 
@@ -375,8 +389,13 @@ The conformance suite does not catch it: `spitest`'s nested malformed-path case
 is built as a `FilterAnd` only, so no backend — the commercial one included —
 would fail on this at its next pin bump.
 
-**Fix.** `FilterNot` recurses in all three validators, and `spitest` grows a
+**Fix.** All three validators recurse through `FilterNot`, and `spitest` grows a
 malformed path nested under a `NOT`.
+
+Recurse on **any node carrying children**, rather than adding `FilterNot` to the
+`case` list. Naming each branch operator reproduces this defect for the next one
+added; the property that matters is "this node has a subtree", not which operator
+it is.
 
 ## 7. The shared translator must reject unknown group operators
 
@@ -423,15 +442,23 @@ failure into a never-match leaf return it instead:
 
 - `prepared_filter.go`'s `!n.expanded` arm — reached from an `ExpandLeaf` error,
   a `ParseFilterPath` failure, and an empty `SourceData` leaf path.
-- the `Expansion.void` case, which reaches `Prepare` with **no error at all**
-  today and so needs one raised rather than propagated (§ 4.2).
-- `internal/match`'s `prepNever`, which is additionally `prepKind`'s **zero
-  value** — so today an unfinished node silently means "never matches". After
-  this change an unfinished node cannot be built, because the failure paths
-  return an error instead of a node.
+- a pattern operand that will not compile. The swallow for this one is inside
+  `ExpandLeaf`, not `Prepare` (`eval_leaf.go:141-146`, which returns a nil error
+  and a nil matcher), so `Prepare` has nothing to propagate today. `Prepare`
+  calls `ValidateLeafPattern` itself rather than changing `ExpandLeaf`'s
+  contract, which has other callers.
 
-This is a breaking SPI signature change. Pre-1.0 that ships in a patch tag; it
-is declared in `COMPATIBILITY.md` and the SPI `CHANGELOG.md`.
+`Expansion.void` is **not** in this list. It is a determinate answer, not a
+failure, and § 4.2 fixes how it is evaluated rather than rejecting it.
+
+This is a breaking SPI signature change, and the ripple is wider than the
+signature: `spi.Prepare` has eight non-test call sites across the three plugins —
+`memory/searcher.go`, `memory/grouped_stats.go` (×2), `sqlite/searcher.go`,
+`sqlite/query_planner.go`, `sqlite/grouped_stats.go`, `postgres/query_planner.go`
+— all inside functions that return no error today. `planFor`, `planQuery` and the
+grouped-aggregator constructors each grow an error return, and their callers with
+them. Pre-1.0 this ships in a patch tag, declared in `COMPATIBILITY.md` and the
+SPI `CHANGELOG.md`.
 
 **A malformed `FilterNot` is an error, not a false.** `Filter` is a public struct
 any backend may build. A `FilterNot` whose `Children` length is not exactly 1, or
@@ -500,14 +527,25 @@ code:
 What remained of it was element correlation, which § 2 places out of scope: it
 is a capability the system lacks, not a wrong answer it gives.
 
-**One further gap goes with it, named so the decision is made with it visible.**
-`ALL(P)` is written `NOT(some element satisfies ¬P)` and therefore needs `¬P` as
-a leaf, which requires a negative twin. `LIKE`, `MATCHES_PATTERN`, `BETWEEN` and
-`BETWEEN_INCLUSIVE` have none, so *"every element's name matches this pattern"*
-stays inexpressible after this change. A quantifier node with an inner `NOT`
-would have covered it. Accepted: the four are the rarest operators to quantify
-universally over a list, and adding four negative-twin operators to close it
-would multiply § 4.7's asymmetry rather than resolve it.
+**The gap this leaves is wider than an earlier revision of this document
+claimed, and is stated at full width.** That revision said `ALL(P)` was
+unavailable only for the four operators with no negative twin. That is wrong.
+
+`ALL(P)` is unavailable **for all 26 operators** whenever a list may contain a
+null element, because the only construction available — `NOT(some element
+satisfies ¬P)` — reports success for a list of nulls (§ 4.6, measured). `NOT`
+sits above the existential quantifier and cannot reach inside it to negate the
+element predicate.
+
+A quantifier node carrying its own child predicate — the thing `#32` proposed —
+would close this, because a `NOT` could then sit *inside* the quantifier, below
+the element iteration. Dropping `#32` therefore accepts a real gap, not a
+theoretical one.
+
+Accepted on that basis: `ALL` over a list is not offered at all, rather than
+offered with a construction that is wrong on null elements. § 4.6 documents its
+absence rather than publishing the broken recipe. If `ALL` is wanted later, it
+needs the quantifier node, and this is the argument to reopen.
 
 ## 13. Documentation
 
@@ -518,7 +556,7 @@ would multiply § 4.7's asymmetry rather than resolve it.
 | `docs/cloud-parity/README.md` | its contents table indexes every file in the folder, and this change adds one |
 | `cmd/cyoda/help/content/predicates.md` | states that everything in it applies identically to search and criteria; carries the negative-operator null rule § 4.7 now qualifies, and the `INVALID_CONDITION` cause list |
 | `docs/workflow-schema-versioning.md` | **Gate 4, mandatory**: `NOT` inside a `criterion` changes the `WorkflowConfigurationDto` accepted-input set, and § 5 changes the outcome of saves that succeed today. Record the bump decision and its rationale, as `unevaluable-criterion-fails-save.md` did |
-| `docs/cyoda/cloud-divergences.md` | exists for fields cyoda-go declares in OpenAPI but does not implement; the `NOT` enum value is one, and is removed from that list by this change |
+| `docs/cyoda/cloud-divergences.md` | exists for fields cyoda-go declares in OpenAPI but does not implement. It has **no** `GroupConditionDto` / `NOT` row today, so there is nothing to remove — the omission is itself the gap, and the row is added and then struck by this change |
 | `internal/domain/workflow/validate.go` | its doc comment repeats the "import is the only boundary a criterion crosses" rationale § 5 reverses |
 | `cyoda-go-spi/CHANGELOG.md` | `FilterNot`, the breaking `Prepare` error return, `groupToFilter` strictness, the inverted `MalformedLike` case |
 | `docs/cloud-parity/` (new) | Cloud twin-alignment document for negation |
@@ -554,6 +592,15 @@ narrowing Cloud must adopt.
    (§ 4.3): it previously required no error and no rows. A backend that returns
    an empty page for a malformed operand now fails conformance.
 
+   **The refusal must carry a classifiable sentinel.**
+   `search.ClassifyStoreQueryError` maps exactly two sentinels today and returns
+   nil for everything else, which surfaces as `500` with a ticket id. A bare
+   error from a backend would therefore contradict § 10's `400`. The pattern half
+   uses the existing `spi.ErrInvalidPattern`; the type half needs a sentinel
+   added alongside it, and both are added to the classifier.
+5. **Answer an unsatisfiable comparison by operator polarity** (§ 4.2) if it
+   self-executes searches, rather than false for every operator.
+
 ## 15. Test coverage
 
 Scenario × layer. "parity" is `e2e/parity`, run on memory, sqlite and postgres —
@@ -574,14 +621,18 @@ some leaves, which is where they can differ.
 | `NOT(AND[])`, `NOT(OR[])` | ✓ | — | — | — |
 | a `FUNCTION` clause nested inside a `NOT` is rejected (§ 4.10) | ✓ | ✓ | — | — |
 | a `NOT` counts one level against both depth caps (§ 4.11) | ✓ | ✓ | — | — |
-| operand fits no declared type → `400 CONDITION_TYPE_MISMATCH` (§ 4.2) | ✓ | ✓ | ✓ | ✓ |
-| **void expansion** → `400`: `EQUALS "2024"` on a date-only field (§ 4.2) | ✓ | ✓ | ✓ | ✓ |
-| — the same operand on a `year \| date` field still **succeeds** (§ 4.4) | ✓ | ✓ | ✓ | — |
-| — `GREATER_THAN "2024"` on a date-only field still **succeeds** (§ 4.4) | ✓ | ✓ | ✓ | — |
-| uncompilable pattern → `400 INVALID_CONDITION` at execution (§ 4.3) | ✓ | ✓ | ✓ | ✓ |
-| a stored criterion carrying any of the above fails the save (§ 4.4) | ✓ | ✓ | — | — |
+| **unsatisfiable comparison, negative operator**: `$.n NOT_EQUAL 12.5` on `INTEGER` returns rows (§ 4.2) | ✓ | ✓ | ✓ | — |
+| — the positive twin `$.n EQUALS 12.5` still returns none (§ 4.2) | ✓ | ✓ | ✓ | — |
+| — null and absent still match neither (§ 4.2, `operator-semantics.md` § 2) | ✓ | — | ✓ | — |
+| — each of the eight negative operators (§ 4.2) | ✓ | — | — | — |
+| — `EQUALS "2024"` on a `LocalDate` field is unchanged, not rejected (§ 4.4) | ✓ | ✓ | — | — |
+| `ALL(P)` via the negative twin is wrong on a null element (§ 4.6) — pinned so the recipe is not published later | ✓ | — | — | — |
+| operand fits no declared type in a criterion → save aborted (§ 5) | ✓ | ✓ | — | — |
+| uncompilable pattern in a stored criterion → save aborted (§ 5) | ✓ | ✓ | — | — |
 | `Search` **errors** on an unevaluable operand — `spitest`, inverted (§ 4.3) | ✓ | — | ✓ | — |
+| — and the error classifies as `400`, not `500` (§ 14.4) | ✓ | ✓ | — | ✓ |
 | `spi.Prepare` returns an error rather than a never-match leaf (§ 9) | ✓ | — | — | — |
+| — all eight plugin call sites propagate it (§ 9) | ✓ | — | — | — |
 | `conditions` = 0 → `400 INVALID_CONDITION`, **each of the four condition surfaces** | ✓ | ✓ | — | ✓ |
 | `conditions` ≥ 2 → `400 INVALID_CONDITION`, **each of the four condition surfaces** | ✓ | ✓ | — | ✓ |
 | unrecognised group operator → `400 INVALID_CONDITION` | ✓ | ✓ | — | ✓ |
@@ -592,14 +643,17 @@ some leaves, which is where they can differ.
 | `NOT` in grouped stats | ✓ | ✓ | — | n/a |
 | `NOT` in a workflow criterion, evaluated on save | ✓ | ✓ | — | — |
 | `NOT` criterion, `conditions` ≠ 1 → import `400 VALIDATION_FAILED` | ✓ | ✓ | — | — |
-| criterion on an undeclared path fails the save (§ 5) | ✓ | ✓ | — | — |
+| criterion on an undeclared path aborts and rolls back the save (§ 5) | ✓ | ✓ | — | — |
+| — for a Group B operator too, e.g. `IS_NULL` (§ 5, all 26 operators) | ✓ | ✓ | — | — |
+| — a lifecycle-only criterion still evaluates with no model read (§ 5) | ✓ | ✓ | — | — |
+| — a temporal meta field under a text operator is refused, not inverted (§ 5) | ✓ | ✓ | — | — |
 | criterion comparing a container path to a scalar fails the save (§ 5) | ✓ | ✓ | — | — |
 | criterion on a path a peer just added is **not** rejected (§ 5 refresh) | ✓ | ✓ | — | — |
 | malformed `FilterNot` from a backend fails `Prepare` (§ 9) | ✓ | — | — | — |
 | `NOT` stays residual on both planners (§ 8) | ✓ | — | — | — |
 | malformed path under `NOT` rejected — `spitest` | ✓ | — | ✓ | — |
 | `FilterNot` **evaluated** through every search entry point — `spitest` (§ 14.2) | ✓ | — | ✓ | — |
-| equivalence corpus emits `NOT` groups | ✓ | — | — | — |
+| equivalence corpus emits `NOT` groups, and its temporal-meta skip propagates through the new node (§ 11) | ✓ | — | — | — |
 
 Delete-by-condition carries the worst blast radius — a wrongly-true `NOT`
 deletes rows — and is covered on every layer it reaches.
@@ -620,11 +674,11 @@ above, per the rollout's own standing rule.
 
 ## 16. Sequence
 
-1. **Reject unevaluable conditions** (§ 4.2, § 4.3, § 9): `Prepare` gains an
-   error, the three swallow sites return it, the boundary maps it to a `400`,
-   and `spitest`'s `MalformedLike` case is inverted. Lands and is verified with
-   no `NOT` in the language yet — it is a defect fix on its own, and it is what
-   makes every later step sound.
+1. **Fix how an unsatisfiable comparison answers** (§ 4.2), and **make an
+   unevaluable one an error** (§ 4.3, § 9): `spi.Prepare` gains an error, its
+   eight plugin call sites propagate it, the classifier gains the sentinels, and
+   `spitest`'s `MalformedLike` case is inverted. Lands and is verified with no
+   `NOT` in the language yet — each is a defect fix on its own terms.
 2. § 5 — criterion validation at evaluation.
 3. § 6 — plugin path validation through `NOT`, plus the `spitest` path case.
 4. § 7 and § 9 — the SPI: `FilterNot`, its prepared evaluator, `groupToFilter`
@@ -643,10 +697,15 @@ malformed `NOT` criterion import with `200` and then fail every subsequent save
 on that transition, permanently, instead of being refused at import as § 10
 states.
 
-**The no-window claim is scoped to this repo's build.** Steps 1–3 land before
-`NOT` is expressible in-tree. They do not travel with an SPI tag: step 4 tags an
-SPI whose `groupToFilter` emits `FilterNot`, and a self-executing backend
-pinning that tag starts receiving `FilterNot` before it has stepped 3's
-validator arm or § 14.2's evaluation. That window is real and is closed by the
-`spitest` cases failing conformance at the pin bump, which makes § 14 a hard
-minimum recorded in `COMPATIBILITY.md` rather than prose here.
+**Two SPI waves, and the ordering between them is the whole point.** Step 1 is
+itself an SPI change — it alters `spi.Prepare`'s signature and inverts a
+`spitest` case — so it tags and the engine pins it before step 4 exists. A
+backend pinning that first tag receives the `Prepare` error and the inverted
+conformance case, and no `FilterNot`: it cannot yet be asked to negate anything,
+so there is nothing to answer wrongly. Step 4's tag then adds `FilterNot`
+together with the § 14.1 and § 14.2 conformance cases, so a backend cannot pin
+the node without also pinning the cases that fail it if unimplemented.
+
+An earlier revision claimed steps 1–3 "do not travel with an SPI tag". That was
+wrong — step 1 does. The guarantee is not that no window exists but that the
+window contains no negation, which is what makes it harmless.
