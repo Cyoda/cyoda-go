@@ -38,9 +38,10 @@ supported"* and the server answers `400`. Three sources, three answers.
 In scope:
 
 1. `NOT` in the condition language, end to end.
-2. **Three-valued evaluation** in both prepared trees (§ 4) — the mechanism that
-   makes `NOT` sound. Not optional and not deferrable: validation cannot
-   establish the alternative (§ 4.1).
+2. **Stop swallowing unevaluable conditions** (§ 4.2, § 4.3) — `Prepare` gains
+   an error and the boundary reports it. This is what makes `NOT` sound, and it
+   is a defect in its own right: a junk query answers `200` with an empty page
+   today.
 3. **Criterion validation at evaluation** (§ 5) — a defect in its own right:
    today a misspelled field in a criterion silently never fires the transition.
 4. **Filter-path validation through a `NOT` node** in all three storage plugins
@@ -87,105 +88,100 @@ requester writes the group they meant.
 
 ## 4. Semantics
 
-### 4.1 The rule, and the third state it forces
+### 4.1 The rule
 
-`NOT(c)` is **true exactly when `c` is false, and unknown when `c` is unknown.**
+`NOT(c)` is **true exactly when `c` is false**. Two-valued. There is no third
+truth value and no uncertainty to propagate.
 
-A leaf evaluates to one of three results, not two:
+That holds because a condition we cannot evaluate is **not an answer about an
+entity — it is an invalid request**, and it is refused before any entity is
+read. § 4.2 establishes that; § 4.3 lists what has to change to make it true.
 
-| Result | Meaning |
-|---|---|
-| true | evaluated, matched |
-| false | evaluated, did not match |
-| **unknown** | **could not be evaluated against this entity at all** |
+### 4.2 An unevaluable condition is a rejected request, not a non-match
 
-Without the third state, `NOT` inverts "we could not tell" into "matches
-everything" — fail-open, against
-`.claude/rules/correctness-over-availability.md`. On `DELETE /entity/...` that
-deletes rows nobody asked to delete.
+Three things can leave a leaf unable to answer. **All three are decided when the
+query is prepared, from the condition alone, before a single entity is
+examined** — the operand is parsed once, the declared types resolved once, the
+pattern compiled once. None of them depends on any entity's data.
 
-**Validation cannot remove the third state, so the design must carry it.** An
-earlier draft asserted the opposite — that §§ 5–7 could guarantee nothing
-unevaluable ever reaches evaluation. That is false, measured three ways:
-
-| Case | Reaches evaluation? | Why validation cannot stop it |
+| Cause | Today | Must be |
 |---|---|---|
-| field declared with an **empty type set** (a `LEAF` node carrying no `types`) | yes | `ValidateKnownPaths` passes — the path *is* declared. `ValidateConditionValueTypes` passes — `condition_type_validate.go:124-127` treats an empty type set as "no constraint". `ExpandLeaf` then fails. `$.a GREATER_THAN 3` over `{"a":5}` answers false; the truth is true. |
-| **imprecise temporal comparison** — `EQUALS "2024"` on a `LocalDate` field | yes | `ExpandLeaf` returns **no error at all** (`Expansion.void`, `eval_leaf.go:85, 206-209`). Operand valid, type declared, nothing to reject. `EQUALS "2024"` over `{"d":"2024-05-01"}` answers false. |
-| a **stored legacy criterion** carrying an uncompilable pattern | yes | Stored workflows are never re-validated (`path-grammar.md` § 7), and `ExpandLeaf` deliberately swallows a pattern-compile failure (`eval_leaf.go:141-146`). |
+| operand fits no declared type of the field (`ExpandLeaf` errors) | swallowed → leaf never matches | `400 CONDITION_TYPE_MISMATCH` |
+| operand fits a declared type but **no comparison survives** for any of them (`Expansion.void`) | no error at all → leaf never matches | `400 CONDITION_TYPE_MISMATCH` |
+| pattern operand will not compile | swallowed (`eval_leaf.go:141-146`) → leaf never matches | `400 INVALID_CONDITION` |
 
-The second is the one that settles it: there is nothing for a validator to
-refuse. §§ 5–7 remain worthwhile — they turn a silent wrong answer into an early,
-accurate error for the cases they *can* catch — but correctness under `NOT` does
-not rest on them.
+The second is the one worth spelling out, because it looks like a working query.
 
-### 4.2 Three-valued composition
+Temporal values are held at several precisions — year, year-month, date,
+date-time — and comparisons convert between them. That conversion is deliberate
+and useful: `$.d GREATER_THAN "2024"` on a date field means "later than 2024",
+and the operator is adjusted so the boundary stays correct (`>=` against a
+floored value becomes `>`). But `$.d EQUALS "2024"` on a date field is
+meaningless — a specific date is never equal to a whole year — so the conversion
+drops it (`temporal_subtype.go`, the imprecise-`EQUALS` drop, ported from
+Cloud's `PolymorphicTemporalConversions`).
 
-Kleene's strong three-valued logic, which is also what SQL uses:
+The drop is per declared type, and that must not change: for a field declared
+`year | date`, `EQUALS "2024"` is meaningful for the year branch and dropped for
+the date branch, so the query is good. Only when **every** declared type drops it
+is there nothing left to ask. `Expansion.void` already computes exactly that
+condition. It is a junk query, and it must say so.
 
-| `a` | `b` | `AND` | `OR` |
-|---|---|---|---|
-| true | true | true | true |
-| true | false | false | true |
-| true | unknown | **unknown** | **true** |
-| false | false | false | false |
-| false | unknown | **false** | **unknown** |
-| unknown | unknown | unknown | unknown |
+**This is what SQL does.** Measured on PostgreSQL 17:
 
-`NOT(true)` = false, `NOT(false)` = true, **`NOT(unknown)` = unknown**.
+```
+select '2024-05-01'::date = '2024';   ERROR:  invalid input syntax for type date: "2024"
+```
 
-At the root, unknown resolves by surface:
+A hard error, not an empty result set.
 
-| Surface | Root unknown |
-|---|---|
-| search, conditional delete, grouped stats | **non-match** — the entity is not returned |
-| workflow criterion | **fails the save**, `400 WORKFLOW_FAILED`, rolled back |
+**A missing field is a different thing and stays a plain `false`.** That is data,
+not a broken query. `NOT($.x EQUALS "A")` on an entity with no `x` is genuinely
+**true**, and SQL/JSON agrees — `jsonb_path_match('{"a":1}', '!($.x == "A")')`
+returns `t`, measured. See § 4.7.
 
-The criterion rule is what `unevaluable-criterion-fails-save.md` already
-requires: *"a criterion that cannot be evaluated must never be read as
-'condition not met'"*. That contract was implemented for an unrecognised
-operator and left unimplemented for every other way a criterion can fail to
-evaluate; this closes it.
+### 4.3 What has to change, and the conformance rule that is wrong
 
-### 4.3 Existing queries are unaffected — this is provable, not hoped
+`spi.Prepare` returns no error by contract, and swallows every failure above
+into a leaf that never matches. That is the mechanism to remove: **`Prepare`
+gains an error**, and the request boundary reports it.
 
-**For any condition containing no `NOT`, three-valued evaluation followed by
-"unknown becomes non-match at the root" gives exactly the answer that treating an
-unevaluable leaf as false gives today.**
+One existing conformance rule has to be inverted, not accommodated.
+`spitest`'s `Searcher/Pattern/MalformedLike` requires a backend's `Search` to
+return **no error and no rows** for a malformed `LIKE` operand, justified as
+*"rejecting it with a 400 is the request boundary's job, above the Searcher."*
 
-`AND` and `OR` are monotone, so an unknown can only ever propagate to unknown or
-be absorbed by a decisive sibling, and collapsing at the root is the same as
-substituting false at the leaf:
+That reasoning is wrong. "The boundary already rejects this" is a reason the
+case should be unreachable — it is not a licence to pin the wrong answer
+underneath, and pinning it makes an empty page the *required* behaviour on the
+one path where something slipped through. Query execution is not the place for
+leniency: an empty page for a junk query is a wrong answer wearing the costume
+of a valid one, which is the exact defect class this rollout exists to close.
 
-| Tree | Today | Three-valued, then collapse |
+Leniency belongs at **import**, and only there: a stored criterion may name a
+field the model has not grown yet, because a model extends on write. That is a
+statement about *when* a workflow is checked, not about what an evaluator may
+answer. Applying it to execution was an over-generalisation.
+
+`Searcher/Pattern/MalformedLike` therefore inverts: `Search` **must** return an
+error. That is a commercial-backend obligation (§ 14).
+
+### 4.4 What callers see change
+
+A request that is junk today returns `200` with an empty page; it will return
+`400` naming the fault. Nothing that returns rows today returns different rows.
+
+| Request | Today | After |
 |---|---|---|
-| `OR[unknown, true]` | true | true |
-| `OR[unknown, false]` | false | unknown → false |
-| `AND[unknown, true]` | false | unknown → false |
-| `AND[unknown, false]` | false | false |
+| `$.d EQUALS "2024"`, `d` declared date-only | `200`, empty | `400 CONDITION_TYPE_MISMATCH` |
+| `$.d GREATER_THAN "2024"`, `d` declared date-only | rows later than 2024 | unchanged |
+| `$.d EQUALS "2024"`, `d` declared `year \| date` | rows in 2024 | unchanged |
+| `LIKE "a\\"` (trailing unpaired escape) | `200`, empty | `400 INVALID_CONDITION` |
+| criterion carrying any of the above, at save | transition silently does not fire | save fails, rolled back |
 
-So no existing query changes answer, and the third state is observable only
-through `NOT` — which is the only place it was ever needed.
-
-The one deliberate behaviour change is the criterion root rule in § 4.2: a
-criterion that cannot be evaluated now fails the save instead of silently
-reading as "not satisfied". See § 5.
-
-### 4.4 Where the third state must live
-
-Both prepared trees currently collapse "never matches" and "could not be
-evaluated" into a single state, and it is the **zero value** in one of them:
-
-- SPI — `prepared_filter.go:151-153`, `if !n.expanded { return false }`,
-  produced by an `ExpandLeaf` error, a `ParseFilterPath` failure, or an empty
-  `SourceData` path.
-- engine — `internal/match/prepared.go:157-169`, `prepNever`, which is also
-  `prepKind`'s zero value.
-
-A per-node guard on `NOT` is **not sufficient and must not be the mechanism**.
-Measured: `AND[true, unevaluable]` answers false, so a `NOT` one level above sees
-a group that prepared cleanly and answered false, and inverts it. The unknown
-must be a value that propagates through every ancestor, in both trees.
+Declared `### Breaking`. Both directions are the correct one: a caller who wrote
+a query that cannot mean anything is told, instead of being handed an empty page
+they will read as "no such entities".
 
 ### 4.5 Truth table
 
@@ -422,26 +418,26 @@ cannot silently make it pushable without the soundness rule being written first.
 `spi.Filter` gains `FilterNot`, a branch node with exactly one child and an
 empty `Path`.
 
-Both prepared trees gain the third result of § 4.1. The unknown is a **value
-that propagates**, not a check performed at the `NOT` node: a guard that only
-inspects `NOT`'s immediate child is insufficient, because `AND[true,
-unevaluable]` answers false and a `NOT` above it inverts that to true (measured,
-§ 4.4).
+**`spi.Prepare` gains an error return**, and the arms that currently swallow a
+failure into a never-match leaf return it instead:
 
-The two places that currently conflate "never matches" with "could not be
-evaluated" both need splitting:
+- `prepared_filter.go`'s `!n.expanded` arm — reached from an `ExpandLeaf` error,
+  a `ParseFilterPath` failure, and an empty `SourceData` leaf path.
+- the `Expansion.void` case, which reaches `Prepare` with **no error at all**
+  today and so needs one raised rather than propagated (§ 4.2).
+- `internal/match`'s `prepNever`, which is additionally `prepKind`'s **zero
+  value** — so today an unfinished node silently means "never matches". After
+  this change an unfinished node cannot be built, because the failure paths
+  return an error instead of a node.
 
-- SPI — `prepared_filter.go`'s `!n.expanded` arm, reached from an `ExpandLeaf`
-  error, a `ParseFilterPath` failure and an empty `SourceData` path.
-- engine — `internal/match`'s `prepNever`, which is additionally `prepKind`'s
-  **zero value**, so the fail-open is what an unfinished node defaults to.
-  Whatever represents unknown must not be a zero value.
+This is a breaking SPI signature change. Pre-1.0 that ships in a patch tag; it
+is declared in `COMPATIBILITY.md` and the SPI `CHANGELOG.md`.
 
-**A malformed `FilterNot` is unknown, not false.** `Filter` is a public struct
-any backend may build, and `Prepare` returns no error by contract. A `FilterNot`
-whose `Children` length is not exactly 1, or whose child is a zero-`Op` leaf,
-prepares to unknown — never an unguarded `Children[0]`, never "invert the AND of
-the children", and never a plain false that an enclosing `NOT` could invert.
+**A malformed `FilterNot` is an error, not a false.** `Filter` is a public struct
+any backend may build. A `FilterNot` whose `Children` length is not exactly 1, or
+whose child is a zero-`Op` leaf, fails `Prepare` — never an unguarded
+`Children[0]`, never "invert the AND of the children", and never a plain false
+that an enclosing `NOT` could invert into a match.
 
 ## 10. Surfaces and errors
 
@@ -524,7 +520,7 @@ would multiply § 4.7's asymmetry rather than resolve it.
 | `docs/workflow-schema-versioning.md` | **Gate 4, mandatory**: `NOT` inside a `criterion` changes the `WorkflowConfigurationDto` accepted-input set, and § 5 changes the outcome of saves that succeed today. Record the bump decision and its rationale, as `unevaluable-criterion-fails-save.md` did |
 | `docs/cyoda/cloud-divergences.md` | exists for fields cyoda-go declares in OpenAPI but does not implement; the `NOT` enum value is one, and is removed from that list by this change |
 | `internal/domain/workflow/validate.go` | its doc comment repeats the "import is the only boundary a criterion crosses" rationale § 5 reverses |
-| `cyoda-go-spi/CHANGELOG.md` | `FilterNot`, three-valued `Prepare`, `groupToFilter` strictness, new `spitest` cases |
+| `cyoda-go-spi/CHANGELOG.md` | `FilterNot`, the breaking `Prepare` error return, `groupToFilter` strictness, the inverted `MalformedLike` case |
 | `docs/cloud-parity/` (new) | Cloud twin-alignment document for negation |
 | `cmd/cyoda/help/content/search.md:147` | replace *"`NOT` is not supported"* |
 | `api/openapi.yaml` | `GroupConditionDto` — describe `NOT` and its one-condition rule |
@@ -543,7 +539,7 @@ narrowing Cloud must adopt.
    `AND`/`OR` skips a `NOT`'s subtree. Enforced by the new `spitest` case, so it
    fails conformance at the next pin bump.
 2. **Evaluate `FilterNot`** if it self-executes searches: exactly one child,
-   inverting a *three-valued* result per § 4.2, and answering unknown for a
+   inverting a two-valued result, and failing rather than matching for a
    malformed node. `Filter.Op` is an open string, so a backend with no
    `FilterNot` arm treats the node as a leaf with an empty path and answers a
    silent empty page — which `path-grammar.md` § 9 forbids. `spitest` therefore
@@ -553,6 +549,10 @@ narrowing Cloud must adopt.
    obligation is advice rather than conformance.
 3. **Do not push a `NOT` into a query** unless every leaf beneath it translates
    exactly. Leaving it residual is always correct.
+4. **`Search` must fail on an unevaluable operand, not return an empty page.**
+   `spitest`'s `Searcher/Pattern/MalformedLike` is inverted by this change
+   (§ 4.3): it previously required no error and no rows. A backend that returns
+   an empty page for a malformed operand now fails conformance.
 
 ## 15. Test coverage
 
@@ -574,13 +574,14 @@ some leaves, which is where they can differ.
 | `NOT(AND[])`, `NOT(OR[])` | ✓ | — | — | — |
 | a `FUNCTION` clause nested inside a `NOT` is rejected (§ 4.10) | ✓ | ✓ | — | — |
 | a `NOT` counts one level against both depth caps (§ 4.11) | ✓ | ✓ | — | — |
-| **unknown propagates**: `AND`/`OR`/`NOT` truth tables (§ 4.2) | ✓ | — | — | — |
-| **no regression**: `NOT`-free trees answer as before (§ 4.3) | ✓ | ✓ | ✓ | — |
-| unknown under a `NOT` does **not** invert (§ 4.1) | ✓ | ✓ | ✓ | — |
-| — empty-type-set field under a `NOT` | ✓ | ✓ | ✓ | — |
-| — imprecise temporal `EQUALS` under a `NOT` | ✓ | — | ✓ | — |
-| — uncompilable pattern in a stored criterion fails the save | ✓ | ✓ | — | — |
-| unknown at the root: search non-match, criterion fails save (§ 4.2) | ✓ | ✓ | — | — |
+| operand fits no declared type → `400 CONDITION_TYPE_MISMATCH` (§ 4.2) | ✓ | ✓ | ✓ | ✓ |
+| **void expansion** → `400`: `EQUALS "2024"` on a date-only field (§ 4.2) | ✓ | ✓ | ✓ | ✓ |
+| — the same operand on a `year \| date` field still **succeeds** (§ 4.4) | ✓ | ✓ | ✓ | — |
+| — `GREATER_THAN "2024"` on a date-only field still **succeeds** (§ 4.4) | ✓ | ✓ | ✓ | — |
+| uncompilable pattern → `400 INVALID_CONDITION` at execution (§ 4.3) | ✓ | ✓ | ✓ | ✓ |
+| a stored criterion carrying any of the above fails the save (§ 4.4) | ✓ | ✓ | — | — |
+| `Search` **errors** on an unevaluable operand — `spitest`, inverted (§ 4.3) | ✓ | — | ✓ | — |
+| `spi.Prepare` returns an error rather than a never-match leaf (§ 9) | ✓ | — | — | — |
 | `conditions` = 0 → `400 INVALID_CONDITION`, **each of the four condition surfaces** | ✓ | ✓ | — | ✓ |
 | `conditions` ≥ 2 → `400 INVALID_CONDITION`, **each of the four condition surfaces** | ✓ | ✓ | — | ✓ |
 | unrecognised group operator → `400 INVALID_CONDITION` | ✓ | ✓ | — | ✓ |
@@ -594,7 +595,7 @@ some leaves, which is where they can differ.
 | criterion on an undeclared path fails the save (§ 5) | ✓ | ✓ | — | — |
 | criterion comparing a container path to a scalar fails the save (§ 5) | ✓ | ✓ | — | — |
 | criterion on a path a peer just added is **not** rejected (§ 5 refresh) | ✓ | ✓ | — | — |
-| malformed `FilterNot` from a backend never matches (§ 9) | ✓ | — | — | — |
+| malformed `FilterNot` from a backend fails `Prepare` (§ 9) | ✓ | — | — | — |
 | `NOT` stays residual on both planners (§ 8) | ✓ | — | — | — |
 | malformed path under `NOT` rejected — `spitest` | ✓ | — | ✓ | — |
 | `FilterNot` **evaluated** through every search entry point — `spitest` (§ 14.2) | ✓ | — | ✓ | — |
@@ -619,8 +620,11 @@ above, per the rollout's own standing rule.
 
 ## 16. Sequence
 
-1. **Three-valued evaluation** (§ 4.2, § 9) in both prepared trees, with no
-   `NOT` yet. Provable no-op by § 4.3, so it lands and is verified on its own.
+1. **Reject unevaluable conditions** (§ 4.2, § 4.3, § 9): `Prepare` gains an
+   error, the three swallow sites return it, the boundary maps it to a `400`,
+   and `spitest`'s `MalformedLike` case is inverted. Lands and is verified with
+   no `NOT` in the language yet — it is a defect fix on its own, and it is what
+   makes every later step sound.
 2. § 5 — criterion validation at evaluation.
 3. § 6 — plugin path validation through `NOT`, plus the `spitest` path case.
 4. § 7 and § 9 — the SPI: `FilterNot`, its prepared evaluator, `groupToFilter`
