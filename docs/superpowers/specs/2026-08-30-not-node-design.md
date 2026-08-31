@@ -558,7 +558,8 @@ Unchanged and inherited, listed so the table is a complete checklist:
 | unrecognised group operator | `400 INVALID_CONDITION` |
 | criterion naming an undeclared path, at evaluation (§ 5) | `400 WORKFLOW_FAILED`, rolled back |
 
-**No new error code**, so no `errors/<CODE>.md` topic is owed.
+**No new error code**, so no `errors/<CODE>.md` topic is owed. Four existing error
+topics change text — see § 13.
 
 Over gRPC a rejection is an envelope error with `success=false` and
 `error.code = CLIENT_ERROR`, the message carrying the code above — never an
@@ -618,26 +619,51 @@ needs the quantifier node, and this is the argument to reopen.
 
 ## 13. Documentation
 
+**Contract — `docs/cloud-parity/`**
+
 | File | Change |
 |---|---|
-| `docs/cloud-parity/operator-semantics.md` | the `NOT` section: truth table, the universal-quantifier reading, the absent-field asymmetry, no-De-Morgan |
-| `docs/cloud-parity/path-grammar.md` | § 7 — the criterion row moves from "no model check" to checked at evaluation, and the subsection arguing against it is rewritten (§ 5); § 8 clause table gains `NOT`; § 9 states that whole-tree path validation includes it; § 11 gains the criterion-at-evaluation error row |
-| `docs/cloud-parity/README.md` | its contents table indexes every file in the folder, and this change adds one |
-| `cmd/cyoda/help/content/predicates.md` | states that everything in it applies identically to search and criteria; carries the negative-operator null rule § 4.7 now qualifies, and the `INVALID_CONDITION` cause list |
-| `docs/workflow-schema-versioning.md` | **Gate 4, mandatory, and two separate answers.** `NOT` inside a `criterion` widens the `WorkflowConfigurationDto` accepted-input set — the doc names "new condition operator" as a MINOR example, so it is a bump. § 5 is evaluation-time only and changes no import validation, acceptance rule or export shape, so it is **not** a bump; record that the way `unevaluable-criterion-fails-save.md` recorded its own non-bump. Do not merge the two under one precedent |
-| `docs/cyoda/cloud-divergences.md` | exists for fields cyoda-go declares in OpenAPI but does not implement. It has **no** `GroupConditionDto` / `NOT` row today, so there is nothing to remove — the omission is itself the gap, and the row is added and then struck by this change |
-| `internal/domain/workflow/validate.go` | its doc comment repeats the "import is the only boundary a criterion crosses" rationale § 5 reverses |
-| `cyoda-go-spi/CHANGELOG.md` | `FilterNot`, the breaking `Prepare` error return, `groupToFilter` strictness, the inverted `MalformedLike` case |
-| `docs/cloud-parity/negation.md` (new) | what `NOT` is and how it evaluates: the truth table, the one-condition rule, the ∀ reading over a list, the two asymmetries, and the errors |
-| `cmd/cyoda/help/content/search.md:147` | replace *"`NOT` is not supported"* |
+| `negation.md` (new) | what `NOT` is and how it evaluates: truth table, the one-condition rule, the ∀ reading over a list, the two asymmetries, the errors |
+| `operator-semantics.md` | the `NOT` section; § 4.2's per-family rule for an unsatisfiable comparison; § 4 qualified where it says the eight answer non-match |
+| `path-grammar.md` | § 7's criterion row moves from "no model check" to checked at evaluation, and its subsection is rewritten (§ 5); § 8's clause table gains `NOT`; § 9 **adds** the whole-tree filter-path rule (§ 6); § 11 gains the criterion-at-evaluation row |
+| `unevaluable-criterion-fails-save.md` | § 5 extends its invariant from an unrecognised operator to an undeclared path |
+| `README.md` | its contents table indexes every file in the folder |
+
+**CLI help — `cmd/cyoda/help/content/`**
+
+| File | Change |
+|---|---|
+| `search.md` | `:144` calls `AND`/`OR` "the only supported values" and `:147` says *"`NOT` is not supported"*. Both replaced: the operator set, the one-condition rule, the ∀ reading, the two asymmetries. Plus § 8's cost — a condition containing a `NOT` is not bounded by a pushed SQL `LIMIT` |
+| `predicates.md` | applies to search and criteria alike; carries the negative-operator null rule § 4.7 qualifies and the operator table § 4.2 changes |
+| `crud.md:474` | names the grouped-stats clause set as "`GroupCondition` with `AND`/`OR`" |
+| `analytics.md:228` | describes `expressionCondition` as "AND/OR groups" |
+| `workflows.md` | § 5's behaviour change: a criterion naming an undeclared path aborts and rolls back the save |
+| `workflows/schema-version.md` | the MINOR bump for `NOT` in a criterion |
+| `errors/INVALID_CONDITION.md` | `:22`'s cause list gains `NOT` with `conditions` ≠ 1 |
+| `errors/VALIDATION_FAILED.md` | a criterion `NOT` with `conditions` ≠ 1, refused at import |
+| `errors/WORKFLOW_FAILED.md` | its cause list gains a criterion naming an undeclared path |
+| `errors/CONDITION_TYPE_MISMATCH.md` | § 4.2 changes when a comparison answers; confirm the text still holds |
+
+No new error code, so no `errors/<CODE>.md` is added and `TestErrCode_Parity`
+needs nothing.
+
+**Everything else**
+
+| File | Change |
+|---|---|
 | `api/openapi.yaml` | `GroupConditionDto` — describe `NOT` and its one-condition rule |
-| `COMPATIBILITY.md` | commercial-backend obligations (§ 14) |
-| `CHANGELOG.md` | the feature, and `### Breaking` for § 5 |
+| `docs/workflow-schema-versioning.md` | **Gate 4, two separate answers.** `NOT` in a criterion widens the `WorkflowConfigurationDto` accepted-input set — the doc names "new condition operator" as a MINOR example, so it is a bump. § 5 is evaluation-time only and changes no import validation, acceptance rule or export shape, so it is not. Record both; do not merge them |
+| `docs/cyoda/cloud-divergences.md` | it has no `GroupConditionDto` / `NOT` row today although one was owed; add it and strike it in the same change |
+| `internal/domain/workflow/validate.go` | its doc comment carries the "import is the only boundary a criterion crosses" rationale § 5 reverses |
+| `COMPATIBILITY.md` | the `v0.8.4` row: the obligations of § 14, narrated when the pin moves |
+| `CHANGELOG.md` | the feature, and `### Breaking` for § 4.4 and § 5 |
+| `cyoda-go-spi/CHANGELOG.md` | `[Unreleased]`: `FilterNot`, the breaking `Prepare` error return, `groupToFilter` strictness, the inverted `MalformedLike` case |
 
 `docs/cloud-parity/` documents state the contract and nothing else: what the rule
 is, what it accepts, what it rejects, and the tables a reader needs. No
 comparison against Cloud, no alignment task, no account of how a rule was arrived
-at, no record of what a document previously said.
+at, no record of what a document previously said. The same applies to the help
+topics.
 
 ## 14. Commercial-backend obligations
 
