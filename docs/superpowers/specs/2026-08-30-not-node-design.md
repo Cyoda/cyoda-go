@@ -120,10 +120,9 @@ declared `INTEGER`, entity `{"n":5}`:
 number there, because 5 is not 12.5. PostgreSQL agrees: `select 5::int <> 12.5`
 is `t`. A live wrong answer with no `NOT` involved.
 
-**The fix must be per stored-value type family, not per expansion.** The obvious
-place to hang it — `Expansion.void` — is the wrong granularity, and an earlier
-revision of this spec made exactly that mistake. `void` is set only when **every**
-declared type dropped the operand (`eval_leaf.go:208`). A field declared
+**The fix is per stored-value type family, not per expansion.** `Expansion.void`
+is the wrong granularity: it is set only when **every** declared type dropped the
+operand (`eval_leaf.go:208`). A field declared
 `[INTEGER, String]` is not void for the operand `12.5`, because the string branch
 accepts it — yet the numeric branch still dropped, and the same wrong answer
 survives. Measured:
@@ -154,21 +153,12 @@ granularity the negative string operators come into scope as well. The
 implementation determines the reachable set operator by operator, with a test per
 operator, rather than working from a list written in advance.
 
-**Not a rejection.** An earlier revision proposed `400` here. That was wrong:
-`$.n EQUALS 12.5` is a well-formed question whose answer is simply "no", and
-PostgreSQL answers `f` rather than erroring. That revision's worked example —
-`EQUALS "2024"` on a date-declared field — is not affected at all: the operand
-floors to `2024-01-01` and the comparison runs. The imprecise-`EQUALS` drop
-applies in the other direction, to a precise operand against a coarser declared
-field such as `Year EQUALS "2024-09-09"`.
-
-**Not a rejection.** An earlier revision of this spec proposed `400` for a void
-expansion. That was wrong twice over: `$.n EQUALS 12.5` is a well-formed question
-whose answer is simply "no", and PostgreSQL answers `f` rather than erroring. The
-worked example that revision used — `EQUALS "2024"` on a date-declared field —
-is not void at all: the operand floors to `2024-01-01` and the comparison runs.
-The imprecise-`EQUALS` drop applies in the other direction, to a precise operand
-against a coarser declared field such as `Year EQUALS "2024-09-09"`.
+**This is not a rejection.** `$.n EQUALS 12.5` is a well-formed question whose
+answer is "no", and PostgreSQL answers `f` rather than erroring. Nor does it
+touch `EQUALS "2024"` on a date-declared field: that operand floors to
+`2024-01-01` and the comparison runs. The imprecise-`EQUALS` drop applies in the
+other direction only — a precise operand against a coarser declared field, such
+as `Year EQUALS "2024-09-09"`.
 
 ### 4.3 What genuinely cannot be evaluated, and where each is refused
 
@@ -420,15 +410,13 @@ return validateJSONPath(f.Path)
 it returns `nil` and **its child is never validated**.
 
 `path-grammar.md` § 9 requires a backend to reject a filter path outside the
-grammar rather than answer an empty result set — but it does **not** state that
-validation must walk the whole `Filter` tree. That sentence is not in the
-document; an earlier revision of this spec quoted it as if it were. The nearest
-written rule is § 8's clause table, which is about the wire boundary, not a
+grammar rather than answer an empty result set. It does **not** state that
+validation must walk the whole `Filter` tree — no document does. The nearest
+written rule is § 8's clause table, which governs the wire boundary, not a
 plugin's `spi.Filter` tree.
 
-So the normative gap is wider than a wording tweak: **§ 9 must add the
-whole-tree rule**, not merely note that it covers `NOT`. § 13 carries that as an
-addition rather than an edit. The consequence is worse under `NOT` than
+**§ 9 must therefore add the whole-tree rule**, not merely note that it covers
+`NOT`. § 13 carries it as an addition. The consequence is worse under `NOT` than
 under `AND`: an unvalidated malformed path becomes a never-match leaf, and `NOT`
 inverts that into matches-everything — a superset on search, and on
 `DELETE /entity/...` a destructive one.
@@ -606,9 +594,7 @@ code:
 What remained of it was element correlation, which § 2 places out of scope: it
 is a capability the system lacks, not a wrong answer it gives.
 
-**The gap this leaves is wider than an earlier revision of this document
-claimed, and is stated at full width.** That revision said `ALL(P)` was
-unavailable only for the four operators with no negative twin. That is wrong.
+**The gap this leaves is stated at full width.**
 
 `ALL(P)` is unavailable **for all 26 operators** whenever a list may contain a
 null element, because the only construction available — `NOT(some element
@@ -638,23 +624,16 @@ needs the quantifier node, and this is the argument to reopen.
 | `docs/cyoda/cloud-divergences.md` | exists for fields cyoda-go declares in OpenAPI but does not implement. It has **no** `GroupConditionDto` / `NOT` row today, so there is nothing to remove — the omission is itself the gap, and the row is added and then struck by this change |
 | `internal/domain/workflow/validate.go` | its doc comment repeats the "import is the only boundary a criterion crosses" rationale § 5 reverses |
 | `cyoda-go-spi/CHANGELOG.md` | `FilterNot`, the breaking `Prepare` error return, `groupToFilter` strictness, the inverted `MalformedLike` case |
-| `docs/cloud-parity/` (new) | Cloud twin-alignment document for negation |
+| `docs/cloud-parity/negation.md` (new) | what `NOT` is and how it evaluates: the truth table, the one-condition rule, the ∀ reading over a list, the two asymmetries, and the errors |
 | `cmd/cyoda/help/content/search.md:147` | replace *"`NOT` is not supported"* |
 | `api/openapi.yaml` | `GroupConditionDto` — describe `NOT` and its one-condition rule |
 | `COMPATIBILITY.md` | commercial-backend obligations (§ 14) |
 | `CHANGELOG.md` | the feature, and `### Breaking` for § 5 |
 
-The specification documents are written to stand on their own. Cloud publishes
-`NOT` with an unbounded `conditions` array in its own spec copy
-(`docs/cyoda/openapi.yml`); cyoda-go leads this contract, so the alignment
-document states the one-condition rule as the contract and names it as a
-narrowing Cloud must adopt.
-
-**One fact is owed before that document is written: what Cloud does today with a
-multi-child `NOT`** — "not both", "neither", or reject. It decides whether the
-narrowing refuses a shape nobody sends or silently changes results for payloads
-Cloud accepts now. Establish it with cyoda-cloud rather than assuming; Gate 7
-requires the reconciliation either way.
+`docs/cloud-parity/` documents state the contract and nothing else: what the rule
+is, what it accepts, what it rejects, and the tables a reader needs. No
+comparison against Cloud, no alignment task, no account of how a rule was arrived
+at, no record of what a document previously said.
 
 ## 14. Commercial-backend obligations
 
@@ -793,6 +772,5 @@ so there is nothing to answer wrongly. Step 4's tag then adds `FilterNot`
 together with the § 14.1 and § 14.2 conformance cases, so a backend cannot pin
 the node without also pinning the cases that fail it if unimplemented.
 
-An earlier revision claimed steps 1–3 "do not travel with an SPI tag". That was
-wrong — step 1 does. The guarantee is not that no window exists but that the
-window contains no negation, which is what makes it harmless.
+The guarantee is not that no window exists, but that the window contains no
+negation.
