@@ -289,7 +289,29 @@ PR 3 also carries:
   `entity/grouped_stats_service.go:351` is updated.
 - `make test-full` green; `make race` once before each PR.
 
-## 10. Out of scope
+## 10. Accepted trade-offs
+
+- **No new error code for a translation failure.** It is unreachable from
+  validated input; `INVALID_CONDITION` / `INVALID_FIELD_PATH` via
+  `ClassifyStoreQueryError` already name the fault.
+- **`Limit <= 0` in `Search` is a plain error, not a 400.** No transport can
+  produce it.
+- **The `Iterate` rung may leave up to `Limit + 1` entities in the read-set
+  on a 400.** A prefix, never the model; only a store without `Searcher`
+  reaches the rung.
+- **No deprecation window for `Iterable` or `GetAll`.** A deprecated alias
+  would keep the dead refusal branches compiling. Pre-1.0, `### Breaking`
+  with migration notes and the KNOWN_CONSUMERS notification (cassandra#95).
+- **sqlite `Begin` waits for an in-flight commit's flush** (§4.1). Begin
+  latency under a concurrent commit is the price of a correct snapshot; the
+  memory plugin already pays it.
+- **The memory plugin walks an O(tenant) pointer slice per model read and
+  sorts pointers per page.** No payload bytes are copied; a per-model
+  sorted index is not kept.
+- **Three PRs, not one.** Reviewability over a single atomic landing; the
+  plugin PR is independently correct.
+
+## 11. Out of scope
 
 - `internal/match` traversal sharing with the kernel (#464).
 - The memory plugin's O(tenant) pointer walk per model read (§4.7 note).
