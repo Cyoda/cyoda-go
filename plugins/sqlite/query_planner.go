@@ -603,13 +603,21 @@ func leafToSQL(f spi.Filter) (string, []any) {
 			return fmt.Sprintf("(%s IS NOT NULL AND %s BETWEEN ? AND ?)", col, col),
 				[]any{comparisonBind(f, f.Values[0]), comparisonBind(f, f.Values[1])}
 		}
-		// Malformed BETWEEN (not exactly 2 operands) fails closed — exclude
-		// every row, matching memory's spi.Prepare/PreparedFilter.Match
-		// semantics. Validation upstream (search.validateBetweenArity) rejects
-		// this shape before it ever reaches a plugin; this is defense-in-depth
-		// only.
+		// Malformed BETWEEN (not exactly 2 operands) is unreachable here: this
+		// function only runs on the pushed half planQuery's dissect produces,
+		// and planQuery calls spi.Prepare on the WHOLE filter first — Prepare
+		// now errors on a range leaf without exactly 2 bounds
+		// (ExpandLeaf/expandBetween), so a malformed BETWEEN never survives to
+		// reach dissect/leafToSQL at all. search.validateBetweenArity rejects
+		// the same shape even earlier, at the request boundary.
 		return "0", nil
 	}
+	// Unreachable: leafToSQL only ever receives a genuine leaf (dissect never
+	// pushes a branch op into it). FilterNot is the first branch op whose
+	// accidental arrival here would have been silently absorbed as this
+	// match-all default instead of failing loudly — AND/OR never risked it,
+	// since a group either stayed fully residual or was flattened per-child
+	// before reaching this function.
 	return "1=1", nil
 }
 
@@ -642,11 +650,11 @@ func temporalLeafToSQL(f spi.Filter) (string, []any) {
 	switch f.Op {
 	case spi.FilterBetween, spi.FilterBetweenInclusive:
 		if len(f.Values) < 2 {
-			// Malformed BETWEEN (not exactly 2 operands) fails closed —
-			// exclude every row, matching memory's
-			// spi.Prepare/PreparedFilter.Match semantics. Validation upstream
-			// (search.validateBetweenArity) rejects this shape before it ever
-			// reaches a plugin; this is defense-in-depth only.
+			// Malformed BETWEEN (not exactly 2 operands) is unreachable here
+			// for the same reason as leafToSQL's identical arm above:
+			// planQuery calls spi.Prepare on the whole filter before dissect
+			// ever routes a leaf to this function, and Prepare now errors on
+			// a range leaf without exactly 2 bounds regardless of Coercion.
 			return "0", nil
 		}
 		lo, _ := spi.ParseTemporalMillis(fmt.Sprint(f.Values[0]))

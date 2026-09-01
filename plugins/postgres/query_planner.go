@@ -737,13 +737,24 @@ func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 			return fmt.Sprintf("(%s IS NOT NULL AND %s BETWEEN %s AND %s)",
 				col, col, p1, p2), []any{textArg(f.Values[0]), textArg(f.Values[1])}
 		}
-		// Malformed BETWEEN (not exactly 2 operands) fails closed — exclude
-		// every row, matching memory's spi.Prepare/PreparedFilter.Match semantics.
-		// Validation
-		// upstream (search.validateBetweenArity) rejects this shape before it
-		// ever reaches a plugin; this is defense-in-depth only.
+		// Malformed BETWEEN (not exactly 2 operands) is unreachable here: this
+		// function only runs on the pushed half planQuery's dissect produces,
+		// and planQuery calls spi.Prepare on the WHOLE filter first — Prepare
+		// now errors on a range leaf without exactly 2 bounds
+		// (ExpandLeaf/expandBetween), so a malformed BETWEEN never survives to
+		// reach dissect/leafToSQL at all. search.validateBetweenArity rejects
+		// the same shape even earlier, at the request boundary. The "false"
+		// this arm returns can no longer be produced by any live caller; it
+		// stays as the closed-fail default rather than a panic, in case that
+		// ever changes.
 		return "false", nil
 	}
+	// Unreachable: leafToSQL only ever receives a genuine leaf (dissect never
+	// pushes a branch op into it). FilterNot is the first branch op whose
+	// accidental arrival here would have been silently absorbed as this
+	// match-all default instead of failing loudly — AND/OR never risked it,
+	// since a group either stayed fully residual or was flattened per-child
+	// before reaching this function.
 	return "1=1", nil
 }
 

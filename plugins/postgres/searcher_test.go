@@ -82,10 +82,10 @@ func TestPGSearcher_Eq(t *testing.T) {
 // evaluate (a LIKE pattern with a trailing unpaired escape, which will not
 // compile) must fail the search outright, not silently degrade to an empty
 // page. See .claude/rules/correctness-over-availability.md. Both malformed
-// operands the skipped spitest Pattern/MalformedLike conformance case
-// covered (a trailing escape after a literal, and a bare trailing escape)
-// are exercised here so this replacement is not narrower than what it
-// replaces.
+// operands `spitest`'s `Pattern/MalformedLike` conformance case requires an
+// error for (a trailing escape after a literal, and a bare trailing escape)
+// are exercised here too, pinning the same requirement at this plugin's own
+// Search boundary.
 func TestPGSearcher_RejectsUnevaluableFilter(t *testing.T) {
 	for _, operand := range []string{`a\`, `\`} {
 		t.Run(operand, func(t *testing.T) {
