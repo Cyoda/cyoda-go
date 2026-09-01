@@ -865,13 +865,22 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 // all three as one cause) — but the two are NOT logged at the same severity,
 // because they are not equally likely to mean the same thing:
 //
-//   - spi.ErrInvalidPattern IS the same class of backstop as
-//     ErrInvalidFilterPath (input the boundary should already have rejected):
-//     ValidatePatterns (pattern_validate.go) pre-validates every pattern
-//     operand with the identical derivation (compileLeafPattern) before a
-//     query ever reaches a backend, so a plugin hitting this sentinel means
-//     that pre-validation and the kernel disagree — a genuine inconsistency,
-//     worth a WARN.
+//   - spi.ErrInvalidPattern is UNREACHABLE from the two in-tree evaluators.
+//     Both collapse a pattern-compile failure into ErrUnevaluableLeaf with a
+//     %v, not a %w (spi/prepared_filter.go and match/prepared.go), so the
+//     sentinel never enters the chain; and ValidatePatterns rejects at the
+//     boundary with its own 400 without ever reaching this classifier. The
+//     arm exists solely for a self-executing OUT-OF-TREE backend — the
+//     § 14.4 obligation — which calls spi.ValidateLeafPattern itself and
+//     surfaces the sentinel directly. From such a backend it does mean the
+//     boundary and that backend disagree, which is worth a WARN.
+//
+//     Note what this arm does NOT do: it is not a tripwire for the in-tree
+//     boundary and kernel drifting apart. They cannot drift —
+//     spi.ValidateLeafPattern is a call to compileLeafPattern, so the
+//     validator and the evaluator are the same derivation by construction,
+//     not merely the same algorithm.
+//
 //   - spi.ErrUnevaluableLeaf's single most common cause, by far, is a field
 //     with NO declared type — and condition_type_validate.go's boundary check
 //     deliberately treats that as "no constraint; accept" rather than
