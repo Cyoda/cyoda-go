@@ -341,10 +341,13 @@ func ConditionFieldPaths(cond predicate.Condition) []string {
 // A nil fields map is not "nothing to check against": it is a model declaring
 // no fields, in which every path is unknown.
 //
-// The returned error is a 400 INVALID_FIELD_PATH *common.AppError naming the
-// paths that remain unknown. On success the returned map is the refreshed one
-// when a refresh happened, so the caller types its leaves against the schema
-// the paths were actually validated against rather than the stale one.
+// The returned error is either a 400 INVALID_FIELD_PATH *common.AppError
+// naming the paths that remain unknown, or — when the bounded refresh itself
+// failed — a plain error wrapping [ErrPathRefreshInfra] (see that sentinel's
+// doc for why the two are deliberately NOT the same classification). On
+// success the returned map is the refreshed one when a refresh happened, so
+// the caller types its leaves against the schema the paths were actually
+// validated against rather than the stale one.
 func ValidateKnownPaths(
 	ctx context.Context,
 	modelStore spi.ModelStore,
@@ -364,14 +367,25 @@ func ValidateKnownPaths(
 	switch {
 	case !refreshed:
 		// No cache layer to refresh — the miss is authoritative.
+	case refreshErr != nil && errors.Is(refreshErr, spi.ErrNotFound):
+		// The model was deleted between the two reads, so there is no
+		// schema authority left and the miss stands.
 	case refreshErr != nil:
-		if !errors.Is(refreshErr, spi.ErrNotFound) {
-			slog.Debug("schema refresh failed during field-path validation",
-				"pkg", "search", "entityName", ref.EntityName,
-				"modelVersion", ref.ModelVersion, "error", refreshErr)
-		}
-		// ErrNotFound: the model was deleted between the two reads, so there
-		// is no schema authority left and the miss stands.
+		// A refresh failure that is NOT "the model is gone" means we cannot
+		// tell "this field is genuinely undeclared" from "the cache is
+		// merely stale and we couldn't confirm which" — the two are
+		// indistinguishable without a successful refresh. Per
+		// correctness-over-availability this is infrastructure, not a
+		// client fault, and must not fold into the same 400
+		// INVALID_FIELD_PATH the genuine-unknown-path case gets below: a
+		// caller that did that would report a model-store outage as the
+		// caller's own mistake, in exactly the peer-added-field window this
+		// refresh exists to serve.
+		slog.Warn("schema refresh failed during field-path validation; reporting infra, not a client fault",
+			"pkg", "search", "entityName", ref.EntityName,
+			"modelVersion", ref.ModelVersion, "error", refreshErr)
+		return nil, fmt.Errorf("%w: schema refresh failed for %s/%s: %w",
+			ErrPathRefreshInfra, ref.EntityName, ref.ModelVersion, refreshErr)
 	case freshFields != nil:
 		unknown = findUnknownPaths(unknown, freshFields)
 		fields = freshFields
@@ -381,3 +395,29 @@ func ValidateKnownPaths(
 	}
 	return fields, nil
 }
+
+// ErrPathRefreshInfra marks a failed bounded schema refresh inside
+// [ValidateKnownPaths]: RefreshAndGet itself errored (for any reason other
+// than [spi.ErrNotFound], which means the model was legitimately deleted
+// between the two reads). A caller must classify this as a server-side
+// infrastructure failure (5xx), not fold it into the client-facing 400
+// INVALID_FIELD_PATH the genuine-unknown-path case returns — the whole point
+// of the bounded refresh is to tell "genuinely undeclared" apart from "cache
+// is stale", and a failed refresh answers neither question.
+//
+// Deliberately a plain sentinel-wrapped error, not a pre-classified
+// *common.AppError: this package has no HTTP-status opinion of its own for
+// an infra failure (each caller already has its own ticketed 5xx convention
+// — internal/domain/entity's grouped-stats handler and classifyError, and
+// the workflow engine's ErrCriterionTypingInfra), and every existing caller
+// of ValidateKnownPaths already defaults a non-AppError error to a 5xx
+// (verified: grouped_stats_handler.go's `errors.As` fallback to
+// common.Internal, and entity/service.go's classifyError catch-all) — so no
+// caller needed new code to pick this branch up correctly, only workflow's
+// evaluateCriterion (which has its own, more specific ErrCriterionTypingInfra
+// wrapping) needed a deliberate carve-out. Wrapped with %w on both sides so
+// errors.Is(err, ErrPathRefreshInfra) AND errors.Is(err, <the underlying
+// refresh error>) both hold — a context.DeadlineExceeded riding inside the
+// refresh failure must stay reachable for a caller further up the chain that
+// specifically detects it (e.g. common.ClassifyRequestTimeout).
+var ErrPathRefreshInfra = errors.New("model schema refresh failed")

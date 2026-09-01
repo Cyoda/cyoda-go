@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/match"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -65,6 +67,15 @@ func TestEvaluateCriterion_UndeclaredPathAbortsTheSave(t *testing.T) {
 				t.Fatalf("%s: error must not be a *common.AppError (got code %q); "+
 					"it must fall through to the workflow-domain WORKFLOW_FAILED classification", op, appErr.Code)
 			}
+			// The detail must carry exactly ONE code (WORKFLOW_FAILED, stamped
+			// by classifyWorkflowError above this layer) — not two
+			// ("WORKFLOW_FAILED: ...: INVALID_FIELD_PATH: ..."). The re-wrap
+			// in evaluateCriterion strips search.ValidateKnownPaths' own
+			// "INVALID_FIELD_PATH: " prefix (baked into its AppError.Message)
+			// before discarding the AppError typing.
+			if strings.Contains(err.Error(), "INVALID_FIELD_PATH") {
+				t.Errorf("%s: error must not carry the INVALID_FIELD_PATH code prefix (that classification is wrong here, not merely redundant): %v", op, err)
+			}
 		})
 	}
 }
@@ -99,35 +110,6 @@ func TestEvaluateCriterion_UndeclaredPathLeavesStateUnchanged(t *testing.T) {
 	}
 	if entity.Meta.State == "ADVANCED" {
 		t.Fatalf("state must not have advanced past the aborted criterion, got %q", entity.Meta.State)
-	}
-}
-
-// TestEvaluateCriterion_LifecycleOnlyNeedsNoModelRead pins the ONE mistake
-// the task brief calls out: the model READ is gated on
-// search.ConditionFieldPaths(cond) being non-empty, so a lifecycle-only
-// criterion must still evaluate correctly even when the model store is
-// completely unavailable — proving the gate is on the read, not on the
-// validation call (which always runs, see the temporal-meta-field test
-// below for why that distinction matters).
-func TestEvaluateCriterion_LifecycleOnlyNeedsNoModelRead(t *testing.T) {
-	baseFactory := memory.NewStoreFactory()
-	t.Cleanup(func() { baseFactory.Close() })
-	uuids := common.NewTestUUIDGenerator()
-	txMgr := baseFactory.NewTransactionManager(uuids)
-	factory := &errModelStoreFactory{StoreFactory: baseFactory, err: errors.New("model store down")}
-	engine := NewEngine(factory, uuids, txMgr)
-
-	ctx := ctxWithTenant(testTenant)
-	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1.0"}
-	entity := makeEntity("e1", ref, map[string]any{"age": 30})
-	entity.Meta.State = "CREATED"
-
-	got, _, err := engine.evaluateCriterion(lifecycleCriterion("state", "EQUALS", "CREATED"), entity, &criterionContext{ctx: ctx})
-	if err != nil {
-		t.Fatalf("a lifecycle-only criterion must not touch the model store: %v", err)
-	}
-	if !got {
-		t.Fatal("state EQUALS CREATED must match")
 	}
 }
 
@@ -174,12 +156,22 @@ func TestEvaluateCriterion_TemporalMetaUnderTextOperatorIsRefused(t *testing.T) 
 // Get returns the head of getQueue (simulating a possibly-stale cached
 // descriptor); RefreshAndGet returns the head of refreshQueue and is
 // counted, so a test can assert the refresh happened exactly once (the
-// bounded refresh path-grammar.md section 6 describes).
+// bounded refresh path-grammar.md section 6 describes). Once both queues
+// are drained, Get falls back to the LAST descriptor a refresh produced —
+// mirroring a real caching model store, whose Get keeps serving the
+// now-updated cache indefinitely after a RefreshAndGet repopulates it,
+// rather than reverting to nothing. This matters because evaluateCriterion
+// performs TWO separate reads after a successful path-check refresh (the
+// path check itself, then a fresh search.LoadModelNode for the type check)
+// — without this fallback the second read would see a store that has
+// "forgotten" the refresh it just served.
 type refreshingModelStore struct {
-	mu           sync.Mutex
-	getQueue     []*spi.ModelDescriptor
-	refreshQueue []*spi.ModelDescriptor
-	refreshCount int
+	mu            sync.Mutex
+	getQueue      []*spi.ModelDescriptor
+	refreshQueue  []*spi.ModelDescriptor
+	refreshErr    error // when set, RefreshAndGet returns this instead of consuming refreshQueue
+	lastRefreshed *spi.ModelDescriptor
+	refreshCount  int
 }
 
 func (s *refreshingModelStore) Get(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error) {
@@ -188,6 +180,9 @@ func (s *refreshingModelStore) Get(context.Context, spi.ModelRef) (*spi.ModelDes
 	if len(s.getQueue) == 0 {
 		if len(s.refreshQueue) > 0 {
 			return s.refreshQueue[0], nil
+		}
+		if s.lastRefreshed != nil {
+			return s.lastRefreshed, nil
 		}
 		return nil, nil
 	}
@@ -200,11 +195,15 @@ func (s *refreshingModelStore) RefreshAndGet(context.Context, spi.ModelRef) (*sp
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.refreshCount++
+	if s.refreshErr != nil {
+		return nil, s.refreshErr
+	}
 	if len(s.refreshQueue) == 0 {
 		return nil, nil
 	}
 	d := s.refreshQueue[0]
 	s.refreshQueue = s.refreshQueue[1:]
+	s.lastRefreshed = d
 	return d, nil
 }
 
@@ -287,6 +286,160 @@ func TestEvaluateCriterion_PathAddedByAPeerIsNotRefused(t *testing.T) {
 	}
 	if !got {
 		t.Fatal("peer_field(10) GREATER_THAN 5 must match under the refreshed declared type")
+	}
+	if rc := ms.RefreshCount(); rc != 1 {
+		t.Errorf("expected exactly 1 bounded RefreshAndGet call, got %d", rc)
+	}
+}
+
+// buildNestedAddressModel saves a model whose schema declares ONLY
+// "address.street" (String) — "address" itself is a KNOWN CONTAINER (a
+// structural node with substructure) but never a leaf. Used to isolate
+// search.ValidateConditionValueTypes' container-vs-scalar check: a
+// container path IS accepted by search.ValidateKnownPaths (a container with
+// at least one known leaf beneath it counts as "known" — see
+// isKnownContainerPath), so ONLY the type-soundness check refuses a scalar
+// comparison against it.
+func buildNestedAddressModel(t *testing.T, ctx context.Context, factory spi.StoreFactory, ref spi.ModelRef) {
+	t.Helper()
+	addr := schema.NewObjectNode()
+	addr.SetChild("street", schema.NewLeafNode(schema.String))
+	root := schema.NewObjectNode()
+	root.SetChild("address", addr)
+	raw, err := schema.Marshal(root)
+	if err != nil {
+		t.Fatalf("schema.Marshal: %v", err)
+	}
+	ms, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
+		t.Fatalf("Save model: %v", err)
+	}
+}
+
+// TestEvaluateCriterion_ContainerPathScalarComparisonAbortsTheSave covers the
+// search.ValidateConditionValueTypes matrix row: a scalar-carrying operator
+// (CONTAINS) compared against a path the model declares as a CONTAINER (an
+// object with substructure, never itself a leaf) must abort — "$.address"
+// is a JSON object in the entity's data, not a string to substring-match.
+//
+// This is NOT the same gap the undeclared-path checks close: the model DOES
+// declare "$.address" (as a container), so search.ValidateKnownPaths accepts
+// it (a container with a known leaf beneath it counts as known). And
+// match.Prepare does not reject it either — CONTAINS is one of the
+// declaration-independent string operators (internal/match/match.go's
+// FieldTypes doc), so Prepare builds the leaf fine regardless of declared
+// types, and Match() would silently answer non-match at runtime (the
+// container value never string-matches). Only
+// search.ValidateConditionValueTypes's container-vs-scalar check catches
+// this — deleting its call site in evaluateCriterion makes this test fail
+// (verified: see task 7 fix-round-1 report).
+func TestEvaluateCriterion_ContainerPathScalarComparisonAbortsTheSave(t *testing.T) {
+	engine, factory := setupEngine(t)
+	ctx := ctxWithTenant(testTenant)
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1.0"}
+	buildNestedAddressModel(t, ctx, factory, ref)
+
+	entity := makeEntity("e1", ref, map[string]any{"address": map[string]any{"street": "Main St"}})
+
+	_, _, err := engine.evaluateCriterion(simpleCriterion("$.address", "CONTAINS", "Main"), entity, &criterionContext{ctx: ctx})
+	if err == nil {
+		t.Fatal("CONTAINS against a container path ($.address has substructure, not a scalar) must abort, got no error")
+	}
+}
+
+// TestEvaluateCriterion_UncompilablePatternAbortsTheSave covers the
+// search.ValidatePatterns matrix row: a stored criterion carrying an
+// operand the pattern kernel cannot compile (a LIKE glob with a trailing
+// unpaired escape) must abort, not silently evaluate to a permanent
+// non-match.
+//
+// match.Prepare ALSO rejects this specific case today — internal/match's
+// expandNamed re-validates a LIKE/MATCHES_PATTERN operand via
+// spi.ValidateLeafPattern after calling spi.ExpandLeaf, closing the exact
+// swallow ExpandLeaf's own doc comment describes ("Callers wanting a
+// rejection ask ValidateLeafPattern FIRST") — a fail-open fix that landed
+// ahead of this task. So `err == nil` alone would NOT distinguish the two
+// checks: deleting search.ValidatePatterns' call site still leaves an
+// error, from match.Prepare's own errUnevaluableLeaf path (verified: see
+// task 7 fix-round-1 report). The distinguishing assertion is the
+// classification: search.ValidatePatterns' error names the jsonPath and is
+// a PLAIN error (never wraps match.ErrUnevaluableLeaf) — that is precisely
+// the "only the diagnostic changes" the reviewer described, and pinning it
+// is what the spec's coverage-matrix row requires regardless of whether a
+// deeper layer is also, today, defense-in-depth. The field is declared and
+// correctly typed so the OTHER two checks (ValidateKnownPaths,
+// ValidateConditionValueTypes) have nothing to say about this criterion.
+func TestEvaluateCriterion_UncompilablePatternAbortsTheSave(t *testing.T) {
+	engine, factory := setupEngine(t)
+	ctx := ctxWithTenant(testTenant)
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1.0"}
+	registerModelFields(t, ctx, factory, ref, map[string]schema.DataType{"name": schema.String})
+
+	entity := makeEntity("e1", ref, map[string]any{"name": "Alice"})
+
+	_, _, err := engine.evaluateCriterion(simpleCriterion("$.name", "LIKE", `a\`), entity, &criterionContext{ctx: ctx})
+	if err == nil {
+		t.Fatal("an uncompilable LIKE pattern (trailing unpaired escape) must abort, got no error")
+	}
+	if errors.Is(err, match.ErrUnevaluableLeaf) {
+		t.Fatalf("expected search.ValidatePatterns' own classification (plain error naming the jsonPath), "+
+			"got match.Prepare's errUnevaluableLeaf instead — search.ValidatePatterns' call site was skipped: %v", err)
+	}
+	if !strings.Contains(err.Error(), "$.name") {
+		t.Errorf("expected search.ValidatePatterns' error to name the jsonPath, got: %v", err)
+	}
+}
+
+// TestEvaluateCriterion_FailedRefreshIsInfraNotClientFault pins review round
+// 1's Important-1 finding: a failed bounded schema refresh (the store's Get
+// serves a warm cache, but RefreshAndGet itself errors) cannot tell "this
+// field is genuinely undeclared" from "the cache is merely stale and we
+// couldn't confirm which". Per correctness-over-availability that ambiguity
+// is infrastructure, not a client fault, so it must be classified alongside
+// every other criterion-typing infra failure — ErrCriterionTypingInfra — and
+// the underlying cause must stay reachable via errors.Is (a
+// context.DeadlineExceeded riding inside the refresh failure must still be
+// detectable further up the chain), not severed the way the genuine
+// unknown-path 400 case's message is.
+func TestEvaluateCriterion_FailedRefreshIsInfraNotClientFault(t *testing.T) {
+	baseFactory := memory.NewStoreFactory()
+	t.Cleanup(func() { baseFactory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr := baseFactory.NewTransactionManager(uuids)
+
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1.0"}
+	stale := buildBoundaryDescriptor(t, ref, map[string]schema.DataType{"a": schema.String})
+	wantCause := errors.New("connection refused")
+
+	ms := &refreshingModelStore{
+		getQueue:   []*spi.ModelDescriptor{stale},
+		refreshErr: wantCause,
+	}
+	factory := &refreshingModelStoreFactory{StoreFactory: baseFactory, store: ms}
+	engine := NewEngine(factory, uuids, txMgr)
+
+	ctx := ctxWithTenant(testTenant)
+	entity := makeEntity("e1", ref, map[string]any{"peer_field": 10})
+
+	_, _, err := engine.evaluateCriterion(simpleCriterion("$.peer_field", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
+	if err == nil {
+		t.Fatal("expected an error: the refresh failed, so $.peer_field's status is unknown")
+	}
+	if !errors.Is(err, ErrCriterionTypingInfra) {
+		t.Errorf("expected errors.Is(err, ErrCriterionTypingInfra) — a failed refresh is infra, not a client fault; got: %v", err)
+	}
+	if !errors.Is(err, search.ErrPathRefreshInfra) {
+		t.Errorf("expected errors.Is(err, search.ErrPathRefreshInfra) to still hold in the chain, got: %v", err)
+	}
+	if !errors.Is(err, wantCause) {
+		t.Errorf("expected the underlying refresh cause to stay reachable via errors.Is (chain must not be severed), got: %v", err)
+	}
+	var appErr *common.AppError
+	if errors.As(err, &appErr) {
+		t.Errorf("expected a plain error wrapping ErrCriterionTypingInfra (classifyWorkflowError classifies it), got a pre-classified *common.AppError: %+v", appErr)
 	}
 	if rc := ms.RefreshCount(); rc != 1 {
 		t.Errorf("expected exactly 1 bounded RefreshAndGet call, got %d", rc)

@@ -1717,12 +1717,28 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelStore s
 			// cache: there is no schema authority to invalidate against.
 			return nil, invalidPathError(missing)
 		}
-		slog.Debug("schema refresh failed during pre-execution validation",
+		// A refresh failure that is NOT "the model is gone" means we cannot
+		// tell "these fields are genuinely undeclared" from "the cache is
+		// merely stale and we couldn't confirm which" — the two are
+		// indistinguishable without a successful refresh. Per
+		// correctness-over-availability this is infrastructure, not a
+		// client fault, and must not fold into the same 400
+		// INVALID_FIELD_PATH the genuine-unknown-path case above returns:
+		// that would report a model-store outage as the caller's own
+		// mistake, in exactly the peer-added-field window the refresh
+		// exists to serve. Mirrors ValidateKnownPaths' own ErrPathRefreshInfra
+		// branch (path_validate.go) — this method predates that shared
+		// helper and keeps its own negative-cache-aware implementation, but
+		// the two must not diverge on THIS classification. Deliberately NOT
+		// negative-cached: an infra failure says nothing about whether the
+		// path exists.
+		slog.Warn("schema refresh failed during pre-execution validation; reporting infra, not a client fault",
 			"pkg", "search",
 			"entityName", modelRef.EntityName,
 			"modelVersion", modelRef.ModelVersion,
 			"error", refreshErr)
-		return nil, invalidPathError(missing)
+		return nil, fmt.Errorf("%w: schema refresh failed for %s/%s: %w",
+			ErrPathRefreshInfra, modelRef.EntityName, modelRef.ModelVersion, refreshErr)
 	}
 	if freshFields == nil {
 		// The refresh produced no schema, so the descriptor carries none.

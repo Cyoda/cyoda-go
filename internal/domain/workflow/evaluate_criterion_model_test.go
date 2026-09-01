@@ -12,10 +12,12 @@ import (
 )
 
 // registerTypedModel saves a model descriptor whose schema declares a single
-// top-level Integer leaf `age`, so the criterion evaluator's lazily-loaded
-// FieldsMap resolver returns a declared numeric type for `$.age`. That is what
-// makes a comparison operator (GREATER_THAN) type-directed rather than degrading
-// to non-match on an untyped leaf.
+// top-level Integer leaf `age`, so the criterion evaluator's model-read
+// resolves a declared numeric type for `$.age` (the read is eager once the
+// criterion carries `$.age` as a data path — see evaluateCriterion's
+// search.ConditionFieldPaths gate). That is what makes a comparison operator
+// (GREATER_THAN) type-directed rather than degrading to non-match on an
+// untyped leaf.
 func registerTypedModel(t *testing.T, ctx context.Context, factory spi.StoreFactory, ref spi.ModelRef) {
 	t.Helper()
 	node := schema.NewObjectNode()
@@ -35,12 +37,14 @@ func registerTypedModel(t *testing.T, ctx context.Context, factory spi.StoreFact
 
 // registerModelFields saves a model descriptor whose schema declares the given
 // top-level leaf fields with their declared types. Data-field criteria in the
-// workflow engine are type-directed: the evaluator lazily loads the model's
-// FieldsMap so a comparison/equality leaf resolves against the declared type.
-// Tests that exercise data-field criteria must register the model the same way
-// production does — otherwise a referenced leaf either fails closed with a
-// model-load error, or fails closed with a Prepare error (a comparison leaf
-// with no declared type cannot be evaluated — see
+// workflow engine are type-directed: the evaluator eagerly loads the model's
+// FieldsMap (once the criterion carries at least one data-field path) so a
+// comparison/equality leaf resolves against the declared type. Tests that
+// exercise data-field criteria must register the model the same way
+// production does — otherwise a referenced leaf fails closed either with a
+// model-load error, an undeclared-path error (search.ValidateKnownPaths —
+// see TestEvaluateCriterion_UndeclaredPathAbortsTheSave), or a declared-but-
+// type-mismatched error (search.ValidateConditionValueTypes — see
 // TestEvaluateCriterion_DataFieldPathUntypedFailsClosed).
 func registerModelFields(t *testing.T, ctx context.Context, factory spi.StoreFactory, ref spi.ModelRef, fields map[string]schema.DataType) {
 	t.Helper()
@@ -79,7 +83,10 @@ func (f *errModelStoreFactory) ModelStore(context.Context) (spi.ModelStore, erro
 // proving the declared types loaded from the model store are what drive the
 // match. The same criterion against a path the model does NOT declare fails
 // closed instead of degrading to non-match — see
-// TestEvaluateCriterion_DataFieldPathUntypedFailsClosed.
+// TestEvaluateCriterion_UndeclaredPathAbortsTheSave (criterion_model_boundary_test.go).
+// A path the model DOES declare, but with a type the operand cannot parse
+// into, also fails closed — see TestEvaluateCriterion_DataFieldPathUntypedFailsClosed
+// below.
 func TestEvaluateCriterion_DataFieldTypeDirectedWithRegisteredModel(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
@@ -110,41 +117,48 @@ func TestEvaluateCriterion_DataFieldTypeDirectedWithRegisteredModel(t *testing.T
 
 // TestEvaluateCriterion_DataFieldPathUntypedFailsClosed is the companion that
 // isolates the model's contribution: a model IS registered (schema loads
-// successfully, no error), but it declares only `name` — `$.age` carries no
-// declared type — so the GREATER_THAN comparison leaf cannot be evaluated and
-// evaluateCriterion fails closed with an error (internal/match/prepared.go's
-// leafNode expansion-failure branch), distinct from BOTH a genuine model-load
-// error (TestEvaluateCriterion_FailsClosedOnGenuineModelLoadError) and a
-// successful, type-directed match/non-match
-// (TestEvaluateCriterion_DataFieldTypeDirectedWithRegisteredModel). An
-// unevaluable comparison leaf is a structural fault in the criterion, not a
-// row-dependent non-match, so it must not be silently read as "doesn't
-// match" (correctness-over-availability).
+// successfully, no error) and DOES declare `$.age` — as Boolean — so
+// search.ValidateKnownPaths' undeclared-path check has nothing to say about
+// this criterion (that gap is covered separately by
+// TestEvaluateCriterion_UndeclaredPathAbortsTheSave). The GREATER_THAN
+// operand (5) parses into none of `$.age`'s declared types, so
+// search.ValidateConditionValueTypes fails closed — distinct from BOTH a
+// genuine model-load error (TestEvaluateCriterion_FailsClosedOnGenuineModelLoadError)
+// and a successful, type-directed match/non-match
+// (TestEvaluateCriterion_DataFieldTypeDirectedWithRegisteredModel). A
+// declared-but-type-mismatched comparison leaf is a structural fault in the
+// criterion, not a row-dependent non-match, so it must not be silently read
+// as "doesn't match" (correctness-over-availability).
+//
+// Before Task 7 wired in search.ValidateConditionValueTypes, this same
+// fixture (with `$.age` left UNDECLARED entirely) isolated
+// internal/match/prepared.go's own leafNode expansion-failure branch
+// instead — that branch is still reachable (any criterion whose only
+// data leaf uses a non-parse-constrained operator skips
+// ValidateConditionValueTypes' type check entirely), but no longer through
+// THIS fixture: an undeclared `$.age` is now caught earlier, by
+// search.ValidateKnownPaths, which would make this test a duplicate of
+// TestEvaluateCriterion_UndeclaredPathAbortsTheSave instead of exercising
+// the type-mismatch branch its name and doc promise. Declaring `$.age` (with
+// an incompatible type) restores that isolation.
 func TestEvaluateCriterion_DataFieldPathUntypedFailsClosed(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1.0"}
 
-	// Register a model that declares `name` (String) but NOT `age`.
-	node := schema.NewObjectNode()
-	node.SetChild("name", schema.NewLeafNode(schema.String))
-	raw, err := schema.Marshal(node)
-	if err != nil {
-		t.Fatalf("schema.Marshal: %v", err)
-	}
-	ms, err := factory.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
-		t.Fatalf("Save model: %v", err)
-	}
+	// Register a model that declares `name` (String) and `age` (Boolean) —
+	// `age` IS declared, so the undeclared-path check accepts it, but a
+	// GREATER_THAN 5 operand parses into none of Boolean's forms.
+	registerModelFields(t, ctx, factory, ref, map[string]schema.DataType{
+		"name": schema.String,
+		"age":  schema.Boolean,
+	})
 
 	entity := makeEntity("e1", ref, map[string]any{"age": 30})
 
-	_, _, err = engine.evaluateCriterion(simpleCriterion("$.age", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
+	_, _, err := engine.evaluateCriterion(simpleCriterion("$.age", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
 	if err == nil {
-		t.Fatal("expected an error: $.age carries no declared type, so the comparison leaf cannot be evaluated")
+		t.Fatal("expected an error: $.age is declared Boolean, so operand 5 parses into none of its declared types")
 	}
 }
 
@@ -175,10 +189,19 @@ func TestEvaluateCriterion_FailsClosedOnGenuineModelLoadError(t *testing.T) {
 	}
 }
 
-// TestEvaluateCriterion_LifecycleCriterionNeedsNoModel proves the lazy-load
-// contract: a pure lifecycle/state criterion never touches the model store, so
-// it evaluates correctly even when the model store is unavailable — the
-// unavailability only fails criteria that actually reference data leaves.
+// TestEvaluateCriterion_LifecycleCriterionNeedsNoModel proves the model-read
+// gate: a pure lifecycle/state criterion carries no data-field path (see
+// search.ConditionFieldPaths), so evaluateCriterion never touches the model
+// store for it — it evaluates correctly even when the model store is
+// unavailable. The unavailability only fails criteria that actually
+// reference data leaves. The companion,
+// TestEvaluateCriterion_TemporalMetaUnderTextOperatorIsRefused
+// (criterion_model_boundary_test.go), proves the other half of the same
+// gate: the model READ is skipped here, but the VALIDATION CALL
+// (search.ValidateConditionValueTypes) is never gated — it always runs with
+// a nil model — because that is the one call that still refuses a
+// text/pattern operator on a temporal meta field for a lifecycle-only
+// criterion.
 func TestEvaluateCriterion_LifecycleCriterionNeedsNoModel(t *testing.T) {
 	baseFactory := memory.NewStoreFactory()
 	t.Cleanup(func() { baseFactory.Close() })
