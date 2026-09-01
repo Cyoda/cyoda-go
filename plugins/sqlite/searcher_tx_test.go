@@ -134,6 +134,31 @@ func TestSearchTx_RYWParity_CreateUpdateDelete(t *testing.T) {
 	}
 }
 
+// TestSearchTx_RejectsUnevaluableFilter pins the propagation of
+// spi.Prepare's error through the in-transaction Search overlay
+// (searchTxOverlay): a leaf spi.Prepare genuinely cannot evaluate must fail
+// the search outright, not silently degrade to an empty page. This is the
+// same acceptance criterion as the non-tx Searcher tests, but exercised on
+// the read-your-own-writes overlay path, which plans AND prepares the
+// filter independently of the non-tx committed-pushdown path.
+func TestSearchTx_RejectsUnevaluableFilter(t *testing.T) {
+	store, txCtx, searcher := beginTxSearcher(t)
+	if _, err := store.Save(txCtx, mkPerson("e6", "Berlin", "NEW")); err != nil {
+		t.Fatalf("Save e6: %v", err)
+	}
+
+	_, err := searcher.Search(txCtx, spi.Filter{
+		Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
+		Value: `a\`, Declared: []spi.DataType{spi.String},
+	}, spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 20})
+	if err == nil {
+		t.Fatal("in-tx Search must fail on an unevaluable filter, not return an empty page")
+	}
+	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
+		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
+	}
+}
+
 // TestSearchTx_DeletedInTxAbsent: a committed entity deleted in the tx is absent;
 // a sibling remains present.
 func TestSearchTx_DeletedInTxAbsent(t *testing.T) {

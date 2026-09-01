@@ -107,7 +107,27 @@ func planFor(filter spi.Filter) (sqlPlan, error) {
 // Callers go through planFor, not here: planQuery has no match-all guard.
 //
 // The error return propagates spi.Prepare's — see planFor's doc comment.
+// Evaluability is checked UNCONDITIONALLY, on the whole input filter, before
+// dissection ever runs — never as a by-product of preparing the residual.
+// Only IsNull/NotNull are leafExact, so a filter built entirely from those
+// (e.g. a single bogus-path IsNull leaf, or an AND/OR of two IsNull/NotNull
+// leaves where one addresses a path spi.Prepare cannot resolve) plans fully
+// pushable and EXACT: postFilter stays nil and no residual is ever prepared.
+// Gating the spi.Prepare call on "postFilter != nil" would let that shape
+// skip the check entirely and push SQL that means something else — IS NULL
+// on a JSON key that never exists is true for EVERY row, so an unevaluable
+// filter would silently select everything (fail-open), while the memory
+// backend correctly rejects the same filter — a three-backend divergence
+// this project treats as a defect. Preparing the full filter up front closes
+// that gap for every plan shape, and its result is reused below instead of
+// preparing the same full filter a second time when it also becomes the
+// residual.
 func planQuery(filter spi.Filter) (sqlPlan, error) {
+	preparedFull, err := spi.Prepare(filter)
+	if err != nil {
+		return sqlPlan{}, err
+	}
+
 	pushed, residual := dissect(filter)
 	plan := sqlPlan{postFilter: residual}
 	if pushed != nil {
@@ -119,15 +139,7 @@ func planQuery(filter spi.Filter) (sqlPlan, error) {
 	if residual != nil || (pushed != nil && !allPushedExact(*pushed)) {
 		full := filter
 		plan.postFilter = &full
-	}
-	// Single population point, so the nil-ness invariant cannot drift between
-	// the branches above.
-	if plan.postFilter != nil {
-		p, err := spi.Prepare(*plan.postFilter)
-		if err != nil {
-			return sqlPlan{}, err
-		}
-		plan.preparedPostFilter = &p
+		plan.preparedPostFilter = &preparedFull
 	}
 	return plan, nil
 }

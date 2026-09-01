@@ -238,13 +238,15 @@ func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionSt
 	if err != nil {
 		return nil, fmt.Errorf("Search: %w", err)
 	}
-	// The buffered own-writes are matched against the FULL original filter (not
-	// the residual), so they need their own prepared value. Prepared once,
-	// above the loop.
-	pf, err := spi.Prepare(filter)
-	if err != nil {
-		return nil, fmt.Errorf("Search: %w", err)
-	}
+	// The buffered own-writes are matched against the FULL original filter
+	// (not the residual), so they need their own prepared value, independent
+	// of plan.preparedPostFilter (which stays nil whenever the plan is fully
+	// EXACT — see planQuery). The error is ignored, not unchecked: planFor's
+	// success above already ran spi.Prepare on this exact filter value
+	// (planQuery calls it unconditionally, before dissection, precisely so no
+	// plan shape can skip evaluability), so a second failure here is
+	// impossible — this call exists only to obtain the PreparedFilter value.
+	pf, _ := spi.Prepare(filter)
 
 	// Committed candidate SQL: snapshot at tx.SnapshotTime, ORDER BY, no LIMIT.
 	baseQuery, baseArgs := s.searchSnapshotBase(opts, timeToMicro(tx.SnapshotTime))

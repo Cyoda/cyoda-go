@@ -1149,6 +1149,30 @@ func TestSoundness_ExactFastPath(t *testing.T) {
 	}
 }
 
+// TestSoundness_AllExactPlanStillChecksEvaluability guards the exact CRITICAL
+// gap a fast-path-only Prepare call would leave open: only IsNull/NotNull
+// are leafExact, so an AND of two such leaves plans fully pushable and
+// EXACT — postFilter stays nil, and dissect() never installs a residual.
+// Gating spi.Prepare on "postFilter != nil" would let this shape skip
+// evaluability entirely, and IS NULL on a JSON key spi.Prepare cannot
+// resolve (an unrecognized SourceMeta path, here) is TRUE for every row —
+// not the empty page or rejection every other backend gives, but silently
+// selecting everything. planQuery must reject this outright, independent of
+// whether the plan shape ever produces a residual to prepare.
+func TestSoundness_AllExactPlanStillChecksEvaluability(t *testing.T) {
+	f := spi.Filter{Op: spi.FilterAnd, Children: []spi.Filter{
+		{Op: spi.FilterIsNull, Path: "name", Source: spi.SourceData},
+		{Op: spi.FilterIsNull, Path: "bogus", Source: spi.SourceMeta},
+	}}
+	_, err := planQuery(f)
+	if err == nil {
+		t.Fatal("planQuery must fail on an unevaluable leaf even when every pushed leaf is EXACT and postFilter would stay nil")
+	}
+	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
+		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
+	}
+}
+
 // TestSoundness_MixedPresenceAndValue asserts that adding a single non-EXACT
 // leaf (Eq) to a presence check disables the fast path: the whole plan is
 // re-checked against the FULL filter.
@@ -1225,6 +1249,64 @@ func TestSoundness_NeNonPushable(t *testing.T) {
 	}
 }
 
+// fuzzMetaPaths is the closed canonical SourceMeta vocabulary
+// extractFilterMetaValue (the SPI kernel) and validateFilterPaths both
+// recognize — used by sanitizeFuzzPath to fold an arbitrary fuzzer string
+// into one of these instead of an unrecognized meta path, which spi.Prepare
+// now rejects with ErrUnevaluableLeaf.
+var fuzzMetaPaths = []string{
+	"entity_id", "state", "version", "created_at", "updated_at",
+	"model_name", "model_version", "change_type", "transaction_id",
+	"id", "creationDate", "lastUpdateTime", "transitionForLatestSave", "transactionId",
+}
+
+// sanitizeFuzzPath maps an arbitrary fuzzer-generated string into a path
+// spi.Prepare can evaluate, so FuzzQueryPlanner's structural assertions run
+// on the large majority of generated inputs instead of bailing via
+// ErrUnevaluableLeaf on a path that is essentially always malformed
+// (SourceData: an arbitrary string almost never satisfies the bare
+// dotted-identifier grammar) or unrecognized (SourceMeta: outside the
+// closed canonical vocabulary above). This trades bracket/wildcard-subscript
+// exploration (raw fuzzing essentially never produces valid bracket syntax
+// anyway) for exploring the AND/OR/dissection/pushdown structure the fuzz
+// target actually targets.
+func sanitizeFuzzPath(raw string, source spi.FieldSource) string {
+	if source == spi.SourceMeta {
+		sum := 0
+		for _, b := range []byte(raw) {
+			sum += int(b)
+		}
+		return fuzzMetaPaths[sum%len(fuzzMetaPaths)]
+	}
+	// SourceData: fold to the bare dotted-identifier grammar (letters,
+	// digits, underscore, hyphen, dot); anything else becomes 'x'. Leading
+	// and consecutive dots are collapsed away, and a trailing dot is
+	// trimmed, so ".."/leading "."/trailing "." (all outside the grammar)
+	// never survive the fold.
+	var b strings.Builder
+	prevDot := true // treat the start as "just after a dot" to drop a leading dot
+	for _, r := range raw {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+			b.WriteRune(r)
+			prevDot = false
+		case r == '.':
+			if !prevDot {
+				b.WriteRune('.')
+				prevDot = true
+			}
+		default:
+			b.WriteByte('x')
+			prevDot = false
+		}
+	}
+	out := strings.TrimSuffix(b.String(), ".")
+	if out == "" {
+		out = "f"
+	}
+	return out
+}
+
 // FuzzQueryPlanner generates random spi.Filter trees and verifies that
 // planQuery never panics, and that the pushable/residual split is consistent:
 //   - If postFilter is nil, the original filter was fully pushable
@@ -1271,6 +1353,9 @@ func FuzzQueryPlanner(f *testing.F) {
 		if sourceIdx%2 == 1 {
 			source = spi.SourceMeta
 		}
+		// Fold the raw fuzzer path into one spi.Prepare can evaluate — see
+		// sanitizeFuzzPath's doc comment.
+		path = sanitizeFuzzPath(path, source)
 
 		// Build a leaf filter. Declared:String so the comparison/range ops
 		// (Eq/Ne/Gt/Lt/Gte/Lte/Between) are evaluable — spi.Prepare now
@@ -1324,7 +1409,7 @@ func FuzzQueryPlanner(f *testing.F) {
 							{Op: spi.FilterEq, Path: "x", Source: spi.SourceData, Value: "y", Declared: []spi.DataType{spi.String}},
 						},
 					},
-					{Op: spi.FilterGt, Path: "z", Source: spi.SourceData, Value: float64(1), Declared: []spi.DataType{spi.String}},
+					{Op: spi.FilterGt, Path: "z", Source: spi.SourceData, Value: float64(1), Declared: []spi.DataType{spi.Double}},
 				},
 			}
 		}

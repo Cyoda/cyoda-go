@@ -102,27 +102,35 @@ func TestSearcher_EqFilter(t *testing.T) {
 
 // TestSearcher_RejectsUnevaluableFilter pins the propagation of
 // spi.Prepare's error through Search: a leaf spi.Prepare genuinely cannot
-// evaluate (here, a LIKE pattern with a trailing backslash that will not
+// evaluate (a LIKE pattern with a trailing unpaired escape, which will not
 // compile) must fail the search outright, not silently degrade to an empty
-// page. See .claude/rules/correctness-over-availability.md.
+// page. See .claude/rules/correctness-over-availability.md. Both malformed
+// operands the skipped spitest Pattern/MalformedLike conformance case
+// covered (a trailing escape after a literal, and a bare trailing escape)
+// are exercised here so this replacement is not narrower than what it
+// replaces.
 func TestSearcher_RejectsUnevaluableFilter(t *testing.T) {
-	factory, ctx := setupSearcherTest(t)
+	for _, operand := range []string{`a\`, `\`} {
+		t.Run(operand, func(t *testing.T) {
+			factory, ctx := setupSearcherTest(t)
 
-	store, _ := factory.EntityStore(ctx)
-	searcher, ok := store.(spi.Searcher)
-	if !ok {
-		t.Fatal("entityStore does not implement spi.Searcher")
-	}
+			store, _ := factory.EntityStore(ctx)
+			searcher, ok := store.(spi.Searcher)
+			if !ok {
+				t.Fatal("entityStore does not implement spi.Searcher")
+			}
 
-	_, err := searcher.Search(ctx, spi.Filter{
-		Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
-		Value: `a\`, Declared: []spi.DataType{spi.String},
-	}, spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 100})
-	if err == nil {
-		t.Fatal("Search must fail on an unevaluable filter, not return an empty page")
-	}
-	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
-		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
+			_, err := searcher.Search(ctx, spi.Filter{
+				Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
+				Value: operand, Declared: []spi.DataType{spi.String},
+			}, spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 100})
+			if err == nil {
+				t.Fatal("Search must fail on an unevaluable filter, not return an empty page")
+			}
+			if !errors.Is(err, spi.ErrUnevaluableLeaf) {
+				t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
+			}
+		})
 	}
 }
 
