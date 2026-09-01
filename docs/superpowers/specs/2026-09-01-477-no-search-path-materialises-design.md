@@ -113,9 +113,10 @@ deleted: `entity/service.go:835`, `:1228`, `:1538`, `search/service.go:1337`,
    `testEntityEmptyTenant`'s `GetAll` read are deleted or moved to
    `GetPage`; **`TenantIsolation/GetPage` is added** (absent today). The
    `Iterable` suite stops gating on a type assertion (18 assertion
-   sites: 17 in `spitest/iterable.go`, 1 in `filter_not.go:196`). Test doubles
-   `default_save_all_test.go:15` and `persistence_extendschema_test.go`
-   drop `GetAll` and gain `Iterate`.
+   sites: 17 in `spitest/iterable.go`, 1 in `filter_not.go:196`). The test double
+   `default_save_all_test.go:15` drops `GetAll` and gains `Iterate`
+   (`persistence_extendschema_test.go` is a `ModelStore` double and is
+   unaffected).
 4. Doc comments: `searcher.go:8-11` ("fall back to in-memory filtering") and
    `:26-28` ("identical to what GetAll + in-memory match would produce"),
    and the former `iterable.go:42-46` paragraph, state the new contract.
@@ -170,23 +171,30 @@ the same key set; `CompareAndSave` clears neither (memory `:224-237`, sqlite
 `:392-393`), so delete-then-CAS leaves an id in both `Buffer` and `Deletes`
 and commits a tombstone while in-tx reads disagree. One `unstageDelete(tx,
 id)` helper per plugin, deleting from both maps, called from `Save` and
-`CompareAndSave`. Test asserts the committed outcome after `Commit`.
+`CompareAndSave`. The committed outcome is a contract every backend shares
+and is reachable over the wire (`DELETE /entity/{id}` then `PUT` with
+`If-Match` under one `X-Tx-Token`, then commit), so it is pinned at the
+cross-backend seams: spitest `Transaction/DeleteThenSave` and
+`Transaction/DeleteThenCompareAndSave` (PR 2), and an HTTP parity scenario
+registered in `e2e/parity/registry.go` (PR 3). Plugin unit tests drive the
+red/green in PR 1 and stay.
 
-### 4.3 In-tx `Count` / `CountByState` in O(buffer) (memory, sqlite)
+### 4.3 In-tx `Count` / `CountByState` count over the merge cursor (memory, sqlite)
 
-`count = committedTotal(snapshot) − committed(id IN buffered ∪ deleted) +
-|buffered entities of this model not in tx.Deletes|`. `CountByState` is the
-same with `GROUP BY state`, the buffered entity supplying its own state.
-Both terms use `searchSnapshotBase`'s latest-version-at-`submit_time <=
-SnapshotTime` with `change_type != 'DELETED'` — not the current-state
-`entities` table the non-tx `Count` reads. sqlite passes the id set as one
-JSON-array parameter through `json_each` (one query, no variable-number
-cap). `json_each` is new SQL surface for the plugin (`json_extract` is
-already used; the driver `ncruces/go-sqlite3` builds JSON1 in) and is pinned
-by a plugin test against the real driver. `tx.Deletes` carries no model; a deleted id not committed in
-this model contributes nothing to the `IN` term by construction. Memory
-walks its committed map without copying. Postgres counts on the
+One in-transaction read path, not two: the in-tx counts drain the §4.4
+merge cursor with an `(entity_id, state)` projection — committed rows
+selecting id and state only, merged with the buffer, deletes excluded — and
+tally. O(1) memory, no payload bytes, no new SQL, and by construction the
+same view `Iterate` and `GetPage` return. Time is O(model ids), which is
+what the non-tx `Count` costs the database anyway; the property under
+repair is memory, not latency. Memory walks its committed pointers under
+`entityMu.RLock` and tallies without copying. Postgres counts on the
 transaction's connection and needs nothing.
+
+Rejected: set arithmetic (`committedTotal − committed(id IN buffered ∪
+deleted) + buffered`) with the id set passed through `json_each`. O(buffer)
+time, but a second in-tx read mechanism with three formulas that must agree
+with the cursor's view and new SQL surface to pin.
 
 ### 4.4 sqlite in-tx `Iterate` and `GetPage` stream through `MergeOrdered`
 
@@ -229,7 +237,13 @@ checks a single yielded id and would not catch pre-residual recording).
 
 `buildSnapshot` records the whole merged model into the read-set at open
 when `TrackingRead` (`grouped_stats.go:150-165`); it records per yield
-instead, the pattern 4.4 introduces. `Search` takes a pointer snapshot under
+instead, the pattern 4.4 introduces. `GroupedAggregate` has no yield and
+the backends disagree today — memory records the whole model
+(`grouped_stats.go:357`), sqlite (`:285`) and postgres (`:377`) record
+nothing. The rule for all backends: **in-transaction grouped stats records
+nothing** (the engine passes no `TrackingRead` to `Iterate` for stats
+either, `grouped_stats_service.go:332`). Memory drops the recording; a
+spitest case pins it on every backend. `Search` takes a pointer snapshot under
 `entityMu.RLock` (the shape `currentStatePointersUnlocked` and
 `getAllSnapshotPointersUnlocked` already have), releases it, filters
 lock-free — the stored `*spi.Entity` is immutable: `saveUnlocked` and the
@@ -255,7 +269,7 @@ model read is an O(tenant) pointer walk and in-tx `GetPage` sorts a pointer
 slice per page. The property is "no payload bytes copied beyond the result",
 not "no O(n) pointer slice".
 
-## 5. Error/status-code table (verification — the wire contract is unchanged)
+## 5. Error/status-code table (one code withdrawn; everything else re-verified)
 
 | Endpoint | Codes that must still hold |
 |---|---|
@@ -264,11 +278,15 @@ not "no O(n) pointer slice".
 | `GET /search/async/{jobId}` `/status` `/cancel` | unchanged |
 | `DELETE /entity/{entityName}/{modelVersion}` (conditional, delete-all) | 200; 400; 401; 404; 409 `DELETE_NOT_CONVERGED` |
 | `GET /entity/{entityName}/{modelVersion}` (list) | 200; 400; 401; 404 |
-| `POST /entity/stats/…/query` (grouped) | 200; 400; 404 — **501 for "neither capability" is gone** (dead: `Iterate` is required) |
+| `POST /entity/stats/…/query` (grouped) | 200; 400; 404 — **`501 NOT_IMPLEMENTED_BY_BACKEND` is withdrawn**: its only trigger (a store with neither `Iterable` nor `GroupedAggregator`) cannot exist once `Iterate` is required. The code is retired everywhere (§8), with a `### Breaking` line and a `docs/cloud-parity/` note |
 | gRPC search / delete / list | existing envelope codes per class |
 
 New 400s (§2.1 nil condition, translation failure) are unreachable from a
-client and covered at unit level.
+client and covered at unit level. The withdrawn 501 is a Gate-7 contract
+change: a new `docs/cloud-parity/grouped-stats-iterate-required.md` (no
+grouped-stats contract file exists today; add the row to that folder's
+`README.md` index) states in one paragraph: `Iterate` is required of every backend, so the 501 has no
+trigger and is withdrawn; Cloud must not answer it.
 
 ## 6. Coverage matrix
 
@@ -286,8 +304,9 @@ client and covered at unit level.
 | async submit dry-run 400; execution-time failure → job FAILED | ✓ | — | — | — |
 | every existing search/delete/list/stats status code still holds | — | ✓ (existing suites) | ✓ (existing) | ✓ (existing) |
 | sqlite `Begin` gate: tx begun mid-flush sees the flush and its conflicting commit is refused | ✓ (plugin) | — | — | — |
-| `unstageDelete`: delete-then-Save / delete-then-CAS committed outcome | ✓ (memory, sqlite) | — | — | — |
-| in-tx `Count`/`CountByState`: create, update, delete committed, create-then-delete, delete-then-CAS, state change, after `DeleteAll` | ✓ (memory, sqlite) | — | ✓ (existing in-tx count parity keeps passing) | — |
+| `unstageDelete`: delete-then-Save / delete-then-CAS committed outcome | ✓ (memory, sqlite; PR 1) | — | ✓ spitest `Transaction/DeleteThenSave`, `Transaction/DeleteThenCompareAndSave` (PR 2); HTTP parity scenario delete-then-CAS under one `X-Tx-Token` (PR 3) | — |
+| in-tx `Count`/`CountByState`: create, update, delete committed, create-then-delete, delete-then-CAS, state change, after `DeleteAll` | ✓ (memory, sqlite; PR 1) | — | ✓ spitest in-tx count case (`spitest/entity.go:312` today covers one shape) extended to the seven shapes (PR 2) | — |
+| in-tx `GroupedAggregate` records nothing into the read-set, on every backend | ✓ (memory) | — | ✓ spitest (PR 2) | — |
 | sqlite in-tx `Iterate`/`GetPage` via `MergeOrdered`: sequence equality, page slice equality, no deadlock with same-tx `Delete`, `TrackingRead` gating | ✓ (plugin) | — | ✓ (spitest, existing) | — |
 | memory `Iterate` per-yield recording; `Search` survivor-only copies | ✓ (plugin) | — | ✓ (spitest `TrackingRead` gating) | — |
 | in-tx `DeleteAll` stages ids only | ✓ (plugin) | — | — | — |
@@ -348,17 +367,39 @@ PR 3 also carries:
   all of which invert once `Limit <= 0` is an engine error);
   `docs/cloud-parity/path-grammar.md` §11 ("the bounded search call and the
   unbounded streaming drain alike" → "the `Searcher` call and the `Iterate`
-  rung alike"); `docs/ARCHITECTURE.md`; `docs/plugins/*.md`; `CHANGELOG.md`;
-  `COMPATIBILITY.md` (narrate the wave with the pin move).
+  rung alike"); `docs/CONSISTENCY.md` — §3c (`:200`) prescribes `GetAll` as
+  the always-tracking fence primitive: the replacement is `GetPage`, which
+  records every returned page unconditionally, or `Iterate` with
+  `TrackingRead`, which records yields only — the two record differently
+  and §3c must say which serves a fence (a `GetPage` drain does; a
+  predicate `Iterate` has the same subset gap §3c already describes for
+  `Search`); also `:508` and the Appendix A/B walkthroughs
+  (`:649, :709-764, :855-893, :1002-1167`); `cmd/cyoda/help/content/crud.md:533-536`
+  (the in-tx iterator "materializes via getAllTx" / `buildSnapshot`
+  description) and `workflows.md:174`; `docs/ARCHITECTURE.md`;
+  `docs/plugins/*.md`; `CHANGELOG.md`; `COMPATIBILITY.md` (narrate the wave
+  with the pin move).
+- `NOT_IMPLEMENTED_BY_BACKEND` retired in full — `TestErrCode_Parity`
+  (`cmd/cyoda/help/help_test.go:549`) enforces the code↔topic bijection, so
+  constant and topic go together: `internal/common/error_codes.go:157-162`,
+  `cmd/cyoda/help/content/errors/NOT_IMPLEMENTED_BY_BACKEND.md`,
+  `errors.md:97`, `crud.md:541,579,656`, `api/openapi.yaml:1151,1161,1277-1280`,
+  `internal/e2e/zzz_errorcode_matrix_test.go:61`,
+  `grouped_stats_handler_test.go`, `grouped_stats_service_test.go`,
+  `COMPATIBILITY.md`, `CHANGELOG.md` (`### Breaking`).
 - Rollback: PR 1 reverts independently; PR 3 reverts by re-pinning
   `f6863ae`; an SPI tag is immutable — a bad tag is superseded by a fresh
   version, never moved.
 
 ## 9. Exit checks (greppable)
 
-- `grep -rn 'GetAll\b\|GetAllAsAt\|getAllTx\|Iterable' --include='*.go'`
+- `grep -rn 'GetAll(ctx, .*ModelRef\|GetAllAsAt\|getAllTx\|spi\.Iterable' --include='*.go'`
   over the three repos' non-test code: empty (the compiler enforces the
-  first two; the grep also catches prose).
+  entity-store methods; the grep also catches prose). `ModelStore.GetAll`
+  (`persistence.go:171`, returns `[]ModelRef`) is out of scope and keeps its
+  five production callers.
+- `grep -rn 'GetAll\b' docs cmd/cyoda/help/content README.md`: no prose
+  describes entity reads by reference to it.
 - `grep -rn GetAll plugins/ internal/domain/search`: no comment describes
   behaviour by reference to it (about forty do today).
 - `grep -n 'cond == nil\|drainIterate\|ErrBackendNotSupported' internal/domain/search/service.go internal/domain/entity/*.go`:
