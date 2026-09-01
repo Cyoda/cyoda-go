@@ -48,10 +48,10 @@ func TestPrepare_StructuralErrors(t *testing.T) {
 		},
 		{
 			"unknown group operator",
-			&predicate.GroupCondition{Operator: "NOT", Conditions: []predicate.Condition{
+			&predicate.GroupCondition{Operator: "XOR", Conditions: []predicate.Condition{
 				&predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "active"},
 			}},
-			"unknown group operator: NOT",
+			"unknown group operator: XOR",
 		},
 		{
 			"lowercase group operator",
@@ -388,4 +388,111 @@ func TestPrepare_TemporalMetaGuardStaysANonMatch(t *testing.T) {
 		Field: "creationDate", OperatorType: "CONTAINS", Value: "2024"}, nil)
 	require.NoError(t, err)
 	require.False(t, p.Match([]byte(`{}`), spi.EntityMeta{CreationDate: time.Now()}))
+}
+
+// notOf wraps cond in a GroupCondition{Operator: "NOT"} with exactly one
+// child, the wire shape spi.ConditionToFilter's groupToFilter maps to
+// Filter{Op: FilterNot, Children: [1]} (see the SPI kernel's own
+// groupOperatorToFilterOp).
+func notOf(cond predicate.Condition) *predicate.GroupCondition {
+	return &predicate.GroupCondition{Operator: "NOT", Conditions: []predicate.Condition{cond}}
+}
+
+// TestPrepare_Not mirrors the SPI kernel's TestPrepare_Not
+// (cyoda-go-spi/prepared_filter_test.go): a bare NOT over a scalar leaf is a
+// textual inversion — false where the leaf matches, true everywhere else,
+// including an absent field.
+func TestPrepare_Not(t *testing.T) {
+	cond := notOf(&predicate.SimpleCondition{JsonPath: "$.s", OperatorType: "EQUALS", Value: "x"})
+	p, err := match.Prepare(cond, typed(spi.String))
+	require.NoError(t, err)
+	require.False(t, p.Match([]byte(`{"s":"x"}`), spi.EntityMeta{}))
+	require.True(t, p.Match([]byte(`{"s":"y"}`), spi.EntityMeta{}))
+	require.True(t, p.Match([]byte(`{}`), spi.EntityMeta{}), "absent field: leaf is false, NOT is true")
+}
+
+// TestPrepare_NotOverWildcardIsUniversal pins the divergence the brief calls
+// out explicitly: NOT over a wildcard path negates the child's own
+// "SOME element matches" answer, making it a universal quantifier ("NO
+// element matches") — a different question from the element-wise NOT_EQUAL
+// ("SOME element differs"). Both are asserted on the SAME data so the
+// contrast is a value, not prose: for {"tags":["red","blue"]}, NOT(EQUALS
+// "red") is false (an element IS "red") while NOT_EQUAL "red" is true (an
+// element, "blue", differs).
+func TestPrepare_NotOverWildcardIsUniversal(t *testing.T) {
+	pNot, err := match.Prepare(
+		notOf(&predicate.SimpleCondition{JsonPath: "$.tags[*]", OperatorType: "EQUALS", Value: "red"}),
+		typed(spi.String))
+	require.NoError(t, err)
+	pNotEqual, err := match.Prepare(
+		&predicate.SimpleCondition{JsonPath: "$.tags[*]", OperatorType: "NOT_EQUAL", Value: "red"},
+		typed(spi.String))
+	require.NoError(t, err)
+
+	mixed := []byte(`{"tags":["red","blue"]}`)
+	require.False(t, pNot.Match(mixed, spi.EntityMeta{}),
+		"NOT($.tags[*] EQUALS \"red\") over [red,blue]: an element IS red, so NOT is false")
+	require.True(t, pNotEqual.Match(mixed, spi.EntityMeta{}),
+		"$.tags[*] NOT_EQUAL \"red\" over [red,blue]: \"blue\" differs, so NOT_EQUAL is true")
+
+	require.True(t, pNot.Match([]byte(`{"tags":["blue"]}`), spi.EntityMeta{}))
+	require.True(t, pNot.Match([]byte(`{"tags":[]}`), spi.EntityMeta{}), "vacuously true: empty array")
+	require.True(t, pNot.Match([]byte(`{}`), spi.EntityMeta{}), "vacuously true: absent field")
+}
+
+// TestPrepare_MalformedNotFailsClosed pins arity 0 and arity >=2: there is no
+// well-defined "invert" of zero or many children (never "invert the first
+// child", never "invert the AND of the children") — a malformed NOT is a
+// structural fault in the condition, the same disposition every other
+// unevaluable shape in this file gets.
+func TestPrepare_MalformedNotFailsClosed(t *testing.T) {
+	leaf := func() predicate.Condition {
+		return &predicate.SimpleCondition{JsonPath: "$.s", OperatorType: "EQUALS", Value: "x"}
+	}
+	cases := []struct {
+		name  string
+		count int
+	}{
+		{"zero conditions", 0},
+		{"two conditions", 2},
+		{"three conditions", 3},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			conds := make([]predicate.Condition, c.count)
+			for i := range conds {
+				conds[i] = leaf()
+			}
+			cond := &predicate.GroupCondition{Operator: "NOT", Conditions: conds}
+			_, err := match.Prepare(cond, typed(spi.String))
+			require.Error(t, err, "a malformed NOT must fail Prepare, never guess an inversion")
+		})
+	}
+}
+
+// TestPrepare_NotNot pins double negation: NOT(NOT(x)) answers exactly as x
+// does, recovering the original leaf's match/non-match/absent-field answers.
+func TestPrepare_NotNot(t *testing.T) {
+	inner := &predicate.SimpleCondition{JsonPath: "$.s", OperatorType: "EQUALS", Value: "x"}
+	cond := notOf(notOf(inner))
+	p, err := match.Prepare(cond, typed(spi.String))
+	require.NoError(t, err)
+	require.True(t, p.Match([]byte(`{"s":"x"}`), spi.EntityMeta{}))
+	require.False(t, p.Match([]byte(`{"s":"y"}`), spi.EntityMeta{}))
+	require.False(t, p.Match([]byte(`{}`), spi.EntityMeta{}))
+}
+
+// TestPrepare_NotOverEmptyGroupComplements pins NOT(AND[]) = false and
+// NOT(OR[]) = true: an empty AND matches trivially (the vacuous-conjunction
+// answer prepareGroup's own match loop already gives), an empty OR never
+// matches, and NOT must invert each answer rather than special-casing an
+// empty child group.
+func TestPrepare_NotOverEmptyGroupComplements(t *testing.T) {
+	pAnd, err := match.Prepare(notOf(&predicate.GroupCondition{Operator: "AND", Conditions: nil}), nil)
+	require.NoError(t, err)
+	require.False(t, pAnd.Match([]byte(`{}`), spi.EntityMeta{}), "NOT(AND[]) must be false")
+
+	pOr, err := match.Prepare(notOf(&predicate.GroupCondition{Operator: "OR", Conditions: nil}), nil)
+	require.NoError(t, err)
+	require.True(t, pOr.Match([]byte(`{}`), spi.EntityMeta{}), "NOT(OR[]) must be true")
 }

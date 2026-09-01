@@ -83,6 +83,7 @@ const (
 	// fail-closed answer for a caller that ignores the error.
 	prepNever prepKind = iota
 	prepGroup
+	prepNot          // NOT: negates its single child (see prepNode.children)
 	prepLeaf         // data leaf, addressed by a parsed filter path
 	prepMetaString   // lifecycle leaf on a string-valued meta field
 	prepMetaTemporal // lifecycle leaf on creationDate / lastUpdateTime
@@ -103,6 +104,9 @@ type prepNode struct {
 	// prepGroup
 	or       bool
 	children []prepNode
+
+	// prepNot also uses children, always with exactly one element — the
+	// negated child. It does not use or.
 
 	// prepLeaf
 	hops []spi.PathHop
@@ -359,30 +363,46 @@ func prepareLifecycle(c *predicate.LifecycleCondition) (prepNode, error) {
 }
 
 func prepareGroup(c *predicate.GroupCondition, fieldTypes FieldTypes) (prepNode, error) {
-	var or bool
 	switch c.Operator {
-	case "AND":
-	case "OR":
-		or = true
+	case "AND", "OR":
+		n := prepNode{kind: prepGroup, or: c.Operator == "OR"}
+		if len(c.Conditions) > 0 {
+			n.children = make([]prepNode, 0, len(c.Conditions))
+			for _, child := range c.Conditions {
+				// child is already desugared — see prepareDesugared's doc —
+				// so this calls the dispatch directly rather than prepare,
+				// which would re-run spi.DesugarCondition on it.
+				cn, err := prepareDesugared(child, fieldTypes)
+				if err != nil {
+					return prepNode{}, err
+				}
+				n.children = append(n.children, cn)
+			}
+		}
+		return n, nil
+
+	case "NOT":
+		// Arity is exactly one. GroupCondition is a public wire shape any
+		// caller can build, so a malformed NOT must be rejected rather than
+		// guessed at: there is no well-defined "invert" of zero children or
+		// of many — inverting the first and discarding the rest, or
+		// inverting the AND of the children, are both answers nobody asked
+		// for. Mirrors the SPI kernel's identical arity check in
+		// prepareNode (prepared_filter.go) for FilterNot. Checked BEFORE
+		// indexing c.Conditions[0]: an unguarded index on a length-0 slice
+		// panics.
+		if len(c.Conditions) != 1 {
+			return prepNode{}, fmt.Errorf("NOT requires exactly one condition, got %d", len(c.Conditions))
+		}
+		child, err := prepareDesugared(c.Conditions[0], fieldTypes)
+		if err != nil {
+			return prepNode{}, err
+		}
+		return prepNode{kind: prepNot, children: []prepNode{child}}, nil
+
 	default:
 		return prepNode{}, fmt.Errorf("unknown group operator: %s", c.Operator)
 	}
-
-	n := prepNode{kind: prepGroup, or: or}
-	if len(c.Conditions) > 0 {
-		n.children = make([]prepNode, 0, len(c.Conditions))
-		for _, child := range c.Conditions {
-			// child is already desugared — see prepareDesugared's doc — so
-			// this calls the dispatch directly rather than prepare, which
-			// would re-run spi.DesugarCondition on it.
-			cn, err := prepareDesugared(child, fieldTypes)
-			if err != nil {
-				return prepNode{}, err
-			}
-			n.children = append(n.children, cn)
-		}
-	}
-	return n, nil
 }
 
 // Match reports whether the entity satisfies the prepared condition. It cannot
@@ -409,6 +429,24 @@ func (n *prepNode) match(data []byte, meta spi.EntityMeta) bool {
 			}
 		}
 		return true
+
+	case prepNot:
+		// Negating the child's own match answer (never rewriting the child
+		// operator into its element-wise negative counterpart) is what
+		// makes this a universal quantifier over a wildcard path: the child
+		// leaf already holds "SOME addressed value satisfies it", so
+		// negating that gives "NO addressed value satisfies it" — a
+		// different question from "SOME addressed value differs"
+		// (NOT_EQUAL). For {"tags":["red","blue"]}, NOT($.tags[*] EQUALS
+		// "red") is false (some element IS "red"), while $.tags[*]
+		// NOT_EQUAL "red" is true (some element, "blue", differs). This
+		// also gives vacuous truth for free: an empty array, an explicit
+		// null, or an absent field all make the child leaf resolve no
+		// values (see the prepLeaf case below), so the child is false and
+		// NOT is therefore true, with no special-casing here. Mirrors the
+		// SPI kernel's identical preparedNode.match FilterNot arm
+		// (prepared_filter.go).
+		return !n.children[0].match(data, meta)
 
 	case prepLeaf:
 		// The path's SYNTAX decides what it addresses, never the stored
