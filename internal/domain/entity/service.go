@@ -1057,16 +1057,14 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 	// validateConditionTypes boundary, including its failure policy: a schema
 	// that cannot be loaded fails the request. A conditional delete decided
 	// against a condition nobody could type-check is the last place to prefer
-	// an available answer to a correct one.
-	node, nodeErr := deleteModelSchemaNode(ctx, modelStore, ref)
-	if nodeErr != nil {
-		return deleteSelectionPlan{}, fmt.Errorf("failed to load model schema for condition validation: %w", nodeErr)
-	}
-	if node != nil {
-		if tErr := search.ValidateConditionValueTypes(node, cond); tErr != nil {
-			code := search.ClassifyConditionTypeErrCode(tErr)
-			return deleteSelectionPlan{}, common.Operational(http.StatusBadRequest, code, tErr.Error())
-		}
+	// an available answer to a correct one. Extracted into its own function
+	// (deleteConditionTypeCheck) so it is directly unit-testable independent
+	// of the search.ValidateCondition structural gate a few lines above,
+	// which today already rejects a GroupCondition{Operator:"NOT"} outright
+	// — see that function's own doc for why the gating bug it fixes must
+	// still be tested at this level.
+	if tErr := deleteConditionTypeCheck(ctx, modelStore, ref, cond); tErr != nil {
+		return deleteSelectionPlan{}, tErr
 	}
 
 	filter, translateErr := spi.ConditionToFilter(cond, fields)
@@ -1114,6 +1112,45 @@ func deleteModelSchemaNode(ctx context.Context, modelStore spi.ModelStore, ref s
 		return nil, nil
 	}
 	return schema.Unmarshal(desc.Schema)
+}
+
+// deleteConditionTypeCheck runs condition type-soundness for planDeleteSelection,
+// gating the model READ (never the validation CALL) on whether cond addresses
+// any data path — mirrors search.validateConditionTypes and
+// workflow/engine.go's evaluateCriterion (Task 7). A lifecycle-only condition
+// needs no schema to validate: ValidateConditionValueTypes tolerates a nil
+// model by design, still running its model-independent half —
+// validateLifecycleType, the one check that refuses a text or pattern
+// operator on a temporal meta field (creationDate/lastUpdateTime).
+//
+// This used to be inlined in planDeleteSelection as "if node != nil { ... }",
+// which skipped the validation call ENTIRELY whenever deleteModelSchemaNode
+// returned a nil node — the ordinary "model has no schema yet" state, not a
+// failure — silently accepting a predicate validateLifecycleType exists to
+// reject. Left unrejected, that predicate reaches internal/match's
+// deliberate temporal-meta never-match guard unvalidated, and a NOT wrapping
+// it inverts that guard into matching every entity: on conditional delete,
+// the highest blast-radius surface this predicate reaches, that is a
+// delete-everything. Extracted into its own function so it is directly
+// unit-testable (delete_condition_type_gating_test.go) independent of
+// search.ValidateCondition's structural gate a few lines up in
+// planDeleteSelection, which today already rejects a
+// GroupCondition{Operator:"NOT"} outright — the wire-level acceptance this
+// fix pre-empts is a later, separate change.
+func deleteConditionTypeCheck(ctx context.Context, modelStore spi.ModelStore, ref spi.ModelRef, cond predicate.Condition) error {
+	var node *schema.ModelNode
+	if len(search.ConditionFieldPaths(cond)) > 0 {
+		var nodeErr error
+		node, nodeErr = deleteModelSchemaNode(ctx, modelStore, ref)
+		if nodeErr != nil {
+			return fmt.Errorf("failed to load model schema for condition validation: %w", nodeErr)
+		}
+	}
+	if tErr := search.ValidateConditionValueTypes(node, cond); tErr != nil {
+		code := search.ClassifyConditionTypeErrCode(tErr)
+		return common.Operational(http.StatusBadRequest, code, tErr.Error())
+	}
+	return nil
 }
 
 // drainDeleteSelection opens a spi.Iterable iterator scoped to ctx (pass a

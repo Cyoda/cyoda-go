@@ -2011,14 +2011,18 @@ func (f *wrapModelStoreCounterFactory) ModelStore(ctx context.Context) (spi.Mode
 // Searcher pushdown branch of Search loads the model's FieldsMap and
 // threads it into ConditionToFilter, rather than hardcoding nil.
 //
-// A LifecycleCondition addresses no data-field paths, so
-// validateConditionPaths short-circuits without touching the ModelStore
-// (extractFieldPaths returns empty — see path_validate.go), and an empty
-// OrderBy makes resolveSortKeys return before touching it too. That isolates
-// the count: with no OrderBy and a lifecycle-only condition, the only
-// ModelStore.Get call before this task's change is EnsureModelRegistered's
-// single lookup. Once Search's Searcher branch calls loadFieldsMap to build
-// the fields argument for ConditionToFilter, a second Get call appears.
+// The condition addresses one data path ($.name), so validateConditionPaths
+// loads and returns a real FieldsMap (extractFieldPaths is non-empty — see
+// path_validate.go) and validateConditionTypes's own type-soundness check
+// consults the schema too (its own read is gated on exactly the same
+// path-need, per this task's fix to a validation-skip bug — a LIFECYCLE-ONLY
+// condition, by contrast, now makes NO ModelStore.Get call at all, covered
+// separately by TestValidateConditionTypes_LifecycleOnly_NoModelRead in
+// condition_type_validate_gating_test.go). An empty OrderBy makes
+// resolveSortKeys return without touching the store too, so every Get call
+// this test observes comes from the two schema-consulting checks above plus
+// EnsureModelRegistered's own lookup — at least 2, whichever two of those
+// three a given code shape happens to route through.
 //
 // (dataCoercion's routing effect is not separately observable via the
 // result set today — classifyType never classifies a *data* field as
@@ -2049,15 +2053,12 @@ func TestSearch_ThreadsFieldsMapIntoConditionToFilter(t *testing.T) {
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 	svc := search.NewSearchService(factory, uuids, searchStore)
 
-	cond := &predicate.LifecycleCondition{
-		Field:        "state",
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.name",
 		OperatorType: "EQUALS",
-		Value:        "NEW",
+		Value:        "Alice",
 	}
 
-	// Precondition: EnsureModelRegistered is the only ModelStore.Get call a
-	// lifecycle-only, no-OrderBy search makes before Search's pushdown
-	// branch is threaded with a real FieldsMap.
 	realStore, err := base.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
@@ -2066,13 +2067,20 @@ func TestSearch_ThreadsFieldsMapIntoConditionToFilter(t *testing.T) {
 		t.Fatal("precondition: memory store expected to implement spi.Searcher")
 	}
 
-	_, err = svc.Search(ctx, ref, cond, search.SearchOptions{})
+	results, err := svc.Search(ctx, ref, cond, search.SearchOptions{})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
+	// A non-nil, correctly-typed FieldsMap is what makes this EQUALS leaf
+	// match at all — an empty Declared set (the hardcoded-nil regression
+	// this test guards against) annihilates a comparison leaf to a
+	// non-match per spi.ConditionToFilter's own godoc.
+	if len(results) != 1 {
+		t.Fatalf("got %d result(s), want 1: the EQUALS leaf against $.name must match when FieldsMap is threaded correctly", len(results))
+	}
 
 	if cms.getCalls < 2 {
-		t.Errorf("ModelStore.Get calls = %d, want >= 2 (EnsureModelRegistered + Search's FieldsMap load for ConditionToFilter)", cms.getCalls)
+		t.Errorf("ModelStore.Get calls = %d, want >= 2 (EnsureModelRegistered + at least one real schema-consulting check)", cms.getCalls)
 	}
 }
 

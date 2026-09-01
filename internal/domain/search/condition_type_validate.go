@@ -430,19 +430,32 @@ func ClassifyConditionTypeErrCode(err error) string {
 // The workflow engine already fails closed on the same load error; search now
 // matches it, per .claude/rules/correctness-over-availability.md.
 func (s *SearchService) validateConditionTypes(ctx context.Context, modelStore spi.ModelStore, modelRef spi.ModelRef, cond predicate.Condition) *common.AppError {
-	node, err := loadModelNode(ctx, modelStore, modelRef)
-	if err != nil {
-		// Same dependency rule as validateConditionPaths: the schema is
-		// required only for a condition that addresses a data path. A
-		// lifecycle-only condition is answerable without it, so an
-		// unreadable schema must not fail it.
-		if len(extractFieldPaths(cond)) == 0 {
-			return nil
+	// Gate the model READ on whether cond addresses any data path — a
+	// lifecycle-only condition needs no schema to validate (mirrors
+	// workflow/engine.go's evaluateCriterion, Task 7) — but never gate the
+	// VALIDATION CALL itself on whether that read was attempted, succeeded,
+	// or found a schema. This used to return nil without calling
+	// ValidateConditionValueTypes at all in two cases — an unreadable
+	// schema paired with a lifecycle-only condition, and a model that
+	// loaded cleanly but carries no schema yet — and both silently skipped
+	// its model-independent half too: validateLifecycleType, the one check
+	// that refuses a text or pattern operator on a temporal meta field
+	// (creationDate/lastUpdateTime). Left unrejected, that predicate reaches
+	// internal/match's deliberate temporal-meta never-match guard
+	// unvalidated, and a NOT wrapping it inverts that guard into matching
+	// every entity — the exact fail-open Task 7 already closed for the
+	// workflow-criterion path. ValidateConditionValueTypes tolerates a nil
+	// model by design (its own doc: the model-independent checks still run),
+	// so calling it unconditionally here, with node possibly nil, is always
+	// safe and never a behaviour change for a condition with a genuine data
+	// path against a loadable schema.
+	var node *schema.ModelNode
+	if len(extractFieldPaths(cond)) > 0 {
+		var err error
+		node, err = loadModelNode(ctx, modelStore, modelRef)
+		if err != nil {
+			return common.Internal("failed to load model schema for condition type validation", err)
 		}
-		return common.Internal("failed to load model schema for condition type validation", err)
-	}
-	if node == nil {
-		return nil
 	}
 	if err := ValidateConditionValueTypes(node, cond); err != nil {
 		return common.Operational(http.StatusBadRequest, classifyConditionTypeErrCode(err), err.Error())
