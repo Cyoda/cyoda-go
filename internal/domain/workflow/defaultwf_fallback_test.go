@@ -24,8 +24,15 @@ func TestDefaultWorkflowFallback_WhenImportedWorkflowCriterionDoesNotMatch(t *te
 			Name:         "obo-workflow",
 			InitialState: "INIT",
 			Active:       true,
-			// Criterion that requires a field value the entity won't have.
-			Criterion: simpleCriterion("$.nonExistentField", "EQUALS", "match-me"),
+			// Criterion on a DECLARED field with a value the entity's data
+			// does not hold — a genuine, evaluable non-match. A reference to
+			// an undeclared field would instead fail Prepare outright
+			// (leafNode's expansion-failure branch, internal/match/prepared.go):
+			// an unevaluable comparison leaf fails the transition rather than
+			// silently reading as "not satisfied" (correctness-over-availability),
+			// so it can no longer stand in for "criterion legitimately
+			// doesn't match" the way this test needs.
+			Criterion: simpleCriterion("$.algorithm", "EQUALS", "ES256"),
 			States: map[string]spi.StateDefinition{
 				"INIT": {
 					Transitions: []spi.TransitionDefinition{
@@ -40,10 +47,11 @@ func TestDefaultWorkflowFallback_WhenImportedWorkflowCriterionDoesNotMatch(t *te
 		t.Fatalf("failed to save workflow: %v", err)
 	}
 
-	// Register the model declaring the entity's real leaves. The criterion
-	// references $.nonExistentField, which carries no declared type, so the
-	// data-field equality leaf degrades to non-match — driving the intended
-	// fallback to the default workflow (not a fail-closed load error).
+	// Register the model declaring the entity's real leaves, including
+	// $.algorithm — the criterion's declared type comes from here, so the
+	// EQUALS comparison evaluates cleanly and genuinely doesn't match (the
+	// entity's algorithm is RS256, not ES256), driving the intended fallback
+	// to the default workflow.
 	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{
 		"keyId":     schema.String,
 		"algorithm": schema.String,

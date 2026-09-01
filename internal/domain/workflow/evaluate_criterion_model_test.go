@@ -38,8 +38,10 @@ func registerTypedModel(t *testing.T, ctx context.Context, factory spi.StoreFact
 // workflow engine are type-directed: the evaluator lazily loads the model's
 // FieldsMap so a comparison/equality leaf resolves against the declared type.
 // Tests that exercise data-field criteria must register the model the same way
-// production does — otherwise a referenced leaf either fails closed (model-load
-// error) or degrades to non-match (declared type absent).
+// production does — otherwise a referenced leaf either fails closed with a
+// model-load error, or fails closed with a Prepare error (a comparison leaf
+// with no declared type cannot be evaluated — see
+// TestEvaluateCriterion_DataFieldPathUntypedFailsClosed).
 func registerModelFields(t *testing.T, ctx context.Context, factory spi.StoreFactory, ref spi.ModelRef, fields map[string]schema.DataType) {
 	t.Helper()
 	node := schema.NewObjectNode()
@@ -73,9 +75,11 @@ func (f *errModelStoreFactory) ModelStore(context.Context) (spi.ModelStore, erro
 
 // TestEvaluateCriterion_DataFieldTypeDirectedWithRegisteredModel proves the
 // Task-8 wiring: with a registered model declaring `$.age` Integer, a
-// GREATER_THAN data-field criterion evaluates type-directed (numeric), and the
-// same criterion with NO model registered degrades to non-match — proving the
-// declared types loaded from the model store are what drive the match.
+// GREATER_THAN data-field criterion evaluates type-directed (numeric) —
+// proving the declared types loaded from the model store are what drive the
+// match. The same criterion against a path the model does NOT declare fails
+// closed instead of degrading to non-match — see
+// TestEvaluateCriterion_DataFieldPathUntypedFailsClosed.
 func TestEvaluateCriterion_DataFieldTypeDirectedWithRegisteredModel(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
@@ -104,13 +108,19 @@ func TestEvaluateCriterion_DataFieldTypeDirectedWithRegisteredModel(t *testing.T
 	}
 }
 
-// TestEvaluateCriterion_DataFieldNonMatchWhenPathUntyped is the companion that
+// TestEvaluateCriterion_DataFieldPathUntypedFailsClosed is the companion that
 // isolates the model's contribution: a model IS registered (schema loads
 // successfully, no error), but it declares only `name` — `$.age` carries no
-// declared type — so the GREATER_THAN comparison leaf degrades to non-match.
-// This is the intended graceful "path not typed" behaviour, distinct from a
-// genuine load error which fails closed.
-func TestEvaluateCriterion_DataFieldNonMatchWhenPathUntyped(t *testing.T) {
+// declared type — so the GREATER_THAN comparison leaf cannot be evaluated and
+// evaluateCriterion fails closed with an error (internal/match/prepared.go's
+// leafNode expansion-failure branch), distinct from BOTH a genuine model-load
+// error (TestEvaluateCriterion_FailsClosedOnGenuineModelLoadError) and a
+// successful, type-directed match/non-match
+// (TestEvaluateCriterion_DataFieldTypeDirectedWithRegisteredModel). An
+// unevaluable comparison leaf is a structural fault in the criterion, not a
+// row-dependent non-match, so it must not be silently read as "doesn't
+// match" (correctness-over-availability).
+func TestEvaluateCriterion_DataFieldPathUntypedFailsClosed(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1.0"}
@@ -132,12 +142,9 @@ func TestEvaluateCriterion_DataFieldNonMatchWhenPathUntyped(t *testing.T) {
 
 	entity := makeEntity("e1", ref, map[string]any{"age": 30})
 
-	got, _, err := engine.evaluateCriterion(simpleCriterion("$.age", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
-	if err != nil {
-		t.Fatalf("successful schema load must not error, got: %v", err)
-	}
-	if got {
-		t.Fatal("with no declared type for $.age the comparison leaf must degrade to non-match")
+	_, _, err = engine.evaluateCriterion(simpleCriterion("$.age", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
+	if err == nil {
+		t.Fatal("expected an error: $.age carries no declared type, so the comparison leaf cannot be evaluated")
 	}
 }
 

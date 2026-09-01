@@ -204,7 +204,10 @@ func assertRYWOracle(t *testing.T, store spi.EntityStore, sr spi.Searcher, txCtx
 	if err != nil {
 		t.Fatalf("GetAll(tx): %v", err)
 	}
-	prepared := spi.Prepare(filter)
+	prepared, err := spi.Prepare(filter)
+	if err != nil {
+		t.Fatalf("spi.Prepare(filter): %v", err)
+	}
 	wantIDs := []string{}
 	wantData := map[string]string{}
 	for _, e := range all {
@@ -475,7 +478,10 @@ func runInTxPIT(t *testing.T, b backend) {
 	if err != nil {
 		t.Fatalf("GetAllAsAt: %v", err)
 	}
-	prepared := spi.Prepare(cityBerlin)
+	prepared, err := spi.Prepare(cityBerlin)
+	if err != nil {
+		t.Fatalf("spi.Prepare(cityBerlin): %v", err)
+	}
 	wantIDs := []string{}
 	for _, e := range all {
 		if prepared.Match(e.Data, e.Meta) {
