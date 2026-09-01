@@ -52,9 +52,19 @@ var metaOrderPaths = map[string]bool{
 // never matched anything here either. GroupExpr.Path and AggregateExpr.Field
 // go through validateJSONPath at the GroupedAggregate boundary and are held to
 // the same bare-path grammar.
+//
+// Recurses on the PRESENCE of a subtree (len(f.Children) > 0) rather than on
+// a case list of named branch operators (FilterAnd, FilterOr). A case list
+// reproduces the same defect for the next branch operator added: FilterNot
+// does not exist on this SPI version, but to this validator it is
+// indistinguishable from any other operator it has never seen, and a node
+// with an unrecognised Op and populated Children fell through to the "f.Path
+// == """ check below and returned nil without ever looking at Children — its
+// subtree went unvalidated. A malformed path inside a NOT would then reach
+// spi.Prepare as a never-match leaf, which NOT inverts into matching every
+// entity.
 func validateFilterPaths(f spi.Filter) error {
-	switch f.Op {
-	case spi.FilterAnd, spi.FilterOr:
+	if len(f.Children) > 0 {
 		for _, c := range f.Children {
 			if err := validateFilterPaths(c); err != nil {
 				return err
