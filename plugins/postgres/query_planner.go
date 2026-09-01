@@ -83,9 +83,15 @@ func allPushedExact(f spi.Filter) bool {
 // and would install the zero filter as its own residual. That residual matches
 // everything, so results stay correct while LIMIT pushdown and native GROUP BY
 // are silently lost. Mirrors the guard in the sqlite plugin.
-func planFor(filter spi.Filter) sqlPlan {
+//
+// The error return is spi.Prepare's: a leaf the kernel genuinely cannot
+// evaluate (an operand fitting no declared type, a pattern that will not
+// compile, ...) makes the whole filter unplannable, wrapping
+// spi.ErrUnevaluableLeaf. Callers propagate it rather than degrading to a
+// plan that matches nothing.
+func planFor(filter spi.Filter) (sqlPlan, error) {
 	if filter.Op == "" {
-		return sqlPlan{}
+		return sqlPlan{}, nil
 	}
 	return planQuery(filter)
 }
@@ -105,7 +111,9 @@ func planFor(filter spi.Filter) sqlPlan {
 // disables the SQL LIMIT/OFFSET/GROUP-BY fast path (gated on postFilter == nil).
 //
 // Callers go through planFor, not here: planQuery has no match-all guard.
-func planQuery(filter spi.Filter) sqlPlan {
+//
+// The error return propagates spi.Prepare's — see planFor's doc comment.
+func planQuery(filter spi.Filter) (sqlPlan, error) {
 	pushed, residual := dissect(filter)
 	plan := sqlPlan{postFilter: residual}
 	if pushed != nil {
@@ -122,10 +130,13 @@ func planQuery(filter spi.Filter) sqlPlan {
 	// Single population point, so the nil-ness invariant cannot drift between
 	// the branches above.
 	if plan.postFilter != nil {
-		p := spi.Prepare(*plan.postFilter)
+		p, err := spi.Prepare(*plan.postFilter)
+		if err != nil {
+			return sqlPlan{}, err
+		}
 		plan.preparedPostFilter = &p
 	}
-	return plan
+	return plan, nil
 }
 
 // dissect splits a filter tree into a pushable portion and a residual portion.

@@ -123,9 +123,13 @@ func fUnary(op spi.FilterOp, path string) spi.Filter {
 // oracleIDs computes the TRUE match set directly via
 // spi.Prepare/PreparedFilter.Match over the in-process corpus — exactly the
 // memory backend's Iterate/Search algorithm (no SQL, no narrowing).
-func oracleIDs(corpus []*spi.Entity, f spi.Filter) map[string]bool {
+func oracleIDs(t *testing.T, corpus []*spi.Entity, f spi.Filter) map[string]bool {
+	t.Helper()
 	out := map[string]bool{}
-	pf := spi.Prepare(f)
+	pf, err := spi.Prepare(f)
+	if err != nil {
+		t.Fatalf("spi.Prepare: %v", err)
+	}
 	for _, e := range corpus {
 		if pf.Match(e.Data, e.Meta) {
 			out[e.Meta.ID] = true
@@ -235,7 +239,7 @@ func TestPostgresPushdownSoundnessProperty(t *testing.T) {
 
 	for _, tc := range conditions {
 		t.Run(tc.name, func(t *testing.T) {
-			oracle := oracleIDs(corpus, tc.f)
+			oracle := oracleIDs(t, corpus, tc.f)
 
 			// Assertion 1: SQL pre-recheck candidates ⊇ kernel matches (no
 			// under-select survives to the re-check stage).
@@ -302,7 +306,11 @@ func TestPostgresPushdownSoundness_EndsWithUnderSelects_KNOWNBUG(t *testing.T) {
 
 	filter := spi.Filter{Op: spi.FilterEndsWith, Source: spi.SourceData, Path: "name", Value: "get"}
 
-	oracle := spi.Prepare(filter).Match([]byte(`{"name":"Widget"}`), spi.EntityMeta{})
+	oraclePF, err := spi.Prepare(filter)
+	if err != nil {
+		t.Fatalf("spi.Prepare: %v", err)
+	}
+	oracle := oraclePF.Match([]byte(`{"name":"Widget"}`), spi.EntityMeta{})
 	if !oracle {
 		t.Fatalf("test setup invalid: kernel oracle must match ENDS_WITH 'get' against 'Widget'")
 	}
@@ -337,7 +345,11 @@ func TestPostgresPushdownSoundness_LikeWildcardUnderSelects_KNOWNBUG(t *testing.
 
 	filter := spi.Filter{Op: spi.FilterLike, Source: spi.SourceData, Path: "desc", Value: "foo%baz"}
 
-	oracle := spi.Prepare(filter).Match([]byte(`{"desc":"foobarbaz"}`), spi.EntityMeta{})
+	oraclePF, err := spi.Prepare(filter)
+	if err != nil {
+		t.Fatalf("spi.Prepare: %v", err)
+	}
+	oracle := oraclePF.Match([]byte(`{"desc":"foobarbaz"}`), spi.EntityMeta{})
 	if !oracle {
 		t.Fatalf("test setup invalid: kernel oracle must match wildcard pattern 'foo%%baz' against 'foobarbaz'")
 	}

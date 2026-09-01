@@ -60,7 +60,11 @@ func TestEvalPostFilter_MetaBlockIsNotAMatchableDataPath(t *testing.T) {
 		Declared: []spi.DataType{spi.String},
 	}
 
-	got := evalPostFilter(spi.Prepare(metaAsData), decoded)
+	metaAsDataPF, err := spi.Prepare(metaAsData)
+	if err != nil {
+		t.Fatalf("spi.Prepare: %v", err)
+	}
+	got := evalPostFilter(metaAsDataPF, decoded)
 	if got {
 		t.Error("a data-source condition on _meta.state matched: postgres is exposing the storage-layer meta block as a queryable data path, which memory and sqlite do not")
 	}
@@ -74,7 +78,11 @@ func TestEvalPostFilter_MetaBlockIsNotAMatchableDataPath(t *testing.T) {
 		Value:    "OPEN",
 		Declared: []spi.DataType{spi.String},
 	}
-	ok := evalPostFilter(spi.Prepare(domain), decoded)
+	domainPF, err := spi.Prepare(domain)
+	if err != nil {
+		t.Fatalf("spi.Prepare: %v", err)
+	}
+	ok := evalPostFilter(domainPF, decoded)
 	if !ok {
 		t.Error("domain data condition failed to match")
 	}
@@ -90,7 +98,11 @@ func TestEvalPostFilter_MetaBlockIsNotAMatchableDataPath(t *testing.T) {
 		Value:    "active",
 		Declared: []spi.DataType{spi.String},
 	}
-	ok = evalPostFilter(spi.Prepare(metaProper), decoded)
+	metaProperPF, err := spi.Prepare(metaProper)
+	if err != nil {
+		t.Fatalf("spi.Prepare: %v", err)
+	}
+	ok = evalPostFilter(metaProperPF, decoded)
 	if !ok {
 		t.Error("SourceMeta condition on state failed to match")
 	}

@@ -105,7 +105,10 @@ func assertSearchMatchesGetAll(t *testing.T, store spi.EntityStore, ctx context.
 		t.Fatalf("GetAll: %v", err)
 	}
 	wantIDs := make([]string, 0, len(all))
-	pf := spi.Prepare(filter)
+	pf, err := spi.Prepare(filter)
+	if err != nil {
+		t.Fatalf("spi.Prepare: %v", err)
+	}
 	for _, e := range all {
 		if pf.Match(e.Data, e.Meta) {
 			wantIDs = append(wantIDs, e.Meta.ID)
@@ -473,7 +476,10 @@ func TestSearchTxPIT_CommittedOnlyMatchesGetAllAsAt(t *testing.T) {
 		t.Fatalf("GetAllAsAt: %v", err)
 	}
 	var wantIDs []string
-	pf := spi.Prepare(spi.Filter{})
+	pf, err := spi.Prepare(spi.Filter{})
+	if err != nil {
+		t.Fatalf("spi.Prepare: %v", err)
+	}
 	for _, e := range all {
 		if pf.Match(e.Data, e.Meta) {
 			wantIDs = append(wantIDs, e.Meta.ID)

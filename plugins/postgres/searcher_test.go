@@ -77,6 +77,26 @@ func TestPGSearcher_Eq(t *testing.T) {
 	}
 }
 
+// TestPGSearcher_RejectsUnevaluableFilter pins the propagation of
+// spi.Prepare's error through Search: a leaf spi.Prepare genuinely cannot
+// evaluate (here, a LIKE pattern with a trailing backslash that will not
+// compile) must fail the search outright, not silently degrade to an empty
+// page. See .claude/rules/correctness-over-availability.md.
+func TestPGSearcher_RejectsUnevaluableFilter(t *testing.T) {
+	store, ctx := setupSearcher(t)
+	_, err := searcherOf(t, store).Search(ctx,
+		spi.Filter{
+			Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
+			Value: `a\`, Declared: []spi.DataType{spi.String},
+		}, baseOpts())
+	if err == nil {
+		t.Fatal("Search must fail on an unevaluable filter, not return an empty page")
+	}
+	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
+		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
+	}
+}
+
 func TestPGSearcher_GtNumeric(t *testing.T) {
 	store, ctx := setupSearcher(t)
 	got, err := searcherOf(t, store).Search(ctx,

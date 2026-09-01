@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -10,12 +11,16 @@ import (
 
 func TestPlanQuery_EqSourceData(t *testing.T) {
 	f := spi.Filter{
-		Op:     spi.FilterEq,
-		Path:   "city",
-		Source: spi.SourceData,
-		Value:  "Berlin",
+		Op:       spi.FilterEq,
+		Path:     "city",
+		Source:   spi.SourceData,
+		Value:    "Berlin",
+		Declared: []spi.DataType{spi.String},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	wantWhere := "(doc->>'city' IS NOT NULL AND doc->>'city' = $1)"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
@@ -34,12 +39,16 @@ func TestPlanQuery_NeSourceData(t *testing.T) {
 	// Ne is NON-pushable (SQL "!=" under-selects under float8/text collision).
 	// It becomes residual-only: no WHERE fragment, kernel-evaluated.
 	f := spi.Filter{
-		Op:     spi.FilterNe,
-		Path:   "status",
-		Source: spi.SourceData,
-		Value:  "CLOSED",
+		Op:       spi.FilterNe,
+		Path:     "status",
+		Source:   spi.SourceData,
+		Value:    "CLOSED",
+		Declared: []spi.DataType{spi.String},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	if plan.where != "" {
 		t.Errorf("where should be empty for non-pushable Ne, got %s", plan.where)
 	}
@@ -67,12 +76,16 @@ func TestPlanQuery_ComparisonOps_String(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := spi.Filter{
-				Op:     tt.op,
-				Path:   "name",
-				Source: spi.SourceData,
-				Value:  "M",
+				Op:       tt.op,
+				Path:     "name",
+				Source:   spi.SourceData,
+				Value:    "M",
+				Declared: []spi.DataType{spi.String},
 			}
-			plan := planQuery(f)
+			plan, err := planQuery(f)
+			if err != nil {
+				t.Fatalf("planQuery: %v", err)
+			}
 			want := "(doc->>'name' IS NOT NULL AND doc->>'name' " + tt.sqlOp + " $1)"
 			if plan.where != want {
 				t.Errorf("where:\n  got  %s\n  want %s", plan.where, want)
@@ -99,12 +112,16 @@ func TestPlanQuery_ComparisonOps_Numeric(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := spi.Filter{
-				Op:     tt.op,
-				Path:   "age",
-				Source: spi.SourceData,
-				Value:  float64(25),
+				Op:       tt.op,
+				Path:     "age",
+				Source:   spi.SourceData,
+				Value:    float64(25),
+				Declared: []spi.DataType{spi.Double},
 			}
-			plan := planQuery(f)
+			plan, err := planQuery(f)
+			if err != nil {
+				t.Fatalf("planQuery: %v", err)
+			}
 			want := "(cyoda_try_float8(doc->>'age') IS NOT NULL AND cyoda_try_float8(doc->>'age') " + tt.sqlOp + " $1::float8)"
 			if plan.where != want {
 				t.Errorf("where:\n  got  %s\n  want %s", plan.where, want)
@@ -127,7 +144,10 @@ func TestPlanQuery_Contains(t *testing.T) {
 		Source: spi.SourceData,
 		Value:  "Ali",
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	// strpos returns 0 when not found and >0 when found — matches sqlite's instr semantics.
 	wantWhere := "strpos(doc->>'name', $1) > 0"
 	if plan.where != wantWhere {
@@ -145,7 +165,10 @@ func TestPlanQuery_StartsWith(t *testing.T) {
 		Source: spi.SourceData,
 		Value:  "Al",
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	wantWhere := "substr(doc->>'name', 1, length($1)) = $2"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
@@ -167,7 +190,10 @@ func TestPlanQuery_EndsWith(t *testing.T) {
 		Source: spi.SourceData,
 		Value:  ".com",
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	wantWhere := "right(doc->>'email', char_length($1)) = $2"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
@@ -188,7 +214,10 @@ func TestPlanQuery_Like(t *testing.T) {
 		Source: spi.SourceData,
 		Value:  "foo%bar_baz\\qux",
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	if plan.where != "" {
 		t.Errorf("where should be empty for non-pushable Like, got %s", plan.where)
 	}
@@ -206,7 +235,10 @@ func TestPlanQuery_IsNull(t *testing.T) {
 		Path:   "address",
 		Source: spi.SourceData,
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	wantWhere := "doc->>'address' IS NULL"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
@@ -222,7 +254,10 @@ func TestPlanQuery_NotNull(t *testing.T) {
 		Path:   "phone",
 		Source: spi.SourceData,
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	wantWhere := "doc->>'phone' IS NOT NULL"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
@@ -234,12 +269,16 @@ func TestPlanQuery_NotNull(t *testing.T) {
 
 func TestPlanQuery_Between_String(t *testing.T) {
 	f := spi.Filter{
-		Op:     spi.FilterBetween,
-		Path:   "name",
-		Source: spi.SourceData,
-		Values: []any{"A", "Z"},
+		Op:       spi.FilterBetween,
+		Path:     "name",
+		Source:   spi.SourceData,
+		Values:   []any{"A", "Z"},
+		Declared: []spi.DataType{spi.String},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	wantWhere := "(doc->>'name' IS NOT NULL AND doc->>'name' BETWEEN $1 AND $2)"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
@@ -251,12 +290,16 @@ func TestPlanQuery_Between_String(t *testing.T) {
 
 func TestPlanQuery_Between_Numeric(t *testing.T) {
 	f := spi.Filter{
-		Op:     spi.FilterBetween,
-		Path:   "score",
-		Source: spi.SourceData,
-		Values: []any{float64(10), float64(20)},
+		Op:       spi.FilterBetween,
+		Path:     "score",
+		Source:   spi.SourceData,
+		Values:   []any{float64(10), float64(20)},
+		Declared: []spi.DataType{spi.Double},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	wantWhere := "(cyoda_try_float8(doc->>'score') IS NOT NULL AND cyoda_try_float8(doc->>'score') BETWEEN $1::float8 AND $2::float8)"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
@@ -269,12 +312,16 @@ func TestPlanQuery_Between_Numeric(t *testing.T) {
 func TestPlanQuery_SourceMeta_State(t *testing.T) {
 	// "state" lives inside doc->'_meta' (not a direct column on entities).
 	f := spi.Filter{
-		Op:     spi.FilterEq,
-		Path:   "state",
-		Source: spi.SourceMeta,
-		Value:  "ACTIVE",
+		Op:       spi.FilterEq,
+		Path:     "state",
+		Source:   spi.SourceMeta,
+		Value:    "ACTIVE",
+		Declared: []spi.DataType{spi.String},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	wantWhere := "(doc->'_meta'->>'state' IS NOT NULL AND doc->'_meta'->>'state' = $1)"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
@@ -287,12 +334,16 @@ func TestPlanQuery_SourceMeta_State(t *testing.T) {
 func TestPlanQuery_SourceMeta_DirectColumn(t *testing.T) {
 	// entity_id is a direct column on the entities table.
 	f := spi.Filter{
-		Op:     spi.FilterEq,
-		Path:   "entity_id",
-		Source: spi.SourceMeta,
-		Value:  "abc-123",
+		Op:       spi.FilterEq,
+		Path:     "entity_id",
+		Source:   spi.SourceMeta,
+		Value:    "abc-123",
+		Declared: []spi.DataType{spi.String},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	wantWhere := "(entity_id IS NOT NULL AND entity_id = $1)"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
@@ -302,12 +353,16 @@ func TestPlanQuery_SourceMeta_DirectColumn(t *testing.T) {
 func TestPlanQuery_NestedPath(t *testing.T) {
 	// Dotted paths map to chained -> followed by ->> on the leaf.
 	f := spi.Filter{
-		Op:     spi.FilterEq,
-		Path:   "parent.child",
-		Source: spi.SourceData,
-		Value:  "x",
+		Op:       spi.FilterEq,
+		Path:     "parent.child",
+		Source:   spi.SourceData,
+		Value:    "x",
+		Declared: []spi.DataType{spi.String},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	wantWhere := "(doc->'parent'->>'child' IS NOT NULL AND doc->'parent'->>'child' = $1)"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
@@ -316,12 +371,16 @@ func TestPlanQuery_NestedPath(t *testing.T) {
 
 func TestPlanQuery_NestedPath_TwoLevels(t *testing.T) {
 	f := spi.Filter{
-		Op:     spi.FilterEq,
-		Path:   "a.b.c",
-		Source: spi.SourceData,
-		Value:  "x",
+		Op:       spi.FilterEq,
+		Path:     "a.b.c",
+		Source:   spi.SourceData,
+		Value:    "x",
+		Declared: []spi.DataType{spi.String},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	wantWhere := "(doc->'a'->'b'->>'c' IS NOT NULL AND doc->'a'->'b'->>'c' = $1)"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
@@ -335,7 +394,10 @@ func TestPlanQuery_NonPushable_Regex(t *testing.T) {
 		Source: spi.SourceData,
 		Value:  "^[A-Z]+$",
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	if plan.where != "" {
 		t.Errorf("where should be empty for non-pushable, got %s", plan.where)
 	}
@@ -362,7 +424,10 @@ func TestPlanQuery_NonPushable_CaseInsensitive(t *testing.T) {
 	for _, op := range tests {
 		t.Run(string(op), func(t *testing.T) {
 			f := spi.Filter{Op: op, Path: "name", Source: spi.SourceData, Value: "alice"}
-			plan := planQuery(f)
+			plan, err := planQuery(f)
+			if err != nil {
+				t.Fatalf("planQuery: %v", err)
+			}
 			if plan.where != "" {
 				t.Errorf("where should be empty, got %s", plan.where)
 			}
@@ -377,12 +442,15 @@ func TestPlanQuery_GreedyAND_MixedPushable(t *testing.T) {
 	f := spi.Filter{
 		Op: spi.FilterAnd,
 		Children: []spi.Filter{
-			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin"},
+			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
 			{Op: spi.FilterMatchesRegex, Path: "code", Source: spi.SourceData, Value: "^X"},
-			{Op: spi.FilterEq, Path: "country", Source: spi.SourceData, Value: "DE"},
+			{Op: spi.FilterEq, Path: "country", Source: spi.SourceData, Value: "DE", Declared: []spi.DataType{spi.String}},
 		},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 
 	wantWhere := "((doc->>'city' IS NOT NULL AND doc->>'city' = $1)) AND " +
 		"((doc->>'country' IS NOT NULL AND doc->>'country' = $2))"
@@ -406,11 +474,14 @@ func TestPlanQuery_GreedyAND_AllPushable(t *testing.T) {
 	f := spi.Filter{
 		Op: spi.FilterAnd,
 		Children: []spi.Filter{
-			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin"},
-			{Op: spi.FilterEq, Path: "country", Source: spi.SourceData, Value: "DE"},
+			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
+			{Op: spi.FilterEq, Path: "country", Source: spi.SourceData, Value: "DE", Declared: []spi.DataType{spi.String}},
 		},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	// All children pushable but none EXACT → full-filter kernel re-check.
 	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterAnd {
 		t.Errorf("postFilter should be the full AND filter, got %+v", plan.postFilter)
@@ -431,7 +502,10 @@ func TestPlanQuery_GreedyAND_AllNonPushable(t *testing.T) {
 			{Op: spi.FilterIEq, Path: "b", Source: spi.SourceData, Value: "x"},
 		},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	if plan.where != "" {
 		t.Errorf("where should be empty, got %s", plan.where)
 	}
@@ -450,11 +524,14 @@ func TestPlanQuery_ConservativeOR_AllPushable(t *testing.T) {
 	f := spi.Filter{
 		Op: spi.FilterOr,
 		Children: []spi.Filter{
-			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin"},
-			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Munich"},
+			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
+			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Munich", Declared: []spi.DataType{spi.String}},
 		},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	// All OR children pushable but not EXACT → full-filter kernel re-check.
 	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterOr {
 		t.Errorf("postFilter should be the full OR filter, got %+v", plan.postFilter)
@@ -470,11 +547,14 @@ func TestPlanQuery_ConservativeOR_AnyNonPushable(t *testing.T) {
 	f := spi.Filter{
 		Op: spi.FilterOr,
 		Children: []spi.Filter{
-			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin"},
+			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
 			{Op: spi.FilterMatchesRegex, Path: "code", Source: spi.SourceData, Value: "^X"},
 		},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	if plan.where != "" {
 		t.Errorf("where should be empty, got %s", plan.where)
 	}
@@ -490,17 +570,20 @@ func TestPlanQuery_NestedANDWithOR(t *testing.T) {
 	f := spi.Filter{
 		Op: spi.FilterAnd,
 		Children: []spi.Filter{
-			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin"},
+			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
 			{
 				Op: spi.FilterOr,
 				Children: []spi.Filter{
-					{Op: spi.FilterEq, Path: "a", Source: spi.SourceData, Value: "x"},
-					{Op: spi.FilterEq, Path: "b", Source: spi.SourceData, Value: "y"},
+					{Op: spi.FilterEq, Path: "a", Source: spi.SourceData, Value: "x", Declared: []spi.DataType{spi.String}},
+					{Op: spi.FilterEq, Path: "b", Source: spi.SourceData, Value: "y", Declared: []spi.DataType{spi.String}},
 				},
 			},
 		},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	// Fully pushable but no leaf is EXACT → full-filter kernel re-check.
 	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterAnd {
 		t.Errorf("postFilter should be the full AND filter, got %+v", plan.postFilter)
@@ -514,17 +597,20 @@ func TestPlanQuery_NestedANDWithPartialOR(t *testing.T) {
 	f := spi.Filter{
 		Op: spi.FilterAnd,
 		Children: []spi.Filter{
-			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin"},
+			{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
 			{
 				Op: spi.FilterOr,
 				Children: []spi.Filter{
-					{Op: spi.FilterEq, Path: "a", Source: spi.SourceData, Value: "x"},
+					{Op: spi.FilterEq, Path: "a", Source: spi.SourceData, Value: "x", Declared: []spi.DataType{spi.String}},
 					{Op: spi.FilterMatchesRegex, Path: "b", Source: spi.SourceData, Value: "^y"},
 				},
 			},
 		},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	wantWhere := "(doc->>'city' IS NOT NULL AND doc->>'city' = $1)"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
@@ -540,7 +626,10 @@ func TestPlanQuery_NestedANDWithPartialOR(t *testing.T) {
 
 func TestPlanQuery_EmptyFilter(t *testing.T) {
 	f := spi.Filter{}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	if plan.where != "" {
 		t.Errorf("where should be empty for empty filter, got %s", plan.where)
 	}
@@ -553,10 +642,13 @@ func TestPlanQuery_SingleChildAND(t *testing.T) {
 	f := spi.Filter{
 		Op: spi.FilterAnd,
 		Children: []spi.Filter{
-			{Op: spi.FilterEq, Path: "name", Source: spi.SourceData, Value: "Alice"},
+			{Op: spi.FilterEq, Path: "name", Source: spi.SourceData, Value: "Alice", Declared: []spi.DataType{spi.String}},
 		},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	wantWhere := "(doc->>'name' IS NOT NULL AND doc->>'name' = $1)"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
@@ -567,12 +659,14 @@ func TestPlanQuery_SingleChildAND(t *testing.T) {
 	}
 }
 
-// C1/M4 — a malformed (non-2-element) BETWEEN value must fail closed
-// (exclude every row), matching memory's spi.Prepare/PreparedFilter.Match
-// behavior, not match-all ("1=1"). Validation now rejects this upstream (see
-// internal/domain/search/operators.go validateBetweenArity), so this guard
-// is defense-in-depth for any Filter constructed directly (bypassing the
-// domain validator), never a panic and never a false match-all.
+// C1/M4 — a malformed (non-2-element) BETWEEN value now fails planQuery
+// outright: spi.Prepare rejects a malformed range arity with
+// ErrUnevaluableLeaf, and planQuery propagates it rather than computing a
+// fail-closed exclude predicate. Validation also rejects this upstream (see
+// internal/domain/search/operators.go validateBetweenArity), so this is
+// defense-in-depth for any Filter constructed directly (bypassing the
+// domain validator) — the request is rejected, never silently answered as
+// an empty page, and never a panic.
 func TestPlanQuery_BetweenInsufficientValues(t *testing.T) {
 	f := spi.Filter{
 		Op:     spi.FilterBetween,
@@ -580,28 +674,32 @@ func TestPlanQuery_BetweenInsufficientValues(t *testing.T) {
 		Source: spi.SourceData,
 		Values: []any{float64(10)},
 	}
-	plan := planQuery(f)
-	if plan.where != "false" {
-		t.Errorf("where = %s, want false (exclude, matching memory's fail-closed semantics)", plan.where)
+	_, err := planQuery(f)
+	if err == nil {
+		t.Fatal("planQuery must fail on a malformed BETWEEN arity, not silently plan an exclude predicate")
+	}
+	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
+		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
 	}
 }
 
 // TestPlan_TemporalBetween_NilValues_DoesNotPanic is the C1 regression test:
 // a CoerceTemporal BETWEEN leaf with Values=nil (the shape produced by
 // betweenValues for a malformed BETWEEN operand, before the fix landed) must
-// not panic indexing f.Values[0]/[1], and must emit an exclude predicate —
-// never the sqlite/memory-diverging match-all.
+// not panic indexing f.Values[0]/[1] — it now fails planQuery outright via
+// spi.Prepare's ErrUnevaluableLeaf (malformed range arity), never the
+// sqlite/memory-diverging match-all and never a panic.
 func TestPlan_TemporalBetween_NilValues_DoesNotPanic(t *testing.T) {
 	f := spi.Filter{
 		Op: spi.FilterBetween, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal,
 		Values: nil,
 	}
-	plan := planQuery(f)
-	if plan.where != "false" {
-		t.Errorf("where = %s, want false (exclude) for a malformed temporal BETWEEN with no values", plan.where)
+	_, err := planQuery(f)
+	if err == nil {
+		t.Fatal("planQuery must fail on a malformed temporal BETWEEN with no values")
 	}
-	if len(plan.args) != 0 {
-		t.Errorf("args = %v, want none", plan.args)
+	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
+		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
 	}
 }
 
@@ -612,9 +710,12 @@ func TestPlan_TemporalBetween_OneValue_DoesNotPanic(t *testing.T) {
 		Op: spi.FilterBetween, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal,
 		Values: []any{"2021-01-01T00:00:00Z"},
 	}
-	plan := planQuery(f)
-	if plan.where != "false" {
-		t.Errorf("where = %s, want false (exclude) for a malformed temporal BETWEEN with one value", plan.where)
+	_, err := planQuery(f)
+	if err == nil {
+		t.Fatal("planQuery must fail on a malformed temporal BETWEEN with one value")
+	}
+	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
+		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
 	}
 }
 
@@ -645,12 +746,15 @@ func TestPlanQuery_PlaceholderNumbering(t *testing.T) {
 	f := spi.Filter{
 		Op: spi.FilterAnd,
 		Children: []spi.Filter{
-			{Op: spi.FilterEq, Path: "a", Source: spi.SourceData, Value: "1"},
-			{Op: spi.FilterEq, Path: "b", Source: spi.SourceData, Value: "2"},
-			{Op: spi.FilterEq, Path: "c", Source: spi.SourceData, Value: "3"},
+			{Op: spi.FilterEq, Path: "a", Source: spi.SourceData, Value: "1", Declared: []spi.DataType{spi.String}},
+			{Op: spi.FilterEq, Path: "b", Source: spi.SourceData, Value: "2", Declared: []spi.DataType{spi.String}},
+			{Op: spi.FilterEq, Path: "c", Source: spi.SourceData, Value: "3", Declared: []spi.DataType{spi.String}},
 		},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	// Must contain $1, $2, $3 in order, and only those.
 	if !strings.Contains(plan.where, "$1") || !strings.Contains(plan.where, "$2") || !strings.Contains(plan.where, "$3") {
 		t.Errorf("expected $1/$2/$3 in where: %s", plan.where)
@@ -670,10 +774,13 @@ func TestPlanQuery_StartsWith_PlaceholderReuse(t *testing.T) {
 		Op: spi.FilterAnd,
 		Children: []spi.Filter{
 			{Op: spi.FilterStartsWith, Path: "a", Source: spi.SourceData, Value: "x"},
-			{Op: spi.FilterEq, Path: "b", Source: spi.SourceData, Value: "y"},
+			{Op: spi.FilterEq, Path: "b", Source: spi.SourceData, Value: "y", Declared: []spi.DataType{spi.String}},
 		},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	wantWhere := "(substr(doc->>'a', 1, length($1)) = $2) AND ((doc->>'b' IS NOT NULL AND doc->>'b' = $3))"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
@@ -690,20 +797,23 @@ func TestPlanQuery_DeeplyNested(t *testing.T) {
 			{
 				Op: spi.FilterOr,
 				Children: []spi.Filter{
-					{Op: spi.FilterEq, Path: "a", Source: spi.SourceData, Value: "x"},
-					{Op: spi.FilterEq, Path: "b", Source: spi.SourceData, Value: "y"},
+					{Op: spi.FilterEq, Path: "a", Source: spi.SourceData, Value: "x", Declared: []spi.DataType{spi.String}},
+					{Op: spi.FilterEq, Path: "b", Source: spi.SourceData, Value: "y", Declared: []spi.DataType{spi.String}},
 				},
 			},
 			{
 				Op: spi.FilterAnd,
 				Children: []spi.Filter{
-					{Op: spi.FilterGt, Path: "c", Source: spi.SourceData, Value: float64(1)},
-					{Op: spi.FilterLt, Path: "d", Source: spi.SourceData, Value: float64(100)},
+					{Op: spi.FilterGt, Path: "c", Source: spi.SourceData, Value: float64(1), Declared: []spi.DataType{spi.Double}},
+					{Op: spi.FilterLt, Path: "d", Source: spi.SourceData, Value: float64(100), Declared: []spi.DataType{spi.Double}},
 				},
 			},
 		},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	// Fully pushable tree, but none of its leaves is EXACT → full re-check.
 	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterAnd {
 		t.Errorf("postFilter should be the full AND filter, got %+v", plan.postFilter)
@@ -719,7 +829,10 @@ func TestPlanQuery_SourceMeta_StateIsNull(t *testing.T) {
 		Path:   "state",
 		Source: spi.SourceMeta,
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	wantWhere := "doc->'_meta'->>'state' IS NULL"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
@@ -793,8 +906,11 @@ func TestFieldExpr_MetaCanonicalMapping(t *testing.T) {
 // routes through cyoda_epoch_millis on the canonically-mapped JSONB key, and
 // binds a Go-precomputed int64 epoch-ms operand (not the raw RFC3339 string).
 func TestPlan_TemporalMetaEmitsEpochMillis(t *testing.T) {
-	f := spi.Filter{Op: spi.FilterGt, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal, Value: "2021-01-01T00:00:00Z"}
-	plan := planQuery(f)
+	f := spi.Filter{Op: spi.FilterGt, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal, Value: "2021-01-01T00:00:00Z", Declared: []spi.DataType{spi.ZonedDateTime}}
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	if !strings.Contains(plan.where, "cyoda_epoch_millis(doc->'_meta'->>'creation_date')") {
 		t.Errorf("where = %q", plan.where)
 	}
@@ -816,8 +932,11 @@ func TestPlan_TemporalMetaEmitsEpochMillis(t *testing.T) {
 // preserved for temporal leaves, mirroring the non-temporal NE shape.
 func TestPlan_TemporalMetaNE(t *testing.T) {
 	// Ne is non-pushable (isPushable is coercion-blind) → residual-only.
-	f := spi.Filter{Op: spi.FilterNe, Source: spi.SourceMeta, Path: "lastUpdateTime", Coercion: spi.CoerceTemporal, Value: "2021-01-01T00:00:00Z"}
-	plan := planQuery(f)
+	f := spi.Filter{Op: spi.FilterNe, Source: spi.SourceMeta, Path: "lastUpdateTime", Coercion: spi.CoerceTemporal, Value: "2021-01-01T00:00:00Z", Declared: []spi.DataType{spi.ZonedDateTime}}
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	if plan.where != "" {
 		t.Errorf("temporal Ne must not be pushed, got where %q", plan.where)
 	}
@@ -834,9 +953,12 @@ func TestPlan_TemporalMetaNE(t *testing.T) {
 func TestPlan_TemporalMetaBetween(t *testing.T) {
 	f := spi.Filter{
 		Op: spi.FilterBetween, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal,
-		Values: []any{"2021-01-01T00:00:00Z", "2021-06-01T14:00:00+02:00"},
+		Values: []any{"2021-01-01T00:00:00Z", "2021-06-01T14:00:00+02:00"}, Declared: []spi.DataType{spi.ZonedDateTime},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	wantWhere := "(cyoda_epoch_millis(doc->'_meta'->>'creation_date') IS NOT NULL AND cyoda_epoch_millis(doc->'_meta'->>'creation_date') BETWEEN $1 AND $2)"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
@@ -858,8 +980,11 @@ func TestPlan_TemporalMetaBetween(t *testing.T) {
 // divergence from the op-level isPushable set (identical results, not
 // identical WHERE clauses).
 func TestPlan_TemporalData(t *testing.T) {
-	f := spi.Filter{Op: spi.FilterLte, Source: spi.SourceData, Path: "occurredAt", Coercion: spi.CoerceTemporal, Value: "2021-01-01T00:00:00Z"}
-	plan := planQuery(f)
+	f := spi.Filter{Op: spi.FilterLte, Source: spi.SourceData, Path: "occurredAt", Coercion: spi.CoerceTemporal, Value: "2021-01-01T00:00:00Z", Declared: []spi.DataType{spi.ZonedDateTime}}
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	if plan.where != "" {
 		t.Errorf("data temporal comparison must not be pushed; got where=%q", plan.where)
 	}
@@ -881,7 +1006,10 @@ func TestPlan_TemporalData(t *testing.T) {
 // ordering.
 func TestPlan_TemporalIsNull(t *testing.T) {
 	f := spi.Filter{Op: spi.FilterIsNull, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	wantWhere := "doc->'_meta'->>'creation_date' IS NULL"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
@@ -905,7 +1033,10 @@ func TestPlan_TemporalIsNull(t *testing.T) {
 
 func TestPlan_TemporalNotNull(t *testing.T) {
 	f := spi.Filter{Op: spi.FilterNotNull, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	wantWhere := "doc->'_meta'->>'creation_date' IS NOT NULL"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
@@ -944,12 +1075,16 @@ func TestIsNumericValue_JSONNumber(t *testing.T) {
 
 func TestPlanQuery_Eq_JSONNumberOperand(t *testing.T) {
 	f := spi.Filter{
-		Op:     spi.FilterEq,
-		Path:   "age",
-		Source: spi.SourceData,
-		Value:  json.Number("25"),
+		Op:       spi.FilterEq,
+		Path:     "age",
+		Source:   spi.SourceData,
+		Value:    json.Number("25"),
+		Declared: []spi.DataType{spi.Double},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	wantWhere := "(cyoda_try_float8(doc->>'age') IS NOT NULL AND cyoda_try_float8(doc->>'age') = $1::float8)"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
@@ -965,12 +1100,16 @@ func TestPlanQuery_Eq_JSONNumberOperand(t *testing.T) {
 func TestPlanQuery_Ne_JSONNumberOperand(t *testing.T) {
 	// Ne is non-pushable regardless of operand kind — never translated to SQL.
 	f := spi.Filter{
-		Op:     spi.FilterNe,
-		Path:   "age",
-		Source: spi.SourceData,
-		Value:  json.Number("25"),
+		Op:       spi.FilterNe,
+		Path:     "age",
+		Source:   spi.SourceData,
+		Value:    json.Number("25"),
+		Declared: []spi.DataType{spi.Double},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	if plan.where != "" || len(plan.args) != 0 {
 		t.Errorf("Ne must not be pushed: where=%q args=%v", plan.where, plan.args)
 	}
@@ -981,12 +1120,16 @@ func TestPlanQuery_Ne_JSONNumberOperand(t *testing.T) {
 
 func TestPlanQuery_Gt_JSONNumberOperand(t *testing.T) {
 	f := spi.Filter{
-		Op:     spi.FilterGt,
-		Path:   "age",
-		Source: spi.SourceData,
-		Value:  json.Number("25"),
+		Op:       spi.FilterGt,
+		Path:     "age",
+		Source:   spi.SourceData,
+		Value:    json.Number("25"),
+		Declared: []spi.DataType{spi.Double},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	// SOUND SUPERSET: Gt relaxed to >=.
 	wantWhere := "(cyoda_try_float8(doc->>'age') IS NOT NULL AND cyoda_try_float8(doc->>'age') >= $1::float8)"
 	if plan.where != wantWhere {
@@ -999,12 +1142,16 @@ func TestPlanQuery_Gt_JSONNumberOperand(t *testing.T) {
 
 func TestPlanQuery_Between_JSONNumberOperand(t *testing.T) {
 	f := spi.Filter{
-		Op:     spi.FilterBetween,
-		Path:   "score",
-		Source: spi.SourceData,
-		Values: []any{json.Number("10"), json.Number("20")},
+		Op:       spi.FilterBetween,
+		Path:     "score",
+		Source:   spi.SourceData,
+		Values:   []any{json.Number("10"), json.Number("20")},
+		Declared: []spi.DataType{spi.Double},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	wantWhere := "(cyoda_try_float8(doc->>'score') IS NOT NULL AND cyoda_try_float8(doc->>'score') BETWEEN $1::float8 AND $2::float8)"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
@@ -1037,7 +1184,10 @@ func TestSoundness_ExactFastPath(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			plan := planQuery(tc.f)
+			plan, err := planQuery(tc.f)
+			if err != nil {
+				t.Fatalf("planQuery: %v", err)
+			}
 			if plan.postFilter != nil {
 				t.Errorf("postFilter should be nil (fast path) for an all-EXACT plan, got %+v", plan.postFilter)
 			}
@@ -1054,9 +1204,12 @@ func TestSoundness_ExactFastPath(t *testing.T) {
 func TestSoundness_MixedPresenceAndValue(t *testing.T) {
 	f := spi.Filter{Op: spi.FilterAnd, Children: []spi.Filter{
 		{Op: spi.FilterNotNull, Path: "a", Source: spi.SourceData},
-		{Op: spi.FilterEq, Path: "b", Source: spi.SourceData, Value: "x"},
+		{Op: spi.FilterEq, Path: "b", Source: spi.SourceData, Value: "x", Declared: []spi.DataType{spi.String}},
 	}}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterAnd {
 		t.Fatalf("a non-EXACT leaf must force a full-filter re-check, got %+v", plan.postFilter)
 	}
@@ -1071,8 +1224,11 @@ func TestSoundness_BetweenInclusivePushable(t *testing.T) {
 	if !isPushable(spi.FilterBetweenInclusive) {
 		t.Fatal("FilterBetweenInclusive must be pushable")
 	}
-	f := spi.Filter{Op: spi.FilterBetweenInclusive, Path: "score", Source: spi.SourceData, Values: []any{float64(10), float64(20)}}
-	plan := planQuery(f)
+	f := spi.Filter{Op: spi.FilterBetweenInclusive, Path: "score", Source: spi.SourceData, Values: []any{float64(10), float64(20)}, Declared: []spi.DataType{spi.Double}}
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	wantWhere := "(cyoda_try_float8(doc->>'score') IS NOT NULL AND cyoda_try_float8(doc->>'score') BETWEEN $1::float8 AND $2::float8)"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
@@ -1085,8 +1241,11 @@ func TestSoundness_BetweenInclusivePushable(t *testing.T) {
 // TestSoundness_ExclusiveBetweenIsInclusiveSuperset asserts the exclusive kernel
 // FilterBetween pushes an inclusive SQL BETWEEN (a sound superset) and re-checks.
 func TestSoundness_ExclusiveBetweenIsInclusiveSuperset(t *testing.T) {
-	f := spi.Filter{Op: spi.FilterBetween, Path: "score", Source: spi.SourceData, Values: []any{float64(10), float64(20)}}
-	plan := planQuery(f)
+	f := spi.Filter{Op: spi.FilterBetween, Path: "score", Source: spi.SourceData, Values: []any{float64(10), float64(20)}, Declared: []spi.DataType{spi.Double}}
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	wantWhere := "(cyoda_try_float8(doc->>'score') IS NOT NULL AND cyoda_try_float8(doc->>'score') BETWEEN $1::float8 AND $2::float8)"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s (inclusive SQL BETWEEN is a superset of the exclusive kernel)", plan.where, wantWhere)
@@ -1101,8 +1260,11 @@ func TestSoundness_NeNonPushable(t *testing.T) {
 	if isPushable(spi.FilterNe) {
 		t.Fatal("FilterNe must NOT be pushable")
 	}
-	f := spi.Filter{Op: spi.FilterNe, Path: "creationDate", Source: spi.SourceMeta, Coercion: spi.CoerceTemporal, Value: "2021-01-01T00:00:00Z"}
-	plan := planQuery(f)
+	f := spi.Filter{Op: spi.FilterNe, Path: "creationDate", Source: spi.SourceMeta, Coercion: spi.CoerceTemporal, Value: "2021-01-01T00:00:00Z", Declared: []spi.DataType{spi.ZonedDateTime}}
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	if plan.where != "" {
 		t.Errorf("temporal Ne must not be pushed, got where %q", plan.where)
 	}
@@ -1160,10 +1322,13 @@ func TestJsonbExtract_WildcardIsRejectedNotDropped(t *testing.T) {
 // matching row, and a narrowing WHERE cannot be recovered by the residual
 // re-check, so the wildcard leaf must be installed as a residual instead.
 func TestPlanQuery_WildcardIsResidual(t *testing.T) {
-	plan := planQuery(spi.Filter{
+	plan, err := planQuery(spi.Filter{
 		Op: spi.FilterEq, Path: "tags[*]", Source: spi.SourceData,
 		Value: "A", Declared: []spi.DataType{spi.String},
 	})
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	if plan.where != "" {
 		t.Errorf("wildcard leaf must not narrow; got WHERE %q", plan.where)
 	}
@@ -1194,10 +1359,13 @@ func TestPathHasWildcard_ParseFailureIsTreatedAsWildcard(t *testing.T) {
 // TestPlanQuery_PositionalIsPushed: a positional subscript is a sound,
 // pushable leaf and renders postgres's integer-accessor spelling.
 func TestPlanQuery_PositionalIsPushed(t *testing.T) {
-	plan := planQuery(spi.Filter{
+	plan, err := planQuery(spi.Filter{
 		Op: spi.FilterEq, Path: "tags[0]", Source: spi.SourceData,
 		Value: "A", Declared: []spi.DataType{spi.String},
 	})
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	if !strings.Contains(plan.where, "doc->'tags'->>0") {
 		t.Errorf("positional leaf must push its dialect index; got WHERE %q", plan.where)
 	}
