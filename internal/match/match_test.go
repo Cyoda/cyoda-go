@@ -65,6 +65,11 @@ func sampleTypes(path string) []spi.DataType {
 		"$.laureates[*].name":       {spi.String},
 		"$.laureates[*].motivation": {spi.String},
 		"$.scores[*]":               {spi.UnboundDecimal},
+		// Declared but absent from sampleData — TestMatchMissingFieldReturnsFalse
+		// needs a leaf that expands cleanly so the resulting non-match is
+		// genuinely row-dependent (the field is absent from THIS row's data),
+		// not a Prepare-time expansion failure (no declared type at all).
+		"$.nonexistent": {spi.String},
 	}
 	return m[path]
 }
@@ -764,7 +769,8 @@ func TestMatchLifecycle_TemporalBetweenUnsetExcluded(t *testing.T) {
 }
 
 // TestMatchLifecycle_TemporalBetweenMalformedOperand: a malformed bound set
-// degrades safely to no-match rather than panicking.
+// cannot be evaluated and fails Prepare (leafNode's expansion-failure
+// branch) rather than degrading to a silent no-match or panicking.
 func TestMatchLifecycle_TemporalBetweenMalformedOperand(t *testing.T) {
 	m := spi.EntityMeta{CreationDate: time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC)}
 
@@ -773,8 +779,8 @@ func TestMatchLifecycle_TemporalBetweenMalformedOperand(t *testing.T) {
 		OperatorType: "BETWEEN",
 		Value:        []any{"2026-01-01T00:00:00Z"}, // wrong shape: only one bound
 	}
-	if got, err := matchLifecycleForTest(oneElement, m); err != nil || got {
-		t.Errorf("expected no-match for malformed (1-element) BETWEEN operand; got=%v err=%v", got, err)
+	if _, err := matchLifecycleForTest(oneElement, m); err == nil {
+		t.Error("expected Prepare error for malformed (1-element) BETWEEN operand, got nil")
 	}
 
 	nonRFC3339Bound := &predicate.LifecycleCondition{
@@ -782,8 +788,8 @@ func TestMatchLifecycle_TemporalBetweenMalformedOperand(t *testing.T) {
 		OperatorType: "BETWEEN",
 		Value:        []any{"not-a-timestamp", "2026-01-31T00:00:00Z"}, // lo bound not offset-RFC3339
 	}
-	if got, err := matchLifecycleForTest(nonRFC3339Bound, m); err != nil || got {
-		t.Errorf("expected no-match for malformed (non-RFC3339 bound) BETWEEN operand; got=%v err=%v", got, err)
+	if _, err := matchLifecycleForTest(nonRFC3339Bound, m); err == nil {
+		t.Error("expected Prepare error for malformed (non-RFC3339 bound) BETWEEN operand, got nil")
 	}
 }
 

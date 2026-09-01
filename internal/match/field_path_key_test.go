@@ -64,19 +64,18 @@ func TestMatchSimple_ResolvesDeclaredTypesForPrefixlessPath(t *testing.T) {
 	}
 }
 
-// A genuinely unknown path must still resolve to no declared types, so a
-// comparison leaf keeps degrading to non-match rather than erroring.
-func TestMatchSimple_UnknownPathStillDegradesToNonMatch(t *testing.T) {
+// A genuinely unknown path still resolves to no declared types, and a
+// comparison leaf with no declared type cannot be evaluated — it fails
+// Prepare (leafNode's expansion-failure branch) rather than silently
+// degrading to a non-match.
+func TestMatchSimple_UnknownPathFailsPrepare(t *testing.T) {
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.nosuch",
 		OperatorType: "GREATER_THAN",
 		Value:        10,
 	}
-	prepared, err := Prepare(cond, prefixedTypes(t))
-	if err != nil {
-		t.Fatalf("Prepare: %v", err)
-	}
-	if prepared.Match([]byte(`{"amount":42}`), spi.EntityMeta{}) {
-		t.Error("an unknown path matched")
+	_, err := Prepare(cond, prefixedTypes(t))
+	if err == nil {
+		t.Fatal("Prepare() = nil error, want an error: an unknown path resolves to no declared type")
 	}
 }

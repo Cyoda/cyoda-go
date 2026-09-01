@@ -284,25 +284,53 @@ func hasKnownTemporalMetaDivergence(cond predicate.Condition) bool {
 // (spi.ConditionToFilter + spi.Prepare) on every well-formed condition the
 // generator produces.
 //
-// The generator emits only conditions match.Prepare cannot error on —
-// structural faults are covered by the hand-written cases in
+// The generator emits only SYNTACTICALLY well-formed conditions (known
+// operator names, known meta fields, AND/OR trees) — structural faults from a
+// malformed condition SHAPE are covered by the hand-written cases in
 // prepared_test.go (TestPrepare_StructuralErrors,
-// TestPrepare_UnknownConditionType) — so a Prepare error here is a generator
-// bug or a real defect, never a case to skip. Two kinds of case ARE skipped,
-// both for a documented "no kernel answer to compare against" reason, never
-// to dodge a genuine resolver disagreement:
+// TestPrepare_UnknownConditionType). But since Task 4 (this file's own
+// deliverable), match.Prepare also fails a leaf it cannot EVALUATE — an
+// operand that parses into no declared type, chiefly, since the generator's
+// genFieldTypeSets includes a nil type set and genValues deliberately mixes
+// types across every operator — and the corpus routinely produces exactly
+// that leaf shape. A bare Prepare error is therefore no longer a generator
+// bug by itself; what would be a bug is the two evaluators disagreeing about
+// WHICH leaves are evaluable, so this test compares evaluability itself, not
+// only the match answer where both happen to succeed:
+//
+//   - Both Prepare calls fail: same disposition, counted and skipped (no
+//     match answer exists on either side to compare).
+//   - Exactly one fails: a genuine divergence, and the test fails.
+//   - Both succeed: the two Match answers must agree exactly, as before.
+//
+// Two further kinds of case are skipped, both for a documented "no kernel
+// answer to compare against" reason, never to dodge a genuine resolver
+// disagreement:
 //
 //   - A spi.ConditionToFilter TRANSLATE error: expected for the leader-less
-//     "name" path (see genJSONPaths).
+//     "name" path (see genJSONPaths) — a wire-grammar strictness difference,
+//     not an evaluability disagreement, so it is decided before either
+//     side's Prepare is even compared.
 //   - hasKnownTemporalMetaDivergence: the deliberate, permanent divergence
 //     for an unvalidated direct caller (see that function). The validation
 //     boundary makes it unreachable in production; this corpus deliberately
-//     bypasses that boundary and so cannot be a comparison against it.
+//     bypasses that boundary and so cannot be a comparison against it. Like
+//     the translate check, this is decided before either side's Prepare
+//     result is inspected, because prepareLifecycle's guard answers
+//     never-match with a NIL error — it is not one of the new evaluability
+//     failures the disposition check above targets.
+//
+// A gate that skips everything passes vacuously, so — mirroring the SPI
+// kernel's own rate floor added for the identical hazard
+// (TestPrepare_EquivalentToFrozenMatchFilter) — this test fails if the
+// both-sides-Match comparison covers half the corpus or less.
 func TestPrepare_EquivalentToKernel(t *testing.T) {
 	cases := equivCases()
 	r := rand.New(rand.NewSource(equivSeed()))
 	skippedTranslate := 0
 	skippedTemporal := 0
+	skippedUnevaluable := 0
+	compared := 0
 
 	for i := 0; i < cases; i++ {
 		cond := genValidCondition(r, 3)
@@ -310,13 +338,6 @@ func TestPrepare_EquivalentToKernel(t *testing.T) {
 		meta := equivMetas[r.Intn(len(equivMetas))]
 		types := genFieldTypeSets[r.Intn(len(genFieldTypeSets))]
 		fieldTypes := func(string) []spi.DataType { return types }
-
-		prepared, prepErr := Prepare(cond, fieldTypes)
-		if prepErr != nil {
-			t.Fatalf("case %d: Prepare errored on a well-formed condition: %v\n  cond=%#v",
-				i, prepErr, cond)
-		}
-		gotMatch := prepared.Match(data, meta)
 
 		if hasKnownTemporalMetaDivergence(cond) {
 			skippedTemporal++
@@ -328,14 +349,36 @@ func TestPrepare_EquivalentToKernel(t *testing.T) {
 			skippedTranslate++
 			continue
 		}
-		gotKernel := spi.Prepare(filter).Match(data, meta)
+
+		prepared, prepErr := Prepare(cond, fieldTypes)
+		kernelPrepared, kernelErr := spi.Prepare(filter)
+
+		switch {
+		case prepErr != nil && kernelErr != nil:
+			// Both evaluators agree the leaf cannot be evaluated. No Match
+			// answer exists on either side to compare.
+			skippedUnevaluable++
+			continue
+		case prepErr != nil || kernelErr != nil:
+			t.Fatalf("DIVERGENCE at case %d: evaluability disagreement\n  matchErr=%v kernelErr=%v\n  cond=%#v\n  types=%v",
+				i, prepErr, kernelErr, cond, types)
+		}
+
+		gotMatch := prepared.Match(data, meta)
+		gotKernel := kernelPrepared.Match(data, meta)
 
 		if gotMatch != gotKernel {
 			t.Fatalf("DIVERGENCE at case %d\n  match=%v kernel=%v\n  cond=%#v\n  data=%s\n  meta=%+v\n  types=%v",
 				i, gotMatch, gotKernel, cond, data, meta, types)
 		}
+		compared++
 	}
 
-	t.Logf("TestPrepare_EquivalentToKernel: %d cases, %d skipped (untranslatable leader-less path), %d skipped (known temporal-meta divergence)",
-		cases, skippedTranslate, skippedTemporal)
+	t.Logf("TestPrepare_EquivalentToKernel: %d cases, %d compared, %d skipped (untranslatable leader-less path), %d skipped (known temporal-meta divergence), %d skipped (both sides agree unevaluable)",
+		cases, compared, skippedTranslate, skippedTemporal, skippedUnevaluable)
+
+	if floor := cases / 2; compared <= floor {
+		t.Fatalf("compared %d of %d cases (%.1f%%), want more than %d (50%%): skips are swallowing too much of the corpus for this gate to mean anything",
+			compared, cases, 100*float64(compared)/float64(cases), floor)
+	}
 }

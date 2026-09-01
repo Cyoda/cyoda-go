@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 
@@ -81,10 +83,17 @@ func TestPrepare_StructuralErrors(t *testing.T) {
 	}
 }
 
-// TestPrepare_NeverMatchIsNotAnError pins the four cases that sit in FRONT of
-// the error path: they are deliberate never-match behaviour and turning any
-// of them into a Prepare error would reject conditions that evaluate cleanly
-// today.
+// TestPrepare_NeverMatchIsNotAnError pins the two cases that sit in FRONT of
+// the error path: they are deliberate never-match behaviour (the
+// prepareLifecycle temporal-meta guard) and turning either into a Prepare
+// error would silently reactivate a dormant workflow-criterion transition on
+// a binary upgrade alone (see the guard's own doc in prepared.go).
+//
+// The other two cases this table used to carry — a comparison leaf on an
+// untyped path, and an operand that parses into no declared type — moved to
+// TestPrepare_UnevaluableLeafIsAnError: both are leafNode's expansion-failure
+// branch, which now fails Prepare instead of building a silent never-match
+// leaf.
 func TestPrepare_NeverMatchIsNotAnError(t *testing.T) {
 	meta := spi.EntityMeta{
 		State:        "active",
@@ -110,18 +119,6 @@ func TestPrepare_NeverMatchIsNotAnError(t *testing.T) {
 			&predicate.LifecycleCondition{Field: "creationDate", OperatorType: "CONTAINS", Value: "2026"},
 			nil,
 			[]byte(`{}`),
-		},
-		{
-			"comparison leaf on an untyped path",
-			&predicate.SimpleCondition{JsonPath: "$.unknown", OperatorType: "GREATER_THAN", Value: 5},
-			func(string) []spi.DataType { return nil },
-			[]byte(`{"unknown":10}`),
-		},
-		{
-			"operand parses into no declared type",
-			&predicate.SimpleCondition{JsonPath: "$.qty", OperatorType: "GREATER_THAN", Value: "not-a-number"},
-			typed(spi.Integer),
-			[]byte(`{"qty":10}`),
 		},
 	}
 
@@ -253,10 +250,10 @@ func TestPrepare_UnknownConditionType(t *testing.T) {
 	}
 }
 
-// TestPrepare_MalformedPathNeverMatches pins prepareSimple's
-// spi.ParseFilterPath failure branch: a jsonPath outside the filter-path
-// grammar becomes a never-match leaf, not a Prepare error — the same
-// "never matches" answer an expansion failure already produces.
+// TestPrepare_MalformedPathIsAnError pins prepareSimple's spi.ParseFilterPath
+// failure branch: a jsonPath outside the filter-path grammar fails Prepare —
+// the same fault class an expansion failure already is (see
+// TestPrepare_UnevaluableLeafIsAnError), not a silent never-match leaf.
 //
 // This is defense in depth, not a reachable production path: both boundaries
 // a condition passes through before reaching match.Prepare —
@@ -265,62 +262,89 @@ func TestPrepare_UnknownConditionType(t *testing.T) {
 // jsonPath before it gets here. The branch is pinned anyway because it is
 // live code with its own failure mode, not because a malformed path is
 // expected to arrive.
-func TestPrepare_MalformedPathNeverMatches(t *testing.T) {
+func TestPrepare_MalformedPathIsAnError(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.arr[", OperatorType: "NOT_NULL"}
-	p, err := match.Prepare(cond, typed(spi.String))
-	if err != nil {
-		t.Fatalf("Prepare() error = %v, want nil (never-match, not an error)", err)
-	}
-	if p.Match([]byte(`{"arr":[1,2,3]}`), spi.EntityMeta{}) {
-		t.Error("Match() = true, want false: a malformed path must never match")
-	}
+	_, err := match.Prepare(cond, typed(spi.String))
+	require.Error(t, err)
 }
 
-// TestPrepare_EmptyLeafPathNeverMatches mirrors the SPI kernel's own guard
+// TestPrepare_EmptyLeafPathIsAnError mirrors the SPI kernel's own guard
 // (prepareNode in prepared_filter.go): a SourceData LEAF with an empty path
-// addresses no field and must never resolve to anything. Without this guard,
+// addresses no field and cannot be evaluated. Without this guard,
 // stripLeader("$") / stripLeader("$.") / stripLeader("") all yield "",
 // spi.ParseFilterPath("") legitimately returns (nil, nil) — the shape a TREE
 // operator's absent path is allowed to take — and spi.ResolvePath(data, nil)
 // resolves that nil hop slice to the parsed ROOT DOCUMENT, so a presence
-// test (NOT_NULL) matches every entity regardless of its shape.
-//
-// The CONTAINS sub-test additionally pins the string-operator hazard, but
-// only reproduces it against a document whose raw bytes ARE a bare JSON
-// string at the root: spi.EvalLeaf's string-op branch requires
-// stored.Type == gjson.String, so against the normal, object-rooted entity
-// shape a string operator on the unguarded root is already a non-match —
-// asserting against `{"a":1}` here would pass whether or not the guard
-// exists, and would not be pinning anything.
-func TestPrepare_EmptyLeafPathNeverMatches(t *testing.T) {
+// test (NOT_NULL) would match every entity regardless of its shape were this
+// not rejected at Prepare time.
+func TestPrepare_EmptyLeafPathIsAnError(t *testing.T) {
 	paths := []string{"", "$", "$."}
+	ops := []struct {
+		op    string
+		value any
+	}{
+		{"NOT_NULL", nil},
+		{"CONTAINS", "needle"},
+	}
 	for _, path := range paths {
-		t.Run(fmt.Sprintf("path=%q/NOT_NULL", path), func(t *testing.T) {
-			cond := &predicate.SimpleCondition{JsonPath: path, OperatorType: "NOT_NULL"}
-			p, err := match.Prepare(cond, typed(spi.String))
-			if err != nil {
-				t.Fatalf("Prepare() error = %v, want nil (never-match, not an error)", err)
-			}
-			if p.Match([]byte(`{"a":1}`), spi.EntityMeta{}) {
-				t.Error("Match() = true, want false: an empty leaf path must never match")
-			}
-		})
-		t.Run(fmt.Sprintf("path=%q/CONTAINS", path), func(t *testing.T) {
-			cond := &predicate.SimpleCondition{JsonPath: path, OperatorType: "CONTAINS", Value: "needle"}
-			p, err := match.Prepare(cond, typed(spi.String))
-			if err != nil {
-				t.Fatalf("Prepare() error = %v, want nil (never-match, not an error)", err)
-			}
-			// A bare JSON string at the document root — not the normal
-			// object-rooted entity shape, but the one shape where
-			// spi.ResolvePath(data, nil)'s resolved "field" is itself a
-			// gjson string, so spi.EvalLeaf's string-op branch actually
-			// runs the comparison rather than short-circuiting on
-			// stored.Type != gjson.String. Without the guard this
-			// substring-matches the root scalar directly.
-			if p.Match([]byte(`"a needle in a haystack"`), spi.EntityMeta{}) {
-				t.Error("Match() = true, want false: an empty leaf path must never match, not substring-match a scalar-rooted document")
-			}
+		for _, o := range ops {
+			t.Run(fmt.Sprintf("path=%q/%s", path, o.op), func(t *testing.T) {
+				cond := &predicate.SimpleCondition{JsonPath: path, OperatorType: o.op, Value: o.value}
+				_, err := match.Prepare(cond, typed(spi.String))
+				require.Error(t, err)
+			})
+		}
+	}
+}
+
+// TestPrepare_UnevaluableLeafIsAnError pins the three swallows that move from
+// never-match into a Prepare error: an operand that fits no declared type
+// (leafNode's expansion-failure branch), an empty leaf path, and a jsonPath
+// outside the filter-path grammar (both prepareSimple branches). Each used to
+// produce a leaf that silently never matched; each is now a structural fault
+// in the CONDITION and fails Prepare instead.
+func TestPrepare_UnevaluableLeafIsAnError(t *testing.T) {
+	strTypes := func(string) []spi.DataType { return []spi.DataType{spi.Integer} }
+	cases := []struct {
+		name string
+		cond predicate.Condition
+		ft   match.FieldTypes
+	}{
+		{"operand fits no declared type",
+			&predicate.SimpleCondition{JsonPath: "$.n", OperatorType: "GREATER_THAN", Value: "abc"}, strTypes},
+		{"empty path",
+			&predicate.SimpleCondition{JsonPath: "$.", OperatorType: "EQUALS", Value: "x"}, strTypes},
+		{"path outside the grammar",
+			&predicate.SimpleCondition{JsonPath: "$.a[", OperatorType: "EQUALS", Value: "x"}, strTypes},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := match.Prepare(c.cond, c.ft)
+			require.Error(t, err)
 		})
 	}
+}
+
+// TestPrepare_ComparisonLeafOnUntypedPathIsAnError pins the same
+// expansion-failure branch as TestPrepare_UnevaluableLeafIsAnError, but for a
+// NIL declared-types set rather than a declared set the operand merely
+// doesn't fit — the shape a caller gets when the path names a field
+// FieldTypes has no entry for at all.
+func TestPrepare_ComparisonLeafOnUntypedPathIsAnError(t *testing.T) {
+	cond := &predicate.SimpleCondition{JsonPath: "$.unknown", OperatorType: "GREATER_THAN", Value: 5}
+	_, err := match.Prepare(cond, func(string) []spi.DataType { return nil })
+	require.Error(t, err)
+}
+
+// TestPrepare_TemporalMetaGuardStaysANonMatch pins the fourth swallow — the
+// temporal-meta guard in prepareLifecycle — as the one that does NOT become
+// an error. operator-semantics.md and prepared_equivalence_test.go pin this
+// as a deliberate, permanent never-match: relaxing it would silently
+// reactivate a dormant transition in a stored workflow criterion on a binary
+// upgrade alone.
+func TestPrepare_TemporalMetaGuardStaysANonMatch(t *testing.T) {
+	p, err := match.Prepare(&predicate.LifecycleCondition{
+		Field: "creationDate", OperatorType: "CONTAINS", Value: "2024"}, nil)
+	require.NoError(t, err)
+	require.False(t, p.Match([]byte(`{}`), spi.EntityMeta{CreationDate: time.Now()}))
 }

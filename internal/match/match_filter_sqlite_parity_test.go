@@ -91,22 +91,22 @@ func TestSqliteEvaluateFilter_DelegatesToKernel(t *testing.T) {
 		// the (now-deleted) fused evaluator parsed strings → returned true.
 		{
 			name: "Gt-on-stringly-numeric",
-			f:    spi.Filter{Op: spi.FilterGt, Path: "qty", Source: spi.SourceData, Value: 42},
+			f:    spi.Filter{Op: spi.FilterGt, Path: "qty", Source: spi.SourceData, Value: 42, Declared: []spi.DataType{spi.String}},
 			data: stringyNumeric,
 		},
 		{
 			name: "Lt-on-stringly-numeric",
-			f:    spi.Filter{Op: spi.FilterLt, Path: "qty", Source: spi.SourceData, Value: 42},
+			f:    spi.Filter{Op: spi.FilterLt, Path: "qty", Source: spi.SourceData, Value: 42, Declared: []spi.DataType{spi.String}},
 			data: stringyNumeric,
 		},
 		{
 			name: "Gte-on-stringly-numeric",
-			f:    spi.Filter{Op: spi.FilterGte, Path: "qty", Source: spi.SourceData, Value: 100},
+			f:    spi.Filter{Op: spi.FilterGte, Path: "qty", Source: spi.SourceData, Value: 100, Declared: []spi.DataType{spi.String}},
 			data: stringyNumeric,
 		},
 		{
 			name: "Between-on-stringly-numeric",
-			f:    spi.Filter{Op: spi.FilterBetween, Path: "qty", Source: spi.SourceData, Values: []any{10, 200}},
+			f:    spi.Filter{Op: spi.FilterBetween, Path: "qty", Source: spi.SourceData, Values: []any{10, 200}, Declared: []spi.DataType{spi.String}},
 			data: stringyNumeric,
 		},
 
@@ -143,17 +143,17 @@ func TestSqliteEvaluateFilter_DelegatesToKernel(t *testing.T) {
 		// --- Standard scalar cases ---
 		{
 			name: "Eq-string",
-			f:    spi.Filter{Op: spi.FilterEq, Path: "variantId", Source: spi.SourceData, Value: "v1"},
+			f:    spi.Filter{Op: spi.FilterEq, Path: "variantId", Source: spi.SourceData, Value: "v1", Declared: []spi.DataType{spi.String}},
 			data: scalar,
 		},
 		{
 			name: "Eq-numeric",
-			f:    spi.Filter{Op: spi.FilterEq, Path: "qty", Source: spi.SourceData, Value: 42},
+			f:    spi.Filter{Op: spi.FilterEq, Path: "qty", Source: spi.SourceData, Value: 42, Declared: []spi.DataType{spi.Integer}},
 			data: scalar,
 		},
 		{
 			name: "Ne-string",
-			f:    spi.Filter{Op: spi.FilterNe, Path: "variantId", Source: spi.SourceData, Value: "vX"},
+			f:    spi.Filter{Op: spi.FilterNe, Path: "variantId", Source: spi.SourceData, Value: "vX", Declared: []spi.DataType{spi.String}},
 			data: scalar,
 		},
 		{
@@ -195,12 +195,12 @@ func TestSqliteEvaluateFilter_DelegatesToKernel(t *testing.T) {
 		},
 		{
 			name: "Eq-against-null-field-missing-short-circuits-false",
-			f:    spi.Filter{Op: spi.FilterEq, Path: "missing", Source: spi.SourceData, Value: "anything"},
+			f:    spi.Filter{Op: spi.FilterEq, Path: "missing", Source: spi.SourceData, Value: "anything", Declared: []spi.DataType{spi.String}},
 			data: scalar,
 		},
 		{
 			name: "Ne-against-missing-field-vacuously-true",
-			f:    spi.Filter{Op: spi.FilterNe, Path: "missing", Source: spi.SourceData, Value: "anything"},
+			f:    spi.Filter{Op: spi.FilterNe, Path: "missing", Source: spi.SourceData, Value: "anything", Declared: []spi.DataType{spi.String}},
 			data: scalar,
 		},
 
@@ -210,8 +210,8 @@ func TestSqliteEvaluateFilter_DelegatesToKernel(t *testing.T) {
 			f: spi.Filter{
 				Op: spi.FilterAnd,
 				Children: []spi.Filter{
-					{Op: spi.FilterEq, Path: "variantId", Source: spi.SourceData, Value: "v1"},
-					{Op: spi.FilterGt, Path: "qty", Source: spi.SourceData, Value: 10},
+					{Op: spi.FilterEq, Path: "variantId", Source: spi.SourceData, Value: "v1", Declared: []spi.DataType{spi.String}},
+					{Op: spi.FilterGt, Path: "qty", Source: spi.SourceData, Value: 10, Declared: []spi.DataType{spi.Integer}},
 				},
 			},
 			data: scalar,
@@ -221,8 +221,8 @@ func TestSqliteEvaluateFilter_DelegatesToKernel(t *testing.T) {
 			f: spi.Filter{
 				Op: spi.FilterAnd,
 				Children: []spi.Filter{
-					{Op: spi.FilterEq, Path: "variantId", Source: spi.SourceData, Value: "v1"},
-					{Op: spi.FilterGt, Path: "qty", Source: spi.SourceData, Value: 100},
+					{Op: spi.FilterEq, Path: "variantId", Source: spi.SourceData, Value: "v1", Declared: []spi.DataType{spi.String}},
+					{Op: spi.FilterGt, Path: "qty", Source: spi.SourceData, Value: 100, Declared: []spi.DataType{spi.Integer}},
 				},
 			},
 			data: scalar,
@@ -232,8 +232,8 @@ func TestSqliteEvaluateFilter_DelegatesToKernel(t *testing.T) {
 			f: spi.Filter{
 				Op: spi.FilterOr,
 				Children: []spi.Filter{
-					{Op: spi.FilterEq, Path: "variantId", Source: spi.SourceData, Value: "vX"},
-					{Op: spi.FilterEq, Path: "color", Source: spi.SourceData, Value: "red"},
+					{Op: spi.FilterEq, Path: "variantId", Source: spi.SourceData, Value: "vX", Declared: []spi.DataType{spi.String}},
+					{Op: spi.FilterEq, Path: "color", Source: spi.SourceData, Value: "red", Declared: []spi.DataType{spi.String}},
 				},
 			},
 			data: scalar,
@@ -243,8 +243,8 @@ func TestSqliteEvaluateFilter_DelegatesToKernel(t *testing.T) {
 			f: spi.Filter{
 				Op: spi.FilterOr,
 				Children: []spi.Filter{
-					{Op: spi.FilterEq, Path: "variantId", Source: spi.SourceData, Value: "vX"},
-					{Op: spi.FilterEq, Path: "color", Source: spi.SourceData, Value: "blue"},
+					{Op: spi.FilterEq, Path: "variantId", Source: spi.SourceData, Value: "vX", Declared: []spi.DataType{spi.String}},
+					{Op: spi.FilterEq, Path: "color", Source: spi.SourceData, Value: "blue", Declared: []spi.DataType{spi.String}},
 				},
 			},
 			data: scalar,
@@ -254,12 +254,12 @@ func TestSqliteEvaluateFilter_DelegatesToKernel(t *testing.T) {
 			f: spi.Filter{
 				Op: spi.FilterAnd,
 				Children: []spi.Filter{
-					{Op: spi.FilterEq, Path: "variantId", Source: spi.SourceData, Value: "v1"},
+					{Op: spi.FilterEq, Path: "variantId", Source: spi.SourceData, Value: "v1", Declared: []spi.DataType{spi.String}},
 					{
 						Op: spi.FilterOr,
 						Children: []spi.Filter{
-							{Op: spi.FilterGt, Path: "qty", Source: spi.SourceData, Value: 100},
-							{Op: spi.FilterEq, Path: "color", Source: spi.SourceData, Value: "red"},
+							{Op: spi.FilterGt, Path: "qty", Source: spi.SourceData, Value: 100, Declared: []spi.DataType{spi.Integer}},
+							{Op: spi.FilterEq, Path: "color", Source: spi.SourceData, Value: "red", Declared: []spi.DataType{spi.String}},
 						},
 					},
 				},
@@ -270,27 +270,27 @@ func TestSqliteEvaluateFilter_DelegatesToKernel(t *testing.T) {
 		// --- SourceMeta ---
 		{
 			name: "Meta-state-eq",
-			f:    spi.Filter{Op: spi.FilterEq, Path: "state", Source: spi.SourceMeta, Value: "available"},
+			f:    spi.Filter{Op: spi.FilterEq, Path: "state", Source: spi.SourceMeta, Value: "available", Declared: []spi.DataType{spi.String}},
 			meta: meta,
 		},
 		{
 			name: "Meta-state-ne",
-			f:    spi.Filter{Op: spi.FilterEq, Path: "state", Source: spi.SourceMeta, Value: "shipped"},
+			f:    spi.Filter{Op: spi.FilterEq, Path: "state", Source: spi.SourceMeta, Value: "shipped", Declared: []spi.DataType{spi.String}},
 			meta: meta,
 		},
 		{
 			name: "Meta-entity_id-eq",
-			f:    spi.Filter{Op: spi.FilterEq, Path: "entity_id", Source: spi.SourceMeta, Value: "ent-1"},
+			f:    spi.Filter{Op: spi.FilterEq, Path: "entity_id", Source: spi.SourceMeta, Value: "ent-1", Declared: []spi.DataType{spi.String}},
 			meta: meta,
 		},
 		{
 			name: "Meta-change_type-eq",
-			f:    spi.Filter{Op: spi.FilterEq, Path: "change_type", Source: spi.SourceMeta, Value: "UPDATED"},
+			f:    spi.Filter{Op: spi.FilterEq, Path: "change_type", Source: spi.SourceMeta, Value: "UPDATED", Declared: []spi.DataType{spi.String}},
 			meta: meta,
 		},
 		{
 			name: "Meta-version-gt",
-			f:    spi.Filter{Op: spi.FilterGt, Path: "version", Source: spi.SourceMeta, Value: int64(5)},
+			f:    spi.Filter{Op: spi.FilterGt, Path: "version", Source: spi.SourceMeta, Value: int64(5), Declared: []spi.DataType{spi.Long}},
 			meta: meta,
 		},
 
@@ -328,8 +328,13 @@ func TestSqliteEvaluateFilter_DelegatesToKernel(t *testing.T) {
 			ent := &spi.Entity{Meta: tc.meta, Data: data}
 
 			// Both sides prepared, mirroring production: the plugin prepares
-			// at its plan site, the domain evaluator at its query site.
-			prepared := spi.Prepare(tc.f)
+			// at its plan site, the domain evaluator at its query site. Every
+			// case above is a well-formed Filter by construction, so Prepare
+			// cannot fail here.
+			prepared, err := spi.Prepare(tc.f)
+			if err != nil {
+				t.Fatalf("spi.Prepare(%+v): %v", tc.f, err)
+			}
 			sqliteRes := sqlite.EvaluateFilter(prepared, ent)
 			kernelRes := prepared.Match(data, tc.meta)
 

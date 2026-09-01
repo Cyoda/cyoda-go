@@ -19,8 +19,14 @@ import (
 // already-desugared subtree. For a depth-D chain that telescopes into
 // D + (D-1) + ... + 1 = O(D²) group-node revisits instead of O(D).
 func deepChainCondition(depth int) predicate.Condition {
+	// CONTAINS is declaration-independent (TestApplyOperator_StringOpsAreDeclarationIndependent),
+	// so this leaf expands cleanly with the nil FieldTypes match.Prepare is
+	// called with below — an EQUALS leaf would now fail Prepare instead
+	// (leafNode's expansion-failure branch, since nil FieldTypes resolves to
+	// no declared type), which is not what this allocation-counting test is
+	// about.
 	var c predicate.Condition = &predicate.SimpleCondition{
-		JsonPath: "$.leaf", OperatorType: "EQUALS", Value: "x",
+		JsonPath: "$.leaf", OperatorType: "CONTAINS", Value: "x",
 	}
 	for i := 0; i < depth; i++ {
 		c = &predicate.GroupCondition{Operator: "AND", Conditions: []predicate.Condition{c}}
