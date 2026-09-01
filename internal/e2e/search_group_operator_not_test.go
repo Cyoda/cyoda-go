@@ -95,6 +95,27 @@ func TestSearch_Sync_GroupOperatorNOT_BadArity_ErrorCodeIsInvalidCondition(t *te
 	commontest.ExpectErrorCode(t, resp, "INVALID_CONDITION")
 }
 
+// TestSearch_Sync_GroupOperatorNOT_BadOperandType_ConditionTypeMismatch pins
+// that an operand parsing into none of a field's declared types is still
+// rejected 400 CONDITION_TYPE_MISMATCH when the leaf sits inside a NOT's
+// single child — the type-check walker (condition_type_validate.go) must
+// recurse into a NOT node exactly as it does into AND/OR, not stop at a
+// fixed case list.
+func TestSearch_Sync_GroupOperatorNOT_BadOperandType_ConditionTypeMismatch(t *testing.T) {
+	const model = "e2e-search-not-sync-type-mismatch"
+	setupSearchModel(t, model)
+	createEntityE2E(t, model, 1, `{"name":"Alice","amount":100,"status":"active"}`)
+
+	path := fmt.Sprintf("/api/search/direct/%s/1", model)
+	resp := doAuth(t, http.MethodPost, path,
+		notCondition(`{"type":"simple","jsonPath":"$.amount","operatorType":"GREATER_THAN","value":"abc"}`))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d; body: %s", resp.StatusCode, readBody(t, resp))
+	}
+	commontest.ExpectErrorCode(t, resp, "CONDITION_TYPE_MISMATCH")
+}
+
 // --- Async submit ---
 
 func TestSearch_AsyncSubmit_GroupOperatorNOT_OneCondition_Accepted(t *testing.T) {

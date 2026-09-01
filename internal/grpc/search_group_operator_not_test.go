@@ -194,6 +194,49 @@ func TestRPC_SnapshotSearch_GroupOperatorNOT_ZeroConditions_NoJobIssued(t *testi
 	}
 }
 
+// TestRPC_DirectSearch_GroupOperatorNOT_BadOperandType_400_ConditionTypeMismatch
+// pins that an operand parsing into none of a field's declared types is
+// still rejected 400 CONDITION_TYPE_MISMATCH when the leaf sits inside a
+// NOT's single child, on gRPC — the type-check walker must recurse into a
+// NOT node exactly as it does into AND/OR, mirroring
+// TestSearch_Sync_GroupOperatorNOT_BadOperandType_ConditionTypeMismatch's
+// HTTP coverage in internal/e2e.
+func TestRPC_DirectSearch_GroupOperatorNOT_BadOperandType_400_ConditionTypeMismatch(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Bob", "amount": 100})
+
+	ce := makeCE(EntitySearchRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "person", "version": 1},
+		"condition": notGroup(map[string]any{
+			"type": "simple", "jsonPath": "$.amount", "operatorType": "GREATER_THAN", "value": "abc",
+		}),
+	})
+
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(ce, stream); err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+	if len(stream.sent) == 0 {
+		t.Fatal("expected an error response on the stream, got empty stream")
+	}
+
+	var typed events.EntityResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if typed.Success {
+		t.Fatal("expected success=false for a bad operand type inside NOT")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error block in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected code=CLIENT_ERROR, got %q", typed.Error.Code)
+	}
+	if !strings.Contains(typed.Error.Message, "CONDITION_TYPE_MISMATCH") {
+		t.Errorf("expected message to contain CONDITION_TYPE_MISMATCH, got %s", typed.Error.Message)
+	}
+}
+
 // TestRPC_SnapshotSearch_GroupOperatorNOT_TwoConditions_NoJobIssued is the
 // sibling arity failure for the same no-job-issued guarantee.
 func TestRPC_SnapshotSearch_GroupOperatorNOT_TwoConditions_NoJobIssued(t *testing.T) {
