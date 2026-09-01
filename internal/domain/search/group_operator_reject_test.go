@@ -79,25 +79,9 @@ func TestValidateCondition_GroupOperatorXOR_Rejected(t *testing.T) {
 	}
 }
 
-func TestValidateCondition_GroupOperatorNOT_Rejected(t *testing.T) {
-	// "NOT" is an advertised enum value in the generated API types but has
-	// never been representable by GroupCondition (which only ever carries
-	// "AND"/"OR" children) — it must still be rejected here, not silently
-	// treated as AND by the pushdown translator.
-	cond := &predicate.GroupCondition{
-		Operator: "NOT",
-		Conditions: []predicate.Condition{
-			&predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"},
-		},
-	}
-	err := ValidateCondition(cond)
-	if err == nil {
-		t.Fatal("expected NOT group operator to be rejected")
-	}
-	if !errors.Is(err, ErrInvalidCondition) {
-		t.Errorf("error does not wrap ErrInvalidCondition: %v", err)
-	}
-}
+// NOT's own arity contract (exactly one condition) is pinned in
+// group_operator_not_arity_test.go, not here — this file only pins the
+// operator-name gate (AND/OR/NOT vs. everything else).
 
 func TestValidateCondition_GroupOperatorEmpty_Rejected(t *testing.T) {
 	cond := &predicate.GroupCondition{
