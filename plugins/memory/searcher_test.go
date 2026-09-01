@@ -593,28 +593,36 @@ func TestMemorySearch_ZeroLimitRejected(t *testing.T) {
 
 // TestMemorySearch_RejectsUnevaluableFilter pins the propagation of
 // spi.Prepare's error through Search: a leaf spi.Prepare genuinely cannot
-// evaluate (here, a LIKE pattern with a trailing backslash that will not
+// evaluate (a LIKE pattern with a trailing unpaired escape, which will not
 // compile) must fail the search outright, not silently degrade to an empty
-// page. See .claude/rules/correctness-over-availability.md.
+// page. See .claude/rules/correctness-over-availability.md. Both malformed
+// operands the skipped spitest Pattern/MalformedLike conformance case
+// covered (a trailing escape after a literal, and a bare trailing escape)
+// are exercised here so this replacement is not narrower than what it
+// replaces.
 func TestMemorySearch_RejectsUnevaluableFilter(t *testing.T) {
-	factory := memory.NewStoreFactory()
-	defer factory.Close()
-	ctx := ctxWithTenant("tenant-A")
-	store, _ := factory.EntityStore(ctx)
-	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	searcher := asSearcher(t, store)
+	for _, operand := range []string{`a\`, `\`} {
+		t.Run(operand, func(t *testing.T) {
+			factory := memory.NewStoreFactory()
+			defer factory.Close()
+			ctx := ctxWithTenant("tenant-A")
+			store, _ := factory.EntityStore(ctx)
+			modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+			searcher := asSearcher(t, store)
 
-	store.Save(ctx, mkEntity("e-1", "ACTIVE", `{"name": "a"}`, modelRef))
+			store.Save(ctx, mkEntity("e-1", "ACTIVE", `{"name": "a"}`, modelRef))
 
-	_, err := searcher.Search(ctx, spi.Filter{
-		Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
-		Value: `a\`, Declared: []spi.DataType{spi.String},
-	}, spi.SearchOptions{ModelName: "Order", ModelVersion: "1", Limit: 100})
-	if err == nil {
-		t.Fatal("Search must fail on an unevaluable filter, not return an empty page")
-	}
-	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
-		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
+			_, err := searcher.Search(ctx, spi.Filter{
+				Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
+				Value: operand, Declared: []spi.DataType{spi.String},
+			}, spi.SearchOptions{ModelName: "Order", ModelVersion: "1", Limit: 100})
+			if err == nil {
+				t.Fatal("Search must fail on an unevaluable filter, not return an empty page")
+			}
+			if !errors.Is(err, spi.ErrUnevaluableLeaf) {
+				t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
+			}
+		})
 	}
 }
 
