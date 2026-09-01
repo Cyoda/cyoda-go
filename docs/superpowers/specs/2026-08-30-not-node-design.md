@@ -706,7 +706,7 @@ some leaves, which is where they can differ.
 | `NOT(IS_NULL)` ≠ `NOT_NULL` on a wildcard path (§ 4.8) | ✓ | — | ✓ | — |
 | `NOT(AND[])`, `NOT(OR[])` | ✓ | — | — | — |
 | a `FUNCTION` clause nested inside a `NOT` is rejected (§ 4.10) | ✓ | ✓ | — | — |
-| a `NOT` counts one level against both depth caps (§ 4.11) | ✓ | ✓ | — | — |
+| a `NOT` counts one level against both depth caps (§ 4.11) — unit-only; no e2e coverage exists for condition-depth-exceeded on any operator, a pre-existing gap, not `NOT`-specific | ✓ | — | — | — |
 | **unsatisfiable comparison, negative operator**: `$.n NOT_EQUAL 12.5` on `INTEGER` returns rows (§ 4.2) | ✓ | — | ✓ | — |
 | — the positive twin `$.n EQUALS 12.5` still returns none (§ 4.2) | ✓ | — | ✓ | — |
 | — null and absent still match neither (§ 4.2, `operator-semantics.md` § 2) | ✓ | — | ✓ | — |
