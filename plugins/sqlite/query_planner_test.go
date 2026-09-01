@@ -1553,3 +1553,33 @@ func TestPlanQuery_PositionalIsPushed(t *testing.T) {
 		t.Errorf("positional leaf must push its dialect index; got WHERE %q", plan.where)
 	}
 }
+
+// TestSoundness_NotNeverPushed pins that spi.FilterNot is residual-only:
+// isPushable's switch has no FilterNot case, so dissect's default arm
+// (via isLeafPushable) routes any NOT node straight to the residual, and no
+// "not" ever appears in the WHERE fragment.
+//
+// This is deliberate today by construction rather than by a written
+// soundness rule: the rule one would otherwise author — push a NOT only over
+// an exactly-translatable child — would authorize almost nothing, since only
+// IS_NULL/NOT_NULL are EXACT (see allPushedExact). Negating an approximate
+// (sound-superset) child turns a superset into a subset and silently drops
+// rows a narrowing WHERE never returns — the opposite of sound. This test
+// guards against a future isPushable edit making NOT pushable without that
+// rule being written first: adding spi.FilterNot to isPushable's switch
+// makes this test fail (verified during development; not asserted here).
+func TestSoundness_NotNeverPushed(t *testing.T) {
+	f := spi.Filter{Op: spi.FilterNot, Children: []spi.Filter{
+		{Op: spi.FilterEq, Path: "status", Source: spi.SourceData, Value: "CLOSED", Declared: []spi.DataType{spi.String}},
+	}}
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
+	if plan.where != "" {
+		t.Errorf("NOT must never be pushed to SQL, got WHERE %q", plan.where)
+	}
+	if plan.postFilter == nil || plan.postFilter.Op != spi.FilterNot {
+		t.Fatalf("postFilter should be the full NOT filter (residual-only), got %+v", plan.postFilter)
+	}
+}
