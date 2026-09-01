@@ -6,6 +6,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -31,14 +32,22 @@ func newEngineWithFailingModelStore(t *testing.T) (*Engine, *spi.Entity, *criter
 }
 
 // newEngineWithHealthyModelStore builds an engine on the standard
-// setupEngine fixture with a model registered that declares $.age as an
-// Integer, so the criterion's first leaf genuinely resolves a declared type.
+// setupEngine fixture with a model registered that declares BOTH $.age
+// (Integer) and $.x (String), so the criterion's leaves genuinely resolve
+// declared types/known paths. $.x must be declared too — Task 7's
+// model-boundary check (search.ValidateKnownPaths) now runs before the
+// unsupported-operator structural fault this fixture's own test wants to
+// isolate; an undeclared $.x would abort on the field-path check first and
+// the test would never reach the operator-name fault it is pinning.
 func newEngineWithHealthyModelStore(t *testing.T) (*Engine, *spi.Entity, *criterionContext) {
 	t.Helper()
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1.0"}
-	registerTypedModel(t, ctx, factory, ref)
+	registerModelFields(t, ctx, factory, ref, map[string]schema.DataType{
+		"age": schema.Integer,
+		"x":   schema.String,
+	})
 
 	entity := makeEntity("e1", ref, map[string]any{"age": 30})
 
