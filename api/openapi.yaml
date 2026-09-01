@@ -6973,7 +6973,7 @@ paths:
         creationDate, lastUpdateTime, transitionForLatestSave — alias
         previousTransition, transactionId, id)
 
-        3. Group conditions - combine multiple conditions with AND/OR operators
+        3. Group conditions - combine multiple conditions with AND/OR/NOT operators
 
         4. Array conditions - positional matching against array elements
 

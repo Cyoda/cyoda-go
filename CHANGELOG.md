@@ -611,6 +611,18 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   condition containing one is not bounded by a pushed SQL `LIMIT`. See
   [`docs/cloud-parity/negation.md`](./docs/cloud-parity/negation.md).
 
+  - **Workflow schema version bumps 1.3 → 1.4** (`WorkflowConfigurationDto.version`).
+    `NOT` on a criterion's `group` clause widens the accepted-input set, and
+    the bump rules name "a new condition operator" as the canonical additive
+    MINOR example. Dual-shape: 1.1, 1.2 and 1.3 stay accepted alongside 1.4
+    (`SupportedSchemaRanges` widens to `{1, 1, 4}`; nothing is retired).
+    `GET /help/workflows/schema-version/versions` now reports `"current":
+    "1.4"` — an integrator whose CI pins `test "$current" = "1.3"` (or any
+    fixed prior value) must update the pin. See
+    `docs/workflow-schema-versioning.md` for the full rationale, including
+    why a separate, unrelated criterion-`jsonPath`-grammar tightening in this
+    same release is *not* part of this bump.
+
   - **An unsatisfiable comparison now follows operator polarity.** When an
     operand cannot be satisfied by a stored value's own declared type
     family, `EQUALS` and the other positive comparison operators still
