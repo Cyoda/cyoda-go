@@ -8,6 +8,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda-platform/cyoda-go/internal/match"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -45,13 +46,54 @@ func registerTypedModel(t *testing.T, ctx context.Context, factory spi.StoreFact
 // model-load error, an undeclared-path error (search.ValidateKnownPaths —
 // see TestEvaluateCriterion_UndeclaredPathAbortsTheSave), or a declared-but-
 // type-mismatched error (search.ValidateConditionValueTypes — see
-// TestEvaluateCriterion_DataFieldPathUntypedFailsClosed).
+// TestEvaluateCriterion_ContainerPathScalarComparisonAbortsTheSave,
+// criterion_model_boundary_test.go).
 func registerModelFields(t *testing.T, ctx context.Context, factory spi.StoreFactory, ref spi.ModelRef, fields map[string]schema.DataType) {
 	t.Helper()
 	node := schema.NewObjectNode()
 	for name, dt := range fields {
 		node.SetChild(name, schema.NewLeafNode(dt))
 	}
+	raw, err := schema.Marshal(node)
+	if err != nil {
+		t.Fatalf("schema.Marshal: %v", err)
+	}
+	ms, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
+		t.Fatalf("Save model: %v", err)
+	}
+}
+
+// registerUnionTypedModel saves a model descriptor whose schema declares a
+// single top-level leaf carrying MULTIPLE declared scalar types (the model
+// has observed both, e.g. an early-lifecycle field that started as an
+// Integer and was later also written as a Boolean). Used to isolate
+// match.Prepare's own leaf-expansion-failure branch from
+// search.ValidateConditionValueTypes: for a RANGE operator (BETWEEN),
+// ValidateConditionValueTypes checks EACH bound independently against the
+// declared set (operandParsesDeclared, an operator-independent FilterEq
+// oracle) and accepts as long as every bound parses into SOME declared
+// type — it does not require the SAME type for both bounds. The SPI
+// kernel's own expandBetween is stricter: a numeric range requires BOTH
+// bounds to parse as a number, a temporal range requires both to parse as a
+// timestamp, and only a declared String type accepts a mixed pair
+// lexicographically — so a boolean/numeric mixed pair against
+// [Integer, Boolean] parses per-element but engages no bucket jointly,
+// and match.Prepare (which calls the same expandBetween) fails with
+// ErrUnevaluableLeaf while ValidateConditionValueTypes has already
+// accepted it.
+func registerUnionTypedModel(t *testing.T, ctx context.Context, factory spi.StoreFactory, ref spi.ModelRef, field string, types ...schema.DataType) {
+	t.Helper()
+	if len(types) == 0 {
+		t.Fatal("registerUnionTypedModel: at least one type required")
+	}
+	leaf := schema.NewLeafNode(types[0])
+	leaf.AddScalarTypes(types[1:]...)
+	node := schema.NewObjectNode()
+	node.SetChild(field, leaf)
 	raw, err := schema.Marshal(node)
 	if err != nil {
 		t.Fatalf("schema.Marshal: %v", err)
@@ -84,9 +126,9 @@ func (f *errModelStoreFactory) ModelStore(context.Context) (spi.ModelStore, erro
 // match. The same criterion against a path the model does NOT declare fails
 // closed instead of degrading to non-match — see
 // TestEvaluateCriterion_UndeclaredPathAbortsTheSave (criterion_model_boundary_test.go).
-// A path the model DOES declare, but with a type the operand cannot parse
-// into, also fails closed — see TestEvaluateCriterion_DataFieldPathUntypedFailsClosed
-// below.
+// A path the model DOES declare, but whose bounds jointly engage no
+// declared type, also fails closed — see
+// TestEvaluateCriterion_DataFieldPathUntypedFailsClosed below.
 func TestEvaluateCriterion_DataFieldTypeDirectedWithRegisteredModel(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
@@ -115,50 +157,61 @@ func TestEvaluateCriterion_DataFieldTypeDirectedWithRegisteredModel(t *testing.T
 	}
 }
 
-// TestEvaluateCriterion_DataFieldPathUntypedFailsClosed is the companion that
-// isolates the model's contribution: a model IS registered (schema loads
-// successfully, no error) and DOES declare `$.age` — as Boolean — so
-// search.ValidateKnownPaths' undeclared-path check has nothing to say about
-// this criterion (that gap is covered separately by
-// TestEvaluateCriterion_UndeclaredPathAbortsTheSave). The GREATER_THAN
-// operand (5) parses into none of `$.age`'s declared types, so
-// search.ValidateConditionValueTypes fails closed — distinct from BOTH a
-// genuine model-load error (TestEvaluateCriterion_FailsClosedOnGenuineModelLoadError)
-// and a successful, type-directed match/non-match
-// (TestEvaluateCriterion_DataFieldTypeDirectedWithRegisteredModel). A
-// declared-but-type-mismatched comparison leaf is a structural fault in the
-// criterion, not a row-dependent non-match, so it must not be silently read
-// as "doesn't match" (correctness-over-availability).
+// TestEvaluateCriterion_DataFieldPathUntypedFailsClosed isolates
+// match.Prepare's OWN leaf-expansion-failure branch (internal/match's
+// leafNode/ErrUnevaluableLeaf) — distinct from BOTH search.ValidateKnownPaths
+// (TestEvaluateCriterion_UndeclaredPathAbortsTheSave — $.age is DECLARED
+// here) and search.ValidateConditionValueTypes, which this exact criterion
+// does NOT trip.
 //
-// Before Task 7 wired in search.ValidateConditionValueTypes, this same
-// fixture (with `$.age` left UNDECLARED entirely) isolated
-// internal/match/prepared.go's own leafNode expansion-failure branch
-// instead — that branch is still reachable (any criterion whose only
-// data leaf uses a non-parse-constrained operator skips
-// ValidateConditionValueTypes' type check entirely), but no longer through
-// THIS fixture: an undeclared `$.age` is now caught earlier, by
-// search.ValidateKnownPaths, which would make this test a duplicate of
-// TestEvaluateCriterion_UndeclaredPathAbortsTheSave instead of exercising
-// the type-mismatch branch its name and doc promise. Declaring `$.age` (with
-// an incompatible type) restores that isolation.
+// `$.age` is declared with a UNION of scalar types, [Integer, Boolean] (the
+// model has observed both). The criterion is BETWEEN [5, true].
+// search.ValidateConditionValueTypes checks each bound independently
+// (operandParsesDeclared, an operator-independent oracle) and accepts: "5"
+// parses as Integer, "true" parses as Boolean, each individually a member of
+// the declared set — so it raises no error. The SPI kernel's own
+// expandBetween (which match.Prepare calls) is stricter: a numeric range
+// requires BOTH bounds to parse as a number, a temporal range requires both
+// to parse as a timestamp, and only a declared String type accepts a mixed
+// pair lexicographically — [Integer, Boolean] offers none of those, so no
+// bucket engages jointly and expandBetween fails with "range bounds parse
+// into no declared type", which leafNode turns into match.ErrUnevaluableLeaf.
+//
+// Before Task 7 wired in search.ValidateConditionValueTypes, a simpler
+// fixture (a single-type field an operand couldn't parse into at all) also
+// isolated this same match.Prepare branch — but for the SINGLE-type case,
+// ValidateConditionValueTypes' per-element check and match.Prepare's
+// engagement check share the identical underlying oracle for every
+// comparison and range operator and are structurally guaranteed to agree,
+// so no single-type fixture can any longer tell the two apart: with
+// ValidateConditionValueTypes now running before match.Prepare, a
+// single-type mismatch is always caught by ValidateConditionValueTypes
+// first, and match.Prepare's own check becomes unreachable through such a
+// fixture — verified: deleting the search.ValidateConditionValueTypes call
+// site left the OLD single-type version of this test passing unchanged.
+// The union-type BETWEEN mismatch above is the one shape where the two
+// checks genuinely disagree, and it is what makes this test's assertion
+// (errors.Is(err, match.ErrUnevaluableLeaf)) meaningful: it fails if EITHER
+// candidate call site — search.ValidateConditionValueTypes (which must NOT
+// have already rejected this criterion) or match.Prepare (which must be the
+// one that does) — is wrong.
 func TestEvaluateCriterion_DataFieldPathUntypedFailsClosed(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1.0"}
 
-	// Register a model that declares `name` (String) and `age` (Boolean) —
-	// `age` IS declared, so the undeclared-path check accepts it, but a
-	// GREATER_THAN 5 operand parses into none of Boolean's forms.
-	registerModelFields(t, ctx, factory, ref, map[string]schema.DataType{
-		"name": schema.String,
-		"age":  schema.Boolean,
-	})
+	registerUnionTypedModel(t, ctx, factory, ref, "age", schema.Integer, schema.Boolean)
 
 	entity := makeEntity("e1", ref, map[string]any{"age": 30})
 
-	_, _, err := engine.evaluateCriterion(simpleCriterion("$.age", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
+	_, _, err := engine.evaluateCriterion(simpleCriterion("$.age", "BETWEEN", []any{5, true}), entity, &criterionContext{ctx: ctx})
 	if err == nil {
-		t.Fatal("expected an error: $.age is declared Boolean, so operand 5 parses into none of its declared types")
+		t.Fatal("expected an error: BETWEEN [5, true] engages no declared type jointly, even though $.age is declared [Integer, Boolean]")
+	}
+	if !errors.Is(err, match.ErrUnevaluableLeaf) {
+		t.Fatalf("expected match.ErrUnevaluableLeaf (match.Prepare's own leaf-expansion-failure branch); "+
+			"got a different error, meaning search.ValidateConditionValueTypes rejected this criterion instead "+
+			"of accepting it as expected: %v", err)
 	}
 }
 

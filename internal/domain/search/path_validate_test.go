@@ -272,3 +272,48 @@ func TestSearch_RefreshFailure_ReportedAsInfraNot4xx(t *testing.T) {
 		t.Errorf("expected exactly 1 RefreshAndGet call (bounded), got %d", got)
 	}
 }
+
+// TestSearch_SortKeyRefreshFailure_ReportedAsInfraNot4xx pins the same
+// classification for resolveSortKeys' independent bounded-refresh
+// reimplementation (a THIRD "known field path" surface, alongside
+// ValidateKnownPaths and validateConditionPaths): a sort key absent from
+// the cached schema whose confirming RefreshAndGet itself fails must report
+// infrastructure, not the client-facing 400 INVALID_FIELD_PATH a genuinely
+// unknown sort field gets. cond is nil so validateConditionPaths/
+// validateConditionTypes have nothing to refuse first — this isolates the
+// sort-key path.
+func TestSearch_SortKeyRefreshFailure_ReportedAsInfraNot4xx(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+
+	stale := buildSearchDescriptor(t, ref, "a")
+	ms := &refreshingModelStore{
+		// Generous supply: EnsureModelRegistered, validateConditionTypes'
+		// own loadModelNode Get, and resolveSortKeys' loadFieldsMap Get all
+		// consume from this queue before the sort-key refresh is reached.
+		getQueue:   []*spi.ModelDescriptor{stale, stale, stale, stale, stale},
+		refreshErr: errors.New("connection refused"),
+	}
+	factory := &modelStoreFactory{StoreFactory: base, modelStore: ms}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	_, err := svc.Search(ctx, ref, nil, search.SearchOptions{
+		OrderBy: []search.OrderKey{{Path: "$.zz", Source: spi.SourceData}},
+	})
+	if err == nil {
+		t.Fatalf("expected an error: the sort-key refresh failed, so $.zz's status is unknown")
+	}
+	var appErr *common.AppError
+	if errors.As(err, &appErr) {
+		t.Fatalf("must NOT be a pre-classified *common.AppError (that would let a 400 leak through instead of the handler's 5xx catch-all); got: %v", appErr)
+	}
+	if !errors.Is(err, search.ErrPathRefreshInfra) {
+		t.Errorf("expected errors.Is(err, search.ErrPathRefreshInfra), got: %v", err)
+	}
+}

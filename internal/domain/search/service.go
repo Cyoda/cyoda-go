@@ -1644,8 +1644,12 @@ func (s *SearchService) CancelAsyncSearch(ctx context.Context, snapshotID string
 // and a truly-unknown path surfaces as 4xx without a refresh loop.
 //
 // Returns nil when validation passes or when no data-field paths are
-// addressed (lifecycle-only conditions). Validator failures surface as a
-// 4xx common.AppError with the missing paths listed.
+// addressed (lifecycle-only conditions). A genuinely unknown path surfaces
+// as a 4xx common.AppError listing the missing paths; a failed bounded
+// refresh (RefreshAndGet errored for a reason other than the model being
+// deleted) instead returns a plain error wrapping ErrPathRefreshInfra — the
+// caller must classify that as a 5xx, not fold it into the same 4xx (see
+// ErrPathRefreshInfra's doc).
 func (s *SearchService) validateConditionPaths(ctx context.Context, modelStore spi.ModelStore, modelRef spi.ModelRef, cond predicate.Condition) (map[string]schema.FieldDescriptor, error) {
 	paths := extractFieldPaths(cond)
 	if len(paths) == 0 {
@@ -1942,10 +1946,36 @@ func (s *SearchService) resolveSortKeys(ctx context.Context, modelRef spi.ModelR
 		s.markPathsAbsent(tenant, modelRef, surfaceSort, missing)
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, rerr.Error())
 	}
-	if refreshErr != nil || freshFields == nil {
-		// The refresh itself failed, or it produced no schema. Deliberately
-		// NOT negative-cached, same as validateConditionPaths: there is no
-		// schema authority to invalidate this entry against later.
+	if refreshErr != nil {
+		if errors.Is(refreshErr, spi.ErrNotFound) {
+			// Model was deleted between Get and RefreshAndGet — no schema
+			// authority left, the cached miss stands. Deliberately NOT
+			// negative-cached: there is no schema authority to invalidate
+			// this entry against later, same as validateConditionPaths.
+			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, rerr.Error())
+		}
+		// A refresh failure that is NOT "the model is gone" means we cannot
+		// tell "these sort fields are genuinely undeclared" from "the cache
+		// is merely stale and we couldn't confirm which" — the two are
+		// indistinguishable without a successful refresh. Per
+		// correctness-over-availability this is infrastructure, not a
+		// client fault — mirrors ValidateKnownPaths' and
+		// validateConditionPaths' own ErrPathRefreshInfra branch (this
+		// method predates the shared helper and keeps its own
+		// negative-cache-aware implementation, but all three "known field
+		// path" surfaces must not diverge on THIS classification).
+		// Deliberately NOT negative-cached: an infra failure says nothing
+		// about whether the sort field exists.
+		slog.Warn("schema refresh failed during sort-key validation; reporting infra, not a client fault",
+			"pkg", "search", "entityName", modelRef.EntityName,
+			"modelVersion", modelRef.ModelVersion, "error", refreshErr)
+		return nil, fmt.Errorf("%w: schema refresh failed for %s/%s: %w",
+			ErrPathRefreshInfra, modelRef.EntityName, modelRef.ModelVersion, refreshErr)
+	}
+	if freshFields == nil {
+		// The refresh produced no schema. Deliberately NOT negative-cached,
+		// same as validateConditionPaths: there is no schema authority to
+		// invalidate this entry against later.
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, rerr.Error())
 	}
 	specs, rerr = resolveOrderBy(keys, freshFields)

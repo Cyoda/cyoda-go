@@ -1043,23 +1043,44 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *cri
 		modelStore, err := e.factory.ModelStore(cc.ctx)
 		if err != nil {
 			loadErr = fmt.Errorf("%w: model store unavailable: %w", ErrCriterionTypingInfra, err)
-		} else if f, err := search.LoadFieldsMap(cc.ctx, modelStore, entity.Meta.ModelRef); err != nil {
+		} else if n, err := search.LoadModelNode(cc.ctx, modelStore, entity.Meta.ModelRef); err != nil {
 			loadErr = fmt.Errorf("%w: model %s/%s: %w", ErrCriterionTypingInfra,
 				entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion, err)
 		} else {
-			fields = f
+			// ONE read, ONE parse: node feeds BOTH the path check below (via
+			// its own FieldsMap()) and the type-soundness check
+			// (ValidateConditionValueTypes(node, cond)) at the bottom of
+			// this function. Two separate reads here — one via
+			// LoadFieldsMap, one via LoadModelNode — would double the
+			// store Get and schema.Unmarshal cost on every criterion, every
+			// transition, every save, for no benefit on the common
+			// (unrefreshed) path, and would open a TOCTOU where Prepare and
+			// ValidateConditionValueTypes could silently disagree about
+			// which schema snapshot they are typing against.
+			node = n
+			if node != nil {
+				fields = node.FieldsMap()
+			}
 			// A query never executes against a field the model does not
 			// declare (ruling, spec §5): hold every path the criterion
 			// names to the model's declared fields. This carries the one
 			// bounded schema refresh a cluster needs (path-grammar.md
 			// §6) — a field a peer node just added is not falsely
-			// refused — and the (possibly refreshed) fields map is what
-			// feeds fieldTypes below, so the actual match evaluation
-			// below sees the same authoritative schema this check
-			// validated against.
+			// refused. That refresh is itself a SECOND read, but only on
+			// the rare path where the first one missed a path — the common
+			// case above pays for exactly one. The (possibly refreshed)
+			// fields map is what feeds fieldTypes below, so the actual
+			// match evaluation sees the same authoritative schema this
+			// check validated against; node is deliberately NOT
+			// re-derived from that refresh (there is no cheap way to turn
+			// a refreshed fields map back into a *schema.ModelNode without
+			// a third read) — ValidateConditionValueTypes treats a path
+			// absent from its own (possibly one-refresh-stale) node as
+			// "no type constraint here" and defers to this already-passed
+			// check, exactly the leniency it already documents for any
+			// path it doesn't recognise.
 			fields, pathErr = search.ValidateKnownPaths(cc.ctx, modelStore, entity.Meta.ModelRef, paths, fields)
-			switch {
-			case errors.Is(pathErr, search.ErrPathRefreshInfra):
+			if errors.Is(pathErr, search.ErrPathRefreshInfra) {
 				// The bounded refresh itself failed — RefreshAndGet errored
 				// for a reason other than the model being legitimately
 				// deleted. That failure cannot tell "this field is
@@ -1075,20 +1096,6 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *cri
 				// on the read above.
 				loadErr = fmt.Errorf("%w: %w", ErrCriterionTypingInfra, pathErr)
 				pathErr = nil
-			case pathErr == nil:
-				// The path check passed. Load the model node — a FRESH
-				// read, not reused from the fields map above — for the
-				// type-soundness check below. Same order as the search HTTP
-				// boundary and its sibling callers (entity/service.go's
-				// conditional-delete, grouped_stats_handler.go): the path
-				// check and the type check are deliberately separate reads.
-				n, err := search.LoadModelNode(cc.ctx, modelStore, entity.Meta.ModelRef)
-				if err != nil {
-					loadErr = fmt.Errorf("%w: model %s/%s: %w", ErrCriterionTypingInfra,
-						entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion, err)
-				} else {
-					node = n
-				}
 			}
 		}
 	}
