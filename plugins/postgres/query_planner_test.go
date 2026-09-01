@@ -719,6 +719,48 @@ func TestPlan_TemporalBetween_OneValue_DoesNotPanic(t *testing.T) {
 	}
 }
 
+// TestPlan_TemporalBetween_NilValues_Excludes is the direct leafToSQL-level
+// counterpart to TestPlan_TemporalBetween_NilValues_DoesNotPanic, mirroring
+// sqlite's TestSqlitePlan_TemporalBetween_NilValues_Excludes: leafToSQL
+// itself (the lower-level SQL-fragment builder, independent of planQuery's
+// spi.Prepare gate) must still emit the fail-closed exclude predicate for a
+// CoerceTemporal BETWEEN leaf with Values=nil, never index f.Values out of
+// range, and never the match-all "1=1" that would let every row through.
+// planQuery/spi.Prepare rejecting this shape upstream (see
+// TestPlan_TemporalBetween_NilValues_DoesNotPanic above) does not make this
+// lower-level guard redundant: leafToSQL is exercised directly by
+// toSQL/dissect before any evaluability check runs, and defense-in-depth
+// here is what the sqlite plugin already pins.
+func TestPlan_TemporalBetween_NilValues_Excludes(t *testing.T) {
+	f := spi.Filter{
+		Op: spi.FilterBetween, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal,
+		Values: nil,
+	}
+	counter := 0
+	sql, args := leafToSQL(f, &counter)
+	if sql != "false" {
+		t.Errorf("sql = %s, want false (exclude) for a malformed temporal BETWEEN with no values", sql)
+	}
+	if len(args) != 0 {
+		t.Errorf("args = %v, want none", args)
+	}
+}
+
+// TestPlan_TemporalBetween_OneValue_Excludes covers the 1-element-array
+// shape of the same malformed condition — see
+// TestPlan_TemporalBetween_NilValues_Excludes's doc comment.
+func TestPlan_TemporalBetween_OneValue_Excludes(t *testing.T) {
+	f := spi.Filter{
+		Op: spi.FilterBetween, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal,
+		Values: []any{"2021-01-01T00:00:00Z"},
+	}
+	counter := 0
+	sql, _ := leafToSQL(f, &counter)
+	if sql != "false" {
+		t.Errorf("sql = %s, want false (exclude) for a malformed temporal BETWEEN with one value", sql)
+	}
+}
+
 func TestEscapeLike(t *testing.T) {
 	tests := []struct {
 		input string
@@ -1195,6 +1237,30 @@ func TestSoundness_ExactFastPath(t *testing.T) {
 				t.Error("where should narrow even on the fast path")
 			}
 		})
+	}
+}
+
+// TestSoundness_AllExactPlanStillChecksEvaluability guards the exact CRITICAL
+// gap a fast-path-only Prepare call would leave open: only IsNull/NotNull
+// are leafExact, so an AND of two such leaves plans fully pushable and
+// EXACT — postFilter stays nil, and dissect() never installs a residual.
+// Gating spi.Prepare on "postFilter != nil" would let this shape skip
+// evaluability entirely, and IS NULL on a JSON key spi.Prepare cannot
+// resolve (an unrecognized SourceMeta path, here) is TRUE for every row —
+// not the empty page or rejection every other backend gives, but silently
+// selecting everything. planQuery must reject this outright, independent of
+// whether the plan shape ever produces a residual to prepare.
+func TestSoundness_AllExactPlanStillChecksEvaluability(t *testing.T) {
+	f := spi.Filter{Op: spi.FilterAnd, Children: []spi.Filter{
+		{Op: spi.FilterIsNull, Path: "name", Source: spi.SourceData},
+		{Op: spi.FilterIsNull, Path: "bogus", Source: spi.SourceMeta},
+	}}
+	_, err := planQuery(f)
+	if err == nil {
+		t.Fatal("planQuery must fail on an unevaluable leaf even when every pushed leaf is EXACT and postFilter would stay nil")
+	}
+	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
+		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
 	}
 }
 
