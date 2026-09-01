@@ -100,6 +100,32 @@ func TestSearcher_EqFilter(t *testing.T) {
 	}
 }
 
+// TestSearcher_RejectsUnevaluableFilter pins the propagation of
+// spi.Prepare's error through Search: a leaf spi.Prepare genuinely cannot
+// evaluate (here, a LIKE pattern with a trailing backslash that will not
+// compile) must fail the search outright, not silently degrade to an empty
+// page. See .claude/rules/correctness-over-availability.md.
+func TestSearcher_RejectsUnevaluableFilter(t *testing.T) {
+	factory, ctx := setupSearcherTest(t)
+
+	store, _ := factory.EntityStore(ctx)
+	searcher, ok := store.(spi.Searcher)
+	if !ok {
+		t.Fatal("entityStore does not implement spi.Searcher")
+	}
+
+	_, err := searcher.Search(ctx, spi.Filter{
+		Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
+		Value: `a\`, Declared: []spi.DataType{spi.String},
+	}, spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 100})
+	if err == nil {
+		t.Fatal("Search must fail on an unevaluable filter, not return an empty page")
+	}
+	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
+		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
+	}
+}
+
 func TestSearcher_GtFilter(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 

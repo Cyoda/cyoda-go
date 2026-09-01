@@ -263,9 +263,13 @@ var soundnessConditions = []struct {
 // oracleIDs computes the TRUE match set directly via spi.Prepare(f).Match over
 // the in-process corpus — exactly the memory backend's Iterate/Search
 // algorithm (no SQL, no narrowing).
-func oracleIDs(corpus []*spi.Entity, f spi.Filter) map[string]bool {
+func oracleIDs(t *testing.T, corpus []*spi.Entity, f spi.Filter) map[string]bool {
+	t.Helper()
 	out := map[string]bool{}
-	pf := spi.Prepare(f)
+	pf, err := spi.Prepare(f)
+	if err != nil {
+		t.Fatalf("spi.Prepare: %v", err)
+	}
 	for _, e := range corpus {
 		if pf.Match(e.Data, e.Meta) {
 			out[e.Meta.ID] = true
@@ -310,7 +314,7 @@ func TestSqlitePushdownSoundnessProperty(t *testing.T) {
 
 	for _, tc := range soundnessConditions {
 		t.Run(tc.name, func(t *testing.T) {
-			oracle := oracleIDs(corpus, tc.f)
+			oracle := oracleIDs(t, corpus, tc.f)
 
 			// Assertion 1: SQL pre-recheck candidates ⊇ kernel matches (no
 			// under-select survives to the re-check stage).
@@ -394,7 +398,11 @@ func TestSqlitePushdownSoundness_MonomorphicStringNumericOperand(t *testing.T) {
 
 	// Kernel oracle: the string field holds "30", the operand normalizes to the
 	// text "30" -> a match.
-	if !spi.Prepare(filter).Match([]byte(`{"code":"30"}`), spi.EntityMeta{}) {
+	oraclePF, err := spi.Prepare(filter)
+	if err != nil {
+		t.Fatalf("spi.Prepare: %v", err)
+	}
+	if !oraclePF.Match([]byte(`{"code":"30"}`), spi.EntityMeta{}) {
 		t.Fatalf("test setup invalid: kernel must match STRING \"30\" against numeric-looking operand 30")
 	}
 
@@ -433,7 +441,11 @@ func TestSqlitePushdownSoundness_LikeWildcardUnderSelects_KNOWNBUG(t *testing.T)
 
 	filter := spi.Filter{Op: spi.FilterLike, Source: spi.SourceData, Path: "desc", Value: "foo%baz"}
 
-	oracle := spi.Prepare(filter).Match([]byte(`{"desc":"foobarbaz"}`), spi.EntityMeta{})
+	oraclePF, err := spi.Prepare(filter)
+	if err != nil {
+		t.Fatalf("spi.Prepare: %v", err)
+	}
+	oracle := oraclePF.Match([]byte(`{"desc":"foobarbaz"}`), spi.EntityMeta{})
 	if !oracle {
 		t.Fatalf("test setup invalid: kernel oracle must match wildcard pattern 'foo%%baz' against 'foobarbaz'")
 	}

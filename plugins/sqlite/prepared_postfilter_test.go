@@ -38,7 +38,10 @@ func TestPlanQuery_PreparedPostFilterMatchesNilness(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			plan := planQuery(tc.filter)
+			plan, err := planQuery(tc.filter)
+			if err != nil {
+				t.Fatalf("planQuery: %v", err)
+			}
 			if (plan.postFilter == nil) != (plan.preparedPostFilter == nil) {
 				t.Fatalf("nil-ness diverged: postFilter==nil is %v, preparedPostFilter==nil is %v",
 					plan.postFilter == nil, plan.preparedPostFilter == nil)
@@ -48,7 +51,11 @@ func TestPlanQuery_PreparedPostFilterMatchesNilness(t *testing.T) {
 			}
 			// And the prepared one must agree with the residual it stands for.
 			data := []byte(`{"name":"Alice","a":null,"b":"x"}`)
-			want := spi.Prepare(*plan.postFilter).Match(data, spi.EntityMeta{})
+			wantPF, err := spi.Prepare(*plan.postFilter)
+			if err != nil {
+				t.Fatalf("spi.Prepare: %v", err)
+			}
+			want := wantPF.Match(data, spi.EntityMeta{})
 			if got := plan.preparedPostFilter.Match(data, spi.EntityMeta{}); got != want {
 				t.Errorf("preparedPostFilter.Match = %v, want %v (the residual it stands for)", got, want)
 			}

@@ -102,15 +102,22 @@ func (s *entityStore) Iterate(
 		if err != nil {
 			return nil, err
 		}
+		prepared, err := spi.Prepare(filter)
+		if err != nil {
+			return nil, fmt.Errorf("Iterate: %w", err)
+		}
 		return &sqliteSliceIter{
 			ctx:      ctx,
 			snapshot: entities,
-			prepared: spi.Prepare(filter),
+			prepared: prepared,
 		}, nil
 	}
 
 	// Zero-value Filter means "match all" per the spi.Iterable contract.
-	plan := planFor(filter)
+	plan, err := planFor(filter)
+	if err != nil {
+		return nil, fmt.Errorf("Iterate: %w", err)
+	}
 
 	searchOpts := spi.SearchOptions{
 		ModelName:    model.EntityName,
@@ -320,7 +327,10 @@ func (s *entityStore) GroupedAggregate(
 		}
 	}
 	// Zero-value Filter means "match all" (same convention as Iterable).
-	plan := planFor(filter)
+	plan, err := planFor(filter)
+	if err != nil {
+		return nil, fmt.Errorf("GroupedAggregate: %w", err)
+	}
 	if plan.postFilter != nil {
 		// A SQL GROUP BY can't safely apply a residual filter after the
 		// fact — it would corrupt per-bucket counts/aggregates. Defer to
