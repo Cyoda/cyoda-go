@@ -137,7 +137,14 @@ func genArrayValues(r *rand.Rand) []any {
 
 // genValidCondition builds a condition tree neither evaluator can error on —
 // the only shapes it emits are well-formed by construction (known operator
-// names, known meta fields, AND/OR groups).
+// names, known meta fields, AND/OR/NOT groups).
+//
+// NOT is a GroupCondition with Operator "NOT" and exactly one child (see
+// spi.ConditionToFilter's groupOperatorNames and match.Prepare's "NOT" case,
+// both of which reject any other arity). Its child is drawn from the same
+// genValidCondition recursion used for AND/OR children, so a NOT can wrap a
+// leaf, an AND/OR group, or another NOT — nesting falls out of the ordinary
+// depth-1 recursion, it is not special-cased here.
 func genValidCondition(r *rand.Rand, depth int) predicate.Condition {
 	if depth <= 0 || r.Intn(3) == 0 {
 		switch r.Intn(3) {
@@ -160,15 +167,44 @@ func genValidCondition(r *rand.Rand, depth int) predicate.Condition {
 			}
 		}
 	}
-	op := "AND"
-	if r.Intn(2) == 0 {
-		op = "OR"
+	switch r.Intn(3) {
+	case 0:
+		g := &predicate.GroupCondition{Operator: "AND"}
+		for i := 0; i < r.Intn(4); i++ {
+			g.Conditions = append(g.Conditions, genValidCondition(r, depth-1))
+		}
+		return g
+	case 1:
+		g := &predicate.GroupCondition{Operator: "OR"}
+		for i := 0; i < r.Intn(4); i++ {
+			g.Conditions = append(g.Conditions, genValidCondition(r, depth-1))
+		}
+		return g
+	default:
+		return &predicate.GroupCondition{
+			Operator:   "NOT",
+			Conditions: []predicate.Condition{genValidCondition(r, depth-1)},
+		}
 	}
-	g := &predicate.GroupCondition{Operator: op}
-	for i := 0; i < r.Intn(4); i++ {
-		g.Conditions = append(g.Conditions, genValidCondition(r, depth-1))
+}
+
+// countNotNodes walks a condition tree and counts GroupCondition nodes whose
+// Operator is "NOT", at any depth. Used to pin that the generator actually
+// produces NOT nodes (and nested ones) rather than merely accepting them if
+// they occurred — see TestGenValidCondition_EmitsNot.
+func countNotNodes(cond predicate.Condition) int {
+	g, ok := cond.(*predicate.GroupCondition)
+	if !ok {
+		return 0
 	}
-	return g
+	n := 0
+	if g.Operator == "NOT" {
+		n++
+	}
+	for _, child := range g.Conditions {
+		n += countNotNodes(child)
+	}
+	return n
 }
 
 // Corpus size and seed are overridable so a one-off widened exploration is
@@ -287,6 +323,55 @@ func hasKnownTemporalMetaDivergence(cond predicate.Condition) bool {
 	}
 }
 
+// TestHasKnownTemporalMetaDivergence_PropagatesThroughNot confirms, by
+// running rather than assuming, that the GroupCondition case above is
+// genuinely operator-agnostic: it recurses into c.Conditions regardless of
+// whether c.Operator is "AND", "OR", or "NOT", so a NOT wrapping a
+// known-divergent temporal-meta leaf is still caught. A NOT wrapping the leaf
+// does not "cancel" the divergence — NOT(divergent) is still divergent,
+// because the two evaluators would disagree about what the WRAPPED leaf
+// itself evaluates to before either one negates it. Without this
+// propagation, the corpus's NOT nodes would spuriously fail
+// TestPrepare_EquivalentToKernel on an already-known, permanent gap — which
+// invites "fixing" the failure by relaxing the guard this test pins.
+func TestHasKnownTemporalMetaDivergence_PropagatesThroughNot(t *testing.T) {
+	divergentLeaf := &predicate.LifecycleCondition{
+		Field:        "creationDate",
+		OperatorType: "CONTAINS", // non-temporal operator on a temporal meta field
+		Value:        "2024",
+	}
+	if !hasKnownTemporalMetaDivergence(divergentLeaf) {
+		t.Fatal("sanity check failed: the leaf itself must be flagged divergent")
+	}
+
+	notWrapped := &predicate.GroupCondition{Operator: "NOT", Conditions: []predicate.Condition{divergentLeaf}}
+	if !hasKnownTemporalMetaDivergence(notWrapped) {
+		t.Error("NOT wrapping a known-divergent temporal-meta leaf must still be flagged divergent")
+	}
+
+	nestedNotWrapped := &predicate.GroupCondition{Operator: "NOT", Conditions: []predicate.Condition{notWrapped}}
+	if !hasKnownTemporalMetaDivergence(nestedNotWrapped) {
+		t.Error("nested NOT(NOT(divergent leaf)) must still be flagged divergent")
+	}
+
+	andWithNotChild := &predicate.GroupCondition{Operator: "AND", Conditions: []predicate.Condition{
+		&predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"},
+		notWrapped,
+	}}
+	if !hasKnownTemporalMetaDivergence(andWithNotChild) {
+		t.Error("an AND containing a NOT-wrapped divergent leaf must still be flagged divergent")
+	}
+
+	// Negative control: a NOT wrapping a NON-divergent condition must not be
+	// flagged.
+	nonDivergent := &predicate.GroupCondition{Operator: "NOT", Conditions: []predicate.Condition{
+		&predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"},
+	}}
+	if hasKnownTemporalMetaDivergence(nonDivergent) {
+		t.Error("NOT wrapping a non-divergent condition must not be flagged divergent")
+	}
+}
+
 // TestPrepare_EquivalentToKernel is the fuzz-corpus merge gate: exact answer
 // agreement between match.Prepare and the SPI kernel
 // (spi.ConditionToFilter + spi.Prepare) on every well-formed condition the
@@ -328,6 +413,34 @@ func hasKnownTemporalMetaDivergence(cond predicate.Condition) bool {
 //     never-match with a NIL error — it is not one of the new evaluability
 //     failures the disposition check above targets.
 //
+// TestGenValidCondition_EmitsNot pins that the corpus generator actually
+// produces NOT nodes — including nested ones (a NOT whose child is itself a
+// NOT) — rather than merely tolerating them if genValidCondition happened to
+// emit one. Before this generator change, genValidCondition only ever chose
+// AND/OR at a branch point, so this corpus covered zero NOT nodes: the
+// reported comparison rate was not evidence the "NOT" evaluator arm
+// (internal/match/prepared.go's prepNot case) was exercised at all.
+func TestGenValidCondition_EmitsNot(t *testing.T) {
+	r := rand.New(rand.NewSource(equivSeed()))
+	notCount := 0
+	nestedNotCount := 0
+	for i := 0; i < 2000; i++ {
+		cond := genValidCondition(r, 3)
+		n := countNotNodes(cond)
+		notCount += n
+		if n >= 2 {
+			nestedNotCount++
+		}
+	}
+	if notCount == 0 {
+		t.Fatal("genValidCondition never emitted a NOT node across 2000 draws at depth 3")
+	}
+	if nestedNotCount == 0 {
+		t.Fatal("genValidCondition never emitted a NESTED NOT (NOT wrapping NOT) across 2000 draws at depth 3")
+	}
+	t.Logf("TestGenValidCondition_EmitsNot: %d NOT nodes across 2000 draws, %d draws containing 2+ NOT nodes", notCount, nestedNotCount)
+}
+
 // A gate that skips everything passes vacuously, so — mirroring the SPI
 // kernel's own rate floor added for the identical hazard
 // (TestPrepare_EquivalentToFrozenMatchFilter) — this test fails if the

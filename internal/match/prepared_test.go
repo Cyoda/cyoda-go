@@ -437,6 +437,7 @@ func TestPrepare_NotOverWildcardIsUniversal(t *testing.T) {
 
 	require.True(t, pNot.Match([]byte(`{"tags":["blue"]}`), spi.EntityMeta{}))
 	require.True(t, pNot.Match([]byte(`{"tags":[]}`), spi.EntityMeta{}), "vacuously true: empty array")
+	require.True(t, pNot.Match([]byte(`{"tags":null}`), spi.EntityMeta{}), "vacuously true: explicit null")
 	require.True(t, pNot.Match([]byte(`{}`), spi.EntityMeta{}), "vacuously true: absent field")
 }
 
