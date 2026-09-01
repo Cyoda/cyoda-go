@@ -201,17 +201,6 @@ func TestConformance(t *testing.T) {
 			// tx-state buffer surface mid-op rollback through the engine's
 			// failure code.
 			"Transaction/TxStateErrors/OpAfterRollback": "postgres: pgx.Tx aborts surface as ErrConflict via SQLSTATE 25P02, not as ErrTxRolledBack",
-			// spitest's Pattern/MalformedLike pins the pre-error Prepare
-			// contract ("a leaf whose operand cannot be expanded becomes a
-			// leaf that never matches" — Search returns no error, no rows).
-			// spi.Prepare now returns an error wrapping ErrUnevaluableLeaf
-			// for exactly this case (a pattern operand that will not
-			// compile), and Search propagates it rather than degrading to
-			// an empty page (correctness-over-availability). This postgres
-			// plugin's own TestPGSearcher_RejectsUnevaluableFilter pins the
-			// new contract directly. The spitest case itself asserts the
-			// superseded contract and needs an SPI-side update.
-			"Searcher/Pattern/MalformedLike": "asserts the pre-ErrUnevaluableLeaf Prepare contract; superseded, needs an SPI-side fix",
 		},
 	})
 }
