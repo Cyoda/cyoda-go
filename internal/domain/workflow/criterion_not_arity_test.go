@@ -43,7 +43,7 @@ func TestValidateImportRequest_RejectsCriterionNOT_ZeroConditions(t *testing.T) 
 	if err == nil {
 		t.Fatal("NOT with zero conditions must be rejected at import")
 	}
-	if !strings.Contains(err.Error(), "wf-regex") || !strings.Contains(err.Error(), "go") {
+	if !strings.Contains(err.Error(), "wf-regex") || !strings.Contains(err.Error(), `transition "go"`) {
 		t.Errorf("error must name the offending workflow/transition, got: %v", err)
 	}
 }

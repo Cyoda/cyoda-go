@@ -41,8 +41,17 @@ func TestSearch_Sync_GroupOperatorNOT_OneCondition_Accepted(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("NOT(status==inactive): expected 200, got %d", status)
 	}
+	// Count alone does not discriminate NOT from the exact historical bug
+	// this validator closes: a non-OR group operator silently mapped to
+	// FilterAnd would answer AND(status==inactive) here, which ALSO returns
+	// exactly one row — Bob, not Alice. Assert the identity, not just the
+	// count.
 	if len(results) != 1 {
 		t.Fatalf("NOT(status==inactive): expected 1 result (Alice), got %d: %v", len(results), results)
+	}
+	if name := extractDataString(t, results[0], "name"); name != "Alice" {
+		t.Errorf("NOT(status==inactive): expected Alice, got %q — a group operator silently folded to AND "+
+			"would also return exactly 1 row here (Bob), so the count alone would not have caught it", name)
 	}
 }
 
@@ -111,8 +120,18 @@ func TestSearch_AsyncSubmit_GroupOperatorNOT_OneCondition_Accepted(t *testing.T)
 		t.Fatalf("parse results page: %v; body: %s", err, body)
 	}
 	content, _ := page["content"].([]any)
+	// Same identity check as the sync test above: a group operator silently
+	// folded to AND would also answer exactly 1 row here (Bob), so the count
+	// alone would not distinguish NOT from that historical bug.
 	if len(content) != 1 {
-		t.Errorf("NOT(status==inactive) async: expected 1 result (Alice), got %d: %s", len(content), body)
+		t.Fatalf("NOT(status==inactive) async: expected 1 result (Alice), got %d: %s", len(content), body)
+	}
+	row, ok := content[0].(map[string]any)
+	if !ok {
+		t.Fatalf("content[0] is not a map[string]any: %T", content[0])
+	}
+	if name := extractDataString(t, row, "name"); name != "Alice" {
+		t.Errorf("NOT(status==inactive) async: expected Alice, got %q", name)
 	}
 }
 

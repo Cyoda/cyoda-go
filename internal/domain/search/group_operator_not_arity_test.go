@@ -26,8 +26,11 @@ import (
 //
 // The operator match stays case-sensitive: "not" (lowercase) is not "NOT"
 // and is rejected as an unknown group operator regardless of arity, exactly
-// like "or"/"and" already are — TestValidateCondition_GroupOperatorLowercaseOr_Rejected
-// in group_operator_reject_test.go pins that half of the contract.
+// like "or"/"and" already are. TestValidateCondition_GroupOperatorLowercaseOr_Rejected
+// in group_operator_reject_test.go pins that half of the contract for "or";
+// TestValidateCondition_GroupOperatorLowercaseNot_Rejected and its criterion
+// sibling below pin it directly for "not" — the newly-accepted operator and
+// so the one most at risk of being loosened into case-insensitivity later.
 
 func simpleAliceCondition() *predicate.SimpleCondition {
 	return &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
@@ -134,6 +137,36 @@ func TestValidateCondition_NestedGroupNOTBadArity_Rejected(t *testing.T) {
 	err := ValidateCondition(cond)
 	if err == nil {
 		t.Fatal("expected a nested NOT with bad arity to be rejected")
+	}
+	if !errors.Is(err, ErrInvalidCondition) {
+		t.Errorf("error does not wrap ErrInvalidCondition: %v", err)
+	}
+}
+
+// --- Case sensitivity: "not" (lowercase) must NOT be treated as "NOT" ---
+
+func TestValidateCondition_GroupOperatorLowercaseNot_Rejected(t *testing.T) {
+	cond := &predicate.GroupCondition{
+		Operator:   "not",
+		Conditions: []predicate.Condition{simpleAliceCondition()},
+	}
+	err := ValidateCondition(cond)
+	if err == nil {
+		t.Fatal("expected lowercase \"not\" group operator to be rejected")
+	}
+	if !errors.Is(err, ErrInvalidCondition) {
+		t.Errorf("error does not wrap ErrInvalidCondition: %v", err)
+	}
+}
+
+func TestValidateCriterionCondition_GroupOperatorLowercaseNot_Rejected(t *testing.T) {
+	cond := &predicate.GroupCondition{
+		Operator:   "not",
+		Conditions: []predicate.Condition{simpleAliceCondition()},
+	}
+	err := ValidateCriterionCondition(cond)
+	if err == nil {
+		t.Fatal("expected lowercase \"not\" group operator to be rejected")
 	}
 	if !errors.Is(err, ErrInvalidCondition) {
 		t.Errorf("error does not wrap ErrInvalidCondition: %v", err)

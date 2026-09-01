@@ -35,10 +35,27 @@ func amountGreaterThan1000() map[string]any {
 
 // TestRPC_DirectSearch_GroupOperatorNOT_OneCondition_Accepted is the
 // positive control: a NOT group with exactly one condition must be accepted
-// rather than rejected as a malformed request.
+// AND must evaluate a real negation, not merely fail to be rejected. Seeds
+// Alice and Bob so NOT(name==Bob) has exactly one entity to discriminate
+// against — ranging over an empty stream (as an unseeded model would leave
+// it) would assert nothing, since the loop body would never execute.
 func TestRPC_DirectSearch_GroupOperatorNOT_OneCondition_Accepted(t *testing.T) {
 	svc, ctx := newTestEnv(t)
 	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Bob"})
+
+	for _, name := range []string{"Alice", "Bob"} {
+		createCE := makeCE(EntityCreateRequest, map[string]any{
+			"id":         "test",
+			"dataFormat": "JSON",
+			"payload": map[string]any{
+				"model": map[string]any{"name": "person", "version": 1},
+				"data":  map[string]any{"name": name},
+			},
+		})
+		if _, err := svc.EntityManage(ctx, createCE); err != nil {
+			t.Fatalf("create %s failed: %v", name, err)
+		}
+	}
 
 	ce := makeCE(EntitySearchRequest, map[string]any{
 		"id":        "test",
@@ -50,12 +67,21 @@ func TestRPC_DirectSearch_GroupOperatorNOT_OneCondition_Accepted(t *testing.T) {
 	if err := svc.EntitySearchCollection(ce, stream); err != nil {
 		t.Fatalf("unexpected transport error: %v", err)
 	}
-	for _, sent := range stream.sent {
-		var typed events.EntityResponseJson
-		validateResponse(t, sent, &typed)
-		if !typed.Success {
-			t.Fatalf("expected success=true for NOT with exactly one condition, got error: %v", typed.Error)
-		}
+	if len(stream.sent) != 1 {
+		t.Fatalf("NOT(name==Bob) over {Alice,Bob}: expected exactly 1 response, got %d", len(stream.sent))
+	}
+
+	var typed events.EntityResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if !typed.Success {
+		t.Fatalf("expected success=true for NOT with exactly one condition, got error: %v", typed.Error)
+	}
+	dataMap, ok := typed.Payload.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Payload.Data is not map[string]interface{}: %T", typed.Payload.Data)
+	}
+	if name, _ := dataMap["name"].(string); name != "Alice" {
+		t.Errorf("NOT(name==Bob) over {Alice,Bob}: expected Alice, got %q", name)
 	}
 }
 
