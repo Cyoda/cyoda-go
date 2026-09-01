@@ -16,7 +16,7 @@ Every feature follows this flow:
    c. Refactor — all tests stay green
    d. Commit
 3. Run E2E tests:
-   - If Docker socket is available: run directly (go test ./internal/e2e/ -v)
+   - If Docker socket is available: run directly (go test ./internal/e2e/), or `make test-full` for the whole suite
    - If sandboxed without Docker: human operator runs E2E tests and provides feedback
 4. Code review (code-reviewer)
    -> Fix all Critical/Important findings
@@ -37,11 +37,19 @@ Every feature must have tests at the appropriate level before it can be merged.
 **Reconciliation tests** (`test/recon/`, build tag `cyoda_recon`) compare Cyoda-Go responses against Cyoda Cloud to verify API-level compatibility. These are optional and require Cloud credentials.
 
 ```bash
-go test ./... -v                          # all unit tests (no Docker needed)
-go test ./internal/e2e/ -v               # E2E tests (requires Docker)
-make race                                 # race detector (CI-parity scope) — run before every PR
+make test        # iteration tier: unit + cross-backend parity (~90s cold, ~13s warm)
+make test-full   # everything, root + all three plugin submodules (~15 min)
+make race        # race detector (CI-parity scope) — once before a PR
 go test -tags cyoda_recon ./test/recon/   # reconciliation (optional, needs Cloud)
 ```
+
+Both tiers require Docker and there is no Docker-free alternative: if Docker
+cannot serve the suites, `make preflight` fails with what to fix. Prefer these
+targets over a hand-rolled `go test ./...`, which reports `ok` for a suite that
+never ran — a `TestMain` calling `os.Exit(0)` prints `ok  pkg  2.80s` having
+executed nothing. The targets pipe through `scripts/testreport`, which fails
+when a required suite ran no tests and prints failures verbatim rather than
+burying them in `-v` output.
 
 `make race` runs `go test -race -timeout=15m` over every package except
 `internal/e2e` and is what CI invokes — running it locally before a PR
@@ -54,7 +62,8 @@ and when to run `-race` against `./internal/e2e/...` manually.
 |---------|-------------|
 | `go run ./cmd/cyoda` | Run from source |
 | `go build -o bin/cyoda ./cmd/cyoda` | Build executable |
-| `go test ./... -v` | Run all tests |
+| `make test` | Iteration tier: unit + parity (~90s cold, ~13s warm) |
+| `make test-full` | Everything, root + plugin submodules (~15 min) |
 | `make race` | Run tests with race detector (CI-parity scope; excludes `internal/e2e`) |
 | `go test -coverprofile=coverage.out ./...` | Test coverage |
 | `./scripts/dev/run-docker-dev.sh` | Start with Docker + PostgreSQL |
