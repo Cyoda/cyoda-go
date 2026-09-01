@@ -36,21 +36,31 @@ import (
 // TestMatch_TemporalMetaField_StringOperatorNeverMatches. Every other
 // row-dependent failure stays a non-match, exactly as before.
 
-// errUnsupportedOperator marks an operator NAME with no kernel op — a
+// ErrUnsupportedOperator marks an operator NAME with no kernel op — a
 // structural fault that fails Prepare. It is deliberately a distinct
-// sentinel from errUnevaluableLeaf (an operand that parses into no declared
+// sentinel from ErrUnevaluableLeaf (an operand that parses into no declared
 // type, an empty leaf path, or a path outside the filter-path grammar) so a
 // caller that wants to tell "no such operator" apart from "operator exists
 // but this leaf cannot be evaluated" can do so with errors.Is.
-var errUnsupportedOperator = errors.New("unsupported operator")
+//
+// Exported so callers outside this package that drive Prepare against a
+// residual (untranslatable) condition — search.Service.Search's fallback,
+// entity's conditional-delete planner, grouped-stats' streaming tally — can
+// classify a Prepare failure into a client-facing 4xx via
+// search.ClassifyStoreQueryError instead of it defaulting to a 500. See that
+// function's doc for the mapping.
+var ErrUnsupportedOperator = errors.New("unsupported operator")
 
-// errUnevaluableLeaf marks a leaf that IS a recognised operator but cannot be
+// ErrUnevaluableLeaf marks a leaf that IS a recognised operator but cannot be
 // evaluated: an operand that parses into no declared type (or a malformed
 // range arity), an empty leaf path, or a jsonPath outside the filter-path
 // grammar. Prepare fails closed on all three rather than building a node that
 // silently never matches — see prepKind's doc for why a silently-unfinished
 // node is exactly the failure mode this guards against.
-var errUnevaluableLeaf = errors.New("unevaluable leaf")
+//
+// Exported for the same cross-package classification reason as
+// ErrUnsupportedOperator (see its doc).
+var ErrUnevaluableLeaf = errors.New("unevaluable leaf")
 
 // prepKind discriminates the prepared node shapes.
 type prepKind int
@@ -168,14 +178,14 @@ func prepareDesugared(cond predicate.Condition, fieldTypes FieldTypes) (prepNode
 }
 
 // expandNamed maps an operator NAME to its kernel op and expands the operand.
-// A name with no kernel op is a structural fault (errUnsupportedOperator);
+// A name with no kernel op is a structural fault (ErrUnsupportedOperator);
 // anything else the kernel rejects is an expansion failure the caller
-// (leafNode) turns into a Prepare error (errUnevaluableLeaf) — an unevaluable
+// (leafNode) turns into a Prepare error (ErrUnevaluableLeaf) — an unevaluable
 // leaf is a structural fault too, not a leaf that silently never matches.
 func expandNamed(operatorType string, value any, declared []spi.DataType) (spi.Expansion, error) {
 	op, ok := opNameToFilterOp(operatorType)
 	if !ok {
-		return spi.Expansion{}, fmt.Errorf("%w: %s", errUnsupportedOperator, operatorType)
+		return spi.Expansion{}, fmt.Errorf("%w: %s", ErrUnsupportedOperator, operatorType)
 	}
 	var values []string
 	if op == spi.FilterBetween || op == spi.FilterBetweenInclusive {
@@ -222,14 +232,14 @@ func expandNamed(operatorType string, value any, declared []spi.DataType) (spi.E
 func leafNode(kind prepKind, operatorType string, value any, declared []spi.DataType) (prepNode, error) {
 	exp, err := expandNamed(operatorType, value, declared)
 	if err != nil {
-		if errors.Is(err, errUnsupportedOperator) {
+		if errors.Is(err, ErrUnsupportedOperator) {
 			return prepNode{}, err
 		}
 		// An operand that parses into no declared type, or a malformed range
 		// arity, cannot be evaluated: the swallowed expansion error the
 		// per-row evaluator used to absorb into a silent non-match, made an
 		// explicit Prepare failure instead.
-		return prepNode{}, fmt.Errorf("%w: %v", errUnevaluableLeaf, err)
+		return prepNode{}, fmt.Errorf("%w: %v", ErrUnevaluableLeaf, err)
 	}
 	return prepNode{kind: kind, exp: exp}, nil
 }
@@ -267,7 +277,7 @@ func prepareSimple(c *predicate.SimpleCondition, fieldTypes FieldTypes) (prepNod
 		// whose raw bytes parse to a bare JSON string at the root, the
 		// resolved "field" IS that root scalar, and a string operator
 		// would substring-match it directly.
-		return prepNode{}, fmt.Errorf("%w: leaf addresses no field (empty path)", errUnevaluableLeaf)
+		return prepNode{}, fmt.Errorf("%w: leaf addresses no field (empty path)", ErrUnevaluableLeaf)
 	}
 	hops, err := spi.ParseFilterPath(stripped)
 	if err != nil {
@@ -275,7 +285,7 @@ func prepareSimple(c *predicate.SimpleCondition, fieldTypes FieldTypes) (prepNod
 		// class an expansion failure already is, and the same answer the
 		// SPI kernel gives a malformed SourceData path (prepareNode in
 		// prepared_filter.go).
-		return prepNode{}, fmt.Errorf("%w: path %q: %v", errUnevaluableLeaf, c.JsonPath, err)
+		return prepNode{}, fmt.Errorf("%w: path %q: %v", ErrUnevaluableLeaf, c.JsonPath, err)
 	}
 	n.hops = hops
 	return n, nil

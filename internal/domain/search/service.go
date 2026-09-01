@@ -784,6 +784,14 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		// than on whichever row happens to reach it first.
 		prepared, prepErr := match.Prepare(cond, fieldTypes)
 		if prepErr != nil {
+			// Classify before the generic wrap: match.ErrUnevaluableLeaf /
+			// match.ErrUnsupportedOperator are client-input faults
+			// (ClassifyStoreQueryError's own doc explains the mapping), not
+			// a storage failure — an unclassified wrap wrongly answered 500
+			// plus a support ticket for input that is simply malformed.
+			if appErr := ClassifyStoreQueryError(prepErr); appErr != nil {
+				return nil, appErr
+			}
 			return nil, fmt.Errorf("predicate match failed: %w", prepErr)
 		}
 
@@ -847,9 +855,41 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 // and a plugin's own check disagree, which is worth a WARN — but the caller's
 // answer is still 400, because the input is what is wrong.
 //
+// spi.ErrUnevaluableLeaf and spi.ErrInvalidPattern are the SPI kernel's own
+// Prepare (spi.Filter side) refusing an operand it cannot type-check or a
+// pattern it cannot compile — the § 14.4 commercial-backend obligation this
+// mapping exists to satisfy. Both are the same class of backstop as
+// ErrInvalidFilterPath (input the boundary should already have rejected) and
+// both collapse to 400 INVALID_CONDITION: the leaf is malformed input, not a
+// storage fault, and neither sentinel is granular enough to say whether the
+// underlying cause was a type mismatch, a path problem, or an uncompilable
+// pattern (spi.ErrUnevaluableLeaf's own doc lists all three as one cause).
+//
+// match.ErrUnevaluableLeaf and match.ErrUnsupportedOperator are
+// internal/match's OWN Prepare (predicate.Condition side, a different
+// evaluator entirely — see the package doc's "Two evaluators stay two")
+// reached through search.Service.Search's GetAll+match fallback, entity's
+// conditional-delete planner, and grouped-stats' streaming tally. Every
+// caller of those previously wrapped the error generically
+// ("predicate match failed: %w"), which classified as an unrecognised 500 —
+// the identical defect ErrInvalidFilterPath's omission was, just on the
+// residual-evaluator side rather than the pushdown side. match.ErrUnevaluableLeaf
+// maps to 400 CONDITION_TYPE_MISMATCH: unlike the SPI-side sentinel, its
+// three dominant real-world causes (an operand that parses into no declared
+// type, a malformed range arity, a path outside the grammar) are reached
+// downstream of this evaluator's own callers' path/type boundary checks, so
+// by the time Prepare sees it the declared-type mismatch is what is actually
+// live in practice (see the fallback's own "no schema registered" comment in
+// Search). match.ErrUnsupportedOperator — an operator NAME with no kernel
+// op — maps to 400 INVALID_CONDITION, matching the spec's own disposition
+// for "unrecognised group operator" and mirroring spi.ErrUnknownOperator's
+// established mapping elsewhere.
+//
 // Exported so callers outside this package that drive a store with an
-// engine-translated Filter (entity's grouped-stats service) classify
-// identically instead of maintaining a second copy of the table.
+// engine-translated Filter (entity's grouped-stats service) or run
+// internal/match's residual evaluator directly (entity's conditional-delete
+// planner, grouped-stats' streaming tally) classify identically instead of
+// maintaining a second copy of the table.
 func ClassifyStoreQueryError(err error) *common.AppError {
 	switch {
 	case err == nil:
@@ -864,6 +904,24 @@ func ClassifyStoreQueryError(err error) *common.AppError {
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeInvalidFieldPath,
 			"condition or sort references an invalid field path").WithCause(err)
+	case errors.Is(err, spi.ErrUnevaluableLeaf):
+		slog.Warn("storage backend could not evaluate a condition leaf the boundary accepted",
+			"pkg", "search", "err", err)
+		return common.Operational(http.StatusBadRequest,
+			common.ErrCodeInvalidCondition,
+			"condition contains a leaf the backend cannot evaluate").WithCause(err)
+	case errors.Is(err, spi.ErrInvalidPattern):
+		return common.Operational(http.StatusBadRequest,
+			common.ErrCodeInvalidCondition,
+			"condition contains a pattern operand the backend cannot compile").WithCause(err)
+	case errors.Is(err, match.ErrUnevaluableLeaf):
+		return common.Operational(http.StatusBadRequest,
+			common.ErrCodeConditionTypeMismatch,
+			"condition operand does not fit the field's declared type").WithCause(err)
+	case errors.Is(err, match.ErrUnsupportedOperator):
+		return common.Operational(http.StatusBadRequest,
+			common.ErrCodeInvalidCondition,
+			"condition uses an operator the evaluator does not support").WithCause(err)
 	}
 	return nil
 }

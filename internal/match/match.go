@@ -19,7 +19,7 @@ import (
 // is NOT tolerated for a comparison/range leaf on that path: with no declared
 // type to expand the operand against, the leaf cannot be evaluated and
 // Prepare fails closed (leafNode's expansion-failure branch,
-// errUnevaluableLeaf in prepared.go) rather than silently degrading to a
+// ErrUnevaluableLeaf in prepared.go) rather than silently degrading to a
 // permanent non-match. String and null-test leaves are unaffected — they are
 // declaration-independent and evaluate the same with or without a declared
 // type.

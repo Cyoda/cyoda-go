@@ -1085,6 +1085,13 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 	}
 	prepared, prepErr := match.Prepare(cond, fieldTypes)
 	if prepErr != nil {
+		// Classify before the generic wrap — same rationale as
+		// SearchService.Search's own match.Prepare call site: an unclassified
+		// wrap surfaced a malformed client condition as a 500 plus a support
+		// ticket. See search.ClassifyStoreQueryError's doc for the mapping.
+		if appErr := search.ClassifyStoreQueryError(prepErr); appErr != nil {
+			return deleteSelectionPlan{}, appErr
+		}
 		return deleteSelectionPlan{}, fmt.Errorf("predicate match failed: %w", prepErr)
 	}
 	return deleteSelectionPlan{residual: &prepared}, nil

@@ -91,11 +91,31 @@ func classifyGroupedStatsError(err error) error {
 		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, err.Error()).WithCause(err)
 	case errors.Is(err, search.ErrInvalidFieldPath):
 		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, err.Error()).WithCause(err)
-	case errors.Is(err, spi.ErrInvalidFilterPath):
-		// The PLUGIN-side twin of the arm above: a backend's own backstop
-		// rejecting a path outside the model's syntax. Same disposition (400
-		// INVALID_FIELD_PATH) because the input is what is wrong; delegated so
-		// the mapping is not maintained twice.
+	case errors.Is(err, spi.ErrInvalidFilterPath),
+		errors.Is(err, spi.ErrUnevaluableLeaf),
+		errors.Is(err, spi.ErrInvalidPattern),
+		errors.Is(err, match.ErrUnevaluableLeaf),
+		errors.Is(err, match.ErrUnsupportedOperator):
+		// spi.ErrInvalidFilterPath is the PLUGIN-side twin of the arm above: a
+		// backend's own backstop rejecting a path outside the model's syntax.
+		//
+		// spi.ErrUnevaluableLeaf / spi.ErrInvalidPattern reach here from the
+		// streaming-tally fallback's own store.Iterate call (tallyStreaming
+		// passes it the pushdown Filter — with Declared possibly empty for a
+		// bare-typeless field — the same way SearchService.Search's Iterate
+		// branch does), or from a GroupedAggregator pushdown attempt.
+		//
+		// match.ErrUnevaluableLeaf / match.ErrUnsupportedOperator reach here
+		// from tallyStreaming's OWN match.Prepare call (the residual
+		// evaluator, used only when the condition doesn't translate to a
+		// pushdown Filter at all).
+		//
+		// All five used to propagate raw, with no case here to catch them, so
+		// they fell through to the generic 500 below — the identical defect
+		// SearchService.Search's own match.Prepare/Iterate call sites had
+		// before search.ClassifyStoreQueryError learned these sentinels (see
+		// that function's doc). Delegating keeps one mapping table instead of
+		// several.
 		return search.ClassifyStoreQueryError(err)
 	case errors.Is(err, search.ErrConditionTypeMismatch):
 		return common.Operational(http.StatusBadRequest, common.ErrCodeConditionTypeMismatch, err.Error()).WithCause(err)
