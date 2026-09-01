@@ -1,9 +1,11 @@
 package search_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -438,4 +440,66 @@ func TestAsyncSearchJob_BareLeafField_RendersInvalidConditionMessage(t *testing.
 	if job.Error == "search failed unexpectedly" {
 		t.Error("job error is the generic unclassified fallback — the fix did not reach the async path")
 	}
+}
+
+// captureSlog redirects the default logger into a buffer at DEBUG threshold
+// (so a demoted-from-WARN log line is still captured) for the duration of a
+// single call, and restores the previous default afterward.
+func captureSlog(t *testing.T, f func()) string {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prev)
+	f()
+	return buf.String()
+}
+
+// TestClassifyStoreQueryError_UnevaluableLeafLogSeverity pins the
+// security-review fix: spi.ErrUnevaluableLeaf's and match.ErrUnevaluableLeaf's
+// single most common cause, by far, is a field with NO declared type —
+// condition_type_validate.go's boundary deliberately treats that as "no
+// constraint; accept" rather than rejecting it, so the SPI/match kernels
+// refusing to evaluate it is the DESIGNED interaction between an
+// intentionally permissive boundary and a kernel that must have a type to
+// compare against — not a boundary/backend disagreement worth an
+// investigate-me WARN. TestSearch_BareLeafField_Postgres_DirectSearch_
+// 400InvalidCondition (internal/e2e) pins this exact case as a documented,
+// ordinary 400. spi.ErrInvalidPattern is different: ValidatePatterns
+// pre-validates with the SAME derivation before a query ever reaches a
+// backend, so reaching it there IS a genuine inconsistency and must stay a
+// WARN.
+func TestClassifyStoreQueryError_UnevaluableLeafLogSeverity(t *testing.T) {
+	t.Run("spi.ErrUnevaluableLeaf is not logged as an alarm", func(t *testing.T) {
+		err := fmt.Errorf("%w: operand %q for op %q: %v", spi.ErrUnevaluableLeaf, "abc", "GT",
+			errors.New(`ExpandLeaf: operand "abc" parses into no declared type`))
+		out := captureSlog(t, func() { search.ClassifyStoreQueryError(err) })
+		if strings.Contains(out, `"level":"WARN"`) {
+			t.Errorf("expected the documented-normal no-declared-type case NOT to log at WARN, got: %s", out)
+		}
+	})
+
+	t.Run("match.ErrUnevaluableLeaf is not logged as an alarm", func(t *testing.T) {
+		err := fmt.Errorf("predicate match failed: %w", match.ErrUnevaluableLeaf)
+		out := captureSlog(t, func() { search.ClassifyStoreQueryError(err) })
+		if strings.Contains(out, `"level":"WARN"`) {
+			t.Errorf("expected the documented-normal no-declared-type case NOT to log at WARN, got: %s", out)
+		}
+	})
+
+	t.Run("spi.ErrInvalidPattern still logs at WARN: a genuine boundary/backend disagreement", func(t *testing.T) {
+		err := fmt.Errorf("plugin detail: %w", spi.ErrInvalidPattern)
+		out := captureSlog(t, func() { search.ClassifyStoreQueryError(err) })
+		if !strings.Contains(out, `"level":"WARN"`) {
+			t.Errorf("expected spi.ErrInvalidPattern to keep its WARN — it means the pre-validated pattern and the kernel disagree, got: %s", out)
+		}
+	})
+
+	t.Run("spi.ErrInvalidFilterPath still logs at WARN: unrelated to this fix", func(t *testing.T) {
+		err := fmt.Errorf("plugin detail: %w", spi.ErrInvalidFilterPath)
+		out := captureSlog(t, func() { search.ClassifyStoreQueryError(err) })
+		if !strings.Contains(out, `"level":"WARN"`) {
+			t.Errorf("expected spi.ErrInvalidFilterPath's WARN to be untouched, got: %s", out)
+		}
+	})
 }

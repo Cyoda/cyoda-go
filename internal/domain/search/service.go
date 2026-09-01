@@ -858,12 +858,34 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 // spi.ErrUnevaluableLeaf and spi.ErrInvalidPattern are the SPI kernel's own
 // Prepare (spi.Filter side) refusing an operand it cannot type-check or a
 // pattern it cannot compile — the § 14.4 commercial-backend obligation this
-// mapping exists to satisfy. Both are the same class of backstop as
-// ErrInvalidFilterPath (input the boundary should already have rejected) and
-// both collapse to 400 INVALID_CONDITION: the leaf is malformed input, not a
-// storage fault, and neither sentinel is granular enough to say whether the
-// underlying cause was a type mismatch, a path problem, or an uncompilable
-// pattern (spi.ErrUnevaluableLeaf's own doc lists all three as one cause).
+// mapping exists to satisfy. Both collapse to 400 INVALID_CONDITION: the leaf
+// is malformed input, not a storage fault, and neither sentinel is granular
+// enough to say whether the underlying cause was a type mismatch, a path
+// problem, or an uncompilable pattern (spi.ErrUnevaluableLeaf's own doc lists
+// all three as one cause) — but the two are NOT logged at the same severity,
+// because they are not equally likely to mean the same thing:
+//
+//   - spi.ErrInvalidPattern IS the same class of backstop as
+//     ErrInvalidFilterPath (input the boundary should already have rejected):
+//     ValidatePatterns (pattern_validate.go) pre-validates every pattern
+//     operand with the identical derivation (compileLeafPattern) before a
+//     query ever reaches a backend, so a plugin hitting this sentinel means
+//     that pre-validation and the kernel disagree — a genuine inconsistency,
+//     worth a WARN.
+//   - spi.ErrUnevaluableLeaf's single most common cause, by far, is a field
+//     with NO declared type — and condition_type_validate.go's boundary check
+//     deliberately treats that as "no constraint; accept" rather than
+//     rejecting it (see that file's own doc), precisely so a schema-less or
+//     as-yet-unobserved field stays searchable. Hitting this sentinel for
+//     that reason is therefore the DESIGNED interaction between an
+//     intentionally permissive boundary and a kernel that must have a
+//     declared type to compare against — not a boundary/backend disagreement
+//     — and TestSearch_BareLeafField_Postgres_DirectSearch_400InvalidCondition
+//     (internal/e2e) pins exactly this as an ordinary, documented 400. Logging
+//     it at WARN claimed a system inconsistency on every ordinary hit of the
+//     single most common cause, drowning out the rarer, genuinely anomalous
+//     ones (a malformed NOT node, an out-of-grammar path) the sentinel cannot
+//     be told apart from — so this one logs at DEBUG instead.
 //
 // match.ErrUnevaluableLeaf and match.ErrUnsupportedOperator are
 // internal/match's OWN Prepare (predicate.Condition side, a different
@@ -916,7 +938,10 @@ func ClassifyStoreQueryError(err error) *common.AppError {
 			common.ErrCodeInvalidFieldPath,
 			"condition or sort references an invalid field path").WithCause(err)
 	case errors.Is(err, spi.ErrUnevaluableLeaf):
-		slog.Warn("storage backend could not evaluate a condition leaf the boundary accepted",
+		// DEBUG, not WARN — see this function's doc comment: the dominant
+		// cause here (a field with no declared type) is a documented-normal
+		// 400, not a boundary/backend inconsistency.
+		slog.Debug("search condition leaf rejected by the evaluator: commonly a field with no declared type",
 			"pkg", "search", "source", "spi.Prepare", "err", err)
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeInvalidCondition,
@@ -928,7 +953,12 @@ func ClassifyStoreQueryError(err error) *common.AppError {
 			common.ErrCodeInvalidCondition,
 			"condition contains a pattern operand the backend cannot compile").WithCause(err)
 	case errors.Is(err, match.ErrUnevaluableLeaf):
-		slog.Warn("residual evaluator could not evaluate a condition leaf the boundary accepted",
+		// DEBUG, not WARN — same reasoning as the spi.ErrUnevaluableLeaf arm
+		// above: a NOT condition can route the identical no-declared-type
+		// leaf through this evaluator instead of spi.Prepare depending on
+		// translatability alone (the query PLAN, not the input), so the same
+		// documented-normal case reaches this arm just as often.
+		slog.Debug("search condition leaf rejected by the residual evaluator: commonly a field with no declared type",
 			"pkg", "search", "source", "match.Prepare", "err", err)
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeInvalidCondition,

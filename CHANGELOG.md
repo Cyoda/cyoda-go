@@ -640,6 +640,18 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
     binary operator, including negatives. See
     [`docs/cloud-parity/operator-semantics.md`](./docs/cloud-parity/operator-semantics.md).
 
+    **This also widens conditional delete, not only search.** `DELETE
+    /entity/{name}/{version}` evaluates its condition through the same
+    kernel, so a stored or scheduled delete using a negative operator against
+    a typed field — e.g. `$.n NOT_EQUAL 12.5` on an `INTEGER` field — now
+    removes strictly more rows after upgrade than it did before: every entity
+    holding a number at `n`, not zero. Audit any automation that issues a
+    conditional delete with a negative operator before upgrading. The
+    widening does not extend to entities missing the field or holding an
+    explicit `null` there — those still fail closed for every binary
+    operator, negatives included — so exposure is limited to entities that
+    actually hold an unsatisfying value of a declared type.
+
   - **A workflow criterion naming a field the model does not declare now
     aborts and rolls back the save that evaluates it**, `400
     WORKFLOW_FAILED` — no entity write, no state transition, no partial
