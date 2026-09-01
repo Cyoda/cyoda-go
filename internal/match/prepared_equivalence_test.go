@@ -81,6 +81,14 @@ var genValues = []any{
 	"2024-01-01T00:00:00Z", "2024-06-01", "2024",
 	[]any{"1", "100"}, []any{"a", "z"}, []any{"1"},
 	"não",
+	// "[" and "a(" are uncompilable as a MATCHES_PATTERN regex (an unclosed
+	// character class / group) — harmless string literals against every
+	// other operator, but the cheapest way to make the corpus actually
+	// exercise expandNamed's pattern-compile-failure path
+	// (TestPrepare_MalformedPatternIsAnError pins it directly; this is
+	// what makes the wide corpus reach it too, per that test's own doc
+	// about a fail-open swallow a future NOT would invert).
+	"[", "a(",
 }
 
 var genFieldTypeSets = [][]spi.DataType{

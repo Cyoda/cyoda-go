@@ -1016,12 +1016,15 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 
 	// Reject a MATCHES_PATTERN or LIKE operand the kernel cannot compile,
 	// before any selection runs — mirrors SearchService.Search's
-	// ValidatePatterns call. Left unvalidated, the residual match.Prepare
-	// kernel treats an uncompilable pattern as a silent non-match rather
-	// than an error, so the delete would report success having selected
-	// nothing. Runs after the structural check, as it does on the search
-	// path: the pattern error names the leaf by the jsonPath the caller
-	// wrote, and that string should have cleared the path grammar first.
+	// ValidatePatterns call. match.Prepare's own expandNamed also rejects an
+	// uncompilable pattern now (prepared.go, errUnevaluableLeaf) rather than
+	// silently degrading to a non-match, so leaving this validation out
+	// would no longer risk a false "deleted nothing" success — but it would
+	// still surface as a generic internal error instead of a clean 400
+	// INVALID_CONDITION naming the offending leaf. Runs after the structural
+	// check, as it does on the search path: the pattern error names the leaf
+	// by the jsonPath the caller wrote, and that string should have cleared
+	// the path grammar first.
 	if rErr := search.ValidatePatterns(cond); rErr != nil {
 		return deleteSelectionPlan{}, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
 			rErr.Error())

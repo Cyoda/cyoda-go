@@ -16,8 +16,13 @@ import (
 // lexically) because the model declares its type here.
 //
 // A nil FieldTypes, or a lookup that returns nil for an unknown/untyped path,
-// is tolerated: comparison/range leaves on that path degrade to non-match
-// (they cannot be typed), while string and null-test leaves are unaffected.
+// is NOT tolerated for a comparison/range leaf on that path: with no declared
+// type to expand the operand against, the leaf cannot be evaluated and
+// Prepare fails closed (leafNode's expansion-failure branch,
+// errUnevaluableLeaf in prepared.go) rather than silently degrading to a
+// permanent non-match. String and null-test leaves are unaffected — they are
+// declaration-independent and evaluate the same with or without a declared
+// type.
 type FieldTypes func(jsonPath string) []spi.DataType
 
 // stripLeader removes the wire-form "$." (or bare "$") leader from a

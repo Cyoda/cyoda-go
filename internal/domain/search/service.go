@@ -764,7 +764,10 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		// model schema is a required input for correct typing, so we surface the
 		// error rather than silently under-match with untyped leaves. The
 		// no-schema-registered case is (nil, nil) — fields stays nil, the resolver
-		// returns nil types, and comparison leaves degrade to non-match as intended.
+		// returns nil types, and a comparison/range leaf on that path now fails
+		// Prepare (see the prepErr check right below) rather than degrading to a
+		// silent non-match: an unevaluable leaf is a structural fault in the
+		// condition, not a row-dependent answer to guess at.
 		fallbackFields, ffErr := loadFieldsMap(ctx, modelStore, modelRef)
 		if ffErr != nil {
 			return nil, fmt.Errorf("failed to load model field types: %w", ffErr)

@@ -145,12 +145,14 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 	// Structural condition validation (canonical operator set, BETWEEN
 	// arity) — model-independent, mirrors the single boundary the search
 	// path enforces in SearchService.Search/SubmitAsync via the same
-	// search.ValidateCondition call. Without this, a malformed-arity
-	// BETWEEN (or an unknown operatorType) slips past every downstream
-	// layer here exactly as a malformed pattern would: ConditionToFilter and
-	// match.Prepare both fail closed (never matching) rather than erroring,
-	// so the request would silently degrade to an empty/wrong result
-	// instead of failing with 400.
+	// search.ValidateCondition call. Without this, a malformed-arity BETWEEN
+	// (or an unknown operatorType) slips past every downstream layer here:
+	// ConditionToFilter's translate-time check catches some shapes, but both
+	// it and match.Prepare now FAIL CLOSED WITH AN ERROR on an unevaluable
+	// leaf (never silently non-matching) — so without this earlier,
+	// better-classified check the request would surface as a generic
+	// internal error instead of a clean 400 INVALID_CONDITION naming the
+	// actual structural fault.
 	if parsedCond != nil {
 		if cErr := search.ValidateCondition(parsedCond); cErr != nil {
 			// A jsonPath outside JSON Path nomenclature is propagated

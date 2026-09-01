@@ -304,23 +304,34 @@ func TestPrepare_EmptyLeafPathIsAnError(t *testing.T) {
 // produce a leaf that silently never matched; each is now a structural fault
 // in the CONDITION and fails Prepare instead.
 func TestPrepare_UnevaluableLeafIsAnError(t *testing.T) {
-	strTypes := func(string) []spi.DataType { return []spi.DataType{spi.Integer} }
+	intTypes := func(string) []spi.DataType { return []spi.DataType{spi.Integer} }
+	// The empty-path and grammar cases below use CONTAINS on a String-typed
+	// path rather than reusing intTypes/EQUALS: EQUALS against declared
+	// [Integer] with a string operand ("x") would already fail leafNode's
+	// OWN expansion-failure branch, before prepareSimple ever reaches its
+	// path checks — pinning the "operand fits no declared type" branch three
+	// times under three names instead of exercising each named branch. A
+	// leaf that expands cleanly (String declared, CONTAINS is
+	// declaration-independent besides) isolates the path check as the thing
+	// that actually fails.
+	strContains := func(string) []spi.DataType { return []spi.DataType{spi.String} }
 	cases := []struct {
 		name string
 		cond predicate.Condition
 		ft   match.FieldTypes
 	}{
 		{"operand fits no declared type",
-			&predicate.SimpleCondition{JsonPath: "$.n", OperatorType: "GREATER_THAN", Value: "abc"}, strTypes},
+			&predicate.SimpleCondition{JsonPath: "$.n", OperatorType: "GREATER_THAN", Value: "abc"}, intTypes},
 		{"empty path",
-			&predicate.SimpleCondition{JsonPath: "$.", OperatorType: "EQUALS", Value: "x"}, strTypes},
+			&predicate.SimpleCondition{JsonPath: "$.", OperatorType: "CONTAINS", Value: "x"}, strContains},
 		{"path outside the grammar",
-			&predicate.SimpleCondition{JsonPath: "$.a[", OperatorType: "EQUALS", Value: "x"}, strTypes},
+			&predicate.SimpleCondition{JsonPath: "$.a[", OperatorType: "CONTAINS", Value: "x"}, strContains},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			_, err := match.Prepare(c.cond, c.ft)
 			require.Error(t, err)
+			t.Logf("%s: err = %v", c.name, err)
 		})
 	}
 }
@@ -334,6 +345,36 @@ func TestPrepare_ComparisonLeafOnUntypedPathIsAnError(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.unknown", OperatorType: "GREATER_THAN", Value: 5}
 	_, err := match.Prepare(cond, func(string) []spi.DataType { return nil })
 	require.Error(t, err)
+}
+
+// TestPrepare_MalformedPatternIsAnError pins the fourth expansion-failure
+// swallow, distinct from the other three because it lives inside
+// spi.ExpandLeaf's own success path rather than its error return:
+// spi.ExpandLeaf deliberately swallows a pattern-compile failure for LIKE
+// and MATCHES_PATTERN — see its own doc — building a leaf whose matcher is
+// nil (never matches) instead of returning an error, for callers that still
+// want that leaf built. expandNamed (prepared.go) must not inherit that
+// swallow silently: a malformed pattern operand must fail Prepare, the same
+// as any other unevaluable leaf, not degrade into a permanent non-match a
+// future NOT arm could invert into matching every entity.
+func TestPrepare_MalformedPatternIsAnError(t *testing.T) {
+	cases := []struct {
+		name string
+		op   string
+		val  string
+	}{
+		{"MATCHES_PATTERN unclosed character class", "MATCHES_PATTERN", "["},
+		{"MATCHES_PATTERN unclosed group", "MATCHES_PATTERN", "a("},
+		{"LIKE trailing unpaired escape", "LIKE", `a\`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cond := &predicate.SimpleCondition{JsonPath: "$.s", OperatorType: c.op, Value: c.val}
+			_, err := match.Prepare(cond, typed(spi.String))
+			require.Error(t, err)
+			t.Logf("%s: err = %v", c.name, err)
+		})
+	}
 }
 
 // TestPrepare_TemporalMetaGuardStaysANonMatch pins the fourth swallow — the

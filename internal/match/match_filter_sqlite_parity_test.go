@@ -199,7 +199,12 @@ func TestSqliteEvaluateFilter_DelegatesToKernel(t *testing.T) {
 			data: scalar,
 		},
 		{
-			name: "Ne-against-missing-field-vacuously-true",
+			// Named for the ACTUAL contract, not the "!positive" intuition:
+			// null/absent uniformity (eval_leaf.go's own doc) makes an
+			// absent field a non-match for EVERY binary op, negatives
+			// included — NE does not vacuously match just because there is
+			// no value to be unequal to.
+			name: "Ne-against-missing-field-non-match",
 			f:    spi.Filter{Op: spi.FilterNe, Path: "missing", Source: spi.SourceData, Value: "anything", Declared: []spi.DataType{spi.String}},
 			data: scalar,
 		},

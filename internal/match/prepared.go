@@ -181,7 +181,38 @@ func expandNamed(operatorType string, value any, declared []spi.DataType) (spi.E
 	if op == spi.FilterBetween || op == spi.FilterBetweenInclusive {
 		values = betweenBounds(value)
 	}
-	return spi.ExpandLeaf(op, spi.OperandString(value), values, declared)
+	exp, err := spi.ExpandLeaf(op, spi.OperandString(value), values, declared)
+	if err != nil {
+		return spi.Expansion{}, err
+	}
+	// spi.ExpandLeaf deliberately swallows a pattern-compile failure for
+	// LIKE and MATCHES_PATTERN (its own doc comment): it still returns a
+	// leaf, with the built Expansion's matcher left nil (never matches),
+	// for callers outside the SPI package that still want that leaf built
+	// rather than an error. The SPI kernel's own Prepare closes exactly this
+	// swallow (prepared_filter.go) by re-deriving the compile ONLY when it
+	// can see, via the Expansion's unexported matcher field, that the first
+	// attempt actually failed. This package has no such visibility — the
+	// field is private to spi, and Expansion exposes no accessor for it —
+	// so it cannot gate the re-derivation on "did it actually fail"; it
+	// gates on "is this a pattern operator at all" instead, paying one
+	// extra ExpandLeaf-equivalent compile for every LIKE/MATCHES_PATTERN
+	// leaf (matching or not) rather than only the ones that fail. That cost
+	// is paid once per query at Prepare time, same as every other leaf here
+	// — never once per row. spi.ValidateLeafPattern is a no-op (returns nil
+	// immediately) for every non-pattern operator, so it is safe to reach
+	// for unconditionally once op is known to be one of the two.
+	//
+	// Left unguarded, a malformed pattern (e.g. an unclosed regex character
+	// class, "[") would silently build a leaf that never matches instead of
+	// failing Prepare — exactly the fail-open shape this whole task removes,
+	// and one a future NOT arm would invert into matching every entity.
+	if op == spi.FilterLike || op == spi.FilterMatchesRegex {
+		if err := spi.ValidateLeafPattern(op, value); err != nil {
+			return spi.Expansion{}, err
+		}
+	}
+	return exp, nil
 }
 
 // leafNode builds a prepared leaf of the given kind, or fails Prepare when
