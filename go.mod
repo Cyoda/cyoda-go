@@ -4,7 +4,7 @@ go 1.26.7
 
 require (
 	github.com/charmbracelet/glamour v1.0.0
-	github.com/cyoda-platform/cyoda-go-spi v0.8.4-0.20260830161031-99b0b81c4322
+	github.com/cyoda-platform/cyoda-go-spi v0.8.4-0.20260901144642-f6863ae5e2e3
 	github.com/getkin/kin-openapi v0.144.0
 	github.com/go-chi/chi/v5 v5.3.1
 	github.com/google/uuid v1.6.0
@@ -151,7 +151,7 @@ require (
 	github.com/shirou/gopsutil/v4 v4.26.5 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/speakeasy-api/jsonpath v0.6.3 // indirect
-	github.com/stretchr/testify v1.11.1 // indirect
+	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.43.0
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
