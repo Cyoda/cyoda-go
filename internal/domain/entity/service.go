@@ -1017,7 +1017,7 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 	// Reject a MATCHES_PATTERN or LIKE operand the kernel cannot compile,
 	// before any selection runs — mirrors SearchService.Search's
 	// ValidatePatterns call. match.Prepare's own expandNamed also rejects an
-	// uncompilable pattern now (prepared.go, errUnevaluableLeaf) rather than
+	// uncompilable pattern now (prepared.go, match.ErrUnevaluableLeaf) rather than
 	// silently degrading to a non-match, so leaving this validation out
 	// would no longer risk a false "deleted nothing" success — but it would
 	// still surface as a generic internal error instead of a clean 400
@@ -1129,6 +1129,18 @@ func deleteModelSchemaNode(ctx context.Context, modelStore spi.ModelStore, ref s
 func drainDeleteSelection(ctx context.Context, iterableStore spi.Iterable, ref spi.ModelRef, plan deleteSelectionPlan, pointInTime *time.Time, visit func(e *spi.Entity)) error {
 	it, err := iterableStore.Iterate(ctx, ref, plan.filter, spi.IterateOptions{PointInTime: pointInTime})
 	if err != nil {
+		// Classify before returning raw: a plugin refusing plan.filter because
+		// the query planner cannot evaluate one of its leaves
+		// (spi.ErrUnevaluableLeaf/spi.ErrInvalidPattern) is a malformed CLIENT
+		// condition, not a storage failure (search.ClassifyStoreQueryError's
+		// doc). Every caller reached through here — selectDeleteIDs's
+		// DeleteEntitiesConditional, resolveBatchTargetsOnePass — must see the
+		// classified 4xx; a bare sentinel is not a *common.AppError, so an
+		// errors.As(&appErr) check at the caller silently misses it and this
+		// is delete-by-condition, the worst blast radius in this plan.
+		if appErr := search.ClassifyStoreQueryError(err); appErr != nil {
+			return appErr
+		}
 		return err
 	}
 	var scanErr error
@@ -1162,6 +1174,11 @@ func drainDeleteSelection(ctx context.Context, iterableStore spi.Iterable, ref s
 			visit(e)
 		}
 	}()
+	// Same classification as the Iterate-open error above: a sticky scan
+	// error can carry the identical cross-backend sentinels.
+	if appErr := search.ClassifyStoreQueryError(scanErr); appErr != nil {
+		return appErr
+	}
 	return scanErr
 }
 
@@ -1384,6 +1401,14 @@ func (h *Handler) resolveBatchTargetsOnePass(ctx context.Context, entityStore sp
 		ids = append(ids, id)
 	})
 	if err != nil {
+		// A classified 4xx from drainDeleteSelection (an unevaluable leaf or
+		// uncompilable pattern the store rejected) is the caller's error, not
+		// a server fault — common.Internal would bury it as a 500 + ticket.
+		// Mirrors DeleteEntitiesConditional's own selectDeleteIDs check.
+		var appErr *common.AppError
+		if errors.As(err, &appErr) {
+			return nil, appErr
+		}
 		return nil, common.Internal("failed to select entities for delete", err)
 	}
 
@@ -1569,6 +1594,14 @@ func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond pred
 
 		it, iterErr := iterableStore.Iterate(ctx, ref, plan.filter, spi.IterateOptions{})
 		if iterErr != nil {
+			// Same classification as drainDeleteSelection's identical guard:
+			// this loop scans plan.filter directly (batching needs its own
+			// re-iterate-per-cycle shape, so it does not route through
+			// drainDeleteSelection), but a plugin's refusal of the same
+			// filter carries the same cross-backend sentinels.
+			if appErr := search.ClassifyStoreQueryError(iterErr); appErr != nil {
+				return nil, appErr
+			}
 			return nil, common.Internal("failed to select entities for delete", iterErr)
 		}
 		var (
@@ -1616,6 +1649,9 @@ func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond pred
 			}
 		}()
 		if scanErr != nil {
+			if appErr := search.ClassifyStoreQueryError(scanErr); appErr != nil {
+				return nil, appErr
+			}
 			return nil, common.Internal("failed to select entities for delete", scanErr)
 		}
 		if len(chunk) == 0 {

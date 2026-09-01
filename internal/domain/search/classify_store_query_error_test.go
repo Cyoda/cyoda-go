@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
@@ -27,13 +29,45 @@ import (
 //     internal/match's OWN Prepare (predicate.Condition side), reached
 //     through search.Service.Search's GetAll+match fallback, entity's
 //     conditional-delete planner, and grouped-stats' streaming tally. Maps to
-//     400 CONDITION_TYPE_MISMATCH / 400 INVALID_CONDITION respectively — see
-//     ClassifyStoreQueryError's own doc for why those two codes (not
-//     INVALID_CONDITION uniformly) were chosen for this class.
+//     400 INVALID_CONDITION — the SAME code as the SPI-side sentinels above,
+//     not a dedicated CONDITION_TYPE_MISMATCH: match.ErrUnevaluableLeaf
+//     itself wraps three distinct causes and only one is ever a type
+//     mismatch, and a NOT condition can route the identical leaf through
+//     either evaluator depending on translatability alone — the client-
+//     visible status must not depend on which one ran. See
+//     ClassifyStoreQueryError's own doc for the full rationale.
 //
 // Before this task both classes classified as nil — an unrecognised store
 // error — which the transport layer defaults to 500 SERVER_ERROR plus a
 // support ticket for what is, in every case here, a malformed CLIENT INPUT.
+//
+// This classifier is a BACKSTOP, exactly like the pre-existing
+// spi.ErrInvalidFilterPath case it sits beside — not a client-reachable
+// path through this repo's own API. Every trigger in this file goes through
+// the ModelStore backdoor (a hand-built bare {"kind":"LEAF"} schema node), not
+// through ImportModel: ImportModel accepts only the SAMPLE_DATA converter,
+// and a null-only sample field yields declared types ["NULL"] (model_schema.go's
+// own doc: "a node observed only as null declares NULL at its own path"), not
+// an empty set — a comparison against a NULL-typed field is rejected 400 by
+// the condition-type boundary before any store is ever reached. The bare-leaf
+// shape this file constructs directly is nonetheless a real, spec-anticipated
+// one (model_schema.go: "A node declaring ONLY an empty scalar branch still
+// emits it, which is what a bare {"kind":"LEAF"} has always meant") that a
+// backend genuinely disagrees with the boundary about — precisely the
+// commercial-backend obligation (spec §14.4) this classifier exists for.
+//
+// PARITY WAIVER (test-coverage.md: "a missing cell blocks merge unless
+// waived with a one-line reason"): there is no cross-backend e2e/parity
+// scenario for this class. e2e/parity.BackendFixture exposes only
+// BaseURL/GRPCEndpoint/NewTenant/ComputeTenant — no storage handle
+// ("verification is API-only", fixture.go's own doc) — so a parity scenario
+// cannot reach the ModelStore backdoor this file uses, and the trigger
+// cannot be produced over HTTP at all (the paragraph above). Coverage here
+// is instead: the real memory plugin (this file), the real postgres plugin
+// (internal/e2e), and internal/match's own evaluator (this file's
+// MatchFallback test) — three of the backends the parity suite would have
+// covered, exercised individually because the harness that runs them
+// together cannot construct the input.
 
 // TestClassifyStoreQueryError_UnrelatedError_ReturnsNil pins the "does not
 // swallow everything" half of the classifier's contract: an error with no
@@ -83,14 +117,20 @@ func TestClassifyStoreQueryError_SPIInvalidPattern_MapsTo400InvalidCondition(t *
 	}
 }
 
-func TestClassifyStoreQueryError_MatchUnevaluableLeaf_MapsTo400ConditionTypeMismatch(t *testing.T) {
+func TestClassifyStoreQueryError_MatchUnevaluableLeaf_MapsTo400InvalidCondition(t *testing.T) {
 	err := fmt.Errorf("predicate match failed: %w", match.ErrUnevaluableLeaf)
 	appErr := search.ClassifyStoreQueryError(err)
 	if appErr == nil {
 		t.Fatal("ClassifyStoreQueryError(match.ErrUnevaluableLeaf) = nil, want a classified AppError")
 	}
-	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeConditionTypeMismatch {
-		t.Errorf("got %d/%q, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeConditionTypeMismatch)
+	// Same code as the SPI-side spi.ErrUnevaluableLeaf, not a dedicated
+	// CONDITION_TYPE_MISMATCH — see ClassifyStoreQueryError's own doc: this
+	// sentinel bundles three causes (only one a type mismatch), and a NOT
+	// condition can route the identical leaf through either evaluator
+	// depending on translatability, so the status must not depend on which
+	// evaluator ran.
+	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeInvalidCondition {
+		t.Errorf("got %d/%q, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeInvalidCondition)
 	}
 	if !errors.Is(appErr, match.ErrUnevaluableLeaf) {
 		t.Error("errors.Is(appErr, match.ErrUnevaluableLeaf) = false; WithCause must preserve the sentinel")
@@ -290,15 +330,17 @@ func TestSearch_BareLeafField_RealMemoryPlugin_Unbounded_MapsTo400(t *testing.T)
 	}
 }
 
-// TestSearch_BareLeafField_MatchFallback_MapsTo400ConditionTypeMismatch
-// wires the SAME bare-leaf schema shape through search.Service.Search's
-// OTHER evaluator: the GetAll+internal/match fallback, forced by a store
-// that implements neither spi.Searcher nor spi.Iterable (nonSearcherEntityStore,
+// TestSearch_BareLeafField_MatchFallback_MapsTo400InvalidCondition wires the
+// SAME bare-leaf schema shape through search.Service.Search's OTHER
+// evaluator: the GetAll+internal/match fallback, forced by a store that
+// implements neither spi.Searcher nor spi.Iterable (nonSearcherEntityStore,
 // already defined in service_test.go for exactly this purpose). This proves
 // the fallback's match.Prepare failure (line ~787) is actually routed through
 // ClassifyStoreQueryError now, not merely that the classifier function itself
-// knows the mapping.
-func TestSearch_BareLeafField_MatchFallback_MapsTo400ConditionTypeMismatch(t *testing.T) {
+// knows the mapping. Asserts 400 INVALID_CONDITION — the same code the SPI
+// sentinel above maps to, not CONDITION_TYPE_MISMATCH; see
+// ClassifyStoreQueryError's doc for why the two classes are not split.
+func TestSearch_BareLeafField_MatchFallback_MapsTo400InvalidCondition(t *testing.T) {
 	base := memory.NewStoreFactory()
 	defer base.Close()
 	ctx := tenantCtx("tenant-1")
@@ -317,10 +359,83 @@ func TestSearch_BareLeafField_MatchFallback_MapsTo400ConditionTypeMismatch(t *te
 	if !errors.As(err, &appErr) {
 		t.Fatalf("want *common.AppError, got %T: %v", err, err)
 	}
-	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeConditionTypeMismatch {
-		t.Errorf("got %d/%q, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeConditionTypeMismatch)
+	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeInvalidCondition {
+		t.Errorf("got %d/%q, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeInvalidCondition)
 	}
 	if !errors.Is(err, match.ErrUnevaluableLeaf) {
 		t.Errorf("errors.Is(err, match.ErrUnevaluableLeaf) = false, err = %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The async search endpoint: an HTTP-reachable unbounded route.
+// ---------------------------------------------------------------------------
+//
+// POST /search/async leaves SearchOptions.Limit at zero (search/handler.go
+// never resolves a default for the async submit path the way /search/direct
+// does), so it is the ONE genuinely client-reachable way to drive an
+// unbounded (Iterate) search over real HTTP — unlike the service-layer-only
+// Limit<=0 branch the other "both routes" tests in this file exercise
+// directly. It inherits this task's classifier fix for free (runAsyncJob's
+// own Iterate call already routed through ClassifyStoreQueryError before this
+// task, exactly like TestAsyncSearchJob_StoreSentinelIsClassified above pins
+// for spi.ErrInvalidFilterPath), but nothing exercised it end to end for the
+// new sentinels — including how the domain code renders the classified error
+// into the job record, which is the only report an async caller ever gets
+// (jobFailureMessage's own doc: "AppError.Error() returns the client-safe
+// Message alone").
+
+// TestAsyncSearchJob_BareLeafField_RendersInvalidConditionMessage mirrors
+// TestAsyncSearchJob_StoreSentinelIsClassified's shape exactly, but drives
+// the REAL memory plugin (no stub) with the same bare-leaf-no-types schema
+// this file's other tests use, through the full SubmitAsync -> runAsyncJob
+// -> writeAsyncFailure -> searchStore.GetJob round trip.
+func TestAsyncSearchJob_BareLeafField_RendersInvalidConditionMessage(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+	ctx := tenantCtx("tenant-async-bare-leaf")
+	ref := spi.ModelRef{EntityName: "widget", ModelVersion: "1"}
+	saveBareLeafModel(t, ctx, base, ref, "score")
+
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore)
+
+	cond := &predicate.SimpleCondition{JsonPath: "$.score", OperatorType: "EQUALS", Value: float64(5)}
+	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{})
+	if err != nil {
+		t.Fatalf("SubmitAsync: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var status search.SearchJobStatus
+	for time.Now().Before(deadline) {
+		status, err = svc.GetAsyncStatus(ctx, jobID)
+		if err != nil {
+			t.Fatalf("GetAsyncStatus: %v", err)
+		}
+		if status.Status == "FAILED" || status.Status == "SUCCESSFUL" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if status.Status != "FAILED" {
+		t.Fatalf("status = %q, want FAILED", status.Status)
+	}
+
+	job, err := searchStore.GetJob(ctx, jobID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if !strings.Contains(job.Error, "INVALID_CONDITION") {
+		t.Errorf("job error = %q, want it to carry INVALID_CONDITION — an async caller's ONLY report of why the job failed", job.Error)
+	}
+	// Gate 3 / jobFailureMessage's own contract: the classified message is the
+	// client-safe one (AppError.Error()), never the store's internal detail
+	// or the generic fallback a bare sentinel used to collapse into.
+	if strings.Contains(job.Error, "ExpandLeaf") || strings.Contains(job.Error, "parses into no declared type") {
+		t.Errorf("job error leaks internal detail: %q", job.Error)
+	}
+	if job.Error == "search failed unexpectedly" {
+		t.Error("job error is the generic unclassified fallback — the fix did not reach the async path")
 	}
 }

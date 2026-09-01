@@ -141,9 +141,31 @@ func TestRPC_DirectSearch_UnevaluableLeaf_400_InvalidCondition(t *testing.T) {
 // accept-side counterpart: the SAME condition shape against a field that DOES
 // carry a declared type must still search normally (no accept/reject skew
 // introduced by this classification).
+//
+// A matching entity is created first and the response count is asserted
+// (mirrors TestRPC_DirectSearch's own "expected at least 1 response sent"
+// check, rpc_test.go) — EntitySearchCollection sends exactly one message PER
+// MATCHED ENTITY (search.go's handleDirectSearchRequest: `for _, e := range
+// results { ... stream.Send(...) }`), so a zero-entity search sends ZERO
+// messages. Without a seeded match, ranging over an empty stream.sent runs
+// no assertions at all and the test passes vacuously — silently, exactly
+// the failure mode a `NOT` rejection must never look like (spec §10: "never
+// an empty stream, which a client reads as 'no matches'").
 func TestRPC_DirectSearch_UnevaluableLeaf_ValidTypedField_200(t *testing.T) {
 	svc, ctx := newTestEnv(t)
 	importAndLockModel(t, svc, ctx, "widget", "1", map[string]any{"score": 0})
+
+	createCE := makeCE(EntityCreateRequest, map[string]any{
+		"id":         "test",
+		"dataFormat": "JSON",
+		"payload": map[string]any{
+			"model": map[string]any{"name": "widget", "version": 1},
+			"data":  map[string]any{"score": 5},
+		},
+	})
+	if _, err := svc.EntityManage(ctx, createCE); err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
 
 	ce := makeCE(EntitySearchRequest, map[string]any{
 		"id":    "test",
@@ -160,11 +182,12 @@ func TestRPC_DirectSearch_UnevaluableLeaf_ValidTypedField_200(t *testing.T) {
 	if err := svc.EntitySearchCollection(ce, stream); err != nil {
 		t.Fatalf("unexpected transport error: %v", err)
 	}
-	for _, sent := range stream.sent {
-		var typed events.EntityResponseJson
-		validateResponse(t, sent, &typed)
-		if !typed.Success {
-			t.Fatalf("expected success=true for a declared-type field, got error: %v", typed.Error)
-		}
+	if len(stream.sent) != 1 {
+		t.Fatalf("expected exactly 1 response sent (the seeded match), got %d", len(stream.sent))
+	}
+	var typed events.EntityResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if !typed.Success {
+		t.Fatalf("expected success=true for a declared-type field, got error: %v", typed.Error)
 	}
 }

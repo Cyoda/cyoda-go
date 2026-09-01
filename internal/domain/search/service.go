@@ -867,23 +867,34 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 //
 // match.ErrUnevaluableLeaf and match.ErrUnsupportedOperator are
 // internal/match's OWN Prepare (predicate.Condition side, a different
-// evaluator entirely — see the package doc's "Two evaluators stay two")
-// reached through search.Service.Search's GetAll+match fallback, entity's
-// conditional-delete planner, and grouped-stats' streaming tally. Every
-// caller of those previously wrapped the error generically
-// ("predicate match failed: %w"), which classified as an unrecognised 500 —
-// the identical defect ErrInvalidFilterPath's omission was, just on the
-// residual-evaluator side rather than the pushdown side. match.ErrUnevaluableLeaf
-// maps to 400 CONDITION_TYPE_MISMATCH: unlike the SPI-side sentinel, its
-// three dominant real-world causes (an operand that parses into no declared
-// type, a malformed range arity, a path outside the grammar) are reached
-// downstream of this evaluator's own callers' path/type boundary checks, so
-// by the time Prepare sees it the declared-type mismatch is what is actually
-// live in practice (see the fallback's own "no schema registered" comment in
-// Search). match.ErrUnsupportedOperator — an operator NAME with no kernel
-// op — maps to 400 INVALID_CONDITION, matching the spec's own disposition
-// for "unrecognised group operator" and mirroring spi.ErrUnknownOperator's
-// established mapping elsewhere.
+// evaluator entirely from spi.Prepare — see prepared.go's own package doc:
+// "this package's error set is its own, not a mirror of spi.ErrUnevaluableLeaf,
+// but the disposition is the same") reached through search.Service.Search's
+// GetAll+match fallback, entity's conditional-delete planner, and
+// grouped-stats' streaming tally. Every caller of those previously wrapped
+// the error generically ("predicate match failed: %w") or propagated it raw,
+// which classified as an unrecognised 500 — the identical defect
+// ErrInvalidFilterPath's omission was, just on the residual-evaluator side
+// rather than the pushdown side.
+//
+// Both match.ErrUnevaluableLeaf and match.ErrUnsupportedOperator map to 400
+// INVALID_CONDITION — the SAME code as their SPI-side counterparts, not
+// CONDITION_TYPE_MISMATCH. Two reasons: (1) match.ErrUnevaluableLeaf itself
+// wraps three distinct causes (prepared.go's leafNode expansion failure,
+// its empty-leaf-path guard, its path-outside-grammar guard) and only the
+// first is ever a type mismatch, so a single dedicated code would be wrong
+// on its own terms for the other two; (2) a NOT condition can route the
+// identical leaf through either evaluator depending on whether
+// spi.ConditionToFilter can translate it — the query PLAN, not anything
+// about the input — so the client-visible status must not depend on which
+// evaluator happened to run, exactly the invariant this whole feature's
+// pushdown/residual split must preserve one level up.
+//
+// match.ErrUnevaluableLeaf and spi.ErrUnevaluableLeaf share both a name and
+// an error message ("unevaluable leaf") by design — two evaluators, one
+// disposition — so the two cases below are logged with an explicit "source"
+// field: a caller reaching for the wrong sentinel in a log-line search would
+// otherwise have no way to tell which evaluator actually rejected the leaf.
 //
 // Exported so callers outside this package that drive a store with an
 // engine-translated Filter (entity's grouped-stats service) or run
@@ -906,18 +917,22 @@ func ClassifyStoreQueryError(err error) *common.AppError {
 			"condition or sort references an invalid field path").WithCause(err)
 	case errors.Is(err, spi.ErrUnevaluableLeaf):
 		slog.Warn("storage backend could not evaluate a condition leaf the boundary accepted",
-			"pkg", "search", "err", err)
+			"pkg", "search", "source", "spi.Prepare", "err", err)
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeInvalidCondition,
 			"condition contains a leaf the backend cannot evaluate").WithCause(err)
 	case errors.Is(err, spi.ErrInvalidPattern):
+		slog.Warn("storage backend could not compile a condition pattern the boundary accepted",
+			"pkg", "search", "source", "spi.ValidateLeafPattern", "err", err)
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeInvalidCondition,
 			"condition contains a pattern operand the backend cannot compile").WithCause(err)
 	case errors.Is(err, match.ErrUnevaluableLeaf):
+		slog.Warn("residual evaluator could not evaluate a condition leaf the boundary accepted",
+			"pkg", "search", "source", "match.Prepare", "err", err)
 		return common.Operational(http.StatusBadRequest,
-			common.ErrCodeConditionTypeMismatch,
-			"condition operand does not fit the field's declared type").WithCause(err)
+			common.ErrCodeInvalidCondition,
+			"condition contains a leaf the evaluator cannot evaluate").WithCause(err)
 	case errors.Is(err, match.ErrUnsupportedOperator):
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeInvalidCondition,
