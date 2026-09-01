@@ -37,7 +37,12 @@ import (
 // existing `delayMs`. Dual-shape: 1.1 and 1.2 stay in
 // SupportedSchemaRanges (every prior payload remains valid). See
 // docs/workflow-schema-versioning.md §"1.2 → 1.3".
-const CurrentSchemaVersion = "1.3"
+//
+// 1.3 → 1.4 in v0.8.4: additive MINOR — a new condition operator, `NOT`,
+// accepted on a criterion's `group` clause. Dual-shape: 1.1, 1.2 and 1.3
+// stay in SupportedSchemaRanges (every prior payload remains valid). See
+// docs/workflow-schema-versioning.md §"1.3 → 1.4".
+const CurrentSchemaVersion = "1.4"
 
 // SchemaRange is a closed integer interval [MinMinor..MaxMinor] on
 // the MINOR axis of a given MAJOR. A range models a single contiguous
@@ -58,7 +63,7 @@ type SchemaRange struct {
 // exercise alternative range configurations without changing
 // production defaults.
 var SupportedSchemaRanges = []SchemaRange{
-	{Major: 1, MinMinor: 1, MaxMinor: 3},
+	{Major: 1, MinMinor: 1, MaxMinor: 4},
 }
 
 // Sentinel errors returned by Supports. Callers use errors.Is to

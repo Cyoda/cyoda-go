@@ -48,7 +48,7 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 ```json
 {
-  "version": "1.3",
+  "version": "1.4",
   "name": "prize-lifecycle",
   "desc": "State machine for Nobel Prize entities",
   "initialState": "NEW",
@@ -421,6 +421,10 @@ Criteria on workflows and transitions use the same `Condition` DSL as search —
 
 `simple` and `array` criteria address entity data fields by `jsonPath`, under the same grammar a search condition obeys — the `$.` leader is required, and a path outside it is rejected at **import** with `400 VALIDATION_FAILED` rather than at every later evaluation. Write `$.amount`, not `amount`. **Well-formed** array subscripts — the wildcard `[*]` or a non-negative index `[0]` — are valid (`$.tags[*].name`, `$.arr[0]`): criteria are evaluated in memory, which resolves them. A path ending in `[*]` addresses every element, so the criterion fires when **some** element satisfies it (`$.arr[*] GREATER_THAN 50`), and never on an empty array. Any other bracket spelling (`$.a[-1]`, `$.a[0:2]`, `$.a[?(@.x)]`, `$.a[`, `$.a[0]b`) is malformed and is rejected at import with the same `400 VALIDATION_FAILED` — previously it imported cleanly and the criterion then silently never fired, because no evaluator resolves those spellings. See `cyoda help search` for the grammar.
 
+**Import checks the path's grammar, not whether the model declares it.** A model may legitimately be declared after the workflow that references it, so a criterion naming a field the model does not yet declare imports cleanly. The model check happens instead when the criterion is **evaluated**: a query never executes against a field the model does not declare, so if the field is still undeclared at evaluation time, the save that triggered the evaluation is **aborted and rolled back** with `400 WORKFLOW_FAILED` — no entity write, no state transition, no partial effect. This applies to all 26 operators, not only the ones that need a declared type. A field that no entity has ever written must be declared explicitly through `POST /model/import/...`; the model does not grow from a criterion alone. See `errors.WORKFLOW_FAILED` and `docs/cloud-parity/unevaluable-criterion-fails-save.md`.
+
+`group` criteria combine conditions with `AND`, `OR`, or `NOT`. `NOT` takes **exactly one** child condition (`NOT(A AND B)` is written by nesting, not as a two-entry list); zero entries or two-or-more is rejected at import with `400 VALIDATION_FAILED`. Over a wildcard path `NOT` is a universal quantifier where the leaf beneath it is existential — `NOT($.tags[*] EQUALS "red")` fires when no element equals `"red"`, a different question from `$.tags[*] NOT_EQUAL "red"` (some element differs) — and `NOT` over an empty list, an explicit `null`, or an absent field fires, because the inner leaf is false. See `cyoda help search` for the full contract.
+
 `lifecycle` criteria match entity metadata fields: `state`, `creationDate`, `lastUpdateTime`, `transitionForLatestSave` (alias `previousTransition`), `transactionId`, `id`. `creationDate` and `lastUpdateTime` are temporal — compared chronologically, exactly as in search.
 
 A `null` criterion on a workflow means the workflow matches any entity. A `null` criterion on a transition means the transition always fires (automated) or is always available (manual). When multiple automated transitions are eligible, the engine selects the first one by declaration order whose criterion matches. A `null` criterion matches unconditionally, so a `null`-criterion automated transition must be the last automated transition in declaration order; any automated transitions declared after a `null`-criterion transition are unreachable.
@@ -488,6 +492,7 @@ Static validation runs on the incoming request before saving. Any of the followi
 - A criterion `jsonPath` (on a `simple` or `array` clause, at any nesting depth) that is not JSON Path — see CRITERIA below.
 - A criterion `LIKE` or `MATCHES_PATTERN` value that is not a valid pattern.
 - A criterion `lifecycle` clause naming an unknown metadata field, or comparing a temporal field (`creationDate`, `lastUpdateTime`) against a non-timestamp operand.
+- A criterion `group` clause whose `operator` is not `AND`, `OR`, or `NOT`, or whose `operator` is `NOT` with `conditions` other than exactly one entry.
 
 The new structural rules (state graph, name uniqueness, `executionMode` enum, `retryPolicy` enum) run on the incoming request only — existing stored workflows are not retroactively re-checked against them. The cycle-detection and `startNewTxOnDispatch` coherence checks continue to run against the merged result, so a legacy stored cycle or incoherent flag still surfaces at any subsequent import.
 
@@ -561,7 +566,7 @@ curl -s -X POST \
     "importMode": "MERGE",
     "workflows": [
       {
-        "version": "1.3",
+        "version": "1.4",
         "name": "prize-lifecycle",
         "initialState": "NEW",
         "active": true,
@@ -613,7 +618,7 @@ curl -s -X POST \
     "importMode": "REPLACE",
     "workflows": [
       {
-        "version": "1.3",
+        "version": "1.4",
         "name": "simple-wf",
         "initialState": "OPEN",
         "active": true,

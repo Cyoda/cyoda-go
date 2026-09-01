@@ -269,7 +269,7 @@ difference is deliberate.
 | Surface | Field | Subscripts | Model check | Rejection code |
 |---|---|---|---|---|
 | search condition | `jsonPath` in a `simple` or `array` clause | yes | yes | `400 INVALID_FIELD_PATH` |
-| workflow criterion | `jsonPath` in a `simple` or `array` clause | yes | no — grammar only | `400 VALIDATION_FAILED` at workflow import |
+| workflow criterion | `jsonPath` in a `simple` or `array` clause | yes | grammar at import; model membership at evaluation | `400 VALIDATION_FAILED` (grammar, at import); `400 WORKFLOW_FAILED`, rolled back (undeclared field, at evaluation) |
 | grouped-stats grouping | `groupBy` entry | **no** | yes | `400 INVALID_GROUP_BY_PATH` outside the grammar; `400 INVALID_FIELD_PATH` undeclared |
 | grouped-stats aggregation | aggregation `field` | **no** | yes | `400 INVALID_AGGREGATION_FIELD` outside the grammar; `400 INVALID_FIELD_PATH` undeclared |
 | sort key | `orderBy` path | **no** | yes | `400` — see `search-sort.md` |
@@ -307,16 +307,33 @@ check returns an answer that looks real: an undeclared condition leaf yields no
 buckets, an undeclared `groupBy` puts every entity under a `null` key, and an
 undeclared aggregate reports a `null` total beside a correct count.
 
-### Why a criterion is checked at import and not at evaluation
+### A criterion's grammar is checked at import; its model membership at evaluation
 
-Import is the only boundary a criterion crosses. A criterion is stored verbatim
-and read back on every entity write that touches its transition. A rejection at
-evaluation time would fail a save, repeatedly, for every entity, long after the
-workflow was accepted, and it would report the fault to a caller who cannot fix
-it.
+A criterion is stored verbatim and read back on every entity write that
+touches its transition, and a model may legitimately be declared after the
+workflow that references it. Path grammar, operator names, lifecycle
+type-soundness and pattern operands are therefore checked once, at import
+(`400 VALIDATION_FAILED`), and not re-checked on a stored workflow: a
+workflow carrying a path outside the grammar fails on its next import, and a
+criterion naming a field the model has not yet declared is accepted at
+import regardless.
 
-A stored workflow is not re-checked. Validation runs on the incoming import
-request. A workflow carrying a path outside the grammar fails on its next import.
+**Model membership is checked at evaluation instead, not at import.** A query
+never executes against a field the model does not declare — there is no such
+thing as an undeclared field to query. So when a transition's criterion is
+evaluated, the field it names must be declared by the model at that point;
+if it is not, the save that triggered the evaluation is aborted and rolled
+back with `400 WORKFLOW_FAILED` — no entity write, no state transition, no
+partial effect. This applies to all 26 operators, not only the ones that need
+a declared type. See `unevaluable-criterion-fails-save.md`.
+
+A field that no entity has ever written must be declared explicitly through
+`POST /model/import/...` — the model does not grow from a criterion alone. A
+criterion on such a field is supported once the field is declared; declaring
+it is the modelling step that makes it so. The evaluation-time check applies
+one bounded schema refresh before it refuses, matching section 6, so a field
+a peer node has just declared is not falsely refused by a node holding an
+older cached schema.
 
 ## 8. Condition clauses
 
@@ -326,7 +343,7 @@ Five clause types exist. Two carry a path.
 |---|---|---|
 | `simple` | `jsonPath` | one data path |
 | `array` | `jsonPath` | one data path — see below |
-| `group` | no | recursed into; every leaf beneath it is checked |
+| `group` | no | recursed into; every leaf beneath it is checked — operator `AND`, `OR`, or `NOT` (`NOT` recurses into exactly one child; see `negation.md`) |
 | `lifecycle` | no | `field` names a member of the closed meta vocabulary |
 | `function` | no | dispatched to a compute member |
 
@@ -388,7 +405,7 @@ subscript  = "[" ( "*" / 1*DIGIT ) "]"          ; the digit run must fit an int3
 ```
 
 `$.tags[0]` becomes `tags[0]`. `$.obj.0` becomes `obj.0`. An empty filter path is
-legal and carries no field: `AND` and `OR` nodes hold one.
+legal and carries no field: `AND`, `OR` and `NOT` nodes hold one.
 
 The magnitude bound on a positional index carries through unchanged: a digit
 run that does not fit an `int32` is rejected here exactly as it is at the wire
@@ -419,6 +436,17 @@ answers.
 The grammar is also the injection guard on SQL backends. Every character that
 could terminate a quoted path literal is outside it. A backend that needs a wider
 form widens this grammar; it does not bypass its own validator.
+
+**Validation walks the whole tree, on any node carrying children — not a fixed
+list of recognised branch operators.** A validator that recurses only into
+`AND` and `OR` leaves a `NOT` node's child unvalidated, since `NOT` carries no
+`Path` of its own. The consequence is worse than under `AND`: an unvalidated
+malformed path resolves as a never-match leaf, and `NOT` inverts that into
+matches-everything — a superset on search, and a destructive one on
+`DELETE /entity/...`. The property that decides whether a node needs
+recursing into is "this node has children", not which operator it is, so a
+later branch operator is covered by construction rather than by remembering
+to add it to a case list.
 
 ## 10. One resolver
 
@@ -460,6 +488,7 @@ the path the request actually sent.
 | `INVALID_GROUP_BY_PATH` | a `groupBy` entry is outside the grammar | grouped stats |
 | `INVALID_AGGREGATION_FIELD` | an aggregation `field` is outside the grammar | grouped stats |
 | `VALIDATION_FAILED` | a criterion path is outside the grammar | workflow import |
+| `WORKFLOW_FAILED` | a criterion names a path the model does not declare, discovered at evaluation | the transition attempt that evaluates the criterion; rolled back |
 
 A well-formed `groupBy` entry or aggregation `field` that the model does not
 declare answers `INVALID_FIELD_PATH`, like any other unknown field.

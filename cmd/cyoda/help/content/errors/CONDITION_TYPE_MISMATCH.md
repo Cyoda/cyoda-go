@@ -25,6 +25,8 @@ Validation is parse-based: a comparison or range operand is rejected only when i
 
 An operator must also apply to the field's type: string and pattern operators require a text field; ordering and range operators require an ordered type (number, text, timestamp). `IS_NULL`/`NOT_NULL` carry no operand-type constraint. A field with no declared types, and paths not present in the schema, carry no constraint here; an unknown field path is instead rejected by a separate validation pass with `INVALID_FIELD_PATH`.
 
+An operand accepted here because it fits at least one of a polymorphic field's declared types is not guaranteed a real comparison against every entity: for an entity whose own stored value is a type family the operand does not fit, `EQUALS` and the other positive comparison operators answer non-match, while `NOT_EQUAL` answers match — see `predicates` for the unsatisfiable-comparison polarity rule. That is an evaluation-time answer about the entity, not a rejection, and is unaffected by this validation.
+
 Temporal meta fields (`creationDate`, `lastUpdateTime`) follow the same rule: a comparison/range operand must parse into a temporal type. A coarse operand (e.g. a bare year, or an offset-less date-time) upscales and is accepted; only an operand that parses into no temporal type is this error.
 
 Both `/search` and the grouped-statistics endpoint (`POST /api/entity/stats/{entityName}/{modelVersion}/query`) enforce this check.

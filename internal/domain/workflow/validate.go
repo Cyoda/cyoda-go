@@ -231,10 +231,20 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 // errored nowhere and simply resolved, so the criterion worked. An unknown
 // operator is worse again: it fails closed on every subsequent evaluation
 // with no error surfaced anywhere, so the transition it guards silently
-// never fires. Import is the only boundary a criterion crosses, which is why
-// all four are checked here rather than at evaluation, where the failure
-// would land on a save (or, for the unknown-operator case, never surface at
-// all).
+// never fires. These four checks are grammar-only and belong at import,
+// which a stored workflow crosses exactly once, rather than at evaluation,
+// where the failure would land on a save (or, for the unknown-operator case,
+// never surface at all).
+//
+// Import is NOT the only boundary a criterion crosses, though: whether the
+// model DECLARES a path this validator has already approved is checked
+// again at evaluation, in evaluateCriterion, not here. A model may
+// legitimately be declared after the workflow that references it, so
+// rejecting an undeclared field at import would refuse a criterion that
+// becomes valid the moment its model catches up. See
+// docs/cloud-parity/path-grammar.md §7 and
+// docs/cloud-parity/unevaluable-criterion-fails-save.md for why grammar and
+// model membership are checked at two different times rather than one.
 //
 // location names the workflow/state/transition the criterion belongs to, for
 // the error message. Empty/null criteria are skipped. A criterion that does

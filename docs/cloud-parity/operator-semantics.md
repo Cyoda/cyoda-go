@@ -70,13 +70,52 @@ what happens when a field has no declared type.
 | string and pattern | `CONTAINS`, `NOT_CONTAINS`, `STARTS_WITH`, `NOT_STARTS_WITH`, `ENDS_WITH`, `NOT_ENDS_WITH`, `LIKE`, `MATCHES_PATTERN`, and the case-insensitive family `IEQUALS`, `INOT_EQUAL`, `ICONTAINS`, `INOT_CONTAINS`, `ISTARTS_WITH`, `INOT_STARTS_WITH`, `IENDS_WITH`, `INOT_ENDS_WITH` | no |
 
 The eight in the first group need a type slot to compare in. With no declared
-type they answer non-match. The other eighteen never read a declared type and
-keep evaluating.
+type, or with a declared type the operand does not fit, **a positive operator
+answers non-match. `NOT_EQUAL`, the one negative operator in this group,
+answers match instead** — see the polarity rule below. The other eighteen
+never read a declared type and keep evaluating.
 
-The sixteen string and pattern operators stringify the **operand** only. A stored
-value that is not textual is a non-match; it is never stringified to be compared.
-The two presence tests compare nothing at all — they read whether the value is
-present and non-null.
+The sixteen string and pattern operators stringify the **operand** only. A
+stored value that is not textual gives a positive operator non-match; it is
+never stringified to be compared. The seven negative operators in this group
+(`NOT_CONTAINS`, `NOT_STARTS_WITH`, `NOT_ENDS_WITH`, `INOT_EQUAL`,
+`INOT_CONTAINS`, `INOT_STARTS_WITH`, `INOT_ENDS_WITH`) answer match instead,
+by the same polarity rule. The two presence tests compare nothing at all —
+they read whether the value is present and non-null, and are unaffected by
+either rule.
+
+### An unsatisfiable comparison follows operator polarity
+
+When an operand cannot be satisfied by any of a stored value's own declared
+type family — the operand parses into no type the value's family declares, or
+the field declares no type at all — that is a determinate answer about the
+entity (*no value of this family can satisfy this comparison*), not a failure
+to evaluate. **The answer follows the operator's polarity**: false for a
+positive operator, true for a negative one.
+
+This is decided **per stored-value type family**, not for the whole
+expansion. A field declared `[INTEGER, String]` is not exempt: the string
+branch may accept an operand the numeric branch drops, but a numeric-typed
+entity's own family still had nothing surviving, and its answer still follows
+polarity.
+
+Measured, field declared `INTEGER`, entity `{"n":5}`:
+
+| Leaf | Answers |
+|---|---|
+| `$.n EQUALS 12.5` | false |
+| `$.n NOT_EQUAL 12.5` | **true** |
+
+`$.n NOT_EQUAL 12.5` matches every entity holding a number at `n`, because 5
+is not 12.5. PostgreSQL agrees: `select 5::int <> 12.5` is `t`.
+
+This is not a rejection: `$.n EQUALS 12.5` is a well-formed question whose
+answer is "no", the same way PostgreSQL answers `f` rather than erroring. Nor
+does it touch a coarse temporal operand — `EQUALS "2024"` on a `LocalDate`
+field still floors to `2024-01-01` and compares, because the operand *is*
+satisfiable by the field's declared type (section 3). Null and absent values
+are unaffected either way — section 2's gate runs first and applies uniformly
+to every binary operator, positive or negative.
 
 This is why a condition cannot be answered without the model schema. A mixed
 condition does not degrade uniformly — it answers a short result set that looks
@@ -167,6 +206,27 @@ Memory, SQLite and PostgreSQL evaluate predicates identically. The commercial
 backend implements the same rules. The cross-backend parity suite checks
 predicate-evaluation consistency across every backend wired into it.
 
+## 10. `NOT`
+
+`NOT` is a group operator that inverts its single child's two-valued answer.
+`docs/cloud-parity/negation.md` is the full contract — the wire form, the
+one-condition rule, the truth table, the universal-quantifier reading over a
+list, and the two asymmetries with an absent field and with the presence
+tests. This section states only how `NOT` interacts with the operator rules
+above:
+
+- `NOT` never rewrites a leaf by De Morgan into its negative twin, and never
+  distributes over a group's children. `NOT(EQUALS)` is not `NOT_EQUAL`; a
+  negated `AND` is not an `OR` of negated children. The rewrite changes the
+  answer, both over a list and over an absent field.
+- The polarity rule above governs the leaf `NOT` wraps, not `NOT` itself:
+  `NOT` inverts whatever two-valued answer the leaf already gives, including
+  an answer the polarity rule produced.
+- A leaf that cannot be evaluated at all — an undeclared path, a pattern that
+  will not compile — is refused before evaluation, on every surface. Nothing
+  reaches `NOT` in a state where refusing versus inverting is ambiguous; see
+  `unevaluable-criterion-fails-save.md` for the workflow-criterion door.
+
 ## Test surface
 
 - The operator table and the type/operand-shape checks it drives:
@@ -191,3 +251,10 @@ predicate-evaluation consistency across every backend wired into it.
   `internal/e2e/grouped_stats_temporal_test.go`,
   `internal/grpc/search_unknown_operator_test.go` and
   `internal/grpc/search_temporal_test.go`.
+- The unsatisfiable-comparison polarity rule, per operator and per stored-value
+  type family, including the polymorphic `[INTEGER, String]` case: `cyoda-go-spi`'s
+  `eval_leaf_test.go` (`TestEvalLeaf_UnsatisfiableComparisonFollowsPolarity`,
+  `TestEvalLeaf_UnsatisfiableComparisonReachabilityMatrix`), mirrored in
+  `internal/match/operators_test.go`, and cross-backend in
+  `e2e/parity/negation.go`.
+- `NOT` itself: see the Test surface section of `docs/cloud-parity/negation.md`.

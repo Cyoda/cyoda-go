@@ -225,7 +225,7 @@ The WebSocket API is served by Cyoda Cloud over STOMP. The concrete WebSocket en
 - `metaClassId` — UUID — which Entity Model to query
 - `path` — string — structural path / `uniformedPath` value of the target table
 - `domainCondition` — map of `ColumnCategory` → field key → condition; organized by category (`SPECIAL`, `ROOT`, `INDEX`, `DATA`)
-- `expressionCondition` — `GroupConditionDto` — alternative condition format using AND/OR groups
+- `expressionCondition` — `GroupConditionDto` — alternative condition format using `AND`/`OR`/`NOT` groups
 - `selectedFields` — optional list of value map keys to include; null returns all fields
 - `userId` — string — user ID for authenticated context and permission-filtered entity access
 

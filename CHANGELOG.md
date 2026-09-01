@@ -594,6 +594,60 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
     rule; the three surfaces share one scanner with the filter-path grammar
     minus the subscript production, so they cannot drift from it again.
 
+- **`NOT` is a real group operator, and two answers it exposed are now
+  correct instead of silently wrong.** `NOT` has been declared in
+  `GroupConditionDto.operator`'s OpenAPI enum since the initial import, while
+  the server answered `400` for it; it is now implemented end to end — search,
+  grouped stats, conditional delete, and workflow/transition criteria. It
+  takes exactly one child condition (`NOT(A AND B)` is written by nesting, not
+  as a two-entry list under `NOT`); zero entries or two-or-more is rejected
+  `400 INVALID_CONDITION` (`400 VALIDATION_FAILED` at workflow import). Over a
+  wildcard-addressed list `NOT` is a universal quantifier, where the leaf it
+  wraps is existential: `NOT($.tags[*] EQUALS "red")` matches when no element
+  equals `"red"`, a different question from `$.tags[*] NOT_EQUAL "red"` (some
+  element differs) — and `NOT` over an empty list, an explicit `null`, or an
+  absent field matches, because the wrapped leaf is false. `NOT` is
+  residual-only: no backend pushes it into its own query language, so a
+  condition containing one is not bounded by a pushed SQL `LIMIT`. See
+  [`docs/cloud-parity/negation.md`](./docs/cloud-parity/negation.md).
+
+  - **An unsatisfiable comparison now follows operator polarity.** When an
+    operand cannot be satisfied by a stored value's own declared type
+    family, `EQUALS` and the other positive comparison operators still
+    answer non-match, but `NOT_EQUAL` — the group's one negative operator —
+    now answers **match** instead of always answering non-match. `$.n
+    NOT_EQUAL 12.5` on a field declared `INTEGER` used to return no rows; it
+    now returns every entity holding a number at `n`, because no integer
+    equals `12.5` — the same answer PostgreSQL gives for `5::int <> 12.5`.
+    Decided per stored-value type family, so a polymorphic field declared
+    `[INTEGER, String]` gets the fix too, not only a field declared a single
+    type. Null and absent values are unaffected: they still never match any
+    binary operator, including negatives. See
+    [`docs/cloud-parity/operator-semantics.md`](./docs/cloud-parity/operator-semantics.md).
+
+  - **A workflow criterion naming a field the model does not declare now
+    aborts and rolls back the save that evaluates it**, `400
+    WORKFLOW_FAILED` — no entity write, no state transition, no partial
+    effect. It previously evaluated to "not satisfied" and the save
+    succeeded, so a misspelled field name in a criterion meant the
+    transition silently never fired. Import is unchanged: a criterion's path
+    grammar, operator names, and pattern operands are still checked once at
+    import, not model membership, because a model may legitimately be
+    declared after the workflow that references it — a field that no entity
+    has ever written must be declared explicitly through
+    `POST /model/import/...`. Applies to all 26 operators, not only the ones
+    that need a declared type. See
+    [`docs/cloud-parity/unevaluable-criterion-fails-save.md`](./docs/cloud-parity/unevaluable-criterion-fails-save.md).
+
+  - **A malformed `LIKE` operand now fails a self-executing backend's
+    `Search` rather than answering an empty page.** The conformance
+    requirement inverted from "reject with `400` at the request boundary,
+    tolerate silently underneath" to requiring both halves: the boundary
+    still rejects `400 INVALID_CONDITION`/`400 VALIDATION_FAILED`, and a
+    request that somehow reaches evaluation anyway (a criterion stored
+    before the boundary check existed) now errors instead of matching
+    nothing.
+
 ### Added
 
 - **`STORAGE_UNAVAILABLE` — 503, retryable.** Raised when the pool cannot supply a

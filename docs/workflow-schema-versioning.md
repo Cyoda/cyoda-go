@@ -82,6 +82,30 @@ acceptance is unchanged: `WorkflowConfigurationDto` still validates only
 imports byte-identically. No `CurrentSchemaVersion` or `SupportedSchemaRanges`
 change.
 
+### Undeclared-field criteria rejected at evaluation, not import (v0.8.4)
+
+A query never executes against a field the model does not declare — there is
+no such thing as an undeclared field to query. A criterion naming such a
+field now aborts and rolls back the save that evaluates it with `400
+WORKFLOW_FAILED`, instead of the condition silently evaluating to "not
+satisfied" and the save succeeding. See
+[`docs/cloud-parity/unevaluable-criterion-fails-save.md`](./cloud-parity/unevaluable-criterion-fails-save.md).
+
+This is the same "bug-fixing a validator that was already supposed to reject
+something" case as the unrecognised-operator entry directly above it, reached
+through a different check: a criterion on a field the model does not declare
+never worked as a correct guard either, so no *working* config is newly
+rejected. Import-time acceptance is unchanged — `walkCriterion` still checks
+only path grammar, operator names, lifecycle type-soundness and pattern
+operands at import, not model membership, so a criterion naming a field the
+model has not yet declared still imports byte-identically; the field's
+declaration is a modelling step, not an import-validation one. No
+`CurrentSchemaVersion` or `SupportedSchemaRanges` change.
+
+Not to be confused with the `NOT` group operator entry under the Changelog
+below, which **is** a bump: the two are separate changes shipped in the same
+release, and neither's bump decision generalises to the other.
+
 ## Required commit-/PR-time checks
 
 Before merging a schema bump:
@@ -93,7 +117,39 @@ Before merging a schema bump:
 
 ## Changelog
 
-### 1.3 — v0.8.3 contract (current)
+### 1.4 — v0.8.4 contract (current)
+
+Additive MINOR — one new condition operator, `NOT`, accepted on a criterion's
+`group` clause:
+
+- **`NOT` on `GroupConditionDto.operator`.** `NOT` takes exactly one entry in
+  `conditions` (rejected at import with `400 VALIDATION_FAILED` if zero, or
+  two or more) and inverts that entry's own two-valued answer. This widens
+  the accepted-input set for the criterion embedded in
+  `WorkflowDefinition.criterion` and `TransitionDefinition.criterion` — the
+  bump rules above name "a new condition operator" as the canonical additive
+  MINOR example. See
+  [`docs/cloud-parity/negation.md`](./cloud-parity/negation.md) for the full
+  contract.
+
+Every 1.3 payload — including one whose `group` clauses use only `AND`/`OR`
+— is byte-identical and remains valid; `NOT` is purely additive alongside
+them, not a replacement for either.
+
+**Dual-shape retention of 1.1, 1.2 and 1.3.** Nothing is retired:
+`SupportedSchemaRanges` widens in place to
+`{Major: 1, MinMinor: 1, MaxMinor: 4}` — 1.1-, 1.2- and 1.3-stamped imports
+keep working alongside 1.4.
+
+This bump is for the criterion **shape** only. Two related evaluation-time
+behaviour changes shipped in the same release do not bump this contract —
+see the "Undeclared-field criteria rejected at evaluation, not import
+(v0.8.4)" and "Unrecognised-operator criteria rejected at evaluation, not
+import (v0.8.4)" entries under "When NOT to bump" above. Each of the three
+changes is decided on its own terms; none of the three decisions
+generalises to another.
+
+### 1.3 — v0.8.3 contract
 
 Additive MINOR — one new optional field, mutually exclusive with an existing
 one, both still under the same parent object:

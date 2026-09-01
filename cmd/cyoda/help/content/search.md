@@ -141,10 +141,20 @@ Operator strings outside this list are rejected with `errors.INVALID_CONDITION` 
 ```
 
 - `type`: `"group"`
-- `operator`: `"AND"` or `"OR"` — these are the only supported values; any other string is rejected `400 errors.INVALID_CONDITION` at validation time ("unknown group operator")
-- `conditions`: array of `Condition` objects (recursive; maximum nesting depth 50)
+- `operator`: `"AND"`, `"OR"`, or `"NOT"` — any other string is rejected `400 errors.INVALID_CONDITION` at validation time ("unknown group operator")
+- `conditions`: array of `Condition` objects (recursive; maximum nesting depth 50) — for `"AND"`/`"OR"` any number of entries, including zero; for `"NOT"` **exactly one** entry
 
-`"NOT"` is not supported. An `AND` group with an empty `conditions` array evaluates to `true` (vacuous conjunction). An `OR` group with an empty `conditions` array evaluates to `false` (vacuous disjunction).
+An `AND` group with an empty `conditions` array evaluates to `true` (vacuous conjunction). An `OR` group with an empty `conditions` array evaluates to `false` (vacuous disjunction).
+
+**`NOT`** inverts its single child's two-valued answer: `NOT(c)` is true exactly when `c` is false. `conditions` with zero entries, or two or more, is rejected `400 errors.INVALID_CONDITION` — a bare list under `NOT` has two defensible readings ("not both" vs. "neither") that disagree on the same data, so the group is written by nesting: `NOT(A AND B)`, not `NOT[A, B]`. `NOT(NOT(x))` is legal and restores `x`'s own answer.
+
+Over a wildcard path `NOT` is a **universal** quantifier, where the leaf underneath it is existential: `NOT($.tags[*] EQUALS "red")` matches when **no** element equals `"red"`, while `$.tags[*] NOT_EQUAL "red"` matches when **some** element differs from `"red"` — for `{"tags":["red","blue"]}` the first is false and the second is true. `NOT` is never rewritten by De Morgan into a leaf's negative twin (`NOT(EQUALS)` is not `NOT_EQUAL`; `NOT(IS_NULL)` is not `NOT_NULL` — see `predicates`), and a `NOT`ted group is never distributed over its children.
+
+`NOT` over an empty list, an explicit `null`, or an absent field is **true**, because the inner leaf is false in all three states — `[*]` is existential and nothing matches an empty array (see above), and a missing/null value never matches any binary operator including the negatives (see `predicates`). On an absent field `NOT($.x EQUALS "A")` matches while both `$.x EQUALS "A"` and `$.x NOT_EQUAL "A"` do not — `NOT` sits outside the operator and inverts a result the operator itself never inverts.
+
+There is no `ALL(P)` ("every element satisfies P") operator, and no sound way to build one from `NOT` over a list that may contain `null`: `NOT(some element satisfies ¬P)` reports "every element satisfies P" for `["red", null]`, which is wrong. Do not use that construction.
+
+A `NOT` anywhere in a condition makes the whole query residual: no backend pushes a `NOT` into its own query language, so a condition containing one is not bounded by a pushed SQL `LIMIT` clause. It is evaluated in memory by the kernel, streaming through the model and stopping once enough matches accumulate to satisfy the request's own `limit`, rather than narrowing in SQL first.
 
 **EMPTY CONDITION**: Submitting an empty body (`{}`) or a body with no `type` field as the top-level search condition is rejected with `errors.BAD_REQUEST` — the parser requires a valid `type` field. Submitting a valid `AND` group with an empty `conditions` array (`{"type":"group","operator":"AND","conditions":[]}`) is accepted and matches all entities — this is the correct way to retrieve all entities without filtering.
 
