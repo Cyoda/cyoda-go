@@ -27,12 +27,16 @@ func TestPlanQuery_BoolEqNe(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := spi.Filter{
-				Op:     tt.op,
-				Path:   "active",
-				Source: spi.SourceData,
-				Value:  tt.value,
+				Op:       tt.op,
+				Path:     "active",
+				Source:   spi.SourceData,
+				Value:    tt.value,
+				Declared: []spi.DataType{spi.Boolean},
 			}
-			plan := planQuery(f)
+			plan, err := planQuery(f)
+			if err != nil {
+				t.Fatalf("planQuery: %v", err)
+			}
 			if plan.where != tt.wantSQL {
 				t.Errorf("where:\n  got  %s\n  want %s", plan.where, tt.wantSQL)
 			}

@@ -20,7 +20,7 @@ Every `WorkflowConfigurationDto` carries a `version` field. The server validates
 
 ```json
 {
-  "version": "1.3",
+  "version": "1.4",
   "name": "my-workflow",
   "initialState": "ready",
   "states": { "ready": {} }
@@ -33,6 +33,8 @@ Every `WorkflowConfigurationDto` carries a `version` field. The server validates
 - **MINOR** bumps for additive, backward-compatible changes — a new optional field, a new enum value in an existing string-enum, a new condition operator. **This is the common case.**
 
 Multiple MAJORs may be accepted concurrently during a deprecation window. Within a MAJOR, the server accepts any MINOR in its declared `[minMinor, maxMinor]` range.
+
+Current contract: **1.4**, which added the `NOT` group operator to a criterion's `group` clause (dual-shape: 1.1, 1.2 and 1.3 remain accepted). Not every behaviour change bumps this contract — the evaluation-time change that makes a criterion naming a field the model does not declare abort and roll back the save (see `errors.WORKFLOW_FAILED`) does not, because it alters no import validation, acceptance rule, or export shape. See `docs/workflow-schema-versioning.md` for the full rationale on both.
 
 ## DISCOVERY
 
@@ -52,9 +54,9 @@ Both emit the same structured JSON:
 
 ```json
 {
-  "current": "1.3",
+  "current": "1.4",
   "supported": [
-    { "major": 1, "minMinor": 1, "maxMinor": 3 }
+    { "major": 1, "minMinor": 1, "maxMinor": 4 }
   ]
 }
 ```
@@ -75,5 +77,5 @@ Pin your authoring tools and CI to the schema version they were tested against:
 ```bash
 # in a CI step
 current=$(curl -s $CYODA_HOST/api/help/workflows/schema-version/versions | jq -r .current)
-test "$current" = "1.3" || { echo "schema drift"; exit 1; }
+test "$current" = "1.4" || { echo "schema drift"; exit 1; }
 ```

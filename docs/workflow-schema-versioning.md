@@ -62,6 +62,39 @@ moves from eval time to import time. No `CurrentSchemaVersion` or
 
 `GET /model/export/…` responses carry a top-level `uniqueKeys` array listing the model's declared composite unique keys. The field uses **omitempty** semantics — it is present only when the model declares at least one key; a model with no keys exports byte-identically to a pre-feature model (matching the descriptor storage DTOs, which also omit the empty case). This is a purely additive change to the **model export DTO** (`ExportModel`) — it is separate from `WorkflowConfigurationDto` and therefore does **not** trigger a workflow schema version bump per the rule above. No `CurrentSchemaVersion` change is required.
 
+### Criterion `jsonPath` grammar tightened at import (v0.8.4)
+
+A `simple`/`array` criterion's `jsonPath` is now checked against the same
+bracket-subscript grammar a search condition obeys, instead of a looser
+check that only confirmed the `$.` leader. A bracket spelling outside the
+grammar — `$.a[-1]`, `$.a[0:2]`, `$.a[?(@.x)]`, `$.a[`, `$.a[0]b`, and
+similar — is now rejected at import with `400 VALIDATION_FAILED`, where it
+previously imported cleanly and the criterion then silently never fired,
+because no evaluator resolves those spellings. Landed as part of
+[cyoda-go#538](https://github.com/Cyoda/cyoda-go/pull/538) ("one path
+grammar and one path resolver"), which also unified the search and criterion
+path validators onto the single grammar `docs/cloud-parity/path-grammar.md`
+defines. See `cmd/cyoda/help/content/workflows.md`'s CRITERIA section.
+
+This is the §"When NOT to bump" "bug-fixing a validator that was already
+supposed to reject something" case, same as the v0.8.3 malformed-regex entry
+above: a criterion carrying one of these bracket spellings never worked as a
+correct guard — no evaluator resolves it, so the transition it guarded
+always silently failed to fire — so no *working* config is newly rejected,
+only the failure moves from a silent, permanent no-op at evaluation to a
+loud one at import. `WorkflowConfigurationDto`'s shape is unchanged; only
+what a `simple`/`array` clause's `jsonPath` value must look like tightens.
+No `CurrentSchemaVersion` or `SupportedSchemaRanges` change.
+
+**This is independent of, and predates, the 1.3 → 1.4 bump below.** It
+applies to a criterion imported under any schema version — 1.1 through
+1.4 alike — because it is a validation-layer change, not a DTO-shape one.
+It is the reason the 1.4 entry below qualifies "every 1.3 payload remains
+valid" rather than stating it unconditionally: a 1.3-stamped payload whose
+criterion carries a malformed bracket path imported successfully before
+this change and is rejected by the same v0.8.4 binary now, regardless of
+which schema version it declares.
+
 ### Unrecognised-operator criteria rejected at evaluation, not import (v0.8.4)
 
 A workflow-level or transition-level criterion carrying an operator name the
@@ -82,6 +115,30 @@ acceptance is unchanged: `WorkflowConfigurationDto` still validates only
 imports byte-identically. No `CurrentSchemaVersion` or `SupportedSchemaRanges`
 change.
 
+### Undeclared-field criteria rejected at evaluation, not import (v0.8.4)
+
+A query never executes against a field the model does not declare — there is
+no such thing as an undeclared field to query. A criterion naming such a
+field now aborts and rolls back the save that evaluates it with `400
+WORKFLOW_FAILED`, instead of the condition silently evaluating to "not
+satisfied" and the save succeeding. See
+[`docs/cloud-parity/unevaluable-criterion-fails-save.md`](./cloud-parity/unevaluable-criterion-fails-save.md).
+
+This is the same "bug-fixing a validator that was already supposed to reject
+something" case as the unrecognised-operator entry directly above it, reached
+through a different check: a criterion on a field the model does not declare
+never worked as a correct guard either, so no *working* config is newly
+rejected. Import-time acceptance is unchanged — `walkCriterion` still checks
+only path grammar, operator names, lifecycle type-soundness and pattern
+operands at import, not model membership, so a criterion naming a field the
+model has not yet declared still imports byte-identically; the field's
+declaration is a modelling step, not an import-validation one. No
+`CurrentSchemaVersion` or `SupportedSchemaRanges` change.
+
+Not to be confused with the `NOT` group operator entry under the Changelog
+below, which **is** a bump: the two are separate changes shipped in the same
+release, and neither's bump decision generalises to the other.
+
 ## Required commit-/PR-time checks
 
 Before merging a schema bump:
@@ -93,7 +150,51 @@ Before merging a schema bump:
 
 ## Changelog
 
-### 1.3 — v0.8.3 contract (current)
+### 1.4 — v0.8.4 contract (current)
+
+Additive MINOR — one new condition operator, `NOT`, accepted on a criterion's
+`group` clause:
+
+- **`NOT` on `GroupConditionDto.operator`.** `NOT` takes exactly one entry in
+  `conditions` (rejected at import with `400 VALIDATION_FAILED` if zero, or
+  two or more) and inverts that entry's own two-valued answer. This widens
+  the accepted-input set for the criterion embedded in
+  `WorkflowDefinition.criterion` and `TransitionDefinition.criterion` — the
+  bump rules above name "a new condition operator" as the canonical additive
+  MINOR example. See
+  [`docs/cloud-parity/negation.md`](./cloud-parity/negation.md) for the full
+  contract.
+
+Every 1.3 payload whose criteria import cleanly today — including one
+whose `group` clauses use only `AND`/`OR` — is byte-identical and remains
+valid under 1.4; `NOT` is purely additive alongside `AND`/`OR`, not a
+replacement for either, and this bump by itself rejects nothing a prior
+MINOR accepted.
+
+**That is not the same claim as "every payload previously accepted by a
+1.3-labelled binary still imports."** It is not, independent of this bump:
+this same v0.8.4 release also tightens criterion `jsonPath` validation at
+import (see "Criterion `jsonPath` grammar tightened at import (v0.8.4)"
+under "When NOT to bump" above) — a 1.3-stamped criterion carrying a
+malformed bracket path such as `$.a[-1]` imported cleanly before that
+change and is rejected now. That tightening is orthogonal to the schema
+version number and does not retire any MINOR; it is called out here only so
+this entry's own additivity claim is not read more broadly than it is.
+
+**Dual-shape retention of 1.1, 1.2 and 1.3.** Nothing is retired:
+`SupportedSchemaRanges` widens in place to
+`{Major: 1, MinMinor: 1, MaxMinor: 4}` — 1.1-, 1.2- and 1.3-stamped imports
+keep working alongside 1.4.
+
+This bump is for the criterion **shape** only. Two related evaluation-time
+behaviour changes shipped in the same release do not bump this contract —
+see the "Undeclared-field criteria rejected at evaluation, not import
+(v0.8.4)" and "Unrecognised-operator criteria rejected at evaluation, not
+import (v0.8.4)" entries under "When NOT to bump" above. Each of the three
+changes is decided on its own terms; none of the three decisions
+generalises to another.
+
+### 1.3 — v0.8.3 contract
 
 Additive MINOR — one new optional field, mutually exclusive with an existing
 one, both still under the same parent object:

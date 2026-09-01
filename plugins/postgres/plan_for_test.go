@@ -33,7 +33,10 @@ func TestPlanFor_MatchAllLeavesNoResidual(t *testing.T) {
 		{"explicit empty AND", spi.Filter{Op: spi.FilterAnd}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			plan := planFor(tc.filter)
+			plan, err := planFor(tc.filter)
+			if err != nil {
+				t.Fatalf("planFor: %v", err)
+			}
 			if plan.postFilter != nil {
 				t.Errorf("postFilter = %+v, want nil: a match-all query has nothing to "+
 					"post-filter, and a non-nil residual costs LIMIT pushdown and "+
@@ -56,7 +59,10 @@ func TestPlanFor_MatchAllLeavesNoResidual(t *testing.T) {
 // match-all. Widening planFor's short-circuit to any childless group would turn
 // "match nothing" into "match everything".
 func TestPlanFor_EmptyOrIsNotMatchAll(t *testing.T) {
-	plan := planFor(spi.Filter{Op: spi.FilterOr})
+	plan, err := planFor(spi.Filter{Op: spi.FilterOr})
+	if err != nil {
+		t.Fatalf("planFor: %v", err)
+	}
 	if plan.postFilter == nil {
 		t.Fatal("postFilter = nil: an empty OR matches nothing and must stay a residual")
 	}
@@ -73,7 +79,14 @@ func TestPlanFor_DelegatesToPlanQuery(t *testing.T) {
 		Op: spi.FilterEq, Source: spi.SourceData, Path: "name",
 		Value: "Alice", Declared: []spi.DataType{spi.String},
 	}
-	got, want := planFor(f), planQuery(f)
+	got, err := planFor(f)
+	if err != nil {
+		t.Fatalf("planFor: %v", err)
+	}
+	want, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	if got.where != want.where {
 		t.Errorf("where = %q, want %q", got.where, want.where)
 	}
@@ -98,7 +111,10 @@ func TestPlanFor_MixedFilterPushesTheEqLeaf(t *testing.T) {
 		{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: ".*"},
 	}}
 
-	plan := planFor(mixed)
+	plan, err := planFor(mixed)
+	if err != nil {
+		t.Fatalf("planFor: %v", err)
+	}
 	if plan.where == "" {
 		t.Fatal("where is empty: the pushable eq(city) leaf was not pushed, so this " +
 			"filter shape now full-scans the model")

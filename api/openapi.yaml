@@ -6973,7 +6973,7 @@ paths:
         creationDate, lastUpdateTime, transitionForLatestSave — alias
         previousTransition, transactionId, id)
 
-        3. Group conditions - combine multiple conditions with AND/OR operators
+        3. Group conditions - combine multiple conditions with AND/OR/NOT operators
 
         4. Array conditions - positional matching against array elements
 
@@ -9521,6 +9521,21 @@ components:
       required:
         - function
     GroupConditionDto:
+      description: |
+        Combines conditions with a logical operator. `AND`/`OR` accept any
+        number of `conditions`, including zero (a vacuous conjunction is
+        true; a vacuous disjunction is false). `NOT` accepts **exactly one**
+        entry — `NOT(c)` is true exactly when `c` is false. A `NOT` with
+        zero, or two or more, entries is rejected: a bare list has two
+        defensible readings ("not both" vs. "neither") that disagree on the
+        same data, so a multi-condition `NOT` is written by nesting a group
+        inside it (`NOT(A AND B)`), not as a flat list under `NOT`.
+
+        Over a wildcard-addressed list, `NOT` is a universal quantifier
+        where the wrapped leaf is existential: `NOT($.tags[*] EQUALS "red")`
+        matches when no element equals `"red"`, a different question from
+        `$.tags[*] NOT_EQUAL "red"` (some element differs). `NOT` is never
+        rewritten by De Morgan into a leaf's negative twin.
       allOf:
         - $ref: "#/components/schemas/AbstractConditionDto"
         - type: object

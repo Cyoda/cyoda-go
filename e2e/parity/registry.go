@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 250 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 260 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -463,6 +463,22 @@ var allTests = []NamedTest{
 	{"SearchStringOpsCaseSensitivityAndNonTextual", RunSearchStringOpsCaseSensitivityAndNonTextual},
 	{"SearchNegativeOpOnAbsentField", RunSearchNegativeOpOnAbsentField},
 	{"SearchIsNullAbsentVsPresentNull", RunSearchIsNullAbsentVsPresentNull},
+
+	// Task 1 fix (cyoda-go-spi eval_leaf.go): an unsatisfiable comparison
+	// answers by operator polarity rather than a blanket false, including the
+	// polymorphic [INTEGER, String] carve-out. See negation.go.
+	{"SearchUnsatisfiableComparisonPolarity", RunSearchUnsatisfiableComparisonPolarity},
+
+	// NOT-node plan Task 13: cross-backend NOT scenarios. See negation.go.
+	{"SearchNotOverSimpleCondition", RunSearchNotOverSimpleCondition},
+	{"SearchNotOverAndGroup", RunSearchNotOverAndGroup},
+	{"SearchNotOverOrGroup", RunSearchNotOverOrGroup},
+	{"SearchNotUniversalQuantifierOverWildcard", RunSearchNotUniversalQuantifierOverWildcard},
+	{"SearchNotVsNegativeTwinDiffer", RunSearchNotVsNegativeTwinDiffer},
+	{"SearchNotOverAbsentField", RunSearchNotOverAbsentField},
+	{"SearchNotIsNullDiffersFromNotNullOnWildcard", RunSearchNotIsNullDiffersFromNotNullOnWildcard},
+	{"DeleteConditionalNotOverCondition", RunDeleteConditionalNotOverCondition},
+	{"SearchBadPathInsideNot", RunSearchBadPathInsideNot},
 
 	// Spec §4 — data-field temporal (subsumes the earlier standalone
 	// temporal-search-on-data-fields work). Model discovery content-sniffs

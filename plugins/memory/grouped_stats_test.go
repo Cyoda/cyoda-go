@@ -84,6 +84,41 @@ func TestMemoryIterate_BasicScan(t *testing.T) {
 	}
 }
 
+// TestMemoryIterate_RejectsUnevaluableFilter pins the propagation of
+// spi.Prepare's error through Iterate: a leaf spi.Prepare genuinely cannot
+// evaluate must fail Iterate outright, not silently return an iterator that
+// matches nothing.
+func TestMemoryIterate_RejectsUnevaluableFilter(t *testing.T) {
+	_, store, ctx := gsNewStore(t)
+	gsSave(t, ctx, store, "e-1", "available", map[string]any{"name": "a"})
+
+	it, ok := store.(spi.Iterable)
+	if !ok {
+		t.Fatal("store does not implement spi.Iterable")
+	}
+	iter, err := it.Iterate(ctx, gsModel, spi.Filter{
+		Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
+		Value: `a\`, Declared: []spi.DataType{spi.String},
+	}, spi.IterateOptions{})
+	// Drain and close defensively: if the guard under test regressed and
+	// Iterate wrongly succeeded, an undrained iterator would mask that as a
+	// hang/leak in a later test instead of failing cleanly right here.
+	if iter != nil {
+		for iter.Next() {
+		}
+		if err == nil {
+			err = iter.Err()
+		}
+		_ = iter.Close()
+	}
+	if err == nil {
+		t.Fatal("Iterate must fail on an unevaluable filter, not return an iterator over an empty match set")
+	}
+	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
+		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
+	}
+}
+
 func TestMemoryIterate_FilterAppliedInNext(t *testing.T) {
 	_, store, ctx := gsNewStore(t)
 	gsSave(t, ctx, store, "e-a", "available", map[string]any{"x": 1})
@@ -243,6 +278,31 @@ func TestMemoryGroupedAggregate_CountByState(t *testing.T) {
 	}
 	if totals["available"] != 5 || totals["allocated"] != 2 {
 		t.Fatalf("counts wrong: %v", totals)
+	}
+}
+
+// TestMemoryGroupedAggregate_RejectsUnevaluableFilter pins the propagation of
+// spi.Prepare's error through GroupedAggregate: a leaf spi.Prepare genuinely
+// cannot evaluate must fail the aggregation outright, not silently bucket
+// zero entities.
+func TestMemoryGroupedAggregate_RejectsUnevaluableFilter(t *testing.T) {
+	_, store, ctx := gsNewStore(t)
+	gsSave(t, ctx, store, "e-1", "available", map[string]any{"name": "a"})
+
+	ga := store.(spi.GroupedAggregator)
+	_, err := ga.GroupedAggregate(ctx, gsModel,
+		[]spi.GroupExpr{{Kind: spi.GroupExprState}},
+		spi.Filter{
+			Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
+			Value: `a\`, Declared: []spi.DataType{spi.String},
+		},
+		spi.GroupedAggregationsOptions{MaxBuckets: 100},
+	)
+	if err == nil {
+		t.Fatal("GroupedAggregate must fail on an unevaluable filter, not silently bucket zero entities")
+	}
+	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
+		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
 	}
 }
 

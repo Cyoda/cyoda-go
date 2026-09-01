@@ -20,20 +20,47 @@ import (
 // through spi.ResolvePath — the one resolver the SPI kernel's PreparedFilter
 // also calls (docs/cloud-parity/path-grammar.md section 10).
 //
-// Prepare returns an error where the Filter-side spi.Prepare does not, because
-// the two consume different input types: spi.FilterOp is a closed enum, while
-// predicate.Condition carries free-text operator and field names that can name
-// nothing.
+// Prepare and the Filter-side spi.Prepare both fail a leaf they cannot
+// evaluate rather than silently building one that never matches — the two
+// consume different input types (spi.FilterOp is a closed enum, while
+// predicate.Condition carries free-text operator and field names that can
+// name nothing), so this package's error set is its own, not a mirror of
+// spi.ErrUnevaluableLeaf, but the disposition is the same: an unevaluable
+// leaf is a structural fault, not a row-dependent non-match.
 //
-// Errors are structural properties of the CONDITION, never of the row. Every
+// Errors are structural properties of the CONDITION, never of the row.
+// Exactly one swallow stays a deliberate non-match rather than an error: the
+// temporal-meta guard in prepareLifecycle (a text or pattern operator on
+// creationDate/lastUpdateTime), pinned as permanent by
+// TestPrepare_TemporalMetaGuardStaysANonMatch and
+// TestMatch_TemporalMetaField_StringOperatorNeverMatches. Every other
 // row-dependent failure stays a non-match, exactly as before.
 
-// errUnsupportedOperator marks an operator NAME with no kernel op — a
-// structural fault that fails Prepare. It is deliberately distinct from an
-// expansion failure (an operand that parses into no declared type), which is a
-// leaf that never matches. Collapsing the two would reject conditions that
-// evaluate cleanly today.
-var errUnsupportedOperator = errors.New("unsupported operator")
+// ErrUnsupportedOperator marks an operator NAME with no kernel op — a
+// structural fault that fails Prepare. It is deliberately a distinct
+// sentinel from ErrUnevaluableLeaf (an operand that parses into no declared
+// type, an empty leaf path, or a path outside the filter-path grammar) so a
+// caller that wants to tell "no such operator" apart from "operator exists
+// but this leaf cannot be evaluated" can do so with errors.Is.
+//
+// Exported so callers outside this package that drive Prepare against a
+// residual (untranslatable) condition — search.Service.Search's fallback,
+// entity's conditional-delete planner, grouped-stats' streaming tally — can
+// classify a Prepare failure into a client-facing 4xx via
+// search.ClassifyStoreQueryError instead of it defaulting to a 500. See that
+// function's doc for the mapping.
+var ErrUnsupportedOperator = errors.New("unsupported operator")
+
+// ErrUnevaluableLeaf marks a leaf that IS a recognised operator but cannot be
+// evaluated: an operand that parses into no declared type (or a malformed
+// range arity), an empty leaf path, or a jsonPath outside the filter-path
+// grammar. Prepare fails closed on all three rather than building a node that
+// silently never matches — see prepKind's doc for why a silently-unfinished
+// node is exactly the failure mode this guards against.
+//
+// Exported for the same cross-package classification reason as
+// ErrUnsupportedOperator (see its doc).
+var ErrUnevaluableLeaf = errors.New("unevaluable leaf")
 
 // prepKind discriminates the prepared node shapes.
 type prepKind int
@@ -41,8 +68,22 @@ type prepKind int
 const (
 	// prepNever is the ZERO VALUE on purpose: an unpopulated node, and the
 	// zero Prepared that Prepare returns alongside an error, must fail closed.
+	//
+	// Exactly one node deliberately carries this kind as a real, wired-in
+	// value with a nil error: prepareLifecycle's temporal-meta guard (a text
+	// or pattern operator on creationDate/lastUpdateTime never matches,
+	// permanently — see that function). Everywhere else, prepNever is
+	// reached only as the discarded zero value paired with a non-nil error —
+	// leafNode and prepareSimple no longer construct a bare
+	// prepNode{kind: prepNever} to swallow a failure; they return an error
+	// instead, so a half-built node can never be wired into a live tree. The
+	// caller either propagates that error immediately (prepareGroup) or, at
+	// the top, Prepare itself discards its own result and returns the zero
+	// Prepared — which is prepNever by construction and the correct
+	// fail-closed answer for a caller that ignores the error.
 	prepNever prepKind = iota
 	prepGroup
+	prepNot          // NOT: negates its single child (see prepNode.children)
 	prepLeaf         // data leaf, addressed by a parsed filter path
 	prepMetaString   // lifecycle leaf on a string-valued meta field
 	prepMetaTemporal // lifecycle leaf on creationDate / lastUpdateTime
@@ -63,6 +104,9 @@ type prepNode struct {
 	// prepGroup
 	or       bool
 	children []prepNode
+
+	// prepNot also uses children, always with exactly one element — the
+	// negated child. It does not use or.
 
 	// prepLeaf
 	hops []spi.PathHop
@@ -138,32 +182,68 @@ func prepareDesugared(cond predicate.Condition, fieldTypes FieldTypes) (prepNode
 }
 
 // expandNamed maps an operator NAME to its kernel op and expands the operand.
-// A name with no kernel op is a structural fault; anything else the kernel
-// rejects is an expansion failure the caller turns into a never-match leaf.
+// A name with no kernel op is a structural fault (ErrUnsupportedOperator);
+// anything else the kernel rejects is an expansion failure the caller
+// (leafNode) turns into a Prepare error (ErrUnevaluableLeaf) — an unevaluable
+// leaf is a structural fault too, not a leaf that silently never matches.
 func expandNamed(operatorType string, value any, declared []spi.DataType) (spi.Expansion, error) {
 	op, ok := opNameToFilterOp(operatorType)
 	if !ok {
-		return spi.Expansion{}, fmt.Errorf("%w: %s", errUnsupportedOperator, operatorType)
+		return spi.Expansion{}, fmt.Errorf("%w: %s", ErrUnsupportedOperator, operatorType)
 	}
 	var values []string
 	if op == spi.FilterBetween || op == spi.FilterBetweenInclusive {
 		values = betweenBounds(value)
 	}
-	return spi.ExpandLeaf(op, spi.OperandString(value), values, declared)
+	exp, err := spi.ExpandLeaf(op, spi.OperandString(value), values, declared)
+	if err != nil {
+		return spi.Expansion{}, err
+	}
+	// spi.ExpandLeaf deliberately swallows a pattern-compile failure for
+	// LIKE and MATCHES_PATTERN (its own doc comment): it still returns a
+	// leaf, with the built Expansion's matcher left nil (never matches),
+	// for callers outside the SPI package that still want that leaf built
+	// rather than an error. The SPI kernel's own Prepare closes exactly this
+	// swallow (prepared_filter.go) by re-deriving the compile ONLY when it
+	// can see, via the Expansion's unexported matcher field, that the first
+	// attempt actually failed. This package has no such visibility — the
+	// field is private to spi, and Expansion exposes no accessor for it —
+	// so it cannot gate the re-derivation on "did it actually fail"; it
+	// gates on "is this a pattern operator at all" instead, paying one
+	// extra ExpandLeaf-equivalent compile for every LIKE/MATCHES_PATTERN
+	// leaf (matching or not) rather than only the ones that fail. That cost
+	// is paid once per query at Prepare time, same as every other leaf here
+	// — never once per row. spi.ValidateLeafPattern is a no-op (returns nil
+	// immediately) for every non-pattern operator, so it is safe to reach
+	// for unconditionally once op is known to be one of the two.
+	//
+	// Left unguarded, a malformed pattern (e.g. an unclosed regex character
+	// class, "[") would silently build a leaf that never matches instead of
+	// failing Prepare — exactly the fail-open shape this whole task removes,
+	// and one a future NOT arm would invert into matching every entity.
+	if op == spi.FilterLike || op == spi.FilterMatchesRegex {
+		if err := spi.ValidateLeafPattern(op, value); err != nil {
+			return spi.Expansion{}, err
+		}
+	}
+	return exp, nil
 }
 
-// leafNode builds a prepared leaf of the given kind, or a never-match node when
-// expansion fails. It propagates only the structural fault.
+// leafNode builds a prepared leaf of the given kind, or fails Prepare when
+// expansion fails. On success, the returned node's kind is always exactly
+// kind — leafNode never returns a partially-built node alongside a nil
+// error, so a caller checking only the error can rely on that invariant.
 func leafNode(kind prepKind, operatorType string, value any, declared []spi.DataType) (prepNode, error) {
 	exp, err := expandNamed(operatorType, value, declared)
 	if err != nil {
-		if errors.Is(err, errUnsupportedOperator) {
+		if errors.Is(err, ErrUnsupportedOperator) {
 			return prepNode{}, err
 		}
 		// An operand that parses into no declared type, or a malformed range
-		// arity, is a leaf that never matches — the swallowed expansion error
-		// the per-row evaluator produced, made explicit.
-		return prepNode{kind: prepNever}, nil
+		// arity, cannot be evaluated: the swallowed expansion error the
+		// per-row evaluator used to absorb into a silent non-match, made an
+		// explicit Prepare failure instead.
+		return prepNode{}, fmt.Errorf("%w: %v", ErrUnevaluableLeaf, err)
 	}
 	return prepNode{kind: kind, exp: exp}, nil
 }
@@ -173,47 +253,45 @@ func prepareSimple(c *predicate.SimpleCondition, fieldTypes FieldTypes) (prepNod
 	if fieldTypes != nil {
 		declared = fieldTypes(fieldMapKey(c.JsonPath))
 	}
+	// leafNode(prepLeaf, ...) either fails or returns a node whose kind is
+	// exactly prepLeaf — see leafNode's doc — so nothing below needs to
+	// re-check n.kind before touching n.hops.
 	n, err := leafNode(prepLeaf, c.OperatorType, c.Value, declared)
 	if err != nil {
 		return prepNode{}, err
 	}
-	if n.kind == prepLeaf {
-		stripped := stripLeader(c.JsonPath)
-		if stripped == "" {
-			// An empty path is legal ONLY for a tree operator (AND/OR,
-			// handled by prepareGroup and never reaching this function) — it
-			// is how a condition spells "addresses no field at all". A LEAF
-			// with an empty path (raw "", "$", or "$." — stripLeader collapses
-			// all three) addresses no field either, so it must never resolve
-			// to anything. Mirrors the SPI kernel's own guard for exactly
-			// this case (prepareNode in prepared_filter.go): without it,
-			// spi.ParseFilterPath("") legitimately returns (nil, nil) — the
-			// shape the tree-operator case is allowed to take — and
-			// spi.ResolvePath(data, nil) resolves that nil hop slice to the
-			// parsed ROOT DOCUMENT, so a presence test (IS_NULL/NOT_NULL)
-			// would match every row regardless of its shape. A STRING
-			// operator's exposure is narrower — spi.EvalLeaf's kindStringOp
-			// branch requires stored.Type == gjson.String, which an
-			// object- or array-rooted document (the normal entity shape)
-			// never is, so it stays a non-match there — but for a document
-			// whose raw bytes parse to a bare JSON string at the root, the
-			// resolved "field" IS that root scalar, and a string operator
-			// substring-matches it directly.
-			return prepNode{kind: prepNever}, nil
-		}
-		hops, err := spi.ParseFilterPath(stripped)
-		if err != nil {
-			// A path outside the grammar never resolves to anything — the
-			// same "never matches" a leaf whose expansion failed already
-			// produces, and the same answer the SPI kernel gives a malformed
-			// SourceData path (prepareNode in prepared_filter.go). Do not
-			// promote this to a Prepare error: only a structural property of
-			// the CONDITION does that, and the path is validated at the
-			// boundary before a condition ever reaches this evaluator.
-			return prepNode{kind: prepNever}, nil
-		}
-		n.hops = hops
+	stripped := stripLeader(c.JsonPath)
+	if stripped == "" {
+		// An empty path is legal ONLY for a tree operator (AND/OR,
+		// handled by prepareGroup and never reaching this function) — it
+		// is how a condition spells "addresses no field at all". A LEAF
+		// with an empty path (raw "", "$", or "$." — stripLeader collapses
+		// all three) addresses no field either, so it cannot be evaluated.
+		// Mirrors the SPI kernel's own guard for exactly this case
+		// (prepareNode in prepared_filter.go): without it,
+		// spi.ParseFilterPath("") legitimately returns (nil, nil) — the
+		// shape the tree-operator case is allowed to take — and
+		// spi.ResolvePath(data, nil) resolves that nil hop slice to the
+		// parsed ROOT DOCUMENT, so a presence test (IS_NULL/NOT_NULL)
+		// would match every row regardless of its shape. A STRING
+		// operator's exposure is narrower — spi.EvalLeaf's kindStringOp
+		// branch requires stored.Type == gjson.String, which an
+		// object- or array-rooted document (the normal entity shape)
+		// never is, so it stays a non-match there — but for a document
+		// whose raw bytes parse to a bare JSON string at the root, the
+		// resolved "field" IS that root scalar, and a string operator
+		// would substring-match it directly.
+		return prepNode{}, fmt.Errorf("%w: leaf addresses no field (empty path)", ErrUnevaluableLeaf)
 	}
+	hops, err := spi.ParseFilterPath(stripped)
+	if err != nil {
+		// A path outside the grammar cannot be evaluated — the same fault
+		// class an expansion failure already is, and the same answer the
+		// SPI kernel gives a malformed SourceData path (prepareNode in
+		// prepared_filter.go).
+		return prepNode{}, fmt.Errorf("%w: path %q: %v", ErrUnevaluableLeaf, c.JsonPath, err)
+	}
+	n.hops = hops
 	return n, nil
 }
 
@@ -259,23 +337,23 @@ func prepareLifecycle(c *predicate.LifecycleCondition) (prepNode, error) {
 		if !IsTemporalOperator(c.OperatorType) {
 			return prepNode{kind: prepNever}, nil
 		}
+		// leafNode(prepMetaTemporal, ...) either fails or returns a node
+		// whose kind is exactly prepMetaTemporal — see leafNode's doc.
 		n, err := leafNode(prepMetaTemporal, c.OperatorType, c.Value, []spi.DataType{spi.ZonedDateTime})
 		if err != nil {
 			return prepNode{}, err
 		}
-		if n.kind == prepMetaTemporal {
-			n.metaField = field
-		}
+		n.metaField = field
 		return n, nil
 
 	case "state", "transitionForLatestSave", "transactionId", "id":
+		// leafNode(prepMetaString, ...) either fails or returns a node whose
+		// kind is exactly prepMetaString — see leafNode's doc.
 		n, err := leafNode(prepMetaString, c.OperatorType, c.Value, []spi.DataType{spi.String})
 		if err != nil {
 			return prepNode{}, err
 		}
-		if n.kind == prepMetaString {
-			n.metaField = field
-		}
+		n.metaField = field
 		return n, nil
 
 	default:
@@ -285,30 +363,46 @@ func prepareLifecycle(c *predicate.LifecycleCondition) (prepNode, error) {
 }
 
 func prepareGroup(c *predicate.GroupCondition, fieldTypes FieldTypes) (prepNode, error) {
-	var or bool
 	switch c.Operator {
-	case "AND":
-	case "OR":
-		or = true
+	case "AND", "OR":
+		n := prepNode{kind: prepGroup, or: c.Operator == "OR"}
+		if len(c.Conditions) > 0 {
+			n.children = make([]prepNode, 0, len(c.Conditions))
+			for _, child := range c.Conditions {
+				// child is already desugared — see prepareDesugared's doc —
+				// so this calls the dispatch directly rather than prepare,
+				// which would re-run spi.DesugarCondition on it.
+				cn, err := prepareDesugared(child, fieldTypes)
+				if err != nil {
+					return prepNode{}, err
+				}
+				n.children = append(n.children, cn)
+			}
+		}
+		return n, nil
+
+	case "NOT":
+		// Arity is exactly one. GroupCondition is a public wire shape any
+		// caller can build, so a malformed NOT must be rejected rather than
+		// guessed at: there is no well-defined "invert" of zero children or
+		// of many — inverting the first and discarding the rest, or
+		// inverting the AND of the children, are both answers nobody asked
+		// for. Mirrors the SPI kernel's identical arity check in
+		// prepareNode (prepared_filter.go) for FilterNot. Checked BEFORE
+		// indexing c.Conditions[0]: an unguarded index on a length-0 slice
+		// panics.
+		if len(c.Conditions) != 1 {
+			return prepNode{}, fmt.Errorf("NOT requires exactly one condition, got %d", len(c.Conditions))
+		}
+		child, err := prepareDesugared(c.Conditions[0], fieldTypes)
+		if err != nil {
+			return prepNode{}, err
+		}
+		return prepNode{kind: prepNot, children: []prepNode{child}}, nil
+
 	default:
 		return prepNode{}, fmt.Errorf("unknown group operator: %s", c.Operator)
 	}
-
-	n := prepNode{kind: prepGroup, or: or}
-	if len(c.Conditions) > 0 {
-		n.children = make([]prepNode, 0, len(c.Conditions))
-		for _, child := range c.Conditions {
-			// child is already desugared — see prepareDesugared's doc — so
-			// this calls the dispatch directly rather than prepare, which
-			// would re-run spi.DesugarCondition on it.
-			cn, err := prepareDesugared(child, fieldTypes)
-			if err != nil {
-				return prepNode{}, err
-			}
-			n.children = append(n.children, cn)
-		}
-	}
-	return n, nil
 }
 
 // Match reports whether the entity satisfies the prepared condition. It cannot
@@ -335,6 +429,24 @@ func (n *prepNode) match(data []byte, meta spi.EntityMeta) bool {
 			}
 		}
 		return true
+
+	case prepNot:
+		// Negating the child's own match answer (never rewriting the child
+		// operator into its element-wise negative counterpart) is what
+		// makes this a universal quantifier over a wildcard path: the child
+		// leaf already holds "SOME addressed value satisfies it", so
+		// negating that gives "NO addressed value satisfies it" — a
+		// different question from "SOME addressed value differs"
+		// (NOT_EQUAL). For {"tags":["red","blue"]}, NOT($.tags[*] EQUALS
+		// "red") is false (some element IS "red"), while $.tags[*]
+		// NOT_EQUAL "red" is true (some element, "blue", differs). This
+		// also gives vacuous truth for free: an empty array, an explicit
+		// null, or an absent field all make the child leaf resolve no
+		// values (see the prepLeaf case below), so the child is false and
+		// NOT is therefore true, with no special-casing here. Mirrors the
+		// SPI kernel's identical preparedNode.match FilterNot arm
+		// (prepared_filter.go).
+		return !n.children[0].match(data, meta)
 
 	case prepLeaf:
 		// The path's SYNTAX decides what it addresses, never the stored

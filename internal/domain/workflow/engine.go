@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -1018,64 +1019,176 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *cri
 
 	// Type-directed evaluation: the predicate kernel compares data leaves by
 	// their declared model types (a temporal data field compares temporally,
-	// consistent with the search path). The FieldsMap is loaded on the first
-	// data leaf the criterion carries — preparation resolves types for every
-	// simple and array leaf, whatever its operator, so a criterion that
-	// references any data leaf loads the schema even when a lifecycle conjunct
-	// would previously have short-circuited past it. A purely lifecycle
-	// criterion still touches nothing. A load failure on a criterion that DOES
-	// reference data leaves is surfaced (fail closed): the model schema is a
-	// required input for correct typing, so we reject rather than silently
-	// mis-evaluate.
+	// consistent with the search path). The model READ is gated on the
+	// condition carrying at least one data-field path (search.ConditionFieldPaths
+	// walks the WHOLE tree up front, not just as far as Prepare's own walk
+	// reaches) — a purely lifecycle criterion never touches the model store.
+	// This is deliberately EAGER rather than the previous lazily-triggered-
+	// during-Prepare load: computing the path set over the whole tree first
+	// makes the infra-failure precedence below hold regardless of which child
+	// of a group a structural fault happens to live in (see the note on
+	// loadErr below).
+	//
+	// A load failure on a criterion that DOES reference data leaves is
+	// surfaced (fail closed): the model schema is a required input for
+	// correct typing, so we reject rather than silently mis-evaluate.
+	paths := search.ConditionFieldPaths(cond)
+
 	var loadErr error
+	var pathErr error
+	var node *schema.ModelNode
 	var fields map[string]schema.FieldDescriptor
-	loaded := false
-	fieldTypes := func(p string) []spi.DataType {
-		if !loaded {
-			loaded = true
-			modelStore, err := e.factory.ModelStore(cc.ctx)
-			if err != nil {
-				loadErr = fmt.Errorf("%w: model store unavailable: %w", ErrCriterionTypingInfra, err)
-				return nil
+
+	if len(paths) > 0 {
+		modelStore, err := e.factory.ModelStore(cc.ctx)
+		if err != nil {
+			loadErr = fmt.Errorf("%w: model store unavailable: %w", ErrCriterionTypingInfra, err)
+		} else if n, err := search.LoadModelNode(cc.ctx, modelStore, entity.Meta.ModelRef); err != nil {
+			loadErr = fmt.Errorf("%w: model %s/%s: %w", ErrCriterionTypingInfra,
+				entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion, err)
+		} else {
+			// ONE read, ONE parse: node feeds BOTH the path check below (via
+			// its own FieldsMap()) and the type-soundness check
+			// (ValidateConditionValueTypes(node, cond)) at the bottom of
+			// this function. Two separate reads here — one via
+			// LoadFieldsMap, one via LoadModelNode — would double the
+			// store Get and schema.Unmarshal cost on every criterion, every
+			// transition, every save, for no benefit on the common
+			// (unrefreshed) path, and would open a TOCTOU where Prepare and
+			// ValidateConditionValueTypes could silently disagree about
+			// which schema snapshot they are typing against.
+			node = n
+			if node != nil {
+				fields = node.FieldsMap()
 			}
-			f, err := search.LoadFieldsMap(cc.ctx, modelStore, entity.Meta.ModelRef)
-			if err != nil {
-				loadErr = fmt.Errorf("%w: model %s/%s: %w", ErrCriterionTypingInfra,
-					entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion, err)
-				return nil
+			// A query never executes against a field the model does not
+			// declare (ruling, spec §5): hold every path the criterion
+			// names to the model's declared fields. This carries the one
+			// bounded schema refresh a cluster needs (path-grammar.md
+			// §6) — a field a peer node just added is not falsely
+			// refused. That refresh is itself a SECOND read, but only on
+			// the rare path where the first one missed a path — the common
+			// case above pays for exactly one. The (possibly refreshed)
+			// fields map is what feeds fieldTypes below, so the actual
+			// match evaluation sees the same authoritative schema this
+			// check validated against; node is deliberately NOT
+			// re-derived from that refresh (there is no cheap way to turn
+			// a refreshed fields map back into a *schema.ModelNode without
+			// a third read) — ValidateConditionValueTypes treats a path
+			// absent from its own (possibly one-refresh-stale) node as
+			// "no type constraint here" and defers to this already-passed
+			// check, exactly the leniency it already documents for any
+			// path it doesn't recognise.
+			fields, pathErr = search.ValidateKnownPaths(cc.ctx, modelStore, entity.Meta.ModelRef, paths, fields)
+			if errors.Is(pathErr, search.ErrPathRefreshInfra) {
+				// The bounded refresh itself failed — RefreshAndGet errored
+				// for a reason other than the model being legitimately
+				// deleted. That failure cannot tell "this field is
+				// genuinely undeclared" from "the cache is merely stale",
+				// so per correctness-over-availability it is infrastructure,
+				// not the caller's fault. Fold it into loadErr (wrapped with
+				// %w on both sides, so the underlying cause — a
+				// context.DeadlineExceeded included — stays reachable via
+				// errors.Is for classifyWorkflowError's own cancellation
+				// branch and, beyond it, common.ClassifyRequestTimeout) so
+				// it shares loadErr's precedence: infra wins over every
+				// structural fault below, exactly like a model-store outage
+				// on the read above.
+				loadErr = fmt.Errorf("%w: %w", ErrCriterionTypingInfra, pathErr)
+				pathErr = nil
 			}
-			fields = f
 		}
+	}
+
+	fieldTypes := func(p string) []spi.DataType {
 		if fd, ok := fields[p]; ok {
 			return fd.Types
 		}
 		return nil
 	}
 
-	// Prepared once. Every structural fault the criterion carries surfaces
-	// here, from the condition's own shape, rather than from whichever entity
-	// happens to reach it — so a criterion that cannot be evaluated fails the
-	// transition instead of being silently read as "not satisfied".
-	prepared, prepErr := match.Prepare(cond, fieldTypes)
-
-	// If an infra failure was observed, it wins: a model-store outage is a
-	// server-side condition and must not surface as a client error just
-	// because the same criterion also carries a malformed operator.
-	//
-	// That rule is not an unconditional guarantee — it only fires when loadErr
-	// was actually latched, and whether it was depends on tree order. Prepare
-	// returns on the FIRST structural fault its walk finds, and fieldTypes
-	// (the closure that sets loadErr) is only invoked when the walk reaches a
-	// simple or array leaf. So with the model store down,
-	// OR[$.age > 5, $.x IS_CHANGED] reports the infra failure (the first
-	// child is a data leaf and latches loadErr before the second child's bad
-	// operator is ever parsed), but OR[$.x IS_CHANGED, $.age > 5] reports the
-	// structural fault instead (the walk bails on the first child before any
-	// data leaf is reached). "Infra failure wins" describes what happens once
-	// loadErr is set, not a promise that it always will be.
+	// If an infra failure was observed, it wins: a model-store outage — on
+	// either read, or on the bounded refresh ValidateKnownPaths performs —
+	// is a server-side condition and must not surface as a client error just
+	// because the same criterion also carries a malformed operator or an
+	// undeclared field. Unlike the previous lazily-triggered load, paths is
+	// now computed over the WHOLE tree before Prepare ever runs, so this
+	// precedence holds regardless of which child of a group carries the data
+	// leaf versus the structural fault.
 	if loadErr != nil {
 		return false, "", loadErr
 	}
+
+	// Model-boundary validation, in the same order the search HTTP boundary
+	// enforces it (path existence, then pattern compilability, then declared
+	// type/operator soundness):
+	//
+	//  1. ValidateKnownPaths (above) — the field itself must be declared.
+	//  2. ValidatePatterns — a MATCHES_PATTERN/LIKE operand the kernel cannot
+	//     compile is rejected regardless of whether the field is typed; a
+	//     workflow stored before pattern validation existed is never
+	//     re-validated at import, so this must run at evaluation. Not
+	//     redundant with match.Prepare below: for the string-operator family
+	//     (LIKE/MATCHES_PATTERN included), the SPI kernel's ExpandLeaf
+	//     deliberately SWALLOWS a pattern-compile failure into a leaf that
+	//     never matches (its own doc comment: "Callers wanting a rejection
+	//     ask ValidateLeafPattern FIRST") — so Prepare alone would silently
+	//     never-match rather than abort.
+	//  3. ValidateConditionValueTypes — ALWAYS called, with node nil when the
+	//     condition carries no data path. This is deliberate: gating the
+	//     CALL (rather than just the model READ, which is correctly gated
+	//     above on len(paths)>0) would leave validateLifecycleType unreached,
+	//     and that is the one check that refuses a text/pattern operator on
+	//     a temporal meta field (e.g. `creationDate CONTAINS "2024"`, which
+	//     carries no data path at all). Without it, such a criterion would
+	//     reach internal/match's deliberate temporal-meta never-match guard —
+	//     exactly the fail-open a later NOT node would invert into
+	//     matching every entity. Also not fully redundant with Prepare for a
+	//     data leaf: a KNOWN CONTAINER path (declared, but only via a nested
+	//     leaf beneath it) compared with a scalar-carrying operator like
+	//     CONTAINS is accepted by ValidateKnownPaths (a container with a
+	//     known leaf beneath it counts as known) and by Prepare (CONTAINS is
+	//     declaration-independent), but is not a sound comparison — only this
+	//     check's container-vs-scalar guard refuses it.
+	//
+	// pathErr, when it names a genuinely unknown path, is re-wrapped as a
+	// plain error rather than returned as-is: search.ValidateKnownPaths
+	// hands back an already-classified *common.AppError (400
+	// INVALID_FIELD_PATH), the correct code for its other callers —
+	// SearchService and grouped stats, where the client's request IS a field
+	// path. Here the client asked to save/transition an entity and knows
+	// nothing about the criterion's internal JSONPath; classifyWorkflowError
+	// checks errors.As(*common.AppError) FIRST and would otherwise let that
+	// unrelated code leak through unchanged instead of falling to the
+	// uniform 400 WORKFLOW_FAILED every other criterion structural fault
+	// gets (the "existing unevaluable-criterion contract"). The AppError's
+	// Message already carries its own "INVALID_FIELD_PATH: " code prefix
+	// (common.Operational bakes the code into Message); that prefix is
+	// stripped so the re-wrapped detail does not carry two codes
+	// ("WORKFLOW_FAILED: ...: INVALID_FIELD_PATH: ...") — only the domain
+	// detail (which names the offending path) survives.
+	if pathErr != nil {
+		var appErr *common.AppError
+		if errors.As(pathErr, &appErr) {
+			return false, "", errors.New(strings.TrimPrefix(appErr.Message, appErr.Code+": "))
+		}
+		return false, "", errors.New(pathErr.Error())
+	}
+	if err := search.ValidatePatterns(cond); err != nil {
+		return false, "", err
+	}
+	if err := search.ValidateConditionValueTypes(node, cond); err != nil {
+		return false, "", err
+	}
+
+	// Prepared only now, after every model-boundary refusal above has
+	// cleared: a criterion the model-boundary checks would abort is never
+	// even compiled, just to be discarded. Every structural fault the
+	// criterion carries surfaces here, from the condition's own shape,
+	// rather than from whichever entity happens to reach it — so a
+	// criterion that cannot be evaluated fails the transition instead of
+	// being silently read as "not satisfied".
+	prepared, prepErr := match.Prepare(cond, fieldTypes)
 	if prepErr != nil {
 		return false, "", prepErr
 	}

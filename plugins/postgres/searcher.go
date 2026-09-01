@@ -210,7 +210,10 @@ func (s *entityStore) classifyScanError(err error) error {
 // below are unconditional.
 func (s *entityStore) runSearch(ctx context.Context, q Querier, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
 	// Zero-value Filter means "match all".
-	plan := planFor(filter)
+	plan, err := planFor(filter)
+	if err != nil {
+		return nil, fmt.Errorf("Search: %w", err)
+	}
 
 	baseQuery, baseArgs := s.searchBaseQuery(opts.ModelName, opts.ModelVersion, opts.PointInTime)
 

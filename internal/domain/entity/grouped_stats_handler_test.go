@@ -443,3 +443,74 @@ func TestGroupedStatsHandler_ConditionTypeMismatch_Rejected(t *testing.T) {
 		t.Fatalf("errorCode=%s, want CONDITION_TYPE_MISMATCH", got)
 	}
 }
+
+// refreshFailingModelStore serves a warm-but-stale cached descriptor (Get
+// always succeeds, declaring only "name") and always FAILS its
+// RefreshAndGet — modelling a genuine model-store outage discovered while
+// confirming a possibly-stale field-path miss.
+type refreshFailingModelStore struct {
+	ref spi.ModelRef
+}
+
+func (s *refreshFailingModelStore) Get(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error) {
+	node := schema.NewObjectNode()
+	node.SetChild("name", schema.NewLeafNode(schema.String))
+	raw, err := schema.Marshal(node)
+	if err != nil {
+		return nil, err
+	}
+	return &spi.ModelDescriptor{Ref: s.ref, State: spi.ModelLocked, Schema: raw}, nil
+}
+
+func (s *refreshFailingModelStore) RefreshAndGet(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error) {
+	return nil, errors.New("connection refused")
+}
+
+func (s *refreshFailingModelStore) Save(context.Context, *spi.ModelDescriptor) error { return nil }
+func (s *refreshFailingModelStore) GetAll(context.Context) ([]spi.ModelRef, error)   { return nil, nil }
+func (s *refreshFailingModelStore) Delete(context.Context, spi.ModelRef) error       { return nil }
+func (s *refreshFailingModelStore) Lock(context.Context, spi.ModelRef) error         { return nil }
+func (s *refreshFailingModelStore) Unlock(context.Context, spi.ModelRef) error       { return nil }
+func (s *refreshFailingModelStore) IsLocked(context.Context, spi.ModelRef) (bool, error) {
+	return true, nil
+}
+func (s *refreshFailingModelStore) SetChangeLevel(context.Context, spi.ModelRef, spi.ChangeLevel) error {
+	return nil
+}
+func (s *refreshFailingModelStore) ExtendSchema(context.Context, spi.ModelRef, spi.SchemaDelta) error {
+	return nil
+}
+
+var _ spi.ModelStore = (*refreshFailingModelStore)(nil)
+
+// TestGroupedStatsHandler_SchemaRefreshFailure_Returns5xxNot400 pins the
+// review-round finding that grouped stats shares the same 400→5xx flip as
+// /search/direct and conditional DELETE: a condition naming a field absent
+// from the cached schema, whose confirming RefreshAndGet call itself FAILS,
+// must be reported as infrastructure — not folded into the same 400
+// INVALID_FIELD_PATH TestGroupedStatsHandler_UnknownConditionPath_Rejected
+// pins for a genuinely-unknown path.
+func TestGroupedStatsHandler_SchemaRefreshFailure_Returns5xxNot400(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "X", ModelVersion: "1"}
+	ms := &refreshFailingModelStore{ref: ref}
+	fields := map[string]schema.FieldDescriptor{
+		"$.name": {Path: "$.name", Types: []spi.DataType{spi.String}},
+	}
+	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+		return &fakeIterable{}, ref, fields, ms, true, nil
+	}
+	h := entity.NewGroupedStatsHandler(resolver, 10000)
+	body := `{"groupBy":["state"],"condition":{"type":"simple","jsonPath":"$.zz","operatorType":"EQUALS","value":"x"}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/entity/stats/X/1/query", strings.NewReader(body))
+	req.SetPathValue("entityName", "X")
+	req.SetPathValue("modelVersion", "1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code < http.StatusInternalServerError {
+		t.Fatalf("status %d, want 5xx: a failed schema refresh is infrastructure, not a client fault (body: %s)",
+			rec.Code, rec.Body.String())
+	}
+	if got := decodeProblemErrorCode(t, rec.Body.Bytes()); got == "INVALID_FIELD_PATH" {
+		t.Errorf("errorCode=%s, must NOT be INVALID_FIELD_PATH — that is the genuine-unknown-path classification", got)
+	}
+}

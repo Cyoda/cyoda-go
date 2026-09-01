@@ -42,6 +42,17 @@ const functionConditionNestedInGroup = `{
 	]
 }`
 
+// functionConditionNestedInNot buries the clause inside a NOT group — the
+// walker must recurse into a NOT's single child exactly as it does into
+// AND/OR's children, not stop at a fixed {AND, OR} case list.
+const functionConditionNestedInNot = `{
+	"type": "group",
+	"operator": "NOT",
+	"conditions": [
+		{"type":"function","function":{"name":"approval-check"}}
+	]
+}`
+
 // expectFunctionConditionRejected asserts the 400 INVALID_CONDITION contract
 // and that the detail names the reason rather than leaking internals.
 func expectFunctionConditionRejected(t *testing.T, method, path, body string) {
@@ -118,6 +129,15 @@ func TestSearch_Sync_FunctionConditionNestedInGroup_Returns400(t *testing.T) {
 
 	expectFunctionConditionRejected(t, http.MethodPost,
 		fmt.Sprintf("/api/search/direct/%s/1", model), functionConditionNestedInGroup)
+}
+
+func TestSearch_Sync_FunctionConditionNestedInNot_Returns400(t *testing.T) {
+	const model = "e2e-search-fn-nested-not"
+	setupSearchModel(t, model)
+	createEntityE2E(t, model, 1, `{"name":"Alice","amount":100,"status":"active"}`)
+
+	expectFunctionConditionRejected(t, http.MethodPost,
+		fmt.Sprintf("/api/search/direct/%s/1", model), functionConditionNestedInNot)
 }
 
 // The accept-side counterpart: rejecting function clauses in search must not

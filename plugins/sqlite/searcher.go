@@ -66,7 +66,10 @@ func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 // bound, via the direct-search timeout or async job cancellation, never the
 // backend's.
 func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
-	plan := planFor(filter)
+	plan, err := planFor(filter)
+	if err != nil {
+		return nil, fmt.Errorf("Search: %w", err)
+	}
 
 	var baseQuery string
 	var baseArgs []any
@@ -231,11 +234,19 @@ func sortEntitiesByOrder(ctx context.Context, rows []*spi.Entity, order []spi.Or
 // the sql.DB query — identical to Save/GetAll/getAllTx in this package.
 func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionState, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
 	modelRef := spi.ModelRef{EntityName: opts.ModelName, ModelVersion: opts.ModelVersion}
-	plan := planFor(filter)
-	// The buffered own-writes are matched against the FULL original filter (not
-	// the residual), so they need their own prepared value. Prepared once,
-	// above the loop.
-	pf := spi.Prepare(filter)
+	plan, err := planFor(filter)
+	if err != nil {
+		return nil, fmt.Errorf("Search: %w", err)
+	}
+	// The buffered own-writes are matched against the FULL original filter
+	// (not the residual), so they need their own prepared value, independent
+	// of plan.preparedPostFilter (which stays nil whenever the plan is fully
+	// EXACT — see planQuery). The error is ignored, not unchecked: planFor's
+	// success above already ran spi.Prepare on this exact filter value
+	// (planQuery calls it unconditionally, before dissection, precisely so no
+	// plan shape can skip evaluability), so a second failure here is
+	// impossible — this call exists only to obtain the PreparedFilter value.
+	pf, _ := spi.Prepare(filter)
 
 	// Committed candidate SQL: snapshot at tx.SnapshotTime, ORDER BY, no LIMIT.
 	baseQuery, baseArgs := s.searchSnapshotBase(opts, timeToMicro(tx.SnapshotTime))
@@ -246,7 +257,7 @@ func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionSt
 	baseQuery += orderByClause(opts.OrderBy, "ev")
 
 	var results []*spi.Entity
-	err := func() error {
+	err = func() error {
 		tx.OpMu.RLock()
 		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {

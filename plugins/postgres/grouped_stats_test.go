@@ -115,6 +115,39 @@ func TestPostgresIterate_FilterPushdown(t *testing.T) {
 	}
 }
 
+// TestPostgresIterate_RejectsUnevaluableFilter pins the propagation of
+// spi.Prepare's error through Iterate's planFor call: a leaf spi.Prepare
+// genuinely cannot evaluate must fail Iterate outright, not silently stream
+// zero rows.
+func TestPostgresIterate_RejectsUnevaluableFilter(t *testing.T) {
+	_, store, ctx := gsNewStore(t)
+	gsSave(t, ctx, store, "a", "available", map[string]any{"name": "x"})
+
+	it := store.(spi.Iterable)
+	iter, err := it.Iterate(ctx, gsModel, spi.Filter{
+		Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
+		Value: `a\`, Declared: []spi.DataType{spi.String},
+	}, spi.IterateOptions{})
+	// Drain and close defensively: if the guard under test regressed and
+	// Iterate wrongly succeeded, an undrained cursor would leak the pool
+	// connection and hang later tests' cleanup instead of failing cleanly
+	// right here.
+	if iter != nil {
+		for iter.Next() {
+		}
+		if err == nil {
+			err = iter.Err()
+		}
+		_ = iter.Close()
+	}
+	if err == nil {
+		t.Fatal("Iterate must fail on an unevaluable filter, not silently stream zero rows")
+	}
+	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
+		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
+	}
+}
+
 func TestPostgresIterate_ResidualApplied(t *testing.T) {
 	_, store, ctx := gsNewStore(t)
 	gsSave(t, ctx, store, "a", "available", map[string]any{"city": "Berlin", "tag": "x"})
@@ -251,6 +284,34 @@ func TestPostgresIterate_CloseIdempotent(t *testing.T) {
 }
 
 // ---------- GroupedAggregate ----------
+
+// TestPostgresGroupedAggregate_RejectsUnevaluableFilter pins the
+// propagation of spi.Prepare's error through GroupedAggregate's planFor
+// call: a leaf spi.Prepare genuinely cannot evaluate must fail the
+// aggregation outright, not silently bucket zero entities.
+func TestPostgresGroupedAggregate_RejectsUnevaluableFilter(t *testing.T) {
+	_, store, ctx := gsNewStore(t)
+	gsSave(t, ctx, store, "a", "available", map[string]any{"name": "x"})
+
+	ga, ok := store.(spi.GroupedAggregator)
+	if !ok {
+		t.Fatal("entityStore does not implement spi.GroupedAggregator")
+	}
+	_, err := ga.GroupedAggregate(ctx, gsModel,
+		[]spi.GroupExpr{{Kind: spi.GroupExprState}},
+		spi.Filter{
+			Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
+			Value: `a\`, Declared: []spi.DataType{spi.String},
+		},
+		spi.GroupedAggregationsOptions{MaxBuckets: 10},
+	)
+	if err == nil {
+		t.Fatal("GroupedAggregate must fail on an unevaluable filter, not silently bucket zero entities")
+	}
+	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
+		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
+	}
+}
 
 func TestPostgresGroupedAggregate_PushesCountByState(t *testing.T) {
 	_, store, ctx := gsNewStore(t)

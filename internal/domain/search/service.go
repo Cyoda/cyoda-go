@@ -764,7 +764,10 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		// model schema is a required input for correct typing, so we surface the
 		// error rather than silently under-match with untyped leaves. The
 		// no-schema-registered case is (nil, nil) — fields stays nil, the resolver
-		// returns nil types, and comparison leaves degrade to non-match as intended.
+		// returns nil types, and a comparison/range leaf on that path now fails
+		// Prepare (see the prepErr check right below) rather than degrading to a
+		// silent non-match: an unevaluable leaf is a structural fault in the
+		// condition, not a row-dependent answer to guess at.
 		fallbackFields, ffErr := loadFieldsMap(ctx, modelStore, modelRef)
 		if ffErr != nil {
 			return nil, fmt.Errorf("failed to load model field types: %w", ffErr)
@@ -781,6 +784,14 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		// than on whichever row happens to reach it first.
 		prepared, prepErr := match.Prepare(cond, fieldTypes)
 		if prepErr != nil {
+			// Classify before the generic wrap: match.ErrUnevaluableLeaf /
+			// match.ErrUnsupportedOperator are client-input faults
+			// (ClassifyStoreQueryError's own doc explains the mapping), not
+			// a storage failure — an unclassified wrap wrongly answered 500
+			// plus a support ticket for input that is simply malformed.
+			if appErr := ClassifyStoreQueryError(prepErr); appErr != nil {
+				return nil, appErr
+			}
 			return nil, fmt.Errorf("predicate match failed: %w", prepErr)
 		}
 
@@ -844,9 +855,83 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 // and a plugin's own check disagree, which is worth a WARN — but the caller's
 // answer is still 400, because the input is what is wrong.
 //
+// spi.ErrUnevaluableLeaf and spi.ErrInvalidPattern are the SPI kernel's own
+// Prepare (spi.Filter side) refusing an operand it cannot type-check or a
+// pattern it cannot compile — the § 14.4 commercial-backend obligation this
+// mapping exists to satisfy. Both collapse to 400 INVALID_CONDITION: the leaf
+// is malformed input, not a storage fault, and neither sentinel is granular
+// enough to say whether the underlying cause was a type mismatch, a path
+// problem, or an uncompilable pattern (spi.ErrUnevaluableLeaf's own doc lists
+// all three as one cause) — but the two are NOT logged at the same severity,
+// because they are not equally likely to mean the same thing:
+//
+//   - spi.ErrInvalidPattern is UNREACHABLE from the two in-tree evaluators.
+//     Both collapse a pattern-compile failure into ErrUnevaluableLeaf with a
+//     %v, not a %w (spi/prepared_filter.go and match/prepared.go), so the
+//     sentinel never enters the chain; and ValidatePatterns rejects at the
+//     boundary with its own 400 without ever reaching this classifier. The
+//     arm exists solely for a self-executing OUT-OF-TREE backend — the
+//     § 14.4 obligation — which calls spi.ValidateLeafPattern itself and
+//     surfaces the sentinel directly. From such a backend it does mean the
+//     boundary and that backend disagree, which is worth a WARN.
+//
+//     Note what this arm does NOT do: it is not a tripwire for the in-tree
+//     boundary and kernel drifting apart. They cannot drift —
+//     spi.ValidateLeafPattern is a call to compileLeafPattern, so the
+//     validator and the evaluator are the same derivation by construction,
+//     not merely the same algorithm.
+//
+//   - spi.ErrUnevaluableLeaf's single most common cause, by far, is a field
+//     with NO declared type — and condition_type_validate.go's boundary check
+//     deliberately treats that as "no constraint; accept" rather than
+//     rejecting it (see that file's own doc), precisely so a schema-less or
+//     as-yet-unobserved field stays searchable. Hitting this sentinel for
+//     that reason is therefore the DESIGNED interaction between an
+//     intentionally permissive boundary and a kernel that must have a
+//     declared type to compare against — not a boundary/backend disagreement
+//     — and TestSearch_BareLeafField_Postgres_DirectSearch_400InvalidCondition
+//     (internal/e2e) pins exactly this as an ordinary, documented 400. Logging
+//     it at WARN claimed a system inconsistency on every ordinary hit of the
+//     single most common cause, drowning out the rarer, genuinely anomalous
+//     ones (a malformed NOT node, an out-of-grammar path) the sentinel cannot
+//     be told apart from — so this one logs at DEBUG instead.
+//
+// match.ErrUnevaluableLeaf and match.ErrUnsupportedOperator are
+// internal/match's OWN Prepare (predicate.Condition side, a different
+// evaluator entirely from spi.Prepare — see prepared.go's own package doc:
+// "this package's error set is its own, not a mirror of spi.ErrUnevaluableLeaf,
+// but the disposition is the same") reached through search.Service.Search's
+// GetAll+match fallback, entity's conditional-delete planner, and
+// grouped-stats' streaming tally. Every caller of those previously wrapped
+// the error generically ("predicate match failed: %w") or propagated it raw,
+// which classified as an unrecognised 500 — the identical defect
+// ErrInvalidFilterPath's omission was, just on the residual-evaluator side
+// rather than the pushdown side.
+//
+// Both match.ErrUnevaluableLeaf and match.ErrUnsupportedOperator map to 400
+// INVALID_CONDITION — the SAME code as their SPI-side counterparts, not
+// CONDITION_TYPE_MISMATCH. Two reasons: (1) match.ErrUnevaluableLeaf itself
+// wraps three distinct causes (prepared.go's leafNode expansion failure,
+// its empty-leaf-path guard, its path-outside-grammar guard) and only the
+// first is ever a type mismatch, so a single dedicated code would be wrong
+// on its own terms for the other two; (2) a NOT condition can route the
+// identical leaf through either evaluator depending on whether
+// spi.ConditionToFilter can translate it — the query PLAN, not anything
+// about the input — so the client-visible status must not depend on which
+// evaluator happened to run, exactly the invariant this whole feature's
+// pushdown/residual split must preserve one level up.
+//
+// match.ErrUnevaluableLeaf and spi.ErrUnevaluableLeaf share both a name and
+// an error message ("unevaluable leaf") by design — two evaluators, one
+// disposition — so the two cases below are logged with an explicit "source"
+// field: a caller reaching for the wrong sentinel in a log-line search would
+// otherwise have no way to tell which evaluator actually rejected the leaf.
+//
 // Exported so callers outside this package that drive a store with an
-// engine-translated Filter (entity's grouped-stats service) classify
-// identically instead of maintaining a second copy of the table.
+// engine-translated Filter (entity's grouped-stats service) or run
+// internal/match's residual evaluator directly (entity's conditional-delete
+// planner, grouped-stats' streaming tally) classify identically instead of
+// maintaining a second copy of the table.
 func ClassifyStoreQueryError(err error) *common.AppError {
 	switch {
 	case err == nil:
@@ -861,6 +946,36 @@ func ClassifyStoreQueryError(err error) *common.AppError {
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeInvalidFieldPath,
 			"condition or sort references an invalid field path").WithCause(err)
+	case errors.Is(err, spi.ErrUnevaluableLeaf):
+		// DEBUG, not WARN — see this function's doc comment: the dominant
+		// cause here (a field with no declared type) is a documented-normal
+		// 400, not a boundary/backend inconsistency.
+		slog.Debug("search condition leaf rejected by the evaluator: commonly a field with no declared type",
+			"pkg", "search", "source", "spi.Prepare", "err", err)
+		return common.Operational(http.StatusBadRequest,
+			common.ErrCodeInvalidCondition,
+			"condition contains a leaf the backend cannot evaluate").WithCause(err)
+	case errors.Is(err, spi.ErrInvalidPattern):
+		slog.Warn("storage backend could not compile a condition pattern the boundary accepted",
+			"pkg", "search", "source", "spi.ValidateLeafPattern", "err", err)
+		return common.Operational(http.StatusBadRequest,
+			common.ErrCodeInvalidCondition,
+			"condition contains a pattern operand the backend cannot compile").WithCause(err)
+	case errors.Is(err, match.ErrUnevaluableLeaf):
+		// DEBUG, not WARN — same reasoning as the spi.ErrUnevaluableLeaf arm
+		// above: a NOT condition can route the identical no-declared-type
+		// leaf through this evaluator instead of spi.Prepare depending on
+		// translatability alone (the query PLAN, not the input), so the same
+		// documented-normal case reaches this arm just as often.
+		slog.Debug("search condition leaf rejected by the residual evaluator: commonly a field with no declared type",
+			"pkg", "search", "source", "match.Prepare", "err", err)
+		return common.Operational(http.StatusBadRequest,
+			common.ErrCodeInvalidCondition,
+			"condition contains a leaf the evaluator cannot evaluate").WithCause(err)
+	case errors.Is(err, match.ErrUnsupportedOperator):
+		return common.Operational(http.StatusBadRequest,
+			common.ErrCodeInvalidCondition,
+			"condition uses an operator the evaluator does not support").WithCause(err)
 	}
 	return nil
 }
@@ -1568,8 +1683,12 @@ func (s *SearchService) CancelAsyncSearch(ctx context.Context, snapshotID string
 // and a truly-unknown path surfaces as 4xx without a refresh loop.
 //
 // Returns nil when validation passes or when no data-field paths are
-// addressed (lifecycle-only conditions). Validator failures surface as a
-// 4xx common.AppError with the missing paths listed.
+// addressed (lifecycle-only conditions). A genuinely unknown path surfaces
+// as a 4xx common.AppError listing the missing paths; a failed bounded
+// refresh (RefreshAndGet errored for a reason other than the model being
+// deleted) instead returns a plain error wrapping ErrPathRefreshInfra — the
+// caller must classify that as a 5xx, not fold it into the same 4xx (see
+// ErrPathRefreshInfra's doc).
 func (s *SearchService) validateConditionPaths(ctx context.Context, modelStore spi.ModelStore, modelRef spi.ModelRef, cond predicate.Condition) (map[string]schema.FieldDescriptor, error) {
 	paths := extractFieldPaths(cond)
 	if len(paths) == 0 {
@@ -1641,12 +1760,28 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelStore s
 			// cache: there is no schema authority to invalidate against.
 			return nil, invalidPathError(missing)
 		}
-		slog.Debug("schema refresh failed during pre-execution validation",
+		// A refresh failure that is NOT "the model is gone" means we cannot
+		// tell "these fields are genuinely undeclared" from "the cache is
+		// merely stale and we couldn't confirm which" — the two are
+		// indistinguishable without a successful refresh. Per
+		// correctness-over-availability this is infrastructure, not a
+		// client fault, and must not fold into the same 400
+		// INVALID_FIELD_PATH the genuine-unknown-path case above returns:
+		// that would report a model-store outage as the caller's own
+		// mistake, in exactly the peer-added-field window the refresh
+		// exists to serve. Mirrors ValidateKnownPaths' own ErrPathRefreshInfra
+		// branch (path_validate.go) — this method predates that shared
+		// helper and keeps its own negative-cache-aware implementation, but
+		// the two must not diverge on THIS classification. Deliberately NOT
+		// negative-cached: an infra failure says nothing about whether the
+		// path exists.
+		slog.Warn("schema refresh failed during pre-execution validation; reporting infra, not a client fault",
 			"pkg", "search",
 			"entityName", modelRef.EntityName,
 			"modelVersion", modelRef.ModelVersion,
 			"error", refreshErr)
-		return nil, invalidPathError(missing)
+		return nil, fmt.Errorf("%w: schema refresh failed for %s/%s: %w",
+			ErrPathRefreshInfra, modelRef.EntityName, modelRef.ModelVersion, refreshErr)
 	}
 	if freshFields == nil {
 		// The refresh produced no schema, so the descriptor carries none.
@@ -1850,10 +1985,36 @@ func (s *SearchService) resolveSortKeys(ctx context.Context, modelRef spi.ModelR
 		s.markPathsAbsent(tenant, modelRef, surfaceSort, missing)
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, rerr.Error())
 	}
-	if refreshErr != nil || freshFields == nil {
-		// The refresh itself failed, or it produced no schema. Deliberately
-		// NOT negative-cached, same as validateConditionPaths: there is no
-		// schema authority to invalidate this entry against later.
+	if refreshErr != nil {
+		if errors.Is(refreshErr, spi.ErrNotFound) {
+			// Model was deleted between Get and RefreshAndGet — no schema
+			// authority left, the cached miss stands. Deliberately NOT
+			// negative-cached: there is no schema authority to invalidate
+			// this entry against later, same as validateConditionPaths.
+			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, rerr.Error())
+		}
+		// A refresh failure that is NOT "the model is gone" means we cannot
+		// tell "these sort fields are genuinely undeclared" from "the cache
+		// is merely stale and we couldn't confirm which" — the two are
+		// indistinguishable without a successful refresh. Per
+		// correctness-over-availability this is infrastructure, not a
+		// client fault — mirrors ValidateKnownPaths' and
+		// validateConditionPaths' own ErrPathRefreshInfra branch (this
+		// method predates the shared helper and keeps its own
+		// negative-cache-aware implementation, but all three "known field
+		// path" surfaces must not diverge on THIS classification).
+		// Deliberately NOT negative-cached: an infra failure says nothing
+		// about whether the sort field exists.
+		slog.Warn("schema refresh failed during sort-key validation; reporting infra, not a client fault",
+			"pkg", "search", "entityName", modelRef.EntityName,
+			"modelVersion", modelRef.ModelVersion, "error", refreshErr)
+		return nil, fmt.Errorf("%w: schema refresh failed for %s/%s: %w",
+			ErrPathRefreshInfra, modelRef.EntityName, modelRef.ModelVersion, refreshErr)
+	}
+	if freshFields == nil {
+		// The refresh produced no schema. Deliberately NOT negative-cached,
+		// same as validateConditionPaths: there is no schema authority to
+		// invalidate this entry against later.
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, rerr.Error())
 	}
 	specs, rerr = resolveOrderBy(keys, freshFields)

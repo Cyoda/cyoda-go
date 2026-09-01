@@ -78,9 +78,15 @@ func allPushedExact(f spi.Filter) bool {
 // and would install the zero filter as its own residual. That residual matches
 // everything, so results stay correct while LIMIT pushdown and native GROUP BY
 // are silently lost. Mirrors the guard in the postgres plugin.
-func planFor(filter spi.Filter) sqlPlan {
+//
+// The error return is spi.Prepare's: a leaf the kernel genuinely cannot
+// evaluate (an operand fitting no declared type, a pattern that will not
+// compile, ...) makes the whole filter unplannable, wrapping
+// spi.ErrUnevaluableLeaf. Callers propagate it rather than degrading to a
+// plan that matches nothing.
+func planFor(filter spi.Filter) (sqlPlan, error) {
 	if filter.Op == "" {
-		return sqlPlan{}
+		return sqlPlan{}, nil
 	}
 	return planQuery(filter)
 }
@@ -99,7 +105,29 @@ func planFor(filter spi.Filter) sqlPlan {
 // disables the SQL LIMIT/OFFSET/GROUP-BY fast path (gated on postFilter == nil).
 //
 // Callers go through planFor, not here: planQuery has no match-all guard.
-func planQuery(filter spi.Filter) sqlPlan {
+//
+// The error return propagates spi.Prepare's — see planFor's doc comment.
+// Evaluability is checked UNCONDITIONALLY, on the whole input filter, before
+// dissection ever runs — never as a by-product of preparing the residual.
+// Only IsNull/NotNull are leafExact, so a filter built entirely from those
+// (e.g. a single bogus-path IsNull leaf, or an AND/OR of two IsNull/NotNull
+// leaves where one addresses a path spi.Prepare cannot resolve) plans fully
+// pushable and EXACT: postFilter stays nil and no residual is ever prepared.
+// Gating the spi.Prepare call on "postFilter != nil" would let that shape
+// skip the check entirely and push SQL that means something else — IS NULL
+// on a JSON key that never exists is true for EVERY row, so an unevaluable
+// filter would silently select everything (fail-open), while the memory
+// backend correctly rejects the same filter — a three-backend divergence
+// this project treats as a defect. Preparing the full filter up front closes
+// that gap for every plan shape, and its result is reused below instead of
+// preparing the same full filter a second time when it also becomes the
+// residual.
+func planQuery(filter spi.Filter) (sqlPlan, error) {
+	preparedFull, err := spi.Prepare(filter)
+	if err != nil {
+		return sqlPlan{}, err
+	}
+
 	pushed, residual := dissect(filter)
 	plan := sqlPlan{postFilter: residual}
 	if pushed != nil {
@@ -111,14 +139,9 @@ func planQuery(filter spi.Filter) sqlPlan {
 	if residual != nil || (pushed != nil && !allPushedExact(*pushed)) {
 		full := filter
 		plan.postFilter = &full
+		plan.preparedPostFilter = &preparedFull
 	}
-	// Single population point, so the nil-ness invariant cannot drift between
-	// the branches above.
-	if plan.postFilter != nil {
-		p := spi.Prepare(*plan.postFilter)
-		plan.preparedPostFilter = &p
-	}
-	return plan
+	return plan, nil
 }
 
 // dissect splits a filter tree into a pushable portion and a residual portion.
@@ -580,13 +603,21 @@ func leafToSQL(f spi.Filter) (string, []any) {
 			return fmt.Sprintf("(%s IS NOT NULL AND %s BETWEEN ? AND ?)", col, col),
 				[]any{comparisonBind(f, f.Values[0]), comparisonBind(f, f.Values[1])}
 		}
-		// Malformed BETWEEN (not exactly 2 operands) fails closed — exclude
-		// every row, matching memory's spi.Prepare/PreparedFilter.Match
-		// semantics. Validation upstream (search.validateBetweenArity) rejects
-		// this shape before it ever reaches a plugin; this is defense-in-depth
-		// only.
+		// Malformed BETWEEN (not exactly 2 operands) is unreachable here: this
+		// function only runs on the pushed half planQuery's dissect produces,
+		// and planQuery calls spi.Prepare on the WHOLE filter first — Prepare
+		// now errors on a range leaf without exactly 2 bounds
+		// (ExpandLeaf/expandBetween), so a malformed BETWEEN never survives to
+		// reach dissect/leafToSQL at all. search.validateBetweenArity rejects
+		// the same shape even earlier, at the request boundary.
 		return "0", nil
 	}
+	// Unreachable: leafToSQL only ever receives a genuine leaf (dissect never
+	// pushes a branch op into it). FilterNot is the first branch op whose
+	// accidental arrival here would have been silently absorbed as this
+	// match-all default instead of failing loudly — AND/OR never risked it,
+	// since a group either stayed fully residual or was flattened per-child
+	// before reaching this function.
 	return "1=1", nil
 }
 
@@ -619,11 +650,11 @@ func temporalLeafToSQL(f spi.Filter) (string, []any) {
 	switch f.Op {
 	case spi.FilterBetween, spi.FilterBetweenInclusive:
 		if len(f.Values) < 2 {
-			// Malformed BETWEEN (not exactly 2 operands) fails closed —
-			// exclude every row, matching memory's
-			// spi.Prepare/PreparedFilter.Match semantics. Validation upstream
-			// (search.validateBetweenArity) rejects this shape before it ever
-			// reaches a plugin; this is defense-in-depth only.
+			// Malformed BETWEEN (not exactly 2 operands) is unreachable here
+			// for the same reason as leafToSQL's identical arm above:
+			// planQuery calls spi.Prepare on the whole filter before dissect
+			// ever routes a leaf to this function, and Prepare now errors on
+			// a range leaf without exactly 2 bounds regardless of Coercion.
 			return "0", nil
 		}
 		lo, _ := spi.ParseTemporalMillis(fmt.Sprint(f.Values[0]))

@@ -1,0 +1,274 @@
+package grpc
+
+import (
+	"strings"
+	"testing"
+
+	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+)
+
+// search_group_operator_not_test.go covers Task 12 of the NOT-node plan on
+// the gRPC surface, mirroring search_unknown_operator_test.go's envelope
+// assertions (Success, Error.Code=="CLIENT_ERROR", INVALID_CONDITION in the
+// message) for the two GroupCondition{Operator:"NOT"} arity failures, plus
+// the accepted case (exactly one condition) and the async/snapshot
+// no-job-issued guarantee TestRPC_SnapshotSearch_MalformedRegex_400_InvalidCondition
+// already pins for a malformed pattern.
+
+func notGroup(conditions ...map[string]any) map[string]any {
+	return map[string]any{
+		"type":       "group",
+		"operator":   "NOT",
+		"conditions": conditions,
+	}
+}
+
+func nameEqualsBob() map[string]any {
+	return map[string]any{"type": "simple", "jsonPath": "$.name", "operatorType": "EQUALS", "value": "Bob"}
+}
+
+func amountGreaterThan1000() map[string]any {
+	return map[string]any{"type": "simple", "jsonPath": "$.amount", "operatorType": "GREATER_THAN", "value": 1000}
+}
+
+// --- Direct search ---
+
+// TestRPC_DirectSearch_GroupOperatorNOT_OneCondition_Accepted is the
+// positive control: a NOT group with exactly one condition must be accepted
+// AND must evaluate a real negation, not merely fail to be rejected. Seeds
+// Alice and Bob so NOT(name==Bob) has exactly one entity to discriminate
+// against — ranging over an empty stream (as an unseeded model would leave
+// it) would assert nothing, since the loop body would never execute.
+func TestRPC_DirectSearch_GroupOperatorNOT_OneCondition_Accepted(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Bob"})
+
+	for _, name := range []string{"Alice", "Bob"} {
+		createCE := makeCE(EntityCreateRequest, map[string]any{
+			"id":         "test",
+			"dataFormat": "JSON",
+			"payload": map[string]any{
+				"model": map[string]any{"name": "person", "version": 1},
+				"data":  map[string]any{"name": name},
+			},
+		})
+		if _, err := svc.EntityManage(ctx, createCE); err != nil {
+			t.Fatalf("create %s failed: %v", name, err)
+		}
+	}
+
+	ce := makeCE(EntitySearchRequest, map[string]any{
+		"id":        "test",
+		"model":     map[string]any{"name": "person", "version": 1},
+		"condition": notGroup(nameEqualsBob()),
+	})
+
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(ce, stream); err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("NOT(name==Bob) over {Alice,Bob}: expected exactly 1 response, got %d", len(stream.sent))
+	}
+
+	var typed events.EntityResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if !typed.Success {
+		t.Fatalf("expected success=true for NOT with exactly one condition, got error: %v", typed.Error)
+	}
+	dataMap, ok := typed.Payload.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Payload.Data is not map[string]interface{}: %T", typed.Payload.Data)
+	}
+	if name, _ := dataMap["name"].(string); name != "Alice" {
+		t.Errorf("NOT(name==Bob) over {Alice,Bob}: expected Alice, got %q", name)
+	}
+}
+
+func TestRPC_DirectSearch_GroupOperatorNOT_ZeroConditions_400_InvalidCondition(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Bob"})
+
+	ce := makeCE(EntitySearchRequest, map[string]any{
+		"id":        "test",
+		"model":     map[string]any{"name": "person", "version": 1},
+		"condition": notGroup(),
+	})
+
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(ce, stream); err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("expected exactly 1 response sent, got %d", len(stream.sent))
+	}
+	var typed events.EntityResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if typed.Success {
+		t.Error("expected success=false for NOT with zero conditions")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected envelope code CLIENT_ERROR, got %s", typed.Error.Code)
+	}
+	if !strings.Contains(typed.Error.Message, "INVALID_CONDITION") {
+		t.Errorf("expected message to contain INVALID_CONDITION, got %s", typed.Error.Message)
+	}
+}
+
+func TestRPC_DirectSearch_GroupOperatorNOT_TwoConditions_400_InvalidCondition(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Bob"})
+
+	ce := makeCE(EntitySearchRequest, map[string]any{
+		"id":        "test",
+		"model":     map[string]any{"name": "person", "version": 1},
+		"condition": notGroup(nameEqualsBob(), amountGreaterThan1000()),
+	})
+
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(ce, stream); err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("expected exactly 1 response sent, got %d", len(stream.sent))
+	}
+	var typed events.EntityResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if typed.Success {
+		t.Error("expected success=false for NOT with two conditions")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected envelope code CLIENT_ERROR, got %s", typed.Error.Code)
+	}
+	if !strings.Contains(typed.Error.Message, "INVALID_CONDITION") {
+		t.Errorf("expected message to contain INVALID_CONDITION, got %s", typed.Error.Message)
+	}
+}
+
+// --- Snapshot (async) search: no job issued on rejection ---
+
+// TestRPC_SnapshotSearch_GroupOperatorNOT_ZeroConditions_NoJobIssued mirrors
+// TestRPC_SnapshotSearch_MalformedRegex_400_InvalidCondition's no-job-issued
+// assertion for the NOT zero-arity rejection: SnapshotID must stay the nil
+// UUID, not merely the response being non-success.
+func TestRPC_SnapshotSearch_GroupOperatorNOT_ZeroConditions_NoJobIssued(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Bob"})
+
+	ce := makeCE(EntitySnapshotSearchRequest, map[string]any{
+		"id":        "test",
+		"model":     map[string]any{"name": "person", "version": 1},
+		"condition": notGroup(),
+	})
+
+	resp, err := svc.EntitySearch(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+	if resp.Type != EntitySnapshotSearchResponse {
+		t.Errorf("expected type %s, got %s", EntitySnapshotSearchResponse, resp.Type)
+	}
+
+	var typed events.EntitySnapshotSearchResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success {
+		t.Error("expected success=false for NOT with zero conditions")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected envelope code CLIENT_ERROR, got %s", typed.Error.Code)
+	}
+	if !strings.Contains(typed.Error.Message, "INVALID_CONDITION") {
+		t.Errorf("expected message to contain INVALID_CONDITION, got %s", typed.Error.Message)
+	}
+	if typed.Status.SnapshotID != nilUUID {
+		t.Errorf("expected no snapshot job to be created, got snapshotId=%s", typed.Status.SnapshotID)
+	}
+}
+
+// TestRPC_DirectSearch_GroupOperatorNOT_BadOperandType_400_ConditionTypeMismatch
+// pins that an operand parsing into none of a field's declared types is
+// still rejected 400 CONDITION_TYPE_MISMATCH when the leaf sits inside a
+// NOT's single child, on gRPC — the type-check walker must recurse into a
+// NOT node exactly as it does into AND/OR, mirroring
+// TestSearch_Sync_GroupOperatorNOT_BadOperandType_ConditionTypeMismatch's
+// HTTP coverage in internal/e2e.
+func TestRPC_DirectSearch_GroupOperatorNOT_BadOperandType_400_ConditionTypeMismatch(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Bob", "amount": 100})
+
+	ce := makeCE(EntitySearchRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "person", "version": 1},
+		"condition": notGroup(map[string]any{
+			"type": "simple", "jsonPath": "$.amount", "operatorType": "GREATER_THAN", "value": "abc",
+		}),
+	})
+
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(ce, stream); err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+	if len(stream.sent) == 0 {
+		t.Fatal("expected an error response on the stream, got empty stream")
+	}
+
+	var typed events.EntityResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if typed.Success {
+		t.Fatal("expected success=false for a bad operand type inside NOT")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error block in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected code=CLIENT_ERROR, got %q", typed.Error.Code)
+	}
+	if !strings.Contains(typed.Error.Message, "CONDITION_TYPE_MISMATCH") {
+		t.Errorf("expected message to contain CONDITION_TYPE_MISMATCH, got %s", typed.Error.Message)
+	}
+}
+
+// TestRPC_SnapshotSearch_GroupOperatorNOT_TwoConditions_NoJobIssued is the
+// sibling arity failure for the same no-job-issued guarantee.
+func TestRPC_SnapshotSearch_GroupOperatorNOT_TwoConditions_NoJobIssued(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Bob"})
+
+	ce := makeCE(EntitySnapshotSearchRequest, map[string]any{
+		"id":        "test",
+		"model":     map[string]any{"name": "person", "version": 1},
+		"condition": notGroup(nameEqualsBob(), amountGreaterThan1000()),
+	})
+
+	resp, err := svc.EntitySearch(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+
+	var typed events.EntitySnapshotSearchResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success {
+		t.Error("expected success=false for NOT with two conditions")
+	}
+	if typed.Error == nil {
+		t.Fatal("expected error in response")
+	}
+	if typed.Error.Code != "CLIENT_ERROR" {
+		t.Errorf("expected envelope code CLIENT_ERROR, got %s", typed.Error.Code)
+	}
+	if !strings.Contains(typed.Error.Message, "INVALID_CONDITION") {
+		t.Errorf("expected message to contain INVALID_CONDITION, got %s", typed.Error.Message)
+	}
+	if typed.Status.SnapshotID != nilUUID {
+		t.Errorf("expected no snapshot job to be created, got snapshotId=%s", typed.Status.SnapshotID)
+	}
+}

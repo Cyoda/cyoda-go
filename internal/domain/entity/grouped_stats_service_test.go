@@ -45,7 +45,10 @@ type fakeIterable struct {
 
 func (f *fakeIterable) Iterate(_ context.Context, _ spi.ModelRef, flt spi.Filter, _ spi.IterateOptions) (spi.Iterator, error) {
 	f.lastFlt = flt
-	pf := spi.Prepare(flt)
+	pf, err := spi.Prepare(flt)
+	if err != nil {
+		return nil, err
+	}
 	rows := make([]*spi.Entity, 0, len(f.entities))
 	for _, e := range f.entities {
 		if pf.Match(e.Data, e.Meta) {

@@ -42,7 +42,11 @@ func TestEvaluatorsAgree(t *testing.T) {
 				if err != nil {
 					t.Fatalf("spi.ConditionToFilter(%s %s): %v", p, op, err)
 				}
-				gotKernel := spi.Prepare(f).Match([]byte(doc), spi.EntityMeta{})
+				pf, err := spi.Prepare(f)
+				if err != nil {
+					t.Fatalf("spi.Prepare(%s %s): %v", p, op, err)
+				}
+				gotKernel := pf.Match([]byte(doc), spi.EntityMeta{})
 
 				if gotMatch != gotKernel {
 					t.Errorf("doc=%s path=%s op=%s: match=%v kernel=%v",

@@ -129,21 +129,25 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 		}
 		return nil
 	case *predicate.GroupCondition:
-		// A group operator other than exactly "AND"/"OR" previously cleared
-		// validation and then behaved differently depending on which
+		// A group operator other than exactly "AND"/"OR"/"NOT" previously
+		// cleared validation and then behaved differently depending on which
 		// execution path the query took: spi.ConditionToFilter's
 		// groupToFilter maps anything non-"OR" (matched case-insensitively)
 		// to FilterAnd, silently answering 200 with the wrong rows, while
-		// match.Prepare requires exactly "AND"/"OR" and returns a bare
-		// "unknown group operator" error that surfaces as a 500 on a
+		// match.Prepare requires exactly one of the closed set and returns a
+		// bare "unknown group operator" error that surfaces as a 500 on a
 		// client-supplied condition. Reject it here — the one boundary every
 		// search-shaped entry point funnels through — the same way the
 		// FunctionCondition arm below closes its own 500-on-client-input
 		// class. Case-sensitive: the predicate parser and match.Prepare both
-		// require uppercase, so lowercase "or" is rejected too rather than
-		// preserved to match the pushdown translator's looser check.
-		if c.Operator != "AND" && c.Operator != "OR" {
-			return fmt.Errorf("%w: unknown group operator %q; valid: AND, OR", ErrInvalidCondition, c.Operator)
+		// require uppercase, so lowercase "or"/"not" is rejected too rather
+		// than preserved to match the pushdown translator's looser check.
+		// validateGroupOperator also enforces NOT's arity-exactly-one
+		// contract — see its doc for why zero or two-or-more is rejected the
+		// same way, rather than left for match.Prepare/groupToFilter to
+		// stumble on downstream.
+		if err := validateGroupOperator(c.Operator, len(c.Conditions)); err != nil {
+			return err
 		}
 		for _, child := range c.Conditions {
 			if err := validateConditionAtDepth(child, depth+1); err != nil {
@@ -230,8 +234,12 @@ func validateCriterionConditionAtDepth(cond predicate.Condition, depth int) erro
 		}
 		return nil
 	case *predicate.GroupCondition:
-		if c.Operator != "AND" && c.Operator != "OR" {
-			return fmt.Errorf("%w: unknown group operator %q; valid: AND, OR", ErrInvalidCondition, c.Operator)
+		// Shares validateGroupOperator with validateConditionAtDepth's own
+		// GroupCondition arm — see that arm's doc for the operator-name and
+		// NOT-arity rationale. Both surfaces must accept and reject the same
+		// group shapes identically.
+		if err := validateGroupOperator(c.Operator, len(c.Conditions)); err != nil {
+			return err
 		}
 		for _, child := range c.Conditions {
 			if err := validateCriterionConditionAtDepth(child, depth+1); err != nil {
@@ -246,6 +254,43 @@ func validateCriterionConditionAtDepth(cond predicate.Condition, depth int) erro
 		return nil
 	default:
 		return nil
+	}
+}
+
+// validateGroupOperator rejects a GroupCondition.Operator outside the closed
+// AND/OR/NOT set and, for NOT, enforces its arity-exactly-one contract.
+// Shared by validateConditionAtDepth (ValidateCondition's search-condition
+// walk) and validateCriterionConditionAtDepth (ValidateCriterionCondition's
+// criterion walk) so a NOT group is accepted or rejected identically on
+// both surfaces.
+//
+// NOT's arity check belongs here, not in predicate.ParseCondition: a
+// criterion that fails to parse is left alone by validateCriterion (the
+// workflow-import boundary) rather than rejected, so a parser-level arity
+// check would let a malformed NOT criterion import with 200 and then fail
+// every subsequent save on that transition, permanently, with no error ever
+// surfaced anywhere. This validator is the one boundary every search- and
+// criterion-shaped entry point funnels through instead — the same reasoning
+// the operator-name rejection above it already relies on.
+//
+// n is len(GroupCondition.Conditions). Zero or two-or-more is rejected as
+// ErrInvalidCondition — the same sentinel every other structural rejection
+// in this file wraps — rather than left for match.Prepare's own FilterNot
+// arity check (or groupToFilter's translation) to reject downstream, where
+// an unclassified failure would surface as a 500 on client-supplied input
+// exactly like the bare group-operator mismatch this function's caller
+// already closes.
+func validateGroupOperator(operator string, n int) error {
+	switch operator {
+	case "AND", "OR":
+		return nil
+	case "NOT":
+		if n != 1 {
+			return fmt.Errorf("%w: NOT requires exactly one condition, got %d", ErrInvalidCondition, n)
+		}
+		return nil
+	default:
+		return fmt.Errorf("%w: unknown group operator %q; valid: AND, OR, NOT", ErrInvalidCondition, operator)
 	}
 }
 

@@ -45,13 +45,21 @@ predicates — operator catalog and evaluation semantics for the `Condition` DSL
 
 **Not supported:** `IS_CHANGED`/`IS_UNCHANGED` are change-generation operators, not search predicates — cyoda-go does not implement them.
 
+## GROUP OPERATORS
+
+`AND`, `OR`, and `NOT` combine conditions (`GroupCondition`, see `cyoda help search`). `NOT` takes **exactly one** child condition — `NOT(c)` is true exactly when `c` is false — and is never rewritten by De Morgan into a leaf's negative twin: `NOT(EQUALS)` is not `NOT_EQUAL`, and `NOT(IS_NULL)` is not `NOT_NULL`. Over a wildcard path `NOT` is a universal quantifier where the leaf beneath it is existential — `NOT($.tags[*] EQUALS "red")` means no element equals `"red"`, a different question from `$.tags[*] NOT_EQUAL "red"` (some element differs). See `cyoda help search` for the full contract, including the one-condition rule and the absent-field/presence-test asymmetries.
+
 ## TYPE-DIRECTED COMPARISON
 
 A condition's operand is compared against the target field's **declared type(s)** (a leaf may carry more than one, e.g. a field seen as both an integer and a string across entities). The operand is treated as a string and parse-tested against every declared type — a numeric-looking string operand (`"30"`) and a JSON number operand (`30`) are parsed identically and are **treated the same**. There is no cross-type coincidental matching: an operand that parses as a number only compares against numerically-stored values; an operand that parses only as a string compares against string-stored values. Numbers compare precisely (arbitrary-precision, not `float64` — correct beyond 2^53). String and pattern operators apply to text fields only.
 
+**An unsatisfiable comparison follows operator polarity.** This applies only once an operand has been accepted — it parses into at least one of the field's declared types (see `errors.CONDITION_TYPE_MISMATCH`). Evaluation still runs per stored-value type family: when a given family's declared type produced no surviving sub-condition for that operand, a **positive** operator (`EQUALS`, `GREATER_THAN`, the string operators, …) answers non-match for an entity in that family, and a **negative** operator (`NOT_EQUAL`, `NOT_CONTAINS`, `INOT_*`, …) answers match instead. `$.n NOT_EQUAL 12.5` on an `INTEGER` field matches every entity holding a number there, because no integer equals `12.5` — the same answer PostgreSQL gives for `5::int <> 12.5`. This is a determinate answer about the entity, not a rejection, and null/absent values are unaffected (see NULL SEMANTICS below). An operand that parses into none of a known field's declared types at all is rejected before evaluation instead (`400 CONDITION_TYPE_MISMATCH`). A field carrying no declared type at all is a different failure with a different code: there is no declared-type check to run, so the operand is accepted here and the leaf instead fails at preparation with `400 INVALID_CONDITION`.
+
 ## NULL SEMANTICS
 
 A missing (absent) or JSON-`null` leaf **never matches any binary operator — including negatives**. `NOT_EQUAL`, `NOT_CONTAINS`, `INOT_*`, and every other negated op are **null-guarded to non-match**, not `!positive` — a null/absent field does not satisfy a negative condition just because it fails the positive one. `IS_NULL` / `NOT_NULL` are the only operators that test presence directly.
+
+**`NOT` is not a binary operator and is not subject to this guard.** `NOT` sits outside the operator it wraps and inverts whatever two-valued answer that operator gives, including a null-guarded non-match: on an entity missing `x`, `NOT($.x EQUALS "A")` **matches** even though both `$.x EQUALS "A"` and `$.x NOT_EQUAL "A"` do not. See `cyoda help search` for the full `NOT` contract.
 
 ## LIKE GRAMMAR
 

@@ -161,7 +161,7 @@ func TestFilterPathValidation_AcceptsContractShapes(t *testing.T) {
 		"tags[0]", "tags[*]", "items[*].sku", "obj.0", "m[0][1]",
 	}
 	for _, path := range dataPaths {
-		filter := spi.Filter{Op: spi.FilterEq, Path: path, Source: spi.SourceData, Value: "x"}
+		filter := spi.Filter{Op: spi.FilterEq, Path: path, Source: spi.SourceData, Value: "x", Declared: []spi.DataType{spi.String}}
 		for name, err := range runAllFilterEntryPoints(t, store, ref, ctx, filter) {
 			if err != nil {
 				t.Errorf("%s with valid data filter path %q: unexpected error %v", name, path, err)
@@ -180,7 +180,7 @@ func TestFilterPathValidation_AcceptsContractShapes(t *testing.T) {
 		"id", "creationDate", "lastUpdateTime", "transitionForLatestSave", "transactionId",
 	}
 	for _, path := range metaPaths {
-		filter := spi.Filter{Op: spi.FilterEq, Path: path, Source: spi.SourceMeta, Value: "x"}
+		filter := spi.Filter{Op: spi.FilterEq, Path: path, Source: spi.SourceMeta, Value: "x", Declared: []spi.DataType{spi.String}}
 		for name, err := range runAllFilterEntryPoints(t, store, ref, ctx, filter) {
 			if err != nil {
 				t.Errorf("%s with valid meta filter path %q: unexpected error %v", name, path, err)

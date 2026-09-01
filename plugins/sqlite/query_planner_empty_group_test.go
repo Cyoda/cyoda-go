@@ -19,7 +19,10 @@ import (
 // query that must match nothing silently matching everything.
 func TestPlanQuery_EmptyOR(t *testing.T) {
 	f := spi.Filter{Op: spi.FilterOr}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	if plan.where != "" {
 		t.Errorf("where should be empty for an empty OR, got %s", plan.where)
 	}
@@ -35,7 +38,10 @@ func TestPlanQuery_EmptyOR(t *testing.T) {
 // expressed as no WHERE clause and no residual. Pins existing behavior.
 func TestPlanQuery_EmptyAND(t *testing.T) {
 	f := spi.Filter{Op: spi.FilterAnd}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	if plan.where != "" {
 		t.Errorf("where should be empty for an empty AND, got %s", plan.where)
 	}
@@ -57,7 +63,10 @@ func TestPlanQuery_EmptyORNestedInAND(t *testing.T) {
 			{Op: spi.FilterOr},
 		},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	if strings.Contains(plan.where, "()") {
 		t.Errorf("where contains malformed empty group: %s", plan.where)
 	}
@@ -81,7 +90,10 @@ func TestPlanQuery_EmptyANDNestedInOR(t *testing.T) {
 			{Op: spi.FilterAnd},
 		},
 	}
-	plan := planQuery(f)
+	plan, err := planQuery(f)
+	if err != nil {
+		t.Fatalf("planQuery: %v", err)
+	}
 	if plan.where != "" {
 		t.Errorf("where should be empty (whole OR residual), got %s", plan.where)
 	}

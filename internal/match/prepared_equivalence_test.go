@@ -81,6 +81,14 @@ var genValues = []any{
 	"2024-01-01T00:00:00Z", "2024-06-01", "2024",
 	[]any{"1", "100"}, []any{"a", "z"}, []any{"1"},
 	"não",
+	// "[" and "a(" are uncompilable as a MATCHES_PATTERN regex (an unclosed
+	// character class / group) — harmless string literals against every
+	// other operator, but the cheapest way to make the corpus actually
+	// exercise expandNamed's pattern-compile-failure path
+	// (TestPrepare_MalformedPatternIsAnError pins it directly; this is
+	// what makes the wide corpus reach it too, per that test's own doc
+	// about a fail-open swallow a future NOT would invert).
+	"[", "a(",
 }
 
 var genFieldTypeSets = [][]spi.DataType{
@@ -129,7 +137,14 @@ func genArrayValues(r *rand.Rand) []any {
 
 // genValidCondition builds a condition tree neither evaluator can error on —
 // the only shapes it emits are well-formed by construction (known operator
-// names, known meta fields, AND/OR groups).
+// names, known meta fields, AND/OR/NOT groups).
+//
+// NOT is a GroupCondition with Operator "NOT" and exactly one child (see
+// spi.ConditionToFilter's groupOperatorNames and match.Prepare's "NOT" case,
+// both of which reject any other arity). Its child is drawn from the same
+// genValidCondition recursion used for AND/OR children, so a NOT can wrap a
+// leaf, an AND/OR group, or another NOT — nesting falls out of the ordinary
+// depth-1 recursion, it is not special-cased here.
 func genValidCondition(r *rand.Rand, depth int) predicate.Condition {
 	if depth <= 0 || r.Intn(3) == 0 {
 		switch r.Intn(3) {
@@ -152,15 +167,44 @@ func genValidCondition(r *rand.Rand, depth int) predicate.Condition {
 			}
 		}
 	}
-	op := "AND"
-	if r.Intn(2) == 0 {
-		op = "OR"
+	switch r.Intn(3) {
+	case 0:
+		g := &predicate.GroupCondition{Operator: "AND"}
+		for i := 0; i < r.Intn(4); i++ {
+			g.Conditions = append(g.Conditions, genValidCondition(r, depth-1))
+		}
+		return g
+	case 1:
+		g := &predicate.GroupCondition{Operator: "OR"}
+		for i := 0; i < r.Intn(4); i++ {
+			g.Conditions = append(g.Conditions, genValidCondition(r, depth-1))
+		}
+		return g
+	default:
+		return &predicate.GroupCondition{
+			Operator:   "NOT",
+			Conditions: []predicate.Condition{genValidCondition(r, depth-1)},
+		}
 	}
-	g := &predicate.GroupCondition{Operator: op}
-	for i := 0; i < r.Intn(4); i++ {
-		g.Conditions = append(g.Conditions, genValidCondition(r, depth-1))
+}
+
+// countNotNodes walks a condition tree and counts GroupCondition nodes whose
+// Operator is "NOT", at any depth. Used to pin that the generator actually
+// produces NOT nodes (and nested ones) rather than merely accepting them if
+// they occurred — see TestGenValidCondition_EmitsNot.
+func countNotNodes(cond predicate.Condition) int {
+	g, ok := cond.(*predicate.GroupCondition)
+	if !ok {
+		return 0
 	}
-	return g
+	n := 0
+	if g.Operator == "NOT" {
+		n++
+	}
+	for _, child := range g.Conditions {
+		n += countNotNodes(child)
+	}
+	return n
 }
 
 // Corpus size and seed are overridable so a one-off widened exploration is
@@ -279,30 +323,135 @@ func hasKnownTemporalMetaDivergence(cond predicate.Condition) bool {
 	}
 }
 
+// TestHasKnownTemporalMetaDivergence_PropagatesThroughNot confirms, by
+// running rather than assuming, that the GroupCondition case above is
+// genuinely operator-agnostic: it recurses into c.Conditions regardless of
+// whether c.Operator is "AND", "OR", or "NOT", so a NOT wrapping a
+// known-divergent temporal-meta leaf is still caught. A NOT wrapping the leaf
+// does not "cancel" the divergence — NOT(divergent) is still divergent,
+// because the two evaluators would disagree about what the WRAPPED leaf
+// itself evaluates to before either one negates it. Without this
+// propagation, the corpus's NOT nodes would spuriously fail
+// TestPrepare_EquivalentToKernel on an already-known, permanent gap — which
+// invites "fixing" the failure by relaxing the guard this test pins.
+func TestHasKnownTemporalMetaDivergence_PropagatesThroughNot(t *testing.T) {
+	divergentLeaf := &predicate.LifecycleCondition{
+		Field:        "creationDate",
+		OperatorType: "CONTAINS", // non-temporal operator on a temporal meta field
+		Value:        "2024",
+	}
+	if !hasKnownTemporalMetaDivergence(divergentLeaf) {
+		t.Fatal("sanity check failed: the leaf itself must be flagged divergent")
+	}
+
+	notWrapped := &predicate.GroupCondition{Operator: "NOT", Conditions: []predicate.Condition{divergentLeaf}}
+	if !hasKnownTemporalMetaDivergence(notWrapped) {
+		t.Error("NOT wrapping a known-divergent temporal-meta leaf must still be flagged divergent")
+	}
+
+	nestedNotWrapped := &predicate.GroupCondition{Operator: "NOT", Conditions: []predicate.Condition{notWrapped}}
+	if !hasKnownTemporalMetaDivergence(nestedNotWrapped) {
+		t.Error("nested NOT(NOT(divergent leaf)) must still be flagged divergent")
+	}
+
+	andWithNotChild := &predicate.GroupCondition{Operator: "AND", Conditions: []predicate.Condition{
+		&predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"},
+		notWrapped,
+	}}
+	if !hasKnownTemporalMetaDivergence(andWithNotChild) {
+		t.Error("an AND containing a NOT-wrapped divergent leaf must still be flagged divergent")
+	}
+
+	// Negative control: a NOT wrapping a NON-divergent condition must not be
+	// flagged.
+	nonDivergent := &predicate.GroupCondition{Operator: "NOT", Conditions: []predicate.Condition{
+		&predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"},
+	}}
+	if hasKnownTemporalMetaDivergence(nonDivergent) {
+		t.Error("NOT wrapping a non-divergent condition must not be flagged divergent")
+	}
+}
+
 // TestPrepare_EquivalentToKernel is the fuzz-corpus merge gate: exact answer
 // agreement between match.Prepare and the SPI kernel
 // (spi.ConditionToFilter + spi.Prepare) on every well-formed condition the
 // generator produces.
 //
-// The generator emits only conditions match.Prepare cannot error on —
-// structural faults are covered by the hand-written cases in
+// The generator emits only SYNTACTICALLY well-formed conditions (known
+// operator names, known meta fields, AND/OR trees) — structural faults from a
+// malformed condition SHAPE are covered by the hand-written cases in
 // prepared_test.go (TestPrepare_StructuralErrors,
-// TestPrepare_UnknownConditionType) — so a Prepare error here is a generator
-// bug or a real defect, never a case to skip. Two kinds of case ARE skipped,
-// both for a documented "no kernel answer to compare against" reason, never
-// to dodge a genuine resolver disagreement:
+// TestPrepare_UnknownConditionType). But since Task 4 (this file's own
+// deliverable), match.Prepare also fails a leaf it cannot EVALUATE — an
+// operand that parses into no declared type, chiefly, since the generator's
+// genFieldTypeSets includes a nil type set and genValues deliberately mixes
+// types across every operator — and the corpus routinely produces exactly
+// that leaf shape. A bare Prepare error is therefore no longer a generator
+// bug by itself; what would be a bug is the two evaluators disagreeing about
+// WHICH leaves are evaluable, so this test compares evaluability itself, not
+// only the match answer where both happen to succeed:
+//
+//   - Both Prepare calls fail: same disposition, counted and skipped (no
+//     match answer exists on either side to compare).
+//   - Exactly one fails: a genuine divergence, and the test fails.
+//   - Both succeed: the two Match answers must agree exactly, as before.
+//
+// Two further kinds of case are skipped, both for a documented "no kernel
+// answer to compare against" reason, never to dodge a genuine resolver
+// disagreement:
 //
 //   - A spi.ConditionToFilter TRANSLATE error: expected for the leader-less
-//     "name" path (see genJSONPaths).
+//     "name" path (see genJSONPaths) — a wire-grammar strictness difference,
+//     not an evaluability disagreement, so it is decided before either
+//     side's Prepare is even compared.
 //   - hasKnownTemporalMetaDivergence: the deliberate, permanent divergence
 //     for an unvalidated direct caller (see that function). The validation
 //     boundary makes it unreachable in production; this corpus deliberately
-//     bypasses that boundary and so cannot be a comparison against it.
+//     bypasses that boundary and so cannot be a comparison against it. Like
+//     the translate check, this is decided before either side's Prepare
+//     result is inspected, because prepareLifecycle's guard answers
+//     never-match with a NIL error — it is not one of the new evaluability
+//     failures the disposition check above targets.
+//
+// TestGenValidCondition_EmitsNot pins that the corpus generator actually
+// produces NOT nodes — including nested ones (a NOT whose child is itself a
+// NOT) — rather than merely tolerating them if genValidCondition happened to
+// emit one. Before this generator change, genValidCondition only ever chose
+// AND/OR at a branch point, so this corpus covered zero NOT nodes: the
+// reported comparison rate was not evidence the "NOT" evaluator arm
+// (internal/match/prepared.go's prepNot case) was exercised at all.
+func TestGenValidCondition_EmitsNot(t *testing.T) {
+	r := rand.New(rand.NewSource(equivSeed()))
+	notCount := 0
+	nestedNotCount := 0
+	for i := 0; i < 2000; i++ {
+		cond := genValidCondition(r, 3)
+		n := countNotNodes(cond)
+		notCount += n
+		if n >= 2 {
+			nestedNotCount++
+		}
+	}
+	if notCount == 0 {
+		t.Fatal("genValidCondition never emitted a NOT node across 2000 draws at depth 3")
+	}
+	if nestedNotCount == 0 {
+		t.Fatal("genValidCondition never emitted a NESTED NOT (NOT wrapping NOT) across 2000 draws at depth 3")
+	}
+	t.Logf("TestGenValidCondition_EmitsNot: %d NOT nodes across 2000 draws, %d draws containing 2+ NOT nodes", notCount, nestedNotCount)
+}
+
+// A gate that skips everything passes vacuously, so — mirroring the SPI
+// kernel's own rate floor added for the identical hazard
+// (TestPrepare_EquivalentToFrozenMatchFilter) — this test fails if the
+// both-sides-Match comparison covers half the corpus or less.
 func TestPrepare_EquivalentToKernel(t *testing.T) {
 	cases := equivCases()
 	r := rand.New(rand.NewSource(equivSeed()))
 	skippedTranslate := 0
 	skippedTemporal := 0
+	skippedUnevaluable := 0
+	compared := 0
 
 	for i := 0; i < cases; i++ {
 		cond := genValidCondition(r, 3)
@@ -310,13 +459,6 @@ func TestPrepare_EquivalentToKernel(t *testing.T) {
 		meta := equivMetas[r.Intn(len(equivMetas))]
 		types := genFieldTypeSets[r.Intn(len(genFieldTypeSets))]
 		fieldTypes := func(string) []spi.DataType { return types }
-
-		prepared, prepErr := Prepare(cond, fieldTypes)
-		if prepErr != nil {
-			t.Fatalf("case %d: Prepare errored on a well-formed condition: %v\n  cond=%#v",
-				i, prepErr, cond)
-		}
-		gotMatch := prepared.Match(data, meta)
 
 		if hasKnownTemporalMetaDivergence(cond) {
 			skippedTemporal++
@@ -328,14 +470,36 @@ func TestPrepare_EquivalentToKernel(t *testing.T) {
 			skippedTranslate++
 			continue
 		}
-		gotKernel := spi.Prepare(filter).Match(data, meta)
+
+		prepared, prepErr := Prepare(cond, fieldTypes)
+		kernelPrepared, kernelErr := spi.Prepare(filter)
+
+		switch {
+		case prepErr != nil && kernelErr != nil:
+			// Both evaluators agree the leaf cannot be evaluated. No Match
+			// answer exists on either side to compare.
+			skippedUnevaluable++
+			continue
+		case prepErr != nil || kernelErr != nil:
+			t.Fatalf("DIVERGENCE at case %d: evaluability disagreement\n  matchErr=%v kernelErr=%v\n  cond=%#v\n  types=%v",
+				i, prepErr, kernelErr, cond, types)
+		}
+
+		gotMatch := prepared.Match(data, meta)
+		gotKernel := kernelPrepared.Match(data, meta)
 
 		if gotMatch != gotKernel {
 			t.Fatalf("DIVERGENCE at case %d\n  match=%v kernel=%v\n  cond=%#v\n  data=%s\n  meta=%+v\n  types=%v",
 				i, gotMatch, gotKernel, cond, data, meta, types)
 		}
+		compared++
 	}
 
-	t.Logf("TestPrepare_EquivalentToKernel: %d cases, %d skipped (untranslatable leader-less path), %d skipped (known temporal-meta divergence)",
-		cases, skippedTranslate, skippedTemporal)
+	t.Logf("TestPrepare_EquivalentToKernel: %d cases, %d compared, %d skipped (untranslatable leader-less path), %d skipped (known temporal-meta divergence), %d skipped (both sides agree unevaluable)",
+		cases, compared, skippedTranslate, skippedTemporal, skippedUnevaluable)
+
+	if floor := cases / 2; compared <= floor {
+		t.Fatalf("compared %d of %d cases (%.1f%%), want more than %d (50%%): skips are swallowing too much of the corpus for this gate to mean anything",
+			compared, cases, 100*float64(compared)/float64(cases), floor)
+	}
 }

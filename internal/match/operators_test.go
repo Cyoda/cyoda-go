@@ -112,20 +112,20 @@ func viaSimpleCondition(t *testing.T, operatorType string, doc []byte, jsonPath 
 }
 
 // TestApplyOperator_ComparisonNeedsDeclared proves the type-directed contract:
-// a comparison operator with NO declared types degrades to non-match (the
-// kernel cannot classify the operand), while the same comparison with a
-// declared numeric type matches.
+// a comparison operator with NO declared types cannot be evaluated — it fails
+// Prepare (leafNode's expansion-failure branch), rather than silently
+// degrading to a non-match — while the same comparison with a declared
+// numeric type matches.
 func TestApplyOperator_ComparisonNeedsDeclared(t *testing.T) {
 	doc := []byte(`{"v":100}`)
 
-	// No declared types → non-match.
-	got, err := viaSimpleCondition(t, "GREATER_THAN", doc, "$.v", float64(20), nil)
-	if err != nil || got {
-		t.Errorf("untyped GREATER_THAN must non-match; got=%v err=%v", got, err)
+	// No declared types → Prepare fails; the kernel cannot classify the operand.
+	if _, err := viaSimpleCondition(t, "GREATER_THAN", doc, "$.v", float64(20), nil); err == nil {
+		t.Error("untyped GREATER_THAN must fail Prepare, got nil error")
 	}
 
 	// Declared numeric → numeric comparison, matches.
-	got, err = viaSimpleCondition(t, "GREATER_THAN", doc, "$.v", float64(20), []spi.DataType{spi.Integer})
+	got, err := viaSimpleCondition(t, "GREATER_THAN", doc, "$.v", float64(20), []spi.DataType{spi.Integer})
 	if err != nil || !got {
 		t.Errorf("typed GREATER_THAN (100>20) must match; got=%v err=%v", got, err)
 	}
@@ -147,11 +147,20 @@ func TestApplyOperator_StringOpsAreDeclarationIndependent(t *testing.T) {
 }
 
 // TestApplyOperator_NegatedStringOpNullUniformity pins the kernel's
-// null/non-textual uniformity for the case-sensitive negatives (routed
+// null/non-textual leaf handling for the case-sensitive negatives (routed
 // directly through spi.FilterNotContains/NotStartsWith/NotEndsWith, not a
-// local "!positive" negation): a present textual value that does not
-// contain the operand matches; an absent, JSON-null, or non-textual value is
-// always a non-match, never a spurious vacuous match.
+// local "!positive" negation): a present textual value that does not contain
+// the operand matches, and an absent or JSON-null value is ALWAYS a
+// non-match — the kernel's null/absent uniformity holds for every binary op,
+// including the negatives — never a spurious vacuous match.
+//
+// A non-textual (present, wrong-JSON-kind) stored value is a DIFFERENT case,
+// not covered by that uniformity: eval_leaf.go's own doc documents that a
+// string op has no candidate to test against a non-textual value, so the
+// answer follows operator POLARITY (isNegativeOp) rather than an
+// unconditional non-match — a positive op is false, a negative op is true.
+// For NOT_CONTAINS/NOT_STARTS_WITH/NOT_ENDS_WITH that means TRUE, the
+// opposite of the absent/JSON-null cases below.
 func TestApplyOperator_NegatedStringOpNullUniformity(t *testing.T) {
 	present := []byte(`{"v":"Alice"}`)
 	// Positive-satisfying operand per op (so !positive would spuriously match on
@@ -165,14 +174,17 @@ func TestApplyOperator_NegatedStringOpNullUniformity(t *testing.T) {
 		{"NOT_STARTS_WITH", "Al", "xy"},
 		{"NOT_ENDS_WITH", "ce", "xy"},
 	}
-	leaves := map[string]struct {
+	nullUniformLeaves := map[string]struct {
 		doc  []byte
 		path string
 	}{
-		"absent":      {[]byte(`{}`), "$.missing"},
-		"json-null":   {[]byte(`{"v":null}`), "$.v"},
-		"non-textual": {[]byte(`{"v":42}`), "$.v"},
+		"absent":    {[]byte(`{}`), "$.missing"},
+		"json-null": {[]byte(`{"v":null}`), "$.v"},
 	}
+	nonTextual := struct {
+		doc  []byte
+		path string
+	}{[]byte(`{"v":42}`), "$.v"}
 	for _, c := range cases {
 		if got, err := viaSimpleCondition(t, c.op, present, "$.v", c.matchArg, nil); err != nil || !got {
 			t.Errorf("%s on present non-matching value must match; got=%v err=%v", c.op, got, err)
@@ -180,13 +192,18 @@ func TestApplyOperator_NegatedStringOpNullUniformity(t *testing.T) {
 		if got, err := viaSimpleCondition(t, c.op, present, "$.v", c.nonMatchArg, nil); err != nil || got {
 			t.Errorf("%s on present matching value must non-match; got=%v err=%v", c.op, got, err)
 		}
-		// Null-uniform: absent / JSON-null / non-textual leaves must all
+		// Null/absent-uniform: absent and JSON-null leaves must both
 		// non-match, NEVER !positive (which would spuriously match here since
 		// nonMatchArg makes the positive twin true on a present value).
-		for name, leaf := range leaves {
+		for name, leaf := range nullUniformLeaves {
 			if got, err := viaSimpleCondition(t, c.op, leaf.doc, leaf.path, c.nonMatchArg, nil); err != nil || got {
-				t.Errorf("%s on %s leaf must non-match (null uniformity); got=%v err=%v", c.op, name, got, err)
+				t.Errorf("%s on %s leaf must non-match (null/absent uniformity); got=%v err=%v", c.op, name, got, err)
 			}
+		}
+		// Non-textual: no candidate to test, so the answer follows operator
+		// polarity — a negative op is TRUE, not a non-match.
+		if got, err := viaSimpleCondition(t, c.op, nonTextual.doc, nonTextual.path, c.nonMatchArg, nil); err != nil || !got {
+			t.Errorf("%s on non-textual leaf must match (operator polarity, no candidate); got=%v err=%v", c.op, got, err)
 		}
 	}
 }

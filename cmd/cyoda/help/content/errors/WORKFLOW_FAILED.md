@@ -23,10 +23,11 @@ HTTP: `400` `Bad Request`. Retryable: `no`.
 
 During an entity create or transition operation the associated workflow processors (pre-processors, post-processors) or guard conditions ran but one of them signalled failure. The failure message from the processor is included in the error detail.
 
-Two further causes are not processor failures at all, and reach the read endpoints `GET /entity/{entityId}/transitions` and `GET /platform-api/entity/fetch/transitions` as well as the write paths:
+Three further causes are not processor failures at all, and reach the read endpoints `GET /entity/{entityId}/transitions` and `GET /platform-api/entity/fetch/transitions` as well as the write paths:
 
 - The workflow selected for the entity does not declare its current state. Selection is by criterion and is re-evaluated on every call, so a data change can bind an entity to a definition that does not model the state it is parked in. The engine rejects rather than falling through to another definition that happens to declare it.
 - A workflow selection criterion could not be evaluated. Where the cause is an unavailable compute member the error is `NO_COMPUTE_MEMBER_FOR_TAG` (`503`, retryable) instead.
+- **A transition or workflow criterion cannot be evaluated.** Import validates a criterion's path grammar, operator names, and pattern operands, but not against the model — a model may legitimately be declared after the workflow that references it. If, when the criterion is evaluated, it names a field the model still does not declare, or names an operator nobody recognises, or carries an operand a declared type cannot satisfy, the save that triggered the evaluation is aborted and rolled back — no entity write, no state transition, no partial effect. This applies to every operator, including a `NOT` group's child leaf. See `docs/cloud-parity/unevaluable-criterion-fails-save.md`.
 
 Not retryable unless the underlying condition has changed. The failure originates from application logic in the processor, or from the workflow configuration; the data, the processor implementation, or the workflow configuration determines the outcome.
 

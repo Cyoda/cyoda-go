@@ -390,15 +390,18 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   evaluate must not be read as "condition not met" — fix the operator name
   before importing.
 
-- **A search or criterion group condition must use exactly `AND` or `OR`.**
-  `GroupCondition.Operator` was never checked at validation, so anything else
-  cleared it and the two execution paths disagreed on what to do with it: the
-  pushdown translator mapped any non-`OR` value (matched case-insensitively)
-  to `AND` and answered **200** with the wrong rows, while the in-memory
-  fallback raised a structural error that surfaced as a **500** on
-  client-supplied input. Both now reject it at the shared validation boundary
-  with **400**. This is case-sensitive — lowercase `"or"` is rejected too,
-  matching the parser and the evaluator, neither of which ever accepted it.
+- **A search or criterion group condition must use exactly `AND`, `OR`, or
+  `NOT`.** `GroupCondition.Operator` was never checked at validation, so
+  anything else cleared it and the two execution paths disagreed on what to
+  do with it: the pushdown translator mapped any non-`OR` value (matched
+  case-insensitively) to `AND` and answered **200** with the wrong rows,
+  while the in-memory fallback raised a structural error that surfaced as a
+  **500** on client-supplied input. Both now reject anything outside that
+  set at the shared validation boundary with **400**. This is
+  case-sensitive — lowercase `"or"` is rejected too, matching the parser and
+  the evaluator, neither of which ever accepted it. (`NOT` itself is added
+  later in this same `[Unreleased]` milestone — see below — and is subject
+  to the identical case-sensitive check.)
 
 - **Model field names must be addressable by a search `jsonPath`.** A field name
   is now accepted only if it is a valid `jsonPath` segment: one or more ASCII
@@ -593,6 +596,84 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
     aggregation field or a sort key. `path-grammar.md` section 7 states the
     rule; the three surfaces share one scanner with the filter-path grammar
     minus the subscript production, so they cannot drift from it again.
+
+- **`NOT` is a real group operator, and two answers it exposed are now
+  correct instead of silently wrong.** `NOT` has been declared in
+  `GroupConditionDto.operator`'s OpenAPI enum since the initial import, while
+  the server answered `400` for it; it is now implemented end to end — search,
+  grouped stats, conditional delete, and workflow/transition criteria. It
+  takes exactly one child condition (`NOT(A AND B)` is written by nesting, not
+  as a two-entry list under `NOT`); zero entries or two-or-more is rejected
+  `400 INVALID_CONDITION` (`400 VALIDATION_FAILED` at workflow import). Over a
+  wildcard-addressed list `NOT` is a universal quantifier, where the leaf it
+  wraps is existential: `NOT($.tags[*] EQUALS "red")` matches when no element
+  equals `"red"`, a different question from `$.tags[*] NOT_EQUAL "red"` (some
+  element differs) — and `NOT` over an empty list, an explicit `null`, or an
+  absent field matches, because the wrapped leaf is false. `NOT` is
+  residual-only: no backend pushes it into its own query language, so a
+  condition containing one is not bounded by a pushed SQL `LIMIT`. See
+  [`docs/cloud-parity/negation.md`](./docs/cloud-parity/negation.md).
+
+  - **Workflow schema version bumps 1.3 → 1.4** (`WorkflowConfigurationDto.version`).
+    `NOT` on a criterion's `group` clause widens the accepted-input set, and
+    the bump rules name "a new condition operator" as the canonical additive
+    MINOR example. Dual-shape: 1.1, 1.2 and 1.3 stay accepted alongside 1.4
+    (`SupportedSchemaRanges` widens to `{1, 1, 4}`; nothing is retired).
+    `GET /help/workflows/schema-version/versions` now reports `"current":
+    "1.4"` — an integrator whose CI pins `test "$current" = "1.3"` (or any
+    fixed prior value) must update the pin. See
+    `docs/workflow-schema-versioning.md` for the full rationale, including
+    why a separate, unrelated criterion-`jsonPath`-grammar tightening in this
+    same release is *not* part of this bump.
+
+  - **An unsatisfiable comparison now follows operator polarity.** When an
+    operand cannot be satisfied by a stored value's own declared type
+    family, `EQUALS` and the other positive comparison operators still
+    answer non-match, but `NOT_EQUAL` — the group's one negative operator —
+    now answers **match** instead of always answering non-match. `$.n
+    NOT_EQUAL 12.5` on a field declared `INTEGER` used to return no rows; it
+    now returns every entity holding a number at `n`, because no integer
+    equals `12.5` — the same answer PostgreSQL gives for `5::int <> 12.5`.
+    Decided per stored-value type family, so a polymorphic field declared
+    `[INTEGER, String]` gets the fix too, not only a field declared a single
+    type. Null and absent values are unaffected: they still never match any
+    binary operator, including negatives. See
+    [`docs/cloud-parity/operator-semantics.md`](./docs/cloud-parity/operator-semantics.md).
+
+    **This also widens conditional delete, not only search.** `DELETE
+    /entity/{name}/{version}` evaluates its condition through the same
+    kernel, so a stored or scheduled delete using a negative operator against
+    a typed field — e.g. `$.n NOT_EQUAL 12.5` on an `INTEGER` field — now
+    removes strictly more rows after upgrade than it did before: every entity
+    holding a number at `n`, not zero. Audit any automation that issues a
+    conditional delete with a negative operator before upgrading. The
+    widening does not extend to entities missing the field or holding an
+    explicit `null` there — those still fail closed for every binary
+    operator, negatives included — so exposure is limited to entities that
+    actually hold an unsatisfying value of a declared type.
+
+  - **A workflow criterion naming a field the model does not declare now
+    aborts and rolls back the save that evaluates it**, `400
+    WORKFLOW_FAILED` — no entity write, no state transition, no partial
+    effect. It previously evaluated to "not satisfied" and the save
+    succeeded, so a misspelled field name in a criterion meant the
+    transition silently never fired. Import is unchanged: a criterion's path
+    grammar, operator names, and pattern operands are still checked once at
+    import, not model membership, because a model may legitimately be
+    declared after the workflow that references it — a field that no entity
+    has ever written must be declared explicitly through
+    `POST /model/import/...`. Applies to all 26 operators, not only the ones
+    that need a declared type. See
+    [`docs/cloud-parity/unevaluable-criterion-fails-save.md`](./docs/cloud-parity/unevaluable-criterion-fails-save.md).
+
+  - **A malformed `LIKE` operand now fails a self-executing backend's
+    `Search` rather than answering an empty page.** The conformance
+    requirement inverted from "reject with `400` at the request boundary,
+    tolerate silently underneath" to requiring both halves: the boundary
+    still rejects `400 INVALID_CONDITION`/`400 VALIDATION_FAILED`, and a
+    request that somehow reaches evaluation anyway (a criterion stored
+    before the boundary check existed) now errors instead of matching
+    nothing.
 
 ### Added
 

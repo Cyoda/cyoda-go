@@ -1016,12 +1016,15 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 
 	// Reject a MATCHES_PATTERN or LIKE operand the kernel cannot compile,
 	// before any selection runs — mirrors SearchService.Search's
-	// ValidatePatterns call. Left unvalidated, the residual match.Prepare
-	// kernel treats an uncompilable pattern as a silent non-match rather
-	// than an error, so the delete would report success having selected
-	// nothing. Runs after the structural check, as it does on the search
-	// path: the pattern error names the leaf by the jsonPath the caller
-	// wrote, and that string should have cleared the path grammar first.
+	// ValidatePatterns call. match.Prepare's own expandNamed also rejects an
+	// uncompilable pattern now (prepared.go, match.ErrUnevaluableLeaf) rather than
+	// silently degrading to a non-match, so leaving this validation out
+	// would no longer risk a false "deleted nothing" success — but it would
+	// still surface as a generic internal error instead of a clean 400
+	// INVALID_CONDITION naming the offending leaf. Runs after the structural
+	// check, as it does on the search path: the pattern error names the leaf
+	// by the jsonPath the caller wrote, and that string should have cleared
+	// the path grammar first.
 	if rErr := search.ValidatePatterns(cond); rErr != nil {
 		return deleteSelectionPlan{}, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
 			rErr.Error())
@@ -1054,16 +1057,14 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 	// validateConditionTypes boundary, including its failure policy: a schema
 	// that cannot be loaded fails the request. A conditional delete decided
 	// against a condition nobody could type-check is the last place to prefer
-	// an available answer to a correct one.
-	node, nodeErr := deleteModelSchemaNode(ctx, modelStore, ref)
-	if nodeErr != nil {
-		return deleteSelectionPlan{}, fmt.Errorf("failed to load model schema for condition validation: %w", nodeErr)
-	}
-	if node != nil {
-		if tErr := search.ValidateConditionValueTypes(node, cond); tErr != nil {
-			code := search.ClassifyConditionTypeErrCode(tErr)
-			return deleteSelectionPlan{}, common.Operational(http.StatusBadRequest, code, tErr.Error())
-		}
+	// an available answer to a correct one. Extracted into its own function
+	// (deleteConditionTypeCheck) so it is directly unit-testable independent
+	// of the search.ValidateCondition structural gate a few lines above,
+	// which today already rejects a GroupCondition{Operator:"NOT"} outright
+	// — see that function's own doc for why the gating bug it fixes must
+	// still be tested at this level.
+	if tErr := deleteConditionTypeCheck(ctx, modelStore, ref, cond); tErr != nil {
+		return deleteSelectionPlan{}, tErr
 	}
 
 	filter, translateErr := spi.ConditionToFilter(cond, fields)
@@ -1082,6 +1083,13 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 	}
 	prepared, prepErr := match.Prepare(cond, fieldTypes)
 	if prepErr != nil {
+		// Classify before the generic wrap — same rationale as
+		// SearchService.Search's own match.Prepare call site: an unclassified
+		// wrap surfaced a malformed client condition as a 500 plus a support
+		// ticket. See search.ClassifyStoreQueryError's doc for the mapping.
+		if appErr := search.ClassifyStoreQueryError(prepErr); appErr != nil {
+			return deleteSelectionPlan{}, appErr
+		}
 		return deleteSelectionPlan{}, fmt.Errorf("predicate match failed: %w", prepErr)
 	}
 	return deleteSelectionPlan{residual: &prepared}, nil
@@ -1106,6 +1114,45 @@ func deleteModelSchemaNode(ctx context.Context, modelStore spi.ModelStore, ref s
 	return schema.Unmarshal(desc.Schema)
 }
 
+// deleteConditionTypeCheck runs condition type-soundness for planDeleteSelection,
+// gating the model READ (never the validation CALL) on whether cond addresses
+// any data path — mirrors search.validateConditionTypes and
+// workflow/engine.go's evaluateCriterion (Task 7). A lifecycle-only condition
+// needs no schema to validate: ValidateConditionValueTypes tolerates a nil
+// model by design, still running its model-independent half —
+// validateLifecycleType, the one check that refuses a text or pattern
+// operator on a temporal meta field (creationDate/lastUpdateTime).
+//
+// This used to be inlined in planDeleteSelection as "if node != nil { ... }",
+// which skipped the validation call ENTIRELY whenever deleteModelSchemaNode
+// returned a nil node — the ordinary "model has no schema yet" state, not a
+// failure — silently accepting a predicate validateLifecycleType exists to
+// reject. Left unrejected, that predicate reaches internal/match's
+// deliberate temporal-meta never-match guard unvalidated, and a NOT wrapping
+// it inverts that guard into matching every entity: on conditional delete,
+// the highest blast-radius surface this predicate reaches, that is a
+// delete-everything. Extracted into its own function so it is directly
+// unit-testable (delete_condition_type_gating_test.go) independent of
+// search.ValidateCondition's structural gate a few lines up in
+// planDeleteSelection, which today already rejects a
+// GroupCondition{Operator:"NOT"} outright — the wire-level acceptance this
+// fix pre-empts is a later, separate change.
+func deleteConditionTypeCheck(ctx context.Context, modelStore spi.ModelStore, ref spi.ModelRef, cond predicate.Condition) error {
+	var node *schema.ModelNode
+	if len(search.ConditionFieldPaths(cond)) > 0 {
+		var nodeErr error
+		node, nodeErr = deleteModelSchemaNode(ctx, modelStore, ref)
+		if nodeErr != nil {
+			return fmt.Errorf("failed to load model schema for condition validation: %w", nodeErr)
+		}
+	}
+	if tErr := search.ValidateConditionValueTypes(node, cond); tErr != nil {
+		code := search.ClassifyConditionTypeErrCode(tErr)
+		return common.Operational(http.StatusBadRequest, code, tErr.Error())
+	}
+	return nil
+}
+
 // drainDeleteSelection opens a spi.Iterable iterator scoped to ctx (pass a
 // transaction-bearing ctx — e.g. txCtx — to select that transaction's
 // overlaid view, a plain ctx for a committed-only read), fully drains it,
@@ -1119,6 +1166,18 @@ func deleteModelSchemaNode(ctx context.Context, modelStore spi.ModelStore, ref s
 func drainDeleteSelection(ctx context.Context, iterableStore spi.Iterable, ref spi.ModelRef, plan deleteSelectionPlan, pointInTime *time.Time, visit func(e *spi.Entity)) error {
 	it, err := iterableStore.Iterate(ctx, ref, plan.filter, spi.IterateOptions{PointInTime: pointInTime})
 	if err != nil {
+		// Classify before returning raw: a plugin refusing plan.filter because
+		// the query planner cannot evaluate one of its leaves
+		// (spi.ErrUnevaluableLeaf/spi.ErrInvalidPattern) is a malformed CLIENT
+		// condition, not a storage failure (search.ClassifyStoreQueryError's
+		// doc). Every caller reached through here — selectDeleteIDs's
+		// DeleteEntitiesConditional, resolveBatchTargetsOnePass — must see the
+		// classified 4xx; a bare sentinel is not a *common.AppError, so an
+		// errors.As(&appErr) check at the caller silently misses it and this
+		// is delete-by-condition, the worst blast radius in this plan.
+		if appErr := search.ClassifyStoreQueryError(err); appErr != nil {
+			return appErr
+		}
 		return err
 	}
 	var scanErr error
@@ -1152,6 +1211,11 @@ func drainDeleteSelection(ctx context.Context, iterableStore spi.Iterable, ref s
 			visit(e)
 		}
 	}()
+	// Same classification as the Iterate-open error above: a sticky scan
+	// error can carry the identical cross-backend sentinels.
+	if appErr := search.ClassifyStoreQueryError(scanErr); appErr != nil {
+		return appErr
+	}
 	return scanErr
 }
 
@@ -1374,6 +1438,14 @@ func (h *Handler) resolveBatchTargetsOnePass(ctx context.Context, entityStore sp
 		ids = append(ids, id)
 	})
 	if err != nil {
+		// A classified 4xx from drainDeleteSelection (an unevaluable leaf or
+		// uncompilable pattern the store rejected) is the caller's error, not
+		// a server fault — common.Internal would bury it as a 500 + ticket.
+		// Mirrors DeleteEntitiesConditional's own selectDeleteIDs check.
+		var appErr *common.AppError
+		if errors.As(err, &appErr) {
+			return nil, appErr
+		}
 		return nil, common.Internal("failed to select entities for delete", err)
 	}
 
@@ -1559,6 +1631,14 @@ func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond pred
 
 		it, iterErr := iterableStore.Iterate(ctx, ref, plan.filter, spi.IterateOptions{})
 		if iterErr != nil {
+			// Same classification as drainDeleteSelection's identical guard:
+			// this loop scans plan.filter directly (batching needs its own
+			// re-iterate-per-cycle shape, so it does not route through
+			// drainDeleteSelection), but a plugin's refusal of the same
+			// filter carries the same cross-backend sentinels.
+			if appErr := search.ClassifyStoreQueryError(iterErr); appErr != nil {
+				return nil, appErr
+			}
 			return nil, common.Internal("failed to select entities for delete", iterErr)
 		}
 		var (
@@ -1606,6 +1686,9 @@ func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond pred
 			}
 		}()
 		if scanErr != nil {
+			if appErr := search.ClassifyStoreQueryError(scanErr); appErr != nil {
+				return nil, appErr
+			}
 			return nil, common.Internal("failed to select entities for delete", scanErr)
 		}
 		if len(chunk) == 0 {

@@ -101,7 +101,10 @@ func (s *entityStore) Iterate(
 	}
 
 	// Zero-value Filter means "match all" per the spi.Iterable contract.
-	plan := planFor(filter)
+	plan, err := planFor(filter)
+	if err != nil {
+		return nil, fmt.Errorf("Iterate: %w", err)
+	}
 
 	baseQuery, baseArgs := s.searchBaseQuery(model.EntityName, model.ModelVersion, opts.PointInTime)
 
@@ -402,7 +405,10 @@ func (s *entityStore) GroupedAggregate(
 		return nil, err
 	}
 	// Zero-value Filter means "match all" (same convention as Iterable).
-	plan := planFor(filter)
+	plan, err := planFor(filter)
+	if err != nil {
+		return nil, fmt.Errorf("GroupedAggregate: %w", err)
+	}
 	if plan.postFilter != nil {
 		// A SQL GROUP BY can't safely apply a residual filter after the
 		// fact — it would corrupt per-bucket counts/aggregates. Defer to

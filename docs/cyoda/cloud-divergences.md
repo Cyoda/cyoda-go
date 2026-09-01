@@ -20,6 +20,15 @@ divergence is identified.
 | Remaining 501 Not Implemented endpoints | Declared in OpenAPI but unhandled at runtime. As of v0.8.0 the keypair + trusted-key (`/oauth/keys/*`), OIDC provider (`/oauth/oidc/providers/*`), and `/clients` surfaces are conformant; the 1 endpoint below still returns 501 via `internal/api/unimplemented.go`. Re-derive with the snippet beneath this table whenever IAM/account surfaces move. | Deferred. | [#194](https://github.com/cyoda/cyoda-go/issues/194) |
 | `EdgeMessage.payload` content types beyond JSON | OpenAPI's `contentType` field suggests support for non-JSON; cyoda-go currently stores/returns JSON-encoded values only. Cloud has the same restriction today. | Future feature, would lead Cloud. | [#193](https://github.com/cyoda/cyoda-go/issues/193) |
 
+## Resolved divergences
+
+Rows below record a divergence that has since been closed — added and struck
+in the same change, so the record of the gap and its closure both survive.
+
+| Surface | Divergence | Resolved |
+|---|---|---|
+| `GroupConditionDto.operator` enum value `NOT` | Declared in OpenAPI's `GroupConditionDto.operator` enum since the initial import; the OSS backend rejected any group with `operator: "NOT"` as an unknown operator (`400 INVALID_CONDITION`), and `cmd/cyoda/help/content/search.md` stated outright that `NOT` was not supported. | Implemented — `NOT` is now a real group operator, end to end. See [`docs/cloud-parity/negation.md`](../cloud-parity/negation.md). |
+
 ## Current 501 snapshot
 
 Re-run the derivation below to refresh this list.

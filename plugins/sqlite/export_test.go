@@ -58,7 +58,10 @@ const SearchResultsChunkSizeForTest = searchResultsChunkSize
 // provides.
 func SearchCandidateIDsForTest(f *StoreFactory, ctx context.Context, tenantID spi.TenantID, modelName, modelVersion string, filter spi.Filter) ([]string, error) {
 	s := &entityStore{db: f.db, readDB: f.readDB, tenantID: tenantID, tm: f.tm, clock: f.clock, cfg: f.cfg}
-	plan := planFor(filter)
+	plan, err := planFor(filter)
+	if err != nil {
+		return nil, err
+	}
 	baseQuery, baseArgs := s.searchCurrentStateBase(spi.SearchOptions{ModelName: modelName, ModelVersion: modelVersion})
 	if plan.where != "" {
 		baseQuery += " AND (" + plan.where + ")"

@@ -46,7 +46,7 @@ For **product context** — value proposition, target use cases, scale envelope,
 - Direct synchronous search with predicate conditions
 - Async snapshot search with job lifecycle (submit, poll, retrieve, cancel)
 - 23 operators (equality, comparison, string, case-insensitive, pattern, range, null)
-- Group conditions with AND/OR nesting
+- Group conditions with AND/OR/NOT nesting
 - Point-in-time search across entity versions
 - Pagination (offset/limit)
 

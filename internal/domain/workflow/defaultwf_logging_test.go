@@ -96,13 +96,16 @@ func TestDefaultFallback_NoCriterionMatched_EmitsSlogWarn(t *testing.T) {
 			Name:         "guarded-only",
 			InitialState: "S",
 			Active:       true,
-			Criterion:    simpleCriterion("$.never", "EQUALS", "match-me"),
+			Criterion:    simpleCriterion("$.k", "EQUALS", "match-me"),
 			States:       map[string]spi.StateDefinition{"S": {Transitions: []spi.TransitionDefinition{}}},
 		},
 	})
-	// Model declares the entity's real leaf `k`; the criterion's $.never is
-	// untyped, so the equality leaf degrades to non-match — exercising the
-	// "no_criterion_matched" fallback reason rather than a load error.
+	// Model declares the entity's real leaf `k` as String, so the
+	// criterion's EQUALS comparison evaluates cleanly and genuinely doesn't
+	// match (the entity's k is "v", not "match-me") — exercising the
+	// "no_criterion_matched" fallback reason rather than a load error. A
+	// reference to an undeclared field would instead fail Prepare outright
+	// (leafNode's expansion-failure branch, internal/match/prepared.go).
 	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{"k": schema.String})
 
 	entity := makeEntity("ord-1", modelRef, map[string]any{"k": "v"})

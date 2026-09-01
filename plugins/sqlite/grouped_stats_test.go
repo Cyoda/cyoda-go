@@ -122,6 +122,38 @@ func TestSqliteIterate_FilterPushdown(t *testing.T) {
 	}
 }
 
+// TestSqliteIterate_RejectsUnevaluableFilter pins the propagation of
+// spi.Prepare's error through the non-tx Iterate path (planFor): a leaf
+// spi.Prepare genuinely cannot evaluate must fail Iterate outright, not
+// silently stream zero rows.
+func TestSqliteIterate_RejectsUnevaluableFilter(t *testing.T) {
+	_, store, ctx := gsNewStore(t)
+	gsSave(t, ctx, store, "a", "available", map[string]any{"name": "x"})
+
+	it := store.(spi.Iterable)
+	iter, err := it.Iterate(ctx, gsModel, spi.Filter{
+		Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
+		Value: `a\`, Declared: []spi.DataType{spi.String},
+	}, spi.IterateOptions{})
+	// Drain and close defensively: if the guard under test regressed and
+	// Iterate wrongly succeeded, an undrained cursor would leak resources
+	// instead of failing cleanly right here.
+	if iter != nil {
+		for iter.Next() {
+		}
+		if err == nil {
+			err = iter.Err()
+		}
+		_ = iter.Close()
+	}
+	if err == nil {
+		t.Fatal("Iterate must fail on an unevaluable filter, not silently stream zero rows")
+	}
+	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
+		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
+	}
+}
+
 func TestSqliteIterate_ResidualApplied(t *testing.T) {
 	_, store, ctx := gsNewStore(t)
 	gsSave(t, ctx, store, "a", "available", map[string]any{"city": "Berlin", "tag": "x"})
@@ -232,6 +264,47 @@ func TestSqliteIterate_InTxOverlay(t *testing.T) {
 	}
 	if seen["e-delete"] {
 		t.Errorf("e-delete should be hidden (tx.Deletes)")
+	}
+}
+
+// TestSqliteIterate_InTx_RejectsUnevaluableFilter pins the propagation of
+// spi.Prepare's error through the in-transaction Iterate overlay branch,
+// which prepares the filter directly (no SQL plan at all — see Iterate's
+// tx-overlay branch): a leaf spi.Prepare genuinely cannot evaluate must
+// fail Iterate outright, not silently materialize an iterator that matches
+// nothing.
+func TestSqliteIterate_InTx_RejectsUnevaluableFilter(t *testing.T) {
+	factory, store, ctx := gsNewStore(t)
+	gsSave(t, ctx, store, "e-keep", "available", map[string]any{"name": "x"})
+
+	tm, err := factory.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	_, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	it := store.(spi.Iterable)
+	iter, iterErr := it.Iterate(txCtx, gsModel, spi.Filter{
+		Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
+		Value: `a\`, Declared: []spi.DataType{spi.String},
+	}, spi.IterateOptions{})
+	// Drain and close defensively — see TestSqliteIterate_RejectsUnevaluableFilter.
+	if iter != nil {
+		for iter.Next() {
+		}
+		if iterErr == nil {
+			iterErr = iter.Err()
+		}
+		_ = iter.Close()
+	}
+	if iterErr == nil {
+		t.Fatal("in-tx Iterate must fail on an unevaluable filter, not silently materialize an empty match set")
+	}
+	if !errors.Is(iterErr, spi.ErrUnevaluableLeaf) {
+		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", iterErr)
 	}
 }
 
@@ -369,6 +442,34 @@ func TestSqliteIterate_CloseIdempotent(t *testing.T) {
 }
 
 // ---------- GroupedAggregate ----------
+
+// TestSqliteGroupedAggregate_RejectsUnevaluableFilter pins the propagation
+// of spi.Prepare's error through GroupedAggregate's planFor call: a leaf
+// spi.Prepare genuinely cannot evaluate must fail the aggregation outright,
+// not silently bucket zero entities.
+func TestSqliteGroupedAggregate_RejectsUnevaluableFilter(t *testing.T) {
+	_, store, ctx := gsNewStore(t)
+	gsSave(t, ctx, store, "a", "available", map[string]any{"name": "x"})
+
+	ga, ok := store.(spi.GroupedAggregator)
+	if !ok {
+		t.Fatal("entityStore does not implement spi.GroupedAggregator")
+	}
+	_, err := ga.GroupedAggregate(ctx, gsModel,
+		[]spi.GroupExpr{{Kind: spi.GroupExprState}},
+		spi.Filter{
+			Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
+			Value: `a\`, Declared: []spi.DataType{spi.String},
+		},
+		spi.GroupedAggregationsOptions{MaxBuckets: 10},
+	)
+	if err == nil {
+		t.Fatal("GroupedAggregate must fail on an unevaluable filter, not silently bucket zero entities")
+	}
+	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
+		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
+	}
+}
 
 func TestSqliteGroupedAggregate_PushesCountByState(t *testing.T) {
 	_, store, ctx := gsNewStore(t)
