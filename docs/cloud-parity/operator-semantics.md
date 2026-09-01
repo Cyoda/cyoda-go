@@ -69,14 +69,19 @@ what happens when a field has no declared type.
 | presence | `IS_NULL`, `NOT_NULL` | no |
 | string and pattern | `CONTAINS`, `NOT_CONTAINS`, `STARTS_WITH`, `NOT_STARTS_WITH`, `ENDS_WITH`, `NOT_ENDS_WITH`, `LIKE`, `MATCHES_PATTERN`, and the case-insensitive family `IEQUALS`, `INOT_EQUAL`, `ICONTAINS`, `INOT_CONTAINS`, `ISTARTS_WITH`, `INOT_STARTS_WITH`, `IENDS_WITH`, `INOT_ENDS_WITH` | no |
 
-The eight in the first group need a type slot to compare in. A field with no
-declared type, or an operand that parses into none of a field's declared
-types, is rejected before evaluation (`400 CONDITION_TYPE_MISMATCH` — section
-1) rather than answered. The polarity rule below applies only once an operand
-has been accepted: a stored value whose own type produces no surviving
-sub-condition for that operand still gets a determinate answer — **a positive
-operator answers non-match, `NOT_EQUAL` answers match instead**. The other
-eighteen never read a declared type and keep evaluating.
+The eight in the first group need a type slot to compare in. Two different
+things are rejected before evaluation, with two different codes, and they
+must not be conflated: an operand that parses into none of a **known**
+field's declared types is `400 CONDITION_TYPE_MISMATCH` (section 1); a field
+carrying **no declared type at all** has nothing for this check to apply to,
+so it is accepted here and instead fails at preparation with `400
+INVALID_CONDITION` (`errors.INVALID_CONDITION`), because the leaf cannot be
+evaluated against any type. The polarity rule below applies only once an
+operand has been accepted against a real declared type: a stored value whose
+own type produces no surviving sub-condition for that operand still gets a
+determinate answer — **a positive operator answers non-match, `NOT_EQUAL`
+answers match instead**. The other eighteen never read a declared type and
+keep evaluating.
 
 The sixteen string and pattern operators stringify the **operand** only. A
 stored value that is not textual gives a positive operator non-match; it is
@@ -90,15 +95,19 @@ either rule.
 ### An unsatisfiable comparison follows operator polarity
 
 When an operand has already been accepted — it parses into at least one of
-the field's declared types — evaluation still runs per stored-value type
+a known field's declared types — evaluation still runs per stored-value type
 family. A family whose declared type produced no surviving sub-condition for
 that operand gives a determinate answer about the entity for that family
 (*no value of this family can satisfy this comparison*), not a failure to
 evaluate. **The answer follows the operator's polarity**: false for a
-positive operator, true for a negative one. This never applies to a field
-with no declared type, or to an operand that parses into none of a field's
-declared types at all — both of those are rejected before evaluation
-(section 1, `400 CONDITION_TYPE_MISMATCH`).
+positive operator, true for a negative one. This never applies to an operand
+that parses into none of a known field's declared types at all — that is
+rejected before evaluation instead (section 1, `400
+CONDITION_TYPE_MISMATCH`). It also never applies to a field with no declared
+type at all: there is no declared-type check to run, so evaluation is
+attempted and fails at preparation with `400 INVALID_CONDITION` instead — a
+different code, because it is a different failure (nothing to check against,
+not a check that failed).
 
 This is decided **per stored-value type family**, not for the whole
 expansion. A field declared `[INTEGER, String]` is not exempt: the string
