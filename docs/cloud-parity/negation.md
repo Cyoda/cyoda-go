@@ -195,18 +195,21 @@ rather than diverging silently.
 
 ## Test surface
 
-- The wire form and its arity rule: `internal/domain/search/operators_test.go`
-  (search) and `internal/domain/workflow/criterion_operator_test.go`
-  (criterion, at import).
+- The wire form and its arity rule:
+  `internal/domain/search/group_operator_not_arity_test.go` (search) and
+  `internal/domain/workflow/criterion_not_arity_test.go` (criterion, at
+  import).
 - The kernel: `FilterNot`, its arity guard and its universal-quantifier
   semantics, in `cyoda-go-spi`'s `prepared_filter_test.go` and
-  `condition_filter_test.go`; the equivalence corpus extended to emit `NOT`
-  groups in `prepared_filter_equivalence_test.go`.
+  `condition_filter_test.go`.
 - The engine's own evaluator, kept aligned to the SPI kernel:
-  `internal/match/prepared_test.go` and
-  `internal/match/prepared_equivalence_test.go`.
+  `internal/match/prepared_test.go`; the equivalence corpus extended to emit
+  `NOT` groups in `internal/match/prepared_equivalence_test.go`. The SPI's
+  own `prepared_filter_equivalence_test.go` is not extended to emit `NOT` —
+  see `cyoda-go-spi/prepared_filter_equivalence_test.go`'s `genFilter` for
+  why and where the real gate lives.
 - Filter-path validation recursing through `NOT`:
-  `plugins/memory/path_validation_test.go`,
+  `plugins/memory/path_validation_internal_test.go`,
   `plugins/sqlite/path_validation_test.go`,
   `plugins/postgres/path_validation_test.go`.
 - Push-down stays residual: `plugins/sqlite/query_planner_test.go`,

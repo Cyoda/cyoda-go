@@ -390,15 +390,18 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   evaluate must not be read as "condition not met" — fix the operator name
   before importing.
 
-- **A search or criterion group condition must use exactly `AND` or `OR`.**
-  `GroupCondition.Operator` was never checked at validation, so anything else
-  cleared it and the two execution paths disagreed on what to do with it: the
-  pushdown translator mapped any non-`OR` value (matched case-insensitively)
-  to `AND` and answered **200** with the wrong rows, while the in-memory
-  fallback raised a structural error that surfaced as a **500** on
-  client-supplied input. Both now reject it at the shared validation boundary
-  with **400**. This is case-sensitive — lowercase `"or"` is rejected too,
-  matching the parser and the evaluator, neither of which ever accepted it.
+- **A search or criterion group condition must use exactly `AND`, `OR`, or
+  `NOT`.** `GroupCondition.Operator` was never checked at validation, so
+  anything else cleared it and the two execution paths disagreed on what to
+  do with it: the pushdown translator mapped any non-`OR` value (matched
+  case-insensitively) to `AND` and answered **200** with the wrong rows,
+  while the in-memory fallback raised a structural error that surfaced as a
+  **500** on client-supplied input. Both now reject anything outside that
+  set at the shared validation boundary with **400**. This is
+  case-sensitive — lowercase `"or"` is rejected too, matching the parser and
+  the evaluator, neither of which ever accepted it. (`NOT` itself is added
+  later in this same `[Unreleased]` milestone — see below — and is subject
+  to the identical case-sensitive check.)
 
 - **Model field names must be addressable by a search `jsonPath`.** A field name
   is now accepted only if it is a valid `jsonPath` segment: one or more ASCII

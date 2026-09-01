@@ -696,21 +696,21 @@ some leaves, which is where they can differ.
 | Scenario | unit | e2e (postgres) | parity | gRPC |
 |---|---|---|---|---|
 | `NOT` over a simple condition | ✓ | ✓ | ✓ | ✓ |
-| `NOT` over an `AND` group | ✓ | ✓ | ✓ | — |
-| `NOT` over an `OR` group | ✓ | ✓ | ✓ | — |
-| `NOT(NOT(x))` | ✓ | ✓ | — | — |
-| `NOT` over a wildcard path — the ∀ reading | ✓ | ✓ | ✓ | — |
-| `NOT` vs the negative twin differ (§ 4.6) | ✓ | ✓ | ✓ | — |
-| `NOT` over an absent field (§ 4.7) | ✓ | ✓ | ✓ | — |
+| `NOT` over an `AND` group | ✓ | — | ✓ | — |
+| `NOT` over an `OR` group | ✓ | — | ✓ | — |
+| `NOT(NOT(x))` | ✓ | — | — | — |
+| `NOT` over a wildcard path — the ∀ reading | ✓ | — | ✓ | — |
+| `NOT` vs the negative twin differ (§ 4.6) | ✓ | — | ✓ | — |
+| `NOT` over an absent field (§ 4.7) | ✓ | — | ✓ | — |
 | `NOT` over empty / null / absent list (§ 4.8) | ✓ | — | ✓ | — |
 | `NOT(IS_NULL)` ≠ `NOT_NULL` on a wildcard path (§ 4.8) | ✓ | — | ✓ | — |
 | `NOT(AND[])`, `NOT(OR[])` | ✓ | — | — | — |
 | a `FUNCTION` clause nested inside a `NOT` is rejected (§ 4.10) | ✓ | ✓ | — | — |
 | a `NOT` counts one level against both depth caps (§ 4.11) | ✓ | ✓ | — | — |
-| **unsatisfiable comparison, negative operator**: `$.n NOT_EQUAL 12.5` on `INTEGER` returns rows (§ 4.2) | ✓ | ✓ | ✓ | — |
-| — the positive twin `$.n EQUALS 12.5` still returns none (§ 4.2) | ✓ | ✓ | ✓ | — |
+| **unsatisfiable comparison, negative operator**: `$.n NOT_EQUAL 12.5` on `INTEGER` returns rows (§ 4.2) | ✓ | — | ✓ | — |
+| — the positive twin `$.n EQUALS 12.5` still returns none (§ 4.2) | ✓ | — | ✓ | — |
 | — null and absent still match neither (§ 4.2, `operator-semantics.md` § 2) | ✓ | — | ✓ | — |
-| — a **polymorphic** declared set, e.g. `[INTEGER, String]`, gets the same fix (§ 4.2) | ✓ | ✓ | ✓ | — |
+| — a **polymorphic** declared set, e.g. `[INTEGER, String]`, gets the same fix (§ 4.2) | ✓ | — | ✓ | — |
 | — the reachable operator set, one test per operator (§ 4.2) | ✓ | — | — | — |
 | — `EQUALS "2024"` on a `LocalDate` field is unchanged, not rejected (§ 4.4) | ✓ | ✓ | — | — |
 | `ALL(P)` via the negative twin is wrong on a null element (§ 4.6) — pinned so the recipe is not published later | ✓ | — | — | — |
@@ -725,7 +725,7 @@ some leaves, which is where they can differ.
 | `conditions` ≥ 2 → `400 INVALID_CONDITION`, **each of the four condition surfaces** | ✓ | ✓ | — | ✓ |
 | unrecognised group operator → `400 INVALID_CONDITION` | ✓ | ✓ | — | ✓ |
 | `groupToFilter` errors on an unknown group operator (§ 7) | ✓ | — | — | — |
-| bad path inside `NOT` → `400 INVALID_FIELD_PATH` | ✓ | ✓ | ✓ | ✓ |
+| bad path inside `NOT` → `400 INVALID_FIELD_PATH` | ✓ | — | ✓ | — |
 | bad operand type inside `NOT` → `400 CONDITION_TYPE_MISMATCH` | ✓ | ✓ | — | ✓ |
 | `NOT` on delete-by-condition | ✓ | ✓ | ✓ | — |
 | `NOT` in grouped stats | ✓ | ✓ | — | n/a |
