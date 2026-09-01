@@ -54,13 +54,16 @@ func validateJSONPath(path string) error {
 //
 // Recurses on the PRESENCE of a subtree (len(f.Children) > 0) rather than on
 // a case list of named branch operators (FilterAnd, FilterOr). A case list
-// reproduces the same defect for the next branch operator added: FilterNot
-// does not exist on this SPI version, but to this validator it is
-// indistinguishable from any other operator it has never seen, and a node
-// with an unrecognised Op and populated Children fell through to the "f.Path
-// == """ check below and returned nil without ever looking at Children — its
-// subtree went unvalidated. A malformed path inside a NOT would then be
-// interpolated into SQL unchecked.
+// reproduces the same defect for the next branch operator that gets added
+// without a matching case — FilterNot already did exactly this once (see
+// TestValidateFilterPaths_RecursesOnAnyNodeWithChildren, which pins both the
+// real FilterNot and a synthetic never-seen operator so a case-list
+// regression is caught either way): to this validator, any operator it has
+// not been given a case for is indistinguishable from one it has never seen
+// at all, and a node with such an Op and populated Children fell through to
+// the "f.Path == """ check below and returned nil without ever looking at
+// Children — its subtree went unvalidated. A malformed path inside a NOT
+// would then be interpolated into SQL unchecked.
 func validateFilterPaths(f spi.Filter) error {
 	if len(f.Children) > 0 {
 		for _, c := range f.Children {
