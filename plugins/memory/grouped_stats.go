@@ -86,9 +86,15 @@ func (s *EntityStore) Iterate(
 			return spi.LessByOrder(snapshot[i], snapshot[j], opts.OrderBy)
 		})
 	}
+	// A leaf spi.Prepare genuinely cannot evaluate fails the iteration
+	// outright rather than degrading to an iterator that matches nothing.
+	prepared, err := spi.Prepare(filter)
+	if err != nil {
+		return nil, fmt.Errorf("Iterate: %w", err)
+	}
 	return &memoryIter{
 		snapshot: snapshot,
-		prepared: spi.Prepare(filter),
+		prepared: prepared,
 		ctx:      ctx,
 	}, nil
 }
@@ -353,8 +359,13 @@ func (s *EntityStore) GroupedAggregate(
 		return nil, err
 	}
 
-	// Prepared once for the whole aggregation — the filter does not vary by row.
-	pf := spi.Prepare(filter)
+	// Prepared once for the whole aggregation — the filter does not vary by
+	// row. A leaf spi.Prepare genuinely cannot evaluate fails the aggregation
+	// outright rather than degrading to a wrong-but-available bucketing.
+	pf, err := spi.Prepare(filter)
+	if err != nil {
+		return nil, fmt.Errorf("GroupedAggregate: %w", err)
+	}
 
 	buckets := make(map[string]*memBucket)
 	for _, e := range snapshot {

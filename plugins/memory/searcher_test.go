@@ -64,7 +64,10 @@ func TestMemorySearch_NonTx_ParityWithGetAllMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAll failed: %v", err)
 	}
-	pf := spi.Prepare(activeFilter)
+	pf, err := spi.Prepare(activeFilter)
+	if err != nil {
+		t.Fatalf("spi.Prepare failed: %v", err)
+	}
 	want := make(map[string]bool)
 	for _, e := range all {
 		if pf.Match(e.Data, e.Meta) {
@@ -462,7 +465,10 @@ func TestMemorySearch_NonTx_PIT_CommittedAsAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAllAsAt failed: %v", err)
 	}
-	pf := spi.Prepare(activeFilter)
+	pf, err := spi.Prepare(activeFilter)
+	if err != nil {
+		t.Fatalf("spi.Prepare failed: %v", err)
+	}
 	want := make(map[string]bool)
 	for _, e := range asAt {
 		if pf.Match(e.Data, e.Meta) {
@@ -582,6 +588,33 @@ func TestMemorySearch_ZeroLimitRejected(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("Limit=0 rejection must not also return a partial result, got %d", len(got))
+	}
+}
+
+// TestMemorySearch_RejectsUnevaluableFilter pins the propagation of
+// spi.Prepare's error through Search: a leaf spi.Prepare genuinely cannot
+// evaluate (here, a LIKE pattern with a trailing backslash that will not
+// compile) must fail the search outright, not silently degrade to an empty
+// page. See .claude/rules/correctness-over-availability.md.
+func TestMemorySearch_RejectsUnevaluableFilter(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	ctx := ctxWithTenant("tenant-A")
+	store, _ := factory.EntityStore(ctx)
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	searcher := asSearcher(t, store)
+
+	store.Save(ctx, mkEntity("e-1", "ACTIVE", `{"name": "a"}`, modelRef))
+
+	_, err := searcher.Search(ctx, spi.Filter{
+		Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
+		Value: `a\`, Declared: []spi.DataType{spi.String},
+	}, spi.SearchOptions{ModelName: "Order", ModelVersion: "1", Limit: 100})
+	if err == nil {
+		t.Fatal("Search must fail on an unevaluable filter, not return an empty page")
+	}
+	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
+		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
 	}
 }
 

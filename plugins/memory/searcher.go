@@ -50,8 +50,14 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 
 	// Prepare once per query. Every branch below evaluates the same filter, so
 	// a single prepared value serves the non-tx scan, the PIT scan, and both
-	// loops of the read-your-own-writes overlay.
-	pf := spi.Prepare(filter)
+	// loops of the read-your-own-writes overlay. A leaf spi.Prepare genuinely
+	// cannot evaluate (a malformed pattern, an unrecognized meta path, ...)
+	// fails the search outright rather than degrading to an empty page — see
+	// .claude/rules/correctness-over-availability.md.
+	pf, err := spi.Prepare(filter)
+	if err != nil {
+		return nil, fmt.Errorf("Search: %w", err)
+	}
 
 	if tx == nil {
 		// Non-transaction: snapshot the committed model under entityMu, then
