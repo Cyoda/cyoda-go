@@ -200,3 +200,49 @@ func TestRejectSubscript_ParseFailureRejects(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateFilterPaths_RecursesOnAnyNodeWithChildren pins the defect this
+// package's validateFilterPaths used to have: it recursed on a case list of
+// named branch operators (FilterAnd, FilterOr) rather than on the PRESENCE
+// of a subtree. A node with an unrecognised Op and populated Children fell
+// through to the "f.Path == """ check and returned nil without ever
+// inspecting Children — its subtree went unvalidated.
+//
+// FilterNot does not exist on this SPI version yet — a later task adds it —
+// so spi.FilterOp("not") stands in for exactly the shape a NOT node will
+// present to this validator until it is rebuilt against the SPI version
+// that defines FilterNot: an unrecognised Op carrying Children. A validator
+// that still switched on named operators would treat this node as a
+// pathless leaf and never look inside it, letting a malformed path reach
+// SQL interpolation unchecked.
+func TestValidateFilterPaths_RecursesOnAnyNodeWithChildren(t *testing.T) {
+	malformed := spi.Filter{Op: spi.FilterEq, Path: "a[", Source: spi.SourceData, Value: "x"}
+	wellFormed := spi.Filter{Op: spi.FilterEq, Path: "a.b", Source: spi.SourceData, Value: "x"}
+
+	// The bug: a malformed path nested under an operator this validator
+	// does not recognise must still be caught.
+	unknownOpMalformed := spi.Filter{Op: spi.FilterOp("not"), Children: []spi.Filter{malformed}}
+	if err := validateFilterPaths(unknownOpMalformed); !errors.Is(err, spi.ErrInvalidFilterPath) {
+		t.Errorf("malformed path nested under unrecognised op %q: err = %v, want wraps spi.ErrInvalidFilterPath", unknownOpMalformed.Op, err)
+	}
+
+	// Regression guard: the existing recognised-operator behaviour must not
+	// have broken. A malformed path nested under a genuine FilterAnd is
+	// still rejected.
+	andMalformed := spi.Filter{Op: spi.FilterAnd, Children: []spi.Filter{wellFormed, malformed}}
+	if err := validateFilterPaths(andMalformed); !errors.Is(err, spi.ErrInvalidFilterPath) {
+		t.Errorf("malformed path nested under FilterAnd: err = %v, want wraps spi.ErrInvalidFilterPath", err)
+	}
+
+	// Regression guard: a well-formed path nested under either kind of
+	// branch node is still accepted — the fix must not start rejecting
+	// valid filters.
+	andWellFormed := spi.Filter{Op: spi.FilterAnd, Children: []spi.Filter{wellFormed}}
+	if err := validateFilterPaths(andWellFormed); err != nil {
+		t.Errorf("well-formed path nested under FilterAnd: err = %v, want nil", err)
+	}
+	unknownOpWellFormed := spi.Filter{Op: spi.FilterOp("not"), Children: []spi.Filter{wellFormed}}
+	if err := validateFilterPaths(unknownOpWellFormed); err != nil {
+		t.Errorf("well-formed path nested under unrecognised op %q: err = %v, want nil", unknownOpWellFormed.Op, err)
+	}
+}
