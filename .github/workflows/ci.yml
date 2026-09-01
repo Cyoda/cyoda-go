@@ -59,8 +59,20 @@ jobs:
       # it under 2x headroom on a runner slower than a developer's machine. A
       # binary that trips the default reports as a panic with a goroutine dump,
       # which reads like a product defect rather than a budget being hit.
+      # scripts/testreport turns the -json stream into a summary plus verbatim
+      # failures, and — the reason it exists — FAILS when a package that was
+      # required to execute tests executed none. `go test` reports a TestMain
+      # that calls os.Exit(0) as `ok  pkg  2.80s` with zero tests run, which no
+      # amount of reading the log distinguishes from a pass. Built once here and
+      # reused by the plugin steps, which run in their own modules.
+      - name: Build test reporter
+        run: go build -o "$RUNNER_TEMP/testreport" ./scripts/testreport
+
       - name: Run tests
-        run: go test ./... -v -timeout 30m
+        run: |
+          set -o pipefail
+          go test -json ./... -timeout 30m | "$RUNNER_TEMP/testreport" \
+            -must-run 'e2e/parity/memory,e2e/parity/sqlite,e2e/parity/postgres,e2e/parity/multinode,e2e/parity/fixtureutil,internal/e2e'
 
       # Race detector. Scoped via `make race` to exclude `internal/e2e` —
       # see Makefile and `.claude/rules/race-testing.md` for rationale.
@@ -72,20 +84,28 @@ jobs:
       # does not recurse into them. Run tests inside each module so CI does
       # not miss regressions (issue #46). The postgres plugin's DB-backed
       # tests connect via CYODA_TEST_DB_URL (job-level postgres service
-      # above) and skip when it is unset.
+      # above) and skip when it is unset — which is why the postgres step
+      # requires its package to have executed tests rather than trusting a
+      # green that a wholly-skipped suite also produces.
       - name: Run plugins/memory tests
         working-directory: plugins/memory
-        run: go test -v ./...
+        run: |
+          set -o pipefail
+          go test -json ./... | "$RUNNER_TEMP/testreport"
 
       - name: Run plugins/sqlite tests
         working-directory: plugins/sqlite
-        run: go test -v ./...
+        run: |
+          set -o pipefail
+          go test -json ./... | "$RUNNER_TEMP/testreport"
 
       - name: Run plugins/postgres tests
         working-directory: plugins/postgres
         env:
           CYODA_TEST_DB_URL: postgres://cyoda:cyoda@localhost:5432/cyoda_test?sslmode=disable
-        run: go test -v ./...
+        run: |
+          set -o pipefail
+          go test -json ./... | "$RUNNER_TEMP/testreport" -must-run 'plugins/postgres'
 
       - name: Build
         run: go build -o bin/cyoda ./cmd/cyoda

@@ -49,7 +49,8 @@ When changing the `WorkflowConfigurationDto` import surface — DTO shape, valid
 
 ### Gate 5: Verify before claiming done
 Use `superpowers:verification-before-completion` skill before claiming work is complete.
-Run `go test ./... -v` and confirm green (this includes E2E tests). Run `go vet ./...` for static analysis.
+Run `make test-full` and confirm green (root + every plugin submodule, including E2E). Run `go vet ./...` for static analysis.
+A raw `go test ./...` is not sufficient: it reports `ok` for suites that never ran.
 E2E tests spin up their own PostgreSQL + HTTP server automatically — just run them.
 Do not claim work is done if any test — unit, integration, or E2E — is failing.
 
@@ -138,16 +139,42 @@ on that task — no need to ask again. If anything still prevents dispatching on
 
 Plugin submodules (`plugins/memory`, `plugins/sqlite`, `plugins/postgres`)
 each have their own `go.mod`; Go's `./...` recursion does **not** cross
-module boundaries, so root-module commands miss them. Use the `-all`
-aggregator targets below when you want coverage across the whole repo.
+module boundaries, so root-module commands miss them. `make test-full` is the
+only target that covers the whole repo.
 
-- Test (root module): `go test ./... -v` — root incl. internal/e2e (requires Docker)
-- Test (root module, unit only): `go test -short ./... -v`
-- Test (root + every plugin submodule): `make test-all` — covers root + `plugins/memory|sqlite|postgres`; Docker required for postgres testcontainers
-- Test (root + plugins, short): `make test-short-all`
-- Test (E2E only): `go test ./internal/e2e/... -v`
-- Coverage (root module): `go test -coverprofile=coverage.out ./...` — run inside each `plugins/*` for per-plugin coverage
-- Race detector (root module, CI-parity scope): `make race` — runs `go test -race -timeout=15m` on every package except `internal/e2e`; same scope CI runs. Use `go test -race -timeout=20m ./internal/e2e/...` separately if you need race coverage on E2E.
+**Use `make test` and `make test-full`. Do not hand-roll `go test ./...`.**
+A raw `go test` cannot tell you that a suite did not run: a `TestMain` that
+calls `os.Exit(0)` — how the parity suites and `internal/e2e` opt out of
+`-short` — prints `ok  pkg  2.80s` with zero tests executed, which is
+indistinguishable from a pass. The make targets pipe through
+`scripts/testreport`, which fails the run when a required suite executed
+nothing and prints failures verbatim instead of burying them in `-v` output.
+
+- **Iteration: `make test`** — unit + cross-backend parity, ~3 min. Excludes
+  `internal/e2e` and the plugin submodules, and says so when it runs.
+- **End of deliverable: `make test-full`** — everything, root + all three
+  plugin submodules, ~15 min. This is the Gate 5 command.
+- Race detector (CI-parity scope): `make race` — `go test -race` on every
+  package except `internal/e2e`; the same scope CI runs. Use
+  `go test -race -timeout=20m ./internal/e2e/...` separately if you need race
+  coverage on E2E. Once before a PR, not per step.
+- One package while iterating: `go test ./internal/domain/search/...` is fine
+  — the tiers are for verification, not for every edit.
+
+**Do not add `-count=1`.** The targets deliberately leave Go's test cache
+enabled, so a re-run only re-executes packages whose inputs changed: measured
+89s cold and 13s warm for `make test`. Forcing `-count=1` throws that away and
+is the single easiest way to make verification slow again. Use it only when
+you are specifically hunting a flake.
+- Coverage (root module): `go test -coverprofile=coverage.out ./...` — run
+  inside each `plugins/*` for per-plugin coverage.
+
+**Docker is a hard requirement for both tiers and there is no Docker-free
+fallback.** `make preflight` checks that the daemon responds, that the probe
+image is present, and that the VM disk can take a write — a full Docker disk
+otherwise surfaces only as `container exited with code 1`. If pre-flight
+fails, fix Docker and say so; do not drop to a narrower run.
+
 - Build: `go build -o bin/cyoda ./cmd/cyoda`
 - Tidy: `go mod tidy`
 - Vet (root module): `go vet ./...` — the `per-module-hygiene` CI job vets each plugin separately

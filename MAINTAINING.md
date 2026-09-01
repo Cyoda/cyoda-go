@@ -167,7 +167,7 @@ Do this as a single consolidated **release-prep** commit on the release branch,
    submodule). If a grouped PR was closed because it was entangled with the
    then-unresolvable SPI pin, apply its third-party updates by hand here.
 3. `go mod tidy` in every module.
-4. Verify: `make check-spi-pin-sync`, `make test-all`, `make race`.
+4. Verify: `make check-spi-pin-sync`, `make test-full`, `make race`.
 
 After this commit the branch is at latest on everything, so Dependabot's next
 run finds nothing to raise — a clean release with no immediate follow-on churn.
@@ -386,7 +386,7 @@ When you bump cyoda-go-spi:
 1. Bump in `go.mod` (root).
 2. Bump identically in `plugins/memory/go.mod`, `plugins/postgres/go.mod`, `plugins/sqlite/go.mod`.
 3. Run `go mod tidy` in each module.
-4. Run `make test-all` to verify cross-plugin interactions.
+4. Run `make test-full` to verify cross-plugin interactions.
 5. Run `make check-spi-pin-sync` locally to confirm green.
 
 This rule is in addition to the existing **plugin-version lockstep**

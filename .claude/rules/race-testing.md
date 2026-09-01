@@ -12,7 +12,11 @@ Use `make race` (defined in `Makefile`) so local and CI run exactly the same sco
 ## Rules
 
 - **During iteration** (subagent dispatch, single-task verification, between commits):
-  use `go test -short ./...` or scoped tests like `go test ./internal/foo/...`. No `-race`.
+  use a scoped run like `go test ./internal/foo/...`, or `make test` for the
+  full iteration tier (~90s, unit + cross-backend parity). No `-race`.
+  Do NOT reach for `go test -short ./...`: it reports `ok` for the parity
+  suites and `internal/e2e` while running none of them, so its green means
+  less than it appears to. See `scripts/testreport`.
 - **Before PR creation** (and only then): run `make race` once as a sanity check.
   CI invokes the same target, so a local pass strongly predicts a CI pass.
 - **If a race-related bug is suspected**: run `-race` on the specific package

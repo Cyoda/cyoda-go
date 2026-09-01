@@ -1,4 +1,9 @@
-.PHONY: dev-up dev-down dev-reset dev-ps dev-logs dev-run dev-test build test test-all test-short-all race clean docker-build docker-push todos check-spi-pin-sync check-codegen check-gofmt repin-plugins
+.PHONY: dev-up dev-down dev-reset dev-ps dev-logs dev-run dev-test build test test-full preflight race clean docker-build docker-push todos check-spi-pin-sync check-codegen check-gofmt repin-plugins
+
+# Recipes need pipefail: a `go test | testreport` pipeline must fail on the
+# LEFT side too, or a compile error in the test binary reports as success.
+SHELL := /bin/bash
+.SHELLFLAGS := -o pipefail -c
 
 # Plugin submodules: each has its own go.mod, so `go test ./...` from the
 # repo root does not recurse into them. The aggregator targets below close
@@ -67,21 +72,46 @@ endif
 
 # --- Testing ---
 
-test:                  ## Run root-module tests only (plugin submodules skipped — see test-all)
-	go test ./... -v
+# --- Tests ---
+#
+# Two tiers, and no Docker-free tier by design. Every tier that matters stands
+# up real containers; when Docker cannot serve them the answer is to fix
+# Docker, not to fall back to a narrower run that reports green.
+#
+# Both tiers pipe `go test -json` through scripts/testreport rather than using
+# -v. That buys two things:
+#
+#   1. A package that ran NO tests is reported as such and, when the tier
+#      required it, fails the run. `go test` cannot express this: a TestMain
+#      calling os.Exit(0) — how the parity suites and internal/e2e opt out of
+#      -short — emits a package-level "pass" with no test events, printing
+#      `ok  pkg  2.80s`, identical to a real pass. A green that cannot be
+#      falsified gets escalated to the full suite every round, which is what
+#      made verification the slowest part of delivery.
+#   2. Failures print verbatim and in full, with the passing majority reduced
+#      to a count. -v emitted 45,000 events for the fast tier alone, so output
+#      got piped through `tail` and real failures were lost.
 
-test-all:              ## Run root + every plugin submodule (requires Docker for postgres)
-	go test ./... -v
-	@for m in $(PLUGIN_MODULES); do \
-	  echo "==> go test ./... in $$m"; \
-	  (cd $$m && go test ./... -v) || exit $$?; \
-	done
+# The parity runners. Deliberately explicit rather than an `e2e/parity` prefix:
+# externalapi, scheduledfunction and scheduledtransition under that tree are
+# scenario libraries with no test files of their own, and requiring them would
+# report a hole that is not one.
+PARITY_SUITES := e2e/parity/memory,e2e/parity/sqlite,e2e/parity/postgres,e2e/parity/multinode,e2e/parity/fixtureutil
 
-test-short-all:        ## Run root + every plugin submodule with -short (quick coverage check)
-	go test -short ./... -v
+preflight:             ## Verify Docker can actually serve the test suites
+	@./scripts/preflight-docker.sh
+
+test: preflight        ## Iteration tier: unit + cross-backend parity (~3 min). Excludes internal/e2e and plugin submodules.
+	@echo "==> unit + parity — NOT in this tier: internal/e2e, plugin submodules (see test-full)"
+	@pkgs=$$(go list ./... | grep -v '^github.com/cyoda-platform/cyoda-go/internal/e2e$$'); \
+	go test -json $$pkgs | go run ./scripts/testreport -must-run '$(PARITY_SUITES)'
+
+test-full: preflight   ## End-of-deliverable: everything, root + every plugin submodule (~15 min)
+	@echo "==> root module, including internal/e2e"
+	@go test -json -timeout 30m ./... | go run ./scripts/testreport -must-run '$(PARITY_SUITES),internal/e2e'
 	@for m in $(PLUGIN_MODULES); do \
-	  echo "==> go test -short ./... in $$m"; \
-	  (cd $$m && go test -short ./... -v) || exit $$?; \
+	  echo "==> $$m"; \
+	  (cd $$m && go test -json ./... | go run $(CURDIR)/scripts/testreport) || exit $$?; \
 	done
 
 # Race detector — run once before opening a PR, not on every iteration.
@@ -93,10 +123,11 @@ test-short-all:        ## Run root + every plugin submodule with -short (quick c
 race:                  ## Run race detector on race-sensitive packages (CI parity; excludes internal/e2e)
 	@pkgs=$$(go list ./... | grep -v '^github.com/cyoda-platform/cyoda-go/internal/e2e$$'); \
 	echo "race-testing $$(echo "$$pkgs" | wc -l | tr -d ' ') packages"; \
-	go test -race -timeout=15m $$pkgs
+	go test -json -race -timeout=15m $$pkgs | go run ./scripts/testreport
 
-dev-test: dev-up       ## Run all tests against local postgres
-	$(DEV_PG_ENV) go test ./... -v -count=1
+dev-test: dev-up       ## Run all tests against the local postgres from dev-up
+	$(DEV_PG_ENV) go test -json -count=1 -timeout 30m ./... | go run ./scripts/testreport \
+	  -must-run '$(PARITY_SUITES),internal/e2e'
 
 # --- TODOs ---
 
