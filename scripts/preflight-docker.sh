@@ -42,7 +42,10 @@ resolve_docker() {
               /Applications/Docker.app/Contents/Resources/bin/docker \
               "$HOME/.docker/bin/docker" /opt/homebrew/bin/docker; do
     [ -n "$cand" ] || continue
-    if "$cand" version >/dev/null 2>&1 || "$cand" info >/dev/null 2>&1; then
+    # --version is client-only and succeeds with the daemon down, which is
+    # what lets the daemon check below report that case precisely instead of
+    # every candidate failing and the script blaming the binary.
+    if "$cand" --version >/dev/null 2>&1; then
       echo "$cand"
       return 0
     fi

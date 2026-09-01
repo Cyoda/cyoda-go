@@ -44,7 +44,7 @@ func trimFloat(f float64) string {
 func TestSilentSkip_RequiredPackageThatRanNoTests_IsAFailure(t *testing.T) {
 	stream := eventStream(pkgEvent("pass", pkgParity, 2.8))
 
-	res, err := analyse(strings.NewReader(stream), []string{"e2e/parity"})
+	res, err := analyse(strings.NewReader(stream), []string{"e2e/parity/memory"})
 	if err != nil {
 		t.Fatalf("analyse: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestRequiredPackageThatPassed_IsClean(t *testing.T) {
 		pkgEvent("pass", pkgParity, 2.8),
 	)
 
-	res, err := analyse(strings.NewReader(stream), []string{"e2e/parity"})
+	res, err := analyse(strings.NewReader(stream), []string{"e2e/parity/memory"})
 	if err != nil {
 		t.Fatalf("analyse: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestPackageWhereEveryTestSkipped_DoesNotSatisfyMustRun(t *testing.T) {
 		pkgEvent("pass", pkgParity, 2.8),
 	)
 
-	res, err := analyse(strings.NewReader(stream), []string{"e2e/parity"})
+	res, err := analyse(strings.NewReader(stream), []string{"e2e/parity/memory"})
 	if err != nil {
 		t.Fatalf("analyse: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestRequiredPackageAbsentFromStream_IsAFailure(t *testing.T) {
 		pkgEvent("pass", pkgSearch, 1.5),
 	)
 
-	res, err := analyse(strings.NewReader(stream), []string{"e2e/parity"})
+	res, err := analyse(strings.NewReader(stream), []string{"e2e/parity/memory"})
 	if err != nil {
 		t.Fatalf("analyse: %v", err)
 	}
@@ -324,5 +324,122 @@ func TestBuildError_KeyedByImportPath_IsAttributedAndShown(t *testing.T) {
 	}
 	if !strings.Contains(out, "x_test.go:6:2") {
 		t.Errorf("the file:line must be shown; got:\n%s", out)
+	}
+}
+
+// Only tests that ACTUALLY failed may appear under a --- FAIL header. A
+// package records no per-test outcome unless we track it, and a fallback of
+// "keep any test that produced output" relabels the passing majority as
+// failures — recreating the wall of output this tool exists to remove, now
+// with wrong labels.
+func TestOnlyFailingTests_AppearInTheFailureReport(t *testing.T) {
+	stream := eventStream(
+		runEvent(pkgSearch, "TestChatty"),
+		outEvent(pkgSearch, "TestChatty", "    chatty_test.go:3: progress\\n"),
+		testEvent("pass", pkgSearch, "TestChatty"),
+		runEvent(pkgSearch, "TestBroken"),
+		outEvent(pkgSearch, "TestBroken", "    x_test.go:9: want 7, got 3\\n"),
+		testEvent("fail", pkgSearch, "TestBroken"),
+		pkgEvent("fail", pkgSearch, 1.5),
+	)
+
+	res, err := analyse(strings.NewReader(stream), []string{})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	out := res.Render()
+	if !strings.Contains(out, "want 7, got 3") {
+		t.Errorf("the real failure must be shown; got:\n%s", out)
+	}
+	if strings.Contains(out, "TestChatty") {
+		t.Errorf("a PASSING test must not appear in the failure report; got:\n%s", out)
+	}
+	if n := strings.Count(out, "--- FAIL:"); n != 1 {
+		t.Errorf("want exactly 1 --- FAIL header, got %d:\n%s", n, out)
+	}
+}
+
+// A must-run entry names ONE package. A different package that merely contains
+// the string as a path prefix does not satisfy it: internal/e2e/goroutinesafety
+// running is not internal/e2e running, and both exist in this repo.
+func TestMustRun_IsNotSatisfiedByASubpackage(t *testing.T) {
+	const sub = "github.com/cyoda-platform/cyoda-go/internal/e2e/goroutinesafety"
+	stream := eventStream(
+		runEvent(sub, "TestThing"),
+		testEvent("pass", sub, "TestThing"),
+		pkgEvent("pass", sub, 1.5),
+	)
+
+	res, err := analyse(strings.NewReader(stream), []string{"internal/e2e"})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	if res.ExitCode == 0 {
+		t.Fatalf("internal/e2e did not run; a subpackage must not satisfy it\n%s", res.Render())
+	}
+}
+
+// The exact package still satisfies its own requirement.
+func TestMustRun_IsSatisfiedByTheExactPackage(t *testing.T) {
+	const pkg = "github.com/cyoda-platform/cyoda-go/internal/e2e"
+	stream := eventStream(
+		runEvent(pkg, "TestThing"),
+		testEvent("pass", pkg, "TestThing"),
+		pkgEvent("pass", pkg, 1.5),
+	)
+
+	res, err := analyse(strings.NewReader(stream), []string{"internal/e2e"})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("the exact package ran; want exit 0, got %d\n%s", res.ExitCode, res.Render())
+	}
+}
+
+// The bug that started this was spotted as "7885 tests passing" next to five
+// silent packages. Reporting only package counts loses that smell, so the
+// executed-test total stays in the summary.
+func TestSummary_ReportsExecutedTestCount(t *testing.T) {
+	stream := eventStream(
+		runEvent(pkgSearch, "TestA"),
+		testEvent("pass", pkgSearch, "TestA"),
+		runEvent(pkgSearch, "TestB"),
+		testEvent("pass", pkgSearch, "TestB"),
+		pkgEvent("pass", pkgSearch, 1.5),
+	)
+
+	res, err := analyse(strings.NewReader(stream), []string{})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	if !strings.Contains(res.Render(), "2 tests") {
+		t.Errorf("summary must carry the executed-test count; got:\n%s", res.Render())
+	}
+}
+
+// The report writes its own "--- FAIL: <test>" header, so the toolchain's
+// duplicate of that line, and its bare package-level FAIL framing, are noise.
+func TestToolchainFailFraming_IsNotDuplicated(t *testing.T) {
+	stream := eventStream(
+		runEvent(pkgSearch, "TestBroken"),
+		outEvent(pkgSearch, "TestBroken", "=== RUN   TestBroken\\n"),
+		outEvent(pkgSearch, "TestBroken", "    x_test.go:9: want 7, got 3\\n"),
+		outEvent(pkgSearch, "TestBroken", "--- FAIL: TestBroken (0.00s)\\n"),
+		testEvent("fail", pkgSearch, "TestBroken"),
+		`{"Action":"output","Package":"`+pkgSearch+`","Output":"FAIL\n"}`,
+		pkgEvent("fail", pkgSearch, 1.5),
+	)
+
+	res, err := analyse(strings.NewReader(stream), []string{})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	out := res.Render()
+	if n := strings.Count(out, "--- FAIL:"); n != 1 {
+		t.Errorf("want exactly 1 --- FAIL header, got %d:\n%s", n, out)
+	}
+	if !strings.Contains(out, "want 7, got 3") {
+		t.Errorf("the substance must survive; got:\n%s", out)
 	}
 }

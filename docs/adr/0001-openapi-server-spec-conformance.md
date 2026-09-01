@@ -80,7 +80,7 @@ this ADR; revisiting requires a new ADR superseding this one.
 - **Runtime, not compile-time guarantee.** A handler can return the
   wrong shape and we find out at the next E2E run, not at build. This
   is acceptable while we have a robust E2E suite (we do — `make
-  test-all` covers all backends including postgres testcontainers); it
+  test-full` covers all backends including postgres testcontainers); it
   becomes weaker if a wire-shape regression slips into a less-covered
   path. **Mitigation:** treat E2E coverage as load-bearing for this
   guarantee; gaps surfaced during the spec audit get tests added

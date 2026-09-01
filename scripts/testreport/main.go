@@ -54,13 +54,17 @@ type event struct {
 }
 
 type pkgResult struct {
-	name       string
-	pass       int
-	fail       int
-	skip       int
-	elapsed    float64
-	failed     bool
-	failOutput []string // verbatim, in order, for failing tests and build errors
+	name    string
+	pass    int
+	fail    int
+	skip    int
+	elapsed float64
+	failed  bool
+	// failedTests is which tests actually failed. Without it there is no way
+	// to tell a failing test's buffered output from a chatty passing one's,
+	// and every test that logged anything gets relabelled as a failure.
+	failedTests map[string]bool
+	failOutput  []string // verbatim, in order, for failing tests and build errors
 }
 
 // Result is the analysed run.
@@ -107,7 +111,7 @@ func analyseTo(src io.Reader, mustRun []string, progress io.Writer) (*Result, er
 	get := func(name string) *pkgResult {
 		p, ok := res.pkgs[name]
 		if !ok {
-			p = &pkgResult{name: name}
+			p = &pkgResult{name: name, failedTests: map[string]bool{}}
 			res.pkgs[name] = p
 			res.order = append(res.order, name)
 		}
@@ -171,7 +175,8 @@ func analyseTo(src io.Reader, mustRun []string, progress io.Writer) (*Result, er
 			p.pass++
 		case "fail":
 			p.fail++
-			fmt.Fprintf(progress, "FAIL %s.%s\n", shortPkg(e.Package), e.Test)
+			p.failedTests[e.Test] = true
+			fmt.Fprintf(progress, "FAIL %s.%s\n", shortPkg(pkgName), e.Test)
 		case "skip":
 			p.skip++
 		case "output":
@@ -213,7 +218,11 @@ func isNoise(s string) bool {
 		strings.HasPrefix(t, "=== RUN") || strings.HasPrefix(t, "=== PAUSE") ||
 		strings.HasPrefix(t, "=== CONT") || strings.HasPrefix(t, "=== NAME") ||
 		strings.HasPrefix(t, "--- PASS") || strings.HasPrefix(t, "--- SKIP") ||
-		strings.HasPrefix(t, "PASS") || strings.HasPrefix(t, "ok ")
+		strings.HasPrefix(t, "PASS") || strings.HasPrefix(t, "ok ") ||
+		// The report writes its own "--- FAIL: <test>" header and names the
+		// package itself, so the toolchain's copies of both are duplication.
+		strings.HasPrefix(t, "--- FAIL") || t == "FAIL" ||
+		strings.HasPrefix(t, "FAIL\t")
 }
 
 func (r *Result) finalise(mustRun []string) {
@@ -224,10 +233,10 @@ func (r *Result) finalise(mustRun []string) {
 			continue
 		}
 		for _, test := range b.order {
-			lines := b.byTest[test]
-			if !containsFailure(lines) {
-				continue
+			if !p.failedTests[test] {
+				continue // a passing test's output is noise, not a failure
 			}
+			lines := b.byTest[test]
 			p.failOutput = append(p.failOutput, "--- FAIL: "+test)
 			for _, l := range lines {
 				if !isNoise(l) {
@@ -278,18 +287,6 @@ func (r *Result) isMissed(pkg string) bool {
 	return false
 }
 
-func containsFailure(lines []string) bool {
-	for _, l := range lines {
-		if strings.HasPrefix(strings.TrimSpace(l), "--- FAIL") {
-			return true
-		}
-	}
-	// A test can fail without a "--- FAIL" output line reaching this buffer;
-	// the caller only keeps output for tests it already knows failed when the
-	// marker is absent, so fall back to keeping it.
-	return len(lines) > 0
-}
-
 // importPathToPackage strips the " [pkg.test]" qualifier go test appends to a
 // build diagnostic's ImportPath, yielding the package the report keys on.
 func importPathToPackage(ip string) string {
@@ -307,18 +304,29 @@ func shortPkg(pkg string) string {
 	return pkg
 }
 
+// matchesRequirement reports whether pkg IS the package a requirement names.
+// Substring matching is wrong here: "internal/e2e" would be satisfied by
+// "internal/e2e/goroutinesafety", a different package that really does exist,
+// and the requirement would silently evaporate.
+func matchesRequirement(pkg, req string) bool {
+	if req == "" {
+		return false
+	}
+	return pkg == req || shortPkg(pkg) == req || strings.HasSuffix(pkg, "/"+req)
+}
+
 func matchesAny(pkg string, subs []string) bool {
 	for _, s := range subs {
-		if s != "" && strings.Contains(pkg, s) {
+		if matchesRequirement(pkg, s) {
 			return true
 		}
 	}
 	return false
 }
 
-func anyPackageMatches(pkgs []string, sub string) bool {
+func anyPackageMatches(pkgs []string, req string) bool {
 	for _, p := range pkgs {
-		if strings.Contains(p, sub) {
+		if matchesRequirement(p, req) {
 			return true
 		}
 	}
@@ -351,6 +359,12 @@ func (r *Result) Render() string {
 	}
 
 	var pass, fail, skipped, notests int
+	var ranTests, failedTests, skippedTests int
+	for _, p := range r.pkgs {
+		ranTests += p.pass + p.fail
+		failedTests += p.fail
+		skippedTests += p.skip
+	}
 	var sum strings.Builder
 	for _, name := range r.order {
 		p := r.pkgs[name]
@@ -378,7 +392,12 @@ func (r *Result) Render() string {
 		b.WriteString("\n=== PACKAGES NOT PASSING NORMALLY ===\n")
 		b.WriteString(sum.String())
 	}
-	fmt.Fprintf(&b, "\n%d passed, %d failed, %d all-skipped, %d ran no tests\n",
+	// Both axes, because they answer different questions. The defect that
+	// prompted this tool looked like "7885 tests passing" — healthy — while
+	// five PACKAGES had run nothing at all.
+	fmt.Fprintf(&b, "\n%d tests (%d failed, %d skipped) across %d packages\n",
+		ranTests, failedTests, skippedTests, len(r.order))
+	fmt.Fprintf(&b, "%d packages passed, %d failed, %d all-skipped, %d ran no tests\n",
 		pass, fail, skipped, notests)
 	return b.String()
 }

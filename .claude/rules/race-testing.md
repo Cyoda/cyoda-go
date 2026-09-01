@@ -13,7 +13,7 @@ Use `make race` (defined in `Makefile`) so local and CI run exactly the same sco
 
 - **During iteration** (subagent dispatch, single-task verification, between commits):
   use a scoped run like `go test ./internal/foo/...`, or `make test` for the
-  full iteration tier (~90s, unit + cross-backend parity). No `-race`.
+  full iteration tier (unit + cross-backend parity, ~90s cold and ~13s warm). No `-race`.
   Do NOT reach for `go test -short ./...`: it reports `ok` for the parity
   suites and `internal/e2e` while running none of them, so its green means
   less than it appears to. See `scripts/testreport`.

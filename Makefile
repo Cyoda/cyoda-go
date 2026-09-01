@@ -101,18 +101,19 @@ PARITY_SUITES := e2e/parity/memory,e2e/parity/sqlite,e2e/parity/postgres,e2e/par
 preflight:             ## Verify Docker can actually serve the test suites
 	@./scripts/preflight-docker.sh
 
-test: preflight        ## Iteration tier: unit + cross-backend parity (~3 min). Excludes internal/e2e and plugin submodules.
+test: preflight        ## Iteration tier: unit + cross-backend parity (~90s cold, ~13s warm). Excludes internal/e2e and plugin submodules.
 	@echo "==> unit + parity — NOT in this tier: internal/e2e, plugin submodules (see test-full)"
 	@pkgs=$$(go list ./... | grep -v '^github.com/cyoda-platform/cyoda-go/internal/e2e$$'); \
-	go test -json $$pkgs | go run ./scripts/testreport -must-run '$(PARITY_SUITES)'
+	go test -json -timeout 20m $$pkgs | go run ./scripts/testreport -must-run '$(PARITY_SUITES)'
 
 test-full: preflight   ## End-of-deliverable: everything, root + every plugin submodule (~15 min)
 	@echo "==> root module, including internal/e2e"
 	@go test -json -timeout 30m ./... | go run ./scripts/testreport -must-run '$(PARITY_SUITES),internal/e2e'
-	@for m in $(PLUGIN_MODULES); do \
+	@rpt=$$(mktemp -t testreport); go build -o "$$rpt" ./scripts/testreport; \
+	for m in $(PLUGIN_MODULES); do \
 	  echo "==> $$m"; \
-	  (cd $$m && go test -json ./... | go run $(CURDIR)/scripts/testreport) || exit $$?; \
-	done
+	  (cd $$m && go test -json ./... | "$$rpt" -must-run "$$m") || { rm -f "$$rpt"; exit 1; }; \
+	done; rm -f "$$rpt"
 
 # Race detector — run once before opening a PR, not on every iteration.
 # Race instrumentation makes tests 2-10× slower (see .claude/rules/race-testing.md).
@@ -123,7 +124,7 @@ test-full: preflight   ## End-of-deliverable: everything, root + every plugin su
 race:                  ## Run race detector on race-sensitive packages (CI parity; excludes internal/e2e)
 	@pkgs=$$(go list ./... | grep -v '^github.com/cyoda-platform/cyoda-go/internal/e2e$$'); \
 	echo "race-testing $$(echo "$$pkgs" | wc -l | tr -d ' ') packages"; \
-	go test -json -race -timeout=15m $$pkgs | go run ./scripts/testreport
+	go test -json -race -timeout=15m $$pkgs | go run ./scripts/testreport -must-run '$(PARITY_SUITES)'
 
 dev-test: dev-up       ## Run all tests against the local postgres from dev-up
 	$(DEV_PG_ENV) go test -json -count=1 -timeout 30m ./... | go run ./scripts/testreport \

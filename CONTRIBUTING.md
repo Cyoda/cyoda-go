@@ -16,7 +16,7 @@ Every feature follows this flow:
    c. Refactor — all tests stay green
    d. Commit
 3. Run E2E tests:
-   - If Docker socket is available: run directly (go test ./internal/e2e/ -v)
+   - If Docker socket is available: run directly (go test ./internal/e2e/), or `make test-full` for the whole suite
    - If sandboxed without Docker: human operator runs E2E tests and provides feedback
 4. Code review (code-reviewer)
    -> Fix all Critical/Important findings
@@ -37,7 +37,7 @@ Every feature must have tests at the appropriate level before it can be merged.
 **Reconciliation tests** (`test/recon/`, build tag `cyoda_recon`) compare Cyoda-Go responses against Cyoda Cloud to verify API-level compatibility. These are optional and require Cloud credentials.
 
 ```bash
-make test        # iteration tier: unit + cross-backend parity (~3 min)
+make test        # iteration tier: unit + cross-backend parity (~90s cold, ~13s warm)
 make test-full   # everything, root + all three plugin submodules (~15 min)
 make race        # race detector (CI-parity scope) — once before a PR
 go test -tags cyoda_recon ./test/recon/   # reconciliation (optional, needs Cloud)
@@ -62,7 +62,7 @@ and when to run `-race` against `./internal/e2e/...` manually.
 |---------|-------------|
 | `go run ./cmd/cyoda` | Run from source |
 | `go build -o bin/cyoda ./cmd/cyoda` | Build executable |
-| `make test` | Iteration tier: unit + parity (~3 min) |
+| `make test` | Iteration tier: unit + parity (~90s cold, ~13s warm) |
 | `make test-full` | Everything, root + plugin submodules (~15 min) |
 | `make race` | Run tests with race detector (CI-parity scope; excludes `internal/e2e`) |
 | `go test -coverprofile=coverage.out ./...` | Test coverage |

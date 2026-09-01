@@ -29,7 +29,9 @@ When adding or changing user-facing behavior (API responses, workflow semantics,
 add or update E2E tests in `internal/e2e/` to cover the change through the full HTTP stack.
 E2E tests are self-contained: `TestMain` starts a PostgreSQL container via testcontainers-go
 and an in-process `httptest.Server` with JWT auth — no external instance needed.
-Just run `go test ./internal/e2e/... -v` (requires Docker running).
+Run `make test-full`, which includes them (requires Docker running). To iterate on
+E2E alone, `go test ./internal/e2e/...` is fine — but do not read a green from it
+as whole-suite verification, and do not add `-v`.
 For API/gRPC features the bar is **full coverage** — happy path AND every documented
 status/error code on a running backend, plus a cross-backend parity scenario for
 backend-agnostic behavior. See `.claude/rules/test-coverage.md` (the spec's error table is
@@ -150,7 +152,8 @@ indistinguishable from a pass. The make targets pipe through
 `scripts/testreport`, which fails the run when a required suite executed
 nothing and prints failures verbatim instead of burying them in `-v` output.
 
-- **Iteration: `make test`** — unit + cross-backend parity, ~3 min. Excludes
+- **Iteration: `make test`** — unit + cross-backend parity, ~90s cold and
+  ~13s warm against the test cache. Excludes
   `internal/e2e` and the plugin submodules, and says so when it runs.
 - **End of deliverable: `make test-full`** — everything, root + all three
   plugin submodules, ~15 min. This is the Gate 5 command.
@@ -163,7 +166,7 @@ nothing and prints failures verbatim instead of burying them in `-v` output.
 
 **Do not add `-count=1`.** The targets deliberately leave Go's test cache
 enabled, so a re-run only re-executes packages whose inputs changed: measured
-89s cold and 13s warm for `make test`. Forcing `-count=1` throws that away and
+89s cold and 13.3s warm for `make test`. Forcing `-count=1` throws that away and
 is the single easiest way to make verification slow again. Use it only when
 you are specifically hunting a flake.
 - Coverage (root module): `go test -coverprofile=coverage.out ./...` — run

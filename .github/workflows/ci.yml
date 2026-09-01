@@ -91,13 +91,13 @@ jobs:
         working-directory: plugins/memory
         run: |
           set -o pipefail
-          go test -json ./... | "$RUNNER_TEMP/testreport"
+          go test -json ./... | "$RUNNER_TEMP/testreport" -must-run 'plugins/memory'
 
       - name: Run plugins/sqlite tests
         working-directory: plugins/sqlite
         run: |
           set -o pipefail
-          go test -json ./... | "$RUNNER_TEMP/testreport"
+          go test -json ./... | "$RUNNER_TEMP/testreport" -must-run 'plugins/sqlite'
 
       - name: Run plugins/postgres tests
         working-directory: plugins/postgres
@@ -151,7 +151,7 @@ jobs:
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Run shellcheck
-        run: shellcheck scripts/install.sh scripts/dev/run-docker-dev.sh scripts/check-spi-pin-sync.sh scripts/check-spi-pin-sync_test.sh scripts/check-generated-in-sync.sh
+        run: shellcheck scripts/install.sh scripts/dev/run-docker-dev.sh scripts/check-spi-pin-sync.sh scripts/check-spi-pin-sync_test.sh scripts/check-generated-in-sync.sh scripts/preflight-docker.sh
 
   # Continuous security gates (issue #67):
   #   - govulncheck scans the call graph for exploitable stdlib and third-party CVEs,
