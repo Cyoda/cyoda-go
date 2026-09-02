@@ -54,9 +54,9 @@ var (
 // time, matching the convention used by searchPointInTimeBase.
 //
 // In-tx semantics (D11 RYW): when a transaction is active and PointInTime
-// is NOT set, the iterator materializes via getAllTx — the same overlay
-// (entity_versions @ tx.SnapshotTime + tx.Buffer − tx.Deletes) used by
-// GetAll's in-tx branch. Without this branch, grouped-stats would query
+// is NOT set, the iterator streams the same overlay
+// (entity_versions @ tx.SnapshotTime + tx.Buffer − tx.Deletes) through one
+// cursor (tx_overlay.go). Without this branch, grouped-stats would query
 // the `entities` table directly and miss buffered writes / fail to mask
 // buffered deletes, violating read-your-writes promised by spec D11.
 //
@@ -90,27 +90,11 @@ func (s *entityStore) Iterate(
 		return nil, fmt.Errorf("Iterate: ordered iteration inside a transaction is unsupported")
 	}
 
-	// In-tx, non-PIT: materialize via tx-overlay then iterate the slice.
-	// Mirrors plugins/memory/grouped_stats.go's buildSnapshot pattern.
+	// In-tx, non-PIT: one overlay cursor (committed snapshot on readDB merged
+	// with the buffer, deletes suppressed), residual applied inside the
+	// stream — never a materialised merged view. See tx_overlay.go.
 	if tx != nil && opts.PointInTime == nil {
-		tx.OpMu.RLock()
-		defer tx.OpMu.RUnlock()
-		if tx.RolledBack {
-			return nil, fmt.Errorf("Iterate: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
-		}
-		entities, err := s.getAllTx(ctx, tx, model, opts.TrackingRead)
-		if err != nil {
-			return nil, err
-		}
-		prepared, err := spi.Prepare(filter)
-		if err != nil {
-			return nil, fmt.Errorf("Iterate: %w", err)
-		}
-		return &sqliteSliceIter{
-			ctx:      ctx,
-			snapshot: entities,
-			prepared: prepared,
-		}, nil
+		return s.iterateTx(ctx, tx, model, filter, opts.TrackingRead)
 	}
 
 	// Zero-value Filter means "match all" per the spi.Iterable contract.
@@ -159,56 +143,6 @@ func (s *entityStore) Iterate(
 		preparedPostFilter: plan.preparedPostFilter,
 		pointInTime:        pointInTime,
 	}, nil
-}
-
-// sqliteSliceIter walks a pre-built snapshot from getAllTx, applying the
-// filter inside Next() via the prepared filter's Match — the same
-// spi.Prepare(filter) result the streaming path's post-filter uses. Used by
-// the in-tx Iterate branch to honour D11 RYW. Per the SPI iterator contract:
-// Err() is sticky, Close() is idempotent, ctx cancellation is observed.
-type sqliteSliceIter struct {
-	ctx      context.Context
-	snapshot []*spi.Entity
-	prepared spi.PreparedFilter
-	idx      int
-	cur      *spi.Entity
-	err      error
-	closed   bool
-}
-
-func (it *sqliteSliceIter) Next() bool {
-	if it.err != nil || it.closed {
-		return false
-	}
-	if err := it.ctx.Err(); err != nil {
-		it.err = err
-		return false
-	}
-	for it.idx < len(it.snapshot) {
-		e := it.snapshot[it.idx]
-		it.idx++
-		// A zero-value filter prepares to match-all, so no Op guard is needed
-		// here any more: spi.Prepare handles the root asymmetry.
-		if !it.prepared.Match(e.Data, e.Meta) {
-			continue
-		}
-		it.cur = e
-		return true
-	}
-	return false
-}
-
-func (it *sqliteSliceIter) Entity() *spi.Entity { return it.cur }
-func (it *sqliteSliceIter) Err() error          { return it.err }
-
-func (it *sqliteSliceIter) Close() error {
-	if it.closed {
-		return nil
-	}
-	it.closed = true
-	it.snapshot = nil
-	it.cur = nil
-	return nil
 }
 
 // sqliteIter wraps sql.Rows, applying any residual filter inside Next()
