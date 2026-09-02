@@ -2686,23 +2686,24 @@ func TestEngine_CommitBeforeDispatch_TrueBranch_HappyPath(t *testing.T) {
 	// once the handler commits the engine's final TX_post.
 }
 
-// TestEngine_CommitBeforeDispatch_TrueBranch_DoubleWriteIsLastWriterWins
-// documents (does NOT endorse) the last-writer-wins outcome when a
-// startNewTxOnDispatch=true processor writes the cascade-anchor entity
-// itself AND returns mutations for it.
+// TestEngine_CommitBeforeDispatch_TrueBranch_DoubleWriteConflicts pins the
+// outcome when a startNewTxOnDispatch=true processor writes the
+// cascade-anchor entity itself AND returns mutations for it.
 //
-// Per spec §10.3, this pattern is forbidden by existing best-practice
-// across SYNC, ASYNC_SAME_TX, and COMMIT_BEFORE_DISPATCH (true). The engine
-// does NOT detect or prevent the violation — the processor's intra-TX_post
-// write is silently overwritten by the engine's apply-result CAS.
+// Per spec §10.3 this pattern is forbidden by existing best-practice across
+// SYNC, ASYNC_SAME_TX and COMMIT_BEFORE_DISPATCH (true). The engine applies
+// its result with a CAS against TX_pre's transaction ID, and a write
+// compares against its own transaction's view: the processor's intra-TX_post
+// write has already superseded that ID, so the CAS conflicts. The violation
+// is refused rather than resolved last-writer-wins.
 //
-// This test exists so the LWW outcome is pinned down (not "undefined")
-// and so a future engine change that accidentally REVERSES the order
-// (processor's write wins) would surface as a test failure for review.
+// This is the answer on every backend. Postgres has always given it — its
+// CAS reads the transaction's own connection, so the processor's uncommitted
+// row is visible — and memory and sqlite now do too.
 //
-// Asserts the in-memory entity after Execute, NOT durable state: TX_post
-// is left open by the engine pending the Task 12/13 handler refactor.
-func TestEngine_CommitBeforeDispatch_TrueBranch_DoubleWriteIsLastWriterWins(t *testing.T) {
+// Asserts the error from Execute, NOT durable state: TX_post is rolled back
+// by the segment guard on this path.
+func TestEngine_CommitBeforeDispatch_TrueBranch_DoubleWriteConflicts(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
@@ -2787,19 +2788,15 @@ func TestEngine_CommitBeforeDispatch_TrueBranch_DoubleWriteIsLastWriterWins(t *t
 		Data: []byte(`{"x":0}`),
 	}
 
-	if _, err := engine.Execute(txCtx, entity, ""); err != nil {
-		t.Fatalf("Execute failed: %v", err)
+	_, err = engine.Execute(txCtx, entity, "")
+	if !errors.Is(err, spi.ErrConflict) {
+		t.Fatalf("Execute: err = %v, want a conflict — the processor's intra-TX_post write supersedes the ID the apply-result CAS compares against", err)
 	}
-
-	// Engine's apply-result wins: the in-memory entity carries the engine's
-	// data, NOT the processor's intra-TX_post write.
-	if string(entity.Data) != `{"engine_applied":true}` {
-		t.Errorf("LWW expected engine apply-result to win, got: %s", entity.Data)
+	// The conflict landed past TX_pre's commit, so a batching caller must not
+	// try to isolate this item into the transaction it would continue in.
+	if !errors.Is(err, ErrPostSegmentConflict) {
+		t.Errorf("Execute: err = %v, want it to carry ErrPostSegmentConflict", err)
 	}
-
-	// TODO(issue-27, Task 13): once the handler refactor commits TX_post,
-	// add a durable-read assertion confirming the engine's data is what hits
-	// the committed store. Until then, only in-memory entity is asserted.
 }
 
 // TestEngine_CommitBeforeDispatch_AuditEventPlacement pins down spec §8's

@@ -1527,7 +1527,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   buffered own-write supersedes the caller's expected transaction ID; memory
   and sqlite compared against the committed row instead and let the save
   through, silently discarding the buffered version. Postgres already answered
-  this way.
+  this way. One workflow path changes with it on memory and sqlite: a
+  `COMMIT_BEFORE_DISPATCH` processor that writes the cascade-anchor entity
+  itself inside the dispatch transaction — a pattern the processor contract
+  already forbids — now fails the transition with a conflict instead of having
+  its write silently overwritten by the engine's apply-result.
 - sqlite: in-transaction `Iterate`, `GetPage`, `Count`, `CountByState` and
   `DeleteAll` no longer materialise the model's merged view — one overlay
   cursor serves them all, and counts read no payload bytes.
