@@ -307,6 +307,15 @@ func (s *entityStore) saveDirectly(ctx context.Context, entity *spi.Entity) (int
 	_ = s.tm.acquireCommitGate(context.Background())
 	defer s.tm.releaseCommitGate()
 
+	return s.saveDirectlyLocked(ctx, entity)
+}
+
+// saveDirectlyLocked is saveDirectly's body, with the commit gate already held
+// by the caller. The gate is a one-slot channel and is NOT reentrant, so a
+// caller that needs the gate to span more than the write itself — the
+// non-transactional CompareAndSave, whose check must be indivisible from its
+// write — takes the gate once and calls this instead of saveDirectly.
+func (s *entityStore) saveDirectlyLocked(ctx context.Context, entity *spi.Entity) (int64, error) {
 	cp := copyEntity(entity)
 	cp.Meta.TenantID = s.tenantID
 	// Stamp under the monotonic floor Commit uses (nextSubmitTime), not the
@@ -443,7 +452,18 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		return 0, nil
 	}
 
-	// Non-transaction: check CAS then save.
+	// Non-transaction: check CAS then save, both under the commit gate. The
+	// check and the write must be indivisible — the writer connection
+	// serialises the writes alone, so a check taken outside the gate leaves a
+	// window in which every concurrent caller naming the same expected
+	// transaction ID reads it, passes, and writes, each silently clobbering
+	// the last. Holding the gate across both makes exactly one caller the
+	// winner and every other one ErrConflict. The gate is not reentrant, so
+	// the write goes through saveDirectlyLocked, not saveDirectly. Background
+	// context, as in saveDirectly: a write that has begun must finish.
+	_ = s.tm.acquireCommitGate(context.Background())
+	defer s.tm.releaseCommitGate()
+
 	var currentTxID sql.NullString
 	err := s.db.QueryRowContext(ctx,
 		"SELECT json_extract(json(meta), '$.transaction_id') FROM entities WHERE tenant_id = ? AND entity_id = ? AND NOT deleted",
@@ -455,7 +475,7 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		return 0, spi.ErrConflict
 	}
 
-	return s.saveDirectly(ctx, entity)
+	return s.saveDirectlyLocked(ctx, entity)
 }
 
 func (s *entityStore) Get(ctx context.Context, entityID string) (*spi.Entity, error) {
