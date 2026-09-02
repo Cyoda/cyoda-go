@@ -310,6 +310,13 @@ func (m *transactionManager) Begin(ctx context.Context) (string, context.Context
 	// SnapshotTime" imply "rows visible" on every connection. Lock order
 	// commitGate → mu, the order Commit uses.
 	//
+	// The snapshot is then RESERVED as the new floor. Reading the floor is
+	// not enough: with the floor below the clock (a quiet database leaves it
+	// at zero) the snapshot is the raw clock value, and the next write stamps
+	// max(now, floor+1) — the same microsecond — which the visibility rule
+	// (submit_time <= SnapshotTime) counts as visible to a transaction that
+	// began before it. Reserving makes the next stamp strictly later.
+	//
 	// The wait honours the caller's context: a client that has given up gets
 	// its own context error rather than a transaction it no longer wants.
 	if err := func() error {
@@ -323,6 +330,7 @@ func (m *transactionManager) Begin(ctx context.Context) (string, context.Context
 			nowMicro = m.lastSubmitTime
 		}
 		tx.SnapshotTime = time.UnixMicro(nowMicro)
+		m.lastSubmitTime = nowMicro
 		m.active[txID] = tx
 		return nil
 	}(); err != nil {

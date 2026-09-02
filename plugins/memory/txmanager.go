@@ -302,6 +302,13 @@ func (m *TransactionManager) Begin(ctx context.Context) (string, context.Context
 	// several writes inside one clock tick each bump it by a microsecond, and
 	// a test clock can be frozen outright — and the snapshot would then sit
 	// at or above a write it must not see.
+	//
+	// The snapshot is then RESERVED as the new floor. Reading the floor is
+	// not enough: with the floor below the clock (a quiet factory leaves it
+	// at zero) the snapshot is the raw clock value, and the next write stamps
+	// max(now, floor+1µs) — the same instant — which the visibility rule
+	// (submitTime <= SnapshotTime) counts as visible to a transaction that
+	// began before it. Reserving makes the next stamp strictly later.
 	func() {
 		m.mu.Lock()
 		defer m.mu.Unlock()
@@ -310,6 +317,7 @@ func (m *TransactionManager) Begin(ctx context.Context) (string, context.Context
 			now = m.lastSubmitTime
 		}
 		tx.SnapshotTime = now
+		m.lastSubmitTime = now
 		m.active[txID] = tx
 		m.txSnapshotSeq[txID] = m.commitSeq
 	}()
