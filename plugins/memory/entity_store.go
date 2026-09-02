@@ -679,19 +679,19 @@ func (s *EntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 		if tx.RolledBack {
 			return fmt.Errorf("DeleteAll: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
+		if tx.Closed {
+			return fmt.Errorf("DeleteAll: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
+		}
 		// Get all entities for the model (snapshot), mark each as deleted
 		// in tx. Wrap the entityMu hold in an IIFE so the unlock runs via
-		// defer.
+		// defer. We only need each entity's id, so the pointer snapshot
+		// (no payload deep-copy) is enough.
 		var mainEntities []*spi.Entity
-		var snapErr error
 		func() {
 			s.factory.entityMu.RLock()
 			defer s.factory.entityMu.RUnlock()
-			mainEntities, snapErr = s.getAllSnapshotUnlocked(ctx, modelRef, tx.SnapshotTime)
+			mainEntities = s.getAllSnapshotPointersUnlocked(modelRef, tx.SnapshotTime)
 		}()
-		if snapErr != nil {
-			return fmt.Errorf("DeleteAll: %w", snapErr)
-		}
 
 		// Attribution captured once for this call (this caller, this ctx)
 		// and applied to every entity ID this DeleteAll stages — same
