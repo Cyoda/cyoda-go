@@ -90,3 +90,10 @@ Security fix: d251e83 (Save/CompareAndSave/Delete refuse a committed tx on both 
 Security-fix re-review: addressed, no new breakage.
 Parked — Ruling: Get/GetAsAt/Exists carry no tx.Closed guard (pre-existing, both plugins). After a commit the buffer content equals what was flushed, so their answers are correct; GetAsAt is committed-only by contract. Guard-set uniformity for reads is a follow-up (PR 2's spitest OpAfterCommit case can cover it). Cost if wrong: none observable.
 Final verification at 6246eab: make test-full green (root 10171/0, memory 449/0, sqlite 606/0, postgres 251/0), make race green (9296/0).
+
+## Post-PR sweep (2026-09-02)
+
+Paul's ruling: a finding is fixed in the PR or gets an issue; "parked" in a PR body is not tracking. Four of the five residuals were small and were swept in (a21de04 direct-write submit-time floor; 805bc99 context-aware commit gate; 82f3187 Get/Exists refuse a committed tx; e8cda4a DeleteAll drain-ordering comment); plugins re-pinned (8d50e35).
+Dropped (no defect, no action): the read-set written under the transaction's shared lock — the engine serialises joined operations per transaction through txgate, so the SPI's application-side contract is met. The only follow-on is a doc clarification of TransactionManager.Join in the SPI, added to Plan 2.
+Dropped (no action worth its cost): mechanical enforcement of "no nested reader read inside an in-transaction iteration" on sqlite; the rule is documented at the pool sizing and both engine consumers comply.
+Known nuance, not a defect: under a frozen test clock sqlite advances tied submit times by one microsecond (its commits always did; direct writes now match), memory keeps ties ordered by sequence; nothing asserts cross-backend equality of stamped times.
