@@ -197,7 +197,48 @@ func TestTxIterate_SameTxDeleteWhileOpen_NoDeadlock(t *testing.T) {
 	case <-timeoutCh(t):
 		t.Fatal("Delete deadlocked behind the open iterator")
 	}
-	_ = drainIDs(t, it)
+	// The stream is a snapshot taken at open, so the delete staged afterwards
+	// does not retract e04 from it.
+	got := append([]string{"e00"}, drainIDs(t, it)...)
+	want := []string{"e00", "e01", "e02", "e03", "e04"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("ids = %v, want %v", got, want)
+	}
+}
+
+// A concurrent Rollback ends the iteration even when TrackingRead is off:
+// yielding the buffer of a transaction that has been thrown away would be a
+// wrong-but-available answer.
+func TestTxIterate_RollbackWhileOpen_EndsWithRolledBack(t *testing.T) {
+	f, tm := newAttrFactory(t)
+	ctx := attrCtx("tenant-ovl", "u1", spi.PrincipalUser)
+	ref := spi.ModelRef{EntityName: "m-ovl-rb", ModelVersion: "1"}
+	store, _ := f.EntityStore(ctx)
+	seedN(t, store, ctx, ref, 3)
+
+	txID, txCtx, _ := tm.Begin(ctx)
+	if _, err := store.Save(txCtx, &spi.Entity{
+		Meta: spi.EntityMeta{ID: "z00", TenantID: "tenant-ovl", ModelRef: ref, State: "open"},
+		Data: []byte(`{}`),
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	it, err := iterable(t, store).Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{})
+	if err != nil {
+		t.Fatalf("Iterate: %v", err)
+	}
+	if !it.Next() {
+		t.Fatalf("first Next: false, err=%v", it.Err())
+	}
+	if err := tm.Rollback(txCtx, txID); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	for it.Next() {
+	}
+	_ = it.Close()
+	if err := it.Err(); !errors.Is(err, spi.ErrTxRolledBack) {
+		t.Fatalf("Err after rollback = %v, want ErrTxRolledBack", err)
+	}
 }
 
 // Commit while an iterator is open ends the iteration with

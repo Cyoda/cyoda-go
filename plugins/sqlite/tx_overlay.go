@@ -16,18 +16,18 @@ const (
 	// projectFull reads the whole row: id, model, version, data, meta, submit_time.
 	projectFull txOverlayProjection = iota
 	// projectIDState reads entity_id and the meta state only — no payload
-	// bytes cross the driver. Used by the in-tx counts.
-	//
-	// Because it does not read data, it cannot evaluate a residual
-	// post-filter: openTxOverlay refuses the combination rather than
-	// silently counting rows the residual would have excluded.
+	// bytes cross the driver. Used by the in-tx counts, which pass a
+	// zero-value filter: with no payload there is nothing for a residual to
+	// evaluate against, so the projection is valid only for a filter that
+	// leaves none.
 	projectIDState
 )
 
 // txOverlay is the merged (committed snapshot ∪ transaction buffer − staged
-// deletes) pull-stream for one model inside one transaction. It is the ONE
-// in-transaction read path: Iterate, GetPage, Count and CountByState all
-// consume it, so they cannot disagree on what the transaction sees.
+// deletes) pull-stream for one model inside one transaction. It is meant to
+// be the ONE in-transaction read path, so the reads cannot disagree on what
+// the transaction sees: Iterate consumes it; GetPage and the in-transaction
+// counts adopt it next.
 //
 // The committed cursor runs on readDB, never on the single writer connection:
 // a second statement on the writer while a cursor is open would deadlock,
@@ -47,18 +47,16 @@ type txOverlay struct {
 }
 
 // openTxOverlay opens the stream. Caller holds tx.OpMu.RLock and has checked
-// tx.RolledBack. Entities are yielded in byte-wise entity-ID order.
+// both tx.RolledBack and tx.Closed. Entities are yielded in byte-wise
+// entity-ID order.
+//
+// Projection precondition: projectIDState callers pass a zero-value filter;
+// the residual is not applied on that projection, which reads no payload for
+// it to evaluate against.
 func (s *entityStore) openTxOverlay(ctx context.Context, tx *spi.TransactionState, modelRef spi.ModelRef, filter spi.Filter, proj txOverlayProjection) (*txOverlay, error) {
 	plan, err := planFor(filter)
 	if err != nil {
 		return nil, err
-	}
-	// The id/state projection reads no payload, so evaluateFilter cannot run
-	// over its rows. Declining is defence-in-depth: today's only caller passes
-	// the zero filter (which never leaves a residual), and a future one that
-	// forgets that must get an error, not an over-count.
-	if proj == projectIDState && plan.preparedPostFilter != nil {
-		return nil, fmt.Errorf("tx overlay: id/state projection cannot evaluate a residual filter")
 	}
 	// planFor's success already ran spi.Prepare on this filter; this call
 	// only obtains the prepared value for the buffer side.
@@ -89,7 +87,17 @@ func (s *entityStore) openTxOverlay(ctx context.Context, tx *spi.TransactionStat
 	for id := range tx.Deletes {
 		suppressed[id] = struct{}{}
 	}
+	bufI := 0
 	for id, e := range tx.Buffer {
+		// Amortised cancellation check: this loop is pure Go, so an expiring
+		// ctx has no other signal to abort it — checked every 1024 entries
+		// (true at index 0), matching searchTxOverlay's buffer walk.
+		if bufI&1023 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		bufI++
 		if e.Meta.ModelRef != modelRef {
 			continue
 		}
@@ -119,7 +127,7 @@ func (s *entityStore) openTxOverlay(ctx context.Context, tx *spi.TransactionStat
 		for rows.Next() {
 			if scanned&1023 == 0 {
 				if err := ctx.Err(); err != nil {
-					return nil, false, err
+					return nil, false, fmt.Errorf("Iterate: %w", err)
 				}
 			}
 			scanned++
@@ -139,8 +147,11 @@ func (s *entityStore) openTxOverlay(ctx context.Context, tx *spi.TransactionStat
 			return e, true, nil
 		}
 		if err := rows.Err(); err != nil {
+			// Prefer ctx.Err() over the raw driver error — a cancelled query
+			// surfaces as a driver-level failure, and the caller wants the
+			// deterministic cause.
 			if cErr := ctx.Err(); cErr != nil {
-				return nil, false, cErr
+				return nil, false, fmt.Errorf("Iterate: %w", cErr)
 			}
 			return nil, false, fmt.Errorf("row iteration: %w", err)
 		}
@@ -207,9 +218,14 @@ func (s *entityStore) iterateTx(ctx context.Context, tx *spi.TransactionState, m
 		if tx.Closed {
 			return fmt.Errorf("Iterate: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
 		}
+		// Own-writes for THIS model only: the overlay's suppression set is
+		// model-scoped, so an id buffered under another model never shadows a
+		// row of this stream and must stay recordable.
 		bufferedIDs = make(map[string]struct{}, len(tx.Buffer))
-		for id := range tx.Buffer {
-			bufferedIDs[id] = struct{}{}
+		for id, e := range tx.Buffer {
+			if e.Meta.ModelRef == model {
+				bufferedIDs[id] = struct{}{}
+			}
 		}
 		var oErr error
 		overlay, oErr = s.openTxOverlay(ctx, tx, model, filter, projectFull)
@@ -224,11 +240,14 @@ func (s *entityStore) iterateTx(ctx context.Context, tx *spi.TransactionState, m
 	return &sqliteTxIter{ctx: ctx, tx: tx, overlay: overlay, trackingRead: trackingRead, bufferedIDs: bufferedIDs}, nil
 }
 
-// sqliteTxIter adapts a txOverlay to spi.Iterator. With trackingRead, each
-// yielded COMMITTED entity is recorded into the read-set under a short
-// tx.OpMu.RLock that also checks the transaction is still open: Commit takes
-// OpMu.Lock between two yields, and an iterator must not record into a
-// transaction that has since closed.
+// sqliteTxIter adapts a txOverlay to spi.Iterator. EVERY yield first re-checks
+// the transaction under a short tx.OpMu.RLock: Commit and Rollback take
+// OpMu.Lock between two yields, and an iterator must neither keep serving a
+// view of a transaction that has since closed nor record into one. The check
+// is unconditional — a non-tracking iterator would otherwise go on yielding
+// buffered writes that a concurrent Rollback has thrown away. With
+// trackingRead the same critical section records the id, for committed
+// entities only (own-writes are already in the write-set).
 type sqliteTxIter struct {
 	ctx          context.Context
 	tx           *spi.TransactionState
@@ -256,19 +275,19 @@ func (it *sqliteTxIter) Next() bool {
 	if !ok {
 		return false
 	}
-	if it.trackingRead {
-		if _, buffered := it.bufferedIDs[e.Meta.ID]; !buffered {
-			if err := it.record(e.Meta.ID); err != nil {
-				it.err = err
-				return false
-			}
-		}
+	if err := it.checkAndRecord(e.Meta.ID); err != nil {
+		it.err = err
+		return false
 	}
 	it.cur = e
 	return true
 }
 
-func (it *sqliteTxIter) record(id string) error {
+// checkAndRecord is the per-yield critical section: the transaction must still
+// be open for this yield to be served at all, and — when tracking — the
+// committed id is recorded while the same lock is held, so a Commit cannot
+// slip in between the check and the write.
+func (it *sqliteTxIter) checkAndRecord(id string) error {
 	it.tx.OpMu.RLock()
 	defer it.tx.OpMu.RUnlock()
 	if it.tx.RolledBack {
@@ -276,6 +295,12 @@ func (it *sqliteTxIter) record(id string) error {
 	}
 	if it.tx.Closed {
 		return fmt.Errorf("Iterate: %w (txID=%s)", spi.ErrTxAlreadyCommitted, it.tx.ID)
+	}
+	if !it.trackingRead {
+		return nil
+	}
+	if _, buffered := it.bufferedIDs[id]; buffered {
+		return nil
 	}
 	it.tx.ReadSet[id] = true
 	return nil
