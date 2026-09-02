@@ -1,5 +1,8 @@
 # SQLite Plugin — `*spi.TransactionState` Locking Audit
 
+Superseded: `commitMu` was replaced by a context-aware commit gate (see
+`plugins/sqlite/txmanager.go`); this audit describes the state as of May 2026.
+
 Issue #199 PR-C1. Parallels `2026-05-memory-plugin-tx-locking.md` for the
 sqlite plugin. Covers every method in `plugins/sqlite/` that touches
 `*spi.TransactionState` post-fix, plus the asymmetries with the memory
