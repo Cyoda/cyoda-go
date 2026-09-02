@@ -177,6 +177,9 @@ func (s *EntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		if tx.RolledBack {
 			return 0, fmt.Errorf("Save: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
+		if tx.Closed {
+			return 0, fmt.Errorf("Save: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
+		}
 		// Transaction mode: write to buffer, not main store. Stage any
 		// value this overwrites (see stageSuperseded's godoc) BEFORE
 		// overwriting tx.Buffer, so a same-tx double-save of the same
@@ -215,6 +218,9 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return 0, fmt.Errorf("CompareAndSave: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
+		}
+		if tx.Closed {
+			return 0, fmt.Errorf("CompareAndSave: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
 		}
 		// A write compares against the transaction's own view: a same-tx
 		// delete is the current latest state, so a compare-and-save against
@@ -615,6 +621,9 @@ func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return fmt.Errorf("Delete: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
+		}
+		if tx.Closed {
+			return fmt.Errorf("Delete: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
 		}
 		// Check existence: buffer first, then committed store. Wrap the
 		// entityMu hold in an IIFE so the unlock runs via defer.

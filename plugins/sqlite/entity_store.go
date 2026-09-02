@@ -248,6 +248,9 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		if tx.RolledBack {
 			return 0, fmt.Errorf("Save: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
+		if tx.Closed {
+			return 0, fmt.Errorf("Save: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
+		}
 		// Transaction mode: write to buffer, not main store.
 		cp := copyEntity(entity)
 		cp.Meta.TenantID = s.tenantID
@@ -391,6 +394,9 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return 0, fmt.Errorf("CompareAndSave: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
+		}
+		if tx.Closed {
+			return 0, fmt.Errorf("CompareAndSave: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
 		}
 		// A write compares against the transaction's own view. A same-tx
 		// delete is the current latest state of this entity, so a
@@ -666,6 +672,9 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return fmt.Errorf("Delete: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
+		}
+		if tx.Closed {
+			return fmt.Errorf("Delete: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
 		}
 		// Check existence: buffer first, then committed store.
 		if _, inBuffer := tx.Buffer[entityID]; !inBuffer {
