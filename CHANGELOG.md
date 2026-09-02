@@ -1511,6 +1511,20 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   successful parse) a correct "no subscript" / "not pushable" answer
   requires now fails the check instead of being treated as satisfying it.
 
+- sqlite: `Begin` now waits for an in-flight commit's flush before flooring its
+  snapshot time, so a transaction begun mid-commit cannot miss rows a commit
+  it is ordered after has already claimed.
+- sqlite and memory: `CompareAndSave` after a same-transaction `Delete` returns
+  a conflict on every backend (memory and sqlite previously resurrected the
+  entity at commit); `Save` after `Delete` clears the delete's attribution too.
+- sqlite: in-transaction `Iterate`, `GetPage`, `Count`, `CountByState` and
+  `DeleteAll` no longer materialise the model's merged view — one overlay
+  cursor serves them all, and counts read no payload bytes.
+- memory: `Search` no longer copies every entity's payload before filtering;
+  in-transaction `Iterate` records the read-set per yield instead of the whole
+  model at open; grouped stats records nothing in a transaction, matching
+  sqlite and postgres.
+
 ## [0.8.3] — 2026-07-27
 
 ### Added
