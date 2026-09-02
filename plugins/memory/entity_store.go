@@ -792,15 +792,55 @@ func (s *EntityStore) Exists(ctx context.Context, entityID string) (bool, error)
 	return !versions[len(versions)-1].deleted, nil
 }
 
+// countTx tallies the transaction's view of modelRef without copying: the
+// committed pointer snapshot at tx.SnapshotTime minus staged deletes, plus
+// buffered own-writes of the model. Caller holds tx.OpMu.RLock.
+func (s *EntityStore) countTx(ctx context.Context, tx *spi.TransactionState, modelRef spi.ModelRef, tally func(state string)) error {
+	var committed []*spi.Entity
+	func() {
+		s.factory.entityMu.RLock()
+		defer s.factory.entityMu.RUnlock()
+		committed = s.getAllSnapshotPointersUnlocked(modelRef, tx.SnapshotTime)
+	}()
+	for i, e := range committed {
+		if i&1023 == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
+		if tx.Deletes[e.Meta.ID] {
+			continue
+		}
+		if _, buffered := tx.Buffer[e.Meta.ID]; buffered {
+			continue // the buffered version is tallied below
+		}
+		tally(e.Meta.State)
+	}
+	for id, e := range tx.Buffer {
+		if e.Meta.ModelRef != modelRef || tx.Deletes[id] {
+			continue
+		}
+		tally(e.Meta.State)
+	}
+	return nil
+}
+
 func (s *EntityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, error) {
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
-		// Use the same logic as GetAll to get the merged view, then count.
-		all, err := s.GetAll(ctx, modelRef)
-		if err != nil {
-			return 0, err
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
+		if tx.RolledBack {
+			return 0, fmt.Errorf("Count: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
-		return int64(len(all)), nil
+		if tx.Closed {
+			return 0, fmt.Errorf("Count: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
+		}
+		var n int64
+		if err := s.countTx(ctx, tx, modelRef, func(string) { n++ }); err != nil {
+			return 0, fmt.Errorf("Count: %w", err)
+		}
+		return n, nil
 	}
 
 	// Non-transaction: existing behavior.
@@ -840,20 +880,25 @@ func (s *EntityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, s
 
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
-		// In-tx: use GetAll's merged-view logic (matches existing Count's in-tx fallback).
-		all, err := s.GetAll(ctx, modelRef)
-		if err != nil {
-			return nil, err
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
+		if tx.RolledBack {
+			return nil, fmt.Errorf("CountByState: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
+		}
+		if tx.Closed {
+			return nil, fmt.Errorf("CountByState: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
 		}
 		result := make(map[string]int64)
-		for _, e := range all {
-			st := e.Meta.State
+		err := s.countTx(ctx, tx, modelRef, func(st string) {
 			if filter != nil {
 				if _, ok := filter[st]; !ok {
-					continue
+					return
 				}
 			}
 			result[st]++
+		})
+		if err != nil {
+			return nil, fmt.Errorf("CountByState: %w", err)
 		}
 		return result, nil
 	}
