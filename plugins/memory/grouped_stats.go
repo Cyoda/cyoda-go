@@ -92,11 +92,20 @@ func (s *EntityStore) Iterate(
 	if err != nil {
 		return nil, fmt.Errorf("Iterate: %w", err)
 	}
+	// A point-in-time read is committed-only and ignores the ambient
+	// transaction (buildSnapshot's PIT path already bypasses the overlay), so
+	// the iterator carries no transaction either: no per-yield tx check, no
+	// recording. tx, trackingRead and bufferedIDs are meaningful only for an
+	// in-transaction, non-PIT iteration.
+	var tx *spi.TransactionState
+	if opts.PointInTime == nil {
+		tx = spi.GetTransaction(ctx)
+	}
 	return &memoryIter{
 		snapshot:     snapshot,
 		prepared:     prepared,
 		ctx:          ctx,
-		tx:           spi.GetTransaction(ctx),
+		tx:           tx,
 		trackingRead: opts.TrackingRead,
 		bufferedIDs:  bufferedIDs,
 	}, nil

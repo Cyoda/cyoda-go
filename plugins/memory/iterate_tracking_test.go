@@ -133,3 +133,49 @@ func TestIterate_InTx_RollbackWhileOpen_EndsWithRolledBack(t *testing.T) {
 		t.Fatalf("Err after rollback = %v, want ErrTxRolledBack", err)
 	}
 }
+
+// A point-in-time iteration is committed-only and ignores the ambient
+// transaction: it yields neither the buffer's own-writes nor the read-set, and
+// a Rollback under it does not end the drain — the same routing sqlite applies
+// by sending a PIT read away from its transaction iterator.
+func TestIterate_InTx_PIT_IgnoresTransaction(t *testing.T) {
+	f, tm := newTxManager(t)
+	ctx := tenantCtx("tenant-it")
+	ref := spi.ModelRef{EntityName: "m-it-pit", ModelVersion: "1"}
+	store, _ := f.EntityStore(ctx)
+	seedStates(t, store, ctx, ref, "open", "open", "open")
+
+	txID, txCtx, _ := tm.Begin(ctx)
+	tx := spi.GetTransaction(txCtx)
+	snapshotTime := tx.SnapshotTime
+	if _, err := store.Save(txCtx, &spi.Entity{Meta: spi.EntityMeta{ID: "z00", TenantID: "tenant-it", ModelRef: ref, State: "open"}, Data: []byte(`{}`)}); err != nil {
+		t.Fatalf("buffered Save: %v", err)
+	}
+
+	it, err := store.(spi.Iterable).Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{PointInTime: &snapshotTime, TrackingRead: true})
+	if err != nil {
+		t.Fatalf("Iterate: %v", err)
+	}
+	var yielded []string
+	if !it.Next() {
+		t.Fatalf("first Next: false, err=%v", it.Err())
+	}
+	yielded = append(yielded, it.Entity().Meta.ID)
+	if err := tm.Rollback(txCtx, txID); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	for it.Next() {
+		yielded = append(yielded, it.Entity().Meta.ID)
+	}
+	_ = it.Close()
+	if err := it.Err(); err != nil {
+		t.Fatalf("Err: %v, want nil (a PIT read does not observe the transaction)", err)
+	}
+	sort.Strings(yielded)
+	if fmt.Sprint(yielded) != fmt.Sprint([]string{"e00", "e01", "e02"}) {
+		t.Fatalf("yielded = %v, want [e00 e01 e02] (committed only)", yielded)
+	}
+	if got := readSetIDs(tx); len(got) != 0 {
+		t.Fatalf("PIT iteration recorded %v into the read-set; must record nothing", got)
+	}
+}
