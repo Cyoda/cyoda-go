@@ -47,6 +47,13 @@ type EntityStore struct {
 	factory *StoreFactory
 }
 
+// unstageDelete removes a staged delete for id from BOTH maps the delete
+// occupies (Deletes and DeleteAttribution always cover the same key set).
+func unstageDelete(tx *spi.TransactionState, id string) {
+	delete(tx.Deletes, id)
+	delete(tx.DeleteAttribution, id)
+}
+
 func copyEntity(e *spi.Entity) *spi.Entity {
 	cp := &spi.Entity{Meta: e.Meta, Data: make([]byte, len(e.Data))}
 	copy(cp.Data, e.Data)
@@ -180,10 +187,10 @@ func (s *EntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		tx.WriteSet[entity.Meta.ID] = true
 		// If the entity was previously marked for deletion in this tx, unmark it
 		// (last-write-wins: Save-after-Delete → present). Keeps tx.Buffer and
-		// tx.Deletes mutually exclusive, the invariant txmanager.Commit assumes
-		// and that GetAll / Search / commit all rely on to agree. Mirrors
-		// plugins/sqlite/entity_store.go Save.
-		delete(tx.Deletes, entity.Meta.ID)
+		// tx.Deletes/DeleteAttribution mutually exclusive, the invariant
+		// txmanager.Commit assumes and that GetAll / Search / commit all rely
+		// on to agree. Mirrors plugins/sqlite/entity_store.go Save.
+		unstageDelete(tx, entity.Meta.ID)
 		// Capture unique keys at buffer time (last-write-wins, matching tx.Buffer
 		// semantics). Commit sees ONE ctx but a mixed-model batch may buffer
 		// entities with different key contexts, so keys must be stored per-entity.
@@ -208,6 +215,12 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return 0, fmt.Errorf("CompareAndSave: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
+		}
+		// A write compares against the transaction's own view: a same-tx
+		// delete is the current latest state, so a compare-and-save against
+		// it conflicts. Same answer postgres gives.
+		if tx.Deletes[entity.Meta.ID] {
+			return 0, spi.ErrConflict
 		}
 		// Check CAS against main store (committed data), not buffer.
 		// Hold entityMu.RLock through both version check AND buffer write
