@@ -26,8 +26,8 @@ const (
 // txOverlay is the merged (committed snapshot ∪ transaction buffer − staged
 // deletes) pull-stream for one model inside one transaction. It is meant to
 // be the ONE in-transaction read path, so the reads cannot disagree on what
-// the transaction sees: Iterate consumes it; GetPage and the in-transaction
-// counts adopt it next.
+// the transaction sees: Iterate, GetPage, Count, and CountByState all
+// consume it.
 //
 // The committed cursor runs on readDB, never on the single writer connection:
 // a second statement on the writer while a cursor is open would deadlock,
@@ -168,6 +168,27 @@ func (s *entityStore) openTxOverlay(ctx context.Context, tx *spi.TransactionStat
 		pull: spi.MergeOrdered(next, adds, isSuppressed, cmp),
 		rows: rows,
 	}, nil
+}
+
+// countTx tallies the overlay with the id/state projection: no payload
+// bytes are read, and the answer is by construction the view Iterate and
+// GetPage return. Caller holds tx.OpMu.RLock.
+func (s *entityStore) countTx(ctx context.Context, tx *spi.TransactionState, modelRef spi.ModelRef, tally func(state string)) error {
+	overlay, err := s.openTxOverlay(ctx, tx, modelRef, spi.Filter{}, projectIDState)
+	if err != nil {
+		return err
+	}
+	defer overlay.Close()
+	for {
+		e, ok, err := overlay.pull()
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		tally(e.Meta.State)
+	}
 }
 
 // Close releases the committed cursor. Idempotent.

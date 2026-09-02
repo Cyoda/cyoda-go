@@ -52,8 +52,8 @@ func iterable(t *testing.T, store spi.EntityStore) spi.Iterable {
 }
 
 // The in-tx iterator yields the committed snapshot merged with the buffer,
-// minus staged deletes, in entity-ID order — the same set getAllTx produced,
-// now as one cursor.
+// minus staged deletes, in entity-ID order — the same merged view GetAll
+// (also on the overlay) produces, now as one cursor.
 func TestTxIterate_MergedViewInIDOrder(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-ovl", "u1", spi.PrincipalUser)

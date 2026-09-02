@@ -479,8 +479,8 @@ func (s *entityStore) getDirect(ctx context.Context, entityID string) (*spi.Enti
 //
 // Snapshot-time convention: submit_time <= snapshotTime (non-strict).
 // This matches the memory plugin's !v.submitTime.After(snapshotTime) and is
-// used consistently across getSnapshot, getAllTx, DeleteAll tx,
-// searchPointInTimeBase, GetAsAt, and GetAllAsAt.
+// used consistently across getSnapshot, the tx overlay (tx_overlay.go),
+// DeleteAll tx, searchPointInTimeBase, GetAsAt, and GetAllAsAt.
 func (s *entityStore) getSnapshot(ctx context.Context, entityID string, snapshotTime time.Time) (*spi.Entity, error) {
 	snapshotMicro := timeToMicro(snapshotTime)
 	row := s.db.QueryRowContext(ctx,
@@ -555,9 +555,28 @@ func (s *entityStore) GetAll(ctx context.Context, modelRef spi.ModelRef) ([]*spi
 		if tx.RolledBack {
 			return nil, fmt.Errorf("GetAll: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
-		// GetAll records unconditionally — unlike Search/Iterate, it has no
-		// TrackingRead knob (see searchTxOverlay's doc comment).
-		return s.getAllTx(ctx, tx, modelRef, true)
+		if tx.Closed {
+			return nil, fmt.Errorf("GetAll: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
+		}
+		overlay, err := s.openTxOverlay(ctx, tx, modelRef, spi.Filter{}, projectFull)
+		if err != nil {
+			return nil, fmt.Errorf("GetAll: %w", err)
+		}
+		defer overlay.Close()
+		var all []*spi.Entity
+		for {
+			e, ok, err := overlay.pull()
+			if err != nil {
+				return nil, fmt.Errorf("GetAll: %w", err)
+			}
+			if !ok {
+				break
+			}
+			// GetAll records unconditionally (no TrackingRead knob).
+			tx.ReadSet[e.Meta.ID] = true
+			all = append(all, e)
+		}
+		return all, nil
 	}
 
 	return s.getAllDirect(ctx, modelRef)
@@ -587,64 +606,6 @@ func (s *entityStore) getAllDirect(ctx context.Context, modelRef spi.ModelRef) (
 		return nil, fmt.Errorf("row iteration: %w", err)
 	}
 	return result, nil
-}
-
-// trackRead gates read-set recording: GetAll always passes true (unconditional,
-// no TrackingRead knob of its own); Iterate's in-tx branch passes
-// opts.TrackingRead, so a plain snapshot read (the default) records nothing.
-func (s *entityStore) getAllTx(ctx context.Context, tx *spi.TransactionState, modelRef spi.ModelRef, trackRead bool) ([]*spi.Entity, error) {
-	// Get snapshot from entity_versions.
-	snapshotMicro := timeToMicro(tx.SnapshotTime)
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT ev.entity_id, ev.model_name, ev.model_version, ev.version,
-		        json(ev.data), json(ev.meta), ev.submit_time
-		 FROM entity_versions ev
-		 INNER JOIN (
-		     SELECT entity_id, MAX(version) AS max_ver
-		     FROM entity_versions
-		     WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND submit_time <= ?
-		     GROUP BY entity_id
-		 ) latest ON ev.entity_id = latest.entity_id AND ev.version = latest.max_ver
-		 WHERE ev.tenant_id = ? AND ev.change_type != 'DELETED'`,
-		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion, snapshotMicro,
-		string(s.tenantID))
-	if err != nil {
-		return nil, fmt.Errorf("query snapshot entities: %w", err)
-	}
-	defer rows.Close()
-
-	result := make(map[string]*spi.Entity)
-	for rows.Next() {
-		e, err := scanVersionEntity(rows)
-		if err != nil {
-			return nil, err
-		}
-		if !tx.Deletes[e.Meta.ID] {
-			result[e.Meta.ID] = e
-			if trackRead {
-				tx.ReadSet[e.Meta.ID] = true
-			}
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("row iteration: %w", err)
-	}
-
-	// Overlay buffer.
-	for id, e := range tx.Buffer {
-		if e.Meta.ModelRef == modelRef {
-			result[id] = copyEntity(e)
-			if trackRead {
-				tx.ReadSet[id] = true
-			}
-		}
-	}
-
-	entities := make([]*spi.Entity, 0, len(result))
-	for _, e := range result {
-		entities = append(entities, e)
-	}
-	return entities, nil
 }
 
 func (s *entityStore) GetAllAsAt(ctx context.Context, modelRef spi.ModelRef, asAt time.Time) ([]*spi.Entity, error) {
@@ -898,12 +859,19 @@ func (s *entityStore) Exists(ctx context.Context, entityID string) (bool, error)
 func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, error) {
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
-		// Use the same logic as GetAll to get the merged view, then count.
-		all, err := s.GetAll(ctx, modelRef)
-		if err != nil {
-			return 0, err
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
+		if tx.RolledBack {
+			return 0, fmt.Errorf("Count: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
-		return int64(len(all)), nil
+		if tx.Closed {
+			return 0, fmt.Errorf("Count: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
+		}
+		var n int64
+		if err := s.countTx(ctx, tx, modelRef, func(string) { n++ }); err != nil {
+			return 0, fmt.Errorf("Count: %w", err)
+		}
+		return n, nil
 	}
 
 	// Non-transaction.
@@ -969,8 +937,8 @@ func inPlaceholders(n int) string {
 // json_extract(json(meta), '$.state'). An indexed expression on this extraction is
 // a future optimization (out of scope for this issue).
 //
-// In-tx callers fall back to GetAll-then-count-in-Go to honour merged-view
-// snapshot semantics, matching the existing Count method's pattern.
+// In-tx callers tally the overlay cursor with an id/state projection
+// (tx_overlay.go).
 func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string) (map[string]int64, error) {
 	if states != nil && len(states) == 0 {
 		return map[string]int64{}, nil
@@ -981,10 +949,13 @@ func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, s
 
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
-		// In-tx: use GetAll's merged-view logic (matches existing Count's in-tx fallback).
-		all, err := s.GetAll(ctx, modelRef)
-		if err != nil {
-			return nil, err
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
+		if tx.RolledBack {
+			return nil, fmt.Errorf("CountByState: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
+		}
+		if tx.Closed {
+			return nil, fmt.Errorf("CountByState: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
 		}
 		var filter map[string]struct{}
 		if states != nil {
@@ -994,14 +965,16 @@ func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, s
 			}
 		}
 		result := make(map[string]int64)
-		for _, e := range all {
-			st := e.Meta.State
+		err := s.countTx(ctx, tx, modelRef, func(st string) {
 			if filter != nil {
 				if _, ok := filter[st]; !ok {
-					continue
+					return
 				}
 			}
 			result[st]++
+		})
+		if err != nil {
+			return nil, fmt.Errorf("CountByState: %w", err)
 		}
 		return result, nil
 	}
@@ -1130,9 +1103,9 @@ func (s *entityStore) getPageDirect(ctx context.Context, modelRef spi.ModelRef, 
 }
 
 // getPageAsAt is the asAt!=nil path: a committed-only snapshot join
-// (searchSnapshotBase — the same base query getSnapshot/getAllTx/GetAllAsAt
-// use), paged via ORDER BY ev.entity_id LIMIT/OFFSET. Ignores any ambient
-// transaction, matching GetAllAsAt.
+// (searchSnapshotBase — the same base query getSnapshot/the tx overlay
+// (tx_overlay.go)/GetAllAsAt use), paged via ORDER BY ev.entity_id
+// LIMIT/OFFSET. Ignores any ambient transaction, matching GetAllAsAt.
 func (s *entityStore) getPageAsAt(ctx context.Context, modelRef spi.ModelRef, limit, offset int, asAt time.Time) ([]*spi.Entity, error) {
 	searchOpts := spi.SearchOptions{ModelName: modelRef.EntityName, ModelVersion: modelRef.ModelVersion}
 	query, args := s.searchSnapshotBase(searchOpts, timeToMicro(asAt))
