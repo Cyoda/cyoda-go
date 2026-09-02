@@ -134,6 +134,15 @@ func copyEntity(e *spi.Entity) *spi.Entity {
 	return cp
 }
 
+// unstageDelete removes a staged delete for id from BOTH maps the delete
+// occupies. Deletes and DeleteAttribution always cover the same key set
+// (spi.TransactionState); clearing only one leaves a phantom attribution
+// entry a savepoint restore would carry back in.
+func unstageDelete(tx *spi.TransactionState, id string) {
+	delete(tx.Deletes, id)
+	delete(tx.DeleteAttribution, id)
+}
+
 // scanEntityFromRow scans a single entity from a query result row.
 // Expected columns: entity_id, model_name, model_version, version, json(data), json(meta), created_at, updated_at
 func scanEntityFromRow(row interface{ Scan(...any) error }) (*spi.Entity, error) {
@@ -252,8 +261,9 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		s.tm.stageSuperseded(tx.ID, entity.Meta.ID, tx.Buffer[entity.Meta.ID])
 		tx.Buffer[entity.Meta.ID] = cp
 		tx.WriteSet[entity.Meta.ID] = true
-		// If the entity was previously marked for deletion in this tx, unmark it.
-		delete(tx.Deletes, entity.Meta.ID)
+		// If the entity was previously marked for deletion in this tx, unmark
+		// it (last-write-wins: Save after Delete → present).
+		unstageDelete(tx, entity.Meta.ID)
 		// Capture unique keys at buffer time (last-write-wins, matching tx.Buffer).
 		// flushToSQLite runs once at Commit with a single context, so keys must
 		// be stored per-entity here to support mixed-model batches where each Save
@@ -373,6 +383,16 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		if tx.RolledBack {
 			return 0, fmt.Errorf("CompareAndSave: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
+		// A write compares against the transaction's own view. A same-tx
+		// delete is the current latest state of this entity, so a
+		// compare-and-save against it cannot succeed: the caller's expected
+		// transaction ID names a version this transaction has already
+		// superseded. Same answer postgres gives, where the delete is
+		// applied at once.
+		if tx.Deletes[entity.Meta.ID] {
+			return 0, spi.ErrConflict
+		}
+
 		// Check CAS against committed store (not buffer).
 		var currentTxID sql.NullString
 		err := s.db.QueryRowContext(ctx,
