@@ -413,14 +413,27 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		if tx.Closed {
 			return 0, fmt.Errorf("CompareAndSave: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
 		}
-		// A write compares against the transaction's own view. A same-tx
-		// delete is the current latest state of this entity, so a
-		// compare-and-save against it cannot succeed: the caller's expected
-		// transaction ID names a version this transaction has already
-		// superseded. Same answer postgres gives, where the delete is
-		// applied at once.
+		// A write compares against the transaction's own view, and a same-tx
+		// delete means the transaction sees NO entity: the current
+		// transaction ID is "". A non-empty expected ID names a version the
+		// delete has already superseded, so it conflicts. An empty one says
+		// "expect no entity" — which is exactly what the delete left behind —
+		// so the save is allowed and re-creates the entity. It must unstage
+		// the delete as Save does, or the commit would apply the tombstone on
+		// top of the re-creation. Same answer postgres gives, where the
+		// delete is applied at once.
 		if tx.Deletes[entity.Meta.ID] {
-			return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
+			if expectedTxID != "" {
+				return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
+			}
+			unstageDelete(tx, entity.Meta.ID)
+			cp := copyEntity(entity)
+			cp.Meta.TenantID = s.tenantID
+			s.tm.stageSuperseded(tx.ID, entity.Meta.ID, tx.Buffer[entity.Meta.ID])
+			tx.Buffer[entity.Meta.ID] = cp
+			tx.WriteSet[entity.Meta.ID] = true
+			s.tm.recordUniqueKeys(tx.ID, entity.Meta.ID, spi.UniqueKeysFromContext(ctx))
+			return 0, nil
 		}
 		// A buffered own-write IS the transaction's current version of this
 		// entity, so the comparison is against it, not against the committed
@@ -445,14 +458,11 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		}
 
 		// Check CAS against committed store (not buffer).
-		var currentTxID sql.NullString
-		err := s.db.QueryRowContext(ctx,
-			"SELECT json_extract(json(meta), '$.transaction_id') FROM entities WHERE tenant_id = ? AND entity_id = ? AND NOT deleted",
-			string(s.tenantID), entity.Meta.ID).Scan(&currentTxID)
-		if err != nil && err != sql.ErrNoRows {
-			return 0, fmt.Errorf("check transaction ID: %w", classifyError(err))
+		current, err := s.committedTxID(ctx, entity.Meta.ID)
+		if err != nil {
+			return 0, err
 		}
-		if err == nil && currentTxID.Valid && currentTxID.String != expectedTxID {
+		if current != expectedTxID {
 			return 0, spi.ErrConflict
 		}
 
@@ -481,18 +491,34 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 	_ = s.tm.acquireCommitGate(context.Background())
 	defer s.tm.releaseCommitGate()
 
-	var currentTxID sql.NullString
-	err := s.db.QueryRowContext(ctx,
-		"SELECT json_extract(json(meta), '$.transaction_id') FROM entities WHERE tenant_id = ? AND entity_id = ? AND NOT deleted",
-		string(s.tenantID), entity.Meta.ID).Scan(&currentTxID)
-	if err != nil && err != sql.ErrNoRows {
-		return 0, fmt.Errorf("check transaction ID: %w", classifyError(err))
+	current, err := s.committedTxID(ctx, entity.Meta.ID)
+	if err != nil {
+		return 0, err
 	}
-	if err == nil && currentTxID.Valid && currentTxID.String != expectedTxID {
+	if current != expectedTxID {
 		return 0, spi.ErrConflict
 	}
 
 	return s.saveDirectlyLocked(ctx, entity)
+}
+
+// committedTxID returns the transaction ID a compare-and-save compares
+// against: the committed row's, or "" when there is no entity — never
+// written, or deleted. A deleted entity is no entity, exactly as Get reports
+// it, so its tombstone does not offer up the superseded version's ID for a
+// caller to match against.
+func (s *entityStore) committedTxID(ctx context.Context, entityID string) (string, error) {
+	var txID sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		"SELECT json_extract(json(meta), '$.transaction_id') FROM entities WHERE tenant_id = ? AND entity_id = ? AND NOT deleted",
+		string(s.tenantID), entityID).Scan(&txID)
+	if err != nil && err != sql.ErrNoRows {
+		return "", fmt.Errorf("check transaction ID: %w", classifyError(err))
+	}
+	if err != nil || !txID.Valid {
+		return "", nil
+	}
+	return txID.String, nil
 }
 
 func (s *entityStore) Get(ctx context.Context, entityID string) (*spi.Entity, error) {

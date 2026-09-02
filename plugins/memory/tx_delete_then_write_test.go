@@ -15,7 +15,10 @@ func TestTx_DeleteThenCompareAndSave_Conflicts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	if _, err := store.Save(ctx, &spi.Entity{Meta: spi.EntityMeta{ID: "e-cas", TenantID: "tenant-dtw", ModelRef: ref}, Data: []byte(`{"n":1}`)}); err != nil {
+	// A real seed transaction ID, so the compare-and-save below names a
+	// version the delete superseded rather than the empty ID — which means
+	// "expect no entity" and would legitimately re-create.
+	if _, err := store.Save(ctx, &spi.Entity{Meta: spi.EntityMeta{ID: "e-cas", TenantID: "tenant-dtw", ModelRef: ref, TransactionID: "tx-seed"}, Data: []byte(`{"n":1}`)}); err != nil {
 		t.Fatalf("seed Save: %v", err)
 	}
 	committed, err := store.Get(ctx, "e-cas")

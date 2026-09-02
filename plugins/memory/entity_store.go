@@ -222,11 +222,25 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		if tx.Closed {
 			return 0, fmt.Errorf("CompareAndSave: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
 		}
-		// A write compares against the transaction's own view: a same-tx
-		// delete is the current latest state, so a compare-and-save against
-		// it conflicts. Same answer postgres gives.
+		// A write compares against the transaction's own view, and a same-tx
+		// delete means the transaction sees NO entity: the current
+		// transaction ID is "". A non-empty expected ID names a version the
+		// delete has already superseded, so it conflicts. An empty one says
+		// "expect no entity" — which is exactly what the delete left behind —
+		// so the save is allowed and re-creates the entity. It must unstage
+		// the delete as Save does, or the commit would apply the tombstone on
+		// top of the re-creation. Same answer postgres gives.
 		if tx.Deletes[entity.Meta.ID] {
-			return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
+			if expectedTxID != "" {
+				return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
+			}
+			unstageDelete(tx, entity.Meta.ID)
+			cp := copyEntity(entity)
+			s.factory.txManager.stageSuperseded(tx.ID, entity.Meta.ID, tx.Buffer[entity.Meta.ID])
+			tx.Buffer[entity.Meta.ID] = cp
+			tx.WriteSet[entity.Meta.ID] = true
+			s.factory.txManager.recordUniqueKeys(tx.ID, entity.Meta.ID, spi.UniqueKeysFromContext(ctx))
+			return 0, nil
 		}
 		// A buffered own-write IS the transaction's current version of this
 		// entity, so the comparison is against it, not against the committed
@@ -254,17 +268,9 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		func() {
 			s.factory.entityMu.RLock()
 			defer s.factory.entityMu.RUnlock()
-			versions := s.factory.entityData[s.tenant][entity.Meta.ID]
-			if len(versions) > 0 {
-				for i := len(versions) - 1; i >= 0; i-- {
-					if !versions[i].deleted && versions[i].entity != nil {
-						if versions[i].entity.Meta.TransactionID != expectedTxID {
-							conflict = true
-							return
-						}
-						break
-					}
-				}
+			if currentTxIDLocked(s.factory.entityData[s.tenant][entity.Meta.ID]) != expectedTxID {
+				conflict = true
+				return
 			}
 			// Write to buffer under the same lock hold. Stage any value
 			// this overwrites (see stageSuperseded's godoc) first.
@@ -281,25 +287,31 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		return 0, nil
 	}
 
-	// Non-transaction: existing behavior.
+	// Non-transaction: the same literal comparison, against committed data.
 	s.factory.entityMu.Lock()
 	defer s.factory.entityMu.Unlock()
 
-	tid := s.tenant
-	eid := entity.Meta.ID
-
-	if versions, ok := s.factory.entityData[tid][eid]; ok && len(versions) > 0 {
-		for i := len(versions) - 1; i >= 0; i-- {
-			if !versions[i].deleted && versions[i].entity != nil {
-				if versions[i].entity.Meta.TransactionID != expectedTxID {
-					return 0, spi.ErrConflict
-				}
-				break
-			}
-		}
+	if currentTxIDLocked(s.factory.entityData[s.tenant][entity.Meta.ID]) != expectedTxID {
+		return 0, spi.ErrConflict
 	}
 
 	return s.saveUnlocked(ctx, entity)
+}
+
+// currentTxIDLocked returns the transaction ID a compare-and-save compares
+// against: the latest committed version's, or "" when there is no entity —
+// never written, or deleted. A deleted entity is no entity, exactly as Get
+// reports it, so its tombstone does not expose the superseded version's ID.
+// The caller must hold factory.entityMu (read or write).
+func currentTxIDLocked(versions []entityVersion) string {
+	if len(versions) == 0 {
+		return ""
+	}
+	latest := versions[len(versions)-1]
+	if latest.deleted || latest.entity == nil {
+		return ""
+	}
+	return latest.entity.Meta.TransactionID
 }
 
 // saveUnlocked performs the save logic without acquiring the lock. The caller

@@ -274,27 +274,41 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 }
 
 // compareTxID reports whether the stored entity still carries expectedTxID,
-// returning spi.ErrConflict when it does not. A missing row passes: there is
-// no current transaction ID to disagree with, and the save that follows
-// creates it.
+// returning spi.ErrConflict when it does not. expectedTxID is compared
+// literally: the entity's current transaction ID is the row's, or "" when
+// there is no entity — never written, or deleted. So a non-empty expected ID
+// against a missing entity conflicts (it names a version that does not
+// exist), and the empty expected ID is how a caller says "expect no entity"
+// and creates one.
+//
+// The row is read with NOT deleted, as Get and Delete read it: a deleted
+// entity is no entity, so its tombstone does not offer up the superseded
+// version's transaction ID for a caller to match against and resurrect the
+// row. A delete applied earlier in the caller's own transaction is visible on
+// that transaction's connection, so the same rule covers it — matching what
+// the buffered backends answer for a same-transaction delete.
 //
 // forUpdate locks the row for the rest of the caller's database transaction —
 // what makes the non-transactional path's check and write indivisible. It is
 // false inside the caller's own transaction, whose write is not committed
 // here and must not hold a row lock the caller did not ask for.
 func (s *entityStore) compareTxID(ctx context.Context, q Querier, entityID, expectedTxID string, forUpdate bool) error {
-	query := `SELECT doc->'_meta'->>'transaction_id' FROM entities WHERE tenant_id = $1 AND entity_id = $2`
+	query := `SELECT doc->'_meta'->>'transaction_id' FROM entities WHERE tenant_id = $1 AND entity_id = $2 AND NOT deleted`
 	if forUpdate {
 		query += ` FOR UPDATE`
 	}
-	var currentTxID *string
-	err := q.QueryRow(ctx, query, string(s.tenantID), entityID).Scan(&currentTxID)
+	var scanned *string
+	err := q.QueryRow(ctx, query, string(s.tenantID), entityID).Scan(&scanned)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("failed to check transaction ID: %w", err)
 	}
-	if err == nil && currentTxID != nil && *currentTxID != expectedTxID {
+	currentTxID := ""
+	if err == nil && scanned != nil {
+		currentTxID = *scanned
+	}
+	if currentTxID != expectedTxID {
 		return fmt.Errorf("entity %s transaction ID mismatch (current=%q, expected=%q): %w",
-			entityID, *currentTxID, expectedTxID, spi.ErrConflict)
+			entityID, currentTxID, expectedTxID, spi.ErrConflict)
 	}
 	return nil
 }

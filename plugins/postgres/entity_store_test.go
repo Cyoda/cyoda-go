@@ -200,8 +200,10 @@ func TestEntityStore_CompareAndSave_NewEntity(t *testing.T) {
 	ctx := ctxWithTenant("entity-tenant")
 	store, _ := factory.EntityStore(ctx)
 
+	// The current transaction ID of an entity that is not there is the empty
+	// one, so that — and only that — is what a create may expect.
 	ent := makeEntity("ent-cas-new")
-	v, err := store.CompareAndSave(ctx, ent, "any-tx-id")
+	v, err := store.CompareAndSave(ctx, ent, "")
 	if err != nil {
 		t.Fatalf("CompareAndSave for new entity: %v", err)
 	}

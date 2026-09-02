@@ -13,7 +13,10 @@ type contextT = context.Context
 func seedOne(t *testing.T, store spi.EntityStore, ctx contextT, id string, ref spi.ModelRef) *spi.Entity {
 	t.Helper()
 	e := &spi.Entity{
-		Meta: spi.EntityMeta{ID: id, TenantID: "tenant-dtw", ModelRef: ref, State: "open"},
+		// A real transaction ID, so a compare-and-save naming it is a
+		// genuine "expect this version" rather than the empty ID, which
+		// means "expect no entity".
+		Meta: spi.EntityMeta{ID: id, TenantID: "tenant-dtw", ModelRef: ref, State: "open", TransactionID: "tx-seed"},
 		Data: []byte(`{"n":1}`),
 	}
 	if _, err := store.Save(ctx, e); err != nil {

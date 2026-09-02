@@ -986,6 +986,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   already open.** `Begin` also reserves the snapshot it takes as the new
   floor, so the next write stamps strictly above it rather than at it.
 
+- **Compare-and-save compares the expected transaction ID literally on every
+  backend: a non-empty expected ID against a missing entity conflicts instead
+  of creating; an empty expected ID means "expect no entity".** The comparison
+  used to be skipped whenever the store held no row, so a caller naming a
+  transaction ID that could not possibly be current had its entity created
+  anyway, and a caller expecting no entity overwrote whatever was there. The
+  current transaction ID is now the transaction's own uncommitted write's if it
+  has one, else the committed row's, and `""` when there is no entity — never
+  written, or deleted. A delete makes the tombstone's ID unmatchable, so a
+  stale precondition can no longer resurrect a deleted entity.
+
 - **memory, sqlite and postgres: concurrent non-transactional
   compare-and-saves against an existing entity with the same expected
   transaction ID yield exactly one winner; the check and the write are one
