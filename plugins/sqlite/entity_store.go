@@ -438,6 +438,9 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 			s.tm.stageSuperseded(tx.ID, entity.Meta.ID, buffered)
 			tx.Buffer[entity.Meta.ID] = cp
 			tx.WriteSet[entity.Meta.ID] = true
+			// Capture unique keys at buffer time, as Save does — see the
+			// comment there for why the flush cannot recover them.
+			s.tm.recordUniqueKeys(tx.ID, entity.Meta.ID, spi.UniqueKeysFromContext(ctx))
 			return 0, nil
 		}
 
@@ -460,6 +463,9 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		s.tm.stageSuperseded(tx.ID, entity.Meta.ID, tx.Buffer[entity.Meta.ID])
 		tx.Buffer[entity.Meta.ID] = cp
 		tx.WriteSet[entity.Meta.ID] = true
+		// Capture unique keys at buffer time, as Save does — see the comment
+		// there for why the flush cannot recover them.
+		s.tm.recordUniqueKeys(tx.ID, entity.Meta.ID, spi.UniqueKeysFromContext(ctx))
 		return 0, nil
 	}
 
