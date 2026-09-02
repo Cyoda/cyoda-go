@@ -72,6 +72,12 @@ jobs:
       # -must-run suite list live in one place instead of being copied here to
       # drift. test-root is test-full's root half — the plugin submodules are
       # the steps below, each with its own working directory.
+      #
+      # The target's `preflight` requires postgres:17-alpine to be present
+      # locally and never pulls it; on this runner the `services:` block above
+      # is what puts it there. Bumping that tag means bumping
+      # scripts/preflight-docker.sh's PROBE_IMAGE with it, or pre-flight fails
+      # on an image the job just downloaded under a different tag.
       - name: Run tests
         run: |
           set -o pipefail

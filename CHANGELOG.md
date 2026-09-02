@@ -987,8 +987,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   floor, so the next write stamps strictly above it rather than at it.
 
 - **memory, sqlite and postgres: concurrent non-transactional
-  compare-and-saves with the same expected version yield exactly one winner;
-  the check and the write are one atomic step.**
+  compare-and-saves against an existing entity with the same expected
+  transaction ID yield exactly one winner; the check and the write are one
+  atomic step.** Creating an entity is not covered on postgres: `FOR UPDATE`
+  locks no absent row, so concurrent compare-and-saves that both CREATE the
+  same id can still both succeed there, where memory and sqlite give one
+  winner.
 
 - **sqlite: a compare-and-save inside a transaction records its unique-key
   claims, as a save does.** An entity written that way committed with no claim

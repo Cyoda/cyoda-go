@@ -184,9 +184,12 @@ func (f *StoreFactory) EntityStore(ctx context.Context) (spi.EntityStore, error)
 	if err != nil {
 		return nil, err
 	}
-	// pool and acquireTimeout are for the one path that needs a transaction of
-	// its own rather than the context-resolving querier: the async-search scan,
-	// which raises its ceiling with SET LOCAL. See searcher.go.
+	// pool and acquireTimeout are for the paths that need a connection of their
+	// own rather than the context-resolving querier: point-in-time reads, the
+	// async-search scan (which raises its ceiling with SET LOCAL, searcher.go)
+	// and a non-transactional compare-and-save (which takes its row lock and
+	// commits the write it guards in one transaction). See the entityStore.pool
+	// field godoc.
 	return &entityStore{
 		q:              f.querier(),
 		tenantID:       tid,

@@ -69,7 +69,7 @@ type TransactionState struct {
 ```
 1. Acquire tx.OpMu.Lock()          -- wait for in-flight ops to finish
 2. Acquire factory.entityMu.Lock() -- exclusive access to shared data
-3. Acquire tm.mu.Lock()            -- scan committed log
+3. Take tm.mu, and release it at 4 -- scan committed log
 4. FOR EACH committed_tx where seq > tx's snapshot commitSeq:
      IF committed_tx.writeSet intersects (tx.ReadSet UNION tx.WriteSet):
        ABORT -> ErrConflict
@@ -80,8 +80,14 @@ type TransactionState struct {
 9. Record submitTime in submitTimes map
 10. Remove from active map
 11. Prune committedLog (entries older than oldest active snapshot)
-12. Release all locks
+12. Release entityMu, then tx.OpMu
 ```
+
+`tm.mu` is not held across steps 3–12. It is a leaf lock, taken and released
+three times: for the conflict scan (steps 3–4), inside `nextSubmitTime` for the
+stamp (step 5), and for the commit-log append, the submit-time record and the
+prune (steps 8–11). Everything in between runs under `entityMu`, which is what
+makes the flush atomic. Each acquisition still follows the one order below.
 
 This is first-committer-wins: the transaction that reaches step 4
 first wins; any concurrent transaction whose read-set or write-set
