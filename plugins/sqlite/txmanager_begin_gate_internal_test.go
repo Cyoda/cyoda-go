@@ -293,3 +293,82 @@ func TestDirectSave_ThenBegin_SeesRow(t *testing.T) {
 		t.Fatalf("in-tx overlay saw the directly-saved row %d times, want 1", n)
 	}
 }
+
+// A direct (non-transactional) write must stamp its submit_time under the
+// same monotonic floor a commit uses. lastSubmitTime can stand ahead of the
+// wall clock — several commits inside one microsecond each bump it by one,
+// and a test clock can be frozen outright — and Begin floors a new
+// transaction's SnapshotTime to it. A direct write that stamped the raw
+// clock value would land BELOW a snapshot already open, and that
+// transaction's snapshot read would then see a row written after it began.
+func TestDirectSave_StampsAboveAnOpenSnapshot(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "direct-floor.db")
+	f, err := NewStoreFactoryForTest(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("NewStoreFactoryForTest: %v", err)
+	}
+	defer f.Close()
+	m := f.tm
+	ctx := attrInternalCtx("tenant-floor", "alice", spi.PrincipalUser)
+	ref := spi.ModelRef{EntityName: "m-floor", ModelVersion: "1"}
+
+	store, err := f.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+
+	// Stand in for a run of commits that pushed the monotonic submit time
+	// past the wall clock.
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.lastSubmitTime = m.factory.clock.Now().UnixMicro() + 5_000_000 // 5s ahead
+	}()
+
+	txID, txCtx, err := m.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	defer func() { _ = m.Rollback(txCtx, txID) }()
+	snapshot := spi.GetTransaction(txCtx).SnapshotTime.UnixMicro()
+
+	if _, err := store.Save(ctx, &spi.Entity{
+		Meta: spi.EntityMeta{ID: "e-floor", TenantID: "tenant-floor", ModelRef: ref, State: "open"},
+		Data: []byte(`{"n":1}`),
+	}); err != nil {
+		t.Fatalf("direct Save: %v", err)
+	}
+
+	var stamped int64
+	if err := f.db.QueryRow(
+		"SELECT submit_time FROM entity_versions WHERE entity_id = ?", "e-floor").Scan(&stamped); err != nil {
+		t.Fatalf("read stamped submit_time: %v", err)
+	}
+	if stamped <= snapshot {
+		t.Fatalf("direct write stamped submit_time %d at or below the open snapshot %d", stamped, snapshot)
+	}
+
+	iterable, ok := store.(spi.Iterable)
+	if !ok {
+		t.Fatalf("entityStore does not implement spi.Iterable")
+	}
+	it, err := iterable.Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{})
+	if err != nil {
+		t.Fatalf("Iterate: %v", err)
+	}
+	var seen int
+	for it.Next() {
+		if it.Entity().Meta.ID == "e-floor" {
+			seen++
+		}
+	}
+	if err := it.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := it.Err(); err != nil {
+		t.Fatalf("Iterate Err: %v", err)
+	}
+	if seen != 0 {
+		t.Fatalf("the open transaction saw a row written after it began (%d times)", seen)
+	}
+}

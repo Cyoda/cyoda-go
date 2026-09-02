@@ -307,7 +307,12 @@ func (s *entityStore) saveDirectly(ctx context.Context, entity *spi.Entity) (int
 
 	cp := copyEntity(entity)
 	cp.Meta.TenantID = s.tenantID
-	now := s.clock.Now()
+	// Stamp under the monotonic floor Commit uses (nextSubmitTime), not the
+	// raw clock: lastSubmitTime can stand ahead of the clock, and Begin
+	// floors an open transaction's snapshot to it. A raw-clock stamp could
+	// therefore land below a snapshot already open, which that transaction's
+	// snapshot read would then wrongly include.
+	now := microToTime(s.tm.nextSubmitTime())
 	tid := string(s.tenantID)
 
 	var existingVersion sql.NullInt64
@@ -709,8 +714,10 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 	defer s.tm.commitMu.Unlock()
 
 	tid := string(s.tenantID)
-	now := s.clock.Now()
-	nowMicro := timeToMicro(now)
+	// Stamp under the shared monotonic floor, for the reason spelled out in
+	// saveDirectly: a raw-clock stamp could land below a snapshot already
+	// open, which that transaction would then read as still-present.
+	nowMicro := s.tm.nextSubmitTime()
 
 	sqlTx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

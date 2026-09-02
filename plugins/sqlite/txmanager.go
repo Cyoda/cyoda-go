@@ -207,6 +207,26 @@ func (m *transactionManager) seedLastSubmitTime() {
 	}
 }
 
+// nextSubmitTime returns the submit time to stamp on a write, in
+// microseconds, and records it as the new floor. max(now, lastSubmitTime+1)
+// guarantees forward progress even under NTP steps, VM pause/migrate, leap-
+// second smearing, or a frozen test clock, and — because Begin floors a new
+// transaction's SnapshotTime to lastSubmitTime — guarantees a write never
+// stamps at or below a snapshot already open. Every path that stamps a
+// submit_time uses it: Commit's step 4 and the direct writes (saveDirectly,
+// the non-tx Delete). Callers hold commitMu from here through their own
+// commit; lock order commitMu → mu.
+func (m *transactionManager) nextSubmitTime() int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	nowMicro := m.factory.clock.Now().UnixMicro()
+	if nowMicro <= m.lastSubmitTime {
+		nowMicro = m.lastSubmitTime + 1
+	}
+	m.lastSubmitTime = nowMicro
+	return nowMicro
+}
+
 // Begin starts a new transaction. It resolves the tenant from the context,
 // generates a unique transaction ID, captures a snapshot time, and returns
 // a new context carrying the TransactionState.
@@ -362,21 +382,9 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 		return err
 	}
 
-	// 4. Capture submit time with monotonicity guarantee.
-	// max(clock.Now().UnixMicro(), lastSubmitTime + 1) ensures forward
-	// progress even under NTP steps, VM pause/migrate, or leap-second
-	// smearing. commitMu serializes the commit path; m.mu protects
-	// lastSubmitTime for reads in Begin.
-	submitTime := func() time.Time {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		nowMicro := m.factory.clock.Now().UnixMicro()
-		if nowMicro <= m.lastSubmitTime {
-			nowMicro = m.lastSubmitTime + 1
-		}
-		m.lastSubmitTime = nowMicro
-		return time.UnixMicro(nowMicro)
-	}()
+	// 4. Capture submit time under the monotonic floor every stamping path
+	// shares — see nextSubmitTime.
+	submitTime := time.UnixMicro(m.nextSubmitTime())
 
 	// 4.5. Snapshot staged ScheduledTaskStore ops for this tx. Safe to read
 	// without extending m.mu across the whole flush: tx.OpMu.Lock (held
