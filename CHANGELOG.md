@@ -987,6 +987,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **sqlite: `Begin` returns the caller's context error instead of waiting
   indefinitely for the commit gate.**
 
+- **memory and sqlite: `Get` and `Exists` on an already-committed transaction
+  are refused.**
+
 - **memory and sqlite: a write (`Save`, `CompareAndSave`, `Delete`, `DeleteAll`)
   issued on an already-committed transaction is refused with a
   transaction-closed error instead of being buffered and silently discarded.**

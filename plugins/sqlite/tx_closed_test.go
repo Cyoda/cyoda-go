@@ -1,4 +1,4 @@
-package memory_test
+package sqlite_test
 
 import (
 	"context"
@@ -9,20 +9,22 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// Every read and bulk-write entry point refuses a committed transaction's
-// context with ErrTxAlreadyCommitted — the same guard set sqlite carries.
-// Without it a caller holding a stale transaction context silently reads the
-// merged view of a transaction that no longer exists.
-func TestTx_ClosedTransaction_RefusesEveryEntryPoint(t *testing.T) {
-	f, tm := newTxManager(t)
-	ctx := tenantCtx(spi.TenantID("tenant-closed"))
-	ref := spi.ModelRef{EntityName: "m-closed", ModelVersion: "1"}
+// Every read entry point refuses a committed transaction's context with
+// ErrTxAlreadyCommitted — the twin of the memory plugin's guard set, and of
+// the write guards in tx_closed_write_test.go. Without it a caller holding a
+// stale transaction context silently reads the merged view of a transaction
+// that no longer exists: the snapshot is frozen at a time that has passed,
+// and the buffer it merges was already flushed.
+func TestTx_ClosedTransaction_RefusesEveryRead(t *testing.T) {
+	f, tm := newAttrFactory(t)
+	ctx := attrCtx("tenant-closed-read", "u1", spi.PrincipalUser)
+	ref := spi.ModelRef{EntityName: "m-closed-read", ModelVersion: "1"}
 	store, err := f.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	if _, err := store.Save(ctx, &spi.Entity{
-		Meta: spi.EntityMeta{ID: "e-closed", TenantID: "tenant-closed", ModelRef: ref, State: "open"},
+		Meta: spi.EntityMeta{ID: "e-closed-read", TenantID: "tenant-closed-read", ModelRef: ref, State: "open"},
 		Data: []byte(`{"n":1}`),
 	}); err != nil {
 		t.Fatalf("seed Save: %v", err)
@@ -36,7 +38,7 @@ func TestTx_ClosedTransaction_RefusesEveryEntryPoint(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	iterable, ok := any(store).(spi.Iterable)
+	iterable, ok := store.(spi.Iterable)
 	if !ok {
 		t.Fatalf("EntityStore does not implement spi.Iterable")
 	}
@@ -46,15 +48,15 @@ func TestTx_ClosedTransaction_RefusesEveryEntryPoint(t *testing.T) {
 		call func(context.Context) error
 	}{
 		{"Get", func(c context.Context) error {
-			_, err := store.Get(c, "e-closed")
+			_, err := store.Get(c, "e-closed-read")
 			return err
 		}},
 		{"GetAsAt", func(c context.Context) error {
-			_, err := store.GetAsAt(c, "e-closed", time.Now())
+			_, err := store.GetAsAt(c, "e-closed-read", time.Now())
 			return err
 		}},
 		{"Exists", func(c context.Context) error {
-			_, err := store.Exists(c, "e-closed")
+			_, err := store.Exists(c, "e-closed-read")
 			return err
 		}},
 		{"GetAll", func(c context.Context) error {
@@ -82,9 +84,6 @@ func TestTx_ClosedTransaction_RefusesEveryEntryPoint(t *testing.T) {
 		{"CountByState", func(c context.Context) error {
 			_, err := store.CountByState(c, ref, nil)
 			return err
-		}},
-		{"DeleteAll", func(c context.Context) error {
-			return store.DeleteAll(c, ref)
 		}},
 	}
 

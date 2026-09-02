@@ -391,6 +391,9 @@ func (s *EntityStore) Get(ctx context.Context, entityID string) (*spi.Entity, er
 		if tx.RolledBack {
 			return nil, fmt.Errorf("Get: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
+		if tx.Closed {
+			return nil, fmt.Errorf("Get: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
+		}
 		// Check if deleted in this transaction.
 		if tx.Deletes[entityID] {
 			return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
@@ -433,6 +436,9 @@ func (s *EntityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return nil, fmt.Errorf("GetAsAt: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
+		}
+		if tx.Closed {
+			return nil, fmt.Errorf("GetAsAt: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
 		}
 		tx.ReadSet[entityID] = true
 	}
@@ -788,6 +794,9 @@ func (s *EntityStore) Exists(ctx context.Context, entityID string) (bool, error)
 		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return false, fmt.Errorf("Exists: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
+		}
+		if tx.Closed {
+			return false, fmt.Errorf("Exists: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
 		}
 		// Check deletes first.
 		if tx.Deletes[entityID] {
