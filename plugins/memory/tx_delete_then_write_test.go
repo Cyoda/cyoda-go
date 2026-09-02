@@ -79,3 +79,45 @@ func TestTx_DeleteThenSave_CommitsPresent(t *testing.T) {
 		}
 	}
 }
+
+// A write compares against the transaction's own view. A buffered own-write
+// supersedes the caller's expected transaction ID, so a compare-and-save on
+// an id already written in this transaction conflicts — as postgres answers.
+func TestTx_SaveThenCompareAndSave_Conflicts(t *testing.T) {
+	f, tm := newTxManager(t)
+	ctx := tenantCtx(spi.TenantID("tenant-dtw"))
+	ref := spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"}
+	store, err := f.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	if _, err := store.Save(ctx, &spi.Entity{Meta: spi.EntityMeta{ID: "e-scas", TenantID: "tenant-dtw", ModelRef: ref}, Data: []byte(`{"n":1}`)}); err != nil {
+		t.Fatalf("seed Save: %v", err)
+	}
+	committed, err := store.Get(ctx, "e-scas")
+	if err != nil {
+		t.Fatalf("seed Get: %v", err)
+	}
+
+	txID, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if _, err := store.Save(txCtx, &spi.Entity{Meta: committed.Meta, Data: []byte(`{"n":2}`)}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	_, err = store.CompareAndSave(txCtx, &spi.Entity{Meta: committed.Meta, Data: []byte(`{"n":3}`)}, committed.Meta.TransactionID)
+	if !errors.Is(err, spi.ErrConflict) {
+		t.Fatalf("CompareAndSave after same-tx Save: err = %v, want ErrConflict", err)
+	}
+	if err := tm.Commit(txCtx, txID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	got, err := store.Get(ctx, "e-scas")
+	if err != nil {
+		t.Fatalf("after commit Get: %v", err)
+	}
+	if string(got.Data) != `{"n":2}` {
+		t.Fatalf("after commit Data = %s, want {\"n\":2} (the Save must stand)", got.Data)
+	}
+}

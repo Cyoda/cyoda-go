@@ -220,7 +220,13 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		// delete is the current latest state, so a compare-and-save against
 		// it conflicts. Same answer postgres gives.
 		if tx.Deletes[entity.Meta.ID] {
-			return 0, spi.ErrConflict
+			return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
+		}
+		// A buffered own-write likewise supersedes the caller's expected
+		// transaction ID: the version it names is no longer this
+		// transaction's latest.
+		if _, buffered := tx.Buffer[entity.Meta.ID]; buffered {
+			return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
 		}
 		// Check CAS against main store (committed data), not buffer.
 		// Hold entityMu.RLock through both version check AND buffer write

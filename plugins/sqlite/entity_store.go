@@ -388,7 +388,13 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		// superseded. Same answer postgres gives, where the delete is
 		// applied at once.
 		if tx.Deletes[entity.Meta.ID] {
-			return 0, spi.ErrConflict
+			return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
+		}
+		// A buffered own-write likewise supersedes the caller's expected
+		// transaction ID: the version it names is no longer this
+		// transaction's latest.
+		if _, buffered := tx.Buffer[entity.Meta.ID]; buffered {
+			return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
 		}
 
 		// Check CAS against committed store (not buffer).
