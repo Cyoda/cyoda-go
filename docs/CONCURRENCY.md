@@ -146,7 +146,7 @@ per-tx `mu`) independent of the SPI surface.
 Plugin-specific concurrency detail lives in each plugin's doc:
 
 - [`docs/plugins/IN_MEMORY.md`](plugins/IN_MEMORY.md) — in-process SI+FCW with detailed lock sequence.
-- [`docs/plugins/SQLITE.md`](plugins/SQLITE.md) — application-layer SI+FCW; `flock` startup gate; `commitMu` serialises whole commit path.
+- [`docs/plugins/SQLITE.md`](plugins/SQLITE.md) — application-layer SI+FCW; `flock` startup gate; the commit gate serialises the whole commit path and floors a new transaction's snapshot.
 - [`docs/plugins/POSTGRES.md`](plugins/POSTGRES.md) — `REPEATABLE READ` + commit-time read-set validation; `pgx.Tx` single-owner property.
 
 Per-plugin tx-state locking audits (PR-C of #199):

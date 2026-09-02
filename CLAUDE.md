@@ -152,8 +152,9 @@ indistinguishable from a pass. The make targets pipe through
 `scripts/testreport`, which fails the run when a required suite executed
 nothing and prints failures verbatim instead of burying them in `-v` output.
 
-- **Iteration: `make test`** — unit + cross-backend parity, ~90s cold and
-  ~13s warm against the test cache. Excludes
+- **Iteration: `make test`** — unit + cross-backend parity, ~115s cold and
+  ~85s warm against the test cache; the warm floor is the parity suites
+  re-executing, which they always do. Excludes
   `internal/e2e` and the plugin submodules, and says so when it runs.
 - **End of deliverable: `make test-full`** — everything, root + all three
   plugin submodules, ~15 min. This is the Gate 5 command.
@@ -166,9 +167,13 @@ nothing and prints failures verbatim instead of burying them in `-v` output.
 
 **Do not add `-count=1`.** The targets deliberately leave Go's test cache
 enabled, so a re-run only re-executes packages whose inputs changed: measured
-89s cold and 13.3s warm for `make test`. Forcing `-count=1` throws that away and
+114s cold and 84s warm for `make test`, the warm figure being the parity suites
+re-executing on every run. Forcing `-count=1` throws the rest away and
 is the single easiest way to make verification slow again. Use it only when
-you are specifically hunting a flake.
+you are specifically hunting a flake. The parity suites are the one exception,
+and the make targets already run them uncached in their own invocation: their
+fixtures build the server binary in a subprocess the test cache cannot see, so
+a cached parity pass can be replayed over a server built from the old code.
 - Coverage (root module): `go test -coverprofile=coverage.out ./...` — run
   inside each `plugins/*` for per-plugin coverage.
 

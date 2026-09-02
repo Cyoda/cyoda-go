@@ -981,6 +981,44 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **memory and sqlite: direct writes stamp their submit time under the same
+  monotonic floor commits use, so a write cannot stamp below a snapshot
+  already open.** `Begin` also reserves the snapshot it takes as the new
+  floor, so the next write stamps strictly above it rather than at it.
+
+- **Compare-and-save compares the expected transaction ID literally on every
+  backend: a non-empty expected ID against a missing entity conflicts instead
+  of creating; an empty expected ID means "expect no entity".** The comparison
+  used to be skipped whenever the store held no row, so a caller naming a
+  transaction ID that could not possibly be current had its entity created
+  anyway, and a caller expecting no entity overwrote whatever was there. The
+  current transaction ID is now the transaction's own uncommitted write's if it
+  has one, else the committed row's, and `""` when there is no entity — never
+  written, or deleted. A delete makes the tombstone's ID unmatchable, so a
+  stale precondition can no longer resurrect a deleted entity.
+
+- **memory, sqlite and postgres: concurrent non-transactional
+  compare-and-saves of the same entity yield exactly one winner; the check and
+  the write are one atomic step.** Creates are covered too: `FOR UPDATE` locks
+  no absent row, so postgres additionally takes a transaction-scoped advisory
+  lock on the entity, and the callers that lose re-read under it and conflict
+  rather than all succeeding. memory and sqlite already held their write gate
+  across the check and the write whether or not the entity existed.
+
+- **sqlite: a compare-and-save inside a transaction records its unique-key
+  claims, as a save does.** An entity written that way committed with no claim
+  row, leaving the value it should have held free for the next writer.
+
+- **sqlite: `Begin` returns the caller's context error instead of waiting
+  indefinitely for the commit gate.**
+
+- **memory and sqlite: `Get`, `GetAsAt` and `Exists` on an already-committed
+  transaction are refused.**
+
+- **memory and sqlite: a write (`Save`, `CompareAndSave`, `Delete`, `DeleteAll`)
+  issued on an already-committed transaction is refused with a
+  transaction-closed error instead of being buffered and silently discarded.**
+
 - **A write matching a kind the model declares is accepted with a `changeLevel`
   set.** The extension gate compared one kind per path, so a model with a
   multi-kind field refused half of its own declared data at every level — with a
@@ -1510,6 +1548,43 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `.claude/rules/correctness-over-availability.md`: a dependency (a
   successful parse) a correct "no subscript" / "not pushable" answer
   requires now fails the check instead of being treated as satisfying it.
+
+- sqlite: `Begin` now waits for an in-flight commit's flush before flooring its
+  snapshot time, so a transaction begun mid-commit cannot miss rows a commit
+  it is ordered after has already claimed.
+- sqlite: a direct (non-transactional) write holds the same commit gate, from
+  the moment it stamps its submit time until its rows are committed. It
+  previously stamped and committed outside the gate, so a `Begin` in between
+  could floor a snapshot at or past that submit time while the row was still
+  invisible to the connection the in-transaction reads use.
+- sqlite and memory: `CompareAndSave` after a same-transaction `Delete` returns
+  a conflict on every backend (memory and sqlite previously resurrected the
+  entity at commit); `Save` after `Delete` clears the delete's attribution too.
+- sqlite and memory: a compare-and-save after a same-transaction save compares
+  against the transaction's own version on every backend. The buffered
+  own-write is the transaction's current version of the entity, so the expected
+  transaction ID is compared against it, not against the committed row it
+  supersedes: an expected ID naming the buffered version matches and the save
+  proceeds, and only a stale expected ID — the committed version's — conflicts.
+  Memory and sqlite compared against the committed row instead, letting a stale
+  expected ID through (silently discarding the buffered version) while
+  rejecting a joined callback's update of an entity created earlier in the same
+  transaction. Postgres already answered this way, its compare reading the
+  transaction's own connection. One workflow path changes with it on memory and
+  sqlite: a `COMMIT_BEFORE_DISPATCH` processor that writes the cascade-anchor
+  entity itself inside the dispatch transaction — a pattern the processor
+  contract already forbids — now fails the transition with a conflict instead
+  of having its write silently overwritten by the engine's apply-result.
+- sqlite: in-transaction `Iterate`, `GetPage`, `Count`, `CountByState` and
+  `DeleteAll` no longer materialise the model's merged view — one overlay
+  cursor serves them all, and counts read no payload bytes.
+- memory: `Search` no longer copies every entity's payload before filtering;
+  in-transaction `Iterate` records the read-set per yield instead of the whole
+  model at open; in-transaction `Count`, `CountByState` and `DeleteAll` walk
+  the same pointer snapshot rather than building a merged copy of the model;
+  grouped stats records nothing in a transaction, matching sqlite and postgres.
+  `GetAll` and `GetPage` also refuse a committed transaction's context, the
+  guard sqlite already carried on every in-transaction entry point.
 
 ## [0.8.3] — 2026-07-27
 

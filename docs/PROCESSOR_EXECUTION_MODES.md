@@ -411,7 +411,7 @@ contract from the engine's point of view.
 ### SQLite (`plugins/sqlite/`)
 
 - App-layer SI+FCW over native SQLite transactions: `Commit` validates
-  against an in-memory committed log under `commitMu`, then opens a real
+  against an in-memory committed log under the commit gate, then opens a real
   SQLite TX, writes the buffer to `entities` / `entity_versions`, records a
   monotonic submit time in `submit_times`, and commits the SQLite TX.
 - Savepoints are app-layer snapshots, **not** real SQLite SAVEPOINTs —

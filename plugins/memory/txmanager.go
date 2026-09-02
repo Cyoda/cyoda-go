@@ -104,6 +104,10 @@ type TransactionManager struct {
 	commitSeq     int64
 	txSnapshotSeq map[string]int64 // txID → commitSeq at Begin time; cleaned up after commit or rollback (no leak)
 
+	// lastSubmitTime is the monotonic floor every stamped submit time sits
+	// at or above — see nextSubmitTime. Read and written under mu only.
+	lastSubmitTime time.Time
+
 	// supersededSaves records, per (txID, entityID), each buffered
 	// *spi.Entity value overwritten by a later same-entity Save/
 	// CompareAndSave within the same open transaction, oldest first.
@@ -154,8 +158,11 @@ type TransactionManager struct {
 // Verify interface compliance at compile time.
 var _ spi.TransactionManager = (*TransactionManager)(nil)
 
-// NewTransactionManager creates and registers a TransactionManager on the StoreFactory.
+// NewTransactionManager creates and registers a TransactionManager on the
+// StoreFactory, carrying over the submit-time floor of whatever it replaces
+// (see seedLastSubmitTime).
 func (f *StoreFactory) NewTransactionManager(uuids spi.UUIDGenerator) *TransactionManager {
+	floor := f.seedLastSubmitTime()
 	tm := &TransactionManager{
 		factory:          f,
 		uuids:            uuids,
@@ -168,9 +175,42 @@ func (f *StoreFactory) NewTransactionManager(uuids spi.UUIDGenerator) *Transacti
 		txSnapshotSeq:    make(map[string]int64),
 		supersededSaves:  make(map[string]map[string][]*spi.Entity),
 		scheduledTaskOps: make(map[string][]scheduledTaskOp),
+		lastSubmitTime:   floor,
 	}
 	f.txManager = tm
 	return tm
+}
+
+// seedLastSubmitTime returns the submit-time floor a manager being installed
+// on this factory must start from: the outgoing manager's floor when there is
+// one, otherwise the latest submit time already stamped on the factory's
+// rows. Starting from zero would put the new manager's first snapshot below
+// stamps already committed — every stamp is max(now, floor+1µs) and so can
+// stand ahead of the clock — and those rows would be invisible to the first
+// transaction it begins. The sqlite plugin seeds the same value from
+// MAX(submit_time) on open.
+//
+// The outgoing manager's floor is authoritative on its own: it is at or above
+// every stamp it issued.
+func (f *StoreFactory) seedLastSubmitTime() time.Time {
+	if prev := f.txManager; prev != nil {
+		prev.mu.Lock()
+		defer prev.mu.Unlock()
+		return prev.lastSubmitTime
+	}
+	f.entityMu.RLock()
+	defer f.entityMu.RUnlock()
+	var latest time.Time
+	for _, entities := range f.entityData {
+		for _, versions := range entities {
+			for _, v := range versions {
+				if v.submitTime.After(latest) {
+					latest = v.submitTime
+				}
+			}
+		}
+	}
+	return latest
 }
 
 // recordUniqueKeys stores the unique keys for entityID under txID so that
@@ -211,6 +251,29 @@ func (m *TransactionManager) stageScheduledTaskOp(txID string, op scheduledTaskO
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.scheduledTaskOps[txID] = append(m.scheduledTaskOps[txID], op)
+}
+
+// nextSubmitTime returns the submit time to stamp on a write and records it
+// as the new floor. max(now, lastSubmitTime+1µs) guarantees forward progress
+// even under NTP steps, VM pause/migrate, leap-second smearing, or a frozen
+// test clock, and — because Begin floors a new transaction's SnapshotTime to
+// lastSubmitTime — guarantees a write never stamps at or below a snapshot
+// already open. Every path that stamps a submit time uses it: Commit's flush
+// and the direct writes (saveUnlocked, the non-tx Delete and DeleteAll). The
+// one-microsecond step matches the sqlite plugin, so under a frozen clock
+// both backends produce the same sequence of stamps.
+//
+// mu is a leaf lock; callers already holding factory.entityMu take it in the
+// order entityMu → mu, the order Commit uses.
+func (m *TransactionManager) nextSubmitTime() time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.factory.clock.Now()
+	if !now.After(m.lastSubmitTime) {
+		now = m.lastSubmitTime.Add(time.Microsecond)
+	}
+	m.lastSubmitTime = now
+	return now
 }
 
 // GetTransactionManager returns the registered TransactionManager, or nil.
@@ -268,10 +331,29 @@ func (m *TransactionManager) Begin(ctx context.Context) (string, context.Context
 	// earlier-ordered section, and the clock is monotonic non-decreasing —
 	// see clock.go: wallClock uses Go's monotonic time.Now(), TestClock's
 	// virtual time only ever advances forward).
+	//
+	// SnapshotTime is additionally floored to lastSubmitTime, the monotonic
+	// floor every stamped submit time sits at or above (see nextSubmitTime).
+	// Without the floor a stamped time could stand ahead of the raw clock —
+	// several writes inside one clock tick each bump it by a microsecond, and
+	// a test clock can be frozen outright — and the snapshot would then sit
+	// at or above a write it must not see.
+	//
+	// The snapshot is then RESERVED as the new floor. Reading the floor is
+	// not enough: with the floor below the clock (a quiet factory leaves it
+	// at zero) the snapshot is the raw clock value, and the next write stamps
+	// max(now, floor+1µs) — the same instant — which the visibility rule
+	// (submitTime <= SnapshotTime) counts as visible to a transaction that
+	// began before it. Reserving makes the next stamp strictly later.
 	func() {
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		tx.SnapshotTime = m.factory.clock.Now()
+		now := m.factory.clock.Now()
+		if now.Before(m.lastSubmitTime) {
+			now = m.lastSubmitTime
+		}
+		tx.SnapshotTime = now
+		m.lastSubmitTime = now
 		m.active[txID] = tx
 		m.txSnapshotSeq[txID] = m.commitSeq
 	}()
@@ -478,7 +560,15 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 		}
 
 		// 4. Flush buffer to entity store.
-		submitTime := m.factory.clock.Now()
+		//
+		// Stamped under the monotonic floor (see nextSubmitTime), and still
+		// captured HERE — before the mu section at step 6 that assigns this
+		// commit's seq — which is what Begin's atomic-capture argument above
+		// rests on: a commit whose seq section precedes a Begin has already
+		// bumped lastSubmitTime, so that Begin's floored SnapshotTime is at
+		// or after this submitTime and the write it excludes from its FCW
+		// baseline is one it can see.
+		submitTime := m.nextSubmitTime()
 
 		// Pre-release: free claims for all deleted entities BEFORE inserting any
 		// new buffer claims. This ensures a same-tx delete+reclaim of the same

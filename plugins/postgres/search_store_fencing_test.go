@@ -284,7 +284,7 @@ func (tr *cancelAfterFenceTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn
 // boundaries inside the plugin's own transactions.
 func setupSearchTestWithTracer(t *testing.T, tracer pgx.QueryTracer) (*postgres.StoreFactory, *pgxpool.Pool) {
 	t.Helper()
-	dbURL := skipIfNoPostgres(t)
+	dbURL := testDBURL(t)
 
 	poolCfg, err := pgxpool.ParseConfig(dbURL)
 	if err != nil {

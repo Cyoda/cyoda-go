@@ -200,7 +200,10 @@ func newStoreFactory(ctx context.Context, cfg config, opts ...Option) (*StoreFac
 //
 // Floored at 4 so a one- or two-CPU container still keeps an interactive
 // GetPage off the back of a long streaming scan — the starvation this pool
-// exists to prevent.
+// exists to prevent. An in-transaction iterator holds one readDB connection
+// for its whole lifetime, so a consumer must not issue another readDB read
+// inside its loop: with a small pool, enough nested readers exhaust it and
+// the inner read waits on a connection the outer loop will not release.
 //
 // Ceilinged at 8 because PRAGMA cache_size is per-connection: each pooled
 // reader owns its own page cache (cfg.CacheSizeKiB, 64 MiB by default), so
@@ -346,7 +349,7 @@ func (f *StoreFactory) EntityStore(ctx context.Context) (spi.EntityStore, error)
 	if err != nil {
 		return nil, err
 	}
-	return &entityStore{db: f.db, readDB: f.readDB, tenantID: tid, tm: f.tm, clock: f.clock, cfg: f.cfg}, nil
+	return &entityStore{db: f.db, readDB: f.readDB, tenantID: tid, tm: f.tm, cfg: f.cfg}, nil
 }
 
 func (f *StoreFactory) ModelStore(ctx context.Context) (spi.ModelStore, error) {

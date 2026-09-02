@@ -9,17 +9,20 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
 )
 
-func skipIfNoPostgres(t *testing.T) string {
+// testDBURL returns the database every test in this package runs against.
+// TestMain guarantees it — from the environment, or from a container it
+// started — so an empty value is a broken fixture, not a reason to skip.
+func testDBURL(t *testing.T) string {
 	t.Helper()
 	url := os.Getenv("CYODA_TEST_DB_URL")
 	if url == "" {
-		t.Skip("CYODA_TEST_DB_URL not set — skipping PostgreSQL test")
+		t.Fatal("CYODA_TEST_DB_URL is empty — TestMain must provision a database")
 	}
 	return url
 }
 
 func TestNewPool_Connects(t *testing.T) {
-	dbURL := skipIfNoPostgres(t)
+	dbURL := testDBURL(t)
 
 	cfg := postgres.DBConfig{
 		URL:             dbURL,

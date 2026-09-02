@@ -282,7 +282,7 @@ type abortFixture struct {
 
 func newAbortFixture(t *testing.T, idle time.Duration) *abortFixture {
 	t.Helper()
-	pool := openCeilingPool(t, ceilingEnv(skipIfNoLiveDB(t), map[string]string{
+	pool := openCeilingPool(t, ceilingEnv(testDBURL(t), map[string]string{
 		"CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT": idle.String(),
 	}))
 	tm := NewTransactionManager(pool, newTestUUIDGenerator())
@@ -297,7 +297,7 @@ func newAbortFixture(t *testing.T, idle time.Duration) *abortFixture {
 // other way.
 func newStatementCeilingFixture(t *testing.T, limit time.Duration) *abortFixture {
 	t.Helper()
-	pool := openCeilingPool(t, ceilingEnv(skipIfNoLiveDB(t), map[string]string{
+	pool := openCeilingPool(t, ceilingEnv(testDBURL(t), map[string]string{
 		"CYODA_POSTGRES_STATEMENT_TIMEOUT": limit.String(),
 	}))
 	tm := NewTransactionManager(pool, newTestUUIDGenerator())
@@ -339,7 +339,7 @@ func (fx *abortFixture) beginThenLetTheCeilingFire(t *testing.T) (string, contex
 // than this plugin's reading of it. The observed shapes are written up in the
 // comment above isConnectionTorn.
 func TestLive_IdleInTxCeiling_ErrorShape(t *testing.T) {
-	pool := openCeilingPool(t, ceilingEnv(skipIfNoLiveDB(t), map[string]string{
+	pool := openCeilingPool(t, ceilingEnv(testDBURL(t), map[string]string{
 		"CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT": "300ms",
 	}))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

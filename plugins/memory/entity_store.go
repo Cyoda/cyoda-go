@@ -47,6 +47,13 @@ type EntityStore struct {
 	factory *StoreFactory
 }
 
+// unstageDelete removes a staged delete for id from BOTH maps the delete
+// occupies (Deletes and DeleteAttribution always cover the same key set).
+func unstageDelete(tx *spi.TransactionState, id string) {
+	delete(tx.Deletes, id)
+	delete(tx.DeleteAttribution, id)
+}
+
 func copyEntity(e *spi.Entity) *spi.Entity {
 	cp := &spi.Entity{Meta: e.Meta, Data: make([]byte, len(e.Data))}
 	copy(cp.Data, e.Data)
@@ -170,6 +177,9 @@ func (s *EntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		if tx.RolledBack {
 			return 0, fmt.Errorf("Save: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
+		if tx.Closed {
+			return 0, fmt.Errorf("Save: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
+		}
 		// Transaction mode: write to buffer, not main store. Stage any
 		// value this overwrites (see stageSuperseded's godoc) BEFORE
 		// overwriting tx.Buffer, so a same-tx double-save of the same
@@ -180,10 +190,10 @@ func (s *EntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		tx.WriteSet[entity.Meta.ID] = true
 		// If the entity was previously marked for deletion in this tx, unmark it
 		// (last-write-wins: Save-after-Delete → present). Keeps tx.Buffer and
-		// tx.Deletes mutually exclusive, the invariant txmanager.Commit assumes
-		// and that GetAll / Search / commit all rely on to agree. Mirrors
-		// plugins/sqlite/entity_store.go Save.
-		delete(tx.Deletes, entity.Meta.ID)
+		// tx.Deletes/DeleteAttribution mutually exclusive, the invariant
+		// txmanager.Commit assumes and that GetAll / Search / commit all rely
+		// on to agree. Mirrors plugins/sqlite/entity_store.go Save.
+		unstageDelete(tx, entity.Meta.ID)
 		// Capture unique keys at buffer time (last-write-wins, matching tx.Buffer
 		// semantics). Commit sees ONE ctx but a mixed-model batch may buffer
 		// entities with different key contexts, so keys must be stored per-entity.
@@ -209,6 +219,47 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		if tx.RolledBack {
 			return 0, fmt.Errorf("CompareAndSave: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
+		if tx.Closed {
+			return 0, fmt.Errorf("CompareAndSave: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
+		}
+		// A write compares against the transaction's own view, and a same-tx
+		// delete means the transaction sees NO entity: the current
+		// transaction ID is "". A non-empty expected ID names a version the
+		// delete has already superseded, so it conflicts. An empty one says
+		// "expect no entity" — which is exactly what the delete left behind —
+		// so the save is allowed and re-creates the entity. It must unstage
+		// the delete as Save does, or the commit would apply the tombstone on
+		// top of the re-creation. Same answer postgres gives.
+		if tx.Deletes[entity.Meta.ID] {
+			if expectedTxID != "" {
+				return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
+			}
+			unstageDelete(tx, entity.Meta.ID)
+			cp := copyEntity(entity)
+			s.factory.txManager.stageSuperseded(tx.ID, entity.Meta.ID, tx.Buffer[entity.Meta.ID])
+			tx.Buffer[entity.Meta.ID] = cp
+			tx.WriteSet[entity.Meta.ID] = true
+			s.factory.txManager.recordUniqueKeys(tx.ID, entity.Meta.ID, spi.UniqueKeysFromContext(ctx))
+			return 0, nil
+		}
+		// A buffered own-write IS the transaction's current version of this
+		// entity, so the comparison is against it, not against the committed
+		// row it supersedes. An expected ID naming the buffered version
+		// matches — that is how a joined callback updates an entity created
+		// earlier in the same transaction; only a stale expected ID (the
+		// committed version's) conflicts. Same answer postgres gives, whose
+		// CAS reads the transaction's own connection.
+		if buffered, ok := tx.Buffer[entity.Meta.ID]; ok {
+			if buffered.Meta.TransactionID != expectedTxID {
+				return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
+			}
+			cp := copyEntity(entity)
+			s.factory.txManager.stageSuperseded(tx.ID, entity.Meta.ID, buffered)
+			tx.Buffer[entity.Meta.ID] = cp
+			tx.WriteSet[entity.Meta.ID] = true
+			s.factory.txManager.recordUniqueKeys(tx.ID, entity.Meta.ID, spi.UniqueKeysFromContext(ctx))
+			return 0, nil
+		}
 		// Check CAS against main store (committed data), not buffer.
 		// Hold entityMu.RLock through both version check AND buffer write
 		// to prevent TOCTOU. Wrap in an IIFE so the unlock runs via defer
@@ -217,17 +268,9 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		func() {
 			s.factory.entityMu.RLock()
 			defer s.factory.entityMu.RUnlock()
-			versions := s.factory.entityData[s.tenant][entity.Meta.ID]
-			if len(versions) > 0 {
-				for i := len(versions) - 1; i >= 0; i-- {
-					if !versions[i].deleted && versions[i].entity != nil {
-						if versions[i].entity.Meta.TransactionID != expectedTxID {
-							conflict = true
-							return
-						}
-						break
-					}
-				}
+			if currentTxIDLocked(s.factory.entityData[s.tenant][entity.Meta.ID]) != expectedTxID {
+				conflict = true
+				return
 			}
 			// Write to buffer under the same lock hold. Stage any value
 			// this overwrites (see stageSuperseded's godoc) first.
@@ -244,25 +287,34 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		return 0, nil
 	}
 
-	// Non-transaction: existing behavior.
+	// Non-transaction: the same literal comparison, against committed data.
 	s.factory.entityMu.Lock()
 	defer s.factory.entityMu.Unlock()
 
-	tid := s.tenant
-	eid := entity.Meta.ID
-
-	if versions, ok := s.factory.entityData[tid][eid]; ok && len(versions) > 0 {
-		for i := len(versions) - 1; i >= 0; i-- {
-			if !versions[i].deleted && versions[i].entity != nil {
-				if versions[i].entity.Meta.TransactionID != expectedTxID {
-					return 0, spi.ErrConflict
-				}
-				break
-			}
-		}
+	if currentTxIDLocked(s.factory.entityData[s.tenant][entity.Meta.ID]) != expectedTxID {
+		return 0, spi.ErrConflict
 	}
 
 	return s.saveUnlocked(ctx, entity)
+}
+
+// currentTxIDLocked returns the transaction ID a compare-and-save compares
+// against: the latest committed version's, or "" when there is no entity —
+// never written, or deleted. A deleted entity is no entity, exactly as Get
+// reports it, so its tombstone does not expose the superseded version's ID.
+// An entity actually stored with an empty transaction ID would read the same
+// way — as no entity — but every writer stamps a non-empty one, so that case
+// is not reachable in production.
+// The caller must hold factory.entityMu (read or write).
+func currentTxIDLocked(versions []entityVersion) string {
+	if len(versions) == 0 {
+		return ""
+	}
+	latest := versions[len(versions)-1]
+	if latest.deleted || latest.entity == nil {
+		return ""
+	}
+	return latest.entity.Meta.TransactionID
 }
 
 // saveUnlocked performs the save logic without acquiring the lock. The caller
@@ -304,7 +356,11 @@ func (s *EntityStore) saveUnlocked(ctx context.Context, entity *spi.Entity) (int
 		}
 	}
 
-	now := s.factory.clock.Now()
+	// Stamped under the monotonic floor a commit uses (nextSubmitTime), not
+	// the raw clock: the floor can stand ahead of the clock, and Begin floors
+	// a new transaction's SnapshotTime to it, so a raw-clock stamp could land
+	// at or below a snapshot already open.
+	now := s.factory.txManager.nextSubmitTime()
 	changeType := deriveChangeType(entity.Meta.ChangeType, len(versions) > 0)
 
 	creationDate := entity.Meta.CreationDate
@@ -366,6 +422,9 @@ func (s *EntityStore) Get(ctx context.Context, entityID string) (*spi.Entity, er
 		if tx.RolledBack {
 			return nil, fmt.Errorf("Get: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
+		if tx.Closed {
+			return nil, fmt.Errorf("Get: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
+		}
 		// Check if deleted in this transaction.
 		if tx.Deletes[entityID] {
 			return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
@@ -408,6 +467,9 @@ func (s *EntityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return nil, fmt.Errorf("GetAsAt: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
+		}
+		if tx.Closed {
+			return nil, fmt.Errorf("GetAsAt: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
 		}
 		tx.ReadSet[entityID] = true
 	}
@@ -455,6 +517,9 @@ func (s *EntityStore) GetAll(ctx context.Context, modelRef spi.ModelRef) ([]*spi
 		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return nil, fmt.Errorf("GetAll: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
+		}
+		if tx.Closed {
+			return nil, fmt.Errorf("GetAll: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
 		}
 		// Combine: snapshot of main store + buffer - deletes. Wrap the
 		// entityMu hold in an IIFE so the unlock runs via defer (per
@@ -594,6 +659,9 @@ func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 		if tx.RolledBack {
 			return fmt.Errorf("Delete: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
+		if tx.Closed {
+			return fmt.Errorf("Delete: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
+		}
 		// Check existence: buffer first, then committed store. Wrap the
 		// entityMu hold in an IIFE so the unlock runs via defer.
 		if _, inBuffer := tx.Buffer[entityID]; !inBuffer {
@@ -638,11 +706,13 @@ func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 	attributed, executor := spi.AttributionFor(ctx)
 	// latest.deleted was already checked false above, so latest.entity is
 	// guaranteed non-nil here.
+	// Stamped under the monotonic floor — see saveUnlocked.
+	deletedAt := s.factory.txManager.nextSubmitTime()
 	s.factory.entityData[s.tenant][entityID] = append(versions, entityVersion{
 		entity:         nil,
 		version:        latest.entity.Meta.Version + 1,
 		transactionID:  "",
-		submitTime:     s.factory.clock.Now(),
+		submitTime:     deletedAt,
 		deleted:        true,
 		changeType:     "DELETED",
 		user:           attributed.ID,
@@ -666,15 +736,19 @@ func (s *EntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 		if tx.RolledBack {
 			return fmt.Errorf("DeleteAll: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
+		if tx.Closed {
+			return fmt.Errorf("DeleteAll: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
+		}
 		// Get all entities for the model (snapshot), mark each as deleted
 		// in tx. Wrap the entityMu hold in an IIFE so the unlock runs via
-		// defer.
+		// defer. We only need each entity's id, so the pointer snapshot
+		// (no payload deep-copy) is enough.
 		var mainEntities []*spi.Entity
 		var snapErr error
 		func() {
 			s.factory.entityMu.RLock()
 			defer s.factory.entityMu.RUnlock()
-			mainEntities, snapErr = s.getAllSnapshotUnlocked(ctx, modelRef, tx.SnapshotTime)
+			mainEntities, snapErr = s.getAllSnapshotPointersUnlocked(ctx, modelRef, tx.SnapshotTime)
 		}()
 		if snapErr != nil {
 			return fmt.Errorf("DeleteAll: %w", snapErr)
@@ -714,7 +788,9 @@ func (s *EntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 	s.factory.entityMu.Lock()
 	defer s.factory.entityMu.Unlock()
 
-	now := s.factory.clock.Now()
+	// Stamped under the monotonic floor — see saveUnlocked. One stamp for the
+	// whole sweep: a non-transactional DeleteAll is a single write.
+	now := s.factory.txManager.nextSubmitTime()
 	attributed, executor := spi.AttributionFor(ctx)
 	for eid, versions := range s.factory.entityData[s.tenant] {
 		if len(versions) == 0 {
@@ -754,6 +830,9 @@ func (s *EntityStore) Exists(ctx context.Context, entityID string) (bool, error)
 		if tx.RolledBack {
 			return false, fmt.Errorf("Exists: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
+		if tx.Closed {
+			return false, fmt.Errorf("Exists: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
+		}
 		// Check deletes first.
 		if tx.Deletes[entityID] {
 			return false, nil
@@ -779,15 +858,63 @@ func (s *EntityStore) Exists(ctx context.Context, entityID string) (bool, error)
 	return !versions[len(versions)-1].deleted, nil
 }
 
+// countTx tallies the transaction's view of modelRef without copying: the
+// committed pointer snapshot at tx.SnapshotTime minus staged deletes, plus
+// buffered own-writes of the model. Caller holds tx.OpMu.RLock.
+func (s *EntityStore) countTx(ctx context.Context, tx *spi.TransactionState, modelRef spi.ModelRef, tally func(state string)) error {
+	var committed []*spi.Entity
+	var snapErr error
+	func() {
+		s.factory.entityMu.RLock()
+		defer s.factory.entityMu.RUnlock()
+		committed, snapErr = s.getAllSnapshotPointersUnlocked(ctx, modelRef, tx.SnapshotTime)
+	}()
+	if snapErr != nil {
+		return snapErr
+	}
+	for i, e := range committed {
+		if i&1023 == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
+		if tx.Deletes[e.Meta.ID] {
+			continue
+		}
+		// Only a buffered write of the SAME model supersedes this committed
+		// row — that is how GetAll, GetPage and buildSnapshot overlay the
+		// buffer. A buffered write of another model leaves the committed row
+		// standing in this model's view, so it must still be tallied.
+		if b, buffered := tx.Buffer[e.Meta.ID]; buffered && b.Meta.ModelRef == modelRef {
+			continue // the buffered version is tallied below
+		}
+		tally(e.Meta.State)
+	}
+	for id, e := range tx.Buffer {
+		if e.Meta.ModelRef != modelRef || tx.Deletes[id] {
+			continue
+		}
+		tally(e.Meta.State)
+	}
+	return nil
+}
+
 func (s *EntityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, error) {
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
-		// Use the same logic as GetAll to get the merged view, then count.
-		all, err := s.GetAll(ctx, modelRef)
-		if err != nil {
-			return 0, err
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
+		if tx.RolledBack {
+			return 0, fmt.Errorf("Count: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
-		return int64(len(all)), nil
+		if tx.Closed {
+			return 0, fmt.Errorf("Count: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
+		}
+		var n int64
+		if err := s.countTx(ctx, tx, modelRef, func(string) { n++ }); err != nil {
+			return 0, fmt.Errorf("Count: %w", err)
+		}
+		return n, nil
 	}
 
 	// Non-transaction: existing behavior.
@@ -827,20 +954,25 @@ func (s *EntityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, s
 
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
-		// In-tx: use GetAll's merged-view logic (matches existing Count's in-tx fallback).
-		all, err := s.GetAll(ctx, modelRef)
-		if err != nil {
-			return nil, err
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
+		if tx.RolledBack {
+			return nil, fmt.Errorf("CountByState: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
+		}
+		if tx.Closed {
+			return nil, fmt.Errorf("CountByState: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
 		}
 		result := make(map[string]int64)
-		for _, e := range all {
-			st := e.Meta.State
+		err := s.countTx(ctx, tx, modelRef, func(st string) {
 			if filter != nil {
 				if _, ok := filter[st]; !ok {
-					continue
+					return
 				}
 			}
 			result[st]++
+		})
+		if err != nil {
+			return nil, fmt.Errorf("CountByState: %w", err)
 		}
 		return result, nil
 	}
@@ -943,7 +1075,10 @@ func (s *EntityStore) GetPage(ctx context.Context, modelRef spi.ModelRef, limit,
 		// overlay, mirroring GetAllAsAt.
 		s.factory.entityMu.RLock()
 		defer s.factory.entityMu.RUnlock()
-		rows := s.getAllSnapshotPointersUnlocked(modelRef, *asAt)
+		rows, err := s.getAllSnapshotPointersUnlocked(ctx, modelRef, *asAt)
+		if err != nil {
+			return nil, fmt.Errorf("GetPage: %w", err)
+		}
 		return pageSlice(rows, limit, offset), nil
 	}
 
@@ -967,13 +1102,20 @@ func (s *EntityStore) GetPage(ctx context.Context, modelRef spi.ModelRef, limit,
 	if tx.RolledBack {
 		return nil, fmt.Errorf("GetPage: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 	}
+	if tx.Closed {
+		return nil, fmt.Errorf("GetPage: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
+	}
 
 	var mainEntities []*spi.Entity
+	var snapErr error
 	func() {
 		s.factory.entityMu.RLock()
 		defer s.factory.entityMu.RUnlock()
-		mainEntities = s.getAllSnapshotPointersUnlocked(modelRef, tx.SnapshotTime)
+		mainEntities, snapErr = s.getAllSnapshotPointersUnlocked(ctx, modelRef, tx.SnapshotTime)
 	}()
+	if snapErr != nil {
+		return nil, fmt.Errorf("GetPage: %w", snapErr)
+	}
 
 	merged := make(map[string]*spi.Entity, len(mainEntities))
 	for _, e := range mainEntities {

@@ -77,7 +77,7 @@ func (s *EntityStore) Iterate(
 		return nil, fmt.Errorf("iterate: ordered iteration inside a transaction is unsupported")
 	}
 
-	snapshot, err := s.buildSnapshot(ctx, model, opts.PointInTime, opts.TrackingRead)
+	snapshot, bufferedIDs, err := s.buildSnapshot(ctx, model, opts.PointInTime)
 	if err != nil {
 		return nil, err
 	}
@@ -92,10 +92,22 @@ func (s *EntityStore) Iterate(
 	if err != nil {
 		return nil, fmt.Errorf("Iterate: %w", err)
 	}
+	// A point-in-time read is committed-only and ignores the ambient
+	// transaction (buildSnapshot's PIT path already bypasses the overlay), so
+	// the iterator carries no transaction either: no per-yield tx check, no
+	// recording. tx, trackingRead and bufferedIDs are meaningful only for an
+	// in-transaction, non-PIT iteration.
+	var tx *spi.TransactionState
+	if opts.PointInTime == nil {
+		tx = spi.GetTransaction(ctx)
+	}
 	return &memoryIter{
-		snapshot: snapshot,
-		prepared: prepared,
-		ctx:      ctx,
+		snapshot:     snapshot,
+		prepared:     prepared,
+		ctx:          ctx,
+		tx:           tx,
+		trackingRead: opts.TrackingRead,
+		bufferedIDs:  bufferedIDs,
 	}, nil
 }
 
@@ -109,21 +121,26 @@ func (s *EntityStore) Iterate(
 // the requested instant, ignoring any in-flight tx — consistent with the
 // rest of the SPI's historical-read semantics.
 //
-// trackingRead gates in-tx read-set recording, matching
-// IterateOptions.TrackingRead's "no-op unless true" contract (see the
-// spi.IterateOptions doc comment). GroupedAggregate has no such knob in its
-// options and always passes true, preserving its pre-existing unconditional
-// recording behavior.
-func (s *EntityStore) buildSnapshot(ctx context.Context, model spi.ModelRef, pit *time.Time, trackingRead bool) ([]*spi.Entity, error) {
+// The snapshot build records nothing into the read-set. Recording is the
+// iterator's job, per yield — see memoryIter.checkAndRecord.
+//
+// The second return value is the set of ids the transaction's own buffer
+// contributed to the snapshot (nil outside a transaction). Those are
+// own-writes: already write-set entries, never read-set entries.
+func (s *EntityStore) buildSnapshot(ctx context.Context, model spi.ModelRef, pit *time.Time) ([]*spi.Entity, map[string]struct{}, error) {
 	// PIT path: historical read, bypass tx overlay.
 	if pit != nil {
 		var snapshot []*spi.Entity
+		var snapErr error
 		func() {
 			s.factory.entityMu.RLock()
 			defer s.factory.entityMu.RUnlock()
-			snapshot = s.getAllSnapshotPointersUnlocked(model, *pit)
+			snapshot, snapErr = s.getAllSnapshotPointersUnlocked(ctx, model, *pit)
 		}()
-		return snapshot, nil
+		if snapErr != nil {
+			return nil, nil, fmt.Errorf("Iterate: %w", snapErr)
+		}
+		return snapshot, nil, nil
 	}
 
 	tx := spi.GetTransaction(ctx)
@@ -135,34 +152,37 @@ func (s *EntityStore) buildSnapshot(ctx context.Context, model spi.ModelRef, pit
 		tx.OpMu.RLock()
 		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
-			return nil, fmt.Errorf("Iterate: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
+			return nil, nil, fmt.Errorf("Iterate: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
+		}
+		if tx.Closed {
+			return nil, nil, fmt.Errorf("Iterate: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
 		}
 
 		var mainEntities []*spi.Entity
+		var snapErr error
 		func() {
 			s.factory.entityMu.RLock()
 			defer s.factory.entityMu.RUnlock()
-			mainEntities = s.getAllSnapshotPointersUnlocked(model, tx.SnapshotTime)
+			mainEntities, snapErr = s.getAllSnapshotPointersUnlocked(ctx, model, tx.SnapshotTime)
 		}()
+		if snapErr != nil {
+			return nil, nil, fmt.Errorf("Iterate: %w", snapErr)
+		}
 
 		merged := make(map[string]*spi.Entity, len(mainEntities))
 		for _, e := range mainEntities {
 			if !tx.Deletes[e.Meta.ID] {
 				merged[e.Meta.ID] = e
-				if trackingRead {
-					tx.ReadSet[e.Meta.ID] = true
-				}
 			}
 		}
 		// Overlay tx.Buffer. The buffered *spi.Entity is owned by the tx
 		// and not yet committed; for snapshot semantics we copy it so the
 		// iterator can read it lock-free without aliasing live tx state.
+		bufferedIDs := make(map[string]struct{}, len(tx.Buffer))
 		for id, e := range tx.Buffer {
 			if e.Meta.ModelRef == model {
 				merged[id] = copyEntity(e)
-				if trackingRead {
-					tx.ReadSet[id] = true
-				}
+				bufferedIDs[id] = struct{}{}
 			}
 		}
 
@@ -170,7 +190,7 @@ func (s *EntityStore) buildSnapshot(ctx context.Context, model spi.ModelRef, pit
 		for _, e := range merged {
 			snapshot = append(snapshot, e)
 		}
-		return snapshot, nil
+		return snapshot, bufferedIDs, nil
 	}
 
 	// Non-tx: latest committed version per entity matching the model.
@@ -196,7 +216,7 @@ func (s *EntityStore) buildSnapshot(ctx context.Context, model spi.ModelRef, pit
 			snapshot = append(snapshot, latest.entity)
 		}
 	}()
-	return snapshot, nil
+	return snapshot, nil, nil
 }
 
 // getAllSnapshotPointersUnlocked is the *spi.Entity-pointer-returning
@@ -205,10 +225,23 @@ func (s *EntityStore) buildSnapshot(ctx context.Context, model spi.ModelRef, pit
 // pointer is heap-stable and the entityVersion immutability invariant
 // makes lock-free read safe.
 //
+// ctx gates the same amortized cancellation check the copying variant runs:
+// every 1024 entities (i&1023==0, true at i==0 too) so an already-expired or
+// since-expired ctx aborts the scan rather than walking the whole tenant
+// first. ctx.Err() is a lock-free atomic read, so running it under
+// entityMu.RLock() changes no locking structure.
+//
 // Caller must hold at least s.factory.entityMu.RLock().
-func (s *EntityStore) getAllSnapshotPointersUnlocked(modelRef spi.ModelRef, snapshotTime time.Time) []*spi.Entity {
+func (s *EntityStore) getAllSnapshotPointersUnlocked(ctx context.Context, modelRef spi.ModelRef, snapshotTime time.Time) ([]*spi.Entity, error) {
 	var result []*spi.Entity
+	i := 0
 	for _, versions := range s.factory.entityData[s.tenant] {
+		if i&1023 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		i++
 		if len(versions) == 0 {
 			continue
 		}
@@ -228,20 +261,32 @@ func (s *EntityStore) getAllSnapshotPointersUnlocked(modelRef spi.ModelRef, snap
 			result = append(result, found)
 		}
 	}
-	return result
+	return result, nil
 }
 
 // memoryIter walks a pre-built snapshot, applying the filter inside Next()
 // before yielding each entity. Per the SPI contract: Err() is sticky,
 // Close() is idempotent, ctx cancellation is observed.
+//
+// Inside a transaction EVERY yield first re-checks the transaction under a
+// short tx.OpMu.RLock: Commit and Rollback take OpMu.Lock between two yields,
+// and an iterator must neither keep serving a view of a transaction that has
+// since closed nor record into one. The check is unconditional — a
+// non-tracking iterator would otherwise go on yielding buffered writes that a
+// concurrent Rollback has thrown away. With trackingRead the same critical
+// section records the id, for committed entities only (own-writes are already
+// in the write-set).
 type memoryIter struct {
-	snapshot []*spi.Entity
-	prepared spi.PreparedFilter
-	ctx      context.Context
-	idx      int
-	cur      *spi.Entity
-	err      error
-	closed   bool
+	snapshot     []*spi.Entity
+	prepared     spi.PreparedFilter
+	ctx          context.Context
+	tx           *spi.TransactionState // nil outside a transaction
+	trackingRead bool
+	bufferedIDs  map[string]struct{} // own-writes are never read-set entries
+	idx          int
+	cur          *spi.Entity
+	err          error
+	closed       bool
 }
 
 func (it *memoryIter) Next() bool {
@@ -258,10 +303,39 @@ func (it *memoryIter) Next() bool {
 		if !it.prepared.Match(e.Data, e.Meta) {
 			continue
 		}
+		if it.tx != nil {
+			if err := it.checkAndRecord(e.Meta.ID); err != nil {
+				it.err = err
+				return false
+			}
+		}
 		it.cur = e
 		return true
 	}
 	return false
+}
+
+// checkAndRecord is the per-yield critical section: the transaction must still
+// be open for this yield to be served at all, and — when tracking — the
+// committed id is recorded while the same lock is held, so a Commit cannot
+// slip in between the check and the write.
+func (it *memoryIter) checkAndRecord(id string) error {
+	it.tx.OpMu.RLock()
+	defer it.tx.OpMu.RUnlock()
+	if it.tx.RolledBack {
+		return fmt.Errorf("Iterate: %w (txID=%s)", spi.ErrTxRolledBack, it.tx.ID)
+	}
+	if it.tx.Closed {
+		return fmt.Errorf("Iterate: %w (txID=%s)", spi.ErrTxAlreadyCommitted, it.tx.ID)
+	}
+	if !it.trackingRead {
+		return nil
+	}
+	if _, buffered := it.bufferedIDs[id]; buffered {
+		return nil
+	}
+	it.tx.ReadSet[id] = true
+	return nil
 }
 
 func (it *memoryIter) Entity() *spi.Entity { return it.cur }
@@ -351,10 +425,10 @@ func (s *EntityStore) GroupedAggregate(
 		}
 	}
 
-	// GroupedAggregationsOptions has no TrackingRead knob — always record,
-	// preserving this method's pre-existing unconditional behavior (see
-	// buildSnapshot's doc comment).
-	snapshot, err := s.buildSnapshot(ctx, model, opts.PointInTime, true)
+	// In-transaction grouped stats records nothing into the read-set — the
+	// rule every backend shares (sqlite and postgres record nothing; the
+	// engine passes no TrackingRead for stats either).
+	snapshot, _, err := s.buildSnapshot(ctx, model, opts.PointInTime)
 	if err != nil {
 		return nil, err
 	}

@@ -1,14 +1,15 @@
 package postgres_test
 
-// self_wrap_acquire_test.go — the two acquires that are NOT
+// self_wrap_acquire_test.go — the acquires that are NOT
 // TransactionManager.Begin.
 //
-// Three code paths in this plugin open a transaction of their own on the pool:
-// Begin, ExtendSchema's self-wrap, and the async-search scan's own-ceiling
-// transaction. All three contend for the same connections, so all three can
-// fail for the same transient reason — and a client must be told the same thing
+// Several code paths in this plugin open a transaction of their own on the
+// pool: Begin, ExtendSchema's self-wrap, the async-search scan's own-ceiling
+// transaction, and the transaction a non-transactional CompareAndSave takes its
+// row lock in. They all contend for the same connections, so they can all fail
+// for the same transient reason — and a client must be told the same thing
 // about it whichever one it reached. Begin has been tested since the ceiling
-// work landed (acquire_test.go); these are the other two.
+// work landed (acquire_test.go); these are the others.
 //
 // Each is tested in both directions, because the interesting half is the one a
 // classifier keyed on context.DeadlineExceeded alone would get wrong: a caller
@@ -173,6 +174,67 @@ func TestAsyncScanSearch_CallerDeadlineOnSaturatedPool_IsNotStorageUnavailable(t
 	err := asyncScanSearch(t, callerCtx, f)
 	if err == nil {
 		t.Fatal("async scan succeeded on a one-connection pool with the only connection held")
+	}
+	if storageUnavailable(err) {
+		t.Fatalf("the caller's own deadline was reported as a server-side outage: %v", err)
+	}
+}
+
+// --- CompareAndSave's own transaction ----------------------------------------
+
+// compareAndSaveOnSaturatedPool drives CompareAndSave with NO ambient
+// transaction on ctx, which is the branch that opens a transaction of its own
+// to take the row lock. No entity is needed: the acquire fails before any SQL.
+func compareAndSaveOnSaturatedPool(t *testing.T, callerCtx context.Context, f *postgres.StoreFactory) error {
+	t.Helper()
+	es, err := f.EntityStore(callerCtx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	if spi.GetTransaction(callerCtx) != nil {
+		t.Fatal("caller ctx carries a transaction; CompareAndSave would not open one of its own")
+	}
+	_, err = es.CompareAndSave(callerCtx, &spi.Entity{
+		Meta: spi.EntityMeta{
+			ID: "e-acquire", ModelRef: spi.ModelRef{EntityName: "Widget", ModelVersion: "1"},
+			State: "open", TransactionID: "tx-writer",
+		},
+		Data: []byte(`{}`),
+	}, "tx-expected")
+	return err
+}
+
+// A compare-and-save that cannot get a connection is transient contention on
+// the shared pool, exactly like every sibling acquire. Left unbounded it waits
+// on the pool for as long as the caller's context allows and then reports a
+// ticketed server error, for a condition the next attempt would likely survive.
+func TestNonTxCompareAndSave_PoolSaturated_ReportsStorageUnavailable(t *testing.T) {
+	f, ctx := newSaturatedFactory(t, 200*time.Millisecond)
+
+	start := time.Now()
+	err := compareAndSaveOnSaturatedPool(t, ctx, f)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("CompareAndSave succeeded on a one-connection pool with the only connection held")
+	}
+	if !storageUnavailable(err) {
+		t.Fatalf("acquire failure not marked storage-unavailable: %v", err)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("waited %v; the acquire should fail fast rather than queue", elapsed)
+	}
+}
+
+// The other direction: the caller's own deadline is not a server-side outage.
+func TestNonTxCompareAndSave_CallerDeadlineOnSaturatedPool_IsNotStorageUnavailable(t *testing.T) {
+	f, ctx := newSaturatedFactory(t, 30*time.Second)
+	callerCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
+
+	err := compareAndSaveOnSaturatedPool(t, callerCtx, f)
+	if err == nil {
+		t.Fatal("CompareAndSave succeeded on a one-connection pool with the only connection held")
 	}
 	if storageUnavailable(err) {
 		t.Fatalf("the caller's own deadline was reported as a server-side outage: %v", err)

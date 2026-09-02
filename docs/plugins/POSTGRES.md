@@ -67,6 +67,13 @@ Full transaction-lifecycle implementation
   `SELECT CURRENT_TIMESTAMP` before `COMMIT` and records it with a
   1-hour TTL, surfaced via `GetSubmitTime`.
 
+- **Eager deletes:** an in-transaction `Delete` writes its tombstone
+  version row immediately on the transaction's connection. A re-create of
+  the same entity later in that transaction therefore leaves `DELETED` then
+  the re-create in the version history, where memory and sqlite (which
+  buffer and cancel the delete) record only the re-create. Documented
+  difference; see `docs/CONSISTENCY.md` §6.
+
 The real serialization guarantee is the combination of PostgreSQL's
 `REPEATABLE READ` snapshot + tuple locks + the TM's first-committer
 validation — not `SERIALIZABLE` alone.

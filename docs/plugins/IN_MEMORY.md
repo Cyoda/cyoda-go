@@ -35,10 +35,19 @@ doing conflict detection.
 
 **Per-transaction state:**
 
-Each transaction captures a `SnapshotTime` at `Begin()`. Reads see
-only data committed before the snapshot. Writes are buffered in a
+Each transaction captures a `SnapshotTime` at `Begin()`. Reads see data
+whose submit time is at or below the snapshot. Writes are buffered in a
 per-transaction `Buffer` map. At commit time, the committed log is
 scanned for conflicts.
+
+**Submit-time floor.** Every stamped submit time — a commit's and a
+direct write's alike — is `max(now, lastSubmitTime + 1µs)`, so stamps are
+strictly increasing whatever the clock does (a coarse clock, an NTP step,
+a frozen test clock). `Begin` floors its snapshot to `lastSubmitTime` and
+then reserves it as the new floor, both under `tm.mu`. Flooring keeps the
+snapshot from landing below a write already stamped; reserving keeps the
+next write from stamping *at* the snapshot, which the "at or below" rule
+above would count as visible to a transaction that began before it.
 
 ```go
 type TransactionState struct {
@@ -58,29 +67,45 @@ type TransactionState struct {
 **Commit sequence (critical section):**
 
 ```
-1. Acquire tx.OpMu.Lock()         -- wait for in-flight ops to finish
-2. Acquire factory.mu.Lock()      -- exclusive access to shared data
-3. Acquire tm.mu.Lock()           -- scan committed log
-4. FOR EACH committed_tx where submitTime > tx.SnapshotTime:
+1. Acquire tx.OpMu.Lock()          -- wait for in-flight ops to finish
+2. Acquire factory.entityMu.Lock() -- exclusive access to shared data
+3. Take tm.mu, and release it at 4 -- scan committed log
+4. FOR EACH committed_tx where seq > tx's snapshot commitSeq:
      IF committed_tx.writeSet intersects (tx.ReadSet UNION tx.WriteSet):
        ABORT -> ErrConflict
-5. Flush tx.Buffer to factory.entityData (deep copy)
-6. Apply tx.Deletes (append tombstone versions)
-7. Append to committedLog: {txID, submitTime, writeSet}
-8. Record submitTime in submitTimes map
-9. Remove from active map
-10. Prune committedLog (entries older than oldest active snapshot)
-11. Release all locks
+5. Stamp submitTime = max(now, lastSubmitTime + 1µs); record it as the floor
+6. Flush tx.Buffer to factory.entityData (deep copy)
+7. Apply tx.Deletes (append tombstone versions)
+8. Append to committedLog: {txID, seq, submitTime, writeSet}
+9. Record submitTime in submitTimes map
+10. Remove from active map
+11. Prune committedLog (entries older than oldest active snapshot)
+12. Release entityMu, then tx.OpMu
 ```
+
+`tm.mu` is not held across steps 3–12. It is a leaf lock, taken and released
+three times: for the conflict scan (steps 3–4), inside `nextSubmitTime` for the
+stamp (step 5), and for the commit-log append, the submit-time record and the
+prune (steps 8–11). Everything in between runs under `entityMu`, which is what
+makes the flush atomic. Each acquisition still follows the one order below.
 
 This is first-committer-wins: the transaction that reaches step 4
 first wins; any concurrent transaction whose read-set or write-set
 intersects the winner's write-set is aborted with `common.ErrConflict`
 when it attempts to commit.
 
+Conflict detection keys on `commitSeq` — a counter incremented under
+`tm.mu` — not on the submit time. Wall-clock times tie under a coarse or
+frozen clock even for commits that are genuinely ordered, and a tie there
+fails open: the later commit would be excluded from the earlier
+transaction's check. `Begin` captures the snapshot time and the snapshot
+`commitSeq` in one `tm.mu` critical section, so the two orderings cannot
+disagree. Submit times order *visibility*; sequence numbers order
+*commits*.
+
 **TOCTOU guard:** A `committing` map prevents double-commit races.
-The lock acquisition order — `tx.OpMu` → `factory.mu` → `tm.mu` — is
-uniform across the plugin; all commits take locks in the same order,
+The lock acquisition order — `tx.OpMu` → `factory.entityMu` → `tm.mu` —
+is uniform across the plugin; all commits take locks in the same order,
 so there is no cycle.
 
 **Committed-log pruning:** After each commit, entries older than the

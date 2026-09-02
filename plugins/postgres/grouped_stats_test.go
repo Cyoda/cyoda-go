@@ -18,7 +18,6 @@ import (
 var gsModel = spi.ModelRef{EntityName: "Item", ModelVersion: "1"}
 
 // gsNewStore creates a fresh postgres-backed EntityStore for grouped-stats tests.
-// Skips if CYODA_TEST_DB_URL is not set (Docker required).
 func gsNewStore(t *testing.T) (*postgres.StoreFactory, spi.EntityStore, context.Context) {
 	t.Helper()
 	factory := setupEntityTest(t)

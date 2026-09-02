@@ -177,11 +177,12 @@ func (s *entityStore) searchPointInTimeBase(opts spi.SearchOptions) (string, []a
 // searchSnapshotBase returns the base SQL selecting the latest non-deleted
 // version of each entity for the model as of snapshotMicro. Shared by the
 // point-in-time path (snapshotMicro = opts.PointInTime) and the in-tx overlay
-// (snapshotMicro = tx.SnapshotTime) so both agree with getSnapshot/getAllTx.
+// (snapshotMicro = tx.SnapshotTime) so both agree with getSnapshot.
 //
 // Uses submit_time <= ? (non-strict) matching the memory plugin's convention
 // (!v.submitTime.After(snapshotTime)) and all other snapshot queries in this
-// package (getSnapshot, getAllTx, DeleteAll tx). Rows scan via scanVersionEntity.
+// package (getSnapshot, the tx overlay in tx_overlay.go, DeleteAll tx). Rows
+// scan via scanVersionEntity.
 func (s *entityStore) searchSnapshotBase(opts spi.SearchOptions, snapshotMicro int64) (string, []any) {
 	query := `SELECT ev.entity_id, ev.model_name, ev.model_version, ev.version,
 	                 json(ev.data), json(ev.meta), ev.submit_time
@@ -231,7 +232,7 @@ func sortEntitiesByOrder(ctx context.Context, rows []*spi.Entity, order []spi.Or
 // The whole operation runs under tx.OpMu.RLock (fail fast on tx.RolledBack) so
 // Commit/Rollback (which take tx.OpMu.Lock) cannot race our reads of
 // tx.Buffer/tx.Deletes or our write to tx.ReadSet. Lock order: tx.OpMu before
-// the sql.DB query — identical to Save/GetAll/getAllTx in this package.
+// the sql.DB query — identical to Save/GetAll in this package.
 func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionState, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
 	modelRef := spi.ModelRef{EntityName: opts.ModelName, ModelVersion: opts.ModelVersion}
 	plan, err := planFor(filter)

@@ -40,7 +40,7 @@ func (f *noCloseFactory) Close() error { return nil }
 // (the clock this plugin stamps versions from) rather than the test process's.
 func newConformancePool(t *testing.T) (spi.StoreFactory, *pgxpool.Pool) {
 	t.Helper()
-	dbURL := skipIfNoPostgres(t)
+	dbURL := testDBURL(t)
 
 	// Migration pool: minimal, used only for Migrate/MigrateDown.
 	migPool, err := postgres.NewPool(context.Background(), postgres.DBConfig{

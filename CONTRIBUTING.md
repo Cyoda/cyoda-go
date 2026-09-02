@@ -37,19 +37,27 @@ Every feature must have tests at the appropriate level before it can be merged.
 **Reconciliation tests** (`test/recon/`, build tag `cyoda_recon`) compare Cyoda-Go responses against Cyoda Cloud to verify API-level compatibility. These are optional and require Cloud credentials.
 
 ```bash
-make test        # iteration tier: unit + cross-backend parity (~90s cold, ~13s warm)
+make test        # iteration tier: unit + cross-backend parity (~115s cold, ~85s warm)
 make test-full   # everything, root + all three plugin submodules (~15 min)
 make race        # race detector (CI-parity scope) — once before a PR
 go test -tags cyoda_recon ./test/recon/   # reconciliation (optional, needs Cloud)
 ```
 
 Both tiers require Docker and there is no Docker-free alternative: if Docker
-cannot serve the suites, `make preflight` fails with what to fix. Prefer these
+cannot serve the suites, `make preflight` fails with what to fix. The
+`plugins/postgres` suite is database-backed throughout and provisions its own
+PostgreSQL container when `CYODA_TEST_DB_URL` is unset — CI sets that variable
+and its service container is used instead. Prefer these
 targets over a hand-rolled `go test ./...`, which reports `ok` for a suite that
 never ran — a `TestMain` calling `os.Exit(0)` prints `ok  pkg  2.80s` having
 executed nothing. The targets pipe through `scripts/testreport`, which fails
 when a required suite ran no tests and prints failures verbatim rather than
-burying them in `-v` output.
+burying them in `-v` output. The targets leave Go's test cache on — that is
+what keeps a warm `make test` off its ~115s cold time — except for the
+cross-backend parity suites, which each tier runs in a second, `-count=1`
+invocation because their
+fixtures build the server binary in a subprocess the test cache cannot see, so
+a cached pass could be replayed over a server built from the old code.
 
 `make race` runs `go test -race -timeout=15m` over every package except
 `internal/e2e` and is what CI invokes — running it locally before a PR
@@ -62,7 +70,7 @@ and when to run `-race` against `./internal/e2e/...` manually.
 |---------|-------------|
 | `go run ./cmd/cyoda` | Run from source |
 | `go build -o bin/cyoda ./cmd/cyoda` | Build executable |
-| `make test` | Iteration tier: unit + parity (~90s cold, ~13s warm) |
+| `make test` | Iteration tier: unit + parity (~115s cold, ~85s warm — parity always re-runs) |
 | `make test-full` | Everything, root + plugin submodules (~15 min) |
 | `make race` | Run tests with race detector (CI-parity scope; excludes `internal/e2e`) |
 | `go test -coverprofile=coverage.out ./...` | Test coverage |

@@ -12,7 +12,7 @@ import (
 )
 
 // Task 13 — per-backend pushdown soundness property (postgres, Docker-gated
-// via gsNewStore -> setupEntityTest -> skipIfNoPostgres).
+// via gsNewStore -> setupEntityTest -> testDBURL).
 //
 // Mirrors plugins/sqlite/soundness_property_test.go's contract exactly: the
 // SQL WHERE fragment planQuery produces must return a SUPERSET of

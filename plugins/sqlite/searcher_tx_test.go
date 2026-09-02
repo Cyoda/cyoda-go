@@ -635,8 +635,12 @@ func TestSearchTxPIT_MixedFilterOverLargeModel(t *testing.T) {
 			t.Fatalf("Save: %v", err)
 		}
 	}
-	pit := clock.Now() // snapshot after all 50 committed rows
+	// Advance before capturing the snapshot: submit times are stamped under a
+	// monotonic floor, so 50 writes inside one frozen-clock tick land at
+	// successive microseconds ABOVE the clock. A point in time read off the
+	// clock itself would sit below all but the first.
 	clock.Advance(time.Millisecond)
+	pit := clock.Now() // snapshot after all 50 committed rows
 
 	tm, err := factory.TransactionManager(ctx)
 	if err != nil {

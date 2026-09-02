@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -20,10 +19,7 @@ import (
 // value for ArmedBy, not an actual pre-migration row); this plugin-local
 // test covers the storage layer directly.
 func TestScheduledTask_LegacyRow_ArmedByReadsZeroValue(t *testing.T) {
-	url := os.Getenv("CYODA_TEST_DB_URL")
-	if url == "" {
-		t.Skip("CYODA_TEST_DB_URL not set — skipping PostgreSQL test")
-	}
+	url := testDBURL(t)
 	pool, err := pgxpool.New(context.Background(), url)
 	if err != nil {
 		t.Fatalf("create pool: %v", err)

@@ -125,10 +125,11 @@ func (e *acquireTimeoutError) StorageUnavailable() bool { return true }
 // produces the storage-unavailable marker.
 //
 // It is package-level, and every acquire in this plugin goes through it, because
-// the three sites that open a transaction on the pool — TransactionManager.Begin,
-// ExtendSchema's self-wrap and the async-search scan's own-ceiling transaction —
-// contend for the same connections and must therefore say the same thing about
-// running out of them. When only Begin classified, a saturated pool answered a
+// the sites that open a transaction on the pool — TransactionManager.Begin,
+// ExtendSchema's self-wrap, the async-search scan's own-ceiling transaction and
+// a non-transactional compare-and-save's row-lock transaction — contend for the
+// same connections and must therefore say the same thing about running out of
+// them. When only Begin classified, a saturated pool answered a
 // retryable 503 through the write doors and a ticketed 500 through the
 // schema-extension path, for one condition.
 // An acquire fails for two transient reasons, not one, so the non-deadline

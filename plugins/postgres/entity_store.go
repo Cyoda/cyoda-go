@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
 	"time"
@@ -20,24 +21,27 @@ type entityStore struct {
 	tenantID spi.TenantID
 	tm       *TransactionManager
 
-	// pool is for the two kinds of statement that must NOT join the caller's
+	// pool is for the three kinds of statement that must NOT join the caller's
 	// transaction, and so cannot go through q (which resolves it per call):
 	//
 	//   - every point-in-time read, which is committed-only by contract and
 	//     therefore runs pool-pinned via committedQuerier (search_base.go);
 	//   - the async-search scan, which runs in a transaction of its own so it
 	//     can raise its statement ceiling with SET LOCAL (searcher.go,
-	//     grouped_stats.go).
+	//     grouped_stats.go);
+	//   - a compare-and-save taken OUTSIDE a caller transaction, which runs in
+	//     a transaction of its own so the check's row lock and the write it
+	//     guards commit as one step (CompareAndSave).
 	//
-	// acquireTimeout bounds the wait for a connection on both: the
-	// ceiling-scoped Begin, and the second connection an IN-TRANSACTION
+	// acquireTimeout bounds the wait for a connection on all of them: the two
+	// own-transaction Begins, and the second connection an IN-TRANSACTION
 	// point-in-time read takes while the caller still holds the transaction's
 	// (the hold-and-wait unjoinedQuerier documents). It bounds getting the
 	// connection only, never using it.
 	//
 	// Every other statement goes through q. acquireTimeout is zero on the
-	// test-only construction in export_test.go, which opens no ceiling-scoped
-	// transaction and issues no point-in-time read.
+	// test-only construction in export_test.go, which opens no transaction of
+	// its own and issues no point-in-time read.
 	pool           *pgxpool.Pool
 	acquireTimeout time.Duration
 }
@@ -49,7 +53,31 @@ func (s *entityStore) SaveAll(ctx context.Context, entities iter.Seq[*spi.Entity
 	return spi.DefaultSaveAll(s, ctx, entities)
 }
 
+// txTimeSource is the SQL expression a save reads its transaction-time stamp
+// from. The two values differ only for a transaction that waits mid-flight.
+type txTimeSource string
+
+const (
+	// stampAtTxStart is CURRENT_TIMESTAMP: the transaction's start time, one
+	// value for every entity saved under it. That is what gives the entities a
+	// caller writes in a single transaction a common valid_time.
+	stampAtTxStart txTimeSource = "CURRENT_TIMESTAMP"
+
+	// stampAtStatement is statement_timestamp(): the moment the stamping
+	// statement itself runs. CompareAndSave's own transaction uses it because
+	// that transaction fixes its start time BEFORE waiting on the row lock, so
+	// a caller that queued behind another writer would otherwise date its
+	// version earlier than the version it just read and superseded — and a
+	// point-in-time read would order the two backwards. That transaction saves
+	// one entity, so it has no common valid_time to hold together.
+	stampAtStatement txTimeSource = "statement_timestamp()"
+)
+
 func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, error) {
+	return s.save(ctx, entity, stampAtTxStart)
+}
+
+func (s *entityStore) save(ctx context.Context, entity *spi.Entity, stampFrom txTimeSource) (int64, error) {
 	// Defensive copy — stores own their copies (Ownership Rule 4).
 	e := *entity
 	if entity.Data != nil {
@@ -69,11 +97,11 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		entity.Meta.TransactionID = tx.ID
 	}
 
-	// Get DB timestamps first: CURRENT_TIMESTAMP (stable within tx) for
+	// Get DB timestamps first: stampFrom (see txTimeSource) for
 	// valid_time/transaction_time, clock_timestamp() (actual wall clock) for
 	// wall_clock_time.
 	var dbNow, wallClockTime time.Time
-	if err := s.q.QueryRow(ctx, `SELECT CURRENT_TIMESTAMP, clock_timestamp()`).Scan(&dbNow, &wallClockTime); err != nil {
+	if err := s.q.QueryRow(ctx, `SELECT `+string(stampFrom)+`, clock_timestamp()`).Scan(&dbNow, &wallClockTime); err != nil {
 		return 0, fmt.Errorf("failed to get DB timestamps: %w", err)
 	}
 
@@ -166,25 +194,155 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 }
 
 func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, expectedTxID string) (int64, error) {
-	tid := string(s.tenantID)
-	eid := entity.Meta.ID
-
-	// Check current transaction ID.
-	var currentTxID *string
-	err := s.q.QueryRow(ctx,
-		`SELECT doc->'_meta'->>'transaction_id' FROM entities WHERE tenant_id = $1 AND entity_id = $2`,
-		tid, eid).Scan(&currentTxID)
-	if err != nil && err != pgx.ErrNoRows {
-		return 0, fmt.Errorf("failed to check transaction ID: %w", err)
+	// Inside the caller's transaction the check and the write already run on
+	// one connection, under that transaction — the check reads the
+	// transaction's own view, and neither half can commit before the caller
+	// says so. Nothing to add here.
+	//
+	// This branch does not take the advisory lock the non-transactional path
+	// below uses to serialize concurrent compare-and-save creates of the same
+	// entity ID: two transactions racing to create the same ID here are not
+	// ordered against each other and both can pass compareTxID before either
+	// commits. That is acceptable because the engine reaches this branch
+	// only with a non-empty If-Match naming a version a prior read already
+	// found; a create with no prior read to name goes through Save, not
+	// CompareAndSave. The one expectedTxID=="" caller this branch does see
+	// is a transaction re-creating an entity it deleted itself earlier in
+	// the same transaction — its own eager delete, not a race with another
+	// transaction creating the same ID from nothing.
+	if spi.GetTransaction(ctx) != nil {
+		if err := s.compareTxID(ctx, s.q, entity.Meta.ID, expectedTxID, false); err != nil {
+			return 0, err
+		}
+		return s.Save(ctx, entity)
 	}
 
-	// If entity exists and txID doesn't match, conflict.
-	if err == nil && currentTxID != nil && *currentTxID != expectedTxID {
-		return 0, fmt.Errorf("entity %s transaction ID mismatch (current=%q, expected=%q): %w",
-			eid, *currentTxID, expectedTxID, spi.ErrConflict)
+	// Outside a transaction every statement is separately auto-committed, so
+	// a check taken on its own leaves a check-then-write window: several
+	// callers naming the same expected transaction ID all read it, all pass,
+	// and all write, each silently clobbering the last instead of getting
+	// ErrConflict. One database transaction closes it — the check takes the
+	// row lock (FOR UPDATE) and the write commits under it, so a concurrent
+	// caller blocks on the check and then reads the winner's ID.
+	//
+	// Same scoping rule as every other acquire in this plugin: the deadline
+	// bounds getting the connection and is cancelled the instant BeginTx
+	// returns, so the transaction handle — which outlives it — cannot inherit
+	// it (newAcquireContext).
+	//
+	// READ COMMITTED is explicit, not inherited from the server default or a
+	// DSN override, because it IS the mechanism described above: a caller
+	// queued on the row lock re-reads the row once the winner commits and sees
+	// the winner's transaction ID. Under REPEATABLE READ it would instead read
+	// its pre-lock snapshot and abort with a serialization failure — a coarser
+	// answer for a condition this path reports precisely.
+	acquireCtx, cancelAcquire := newAcquireContext(ctx, s.acquireTimeout)
+	tx, err := s.pool.BeginTx(acquireCtx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	cancelAcquire() // BeginTx has returned; the handle must not inherit the deadline
+	if err != nil {
+		// Same classification as every other acquire in this plugin: a
+		// saturated pool is transient contention and carries the
+		// storage-unavailable marker the application layer turns into a
+		// retryable 503, while a caller who gave up first does not.
+		return 0, classifyAcquireErr(ctx, acquireCtx, "failed to begin compare-and-save transaction", err)
+	}
+	// Rollback after a successful Commit is a no-op, so this covers every
+	// error return below without a second exit path. On a context derived
+	// WithoutCancel: a caller that cancelled mid-save is exactly when this
+	// runs, and a rollback issued on an expired context never reaches the
+	// server — leaving the transaction status non-idle, after which
+	// pgxpool.Release destroys the connection instead of returning it.
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	// The tenant the RLS policies read, as every other transaction this plugin
+	// opens sets it (TransactionManager.Begin, ExtendSchema's self-wrap, the
+	// async-search scan). set_config rather than SET LOCAL because
+	// PostgreSQL's SET takes no bound parameters.
+	if _, err := tx.Exec(ctx,
+		"SELECT set_config('app.current_tenant', $1, true)", string(s.tenantID)); err != nil {
+		return 0, fmt.Errorf("failed to set tenant for compare-and-save: %w", classifyError(err))
 	}
 
-	return s.Save(ctx, entity)
+	// The whole save runs on that transaction's connection rather than
+	// through s.q, which would resolve the pool and auto-commit each
+	// statement. classifiedQuerier is the plain funnel s.q applies outside a
+	// transaction, so the errors callers see are unchanged.
+	txStore := *s
+	txStore.q = classifiedQuerier{inner: tx}
+
+	// FOR UPDATE locks a row that exists; an absent row has nothing to lock,
+	// so the check above closes the window for UPDATES only. Two callers
+	// CREATING the same id would both read "no entity", both pass, and both
+	// write. A transaction-scoped advisory lock needs no row: it is keyed on
+	// the entity itself and released when this transaction commits or rolls
+	// back, so the second creator waits here, re-reads under the lock, sees
+	// the winner's row carrying the winner's transaction ID, and conflicts.
+	// The key is hashed from tenant and id together — a collision between two
+	// unrelated entities costs a wait, never a wrong answer.
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext($1))`,
+		string(s.tenantID)+":"+entity.Meta.ID); err != nil {
+		return 0, fmt.Errorf("failed to lock entity for compare-and-save: %w", classifyError(err))
+	}
+
+	if err := txStore.compareTxID(ctx, txStore.q, entity.Meta.ID, expectedTxID, true); err != nil {
+		return 0, err
+	}
+	// stampAtStatement, so the write is dated after the lock wait rather than
+	// at this transaction's start — see txTimeSource.
+	version, err := txStore.save(ctx, entity, stampAtStatement)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, classifyError(fmt.Errorf("failed to commit compare-and-save: %w", err))
+	}
+	return version, nil
+}
+
+// compareTxID reports whether the stored entity still carries expectedTxID,
+// returning spi.ErrConflict when it does not. expectedTxID is compared
+// literally: the entity's current transaction ID is the row's, or "" when
+// there is no entity — never written, or deleted. So a non-empty expected ID
+// against a missing entity conflicts (it names a version that does not
+// exist), and the empty expected ID is how a caller says "expect no entity"
+// and creates one.
+//
+// The row is read with NOT deleted, as Get and Delete read it: a deleted
+// entity is no entity, so its tombstone does not offer up the superseded
+// version's transaction ID for a caller to match against and resurrect the
+// row. A delete applied earlier in the caller's own transaction is visible on
+// that transaction's connection, so the same rule covers it — matching what
+// the buffered backends answer for a same-transaction delete. A row actually
+// stored with an empty transaction ID would read the same way — as no
+// entity — but every writer stamps a non-empty one, so that case is not
+// reachable in production.
+//
+// forUpdate locks the row for the rest of the caller's database transaction —
+// what makes the non-transactional path's check and write indivisible. It is
+// false inside the caller's own transaction, whose write is not committed
+// here and must not hold a row lock the caller did not ask for. A row that is
+// not there locks nothing, which is why the non-transactional path takes an
+// advisory lock on the entity as well — see CompareAndSave.
+func (s *entityStore) compareTxID(ctx context.Context, q Querier, entityID, expectedTxID string, forUpdate bool) error {
+	query := `SELECT doc->'_meta'->>'transaction_id' FROM entities WHERE tenant_id = $1 AND entity_id = $2 AND NOT deleted`
+	if forUpdate {
+		query += ` FOR UPDATE`
+	}
+	var scanned *string
+	err := q.QueryRow(ctx, query, string(s.tenantID), entityID).Scan(&scanned)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("failed to check transaction ID: %w", err)
+	}
+	currentTxID := ""
+	if err == nil && scanned != nil {
+		currentTxID = *scanned
+	}
+	if currentTxID != expectedTxID {
+		return fmt.Errorf("entity %s transaction ID mismatch (current=%q, expected=%q): %w",
+			entityID, currentTxID, expectedTxID, spi.ErrConflict)
+	}
+	return nil
 }
 
 func (s *entityStore) Get(ctx context.Context, entityID string) (*spi.Entity, error) {
