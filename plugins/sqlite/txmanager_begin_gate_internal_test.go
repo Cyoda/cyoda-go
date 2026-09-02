@@ -11,13 +11,13 @@ import (
 )
 
 // Commit bumps lastSubmitTime (step 4) before its sqlTx commits, holding
-// commitMu across the whole flush. Begin floors SnapshotTime to
-// lastSubmitTime. If Begin does not wait for commitMu, a transaction begun
+// the commit gate across the whole flush. Begin floors SnapshotTime to
+// lastSubmitTime. If Begin does not wait for the gate, a transaction begun
 // mid-flush has SnapshotTime >= that commit's submit time while the rows
 // are not yet visible on readDB — and the conflict check at Commit then
 // treats that commit as "before my snapshot" and skips it: a lost update.
 //
-// The test stands in for a mid-flush commit by holding commitMu and
+// The test stands in for a mid-flush commit by holding the gate and
 // bumping lastSubmitTime, exactly the state Commit is in between step 4
 // and sqlTx.Commit.
 func TestBegin_WaitsForInFlightCommit(t *testing.T) {
@@ -37,15 +37,15 @@ func TestBegin_WaitsForInFlightCommit(t *testing.T) {
 	}
 	done := make(chan beginResult, 1)
 
-	// Stand in for a commit between step 4 and sqlTx.Commit: hold commitMu
+	// Stand in for a commit between step 4 and sqlTx.Commit: hold the gate
 	// while bumping lastSubmitTime, start Begin concurrently, and assert it
-	// is still blocked after 150ms — all inside the commitMu hold. A
-	// t.Fatalf in the select still runs the deferred Unlock via
+	// is still blocked after 150ms — all inside the gate hold. A
+	// t.Fatalf in the select still runs the deferred release via
 	// runtime.Goexit.
 	var bumped int64
 	func() {
-		m.commitMu.Lock()
-		defer m.commitMu.Unlock()
+		_ = m.acquireCommitGate(context.Background())
+		defer m.releaseCommitGate()
 
 		bumped = func() int64 {
 			m.mu.Lock()
@@ -61,7 +61,7 @@ func TestBegin_WaitsForInFlightCommit(t *testing.T) {
 
 		select {
 		case r := <-done:
-			t.Fatalf("Begin returned while a commit was in flight (txID=%q err=%v); it must wait for commitMu", r.txID, r.err)
+			t.Fatalf("Begin returned while a commit was in flight (txID=%q err=%v); it must wait for the commit gate", r.txID, r.err)
 		case <-time.After(150 * time.Millisecond):
 			// Blocked, as required.
 		}
@@ -71,7 +71,7 @@ func TestBegin_WaitsForInFlightCommit(t *testing.T) {
 	select {
 	case r = <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("Begin did not return after commitMu was released")
+		t.Fatal("Begin did not return after the commit gate was released")
 	}
 	if r.err != nil {
 		t.Fatalf("Begin: %v", r.err)
@@ -85,7 +85,7 @@ func TestBegin_WaitsForInFlightCommit(t *testing.T) {
 }
 
 // A transaction begun while another transaction's commit is in flight must
-// see that commit's rows once Begin returns: Begin queues behind commitMu,
+// see that commit's rows once Begin returns: Begin queues behind the commit gate,
 // so its snapshot floor is captured only after the flush is committed on
 // every connection. The invariant under test is conditional — a snapshot
 // floored at or after a commit's submit time implies that commit's rows are
@@ -93,8 +93,8 @@ func TestBegin_WaitsForInFlightCommit(t *testing.T) {
 // which of the two queued goroutines the runtime wakes first.
 //
 // No production hook is used to order the two goroutines: the test holds
-// commitMu itself, queues T_A's Commit behind it, then queues T_B's Begin,
-// and releases. Go's mutex wait queue is FIFO, so T_A commits first in
+// the gate itself, queues T_A's Commit behind it, then queues T_B's Begin,
+// and releases. Go's channel wait queue is FIFO, so T_A commits first in
 // practice; the assertions do not rely on it.
 func TestBegin_SeesConcurrentCommitRows(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "begin-sees-commit.db")
@@ -151,10 +151,10 @@ func TestBegin_SeesConcurrentCommitRows(t *testing.T) {
 	beginDone := make(chan beginResult, 1)
 
 	func() {
-		m.commitMu.Lock()
-		defer m.commitMu.Unlock()
+		_ = m.acquireCommitGate(context.Background())
+		defer m.releaseCommitGate()
 		go func() { commitDone <- m.Commit(ctxA, txA) }()
-		// Give T_A's Commit time to reach commitMu before T_B's Begin
+		// Give T_A's Commit time to reach the gate before T_B's Begin
 		// queues behind it.
 		time.Sleep(100 * time.Millisecond)
 		go func() {
@@ -213,13 +213,13 @@ func TestBegin_SeesConcurrentCommitRows(t *testing.T) {
 	if txB.SnapshotTime.UnixMicro() >= submitA {
 		// The snapshot is floored at or after T_A's commit, so T_A's rows
 		// MUST be visible on readDB — that is the whole guarantee Begin's
-		// commitMu hold buys.
+		// gate hold buys.
 		if !seen["e-fromA"] {
 			t.Fatalf("T_B SnapshotTime %d >= T_A submit time %d but T_A's row is invisible; seen=%v",
 				txB.SnapshotTime.UnixMicro(), submitA, seen)
 		}
 	} else {
-		// T_B's Begin won the mutex ahead of T_A's commit: T_A's row is
+		// T_B's Begin won the gate ahead of T_A's commit: T_A's row is
 		// legitimately outside T_B's snapshot.
 		if seen["e-fromA"] {
 			t.Fatalf("T_B SnapshotTime %d < T_A submit time %d yet T_A's row is visible; seen=%v",
@@ -238,7 +238,7 @@ func TestBegin_SeesConcurrentCommitRows(t *testing.T) {
 }
 
 // A direct (non-transactional) write stamps a submit_time and commits its
-// own sqlTx. It holds commitMu across both, so a Begin that follows cannot
+// own sqlTx. It holds the commit gate across both, so a Begin that follows cannot
 // floor its snapshot at or past that submit time while the row is still
 // invisible on readDB.
 func TestDirectSave_ThenBegin_SeesRow(t *testing.T) {
@@ -291,6 +291,70 @@ func TestDirectSave_ThenBegin_SeesRow(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("in-tx overlay saw the directly-saved row %d times, want 1", n)
+	}
+}
+
+// Begin queues behind the commit gate, and a commit's flush can take as long
+// as the write does. A caller whose context ends while Begin waits must get
+// its own context error back rather than waiting indefinitely, and must leave
+// no transaction registered behind it.
+func TestBegin_ReturnsCallerContextErrorWhileGateHeld(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "begin-ctx.db")
+	f, err := NewStoreFactoryForTest(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("NewStoreFactoryForTest: %v", err)
+	}
+	defer f.Close()
+	m := f.tm
+	ctx := attrInternalCtx("tenant-ctx", "alice", spi.PrincipalUser)
+
+	type beginResult struct {
+		txID string
+		err  error
+	}
+
+	func() {
+		_ = m.acquireCommitGate(context.Background())
+		defer m.releaseCommitGate()
+
+		waitCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		defer cancel()
+
+		done := make(chan beginResult, 1)
+		go func() {
+			id, _, err := m.Begin(waitCtx)
+			done <- beginResult{id, err}
+		}()
+
+		select {
+		case r := <-done:
+			if !errors.Is(r.err, context.DeadlineExceeded) {
+				t.Fatalf("Begin with an expired context while the gate is held: err = %v, want context.DeadlineExceeded", r.err)
+			}
+			if r.txID != "" {
+				t.Fatalf("Begin returned txID %q after failing", r.txID)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Begin ignored its caller's context and kept waiting for the commit gate")
+		}
+
+		func() {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			if len(m.active) != 0 {
+				t.Fatalf("a failed Begin registered %d transaction(s)", len(m.active))
+			}
+		}()
+	}()
+
+	// Gate released: Begin succeeds again.
+	txID, txCtx, err := m.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin after the gate was released: %v", err)
+	}
+	defer func() { _ = m.Rollback(txCtx, txID) }()
+	if spi.GetTransaction(txCtx) == nil {
+		t.Fatal("Begin returned a context with no transaction")
 	}
 }
 

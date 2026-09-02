@@ -34,8 +34,8 @@ const (
 // and the SPI forbids holding a write-blocking lock for an iterator's
 // lifetime. Reading committed rows at tx.SnapshotTime on readDB is correct
 // because every write that stamps a submit_time — a transaction's flush and
-// a direct write alike — holds commitMu until its rows are committed, and
-// Begin floors its snapshot under the same lock (txmanager.go, Begin). So
+// a direct write alike — holds the commit gate until its rows are committed,
+// and Begin floors its snapshot under the same gate (txmanager.go, Begin). So
 // submit_time <= SnapshotTime implies visible on every connection.
 //
 // The buffer and the delete set are copied into locals at open, under the

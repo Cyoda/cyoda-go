@@ -60,20 +60,24 @@ type savepointSnapshot struct {
 // Snapshot Isolation + First-Committer-Wins (SI+FCW). In-memory committedLog
 // tracks conflicts; SQLite is the persistence layer.
 //
-// Commit ordering: acquire commitMu -> validate SI+FCW -> capture submitTime ->
-// BEGIN IMMEDIATE -> flush -> COMMIT -> append committedLog -> prune -> release commitMu.
+// Commit ordering: acquire the commit gate -> validate SI+FCW -> capture
+// submitTime -> BEGIN IMMEDIATE -> flush -> COMMIT -> append committedLog ->
+// prune -> release the commit gate.
 type transactionManager struct {
-	factory  *StoreFactory
-	uuids    spi.UUIDGenerator
-	commitMu sync.Mutex // serializes the entire commit path for SI+FCW correctness
-	mu       sync.Mutex // protects active, committedLog, committing, submitTimes, savepoints, txUniqueKeys
+	factory *StoreFactory
+	uuids   spi.UUIDGenerator
+	// commitGate is a one-slot semaphore serializing the entire commit path
+	// for SI+FCW correctness — a mutex in every respect except that a waiter
+	// can be released by its context. See acquireCommitGate.
+	commitGate chan struct{}
+	mu         sync.Mutex // protects active, committedLog, committing, submitTimes, savepoints, txUniqueKeys
 
 	active         map[string]*spi.TransactionState
 	committedLog   []committedTx
 	committing     map[string]bool
 	submitTimes    map[string]submitTimeEntry
 	savepoints     map[string]map[string]savepointSnapshot
-	lastSubmitTime int64 // monotonic submit time in microseconds; written under commitMu, read under mu
+	lastSubmitTime int64 // monotonic submit time in microseconds; bumped and read under mu, by callers holding the commit gate
 
 	// txUniqueKeys holds per-entity unique keys captured at Save (buffer) time.
 	// Keys are recorded when an entity is buffered so that flushToSQLite can
@@ -123,6 +127,7 @@ func newTransactionManager(factory *StoreFactory, uuids spi.UUIDGenerator) *tran
 	return &transactionManager{
 		factory:          factory,
 		uuids:            uuids,
+		commitGate:       make(chan struct{}, 1),
 		active:           make(map[string]*spi.TransactionState),
 		committing:       make(map[string]bool),
 		submitTimes:      make(map[string]submitTimeEntry),
@@ -207,6 +212,28 @@ func (m *transactionManager) seedLastSubmitTime() {
 	}
 }
 
+// acquireCommitGate takes the one-slot commit gate, which serializes the whole
+// commit path for SI+FCW correctness and gates Begin's snapshot floor (see
+// Begin). It is a channel rather than a mutex only so that a waiter can be
+// released by its context: Begin passes its caller's context and gets
+// ctx.Err() back if the caller gives up before the gate frees. A path that
+// must not abandon work already in flight passes context.Background(), for
+// which the acquisition cannot fail. Every acquisition is paired with a
+// deferred releaseCommitGate on the next line, as for a mutex.
+func (m *transactionManager) acquireCommitGate(ctx context.Context) error {
+	select {
+	case m.commitGate <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// releaseCommitGate releases the gate taken by acquireCommitGate.
+func (m *transactionManager) releaseCommitGate() {
+	<-m.commitGate
+}
+
 // nextSubmitTime returns the submit time to stamp on a write, in
 // microseconds, and records it as the new floor. max(now, lastSubmitTime+1)
 // guarantees forward progress even under NTP steps, VM pause/migrate, leap-
@@ -214,8 +241,8 @@ func (m *transactionManager) seedLastSubmitTime() {
 // transaction's SnapshotTime to lastSubmitTime — guarantees a write never
 // stamps at or below a snapshot already open. Every path that stamps a
 // submit_time uses it: Commit's step 4 and the direct writes (saveDirectly,
-// the non-tx Delete). Callers hold commitMu from here through their own
-// commit; lock order commitMu → mu.
+// the non-tx Delete). Callers hold the commit gate from here through their own
+// commit; lock order commitGate → mu.
 func (m *transactionManager) nextSubmitTime() int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -258,8 +285,8 @@ func (m *transactionManager) Begin(ctx context.Context) (string, context.Context
 	// submit-time bump could push a commit past the next Begin's raw clock
 	// value, making committed entities invisible to new transactions.
 	//
-	// The floor is captured under commitMu, and every write that stamps a
-	// submit_time holds commitMu until its rows are committed — a
+	// The floor is captured under the commit gate, and every write that
+	// stamps a submit_time holds the gate until its rows are committed — a
 	// transaction's flush (Commit bumps lastSubmitTime at step 4, before its
 	// rows are visible) and a direct write (saveDirectly, the non-tx Delete)
 	// alike. A Begin that read a stamped value without waiting would carry a
@@ -267,10 +294,15 @@ func (m *transactionManager) Begin(ctx context.Context) (string, context.Context
 	// readDB — and Commit's conflict check would then treat that commit as
 	// preceding the snapshot. Waiting here makes "submit_time <=
 	// SnapshotTime" imply "rows visible" on every connection. Lock order
-	// commitMu → mu, the order Commit uses.
-	func() {
-		m.commitMu.Lock()
-		defer m.commitMu.Unlock()
+	// commitGate → mu, the order Commit uses.
+	//
+	// The wait honours the caller's context: a client that has given up gets
+	// its own context error rather than a transaction it no longer wants.
+	if err := func() error {
+		if err := m.acquireCommitGate(ctx); err != nil {
+			return fmt.Errorf("Begin: %w", err)
+		}
+		defer m.releaseCommitGate()
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		if nowMicro < m.lastSubmitTime {
@@ -278,7 +310,10 @@ func (m *transactionManager) Begin(ctx context.Context) (string, context.Context
 		}
 		tx.SnapshotTime = time.UnixMicro(nowMicro)
 		m.active[txID] = tx
-	}()
+		return nil
+	}(); err != nil {
+		return "", ctx, err
+	}
 
 	return txID, spi.WithTransaction(ctx, tx), nil
 }
@@ -317,9 +352,9 @@ func (m *transactionManager) Join(ctx context.Context, txID string) (context.Con
 // flushes the write buffer and deletes to SQLite, and records the commit in the
 // log.
 //
-// The commitMu serializes the entire commit path. This is required for SI+FCW
-// correctness -- without it, two commits could both validate against a stale
-// committedLog and both succeed, missing a conflict.
+// The commit gate serializes the entire commit path. This is required for
+// SI+FCW correctness -- without it, two commits could both validate against a
+// stale committedLog and both succeed, missing a conflict.
 func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 	// 1. Look up the active transaction and mark as committing (TOCTOU guard).
 	uc := spi.GetUserContext(ctx)
@@ -347,13 +382,17 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 		tx.OpMu.Unlock()
 	}()
 
-	// 2. Acquire commitMu -- serializes the entire commit path.
-	m.commitMu.Lock()
-	defer m.commitMu.Unlock()
+	// 2. Acquire the commit gate -- serializes the entire commit path. Taken
+	// with a background context, not the caller's: a commit that has begun
+	// must finish, so a caller that gives up here must not leave the flush
+	// half-done. Only Begin honours its caller's context on this gate, and
+	// acquiring against a context that is never done cannot fail.
+	_ = m.acquireCommitGate(context.Background())
+	defer m.releaseCommitGate()
 
 	// 3. Conflict detection: check committed log for overlapping write sets.
 	// Unlike the memory plugin which uses entityMu to serialize CAS checks
-	// against commits, the SQLite plugin uses commitMu. The SI+FCW check uses
+	// against commits, the SQLite plugin uses the commit gate. The SI+FCW check uses
 	// !Before (>=) rather than After (>) for the submit time comparison.
 	// This catches write-write conflicts even when commits happen at the
 	// same clock tick (e.g., frozen TestClock). The memory plugin avoids
