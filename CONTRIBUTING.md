@@ -49,7 +49,11 @@ targets over a hand-rolled `go test ./...`, which reports `ok` for a suite that
 never ran — a `TestMain` calling `os.Exit(0)` prints `ok  pkg  2.80s` having
 executed nothing. The targets pipe through `scripts/testreport`, which fails
 when a required suite ran no tests and prints failures verbatim rather than
-burying them in `-v` output.
+burying them in `-v` output. The targets leave Go's test cache on — that is
+what makes a warm `make test` 13s — except for the cross-backend parity
+suites, which each tier runs in a second, `-count=1` invocation because their
+fixtures build the server binary in a subprocess the test cache cannot see, so
+a cached pass could be replayed over a server built from the old code.
 
 `make race` runs `go test -race -timeout=15m` over every package except
 `internal/e2e` and is what CI invokes — running it locally before a PR
