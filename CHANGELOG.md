@@ -981,6 +981,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **memory and sqlite: a write (`Save`, `CompareAndSave`, `Delete`, `DeleteAll`)
+  issued on an already-committed transaction is refused with a
+  transaction-closed error instead of being buffered and silently discarded.**
+
 - **A write matching a kind the model declares is accepted with a `changeLevel`
   set.** The extension gate compared one kind per path, so a model with a
   multi-kind field refused half of its own declared data at every level — with a
