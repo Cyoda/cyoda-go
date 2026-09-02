@@ -29,39 +29,43 @@ func TestBegin_WaitsForInFlightCommit(t *testing.T) {
 	m := f.tm
 	ctx := attrInternalCtx("tenant-A", "alice", spi.PrincipalUser)
 
-	// Stand in for a commit between step 4 and sqlTx.Commit.
-	m.commitMu.Lock()
-	func() {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		m.lastSubmitTime = m.factory.clock.Now().UnixMicro() + 5_000_000 // 5s ahead
-	}()
-	bumped := func() int64 {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		return m.lastSubmitTime
-	}()
-
 	type beginResult struct {
 		txID string
 		ctx  context.Context
 		err  error
 	}
 	done := make(chan beginResult, 1)
-	go func() {
-		id, txCtx, err := m.Begin(ctx)
-		done <- beginResult{id, txCtx, err}
+
+	// Stand in for a commit between step 4 and sqlTx.Commit: hold commitMu
+	// while bumping lastSubmitTime, start Begin concurrently, and assert it
+	// is still blocked after 150ms — all inside the commitMu hold. A
+	// t.Fatalf in the select still runs the deferred Unlock via
+	// runtime.Goexit.
+	var bumped int64
+	func() {
+		m.commitMu.Lock()
+		defer m.commitMu.Unlock()
+
+		bumped = func() int64 {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			m.lastSubmitTime = m.factory.clock.Now().UnixMicro() + 5_000_000 // 5s ahead
+			return m.lastSubmitTime
+		}()
+
+		go func() {
+			id, txCtx, err := m.Begin(ctx)
+			done <- beginResult{id, txCtx, err}
+		}()
+
+		select {
+		case r := <-done:
+			t.Fatalf("Begin returned while a commit was in flight (txID=%q err=%v); it must wait for commitMu", r.txID, r.err)
+		case <-time.After(150 * time.Millisecond):
+			// Blocked, as required.
+		}
 	}()
 
-	select {
-	case r := <-done:
-		m.commitMu.Unlock()
-		t.Fatalf("Begin returned while a commit was in flight (txID=%q err=%v); it must wait for commitMu", r.txID, r.err)
-	case <-time.After(150 * time.Millisecond):
-		// Blocked, as required.
-	}
-
-	m.commitMu.Unlock()
 	var r beginResult
 	select {
 	case r = <-done:
