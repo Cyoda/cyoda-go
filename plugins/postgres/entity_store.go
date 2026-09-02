@@ -258,6 +258,21 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 	txStore := *s
 	txStore.q = classifiedQuerier{inner: tx}
 
+	// FOR UPDATE locks a row that exists; an absent row has nothing to lock,
+	// so the check above closes the window for UPDATES only. Two callers
+	// CREATING the same id would both read "no entity", both pass, and both
+	// write. A transaction-scoped advisory lock needs no row: it is keyed on
+	// the entity itself and released when this transaction commits or rolls
+	// back, so the second creator waits here, re-reads under the lock, sees
+	// the winner's row carrying the winner's transaction ID, and conflicts.
+	// The key is hashed from tenant and id together — a collision between two
+	// unrelated entities costs a wait, never a wrong answer.
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext($1))`,
+		string(s.tenantID)+":"+entity.Meta.ID); err != nil {
+		return 0, fmt.Errorf("failed to lock entity for compare-and-save: %w", classifyError(err))
+	}
+
 	if err := txStore.compareTxID(ctx, txStore.q, entity.Meta.ID, expectedTxID, true); err != nil {
 		return 0, err
 	}
@@ -291,7 +306,9 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 // forUpdate locks the row for the rest of the caller's database transaction —
 // what makes the non-transactional path's check and write indivisible. It is
 // false inside the caller's own transaction, whose write is not committed
-// here and must not hold a row lock the caller did not ask for.
+// here and must not hold a row lock the caller did not ask for. A row that is
+// not there locks nothing, which is why the non-transactional path takes an
+// advisory lock on the entity as well — see CompareAndSave.
 func (s *entityStore) compareTxID(ctx context.Context, q Querier, entityID, expectedTxID string, forUpdate bool) error {
 	query := `SELECT doc->'_meta'->>'transaction_id' FROM entities WHERE tenant_id = $1 AND entity_id = $2 AND NOT deleted`
 	if forUpdate {
