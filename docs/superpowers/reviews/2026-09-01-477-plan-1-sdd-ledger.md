@@ -123,3 +123,4 @@ Fix 4b review (sonnet): all five correct, no findings.
 Final verification at d1280bc: make test-full green — root 8782 (+1389 parity, uncached), memory 470, sqlite 636, postgres 833 (its suite now runs locally), 0 failed.
 Paul (2026-09-02): the same-transaction delete-then-recreate history difference is a detail — documented (CONSISTENCY.md §6, docs/plugins/POSTGRES.md), not changed.
 Final race run at d1280bc: 7907 + 1389 parity, 0 failed (one earlier attempt hit a testcontainers reaper start-up error; re-run clean).
+CI security job failed at a157bce: the testcontainers dependency added to plugins/postgres pulled golang.org/x/crypto v0.51.0 (published advisories); bumped to the root's v0.54.0 (48da54c), re-pin 80d72c2.
