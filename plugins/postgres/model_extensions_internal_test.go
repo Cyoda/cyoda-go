@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -90,10 +89,7 @@ type pgFixture struct {
 
 func newPGFixture(t *testing.T) *pgFixture {
 	t.Helper()
-	dbURL := os.Getenv("CYODA_TEST_DB_URL")
-	if dbURL == "" {
-		t.Skip("CYODA_TEST_DB_URL not set — skipping PostgreSQL test")
-	}
+	dbURL := testDBURL(t)
 	poolCfg, err := pgxpool.ParseConfig(dbURL)
 	if err != nil {
 		t.Fatalf("parse pool config: %v", err)
@@ -153,10 +149,7 @@ func newPGFixture(t *testing.T) *pgFixture {
 // time — used by B-I2 to compare interval=64 vs interval=1_000_000.
 func newPGFixtureWithInterval(t *testing.T, interval int) *pgFixture {
 	t.Helper()
-	dbURL := os.Getenv("CYODA_TEST_DB_URL")
-	if dbURL == "" {
-		t.Skip("CYODA_TEST_DB_URL not set — skipping PostgreSQL test")
-	}
+	dbURL := testDBURL(t)
 	poolCfg, err := pgxpool.ParseConfig(dbURL)
 	if err != nil {
 		t.Fatalf("parse pool config: %v", err)

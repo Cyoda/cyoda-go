@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
 	"sync"
 	"testing"
 
@@ -222,7 +221,7 @@ func TestExtendSchema_SelfWrap_SetsTenantGUCForRLS(t *testing.T) {
 		_, _ = fx.db.Exec(context.Background(), `DROP ROLE IF EXISTS `+probeRole)
 	})
 
-	probeURL, err := url.Parse(os.Getenv("CYODA_TEST_DB_URL"))
+	probeURL, err := url.Parse(testDBURL(t))
 	if err != nil {
 		t.Fatalf("parse CYODA_TEST_DB_URL: %v", err)
 	}

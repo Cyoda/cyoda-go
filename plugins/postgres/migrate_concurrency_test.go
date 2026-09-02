@@ -38,7 +38,7 @@ import (
 // ones a migration connection must NOT inherit.
 func newPoolWithCeilings(t *testing.T, statement, idle time.Duration) *pgxpool.Pool {
 	t.Helper()
-	return openCeilingPool(t, ceilingEnv(skipIfNoLiveDB(t), map[string]string{
+	return openCeilingPool(t, ceilingEnv(testDBURL(t), map[string]string{
 		"CYODA_POSTGRES_STATEMENT_TIMEOUT":  statement.String(),
 		"CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT": idle.String(),
 	}))
@@ -202,7 +202,7 @@ func TestOpenDB_DoesNotLeakIntoTheAppPool(t *testing.T) {
 // half: the exact config RunMigrateWithDSN builds, materialised into a live
 // connection, with a hostile ceiling in the DSN.
 func TestE2E_MigratePoolConfig_OverridesACeilingFromTheDSN(t *testing.T) {
-	dsn := dsnWithParam(t, skipIfNoLiveDB(t), "statement_timeout", "1s")
+	dsn := dsnWithParam(t, testDBURL(t), "statement_timeout", "1s")
 	poolCfg, err := migratePoolConfig(dsn, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("migratePoolConfig: %v", err)
@@ -247,7 +247,7 @@ func TestE2E_MigratePoolConfig_OverridesACeilingFromTheDSN(t *testing.T) {
 // the discriminating power is TestE2E_MigratePoolConfig_OverridesACeilingFromTheDSN
 // above, which does fail under that mutation.
 func TestE2E_RunMigrateWithDSN_CompletesWithACeilingInTheDSN(t *testing.T) {
-	plain := skipIfNoLiveDB(t)
+	plain := testDBURL(t)
 	dsn := dsnWithParam(t, plain, "statement_timeout", "1ms")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -338,7 +338,7 @@ func TestLockTimeout_AbortsAnAdvisoryLockWait(t *testing.T) {
 // independent migration domains.
 func freshDatabase(t *testing.T) string {
 	t.Helper()
-	base := skipIfNoLiveDB(t)
+	base := testDBURL(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

@@ -26,12 +26,10 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # Service container for the plugins/postgres step below. The plugin's
-    # tests skip themselves when CYODA_TEST_DB_URL is unset (they have no
-    # testcontainers bootstrap of their own — that lives in the root
-    # module's e2e/parity fixtures), so without this service the postgres
-    # plugin step was silently green while exercising none of its
-    # DB-backed tests.
+    # Service container for the plugins/postgres step below, published to it
+    # as CYODA_TEST_DB_URL. The plugin's TestMain starts a testcontainer when
+    # that variable is unset, so the suite has a database either way; this
+    # service is the faster path on a runner that already has one.
     services:
       postgres:
         image: postgres:17-alpine

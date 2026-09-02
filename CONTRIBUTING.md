@@ -44,7 +44,10 @@ go test -tags cyoda_recon ./test/recon/   # reconciliation (optional, needs Clou
 ```
 
 Both tiers require Docker and there is no Docker-free alternative: if Docker
-cannot serve the suites, `make preflight` fails with what to fix. Prefer these
+cannot serve the suites, `make preflight` fails with what to fix. The
+`plugins/postgres` suite is database-backed throughout and provisions its own
+PostgreSQL container when `CYODA_TEST_DB_URL` is unset — CI sets that variable
+and its service container is used instead. Prefer these
 targets over a hand-rolled `go test ./...`, which reports `ok` for a suite that
 never ran — a `TestMain` calling `os.Exit(0)` prints `ok  pkg  2.80s` having
 executed nothing. The targets pipe through `scripts/testreport`, which fails

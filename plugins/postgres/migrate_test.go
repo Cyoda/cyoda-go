@@ -19,7 +19,7 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 // control, so a test can make connection scarcity reachable.
 func newTestPoolSized(t *testing.T, maxConns int32) *pgxpool.Pool {
 	t.Helper()
-	dbURL := skipIfNoPostgres(t)
+	dbURL := testDBURL(t)
 
 	// Use pgxpool.ParseConfig + NewWithConfig so we can set HealthCheckPeriod
 	// to 24h (effectively disabled). The default HealthCheckPeriod triggers a

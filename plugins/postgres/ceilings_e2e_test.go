@@ -22,11 +22,14 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-func skipIfNoLiveDB(t *testing.T) string {
+// testDBURL returns the database every test in this package runs against.
+// TestMain guarantees it — from the environment, or from a container it
+// started — so an empty value is a broken fixture, not a reason to skip.
+func testDBURL(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("CYODA_TEST_DB_URL")
 	if dsn == "" {
-		t.Skip("CYODA_TEST_DB_URL not set — skipping PostgreSQL test")
+		t.Fatal("CYODA_TEST_DB_URL is empty — TestMain must provision a database")
 	}
 	return dsn
 }
@@ -99,7 +102,7 @@ func gucMillis(t *testing.T, pool *pgxpool.Pool, name string) int64 {
 // row 11a: the values this plugin renders are accepted by a real server and take
 // effect as the documented defaults.
 func TestE2E_Ceilings_DefaultsAppliedOnLiveConnection(t *testing.T) {
-	pool := openCeilingPool(t, ceilingEnv(skipIfNoLiveDB(t), nil))
+	pool := openCeilingPool(t, ceilingEnv(testDBURL(t), nil))
 
 	if got := gucMillis(t, pool, "statement_timeout"); got != 300000 {
 		t.Errorf("statement_timeout = %d ms, want 300000 (5m)", got)
@@ -113,7 +116,7 @@ func TestE2E_Ceilings_DefaultsAppliedOnLiveConnection(t *testing.T) {
 // middle case: a value the operator put in CYODA_POSTGRES_URL is not clobbered
 // by a default nobody set.
 func TestE2E_Ceilings_DSNValueSurvives(t *testing.T) {
-	dsn := dsnWithParam(t, skipIfNoLiveDB(t), "statement_timeout", "7000")
+	dsn := dsnWithParam(t, testDBURL(t), "statement_timeout", "7000")
 	pool := openCeilingPool(t, ceilingEnv(dsn, nil))
 
 	if got := gucMillis(t, pool, "statement_timeout"); got != 7000 {
@@ -127,7 +130,7 @@ func TestE2E_Ceilings_DSNValueSurvives(t *testing.T) {
 
 // TestE2E_Ceilings_EnvOverridesDSN is row 11h's third case on a live server.
 func TestE2E_Ceilings_EnvOverridesDSN(t *testing.T) {
-	dsn := dsnWithParam(t, skipIfNoLiveDB(t), "statement_timeout", "7000")
+	dsn := dsnWithParam(t, testDBURL(t), "statement_timeout", "7000")
 	pool := openCeilingPool(t, ceilingEnv(dsn, map[string]string{
 		"CYODA_POSTGRES_STATEMENT_TIMEOUT": "11s",
 	}))
@@ -141,7 +144,7 @@ func TestE2E_Ceilings_EnvOverridesDSN(t *testing.T) {
 // limit", and an explicit 0 must reach the server as such rather than being
 // treated as "unset, apply the default".
 func TestE2E_Ceilings_ZeroDisables(t *testing.T) {
-	pool := openCeilingPool(t, ceilingEnv(skipIfNoLiveDB(t), map[string]string{
+	pool := openCeilingPool(t, ceilingEnv(testDBURL(t), map[string]string{
 		"CYODA_POSTGRES_STATEMENT_TIMEOUT":  "0",
 		"CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT": "0",
 	}))
@@ -160,7 +163,7 @@ func TestE2E_Ceilings_ZeroDisables(t *testing.T) {
 // (and its locks) indefinitely. Without this the ceiling could be a well-formed
 // string that never fires.
 func TestE2E_Ceilings_IdleInTransactionActuallyReclaims(t *testing.T) {
-	pool := openCeilingPool(t, ceilingEnv(skipIfNoLiveDB(t), map[string]string{
+	pool := openCeilingPool(t, ceilingEnv(testDBURL(t), map[string]string{
 		"CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT": "300ms",
 	}))
 
@@ -194,7 +197,7 @@ func TestE2E_Ceilings_IdleInTransactionActuallyReclaims(t *testing.T) {
 
 // TestE2E_Ceilings_StatementTimeoutActuallyFires — the other GUC, same argument.
 func TestE2E_Ceilings_StatementTimeoutActuallyFires(t *testing.T) {
-	pool := openCeilingPool(t, ceilingEnv(skipIfNoLiveDB(t), map[string]string{
+	pool := openCeilingPool(t, ceilingEnv(testDBURL(t), map[string]string{
 		"CYODA_POSTGRES_STATEMENT_TIMEOUT": "300ms",
 	}))
 
@@ -419,7 +422,7 @@ type asyncScanMarker interface {
 // ceiling for that transaction alone. Without the raise, the scan would die on
 // the ceiling the pool carries — which the unmarked control below proves it does.
 func TestE2E_SearchCeiling_BoundsTheScanTheInteractiveCeilingWouldNot(t *testing.T) {
-	dsn := skipIfNoLiveDB(t)
+	dsn := testDBURL(t)
 	seedSearchCeilingModel(t, dsn)
 
 	interactive := searchCeilingInteractiveFor(t, dsn)
@@ -456,7 +459,7 @@ func TestE2E_SearchCeiling_BoundsTheScanTheInteractiveCeilingWouldNot(t *testing
 // two apart; a plain SET would have poisoned the connection for everything that
 // borrowed it next.
 func TestE2E_SearchCeiling_FiresOnTheScanAndNowhereElse(t *testing.T) {
-	dsn := skipIfNoLiveDB(t)
+	dsn := testDBURL(t)
 	seedSearchCeilingModel(t, dsn)
 
 	// The 1ms is safe on this side: the scan's preamble runs under the generous
@@ -527,7 +530,7 @@ func searchCeilingIterate(t *testing.T, es spi.EntityStore, ctx context.Context)
 // postgresIter's mid-iteration classification path (not just the one at
 // Search's single return point) names the ceiling correctly.
 func TestE2E_SearchCeiling_Iterate_FiresOnTheScanAndNowhereElse(t *testing.T) {
-	dsn := skipIfNoLiveDB(t)
+	dsn := testDBURL(t)
 	seedSearchCeilingModel(t, dsn)
 
 	// The 1ms is safe on this side: the scan's preamble runs under the generous

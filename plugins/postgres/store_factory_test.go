@@ -104,7 +104,7 @@ func TestPostgresStoreFactory_SkeletonReturnsErrors(t *testing.T) {
 }
 
 func TestPostgresStoreFactory_Close(t *testing.T) {
-	dbURL := skipIfNoPostgres(t)
+	dbURL := testDBURL(t)
 	cfg := postgres.DBConfig{URL: dbURL, MaxConns: 2, MinConns: 0, MaxConnIdleTime: "1m"}
 	pool, err := postgres.NewPool(context.Background(), cfg)
 	if err != nil {
