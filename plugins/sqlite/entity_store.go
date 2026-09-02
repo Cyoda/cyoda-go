@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"iter"
-	"sort"
-	"strings"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -1062,21 +1060,6 @@ func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, s
 	return result, nil
 }
 
-// pageSlice returns a copied [offset:offset+limit) window of rows, already
-// sorted in canonical (byte-wise) entity-ID order by the caller. Mirrors the
-// memory plugin's pageSlice helper — see spi.EntityStore.GetPage's doc
-// comment for the paging contract.
-func pageSlice(rows []*spi.Entity, limit, offset int) []*spi.Entity {
-	if offset >= len(rows) {
-		return []*spi.Entity{}
-	}
-	end := offset + limit
-	if end > len(rows) {
-		end = len(rows)
-	}
-	return rows[offset:end]
-}
-
 // GetPage returns a page of modelRef's entities in canonical (byte-wise)
 // entity-ID order. See spi.EntityStore.GetPage's doc comment for the full
 // contract: limit>=1 && offset>=0 is required; asAt==nil reads the live
@@ -1176,106 +1159,47 @@ func (s *entityStore) getPageAsAt(ctx context.Context, modelRef spi.ModelRef, li
 	return page, nil
 }
 
-// getPageTx is the in-tx, asAt==nil path: the committed snapshot at
-// tx.SnapshotTime (on the writer connection, tx.OpMu-guarded — the same
-// posture as getAllTx/Save/GetAll) merged with the transaction's own
-// buffered writes via spi.MergeOrdered, skipping staged deletes.
-//
-// The committed query is bounded to LIMIT offset+limit+len(tx.Deletes) rows
-// and fully drained (rows.Next() to exhaustion) and closed BEFORE any
-// merging begins: s.db has a single-connection pool (SetMaxOpenConns(1)),
-// so a second statement issued while these rows are still open would
-// deadlock waiting for a connection that can only be released by closing
-// (or fully draining) the first.
-//
-// Why +len(tx.Deletes): offset+limit alone bounds how many committed rows
-// spi.MergeOrdered's advance() ever LANDS on (buffered adds can only
-// shrink that, never grow it — each output consumes at most one landed
-// committed row). But every staged delete that advance() encounters along
-// the way is skipped and silently consumes ANOTHER underlying row without
-// producing output (see MergeOrdered's isDeleted skip-loop) — a committed
-// row is "wasted" this way, not "landed". A committed ID can be skipped at
-// most once (each entity has at most one row in this snapshot), so
-// len(tx.Deletes) is a safe upper bound on total waste across the whole
-// query, and offset+limit+len(tx.Deletes) rows are therefore always enough
-// to reach the offset+limit-th real landing (or the true end of the
-// committed set) before the artificial LIMIT can cut a needed row off.
-// Without this term, deletes shadowing rows inside the fetched prefix
-// silently under-fill or empty the page instead of paging past them.
+// getPageTx is the in-tx, asAt==nil path: the same overlay cursor Iterate
+// uses (tx_overlay.go), pulled offset+limit times. The first offset merged
+// rows are discarded as they are pulled, so peak memory is one page plus the
+// buffered adds — never the committed prefix. Every entity on the returned
+// page is recorded into the read-set unconditionally (GetPage's SPI
+// contract; it has no TrackingRead knob).
 func (s *entityStore) getPageTx(ctx context.Context, tx *spi.TransactionState, modelRef spi.ModelRef, limit, offset int) ([]*spi.Entity, error) {
 	tx.OpMu.RLock()
 	defer tx.OpMu.RUnlock()
 	if tx.RolledBack {
 		return nil, fmt.Errorf("GetPage: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 	}
-
-	searchOpts := spi.SearchOptions{ModelName: modelRef.EntityName, ModelVersion: modelRef.ModelVersion}
-	query, args := s.searchSnapshotBase(searchOpts, timeToMicro(tx.SnapshotTime))
-	query += " ORDER BY ev.entity_id LIMIT ?"
-	args = append(args, offset+limit+len(tx.Deletes))
-
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	if tx.Closed {
+		return nil, fmt.Errorf("GetPage: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
+	}
+	overlay, err := s.openTxOverlay(ctx, tx, modelRef, spi.Filter{}, projectFull)
 	if err != nil {
-		return nil, fmt.Errorf("GetPage: committed query: %w", err)
+		return nil, fmt.Errorf("GetPage: %w", err)
 	}
-	var committed []*spi.Entity
-	for rows.Next() {
-		e, err := scanVersionEntity(rows)
+	defer overlay.Close()
+
+	for skipped := 0; skipped < offset; skipped++ {
+		_, ok, err := overlay.pull()
 		if err != nil {
-			_ = rows.Close()
-			return nil, err
+			return nil, fmt.Errorf("GetPage: %w", err)
 		}
-		committed = append(committed, e)
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return nil, fmt.Errorf("GetPage: committed row iteration: %w", err)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, fmt.Errorf("GetPage: close committed rows: %w", err)
-	}
-
-	// Buffered own-writes for this model, byte-wise sorted to match the
-	// committed stream's order — spi.MergeOrdered requires both inputs
-	// pre-sorted by the same comparator.
-	adds := make([]*spi.Entity, 0, len(tx.Buffer))
-	for _, e := range tx.Buffer {
-		if e.Meta.ModelRef == modelRef {
-			adds = append(adds, copyEntity(e))
+		if !ok {
+			return []*spi.Entity{}, nil
 		}
 	}
-	sort.Slice(adds, func(i, j int) bool { return adds[i].Meta.ID < adds[j].Meta.ID })
-
-	idx := 0
-	next := func() (*spi.Entity, bool, error) {
-		if idx >= len(committed) {
-			return nil, false, nil
-		}
-		e := committed[idx]
-		idx++
-		return e, true, nil
-	}
-	isDeleted := func(entityID string) bool { return tx.Deletes[entityID] }
-	cmp := func(a, b *spi.Entity) int { return strings.Compare(a.Meta.ID, b.Meta.ID) }
-
-	pull := spi.MergeOrdered(next, adds, isDeleted, cmp)
-	target := offset + limit
-	merged := make([]*spi.Entity, 0, target)
-	for len(merged) < target {
-		e, ok, err := pull()
+	page := make([]*spi.Entity, 0, limit)
+	for len(page) < limit {
+		e, ok, err := overlay.pull()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("GetPage: %w", err)
 		}
 		if !ok {
 			break
 		}
-		merged = append(merged, e)
+		page = append(page, e)
 	}
-
-	page := pageSlice(merged, limit, offset)
-	// Unconditional: every entity on the returned page enters the
-	// transaction's read-set — no TrackingRead knob, per GetPage's SPI doc
-	// comment (unlike Search/Iterate's opt-in TrackingRead).
 	for _, e := range page {
 		tx.ReadSet[e.Meta.ID] = true
 	}
