@@ -163,3 +163,54 @@ func TestBegin_ReservesItsSnapshotTimeAsTheFloor(t *testing.T) {
 		t.Fatalf("non-transactional Get returned %q, want e-reserve", got.Meta.ID)
 	}
 }
+
+// A transaction manager installed on a factory that already holds rows takes
+// over that factory's floor; it does not start from zero. Starting from zero
+// would put the first snapshot after the swap below submit times already
+// stamped — the stamps stand above the clock, which is the whole point of the
+// floor — and the rows written under the old manager would be invisible to
+// the first transaction under the new one. The sqlite plugin seeds the same
+// value from MAX(submit_time) on open.
+func TestNewTransactionManager_CarriesTheSubmitTimeFloor(t *testing.T) {
+	clock := memory.NewTestClockAt(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	factory := memory.NewStoreFactory(memory.WithClock(clock))
+	ctx := ctxWithTenant("tenant-carry")
+	ref := spi.ModelRef{EntityName: "m-carry", ModelVersion: "1"}
+
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+
+	// Two writes inside one frozen clock tick: the second is stamped a
+	// microsecond ABOVE the clock, so the floor now stands ahead of it and a
+	// manager that started from zero would floor its snapshot below the row.
+	for range 2 {
+		if _, err := store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: "e-carry", TenantID: "tenant-carry", ModelRef: ref, State: "open"},
+			Data: []byte(`{"n":1}`),
+		}); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+	}
+	metas, err := store.GetVersionMetadata(ctx, "e-carry", spi.VersionMetadataOptions{})
+	if err != nil {
+		t.Fatalf("GetVersionMetadata: %v", err)
+	}
+	if len(metas) == 0 {
+		t.Fatal("no version metadata for e-carry")
+	}
+	submitTime := metas[0].Timestamp // newest first
+
+	tm := factory.NewTransactionManager(newTestUUIDGenerator())
+	txID, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	defer func() { _ = tm.Rollback(txCtx, txID) }()
+
+	if snapshot := spi.GetTransaction(txCtx).SnapshotTime; snapshot.Before(submitTime) {
+		t.Fatalf("snapshot %s of a re-created manager sits below a committed submit time %s",
+			snapshot, submitTime)
+	}
+}

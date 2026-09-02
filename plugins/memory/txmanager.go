@@ -158,8 +158,11 @@ type TransactionManager struct {
 // Verify interface compliance at compile time.
 var _ spi.TransactionManager = (*TransactionManager)(nil)
 
-// NewTransactionManager creates and registers a TransactionManager on the StoreFactory.
+// NewTransactionManager creates and registers a TransactionManager on the
+// StoreFactory, carrying over the submit-time floor of whatever it replaces
+// (see seedLastSubmitTime).
 func (f *StoreFactory) NewTransactionManager(uuids spi.UUIDGenerator) *TransactionManager {
+	floor := f.seedLastSubmitTime()
 	tm := &TransactionManager{
 		factory:          f,
 		uuids:            uuids,
@@ -172,9 +175,42 @@ func (f *StoreFactory) NewTransactionManager(uuids spi.UUIDGenerator) *Transacti
 		txSnapshotSeq:    make(map[string]int64),
 		supersededSaves:  make(map[string]map[string][]*spi.Entity),
 		scheduledTaskOps: make(map[string][]scheduledTaskOp),
+		lastSubmitTime:   floor,
 	}
 	f.txManager = tm
 	return tm
+}
+
+// seedLastSubmitTime returns the submit-time floor a manager being installed
+// on this factory must start from: the outgoing manager's floor when there is
+// one, otherwise the latest submit time already stamped on the factory's
+// rows. Starting from zero would put the new manager's first snapshot below
+// stamps already committed — every stamp is max(now, floor+1µs) and so can
+// stand ahead of the clock — and those rows would be invisible to the first
+// transaction it begins. The sqlite plugin seeds the same value from
+// MAX(submit_time) on open.
+//
+// The outgoing manager's floor is authoritative on its own: it is at or above
+// every stamp it issued.
+func (f *StoreFactory) seedLastSubmitTime() time.Time {
+	if prev := f.txManager; prev != nil {
+		prev.mu.Lock()
+		defer prev.mu.Unlock()
+		return prev.lastSubmitTime
+	}
+	f.entityMu.RLock()
+	defer f.entityMu.RUnlock()
+	var latest time.Time
+	for _, entities := range f.entityData {
+		for _, versions := range entities {
+			for _, v := range versions {
+				if v.submitTime.After(latest) {
+					latest = v.submitTime
+				}
+			}
+		}
+	}
+	return latest
 }
 
 // recordUniqueKeys stores the unique keys for entityID under txID so that
