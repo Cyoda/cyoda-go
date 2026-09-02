@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
 	"time"
@@ -166,25 +167,76 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 }
 
 func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, expectedTxID string) (int64, error) {
-	tid := string(s.tenantID)
-	eid := entity.Meta.ID
+	// Inside the caller's transaction the check and the write already run on
+	// one connection, under that transaction — the check reads the
+	// transaction's own view, and neither half can commit before the caller
+	// says so. Nothing to add here.
+	if spi.GetTransaction(ctx) != nil {
+		if err := s.compareTxID(ctx, s.q, entity.Meta.ID, expectedTxID, false); err != nil {
+			return 0, err
+		}
+		return s.Save(ctx, entity)
+	}
 
-	// Check current transaction ID.
+	// Outside a transaction every statement is separately auto-committed, so
+	// a check taken on its own leaves a check-then-write window: several
+	// callers naming the same expected transaction ID all read it, all pass,
+	// and all write, each silently clobbering the last instead of getting
+	// ErrConflict. One database transaction closes it — the check takes the
+	// row lock (FOR UPDATE) and the write commits under it, so a concurrent
+	// caller blocks on the check and then reads the winner's ID.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, classifyError(fmt.Errorf("failed to begin compare-and-save transaction: %w", err))
+	}
+	// Rollback after a successful Commit is a no-op, so this covers every
+	// error return below without a second exit path.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// The whole save runs on that transaction's connection rather than
+	// through s.q, which would resolve the pool and auto-commit each
+	// statement. classifiedQuerier is the plain funnel s.q applies outside a
+	// transaction, so the errors callers see are unchanged.
+	txStore := *s
+	txStore.q = classifiedQuerier{inner: tx}
+
+	if err := txStore.compareTxID(ctx, txStore.q, entity.Meta.ID, expectedTxID, true); err != nil {
+		return 0, err
+	}
+	version, err := txStore.Save(ctx, entity)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, classifyError(fmt.Errorf("failed to commit compare-and-save: %w", err))
+	}
+	return version, nil
+}
+
+// compareTxID reports whether the stored entity still carries expectedTxID,
+// returning spi.ErrConflict when it does not. A missing row passes: there is
+// no current transaction ID to disagree with, and the save that follows
+// creates it.
+//
+// forUpdate locks the row for the rest of the caller's database transaction —
+// what makes the non-transactional path's check and write indivisible. It is
+// false inside the caller's own transaction, whose write is not committed
+// here and must not hold a row lock the caller did not ask for.
+func (s *entityStore) compareTxID(ctx context.Context, q Querier, entityID, expectedTxID string, forUpdate bool) error {
+	query := `SELECT doc->'_meta'->>'transaction_id' FROM entities WHERE tenant_id = $1 AND entity_id = $2`
+	if forUpdate {
+		query += ` FOR UPDATE`
+	}
 	var currentTxID *string
-	err := s.q.QueryRow(ctx,
-		`SELECT doc->'_meta'->>'transaction_id' FROM entities WHERE tenant_id = $1 AND entity_id = $2`,
-		tid, eid).Scan(&currentTxID)
-	if err != nil && err != pgx.ErrNoRows {
-		return 0, fmt.Errorf("failed to check transaction ID: %w", err)
+	err := q.QueryRow(ctx, query, string(s.tenantID), entityID).Scan(&currentTxID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("failed to check transaction ID: %w", err)
 	}
-
-	// If entity exists and txID doesn't match, conflict.
 	if err == nil && currentTxID != nil && *currentTxID != expectedTxID {
-		return 0, fmt.Errorf("entity %s transaction ID mismatch (current=%q, expected=%q): %w",
-			eid, *currentTxID, expectedTxID, spi.ErrConflict)
+		return fmt.Errorf("entity %s transaction ID mismatch (current=%q, expected=%q): %w",
+			entityID, *currentTxID, expectedTxID, spi.ErrConflict)
 	}
-
-	return s.Save(ctx, entity)
+	return nil
 }
 
 func (s *entityStore) Get(ctx context.Context, entityID string) (*spi.Entity, error) {
