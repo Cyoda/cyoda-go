@@ -237,7 +237,18 @@ func (m *transactionManager) Begin(ctx context.Context) (string, context.Context
 	// sees all previously committed data. Without this floor, a monotonic
 	// submit-time bump could push a commit past the next Begin's raw clock
 	// value, making committed entities invisible to new transactions.
+	//
+	// The floor is captured under commitMu, which Commit holds from its
+	// conflict check through sqlTx.Commit: Commit bumps lastSubmitTime
+	// (step 4) before its rows are visible, so a Begin that read the bumped
+	// value without waiting would carry a SnapshotTime at or after a commit
+	// whose rows it cannot yet see on readDB — and Commit's conflict check
+	// would then treat that commit as preceding the snapshot. Waiting here
+	// makes "SnapshotTime >= submitTime" imply "rows visible" on every
+	// connection. Lock order commitMu → mu, the order Commit uses.
 	func() {
+		m.commitMu.Lock()
+		defer m.commitMu.Unlock()
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		if nowMicro < m.lastSubmitTime {
