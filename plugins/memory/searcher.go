@@ -69,9 +69,9 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 			s.factory.entityMu.RLock()
 			defer s.factory.entityMu.RUnlock()
 			if opts.PointInTime != nil {
-				committed, snapErr = s.getAllSnapshotUnlocked(ctx, modelRef, *opts.PointInTime)
+				committed = s.getAllSnapshotPointersUnlocked(modelRef, *opts.PointInTime)
 			} else {
-				committed, snapErr = s.currentStateMatchesUnlocked(ctx, modelRef)
+				committed, snapErr = s.currentStatePointersUnlocked(ctx, modelRef)
 			}
 		}()
 		if snapErr != nil {
@@ -94,32 +94,24 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 		// In-tx point-in-time: committed-only, no buffer overlay, no read-set
 		// (mirrors GetAllAsAt). Snapshot under entityMu via IIFE.
 		var committed []*spi.Entity
-		var snapErr error
 		func() {
 			s.factory.entityMu.RLock()
 			defer s.factory.entityMu.RUnlock()
-			committed, snapErr = s.getAllSnapshotUnlocked(ctx, modelRef, *opts.PointInTime)
+			committed = s.getAllSnapshotPointersUnlocked(modelRef, *opts.PointInTime)
 		}()
-		if snapErr != nil {
-			return nil, fmt.Errorf("Search: %w", snapErr)
-		}
 		return matchSortBounded(ctx, pf, committed, opts.OrderBy, opts.Limit)
 	}
 
 	// In-tx read-your-own-writes overlay. Snapshot the committed model at the
 	// tx snapshot time, filter it, and sort it — this is the lazy `next`
-	// source for the merge. copyEntity happens inside getAllSnapshotUnlocked,
-	// so no raw store pointer escapes the lock.
+	// source for the merge. The snapshot is pointers; survivors are copied
+	// before they are returned, so no raw store pointer escapes the lock.
 	var committed []*spi.Entity
-	var snapErr error
 	func() {
 		s.factory.entityMu.RLock()
 		defer s.factory.entityMu.RUnlock()
-		committed, snapErr = s.getAllSnapshotUnlocked(ctx, modelRef, tx.SnapshotTime)
+		committed = s.getAllSnapshotPointersUnlocked(modelRef, tx.SnapshotTime)
 	}()
-	if snapErr != nil {
-		return nil, fmt.Errorf("Search: %w", snapErr)
-	}
 	filteredCommitted := make([]*spi.Entity, 0, len(committed))
 	for i, e := range committed {
 		// Amortized cancellation check (spec D5): the memory plugin IS
@@ -196,6 +188,15 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 		return nil, err
 	}
 
+	// page holds pointers for the committed survivors (filteredCommitted was
+	// never copied) and copies for the buffered adds (already copied above).
+	// Copy the committed survivors now so no raw store pointer escapes.
+	for i, e := range page {
+		if _, buffered := tx.Buffer[e.Meta.ID]; !buffered {
+			page[i] = copyEntity(e)
+		}
+	}
+
 	// Read-set recording is CONDITIONAL on TrackingRead (GetAll records
 	// unconditionally). Only committed rows (not in the buffer — those are
 	// own-writes already in the write-set) enter the read-set. Bounded-or-fail
@@ -210,35 +211,6 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 		}
 	}
 	return page, nil
-}
-
-// currentStateMatchesUnlocked returns copies of the latest non-deleted versions
-// matching modelRef. Caller must hold at least s.factory.entityMu.RLock().
-// Mirrors the non-tx branch of GetAll — including its amortized ctx check,
-// since this is the default (non-PIT) non-tx Search scan and thus the most
-// heavily-travelled loop on the real search path (spec D5).
-func (s *EntityStore) currentStateMatchesUnlocked(ctx context.Context, modelRef spi.ModelRef) ([]*spi.Entity, error) {
-	result := make([]*spi.Entity, 0)
-	i := 0
-	for _, versions := range s.factory.entityData[s.tenant] {
-		if i&1023 == 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-		}
-		i++
-		if len(versions) == 0 {
-			continue
-		}
-		latest := versions[len(versions)-1]
-		if latest.deleted {
-			continue
-		}
-		if latest.entity.Meta.ModelRef == modelRef {
-			result = append(result, copyEntity(latest.entity))
-		}
-	}
-	return result, nil
 }
 
 // matchSortBounded filters rows with a prepared filter, orders with
@@ -263,7 +235,7 @@ func matchSortBounded(ctx context.Context, pf spi.PreparedFilter, rows []*spi.En
 			}
 		}
 		if pf.Match(e.Data, e.Meta) {
-			filtered = append(filtered, e)
+			filtered = append(filtered, copyEntity(e))
 			// Short-circuit before sorting: the result is an error either way.
 			if len(filtered) > limit {
 				return nil, fmt.Errorf("search: more than %d matches: %w", limit, spi.ErrSearchResultLimitExceeded)
