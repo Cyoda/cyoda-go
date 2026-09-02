@@ -131,11 +131,15 @@ func (s *EntityStore) buildSnapshot(ctx context.Context, model spi.ModelRef, pit
 	// PIT path: historical read, bypass tx overlay.
 	if pit != nil {
 		var snapshot []*spi.Entity
+		var snapErr error
 		func() {
 			s.factory.entityMu.RLock()
 			defer s.factory.entityMu.RUnlock()
-			snapshot = s.getAllSnapshotPointersUnlocked(model, *pit)
+			snapshot, snapErr = s.getAllSnapshotPointersUnlocked(ctx, model, *pit)
 		}()
+		if snapErr != nil {
+			return nil, nil, fmt.Errorf("Iterate: %w", snapErr)
+		}
 		return snapshot, nil, nil
 	}
 
@@ -150,13 +154,20 @@ func (s *EntityStore) buildSnapshot(ctx context.Context, model spi.ModelRef, pit
 		if tx.RolledBack {
 			return nil, nil, fmt.Errorf("Iterate: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
+		if tx.Closed {
+			return nil, nil, fmt.Errorf("Iterate: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
+		}
 
 		var mainEntities []*spi.Entity
+		var snapErr error
 		func() {
 			s.factory.entityMu.RLock()
 			defer s.factory.entityMu.RUnlock()
-			mainEntities = s.getAllSnapshotPointersUnlocked(model, tx.SnapshotTime)
+			mainEntities, snapErr = s.getAllSnapshotPointersUnlocked(ctx, model, tx.SnapshotTime)
 		}()
+		if snapErr != nil {
+			return nil, nil, fmt.Errorf("Iterate: %w", snapErr)
+		}
 
 		merged := make(map[string]*spi.Entity, len(mainEntities))
 		for _, e := range mainEntities {
@@ -214,10 +225,23 @@ func (s *EntityStore) buildSnapshot(ctx context.Context, model spi.ModelRef, pit
 // pointer is heap-stable and the entityVersion immutability invariant
 // makes lock-free read safe.
 //
+// ctx gates the same amortized cancellation check the copying variant runs:
+// every 1024 entities (i&1023==0, true at i==0 too) so an already-expired or
+// since-expired ctx aborts the scan rather than walking the whole tenant
+// first. ctx.Err() is a lock-free atomic read, so running it under
+// entityMu.RLock() changes no locking structure.
+//
 // Caller must hold at least s.factory.entityMu.RLock().
-func (s *EntityStore) getAllSnapshotPointersUnlocked(modelRef spi.ModelRef, snapshotTime time.Time) []*spi.Entity {
+func (s *EntityStore) getAllSnapshotPointersUnlocked(ctx context.Context, modelRef spi.ModelRef, snapshotTime time.Time) ([]*spi.Entity, error) {
 	var result []*spi.Entity
+	i := 0
 	for _, versions := range s.factory.entityData[s.tenant] {
+		if i&1023 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		i++
 		if len(versions) == 0 {
 			continue
 		}
@@ -237,7 +261,7 @@ func (s *EntityStore) getAllSnapshotPointersUnlocked(modelRef spi.ModelRef, snap
 			result = append(result, found)
 		}
 	}
-	return result
+	return result, nil
 }
 
 // memoryIter walks a pre-built snapshot, applying the filter inside Next()

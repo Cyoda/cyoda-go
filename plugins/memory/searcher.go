@@ -69,7 +69,7 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 			s.factory.entityMu.RLock()
 			defer s.factory.entityMu.RUnlock()
 			if opts.PointInTime != nil {
-				committed = s.getAllSnapshotPointersUnlocked(modelRef, *opts.PointInTime)
+				committed, snapErr = s.getAllSnapshotPointersUnlocked(ctx, modelRef, *opts.PointInTime)
 			} else {
 				committed, snapErr = s.currentStatePointersUnlocked(ctx, modelRef)
 			}
@@ -94,11 +94,15 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 		// In-tx point-in-time: committed-only, no buffer overlay, no read-set
 		// (mirrors GetAllAsAt). Snapshot under entityMu via IIFE.
 		var committed []*spi.Entity
+		var snapErr error
 		func() {
 			s.factory.entityMu.RLock()
 			defer s.factory.entityMu.RUnlock()
-			committed = s.getAllSnapshotPointersUnlocked(modelRef, *opts.PointInTime)
+			committed, snapErr = s.getAllSnapshotPointersUnlocked(ctx, modelRef, *opts.PointInTime)
 		}()
+		if snapErr != nil {
+			return nil, fmt.Errorf("Search: %w", snapErr)
+		}
 		return matchSortBounded(ctx, pf, committed, opts.OrderBy, opts.Limit)
 	}
 
@@ -107,11 +111,15 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 	// source for the merge. The snapshot is pointers; survivors are copied
 	// before they are returned, so no raw store pointer escapes the lock.
 	var committed []*spi.Entity
+	var snapErr error
 	func() {
 		s.factory.entityMu.RLock()
 		defer s.factory.entityMu.RUnlock()
-		committed = s.getAllSnapshotPointersUnlocked(modelRef, tx.SnapshotTime)
+		committed, snapErr = s.getAllSnapshotPointersUnlocked(ctx, modelRef, tx.SnapshotTime)
 	}()
+	if snapErr != nil {
+		return nil, fmt.Errorf("Search: %w", snapErr)
+	}
 	filteredCommitted := make([]*spi.Entity, 0, len(committed))
 	for i, e := range committed {
 		// Amortized cancellation check (spec D5): the memory plugin IS

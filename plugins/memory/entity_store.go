@@ -475,6 +475,9 @@ func (s *EntityStore) GetAll(ctx context.Context, modelRef spi.ModelRef) ([]*spi
 		if tx.RolledBack {
 			return nil, fmt.Errorf("GetAll: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
+		if tx.Closed {
+			return nil, fmt.Errorf("GetAll: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
+		}
 		// Combine: snapshot of main store + buffer - deletes. Wrap the
 		// entityMu hold in an IIFE so the unlock runs via defer (per
 		// .claude/rules/go-mutex-discipline.md — bare Unlock is not the
@@ -693,11 +696,15 @@ func (s *EntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 		// defer. We only need each entity's id, so the pointer snapshot
 		// (no payload deep-copy) is enough.
 		var mainEntities []*spi.Entity
+		var snapErr error
 		func() {
 			s.factory.entityMu.RLock()
 			defer s.factory.entityMu.RUnlock()
-			mainEntities = s.getAllSnapshotPointersUnlocked(modelRef, tx.SnapshotTime)
+			mainEntities, snapErr = s.getAllSnapshotPointersUnlocked(ctx, modelRef, tx.SnapshotTime)
 		}()
+		if snapErr != nil {
+			return fmt.Errorf("DeleteAll: %w", snapErr)
+		}
 
 		// Attribution captured once for this call (this caller, this ctx)
 		// and applied to every entity ID this DeleteAll stages — same
@@ -803,11 +810,15 @@ func (s *EntityStore) Exists(ctx context.Context, entityID string) (bool, error)
 // buffered own-writes of the model. Caller holds tx.OpMu.RLock.
 func (s *EntityStore) countTx(ctx context.Context, tx *spi.TransactionState, modelRef spi.ModelRef, tally func(state string)) error {
 	var committed []*spi.Entity
+	var snapErr error
 	func() {
 		s.factory.entityMu.RLock()
 		defer s.factory.entityMu.RUnlock()
-		committed = s.getAllSnapshotPointersUnlocked(modelRef, tx.SnapshotTime)
+		committed, snapErr = s.getAllSnapshotPointersUnlocked(ctx, modelRef, tx.SnapshotTime)
 	}()
+	if snapErr != nil {
+		return snapErr
+	}
 	for i, e := range committed {
 		if i&1023 == 0 {
 			if err := ctx.Err(); err != nil {
@@ -817,7 +828,11 @@ func (s *EntityStore) countTx(ctx context.Context, tx *spi.TransactionState, mod
 		if tx.Deletes[e.Meta.ID] {
 			continue
 		}
-		if _, buffered := tx.Buffer[e.Meta.ID]; buffered {
+		// Only a buffered write of the SAME model supersedes this committed
+		// row — that is how GetAll, GetPage and buildSnapshot overlay the
+		// buffer. A buffered write of another model leaves the committed row
+		// standing in this model's view, so it must still be tallied.
+		if b, buffered := tx.Buffer[e.Meta.ID]; buffered && b.Meta.ModelRef == modelRef {
 			continue // the buffered version is tallied below
 		}
 		tally(e.Meta.State)
@@ -1007,7 +1022,10 @@ func (s *EntityStore) GetPage(ctx context.Context, modelRef spi.ModelRef, limit,
 		// overlay, mirroring GetAllAsAt.
 		s.factory.entityMu.RLock()
 		defer s.factory.entityMu.RUnlock()
-		rows := s.getAllSnapshotPointersUnlocked(modelRef, *asAt)
+		rows, err := s.getAllSnapshotPointersUnlocked(ctx, modelRef, *asAt)
+		if err != nil {
+			return nil, fmt.Errorf("GetPage: %w", err)
+		}
 		return pageSlice(rows, limit, offset), nil
 	}
 
@@ -1031,13 +1049,20 @@ func (s *EntityStore) GetPage(ctx context.Context, modelRef spi.ModelRef, limit,
 	if tx.RolledBack {
 		return nil, fmt.Errorf("GetPage: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 	}
+	if tx.Closed {
+		return nil, fmt.Errorf("GetPage: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
+	}
 
 	var mainEntities []*spi.Entity
+	var snapErr error
 	func() {
 		s.factory.entityMu.RLock()
 		defer s.factory.entityMu.RUnlock()
-		mainEntities = s.getAllSnapshotPointersUnlocked(modelRef, tx.SnapshotTime)
+		mainEntities, snapErr = s.getAllSnapshotPointersUnlocked(ctx, modelRef, tx.SnapshotTime)
 	}()
+	if snapErr != nil {
+		return nil, fmt.Errorf("GetPage: %w", snapErr)
+	}
 
 	merged := make(map[string]*spi.Entity, len(mainEntities))
 	for _, e := range mainEntities {
