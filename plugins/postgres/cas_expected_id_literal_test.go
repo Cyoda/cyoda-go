@@ -22,16 +22,23 @@ func TestCompareAndSave_ExpectedIDIsLiteral(t *testing.T) {
 	cases := []struct {
 		name         string
 		seed         bool   // an entity is committed under seedTxID first
+		tombstone    bool   // the seeded entity is then deleted, committed, before the CAS
 		expectedTxID string // what the caller claims is current
 		wantConflict bool
 	}{
 		// No entity: the current ID is "", so a non-empty expected ID
 		// names a version that does not exist.
-		{"NonEmptyExpectedAgainstMissingEntity", false, "tx-ghost", true},
+		{"NonEmptyExpectedAgainstMissingEntity", false, false, "tx-ghost", true},
 		// No entity and "expect no entity" — the create case.
-		{"EmptyExpectedAgainstMissingEntity", false, "", false},
+		{"EmptyExpectedAgainstMissingEntity", false, false, "", false},
 		// An entity IS there, so "expect no entity" is wrong.
-		{"EmptyExpectedAgainstExistingEntity", true, "", true},
+		{"EmptyExpectedAgainstExistingEntity", true, false, "", true},
+		// A committed tombstone offers no ID to match: the pre-delete
+		// transaction ID no longer names the current version.
+		{"NonEmptyExpectedAgainstTombstone", true, true, seedTxID, true},
+		// A committed tombstone is no entity, so "expect no entity"
+		// succeeds and re-creates it.
+		{"EmptyExpectedAgainstTombstone", true, true, "", false},
 	}
 
 	factory, tm := setupEntityTestWithTM(t)
@@ -50,14 +57,33 @@ func TestCompareAndSave_ExpectedIDIsLiteral(t *testing.T) {
 			if tc.seed {
 				seedLiteral(t, store, ctx, ref, id, seedTxID)
 			}
+			if tc.tombstone {
+				if err := store.Delete(ctx, id); err != nil {
+					t.Fatalf("seed Delete: %v", err)
+				}
+			}
 			_, err := store.CompareAndSave(ctx, literalEntity(ref, id, "tx-writer"), tc.expectedTxID)
 			assertConflict(t, err, tc.wantConflict)
+			if tc.tombstone && !tc.wantConflict {
+				got, err := store.Get(ctx, id)
+				if err != nil {
+					t.Fatalf("after re-create Get: %v", err)
+				}
+				if string(got.Data) != `{"n":1}` {
+					t.Fatalf("after re-create Data = %s, want {\"n\":1}", got.Data)
+				}
+			}
 		})
 
 		t.Run(tc.name+"/InTransaction", func(t *testing.T) {
 			id := "e-lit-" + tc.name + "-tx"
 			if tc.seed {
 				seedLiteral(t, store, ctx, ref, id, seedTxID)
+			}
+			if tc.tombstone {
+				if err := store.Delete(ctx, id); err != nil {
+					t.Fatalf("seed Delete: %v", err)
+				}
 			}
 			txID, txCtx, err := tm.Begin(ctx)
 			if err != nil {
@@ -66,6 +92,18 @@ func TestCompareAndSave_ExpectedIDIsLiteral(t *testing.T) {
 			defer func() { _ = tm.Rollback(txCtx, txID) }()
 			_, err = store.CompareAndSave(txCtx, literalEntity(ref, id, "tx-writer"), tc.expectedTxID)
 			assertConflict(t, err, tc.wantConflict)
+			if tc.tombstone && !tc.wantConflict {
+				if err := tm.Commit(txCtx, txID); err != nil {
+					t.Fatalf("Commit: %v", err)
+				}
+				got, err := store.Get(ctx, id)
+				if err != nil {
+					t.Fatalf("after re-create Get: %v", err)
+				}
+				if string(got.Data) != `{"n":1}` {
+					t.Fatalf("after re-create Data = %s, want {\"n\":1}", got.Data)
+				}
+			}
 		})
 	}
 }

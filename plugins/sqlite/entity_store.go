@@ -506,7 +506,9 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 // against: the committed row's, or "" when there is no entity — never
 // written, or deleted. A deleted entity is no entity, exactly as Get reports
 // it, so its tombstone does not offer up the superseded version's ID for a
-// caller to match against.
+// caller to match against. An entity actually stored with an empty
+// transaction ID would read the same way — as no entity — but every writer
+// stamps a non-empty one, so that case is not reachable in production.
 func (s *entityStore) committedTxID(ctx context.Context, entityID string) (string, error) {
 	var txID sql.NullString
 	err := s.db.QueryRowContext(ctx,

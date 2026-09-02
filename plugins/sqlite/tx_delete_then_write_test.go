@@ -106,6 +106,52 @@ func TestTx_DeleteThenSave_CommitsPresent(t *testing.T) {
 	}
 }
 
+// The other half of TestTx_DeleteThenCompareAndSave_Conflicts: an empty
+// expected ID means "expect no entity", which is exactly what the same-tx
+// delete left, so the compare-and-save is allowed and re-creates the entity
+// — present after commit and carrying no DELETED version, the same as a
+// plain Save after a same-tx Delete.
+func TestTx_DeleteThenCompareAndSaveEmpty_RecreatesPresent(t *testing.T) {
+	f, tm := newAttrFactory(t)
+	ctx := attrCtx("tenant-dtw", "u1", spi.PrincipalUser)
+	ref := spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"}
+	store, err := f.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	committed := seedOne(t, store, ctx, "e-cas-recreate", ref)
+
+	txID, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := store.Delete(txCtx, "e-cas-recreate"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := store.CompareAndSave(txCtx, &spi.Entity{Meta: committed.Meta, Data: []byte(`{"n":2}`)}, ""); err != nil {
+		t.Fatalf("CompareAndSave with empty expected ID after same-tx Delete: %v, want success", err)
+	}
+	if err := tm.Commit(txCtx, txID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	got, err := store.Get(ctx, "e-cas-recreate")
+	if err != nil {
+		t.Fatalf("after commit Get: %v", err)
+	}
+	if string(got.Data) != `{"n":2}` {
+		t.Fatalf("after commit Data = %s, want {\"n\":2}", got.Data)
+	}
+	versions, err := store.GetVersionMetadata(ctx, "e-cas-recreate", spi.VersionMetadataOptions{})
+	if err != nil {
+		t.Fatalf("GetVersionMetadata: %v", err)
+	}
+	for _, v := range versions {
+		if v.Deleted {
+			t.Fatalf("a DELETED version was written for an entity whose delete was unstaged: %+v", versions)
+		}
+	}
+}
+
 // A write compares against the transaction's own view. The buffered
 // own-write carries this transaction's ID, so an expected ID naming the
 // committed version is stale and conflicts. Postgres already answers this

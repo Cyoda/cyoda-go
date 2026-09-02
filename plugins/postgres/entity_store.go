@@ -198,6 +198,18 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 	// one connection, under that transaction — the check reads the
 	// transaction's own view, and neither half can commit before the caller
 	// says so. Nothing to add here.
+	//
+	// This branch does not take the advisory lock the non-transactional path
+	// below uses to serialize concurrent compare-and-save creates of the same
+	// entity ID: two transactions racing to create the same ID here are not
+	// ordered against each other and both can pass compareTxID before either
+	// commits. That is acceptable because the engine reaches this branch
+	// only with a non-empty If-Match naming a version a prior read already
+	// found; a create with no prior read to name goes through Save, not
+	// CompareAndSave. The one expectedTxID=="" caller this branch does see
+	// is a transaction re-creating an entity it deleted itself earlier in
+	// the same transaction — its own eager delete, not a race with another
+	// transaction creating the same ID from nothing.
 	if spi.GetTransaction(ctx) != nil {
 		if err := s.compareTxID(ctx, s.q, entity.Meta.ID, expectedTxID, false); err != nil {
 			return 0, err
@@ -301,7 +313,10 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 // version's transaction ID for a caller to match against and resurrect the
 // row. A delete applied earlier in the caller's own transaction is visible on
 // that transaction's connection, so the same rule covers it — matching what
-// the buffered backends answer for a same-transaction delete.
+// the buffered backends answer for a same-transaction delete. A row actually
+// stored with an empty transaction ID would read the same way — as no
+// entity — but every writer stamps a non-empty one, so that case is not
+// reachable in production.
 //
 // forUpdate locks the row for the rest of the caller's database transaction —
 // what makes the non-transactional path's check and write indivisible. It is

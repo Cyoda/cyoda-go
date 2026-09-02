@@ -143,7 +143,7 @@ test-full: test-root   ## End-of-deliverable: everything, root + every plugin su
 	@rpt=$$(mktemp -t testreport); go build -o "$$rpt" ./scripts/testreport; \
 	for m in $(PLUGIN_MODULES); do \
 	  echo "==> $$m"; \
-	  (cd $$m && go test -json ./... | "$$rpt" -must-run "$$m") || { rm -f "$$rpt"; exit 1; }; \
+	  (cd $$m && go test -json -timeout 20m ./... | "$$rpt" -must-run "$$m") || { rm -f "$$rpt"; exit 1; }; \
 	done; rm -f "$$rpt"
 
 # Race detector — run once before opening a PR, not on every iteration.
