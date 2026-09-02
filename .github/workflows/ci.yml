@@ -53,26 +53,29 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # -timeout is explicit rather than left to Go's implicit 10m per-binary
-      # default. internal/e2e stands up a PostgreSQL container and a full HTTP
-      # stack per harness, so it is minutes long by nature and the default left
-      # it under 2x headroom on a runner slower than a developer's machine. A
-      # binary that trips the default reports as a panic with a goroutine dump,
-      # which reads like a product defect rather than a budget being hit.
       # scripts/testreport turns the -json stream into a summary plus verbatim
       # failures, and — the reason it exists — FAILS when a package that was
       # required to execute tests executed none. `go test` reports a TestMain
       # that calls os.Exit(0) as `ok  pkg  2.80s` with zero tests run, which no
-      # amount of reading the log distinguishes from a pass. Built once here and
-      # reused by the plugin steps, which run in their own modules.
+      # amount of reading the log distinguishes from a pass. The root-module
+      # step below builds its own copy through the Makefile; this one is for
+      # the plugin steps, which run in their own modules.
       - name: Build test reporter
         run: go build -o "$RUNNER_TEMP/testreport" ./scripts/testreport
 
+      # The root module goes through the Makefile rather than a hand-written
+      # `go test ./...`, so CI and a developer's pre-PR run are the same
+      # command. What the target adds: the parity suites run in a SECOND
+      # invocation with -count=1, because their fixture builds the server in a
+      # subprocess the test cache cannot see and Go would otherwise replay a
+      # stale pass over a server built from old code; the timeouts and the
+      # -must-run suite list live in one place instead of being copied here to
+      # drift. test-root is test-full's root half — the plugin submodules are
+      # the steps below, each with its own working directory.
       - name: Run tests
         run: |
           set -o pipefail
-          go test -json ./... -timeout 30m | "$RUNNER_TEMP/testreport" \
-            -must-run 'e2e/parity/memory,e2e/parity/sqlite,e2e/parity/postgres,e2e/parity/multinode,e2e/parity/fixtureutil,internal/e2e'
+          make test-root
 
       # Race detector. Scoped via `make race` to exclude `internal/e2e` —
       # see Makefile and `.claude/rules/race-testing.md` for rationale.
