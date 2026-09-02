@@ -103,7 +103,8 @@ endif
 # actually under test, and the test cache cannot see it. Change a plugin, and
 # Go still considers the parity package's own inputs unchanged and replays a
 # stale `(cached)` pass over a server built from the old code. Everything else
-# keeps the cache — that is what makes `make test` 13s warm.
+# keeps the cache; the parity suites are what a warm `make test` still spends
+# its ~85s on.
 PARITY_PKGS := e2e/parity/memory e2e/parity/sqlite e2e/parity/postgres e2e/parity/multinode e2e/parity/fixtureutil
 
 empty :=
@@ -118,7 +119,7 @@ PARITY_EXCLUDE := $(subst $(space),|,$(strip $(patsubst %,github.com/cyoda-platf
 preflight:             ## Verify Docker can actually serve the test suites
 	@./scripts/preflight-docker.sh
 
-test: preflight        ## Iteration tier: unit + cross-backend parity (~90s cold, ~13s warm). Excludes internal/e2e and plugin submodules.
+test: preflight        ## Iteration tier: unit + cross-backend parity (~115s cold, ~85s warm — parity always re-runs). Excludes internal/e2e and plugin submodules.
 	@echo "==> unit — NOT in this tier: internal/e2e, plugin submodules (see test-full)"
 	@pkgs=$$(go list ./... | grep -v '^github.com/cyoda-platform/cyoda-go/internal/e2e$$' | grep -Ev '^($(PARITY_EXCLUDE))$$'); \
 	go test -json -timeout 20m $$pkgs | go run ./scripts/testreport
