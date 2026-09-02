@@ -41,6 +41,10 @@ const (
 // tx.OpMu.RLock the caller holds: the overlay is a snapshot at call time
 // (spi.Iterable contract), so later mutation of the transaction does not
 // change what an already-open stream yields.
+//
+// Errors the overlay produces carry the neutral "tx overlay: " prefix, never
+// the name of one consumer: each consumer wraps with its own operation name
+// (iterateTx wraps as "Iterate: %w").
 type txOverlay struct {
 	pull func() (*spi.Entity, bool, error)
 	rows *sql.Rows
@@ -94,7 +98,7 @@ func (s *entityStore) openTxOverlay(ctx context.Context, tx *spi.TransactionStat
 		// (true at index 0), matching searchTxOverlay's buffer walk.
 		if bufI&1023 == 0 {
 			if err := ctx.Err(); err != nil {
-				return nil, err
+				return nil, fmt.Errorf("tx overlay: %w", err)
 			}
 		}
 		bufI++
@@ -127,7 +131,7 @@ func (s *entityStore) openTxOverlay(ctx context.Context, tx *spi.TransactionStat
 		for rows.Next() {
 			if scanned&1023 == 0 {
 				if err := ctx.Err(); err != nil {
-					return nil, false, fmt.Errorf("Iterate: %w", err)
+					return nil, false, fmt.Errorf("tx overlay: %w", err)
 				}
 			}
 			scanned++
@@ -139,7 +143,7 @@ func (s *entityStore) openTxOverlay(ctx context.Context, tx *spi.TransactionStat
 				e, scanErr = scanVersionEntity(rows)
 			}
 			if scanErr != nil {
-				return nil, false, scanErr
+				return nil, false, fmt.Errorf("tx overlay: %w", scanErr)
 			}
 			if plan.preparedPostFilter != nil && !evaluateFilter(*plan.preparedPostFilter, e) {
 				continue
@@ -151,9 +155,9 @@ func (s *entityStore) openTxOverlay(ctx context.Context, tx *spi.TransactionStat
 			// surfaces as a driver-level failure, and the caller wants the
 			// deterministic cause.
 			if cErr := ctx.Err(); cErr != nil {
-				return nil, false, fmt.Errorf("Iterate: %w", cErr)
+				return nil, false, fmt.Errorf("tx overlay: %w", cErr)
 			}
-			return nil, false, fmt.Errorf("row iteration: %w", err)
+			return nil, false, fmt.Errorf("tx overlay: row iteration: %w", err)
 		}
 		return nil, false, nil
 	}
