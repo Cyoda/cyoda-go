@@ -855,6 +855,12 @@ func (s *entityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 	// Each Delete is its own stamped sqlTx and takes the commit gate for itself, so
 	// every tombstone this loop writes is gated; a single outer hold would
 	// deadlock on the non-reentrant gate and would gate nothing extra.
+	//
+	// The id cursor is drained fully into a slice BEFORE the delete loop, and
+	// that ordering is load-bearing: Delete acquires the commit gate and the
+	// writer pool holds one connection, so a cursor still open across a
+	// Delete would deadlock against a commit or direct write waiting for that
+	// connection.
 	tid := string(s.tenantID)
 	rows, err := s.db.QueryContext(ctx,
 		"SELECT entity_id FROM entities WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND NOT deleted",
