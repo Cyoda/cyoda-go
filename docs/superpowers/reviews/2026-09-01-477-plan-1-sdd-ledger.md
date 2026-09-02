@@ -124,3 +124,4 @@ Final verification at d1280bc: make test-full green — root 8782 (+1389 parity,
 Paul (2026-09-02): the same-transaction delete-then-recreate history difference is a detail — documented (CONSISTENCY.md §6, docs/plugins/POSTGRES.md), not changed.
 Final race run at d1280bc: 7907 + 1389 parity, 0 failed (one earlier attempt hit a testcontainers reaper start-up error; re-run clean).
 CI security job failed at a157bce: the testcontainers dependency added to plugins/postgres pulled golang.org/x/crypto v0.51.0 (published advisories); bumped to the root's v0.54.0 (48da54c), re-pin 80d72c2.
+Dependency review then flagged moby/go-archive v0.2.0 (high) in plugins/postgres; the plugin's four transitive versions that differed from the root (klauspost/compress, moby/go-archive, moby/sys/sequential, moby/sys/user) aligned to the root's (b10bf2b), re-pin 71491b9; postgres suite green afterwards.
