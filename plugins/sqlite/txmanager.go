@@ -220,7 +220,13 @@ func (m *transactionManager) seedLastSubmitTime() {
 // must not abandon work already in flight passes context.Background(), for
 // which the acquisition cannot fail. Every acquisition is paired with a
 // deferred releaseCommitGate on the next line, as for a mutex.
+// A context already done on entry always loses: the select below would pick
+// between a free gate and the done context at random, so the check comes
+// first and the answer is deterministic.
 func (m *transactionManager) acquireCommitGate(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	select {
 	case m.commitGate <- struct{}{}:
 		return nil
@@ -229,9 +235,17 @@ func (m *transactionManager) acquireCommitGate(ctx context.Context) error {
 	}
 }
 
-// releaseCommitGate releases the gate taken by acquireCommitGate.
+// releaseCommitGate releases the gate taken by acquireCommitGate. Releasing a
+// gate nobody holds is a discipline error — an acquisition that failed and was
+// deferred anyway, or a release paired with nothing — and it panics rather than
+// blocking: a mis-paired release must fail loudly at its call site, not hang
+// the caller and every writer behind it.
 func (m *transactionManager) releaseCommitGate() {
-	<-m.commitGate
+	select {
+	case <-m.commitGate:
+	default:
+		panic("commit gate released without being held")
+	}
 }
 
 // nextSubmitTime returns the submit time to stamp on a write, in

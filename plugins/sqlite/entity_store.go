@@ -20,7 +20,6 @@ type entityStore struct {
 	readDB   *sql.DB
 	tenantID spi.TenantID
 	tm       *transactionManager
-	clock    Clock
 	cfg      config
 }
 
@@ -872,15 +871,17 @@ func (s *entityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 	}
 
 	// Non-transaction: query all entity IDs for this model and delete each.
-	// Each Delete is its own stamped sqlTx and takes the commit gate for itself, so
-	// every tombstone this loop writes is gated; a single outer hold would
-	// deadlock on the non-reentrant gate and would gate nothing extra.
 	//
 	// The id cursor is drained fully into a slice BEFORE the delete loop, and
-	// that ordering is load-bearing: Delete acquires the commit gate and the
-	// writer pool holds one connection, so a cursor still open across a
-	// Delete would deadlock against a commit or direct write waiting for that
-	// connection.
+	// that ordering is load-bearing for two independent reasons. The writer
+	// pool holds a single connection and an open cursor pins it, so Delete's
+	// own BeginTx would block on the connection the cursor still holds. And
+	// Delete takes the commit gate, which a concurrent commit or direct write
+	// may hold while itself waiting for that same connection.
+	//
+	// Each Delete takes the gate for itself, so every tombstone this loop
+	// writes is gated; a single outer hold would deadlock on the
+	// non-reentrant gate and would gate nothing extra.
 	tid := string(s.tenantID)
 	rows, err := s.db.QueryContext(ctx,
 		"SELECT entity_id FROM entities WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND NOT deleted",

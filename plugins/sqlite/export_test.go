@@ -57,7 +57,7 @@ const SearchResultsChunkSizeForTest = searchResultsChunkSize
 // equality proxy that store.Search() (which DOES apply the residual)
 // provides.
 func SearchCandidateIDsForTest(f *StoreFactory, ctx context.Context, tenantID spi.TenantID, modelName, modelVersion string, filter spi.Filter) ([]string, error) {
-	s := &entityStore{db: f.db, readDB: f.readDB, tenantID: tenantID, tm: f.tm, clock: f.clock, cfg: f.cfg}
+	s := &entityStore{db: f.db, readDB: f.readDB, tenantID: tenantID, tm: f.tm, cfg: f.cfg}
 	plan, err := planFor(filter)
 	if err != nil {
 		return nil, err

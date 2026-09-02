@@ -294,6 +294,69 @@ func TestDirectSave_ThenBegin_SeesRow(t *testing.T) {
 	}
 }
 
+// A context already done on entry must lose deterministically, even when the
+// gate is free: a bare select between a free gate and a done context picks at
+// random, so a caller that has given up would sometimes still be handed a
+// transaction it can no longer roll back.
+func TestBegin_DoneContextNeverGetsATransaction(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "begin-done-ctx.db")
+	f, err := NewStoreFactoryForTest(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("NewStoreFactoryForTest: %v", err)
+	}
+	defer f.Close()
+	m := f.tm
+
+	doneCtx, cancel := context.WithCancel(attrInternalCtx("tenant-done", "alice", spi.PrincipalUser))
+	cancel()
+
+	// The gate is free throughout: every attempt below is the coin-flip case.
+	for i := range 200 {
+		txID, _, err := m.Begin(doneCtx)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("attempt %d: Begin with a cancelled context: err = %v, want context.Canceled", i, err)
+		}
+		if txID != "" {
+			t.Fatalf("attempt %d: Begin returned txID %q after failing", i, txID)
+		}
+	}
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if len(m.active) != 0 {
+			t.Fatalf("failed Begins registered %d transaction(s)", len(m.active))
+		}
+	}()
+}
+
+// Releasing a gate nobody holds is a discipline error. It must fail loudly at
+// the call site rather than block there — a silent hang would stall the
+// releasing goroutine and every writer queued behind the gate.
+func TestReleaseCommitGate_UnheldPanics(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "gate-release.db")
+	f, err := NewStoreFactoryForTest(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("NewStoreFactoryForTest: %v", err)
+	}
+	defer f.Close()
+	m := f.tm
+
+	done := make(chan any, 1)
+	go func() {
+		defer func() { done <- recover() }()
+		m.releaseCommitGate()
+	}()
+
+	select {
+	case r := <-done:
+		if r == nil {
+			t.Fatal("releasing an unheld commit gate did not panic")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("releasing an unheld commit gate blocked instead of panicking")
+	}
+}
+
 // Begin queues behind the commit gate, and a commit's flush can take as long
 // as the write does. A caller whose context ends while Begin waits must get
 // its own context error back rather than waiting indefinitely, and must leave

@@ -349,7 +349,7 @@ func (f *StoreFactory) EntityStore(ctx context.Context) (spi.EntityStore, error)
 	if err != nil {
 		return nil, err
 	}
-	return &entityStore{db: f.db, readDB: f.readDB, tenantID: tid, tm: f.tm, clock: f.clock, cfg: f.cfg}, nil
+	return &entityStore{db: f.db, readDB: f.readDB, tenantID: tid, tm: f.tm, cfg: f.cfg}, nil
 }
 
 func (f *StoreFactory) ModelStore(ctx context.Context) (spi.ModelStore, error) {
