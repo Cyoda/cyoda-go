@@ -1535,16 +1535,21 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - sqlite and memory: `CompareAndSave` after a same-transaction `Delete` returns
   a conflict on every backend (memory and sqlite previously resurrected the
   entity at commit); `Save` after `Delete` clears the delete's attribution too.
-- sqlite and memory: a compare-and-save after a same-transaction save conflicts
-  on every backend. A write compares against the transaction's own view, and a
-  buffered own-write supersedes the caller's expected transaction ID; memory
-  and sqlite compared against the committed row instead and let the save
-  through, silently discarding the buffered version. Postgres already answered
-  this way. One workflow path changes with it on memory and sqlite: a
-  `COMMIT_BEFORE_DISPATCH` processor that writes the cascade-anchor entity
-  itself inside the dispatch transaction — a pattern the processor contract
-  already forbids — now fails the transition with a conflict instead of having
-  its write silently overwritten by the engine's apply-result.
+- sqlite and memory: a compare-and-save after a same-transaction save compares
+  against the transaction's own version on every backend. The buffered
+  own-write is the transaction's current version of the entity, so the expected
+  transaction ID is compared against it, not against the committed row it
+  supersedes: an expected ID naming the buffered version matches and the save
+  proceeds, and only a stale expected ID — the committed version's — conflicts.
+  Memory and sqlite compared against the committed row instead, letting a stale
+  expected ID through (silently discarding the buffered version) while
+  rejecting a joined callback's update of an entity created earlier in the same
+  transaction. Postgres already answered this way, its compare reading the
+  transaction's own connection. One workflow path changes with it on memory and
+  sqlite: a `COMMIT_BEFORE_DISPATCH` processor that writes the cascade-anchor
+  entity itself inside the dispatch transaction — a pattern the processor
+  contract already forbids — now fails the transition with a conflict instead
+  of having its write silently overwritten by the engine's apply-result.
 - sqlite: in-transaction `Iterate`, `GetPage`, `Count`, `CountByState` and
   `DeleteAll` no longer materialise the model's merged view — one overlay
   cursor serves them all, and counts read no payload bytes.

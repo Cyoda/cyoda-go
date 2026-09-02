@@ -422,11 +422,23 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		if tx.Deletes[entity.Meta.ID] {
 			return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
 		}
-		// A buffered own-write likewise supersedes the caller's expected
-		// transaction ID: the version it names is no longer this
-		// transaction's latest.
-		if _, buffered := tx.Buffer[entity.Meta.ID]; buffered {
-			return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
+		// A buffered own-write IS the transaction's current version of this
+		// entity, so the comparison is against it, not against the committed
+		// row it supersedes. An expected ID naming the buffered version
+		// matches — that is how a joined callback updates an entity created
+		// earlier in the same transaction; only a stale expected ID (the
+		// committed version's) conflicts. Same answer postgres gives, whose
+		// CAS reads the transaction's own connection.
+		if buffered, ok := tx.Buffer[entity.Meta.ID]; ok {
+			if buffered.Meta.TransactionID != expectedTxID {
+				return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
+			}
+			cp := copyEntity(entity)
+			cp.Meta.TenantID = s.tenantID
+			s.tm.stageSuperseded(tx.ID, entity.Meta.ID, buffered)
+			tx.Buffer[entity.Meta.ID] = cp
+			tx.WriteSet[entity.Meta.ID] = true
+			return 0, nil
 		}
 
 		// Check CAS against committed store (not buffer).
