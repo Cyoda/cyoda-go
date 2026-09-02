@@ -33,8 +33,8 @@ sqlite plugins copy no payload bytes beyond what they return.
 
 - **`Limit >= 1` is required.** `Limit <= 0` returns a plain error (a
   programmer contract violation; HTTP resolves `DefaultDirectSearchLimit`
-  and gRPC rejects `< 1`, so no transport can produce it). `drainIterate`'s
-  unbounded mode and the `Limit <= 0` routing go.
+  and gRPC rejects `< 1`, so no transport can produce it). `drainIterate`
+  and the `Limit <= 0` routing are deleted.
 - **A nil condition is rejected** in `Search` and `SubmitAsync` with
   `400 INVALID_CONDITION` before `ValidateCondition` runs. Not inside
   `ValidateCondition`: `ValidateCondition(nil)` is vacuously valid and the
@@ -59,61 +59,58 @@ sqlite plugins copy no payload bytes beyond what they return.
 ### 2.2 Routing
 
 ```
-store is spi.Searcher  →  Searcher.Search(filter, opts)          (unchanged)
-otherwise              →  Iterate(filter) drained to Limit+1     (bounded drain)
+Search(filter, opts)  →  EntityStore.Search   (required on every store, §3.2)
 ```
 
-The second rung: `Iterate` with the translated filter (pushdown at the
-store, residual inside `Next()` by the same kernel), `PointInTime` and
-`TrackingRead` forwarded, `OrderBy` left out of `IterateOptions` (in-tx
-ordered iteration is an SPI error) and the bounded match set sorted by
-`sortEntities` (`ordersort.go:23`, delegating to `spi.LessByOrder`, whose
-terminal tiebreaker is byte-wise `Meta.ID`, so both rungs return canonical
-order). The `Limit + 1`-th yield raises
-`400 SEARCH_RESULT_LIMIT` with `spi.ErrSearchResultLimitExceeded` as cause
-and closes the iterator. Peak memory `Limit + 1` entities. On this rung a
-400 may leave up to `Limit + 1` entities recorded in the read-set — a prefix.
+One path. `Search` is a required `EntityStore` method, so the `Searcher`
+type assertion, the `Iterate` fall-through and `drainIterate` are deleted.
+Every backend, in-house and commercial, already implements it; the
+fall-through served only a test double.
 
 There is no `GetPage` rung: offset paging outside a transaction is not a
 snapshot (each page is its own statement; a concurrent insert or delete that
 sorts before the cursor shifts the window, so a match can be skipped or
 returned twice). A skipped match is a wrong-but-available answer.
 
-There is no third rung: `Iterate` becomes a required `EntityStore` method
-(§3.2), so the five "store supports neither" refusal branches are dead and
-deleted: `entity/service.go:835`, `:1228`, `:1538`, `search/service.go:1337`,
+`Iterate` becomes a required `EntityStore` method too (§3.2), so the five
+"store supports neither" refusal branches are dead and deleted: `entity/service.go:835`, `:1228`, `:1538`, `search/service.go:1337`,
 `entity/grouped_stats_service.go:280-285`.
 
 ### 2.3 Async
 
 - `runAsyncJob`: the translate-failure branch that called `Search` is
-  deleted. A translation failure at execution fails the job closed via
-  `writeAsyncFailure`, like the branch beside it.
+  deleted, and no replacement branch is written. A condition that
+  translated at submit always translates at execution: the translator reads
+  the schema only to attach declared types, never as an error source, and a
+  locked schema changes only additively. The error return of
+  `spi.ConditionToFilter` at execution is handled as any other unexpected
+  error on that path (job `FAILED` with a ticket) — ordinary error handling,
+  not a designed branch, and it gets no test of its own.
 - `SubmitAsync` dry-runs `spi.ConditionToFilter` against the FieldsMap
   `validateConditionPaths` already returns (currently discarded) and answers
-  with §2.1's classification on failure. A persisted job therefore carries a
-  condition that translated once; an execution-time failure can only mean
-  the schema changed after submission. Cost: one translation per submit.
+  with §2.1's classification on failure. Cost: one translation per submit.
 
 ## 3. SPI — `cyoda-go-spi` (one PR, merged before the row-14 tag)
 
 1. **`EntityStore.GetAll` and `GetAllAsAt` are removed.** Replacements:
    `GetPage` (paged, random access) and `Iterate` with a zero-value filter
    (one cursor, streamed).
-2. **`Iterate` moves onto `EntityStore`; the `Iterable` interface is
-   deleted.** Every engine path that reads more than one entity requires it
-   and fails closed without it; all four in-house backends implement it.
-   `Iterator` and `IterateOptions` stay in `iterable.go` beside the method's
-   doc. `Searcher` stays optional as the bounded-or-fail optimisation. The only
-   `Searcher`-without-`Iterate` shape the SPI contemplates (self-executing
-   async, `search_store.go:76-88`) already cannot serve delete-all,
-   conditional delete or grouped stats.
+2. **`Search` and `Iterate` move onto `EntityStore`; the `Searcher` and
+   `Iterable` interfaces are deleted.** Every engine path that reads more
+   than one entity requires one of them and fails closed without it; all
+   four backends implement both. An optional interface every consumer
+   requires keeps dead branches alive — the engine's `Searcher` fall-through
+   served only a test double. `Iterator`, `IterateOptions` and
+   `SearchOptions` keep their files beside the methods' docs. The
+   self-executing async shape (`search_store.go:76-88`) is unaffected: such
+   a store implements `EntityStore` like any other.
 3. spitest: `GetAll` empty/populated, `GetAllAsAt`,
    `GetAllAsAt/CommittedOnlyInTx`, `TenantIsolation/GetAll` and
    `testEntityEmptyTenant`'s `GetAll` read are deleted or moved to
    `GetPage`; **`TenantIsolation/GetPage` is added** (absent today). The
-   `Iterable` suite stops gating on a type assertion (18 assertion
-   sites: 17 in `spitest/iterable.go`, 1 in `filter_not.go:196`). The test double
+   `Iterable` and `Searcher` suites stop gating on a type assertion (18
+   `Iterable` sites: 17 in `spitest/iterable.go`, 1 in `filter_not.go:196`;
+   the `Searcher` sites are counted at implementation). The test double
    `default_save_all_test.go:15` drops `GetAll` and gains `Iterate`
    (`persistence_extendschema_test.go` is a `ModelStore` double and is
    unaffected).
@@ -163,20 +160,34 @@ goroutine and assert it blocks until release; then assert its
 `SnapshotTime`, that it sees the committed rows, and that its conflicting
 commit is refused.
 
-### 4.2 `unstageDelete` seals the buffer invariant
+### 4.2 Delete-then-write inside one transaction
 
-`Save` clears only `tx.Deletes` (memory `:187`, sqlite `:255`) though the SPI's
-`txcontext.go:19-23,108` says `Deletes` and `DeleteAttribution` always cover
-the same key set; `CompareAndSave` clears neither (memory `:224-237`, sqlite
-`:392-393`), so delete-then-CAS leaves an id in both `Buffer` and `Deletes`
-and commits a tombstone while in-tx reads disagree. One `unstageDelete(tx,
-id)` helper per plugin, deleting from both maps, called from `Save` and
-`CompareAndSave`. The committed outcome is a contract every backend shares
-and is reachable over the wire (`DELETE /entity/{id}` then `PUT` with
-`If-Match` under one `X-Tx-Token`, then commit), so it is pinned at the
-cross-backend seams: spitest `Transaction/DeleteThenSave` and
-`Transaction/DeleteThenCompareAndSave` (PR 2), and an HTTP parity scenario
-registered in `e2e/parity/registry.go` (PR 3). Plugin unit tests drive the
+Two defects, one contract: **a write compares against the transaction's
+own view.** A delete or save earlier in the same transaction is the current
+latest state.
+
+- **`CompareAndSave` after a same-transaction `Delete` returns
+  `ErrConflict` on every backend.** Postgres already does (it applies the
+  delete at once and stamps the tombstone with the deleting transaction's
+  ID, `entity_store.go:340-385`, `:168-189`). Memory (`:220-237`) and
+  sqlite (`:375-383`) compare against the committed row only, look past
+  the buffered delete, let the save through, and the entity is present
+  after commit. They consult `tx.Deletes` and `tx.Buffer` before the
+  committed row.
+- **`Save` after a same-transaction `Delete` unstages the delete
+  completely.** `Save` clears only `tx.Deletes` (memory `:187`, sqlite
+  `:255`) though the SPI's `txcontext.go:19-23,108` says `Deletes` and
+  `DeleteAttribution` always cover the same key set. One
+  `unstageDelete(tx, id)` helper per plugin, deleting from both maps,
+  called from `Save` only.
+
+Both are committed-outcome contracts every backend shares, pinned at the
+cross-backend seam: spitest `Transaction/DeleteThenSave` and
+`Transaction/DeleteThenCompareAndSave` (PR 2), run against all three
+in-tree plugins before the SPI commit is pinned. There is no HTTP parity
+scenario: over the wire the update path reads the entity first and a
+same-transaction delete answers `404` before `CompareAndSave` runs
+(`internal/domain/entity/service.go:2213`). Plugin unit tests drive the
 red/green in PR 1 and stay.
 
 ### 4.3 In-tx `Count` / `CountByState` count over the merge cursor (memory, sqlite)
@@ -259,6 +270,12 @@ memory `:677` copies every entity via `getAllSnapshotUnlocked` to stage ids;
 sqlite `:764-777` selects `json(data), json(meta)` to read `entity_id`. Both
 walk ids only.
 
+The memory-use property §4.3, §4.5 and §4.6 deliver is not functionally
+observable. It is implemented without a driving unit test: injecting
+test-only counters into production code is an anti-pattern this project
+does not accept, and the behaviour these paths return is already covered.
+Recorded in §10.
+
 ### 4.7 After the SPI change
 
 Delete `GetAll`/`GetAllAsAt`; the `Iterable` compile-time assertions become
@@ -296,15 +313,10 @@ trigger and is withdrawn; Cloud must not answer it.
 | nil condition → 400 `INVALID_CONDITION` (`Search`, `SubmitAsync`) | ✓ | — (unreachable) | — | — |
 | translation failure → `400 INVALID_CONDITION` through `Search` (caller-built condition type) | ✓ | — (unreachable) | — | — |
 | `ClassifyStoreQueryError` maps a wrapped `spi.ErrInvalidFilterPath` to `INVALID_FIELD_PATH` (direct test; the leg is unreachable through `Search`) | ✓ | — | — | — |
-| non-`Searcher` store → `Iterate` rung: correct result, sorted, bound raises after `Limit+1` yields, iterator closed | ✓ | — (all backends are `Searcher`) | — | — |
-| `Iterate` rung agrees with `Searcher` rung on a numeric sort key (carried from the deleted e2e test) | ✓ | — | — | — |
-| `Iterate` rung: pre-expired ctx and mid-drain cancellation → `context.DeadlineExceeded` in the error chain (408 at the handler; carried from `handler_timeout_test.go:162`) | ✓ | — | — | — |
-| `Iterate` rung: type-directed comparison through the plugin kernel with a registered model; schema-load failure fails closed (carried from `fallback_typed_test.go:70,117`) | ✓ | — | — | — |
-| `Iterate` rung: a bare leaf field the kernel cannot evaluate → `400 INVALID_CONDITION` (carried from `classify_store_query_error_test.go:345`) | ✓ | — | — | — |
-| async submit dry-run 400; execution-time failure → job FAILED | ✓ | — | — | — |
+| async submit dry-run → classified 400 | ✓ | — (unreachable) | — | — |
 | every existing search/delete/list/stats status code still holds | — | ✓ (existing suites) | ✓ (existing) | ✓ (existing) |
 | sqlite `Begin` gate: tx begun mid-flush sees the flush and its conflicting commit is refused | ✓ (plugin) | — | — | — |
-| `unstageDelete`: delete-then-Save / delete-then-CAS committed outcome | ✓ (memory, sqlite; PR 1) | — | ✓ spitest `Transaction/DeleteThenSave`, `Transaction/DeleteThenCompareAndSave` (PR 2); HTTP parity scenario delete-then-CAS under one `X-Tx-Token` (PR 3) | — |
+| delete-then-`Save` commits present with the delete unstaged; delete-then-`CompareAndSave` → `ErrConflict` (all backends) | ✓ (memory, sqlite; PR 1) | — | ✓ spitest `Transaction/DeleteThenSave`, `Transaction/DeleteThenCompareAndSave` (PR 2) | — |
 | in-tx `Count`/`CountByState`: create, update, delete committed, create-then-delete, delete-then-CAS, state change, after `DeleteAll` | ✓ (memory, sqlite; PR 1) | — | ✓ spitest in-tx count case (`spitest/entity.go:312` today covers one shape) extended to the seven shapes (PR 2) | — |
 | in-tx `GroupedAggregate` records nothing into the read-set, on every backend | ✓ (memory) | — | ✓ spitest (PR 2) | — |
 | sqlite in-tx `Iterate`/`GetPage` via `MergeOrdered`: sequence equality, page slice equality, no deadlock with same-tx `Delete`, `TrackingRead` gating | ✓ (plugin) | — | ✓ (spitest, existing) | — |
@@ -343,16 +355,18 @@ PR 3 also carries:
   `service_list_test.go:23`'s `noWholeModelEntityStore` is deleted: the
   compiler now proves what it pinned. `mock_store_test.go:47`
   (`failingEntityStore`) gains `Iterate`.
-- The six unit tests that pin the old fallback, and their fate:
-  `TestSearch_FallbackBranchIsBounded` (`service_test.go:2359`) → rewritten as
-  the `Iterate`-rung bound test; `TestSearch_FallbackBranchUnboundedReturnsAll`
-  (`:2387`) → deleted, replaced by the `Limit <= 0` error test;
-  `TestSearch_FallbackBranchIsBounded_TranslateFailureRoute` (`:2468`) →
-  deleted, replaced by the nil-condition 400 test and the caller-built-type
-  translation-failure test; `fallback_typed_test.go:70,117` → rewritten on the
-  `Iterate` rung (§6 rows); `handler_timeout_test.go:162` → rewritten on the
-  `Iterate` rung; `classify_store_query_error_test.go:345` → rewritten on the
-  `Iterate` rung. All through the existing `nonSearcherEntityStore` fixture.
+- The six unit tests that pin the old fallback are deleted with the branch,
+  together with the `nonSearcherEntityStore` / `nonSearcherFactory` fixtures
+  (`service_test.go:2286-2308`): `TestSearch_FallbackBranchIsBounded`
+  (`service_test.go:2359`), `TestSearch_FallbackBranchUnboundedReturnsAll`
+  (`:2387`, replaced by the `Limit <= 0` error test),
+  `TestSearch_FallbackBranchIsBounded_TranslateFailureRoute` (`:2468`,
+  replaced by the nil-condition 400 test and the caller-built-type
+  translation-failure test), `fallback_typed_test.go:70,117`,
+  `handler_timeout_test.go:162`, `classify_store_query_error_test.go:345`.
+  The behaviours they pinned (type-directed comparison, ctx expiry,
+  unevaluable-leaf classification) exist on the one remaining path and are
+  pinned there by the existing pushdown tests.
 - `TestSearchSort_PushdownFallbackAgree` (`internal/e2e/search_test.go:777`)
   is deleted: its premise is stale since row 11 (a wildcard leaf translates)
   and it compares pushdown with itself. Its sort-agreement assertion lives
@@ -402,9 +416,9 @@ PR 3 also carries:
   describes entity reads by reference to it.
 - `grep -rn GetAll plugins/ internal/domain/search`: no comment describes
   behaviour by reference to it (about forty do today).
-- `grep -n 'cond == nil\|drainIterate\|ErrBackendNotSupported' internal/domain/search/service.go internal/domain/entity/*.go`:
-  only the bounded drain remains; the `drainIterate` mention at
-  `entity/grouped_stats_service.go:351` is updated.
+- `grep -rn 'cond == nil\|drainIterate\|ErrBackendNotSupported\|spi\.Searcher\|spi\.Iterable\|nonSearcherEntityStore' internal/ plugins/ --include='*.go'`:
+  empty (the `drainIterate` mention at `entity/grouped_stats_service.go:351`
+  is updated).
 - `make test-full` green; `make race` once before each PR.
 
 ## 10. Accepted trade-offs
@@ -414,9 +428,17 @@ PR 3 also carries:
   `ClassifyStoreQueryError` already name the fault.
 - **`Limit <= 0` in `Search` is a plain error, not a 400.** No transport can
   produce it.
-- **The `Iterate` rung may leave up to `Limit + 1` entities in the read-set
-  on a 400.** A prefix, never the model; only a store without `Searcher`
-  reaches the rung.
+- **`Search` and `Iterate` are both required of a store.** Every backend
+  implements both; an optional interface every consumer requires only keeps
+  dead engine branches alive (ruled 2026-09-01, review 03).
+- **No branch for a translation failure at async execution.** It cannot
+  occur (schema changes after locking are additive); unreachable branches
+  are deleted, not kept as guards (ruled 2026-09-01, review 03).
+- **The memory-use property of §4.3, §4.5, §4.6 has no driving unit test.**
+  Test-only hooks in production code are an anti-pattern; the property is
+  reviewed, not unit-tested (ruled 2026-09-01, review 03).
+- **Delete-then-`CompareAndSave` conflicts on every backend.** A write
+  compares against the transaction's own view (ruled 2026-09-01, review 03).
 - **No deprecation window for `Iterable` or `GetAll`.** A deprecated alias
   would keep the dead refusal branches compiling. Pre-1.0, `### Breaking`
   with migration notes and the KNOWN_CONSUMERS notification (cassandra#95).
