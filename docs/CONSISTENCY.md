@@ -313,6 +313,16 @@ All plugins honour the same contract. Implementation strategy varies.
 | **postgres** | `REPEATABLE READ` (snapshot) + row-level tuple locks on entity tables | Entity-keyed read-set validation at commit; `40001` (`could not serialize access`) and `40P01` (`deadlock_detected`) mapped to `spi.ErrConflict` with bounded retry | **SI+FCW** | per-entity (via tuple locks on 1-to-1 `entities` table) |
 | **cassandra** (commercial) | *(proprietary)* | *(plugin-internal)* | **SI+FCW** | per-entity |
 
+**A documented per-plugin difference: version history of a delete followed by
+a re-create in one transaction.** The committed entity is identical on every
+backend, but the recorded history is not. memory and sqlite buffer the
+delete; a later save or compare-and-save in the same transaction cancels it,
+and commit writes one version row (the re-create). postgres applies the
+delete to the database at once, inside the transaction, so its history shows
+a `DELETED` row followed by the re-create's row. Nothing in the engine
+performs this sequence; a processor or callback that does will see the
+history differ by backend. Accepted as a detail, not a contract.
+
 Entity tables on the postgres plugin are keyed by `(tenant_id, entity_id)`
 for `entities` and by `(tenant_id, entity_id, version)` for
 `entity_versions`. Because `entities` is 1-to-1 with logical entities,
