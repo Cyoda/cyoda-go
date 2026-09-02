@@ -981,8 +981,18 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
-- **sqlite: direct writes stamp their submit time under the same monotonic
-  floor commits use, so a write cannot stamp below a snapshot already open.**
+- **memory and sqlite: direct writes stamp their submit time under the same
+  monotonic floor commits use, so a write cannot stamp below a snapshot
+  already open.** `Begin` also reserves the snapshot it takes as the new
+  floor, so the next write stamps strictly above it rather than at it.
+
+- **memory, sqlite and postgres: concurrent non-transactional
+  compare-and-saves with the same expected version yield exactly one winner;
+  the check and the write are one atomic step.**
+
+- **sqlite: a compare-and-save inside a transaction records its unique-key
+  claims, as a save does.** An entity written that way committed with no claim
+  row, leaving the value it should have held free for the next writer.
 
 - **sqlite: `Begin` returns the caller's context error instead of waiting
   indefinitely for the commit gate.**
