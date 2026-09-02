@@ -1514,16 +1514,30 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - sqlite: `Begin` now waits for an in-flight commit's flush before flooring its
   snapshot time, so a transaction begun mid-commit cannot miss rows a commit
   it is ordered after has already claimed.
+- sqlite: a direct (non-transactional) write holds the same commit gate, from
+  the moment it stamps its submit time until its rows are committed. It
+  previously stamped and committed outside the gate, so a `Begin` in between
+  could floor a snapshot at or past that submit time while the row was still
+  invisible to the connection the in-transaction reads use.
 - sqlite and memory: `CompareAndSave` after a same-transaction `Delete` returns
   a conflict on every backend (memory and sqlite previously resurrected the
   entity at commit); `Save` after `Delete` clears the delete's attribution too.
+- sqlite and memory: a compare-and-save after a same-transaction save conflicts
+  on every backend. A write compares against the transaction's own view, and a
+  buffered own-write supersedes the caller's expected transaction ID; memory
+  and sqlite compared against the committed row instead and let the save
+  through, silently discarding the buffered version. Postgres already answered
+  this way.
 - sqlite: in-transaction `Iterate`, `GetPage`, `Count`, `CountByState` and
   `DeleteAll` no longer materialise the model's merged view — one overlay
   cursor serves them all, and counts read no payload bytes.
 - memory: `Search` no longer copies every entity's payload before filtering;
   in-transaction `Iterate` records the read-set per yield instead of the whole
-  model at open; grouped stats records nothing in a transaction, matching
-  sqlite and postgres.
+  model at open; in-transaction `Count`, `CountByState` and `DeleteAll` walk
+  the same pointer snapshot rather than building a merged copy of the model;
+  grouped stats records nothing in a transaction, matching sqlite and postgres.
+  `GetAll` and `GetPage` also refuse a committed transaction's context, the
+  guard sqlite already carried on every in-transaction entry point.
 
 ## [0.8.3] — 2026-07-27
 

@@ -238,14 +238,16 @@ func (m *transactionManager) Begin(ctx context.Context) (string, context.Context
 	// submit-time bump could push a commit past the next Begin's raw clock
 	// value, making committed entities invisible to new transactions.
 	//
-	// The floor is captured under commitMu, which Commit holds from its
-	// conflict check through sqlTx.Commit: Commit bumps lastSubmitTime
-	// (step 4) before its rows are visible, so a Begin that read the bumped
-	// value without waiting would carry a SnapshotTime at or after a commit
-	// whose rows it cannot yet see on readDB — and Commit's conflict check
-	// would then treat that commit as preceding the snapshot. Waiting here
-	// makes "SnapshotTime >= submitTime" imply "rows visible" on every
-	// connection. Lock order commitMu → mu, the order Commit uses.
+	// The floor is captured under commitMu, and every write that stamps a
+	// submit_time holds commitMu until its rows are committed — a
+	// transaction's flush (Commit bumps lastSubmitTime at step 4, before its
+	// rows are visible) and a direct write (saveDirectly, the non-tx Delete)
+	// alike. A Begin that read a stamped value without waiting would carry a
+	// SnapshotTime at or after a write whose rows it cannot yet see on
+	// readDB — and Commit's conflict check would then treat that commit as
+	// preceding the snapshot. Waiting here makes "submit_time <=
+	// SnapshotTime" imply "rows visible" on every connection. Lock order
+	// commitMu → mu, the order Commit uses.
 	func() {
 		m.commitMu.Lock()
 		defer m.commitMu.Unlock()

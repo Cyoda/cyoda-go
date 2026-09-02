@@ -133,9 +133,9 @@ func copyEntity(e *spi.Entity) *spi.Entity {
 }
 
 // unstageDelete removes a staged delete for id from BOTH maps the delete
-// occupies. Deletes and DeleteAttribution always cover the same key set
-// (spi.TransactionState); clearing only one leaves a phantom attribution
-// entry a savepoint restore would carry back in.
+// occupies. Deletes and DeleteAttribution always cover the same key set —
+// the invariant Delete and DeleteAll already establish; clearing only one
+// leaves an entry no reader expects.
 func unstageDelete(tx *spi.TransactionState, id string) {
 	delete(tx.Deletes, id)
 	delete(tx.DeleteAttribution, id)
@@ -291,6 +291,17 @@ func deriveChangeType(caller string, isNew bool) string {
 }
 
 func (s *entityStore) saveDirectly(ctx context.Context, entity *spi.Entity) (int64, error) {
+	// A direct write stamps a submit_time and commits its own sqlTx. Begin
+	// floors a new transaction's snapshot under commitMu, so this write must
+	// hold commitMu from the stamp through the commit: otherwise a Begin in
+	// between carries SnapshotTime > submit_time while the row is not yet
+	// visible on readDB, and the in-transaction reads that run there would
+	// miss it. The function returns as soon as the sqlTx commits, so the
+	// hold covers exactly the stamp-to-visible window. Lock order:
+	// tx.OpMu -> commitMu -> m.mu; a direct write takes no OpMu.
+	s.tm.commitMu.Lock()
+	defer s.tm.commitMu.Unlock()
+
 	cp := copyEntity(entity)
 	cp.Meta.TenantID = s.tenantID
 	now := s.clock.Now()
@@ -678,6 +689,16 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 
 	// Non-transaction: begin SQLite transaction first, then check existence
 	// and delete atomically (no race window between check and delete).
+	//
+	// commitMu is held from the submit_time stamp through the sqlTx commit,
+	// for the reason spelled out in saveDirectly: Begin floors a snapshot
+	// under the same lock, so a direct write must not leave a window where
+	// submit_time <= SnapshotTime but the tombstone is invisible on readDB.
+	// The function returns as soon as the sqlTx commits. Lock order:
+	// tx.OpMu -> commitMu -> m.mu; a direct write takes no OpMu.
+	s.tm.commitMu.Lock()
+	defer s.tm.commitMu.Unlock()
+
 	tid := string(s.tenantID)
 	now := s.clock.Now()
 	nowMicro := timeToMicro(now)
@@ -805,6 +826,9 @@ func (s *entityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 	}
 
 	// Non-transaction: query all entity IDs for this model and delete each.
+	// Each Delete is its own stamped sqlTx and takes commitMu for itself, so
+	// every tombstone this loop writes is gated; a single outer hold would
+	// deadlock on the non-reentrant commitMu and would gate nothing extra.
 	tid := string(s.tenantID)
 	rows, err := s.db.QueryContext(ctx,
 		"SELECT entity_id FROM entities WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND NOT deleted",
