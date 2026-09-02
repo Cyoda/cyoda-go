@@ -738,11 +738,15 @@ func (s *entityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 		if tx.RolledBack {
 			return fmt.Errorf("DeleteAll: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 		}
-		// Get all entities for the model (snapshot), mark each as deleted.
+		if tx.Closed {
+			return fmt.Errorf("DeleteAll: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
+		}
+		// Stage every committed id of the model visible at the snapshot —
+		// ids only, no payload bytes. Reads on readDB (see tx_overlay.go
+		// for why an in-tx snapshot read on readDB is correct).
 		snapshotMicro := timeToMicro(tx.SnapshotTime)
-		rows, err := s.db.QueryContext(ctx,
-			`SELECT ev.entity_id, ev.model_name, ev.model_version, ev.version,
-			        json(ev.data), json(ev.meta), ev.submit_time
+		rows, err := s.readDB.QueryContext(ctx,
+			`SELECT ev.entity_id
 			 FROM entity_versions ev
 			 INNER JOIN (
 			     SELECT entity_id, MAX(version) AS max_ver
@@ -754,7 +758,7 @@ func (s *entityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 			string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion, snapshotMicro,
 			string(s.tenantID))
 		if err != nil {
-			return fmt.Errorf("query snapshot entities for deleteAll: %w", err)
+			return fmt.Errorf("query snapshot ids for deleteAll: %w", err)
 		}
 		defer rows.Close()
 
@@ -765,14 +769,14 @@ func (s *entityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 		attribution := spi.WriteAttribution{Attributed: a, Executor: e}
 
 		for rows.Next() {
-			ent, err := scanVersionEntity(rows)
-			if err != nil {
-				return err
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return fmt.Errorf("scan id for deleteAll: %w", err)
 			}
-			tx.Deletes[ent.Meta.ID] = true
-			delete(tx.Buffer, ent.Meta.ID)
-			tx.WriteSet[ent.Meta.ID] = true
-			tx.DeleteAttribution[ent.Meta.ID] = attribution
+			tx.Deletes[id] = true
+			delete(tx.Buffer, id)
+			tx.WriteSet[id] = true
+			tx.DeleteAttribution[id] = attribution
 		}
 		if err := rows.Err(); err != nil {
 			return fmt.Errorf("row iteration: %w", err)
