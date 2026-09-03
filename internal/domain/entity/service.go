@@ -832,15 +832,6 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 		return nil, common.Internal("failed to load model", err)
 	}
 
-	iterableStore, ok := entityStore.(spi.Iterable)
-	if !ok {
-		// Fail closed (correctness-over-availability): every in-house store
-		// implements spi.Iterable (mirrors the async search executor's own
-		// stance); there is no lesser-quality answer to degrade to.
-		return nil, common.Internal("entity store does not support streamed selection",
-			fmt.Errorf("store does not implement spi.Iterable"))
-	}
-
 	// Count entities before deleting (for the response) without
 	// materialising them — DeleteAllResult carries only a count, never ids
 	// (enumerating a whole-model wipe is impractical at scale). Draining
@@ -849,7 +840,7 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 	// and the SPI forbids mutating a transaction while its own iterator is
 	// still open.
 	count := 0
-	if scanErr := drainDeleteSelection(txCtx, iterableStore, ref, deleteSelectionPlan{}, nil, func(*spi.Entity) {
+	if scanErr := drainDeleteSelection(txCtx, entityStore, ref, deleteSelectionPlan{}, nil, func(*spi.Entity) {
 		count++
 	}); scanErr != nil {
 		return nil, common.Internal("failed to count entities for delete", scanErr)
@@ -956,13 +947,13 @@ func mintDeleteTicket(entityID string, err error) string {
 // deleteSelectionPlan is how a conditional delete selects entities once
 // DeleteEntitiesConditional/deleteBatched stopped routing through
 // SearchService.Search: either a pushdown spi.Filter (cond
-// translated cleanly via spi.ConditionToFilter) that a spi.Iterable store
-// applies natively, or a zero-value Filter (matches everything at the
+// translated cleanly via spi.ConditionToFilter) that the store applies
+// natively in Iterate, or a zero-value Filter (matches everything at the
 // store) paired with a prepared residual matcher re-applied to each
 // streamed entity client-side. The residual branch mirrors
 // GroupedStatsService.tallyStreaming's design (grouped_stats_service.go),
 // so an untranslatable condition (a function condition, an array-wildcard
-// leaf) still selects via spi.Iterable instead of falling back to a
+// leaf) still selects via Iterate instead of falling back to a
 // whole-model materialising read.
 type deleteSelectionPlan struct {
 	filter   spi.Filter
@@ -984,7 +975,7 @@ func (p deleteSelectionPlan) matches(e *spi.Entity) bool {
 // / deleteBatched select matching entities. Delete reuses the search
 // condition primitive so no special engine rights are claimed (design
 // §6.1), but — now that selection streams via the delete path's own
-// spi.Iterable drain rather than through SearchService.Search — the
+// Iterate drain rather than through SearchService.Search — the
 // validation Search enforces along the way (structural condition shape,
 // regex compilability, unknown data-field paths, type soundness) has to be
 // replicated here instead of arriving as a side effect of that call. Same
@@ -1153,7 +1144,7 @@ func deleteConditionTypeCheck(ctx context.Context, modelStore spi.ModelStore, re
 	return nil
 }
 
-// drainDeleteSelection opens a spi.Iterable iterator scoped to ctx (pass a
+// drainDeleteSelection opens an Iterate iterator scoped to ctx (pass a
 // transaction-bearing ctx — e.g. txCtx — to select that transaction's
 // overlaid view, a plain ctx for a committed-only read), fully drains it,
 // invoking visit once for every entity plan.matches, and closes it before
@@ -1163,8 +1154,8 @@ func deleteConditionTypeCheck(ctx context.Context, modelStore spi.ModelStore, re
 // its own iterator is still open is forbidden. visit must not retain e
 // beyond the call — its payload is discarded once visit returns, so only
 // what visit itself copies out (an id, a version, ...) survives the drain.
-func drainDeleteSelection(ctx context.Context, iterableStore spi.Iterable, ref spi.ModelRef, plan deleteSelectionPlan, pointInTime *time.Time, visit func(e *spi.Entity)) error {
-	it, err := iterableStore.Iterate(ctx, ref, plan.filter, spi.IterateOptions{PointInTime: pointInTime})
+func drainDeleteSelection(ctx context.Context, store spi.EntityStore, ref spi.ModelRef, plan deleteSelectionPlan, pointInTime *time.Time, visit func(e *spi.Entity)) error {
+	it, err := store.Iterate(ctx, ref, plan.filter, spi.IterateOptions{PointInTime: pointInTime})
 	if err != nil {
 		// Classify before returning raw: a plugin refusing plan.filter because
 		// the query planner cannot evaluate one of its leaves
@@ -1225,15 +1216,8 @@ func drainDeleteSelection(ctx context.Context, iterableStore spi.Iterable, ref s
 // requested: deletion needs no order, and asking for one would make a
 // backend pay for a sort it doesn't need.
 func selectDeleteIDs(ctx context.Context, entityStore spi.EntityStore, ref spi.ModelRef, plan deleteSelectionPlan, pointInTime *time.Time) ([]string, error) {
-	iterableStore, ok := entityStore.(spi.Iterable)
-	if !ok {
-		// Fail closed (correctness-over-availability): every in-house store
-		// implements spi.Iterable; there is no lesser-quality answer to
-		// degrade to.
-		return nil, fmt.Errorf("entity store does not support streamed selection (spi.Iterable)")
-	}
 	var ids []string
-	if err := drainDeleteSelection(ctx, iterableStore, ref, plan, pointInTime, func(e *spi.Entity) {
+	if err := drainDeleteSelection(ctx, entityStore, ref, plan, pointInTime, func(e *spi.Entity) {
 		ids = append(ids, e.Meta.ID)
 	}); err != nil {
 		return nil, err
@@ -1246,7 +1230,7 @@ func selectDeleteIDs(ctx context.Context, entityStore spi.EntityStore, ref spi.M
 // matching entities (as-at pointInTime, when supplied) are deleted — reusing
 // the search condition primitive so no special engine rights are claimed
 // (design §6.1). Selection and deletion run inside one transaction; the
-// selection drains a spi.Iterable iterator scoped to that SAME transaction
+// selection drains an Iterate iterator scoped to that SAME transaction
 // (txCtx), so buffered writes already made in it are visible to the
 // selection exactly as the removed Searcher-backed selection saw them — and,
 // per the SPI's no-interleave rule, the iterator is fully drained and closed
@@ -1332,7 +1316,7 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 		return nil, planErr
 	}
 
-	// Select ALL matching ids via a streamed spi.Iterable drain, scoped to
+	// Select ALL matching ids via a streamed Iterate drain, scoped to
 	// txCtx (tx-visible; honours pointInTime) — see selectDeleteIDs/
 	// drainDeleteSelection for why only ids are ever retained and why the
 	// iterator is fully closed before the delete loop below starts.
@@ -1407,7 +1391,7 @@ type batchTarget struct {
 	baselineVersion int64
 }
 
-// resolveBatchTargetsOnePass drains a spi.Iterable selection in ONE full
+// resolveBatchTargetsOnePass drains an Iterate selection in ONE full
 // pass, recording each match's id and version-guard baseline — used by
 // deleteBatched's pointInTime!=nil branch (see its own doc comment for why
 // PIT can't use the per-cycle re-scan the nil-PIT streamed branch does).
@@ -1427,9 +1411,9 @@ type batchTarget struct {
 // has connections. Collecting ids first costs nothing extra: this function
 // already retains one O(matches) slice, and ids are the same shape as the
 // targets they become.
-func (h *Handler) resolveBatchTargetsOnePass(ctx context.Context, entityStore spi.EntityStore, iterableStore spi.Iterable, ref spi.ModelRef, plan deleteSelectionPlan, pointInTime *time.Time, verbose bool, result *DeleteResult) ([]batchTarget, error) {
+func (h *Handler) resolveBatchTargetsOnePass(ctx context.Context, entityStore spi.EntityStore, ref spi.ModelRef, plan deleteSelectionPlan, pointInTime *time.Time, verbose bool, result *DeleteResult) ([]batchTarget, error) {
 	var ids []string
-	err := drainDeleteSelection(ctx, iterableStore, ref, plan, pointInTime, func(e *spi.Entity) {
+	err := drainDeleteSelection(ctx, entityStore, ref, plan, pointInTime, func(e *spi.Entity) {
 		result.MatchedCount++
 		id := e.Meta.ID
 		if verbose {
@@ -1480,7 +1464,7 @@ func (h *Handler) resolveBatchTargetsOnePass(ctx context.Context, entityStore sp
 // Selection has two shapes, chosen by pointInTime:
 //
 //   - pointInTime == nil: streamed, no O(matches) buffer. Each cycle
-//     re-opens a fresh committed-only spi.Iterable iterator (plain ctx, no
+//     re-opens a fresh committed-only Iterate iterator (plain ctx, no
 //     ambient transaction) and pulls up to batchSize NEW ids. Because a
 //     cycle's successful deletes are durable before the NEXT cycle's
 //     Iterate call, a live re-scan of the same filter naturally excludes
@@ -1497,7 +1481,7 @@ func (h *Handler) resolveBatchTargetsOnePass(ctx context.Context, entityStore sp
 //     row doesn't change what an as-at query sees), so the streamed
 //     branch's re-scan-to-shrink trick doesn't terminate here — the same
 //     historical ids would resurface on every cycle. A single drained pass
-//     (still via spi.Iterable, still never materialising entities) avoids
+//     (still via Iterate, still never materialising entities) avoids
 //     that.
 func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond predicate.Condition, pointInTime *time.Time, verbose bool, batchSize int) (*DeleteResult, error) {
 	// --- Setup phase: a short-lived, committed tx checks the model exists
@@ -1535,15 +1519,6 @@ func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond pred
 	if err != nil {
 		return nil, common.Internal("failed to access entity store", err)
 	}
-	iterableStore, ok := entityStore.(spi.Iterable)
-	if !ok {
-		// Fail closed (correctness-over-availability): every in-house store
-		// implements spi.Iterable; there is no lesser-quality answer to
-		// degrade to.
-		return nil, common.Internal("entity store does not support streamed selection",
-			fmt.Errorf("store does not implement spi.Iterable"))
-	}
-
 	// An empty condition still batches (unlike the single-tx path's
 	// DeleteAll fast path) so a caller who asked for transactionSize on a
 	// whole-model wipe gets version-guarded, chunked deletes rather than
@@ -1568,7 +1543,7 @@ func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond pred
 	}
 
 	if pointInTime != nil {
-		targets, err := h.resolveBatchTargetsOnePass(ctx, entityStore, iterableStore, ref, plan, pointInTime, verbose, result)
+		targets, err := h.resolveBatchTargetsOnePass(ctx, entityStore, ref, plan, pointInTime, verbose, result)
 		if err != nil {
 			return nil, err
 		}
@@ -1603,7 +1578,7 @@ func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond pred
 	// applied client-side by plan.matches) there is nothing to push down and
 	// every cycle rescans the whole model — quadratic in the match count.
 	// Accepted deliberately: a cursor would have to be stable across the
-	// deletes it is interleaved with, which the spi.Iterable contract does
+	// deletes it is interleaved with, which the Iterate contract does
 	// not offer.
 	//
 	// cycleBudget is the termination guarantee. `seen` only remembers ids
@@ -1629,7 +1604,7 @@ func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond pred
 			).AsRetryable()
 		}
 
-		it, iterErr := iterableStore.Iterate(ctx, ref, plan.filter, spi.IterateOptions{})
+		it, iterErr := entityStore.Iterate(ctx, ref, plan.filter, spi.IterateOptions{})
 		if iterErr != nil {
 			// Same classification as drainDeleteSelection's identical guard:
 			// this loop scans plan.filter directly (batching needs its own
