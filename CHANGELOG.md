@@ -1026,22 +1026,27 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 - **Compare-and-save compares the expected transaction ID literally on every
   backend: a non-empty expected ID against a missing entity conflicts instead
-  of creating; an empty expected ID means "expect no entity".** The comparison
-  used to be skipped whenever the store held no row, so a caller naming a
-  transaction ID that could not possibly be current had its entity created
-  anyway, and a caller expecting no entity overwrote whatever was there. The
-  current transaction ID is now the transaction's own uncommitted write's if it
-  has one, else the committed row's, and `""` when there is no entity — never
-  written, or deleted. A delete makes the tombstone's ID unmatchable, so a
-  stale precondition can no longer resurrect a deleted entity.
+  of creating.** The comparison used to be skipped whenever the store held no
+  row, so a caller naming a transaction ID that could not possibly be current
+  had its entity created anyway. The current transaction ID is now the
+  transaction's own uncommitted write's if it has one, else the committed
+  row's, and `""` when there is no entity — never written, or deleted. A delete
+  makes the tombstone's ID unmatchable, so a stale precondition can no longer
+  resurrect a deleted entity. (This change originally also read an empty
+  expected ID as "expect no entity"; a later entry above supersedes that, since
+  an entity written outside a transaction carries the empty ID too. An empty
+  expected ID is now rejected.)
 
 - **memory, sqlite and postgres: concurrent non-transactional
   compare-and-saves of the same entity yield exactly one winner; the check and
-  the write are one atomic step.** Creates are covered too: `FOR UPDATE` locks
-  no absent row, so postgres additionally takes a transaction-scoped advisory
-  lock on the entity, and the callers that lose re-read under it and conflict
-  rather than all succeeding. memory and sqlite already held their write gate
-  across the check and the write whether or not the entity existed.
+  the write are one atomic step.** postgres takes `FOR UPDATE` on the row it is
+  about to write inside the transaction it opens for the pair, so the callers
+  that lose re-read under the lock and conflict rather than all succeeding;
+  memory and sqlite hold their write gate across the check and the write. (This
+  change originally also covered concurrent *creates*, via a transaction-scoped
+  advisory lock on the entity, because `FOR UPDATE` locks no absent row. A
+  later entry above removes that: compare-and-save can no longer create, so the
+  advisory lock protected nothing and went with the create path.)
 
 - **sqlite: a compare-and-save inside a transaction records its unique-key
   claims, as a save does.** An entity written that way committed with no claim
