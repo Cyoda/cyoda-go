@@ -34,7 +34,7 @@ shape parses in both. Everything downstream of the parse is not shared:
 - The predicate kernel is a pure, synchronous, in-process function with no
   `context.Context`. A function clause is a blocking network callout. Giving a
   leaf I/O capability changes the contract of every caller.
-- `spi.Filter` has no callout op and `spi.Searcher.Search` takes only a
+- `spi.Filter` has no callout op and `EntityStore.Search` takes only a
   `Filter`, so a function clause can never narrow a scan — it forces a full
   scan plus post-filter.
 - `EntityCriteriaCalculationRequest` carries a single `entityId` and a single

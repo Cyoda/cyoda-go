@@ -120,7 +120,7 @@ a past fact adds a new version with earlier `valid_time` and current
 **Point-in-time reads run at the same performance class as current
 reads.** Current-state reads are primary-key lookups on a
 materialised `entities` table (one row per live entity). Historical
-reads (`GetAsAt`, `GetAllAsAt`) are indexed seeks against a dedicated
+reads (`GetAsAt`, `GetPage(asAt)`, `Iterate(pointInTime)`) are indexed seeks against a dedicated
 bi-temporal composite index (`idx_ev_bitemporal` on
 `(tenant_id, entity_id, valid_time DESC, transaction_time DESC)` in
 the postgres plugin). Both are constant-time index operations — no

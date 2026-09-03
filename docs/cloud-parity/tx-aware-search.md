@@ -6,14 +6,14 @@ implementation.
 
 ## Behaviour
 
-`spi.Searcher.Search` is tx-aware by contract, not by a separate interface:
-when an active transaction is present **and no `pointInTime` is set**, `Search`
-honours it — read-your-own-writes correct against the transaction's own
-uncommitted writes, producing results identical to a full
-committed-scan-plus-in-memory-filter for the same transaction state. There is
-no fallback to a full-model scan for an active transaction; the engine only
-falls back when the search condition itself cannot be translated to a backend
-predicate (unsupported condition type).
+`EntityStore.Search` is tx-aware by contract: when an active transaction is
+present **and no `pointInTime` is set**, `Search` honours it —
+read-your-own-writes correct against the transaction's own uncommitted writes,
+producing results identical to an unfiltered in-transaction `Iterate` plus the
+same predicate applied per row. There is no fallback to a full-model scan, for
+an active transaction or otherwise: `Search` is the only synchronous search
+path, and a condition that cannot be translated is rejected rather than served
+another way.
 
 ### Carve-out: point-in-time reads are committed-only
 
@@ -27,7 +27,7 @@ both would return rows whose visibility depends on which connection ran the
 query rather than on T.
 
 The same carve-out applies to every point-in-time read in the family, not just
-`Search`: `GetAsAt`, `GetAllAsAt`, `GetPage(asAt)` and `Iterate(PointInTime)`.
+`Search`: `GetAsAt`, `GetPage(asAt)` and `Iterate(PointInTime)`.
 It is wire-visible — the `X-Tx-Token` join middleware wraps the whole API mux,
 so a compute-node callback issuing `GET /entity/{id}?pointInTime=…` inside the
 transition's transaction gets `404 ENTITY_NOT_FOUND` for an entity that
@@ -68,7 +68,7 @@ protects only the rows a search actually returned.
    in search results, with no full-model materialisation as the mechanism.
    With `pointInTime` set, the opposite is required: the ambient transaction is
    ignored and only committed state as of that instant is returned, across
-   `Search`, `Iterate`, `GetAsAt`, `GetAllAsAt` and `GetPage(asAt)` alike.
+   `Search`, `Iterate`, `GetAsAt` and `GetPage(asAt)` alike.
    Conformance for this is pinned by `spitest` — a backend that answers a
    point-in-time read from its transaction buffer now fails the suite.
 2. `trackingRead` is additive and optional; omitting it must behave exactly

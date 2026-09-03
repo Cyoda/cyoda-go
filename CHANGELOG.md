@@ -713,6 +713,33 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `spitest` conformance suite gains `CompareAndSave/EmptyExpectedIDRejected`
   and reshapes `CompareAndSave/ExpectedIDIsLiteral` to match.
 
+- **Direct search has one path.** The in-memory whole-model fallback is
+  deleted: a condition that cannot be translated is rejected with `400`
+  (`INVALID_CONDITION`, or `INVALID_FIELD_PATH` for a path-shaped failure)
+  instead of scanning the model in process. No client-reachable request
+  changes status — the boundary grammar and the translator share one path
+  parser and one operator set, so validated input always translates.
+
+  Two shapes the fallback used to absorb are now answered rather than served.
+  A nil condition is `400 INVALID_CONDITION`, not "match everything". A
+  non-positive `limit` is a caller contract violation rather than a request
+  for the complete matched set: both transports resolve a positive limit
+  before the service is reached, and streaming every match of a predicate is
+  `Iterate`'s job.
+
+  `EntityStore` gains `Search` and `Iterate` as required methods and loses
+  `GetAll`/`GetAllAsAt`; the optional `Searcher` and `Iterable` interfaces are
+  gone with them. There is no whole-model read anywhere in the engine.
+
+- **Grouped statistics no longer answer `501 NOT_IMPLEMENTED_BY_BACKEND`; the
+  code is retired.** Its only trigger was a backend implementing neither
+  `Iterable` nor `GroupedAggregator`, which cannot exist now that `Iterate` is
+  required. The endpoint always has an execution path: `GroupedAggregator`
+  pushdown when the backend offers it and accepts the shape, otherwise a
+  streamed tally. The constant, the help topic
+  `errors.NOT_IMPLEMENTED_BY_BACKEND`, the OpenAPI `501` response and the
+  documented code list all go with it.
+
 ### Added
 
 - **`STORAGE_UNAVAILABLE` — 503, retryable.** Raised when the pool cannot supply a
@@ -851,6 +878,32 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   metadata.
 
 ### Changed
+
+- **Async search translates the condition before it persists the job.**
+  `SubmitAsync` validated a condition's structure, paths, patterns and types
+  but never translated it, so a condition no backend could execute was accepted
+  as a job and failed in the background. It is now refused at submission with
+  the same `400` the synchronous door gives. A nil condition is refused there
+  too.
+
+- **A scheduled transition refuses to fire an entity that carries no
+  transaction ID.** `FireScheduledTransition` is the only engine caller that
+  derives its compare-and-save precondition from stored data rather than a
+  client `If-Match`, and an empty precondition is now rejected by the store.
+  The refusal happens before the transition runs: a
+  `COMMIT_BEFORE_DISPATCH` processor segments the fire, so failing at the
+  terminal persist would have left the entity advanced by a fire that could
+  not be guarded. The task is dropped, not deleted.
+
+- **A write inside a transaction carries that transaction's ID on every
+  backend.** memory and sqlite stamped `Meta.TransactionID` only at commit, so
+  an in-transaction compare-and-save compared its expected ID against whatever
+  the caller had staged; postgres stamped at write time but honoured a
+  caller-supplied value if there was one. All three now stamp the transaction's
+  own ID unconditionally at write time: a row cannot claim it was committed by
+  a transaction that did not commit it, and the in-transaction precondition
+  names the transaction's own view. Every in-tree caller already stamped its
+  own transaction's ID, so no behaviour visible over the API changes.
 
 - **The server no longer imposes a scan budget on search. sqlite's
   residual-scan budget and its `CYODA_SQLITE_SEARCH_SCAN_LIMIT` are removed,

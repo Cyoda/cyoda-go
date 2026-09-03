@@ -71,7 +71,7 @@ backends pass all of them.
 `MalformedLike` is the one to read closely: it requires `Search` to return **no
 error and no rows** for a trailing unpaired escape. Failing the search there
 instead is a divergence — rejecting the pattern is the request boundary's job,
-above the `Searcher`.
+above the store.
 
 A backend carrying its own `LIKE`→regex implementation fails these subtests. It
 must adopt the kernel rather than align its translation: two implementations of

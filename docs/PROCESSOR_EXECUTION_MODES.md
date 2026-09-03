@@ -306,7 +306,7 @@ The engine cannot deduplicate replays.
 ### Segment-boundary visibility
 
 The pre-callout state is **publicly observable** to readers between
-segments. A concurrent transaction's `Get` / `GetAll` / `Search` / `Count`
+segments. A concurrent transaction's `Get` / `GetPage` / `Iterate` / `Search` / `Count`
 will see the entity in the pre-callout state, and a second cascade may
 decide to fire criteria-driven transitions based on that observed state.
 Workflow authors must treat segment-boundary states as committed states —

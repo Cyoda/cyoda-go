@@ -514,9 +514,9 @@ Surfaces that carry a condition:
 **A backend's own rejection carries the same code.** A backend that refuses a
 filter path answers its `ErrInvalidFilterPath` sentinel, and the engine reports
 that as `400 INVALID_FIELD_PATH` rather than a `5xx` with a ticket id. The
-classification applies on every route to the backend — the bounded search call
-and the unbounded streaming drain alike. Classifying one route only makes the
-answer depend on whether the request carried a positive `limit`.
+classification applies on every route to the backend — the store's `Search`
+and `Iterate` alike. Classifying one route only would make the answer depend on
+whether the request was served synchronously or streamed.
 
 **A path that is well formed but that a backend cannot translate is not an
 error.** It is answered by the resolver instead. Only a path outside the grammar
