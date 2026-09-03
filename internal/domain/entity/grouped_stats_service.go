@@ -347,8 +347,8 @@ func (s *GroupedStatsService) tallyStreaming(
 		// error at Close, not at the last Next(), so reading Err() before
 		// Close() runs (the previous shape here, with a bare
 		// `defer iter.Close()` registered ahead of a same-function
-		// `iter.Err()` call that executed first) can miss it. Mirrors
-		// drainIterate's ordering (internal/domain/search/service.go).
+		// `iter.Err()` call that executed first) can miss it. Err() is
+		// read after Close() everywhere an iterator is drained.
 		defer func() {
 			if closeErr := iter.Close(); closeErr != nil {
 				scanErr = closeErr

@@ -287,7 +287,7 @@ func TestQueryGroupedStats_PushdownArbitraryErrorPropagates(t *testing.T) {
 // deferred iter.Close() ran, so an error that only becomes visible via
 // Err() after Close() (closeStickyIter's shape — see its doc comment) was
 // silently missed and the query returned success. Reordering to read Err()
-// after Close() runs (mirrors drainIterate's ordering) surfaces it.
+// after Close() runs surfaces it.
 func TestQueryGroupedStats_CloseOnlySurfacedErrorFailsQuery(t *testing.T) {
 	svc := entity.NewGroupedStatsService(10000)
 	req := &entity.ValidatedGroupedStatsRequest{
