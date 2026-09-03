@@ -943,13 +943,11 @@ func TestSearch_TrackingReadPushedToSearcher(t *testing.T) {
 }
 
 // TestSearchDelegatesToSearcherInTransaction verifies the de-guarded
-// contract (Task 13): a plugin Searcher is now tx-aware (read-your-own-writes)
-// on every OSS backend, so Search delegates to it even with an active
-// transaction in ctx — it must NOT fall back to GetAll+match just because a
-// tx is present. This replaces the pre-Task-13 expectation (formerly
-// TestSearchFallsBackWhenInTransaction) that in-tx searches always bypassed
-// pushdown; that expectation was correct for the old tx==nil gate but is now
-// the wrong contract now that all backends implement a tx-aware Searcher.
+// contract: a backend's Search is tx-aware (read-your-own-writes), so the
+// service pushes down even with an active transaction in ctx rather than
+// treating a transaction as a reason to answer some other way. An earlier
+// contract bypassed pushdown whenever a transaction was present; that was
+// correct for the old tx==nil gate and is the wrong contract now.
 func TestSearchDelegatesToSearcherInTransaction(t *testing.T) {
 	base := memory.NewStoreFactory()
 	defer base.Close()
