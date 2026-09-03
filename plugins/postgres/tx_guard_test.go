@@ -34,8 +34,8 @@ import (
 // this call, so LIFO runs the barrier first and the hold is never cut short.
 //
 // It lives in the in-package test file and is re-exported as
-// BeginGuardedForTest so the external postgres_test package shares this one
-// implementation rather than keeping a second copy.
+// BeginGuardedForTest (export_test.go) so the external postgres_test package
+// shares this one implementation rather than keeping a second copy.
 func beginGuarded(t *testing.T, tm spi.TransactionManager, ctx context.Context) (txID string, txCtx context.Context) {
 	t.Helper()
 	txID, txCtx, err := tm.Begin(ctx)
@@ -45,8 +45,3 @@ func beginGuarded(t *testing.T, tm spi.TransactionManager, ctx context.Context) 
 	t.Cleanup(func() { _ = tm.Rollback(txCtx, txID) })
 	return txID, txCtx
 }
-
-// BeginGuardedForTest exposes beginGuarded to the external postgres_test
-// package via the export_test.go idiom. Both test packages in this directory
-// call the same guard.
-var BeginGuardedForTest = beginGuarded
