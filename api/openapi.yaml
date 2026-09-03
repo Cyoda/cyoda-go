@@ -1147,8 +1147,7 @@ paths:
 
         Group cardinality is bounded server-side by `CYODA_STATS_GROUP_MAX`
         (default 10000); requests exceeding the bound fail with 422
-        `GROUP_CARDINALITY_EXCEEDED`. Backends that do not implement the
-        grouped-stats SPI capability return 501 `NOT_IMPLEMENTED_BY_BACKEND`.
+        `GROUP_CARDINALITY_EXCEEDED`.
 
 
         Error responses use RFC 9457 problem+json with the cyoda-go
@@ -1157,8 +1156,7 @@ paths:
         `DUPLICATE_GROUP_BY`, `INVALID_AGGREGATION_OP`,
         `INVALID_AGGREGATION_FIELD`, `DUPLICATE_AGGREGATION_ALIAS`,
         `INVALID_LIMIT`, `INVALID_CONDITION`, `INVALID_FIELD_PATH`,
-        `CONDITION_TYPE_MISMATCH`, `GROUP_CARDINALITY_EXCEEDED`,
-        `NOT_IMPLEMENTED_BY_BACKEND`).
+        `CONDITION_TYPE_MISMATCH`, `GROUP_CARDINALITY_EXCEEDED`).
       operationId: queryGroupedEntityStatisticsForModel
       parameters:
         - name: entityName
@@ -1270,14 +1268,6 @@ paths:
             (`GROUP_CARDINALITY_EXCEEDED`). No partial result is returned.
             Retry with a more selective `condition` or fewer `groupBy`
             dimensions.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "501":
-          description: >-
-            The configured storage backend does not implement the
-            grouped-stats SPI capability (`NOT_IMPLEMENTED_BY_BACKEND`).
           content:
             application/problem+json:
               schema:

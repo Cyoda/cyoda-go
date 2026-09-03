@@ -15,7 +15,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 )
 
-// fakeIterable satisfies only spi.Iterable, and genuinely applies the Filter
+// fakeIterable serves Iterate and nothing else, and genuinely applies the Filter
 // it is handed — via spi.Prepare(flt).Match, the same kernel a real backend's
 // Iterate uses — rather than recording it and returning every row regardless.
 //
@@ -35,6 +35,10 @@ import (
 // backend's Iterate is, so this is what fakeIterable must be to stand in for
 // one.
 type fakeIterable struct {
+	// Embedded nil: only Iterate is ever called on this double, and a
+	// panic on any other EntityStore method is the assertion that stays
+	// true. Iterate below shadows the embedded interface's own.
+	spi.EntityStore
 	entities []*spi.Entity
 	lastFlt  spi.Filter
 	// iterErr, when set, is returned from the yielded fakeIter's Err()
@@ -107,9 +111,11 @@ func (i *closeStickyIter) Close() error {
 	return nil
 }
 
-// closeStickyIterable satisfies spi.Iterable only, always yielding a
+// closeStickyIterable serves Iterate and nothing else, always yielding a
 // closeStickyIter over rows.
 type closeStickyIterable struct {
+	// Embedded nil: see fakeIterable.
+	spi.EntityStore
 	rows      []*spi.Entity
 	stickyErr error
 }
@@ -192,15 +198,6 @@ func TestQueryGroupedStats_FallsBackToStreaming(t *testing.T) {
 	}
 	if total != 3 {
 		t.Fatalf("total count %d, want 3", total)
-	}
-}
-
-func TestQueryGroupedStats_501WhenNoCapability(t *testing.T) {
-	type noop struct{}
-	svc := entity.NewGroupedStatsService(10000)
-	_, err := svc.QueryGroupedStats(context.Background(), noop{}, spi.ModelRef{}, nil, &entity.ValidatedGroupedStatsRequest{GroupBy: []entity.GroupExprValidated{{IsState: true}}})
-	if !errors.Is(err, entity.ErrBackendNotSupported) {
-		t.Fatalf("want ErrBackendNotSupported, got %v", err)
 	}
 }
 

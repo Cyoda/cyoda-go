@@ -154,11 +154,6 @@ const (
 	// non-retryable as sent: narrow the condition, drop a groupBy dimension,
 	// or raise the ceiling.
 	ErrCodeGroupCardinalityExceeded = "GROUP_CARDINALITY_EXCEEDED"
-	// ErrCodeNotImplementedByBackend is returned when the configured storage
-	// backend implements neither spi.Iterable nor spi.GroupedAggregator, so
-	// there is no execution path for the query. 501, non-retryable: the
-	// deployment's backend has to change.
-	ErrCodeNotImplementedByBackend = "NOT_IMPLEMENTED_BY_BACKEND"
 )
 
 // Composite unique-key errors

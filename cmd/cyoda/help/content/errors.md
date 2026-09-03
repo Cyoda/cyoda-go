@@ -94,7 +94,6 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.NO_COMPUTE_MEMBER_FOR_TAG` — `503` — retryable — no live cluster node advertises the compute tag required by the processor
 - `errors.NOT_FOUND` — `404` — not retryable — generic resource not found, used by admin endpoints (key pair lifecycle, trusted-key lifecycle); domain-specific resources have their own codes
 - `errors.NOT_IMPLEMENTED` — `501` — not retryable — endpoint is defined but has no functional implementation in this version
-- `errors.NOT_IMPLEMENTED_BY_BACKEND` — `501` — not retryable — configured storage backend implements neither of the SPI capabilities the grouped-stats endpoint executes against
 - `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — not retryable — operation attempted on a search job that has already completed, failed, or been cancelled
 - `errors.SEARCH_JOB_NOT_FOUND` — `404` — not retryable — referenced search job does not exist in the current tenant
 - `errors.SEARCH_QUEUE_FULL` — `503` — retryable — async-search worker pool has no free worker and its submit queue is at capacity

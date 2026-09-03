@@ -9,12 +9,14 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
-// residualProbeIterable is a spi.Iterable-only store that records the Filter
+// residualProbeIterable is an Iterate-only store that records the Filter
 // tallyStreaming hands to Iterate and otherwise ignores it, returning every
 // row regardless — the same shape entity_test's fakeIterable used to have,
 // used here deliberately: this test's whole point is that the RESIDUAL, not
 // the store, must exclude the non-matching row when pushable is false.
 type residualProbeIterable struct {
+	// Embedded nil: only Iterate is ever called on this double.
+	spi.EntityStore
 	entities []*spi.Entity
 	lastFlt  spi.Filter
 }

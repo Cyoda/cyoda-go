@@ -543,7 +543,7 @@ func structuralConditionErrCode(cErr error) string {
 // structuralConditionErrCode, so a caller outside this package that
 // validates a condition via the exported ValidateCondition — currently
 // entity.Handler's delete paths, which select entities via their own
-// spi.Iterable drain instead of Search and so must replicate Search's
+// Iterate drain instead of Search and so must replicate Search's
 // pre-execution validation rather than inherit it as a side effect —
 // classifies a ValidateCondition failure identically to Search/SubmitAsync
 // instead of drifting onto a coarser code of its own. Mirrors the

@@ -692,15 +692,14 @@ func New(cfg Config) *App {
 
 	// Grouped-stats route (POST /entity/stats/{name}/{ver}/query). Wired here (not via openapi.yaml) so
 	// the closure can capture a.storeFactory directly — the handler needs
-	// the EntityStore as `any` (capability detection via type assertion in
-	// the service layer) and a validated ModelRef for the calling tenant.
+	// the EntityStore and a validated ModelRef for the calling tenant.
 	// The resolver returns ok=false when the model is not registered (after
 	// one bounded cache refresh — closing the multi-node stale-cache race);
 	// the handler maps that to 404 MODEL_NOT_FOUND. Genuine store errors
 	// (non-ErrNotFound from Get or RefreshAndGet) surface as Internal(500)
 	// and are propagated to the 500-with-ticket path.
 	storeFactory := a.storeFactory
-	groupedStatsResolver := func(r *http.Request, entityName, modelVersion string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+	groupedStatsResolver := func(r *http.Request, entityName, modelVersion string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 		ctx := r.Context()
 		modelStore, err := storeFactory.ModelStore(ctx)
 		if err != nil {
@@ -726,7 +725,7 @@ func New(cfg Config) *App {
 		// correct typing, so surface it to the 500-with-ticket path rather than
 		// silently under-match with untyped leaves. The no-schema-registered
 		// case is (nil, nil) — fields stays nil and data leaves degrade to
-		// non-type-directed comparison, same as the search fallback.
+		// non-type-directed comparison.
 		fields, err := search.LoadFieldsMap(ctx, modelStore, ref)
 		if err != nil {
 			return nil, ref, nil, nil, false, err

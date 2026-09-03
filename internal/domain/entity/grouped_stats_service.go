@@ -18,11 +18,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/match"
 )
 
-// ErrBackendNotSupported is returned when the storage backend supports
-// neither spi.Iterable nor spi.GroupedAggregator. The HTTP handler maps
-// this to 501 NOT_IMPLEMENTED_BY_BACKEND.
-var ErrBackendNotSupported = errors.New("backend supports neither Iterable nor GroupedAggregator")
-
 // ErrInvalidCondition wraps any predicate.ParseCondition failure that
 // surfaces from the service-layer dispatch. The HTTP handler maps this
 // (via errors.Is) to 400 INVALID_CONDITION per spec §3. We need the
@@ -34,7 +29,7 @@ var ErrInvalidCondition = errors.New("invalid condition")
 
 // GroupedStatsService is the per-request dispatcher described in spec §4.
 // It decides between native pushdown (spi.GroupedAggregator) and the
-// streaming-tally fallback (spi.Iterable + in-process accumulator).
+// streaming-tally fallback (EntityStore.Iterate + in-process accumulator).
 type GroupedStatsService struct {
 	maxBuckets int
 }
@@ -54,7 +49,7 @@ func NewGroupedStatsService(maxBuckets int) *GroupedStatsService {
 // Internal fallback.
 func (s *GroupedStatsService) QueryGroupedStats(
 	ctx context.Context,
-	store any,
+	store spi.EntityStore,
 	model spi.ModelRef,
 	fields map[string]schema.FieldDescriptor,
 	req *ValidatedGroupedStatsRequest,
@@ -66,15 +61,12 @@ func (s *GroupedStatsService) QueryGroupedStats(
 	return buckets, nil
 }
 
-// classifyGroupedStatsError maps the seven known sentinels to operational
+// classifyGroupedStatsError maps the known sentinels to operational
 // AppErrors (each wrapping the sentinel via WithCause so errors.Is still
 // holds); any other error is returned unchanged (surfaces as 500 at the
 // transport).
 func classifyGroupedStatsError(err error) error {
 	switch {
-	case errors.Is(err, ErrBackendNotSupported):
-		return common.Operational(http.StatusNotImplemented, common.ErrCodeNotImplementedByBackend,
-			"backend does not support grouped stats").WithCause(err)
 	case errors.Is(err, spi.ErrGroupCardinalityExceeded):
 		return common.Operational(http.StatusUnprocessableEntity, common.ErrCodeGroupCardinalityExceeded,
 			"group cardinality exceeds the configured maximum").WithCause(err)
@@ -124,23 +116,21 @@ func classifyGroupedStatsError(err error) error {
 }
 
 // queryGroupedStatsInner dispatches a validated grouped-stats request
-// against any storage backend. The store parameter is intentionally `any`
-// — capabilities are detected via type assertion so a backend can satisfy
-// one or both of spi.Iterable / spi.GroupedAggregator.
+// against any storage backend. Every backend implements Iterate, so the
+// query always has an execution path; GroupedAggregator is the optional
+// pushdown on top of it.
 //
 // Decision tree (spec §4, decisions D11/D14/D15):
 //  1. Native pushdown — only when (a) store implements GroupedAggregator,
 //     (b) the request's Condition translates cleanly to spi.Filter, AND
 //     (c) we're not inside a transaction (D11: tx visibility requires the
 //     streaming path).
-//  2. Streaming fallback — when store implements Iterable. If the filter
-//     translates, push it; otherwise pass zero-value and re-apply the
-//     prepared predicate (match.Prepare/(Prepared).Match) per yielded
-//     entity (D15).
-//  3. Neither — return ErrBackendNotSupported (handler maps to 501).
+//  2. Otherwise stream Iterate and tally. If the filter translates, push
+//     it; otherwise pass zero-value and re-apply the prepared predicate
+//     (match.Prepare/(Prepared).Match) per yielded entity (D15).
 func (s *GroupedStatsService) queryGroupedStatsInner(
 	ctx context.Context,
-	store any,
+	store spi.EntityStore,
 	model spi.ModelRef,
 	fields map[string]schema.FieldDescriptor,
 	req *ValidatedGroupedStatsRequest,
@@ -276,13 +266,8 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 		// Plugin declined this shape; fall through to streaming.
 	}
 
-	// 2. Streaming fallback.
-	if it, ok := store.(spi.Iterable); ok {
-		return s.tallyStreaming(ctx, it, model, fields, req, pushFilter, pushable, parsedCond)
-	}
-
-	// 3. Neither capability.
-	return nil, ErrBackendNotSupported
+	// 2. Stream and tally.
+	return s.tallyStreaming(ctx, store, model, fields, req, pushFilter, pushable, parsedCond)
 }
 
 // tallyStreaming implements the spec §4 streaming branch: iterate, apply
@@ -290,7 +275,7 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 // materialize.
 func (s *GroupedStatsService) tallyStreaming(
 	ctx context.Context,
-	it spi.Iterable,
+	store spi.EntityStore,
 	model spi.ModelRef,
 	fields map[string]schema.FieldDescriptor,
 	req *ValidatedGroupedStatsRequest,
@@ -329,7 +314,7 @@ func (s *GroupedStatsService) tallyStreaming(
 		iterFilter = spi.Filter{}
 	}
 
-	iter, err := it.Iterate(ctx, model, iterFilter, spi.IterateOptions{PointInTime: req.PointInTime})
+	iter, err := store.Iterate(ctx, model, iterFilter, spi.IterateOptions{PointInTime: req.PointInTime})
 	if err != nil {
 		return nil, err
 	}

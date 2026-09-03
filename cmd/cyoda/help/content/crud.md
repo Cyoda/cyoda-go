@@ -537,8 +537,6 @@ The function is `IMMUTABLE PARALLEL SAFE` (the planner inlines and parallelizes)
 
 **Cardinality ceiling.** `CYODA_STATS_GROUP_MAX` (default 10000) bounds the number of distinct group buckets the endpoint will produce. When the result would exceed the ceiling, the request fails with 422 `GROUP_CARDINALITY_EXCEEDED` (retry with a more selective `condition` or fewer `groupBy` dimensions). The same value caps the request `limit`: `limit > CYODA_STATS_GROUP_MAX` is rejected up-front with 400 `INVALID_LIMIT`.
 
-**Backend capability.** The endpoint requires the storage backend to implement at least one of the optional SPI interfaces `Iterable` or `GroupedAggregator`. The three plugins shipped in this repository (`memory`, `sqlite`, `postgres`) implement both. Backends that implement neither return 501 `NOT_IMPLEMENTED_BY_BACKEND`.
-
 **Index guidance — postgres.**
 
 - **State grouping/filtering on the non-tx pushdown path is index-backed out of the box.** The shipped migration creates `entities_state_idx` on `(tenant_id, model_name, model_version, (doc->'_meta'->>'state')) WHERE NOT deleted`. Queries grouping by or filtering on `state` use this index without operator action.
@@ -575,7 +573,6 @@ Error codes (response carries RFC 9457 problem+json with `properties.errorCode` 
 - `CONDITION_TYPE_MISMATCH` — `400` — `condition` value type incompatible with the locked DataType (propagated from search validator)
 - `INVALID_LIMIT` — `400` — `limit` non-positive or `> CYODA_STATS_GROUP_MAX`
 - `GROUP_CARDINALITY_EXCEEDED` — `422` — result buckets would exceed `CYODA_STATS_GROUP_MAX`
-- `NOT_IMPLEMENTED_BY_BACKEND` — `501` — backend implements neither `Iterable` nor `GroupedAggregator`
 - Standard `401` (missing/invalid Bearer), `403` (authenticated but not authorized), `413` (body exceeds 10 MiB), `500` (internal/driver error with ticket UUID; full detail logged server-side) apply as elsewhere.
 
 ## POINT-IN-TIME SEMANTICS
@@ -652,7 +649,7 @@ See `cyoda help errors ENTITY_MODIFIED` for the recovery flow on a `412`.
 - `errors.WORKFLOW_FAILED` — `400` — the workflow engine rejected the operation: a transition criterion did not match, a processor failed, the workflow selected for the entity does not declare its current state, or a workflow selection criterion could not be evaluated. Reachable on create, a named transition, a transition-less (loopback) update, and both transitions reads — selection runs on every door
 - `errors.NO_COMPUTE_MEMBER_FOR_TAG` — `503` — retryable — a `function` criterion or processor needs a compute member for its tags and none is connected. Reachable on the transitions reads too, since they evaluate workflow selection criteria
 - `errors.BAD_REQUEST` — `400` — malformed request, invalid UUID, conflicting query parameters, states filter exceeds 1000 entries
-- Grouped-stats query (`POST /api/entity/stats/{entityName}/{modelVersion}/query`) — `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant; `400` for validation failures (`MALFORMED_REQUEST`, `MISSING_GROUP_BY`, `INVALID_GROUP_BY_PATH`, `DUPLICATE_GROUP_BY`, `INVALID_AGGREGATION_OP`, `INVALID_AGGREGATION_FIELD`, `DUPLICATE_AGGREGATION_ALIAS`, `INVALID_LIMIT`); `400` propagated from the search-condition validator (`INVALID_CONDITION`, `INVALID_FIELD_PATH`, `CONDITION_TYPE_MISMATCH`); `422 GROUP_CARDINALITY_EXCEEDED` when distinct buckets would exceed `CYODA_STATS_GROUP_MAX`; `501 NOT_IMPLEMENTED_BY_BACKEND` when the storage backend implements neither `Iterable` nor `GroupedAggregator`. The full enumeration with descriptions is in the grouped-stats endpoint section above.
+- Grouped-stats query (`POST /api/entity/stats/{entityName}/{modelVersion}/query`) — `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant; `400` for validation failures (`MALFORMED_REQUEST`, `MISSING_GROUP_BY`, `INVALID_GROUP_BY_PATH`, `DUPLICATE_GROUP_BY`, `INVALID_AGGREGATION_OP`, `INVALID_AGGREGATION_FIELD`, `DUPLICATE_AGGREGATION_ALIAS`, `INVALID_LIMIT`); `400` propagated from the search-condition validator (`INVALID_CONDITION`, `INVALID_FIELD_PATH`, `CONDITION_TYPE_MISMATCH`); `422 GROUP_CARDINALITY_EXCEEDED` when distinct buckets would exceed `CYODA_STATS_GROUP_MAX`. The full enumeration with descriptions is in the grouped-stats endpoint section above.
 
 ## EXAMPLES
 

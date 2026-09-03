@@ -20,8 +20,7 @@ import (
 // 413 ceiling on the public surface.
 const maxGroupedStatsBodySize = 10 * 1024 * 1024
 
-// StoreResolver returns the EntityStore (as any, since capability
-// detection happens via type assertion inside the service), the resolved
+// StoreResolver returns the EntityStore, the resolved
 // ModelRef, and the model's declared field-type map for the given entity
 // name and model version. `fields` is used by the service to stamp declared
 // types onto the pushdown filter and the streaming residual evaluator, so
@@ -41,7 +40,7 @@ const maxGroupedStatsBodySize = 10 * 1024 * 1024
 // closure that returns the desired fake store + model. Production
 // wiring at app construction supplies a closure that uses the existing
 // StoreFactory + ModelStore plumbing (see app/app.go).
-type StoreResolver func(r *http.Request, entityName, modelVersion string) (store any, model spi.ModelRef, fields map[string]schema.FieldDescriptor, modelStore spi.ModelStore, ok bool, err error)
+type StoreResolver func(r *http.Request, entityName, modelVersion string) (store spi.EntityStore, model spi.ModelRef, fields map[string]schema.FieldDescriptor, modelStore spi.ModelStore, ok bool, err error)
 
 // GroupedStatsHandler is the HTTP handler for
 // POST /api/entity/stats/{entityName}/{modelVersion}/query.
