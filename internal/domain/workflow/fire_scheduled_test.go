@@ -2001,6 +2001,13 @@ func TestFireScheduled_UnstampedEntity_RefusesBeforeFiring(t *testing.T) {
 	if _, found := getTask(t, factory, ctx, id); found {
 		t.Error("expected the unfireable task deleted, not left to be re-dispatched every scan")
 	}
+	// Audited, not silent — the same rule the obsolete-task drop above it
+	// follows. A scheduled transition is often a time-based control, and a
+	// timer this destroys permanently must be attributable to something an
+	// operator can find after the fact; a log line on one node is not that.
+	if n := countAuditEvents(t, factory, ctx, "unstamped-e1", spi.SMEventScheduledTransitionCancelled); n != 1 {
+		t.Errorf("cancelled audit events = %d, want 1", n)
+	}
 	if n := tracker.openCount(); n != 0 {
 		t.Errorf("open transactions = %d, want 0", n)
 	}

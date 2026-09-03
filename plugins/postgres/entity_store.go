@@ -98,6 +98,16 @@ func (s *entityStore) save(ctx context.Context, entity *spi.Entity, stampFrom tx
 	// committed by a transaction that did not commit it, and would make the
 	// in-transaction compare-and-save precondition depend on what the caller
 	// happened to stamp rather than on the transaction's own view.
+	//
+	// KNOWN ASYMMETRY, pre-dating this stamp and wider than it: this
+	// function writes back into the CALLER's *spi.Entity — TenantID here,
+	// TransactionID below, then Version, ChangeType, CreationDate and
+	// LastModifiedDate further down — while memory and sqlite stamp only
+	// their own buffered copy. Nothing may rely on the write-back, precisely
+	// because it is not portable across backends; the stamped values reach a
+	// caller through a subsequent read, and the version through this
+	// function's return. Converging the three is a change to all six fields,
+	// not to this one.
 	if tx := spi.GetTransaction(ctx); tx != nil {
 		entity.Meta.TransactionID = tx.ID
 	}

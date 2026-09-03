@@ -904,7 +904,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   The refusal happens before the transition runs: a
   `COMMIT_BEFORE_DISPATCH` processor segments the fire, so failing at the
   terminal persist would have left the entity advanced by a fire that could
-  not be guarded. The task is dropped, not deleted.
+  not be guarded. The task is deleted and the deletion audited as
+  `SCHEDULED_TRANSITION_CANCELLED`: nothing rewrites a stored transaction ID
+  on its own, so leaving the row would re-dispatch and re-refuse it on every
+  scan. Any write that would make the transition fireable re-arms it through
+  the same reconcile every entity write runs, so nothing that can still fire
+  is lost.
 
 - **A write inside a transaction carries that transaction's ID on every
   backend.** memory and sqlite stamped `Meta.TransactionID` only at commit, so

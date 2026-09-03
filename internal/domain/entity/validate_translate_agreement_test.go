@@ -77,4 +77,13 @@ func TestDeleteAndGroupedStats_ClearingImpliesTranslates(t *testing.T) {
 	t.Run("positional subscript", func(t *testing.T) {
 		assert(t, &predicate.SimpleCondition{JsonPath: "$.lines[0].sku", OperatorType: "EQUALS", Value: "v"})
 	})
+	t.Run("wildcard mid-path", func(t *testing.T) {
+		assert(t, &predicate.SimpleCondition{JsonPath: "$.items[*].name", OperatorType: "EQUALS", Value: "v"})
+	})
+	// An array clause desugars into positional comparisons before the
+	// translator's switch runs, so it is a distinct shape from the ones
+	// above rather than a rewording of them.
+	t.Run("array", func(t *testing.T) {
+		assert(t, &predicate.ArrayCondition{JsonPath: "$.tags[*]", Values: []any{"v", nil, "w"}})
+	})
 }

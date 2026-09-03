@@ -13,21 +13,30 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
-// A condition that cannot be translated is refused, not served another way.
+// TestQueryGroupedStats_FunctionCondition_Is400 pins the BOUNDARY that stands
+// in front of grouped stats' translation step, not the refusal arm behind it.
 //
-// Grouped statistics used to answer one by passing the store a zero-value
-// filter and re-matching every yielded entity in this process — a whole-model
-// scan, the shape direct search deleted. It now refuses, which is only free
-// because the refusal is unreachable from validated input
-// (TestDeleteAndGroupedStats_ClearingImpliesTranslates). This test drives the
-// arm itself, through the entry point, to pin the status and code it answers
-// with rather than trusting it never runs.
+// Be precise about what this can and cannot show. Grouped statistics used to
+// answer an untranslatable condition by passing the store a zero-value filter
+// and re-matching every yielded entity in this process — a whole-model scan,
+// the shape direct search deleted. That branch is gone and the entry point
+// refuses instead (grouped_stats_service.go). But the refusal arm is NOT
+// reachable through this entry point: QueryGroupedStats takes raw JSON, so
+// every condition it sees is one of predicate.ParseCondition's five clause
+// types, and search.ValidateCondition rejects the only one of those that
+// fails translation — a function clause — before the translator runs. So this
+// test passes with the refusal arm reverted, and would be dishonest if it
+// claimed otherwise.
 //
-// The condition is a function clause: search.ValidateCondition refuses it
-// first, so this asserts the boundary that stands in front of the arm. There
-// is no wire shape that clears validation and then fails translation — that
-// is the point — so the arm is pinned by the classifier it shares with
-// search rather than by a request that reaches it.
+// What it does pin is worth having: a function clause is 400
+// INVALID_CONDITION and the store is never reached, so the refusal happens
+// before any scan rather than after one. The unreachability of the arm itself
+// is established by enumeration in
+// TestDeleteAndGroupedStats_ClearingImpliesTranslates, which is the right
+// shape of proof for a property no input can exercise. Search's equivalent
+// arm HAS a direct test only because its service method takes a
+// predicate.Condition and a test can hand it a caller-built type; grouped
+// stats and conditional delete take bytes, and cannot.
 func TestQueryGroupedStats_FunctionCondition_Is400(t *testing.T) {
 	cond := json.RawMessage(`{
 		"type": "function",

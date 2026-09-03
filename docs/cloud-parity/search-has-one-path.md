@@ -16,7 +16,7 @@ Two request shapes that the fallback used to absorb are now answered:
   INVALID_CONDITION`, or `400 INVALID_FIELD_PATH` when the failure is
   path-shaped. It is not reachable from validated input — the boundary
   grammar and the translator share the same path parser and operator set
-  (`path-grammar.md` §12) — so no valid request changes status.
+  (`path-grammar.md` §11) — so no valid request changes status.
 - **A nil/absent condition** is `400 INVALID_CONDITION`, not "match
   everything". A caller that wants every entity of a model pages it.
 

@@ -224,8 +224,9 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 		}
 	}
 
-	// Try to translate to a pushdown-friendly Filter. A nil parsedCond
-	// yields the zero-value Filter ("match all"); a parsedCond that the
+	// Translate to a pushdown Filter. A nil parsedCond yields the zero-value
+	// Filter ("match all").
+	//
 	// One path, as on search and conditional delete: the condition either
 	// translates or the request is refused. A translation failure is
 	// unreachable from input that cleared search.ValidateCondition above —

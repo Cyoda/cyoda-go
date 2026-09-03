@@ -209,11 +209,21 @@ func seed(t *testing.T, f spi.StoreFactory, baseCtx context.Context, rows ...*sp
 	}
 }
 
-// assertRYWOracle is the genuine oracle: an in-tx Search must return exactly
-// the id-set (and per-id data) that an unfiltered in-tx Iterate +
+// assertRYWOracle is the oracle: an in-tx Search must return exactly the
+// id-set (and per-id data) that an unfiltered in-tx Iterate +
 // spi.Prepare(filter).Match produces for the same tx state — computed
 // through the SAME tx-scoped store, so the comparison is a real cross-check,
 // not a tautology.
+//
+// It is a WEAKER cross-check than it was. The oracle read the model through
+// GetAll, a structurally separate path from Search; with GetAll gone it reads
+// through Iterate, which on memory shares the merge/snapshot machinery Search
+// uses. A defect in that shared machinery can now move both sides of the
+// comparison together. What still catches it is the hardcoded expectation
+// each scenario carries — the wantPresent/wantAbsent id-sets below are the
+// cross-backend contract, and they are written out, not derived. Read the two
+// together: the oracle checks Search against the store's own view, the
+// hardcoded sets check that view against the contract.
 func assertRYWOracle(t *testing.T, store spi.EntityStore, txCtx context.Context, filter spi.Filter, o spi.SearchOptions) []*spi.Entity {
 	t.Helper()
 	all := drainAll(t, store, txCtx, nil)

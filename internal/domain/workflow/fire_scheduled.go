@@ -375,9 +375,11 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 	// --- Fire (design §5.2/§5.3) ---
 	// expectedTxID is "the txID read in this fire transaction" (design
 	// §5.3): the entity's last-committed TransactionID as of the Get above.
-	// Captured before fireTransition/cascadeAutomated run — neither mutates
-	// entity.Meta.TransactionID — so it stays valid as the CAS precondition
-	// for the final persist below, whether or not the cascade segments.
+	// Captured — a string, by value — before fireTransition/cascadeAutomated
+	// run, so it stays valid as the CAS precondition for the final persist
+	// below whether or not the cascade segments, and regardless of a
+	// backend writing its own stamp back into entity.Meta along the way
+	// (postgres does; see its save()).
 	expectedTxID := entity.Meta.TransactionID
 	if expectedTxID == "" {
 		// Fail closed: CompareAndSave rejects an empty expectedTxID, so there
@@ -398,8 +400,19 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 		// nothing that can still fire.
 		slog.Error("scheduled fire refused: stored entity carries no transaction ID to guard against",
 			"pkg", "workflow", "taskID", cur.ID, "entityID", cur.EntityID)
-		if _, delErr := sts.Delete(txCtx, task.ID); delErr != nil {
+		// Audited, not silent — the same rule the obsolete-task drop above
+		// follows, and for the same reason: this destroys a timer
+		// permanently, and a vanished timer must be attributable to
+		// something an operator can find later. A log line on whichever node
+		// happened to pick the task up is not that.
+		if removed, delErr := sts.Delete(txCtx, task.ID); delErr != nil {
 			return OutcomeDropped, fmt.Errorf("failed to delete unguardable scheduled task: %w", delErr)
+		} else if removed {
+			e.recordEvent(auditStore, txCtx, entity.Meta.ID, txID, entity.Meta.State,
+				spi.SMEventScheduledTransitionCancelled,
+				fmt.Sprintf("Scheduled transition %q cancelled (entity carries no committed transaction ID, so the fire cannot be guarded)",
+					cur.Transition),
+				map[string]any{"transition": cur.Transition, "sourceState": cur.SourceState})
 		}
 		committed = true
 		return OutcomeDropped, e.txMgr.Commit(ctx, txID)

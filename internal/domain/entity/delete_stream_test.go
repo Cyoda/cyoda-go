@@ -369,6 +369,6 @@ func TestDeleteEntitiesConditional_SingleTx_WildcardPathConditionStreams(t *test
 		}
 	}
 	if spy.iterateOpenCount() < 1 {
-		t.Error("Iterate() was never called; the untranslatable-condition path must still stream via Iterate")
+		t.Error("Iterate() was never called; a wildcard-path condition must still stream via Iterate")
 	}
 }
