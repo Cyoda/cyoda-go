@@ -402,7 +402,7 @@ func (s *entityStore) GroupedAggregate(
 	if err := validateGroupAndAggregatePaths(groupBy, opts.Aggregations); err != nil {
 		return nil, err
 	}
-	// Zero-value Filter means "match all" (same convention as Iterable).
+	// Zero-value Filter means "match all" (same convention as Iterate).
 	plan, err := planFor(filter)
 	if err != nil {
 		return nil, fmt.Errorf("GroupedAggregate: %w", err)

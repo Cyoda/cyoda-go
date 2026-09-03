@@ -951,10 +951,20 @@ func mintDeleteTicket(entityID string, err error) string {
 // natively in Iterate, or a zero-value Filter (matches everything at the
 // store) paired with a prepared residual matcher re-applied to each
 // streamed entity client-side. The residual branch mirrors
-// GroupedStatsService.tallyStreaming's design (grouped_stats_service.go),
-// so an untranslatable condition (a function condition, an array-wildcard
-// leaf) still selects via Iterate instead of falling back to a
+// GroupedStatsService.tallyStreaming's design (grouped_stats_service.go):
+// an untranslatable condition still selects via Iterate rather than a
 // whole-model materialising read.
+//
+// The residual branch has no known reachable input. planDeleteSelection runs
+// the same validation quartet as SearchService.Search — ValidateCondition,
+// ValidatePatterns, ValidateKnownPaths and the type check — and clearing
+// those implies translating (see TestValidateCondition_ClearingImpliesTranslates
+// in internal/domain/search). A function condition is refused by the first of
+// them; an array-wildcard leaf, which this comment used to name as the
+// example, has translated since spi.ConditionToFilter learned to carry a
+// subscript through (path-grammar.md §2/§8). Search answers its own
+// untranslatable case with a 400 rather than keeping a second path for it;
+// this one still keeps a second path, and closing that gap is its own change.
 type deleteSelectionPlan struct {
 	filter   spi.Filter
 	residual *match.Prepared
@@ -1232,7 +1242,7 @@ func selectDeleteIDs(ctx context.Context, entityStore spi.EntityStore, ref spi.M
 // (design §6.1). Selection and deletion run inside one transaction; the
 // selection drains an Iterate iterator scoped to that SAME transaction
 // (txCtx), so buffered writes already made in it are visible to the
-// selection exactly as the removed Searcher-backed selection saw them — and,
+// selection exactly as the removed search-service selection saw them — and,
 // per the SPI's no-interleave rule, the iterator is fully drained and closed
 // BEFORE the first delete, never interleaved with one.
 //

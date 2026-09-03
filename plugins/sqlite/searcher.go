@@ -399,7 +399,7 @@ func jsonExtract(col, key string) string {
 //
 //   - When order is empty, defaults to "ORDER BY entity_id". For Search this
 //     is the documented canonical default; for Iterate an empty OrderBy means
-//     "unspecified" per the Iterable doc, and a deterministic order is a
+//     "unspecified" per the Iterate doc, and a deterministic order is a
 //     conformant (if stronger-than-required) choice within "unspecified".
 //   - Each clause gets NULLS LAST so absent/null values sort after real values
 //     regardless of ASC/DESC.

@@ -583,7 +583,8 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 	// Defense-in-depth: enforce the limit cap at the service layer so every
 	// entry point (HTTP, gRPC, future transports) sees the same rejection.
 	// The HTTP handler checks this already; gRPC does not — placing the check
-	// here closes that gap without altering the unbounded (limit<0) semantics.
+	// here closes that gap. The lower bound is the guard above: there are no
+	// unbounded semantics left for this cap to preserve.
 	if opts.Limit > pagination.MaxPageSize {
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
 			fmt.Sprintf("limit exceeds maximum %d", pagination.MaxPageSize))
@@ -672,7 +673,7 @@ func untranslatableCondition(translateErr error) *common.AppError {
 }
 
 // ClassifyStoreQueryError maps the cross-backend sentinels a storage plugin
-// may return from a pushdown query (Searcher.Search, Iterable.Iterate,
+// may return from a pushdown query (EntityStore.Search, EntityStore.Iterate,
 // GroupedAggregator.GroupedAggregate) onto operational AppErrors, and returns
 // nil for anything it does not recognise so the caller can pass the error
 // through — an unrecognised store error is genuinely a 500.
@@ -1136,7 +1137,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 	orderBy := resolvedOrderBy
 	if len(orderBy) == 0 {
 		// Iterate's own empty-OrderBy contract is merely "unspecified"
-		// (unlike Search/Searcher, where empty already means the
+		// (unlike Search, where empty already means the
 		// engine's canonical entity-ID order) — request that order
 		// explicitly so async results keep today's default order.
 		orderBy = []spi.OrderSpec{{Source: spi.SourceMeta, Path: "id"}}

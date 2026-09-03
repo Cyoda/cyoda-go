@@ -1993,6 +1993,14 @@ func TestFireScheduled_UnstampedEntity_RefusesBeforeFiring(t *testing.T) {
 	if n := countAuditEvents(t, factory, ctx, "unstamped-e1", spi.SMEventScheduledTransitionFired); n != 0 {
 		t.Errorf("fired audit events = %d, want 0", n)
 	}
+	// The task is deleted, not left for the next scan. Nothing rewrites a
+	// stored transaction ID on its own, so leaving the row would re-dispatch
+	// and re-refuse it on every scan for as long as the entity sits
+	// untouched — and any write that WOULD make it fireable runs reconcile,
+	// which re-arms this transition out of the entity's current state.
+	if _, found := getTask(t, factory, ctx, id); found {
+		t.Error("expected the unfireable task deleted, not left to be re-dispatched every scan")
+	}
 	if n := tracker.openCount(); n != 0 {
 		t.Errorf("open transactions = %d, want 0", n)
 	}

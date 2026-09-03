@@ -50,9 +50,8 @@ const jsonPathLeader = "$."
 //     as a JSON array access on every backend, while a wildcard leaf has no
 //     SQL form on either backend until a quantifier node exists (each SQL
 //     planner's isLeafPushable routes it to the residual, same as a shape
-//     neither backend can push down at all, e.g. a
-//     [predicate.FunctionCondition]) and falls back to the in-memory
-//     evaluator instead. Either way the request is served, not refused.
+//     neither backend can push down at all) and the backend's own residual
+//     evaluates it instead. Either way the request is served, not refused.
 //   - [ValidateScalarJSONPath] — the groupBy, aggregation-field and SORT-key
 //     surfaces — REJECTS them. Those paths must denote a single scalar; a
 //     projection or a positional element has no single-value meaning there.

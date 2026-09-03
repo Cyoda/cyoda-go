@@ -289,7 +289,7 @@ var metaJSONKey = map[string]string{
 //
 //   - Empty → default `ORDER BY entity_id COLLATE "C"` (unique, deterministic).
 //     For Search this is the documented canonical default; for Iterate an
-//     empty OrderBy means "unspecified" per the Iterable doc, and a
+//     empty OrderBy means "unspecified" per the Iterate doc, and a
 //     deterministic order is a conformant (if stronger-than-required) choice
 //     within "unspecified".
 //   - Every key gets NULLS LAST so absent/null values sort after real values

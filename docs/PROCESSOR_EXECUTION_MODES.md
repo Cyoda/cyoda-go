@@ -339,7 +339,9 @@ per-item-isolated rather than rolling back the whole batch. See
 ### `CompareAndSave` and txID stamping
 
 Every entity mutation that lands through a transaction stamps the entity's
-`_meta.transaction_id` with that transaction's txID at commit time.
+`_meta.transaction_id` with that transaction's txID, at write time and
+unconditionally — the committing transaction owns the field, so a
+caller-supplied value there is not honoured.
 `CompareAndSave(entity, expectedTxID)` reads the current row's stamp; on
 mismatch it returns `spi.ErrConflict`. `expectedTxID` must be non-empty — the
 empty string is a caller error, rejected before any read or write — so
@@ -438,16 +440,26 @@ contract from the engine's point of view.
   longer holds a pooled connection. The design (see
   [`docs/superpowers/specs/2026-05-04-issue-27-commit-before-dispatch-design.md`](superpowers/specs/2026-05-04-issue-27-commit-before-dispatch-design.md))
   is motivated by pool exhaustion under slow processors.
-- `CompareAndSave` called **outside** any transaction (the
-  `startNewTxOnDispatch=false` dispatch path) opens a database transaction of
-  its own at `READ COMMITTED`, reads the current txID with `SELECT ... FOR
-  UPDATE`, and commits the write under that row lock. Check and write are
-  therefore indivisible: a concurrent caller naming the same expected txID
-  blocks on the row lock, re-reads once the winner commits — which is what the
-  explicit `READ COMMITTED` buys — sees the winner's txID and gets
-  `spi.ErrConflict`. The write is stamped from `statement_timestamp()` rather
-  than the transaction's start time, so a caller that queued on the lock does
-  not date its version before the version it superseded.
+- `CompareAndSave` called **outside** any transaction opens a database
+  transaction of its own at `READ COMMITTED`, reads the current txID with
+  `SELECT ... FOR UPDATE`, and commits the write under that row lock. Check
+  and write are therefore indivisible: a concurrent caller naming the same
+  expected txID blocks on the row lock and re-reads once the winner commits,
+  which is what the explicit `READ COMMITTED` buys. The write is stamped from
+  `statement_timestamp()` rather than the transaction's start time, so a
+  caller that queued on the lock does not date its version before the version
+  it superseded.
+
+  Whether the loser then **conflicts** is the caller's to determine, not the
+  store's: outside a transaction there is no transaction whose ID to stamp, so
+  the row keeps whatever `Meta.TransactionID` the writer supplied. A racer that
+  writes a new ID is seen by the next racer's re-read and that one conflicts; a
+  racer that echoes back the ID it read leaves the stamp unchanged, and every
+  later check still matches. This is the deliberate asymmetry with the
+  in-transaction path above, where the store owns the stamp because a
+  transaction exists to name. No in-tree caller uses this path — the
+  `startNewTxOnDispatch=false` dispatch opens `TX_post` before its
+  compare-and-save, so that call is in-transaction like every other.
 - The row is always there to lock, because `expectedTxID` must be non-empty:
   an absent or deleted entity reports the empty txID, which no non-empty
   expected ID matches, so the check conflicts before any write. `CompareAndSave`

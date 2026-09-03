@@ -258,7 +258,7 @@ func (s *entityStore) GroupedAggregate(
 			return nil, spi.ErrAggregationNotPushdownable
 		}
 	}
-	// Zero-value Filter means "match all" (same convention as Iterable).
+	// Zero-value Filter means "match all" (same convention as Iterate).
 	plan, err := planFor(filter)
 	if err != nil {
 		return nil, fmt.Errorf("GroupedAggregate: %w", err)
