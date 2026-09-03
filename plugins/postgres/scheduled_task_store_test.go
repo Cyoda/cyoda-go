@@ -45,10 +45,7 @@ func TestPostgres_ScheduledTaskArm_RollbackIsAtomic(t *testing.T) {
 	factory := postgres.NewStoreFactoryWithTMForTest(pool, tm)
 
 	ctx := ctxWithTenant("tenant-A")
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+	txID, txCtx := beginGuarded(t, tm, ctx)
 
 	sts, err := factory.ScheduledTaskStore(txCtx)
 	if err != nil {

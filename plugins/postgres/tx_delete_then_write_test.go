@@ -32,15 +32,7 @@ func TestTx_DeleteThenCompareAndSaveEmpty_Rejected(t *testing.T) {
 		t.Fatalf("seed Get: %v", err)
 	}
 
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	// A t.Fatal anywhere below would otherwise leave the transaction holding a
-	// pooled connection, and the fixture's pool.Close would block forever. It
-	// has to sit here, before the first fallible call on txCtx, not just
-	// before the assertions.
-	defer func() { _ = tm.Rollback(txCtx, txID) }()
+	txID, txCtx := beginGuarded(t, tm, ctx)
 	if err := store.Delete(txCtx, "e-cas-recreate"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}

@@ -83,16 +83,12 @@ func newPITAcquireFixture(t *testing.T, maxConns int32, acquire time.Duration, s
 // pool and keeps it until commit — and returns its context. That held connection
 // is what makes a point-in-time read from the same context hold-and-wait.
 //
-// The rollback is registered as a cleanup rather than deferred so it runs BEFORE
-// the fixture's schema drop, which acquires from this same pool and would
-// otherwise block forever.
+// beginGuarded registers the rollback as a cleanup rather than a deferred call,
+// so it runs BEFORE the fixture's schema drop, which acquires from this same
+// pool and would otherwise block forever.
 func beginHoldingTx(t *testing.T, tm *postgres.TransactionManager, ctx context.Context) context.Context {
 	t.Helper()
-	holdID, holdCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("hold begin: %v", err)
-	}
-	t.Cleanup(func() { _ = tm.Rollback(holdCtx, holdID) })
+	_, holdCtx := beginGuarded(t, tm, ctx)
 	return holdCtx
 }
 
@@ -248,10 +244,7 @@ func TestPITAcquire_OutsideTx_NotBoundedByTheAcquireDeadline(t *testing.T) {
 
 	factory, tm, ctx := newPITAcquireFixture(t, 1, acquire, 1, 0)
 
-	holdID, holdCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("hold begin: %v", err)
-	}
+	holdID, holdCtx := beginGuarded(t, tm, ctx)
 	released := make(chan struct{})
 	go func() {
 		defer close(released)

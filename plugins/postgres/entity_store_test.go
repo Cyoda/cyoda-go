@@ -572,11 +572,7 @@ func TestEntityStore_Get_PopulatesReadSet(t *testing.T) {
 	seedStore.Save(ctx, e) // v3
 
 	// Begin a transaction.
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer tm.Rollback(txCtx, txID) //nolint:errcheck
+	txID, txCtx := beginGuarded(t, tm, ctx)
 
 	// Get within the transaction.
 	txStore, _ := factory.EntityStore(txCtx)
@@ -628,11 +624,7 @@ func TestEntityStore_Save_FreshInsertNotRecorded(t *testing.T) {
 	factory, tm := setupEntityTestWithTM(t)
 	ctx := ctxWithTenant("hook-tenant")
 
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer tm.Rollback(txCtx, txID) //nolint:errcheck
+	txID, txCtx := beginGuarded(t, tm, ctx)
 
 	txStore, _ := factory.EntityStore(txCtx)
 	e := makeEntity("new-e1")
@@ -665,11 +657,7 @@ func TestEntityStore_Save_UpdateRecordsPreWriteVersion(t *testing.T) {
 		seedStore.Save(ctx, e)
 	}
 
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer tm.Rollback(txCtx, txID) //nolint:errcheck
+	txID, txCtx := beginGuarded(t, tm, ctx)
 
 	txStore, _ := factory.EntityStore(txCtx)
 	if _, err := txStore.Save(txCtx, e); err != nil {
@@ -703,11 +691,7 @@ func TestEntityStore_Delete_RecordsWriteSet(t *testing.T) {
 		seedStore.Save(ctx, e)
 	}
 
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer tm.Rollback(txCtx, txID) //nolint:errcheck
+	txID, txCtx := beginGuarded(t, tm, ctx)
 
 	txStore, _ := factory.EntityStore(txCtx)
 	if err := txStore.Delete(txCtx, "del-e"); err != nil {
@@ -746,11 +730,7 @@ func TestEntityStore_GetPage_RecordsEachReadSet(t *testing.T) {
 		seedStore.Save(ctx, e)
 	}
 
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer tm.Rollback(txCtx, txID) //nolint:errcheck
+	txID, txCtx := beginGuarded(t, tm, ctx)
 
 	txStore, _ := factory.EntityStore(txCtx)
 	all, err := txStore.GetPage(txCtx, ref, 100, 0, nil)

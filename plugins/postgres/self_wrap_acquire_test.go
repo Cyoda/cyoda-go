@@ -41,13 +41,10 @@ func newSaturatedFactory(t *testing.T, acquire time.Duration) (*postgres.StoreFa
 	tm, pool := newTestTxManager(t, withMaxConns(1), withAcquireTimeout(acquire))
 	ctx := ctxWithTenant("self-wrap-tenant")
 
-	holdID, holdCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("hold begin: %v", err)
-	}
-	// Hand the only connection back before the fixture's schema cleanup runs;
-	// that cleanup acquires from this same pool and would otherwise block.
-	t.Cleanup(func() { _ = tm.Rollback(holdCtx, holdID) })
+	// The guard hands the only connection back before the fixture's schema
+	// cleanup runs; that cleanup acquires from this same pool and would
+	// otherwise block.
+	_, _ = beginGuarded(t, tm, ctx)
 
 	return postgres.NewStoreFactoryWithAcquireTimeoutForTest(pool, acquire), ctx
 }

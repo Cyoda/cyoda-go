@@ -318,10 +318,7 @@ func classifyTestCtx() context.Context {
 // raised — which is the thing under classification.
 func (fx *abortFixture) beginThenLetTheCeilingFire(t *testing.T) (string, context.Context, error) {
 	t.Helper()
-	txID, txCtx, err := fx.tm.Begin(classifyTestCtx())
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
+	txID, txCtx := beginGuarded(t, fx.tm, classifyTestCtx())
 	time.Sleep(2 * time.Second) // well past the fixture's ceiling
 
 	var one int
@@ -426,10 +423,7 @@ func TestCommitAfterStatementTimeout_IsNotAConflict(t *testing.T) {
 	fx := newStatementCeilingFixture(t, 300*time.Millisecond)
 
 	ctx := classifyTestCtx()
-	txID, txCtx, err := fx.tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
+	txID, txCtx := beginGuarded(t, fx.tm, ctx)
 
 	var slept string
 	stmtErr := fx.q.QueryRow(txCtx, "SELECT pg_sleep(3)").Scan(&slept)
@@ -474,10 +468,7 @@ func TestCommitAfterSavepointRollback_StillReportsAConflict(t *testing.T) {
 	fx := newStatementCeilingFixture(t, 300*time.Millisecond)
 
 	ctx := classifyTestCtx()
-	txID, txCtx, err := fx.tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
+	txID, txCtx := beginGuarded(t, fx.tm, ctx)
 
 	spID, err := fx.tm.Savepoint(ctx, txID)
 	if err != nil {
@@ -525,10 +516,7 @@ func TestCommitAfterSerializationFailure_IsStillAConflict(t *testing.T) {
 	fx := newStatementCeilingFixture(t, 0) // no ceiling; the abort comes from bad SQL
 
 	ctx := classifyTestCtx()
-	txID, txCtx, err := fx.tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
+	txID, txCtx := beginGuarded(t, fx.tm, ctx)
 
 	// Any failed statement aborts the transaction; this one is not a ceiling.
 	var n int

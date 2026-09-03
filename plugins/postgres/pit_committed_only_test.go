@@ -67,11 +67,7 @@ func setupPITCommitted(t *testing.T) (*postgres.StoreFactory, *postgres.Transact
 // neither.
 func beginPITTx(t *testing.T, factory *postgres.StoreFactory, tm *postgres.TransactionManager, ctx context.Context) (spi.EntityStore, context.Context) {
 	t.Helper()
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	t.Cleanup(func() { _ = tm.Rollback(txCtx, txID) })
+	_, txCtx := beginGuarded(t, tm, ctx)
 
 	txStore, err := factory.EntityStore(txCtx)
 	if err != nil {

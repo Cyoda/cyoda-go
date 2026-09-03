@@ -131,11 +131,7 @@ func TestSearchTx_RYWParity_CreateUpdateDelete(t *testing.T) {
 		"e3": `{"city":"Berlin"}`,
 	})
 	baseCtx := ctxWithTenant("searchtx-tenant")
-	txID, txCtx, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(txCtx, txID) }()
+	_, txCtx := beginGuarded(t, tm, baseCtx)
 	store, err := factory.EntityStore(txCtx)
 	if err != nil {
 		t.Fatalf("EntityStore (tx): %v", err)
@@ -175,11 +171,7 @@ func TestSearchTx_DeleteThenSavePresent(t *testing.T) {
 		"e1": `{"city":"Berlin"}`,
 	})
 	baseCtx := ctxWithTenant("searchtx-tenant")
-	txID, txCtx, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(txCtx, txID) }()
+	_, txCtx := beginGuarded(t, tm, baseCtx)
 	store, err := factory.EntityStore(txCtx)
 	if err != nil {
 		t.Fatalf("EntityStore (tx): %v", err)
@@ -218,11 +210,7 @@ func TestSearchTx_PositiveSupersession(t *testing.T) {
 		"e2": `{"city":"Munich"}`,
 	})
 	baseCtx := ctxWithTenant("searchtx-tenant")
-	txID, txCtx, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(txCtx, txID) }()
+	_, txCtx := beginGuarded(t, tm, baseCtx)
 	store, err := factory.EntityStore(txCtx)
 	if err != nil {
 		t.Fatalf("EntityStore (tx): %v", err)
@@ -257,11 +245,7 @@ func TestSearchTx_TrackingReadRecordsReturnedIds(t *testing.T) {
 	baseCtx := ctxWithTenant("searchtx-tenant")
 
 	// Tx A: Search with TrackingRead=true.
-	txA, txCtxA, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Tx A Begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(txCtxA, txA) }()
+	txA, txCtxA := beginGuarded(t, tm, baseCtx)
 	storeA, err := factory.EntityStore(txCtxA)
 	if err != nil {
 		t.Fatalf("Tx A EntityStore: %v", err)
@@ -288,20 +272,15 @@ func TestSearchTx_TrackingReadRecordsReturnedIds(t *testing.T) {
 	}
 
 	// Tx B: concurrently update e2 (a returned id) and commit → bumps e2 to v2.
-	txB, txCtxB, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Tx B Begin: %v", err)
-	}
+	txB, txCtxB := beginGuarded(t, tm, baseCtx)
 	storeB, err := factory.EntityStore(txCtxB)
 	if err != nil {
-		_ = tm.Rollback(txCtxB, txB)
 		t.Fatalf("Tx B EntityStore: %v", err)
 	}
 	if _, err := storeB.Save(txCtxB, &spi.Entity{
 		Meta: spi.EntityMeta{ID: "e2", ModelRef: searchTxModel, State: "CHANGED"},
 		Data: []byte(`{"city":"Hamburg"}`),
 	}); err != nil {
-		_ = tm.Rollback(txCtxB, txB)
 		t.Fatalf("Tx B Save e2: %v", err)
 	}
 	if err := tm.Commit(baseCtx, txB); err != nil {
@@ -327,11 +306,7 @@ func TestSearchTx_NoTrackingReadRecordsNothing(t *testing.T) {
 	})
 	baseCtx := ctxWithTenant("searchtx-tenant")
 
-	txA, txCtxA, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Tx A Begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(txCtxA, txA) }()
+	txA, txCtxA := beginGuarded(t, tm, baseCtx)
 	storeA, err := factory.EntityStore(txCtxA)
 	if err != nil {
 		t.Fatalf("Tx A EntityStore: %v", err)
@@ -357,20 +332,15 @@ func TestSearchTx_NoTrackingReadRecordsNothing(t *testing.T) {
 	}
 
 	// Tx B updates e2 and commits.
-	txB, txCtxB, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Tx B Begin: %v", err)
-	}
+	txB, txCtxB := beginGuarded(t, tm, baseCtx)
 	storeB, err := factory.EntityStore(txCtxB)
 	if err != nil {
-		_ = tm.Rollback(txCtxB, txB)
 		t.Fatalf("Tx B EntityStore: %v", err)
 	}
 	if _, err := storeB.Save(txCtxB, &spi.Entity{
 		Meta: spi.EntityMeta{ID: "e2", ModelRef: searchTxModel, State: "CHANGED"},
 		Data: []byte(`{"city":"Hamburg"}`),
 	}); err != nil {
-		_ = tm.Rollback(txCtxB, txB)
 		t.Fatalf("Tx B Save e2: %v", err)
 	}
 	if err := tm.Commit(baseCtx, txB); err != nil {
@@ -436,11 +406,7 @@ func TestSearchTxPIT_CommittedOnlyMatchesIterateAsAt(t *testing.T) {
 		t.Fatalf("parse pit: %v", err)
 	}
 
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(txCtx, txID) }()
+	txID, txCtx := beginGuarded(t, tm, ctx)
 	txStore, err := factory.EntityStore(txCtx)
 	if err != nil {
 		t.Fatalf("EntityStore (tx): %v", err)
@@ -540,11 +506,7 @@ func TestSearchTxPIT_TrackingReadNoConflictOnConcurrentWrite(t *testing.T) {
 	}
 
 	// Tx A: PIT Search with TrackingRead=true.
-	txA, txCtxA, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Tx A Begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(txCtxA, txA) }()
+	txA, txCtxA := beginGuarded(t, tm, baseCtx)
 	storeA, err := factory.EntityStore(txCtxA)
 	if err != nil {
 		t.Fatalf("Tx A EntityStore: %v", err)
@@ -573,20 +535,15 @@ func TestSearchTxPIT_TrackingReadNoConflictOnConcurrentWrite(t *testing.T) {
 
 	// Tx B: concurrently update pc-e2 (a PIT-returned id) and commit, bumping
 	// its current-state version.
-	txB, txCtxB, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Tx B Begin: %v", err)
-	}
+	txB, txCtxB := beginGuarded(t, tm, baseCtx)
 	storeB, err := factory.EntityStore(txCtxB)
 	if err != nil {
-		_ = tm.Rollback(txCtxB, txB)
 		t.Fatalf("Tx B EntityStore: %v", err)
 	}
 	if _, err := storeB.Save(txCtxB, &spi.Entity{
 		Meta: spi.EntityMeta{ID: "pc-e2", ModelRef: searchTxModel, State: "CHANGED"},
 		Data: []byte(`{"city":"Hamburg"}`),
 	}); err != nil {
-		_ = tm.Rollback(txCtxB, txB)
 		t.Fatalf("Tx B Save: %v", err)
 	}
 	if err := tm.Commit(baseCtx, txB); err != nil {

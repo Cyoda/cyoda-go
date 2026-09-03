@@ -397,16 +397,12 @@ func TestExtendSchema_RolledBack_NotVisible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+	txID, txCtx := beginGuarded(t, tm, ctx)
 	// ExtendSchema must be invoked via a store built for the tx-carrying
 	// context so that subsequent plugin-internal resolutions still see the
 	// tx (the ctxQuerier will re-resolve on each call anyway, but we reuse
 	// the same ms because resolveRaw inspects the call-time context).
 	if err := ms.ExtendSchema(txCtx, ref, spi.SchemaDelta(`[{"kind":"broaden_type","path":"x","payload":["NULL"]}]`)); err != nil {
-		_ = tm.Rollback(ctx, txID)
 		t.Fatalf("ExtendSchema: %v", err)
 	}
 	if err := tm.Rollback(ctx, txID); err != nil {
@@ -447,12 +443,8 @@ func TestExtendSchema_Commit_VisibleAfterCommit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+	txID, txCtx := beginGuarded(t, tm, ctx)
 	if err := ms.ExtendSchema(txCtx, ref, spi.SchemaDelta(`[{"kind":"broaden_type","path":"x","payload":["NULL"]}]`)); err != nil {
-		_ = tm.Rollback(ctx, txID)
 		t.Fatalf("ExtendSchema: %v", err)
 	}
 	if err := tm.Commit(ctx, txID); err != nil {

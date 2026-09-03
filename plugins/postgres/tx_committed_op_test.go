@@ -40,10 +40,7 @@ func TestTx_OpAfterCommit_WrapsSentinel(t *testing.T) {
 		t.Fatalf("seed Get: %v", err)
 	}
 
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+	txID, txCtx := beginGuarded(t, tm, ctx)
 	if err := tm.Commit(txCtx, txID); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}

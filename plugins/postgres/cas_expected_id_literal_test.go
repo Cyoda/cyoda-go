@@ -96,11 +96,7 @@ func TestCompareAndSave_ExpectedIDIsLiteral(t *testing.T) {
 					t.Fatalf("seed Delete: %v", err)
 				}
 			}
-			txID, txCtx, err := tm.Begin(ctx)
-			if err != nil {
-				t.Fatalf("Begin: %v", err)
-			}
-			defer func() { _ = tm.Rollback(txCtx, txID) }()
+			txID, txCtx := beginGuarded(t, tm, ctx)
 			_, err = store.CompareAndSave(txCtx, literalEntity(ref, id, "tx-writer"), tc.expectedTxID)
 			assertCASOutcome(t, err, tc.want)
 			if tc.want == casRejected {
@@ -132,13 +128,7 @@ func TestCompareAndSave_EmptyExpectedAfterSameTxDelete_Rejected(t *testing.T) {
 	const id = "e-lit-same-tx-delete"
 	seedLiteral(t, store, ctx, ref, id, "tx-seed")
 
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	// A t.Fatal below would otherwise leave the transaction holding a pooled
-	// connection, and the fixture's pool.Close would block forever.
-	defer func() { _ = tm.Rollback(txCtx, txID) }()
+	txID, txCtx := beginGuarded(t, tm, ctx)
 	if err := store.Delete(txCtx, id); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
@@ -175,10 +165,7 @@ func TestCompareAndSave_EmptyExpectedOnDeadTransaction_ReportsArgumentError(t *t
 			id := "e-lit-dead-tx-" + kill
 			seedLiteral(t, store, ctx, ref, id, "tx-seed")
 
-			txID, txCtx, err := tm.Begin(ctx)
-			if err != nil {
-				t.Fatalf("Begin: %v", err)
-			}
+			txID, txCtx := beginGuarded(t, tm, ctx)
 			if kill == "Committed" {
 				err = tm.Commit(txCtx, txID)
 			} else {

@@ -46,11 +46,7 @@ func TestIterateTx_TrackingReadRecordsOnlyYieldedIds(t *testing.T) {
 	baseCtx := ctxWithTenant("searchtx-tenant")
 
 	// Tx A: Iterate with TrackingRead=true, filtered to Berlin rows only.
-	txA, txCtxA, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Tx A Begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(txCtxA, txA) }()
+	txA, txCtxA := beginGuarded(t, tm, baseCtx)
 	storeA, err := factory.EntityStore(txCtxA)
 	if err != nil {
 		t.Fatalf("Tx A EntityStore: %v", err)
@@ -91,20 +87,15 @@ func TestIterateTx_TrackingReadRecordsOnlyYieldedIds(t *testing.T) {
 
 	// Tx B: concurrently update e2 (scanned by Tx A's Iterate, but never
 	// yielded — the filter excluded it) and commit.
-	txB, txCtxB, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Tx B Begin: %v", err)
-	}
+	txB, txCtxB := beginGuarded(t, tm, baseCtx)
 	storeB, err := factory.EntityStore(txCtxB)
 	if err != nil {
-		_ = tm.Rollback(txCtxB, txB)
 		t.Fatalf("Tx B EntityStore: %v", err)
 	}
 	if _, err := storeB.Save(txCtxB, &spi.Entity{
 		Meta: spi.EntityMeta{ID: "e2", ModelRef: searchTxModel, State: "CHANGED"},
 		Data: []byte(`{"city":"Munich"}`),
 	}); err != nil {
-		_ = tm.Rollback(txCtxB, txB)
 		t.Fatalf("Tx B Save e2: %v", err)
 	}
 	if err := tm.Commit(baseCtx, txB); err != nil {
@@ -129,11 +120,7 @@ func TestIterateTx_NoTrackingReadRecordsNothing(t *testing.T) {
 	})
 	baseCtx := ctxWithTenant("searchtx-tenant")
 
-	txA, txCtxA, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Tx A Begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(txCtxA, txA) }()
+	txA, txCtxA := beginGuarded(t, tm, baseCtx)
 	storeA, err := factory.EntityStore(txCtxA)
 	if err != nil {
 		t.Fatalf("Tx A EntityStore: %v", err)
@@ -170,20 +157,15 @@ func TestIterateTx_NoTrackingReadRecordsNothing(t *testing.T) {
 	}
 
 	// Tx B updates e1 (yielded by Tx A's Iterate) and commits.
-	txB, txCtxB, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Tx B Begin: %v", err)
-	}
+	txB, txCtxB := beginGuarded(t, tm, baseCtx)
 	storeB, err := factory.EntityStore(txCtxB)
 	if err != nil {
-		_ = tm.Rollback(txCtxB, txB)
 		t.Fatalf("Tx B EntityStore: %v", err)
 	}
 	if _, err := storeB.Save(txCtxB, &spi.Entity{
 		Meta: spi.EntityMeta{ID: "e1", ModelRef: searchTxModel, State: "CHANGED"},
 		Data: []byte(`{"city":"Hamburg"}`),
 	}); err != nil {
-		_ = tm.Rollback(txCtxB, txB)
 		t.Fatalf("Tx B Save e1: %v", err)
 	}
 	if err := tm.Commit(baseCtx, txB); err != nil {

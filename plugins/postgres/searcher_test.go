@@ -1134,11 +1134,7 @@ func TestPGSearcher_NegativeLimitRejected(t *testing.T) {
 func TestPGSearcher_InTxOverLimitFails(t *testing.T) {
 	factory, tm := setupFCWTest(t)
 	ctx := ctxWithTenant("bounded-search-tx-tenant")
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(txCtx, txID) }()
+	_, txCtx := beginGuarded(t, tm, ctx)
 	store, err := factory.EntityStore(txCtx)
 	if err != nil {
 		t.Fatalf("EntityStore (tx): %v", err)

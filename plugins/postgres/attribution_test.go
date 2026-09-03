@@ -28,11 +28,7 @@ func TestTxManager_Begin_CapturesOrigin(t *testing.T) {
 	tm, _ := newTestTxManager(t)
 	ctx := ctxWithTenantAndUser("tx-tenant", "alice", spi.PrincipalUser)
 
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(txCtx, txID) }()
+	_, txCtx := beginGuarded(t, tm, ctx)
 
 	tx := spi.GetTransaction(txCtx)
 	if tx == nil {
@@ -57,11 +53,7 @@ func TestTxManager_Join_RepopulatesOrigin(t *testing.T) {
 	tenant := spi.TenantID("tx-tenant")
 	rootCtx := ctxWithTenantAndUser(tenant, "root-user", spi.PrincipalUser)
 
-	txID, txCtx1, err := tm.Begin(rootCtx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(txCtx1, txID) }()
+	txID, txCtx1 := beginGuarded(t, tm, rootCtx)
 
 	tx1 := spi.GetTransaction(txCtx1)
 	wantOrigin := spi.Principal{ID: "root-user", Kind: spi.PrincipalUser}
@@ -95,10 +87,7 @@ func TestTxManager_Commit_NoOriginLeak(t *testing.T) {
 	ctx := ctxWithTenantAndUser("tx-tenant", "alice", spi.PrincipalUser)
 
 	before := postgres.OriginMapLenForTest(tm)
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+	txID, txCtx := beginGuarded(t, tm, ctx)
 	if got := postgres.OriginMapLenForTest(tm); got != before+1 {
 		t.Fatalf("origins map len after Begin = %d, want %d", got, before+1)
 	}
@@ -118,10 +107,7 @@ func TestTxManager_Rollback_NoOriginLeak(t *testing.T) {
 	ctx := ctxWithTenantAndUser("tx-tenant", "alice", spi.PrincipalUser)
 
 	before := postgres.OriginMapLenForTest(tm)
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+	txID, txCtx := beginGuarded(t, tm, ctx)
 	if got := postgres.OriginMapLenForTest(tm); got != before+1 {
 		t.Fatalf("origins map len after Begin = %d, want %d", got, before+1)
 	}
@@ -182,10 +168,7 @@ func TestEntityStore_Delete_Tx_StampsDeleterNotPriorWriter(t *testing.T) {
 	}
 
 	deleterCtx := ctxWithTenantAndUser(tenant, "deleter-user", spi.PrincipalUser)
-	txID, txCtx, err := tm.Begin(deleterCtx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+	txID, txCtx := beginGuarded(t, tm, deleterCtx)
 	deleterStore, err := factory.EntityStore(txCtx)
 	if err != nil {
 		t.Fatalf("EntityStore(txCtx): %v", err)
@@ -244,10 +227,7 @@ func TestEntityStore_Delete_Tx_StampsDeletingTransactionID(t *testing.T) {
 	tenant := spi.TenantID("tenant-A")
 	ctx := ctxWithTenantAndUser(tenant, "creator-user", spi.PrincipalUser)
 
-	createTxID, createTxCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin (create): %v", err)
-	}
+	createTxID, createTxCtx := beginGuarded(t, tm, ctx)
 	createStore, err := factory.EntityStore(createTxCtx)
 	if err != nil {
 		t.Fatalf("EntityStore(createTxCtx): %v", err)
@@ -267,10 +247,7 @@ func TestEntityStore_Delete_Tx_StampsDeletingTransactionID(t *testing.T) {
 		t.Fatalf("Commit (create): %v", err)
 	}
 
-	deleteTxID, deleteTxCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin (delete): %v", err)
-	}
+	deleteTxID, deleteTxCtx := beginGuarded(t, tm, ctx)
 	if deleteTxID == createTxID {
 		t.Fatal("test setup invalid: create and delete transactions must have different IDs")
 	}
