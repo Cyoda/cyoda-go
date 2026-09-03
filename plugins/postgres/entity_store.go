@@ -92,8 +92,13 @@ func (s *entityStore) save(ctx context.Context, entity *spi.Entity, stampFrom tx
 	entity.Meta.TenantID = s.tenantID
 
 	// Stamp the transaction ID from context so callers can read it back
-	// after commit (required by the SPI conformance contract).
-	if tx := spi.GetTransaction(ctx); tx != nil && entity.Meta.TransactionID == "" {
+	// after commit (required by the SPI conformance contract). Unconditional:
+	// the committing transaction owns this field, so a caller-supplied value
+	// is not authoritative — honouring one would let a row claim it was
+	// committed by a transaction that did not commit it, and would make the
+	// in-transaction compare-and-save precondition depend on what the caller
+	// happened to stamp rather than on the transaction's own view.
+	if tx := spi.GetTransaction(ctx); tx != nil {
 		entity.Meta.TransactionID = tx.ID
 	}
 

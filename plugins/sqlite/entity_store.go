@@ -253,6 +253,7 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		// Transaction mode: write to buffer, not main store.
 		cp := copyEntity(entity)
 		cp.Meta.TenantID = s.tenantID
+		cp.Meta.TransactionID = tx.ID
 		// Stage the value this overwrites (see stageSuperseded's godoc)
 		// BEFORE overwriting tx.Buffer, so a same-tx double-save of the same
 		// entity still produces an earliest-wins-eligible version row at
@@ -440,14 +441,17 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		// row it supersedes. An expected ID naming the buffered version
 		// matches — that is how a joined callback updates an entity created
 		// earlier in the same transaction; only a stale expected ID (the
-		// committed version's) conflicts. Same answer postgres gives, whose
-		// CAS reads the transaction's own connection.
+		// committed version's) conflicts. The buffered entity carries this
+		// transaction's ID because every in-tx write is stamped with it at
+		// write time — the same value postgres's own uncommitted row holds,
+		// which is what its CAS reads off its own connection.
 		if buffered, ok := tx.Buffer[entity.Meta.ID]; ok {
 			if buffered.Meta.TransactionID != expectedTxID {
 				return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
 			}
 			cp := copyEntity(entity)
 			cp.Meta.TenantID = s.tenantID
+			cp.Meta.TransactionID = tx.ID
 			s.tm.stageSuperseded(tx.ID, entity.Meta.ID, buffered)
 			tx.Buffer[entity.Meta.ID] = cp
 			tx.WriteSet[entity.Meta.ID] = true
@@ -470,6 +474,7 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		// matching comment in Save.
 		cp := copyEntity(entity)
 		cp.Meta.TenantID = s.tenantID
+		cp.Meta.TransactionID = tx.ID
 		s.tm.stageSuperseded(tx.ID, entity.Meta.ID, tx.Buffer[entity.Meta.ID])
 		tx.Buffer[entity.Meta.ID] = cp
 		tx.WriteSet[entity.Meta.ID] = true
