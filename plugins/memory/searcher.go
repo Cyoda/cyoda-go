@@ -8,11 +8,11 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// Compile-time check that *EntityStore implements spi.Searcher.
-var _ spi.Searcher = (*EntityStore)(nil)
+// Compile-time check that *EntityStore implements spi.EntityStore.
+var _ spi.EntityStore = (*EntityStore)(nil)
 
-// Search implements spi.Searcher for the in-memory entity store. It produces
-// the same result set that GetAll + spi.Prepare(filter).Match would for the
+// Search implements spi.EntityStore.Search for the in-memory entity store. It produces
+// the same result set that GetPage + spi.Prepare(filter).Match would for the
 // same transaction state, but filters/orders/bounds with the canonical SPI
 // helpers (spi.Prepare/PreparedFilter.Match, spi.LessByOrder,
 // spi.MergeBounded) so every backend agrees. Search is bounded-or-fail:
@@ -24,11 +24,11 @@ var _ spi.Searcher = (*EntityStore)(nil)
 //   - non-tx: iterate the current committed model (or the PIT snapshot when
 //     opts.PointInTime is set), filter, sort, bound. No read-set.
 //   - in-tx with PointInTime: committed-only snapshot at the PIT — no buffer
-//     overlay, no read-set (mirrors GetAllAsAt).
+//     overlay, no read-set (mirrors GetPage's committed-only PIT branch).
 //   - in-tx, PointInTime==nil: read-your-own-writes overlay — a k-way merge of
 //     the committed snapshot (suppressing tx.Deletes and buffered ids) with the
 //     matching buffer entries, bounded by spi.MergeBounded. Returned committed
-//     ids enter tx.ReadSet ONLY when opts.TrackingRead is set (unlike GetAll,
+//     ids enter tx.ReadSet ONLY when opts.TrackingRead is set (unlike GetPage,
 //     which records every read unconditionally).
 func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
 	if opts.Limit <= 0 {
@@ -83,7 +83,7 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 	// In-transaction: hold tx.OpMu.RLock for the whole operation so Commit/
 	// Rollback (which take tx.OpMu.Lock) cannot race with our reads of
 	// tx.Buffer / tx.Deletes and our write to tx.ReadSet. Lock order:
-	// tx.OpMu before factory.entityMu (matches Save/GetAll and txmanager.Commit).
+	// tx.OpMu before factory.entityMu (matches Save/GetPage and txmanager.Commit).
 	tx.OpMu.RLock()
 	defer tx.OpMu.RUnlock()
 	if tx.RolledBack {
@@ -92,7 +92,7 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 
 	if opts.PointInTime != nil {
 		// In-tx point-in-time: committed-only, no buffer overlay, no read-set
-		// (mirrors GetAllAsAt). Snapshot under entityMu via IIFE.
+		// (mirrors GetPage's committed-only PIT branch). Snapshot under entityMu via IIFE.
 		var committed []*spi.Entity
 		var snapErr error
 		func() {
@@ -123,7 +123,7 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 	filteredCommitted := make([]*spi.Entity, 0, len(committed))
 	for i, e := range committed {
 		// Amortized cancellation check (spec D5): the memory plugin IS
-		// spi.Searcher, so this loop (and its siblings below) is the real
+		// spi.EntityStore.Search, so this loop (and its siblings below) is the real
 		// search-scan path for this backend, not a fallback. Check every
 		// 1024 rows (i&1023==0, true at i==0 too) so a pre-expired or
 		// since-expired ctx aborts promptly without paying a per-row cost.
@@ -205,7 +205,7 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 		}
 	}
 
-	// Read-set recording is CONDITIONAL on TrackingRead (GetAll records
+	// Read-set recording is CONDITIONAL on TrackingRead (GetPage records
 	// unconditionally). Only committed rows (not in the buffer — those are
 	// own-writes already in the write-set) enter the read-set. Bounded-or-fail
 	// means page is exactly the matched set — there is no smaller page to

@@ -406,54 +406,6 @@ func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 
 	return unmarshalEntityDoc(doc)
 }
-
-func (s *entityStore) GetAll(ctx context.Context, modelRef spi.ModelRef) ([]*spi.Entity, error) {
-	rows, err := s.q.Query(ctx,
-		`SELECT doc FROM entities WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted`,
-		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query entities: %w", err)
-	}
-	defer rows.Close()
-
-	entities, err := scanEntities(rows)
-	if err != nil {
-		return nil, err
-	}
-	if s.tm != nil {
-		for _, e := range entities {
-			s.tm.recordReadIfInTx(ctx, e.Meta.ID, e.Meta.Version)
-		}
-	}
-	return entities, nil
-}
-
-// GetAllAsAt is committed-only, through committedQuerier — the collection form
-// of GetAsAt's routing, and for the same reason.
-//
-// Deliberately not tracked in readSet: historical reads target immutable versions. See spec §Known limitation.
-func (s *entityStore) GetAllAsAt(ctx context.Context, modelRef spi.ModelRef, asAt time.Time) ([]*spi.Entity, error) {
-	rows, err := s.committedQuerier().Query(ctx,
-		`SELECT v.doc
-		 FROM entities e
-		 CROSS JOIN LATERAL (
-		     SELECT doc FROM entity_versions ev
-		     WHERE ev.tenant_id = e.tenant_id AND ev.entity_id = e.entity_id
-		       AND ev.valid_time <= $4
-		       AND ev.transaction_time <= CURRENT_TIMESTAMP
-		     ORDER BY ev.valid_time DESC, ev.transaction_time DESC
-		     LIMIT 1
-		 ) v
-		 WHERE e.tenant_id = $1 AND e.model_name = $2 AND e.model_version = $3`,
-		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion, asAt)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query entities as-at: %w", err)
-	}
-	defer rows.Close()
-
-	return scanEntitiesFilterDeleted(rows)
-}
-
 func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 	tid := string(s.tenantID)
 
@@ -759,8 +711,8 @@ func (s *entityStore) getPageCurrent(ctx context.Context, modelRef spi.ModelRef,
 }
 
 // getPageAsAt is GetPage's asAt!=nil path: a committed-only snapshot built
-// on searchBaseQuery's PIT base (the same base Search/Iterate/GetAllAsAt
-// use), paged via ORDER BY entity_id COLLATE "C" LIMIT/OFFSET.
+// on searchBaseQuery's PIT base (the same base Search/Iterate use),
+// paged via ORDER BY entity_id COLLATE "C" LIMIT/OFFSET.
 //
 // Deliberately bypasses s.q (which would resolve an ambient transaction)
 // and issues the query through the pool-pinned committedQuerier instead —
@@ -813,7 +765,7 @@ const getVersionByTransactionQuery = `SELECT doc, version, valid_time FROM entit
 // partition (tenant_id, entity_id, version) rather than a full table scan
 // — asserted by entity_page_plan_test.go via EXPLAIN over
 // getVersionByTransactionQuery itself. Deliberately not tracked in readSet:
-// historical reads target immutable versions, matching GetAsAt/GetAllAsAt.
+// historical reads target immutable versions, matching GetAsAt.
 func (s *entityStore) GetVersionByTransaction(ctx context.Context, entityID, txID string) (*spi.EntityVersion, error) {
 	if txID == "" {
 		return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
@@ -837,7 +789,7 @@ func (s *entityStore) GetVersionByTransaction(ctx context.Context, entityID, txI
 // GetVersionMetadata returns entityID's version metadata — no entity
 // payload, just the audit trail — newest first, ties broken by Version
 // DESC. opts.From/opts.Until bound the window inclusively on valid_time (the
-// same column GetAsAt/GetAllAsAt/GetVersionByTransaction treat as the
+// same column GetAsAt/GetVersionByTransaction treat as the
 // canonical Timestamp); opts.Limit caps the row count (0 means all). The
 // query projects doc->'_meta' alone — never the full doc — per
 // spi.EntityStore.GetVersionMetadata's doc comment: this method surfaces

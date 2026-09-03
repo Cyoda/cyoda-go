@@ -12,7 +12,7 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// This file implements spi.Iterable and spi.GroupedAggregator on
+// This file implements spi.EntityStore.Iterate and spi.GroupedAggregator on
 // *EntityStore for the grouped entity statistics query endpoint
 // (POST /api/entity/stats/{name}/{version}/query). The design follows
 // spec §6.1 (decisions D11, D14, D18, D20):
@@ -24,7 +24,7 @@ import (
 //     walk the snapshot lock-free after the read-lock is released.
 //
 //   - D11: in-tx callers (spi.GetTransaction(ctx) != nil) overlay tx.Buffer
-//     and exclude tx.Deletes, matching the GetAll in-tx branch in
+//     and exclude tx.Deletes, matching the Search/GetPage in-tx branch in
 //     entity_store.go.
 //
 //   - D14: the read lock is held only for the snapshot build (one append per
@@ -49,7 +49,7 @@ import (
 //     (see Iterate and GroupedAggregate) and matched per row; there is no
 //     plugin-local leaf evaluator here.
 
-// Iterate implements spi.Iterable. The filter is prepared once here and
+// Iterate implements spi.EntityStore.Iterate. The filter is prepared once here and
 // evaluated per row by the shared kernel — the same evaluator the sqlite
 // (plugins/sqlite/post_filter.go) and postgres (plugins/postgres/
 // grouped_stats.go) backends use, so all three backends agree bit-for-bit on
@@ -71,7 +71,7 @@ func (s *EntityStore) Iterate(
 		return nil, err
 	}
 	// A non-empty OrderBy with an ambient transaction is unsupported (see
-	// the spi.Iterable doc comment) — reject up front rather than silently
+	// EntityStore.Iterate's doc comment) — reject up front rather than silently
 	// ignoring the requested order.
 	if len(opts.OrderBy) > 0 && spi.GetTransaction(ctx) != nil {
 		return nil, fmt.Errorf("iterate: ordered iteration inside a transaction is unsupported")
@@ -114,7 +114,7 @@ func (s *EntityStore) Iterate(
 // buildSnapshot captures all entities matching modelRef visible to this
 // caller, returning a slice of *spi.Entity pointers. For in-tx callers
 // the snapshot reflects the tx-merged view (committed-at-snapshot-time
-// minus tx.Deletes plus tx.Buffer), matching GetAll's in-tx branch.
+// minus tx.Deletes plus tx.Buffer), matching Search's in-tx branch.
 // Non-tx callers see the latest committed version per entity.
 //
 // PIT (opts.PointInTime, when non-nil) reads the historical snapshot at
@@ -145,7 +145,7 @@ func (s *EntityStore) buildSnapshot(ctx context.Context, model spi.ModelRef, pit
 
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
-		// Mirror GetAll's in-tx branch: hold tx.OpMu.RLock across the
+		// Mirror Search's in-tx branch: hold tx.OpMu.RLock across the
 		// snapshot read AND the buffer/deletes overlay so Commit/Rollback
 		// (tx.OpMu.Lock) can't race with us. Lock order: tx.OpMu before
 		// factory.entityMu.
@@ -219,11 +219,11 @@ func (s *EntityStore) buildSnapshot(ctx context.Context, model spi.ModelRef, pit
 	return snapshot, nil, nil
 }
 
-// getAllSnapshotPointersUnlocked is the *spi.Entity-pointer-returning
-// counterpart of getAllSnapshotUnlocked (which copies). For Iterate /
-// GroupedAggregate we deliberately do NOT copy — the *spi.Entity
-// pointer is heap-stable and the entityVersion immutability invariant
-// makes lock-free read safe.
+// getAllSnapshotPointersUnlocked returns all entities matching modelRef
+// that were visible at snapshotTime, as *spi.Entity pointers (not copies).
+// For Iterate / GroupedAggregate / Search / GetPage we deliberately do NOT
+// copy — the *spi.Entity pointer is heap-stable and the entityVersion
+// immutability invariant makes lock-free read safe.
 //
 // ctx gates the same amortized cancellation check the copying variant runs:
 // every 1024 entities (i&1023==0, true at i==0 too) so an already-expired or

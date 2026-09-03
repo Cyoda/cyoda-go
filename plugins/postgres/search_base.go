@@ -38,7 +38,7 @@ func (s *entityStore) searchBaseQuery(entityName, modelVersion string, pit *time
 }
 
 // committedQuerier is the querier EVERY point-in-time read runs through:
-// GetAsAt, GetAllAsAt, GetPage(asAt), and Search/Iterate with a PointInTime.
+// GetAsAt, GetPage(asAt), and Search/Iterate with a PointInTime.
 //
 // A point-in-time read is committed-only — it ignores any ambient transaction
 // and answers from committed state as of the requested instant. s.q would

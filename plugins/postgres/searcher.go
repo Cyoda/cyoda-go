@@ -10,10 +10,10 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// Compile-time check that *entityStore implements spi.Searcher.
-var _ spi.Searcher = (*entityStore)(nil)
+// Compile-time check that *entityStore implements spi.EntityStore.
+var _ spi.EntityStore = (*entityStore)(nil)
 
-// Search implements spi.Searcher for the PostgreSQL entity store. Pushable
+// Search implements spi.EntityStore.Search for the PostgreSQL entity store. Pushable
 // predicates go into the SQL WHERE via planQuery; the residual (regex /
 // case-insensitive ops) is evaluated in Go by postgresIter/evalPostFilter.
 //
@@ -22,7 +22,7 @@ var _ spi.Searcher = (*entityStore)(nil)
 // spi.ErrSearchResultLimitExceeded, never a truncated prefix; exactly-at-limit
 // succeeds. opts.Limit <= 0 is a contract violation — Search returns an error
 // rather than treating it as "unbounded" or substituting a default of its own
-// (see spi.Searcher's doc comment; the engine resolves the direct-search
+// (see spi.EntityStore.Search's doc comment; the engine resolves the direct-search
 // default before calling, so Search itself never needs to guess a bound).
 // When there is no residual, the bound is pushed into SQL as "LIMIT limit+1":
 // the extra row, if returned, is the proof that the matched set does not fit,
@@ -49,7 +49,7 @@ var _ spi.Searcher = (*entityStore)(nil)
 // RYW is provided by the database, and the committed pushdown IS the RYW result.
 // No buffer overlay, no spi.MergeBounded, and no tx.OpMu are involved (postgres
 // never populates Buffer/Deletes/DeleteAttribution or any other
-// TransactionState bookkeeping field; Get/GetAll don't take tx.OpMu either).
+// TransactionState bookkeeping field; Get/GetPage don't take tx.OpMu either).
 // The one tx-specific behaviour Search adds over the committed pushdown
 // is read-set recording — see the TrackingRead block at the end of the function.
 func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
@@ -71,7 +71,7 @@ func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 	// Read-set recording. Only in-transaction, current-state (PointInTime==nil),
 	// and only when TrackingRead is requested. Each returned entity's observed
 	// version enters the tx read-set so commit-time first-committer-wins
-	// validates it (mirroring Get/GetAll, which record via recordReadIfInTx —
+	// validates it (mirroring Get/GetPage, which record via recordReadIfInTx —
 	// but they record unconditionally; Search records only when asked).
 	//
 	// Recording the matched set, which under bounded-or-fail is everything the
@@ -84,7 +84,7 @@ func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 	// read-set — harmless: ValidateReadSet runs inside the same pgx.Tx at
 	// commit and sees the own write at the recorded version, so it matches and
 	// never false-conflicts. In-tx point-in-time search is committed-only and
-	// records nothing (consistent with GetAsAt / GetAllAsAt, which deliberately
+	// records nothing (consistent with GetAsAt, which deliberately
 	// skip read-set tracking for historical reads).
 	if opts.TrackingRead && opts.PointInTime == nil && s.tm != nil {
 		for _, e := range results {
