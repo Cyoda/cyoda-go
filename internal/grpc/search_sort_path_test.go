@@ -46,24 +46,19 @@ var sortPathModel = map[string]any{
 //
 // A well-formed array-subscripted condition ("$.items[*].name EQUALS
 // "widget"") used to be the one shape spi.ConditionToFilter declined to
-// translate, routing the WHOLE request — sort included — through
-// SearchService's own GetAll+in-memory-evaluator fallback, which is where an
-// unchecked sort path stopped being an error and became a wrong answer:
-// gjson has no bracket syntax, so every entity missed, all compared equal,
-// and the caller received a 200 whose order was not the one they asked for.
+// translate, routing the WHOLE request — sort included — through an
+// in-process evaluator where an unchecked sort path stopped being an error
+// and became a wrong answer: gjson has no bracket syntax, so every entity
+// missed, all compared equal, and the caller received a 200 whose order was
+// not the one they asked for.
 //
-// That is no longer true: the kernel resolves a subscripted path directly
-// (see spi.ResolvePath), so this condition now translates and clears through
-// the store's Searcher exactly like the trivial one — search.ValidateCondition
-// rejects every input shape that could still fail translation (a
-// FunctionCondition), so SearchService's own fallback branch is unreachable
-// from a valid direct-search condition at all (see
-// TestValidateCondition_ClearingImpliesTranslates in internal/domain/search).
-// Both rows below therefore exercise the same Searcher-backed code path
-// today; they are kept as two rows because sort-path validation must hold
-// for either condition shape, not because they still probe different
-// mechanisms — a table that only exercised one shape would say nothing about
-// the other, even if both now resolve identically.
+// The kernel resolves a subscripted path directly now (see spi.ResolvePath),
+// so this condition translates and pushes down exactly like the trivial one,
+// and a condition that cannot be translated is refused rather than served
+// another way (see TestValidateCondition_ClearingImpliesTranslates in
+// internal/domain/search). Both rows below therefore exercise the same code
+// path; they are kept as two rows because sort-path validation must hold for
+// either condition shape, not because they still probe different mechanisms.
 var searchConditions = []struct {
 	name string
 	cond map[string]any

@@ -16,7 +16,7 @@ import (
 // TestQueryGroupedStats_BareLeafField_UnevaluableLeaf_MapsTo400 is the Gate-6
 // sibling fix pinned alongside Task 5's main classifier work: grouped-stats'
 // streaming-tally fallback (queryGroupedStatsInner -> tallyStreaming) drives a
-// store's spi.Iterable.Iterate with a translated pushdown Filter exactly like
+// store's Iterate with a translated pushdown Filter exactly like
 // search.Service.Search's own pushdown branch does, and a real backend's
 // Iterate can refuse that Filter with spi.ErrUnevaluableLeaf for the same
 // reason (a comparison operand against a field with zero declared types — a

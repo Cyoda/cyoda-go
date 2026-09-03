@@ -18,15 +18,14 @@ import (
 // --- Task E4.1: RED tests for the streamed delete selection ---
 //
 // These tests pin that DeleteEntitiesConditional (single-tx and batched) and
-// DeleteAllEntities select entities via a spi.Iterable drain instead of
-// search.SearchService.Search / EntityStore.GetAll, and never hold the
-// matched set as materialised *spi.Entity values.
+// DeleteAllEntities select entities via an Iterate drain instead of
+// search.SearchService.Search, and never hold the matched set as
+// materialised *spi.Entity values.
 
-// searchForbiddenStore wraps a real spi.EntityStore (which also implements
-// spi.Iterable) and fails the test outright if Search or GetAll is ever
-// called on it — proving a delete path selects via spi.Iterable, never
-// search.SearchService's plugin Searcher pushdown or a whole-model
-// materialising read. Also counts every spi.Iterate() call and every
+// searchForbiddenStore wraps a real spi.EntityStore and fails the test
+// outright if Search is ever called on it — proving a delete path selects
+// via Iterate, never search.SearchService's pushdown. Also counts every
+// Iterate() call and every
 // spi.Iterator.Entity() call it hands out across its lifetime, so a test can
 // assert (a) how many times selection re-opened an iterator (streamed
 // batching re-opens one per cycle) and (b) that the number of entities
@@ -43,19 +42,13 @@ type searchForbiddenStore struct {
 
 func (s *searchForbiddenStore) Search(context.Context, spi.Filter, spi.SearchOptions) ([]*spi.Entity, error) {
 	s.t.Helper()
-	s.t.Fatal("Search must not be called by a delete path: selection streams via spi.Iterable")
-	return nil, fmt.Errorf("unreachable")
-}
-
-func (s *searchForbiddenStore) GetAll(context.Context, spi.ModelRef) ([]*spi.Entity, error) {
-	s.t.Helper()
-	s.t.Fatal("GetAll must not be called by a delete path: selection streams via spi.Iterable")
+	s.t.Fatal("Search must not be called by a delete path: selection streams via Iterate")
 	return nil, fmt.Errorf("unreachable")
 }
 
 func (s *searchForbiddenStore) Iterate(ctx context.Context, model spi.ModelRef, filter spi.Filter, opts spi.IterateOptions) (spi.Iterator, error) {
 	atomic.AddInt32(&s.iterateOpens, 1)
-	it, err := s.EntityStore.(spi.Iterable).Iterate(ctx, model, filter, opts)
+	it, err := s.EntityStore.Iterate(ctx, model, filter, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -293,7 +286,7 @@ func TestDeleteAllEntities_StreamsSelection(t *testing.T) {
 		t.Errorf("TotalCount = %d, want %d", result.TotalCount, n)
 	}
 	if spy.iterateOpenCount() < 1 {
-		t.Error("Iterate() was never called; DeleteAllEntities must count via spi.Iterable, not GetAll")
+		t.Error("Iterate() was never called; DeleteAllEntities must count via Iterate")
 	}
 	if got := spy.entityCallCount(); got != n {
 		t.Errorf("Entity() calls = %d, want exactly %d", got, n)
@@ -309,7 +302,7 @@ func TestDeleteAllEntities_StreamsSelection(t *testing.T) {
 // TestDeleteEntitiesConditional_SingleTx_UntranslatableConditionStreams is
 // E4.1(d): a condition carrying an array-wildcard leaf (mirroring search's
 // own matchAllFixtureCondition fixture) still deletes correctly — decoys
-// survive, only the matching entity is removed — via spi.Iterable, never
+// survive, only the matching entity is removed — via Iterate, never
 // falling back to Search or GetAll.
 //
 // The name and the "Untranslatable" framing below predate
@@ -317,7 +310,7 @@ func TestDeleteAllEntities_StreamsSelection(t *testing.T) {
 // other (path-grammar.md §2/§8): this condition now translates, so
 // planDeleteSelection takes the TRANSLATABLE branch and hands Iterate a real
 // pushdown Filter rather than a zero-value one plus a residual re-check. The
-// property this test actually pins — streamed selection via spi.Iterable,
+// property this test actually pins — streamed selection via Iterate,
 // never Search or GetAll, decoys survive, matches are removed — holds
 // identically on both branches (see deleteSelectionPlan's doc comment), so
 // the assertions below did not need to change; only this comment was wrong.
@@ -377,6 +370,6 @@ func TestDeleteEntitiesConditional_SingleTx_UntranslatableConditionStreams(t *te
 		}
 	}
 	if spy.iterateOpenCount() < 1 {
-		t.Error("Iterate() was never called; the untranslatable-condition path must still stream via spi.Iterable")
+		t.Error("Iterate() was never called; the untranslatable-condition path must still stream via Iterate")
 	}
 }

@@ -99,9 +99,9 @@ func TestSearch_BareLeafField_Postgres_DirectSearch_400InvalidCondition(t *testi
 
 // TestSearch_BareLeafField_Postgres_DirectSearch_Unbounded_400InvalidCondition
 // covers the UNBOUNDED store route: SearchService.Search's own Limit<=0
-// branch drains spi.Iterable.Iterate instead of calling Searcher.Search
+// branch drains Iterate instead of calling Search
 // (search/service.go's Search doc comment: "opts.Limit <= 0 ... streamed
-// through spi.Iterable.Iterate instead of Searcher"). No transport resolves
+// through Iterate instead of Search"). No transport resolves
 // a non-positive limit before reaching the service (both HTTP and gRPC
 // direct entry points resolve a default first), so this route is a
 // service-layer contract, exercised here the same way the package's own

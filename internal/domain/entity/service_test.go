@@ -675,7 +675,7 @@ var _ = strconv.Itoa // ensure strconv is not flagged as unused
 // own selection validation (planDeleteSelection,
 // internal/domain/entity/service.go) has a real FieldsMap to check a
 // condition's path against. Since the streamed-selection rework, delete selects entities via its own
-// spi.Iterable drain rather than through SearchService.Search, so a
+// Iterate drain rather than through SearchService.Search, so a
 // classified-4xx-forwarding test needs a selection-validation failure (an
 // unknown field path) rather than a stubbed Searcher failure.
 func newDeleteFixtureWithSchema(t *testing.T) (h *entity.Handler, ctx context.Context, entityName, modelVersion string) {

@@ -811,7 +811,7 @@ func saveMinimalModelGRPC(t *testing.T, ctx context.Context, factory *memory.Sto
 	}
 }
 
-// searcherEntityStoreG wraps an EntityStore and implements spi.Searcher,
+// searcherEntityStoreG wraps an EntityStore and overrides Search,
 // capturing the spi.SearchOptions passed to Search. Mirrors
 // internal/domain/search's searcherEntityStore test helper.
 type searcherEntityStoreG struct {

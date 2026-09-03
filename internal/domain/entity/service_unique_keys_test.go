@@ -486,11 +486,11 @@ func (s *spyEntityStore) Get(ctx context.Context, entityID string) (*spi.Entity,
 func (s *spyEntityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Time) (*spi.Entity, error) {
 	return s.delegate.GetAsAt(ctx, entityID, asAt)
 }
-func (s *spyEntityStore) GetAll(ctx context.Context, modelRef spi.ModelRef) ([]*spi.Entity, error) {
-	return s.delegate.GetAll(ctx, modelRef)
+func (s *spyEntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+	return s.delegate.Search(ctx, filter, opts)
 }
-func (s *spyEntityStore) GetAllAsAt(ctx context.Context, modelRef spi.ModelRef, asAt time.Time) ([]*spi.Entity, error) {
-	return s.delegate.GetAllAsAt(ctx, modelRef, asAt)
+func (s *spyEntityStore) Iterate(ctx context.Context, modelRef spi.ModelRef, filter spi.Filter, opts spi.IterateOptions) (spi.Iterator, error) {
+	return s.delegate.Iterate(ctx, modelRef, filter, opts)
 }
 func (s *spyEntityStore) Delete(ctx context.Context, entityID string) error {
 	return s.delegate.Delete(ctx, entityID)

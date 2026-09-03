@@ -118,13 +118,13 @@ func TestSubmitAsync_PerTenantCap_RejectsBeforeCreateJob(t *testing.T) {
 		WithAsyncMaxPerTenant(1).
 		WithHeartbeat(50 * time.Millisecond)
 
-	if _, err := svc.SubmitAsync(ctxA, ref, matchEverything, search.SearchOptions{}); err != nil {
+	if _, err := svc.SubmitAsync(ctxA, ref, matchEverything, search.SearchOptions{Limit: 10}); err != nil {
 		t.Fatalf("first submit: %v", err)
 	}
 	createsAfterAccepted := store.creates.Load()
 
 	for i := 0; i < 3; i++ {
-		_, err := svc.SubmitAsync(ctxA, ref, matchEverything, search.SearchOptions{})
+		_, err := svc.SubmitAsync(ctxA, ref, matchEverything, search.SearchOptions{Limit: 10})
 		if err == nil {
 			t.Fatalf("submit %d was accepted; the per-tenant cap (1) is not enforced", i)
 		}
@@ -177,7 +177,7 @@ func TestSubmitAsync_PerTenantCap_RegisterStaysTheAuthority(t *testing.T) {
 		// Runs INSIDE the first submission's CreateJob, after its pre-check
 		// saw a free slot. The competitor takes that slot and returns.
 		go func() {
-			_, cErr := svc.SubmitAsync(ctxA, ref, matchEverything, search.SearchOptions{})
+			_, cErr := svc.SubmitAsync(ctxA, ref, matchEverything, search.SearchOptions{Limit: 10})
 			competitorDone <- cErr
 		}()
 		select {
@@ -191,7 +191,7 @@ func TestSubmitAsync_PerTenantCap_RegisterStaysTheAuthority(t *testing.T) {
 	}
 	store.hookArmed.Store(true)
 
-	_, err = svc.SubmitAsync(ctxA, ref, matchEverything, search.SearchOptions{})
+	_, err = svc.SubmitAsync(ctxA, ref, matchEverything, search.SearchOptions{Limit: 10})
 	if err == nil {
 		t.Fatal("the submission whose slot was taken mid-CreateJob was accepted; registerJob is no longer the authority")
 	}

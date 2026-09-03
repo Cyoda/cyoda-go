@@ -244,7 +244,7 @@ func TestSearchAsync_NonJSONPathCondition_Returns400(t *testing.T) {
 
 // TestDeleteEntities_NonJSONPathCondition_Returns400 covers the fourth
 // translate site: conditional delete selects entities through its own
-// spi.Iterable drain rather than through Search, so it replicates Search's
+// Iterate drain rather than through Search, so it replicates Search's
 // pre-execution validation instead of inheriting it. This is the surface where
 // a silent fallback is most dangerous — a bare path that quietly widened the
 // selection would delete the wrong rows.

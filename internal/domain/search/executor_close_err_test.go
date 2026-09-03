@@ -58,14 +58,10 @@ func TestAsyncSearchJob_IteratorCloseErrorFailsJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	iterableReal, ok := realStore.(spi.Iterable)
-	if !ok {
-		t.Fatal("precondition: memory EntityStore must implement spi.Iterable")
-	}
 	ies := &iterableEntityStore{
 		EntityStore: realStore,
 		iterateFn: func(ctx context.Context, model spi.ModelRef, filter spi.Filter, opts spi.IterateOptions) (spi.Iterator, error) {
-			it, iterErr := iterableReal.Iterate(ctx, model, filter, opts)
+			it, iterErr := realStore.Iterate(ctx, model, filter, opts)
 			if iterErr != nil {
 				return nil, iterErr
 			}
@@ -83,7 +79,7 @@ func TestAsyncSearchJob_IteratorCloseErrorFailsJob(t *testing.T) {
 		OperatorType: "EQUALS",
 		Value:        "Alice",
 	}
-	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{})
+	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	if err != nil {
 		t.Fatalf("SubmitAsync: %v", err)
 	}

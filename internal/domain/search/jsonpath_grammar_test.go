@@ -120,11 +120,10 @@ var invalidJSONPaths = []struct {
 }
 
 // validJSONPaths must keep working. Two classes are folded together
-// deliberately: well-formed dotted paths (pushable), and array-subscripted
-// paths which are valid JSON Path but not expressible as a pushdown filter —
-// those must NOT be rejected here, because the engine answers them from the
-// in-memory evaluator via the translate-error fallback. Rejecting them would
-// turn working queries into 400s.
+// deliberately: well-formed dotted paths, and array-subscripted paths.
+// Both translate to a pushdown filter (spi.ParseFilterPath carries the
+// subscript through), so rejecting either here would turn working queries
+// into 400s.
 var validJSONPaths = []struct {
 	name string
 	path string

@@ -52,7 +52,7 @@ func TestAsyncSearchJob_StoreSentinelIsClassified(t *testing.T) {
 
 	jobID, err := svc.SubmitAsync(ctx, ref, &predicate.SimpleCondition{
 		JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice",
-	}, search.SearchOptions{})
+	}, search.SearchOptions{Limit: 10})
 	if err != nil {
 		t.Fatalf("SubmitAsync: %v", err)
 	}
@@ -113,14 +113,10 @@ func TestAsyncSearchJob_StickyScanErrorIsClassified(t *testing.T) {
 	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
 
 	realStore, _ := base.EntityStore(ctx)
-	iterableReal, ok := realStore.(spi.Iterable)
-	if !ok {
-		t.Fatal("precondition: memory EntityStore must implement spi.Iterable")
-	}
 	ies := &iterableEntityStore{
 		EntityStore: realStore,
 		iterateFn: func(ctx context.Context, model spi.ModelRef, filter spi.Filter, opts spi.IterateOptions) (spi.Iterator, error) {
-			it, err := iterableReal.Iterate(ctx, model, filter, opts)
+			it, err := realStore.Iterate(ctx, model, filter, opts)
 			if err != nil {
 				return nil, err
 			}
@@ -137,7 +133,7 @@ func TestAsyncSearchJob_StickyScanErrorIsClassified(t *testing.T) {
 
 	jobID, err := svc.SubmitAsync(ctx, ref, &predicate.SimpleCondition{
 		JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice",
-	}, search.SearchOptions{})
+	}, search.SearchOptions{Limit: 10})
 	if err != nil {
 		t.Fatalf("SubmitAsync: %v", err)
 	}

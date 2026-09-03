@@ -3,7 +3,7 @@ package search
 import (
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 

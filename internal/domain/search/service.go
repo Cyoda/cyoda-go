@@ -718,9 +718,8 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 // internal/match's OWN Prepare (predicate.Condition side, a different
 // evaluator entirely from spi.Prepare — see prepared.go's own package doc:
 // "this package's error set is its own, not a mirror of spi.ErrUnevaluableLeaf,
-// but the disposition is the same") reached through search.Service.Search's
-// GetAll+match fallback, entity's conditional-delete planner, and
-// grouped-stats' streaming tally. Every caller of those previously wrapped
+// but the disposition is the same") reached through entity's
+// conditional-delete planner and grouped-stats' streaming tally. Every caller of those previously wrapped
 // the error generically ("predicate match failed: %w") or propagated it raw,
 // which classified as an unrecognised 500 — the identical defect
 // ErrInvalidFilterPath's omission was, just on the residual-evaluator side

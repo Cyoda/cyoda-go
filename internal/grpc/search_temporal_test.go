@@ -261,8 +261,8 @@ func TestSearchTemporal_GRPC_CreationDate_Equals_MixedPrecision(t *testing.T) {
 // INVALID_CONDITION in the message — the same classification HTTP uses.
 //
 // This reverses an earlier deliberate acceptance: served by the SPI kernel
-// on a pushdown route, the field bridges to its RFC3339 text and CONTAINS
-// matches lexically; served by internal/match on the fallback route,
+// on the pushdown route, the field bridges to its RFC3339 text and CONTAINS
+// matches lexically; served by internal/match on a residual route,
 // prepareLifecycle refuses the operator and never-matches. Rejecting at the
 // shared validation boundary — which both HTTP and gRPC funnel through —
 // makes both evaluators' conflicting behaviour unreachable on either

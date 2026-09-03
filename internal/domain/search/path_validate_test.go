@@ -83,7 +83,7 @@ func (s *refreshingModelStore) RefreshCount() int {
 
 // modelStoreFactory wraps an inner StoreFactory and returns a fixed
 // ModelStore (the refreshingModelStore under test). EntityStore and other
-// methods delegate to the inner factory so fallback search still works.
+// methods delegate to the inner factory so the search still reaches a real store.
 type modelStoreFactory struct {
 	spi.StoreFactory
 	modelStore spi.ModelStore
@@ -124,8 +124,8 @@ func TestSearch_StaleSchema_RefreshesOnceAndSucceeds(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
-	// Save a single entity carrying field "z". The fallback search will
-	// match it once validation accepts the path.
+	// Save a single entity carrying field "z". The search matches it once
+	// validation accepts the path.
 	saveEntity(t, ctx, base, ref, "e1", []byte(`{"z":"hello"}`))
 
 	stale := buildSearchDescriptor(t, ref, "a")
@@ -156,7 +156,7 @@ func TestSearch_StaleSchema_RefreshesOnceAndSucceeds(t *testing.T) {
 		Value:        "hello",
 	}
 
-	results, err := svc.Search(ctx, ref, cond, search.SearchOptions{})
+	results, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	if err != nil {
 		t.Fatalf("expected search to succeed after one refresh, got error: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestSearch_TrulyMissingPath_FourxxAfterOneRefresh(t *testing.T) {
 		Value:        "hello",
 	}
 
-	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{})
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	if err == nil {
 		t.Fatalf("expected validation error for truly-missing path, got nil")
 	}
@@ -249,7 +249,7 @@ func TestSearch_RefreshFailure_ReportedAsInfraNot4xx(t *testing.T) {
 		Value:        "hello",
 	}
 
-	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{})
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	if err == nil {
 		t.Fatalf("expected an error: the refresh failed, so the path's status is unknown")
 	}
@@ -279,9 +279,9 @@ func TestSearch_RefreshFailure_ReportedAsInfraNot4xx(t *testing.T) {
 // ValidateKnownPaths and validateConditionPaths): a sort key absent from
 // the cached schema whose confirming RefreshAndGet itself fails must report
 // infrastructure, not the client-facing 400 INVALID_FIELD_PATH a genuinely
-// unknown sort field gets. cond is nil so validateConditionPaths/
-// validateConditionTypes have nothing to refuse first — this isolates the
-// sort-key path.
+// unknown sort field gets. The condition is lifecycle-only, so
+// validateConditionPaths/validateConditionTypes have no data path to refuse
+// first — this isolates the sort-key path.
 func TestSearch_SortKeyRefreshFailure_ReportedAsInfraNot4xx(t *testing.T) {
 	base := memory.NewStoreFactory()
 	defer base.Close()
@@ -303,7 +303,13 @@ func TestSearch_SortKeyRefreshFailure_ReportedAsInfraNot4xx(t *testing.T) {
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 	svc := search.NewSearchService(factory, uuids, searchStore)
 
-	_, err := svc.Search(ctx, ref, nil, search.SearchOptions{
+	cond := &predicate.LifecycleCondition{
+		Field:        "state",
+		OperatorType: "EQUALS",
+		Value:        "ACTIVE",
+	}
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{
+		Limit:   10,
 		OrderBy: []search.OrderKey{{Path: "$.zz", Source: spi.SourceData}},
 	})
 	if err == nil {

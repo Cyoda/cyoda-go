@@ -3,7 +3,6 @@ package search_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -145,35 +144,5 @@ func TestSearchEntities_TimeoutExpires_Returns408BeforeAnyBody(t *testing.T) {
 	}
 	if ses.searchCalls != 1 {
 		t.Fatalf("Search called %d times, want exactly 1", ses.searchCalls)
-	}
-}
-
-// --- Service-level: fallback (GetAll + in-memory match) loop cancellation ---
-
-// TestSearch_FallbackLoop_PreExpiredCtx_ReturnsDeadlineExceeded pins that the
-// GetAll+in-memory-match fallback loop in SearchService.Search (reached only
-// when the store does NOT implement spi.Searcher — all three OSS backends do,
-// so this path is otherwise near-dead) observes ctx cancellation and aborts
-// rather than returning results computed past the client's deadline. Uses
-// newFallbackFixture (nonSearcherEntityStore/nonSearcherFactory, defined in
-// service_test.go) to force the fallback branch, and waits on the deadline's
-// own Done channel rather than a wall-clock sleep so the pre-expired state is
-// deterministic.
-func TestSearch_FallbackLoop_PreExpiredCtx_ReturnsDeadlineExceeded(t *testing.T) {
-	svc, ctx, ref := newFallbackFixture(t, 3)
-
-	opCtx, cancel := common.WithRequestTimeout(ctx, 1)
-	defer cancel()
-	<-opCtx.Done()
-
-	results, err := svc.Search(opCtx, ref, matchAllFixtureCondition(t), search.SearchOptions{Limit: 1000})
-	if err == nil {
-		t.Fatal("expected an error for a pre-expired deadline, got nil")
-	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("error chain does not contain context.DeadlineExceeded: %v", err)
-	}
-	if results != nil {
-		t.Fatalf("expected nil results on a cancelled fallback scan, got %d", len(results))
 	}
 }

@@ -745,7 +745,7 @@ func TestQueryGroupedStats_LifecycleTemporalTypeMismatchRejected(t *testing.T) {
 // field (creationDate, lastUpdateTime) previously produced two different
 // answers depending on the query plan — the SPI kernel's pushdown re-check
 // bridges the field to RFC3339 text and matches CONTAINS lexically, while
-// internal/match's fallback route guarded the same case to a never-match.
+// internal/match's residual route guarded the same case to a never-match.
 // classifyGroupedStatsError must classify the shared boundary's rejection as
 // search.ErrInvalidCondition (400 INVALID_CONDITION), the same code /search
 // now answers for the identical condition.

@@ -68,7 +68,7 @@ func TestSearch_MalformedRegex_Rejected(t *testing.T) {
 		Value:        "(",
 	}
 
-	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{})
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	assertInvalidCondition(t, err)
 }
 
@@ -84,7 +84,7 @@ func TestSearch_ValidRegex_Accepted(t *testing.T) {
 		Value:        "^a.*z$",
 	}
 
-	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{})
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	if err != nil {
 		t.Fatalf("expected success for valid pattern, got: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestSearch_MalformedRegex_Nested_Rejected(t *testing.T) {
 		},
 	}
 
-	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{})
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	assertInvalidCondition(t, err)
 }
 
@@ -140,7 +140,7 @@ func TestSubmitAsync_MalformedRegex_Rejected(t *testing.T) {
 		Value:        "(",
 	}
 
-	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{})
+	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	assertInvalidCondition(t, err)
 	if jobID != "" {
 		t.Errorf("expected no job ID to be created, got %q", jobID)
@@ -158,7 +158,7 @@ func TestSubmitAsync_ValidRegex_Accepted(t *testing.T) {
 		Value:        "^a.*z$",
 	}
 
-	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{})
+	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	if err != nil {
 		t.Fatalf("expected success for valid pattern, got: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestSearch_MalformedRegex_LifecycleCondition_Rejected(t *testing.T) {
 		Value:        "(",
 	}
 
-	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{})
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	assertInvalidCondition(t, err)
 }
 
@@ -202,7 +202,7 @@ func TestSearch_AnchorSkewPattern_Rejected(t *testing.T) {
 		Value:        `\Q`,
 	}
 
-	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{})
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	assertInvalidCondition(t, err)
 }
 
@@ -219,7 +219,7 @@ func TestSubmitAsync_AnchorSkewPattern_Rejected(t *testing.T) {
 		Value:        `\Q`,
 	}
 
-	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{})
+	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	assertInvalidCondition(t, err)
 	if jobID != "" {
 		t.Errorf("expected no job ID to be created, got %q", jobID)
@@ -244,7 +244,7 @@ func TestSearch_UnbalancedParenPattern_Rejected(t *testing.T) {
 				Value:        pattern,
 			}
 
-			_, err := svc.Search(ctx, ref, cond, search.SearchOptions{})
+			_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
 			assertInvalidCondition(t, err)
 		})
 	}
@@ -265,7 +265,7 @@ func TestSearch_ValidPattern_StillAccepted(t *testing.T) {
 				Value:        pattern,
 			}
 
-			if _, err := svc.Search(ctx, ref, cond, search.SearchOptions{}); err != nil {
+			if _, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10}); err != nil {
 				t.Fatalf("expected success for valid pattern %q, got: %v", pattern, err)
 			}
 		})
@@ -288,7 +288,7 @@ func TestSearch_MalformedLike_Rejected(t *testing.T) {
 		Value:        `abc\`,
 	}
 
-	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{})
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	assertInvalidCondition(t, err)
 }
 
@@ -304,7 +304,7 @@ func TestSubmitAsync_MalformedLike_Rejected(t *testing.T) {
 		Value:        `abc\`,
 	}
 
-	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{})
+	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	assertInvalidCondition(t, err)
 	if jobID != "" {
 		t.Errorf("expected no job ID to be created, got %q", jobID)
@@ -324,7 +324,7 @@ func TestSearch_MalformedLike_LifecycleCondition_Rejected(t *testing.T) {
 		Value:        `abc\`,
 	}
 
-	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{})
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	assertInvalidCondition(t, err)
 }
 
@@ -350,7 +350,7 @@ func TestSearch_MalformedLike_NestedInGroup_Rejected(t *testing.T) {
 		},
 	}
 
-	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{})
+	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	assertInvalidCondition(t, err)
 }
 
@@ -372,7 +372,7 @@ func TestSearch_ValidLike_Accepted(t *testing.T) {
 				Value:        pattern,
 			}
 
-			if _, err := svc.Search(ctx, ref, cond, search.SearchOptions{}); err != nil {
+			if _, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10}); err != nil {
 				t.Fatalf("expected success for valid LIKE %q, got: %v", pattern, err)
 			}
 		})

@@ -8,9 +8,8 @@ package postgres_test
 // for Search, but both drive it with spi.Filter{} (match-all): every seeded
 // row is returned, so those tests cannot distinguish "record only what was
 // yielded" from "record everything scanned" — the two coincide when nothing
-// is filtered out. Search's engine-level Limit<=0 branch now delegates to
-// Iterate (internal/domain/search/service.go's drainIterate) precisely for
-// the "unbounded, still filtered" shape, so this file exercises Iterate with
+// is filtered out. The async search executor drives Iterate for the
+// "unbounded, still filtered" shape, so this file exercises Iterate with
 // a filter that excludes some seeded rows — the shape that actually
 // discriminates the bug this pins a regression test for: over-recording the
 // read-set with entities the caller never asked about, purely because they

@@ -165,7 +165,7 @@ func validateJSONPath(path string, allowSubscript bool) error {
 	}
 	// Bracket-quoted property access denotes the same node as dotted access but
 	// is not the model's syntax, and NO evaluator in the stack resolves it —
-	// pushdown rejects it and the in-memory fallback misses, answering an empty
+	// every evaluator misses it, answering an empty
 	// page for a field that exists. Both quoting styles: spi.ParseFilterPath
 	// below would reject either anyway (as an unsupported subscript or a
 	// disallowed character), but naming them first lets the diagnostic say

@@ -358,7 +358,7 @@ func TestValidateConditionTypes_ArrayCondition_Accepted(t *testing.T) {
 // and matches CONTAINS lexically, while internal/match's prepareLifecycle
 // guards the same case to a never-match on field identity — the same
 // request answering two ways depending only on which query plan served it
-// (a pushdown narrowing vs. the in-memory fallback). Both evaluators' own
+// (a pushdown narrowing vs. a residual re-check). Both evaluators' own
 // "KNOWN DIVERGENCE" comments name this exact fix: reject the predicate here,
 // at the one boundary every condition surface — search, conditional delete,
 // grouped stats, and workflow-criterion import — funnels through, which
