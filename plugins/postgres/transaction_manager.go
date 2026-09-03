@@ -400,6 +400,28 @@ func (tm *TransactionManager) LookupTx(txID string) (pgx.Tx, bool) {
 	return tm.registry.Lookup(txID)
 }
 
+// wasCommitted reports whether txID is recorded in submitTimes — i.e. it
+// committed successfully and Commit has not yet evicted the entry (up to
+// submitTimeTTL later). It is the store layer's way of telling "this
+// transaction is gone because it committed" apart from "this transaction is
+// gone for an unknown reason" at the resolveRaw seam: cleanupTx purges the
+// registry on every exit path (Commit and Rollback alike), so a registry
+// miss alone cannot distinguish committed from rolled-back from reclaimed.
+// submitTimes, populated only on the Commit success path and kept
+// deliberately past cleanupTx (see Commit's comment on the race with
+// GetSubmitTime), is the one piece of post-cleanup state that answers
+// "committed" affirmatively.
+//
+// No tenant check: this only steers which SPI sentinel a same-context store
+// operation gets classified as, never anything that discloses the submit
+// time or any other value to a caller who doesn't already hold the ID.
+func (tm *TransactionManager) wasCommitted(txID string) bool {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	_, ok := tm.submitTimes[txID]
+	return ok
+}
+
 // cleanupTx removes all per-transaction state (registry, tenant, txState).
 // Called on every Commit/Rollback exit path.
 func (tm *TransactionManager) cleanupTx(txID string) {
