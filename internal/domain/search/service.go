@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -813,6 +812,11 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 			fmt.Sprintf("limit exceeds maximum %d", pagination.MaxPageSize))
 	}
 
+	if cond == nil {
+		return "", common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
+			"condition is required")
+	}
+
 	// Structural condition validation (canonical operator set, BETWEEN
 	// arity) — same single boundary as Search, so an async job is never
 	// created for a structurally-malformed condition regardless of transport.
@@ -833,7 +837,8 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 		return "", appErr
 	}
 
-	if _, vErr := s.validateConditionPaths(ctx, modelStore, modelRef, cond); vErr != nil {
+	validatedFields, vErr := s.validateConditionPaths(ctx, modelStore, modelRef, cond)
+	if vErr != nil {
 		return "", vErr
 	}
 	if rErr := ValidatePatterns(cond); rErr != nil {
@@ -845,6 +850,17 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	// a type-unsound condition regardless of transport.
 	if tErr := s.validateConditionTypes(ctx, modelStore, modelRef, cond); tErr != nil {
 		return "", tErr
+	}
+
+	// Translate once at submission: a persisted job carries a condition that
+	// translates. (The result is discarded; the executor translates against
+	// the schema as it stands at execution, which can only have grown.)
+	if _, translateErr := spi.ConditionToFilter(cond, validatedFields); translateErr != nil {
+		if appErr := ClassifyStoreQueryError(translateErr); appErr != nil {
+			return "", appErr
+		}
+		return "", common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
+			fmt.Sprintf("condition cannot be translated: %v", translateErr))
 	}
 
 	// Resolve sort keys synchronously so a bad field path returns 400
@@ -1082,6 +1098,13 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		return
 	}
 	filter, translateErr := spi.ConditionToFilter(cond, fields)
+	if translateErr != nil {
+		// Ordinary error handling, not a designed branch: a condition that
+		// translated at submission translates here (schema changes after
+		// locking are additive). Anything else is an unexpected failure.
+		s.writeAsyncFailure(jobCtx, jobID, jobFailureMessage(common.Internal("failed to translate search condition", translateErr)), time.Now(), time.Since(start).Milliseconds())
+		return
+	}
 
 	var (
 		count   int
@@ -1089,123 +1112,93 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		saveErr error
 	)
 
-	if translateErr != nil {
-		// Untranslatable condition: unchanged interim fallback. Search's own
-		// Searcher-pushdown branch independently attempts (and, for the same
-		// reason, fails) the same translation, so calling it here reaches
-		// its GetAll + in-memory-match branch — the same code, not a
-		// duplicate of it — and the resulting IDs are streamed through the
-		// same SaveResults call as the Iterate path below.
-		results, searchErr := s.Search(jobCtx, modelRef, cond, opts)
-		if searchErr != nil {
-			prodErr = searchErr
-		} else {
-			ids := make([]string, len(results))
-			for i, e := range results {
-				ids[i] = e.Meta.ID
-			}
-			count = len(ids)
-			saveErr = s.searchStore.SaveResults(jobCtx, jobID, initialEpoch, slices.Values(ids))
+	entityStore, err := s.factory.EntityStore(jobCtx)
+	if err != nil {
+		s.writeAsyncFailure(jobCtx, jobID, jobFailureMessage(err), time.Now(), time.Since(start).Milliseconds())
+		return
+	}
+
+	orderBy := resolvedOrderBy
+	if len(orderBy) == 0 {
+		// Iterate's own empty-OrderBy contract is merely "unspecified"
+		// (unlike Search/Searcher, where empty already means the
+		// engine's canonical entity-ID order) — request that order
+		// explicitly so async results keep today's default order.
+		orderBy = []spi.OrderSpec{{Source: spi.SourceMeta, Path: "id"}}
+	}
+
+	it, iterErr := entityStore.Iterate(jobCtx, modelRef, filter, spi.IterateOptions{
+		PointInTime: opts.PointInTime,
+		OrderBy:     orderBy,
+	})
+	if iterErr != nil {
+		// Classify exactly as the synchronous door does. The job record
+		// is the only report an async caller gets, and jobFailureMessage
+		// renders an *AppError's client-safe text while collapsing
+		// anything else to the generic fallback — so an unclassified
+		// sentinel turned a client's own malformed request into
+		// "search failed unexpectedly". Reaching a plugin's path
+		// rejection at all means the boundary grammar and that plugin
+		// disagree; the caller is still owed the 400.
+		prodErr = iterErr
+		if appErr := ClassifyStoreQueryError(iterErr); appErr != nil {
+			prodErr = appErr
 		}
 	} else {
-		entityStore, err := s.factory.EntityStore(jobCtx)
-		if err != nil {
-			s.writeAsyncFailure(jobCtx, jobID, jobFailureMessage(err), time.Now(), time.Since(start).Milliseconds())
-			return
-		}
-		iterableStore, ok := entityStore.(spi.Iterable)
-		if !ok {
-			// Fail closed (correctness-over-availability): every in-house
-			// store implements spi.Iterable; a store that implements only
-			// Searcher cannot serve the engine-executed streaming async
-			// path, and there is no lesser-quality answer to fall back to.
-			slog.Error("async search store does not implement spi.Iterable", "pkg", "search", "jobID", jobID)
-			s.writeAsyncFailure(jobCtx, jobID, jobFailureFallback, time.Now(), time.Since(start).Milliseconds())
-			return
-		}
-
-		orderBy := resolvedOrderBy
-		if len(orderBy) == 0 {
-			// Iterate's own empty-OrderBy contract is merely "unspecified"
-			// (unlike Search/Searcher, where empty already means the
-			// engine's canonical entity-ID order) — request that order
-			// explicitly so async results keep today's default order.
-			orderBy = []spi.OrderSpec{{Source: spi.SourceMeta, Path: "id"}}
-		}
-
-		it, iterErr := iterableStore.Iterate(jobCtx, modelRef, filter, spi.IterateOptions{
-			PointInTime: opts.PointInTime,
-			OrderBy:     orderBy,
-		})
-		if iterErr != nil {
-			// Classify exactly as the synchronous door does. The job record
-			// is the only report an async caller gets, and jobFailureMessage
-			// renders an *AppError's client-safe text while collapsing
-			// anything else to the generic fallback — so an unclassified
-			// sentinel turned a client's own malformed request into
-			// "search failed unexpectedly". Reaching a plugin's path
-			// rejection at all means the boundary grammar and that plugin
-			// disagree; the caller is still owed the 400.
-			prodErr = iterErr
-			if appErr := ClassifyStoreQueryError(iterErr); appErr != nil {
-				prodErr = appErr
-			}
-		} else {
-			// IIFE so `defer it.Close()` fires at the end of THIS scope —
-			// before the terminal write below, and unconditionally
-			// (including if SaveResults or the scan loop panics: the
-			// defer still runs during the panic unwind, ahead of the
-			// panic-recovery defer above) — rather than at runAsyncJob's
-			// own return, which would run after the terminal write.
-			count, saveErr, prodErr = func() (n int, sErr, pErr error) {
-				// Named returns: the deferred closure sets pErr AFTER
-				// Close() runs — some implementations only surface a
-				// sticky scan error at Close, not at the last Next(), so
-				// reading it.Err() in the function body (before Close)
-				// would miss it.
-				//
-				// A Close() error is fatal here, not merely logged: for
-				// database/sql-backed iterators (e.g. sqliteIter), Close()
-				// returns rows.Close()'s error and that error is NOT folded
-				// into Rows.Err() — so it.Err() alone can stay nil while a
-				// mid-scan driver error truncated the result set. Treating
-				// Close's error as advisory would let this job land
-				// SUCCESSFUL with a truncated result set, indistinguishable
-				// from a complete one (matches drainIterate's ordering).
-				defer func() {
-					if closeErr := it.Close(); closeErr != nil {
-						slog.Warn("failed to close async search iterator", "pkg", "search", "jobID", jobID, "err", closeErr)
-						pErr = closeErr
-					}
-					if errErr := it.Err(); errErr != nil {
-						pErr = errErr
-						// A sticky scan error carries the same
-						// cross-backend sentinels Iterate's own error
-						// does — classify it identically rather than
-						// letting the door it surfaced on decide.
-						if appErr := ClassifyStoreQueryError(errErr); appErr != nil {
-							pErr = appErr
-						}
-					}
-				}()
-				seq := func(yield func(string) bool) {
-					for it.Next() {
-						// Counted AFTER the yield returns true: a
-						// false return means the consumer declined
-						// this id, so it is not part of the result
-						// set and must not be reported as one — the
-						// job's status would otherwise advertise a
-						// result GetAsyncResults cannot serve.
-						if !yield(it.Entity().Meta.ID) {
-							return
-						}
-						n++
+		// IIFE so `defer it.Close()` fires at the end of THIS scope —
+		// before the terminal write below, and unconditionally
+		// (including if SaveResults or the scan loop panics: the
+		// defer still runs during the panic unwind, ahead of the
+		// panic-recovery defer above) — rather than at runAsyncJob's
+		// own return, which would run after the terminal write.
+		count, saveErr, prodErr = func() (n int, sErr, pErr error) {
+			// Named returns: the deferred closure sets pErr AFTER
+			// Close() runs — some implementations only surface a
+			// sticky scan error at Close, not at the last Next(), so
+			// reading it.Err() in the function body (before Close)
+			// would miss it.
+			//
+			// A Close() error is fatal here, not merely logged: for
+			// database/sql-backed iterators (e.g. sqliteIter), Close()
+			// returns rows.Close()'s error and that error is NOT folded
+			// into Rows.Err() — so it.Err() alone can stay nil while a
+			// mid-scan driver error truncated the result set. Treating
+			// Close's error as advisory would let this job land
+			// SUCCESSFUL with a truncated result set, indistinguishable
+			// from a complete one.
+			defer func() {
+				if closeErr := it.Close(); closeErr != nil {
+					slog.Warn("failed to close async search iterator", "pkg", "search", "jobID", jobID, "err", closeErr)
+					pErr = closeErr
+				}
+				if errErr := it.Err(); errErr != nil {
+					pErr = errErr
+					// A sticky scan error carries the same
+					// cross-backend sentinels Iterate's own error
+					// does — classify it identically rather than
+					// letting the door it surfaced on decide.
+					if appErr := ClassifyStoreQueryError(errErr); appErr != nil {
+						pErr = appErr
 					}
 				}
-				sErr = s.searchStore.SaveResults(jobCtx, jobID, initialEpoch, seq)
-				return
 			}()
-		}
+			seq := func(yield func(string) bool) {
+				for it.Next() {
+					// Counted AFTER the yield returns true: a
+					// false return means the consumer declined
+					// this id, so it is not part of the result
+					// set and must not be reported as one — the
+					// job's status would otherwise advertise a
+					// result GetAsyncResults cannot serve.
+					if !yield(it.Entity().Meta.ID) {
+						return
+					}
+					n++
+				}
+			}
+			sErr = s.searchStore.SaveResults(jobCtx, jobID, initialEpoch, seq)
+			return
+		}()
 	}
 
 	finishTime := time.Now()
