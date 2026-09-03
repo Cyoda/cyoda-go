@@ -111,9 +111,11 @@ func TestBegin_SeesConcurrentCommitRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	// A committed row whose transaction ID predates T_A.
+	// A committed row whose transaction ID predates T_A. It carries a real
+	// transaction ID so the compare-and-save at the end of this test names
+	// one: the empty expected ID is a caller error, not a value to compare.
 	if _, err := store.Save(ctx, &spi.Entity{
-		Meta: spi.EntityMeta{ID: "e-seed", TenantID: "tenant-gate", ModelRef: ref, State: "open"},
+		Meta: spi.EntityMeta{ID: "e-seed", TenantID: "tenant-gate", ModelRef: ref, State: "open", TransactionID: "tx-pre"},
 		Data: []byte(`{"n":0}`),
 	}); err != nil {
 		t.Fatalf("seed Save: %v", err)

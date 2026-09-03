@@ -1,19 +1,18 @@
 package postgres_test
 
 import (
+	"errors"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// The other half of the same-transaction-delete story: an empty expected ID
-// means "expect no entity", which is exactly what the delete left, so the
-// compare-and-save is allowed and re-creates the entity — present after
-// commit and carrying no DELETED version. Postgres applies a Delete eagerly
-// on the transaction's own connection rather than buffering it, so there is
-// no unstageDelete step to get wrong here; this pins the same outcome the
-// buffered backends reach a different way.
-func TestTx_DeleteThenCompareAndSaveEmpty_RecreatesPresent(t *testing.T) {
+// The other half of the same-transaction-delete story: the empty expected ID
+// does NOT mean "expect no entity" — it is a caller error, so it cannot
+// re-create what the same-transaction delete removed either. The delete
+// stands at commit. A caller that wants the entity back calls Save. Same
+// answer the buffered backends give.
+func TestTx_DeleteThenCompareAndSaveEmpty_Rejected(t *testing.T) {
 	factory, tm := setupEntityTestWithTM(t)
 	ctx := ctxWithTenant("tenant-dtw")
 	ref := spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"}
@@ -40,31 +39,20 @@ func TestTx_DeleteThenCompareAndSaveEmpty_RecreatesPresent(t *testing.T) {
 	if err := store.Delete(txCtx, "e-cas-recreate"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, err := store.CompareAndSave(txCtx, &spi.Entity{Meta: committed.Meta, Data: []byte(`{"n":2}`)}, ""); err != nil {
-		t.Fatalf("CompareAndSave with empty expected ID after same-tx Delete: %v, want success", err)
+	// A t.Fatal below would otherwise leave the transaction holding a pooled
+	// connection, and the fixture's pool.Close would block forever.
+	defer func() { _ = tm.Rollback(txCtx, txID) }()
+	_, err = store.CompareAndSave(txCtx, &spi.Entity{Meta: committed.Meta, Data: []byte(`{"n":2}`)}, "")
+	if err == nil {
+		t.Fatal("CompareAndSave with an empty expected ID after same-tx Delete: err = nil, want a rejection")
+	}
+	if errors.Is(err, spi.ErrConflict) {
+		t.Fatalf("CompareAndSave with an empty expected ID: err = %v, want a plain caller error, not ErrConflict", err)
 	}
 	if err := tm.Commit(txCtx, txID); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	got, err := store.Get(ctx, "e-cas-recreate")
-	if err != nil {
-		t.Fatalf("after commit Get: %v", err)
-	}
-	if string(got.Data) != `{"n":2}` {
-		t.Fatalf("after commit Data = %s, want {\"n\":2}", got.Data)
-	}
-	// Unlike memory/sqlite, postgres applies the Delete eagerly, so the
-	// audit trail does carry a DELETED row (the eager tombstone) before the
-	// re-create's version — that is expected, not a bug. What must not
-	// happen is a DELETED row AFTER it: that would mean the tombstone landed
-	// on top of the re-created entity instead of under it.
-	versions, err := store.GetVersionMetadata(ctx, "e-cas-recreate", spi.VersionMetadataOptions{})
-	if err != nil {
-		t.Fatalf("GetVersionMetadata: %v", err)
-	}
-	for _, v := range versions {
-		if v.Deleted && v.Version > got.Meta.Version {
-			t.Fatalf("a DELETED version (%d) follows the re-create's version (%d): %+v", v.Version, got.Meta.Version, versions)
-		}
+	if _, err := store.Get(ctx, "e-cas-recreate"); !errors.Is(err, spi.ErrNotFound) {
+		t.Fatalf("after commit Get: err = %v, want ErrNotFound (the delete must stand)", err)
 	}
 }

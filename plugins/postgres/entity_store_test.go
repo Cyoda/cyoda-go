@@ -195,23 +195,6 @@ func TestEntityStore_CompareAndSave_Mismatch(t *testing.T) {
 	}
 }
 
-func TestEntityStore_CompareAndSave_NewEntity(t *testing.T) {
-	factory := setupEntityTest(t)
-	ctx := ctxWithTenant("entity-tenant")
-	store, _ := factory.EntityStore(ctx)
-
-	// The current transaction ID of an entity that is not there is the empty
-	// one, so that — and only that — is what a create may expect.
-	ent := makeEntity("ent-cas-new")
-	v, err := store.CompareAndSave(ctx, ent, "")
-	if err != nil {
-		t.Fatalf("CompareAndSave for new entity: %v", err)
-	}
-	if v != 1 {
-		t.Errorf("expected version 1, got %d", v)
-	}
-}
-
 func TestEntityStore_GetNotFound(t *testing.T) {
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("entity-tenant")

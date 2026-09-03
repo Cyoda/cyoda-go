@@ -612,31 +612,6 @@ func TestCompareAndSaveMismatchTxID(t *testing.T) {
 	}
 }
 
-func TestCompareAndSaveNewEntity(t *testing.T) {
-	factory := memory.NewStoreFactory()
-	ctx := ctxWithTenant("tenant-A")
-	store, _ := factory.EntityStore(ctx)
-	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-
-	// CompareAndSave on a new entity (no prior versions) succeeds only when
-	// the caller expects no entity: the current transaction ID of an entity
-	// that is not there is the empty one.
-	entity := &spi.Entity{
-		Meta: spi.EntityMeta{
-			ID: "e-cas-new", TenantID: "tenant-A", ModelRef: modelRef,
-			State: "NEW", TransactionID: "tx-001",
-		},
-		Data: []byte(`{"v": 1}`),
-	}
-	ver, err := store.CompareAndSave(ctx, entity, "")
-	if err != nil {
-		t.Fatalf("expected success for new entity, got error: %v", err)
-	}
-	if ver != 1 {
-		t.Errorf("expected version 1, got %d", ver)
-	}
-}
-
 // --- Transaction-aware tests ---
 
 func TestTransactionReadYourOwnWrites(t *testing.T) {

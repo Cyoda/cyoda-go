@@ -14,8 +14,8 @@ func seedOne(t *testing.T, store spi.EntityStore, ctx contextT, id string, ref s
 	t.Helper()
 	e := &spi.Entity{
 		// A real transaction ID, so a compare-and-save naming it is a
-		// genuine "expect this version" rather than the empty ID, which
-		// means "expect no entity".
+		// genuine "expect this version" rather than the empty ID, which is
+		// rejected outright.
 		Meta: spi.EntityMeta{ID: id, TenantID: "tenant-dtw", ModelRef: ref, State: "open", TransactionID: "tx-seed"},
 		Data: []byte(`{"n":1}`),
 	}
@@ -106,12 +106,12 @@ func TestTx_DeleteThenSave_CommitsPresent(t *testing.T) {
 	}
 }
 
-// The other half of TestTx_DeleteThenCompareAndSave_Conflicts: an empty
-// expected ID means "expect no entity", which is exactly what the same-tx
-// delete left, so the compare-and-save is allowed and re-creates the entity
-// — present after commit and carrying no DELETED version, the same as a
-// plain Save after a same-tx Delete.
-func TestTx_DeleteThenCompareAndSaveEmpty_RecreatesPresent(t *testing.T) {
+// The other half of TestTx_DeleteThenCompareAndSave_Conflicts: the empty
+// expected ID does NOT mean "expect no entity" — it is a caller error, so it
+// cannot re-create what the same-transaction delete removed either. The
+// delete stands at commit. A caller that wants the entity back calls Save,
+// which unstages the delete (TestTx_DeleteThenSave_CommitsPresent).
+func TestTx_DeleteThenCompareAndSaveEmpty_Rejected(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-dtw", "u1", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"}
@@ -128,27 +128,18 @@ func TestTx_DeleteThenCompareAndSaveEmpty_RecreatesPresent(t *testing.T) {
 	if err := store.Delete(txCtx, "e-cas-recreate"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, err := store.CompareAndSave(txCtx, &spi.Entity{Meta: committed.Meta, Data: []byte(`{"n":2}`)}, ""); err != nil {
-		t.Fatalf("CompareAndSave with empty expected ID after same-tx Delete: %v, want success", err)
+	_, err = store.CompareAndSave(txCtx, &spi.Entity{Meta: committed.Meta, Data: []byte(`{"n":2}`)}, "")
+	if err == nil {
+		t.Fatal("CompareAndSave with an empty expected ID after same-tx Delete: err = nil, want a rejection")
+	}
+	if errors.Is(err, spi.ErrConflict) {
+		t.Fatalf("CompareAndSave with an empty expected ID: err = %v, want a plain caller error, not ErrConflict", err)
 	}
 	if err := tm.Commit(txCtx, txID); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	got, err := store.Get(ctx, "e-cas-recreate")
-	if err != nil {
-		t.Fatalf("after commit Get: %v", err)
-	}
-	if string(got.Data) != `{"n":2}` {
-		t.Fatalf("after commit Data = %s, want {\"n\":2}", got.Data)
-	}
-	versions, err := store.GetVersionMetadata(ctx, "e-cas-recreate", spi.VersionMetadataOptions{})
-	if err != nil {
-		t.Fatalf("GetVersionMetadata: %v", err)
-	}
-	for _, v := range versions {
-		if v.Deleted {
-			t.Fatalf("a DELETED version was written for an entity whose delete was unstaged: %+v", versions)
-		}
+	if _, err := store.Get(ctx, "e-cas-recreate"); !errors.Is(err, spi.ErrNotFound) {
+		t.Fatalf("after commit Get: err = %v, want ErrNotFound (the delete must stand)", err)
 	}
 }
 
