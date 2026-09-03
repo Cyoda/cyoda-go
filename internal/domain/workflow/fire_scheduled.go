@@ -379,6 +379,19 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 	// entity.Meta.TransactionID — so it stays valid as the CAS precondition
 	// for the final persist below, whether or not the cascade segments.
 	expectedTxID := entity.Meta.TransactionID
+	if expectedTxID == "" {
+		// Fail closed: CompareAndSave rejects an empty expectedTxID, so
+		// there is no precondition to fire under. Refusing here rather than
+		// at the terminal persist is load-bearing — a COMMIT_BEFORE_DISPATCH
+		// processor segments the fire, and the first segment's flush would
+		// already be committed by the time the terminal persist ran, leaving
+		// the entity advanced by a fire that could not be guarded. Permanent
+		// for this row, not a race: dropping without deleting the task lets
+		// the next scan re-read it once the row carries a transaction ID.
+		slog.Error("scheduled fire refused: stored entity carries no transaction ID to guard against",
+			"pkg", "workflow", "taskID", task.ID, "entityID", task.EntityID)
+		return OutcomeDropped, fmt.Errorf("scheduled fire cannot be guarded: entity %s has no committed transaction ID", task.EntityID)
+	}
 	fireCtx := withIfMatch(txCtx, expectedTxID)
 
 	newCtx, newTxID, matched, fireErr := e.fireTransition(fireCtx, entity, wf, transition, auditStore, txID)

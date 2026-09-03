@@ -1917,3 +1917,80 @@ func TestFireScheduled_GuardCASRace_DropsWithoutTornWrite(t *testing.T) {
 		t.Error("expected task to remain for retry after losing the CAS race")
 	}
 }
+
+// TestFireScheduled_UnstampedEntity_RefusesBeforeFiring pins the guard on the
+// one engine caller that derives its compare-and-save precondition from
+// stored data rather than a client If-Match. CompareAndSave rejects an empty
+// expectedTxID outright, so an entity whose last committed version carries no
+// transaction ID has no usable precondition — and the fire must refuse BEFORE
+// running the transition, not after.
+//
+// The processor is COMMIT_BEFORE_DISPATCH, which is what makes the ordering
+// load-bearing rather than cosmetic: a fire that runs first and only fails at
+// the terminal persist rolls back TX_post while TX_pre is already committed,
+// leaving the entity advanced by a fire that was refused. The dispatch
+// counter is the discriminating assertion — the entity's state and audit
+// trail alone cannot tell "never ran" from "ran and rolled back".
+func TestFireScheduled_UnstampedEntity_RefusesBeforeFiring(t *testing.T) {
+	const armMs = int64(1_700_000_000_000)
+	const delayMs = int64(1000)
+
+	dispatches := 0
+	mock := &mockExternalProcessing{
+		dispatchFunc: func(_ context.Context, e *spi.Entity, _ spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
+			dispatches++
+			return e, nil
+		},
+	}
+	engine, factory, tracker, advance := setupEngineForCBDFire(t, armMs, mock, 0)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "unstamped-order", ModelVersion: "1.0"}
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{})
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.1", Name: "UnstampedWF", InitialState: "OPEN", Active: true,
+		States: map[string]spi.StateDefinition{
+			"OPEN": {Transitions: []spi.TransitionDefinition{
+				{Name: "AutoClose", Next: "MID", Schedule: &spi.TransitionSchedule{DelayMs: delayMs},
+					Processors: []spi.ProcessorDefinition{
+						{Type: ProcessorTypeExternalized, Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+					}},
+			}},
+			"MID": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	// No transaction ID on the stored row: a store's non-transactional Save
+	// keeps whatever the caller supplied, so a writer that never stamps one
+	// produces exactly this shape.
+	seedFireEntity(t, factory, ctx, "unstamped-e1", modelRef, "OPEN", "", map[string]any{})
+
+	id := taskID(testTenant, "unstamped-e1", "OPEN", "AutoClose")
+	armTask(t, factory, ctx, spi.ScheduledTask{
+		ID: id, TenantID: testTenant, Type: spi.ScheduledTaskFireTransition,
+		ScheduledTime: armMs + delayMs, EntityID: "unstamped-e1", ModelName: modelRef.EntityName,
+		Transition: "AutoClose", SourceState: "OPEN", ArmedAt: armMs,
+	})
+
+	advance(delayMs)
+
+	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
+	if outcome != OutcomeDropped {
+		t.Fatalf("outcome = %v, want Dropped", outcome)
+	}
+	if err == nil {
+		t.Fatal("expected an error naming the missing precondition, got nil")
+	}
+	if dispatches != 0 {
+		t.Errorf("processor dispatches = %d, want 0 — the fire must refuse before running the transition", dispatches)
+	}
+	if got := getEntityState(t, factory, ctx, "unstamped-e1"); got != "OPEN" {
+		t.Errorf("entity state = %q, want OPEN", got)
+	}
+	if n := countAuditEvents(t, factory, ctx, "unstamped-e1", spi.SMEventScheduledTransitionFired); n != 0 {
+		t.Errorf("fired audit events = %d, want 0", n)
+	}
+	if n := tracker.openCount(); n != 0 {
+		t.Errorf("open transactions = %d, want 0", n)
+	}
+}
