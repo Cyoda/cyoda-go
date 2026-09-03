@@ -29,7 +29,7 @@ func TestGetPageTx_PagesEqualIterateSlices_RecordsPageOnly(t *testing.T) {
 	_, _ = store.Save(txCtx, &spi.Entity{Meta: spi.EntityMeta{ID: "b00", TenantID: "tenant-ovl", ModelRef: ref}, Data: []byte(`{}`)})
 	_, _ = store.Save(txCtx, &spi.Entity{Meta: spi.EntityMeta{ID: "e07", TenantID: "tenant-ovl", ModelRef: ref}, Data: []byte(`{"u":1}`)})
 
-	it, err := iterable(t, store).Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{})
+	it, err := store.Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
 	}

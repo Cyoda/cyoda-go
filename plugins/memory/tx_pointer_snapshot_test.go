@@ -8,7 +8,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// An in-transaction Count answers over the same merged view GetAll and
+// An in-transaction Count answers over the same merged view Search/Iterate and
 // GetPage present. A buffered write of a DIFFERENT model does not hide the
 // committed row of the model being counted: the buffer overlay is
 // model-scoped everywhere else, and the count must scope its skip the same
@@ -43,16 +43,13 @@ func TestTx_Count_BufferedOtherModelDoesNotHideCommittedRow(t *testing.T) {
 		t.Fatalf("in-tx Save: %v", err)
 	}
 
-	all, err := store.GetAll(txCtx, refA)
-	if err != nil {
-		t.Fatalf("GetAll: %v", err)
-	}
+	all := drainAll(t, txCtx, store, refA, nil)
 	n, err := store.Count(txCtx, refA)
 	if err != nil {
 		t.Fatalf("Count: %v", err)
 	}
 	if n != int64(len(all)) {
-		t.Fatalf("Count(refA) = %d, GetAll(refA) = %d rows — the count must match the merged view", n, len(all))
+		t.Fatalf("Count(refA) = %d, Iterate(refA) = %d rows — the count must match the merged view", n, len(all))
 	}
 
 	byState, err := store.CountByState(txCtx, refA, nil)
@@ -64,7 +61,7 @@ func TestTx_Count_BufferedOtherModelDoesNotHideCommittedRow(t *testing.T) {
 		total += c
 	}
 	if total != int64(len(all)) {
-		t.Fatalf("CountByState(refA) total = %d, GetAll(refA) = %d rows", total, len(all))
+		t.Fatalf("CountByState(refA) total = %d, Iterate(refA) = %d rows", total, len(all))
 	}
 }
 

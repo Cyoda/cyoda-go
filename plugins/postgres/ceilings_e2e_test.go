@@ -401,7 +401,7 @@ func searchCeilingStores(t *testing.T, dsn string, overrides map[string]string) 
 func searchCeilingScan(t *testing.T, es spi.EntityStore, ctx context.Context) ([]*spi.Entity, error) {
 	t.Helper()
 	now := time.Now()
-	return es.(spi.Searcher).Search(ctx, spi.Filter{}, spi.SearchOptions{
+	return es.Search(ctx, spi.Filter{}, spi.SearchOptions{
 		ModelName:    searchCeilingModel,
 		ModelVersion: "1",
 		PointInTime:  &now,
@@ -503,7 +503,7 @@ func TestE2E_SearchCeiling_FiresOnTheScanAndNowhereElse(t *testing.T) {
 func searchCeilingIterate(t *testing.T, es spi.EntityStore, ctx context.Context) ([]*spi.Entity, error) {
 	t.Helper()
 	now := time.Now()
-	it, err := es.(spi.Iterable).Iterate(ctx, spi.ModelRef{EntityName: searchCeilingModel, ModelVersion: "1"},
+	it, err := es.Iterate(ctx, spi.ModelRef{EntityName: searchCeilingModel, ModelVersion: "1"},
 		spi.Filter{}, spi.IterateOptions{PointInTime: &now})
 	if err != nil {
 		return nil, err

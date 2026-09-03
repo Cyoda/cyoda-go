@@ -128,13 +128,18 @@ func resolveTenant(ctx context.Context) (spi.TenantID, error) {
 // that fails every statement, NOT the pool. The pool would run the statement
 // outside the transaction the caller believes it is in and commit it on its own
 // — a partial write nobody asked for. This is reachable whenever a transaction
-// ends under the caller: the idle ceiling reclaiming it, or a failed commit.
+// ends under the caller: the idle ceiling reclaiming it, a failed commit, or
+// the caller committing/rolling back and then reusing the same context —
+// wasCommitted tells the two SPI-visible cases apart (see its doc comment).
 func (f *StoreFactory) resolveRaw(ctx context.Context) Querier {
 	if f.tm != nil {
 		if tx := spi.GetTransaction(ctx); tx != nil {
 			pgxTx, ok := f.tm.LookupTx(tx.ID)
 			if !ok {
-				return deadTxQuerier{txID: tx.ID}
+				if f.tm.wasCommitted(tx.ID) {
+					return deadTxQuerier{txID: tx.ID, sentinel: spi.ErrTxAlreadyCommitted}
+				}
+				return deadTxQuerier{txID: tx.ID, sentinel: spi.ErrTxNotFound}
 			}
 			return pgxTx
 		}

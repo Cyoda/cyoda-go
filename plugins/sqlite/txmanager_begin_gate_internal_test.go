@@ -111,9 +111,11 @@ func TestBegin_SeesConcurrentCommitRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	// A committed row whose transaction ID predates T_A.
+	// A committed row whose transaction ID predates T_A. It carries a real
+	// transaction ID so the compare-and-save at the end of this test names
+	// one: the empty expected ID is a caller error, not a value to compare.
 	if _, err := store.Save(ctx, &spi.Entity{
-		Meta: spi.EntityMeta{ID: "e-seed", TenantID: "tenant-gate", ModelRef: ref, State: "open"},
+		Meta: spi.EntityMeta{ID: "e-seed", TenantID: "tenant-gate", ModelRef: ref, State: "open", TransactionID: "tx-pre"},
 		Data: []byte(`{"n":0}`),
 	}); err != nil {
 		t.Fatalf("seed Save: %v", err)
@@ -190,10 +192,7 @@ func TestBegin_SeesConcurrentCommitRows(t *testing.T) {
 	}()
 
 	// T_B's overlay read.
-	iterable, ok := store.(spi.Iterable)
-	if !ok {
-		t.Fatalf("entityStore does not implement spi.Iterable")
-	}
+	iterable := store
 	it, err := iterable.Iterate(rb.ctx, ref, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("T_B Iterate: %v", err)
@@ -269,10 +268,7 @@ func TestDirectSave_ThenBegin_SeesRow(t *testing.T) {
 	}
 	defer func() { _ = m.Rollback(txCtx, txID) }()
 
-	iterable, ok := store.(spi.Iterable)
-	if !ok {
-		t.Fatalf("entityStore does not implement spi.Iterable")
-	}
+	iterable := store
 	it, err := iterable.Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
@@ -475,10 +471,7 @@ func TestDirectSave_StampsAboveAnOpenSnapshot(t *testing.T) {
 		t.Fatalf("direct write stamped submit_time %d at or below the open snapshot %d", stamped, snapshot)
 	}
 
-	iterable, ok := store.(spi.Iterable)
-	if !ok {
-		t.Fatalf("entityStore does not implement spi.Iterable")
-	}
+	iterable := store
 	it, err := iterable.Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)

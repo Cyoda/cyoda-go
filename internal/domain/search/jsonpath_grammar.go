@@ -50,9 +50,8 @@ const jsonPathLeader = "$."
 //     as a JSON array access on every backend, while a wildcard leaf has no
 //     SQL form on either backend until a quantifier node exists (each SQL
 //     planner's isLeafPushable routes it to the residual, same as a shape
-//     neither backend can push down at all, e.g. a
-//     [predicate.FunctionCondition]) and falls back to the in-memory
-//     evaluator instead. Either way the request is served, not refused.
+//     neither backend can push down at all) and the backend's own residual
+//     evaluates it instead. Either way the request is served, not refused.
 //   - [ValidateScalarJSONPath] — the groupBy, aggregation-field and SORT-key
 //     surfaces — REJECTS them. Those paths must denote a single scalar; a
 //     projection or a positional element has no single-value meaning there.
@@ -165,7 +164,7 @@ func validateJSONPath(path string, allowSubscript bool) error {
 	}
 	// Bracket-quoted property access denotes the same node as dotted access but
 	// is not the model's syntax, and NO evaluator in the stack resolves it —
-	// pushdown rejects it and the in-memory fallback misses, answering an empty
+	// every evaluator misses it, answering an empty
 	// page for a field that exists. Both quoting styles: spi.ParseFilterPath
 	// below would reject either anyway (as an unsupported subscript or a
 	// disallowed character), but naming them first lets the diagnostic say

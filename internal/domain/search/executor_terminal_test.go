@@ -98,7 +98,7 @@ func TestExecutor_ResultCount_CountsOnlyAcceptedIDs(t *testing.T) {
 	store := &terminalWriteObserverStore{AsyncSearchStore: realAsync, consumeLimit: consume}
 	svc := newObserverService(t, base, store)
 
-	jobID, err := svc.SubmitAsync(ctx, ref, matchEverything, search.SearchOptions{})
+	jobID, err := svc.SubmitAsync(ctx, ref, matchEverything, search.SearchOptions{Limit: 10})
 	if err != nil {
 		t.Fatalf("SubmitAsync: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestExecutor_TerminalWrite_IsNotCancellable(t *testing.T) {
 	store := &terminalWriteObserverStore{AsyncSearchStore: realAsync}
 	svc := newObserverService(t, base, store)
 
-	jobID, err := svc.SubmitAsync(ctx, ref, matchEverything, search.SearchOptions{})
+	jobID, err := svc.SubmitAsync(ctx, ref, matchEverything, search.SearchOptions{Limit: 10})
 	if err != nil {
 		t.Fatalf("SubmitAsync: %v", err)
 	}

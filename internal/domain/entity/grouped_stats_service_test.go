@@ -15,7 +15,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 )
 
-// fakeIterable satisfies only spi.Iterable, and genuinely applies the Filter
+// fakeIterable serves Iterate and nothing else, and genuinely applies the Filter
 // it is handed — via spi.Prepare(flt).Match, the same kernel a real backend's
 // Iterate uses — rather than recording it and returning every row regardless.
 //
@@ -35,6 +35,10 @@ import (
 // backend's Iterate is, so this is what fakeIterable must be to stand in for
 // one.
 type fakeIterable struct {
+	// Embedded nil: only Iterate is ever called on this double, and a
+	// panic on any other EntityStore method is the assertion that stays
+	// true. Iterate below shadows the embedded interface's own.
+	spi.EntityStore
 	entities []*spi.Entity
 	lastFlt  spi.Filter
 	// iterErr, when set, is returned from the yielded fakeIter's Err()
@@ -107,9 +111,11 @@ func (i *closeStickyIter) Close() error {
 	return nil
 }
 
-// closeStickyIterable satisfies spi.Iterable only, always yielding a
+// closeStickyIterable serves Iterate and nothing else, always yielding a
 // closeStickyIter over rows.
 type closeStickyIterable struct {
+	// Embedded nil: see fakeIterable.
+	spi.EntityStore
 	rows      []*spi.Entity
 	stickyErr error
 }
@@ -192,15 +198,6 @@ func TestQueryGroupedStats_FallsBackToStreaming(t *testing.T) {
 	}
 	if total != 3 {
 		t.Fatalf("total count %d, want 3", total)
-	}
-}
-
-func TestQueryGroupedStats_501WhenNoCapability(t *testing.T) {
-	type noop struct{}
-	svc := entity.NewGroupedStatsService(10000)
-	_, err := svc.QueryGroupedStats(context.Background(), noop{}, spi.ModelRef{}, nil, &entity.ValidatedGroupedStatsRequest{GroupBy: []entity.GroupExprValidated{{IsState: true}}})
-	if !errors.Is(err, entity.ErrBackendNotSupported) {
-		t.Fatalf("want ErrBackendNotSupported, got %v", err)
 	}
 }
 
@@ -287,7 +284,7 @@ func TestQueryGroupedStats_PushdownArbitraryErrorPropagates(t *testing.T) {
 // deferred iter.Close() ran, so an error that only becomes visible via
 // Err() after Close() (closeStickyIter's shape — see its doc comment) was
 // silently missed and the query returned success. Reordering to read Err()
-// after Close() runs (mirrors drainIterate's ordering) surfaces it.
+// after Close() runs surfaces it.
 func TestQueryGroupedStats_CloseOnlySurfacedErrorFailsQuery(t *testing.T) {
 	svc := entity.NewGroupedStatsService(10000)
 	req := &entity.ValidatedGroupedStatsRequest{
@@ -407,10 +404,9 @@ func TestQueryGroupedStats_StreamingWithFilterPushdown(t *testing.T) {
 // NON-zero (the opposite of what this test used to require) is the
 // evidence of that.
 //
-// TestTallyStreaming_UnpushableConditionAppliesResidual
-// (grouped_stats_residual_internal_test.go) is what now covers the residual
-// mechanism itself, directly — see its doc comment for why no
-// ValidatedGroupedStatsRequest.Condition value can drive it anymore.
+// There is no residual mechanism left to cover separately: the tally applies
+// the translated filter and nothing else, and a condition that would not
+// translate is refused before it gets here.
 func TestQueryGroupedStats_WildcardArrayPathConditionPushesDown(t *testing.T) {
 	cond := json.RawMessage(`{
 		"type": "simple",
@@ -447,22 +443,21 @@ func TestQueryGroupedStats_WildcardArrayPathConditionPushesDown(t *testing.T) {
 	}
 }
 
-// TestQueryGroupedStats_PushableConditionSkipsResidualInStreaming guards the
-// symmetry between the two "!pushable && parsedCond != nil" guards in
-// tallyStreaming (grouped_stats_service.go): the one that builds the residual
-// match.Prepared, and the one in the per-row loop that applies it. They must
-// stay exactly in sync. If the loop guard ever fires while pushable is true —
-// diverging from the guard that (correctly) left the residual unbuilt — every
-// row is matched against the zero-value match.Prepared, which never matches
-// anything, silently emptying every bucket while returning no error.
+// TestQueryGroupedStats_TallyTrustsTheTranslatedFilter pins that the tally
+// hands the store the filter the condition translated to and then counts what
+// comes back, without re-deciding per row.
 //
-// This exercises "pushable filter AND non-nil condition" against a store
-// that actually enforces the filter it's given (fakeIterable — see its own
-// doc comment for why that is what it now always does) and mixes matching
-// with non-matching rows, so a broken guard (the residual wrongly applied
-// against the zero-value match.Prepared it left unbuilt) produces an
-// observably wrong (empty) result instead of coincidentally passing.
-func TestQueryGroupedStats_PushableConditionSkipsResidualInStreaming(t *testing.T) {
+// It used to guard the symmetry between two "!pushable" guards in
+// tallyStreaming — the one that built a residual match.Prepared and the one
+// in the per-row loop that applied it — because a loop guard firing while
+// the build guard had not left every row matched against a zero-value
+// match.Prepared, silently emptying every bucket with no error. Both guards
+// are gone: an untranslatable condition is refused now, so the tally has no
+// second opinion to keep in sync. The scenario still earns its place —
+// a real filter, a store that enforces it (fakeIterable), and mixed rows, so
+// a tally that dropped or ignored the filter produces an observably wrong
+// count rather than coincidentally passing.
+func TestQueryGroupedStats_TallyTrustsTheTranslatedFilter(t *testing.T) {
 	cond := json.RawMessage(`{
 		"type": "simple",
 		"jsonPath": "$.color",
@@ -748,7 +743,7 @@ func TestQueryGroupedStats_LifecycleTemporalTypeMismatchRejected(t *testing.T) {
 // field (creationDate, lastUpdateTime) previously produced two different
 // answers depending on the query plan — the SPI kernel's pushdown re-check
 // bridges the field to RFC3339 text and matches CONTAINS lexically, while
-// internal/match's fallback route guarded the same case to a never-match.
+// internal/match's residual route guarded the same case to a never-match.
 // classifyGroupedStatsError must classify the shared boundary's rejection as
 // search.ErrInvalidCondition (400 INVALID_CONDITION), the same code /search
 // now answers for the identical condition.

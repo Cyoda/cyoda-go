@@ -3,7 +3,7 @@ module github.com/cyoda-platform/cyoda-go/plugins/postgres
 go 1.26.7
 
 require (
-	github.com/cyoda-platform/cyoda-go-spi v0.8.4-0.20260901144642-f6863ae5e2e3
+	github.com/cyoda-platform/cyoda-go-spi v0.8.4-0.20260903130721-1d3b6ed501f0
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgerrcode v0.0.0-20250907135507-afb5586c32a6
@@ -66,9 +66,9 @@ require (
 	go.opentelemetry.io/otel v1.44.0 // indirect
 	go.opentelemetry.io/otel/metric v1.44.0 // indirect
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
-	golang.org/x/crypto v0.54.0 // indirect
+	golang.org/x/crypto v0.56.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.40.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

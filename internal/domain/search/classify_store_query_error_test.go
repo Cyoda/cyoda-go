@@ -29,8 +29,8 @@ import (
 //     Iterable.Iterate. Maps to 400 INVALID_CONDITION (brief's own contract).
 //   - match.ErrUnevaluableLeaf / match.ErrUnsupportedOperator —
 //     internal/match's OWN Prepare (predicate.Condition side), reached
-//     through search.Service.Search's GetAll+match fallback, entity's
-//     conditional-delete planner, and grouped-stats' streaming tally. Maps to
+//     through entity's conditional-delete planner and grouped-stats'
+//     streaming tally. Maps to
 //     400 INVALID_CONDITION — the SAME code as the SPI-side sentinels above,
 //     not a dedicated CONDITION_TYPE_MISMATCH: match.ErrUnevaluableLeaf
 //     itself wraps three distinct causes and only one is ever a type
@@ -154,16 +154,12 @@ func TestClassifyStoreQueryError_MatchUnsupportedOperator_MapsTo400InvalidCondit
 }
 
 // ---------------------------------------------------------------------------
-// Both store routes: bounded Searcher.Search and unbounded Iterable.Iterate.
+// The store route: EntityStore.Search.
 // ---------------------------------------------------------------------------
 //
-// Mirrors invalid_filter_path_test.go's own two-routes pattern for
-// spi.ErrInvalidFilterPath: the engine reaches a backend by two paths
-// (opts.Limit > 0 -> Searcher.Search, opts.Limit <= 0 -> Iterable.Iterate via
-// drainIterate), and classifying only one would make the client-visible
-// status depend on whether the request happened to carry a positive limit —
-// a defect this codebase has already had once (see TestSearch_Iterate* in
-// invalid_filter_path_test.go).
+// A synchronous search has one route. The unbounded Iterate route is the
+// async executor's, and its own classification is pinned by
+// TestAsyncSearchJob_StoreSentinelIsClassified below.
 
 func TestSearch_SearcherSPISentinels_MapTo400(t *testing.T) {
 	for _, tc := range []struct {
@@ -179,56 +175,6 @@ func TestSearch_SearcherSPISentinels_MapTo400(t *testing.T) {
 			})
 			cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
 			_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
-
-			var appErr *common.AppError
-			if !errors.As(err, &appErr) {
-				t.Fatalf("want *common.AppError, got %T: %v", err, err)
-			}
-			if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeInvalidCondition {
-				t.Errorf("got %d/%q, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeInvalidCondition)
-			}
-			if !errors.Is(err, tc.err) {
-				t.Errorf("errors.Is(err, %v) = false; WithCause must preserve the sentinel", tc.err)
-			}
-		})
-	}
-}
-
-func TestSearch_IterateSPISentinels_MapTo400(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		err  error
-	}{
-		{"UnevaluableLeaf", spi.ErrUnevaluableLeaf},
-		{"InvalidPattern", spi.ErrInvalidPattern},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			base := memory.NewStoreFactory()
-			defer base.Close()
-			ctx := tenantCtx("tenant-1")
-			ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
-			saveMinimalModel(t, ctx, base, ref)
-
-			realStore, _ := base.EntityStore(ctx)
-			ses := &searcherEntityStore{
-				EntityStore: realStore,
-				searchFn: func(context.Context, spi.Filter, spi.SearchOptions) ([]*spi.Entity, error) {
-					t.Fatal("Searcher.Search must not be called for an unbounded request")
-					return nil, nil
-				},
-			}
-			sies := &searcherIterableEntityStore{
-				searcherEntityStore: ses,
-				iterateFn: func(context.Context, spi.ModelRef, spi.Filter, spi.IterateOptions) (spi.Iterator, error) {
-					return nil, fmt.Errorf("plugin detail: %w", tc.err)
-				},
-			}
-			factory := &searcherIterableFactory{StoreFactory: base, entityStore: sies}
-			searchStore, _ := base.AsyncSearchStore(context.Background())
-			svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore)
-
-			cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
-			_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 0})
 
 			var appErr *common.AppError
 			if !errors.As(err, &appErr) {
@@ -307,78 +253,14 @@ func TestSearch_BareLeafField_RealMemoryPlugin_Bounded_MapsTo400(t *testing.T) {
 	}
 }
 
-func TestSearch_BareLeafField_RealMemoryPlugin_Unbounded_MapsTo400(t *testing.T) {
-	base := memory.NewStoreFactory()
-	defer base.Close()
-	ctx := tenantCtx("tenant-1")
-	ref := spi.ModelRef{EntityName: "widget", ModelVersion: "1"}
-	saveBareLeafModel(t, ctx, base, ref, "score")
-
-	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore)
-
-	cond := &predicate.SimpleCondition{JsonPath: "$.score", OperatorType: "EQUALS", Value: float64(5)}
-	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 0})
-
-	var appErr *common.AppError
-	if !errors.As(err, &appErr) {
-		t.Fatalf("want *common.AppError, got %T: %v", err, err)
-	}
-	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeInvalidCondition {
-		t.Errorf("got %d/%q, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeInvalidCondition)
-	}
-	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
-		t.Errorf("errors.Is(err, spi.ErrUnevaluableLeaf) = false, err = %v", err)
-	}
-}
-
-// TestSearch_BareLeafField_MatchFallback_MapsTo400InvalidCondition wires the
-// SAME bare-leaf schema shape through search.Service.Search's OTHER
-// evaluator: the GetAll+internal/match fallback, forced by a store that
-// implements neither spi.Searcher nor spi.Iterable (nonSearcherEntityStore,
-// already defined in service_test.go for exactly this purpose). This proves
-// the fallback's match.Prepare failure (line ~787) is actually routed through
-// ClassifyStoreQueryError now, not merely that the classifier function itself
-// knows the mapping. Asserts 400 INVALID_CONDITION — the same code the SPI
-// sentinel above maps to, not CONDITION_TYPE_MISMATCH; see
-// ClassifyStoreQueryError's doc for why the two classes are not split.
-func TestSearch_BareLeafField_MatchFallback_MapsTo400InvalidCondition(t *testing.T) {
-	base := memory.NewStoreFactory()
-	defer base.Close()
-	ctx := tenantCtx("tenant-1")
-	ref := spi.ModelRef{EntityName: "widget", ModelVersion: "1"}
-	saveBareLeafModel(t, ctx, base, ref, "score")
-
-	realStore, _ := base.EntityStore(ctx)
-	factory := &nonSearcherFactory{StoreFactory: base, entityStore: &nonSearcherEntityStore{EntityStore: realStore}}
-	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore)
-
-	cond := &predicate.SimpleCondition{JsonPath: "$.score", OperatorType: "EQUALS", Value: float64(5)}
-	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
-
-	var appErr *common.AppError
-	if !errors.As(err, &appErr) {
-		t.Fatalf("want *common.AppError, got %T: %v", err, err)
-	}
-	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeInvalidCondition {
-		t.Errorf("got %d/%q, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeInvalidCondition)
-	}
-	if !errors.Is(err, match.ErrUnevaluableLeaf) {
-		t.Errorf("errors.Is(err, match.ErrUnevaluableLeaf) = false, err = %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // The async search endpoint: an HTTP-reachable unbounded route.
 // ---------------------------------------------------------------------------
 //
 // POST /search/async leaves SearchOptions.Limit at zero (search/handler.go
 // never resolves a default for the async submit path the way /search/direct
-// does), so it is the ONE genuinely client-reachable way to drive an
-// unbounded (Iterate) search over real HTTP — unlike the service-layer-only
-// Limit<=0 branch the other "both routes" tests in this file exercise
-// directly. It inherits this task's classifier fix for free (runAsyncJob's
+// does), so it is the client-reachable way to drive an unbounded (Iterate)
+// search. It inherits this task's classifier fix for free (runAsyncJob's
 // own Iterate call already routed through ClassifyStoreQueryError before this
 // task, exactly like TestAsyncSearchJob_StoreSentinelIsClassified above pins
 // for spi.ErrInvalidFilterPath), but nothing exercised it end to end for the
@@ -403,7 +285,7 @@ func TestAsyncSearchJob_BareLeafField_RendersInvalidConditionMessage(t *testing.
 	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore)
 
 	cond := &predicate.SimpleCondition{JsonPath: "$.score", OperatorType: "EQUALS", Value: float64(5)}
-	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{})
+	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	if err != nil {
 		t.Fatalf("SubmitAsync: %v", err)
 	}

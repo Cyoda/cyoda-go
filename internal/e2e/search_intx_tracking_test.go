@@ -121,7 +121,7 @@ func TestSearchIntxTracking_TrueRecordsReturned_ConflictsOnCommit(t *testing.T) 
 	defer func() { _ = tm.Rollback(ctx, txA) }()
 
 	got, err := testApp.SearchService().Search(txCtxA, ref, nameEquals("Xrow"),
-		search.SearchOptions{TrackingRead: true})
+		search.SearchOptions{Limit: 100, TrackingRead: true})
 	if err != nil {
 		t.Fatalf("tx A tracking Search: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestSearchIntxTracking_TrueUnreturnedEntity_Commits(t *testing.T) {
 
 	// Tracking search that returns ONLY X (Y is excluded by the condition).
 	got, err := testApp.SearchService().Search(txCtxA, ref, nameEquals("Xrow"),
-		search.SearchOptions{TrackingRead: true})
+		search.SearchOptions{Limit: 100, TrackingRead: true})
 	if err != nil {
 		t.Fatalf("tx A tracking Search: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestSearchIntxTracking_FalseRecordsNothing_Commits(t *testing.T) {
 
 	// Non-tracking search returns X but records NOTHING into the read-set.
 	got, err := testApp.SearchService().Search(txCtxA, ref, nameEquals("Xrow"),
-		search.SearchOptions{TrackingRead: false})
+		search.SearchOptions{Limit: 100, TrackingRead: false})
 	if err != nil {
 		t.Fatalf("tx A snapshot Search: %v", err)
 	}

@@ -174,10 +174,7 @@ func TestAsyncJobAcquire_OutsideTx_NotBoundedByTheAcquireDeadline(t *testing.T) 
 
 	factory, tm, ctx := newAsyncJobFixture(t, 1, acquire)
 
-	holdID, holdCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("hold begin: %v", err)
-	}
+	holdID, holdCtx := beginGuarded(t, tm, ctx)
 	released := make(chan struct{})
 	go func() {
 		defer close(released)
@@ -227,10 +224,7 @@ func TestAsyncJobAcquire_OutsideTx_NotBoundedByTheAcquireDeadline(t *testing.T) 
 func TestAsyncJob_CreatedInTx_SurvivesCallerRollback(t *testing.T) {
 	factory, tm, ctx := newAsyncJobFixture(t, 2, 5*time.Second)
 
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+	txID, txCtx := beginGuarded(t, tm, ctx)
 
 	store, err := factory.AsyncSearchStore(txCtx)
 	if err != nil {

@@ -37,17 +37,13 @@ package e2e_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 )
 
 // saveBareLeafModelE2E registers a model, under the shared e2e Postgres
@@ -73,10 +69,10 @@ func saveBareLeafModelE2E(t *testing.T, ctx context.Context, ref spi.ModelRef, f
 	}
 }
 
-// TestSearch_BareLeafField_Postgres_DirectSearch_400InvalidCondition covers
-// the BOUNDED store route: POST /search/direct resolves a positive limit
-// before reaching SearchService.Search, so this exercises Searcher.Search
-// against the real postgres plugin.
+// TestSearch_BareLeafField_Postgres_DirectSearch_400InvalidCondition drives
+// the store route: POST /search/direct resolves a positive limit before
+// reaching SearchService.Search, so this exercises EntityStore.Search against
+// the real postgres plugin.
 func TestSearch_BareLeafField_Postgres_DirectSearch_400InvalidCondition(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
@@ -95,40 +91,4 @@ func TestSearch_BareLeafField_Postgres_DirectSearch_400InvalidCondition(t *testi
 		t.Fatalf("expected 400, got %d: %s", resp.StatusCode, readBody(t, resp))
 	}
 	commontest.ExpectErrorCode(t, resp, "INVALID_CONDITION")
-}
-
-// TestSearch_BareLeafField_Postgres_DirectSearch_Unbounded_400InvalidCondition
-// covers the UNBOUNDED store route: SearchService.Search's own Limit<=0
-// branch drains spi.Iterable.Iterate instead of calling Searcher.Search
-// (search/service.go's Search doc comment: "opts.Limit <= 0 ... streamed
-// through spi.Iterable.Iterate instead of Searcher"). No transport resolves
-// a non-positive limit before reaching the service (both HTTP and gRPC
-// direct entry points resolve a default first), so this route is a
-// service-layer contract, exercised here the same way the package's own
-// unit tests exercise it (search.SearchService.Search called directly) — but
-// against the REAL, running e2e Postgres app/store this file's TestMain
-// stood up, not a stub.
-func TestSearch_BareLeafField_Postgres_DirectSearch_Unbounded_400InvalidCondition(t *testing.T) {
-	if testing.Short() {
-		t.Skip("e2e: requires Docker + PostgreSQL")
-	}
-
-	const model = "e2e-search-unevaluable-leaf-iterate"
-	ctx := intxTenantCtx()
-	ref := spi.ModelRef{EntityName: model, ModelVersion: "1"}
-	saveBareLeafModelE2E(t, ctx, ref, "score")
-
-	cond := &predicate.SimpleCondition{JsonPath: "$.score", OperatorType: "EQUALS", Value: float64(5)}
-	_, err := testApp.SearchService().DirectSearch(ctx, ref, cond, search.SearchOptions{Limit: 0})
-
-	var appErr *common.AppError
-	if !errors.As(err, &appErr) {
-		t.Fatalf("want *common.AppError, got %T: %v", err, err)
-	}
-	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeInvalidCondition {
-		t.Errorf("got %d/%q, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeInvalidCondition)
-	}
-	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
-		t.Errorf("errors.Is(err, spi.ErrUnevaluableLeaf) = false, err = %v", err)
-	}
 }

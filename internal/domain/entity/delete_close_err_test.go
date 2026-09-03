@@ -35,14 +35,14 @@ func (c *entityCloseErrIterator) Close() error {
 
 var errEntityCloseInjected = errors.New("injected close error: driver error mid-scan")
 
-// closeErrEntityStore wraps a real spi.EntityStore (also spi.Iterable),
+// closeErrEntityStore wraps a real spi.EntityStore,
 // handing back an entityCloseErrIterator from every Iterate call.
 type closeErrEntityStore struct {
 	spi.EntityStore
 }
 
 func (s *closeErrEntityStore) Iterate(ctx context.Context, model spi.ModelRef, filter spi.Filter, opts spi.IterateOptions) (spi.Iterator, error) {
-	it, err := s.EntityStore.(spi.Iterable).Iterate(ctx, model, filter, opts)
+	it, err := s.EntityStore.Iterate(ctx, model, filter, opts)
 	if err != nil {
 		return nil, err
 	}

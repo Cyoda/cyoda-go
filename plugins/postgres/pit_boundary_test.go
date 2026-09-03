@@ -69,20 +69,18 @@ func TestPostgresPIT_GetAsAt_InclusiveNoRoundUp(t *testing.T) {
 	}
 }
 
-func TestPostgresPIT_GetAllAsAt_InclusiveNoRoundUp(t *testing.T) {
+func TestPostgresPIT_IterateAsAt_InclusiveNoRoundUp(t *testing.T) {
 	_, store, base := pitSetup(t)
 	ctx := ctxWithTenant(pitTenant)
 	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
-	got, err := store.GetAllAsAt(ctx, ref, base())
-	if err != nil {
-		t.Fatalf("GetAllAsAt(base): %v", err)
-	}
+	asAt := base()
+	got := drainAll(t, ctx, store, ref, &asAt)
 	if len(got) != 1 || string(got[0].Data) != `{"value":"v1"}` {
 		var data string
 		if len(got) > 0 {
 			data = string(got[0].Data)
 		}
-		t.Errorf("GetAllAsAt(base) = %d entities (first data=%q), want 1 with {\"value\":\"v1\"}", len(got), data)
+		t.Errorf("Iterate(base) = %d entities (first data=%q), want 1 with {\"value\":\"v1\"}", len(got), data)
 	}
 }

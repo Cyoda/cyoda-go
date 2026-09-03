@@ -85,7 +85,7 @@ func TestDirectSearch_LifecycleBadTemporalOperand_RejectsAtServiceBoundary(t *te
 		Value:        "not-a-date",
 	}
 
-	_, err := svc.DirectSearch(tenantCtx("tenant-1"), ref, cond, search.SearchOptions{})
+	_, err := svc.DirectSearch(tenantCtx("tenant-1"), ref, cond, search.SearchOptions{Limit: 10})
 	assertAppErrorCode(t, err, common.ErrCodeConditionTypeMismatch)
 }
 
@@ -107,7 +107,7 @@ func TestDirectSearch_UnknownMetaField_RejectsAtServiceBoundary(t *testing.T) {
 		Value:        "x",
 	}
 
-	_, err := svc.DirectSearch(tenantCtx("tenant-1"), ref, cond, search.SearchOptions{})
+	_, err := svc.DirectSearch(tenantCtx("tenant-1"), ref, cond, search.SearchOptions{Limit: 10})
 	assertAppErrorCode(t, err, common.ErrCodeInvalidFieldPath)
 }
 
@@ -132,7 +132,7 @@ func TestSubmitAsyncSearch_BadTemporalOperand_RejectsAtServiceBoundary(t *testin
 		Value:        "not-a-date",
 	}
 
-	jobID, err := svc.SubmitAsyncSearch(tenantCtx("tenant-1"), ref, cond, search.SearchOptions{})
+	jobID, err := svc.SubmitAsyncSearch(tenantCtx("tenant-1"), ref, cond, search.SearchOptions{Limit: 10})
 	assertAppErrorCode(t, err, common.ErrCodeConditionTypeMismatch)
 	if jobID != "" {
 		t.Errorf("jobID = %q, want empty (no job created before rejection)", jobID)
@@ -173,7 +173,7 @@ func TestDirectSearch_ScalarBetweenOperand_RejectsAtServiceBoundary(t *testing.T
 		Value:        "2021-01-01T00:00:00Z",
 	}
 
-	_, err := svc.DirectSearch(tenantCtx("tenant-1"), ref, cond, search.SearchOptions{})
+	_, err := svc.DirectSearch(tenantCtx("tenant-1"), ref, cond, search.SearchOptions{Limit: 10})
 	assertAppErrorCode(t, err, common.ErrCodeBadRequest)
 }
 
@@ -196,7 +196,7 @@ func TestSubmitAsyncSearch_ScalarBetweenOperand_RejectsAtServiceBoundary(t *test
 		Value:        float64(18), // scalar, not the required 2-element array
 	}
 
-	jobID, err := svc.SubmitAsyncSearch(tenantCtx("tenant-1"), ref, cond, search.SearchOptions{})
+	jobID, err := svc.SubmitAsyncSearch(tenantCtx("tenant-1"), ref, cond, search.SearchOptions{Limit: 10})
 	assertAppErrorCode(t, err, common.ErrCodeBadRequest)
 	if jobID != "" {
 		t.Errorf("jobID = %q, want empty (no job created before rejection)", jobID)

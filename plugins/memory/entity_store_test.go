@@ -112,7 +112,7 @@ func TestTenantIsolationWritesDontCross(t *testing.T) {
 		Data: []byte(`{"owner": "A"}`),
 	}
 	storeA.Save(ctxA, entity)
-	all, _ := storeB.GetAll(ctxB, spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
+	all := drainAll(t, ctxB, storeB, spi.ModelRef{EntityName: "Order", ModelVersion: "1"}, nil)
 	if len(all) != 0 {
 		t.Errorf("expected 0 entities for tenant-B, got %d", len(all))
 	}
@@ -312,7 +312,7 @@ func TestSoftDeleteCountExcludes(t *testing.T) {
 	}
 }
 
-func TestSoftDeleteGetAllExcludes(t *testing.T) {
+func TestSoftDeleteIterateExcludes(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
@@ -333,7 +333,7 @@ func TestSoftDeleteGetAllExcludes(t *testing.T) {
 	store.Save(ctx, e2)
 	store.Delete(ctx, "e-gone")
 
-	all, _ := store.GetAll(ctx, modelRef)
+	all := drainAll(t, ctx, store, modelRef, nil)
 	if len(all) != 1 {
 		t.Fatalf("expected 1 entity after delete, got %d", len(all))
 	}
@@ -443,7 +443,7 @@ func TestGetVersionMetadataWithDelete(t *testing.T) {
 	}
 }
 
-func TestGetAllAsAt(t *testing.T) {
+func TestIterateAsAt(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
@@ -472,11 +472,8 @@ func TestGetAllAsAt(t *testing.T) {
 	store.Save(ctx, e1)
 	t2 := time.Now()
 
-	// GetAllAsAt(t1) → both at original state
-	gotT1, err := store.GetAllAsAt(ctx, modelRef, t1)
-	if err != nil {
-		t.Fatalf("GetAllAsAt(t1) failed: %v", err)
-	}
+	// Iterate(t1) → both at original state
+	gotT1 := drainAll(t, ctx, store, modelRef, &t1)
 	if len(gotT1) != 2 {
 		t.Fatalf("expected 2 entities at t1, got %d", len(gotT1))
 	}
@@ -486,11 +483,8 @@ func TestGetAllAsAt(t *testing.T) {
 		}
 	}
 
-	// GetAllAsAt(t2) → entity 1 updated, entity 2 original
-	gotT2, err := store.GetAllAsAt(ctx, modelRef, t2)
-	if err != nil {
-		t.Fatalf("GetAllAsAt(t2) failed: %v", err)
-	}
+	// Iterate(t2) → entity 1 updated, entity 2 original
+	gotT2 := drainAll(t, ctx, store, modelRef, &t2)
 	if len(gotT2) != 2 {
 		t.Fatalf("expected 2 entities at t2, got %d", len(gotT2))
 	}
@@ -507,7 +501,7 @@ func TestGetAllAsAt(t *testing.T) {
 	}
 }
 
-func TestGetAllAsAtWithDelete(t *testing.T) {
+func TestIterateAsAtWithDelete(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
@@ -527,10 +521,7 @@ func TestGetAllAsAtWithDelete(t *testing.T) {
 	afterDelete := time.Now()
 
 	// Before delete → entity present
-	got, err := store.GetAllAsAt(ctx, modelRef, beforeDelete)
-	if err != nil {
-		t.Fatalf("GetAllAsAt(beforeDelete) failed: %v", err)
-	}
+	got := drainAll(t, ctx, store, modelRef, &beforeDelete)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 entity before delete, got %d", len(got))
 	}
@@ -539,10 +530,7 @@ func TestGetAllAsAtWithDelete(t *testing.T) {
 	}
 
 	// After delete → empty
-	got, err = store.GetAllAsAt(ctx, modelRef, afterDelete)
-	if err != nil {
-		t.Fatalf("GetAllAsAt(afterDelete) failed: %v", err)
-	}
+	got = drainAll(t, ctx, store, modelRef, &afterDelete)
 	if len(got) != 0 {
 		t.Errorf("expected 0 entities after delete, got %d", len(got))
 	}
@@ -621,31 +609,6 @@ func TestCompareAndSaveMismatchTxID(t *testing.T) {
 	got, _ := store.Get(ctx, "e-cas-2")
 	if string(got.Data) != `{"v": 1}` {
 		t.Errorf("entity should not have been modified, got: %s", got.Data)
-	}
-}
-
-func TestCompareAndSaveNewEntity(t *testing.T) {
-	factory := memory.NewStoreFactory()
-	ctx := ctxWithTenant("tenant-A")
-	store, _ := factory.EntityStore(ctx)
-	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-
-	// CompareAndSave on a new entity (no prior versions) succeeds only when
-	// the caller expects no entity: the current transaction ID of an entity
-	// that is not there is the empty one.
-	entity := &spi.Entity{
-		Meta: spi.EntityMeta{
-			ID: "e-cas-new", TenantID: "tenant-A", ModelRef: modelRef,
-			State: "NEW", TransactionID: "tx-001",
-		},
-		Data: []byte(`{"v": 1}`),
-	}
-	ver, err := store.CompareAndSave(ctx, entity, "")
-	if err != nil {
-		t.Fatalf("expected success for new entity, got error: %v", err)
-	}
-	if ver != 1 {
-		t.Errorf("expected version 1, got %d", ver)
 	}
 }
 
@@ -782,7 +745,7 @@ func TestTransactionDeleteVisibility(t *testing.T) {
 	}
 }
 
-func TestTransactionGetAllIncludesBuffer(t *testing.T) {
+func TestTransactionIterateIncludesBuffer(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	defer factory.Close()
 	uuids := newTestUUIDGenerator()
@@ -815,13 +778,10 @@ func TestTransactionGetAllIncludesBuffer(t *testing.T) {
 	}
 	store.Save(txCtx, newEntity)
 
-	// GetAll within tx → should include both existing and buffered
-	all, err := store.GetAll(txCtx, modelRef)
-	if err != nil {
-		t.Fatalf("GetAll in tx failed: %v", err)
-	}
+	// Iterate within tx → should include both existing and buffered
+	all := drainAll(t, txCtx, store, modelRef, nil)
 	if len(all) != 2 {
-		t.Fatalf("expected 2 entities in tx GetAll, got %d", len(all))
+		t.Fatalf("expected 2 entities in tx Iterate, got %d", len(all))
 	}
 
 	ids := make(map[string]bool)
@@ -832,13 +792,10 @@ func TestTransactionGetAllIncludesBuffer(t *testing.T) {
 		t.Errorf("expected both e-existing and e-buffered, got IDs: %v", ids)
 	}
 
-	// GetAll outside tx → should only include existing
-	allOutside, err := store.GetAll(ctx, modelRef)
-	if err != nil {
-		t.Fatalf("GetAll outside tx failed: %v", err)
-	}
+	// Iterate outside tx → should only include existing
+	allOutside := drainAll(t, ctx, store, modelRef, nil)
 	if len(allOutside) != 1 {
-		t.Fatalf("expected 1 entity outside tx GetAll, got %d", len(allOutside))
+		t.Fatalf("expected 1 entity outside tx Iterate, got %d", len(allOutside))
 	}
 }
 
@@ -942,14 +899,14 @@ func TestTransactionDeleteAllVisibility(t *testing.T) {
 		t.Fatalf("deleteAll in tx failed: %v", err)
 	}
 
-	// Within tx: GetAll should return 0
-	all, _ := store.GetAll(txCtx, modelRef)
+	// Within tx: Iterate should return 0
+	all := drainAll(t, txCtx, store, modelRef, nil)
 	if len(all) != 0 {
 		t.Errorf("expected 0 entities in tx after DeleteAll, got %d", len(all))
 	}
 
 	// Outside tx: still 2
-	allOutside, _ := store.GetAll(ctx, modelRef)
+	allOutside := drainAll(t, ctx, store, modelRef, nil)
 	if len(allOutside) != 2 {
 		t.Errorf("expected 2 entities outside tx, got %d", len(allOutside))
 	}
@@ -1038,10 +995,12 @@ func TestTransactionalDeleteNonExistentEntity(t *testing.T) {
 	}
 }
 
-// TestGetAllReturnsNonNilOnEmptyModel asserts that GetAll returns a non-nil empty
-// slice (not nil) when no entities exist for the requested model. The SPI
-// contract requires non-nil so callers can range over the result safely.
-func TestGetAllReturnsNonNilOnEmptyModel(t *testing.T) {
+// TestIterateReturnsNoEntriesOnEmptyModel asserts that Iterate over a model
+// with no entities yields zero entries and no error — the streamed
+// replacement for the old GetAll-on-empty-model non-nil-slice guarantee
+// (Iterate has no nil-vs-empty-slice ambiguity to begin with: a zero-entry
+// iteration just never calls Next() successfully).
+func TestIterateReturnsNoEntriesOnEmptyModel(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-getall-empty")
 	store, err := factory.EntityStore(ctx)
@@ -1049,21 +1008,15 @@ func TestGetAllReturnsNonNilOnEmptyModel(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	modelRef := spi.ModelRef{EntityName: "m-empty", ModelVersion: "1"}
-	got, err := store.GetAll(ctx, modelRef)
-	if err != nil {
-		t.Fatalf("GetAll: unexpected error: %v", err)
-	}
-	if got == nil {
-		t.Fatal("GetAll on empty model must return non-nil slice, got nil")
-	}
+	got := drainAll(t, ctx, store, modelRef, nil)
 	if len(got) != 0 {
-		t.Fatalf("GetAll on empty model must return empty slice, got %d elements", len(got))
+		t.Fatalf("Iterate on empty model must yield no entities, got %d elements", len(got))
 	}
 }
 
-// TestGetAllAsAtReturnsNonNilOnEmptyModel asserts the same non-nil guarantee
-// for GetAllAsAt on an empty model.
-func TestGetAllAsAtReturnsNonNilOnEmptyModel(t *testing.T) {
+// TestIterateAsAtReturnsNoEntriesOnEmptyModel asserts the same guarantee for
+// Iterate's committed-only PointInTime branch on an empty model.
+func TestIterateAsAtReturnsNoEntriesOnEmptyModel(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-getallasat-empty")
 	store, err := factory.EntityStore(ctx)
@@ -1071,15 +1024,10 @@ func TestGetAllAsAtReturnsNonNilOnEmptyModel(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	modelRef := spi.ModelRef{EntityName: "m-empty", ModelVersion: "1"}
-	got, err := store.GetAllAsAt(ctx, modelRef, time.Now())
-	if err != nil {
-		t.Fatalf("GetAllAsAt: unexpected error: %v", err)
-	}
-	if got == nil {
-		t.Fatal("GetAllAsAt on empty model must return non-nil slice, got nil")
-	}
+	asAt := time.Now()
+	got := drainAll(t, ctx, store, modelRef, &asAt)
 	if len(got) != 0 {
-		t.Fatalf("GetAllAsAt on empty model must return empty slice, got %d elements", len(got))
+		t.Fatalf("Iterate(asAt) on empty model must yield no entities, got %d elements", len(got))
 	}
 }
 

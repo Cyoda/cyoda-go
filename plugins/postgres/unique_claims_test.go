@@ -269,10 +269,7 @@ func TestUniqueClaims_SameTransactionDeleteAndReclaim(t *testing.T) {
 		t.Fatalf("pre-save A: %v", err)
 	}
 
-	txID, txCtx, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+	txID, txCtx := beginGuarded(t, tm, baseCtx)
 
 	// Same transaction: delete A, then create B with A's former value.
 	if err := store.Delete(txCtx, "a"); err != nil {
@@ -326,15 +323,11 @@ func TestUniqueClaims_SameTxReclaimBeforeDelete_RejectedAtInsert(t *testing.T) {
 	if _, err := store.Save(ctx, ucEntity("a", "shared@x.com")); err != nil {
 		t.Fatalf("pre-save A: %v", err)
 	}
-	txID, txCtx, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+	_, txCtx := beginGuarded(t, tm, baseCtx)
 	// SAVE-FIRST: claim V on B before freeing it on A. Postgres enforces inline,
 	// so this fails AT THE SAVE (A still holds V) — not deferred to commit.
 	_, errSave := store.Save(spi.WithUniqueKeys(txCtx, emailKeys()), ucEntity("b", "shared@x.com"))
 	if !errors.Is(errSave, spi.ErrUniqueViolation) {
 		t.Fatalf("postgres save-before-delete: expected ErrUniqueViolation at Save, got %v", errSave)
 	}
-	_ = tm.Rollback(txCtx, txID)
 }

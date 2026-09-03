@@ -180,7 +180,7 @@ func isSortPathKnown(p string, fields map[string]schema.FieldDescriptor) bool {
 // FindUnknownFieldPaths returns the data-field JSONPaths cond references
 // that are absent from fields (typically obtained via LoadFieldsMap).
 // Exported so a caller outside this package that selects entities via its
-// own spi.Iterable drain instead of Search — currently entity.Handler's
+// own Iterate drain instead of Search — currently entity.Handler's
 // delete paths, which reuse the search condition primitive per design §6.1
 // but cannot call Search's unexported validateConditionPaths directly —
 // can still reject a condition naming an unknown schema field before
@@ -249,7 +249,7 @@ type schemaNodeProvider interface {
 
 // RefreshFieldsMap is the exported entry point for refreshFieldsMap, mirroring
 // LoadFieldsMap's exported-wrapper pattern. Callers outside this package that
-// reuse the search condition primitive on their own spi.Iterable drain
+// reuse the search condition primitive on their own Iterate drain
 // (currently entity.Handler's delete path) need the same bounded
 // single-refresh-then-fail behaviour validateConditionPaths gives Search,
 // rather than declaring a field unknown against a possibly-stale cached

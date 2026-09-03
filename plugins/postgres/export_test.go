@@ -36,6 +36,11 @@ func MigrateDownForTest(pool *pgxpool.Pool) error {
 	return migrateDown(pool, defaultMigrateLockTimeout)
 }
 
+// BeginGuardedForTest exposes beginGuarded (tx_guard_test.go) to the external
+// postgres_test package, so both test packages in this directory reach the same
+// guard rather than each keeping a copy of it.
+var BeginGuardedForTest = beginGuarded
+
 // ClassifyErrorForTest exposes classifyError to allow unit-testing of the
 // serialization/deadlock classification logic without requiring a live database.
 var ClassifyErrorForTest = classifyError

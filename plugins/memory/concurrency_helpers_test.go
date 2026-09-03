@@ -14,7 +14,7 @@ import (
 //
 // Matches the three-way disjunction of transaction-state sentinels defined
 // in cyoda-go-spi, plus bare ErrNotFound because in-read ops
-// (Get/GetAll/Exists/Delete) can legitimately surface entity-level not-found
+// (Get/GetPage/Exists/Delete) can legitimately surface entity-level not-found
 // when a concurrent Rollback or Commit changes visibility mid-op — that is
 // a tolerated race outcome, not a defect.
 func isToleratedClosedTxErr(err error) bool {

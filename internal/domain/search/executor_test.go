@@ -1,8 +1,8 @@
 package search_test
 
 // Tests for the streaming async executor (task E2): SubmitAsync's Iterate ->
-// SaveResults pipeline, the heartbeat ticker, the in-process cancel
-// registry, and the untranslatable-condition fallback. Each test below maps
+// SaveResults pipeline, the heartbeat ticker, and the in-process cancel
+// registry. Each test below maps
 // to one of the E2.1 scenarios (a)-(f) in
 // .superpowers/sdd/2026-08-22-472-search-spi-surface/task-E2-brief.md, plus
 // (g) SubmitAsync's own ErrQueueFull cleanup branch (fix-round-1 gap).
@@ -123,14 +123,10 @@ func wrapIterate(t *testing.T, base *memory.StoreFactory, ctx context.Context, d
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	iterableReal, ok := realStore.(spi.Iterable)
-	if !ok {
-		t.Fatal("precondition: memory EntityStore must implement spi.Iterable")
-	}
 	return &iterableEntityStore{
 		EntityStore: realStore,
 		iterateFn: func(ctx context.Context, model spi.ModelRef, filter spi.Filter, opts spi.IterateOptions) (spi.Iterator, error) {
-			it, err := iterableReal.Iterate(ctx, model, filter, opts)
+			it, err := realStore.Iterate(ctx, model, filter, opts)
 			if err != nil {
 				return nil, err
 			}
@@ -172,7 +168,7 @@ func TestExecutor_ResultOrder_DefaultAndExplicit(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.val", OperatorType: "GREATER_THAN", Value: float64(-1)}
 
 	t.Run("default order is entity-ID ascending", func(t *testing.T) {
-		jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{})
+		jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{Limit: 10})
 		if err != nil {
 			t.Fatalf("SubmitAsync: %v", err)
 		}
@@ -256,11 +252,10 @@ func TestExecutor_StreamsIncrementally(t *testing.T) {
 		WithHeartbeat(200 * time.Millisecond)
 
 	// Matches every entity: LifecycleCondition against the default state
-	// saveEntity stamps ("NEW"), translatable to spi.Filter, so the
-	// executor takes the Iterate path (not the untranslatable fallback).
+	// saveEntity stamps ("NEW").
 	cond := &predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "NEW"}
 
-	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{})
+	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	if err != nil {
 		t.Fatalf("SubmitAsync: %v", err)
 	}
@@ -345,7 +340,7 @@ func TestExecutor_CancelMidFlight(t *testing.T) {
 		WithHeartbeat(20 * time.Millisecond)
 
 	cond := &predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "NEW"}
-	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{})
+	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	if err != nil {
 		t.Fatalf("SubmitAsync: %v", err)
 	}
@@ -423,7 +418,7 @@ func TestExecutor_HeartbeatRecordedWhileQueuedAndScanning(t *testing.T) {
 		WithHeartbeat(heartbeatInterval)
 
 	cond := &predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "NEW"}
-	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{})
+	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	if err != nil {
 		t.Fatalf("SubmitAsync: %v", err)
 	}
@@ -491,7 +486,7 @@ func TestExecutor_HeartbeatFencingAborts(t *testing.T) {
 		WithHeartbeat(heartbeatInterval)
 
 	cond := &predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "NEW"}
-	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{})
+	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	if err != nil {
 		t.Fatalf("SubmitAsync: %v", err)
 	}
@@ -537,22 +532,38 @@ func TestExecutor_HeartbeatFencingAborts(t *testing.T) {
 }
 
 // (f) an OR condition (one always-true member, one on a wildcard array path)
-// still completes and saves its results correctly, whichever route it takes.
-// This used to name and pin a translate-FAILURE route specifically — the
-// wildcard-array-path member was untranslatable, forcing the GetAll
-// fallback. It no longer is (spi.ConditionToFilter pushes a wildcard array
-// path down like any other; see matchAllFixtureCondition's doc comment), so
-// this condition now clears translation and the pushdown path executes it
-// instead. The assertions below (job SUCCESSFUL, Total==5, 5 result IDs)
-// never depended on which route ran — both must produce the same
-// correct answer — so this test still holds, just no longer as a fallback
-// pin specifically; TestSearch_FallbackBranchIsBounded_TranslateFailureRoute
-// is now the one that isolates a genuine translate failure.
+// completes and saves its results correctly. It once pinned a
+// translate-FAILURE route: the wildcard-array-path member was untranslatable
+// and forced the whole-model fallback. spi.ConditionToFilter pushes a
+// wildcard array path down like any other now, so the condition translates
+// and the executor streams it — which is the only thing it can do.
+// orConditionOverValAndItems is an OR of an always-true numeric member and a
+// never-matching member on a wildcard array path. Both members are declared
+// fields of saveModelWithValAndItemsArray's schema, so the tree clears
+// pre-execution path validation, and both translate.
+func orConditionOverValAndItems() predicate.Condition {
+	return &predicate.GroupCondition{
+		Operator: "OR",
+		Conditions: []predicate.Condition{
+			&predicate.SimpleCondition{
+				JsonPath:     "$.val",
+				OperatorType: "GREATER_THAN",
+				Value:        float64(-1),
+			},
+			&predicate.SimpleCondition{
+				JsonPath:     "$.items[*].name",
+				OperatorType: "EQUALS",
+				Value:        "never-present",
+			},
+		},
+	}
+}
+
 func TestExecutor_OrConditionCompletesAndSaves(t *testing.T) {
 	base := memory.NewStoreFactory()
 	defer base.Close()
 	ctx := tenantCtx("tenant-1")
-	ref := spi.ModelRef{EntityName: "fallbackitem", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "oritem", ModelVersion: "1"}
 	saveModelWithValAndItemsArray(t, ctx, base, ref)
 	for i := 0; i < 5; i++ {
 		saveEntity(t, ctx, base, ref, fmt.Sprintf("e%d", i), []byte(fmt.Sprintf(`{"val":%d}`, i)))
@@ -565,7 +576,7 @@ func TestExecutor_OrConditionCompletesAndSaves(t *testing.T) {
 		WithAsyncPool(pool).
 		WithHeartbeat(50 * time.Millisecond)
 
-	jobID, err := svc.SubmitAsync(ctx, ref, matchAllFixtureCondition(t), search.SearchOptions{})
+	jobID, err := svc.SubmitAsync(ctx, ref, orConditionOverValAndItems(), search.SearchOptions{Limit: 10})
 	if err != nil {
 		t.Fatalf("SubmitAsync: %v", err)
 	}
@@ -661,7 +672,7 @@ func TestExecutor_SubmitAsync_QueueFullCleansUp(t *testing.T) {
 		WithHeartbeat(20 * time.Millisecond)
 
 	cond := &predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "NEW"}
-	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{})
+	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	if !errors.Is(err, search.ErrQueueFull) {
 		t.Fatalf("SubmitAsync error = %v, want ErrQueueFull", err)
 	}

@@ -16,10 +16,10 @@ import (
 // slice and the write lock is released, its fields are NEVER mutated. Iterators
 // and snapshots may hold *entityVersion or *spi.Entity (via the .entity field)
 // pointers and read them lock-free after releasing the read lock. This invariant
-// is load-bearing for the snapshot-then-iterate pattern in Iterable / GroupedAggregator.
+// is load-bearing for the snapshot-then-iterate pattern in Iterate / GroupedAggregator.
 //
 // If you add a code path that mutates a published entityVersion, fix the
-// invariant doc here AND audit the memory plugin's Iterable/GroupedAggregator
+// invariant doc here AND audit the memory plugin's Iterate/GroupedAggregator
 // implementations.
 type entityVersion struct {
 	entity *spi.Entity
@@ -119,48 +119,6 @@ func (s *EntityStore) getSnapshotVersion(entityID string, snapshotTime time.Time
 	return copyEntity(result), nil
 }
 
-// getAllSnapshotUnlocked returns all entities matching modelRef that were visible
-// at snapshotTime. Caller must hold at least s.factory.entityMu.RLock().
-//
-// ctx gates an amortized cancellation check (spec D5): checked every 1024
-// entries (i&1023==0, true at i==0 too) so an already-expired or
-// since-expired ctx aborts the scan rather than materializing a full result
-// computed past the deadline. The check is a lock-free atomic read
-// (ctx.Err()), so running it while the caller holds entityMu.RLock() is
-// acceptable per .claude/rules/go-mutex-discipline.md — this does not change
-// any locking structure.
-func (s *EntityStore) getAllSnapshotUnlocked(ctx context.Context, modelRef spi.ModelRef, snapshotTime time.Time) ([]*spi.Entity, error) {
-	var result []*spi.Entity
-	i := 0
-	for _, versions := range s.factory.entityData[s.tenant] {
-		if i&1023 == 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-		}
-		i++
-		if len(versions) == 0 {
-			continue
-		}
-		var found *spi.Entity
-		for _, v := range versions {
-			if !v.submitTime.After(snapshotTime) {
-				if v.deleted {
-					found = nil
-				} else {
-					found = v.entity
-				}
-			} else {
-				break
-			}
-		}
-		if found != nil && found.Meta.ModelRef == modelRef {
-			result = append(result, copyEntity(found))
-		}
-	}
-	return result, nil
-}
-
 func (s *EntityStore) SaveAll(ctx context.Context, entities iter.Seq[*spi.Entity]) ([]int64, error) {
 	return spi.DefaultSaveAll(s, ctx, entities)
 }
@@ -185,13 +143,14 @@ func (s *EntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		// overwriting tx.Buffer, so a same-tx double-save of the same
 		// entity can still flush both versions at Commit.
 		cp := copyEntity(entity)
+		cp.Meta.TransactionID = tx.ID
 		s.factory.txManager.stageSuperseded(tx.ID, entity.Meta.ID, tx.Buffer[entity.Meta.ID])
 		tx.Buffer[entity.Meta.ID] = cp
 		tx.WriteSet[entity.Meta.ID] = true
 		// If the entity was previously marked for deletion in this tx, unmark it
 		// (last-write-wins: Save-after-Delete → present). Keeps tx.Buffer and
 		// tx.Deletes/DeleteAttribution mutually exclusive, the invariant
-		// txmanager.Commit assumes and that GetAll / Search / commit all rely
+		// txmanager.Commit assumes and that Search / Iterate / commit all rely
 		// on to agree. Mirrors plugins/sqlite/entity_store.go Save.
 		unstageDelete(tx, entity.Meta.ID)
 		// Capture unique keys at buffer time (last-write-wins, matching tx.Buffer
@@ -207,7 +166,19 @@ func (s *EntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 	return s.saveUnlocked(ctx, entity)
 }
 
+// CompareAndSave writes entity only if its stored transaction ID is still
+// expectedTxID. expectedTxID must not be empty: it is compared literally, and
+// the empty string is the transaction ID a missing or deleted entity reports
+// — but also the one a write taken outside a transaction stores verbatim when
+// the caller supplied none, so an empty expected ID cannot tell "no entity"
+// from "an entity written outside a transaction" and would overwrite the
+// latter. It is rejected as a caller error, before any read or write.
+// CompareAndSave therefore never creates an entity and never resurrects a
+// deleted one; Save does that.
 func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, expectedTxID string) (int64, error) {
+	if expectedTxID == "" {
+		return 0, fmt.Errorf("CompareAndSave: expectedTxID must not be empty")
+	}
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
 		// Hold tx.OpMu.RLock for the duration of the CAS+buffer mutation
@@ -224,36 +195,28 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		}
 		// A write compares against the transaction's own view, and a same-tx
 		// delete means the transaction sees NO entity: the current
-		// transaction ID is "". A non-empty expected ID names a version the
-		// delete has already superseded, so it conflicts. An empty one says
-		// "expect no entity" — which is exactly what the delete left behind —
-		// so the save is allowed and re-creates the entity. It must unstage
-		// the delete as Save does, or the commit would apply the tombstone on
-		// top of the re-creation. Same answer postgres gives.
+		// transaction ID is "". expectedTxID is non-empty here, so it names a
+		// version the delete has already superseded and conflicts. Nothing
+		// re-creates the entity through this method — Save does that, and it
+		// unstages the delete. Same answer postgres gives.
 		if tx.Deletes[entity.Meta.ID] {
-			if expectedTxID != "" {
-				return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
-			}
-			unstageDelete(tx, entity.Meta.ID)
-			cp := copyEntity(entity)
-			s.factory.txManager.stageSuperseded(tx.ID, entity.Meta.ID, tx.Buffer[entity.Meta.ID])
-			tx.Buffer[entity.Meta.ID] = cp
-			tx.WriteSet[entity.Meta.ID] = true
-			s.factory.txManager.recordUniqueKeys(tx.ID, entity.Meta.ID, spi.UniqueKeysFromContext(ctx))
-			return 0, nil
+			return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
 		}
 		// A buffered own-write IS the transaction's current version of this
 		// entity, so the comparison is against it, not against the committed
 		// row it supersedes. An expected ID naming the buffered version
 		// matches — that is how a joined callback updates an entity created
 		// earlier in the same transaction; only a stale expected ID (the
-		// committed version's) conflicts. Same answer postgres gives, whose
-		// CAS reads the transaction's own connection.
+		// committed version's) conflicts. The buffered entity carries this
+		// transaction's ID because every in-tx write is stamped with it at
+		// write time — the same value postgres's own uncommitted row holds,
+		// which is what its CAS reads off its own connection.
 		if buffered, ok := tx.Buffer[entity.Meta.ID]; ok {
 			if buffered.Meta.TransactionID != expectedTxID {
 				return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
 			}
 			cp := copyEntity(entity)
+			cp.Meta.TransactionID = tx.ID
 			s.factory.txManager.stageSuperseded(tx.ID, entity.Meta.ID, buffered)
 			tx.Buffer[entity.Meta.ID] = cp
 			tx.WriteSet[entity.Meta.ID] = true
@@ -275,6 +238,7 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 			// Write to buffer under the same lock hold. Stage any value
 			// this overwrites (see stageSuperseded's godoc) first.
 			cp := copyEntity(entity)
+			cp.Meta.TransactionID = tx.ID
 			s.factory.txManager.stageSuperseded(tx.ID, entity.Meta.ID, tx.Buffer[entity.Meta.ID])
 			tx.Buffer[entity.Meta.ID] = cp
 			tx.WriteSet[entity.Meta.ID] = true
@@ -302,9 +266,9 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 // against: the latest committed version's, or "" when there is no entity —
 // never written, or deleted. A deleted entity is no entity, exactly as Get
 // reports it, so its tombstone does not expose the superseded version's ID.
-// An entity actually stored with an empty transaction ID would read the same
-// way — as no entity — but every writer stamps a non-empty one, so that case
-// is not reachable in production.
+// "" is also what an entity written outside a transaction with no supplied ID
+// stores; the two are indistinguishable here, which is why CompareAndSave
+// rejects an empty expectedTxID rather than letting it match either.
 // The caller must hold factory.entityMu (read or write).
 func currentTxIDLocked(versions []entityVersion) string {
 	if len(versions) == 0 {
@@ -504,147 +468,6 @@ func (s *EntityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 		return nil, fmt.Errorf("no version of entity %s exists at %v: %w", entityID, asAt, spi.ErrNotFound)
 	}
 	return copyEntity(result), nil
-}
-
-func (s *EntityStore) GetAll(ctx context.Context, modelRef spi.ModelRef) ([]*spi.Entity, error) {
-	tx := spi.GetTransaction(ctx)
-	if tx != nil {
-		// Hold tx.OpMu.RLock for the duration of the tx-state reads and
-		// the ReadSet writes so Commit/Rollback (which take tx.OpMu.Lock)
-		// cannot race with our iteration of tx.Buffer / tx.Deletes.
-		// Lock order: tx.OpMu before factory.entityMu.
-		tx.OpMu.RLock()
-		defer tx.OpMu.RUnlock()
-		if tx.RolledBack {
-			return nil, fmt.Errorf("GetAll: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
-		}
-		if tx.Closed {
-			return nil, fmt.Errorf("GetAll: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
-		}
-		// Combine: snapshot of main store + buffer - deletes. Wrap the
-		// entityMu hold in an IIFE so the unlock runs via defer (per
-		// .claude/rules/go-mutex-discipline.md — bare Unlock is not the
-		// right answer).
-		var mainEntities []*spi.Entity
-		var snapErr error
-		func() {
-			s.factory.entityMu.RLock()
-			defer s.factory.entityMu.RUnlock()
-			mainEntities, snapErr = s.getAllSnapshotUnlocked(ctx, modelRef, tx.SnapshotTime)
-		}()
-		if snapErr != nil {
-			return nil, fmt.Errorf("GetAll: %w", snapErr)
-		}
-
-		result := make(map[string]*spi.Entity)
-		for i, e := range mainEntities {
-			// Amortized cancellation check (spec D5): mirrors the non-tx
-			// loop below — every 1024 rows, true at i==0 too.
-			if i&1023 == 0 {
-				if err := ctx.Err(); err != nil {
-					return nil, fmt.Errorf("GetAll: %w", err)
-				}
-			}
-			if !tx.Deletes[e.Meta.ID] {
-				result[e.Meta.ID] = e
-				tx.ReadSet[e.Meta.ID] = true
-			}
-		}
-		// Overlay buffer.
-		bufI := 0
-		for id, e := range tx.Buffer {
-			if bufI&1023 == 0 {
-				if err := ctx.Err(); err != nil {
-					return nil, fmt.Errorf("GetAll: %w", err)
-				}
-			}
-			bufI++
-			if e.Meta.ModelRef == modelRef {
-				result[id] = copyEntity(e)
-				tx.ReadSet[id] = true
-			}
-		}
-
-		entities := make([]*spi.Entity, 0, len(result))
-		for _, e := range result {
-			entities = append(entities, e)
-		}
-		return entities, nil
-	}
-
-	// Non-transaction: existing behavior.
-	s.factory.entityMu.RLock()
-	defer s.factory.entityMu.RUnlock()
-
-	result := make([]*spi.Entity, 0)
-	i := 0
-	for _, versions := range s.factory.entityData[s.tenant] {
-		// Amortized cancellation check (spec D5): this is the primary
-		// real-search-path scan for non-tx GetAll — checked every 1024
-		// entries (i&1023==0, true at i==0 too) so a pre-expired or
-		// since-expired ctx aborts rather than returning a full result
-		// set computed past the client's deadline.
-		if i&1023 == 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, fmt.Errorf("GetAll: %w", err)
-			}
-		}
-		i++
-		if len(versions) == 0 {
-			continue
-		}
-		latest := versions[len(versions)-1]
-		if latest.deleted {
-			continue
-		}
-		if latest.entity.Meta.ModelRef == modelRef {
-			result = append(result, copyEntity(latest.entity))
-		}
-	}
-	return result, nil
-}
-
-func (s *EntityStore) GetAllAsAt(ctx context.Context, modelRef spi.ModelRef, asAt time.Time) ([]*spi.Entity, error) {
-	s.factory.entityMu.RLock()
-	defer s.factory.entityMu.RUnlock()
-
-	// Historical query: always reads committed data.
-	result := make([]*spi.Entity, 0)
-	i := 0
-	for _, versions := range s.factory.entityData[s.tenant] {
-		// Amortized cancellation check (spec D5): every 1024 entries
-		// (i&1023==0, true at i==0 too).
-		if i&1023 == 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, fmt.Errorf("GetAllAsAt: %w", err)
-			}
-		}
-		i++
-		if len(versions) == 0 {
-			continue
-		}
-
-		var found *spi.Entity
-		var wasDeleted bool
-		for _, v := range versions {
-			if !v.submitTime.After(asAt) {
-				if v.deleted {
-					found = nil
-					wasDeleted = true
-				} else {
-					found = v.entity
-					wasDeleted = false
-				}
-			} else {
-				break
-			}
-		}
-		_ = wasDeleted
-		if found != nil && found.Meta.ModelRef == modelRef {
-			result = append(result, copyEntity(found))
-		}
-	}
-	return result, nil
 }
 
 func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
@@ -882,8 +705,8 @@ func (s *EntityStore) countTx(ctx context.Context, tx *spi.TransactionState, mod
 			continue
 		}
 		// Only a buffered write of the SAME model supersedes this committed
-		// row — that is how GetAll, GetPage and buildSnapshot overlay the
-		// buffer. A buffered write of another model leaves the committed row
+		// row — that is how GetPage, Search/Iterate and buildSnapshot overlay
+		// the buffer. A buffered write of another model leaves the committed row
 		// standing in this model's view, so it must still be tallied.
 		if b, buffered := tx.Buffer[e.Meta.ID]; buffered && b.Meta.ModelRef == modelRef {
 			continue // the buffered version is tallied below
@@ -1072,7 +895,7 @@ func (s *EntityStore) GetPage(ctx context.Context, modelRef spi.ModelRef, limit,
 
 	if asAt != nil {
 		// Committed-only PIT snapshot — ignores any ambient transaction's
-		// overlay, mirroring GetAllAsAt.
+		// overlay, mirroring Search/Iterate's PointInTime branch.
 		s.factory.entityMu.RLock()
 		defer s.factory.entityMu.RUnlock()
 		rows, err := s.getAllSnapshotPointersUnlocked(ctx, modelRef, *asAt)
@@ -1096,7 +919,7 @@ func (s *EntityStore) GetPage(ctx context.Context, modelRef spi.ModelRef, limit,
 	// In-tx: merged committed ∪ write-set view. Hold tx.OpMu.RLock for the
 	// duration so Commit/Rollback (tx.OpMu.Lock) cannot race with our reads
 	// of tx.Buffer/tx.Deletes and our write to tx.ReadSet. Lock order:
-	// tx.OpMu before factory.entityMu (matches Save/GetAll).
+	// tx.OpMu before factory.entityMu (matches Save/Search).
 	tx.OpMu.RLock()
 	defer tx.OpMu.RUnlock()
 	if tx.RolledBack {

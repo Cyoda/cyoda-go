@@ -26,11 +26,7 @@ type trackingReadSearcherEntityStore struct {
 
 func (s *trackingReadSearcherEntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
 	*s.captured = opts
-	searcher, ok := s.EntityStore.(spi.Searcher)
-	if !ok {
-		return nil, nil
-	}
-	return searcher.Search(ctx, filter, opts)
+	return s.EntityStore.Search(ctx, filter, opts)
 }
 
 // trackingReadSearcherFactory wraps a StoreFactory and returns the spy

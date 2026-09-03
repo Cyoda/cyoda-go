@@ -9,21 +9,20 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// Compile-time check that entityStore implements spi.Searcher.
-var _ spi.Searcher = (*entityStore)(nil)
-
-// Search implements spi.Searcher for the SQLite entity store.
+// Search implements spi.EntityStore.Search for the SQLite entity store. The
+// compile-time check that *entityStore implements spi.EntityStore lives in
+// entity_store.go.
 //
 // Search is bounded-or-fail: opts.Limit >= 1 is REQUIRED, a cap on the matched
 // set, not a page size. A matched set larger than Limit is
 // spi.ErrSearchResultLimitExceeded, never a truncated prefix; exactly-at-limit
 // succeeds. opts.Limit <= 0 is a contract violation — Search returns an error
 // rather than treating it as "unbounded" or substituting a default of its own
-// (see spi.Searcher's doc comment; the engine resolves the direct-search
+// (see spi.EntityStore.Search's doc comment; the engine resolves the direct-search
 // default before calling, so Search itself never needs to guess a bound).
 //
 // Three branches, all producing the same result set that
-// GetAll + spi.Prepare(filter).Match would for the same transaction state:
+// GetPage + spi.Prepare(filter).Match would for the same transaction state:
 //   - non-tx (or in-tx point-in-time): committed pushdown via searchCommitted —
 //     the query planner pushes pushable predicates to SQL and post-filters the
 //     residual in Go; the bound is enforced in SQL (LIMIT limit+1, so the extra
@@ -229,10 +228,10 @@ func sortEntitiesByOrder(ctx context.Context, rows []*spi.Entity, order []spi.Or
 // does not full-scan. The scan itself is unmetered and opts.Limit is the only
 // bound, exactly as in searchCommitted.
 //
-// The whole operation runs under tx.OpMu.RLock (fail fast on tx.RolledBack) so
-// Commit/Rollback (which take tx.OpMu.Lock) cannot race our reads of
-// tx.Buffer/tx.Deletes or our write to tx.ReadSet. Lock order: tx.OpMu before
-// the sql.DB query — identical to Save/GetAll in this package.
+// The whole operation runs under tx.OpMu.RLock (fail fast on tx.RolledBack or
+// tx.Closed) so Commit/Rollback (which take tx.OpMu.Lock) cannot race our
+// reads of tx.Buffer/tx.Deletes or our write to tx.ReadSet. Lock order:
+// tx.OpMu before the sql.DB query — identical to Save/GetPage in this package.
 func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionState, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
 	modelRef := spi.ModelRef{EntityName: opts.ModelName, ModelVersion: opts.ModelVersion}
 	plan, err := planFor(filter)
@@ -263,6 +262,9 @@ func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionSt
 		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return fmt.Errorf("Search: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
+		}
+		if tx.Closed {
+			return fmt.Errorf("Search: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
 		}
 
 		rows, err := s.db.QueryContext(ctx, baseQuery, baseArgs...)
@@ -350,7 +352,7 @@ func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionSt
 			return mErr
 		}
 
-		// Read-set recording is CONDITIONAL on TrackingRead (unlike GetAll, which
+		// Read-set recording is CONDITIONAL on TrackingRead (unlike GetPage, which
 		// records unconditionally). Only returned committed rows (not buffered —
 		// those are own-writes already in the write-set) enter the read-set.
 		// Under bounded-or-fail, page IS the whole matched committed+buffered
@@ -397,7 +399,7 @@ func jsonExtract(col, key string) string {
 //
 //   - When order is empty, defaults to "ORDER BY entity_id". For Search this
 //     is the documented canonical default; for Iterate an empty OrderBy means
-//     "unspecified" per the Iterable doc, and a deterministic order is a
+//     "unspecified" per the Iterate doc, and a deterministic order is a
 //     conformant (if stronger-than-required) choice within "unspecified".
 //   - Each clause gets NULLS LAST so absent/null values sort after real values
 //     regardless of ASC/DESC.

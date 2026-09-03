@@ -7,15 +7,6 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-func searcher(t *testing.T, store spi.EntityStore) spi.Searcher {
-	t.Helper()
-	s, ok := store.(spi.Searcher)
-	if !ok {
-		t.Fatal("store is not spi.Searcher")
-	}
-	return s
-}
-
 // Returned entities are copies: mutating a result must not change what the
 // store returns next. Covers all three branches (non-tx, in-tx PIT, in-tx RYW).
 func TestSearch_ResultsDoNotAliasStore(t *testing.T) {
@@ -33,13 +24,13 @@ func TestSearch_ResultsDoNotAliasStore(t *testing.T) {
 
 	mutateAndRecheck := func(name string, c contextT, o spi.SearchOptions) {
 		t.Helper()
-		first, err := searcher(t, store).Search(c, filter, o)
+		first, err := store.Search(c, filter, o)
 		if err != nil || len(first) != 3 {
 			t.Fatalf("%s: Search = %d entities, err=%v", name, len(first), err)
 		}
 		first[0].Data[5] = '9' // {"v":9}
 		first[0].Meta.State = "mutated"
-		again, err := searcher(t, store).Search(c, filter, o)
+		again, err := store.Search(c, filter, o)
 		if err != nil || len(again) != 3 {
 			t.Fatalf("%s: second Search = %d entities, err=%v (a mutated result leaked into the store)", name, len(again), err)
 		}

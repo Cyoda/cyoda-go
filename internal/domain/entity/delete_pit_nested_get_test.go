@@ -11,9 +11,9 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
-// nestedGetGuardStore wraps a real spi.EntityStore (which also implements
-// spi.Iterable) and records whether EntityStore.Get was ever called while one
-// of its own iterators was still open.
+// nestedGetGuardStore wraps a real spi.EntityStore and records whether
+// EntityStore.Get was ever called while one of its own iterators was still
+// open.
 //
 // That window is the defect this fixture exists to pin: on postgres, Iterate
 // holds a pooled connection for the iterator's whole lifetime and Get acquires
@@ -32,7 +32,7 @@ type nestedGetGuardStore struct {
 }
 
 func (s *nestedGetGuardStore) Iterate(ctx context.Context, model spi.ModelRef, filter spi.Filter, opts spi.IterateOptions) (spi.Iterator, error) {
-	it, err := s.EntityStore.(spi.Iterable).Iterate(ctx, model, filter, opts)
+	it, err := s.EntityStore.Iterate(ctx, model, filter, opts)
 	if err != nil {
 		return nil, err
 	}

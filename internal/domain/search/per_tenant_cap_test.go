@@ -54,9 +54,8 @@ func (s *blockingSaveStore) DeleteJob(ctx context.Context, jobID string) error {
 	return s.AsyncSearchStore.DeleteJob(ctx, jobID)
 }
 
-// matchEverything is translatable to a spi.Filter, so the executor takes the
-// Iterate -> SaveResults path (where blockingSaveStore's park applies)
-// rather than the untranslatable fallback.
+// matchEverything is translatable to a spi.Filter, so the executor reaches
+// the Iterate -> SaveResults path where blockingSaveStore's park applies.
 var matchEverything = &predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "NEW"}
 
 // newCappedService wires a service whose pool is wide enough that the pool's
@@ -89,7 +88,7 @@ func submitEventually(t *testing.T, svc *search.SearchService, ctx context.Conte
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for {
-		jobID, err := svc.SubmitAsync(ctx, ref, matchEverything, search.SearchOptions{})
+		jobID, err := svc.SubmitAsync(ctx, ref, matchEverything, search.SearchOptions{Limit: 10})
 		if err == nil {
 			return jobID
 		}
@@ -130,19 +129,19 @@ func TestSubmitAsync_PerTenantCap_RejectsOverCapAndSparesOtherTenants(t *testing
 	defer close(store.release)
 
 	for i := 0; i < 2; i++ {
-		if _, err := svc.SubmitAsync(ctxA, ref, matchEverything, search.SearchOptions{}); err != nil {
+		if _, err := svc.SubmitAsync(ctxA, ref, matchEverything, search.SearchOptions{Limit: 10}); err != nil {
 			t.Fatalf("tenant-a submit %d: %v", i, err)
 		}
 	}
 
-	_, err := svc.SubmitAsync(ctxA, ref, matchEverything, search.SearchOptions{})
+	_, err := svc.SubmitAsync(ctxA, ref, matchEverything, search.SearchOptions{Limit: 10})
 	if err == nil {
 		t.Fatal("tenant-a's third submit was accepted; the per-tenant in-flight cap (2) is not enforced")
 	}
 	assertQueueFull(t, err)
 
 	// The whole point of the cap: tenant-b is unaffected by tenant-a's burst.
-	if _, err := svc.SubmitAsync(ctxB, ref, matchEverything, search.SearchOptions{}); err != nil {
+	if _, err := svc.SubmitAsync(ctxB, ref, matchEverything, search.SearchOptions{Limit: 10}); err != nil {
 		t.Fatalf("tenant-b submit was rejected because tenant-a filled the node: %v", err)
 	}
 
@@ -171,11 +170,11 @@ func TestSubmitAsync_PerTenantCap_ReleasedOnEveryTerminalPath(t *testing.T) {
 		saveMinimalModel(t, ctx, base, ref)
 
 		svc, store := newCappedService(t, base, 1, nil)
-		jobID, err := svc.SubmitAsync(ctx, ref, matchEverything, search.SearchOptions{})
+		jobID, err := svc.SubmitAsync(ctx, ref, matchEverything, search.SearchOptions{Limit: 10})
 		if err != nil {
 			t.Fatalf("SubmitAsync: %v", err)
 		}
-		if _, err := svc.SubmitAsync(ctx, ref, matchEverything, search.SearchOptions{}); err == nil {
+		if _, err := svc.SubmitAsync(ctx, ref, matchEverything, search.SearchOptions{Limit: 10}); err == nil {
 			t.Fatal("second submit accepted while the first is still in flight; cap=1 is not enforced")
 		}
 		close(store.release)
@@ -192,7 +191,7 @@ func TestSubmitAsync_PerTenantCap_ReleasedOnEveryTerminalPath(t *testing.T) {
 		saveMinimalModel(t, ctx, base, ref)
 
 		svc, store := newCappedService(t, base, 1, errors.New("save exploded"))
-		jobID, err := svc.SubmitAsync(ctx, ref, matchEverything, search.SearchOptions{})
+		jobID, err := svc.SubmitAsync(ctx, ref, matchEverything, search.SearchOptions{Limit: 10})
 		if err != nil {
 			t.Fatalf("SubmitAsync: %v", err)
 		}
@@ -212,7 +211,7 @@ func TestSubmitAsync_PerTenantCap_ReleasedOnEveryTerminalPath(t *testing.T) {
 		svc, store := newCappedService(t, base, 1, nil)
 		defer close(store.release)
 
-		jobID, err := svc.SubmitAsync(ctx, ref, matchEverything, search.SearchOptions{})
+		jobID, err := svc.SubmitAsync(ctx, ref, matchEverything, search.SearchOptions{Limit: 10})
 		if err != nil {
 			t.Fatalf("SubmitAsync: %v", err)
 		}
@@ -238,7 +237,7 @@ func TestSubmitAsync_PerTenantCap_DisabledByZero(t *testing.T) {
 	defer close(store.release)
 
 	for i := 0; i < 8; i++ {
-		if _, err := svc.SubmitAsync(ctx, ref, matchEverything, search.SearchOptions{}); err != nil {
+		if _, err := svc.SubmitAsync(ctx, ref, matchEverything, search.SearchOptions{Limit: 10}); err != nil {
 			t.Fatalf("submit %d rejected with the cap disabled: %v", i, err)
 		}
 	}

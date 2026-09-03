@@ -77,10 +77,7 @@ func TestSearcher_EqFilter(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 
 	store, _ := factory.EntityStore(ctx)
-	searcher, ok := store.(spi.Searcher)
-	if !ok {
-		t.Fatal("entityStore does not implement spi.Searcher")
-	}
+	searcher := store
 
 	results, err := searcher.Search(ctx, spi.Filter{
 		Op:       spi.FilterEq,
@@ -115,10 +112,7 @@ func TestSearcher_RejectsUnevaluableFilter(t *testing.T) {
 			factory, ctx := setupSearcherTest(t)
 
 			store, _ := factory.EntityStore(ctx)
-			searcher, ok := store.(spi.Searcher)
-			if !ok {
-				t.Fatal("entityStore does not implement spi.Searcher")
-			}
+			searcher := store
 
 			_, err := searcher.Search(ctx, spi.Filter{
 				Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
@@ -138,7 +132,7 @@ func TestSearcher_GtFilter(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 
 	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	results, err := searcher.Search(ctx, spi.Filter{
 		Op:       spi.FilterGt,
@@ -163,7 +157,7 @@ func TestSearcher_ContainsFilter(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 
 	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	results, err := searcher.Search(ctx, spi.Filter{
 		Op:     spi.FilterContains,
@@ -187,7 +181,7 @@ func TestSearcher_ANDFilter(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 
 	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	results, err := searcher.Search(ctx, spi.Filter{
 		Op: spi.FilterAnd,
@@ -215,7 +209,7 @@ func TestSearcher_ORFilter(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 
 	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	results, err := searcher.Search(ctx, spi.Filter{
 		Op: spi.FilterOr,
@@ -240,7 +234,7 @@ func TestSearcher_PostFilterRegex(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 
 	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	// Regex is not pushable, should post-filter. MATCHES_PATTERN is anchored to
 	// a whole-string match by the kernel (Cloud Pattern.matcher(x).matches()
@@ -268,7 +262,7 @@ func TestSearcher_MixedPushAndPostFilter(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 
 	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	// AND with pushable eq(city) and non-pushable regex(name). MATCHES_PATTERN is
 	// anchored to a whole-string match (Cloud Pattern.matcher(x).matches()), so
@@ -305,7 +299,7 @@ func TestSearcher_MixedPushAndPostFilter(t *testing.T) {
 func TestSearcher_Bounded_NoResidual(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	// Pushable, leaf-exact filter matching all 5 seeded persons.
 	filter := spi.Filter{Op: spi.FilterNotNull, Path: "name", Source: spi.SourceData}
@@ -363,7 +357,7 @@ func TestSearcher_Bounded_NoResidual(t *testing.T) {
 func TestSearcher_Bounded_Residual(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	// Non-pushable filter matching all 5 seeded persons.
 	filter := spi.Filter{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: ".*"}
@@ -453,7 +447,7 @@ func TestSearcher_ResidualScanIsUnbounded_SparseMatches(t *testing.T) {
 		}
 	}
 
-	searcher := store.(spi.Searcher)
+	searcher := store
 	// FilterMatchesRegex is never pushed down, so this runs the residual path.
 	ids, err := searcher.Search(ctx, spi.Filter{
 		Op:     spi.FilterMatchesRegex,
@@ -496,7 +490,7 @@ func TestSearcher_ResultBoundStillTripsOnResidualPath(t *testing.T) {
 		}
 	}
 
-	searcher := store.(spi.Searcher)
+	searcher := store
 	_, err = searcher.Search(ctx, spi.Filter{
 		Op:     spi.FilterMatchesRegex,
 		Path:   "val",
@@ -535,8 +529,8 @@ func TestSearcher_TenantIsolation(t *testing.T) {
 		Data: []byte(`{"name":"Bob"}`),
 	})
 
-	searcherA := storeA.(spi.Searcher)
-	searcherB := storeB.(spi.Searcher)
+	searcherA := storeA
+	searcherB := storeB
 
 	filter := spi.Filter{Op: spi.FilterNotNull, Path: "name", Source: spi.SourceData}
 	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 10}
@@ -608,7 +602,7 @@ func TestSearcher_OrderByNumericData(t *testing.T) {
 		}
 	}
 
-	searcher := store.(spi.Searcher)
+	searcher := store
 	results, err := searcher.Search(ctx,
 		spi.Filter{Op: spi.FilterNotNull, Path: "n", Source: spi.SourceData},
 		spi.SearchOptions{
@@ -659,7 +653,7 @@ func TestSearcher_OrderByCreationDateMeta(t *testing.T) {
 		clock.Advance(10 * time.Millisecond)
 	}
 
-	searcher := store.(spi.Searcher)
+	searcher := store
 	results, err := searcher.Search(ctx,
 		spi.Filter{Op: spi.FilterNotNull, Path: "v", Source: spi.SourceData},
 		spi.SearchOptions{
@@ -707,7 +701,7 @@ func TestSearcher_OrderByStateMeta(t *testing.T) {
 		}
 	}
 
-	searcher := store.(spi.Searcher)
+	searcher := store
 	results, err := searcher.Search(ctx,
 		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "x", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
@@ -753,7 +747,7 @@ func TestSearcher_OrderByNullsLast(t *testing.T) {
 		}
 	}
 
-	searcher := store.(spi.Searcher)
+	searcher := store
 	// Filter by "present" so all 3 entities are returned; sort by "score" ASC.
 	results, err := searcher.Search(ctx,
 		spi.Filter{Op: spi.FilterEq, Path: "present", Source: spi.SourceData, Value: true, Declared: []spi.DataType{spi.Boolean}},
@@ -797,7 +791,7 @@ func TestSearcher_OrderByTiebreaker(t *testing.T) {
 		}
 	}
 
-	searcher := store.(spi.Searcher)
+	searcher := store
 	results, err := searcher.Search(ctx,
 		spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
@@ -847,7 +841,7 @@ func TestSearcher_OrderByPointInTime(t *testing.T) {
 	clock.Advance(10 * time.Millisecond) // → t2
 	t2 := clock.Now()
 
-	searcher := store.(spi.Searcher)
+	searcher := store
 	results, err := searcher.Search(ctx,
 		spi.Filter{Op: spi.FilterNotNull, Path: "v", Source: spi.SourceData},
 		spi.SearchOptions{
@@ -869,7 +863,7 @@ func TestSearcher_OrderByPointInTime(t *testing.T) {
 func TestSearcher_ValidateOrderSpecsRejectsUnknownMetaPath(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	_, err := searcher.Search(ctx,
 		spi.Filter{Op: spi.FilterNotNull, Path: "name", Source: spi.SourceData},
@@ -892,7 +886,7 @@ func TestSearcher_ValidateOrderSpecsRejectsUnknownMetaPath(t *testing.T) {
 func TestSearcher_OrderByMetaIDNoTiebreaker(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	results, err := searcher.Search(ctx,
 		spi.Filter{Op: spi.FilterNotNull, Path: "name", Source: spi.SourceData},
@@ -918,7 +912,7 @@ func TestSearcher_OrderByMetaIDNoTiebreaker(t *testing.T) {
 func TestSearcher_OrderByDesc(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	results, err := searcher.Search(ctx,
 		spi.Filter{Op: spi.FilterNotNull, Path: "name", Source: spi.SourceData},
@@ -968,7 +962,7 @@ func TestSearcher_OrderByBool(t *testing.T) {
 		}
 	}
 
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	// ASC: false < true → f, t.
 	asc, err := searcher.Search(ctx,

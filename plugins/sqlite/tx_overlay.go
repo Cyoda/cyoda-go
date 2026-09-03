@@ -40,7 +40,7 @@ const (
 //
 // The buffer and the delete set are copied into locals at open, under the
 // tx.OpMu.RLock the caller holds: the overlay is a snapshot at call time
-// (spi.Iterable contract), so later mutation of the transaction does not
+// (spi.EntityStore.Iterate contract), so later mutation of the transaction does not
 // change what an already-open stream yields.
 //
 // Errors the overlay produces carry the neutral "tx overlay: " prefix, never

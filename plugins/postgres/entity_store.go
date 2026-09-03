@@ -92,8 +92,23 @@ func (s *entityStore) save(ctx context.Context, entity *spi.Entity, stampFrom tx
 	entity.Meta.TenantID = s.tenantID
 
 	// Stamp the transaction ID from context so callers can read it back
-	// after commit (required by the SPI conformance contract).
-	if tx := spi.GetTransaction(ctx); tx != nil && entity.Meta.TransactionID == "" {
+	// after commit (required by the SPI conformance contract). Unconditional:
+	// the committing transaction owns this field, so a caller-supplied value
+	// is not authoritative — honouring one would let a row claim it was
+	// committed by a transaction that did not commit it, and would make the
+	// in-transaction compare-and-save precondition depend on what the caller
+	// happened to stamp rather than on the transaction's own view.
+	//
+	// KNOWN ASYMMETRY, pre-dating this stamp and wider than it: this
+	// function writes back into the CALLER's *spi.Entity — TenantID here,
+	// TransactionID below, then Version, ChangeType, CreationDate and
+	// LastModifiedDate further down — while memory and sqlite stamp only
+	// their own buffered copy. Nothing may rely on the write-back, precisely
+	// because it is not portable across backends; the stamped values reach a
+	// caller through a subsequent read, and the version through this
+	// function's return. Converging the three is a change to all six fields,
+	// not to this one.
+	if tx := spi.GetTransaction(ctx); tx != nil {
 		entity.Meta.TransactionID = tx.ID
 	}
 
@@ -193,23 +208,24 @@ func (s *entityStore) save(ctx context.Context, entity *spi.Entity, stampFrom tx
 	return nextVersion, nil
 }
 
+// CompareAndSave writes entity only if its stored transaction ID is still
+// expectedTxID. expectedTxID must not be empty: it is compared literally, and
+// the empty string is the transaction ID a missing or deleted entity reports
+// — but also the one a write taken outside a transaction stores verbatim when
+// the caller supplied none, so an empty expected ID cannot tell "no entity"
+// from "an entity written outside a transaction" and would overwrite the
+// latter. It is rejected as a caller error, before any read or write.
+// CompareAndSave therefore never creates an entity and never resurrects a
+// deleted one; Save does that.
 func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, expectedTxID string) (int64, error) {
+	if expectedTxID == "" {
+		return 0, fmt.Errorf("CompareAndSave: expectedTxID must not be empty")
+	}
+
 	// Inside the caller's transaction the check and the write already run on
 	// one connection, under that transaction — the check reads the
 	// transaction's own view, and neither half can commit before the caller
 	// says so. Nothing to add here.
-	//
-	// This branch does not take the advisory lock the non-transactional path
-	// below uses to serialize concurrent compare-and-save creates of the same
-	// entity ID: two transactions racing to create the same ID here are not
-	// ordered against each other and both can pass compareTxID before either
-	// commits. That is acceptable because the engine reaches this branch
-	// only with a non-empty If-Match naming a version a prior read already
-	// found; a create with no prior read to name goes through Save, not
-	// CompareAndSave. The one expectedTxID=="" caller this branch does see
-	// is a transaction re-creating an entity it deleted itself earlier in
-	// the same transaction — its own eager delete, not a race with another
-	// transaction creating the same ID from nothing.
 	if spi.GetTransaction(ctx) != nil {
 		if err := s.compareTxID(ctx, s.q, entity.Meta.ID, expectedTxID, false); err != nil {
 			return 0, err
@@ -223,7 +239,9 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 	// and all write, each silently clobbering the last instead of getting
 	// ErrConflict. One database transaction closes it — the check takes the
 	// row lock (FOR UPDATE) and the write commits under it, so a concurrent
-	// caller blocks on the check and then reads the winner's ID.
+	// caller blocks on the check and then reads the winner's ID. The row is
+	// always there to lock: expectedTxID is non-empty, so an absent row's
+	// current ID ("") cannot match and the check has already conflicted.
 	//
 	// Same scoping rule as every other acquire in this plugin: the deadline
 	// bounds getting the connection and is cancelled the instant BeginTx
@@ -270,21 +288,6 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 	txStore := *s
 	txStore.q = classifiedQuerier{inner: tx}
 
-	// FOR UPDATE locks a row that exists; an absent row has nothing to lock,
-	// so the check above closes the window for UPDATES only. Two callers
-	// CREATING the same id would both read "no entity", both pass, and both
-	// write. A transaction-scoped advisory lock needs no row: it is keyed on
-	// the entity itself and released when this transaction commits or rolls
-	// back, so the second creator waits here, re-reads under the lock, sees
-	// the winner's row carrying the winner's transaction ID, and conflicts.
-	// The key is hashed from tenant and id together — a collision between two
-	// unrelated entities costs a wait, never a wrong answer.
-	if _, err := tx.Exec(ctx,
-		`SELECT pg_advisory_xact_lock(hashtext($1))`,
-		string(s.tenantID)+":"+entity.Meta.ID); err != nil {
-		return 0, fmt.Errorf("failed to lock entity for compare-and-save: %w", classifyError(err))
-	}
-
 	if err := txStore.compareTxID(ctx, txStore.q, entity.Meta.ID, expectedTxID, true); err != nil {
 		return 0, err
 	}
@@ -303,10 +306,10 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 // compareTxID reports whether the stored entity still carries expectedTxID,
 // returning spi.ErrConflict when it does not. expectedTxID is compared
 // literally: the entity's current transaction ID is the row's, or "" when
-// there is no entity — never written, or deleted. So a non-empty expected ID
-// against a missing entity conflicts (it names a version that does not
-// exist), and the empty expected ID is how a caller says "expect no entity"
-// and creates one.
+// there is no entity — never written, or deleted. So an expected ID against a
+// missing entity conflicts: it names a version that does not exist.
+// CompareAndSave rejects an empty expectedTxID before calling this, so ""
+// never reaches the comparison as a value a caller may match.
 //
 // The row is read with NOT deleted, as Get and Delete read it: a deleted
 // entity is no entity, so its tombstone does not offer up the superseded
@@ -314,16 +317,15 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 // row. A delete applied earlier in the caller's own transaction is visible on
 // that transaction's connection, so the same rule covers it — matching what
 // the buffered backends answer for a same-transaction delete. A row actually
-// stored with an empty transaction ID would read the same way — as no
-// entity — but every writer stamps a non-empty one, so that case is not
-// reachable in production.
+// stored with an empty transaction ID also reads as "" here, which is exactly
+// why CompareAndSave will not let a caller name it.
 //
 // forUpdate locks the row for the rest of the caller's database transaction —
 // what makes the non-transactional path's check and write indivisible. It is
 // false inside the caller's own transaction, whose write is not committed
-// here and must not hold a row lock the caller did not ask for. A row that is
-// not there locks nothing, which is why the non-transactional path takes an
-// advisory lock on the entity as well — see CompareAndSave.
+// here and must not hold a row lock the caller did not ask for. The row is
+// there to lock whenever the check passes, because a non-empty expected ID
+// never matches an absent row.
 func (s *entityStore) compareTxID(ctx context.Context, q Querier, entityID, expectedTxID string, forUpdate bool) error {
 	query := `SELECT doc->'_meta'->>'transaction_id' FROM entities WHERE tenant_id = $1 AND entity_id = $2 AND NOT deleted`
 	if forUpdate {
@@ -406,54 +408,6 @@ func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 
 	return unmarshalEntityDoc(doc)
 }
-
-func (s *entityStore) GetAll(ctx context.Context, modelRef spi.ModelRef) ([]*spi.Entity, error) {
-	rows, err := s.q.Query(ctx,
-		`SELECT doc FROM entities WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted`,
-		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query entities: %w", err)
-	}
-	defer rows.Close()
-
-	entities, err := scanEntities(rows)
-	if err != nil {
-		return nil, err
-	}
-	if s.tm != nil {
-		for _, e := range entities {
-			s.tm.recordReadIfInTx(ctx, e.Meta.ID, e.Meta.Version)
-		}
-	}
-	return entities, nil
-}
-
-// GetAllAsAt is committed-only, through committedQuerier — the collection form
-// of GetAsAt's routing, and for the same reason.
-//
-// Deliberately not tracked in readSet: historical reads target immutable versions. See spec §Known limitation.
-func (s *entityStore) GetAllAsAt(ctx context.Context, modelRef spi.ModelRef, asAt time.Time) ([]*spi.Entity, error) {
-	rows, err := s.committedQuerier().Query(ctx,
-		`SELECT v.doc
-		 FROM entities e
-		 CROSS JOIN LATERAL (
-		     SELECT doc FROM entity_versions ev
-		     WHERE ev.tenant_id = e.tenant_id AND ev.entity_id = e.entity_id
-		       AND ev.valid_time <= $4
-		       AND ev.transaction_time <= CURRENT_TIMESTAMP
-		     ORDER BY ev.valid_time DESC, ev.transaction_time DESC
-		     LIMIT 1
-		 ) v
-		 WHERE e.tenant_id = $1 AND e.model_name = $2 AND e.model_version = $3`,
-		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion, asAt)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query entities as-at: %w", err)
-	}
-	defer rows.Close()
-
-	return scanEntitiesFilterDeleted(rows)
-}
-
 func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 	tid := string(s.tenantID)
 
@@ -759,8 +713,8 @@ func (s *entityStore) getPageCurrent(ctx context.Context, modelRef spi.ModelRef,
 }
 
 // getPageAsAt is GetPage's asAt!=nil path: a committed-only snapshot built
-// on searchBaseQuery's PIT base (the same base Search/Iterate/GetAllAsAt
-// use), paged via ORDER BY entity_id COLLATE "C" LIMIT/OFFSET.
+// on searchBaseQuery's PIT base (the same base Search/Iterate use),
+// paged via ORDER BY entity_id COLLATE "C" LIMIT/OFFSET.
 //
 // Deliberately bypasses s.q (which would resolve an ambient transaction)
 // and issues the query through the pool-pinned committedQuerier instead —
@@ -813,7 +767,7 @@ const getVersionByTransactionQuery = `SELECT doc, version, valid_time FROM entit
 // partition (tenant_id, entity_id, version) rather than a full table scan
 // — asserted by entity_page_plan_test.go via EXPLAIN over
 // getVersionByTransactionQuery itself. Deliberately not tracked in readSet:
-// historical reads target immutable versions, matching GetAsAt/GetAllAsAt.
+// historical reads target immutable versions, matching GetAsAt.
 func (s *entityStore) GetVersionByTransaction(ctx context.Context, entityID, txID string) (*spi.EntityVersion, error) {
 	if txID == "" {
 		return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
@@ -837,7 +791,7 @@ func (s *entityStore) GetVersionByTransaction(ctx context.Context, entityID, txI
 // GetVersionMetadata returns entityID's version metadata — no entity
 // payload, just the audit trail — newest first, ties broken by Version
 // DESC. opts.From/opts.Until bound the window inclusively on valid_time (the
-// same column GetAsAt/GetAllAsAt/GetVersionByTransaction treat as the
+// same column GetAsAt/GetVersionByTransaction treat as the
 // canonical Timestamp); opts.Limit caps the row count (0 means all). The
 // query projects doc->'_meta' alone — never the full doc — per
 // spi.EntityStore.GetVersionMetadata's doc comment: this method surfaces

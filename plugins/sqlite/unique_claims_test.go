@@ -477,15 +477,22 @@ func TestUniqueClaims_CompareAndSaveInTxRecordsClaims(t *testing.T) {
 		t.Fatalf("TransactionManager: %v", err)
 	}
 
-	// The entity does not exist yet, so its current transaction ID is the
-	// empty one — the expected ID that means "expect no entity" — and the
-	// write is buffered like a Save's.
+	// CompareAndSave never creates, so the entity is seeded first — with no
+	// unique keys declared, so it holds no claim yet and the claim asserted
+	// below can only have come from the compare-and-save.
+	const seedTxID = "tx-seed"
+	seed := ucEntity("e1", "seed@x.com")
+	seed.Meta.TransactionID = seedTxID
+	if _, err := store.Save(baseCtx, seed); err != nil {
+		t.Fatalf("seed Save: %v", err)
+	}
+
 	txID, txCtx, err := tm.Begin(baseCtx)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
 	if _, err := store.CompareAndSave(
-		spi.WithUniqueKeys(txCtx, emailKeys()), ucEntity("e1", "a@x.com"), ""); err != nil {
+		spi.WithUniqueKeys(txCtx, emailKeys()), ucEntity("e1", "a@x.com"), seedTxID); err != nil {
 		t.Fatalf("CompareAndSave: %v", err)
 	}
 	if err := tm.Commit(txCtx, txID); err != nil {

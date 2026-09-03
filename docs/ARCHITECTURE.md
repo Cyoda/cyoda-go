@@ -128,7 +128,8 @@ Three importable packages:
 
 - **`spi`** (the module root) — storage-plugin interfaces and value types:
   - Store interfaces: `StoreFactory`, `EntityStore`, `ModelStore`, `KeyValueStore`, `MessageStore`, `WorkflowStore`, `StateMachineAuditStore`, `ScheduledTaskStore`, `AsyncSearchStore`, `SelfExecutingSearchStore`
-  - Optional capability interfaces a store may also implement: `Searcher`, `GroupedAggregator`, `Iterable`/`Iterator`, `CompositeUniqueKeyCapable`
+  - `EntityStore` includes `Search` (bounded-or-fail predicate pushdown) and `Iterate` (streamed predicate pushdown, yielding an `Iterator`); there is no whole-model read
+  - Optional capability interfaces a store may also implement: `GroupedAggregator`, `CompositeUniqueKeyCapable`
   - `TransactionManager` interface (Begin/Commit/Rollback/Join/GetSubmitTime/Savepoint/RollbackToSavepoint/ReleaseSavepoint)
   - Value types: `Entity`, `EntityMeta`, `EntityVersion`, `ModelRef`, `ModelDescriptor`, `WorkflowDefinition`, `StateDefinition`, `TransitionDefinition`, `TransitionSchedule`, `ScheduleFunction`, `ScheduledTask`, `StateMachineEvent`, `TransactionState`, `MessageHeader`, `MessageMetaData`, `ProcessorDefinition`, `SearchJob`, `Principal`, `WriteAttribution`
   - Context: `UserContext`, `Tenant`, `TenantID`, `WithUserContext`/`GetUserContext`, `WithTransaction`/`GetTransaction`
@@ -142,7 +143,7 @@ Three importable packages:
   - `ParseCondition(body []byte) (Condition, error)` + marshalers
 - **`spitest`** — the behavioural conformance harness. A plugin runs it against its own `StoreFactory` to prove it satisfies the contract; all three stock plugins do.
 
-The `predicate` package imports only the standard library. A plugin that translates predicates to its own query dialect (SQL, CQL) can import it without pulling in a match engine. The stock match engine (gjson-based, used by the `memory` plugin) lives in `cyoda-go/internal/match/`.
+The `predicate` package imports only the standard library. A plugin that translates predicates to its own query dialect (SQL, CQL) can import it without pulling in a match engine. The in-process tree adapter over the SPI predicate kernel — used for workflow criteria, the conditional-delete residual and the grouped-stats residual — lives in `cyoda-go/internal/match/`.
 
 ### Plugin Contract (summary)
 
@@ -1042,8 +1043,7 @@ see each plugin's "Canonical entity-ID order" section in `docs/plugins/`).
 Reachable inside a joined transaction via compute-node callbacks: with
 `asAt` nil, the page overlays the transaction's own write-set on top of the
 committed view and every returned entity is unconditionally recorded into
-the transaction's read-set (narrower than the old whole-model `GetAll`
-behaviour it replaced, which recorded the entire model). With `asAt` set,
+the transaction's read-set (the page, not the model). With `asAt` set,
 the read is committed-only, ignoring any ambient transaction. Postgres
 backs this with the `idx_entities_model_entity_id` index (migration
 `000008`, `COLLATE "C"` for byte-wise order); sqlite adds a

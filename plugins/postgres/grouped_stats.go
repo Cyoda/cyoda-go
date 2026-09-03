@@ -12,7 +12,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// This file implements spi.Iterable and spi.GroupedAggregator on
+// This file implements spi.EntityStore.Iterate and spi.GroupedAggregator on
 // *entityStore for the grouped entity statistics query endpoint
 // (POST /api/entity/stats/{name}/{version}/query).
 //
@@ -41,13 +41,11 @@ import (
 // GROUP BY uses the full extractor expression (not the column alias) for
 // portability across SQL dialects.
 
-// Compile-time interface checks.
-var (
-	_ spi.Iterable          = (*entityStore)(nil)
-	_ spi.GroupedAggregator = (*entityStore)(nil)
-)
+// Compile-time interface check. The spi.EntityStore assertion in
+// searcher.go covers Iterate.
+var _ spi.GroupedAggregator = (*entityStore)(nil)
 
-// Iterate implements spi.Iterable.
+// Iterate implements spi.EntityStore.Iterate.
 //
 // Returns an iterator over entities in the model matching filter. Pushable
 // filter parts go into SQL WHERE; the residual is applied inside Next() via
@@ -57,13 +55,13 @@ var (
 // using DISTINCT ON to surface only the latest visible version per entity,
 // then excludes deletion-marker versions. It is committed-only — it ignores any
 // ambient transaction and runs through committedQuerier (search_base.go), like
-// GetAsAt/GetAllAsAt/GetPage(asAt) and Search with a PointInTime.
+// GetAsAt/GetPage(asAt) and Search with a PointInTime.
 //
 // Ordering: empty OrderBy means unspecified (a deterministic entity_id
 // COLLATE "C" order is still emitted — a conformant, if stronger-than-
 // required, choice within "unspecified"); a non-empty OrderBy is honoured via
 // orderByClause, shared with Search. A non-empty OrderBy with an ambient
-// transaction is unsupported per the spi.Iterable doc — rejected up front,
+// transaction is unsupported per the spi.EntityStore.Iterate doc — rejected up front,
 // before any query is built. Postgres runs every transaction as a real
 // pgx.Tx and could technically order an in-tx scan natively, but the SPI
 // contract draws this line uniformly across backends, so it is honoured here
@@ -100,7 +98,7 @@ func (s *entityStore) Iterate(
 		return nil, fmt.Errorf("Iterate: ordered iteration inside a transaction is unsupported")
 	}
 
-	// Zero-value Filter means "match all" per the spi.Iterable contract.
+	// Zero-value Filter means "match all" per the spi.EntityStore.Iterate contract.
 	plan, err := planFor(filter)
 	if err != nil {
 		return nil, fmt.Errorf("Iterate: %w", err)
@@ -119,7 +117,7 @@ func (s *entityStore) Iterate(
 
 	// TrackingRead is gated exactly like Search's: current-state only
 	// (PointInTime == nil — an in-tx point-in-time read is committed-only and
-	// tracks nothing, consistent with GetAsAt/GetAllAsAt), and only when
+	// tracks nothing, consistent with GetAsAt), and only when
 	// requested. Bound as a closure so postgresIter's Next() can call it
 	// per-entity without knowing about entityStore/TransactionManager.
 	var recordRead func(id string, version int64)
@@ -404,7 +402,7 @@ func (s *entityStore) GroupedAggregate(
 	if err := validateGroupAndAggregatePaths(groupBy, opts.Aggregations); err != nil {
 		return nil, err
 	}
-	// Zero-value Filter means "match all" (same convention as Iterable).
+	// Zero-value Filter means "match all" (same convention as Iterate).
 	plan, err := planFor(filter)
 	if err != nil {
 		return nil, fmt.Errorf("GroupedAggregate: %w", err)

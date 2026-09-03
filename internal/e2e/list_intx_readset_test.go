@@ -151,8 +151,10 @@ func TestListIntxReadSet_ReturnedEntity_ConflictsOnCommit(t *testing.T) {
 }
 
 // TestListIntxReadSet_WholeModelRead_ConflictsOnUnreturnedEntity is case (c),
-// the revert control: it performs the PRE-NARROWING read — GetAll, which
-// records the whole model — and then runs case (a)'s exact scenario. The
+// the revert control: it performs a whole-model read through GetPage, which
+// records every returned page unconditionally — the same model-wide
+// read-set the pre-narrowing read produced — and then runs case (a)'s exact
+// scenario. The
 // commit must abort. That is the observed failure case (a) would produce if
 // ListEntities were rewired back onto a model-wide read, which is what makes
 // case (a) a real regression guard rather than a test that cannot fail.
@@ -188,17 +190,27 @@ func TestListIntxReadSet_WholeModelRead_ConflictsOnUnreturnedEntity(t *testing.T
 	}
 	offPage := otherThan(t, seeded, envelopeID(t, probe[0]))
 
-	// The pre-narrowing read: materialise the whole model inside tx A.
+	// The pre-narrowing read: drain the whole model inside tx A, page by
+	// page. GetPage records every entity it returns regardless of the
+	// tracking flag, so a full drain builds the model-wide read-set the old
+	// whole-model read built in one call.
 	store, err := testApp.StoreFactory().EntityStore(txCtxA)
 	if err != nil {
 		t.Fatalf("tx A EntityStore: %v", err)
 	}
-	all, err := store.GetAll(txCtxA, ref)
-	if err != nil {
-		t.Fatalf("tx A GetAll: %v", err)
+	var all []*spi.Entity
+	for offset := 0; ; offset += 100 {
+		page, pErr := store.GetPage(txCtxA, ref, 100, offset, nil)
+		if pErr != nil {
+			t.Fatalf("tx A GetPage(offset=%d): %v", offset, pErr)
+		}
+		all = append(all, page...)
+		if len(page) < 100 {
+			break
+		}
 	}
 	if len(all) != len(seeded) {
-		t.Fatalf("tx A GetAll: want %d entities, got %d", len(seeded), len(all))
+		t.Fatalf("tx A whole-model drain: want %d entities, got %d", len(seeded), len(all))
 	}
 
 	time.Sleep(10 * time.Millisecond)

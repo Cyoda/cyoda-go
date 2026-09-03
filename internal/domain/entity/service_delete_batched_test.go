@@ -73,7 +73,7 @@ func newDeleteBatchedCtx(t *testing.T, factory spi.StoreFactory) context.Context
 
 // buildDeleteBatchedHandler wires a Handler to factory/txMgr so
 // condition-based deletes exercise the production selection path (a
-// spi.Iterable drain, since the streamed-selection rework) rather than a stub.
+// Iterate drain, since the streamed-selection rework) rather than a stub.
 func buildDeleteBatchedHandler(t *testing.T, factory spi.StoreFactory, txMgr spi.TransactionManager) *Handler {
 	t.Helper()
 	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
@@ -147,16 +147,6 @@ func (s *deleteAllSpyStore) wasCalled() bool {
 	return s.called
 }
 
-// Iterate passes through to the embedded real store. spi.EntityStore is
-// embedded by interface value, which does NOT promote spi.Iterable's
-// Iterate method onto *deleteAllSpyStore even though the underlying
-// concrete store implements it — an explicit passthrough is required so
-// deleteBatched's own entityStore.(spi.Iterable) capability check succeeds
-// against this spy the same way it does against the real store.
-func (s *deleteAllSpyStore) Iterate(ctx context.Context, model spi.ModelRef, filter spi.Filter, opts spi.IterateOptions) (spi.Iterator, error) {
-	return s.EntityStore.(spi.Iterable).Iterate(ctx, model, filter, opts)
-}
-
 // mutateAfterSelectionStore wraps a real spi.EntityStore and, on the
 // Close() of whichever streamed selection cycle's Iterate() yielded
 // targetID, synchronously runs mutate — AFTER that cycle's iterator (and so
@@ -172,7 +162,7 @@ func (s *deleteAllSpyStore) Iterate(ctx context.Context, model spi.ModelRef, fil
 // guard this test exists to pin. Tracking yielded ids per iterator instance
 // (rather than hooking Get by id) also sidesteps depending on which
 // streamed cycle happens to contain targetID — unspecified per the
-// spi.Iterable contract.
+// Iterate contract.
 //
 // hookOnFirstGet switches the trigger from "that cycle's Close" to "the
 // first EntityStore.Get of targetID", which is what the pointInTime branch
@@ -213,7 +203,7 @@ func (s *mutateAfterSelectionStore) Get(ctx context.Context, id string) (*spi.En
 }
 
 func (s *mutateAfterSelectionStore) Iterate(ctx context.Context, model spi.ModelRef, filter spi.Filter, opts spi.IterateOptions) (spi.Iterator, error) {
-	it, err := s.EntityStore.(spi.Iterable).Iterate(ctx, model, filter, opts)
+	it, err := s.EntityStore.Iterate(ctx, model, filter, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +264,7 @@ func (f *deleteAllSpyFactory) EntityStore(_ context.Context) (spi.EntityStore, e
 
 // TestDeleteEntitiesConditional_Batched_HappyPath pins the batched path's
 // basic shape: 5 matching entities, batchSize=2 removes all 5 with an empty
-// IDToError. Since the streamed-selection rework, the selection streams via a fresh spi.Iterable
+// IDToError. Since the streamed-selection rework, the selection streams via a fresh Iterate
 // iterator per cycle instead of one upfront resolution transaction — a live
 // re-scan naturally shrinks as each cycle's deletes land, so there is no
 // separate resolution Begin/Commit any more, just one Begin per batch (3
@@ -611,7 +601,7 @@ func TestDeleteEntitiesConditional_NoBatchSize_Unchanged(t *testing.T) {
 // TestDeleteEntitiesConditional_Batched_PointInTime_SinglePassSelection pins
 // deleteBatched's pointInTime != nil branch (resolveBatchTargetsOnePass,
 // service.go): 8 matching entities, batchSize=3 (3 batches of 3,3,2)
-// resolve in exactly ONE spi.Iterable Iterate() call, not the nil-PIT
+// resolve in exactly ONE Iterate() call, not the nil-PIT
 // branch's per-cycle re-open — and the operation terminates and removes
 // every match. This is the direct regression guard for the non-termination
 // hazard deleteBatched's own doc comment identifies: re-scanning the same

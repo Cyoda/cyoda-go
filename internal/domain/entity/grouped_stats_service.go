@@ -18,11 +18,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/match"
 )
 
-// ErrBackendNotSupported is returned when the storage backend supports
-// neither spi.Iterable nor spi.GroupedAggregator. The HTTP handler maps
-// this to 501 NOT_IMPLEMENTED_BY_BACKEND.
-var ErrBackendNotSupported = errors.New("backend supports neither Iterable nor GroupedAggregator")
-
 // ErrInvalidCondition wraps any predicate.ParseCondition failure that
 // surfaces from the service-layer dispatch. The HTTP handler maps this
 // (via errors.Is) to 400 INVALID_CONDITION per spec §3. We need the
@@ -34,7 +29,7 @@ var ErrInvalidCondition = errors.New("invalid condition")
 
 // GroupedStatsService is the per-request dispatcher described in spec §4.
 // It decides between native pushdown (spi.GroupedAggregator) and the
-// streaming-tally fallback (spi.Iterable + in-process accumulator).
+// streaming-tally fallback (EntityStore.Iterate + in-process accumulator).
 type GroupedStatsService struct {
 	maxBuckets int
 }
@@ -54,7 +49,7 @@ func NewGroupedStatsService(maxBuckets int) *GroupedStatsService {
 // Internal fallback.
 func (s *GroupedStatsService) QueryGroupedStats(
 	ctx context.Context,
-	store any,
+	store spi.EntityStore,
 	model spi.ModelRef,
 	fields map[string]schema.FieldDescriptor,
 	req *ValidatedGroupedStatsRequest,
@@ -66,15 +61,12 @@ func (s *GroupedStatsService) QueryGroupedStats(
 	return buckets, nil
 }
 
-// classifyGroupedStatsError maps the seven known sentinels to operational
+// classifyGroupedStatsError maps the known sentinels to operational
 // AppErrors (each wrapping the sentinel via WithCause so errors.Is still
 // holds); any other error is returned unchanged (surfaces as 500 at the
 // transport).
 func classifyGroupedStatsError(err error) error {
 	switch {
-	case errors.Is(err, ErrBackendNotSupported):
-		return common.Operational(http.StatusNotImplemented, common.ErrCodeNotImplementedByBackend,
-			"backend does not support grouped stats").WithCause(err)
 	case errors.Is(err, spi.ErrGroupCardinalityExceeded):
 		return common.Operational(http.StatusUnprocessableEntity, common.ErrCodeGroupCardinalityExceeded,
 			"group cardinality exceeds the configured maximum").WithCause(err)
@@ -100,15 +92,14 @@ func classifyGroupedStatsError(err error) error {
 		// backend's own backstop rejecting a path outside the model's syntax.
 		//
 		// spi.ErrUnevaluableLeaf / spi.ErrInvalidPattern reach here from the
-		// streaming-tally fallback's own store.Iterate call (tallyStreaming
-		// passes it the pushdown Filter — with Declared possibly empty for a
-		// bare-typeless field — the same way SearchService.Search's Iterate
-		// branch does), or from a GroupedAggregator pushdown attempt.
+		// streaming tally's own store.Iterate call (tallyStreaming passes it
+		// the pushdown Filter — with Declared possibly empty for a
+		// bare-typeless field), or from a GroupedAggregator pushdown attempt.
 		//
 		// match.ErrUnevaluableLeaf / match.ErrUnsupportedOperator reach here
-		// from tallyStreaming's OWN match.Prepare call (the residual
-		// evaluator, used only when the condition doesn't translate to a
-		// pushdown Filter at all).
+		// from the criterion evaluator this package shares, not from grouped
+		// stats itself: the streaming tally has no in-process predicate of
+		// its own any more.
 		//
 		// All five used to propagate raw, with no case here to catch them, so
 		// they fell through to the generic 500 below — the identical defect
@@ -124,23 +115,23 @@ func classifyGroupedStatsError(err error) error {
 }
 
 // queryGroupedStatsInner dispatches a validated grouped-stats request
-// against any storage backend. The store parameter is intentionally `any`
-// — capabilities are detected via type assertion so a backend can satisfy
-// one or both of spi.Iterable / spi.GroupedAggregator.
+// against any storage backend. Every backend implements Iterate, so the
+// query always has an execution path; GroupedAggregator is the optional
+// pushdown on top of it.
 //
-// Decision tree (spec §4, decisions D11/D14/D15):
+// Decision tree (spec §4, decisions D11/D14):
 //  1. Native pushdown — only when (a) store implements GroupedAggregator,
-//     (b) the request's Condition translates cleanly to spi.Filter, AND
-//     (c) we're not inside a transaction (D11: tx visibility requires the
-//     streaming path).
-//  2. Streaming fallback — when store implements Iterable. If the filter
-//     translates, push it; otherwise pass zero-value and re-apply the
-//     prepared predicate (match.Prepare/(Prepared).Match) per yielded
-//     entity (D15).
-//  3. Neither — return ErrBackendNotSupported (handler maps to 501).
+//     (b) the store accepts the shape, AND (c) we're not inside a
+//     transaction (D11: tx visibility requires the streaming path).
+//  2. Otherwise stream Iterate with the translated filter and tally.
+//
+// A condition that will not translate is refused before either branch, so
+// neither ever sees a filter that does not match the request. Spec §4's D15
+// — pass a zero-value filter and re-apply the predicate per yielded entity —
+// is retired with the whole-model-scan family it belonged to.
 func (s *GroupedStatsService) queryGroupedStatsInner(
 	ctx context.Context,
-	store any,
+	store spi.EntityStore,
 	model spi.ModelRef,
 	fields map[string]schema.FieldDescriptor,
 	req *ValidatedGroupedStatsRequest,
@@ -233,33 +224,42 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 		}
 	}
 
-	// Try to translate to a pushdown-friendly Filter. A nil parsedCond
-	// yields the zero-value Filter ("match all"); a parsedCond that the
-	// translator can't handle (a function condition — the kernel now
-	// resolves a subscripted/wildcard path directly, see spi.ResolvePath, so
-	// that shape TRANSLATES like any other rather than erroring here)
-	// returns an error — in that case the streaming branch will re-apply the
-	// prepared predicate (match.Prepare/(Prepared).Match) per entity.
+	// Translate to a pushdown Filter. A nil parsedCond yields the zero-value
+	// Filter ("match all").
+	//
+	// One path, as on search and conditional delete: the condition either
+	// translates or the request is refused. A translation failure is
+	// unreachable from input that cleared search.ValidateCondition above —
+	// the same pairing search runs, checked by
+	// TestDeleteAndGroupedStats_ClearingImpliesTranslates — so refusing
+	// costs no valid request.
+	//
 	// Translating is not the same as pushing down: a wildcard leaf still has
 	// no SQL form on either backend (each SQL planner's isLeafPushable
-	// routes it to the residual, see spi.ErrAggregationNotPushdownable
-	// below), so a successfully-translated wildcard Filter can still fall
-	// through to the streaming branch below.
+	// routes it to that backend's own residual, see
+	// spi.ErrAggregationNotPushdownable below), so a
+	// successfully-translated wildcard Filter can still fall through to the
+	// streaming branch below. That residual is the backend's, applied to a
+	// filter it was actually given — not a whole-model scan re-matched in
+	// this process.
 	var pushFilter spi.Filter
-	pushable := true
 	if parsedCond != nil {
 		f, terr := spi.ConditionToFilter(parsedCond, fields)
 		if terr != nil {
-			pushable = false
-		} else {
-			pushFilter = f
+			if appErr := search.ClassifyStoreQueryError(terr); appErr != nil {
+				return nil, appErr
+			}
+			return nil, common.Operational(http.StatusBadRequest,
+				common.ErrCodeInvalidCondition,
+				"condition cannot be translated to a backend predicate")
 		}
+		pushFilter = f
 	}
 
 	inTx := spi.GetTransaction(ctx) != nil
 
 	// 1. Native pushdown branch.
-	if ga, ok := store.(spi.GroupedAggregator); ok && !inTx && pushable {
+	if ga, ok := store.(spi.GroupedAggregator); ok && !inTx {
 		spiGroups := translateGroupBy(req.GroupBy)
 		spiAggs := translateAggregations(req.Aggregations)
 		out, err := ga.GroupedAggregate(ctx, model, spiGroups, pushFilter, spi.GroupedAggregationsOptions{
@@ -276,60 +276,27 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 		// Plugin declined this shape; fall through to streaming.
 	}
 
-	// 2. Streaming fallback.
-	if it, ok := store.(spi.Iterable); ok {
-		return s.tallyStreaming(ctx, it, model, fields, req, pushFilter, pushable, parsedCond)
-	}
-
-	// 3. Neither capability.
-	return nil, ErrBackendNotSupported
+	// 2. Stream and tally.
+	return s.tallyStreaming(ctx, store, model, fields, req, pushFilter)
 }
 
-// tallyStreaming implements the spec §4 streaming branch: iterate, apply
-// any unpushable residual via a prepared match.Prepared, group, accumulate,
-// materialize.
+// tallyStreaming implements the spec §4 streaming branch: iterate the
+// translated filter, group, accumulate, materialize.
+//
+// It used to carry a residual of its own: when the condition would not
+// translate, it passed a zero-value filter and re-applied the predicate per
+// yielded entity — a whole-model scan matched in this process. The caller
+// refuses a translation failure now, so pushFilter is always what the
+// condition translated to and every yielded entity already matches.
 func (s *GroupedStatsService) tallyStreaming(
 	ctx context.Context,
-	it spi.Iterable,
+	store spi.EntityStore,
 	model spi.ModelRef,
 	fields map[string]schema.FieldDescriptor,
 	req *ValidatedGroupedStatsRequest,
 	pushFilter spi.Filter,
-	pushable bool,
-	parsedCond predicate.Condition,
 ) ([]GroupedStatsBucket, error) {
-	// Declared-type resolver for the residual predicate evaluation below, so the
-	// streaming path types data leaves consistently with the pushdown filter
-	// (both stamped from `fields`). A nil `fields` yields a nil-returning
-	// resolver, which the evaluator tolerates.
-	fieldTypes := func(p string) []spi.DataType {
-		if fd, ok := fields[p]; ok {
-			return fd.Types
-		}
-		return nil
-	}
-	// Prepared once, only when there is actually a residual to apply. The
-	// guard mirrors the one in the loop below exactly: preparing an unused
-	// condition would resolve declared types for a query that never evaluates
-	// it.
-	var residual match.Prepared
-	if !pushable && parsedCond != nil {
-		p, err := match.Prepare(parsedCond, fieldTypes)
-		if err != nil {
-			return nil, err
-		}
-		residual = p
-	}
-
-	// D15: if the filter wasn't pushable, pass zero-value to the iterator
-	// (match-all) and re-apply the residual inside the loop. Otherwise
-	// trust the plugin to apply pushFilter itself.
-	iterFilter := pushFilter
-	if !pushable {
-		iterFilter = spi.Filter{}
-	}
-
-	iter, err := it.Iterate(ctx, model, iterFilter, spi.IterateOptions{PointInTime: req.PointInTime})
+	iter, err := store.Iterate(ctx, model, pushFilter, spi.IterateOptions{PointInTime: req.PointInTime})
 	if err != nil {
 		return nil, err
 	}
@@ -347,8 +314,8 @@ func (s *GroupedStatsService) tallyStreaming(
 		// error at Close, not at the last Next(), so reading Err() before
 		// Close() runs (the previous shape here, with a bare
 		// `defer iter.Close()` registered ahead of a same-function
-		// `iter.Err()` call that executed first) can miss it. Mirrors
-		// drainIterate's ordering (internal/domain/search/service.go).
+		// `iter.Err()` call that executed first) can miss it. Err() is
+		// read after Close() everywhere an iterator is drained.
 		defer func() {
 			if closeErr := iter.Close(); closeErr != nil {
 				scanErr = closeErr
@@ -359,13 +326,6 @@ func (s *GroupedStatsService) tallyStreaming(
 		}()
 		for iter.Next() {
 			e := iter.Entity()
-
-			// Residual predicate evaluation: only when the original condition
-			// was not pushable and we therefore need to filter per entity.
-			if !pushable && parsedCond != nil && !residual.Match(e.Data, e.Meta) {
-				continue
-			}
-
 			keyValues, groupKey := buildGroupKeyFromEntity(req.GroupBy, e)
 			k := buildGroupKey(keyValues)
 			if !acc.has(k) && acc.len() >= s.maxBuckets {

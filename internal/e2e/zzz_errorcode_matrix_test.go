@@ -58,7 +58,7 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 	//     full surface out of scope.
 	//   queryGroupedEntityStatisticsForModel: 404 MODEL_NOT_FOUND proven by
 	//     TestGroupedStats_UnknownModel_404 (grouped_stats_test.go); full surface
-	//     (MISSING_GROUP_BY, GROUP_CARDINALITY_EXCEEDED, NOT_IMPLEMENTED_BY_BACKEND)
+	//     (MISSING_GROUP_BY, GROUP_CARDINALITY_EXCEEDED)
 	//     out of scope for this slice.
 	"getAllEntities": {
 		{Status: 404, Code: "MODEL_NOT_FOUND"}, // TestGetAllEntities_UnknownModel_404

@@ -94,7 +94,7 @@ func TestGroupedStatsHandler_RejectsUnknownTopLevelField(t *testing.T) {
 }
 
 func TestGroupedStatsHandler_Returns404OnUnknownModel(t *testing.T) {
-	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+	resolver := func(_ *http.Request, _, _ string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 		return nil, spi.ModelRef{}, nil, nil, false, nil
 	}
 	h := entity.NewGroupedStatsHandler(resolver, 10000)
@@ -112,27 +112,6 @@ func TestGroupedStatsHandler_Returns404OnUnknownModel(t *testing.T) {
 	}
 }
 
-func TestGroupedStatsHandler_BackendNotSupportedReturns501(t *testing.T) {
-	// "store" satisfies neither Iterable nor GroupedAggregator.
-	type empty struct{}
-	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
-		return empty{}, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, nil, true, nil
-	}
-	h := entity.NewGroupedStatsHandler(resolver, 10000)
-	body := strings.NewReader(`{"groupBy":["state"]}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/entity/stats/X/1/query", body)
-	req.SetPathValue("entityName", "X")
-	req.SetPathValue("modelVersion", "1")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("status %d, want 501 (body: %s)", rec.Code, rec.Body.String())
-	}
-	if got := decodeProblemErrorCode(t, rec.Body.Bytes()); got != "NOT_IMPLEMENTED_BY_BACKEND" {
-		t.Fatalf("errorCode=%s, want NOT_IMPLEMENTED_BY_BACKEND (body: %s)", got, rec.Body.String())
-	}
-}
-
 func TestGroupedStatsHandler_GroupCardinalityExceededReturns422(t *testing.T) {
 	// Stream three rows with a maxBuckets=1 ceiling — second distinct state trips the SPI sentinel.
 	rows := []*spi.Entity{
@@ -140,7 +119,7 @@ func TestGroupedStatsHandler_GroupCardinalityExceededReturns422(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "allocated"}, Data: []byte(`{}`)},
 	}
 	store := &fakeIterable{entities: rows}
-	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+	resolver := func(_ *http.Request, _, _ string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, nil, true, nil
 	}
 	h := entity.NewGroupedStatsHandler(resolver, 1)
@@ -163,7 +142,7 @@ func TestGroupedStatsHandler_InvalidConditionReturns400(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
 	}
 	store := &fakeIterable{entities: rows}
-	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+	resolver := func(_ *http.Request, _, _ string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, nil, true, nil
 	}
 	h := entity.NewGroupedStatsHandler(resolver, 10000)
@@ -187,7 +166,7 @@ func TestGroupedStatsHandler_LifecycleTemporalTypeMismatchReturns400(t *testing.
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
 	}
 	store := &fakeIterable{entities: rows}
-	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+	resolver := func(_ *http.Request, _, _ string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, nil, true, nil
 	}
 	h := entity.NewGroupedStatsHandler(resolver, 10000)
@@ -213,7 +192,7 @@ func TestGroupedStatsHandler_UnknownMetaFieldReturns400(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
 	}
 	store := &fakeIterable{entities: rows}
-	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+	resolver := func(_ *http.Request, _, _ string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, nil, true, nil
 	}
 	h := entity.NewGroupedStatsHandler(resolver, 10000)
@@ -238,7 +217,7 @@ func TestGroupedStatsHandler_MalformedBetweenArityReturns400(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"price":10}`)},
 	}
 	store := &fakeIterable{entities: rows}
-	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+	resolver := func(_ *http.Request, _, _ string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, nil, true, nil
 	}
 	h := entity.NewGroupedStatsHandler(resolver, 10000)
@@ -263,7 +242,7 @@ func TestGroupedStatsHandler_HappyPathReturns200(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "allocated"}, Data: []byte(`{}`)},
 	}
 	store := &fakeIterable{entities: rows}
-	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+	resolver := func(_ *http.Request, _, _ string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, nil, true, nil
 	}
 	h := entity.NewGroupedStatsHandler(resolver, 10000)
@@ -293,7 +272,7 @@ func TestGroupedStatsHandler_HappyPathReturns200(t *testing.T) {
 }
 
 func TestGroupedStatsHandler_ResolverError_Returns500(t *testing.T) {
-	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+	resolver := func(_ *http.Request, _, _ string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 		return nil, spi.ModelRef{}, nil, nil, false, errors.New("boom")
 	}
 	h := entity.NewGroupedStatsHandler(resolver, 10000)
@@ -310,7 +289,7 @@ func TestGroupedStatsHandler_ResolverError_Returns500(t *testing.T) {
 
 // Compile-time sanity: confirm the StoreResolver signature is what the
 // router-wiring site expects.
-var _ entity.StoreResolver = func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+var _ entity.StoreResolver = func(_ *http.Request, _, _ string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 	return nil, spi.ModelRef{}, nil, nil, false, nil
 }
 
@@ -374,7 +353,7 @@ func groupedStatsPathReq(t *testing.T, body string) *httptest.ResponseRecorder {
 		"$.name": {Path: "$.name", Types: []spi.DataType{spi.String}},
 		"$.age":  {Path: "$.age", Types: []spi.DataType{spi.Integer}},
 	}
-	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+	resolver := func(_ *http.Request, _, _ string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 		return &fakeIterable{}, ref, fields, ms, true, nil
 	}
 	h := entity.NewGroupedStatsHandler(resolver, 10000)
@@ -496,7 +475,7 @@ func TestGroupedStatsHandler_SchemaRefreshFailure_Returns5xxNot400(t *testing.T)
 	fields := map[string]schema.FieldDescriptor{
 		"$.name": {Path: "$.name", Types: []spi.DataType{spi.String}},
 	}
-	resolver := func(_ *http.Request, _, _ string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+	resolver := func(_ *http.Request, _, _ string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 		return &fakeIterable{}, ref, fields, ms, true, nil
 	}
 	h := entity.NewGroupedStatsHandler(resolver, 10000)

@@ -41,7 +41,7 @@ func TestSqlitePIT_SearchSelectMatchesGetAsAtRefetch(t *testing.T) {
 	}
 
 	pit := pitBase
-	searcher := store.(spi.Searcher)
+	searcher := store
 	results, err := searcher.Search(ctx,
 		spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{ModelName: "person", ModelVersion: "1", PointInTime: &pit, Limit: 10})

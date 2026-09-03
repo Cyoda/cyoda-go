@@ -44,13 +44,9 @@ func setupSearcher(t *testing.T) (spi.EntityStore, context.Context) {
 	return store, ctx
 }
 
-func searcherOf(t *testing.T, store spi.EntityStore) spi.Searcher {
+func searcherOf(t *testing.T, store spi.EntityStore) spi.EntityStore {
 	t.Helper()
-	sr, ok := store.(spi.Searcher)
-	if !ok {
-		t.Fatal("postgres entityStore does not implement spi.Searcher")
-	}
-	return sr
+	return store
 }
 
 // searcherBaseLimit is generously above every baseOpts() caller's expected
@@ -325,7 +321,7 @@ func TestPGSearcher_OrderByNumericData(t *testing.T) {
 			t.Fatalf("Save %s: %v", e.id, err)
 		}
 	}
-	sr := store.(spi.Searcher)
+	sr := store
 	results, err := sr.Search(ctx,
 		spi.Filter{Op: spi.FilterNotNull, Path: "n", Source: spi.SourceData},
 		spi.SearchOptions{
@@ -383,7 +379,7 @@ func TestPGSearcher_OrderByCreationDateMeta(t *testing.T) {
 			t.Fatalf("patch creation_date %s: %v", pair.id, err)
 		}
 	}
-	sr := store.(spi.Searcher)
+	sr := store
 	results, err := sr.Search(ctx,
 		spi.Filter{Op: spi.FilterNotNull, Path: "v", Source: spi.SourceData},
 		spi.SearchOptions{
@@ -425,7 +421,7 @@ func TestPGSearcher_OrderByStateMeta(t *testing.T) {
 			t.Fatalf("Save %s: %v", e.id, err)
 		}
 	}
-	sr := store.(spi.Searcher)
+	sr := store
 	results, err := sr.Search(ctx,
 		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "x", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
@@ -484,7 +480,7 @@ func TestPGSearcher_OrderByMetaEmptyTransitionLast(t *testing.T) {
 		t.Fatalf("patch transition e-has: %v", err)
 	}
 
-	sr := store.(spi.Searcher)
+	sr := store
 	results, err := sr.Search(ctx,
 		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "y", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
@@ -524,7 +520,7 @@ func TestPGSearcher_OrderByNullsLast(t *testing.T) {
 			t.Fatalf("Save %s: %v", e.id, err)
 		}
 	}
-	sr := store.(spi.Searcher)
+	sr := store
 	// FilterNotNull on "present" matches all three entities (all have the field).
 	// Sorting by "score" ASC with NULLS LAST puts the null score last.
 	results, err := sr.Search(ctx,
@@ -562,7 +558,7 @@ func TestPGSearcher_OrderByTiebreaker(t *testing.T) {
 			t.Fatalf("Save %s: %v", id, err)
 		}
 	}
-	sr := store.(spi.Searcher)
+	sr := store
 	results, err := sr.Search(ctx,
 		spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
@@ -616,7 +612,7 @@ func TestPGSearcher_OrderByPointInTime(t *testing.T) {
 		}
 	}
 	pit, _ := time.Parse(time.RFC3339, "2026-05-01T00:00:00Z")
-	sr := store.(spi.Searcher)
+	sr := store
 	results, err := sr.Search(ctx,
 		spi.Filter{Op: spi.FilterNotNull, Path: "v", Source: spi.SourceData},
 		spi.SearchOptions{
@@ -809,12 +805,11 @@ func TestPGSearcher_NeNumeric_MissingField(t *testing.T) {
 	}
 }
 
-// Compile-time guard mirrored as a runtime assertion for clarity.
+// Compile-time guard mirrored as a runtime assertion for clarity: Search is a
+// required spi.EntityStore method, so any *entityStore already satisfies it.
 func TestPGSearcher_ImplementsSearcher(t *testing.T) {
 	store, ctx := setupSearcher(t)
-	if _, ok := store.(spi.Searcher); !ok {
-		t.Fatal("postgres entityStore must implement spi.Searcher")
-	}
+	var _ spi.EntityStore = store
 	_ = ctx
 }
 
@@ -872,7 +867,7 @@ func TestPGSearcher_PointInTimeDefaultOrder(t *testing.T) {
 	store, ctx, base := pitSearchSetup(t)
 	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1", PointInTime: &base, Limit: searcherBaseLimit}
 
-	active, err := store.(spi.Searcher).Search(ctx,
+	active, err := store.Search(ctx,
 		spi.Filter{Op: spi.FilterEq, Path: "status", Source: spi.SourceData, Value: "active", Declared: []spi.DataType{spi.String}}, opts)
 	if err != nil {
 		t.Fatalf("Search active@base: %v", err)
@@ -881,7 +876,7 @@ func TestPGSearcher_PointInTimeDefaultOrder(t *testing.T) {
 		t.Fatalf("status=active @base: want 1 (v1 snapshot), got %d", len(active))
 	}
 
-	inactive, err := store.(spi.Searcher).Search(ctx,
+	inactive, err := store.Search(ctx,
 		spi.Filter{Op: spi.FilterEq, Path: "status", Source: spi.SourceData, Value: "inactive", Declared: []spi.DataType{spi.String}}, opts)
 	if err != nil {
 		t.Fatalf("Search inactive@base: %v", err)
@@ -915,7 +910,7 @@ func TestPGSearcher_OrderByNullsLastDesc(t *testing.T) {
 			t.Fatalf("Save %s: %v", e.id, err)
 		}
 	}
-	sr := store.(spi.Searcher)
+	sr := store
 	// DESC on "score": "90" > "50" lexically, so order is high-score, has-score.
 	// no-score (NULL) must still be LAST. Without "NULLS LAST", DESC puts it
 	// FIRST — the assertion on the last element proves "NULLS LAST" is present.
@@ -956,7 +951,7 @@ func TestPGSearcher_OrderByBool(t *testing.T) {
 			t.Fatalf("Save %s: %v", e.id, err)
 		}
 	}
-	sr := store.(spi.Searcher)
+	sr := store
 
 	// ASC: false < true → f, t.
 	asc, err := sr.Search(ctx,
@@ -1139,11 +1134,7 @@ func TestPGSearcher_NegativeLimitRejected(t *testing.T) {
 func TestPGSearcher_InTxOverLimitFails(t *testing.T) {
 	factory, tm := setupFCWTest(t)
 	ctx := ctxWithTenant("bounded-search-tx-tenant")
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(txCtx, txID) }()
+	_, txCtx := beginGuarded(t, tm, ctx)
 	store, err := factory.EntityStore(txCtx)
 	if err != nil {
 		t.Fatalf("EntityStore (tx): %v", err)

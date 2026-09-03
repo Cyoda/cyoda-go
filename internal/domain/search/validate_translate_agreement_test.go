@@ -9,11 +9,10 @@ import (
 )
 
 // TestValidateCondition_ClearingImpliesTranslates is the empirical check for
-// service_test.go's claim (TestSearch_FallbackBranchIsBounded_TranslateFailureRoute's
-// doc comment): once a non-nil condition clears search.ValidateCondition,
-// every reachable shape also clears spi.ConditionToFilter — i.e. the
-// in-memory translate-failure fallback is unreachable from validated,
-// non-nil input.
+// the claim Search rests on: once a non-nil condition clears
+// search.ValidateCondition, every reachable shape also clears
+// spi.ConditionToFilter — i.e. a translation failure is unreachable from
+// validated, non-nil input, so refusing one costs no valid request.
 //
 // Before this deliverable's C1 fix that was FALSE and undetected: the
 // boundary's subscript check (digit class only) and spi.ParseFilterPath's
@@ -84,7 +83,9 @@ func assertClearingImpliesTranslates(t *testing.T, cond predicate.Condition) {
 		t.Fatalf("ValidateCondition = %v, want nil (test fixture is meant to be a valid condition)", err)
 	}
 	if _, err := spi.ConditionToFilter(cond, nil); err != nil {
-		t.Errorf("cleared ValidateCondition but ConditionToFilter failed: %v — the claim in "+
-			"TestSearch_FallbackBranchIsBounded_TranslateFailureRoute's doc comment is violated", err)
+		t.Errorf("cleared ValidateCondition but ConditionToFilter failed: %v — every entry "+
+			"point that pairs these two calls (SearchService.Search, SubmitAsync, "+
+			"Handler.planDeleteSelection, GroupedStatsService.queryGroupedStatsInner) "+
+			"refuses a translation failure, and this is the claim that makes that free", err)
 	}
 }

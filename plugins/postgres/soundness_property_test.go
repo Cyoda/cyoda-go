@@ -184,7 +184,7 @@ func findByID(t *testing.T, corpus []*spi.Entity, id string) *spi.Entity {
 func TestPostgresPushdownSoundnessProperty(t *testing.T) {
 	factory, store, ctx := gsNewStore(t)
 	corpus := buildSoundnessCorpus(t, ctx, store)
-	searcher := store.(spi.Searcher)
+	searcher := store
 	pool := postgres.PoolForTest(factory)
 
 	// e1's own persisted creationDate — an exact SOUND-SUPERSET boundary
@@ -315,7 +315,7 @@ func TestPostgresPushdownSoundness_EndsWithUnderSelects_KNOWNBUG(t *testing.T) {
 		t.Fatalf("test setup invalid: kernel oracle must match ENDS_WITH 'get' against 'Widget'")
 	}
 
-	searcher := store.(spi.Searcher)
+	searcher := store
 	results, err := searcher.Search(ctx, filter, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion, Limit: len(soundnessCorpusRows) + 1})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -354,7 +354,7 @@ func TestPostgresPushdownSoundness_LikeWildcardUnderSelects_KNOWNBUG(t *testing.
 		t.Fatalf("test setup invalid: kernel oracle must match wildcard pattern 'foo%%baz' against 'foobarbaz'")
 	}
 
-	searcher := store.(spi.Searcher)
+	searcher := store
 	results, err := searcher.Search(ctx, filter, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion, Limit: len(soundnessCorpusRows) + 1})
 	if err != nil {
 		t.Fatalf("Search: %v", err)

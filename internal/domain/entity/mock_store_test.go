@@ -63,10 +63,10 @@ func (s *failingEntityStore) Get(_ context.Context, _ string) (*spi.Entity, erro
 func (s *failingEntityStore) GetAsAt(_ context.Context, _ string, _ time.Time) (*spi.Entity, error) {
 	return nil, s.err
 }
-func (s *failingEntityStore) GetAll(_ context.Context, _ spi.ModelRef) ([]*spi.Entity, error) {
+func (s *failingEntityStore) Search(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) {
 	return nil, s.err
 }
-func (s *failingEntityStore) GetAllAsAt(_ context.Context, _ spi.ModelRef, _ time.Time) ([]*spi.Entity, error) {
+func (s *failingEntityStore) Iterate(_ context.Context, _ spi.ModelRef, _ spi.Filter, _ spi.IterateOptions) (spi.Iterator, error) {
 	return nil, s.err
 }
 func (s *failingEntityStore) Delete(_ context.Context, _ string) error {

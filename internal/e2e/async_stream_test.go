@@ -255,7 +255,7 @@ type blockingIterateStore struct {
 
 func (s *blockingIterateStore) Iterate(ctx context.Context, model spi.ModelRef, filter spi.Filter, opts spi.IterateOptions) (spi.Iterator, error) {
 	s.gate.wait(ctx)
-	return s.EntityStore.(spi.Iterable).Iterate(ctx, model, filter, opts)
+	return s.EntityStore.Iterate(ctx, model, filter, opts)
 }
 
 type blockingIterateFactory struct {

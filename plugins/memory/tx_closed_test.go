@@ -36,11 +36,6 @@ func TestTx_ClosedTransaction_RefusesEveryEntryPoint(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	iterable, ok := any(store).(spi.Iterable)
-	if !ok {
-		t.Fatalf("EntityStore does not implement spi.Iterable")
-	}
-
 	cases := []struct {
 		name string
 		call func(context.Context) error
@@ -57,8 +52,10 @@ func TestTx_ClosedTransaction_RefusesEveryEntryPoint(t *testing.T) {
 			_, err := store.Exists(c, "e-closed")
 			return err
 		}},
-		{"GetAll", func(c context.Context) error {
-			_, err := store.GetAll(c, ref)
+		{"Search", func(c context.Context) error {
+			_, err := store.Search(c, spi.Filter{}, spi.SearchOptions{
+				ModelName: ref.EntityName, ModelVersion: ref.ModelVersion, Limit: 10,
+			})
 			return err
 		}},
 		{"GetPage", func(c context.Context) error {
@@ -66,7 +63,7 @@ func TestTx_ClosedTransaction_RefusesEveryEntryPoint(t *testing.T) {
 			return err
 		}},
 		{"Iterate", func(c context.Context) error {
-			it, err := iterable.Iterate(c, ref, spi.Filter{}, spi.IterateOptions{})
+			it, err := store.Iterate(c, ref, spi.Filter{}, spi.IterateOptions{})
 			if err != nil {
 				return err
 			}

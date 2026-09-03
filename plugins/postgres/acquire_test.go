@@ -25,10 +25,7 @@ func TestBegin_AcquireDeadlineDoesNotLeakIntoTheTransaction(t *testing.T) {
 	tm, _ := newTestTxManager(t, withAcquireTimeout(200*time.Millisecond))
 	ctx := ctxWithTenant("acquire-tenant")
 
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
+	txID, txCtx := beginGuarded(t, tm, ctx)
 
 	const idle = 500 * time.Millisecond // well past the acquire deadline
 	time.Sleep(idle)
@@ -51,16 +48,13 @@ func TestBegin_PoolSaturated_ReportsStorageUnavailable(t *testing.T) {
 	tm, _ := newTestTxManager(t, withMaxConns(1), withAcquireTimeout(200*time.Millisecond))
 	ctx := ctxWithTenant("acquire-tenant")
 
-	holdID, holdCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("first begin: %v", err)
-	}
-	// Hand the only connection back before the fixture's schema cleanup runs:
-	// it acquires from this same pool and would otherwise block forever.
-	defer func() { _ = tm.Rollback(holdCtx, holdID) }()
+	// The guard hands the only connection back before the fixture's schema
+	// cleanup runs: that cleanup acquires from this same pool and would
+	// otherwise block forever.
+	_, _ = beginGuarded(t, tm, ctx)
 
 	start := time.Now()
-	_, _, err = tm.Begin(ctx)
+	_, _, err := tm.Begin(ctx)
 	elapsed := time.Since(start)
 	if err == nil {
 		t.Fatal("second begin succeeded on a one-connection pool")
@@ -104,16 +98,12 @@ func TestBegin_CallerDeadlineOnSaturatedPool_IsNotStorageUnavailable(t *testing.
 	tm, _ := newTestTxManager(t, withMaxConns(1), withAcquireTimeout(30*time.Second))
 	ctx := ctxWithTenant("acquire-tenant")
 
-	holdID, holdCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("first begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(holdCtx, holdID) }()
+	_, _ = beginGuarded(t, tm, ctx)
 
 	callerCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer cancel()
 
-	_, _, err = tm.Begin(callerCtx)
+	_, _, err := tm.Begin(callerCtx)
 	if err == nil {
 		t.Fatal("second begin succeeded on a one-connection pool")
 	}

@@ -9,11 +9,7 @@ import (
 func TestValidateInChunks_EmptyIDs(t *testing.T) {
 	tm, _ := newTestTxManager(t)
 	ctx := ctxWithTenant("t1")
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer tm.Rollback(ctx, txID) //nolint:errcheck
+	txID, txCtx := beginGuarded(t, tm, ctx)
 	tx, _ := tm.LookupTx(txID)
 	current, err := postgres.ValidateInChunksForTest(tm, txCtx, tx, "t1", nil, 100)
 	if err != nil {
@@ -32,11 +28,7 @@ func TestValidateInChunks_SingleChunk(t *testing.T) {
 		VALUES ('t1', 'e1', 'M', '1', 3, false, '{}'::jsonb),
 		       ('t1', 'e2', 'M', '1', 7, false, '{}'::jsonb)
 	`)
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer tm.Rollback(ctx, txID) //nolint:errcheck
+	txID, txCtx := beginGuarded(t, tm, ctx)
 	tx, _ := tm.LookupTx(txID)
 	current, err := postgres.ValidateInChunksForTest(tm, txCtx, tx, "t1", []string{"e1", "e2"}, 100)
 	if err != nil {
@@ -56,11 +48,7 @@ func TestValidateInChunks_MultipleChunks(t *testing.T) {
 			VALUES ('t1', $1, 'M', '1', $2, false, '{}'::jsonb)
 		`, id, int64(i+1))
 	}
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer tm.Rollback(ctx, txID) //nolint:errcheck
+	txID, txCtx := beginGuarded(t, tm, ctx)
 	tx, _ := tm.LookupTx(txID)
 	current, err := postgres.ValidateInChunksForTest(tm, txCtx, tx, "t1",
 		[]string{"a", "b", "c", "d", "e"}, 2) // chunk size 2 → 3 chunks
@@ -80,11 +68,7 @@ func TestValidateInChunks_TenantScoped(t *testing.T) {
 		VALUES ('t1', 'e1', 'M', '1', 1, false, '{}'::jsonb),
 		       ('t2', 'e1', 'M', '1', 99, false, '{}'::jsonb)
 	`)
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer tm.Rollback(ctx, txID) //nolint:errcheck
+	txID, txCtx := beginGuarded(t, tm, ctx)
 	tx, _ := tm.LookupTx(txID)
 	current, err := postgres.ValidateInChunksForTest(tm, txCtx, tx, "t1", []string{"e1"}, 100)
 	if err != nil {

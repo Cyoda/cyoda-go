@@ -41,13 +41,10 @@ func newSaturatedFactory(t *testing.T, acquire time.Duration) (*postgres.StoreFa
 	tm, pool := newTestTxManager(t, withMaxConns(1), withAcquireTimeout(acquire))
 	ctx := ctxWithTenant("self-wrap-tenant")
 
-	holdID, holdCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("hold begin: %v", err)
-	}
-	// Hand the only connection back before the fixture's schema cleanup runs;
-	// that cleanup acquires from this same pool and would otherwise block.
-	t.Cleanup(func() { _ = tm.Rollback(holdCtx, holdID) })
+	// The guard hands the only connection back before the fixture's schema
+	// cleanup runs; that cleanup acquires from this same pool and would
+	// otherwise block.
+	_, _ = beginGuarded(t, tm, ctx)
 
 	return postgres.NewStoreFactoryWithAcquireTimeoutForTest(pool, acquire), ctx
 }
@@ -134,10 +131,7 @@ func asyncScanSearch(t *testing.T, callerCtx context.Context, f *postgres.StoreF
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	searcher, ok := es.(spi.Searcher)
-	if !ok {
-		t.Fatalf("entity store is not a Searcher: %T", es)
-	}
+	searcher := es
 	_, err = searcher.Search(scoper.AsyncScanContext(callerCtx), spi.Filter{}, spi.SearchOptions{
 		ModelName: "Widget", ModelVersion: "1",
 		// Limit must be >= 1 (Search is bounded-or-fail) so this reaches the

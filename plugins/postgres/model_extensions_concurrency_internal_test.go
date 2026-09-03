@@ -46,19 +46,13 @@ func TestExtendSchema_OverlappingTx_CommittedDeltaSurvivesSavepointFold(t *testi
 
 	// T1 begins first and pins its REPEATABLE READ snapshot with a read,
 	// so everything T2 commits from here on is invisible to T1.
-	tx1ID, tx1Ctx, err := tm.Begin(fx.ctx)
-	if err != nil {
-		t.Fatalf("Begin T1: %v", err)
-	}
+	tx1ID, tx1Ctx := beginGuarded(t, tm, fx.ctx)
 	if _, err := fx.store.Get(tx1Ctx, ref); err != nil {
 		t.Fatalf("T1 snapshot-pinning Get: %v", err)
 	}
 
 	// T2 adds "fieldB" and commits. One delta < interval: no savepoint.
-	tx2ID, tx2Ctx, err := tm.Begin(fx.ctx)
-	if err != nil {
-		t.Fatalf("Begin T2: %v", err)
-	}
+	tx2ID, tx2Ctx := beginGuarded(t, tm, fx.ctx)
 	if err := fx.store.ExtendSchema(tx2Ctx, ref, spi.SchemaDelta(`"fieldB"`)); err != nil {
 		t.Fatalf("T2 ExtendSchema: %v", err)
 	}
@@ -83,12 +77,8 @@ func TestExtendSchema_OverlappingTx_CommittedDeltaSurvivesSavepointFold(t *testi
 		if !errors.Is(err, spi.ErrConflict) {
 			t.Fatalf("overlapping writer rejected with a non-conflict error: %v", err)
 		}
-		retryID, retryCtx, beginErr := tm.Begin(fx.ctx)
-		if beginErr != nil {
-			t.Fatalf("Begin retry tx: %v", beginErr)
-		}
+		retryID, retryCtx := beginGuarded(t, tm, fx.ctx)
 		if err := fx.store.ExtendSchema(retryCtx, ref, spi.SchemaDelta(`"fieldA"`)); err != nil {
-			_ = tm.Rollback(fx.ctx, retryID)
 			t.Fatalf("retry ExtendSchema: %v", err)
 		}
 		if err := tm.Commit(fx.ctx, retryID); err != nil {

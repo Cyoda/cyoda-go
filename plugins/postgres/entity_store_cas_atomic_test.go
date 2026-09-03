@@ -3,7 +3,6 @@ package postgres_test
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/url"
 	"sync"
 	"testing"
@@ -267,59 +266,5 @@ func TestNonTxCompareAndSave_StampsAfterTheLockWait(t *testing.T) {
 	if validTime.Before(heldUntil) {
 		t.Fatalf("the write that waited on the lock is stamped %v before the lock was released (%v vs %v)",
 			heldUntil.Sub(validTime), validTime, heldUntil)
-	}
-}
-
-// The same indivisibility, for the CREATE case: several callers naming the
-// empty expected transaction ID — "expect no entity" — must not all succeed.
-// FOR UPDATE locks no absent row, so the check alone leaves every creator
-// reading "no entity", passing, and writing. The advisory lock the
-// non-transactional path takes on the entity closes that window: the second
-// creator waits, re-reads under the lock, sees the winner's row with its
-// transaction ID, and conflicts.
-func TestNonTxCompareAndSave_ConcurrentCreates_ExactlyOneWinner(t *testing.T) {
-	factory := setupEntityTest(t)
-	ctx := ctxWithTenant("tenant-cas")
-	ref := spi.ModelRef{EntityName: "m-cas-create", ModelVersion: "1"}
-
-	store, err := factory.EntityStore(ctx)
-	if err != nil {
-		t.Fatalf("EntityStore: %v", err)
-	}
-
-	const racers = 8
-	var wg sync.WaitGroup
-	results := make([]error, racers)
-	start := make(chan struct{})
-	for i := range racers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			<-start
-			_, results[i] = store.CompareAndSave(ctx, &spi.Entity{
-				Meta: spi.EntityMeta{
-					ID: "e-cas-create", TenantID: "tenant-cas", ModelRef: ref,
-					State: "open", TransactionID: fmt.Sprintf("tx-writer-%d", i),
-				},
-				Data: []byte(`{"n":1}`),
-			}, "")
-		}()
-	}
-	close(start)
-	wg.Wait()
-
-	var wins, conflicts int
-	for i, err := range results {
-		switch {
-		case err == nil:
-			wins++
-		case errors.Is(err, spi.ErrConflict):
-			conflicts++
-		default:
-			t.Fatalf("racer %d: unexpected error: %v", i, err)
-		}
-	}
-	if wins != 1 || conflicts != racers-1 {
-		t.Fatalf("got %d winners and %d conflicts, want exactly 1 winner and %d conflicts", wins, conflicts, racers-1)
 	}
 }

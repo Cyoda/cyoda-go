@@ -170,7 +170,7 @@ manifest as silent data loss in production.
 
 ## 3c. In-transaction `Search` is a predicate read
 
-An in-transaction `Search` (`spi.Searcher.Search`, pushed down to the storage
+An in-transaction `Search` (`EntityStore.Search`, pushed down to the storage
 plugin) is read-your-own-writes correct — it sees the transaction's own
 uncommitted writes overlaid on the committed snapshot — but its read-set
 participation is governed by a per-query boolean, **`TrackingRead`**
@@ -186,19 +186,20 @@ participation is governed by a per-query boolean, **`TrackingRead`**
   against phantoms: a concurrent *insert* of a new matching entity is not
   caught, only writes to rows the search actually returned.
 
-This is a lighter-weight lever than `GetAll`: today `GetAll` is implicitly
-"always tracking" and `Count` is "never" (§7.3, Appendix A.5); `TrackingRead`
-lets a `Search` call declare its own read-set intent instead of inheriting
-one from a full-model scan.
+This is a lighter-weight lever than a full-model `GetPage` drain, which is
+implicitly "always tracking" while `Count` is "never" (§7.3, Appendix A.5);
+`TrackingRead` lets a `Search` call declare its own read-set intent instead of
+inheriting one from a whole-model read.
 
 **Fence guidance, reworded.** §5 and Appendix A rely on reading *every*
 peer entity the invariant covers so FCW can catch a concurrent violator. A
 predicate `Search` — even with `TrackingRead=true` — only records the rows
 it *returns*; if the predicate can return a strict subset of the peer set
 the invariant depends on (e.g. it excludes a state the invariant also
-cares about), the fence has a gap a `GetAll`-based peer scan would not have.
-Use `GetAll` (unchanged, always-tracking) for a fence, or a `TrackingRead`
-search whose predicate is provably peer-complete for the invariant.
+cares about), the fence has a gap a whole-model peer scan would not have.
+Use a full `GetPage` drain (every returned page is recorded unconditionally)
+for a fence, or a `TrackingRead` search whose predicate is provably
+peer-complete for the invariant.
 
 The per-backend mechanism that makes the overlay RYW-correct differs
 (`memory`/`sqlite` overlay the in-process transaction buffer over the
@@ -515,7 +516,7 @@ A short checklist:
    entities in state X per tenant, ever"), either materialise the count
    or add a reconciliation step.
 7. **`COMMIT_BEFORE_DISPATCH` makes segment-boundary states publicly
-   visible.** A concurrent reader's `Get`/`GetAll`/`Search`/`Count`
+   visible.** A concurrent reader's `Get`/`GetPage`/`Iterate`/`Search`/`Count`
    between `TX_pre.Commit` and `TX_post.Commit` will see the entity in
    the pre-callout state. A second cascade may decide to fire
    criteria-driven transitions on that intermediate state. Treat
@@ -656,8 +657,8 @@ enforce two invariants:
    `OFF_DUTY → PENDING_ON_DUTY` and `PENDING_ON_DUTY → ON_DUTY`.
 2. **The promotion processor reads every peer candidate by entity, not
    by aggregate.** The `PENDING_ON_DUTY → ON_DUTY` transition's
-   processor calls `entityStore.GetAll(Doctor)` (or an equivalent that
-   returns individual entities) and filters in-memory for states
+   processor drains every `Doctor` through `entityStore.GetPage` (or an
+   equivalent that returns individual entities) and filters in-memory for states
    `ON_DUTY` and `PENDING_ON_DUTY`. It does **not** call
    `Count`/`CountByState`.
 
@@ -716,19 +717,18 @@ Forbidden paths (enforced by the FSM — no such transitions exist):
 #### A.3.3 Criterion and processor pseudocode
 
 The two invariant-bearing callbacks live on `PROMOTE`. Both do an
-**entity-level** read of all peers — `GetAll` on the postgres plugin
-walks the entities table and calls `recordReadIfInTx` for every row
-(`plugins/postgres/entity_store.go:232-236`), so every peer's version
-enters the transaction's read-set.
+**entity-level** read of all peers — a full `GetPage` drain records every
+returned entity into the transaction's read-set unconditionally, so every
+peer's version is fenced.
 
 ```text
 criterion promote_ok(self):
-    all := entityStore.GetAll(model = Doctor)   // populates read-set
+    all := drainPages(entityStore.GetPage, model = Doctor)   // populates read-set
     onDuty := [ d for d in all if d.state == ON_DUTY ]
     return len(onDuty) < N
 
 processor promote(self):
-    all := entityStore.GetAll(model = Doctor)   // populates read-set
+    all := drainPages(entityStore.GetPage, model = Doctor)   // populates read-set
     onDuty  := [ d for d in all if d.state == ON_DUTY ]
     pending := [ d for d in all if d.state == PENDING_ON_DUTY ]
     if len(onDuty) >= N:
@@ -742,16 +742,16 @@ processor promote(self):
 
 Non-negotiables for the author:
 
-- Use `GetAll` (or an equivalent predicate scan that returns entities).
-  **Never** use `Count` / `CountByState` here — aggregates do not
+- Use a full `GetPage` drain (or an equivalent predicate scan that returns
+  entities). **Never** use `Count` / `CountByState` here — aggregates do not
   populate the read-set and silently disable the fence. A `Search` with
-  `TrackingRead=true` (§3c) is an alternative to `GetAll` only if its
+  `TrackingRead=true` (§3c) is an alternative only if its
   predicate is provably peer-complete for the invariant; a predicate that
   can exclude a relevant peer breaks the fence just like a subset scan
   would.
 - Read then filter. Filter-then-read via a non-transactional pre-fetch
   shrinks the read-set and lets peers slip past.
-- The criterion's `GetAll` and the processor's `GetAll` hit the same
+- The criterion's drain and the processor's drain hit the same
   read-set (first-read-wins — `plugins/postgres/txstate.go:58-70`). The
   redundancy is harmless; collapse to one if preferred.
 
@@ -764,14 +764,14 @@ Now replay the scenario. Carol and Dave start in `PENDING_ON_DUTY`, not
 Initial: Alice, Bob ON_DUTY. Carol, Dave PENDING_ON_DUTY. Cap N = 3.
 
 T1: PROMOTE Carol
-    GetAll → {Alice@v, Bob@v, Carol@v, Dave@v} all enter read-set
+    GetPage drain → {Alice@v, Bob@v, Carol@v, Dave@v} all enter read-set
     onDuty = {Alice, Bob}; pending = {Carol, Dave}
     len(onDuty)=2 < 3 → criterion passes
     write Carol @ state=ON_DUTY  (Carol promoted from read-set to write-set)
     T1 commit snapshot: read-set = {Alice, Bob, Dave}, write-set = {Carol}
 
 T2: PROMOTE Dave
-    GetAll → {Alice@v, Bob@v, Carol@v, Dave@v} all enter read-set
+    GetPage drain → {Alice@v, Bob@v, Carol@v, Dave@v} all enter read-set
     onDuty = {Alice, Bob}; pending = {Carol, Dave}
     len(onDuty)=2 < 3 → criterion passes
     write Dave @ state=ON_DUTY
@@ -810,7 +810,7 @@ candidates as peers in their read-sets.
 and `CountByState` do not populate the read-set. An author who writes
 `if CountByState(Doctor, [ON_DUTY]).sum() < N` inside a criterion gets
 the exact naive-failure mode from A.1 even with `PENDING_ON_DUTY` in
-the model. `GetAll`-and-filter preserves the per-entity identity that
+the model. Drain-and-filter preserves the per-entity identity that
 FCW needs.
 
 ### A.6 The symmetric case: minimum-cap
@@ -862,7 +862,7 @@ Criterion and processor pseudocode:
 
 ```text
 criterion step_down_ok(self):
-    all := entityStore.GetAll(model = Doctor)   // populates read-set
+    all := drainPages(entityStore.GetPage, model = Doctor)   // populates read-set
     // Peer count of doctors who will still be ON_DUTY or
     // STEPPING_DOWN after this transition. Self is excluded since
     // we're leaving the set.
@@ -875,7 +875,7 @@ criterion step_down_ok(self):
 
 Two doctors concurrently invoking `STEP_DOWN`:
 
-- Each `GetAll` captures the other in the read-set (both were `ON_DUTY`
+- Each drain captures the other in the read-set (both were `ON_DUTY`
   or `STEPPING_DOWN` at the respective snapshots).
 - Each writes its own entity (own state → `OFF_DUTY`).
 - First committer wins. Second's `ValidateReadSet` observes peer has
@@ -896,11 +896,11 @@ The fence is only as strong as invariants 1 and 2. Specific residuals:
   promotion transactions cannot see that new entity until it commits,
   and the fence is bypassed. The FSM must prohibit this transition;
   import and administrative paths must too.
-- **Workflow author calls `CountByState` instead of `GetAll`.** Silent
+- **Workflow author calls `CountByState` instead of draining.** Silent
   bypass — the criterion passes, no read-set is populated. Enforceable
   by code review and the §5 operational rule.
 - **Criterion reads a subset of candidates.** If the processor filters
-  the `GetAll` results before recording reads (e.g., by using a
+  the drained results before recording reads (e.g., by using a
   non-transactional pre-fetch), the read-set shrinks and peers outside
   the filter fall through. Always read then filter; never filter then
   read.
@@ -1009,7 +1009,7 @@ roster:
   in state Y" for compliance-driven quotas. Peer population: the full
   tenant corpus.
 
-Appendix A's processor calls `GetAll(Doctor)` on every `PROMOTE` /
+Appendix A's processor drains every `Doctor` on every `PROMOTE` /
 `STEP_DOWN`. That is O(peer population) per transition. For a small
 ward it is fine. For any of the examples above it is catastrophic: a
 payment-authorisation workflow doing a full scan of authorisations per
@@ -1063,7 +1063,7 @@ and writes from the `Doctor` transitions.
 
 The `Doctor` FSM is exactly Appendix A's combined max-cap + min-cap
 diagram (§A.6). What changes is **where** the criterion and processor
-do their work: against the `DutyRoster` entity, not a `GetAll(Doctor)`
+do their work: against the `DutyRoster` entity, not a whole-model `Doctor`
 scan.
 
 ```mermaid
@@ -1174,7 +1174,7 @@ Per `PROMOTE` / `STEP_DOWN` transaction:
 
 | Approach                       | Entities in read-set | Entities in write-set |
 |--------------------------------|----------------------|-----------------------|
-| Appendix A (`GetAll(Doctor)`)  | total Doctor count   | `{self, DutyRoster?}` → `{self}` |
+| Appendix A (drain `Doctor`)    | total Doctor count   | `{self, DutyRoster?}` → `{self}` |
 | Appendix B (`DutyRoster`)      | `{DutyRoster}`       | `{self, DutyRoster}`  |
 
 Appendix A scales O(total doctors). Appendix B scales O(1) —

@@ -42,17 +42,8 @@ func drainIDs(t *testing.T, it spi.Iterator) []string {
 	return ids
 }
 
-func iterable(t *testing.T, store spi.EntityStore) spi.Iterable {
-	t.Helper()
-	it, ok := store.(spi.Iterable)
-	if !ok {
-		t.Fatal("store is not spi.Iterable")
-	}
-	return it
-}
-
 // The in-tx iterator yields the committed snapshot merged with the buffer,
-// minus staged deletes, in entity-ID order — the same merged view GetAll
+// minus staged deletes, in entity-ID order — the same merged view Search
 // (also on the overlay) produces, now as one cursor.
 func TestTxIterate_MergedViewInIDOrder(t *testing.T) {
 	f, tm := newAttrFactory(t)
@@ -82,7 +73,7 @@ func TestTxIterate_MergedViewInIDOrder(t *testing.T) {
 		t.Fatalf("Save update: %v", err)
 	}
 
-	it, err := iterable(t, store).Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{})
+	it, err := store.Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
 	}
@@ -126,7 +117,7 @@ func TestTxIterate_FilterAppliesToBothStreams(t *testing.T) {
 	_, _ = store.Save(txCtx, &spi.Entity{Meta: spi.EntityMeta{ID: "z00", TenantID: "tenant-ovl", ModelRef: ref, State: "open"}, Data: []byte(`{}`)})
 
 	filter := spi.Filter{Op: spi.FilterEq, Path: "state", Source: spi.SourceMeta, Value: "open", Declared: []spi.DataType{spi.String}}
-	it, err := iterable(t, store).Iterate(txCtx, ref, filter, spi.IterateOptions{})
+	it, err := store.Iterate(txCtx, ref, filter, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
 	}
@@ -151,7 +142,7 @@ func TestTxIterate_TrackingReadRecordsYieldsOnly(t *testing.T) {
 	_, _ = store.Save(txCtx, &spi.Entity{Meta: spi.EntityMeta{ID: "z00", TenantID: "tenant-ovl", ModelRef: ref, State: "open"}, Data: []byte(`{}`)})
 
 	filter := spi.Filter{Op: spi.FilterEq, Path: "state", Source: spi.SourceMeta, Value: "open", Declared: []spi.DataType{spi.String}}
-	it, err := iterable(t, store).Iterate(txCtx, ref, filter, spi.IterateOptions{TrackingRead: true})
+	it, err := store.Iterate(txCtx, ref, filter, spi.IterateOptions{TrackingRead: true})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
 	}
@@ -180,7 +171,7 @@ func TestTxIterate_SameTxDeleteWhileOpen_NoDeadlock(t *testing.T) {
 
 	txID, txCtx, _ := tm.Begin(ctx)
 	defer func() { _ = tm.Rollback(txCtx, txID) }()
-	it, err := iterable(t, store).Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{})
+	it, err := store.Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
 	}
@@ -223,7 +214,7 @@ func TestTxIterate_RollbackWhileOpen_EndsWithRolledBack(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	it, err := iterable(t, store).Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{})
+	it, err := store.Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
 	}
@@ -251,7 +242,7 @@ func TestTxIterate_CommitWhileOpen_EndsWithAlreadyCommitted(t *testing.T) {
 	seedN(t, store, ctx, ref, 3)
 
 	txID, txCtx, _ := tm.Begin(ctx)
-	it, err := iterable(t, store).Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{TrackingRead: true})
+	it, err := store.Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{TrackingRead: true})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
 	}

@@ -85,7 +85,7 @@ func TestExecutor_FailureTerminalWrite_IsNotCancellable(t *testing.T) {
 		WithAsyncPool(pool).
 		WithHeartbeat(50 * time.Millisecond)
 
-	jobID, err := svc.SubmitAsync(ctx, ref, matchEverything, search.SearchOptions{})
+	jobID, err := svc.SubmitAsync(ctx, ref, matchEverything, search.SearchOptions{Limit: 10})
 	if err != nil {
 		t.Fatalf("SubmitAsync: %v", err)
 	}

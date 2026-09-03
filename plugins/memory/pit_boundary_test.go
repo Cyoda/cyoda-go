@@ -51,20 +51,17 @@ func TestMemoryPIT_GetAsAt_InclusiveNoRoundUp(t *testing.T) {
 	}
 }
 
-func TestMemoryPIT_GetAllAsAt_InclusiveNoRoundUp(t *testing.T) {
+func TestMemoryPIT_IterateAsAt_InclusiveNoRoundUp(t *testing.T) {
 	store, _ := twoVersionsSameMillisecond(t)
 	ctx := ctxWithTenant("tenant-pit")
 	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
-	got, err := store.GetAllAsAt(ctx, ref, msBase)
-	if err != nil {
-		t.Fatalf("GetAllAsAt(msBase): %v", err)
-	}
+	got := drainAll(t, ctx, store, ref, &msBase)
 	if len(got) != 1 {
-		t.Fatalf("GetAllAsAt(msBase) returned %d entities, want 1", len(got))
+		t.Fatalf("Iterate(msBase) returned %d entities, want 1", len(got))
 	}
 	if string(got[0].Data) != `{"v":1}` {
-		t.Errorf("GetAllAsAt(msBase) data = %s, want {\"v\":1}", got[0].Data)
+		t.Errorf("Iterate(msBase) data = %s, want {\"v\":1}", got[0].Data)
 	}
 }
 
@@ -73,9 +70,8 @@ func TestMemoryPIT_Iterate_InclusiveNoRoundUp(t *testing.T) {
 	ctx := ctxWithTenant("tenant-pit")
 	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
-	it := store.(spi.Iterable)
 	pit := msBase
-	iter, err := it.Iterate(ctx, ref, spi.Filter{}, spi.IterateOptions{PointInTime: &pit})
+	iter, err := store.Iterate(ctx, ref, spi.Filter{}, spi.IterateOptions{PointInTime: &pit})
 	if err != nil {
 		t.Fatalf("Iterate(msBase): %v", err)
 	}

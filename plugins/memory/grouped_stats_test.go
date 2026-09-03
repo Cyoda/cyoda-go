@@ -59,11 +59,7 @@ func TestMemoryIterate_BasicScan(t *testing.T) {
 		gsSave(t, ctx, store, fmt.Sprintf("e-%d", i), "available", map[string]any{"x": i})
 	}
 
-	it, ok := store.(spi.Iterable)
-	if !ok {
-		t.Fatal("store does not implement spi.Iterable")
-	}
-	iter, err := it.Iterate(ctx, gsModel, spi.Filter{}, spi.IterateOptions{})
+	iter, err := store.Iterate(ctx, gsModel, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
 	}
@@ -92,11 +88,7 @@ func TestMemoryIterate_RejectsUnevaluableFilter(t *testing.T) {
 	_, store, ctx := gsNewStore(t)
 	gsSave(t, ctx, store, "e-1", "available", map[string]any{"name": "a"})
 
-	it, ok := store.(spi.Iterable)
-	if !ok {
-		t.Fatal("store does not implement spi.Iterable")
-	}
-	iter, err := it.Iterate(ctx, gsModel, spi.Filter{
+	iter, err := store.Iterate(ctx, gsModel, spi.Filter{
 		Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
 		Value: `a\`, Declared: []spi.DataType{spi.String},
 	}, spi.IterateOptions{})
@@ -125,7 +117,6 @@ func TestMemoryIterate_FilterAppliedInNext(t *testing.T) {
 	gsSave(t, ctx, store, "e-b", "allocated", map[string]any{"x": 2})
 	gsSave(t, ctx, store, "e-c", "available", map[string]any{"x": 3})
 
-	it := store.(spi.Iterable)
 	filter := spi.Filter{
 		Op:       spi.FilterEq,
 		Source:   spi.SourceMeta,
@@ -133,7 +124,7 @@ func TestMemoryIterate_FilterAppliedInNext(t *testing.T) {
 		Value:    "available",
 		Declared: []spi.DataType{spi.String},
 	}
-	iter, err := it.Iterate(ctx, gsModel, filter, spi.IterateOptions{})
+	iter, err := store.Iterate(ctx, gsModel, filter, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
 	}
@@ -157,9 +148,8 @@ func TestMemoryIterate_CtxCancellationObserved(t *testing.T) {
 		gsSave(t, ctx, store, fmt.Sprintf("e-%d", i), "available", map[string]any{"x": i})
 	}
 
-	it := store.(spi.Iterable)
 	cctx, cancel := context.WithCancel(ctx)
-	iter, err := it.Iterate(cctx, gsModel, spi.Filter{}, spi.IterateOptions{})
+	iter, err := store.Iterate(cctx, gsModel, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
 	}
@@ -182,8 +172,7 @@ func TestMemoryIterate_CloseIdempotent(t *testing.T) {
 	_, store, ctx := gsNewStore(t)
 	gsSave(t, ctx, store, "e-1", "available", map[string]any{"x": 1})
 
-	it := store.(spi.Iterable)
-	iter, err := it.Iterate(ctx, gsModel, spi.Filter{}, spi.IterateOptions{})
+	iter, err := store.Iterate(ctx, gsModel, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
 	}
@@ -222,8 +211,7 @@ func TestMemoryIterate_InTxOverlay(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	it := store.(spi.Iterable)
-	iter, err := it.Iterate(txCtx, gsModel, spi.Filter{}, spi.IterateOptions{})
+	iter, err := store.Iterate(txCtx, gsModel, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
 	}

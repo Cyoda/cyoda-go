@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -544,7 +543,7 @@ func structuralConditionErrCode(cErr error) string {
 // structuralConditionErrCode, so a caller outside this package that
 // validates a condition via the exported ValidateCondition — currently
 // entity.Handler's delete paths, which select entities via their own
-// spi.Iterable drain instead of Search and so must replicate Search's
+// Iterate drain instead of Search and so must replicate Search's
 // pre-execution validation rather than inherit it as a side effect —
 // classifies a ValidateCondition failure identically to Search/SubmitAsync
 // instead of drifting onto a coarser code of its own. Mirrors the
@@ -554,30 +553,38 @@ func StructuralConditionErrCode(cErr error) string {
 	return structuralConditionErrCode(cErr)
 }
 
-// Search performs a synchronous entity search, returning matching entities.
+// Search performs a synchronous, bounded-or-fail entity search.
 //
-// When the plugin's EntityStore implements spi.Searcher, Search delegates to
-// the plugin for SQL predicate pushdown — tx or not. Every OSS backend's
-// Searcher.Search is transaction-aware: called with an active transaction in
-// ctx, it honors the transaction's buffered writes and produces
-// read-your-own-writes results equal to GetAll+match, so the engine no
-// longer needs to special-case "in a transaction" to preserve correctness.
-// The GetAll/GetAllAsAt + in-memory match fallback below now serves only two
-// cases: (1) a store that does not implement spi.Searcher at all, and (2) a
-// condition ConditionToFilter cannot translate to a pushdownable filter.
+// Contract: opts.Limit >= 1 (a non-positive limit is a caller error, not a
+// client status — both transports resolve a positive limit first); cond is
+// non-nil (a nil condition is 400 INVALID_CONDITION). The condition is
+// validated structurally, against the model's paths and declared types,
+// and for pattern operands, then translated to spi.Filter and pushed to
+// EntityStore.Search. A translation failure — unreachable from validated
+// input, reachable only with a caller-built condition type — is classified
+// like any store rejection (a path-shaped failure is INVALID_FIELD_PATH) and
+// otherwise 400 INVALID_CONDITION. There is one path: the store's Search.
+// No whole-model read exists anywhere in the engine.
 //
 // Pre-execution path validation: every condition path is checked against
-// the cached model schema's FieldsMap. When a path is unknown, the
-// schema cache is refreshed exactly once via RefreshAndGet (mirroring
-// entity.Handler.ValidateWithRefresh's bounded-retry contract) so a
-// search referencing a peer's freshly-extended path succeeds after one
-// authoritative read. Truly-unknown paths surface as 400 INVALID_FIELD_PATH.
-// Unregistered models surface as 404 MODEL_NOT_FOUND.
+// the cached model schema's FieldsMap. When a path is unknown, the schema
+// cache is refreshed exactly once via RefreshAndGet so a search referencing
+// a peer's freshly-extended path succeeds after one authoritative read.
+// Truly-unknown paths surface as 400 INVALID_FIELD_PATH. Unregistered
+// models surface as 404 MODEL_NOT_FOUND.
 func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition, opts SearchOptions) ([]*spi.Entity, error) {
+	if opts.Limit <= 0 {
+		return nil, fmt.Errorf("search: limit must be >= 1, got %d", opts.Limit)
+	}
+	if cond == nil {
+		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
+			"condition is required")
+	}
 	// Defense-in-depth: enforce the limit cap at the service layer so every
 	// entry point (HTTP, gRPC, future transports) sees the same rejection.
 	// The HTTP handler checks this already; gRPC does not — placing the check
-	// here closes that gap without altering the unbounded (limit<0) semantics.
+	// here closes that gap. The lower bound is the guard above: there are no
+	// unbounded semantics left for this cap to preserve.
 	if opts.Limit > pagination.MaxPageSize {
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
 			fmt.Sprintf("limit exceeds maximum %d", pagination.MaxPageSize))
@@ -624,220 +631,49 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		return nil, fmt.Errorf("failed to get entity store: %w", err)
 	}
 
-	// Delegate to the plugin for predicate pushdown whenever a translatable
-	// filter and a capable store are both available — tx or not; every OSS
-	// backend's Searcher and Iterable are transaction-aware (RYW), see the
-	// Search doc comment. Two capabilities cover the two shapes a pushdown
-	// request can take:
-	//
-	//   - opts.Limit > 0: spi.Searcher.Search, bounded-or-fail. Its contract
-	//     requires Limit >= 1 and treats anything else as a caller error —
-	//     there is no zero-means-unbounded sentinel at that interface.
-	//   - opts.Limit <= 0 ("no explicit limit" — an internal caller that
-	//     genuinely wants every match, unbounded: e.g. this Search entry
-	//     point called directly rather than through an HTTP/gRPC handler,
-	//     both of which resolve a default before reaching here): the
-	//     matched entities are still read via the plugin's predicate
-	//     pushdown, but streamed through spi.Iterable.Iterate instead of
-	//     Searcher (which would reject the sub-1 Limit). This is the same
-	//     capability the streaming async executor and streamed-delete paths
-	//     already use for the identical "unbounded, want every match" shape
-	//     — not a special case invented here. Iterate's TrackingRead gate
-	//     records each entity into the tx read-set per-YIELD as it streams
-	//     (see the Iterate doc comment). Whether that ends up tracking
-	//     exactly the matched set or the whole model is per-backend, not a
-	//     property of routing through Iterate itself: postgres pushes filter
-	//     down into the scan, so only matches are yielded and tracked; the
-	//     in-tx Iterate on memory and sqlite pushes no filter down and yields
-	//     (and so tracks) every row it scans, byte-identical to what the
-	//     GetAll fallback below would track. Closing that gap for memory/
-	//     sqlite is tracked as follow-up work, not done here.
-	//
-	// Both shapes need the same FieldsMap-driven condition->filter
-	// translation; a translate failure (untranslatable condition) falls
-	// through to the GetAll + in-memory-match fallback below either way.
-	searcher, storeIsSearcher := store.(spi.Searcher)
-	iterableStore, storeIsIterable := store.(spi.Iterable)
-	if (storeIsSearcher && opts.Limit > 0) || (storeIsIterable && opts.Limit <= 0) {
-		// Reuse the map validateConditionPaths already loaded and validated
-		// the condition's paths against. Loading it a second time here both
-		// repeated the work and discarded its error, so a schema that became
-		// unreadable between the two loads translated against nil — which is
-		// not "no types", it is a filter whose comparison leaves annihilate
-		// while its string leaves keep matching.
-		filter, translateErr := spi.ConditionToFilter(cond, validatedFields)
-		if translateErr == nil {
-			if opts.Limit > 0 {
-				res, sErr := searcher.Search(ctx, filter, spi.SearchOptions{
-					ModelName:    modelRef.EntityName,
-					ModelVersion: modelRef.ModelVersion,
-					PointInTime:  opts.PointInTime,
-					Limit:        opts.Limit,
-					OrderBy:      orderBy,
-					TrackingRead: opts.TrackingRead,
-				})
-				if appErr := ClassifyStoreQueryError(sErr); appErr != nil {
-					return nil, appErr
-				}
-				return res, sErr
-			}
-
-			// Unbounded (Limit <= 0): stream every match via Iterate. OrderBy
-			// is deliberately NOT threaded into IterateOptions here — Iterate
-			// treats a non-empty OrderBy inside a transaction as an error
-			// (its stronger "honour explicitly or refuse" contract, unlike
-			// Searcher/GetAll), and this fallback has always sorted in Go
-			// after the fact instead (see sortEntities below); leaving
-			// IterateOptions.OrderBy empty keeps an in-tx ordered unbounded
-			// search working exactly as it did through the GetAll fallback.
-			matches, iErr := drainIterate(ctx, iterableStore, modelRef, filter, opts)
-			if iErr != nil {
-				// Same sentinel classification the bounded branch above
-				// applies: the store is reached through a different method
-				// here, but a plugin rejecting the request answers with the
-				// same cross-backend sentinels and the caller-facing status
-				// must not depend on which branch the request took.
-				if appErr := ClassifyStoreQueryError(iErr); appErr != nil {
-					return nil, appErr
-				}
-				return nil, iErr
-			}
-			sortEntities(matches, orderBy)
-			return matches, nil
+	// One path: translate, push down. Every backend implements Search;
+	// there is no capability ladder and no in-process fallback.
+	filter, translateErr := spi.ConditionToFilter(cond, validatedFields)
+	if translateErr != nil {
+		if appErr := ClassifyStoreQueryError(translateErr); appErr != nil {
+			return nil, appErr
 		}
-		// Fall through to in-memory filtering if translation fails.
-		slog.Debug("condition-to-filter translation failed, falling back to in-memory",
-			"pkg", "search", "error", translateErr)
+		return nil, untranslatableCondition(translateErr)
 	}
-
-	// Fallback: GetAll/GetAllAsAt + in-memory filtering. This path is reached
-	// only when no capability fits the request shape (a store without
-	// Searcher for a bounded request, or without Iterable for an unbounded
-	// one) or the condition doesn't translate to a pushdownable filter. In-tx,
-	// this is a rare edge: GetAll unconditionally records every returned
-	// entity into the transaction's read-set (unlike the TrackingRead-gated
-	// pushdown paths above), so a translate-failure search conservatively
-	// widens the read-set to the whole model regardless of opts.TrackingRead.
-	// The GetAllAsAt (point-in-time) branch of this same fallback records no
-	// read-set at all, matching GetAsAt/GetAllAsAt's historical-read semantics.
-	//
-	// Two consequences of GetAll running before any bound can be evaluated,
-	// worth keeping in mind reading the bounded-or-fail check below: (1) it is
-	// a correctness fix, not a resource-protection one — GetAll has already
-	// materialised the entire model into memory by the time the oversized
-	// match set is detected, so the fix stops a truncated answer from being
-	// returned, it does not avoid the memory cost of computing it; and (2)
-	// in-transaction, GetAll has also already recorded every entity into the
-	// transaction's read-set before the bound can raise, so a request that
-	// ends in a 400 here still leaves the transaction holding a model-wide
-	// read-set, same as a request that succeeds.
-	var entities []*spi.Entity
-	if opts.PointInTime != nil {
-		entities, err = store.GetAllAsAt(ctx, modelRef, *opts.PointInTime)
-	} else {
-		entities, err = store.GetAll(ctx, modelRef)
+	res, sErr := store.Search(ctx, filter, spi.SearchOptions{
+		ModelName:    modelRef.EntityName,
+		ModelVersion: modelRef.ModelVersion,
+		PointInTime:  opts.PointInTime,
+		Limit:        opts.Limit,
+		OrderBy:      orderBy,
+		TrackingRead: opts.TrackingRead,
+	})
+	if appErr := ClassifyStoreQueryError(sErr); appErr != nil {
+		return nil, appErr
 	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve entities: %w", err)
-	}
+	return res, sErr
+}
 
-	// A nil condition matches every entity — the "no filtering" case, same
-	// answer the pre-split evaluator gave (it never faulted on a nil
-	// condition; it only ever evaluated one once a row reached it, and a nil
-	// condition never reached the per-row evaluation at all). match.Prepare
-	// has no clause for a nil predicate.Condition — every concrete type in the
-	// sum type is a struct, never nil — so calling it here would report
-	// "unknown condition type: <nil>" and turn an empty model's "no filter"
-	// query into a 500. Not reachable today (predicate.ParseCondition never
-	// returns (nil, nil), and the one nil-capable caller short-circuits
-	// earlier), but the guard is cheap and keeps the fallback's answer
-	// independent of that being true forever.
-	var matches []*spi.Entity
-	if cond == nil {
-		matches = entities
-	} else {
-		// Declared-type resolver for the predicate evaluator: the type-directed
-		// kernel compares temporal data fields temporally (not lexically) only when
-		// the model supplies their declared subtype. Load the model's FieldsMap so
-		// this in-memory fallback path matches the pushdown's typing. A genuine
-		// store/schema-load error fails closed (correctness-over-availability): the
-		// model schema is a required input for correct typing, so we surface the
-		// error rather than silently under-match with untyped leaves. The
-		// no-schema-registered case is (nil, nil) — fields stays nil, the resolver
-		// returns nil types, and a comparison/range leaf on that path now fails
-		// Prepare (see the prepErr check right below) rather than degrading to a
-		// silent non-match: an unevaluable leaf is a structural fault in the
-		// condition, not a row-dependent answer to guess at.
-		fallbackFields, ffErr := loadFieldsMap(ctx, modelStore, modelRef)
-		if ffErr != nil {
-			return nil, fmt.Errorf("failed to load model field types: %w", ffErr)
-		}
-		fieldTypes := func(p string) []spi.DataType {
-			if fd, ok := fallbackFields[p]; ok {
-				return fd.Types
-			}
-			return nil
-		}
-
-		// Prepared once for the whole scan. Everything the leaf evaluator can fault
-		// on is a structural property of the condition, so it surfaces here rather
-		// than on whichever row happens to reach it first.
-		prepared, prepErr := match.Prepare(cond, fieldTypes)
-		if prepErr != nil {
-			// Classify before the generic wrap: match.ErrUnevaluableLeaf /
-			// match.ErrUnsupportedOperator are client-input faults
-			// (ClassifyStoreQueryError's own doc explains the mapping), not
-			// a storage failure — an unclassified wrap wrongly answered 500
-			// plus a support ticket for input that is simply malformed.
-			if appErr := ClassifyStoreQueryError(prepErr); appErr != nil {
-				return nil, appErr
-			}
-			return nil, fmt.Errorf("predicate match failed: %w", prepErr)
-		}
-
-		// Amortized cancellation check (spec D9): a client-requested
-		// timeoutMillis must abort this scan rather than let it run to
-		// completion and return results computed past the deadline. This
-		// branch is reached only when the store does not implement
-		// spi.Searcher — all three OSS backends do, so it is a rare edge
-		// (translate-failure or a non-Searcher store) — but a match set can
-		// still be large, so the check runs every 1024 entities (i&1023==0,
-		// true at i==0 too) rather than on every iteration, keeping the
-		// per-entity cost off the hot path while still bounding how much
-		// stale work a pre-expired or since-expired ctx can produce.
-		for i, e := range entities {
-			if i&1023 == 0 {
-				if err := ctx.Err(); err != nil {
-					return nil, fmt.Errorf("search aborted: %w", err)
-				}
-			}
-			if prepared.Match(e.Data, e.Meta) {
-				matches = append(matches, e)
-			}
-		}
-	}
-
-	sortEntities(matches, orderBy)
-
-	// Bounded-or-fail, same contract as the Searcher path above. A truncated
-	// prefix here would be indistinguishable from a complete result, so an
-	// oversized match set is an error rather than a silently shortened one.
-	// Limit <= 0 is unbounded (async submit, scoped delete) and never raises;
-	// the direct entry points resolve an omitted client limit to
-	// DefaultDirectSearchLimit before reaching the service, so 0 here means an
-	// explicit store-all (async submit or an internal caller), never "client
-	// omitted".
-	if opts.Limit > 0 && len(matches) > opts.Limit {
-		return nil, common.Operational(http.StatusBadRequest,
-			common.ErrCodeSearchResultLimit,
-			"matched result count exceeds the configured limit").WithCause(spi.ErrSearchResultLimitExceeded)
-	}
-
-	return matches, nil
+// untranslatableCondition renders the one translation failure
+// ClassifyStoreQueryError does not recognise.
+//
+// The translator's own error is attached as the cause — errors.Is still
+// reaches it, and the server-side log below carries its text — but is
+// deliberately NOT interpolated into the client-visible message. The
+// remaining unclassified cause is spi.ConditionToFilter's "unsupported
+// condition type: %T", which names an engine-internal Go type rather than
+// anything about the request. It is unreachable from the wire (predicate
+// .ParseCondition builds only the five clause types, and a FunctionCondition
+// is refused earlier), so a caller loses no diagnostic detail here.
+func untranslatableCondition(translateErr error) *common.AppError {
+	slog.Warn("condition cleared validation but could not be translated",
+		"pkg", "search", "err", translateErr)
+	return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
+		"condition cannot be translated to a backend predicate").WithCause(translateErr)
 }
 
 // ClassifyStoreQueryError maps the cross-backend sentinels a storage plugin
-// may return from a pushdown query (Searcher.Search, Iterable.Iterate,
+// may return from a pushdown query (EntityStore.Search, EntityStore.Iterate,
 // GroupedAggregator.GroupedAggregate) onto operational AppErrors, and returns
 // nil for anything it does not recognise so the caller can pass the error
 // through — an unrecognised store error is genuinely a 500.
@@ -900,9 +736,8 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 // internal/match's OWN Prepare (predicate.Condition side, a different
 // evaluator entirely from spi.Prepare — see prepared.go's own package doc:
 // "this package's error set is its own, not a mirror of spi.ErrUnevaluableLeaf,
-// but the disposition is the same") reached through search.Service.Search's
-// GetAll+match fallback, entity's conditional-delete planner, and
-// grouped-stats' streaming tally. Every caller of those previously wrapped
+// but the disposition is the same") reached through entity's
+// conditional-delete planner and grouped-stats' streaming tally. Every caller of those previously wrapped
 // the error generically ("predicate match failed: %w") or propagated it raw,
 // which classified as an unrecognised 500 — the identical defect
 // ErrInvalidFilterPath's omission was, just on the residual-evaluator side
@@ -980,46 +815,6 @@ func ClassifyStoreQueryError(err error) *common.AppError {
 	return nil
 }
 
-// drainIterate runs an unbounded (Limit <= 0) pushdown search via
-// spi.Iterable.Iterate, draining the iterator fully into a slice for
-// Search's synchronous return contract. TrackingRead and PointInTime forward
-// unchanged; OrderBy is intentionally omitted (see the call site's comment)
-// — the caller sorts the drained slice itself, matching the GetAll
-// fallback's own sort-after-collect shape.
-//
-// Err() is read after Close(), not before: some Iterator implementations
-// only surface a sticky scan error at Close (mirrors the same ordering the
-// streaming async executor uses at its own drain site).
-func drainIterate(ctx context.Context, store spi.Iterable, modelRef spi.ModelRef, filter spi.Filter, opts SearchOptions) ([]*spi.Entity, error) {
-	it, err := store.Iterate(ctx, modelRef, filter, spi.IterateOptions{
-		PointInTime:  opts.PointInTime,
-		TrackingRead: opts.TrackingRead,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to iterate entities: %w", err)
-	}
-
-	var matches []*spi.Entity
-	var scanErr error
-	func() {
-		defer func() {
-			if closeErr := it.Close(); closeErr != nil && scanErr == nil {
-				scanErr = closeErr
-			}
-			if errErr := it.Err(); errErr != nil {
-				scanErr = errErr
-			}
-		}()
-		for it.Next() {
-			matches = append(matches, it.Entity())
-		}
-	}()
-	if scanErr != nil {
-		return nil, fmt.Errorf("failed to iterate entities: %w", scanErr)
-	}
-	return matches, nil
-}
-
 // SubmitAsync starts an asynchronous search job and returns the job ID.
 //
 // Pre-execution path validation runs synchronously before the job is
@@ -1032,6 +827,11 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	if opts.Limit > pagination.MaxPageSize {
 		return "", common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
 			fmt.Sprintf("limit exceeds maximum %d", pagination.MaxPageSize))
+	}
+
+	if cond == nil {
+		return "", common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
+			"condition is required")
 	}
 
 	// Structural condition validation (canonical operator set, BETWEEN
@@ -1054,7 +854,8 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 		return "", appErr
 	}
 
-	if _, vErr := s.validateConditionPaths(ctx, modelStore, modelRef, cond); vErr != nil {
+	validatedFields, vErr := s.validateConditionPaths(ctx, modelStore, modelRef, cond)
+	if vErr != nil {
 		return "", vErr
 	}
 	if rErr := ValidatePatterns(cond); rErr != nil {
@@ -1066,6 +867,16 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	// a type-unsound condition regardless of transport.
 	if tErr := s.validateConditionTypes(ctx, modelStore, modelRef, cond); tErr != nil {
 		return "", tErr
+	}
+
+	// Translate once at submission: a persisted job carries a condition that
+	// translates. (The result is discarded; the executor translates against
+	// the schema as it stands at execution, which can only have grown.)
+	if _, translateErr := spi.ConditionToFilter(cond, validatedFields); translateErr != nil {
+		if appErr := ClassifyStoreQueryError(translateErr); appErr != nil {
+			return "", appErr
+		}
+		return "", untranslatableCondition(translateErr)
 	}
 
 	// Resolve sort keys synchronously so a bad field path returns 400
@@ -1303,6 +1114,13 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		return
 	}
 	filter, translateErr := spi.ConditionToFilter(cond, fields)
+	if translateErr != nil {
+		// Ordinary error handling, not a designed branch: a condition that
+		// translated at submission translates here (schema changes after
+		// locking are additive). Anything else is an unexpected failure.
+		s.writeAsyncFailure(jobCtx, jobID, jobFailureMessage(common.Internal("failed to translate search condition", translateErr)), time.Now(), time.Since(start).Milliseconds())
+		return
+	}
 
 	var (
 		count   int
@@ -1310,123 +1128,93 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		saveErr error
 	)
 
-	if translateErr != nil {
-		// Untranslatable condition: unchanged interim fallback. Search's own
-		// Searcher-pushdown branch independently attempts (and, for the same
-		// reason, fails) the same translation, so calling it here reaches
-		// its GetAll + in-memory-match branch — the same code, not a
-		// duplicate of it — and the resulting IDs are streamed through the
-		// same SaveResults call as the Iterate path below.
-		results, searchErr := s.Search(jobCtx, modelRef, cond, opts)
-		if searchErr != nil {
-			prodErr = searchErr
-		} else {
-			ids := make([]string, len(results))
-			for i, e := range results {
-				ids[i] = e.Meta.ID
-			}
-			count = len(ids)
-			saveErr = s.searchStore.SaveResults(jobCtx, jobID, initialEpoch, slices.Values(ids))
+	entityStore, err := s.factory.EntityStore(jobCtx)
+	if err != nil {
+		s.writeAsyncFailure(jobCtx, jobID, jobFailureMessage(err), time.Now(), time.Since(start).Milliseconds())
+		return
+	}
+
+	orderBy := resolvedOrderBy
+	if len(orderBy) == 0 {
+		// Iterate's own empty-OrderBy contract is merely "unspecified"
+		// (unlike Search, where empty already means the
+		// engine's canonical entity-ID order) — request that order
+		// explicitly so async results keep today's default order.
+		orderBy = []spi.OrderSpec{{Source: spi.SourceMeta, Path: "id"}}
+	}
+
+	it, iterErr := entityStore.Iterate(jobCtx, modelRef, filter, spi.IterateOptions{
+		PointInTime: opts.PointInTime,
+		OrderBy:     orderBy,
+	})
+	if iterErr != nil {
+		// Classify exactly as the synchronous door does. The job record
+		// is the only report an async caller gets, and jobFailureMessage
+		// renders an *AppError's client-safe text while collapsing
+		// anything else to the generic fallback — so an unclassified
+		// sentinel turned a client's own malformed request into
+		// "search failed unexpectedly". Reaching a plugin's path
+		// rejection at all means the boundary grammar and that plugin
+		// disagree; the caller is still owed the 400.
+		prodErr = iterErr
+		if appErr := ClassifyStoreQueryError(iterErr); appErr != nil {
+			prodErr = appErr
 		}
 	} else {
-		entityStore, err := s.factory.EntityStore(jobCtx)
-		if err != nil {
-			s.writeAsyncFailure(jobCtx, jobID, jobFailureMessage(err), time.Now(), time.Since(start).Milliseconds())
-			return
-		}
-		iterableStore, ok := entityStore.(spi.Iterable)
-		if !ok {
-			// Fail closed (correctness-over-availability): every in-house
-			// store implements spi.Iterable; a store that implements only
-			// Searcher cannot serve the engine-executed streaming async
-			// path, and there is no lesser-quality answer to fall back to.
-			slog.Error("async search store does not implement spi.Iterable", "pkg", "search", "jobID", jobID)
-			s.writeAsyncFailure(jobCtx, jobID, jobFailureFallback, time.Now(), time.Since(start).Milliseconds())
-			return
-		}
-
-		orderBy := resolvedOrderBy
-		if len(orderBy) == 0 {
-			// Iterate's own empty-OrderBy contract is merely "unspecified"
-			// (unlike Search/Searcher, where empty already means the
-			// engine's canonical entity-ID order) — request that order
-			// explicitly so async results keep today's default order.
-			orderBy = []spi.OrderSpec{{Source: spi.SourceMeta, Path: "id"}}
-		}
-
-		it, iterErr := iterableStore.Iterate(jobCtx, modelRef, filter, spi.IterateOptions{
-			PointInTime: opts.PointInTime,
-			OrderBy:     orderBy,
-		})
-		if iterErr != nil {
-			// Classify exactly as the synchronous door does. The job record
-			// is the only report an async caller gets, and jobFailureMessage
-			// renders an *AppError's client-safe text while collapsing
-			// anything else to the generic fallback — so an unclassified
-			// sentinel turned a client's own malformed request into
-			// "search failed unexpectedly". Reaching a plugin's path
-			// rejection at all means the boundary grammar and that plugin
-			// disagree; the caller is still owed the 400.
-			prodErr = iterErr
-			if appErr := ClassifyStoreQueryError(iterErr); appErr != nil {
-				prodErr = appErr
-			}
-		} else {
-			// IIFE so `defer it.Close()` fires at the end of THIS scope —
-			// before the terminal write below, and unconditionally
-			// (including if SaveResults or the scan loop panics: the
-			// defer still runs during the panic unwind, ahead of the
-			// panic-recovery defer above) — rather than at runAsyncJob's
-			// own return, which would run after the terminal write.
-			count, saveErr, prodErr = func() (n int, sErr, pErr error) {
-				// Named returns: the deferred closure sets pErr AFTER
-				// Close() runs — some implementations only surface a
-				// sticky scan error at Close, not at the last Next(), so
-				// reading it.Err() in the function body (before Close)
-				// would miss it.
-				//
-				// A Close() error is fatal here, not merely logged: for
-				// database/sql-backed iterators (e.g. sqliteIter), Close()
-				// returns rows.Close()'s error and that error is NOT folded
-				// into Rows.Err() — so it.Err() alone can stay nil while a
-				// mid-scan driver error truncated the result set. Treating
-				// Close's error as advisory would let this job land
-				// SUCCESSFUL with a truncated result set, indistinguishable
-				// from a complete one (matches drainIterate's ordering).
-				defer func() {
-					if closeErr := it.Close(); closeErr != nil {
-						slog.Warn("failed to close async search iterator", "pkg", "search", "jobID", jobID, "err", closeErr)
-						pErr = closeErr
-					}
-					if errErr := it.Err(); errErr != nil {
-						pErr = errErr
-						// A sticky scan error carries the same
-						// cross-backend sentinels Iterate's own error
-						// does — classify it identically rather than
-						// letting the door it surfaced on decide.
-						if appErr := ClassifyStoreQueryError(errErr); appErr != nil {
-							pErr = appErr
-						}
-					}
-				}()
-				seq := func(yield func(string) bool) {
-					for it.Next() {
-						// Counted AFTER the yield returns true: a
-						// false return means the consumer declined
-						// this id, so it is not part of the result
-						// set and must not be reported as one — the
-						// job's status would otherwise advertise a
-						// result GetAsyncResults cannot serve.
-						if !yield(it.Entity().Meta.ID) {
-							return
-						}
-						n++
+		// IIFE so `defer it.Close()` fires at the end of THIS scope —
+		// before the terminal write below, and unconditionally
+		// (including if SaveResults or the scan loop panics: the
+		// defer still runs during the panic unwind, ahead of the
+		// panic-recovery defer above) — rather than at runAsyncJob's
+		// own return, which would run after the terminal write.
+		count, saveErr, prodErr = func() (n int, sErr, pErr error) {
+			// Named returns: the deferred closure sets pErr AFTER
+			// Close() runs — some implementations only surface a
+			// sticky scan error at Close, not at the last Next(), so
+			// reading it.Err() in the function body (before Close)
+			// would miss it.
+			//
+			// A Close() error is fatal here, not merely logged: for
+			// database/sql-backed iterators (e.g. sqliteIter), Close()
+			// returns rows.Close()'s error and that error is NOT folded
+			// into Rows.Err() — so it.Err() alone can stay nil while a
+			// mid-scan driver error truncated the result set. Treating
+			// Close's error as advisory would let this job land
+			// SUCCESSFUL with a truncated result set, indistinguishable
+			// from a complete one.
+			defer func() {
+				if closeErr := it.Close(); closeErr != nil {
+					slog.Warn("failed to close async search iterator", "pkg", "search", "jobID", jobID, "err", closeErr)
+					pErr = closeErr
+				}
+				if errErr := it.Err(); errErr != nil {
+					pErr = errErr
+					// A sticky scan error carries the same
+					// cross-backend sentinels Iterate's own error
+					// does — classify it identically rather than
+					// letting the door it surfaced on decide.
+					if appErr := ClassifyStoreQueryError(errErr); appErr != nil {
+						pErr = appErr
 					}
 				}
-				sErr = s.searchStore.SaveResults(jobCtx, jobID, initialEpoch, seq)
-				return
 			}()
-		}
+			seq := func(yield func(string) bool) {
+				for it.Next() {
+					// Counted AFTER the yield returns true: a
+					// false return means the consumer declined
+					// this id, so it is not part of the result
+					// set and must not be reported as one — the
+					// job's status would otherwise advertise a
+					// result GetAsyncResults cannot serve.
+					if !yield(it.Entity().Meta.ID) {
+						return
+					}
+					n++
+				}
+			}
+			sErr = s.searchStore.SaveResults(jobCtx, jobID, initialEpoch, seq)
+			return
+		}()
 	}
 
 	finishTime := time.Now()

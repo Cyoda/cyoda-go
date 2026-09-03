@@ -34,18 +34,13 @@ func TestPostgresCommit_RejectsCrossTenant(t *testing.T) {
 	ctxA := ctxWithTenant("tenant-A")
 	ctxB := ctxWithTenant("tenant-B")
 
-	txAID, _, err := tm.Begin(ctxA)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+	txAID, _ := beginGuarded(t, tm, ctxA)
 
 	if err := tm.Commit(ctxB, txAID); err == nil {
 		t.Fatal("expected error when tenant B commits tenant A's tx")
 	} else if !errors.Is(err, spi.ErrTxTenantMismatch) {
 		t.Fatalf("expected ErrTxTenantMismatch, got: %v", err)
 	}
-
-	_ = tm.Rollback(ctxA, txAID)
 }
 
 func TestPostgresRollback_RejectsCrossTenant(t *testing.T) {
@@ -53,18 +48,13 @@ func TestPostgresRollback_RejectsCrossTenant(t *testing.T) {
 	ctxA := ctxWithTenant("tenant-A")
 	ctxB := ctxWithTenant("tenant-B")
 
-	txAID, _, err := tm.Begin(ctxA)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+	txAID, _ := beginGuarded(t, tm, ctxA)
 
 	if err := tm.Rollback(ctxB, txAID); err == nil {
 		t.Fatal("expected error when tenant B rolls back tenant A's tx")
 	} else if !errors.Is(err, spi.ErrTxTenantMismatch) {
 		t.Fatalf("expected ErrTxTenantMismatch, got: %v", err)
 	}
-
-	_ = tm.Rollback(ctxA, txAID)
 }
 
 func TestPostgresJoin_RejectsCrossTenant(t *testing.T) {
@@ -72,18 +62,13 @@ func TestPostgresJoin_RejectsCrossTenant(t *testing.T) {
 	ctxA := ctxWithTenant("tenant-A")
 	ctxB := ctxWithTenant("tenant-B")
 
-	txAID, _, err := tm.Begin(ctxA)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+	txAID, _ := beginGuarded(t, tm, ctxA)
 
 	if _, err := tm.Join(ctxB, txAID); err == nil {
 		t.Fatal("expected error when tenant B joins tenant A's tx")
 	} else if !errors.Is(err, spi.ErrTxTenantMismatch) {
 		t.Fatalf("expected ErrTxTenantMismatch, got: %v", err)
 	}
-
-	_ = tm.Rollback(ctxA, txAID)
 }
 
 func TestPostgresSavepoint_RejectsCrossTenant(t *testing.T) {
@@ -91,18 +76,13 @@ func TestPostgresSavepoint_RejectsCrossTenant(t *testing.T) {
 	ctxA := ctxWithTenant("tenant-A")
 	ctxB := ctxWithTenant("tenant-B")
 
-	txAID, _, err := tm.Begin(ctxA)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+	txAID, _ := beginGuarded(t, tm, ctxA)
 
 	if _, err := tm.Savepoint(ctxB, txAID); err == nil {
 		t.Fatal("expected error when tenant B takes savepoint on tenant A's tx")
 	} else if !errors.Is(err, spi.ErrTxTenantMismatch) {
 		t.Fatalf("expected ErrTxTenantMismatch, got: %v", err)
 	}
-
-	_ = tm.Rollback(ctxA, txAID)
 }
 
 func TestPostgresRollbackToSavepoint_RejectsCrossTenant(t *testing.T) {
@@ -110,10 +90,7 @@ func TestPostgresRollbackToSavepoint_RejectsCrossTenant(t *testing.T) {
 	ctxA := ctxWithTenant("tenant-A")
 	ctxB := ctxWithTenant("tenant-B")
 
-	txAID, _, err := tm.Begin(ctxA)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+	txAID, _ := beginGuarded(t, tm, ctxA)
 	spID, err := tm.Savepoint(ctxA, txAID)
 	if err != nil {
 		t.Fatalf("Savepoint: %v", err)
@@ -124,8 +101,6 @@ func TestPostgresRollbackToSavepoint_RejectsCrossTenant(t *testing.T) {
 	} else if !errors.Is(err, spi.ErrTxTenantMismatch) {
 		t.Fatalf("expected ErrTxTenantMismatch, got: %v", err)
 	}
-
-	_ = tm.Rollback(ctxA, txAID)
 }
 
 func TestPostgresGetSubmitTime_RejectsCrossTenant(t *testing.T) {
@@ -133,14 +108,7 @@ func TestPostgresGetSubmitTime_RejectsCrossTenant(t *testing.T) {
 	ctxA := ctxWithTenant("tenant-A")
 	ctxB := ctxWithTenant("tenant-B")
 
-	txAID, txCtxA, err := tm.Begin(ctxA)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	// Safety net: an assertion failure below must not leave the tx open —
-	// pool.Close in cleanup would wait on its connection forever. The
-	// error from rolling back an already-committed tx is ignored.
-	defer func() { _ = tm.Rollback(txCtxA, txAID) }()
+	txAID, txCtxA := beginGuarded(t, tm, ctxA)
 
 	// In flight: tenant B must not learn "exists but not yet committed".
 	if _, err := tm.GetSubmitTime(ctxB, txAID); err == nil {
@@ -182,10 +150,7 @@ func TestPostgresReleaseSavepoint_RejectsCrossTenant(t *testing.T) {
 	ctxA := ctxWithTenant("tenant-A")
 	ctxB := ctxWithTenant("tenant-B")
 
-	txAID, _, err := tm.Begin(ctxA)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+	txAID, _ := beginGuarded(t, tm, ctxA)
 	spID, err := tm.Savepoint(ctxA, txAID)
 	if err != nil {
 		t.Fatalf("Savepoint: %v", err)
@@ -196,6 +161,4 @@ func TestPostgresReleaseSavepoint_RejectsCrossTenant(t *testing.T) {
 	} else if !errors.Is(err, spi.ErrTxTenantMismatch) {
 		t.Fatalf("expected ErrTxTenantMismatch, got: %v", err)
 	}
-
-	_ = tm.Rollback(ctxA, txAID)
 }

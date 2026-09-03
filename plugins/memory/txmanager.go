@@ -622,6 +622,9 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 				saved := copyEntity(staged)
 				saved.Meta.Version = nextVersion
 				saved.Meta.LastModifiedDate = submitTime
+				// Already stamped at write time (entity_store.go), so this
+				// only restates the invariant: a committed version's
+				// transaction ID is the transaction that committed it.
 				saved.Meta.TransactionID = txID
 				saved.Meta.TenantID = tid
 				saved.Meta.ChangeType = changeType

@@ -675,6 +675,82 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
     before the boundary check existed) now errors instead of matching
     nothing.
 
+- **`EntityStore.CompareAndSave` rejects an empty `expectedTxID`, and no
+  longer creates or resurrects an entity.** The expected transaction ID is
+  compared literally against the entity's stored one, and the empty string was
+  read as "expect no entity" — a missing or deleted entity reports it. But so
+  does an entity written outside a transaction, because every backend persists
+  the caller's supplied `_meta.transaction_id` verbatim on that path. Using
+  `""` as "create only" therefore overwrote an entity that already existed:
+  a fail-open on a guard whose whole job is to fail closed.
+
+  An empty `expectedTxID` is now a caller error on all three in-tree backends,
+  rejected before any read or write and in both the transactional and the
+  non-transactional branch. It returns a plain error, deliberately **not**
+  `spi.ErrConflict`, so a handler cannot mistake a malformed call for a lost
+  race and retry something that can never succeed. The rejection takes
+  precedence over the rolled-back and already-committed transaction checks.
+
+  Because a missing or deleted entity's current ID is `""` and no non-empty
+  expected ID matches it, `CompareAndSave` can no longer create an entity and
+  can no longer resurrect a deleted one. After a delete staged in the caller's
+  own transaction, no `CompareAndSave` succeeds — **`Save` is how you create,
+  and `Save` is what unstages a delete.** The removed capability (atomic
+  insert-if-absent with exactly one winner under concurrency) had no caller:
+  every engine `CompareAndSave` site passes a transaction ID a prior read
+  found.
+
+  PostgreSQL's transaction-scoped advisory lock
+  (`pg_advisory_xact_lock(hashtext(...))`) in the non-transactional path went
+  with the create case it existed for. It ordered concurrent creators, which
+  `SELECT ... FOR UPDATE` cannot, because an absent row has nothing to lock.
+  With creates gone the check always locks a row that exists, and the row lock
+  plus the path's own `READ COMMITTED` transaction serialise the update case on
+  their own — unchanged behaviour, one fewer lock acquisition per
+  non-transactional compare-and-save.
+
+  Out-of-tree storage plugins must reject the empty expected ID too; the
+  `spitest` conformance suite gains `CompareAndSave/EmptyExpectedIDRejected`
+  and reshapes `CompareAndSave/ExpectedIDIsLiteral` to match.
+
+- **Direct search has one path.** The in-memory whole-model fallback is
+  deleted: a condition that cannot be translated is rejected with `400`
+  (`INVALID_CONDITION`, or `INVALID_FIELD_PATH` for a path-shaped failure)
+  instead of scanning the model in process. No client-reachable request
+  changes status — the boundary grammar and the translator share one path
+  parser and one operator set, so validated input always translates.
+
+  Two shapes the fallback used to absorb are now answered rather than served.
+  A nil condition is `400 INVALID_CONDITION`, not "match everything". A
+  non-positive `limit` is a caller contract violation rather than a request
+  for the complete matched set: both transports resolve a positive limit
+  before the service is reached, and streaming every match of a predicate is
+  `Iterate`'s job.
+
+  `EntityStore` gains `Search` and `Iterate` as required methods and loses
+  `GetAll`/`GetAllAsAt`; the optional `Searcher` and `Iterable` interfaces are
+  gone with them. There is no whole-model read anywhere in the engine.
+
+  Conditional `DELETE /entity/{entityName}/{modelVersion}` and grouped
+  statistics each kept a fallback of the same shape — a zero-value filter
+  passed to the store with the predicate re-applied per yielded entity in the
+  engine — and both are deleted too. One malformed condition answered three
+  ways before this: a `400` from search, a served result from each of the
+  other two. All three refuse it now, and for the same reason: each runs the
+  same `ValidateCondition` before the same `ConditionToFilter`, and clearing
+  the first implies clearing the second. A backend's own residual is
+  untouched — a filter it cannot push into SQL is still evaluated there,
+  against the filter it was given.
+
+- **Grouped statistics no longer answer `501 NOT_IMPLEMENTED_BY_BACKEND`; the
+  code is retired.** Its only trigger was a backend implementing neither
+  `Iterable` nor `GroupedAggregator`, which cannot exist now that `Iterate` is
+  required. The endpoint always has an execution path: `GroupedAggregator`
+  pushdown when the backend offers it and accepts the shape, otherwise a
+  streamed tally. The constant, the help topic
+  `errors.NOT_IMPLEMENTED_BY_BACKEND`, the OpenAPI `501` response and the
+  documented code list all go with it.
+
 ### Added
 
 - **`STORAGE_UNAVAILABLE` — 503, retryable.** Raised when the pool cannot supply a
@@ -813,6 +889,37 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   metadata.
 
 ### Changed
+
+- **Async search translates the condition before it persists the job.**
+  `SubmitAsync` validated a condition's structure, paths, patterns and types
+  but never translated it, so a condition no backend could execute was accepted
+  as a job and failed in the background. It is now refused at submission with
+  the same `400` the synchronous door gives. A nil condition is refused there
+  too.
+
+- **A scheduled transition refuses to fire an entity that carries no
+  transaction ID.** `FireScheduledTransition` is the only engine caller that
+  derives its compare-and-save precondition from stored data rather than a
+  client `If-Match`, and an empty precondition is now rejected by the store.
+  The refusal happens before the transition runs: a
+  `COMMIT_BEFORE_DISPATCH` processor segments the fire, so failing at the
+  terminal persist would have left the entity advanced by a fire that could
+  not be guarded. The task is deleted and the deletion audited as
+  `SCHEDULED_TRANSITION_CANCELLED`: nothing rewrites a stored transaction ID
+  on its own, so leaving the row would re-dispatch and re-refuse it on every
+  scan. Any write that would make the transition fireable re-arms it through
+  the same reconcile every entity write runs, so nothing that can still fire
+  is lost.
+
+- **A write inside a transaction carries that transaction's ID on every
+  backend.** memory and sqlite stamped `Meta.TransactionID` only at commit, so
+  an in-transaction compare-and-save compared its expected ID against whatever
+  the caller had staged; postgres stamped at write time but honoured a
+  caller-supplied value if there was one. All three now stamp the transaction's
+  own ID unconditionally at write time: a row cannot claim it was committed by
+  a transaction that did not commit it, and the in-transaction precondition
+  names the transaction's own view. Every in-tree caller already stamped its
+  own transaction's ID, so no behaviour visible over the API changes.
 
 - **The server no longer imposes a scan budget on search. sqlite's
   residual-scan budget and its `CYODA_SQLITE_SEARCH_SCAN_LIMIT` are removed,
@@ -988,22 +1095,27 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 - **Compare-and-save compares the expected transaction ID literally on every
   backend: a non-empty expected ID against a missing entity conflicts instead
-  of creating; an empty expected ID means "expect no entity".** The comparison
-  used to be skipped whenever the store held no row, so a caller naming a
-  transaction ID that could not possibly be current had its entity created
-  anyway, and a caller expecting no entity overwrote whatever was there. The
-  current transaction ID is now the transaction's own uncommitted write's if it
-  has one, else the committed row's, and `""` when there is no entity — never
-  written, or deleted. A delete makes the tombstone's ID unmatchable, so a
-  stale precondition can no longer resurrect a deleted entity.
+  of creating.** The comparison used to be skipped whenever the store held no
+  row, so a caller naming a transaction ID that could not possibly be current
+  had its entity created anyway. The current transaction ID is now the
+  transaction's own uncommitted write's if it has one, else the committed
+  row's, and `""` when there is no entity — never written, or deleted. A delete
+  makes the tombstone's ID unmatchable, so a stale precondition can no longer
+  resurrect a deleted entity. (This change originally also read an empty
+  expected ID as "expect no entity"; a later entry above supersedes that, since
+  an entity written outside a transaction carries the empty ID too. An empty
+  expected ID is now rejected.)
 
 - **memory, sqlite and postgres: concurrent non-transactional
   compare-and-saves of the same entity yield exactly one winner; the check and
-  the write are one atomic step.** Creates are covered too: `FOR UPDATE` locks
-  no absent row, so postgres additionally takes a transaction-scoped advisory
-  lock on the entity, and the callers that lose re-read under it and conflict
-  rather than all succeeding. memory and sqlite already held their write gate
-  across the check and the write whether or not the entity existed.
+  the write are one atomic step.** postgres takes `FOR UPDATE` on the row it is
+  about to write inside the transaction it opens for the pair, so the callers
+  that lose re-read under the lock and conflict rather than all succeeding;
+  memory and sqlite hold their write gate across the check and the write. (This
+  change originally also covered concurrent *creates*, via a transaction-scoped
+  advisory lock on the entity, because `FOR UPDATE` locks no absent row. A
+  later entry above removes that: compare-and-save can no longer create, so the
+  advisory lock protected nothing and went with the create path.)
 
 - **sqlite: a compare-and-save inside a transaction records its unique-key
   claims, as a save does.** An entity written that way committed with no claim

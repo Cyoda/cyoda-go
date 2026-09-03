@@ -10,7 +10,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// This file implements spi.Iterable and spi.GroupedAggregator on
+// This file implements spi.EntityStore.Iterate and spi.GroupedAggregator on
 // *entityStore for the grouped entity statistics query endpoint
 // (POST /api/entity/stats/{name}/{version}/query).
 //
@@ -38,13 +38,11 @@ import (
 // portability across SQL dialects — even where sqlite would accept alias
 // references, we don't rely on it.
 
-// Compile-time interface checks.
-var (
-	_ spi.Iterable          = (*entityStore)(nil)
-	_ spi.GroupedAggregator = (*entityStore)(nil)
-)
+// Compile-time interface check. The spi.EntityStore assertion in
+// entity_store.go covers Iterate.
+var _ spi.GroupedAggregator = (*entityStore)(nil)
 
-// Iterate implements spi.Iterable.
+// Iterate implements spi.EntityStore.Iterate.
 //
 // Returns an iterator over entities in the model matching filter. Pushable
 // filter parts go into SQL WHERE; the residual is applied inside Next() via
@@ -70,7 +68,7 @@ var (
 // order is still emitted — a conformant choice within "unspecified"); a
 // non-empty OrderBy is honoured via orderByClause (shared with Search) on
 // the non-tx/PIT SQL paths. A non-empty OrderBy with an ambient transaction
-// is unsupported per the Iterable doc — rejected up front, before either
+// is unsupported per the EntityStore.Iterate doc — rejected up front, before either
 // tx branch below runs.
 func (s *entityStore) Iterate(
 	ctx context.Context,
@@ -97,7 +95,7 @@ func (s *entityStore) Iterate(
 		return s.iterateTx(ctx, tx, model, filter, opts.TrackingRead)
 	}
 
-	// Zero-value Filter means "match all" per the spi.Iterable contract.
+	// Zero-value Filter means "match all" per the spi.EntityStore.Iterate contract.
 	plan, err := planFor(filter)
 	if err != nil {
 		return nil, fmt.Errorf("Iterate: %w", err)
@@ -260,7 +258,7 @@ func (s *entityStore) GroupedAggregate(
 			return nil, spi.ErrAggregationNotPushdownable
 		}
 	}
-	// Zero-value Filter means "match all" (same convention as Iterable).
+	// Zero-value Filter means "match all" (same convention as Iterate).
 	plan, err := planFor(filter)
 	if err != nil {
 		return nil, fmt.Errorf("GroupedAggregate: %w", err)

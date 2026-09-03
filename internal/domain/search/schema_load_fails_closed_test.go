@@ -95,7 +95,7 @@ func TestSearch_SchemaLoadFails_FailsClosedInsteadOfAnswering(t *testing.T) {
 		Value:        "Alice",
 	}
 
-	results, err := svc.Search(ctx, ref, cond, search.SearchOptions{})
+	results, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	if err == nil {
 		t.Fatalf("Search returned no error with an unloadable schema; got %d result(s). "+
 			"A model-store read failure must not produce a result set.", len(results))
@@ -152,7 +152,7 @@ func TestSearch_ModelCarriesNoSchema_RejectsTheDataPath(t *testing.T) {
 		Value:        "Alice",
 	}
 
-	results, err := svc.Search(ctx, ref, cond, search.SearchOptions{})
+	results, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	if err == nil {
 		t.Fatalf("Search accepted a data path against a model declaring no fields; "+
 			"got %d result(s)", len(results))
@@ -255,7 +255,7 @@ func TestAsyncSearch_SchemaBreaksAfterSubmit_JobFails(t *testing.T) {
 		OperatorType: "EQUALS",
 		Value:        "Alice",
 	}
-	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{})
+	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	if err != nil {
 		t.Fatalf("SubmitAsync: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestSearch_LifecycleOnlyCondition_DoesNotNeedTheSchema(t *testing.T) {
 		Value:        "NEW",
 	}
 
-	results, err := svc.Search(ctx, ref, cond, search.SearchOptions{})
+	results, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	if err != nil {
 		t.Fatalf("lifecycle-only search failed on an unreadable schema: %v. "+
 			"A meta leaf takes its type from the static vocabulary, so the model "+

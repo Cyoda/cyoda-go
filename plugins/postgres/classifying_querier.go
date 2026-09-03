@@ -138,23 +138,38 @@ func (c classifiedQuerier) QueryRow(ctx context.Context, sql string, args ...any
 //
 // It carries the same StorageUnavailable marker — the transaction is gone
 // either way, so the work cannot complete and a retry on a fresh one may well
-// succeed — but it is a distinct type from idleInTxAbortError because the CAUSE
-// is unknown here. A registry miss follows a reclaimed session, a failed commit,
-// or a transaction that simply finished, and the operator log must not name one
-// of them.
-type deadTxError struct{ txID string }
+// succeed — but it is a distinct type from idleInTxAbortError because the
+// operator-facing message never names the cause: a registry miss follows a
+// reclaimed session, a failed commit, or a transaction that simply finished,
+// and the log line must not guess which. What the SPI sentinel classifies as
+// (via Unwrap) is a separate, narrower question the caller of resolveRaw
+// answers when it can (wasCommitted) — sentinel is spi.ErrTxAlreadyCommitted
+// when the manager still has proof of a successful commit, spi.ErrTxNotFound
+// otherwise. Either way the message stays generic.
+type deadTxError struct {
+	txID     string
+	sentinel error
+}
 
 func (e *deadTxError) Error() string {
 	return "transaction " + e.txID + " is no longer active"
 }
 func (e *deadTxError) StorageUnavailable() bool { return true }
+func (e *deadTxError) Unwrap() error            { return e.sentinel }
 
 // deadTxQuerier is what resolveRaw hands a store whose context names a
 // transaction the manager no longer holds. Every statement fails: falling back
 // to the pool would run it outside the transaction the caller believes it is in.
-type deadTxQuerier struct{ txID string }
+//
+// sentinel is the SPI error resolveRaw's caller has already classified this
+// registry miss as (spi.ErrTxAlreadyCommitted or spi.ErrTxNotFound) — see
+// deadTxError's doc comment.
+type deadTxQuerier struct {
+	txID     string
+	sentinel error
+}
 
-func (d deadTxQuerier) err() error { return &deadTxError{txID: d.txID} }
+func (d deadTxQuerier) err() error { return &deadTxError{txID: d.txID, sentinel: d.sentinel} }
 
 func (d deadTxQuerier) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
 	return pgconn.CommandTag{}, d.err()
