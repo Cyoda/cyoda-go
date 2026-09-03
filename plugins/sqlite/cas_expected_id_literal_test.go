@@ -3,6 +3,7 @@ package sqlite_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -184,24 +185,42 @@ func TestCompareAndSave_EmptyExpectedOnDeadTransaction_ReportsArgumentError(t *t
 			}
 
 			_, err = store.CompareAndSave(txCtx, literalEntity(ref, "tx-writer"), "")
-			assertArgumentErrorNotTxState(t, err)
+			assertArgumentRejection(t, err)
 			assertLiteralUnchanged(t, store, ctx, true)
 		})
 	}
 }
 
-// assertArgumentErrorNotTxState reports that err is the plain argument
-// rejection and not one of the sentinels a caller would act on differently.
-func assertArgumentErrorNotTxState(t *testing.T, err error) {
+// casRejectionMessage is the text every backend's empty-expectedTxID guard
+// returns. The rejection deliberately carries no sentinel — it is a contract
+// violation, not a condition a caller retries — so the message is the only
+// positive identification available, and matching it is what makes an
+// assertion CONFIRM the argument error rather than merely rule out the
+// alternatives someone happened to think of. Exactly one error is legitimate
+// here, so this is a match, not a disjunction.
+const casRejectionMessage = "expectedTxID must not be empty"
+
+// assertArgumentRejection reports that err IS the empty-expectedTxID argument
+// rejection: it carries casRejectionMessage, and it wraps none of the
+// sentinels a caller would act on differently. The sentinel half matters most
+// on a dead transaction, where the guard's position ahead of the rolled-back
+// and already-committed checks is what decides the answer — but an
+// exclusion-only check would pass on any unrelated fifth error, which is
+// precisely the reorder these assertions exist to catch, so the message match
+// leads.
+func assertArgumentRejection(t *testing.T, err error) {
 	t.Helper()
 	if err == nil {
-		t.Fatal("CompareAndSave with an empty expected transaction ID: err = nil, want a rejection")
+		t.Fatal("CompareAndSave with an empty expected transaction ID: err = nil, want the argument rejection")
+	}
+	if !strings.Contains(err.Error(), casRejectionMessage) {
+		t.Fatalf("CompareAndSave with an empty expected transaction ID: err = %v, want an error containing %q", err, casRejectionMessage)
 	}
 	for _, sentinel := range []error{
-		spi.ErrTxAlreadyCommitted, spi.ErrTxRolledBack, spi.ErrTxNotFound, spi.ErrConflict,
+		spi.ErrConflict, spi.ErrTxAlreadyCommitted, spi.ErrTxRolledBack, spi.ErrTxNotFound,
 	} {
 		if errors.Is(err, sentinel) {
-			t.Fatalf("CompareAndSave with an empty expected transaction ID on a dead transaction: err = %v, want the plain argument error (the empty-ID guard runs first), not %v", err, sentinel)
+			t.Fatalf("CompareAndSave with an empty expected transaction ID: err = %v, is the argument rejection but must not also wrap %v", err, sentinel)
 		}
 	}
 }
@@ -260,11 +279,6 @@ func assertCASOutcome(t *testing.T, err error, want casOutcome) {
 			t.Fatalf("CompareAndSave: err = %v, want ErrConflict", err)
 		}
 	case casRejected:
-		if err == nil {
-			t.Fatalf("CompareAndSave with an empty expected transaction ID: err = nil, want a rejection")
-		}
-		if errors.Is(err, spi.ErrConflict) {
-			t.Fatalf("CompareAndSave with an empty expected transaction ID: err = %v, want a plain caller error, not ErrConflict", err)
-		}
+		assertArgumentRejection(t, err)
 	}
 }
