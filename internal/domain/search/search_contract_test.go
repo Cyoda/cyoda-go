@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -69,6 +70,22 @@ func TestSearch_TranslationFailure_Is400InvalidCondition(t *testing.T) {
 	var appErr *common.AppError
 	if !errors.As(err, &appErr) || appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeInvalidCondition {
 		t.Fatalf("got %v, want 400 %s", err, common.ErrCodeInvalidCondition)
+	}
+	// The translator's own error is preserved for errors.Is and for the
+	// server-side log, but is NOT interpolated into the client-visible
+	// message: it renders Go type names (`unsupported condition type: %T`)
+	// that describe the engine's internals rather than the request.
+	if strings.Contains(appErr.Message, "search_test.unknownCondition") {
+		t.Errorf("client message names an internal Go type: %q", appErr.Message)
+	}
+	// It survives as the cause, so a server-side log or an errors.Is check
+	// downstream still reaches it.
+	cause := appErr.Unwrap()
+	if cause == nil {
+		t.Fatal("the translator's error must be preserved as the cause")
+	}
+	if !strings.Contains(cause.Error(), "search_test.unknownCondition") {
+		t.Errorf("cause lost the translator's detail: %q", cause)
 	}
 }
 

@@ -387,10 +387,15 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 		// already be committed by the time the terminal persist ran, leaving
 		// the entity advanced by a fire that could not be guarded. Permanent
 		// for this row, not a race: dropping without deleting the task lets
-		// the next scan re-read it once the row carries a transaction ID.
+		// the next scan re-read it once a later write stamps the row.
+		//
+		// Dropped with no error. Nothing in the machinery failed — this is a
+		// property of the stored row — and returning one would have the
+		// scheduler log its generic "local fire failed" ERROR on top of this
+		// one, every scan, for a condition already reported here by cause.
 		slog.Error("scheduled fire refused: stored entity carries no transaction ID to guard against",
-			"pkg", "workflow", "taskID", task.ID, "entityID", task.EntityID)
-		return OutcomeDropped, fmt.Errorf("scheduled fire cannot be guarded: entity %s has no committed transaction ID", task.EntityID)
+			"pkg", "workflow", "taskID", cur.ID, "entityID", cur.EntityID)
+		return OutcomeDropped, nil
 	}
 	fireCtx := withIfMatch(txCtx, expectedTxID)
 

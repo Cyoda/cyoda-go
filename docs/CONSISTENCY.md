@@ -170,7 +170,7 @@ manifest as silent data loss in production.
 
 ## 3c. In-transaction `Search` is a predicate read
 
-An in-transaction `Search` (`spi.Searcher.Search`, pushed down to the storage
+An in-transaction `Search` (`EntityStore.Search`, pushed down to the storage
 plugin) is read-your-own-writes correct — it sees the transaction's own
 uncommitted writes overlaid on the committed snapshot — but its read-set
 participation is governed by a per-query boolean, **`TrackingRead`**

@@ -637,8 +637,7 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		if appErr := ClassifyStoreQueryError(translateErr); appErr != nil {
 			return nil, appErr
 		}
-		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
-			fmt.Sprintf("condition cannot be translated: %v", translateErr))
+		return nil, untranslatableCondition(translateErr)
 	}
 	res, sErr := store.Search(ctx, filter, spi.SearchOptions{
 		ModelName:    modelRef.EntityName,
@@ -652,6 +651,24 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		return nil, appErr
 	}
 	return res, sErr
+}
+
+// untranslatableCondition renders the one translation failure
+// ClassifyStoreQueryError does not recognise.
+//
+// The translator's own error is attached as the cause — errors.Is still
+// reaches it, and the server-side log below carries its text — but is
+// deliberately NOT interpolated into the client-visible message. The
+// remaining unclassified cause is spi.ConditionToFilter's "unsupported
+// condition type: %T", which names an engine-internal Go type rather than
+// anything about the request. It is unreachable from the wire (predicate
+// .ParseCondition builds only the five clause types, and a FunctionCondition
+// is refused earlier), so a caller loses no diagnostic detail here.
+func untranslatableCondition(translateErr error) *common.AppError {
+	slog.Warn("condition cleared validation but could not be translated",
+		"pkg", "search", "err", translateErr)
+	return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
+		"condition cannot be translated to a backend predicate").WithCause(translateErr)
 }
 
 // ClassifyStoreQueryError maps the cross-backend sentinels a storage plugin
@@ -858,8 +875,7 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 		if appErr := ClassifyStoreQueryError(translateErr); appErr != nil {
 			return "", appErr
 		}
-		return "", common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
-			fmt.Sprintf("condition cannot be translated: %v", translateErr))
+		return "", untranslatableCondition(translateErr)
 	}
 
 	// Resolve sort keys synchronously so a bad field path returns 400

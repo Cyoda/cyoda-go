@@ -1978,8 +1978,11 @@ func TestFireScheduled_UnstampedEntity_RefusesBeforeFiring(t *testing.T) {
 	if outcome != OutcomeDropped {
 		t.Fatalf("outcome = %v, want Dropped", outcome)
 	}
-	if err == nil {
-		t.Fatal("expected an error naming the missing precondition, got nil")
+	// Dropped with no error: nothing in the machinery failed, and the
+	// executor's own "local fire failed" ERROR on top of the guard's would
+	// double-log a condition the guard already reports, on every scan.
+	if err != nil {
+		t.Fatalf("expected a clean drop, got %v", err)
 	}
 	if dispatches != 0 {
 		t.Errorf("processor dispatches = %d, want 0 — the fire must refuse before running the transition", dispatches)
