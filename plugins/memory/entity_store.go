@@ -165,7 +165,19 @@ func (s *EntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 	return s.saveUnlocked(ctx, entity)
 }
 
+// CompareAndSave writes entity only if its stored transaction ID is still
+// expectedTxID. expectedTxID must not be empty: it is compared literally, and
+// the empty string is the transaction ID a missing or deleted entity reports
+// — but also the one a write taken outside a transaction stores verbatim when
+// the caller supplied none, so an empty expected ID cannot tell "no entity"
+// from "an entity written outside a transaction" and would overwrite the
+// latter. It is rejected as a caller error, before any read or write.
+// CompareAndSave therefore never creates an entity and never resurrects a
+// deleted one; Save does that.
 func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, expectedTxID string) (int64, error) {
+	if expectedTxID == "" {
+		return 0, fmt.Errorf("CompareAndSave: expectedTxID must not be empty")
+	}
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
 		// Hold tx.OpMu.RLock for the duration of the CAS+buffer mutation
@@ -182,23 +194,12 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		}
 		// A write compares against the transaction's own view, and a same-tx
 		// delete means the transaction sees NO entity: the current
-		// transaction ID is "". A non-empty expected ID names a version the
-		// delete has already superseded, so it conflicts. An empty one says
-		// "expect no entity" — which is exactly what the delete left behind —
-		// so the save is allowed and re-creates the entity. It must unstage
-		// the delete as Save does, or the commit would apply the tombstone on
-		// top of the re-creation. Same answer postgres gives.
+		// transaction ID is "". expectedTxID is non-empty here, so it names a
+		// version the delete has already superseded and conflicts. Nothing
+		// re-creates the entity through this method — Save does that, and it
+		// unstages the delete. Same answer postgres gives.
 		if tx.Deletes[entity.Meta.ID] {
-			if expectedTxID != "" {
-				return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
-			}
-			unstageDelete(tx, entity.Meta.ID)
-			cp := copyEntity(entity)
-			s.factory.txManager.stageSuperseded(tx.ID, entity.Meta.ID, tx.Buffer[entity.Meta.ID])
-			tx.Buffer[entity.Meta.ID] = cp
-			tx.WriteSet[entity.Meta.ID] = true
-			s.factory.txManager.recordUniqueKeys(tx.ID, entity.Meta.ID, spi.UniqueKeysFromContext(ctx))
-			return 0, nil
+			return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
 		}
 		// A buffered own-write IS the transaction's current version of this
 		// entity, so the comparison is against it, not against the committed
@@ -260,9 +261,9 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 // against: the latest committed version's, or "" when there is no entity —
 // never written, or deleted. A deleted entity is no entity, exactly as Get
 // reports it, so its tombstone does not expose the superseded version's ID.
-// An entity actually stored with an empty transaction ID would read the same
-// way — as no entity — but every writer stamps a non-empty one, so that case
-// is not reachable in production.
+// "" is also what an entity written outside a transaction with no supplied ID
+// stores; the two are indistinguishable here, which is why CompareAndSave
+// rejects an empty expectedTxID rather than letting it match either.
 // The caller must hold factory.entityMu (read or write).
 func currentTxIDLocked(versions []entityVersion) string {
 	if len(versions) == 0 {

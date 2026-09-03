@@ -193,23 +193,24 @@ func (s *entityStore) save(ctx context.Context, entity *spi.Entity, stampFrom tx
 	return nextVersion, nil
 }
 
+// CompareAndSave writes entity only if its stored transaction ID is still
+// expectedTxID. expectedTxID must not be empty: it is compared literally, and
+// the empty string is the transaction ID a missing or deleted entity reports
+// — but also the one a write taken outside a transaction stores verbatim when
+// the caller supplied none, so an empty expected ID cannot tell "no entity"
+// from "an entity written outside a transaction" and would overwrite the
+// latter. It is rejected as a caller error, before any read or write.
+// CompareAndSave therefore never creates an entity and never resurrects a
+// deleted one; Save does that.
 func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, expectedTxID string) (int64, error) {
+	if expectedTxID == "" {
+		return 0, fmt.Errorf("CompareAndSave: expectedTxID must not be empty")
+	}
+
 	// Inside the caller's transaction the check and the write already run on
 	// one connection, under that transaction — the check reads the
 	// transaction's own view, and neither half can commit before the caller
 	// says so. Nothing to add here.
-	//
-	// This branch does not take the advisory lock the non-transactional path
-	// below uses to serialize concurrent compare-and-save creates of the same
-	// entity ID: two transactions racing to create the same ID here are not
-	// ordered against each other and both can pass compareTxID before either
-	// commits. That is acceptable because the engine reaches this branch
-	// only with a non-empty If-Match naming a version a prior read already
-	// found; a create with no prior read to name goes through Save, not
-	// CompareAndSave. The one expectedTxID=="" caller this branch does see
-	// is a transaction re-creating an entity it deleted itself earlier in
-	// the same transaction — its own eager delete, not a race with another
-	// transaction creating the same ID from nothing.
 	if spi.GetTransaction(ctx) != nil {
 		if err := s.compareTxID(ctx, s.q, entity.Meta.ID, expectedTxID, false); err != nil {
 			return 0, err
@@ -303,10 +304,10 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 // compareTxID reports whether the stored entity still carries expectedTxID,
 // returning spi.ErrConflict when it does not. expectedTxID is compared
 // literally: the entity's current transaction ID is the row's, or "" when
-// there is no entity — never written, or deleted. So a non-empty expected ID
-// against a missing entity conflicts (it names a version that does not
-// exist), and the empty expected ID is how a caller says "expect no entity"
-// and creates one.
+// there is no entity — never written, or deleted. So an expected ID against a
+// missing entity conflicts: it names a version that does not exist.
+// CompareAndSave rejects an empty expectedTxID before calling this, so ""
+// never reaches the comparison as a value a caller may match.
 //
 // The row is read with NOT deleted, as Get and Delete read it: a deleted
 // entity is no entity, so its tombstone does not offer up the superseded
@@ -314,9 +315,8 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 // row. A delete applied earlier in the caller's own transaction is visible on
 // that transaction's connection, so the same rule covers it — matching what
 // the buffered backends answer for a same-transaction delete. A row actually
-// stored with an empty transaction ID would read the same way — as no
-// entity — but every writer stamps a non-empty one, so that case is not
-// reachable in production.
+// stored with an empty transaction ID also reads as "" here, which is exactly
+// why CompareAndSave will not let a caller name it.
 //
 // forUpdate locks the row for the rest of the caller's database transaction —
 // what makes the non-transactional path's check and write indivisible. It is
