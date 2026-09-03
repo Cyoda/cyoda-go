@@ -2,6 +2,47 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> ## STATUS 2026-09-03 — Task 1 is DONE. Start at Task 2.
+>
+> Plan 2 merged to `cyoda-go-spi` `main` as `1d3b6ed`. Work continues on branch
+> `fix/477-search-fallback` (pushed). Already committed here:
+>
+> - **Task 1 complete.** `ce9f8c6` pins all four `go.mod` files at
+>   `v0.8.4-0.20260903130721-1d3b6ed501f0` and re-pins the plugin submodules to
+>   this branch's HEAD. `make check-spi-pin-sync` passes. The plugin removals
+>   (`e2a55a3`) are in, and all three plugins build, vet and test clean both in
+>   workspace mode and under `GOWORK=off`.
+> - **Task 6's plugin half is complete** (`e8db6d1`): each plugin has a
+>   `drainAll` helper and no plugin test calls `GetAll`/`GetAllAsAt`. What
+>   remains of Task 6 is the `internal/`, `internal/e2e/` and
+>   `e2e/parity/txsearchryw` sites plus `internal/common/commontest/drain.go`.
+> - **Beyond the plan**, three defects the conformance run exposed are fixed
+>   here: `Search` checked `RolledBack` but not `Closed` on memory and sqlite
+>   (`d9de052`); a postgres store op on a committed transaction wrapped no SPI
+>   sentinel (`c7c77e7`, `3c37808`); and @pschleger ruled that `CompareAndSave`
+>   **rejects an empty `expectedTxID`** rather than reading it as "expect no
+>   entity" (`2818f96`, `53a781a`, `36fe3e5`, `061e335`, `33ab0c3`) — which also
+>   made postgres's compare-and-save advisory lock dead code. Every postgres
+>   test's transaction now goes through one `beginGuarded` helper
+>   (`c3b9418`, `f84f775`, `5620ea4`).
+>
+> **The root module does not compile.** That is this plan's intended starting
+> state: `internal/domain/search/service.go` and
+> `e2e/parity/txsearchryw/tx_search_ryw_test.go` are the genuine failures;
+> everything else cascades from importing the broken search package, so expect
+> more once `service.go` is fixed.
+>
+> **Two findings Tasks 2-7 must act on**, both written up on Cyoda/cyoda-go#516
+> under *Reference: the compare-and-save empty-ID ruling*:
+> 1. `internal/domain/workflow/fire_scheduled.go:381,473` is the only engine
+>    caller deriving `expectedTxID` from stored data rather than a client
+>    `If-Match`. With the empty ID now rejected it can return an error where it
+>    used to overwrite silently. Failing closed is right; guard it deliberately.
+> 2. memory and sqlite overwrite `Meta.TransactionID` at commit while postgres
+>    stamps only when the caller left it empty, and memory/sqlite compare an
+>    in-transaction compare-and-save against the *buffered* entity's raw ID.
+>    Latent, since callers stamp — but the escape hatch that hid it is gone.
+
 **Goal:** Direct search has one path (`EntityStore.Search`), the whole-model fallback and every "store lacks the capability" branch are gone, the async executor fails closed, the 501 grouped-stats code is retired, and all four `go.mod` files pin the SPI commit Plan 2 merged.
 
 **Architecture:** The pin bump makes the compiler drive the removal: `GetAll`/`GetAllAsAt` no longer exist, `Search`/`Iterate` are plain method calls. The search service validates a nil condition and a non-positive limit up front, classifies a translation failure, and calls `store.Search`. Five refusal branches, `drainIterate`, the in-memory fallback, the `Searcher`/`Iterable` assertions, `ErrBackendNotSupported` and `NOT_IMPLEMENTED_BY_BACKEND` are deleted. Tests that read a model with `GetAll` move to an `Iterate` drain helper.
@@ -43,10 +84,12 @@
 
 ### Task 1: Pin the new SPI and let the compiler drive the plugin removals
 
+**DONE — `ce9f8c6` (pin + repin) and `e2a55a3` (plugin removals). Skip to Task 2.**
+
 **Files:**
 - Modify: four `go.mod` + `go.sum`; `plugins/memory/entity_store.go:447-545` (`GetAll`, `GetAllAsAt`), `:118-160` (`getAllSnapshotUnlocked`); `plugins/sqlite/entity_store.go:532-571` (`GetAll`), `:632-…` (`GetAllAsAt`); `plugins/postgres/entity_store.go:252-300` (`GetAll`, `GetAllAsAt`); `plugins/memory/searcher.go:12`, `plugins/sqlite/searcher.go:13`, `plugins/postgres/searcher.go:14`, `plugins/{memory,sqlite,postgres}/grouped_stats.go` compile-time assertions.
 
-- [ ] **Step 1: Bump the pin (one commit's worth, not yet committed)**
+- [x] **Step 1: Bump the pin (one commit's worth, not yet committed)**
 
 ```bash
 SHA=$(git -C /Users/paul/go-projects/cyoda-light/cyoda-go-spi rev-parse origin/main)   # Plan 2's merge commit
@@ -57,7 +100,7 @@ go build ./... 2>&1 | head -30
 
 Expected: `check-spi-pin-sync` PASS; the build FAILS on every `GetAll`/`GetAllAsAt` definition-without-interface-use (plugins compile — an extra method is legal — but engine call sites at `internal/domain/search/service.go:736-738` fail: `store.GetAll undefined`) and on `spi.Iterable`/`spi.Searcher` references. These compile errors are the failing test for this task.
 
-- [ ] **Step 2: Delete the plugin methods and fix the assertions**
+- [x] **Step 2: Delete the plugin methods and fix the assertions**
 
 memory: delete `GetAll` (`entity_store.go:447-505`), `GetAllAsAt` (`:542-…`), `getAllSnapshotUnlocked` (`:118-160`); `searcher.go:12` becomes `var _ spi.EntityStore = (*EntityStore)(nil)`; `grouped_stats.go` `var _ spi.Iterable = …` → delete (the `EntityStore` assertion covers it), keep `var _ spi.GroupedAggregator`.
 sqlite: delete `GetAll` (`entity_store.go:532-571`, including `getAllDirect`) and `GetAllAsAt`; `searcher.go:13` → `var _ spi.EntityStore = (*entityStore)(nil)`; `grouped_stats.go:43-46` drop the `Iterable` line.
@@ -66,7 +109,7 @@ postgres: delete `GetAll` (`entity_store.go:252-276`) and `GetAllAsAt` (`:277-�
 Run: `for p in memory sqlite postgres; do (cd plugins/$p && go build ./... && go vet ./...); done`
 Expected: PASS. Plugin tests will not compile yet (test call sites use `GetAll`); Task 6 migrates them. Root build still fails on the engine — Tasks 2–5.
 
-- [ ] **Step 3: Commit the pin and the plugin removals together**
+- [x] **Step 3: Commit the pin and the plugin removals together**
 
 ```bash
 git add go.mod go.sum plugins/*/go.mod plugins/*/go.sum plugins/memory/entity_store.go plugins/memory/searcher.go plugins/memory/grouped_stats.go plugins/sqlite/entity_store.go plugins/sqlite/searcher.go plugins/sqlite/grouped_stats.go plugins/postgres/entity_store.go plugins/postgres/searcher.go plugins/postgres/grouped_stats.go
