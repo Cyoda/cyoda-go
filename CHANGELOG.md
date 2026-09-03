@@ -675,6 +675,44 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
     before the boundary check existed) now errors instead of matching
     nothing.
 
+- **`EntityStore.CompareAndSave` rejects an empty `expectedTxID`, and no
+  longer creates or resurrects an entity.** The expected transaction ID is
+  compared literally against the entity's stored one, and the empty string was
+  read as "expect no entity" — a missing or deleted entity reports it. But so
+  does an entity written outside a transaction, because every backend persists
+  the caller's supplied `_meta.transaction_id` verbatim on that path. Using
+  `""` as "create only" therefore overwrote an entity that already existed:
+  a fail-open on a guard whose whole job is to fail closed.
+
+  An empty `expectedTxID` is now a caller error on all three in-tree backends,
+  rejected before any read or write and in both the transactional and the
+  non-transactional branch. It returns a plain error, deliberately **not**
+  `spi.ErrConflict`, so a handler cannot mistake a malformed call for a lost
+  race and retry something that can never succeed. The rejection takes
+  precedence over the rolled-back and already-committed transaction checks.
+
+  Because a missing or deleted entity's current ID is `""` and no non-empty
+  expected ID matches it, `CompareAndSave` can no longer create an entity and
+  can no longer resurrect a deleted one. After a delete staged in the caller's
+  own transaction, no `CompareAndSave` succeeds — **`Save` is how you create,
+  and `Save` is what unstages a delete.** The removed capability (atomic
+  insert-if-absent with exactly one winner under concurrency) had no caller:
+  every engine `CompareAndSave` site passes a transaction ID a prior read
+  found.
+
+  PostgreSQL's transaction-scoped advisory lock
+  (`pg_advisory_xact_lock(hashtext(...))`) in the non-transactional path went
+  with the create case it existed for. It ordered concurrent creators, which
+  `SELECT ... FOR UPDATE` cannot, because an absent row has nothing to lock.
+  With creates gone the check always locks a row that exists, and the row lock
+  plus the path's own `READ COMMITTED` transaction serialise the update case on
+  their own — unchanged behaviour, one fewer lock acquisition per
+  non-transactional compare-and-save.
+
+  Out-of-tree storage plugins must reject the empty expected ID too; the
+  `spitest` conformance suite gains `CompareAndSave/EmptyExpectedIDRejected`
+  and reshapes `CompareAndSave/ExpectedIDIsLiteral` to match.
+
 ### Added
 
 - **`STORAGE_UNAVAILABLE` — 503, retryable.** Raised when the pool cannot supply a
