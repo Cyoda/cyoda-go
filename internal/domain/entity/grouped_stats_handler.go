@@ -23,8 +23,8 @@ const maxGroupedStatsBodySize = 10 * 1024 * 1024
 // StoreResolver returns the EntityStore, the resolved
 // ModelRef, and the model's declared field-type map for the given entity
 // name and model version. `fields` is used by the service to stamp declared
-// types onto the pushdown filter and the streaming residual evaluator, so
-// grouped-stats comparison is type-directed exactly like the search path; it
+// types onto the pushdown filter, so grouped-stats comparison is
+// type-directed exactly like the search path; it
 // may be nil when the model has no schema bound. The ok return is false when
 // the model is not found for the calling tenant — the handler maps that to
 // 404 MODEL_NOT_FOUND.

@@ -305,16 +305,15 @@ func TestDeleteAllEntities_StreamsSelection(t *testing.T) {
 // survive, only the matching entity is removed — via Iterate, never
 // falling back to Search or GetAll.
 //
-// The name and the "Untranslatable" framing below predate
-// spi.ConditionToFilter learning to push a wildcard array path down like any
-// other (path-grammar.md §2/§8): this condition now translates, so
-// planDeleteSelection takes the TRANSLATABLE branch and hands Iterate a real
-// pushdown Filter rather than a zero-value one plus a residual re-check. The
-// property this test actually pins — streamed selection via Iterate,
-// never Search or GetAll, decoys survive, matches are removed — holds
-// identically on both branches (see deleteSelectionPlan's doc comment), so
-// the assertions below did not need to change; only this comment was wrong.
-func TestDeleteEntitiesConditional_SingleTx_UntranslatableConditionStreams(t *testing.T) {
+// The condition is a wildcard array path, which once did not translate and
+// drove the residual branch planDeleteSelection used to carry. It has
+// translated since spi.ConditionToFilter learned to carry a subscript through
+// (path-grammar.md §2/§8), and the residual branch is gone with the rest of
+// the whole-model-scan family — so this hands Iterate a real pushdown filter.
+// The property the test pins is unchanged and was never about which branch
+// ran: streamed selection via Iterate, never Search, decoys survive, matches
+// are removed.
+func TestDeleteEntitiesConditional_SingleTx_WildcardPathConditionStreams(t *testing.T) {
 	realFactory := memory.NewStoreFactory()
 	t.Cleanup(func() { realFactory.Close() })
 	ref := spi.ModelRef{EntityName: "StreamUntranslatableModel", ModelVersion: "1"}

@@ -24,7 +24,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
-	"github.com/cyoda-platform/cyoda-go/internal/match"
 )
 
 // --- Input/Output types ---
@@ -946,39 +945,21 @@ func mintDeleteTicket(entityID string, err error) string {
 
 // deleteSelectionPlan is how a conditional delete selects entities once
 // DeleteEntitiesConditional/deleteBatched stopped routing through
-// SearchService.Search: either a pushdown spi.Filter (cond
-// translated cleanly via spi.ConditionToFilter) that the store applies
-// natively in Iterate, or a zero-value Filter (matches everything at the
-// store) paired with a prepared residual matcher re-applied to each
-// streamed entity client-side. The residual branch mirrors
-// GroupedStatsService.tallyStreaming's design (grouped_stats_service.go):
-// an untranslatable condition still selects via Iterate rather than a
-// whole-model materialising read.
+// SearchService.Search: a pushdown spi.Filter the store applies natively in
+// Iterate, or the zero-value Filter (matches everything at the store) for a
+// nil condition. Every yielded entity already matches; there is no
+// client-side re-check.
 //
-// The residual branch has no known reachable input. planDeleteSelection runs
-// the same validation quartet as SearchService.Search — ValidateCondition,
-// ValidatePatterns, ValidateKnownPaths and the type check — and clearing
-// those implies translating (see TestValidateCondition_ClearingImpliesTranslates
-// in internal/domain/search). A function condition is refused by the first of
-// them; an array-wildcard leaf, which this comment used to name as the
-// example, has translated since spi.ConditionToFilter learned to carry a
-// subscript through (path-grammar.md §2/§8). Search answers its own
-// untranslatable case with a 400 rather than keeping a second path for it;
-// this one still keeps a second path, and closing that gap is its own change.
+// It used to carry a prepared residual for an untranslatable condition,
+// re-applied per streamed entity over a zero-value filter — a whole-model
+// scan plus an in-process match, the shape search deleted. planDeleteSelection
+// runs the same four checks search does (ValidateCondition, ValidatePatterns,
+// ValidateKnownPaths, the type check) before translating, and clearing them
+// implies translating, so the residual had no reachable input:
+// TestDeleteAndGroupedStats_ClearingImpliesTranslates is the check that keeps
+// that true. Delete now refuses a translation failure exactly as search does.
 type deleteSelectionPlan struct {
-	filter   spi.Filter
-	residual *match.Prepared
-}
-
-// matches reports whether e satisfies the plan. When residual is nil the
-// store-level filter alone is authoritative (translated cleanly, or the
-// zero-value "everything" plan) and every yielded entity already matches;
-// otherwise the prepared predicate is re-checked client-side.
-func (p deleteSelectionPlan) matches(e *spi.Entity) bool {
-	if p.residual == nil {
-		return true
-	}
-	return p.residual.Match(e.Data, e.Meta)
+	filter spi.Filter
 }
 
 // planDeleteSelection validates cond and resolves how DeleteEntitiesConditional
@@ -1068,32 +1049,21 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 		return deleteSelectionPlan{}, tErr
 	}
 
+	// One path, as on search: the condition either pushes down or the request
+	// is refused. A translation failure is unreachable from input that
+	// cleared the four checks above — they are the same calls search runs,
+	// and TestDeleteAndGroupedStats_ClearingImpliesTranslates checks the
+	// pairing holds — so refusing costs no valid delete.
 	filter, translateErr := spi.ConditionToFilter(cond, fields)
-	if translateErr == nil {
-		return deleteSelectionPlan{filter: filter}, nil
-	}
-
-	// Untranslatable: select everything at the store and re-apply the same
-	// predicate client-side per streamed entity — never a whole-model
-	// materialising fallback (see the type's doc comment).
-	fieldTypes := func(p string) []spi.DataType {
-		if fd, ok := fields[p]; ok {
-			return fd.Types
-		}
-		return nil
-	}
-	prepared, prepErr := match.Prepare(cond, fieldTypes)
-	if prepErr != nil {
-		// Classify before the generic wrap — same rationale as
-		// SearchService.Search's own match.Prepare call site: an unclassified
-		// wrap surfaced a malformed client condition as a 500 plus a support
-		// ticket. See search.ClassifyStoreQueryError's doc for the mapping.
-		if appErr := search.ClassifyStoreQueryError(prepErr); appErr != nil {
+	if translateErr != nil {
+		if appErr := search.ClassifyStoreQueryError(translateErr); appErr != nil {
 			return deleteSelectionPlan{}, appErr
 		}
-		return deleteSelectionPlan{}, fmt.Errorf("predicate match failed: %w", prepErr)
+		return deleteSelectionPlan{}, common.Operational(http.StatusBadRequest,
+			common.ErrCodeInvalidCondition,
+			"condition cannot be translated to a backend predicate")
 	}
-	return deleteSelectionPlan{residual: &prepared}, nil
+	return deleteSelectionPlan{filter: filter}, nil
 }
 
 // deleteModelSchemaNode loads and parses ref's schema for
@@ -1157,7 +1127,7 @@ func deleteConditionTypeCheck(ctx context.Context, modelStore spi.ModelStore, re
 // drainDeleteSelection opens an Iterate iterator scoped to ctx (pass a
 // transaction-bearing ctx — e.g. txCtx — to select that transaction's
 // overlaid view, a plain ctx for a committed-only read), fully drains it,
-// invoking visit once for every entity plan.matches, and closes it before
+// invoking visit once for every entity the store yields, and closes it before
 // returning — draining is the ONLY thing done with the iterator here.
 // Closing before the caller does anything else with ctx's transaction (if
 // any) honours the SPI's no-interleave rule: mutating a transaction while
@@ -1205,11 +1175,7 @@ func drainDeleteSelection(ctx context.Context, store spi.EntityStore, ref spi.Mo
 			}
 		}()
 		for it.Next() {
-			e := it.Entity()
-			if !plan.matches(e) {
-				continue
-			}
-			visit(e)
+			visit(it.Entity())
 		}
 	}()
 	// Same classification as the Iterate-open error above: a sticky scan
@@ -1583,10 +1549,10 @@ func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond pred
 	// Read amplification: every cycle re-opens Iterate from offset zero with
 	// no cursor, so selection costs O(cycles x scan). On a pushdown-capable
 	// backend the scan is filtered server-side and each cycle only pays for
-	// the still-matching rows, which shrink as the delete progresses. On the
-	// untranslatable-condition plan (plan.filter zero-valued, the residual
-	// applied client-side by plan.matches) there is nothing to push down and
-	// every cycle rescans the whole model — quadratic in the match count.
+	// the still-matching rows, which shrink as the delete progresses. A nil
+	// condition carries the zero-value filter, so there is nothing to narrow
+	// with and every cycle rescans the whole model — quadratic in the match
+	// count.
 	// Accepted deliberately: a cursor would have to be stable across the
 	// deletes it is interleaved with, which the Iterate contract does
 	// not offer.
@@ -1651,9 +1617,6 @@ func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond pred
 			}()
 			for it.Next() {
 				e := it.Entity()
-				if !plan.matches(e) {
-					continue
-				}
 				id := e.Meta.ID
 				if _, dup := seen[id]; dup {
 					continue

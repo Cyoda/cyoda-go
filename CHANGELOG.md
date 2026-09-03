@@ -731,6 +731,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `GetAll`/`GetAllAsAt`; the optional `Searcher` and `Iterable` interfaces are
   gone with them. There is no whole-model read anywhere in the engine.
 
+  Conditional `DELETE /entity/{entityName}/{modelVersion}` and grouped
+  statistics each kept a fallback of the same shape — a zero-value filter
+  passed to the store with the predicate re-applied per yielded entity in the
+  engine — and both are deleted too. One malformed condition answered three
+  ways before this: a `400` from search, a served result from each of the
+  other two. All three refuse it now, and for the same reason: each runs the
+  same `ValidateCondition` before the same `ConditionToFilter`, and clearing
+  the first implies clearing the second. A backend's own residual is
+  untouched — a filter it cannot push into SQL is still evaluated there,
+  against the filter it was given.
+
 - **Grouped statistics no longer answer `501 NOT_IMPLEMENTED_BY_BACKEND`; the
   code is retired.** Its only trigger was a backend implementing neither
   `Iterable` nor `GroupedAggregator`, which cannot exist now that `Iterate` is

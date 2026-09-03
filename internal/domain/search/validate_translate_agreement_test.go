@@ -83,7 +83,9 @@ func assertClearingImpliesTranslates(t *testing.T, cond predicate.Condition) {
 		t.Fatalf("ValidateCondition = %v, want nil (test fixture is meant to be a valid condition)", err)
 	}
 	if _, err := spi.ConditionToFilter(cond, nil); err != nil {
-		t.Errorf("cleared ValidateCondition but ConditionToFilter failed: %v — the claim in "+
-			"TestSearch_FallbackBranchIsBounded_TranslateFailureRoute's doc comment is violated", err)
+		t.Errorf("cleared ValidateCondition but ConditionToFilter failed: %v — every entry "+
+			"point that pairs these two calls (SearchService.Search, SubmitAsync, "+
+			"Handler.planDeleteSelection, GroupedStatsService.queryGroupedStatsInner) "+
+			"refuses a translation failure, and this is the claim that makes that free", err)
 	}
 }

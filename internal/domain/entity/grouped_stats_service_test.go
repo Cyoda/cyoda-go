@@ -404,10 +404,9 @@ func TestQueryGroupedStats_StreamingWithFilterPushdown(t *testing.T) {
 // NON-zero (the opposite of what this test used to require) is the
 // evidence of that.
 //
-// TestTallyStreaming_UnpushableConditionAppliesResidual
-// (grouped_stats_residual_internal_test.go) is what now covers the residual
-// mechanism itself, directly — see its doc comment for why no
-// ValidatedGroupedStatsRequest.Condition value can drive it anymore.
+// There is no residual mechanism left to cover separately: the tally applies
+// the translated filter and nothing else, and a condition that would not
+// translate is refused before it gets here.
 func TestQueryGroupedStats_WildcardArrayPathConditionPushesDown(t *testing.T) {
 	cond := json.RawMessage(`{
 		"type": "simple",
@@ -444,22 +443,21 @@ func TestQueryGroupedStats_WildcardArrayPathConditionPushesDown(t *testing.T) {
 	}
 }
 
-// TestQueryGroupedStats_PushableConditionSkipsResidualInStreaming guards the
-// symmetry between the two "!pushable && parsedCond != nil" guards in
-// tallyStreaming (grouped_stats_service.go): the one that builds the residual
-// match.Prepared, and the one in the per-row loop that applies it. They must
-// stay exactly in sync. If the loop guard ever fires while pushable is true —
-// diverging from the guard that (correctly) left the residual unbuilt — every
-// row is matched against the zero-value match.Prepared, which never matches
-// anything, silently emptying every bucket while returning no error.
+// TestQueryGroupedStats_TallyTrustsTheTranslatedFilter pins that the tally
+// hands the store the filter the condition translated to and then counts what
+// comes back, without re-deciding per row.
 //
-// This exercises "pushable filter AND non-nil condition" against a store
-// that actually enforces the filter it's given (fakeIterable — see its own
-// doc comment for why that is what it now always does) and mixes matching
-// with non-matching rows, so a broken guard (the residual wrongly applied
-// against the zero-value match.Prepared it left unbuilt) produces an
-// observably wrong (empty) result instead of coincidentally passing.
-func TestQueryGroupedStats_PushableConditionSkipsResidualInStreaming(t *testing.T) {
+// It used to guard the symmetry between two "!pushable" guards in
+// tallyStreaming — the one that built a residual match.Prepared and the one
+// in the per-row loop that applied it — because a loop guard firing while
+// the build guard had not left every row matched against a zero-value
+// match.Prepared, silently emptying every bucket with no error. Both guards
+// are gone: an untranslatable condition is refused now, so the tally has no
+// second opinion to keep in sync. The scenario still earns its place —
+// a real filter, a store that enforces it (fakeIterable), and mixed rows, so
+// a tally that dropped or ignored the filter produces an observably wrong
+// count rather than coincidentally passing.
+func TestQueryGroupedStats_TallyTrustsTheTranslatedFilter(t *testing.T) {
 	cond := json.RawMessage(`{
 		"type": "simple",
 		"jsonPath": "$.color",
