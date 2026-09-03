@@ -58,11 +58,7 @@ func TestDirectSave_StampsAboveAnOpenSnapshot(t *testing.T) {
 		t.Fatalf("direct Save: %v", err)
 	}
 
-	iterable, ok := store.(spi.Iterable)
-	if !ok {
-		t.Fatal("EntityStore does not implement spi.Iterable")
-	}
-	it, err := iterable.Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{})
+	it, err := store.Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
 	}
@@ -131,11 +127,7 @@ func TestBegin_ReservesItsSnapshotTimeAsTheFloor(t *testing.T) {
 		t.Fatalf("direct Save: %v", err)
 	}
 
-	iterable, ok := store.(spi.Iterable)
-	if !ok {
-		t.Fatal("EntityStore does not implement spi.Iterable")
-	}
-	it, err := iterable.Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{})
+	it, err := store.Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
 	}

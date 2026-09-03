@@ -24,8 +24,9 @@ func idSetTx(entities []*spi.Entity) map[string]bool {
 var cityBerlin = spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}}
 
 // beginTxSearcher sets up a factory seeded with the standard person set, begins a
-// transaction, and returns the store, the transaction context, and the searcher.
-func beginTxSearcher(t *testing.T) (spi.EntityStore, context.Context, spi.Searcher) {
+// transaction, and returns the store, the transaction context, and the store
+// again as the searcher (Search is a required spi.EntityStore method).
+func beginTxSearcher(t *testing.T) (spi.EntityStore, context.Context, spi.EntityStore) {
 	t.Helper()
 	factory, ctx := setupSearcherTest(t)
 	store, err := factory.EntityStore(ctx)
@@ -40,11 +41,7 @@ func beginTxSearcher(t *testing.T) (spi.EntityStore, context.Context, spi.Search
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
-	searcher, ok := store.(spi.Searcher)
-	if !ok {
-		t.Fatal("entityStore does not implement spi.Searcher")
-	}
-	return store, txCtx, searcher
+	return store, txCtx, store
 }
 
 // mkPerson builds a person entity with the given id, city, and state.
@@ -56,16 +53,13 @@ func mkPerson(id, city, state string) *spi.Entity {
 	}
 }
 
-// assertSearchEqualsGetAllMatch asserts that Search returns exactly the same
-// id-set (and per-id Data) as GetAll + spi.Prepare(filter).Match would for the
+// assertSearchEqualsIterateMatch asserts that Search returns exactly the same
+// id-set (and per-id Data) as Iterate + spi.Prepare(filter).Match would for the
 // same tx state — the canonical RYW parity contract.
-func assertSearchEqualsGetAllMatch(t *testing.T, store spi.EntityStore, searcher spi.Searcher, txCtx context.Context, filter spi.Filter, opts spi.SearchOptions) []*spi.Entity {
+func assertSearchEqualsIterateMatch(t *testing.T, store spi.EntityStore, searcher spi.EntityStore, txCtx context.Context, filter spi.Filter, opts spi.SearchOptions) []*spi.Entity {
 	t.Helper()
 	ref := spi.ModelRef{EntityName: opts.ModelName, ModelVersion: opts.ModelVersion}
-	all, err := store.GetAll(txCtx, ref)
-	if err != nil {
-		t.Fatalf("GetAll: %v", err)
-	}
+	all := drainAll(t, txCtx, store, ref, nil)
 	wantIDs := make(map[string]bool)
 	wantData := make(map[string]string)
 	pf, err := spi.Prepare(filter)
@@ -94,7 +88,7 @@ func assertSearchEqualsGetAllMatch(t *testing.T, store spi.EntityStore, searcher
 	}
 	for _, e := range got {
 		if wd, ok := wantData[e.Meta.ID]; ok && string(e.Data) != wd {
-			t.Errorf("id %s data mismatch: Search=%s GetAll=%s", e.Meta.ID, e.Data, wd)
+			t.Errorf("id %s data mismatch: Search=%s Iterate=%s", e.Meta.ID, e.Data, wd)
 		}
 	}
 	return got
@@ -102,7 +96,7 @@ func assertSearchEqualsGetAllMatch(t *testing.T, store spi.EntityStore, searcher
 
 // TestSearchTx_RYWParity_CreateUpdateDelete: buffered create, an update that
 // changes a matching entity to no longer match, and a delete must all be
-// reflected in Search exactly as GetAll + spi.Prepare(filter).Match sees them.
+// reflected in Search exactly as Iterate + spi.Prepare(filter).Match sees them.
 func TestSearchTx_RYWParity_CreateUpdateDelete(t *testing.T) {
 	store, txCtx, searcher := beginTxSearcher(t)
 	// Committed baseline (from setup): e1=Berlin, e3=Berlin match cityBerlin.
@@ -120,7 +114,7 @@ func TestSearchTx_RYWParity_CreateUpdateDelete(t *testing.T) {
 	}
 
 	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 20}
-	got := assertSearchEqualsGetAllMatch(t, store, searcher, txCtx, cityBerlin, opts)
+	got := assertSearchEqualsIterateMatch(t, store, searcher, txCtx, cityBerlin, opts)
 
 	ids := idSetTx(got)
 	if !ids["e6"] {
@@ -167,7 +161,7 @@ func TestSearchTx_DeletedInTxAbsent(t *testing.T) {
 		t.Fatalf("Delete e1: %v", err)
 	}
 	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 20}
-	got := assertSearchEqualsGetAllMatch(t, store, searcher, txCtx, cityBerlin, opts)
+	got := assertSearchEqualsIterateMatch(t, store, searcher, txCtx, cityBerlin, opts)
 	ids := idSetTx(got)
 	if ids["e1"] {
 		t.Errorf("deleted-in-tx e1 must be absent, got %v", ids)
@@ -179,7 +173,7 @@ func TestSearchTx_DeletedInTxAbsent(t *testing.T) {
 
 // TestSearchTx_DeleteThenSave_ReturnedOnceAsBuffered is the Save-after-Delete
 // regression: Delete then re-Save the same id in one tx must leave it present
-// exactly once, as the buffered version — and Search must agree with GetAll.
+// exactly once, as the buffered version — and Search must agree with Iterate.
 func TestSearchTx_DeleteThenSave_ReturnedOnceAsBuffered(t *testing.T) {
 	store, txCtx, searcher := beginTxSearcher(t)
 	// e1 is a committed Berlin match.
@@ -202,7 +196,7 @@ func TestSearchTx_DeleteThenSave_ReturnedOnceAsBuffered(t *testing.T) {
 	}
 
 	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 20}
-	got := assertSearchEqualsGetAllMatch(t, store, searcher, txCtx, cityBerlin, opts)
+	got := assertSearchEqualsIterateMatch(t, store, searcher, txCtx, cityBerlin, opts)
 
 	count := 0
 	var found *spi.Entity
@@ -234,7 +228,7 @@ func TestSearchTx_BufferedSupersedesCommitted(t *testing.T) {
 	}
 
 	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 20}
-	got := assertSearchEqualsGetAllMatch(t, store, searcher, txCtx, cityBerlin, opts)
+	got := assertSearchEqualsIterateMatch(t, store, searcher, txCtx, cityBerlin, opts)
 
 	count := 0
 	var found *spi.Entity
@@ -361,10 +355,7 @@ func TestSearchTx_TrackingRead_RecordsMatchedSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
-	searcher, ok := store.(spi.Searcher)
-	if !ok {
-		t.Fatal("entityStore does not implement spi.Searcher")
-	}
+	searcher := store
 
 	// A buffered own-write that DOES match cityBerlin — it is part of the
 	// returned matched set (RYW), so it must actually reach tx.ReadSet's
@@ -466,7 +457,7 @@ func TestSearchTx_MixedFilterOverLargeModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	// Mixed filter: pushable eq(city=Berlin) narrows to 2 rows; the residual
 	// regex on name then post-filters those 2.
@@ -514,11 +505,10 @@ func itoa(i int) string {
 
 // TestSearchTxPIT_CommittedOnly_ExcludesBufferedWrite: an in-tx Search with
 // PointInTime set to before a buffered write must be committed-only — the
-// buffered write is excluded (no overlay) — and must equal
-// GetAllAsAt(pit) + spi.Prepare(filter).Match exactly. It must also record
+// buffered write is excluded (no overlay) — and must equal a committed-only
+// Iterate(pit) + spi.Prepare(filter).Match exactly. It must also record
 // NOTHING in tx.ReadSet even with TrackingRead:true (PIT does not participate
-// in RYW read-set tracking; it mirrors GetAllAsAt, which always reads
-// committed data).
+// in RYW read-set tracking; it always reads committed data).
 func TestSearchTxPIT_CommittedOnly_ExcludesBufferedWrite(t *testing.T) {
 	dir := t.TempDir()
 	clock := sqlite.NewTestClockAt(pitBase)
@@ -550,15 +540,13 @@ func TestSearchTxPIT_CommittedOnly_ExcludesBufferedWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
-	searcher := store.(spi.Searcher)
-
 	// Buffered write, AFTER pit, inside the tx: must be excluded from a
 	// committed-only PIT search at pit (which predates it).
 	if _, err := store.Save(txCtx, mkPerson2(ref, "e2", "Berlin", "buffered")); err != nil {
 		t.Fatalf("Save e2 (buffered): %v", err)
 	}
 
-	got, err := searcher.Search(txCtx, cityBerlin, spi.SearchOptions{
+	got, err := store.Search(txCtx, cityBerlin, spi.SearchOptions{
 		ModelName: "person", ModelVersion: "1", PointInTime: &pit, TrackingRead: true, Limit: 20,
 	})
 	if err != nil {
@@ -572,12 +560,10 @@ func TestSearchTxPIT_CommittedOnly_ExcludesBufferedWrite(t *testing.T) {
 		t.Errorf("committed e1 must be present, got %v", gotIDs)
 	}
 
-	// Must equal GetAllAsAt(pit) + spi.Prepare(filter).Match exactly (the
-	// committed-pushdown contract; no overlay dimension participates).
-	wantAll, err := store.GetAllAsAt(ctx, ref, pit)
-	if err != nil {
-		t.Fatalf("GetAllAsAt: %v", err)
-	}
+	// Must equal a committed-only Iterate(pit) + spi.Prepare(filter).Match
+	// exactly (the committed-pushdown contract; no overlay dimension
+	// participates).
+	wantAll := drainAll(t, ctx, store, ref, &pit)
 	wantIDs := map[string]bool{}
 	pfBerlin, err := spi.Prepare(cityBerlin)
 	if err != nil {
@@ -589,11 +575,11 @@ func TestSearchTxPIT_CommittedOnly_ExcludesBufferedWrite(t *testing.T) {
 		}
 	}
 	if len(gotIDs) != len(wantIDs) {
-		t.Fatalf("Search(PIT) id-set %v != GetAllAsAt+Prepare/Match %v", gotIDs, wantIDs)
+		t.Fatalf("Search(PIT) id-set %v != Iterate(pit)+Prepare/Match %v", gotIDs, wantIDs)
 	}
 	for id := range wantIDs {
 		if !gotIDs[id] {
-			t.Errorf("expected id %s from GetAllAsAt+Prepare/Match, missing from Search(PIT) %v", id, gotIDs)
+			t.Errorf("expected id %s from Iterate(pit)+Prepare/Match, missing from Search(PIT) %v", id, gotIDs)
 		}
 	}
 
@@ -650,7 +636,7 @@ func TestSearchTxPIT_MixedFilterOverLargeModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	// Mixed filter: pushable eq(city=Berlin) narrows to 2 rows; the residual
 	// regex on name then post-filters those 2.

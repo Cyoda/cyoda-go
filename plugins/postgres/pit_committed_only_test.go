@@ -115,16 +115,14 @@ func TestPITCommittedOnly_GetAsAt(t *testing.T) {
 	}
 }
 
-// TestPITCommittedOnly_GetAllAsAt: same contract, collection form.
-func TestPITCommittedOnly_GetAllAsAt(t *testing.T) {
+// TestPITCommittedOnly_IterateAsAt: same contract, streamed form.
+func TestPITCommittedOnly_IterateAsAt(t *testing.T) {
 	factory, tm, ctx := setupPITCommitted(t)
 	txStore, txCtx := beginPITTx(t, factory, tm, ctx)
 
-	got, err := txStore.GetAllAsAt(txCtx, pitModel, pitFuture())
-	if err != nil {
-		t.Fatalf("GetAllAsAt: %v", err)
-	}
-	assertCommittedOnly(t, "GetAllAsAt", got)
+	asAt := pitFuture()
+	got := drainAll(t, txCtx, txStore, pitModel, &asAt)
+	assertCommittedOnly(t, "Iterate(asAt)", got)
 }
 
 // TestPITCommittedOnly_Search: Search with opts.PointInTime set.
@@ -133,7 +131,7 @@ func TestPITCommittedOnly_Search(t *testing.T) {
 	txStore, txCtx := beginPITTx(t, factory, tm, ctx)
 
 	asAt := pitFuture()
-	got, err := txStore.(spi.Searcher).Search(txCtx, spi.Filter{}, spi.SearchOptions{
+	got, err := txStore.Search(txCtx, spi.Filter{}, spi.SearchOptions{
 		ModelName:    pitModel.EntityName,
 		ModelVersion: pitModel.ModelVersion,
 		Limit:        100,
@@ -147,13 +145,13 @@ func TestPITCommittedOnly_Search(t *testing.T) {
 
 // TestPITCommittedOnly_Iterate: Iterate with opts.PointInTime set. OrderBy is
 // left empty — ordered iteration inside a transaction is unsupported per the
-// spi.Iterable contract, and this test is about visibility, not order.
+// spi.EntityStore.Iterate contract, and this test is about visibility, not order.
 func TestPITCommittedOnly_Iterate(t *testing.T) {
 	factory, tm, ctx := setupPITCommitted(t)
 	txStore, txCtx := beginPITTx(t, factory, tm, ctx)
 
 	asAt := pitFuture()
-	it, err := txStore.(spi.Iterable).Iterate(txCtx, pitModel, spi.Filter{}, spi.IterateOptions{PointInTime: &asAt})
+	it, err := txStore.Iterate(txCtx, pitModel, spi.Filter{}, spi.IterateOptions{PointInTime: &asAt})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
 	}
@@ -228,13 +226,10 @@ func TestPITCommittedOnly_NonTxUnaffected(t *testing.T) {
 		t.Errorf("non-tx GetAsAt = %s, want {\"v\":\"committed\"}", one.Data)
 	}
 
-	all, err := store.GetAllAsAt(ctx, pitModel, asAt)
-	if err != nil {
-		t.Fatalf("GetAllAsAt: %v", err)
-	}
-	assertCommittedOnly(t, "non-tx GetAllAsAt", all)
+	all := drainAll(t, ctx, store, pitModel, &asAt)
+	assertCommittedOnly(t, "non-tx Iterate(asAt)", all)
 
-	found, err := store.(spi.Searcher).Search(ctx, spi.Filter{}, spi.SearchOptions{
+	found, err := store.Search(ctx, spi.Filter{}, spi.SearchOptions{
 		ModelName:    pitModel.EntityName,
 		ModelVersion: pitModel.ModelVersion,
 		Limit:        100,
@@ -245,7 +240,7 @@ func TestPITCommittedOnly_NonTxUnaffected(t *testing.T) {
 	}
 	assertCommittedOnly(t, "non-tx Search", found)
 
-	it, err := store.(spi.Iterable).Iterate(ctx, pitModel, spi.Filter{}, spi.IterateOptions{PointInTime: &asAt})
+	it, err := store.Iterate(ctx, pitModel, spi.Filter{}, spi.IterateOptions{PointInTime: &asAt})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
 	}

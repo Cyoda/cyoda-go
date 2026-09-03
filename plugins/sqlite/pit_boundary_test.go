@@ -57,20 +57,17 @@ func TestSqlitePIT_GetAsAt_InclusiveExactT(t *testing.T) {
 	}
 }
 
-func TestSqlitePIT_GetAllAsAt_InclusiveExactT(t *testing.T) {
+func TestSqlitePIT_IterateAsAt_InclusiveExactT(t *testing.T) {
 	factory, ctx := pitTwoVersions(t)
 	store, _ := factory.EntityStore(ctx)
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
-	got, err := store.GetAllAsAt(ctx, ref, pitBase)
-	if err != nil {
-		t.Fatalf("GetAllAsAt(pitBase): %v", err)
-	}
+	got := drainAll(t, ctx, store, ref, &pitBase)
 	if len(got) != 1 || string(got[0].Data) != `{"v":1}` {
 		var firstData string
 		if len(got) > 0 {
 			firstData = string(got[0].Data)
 		}
-		t.Errorf("GetAllAsAt(pitBase): got %d entities, data=%s; want 1 with {\"v\":1}", len(got), firstData)
+		t.Errorf("Iterate(pitBase): got %d entities, data=%s; want 1 with {\"v\":1}", len(got), firstData)
 	}
 }

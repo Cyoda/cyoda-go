@@ -54,10 +54,7 @@ func TestIterate_DoesNotBlockConcurrentAsyncWrite(t *testing.T) {
 		}
 	}
 
-	iterable, ok := store.(spi.Iterable)
-	if !ok {
-		t.Fatal("entityStore does not implement spi.Iterable")
-	}
+	iterable := store
 	it, err := iterable.Iterate(ctx, ref, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)

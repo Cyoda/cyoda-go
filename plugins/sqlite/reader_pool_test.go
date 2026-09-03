@@ -58,10 +58,7 @@ func seedReaderPoolFixture(t *testing.T, name string) (*sqlite.StoreFactory, con
 func TestReadDB_ConcurrentIteratorsRunInParallel(t *testing.T) {
 	_, ctx, ref, store := seedReaderPoolFixture(t, "reader_pool_iter.db")
 
-	iterable, ok := store.(spi.Iterable)
-	if !ok {
-		t.Fatal("entityStore does not implement spi.Iterable")
-	}
+	iterable := store
 
 	first, err := iterable.Iterate(ctx, ref, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
@@ -106,10 +103,7 @@ func TestReadDB_ConcurrentIteratorsRunInParallel(t *testing.T) {
 func TestReadDB_GetPageNotStarvedByOpenIterator(t *testing.T) {
 	_, ctx, ref, store := seedReaderPoolFixture(t, "reader_pool_page.db")
 
-	iterable, ok := store.(spi.Iterable)
-	if !ok {
-		t.Fatal("entityStore does not implement spi.Iterable")
-	}
+	iterable := store
 	it, err := iterable.Iterate(ctx, ref, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
@@ -183,10 +177,7 @@ func TestReadDB_IsStructurallyReadOnly(t *testing.T) {
 	if err := tx.Rollback(); err != nil {
 		t.Fatalf("rollback read-only tx: %v", err)
 	}
-	iterable, ok := store.(spi.Iterable)
-	if !ok {
-		t.Fatal("entityStore does not implement spi.Iterable")
-	}
+	iterable := store
 	it, err := iterable.Iterate(ctx, ref, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)

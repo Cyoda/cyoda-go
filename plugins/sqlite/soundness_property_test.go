@@ -310,7 +310,7 @@ func sortedKeys(m map[string]bool) []string {
 func TestSqlitePushdownSoundnessProperty(t *testing.T) {
 	factory, store, ctx, clock := newSoundnessStore(t)
 	corpus := buildSoundnessCorpus(t, ctx, store, clock)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	for _, tc := range soundnessConditions {
 		t.Run(tc.name, func(t *testing.T) {
@@ -369,7 +369,7 @@ func TestSqlitePushdownSoundness_PolymorphicIntStringUnderSelects(t *testing.T) 
 
 	filter := fPoly(spi.FilterEq, "code", "30")
 
-	searcher := store.(spi.Searcher)
+	searcher := store
 	results, err := searcher.Search(ctx, filter, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion, Limit: 100})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -406,7 +406,7 @@ func TestSqlitePushdownSoundness_MonomorphicStringNumericOperand(t *testing.T) {
 		t.Fatalf("test setup invalid: kernel must match STRING \"30\" against numeric-looking operand 30")
 	}
 
-	searcher := store.(spi.Searcher)
+	searcher := store
 	results, err := searcher.Search(ctx, filter, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion, Limit: 100})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -450,7 +450,7 @@ func TestSqlitePushdownSoundness_LikeWildcardUnderSelects_KNOWNBUG(t *testing.T)
 		t.Fatalf("test setup invalid: kernel oracle must match wildcard pattern 'foo%%baz' against 'foobarbaz'")
 	}
 
-	searcher := store.(spi.Searcher)
+	searcher := store
 	results, err := searcher.Search(ctx, filter, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion, Limit: 100})
 	if err != nil {
 		t.Fatalf("Search: %v", err)

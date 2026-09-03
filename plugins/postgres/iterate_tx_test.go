@@ -55,10 +55,7 @@ func TestIterateTx_TrackingReadRecordsOnlyYieldedIds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Tx A EntityStore: %v", err)
 	}
-	iterableA, ok := storeA.(spi.Iterable)
-	if !ok {
-		t.Fatal("store does not implement spi.Iterable")
-	}
+	iterableA := storeA
 	it, err := iterableA.Iterate(txCtxA, searchTxModel, berlinFilter, spi.IterateOptions{TrackingRead: true})
 	if err != nil {
 		t.Fatalf("Tx A Iterate: %v", err)
@@ -141,10 +138,7 @@ func TestIterateTx_NoTrackingReadRecordsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Tx A EntityStore: %v", err)
 	}
-	iterableA, ok := storeA.(spi.Iterable)
-	if !ok {
-		t.Fatal("store does not implement spi.Iterable")
-	}
+	iterableA := storeA
 	// TrackingRead defaults to false.
 	it, err := iterableA.Iterate(txCtxA, searchTxModel, berlinFilter, spi.IterateOptions{})
 	if err != nil {

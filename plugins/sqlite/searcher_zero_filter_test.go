@@ -52,7 +52,7 @@ func assertMatchAllReturnsEveryRow(t *testing.T, dbName, idPrefix string, filter
 		}
 	}
 
-	got, err := store.(spi.Searcher).Search(ctx, filter, spi.SearchOptions{
+	got, err := store.Search(ctx, filter, spi.SearchOptions{
 		ModelName: "item", ModelVersion: "1", Limit: 10,
 	})
 	if err != nil {

@@ -19,7 +19,7 @@ import (
 func TestSearcher_RejectsMaliciousFilterPath(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	payloads := []string{
 		"state')--",
@@ -57,7 +57,7 @@ func TestSearcher_RejectsMaliciousFilterPath(t *testing.T) {
 func TestSearcher_RejectsMaliciousOrderByPath(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	_, err := searcher.Search(ctx, spi.Filter{
 		Op:     spi.FilterEq,

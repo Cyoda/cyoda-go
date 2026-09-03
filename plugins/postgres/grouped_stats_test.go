@@ -57,10 +57,7 @@ func TestPostgresIterate_StreamsAllEntitiesForModel(t *testing.T) {
 		gsSave(t, ctx, store, fmt.Sprintf("e-%d", i), "available", map[string]any{"x": i})
 	}
 
-	it, ok := store.(spi.Iterable)
-	if !ok {
-		t.Fatal("entityStore does not implement spi.Iterable")
-	}
+	it := store
 	iter, err := it.Iterate(ctx, gsModel, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
@@ -88,7 +85,7 @@ func TestPostgresIterate_FilterPushdown(t *testing.T) {
 	gsSave(t, ctx, store, "b", "available", map[string]any{"city": "Munich"})
 	gsSave(t, ctx, store, "c", "available", map[string]any{"city": "Berlin"})
 
-	it := store.(spi.Iterable)
+	it := store
 	filter := spi.Filter{
 		Op:       spi.FilterEq,
 		Source:   spi.SourceData,
@@ -122,7 +119,7 @@ func TestPostgresIterate_RejectsUnevaluableFilter(t *testing.T) {
 	_, store, ctx := gsNewStore(t)
 	gsSave(t, ctx, store, "a", "available", map[string]any{"name": "x"})
 
-	it := store.(spi.Iterable)
+	it := store
 	iter, err := it.Iterate(ctx, gsModel, spi.Filter{
 		Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
 		Value: `a\`, Declared: []spi.DataType{spi.String},
@@ -152,7 +149,7 @@ func TestPostgresIterate_ResidualApplied(t *testing.T) {
 	gsSave(t, ctx, store, "a", "available", map[string]any{"city": "Berlin", "tag": "x"})
 	gsSave(t, ctx, store, "b", "available", map[string]any{"city": "Berlin", "tag": "y"})
 
-	it := store.(spi.Iterable)
+	it := store
 	// MatchesRegex is non-pushable in postgres planner — forces residual evaluation.
 	filter := spi.Filter{
 		Op: spi.FilterAnd,
@@ -200,7 +197,7 @@ func TestPostgresIterate_PointInTime(t *testing.T) {
 
 	afterDelete := dbNow(t, ctx, factory.Pool())
 
-	it := store.(spi.Iterable)
+	it := store
 
 	// PIT before delete → 2 entities (deletion-marker version not yet present).
 	iterBefore, err := it.Iterate(ctx, gsModel, spi.Filter{}, spi.IterateOptions{PointInTime: &beforeDelete})
@@ -244,7 +241,7 @@ func TestPostgresIterate_CtxCancellation(t *testing.T) {
 	}
 
 	cancelCtx, cancel := context.WithCancel(ctx)
-	it := store.(spi.Iterable)
+	it := store
 	iter, err := it.Iterate(cancelCtx, gsModel, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
@@ -269,7 +266,7 @@ func TestPostgresIterate_CloseIdempotent(t *testing.T) {
 	_, store, ctx := gsNewStore(t)
 	gsSave(t, ctx, store, "a", "available", map[string]any{})
 
-	it := store.(spi.Iterable)
+	it := store
 	iter, err := it.Iterate(ctx, gsModel, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
@@ -528,7 +525,7 @@ func TestPostgresGroupedAggregate_StreamingFallbackCorrectAtSoundSupersetBoundar
 
 	filter := spi.Filter{Op: spi.FilterGt, Source: spi.SourceData, Path: "price", Value: 100.0, Declared: []spi.DataType{spi.Double}}
 
-	it := store.(spi.Iterable)
+	it := store
 	iter, err := it.Iterate(ctx, gsModel, filter, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)

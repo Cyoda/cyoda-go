@@ -10,17 +10,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
-// searcher returns the store as a spi.Searcher, failing the test if the memory
-// entity store does not implement the optional interface.
-func asSearcher(t *testing.T, store spi.EntityStore) spi.Searcher {
-	t.Helper()
-	s, ok := store.(spi.Searcher)
-	if !ok {
-		t.Fatalf("memory EntityStore does not implement spi.Searcher")
-	}
-	return s
-}
-
 func idSet(entities []*spi.Entity) map[string]bool {
 	ids := make(map[string]bool, len(entities))
 	for _, e := range entities {
@@ -44,26 +33,23 @@ func mkEntity(id, state, data string, modelRef spi.ModelRef) *spi.Entity {
 	}
 }
 
-// TestMemorySearch_NonTx_ParityWithGetAllMatch asserts that a non-tx Search
-// returns exactly the same id set as GetAll filtered by spi.Prepare(filter).Match.
-func TestMemorySearch_NonTx_ParityWithGetAllMatch(t *testing.T) {
+// TestMemorySearch_NonTx_ParityWithIterateMatch asserts that a non-tx Search
+// returns exactly the same id set as Iterate filtered by spi.Prepare(filter).Match.
+func TestMemorySearch_NonTx_ParityWithIterateMatch(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	defer factory.Close()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	searcher := asSearcher(t, store)
+	searcher := store
 
 	store.Save(ctx, mkEntity("e-1", "ACTIVE", `{"n": 1}`, modelRef))
 	store.Save(ctx, mkEntity("e-2", "INACTIVE", `{"n": 2}`, modelRef))
 	store.Save(ctx, mkEntity("e-3", "ACTIVE", `{"n": 3}`, modelRef))
 	store.Save(ctx, mkEntity("e-4", "ACTIVE", `{"n": 4}`, modelRef))
 
-	// Reference: GetAll + spi.Prepare(filter).Match.
-	all, err := store.GetAll(ctx, modelRef)
-	if err != nil {
-		t.Fatalf("GetAll failed: %v", err)
-	}
+	// Reference: GetPage + spi.Prepare(filter).Match.
+	all := drainAll(t, ctx, store, modelRef, nil)
 	pf, err := spi.Prepare(activeFilter)
 	if err != nil {
 		t.Fatalf("spi.Prepare failed: %v", err)
@@ -99,7 +85,7 @@ func TestMemorySearch_NonTx_Order(t *testing.T) {
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	searcher := asSearcher(t, store)
+	searcher := store
 
 	store.Save(ctx, mkEntity("e-c", "ACTIVE", `{"n": 3}`, modelRef))
 	store.Save(ctx, mkEntity("e-a", "ACTIVE", `{"n": 1}`, modelRef))
@@ -132,7 +118,7 @@ func TestMemorySearch_InTx_CreatedInTxMatchPresent(t *testing.T) {
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	searcher := asSearcher(t, store)
+	searcher := store
 
 	_, txCtx, err := txMgr.Begin(ctx)
 	if err != nil {
@@ -160,7 +146,7 @@ func TestMemorySearch_InTx_DeletedInTxAbsent(t *testing.T) {
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	searcher := asSearcher(t, store)
+	searcher := store
 
 	store.Save(ctx, mkEntity("e-del", "ACTIVE", `{"n": 1}`, modelRef))
 	store.Save(ctx, mkEntity("e-keep", "ACTIVE", `{"n": 2}`, modelRef))
@@ -198,7 +184,7 @@ func TestMemorySearch_InTx_BufferedNoLongerMatchesAbsent(t *testing.T) {
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	searcher := asSearcher(t, store)
+	searcher := store
 
 	store.Save(ctx, mkEntity("e-flip", "ACTIVE", `{"n": 1}`, modelRef))
 
@@ -229,7 +215,7 @@ func TestMemorySearch_InTx_PIT_CommittedOnly(t *testing.T) {
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	searcher := asSearcher(t, store)
+	searcher := store
 
 	store.Save(ctx, mkEntity("e-committed", "ACTIVE", `{"n": 1}`, modelRef))
 	time.Sleep(2 * time.Millisecond)
@@ -273,7 +259,7 @@ func TestMemorySearch_TrackingRead_RecordsReturnedOnly(t *testing.T) {
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	searcher := asSearcher(t, store)
+	searcher := store
 
 	store.Save(ctx, mkEntity("e-match", "ACTIVE", `{"n": 1}`, modelRef))
 	store.Save(ctx, mkEntity("e-nomatch", "INACTIVE", `{"n": 2}`, modelRef))
@@ -313,7 +299,7 @@ func TestMemorySearch_TrackingRead_RecordsReturnedOnly(t *testing.T) {
 
 // TestMemorySearch_InTx_DeleteThenSave_AllViewsAgree is a regression test for
 // the memory Save-after-Delete bug: Save must clear tx.Deletes so the id is not
-// left in BOTH tx.Buffer and tx.Deletes. With the bug, GetAll reported the
+// left in BOTH tx.Buffer and tx.Deletes. With the bug, Iterate reported the
 // entity present, Search reported it absent, and commit deleted it — three
 // disagreeing views. After the fix all three agree: last-write-wins → present.
 func TestMemorySearch_InTx_DeleteThenSave_AllViewsAgree(t *testing.T) {
@@ -323,7 +309,7 @@ func TestMemorySearch_InTx_DeleteThenSave_AllViewsAgree(t *testing.T) {
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	searcher := asSearcher(t, store)
+	searcher := store
 
 	// Committed baseline.
 	store.Save(ctx, mkEntity("e-dts", "ACTIVE", `{"gen": "committed"}`, modelRef))
@@ -344,13 +330,10 @@ func TestMemorySearch_InTx_DeleteThenSave_AllViewsAgree(t *testing.T) {
 		t.Errorf("Save-after-Delete must clear tx.Deletes; e-dts still marked deleted")
 	}
 
-	// GetAll and Search must AGREE: both contain e-dts, as the buffered version.
-	all, err := store.GetAll(txCtx, modelRef)
-	if err != nil {
-		t.Fatalf("GetAll failed: %v", err)
-	}
+	// Iterate and Search must AGREE: both contain e-dts, as the buffered version.
+	all := drainAll(t, txCtx, store, modelRef, nil)
 	if !idSet(all)["e-dts"] {
-		t.Errorf("GetAll must contain e-dts after Save-after-Delete, got %v", idSet(all))
+		t.Errorf("Iterate must contain e-dts after Save-after-Delete, got %v", idSet(all))
 	}
 	got, err := searcher.Search(txCtx, activeFilter, spi.SearchOptions{
 		ModelName: "Order", ModelVersion: "1", Limit: 10,
@@ -395,7 +378,7 @@ func TestMemorySearch_InTx_BufferedSupersedesCommitted(t *testing.T) {
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	searcher := asSearcher(t, store)
+	searcher := store
 
 	store.Save(ctx, mkEntity("e-sup", "ACTIVE", `{"note": "committed"}`, modelRef))
 
@@ -429,7 +412,8 @@ func TestMemorySearch_InTx_BufferedSupersedesCommitted(t *testing.T) {
 }
 
 // TestMemorySearch_NonTx_PIT_CommittedAsAt: a non-tx Search with PointInTime
-// returns the committed-as-at result (mirrors GetAllAsAt) and records no
+// returns the committed-as-at result (mirrors Iterate's committed-only
+// PointInTime branch) and records no
 // read-set (there is no transaction).
 func TestMemorySearch_NonTx_PIT_CommittedAsAt(t *testing.T) {
 	factory := memory.NewStoreFactory()
@@ -437,7 +421,7 @@ func TestMemorySearch_NonTx_PIT_CommittedAsAt(t *testing.T) {
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	searcher := asSearcher(t, store)
+	searcher := store
 
 	// Only e-early exists as-at pit.
 	store.Save(ctx, mkEntity("e-early", "ACTIVE", `{"n": 1}`, modelRef))
@@ -460,11 +444,8 @@ func TestMemorySearch_NonTx_PIT_CommittedAsAt(t *testing.T) {
 		t.Errorf("non-tx PIT search must NOT see e-late (saved after pit), got %v", ids)
 	}
 
-	// Parity with GetAllAsAt (same as-at instant).
-	asAt, err := store.GetAllAsAt(ctx, modelRef, pit)
-	if err != nil {
-		t.Fatalf("GetAllAsAt failed: %v", err)
-	}
+	// Parity with a committed-only Iterate at the same as-at instant.
+	asAt := drainAll(t, ctx, store, modelRef, &pit)
 	pf, err := spi.Prepare(activeFilter)
 	if err != nil {
 		t.Fatalf("spi.Prepare failed: %v", err)
@@ -476,7 +457,7 @@ func TestMemorySearch_NonTx_PIT_CommittedAsAt(t *testing.T) {
 		}
 	}
 	if len(ids) != len(want) {
-		t.Fatalf("non-tx PIT search must equal GetAllAsAt+match: got %v, want %v", ids, want)
+		t.Fatalf("non-tx PIT search must equal Iterate(asAt)+match: got %v, want %v", ids, want)
 	}
 	for id := range want {
 		if !ids[id] {
@@ -495,7 +476,7 @@ func TestMemorySearch_TrackingRead_BufferedNotInReadSet(t *testing.T) {
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	searcher := asSearcher(t, store)
+	searcher := store
 
 	store.Save(ctx, mkEntity("e-committed", "ACTIVE", `{"n": 1}`, modelRef))
 
@@ -529,7 +510,7 @@ func TestMemorySearch_OverLimitFails(t *testing.T) {
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	searcher := asSearcher(t, store)
+	searcher := store
 
 	store.Save(ctx, mkEntity("e-1", "ACTIVE", `{"n": 1}`, modelRef))
 	store.Save(ctx, mkEntity("e-2", "ACTIVE", `{"n": 2}`, modelRef))
@@ -551,7 +532,7 @@ func TestMemorySearch_AtLimitSucceeds(t *testing.T) {
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	searcher := asSearcher(t, store)
+	searcher := store
 
 	store.Save(ctx, mkEntity("e-1", "ACTIVE", `{"n": 1}`, modelRef))
 	store.Save(ctx, mkEntity("e-2", "ACTIVE", `{"n": 2}`, modelRef))
@@ -576,7 +557,7 @@ func TestMemorySearch_ZeroLimitRejected(t *testing.T) {
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	searcher := asSearcher(t, store)
+	searcher := store
 
 	store.Save(ctx, mkEntity("e-1", "ACTIVE", `{"n": 1}`, modelRef))
 
@@ -608,7 +589,7 @@ func TestMemorySearch_RejectsUnevaluableFilter(t *testing.T) {
 			ctx := ctxWithTenant("tenant-A")
 			store, _ := factory.EntityStore(ctx)
 			modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-			searcher := asSearcher(t, store)
+			searcher := store
 
 			store.Save(ctx, mkEntity("e-1", "ACTIVE", `{"name": "a"}`, modelRef))
 
@@ -636,7 +617,7 @@ func TestMemorySearch_TxOverlayOverLimitFails(t *testing.T) {
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	searcher := asSearcher(t, store)
+	searcher := store
 
 	store.Save(ctx, mkEntity("e-1", "ACTIVE", `{"n": 1}`, modelRef))
 	store.Save(ctx, mkEntity("e-2", "ACTIVE", `{"n": 2}`, modelRef))
@@ -657,9 +638,9 @@ func TestMemorySearch_TxOverlayOverLimitFails(t *testing.T) {
 
 // expiredCtx returns a context derived from parent that is already past its
 // deadline (context.WithTimeout(parent, 0), waited on Done()). Used to prove
-// the memory backend's real search path (spi.Searcher) — and the GetAll scan
-// it and other consumers share — observes ctx cancellation instead of running
-// an already-expired request to completion.
+// the memory backend's real search path (spi.EntityStore.Search) — and the
+// Iterate scan it and other consumers share — observes ctx cancellation
+// instead of running an already-expired request to completion.
 func expiredCtx(t *testing.T, parent context.Context) context.Context {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(parent, 0)
@@ -669,17 +650,17 @@ func expiredCtx(t *testing.T, parent context.Context) context.Context {
 }
 
 // TestSearch_PreExpiredCtxAborts: a pre-expired ctx must abort the non-tx
-// scan on both entry points that walk the committed store — spi.Searcher's
-// Search and EntityStore.GetAll — rather than returning a full result set
-// computed past the deadline. This is spec D5: the memory plugin IS
-// spi.Searcher, so this is the only real search path on this backend.
+// scan on both entry points that walk the committed store — Search and
+// Iterate — rather than returning a full result set computed past the
+// deadline. This is spec D5: the memory plugin IS spi.EntityStore.Search, so
+// this is the only real search path on this backend.
 func TestSearch_PreExpiredCtxAborts(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	defer factory.Close()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	searcher := asSearcher(t, store)
+	searcher := store
 
 	for i := 0; i < 10; i++ {
 		id := "e-" + string(rune('0'+i))
@@ -701,22 +682,23 @@ func TestSearch_PreExpiredCtxAborts(t *testing.T) {
 		t.Errorf("Search with pre-expired ctx: got %d results, want 0", len(got))
 	}
 
-	all, err := store.GetAll(deadCtx, modelRef)
-	if err == nil {
-		t.Fatalf("GetAll with pre-expired ctx: expected error, got %d results", len(all))
+	it, err := store.Iterate(deadCtx, modelRef, spi.Filter{}, spi.IterateOptions{})
+	if err != nil {
+		t.Fatalf("Iterate with pre-expired ctx: unexpected error opening iterator: %v", err)
 	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("GetAll with pre-expired ctx: err = %v, want chain containing context.DeadlineExceeded", err)
+	if it.Next() {
+		t.Fatalf("Iterate with pre-expired ctx: Next() = true, want false")
 	}
-	if len(all) != 0 {
-		t.Errorf("GetAll with pre-expired ctx: got %d results, want 0", len(all))
+	if !errors.Is(it.Err(), context.DeadlineExceeded) {
+		t.Errorf("Iterate with pre-expired ctx: Err() = %v, want chain containing context.DeadlineExceeded", it.Err())
 	}
+	_ = it.Close()
 }
 
 // TestSearch_PreExpiredCtxAborts_InTx: the read-your-own-writes overlay path
 // (in-tx, no PointInTime) walks the committed snapshot and the tx buffer via
 // the same amortized-check loops. A pre-expired ctx presented to an
-// otherwise-live transaction must abort Search and GetAll the same way the
+// otherwise-live transaction must abort Search and Iterate the same way the
 // non-tx path does — the deadline belongs to the request, not the
 // transaction.
 func TestSearch_PreExpiredCtxAborts_InTx(t *testing.T) {
@@ -726,7 +708,7 @@ func TestSearch_PreExpiredCtxAborts_InTx(t *testing.T) {
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	searcher := asSearcher(t, store)
+	searcher := store
 
 	for i := 0; i < 10; i++ {
 		id := "e-" + string(rune('0'+i))
@@ -755,14 +737,11 @@ func TestSearch_PreExpiredCtxAborts_InTx(t *testing.T) {
 		t.Errorf("in-tx Search with pre-expired ctx: got %d results, want 0", len(got))
 	}
 
-	all, err := store.GetAll(deadTxCtx, modelRef)
+	_, err = store.Iterate(deadTxCtx, modelRef, spi.Filter{}, spi.IterateOptions{})
 	if err == nil {
-		t.Fatalf("in-tx GetAll with pre-expired ctx: expected error, got %d results", len(all))
+		t.Fatalf("in-tx Iterate with pre-expired ctx: expected error, got an iterator")
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("in-tx GetAll with pre-expired ctx: err = %v, want chain containing context.DeadlineExceeded", err)
-	}
-	if len(all) != 0 {
-		t.Errorf("in-tx GetAll with pre-expired ctx: got %d results, want 0", len(all))
+		t.Errorf("in-tx Iterate with pre-expired ctx: err = %v, want chain containing context.DeadlineExceeded", err)
 	}
 }

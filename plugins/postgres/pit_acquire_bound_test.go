@@ -122,16 +122,12 @@ func TestPITAcquire_InTxOnSaturatedPool_FailsFastAsStorageUnavailable(t *testing
 			_, err := txStore.GetAsAt(c, pitAcquireID(0), asAt)
 			return err
 		},
-		"GetAllAsAt": func(c context.Context) error {
-			_, err := txStore.GetAllAsAt(c, pitAcquireModel, asAt)
-			return err
-		},
 		"GetPage(asAt)": func(c context.Context) error {
 			_, err := txStore.GetPage(c, pitAcquireModel, 100, 0, &asAt)
 			return err
 		},
 		"Search(PointInTime)": func(c context.Context) error {
-			_, err := txStore.(spi.Searcher).Search(c, spi.Filter{}, spi.SearchOptions{
+			_, err := txStore.Search(c, spi.Filter{}, spi.SearchOptions{
 				ModelName:    pitAcquireModel.EntityName,
 				ModelVersion: pitAcquireModel.ModelVersion,
 				Limit:        100,
@@ -140,7 +136,7 @@ func TestPITAcquire_InTxOnSaturatedPool_FailsFastAsStorageUnavailable(t *testing
 			return err
 		},
 		"Iterate(PointInTime)": func(c context.Context) error {
-			it, err := txStore.(spi.Iterable).Iterate(c, pitAcquireModel, spi.Filter{}, spi.IterateOptions{PointInTime: &asAt})
+			it, err := txStore.Iterate(c, pitAcquireModel, spi.Filter{}, spi.IterateOptions{PointInTime: &asAt})
 			if err != nil {
 				return err
 			}
@@ -208,7 +204,7 @@ func TestPITAcquire_InTxIterate_SurvivesPastTheAcquireDeadline(t *testing.T) {
 	}
 
 	asAt := pitFuture()
-	it, err := txStore.(spi.Iterable).Iterate(holdCtx, pitAcquireModel, spi.Filter{}, spi.IterateOptions{PointInTime: &asAt})
+	it, err := txStore.Iterate(holdCtx, pitAcquireModel, spi.Filter{}, spi.IterateOptions{PointInTime: &asAt})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
 	}

@@ -40,10 +40,7 @@ func TestSearch_PreExpiredCtxAborts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	searcher, ok := store.(spi.Searcher)
-	if !ok {
-		t.Fatal("entityStore does not implement spi.Searcher")
-	}
+	searcher := store
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
 	// setupSearcherTest already seeded 5 "person" entities; add 5 more of a
@@ -111,10 +108,7 @@ func TestSearch_PreExpiredCtxAborts_InTx(t *testing.T) {
 		t.Fatalf("Save in-tx: %v", err)
 	}
 
-	searcher, ok := store.(spi.Searcher)
-	if !ok {
-		t.Fatal("entityStore does not implement spi.Searcher")
-	}
+	searcher := store
 
 	tx := spi.GetTransaction(txCtx)
 	deadTxCtx := spi.WithTransaction(expiredSearchCtx(t, ctx), tx)
@@ -158,10 +152,7 @@ func TestSearch_MidScanTimeoutChainsDeadlineExceeded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	searcher, ok := store.(spi.Searcher)
-	if !ok {
-		t.Fatal("entityStore does not implement spi.Searcher")
-	}
+	searcher := store
 
 	const n = 8000
 	for i := 0; i < n; i++ {
@@ -228,10 +219,7 @@ func TestSearch_TxOverlayBufferLoop_AbortsEarly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	searcher, ok := store.(spi.Searcher)
-	if !ok {
-		t.Fatal("entityStore does not implement spi.Searcher")
-	}
+	searcher := store
 
 	_, txCtx, err := tm.Begin(ctx)
 	if err != nil {

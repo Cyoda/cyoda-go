@@ -55,10 +55,7 @@ func TestBegin_ReservesItsSnapshotTimeAsTheFloor(t *testing.T) {
 		t.Fatalf("direct Save: %v", err)
 	}
 
-	iterable, ok := store.(spi.Iterable)
-	if !ok {
-		t.Fatal("EntityStore does not implement spi.Iterable")
-	}
+	iterable := store
 	it, err := iterable.Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)

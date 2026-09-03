@@ -58,7 +58,7 @@ func TestIterate_InTx_TrackingReadRecordsYieldsOnly(t *testing.T) {
 	defer func() { _ = tm.Rollback(txCtx, txID) }()
 	_, _ = store.Save(txCtx, &spi.Entity{Meta: spi.EntityMeta{ID: "z00", TenantID: "tenant-it", ModelRef: ref, State: "open"}, Data: []byte(`{}`)})
 
-	it, err := store.(spi.Iterable).Iterate(txCtx, ref, stateIs("open"), spi.IterateOptions{TrackingRead: true})
+	it, err := store.Iterate(txCtx, ref, stateIs("open"), spi.IterateOptions{TrackingRead: true})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestIterate_InTx_RollbackWhileOpen_EndsWithRolledBack(t *testing.T) {
 	seedStates(t, store, ctx, ref, "open", "open", "open")
 
 	txID, txCtx, _ := tm.Begin(ctx)
-	it, err := store.(spi.Iterable).Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{})
+	it, err := store.Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestIterate_InTx_PIT_IgnoresTransaction(t *testing.T) {
 		t.Fatalf("buffered Save: %v", err)
 	}
 
-	it, err := store.(spi.Iterable).Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{PointInTime: &snapshotTime, TrackingRead: true})
+	it, err := store.Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{PointInTime: &snapshotTime, TrackingRead: true})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
 	}

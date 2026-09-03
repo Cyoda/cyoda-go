@@ -131,10 +131,7 @@ func TestConcurrentCrossStoreAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EntityStore failed: %v", err)
 	}
-	entities, err := entityStore.GetAll(ctx, spi.ModelRef{EntityName: "ConcTest", ModelVersion: "1"})
-	if err != nil {
-		t.Fatalf("GetAll failed: %v", err)
-	}
+	entities := drainAll(t, ctx, entityStore, spi.ModelRef{EntityName: "ConcTest", ModelVersion: "1"}, nil)
 	expected := goroutinesPerStore * opsPerGoroutine
 	if len(entities) != expected {
 		t.Errorf("expected %d entities, got %d", expected, len(entities))

@@ -267,7 +267,7 @@ func TestEntityStore_GetAsAt(t *testing.T) {
 	}
 }
 
-func TestEntityStore_GetAll(t *testing.T) {
+func TestEntityStore_Iterate(t *testing.T) {
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("entity-tenant")
 	store, _ := factory.EntityStore(ctx)
@@ -283,16 +283,13 @@ func TestEntityStore_GetAll(t *testing.T) {
 	diff.Meta.ModelRef = spi.ModelRef{EntityName: "Invoice", ModelVersion: "1"}
 	store.Save(ctx, diff)
 
-	all, err := store.GetAll(ctx, ref)
-	if err != nil {
-		t.Fatalf("GetAll: %v", err)
-	}
+	all := drainAll(t, ctx, store, ref, nil)
 	if len(all) != 3 {
 		t.Errorf("expected 3, got %d", len(all))
 	}
 }
 
-func TestEntityStore_GetAllAsAt(t *testing.T) {
+func TestEntityStore_IterateAsAt(t *testing.T) {
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("entity-tenant")
 	store, _ := factory.EntityStore(ctx)
@@ -312,20 +309,14 @@ func TestEntityStore_GetAllAsAt(t *testing.T) {
 	store.Save(ctx, makeEntity("ent-aa-3"))
 	afterThird := dbNow(t, ctx, pool)
 
-	// GetAllAsAt after the first two saves should return 2
-	all, err := store.GetAllAsAt(ctx, ref, afterFirst)
-	if err != nil {
-		t.Fatalf("GetAllAsAt: %v", err)
-	}
+	// Iterate(asAt) after the first two saves should return 2
+	all := drainAll(t, ctx, store, ref, &afterFirst)
 	if len(all) != 2 {
 		t.Errorf("expected 2, got %d", len(all))
 	}
 
-	// GetAllAsAt after the third save should return 3
-	allNow, err := store.GetAllAsAt(ctx, ref, afterThird)
-	if err != nil {
-		t.Fatalf("GetAllAsAt now: %v", err)
-	}
+	// Iterate(asAt) after the third save should return 3
+	allNow := drainAll(t, ctx, store, ref, &afterThird)
 	if len(allNow) != 3 {
 		t.Errorf("expected 3, got %d", len(allNow))
 	}
@@ -389,10 +380,7 @@ func TestEntityStore_DeleteAll(t *testing.T) {
 		t.Fatalf("DeleteAll: %v", err)
 	}
 
-	all, err := store.GetAll(ctx, ref)
-	if err != nil {
-		t.Fatalf("GetAll after DeleteAll: %v", err)
-	}
+	all := drainAll(t, ctx, store, ref, nil)
 	if len(all) != 0 {
 		t.Errorf("expected 0 after DeleteAll, got %d", len(all))
 	}
@@ -522,12 +510,9 @@ func TestEntityStore_TenantIsolation(t *testing.T) {
 		t.Errorf("expected ErrNotFound, got: %v", err)
 	}
 
-	// Tenant B GetAll should be empty
+	// Tenant B Iterate should be empty
 	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	all, err := storeB.GetAll(ctxB, ref)
-	if err != nil {
-		t.Fatalf("GetAll: %v", err)
-	}
+	all := drainAll(t, ctxB, storeB, ref, nil)
 	if len(all) != 0 {
 		t.Errorf("tenant-B should see 0, got %d", len(all))
 	}
@@ -759,9 +744,13 @@ func TestEntityStore_Delete_RecordsWriteSet(t *testing.T) {
 	}
 }
 
-// TestEntityStore_GetAll_RecordsEachReadSet verifies that GetAll within a
-// transaction records each returned entity's version in the readSet.
-func TestEntityStore_GetAll_RecordsEachReadSet(t *testing.T) {
+// TestEntityStore_GetPage_RecordsEachReadSet verifies that GetPage within a
+// transaction records each returned entity's version in the readSet
+// unconditionally — the same unconditional-recording contract GetAll used to
+// carry (GetPage is the surviving whole-model-shaped read; Search/Iterate
+// only record when TrackingRead is set, so they cannot stand in for this
+// specific assertion).
+func TestEntityStore_GetPage_RecordsEachReadSet(t *testing.T) {
 	factory, tm := setupEntityTestWithTM(t)
 	ctx := ctxWithTenant("hook-tenant")
 
@@ -781,9 +770,9 @@ func TestEntityStore_GetAll_RecordsEachReadSet(t *testing.T) {
 	defer tm.Rollback(txCtx, txID) //nolint:errcheck
 
 	txStore, _ := factory.EntityStore(txCtx)
-	all, err := txStore.GetAll(txCtx, ref)
+	all, err := txStore.GetPage(txCtx, ref, 100, 0, nil)
 	if err != nil {
-		t.Fatalf("GetAll: %v", err)
+		t.Fatalf("GetPage: %v", err)
 	}
 	if len(all) != 3 {
 		t.Fatalf("expected 3 entities, got %d", len(all))

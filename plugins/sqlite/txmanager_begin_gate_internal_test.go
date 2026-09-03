@@ -190,10 +190,7 @@ func TestBegin_SeesConcurrentCommitRows(t *testing.T) {
 	}()
 
 	// T_B's overlay read.
-	iterable, ok := store.(spi.Iterable)
-	if !ok {
-		t.Fatalf("entityStore does not implement spi.Iterable")
-	}
+	iterable := store
 	it, err := iterable.Iterate(rb.ctx, ref, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("T_B Iterate: %v", err)
@@ -269,10 +266,7 @@ func TestDirectSave_ThenBegin_SeesRow(t *testing.T) {
 	}
 	defer func() { _ = m.Rollback(txCtx, txID) }()
 
-	iterable, ok := store.(spi.Iterable)
-	if !ok {
-		t.Fatalf("entityStore does not implement spi.Iterable")
-	}
+	iterable := store
 	it, err := iterable.Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
@@ -475,10 +469,7 @@ func TestDirectSave_StampsAboveAnOpenSnapshot(t *testing.T) {
 		t.Fatalf("direct write stamped submit_time %d at or below the open snapshot %d", stamped, snapshot)
 	}
 
-	iterable, ok := store.(spi.Iterable)
-	if !ok {
-		t.Fatalf("entityStore does not implement spi.Iterable")
-	}
+	iterable := store
 	it, err := iterable.Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)

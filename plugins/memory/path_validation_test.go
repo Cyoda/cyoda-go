@@ -40,14 +40,14 @@ func runAllFilterEntryPoints(t *testing.T, store spi.EntityStore, ref spi.ModelR
 	t.Helper()
 	out := map[string]error{}
 
-	_, err := store.(spi.Searcher).Search(ctx, filter, spi.SearchOptions{
+	_, err := store.Search(ctx, filter, spi.SearchOptions{
 		ModelName:    ref.EntityName,
 		ModelVersion: ref.ModelVersion,
 		Limit:        10,
 	})
 	out["Search"] = err
 
-	it, err := store.(spi.Iterable).Iterate(ctx, ref, filter, spi.IterateOptions{})
+	it, err := store.Iterate(ctx, ref, filter, spi.IterateOptions{})
 	if it != nil {
 		// Drain so a lazily-surfaced error is not mistaken for acceptance.
 		for it.Next() {
@@ -225,7 +225,7 @@ func TestFilterPathValidation_ValidFilterStillMatches(t *testing.T) {
 		Declared: []spi.DataType{spi.Integer},
 	}
 
-	got, err := store.(spi.Searcher).Search(ctx, filter, spi.SearchOptions{
+	got, err := store.Search(ctx, filter, spi.SearchOptions{
 		ModelName:    ref.EntityName,
 		ModelVersion: ref.ModelVersion,
 		Limit:        10,
@@ -237,7 +237,7 @@ func TestFilterPathValidation_ValidFilterStillMatches(t *testing.T) {
 		t.Fatalf("Search returned %d rows, want the seeded entity", len(got))
 	}
 
-	it, err := store.(spi.Iterable).Iterate(ctx, ref, filter, spi.IterateOptions{})
+	it, err := store.Iterate(ctx, ref, filter, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
 	}
@@ -291,11 +291,7 @@ func TestOrderSpecValidation_RejectsUnknownMetaPath(t *testing.T) {
 
 	bad := []spi.OrderSpec{{Source: spi.SourceMeta, Path: "notAMetaField"}}
 
-	searcher, ok := store.(spi.Searcher)
-	if !ok {
-		t.Fatal("EntityStore does not implement spi.Searcher")
-	}
-	_, err = searcher.Search(ctx, spi.Filter{}, spi.SearchOptions{
+	_, err = store.Search(ctx, spi.Filter{}, spi.SearchOptions{
 		ModelName:    ref.EntityName,
 		ModelVersion: ref.ModelVersion,
 		Limit:        10,
@@ -305,11 +301,7 @@ func TestOrderSpecValidation_RejectsUnknownMetaPath(t *testing.T) {
 		t.Errorf("Search with unknown meta sort path = %v, want ErrInvalidFilterPath", err)
 	}
 
-	iterable, ok := store.(spi.Iterable)
-	if !ok {
-		t.Fatal("EntityStore does not implement spi.Iterable")
-	}
-	it, err := iterable.Iterate(ctx, ref, spi.Filter{}, spi.IterateOptions{OrderBy: bad})
+	it, err := store.Iterate(ctx, ref, spi.Filter{}, spi.IterateOptions{OrderBy: bad})
 	if it != nil {
 		_ = it.Close()
 	}
@@ -337,7 +329,7 @@ func TestOrderSpecValidation_AcceptsCanonicalMetaPaths(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	for _, path := range []string{"id", "state", "creationDate", "lastUpdateTime", "transitionForLatestSave", "transactionId"} {
 		_, err := searcher.Search(ctx, spi.Filter{}, spi.SearchOptions{
@@ -375,7 +367,7 @@ func TestOrderSpecValidation_RejectsMalformedDataPath(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "m-orderpath-bad", ModelVersion: "1"}
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	for _, path := range []string{"a..b", "a.", "a b", "a'b"} {
 		_, err := searcher.Search(ctx, spi.Filter{}, spi.SearchOptions{
@@ -405,7 +397,7 @@ func TestOrderSpecValidation_RejectsSubscript(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "m-orderpath-subscript", ModelVersion: "1"}
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	for _, path := range []string{"tags[0]", "tags[*]"} {
 		_, err := searcher.Search(ctx, spi.Filter{}, spi.SearchOptions{

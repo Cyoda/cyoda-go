@@ -65,10 +65,7 @@ func TestSqliteIterate_StreamsAllEntitiesForModel(t *testing.T) {
 		gsSave(t, ctx, store, fmt.Sprintf("e-%d", i), "available", map[string]any{"x": i})
 	}
 
-	it, ok := store.(spi.Iterable)
-	if !ok {
-		t.Fatal("entityStore does not implement spi.Iterable")
-	}
+	it := store
 	iter, err := it.Iterate(ctx, gsModel, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
@@ -96,7 +93,7 @@ func TestSqliteIterate_FilterPushdown(t *testing.T) {
 	gsSave(t, ctx, store, "b", "available", map[string]any{"city": "Munich"})
 	gsSave(t, ctx, store, "c", "available", map[string]any{"city": "Berlin"})
 
-	it := store.(spi.Iterable)
+	it := store
 	filter := spi.Filter{
 		Op:       spi.FilterEq,
 		Source:   spi.SourceData,
@@ -130,7 +127,7 @@ func TestSqliteIterate_RejectsUnevaluableFilter(t *testing.T) {
 	_, store, ctx := gsNewStore(t)
 	gsSave(t, ctx, store, "a", "available", map[string]any{"name": "x"})
 
-	it := store.(spi.Iterable)
+	it := store
 	iter, err := it.Iterate(ctx, gsModel, spi.Filter{
 		Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
 		Value: `a\`, Declared: []spi.DataType{spi.String},
@@ -159,7 +156,7 @@ func TestSqliteIterate_ResidualApplied(t *testing.T) {
 	gsSave(t, ctx, store, "a", "available", map[string]any{"city": "Berlin", "tag": "x"})
 	gsSave(t, ctx, store, "b", "available", map[string]any{"city": "Berlin", "tag": "y"})
 
-	it := store.(spi.Iterable)
+	it := store
 	// MatchesRegex is non-pushable in sqlite planner — forces residual evaluation.
 	filter := spi.Filter{
 		Op: spi.FilterAnd,
@@ -193,7 +190,7 @@ func TestSqliteIterate_CtxCancellation(t *testing.T) {
 	}
 
 	cancelCtx, cancel := context.WithCancel(ctx)
-	it := store.(spi.Iterable)
+	it := store
 	iter, err := it.Iterate(cancelCtx, gsModel, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
@@ -242,7 +239,7 @@ func TestSqliteIterate_InTxOverlay(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	it := store.(spi.Iterable)
+	it := store
 	iter, err := it.Iterate(txCtx, gsModel, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
@@ -286,7 +283,7 @@ func TestSqliteIterate_InTx_RejectsUnevaluableFilter(t *testing.T) {
 		t.Fatalf("Begin: %v", err)
 	}
 
-	it := store.(spi.Iterable)
+	it := store
 	iter, iterErr := it.Iterate(txCtx, gsModel, spi.Filter{
 		Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
 		Value: `a\`, Declared: []spi.DataType{spi.String},
@@ -347,7 +344,7 @@ func TestSqliteIterate_InTxPlusPointInTime_DocumentedLimitation(t *testing.T) {
 	// non-PIT branch (TestSqliteIterate_InTxOverlay pins that path).
 	gsSave(t, txCtx, store, "e-buffered", "available", map[string]any{"x": 99})
 
-	it := store.(spi.Iterable)
+	it := store
 	iter, err := it.Iterate(txCtx, gsModel, spi.Filter{}, spi.IterateOptions{PointInTime: &pit})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
@@ -403,7 +400,7 @@ func TestSqliteGroupedAggregate_InTxBufferedWritesVisible(t *testing.T) {
 
 	// Iterate-driven tally: walk the iterator and tally by state — that's
 	// what the service-layer streaming fallback does inside a tx.
-	it := store.(spi.Iterable)
+	it := store
 	iter, err := it.Iterate(txCtx, gsModel, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
@@ -428,7 +425,7 @@ func TestSqliteIterate_CloseIdempotent(t *testing.T) {
 	_, store, ctx := gsNewStore(t)
 	gsSave(t, ctx, store, "a", "available", map[string]any{})
 
-	it := store.(spi.Iterable)
+	it := store
 	iter, err := it.Iterate(ctx, gsModel, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
@@ -700,7 +697,7 @@ func TestSqliteGroupedAggregate_StreamingFallbackCorrectAtSoundSupersetBoundary(
 
 	filter := spi.Filter{Op: spi.FilterGt, Source: spi.SourceData, Path: "price", Value: 100.0, Declared: []spi.DataType{spi.Double}}
 
-	it := store.(spi.Iterable)
+	it := store
 	iter, err := it.Iterate(ctx, gsModel, filter, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
