@@ -228,10 +228,10 @@ func sortEntitiesByOrder(ctx context.Context, rows []*spi.Entity, order []spi.Or
 // does not full-scan. The scan itself is unmetered and opts.Limit is the only
 // bound, exactly as in searchCommitted.
 //
-// The whole operation runs under tx.OpMu.RLock (fail fast on tx.RolledBack) so
-// Commit/Rollback (which take tx.OpMu.Lock) cannot race our reads of
-// tx.Buffer/tx.Deletes or our write to tx.ReadSet. Lock order: tx.OpMu before
-// the sql.DB query — identical to Save/GetPage in this package.
+// The whole operation runs under tx.OpMu.RLock (fail fast on tx.RolledBack or
+// tx.Closed) so Commit/Rollback (which take tx.OpMu.Lock) cannot race our
+// reads of tx.Buffer/tx.Deletes or our write to tx.ReadSet. Lock order:
+// tx.OpMu before the sql.DB query — identical to Save/GetPage in this package.
 func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionState, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
 	modelRef := spi.ModelRef{EntityName: opts.ModelName, ModelVersion: opts.ModelVersion}
 	plan, err := planFor(filter)
@@ -262,6 +262,9 @@ func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionSt
 		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return fmt.Errorf("Search: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
+		}
+		if tx.Closed {
+			return fmt.Errorf("Search: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
 		}
 
 		rows, err := s.db.QueryContext(ctx, baseQuery, baseArgs...)

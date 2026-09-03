@@ -89,6 +89,9 @@ func (s *EntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 	if tx.RolledBack {
 		return nil, fmt.Errorf("Search: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
 	}
+	if tx.Closed {
+		return nil, fmt.Errorf("Search: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
+	}
 
 	if opts.PointInTime != nil {
 		// In-tx point-in-time: committed-only, no buffer overlay, no read-set
