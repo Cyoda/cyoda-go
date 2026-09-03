@@ -186,7 +186,15 @@ check-codegen:         ## Verify api/generated.go is in sync with api/openapi.ya
 	@./scripts/check-generated-in-sync.sh
 
 check-gofmt:           ## Verify all Go files are gofmt-clean (root + plugin submodules)
-	@dirty="$$(gofmt -l .)"; \
+	@# `gofmt -l .` walks into .claude/worktrees/, so any feature worktree
+	@# checked out there fails this gate with files that are neither in the
+	@# branch nor the author's. CI never saw it because CI checks out clean.
+	@# -c -o --exclude-standard is tracked PLUS untracked-not-ignored, so a
+	@# brand-new file is still caught (tracked-only would let it through until
+	@# git add), while .gitignore's .claude/worktrees/ entry excludes the
+	@# nested worktrees. It still covers the plugin submodules: separate Go
+	@# modules, same git repository.
+	@dirty="$$(gofmt -l $$(git ls-files -c -o --exclude-standard '*.go'))"; \
 	if [ -n "$$dirty" ]; then \
 		echo "gofmt-dirty files (run 'gofmt -w .'):"; echo "$$dirty"; exit 1; \
 	fi; \
