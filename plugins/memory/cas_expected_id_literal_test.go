@@ -73,10 +73,13 @@ func TestCompareAndSave_ExpectedIDIsLiteral(t *testing.T) {
 			}
 			_, err = store.CompareAndSave(ctx, literalEntity(ref, "tx-writer"), tc.expectedTxID)
 			assertCASOutcome(t, err, tc.want)
-			// A rejected call must not have written: the seeded entity is
-			// still the seed, byte for byte.
-			if tc.want == casRejected && tc.seed && !tc.tombstone {
-				assertLiteralData(t, store, ctx, seedLiteralData)
+			// A rejected call must not have written — the seed is still
+			// the seed byte for byte, and where there was no entity there
+			// is still none. The tombstone legs matter as much as the
+			// existing-entity one: a rejection that resurrected would be
+			// exactly the fail-open this rule exists to close.
+			if tc.want == casRejected {
+				assertLiteralUnchanged(t, store, ctx, tc.seed && !tc.tombstone)
 			}
 		})
 
@@ -105,15 +108,15 @@ func TestCompareAndSave_ExpectedIDIsLiteral(t *testing.T) {
 			}
 			_, err = store.CompareAndSave(txCtx, literalEntity(ref, "tx-writer"), tc.expectedTxID)
 			assertCASOutcome(t, err, tc.want)
-			if tc.want == casRejected && tc.seed && !tc.tombstone {
+			if tc.want == casRejected {
 				// Unchanged in the transaction's own view — a store that
 				// buffered the write and then errored fails here — and
 				// still unchanged once that transaction commits.
-				assertLiteralData(t, store, txCtx, seedLiteralData)
+				assertLiteralUnchanged(t, store, txCtx, tc.seed && !tc.tombstone)
 				if err := tm.Commit(txCtx, txID); err != nil {
 					t.Fatalf("Commit: %v", err)
 				}
-				assertLiteralData(t, store, ctx, seedLiteralData)
+				assertLiteralUnchanged(t, store, ctx, tc.seed && !tc.tombstone)
 			}
 		})
 	}
@@ -154,6 +157,66 @@ func TestCompareAndSave_EmptyExpectedAfterSameTxDelete_Rejected(t *testing.T) {
 	}
 }
 
+// The empty-ID guard is the FIRST thing CompareAndSave does, ahead of the
+// rolled-back and already-committed checks, so a call that is both on a dead
+// transaction and empty-ID reports the argument error. That ordering is
+// deliberate and the same on all three backends: an empty expectedTxID is
+// never a valid call whatever the transaction is doing, and answering it with
+// a transaction-state sentinel would send the caller looking in the wrong
+// place — and would let a handler retry-on-conflict a call that can never
+// succeed. Nothing else pins the precedence, so a later reorder of the guards
+// would flip it unnoticed; this is that pin.
+func TestCompareAndSave_EmptyExpectedOnDeadTransaction_ReportsArgumentError(t *testing.T) {
+	for _, kill := range []string{"Committed", "RolledBack"} {
+		t.Run(kill, func(t *testing.T) {
+			factory := memory.NewStoreFactory()
+			defer factory.Close()
+			uuids := newTestUUIDGenerator()
+			tm := factory.NewTransactionManager(uuids)
+			ctx := ctxWithTenant("tenant-lit")
+			store, err := factory.EntityStore(ctx)
+			if err != nil {
+				t.Fatalf("EntityStore: %v", err)
+			}
+			ref := spi.ModelRef{EntityName: "m-lit", ModelVersion: "1"}
+			seedLiteral(t, store, ctx, ref, "tx-seed")
+
+			txID, txCtx, err := tm.Begin(ctx)
+			if err != nil {
+				t.Fatalf("Begin: %v", err)
+			}
+			if kill == "Committed" {
+				err = tm.Commit(txCtx, txID)
+			} else {
+				err = tm.Rollback(txCtx, txID)
+			}
+			if err != nil {
+				t.Fatalf("%s: %v", kill, err)
+			}
+
+			_, err = store.CompareAndSave(txCtx, literalEntity(ref, "tx-writer"), "")
+			assertArgumentErrorNotTxState(t, err)
+			assertLiteralUnchanged(t, store, ctx, true)
+		})
+	}
+}
+
+// assertArgumentErrorNotTxState reports that err is the plain argument
+// rejection and not one of the sentinels a caller would act on differently.
+func assertArgumentErrorNotTxState(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("CompareAndSave with an empty expected transaction ID: err = nil, want a rejection")
+	}
+	for _, sentinel := range []error{
+		spi.ErrTxAlreadyCommitted, spi.ErrTxRolledBack, spi.ErrTxNotFound, spi.ErrConflict,
+	} {
+		if errors.Is(err, sentinel) {
+			t.Fatalf("CompareAndSave with an empty expected transaction ID on a dead transaction: err = %v, want the plain argument error (the empty-ID guard runs first), not %v", err, sentinel)
+		}
+	}
+}
+
 const seedLiteralData = `{"n":0}`
 
 func literalEntity(ref spi.ModelRef, txID string) *spi.Entity {
@@ -175,14 +238,24 @@ func seedLiteral(t *testing.T, store spi.EntityStore, ctx context.Context, ref s
 	}
 }
 
-func assertLiteralData(t *testing.T, store spi.EntityStore, ctx context.Context, want string) {
+// assertLiteralUnchanged reports that a rejected CompareAndSave left the store
+// exactly as it found it: the seed byte for byte when one was committed and
+// not deleted, and no entity at all otherwise — never written, or a committed
+// tombstone the rejection must not have lifted.
+func assertLiteralUnchanged(t *testing.T, store spi.EntityStore, ctx context.Context, present bool) {
 	t.Helper()
 	got, err := store.Get(ctx, "e-lit")
+	if !present {
+		if !errors.Is(err, spi.ErrNotFound) {
+			t.Fatalf("Get after a rejected CompareAndSave: err = %v, want ErrNotFound (nothing may have been created)", err)
+		}
+		return
+	}
 	if err != nil {
 		t.Fatalf("Get after a rejected CompareAndSave: %v", err)
 	}
-	if string(got.Data) != want {
-		t.Fatalf("Data after a rejected CompareAndSave = %s, want %s", got.Data, want)
+	if string(got.Data) != seedLiteralData {
+		t.Fatalf("Data after a rejected CompareAndSave = %s, want %s", got.Data, seedLiteralData)
 	}
 }
 

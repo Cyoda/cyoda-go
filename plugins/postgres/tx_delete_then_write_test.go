@@ -36,12 +36,14 @@ func TestTx_DeleteThenCompareAndSaveEmpty_Rejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
+	// A t.Fatal anywhere below would otherwise leave the transaction holding a
+	// pooled connection, and the fixture's pool.Close would block forever. It
+	// has to sit here, before the first fallible call on txCtx, not just
+	// before the assertions.
+	defer func() { _ = tm.Rollback(txCtx, txID) }()
 	if err := store.Delete(txCtx, "e-cas-recreate"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	// A t.Fatal below would otherwise leave the transaction holding a pooled
-	// connection, and the fixture's pool.Close would block forever.
-	defer func() { _ = tm.Rollback(txCtx, txID) }()
 	_, err = store.CompareAndSave(txCtx, &spi.Entity{Meta: committed.Meta, Data: []byte(`{"n":2}`)}, "")
 	if err == nil {
 		t.Fatal("CompareAndSave with an empty expected ID after same-tx Delete: err = nil, want a rejection")
