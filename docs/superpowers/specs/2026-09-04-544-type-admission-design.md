@@ -409,6 +409,14 @@ keeps its code, message shape and Props.
 Unique keys keep their guard: a write making a unique-key leaf non-scalar still
 returns `422 INVALID_UNIQUE_KEY_DEFINITION`.
 
+Search endpoints gain no status change, but §7 changes which rows they return:
+
+| Endpoint | Scenario | Today | Under this rule |
+|---|---|---|---|
+| `POST /api/search/direct/{name}/{ver}` | `EQUALS 5.0` against an `INTEGER` leaf holding `5` | `200`, 0 hits | `200`, **1 hit** |
+| `POST /api/search/direct/{name}/{ver}` | comparison against a stored number admitted under §4 that the leaf's declared type covers | `200`, 0 hits | `200`, **the row** |
+| `POST /api/search/direct/{name}/{ver}` | leaf declares no numeric type (e.g. unresolvable path) | `200`, 0 hits | unchanged — fail-closed |
+
 ## 10. Coverage matrix
 
 | Scenario | Unit | Running-backend e2e | Cross-backend parity | gRPC |
@@ -460,9 +468,24 @@ another field, or it passes vacuously against the §5 defect.
 
 **SPI (`cyoda-go-spi`)**
 6. `eval_leaf.go`: judge a stored number against the declared type's envelope
-   for `DOUBLE` and `BIG_DECIMAL`, in both `evalCompare` and `evalBetween`.
-7. Tag, one pin commit (`MAINTAINING.md`, `make repin-plugins`,
+   for `DOUBLE` and `BIG_DECIMAL`, in both `evalCompare` and `evalBetween`
+   (§7 (i)). Leave the "does this leaf declare a numeric type at all" gate
+   untouched — it is what keeps an unresolvable path fail-closed.
+7. `numeric_bucket.go`: strip trailing zeros in `foldToInt` before the
+   integrality test, so `EQUALS 5.0` matches a stored `5` (§7 (ii)).
+8. Tag, one pin commit (`MAINTAINING.md`, `make repin-plugins`,
    `COMPATIBILITY.md`).
+
+### Effect on storage plugins
+
+The in-tree plugins reach the kernel through the same entry points as the
+engine, so they follow automatically. The out-of-tree Cassandra plugin does not
+use the SPI's numeric typing at all: it classifies values with its own
+value-shape classifier to choose an index, and reaches the kernel only as a
+residual re-check over rows an index already returned. Its index selection
+therefore cannot be invalidated by these changes, and no symbol it references is
+removed. Its residual re-check widens slightly, in the same direction as the
+engine's.
 
 `IsAssignableTo` and the widening lattice stay where they are used legitimately:
 merging types the model must genuinely hold both of, and `CollapseNumeric`.
