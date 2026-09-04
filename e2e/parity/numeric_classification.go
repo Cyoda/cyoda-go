@@ -176,3 +176,67 @@ func RunSchemaExtensionsSequentialFoldAcrossRequests(t *testing.T, fixture Backe
 		}
 	}
 }
+
+// RunNumericClassificationDoubleSchemaAcceptsWholeNumber confirms a leaf
+// declared DOUBLE admits a whole number under a below-TYPE change level. The
+// write path classifies the incoming value's type from the value alone —
+// every whole number is INTEGER, whatever its spelling — but INTEGER widens
+// into DOUBLE, so the model's admitted value space is unchanged and the write
+// spends no ChangeLevel permission. Under ARRAY_LENGTH every such write was
+// refused as a spurious "type change at .amount requires TYPE level".
+func RunNumericClassificationDoubleSchemaAcceptsWholeNumber(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "parity-num-double-whole"
+	const modelVersion = 1
+	if err := c.ImportModel(t, modelName, modelVersion, `{"amount":10.5,"amounts":[1.5,2.5]}`); err != nil {
+		t.Fatalf("ImportModel: %v", err)
+	}
+	if err := c.LockModel(t, modelName, modelVersion); err != nil {
+		t.Fatalf("LockModel: %v", err)
+	}
+	if err := c.SetChangeLevel(t, modelName, modelVersion, "ARRAY_LENGTH"); err != nil {
+		t.Fatalf("SetChangeLevel: %v", err)
+	}
+	before, err := c.ExportModel(t, "SIMPLE_VIEW", modelName, modelVersion)
+	if err != nil {
+		t.Fatalf("ExportModel before: %v", err)
+	}
+
+	// The three spellings classify identically — the walker strips trailing
+	// zeros and normalises exponents before classifying.
+	for _, payload := range []string{
+		`{"amount":1000,"amounts":[3,4]}`,
+		`{"amount":1000.0,"amounts":[3.0,4.0]}`,
+		`{"amount":1e3,"amounts":[3e0,4e0]}`,
+	} {
+		status, body, err := c.CreateEntityRaw(t, modelName, modelVersion, payload)
+		if err != nil {
+			t.Fatalf("CreateEntityRaw transport for %s: %v", payload, err)
+		}
+		if status != http.StatusOK {
+			t.Fatalf("whole number into a DOUBLE leaf must be accepted; %s got %d: %s", payload, status, body)
+		}
+	}
+
+	after, err := c.ExportModel(t, "SIMPLE_VIEW", modelName, modelVersion)
+	if err != nil {
+		t.Fatalf("ExportModel after: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("a whole-number write to a DOUBLE leaf must not change the schema\n  before: %s\n  after:  %s",
+			before, after)
+	}
+
+	// The lattice bounds the relaxation, and every backend must fail closed at
+	// the same place: past 2^31 the value classifies LONG, which does not widen
+	// into DOUBLE, so it is a genuine type change and stays refused here.
+	status, body, err := c.CreateEntityRaw(t, modelName, modelVersion, `{"amount":2147483648,"amounts":[1.5,2.5]}`)
+	if err != nil {
+		t.Fatalf("CreateEntityRaw transport: %v", err)
+	}
+	if status != http.StatusBadRequest {
+		t.Errorf("LONG into a DOUBLE leaf is a type change; got %d: %s", status, body)
+	}
+}

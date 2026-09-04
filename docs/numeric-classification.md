@@ -86,6 +86,8 @@ This matches Cyoda Cloud's `findCommonDataType` (`DataType.kt:293-309`) restrict
 
 Under strict validation (`ChangeLevel = ""`), a decimal value against an `Integer` schema is rejected. Under extension (`ChangeLevel = Type` or higher), the same input triggers schema widening via the collapse rule — the field becomes `BigDecimal`.
 
+The change-level gate asks the same question before charging for a change: a value whose classified type is assignable to one the leaf already declares leaves the admitted value space untouched, so it consumes no `ChangeLevel` permission. A whole number in the `Integer` range against a `Double` schema is the everyday case — `Integer → Double` is allowed, so the write is accepted at every level including `ArrayLength`. The asymmetries above bound this precisely: a whole number past 2³¹ classifies `Long`, `Long → Double` is blocked, and that write is a genuine type change collapsing the leaf to `UnboundDecimal`.
+
 ## Intentional divergences from Cyoda Cloud
 
 1. **No polymorphism within numerics.** Cyoda Cloud retains polymorphic numeric sets (e.g., `{FLOAT, DOUBLE, BIG_DECIMAL}`) and collapses only at read time via `findCommonDataType`, which falls back to `STRING` when no common type exists — silently corrupting numeric data. cyoda-go always stores the collapsed numeric type; cross-family mixing promotes to BigDecimal/UnboundDecimal without any STRING fallback. Bug fix, not a neutral divergence.

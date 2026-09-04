@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 260 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 261 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -213,6 +213,7 @@ var allTests = []NamedTest{
 	{"NumericClassificationLargeInteger", RunNumericClassificationLargeInteger},
 	{"NumericClassificationIntegerSchemaAcceptsInteger", RunNumericClassificationIntegerSchemaAcceptsInteger},
 	{"NumericClassificationIntegerSchemaRejectsDecimal", RunNumericClassificationIntegerSchemaRejectsDecimal},
+	{"NumericClassificationDoubleSchemaAcceptsWholeNumber", RunNumericClassificationDoubleSchemaAcceptsWholeNumber},
 
 	// Schema extensions — sequential fold across requests
 	{"SchemaExtensionsSequentialFoldAcrossRequests", RunSchemaExtensionsSequentialFoldAcrossRequests},

@@ -149,9 +149,17 @@ func validateNode(model *ModelNode, data any, path string, depth int) []Validati
 // the types the node's scalar branch carries — the record of the field having
 // been observed holding a bare scalar.
 func matchesScalarBranch(node *ModelNode, data any) bool {
-	dataType := inferDataType(data)
-	for _, mt := range node.DeclaredTypes() {
-		if IsAssignableTo(dataType, mt) {
+	return assignableToAny(inferDataType(data), node.DeclaredTypes())
+}
+
+// assignableToAny reports whether a value classified as dt is admitted by a
+// leaf declaring these types — the type itself, or one that widens into a
+// declared type per the numeric lattice. It is the single answer to "does this
+// leaf already accept this type", shared with the change-level gate in
+// extend.go so validation and extension cannot disagree about it.
+func assignableToAny(dt DataType, declared []DataType) bool {
+	for _, mt := range declared {
+		if IsAssignableTo(dt, mt) {
 			return true
 		}
 	}

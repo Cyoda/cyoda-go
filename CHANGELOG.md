@@ -1088,6 +1088,26 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **A whole number written to a leaf declared `DOUBLE` is no longer refused as
+  a type change.** The change-level gate compared type labels: the walker
+  classifies a value's type from the value alone, so `1000`, `1000.0` and `1e3`
+  all arrive labelled `INTEGER`, and `INTEGER ∉ {DOUBLE}` read as a change
+  needing `TYPE` permission. A model configured at `ARRAY_LENGTH` therefore
+  rejected every such write to any `DOUBLE`-declared leaf, and one at
+  `ARRAY_ELEMENTS` rejected it everywhere but an array's own element (where the
+  level in play is `ARRAY_ELEMENTS` itself, which happened to cover it). The
+  gate now asks whether the leaf already admits the incoming type —
+  assignability, the same widening lattice `Merge`'s `TypeSet.Add` and
+  `Validate`'s scalar check already answer by — so a value the model can hold
+  as it stands spends no permission. `TYPE` and `STRUCTURAL` models were
+  unaffected: their level happened to cover the spurious change, and `Merge`
+  collapsed the stray `INTEGER` straight back into `DOUBLE`.
+
+  The relaxation is bounded by the lattice, not by "whole number": past 2³¹ a
+  value classifies `LONG`, `LONG → DOUBLE` is not a widening (2⁶³ exceeds
+  `DOUBLE`'s 53-bit mantissa), and that write remains a type change that
+  widens the leaf to `UNBOUND_DECIMAL`.
+
 - **memory and sqlite: direct writes stamp their submit time under the same
   monotonic floor commits use, so a write cannot stamp below a snapshot
   already open.** `Begin` also reserves the snapshot it takes as the new
