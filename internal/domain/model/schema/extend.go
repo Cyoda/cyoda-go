@@ -111,7 +111,7 @@ func checkAndExtend(existing, incoming *ModelNode, level spi.ChangeLevel, path s
 func checkBranch(k NodeKind, existing, incoming *ModelNode, level spi.ChangeLevel, path string, scalarLevel spi.ChangeLevel) (bool, error) {
 	switch k {
 	case KindLeaf:
-		if len(typeDifference(incoming.Scalar().Types(), existing.Scalar().Types())) == 0 {
+		if !widensDeclared(incoming.Scalar().Types(), existing.Scalar().Types()) {
 			return false, nil
 		}
 		if !levelPermits(level, scalarLevel) {
@@ -185,4 +185,34 @@ func checkBranch(k NodeKind, existing, incoming *ModelNode, level spi.ChangeLeve
 		return changed, nil
 	}
 	return false, nil
+}
+
+// widensDeclared reports whether any incoming type is outside what the leaf
+// already admits — the only thing that makes a scalar observation a change.
+//
+// Admission is assignability, not label equality. A leaf declaring DOUBLE
+// already admits a whole number in the INTEGER range: the walker classifies it
+// INTEGER by value alone (it cannot see the declaration), and INTEGER widens
+// into DOUBLE, so Merge collapses it straight back to [DOUBLE] and Validate
+// accepts it. Asking for a plain set difference here made that write spend a
+// TYPE-level permission to reach a model identical to the one it started from,
+// which refused every such write to a DOUBLE leaf below TYPE level. The
+// lattice is what bounds this, not "whole number": LONG does not widen into
+// DOUBLE, so a larger value is a genuine change and still costs.
+//
+// This shares its predicate with matchesScalarBranch on the validate path, so
+// the two write doors cannot disagree about what a leaf accepts. TypeSet.Add
+// answers the merge side by a different route (CollapseNumeric), and the two
+// agree exactly rather than by construction — the equivalence is a property to
+// preserve, not a structural guarantee. It rests on the leaf's TypeSet being
+// normalised: at most one numeric member, and never NULL beside a concrete
+// type. If that ever stopped holding, this gate would under-report changes
+// where the set difference did not.
+func widensDeclared(incoming, declared []DataType) bool {
+	for _, dt := range incoming {
+		if !assignableToAny(dt, declared) {
+			return true
+		}
+	}
+	return false
 }
