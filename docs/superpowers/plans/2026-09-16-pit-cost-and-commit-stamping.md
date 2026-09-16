@@ -163,7 +163,18 @@ Expected: PASS.
 - [ ] **Step 5: Run the plugin suite for regressions**
 
 Run: `go test ./plugins/postgres/`
-Expected: PASS. `Delete` shares this shape; if a delete test fails, apply the same wrapper to `Delete` rather than reverting.
+Expected: PASS.
+
+Two hazards found while executing this task, recorded so the next reader does not repeat them:
+
+- **`CompareAndSave` must call `saveOn`, not `save`.** It already opens its own `pgx.Tx`, and `spi.GetTransaction(ctx)` does not see that raw transaction, so calling `save` re-enters the branch above and opens a second transaction on the same pool while the first holds the row lock — a self-deadlock that surfaces only as a ten-minute test timeout. Pass the querier down instead, and pin it with a regression test that runs the non-transactional `CompareAndSave` under a short context deadline.
+- **Passing `q` into `saveOn` is not sufficient on its own.** Every write inside the body must run on that querier, `replaceClaims` included; a copy of the store with its querier repointed (the pattern `CompareAndSave` already uses) is what makes that hold.
+
+- [ ] **Step 5a: Wrap `Delete` too**
+
+`Delete` has the identical four-statement shape and the same window. Wrap it in the same transaction, driven by its own failing test.
+
+Note on testing it: planting a colliding `entity_versions` row — the obvious mirror of the `Save` test above — **does not work here and passes against the unfixed code**. `Delete` writes its version row *first* and updates `entities` second, the opposite order to `Save`, so the collision aborts its first write and leaves nothing partial behind. Make the *second* write fail instead: add a temporary `CHECK (NOT deleted)` constraint on `entities` for the duration of the test, so the delete's `UPDATE entities SET deleted = true` is what fails, then assert the version row it wrote first did not survive.
 
 - [ ] **Step 6: Commit**
 
