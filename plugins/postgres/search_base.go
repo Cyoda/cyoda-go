@@ -3,8 +3,8 @@ package postgres
 import "time"
 
 // pitBaseQueryTemplate is the point-in-time base SELECT. It is a named
-// constant for the same reason getPageCurrentQuery is: pit_plan_test.go's
-// EXPLAIN assertion must plan the query that ACTUALLY runs, not a copy that
+// constant for the same reason getPageCurrentQuery is: a later EXPLAIN
+// assertion needs to plan the query that ACTUALLY runs, not a copy that
 // drifts from it.
 //
 // Shape: one index probe per entity via idx_ev_bitemporal, instead of
@@ -57,10 +57,20 @@ const pitBaseQueryTemplate = `SELECT doc FROM (
 // PIT uses the canonical inclusive bound valid_time <= $4 (no rounding), and
 // follows entities: one lateral probe per row in `entities` rather than a
 // DISTINCT ON over all of entity_versions. The equivalence to the old,
-// revision-walking form rests on three properties that always hold: entities
-// holds a row for every entity that ever existed (Save/Delete never remove
-// it), an entity's model reference is immutable once set, and a tombstone
-// version is filtered by the same deleted check either way.
+// revision-walking form rests on entities holding a row for every entity
+// that ever existed (Save/Delete never remove it) and a tombstone version
+// being filtered by the same deleted check either way — plus one property
+// this file does not itself provide: an entity's model reference never
+// changing after it is first set. That invariant, if enforced, belongs to
+// Save's model-reference handling, not to this query — and as of this
+// commit nothing enforces it: Save's entities upsert unconditionally
+// rewrites model_name/model_version to the incoming value on every write.
+// Without that enforcement, a Save that changes an entity's ModelRef mid-
+// lifetime strands its earlier-model version history: this lateral repeats
+// the model predicate against every version it probes (see below), so a
+// version written under the old model no longer matches a PIT read issued
+// under that old model, even though the same version was reachable there
+// before the change.
 //
 // Shared by Iterate and Search so both stay in lock-step.
 func (s *entityStore) searchBaseQuery(entityName, modelVersion string, pit *time.Time) (string, []any) {
