@@ -119,6 +119,56 @@ func (s *EntityStore) getSnapshotVersion(entityID string, snapshotTime time.Time
 	return copyEntity(result), nil
 }
 
+// modelRefOfLocked returns the model reference id was first saved under, and
+// whether id has any prior version at all. An entity's model reference never
+// changes after creation (see spi.ErrEntityModelMismatch), so the FIRST
+// version's model is the entity's model for its whole lifetime, including
+// through delete/recreate — versions[0].entity is always non-nil (a first
+// Save is always a create, never a tombstone), which also sidesteps the
+// nil *spi.Entity a later DELETED tombstone carries (see entityVersion's
+// doc comment). Caller must hold s.factory.entityMu (read or write).
+func (s *EntityStore) modelRefOfLocked(tid spi.TenantID, id string) (spi.ModelRef, bool) {
+	versions := s.factory.entityData[tid][id]
+	if len(versions) == 0 {
+		return spi.ModelRef{}, false
+	}
+	return versions[0].entity.Meta.ModelRef, true
+}
+
+// modelMismatchErr wraps spi.ErrEntityModelMismatch for entity id.
+func modelMismatchErr(id string) error {
+	return fmt.Errorf("entity %s: %w", id, spi.ErrEntityModelMismatch)
+}
+
+// checkModelImmutable enforces that a same-transaction Save/CompareAndSave
+// does not change entity's model reference, comparing against the
+// transaction's own earlier buffered write for this id when one exists
+// (last-write-wins to a mismatched model is still a mismatch), and against
+// committed state otherwise — a same-tx staged delete does not exempt this
+// check, since the entity's model is fixed for the entity ID regardless of
+// delete/recreate.
+func (s *EntityStore) checkModelImmutable(tx *spi.TransactionState, entity *spi.Entity) error {
+	id := entity.Meta.ID
+	if buffered, ok := tx.Buffer[id]; ok {
+		if buffered.Meta.ModelRef != entity.Meta.ModelRef {
+			return modelMismatchErr(id)
+		}
+		return nil
+	}
+	var mismatch bool
+	func() {
+		s.factory.entityMu.RLock()
+		defer s.factory.entityMu.RUnlock()
+		if ref, ok := s.modelRefOfLocked(s.tenant, id); ok && ref != entity.Meta.ModelRef {
+			mismatch = true
+		}
+	}()
+	if mismatch {
+		return modelMismatchErr(id)
+	}
+	return nil
+}
+
 func (s *EntityStore) SaveAll(ctx context.Context, entities iter.Seq[*spi.Entity]) ([]int64, error) {
 	return spi.DefaultSaveAll(s, ctx, entities)
 }
@@ -137,6 +187,15 @@ func (s *EntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		}
 		if tx.Closed {
 			return 0, fmt.Errorf("Save: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
+		}
+		// An entity's model reference is fixed at creation (see
+		// spi.EntityMeta.ModelRef's doc comment); reject a same-tx buffered
+		// write that would change it BEFORE it is buffered — a buffered
+		// write already looks committed to every subsequent read this
+		// transaction takes, so deferring the check to flush time would let
+		// the caller believe a rejected write had succeeded.
+		if err := s.checkModelImmutable(tx, entity); err != nil {
+			return 0, err
 		}
 		// Transaction mode: write to buffer, not main store. Stage any
 		// value this overwrites (see stageSuperseded's godoc) BEFORE
@@ -201,6 +260,10 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		// unstages the delete. Same answer postgres gives.
 		if tx.Deletes[entity.Meta.ID] {
 			return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
+		}
+		// Same enforcement as Save's tx branch — see checkModelImmutable.
+		if err := s.checkModelImmutable(tx, entity); err != nil {
+			return 0, err
 		}
 		// A buffered own-write IS the transaction's current version of this
 		// entity, so the comparison is against it, not against the committed
@@ -307,6 +370,10 @@ func (s *EntityStore) saveUnlocked(ctx context.Context, entity *spi.Entity) (int
 
 	if s.factory.entityData[tid] == nil {
 		s.factory.entityData[tid] = make(map[string][]entityVersion)
+	}
+
+	if ref, ok := s.modelRefOfLocked(tid, eid); ok && ref != entity.Meta.ModelRef {
+		return 0, modelMismatchErr(eid)
 	}
 
 	versions := s.factory.entityData[tid][eid]

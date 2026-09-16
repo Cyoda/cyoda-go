@@ -235,21 +235,35 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity, stampFrom 
 	// We insert a placeholder doc first, then update it below once we know the
 	// version. The (xmax = 0) expression is true for newly inserted rows and
 	// false for updated rows, letting us distinguish CREATED vs UPDATED.
+	//
+	// The WHERE guard is the enforcement point for spi.ErrEntityModelMismatch:
+	// an entity's model reference is fixed at creation and never rewritten by
+	// a later Save (see EntityMeta.ModelRef's doc comment). ON CONFLICT no
+	// longer touches model_name/model_version at all, and the UPDATE half
+	// only fires when the conflicting row's model already matches the
+	// incoming one. A conflicting row whose model differs matches neither the
+	// INSERT (the row exists) nor the UPDATE (the WHERE fails), so the
+	// statement returns no rows — translated to the sentinel below.
 	var nextVersion int64
 	var isNew bool
 	err := s.q.QueryRow(ctx,
 		`INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
 		 VALUES ($1, $2, $3, $4, 1, false, 'null'::jsonb)
 		 ON CONFLICT (tenant_id, entity_id) DO UPDATE SET
-		   model_name = EXCLUDED.model_name,
-		   model_version = EXCLUDED.model_version,
 		   version = entities.version + 1,
 		   deleted = false,
 		   doc = entities.doc
+		 WHERE entities.model_name = EXCLUDED.model_name
+		   AND entities.model_version = EXCLUDED.model_version
 		 RETURNING version, (xmax = 0)`,
 		tid, eid,
 		entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion).Scan(&nextVersion, &isNew)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The upsert's WHERE guard refused: the stored entity belongs to
+			// a different model. An entity's model is fixed at creation.
+			return 0, fmt.Errorf("entity %s: %w", eid, spi.ErrEntityModelMismatch)
+		}
 		// Already classified: every statement this store issues goes through
 		// ctxQuerier, which is where classification lives. Re-classifying here
 		// would nest the wrapper a second time.
