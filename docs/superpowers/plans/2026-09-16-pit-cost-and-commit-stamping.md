@@ -686,6 +686,24 @@ ALTER TABLE entities ALTER COLUMN last_modified SET NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_ev_transaction
     ON entity_versions (tenant_id, transaction_id, entity_id, version);
 
+-- Every entity_versions row must have an entities row. The point-in-time read
+-- enumerates entities from `entities` and probes each one's revision, so a
+-- version row without its entity row is invisible to every point-in-time read
+-- — silently, with no error. Nothing enforced this before: it held only
+-- because the write paths happened to insert the entities row first. A test
+-- fixture in this repository already violated it and the violation was
+-- undetectable until the read changed shape.
+--
+-- ON DELETE CASCADE rather than RESTRICT: nothing deletes entities rows today
+-- (Delete and DeleteAll set deleted = true), so the clause is unreachable in
+-- current code. Should a retention or erasure feature ever remove an entity
+-- row, taking its history with it is the honest outcome — the alternative is
+-- history that no point-in-time read can reach.
+ALTER TABLE entity_versions
+    ADD CONSTRAINT entity_versions_entity_fk
+    FOREIGN KEY (tenant_id, entity_id) REFERENCES entities (tenant_id, entity_id)
+    ON DELETE CASCADE;
+
 -- Durable submit times: an in-process map answers only on the node that
 -- committed, and only until a restart.
 CREATE TABLE IF NOT EXISTS submit_times (
@@ -729,10 +747,51 @@ ALTER TABLE entity_versions DROP COLUMN IF EXISTS transaction_id;
 Run: `go test ./plugins/postgres/ -run 'TestMigrations|TestRunMigrate'`
 Expected: PASS.
 
+- [ ] **Step 3a: Prove the foreign key actually constrains**
+
+A constraint that exists but is never exercised is indistinguishable from one
+that was quietly dropped to make a migration pass. Write a test that inserts
+an `entity_versions` row for an `entity_id` with no `entities` row and asserts
+the insert is rejected:
+
+```go
+// TestEntityVersionsRequireAnEntityRow proves the foreign key holds. A version
+// row without its entity row is invisible to every point-in-time read — the
+// read enumerates entities and probes each one's revision — so it must be
+// impossible to create, not merely absent by convention. A fixture in this
+// repository violated the convention before the constraint existed, and
+// nothing detected it until a query change made the rows disappear.
+func TestEntityVersionsRequireAnEntityRow(t *testing.T) {
+	factory := setupEntityTest(t)
+	ctx := ctxWithTenant("t-fk")
+	pool := postgres.PoolForTest(factory)
+
+	_, err := pool.Exec(ctx,
+		`INSERT INTO entity_versions
+		   (tenant_id, entity_id, model_name, model_version, version, valid_time, creation_date, doc)
+		 VALUES ('t-fk', 'orphan-id', 'm', '1', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '{"_meta":{}}'::jsonb)`)
+	if err == nil {
+		t.Fatal("an entity_versions row with no entities row must be rejected by the foreign key")
+	}
+	if !strings.Contains(err.Error(), "entity_versions_entity_fk") {
+		t.Errorf("expected the foreign key to reject it, got: %v", err)
+	}
+}
+```
+
+Run: `go test ./plugins/postgres/ -run TestEntityVersionsRequireAnEntityRow`
+Expected: PASS.
+
+**If the migration itself fails because existing rows violate the constraint,
+stop and report it.** Do not drop the constraint, and do not delete the
+offending rows to make it pass — orphan version rows mean a write path creates
+them, and that is a finding the plan needs to hear about, not an obstacle to
+route around.
+
 - [ ] **Step 4: Commit**
 
 ```bash
-git add plugins/postgres/migrations/000012_* plugins/postgres/migration_index_guard_test.go
+git add plugins/postgres/migrations/000012_* plugins/postgres/migration_index_guard_test.go plugins/postgres/entity_versions_fk_test.go
 git commit -m "feat(postgres): columns for the commit instant, and durable submit times"
 ```
 
