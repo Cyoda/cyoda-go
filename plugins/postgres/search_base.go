@@ -2,6 +2,49 @@ package postgres
 
 import "time"
 
+// pitBaseQueryTemplate is the point-in-time base SELECT. It is a named
+// constant for the same reason getPageCurrentQuery is: pit_plan_test.go's
+// EXPLAIN assertion must plan the query that ACTUALLY runs, not a copy that
+// drifts from it.
+//
+// Shape: one index probe per entity via idx_ev_bitemporal, instead of
+// DISTINCT ON walking every revision of every entity up to the instant.
+//
+// The inner subquery projects exactly what the former `latest` derived table
+// projected. The caller's pushdown condition and ORDER BY are generated with
+// BARE column names (query_planner.go fieldExpr, searcher.go
+// orderByFieldExpr) — `doc`, `entity_id`, `version`, `deleted`. Exposing both
+// `entities` and the lateral to those expressions would make `doc` ambiguous
+// and would silently resolve `version` against the entity's CURRENT row
+// rather than its row at the instant.
+//
+// The model predicate is repeated inside the lateral: model membership is a
+// property of the version row, and filtering only the entities row would move
+// that axis onto the entity's current model.
+//
+// version DESC is the final tiebreak. Every row a transaction writes shares
+// one valid_time and one transaction_time, so a delete-then-recreate in one
+// transaction ties on both keys; without the tiebreak the winner is arbitrary
+// and a plan change can flip it.
+//
+// $1 tenant, $2 entity name, $3 model version, $4 instant.
+const pitBaseQueryTemplate = `SELECT doc FROM (
+                SELECT v.doc, v.entity_id, v.version, v.model_name, v.model_version
+                FROM entities e
+                CROSS JOIN LATERAL (
+                  SELECT ev.doc, ev.entity_id, ev.version, ev.model_name, ev.model_version
+                  FROM entity_versions ev
+                  WHERE ev.tenant_id = e.tenant_id AND ev.entity_id = e.entity_id
+                    AND ev.model_name = $2 AND ev.model_version = $3
+                    AND ev.valid_time <= $4
+                    AND ev.transaction_time <= CURRENT_TIMESTAMP
+                  ORDER BY ev.valid_time DESC, ev.transaction_time DESC, ev.version DESC
+                  LIMIT 1
+                ) v
+                WHERE e.tenant_id = $1 AND e.model_name = $2 AND e.model_version = $3
+             ) latest
+             WHERE (doc->'_meta'->>'deleted')::boolean IS NOT TRUE`
+
 // searchBaseQuery builds the base SELECT over a model for current-state
 // (pit == nil) or point-in-time (pit != nil) reads. The outer projection is
 // always `SELECT doc` (one column) — the S-1 invariant the row scanner
@@ -11,25 +54,19 @@ import "time"
 // $4 the snapshot time. Callers append a pushdown WHERE fragment with
 // shiftPlaceholders(frag, len(args)) and (for Search) ORDER BY / LIMIT / OFFSET.
 //
-// PIT uses the canonical inclusive bound valid_time <= $4 (no rounding).
+// PIT uses the canonical inclusive bound valid_time <= $4 (no rounding), and
+// follows entities: one lateral probe per row in `entities` rather than a
+// DISTINCT ON over all of entity_versions. The equivalence to the old,
+// revision-walking form rests on three properties that always hold: entities
+// holds a row for every entity that ever existed (Save/Delete never remove
+// it), an entity's model reference is immutable once set, and a tombstone
+// version is filtered by the same deleted check either way.
+//
 // Shared by Iterate and Search so both stay in lock-step.
 func (s *entityStore) searchBaseQuery(entityName, modelVersion string, pit *time.Time) (string, []any) {
 	tid := string(s.tenantID)
 	if pit != nil {
-		// Bi-temporal snapshot: inner DISTINCT ON picks the latest version per
-		// entity visible at the snapshot; outer drops deletion-marker versions
-		// AFTER the DISTINCT ON (so a delete shadows an older live version).
-		baseQuery := `SELECT doc FROM (
-		                SELECT DISTINCT ON (entity_id)
-		                       entity_id, model_name, model_version, version, doc
-		                FROM entity_versions
-		                WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3
-		                  AND valid_time <= $4
-		                  AND transaction_time <= CURRENT_TIMESTAMP
-		                ORDER BY entity_id, valid_time DESC, transaction_time DESC
-		             ) latest
-		             WHERE (doc->'_meta'->>'deleted')::boolean IS NOT TRUE`
-		return baseQuery, []any{tid, entityName, modelVersion, *pit}
+		return pitBaseQueryTemplate, []any{tid, entityName, modelVersion, *pit}
 	}
 	baseQuery := `SELECT doc
 		             FROM entities

@@ -493,7 +493,7 @@ func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 		 WHERE tenant_id = $1 AND entity_id = $2
 		   AND valid_time <= $3
 		   AND transaction_time <= CURRENT_TIMESTAMP
-		 ORDER BY valid_time DESC, transaction_time DESC
+		 ORDER BY valid_time DESC, transaction_time DESC, version DESC
 		 LIMIT 1`,
 		string(s.tenantID), entityID, asAt).Scan(&doc)
 	if err != nil {
