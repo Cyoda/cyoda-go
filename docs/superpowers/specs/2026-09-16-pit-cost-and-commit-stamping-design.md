@@ -16,9 +16,10 @@ entity with `DISTINCT ON (entity_id)` over `entity_versions`. The planner
 walks every revision of every entity up to the instant and applies the
 caller's condition afterwards, so a point-in-time search, an async snapshot
 scan and grouped statistics at an instant all cost what the *history* costs,
-not what the *model* costs. Measured on 10,000 entities of 250 revisions:
-2,430,002 revisions read and 1.8 s for a condition matching one entity,
-against 0.09 ms for the equivalent current-state search.
+not what the *model* costs. On 10,000 entities of 250 revisions, a
+point-in-time search whose condition matches one entity reads 2,430,000
+revisions and takes 4.9 s, against 0.09 ms for the equivalent current-state
+search. Measurements below.
 
 **Two — a write is dated when its transaction started, not when it
 committed.** `Save` stamps `valid_time` from `CURRENT_TIMESTAMP`, which
@@ -133,6 +134,22 @@ created. `CONCURRENTLY` deterministically deadlocks the concurrent
 multi-node boot path, which is why 000008 is grandfathered; this migration
 needs its own entry with the same justification.
 
+The index is not always chosen, and the design does not depend on it being
+chosen: on a model whose entity count is small enough that every row
+qualifies, the planner prefers a sequential scan of `entities` — measured at
+10,000 entity rows once 2,000 carried `deleted = true`. It earns its place on
+the ordered page path, where it was used, and as the model grows. The
+plan test therefore asserts the *lateral probe* into `idx_ev_bitemporal`,
+which is the property that bounds the cost, not the outer access method.
+
+Tenant isolation is unchanged. `committedQuerier` is pool-routed and sets no
+`app.current_tenant`, so under the owner role both tables' policies are
+bypassed identically and under a non-owner role the point-in-time path
+already returns nothing. Isolation continues to rest on the explicit
+`e.tenant_id = $1` predicate, and the lateral's `ev.tenant_id = e.tenant_id`
+correlation is safe only because the outer query pins the tenant — that
+correlation must not be relaxed into an unqualified join.
+
 ### Reach
 
 `searchBaseQuery` serves `Search`, `Iterate` / grouped statistics and
@@ -142,6 +159,46 @@ ordering and tiebreak, so the family does not fork.
 `GetPage(asAt)` gains early termination: ordering by `entity_id COLLATE "C"`
 can walk the index and stop at `LIMIT` instead of deduplicating the model
 first. That benefit does not apply to a JSON-field sort.
+
+### Measurements
+
+`postgres:17-alpine`, `jit=off`, parallelism disabled, 10,000 entities of 250
+revisions (2.5M rows), an instant admitting 2,430,000 of them, `ANALYZE` run.
+Three shapes: **V0** as shipped, **V1** the alternative below, **V2** this
+design. Execution times from `EXPLAIN (ANALYZE, BUFFERS)`.
+
+| Query | V0 | V1 | V2 |
+|---|---|---|---|
+| Common condition, `LIMIT 51` | 89.7 ms | 56.8 ms | **1.96 ms** |
+| One-match condition, `LIMIT 51` | 4866 ms | 4157 ms | **177.9 ms** |
+| Common condition, no `LIMIT` | 2009 ms | 3326 ms | **149.5 ms** |
+| Page, `LIMIT 20 OFFSET 5000` | 1924 ms | 2519 ms | **154.4 ms** |
+| Rows read, worst case | 2,430,000 | 2,430,000 | 10,000 probes |
+
+**Generic plans hold.** Under `plan_cache_mode = force_generic_plan` the
+lateral keeps its nested-loop-over-index-only-scan shape at 134 ms, against
+3741 ms for `DISTINCT ON` under the same forcing. The first execution of the
+generic plan costs 626 ms and settles to 134 ms.
+
+**Equivalence is measured, not argued.** With 2,000 of the 10,000 entities
+deleted *after* the instant, a read at the instant returns 10,000 under both
+V0 and V2, and a read at "now" returns 8,000 under V2.
+
+### The alternative that was measured and rejected
+
+Keep `DISTINCT ON`, add the `version DESC` tiebreak, and add a covering index
+`entity_versions (tenant_id, model_name, model_version, entity_id,
+valid_time DESC, transaction_time DESC, version DESC)` — one migration, no
+query rewrite, semantics provably unchanged. That is V1 above.
+
+It does not change the asymptote: still 2,430,000 rows read, because
+PostgreSQL 17 has no skip scan. Being wider than the index it replaces in the
+plan, it makes two of the four cases **slower than changing nothing** —
+3326 ms against 2009 ms unbounded, 2519 ms against 1924 ms paged — and buys
+1.6x on one case. It costs 184 MB against a 1776 MB table, 7.4 s to build,
+and write amplification on the largest table for every insert.
+
+Rejected on those measurements.
 
 ## Part B — one commit instant per transaction
 
@@ -224,6 +281,11 @@ populating it.
   observe `doc = 'null'` and a process death can leave `entities` updated
   without its version row. This lands as its own commit with its own failing
   test, first in the series.
+- **The conformance harness's clock floor widens.** It reads `Now` from the
+  database clock with a 5 ms `AdvanceClock` floor sized for clock resolution.
+  With the stamp taken in the commit phase, that floor must also absorb
+  commit latency, or a test that advances the clock by one tick and expects
+  ordering will flake under a slow commit.
 
 ### Durable submit time (#498)
 
@@ -272,7 +334,26 @@ scheduled.
 Part A changes no results. Part B changes observable timestamps but brings
 postgres into line with the contract the other three backends already
 implement, so it is a bug fix, not a Gate 7 contract change: no
-`docs/cloud-parity/` file. The genuine gap is that the SPI documents no
+`docs/cloud-parity/` file.
+
+Reconciled against Cloud's own source rather than inferred.
+`TransactionEntityPair.calculateEntityChange`
+(`cyoda-platform/core-libs/core/src/main/java/com/cyoda/core/consistency/TransactionEntityPair.java:56-61`)
+stamps `lastUpdateTime` from the transaction's commit-phase submit time on
+every write, and `creationDate` from the same value when there was no live
+prior entity:
+
+```java
+Date trSbmtDate = getDateFromUUID(transactionSbmtTime);
+newEntity.setLastUpdateTime(trSbmtDate);
+if (oldEntity == null || oldEntity.isDeleted()) {
+    newEntity.setCreationDate(trSbmtDate);
+}
+```
+
+So this change moves postgres toward Cloud, and Cloud keys `creationDate` off
+"was there a live prior entity" — which is the rule this design adopts for a
+create-then-update in one transaction, independently arrived at. The genuine gap is that the SPI documents no
 instant for any of these values; this design writes it into the SPI godoc
 (`CreationDate`, `LastModifiedDate`, `EntityVersion.Timestamp`,
 `EntityVersionMeta.Timestamp`, `GetSubmitTime`) and into `CONSISTENCY.md`.
@@ -305,6 +386,15 @@ instant for any of these values; this design writes it into the SPI godoc
 
 Concurrency scenarios stay in isolated single-backend e2e, never the shared
 parity suite.
+
+Each new parity scenario is registered in `e2e/parity/registry.go` and
+`wantParityScenarioCount` moves with it, or the suite passes while running
+nothing.
+
+The plan test follows the existing pattern: the point-in-time base SQL
+becomes a **named constant shared between production and the test**, as
+`getPageCurrentQuery` already is, so the EXPLAIN assertion plans the query
+that actually runs rather than a copy that can drift from it.
 
 ## Documentation
 
