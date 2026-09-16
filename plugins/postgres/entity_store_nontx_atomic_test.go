@@ -59,7 +59,9 @@ func TestNonTxSave_IsAtomic(t *testing.T) {
 }
 
 // TestNonTxDelete_IsAtomic proves a non-transactional Delete leaves no
-// partial state behind when one of its statements fails.
+// partial state behind when one of its statements fails — not just that the
+// tombstone version row is rolled back, but that the entities row and its
+// unique-key claim are exactly as they were before Delete ran.
 //
 // Delete's own write order is version-insert-then-entities-update — the
 // mirror image of Save's entities-then-version order — so the version-row
@@ -78,16 +80,21 @@ func TestNonTxSave_IsAtomic(t *testing.T) {
 func TestNonTxDelete_IsAtomic(t *testing.T) {
 	factory := setupEntityTest(t)
 	const tenant spi.TenantID = "tenant-nontx-delete-atomic"
-	ctx := ctxWithTenant(tenant)
+	baseCtx := ctxWithTenant(tenant)
 	pool := postgres.PoolForTest(factory)
 
-	store, err := factory.EntityStore(ctx)
+	store, err := factory.EntityStore(baseCtx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
 
 	id := uuid.NewString()
 	mref := spi.ModelRef{EntityName: "atomic-delete-probe", ModelVersion: "1"}
+	// A declared unique key gives releaseClaims a real claim row to delete
+	// (and, when Delete fails, a real claim row that must survive) — without
+	// one, releaseClaims is a no-op and that half of atomicity goes unchecked.
+	keys := []spi.UniqueKey{{ID: "n-key", Fields: []string{"$.n"}}}
+	ctx := spi.WithUniqueKeys(baseCtx, keys)
 
 	if _, err := store.Save(ctx, &spi.Entity{
 		Meta: spi.EntityMeta{ID: id, TenantID: tenant, ModelRef: mref},
@@ -120,5 +127,39 @@ func TestNonTxDelete_IsAtomic(t *testing.T) {
 	if versionRows != 0 {
 		t.Errorf("tombstone version row survived a failed non-tx Delete: got %d rows, want 0 — "+
 			"the delete's statements are not atomic", versionRows)
+	}
+
+	// The entities row itself must be exactly as the seed Save left it: still
+	// present, not deleted, still at version 1 — Delete's UPDATE (which would
+	// have set version=2, deleted=true) never should have taken effect.
+	var entitiesVersion int64
+	var entitiesDeleted bool
+	if err := pool.QueryRow(ctx,
+		`SELECT version, deleted FROM entities WHERE tenant_id = $1 AND entity_id = $2`,
+		string(tenant), id).Scan(&entitiesVersion, &entitiesDeleted); err != nil {
+		t.Fatalf("read back entities row: %v", err)
+	}
+	if entitiesDeleted {
+		t.Errorf("entities row was marked deleted despite a failed non-tx Delete — " +
+			"the delete's statements are not atomic")
+	}
+	if entitiesVersion != 1 {
+		t.Errorf("entities.version = %d, want 1 (Delete's UPDATE must not have applied)", entitiesVersion)
+	}
+
+	// The unique-claims row releaseClaims would have deleted must survive
+	// too: a failed Delete rolling back its entities/version writes but not
+	// its claims write would free the value for a NEW entity to claim while
+	// the original (undeleted) entity still holds it — a different shape of
+	// the same non-atomicity this test guards.
+	var claimRows int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM unique_claims WHERE tenant_id = $1 AND entity_id = $2`,
+		string(tenant), id).Scan(&claimRows); err != nil {
+		t.Fatalf("count unique_claims rows: %v", err)
+	}
+	if claimRows != 1 {
+		t.Errorf("unique_claims rows for the entity = %d, want 1 — "+
+			"releaseClaims's delete was not rolled back with the rest of the failed Delete", claimRows)
 	}
 }

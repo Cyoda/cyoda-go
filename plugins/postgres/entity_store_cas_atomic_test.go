@@ -269,42 +269,54 @@ func TestNonTxCompareAndSave_StampsAfterTheLockWait(t *testing.T) {
 	}
 }
 
-// TestNonTxCompareAndSave_DoesNotReenterSaveOnItsOwnTransaction guards
-// against a regression that shipped and was caught only by a full-suite
-// run hanging until go test's own 10-minute binary timeout: CompareAndSave's
-// non-tx branch opens its own pgx.Tx and used to call into save(ctx, ...),
-// but save's non-tx branch decides whether to open a transaction using
-// spi.GetTransaction(ctx) — which reports no ambient transaction here either,
-// since CompareAndSave's transaction is a plain pgx.Tx that function never
-// sees — and s.pool, which is still non-nil on the txStore copy. So save
-// opened a SECOND transaction on the same pool while the first still held
-// the row lock compareTxID's FOR UPDATE took, and the nested transaction's
-// own upsert queued behind that lock forever: a self-deadlock only the
-// caller who is blocked could have broken, and never would.
+// TestNonTxCompareAndSave_OwnTxGuardPreventsSelfDeadlock guards against a
+// regression that shipped and was caught only by a full-suite run hanging
+// until go test's own 10-minute binary timeout: CompareAndSave's non-tx
+// branch opens its own pgx.Tx and calls into save(ctx, ...), but save's
+// non-tx branch used to decide whether to open a transaction using only
+// spi.GetTransaction(ctx) and s.pool — both still read as "no ambient
+// transaction, pool available" on CompareAndSave's txStore, since
+// spi.GetTransaction sees only a transaction the CALLER opened through
+// TransactionManager, never a raw pgx.Tx this plugin holds for itself. So
+// save opened a SECOND transaction on the same pool while the first still
+// held the row lock compareTxID's FOR UPDATE took, and the nested
+// transaction's own upsert queued behind that lock forever: a self-deadlock
+// only the blocked caller could have broken, and never would.
 //
-// The fix (CompareAndSave calling saveOn directly, skipping save's
-// transaction decision) makes this call return in milliseconds with no
-// contention at all, so a short context deadline is not needed to make the
-// GOOD case pass — it is here so the BAD case fails fast and loud instead of
-// hanging for the better part of ten minutes: if CompareAndSave ever again
-// routes through save instead of saveOn, the nested transaction's blocked
-// query has its context canceled a few seconds in, and this test reports a
-// clear timeout/cancellation failure instead of silently eating a
-// multi-minute hang.
-func TestNonTxCompareAndSave_DoesNotReenterSaveOnItsOwnTransaction(t *testing.T) {
+// The fix is structural rather than a call-site convention: entityStore
+// carries an ownTx flag, set true on CompareAndSave's txStore copy, and
+// save's (and Delete's) own transaction-opening branch checks !s.ownTx
+// before opening one — see ownTx's doc comment on the entityStore struct.
+// CompareAndSave therefore calls txStore.save(...) directly, the exact same
+// method a first, non-transactional Save reaches, and it falls straight
+// through to saveOn instead of reopening a transaction. That makes this
+// call return in milliseconds with no contention at all, so a short context
+// deadline is not needed to make the GOOD case pass — it is here so a
+// REGRESSED case (the ownTx guard removed, or a copy that forgets to set
+// it) fails fast and loud instead of hanging for the better part of ten
+// minutes: the nested transaction's blocked query has its context canceled
+// a few seconds in, and this test reports a clear timeout/cancellation
+// failure instead of silently eating a multi-minute hang.
+//
+// Also reads the write back and checks it landed at the version
+// CompareAndSave returned, so this pins the write itself, not just the
+// absence of a hang.
+func TestNonTxCompareAndSave_OwnTxGuardPreventsSelfDeadlock(t *testing.T) {
 	factory := setupEntityTest(t)
 	const tenant spi.TenantID = "tenant-cas-no-nested-tx"
 	ctx := ctxWithTenant(tenant)
 	ref := spi.ModelRef{EntityName: "m-cas-no-nested-tx", ModelVersion: "1"}
+	pool := postgres.PoolForTest(factory)
 
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	const seedTxID = "tx-seed"
+	const id = "e-cas-no-nested-tx"
 	if _, err := store.Save(ctx, &spi.Entity{
 		Meta: spi.EntityMeta{
-			ID: "e-cas-no-nested-tx", TenantID: tenant, ModelRef: ref,
+			ID: id, TenantID: tenant, ModelRef: ref,
 			State: "open", TransactionID: seedTxID,
 		},
 		Data: []byte(`{"n":0}`),
@@ -317,14 +329,32 @@ func TestNonTxCompareAndSave_DoesNotReenterSaveOnItsOwnTransaction(t *testing.T)
 	deadlineCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	if _, err := store.CompareAndSave(deadlineCtx, &spi.Entity{
+	version, err := store.CompareAndSave(deadlineCtx, &spi.Entity{
 		Meta: spi.EntityMeta{
-			ID: "e-cas-no-nested-tx", TenantID: tenant, ModelRef: ref,
+			ID: id, TenantID: tenant, ModelRef: ref,
 			State: "open", TransactionID: "tx-writer",
 		},
 		Data: []byte(`{"n":1}`),
-	}, seedTxID); err != nil {
+	}, seedTxID)
+	if err != nil {
 		t.Fatalf("compare-and-save did not complete within its deadline — "+
-			"likely re-entered save and self-deadlocked on a second transaction: %v", err)
+			"likely reopened a transaction on itself and self-deadlocked: %v", err)
+	}
+	if version != 2 {
+		t.Errorf("CompareAndSave returned version %d, want 2", version)
+	}
+
+	var storedTxID string
+	var storedVersion int64
+	if err := pool.QueryRow(ctx,
+		`SELECT doc->'_meta'->>'transaction_id', version FROM entities WHERE tenant_id = $1 AND entity_id = $2`,
+		string(tenant), id).Scan(&storedTxID, &storedVersion); err != nil {
+		t.Fatalf("read back entity: %v", err)
+	}
+	if storedTxID != "tx-writer" {
+		t.Errorf("stored transaction ID = %q, want %q", storedTxID, "tx-writer")
+	}
+	if storedVersion != version {
+		t.Errorf("stored version = %d, want %d (CompareAndSave's return value)", storedVersion, version)
 	}
 }

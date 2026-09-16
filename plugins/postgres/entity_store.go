@@ -44,6 +44,23 @@ type entityStore struct {
 	// its own and issues no point-in-time read.
 	pool           *pgxpool.Pool
 	acquireTimeout time.Duration
+
+	// ownTx is true on a store this plugin already repointed at a
+	// transaction it opened for itself (CompareAndSave's txStore, or save's
+	// / Delete's own non-tx branch below) — never on the store a caller
+	// obtained from the factory. It exists because spi.GetTransaction(ctx)
+	// cannot see that transaction: that function reports only a transaction
+	// the CALLER opened through TransactionManager, so a raw pgx.Tx this
+	// plugin holds for its own purposes still reads as "no ambient
+	// transaction" to it. Without ownTx, save/Delete's non-tx branch would
+	// treat a store already inside such a transaction as needing one of its
+	// own and BeginTx a SECOND transaction on the same pool — exactly the
+	// self-deadlock CompareAndSave hit against its own row lock. Checking
+	// ownTx makes the guard structural: a nested call on an ownTx store
+	// falls through to the body instead of opening another transaction, no
+	// matter which call site reaches it, not just the ones a comment warns
+	// about today.
+	ownTx bool
 }
 
 // SaveAll delegates to Save per-entity via spi.DefaultSaveAll; each Save
@@ -78,56 +95,70 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 }
 
 func (s *entityStore) save(ctx context.Context, entity *spi.Entity, stampFrom txTimeSource) (int64, error) {
-	// A non-transactional save issues four statements. Run them in one
+	// A non-transactional save issues five statements — the entities upsert,
+	// its doc update, the entity_versions insert, and the unique-claims
+	// delete-then-insert(s) replaceClaims issues at the end of saveOn's body
+	// — that would otherwise auto-commit one at a time. Run them in one
 	// transaction of its own so a failure cannot leave the entities row
-	// updated without its version row, and so no reader observes the
-	// placeholder document the upsert writes before the real one lands.
-	// CompareAndSave has done this since it gained its row lock; this brings
-	// the plain path level with it.
-	if spi.GetTransaction(ctx) == nil && s.pool != nil {
+	// updated without its version row (or a claim row without the write it
+	// belongs to), and so no reader observes the placeholder document the
+	// upsert writes before the real one lands. CompareAndSave has done this
+	// since it gained its row lock; this brings the plain path level with
+	// it.
+	//
+	// !s.ownTx, not just "no ambient spi transaction", guards this — see
+	// ownTx's doc comment on the struct for why spi.GetTransaction(ctx)
+	// alone cannot tell a store already inside a transaction THIS PLUGIN
+	// opened from one that needs to open its own.
+	if spi.GetTransaction(ctx) == nil && s.pool != nil && !s.ownTx {
 		acquireCtx, cancelAcquire := newAcquireContext(ctx, s.acquireTimeout)
 		tx, err := s.pool.BeginTx(acquireCtx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 		cancelAcquire() // BeginTx has returned; the handle must not inherit the deadline
 		if err != nil {
-			return 0, classifyAcquireErr(ctx, acquireCtx, "begin non-tx save", err)
+			return 0, classifyAcquireErr(ctx, acquireCtx, "failed to begin non-transactional save", err)
 		}
 		// Rollback after a successful Commit is a no-op, so this covers every
 		// error return below without a second exit path.
 		defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 
 		if _, err := tx.Exec(ctx, "SELECT set_config('app.current_tenant', $1, true)", string(s.tenantID)); err != nil {
-			return 0, fmt.Errorf("set tenant for non-tx save: %w", classifyError(err))
+			return 0, fmt.Errorf("failed to set tenant for non-transactional save: %w", classifyError(err))
 		}
 
-		// A copy with q repointed at the transaction, not just a q argument to
-		// saveOn: replaceClaims (called at the end of saveOn's body) reads
-		// s.q on its own receiver, the same way CompareAndSave's txStore
-		// makes that call see the transaction too. Passing q through as a
-		// parameter alone would leave the claims write outside this
-		// transaction while the entity and version rows were inside it.
+		// A copy with q repointed at the transaction and ownTx set: saveOn
+		// (and replaceClaims, which it calls) read s.q and s.ownTx on THIS
+		// receiver, not a parameter — see saveOn's doc comment. Setting
+		// ownTx here is what makes it safe for any future code path to call
+		// back into save/Save on this copy: the guard above will see
+		// s.ownTx == true and fall through to saveOn instead of trying to
+		// open a second transaction.
 		txStore := *s
 		txStore.q = classifiedQuerier{inner: tx}
-		version, err := txStore.saveOn(ctx, txStore.q, entity, stampFrom)
+		txStore.ownTx = true
+		version, err := txStore.saveOn(ctx, entity, stampFrom)
 		if err != nil {
 			return 0, err
 		}
 		if err := tx.Commit(ctx); err != nil {
-			return 0, fmt.Errorf("commit non-tx save: %w", classifyError(err))
+			return 0, fmt.Errorf("failed to commit non-transactional save: %w", classifyError(err))
 		}
 		return version, nil
 	}
-	return s.saveOn(ctx, s.q, entity, stampFrom)
+	return s.saveOn(ctx, entity, stampFrom)
 }
 
-// saveOn is save's body, parameterized over the Querier it runs its four
-// statements through: s.q when a caller's transaction is already ambient, or
-// a store-owned transaction's connection when save opened one for itself
-// (see save's non-tx branch above). q and s.q are always the same querier on
-// entry — the receiver s is either the original store or, on the non-tx
-// path, a copy with q already repointed at the new transaction — so
-// replaceClaims's own s.q reads land on the same connection as the rest of
-// this function.
-func (s *entityStore) saveOn(ctx context.Context, q Querier, entity *spi.Entity, stampFrom txTimeSource) (int64, error) {
+// saveOn is save's body. It always runs through s.q on its own receiver —
+// never a parameter — because by the time saveOn is called, s.q already IS
+// the right connection: the original store when a caller's transaction is
+// already ambient, or (via save's non-tx branch) a copy already repointed at
+// the transaction save opened for itself. A separate q parameter here would
+// carry no information s.q doesn't already have, while inviting exactly the
+// bug that motivated this function's transaction: a future caller passing a
+// q that quietly disagrees with s.q would split writes across two
+// connections again, the same partial-write shape this function exists to
+// prevent. (Contrast compareTxID/extendSchemaBody, which take q because
+// their receiver is deliberately NOT always repointed to match it.)
+func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity, stampFrom txTimeSource) (int64, error) {
 	// Defensive copy — stores own their copies (Ownership Rule 4).
 	e := *entity
 	if entity.Data != nil {
@@ -166,23 +197,47 @@ func (s *entityStore) saveOn(ctx context.Context, q Querier, entity *spi.Entity,
 	// valid_time/transaction_time, clock_timestamp() (actual wall clock) for
 	// wall_clock_time.
 	var dbNow, wallClockTime time.Time
-	if err := q.QueryRow(ctx, `SELECT `+string(stampFrom)+`, clock_timestamp()`).Scan(&dbNow, &wallClockTime); err != nil {
+	if err := s.q.QueryRow(ctx, `SELECT `+string(stampFrom)+`, clock_timestamp()`).Scan(&dbNow, &wallClockTime); err != nil {
 		return 0, fmt.Errorf("failed to get DB timestamps: %w", err)
 	}
 
 	// Atomically upsert the entities row, incrementing version in the database
 	// without a prior SELECT. The single-statement upsert keeps version
-	// allocation inside one tuple-level operation — under REPEATABLE READ,
-	// concurrent inserts of distinct entities never contend, and concurrent
-	// writers to the same (tenant_id, entity_id) serialise via row locks
-	// (the loser sees 40001, classifyError → spi.ErrConflict).
+	// allocation inside one tuple-level operation, and this statement is
+	// where this transaction TAKES the entities row lock (see the lock-order
+	// note below). Concurrent writers to the same (tenant_id, entity_id)
+	// serialise via that lock: under the ambient-transaction path
+	// (TransactionManager.Begin's REPEATABLE READ), the loser sees 40001,
+	// classifyError → spi.ErrConflict, the instant it tries to acquire the
+	// lock a concurrent writer already committed under. Under save's own
+	// non-tx branch (ReadCommitted, this statement's transaction), a
+	// concurrent writer instead BLOCKS on the lock and proceeds once it is
+	// released — it only fails if that wait forms a genuine deadlock (see
+	// below) or the pool's acquire deadline expires first; concurrent
+	// inserts of DISTINCT entities never contend under either isolation
+	// level.
+	//
+	// Lock order vs. deleteOn: this statement takes the entities row lock
+	// BEFORE the entity_versions INSERT below; deleteOn's UPDATE takes the
+	// same lock AFTER its own entity_versions INSERT (deleteOn's own comment
+	// carries the other half of this note). A concurrent non-transactional
+	// Save and Delete on the SAME entity can therefore wait on each other in
+	// opposite orders — a cycle autocommit could never produce, since no
+	// autocommit statement holds a lock across a second one. PostgreSQL's
+	// deadlock detector breaks that cycle with 40P01 after deadlock_timeout
+	// (~1s); classifySQLState maps it to spi.ErrConflict, the same
+	// fail-closed, retryable outcome as any other lock conflict here — a new
+	// failure MODE this task's atomicity fix makes possible (holding the
+	// lock for the whole operation, instead of per autocommit statement),
+	// not a new failure OUTCOME. See
+	// TestNonTxSaveDeleteConcurrent_NoTornWrite.
 	//
 	// We insert a placeholder doc first, then update it below once we know the
 	// version. The (xmax = 0) expression is true for newly inserted rows and
 	// false for updated rows, letting us distinguish CREATED vs UPDATED.
 	var nextVersion int64
 	var isNew bool
-	err := q.QueryRow(ctx,
+	err := s.q.QueryRow(ctx,
 		`INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
 		 VALUES ($1, $2, $3, $4, 1, false, 'null'::jsonb)
 		 ON CONFLICT (tenant_id, entity_id) DO UPDATE SET
@@ -231,7 +286,7 @@ func (s *entityStore) saveOn(ctx context.Context, q Querier, entity *spi.Entity,
 	}
 
 	// Update the entities row with the final marshaled document.
-	_, err = q.Exec(ctx,
+	_, err = s.q.Exec(ctx,
 		`UPDATE entities SET doc = $1 WHERE tenant_id = $2 AND entity_id = $3`,
 		doc, tid, eid)
 	if err != nil {
@@ -239,7 +294,7 @@ func (s *entityStore) saveOn(ctx context.Context, q Querier, entity *spi.Entity,
 	}
 
 	// Insert version row (explicit wall_clock_time to match _meta value).
-	_, err = q.Exec(ctx,
+	_, err = s.q.Exec(ctx,
 		`INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version, valid_time, wall_clock_time, doc)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 		tid, eid,
@@ -334,28 +389,23 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 	// The whole save runs on that transaction's connection rather than
 	// through s.q, which would resolve the pool and auto-commit each
 	// statement. classifiedQuerier is the plain funnel s.q applies outside a
-	// transaction, so the errors callers see are unchanged.
+	// transaction, so the errors callers see are unchanged. ownTx marks the
+	// copy as already inside a transaction this plugin opened for itself —
+	// see ownTx's doc comment on the struct — so the call to save below is
+	// safe: its guard sees ownTx == true and falls straight through to
+	// saveOn instead of trying to BeginTx a second transaction on the same
+	// pool while this one still holds the row lock from compareTxID's FOR
+	// UPDATE, which is exactly the self-deadlock this store used to hit here.
 	txStore := *s
 	txStore.q = classifiedQuerier{inner: tx}
+	txStore.ownTx = true
 
 	if err := txStore.compareTxID(ctx, txStore.q, entity.Meta.ID, expectedTxID, true); err != nil {
 		return 0, err
 	}
-	// saveOn directly, not save: this transaction is already open (BeginTx
-	// above), and save's own non-tx branch decides whether to open ONE based
-	// only on spi.GetTransaction(ctx) and s.pool — both still read as "no
-	// ambient transaction, pool available" on txStore, since this
-	// transaction is a plain pgx.Tx the compare-and-save opened for itself,
-	// not one spi.GetTransaction sees. Calling save here would have it
-	// BeginTx a second transaction on the same pool while this one still
-	// holds the row lock from compareTxID's FOR UPDATE — a self-deadlock:
-	// the nested transaction's own upsert then queues behind a lock this
-	// goroutine is the only one that can release, and never will until the
-	// nested call it is waiting on returns.
-	//
 	// stampAtStatement, so the write is dated after the lock wait rather than
 	// at this transaction's start — see txTimeSource.
-	version, err := txStore.saveOn(ctx, txStore.q, entity, stampAtStatement)
+	version, err := txStore.save(ctx, entity, stampAtStatement)
 	if err != nil {
 		return 0, err
 	}
@@ -471,52 +521,52 @@ func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 	return unmarshalEntityDoc(doc)
 }
 func (s *entityStore) Delete(ctx context.Context, entityID string) error {
-	// Same reasoning as save's non-tx branch: Delete issues its own version
-	// INSERT and entities UPDATE as separately auto-committed statements when
-	// there is no ambient transaction, so a failure between them can leave a
-	// tombstone version row recorded in history for a delete the entities
-	// table never actually applied. Run them in one transaction of its own,
-	// mirroring CompareAndSave's sequence exactly, the same way save does.
-	if spi.GetTransaction(ctx) == nil && s.pool != nil {
+	// Same reasoning as save's non-tx branch, including the ownTx guard —
+	// see save's and ownTx's doc comments. Delete issues its own version
+	// INSERT and entities UPDATE (and releaseClaims's DELETE) as separately
+	// auto-committed statements when there is no ambient transaction, so a
+	// failure between them can leave a tombstone version row recorded in
+	// history for a delete the entities table never actually applied. Run
+	// them in one transaction of its own, mirroring CompareAndSave's
+	// sequence exactly, the same way save does.
+	if spi.GetTransaction(ctx) == nil && s.pool != nil && !s.ownTx {
 		acquireCtx, cancelAcquire := newAcquireContext(ctx, s.acquireTimeout)
 		tx, err := s.pool.BeginTx(acquireCtx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 		cancelAcquire() // BeginTx has returned; the handle must not inherit the deadline
 		if err != nil {
-			return classifyAcquireErr(ctx, acquireCtx, "begin non-tx delete", err)
+			return classifyAcquireErr(ctx, acquireCtx, "failed to begin non-transactional delete", err)
 		}
 		defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 
 		if _, err := tx.Exec(ctx, "SELECT set_config('app.current_tenant', $1, true)", string(s.tenantID)); err != nil {
-			return fmt.Errorf("set tenant for non-tx delete: %w", classifyError(err))
+			return fmt.Errorf("failed to set tenant for non-transactional delete: %w", classifyError(err))
 		}
 
-		// Same reason saveOn needs a receiver copy: releaseClaims (called at
-		// the end of deleteOn's body) reads s.q on its own receiver, not the
-		// q parameter — so the copy's q must already be the transaction's.
+		// Same reason save needs a receiver copy — see save's non-tx branch.
 		txStore := *s
 		txStore.q = classifiedQuerier{inner: tx}
-		if err := txStore.deleteOn(ctx, txStore.q, entityID); err != nil {
+		txStore.ownTx = true
+		if err := txStore.deleteOn(ctx, entityID); err != nil {
 			return err
 		}
 		if err := tx.Commit(ctx); err != nil {
-			return fmt.Errorf("commit non-tx delete: %w", classifyError(err))
+			return fmt.Errorf("failed to commit non-transactional delete: %w", classifyError(err))
 		}
 		return nil
 	}
-	return s.deleteOn(ctx, s.q, entityID)
+	return s.deleteOn(ctx, entityID)
 }
 
-// deleteOn is Delete's body, parameterized over the Querier it runs its
-// statements through — see saveOn's doc comment for why q and s.q are always
-// the same querier on entry.
-func (s *entityStore) deleteOn(ctx context.Context, q Querier, entityID string) error {
+// deleteOn is Delete's body. It always runs through s.q on its own
+// receiver, never a parameter — see saveOn's doc comment for why.
+func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 	tid := string(s.tenantID)
 
 	// Get current entity (doc + version) in a single point-lookup on the PK.
 	// Fetching both avoids a second round-trip for the version.
 	var doc []byte
 	var maxVersion int64
-	err := q.QueryRow(ctx,
+	err := s.q.QueryRow(ctx,
 		`SELECT doc, version FROM entities WHERE tenant_id = $1 AND entity_id = $2 AND NOT deleted`,
 		tid, entityID).Scan(&doc, &maxVersion)
 	if err != nil {
@@ -539,7 +589,7 @@ func (s *entityStore) deleteOn(ctx context.Context, q Querier, entityID string) 
 
 	// Get DB timestamp.
 	var dbNow, wallClockTime time.Time
-	if err := q.QueryRow(ctx, `SELECT CURRENT_TIMESTAMP, clock_timestamp()`).Scan(&dbNow, &wallClockTime); err != nil {
+	if err := s.q.QueryRow(ctx, `SELECT CURRENT_TIMESTAMP, clock_timestamp()`).Scan(&dbNow, &wallClockTime); err != nil {
 		return fmt.Errorf("failed to get DB timestamps: %w", err)
 	}
 
@@ -579,8 +629,15 @@ func (s *entityStore) deleteOn(ctx context.Context, q Querier, entityID string) 
 		return fmt.Errorf("failed to marshal delete doc: %w", err)
 	}
 
-	// Insert delete version.
-	_, err = q.Exec(ctx,
+	// Insert delete version. Lock order vs. saveOn: THIS statement runs
+	// before deleteOn takes the entities row lock below, while saveOn takes
+	// that lock first and inserts entity_versions second — the mirror
+	// image. See saveOn's lock-order comment (entity_store.go, the entities
+	// upsert) for why a concurrent non-transactional Save and Delete on the
+	// same entity can therefore wait on each other in a genuine cycle, and
+	// why PostgreSQL resolving that with a 40P01 deadlock (→ spi.ErrConflict
+	// via classifySQLState) is the correct, fail-closed outcome.
+	_, err = s.q.Exec(ctx,
 		`INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version, valid_time, wall_clock_time, doc)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 		tid, entityID,
@@ -590,8 +647,10 @@ func (s *entityStore) deleteOn(ctx context.Context, q Querier, entityID string) 
 		return fmt.Errorf("failed to insert delete version: %w", err)
 	}
 
-	// Update entities table to mark deleted.
-	_, err = q.Exec(ctx,
+	// Update entities table to mark deleted — the entities row lock is taken
+	// HERE, after the entity_versions insert above (see that statement's
+	// lock-order comment).
+	_, err = s.q.Exec(ctx,
 		`UPDATE entities SET version = $1, deleted = true, doc = $2 WHERE tenant_id = $3 AND entity_id = $4`,
 		nextVersion, deleteDoc, tid, entityID)
 	if err != nil {
