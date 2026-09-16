@@ -24,6 +24,13 @@
 - **Migration index guard:** `TestMigrations_IndexesOnExistingTablesAreConcurrent` requires `CREATE INDEX CONCURRENTLY` for an index on a table an earlier migration created. `CONCURRENTLY` deadlocks this project's concurrent multi-node boot, so a plain index needs a new entry in that test's `grandfathered` map with its own justification.
 - **Parity registration:** a new parity scenario needs an entry in `e2e/parity/registry.go` **and** a bump to `wantParityScenarioCount` in `e2e/parity/registry_count_test.go` (currently `272`), or the suite passes while running nothing.
 - **Error codes:** every new code needs `cmd/cyoda/help/content/errors/<CODE>.md` (enforced by `TestErrCode_Parity`) and a line in `cmd/cyoda/help/content/errors.md`.
+- **Test fixtures — the names in this plan's test code are wrong.** Every task below writes `newPluginFixture(t)`, which **does not exist**. The real helpers in `plugins/postgres` are:
+  - `setupEntityTest(t) *postgres.StoreFactory` (`entity_store_test.go:31`), or `setupEntityTestWithTM(t) (*postgres.StoreFactory, *postgres.TransactionManager)` when the task needs a transaction manager (`:14`)
+  - `ctxWithTenant(tid spi.TenantID) context.Context` (`store_factory_test.go:27`)
+  - `postgres.PoolForTest(factory)` — a package-level function taking the factory (`export_test.go:131`), **not** a method `factory.PoolForTest()` as the code below writes it
+  - `factory.NewTransactionManagerForTest()` does not exist either; use `setupEntityTestWithTM`, or construct a second manager the way that helper does
+
+  Adapt to the real helpers, keep each task's SQL, assertions and failure messages as written, and record the adaptation in your report. Do not invent a parallel fixture.
 
 ---
 
