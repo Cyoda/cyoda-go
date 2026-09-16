@@ -471,13 +471,52 @@ func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 	return unmarshalEntityDoc(doc)
 }
 func (s *entityStore) Delete(ctx context.Context, entityID string) error {
+	// Same reasoning as save's non-tx branch: Delete issues its own version
+	// INSERT and entities UPDATE as separately auto-committed statements when
+	// there is no ambient transaction, so a failure between them can leave a
+	// tombstone version row recorded in history for a delete the entities
+	// table never actually applied. Run them in one transaction of its own,
+	// mirroring CompareAndSave's sequence exactly, the same way save does.
+	if spi.GetTransaction(ctx) == nil && s.pool != nil {
+		acquireCtx, cancelAcquire := newAcquireContext(ctx, s.acquireTimeout)
+		tx, err := s.pool.BeginTx(acquireCtx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+		cancelAcquire() // BeginTx has returned; the handle must not inherit the deadline
+		if err != nil {
+			return classifyAcquireErr(ctx, acquireCtx, "begin non-tx delete", err)
+		}
+		defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.current_tenant', $1, true)", string(s.tenantID)); err != nil {
+			return fmt.Errorf("set tenant for non-tx delete: %w", classifyError(err))
+		}
+
+		// Same reason saveOn needs a receiver copy: releaseClaims (called at
+		// the end of deleteOn's body) reads s.q on its own receiver, not the
+		// q parameter — so the copy's q must already be the transaction's.
+		txStore := *s
+		txStore.q = classifiedQuerier{inner: tx}
+		if err := txStore.deleteOn(ctx, txStore.q, entityID); err != nil {
+			return err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit non-tx delete: %w", classifyError(err))
+		}
+		return nil
+	}
+	return s.deleteOn(ctx, s.q, entityID)
+}
+
+// deleteOn is Delete's body, parameterized over the Querier it runs its
+// statements through — see saveOn's doc comment for why q and s.q are always
+// the same querier on entry.
+func (s *entityStore) deleteOn(ctx context.Context, q Querier, entityID string) error {
 	tid := string(s.tenantID)
 
 	// Get current entity (doc + version) in a single point-lookup on the PK.
 	// Fetching both avoids a second round-trip for the version.
 	var doc []byte
 	var maxVersion int64
-	err := s.q.QueryRow(ctx,
+	err := q.QueryRow(ctx,
 		`SELECT doc, version FROM entities WHERE tenant_id = $1 AND entity_id = $2 AND NOT deleted`,
 		tid, entityID).Scan(&doc, &maxVersion)
 	if err != nil {
@@ -500,7 +539,7 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 
 	// Get DB timestamp.
 	var dbNow, wallClockTime time.Time
-	if err := s.q.QueryRow(ctx, `SELECT CURRENT_TIMESTAMP, clock_timestamp()`).Scan(&dbNow, &wallClockTime); err != nil {
+	if err := q.QueryRow(ctx, `SELECT CURRENT_TIMESTAMP, clock_timestamp()`).Scan(&dbNow, &wallClockTime); err != nil {
 		return fmt.Errorf("failed to get DB timestamps: %w", err)
 	}
 
@@ -541,7 +580,7 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 	}
 
 	// Insert delete version.
-	_, err = s.q.Exec(ctx,
+	_, err = q.Exec(ctx,
 		`INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version, valid_time, wall_clock_time, doc)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 		tid, entityID,
@@ -552,7 +591,7 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 	}
 
 	// Update entities table to mark deleted.
-	_, err = s.q.Exec(ctx,
+	_, err = q.Exec(ctx,
 		`UPDATE entities SET version = $1, deleted = true, doc = $2 WHERE tenant_id = $3 AND entity_id = $4`,
 		nextVersion, deleteDoc, tid, entityID)
 	if err != nil {

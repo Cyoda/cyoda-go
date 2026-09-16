@@ -268,3 +268,63 @@ func TestNonTxCompareAndSave_StampsAfterTheLockWait(t *testing.T) {
 			heldUntil.Sub(validTime), validTime, heldUntil)
 	}
 }
+
+// TestNonTxCompareAndSave_DoesNotReenterSaveOnItsOwnTransaction guards
+// against a regression that shipped and was caught only by a full-suite
+// run hanging until go test's own 10-minute binary timeout: CompareAndSave's
+// non-tx branch opens its own pgx.Tx and used to call into save(ctx, ...),
+// but save's non-tx branch decides whether to open a transaction using
+// spi.GetTransaction(ctx) — which reports no ambient transaction here either,
+// since CompareAndSave's transaction is a plain pgx.Tx that function never
+// sees — and s.pool, which is still non-nil on the txStore copy. So save
+// opened a SECOND transaction on the same pool while the first still held
+// the row lock compareTxID's FOR UPDATE took, and the nested transaction's
+// own upsert queued behind that lock forever: a self-deadlock only the
+// caller who is blocked could have broken, and never would.
+//
+// The fix (CompareAndSave calling saveOn directly, skipping save's
+// transaction decision) makes this call return in milliseconds with no
+// contention at all, so a short context deadline is not needed to make the
+// GOOD case pass — it is here so the BAD case fails fast and loud instead of
+// hanging for the better part of ten minutes: if CompareAndSave ever again
+// routes through save instead of saveOn, the nested transaction's blocked
+// query has its context canceled a few seconds in, and this test reports a
+// clear timeout/cancellation failure instead of silently eating a
+// multi-minute hang.
+func TestNonTxCompareAndSave_DoesNotReenterSaveOnItsOwnTransaction(t *testing.T) {
+	factory := setupEntityTest(t)
+	const tenant spi.TenantID = "tenant-cas-no-nested-tx"
+	ctx := ctxWithTenant(tenant)
+	ref := spi.ModelRef{EntityName: "m-cas-no-nested-tx", ModelVersion: "1"}
+
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	const seedTxID = "tx-seed"
+	if _, err := store.Save(ctx, &spi.Entity{
+		Meta: spi.EntityMeta{
+			ID: "e-cas-no-nested-tx", TenantID: tenant, ModelRef: ref,
+			State: "open", TransactionID: seedTxID,
+		},
+		Data: []byte(`{"n":0}`),
+	}); err != nil {
+		t.Fatalf("seed Save: %v", err)
+	}
+
+	// A few seconds, not the default test binary timeout: bounds a regressed
+	// self-deadlock to a fast, specific failure instead of a multi-minute hang.
+	deadlineCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	if _, err := store.CompareAndSave(deadlineCtx, &spi.Entity{
+		Meta: spi.EntityMeta{
+			ID: "e-cas-no-nested-tx", TenantID: tenant, ModelRef: ref,
+			State: "open", TransactionID: "tx-writer",
+		},
+		Data: []byte(`{"n":1}`),
+	}, seedTxID); err != nil {
+		t.Fatalf("compare-and-save did not complete within its deadline — "+
+			"likely re-entered save and self-deadlocked on a second transaction: %v", err)
+	}
+}
