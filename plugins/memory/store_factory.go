@@ -87,12 +87,12 @@ type StoreFactory struct {
 	// backend — dropping the index entry there would lose an answer the
 	// others still give. submitTimes' TTL is not a precedent: that map is a
 	// lookup cache for in-flight/recent transactions, not durable history.
-	txIndex     map[spi.TenantID]map[string]map[string]int64
-	modelData   map[spi.TenantID]map[spi.ModelRef]*spi.ModelDescriptor
-	kvData      map[spi.TenantID]map[string]map[string][]byte
-	msgData     map[spi.TenantID]map[string]*messageEntry
-	wfData      map[spi.TenantID]map[spi.ModelRef][]spi.WorkflowDefinition
-	smAudit     map[spi.TenantID]map[string][]spi.StateMachineEvent // tenantID -> entityID -> events
+	txIndex   map[spi.TenantID]map[string]map[string]int64
+	modelData map[spi.TenantID]map[spi.ModelRef]*spi.ModelDescriptor
+	kvData    map[spi.TenantID]map[string]map[string][]byte
+	msgData   map[spi.TenantID]map[string]*messageEntry
+	wfData    map[spi.TenantID]map[spi.ModelRef][]spi.WorkflowDefinition
+	smAudit   map[spi.TenantID]map[string][]spi.StateMachineEvent // tenantID -> entityID -> events
 	// smAuditTxIndex maps (tenant, transactionID) to the positions of the
 	// audit events carrying that label, so the commit-phase stamp
 	// (stampAuditEventsForTx) is a lookup rather than a walk over every entity
@@ -110,10 +110,10 @@ type StoreFactory struct {
 	// transaction id are deliberately not indexed: nothing can look them up,
 	// because the stamp refuses an empty transaction id.
 	smAuditTxIndex map[spi.TenantID]map[string][]auditEventRef
-	blobDir     string
-	txManager   *TransactionManager
-	searchStore *AsyncSearchStore
-	applyFunc   ApplyFunc
+	blobDir        string
+	txManager      *TransactionManager
+	searchStore    *AsyncSearchStore
+	applyFunc      ApplyFunc
 
 	// uniqueClaims and claimsByEntity maintain the in-memory unique-key claim index.
 	// Both are guarded by entityMu (write lock for mutation, read lock for lookup).
