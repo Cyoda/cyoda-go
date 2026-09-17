@@ -59,13 +59,32 @@ func TestMigrations_IndexesOnExistingTablesAreConcurrent(t *testing.T) {
 		// migrate.go, out of scope for the migration itself).
 		"000008_entities_model_entity_id_index.up.sql": true,
 		// idx_entities_model_entity_id, rebuilt without its partial
-		// predicate so point-in-time reads can see entities deleted since
-		// the instant. Same reasoning as 000008's entry above: CREATE INDEX
-		// CONCURRENTLY deadlocks the concurrent multi-node boot path
-		// (golang-migrate holds a session advisory lock for the whole Up()
-		// run; CONCURRENTLY then waits on every other backend, including a
-		// second node's migrator blocked on that very lock). A plain build
-		// briefly locks writers out, which is acceptable pre-1.0.
+		// predicate so point-in-time reads can see entities deleted since the
+		// instant. This is NOT the same operation as 000008's entry above,
+		// and its lock profile needs its own reasoning: 000008 is a bare
+		// CREATE INDEX, so ShareLock is the whole story. This migration
+		// instead builds the replacement under a temporary name with a plain
+		// CREATE INDEX (ShareLock — conflicts with writers, not readers, for
+		// the whole build), then DROPs the old index and RENAMEs the new one
+		// into place; DROP and RENAME each briefly take AccessExclusiveLock
+		// (which DOES conflict with a plain SELECT), but both are
+		// catalog-only with no data to scan or rewrite, so that lock is held
+		// for a moment rather than for the build's duration. See the
+		// migration file's own comment for the alternative this rejected —
+		// DROP-then-CREATE in one statement, which holds AccessExclusiveLock
+		// across the entire build because the whole file runs as one
+		// implicit transaction, blocking every reader as well as every
+		// writer against `entities` cluster-wide for the build's duration.
+		//
+		// The initial build step still isn't CREATE INDEX CONCURRENTLY: that
+		// deterministically deadlocks this project's concurrent multi-node
+		// boot path (golang-migrate holds a session advisory lock for the
+		// whole Up() run; CONCURRENTLY then waits on every other backend,
+		// including a second node's migrator blocked on that very lock).
+		// Writers being blocked for the build's duration either way is
+		// acceptable pre-1.0, with no production entities tables at
+		// meaningful scale yet; the fix above is specifically for readers,
+		// which a bare CREATE INDEX never blocked.
 		"000011_entities_model_index_all.up.sql": true,
 	}
 
