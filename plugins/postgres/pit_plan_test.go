@@ -67,3 +67,42 @@ func TestPITBaseQuery_ProbesPerEntity(t *testing.T) {
 		t.Errorf("plan still deduplicates revisions (DISTINCT ON shape); plan was:\n%s", plan)
 	}
 }
+
+// TestEntitiesModelEntityIDIndex_HasNoPartialPredicate is the schema-property
+// counterpart to TestPITBaseQuery_ProbesPerEntity above: that test guards the
+// INNER lateral shape and, by design, passes regardless of whether
+// idx_entities_model_entity_id is partial — a partial-vs-full index doesn't
+// change which entity_versions index the lateral picks. So nothing in this
+// file failed the reason Task 3 exists: a point-in-time read enumerates
+// entities from the OUTER `entities` table, and it must see entities deleted
+// SINCE the requested instant — rows whose CURRENT state carries
+// deleted = true. A `WHERE NOT deleted` predicate on this index would silently
+// exclude exactly those rows from ever being considered by the outer scan,
+// which is a correctness gap, not a cost one.
+//
+// Asserting the planner's chosen access method would be the wrong way to
+// catch that regression — on a small, freshly-ANALYZEd table a sequential
+// scan is the planner's correct choice regardless of which indexes exist,
+// and seeding enough rows to force an index scan every CI run would be
+// disproportionate. The schema property is deterministic and cheap instead:
+// query the index's own definition and assert it carries no WHERE clause at
+// all, independent of table size or planner statistics.
+func TestEntitiesModelEntityIDIndex_HasNoPartialPredicate(t *testing.T) {
+	factory := setupEntityTest(t)
+	pool := postgres.PoolForTest(factory)
+	ctx := context.Background()
+
+	var indexdef string
+	err := pool.QueryRow(ctx,
+		"SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND indexname = $1",
+		"idx_entities_model_entity_id").Scan(&indexdef)
+	if err != nil {
+		t.Fatalf("look up idx_entities_model_entity_id: %v", err)
+	}
+
+	if strings.Contains(strings.ToUpper(indexdef), "WHERE") {
+		t.Errorf("idx_entities_model_entity_id must have no WHERE clause: a partial index here "+
+			"cannot serve a point-in-time read, because such a read must enumerate entities that "+
+			"have since been deleted; got definition:\n%s", indexdef)
+	}
+}
