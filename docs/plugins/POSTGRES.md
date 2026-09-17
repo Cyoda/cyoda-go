@@ -392,9 +392,12 @@ transaction mode beyond the prepared-statement cache.
   - `000012` adds the four temporal columns, backfills them from the
     documents, adds `idx_ev_transaction`, adds the `entity_versions →
     entities` foreign key, and creates `submit_times`. The foreign key is
-    added `NOT VALID` and validated as a separate statement, so the
-    historical scan of the largest table in the schema runs under
-    `SHARE UPDATE EXCLUSIVE` and does not block ordinary reads or writes.
+    added `NOT VALID` and validated by a following statement, but both run
+    inside one implicit transaction — the whole file does — so the
+    `SHARE ROW EXCLUSIVE` the `ADD CONSTRAINT` takes is held until the file
+    commits, across the historical validation scan of `entity_versions`.
+    **Writers to `entities` and `entity_versions` are blocked for that whole
+    span**; size the window for it. Readers are unaffected.
     The backfill itself is a full pass over `entity_versions` and
     `entities` — its duration scales with history, not with live entities.
   - `000013` adds `idx_sm_events_tenant_tx`, the index the commit-phase

@@ -85,18 +85,35 @@ CREATE INDEX IF NOT EXISTS idx_ev_transaction
 -- RESTRICT is simply the fail-closed choice between two currently-unreachable
 -- options.
 --
--- NOT VALID + a separate VALIDATE CONSTRAINT: a plain ADD CONSTRAINT here
--- would take SHARE ROW EXCLUSIVE on both tables and validate by scanning all
--- of entity_versions — the largest table in this schema — for the whole scan,
--- blocking every writer to entities and entity_versions for its duration.
--- NOT VALID skips that scan: it takes SHARE ROW EXCLUSIVE only long enough to
--- record the constraint definition, then immediately applies it going
--- forward (every new row is checked at insert/update time regardless).
--- VALIDATE CONSTRAINT then performs the historical scan as its own statement
--- under SHARE UPDATE EXCLUSIVE, which conflicts with other DDL but not with
--- ordinary reads or writes — the same category of lock 000011's rebuild
--- keeps readers clear of, applied here to keep writers clear of a full-table
--- scan instead.
+-- Lock profile, stated as it actually is: this migration BLOCKS every writer
+-- to entities and entity_versions from the ADD CONSTRAINT below until the
+-- whole file commits — across the VALIDATE CONSTRAINT scan of
+-- entity_versions, the largest table in this schema, and the submit_times DDL
+-- after it.
+--
+-- The NOT VALID / VALIDATE split does NOT avoid that here, and must not be
+-- read as claiming it does. The split's usual non-blocking profile depends on
+-- the two statements running in SEPARATE transactions, so that ADD CONSTRAINT
+-- releases its SHARE ROW EXCLUSIVE before the historical scan begins and the
+-- scan runs alone under SHARE UPDATE EXCLUSIVE. They do not run separately:
+-- the driver sends this whole file through one Exec with MultiStatementEnabled
+-- false, and PostgreSQL wraps a multi-statement simple query in an implicit
+-- transaction (see migration_index_guard_test.go's clause (b), and 000011's
+-- comment, which turns on the same property). Locks taken inside a transaction
+-- are held to its end, so SHARE ROW EXCLUSIVE — which conflicts with the ROW
+-- EXCLUSIVE every INSERT/UPDATE/DELETE takes — spans the rest of the file.
+-- Net effect on writers: identical to a plain validating ADD CONSTRAINT.
+-- Readers are unaffected either way (ACCESS SHARE does not conflict).
+--
+-- That is acceptable, and the non-blocking profile is deliberately not
+-- pursued: there are no production instances to protect, and buying it would
+-- mean moving VALIDATE CONSTRAINT into a migration file of its own, which
+-- carries its own concurrent multi-node boot implications (the migrator holds
+-- one session advisory lock across the entire Up() run, spanning every file in
+-- the batch) for no benefit today. The split is kept because the end state is
+-- identical and it costs nothing: NOT VALID records the constraint and starts
+-- enforcing it on every new row immediately, leaving VALIDATE to account only
+-- for history.
 ALTER TABLE entity_versions
     ADD CONSTRAINT entity_versions_entity_fk
     FOREIGN KEY (tenant_id, entity_id) REFERENCES entities (tenant_id, entity_id)
