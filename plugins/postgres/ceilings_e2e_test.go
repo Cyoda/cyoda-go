@@ -361,6 +361,22 @@ func seedSearchCeilingModel(t *testing.T, dsn string) {
 		t.Fatalf("seed Save: %v", err)
 	}
 
+	// entities holds one current-state row per entity; the PIT scan under test
+	// joins laterally FROM it, so each synthetic entity_id below needs a match
+	// here too, or it never enters the scan. This block must run BEFORE the
+	// entity_versions copy that follows: entity_versions_entity_fk (migration
+	// 000012) requires a version row's entities row to already exist, the
+	// same order every real Save keeps.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
+		SELECT tenant_id, entity_id || '-' || g, model_name, model_version, version, deleted,
+		       jsonb_set(doc, '{_meta,id}', to_jsonb(entity_id || '-' || g))
+		FROM entities, generate_series(1, $1) AS g
+		WHERE tenant_id = $2 AND entity_id = 'seed'`,
+		searchCeilingSeedRows, searchCeilingTenant); err != nil {
+		t.Fatalf("seed %d entities: %v", searchCeilingSeedRows, err)
+	}
+
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version,
 		                             valid_time, transaction_time, wall_clock_time, doc)
@@ -371,19 +387,6 @@ func seedSearchCeilingModel(t *testing.T, dsn string) {
 		WHERE tenant_id = $2 AND entity_id = 'seed'`,
 		searchCeilingSeedRows, searchCeilingTenant); err != nil {
 		t.Fatalf("seed %d versions: %v", searchCeilingSeedRows, err)
-	}
-
-	// entities holds one current-state row per entity; the PIT scan under test
-	// joins laterally FROM it, so each synthetic entity_id above needs a match
-	// here too, or it never enters the scan.
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
-		SELECT tenant_id, entity_id || '-' || g, model_name, model_version, version, deleted,
-		       jsonb_set(doc, '{_meta,id}', to_jsonb(entity_id || '-' || g))
-		FROM entities, generate_series(1, $1) AS g
-		WHERE tenant_id = $2 AND entity_id = 'seed'`,
-		searchCeilingSeedRows, searchCeilingTenant); err != nil {
-		t.Fatalf("seed %d entities: %v", searchCeilingSeedRows, err)
 	}
 
 	// A real deployment reaches this row count one Save/Delete at a time, so

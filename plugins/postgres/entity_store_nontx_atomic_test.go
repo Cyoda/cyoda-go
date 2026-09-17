@@ -11,10 +11,19 @@ import (
 )
 
 // TestNonTxSave_IsAtomic proves a non-transactional Save leaves no partial
-// state behind when one of its statements fails. A version row planted at
-// version 1 makes the save's own INSERT into entity_versions violate the
-// primary key (tenant_id, entity_id, version); the entities row written
-// earlier in the same save must not survive that failure.
+// state behind when one of its statements fails.
+//
+// The collision used to be a bare orphan entity_versions row (a version 1
+// with no entities row at all), which forced Save's own entities upsert
+// down its fresh-insert path so its own version-1 write would collide. That
+// is no longer constructible: entity_versions_entity_fk (migration 000012)
+// requires every entity_versions row to have an entities row, so an orphan
+// can no longer exist to plant. Planting the entities row too, at version 0,
+// reaches the same collision through the update path instead — Save's
+// upsert computes nextVersion = 0 + 1 = 1, which still collides with the
+// version-1 row already planted — and is arguably the more representative
+// case anyway, since real writers race on updates far more often than on an
+// entity's very first save.
 func TestNonTxSave_IsAtomic(t *testing.T) {
 	factory := setupEntityTest(t)
 	const tenant spi.TenantID = "tenant-nontx-atomic"
@@ -28,6 +37,15 @@ func TestNonTxSave_IsAtomic(t *testing.T) {
 
 	id := uuid.NewString()
 	mref := spi.ModelRef{EntityName: "atomic-probe", ModelVersion: "1"}
+
+	// Plant the entities row the foreign key now requires, at version 0 so
+	// Save's upsert lands on nextVersion = 1 below.
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
+		 VALUES ($1, $2, $3, $4, 0, false, '{"_meta":{}}'::jsonb)`,
+		string(tenant), id, mref.EntityName, mref.ModelVersion); err != nil {
+		t.Fatalf("plant entities row: %v", err)
+	}
 
 	// Plant the collision: version 1 already exists for this id.
 	if _, err := pool.Exec(ctx,
@@ -46,15 +64,15 @@ func TestNonTxSave_IsAtomic(t *testing.T) {
 		t.Fatal("Save must fail: version 1 already exists for this entity")
 	}
 
-	var entitiesRows int
+	var version int64
 	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM entities WHERE tenant_id = $1 AND entity_id = $2`,
-		string(tenant), id).Scan(&entitiesRows); err != nil {
-		t.Fatalf("count entities: %v", err)
+		`SELECT version FROM entities WHERE tenant_id = $1 AND entity_id = $2`,
+		string(tenant), id).Scan(&version); err != nil {
+		t.Fatalf("query entities row: %v", err)
 	}
-	if entitiesRows != 0 {
-		t.Errorf("entities row survived a failed non-tx Save: got %d rows, want 0 — "+
-			"the save's statements are not atomic", entitiesRows)
+	if version != 0 {
+		t.Errorf("entities row was updated despite a failed non-tx Save: got version %d, want 0 (unchanged) — "+
+			"the save's statements are not atomic", version)
 	}
 }
 

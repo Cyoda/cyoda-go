@@ -86,6 +86,36 @@ func TestMigrations_IndexesOnExistingTablesAreConcurrent(t *testing.T) {
 		// meaningful scale yet; the fix above is specifically for readers,
 		// which a bare CREATE INDEX never blocked.
 		"000011_entities_model_index_all.up.sql": true,
+		// idx_ev_transaction: same underlying deadlock mechanism proven for
+		// 000008 (golang-migrate holds one session-level advisory lock for
+		// the migrator's ENTIRE Up() run; CONCURRENTLY's own multi-phase
+		// build then waits on every other backend, including a second
+		// node's migrator merely blocked trying to acquire that very
+		// advisory lock) — re-derived for this file's own shape rather than
+		// copied from precedent, per 000011's practice.
+		//
+		// Unlike 000011, this file's single-transaction requirement isn't
+		// about sequencing an index rebuild: it backfills
+		// entity_versions.creation_date and entities.creation_date /
+		// last_modified from the JSONB document alongside the ADD COLUMN
+		// statements that introduce them (see the migration file's own
+		// comment on why those columns also carry DEFAULT CURRENT_TIMESTAMP
+		// — a provisional value for the gap before commit-stamping lands,
+		// not the intended semantic), adds entity_versions_entity_fk (which
+		// validates every existing row against `entities` as part of the
+		// same ALTER TABLE), and creates the new submit_times table. That
+		// mix already forces one multi-statement file under one implicit
+		// transaction per clause (b) above, so CREATE INDEX CONCURRENTLY
+		// cannot run here regardless of the backfill/NOT NULL ordering.
+		//
+		// Splitting idx_ev_transaction into its own single-statement file —
+		// clause (b)'s usual fix — would not sidestep the deadlock either:
+		// the advisory lock golang-migrate holds spans the whole Up() run
+		// across every file in the batch, not just one file, so a second
+		// node's migrator blocked on that same lock while this node's
+		// CONCURRENTLY build waits on it reproduces 000008's deadlock no
+		// matter which file the statement lives in.
+		"000012_commit_instant.up.sql": true,
 	}
 
 	for _, v := range checkIndexRules(upMigrations(t), grandfathered) {
