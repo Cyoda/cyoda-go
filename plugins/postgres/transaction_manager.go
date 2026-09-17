@@ -415,6 +415,17 @@ func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx,
 		return time.Time{}, fmt.Errorf("record submit time: %w", err)
 	}
 
+	// Same TTL as the in-process map's own opportunistic sweep (see Commit):
+	// without this, submit_times grows one row per committed transaction
+	// forever. idx_submit_times_pruning (migration 000012) makes this a
+	// bounded range delete over the expired rows, not a scan of the whole
+	// table, so it stays cheap on every commit's hot path.
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM submit_times WHERE submit_time < $1`,
+		instant.Add(-submitTimeTTL)); err != nil {
+		return time.Time{}, fmt.Errorf("prune submit times: %w", err)
+	}
+
 	return instant, nil
 }
 
@@ -517,8 +528,41 @@ func (tm *TransactionManager) GetSubmitTime(ctx context.Context, txID string) (t
 		}
 		return time.Time{}, fmt.Errorf("transaction not yet committed: %s", txID)
 	default:
+		return tm.getSubmitTimeFromTable(ctx, txID)
+	}
+}
+
+// getSubmitTimeFromTable answers a lookup that missed both in-process maps:
+// a transaction this node never began or committed, because it committed on
+// a different node, or because this node restarted since. The map is
+// node-local and dies with the process; the submit_times table (written
+// inside Commit, see stampCommitInstant) is the durable authority a lookup
+// routed anywhere, at any time after commit, resolves from.
+//
+// The row's own tenant_id is read unconditionally — the query is not scoped
+// to the caller's tenant — so that a cross-tenant caller is told "wrong
+// tenant" rather than the misleading "not found": verifyTenant runs against
+// whatever tenant actually owns the row, exactly like the committed and
+// active branches above run it against tenant state they already hold.
+// Reporting node-local ignorance as ErrTxNotFound instead of consulting the
+// table would be a wrong definitive answer, which this project's
+// correctness-over-availability design rejects.
+func (tm *TransactionManager) getSubmitTimeFromTable(ctx context.Context, txID string) (time.Time, error) {
+	var tenantID string
+	var submit time.Time
+	err := tm.pool.QueryRow(ctx,
+		`SELECT tenant_id, submit_time FROM submit_times WHERE tx_id = $1`,
+		txID).Scan(&tenantID, &submit)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, fmt.Errorf("GetSubmitTime: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("GetSubmitTime: %w", classifyError(err))
+	}
+	if err := verifyTenant(ctx, spi.TenantID(tenantID), "GetSubmitTime", txID); err != nil {
+		return time.Time{}, err
+	}
+	return submit, nil
 }
 
 // LookupTx exposes the registry lookup for use in tests and by the store
