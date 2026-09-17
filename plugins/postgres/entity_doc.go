@@ -158,14 +158,25 @@ func unmarshalEntityDoc(raw []byte, creationDate, lastModified time.Time) (*spi.
 }
 
 // unmarshalEntityVersion extracts an EntityVersion from a JSONB document,
-// supplementing with the version number, valid time and creation date from
-// the query context. The version's reported LastModifiedDate is validTime
-// (this version's own valid_time) — entity_versions has no last_modified
-// column of its own; a historical version's "last modified" is when it
-// became valid, which matches the pre-existing convention (Timestamp below
-// is the same validTime).
-func unmarshalEntityVersion(raw []byte, version int64, validTime, creationDate time.Time) (*spi.EntityVersion, error) {
-	entity, err := unmarshalEntityDoc(raw, creationDate, validTime)
+// supplementing with the version number, valid time, transaction time and
+// creation date from the query context.
+//
+// Timestamp stays validTime — the instant THIS revision became effective,
+// unrelated to the definitional question below and uncontroversial. The
+// embedded Entity's LastModifiedDate is a DIFFERENT field with a fixed SPI
+// definition ("the instant the transaction that wrote this revision
+// committed", cyoda-go-spi/types.go): that is transaction_time, matching the
+// same choice GetAsAt and the PIT base make for the same field
+// (entity_store.go's GetAsAt, search_base.go's pitBaseQueryTemplate) — not a
+// second, independent decision. entity_versions has no last_modified column
+// of its own, which is why this takes transactionTime as a separate argument
+// rather than reusing validTime the way earlier code here (wrongly) did: the
+// two are equal for every write today (no backdating support yet), so a
+// caller cannot observe the earlier mistake until they diverge — exactly how
+// it stayed latent until reads started projecting columns instead of
+// re-serializing whatever the caller happened to pass at save time.
+func unmarshalEntityVersion(raw []byte, version int64, validTime, transactionTime, creationDate time.Time) (*spi.EntityVersion, error) {
+	entity, err := unmarshalEntityDoc(raw, creationDate, transactionTime)
 	if err != nil {
 		return nil, err
 	}

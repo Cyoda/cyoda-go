@@ -232,7 +232,15 @@ func TestEntityDoc_DeletedFlag(t *testing.T) {
 
 func TestEntityDoc_UnmarshalEntityVersion(t *testing.T) {
 	ent := testEntity()
+	// Three distinct values so the test discriminates an argument-order or
+	// argument-choice mistake rather than passing vacuously because two args
+	// happen to share a value: validTime feeds ONLY EntityVersion.Timestamp;
+	// transactionTime feeds ONLY the embedded Entity's LastModifiedDate (the
+	// two are genuinely different fields with different SPI definitions —
+	// see unmarshalEntityVersion's doc comment); creationDate feeds the
+	// embedded Entity's CreationDate.
 	validTime := testTime
+	transactionTime := testTime.Add(30 * time.Minute)
 	creationDate := testTime.Add(-time.Hour)
 
 	raw, err := marshalEntityDoc(ent, false)
@@ -240,12 +248,15 @@ func TestEntityDoc_UnmarshalEntityVersion(t *testing.T) {
 		t.Fatalf("marshalEntityDoc: %v", err)
 	}
 
-	ver, err := unmarshalEntityVersion(raw, 5, validTime, creationDate)
+	ver, err := unmarshalEntityVersion(raw, 5, validTime, transactionTime, creationDate)
 	if err != nil {
 		t.Fatalf("unmarshalEntityVersion: %v", err)
 	}
 	if !ver.Entity.Meta.CreationDate.Equal(creationDate) {
 		t.Errorf("Entity.Meta.CreationDate = %v, want %v", ver.Entity.Meta.CreationDate, creationDate)
+	}
+	if !ver.Entity.Meta.LastModifiedDate.Equal(transactionTime) {
+		t.Errorf("Entity.Meta.LastModifiedDate = %v, want %v (transaction_time, not valid_time)", ver.Entity.Meta.LastModifiedDate, transactionTime)
 	}
 
 	if ver.Version != 5 {
@@ -300,7 +311,7 @@ func TestEntityDoc_AttributionRoundTrip(t *testing.T) {
 		t.Errorf("ChangeExecutor = %+v, want %+v", got.Meta.ChangeExecutor, wantExecutor)
 	}
 
-	ver, err := unmarshalEntityVersion(raw, 1, testTime, testTime)
+	ver, err := unmarshalEntityVersion(raw, 1, testTime, testTime, testTime)
 	if err != nil {
 		t.Fatalf("unmarshalEntityVersion: %v", err)
 	}
@@ -335,7 +346,7 @@ func TestEntityDoc_LegacyDocAttributionIsZeroValue(t *testing.T) {
 		t.Errorf("ChangeExecutor = %+v, want zero Principal", got.Meta.ChangeExecutor)
 	}
 
-	ver, err := unmarshalEntityVersion(raw, 1, testTime, testTime)
+	ver, err := unmarshalEntityVersion(raw, 1, testTime, testTime, testTime)
 	if err != nil {
 		t.Fatalf("unmarshalEntityVersion: %v", err)
 	}

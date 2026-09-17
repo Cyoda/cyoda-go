@@ -55,7 +55,7 @@ func TestEntityDoc_EmptyObjectVersionRoundTrips(t *testing.T) {
 		t.Fatalf("marshalEntityDoc: %v", err)
 	}
 
-	ver, err := unmarshalEntityVersion(raw, 1, testTime, testTime)
+	ver, err := unmarshalEntityVersion(raw, 1, testTime, testTime, testTime)
 	if err != nil {
 		t.Fatalf("unmarshalEntityVersion: %v", err)
 	}

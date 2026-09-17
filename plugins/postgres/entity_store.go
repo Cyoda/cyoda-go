@@ -980,7 +980,7 @@ func (s *entityStore) getPageAsAt(ctx context.Context, modelRef spi.ModelRef, li
 // index usage must plan the query that actually runs, not a copy of it.
 //
 // $1 tenant, $2 entity id, $3 transaction id.
-const getVersionByTransactionQuery = `SELECT doc, version, valid_time, creation_date FROM entity_versions
+const getVersionByTransactionQuery = `SELECT doc, version, valid_time, transaction_time, creation_date FROM entity_versions
 	 WHERE tenant_id = $1 AND entity_id = $2
 	   AND doc->'_meta'->>'transaction_id' = $3
 	   AND (doc->'_meta'->>'deleted')::boolean IS NOT TRUE
@@ -1010,9 +1010,9 @@ func (s *entityStore) GetVersionByTransaction(ctx context.Context, entityID, txI
 
 	var doc []byte
 	var version int64
-	var validTime, creationDate time.Time
+	var validTime, transactionTime, creationDate time.Time
 	err := s.q.QueryRow(ctx, getVersionByTransactionQuery,
-		string(s.tenantID), entityID, txID).Scan(&doc, &version, &validTime, &creationDate)
+		string(s.tenantID), entityID, txID).Scan(&doc, &version, &validTime, &transactionTime, &creationDate)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
@@ -1020,7 +1020,7 @@ func (s *entityStore) GetVersionByTransaction(ctx context.Context, entityID, txI
 		return nil, fmt.Errorf("GetVersionByTransaction: %w", err)
 	}
 
-	return unmarshalEntityVersion(doc, version, validTime, creationDate)
+	return unmarshalEntityVersion(doc, version, validTime, transactionTime, creationDate)
 }
 
 // GetVersionMetadata returns entityID's version metadata — no entity
