@@ -150,6 +150,12 @@ const (
 // plan shape a hand-copied flat SELECT cannot stand in for.
 const GetResultIDsQueryForTest = getResultIDsQuery
 
+// PITBaseQueryForTest hands pit_plan_test.go the production point-in-time
+// base SELECT, for the same reason as the queries above: a plan assertion
+// must describe the query that actually runs, not a re-typed copy that can
+// silently drift from it.
+const PITBaseQueryForTest = pitBaseQueryTemplate
+
 // SearchCandidateIDsForTest returns the entity IDs the SQL WHERE fragment
 // planQuery(filter) produces BEFORE any Go-side postFilter re-check — i.e.
 // the raw pushdown candidate set exactly as searchCommitted would scan it,

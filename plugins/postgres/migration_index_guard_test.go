@@ -58,6 +58,15 @@ func TestMigrations_IndexesOnExistingTablesAreConcurrent(t *testing.T) {
 		// can retry a deadlock-killed Lock() attempt (a structural change to
 		// migrate.go, out of scope for the migration itself).
 		"000008_entities_model_entity_id_index.up.sql": true,
+		// idx_entities_model_entity_id, rebuilt without its partial
+		// predicate so point-in-time reads can see entities deleted since
+		// the instant. Same reasoning as 000008's entry above: CREATE INDEX
+		// CONCURRENTLY deadlocks the concurrent multi-node boot path
+		// (golang-migrate holds a session advisory lock for the whole Up()
+		// run; CONCURRENTLY then waits on every other backend, including a
+		// second node's migrator blocked on that very lock). A plain build
+		// briefly locks writers out, which is acceptable pre-1.0.
+		"000011_entities_model_index_all.up.sql": true,
 	}
 
 	for _, v := range checkIndexRules(upMigrations(t), grandfathered) {
