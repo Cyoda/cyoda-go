@@ -848,6 +848,23 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 		return fmt.Errorf("record submit time: %w", err)
 	}
 
+	// Audit events LABELLED with this transaction take the same instant, so
+	// the audit trail and the version history cannot drift apart or invert.
+	// Record wrote those rows outside this sqlTx (the audit store holds the
+	// pool, not the flush's transaction), so they are already committed and
+	// visible to this UPDATE; the restamp itself is inside sqlTx, so a flush
+	// that fails leaves every event on its recorded clock.
+	//
+	// "Labelled with", not "written by" — the engine records some events under
+	// a cascade entry's transaction id (EmitTransitionAborted), and one whose
+	// label names no committing transaction is never stamped.
+	_, err = sqlTx.ExecContext(ctx,
+		"UPDATE sm_audit_events SET timestamp = ? WHERE tenant_id = ? AND transaction_id = ?",
+		submitMicro, tid, tx.ID)
+	if err != nil {
+		return fmt.Errorf("stamp audit events: %w", err)
+	}
+
 	// Apply staged ScheduledTaskStore ops. Still inside sqlTx, which is what
 	// makes the scheduled-task arm/cancel commit atomically with the entity
 	// write above (and, symmetrically, why every early-return in this

@@ -51,8 +51,16 @@ UPDATE entities
    SET last_modified = COALESCE(NULLIF(doc->'_meta'->>'last_modified_date', '')::timestamptz, last_modified)
  WHERE doc->'_meta' ? 'last_modified_date';
 
--- The commit phase finds a transaction's own rows by this column, and
--- GetVersionByTransaction moves onto it from its unindexed JSON probe.
+-- The commit phase finds a transaction's own rows by this column, which is
+-- what the index serves.
+--
+-- GetVersionByTransaction deliberately does NOT move onto it, and the
+-- unindexed document probe it keeps is not an oversight: this column carries
+-- only a transaction that actually committed the row, while a non-transactional
+-- write stores the caller-supplied id in the document instead. The memory
+-- backend indexes that document value verbatim (its recordTxIndex), so a
+-- caller-supplied id IS findable there — moving this backend onto the column
+-- would make it answer differently from the others for that class of write.
 CREATE INDEX IF NOT EXISTS idx_ev_transaction
     ON entity_versions (tenant_id, transaction_id, entity_id, version);
 

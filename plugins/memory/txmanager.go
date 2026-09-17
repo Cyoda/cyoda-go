@@ -606,6 +606,12 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 		// baseline is one it can see.
 		submitTime := m.nextSubmitTime()
 
+		// Audit events labelled with this transaction report the same instant
+		// as the versions it writes — see stampAuditEventsForTx. Stamped here,
+		// after the last abort path above, so a transaction that never commits
+		// never restamps anything.
+		m.factory.stampAuditEventsForTx(tid, txID, submitTime)
+
 		// Pre-release: free claims for all deleted entities BEFORE inserting any
 		// new buffer claims. This ensures a same-tx delete+reclaim of the same
 		// key value (ISSUE-3) does not clobber the freshly-inserted buffer claim.

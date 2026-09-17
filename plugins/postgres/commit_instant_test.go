@@ -542,6 +542,16 @@ func runBlockedByRowLock(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 		tenant, entityID); err != nil {
 		t.Fatalf("take the row lock: %v", err)
 	}
+	// The holder's own backend is excluded from the poll below, and the poll
+	// is narrowed to a statement against `entities`. A bare "is any backend in
+	// this database waiting on a lock" poll would be satisfied by any other
+	// lock wait in the database — including one the holder itself entered —
+	// and would then release the lock before the writer had queued, passing
+	// the caller's assertion without exercising anything.
+	var holderPID int
+	if err := holder.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&holderPID); err != nil {
+		t.Fatalf("read the holder's backend pid: %v", err)
+	}
 
 	done := make(chan error, 1)
 	go func() { done <- write() }()
@@ -551,7 +561,8 @@ func runBlockedByRowLock(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 		var blocked int
 		if err := pool.QueryRow(ctx,
 			`SELECT count(*) FROM pg_stat_activity
-			 WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&blocked); err != nil {
+			 WHERE datname = current_database() AND wait_event_type = 'Lock'
+			   AND pid <> $1 AND query LIKE '%entities%'`, holderPID).Scan(&blocked); err != nil {
 			t.Fatalf("poll for a blocked backend: %v", err)
 		}
 		if blocked > 0 {

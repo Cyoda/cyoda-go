@@ -304,11 +304,28 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 // set, which is not authoritative: after a savepoint rollback the write set
 // and the table disagree, and the table is right.
 //
-// Lock note: validateInChunks' FOR SHARE covers the READ set; these updates
-// touch rows this transaction already holds exclusively, so no lock upgrade
-// occurs and this cannot deadlock against the validation that precedes it.
-// That reasoning depends on the WHERE clauses staying scoped to this
-// transaction's own rows.
+// Lock note: validateInChunks' FOR SHARE covers the READ set; the entity and
+// version updates touch rows this transaction already holds exclusively, so no
+// lock upgrade occurs and they cannot deadlock against the validation that
+// precedes them. That reasoning holds only while each WHERE stays scoped to
+// rows this transaction actually wrote.
+//
+// The audit update is the one statement that is NOT so scoped — it matches by
+// LABEL (see its own comment), and an event can be labelled with a transaction
+// that did not record it. It is still safe, but for a second reason rather than
+// the first: this transaction runs at REPEATABLE READ, so a row another
+// transaction inserted after this snapshot is invisible here and is not
+// locked at all, and a visible row concurrently modified raises 40001
+// (→ spi.ErrConflict) instead of waiting. Audit rows are otherwise
+// append-only, so nothing else ever holds one under a conflicting lock.
+//
+// Five things would break this reasoning: widening any WHERE beyond this
+// transaction's own rows; moving the stamp before the validation while that
+// validation still takes FOR SHARE on rows the stamp updates; adding a
+// statement that locks a row this transaction only read; a future FK, trigger
+// or index on the stamped columns that reaches a parent row; and — the one
+// already live above — a statement whose WHERE matches rows this transaction
+// did not write, which needs its own argument every time it is added.
 func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx, tenantID spi.TenantID, txID string) (time.Time, error) {
 	var instant time.Time
 	if err := tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&instant); err != nil {
@@ -357,8 +374,21 @@ func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx,
 		return time.Time{}, fmt.Errorf("stamp entities: %w", err)
 	}
 
-	// Audit events share their transaction's instant, so the audit trail and
-	// the version history cannot drift apart or invert.
+	// Audit events LABELLED with this transaction share its instant, so the
+	// audit trail and the version history cannot drift apart or invert.
+	//
+	// "Labelled with", not "written by", and the difference is real rather
+	// than pedantic: the engine records some events under a transaction id
+	// that is not the one recording them — EmitTransitionAborted carries the
+	// CASCADE ENTRY's id (internal/domain/workflow, reached both from the
+	// engine after a segment flush has already failed and from the entity
+	// service with its own clock and possibly no ambient transaction). Such an
+	// event is matched here if its label happens to name a transaction that
+	// later commits, and is otherwise never stamped at all: it keeps the
+	// recording process's clock while being ordered, and now reported, from
+	// this column. No value regresses — nothing stamped it before either —
+	// but the audit trail is not uniformly on the commit clock, and claiming
+	// otherwise would be false.
 	if _, err := tx.Exec(ctx,
 		`UPDATE sm_audit_events SET timestamp = $1
 		  WHERE tenant_id = $2 AND transaction_id = $3`,

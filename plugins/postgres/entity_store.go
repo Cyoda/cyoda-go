@@ -732,7 +732,9 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 	// current.Meta.LastModifiedDate is deliberately left as read from the
 	// pre-delete row: marshalEntityDoc no longer serializes it (the column is
 	// the source of truth), so stamping it here would be dead Go state with no
-	// observable effect. Task 7 stamps the real last_modified column at commit.
+	// observable effect. The real last_modified column is stamped at this
+	// write's commit — stampOwnCommitInstant below, or
+	// TransactionManager.Commit's stamp inside a caller's transaction.
 	// TransactionID: same rationale as attribution above — the tombstone
 	// must record the DELETING transaction's own ID, not carry over the
 	// PRIOR write's (`current` was unmarshaled from the pre-delete doc, so

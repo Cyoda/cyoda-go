@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
@@ -54,6 +55,40 @@ func (s *StateMachineAuditStore) GetEventsByTransaction(ctx context.Context, ent
 		}
 	}
 	return filtered, nil
+}
+
+// stampAuditEventsForTx moves every recorded event LABELLED with txID onto
+// instant — the commit instant of the transaction being committed.
+//
+// An audit event's timestamp is the clock of whichever process recorded it,
+// read while the transaction was still open. Reporting that value leaves the
+// audit trail on a different clock from the version history it accompanies,
+// and able to invert against it; every backend therefore reports the commit
+// instant instead, and a parity scenario holds the three to it.
+//
+// "Labelled with", not "written by": the engine records some events under a
+// cascade entry's transaction id rather than the recording transaction's
+// (EmitTransitionAborted). Such an event is stamped here only if its label
+// names a transaction that later commits, matching what the SQL backends do
+// with the same WHERE.
+//
+// Called from Commit inside the factory's entityMu critical section. That
+// establishes entityMu → smAuditMu as a lock order; no path takes them in the
+// opposite order (the audit store's own methods take smAuditMu alone), so it
+// introduces no cycle.
+func (f *StoreFactory) stampAuditEventsForTx(tenant spi.TenantID, txID string, instant time.Time) {
+	if txID == "" {
+		return
+	}
+	f.smAuditMu.Lock()
+	defer f.smAuditMu.Unlock()
+	for _, events := range f.smAudit[tenant] {
+		for i := range events {
+			if events[i].TransactionID == txID {
+				events[i].Timestamp = instant
+			}
+		}
+	}
 }
 
 func copyEvent(e spi.StateMachineEvent) spi.StateMachineEvent {
