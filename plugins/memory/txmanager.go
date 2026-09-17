@@ -634,9 +634,20 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 				}
 			}
 			hasPrior := len(versions) > 0
+			// firstNonTombstone, NOT versions[0]: a create and a delete
+			// committed in the same transaction flush a single tombstone
+			// row whose entity is nil (see the tombstone append below, and
+			// firstNonTombstone's doc comment), so an entity whose history
+			// begins with one carries no creation date at versions[0] to
+			// bring forward. Reading it there leaves this zero and the
+			// stamp below then moves the creation date forward on every
+			// later update. entity_store.go's non-transactional path uses
+			// firstNonTombstone for exactly this reason and the two paths
+			// must agree. Pinned by spitest's
+			// Save/UpdateDoesNotRestampCreationDate.
 			var creationDate time.Time
-			if len(versions) > 0 && versions[0].entity != nil {
-				creationDate = versions[0].entity.Meta.CreationDate
+			if e, ok := firstNonTombstone(versions); ok {
+				creationDate = e.Meta.CreationDate
 			}
 
 			// Flush this entity's superseded intra-tx saves (oldest first),
