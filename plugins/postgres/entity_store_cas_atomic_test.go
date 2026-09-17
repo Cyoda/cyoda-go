@@ -172,6 +172,15 @@ func TestNonTxCompareAndSave_SetsTenantGUCForRLS(t *testing.T) {
 // second on the lock would otherwise date its own version half a second before
 // the version it just read and superseded, and a point-in-time read would order
 // the two backwards.
+//
+// This test outlives the mechanism it was written for. It used to be satisfied
+// by CompareAndSave alone stamping from statement_timestamp(); that special
+// case is gone, and every write is now dated at the instant its transaction
+// commits (stampOwnCommitInstant for a write with no SPI transaction, which is
+// this one). A commit necessarily happens after the lock wait it queued behind,
+// so commit stamping satisfies this test's intent directly rather than by a
+// rule about one method — and the test still fails if that stamping is removed,
+// because the row would fall back to its transaction's start time.
 func TestNonTxCompareAndSave_StampsAfterTheLockWait(t *testing.T) {
 	factory := setupEntityTest(t)
 	const tenant spi.TenantID = "tenant-cas-stamp"

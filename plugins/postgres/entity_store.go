@@ -70,31 +70,11 @@ func (s *entityStore) SaveAll(ctx context.Context, entities iter.Seq[*spi.Entity
 	return spi.DefaultSaveAll(s, ctx, entities)
 }
 
-// txTimeSource is the SQL expression a save reads its transaction-time stamp
-// from. The two values differ only for a transaction that waits mid-flight.
-type txTimeSource string
-
-const (
-	// stampAtTxStart is CURRENT_TIMESTAMP: the transaction's start time, one
-	// value for every entity saved under it. That is what gives the entities a
-	// caller writes in a single transaction a common valid_time.
-	stampAtTxStart txTimeSource = "CURRENT_TIMESTAMP"
-
-	// stampAtStatement is statement_timestamp(): the moment the stamping
-	// statement itself runs. CompareAndSave's own transaction uses it because
-	// that transaction fixes its start time BEFORE waiting on the row lock, so
-	// a caller that queued behind another writer would otherwise date its
-	// version earlier than the version it just read and superseded — and a
-	// point-in-time read would order the two backwards. That transaction saves
-	// one entity, so it has no common valid_time to hold together.
-	stampAtStatement txTimeSource = "statement_timestamp()"
-)
-
 func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, error) {
-	return s.save(ctx, entity, stampAtTxStart)
+	return s.save(ctx, entity)
 }
 
-func (s *entityStore) save(ctx context.Context, entity *spi.Entity, stampFrom txTimeSource) (int64, error) {
+func (s *entityStore) save(ctx context.Context, entity *spi.Entity) (int64, error) {
 	// A non-transactional save issues five statements — the entities upsert,
 	// its doc update, the entity_versions insert, and the unique-claims
 	// delete-then-insert(s) replaceClaims issues at the end of saveOn's body
@@ -135,7 +115,7 @@ func (s *entityStore) save(ctx context.Context, entity *spi.Entity, stampFrom tx
 		txStore := *s
 		txStore.q = classifiedQuerier{inner: tx}
 		txStore.ownTx = true
-		version, err := txStore.saveOn(ctx, entity, stampFrom)
+		version, err := txStore.saveOn(ctx, entity)
 		if err != nil {
 			return 0, err
 		}
@@ -144,7 +124,7 @@ func (s *entityStore) save(ctx context.Context, entity *spi.Entity, stampFrom tx
 		}
 		return version, nil
 	}
-	return s.saveOn(ctx, entity, stampFrom)
+	return s.saveOn(ctx, entity)
 }
 
 // saveOn is save's body. It always runs through s.q on its own receiver —
@@ -158,7 +138,7 @@ func (s *entityStore) save(ctx context.Context, entity *spi.Entity, stampFrom tx
 // connections again, the same partial-write shape this function exists to
 // prevent. (Contrast compareTxID/extendSchemaBody, which take q because
 // their receiver is deliberately NOT always repointed to match it.)
-func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity, stampFrom txTimeSource) (int64, error) {
+func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity) (int64, error) {
 	// Defensive copy — stores own their copies (Ownership Rule 4).
 	e := *entity
 	if entity.Data != nil {
@@ -202,15 +182,35 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity, stampFrom 
 	// write-back instead of a subsequent read can therefore see a stale or
 	// absent CreationDate on an update even though the stored value is
 	// correct.
+	//
+	// ambientTxID is the same value, kept separately because it is what the
+	// entity_versions.transaction_id COLUMN gets, and the column must carry
+	// ONLY a transaction that actually commits these rows: the commit phase
+	// finds its own rows by it (TransactionManager.stampCommitInstant), so a
+	// caller-supplied id reaching the column would let one transaction's
+	// commit restamp rows it never wrote. Outside a transaction it stays
+	// empty — the value CompareAndSave rests on a non-transactional write
+	// storing — even when the caller supplied an id that the DOCUMENT keeps.
+	ambientTxID := ""
 	if tx := spi.GetTransaction(ctx); tx != nil {
+		ambientTxID = tx.ID
 		entity.Meta.TransactionID = tx.ID
 	}
 
-	// Get DB timestamps first: stampFrom (see txTimeSource) for
-	// valid_time/transaction_time, clock_timestamp() (actual wall clock) for
-	// wall_clock_time.
+	// dbNow is a PROVISIONAL stamp only. Both temporal columns it feeds are
+	// corrected to the transaction's real instant immediately before that
+	// transaction commits — TransactionManager.Commit's stampCommitInstant for
+	// a caller's transaction, stampOwnCommitInstant below for a write that has
+	// none. CURRENT_TIMESTAMP is this transaction's START, which is precisely
+	// the value those stamps exist to replace; it is kept here because it must
+	// be non-null before the stamp lands, and because it ties every row a
+	// transaction writes to one valid_time in the interim exactly as it does
+	// afterwards.
+	//
+	// clock_timestamp() is a deliberately different value: wall_clock_time is
+	// the physical moment of insertion by design, and no stamp ever rewrites it.
 	var dbNow, wallClockTime time.Time
-	if err := s.q.QueryRow(ctx, `SELECT `+string(stampFrom)+`, clock_timestamp()`).Scan(&dbNow, &wallClockTime); err != nil {
+	if err := s.q.QueryRow(ctx, `SELECT CURRENT_TIMESTAMP, clock_timestamp()`).Scan(&dbNow, &wallClockTime); err != nil {
 		return 0, fmt.Errorf("failed to get DB timestamps: %w", err)
 	}
 
@@ -266,8 +266,8 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity, stampFrom 
 	// transaction's own lifetime", not "never updated at all". A freshly
 	// INSERTed row needs no equivalent here — its last_modified column
 	// already gets DEFAULT CURRENT_TIMESTAMP, which is the same instant this
-	// transaction's dbNow reads for the stampAtTxStart case (the only case
-	// that reaches the INSERT half without a pre-existing row).
+	// transaction's dbNow reads (the column default and dbNow are both
+	// CURRENT_TIMESTAMP, fixed at the same transaction start).
 	var nextVersion int64
 	var isNew bool
 	err := s.q.QueryRow(ctx,
@@ -345,13 +345,13 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity, stampFrom 
 	// any UPDATE — see the entities upsert above, which never sets
 	// creation_date on conflict).
 	_, err = s.q.Exec(ctx,
-		`INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version, valid_time, wall_clock_time, creation_date, doc)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7,
+		`INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version, valid_time, wall_clock_time, transaction_id, creation_date, doc)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
 		         (SELECT creation_date FROM entities WHERE tenant_id = $1 AND entity_id = $2),
-		         $8)`,
+		         $9)`,
 		tid, eid,
 		entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion,
-		nextVersion, dbNow, wallClockTime, doc)
+		nextVersion, dbNow, wallClockTime, ambientTxID, doc)
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert entity version: %w", err)
 	}
@@ -362,7 +362,60 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity, stampFrom 
 		return 0, fmt.Errorf("failed to maintain unique claims: %w", err)
 	}
 
+	// Last statement before this write's own transaction commits — see
+	// stampOwnCommitInstant. A write made under a CALLER's transaction is
+	// stamped by TransactionManager.Commit instead, and must not be stamped
+	// here: its instant is not known until that caller commits.
+	if spi.GetTransaction(ctx) == nil {
+		if err := s.stampOwnCommitInstant(ctx, tid, eid, nextVersion, isNew); err != nil {
+			return 0, err
+		}
+	}
+
 	return nextVersion, nil
+}
+
+// stampOwnCommitInstant dates a write that has no SPI transaction at the
+// instant its OWN transaction is about to commit.
+//
+// TransactionManager.Commit's commit-phase stamp is reachable only from a
+// caller's transaction. A non-transactional Save, Delete or CompareAndSave
+// opens its own transaction (save's and Delete's non-tx branches,
+// CompareAndSave's) with no SPI transaction and no transaction id, so it never
+// passes through there. Without this, such a row keeps the column default —
+// CURRENT_TIMESTAMP, its transaction's START — as its permanent recorded time,
+// which is the exact defect commit stamping exists to remove: the fix would be
+// correct for transactional writes and a no-op for every other one.
+//
+// The rows are addressed by primary key rather than by transaction_id, which
+// is empty here and identifies nothing: a non-transactional write knows
+// exactly which row it wrote.
+//
+// isNew, not `version = 1`, decides whether creation_date is restamped. It is
+// the upsert's own (xmax = 0), so an entity whose entities row already existed
+// keeps its original creation instant; a delete passes false, because a delete
+// never creates an entity and its tombstone must report when the entity was
+// CREATED.
+func (s *entityStore) stampOwnCommitInstant(ctx context.Context, tid, entityID string, version int64, isNew bool) error {
+	var instant time.Time
+	if err := s.q.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&instant); err != nil {
+		return fmt.Errorf("failed to read commit instant: %w", err)
+	}
+	if _, err := s.q.Exec(ctx,
+		`UPDATE entity_versions SET valid_time = $1, transaction_time = $1,
+		        creation_date = CASE WHEN $5 THEN $1 ELSE creation_date END
+		  WHERE tenant_id = $2 AND entity_id = $3 AND version = $4`,
+		instant, tid, entityID, version, isNew); err != nil {
+		return fmt.Errorf("failed to stamp version row: %w", err)
+	}
+	if _, err := s.q.Exec(ctx,
+		`UPDATE entities SET last_modified = $1,
+		        creation_date = CASE WHEN $4 THEN $1 ELSE creation_date END
+		  WHERE tenant_id = $2 AND entity_id = $3`,
+		instant, tid, entityID, isNew); err != nil {
+		return fmt.Errorf("failed to stamp entity row: %w", err)
+	}
+	return nil
 }
 
 // CompareAndSave writes entity only if its stored transaction ID is still
@@ -455,9 +508,14 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 	if err := txStore.compareTxID(ctx, txStore.q, entity.Meta.ID, expectedTxID, true); err != nil {
 		return 0, err
 	}
-	// stampAtStatement, so the write is dated after the lock wait rather than
-	// at this transaction's start — see txTimeSource.
-	version, err := txStore.save(ctx, entity, stampAtStatement)
+	// saveOn stamps this write at the instant just before the Commit below,
+	// not at this transaction's start — which matters here more than
+	// anywhere: this transaction fixes its start time BEFORE waiting on
+	// compareTxID's row lock, so a caller that queued behind another writer
+	// would otherwise date its own version earlier than the version it just
+	// read and superseded, and a point-in-time read would order the two
+	// backwards. See stampOwnCommitInstant.
+	version, err := txStore.save(ctx, entity)
 	if err != nil {
 		return 0, err
 	}
@@ -647,7 +705,9 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 
 	nextVersion := maxVersion + 1
 
-	// Get DB timestamp.
+	// Provisional stamp, corrected to this write's real instant before its
+	// transaction commits — exactly as in saveOn, whose comment on the same
+	// statement carries the reasoning.
 	var dbNow, wallClockTime time.Time
 	if err := s.q.QueryRow(ctx, `SELECT CURRENT_TIMESTAMP, clock_timestamp()`).Scan(&dbNow, &wallClockTime); err != nil {
 		return fmt.Errorf("failed to get DB timestamps: %w", err)
@@ -681,7 +741,14 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 	// memory's tombstone semantics — GetVersionByTransaction's empty-txID
 	// pre-query rejection means an empty stamp here can never accidentally
 	// match a caller-supplied txID.
+	//
+	// ambientTxID carries the same value into the entity_versions
+	// transaction_id COLUMN, which the commit phase finds its own rows by —
+	// see saveOn's note on why only a transaction that actually commits these
+	// rows may appear there.
+	ambientTxID := ""
 	if tx := spi.GetTransaction(ctx); tx != nil {
+		ambientTxID = tx.ID
 		current.Meta.TransactionID = tx.ID
 	} else {
 		current.Meta.TransactionID = ""
@@ -706,13 +773,13 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 	// statement's comment. The tombstone must report when the entity was
 	// CREATED, not when it was deleted.
 	_, err = s.q.Exec(ctx,
-		`INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version, valid_time, wall_clock_time, creation_date, doc)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7,
+		`INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version, valid_time, wall_clock_time, transaction_id, creation_date, doc)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
 		         (SELECT creation_date FROM entities WHERE tenant_id = $1 AND entity_id = $2),
-		         $8)`,
+		         $9)`,
 		tid, entityID,
 		current.Meta.ModelRef.EntityName, current.Meta.ModelRef.ModelVersion,
-		nextVersion, dbNow, wallClockTime, deleteDoc)
+		nextVersion, dbNow, wallClockTime, ambientTxID, deleteDoc)
 	if err != nil {
 		return fmt.Errorf("failed to insert delete version: %w", err)
 	}
@@ -734,6 +801,16 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 	// Release unique-key claims so the freed values can be re-claimed immediately.
 	if err := s.releaseClaims(ctx, entityID); err != nil {
 		return fmt.Errorf("failed to release unique claims: %w", err)
+	}
+
+	// Last statement before this delete's own transaction commits — see
+	// stampOwnCommitInstant. isNew is false: a delete never creates an
+	// entity, so neither the entity's nor the tombstone's creation_date may
+	// move.
+	if spi.GetTransaction(ctx) == nil {
+		if err := s.stampOwnCommitInstant(ctx, tid, entityID, nextVersion, false); err != nil {
+			return err
+		}
 	}
 
 	return nil

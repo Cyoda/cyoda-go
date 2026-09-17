@@ -226,15 +226,17 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		}
 	}
 
-	// Capture the database timestamp before committing.
+	// Fix the transaction's instant and stamp it onto every row the
+	// transaction wrote, immediately before COMMIT.
+	//
 	// If the transaction is already in an aborted state (e.g. an earlier Exec
-	// returned 40001 and left the tx aborted), the SELECT will fail with
-	// SQLSTATE 25P02 (in_failed_sql_transaction). In that case we rollback
-	// and surface ErrConflict, since the abort was most likely caused by a
-	// serialization failure. We use time.Now() as a stand-in; it is never
-	// stored on an error path.
-	var submitTime time.Time
-	if tsErr := pgxTx.QueryRow(ctx, "SELECT CURRENT_TIMESTAMP").Scan(&submitTime); tsErr != nil {
+	// returned 40001 and left the tx aborted), the first statement of the
+	// stamp will fail with SQLSTATE 25P02 (in_failed_sql_transaction). In that
+	// case we rollback and surface ErrConflict, since the abort was most
+	// likely caused by a serialization failure — the same classification the
+	// bare timestamp probe this replaced already had.
+	submitTime, tsErr := tm.stampCommitInstant(ctx, pgxTx, state.tenantID, txID)
+	if tsErr != nil {
 		tm.cleanupTx(txID)
 		// Only classify as ErrConflict when the probe fails specifically because
 		// the transaction is already in an aborted state (SQLSTATE 25P02:
@@ -257,7 +259,7 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		// roll back with a fresh context so we don't leak the connection, then
 		// return the raw error without wrapping it as ErrConflict.
 		_ = pgxTx.Rollback(context.Background())
-		return fmt.Errorf("Commit: failed to capture submit time: %w", tsErr)
+		return fmt.Errorf("Commit: failed to stamp the commit instant: %w", tsErr)
 	}
 
 	if err := pgxTx.Commit(ctx); err != nil {
@@ -289,6 +291,91 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	tm.cleanupTx(txID)
 
 	return nil
+}
+
+// stampCommitInstant fixes the transaction's instant and applies it to every
+// row the transaction wrote, immediately before COMMIT.
+//
+// CURRENT_TIMESTAMP is fixed at transaction START, so it dates a write when
+// the transaction opened rather than when it became visible. clock_timestamp()
+// read here is the closest a transaction can get to its own commit instant.
+//
+// The rows are found by transaction_id rather than from the in-memory write
+// set, which is not authoritative: after a savepoint rollback the write set
+// and the table disagree, and the table is right.
+//
+// Lock note: validateInChunks' FOR SHARE covers the READ set; these updates
+// touch rows this transaction already holds exclusively, so no lock upgrade
+// occurs and this cannot deadlock against the validation that precedes it.
+// That reasoning depends on the WHERE clauses staying scoped to this
+// transaction's own rows.
+func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx, tenantID spi.TenantID, txID string) (time.Time, error) {
+	var instant time.Time
+	if err := tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&instant); err != nil {
+		return time.Time{}, fmt.Errorf("read commit instant: %w", err)
+	}
+	tid := string(tenantID)
+
+	// creation_date is stamped on EVERY row of an entity whose first version
+	// belongs to this transaction — not only on version 1. A transaction that
+	// creates an entity and then updates it carries the creation date forward
+	// by reading inside the transaction, so the later version holds the
+	// provisional value; stamping only version 1 would leave them disagreeing.
+	//
+	// The CASE must stay conditional in BOTH directions. By the time this runs,
+	// the version INSERT already sources creation_date by sub-select from the
+	// entity's own entities.creation_date, so a version written by a LATER
+	// transaction correctly inherits the entity's original creation date.
+	// Replacing this CASE with an unconditional SET creation_date = $1 would
+	// restamp every updated entity's creation as that update's instant — which
+	// is exactly the defect found when this column was first projected into
+	// reads: history reporting when a revision was written rather than when the
+	// entity was created, and diverging from the memory backend, which
+	// preserves the original.
+	if _, err := tx.Exec(ctx,
+		`UPDATE entity_versions SET valid_time = $1, transaction_time = $1,
+		        creation_date = CASE WHEN entity_id IN (
+		            SELECT entity_id FROM entity_versions
+		             WHERE tenant_id = $2 AND transaction_id = $3 AND version = 1
+		        ) THEN $1 ELSE creation_date END
+		  WHERE tenant_id = $2 AND transaction_id = $3`,
+		instant, tid, txID); err != nil {
+		return time.Time{}, fmt.Errorf("stamp entity versions: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE entities e SET last_modified = $1,
+		        creation_date = CASE WHEN EXISTS (
+		            SELECT 1 FROM entity_versions v
+		             WHERE v.tenant_id = e.tenant_id AND v.entity_id = e.entity_id
+		               AND v.transaction_id = $3 AND v.version = 1
+		        ) THEN $1 ELSE e.creation_date END
+		  WHERE e.tenant_id = $2 AND e.entity_id IN (
+		            SELECT entity_id FROM entity_versions
+		             WHERE tenant_id = $2 AND transaction_id = $3)`,
+		instant, tid, txID); err != nil {
+		return time.Time{}, fmt.Errorf("stamp entities: %w", err)
+	}
+
+	// Audit events share their transaction's instant, so the audit trail and
+	// the version history cannot drift apart or invert.
+	if _, err := tx.Exec(ctx,
+		`UPDATE sm_audit_events SET timestamp = $1
+		  WHERE tenant_id = $2 AND transaction_id = $3`,
+		instant, tid, txID); err != nil {
+		return time.Time{}, fmt.Errorf("stamp audit events: %w", err)
+	}
+
+	// The durable record of the same instant: the in-process map answers only
+	// on the node that committed, and only until a restart.
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO submit_times (tenant_id, tx_id, submit_time) VALUES ($1, $2, $3)
+		 ON CONFLICT (tenant_id, tx_id) DO UPDATE SET submit_time = EXCLUDED.submit_time`,
+		tid, txID, instant); err != nil {
+		return time.Time{}, fmt.Errorf("record submit time: %w", err)
+	}
+
+	return instant, nil
 }
 
 // Rollback aborts the transaction.
