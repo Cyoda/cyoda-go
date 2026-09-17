@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +19,11 @@ import (
 )
 
 const submitTimeTTL = 1 * time.Hour
+
+// submitTimePruneInterval rate-limits the submit_times table housekeeping
+// delete (see pruneSubmitTimes) to at most once per interval, rather than
+// running it on every commit.
+const submitTimePruneInterval = 5 * time.Minute
 
 // submitTimeEntry pairs a committed transaction's submit time with the
 // tenant that owns it, so GetSubmitTime can enforce the same tenant gate
@@ -59,6 +65,11 @@ type TransactionManager struct {
 	txStates   map[string]*txState
 	// acquireTimeout bounds Begin's wait for a pooled connection.
 	acquireTimeout time.Duration
+	// lastSubmitTimePruneNano rate-limits pruneSubmitTimes (UnixNano since
+	// epoch; zero means "never pruned"). Accessed without tm.mu: it gates an
+	// independent housekeeping statement on the pool, not the maps tm.mu
+	// protects, so a plain atomic keeps the common (skip) path lock-free.
+	lastSubmitTimePruneNano atomic.Int64
 }
 
 // TransactionManagerOption configures a TransactionManager at construction.
@@ -255,11 +266,20 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 			}
 			return fmt.Errorf("%w: Commit: transaction aborted: %w", spi.ErrConflict, tsErr)
 		}
-		// For non-25P02 errors (e.g. network failures, context deadline exceeded)
-		// roll back with a fresh context so we don't leak the connection, then
-		// return the raw error without wrapping it as ErrConflict.
+		// For non-25P02 errors: roll back with a fresh context so we don't leak
+		// the connection, then classify before returning. classifyError only
+		// reclassifies specific SQLSTATEs (40001/40P01 to spi.ErrConflict,
+		// transport-loss shapes to the idle-in-tx marker) and passes everything
+		// else through unchanged, so a genuine transient infrastructure error
+		// (context cancellation, network failure) still isn't misreported as
+		// retryable. Every statement in stampCommitInstant is currently scoped
+		// to this transaction's own rows and so shouldn't itself raise 40001 —
+		// but that scoping is a property of the SQL text, not something this
+		// error path can verify, so classification stays generic rather than
+		// assuming today's statements are the only ones this function will
+		// ever run.
 		_ = pgxTx.Rollback(context.Background())
-		return fmt.Errorf("Commit: failed to stamp the commit instant: %w", tsErr)
+		return fmt.Errorf("Commit: failed to stamp the commit instant: %w", classifyError(tsErr))
 	}
 
 	if err := pgxTx.Commit(ctx); err != nil {
@@ -270,6 +290,11 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		tm.cleanupTx(txID)
 		return tm.classifyCommitError(txID, fmt.Errorf("Commit: %w", err))
 	}
+
+	// Table housekeeping, deliberately AFTER commit and on the pool, never
+	// inside pgxTx — see pruneSubmitTimes for why sharing this transaction's
+	// snapshot would let unrelated tenants' commits abort each other.
+	tm.pruneSubmitTimes(ctx)
 
 	// Record the submit time BEFORE cleanupTx removes the active-tx state:
 	// a concurrent GetSubmitTime racing this Commit then observes the tx in
@@ -415,18 +440,58 @@ func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx,
 		return time.Time{}, fmt.Errorf("record submit time: %w", err)
 	}
 
-	// Same TTL as the in-process map's own opportunistic sweep (see Commit):
-	// without this, submit_times grows one row per committed transaction
-	// forever. idx_submit_times_pruning (migration 000012) makes this a
-	// bounded range delete over the expired rows, not a scan of the whole
-	// table, so it stays cheap on every commit's hot path.
-	if _, err := tx.Exec(ctx,
-		`DELETE FROM submit_times WHERE submit_time < $1`,
-		instant.Add(-submitTimeTTL)); err != nil {
-		return time.Time{}, fmt.Errorf("prune submit times: %w", err)
+	return instant, nil
+}
+
+// pruneSubmitTimes deletes expired submit_times rows on the pool, called
+// only AFTER the caller's own commit has already succeeded — never from
+// inside pgxTx/stampCommitInstant.
+//
+// It must run outside the committing transaction. Every other statement in
+// stampCommitInstant is scoped to this transaction's own rows, by
+// tenant_id+transaction_id (see that function's lock-note comment); two
+// concurrent commits can never touch the same row there. A DELETE scoped
+// only by submit_time has no such boundary: two concurrent commits whose
+// expiry ranges overlap the same stale row would serialize under
+// REPEATABLE READ, and the loser gets 40001 — meaning two commits from
+// completely unrelated tenants could abort each other over shared
+// housekeeping, on the hot commit path of a system whose primary target is
+// multi-node with concurrent writers. Running this as an independent
+// statement, after commit, on its own connection, removes that coupling: it
+// can now only conflict with another concurrent prune, and even then it
+// just loses this window and tries again next time (see the rate limit and
+// the swallowed error below).
+//
+// Rate-limited to once per submitTimePruneInterval: this is opportunistic
+// housekeeping like the in-process map's own sweep in Commit, not a
+// per-commit obligation, so almost every commit skips it after one atomic
+// load. idx_submit_times_pruning (migration 000012) keeps the occasional
+// real delete a bounded range scan rather than a full-table scan.
+//
+// Failure is logged and swallowed, never returned: a business commit that
+// has already succeeded must not be reported as failed because deleting old
+// bookkeeping rows didn't work.
+func (tm *TransactionManager) pruneSubmitTimes(ctx context.Context) {
+	now := time.Now()
+	last := tm.lastSubmitTimePruneNano.Load()
+	if now.Sub(time.Unix(0, last)) < submitTimePruneInterval {
+		return
+	}
+	if !tm.lastSubmitTimePruneNano.CompareAndSwap(last, now.UnixNano()) {
+		return // another goroutine already claimed this window
 	}
 
-	return instant, nil
+	// A fresh, short-lived context: the caller's Commit is about to return
+	// its own result regardless of this outcome, so this must not inherit a
+	// deadline or cancellation meant for the business transaction — and must
+	// not be allowed to hang indefinitely either.
+	pruneCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if _, err := tm.pool.Exec(pruneCtx,
+		`DELETE FROM submit_times WHERE submit_time < $1`,
+		now.Add(-submitTimeTTL)); err != nil {
+		slog.Warn("prune submit_times failed", "pkg", "postgres", "err", err)
+	}
 }
 
 // Rollback aborts the transaction.
@@ -550,8 +615,14 @@ func (tm *TransactionManager) GetSubmitTime(ctx context.Context, txID string) (t
 func (tm *TransactionManager) getSubmitTimeFromTable(ctx context.Context, txID string) (time.Time, error) {
 	var tenantID string
 	var submit time.Time
+	// The table's primary key is (tenant_id, tx_id), not tx_id alone, so this
+	// WHERE tx_id = $1 is a query, not a key lookup. It's safe only because
+	// txID is a fresh UUID minted per Begin (see NewTransactionManager's
+	// uuids field) and collision across tenants is astronomically unlikely;
+	// LIMIT 1 makes that assumption explicit rather than relying on
+	// QueryRow's own "first row wins" behaviour to paper over a collision.
 	err := tm.pool.QueryRow(ctx,
-		`SELECT tenant_id, submit_time FROM submit_times WHERE tx_id = $1`,
+		`SELECT tenant_id, submit_time FROM submit_times WHERE tx_id = $1 LIMIT 1`,
 		txID).Scan(&tenantID, &submit)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, fmt.Errorf("GetSubmitTime: %w (txID=%s)", spi.ErrTxNotFound, txID)
