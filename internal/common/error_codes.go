@@ -7,13 +7,13 @@ const (
 	ErrCodeModelAlreadyUnlocked = "MODEL_ALREADY_UNLOCKED"
 	ErrCodeModelHasEntities     = "MODEL_HAS_ENTITIES"
 	ErrCodeEntityModified       = "ENTITY_MODIFIED"
-	// ErrCodeEntityModelMismatch is returned when a Save targets an existing
-	// entity under a model different from the one it was created under. An
-	// entity's model reference is fixed at creation (spi.ErrEntityModelMismatch);
-	// today no request path lets a caller supply a model on update (Create
-	// always mints a fresh entity ID; Update/Patch/UpdateEntityCollection
-	// always reuse the existing entity's model), so this is defense in depth
-	// against internal callers rather than a reachable client error today.
+	// ErrCodeEntityModelMismatch is returned when a Save/CompareAndSave
+	// targets an existing entity under a model different from the one it
+	// was created under. An entity's model reference is fixed at creation
+	// (spi.ErrEntityModelMismatch). See classifySaveErr in
+	// internal/domain/entity/service.go for the current reachability claim
+	// — kept there, next to the request paths it depends on, rather than
+	// here.
 	ErrCodeEntityModelMismatch              = "ENTITY_MODEL_MISMATCH"
 	ErrCodeEntityNotFound                   = "ENTITY_NOT_FOUND"
 	ErrCodeValidationFailed                 = "VALIDATION_FAILED"
