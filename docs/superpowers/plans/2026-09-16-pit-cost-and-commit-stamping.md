@@ -1150,6 +1150,57 @@ func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx,
 
 Keep the existing `25P02` classification around the call: if the transaction is already aborted, the first statement fails and must still map to `spi.ErrConflict` exactly as the old timestamp probe did.
 
+- [ ] **Step 3a: Stamp the non-transactional path too**
+
+`stampCommitInstant` above is reachable only from `TransactionManager.Commit`. A
+non-transactional `Save`, `Delete` or `CompareAndSave` opens its **own**
+transaction (Task 1) with no SPI transaction and no transaction id, so it never
+passes through `Commit` and is never restamped. Without this step those writes
+keep the `DEFAULT CURRENT_TIMESTAMP` the migration gave them — permanently, as
+their real recorded time — and `CURRENT_TIMESTAMP` is transaction start, which
+is precisely the defect this whole change exists to remove. The fix would be
+partial by construction: correct for transactional writes, unchanged for every
+other one.
+
+Stamp them in the same place their own transaction commits. In the
+non-transactional branch of `save`/`deleteOn`, after the work and immediately
+before `tx.Commit`, read one `clock_timestamp()` and apply it to the rows this
+write just made — addressed by primary key, since a non-transactional write
+knows exactly which row it wrote and carries the empty transaction id that
+`CompareAndSave` depends on:
+
+```go
+// A non-transactional write has no SPI transaction, so TransactionManager's
+// commit-phase stamp never sees it. Stamp here, at this write's own commit,
+// or the row keeps the column default — CURRENT_TIMESTAMP, the transaction's
+// START — as its permanent recorded time, which is the defect this change
+// exists to remove.
+var instant time.Time
+if err := tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&instant); err != nil {
+	return 0, fmt.Errorf("failed to read commit instant: %w", err)
+}
+if _, err := tx.Exec(ctx,
+	`UPDATE entity_versions SET valid_time = $1, transaction_time = $1,
+	        creation_date = CASE WHEN version = 1 THEN $1 ELSE creation_date END
+	  WHERE tenant_id = $2 AND entity_id = $3 AND version = $4`,
+	instant, tid, eid, nextVersion); err != nil {
+	return 0, fmt.Errorf("failed to stamp version row: %w", err)
+}
+if _, err := tx.Exec(ctx,
+	`UPDATE entities SET last_modified = $1,
+	        creation_date = CASE WHEN $5 THEN $1 ELSE creation_date END
+	  WHERE tenant_id = $2 AND entity_id = $3`,
+	instant, tid, eid, nextVersion, isNew); err != nil {
+	return 0, fmt.Errorf("failed to stamp entity row: %w", err)
+}
+```
+
+Test it directly: a non-transactional `Save`, then assert the stored
+`valid_time` is at or after an instant read from the database clock *after* the
+save began — and specifically that it is **not** the transaction's start. The
+window is small, so assert the property (stamped at commit, not at start) via a
+save whose transaction is deliberately slowed, rather than by racing clocks.
+
 - [ ] **Step 4: Write the transaction id, and delete the stamp-source split**
 
 In `entity_store.go`, the version INSERT gains the column:
