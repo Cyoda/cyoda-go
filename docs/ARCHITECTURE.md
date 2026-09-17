@@ -1076,7 +1076,8 @@ committed view and every returned entity is unconditionally recorded into
 the transaction's read-set (the page, not the model). With `asAt` set,
 the read is committed-only, ignoring any ambient transaction. Postgres
 backs this with the `idx_entities_model_entity_id` index (migration
-`000008`, `COLLATE "C"` for byte-wise order); sqlite adds a
+`000008`, rebuilt by `000011` to cover every entity of a model rather than
+only the live ones, `COLLATE "C"` for byte-wise order); sqlite adds a
 `(tenant_id, model_name, model_version, entity_id)` index.
 
 **History reads.** Two purpose-built reads replace the old
@@ -1733,7 +1734,7 @@ Capabilities this document's design implies but the system does not provide. Eac
 | Idempotency keys | Client-provided keys preventing duplicate operations on retry. The `IDEMPOTENCY_CONFLICT` code is reserved, but no handler reads an `Idempotency-Key` header. |
 | Trace propagation through the search pipeline | A unified search trace waterfall. The search packages emit no spans, and the async-search goroutine starts from a fresh context, severing the parent span. |
 | Outbound trace propagation to external processors | End-to-end workflow tracing. Inbound gRPC trace context is extracted and dispatches are wrapped in spans, but no `traceparent` is injected into the dispatched CloudEvent or the peer-forward request. |
-| Migration-runner retry tolerance for a deadlock-killed advisory lock | Being able to use `CREATE INDEX CONCURRENTLY` for an index added on an already-populated table without deadlocking the concurrent multi-node boot path. Today the migration runner holds one session-level advisory lock for a migrator's entire run with no retry on a `SQLSTATE 40P01` from a lock cycle against `CONCURRENTLY`'s own multi-phase wait, so `entities`' migration `000008` uses a plain `CREATE INDEX` (writer-blocking for the build's duration) instead — see `docs/plugins/POSTGRES.md`. Any future index-on-populated-table migration hits the same choice until this gap closes. |
+| Migration-runner retry tolerance for a deadlock-killed advisory lock | Being able to use `CREATE INDEX CONCURRENTLY` for an index added on an already-populated table without deadlocking the concurrent multi-node boot path. Today the migration runner holds one session-level advisory lock for a migrator's entire run with no retry on a `SQLSTATE 40P01` from a lock cycle against `CONCURRENTLY`'s own multi-phase wait, so `entities`' migration `000008` uses a plain `CREATE INDEX` (writer-blocking for the build's duration) instead — see `docs/plugins/POSTGRES.md`. Migrations `000011`, `000012` and `000013` have since taken the same exception for the same reason; every index-on-populated-table migration hits this choice until the gap closes. |
 
 ---
 
@@ -1904,7 +1905,7 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 | **Read-your-own-writes** | Strong (within a transaction) | Guaranteed by `pgx.Tx` — all reads within a transaction see its own buffered writes. Across transactions, reads are snapshot-isolated. |
 | **Snapshot isolation** | Strong (SI+FCW across all plugins; see §3.7 and [docs/CONSISTENCY.md](CONSISTENCY.md)) | Commit-time conflict detection may abort with `ErrConflict` (40001 / 40P01 on PostgreSQL). The application retries. Under high contention, retry storms are possible. |
 | **Cross-node consistency** | Strong (PG is the authority) | All nodes share the same PG instance. There is no eventual consistency between nodes — they all see the same data at the same isolation level. Gossip metadata (node registry, compute tags) is eventually consistent with sub-second convergence. |
-| **Temporal consistency** | Strong (point-in-time queries) | `GetAsAt` returns the entity as it was at a specific timestamp. Accuracy depends on PG clock precision (microsecond) and correct use of `transaction_time` vs `wall_clock_time`. |
+| **Temporal consistency** | Strong (point-in-time queries) | `GetAsAt` returns the entity as it was at a specific timestamp. A revision is dated at its transaction's commit instant, so a read at an instant is stable once every transaction that started before it has finished; a read taken *while* a transaction commits can still change (`docs/CONSISTENCY.md` §1a). Resolution is bounded by PG clock precision (microsecond). |
 | **Commit ambiguity** | **Gap** (§12) | If the network partitions between Node A and PG at COMMIT time, Node A cannot determine whether PG committed or not. The client may see a false failure for a transaction that actually committed. |
 | **Idempotency** | **Gap** (§12) | Client retries after timeout may create duplicate entities. There is no built-in idempotency key mechanism; clients must handle deduplication at the application level. |
 

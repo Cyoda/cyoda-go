@@ -34,7 +34,7 @@ func TestEvalPostFilter_MetaBlockIsNotAMatchableDataPath(t *testing.T) {
 		},
 	}
 
-	doc, err := marshalEntityDoc(ent, now, now, now, false)
+	doc, err := marshalEntityDoc(ent, false)
 	if err != nil {
 		t.Fatalf("marshalEntityDoc: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestEvalPostFilter_MetaBlockIsNotAMatchableDataPath(t *testing.T) {
 		t.Fatal("precondition failed: stored doc has no _meta block")
 	}
 
-	decoded, err := unmarshalEntityDoc(doc)
+	decoded, err := unmarshalEntityDoc(doc, now, now)
 	if err != nil {
 		t.Fatalf("unmarshalEntityDoc: %v", err)
 	}

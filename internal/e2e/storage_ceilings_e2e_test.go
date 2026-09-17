@@ -789,12 +789,37 @@ func seedEntityVersions(t *testing.T, model string, n int) {
 	}
 	defer pool.Close()
 
+	// entity_versions_entity_fk (migration 000012) requires every
+	// entity_versions row to have a matching entities row, so the clones'
+	// entities rows must land first — the same order every real Save keeps.
+	//
+	// The clone's "name" field is overwritten to a sentinel other than
+	// "pool-hold": TestE2E_SearchCeiling_DoesNotLeakOntoInteractiveStatements
+	// runs an interactive search filtered on name = "pool-hold" and expects
+	// exactly the one real entity back, not the whole seeded volume — the
+	// match-all async scans this fixture backs stay unaffected, since they
+	// filter on nothing at all.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
+		SELECT tenant_id, entity_id || '-' || g, model_name, model_version, version, deleted,
+		       jsonb_set(jsonb_set(doc, '{_meta,id}', to_jsonb(entity_id || '-' || g)),
+		                 '{name}', '"search-ceiling-fill"')
+		FROM entities, generate_series(1, $1) AS g
+		WHERE model_name = $2`, n, model); err != nil {
+		t.Fatalf("seed %d entities for %s: %v", n, model, err)
+	}
+	// Same "name" override as the entities block above: current state and
+	// its own history must agree. Leaving entity_versions.doc saying
+	// "pool-hold" while entities.doc says "search-ceiling-fill" for the same
+	// version would be a state no real write path can produce — Save always
+	// writes the same marshaled doc to both rows.
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version,
 		                             valid_time, transaction_time, wall_clock_time, doc)
 		SELECT tenant_id, entity_id || '-' || g, model_name, model_version, version,
 		       valid_time, transaction_time, wall_clock_time,
-		       jsonb_set(doc, '{_meta,id}', to_jsonb(entity_id || '-' || g))
+		       jsonb_set(jsonb_set(doc, '{_meta,id}', to_jsonb(entity_id || '-' || g)),
+		                 '{name}', '"search-ceiling-fill"')
 		FROM entity_versions, generate_series(1, $1) AS g
 		WHERE model_name = $2`, n, model); err != nil {
 		t.Fatalf("seed %d entity versions for %s: %v", n, model, err)
@@ -807,7 +832,12 @@ func seedEntityVersions(t *testing.T, model string, n int) {
 			return
 		}
 		defer cpool.Close()
+		// model is unique per test (storageCeilingModel derives it from
+		// t.Name()), so clearing every row under it — including the one
+		// entities row h.CreateEntity made directly — is safe: nothing else
+		// depends on this test's data outliving its own cleanup.
 		_, _ = cpool.Exec(cctx, `DELETE FROM entity_versions WHERE model_name = $1`, model)
+		_, _ = cpool.Exec(cctx, `DELETE FROM entities WHERE model_name = $1`, model)
 	})
 }
 

@@ -58,6 +58,77 @@ func TestMigrations_IndexesOnExistingTablesAreConcurrent(t *testing.T) {
 		// can retry a deadlock-killed Lock() attempt (a structural change to
 		// migrate.go, out of scope for the migration itself).
 		"000008_entities_model_entity_id_index.up.sql": true,
+		// idx_entities_model_entity_id, rebuilt without its partial
+		// predicate so point-in-time reads can see entities deleted since the
+		// instant. This is NOT the same operation as 000008's entry above,
+		// and its lock profile needs its own reasoning: 000008 is a bare
+		// CREATE INDEX, so ShareLock is the whole story. This migration
+		// instead builds the replacement under a temporary name with a plain
+		// CREATE INDEX (ShareLock — conflicts with writers, not readers, for
+		// the whole build), then DROPs the old index and RENAMEs the new one
+		// into place; DROP and RENAME each briefly take AccessExclusiveLock
+		// (which DOES conflict with a plain SELECT), but both are
+		// catalog-only with no data to scan or rewrite, so that lock is held
+		// for a moment rather than for the build's duration. See the
+		// migration file's own comment for the alternative this rejected —
+		// DROP-then-CREATE in one statement, which holds AccessExclusiveLock
+		// across the entire build because the whole file runs as one
+		// implicit transaction, blocking every reader as well as every
+		// writer against `entities` cluster-wide for the build's duration.
+		//
+		// The initial build step still isn't CREATE INDEX CONCURRENTLY: that
+		// deterministically deadlocks this project's concurrent multi-node
+		// boot path (golang-migrate holds a session advisory lock for the
+		// whole Up() run; CONCURRENTLY then waits on every other backend,
+		// including a second node's migrator blocked on that very lock).
+		// Writers being blocked for the build's duration either way is
+		// acceptable pre-1.0, with no production entities tables at
+		// meaningful scale yet; the fix above is specifically for readers,
+		// which a bare CREATE INDEX never blocked.
+		"000011_entities_model_index_all.up.sql": true,
+		// idx_ev_transaction: same underlying deadlock mechanism proven for
+		// 000008 (golang-migrate holds one session-level advisory lock for
+		// the migrator's ENTIRE Up() run; CONCURRENTLY's own multi-phase
+		// build then waits on every other backend, including a second
+		// node's migrator merely blocked trying to acquire that very
+		// advisory lock) — re-derived for this file's own shape rather than
+		// copied from precedent, per 000011's practice.
+		//
+		// Unlike 000011, this file's single-transaction requirement isn't
+		// about sequencing an index rebuild — it's simply that the file has
+		// more than one statement (the ADD COLUMN/backfill pairs, the
+		// entity_versions_entity_fk NOT VALID + VALIDATE CONSTRAINT pair,
+		// and the new submit_times table), which already forces one
+		// multi-statement file under one implicit transaction per clause (b)
+		// above, so CREATE INDEX CONCURRENTLY cannot run here regardless.
+		//
+		// Splitting idx_ev_transaction into its own single-statement file —
+		// clause (b)'s usual fix — would not sidestep the deadlock either:
+		// the advisory lock golang-migrate holds spans the whole Up() run
+		// across every file in the batch, not just one file, so a second
+		// node's migrator blocked on that same lock while this node's
+		// CONCURRENTLY build waits on it reproduces 000008's deadlock no
+		// matter which file the statement lives in.
+		"000012_commit_instant.up.sql": true,
+		// idx_sm_events_tenant_tx, the index the commit-phase audit stamp
+		// filters on. Its lock profile is derived for THIS file, not carried
+		// over: it is a single plain CREATE INDEX on sm_audit_events and
+		// nothing else, so SHARE is the whole story — writers to that table
+		// (which now includes every committing transaction, via the stamp)
+		// block for the build, while readers, taking ACCESS SHARE, never do.
+		// No index is dropped or renamed here, so unlike 000011 no
+		// AccessExclusiveLock is taken at any point and no reader is blocked
+		// even momentarily.
+		//
+		// CONCURRENTLY is excluded by the same advisory-lock cycle proven for
+		// 000008, re-derived for this file: golang-migrate holds one
+		// session-level advisory lock for the migrator's ENTIRE Up() run, so
+		// CONCURRENTLY's multi-phase build waits on every other backend —
+		// including a second node's migrator blocked on that very lock. That
+		// span is per-run, not per-file, so this file being a lone statement
+		// (clause (b) satisfied on its own merits) does not make CONCURRENTLY
+		// available; splitting it out further would change nothing.
+		"000013_sm_audit_tx_index.up.sql": true,
 	}
 
 	for _, v := range checkIndexRules(upMigrations(t), grandfathered) {

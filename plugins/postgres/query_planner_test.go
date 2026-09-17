@@ -921,15 +921,17 @@ func TestPlanQuery_IsPushableParityWithSqlite(t *testing.T) {
 // TestFieldExpr_MetaCanonicalMapping asserts fieldExpr resolves canonical
 // SourceMeta lifecycle-filter paths through the same metaJSONKey map
 // orderByFieldExpr uses for ORDER BY, and special-cases "id" to the
-// entity_id column (not present in metaJSONKey).
+// entity_id column (not present in metaJSONKey). creationDate/lastUpdateTime
+// resolve through directTemporalMetaColumns instead — they are native
+// TIMESTAMPTZ columns, not JSONB text.
 func TestFieldExpr_MetaCanonicalMapping(t *testing.T) {
 	tests := []struct {
 		name string
 		path string
 		want string
 	}{
-		{"creationDate", "creationDate", "doc->'_meta'->>'creation_date'"},
-		{"lastUpdateTime", "lastUpdateTime", "doc->'_meta'->>'last_modified_date'"},
+		{"creationDate", "creationDate", "creation_date"},
+		{"lastUpdateTime", "lastUpdateTime", "last_modified"},
 		{"transitionForLatestSave", "transitionForLatestSave", "doc->'_meta'->>'transition'"},
 		{"transactionId", "transactionId", "doc->'_meta'->>'transaction_id'"},
 		{"id", "id", "entity_id"},
@@ -945,19 +947,20 @@ func TestFieldExpr_MetaCanonicalMapping(t *testing.T) {
 }
 
 // TestPlan_TemporalMetaEmitsEpochMillis asserts a CoerceTemporal meta leaf
-// routes through cyoda_epoch_millis on the canonically-mapped JSONB key, and
-// binds a Go-precomputed int64 epoch-ms operand (not the raw RFC3339 string).
+// on creationDate routes through the direct-column epoch expression (native
+// TIMESTAMPTZ, not JSONB text — see directTemporalMetaColumns), and binds a
+// Go-precomputed int64 epoch-ms operand (not the raw RFC3339 string).
 func TestPlan_TemporalMetaEmitsEpochMillis(t *testing.T) {
 	f := spi.Filter{Op: spi.FilterGt, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal, Value: "2021-01-01T00:00:00Z", Declared: []spi.DataType{spi.ZonedDateTime}}
 	plan, err := planQuery(f)
 	if err != nil {
 		t.Fatalf("planQuery: %v", err)
 	}
-	if !strings.Contains(plan.where, "cyoda_epoch_millis(doc->'_meta'->>'creation_date')") {
+	if !strings.Contains(plan.where, "floor(extract(epoch from creation_date) * 1000)::bigint") {
 		t.Errorf("where = %q", plan.where)
 	}
 	// SOUND SUPERSET: temporal Gt is relaxed to >=.
-	wantWhere := "(cyoda_epoch_millis(doc->'_meta'->>'creation_date') IS NOT NULL AND cyoda_epoch_millis(doc->'_meta'->>'creation_date') >= $1)"
+	wantWhere := "(floor(extract(epoch from creation_date) * 1000)::bigint IS NOT NULL AND floor(extract(epoch from creation_date) * 1000)::bigint >= $1)"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
 	}
@@ -1001,7 +1004,7 @@ func TestPlan_TemporalMetaBetween(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planQuery: %v", err)
 	}
-	wantWhere := "(cyoda_epoch_millis(doc->'_meta'->>'creation_date') IS NOT NULL AND cyoda_epoch_millis(doc->'_meta'->>'creation_date') BETWEEN $1 AND $2)"
+	wantWhere := "(floor(extract(epoch from creation_date) * 1000)::bigint IS NOT NULL AND floor(extract(epoch from creation_date) * 1000)::bigint BETWEEN $1 AND $2)"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
 	}
@@ -1040,10 +1043,11 @@ func TestPlan_TemporalData(t *testing.T) {
 
 // TestPlan_TemporalIsNull asserts that a CoerceTemporal meta leaf with
 // FilterIsNull/FilterNotNull emits a plain null-check on the raw field
-// expression (doc->'_meta'->>'creation_date') — NOT the cyoda_epoch_millis(...)
-// wrapped form and NOT the "col = $1" / "= 0" nonsense that sqlOpForTemporal's
-// unconditional "default: return \"=\"" previously produced for an op it
-// doesn't recognize. Presence checks are coercion-independent: they must be
+// expression (the creation_date column — see directTemporalMetaColumns) —
+// NOT the cyoda_epoch_millis(...)/epoch-extraction wrapped form and NOT the
+// "col = $1" / "= 0" nonsense that sqlOpForTemporal's unconditional
+// "default: return \"=\"" previously produced for an op it doesn't
+// recognize. Presence checks are coercion-independent: they must be
 // handled before the CoerceTemporal routing, mirroring spi.evalLeafFilter's
 // ordering.
 func TestPlan_TemporalIsNull(t *testing.T) {
@@ -1052,7 +1056,7 @@ func TestPlan_TemporalIsNull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planQuery: %v", err)
 	}
-	wantWhere := "doc->'_meta'->>'creation_date' IS NULL"
+	wantWhere := "creation_date IS NULL"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
 	}
@@ -1079,7 +1083,7 @@ func TestPlan_TemporalNotNull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planQuery: %v", err)
 	}
-	wantWhere := "doc->'_meta'->>'creation_date' IS NOT NULL"
+	wantWhere := "creation_date IS NOT NULL"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
 	}

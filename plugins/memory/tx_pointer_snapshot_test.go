@@ -13,6 +13,15 @@ import (
 // committed row of the model being counted: the buffer overlay is
 // model-scoped everywhere else, and the count must scope its skip the same
 // way or it silently under-counts.
+//
+// The buffered other-model row uses a DIFFERENT entity ID from the
+// committed one: an entity's model reference is fixed at creation
+// (spi.ErrEntityModelMismatch), so the same ID can no longer be buffered
+// under a different model than its committed row — that reuse was this
+// test's original shape, before the immutability check made it impossible
+// to construct. Two distinct IDs still exercise the property under test:
+// Count(refA) must not be confused by an unrelated buffered write for a
+// different model.
 func TestTx_Count_BufferedOtherModelDoesNotHideCommittedRow(t *testing.T) {
 	f, tm := newTxManager(t)
 	ctx := tenantCtx(spi.TenantID("tenant-ptr"))
@@ -35,9 +44,9 @@ func TestTx_Count_BufferedOtherModelDoesNotHideCommittedRow(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = tm.Rollback(txCtx, txID) })
 
-	// Buffer the same id under a different model.
+	// Buffer a DIFFERENT id under a different model.
 	if _, err := store.Save(txCtx, &spi.Entity{
-		Meta: spi.EntityMeta{ID: "e-ptr", TenantID: "tenant-ptr", ModelRef: refB, State: "open"},
+		Meta: spi.EntityMeta{ID: "e-ptr-other-model", TenantID: "tenant-ptr", ModelRef: refB, State: "open"},
 		Data: []byte(`{"n":2}`),
 	}); err != nil {
 		t.Fatalf("in-tx Save: %v", err)

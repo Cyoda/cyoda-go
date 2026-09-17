@@ -1,5 +1,28 @@
 # Point-in-time read semantics canonicalization (#349)
 
+> **Note added 2026-09-16 — the per-path predicate tables below are stale.**
+> This document is kept as the record of the canonicalization it describes;
+> the canonical rule it establishes (inclusive `<=` at the engine's native
+> precision, no rounding) is unchanged and still holds. Two later changes
+> moved what the tables in "Axis 2 — strictness differs even among the
+> rounded paths" and "Production changes" describe:
+>
+> 1. **The postgres rows read through a lateral join.** Its point-in-time
+>    Search / Iterate / grouped-stats path no longer resolves the latest
+>    revision per entity with `DISTINCT ON (entity_id)` over
+>    `entity_versions`; it enumerates the model's rows in `entities` and
+>    probes each one's revision, and `GetAsAt` gained the matching
+>    `version DESC` tiebreak. The bound is the same `valid_time <= $N`.
+> 2. **The stamp moved to commit.** The timestamps these predicates compare
+>    against are now the writing transaction's commit instant on every
+>    backend, where postgres previously wrote its transaction's start
+>    instant. Nothing about the comparison changed; what a stored timestamp
+>    *means* did.
+>
+> Current statements live in `docs/CONSISTENCY.md` §1a (when a write is
+> dated), `cyoda help crud` (POINT-IN-TIME SEMANTICS) and
+> `docs/plugins/POSTGRES.md`. The history below is left as written.
+
 **Status:** design agreed
 **Milestone:** v0.8.2
 **Relationship:** prerequisite for #37 (PostgreSQL predicate pushdown). #37 consumes

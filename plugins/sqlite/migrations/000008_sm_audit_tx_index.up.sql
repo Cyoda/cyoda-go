@@ -1,0 +1,22 @@
+-- The commit phase stamps audit events by (tenant_id, transaction_id)
+-- (flushToSQLite). The index 000001 created, idx_sm_events_tx, is
+-- (tenant_id, entity_id, transaction_id): entity_id sits between the two
+-- columns that WHERE constrains, and a B-tree can only use a leading prefix,
+-- so that index reduces the stamp to a scan of every audit row the tenant
+-- owns — on every commit, including a read-only one. This index makes it a
+-- lookup.
+--
+-- idx_sm_events_tx is kept rather than replaced: GetEventsByTransaction
+-- filters on all three columns and would lose its own index otherwise.
+--
+-- The postgres plugin takes the identical index in its own 000013, against the
+-- identical defect: both backends inherited the three-column index from the
+-- same 000001 schema, and a backend diverging from the others on the same
+-- contract is a defect rather than a difference to accept.
+--
+-- No lock-profile note is owed here as it is on postgres: SQLite serialises
+-- writers on a single write connection anyway, so an index build blocks the
+-- same writers the next write would have blocked, and there is no reader/writer
+-- lock distinction to reason about.
+CREATE INDEX IF NOT EXISTS idx_sm_events_tenant_tx
+    ON sm_audit_events (tenant_id, transaction_id);

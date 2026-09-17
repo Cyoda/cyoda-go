@@ -118,6 +118,26 @@ type transactionManager struct {
 	// truncated at RollbackToSavepoint — see savepointSnapshot.supersededLens).
 	// Cleaned up after commit or rollback (no leak).
 	supersededSaves map[string]map[string][]*spi.Entity // txID -> entityID -> superseded snapshots, oldest first
+
+	// deletedBufferedEntities records, per (txID, entityID), the buffered
+	// *spi.Entity Delete evicted from tx.Buffer within the same open
+	// transaction. Delete removes id from tx.Buffer unconditionally (Buffer
+	// and Deletes are kept mutually exclusive), so when id was never
+	// committed before this transaction, the SELECT flushToSQLite's delete
+	// loop runs against `entities` finds no row at all (sql.ErrNoRows) — a
+	// same-transaction create-then-delete whose create was never separately
+	// flushed. Without this side channel that shape wrote NOTHING (the old
+	// code `continue`d past it): no entities row, no entity_versions row —
+	// so a later Save reusing the same id under a different model found no
+	// committed row to check against and silently accepted the model
+	// change (the exact defect spi.ErrEntityModelMismatch exists to close).
+	// flushToSQLite now uses this to still write the create+tombstone as
+	// one committed row when the SELECT comes back empty. Protected by mu.
+	// Not savepoint-scoped like supersededSaves: a RollbackToSavepoint that
+	// restores id to tx.Buffer also removes it from tx.Deletes, so a stale
+	// entry here is simply never read again. Cleaned up after commit or
+	// rollback (no leak).
+	deletedBufferedEntities map[string]map[string]*spi.Entity // txID -> entityID -> evicted entity
 }
 
 // Verify interface compliance at compile time.
@@ -125,16 +145,17 @@ var _ spi.TransactionManager = (*transactionManager)(nil)
 
 func newTransactionManager(factory *StoreFactory, uuids spi.UUIDGenerator) *transactionManager {
 	return &transactionManager{
-		factory:          factory,
-		uuids:            uuids,
-		commitGate:       make(chan struct{}, 1),
-		active:           make(map[string]*spi.TransactionState),
-		committing:       make(map[string]bool),
-		submitTimes:      make(map[string]submitTimeEntry),
-		savepoints:       make(map[string]map[string]savepointSnapshot),
-		txUniqueKeys:     make(map[string]map[string][]spi.UniqueKey),
-		scheduledTaskOps: make(map[string][]scheduledTaskOp),
-		supersededSaves:  make(map[string]map[string][]*spi.Entity),
+		factory:                 factory,
+		uuids:                   uuids,
+		commitGate:              make(chan struct{}, 1),
+		active:                  make(map[string]*spi.TransactionState),
+		committing:              make(map[string]bool),
+		submitTimes:             make(map[string]submitTimeEntry),
+		savepoints:              make(map[string]map[string]savepointSnapshot),
+		txUniqueKeys:            make(map[string]map[string][]spi.UniqueKey),
+		scheduledTaskOps:        make(map[string][]scheduledTaskOp),
+		supersededSaves:         make(map[string]map[string][]*spi.Entity),
+		deletedBufferedEntities: make(map[string]map[string]*spi.Entity),
 	}
 }
 
@@ -193,12 +214,89 @@ func (m *transactionManager) stageSuperseded(txID, entityID string, prior *spi.E
 	m.supersededSaves[txID][entityID] = append(m.supersededSaves[txID][entityID], prior)
 }
 
+// stageDeletedBufferedEntity records the buffered *spi.Entity Delete is about
+// to evict from tx.Buffer — see deletedBufferedEntities's field doc for why
+// this is needed. e is stored by reference; the caller must not mutate it
+// afterward (Delete evicts it from tx.Buffer in the same step, so nothing
+// else holds it).
+func (m *transactionManager) stageDeletedBufferedEntity(txID, entityID string, e *spi.Entity) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.deletedBufferedEntities[txID] == nil {
+		m.deletedBufferedEntities[txID] = make(map[string]*spi.Entity)
+	}
+	m.deletedBufferedEntities[txID][entityID] = e
+}
+
 // supersededFor retrieves the superseded values staged for entityID under
 // txID, oldest first. Returns nil if none were recorded. Protected by mu.
 func (m *transactionManager) supersededFor(txID, entityID string) []*spi.Entity {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.supersededSaves[txID][entityID]
+}
+
+// deletedBufferedEntityFor retrieves the buffered entity Delete evicted for
+// entityID under txID, if any — see deletedBufferedEntities's field doc.
+// Protected by mu.
+func (m *transactionManager) deletedBufferedEntityFor(txID, entityID string) (*spi.Entity, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.deletedBufferedEntities[txID][entityID]
+	return e, ok
+}
+
+// insertDeletedBufferedTombstone writes the single committed row for a
+// same-transaction create-then-delete: an `entities` row already deleted
+// (version 1) and one `entity_versions` DELETED row (version 1) — mirroring
+// the shape a real create followed by a real delete would leave, collapsed
+// into one commit because the create never separately flushed (see
+// deletedBufferedEntities's field doc). Matches the memory plugin's
+// equivalent single-tombstone shape for the same case, so the two backends
+// agree on the entity's version history rather than diverging on it.
+//
+// The entities row's data/meta come from the buffered entity — the content
+// it would have held had the create flushed on its own — so a later
+// point-in-time read of the (deleted) row sees the same content a
+// non-collapsed create+delete would have left. attribution is the DELETE's
+// (not the create's): this row's only recorded actor is who deleted it,
+// matching the tombstone user_id column's existing convention.
+func insertDeletedBufferedTombstone(ctx context.Context, sqlTx *sql.Tx, tid, txID, entityID string, submitMicro int64, buffered *spi.Entity, attribution spi.WriteAttribution) error {
+	entityMeta := buffered.Meta
+	entityMeta.Version = 1
+	entityMeta.ChangeType = "DELETED"
+	entityMeta.LastModifiedDate = microToTime(submitMicro)
+	if entityMeta.CreationDate.IsZero() {
+		entityMeta.CreationDate = entityMeta.LastModifiedDate
+	}
+	metaJSON, err := marshalEntityMeta(&entityMeta)
+	if err != nil {
+		return fmt.Errorf("marshal meta for deleted-buffered entity %s: %w", entityID, err)
+	}
+	_, err = sqlTx.ExecContext(ctx,
+		`INSERT INTO entities
+		 (tenant_id, entity_id, model_name, model_version, version, data, meta, deleted, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, 1, jsonb(?), jsonb(?), 1, ?, ?)`,
+		tid, entityID, buffered.Meta.ModelRef.EntityName, buffered.Meta.ModelRef.ModelVersion,
+		string(buffered.Data), string(metaJSON), submitMicro, submitMicro)
+	if err != nil {
+		return fmt.Errorf("insert deleted-buffered entities row %s: %w", entityID, err)
+	}
+
+	tombstoneMeta, err := marshalTombstoneMeta(attribution.Attributed.Kind, attribution.Executor)
+	if err != nil {
+		return fmt.Errorf("marshal tombstone meta for deleted-buffered entity %s: %w", entityID, err)
+	}
+	_, err = sqlTx.ExecContext(ctx,
+		`INSERT INTO entity_versions
+		 (tenant_id, entity_id, model_name, model_version, version, data, meta, change_type, transaction_id, submit_time, user_id)
+		 VALUES (?, ?, ?, ?, 1, NULL, jsonb(?), 'DELETED', ?, ?, ?)`,
+		tid, entityID, buffered.Meta.ModelRef.EntityName, buffered.Meta.ModelRef.ModelVersion,
+		string(tombstoneMeta), txID, submitMicro, attribution.Attributed.ID)
+	if err != nil {
+		return fmt.Errorf("insert deleted-buffered version %s: %w", entityID, err)
+	}
+	return nil
 }
 
 // seedLastSubmitTime reads the maximum submit_time from entity_versions
@@ -433,6 +531,7 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 						delete(m.txUniqueKeys, txID)
 						delete(m.scheduledTaskOps, txID)
 						delete(m.supersededSaves, txID)
+						delete(m.deletedBufferedEntities, txID)
 						return spi.ErrConflict
 					}
 				}
@@ -467,6 +566,7 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 			delete(m.txUniqueKeys, txID)
 			delete(m.scheduledTaskOps, txID)
 			delete(m.supersededSaves, txID)
+			delete(m.deletedBufferedEntities, txID)
 		}()
 		// ErrUniqueViolation from claim writes must not be re-classified —
 		// classifyError passes through non-sqlite errors unchanged.
@@ -500,6 +600,7 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 		delete(m.txUniqueKeys, txID)
 		delete(m.scheduledTaskOps, txID)
 		delete(m.supersededSaves, txID)
+		delete(m.deletedBufferedEntities, txID)
 		var oldest time.Time
 		for _, activeTx := range m.active {
 			if oldest.IsZero() || activeTx.SnapshotTime.Before(oldest) {
@@ -666,28 +767,6 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 
 	// Flush deletes.
 	for entityID := range tx.Deletes {
-		// Get current entity info for the delete version record.
-		var curVersion int64
-		var modelName, modelVersion string
-		err := sqlTx.QueryRowContext(ctx,
-			"SELECT version, model_name, model_version FROM entities WHERE tenant_id = ? AND entity_id = ?",
-			tid, entityID).Scan(&curVersion, &modelName, &modelVersion)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				continue // Entity does not exist; skip.
-			}
-			return fmt.Errorf("check entity for delete %s: %w", entityID, err)
-		}
-
-		nextVersion := curVersion + 1
-
-		_, err = sqlTx.ExecContext(ctx,
-			"UPDATE entities SET deleted = 1, updated_at = ?, version = ? WHERE tenant_id = ? AND entity_id = ?",
-			submitMicro, nextVersion, tid, entityID)
-		if err != nil {
-			return fmt.Errorf("soft delete entity %s: %w", entityID, err)
-		}
-
 		// Attribution: prefer tx.DeleteAttribution[entityID], captured at
 		// stage time (the STAGER's context, under the same OpMu section
 		// that set tx.Deletes[entityID] — see entityStore.Delete/DeleteAll).
@@ -701,6 +780,44 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 			a, e := spi.AttributionFor(ctx)
 			attribution = spi.WriteAttribution{Attributed: a, Executor: e}
 		}
+
+		// Get current entity info for the delete version record.
+		var curVersion int64
+		var modelName, modelVersion string
+		err := sqlTx.QueryRowContext(ctx,
+			"SELECT version, model_name, model_version FROM entities WHERE tenant_id = ? AND entity_id = ?",
+			tid, entityID).Scan(&curVersion, &modelName, &modelVersion)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				// A same-transaction create-then-delete: Delete evicted the
+				// buffered create from tx.Buffer before this flush ran, so
+				// there is no `entities` row to soft-delete (see
+				// deletedBufferedEntities's field doc). Write the
+				// create+tombstone as one committed row instead of
+				// skipping — an id genuinely never saved at all (Delete
+				// bypassing EntityStore) has no staged entry either, and
+				// stays a no-op skip.
+				buffered, ok := m.deletedBufferedEntityFor(tx.ID, entityID)
+				if !ok {
+					continue
+				}
+				if err := insertDeletedBufferedTombstone(ctx, sqlTx, tid, tx.ID, entityID, submitMicro, buffered, attribution); err != nil {
+					return err
+				}
+				continue
+			}
+			return fmt.Errorf("check entity for delete %s: %w", entityID, err)
+		}
+
+		nextVersion := curVersion + 1
+
+		_, err = sqlTx.ExecContext(ctx,
+			"UPDATE entities SET deleted = 1, updated_at = ?, version = ? WHERE tenant_id = ? AND entity_id = ?",
+			submitMicro, nextVersion, tid, entityID)
+		if err != nil {
+			return fmt.Errorf("soft delete entity %s: %w", entityID, err)
+		}
+
 		tombstoneMeta, err := marshalTombstoneMeta(attribution.Attributed.Kind, attribution.Executor)
 		if err != nil {
 			return fmt.Errorf("marshal tombstone meta %s: %w", entityID, err)
@@ -729,6 +846,40 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 		tx.ID, tid, submitMicro)
 	if err != nil {
 		return fmt.Errorf("record submit time: %w", err)
+	}
+
+	// Audit events LABELLED with this transaction take the same instant, so
+	// the audit trail and the version history cannot drift apart or invert.
+	//
+	// Record wrote those rows through the audit store's own handle rather than
+	// this sqlTx, and they are visible here for a structural reason rather
+	// than a hopeful one: that handle IS the writer pool, capped at a single
+	// connection (SetMaxOpenConns(1), store_factory.go), so any Record that
+	// preceded this flush ran on this very connection and committed before the
+	// flush's transaction opened. There is no second writer whose uncommitted
+	// insert this UPDATE could fail to see. The restamp itself is inside
+	// sqlTx, so a flush that fails leaves every event on the clock its
+	// recorder read.
+	//
+	// "Labelled with", not "written by" — the engine records some events under
+	// a cascade entry's transaction id (EmitTransitionAborted), and one whose
+	// label names no committing transaction is never stamped.
+	//
+	// A point-in-time sweep, not a write barrier: an event recorded after this
+	// statement runs keeps the clock its recorder read. It does not arise in
+	// the normal path — recordEvent runs on the goroutine driving the
+	// transaction, which is inside Commit here — but the property is "every
+	// event recorded before the commit phase", not "every event this
+	// transaction labels". Memory and postgres have the identical window.
+	//
+	// Served by idx_sm_events_tenant_tx (migration 000008); 000001's
+	// idx_sm_events_tx cannot serve it, because entity_id sits between the two
+	// columns constrained here.
+	_, err = sqlTx.ExecContext(ctx,
+		"UPDATE sm_audit_events SET timestamp = ? WHERE tenant_id = ? AND transaction_id = ?",
+		submitMicro, tid, tx.ID)
+	if err != nil {
+		return fmt.Errorf("stamp audit events: %w", err)
 	}
 
 	// Apply staged ScheduledTaskStore ops. Still inside sqlTx, which is what
@@ -774,8 +925,9 @@ func (m *transactionManager) Rollback(ctx context.Context, txID string) error {
 		delete(m.committing, txID)
 		delete(m.savepoints, txID)
 		delete(m.txUniqueKeys, txID)
-		delete(m.scheduledTaskOps, txID) // discard staged ops unapplied — see field doc
-		delete(m.supersededSaves, txID)  // discard staged superseded values unapplied — see field doc
+		delete(m.scheduledTaskOps, txID)        // discard staged ops unapplied — see field doc
+		delete(m.supersededSaves, txID)         // discard staged superseded values unapplied — see field doc
+		delete(m.deletedBufferedEntities, txID) // discard staged evicted entities unapplied — see field doc
 	}()
 	return nil
 }

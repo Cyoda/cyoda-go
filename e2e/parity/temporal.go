@@ -240,3 +240,92 @@ func RunTemporalGetAsAtPopulatesFullMeta(t *testing.T, fixture BackendFixture) {
 		t.Errorf("Meta.ID: got %q, want %q", got.Meta.ID, entityID.String())
 	}
 }
+
+// RunPITDeletedSinceInstant asserts that an entity deleted AFTER a captured
+// instant is still part of the model's snapshot at that instant, and absent
+// from the current (no pointInTime) listing. This is the edge a postgres
+// point-in-time read that enumerates live entities and probes each one's
+// revision — rather than walking every revision of every entity — must not
+// get wrong: a since-deleted entity has no live row to enumerate today, so
+// the read must still surface it for an instant that predates the delete.
+func RunPITDeletedSinceInstant(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "pit-deleted-since"
+	const modelVersion = 1
+	setupTemporalWorkflow(t, c, modelName, modelVersion)
+
+	id, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Temporal","amount":0,"status":"init"}`)
+	if err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+	instant := LatestChangeTime(t, c, id)
+
+	if err := c.DeleteEntity(t, id); err != nil {
+		t.Fatalf("DeleteEntity: %v", err)
+	}
+
+	atInstant, err := c.ListEntitiesByModelAt(t, modelName, modelVersion, instant)
+	if err != nil {
+		t.Fatalf("ListEntitiesByModelAt(instant): %v", err)
+	}
+	if len(atInstant) != 1 {
+		t.Fatalf("at the instant (before the delete): got %d entities, want 1", len(atInstant))
+	}
+	if atInstant[0].Meta.ID != id.String() {
+		t.Errorf("at the instant: got entity %q, want %q", atInstant[0].Meta.ID, id.String())
+	}
+
+	now, err := c.ListEntitiesByModel(t, modelName, modelVersion)
+	if err != nil {
+		t.Fatalf("ListEntitiesByModel (current): %v", err)
+	}
+	if len(now) != 0 {
+		t.Fatalf("now (after the delete): got %d entities, want 0", len(now))
+	}
+}
+
+// RunPITCreatedAfterInstant asserts that an entity created AFTER a captured
+// instant is absent from the model's snapshot at that instant. This is the
+// complementary edge to RunPITDeletedSinceInstant: an entity created after
+// the requested instant must not appear just because it is currently live.
+func RunPITCreatedAfterInstant(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "pit-created-after"
+	const modelVersion = 1
+	setupTemporalWorkflow(t, c, modelName, modelVersion)
+
+	seed, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Temporal","amount":0,"status":"init"}`)
+	if err != nil {
+		t.Fatalf("CreateEntity (seed): %v", err)
+	}
+	instant := LatestChangeTime(t, c, seed)
+
+	// Space the second create ≥2ms past the instant so it lands in a distinct
+	// millisecond on the commercial backend, which stores at millisecond
+	// precision — see pit_boundary.go for the rationale.
+	time.Sleep(2 * time.Millisecond)
+	later, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Temporal","amount":1,"status":"init"}`)
+	if err != nil {
+		t.Fatalf("CreateEntity (later): %v", err)
+	}
+
+	atInstant, err := c.ListEntitiesByModelAt(t, modelName, modelVersion, instant)
+	if err != nil {
+		t.Fatalf("ListEntitiesByModelAt(instant): %v", err)
+	}
+	if len(atInstant) != 1 {
+		t.Fatalf("at the instant (before the second create): got %d entities, want 1", len(atInstant))
+	}
+	for _, e := range atInstant {
+		if e.Meta.ID == later.String() {
+			t.Fatalf("an entity created after the instant (%s) appeared in the snapshot at it", later)
+		}
+	}
+	if atInstant[0].Meta.ID != seed.String() {
+		t.Errorf("at the instant: got entity %q, want the seed %q", atInstant[0].Meta.ID, seed.String())
+	}
+}

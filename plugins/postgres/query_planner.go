@@ -403,23 +403,63 @@ var directMetaColumns = map[string]bool{
 	"deleted":       true,
 }
 
+// directTemporalMetaColumns lists the canonical SourceMeta lifecycle-filter
+// paths ("creationDate", "lastUpdateTime") that now resolve to a native
+// TIMESTAMPTZ column — entities.creation_date/last_modified for current-state
+// reads, or the equivalently-named columns search_base.go's PIT `latest`
+// derived table projects — rather than an RFC3339 text value inside
+// doc->'_meta'. The values moved out of the document when the temporal
+// columns landed (entity_doc.go no longer serializes them), so SQL generation
+// for these two paths must resolve to the column directly; every other meta
+// path is still JSONB text and goes through metaJSONKey/jsonbExtractText
+// below. Checked BEFORE metaJSONKey in fieldExpr/orderByFieldExpr, but
+// metaJSONKey keeps these two entries anyway: validateOrderSpecs checks
+// membership in metaJSONKey to decide which meta paths are ACCEPTED at all,
+// a question this map does not answer.
+var directTemporalMetaColumns = map[string]string{
+	"creationDate":   "creation_date",
+	"lastUpdateTime": "last_modified",
+}
+
+// temporalEpochMillisExpr wraps a resolved field expression for a
+// CoerceTemporal comparison (temporalLeafToSQL, orderByFieldExpr's
+// OrderTemporal case). A direct TIMESTAMPTZ column (source==SourceMeta, path
+// in directTemporalMetaColumns) needs no text parse: a plain epoch
+// extraction, floored to the same millisecond resolution
+// cyoda_epoch_millis(text) uses for the JSONB-text form (migration 000005),
+// so a boundary comparison agrees bit-for-bit regardless of which branch
+// produced it — required for cross-backend parity with the epoch-ms-floored
+// comparison memory/sqlite perform. Every other temporal field is still
+// RFC3339 text inside JSONB and still needs cyoda_epoch_millis's text-regex
+// parse.
+func temporalEpochMillisExpr(source spi.FieldSource, path, resolved string) string {
+	if source == spi.SourceMeta {
+		if _, ok := directTemporalMetaColumns[path]; ok {
+			return "floor(extract(epoch from " + resolved + ") * 1000)::bigint"
+		}
+	}
+	return "cyoda_epoch_millis(" + resolved + ")"
+}
+
 // fieldExpr returns the SQL expression for accessing a field's text value.
 //
 // SourceMeta resolution order (mirrors orderByFieldExpr in searcher.go,
 // which resolves the same canonical meta paths for ORDER BY — do not
 // maintain a second mapping):
 //  1. Path "id" → the entity_id column directly (not in metaJSONKey).
-//  2. Path in metaJSONKey (canonical lifecycle-filter name, e.g.
-//     "creationDate") → doc->'_meta'->>'<storage-key>' using the mapped
-//     storage key (e.g. "creation_date"). Filter paths reaching this
-//     function are always canonical post-validation (ConditionToFilter /
-//     lifecycleToFilter build them, and unknown meta fields are rejected
-//     upstream), so this is the common case for meta filters.
-//  3. Path in directMetaColumns (internal/direct-column paths such as
+//  2. Path in directTemporalMetaColumns ("creationDate"/"lastUpdateTime") →
+//     the TIMESTAMPTZ column directly (see that map's doc comment).
+//  3. Path in metaJSONKey (canonical lifecycle-filter name, e.g.
+//     "transitionForLatestSave") → doc->'_meta'->>'<storage-key>' using the
+//     mapped storage key. Filter paths reaching this function are always
+//     canonical post-validation (ConditionToFilter / lifecycleToFilter build
+//     them, and unknown meta fields are rejected upstream), so this is the
+//     common case for meta filters.
+//  4. Path in directMetaColumns (internal/direct-column paths such as
 //     "entity_id", "tenant_id", "version" used by non-search internal
 //     filters) → the column name directly. Kept as a defensive fallback so
 //     existing internal callers using storage-column names don't regress.
-//  4. Otherwise → raw doc->'_meta'->>'<path>' (unreachable for validated
+//  5. Otherwise → raw doc->'_meta'->>'<path>' (unreachable for validated
 //     search filters; kept total for defensiveness).
 //
 // SourceData paths are extracted as doc->>'<path>' (or doc->'a'->>'b' for
@@ -433,6 +473,9 @@ func fieldExpr(f spi.Filter) string {
 	if f.Source == spi.SourceMeta {
 		if f.Path == "id" {
 			return "entity_id"
+		}
+		if col, ok := directTemporalMetaColumns[f.Path]; ok {
+			return col
 		}
 		if key, ok := metaJSONKey[f.Path]; ok {
 			return jsonbExtractText("doc->'_meta'", key)
@@ -796,9 +839,13 @@ func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 // require the column IS NOT NULL (a NULL/unparseable stored value never
 // matches a positive comparison); NE uses IS NULL OR != so a NULL/unparseable
 // stored value vacuously satisfies "not equal" (matching CompareTemporal's
-// vacuous-true-for-NE rule).
+// vacuous-true-for-NE rule). For creationDate/lastUpdateTime specifically
+// (directTemporalMetaColumns), the underlying column is NOT NULL, so the IS
+// NOT NULL guard is always true and NE's IS NULL OR arm is unreachable —
+// harmless, and kept rather than special-cased, so this function stays one
+// shape for every temporal field regardless of storage.
 func temporalLeafToSQL(f spi.Filter, counter *int) (string, []any) {
-	col := "cyoda_epoch_millis(" + fieldExpr(f) + ")"
+	col := temporalEpochMillisExpr(f.Source, f.Path, fieldExpr(f))
 	switch f.Op {
 	case spi.FilterBetween, spi.FilterBetweenInclusive:
 		if len(f.Values) < 2 {

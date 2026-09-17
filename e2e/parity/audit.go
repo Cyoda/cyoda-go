@@ -2,6 +2,7 @@ package parity
 
 import (
 	"testing"
+	"time"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
@@ -172,5 +173,90 @@ func RunAuditPostTxIdMatchesWorkflowFinished(t *testing.T, fixture BackendFixtur
 	}
 	if result["state"] != "CREATED" {
 		t.Errorf("expected state=CREATED in workflow finished response, got %v", result["state"])
+	}
+}
+
+// RunAuditCommitInstantSharedWithVersionHistory asserts that every audit event
+// belonging to one transaction reports that transaction's commit instant — so
+// the audit trail and the version history are on the same clock and cannot
+// drift apart or invert.
+//
+// Both halves of the comparison come from the same endpoint, which is what
+// makes the property expressible as a black-box parity scenario: the audit
+// response builds an EntityChange event's utcTime from the entity VERSION's
+// timestamp and a StateMachine event's utcTime from the SM EVENT's timestamp
+// (internal/domain/audit). Those are two different storage values, written at
+// two different moments — the version at commit, the event when the engine
+// recorded it, mid-transaction, from its own clock. Requiring them to be equal
+// requires the backend to have moved the event onto the commit instant.
+//
+// This is a cross-backend contract, not a postgres detail: the timestamp an
+// audit event reports is part of what a caller sees, so a backend reporting
+// the recording clock while another reports the commit instant is a
+// divergence to fix, not a difference to accept.
+func RunAuditCommitInstantSharedWithVersionHistory(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "audit-commit-instant"
+	const modelVersion = 1
+
+	setupSimpleWorkflow(t, c, modelName, modelVersion)
+
+	entityID, txID, err := c.CreateEntityWithTxID(t, modelName, modelVersion,
+		`{"name":"CommitInstant","amount":7,"status":"new"}`)
+	if err != nil {
+		t.Fatalf("CreateEntityWithTxID: %v", err)
+	}
+	if txID == "" {
+		t.Fatal("POST /entity returned empty transactionId")
+	}
+
+	auditResp, err := c.GetAuditEvents(t, entityID)
+	if err != nil {
+		t.Fatalf("GetAuditEvents: %v", err)
+	}
+
+	var (
+		entityChangeCount int
+		stateMachineCount int
+		reference         *client.AuditEvent
+	)
+	for i := range auditResp.Items {
+		ev := &auditResp.Items[i]
+		if ev.TransactionID != txID {
+			continue
+		}
+		switch ev.AuditEventType {
+		case "EntityChange":
+			entityChangeCount++
+		case "StateMachine":
+			stateMachineCount++
+		default:
+			continue
+		}
+		if reference == nil {
+			reference = ev
+			continue
+		}
+		if !ev.UtcTime.Equal(reference.UtcTime) {
+			t.Errorf("audit events of transaction %s report different instants: %s event at %s, %s event at %s — "+
+				"every event of one transaction must carry that transaction's commit instant",
+				txID, reference.AuditEventType, reference.UtcTime.Format(time.RFC3339Nano),
+				ev.AuditEventType, ev.UtcTime.Format(time.RFC3339Nano))
+		}
+	}
+
+	// Anti-vacuity: the comparison above is trivially satisfied by zero or one
+	// matching event, and is only meaningful when BOTH kinds are present —
+	// they are the two independently-written values the scenario exists to
+	// tie together.
+	if entityChangeCount < 1 {
+		t.Errorf("expected >= 1 EntityChange audit event for transaction %s, got %d — "+
+			"without one the instant comparison is vacuous", txID, entityChangeCount)
+	}
+	if stateMachineCount < 1 {
+		t.Errorf("expected >= 1 StateMachine audit event for transaction %s, got %d — "+
+			"without one the instant comparison is vacuous", txID, stateMachineCount)
 	}
 }

@@ -2,36 +2,115 @@ package postgres
 
 import "time"
 
+// pitBaseQueryTemplate is the point-in-time base SELECT. It is a named
+// constant for the same reason getPageCurrentQuery is: a later EXPLAIN
+// assertion needs to plan the query that ACTUALLY runs, not a copy that
+// drifts from it.
+//
+// Shape: one index probe per entity via idx_ev_bitemporal, instead of
+// DISTINCT ON walking every revision of every entity up to the instant.
+//
+// The inner subquery projects exactly what the former `latest` derived table
+// projected. The caller's pushdown condition and ORDER BY are generated with
+// BARE column names (query_planner.go fieldExpr, searcher.go
+// orderByFieldExpr) — `doc`, `entity_id`, `version`, `deleted`. Exposing both
+// `entities` and the lateral to those expressions would make `doc` ambiguous
+// and would silently resolve `version` against the entity's CURRENT row
+// rather than its row at the instant.
+//
+// The model predicate is repeated inside the lateral: model membership is a
+// property of the version row, and filtering only the entities row would move
+// that axis onto the entity's current model.
+//
+// version DESC is the final tiebreak. Every row a transaction writes shares
+// one valid_time and one transaction_time, so a delete-then-recreate in one
+// transaction ties on both keys; without the tiebreak the winner is arbitrary
+// and a plan change can flip it.
+//
+// $1 tenant, $2 entity name, $3 model version, $4 instant.
+//
+// The inner lateral aliases ev.transaction_time AS last_modified rather than
+// projecting ev.valid_time: entity_versions has no last_modified column of
+// its own (unlike entities), and this outer projection must match entities'
+// current-state shape column-for-column (doc, creation_date, last_modified)
+// so the two searchBaseQuery branches are interchangeable to every caller —
+// scanEntities, postgresIter.Next and GetPage(asAt) all read this result set
+// through that one shared shape.
+//
+// transaction_time, not valid_time, is also the deliberate choice
+// GetAsAt (entity_store.go) makes for the same reason: per this project's
+// definitions lastUpdateTime IS the submit instant (transaction_time) —
+// valid_time merely equals it for a normal change and is reserved for a
+// backdated write, not yet implemented. The two sites must agree; a caller
+// reading the same version through either path cannot tell them apart from
+// the reported date. GetVersionByTransaction (via unmarshalEntityVersion)
+// agrees with both: its EntityVersion.Timestamp is valid_time — inherently
+// so, being the instant that specific revision became effective — while its
+// embedded Entity's LastModifiedDate is transaction_time, the same field
+// taking its value from the same column as here. The two columns are equal
+// for every write today (no backdating yet), so the distinction only becomes
+// observable when backdating lands; see unmarshalEntityVersion's doc comment
+// for why LastModifiedDate must not be fed from valid_time.
+const pitBaseQueryTemplate = `SELECT doc, creation_date, last_modified FROM (
+                SELECT v.doc, v.entity_id, v.version, v.model_name, v.model_version,
+                       v.creation_date, v.last_modified
+                FROM entities e
+                CROSS JOIN LATERAL (
+                  SELECT ev.doc, ev.entity_id, ev.version, ev.model_name, ev.model_version,
+                         ev.creation_date, ev.transaction_time AS last_modified
+                  FROM entity_versions ev
+                  WHERE ev.tenant_id = e.tenant_id AND ev.entity_id = e.entity_id
+                    AND ev.model_name = $2 AND ev.model_version = $3
+                    AND ev.valid_time <= $4
+                    AND ev.transaction_time <= CURRENT_TIMESTAMP
+                  ORDER BY ev.valid_time DESC, ev.transaction_time DESC, ev.version DESC
+                  LIMIT 1
+                ) v
+                WHERE e.tenant_id = $1 AND e.model_name = $2 AND e.model_version = $3
+             ) latest
+             WHERE (doc->'_meta'->>'deleted')::boolean IS NOT TRUE`
+
 // searchBaseQuery builds the base SELECT over a model for current-state
 // (pit == nil) or point-in-time (pit != nil) reads. The outer projection is
-// always `SELECT doc` (one column) — the S-1 invariant the row scanner
-// (postgresIter, grouped_stats.go) depends on.
+// always exactly `doc, creation_date, last_modified`, in that order — the
+// S-1 invariant the row scanners (scanEntities, entity_store.go; and
+// postgresIter.Next, searcher.go) depend on. This replaces the old
+// single-column `SELECT doc` invariant: the temporal values now live in
+// columns rather than in the document (entity_doc.go), so the scanners need
+// those columns projected alongside doc, and both branches below — and every
+// other query built from the same shape (getPageCurrentQuery) — must agree
+// on this exact column list and order. A caller reordering or dropping a
+// column here without updating the scanners compiles cleanly and silently
+// swaps or zeroes reported dates, because pgx.Rows.Scan has no column-name
+// cross-check against its destination arguments.
 //
 // Positional args: $1 tenant, $2 entityName, $3 modelVersion, and for PIT
 // $4 the snapshot time. Callers append a pushdown WHERE fragment with
 // shiftPlaceholders(frag, len(args)) and (for Search) ORDER BY / LIMIT / OFFSET.
 //
-// PIT uses the canonical inclusive bound valid_time <= $4 (no rounding).
+// PIT uses the canonical inclusive bound valid_time <= $4 (no rounding), and
+// follows entities: one lateral probe per row in `entities` rather than a
+// DISTINCT ON over all of entity_versions. The equivalence to the old,
+// revision-walking form rests on entities holding a row for every entity
+// that ever existed (Save/Delete never remove it) and a tombstone version
+// being filtered by the same deleted check either way — plus one property
+// this file does not itself provide: an entity's model reference never
+// changing after it is first set. That invariant belongs to Save's
+// model-reference handling, not to this query, and IS now enforced there:
+// the entities upsert's WHERE guard refuses to change model_name/
+// model_version on an existing row, returning spi.ErrEntityModelMismatch
+// instead (entity_store.go's saveOn). This lateral repeats the model
+// predicate against every version it probes (see below) relying on that
+// enforcement — a version written under a DIFFERENT model than the entity's
+// current one is unreachable by construction, not merely by convention.
+//
 // Shared by Iterate and Search so both stay in lock-step.
 func (s *entityStore) searchBaseQuery(entityName, modelVersion string, pit *time.Time) (string, []any) {
 	tid := string(s.tenantID)
 	if pit != nil {
-		// Bi-temporal snapshot: inner DISTINCT ON picks the latest version per
-		// entity visible at the snapshot; outer drops deletion-marker versions
-		// AFTER the DISTINCT ON (so a delete shadows an older live version).
-		baseQuery := `SELECT doc FROM (
-		                SELECT DISTINCT ON (entity_id)
-		                       entity_id, model_name, model_version, version, doc
-		                FROM entity_versions
-		                WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3
-		                  AND valid_time <= $4
-		                  AND transaction_time <= CURRENT_TIMESTAMP
-		                ORDER BY entity_id, valid_time DESC, transaction_time DESC
-		             ) latest
-		             WHERE (doc->'_meta'->>'deleted')::boolean IS NOT TRUE`
-		return baseQuery, []any{tid, entityName, modelVersion, *pit}
+		return pitBaseQueryTemplate, []any{tid, entityName, modelVersion, *pit}
 	}
-	baseQuery := `SELECT doc
+	baseQuery := `SELECT doc, creation_date, last_modified
 		             FROM entities
 		             WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted`
 	return baseQuery, []any{tid, entityName, modelVersion}

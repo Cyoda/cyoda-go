@@ -338,8 +338,8 @@ func TestPGSearcher_OrderByNumericData(t *testing.T) {
 }
 
 // TestPGSearcher_OrderByCreationDateMeta verifies that the canonical meta path
-// "creationDate" is mapped to the blob key "creation_date", enabling temporal
-// ordering by entity creation time.
+// "creationDate" is mapped to the entities.creation_date column, enabling
+// temporal ordering by entity creation time.
 //
 // Entity IDs are assigned so that chronological (creationDate) order DIFFERS
 // from entity_id lexicographic order: "z" is oldest, "m" is middle, "a" is
@@ -363,9 +363,11 @@ func TestPGSearcher_OrderByCreationDateMeta(t *testing.T) {
 			t.Fatalf("Save %s: %v", id, err)
 		}
 	}
-	// Patch creation_date directly so each entity has a distinct, ordered
-	// timestamp (instants ≥ 1 ms apart). "z" is oldest, "a" is newest —
-	// the inverse of entity_id lexicographic order.
+	// Patch the creation_date COLUMN directly so each entity has a distinct,
+	// ordered timestamp (instants ≥ 1 ms apart). "z" is oldest, "a" is
+	// newest — the inverse of entity_id lexicographic order. The column,
+	// not doc->'_meta'->>'creation_date', is the source of truth
+	// (entity_doc.go no longer serializes the date into the document).
 	pool := factory.Pool()
 	for _, pair := range []struct{ id, ts string }{
 		{"z", "2020-01-01T00:00:00.000Z"},
@@ -373,7 +375,7 @@ func TestPGSearcher_OrderByCreationDateMeta(t *testing.T) {
 		{"a", "2021-01-01T00:00:00.000Z"},
 	} {
 		if _, err := pool.Exec(ctx,
-			`UPDATE entities SET doc = jsonb_set(doc, '{_meta,creation_date}', to_jsonb($1::text))
+			`UPDATE entities SET creation_date = $1::timestamptz
 			 WHERE tenant_id = $2 AND entity_id = $3`,
 			pair.ts, tenant, pair.id); err != nil {
 			t.Fatalf("patch creation_date %s: %v", pair.id, err)
@@ -596,7 +598,11 @@ func TestPGSearcher_OrderByPointInTime(t *testing.T) {
 		}
 	}
 	// Patch entity_versions: set valid_time before the PIT snapshot and set
-	// distinct creation_date values so temporal ordering is deterministic.
+	// distinct creation_date COLUMN values so temporal ordering is
+	// deterministic. The column, not doc->'_meta'->>'creation_date', is the
+	// source of truth (entity_doc.go no longer serializes the date into the
+	// document); the PIT base query's lateral projects ev.creation_date
+	// directly (search_base.go).
 	pool := factory.Pool()
 	for _, pair := range []struct{ id, ts, createdAt string }{
 		{"pit-1", baseTS, "2020-01-01T00:00:00Z"},
@@ -605,7 +611,7 @@ func TestPGSearcher_OrderByPointInTime(t *testing.T) {
 		if _, err := pool.Exec(ctx,
 			`UPDATE entity_versions
 			 SET valid_time = $1,
-			     doc = jsonb_set(doc, '{_meta,creation_date}', to_jsonb($2::text))
+			     creation_date = $2::timestamptz
 			 WHERE tenant_id = $3 AND entity_id = $4`,
 			pair.ts, pair.createdAt, tenant, pair.id); err != nil {
 			t.Fatalf("patch entity_versions %s: %v", pair.id, err)

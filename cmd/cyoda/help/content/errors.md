@@ -67,6 +67,7 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.DISPATCH_TIMEOUT` — `503` — retryable (see note) — compute member did not respond within the dispatch timeout; completion on the remote node is not guaranteed
 - `errors.DUPLICATE_AGGREGATION_ALIAS` — `400` — not retryable — two grouped-stats aggregations over different `(op, field)` pairs resolve to the same response key
 - `errors.DUPLICATE_GROUP_BY` — `400` — not retryable — the same grouped-stats `groupBy` dimension was listed twice
+- `errors.ENTITY_MODEL_MISMATCH` — `400` — not retryable — a save targeted an existing entity under a different model; an entity's model is fixed at creation
 - `errors.ENTITY_MODIFIED` — `412` — not retryable — `If-Match`-guarded entity update rejected; supplied transaction ID does not match the entity's current version
 - `errors.ENTITY_NOT_FOUND` — `404` — not retryable — entity UUID does not exist or is not accessible to the caller
 - `errors.EPOCH_MISMATCH` — `409` — retryable — writing node's cached shard epoch is stale; another node has since taken ownership

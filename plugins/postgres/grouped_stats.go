@@ -31,9 +31,9 @@ import (
 // Decline cases (return spi.ErrAggregationNotPushdownable):
 //   - Filter has a residual (post-aggregation residual application can't
 //     reconstruct per-bucket counts safely).
-//   - opts.PointInTime is set (PIT GROUP BY would need a DISTINCT ON wrapper;
-//     out of scope for v1 — service layer falls through to streaming tally
-//     over Iterate, which DOES support PIT).
+//   - opts.PointInTime is set (PIT GROUP BY would need the same lateral-join
+//     wrapper searchBaseQuery uses; out of scope for v1 — service layer falls
+//     through to streaming tally over Iterate, which DOES support PIT).
 //
 // Cardinality detection (D17): LIMIT MaxBuckets+1 and surface
 // ErrGroupCardinalityExceeded the moment we observe MaxBuckets+1 rows.
@@ -51,11 +51,12 @@ var _ spi.GroupedAggregator = (*entityStore)(nil)
 // filter parts go into SQL WHERE; the residual is applied inside Next() via
 // evalPostFilter.
 //
-// PointInTime (when non-nil) walks entity_versions at the requested snapshot
-// using DISTINCT ON to surface only the latest visible version per entity,
-// then excludes deletion-marker versions. It is committed-only — it ignores any
-// ambient transaction and runs through committedQuerier (search_base.go), like
-// GetAsAt/GetPage(asAt) and Search with a PointInTime.
+// PointInTime (when non-nil) follows entities: a lateral join probes
+// entity_versions once per row in entities to surface the latest version
+// visible at the requested snapshot, then excludes deletion-marker versions.
+// It is committed-only — it ignores any ambient transaction and runs through
+// committedQuerier (search_base.go), like GetAsAt/GetPage(asAt) and Search
+// with a PointInTime.
 //
 // Ordering: empty OrderBy means unspecified (a deterministic entity_id
 // COLLATE "C" order is still emitted — a conformant, if stronger-than-
@@ -306,11 +307,12 @@ func (it *postgresIter) Next() bool {
 			return false
 		}
 		var doc []byte
-		if err := it.rows.Scan(&doc); err != nil {
+		var creationDate, lastModified time.Time
+		if err := it.rows.Scan(&doc, &creationDate, &lastModified); err != nil {
 			it.err = fmt.Errorf("scan iterate row: %w", err)
 			return false
 		}
-		e, err := unmarshalEntityDoc(doc)
+		e, err := unmarshalEntityDoc(doc, creationDate, lastModified)
 		if err != nil {
 			it.err = fmt.Errorf("unmarshal iterate row: %w", err)
 			return false

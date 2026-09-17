@@ -2,6 +2,125 @@
 
 All notable changes to Cyoda-Go are documented here. The project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) conventions and [Semantic Versioning](https://semver.org/) — pre-1.0, where the minor component signals a breaking change and new features ship in patches (see [README — Versioning](./README.md#versioning)).
 
+## [Unreleased]
+
+### Added
+
+- **`ENTITY_MODEL_MISMATCH` (`400`).** An entity's model reference — its
+  model name and version — is fixed at creation and never changes for the
+  life of the entity ID, including across delete and recreate. A save that
+  names a different model is rejected with this code instead of silently
+  rewriting which model the entity's history belongs to. All three in-tree
+  backends enforce it (they all overwrote before), and the SPI conformance
+  suite obliges every backend to. Rewriting the reference stranded the
+  entity's earlier-model history: a point-in-time read issued under the
+  original model lost the entity entirely, with no error. No current
+  request can construct such a write — creating an entity mints a fresh ID
+  and updating one carries the stored model forward — so the code should
+  never appear in a real response; see `cyoda help errors
+  ENTITY_MODEL_MISMATCH`, and `docs/cloud-parity/entity-model-is-immutable.md`
+  for the Cloud-facing contract.
+
+- **Durable transaction submit times (PostgreSQL).** The commit instant is
+  recorded in a new `submit_times` table inside the committing transaction,
+  alongside the existing in-process map. `GetSubmitTime` — and therefore
+  `GET /entity/{id}/transitions?transactionId=`, its only server-side
+  caller — now answers on **any node** and after a restart, not only on the
+  node that committed. (`GET /entity/{id}?transactionId=` resolves through
+  `GetVersionByTransaction` instead and was never node-local.) The
+  1-hour retention is unchanged; pruning runs after commit rather than
+  inside it.
+
+### Changed
+
+- **A write is dated at the instant its transaction commits, not at the
+  instant it started.** This changes the timestamps PostgreSQL-backed
+  deployments report. `CURRENT_TIMESTAMP` is fixed at transaction start, so
+  a transaction that opened at T0 and committed at T0+30s previously dated
+  its writes T0; they are now dated T0+30s. The change covers `valid_time`,
+  `transaction_time`, the reported `creationDate` / `lastUpdateTime`, the
+  recorded submit time, and audit-event timestamps, and every row a
+  transaction writes shares one instant. sqlite already dated every one of
+  those values at commit, and memory all but one (see the `creationDate`
+  fix below), so this brings PostgreSQL into line with a contract the other
+  in-tree backends substantially already met rather than introducing a new
+  one — but a client that compared a stored `creationDate` against its own
+  clock will see the value move later.
+  `wall_clock_time` is unchanged: it stays the physical moment of
+  insertion. `docs/CONSISTENCY.md` §1a states the rule and its one
+  residual window.
+
+- **PostgreSQL migrations `000011`, `000012` and `000013`, and SQLite
+  `000008`.** On PostgreSQL: the model index on `entities` is rebuilt
+  without its partial predicate (a point-in-time read must see entities
+  deleted since the instant); `entity_versions` and `entities` gain the
+  temporal and transaction-id columns, backfilled from the documents;
+  `entity_versions` gains a foreign key to `entities`, so a version row
+  can no longer outlive the entity row a point-in-time read finds it
+  through; `submit_times` is created; and both backends index audit events
+  by `(tenant_id, transaction_id)`. **Operators: schedule a maintenance
+  window** — the index builds block writers, and the column backfill
+  scales with history. See `docs/plugins/POSTGRES.md`.
+
+### Fixed
+
+- **A point-in-time read costs what the model costs, not what the history
+  costs (PostgreSQL).** The point-in-time base query resolved the latest
+  revision per entity with `DISTINCT ON (entity_id)` over
+  `entity_versions`, so the planner walked every revision of every entity
+  up to the instant and applied the caller's condition afterwards — a
+  point-in-time search, an async snapshot scan and grouped statistics at an
+  instant all scaled with the length of the history. The query now
+  enumerates the model's entities and probes each one's revision through a
+  lateral join into the bi-temporal index. On 10,000 entities of 250
+  revisions, a search whose condition matches one entity went from 4.9 s to
+  178 ms; an unbounded scan from 2.0 s to 150 ms. Results are unchanged.
+
+- **Two reads at the same point in time can no longer disagree
+  (PostgreSQL).** Because a write was dated when its transaction started, a
+  read at an instant between a transaction's start and its commit missed
+  its writes while the same read after the commit found them — the past
+  changed after it had been served. Dating at commit closes that window
+  down to the commit itself.
+
+- **An audit event reports its transaction's commit instant on every
+  backend.** memory and sqlite reported the clock of whichever process
+  recorded the event, so an entity's audit trail could drift from — or
+  invert against — its own version history. A cross-backend parity
+  scenario now pins the two together. Events the engine labels with a
+  cascade entry's transaction rather than the recording one keep the
+  recording process's clock; they were never stamped before either.
+
+- **A caller-supplied `creationDate` is ignored on every backend (memory).**
+  An entity's creation date belongs to the store, but the memory backend
+  kept a non-zero value supplied on the entity and only substituted its own
+  clock for a zero one. The engine always supplies one — it builds the
+  entity from its own clock before the transaction is even opened — so a
+  created entity reported a `creationDate` dated at the *start* of the
+  write, the gap being the whole transaction lifetime including processor
+  callouts. That is the same defect this release removes from PostgreSQL,
+  left standing on the one backend nothing checked. sqlite and postgres
+  already ignored the caller. A new SPI conformance case,
+  `Save/CallerCreationDateIgnored`, pins it on every backend and covers the
+  transactional and non-transactional write paths separately.
+
+- **A non-transactional `Save` and `Delete` are each one transaction
+  (PostgreSQL).** Both ran as separate auto-committed statements: `Save`
+  inserted the `entities` row with a `'null'::jsonb` placeholder before
+  updating it, so a concurrent reader could observe `doc = 'null'` and a
+  process death could leave `entities` updated without its version row;
+  `Delete` could leave a tombstone version recorded for a delete the
+  `entities` table never applied. Each now runs in a transaction of its
+  own. A concurrent non-transactional `Save` and `Delete` on the same
+  entity can now deadlock on opposite lock orders; PostgreSQL breaks the
+  cycle and the loser gets the same retryable `409 CONFLICT` any other lock
+  conflict produces — a new failure mode, not a new outcome.
+
+- **`transitions?transactionId=` resolves a `CompareAndSave` write.** The
+  endpoint derives a point in time from the transaction's submit time;
+  because `CompareAndSave` dated its version after that submit time, the
+  lookup could miss its own write.
+
 ## [0.8.4] — 2026-09-09
 
 ### Breaking

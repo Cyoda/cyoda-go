@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +19,11 @@ import (
 )
 
 const submitTimeTTL = 1 * time.Hour
+
+// submitTimePruneInterval rate-limits the submit_times table housekeeping
+// delete (see pruneSubmitTimes) to at most once per interval, rather than
+// running it on every commit.
+const submitTimePruneInterval = 5 * time.Minute
 
 // submitTimeEntry pairs a committed transaction's submit time with the
 // tenant that owns it, so GetSubmitTime can enforce the same tenant gate
@@ -59,6 +65,11 @@ type TransactionManager struct {
 	txStates   map[string]*txState
 	// acquireTimeout bounds Begin's wait for a pooled connection.
 	acquireTimeout time.Duration
+	// lastSubmitTimePruneNano rate-limits pruneSubmitTimes (UnixNano since
+	// epoch; zero means "never pruned"). Accessed without tm.mu: it gates an
+	// independent housekeeping statement on the pool, not the maps tm.mu
+	// protects, so a plain atomic keeps the common (skip) path lock-free.
+	lastSubmitTimePruneNano atomic.Int64
 }
 
 // TransactionManagerOption configures a TransactionManager at construction.
@@ -226,15 +237,17 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		}
 	}
 
-	// Capture the database timestamp before committing.
+	// Fix the transaction's instant and stamp it onto every row the
+	// transaction wrote, immediately before COMMIT.
+	//
 	// If the transaction is already in an aborted state (e.g. an earlier Exec
-	// returned 40001 and left the tx aborted), the SELECT will fail with
-	// SQLSTATE 25P02 (in_failed_sql_transaction). In that case we rollback
-	// and surface ErrConflict, since the abort was most likely caused by a
-	// serialization failure. We use time.Now() as a stand-in; it is never
-	// stored on an error path.
-	var submitTime time.Time
-	if tsErr := pgxTx.QueryRow(ctx, "SELECT CURRENT_TIMESTAMP").Scan(&submitTime); tsErr != nil {
+	// returned 40001 and left the tx aborted), the first statement of the
+	// stamp will fail with SQLSTATE 25P02 (in_failed_sql_transaction). In that
+	// case we rollback and surface ErrConflict, since the abort was most
+	// likely caused by a serialization failure — the same classification the
+	// bare timestamp probe this replaced already had.
+	submitTime, tsErr := tm.stampCommitInstant(ctx, pgxTx, state.tenantID, txID)
+	if tsErr != nil {
 		tm.cleanupTx(txID)
 		// Only classify as ErrConflict when the probe fails specifically because
 		// the transaction is already in an aborted state (SQLSTATE 25P02:
@@ -253,11 +266,20 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 			}
 			return fmt.Errorf("%w: Commit: transaction aborted: %w", spi.ErrConflict, tsErr)
 		}
-		// For non-25P02 errors (e.g. network failures, context deadline exceeded)
-		// roll back with a fresh context so we don't leak the connection, then
-		// return the raw error without wrapping it as ErrConflict.
+		// For non-25P02 errors: roll back with a fresh context so we don't leak
+		// the connection, then classify before returning. classifyError only
+		// reclassifies specific SQLSTATEs (40001/40P01 to spi.ErrConflict,
+		// transport-loss shapes to the idle-in-tx marker) and passes everything
+		// else through unchanged, so a genuine transient infrastructure error
+		// (context cancellation, network failure) still isn't misreported as
+		// retryable. Every statement in stampCommitInstant is currently scoped
+		// to this transaction's own rows and so shouldn't itself raise 40001 —
+		// but that scoping is a property of the SQL text, not something this
+		// error path can verify, so classification stays generic rather than
+		// assuming today's statements are the only ones this function will
+		// ever run.
 		_ = pgxTx.Rollback(context.Background())
-		return fmt.Errorf("Commit: failed to capture submit time: %w", tsErr)
+		return fmt.Errorf("Commit: failed to stamp the commit instant: %w", classifyError(tsErr))
 	}
 
 	if err := pgxTx.Commit(ctx); err != nil {
@@ -268,6 +290,11 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		tm.cleanupTx(txID)
 		return tm.classifyCommitError(txID, fmt.Errorf("Commit: %w", err))
 	}
+
+	// Table housekeeping, deliberately AFTER commit and on the pool, never
+	// inside pgxTx — see pruneSubmitTimes for why sharing this transaction's
+	// snapshot would let unrelated tenants' commits abort each other.
+	tm.pruneSubmitTimes(ctx)
 
 	// Record the submit time BEFORE cleanupTx removes the active-tx state:
 	// a concurrent GetSubmitTime racing this Commit then observes the tx in
@@ -289,6 +316,191 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	tm.cleanupTx(txID)
 
 	return nil
+}
+
+// stampCommitInstant fixes the transaction's instant and applies it to every
+// row the transaction wrote, immediately before COMMIT.
+//
+// CURRENT_TIMESTAMP is fixed at transaction START, so it dates a write when
+// the transaction opened rather than when it became visible. clock_timestamp()
+// read here is the closest a transaction can get to its own commit instant.
+//
+// The rows are found by transaction_id rather than from the in-memory write
+// set, which is not authoritative: after a savepoint rollback the write set
+// and the table disagree, and the table is right.
+//
+// Lock note: validateInChunks' FOR SHARE covers the READ set; the entity and
+// version updates touch rows this transaction already holds exclusively, so no
+// lock upgrade occurs and they cannot deadlock against the validation that
+// precedes them. That reasoning holds only while each WHERE stays scoped to
+// rows this transaction actually wrote.
+//
+// The audit update is the one statement that is NOT so scoped — it matches by
+// LABEL (see its own comment), and an event can be labelled with a transaction
+// that did not record it. It is still safe, but for a second reason rather than
+// the first: this transaction runs at REPEATABLE READ, so a row another
+// transaction inserted after this snapshot is invisible here and is not
+// locked at all, and a visible row concurrently modified raises 40001
+// (→ spi.ErrConflict) instead of waiting. Audit rows are otherwise
+// append-only, so nothing else ever holds one under a conflicting lock.
+//
+// Five things would break this reasoning: widening any WHERE beyond this
+// transaction's own rows; moving the stamp before the validation while that
+// validation still takes FOR SHARE on rows the stamp updates; adding a
+// statement that locks a row this transaction only read; a future FK, trigger
+// or index on the stamped columns that reaches a parent row; and — the one
+// already live above — a statement whose WHERE matches rows this transaction
+// did not write, which needs its own argument every time it is added.
+func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx, tenantID spi.TenantID, txID string) (time.Time, error) {
+	var instant time.Time
+	if err := tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&instant); err != nil {
+		return time.Time{}, fmt.Errorf("read commit instant: %w", err)
+	}
+	tid := string(tenantID)
+
+	// creation_date is stamped on EVERY row of an entity whose first version
+	// belongs to this transaction — not only on version 1. A transaction that
+	// creates an entity and then updates it carries the creation date forward
+	// by reading inside the transaction, so the later version holds the
+	// provisional value; stamping only version 1 would leave them disagreeing.
+	//
+	// The CASE must stay conditional in BOTH directions. By the time this runs,
+	// the version INSERT already sources creation_date by sub-select from the
+	// entity's own entities.creation_date, so a version written by a LATER
+	// transaction correctly inherits the entity's original creation date.
+	// Replacing this CASE with an unconditional SET creation_date = $1 would
+	// restamp every updated entity's creation as that update's instant — which
+	// is exactly the defect found when this column was first projected into
+	// reads: history reporting when a revision was written rather than when the
+	// entity was created, and diverging from the memory backend, which
+	// preserves the original.
+	if _, err := tx.Exec(ctx,
+		`UPDATE entity_versions SET valid_time = $1, transaction_time = $1,
+		        creation_date = CASE WHEN entity_id IN (
+		            SELECT entity_id FROM entity_versions
+		             WHERE tenant_id = $2 AND transaction_id = $3 AND version = 1
+		        ) THEN $1 ELSE creation_date END
+		  WHERE tenant_id = $2 AND transaction_id = $3`,
+		instant, tid, txID); err != nil {
+		return time.Time{}, fmt.Errorf("stamp entity versions: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE entities e SET last_modified = $1,
+		        creation_date = CASE WHEN EXISTS (
+		            SELECT 1 FROM entity_versions v
+		             WHERE v.tenant_id = e.tenant_id AND v.entity_id = e.entity_id
+		               AND v.transaction_id = $3 AND v.version = 1
+		        ) THEN $1 ELSE e.creation_date END
+		  WHERE e.tenant_id = $2 AND e.entity_id IN (
+		            SELECT entity_id FROM entity_versions
+		             WHERE tenant_id = $2 AND transaction_id = $3)`,
+		instant, tid, txID); err != nil {
+		return time.Time{}, fmt.Errorf("stamp entities: %w", err)
+	}
+
+	// Audit events LABELLED with this transaction share its instant, so the
+	// audit trail and the version history cannot drift apart or invert.
+	//
+	// "Labelled with", not "written by", and the difference is real rather
+	// than pedantic: the engine records some events under a transaction id
+	// that is not the one recording them — EmitTransitionAborted carries the
+	// CASCADE ENTRY's id (internal/domain/workflow, reached both from the
+	// engine after a segment flush has already failed and from the entity
+	// service with its own clock and possibly no ambient transaction). Such an
+	// event is matched here if its label happens to name a transaction that
+	// later commits, and is otherwise never stamped at all: it keeps the
+	// recording process's clock while being ordered, and now reported, from
+	// this column. No value regresses — nothing stamped it before either —
+	// but the audit trail is not uniformly on the commit clock, and claiming
+	// otherwise would be false.
+	//
+	// This is also a point-in-time sweep rather than a write barrier: an
+	// INSERT into this table after this statement, in this same transaction,
+	// is not matched and keeps its recorded clock. It does not arise in the
+	// normal path — recordEvent runs on the goroutine driving the transaction,
+	// which is inside Commit here — but the property is "every event recorded
+	// before the commit phase", not "every event this transaction labels".
+	// The index this filters on is idx_sm_events_tenant_tx (migration 000013);
+	// 000001's idx_sm_events_tx cannot serve it, because entity_id sits
+	// between the two columns constrained here.
+	if _, err := tx.Exec(ctx,
+		`UPDATE sm_audit_events SET timestamp = $1
+		  WHERE tenant_id = $2 AND transaction_id = $3`,
+		instant, tid, txID); err != nil {
+		return time.Time{}, fmt.Errorf("stamp audit events: %w", err)
+	}
+
+	// The durable record of the same instant: the in-process map answers only
+	// on the node that committed, and only until a restart.
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO submit_times (tenant_id, tx_id, submit_time) VALUES ($1, $2, $3)
+		 ON CONFLICT (tenant_id, tx_id) DO UPDATE SET submit_time = EXCLUDED.submit_time`,
+		tid, txID, instant); err != nil {
+		return time.Time{}, fmt.Errorf("record submit time: %w", err)
+	}
+
+	return instant, nil
+}
+
+// pruneSubmitTimes deletes expired submit_times rows on the pool, called
+// only AFTER the caller's own commit has already succeeded — never from
+// inside pgxTx/stampCommitInstant.
+//
+// It must run outside the committing transaction. Every other statement in
+// stampCommitInstant is scoped to this transaction's own rows, by
+// tenant_id+transaction_id (see that function's lock-note comment); two
+// concurrent commits can never touch the same row there. A DELETE scoped
+// only by submit_time has no such boundary: two concurrent commits whose
+// expiry ranges overlap the same stale row would serialize under
+// REPEATABLE READ, and the loser gets 40001 — meaning two commits from
+// completely unrelated tenants could abort each other over shared
+// housekeeping, on the hot commit path of a system whose primary target is
+// multi-node with concurrent writers. Running this as an independent
+// statement, after commit, on its own connection, removes that coupling: it
+// can now only conflict with another concurrent prune, and even then it
+// just loses this window and tries again next time (see the rate limit and
+// the swallowed error below).
+//
+// Rate-limited to once per submitTimePruneInterval: this is opportunistic
+// housekeeping like the in-process map's own sweep in Commit, not a
+// per-commit obligation, so almost every commit skips it after one atomic
+// load. idx_submit_times_pruning (migration 000012) keeps the occasional
+// real delete a bounded range scan rather than a full-table scan.
+//
+// Failure is logged and swallowed, never returned: a business commit that
+// has already succeeded must not be reported as failed because deleting old
+// bookkeeping rows didn't work.
+//
+// The DELETE carries no tenant predicate on purpose — this is global
+// housekeeping over every tenant's expired rows, not a tenant-scoped
+// operation — which, like getSubmitTimeFromTable's read, requires the
+// owner role this plugin runs as. Under a non-owner, RLS-subject role
+// (not a supported posture: see rls_test.go and getSubmitTimeFromTable)
+// the policy would admit no row, this would delete nothing on every run,
+// and nothing would say so: zero rows deleted is not an error, and the
+// error path here is swallowed by design.
+func (tm *TransactionManager) pruneSubmitTimes(ctx context.Context) {
+	now := time.Now()
+	last := tm.lastSubmitTimePruneNano.Load()
+	if now.Sub(time.Unix(0, last)) < submitTimePruneInterval {
+		return
+	}
+	if !tm.lastSubmitTimePruneNano.CompareAndSwap(last, now.UnixNano()) {
+		return // another goroutine already claimed this window
+	}
+
+	// A fresh, short-lived context: the caller's Commit is about to return
+	// its own result regardless of this outcome, so this must not inherit a
+	// deadline or cancellation meant for the business transaction — and must
+	// not be allowed to hang indefinitely either.
+	pruneCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if _, err := tm.pool.Exec(pruneCtx,
+		`DELETE FROM submit_times WHERE submit_time < $1`,
+		now.Add(-submitTimeTTL)); err != nil {
+		slog.Warn("prune submit_times failed", "pkg", "postgres", "err", err)
+	}
 }
 
 // Rollback aborts the transaction.
@@ -390,8 +602,65 @@ func (tm *TransactionManager) GetSubmitTime(ctx context.Context, txID string) (t
 		}
 		return time.Time{}, fmt.Errorf("transaction not yet committed: %s", txID)
 	default:
+		return tm.getSubmitTimeFromTable(ctx, txID)
+	}
+}
+
+// getSubmitTimeFromTable answers a lookup that missed both in-process maps:
+// a transaction this node never began or committed, because it committed on
+// a different node, or because this node restarted since. The map is
+// node-local and dies with the process; the submit_times table (written
+// inside Commit, see stampCommitInstant) is the durable authority a lookup
+// routed anywhere, at any time after commit, resolves from.
+//
+// The row's own tenant_id is read unconditionally — the query is not scoped
+// to the caller's tenant — so that a cross-tenant caller is told "wrong
+// tenant" rather than the misleading "not found": verifyTenant runs against
+// whatever tenant actually owns the row, exactly like the committed and
+// active branches above run it against tenant state they already hold.
+// Reporting node-local ignorance as ErrTxNotFound instead of consulting the
+// table would be a wrong definitive answer, which this project's
+// correctness-over-availability design rejects.
+//
+// Role posture — this read requires a database role NOT subject to RLS.
+// Like every other pool-routed statement in this plugin it carries no
+// app.current_tenant GUC (set_config's is_local flag scopes that setting to a
+// transaction, so no non-transactional statement has ever carried it), and
+// submit_times has a tenant-isolation policy like every other table. That is
+// safe in the posture cyoda-go actually runs and supports: the application
+// connects as the table owner, RLS is ENABLEd but not FORCEd (migrate_test.go
+// pins both), and an owner bypasses every policy. A non-owner, RLS-subject
+// role is NOT a supported deployment today — see rls_test.go — and this
+// lookup is one of the reasons: under such a role
+// current_setting('app.current_tenant', true) is NULL on a pooled connection,
+// the policy admits no row, and this function would answer ErrTxNotFound for
+// a transaction that demonstrably committed. That is a wrong definitive
+// answer, not a degraded one, so the non-owner mode cannot be enabled by
+// changing this query: it needs the tenant set on the pool path for the whole
+// plugin (a pgxpool AfterConnect/BeforeAcquire hook) before any pool-routed
+// read can be trusted under RLS.
+func (tm *TransactionManager) getSubmitTimeFromTable(ctx context.Context, txID string) (time.Time, error) {
+	var tenantID string
+	var submit time.Time
+	// The table's primary key is (tenant_id, tx_id), not tx_id alone, so this
+	// WHERE tx_id = $1 is a query, not a key lookup. It's safe only because
+	// txID is a fresh UUID minted per Begin (see NewTransactionManager's
+	// uuids field) and collision across tenants is astronomically unlikely;
+	// LIMIT 1 makes that assumption explicit rather than relying on
+	// QueryRow's own "first row wins" behaviour to paper over a collision.
+	err := tm.pool.QueryRow(ctx,
+		`SELECT tenant_id, submit_time FROM submit_times WHERE tx_id = $1 LIMIT 1`,
+		txID).Scan(&tenantID, &submit)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, fmt.Errorf("GetSubmitTime: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("GetSubmitTime: %w", classifyError(err))
+	}
+	if err := verifyTenant(ctx, spi.TenantID(tenantID), "GetSubmitTime", txID); err != nil {
+		return time.Time{}, err
+	}
+	return submit, nil
 }
 
 // LookupTx exposes the registry lookup for use in tests and by the store

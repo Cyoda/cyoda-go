@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 272 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 275 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -77,11 +77,14 @@ var allTests = []NamedTest{
 	{"TemporalPointInTimeRetrieval", RunTemporalPointInTimeRetrieval},
 	{"TemporalGetAsAtPopulatesFullMeta", RunTemporalGetAsAtPopulatesFullMeta},
 	{"PITBoundaryExactT", RunPITBoundaryExactT},
+	{"PITDeletedSinceInstant", RunPITDeletedSinceInstant},
+	{"PITCreatedAfterInstant", RunPITCreatedAfterInstant},
 
 	// Phase 4a — audit (Task 4a.4)
 	{"AuditEntityHistory", RunAuditEntityHistory},
 	{"AuditWorkflowEvents", RunAuditWorkflowEvents},
 	{"AuditPostTxIdMatchesWorkflowFinished", RunAuditPostTxIdMatchesWorkflowFinished},
+	{"AuditCommitInstantSharedWithVersionHistory", RunAuditCommitInstantSharedWithVersionHistory},
 
 	// History reads (task E6): getEntityChangesMetadata's
 	// newest-first/Version-DESC-tiebreak/tombstone-HasEntity contract and

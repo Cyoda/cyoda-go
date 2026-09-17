@@ -31,16 +31,17 @@ func testEntity() *spi.Entity {
 
 func TestEntityDoc_MarshalRoundTrip(t *testing.T) {
 	ent := testEntity()
-	validTime := testTime
-	txTime := testTime.Add(time.Second)
-	wallClock := testTime.Add(2 * time.Second)
 
-	raw, err := marshalEntityDoc(ent, validTime, txTime, wallClock, false)
+	raw, err := marshalEntityDoc(ent, false)
 	if err != nil {
 		t.Fatalf("marshalEntityDoc: %v", err)
 	}
 
-	got, err := unmarshalEntityDoc(raw)
+	// creation_date/last_modified are no longer IN the document — they are
+	// supplied by the caller (the columns, in production) — so the round
+	// trip here feeds them straight through and asserts they come back
+	// unchanged, exactly like every other projected column.
+	got, err := unmarshalEntityDoc(raw, testTime, testTime)
 	if err != nil {
 		t.Fatalf("unmarshalEntityDoc: %v", err)
 	}
@@ -84,7 +85,7 @@ func TestEntityDoc_MarshalWithNilData(t *testing.T) {
 	ent := testEntity()
 	ent.Data = nil
 
-	raw, err := marshalEntityDoc(ent, testTime, testTime, testTime, false)
+	raw, err := marshalEntityDoc(ent, false)
 	if err != nil {
 		t.Fatalf("marshalEntityDoc: %v", err)
 	}
@@ -103,7 +104,7 @@ func TestEntityDoc_MarshalWithNilData(t *testing.T) {
 	}
 
 	// Round-trip: unmarshalled Data should be empty or represent empty object
-	got, err := unmarshalEntityDoc(raw)
+	got, err := unmarshalEntityDoc(raw, testTime, testTime)
 	if err != nil {
 		t.Fatalf("unmarshalEntityDoc: %v", err)
 	}
@@ -121,12 +122,12 @@ func TestEntityDoc_MarshalWithNilData(t *testing.T) {
 
 func TestEntityDoc_MarshalPreservesDomainData(t *testing.T) {
 	ent := testEntity()
-	raw, err := marshalEntityDoc(ent, testTime, testTime, testTime, false)
+	raw, err := marshalEntityDoc(ent, false)
 	if err != nil {
 		t.Fatalf("marshalEntityDoc: %v", err)
 	}
 
-	got, err := unmarshalEntityDoc(raw)
+	got, err := unmarshalEntityDoc(raw, testTime, testTime)
 	if err != nil {
 		t.Fatalf("unmarshalEntityDoc: %v", err)
 	}
@@ -159,7 +160,7 @@ func TestEntityDoc_MarshalPreservesDomainData(t *testing.T) {
 
 func TestEntityDoc_MetaFieldsPresent(t *testing.T) {
 	ent := testEntity()
-	raw, err := marshalEntityDoc(ent, testTime, testTime, testTime, false)
+	raw, err := marshalEntityDoc(ent, false)
 	if err != nil {
 		t.Fatalf("marshalEntityDoc: %v", err)
 	}
@@ -181,8 +182,7 @@ func TestEntityDoc_MetaFieldsPresent(t *testing.T) {
 
 	requiredKeys := []string{
 		"id", "tenant_id", "model_name", "model_version",
-		"version", "state", "valid_time", "transaction_time",
-		"wall_clock_time", "creation_date", "last_modified_date",
+		"version", "state",
 		"change_type", "change_user", "transaction_id", "transition", "deleted",
 	}
 	// change_user_kind/change_executor_id/change_executor_kind are
@@ -194,11 +194,24 @@ func TestEntityDoc_MetaFieldsPresent(t *testing.T) {
 			t.Errorf("missing _meta key: %q", k)
 		}
 	}
+
+	// valid_time/transaction_time/wall_clock_time/creation_date/
+	// last_modified_date must NOT be in the document: they live in columns
+	// (entities/entity_versions), and a commit-phase stamp updates those
+	// columns rather than rewriting every document it wrote. Pinned again,
+	// no-DB, alongside TestEntityDoc_TemporalValuesAreNotInTheDocument
+	// (entity_doc_columns_test.go), which asserts the same thing through a
+	// real Save.
+	for _, k := range []string{"valid_time", "transaction_time", "wall_clock_time", "creation_date", "last_modified_date"} {
+		if _, ok := meta[k]; ok {
+			t.Errorf("_meta still carries %q; temporal values belong in columns", k)
+		}
+	}
 }
 
 func TestEntityDoc_DeletedFlag(t *testing.T) {
 	ent := testEntity()
-	raw, err := marshalEntityDoc(ent, testTime, testTime, testTime, true)
+	raw, err := marshalEntityDoc(ent, true)
 	if err != nil {
 		t.Fatalf("marshalEntityDoc: %v", err)
 	}
@@ -219,18 +232,31 @@ func TestEntityDoc_DeletedFlag(t *testing.T) {
 
 func TestEntityDoc_UnmarshalEntityVersion(t *testing.T) {
 	ent := testEntity()
+	// Three distinct values so the test discriminates an argument-order or
+	// argument-choice mistake rather than passing vacuously because two args
+	// happen to share a value: validTime feeds ONLY EntityVersion.Timestamp;
+	// transactionTime feeds ONLY the embedded Entity's LastModifiedDate (the
+	// two are genuinely different fields with different SPI definitions —
+	// see unmarshalEntityVersion's doc comment); creationDate feeds the
+	// embedded Entity's CreationDate.
 	validTime := testTime
-	txTime := testTime.Add(time.Second)
-	wallClock := testTime.Add(2 * time.Second)
+	transactionTime := testTime.Add(30 * time.Minute)
+	creationDate := testTime.Add(-time.Hour)
 
-	raw, err := marshalEntityDoc(ent, validTime, txTime, wallClock, false)
+	raw, err := marshalEntityDoc(ent, false)
 	if err != nil {
 		t.Fatalf("marshalEntityDoc: %v", err)
 	}
 
-	ver, err := unmarshalEntityVersion(raw, 5, validTime)
+	ver, err := unmarshalEntityVersion(raw, 5, validTime, transactionTime, creationDate)
 	if err != nil {
 		t.Fatalf("unmarshalEntityVersion: %v", err)
+	}
+	if !ver.Entity.Meta.CreationDate.Equal(creationDate) {
+		t.Errorf("Entity.Meta.CreationDate = %v, want %v", ver.Entity.Meta.CreationDate, creationDate)
+	}
+	if !ver.Entity.Meta.LastModifiedDate.Equal(transactionTime) {
+		t.Errorf("Entity.Meta.LastModifiedDate = %v, want %v (transaction_time, not valid_time)", ver.Entity.Meta.LastModifiedDate, transactionTime)
 	}
 
 	if ver.Version != 5 {
@@ -268,12 +294,12 @@ func TestEntityDoc_AttributionRoundTrip(t *testing.T) {
 	ent.Meta.ChangeUserKind = spi.PrincipalService
 	ent.Meta.ChangeExecutor = spi.Principal{ID: "svc-42", Kind: spi.PrincipalService}
 
-	raw, err := marshalEntityDoc(ent, testTime, testTime, testTime, false)
+	raw, err := marshalEntityDoc(ent, false)
 	if err != nil {
 		t.Fatalf("marshalEntityDoc: %v", err)
 	}
 
-	got, err := unmarshalEntityDoc(raw)
+	got, err := unmarshalEntityDoc(raw, testTime, testTime)
 	if err != nil {
 		t.Fatalf("unmarshalEntityDoc: %v", err)
 	}
@@ -285,7 +311,7 @@ func TestEntityDoc_AttributionRoundTrip(t *testing.T) {
 		t.Errorf("ChangeExecutor = %+v, want %+v", got.Meta.ChangeExecutor, wantExecutor)
 	}
 
-	ver, err := unmarshalEntityVersion(raw, 1, testTime)
+	ver, err := unmarshalEntityVersion(raw, 1, testTime, testTime, testTime)
 	if err != nil {
 		t.Fatalf("unmarshalEntityVersion: %v", err)
 	}
@@ -304,12 +330,12 @@ func TestEntityDoc_AttributionRoundTrip(t *testing.T) {
 // populated EntityVersion.AttributedKind/Executor.
 func TestEntityDoc_LegacyDocAttributionIsZeroValue(t *testing.T) {
 	ent := testEntity() // ChangeUserKind/ChangeExecutor left at zero value
-	raw, err := marshalEntityDoc(ent, testTime, testTime, testTime, false)
+	raw, err := marshalEntityDoc(ent, false)
 	if err != nil {
 		t.Fatalf("marshalEntityDoc: %v", err)
 	}
 
-	got, err := unmarshalEntityDoc(raw)
+	got, err := unmarshalEntityDoc(raw, testTime, testTime)
 	if err != nil {
 		t.Fatalf("unmarshalEntityDoc: %v", err)
 	}
@@ -320,7 +346,7 @@ func TestEntityDoc_LegacyDocAttributionIsZeroValue(t *testing.T) {
 		t.Errorf("ChangeExecutor = %+v, want zero Principal", got.Meta.ChangeExecutor)
 	}
 
-	ver, err := unmarshalEntityVersion(raw, 1, testTime)
+	ver, err := unmarshalEntityVersion(raw, 1, testTime, testTime, testTime)
 	if err != nil {
 		t.Fatalf("unmarshalEntityVersion: %v", err)
 	}

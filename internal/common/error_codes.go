@@ -1,12 +1,20 @@
 package common
 
 const (
-	ErrCodeModelNotFound                    = "MODEL_NOT_FOUND"
-	ErrCodeModelNotLocked                   = "MODEL_NOT_LOCKED"
-	ErrCodeModelAlreadyLocked               = "MODEL_ALREADY_LOCKED"
-	ErrCodeModelAlreadyUnlocked             = "MODEL_ALREADY_UNLOCKED"
-	ErrCodeModelHasEntities                 = "MODEL_HAS_ENTITIES"
-	ErrCodeEntityModified                   = "ENTITY_MODIFIED"
+	ErrCodeModelNotFound        = "MODEL_NOT_FOUND"
+	ErrCodeModelNotLocked       = "MODEL_NOT_LOCKED"
+	ErrCodeModelAlreadyLocked   = "MODEL_ALREADY_LOCKED"
+	ErrCodeModelAlreadyUnlocked = "MODEL_ALREADY_UNLOCKED"
+	ErrCodeModelHasEntities     = "MODEL_HAS_ENTITIES"
+	ErrCodeEntityModified       = "ENTITY_MODIFIED"
+	// ErrCodeEntityModelMismatch is returned when a Save/CompareAndSave
+	// targets an existing entity under a model different from the one it
+	// was created under. An entity's model reference is fixed at creation
+	// (spi.ErrEntityModelMismatch). See classifySaveErr in
+	// internal/domain/entity/service.go for the current reachability claim
+	// — kept there, next to the request paths it depends on, rather than
+	// here.
+	ErrCodeEntityModelMismatch              = "ENTITY_MODEL_MISMATCH"
 	ErrCodeEntityNotFound                   = "ENTITY_NOT_FOUND"
 	ErrCodeValidationFailed                 = "VALIDATION_FAILED"
 	ErrCodeTransitionNotFound               = "TRANSITION_NOT_FOUND"

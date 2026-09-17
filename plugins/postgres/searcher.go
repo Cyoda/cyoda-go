@@ -275,6 +275,17 @@ func (s *entityStore) runSearch(ctx context.Context, q Querier, filter spi.Filte
 // path is special-cased to the entity_id column — it is not in this map.
 // Note: postgres stores the transition as "transition" (not
 // "transition_for_latest_save" as sqlite does — postgres diverges here).
+//
+// This map is ALSO the canonical-path membership check validateOrderSpecs
+// (path_validation.go) uses to decide which meta sort paths are accepted at
+// all — every key here is legal, everything else is rejected. That is why
+// "creationDate"/"lastUpdateTime" stay in this map even though SQL
+// generation (fieldExpr, orderByFieldExpr) never reaches their VALUES here
+// any more: directTemporalMetaColumns (query_planner.go) intercepts both
+// paths first, because they now resolve to a native TIMESTAMPTZ column
+// rather than the JSONB text key named on the right below. Removing these
+// two entries would silently break sort/filter validation for both paths,
+// not just retire dead SQL.
 var metaJSONKey = map[string]string{
 	"state":                   "state",
 	"creationDate":            "creation_date",
@@ -356,14 +367,19 @@ func orderByFieldExpr(spec spi.OrderSpec) string {
 	case spec.Source == spi.SourceMeta && spec.Path == "id":
 		base = "entity_id"
 	case spec.Source == spi.SourceMeta:
-		key, ok := metaJSONKey[spec.Path]
-		if !ok {
+		if col, ok := directTemporalMetaColumns[spec.Path]; ok {
+			// See directTemporalMetaColumns' doc comment (query_planner.go):
+			// creationDate/lastUpdateTime are TIMESTAMPTZ columns now, not
+			// JSONB text.
+			base = col
+		} else if key, ok := metaJSONKey[spec.Path]; ok {
+			base = jsonbExtractText("doc->'_meta'", key)
+		} else {
 			// Unreachable: validateOrderSpecs rejects any meta path outside the
 			// canonical set before Search() builds SQL. Panic surfaces a bypass
 			// (e.g. a future refactor) instead of silently interpolating input.
 			panic(fmt.Sprintf("orderByFieldExpr: unmapped meta sort path %q", spec.Path))
 		}
-		base = jsonbExtractText("doc->'_meta'", key)
 	default:
 		base = jsonbExtractText("doc", spec.Path)
 	}
@@ -374,11 +390,12 @@ func orderByFieldExpr(spec spi.OrderSpec) string {
 		// error the whole query on non-numeric stored values.
 		return "cyoda_try_float8(" + base + ")"
 	case spi.OrderTemporal:
-		// _meta value is RFC3339 text; cyoda_epoch_millis floors the instant to
-		// epoch-milliseconds (the canonical cross-backend resolution) so all
-		// backends agree, and returns NULL (→ NULLS LAST) rather than raising
-		// on offset-less/malformed stored text.
-		return "cyoda_epoch_millis(" + base + ")"
+		// temporalEpochMillisExpr floors the instant to epoch-milliseconds
+		// (the canonical cross-backend resolution) so all backends agree,
+		// whether base is JSONB RFC3339 text (cyoda_epoch_millis) or a native
+		// TIMESTAMPTZ column (a plain epoch extraction — see that function's
+		// doc comment, query_planner.go).
+		return temporalEpochMillisExpr(spec.Source, spec.Path, base)
 	case spi.OrderBool:
 		return "(" + base + ")::boolean"
 	default: // OrderText (zero value)
@@ -391,6 +408,17 @@ func orderByFieldExpr(spec spi.OrderSpec) string {
 		// Data paths and the entity_id column never store empty-means-missing values
 		// this way, so NULLIF is not applied to them.
 		if spec.Source == spi.SourceMeta && spec.Path != "id" {
+			if _, ok := directTemporalMetaColumns[spec.Path]; ok {
+				// base is a TIMESTAMPTZ column, not text: NULLIF(base, '')
+				// below does not typecheck against it (empty string has no
+				// natural cast to a timestamp), and the column is NOT NULL
+				// with no "empty means missing" convention to restore parity
+				// for. Every canonical caller sorts these two paths with
+				// Kind=OrderTemporal; a caller that left Kind at its
+				// zero-value default still gets a temporally-correct order
+				// rather than SQL that fails to typecheck.
+				return temporalEpochMillisExpr(spec.Source, spec.Path, base)
+			}
 			return `NULLIF(` + base + `, '') COLLATE "C"`
 		}
 		return "(" + base + `) COLLATE "C"`

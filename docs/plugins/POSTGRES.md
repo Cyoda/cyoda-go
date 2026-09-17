@@ -63,9 +63,22 @@ Full transaction-lifecycle implementation
 - **Transaction registry:** the `txRegistry` is a mutex-guarded
   `txID → pgx.Tx` map — the single source of truth for active
   transactions on a node.
-- **Submit-time bookkeeping:** each committed transaction captures
-  `SELECT CURRENT_TIMESTAMP` before `COMMIT` and records it with a
-  1-hour TTL, surfaced via `GetSubmitTime`.
+- **Commit-instant stamping:** immediately before `COMMIT` — after
+  read-set validation — the TM reads `clock_timestamp()` once and applies
+  that single instant to every row the transaction wrote, by narrow-column
+  `UPDATE`s over `entity_versions`, `entities` and the audit events
+  labelled with the transaction. `CURRENT_TIMESTAMP` is fixed at
+  transaction *start*, so it dated a write when the transaction opened
+  rather than when it became visible; the commit-phase stamp replaces it.
+  See "Bi-temporal versioning" below for which values move.
+- **Submit-time bookkeeping:** the same instant is the transaction's
+  submit time. It is recorded both in an in-process map (the fast path)
+  and durably in the `submit_times` table, inside the committing
+  transaction, so `GetSubmitTime` answers on any node and after a restart
+  rather than only on the node that committed. Both copies carry a 1-hour
+  TTL; the table's pruning runs after commit, on the pool, rate-limited —
+  never inside the committing transaction, where an unscoped housekeeping
+  `DELETE` could make two unrelated tenants' commits abort each other.
 
 - **Eager deletes:** an in-transaction `Delete` writes its tombstone
   version row immediately on the transaction's connection. A re-create of
@@ -118,26 +131,90 @@ CREATE TABLE entity_versions (
     valid_time       TIMESTAMPTZ NOT NULL,
     transaction_time TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     wall_clock_time  TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    transaction_id   TEXT        NOT NULL DEFAULT '',            -- 000012
+    creation_date    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- 000012
     doc              JSONB       NOT NULL,
-    PRIMARY KEY (tenant_id, entity_id, version)
+    PRIMARY KEY (tenant_id, entity_id, version),
+    FOREIGN KEY (tenant_id, entity_id)
+        REFERENCES entities (tenant_id, entity_id) ON DELETE RESTRICT  -- 000012
 );
 ```
 
-- `valid_time` — application-supplied timestamp (entity's logical
-  time).
-- `transaction_time` — database `CURRENT_TIMESTAMP` (when PG recorded
-  the row).
-- `wall_clock_time` — `clock_timestamp()` (actual wall-clock,
-  independent of transaction).
+- `valid_time` — **the commit instant of the transaction that wrote this
+  revision.** Nothing supplies it: no API accepts a caller-chosen
+  effective time, so "application-supplied" was never true of this
+  column. It is defined as the instant a revision became effective, and
+  it equals `transaction_time` for every write the system can make today;
+  the two are kept separate because a backdated write — which would carry
+  an earlier `valid_time` against a current `transaction_time` — is the
+  case the bi-temporal model reserves them for, and that is **not
+  implemented**.
+- `transaction_time` — the commit instant of the same transaction: when
+  the revision became visible. The `DEFAULT CURRENT_TIMESTAMP` is a
+  provisional value only, holding the column non-null between the insert
+  and the commit-phase stamp that overwrites it; `CURRENT_TIMESTAMP` is
+  fixed at transaction start and is exactly the value the stamp exists to
+  replace. This is the value read back as `lastUpdateTime`.
+- `wall_clock_time` — `clock_timestamp()` at the inserting statement: the
+  physical moment the row was written, independent of the transaction and
+  never restamped. It is the one column that answers "when was this row
+  actually written", which a commit-phase stamp cannot.
+- `transaction_id` — the transaction that committed the row, stamped by
+  the store and never taken from the caller; the empty string for a
+  non-transactional write. The commit phase finds its own rows by it
+  (`idx_ev_transaction`). `GetVersionByTransaction` deliberately does
+  **not** read this column — it keeps probing the document's
+  `_meta.transaction_id`, because that is where a caller-supplied id
+  lives and the other backends answer from it.
+- `creation_date` — the commit instant of the transaction that *created*
+  the entity, carried onto every later revision. A later transaction
+  never restamps it.
 
-As-at queries filter by `valid_time`:
+`entities` carries the same pair of columns for the current row
+(`creation_date`, `last_modified`, both migration `000012`).
+
+**Temporal values live in columns, not in the document.** The documents no
+longer carry `creation_date` / `last_modified_date` copies, and every read
+path projects the columns alongside `doc`. (`_meta.transaction_id` stays in
+the document — the column beside it answers a different question, as above.)
+This is
+what makes the commit-phase stamp a narrow-column `UPDATE` rather than a
+rewrite of every JSONB document the transaction touched, which would
+roughly double a transaction's write volume and end `entity_versions`'
+append-only property. Migration `000012` backfills the columns from the
+documents before writes stop populating them.
+
+A single-entity as-at read probes the version chain:
 
 ```sql
-SELECT doc FROM entity_versions
-WHERE tenant_id = $1 AND entity_id = $2 AND valid_time <= $3
-ORDER BY valid_time DESC, transaction_time DESC
+SELECT doc, creation_date, transaction_time FROM entity_versions
+WHERE tenant_id = $1 AND entity_id = $2
+  AND valid_time <= $3
+  AND transaction_time <= CURRENT_TIMESTAMP
+ORDER BY valid_time DESC, transaction_time DESC, version DESC
 LIMIT 1;
 ```
+
+`version DESC` is a required tiebreak, not a defensive one: every row a
+transaction writes shares one `valid_time` and one `transaction_time`, so
+a delete-then-recreate inside one transaction ties on both sort keys and
+the winner would otherwise be whatever the plan happened to produce.
+
+**A point-in-time read over a model follows entities, not revisions.** The
+base query for `Search`, `Iterate` / grouped statistics and
+`GetPage(asAt)` enumerates the model's rows in `entities` and probes each
+one's revision at the instant through a `CROSS JOIN LATERAL` into
+`idx_ev_bitemporal`, with the same ordering and tiebreak as above. It
+therefore costs one index probe per *entity*, where the previous
+`DISTINCT ON (entity_id)` form read every revision of every entity up to
+the instant and applied the caller's condition afterwards — so the read
+cost followed the length of the history rather than the size of the
+model. The result set is unchanged, and rests on three properties:
+`entities` keeps a row for every entity that has ever existed (delete is
+a soft delete; nothing removes the row, and the foreign key above makes
+that an enforced invariant rather than a habit), an entity's model
+reference never changes (see below), and an entity created after the
+instant yields no lateral row and drops out.
 
 **Row-level security (RLS):** every table has RLS enabled with a
 policy that compares `tenant_id` against the session variable
@@ -166,8 +243,19 @@ the row level.
 | `sm_audit_events` | State-machine audit trail | `(tenant_id, entity_id, event_id)` |
 | `search_jobs` | Async search job metadata | `id` (with `tenant_id` indexed) |
 | `search_job_results` | Entity ID results per job | `(job_id, seq)`, FK to `search_jobs` |
+| `submit_times` | Durable transaction submit instants (1-hour TTL) | `(tenant_id, tx_id)` |
 
 Workflows live in `kv_store` under a dedicated namespace.
+
+**An entity's model reference is immutable.** `model_name` /
+`model_version` are fixed when the entity row is created; the `entities`
+upsert refuses to change them on an existing row and `Save` returns
+`spi.ErrEntityModelMismatch` (surfaced as `400 ENTITY_MODEL_MISMATCH`)
+instead of rewriting them. All three in-tree backends enforce this, and
+the SPI conformance suite requires it of every backend. Rewriting the
+reference would strand the entity's earlier-model history: a point-in-time
+read issued under the original model would lose the entity entirely, with
+no error.
 
 **Migrations:** SQL migrations ship embedded in the binary via
 `//go:embed migrations/*.sql` and are applied on startup by
@@ -193,8 +281,13 @@ enforced with `COLLATE "C"` on every `entity_id ORDER BY` — the database's
 configured default collation may not be `"C"` and can otherwise reorder
 entity IDs differently from Go's byte-wise string comparison, so `COLLATE
 "C"` is pinned explicitly rather than relied on as a server default. The
-supporting index is `idx_entities_model_entity_id` (migration `000008`; see
-that migration's operator note below). This order is stable and
+supporting index is `idx_entities_model_entity_id` (migration `000008`,
+rebuilt by `000011`; see those migrations' operator note below). Since
+`000011` the index covers every entity of a model rather than only the
+live ones: a point-in-time read must see an entity deleted *since* the
+instant, whose current row carries `deleted = true`, so the index can no
+longer carry a `WHERE NOT deleted` predicate. Current-state reads keep
+that predicate in the query and filter after the index lookup. This order is stable and
 deterministic but is **not** guaranteed identical to another storage
 engine's canonical order — each in-house backend documents byte-wise
 ascending as its native behaviour, but a client that depends on
@@ -285,6 +378,32 @@ transaction mode beyond the prepared-statement cache.
   adds an index to an already-populated table hits the same choice between
   `CONCURRENTLY` (deadlocks concurrent multi-node boot) and a plain
   `CREATE INDEX` (blocks writers) until the runner grows that tolerance.
+- **Migrations `000011`, `000012` and `000013` each block writers on an
+  upgrade of a populated deployment**, for the same structural reason and
+  with the same plain-`CREATE INDEX` choice. Size one maintenance window
+  to cover all three.
+  - `000011` rebuilds `idx_entities_model_entity_id` without its partial
+    predicate. It builds the replacement under a temporary name first and
+    only then drops and renames, so **readers are blocked for a moment
+    rather than for the build** — the naive drop-then-create holds
+    `AccessExclusiveLock` across the whole build, because the file runs as
+    one implicit transaction, and blocks every `SELECT` against `entities`
+    cluster-wide for its duration.
+  - `000012` adds the four temporal columns, backfills them from the
+    documents, adds `idx_ev_transaction`, adds the `entity_versions →
+    entities` foreign key, and creates `submit_times`. The foreign key is
+    added `NOT VALID` and validated by a following statement, but both run
+    inside one implicit transaction — the whole file does — so the
+    `SHARE ROW EXCLUSIVE` the `ADD CONSTRAINT` takes is held until the file
+    commits, across the historical validation scan of `entity_versions`.
+    **Writers to `entities` and `entity_versions` are blocked for that whole
+    span**; size the window for it. Readers are unaffected.
+    The backfill itself is a full pass over `entity_versions` and
+    `entities` — its duration scales with history, not with live entities.
+  - `000013` adds `idx_sm_events_tenant_tx`, the index the commit-phase
+    audit stamp filters on. A plain `CREATE INDEX` takes `SHARE` on
+    `sm_audit_events`, so audit writers — which now includes every
+    committing transaction — block for the build; readers never do.
 
 ## When to use / when not to use
 

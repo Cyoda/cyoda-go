@@ -231,8 +231,8 @@ const (
 
 	// searchCeilingSeedRows is not a stress figure — it is what gives the scan a
 	// cost the two ceilings can be placed either side of. Every async search is a
-	// point-in-time read (SubmitAsync stamps one), so the scan reads every seeded
-	// version through the bi-temporal DISTINCT ON and takes hundreds of
+	// point-in-time read (SubmitAsync stamps one), so the scan probes every
+	// seeded entity through the PIT lateral join and takes hundreds of
 	// milliseconds. How many hundreds is a property of the machine, which is why
 	// the scenario needing a ceiling below the scan measures instead of assuming —
 	// see searchCeilingInteractiveFor.
@@ -309,11 +309,16 @@ func searchCeilingCtx() context.Context {
 }
 
 // seedSearchCeilingModel migrates a clean schema and puts searchCeilingSeedRows
-// entity versions behind one model. It runs on a plain pool so neither the
-// migration nor the seeding is subject to the ceilings a scenario configures.
+// entities (one version each) behind one model. It runs on a plain pool so
+// neither the migration nor the seeding is subject to the ceilings a scenario
+// configures.
 //
 // The versions are copies of one real Save, so the stored document is exactly
-// the shape the scanner expects rather than hand-written JSON that could drift.
+// the shape the scanner expects rather than hand-written JSON that could
+// drift. Both entity_versions and entities are seeded: the PIT scan drives
+// off entities (search_base.go), so a synthetic entity_id present only in
+// entity_versions would be invisible to it and the scan would settle on the
+// single real "seed" row instead of searchCeilingSeedRows+1.
 func seedSearchCeilingModel(t *testing.T, dsn string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -356,6 +361,22 @@ func seedSearchCeilingModel(t *testing.T, dsn string) {
 		t.Fatalf("seed Save: %v", err)
 	}
 
+	// entities holds one current-state row per entity; the PIT scan under test
+	// joins laterally FROM it, so each synthetic entity_id below needs a match
+	// here too, or it never enters the scan. This block must run BEFORE the
+	// entity_versions copy that follows: entity_versions_entity_fk (migration
+	// 000012) requires a version row's entities row to already exist, the
+	// same order every real Save keeps.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
+		SELECT tenant_id, entity_id || '-' || g, model_name, model_version, version, deleted,
+		       jsonb_set(doc, '{_meta,id}', to_jsonb(entity_id || '-' || g))
+		FROM entities, generate_series(1, $1) AS g
+		WHERE tenant_id = $2 AND entity_id = 'seed'`,
+		searchCeilingSeedRows, searchCeilingTenant); err != nil {
+		t.Fatalf("seed %d entities: %v", searchCeilingSeedRows, err)
+	}
+
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version,
 		                             valid_time, transaction_time, wall_clock_time, doc)
@@ -366,6 +387,23 @@ func seedSearchCeilingModel(t *testing.T, dsn string) {
 		WHERE tenant_id = $2 AND entity_id = 'seed'`,
 		searchCeilingSeedRows, searchCeilingTenant); err != nil {
 		t.Fatalf("seed %d versions: %v", searchCeilingSeedRows, err)
+	}
+
+	// A real deployment reaches this row count one Save/Delete at a time, so
+	// autovacuum keeps planner statistics current as it goes. This helper
+	// instead lands searchCeilingSeedRows rows in one bulk INSERT, which
+	// autovacuum has had no chance to react to yet — left stale, the planner
+	// under-costs the per-entity lateral probe against idx_ev_model (an
+	// index that can't use entity_id as a search key) instead of
+	// idx_ev_bitemporal, turning it into an unselective scan repeated once
+	// per seeded entity. ANALYZE closes that gap the same way autovacuum
+	// would in production, so the seeded scan measures the query's real
+	// shape rather than an artifact of the seeding method.
+	if _, err := pool.Exec(ctx, `ANALYZE entities`); err != nil {
+		t.Fatalf("analyze entities: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `ANALYZE entity_versions`); err != nil {
+		t.Fatalf("analyze entity_versions: %v", err)
 	}
 }
 

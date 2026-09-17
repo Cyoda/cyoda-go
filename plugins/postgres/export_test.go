@@ -2,8 +2,13 @@ package postgres
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
+	"github.com/golang-migrate/migrate/v4"
+	pgxmigrate "github.com/golang-migrate/migrate/v4/database/pgx/v5"
+	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -34,6 +39,36 @@ var DropSchemaForTest = dropSchema
 // tests; never in production code.
 func MigrateDownForTest(pool *pgxpool.Pool) error {
 	return migrateDown(pool, defaultMigrateLockTimeout)
+}
+
+// MigrateToVersionForTest applies migrations up to (or rolls back down to)
+// exactly the given schema_migrations version. A backfill migration's
+// behavior on pre-existing rows is only exercisable by stopping short of it,
+// seeding data against the schema as it stood one version earlier, then
+// migrating the one remaining step and inspecting the result — every other
+// test in this package migrates an empty database, so a migration's own
+// backfill logic runs against zero rows and is never actually exercised.
+// Use only in tests; never in production code.
+func MigrateToVersionForTest(pool *pgxpool.Pool, version uint) error {
+	db := openDB(pool, defaultMigrateLockTimeout)
+	defer db.Close()
+
+	driver, err := pgxmigrate.WithInstance(db, &pgxmigrate.Config{})
+	if err != nil {
+		return fmt.Errorf("create migration driver: %w", err)
+	}
+	src, err := iofs.New(migrationFS, "migrations")
+	if err != nil {
+		return fmt.Errorf("open embedded migrations: %w", err)
+	}
+	m, err := migrate.NewWithInstance("iofs", src, "pgx5", driver)
+	if err != nil {
+		return fmt.Errorf("create migrator: %w", err)
+	}
+	if err := m.Migrate(version); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		return fmt.Errorf("migrate to version %d: %w", version, err)
+	}
+	return nil
 }
 
 // BeginGuardedForTest exposes beginGuarded (tx_guard_test.go) to the external
@@ -150,6 +185,12 @@ const (
 // plan shape a hand-copied flat SELECT cannot stand in for.
 const GetResultIDsQueryForTest = getResultIDsQuery
 
+// PITBaseQueryForTest hands pit_plan_test.go the production point-in-time
+// base SELECT, for the same reason as the queries above: a plan assertion
+// must describe the query that actually runs, not a re-typed copy that can
+// silently drift from it.
+const PITBaseQueryForTest = pitBaseQueryTemplate
+
 // SearchCandidateIDsForTest returns the entity IDs the SQL WHERE fragment
 // planQuery(filter) produces BEFORE any Go-side postFilter re-check — i.e.
 // the raw pushdown candidate set exactly as searchCommitted would scan it,
@@ -179,10 +220,11 @@ func SearchCandidateIDsForTest(pool *pgxpool.Pool, ctx context.Context, tenantID
 	var ids []string
 	for rows.Next() {
 		var doc []byte
-		if err := rows.Scan(&doc); err != nil {
+		var creationDate, lastModified time.Time
+		if err := rows.Scan(&doc, &creationDate, &lastModified); err != nil {
 			return nil, err
 		}
-		e, err := unmarshalEntityDoc(doc)
+		e, err := unmarshalEntityDoc(doc, creationDate, lastModified)
 		if err != nil {
 			return nil, err
 		}

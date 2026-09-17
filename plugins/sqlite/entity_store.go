@@ -235,6 +235,53 @@ func scanVersionEntity(row interface{ Scan(...any) error }) (*spi.Entity, error)
 	return &spi.Entity{Meta: meta, Data: data}, nil
 }
 
+// committedModelRef returns the model reference of entityID's committed row,
+// and whether the row exists. Used to enforce that Save/CompareAndSave never
+// change an entity's model after creation (see spi.ErrEntityModelMismatch);
+// a soft-deleted row still carries its original model — entities rows are
+// never removed, only flagged — so this deliberately does not filter on
+// `deleted`.
+func (s *entityStore) committedModelRef(ctx context.Context, entityID string) (spi.ModelRef, bool, error) {
+	var name, version string
+	err := s.db.QueryRowContext(ctx,
+		"SELECT model_name, model_version FROM entities WHERE tenant_id = ? AND entity_id = ?",
+		string(s.tenantID), entityID).Scan(&name, &version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return spi.ModelRef{}, false, nil
+	}
+	if err != nil {
+		return spi.ModelRef{}, false, fmt.Errorf("check existing model for entity %s: %w", entityID, err)
+	}
+	return spi.ModelRef{EntityName: name, ModelVersion: version}, true, nil
+}
+
+// modelMismatchErr wraps spi.ErrEntityModelMismatch for entity id.
+func modelMismatchErr(id string) error {
+	return fmt.Errorf("entity %s: %w", id, spi.ErrEntityModelMismatch)
+}
+
+// checkModelImmutableInTx enforces that a same-transaction Save/CompareAndSave
+// does not change entity's model reference: against the transaction's own
+// earlier buffered write for this id when one exists, and against committed
+// state otherwise. Mirrors plugins/memory's checkModelImmutable.
+func (s *entityStore) checkModelImmutableInTx(ctx context.Context, tx *spi.TransactionState, entity *spi.Entity) error {
+	id := entity.Meta.ID
+	if buffered, ok := tx.Buffer[id]; ok {
+		if buffered.Meta.ModelRef != entity.Meta.ModelRef {
+			return modelMismatchErr(id)
+		}
+		return nil
+	}
+	ref, exists, err := s.committedModelRef(ctx, id)
+	if err != nil {
+		return err
+	}
+	if exists && ref != entity.Meta.ModelRef {
+		return modelMismatchErr(id)
+	}
+	return nil
+}
+
 func (s *entityStore) SaveAll(ctx context.Context, entities iter.Seq[*spi.Entity]) ([]int64, error) {
 	return spi.DefaultSaveAll(s, ctx, entities)
 }
@@ -249,6 +296,12 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		}
 		if tx.Closed {
 			return 0, fmt.Errorf("Save: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
+		}
+		// An entity's model reference is fixed at creation; reject a same-tx
+		// buffered write that would change it BEFORE it is buffered — see
+		// checkModelImmutableInTx.
+		if err := s.checkModelImmutableInTx(ctx, tx, entity); err != nil {
+			return 0, err
 		}
 		// Transaction mode: write to buffer, not main store.
 		cp := copyEntity(entity)
@@ -328,12 +381,32 @@ func (s *entityStore) saveDirectlyLocked(ctx context.Context, entity *spi.Entity
 
 	var existingVersion sql.NullInt64
 	var existingCreatedAt sql.NullInt64
+	var existingModelName, existingModelVersion sql.NullString
 	err := s.db.QueryRowContext(ctx,
-		"SELECT version, created_at FROM entities WHERE tenant_id = ? AND entity_id = ?",
-		tid, cp.Meta.ID).Scan(&existingVersion, &existingCreatedAt)
+		"SELECT version, created_at, model_name, model_version FROM entities WHERE tenant_id = ? AND entity_id = ?",
+		tid, cp.Meta.ID).Scan(&existingVersion, &existingCreatedAt, &existingModelName, &existingModelVersion)
 	isNew := err == sql.ErrNoRows
 	if err != nil && !isNew {
 		return 0, fmt.Errorf("check existing entity: %w", err)
+	}
+	// An entity's model reference is fixed at creation — see
+	// spi.ErrEntityModelMismatch. The row persists across delete/recreate
+	// (INSERT OR REPLACE below never removes it, only the `deleted` flag
+	// changes), so this check does not exempt a soft-deleted row.
+	if !isNew {
+		// model_name/model_version are declared NOT NULL (see the STRICT
+		// entities table), so .Valid is always true here in practice. Made
+		// explicit rather than relying on that: a NULL sql.NullString reads
+		// back as "" via .String, which would silently compare equal to an
+		// (impossible, but not type-checked) empty ModelRef field instead
+		// of failing loudly on a row the schema says cannot exist.
+		if !existingModelName.Valid || !existingModelVersion.Valid {
+			return 0, fmt.Errorf("entity %s: existing row has a NULL model_name/model_version, which the schema declares NOT NULL", cp.Meta.ID)
+		}
+		if existingModelName.String != cp.Meta.ModelRef.EntityName ||
+			existingModelVersion.String != cp.Meta.ModelRef.ModelVersion {
+			return 0, modelMismatchErr(cp.Meta.ID)
+		}
 	}
 
 	// Version numbering starts at 1 (matches the memory and postgres
@@ -435,6 +508,10 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		// is applied at once.
 		if tx.Deletes[entity.Meta.ID] {
 			return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
+		}
+		// Same enforcement as Save's tx branch — see checkModelImmutableInTx.
+		if err := s.checkModelImmutableInTx(ctx, tx, entity); err != nil {
+			return 0, err
 		}
 		// A buffered own-write IS the transaction's current version of this
 		// entity, so the comparison is against it, not against the committed
@@ -665,12 +742,20 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 			return fmt.Errorf("Delete: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
 		}
 		// Check existence: buffer first, then committed store.
-		if _, inBuffer := tx.Buffer[entityID]; !inBuffer {
+		if buffered, inBuffer := tx.Buffer[entityID]; !inBuffer {
 			// Check snapshot visibility.
 			_, err := s.getSnapshot(ctx, entityID, tx.SnapshotTime)
 			if err != nil {
 				return fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
 			}
+		} else {
+			// entityID is a same-tx buffered create/update with no prior
+			// committed row. flushToSQLite's delete loop evicts it from
+			// tx.Buffer below without ever separately flushing it, so
+			// without staging it here that flush would find no `entities`
+			// row to soft-delete and skip writing anything at all — see
+			// deletedBufferedEntities's field doc.
+			s.tm.stageDeletedBufferedEntity(tx.ID, entityID, buffered)
 		}
 		tx.Deletes[entityID] = true
 		delete(tx.Buffer, entityID)
@@ -810,7 +895,12 @@ func (s *entityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 			return fmt.Errorf("row iteration: %w", err)
 		}
 
-		// Also delete any buffered entities for this model.
+		// Also delete any buffered entities for this model. Same same-tx
+		// create-then-delete gap as single-entity Delete — stage each
+		// evicted buffered entity before evicting it, so a same-tx-created-
+		// then-DeleteAll'd id whose create never separately flushed still
+		// leaves a row for flushToSQLite's delete loop to soft-delete
+		// instead of skipping (see deletedBufferedEntities's field doc).
 		toDelete := make([]string, 0)
 		for id, ent := range tx.Buffer {
 			if ent.Meta.ModelRef == modelRef {
@@ -818,6 +908,7 @@ func (s *entityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 			}
 		}
 		for _, id := range toDelete {
+			s.tm.stageDeletedBufferedEntity(tx.ID, id, tx.Buffer[id])
 			delete(tx.Buffer, id)
 			tx.Deletes[id] = true
 			tx.WriteSet[id] = true

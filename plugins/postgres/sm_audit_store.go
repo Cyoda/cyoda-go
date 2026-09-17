@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -51,7 +52,7 @@ func (s *smAuditStore) Record(ctx context.Context, entityID string, event spi.St
 // exist for the entity.
 func (s *smAuditStore) GetEvents(ctx context.Context, entityID string) ([]spi.StateMachineEvent, error) {
 	rows, err := s.q.Query(ctx,
-		`SELECT doc FROM sm_audit_events
+		`SELECT doc, timestamp FROM sm_audit_events
 		 WHERE tenant_id = $1 AND entity_id = $2
 		 ORDER BY timestamp ASC`,
 		string(s.tenantID), entityID)
@@ -76,7 +77,7 @@ func (s *smAuditStore) GetEvents(ctx context.Context, entityID string) ([]spi.St
 // match the transaction.
 func (s *smAuditStore) GetEventsByTransaction(ctx context.Context, entityID string, transactionID string) ([]spi.StateMachineEvent, error) {
 	rows, err := s.q.Query(ctx,
-		`SELECT doc FROM sm_audit_events
+		`SELECT doc, timestamp FROM sm_audit_events
 		 WHERE tenant_id = $1 AND entity_id = $2 AND transaction_id = $3
 		 ORDER BY timestamp ASC`,
 		string(s.tenantID), entityID, transactionID)
@@ -92,19 +93,28 @@ func (s *smAuditStore) GetEventsByTransaction(ctx context.Context, entityID stri
 	return events, nil
 }
 
-// scanEventRows reads all rows from a doc JSONB query and unmarshals each into
-// a StateMachineEvent. The caller is responsible for closing rows.
+// scanEventRows reads all rows from a (doc, timestamp) query and unmarshals
+// each into a StateMachineEvent. The caller is responsible for closing rows.
+//
+// The timestamp COLUMN overrides the copy inside the document. The column is
+// what the commit phase stamps with the transaction's instant
+// (TransactionManager.stampCommitInstant), while the document keeps whatever
+// clock the recording process read — so reporting the document's copy would
+// leave the audit trail dated by a different clock from the version history
+// it accompanies, and ordered by a value it does not report.
 func scanEventRows(rows pgx.Rows) ([]spi.StateMachineEvent, error) {
 	var events []spi.StateMachineEvent
 	for rows.Next() {
 		var doc []byte
-		if err := rows.Scan(&doc); err != nil {
+		var timestamp time.Time
+		if err := rows.Scan(&doc, &timestamp); err != nil {
 			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
 		var e spi.StateMachineEvent
 		if err := json.Unmarshal(doc, &e); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal event doc: %w", err)
 		}
+		e.Timestamp = timestamp
 		events = append(events, e)
 	}
 	if err := rows.Err(); err != nil {

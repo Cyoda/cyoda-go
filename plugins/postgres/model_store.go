@@ -403,8 +403,9 @@ func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta s
 
 	// Set the RLS tenant, as every other transaction this plugin opens does
 	// (TransactionManager.Begin, the async-search scan). The owner role
-	// bypasses the policies today, but under the stated non-owner deployment
-	// posture (rls_test.go) an unset GUC filters every row this body needs.
+	// bypasses the policies today, but under a non-owner, RLS-subject role —
+	// the hardening target rls_test.go describes, not a supported deployment —
+	// an unset GUC would filter every row this body needs.
 	if _, err := tx.Exec(ctx,
 		"SELECT set_config('app.current_tenant', $1, true)", string(s.tenantID)); err != nil {
 		return fmt.Errorf("failed to set tenant for ExtendSchema(%s): %w", ref, err)

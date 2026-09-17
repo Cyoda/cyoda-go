@@ -364,7 +364,7 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 			defer h.gate.Acquire(finalTxID)()
 		}
 		if _, err := entityStore.Save(finalCtx, entity); err != nil {
-			return common.Internal("failed to save entity", err)
+			return classifySaveErr("failed to save entity", entity.Meta.ID, err)
 		}
 		if err := scope.Commit(); err != nil {
 			if errors.Is(err, spi.ErrConflict) {
@@ -2063,7 +2063,7 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 				return common.Internal("failed to access entity store", err)
 			}
 			if _, err := finalEntityStore.Save(currentCtx, entity); err != nil {
-				return common.Internal(fmt.Sprintf("item %d: failed to save entity", i), err)
+				return classifySaveErr(fmt.Sprintf("item %d: failed to save entity", i), entity.Meta.ID, err)
 			}
 			return nil
 		}(); appErr != nil {
@@ -2339,7 +2339,7 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 					appErr.Props = map[string]any{"entityId": input.EntityID}
 					return appErr
 				}
-				return common.Internal("failed to save entity", err)
+				return classifySaveErr("failed to save entity", input.EntityID, err)
 			}
 		} else {
 			// Plain Save: either no IfMatch was provided, or the engine already
@@ -2349,7 +2349,7 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 			// fail spuriously — Save lands the post-cascade state in TX_post's
 			// buffer and the segment's own intra-TX guards handle concurrency.
 			if _, err := finalEntityStore.Save(finalCtx, updated); err != nil {
-				return common.Internal("failed to save entity", err)
+				return classifySaveErr("failed to save entity", input.EntityID, err)
 			}
 		}
 
@@ -2739,7 +2739,7 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 						ItemIndex: i,
 					}, nil
 				}
-				return nil, common.Internal(fmt.Sprintf("item %d: failed to save entity", i), saveErr)
+				return nil, classifySaveErr(fmt.Sprintf("item %d: failed to save entity", i), updated.Meta.ID, saveErr)
 			}
 			return nil, nil
 		}()
@@ -2791,6 +2791,28 @@ func classifyError(err error) *common.AppError {
 		return appErr
 	}
 	return common.Internal("unexpected error", err)
+}
+
+// classifySaveErr maps a Save/CompareAndSave storage error to a client-facing
+// AppError where the plugin's sentinel is client-attributable, falling back
+// to internalMsg's sanitized 500 otherwise.
+//
+// spi.ErrEntityModelMismatch → 400 ENTITY_MODEL_MISMATCH: the entity's model
+// reference is fixed at creation (spi.EntityMeta.ModelRef's doc comment) and
+// every plugin now rejects a write that would change it. No request path
+// here actually constructs such a write today — CreateEntity/CreateEntityCollection
+// mint a fresh entity ID per item, and UpdateEntity/PatchEntity/
+// UpdateEntityCollection always copy the existing entity's ModelRef onto the
+// entity being saved — so this mapping is defense in depth against a future
+// or internal caller, not a currently reachable client error.
+func classifySaveErr(internalMsg, entityID string, err error) *common.AppError {
+	if errors.Is(err, spi.ErrEntityModelMismatch) {
+		appErr := common.Operational(http.StatusBadRequest, common.ErrCodeEntityModelMismatch,
+			"entity's model is fixed at creation; this save specified a different model")
+		appErr.Props = map[string]any{"entityId": entityID}
+		return appErr
+	}
+	return common.Internal(internalMsg, err)
 }
 
 // classifyWorkflowError maps a workflow-engine error to the appropriate HTTP

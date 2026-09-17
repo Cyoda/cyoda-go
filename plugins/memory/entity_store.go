@@ -40,6 +40,44 @@ type entityVersion struct {
 	// versions, but attribution must not be (see GetVersionMetadata).
 	changeUserKind spi.PrincipalKind
 	executor       spi.Principal
+	// modelRef records the entity's model reference for a DELETED tombstone
+	// only (entity is nil there, so it carries no ModelRef of its own).
+	// Needed because a transaction that creates and deletes the same id
+	// before committing never separately flushes the create — the buffered
+	// create is evicted from tx.Buffer by Delete, so the tombstone this
+	// commit appends is the ONLY committed version, and it is the sole
+	// place left to record the model an entity-immutability check (see
+	// modelRefOfLocked) can read once that create is gone. txmanager.Commit's
+	// delete flush is the ONLY site that populates it, from the transaction's
+	// own buffered-then-evicted create (see stageDeletedBufferModel), and only
+	// when the entity has no prior committed version at all. Left zero-value
+	// on every other tombstone, because modelRefOfLocked never needs it there:
+	// a live version elsewhere in the history already carries the model.
+	//
+	// The non-transactional Delete path (see Delete) deliberately sets nothing
+	// here and needs nothing: it refuses to delete an entity whose latest
+	// version is absent or already a tombstone, so a live version — the one it
+	// just read — always remains ahead of the tombstone it appends, and
+	// firstNonTombstone finds the model there.
+	modelRef spi.ModelRef
+}
+
+// firstNonTombstone returns the first version in versions with a non-nil
+// entity — i.e. the entity's earliest still-recoverable snapshot. A
+// version's entity is nil only for a DELETED tombstone (see entityVersion's
+// doc comment above); versions[0] is NOT guaranteed to be one, because a
+// transaction that creates and deletes the same id before committing never
+// separately flushes the create (see modelRef's doc comment) — the
+// committed history in that case begins with a tombstone. Callers that need
+// the entity's original model/creation-date and find no non-nil entity here
+// must fall back to a tombstone's own modelRef (see modelRefOfLocked).
+func firstNonTombstone(versions []entityVersion) (*spi.Entity, bool) {
+	for _, v := range versions {
+		if v.entity != nil {
+			return v.entity, true
+		}
+	}
+	return nil, false
 }
 
 type EntityStore struct {
@@ -119,6 +157,71 @@ func (s *EntityStore) getSnapshotVersion(entityID string, snapshotTime time.Time
 	return copyEntity(result), nil
 }
 
+// modelRefOfLocked returns the model reference id was first saved under, and
+// whether id has any known history at all. An entity's model reference never
+// changes after creation (see spi.ErrEntityModelMismatch), so this is the
+// entity's model for its whole lifetime, including through delete/recreate.
+//
+// versions[0].entity is NOT always non-nil: a transaction that creates and
+// deletes the same id before committing never separately flushes the
+// create — only the tombstone txmanager.Commit's delete flush appends is
+// committed, at index 0, with a nil entity (see entityVersion's doc
+// comment and firstNonTombstone). This function therefore prefers the
+// first version with a live entity, and falls back to a tombstone's own
+// stamped modelRef when every version is a tombstone (that stamp is what
+// makes the model recoverable even though the create itself never
+// materialized as a live version — see modelRef's field doc). A tombstone
+// with a zero modelRef reports "unknown" (false) rather than a false
+// positive/negative on an empty ModelRef.
+//
+// Caller must hold s.factory.entityMu (read or write).
+func (s *EntityStore) modelRefOfLocked(tid spi.TenantID, id string) (spi.ModelRef, bool) {
+	versions := s.factory.entityData[tid][id]
+	if e, ok := firstNonTombstone(versions); ok {
+		return e.Meta.ModelRef, true
+	}
+	for _, v := range versions {
+		if v.deleted && v.modelRef != (spi.ModelRef{}) {
+			return v.modelRef, true
+		}
+	}
+	return spi.ModelRef{}, false
+}
+
+// modelMismatchErr wraps spi.ErrEntityModelMismatch for entity id.
+func modelMismatchErr(id string) error {
+	return fmt.Errorf("entity %s: %w", id, spi.ErrEntityModelMismatch)
+}
+
+// checkModelImmutable enforces that a same-transaction Save/CompareAndSave
+// does not change entity's model reference, comparing against the
+// transaction's own earlier buffered write for this id when one exists
+// (last-write-wins to a mismatched model is still a mismatch), and against
+// committed state otherwise — a same-tx staged delete does not exempt this
+// check, since the entity's model is fixed for the entity ID regardless of
+// delete/recreate.
+func (s *EntityStore) checkModelImmutable(tx *spi.TransactionState, entity *spi.Entity) error {
+	id := entity.Meta.ID
+	if buffered, ok := tx.Buffer[id]; ok {
+		if buffered.Meta.ModelRef != entity.Meta.ModelRef {
+			return modelMismatchErr(id)
+		}
+		return nil
+	}
+	var mismatch bool
+	func() {
+		s.factory.entityMu.RLock()
+		defer s.factory.entityMu.RUnlock()
+		if ref, ok := s.modelRefOfLocked(s.tenant, id); ok && ref != entity.Meta.ModelRef {
+			mismatch = true
+		}
+	}()
+	if mismatch {
+		return modelMismatchErr(id)
+	}
+	return nil
+}
+
 func (s *EntityStore) SaveAll(ctx context.Context, entities iter.Seq[*spi.Entity]) ([]int64, error) {
 	return spi.DefaultSaveAll(s, ctx, entities)
 }
@@ -137,6 +240,15 @@ func (s *EntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		}
 		if tx.Closed {
 			return 0, fmt.Errorf("Save: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
+		}
+		// An entity's model reference is fixed at creation (see
+		// spi.EntityMeta.ModelRef's doc comment); reject a same-tx buffered
+		// write that would change it BEFORE it is buffered — a buffered
+		// write already looks committed to every subsequent read this
+		// transaction takes, so deferring the check to flush time would let
+		// the caller believe a rejected write had succeeded.
+		if err := s.checkModelImmutable(tx, entity); err != nil {
+			return 0, err
 		}
 		// Transaction mode: write to buffer, not main store. Stage any
 		// value this overwrites (see stageSuperseded's godoc) BEFORE
@@ -201,6 +313,10 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		// unstages the delete. Same answer postgres gives.
 		if tx.Deletes[entity.Meta.ID] {
 			return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
+		}
+		// Same enforcement as Save's tx branch — see checkModelImmutable.
+		if err := s.checkModelImmutable(tx, entity); err != nil {
+			return 0, err
 		}
 		// A buffered own-write IS the transaction's current version of this
 		// entity, so the comparison is against it, not against the committed
@@ -309,6 +425,10 @@ func (s *EntityStore) saveUnlocked(ctx context.Context, entity *spi.Entity) (int
 		s.factory.entityData[tid] = make(map[string][]entityVersion)
 	}
 
+	if ref, ok := s.modelRefOfLocked(tid, eid); ok && ref != entity.Meta.ModelRef {
+		return 0, modelMismatchErr(eid)
+	}
+
 	versions := s.factory.entityData[tid][eid]
 	var nextVersion int64 = 1
 	if len(versions) > 0 {
@@ -327,11 +447,22 @@ func (s *EntityStore) saveUnlocked(ctx context.Context, entity *spi.Entity) (int
 	now := s.factory.txManager.nextSubmitTime()
 	changeType := deriveChangeType(entity.Meta.ChangeType, len(versions) > 0)
 
-	creationDate := entity.Meta.CreationDate
-	if len(versions) > 0 {
-		creationDate = versions[0].entity.Meta.CreationDate
-	} else if creationDate.IsZero() {
-		creationDate = now
+	// versions[0] is not guaranteed to carry a live entity — see
+	// firstNonTombstone's doc comment (a same-tx create+delete commits a
+	// tombstone at index 0). Recreating an id whose whole history is
+	// tombstone(s) has no recoverable original creation date, so it falls
+	// through to the "no versions" branch below, same as a brand-new id.
+	//
+	// A caller-supplied CreationDate is IGNORED, not used as a fallback: the
+	// creation date is the store's, not the caller's (see
+	// spi.EntityMeta.CreationDate). The engine builds an entity with its own
+	// clock BEFORE it opens a transaction, so honouring that value dated a
+	// created entity at the moment the write started rather than the moment
+	// it was published — a gap as long as the transaction, processor
+	// callouts included. Pinned by spitest's Save/CallerCreationDateIgnored.
+	creationDate := now
+	if e, ok := firstNonTombstone(versions); ok {
+		creationDate = e.Meta.CreationDate
 	}
 
 	saved := &spi.Entity{
@@ -487,7 +618,7 @@ func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 		}
 		// Check existence: buffer first, then committed store. Wrap the
 		// entityMu hold in an IIFE so the unlock runs via defer.
-		if _, inBuffer := tx.Buffer[entityID]; !inBuffer {
+		if buffered, inBuffer := tx.Buffer[entityID]; !inBuffer {
 			var versions []entityVersion
 			func() {
 				s.factory.entityMu.RLock()
@@ -501,6 +632,16 @@ func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 			if latest.deleted {
 				return fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
 			}
+		} else {
+			// entityID is a same-tx buffered create/update with no prior
+			// committed version. Commit's delete flush evicts it from
+			// tx.Buffer below without ever separately flushing it, so the
+			// tombstone that flush appends is the ONLY committed version —
+			// stage its model now so that flush can stamp it (see
+			// deletedBufferModels's field doc); otherwise a later
+			// Save/CompareAndSave against this id could never tell what
+			// model it was created under.
+			s.factory.txManager.stageDeletedBufferModel(tx.ID, entityID, buffered.Meta.ModelRef)
 		}
 		tx.Deletes[entityID] = true
 		delete(tx.Buffer, entityID) // remove from buffer if present
@@ -597,8 +738,14 @@ func (s *EntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 				toDelete = append(toDelete, id)
 			}
 		}
-		// Second pass: delete.
+		// Second pass: delete. Same same-tx create-then-delete gap as
+		// single-entity Delete — stage each evicted buffered entity's model
+		// before evicting it, so a same-tx-created-then-DeleteAll'd id whose
+		// create never separately flushed still leaves its model recoverable
+		// on the tombstone Commit's delete flush appends (see
+		// deletedBufferModels's field doc).
 		for _, id := range toDelete {
+			s.factory.txManager.stageDeletedBufferModel(tx.ID, id, tx.Buffer[id].Meta.ModelRef)
 			delete(tx.Buffer, id)
 			tx.Deletes[id] = true
 			tx.WriteSet[id] = true
