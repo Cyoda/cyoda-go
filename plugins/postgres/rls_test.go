@@ -10,8 +10,19 @@ import (
 // TestRLS_PoliciesExist verifies that RLS policies are defined on all tables.
 // FORCE ROW LEVEL SECURITY is not set (deferred to Plan 5 when SET LOCAL is
 // wired at transaction start). The table owner bypasses RLS without FORCE.
-// In production, the application should connect as a non-owner role for RLS
-// enforcement. Application-level WHERE tenant_id = $1 is the primary isolation.
+//
+// The supported posture today is the table owner, with application-level
+// WHERE tenant_id = $1 as the primary isolation and RLS as inert
+// defence-in-depth beneath it. A non-owner, RLS-subject role is the intended
+// hardening target, NOT a supported deployment: every transaction-scoped path
+// sets app.current_tenant and would work under it, but no POOL-routed
+// statement carries that GUC (set_config's is_local flag scopes it to a
+// transaction), so under a non-owner role the pool paths would see a NULL
+// setting and return nothing — silently for a read, and wrongly for
+// TransactionManager.getSubmitTimeFromTable, which would report a committed
+// transaction as not found. Enabling the mode means setting the tenant on the
+// pool path plugin-wide first. The non-owner probe roles some tests create
+// exist to prove the transaction-scoped paths are already GUC-correct.
 func TestRLS_PoliciesExist(t *testing.T) {
 	pool := newTestPool(t)
 

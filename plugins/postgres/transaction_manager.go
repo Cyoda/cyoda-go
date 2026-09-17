@@ -471,6 +471,15 @@ func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx,
 // Failure is logged and swallowed, never returned: a business commit that
 // has already succeeded must not be reported as failed because deleting old
 // bookkeeping rows didn't work.
+//
+// The DELETE carries no tenant predicate on purpose — this is global
+// housekeeping over every tenant's expired rows, not a tenant-scoped
+// operation — which, like getSubmitTimeFromTable's read, requires the
+// owner role this plugin runs as. Under a non-owner, RLS-subject role
+// (not a supported posture: see rls_test.go and getSubmitTimeFromTable)
+// the policy would admit no row, this would delete nothing on every run,
+// and nothing would say so: zero rows deleted is not an error, and the
+// error path here is swallowed by design.
 func (tm *TransactionManager) pruneSubmitTimes(ctx context.Context) {
 	now := time.Now()
 	last := tm.lastSubmitTimePruneNano.Load()
@@ -612,6 +621,24 @@ func (tm *TransactionManager) GetSubmitTime(ctx context.Context, txID string) (t
 // Reporting node-local ignorance as ErrTxNotFound instead of consulting the
 // table would be a wrong definitive answer, which this project's
 // correctness-over-availability design rejects.
+//
+// Role posture — this read requires a database role NOT subject to RLS.
+// Like every other pool-routed statement in this plugin it carries no
+// app.current_tenant GUC (set_config's is_local flag scopes that setting to a
+// transaction, so no non-transactional statement has ever carried it), and
+// submit_times has a tenant-isolation policy like every other table. That is
+// safe in the posture cyoda-go actually runs and supports: the application
+// connects as the table owner, RLS is ENABLEd but not FORCEd (migrate_test.go
+// pins both), and an owner bypasses every policy. A non-owner, RLS-subject
+// role is NOT a supported deployment today — see rls_test.go — and this
+// lookup is one of the reasons: under such a role
+// current_setting('app.current_tenant', true) is NULL on a pooled connection,
+// the policy admits no row, and this function would answer ErrTxNotFound for
+// a transaction that demonstrably committed. That is a wrong definitive
+// answer, not a degraded one, so the non-owner mode cannot be enabled by
+// changing this query: it needs the tenant set on the pool path for the whole
+// plugin (a pgxpool AfterConnect/BeforeAcquire hook) before any pool-routed
+// read can be trusted under RLS.
 func (tm *TransactionManager) getSubmitTimeFromTable(ctx context.Context, txID string) (time.Time, error) {
 	var tenantID string
 	var submit time.Time
