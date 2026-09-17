@@ -808,12 +808,18 @@ func seedEntityVersions(t *testing.T, model string, n int) {
 		WHERE model_name = $2`, n, model); err != nil {
 		t.Fatalf("seed %d entities for %s: %v", n, model, err)
 	}
+	// Same "name" override as the entities block above: current state and
+	// its own history must agree. Leaving entity_versions.doc saying
+	// "pool-hold" while entities.doc says "search-ceiling-fill" for the same
+	// version would be a state no real write path can produce — Save always
+	// writes the same marshaled doc to both rows.
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version,
 		                             valid_time, transaction_time, wall_clock_time, doc)
 		SELECT tenant_id, entity_id || '-' || g, model_name, model_version, version,
 		       valid_time, transaction_time, wall_clock_time,
-		       jsonb_set(doc, '{_meta,id}', to_jsonb(entity_id || '-' || g))
+		       jsonb_set(jsonb_set(doc, '{_meta,id}', to_jsonb(entity_id || '-' || g)),
+		                 '{name}', '"search-ceiling-fill"')
 		FROM entity_versions, generate_series(1, $1) AS g
 		WHERE model_name = $2`, n, model); err != nil {
 		t.Fatalf("seed %d entity versions for %s: %v", n, model, err)

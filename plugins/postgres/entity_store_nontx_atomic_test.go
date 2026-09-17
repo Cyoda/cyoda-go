@@ -11,19 +11,20 @@ import (
 )
 
 // TestNonTxSave_IsAtomic proves a non-transactional Save leaves no partial
-// state behind when one of its statements fails.
+// state behind when its version insert fails on a brand-new entity — the
+// fresh-insert branch of saveOn's upsert.
 //
 // The collision used to be a bare orphan entity_versions row (a version 1
-// with no entities row at all), which forced Save's own entities upsert
-// down its fresh-insert path so its own version-1 write would collide. That
-// is no longer constructible: entity_versions_entity_fk (migration 000012)
-// requires every entity_versions row to have an entities row, so an orphan
-// can no longer exist to plant. Planting the entities row too, at version 0,
-// reaches the same collision through the update path instead — Save's
-// upsert computes nextVersion = 0 + 1 = 1, which still collides with the
-// version-1 row already planted — and is arguably the more representative
-// case anyway, since real writers race on updates far more often than on an
-// entity's very first save.
+// with no entities row at all), which forced Save's own entities upsert down
+// its fresh-insert path so its own version-1 write would collide with the
+// planted one. That plant is no longer constructible: entity_versions_entity_fk
+// (migration 000012) requires every entity_versions row to have an entities
+// row, so an orphan can no longer exist to seed a collision with. A temporary
+// CHECK constraint reaches the same failure without one: it blocks the
+// version-1 insert Save's own fresh-create path performs, deterministically,
+// with no orphan row and no timing dependency — the same recipe
+// TestNonTxDelete_IsAtomic already uses for the write a version-collision
+// can't reach.
 func TestNonTxSave_IsAtomic(t *testing.T) {
 	factory := setupEntityTest(t)
 	const tenant spi.TenantID = "tenant-nontx-atomic"
@@ -38,12 +39,69 @@ func TestNonTxSave_IsAtomic(t *testing.T) {
 	id := uuid.NewString()
 	mref := spi.ModelRef{EntityName: "atomic-probe", ModelVersion: "1"}
 
+	// No entities row exists for this id yet, so the constraint only ever
+	// has to reject version 1 — the one saveOn's fresh-insert path is about
+	// to try.
+	if _, err := pool.Exec(ctx,
+		`ALTER TABLE entity_versions ADD CONSTRAINT block_version_insert CHECK (version <> 1)`); err != nil {
+		t.Fatalf("add blocking constraint: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(),
+			`ALTER TABLE entity_versions DROP CONSTRAINT IF EXISTS block_version_insert`)
+	})
+
+	_, saveErr := store.Save(ctx, &spi.Entity{
+		Meta: spi.EntityMeta{ID: id, TenantID: tenant, ModelRef: mref},
+		Data: []byte(`{"n":1}`),
+	})
+	if saveErr == nil {
+		t.Fatal("Save must fail: the entity_versions insert violates the blocking CHECK constraint")
+	}
+
+	var entitiesRows int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM entities WHERE tenant_id = $1 AND entity_id = $2`,
+		string(tenant), id).Scan(&entitiesRows); err != nil {
+		t.Fatalf("count entities: %v", err)
+	}
+	if entitiesRows != 0 {
+		t.Errorf("entities row survived a failed non-tx Save: got %d rows, want 0 — "+
+			"the save's statements are not atomic", entitiesRows)
+	}
+}
+
+// TestNonTxSave_UpdatePathIsAtomic covers the OTHER branch of saveOn's
+// upsert: a Save against an entity that already exists. Both branches share
+// the same non-tx wrapping and the same failure point (the version insert),
+// but only the fresh-insert branch (above) had a test before this task —
+// this one closes that gap rather than silently leaving it uncovered.
+//
+// The collision here is a version row already at version 1 while the
+// matching entities row sits at version 0 (planted directly, satisfying
+// entity_versions_entity_fk): Save's upsert computes nextVersion = 0 + 1 = 1,
+// which collides with the version-1 row already planted.
+func TestNonTxSave_UpdatePathIsAtomic(t *testing.T) {
+	factory := setupEntityTest(t)
+	const tenant spi.TenantID = "tenant-nontx-atomic-update"
+	ctx := ctxWithTenant(tenant)
+	pool := postgres.PoolForTest(factory)
+
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+
+	id := uuid.NewString()
+	mref := spi.ModelRef{EntityName: "atomic-probe-update", ModelVersion: "1"}
+	const plantedDoc = `{"_meta":{},"marker":"pre-save"}`
+
 	// Plant the entities row the foreign key now requires, at version 0 so
 	// Save's upsert lands on nextVersion = 1 below.
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
-		 VALUES ($1, $2, $3, $4, 0, false, '{"_meta":{}}'::jsonb)`,
-		string(tenant), id, mref.EntityName, mref.ModelVersion); err != nil {
+		 VALUES ($1, $2, $3, $4, 0, false, $5::jsonb)`,
+		string(tenant), id, mref.EntityName, mref.ModelVersion, plantedDoc); err != nil {
 		t.Fatalf("plant entities row: %v", err)
 	}
 
@@ -64,15 +122,26 @@ func TestNonTxSave_IsAtomic(t *testing.T) {
 		t.Fatal("Save must fail: version 1 already exists for this entity")
 	}
 
+	// Widened beyond "version is unchanged": saveOn's upsert also overwrites
+	// doc with the fully marshaled document (containing the NEW write) before
+	// the version insert that then fails. If the transaction wrapping didn't
+	// roll that back too, a reader would see the entity holding data from a
+	// save that never actually completed — the doc reverting to exactly what
+	// was planted is what proves that half of atomicity, not just the
+	// version counter.
 	var version int64
+	var doc []byte
 	if err := pool.QueryRow(ctx,
-		`SELECT version FROM entities WHERE tenant_id = $1 AND entity_id = $2`,
-		string(tenant), id).Scan(&version); err != nil {
+		`SELECT version, doc FROM entities WHERE tenant_id = $1 AND entity_id = $2`,
+		string(tenant), id).Scan(&version, &doc); err != nil {
 		t.Fatalf("query entities row: %v", err)
 	}
 	if version != 0 {
-		t.Errorf("entities row was updated despite a failed non-tx Save: got version %d, want 0 (unchanged) — "+
-			"the save's statements are not atomic", version)
+		t.Errorf("entities.version = %d, want 0 (unchanged) — the save's statements are not atomic", version)
+	}
+	if !jsonEqual(doc, []byte(plantedDoc)) {
+		t.Errorf("entities.doc = %s, want the pre-save planted doc %s — "+
+			"the save's statements are not atomic (a partially-applied write is observable)", doc, plantedDoc)
 	}
 }
 

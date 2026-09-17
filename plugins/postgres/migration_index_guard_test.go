@@ -95,18 +95,12 @@ func TestMigrations_IndexesOnExistingTablesAreConcurrent(t *testing.T) {
 		// copied from precedent, per 000011's practice.
 		//
 		// Unlike 000011, this file's single-transaction requirement isn't
-		// about sequencing an index rebuild: it backfills
-		// entity_versions.creation_date and entities.creation_date /
-		// last_modified from the JSONB document alongside the ADD COLUMN
-		// statements that introduce them (see the migration file's own
-		// comment on why those columns also carry DEFAULT CURRENT_TIMESTAMP
-		// — a provisional value for the gap before commit-stamping lands,
-		// not the intended semantic), adds entity_versions_entity_fk (which
-		// validates every existing row against `entities` as part of the
-		// same ALTER TABLE), and creates the new submit_times table. That
-		// mix already forces one multi-statement file under one implicit
-		// transaction per clause (b) above, so CREATE INDEX CONCURRENTLY
-		// cannot run here regardless of the backfill/NOT NULL ordering.
+		// about sequencing an index rebuild — it's simply that the file has
+		// more than one statement (the ADD COLUMN/backfill pairs, the
+		// entity_versions_entity_fk NOT VALID + VALIDATE CONSTRAINT pair,
+		// and the new submit_times table), which already forces one
+		// multi-statement file under one implicit transaction per clause (b)
+		// above, so CREATE INDEX CONCURRENTLY cannot run here regardless.
 		//
 		// Splitting idx_ev_transaction into its own single-statement file —
 		// clause (b)'s usual fix — would not sidestep the deadlock either:

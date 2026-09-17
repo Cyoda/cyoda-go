@@ -57,7 +57,7 @@ func TestMigrate_AppliesSchema(t *testing.T) {
 	}
 
 	// Verify tables exist
-	tables := []string{"entities", "entity_versions", "sm_audit_events", "models", "kv_store", "messages", "search_jobs", "search_job_results", "scheduled_tasks"}
+	tables := []string{"entities", "entity_versions", "sm_audit_events", "models", "kv_store", "messages", "search_jobs", "search_job_results", "scheduled_tasks", "submit_times"}
 	for _, table := range tables {
 		var exists bool
 		err := pool.QueryRow(context.Background(),
@@ -74,7 +74,7 @@ func TestMigrate_AppliesSchema(t *testing.T) {
 	// FORCE is deferred to Plan 5 when SET LOCAL is wired at transaction start.
 	// Application-level WHERE tenant_id = $1 is the primary isolation mechanism.
 	// Only check tables that have RLS configured (initial schema tables).
-	rlsTables := []string{"entities", "entity_versions", "sm_audit_events", "models", "kv_store", "messages"}
+	rlsTables := []string{"entities", "entity_versions", "sm_audit_events", "models", "kv_store", "messages", "submit_times"}
 	for _, table := range rlsTables {
 		var rlsEnabled, rlsForced bool
 		err := pool.QueryRow(context.Background(),
