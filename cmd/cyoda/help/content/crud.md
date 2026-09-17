@@ -388,6 +388,8 @@ Response: `200 OK`, `application/json`, array of change entries in reverse-chron
 
 `pointInTime` and `transactionId` are mutually exclusive; supplying both returns `400 BAD_REQUEST`. When neither is provided, the current time is used.
 
+The submit time a `transactionId` resolves to is the transaction's commit instant, recorded durably: **any node** can resolve it, including after a restart, not only the node that ran the transaction. It is retained for one hour after the commit; an id older than that is no longer resolvable and answers `400 BAD_REQUEST`.
+
 Response: `200 OK`, `application/json`, array of available transition names (as returned by the workflow engine).
 
 The names come from the workflow the entity's criterion selects — the same definition a subsequent transition will run (see `cyoda help workflows`, *Workflow-level selection*). Because selection is evaluated here, this read carries the same failure modes as a write: `400 WORKFLOW_FAILED` when a criterion cannot be evaluated, `503 NO_COMPUTE_MEMBER_FOR_TAG` when the cause is specifically an unavailable compute member for a `function` criterion's tags. The request fails rather than answering from a different workflow. The read records no audit events.
@@ -526,7 +528,7 @@ The function is `IMMUTABLE PARALLEL SAFE` (the planner inlines and parallelizes)
 **In-transaction behavior.** Calls made under an active transaction (the request carried a transaction context) route through the streaming-tally path via `EntityStore.Iterate`. The native `GroupedAggregator` pushdown is skipped in this case to preserve read-your-writes semantics. Per backend:
 
 - **memory and sqlite** — Inside a transaction, sqlite streams one merged cursor (committed snapshot on the reader connection plus the transaction's own buffered writes, staged deletes suppressed); memory walks a pointer snapshot of the merged view. Neither copies entity payloads beyond the rows it yields, and `trackingRead` records only yielded rows. Non-tx, non-PIT sqlite queries the live `entities` table directly with `planQuery` WHERE-pushdown (no snapshot involved); non-tx with `pointInTime` queries `entity_versions` with `submit_time <= pointInTime` to read the historical snapshot. In-tx with `pointInTime` falls through to the plain PIT path — reads `entity_versions` at the supplied snapshot WITHOUT applying the tx-buffer overlay; PIT is historical-read by definition, so the in-flight buffer is a documented limitation, and the result reflects committed history rather than the caller's uncommitted edits at the requested instant. The fully-pushed-down `GroupedAggregate` query (against `entities`) is skipped in-tx by the SPI dispatcher so the service falls through to the streaming tally over `Iterate`, which now honours RYW.
-- **postgres** — `Iterate` selects from the bi-temporal `entity_versions` table with `valid_time <= tx.SnapshotTime AND transaction_time <= CURRENT_TIMESTAMP`, and adds `(doc->'_meta'->>'deleted')::boolean IS NOT TRUE` to skip deletion-marker versions. The `GroupedAggregate` pushdown is skipped in-tx.
+- **postgres** — in-tx and non-PIT, `Iterate` selects from the live `entities` table on the transaction's own connection, so it sees that transaction's uncommitted writes on top of its `REPEATABLE READ` snapshot (RYW) and skips soft-deleted rows with `NOT deleted`. With `pointInTime` it is committed-only: it runs off any ambient transaction, enumerates `entities` and probes each entity's revision at the instant with a lateral join into `entity_versions` (`valid_time <= $4 AND transaction_time <= CURRENT_TIMESTAMP`), then drops deletion-marker versions with `(doc->'_meta'->>'deleted')::boolean IS NOT TRUE`. The `GroupedAggregate` pushdown is skipped in-tx, and declines a `pointInTime` request in any case.
 
 **Cardinality ceiling.** `CYODA_STATS_GROUP_MAX` (default 10000) bounds the number of distinct group buckets the endpoint will produce. When the result would exceed the ceiling, the request fails with 422 `GROUP_CARDINALITY_EXCEEDED` (retry with a more selective `condition` or fewer `groupBy` dimensions). The same value caps the request `limit`: `limit > CYODA_STATS_GROUP_MAX` is rejected up-front with 400 `INVALID_LIMIT`.
 
@@ -583,6 +585,31 @@ guaranteed to agree at **millisecond granularity**; finer-grained ordering
 within a single millisecond is backend-defined. Timestamps are accepted and
 emitted as RFC 3339 with full fractional precision.
 
+**The instant a version is dated at is its transaction's commit**, on every
+backend — not the instant the transaction started, and not the instant the
+individual write was issued. Every entity a transaction writes carries the
+same instant, so a `pointInTime` read either sees all of a transaction's
+writes or none of them. A read at an instant becomes stable once every
+transaction that started before it has finished. See `docs/CONSISTENCY.md`
+§1a for the full statement and its one residual window.
+
+Per backend, a point-in-time read resolves the requested instant like this:
+
+- **memory** — walks the version list per entity and takes the newest whose
+  submit time is `<=` the instant.
+- **sqlite** — reads `entity_versions` with `submit_time <= ?`.
+- **postgres** — enumerates the model's rows in `entities` and probes each
+  one's revision with a lateral join (`valid_time <= $4 AND
+  transaction_time <= CURRENT_TIMESTAMP`, newest first, ties broken by
+  `transaction_time` then `version`). A single-entity `GetAsAt` uses the
+  same bound and the same tiebreak against one entity's chain. The cost is
+  one index probe per entity of the model, not one per revision of its
+  history.
+
+All three implement the same inclusive `<=` rule stated above; the
+differences are in how the version is located, never in which version is
+returned.
+
 ## ENTITY ENVELOPE
 
 All entity read operations return entities in the standard envelope:
@@ -609,8 +636,8 @@ All entity read operations return entities in the standard envelope:
 - `meta.id` — UUID string
 - `meta.modelKey` — object with `name` (string) and `version` (int32) identifying the model; present on all entity reads (single-get, list, search).
 - `meta.state` — current workflow state string
-- `meta.creationDate` — RFC 3339 with nanoseconds
-- `meta.lastUpdateTime` — RFC 3339 with nanoseconds; equals `creationDate` if never updated
+- `meta.creationDate` — RFC 3339 with nanoseconds; the instant the transaction that **created** the entity committed, carried unchanged through every later update
+- `meta.lastUpdateTime` — RFC 3339 with nanoseconds; the instant the transaction that wrote this revision committed. Equals `creationDate` if never updated. Both dates are assigned by the server at commit — a value sent on a write is ignored — so entities written by one transaction report the same instant, and a value read back is at or after the moment the write response was returned, never at the moment the transaction opened
 - `meta.pointInTime` — the as-at point-in-time for which the entity was retrieved, when supplied
 - `meta.transactionId` — present when a transaction ID exists
 - `meta.transitionForLatestSave` — transition name that produced the latest save. Valid values: `"loopback"` (loopback update with no transition supplied by the client) or the named transition string. **Known bug:** the server currently stores the literal `"workflow"` for engine-driven initial-state writes; there is no valid `"workflow"` value and this is tracked for fix.

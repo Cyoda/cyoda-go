@@ -74,6 +74,8 @@ An index on a table that already holds data must be built with `CREATE INDEX CON
 
 An index created in the same migration as its own table needs no `CONCURRENTLY`: that table is empty and no writer can reach it yet.
 
+**In this project every index added to a populated table has taken a documented exception to that rule**, because `CONCURRENTLY` deterministically deadlocks cyoda's concurrent multi-node boot: the migration driver holds one session-level advisory lock for a migrator's entire run, and `CONCURRENTLY`'s multi-phase build waits on every other backend's in-flight statement — including a second node's migrator merely blocked on that same advisory lock. That is a genuine lock cycle, reproduced deterministically, and two nodes racing to auto-migrate is the primary deployment shape. A plain `CREATE INDEX` is used instead, at the cost of blocking writers to that table for the build. The exception is not automatic: a static guard over the migration files rejects a plain `CREATE INDEX` on a pre-existing table unless the file is listed explicitly, and each listing carries its own lock-profile reasoning rather than citing precedent. Derive the lock profile for the migration you are writing, write it down, then add the entry.
+
 ## RECOVERING FROM A DIRTY MIGRATION STATE
 
 A migration that dies partway leaves the schema half-applied and the migration state marked dirty. Startup then refuses with `database migration state is dirty at version N`, on both PostgreSQL and SQLite.

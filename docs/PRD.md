@@ -113,18 +113,28 @@ Every version carries two timestamps:
 
 This bi-temporal model answers both "what did we know, and when?" and
 "what was true, and when?" — the distinction that compliance,
-reconciliation, and historical reporting workloads require. Correcting
-a past fact adds a new version with earlier `valid_time` and current
-`transaction_time`; the original recording remains visible for audit.
+reconciliation, and historical reporting workloads require.
 
-**Point-in-time reads run at the same performance class as current
-reads.** Current-state reads are primary-key lookups on a
-materialised `entities` table (one row per live entity). Historical
-reads (`GetAsAt`, `GetPage(asAt)`, `Iterate(pointInTime)`) are indexed seeks against a dedicated
-bi-temporal composite index (`idx_ev_bitemporal` on
-`(tenant_id, entity_id, valid_time DESC, transaction_time DESC)` in
-the postgres plugin). Both are constant-time index operations — no
-version-chain scan, no rebuild, no reconstruction from an event log.
+**For every write the system can make today, the two are equal**: both
+are the instant the writing transaction committed. They are kept as
+separate dimensions because *backdating* — correcting a past fact by
+adding a version with an earlier `valid_time` against a current
+`transaction_time`, leaving the original recording visible for audit — is
+the case that separates them. Backdating is **not implemented**: no API
+accepts a caller-chosen effective time, and no write path supplies one.
+
+**Point-in-time reads cost what the model costs, not what the history
+costs.** Current-state reads are primary-key lookups on a materialised
+`entities` table (one row per live entity). A single-entity historical
+read (`GetAsAt`) is an indexed seek against a dedicated bi-temporal
+composite index (`idx_ev_bitemporal` on
+`(tenant_id, entity_id, valid_time DESC, transaction_time DESC)` in the
+postgres plugin). A model-wide historical read (`GetPage(asAt)`,
+`Iterate(pointInTime)`, point-in-time search and grouped statistics)
+enumerates the model's entities and probes each one's revision at the
+instant through that same index — one seek per entity, bounded by the
+size of the model. No version-chain scan, no rebuild, no reconstruction
+from an event log.
 
 This combination — transactional safety with no phantom-wide
 trade-offs, plus audit-grade history with no performance penalty —
@@ -201,9 +211,16 @@ The persistence layer maintains bi-temporal entity versioning:
 
 | Dimension | Semantics |
 |-----------|-----------|
-| `valid_time` | When the entity version became the "current" truth |
+| `valid_time` | When the fact was true in the domain — see §2 above |
 | `transaction_time` | When the version was committed to the database |
-| `wall_clock_time` | Physical wall clock at version creation |
+| `wall_clock_time` | Physical wall clock at version creation, independent of the transaction |
+
+`valid_time` and `transaction_time` are equal for every write the system
+can make (both the writing transaction's commit instant); backdating is
+the case that would separate them and is not implemented. `wall_clock_time`
+is the only one of the three that is not the commit instant: it records
+when the row was physically inserted, which is earlier than the commit by
+the remaining lifetime of the transaction.
 
 **Point-in-time retrieval:** Any entity (or collection) can be queried as it existed at a specific timestamp via `?pointInTime=<ISO8601>`. This applies to single-entity reads, collection reads, and search operations.
 

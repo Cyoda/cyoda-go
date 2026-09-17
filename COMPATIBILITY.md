@@ -83,6 +83,40 @@ Per-milestone detail of which surface landed when belongs in the matrix row for
 that release, not here; this section describes the mechanism, which does not
 change from release to release.
 
+### SPI work in flight for the next release
+
+The next milestone's SPI change exists **only on a local checkout** at the time
+of writing: it is committed to `cyoda-go-spi` locally, not pushed, not tagged,
+and not pinned. All four `go.mod` files still pin `cyoda-go-spi v0.8.4`, and
+the local build resolves the newer surface through an uncommitted `go.work`
+`replace` — deliberately, so no commit in this repository claims a pin that
+does not resolve for anyone else. There is therefore nothing to add to the
+matrix yet; this note records what is true instead of a version that does not
+exist.
+
+What is on that local SPI branch, and what it will oblige when it is published:
+
+- **`ErrEntityModelMismatch`** — a new sentinel. `Save` returns it when the
+  incoming entity's model reference differs from the stored one, instead of
+  rewriting the reference. Additive: nothing is removed, and a backend that
+  never returns it still compiles.
+- **Conformance cases, not interfaces** — `spitest` gains model-immutability
+  cases covering plain `Save`, an in-transaction `CompareAndSave`, `DeleteAll`'s
+  staging path and a same-transaction create-then-delete, plus a point-in-time
+  case pinning the version tiebreak for a same-transaction delete-and-recreate.
+  These are the obligation: a backend that lets an entity's model change, or
+  that resolves a same-transaction delete/recreate tie arbitrarily, fails
+  conformance at its next `spitest` bump.
+- **Documented instants** — the godoc on `EntityMeta.CreationDate` /
+  `LastModifiedDate` and `TransactionManager.GetSubmitTime` now states that
+  these are the committing transaction's instant, store-assigned, and that a
+  submit time must be answerable by any node. This was previously unstated; it
+  describes what memory, sqlite and Cassandra already did and what PostgreSQL
+  now does.
+
+When that work is pushed and pinned, it takes a matrix row of its own and the
+out-of-tree obligation list moves there.
+
 ### Why there is no `v0.8.0` (SPI or binary)
 
 A `cyoda-go-spi v0.8.0` tag was cut prematurely on 2026-06-13 at an incomplete
@@ -163,6 +197,8 @@ The chart's `version:` bumps only when **rendered manifests** change (templates,
 | `v0.8.3` → `v0.8.4` | None | **Async search admission is capped per tenant** (`CYODA_SEARCH_ASYNC_MAX_PER_TENANT`, default `8`). A single-tenant deployment's accepted-in-flight ceiling drops from 264 to 8, with the excess answered `503 SEARCH_QUEUE_FULL`. Raise it, or set `0`, if that is not wanted. |
 | `v0.8.3` → `v0.8.4` | None | **SQLite resident memory rises.** The new reader pool makes `CYODA_SQLITE_CACHE_SIZE` a per-connection cost: `(readers + 1) ×` the configured size. Lower `CYODA_SQLITE_READER_POOL_SIZE` on a container generous on cores and tight on memory. |
 | `v0.8.3` → `v0.8.4` | None | **Caller-visible contract changes** per [`CHANGELOG.md`](./CHANGELOG.md#084--2026-09-09): field paths must be JSON Path, direct search has one execution path, predicate and model type-admission rules changed. Read the breaking-changes list before upgrading. |
+| `v0.8.4` → next release | None yet | **PostgreSQL: schedule a maintenance window.** Migrations `000011`, `000012` and `000013` land together. `000011` rebuilds the `entities` model index (writers blocked for the build; readers only momentarily, by design), `000012` adds and backfills the temporal columns on `entity_versions` and `entities` — a full pass whose duration scales with history, not with live entities — adds a foreign key validated as its own statement, and creates `submit_times`; `000013` indexes the audit table, blocking audit writers (which now includes every committing transaction) for the build. SQLite takes the equivalent audit index as its `000008`. See [`docs/plugins/POSTGRES.md`](./docs/plugins/POSTGRES.md). |
+| `v0.8.4` → next release | None | **PostgreSQL-reported timestamps move later.** A write is dated at its transaction's commit instead of its start, so `creationDate` / `lastUpdateTime`, a version's times, the submit time and audit-event times now report the commit instant. Clients that compare a stored date against their own clock, or that assume a date at or before the request that produced it, see values move by up to the transaction's lifetime. The other backends already behaved this way. |
 | Any `v0.6.x` → `v0.7.0` | None (chart manifests unchanged) | If fronting a browser SPA: set `extraEnv` `CYODA_CORS_ALLOWED_ORIGINS=https://your-spa.example.com`. New CORS middleware defaults to loopback-only. See [`cmd/cyoda/help/content/config/cors.md`](./cmd/cyoda/help/content/config/cors.md). |
 | Any `v0.6.x` → `v0.7.0` | None | Wire-format breaking changes per [`CHANGELOG.md`](./CHANGELOG.md#070--2026-05-05): `messaging.GetMessage` content shape; stub `errorCode` rename; OpenAPI spec reconciliation. Affects API/SDK clients, not the deployment manifests. |
 

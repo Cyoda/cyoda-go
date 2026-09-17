@@ -38,6 +38,52 @@ the `COMMIT_BEFORE_DISPATCH` execution mode, which deliberately splits a
 single cascade into multiple transactions and exposes intermediate
 segment-boundary states to concurrent readers.
 
+## 1a. When a write is dated
+
+**Every backend dates a transaction's writes at the instant that
+transaction commits — one instant, shared by all of them.** A transaction
+that opens at T0 and commits at T0+30s dates its writes T0+30s, not T0.
+This covers every value derived from the write's time: the version's
+`valid_time` and `transaction_time`, the reported `creationDate` and
+`lastUpdateTime`, the transaction's submit time (`GetSubmitTime`, and the
+`transactionId` form of a point-in-time read), and the timestamps of the
+audit events the transaction recorded. Two entities written by one
+transaction therefore carry the same instant, and an entity's audit trail
+cannot invert against its version history.
+
+A caller-supplied timestamp is never honoured: these values belong to the
+store, and a value set on an entity before `Save` is ignored.
+
+The consequence for readers is what makes this a consistency property
+rather than bookkeeping:
+
+> **A point-in-time read at instant T is stable once every transaction
+> that started before T has finished.** Until then a transaction still in
+> flight may yet commit with an instant at or before T and change the
+> answer.
+
+Dating at transaction *start* — which is what PostgreSQL's
+`CURRENT_TIMESTAMP` gives, and what the postgres plugin used to do — makes
+that property unavailable at any distance: a read at an instant between a
+transaction's start and its commit misses its writes, and the same read
+after the commit finds them. Two reads at the same instant disagree, and
+the past changes after it has been served. The window was the
+transaction's whole lifetime, which spans processor callouts and
+client-held transactions.
+
+**What this does not close.** Reading the clock immediately before
+`COMMIT` is not the commit's linearization point. A transaction that takes
+its instant at `T_a` and then blocks inside `COMMIT` can be overtaken by
+one taking `T_b > T_a`, so a read at an instant between them is served
+without the first write and gains it afterwards. The window shrinks from
+the transaction's lifetime to the commit itself. memory and sqlite avoid
+even that, structurally, by holding a global gate from stamp to publish;
+postgres cannot without serialising every commit, and the commercial
+Cassandra backend carries the same residue. Closing it needs a consistency
+horizon — a read at an instant later than the earliest in-flight
+transaction's start either waits or fails — which is tracked separately
+and deliberately not scheduled.
+
 ## 2. What this contract catches
 
 All three anomalies classically prevented by Snapshot Isolation:
