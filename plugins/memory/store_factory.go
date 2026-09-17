@@ -93,6 +93,23 @@ type StoreFactory struct {
 	msgData     map[spi.TenantID]map[string]*messageEntry
 	wfData      map[spi.TenantID]map[spi.ModelRef][]spi.WorkflowDefinition
 	smAudit     map[spi.TenantID]map[string][]spi.StateMachineEvent // tenantID -> entityID -> events
+	// smAuditTxIndex maps (tenant, transactionID) to the positions of the
+	// audit events carrying that label, so the commit-phase stamp
+	// (stampAuditEventsForTx) is a lookup rather than a walk over every entity
+	// of the tenant on every commit. Guarded by smAuditMu — the same mutex as
+	// smAudit, maintained in the same critical section as every append to it.
+	//
+	// Positions are stable because smAudit is append-only per (tenant,
+	// entity): nothing removes, reorders or compacts a recorded audit event.
+	// That invariant is what this index rests on; were an event ever removed,
+	// these positions would silently address the wrong events.
+	//
+	// Lifetime: one entry per recorded event that carries a transaction id, so
+	// it adds a constant factor to smAudit's own footprint rather than a new
+	// growth class — the same reasoning txIndex records above. Events with no
+	// transaction id are deliberately not indexed: nothing can look them up,
+	// because the stamp refuses an empty transaction id.
+	smAuditTxIndex map[spi.TenantID]map[string][]auditEventRef
 	blobDir     string
 	txManager   *TransactionManager
 	searchStore *AsyncSearchStore
@@ -125,6 +142,7 @@ func NewStoreFactory(opts ...Option) *StoreFactory {
 		msgData:        make(map[spi.TenantID]map[string]*messageEntry),
 		wfData:         make(map[spi.TenantID]map[spi.ModelRef][]spi.WorkflowDefinition),
 		smAudit:        make(map[spi.TenantID]map[string][]spi.StateMachineEvent),
+		smAuditTxIndex: make(map[spi.TenantID]map[string][]auditEventRef),
 		blobDir:        blobDir,
 		uniqueClaims:   make(map[claimKey]string),
 		claimsByEntity: make(map[entityTenantKey][]claimKey),

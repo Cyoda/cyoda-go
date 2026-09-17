@@ -110,6 +110,25 @@ func TestMigrations_IndexesOnExistingTablesAreConcurrent(t *testing.T) {
 		// CONCURRENTLY build waits on it reproduces 000008's deadlock no
 		// matter which file the statement lives in.
 		"000012_commit_instant.up.sql": true,
+		// idx_sm_events_tenant_tx, the index the commit-phase audit stamp
+		// filters on. Its lock profile is derived for THIS file, not carried
+		// over: it is a single plain CREATE INDEX on sm_audit_events and
+		// nothing else, so SHARE is the whole story — writers to that table
+		// (which now includes every committing transaction, via the stamp)
+		// block for the build, while readers, taking ACCESS SHARE, never do.
+		// No index is dropped or renamed here, so unlike 000011 no
+		// AccessExclusiveLock is taken at any point and no reader is blocked
+		// even momentarily.
+		//
+		// CONCURRENTLY is excluded by the same advisory-lock cycle proven for
+		// 000008, re-derived for this file: golang-migrate holds one
+		// session-level advisory lock for the migrator's ENTIRE Up() run, so
+		// CONCURRENTLY's multi-phase build waits on every other backend —
+		// including a second node's migrator blocked on that very lock. That
+		// span is per-run, not per-file, so this file being a lone statement
+		// (clause (b) satisfied on its own merits) does not make CONCURRENTLY
+		// available; splitting it out further would change nothing.
+		"000013_sm_audit_tx_index.up.sql": true,
 	}
 
 	for _, v := range checkIndexRules(upMigrations(t), grandfathered) {

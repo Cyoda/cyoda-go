@@ -19,8 +19,29 @@ func (s *StateMachineAuditStore) Record(ctx context.Context, entityID string, ev
 		s.factory.smAudit[s.tenant] = make(map[string][]spi.StateMachineEvent)
 	}
 	cp := copyEvent(event)
-	s.factory.smAudit[s.tenant][entityID] = append(s.factory.smAudit[s.tenant][entityID], cp)
+	events := append(s.factory.smAudit[s.tenant][entityID], cp)
+	s.factory.smAudit[s.tenant][entityID] = events
+
+	// Index this event's position under its transaction label, in the same
+	// critical section as the append, so the commit-phase stamp is a lookup
+	// rather than a walk over the tenant. See smAuditTxIndex's field comment
+	// for why a position is a stable address here.
+	if cp.TransactionID != "" {
+		if s.factory.smAuditTxIndex[s.tenant] == nil {
+			s.factory.smAuditTxIndex[s.tenant] = make(map[string][]auditEventRef)
+		}
+		s.factory.smAuditTxIndex[s.tenant][cp.TransactionID] = append(
+			s.factory.smAuditTxIndex[s.tenant][cp.TransactionID],
+			auditEventRef{entityID: entityID, index: len(events) - 1})
+	}
 	return nil
+}
+
+// auditEventRef addresses one recorded audit event: the entity whose slice
+// holds it, and its position in that slice.
+type auditEventRef struct {
+	entityID string
+	index    int
 }
 
 func (s *StateMachineAuditStore) GetEvents(ctx context.Context, entityID string) ([]spi.StateMachineEvent, error) {
@@ -75,19 +96,28 @@ func (s *StateMachineAuditStore) GetEventsByTransaction(ctx context.Context, ent
 // Called from Commit inside the factory's entityMu critical section. That
 // establishes entityMu → smAuditMu as a lock order; no path takes them in the
 // opposite order (the audit store's own methods take smAuditMu alone), so it
-// introduces no cycle.
+// introduces no cycle. The work done under both locks is bounded by THIS
+// transaction's own event count, via smAuditTxIndex — it is a lookup, not a
+// walk over the tenant, which is what makes holding the global write lock
+// across it acceptable rather than a scalability trap in the commit path.
+//
+// This is a point-in-time sweep, not a write barrier: an event recorded AFTER
+// it runs but before Commit returns keeps the clock its recorder read. Record
+// takes only smAuditMu, which Commit's entityMu section does not exclude it
+// from, so such an event is possible in principle. It does not arise in the
+// normal path — recordEvent runs on the goroutine driving the transaction,
+// which is inside Commit at this moment and so cannot be recording — but the
+// property this provides is "every event recorded before the commit phase",
+// not "every event the transaction will ever be labelled with". The SQL
+// backends have the identical window for the identical reason.
 func (f *StoreFactory) stampAuditEventsForTx(tenant spi.TenantID, txID string, instant time.Time) {
 	if txID == "" {
 		return
 	}
 	f.smAuditMu.Lock()
 	defer f.smAuditMu.Unlock()
-	for _, events := range f.smAudit[tenant] {
-		for i := range events {
-			if events[i].TransactionID == txID {
-				events[i].Timestamp = instant
-			}
-		}
+	for _, ref := range f.smAuditTxIndex[tenant][txID] {
+		f.smAudit[tenant][ref.entityID][ref.index].Timestamp = instant
 	}
 }
 

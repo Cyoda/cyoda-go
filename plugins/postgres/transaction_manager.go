@@ -389,6 +389,16 @@ func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx,
 	// this column. No value regresses — nothing stamped it before either —
 	// but the audit trail is not uniformly on the commit clock, and claiming
 	// otherwise would be false.
+	//
+	// This is also a point-in-time sweep rather than a write barrier: an
+	// INSERT into this table after this statement, in this same transaction,
+	// is not matched and keeps its recorded clock. It does not arise in the
+	// normal path — recordEvent runs on the goroutine driving the transaction,
+	// which is inside Commit here — but the property is "every event recorded
+	// before the commit phase", not "every event this transaction labels".
+	// The index this filters on is idx_sm_events_tenant_tx (migration 000013);
+	// 000001's idx_sm_events_tx cannot serve it, because entity_id sits
+	// between the two columns constrained here.
 	if _, err := tx.Exec(ctx,
 		`UPDATE sm_audit_events SET timestamp = $1
 		  WHERE tenant_id = $2 AND transaction_id = $3`,

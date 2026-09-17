@@ -850,14 +850,31 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 
 	// Audit events LABELLED with this transaction take the same instant, so
 	// the audit trail and the version history cannot drift apart or invert.
-	// Record wrote those rows outside this sqlTx (the audit store holds the
-	// pool, not the flush's transaction), so they are already committed and
-	// visible to this UPDATE; the restamp itself is inside sqlTx, so a flush
-	// that fails leaves every event on its recorded clock.
+	//
+	// Record wrote those rows through the audit store's own handle rather than
+	// this sqlTx, and they are visible here for a structural reason rather
+	// than a hopeful one: that handle IS the writer pool, capped at a single
+	// connection (SetMaxOpenConns(1), store_factory.go), so any Record that
+	// preceded this flush ran on this very connection and committed before the
+	// flush's transaction opened. There is no second writer whose uncommitted
+	// insert this UPDATE could fail to see. The restamp itself is inside
+	// sqlTx, so a flush that fails leaves every event on the clock its
+	// recorder read.
 	//
 	// "Labelled with", not "written by" — the engine records some events under
 	// a cascade entry's transaction id (EmitTransitionAborted), and one whose
 	// label names no committing transaction is never stamped.
+	//
+	// A point-in-time sweep, not a write barrier: an event recorded after this
+	// statement runs keeps the clock its recorder read. It does not arise in
+	// the normal path — recordEvent runs on the goroutine driving the
+	// transaction, which is inside Commit here — but the property is "every
+	// event recorded before the commit phase", not "every event this
+	// transaction labels". Memory and postgres have the identical window.
+	//
+	// Served by idx_sm_events_tenant_tx (migration 000008); 000001's
+	// idx_sm_events_tx cannot serve it, because entity_id sits between the two
+	// columns constrained here.
 	_, err = sqlTx.ExecContext(ctx,
 		"UPDATE sm_audit_events SET timestamp = ? WHERE tenant_id = ? AND transaction_id = ?",
 		submitMicro, tid, tx.ID)
