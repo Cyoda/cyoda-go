@@ -307,11 +307,12 @@ func (it *postgresIter) Next() bool {
 			return false
 		}
 		var doc []byte
-		if err := it.rows.Scan(&doc); err != nil {
+		var creationDate, lastModified time.Time
+		if err := it.rows.Scan(&doc, &creationDate, &lastModified); err != nil {
 			it.err = fmt.Errorf("scan iterate row: %w", err)
 			return false
 		}
-		e, err := unmarshalEntityDoc(doc)
+		e, err := unmarshalEntityDoc(doc, creationDate, lastModified)
 		if err != nil {
 			it.err = fmt.Errorf("unmarshal iterate row: %w", err)
 			return false

@@ -11,19 +11,14 @@ import (
 // entityMeta is the JSON-serializable representation of the _meta block
 // stored alongside domain data in the JSONB document.
 type entityMeta struct {
-	ID               string `json:"id"`
-	TenantID         string `json:"tenant_id"`
-	ModelName        string `json:"model_name"`
-	ModelVersion     string `json:"model_version"`
-	Version          int64  `json:"version"`
-	State            string `json:"state"`
-	ValidTime        string `json:"valid_time"`
-	TransactionTime  string `json:"transaction_time"`
-	WallClockTime    string `json:"wall_clock_time"`
-	CreationDate     string `json:"creation_date"`
-	LastModifiedDate string `json:"last_modified_date"`
-	ChangeType       string `json:"change_type"`
-	ChangeUser       string `json:"change_user"`
+	ID           string `json:"id"`
+	TenantID     string `json:"tenant_id"`
+	ModelName    string `json:"model_name"`
+	ModelVersion string `json:"model_version"`
+	Version      int64  `json:"version"`
+	State        string `json:"state"`
+	ChangeType   string `json:"change_type"`
+	ChangeUser   string `json:"change_user"`
 	// ChangeUserKind is the PrincipalKind of the attributed ChangeUser above;
 	// empty ("") on legacy docs written before attribution existed — reads
 	// back as spi.PrincipalKind("") (the zero value), never synthesized.
@@ -41,7 +36,15 @@ type entityMeta struct {
 
 // marshalEntityDoc produces a merged JSONB document containing a _meta block
 // and the entity's domain data as top-level keys.
-func marshalEntityDoc(entity *spi.Entity, validTime, txTime, wallClockTime time.Time, deleted bool) ([]byte, error) {
+//
+// It takes no temporal arguments: valid_time/transaction_time/wall_clock_time
+// and creation_date/last_modified_date all live in columns on entities and
+// entity_versions (Task 5's migration), not in this document. Rewriting JSONB
+// at commit time to keep in-document copies honest would roughly double every
+// transaction's write volume and end entity_versions' append-only property —
+// the columns are the sole source of truth, and reads project them back
+// (unmarshalEntityDoc below).
+func marshalEntityDoc(entity *spi.Entity, deleted bool) ([]byte, error) {
 	meta := entityMeta{
 		ID:                 entity.Meta.ID,
 		TenantID:           string(entity.Meta.TenantID),
@@ -49,11 +52,6 @@ func marshalEntityDoc(entity *spi.Entity, validTime, txTime, wallClockTime time.
 		ModelVersion:       entity.Meta.ModelRef.ModelVersion,
 		Version:            entity.Meta.Version,
 		State:              entity.Meta.State,
-		ValidTime:          validTime.UTC().Format(time.RFC3339Nano),
-		TransactionTime:    txTime.UTC().Format(time.RFC3339Nano),
-		WallClockTime:      wallClockTime.UTC().Format(time.RFC3339Nano),
-		CreationDate:       entity.Meta.CreationDate.UTC().Format(time.RFC3339Nano),
-		LastModifiedDate:   entity.Meta.LastModifiedDate.UTC().Format(time.RFC3339Nano),
 		ChangeType:         entity.Meta.ChangeType,
 		ChangeUser:         entity.Meta.ChangeUser,
 		ChangeUserKind:     string(entity.Meta.ChangeUserKind),
@@ -95,10 +93,12 @@ func marshalEntityDoc(entity *spi.Entity, validTime, txTime, wallClockTime time.
 	return json.Marshal(doc)
 }
 
-// unmarshalEntityDoc extracts an Entity from a merged JSONB document.
-// The _meta block is parsed into EntityMeta and removed; the remaining
-// keys become entity.Data.
-func unmarshalEntityDoc(raw []byte) (*spi.Entity, error) {
+// unmarshalEntityDoc rebuilds an Entity from its stored document plus the
+// temporal columns. The dates are NOT in the document: the columns are the
+// source of truth, so a commit-phase stamp updates two narrow columns rather
+// than rewriting every document it wrote. The _meta block is parsed into
+// EntityMeta and removed; the remaining keys become entity.Data.
+func unmarshalEntityDoc(raw []byte, creationDate, lastModified time.Time) (*spi.Entity, error) {
 	var doc map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal entity doc: %w", err)
@@ -134,15 +134,6 @@ func unmarshalEntityDoc(raw []byte) (*spi.Entity, error) {
 		}
 	}
 
-	creationDate, err := time.Parse(time.RFC3339Nano, meta.CreationDate)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse creation_date: %w", err)
-	}
-	lastModified, err := time.Parse(time.RFC3339Nano, meta.LastModifiedDate)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse last_modified_date: %w", err)
-	}
-
 	return &spi.Entity{
 		Meta: spi.EntityMeta{
 			ID:       meta.ID,
@@ -167,9 +158,14 @@ func unmarshalEntityDoc(raw []byte) (*spi.Entity, error) {
 }
 
 // unmarshalEntityVersion extracts an EntityVersion from a JSONB document,
-// supplementing with the version number and valid time from the query context.
-func unmarshalEntityVersion(raw []byte, version int64, validTime time.Time) (*spi.EntityVersion, error) {
-	entity, err := unmarshalEntityDoc(raw)
+// supplementing with the version number, valid time and creation date from
+// the query context. The version's reported LastModifiedDate is validTime
+// (this version's own valid_time) — entity_versions has no last_modified
+// column of its own; a historical version's "last modified" is when it
+// became valid, which matches the pre-existing convention (Timestamp below
+// is the same validTime).
+func unmarshalEntityVersion(raw []byte, version int64, validTime, creationDate time.Time) (*spi.EntityVersion, error) {
+	entity, err := unmarshalEntityDoc(raw, creationDate, validTime)
 	if err != nil {
 		return nil, err
 	}

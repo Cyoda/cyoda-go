@@ -294,7 +294,7 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity, stampFrom 
 	entity.Meta.LastModifiedDate = dbNow
 
 	// Marshal document with the now-known version.
-	doc, err := marshalEntityDoc(entity, dbNow, dbNow, wallClockTime, false)
+	doc, err := marshalEntityDoc(entity, false)
 	if err != nil {
 		return 0, fmt.Errorf("failed to marshal entity doc: %w", err)
 	}
@@ -475,16 +475,17 @@ func (s *entityStore) compareTxID(ctx context.Context, q Querier, entityID, expe
 
 func (s *entityStore) Get(ctx context.Context, entityID string) (*spi.Entity, error) {
 	var doc []byte
+	var creationDate, lastModified time.Time
 	err := s.q.QueryRow(ctx,
-		`SELECT doc FROM entities WHERE tenant_id = $1 AND entity_id = $2 AND NOT deleted`,
-		string(s.tenantID), entityID).Scan(&doc)
+		`SELECT doc, creation_date, last_modified FROM entities WHERE tenant_id = $1 AND entity_id = $2 AND NOT deleted`,
+		string(s.tenantID), entityID).Scan(&doc, &creationDate, &lastModified)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, fmt.Errorf("ENTITY_NOT_FOUND: entity %s not found: %w", entityID, spi.ErrNotFound)
 		}
 		return nil, fmt.Errorf("failed to get entity %s: %w", entityID, err)
 	}
-	entity, err := unmarshalEntityDoc(doc)
+	entity, err := unmarshalEntityDoc(doc, creationDate, lastModified)
 	if err != nil {
 		return nil, err
 	}
@@ -502,14 +503,15 @@ func (s *entityStore) Get(ctx context.Context, entityID string) (*spi.Entity, er
 // Deliberately not tracked in readSet: historical reads target immutable versions. See spec §Known limitation.
 func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Time) (*spi.Entity, error) {
 	var doc []byte
+	var creationDate, validTime time.Time
 	err := s.committedQuerier().QueryRow(ctx,
-		`SELECT doc FROM entity_versions
+		`SELECT doc, creation_date, valid_time FROM entity_versions
 		 WHERE tenant_id = $1 AND entity_id = $2
 		   AND valid_time <= $3
 		   AND transaction_time <= CURRENT_TIMESTAMP
 		 ORDER BY valid_time DESC, transaction_time DESC, version DESC
 		 LIMIT 1`,
-		string(s.tenantID), entityID, asAt).Scan(&doc)
+		string(s.tenantID), entityID, asAt).Scan(&doc, &creationDate, &validTime)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, fmt.Errorf("ENTITY_NOT_FOUND: entity %s not found at %v: %w", entityID, asAt, spi.ErrNotFound)
@@ -532,7 +534,7 @@ func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 		}
 	}
 
-	return unmarshalEntityDoc(doc)
+	return unmarshalEntityDoc(doc, creationDate, validTime)
 }
 func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 	// Same reasoning as save's non-tx branch, including the ownTx guard —
@@ -576,13 +578,14 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 	tid := string(s.tenantID)
 
-	// Get current entity (doc + version) in a single point-lookup on the PK.
-	// Fetching both avoids a second round-trip for the version.
+	// Get current entity (doc + version + dates) in a single point-lookup on
+	// the PK. Fetching all four avoids a second round-trip.
 	var doc []byte
 	var maxVersion int64
+	var creationDate, lastModified time.Time
 	err := s.q.QueryRow(ctx,
-		`SELECT doc, version FROM entities WHERE tenant_id = $1 AND entity_id = $2 AND NOT deleted`,
-		tid, entityID).Scan(&doc, &maxVersion)
+		`SELECT doc, version, creation_date, last_modified FROM entities WHERE tenant_id = $1 AND entity_id = $2 AND NOT deleted`,
+		tid, entityID).Scan(&doc, &maxVersion, &creationDate, &lastModified)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return fmt.Errorf("ENTITY_NOT_FOUND: entity %s not found: %w", entityID, spi.ErrNotFound)
@@ -594,7 +597,7 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 		s.tm.recordWriteIfInTx(ctx, entityID, maxVersion)
 	}
 
-	current, err := unmarshalEntityDoc(doc)
+	current, err := unmarshalEntityDoc(doc, creationDate, lastModified)
 	if err != nil {
 		return fmt.Errorf("failed to unmarshal entity for delete: %w", err)
 	}
@@ -623,7 +626,10 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 	current.Meta.ChangeUser = attributed.ID
 	current.Meta.ChangeUserKind = attributed.Kind
 	current.Meta.ChangeExecutor = executor
-	current.Meta.LastModifiedDate = dbNow
+	// current.Meta.LastModifiedDate is deliberately left as read from the
+	// pre-delete row: marshalEntityDoc no longer serializes it (the column is
+	// the source of truth), so stamping it here would be dead Go state with no
+	// observable effect. Task 7 stamps the real last_modified column at commit.
 	// TransactionID: same rationale as attribution above — the tombstone
 	// must record the DELETING transaction's own ID, not carry over the
 	// PRIOR write's (`current` was unmarshaled from the pre-delete doc, so
@@ -638,7 +644,7 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 		current.Meta.TransactionID = ""
 	}
 
-	deleteDoc, err := marshalEntityDoc(current, dbNow, dbNow, wallClockTime, true)
+	deleteDoc, err := marshalEntityDoc(current, true)
 	if err != nil {
 		return fmt.Errorf("failed to marshal delete doc: %w", err)
 	}
@@ -850,7 +856,7 @@ func (s *entityStore) GetPage(ctx context.Context, modelRef spi.ModelRef, limit,
 // that impossible: any edit here moves the test with it.
 //
 // $1 tenant, $2 model name, $3 model version, $4 limit, $5 offset.
-const getPageCurrentQuery = `SELECT doc FROM entities
+const getPageCurrentQuery = `SELECT doc, creation_date, last_modified FROM entities
 	 WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted
 	 ORDER BY entity_id COLLATE "C"
 	 LIMIT $4 OFFSET $5`
@@ -920,7 +926,7 @@ func (s *entityStore) getPageAsAt(ctx context.Context, modelRef spi.ModelRef, li
 // index usage must plan the query that actually runs, not a copy of it.
 //
 // $1 tenant, $2 entity id, $3 transaction id.
-const getVersionByTransactionQuery = `SELECT doc, version, valid_time FROM entity_versions
+const getVersionByTransactionQuery = `SELECT doc, version, valid_time, creation_date FROM entity_versions
 	 WHERE tenant_id = $1 AND entity_id = $2
 	   AND doc->'_meta'->>'transaction_id' = $3
 	   AND (doc->'_meta'->>'deleted')::boolean IS NOT TRUE
@@ -933,8 +939,9 @@ const getVersionByTransactionQuery = `SELECT doc, version, valid_time FROM entit
 // txID never matches, even a stored-empty one from a non-transactional
 // write, so it is rejected pre-query rather than reaching SQL at all.
 //
-// The deleted predicate reuses scanEntitiesFilterDeleted's exact _meta
-// probe (doc->'_meta'->>'deleted'), restated in SQL rather than a second,
+// The deleted predicate is the same (doc->'_meta'->>'deleted') probe used by
+// the PIT base query's outer filter (search_base.go) and by GetAsAt's
+// post-query check below, restated in SQL rather than a second,
 // possibly-diverging convention.
 //
 // tenant_id/entity_id scope the scan to entity_versions' own PRIMARY KEY
@@ -949,9 +956,9 @@ func (s *entityStore) GetVersionByTransaction(ctx context.Context, entityID, txI
 
 	var doc []byte
 	var version int64
-	var validTime time.Time
+	var validTime, creationDate time.Time
 	err := s.q.QueryRow(ctx, getVersionByTransactionQuery,
-		string(s.tenantID), entityID, txID).Scan(&doc, &version, &validTime)
+		string(s.tenantID), entityID, txID).Scan(&doc, &version, &validTime, &creationDate)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
@@ -959,7 +966,7 @@ func (s *entityStore) GetVersionByTransaction(ctx context.Context, entityID, txI
 		return nil, fmt.Errorf("GetVersionByTransaction: %w", err)
 	}
 
-	return unmarshalEntityVersion(doc, version, validTime)
+	return unmarshalEntityVersion(doc, version, validTime, creationDate)
 }
 
 // GetVersionMetadata returns entityID's version metadata — no entity
@@ -1040,54 +1047,22 @@ func (s *entityStore) GetVersionMetadata(ctx context.Context, entityID string, o
 	return result, nil
 }
 
-// scanEntities reads all Entity rows from a result set.
+// scanEntities reads all Entity rows from a result set. The projection is
+// exactly `doc, creation_date, last_modified`, in that order — the same
+// three-column shape searchBaseQuery's two branches and postgresIter.Next
+// share (search_base.go). Reordering the SELECT list here without updating
+// those breaks the scan silently: pgx.Rows.Scan has no column-name
+// cross-check, so a swapped creation_date/last_modified would compile and
+// misreport dates rather than fail.
 func scanEntities(rows pgx.Rows) ([]*spi.Entity, error) {
 	var result []*spi.Entity
 	for rows.Next() {
 		var doc []byte
-		if err := rows.Scan(&doc); err != nil {
+		var creationDate, lastModified time.Time
+		if err := rows.Scan(&doc, &creationDate, &lastModified); err != nil {
 			return nil, fmt.Errorf("failed to scan entity row: %w", err)
 		}
-		ent, err := unmarshalEntityDoc(doc)
-		if err != nil {
-			return nil, fmt.Errorf("failed to unmarshal entity: %w", err)
-		}
-		result = append(result, ent)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("row iteration error: %w", err)
-	}
-	if result == nil {
-		result = []*spi.Entity{}
-	}
-	return result, nil
-}
-
-// scanEntitiesFilterDeleted reads Entity rows and filters out deleted ones.
-func scanEntitiesFilterDeleted(rows pgx.Rows) ([]*spi.Entity, error) {
-	var result []*spi.Entity
-	for rows.Next() {
-		var doc []byte
-		if err := rows.Scan(&doc); err != nil {
-			return nil, fmt.Errorf("failed to scan entity row: %w", err)
-		}
-
-		// Check deleted flag in _meta.
-		var docMap map[string]json.RawMessage
-		if err := json.Unmarshal(doc, &docMap); err != nil {
-			return nil, fmt.Errorf("failed to parse entity doc: %w", err)
-		}
-		if metaRaw, ok := docMap["_meta"]; ok {
-			var meta entityMeta
-			if err := json.Unmarshal(metaRaw, &meta); err != nil {
-				return nil, fmt.Errorf("failed to parse _meta: %w", err)
-			}
-			if meta.Deleted {
-				continue
-			}
-		}
-
-		ent, err := unmarshalEntityDoc(doc)
+		ent, err := unmarshalEntityDoc(doc, creationDate, lastModified)
 		if err != nil {
 			return nil, fmt.Errorf("failed to unmarshal entity: %w", err)
 		}

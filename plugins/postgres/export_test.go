@@ -220,10 +220,11 @@ func SearchCandidateIDsForTest(pool *pgxpool.Pool, ctx context.Context, tenantID
 	var ids []string
 	for rows.Next() {
 		var doc []byte
-		if err := rows.Scan(&doc); err != nil {
+		var creationDate, lastModified time.Time
+		if err := rows.Scan(&doc, &creationDate, &lastModified); err != nil {
 			return nil, err
 		}
-		e, err := unmarshalEntityDoc(doc)
+		e, err := unmarshalEntityDoc(doc, creationDate, lastModified)
 		if err != nil {
 			return nil, err
 		}
