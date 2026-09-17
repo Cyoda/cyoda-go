@@ -135,10 +135,12 @@ func (f *StoreFactory) stampAuditEventsForTx(tenant spi.TenantID, txID string, i
 // This drops the INDEX, not the trail: the audit events themselves are
 // untouched, keeping whatever timestamp they were stamped or recorded with.
 //
-// Locking: takes smAuditMu, the innermost lock here — callers hold the
-// transaction manager's mu, and on the commit path entityMu as well — so it
-// adds no lock order beyond the entityMu → smAuditMu one stampAuditEventsForTx
-// already documents.
+// Locking: takes smAuditMu, and callers hold more than one lock above it —
+// the conflict-detection abort and the commit-log block both hold entityMu and
+// the transaction manager's mu, giving entityMu → mu → smAuditMu. That is safe
+// without documenting each chain because smAuditMu is a leaf: every other
+// holder (Record, GetEvents, GetEventsByTransaction) takes it alone and
+// acquires nothing under it, so no cycle is reachable whatever is held above.
 func (f *StoreFactory) discardAuditTxIndex(tenant spi.TenantID, txID string) {
 	if txID == "" {
 		return
