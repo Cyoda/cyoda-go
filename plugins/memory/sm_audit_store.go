@@ -121,6 +121,40 @@ func (f *StoreFactory) stampAuditEventsForTx(tenant spi.TenantID, txID string, i
 	}
 }
 
+// discardAuditTxIndex drops txID's entry from smAuditTxIndex.
+//
+// The index exists for exactly one reader — stampAuditEventsForTx, which runs
+// once per transaction — so an entry is dead the moment the transaction
+// reaches a terminal state: stamped and committed, aborted mid-commit, or
+// rolled back. Nothing can read it again. Without this, a long-running
+// process accumulates one reference per audited event forever. It is
+// therefore discarded on exactly the paths that discard the transaction's
+// other staged maps (supersededSaves, deletedBufferModels, scheduledTaskOps),
+// at the same points and for the same reason.
+//
+// This drops the INDEX, not the trail: the audit events themselves are
+// untouched, keeping whatever timestamp they were stamped or recorded with.
+//
+// Locking: takes smAuditMu, the innermost lock here — callers hold the
+// transaction manager's mu, and on the commit path entityMu as well — so it
+// adds no lock order beyond the entityMu → smAuditMu one stampAuditEventsForTx
+// already documents.
+func (f *StoreFactory) discardAuditTxIndex(tenant spi.TenantID, txID string) {
+	if txID == "" {
+		return
+	}
+	f.smAuditMu.Lock()
+	defer f.smAuditMu.Unlock()
+	byTx := f.smAuditTxIndex[tenant]
+	if byTx == nil {
+		return
+	}
+	delete(byTx, txID)
+	if len(byTx) == 0 {
+		delete(f.smAuditTxIndex, tenant)
+	}
+}
+
 func copyEvent(e spi.StateMachineEvent) spi.StateMachineEvent {
 	cp := e
 	if e.Data != nil {

@@ -511,6 +511,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 							delete(m.supersededSaves, txID)
 							delete(m.deletedBufferModels, txID)
 							delete(m.scheduledTaskOps, txID)
+							m.factory.discardAuditTxIndex(tid, txID)
 							return spi.ErrConflict
 						}
 					}
@@ -545,6 +546,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 				delete(m.deletedBufferModels, txID)
 				delete(m.scheduledTaskOps, txID)
 			}()
+			m.factory.discardAuditTxIndex(tid, txID)
 			return err
 		}
 
@@ -824,6 +826,9 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			delete(m.supersededSaves, txID)
 			delete(m.deletedBufferModels, txID)
 			delete(m.scheduledTaskOps, txID)
+			// The commit-phase stamp above is smAuditTxIndex's only reader and
+			// has already run, so this transaction's entries are dead.
+			m.factory.discardAuditTxIndex(tid, txID)
 			var oldest time.Time
 			for _, activeTx := range m.active {
 				if oldest.IsZero() || activeTx.SnapshotTime.Before(oldest) {
@@ -891,6 +896,9 @@ func (m *TransactionManager) Rollback(ctx context.Context, txID string) error {
 		delete(m.deletedBufferModels, txID) // discard staged evicted models unapplied — see field doc
 		delete(m.scheduledTaskOps, txID)    // discard staged ops unapplied — see field doc
 	}()
+	// A rolled-back transaction is never stamped, so its audit-event index
+	// entries have no reader at all — see discardAuditTxIndex.
+	m.factory.discardAuditTxIndex(tx.TenantID, txID)
 	return nil
 }
 
