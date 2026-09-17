@@ -223,11 +223,16 @@ narrow-column `UPDATE`s over the transaction's own rows in `entity_versions`,
 longer carry these values.
 
 - **`transaction_id` column on `entity_versions`**, indexed, identifies those
-  rows. `GetVersionByTransaction` moves onto it, replacing its unindexed
-  `doc->'_meta'->>'transaction_id'` probe, so the table has one source of
-  truth rather than two. The column is load-bearing for correctness, not an
-  optimisation: after a savepoint rollback the in-memory write set disagrees
-  with the table, and the table is right.
+  rows. The column is load-bearing for correctness, not an optimisation:
+  after a savepoint rollback the in-memory write set disagrees with the
+  table, and the table is right. `GetVersionByTransaction` deliberately does
+  **not** move onto it and keeps its `doc->'_meta'->>'transaction_id'` probe:
+  the column and the document field record different facts, not two copies of
+  one. The column carries only a transaction that actually committed the row,
+  while a non-transactional write stores the caller-supplied id in the
+  document — and the memory backend indexes that document value, so such an
+  id is findable there. Moving postgres onto the column would make it answer
+  differently from memory for that class of write.
 - **A non-transactional write keeps the empty-string transaction id.** It
   does not mint a synthetic one — `CompareAndSave` rests on the empty string
   being what a non-transactional write stores — and its own transaction
@@ -381,8 +386,17 @@ instant for any of these values; this design writes it into the SPI godoc
 | Audit event times agree with version times | ✓ | ✓ | — | — |
 | `GetSubmitTime` survives a restart and answers on another node | ✓ | ✓ | ✓ | — |
 | `transitions?transactionId=` resolves a CompareAndSave write | — | ✓ | — | — |
-| Model-reference change rejected | ✓ | ✓ | ✓ (conformance) | ✓ |
+| Model-reference change rejected | ✓ | waived¹ | ✓ (conformance) | waived¹ |
 | Non-transactional save is atomic (no `'null'` doc observable) | ✓ | ✓ | — | — |
+
+¹ Waived on both request doors, per `.claude/rules/test-coverage.md`: no client
+request can construct a model-mismatch write, so neither door can reach the
+check. Creating an entity mints a fresh entity ID in the entity service, and
+every update and patch path copies the stored entity's model reference onto
+the write. The rule is pinned where it is enforceable — storage-layer unit
+tests and the SPI conformance suite, which binds every backend. See
+`cmd/cyoda/help/content/errors/ENTITY_MODEL_MISMATCH.md`, which says the same
+to operators.
 
 Concurrency scenarios stay in isolated single-backend e2e, never the shared
 parity suite.
