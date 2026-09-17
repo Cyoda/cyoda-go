@@ -47,12 +47,18 @@ type entityVersion struct {
 	// create is evicted from tx.Buffer by Delete, so the tombstone this
 	// commit appends is the ONLY committed version, and it is the sole
 	// place left to record the model an entity-immutability check (see
-	// modelRefOfLocked) can read once that create is gone. Populated from
-	// the entity being deleted (non-tx Delete) or from the transaction's
-	// own buffered-then-evicted create (txmanager.Commit's delete flush —
-	// see stageDeletedBufferModel). Left zero-value for a tombstone whose
-	// history already carries a live version elsewhere (modelRefOfLocked
-	// never needs it in that case).
+	// modelRefOfLocked) can read once that create is gone. txmanager.Commit's
+	// delete flush is the ONLY site that populates it, from the transaction's
+	// own buffered-then-evicted create (see stageDeletedBufferModel), and only
+	// when the entity has no prior committed version at all. Left zero-value
+	// on every other tombstone, because modelRefOfLocked never needs it there:
+	// a live version elsewhere in the history already carries the model.
+	//
+	// The non-transactional Delete path (see Delete) deliberately sets nothing
+	// here and needs nothing: it refuses to delete an entity whose latest
+	// version is absent or already a tombstone, so a live version — the one it
+	// just read — always remains ahead of the tombstone it appends, and
+	// firstNonTombstone finds the model there.
 	modelRef spi.ModelRef
 }
 
