@@ -185,7 +185,10 @@ Do this as a single consolidated **release-prep** commit on the release branch,
 
 1. Bump the `cyoda-go-spi` pin to the freshly cut `vX.Y.Z` in all four
    `go.mod` files (this is the maintainer-owned step — Dependabot does **not**
-   touch the SPI pin; see "Bumping cyoda-go-spi" below).
+   touch the SPI pin; see "Bumping cyoda-go-spi" below). This *swaps out* the
+   pseudo-version pin the branch carries during the milestone: "after the tag
+   exists" governs this release-prep swap, not whether a feature branch can
+   compile before a tag.
 2. Apply every pending Dependabot minor/patch bump (root + each plugin
    submodule). If a grouped PR was closed because it was entangled with the
    then-unresolvable SPI pin, apply its third-party updates by hand here.
@@ -460,6 +463,11 @@ actually was), a **minor** only for a breaking interface change. So the
 SPI minor stays put across many binary releases; pick the next SPI
 version by whether the SPI *interface* broke, never to match the
 binary's number.
+
+"Broke" covers the conformance suite, not just signatures. `spitest` gaining a
+case that existing implementors fail is a breaking change to the contract this
+module defines — a backend that compiled and passed now goes red on nothing but
+a pin bump. Cut a **minor** for that, as for any interface break.
 
 **The SPI pin is maintainer-owned, not Dependabot-owned.** During a milestone
 the root and plugin `go.mod` files pin a pseudo-version of `cyoda-go-spi`
