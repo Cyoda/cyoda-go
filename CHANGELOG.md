@@ -24,9 +24,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **Durable transaction submit times (PostgreSQL).** The commit instant is
   recorded in a new `submit_times` table inside the committing transaction,
   alongside the existing in-process map. `GetSubmitTime` — and therefore
-  `GET /entity/{id}?transactionId=` and
-  `GET /entity/{id}/transitions?transactionId=` — now answers on **any
-  node** and after a restart, not only on the node that committed. The
+  `GET /entity/{id}/transitions?transactionId=`, its only server-side
+  caller — now answers on **any node** and after a restart, not only on the
+  node that committed. (`GET /entity/{id}?transactionId=` resolves through
+  `GetVersionByTransaction` instead and was never node-local.) The
   1-hour retention is unchanged; pruning runs after commit rather than
   inside it.
 
@@ -39,11 +40,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   its writes T0; they are now dated T0+30s. The change covers `valid_time`,
   `transaction_time`, the reported `creationDate` / `lastUpdateTime`, the
   recorded submit time, and audit-event timestamps, and every row a
-  transaction writes shares one instant. memory, sqlite and the commercial
-  Cassandra backend already dated at commit, as does the Cyoda platform, so
-  this brings PostgreSQL into line with a contract the others already met
-  rather than introducing a new one — but a client that compared a stored
-  `creationDate` against its own clock will see the value move later.
+  transaction writes shares one instant. sqlite already dated every one of
+  those values at commit, and memory all but one (see the `creationDate`
+  fix below), so this brings PostgreSQL into line with a contract the other
+  in-tree backends substantially already met rather than introducing a new
+  one — but a client that compared a stored `creationDate` against its own
+  clock will see the value move later.
   `wall_clock_time` is unchanged: it stays the physical moment of
   insertion. `docs/CONSISTENCY.md` §1a states the rule and its one
   residual window.
@@ -88,6 +90,19 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   scenario now pins the two together. Events the engine labels with a
   cascade entry's transaction rather than the recording one keep the
   recording process's clock; they were never stamped before either.
+
+- **A caller-supplied `creationDate` is ignored on every backend (memory).**
+  An entity's creation date belongs to the store, but the memory backend
+  kept a non-zero value supplied on the entity and only substituted its own
+  clock for a zero one. The engine always supplies one — it builds the
+  entity from its own clock before the transaction is even opened — so a
+  created entity reported a `creationDate` dated at the *start* of the
+  write, the gap being the whole transaction lifetime including processor
+  callouts. That is the same defect this release removes from PostgreSQL,
+  left standing on the one backend nothing checked. sqlite and postgres
+  already ignored the caller. A new SPI conformance case,
+  `Save/CallerCreationDateIgnored`, pins it on every backend and covers the
+  transactional and non-transactional write paths separately.
 
 - **A non-transactional `Save` and `Delete` are each one transaction
   (PostgreSQL).** Both ran as separate auto-committed statements: `Save`

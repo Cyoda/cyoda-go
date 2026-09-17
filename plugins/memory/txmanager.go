@@ -671,10 +671,21 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 				saved.Meta.TenantID = tid
 				saved.Meta.ChangeType = changeType
 
-				// Preserve CreationDate from existing versions.
+				// Preserve CreationDate from existing versions; otherwise
+				// this transaction created the entity, and its commit
+				// instant IS the creation date.
+				//
+				// A caller-supplied value is IGNORED rather than taken as a
+				// fallback: the date belongs to the store (see
+				// spi.EntityMeta.CreationDate), and the engine stamps one
+				// from its own clock before Begin, so honouring it dated a
+				// created entity at the START of the transaction — processor
+				// callouts included — instead of at its commit, which is the
+				// defect commit-instant stamping exists to remove. Pinned by
+				// spitest's Save/CallerCreationDateIgnored.
 				if !creationDate.IsZero() {
 					saved.Meta.CreationDate = creationDate
-				} else if saved.Meta.CreationDate.IsZero() {
+				} else {
 					saved.Meta.CreationDate = submitTime
 				}
 

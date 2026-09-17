@@ -78,8 +78,12 @@ one taking `T_b > T_a`, so a read at an instant between them is served
 without the first write and gains it afterwards. The window shrinks from
 the transaction's lifetime to the commit itself. memory and sqlite avoid
 even that, structurally, by holding a global gate from stamp to publish;
-postgres cannot without serialising every commit, and the commercial
-Cassandra backend carries the same residue. Closing it needs a consistency
+postgres cannot without serialising every commit. The commercial Cassandra
+backend documents the same residue for its own mechanism: per
+`docs/CASSANDRA_CONSISTENCY_AND_PIT.md` §2, its only remaining
+point-in-time ambiguity requires an instant at or near *now* together with
+a transaction flipping to COMMITTED mid-read, and any genuinely historical
+instant is excluded everywhere. Closing it needs a consistency
 horizon — a read at an instant later than the earliest in-flight
 transaction's start either waits or fails — which is tracked separately
 and deliberately not scheduled.

@@ -446,11 +446,17 @@ func (s *EntityStore) saveUnlocked(ctx context.Context, entity *spi.Entity) (int
 	// tombstone at index 0). Recreating an id whose whole history is
 	// tombstone(s) has no recoverable original creation date, so it falls
 	// through to the "no versions" branch below, same as a brand-new id.
-	creationDate := entity.Meta.CreationDate
+	//
+	// A caller-supplied CreationDate is IGNORED, not used as a fallback: the
+	// creation date is the store's, not the caller's (see
+	// spi.EntityMeta.CreationDate). The engine builds an entity with its own
+	// clock BEFORE it opens a transaction, so honouring that value dated a
+	// created entity at the moment the write started rather than the moment
+	// it was published — a gap as long as the transaction, processor
+	// callouts included. Pinned by spitest's Save/CallerCreationDateIgnored.
+	creationDate := now
 	if e, ok := firstNonTombstone(versions); ok {
 		creationDate = e.Meta.CreationDate
-	} else if creationDate.IsZero() {
-		creationDate = now
 	}
 
 	saved := &spi.Entity{
