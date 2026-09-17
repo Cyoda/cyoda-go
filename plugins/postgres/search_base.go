@@ -35,10 +35,21 @@ import "time"
 // current-state shape column-for-column (doc, creation_date, last_modified)
 // so the two searchBaseQuery branches are interchangeable to every caller —
 // scanEntities, postgresIter.Next and GetPage(asAt) all read this result set
-// through that one shared shape. GetAsAt and GetVersionByTransaction, which
-// return a version-shaped read rather than a current-state-shaped one, use
-// valid_time for the same purpose instead — see unmarshalEntityVersion's doc
-// comment for why those differ.
+// through that one shared shape.
+//
+// transaction_time, not valid_time, is also the deliberate choice
+// GetAsAt (entity_store.go) makes for the same reason: per this project's
+// definitions lastUpdateTime IS the submit instant (transaction_time) —
+// valid_time merely equals it for a normal change and is reserved for a
+// backdated write, not yet implemented. The two sites must agree; a caller
+// reading the same version through either path cannot tell them apart from
+// the reported date. GetVersionByTransaction (via unmarshalEntityVersion)
+// differs for an unrelated reason, not a competing choice about this
+// definition: it returns a version-SHAPED read whose Timestamp is inherently
+// valid_time (the instant this specific revision became effective), and its
+// embedded Entity's LastModifiedDate mirrors that same valid_time rather than
+// the transaction's transaction_time — see unmarshalEntityVersion's doc
+// comment.
 const pitBaseQueryTemplate = `SELECT doc, creation_date, last_modified FROM (
                 SELECT v.doc, v.entity_id, v.version, v.model_name, v.model_version,
                        v.creation_date, v.last_modified

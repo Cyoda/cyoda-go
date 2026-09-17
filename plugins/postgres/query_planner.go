@@ -839,7 +839,11 @@ func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 // require the column IS NOT NULL (a NULL/unparseable stored value never
 // matches a positive comparison); NE uses IS NULL OR != so a NULL/unparseable
 // stored value vacuously satisfies "not equal" (matching CompareTemporal's
-// vacuous-true-for-NE rule).
+// vacuous-true-for-NE rule). For creationDate/lastUpdateTime specifically
+// (directTemporalMetaColumns), the underlying column is NOT NULL, so the IS
+// NOT NULL guard is always true and NE's IS NULL OR arm is unreachable —
+// harmless, and kept rather than special-cased, so this function stays one
+// shape for every temporal field regardless of storage.
 func temporalLeafToSQL(f spi.Filter, counter *int) (string, []any) {
 	col := temporalEpochMillisExpr(f.Source, f.Path, fieldExpr(f))
 	switch f.Op {

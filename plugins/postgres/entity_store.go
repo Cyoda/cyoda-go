@@ -189,6 +189,19 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity, stampFrom 
 	// caller through a subsequent read, and the version through this
 	// function's return. Converging the three is a change to all six fields,
 	// not to this one.
+	//
+	// Since the temporal columns moved out of the document (entity_doc.go),
+	// the write-back is Go-side convenience ONLY — it no longer round-trips
+	// through what gets persisted, and the two can disagree even on THIS
+	// entityStore. CreationDate is written back only when isNew (further
+	// down): on an UPDATE it is left as whatever the caller supplied,
+	// typically the correct original value carried forward from a prior Get
+	// in a read-modify-save cycle, but not guaranteed to be — while the
+	// PERSISTED entities.creation_date always holds the true original
+	// (the upsert below never touches it on conflict). A caller trusting the
+	// write-back instead of a subsequent read can therefore see a stale or
+	// absent CreationDate on an update even though the stored value is
+	// correct.
 	if tx := spi.GetTransaction(ctx); tx != nil {
 		entity.Meta.TransactionID = tx.ID
 	}
@@ -244,6 +257,17 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity, stampFrom 
 	// incoming one. A conflicting row whose model differs matches neither the
 	// INSERT (the row exists) nor the UPDATE (the WHERE fails), so the
 	// statement returns no rows — translated to the sentinel below.
+	// last_modified is set explicitly in the UPDATE half, to dbNow — the same
+	// provisional value the row already carries from creation_date's
+	// migration DEFAULT — so an updated row's LastModifiedDate actually
+	// advances (Get/GetPage/Search project this column, entity_store.go) and
+	// the intermediate state before a later commit-phase stamp lands matches
+	// what migrations/000012's comment documents: "stale by up to the
+	// transaction's own lifetime", not "never updated at all". A freshly
+	// INSERTed row needs no equivalent here — its last_modified column
+	// already gets DEFAULT CURRENT_TIMESTAMP, which is the same instant this
+	// transaction's dbNow reads for the stampAtTxStart case (the only case
+	// that reaches the INSERT half without a pre-existing row).
 	var nextVersion int64
 	var isNew bool
 	err := s.q.QueryRow(ctx,
@@ -252,12 +276,13 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity, stampFrom 
 		 ON CONFLICT (tenant_id, entity_id) DO UPDATE SET
 		   version = entities.version + 1,
 		   deleted = false,
-		   doc = entities.doc
+		   doc = entities.doc,
+		   last_modified = $5
 		 WHERE entities.model_name = EXCLUDED.model_name
 		   AND entities.model_version = EXCLUDED.model_version
 		 RETURNING version, (xmax = 0)`,
 		tid, eid,
-		entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion).Scan(&nextVersion, &isNew)
+		entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion, dbNow).Scan(&nextVersion, &isNew)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// The upsert's WHERE guard refused: the stored entity belongs to
@@ -308,9 +333,22 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity, stampFrom 
 	}
 
 	// Insert version row (explicit wall_clock_time to match _meta value).
+	// creation_date is sourced from the entities row's own creation_date via
+	// a sub-select on (tenant_id, entity_id) rather than dbNow: dbNow is THIS
+	// transaction's stamp, correct for a version-1 insert (the entities row
+	// was just given that exact value by the upsert above) but wrong for
+	// every later version of an updated entity, which must report the
+	// entity's ORIGINAL creation instant, not the instant of the update that
+	// produced this particular version. The entities row already exists and
+	// already holds the right value by the time this statement runs, whether
+	// this is version 1 (just inserted) or a later version (never touched by
+	// any UPDATE — see the entities upsert above, which never sets
+	// creation_date on conflict).
 	_, err = s.q.Exec(ctx,
-		`INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version, valid_time, wall_clock_time, doc)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		`INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version, valid_time, wall_clock_time, creation_date, doc)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7,
+		         (SELECT creation_date FROM entities WHERE tenant_id = $1 AND entity_id = $2),
+		         $8)`,
 		tid, eid,
 		entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion,
 		nextVersion, dbNow, wallClockTime, doc)
@@ -500,18 +538,23 @@ func (s *entityStore) Get(ctx context.Context, entityID string) (*spi.Entity, er
 // invisible to it — see committedQuerier's doc comment for why the query's
 // transaction_time guard cannot achieve that on its own.
 //
-// Deliberately not tracked in readSet: historical reads target immutable versions. See spec §Known limitation.
+// The reported LastModifiedDate is transaction_time, not valid_time: per this
+// project's definitions lastUpdateTime is the submit instant (transaction_time)
+// — valid_time merely equals it for a normal change and is reserved for a
+// backdated write, not yet implemented. This is the same decision
+// search_base.go's PIT lateral makes (`ev.transaction_time AS last_modified`);
+// the two must agree; a caller cannot tell them apart from the reported dates.
 func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Time) (*spi.Entity, error) {
 	var doc []byte
-	var creationDate, validTime time.Time
+	var creationDate, transactionTime time.Time
 	err := s.committedQuerier().QueryRow(ctx,
-		`SELECT doc, creation_date, valid_time FROM entity_versions
+		`SELECT doc, creation_date, transaction_time FROM entity_versions
 		 WHERE tenant_id = $1 AND entity_id = $2
 		   AND valid_time <= $3
 		   AND transaction_time <= CURRENT_TIMESTAMP
 		 ORDER BY valid_time DESC, transaction_time DESC, version DESC
 		 LIMIT 1`,
-		string(s.tenantID), entityID, asAt).Scan(&doc, &creationDate, &validTime)
+		string(s.tenantID), entityID, asAt).Scan(&doc, &creationDate, &transactionTime)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, fmt.Errorf("ENTITY_NOT_FOUND: entity %s not found at %v: %w", entityID, asAt, spi.ErrNotFound)
@@ -534,7 +577,7 @@ func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 		}
 	}
 
-	return unmarshalEntityDoc(doc, creationDate, validTime)
+	return unmarshalEntityDoc(doc, creationDate, transactionTime)
 }
 func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 	// Same reasoning as save's non-tx branch, including the ownTx guard —
@@ -657,9 +700,16 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 	// same entity can therefore wait on each other in a genuine cycle, and
 	// why PostgreSQL resolving that with a 40P01 deadlock (→ spi.ErrConflict
 	// via classifySQLState) is the correct, fail-closed outcome.
+	//
+	// creation_date is sourced from the entities row's own creation_date via
+	// a sub-select, exactly as saveOn's version insert does — see that
+	// statement's comment. The tombstone must report when the entity was
+	// CREATED, not when it was deleted.
 	_, err = s.q.Exec(ctx,
-		`INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version, valid_time, wall_clock_time, doc)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		`INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version, valid_time, wall_clock_time, creation_date, doc)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7,
+		         (SELECT creation_date FROM entities WHERE tenant_id = $1 AND entity_id = $2),
+		         $8)`,
 		tid, entityID,
 		current.Meta.ModelRef.EntityName, current.Meta.ModelRef.ModelVersion,
 		nextVersion, dbNow, wallClockTime, deleteDoc)
@@ -669,10 +719,14 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 
 	// Update entities table to mark deleted — the entities row lock is taken
 	// HERE, after the entity_versions insert above (see that statement's
-	// lock-order comment).
+	// lock-order comment). last_modified is set to dbNow — the same
+	// provisional value the row already uses — for the same reason the
+	// saveOn upsert's ON CONFLICT DO UPDATE now does: a delete without it
+	// would leave LastModifiedDate frozen at the entity's creation forever,
+	// not merely stale by the transaction's own lifetime.
 	_, err = s.q.Exec(ctx,
-		`UPDATE entities SET version = $1, deleted = true, doc = $2 WHERE tenant_id = $3 AND entity_id = $4`,
-		nextVersion, deleteDoc, tid, entityID)
+		`UPDATE entities SET version = $1, deleted = true, doc = $2, last_modified = $5 WHERE tenant_id = $3 AND entity_id = $4`,
+		nextVersion, deleteDoc, tid, entityID, dbNow)
 	if err != nil {
 		return fmt.Errorf("failed to mark entity deleted: %w", err)
 	}
