@@ -44,12 +44,13 @@ import "time"
 // backdated write, not yet implemented. The two sites must agree; a caller
 // reading the same version through either path cannot tell them apart from
 // the reported date. GetVersionByTransaction (via unmarshalEntityVersion)
-// differs for an unrelated reason, not a competing choice about this
-// definition: it returns a version-SHAPED read whose Timestamp is inherently
-// valid_time (the instant this specific revision became effective), and its
-// embedded Entity's LastModifiedDate mirrors that same valid_time rather than
-// the transaction's transaction_time — see unmarshalEntityVersion's doc
-// comment.
+// agrees with both: its EntityVersion.Timestamp is valid_time — inherently
+// so, being the instant that specific revision became effective — while its
+// embedded Entity's LastModifiedDate is transaction_time, the same field
+// taking its value from the same column as here. The two columns are equal
+// for every write today (no backdating yet), so the distinction only becomes
+// observable when backdating lands; see unmarshalEntityVersion's doc comment
+// for why LastModifiedDate must not be fed from valid_time.
 const pitBaseQueryTemplate = `SELECT doc, creation_date, last_modified FROM (
                 SELECT v.doc, v.entity_id, v.version, v.model_name, v.model_version,
                        v.creation_date, v.last_modified
