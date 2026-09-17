@@ -1103,6 +1103,19 @@ func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx,
 	// creates an entity and then updates it carries the creation date forward
 	// by reading inside the transaction, so the later version holds the
 	// provisional value; stamping only version 1 would leave them disagreeing.
+	//
+	// The CASE must stay conditional in BOTH directions. By the time this runs,
+	// the version INSERT already sources creation_date by sub-select from the
+	// entity's own entities.creation_date, so a version written by a LATER
+	// transaction correctly inherits the entity's original creation date.
+	// Replacing this CASE with an unconditional SET creation_date = $1 would
+	// restamp every updated entity's creation as that update's instant — which
+	// is exactly the defect found when this column was first projected into
+	// reads: history reporting when a revision was written rather than when the
+	// entity was created, and diverging from the memory backend, which
+	// preserves the original. Prove both halves: an entity created AND updated
+	// in one transaction ends with one creation date on both rows; an entity
+	// updated by a later transaction keeps its original.
 	if _, err := tx.Exec(ctx,
 		`UPDATE entity_versions SET valid_time = $1, transaction_time = $1,
 		        creation_date = CASE WHEN entity_id IN (
