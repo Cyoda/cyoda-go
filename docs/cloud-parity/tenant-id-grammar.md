@@ -136,10 +136,14 @@ issued the token; it is broken only where it is used.
 1. Validate `caas_org_id` against this grammar where Cloud mints it, so a tenant
    outside the grammar is refused at enrollment with a diagnosable error rather
    than becoming an undiagnosable `401` later.
-2. Answer the one question the source cannot: **whether any live legal entity is
-   already outside the grammar.** Cloud has never constrained the value, so
-   existing data is the only evidence. A tenant found outside it needs a
-   migration decision before the grammar is enforced at the Cloud door.
+2. Enforce it at enrollment as well, so the grammar governs how a legal entity
+   is created and not only how a token is read.
+
+There is no third ask. Cloud has not been released and has no live deployment,
+so there is no existing legal entity that could already fall outside the
+grammar, and no migration to plan. The grammar can be enforced at the Cloud door
+as soon as it is implemented — this is the cheapest moment it will ever be, and
+the reason to do it now rather than after the first tenant exists.
 
 ### Carve-out: the audit sentinel
 
