@@ -5,7 +5,7 @@ go 1.26.7
 require (
 	github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20260918004138-1ab57a60382c
 	github.com/gofrs/flock v0.13.1
-	github.com/golang-migrate/migrate/v4 v4.19.1
+	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/google/uuid v1.6.0
 	github.com/ncruces/go-sqlite3 v0.35.4
 )
