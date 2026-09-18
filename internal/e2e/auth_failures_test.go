@@ -87,19 +87,27 @@ func TestAuth_MissingOrInvalidCredentials_401(t *testing.T) {
 	}
 }
 
-// assertUnauthorizedProblem checks the RFC 9457 shape of a 401 body.
-func assertUnauthorizedProblem(t *testing.T, resp *http.Response) {
+// assertUnauthorizedProblem checks the RFC 9457 shape of a 401 body and
+// returns the raw bytes it read, so a caller can go on to assert on the body
+// text. The body is read once with io.ReadAll and decoded from those bytes: a
+// json.Decoder consumes the whole of a small body on its first refill, leaving
+// nothing for a subsequent read and turning any later body assertion vacuous.
+func assertUnauthorizedProblem(t *testing.T, resp *http.Response) []byte {
 	t.Helper()
 	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/problem+json") {
 		t.Errorf("content-type=%q, want application/problem+json", ct)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read problem detail: %v", err)
 	}
 	var pd struct {
 		Status     int            `json:"status"`
 		Detail     string         `json:"detail"`
 		Properties map[string]any `json:"properties"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&pd); err != nil {
-		t.Fatalf("decode problem detail: %v", err)
+	if err := json.Unmarshal(raw, &pd); err != nil {
+		t.Fatalf("decode problem detail: %v; body=%s", err, raw)
 	}
 	if pd.Status != http.StatusUnauthorized {
 		t.Errorf("problem.status=%d, want 401", pd.Status)
@@ -107,6 +115,7 @@ func assertUnauthorizedProblem(t *testing.T, resp *http.Response) {
 	if got := pd.Properties["errorCode"]; got != "UNAUTHORIZED" {
 		t.Errorf("errorCode=%v, want UNAUTHORIZED", got)
 	}
+	return raw
 }
 
 // TestAuth_RejectionCarriesNoEnumerationSignal asserts that the 401 a
@@ -216,9 +225,8 @@ func TestAuth_TenantClaimOutsideGrammar_401(t *testing.T) {
 				raw, _ := io.ReadAll(resp.Body)
 				t.Fatalf("status=%d, want 401; body: %s", resp.StatusCode, raw)
 			}
-			assertUnauthorizedProblem(t, resp)
+			raw := assertUnauthorizedProblem(t, resp)
 
-			raw, _ := io.ReadAll(resp.Body)
 			if strings.Contains(string(raw), "victim") || strings.Contains(string(raw), "injected") {
 				t.Errorf("response echoes the rejected tenant: %s", raw)
 			}

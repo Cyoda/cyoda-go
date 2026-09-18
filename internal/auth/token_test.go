@@ -1,11 +1,13 @@
 package auth_test
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -568,8 +570,19 @@ func (f failingKeyStore) Reactivate(string, time.Time, time.Time) error {
 // every 5xx carries a generic message plus a ticket UUID and no internals.
 // The OAuth2 body shape has no dedicated field, so the ticket rides in
 // error_description, which the schema already declares as a string.
+//
+// A ticket is only worth minting if an operator can find it: the same UUID
+// must appear in the log record that carries the underlying cause, which is
+// what ties a caller's report to the failure. The log is captured here rather
+// than asserted through a running stack, because inducing a key-store failure
+// over HTTP would need a production seam this project forbids.
 func TestTokenEndpoint_ServerErrorCarriesTicket(t *testing.T) {
 	env := setupTokenEnv(t)
+
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 
 	// A key store whose GetActive always fails drives the server_error path.
 	// The trusted-key store, M2M store and client credentials come from the
@@ -606,5 +619,15 @@ func TestTokenEndpoint_ServerErrorCarriesTicket(t *testing.T) {
 	}
 	if strings.Contains(rr.Body.String(), "hsm") || strings.Contains(rr.Body.String(), "10.0.0.5") {
 		t.Errorf("response leaks the underlying cause: %s", rr.Body.String())
+	}
+
+	// The same ticket reaches the log, with the cause the response withheld.
+	logged := logBuf.String()
+	if !strings.Contains(logged, ticket) {
+		t.Errorf("ticket %q never reaches the log; an operator cannot correlate the caller's report:\n%s",
+			ticket, logged)
+	}
+	if !strings.Contains(logged, "hsm unreachable") {
+		t.Errorf("the underlying cause is missing from the log record:\n%s", logged)
 	}
 }

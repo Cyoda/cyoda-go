@@ -5693,7 +5693,8 @@ paths:
         "400":
           description: >-
             Bad request (an unparseable `activeOnly`, or a tenant identifier
-            that is not UUID-shaped and so can own no provider). Body is an
+            that is not a UUID in its canonical lowercase form and so can own
+            no provider). Body is an
             RFC-9457 problem document; the machine-readable code is in
             `properties.errorCode` (`BAD_REQUEST`, `OIDC_INVALID_TENANT`).
           content:
@@ -5904,9 +5905,10 @@ paths:
         "400":
           description: >-
             Bad request (an unparseable provider `{id}`, or a tenant identifier
-            that is not UUID-shaped and so can own no provider). Body is an
-            RFC-9457 problem document; the machine-readable code is in
-            `properties.errorCode` (`BAD_REQUEST`, `OIDC_INVALID_TENANT`).
+            that is not a UUID in its canonical lowercase form and so can own
+            no provider). Body is an RFC-9457 problem document; the
+            machine-readable code is in `properties.errorCode`
+            (`BAD_REQUEST`, `OIDC_INVALID_TENANT`).
           content:
             application/problem+json:
               schema:
@@ -6000,7 +6002,8 @@ paths:
         "400":
           description: >-
             Bad request (invalid body / issuers / expectedAudiences / rolesClaim,
-            or a tenant identifier that is not UUID-shaped). Body is an RFC-9457
+            or a tenant identifier that is not a UUID in its canonical lowercase
+            form). Body is an RFC-9457
             problem document; the machine-readable code is in
             `properties.errorCode` (`BAD_REQUEST`, `OIDC_INVALID_TENANT`). This
             op accepts no discovery URI, so it never emits `OIDC_SSRF_BLOCKED` —
@@ -6093,9 +6096,10 @@ paths:
         "400":
           description: >-
             Bad request (an unparseable provider `{id}`, or a tenant identifier
-            that is not UUID-shaped and so can own no provider). Body is an
-            RFC-9457 problem document; the machine-readable code is in
-            `properties.errorCode` (`BAD_REQUEST`, `OIDC_INVALID_TENANT`).
+            that is not a UUID in its canonical lowercase form and so can own
+            no provider). Body is an RFC-9457 problem document; the
+            machine-readable code is in `properties.errorCode`
+            (`BAD_REQUEST`, `OIDC_INVALID_TENANT`).
           content:
             application/problem+json:
               schema:
@@ -6183,8 +6187,9 @@ paths:
         "400":
           description: >-
             Bad request (an unparseable provider `{id}`, an invalid request
-            body, or a tenant identifier that is not UUID-shaped and so can own
-            no provider). Body is an RFC-9457 problem document; the
+            body, or a tenant identifier that is not a UUID in its canonical
+            lowercase form and so can own no provider). Body is an RFC-9457
+            problem document; the
             machine-readable code is in `properties.errorCode` (`BAD_REQUEST`,
             `OIDC_INVALID_TENANT`).
           content:

@@ -1,6 +1,6 @@
 ---
 topic: errors.OIDC_INVALID_TENANT
-title: "OIDC_INVALID_TENANT — OIDC provider operations require a UUID-shaped tenant identifier"
+title: "OIDC_INVALID_TENANT — OIDC provider operations require a canonically-spelled UUID tenant identifier"
 stability: stable
 see_also:
   - errors
@@ -12,13 +12,14 @@ see_also:
 
 ## NAME
 
-OIDC_INVALID_TENANT — OIDC provider operations require a UUID-shaped tenant identifier.
+OIDC_INVALID_TENANT — OIDC provider operations require a canonically-spelled UUID tenant identifier.
 
 ## SYNOPSIS
 
 HTTP: `400` `Bad Request` with code `OIDC_INVALID_TENANT` on every OIDC provider
 operation — `POST`, `GET`, `PATCH`, `DELETE` under `/oauth/oidc/providers` — when the
-calling tenant's ID is not a valid UUID. (`POST /oauth/oidc/providers/reload` is
+calling tenant's ID is not a UUID in its canonical lowercase form
+(`1a2b3c4d-5e6f-4a8b-9c0d-1e2f3a4b5c6d`). (`POST /oauth/oidc/providers/reload` is
 tenant-independent and is not affected.)
 
 ## DESCRIPTION
@@ -47,9 +48,16 @@ registration. A non-UUID tenant owns no provider and can never come to own one,
 so listing its providers is not an empty success — it is the same rejection
 registration gives, delivered at the point the caller asks.
 
-Tenant identifiers are compared as UUID values, not as text. A tenant spelled
-`1A2B3C4D-…` addresses the same providers as `1a2b3c4d-…`; the canonical
-lowercase form is what storage keys by.
+The canonical lowercase spelling is **required**, not normalised to. Storage
+keys a provider by that form, and everywhere else in cyoda — entities, KV
+namespaces, audit records, messages — a tenant is compared as raw text. So
+`1A2B3C4D-…` and `1a2b3c4d-…` are two different tenants that own two different
+sets of data; folding them together on this one surface would let either list,
+modify and delete the other's providers, and register a provider owned by the
+other, which is an authentication trust anchor for a tenant it is not. A tenant
+spelled any other way — upper case, or the 32-character hyphenless form — is
+answered `400 OIDC_INVALID_TENANT` here rather than silently addressing another
+tenant's providers.
 
 ## RESOLUTION
 
@@ -58,7 +66,8 @@ Provision a real tenant with a UUID identifier before registering OIDC providers
 - For bootstrap deployments: set `CYODA_BOOTSTRAP_TENANT_ID` to a valid UUID
   (e.g. `CYODA_BOOTSTRAP_TENANT_ID=$(uuidgen)`) and restart the server.
 - For non-default tenants in production: ensure the tenant was created with a
-  UUID identifier and that your M2M credential carries that UUID as `caas_org_id`.
+  UUID identifier and that your M2M credential carries that UUID as
+  `caas_org_id` in its canonical lowercase form.
 
 Then retry the operation.
 

@@ -144,8 +144,8 @@ func TestValidateBootstrapConfig_EmptyTenantWithoutBootstrapClient(t *testing.T)
 func TestShippedTenantConstantsSatisfyGrammar(t *testing.T) {
 	cfg := DefaultConfig()
 	for name, id := range map[string]spi.TenantID{
-		"spi.SystemTenantID":            spi.SystemTenantID,
-		"IAM.MockTenantID":              spi.TenantID(cfg.IAM.MockTenantID),
+		"spi.SystemTenantID":             spi.SystemTenantID,
+		"IAM.MockTenantID":               spi.TenantID(cfg.IAM.MockTenantID),
 		"CYODA_BOOTSTRAP_TENANT_ID dflt": spi.TenantID(cfg.Bootstrap.TenantID),
 	} {
 		if err := common.ValidateTenantID(id); err != nil {

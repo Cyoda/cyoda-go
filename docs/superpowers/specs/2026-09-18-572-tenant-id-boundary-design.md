@@ -54,6 +54,14 @@ A tenant id enters cyoda-go from outside cyoda-go in exactly two places.
    (`internal/grpc/interceptor.go:83` and `internal/api/middleware/auth.go:24`).
 2. **Operator config** — `CYODA_BOOTSTRAP_TENANT_ID` at startup.
 
+A third operator-facing tenant value is covered by a test rather than by the
+check: `cfg.IAM.MockTenantID` (`app/config.go:205,371`) becomes the tenant of
+every request in the non-JWT IAM mode (`app/app.go:426-434`) and never passes
+`ValidateTenantID`. It has no env binding — it is a `DefaultConfig()` literal,
+so it cannot be supplied from outside the binary and is not an ingress — and
+`TestShippedTenantConstantsSatisfyGrammar` pins it against the grammar with the
+other shipped constants.
+
 Everywhere else — peer dispatch bodies, scheduler RPC payloads, gossip
 envelopes, scheduled-task rows, search-job rows, OIDC provider records, the
 stored M2M client table — carries a value this cluster already admitted at one
@@ -232,7 +240,7 @@ No new error code, so no `errors/<CODE>.md` and no `TestErrCode_Parity` churn.
 | `POST /internal/dispatch/callout` | `EntityMeta.TenantID != TenantID` | 400 | plain text, as the sibling malformed-body path |
 | process startup | `CYODA_BOOTSTRAP_TENANT_ID` fails the grammar, with a bootstrap client configured | exit non-zero | — |
 | `POST /oauth/token` | key lookup or signing fails | 500 | `server_error`, now `error_description: server_error [ticket: <uuid>]` |
-| OIDC management endpoints | caller's tenant is not a UUID in any accepted spelling | 400 | existing `OIDC_INVALID_TENANT` |
+| OIDC management endpoints | caller's tenant is not a UUID in its canonical lowercase spelling | 400 | existing `OIDC_INVALID_TENANT` |
 
 `api/openapi.yaml` already declares 401 on every authenticated path, so the
 schema is unchanged.
@@ -252,9 +260,15 @@ schema is unchanged.
 | Concurrent `Save`: same tenant, and same id | yes (isolated) | — | never | — |
 | Temp-file loop: exhaustion errors, cleanup on every failure path | yes | — | — | — |
 | Dispatch `EntityMeta` tenant mismatch → 400 | yes | — | multinode fixture | — |
-| An uppercase/braced/urn-spelled UUID tenant can read, list, update and delete the provider it registered | yes | yes | — | — |
+| A canonically-spelled UUID tenant can list, update, invalidate, reactivate and delete the provider it registered | yes | yes | — | — |
+| A non-canonically-spelled UUID tenant gets `400 OIDC_INVALID_TENANT` from every OIDC endpoint | yes | yes | — | — |
+| Two UUID-equal, differently spelled tenants cannot reach each other's providers | yes | yes | — | — |
 | A non-UUID tenant gets `400 OIDC_INVALID_TENANT` from every OIDC endpoint, not an empty 200 | yes | yes | — | — |
-| A token-endpoint 500 carries a ticket, and the same ticket appears in the log | yes | yes | — | — |
+| A token-endpoint 500 carries a ticket, and the same ticket appears in the log | yes | waived | — | — |
+
+**E2E waiver, one line:** the token-endpoint 500's ticket-in-the-log half is
+asserted in the unit test only, because inducing a key-store failure through a
+running stack would need a production seam, which this project forbids.
 
 **Parity waiver, one line:** the hostile-claim 401 is rejected at the
 authenticator and never reaches a storage backend, so a cross-backend scenario
@@ -294,10 +308,11 @@ the **canonical lowercase** UUID — `spi.TenantID(p.OwnerLegalEntityID.String()
 at `internal/auth/oidc/kv_store.go:43` — while `Get` (`:58`), `GetByURI`
 (`:77`), `Delete` (`:105`), `ListByTenant` (`:121`) and `RaceValidateIndex` all
 key off the caller's raw tenant string. `uuid.Parse`
-(`internal/domain/account/oidc_adapter.go:155`) accepts uppercase, braced and
-`urn:uuid:` forms that `String()` normalises away, so a tenant whose
-`caas_org_id` is spelled any of those ways registers a provider it can then
-never list, read, update or delete.
+(`internal/domain/account/oidc_adapter.go:155`) accepts forms that `String()`
+folds away — upper case and the 32-hex hyphenless form both satisfy the grammar
+and reach this code; braced and `urn:uuid:` do not, being rejected at the token
+boundary on `{` and `:` — so a tenant spelled either admitted way registers a
+provider it can then never list, read, update or delete.
 
 This is engine code on `spi.KeyValueStore` (`app/app.go:317`), so it behaves the
 same on every backend — it is not a memory-plugin defect.
@@ -317,18 +332,33 @@ deliberately (`spi.SystemTenantID` is `SYSTEM`; Cloud's local-issuer fallback is
 **Fix.** `internal/domain/account/oidc_adapter.go` is the sole entry point to the
 OIDC service — `internal/domain/account/handler.go:107-155` routes all seven
 operations through it — and calls `tenantFromCtx` at `:148`, `:238`, `:311`,
-`:345` and `:369`. A single helper canonicalises the caller's tenant to
-`uuid.UUID.String()` once and is used at all five, returning the existing
-`OIDC_INVALID_TENANT` (400) when the tenant is not a UUID at all. `Register`
-already parses at `:155`; it stops passing the raw form on as
-`RegisterInput.TenantID`.
+`:345` and `:369`. A single helper is used at all five. It **requires** the
+canonical spelling rather than normalising to it: parse the tenant as a UUID and
+demand that the parsed value spell back exactly what the caller sent, returning
+the existing `OIDC_INVALID_TENANT` (400) otherwise.
+
+Normalising would fix the stranding and open a cross-tenant hole in its place.
+Every other subsystem compares a tenant as raw text — the tenant resolver hands
+it back verbatim, and the entity, KV, audit and message stores all key on that
+string — so two UUID-equal but differently spelled tenants are distinct
+everywhere else. Folding them together here would make them one tenant on this
+surface: either could list, modify and delete the other's providers and register
+a provider whose owner is the other's UUID, and since `buildOIDCUserContext`
+(`internal/auth/oidc/usercontext.go:64-67`) sets the validated tenant from
+`p.OwnerLegalEntityID.String()`, that provider would be an authentication trust
+anchor for a tenant the registrant is not. Requiring the canonical form resolves
+the stranding identically — register and read address one key — with one
+identity per tenant preserved.
 
 **Behaviour change to record.** A non-UUID tenant such as `default-tenant`
 currently receives an empty `200` from `GET /oauth/oidc/providers`, because its
 prefix scan matches nothing. It now receives `400 OIDC_INVALID_TENANT` — the
 same answer registration already gives it, and what that code's help topic
 already documents. Returning an empty list implied a registration that could
-never have succeeded.
+never have succeeded. A tenant whose id is a UUID spelled non-canonically —
+upper case or the 32-hex hyphenless form, the two such spellings the grammar
+lets through — gets the same `400` across the whole surface, in place of the
+`500`-and-orphan-blob it got from registration before.
 
 ### The token endpoint's 500 carries no ticket (#588)
 

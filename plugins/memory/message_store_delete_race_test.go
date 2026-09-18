@@ -52,6 +52,13 @@ func TestMessageStore_DeleteIsAtomicWithConcurrentSave(t *testing.T) {
 
 		// Hold the lock so both operations queue on it rather than arriving
 		// microseconds apart.
+		//
+		// This Lock/Unlock pair is deliberately not defer-paired, and must
+		// stay that way: the Unlock below is the starting gun that releases
+		// the two racers, so deferring it to the end of the round would
+		// deadlock the test against the goroutines it is waiting on. It is
+		// safe because nothing between the two lines can t.Fatalf or panic —
+		// the statements in between only start goroutines and sleep.
 		f.msgMu.Lock()
 
 		var wg sync.WaitGroup

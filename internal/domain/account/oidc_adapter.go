@@ -69,39 +69,49 @@ func NewOidcAdapter(service *oidc.Service, defaultRolesClaim string, requireHTTP
 	return &OidcAdapter{adapter: newOidcAdapter(service, defaultRolesClaim, requireHTTPS, allowPrivate)}
 }
 
-// oidcTenantFromCtx returns the caller's tenant in the canonical UUID spelling
-// the provider store keys by, plus the parsed UUID for the owner field.
+// oidcTenantFromCtx returns the caller's tenant, which must already be a UUID
+// in its canonical spelling, plus the parsed UUID for the owner field.
 //
 // The store keys a provider's blob and its URI index by
 // OwnerLegalEntityID.String(), which is always canonical lowercase, and reads
-// them back under whatever the caller's tenant happens to say. uuid.Parse
-// accepts spellings String() normalises away — uppercase, braced, and
-// urn:uuid: prefixed — so a caller whose caas_org_id is spelled any other way
-// would address a different key on every read, update and delete than the one
-// registration wrote. Canonicalising here, at the single entry point to the
-// OIDC service, is what makes every operation address the same key.
+// them back under the caller's tenant. The two must agree, so the canonical
+// spelling is *required* here rather than normalised to.
+//
+// Normalising would alias tenants. uuid.Parse accepts spellings String() folds
+// away — upper case and the hyphenless 32-hex form both satisfy the tenant
+// grammar and reach this point — while every other subsystem compares a tenant
+// as raw text: each backend resolves the tenant out of the context verbatim,
+// and the entity, KV, audit and message stores all key on that string. Two
+// UUID-equal but differently spelled tenants are therefore distinct everywhere
+// else, and folding them together here would let one of them list, modify and
+// delete the other's providers, and register a provider owned by the other —
+// an authentication trust anchor for a tenant the caller is not. Requiring the
+// canonical spelling keeps one identity per tenant across the whole product.
 //
 // A tenant that is not UUID-shaped at all has no key to address: the data
 // model types OwnerLegalEntityID as uuid.UUID, and coercing such a tenant to
 // uuid.Nil would collide in storage across every non-UUID tenant and produce a
-// synthetic "nil tenant" identity at token-validation time. It is rejected.
+// synthetic "nil tenant" identity at token-validation time. It is rejected the
+// same way, with the same diagnosable 400 rather than a silent stranding.
 //
 // Confining this surface to UUID-shaped tenants is cyoda-go's own design, not
 // a mirror of Cyoda Cloud's: Cloud does not scope the OIDC surface by a tenant
 // key at all. See docs/cloud-parity/tenant-id-grammar.md, part 2.
 //
-// On failure the response has already been written and ok is false.
+// On failure the response has already been written and ok is false. The
+// rejected tenant is never echoed into the response.
 func oidcTenantFromCtx(w http.ResponseWriter, r *http.Request) (spi.TenantID, uuid.UUID, bool) {
-	owner, err := uuid.Parse(string(tenantFromCtx(r)))
-	if err != nil {
+	raw := string(tenantFromCtx(r))
+	owner, err := uuid.Parse(raw)
+	if err != nil || owner.String() != raw {
 		common.WriteError(w, r, common.Operational(
 			http.StatusBadRequest,
 			common.ErrCodeOidcInvalidTenant,
-			"oidc provider operations require a uuid-shaped tenant identifier; bootstrap deployments using the literal 'default-tenant' string must migrate to real tenant uuids",
+			"oidc provider operations require a tenant identifier that is a uuid in its canonical lowercase form; bootstrap deployments using the literal 'default-tenant' string must migrate to real tenant uuids",
 		))
 		return "", uuid.Nil, false
 	}
-	return spi.TenantID(owner.String()), owner, true
+	return spi.TenantID(raw), owner, true
 }
 
 // RegisterOidcProvider implements POST /oauth/oidc/providers. ROLE_ADMIN required.

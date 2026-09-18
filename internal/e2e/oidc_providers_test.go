@@ -16,10 +16,11 @@ package e2e_test
 //     providers without a real HTTPS endpoint.  No existing e2e test exercises
 //     OIDC SSRF/TLS enforcement (those are unit tests in internal/auth/oidc).
 //
-//   - registerOidcProvider requires a UUID-shaped tenant identifier.  The
-//     bootstrap tenant ("test-tenant") is not UUID-shaped, so this test seeds
-//     a dedicated M2M client with a real UUID tenant via createM2MClient and
-//     drives every OIDC call with that client's token.
+//   - registerOidcProvider requires a tenant identifier that is a UUID in its
+//     canonical lowercase form.  The bootstrap tenant ("test-tenant") is not
+//     UUID-shaped, so this test seeds a dedicated M2M client with a real UUID
+//     tenant via createM2MClient and drives every OIDC call with that client's
+//     token.
 //
 //   - When registration succeeds the OIDC registry attempts to fetch the
 //     discovery document (reloadOne); failure there is WARN-logged and
@@ -44,8 +45,8 @@ func init() {
 	os.Setenv("CYODA_OIDC_ALLOW_PRIVATE_NETWORKS", "true")
 }
 
-// oidcTenantUUID is the UUID-shaped tenant used exclusively by the OIDC
-// lifecycle tests.  A hardcoded value keeps the test deterministic and avoids
+// oidcTenantUUID is the canonically-spelled UUID tenant used exclusively by
+// the OIDC lifecycle tests.  A hardcoded value keeps the test deterministic and avoids
 // polluting the list with a random UUID on every run.
 const oidcTenantUUID = "e2e00000-0000-0000-0000-000000000001"
 
@@ -162,41 +163,48 @@ func TestOidcProviderLifecycle(t *testing.T) {
 	}
 }
 
-// oidcUppercaseTenantUUID is the same class of identifier as oidcTenantUUID —
-// a real UUID — spelled in upper case.  The tenant grammar admits it, so a
-// deployment whose caas_org_id is written this way is a deployment that
-// exists, not a hypothetical.
-const oidcUppercaseTenantUUID = "E2E00000-0000-0000-0000-000000000002"
+// oidcUUIDEqualTenantUUID is oidcVictimTenantUUID's UUID spelled in upper
+// case. The tenant grammar admits it, so a deployment whose caas_org_id is
+// written this way is a deployment that exists - and it is a *different*
+// tenant from the lower-case one everywhere else in the product, because every
+// other subsystem compares a tenant as raw text.
+const (
+	oidcVictimTenantUUID    = "e2e00000-0000-0000-0000-000000000002"
+	oidcUUIDEqualTenantUUID = "E2E00000-0000-0000-0000-000000000002"
+)
 
-// TestOidcProviderLifecycle_UppercaseUUIDTenant drives the full provider
-// lifecycle as a tenant whose UUID is spelled in upper case.
+// TestOidc_UUIDEqualTenantsCannotReachEachOther drives the cross-tenant case
+// over the full HTTP stack: a tenant registers a provider under its canonical
+// UUID, and a second tenant whose id parses to the same UUID but is spelled in
+// upper case must be answered 400 OIDC_INVALID_TENANT by every operation.
 //
-// The store keys a provider by OwnerLegalEntityID.String(), which is always
-// canonical lowercase, and used to read it back under the caller's raw tenant
-// string.  For this tenant the two differed: registration wrote one key and
-// every later operation addressed another, so the provider was unreachable the
-// moment it was created.  Each step below asserts a 2xx, and the list steps
-// assert the provider is actually there and actually gone.
-func TestOidcProviderLifecycle_UppercaseUUIDTenant(t *testing.T) {
+// The OIDC surface keys by the canonical spelling and requires it rather than
+// normalising to it. Normalising would make these two tenants - distinct for
+// entities, KV, audit and messages - a single tenant here, letting either list,
+// modify and delete the other's providers and register a provider owned by the
+// other, which is an authentication trust anchor for a tenant it is not.
+func TestOidc_UUIDEqualTenantsCannotReachEachOther(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
 
-	clientID, clientSecret := createM2MClient(t, oidcUppercaseTenantUUID, "oidc-upper-user",
+	victimID, victimSecret := createM2MClient(t, oidcVictimTenantUUID, "oidc-victim-user",
+		[]string{"ROLE_ADMIN", "ROLE_M2M"})
+	otherID, otherSecret := createM2MClient(t, oidcUUIDEqualTenantUUID, "oidc-uuid-equal-user",
 		[]string{"ROLE_ADMIN", "ROLE_M2M"})
 
-	do := func(t *testing.T, method, path string, body []byte) (int, []byte) {
+	do := func(t *testing.T, clientID, secret, method, path string, body []byte) (int, []byte) {
 		t.Helper()
-		resp := adminRequestAs(t, clientID, clientSecret, method, path, body)
+		resp := adminRequestAs(t, clientID, secret, method, path, body)
 		defer resp.Body.Close()
 		raw, _ := io.ReadAll(resp.Body)
 		return resp.StatusCode, raw
 	}
 
-	// listIDs returns the provider ids this tenant can see.
+	// listIDs returns the provider ids the victim can see.
 	listIDs := func(t *testing.T) []string {
 		t.Helper()
-		status, raw := do(t, http.MethodGet, "/oauth/oidc/providers", nil)
+		status, raw := do(t, victimID, victimSecret, http.MethodGet, "/oauth/oidc/providers", nil)
 		if status != http.StatusOK {
 			t.Fatalf("listOidcProviders: expected 200, got %d: %s", status, raw)
 		}
@@ -213,10 +221,10 @@ func TestOidcProviderLifecycle_UppercaseUUIDTenant(t *testing.T) {
 		return ids
 	}
 
-	wellKnown := fmt.Sprintf("http://oidc-e2e-upper-%d.local/.well-known/openid-configuration",
+	wellKnown := fmt.Sprintf("http://oidc-e2e-victim-%d.local/.well-known/openid-configuration",
 		time.Now().UnixNano())
 
-	status, raw := do(t, http.MethodPost, "/oauth/oidc/providers",
+	status, raw := do(t, victimID, victimSecret, http.MethodPost, "/oauth/oidc/providers",
 		mustJSON(t, map[string]any{"wellKnownConfigUri": wellKnown}))
 	if status != http.StatusOK {
 		t.Fatalf("registerOidcProvider: expected 200, got %d: %s", status, raw)
@@ -231,27 +239,40 @@ func TestOidcProviderLifecycle_UppercaseUUIDTenant(t *testing.T) {
 		t.Fatal("registerOidcProvider: expected non-empty id in response")
 	}
 	providerID := registered.ID
+	t.Cleanup(func() {
+		resp := adminRequestAs(t, victimID, victimSecret, http.MethodDelete,
+			"/oauth/oidc/providers/"+providerID, nil)
+		resp.Body.Close()
+	})
 
 	if !containsString(listIDs(t), providerID) {
-		t.Fatalf("listOidcProviders: provider %s is missing — it was registered under a key this tenant cannot address", providerID)
+		t.Fatalf("listOidcProviders: provider %s is missing from its own tenant's listing", providerID)
 	}
 
-	if status, raw := do(t, http.MethodPatch, "/oauth/oidc/providers/"+providerID,
-		mustJSON(t, map[string]any{"issuers": []string{"https://issuer.oidc-e2e-upper.local"}})); status != http.StatusOK {
-		t.Fatalf("updateOidcProvider: expected 200, got %d: %s", status, raw)
-	}
-	if status, raw := do(t, http.MethodPost, "/oauth/oidc/providers/"+providerID+"/invalidate", nil); status != http.StatusOK {
-		t.Fatalf("invalidateOidcProvider: expected 200, got %d: %s", status, raw)
-	}
-	if status, raw := do(t, http.MethodPost, "/oauth/oidc/providers/"+providerID+"/reactivate", nil); status != http.StatusOK {
-		t.Fatalf("reactivateOidcProvider: expected 200, got %d: %s", status, raw)
-	}
-	if status, raw := do(t, http.MethodDelete, "/oauth/oidc/providers/"+providerID, nil); status != http.StatusOK {
-		t.Fatalf("deleteOidcProvider: expected 200, got %d: %s", status, raw)
+	for _, op := range []struct {
+		name   string
+		method string
+		path   string
+		body   []byte
+	}{
+		{"registerOidcProvider", http.MethodPost, "/oauth/oidc/providers",
+			mustJSON(t, map[string]any{"wellKnownConfigUri": wellKnown + "-other"})},
+		{"listOidcProviders", http.MethodGet, "/oauth/oidc/providers", nil},
+		{"updateOidcProvider", http.MethodPatch, "/oauth/oidc/providers/" + providerID,
+			mustJSON(t, map[string]any{"issuers": []string{"https://issuer.oidc-e2e-other.local"}})},
+		{"invalidateOidcProvider", http.MethodPost, "/oauth/oidc/providers/" + providerID + "/invalidate", nil},
+		{"reactivateOidcProvider", http.MethodPost, "/oauth/oidc/providers/" + providerID + "/reactivate", nil},
+		{"deleteOidcProvider", http.MethodDelete, "/oauth/oidc/providers/" + providerID, nil},
+	} {
+		t.Run(op.name, func(t *testing.T) {
+			resp := adminRequestAs(t, otherID, otherSecret, op.method, op.path, op.body)
+			assertProblemJSON(t, resp, http.StatusBadRequest, "OIDC_INVALID_TENANT")
+		})
 	}
 
-	if containsString(listIDs(t), providerID) {
-		t.Fatalf("listOidcProviders: provider %s survived its own delete", providerID)
+	// Nothing the UUID-equal tenant did reached the victim's provider.
+	if !containsString(listIDs(t), providerID) {
+		t.Fatalf("listOidcProviders: provider %s is gone - the UUID-equal tenant reached it", providerID)
 	}
 }
 

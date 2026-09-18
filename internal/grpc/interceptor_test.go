@@ -1,10 +1,12 @@
 package grpc
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -232,6 +234,14 @@ func TestInterceptor_UnaryRejectsTenantOutsideGrammar(t *testing.T) {
 		return nil, nil
 	}
 
+	// Capture the default logger for the duration of the call: the rejected
+	// tenant is attacker-chosen, so it must reach neither the envelope nor a
+	// log field.
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
 	_, err = interceptor(ctx, "request",
 		&googlegrpc.UnaryServerInfo{FullMethod: "/test.Service/Method"}, handler)
 	if err == nil {
@@ -247,7 +257,18 @@ func TestInterceptor_UnaryRejectsTenantOutsideGrammar(t *testing.T) {
 	if st.Message() != "authentication failed" {
 		t.Errorf("message = %q, want the generic %q", st.Message(), "authentication failed")
 	}
-	if strings.Contains(st.Message(), "victim") {
-		t.Error("gRPC status echoes the rejected tenant")
+	// The whole error, details included, and every log record written while
+	// the claim was rejected: neither may carry the rejected value. The
+	// emptiness guard keeps the log assertion from passing for the wrong
+	// reason — the rejection path does write records, and if it stopped, a
+	// silent buffer would look like a clean one.
+	if logBuf.Len() == 0 {
+		t.Fatal("no log record captured; the log assertion below would be vacuous")
+	}
+	if strings.Contains(err.Error(), "victim") {
+		t.Errorf("gRPC error echoes the rejected tenant: %v", err)
+	}
+	if strings.Contains(logBuf.String(), "victim") {
+		t.Errorf("a log record echoes the rejected tenant:\n%s", logBuf.String())
 	}
 }

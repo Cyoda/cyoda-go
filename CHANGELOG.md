@@ -22,20 +22,29 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   explicitly empty. Every tenant either tier ships or uses today is
   admitted: `SYSTEM`, `CYODA`, `default-tenant`, `mock-tenant`,
   `riskblocs`, `tenant-abc-123`, canonical UUIDs, 32-character hex ids and
-  bare numerics. No new error code. The contract, the evidence behind the
+  bare numerics. One further operator-facing tenant value, the non-JWT IAM
+  mode's `MockTenantID`, is covered by a test rather than by the check: it
+  has no environment binding, so it is a compiled-in default rather than an
+  ingress, and a unit test pins it — with every other shipped tenant
+  constant — against the grammar. No new error code. The contract, the
+  evidence behind the
   charset and the 100-byte cap, and the Cloud-side action item (**CP-3968**
   — Cloud constrains `caas_org_id` nowhere today, so a Cloud-issued token
   outside the grammar becomes a silent `401` rather than a diagnosable
   rejection) are recorded in `docs/cloud-parity/tenant-id-grammar.md`.
 
-- **Every OIDC provider operation answers `400 OIDC_INVALID_TENANT` for a
-  non-UUID tenant, not just registration.** `GET /oauth/oidc/providers`
-  previously returned an empty `200` to such a tenant, because its prefix
-  scan matched nothing — reporting "you have no providers" to a caller that
-  could never have had one. The read and lifecycle forms returned `404` for
-  the same reason. All of them now give the answer registration already
-  gave. `POST /oauth/oidc/providers/reload` takes no tenant and is
-  unaffected. See `docs/cloud-parity/tenant-id-grammar.md` and
+- **Every OIDC provider operation answers `400 OIDC_INVALID_TENANT` unless
+  the caller's tenant is a UUID in its canonical lowercase form.**
+  `GET /oauth/oidc/providers` previously returned an empty `200` to a
+  non-UUID tenant, because its prefix scan matched nothing — reporting "you
+  have no providers" to a caller that could never have had one. The read and
+  lifecycle forms returned `404` for the same reason. All of them now give
+  the answer registration already gave. The same `400` now also answers a
+  tenant whose id is a UUID spelled any other way — upper case, or the
+  32-character hyphenless form — because the canonical spelling is required
+  rather than normalised to; see the entry under Fixed for why.
+  `POST /oauth/oidc/providers/reload` takes no tenant and is unaffected. See
+  `docs/cloud-parity/tenant-id-grammar.md` and
   `cyoda help errors OIDC_INVALID_TENANT`.
 
 ### Added
@@ -186,21 +195,27 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   function alike — is built from a live stored entity whose tenant is
   always set, so an empty one can only come from a hand-crafted peer body.
 
-- **A tenant whose id is a non-canonically-spelled UUID can manage its own
-  OIDC providers.** The provider store wrote a record and its URI index
-  under the canonical lowercase UUID but read them back under the caller's
-  raw tenant string. `uuid.Parse` accepts uppercase, braced and `urn:uuid:`
-  spellings that `String()` normalises away, so such a tenant addressed a
-  different key on every operation than the one registration wrote — and
-  registration itself failed: the post-write index read-back missed its own
-  entry, the service rolled back and answered `500`, and the rollback,
-  keyed the same wrong way, left the provider blob behind. Such a tenant
-  could not register a provider at all. The caller's tenant is now
-  canonicalised once, at the single entry point to the OIDC service, so
-  every spelling of one UUID addresses the same providers. Token validation
-  was never affected — the provider registry is built from the stored
-  record's own owner id. This is engine code over `spi.KeyValueStore`, so
-  it behaved the same on every backend.
+- **The OIDC provider store no longer writes under one key and reads under
+  another.** It wrote a record and its URI index under the canonical
+  lowercase UUID but read them back under the caller's raw tenant string.
+  `uuid.Parse` accepts spellings `String()` folds away — upper case and the
+  32-character hyphenless form both satisfy the tenant grammar — so a tenant
+  spelled either way addressed a different key on every operation than the
+  one registration wrote, and registration itself failed: the post-write
+  index read-back missed its own entry, the service rolled back and answered
+  `500`, and the rollback, keyed the same wrong way, left the provider blob
+  behind. The single entry point to the OIDC service now **requires** the
+  canonical spelling instead of normalising to it: register and read address
+  the same key, nothing strands, and a tenant spelled otherwise gets a
+  diagnosable `400 OIDC_INVALID_TENANT` (see Breaking). Normalising would
+  have closed the stranding by aliasing two tenants that are distinct
+  everywhere else in the product — entities, KV, audit and messages all
+  compare a tenant as raw text — which would have let either list, modify
+  and delete the other's providers and register a provider owned by the
+  other, an authentication trust anchor for a tenant it is not. Token
+  validation was never affected — the provider registry is built from the
+  stored record's own owner id. This is engine code over
+  `spi.KeyValueStore`, so it behaved the same on every backend.
   ([#587](https://github.com/cyoda/cyoda-go/issues/587))
 
 - **A `500` from `POST /oauth/token` carries a ticket.** The endpoint's

@@ -41,7 +41,7 @@ Use this path when the IdP is the source of truth for user accounts. For pure M2
 
 - A working `.well-known/openid-configuration` URL on the IdP.
 - A `ROLE_ADMIN` cyoda token to register the provider.
-- A **UUID-shaped tenant ID** — the bootstrap convenience literal `default-tenant` is rejected by every provider operation (returns `OIDC_INVALID_TENANT`) because non-UUID tenant identifiers collide in storage. Spelling does not matter: a tenant is compared as a UUID value, so `1A2B3C4D-…` and `1a2b3c4d-…` address the same providers.
+- A **UUID tenant ID in its canonical lowercase spelling** — the bootstrap convenience literal `default-tenant` is rejected by every provider operation (returns `OIDC_INVALID_TENANT`) because non-UUID tenant identifiers collide in storage. Spelling matters: `1A2B3C4D-…` and `1a2b3c4d-…` are two different tenants everywhere else in cyoda, so only the canonical lowercase form is accepted here, and any other spelling gets the same `OIDC_INVALID_TENANT`.
 
 ## REQUEST FLOW
 
@@ -194,7 +194,7 @@ Registration-time failures (these DO carry precise codes — see ERRORS) are SSR
 
 Registration / lifecycle (precise codes — admin-facing surface):
 
-- `errors.OIDC_INVALID_TENANT` (`400`) — caller's tenant ID is not UUID-shaped (commonly: bootstrap `default-tenant` literal). Every provider operation answers this way, listing included; only `/oauth/oidc/providers/reload`, which takes no tenant, is exempt.
+- `errors.OIDC_INVALID_TENANT` (`400`) — caller's tenant ID is not a UUID in its canonical lowercase form (commonly: bootstrap `default-tenant` literal; also an upper-case or hyphenless spelling of a real UUID). Every provider operation answers this way, listing included; only `/oauth/oidc/providers/reload`, which takes no tenant, is exempt.
 - `errors.OIDC_SSRF_BLOCKED` (`400`) — `wellKnownConfigUri` resolves to a blocked address range (set `CYODA_OIDC_ALLOW_PRIVATE_NETWORKS=true` for dev).
 - `errors.OIDC_PROVIDER_DUPLICATE` (`409`) — same `wellKnownConfigUri` already registered for this tenant.
 - `errors.OIDC_PROVIDER_NOT_FOUND` (`404`) — referenced provider ID absent in this tenant.
