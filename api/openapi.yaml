@@ -5692,10 +5692,10 @@ paths:
                   $ref: "#/components/schemas/OidcProviderResponseDto"
         "400":
           description: >-
-            Bad request. Body is an RFC-9457 problem document; the
-            machine-readable code is in `properties.errorCode`
-            (`OIDC_INVALID_TENANT` — the caller's tenant identifier is not
-            UUID-shaped, so it can own no provider).
+            Bad request (an unparseable `activeOnly`, or a tenant identifier
+            that is not UUID-shaped and so can own no provider). Body is an
+            RFC-9457 problem document; the machine-readable code is in
+            `properties.errorCode` (`BAD_REQUEST`, `OIDC_INVALID_TENANT`).
           content:
             application/problem+json:
               schema:
@@ -5903,10 +5903,10 @@ paths:
           content: {}
         "400":
           description: >-
-            Bad request. Body is an RFC-9457 problem document; the
-            machine-readable code is in `properties.errorCode`
-            (`OIDC_INVALID_TENANT` — the caller's tenant identifier is not
-            UUID-shaped, so it can own no provider).
+            Bad request (an unparseable provider `{id}`, or a tenant identifier
+            that is not UUID-shaped and so can own no provider). Body is an
+            RFC-9457 problem document; the machine-readable code is in
+            `properties.errorCode` (`BAD_REQUEST`, `OIDC_INVALID_TENANT`).
           content:
             application/problem+json:
               schema:
@@ -6092,10 +6092,10 @@ paths:
           content: {}
         "400":
           description: >-
-            Bad request. Body is an RFC-9457 problem document; the
-            machine-readable code is in `properties.errorCode`
-            (`OIDC_INVALID_TENANT` — the caller's tenant identifier is not
-            UUID-shaped, so it can own no provider).
+            Bad request (an unparseable provider `{id}`, or a tenant identifier
+            that is not UUID-shaped and so can own no provider). Body is an
+            RFC-9457 problem document; the machine-readable code is in
+            `properties.errorCode` (`BAD_REQUEST`, `OIDC_INVALID_TENANT`).
           content:
             application/problem+json:
               schema:
@@ -6182,10 +6182,11 @@ paths:
                 $ref: "#/components/schemas/OidcProviderResponseDto"
         "400":
           description: >-
-            Bad request. Body is an RFC-9457 problem document; the
-            machine-readable code is in `properties.errorCode`
-            (`OIDC_INVALID_TENANT` — the caller's tenant identifier is not
-            UUID-shaped, so it can own no provider).
+            Bad request (an unparseable provider `{id}`, an invalid request
+            body, or a tenant identifier that is not UUID-shaped and so can own
+            no provider). Body is an RFC-9457 problem document; the
+            machine-readable code is in `properties.errorCode` (`BAD_REQUEST`,
+            `OIDC_INVALID_TENANT`).
           content:
             application/problem+json:
               schema:

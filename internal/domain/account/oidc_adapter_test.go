@@ -22,11 +22,9 @@ import (
 
 // ---------- fixture helpers ----------
 
-// oidcTenantUUID is the UUID representation of oidcTenantID. Used for
-// OwnerLegalEntityID in RegisterInput.
+// oidcTenantID is the UUID-shaped tenant every test in this file registers
+// providers as, unless it is specifically varying the tenant.
 const oidcTenantID = spi.TenantID("00000000-0000-0000-0000-00000000aabb")
-
-var oidcTenantUUID = uuid.MustParse(string(oidcTenantID))
 
 // newOidcTestService builds an oidc.Service over an in-memory KV store with a
 // fake discovery (no network) so adapter tests stay offline.
@@ -91,16 +89,6 @@ func withOidcTenantUserCtx(req *http.Request) *http.Request {
 		Tenant:   spi.Tenant{ID: oidcTenantID, Name: "test-tenant"},
 		Roles:    []string{"ROLE_USER"},
 	}))
-}
-
-// jsonBody encodes v to JSON and returns an *http.Request body reader.
-func jsonBody(t *testing.T, v any) *bytes.Buffer {
-	t.Helper()
-	b, err := json.Marshal(v)
-	if err != nil {
-		t.Fatalf("json.Marshal: %v", err)
-	}
-	return bytes.NewBuffer(b)
 }
 
 // rawBody returns a buffer from a raw JSON string (for tri-state tests).

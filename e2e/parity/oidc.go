@@ -2884,12 +2884,16 @@ func RunOidcE2E_MultiNodeEviction(t *testing.T, _ BackendFixture) {
 }
 
 // RunOidcInvalidTenantUUIDRejected_Skip documents the unit-level coverage for
-// the non-UUID tenant rejection on OIDC provider registration (Critical-2 fix).
+// the non-UUID tenant rejection on OIDC provider operations.
 //
 // Covered by: internal/domain/account unit test
 // TestOidcAdapter_NonUUIDTenantRejected — that test constructs a request with a
 // non-UUID tenant context ("default-tenant"), calls RegisterOidcProvider, and
-// asserts 400 + OIDC_INVALID_TENANT.
+// asserts 400 + OIDC_INVALID_TENANT. The rejection is not registration-only:
+// TestOidcAdapter_NonUUIDTenantIsRejectedEverywhere asserts the same 400 from
+// list, update, invalidate, reactivate and delete, and
+// internal/e2e's TestOidc_NonUUIDTenant_RejectedOnEveryOperation drives that
+// same set over HTTP against a running backend.
 //
 // Why skipped here: the parity fixture's NewTenant always returns UUID-shaped
 // tenant IDs (the parity HTTP server requires valid JWTs, which carry a UUID
