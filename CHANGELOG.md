@@ -181,8 +181,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **A callout may not run as one tenant over another's entity.** A peer
   dispatch request carries two tenants — its own, which becomes the user
   context, and the entity metadata's, which is handed to the local
-  dispatcher — and nothing compared them. A mismatch is now `400`. The
-  criteria and function shapes, which carry no entity, are unconstrained.
+  dispatcher — and nothing compared them. A mismatch is now `400`, and so
+  is an absent entity tenant: every callout kind — processor, criteria and
+  function alike — is built from a live stored entity whose tenant is
+  always set, so an empty one can only come from a hand-crafted peer body.
 
 - **A tenant whose id is a non-canonically-spelled UUID can manage its own
   OIDC providers.** The provider store wrote a record and its URI index
@@ -202,7 +204,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   ([#587](https://github.com/cyoda/cyoda-go/issues/587))
 
 - **A `500` from `POST /oauth/token` carries a ticket.** The endpoint's
-  three `server_error` paths emitted the bare RFC 6749 §5.2 pair and logged
+  four `server_error` paths emitted the bare RFC 6749 §5.2 pair and logged
   nothing correlatable, so an operator had no way to tie a caller's report
   to a log record. The ticket now rides in `error_description` as
   `server_error [ticket: <uuid>]` — the RFC fixes the body shape and has no

@@ -170,7 +170,17 @@ func (s *MessageStore) Get(_ context.Context, id string) (spi.MessageHeader, spi
 func (s *MessageStore) Delete(_ context.Context, id string) error {
 	f := s.factory
 
-	// Remove metadata under lock.
+	// The metadata removal and the unlink share one critical section, the
+	// third side of the pairing Save and Get establish. Unlinking after
+	// releasing the lock would let a concurrent Save of the same id land in
+	// between — inserting fresh metadata and renaming a fresh blob into place —
+	// and this unlink would then take that blob out from under it, leaving
+	// metadata with no blob and turning a later Get into an open error instead
+	// of spi.ErrNotFound. Save already holds the write lock across a renameat,
+	// so an unlinkat here sets no new precedent.
+	//
+	// The unlink stays best-effort: the metadata removal is what makes the
+	// message gone, and an already-absent blob is not an error.
 	func() {
 		f.msgMu.Lock()
 		defer f.msgMu.Unlock()
@@ -178,10 +188,8 @@ func (s *MessageStore) Delete(_ context.Context, id string) error {
 		if tenantMap := f.msgData[s.tenant]; tenantMap != nil {
 			delete(tenantMap, id)
 		}
+		f.blobRoot.Remove(blobName(s.tenant, id))
 	}()
-
-	// Best-effort: the metadata removal above is what makes the message gone.
-	f.blobRoot.Remove(blobName(s.tenant, id))
 
 	return nil
 }

@@ -642,7 +642,7 @@ POST /internal/dispatch/callout
 - Authenticated and encrypted with the AES-256-GCM AEAD envelope described in §4.2
 - 10MB max body size
 - Reconstruct `UserContext` from request fields (tenantID, userID, roles, principal kind)
-- A request carries two tenants — its own `TenantID`, which the reconstructed `UserContext` runs as, and `EntityMeta.TenantID`, which is handed to the local dispatcher as the entity's own. They must agree, or the callout would run as one tenant over another's entity; a mismatch is `400`. The criteria and function shapes carry no entity and leave `EntityMeta.TenantID` empty, which is unconstrained. The response names neither value — both are peer-supplied.
+- A request carries two tenants — its own `TenantID`, which the reconstructed `UserContext` runs as, and `EntityMeta.TenantID`, which is handed to the local dispatcher as the entity's own. They must agree, or the callout would run as one tenant over another's entity; a mismatch is `400`. The equality is unconditional and covers an absent `EntityMeta.TenantID`: every callout kind is built from a live stored entity whose `Meta.TenantID` is always set, so an empty one can only come from a hand-crafted peer body. The response names neither value — both are peer-supplied.
 
 **Dispatch request/response types** (`internal/cluster/dispatch/types.go`): the
 request carries the entity payload and meta, the workflow/transition names, the

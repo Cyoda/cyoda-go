@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"io"
 	"io/fs"
 	"os"
@@ -235,6 +236,66 @@ func TestMessageStore_CaseOnlyTenantsStayDistinct(t *testing.T) {
 		if string(got) != tc.payload {
 			t.Fatalf("tenant %q read %q, want %q — the two tenants share a blob",
 				tc.tenant, got, tc.payload)
+		}
+	}
+}
+
+// tempFailingReader fails after remaining bytes, driving Save down its io.Copy
+// failure path — the one reachable failure after createTempBlob has made a
+// temp file.
+type tempFailingReader struct {
+	remaining int
+}
+
+func (r *tempFailingReader) Read(p []byte) (int, error) {
+	if r.remaining <= 0 {
+		return 0, errors.New("simulated I/O failure")
+	}
+	n := min(r.remaining, len(p))
+	for i := 0; i < n; i++ {
+		p[i] = 'x'
+	}
+	r.remaining -= n
+	return n, nil
+}
+
+// TestMessageSave_FailureLeavesNoTempFile covers the cleanup half of the
+// temp-file loop's contract: every failure path after createTempBlob removes
+// the name it created. TestMessageSave_FailureDoesNotLeaveMetadata (in
+// message_store_test.go) asserts only that no metadata survives, which is
+// silent about the file on disk — and the file is what the three root.Remove
+// calls in Save exist for. This test walks the tenant directory instead, which
+// needs StoreFactory.blobDir and so belongs in package memory.
+//
+// The exhaustion half of the same contract — createTempBlob erroring rather
+// than spinning once tempBlobAttempts names have collided — is deliberately
+// not asserted: reaching 10 collisions on 128 bits of crypto/rand would need a
+// seam injected into production code, which this project forbids, so the
+// loop's bound is reviewed rather than tested.
+func TestMessageSave_FailureLeavesNoTempFile(t *testing.T) {
+	f := NewStoreFactory()
+	defer f.Close()
+
+	const tenant spi.TenantID = "tenant-temp-cleanup"
+	ctx := blobTenantCtx(tenant)
+	store, err := f.MessageStore(ctx)
+	if err != nil {
+		t.Fatalf("MessageStore: %v", err)
+	}
+
+	if err := store.Save(ctx, "msg-temp-fail", spi.MessageHeader{}, spi.MessageMetaData{},
+		&tempFailingReader{remaining: 5}); err == nil {
+		t.Fatal("Save succeeded with a failing payload reader")
+	}
+
+	dir := filepath.Join(f.blobDir, tenantBlobDir(tenant))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir(%q): %v", dir, err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "tmp-") {
+			t.Errorf("failed Save left a temp file behind: %q", e.Name())
 		}
 	}
 }

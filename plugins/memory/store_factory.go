@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -140,6 +141,9 @@ func NewStoreFactory(opts ...Option) *StoreFactory {
 	}
 	blobRoot, err := os.OpenRoot(blobDir)
 	if err != nil {
+		// The temp tree has already been created; unwinding it here is the
+		// only chance to, since no factory exists to Close.
+		os.RemoveAll(blobDir)
 		panic(fmt.Sprintf("failed to open blob root: %v", err))
 	}
 	f := &StoreFactory{
@@ -242,10 +246,15 @@ func (f *StoreFactory) Close() error {
 	// blocks the removal. NewStoreFactory panics if OpenRoot fails, so
 	// blobRoot is never nil on a constructed factory and no nil check is
 	// warranted; a second Close is harmless, as os.Root.Close is idempotent.
-	if err := f.blobRoot.Close(); err != nil {
-		return fmt.Errorf("failed to close blob root: %w", err)
+	//
+	// The removal runs whatever the close returned: this is a cleanup path, and
+	// returning early on a close error would strand the temp tree with nothing
+	// left to retry it. Both errors are reported.
+	closeErr := f.blobRoot.Close()
+	if closeErr != nil {
+		closeErr = fmt.Errorf("failed to close blob root: %w", closeErr)
 	}
-	return os.RemoveAll(f.blobDir)
+	return errors.Join(closeErr, os.RemoveAll(f.blobDir))
 }
 
 // releaseClaims removes all unique-key claims held by (tenantID, entityID) from

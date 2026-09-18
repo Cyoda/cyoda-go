@@ -1054,25 +1054,6 @@ func RunOidcMultiProvider_Isolation(t *testing.T, fix BackendFixture) {
 	assertProbeStatus(t, http.StatusUnauthorized, status, body)
 }
 
-// assertErrCodeOptional logs an error code mismatch as a note without
-// failing the test — used in JWT-validation scenarios where the error body
-// shape is not the primary assertion (status code is sufficient).
-func assertErrCodeOptional(t *testing.T, raw []byte, wantCode string) {
-	t.Helper()
-	var envelope struct {
-		Properties struct {
-			ErrorCode string `json:"errorCode"`
-		} `json:"properties"`
-	}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		// 401 responses from the auth middleware may not be Problem Detail format.
-		return
-	}
-	if envelope.Properties.ErrorCode != "" && envelope.Properties.ErrorCode != wantCode {
-		t.Logf("note: properties.errorCode got %q, expected %q (non-fatal)", envelope.Properties.ErrorCode, wantCode)
-	}
-}
-
 // --- Phase 9.4 — OIDC divergences (rows 28-46) ---
 //
 // These scenarios cover cyoda-go-specific behaviours (D5, D17, D3, D6, D11,

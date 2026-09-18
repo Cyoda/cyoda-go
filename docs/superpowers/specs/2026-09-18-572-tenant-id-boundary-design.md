@@ -334,7 +334,7 @@ never have succeeded.
 
 Gate 3 requires every 5xx to carry a generic message plus a ticket UUID.
 `writeTokenError` (`internal/auth/token.go:272`) emits only the RFC 6749 §5.2
-pair, and the three `server_error` call sites (`token.go:78`, `:97`, `:211`,
+pair, and the four `server_error` call sites (`token.go:78`, `:97`, `:211`,
 `:230`) log nothing correlatable.
 
 **Fix.** Mint a ticket, `slog.Error` it with the underlying error, and render
