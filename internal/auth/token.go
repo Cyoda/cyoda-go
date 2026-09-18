@@ -3,6 +3,8 @@ package auth
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -78,7 +80,7 @@ func (h *tokenHandler) handleClientCredentials(w http.ResponseWriter, clientID s
 
 	kp, err := h.keyStore.GetActive("client")
 	if err != nil {
-		writeTokenError(w, http.StatusInternalServerError, "server_error", "")
+		writeTokenServerError(w, "keyStore.GetActive", err)
 		return
 	}
 
@@ -97,7 +99,7 @@ func (h *tokenHandler) handleClientCredentials(w http.ResponseWriter, clientID s
 
 	token, err := Sign(claims, kp.PrivateKey, kp.KID)
 	if err != nil {
-		writeTokenError(w, http.StatusInternalServerError, "server_error", "")
+		writeTokenServerError(w, "Sign", err)
 		return
 	}
 
@@ -209,7 +211,7 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 
 	kp, err := h.keyStore.GetActive("client")
 	if err != nil {
-		writeTokenError(w, http.StatusInternalServerError, "server_error", "")
+		writeTokenServerError(w, "keyStore.GetActive", err)
 		return
 	}
 
@@ -229,7 +231,7 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 
 	token, err := Sign(claims, kp.PrivateKey, kp.KID)
 	if err != nil {
-		writeTokenError(w, http.StatusInternalServerError, "server_error", "")
+		writeTokenServerError(w, "Sign", err)
 		return
 	}
 
@@ -281,6 +283,26 @@ func writeTokenError(w http.ResponseWriter, status int, errCode, description str
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(resp)
+}
+
+// writeTokenServerError answers a 500 on the OAuth2-shaped token endpoint.
+//
+// Gate 3 requires every 5xx to carry a generic message plus a ticket UUID and
+// no internals. RFC 6749 §5.2 fixes this endpoint's body shape, which has no
+// dedicated field, so the ticket rides in error_description — already a
+// declared string in the schema. The cause goes to the log under the same
+// ticket and never into the response, matching the LevelInternal rendering in
+// internal/common/errors.go.
+func writeTokenServerError(w http.ResponseWriter, op string, cause error) {
+	ticket := uuid.NewString()
+	slog.Error("internal error",
+		"pkg", "auth",
+		"ticket", ticket,
+		"op", op,
+		"cause", cause,
+	)
+	writeTokenError(w, http.StatusInternalServerError, "server_error",
+		fmt.Sprintf("server_error [ticket: %s]", ticket))
 }
 
 func writeTokenResponse(w http.ResponseWriter, status int, body map[string]any) {
