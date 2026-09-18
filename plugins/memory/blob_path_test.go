@@ -1,8 +1,12 @@
 package memory
 
 import (
+	"context"
+	"io"
+	"io/fs"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -97,6 +101,113 @@ func TestCreateTempBlob_ExclusiveAndCleanable(t *testing.T) {
 		}
 		if err := root.Remove(name); err != nil {
 			t.Fatalf("remove %q: %v", name, err)
+		}
+	}
+}
+
+// blobTenantCtx is this package's internal-test equivalent of the memory_test
+// helper of the same shape. The tests below need StoreFactory.blobDir, which
+// only a test in package memory can reach.
+func blobTenantCtx(tid spi.TenantID) context.Context {
+	uc := &spi.UserContext{
+		UserID: "test-user",
+		Tenant: spi.Tenant{ID: tid, Name: string(tid)},
+		Roles:  []string{"USER"},
+	}
+	return spi.WithUserContext(context.Background(), uc)
+}
+
+// TestMessageStore_HostileTenantAndIDRoundTrip replaces the traversal-rejection
+// test. Under hex naming these ids and tenants are no longer rejected — they
+// are ordinary byte strings that round-trip and stay in their own directory.
+func TestMessageStore_HostileTenantAndIDRoundTrip(t *testing.T) {
+	f := NewStoreFactory()
+	defer f.Close()
+
+	hostile := []string{"../escape", "..", ".", "a/../../escape", `a\b`, "a:b"}
+	for _, tenant := range hostile {
+		for _, id := range hostile {
+			ctx := blobTenantCtx(spi.TenantID(tenant))
+			store, err := f.MessageStore(ctx)
+			if err != nil {
+				t.Fatalf("MessageStore(%q): %v", tenant, err)
+			}
+			payload := tenant + "|" + id
+			if err := store.Save(ctx, id, spi.MessageHeader{}, spi.MessageMetaData{},
+				strings.NewReader(payload)); err != nil {
+				t.Fatalf("Save(%q,%q): %v", tenant, id, err)
+			}
+			_, _, rc, err := store.Get(ctx, id)
+			if err != nil {
+				t.Fatalf("Get(%q,%q): %v", tenant, id, err)
+			}
+			got, _ := io.ReadAll(rc)
+			rc.Close()
+			if string(got) != payload {
+				t.Errorf("Get(%q,%q) = %q, want %q", tenant, id, got, payload)
+			}
+		}
+	}
+
+	// Nothing escaped: every regular file lives exactly two levels down.
+	root := f.blobDir
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, relErr := filepath.Rel(root, p)
+		if relErr != nil {
+			return relErr
+		}
+		if depth := len(strings.Split(rel, string(filepath.Separator))); depth != 2 {
+			t.Errorf("blob at depth %d: %q", depth, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+}
+
+// TestMessageStore_CaseOnlyTenantsStayDistinct is the regression this change
+// exists for. Before hex naming, these two tenants shared a directory on any
+// case-insensitive filesystem and the second Save overwrote the first.
+func TestMessageStore_CaseOnlyTenantsStayDistinct(t *testing.T) {
+	f := NewStoreFactory()
+	defer f.Close()
+
+	const id = "shared-id"
+	cases := []struct{ tenant, payload string }{
+		{"tenant-a", "payload-lower"},
+		{"tenant-A", "payload-upper"},
+	}
+	for _, tc := range cases {
+		ctx := blobTenantCtx(spi.TenantID(tc.tenant))
+		store, err := f.MessageStore(ctx)
+		if err != nil {
+			t.Fatalf("MessageStore(%q): %v", tc.tenant, err)
+		}
+		if err := store.Save(ctx, id, spi.MessageHeader{}, spi.MessageMetaData{},
+			strings.NewReader(tc.payload)); err != nil {
+			t.Fatalf("Save(%q): %v", tc.tenant, err)
+		}
+	}
+
+	for _, tc := range cases {
+		ctx := blobTenantCtx(spi.TenantID(tc.tenant))
+		store, err := f.MessageStore(ctx)
+		if err != nil {
+			t.Fatalf("MessageStore(%q): %v", tc.tenant, err)
+		}
+		_, _, rc, err := store.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("Get(%q): %v", tc.tenant, err)
+		}
+		got, _ := io.ReadAll(rc)
+		rc.Close()
+		if string(got) != tc.payload {
+			t.Fatalf("tenant %q read %q, want %q — the two tenants share a blob",
+				tc.tenant, got, tc.payload)
 		}
 	}
 }
