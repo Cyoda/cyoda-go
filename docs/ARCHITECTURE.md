@@ -219,7 +219,7 @@ Plugin authors never implement these — they are internal to the cyoda-go appli
 
 Multi-tenancy is intrinsic. Every request context carries a resolved `UserContext` with `TenantID`. All stores, across all plugins, partition by tenant.
 
-A tenant identifier matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$` — 1 to 100 bytes, the first an ASCII letter or digit, case preserved and significant. `common.ValidateTenantID` is the one definition, and it is applied at the only two places a tenant identifier enters the binary from outside it: the `caas_org_id` claim on an inbound JWT (§7.2), which covers every authenticated HTTP request and every authenticated gRPC method, and `CYODA_BOOTSTRAP_TENANT_ID` at startup (§7.2). Everything downstream — peer dispatch bodies, scheduler payloads, gossip envelopes, scheduled-task and search-job rows, OIDC provider records, the M2M client table — carries a value already admitted at one of those two doors and does not re-check it. The rule is a Cloud-facing contract: see `docs/cloud-parity/tenant-id-grammar.md`.
+A tenant identifier matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$` — 1 to 100 bytes, the first an ASCII letter or digit, case preserved and significant. `common.ValidateTenantID` is the one definition, and it is applied at the only two places a tenant identifier enters the binary from outside it: the `caas_org_id` claim on an inbound JWT (§7.2), which covers every authenticated HTTP request and every authenticated gRPC method, and `CYODA_BOOTSTRAP_TENANT_ID` at startup (§9). Everything downstream — peer dispatch bodies, scheduler payloads, gossip envelopes, scheduled-task and search-job rows, OIDC provider records, the M2M client table — carries a value already admitted at one of those two doors and does not re-check it. The rule is a Cloud-facing contract: see `docs/cloud-parity/tenant-id-grammar.md`.
 
 ---
 
@@ -1590,7 +1590,7 @@ These variables apply globally to all tenant-registered OIDC providers. Per-prov
 |----------|---------|-------------|
 | `CYODA_BOOTSTRAP_CLIENT_ID` | (none) | M2M client ID to create at startup. Must be set together with `CYODA_BOOTSTRAP_CLIENT_SECRET` or both left empty — half-configured rejected (jwt mode). |
 | `CYODA_BOOTSTRAP_CLIENT_SECRET` (with `_FILE` variant) | (none) | M2M client secret. Required when `CYODA_BOOTSTRAP_CLIENT_ID` is set in jwt mode; ignored in mock mode. |
-| `CYODA_BOOTSTRAP_TENANT_ID` | `default-tenant` | Tenant for bootstrap client. Must match the tenant grammar (§1); a value outside it refuses startup, but only when a bootstrap client is configured — the value is otherwise never read, including when it is explicitly empty. |
+| `CYODA_BOOTSTRAP_TENANT_ID` | `default-tenant` | Tenant for bootstrap client. Must match the tenant grammar (§1); a value outside it refuses startup, but only in jwt mode with a bootstrap client configured — mock mode ignores bootstrap entirely, and a jwt deployment that configures no bootstrap client never reads the value, including when it is explicitly empty. |
 | `CYODA_BOOTSTRAP_USER_ID` | `admin` | User ID for bootstrap client |
 | `CYODA_BOOTSTRAP_ROLES` | `ROLE_ADMIN,ROLE_M2M` | Comma-separated roles |
 

@@ -118,9 +118,11 @@ Key within the bootstrap client Secret.
 
 **`bootstrap.tenantId`** — string — default `default-tenant`
 Bootstrap tenant ID. Written to ConfigMap as `CYODA_BOOTSTRAP_TENANT_ID`. Must match
-the tenant grammar `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$` — `values.schema.json` carries
-the same pattern, so a bad value fails at `helm install` rather than at container
-start, where it would stop the binary from starting whenever a bootstrap client is
+the tenant grammar `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`. `values.schema.json` expresses
+that as two constraints — the charset and first-byte rule as a `pattern`
+(`^[A-Za-z0-9][A-Za-z0-9._-]*$`), the 100-byte cap as `maxLength` — so a bad value
+fails at `helm install` with a message naming which half it broke, rather than at
+container start, where it stops the binary in jwt mode whenever a bootstrap client is
 configured.
 
 **`bootstrap.userId`** — string — default `admin`

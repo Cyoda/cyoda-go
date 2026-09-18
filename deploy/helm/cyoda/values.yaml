@@ -68,9 +68,14 @@ bootstrap:
     existingSecret: ""
     existingSecretKey: secret
   # -- Tenant for the bootstrap client. Must match the tenant grammar
-  # ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ — values.schema.json enforces it at
-  # install time, and the binary refuses to start on a value outside it
-  # whenever clientId is set.
+  # ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$. values.schema.json enforces it at
+  # install time as a pattern for the charset and first-byte rule plus a
+  # maxLength for the cap; the binary re-checks it in jwt mode and refuses
+  # to start on a value outside it whenever clientId is set.
+  # The two halves agree only because the charset is ASCII: maxLength
+  # counts runes and the binary counts bytes. Widening the charset to
+  # non-ASCII here without changing maxLength would let helm install accept
+  # a value the binary then rejects.
   tenantId: default-tenant
   userId: admin
   roles: "ROLE_ADMIN,ROLE_M2M"

@@ -82,10 +82,13 @@ func NewOidcAdapter(service *oidc.Service, defaultRolesClaim string, requireHTTP
 // OIDC service, is what makes every operation address the same key.
 //
 // A tenant that is not UUID-shaped at all has no key to address: the data
-// model types OwnerLegalEntityID as uuid.UUID (matching cyoda-cloud's
-// JWKOIDCEntity.ownerLegalEntityId), and coercing such a tenant to uuid.Nil
-// would collide in storage across every non-UUID tenant and produce a
+// model types OwnerLegalEntityID as uuid.UUID, and coercing such a tenant to
+// uuid.Nil would collide in storage across every non-UUID tenant and produce a
 // synthetic "nil tenant" identity at token-validation time. It is rejected.
+//
+// Confining this surface to UUID-shaped tenants is cyoda-go's own design, not
+// a mirror of Cyoda Cloud's: Cloud does not scope the OIDC surface by a tenant
+// key at all. See docs/cloud-parity/tenant-id-grammar.md, part 2.
 //
 // On failure the response has already been written and ok is false.
 func oidcTenantFromCtx(w http.ResponseWriter, r *http.Request) (spi.TenantID, uuid.UUID, bool) {

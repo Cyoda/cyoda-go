@@ -114,8 +114,9 @@ implementer should keep it even if their storage layer is safe:
 - **Response injection.** The cluster dispatcher interpolates the raw tenant into
   a caller-visible error string.
 - **Cross-tier consistency.** Cloud's 100-character user column, above.
-- **Unbounded keys.** The model cache concatenates the tenant into a cache key
-  with no length bound of its own.
+- **Unbounded keys.** The model cache keys a map by the tenant with no length
+  cap of its own, and the gossip payload that carries an eviction JSON-encodes
+  the same field.
 
 ## The Cloud side — CP-3968
 
@@ -156,10 +157,9 @@ knows that doing so would break the contract.
 
 ## Rule
 
-On the OIDC provider surface, where the data model types the owner as a UUID
-(`JWKOIDCEntity.ownerLegalEntityId` in Cloud, `OwnerLegalEntityID uuid.UUID`
-here), the caller's tenant is **parsed as a UUID and compared by value**. Two
-spellings of the same UUID address the same providers:
+On the OIDC provider surface, where cyoda-go types the owner as a UUID
+(`OwnerLegalEntityID uuid.UUID`), the caller's tenant is **parsed as a UUID and
+compared by value**. Two spellings of the same UUID address the same providers:
 
 ```
 1A2B3C4D-5E6F-7080-9A0B-C1D2E3F4A5B6
@@ -169,8 +169,9 @@ urn:uuid:1a2b3c4d-5e6f-7080-9a0b-c1d2e3f4a5b6
 ```
 
 Storage keys by the canonical lowercase form. Canonicalisation happens once, at
-the single entry point to the OIDC service, so every operation — register, get,
-list, update, invalidate, reactivate, delete — addresses the same key.
+the single entry point to the OIDC service, so every operation — register, list,
+update, invalidate, reactivate, delete; there is no read-by-id endpoint —
+addresses the same key.
 
 This is compatible with Part 1 by design: the grammar admits uppercase
 deliberately, so it does not and must not be relied on to normalise a UUID.
@@ -185,7 +186,7 @@ tenant, including the list one:
 | --- | --- | --- |
 | `POST /oauth/oidc/providers` | `400 OIDC_INVALID_TENANT` | unchanged |
 | `GET /oauth/oidc/providers` | **empty `200`** | `400 OIDC_INVALID_TENANT` |
-| `GET`/`PATCH`/`DELETE /oauth/oidc/providers/{id}` and the invalidate/reactivate forms | `404` | `400 OIDC_INVALID_TENANT` |
+| `PATCH`/`DELETE /oauth/oidc/providers/{id}` and the invalidate/reactivate forms | `404` | `400 OIDC_INVALID_TENANT` |
 | `POST /oauth/oidc/providers/reload` | `200` | unchanged — tenant-independent |
 
 The empty `200` was the defect worth naming: it reported "you have no providers"
@@ -208,6 +209,47 @@ Token validation was never affected on either tier, because the provider
 registry is built from the *stored* provider's own owner id, which is already
 canonical. Only the management API strands. That asymmetry is what makes the
 defect easy to ship and hard to notice.
+
+## The Cloud side — no ticket, and why
+
+**Cloud needs nothing here.** Neither half of Part 2 is reachable in Cloud,
+because Cloud does not scope this surface by a tenant string at all:
+`OIDCProviderInteractor.listProviders(activeOnly: Boolean)`
+(`OIDCProviderInteractor.kt:49`) takes no tenant, and the service beneath it
+(`JWKOIDCService.kt:188`) fetches `GroupCondition.ALL` and filters only on
+`active`, leaving tenant scoping to the platform's owner-based entity access
+control over the `owner` field that registration sets from
+`securityManager.authorizedUser.legalEntityId` (`JWKOIDCService.kt:165`). With
+no tenant-keyed namespace there is no prefix scan to come back empty, and no
+pair of spellings under which a write and a read could disagree — both defects
+are artefacts of cyoda-go keying a KV namespace by `<tenant>:<providerID>`.
+
+### Open question: the two tiers scope this surface differently
+
+The tiers reach tenant isolation on the OIDC surface by two different designs,
+and it is worth naming the difference so a Cloud reader does not mistake it for
+something this change introduced or for a defect on either side.
+
+- **cyoda-go scopes by a UUID tenant key.** Providers live in one KV namespace
+  keyed `<tenant>:<providerID>`, the owner is typed `uuid.UUID`, and a tenant
+  outside that shape has no key to address — hence `OIDC_INVALID_TENANT`.
+- **Cloud scopes by owner-based entity access control.** There is no tenant key:
+  the listing fetches `GroupCondition.ALL` and the platform's access control
+  decides what the caller may see, over an `owner` field registration sets from
+  the caller's legal entity. The shape of that identifier does not enter into
+  it.
+
+Neither is wrong today. Each is coherent within its own storage model, and both
+isolate tenants. The consequence of the difference is narrow: cyoda-go requires
+a UUID-shaped tenant to use the OIDC surface at all, and Cloud does not.
+
+This predates the change recorded here on both tiers — cyoda-go's registration
+already answered `400 OIDC_INVALID_TENANT` — and nothing above narrows or widens
+it. **Whether the two tiers should converge on one scoping model is an open
+question for the project lead**, not a decision taken in this document. It is
+recorded here rather than ticketed because this folder is the coordination
+surface, and a named open question is worth more than a ticket filed on an
+assumption.
 
 ## Test surface
 

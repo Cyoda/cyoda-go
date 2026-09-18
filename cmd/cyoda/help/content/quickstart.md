@@ -90,8 +90,8 @@ Env vars required to move from defaults to a production-shaped deployment.
 - `CYODA_BOOTSTRAP_CLIENT_SECRET` — M2M client secret (required when client ID is set)
 - `CYODA_BOOTSTRAP_CLIENT_SECRET_FILE` — file path for `CYODA_BOOTSTRAP_CLIENT_SECRET`; takes precedence
 - `CYODA_BOOTSTRAP_TENANT_ID` = `default-tenant` (default) — must match
-  `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`; with a bootstrap client configured, a value
-  outside it stops startup
+  `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`; in jwt mode with a bootstrap client
+  configured, a value outside it stops startup (mock mode ignores bootstrap)
 - `CYODA_BOOTSTRAP_USER_ID` = `admin` (default)
 - `CYODA_BOOTSTRAP_ROLES` = `ROLE_ADMIN,ROLE_M2M` (default)
 

@@ -80,8 +80,9 @@ from outside it:
   authenticated HTTP request and every authenticated gRPC method. A claim
   outside the grammar is rejected like any other bad token: `401` with the
   uniform problem detail, and nothing in the response distinguishing it. The
-  startup log records the rejection with the reason and a byte offset, never
-  the offending value. If you mint tokens from an external IdP, constrain the
+  server log records the rejection at request time — one warning per rejected
+  request, carrying the reason and a byte offset, never the offending value.
+  If you mint tokens from an external IdP, constrain the
   claim there — an identifier outside this grammar is only diagnosable from
   cyoda's own logs.
 - **`CYODA_BOOTSTRAP_TENANT_ID`** (below).
@@ -105,10 +106,11 @@ cyoda can provision a machine-to-machine client at startup for automation and CI
 - `CYODA_BOOTSTRAP_CLIENT_SECRET_FILE` — file path for `CYODA_BOOTSTRAP_CLIENT_SECRET`
   (takes precedence)
 - `CYODA_BOOTSTRAP_TENANT_ID` — tenant for the bootstrap client (default: `default-tenant`).
-  Must match the tenant grammar above. When a bootstrap client is configured and this
-  value does not match, the binary refuses to start. A deployment that configures no
-  bootstrap client never reads the value and is unaffected, even when it is set to the
-  empty string.
+  Must match the tenant grammar above. In jwt mode, when a bootstrap client is
+  configured and this value does not match, the binary refuses to start. A deployment
+  that configures no bootstrap client never reads the value and is unaffected, even when
+  it is set to the empty string — and mock mode ignores the whole bootstrap block, so
+  the value is not checked there either.
 - `CYODA_BOOTSTRAP_USER_ID` — user ID for the bootstrap client (default: `admin`)
 - `CYODA_BOOTSTRAP_ROLES` — comma-separated roles granted to the bootstrap client
   (default: `ROLE_ADMIN,ROLE_M2M`)
