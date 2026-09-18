@@ -39,6 +39,8 @@ var (
 	allOperationIds []string
 	markedOps       = map[string]string{} // operationId → x-cyoda-status value
 	testApp         *app.App              // exposed for test-mode store seeding (e.g. cross-tenant M2M client bootstrap)
+	e2eSignKey      *rsa.PrivateKey       // the stack's JWT signing key, for tests that mint bespoke claims
+	e2eIssuer       string                // the stack's JWT issuer, for the same
 )
 
 // readCyodaStatus returns the x-cyoda-status marker on an operation, or "".
@@ -126,6 +128,8 @@ func TestMain(m *testing.M) {
 	cfg.IAM.JWTSigningKey = keyPEM
 	cfg.IAM.JWTIssuer = "cyoda-test"
 	cfg.IAM.JWTExpiry = 3600
+	e2eSignKey = rsaKey
+	e2eIssuer = cfg.IAM.JWTIssuer
 	cfg.Bootstrap = app.BootstrapConfig{
 		ClientID:     "testclient",
 		ClientSecret: "testsecret",
