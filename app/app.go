@@ -1065,6 +1065,15 @@ func validateBootstrapConfig(cfg *Config) (*Config, error) {
 		return &out, nil
 	case idSet && secretSet:
 		// Bootstrap M2M client configured. Creation happens in New().
+		//
+		// Door 2 of two. The tenant is validated here rather than at the top of
+		// the function because envString uses LookupEnv: an explicitly-empty
+		// CYODA_BOOTSTRAP_TENANT_ID overrides the default, and a deployment
+		// that configures no bootstrap client never consumes the value. Only
+		// the branch that actually creates a client may refuse to start over it.
+		if err := common.ValidateTenantID(spi.TenantID(out.Bootstrap.TenantID)); err != nil {
+			return nil, fmt.Errorf("CYODA_BOOTSTRAP_TENANT_ID is not a valid tenant id: %w", err)
+		}
 		return &out, nil
 	case idSet && !secretSet:
 		return nil, fmt.Errorf(
