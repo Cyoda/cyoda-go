@@ -67,6 +67,10 @@ bootstrap:
   clientSecret:
     existingSecret: ""
     existingSecretKey: secret
+  # -- Tenant for the bootstrap client. Must match the tenant grammar
+  # ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ — values.schema.json enforces it at
+  # install time, and the binary refuses to start on a value outside it
+  # whenever clientId is set.
   tenantId: default-tenant
   userId: admin
   roles: "ROLE_ADMIN,ROLE_M2M"

@@ -219,6 +219,8 @@ Plugin authors never implement these — they are internal to the cyoda-go appli
 
 Multi-tenancy is intrinsic. Every request context carries a resolved `UserContext` with `TenantID`. All stores, across all plugins, partition by tenant.
 
+A tenant identifier matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$` — 1 to 100 bytes, the first an ASCII letter or digit, case preserved and significant. `common.ValidateTenantID` is the one definition, and it is applied at the only two places a tenant identifier enters the binary from outside it: the `caas_org_id` claim on an inbound JWT (§7.2), which covers every authenticated HTTP request and every authenticated gRPC method, and `CYODA_BOOTSTRAP_TENANT_ID` at startup (§7.2). Everything downstream — peer dispatch bodies, scheduler payloads, gossip envelopes, scheduled-task and search-job rows, OIDC provider records, the M2M client table — carries a value already admitted at one of those two doors and does not re-check it. The rule is a Cloud-facing contract: see `docs/cloud-parity/tenant-id-grammar.md`.
+
 ---
 
 ## 2. Storage Architecture
@@ -640,6 +642,7 @@ POST /internal/dispatch/callout
 - Authenticated and encrypted with the AES-256-GCM AEAD envelope described in §4.2
 - 10MB max body size
 - Reconstruct `UserContext` from request fields (tenantID, userID, roles, principal kind)
+- A request carries two tenants — its own `TenantID`, which the reconstructed `UserContext` runs as, and `EntityMeta.TenantID`, which is handed to the local dispatcher as the entity's own. They must agree, or the callout would run as one tenant over another's entity; a mismatch is `400`. The criteria and function shapes carry no entity and leave `EntityMeta.TenantID` empty, which is unconstrained. The response names neither value — both are peer-supplied.
 
 **Dispatch request/response types** (`internal/cluster/dispatch/types.go`): the
 request carries the entity payload and meta, the workflow/transition names, the
@@ -1311,6 +1314,8 @@ secret via a chart-managed Kubernetes Secret with a GitOps-safety guard.
 
 When `CYODA_IAM_MODE=jwt` is active, tenants can register external Identity Providers (IdPs) that issue JWTs which cyoda-go should accept alongside its own locally-issued tokens. Each provider record is stored in the KV store under a single namespace (`oidc-providers`) with composite keys of the form `<tenantID>:<providerID>`, giving per-tenant isolation without a separate table.
 
+The `<tenantID>` half is the **canonical lowercase UUID**, not the caller's spelling. `uuid.Parse` accepts uppercase, braced and `urn:uuid:` forms that `uuid.UUID.String()` normalises away, so the adapter — the single entry point to the OIDC service — canonicalises the caller's tenant once and every operation addresses the same key. A tenant that is not a UUID in any spelling has no key to address and gets `400 OIDC_INVALID_TENANT` from every provider operation, including the list one; `POST /oauth/oidc/providers/reload` takes no tenant and is exempt.
+
 **Chained multi-issuer validation.** The `DelegatingAuthenticator` from §7.2 is the outer shell; inside it the request's `iss` claim determines which validator handles the token:
 
 1. **`JWKSValidator` (first)** — checks locally-issued tokens whose issuer matches `CYODA_JWT_ISSUER`.
@@ -1585,7 +1590,7 @@ These variables apply globally to all tenant-registered OIDC providers. Per-prov
 |----------|---------|-------------|
 | `CYODA_BOOTSTRAP_CLIENT_ID` | (none) | M2M client ID to create at startup. Must be set together with `CYODA_BOOTSTRAP_CLIENT_SECRET` or both left empty — half-configured rejected (jwt mode). |
 | `CYODA_BOOTSTRAP_CLIENT_SECRET` (with `_FILE` variant) | (none) | M2M client secret. Required when `CYODA_BOOTSTRAP_CLIENT_ID` is set in jwt mode; ignored in mock mode. |
-| `CYODA_BOOTSTRAP_TENANT_ID` | `default-tenant` | Tenant for bootstrap client |
+| `CYODA_BOOTSTRAP_TENANT_ID` | `default-tenant` | Tenant for bootstrap client. Must match the tenant grammar (§1); a value outside it refuses startup, but only when a bootstrap client is configured — the value is otherwise never read, including when it is explicitly empty. |
 | `CYODA_BOOTSTRAP_USER_ID` | `admin` | User ID for bootstrap client |
 | `CYODA_BOOTSTRAP_ROLES` | `ROLE_ADMIN,ROLE_M2M` | Comma-separated roles |
 

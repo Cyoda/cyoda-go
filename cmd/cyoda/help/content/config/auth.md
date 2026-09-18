@@ -61,6 +61,35 @@ signal that requests are unauthenticated.
   issuance is disabled and the bootstrap key signs human tokens through
   an external flow. (default: `client`)
 
+### Tenant identifiers
+
+A tenant identifier must match:
+
+```
+^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$
+```
+
+1 to 100 bytes; the first an ASCII letter or digit; the rest letters, digits,
+`.`, `_` and `-`. Case is preserved and significant — `Acme` and `acme` are two
+tenants.
+
+The rule is checked at the two places a tenant identifier enters the binary
+from outside it:
+
+- **The `caas_org_id` claim on an inbound JWT**, which covers every
+  authenticated HTTP request and every authenticated gRPC method. A claim
+  outside the grammar is rejected like any other bad token: `401` with the
+  uniform problem detail, and nothing in the response distinguishing it. The
+  startup log records the rejection with the reason and a byte offset, never
+  the offending value. If you mint tokens from an external IdP, constrain the
+  claim there — an identifier outside this grammar is only diagnosable from
+  cyoda's own logs.
+- **`CYODA_BOOTSTRAP_TENANT_ID`** (below).
+
+Nothing downstream re-checks it: peer dispatch, scheduled tasks, search jobs
+and stored client records all carry a value already admitted at one of those
+two doors.
+
 ### HMAC secret (inter-node dispatch authentication)
 
 - `CYODA_HMAC_SECRET` — hex-encoded HMAC secret for inter-node dispatch auth
@@ -75,7 +104,11 @@ cyoda can provision a machine-to-machine client at startup for automation and CI
   `CYODA_BOOTSTRAP_CLIENT_ID` is set (and vice versa)
 - `CYODA_BOOTSTRAP_CLIENT_SECRET_FILE` — file path for `CYODA_BOOTSTRAP_CLIENT_SECRET`
   (takes precedence)
-- `CYODA_BOOTSTRAP_TENANT_ID` — tenant for the bootstrap client (default: `default-tenant`)
+- `CYODA_BOOTSTRAP_TENANT_ID` — tenant for the bootstrap client (default: `default-tenant`).
+  Must match the tenant grammar above. When a bootstrap client is configured and this
+  value does not match, the binary refuses to start. A deployment that configures no
+  bootstrap client never reads the value and is unaffected, even when it is set to the
+  empty string.
 - `CYODA_BOOTSTRAP_USER_ID` — user ID for the bootstrap client (default: `admin`)
 - `CYODA_BOOTSTRAP_ROLES` — comma-separated roles granted to the bootstrap client
   (default: `ROLE_ADMIN,ROLE_M2M`)
