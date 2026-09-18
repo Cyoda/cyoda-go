@@ -2,6 +2,8 @@ github.com/cyoda-platform/cyoda-go-spi v0.8.4 h1:KjuUqL5L3E6FGWAYVAOTkwHESk30/sN
 github.com/cyoda-platform/cyoda-go-spi v0.8.4/go.mod h1:AcwgAIrvssNIUXbChpZM0/BaXhPmFDLRM+T19iCfD3k=
 github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20260917062317-6220cff99db2 h1:i7nsXFdrJIEp4Zw8V4FM08TWcv3VBhcg2r4D0CTxz3k=
 github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20260917062317-6220cff99db2/go.mod h1:AcwgAIrvssNIUXbChpZM0/BaXhPmFDLRM+T19iCfD3k=
+github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20260918004138-1ab57a60382c h1:w8+aJ98KwfDHazkxx3KOYy8VnBgacYAnqUQoSBoM+ew=
+github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20260918004138-1ab57a60382c/go.mod h1:AcwgAIrvssNIUXbChpZM0/BaXhPmFDLRM+T19iCfD3k=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
 github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
