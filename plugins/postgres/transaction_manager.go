@@ -600,7 +600,7 @@ func (tm *TransactionManager) GetSubmitTime(ctx context.Context, txID string) (t
 		if err := verifyTenant(ctx, activeTenant, "GetSubmitTime", txID); err != nil {
 			return time.Time{}, err
 		}
-		return time.Time{}, fmt.Errorf("transaction not yet committed: %s", txID)
+		return time.Time{}, fmt.Errorf("%w (txID=%s)", spi.ErrTxNotCommitted, txID)
 	default:
 		return tm.getSubmitTimeFromTable(ctx, txID)
 	}
