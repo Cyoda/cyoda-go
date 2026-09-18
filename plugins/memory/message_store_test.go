@@ -304,6 +304,104 @@ func TestMessageStore_SaveRejectsEmptyID(t *testing.T) {
 	}
 }
 
+// blobPayload is the uniform payload writer w publishes, and the size every
+// concurrency test in this file agrees on.
+const blobPayloadSize = 256
+
+func blobPayload(w string) string { return strings.Repeat(w, blobPayloadSize) }
+
+// TestMessageStore_ConcurrentGetPairsHeaderWithBlob is the READ half of the
+// atomicity Save promises, and it needs a reader running concurrently with the
+// writers to see it — TestMessageStore_ConcurrentSaveSameID below only reads
+// after wg.Wait(), when no rename can still be in flight, so it cannot.
+//
+// Get copies the header and metadata from the map and opens the blob. If those
+// two steps do not share one critical section, a Save that wins the write lock
+// between them renames a new blob into place and the reader returns one
+// writer's header with another writer's payload. Every Get here must report a
+// single writer across header, metadata and bytes.
+func TestMessageStore_ConcurrentGetPairsHeaderWithBlob(t *testing.T) {
+	f := memory.NewStoreFactory()
+	defer f.Close()
+
+	ctx := ctxWithTenant("pairing-tenant")
+	store, err := f.MessageStore(ctx)
+	if err != nil {
+		t.Fatalf("MessageStore: %v", err)
+	}
+
+	const id = "contended"
+	save := func(w string) error {
+		return store.Save(ctx, id, spi.MessageHeader{Subject: w},
+			spi.MessageMetaData{Values: map[string]any{"who": w}},
+			strings.NewReader(blobPayload(w)))
+	}
+
+	// Seed, so the first read always finds a message.
+	if err := save("A"); err != nil {
+		t.Fatalf("seed Save: %v", err)
+	}
+
+	stop := make(chan struct{})
+	var writers, readers sync.WaitGroup
+
+	for _, w := range []string{"A", "B"} {
+		writers.Add(1)
+		go func(w string) {
+			defer writers.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if err := save(w); err != nil {
+					t.Errorf("Save(%q): %v", w, err)
+					return
+				}
+			}
+		}(w)
+	}
+
+	for r := 0; r < 4; r++ {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for i := 0; i < 3000; i++ {
+				header, meta, rc, err := store.Get(ctx, id)
+				if err != nil {
+					t.Errorf("Get: %v", err)
+					return
+				}
+				got, readErr := io.ReadAll(rc)
+				rc.Close()
+				if readErr != nil {
+					t.Errorf("read blob: %v", readErr)
+					return
+				}
+				if len(got) == 0 {
+					t.Error("Get returned an empty blob")
+					return
+				}
+				wrote := string(got[:1])
+				if string(got) != blobPayload(wrote) {
+					t.Errorf("payload is torn: starts %q but is not uniform", wrote)
+					return
+				}
+				if header.Subject != wrote || meta.Values["who"] != wrote {
+					t.Errorf("Get paired header %q and metadata %v with a blob written by %q",
+						header.Subject, meta.Values["who"], wrote)
+					return
+				}
+			}
+		}()
+	}
+
+	readers.Wait()
+	close(stop)
+	writers.Wait()
+}
+
 // TestMessageStore_ConcurrentSaveSameID asserts Save is atomic across its blob
 // rename and its metadata insert: whichever writer wins, the payload the
 // reader gets must be the one that writer wrote, never a mix.
@@ -318,7 +416,7 @@ func TestMessageStore_ConcurrentSaveSameID(t *testing.T) {
 	}
 
 	const id = "contended"
-	payloads := []string{strings.Repeat("A", 4096), strings.Repeat("B", 4096)}
+	payloads := []string{blobPayload("A"), blobPayload("B")}
 
 	var wg sync.WaitGroup
 	for _, p := range payloads {
@@ -341,8 +439,11 @@ func TestMessageStore_ConcurrentSaveSameID(t *testing.T) {
 	got, _ := io.ReadAll(rc)
 	rc.Close()
 
+	if len(got) == 0 {
+		t.Fatal("blob is empty: neither writer's payload survived")
+	}
 	winner := string(got[:1])
-	if string(got) != strings.Repeat(winner, 4096) {
+	if string(got) != blobPayload(winner) {
 		t.Fatalf("payload is torn: starts %q but is not uniform", winner)
 	}
 	if header.Subject != winner {

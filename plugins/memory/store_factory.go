@@ -239,11 +239,11 @@ func (f *StoreFactory) ScheduledTaskStore(_ context.Context) (spi.ScheduledTaskS
 
 func (f *StoreFactory) Close() error {
 	// Close the root before removing the tree: on Windows an open handle
-	// blocks the removal.
-	if f.blobRoot != nil {
-		if err := f.blobRoot.Close(); err != nil {
-			return fmt.Errorf("failed to close blob root: %w", err)
-		}
+	// blocks the removal. NewStoreFactory panics if OpenRoot fails, so
+	// blobRoot is never nil on a constructed factory and no nil check is
+	// warranted; a second Close is harmless, as os.Root.Close is idempotent.
+	if err := f.blobRoot.Close(); err != nil {
+		return fmt.Errorf("failed to close blob root: %w", err)
 	}
 	return os.RemoveAll(f.blobDir)
 }

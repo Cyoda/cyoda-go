@@ -99,9 +99,13 @@ func (s *scheduledTaskStore) Delete(ctx context.Context, id string) (bool, error
 	// an as-yet-uncommitted transaction still reports true here if the row
 	// is currently committed — matching Delete's "removed" contract for the
 	// callers that rely on it (delete-gated terminal audit).
-	s.f.entityMu.RLock()
-	_, existed := s.f.scheduledTasks[id]
-	s.f.entityMu.RUnlock()
+	existed := func() bool {
+		s.f.entityMu.RLock()
+		defer s.f.entityMu.RUnlock()
+
+		_, ok := s.f.scheduledTasks[id]
+		return ok
+	}()
 
 	if err := s.stage(ctx, scheduledTaskOp{kind: scheduledTaskDelete, id: id}); err != nil {
 		return false, err
@@ -156,14 +160,18 @@ func (s *scheduledTaskStore) MarkRedispatch(_ context.Context, id string, redisp
 }
 
 func (s *scheduledTaskStore) ReconcileForEntity(ctx context.Context, req spi.ReconcileRequest) ([]spi.ScheduledTask, error) {
-	s.f.entityMu.RLock()
-	var cancelled []spi.ScheduledTask
-	for _, t := range s.f.scheduledTasks {
-		if t.EntityID == req.EntityID && t.TenantID == req.TenantID && t.SourceState != req.CurrentState {
-			cancelled = append(cancelled, copyScheduledTask(t))
+	cancelled := func() []spi.ScheduledTask {
+		s.f.entityMu.RLock()
+		defer s.f.entityMu.RUnlock()
+
+		var out []spi.ScheduledTask
+		for _, t := range s.f.scheduledTasks {
+			if t.EntityID == req.EntityID && t.TenantID == req.TenantID && t.SourceState != req.CurrentState {
+				out = append(out, copyScheduledTask(t))
+			}
 		}
-	}
-	s.f.entityMu.RUnlock()
+		return out
+	}()
 
 	for _, t := range req.Arm {
 		if err := s.Upsert(ctx, t); err != nil {

@@ -49,9 +49,20 @@ func TestBlobName_IsUnspellable(t *testing.T) {
 }
 
 // TestBlobName_DistinctTenantsNeverShareADirectory is the case-collision
-// regression. On APFS and on Windows, "tenant-a" and "tenant-A" are one
-// directory; os.Root does not see that, because it guarantees confinement, not
-// distinctness. Hex encoding is what separates them.
+// regression, and it is the one that has to hold on every platform.
+//
+// The property is fold-distinctness, not mere inequality. Asserting a != b
+// would follow from injectivity alone and would pass for the raw-name scheme
+// this replaced, which is precisely the scheme under which "tenant-a" and
+// "tenant-A" are ONE directory on APFS and on Windows — both release targets.
+// EqualFold is what a case-insensitive filesystem does, so asserting the
+// encoded names do not fold together states the real requirement, and it
+// states it identically on Linux, where the raw names happen not to collide
+// and a naive test is green against the bug.
+//
+// Hex output is lower-case only, so two distinct hex strings can never be
+// EqualFold-equal — the encoding is what makes this hold rather than the
+// filesystem's manners.
 func TestBlobName_DistinctTenantsNeverShareADirectory(t *testing.T) {
 	pairs := [][2]string{
 		{"tenant-a", "tenant-A"},
@@ -61,8 +72,8 @@ func TestBlobName_DistinctTenantsNeverShareADirectory(t *testing.T) {
 	for _, p := range pairs {
 		a := path.Dir(blobName(spi.TenantID(p[0]), "id"))
 		b := path.Dir(blobName(spi.TenantID(p[1]), "id"))
-		if a == b {
-			t.Fatalf("tenants %q and %q share directory %q", p[0], p[1], a)
+		if strings.EqualFold(a, b) {
+			t.Fatalf("tenants %q and %q fold to the same directory %q/%q", p[0], p[1], a, b)
 		}
 	}
 }
@@ -149,7 +160,15 @@ func TestMessageStore_HostileTenantAndIDRoundTrip(t *testing.T) {
 		}
 	}
 
-	// Nothing escaped: every regular file lives exactly two levels down.
+	// Every regular file lives exactly two levels down: <hex tenant>/<hex id>.
+	//
+	// This is NOT a confinement proof, and must not be read as one. A blob
+	// that genuinely escaped would land outside blobDir, where WalkDir rooted
+	// at blobDir never looks. What it catches is sub-directory nesting — a
+	// name that grew a separator and buried a blob one level deeper, inside
+	// the root but outside the tenant's own directory. Confinement itself is
+	// os.Root's job, enforced by the kernel on every openat/renameat, and is
+	// not something a test in this process can usefully re-check.
 	root := f.blobDir
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -169,9 +188,17 @@ func TestMessageStore_HostileTenantAndIDRoundTrip(t *testing.T) {
 	}
 }
 
-// TestMessageStore_CaseOnlyTenantsStayDistinct is the regression this change
-// exists for. Before hex naming, these two tenants shared a directory on any
-// case-insensitive filesystem and the second Save overwrote the first.
+// TestMessageStore_CaseOnlyTenantsStayDistinct is the end-to-end demonstration
+// of the regression: before hex naming, these two tenants shared a directory
+// and tenant-a read back tenant-A's bytes — a cross-tenant read, not merely a
+// lost write.
+//
+// It only EXHIBITS the bug on a case-insensitive filesystem (APFS, Windows).
+// On Linux/ext4 the old raw-name scheme gave the two tenants separate
+// directories, so this test passes against the buggy code there — a green here
+// on CI is not proof that the bug is gone. The platform-independent guard is
+// TestBlobName_DistinctTenantsNeverShareADirectory above, which asserts
+// fold-distinctness of the encoded names; this one shows what that prevents.
 func TestMessageStore_CaseOnlyTenantsStayDistinct(t *testing.T) {
 	f := NewStoreFactory()
 	defer f.Close()

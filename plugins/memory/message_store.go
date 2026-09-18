@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -125,28 +126,42 @@ func (s *MessageStore) Save(_ context.Context, id string, header spi.MessageHead
 func (s *MessageStore) Get(_ context.Context, id string) (spi.MessageHeader, spi.MessageMetaData, io.ReadCloser, error) {
 	f := s.factory
 
-	// Copy metadata under lock.
+	// The metadata copy and the blob OPEN share one critical section, the
+	// mirror of Save's rename-plus-insert. Copying the header under the read
+	// lock and opening the blob after releasing it would let a Save that won
+	// the write lock in between rename a new blob into place, and this reader
+	// would return one writer's header with another writer's payload — the
+	// exact pairing Save is at pains to make atomic.
+	//
+	// Holding the read lock across the openat is the same order of work Save
+	// already holds the write lock across for its renameat. Nothing is held
+	// for the duration of the READ: once the fd exists it refers to that
+	// inode, so a later rename over the name cannot change what this reader
+	// sees, and the lock is gone before a single byte is delivered.
 	var header spi.MessageHeader
 	var metaData spi.MessageMetaData
-	ok := func() bool {
+	var file *os.File
+	if err := func() error {
 		f.msgMu.RLock()
 		defer f.msgMu.RUnlock()
 
 		entry, found := f.msgData[s.tenant][id]
-		if found {
-			header = entry.header
-			metaData = copyMessageMetaData(entry.metaData)
+		if !found {
+			// Answered from the map alone: an id that was never saved does
+			// not reach the filesystem.
+			return spi.ErrNotFound
 		}
-		return found
-	}()
+		header = entry.header
+		metaData = copyMessageMetaData(entry.metaData)
 
-	if !ok {
-		return spi.MessageHeader{}, spi.MessageMetaData{}, nil, spi.ErrNotFound
-	}
-
-	file, err := f.blobRoot.Open(blobName(s.tenant, id))
-	if err != nil {
-		return spi.MessageHeader{}, spi.MessageMetaData{}, nil, fmt.Errorf("failed to open blob file: %w", err)
+		var openErr error
+		file, openErr = f.blobRoot.Open(blobName(s.tenant, id))
+		if openErr != nil {
+			return fmt.Errorf("failed to open blob file: %w", openErr)
+		}
+		return nil
+	}(); err != nil {
+		return spi.MessageHeader{}, spi.MessageMetaData{}, nil, err
 	}
 
 	return header, metaData, &idempotentCloser{rc: file}, nil

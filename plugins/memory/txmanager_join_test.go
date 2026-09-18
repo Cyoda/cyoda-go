@@ -166,21 +166,24 @@ func TestJoinConcurrentOperationAndCommit(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		// Acquire read lock to simulate an in-flight operation.
-		tx.OpMu.RLock()
-		close(operationStarted)
-		// Hold the lock for 100ms to simulate work.
-		time.Sleep(100 * time.Millisecond)
-		// Write entity while holding the lock.
-		tx.Buffer["e-concurrent"] = &spi.Entity{
-			Meta: spi.EntityMeta{
-				ID:         "e-concurrent",
-				TenantID:   "tenant-A",
-				ChangeType: "CREATED",
-			},
-			Data: []byte(`{"concurrent":true}`),
-		}
-		tx.WriteSet["e-concurrent"] = true
-		tx.OpMu.RUnlock()
+		func() {
+			tx.OpMu.RLock()
+			defer tx.OpMu.RUnlock()
+
+			close(operationStarted)
+			// Hold the lock for 100ms to simulate work.
+			time.Sleep(100 * time.Millisecond)
+			// Write entity while holding the lock.
+			tx.Buffer["e-concurrent"] = &spi.Entity{
+				Meta: spi.EntityMeta{
+					ID:         "e-concurrent",
+					TenantID:   "tenant-A",
+					ChangeType: "CREATED",
+				},
+				Data: []byte(`{"concurrent":true}`),
+			}
+			tx.WriteSet["e-concurrent"] = true
+		}()
 		close(operationDone)
 	}()
 

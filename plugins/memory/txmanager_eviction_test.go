@@ -37,18 +37,24 @@ func TestSubmitTimeEviction(t *testing.T) {
 	}
 
 	// Verify all 3 have submit times.
-	txMgr.mu.Lock()
-	for i, txID := range txIDs {
-		if _, ok := txMgr.submitTimes[txID]; !ok {
-			t.Fatalf("expected submit time for tx %d (%s)", i, txID)
-		}
-	}
+	// The t.Fatalf inside is why this is an IIFE rather than a bare
+	// Lock/Unlock pair: Fatalf calls runtime.Goexit, which would walk past a
+	// bare Unlock and leave the manager mutex held for the rest of the run.
+	func() {
+		txMgr.mu.Lock()
+		defer txMgr.mu.Unlock()
 
-	// Artificially age the first two by setting their timestamps to 2 hours ago.
-	twoHoursAgo := time.Now().Add(-2 * time.Hour)
-	txMgr.submitTimes[txIDs[0]] = submitTimeEntry{submitTime: twoHoursAgo, tenantID: "tenant-A"}
-	txMgr.submitTimes[txIDs[1]] = submitTimeEntry{submitTime: twoHoursAgo, tenantID: "tenant-A"}
-	txMgr.mu.Unlock()
+		for i, txID := range txIDs {
+			if _, ok := txMgr.submitTimes[txID]; !ok {
+				t.Fatalf("expected submit time for tx %d (%s)", i, txID)
+			}
+		}
+
+		// Artificially age the first two by setting their timestamps to 2 hours ago.
+		twoHoursAgo := time.Now().Add(-2 * time.Hour)
+		txMgr.submitTimes[txIDs[0]] = submitTimeEntry{submitTime: twoHoursAgo, tenantID: "tenant-A"}
+		txMgr.submitTimes[txIDs[1]] = submitTimeEntry{submitTime: twoHoursAgo, tenantID: "tenant-A"}
+	}()
 
 	// Commit a 4th transaction (triggers eviction).
 	txID4, _, err := txMgr.Begin(ctx)
