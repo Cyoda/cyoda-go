@@ -676,3 +676,74 @@ func TestHandler_UnknownCalloutKind(t *testing.T) {
 		t.Errorf("expected body to mention unknown callout kind, got %q", rec.Body.String())
 	}
 }
+
+// TestHandleCallout_RejectsEntityMetaTenantMismatch closes a cross-tenant gap
+// that has nothing to do with spelling. A dispatch request carries two
+// tenants: TenantID, which becomes the UserContext the callout runs as, and
+// EntityMeta.TenantID, which is handed to the local dispatcher as the entity's
+// own. Nothing compared them, so a peer could run a callout as tenant B over
+// tenant A's entity.
+func TestHandleCallout_RejectsEntityMetaTenantMismatch(t *testing.T) {
+	auth := newAEAD(t)
+	fake := &fakeLocalDispatcher{
+		processorResult: &spi.Entity{Meta: spi.EntityMeta{ID: "entity-1"}, Data: []byte(`{}`)},
+	}
+	handler := NewDispatchHandler(fake, auth)
+	mux := http.NewServeMux()
+	handler.Register(mux)
+
+	req := DispatchCalloutRequest{
+		Kind:   "processor",
+		Entity: json.RawMessage(`{"foo":"bar"}`),
+		EntityMeta: spi.EntityMeta{
+			ID:       "entity-1",
+			TenantID: "tenant-b", // disagrees with TenantID
+		},
+		TenantID: "tenant-a",
+		UserID:   "user-1",
+		Roles:    []string{"ROLE_USER"},
+	}
+	plain, _ := json.Marshal(req)
+	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httpReq)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "tenant-a") || strings.Contains(rec.Body.String(), "tenant-b") {
+		t.Errorf("response echoes a tenant id: %s", rec.Body.String())
+	}
+}
+
+// TestHandleCallout_AcceptsAbsentEntityMetaTenant keeps the check from
+// breaking the requests that carry no entity at all — criteria and function
+// callouts leave EntityMeta zero-valued.
+func TestHandleCallout_AcceptsAbsentEntityMetaTenant(t *testing.T) {
+	auth := newAEAD(t)
+	fake := &fakeLocalDispatcher{
+		processorResult: &spi.Entity{Meta: spi.EntityMeta{ID: "entity-1"}, Data: []byte(`{}`)},
+	}
+	handler := NewDispatchHandler(fake, auth)
+	mux := http.NewServeMux()
+	handler.Register(mux)
+
+	req := DispatchCalloutRequest{
+		Kind:       "processor",
+		Entity:     json.RawMessage(`{"foo":"bar"}`),
+		EntityMeta: spi.EntityMeta{ID: "entity-1"}, // TenantID empty
+		TenantID:   "tenant-a",
+		UserID:     "user-1",
+		Roles:      []string{"ROLE_USER"},
+	}
+	plain, _ := json.Marshal(req)
+	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httpReq)
+
+	if rec.Code == http.StatusBadRequest {
+		t.Fatalf("an absent EntityMeta tenant was rejected: %s", rec.Body.String())
+	}
+}
