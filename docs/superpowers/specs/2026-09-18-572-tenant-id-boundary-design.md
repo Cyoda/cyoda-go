@@ -231,6 +231,8 @@ No new error code, so no `errors/<CODE>.md` and no `TestErrCode_Parity` churn.
 | `POST /oauth/token` | — | unchanged | minted tokens are validated at door 1 on use |
 | `POST /internal/dispatch/callout` | `EntityMeta.TenantID != TenantID` | 400 | plain text, as the sibling malformed-body path |
 | process startup | `CYODA_BOOTSTRAP_TENANT_ID` fails the grammar, with a bootstrap client configured | exit non-zero | — |
+| `POST /oauth/token` | key lookup or signing fails | 500 | `server_error`, now `error_description: server_error [ticket: <uuid>]` |
+| OIDC management endpoints | caller's tenant is not a UUID in any accepted spelling | 400 | existing `OIDC_INVALID_TENANT` |
 
 `api/openapi.yaml` already declares 401 on every authenticated path, so the
 schema is unchanged.
@@ -250,6 +252,9 @@ schema is unchanged.
 | Concurrent `Save`: same tenant, and same id | yes (isolated) | — | never | — |
 | Temp-file loop: exhaustion errors, cleanup on every failure path | yes | — | — | — |
 | Dispatch `EntityMeta` tenant mismatch → 400 | yes | — | multinode fixture | — |
+| An uppercase/braced/urn-spelled UUID tenant can read, list, update and delete the provider it registered | yes | yes | — | — |
+| A non-UUID tenant gets `400 OIDC_INVALID_TENANT` from every OIDC endpoint, not an empty 200 | yes | yes | — | — |
+| A token-endpoint 500 carries a ticket, and the same ticket appears in the log | yes | yes | — | — |
 
 **Parity waiver, one line:** the hostile-claim 401 is rejected at the
 authenticator and never reaches a storage backend, so a cross-backend scenario
@@ -277,6 +282,67 @@ payload, double-`Close`, and tenant isolation against every backend.
   `README.md`, `docs/ARCHITECTURE.md:1588` — the accepted set for
   `CYODA_BOOTSTRAP_TENANT_ID`.
 
+## Two adjacent defects fixed in the same change
+
+Both were found while designing this and are small enough that splitting them
+into their own PRs would cost more review than it saves.
+
+### The OIDC provider store keys by spelling (#587)
+
+`KVOidcProviderStore.Register` writes the provider blob and its URI index under
+the **canonical lowercase** UUID — `spi.TenantID(p.OwnerLegalEntityID.String())`
+at `internal/auth/oidc/kv_store.go:43` — while `Get` (`:58`), `GetByURI`
+(`:77`), `Delete` (`:105`), `ListByTenant` (`:121`) and `RaceValidateIndex` all
+key off the caller's raw tenant string. `uuid.Parse`
+(`internal/domain/account/oidc_adapter.go:155`) accepts uppercase, braced and
+`urn:uuid:` forms that `String()` normalises away, so a tenant whose
+`caas_org_id` is spelled any of those ways registers a provider it can then
+never list, read, update or delete.
+
+This is engine code on `spi.KeyValueStore` (`app/app.go:317`), so it behaves the
+same on every backend — it is not a memory-plugin defect.
+
+Authentication is unaffected: the registry's provider map and kid index are both
+populated from the stored provider's own `OwnerLegalEntityID`
+(`internal/auth/oidc/registry.go:188`), so token validation already uses the
+canonical form. Only the management API strands. Nor does it leak across
+tenants — the stale-index defence at `kv_store.go:134` re-checks
+`OwnerLegalEntityID` on the way out. The record is simply unreachable by its
+owner.
+
+The grammar in this change does not fix it, because the grammar admits uppercase
+deliberately (`spi.SystemTenantID` is `SYSTEM`; Cloud's local-issuer fallback is
+`CYODA`).
+
+**Fix.** `internal/domain/account/oidc_adapter.go` is the sole entry point to the
+OIDC service — `internal/domain/account/handler.go:107-155` routes all seven
+operations through it — and calls `tenantFromCtx` at `:148`, `:238`, `:311`,
+`:345` and `:369`. A single helper canonicalises the caller's tenant to
+`uuid.UUID.String()` once and is used at all five, returning the existing
+`OIDC_INVALID_TENANT` (400) when the tenant is not a UUID at all. `Register`
+already parses at `:155`; it stops passing the raw form on as
+`RegisterInput.TenantID`.
+
+**Behaviour change to record.** A non-UUID tenant such as `default-tenant`
+currently receives an empty `200` from `GET /oauth/oidc/providers`, because its
+prefix scan matches nothing. It now receives `400 OIDC_INVALID_TENANT` — the
+same answer registration already gives it, and what that code's help topic
+already documents. Returning an empty list implied a registration that could
+never have succeeded.
+
+### The token endpoint's 500 carries no ticket (#588)
+
+Gate 3 requires every 5xx to carry a generic message plus a ticket UUID.
+`writeTokenError` (`internal/auth/token.go:272`) emits only the RFC 6749 §5.2
+pair, and the three `server_error` call sites (`token.go:78`, `:97`, `:211`,
+`:230`) log nothing correlatable.
+
+**Fix.** Mint a ticket, `slog.Error` it with the underlying error, and render
+`server_error [ticket: <uuid>]` into `error_description` — the same shape
+`internal/common/errors.go:296` already uses for `LevelInternal`. No OpenAPI
+change: `error_description` is a declared string
+(`api/openapi.yaml:9161`). The underlying error stays out of the response.
+
 ## Explicitly not in scope
 
 - **`"<tenant>:<kid>"` in `internal/auth/kv_trusted_store.go:97`.** Safe already,
@@ -295,9 +361,6 @@ payload, double-`Close`, and tenant isolation against every backend.
 - **CodeQL alert 92.** Re-checked after the rewrite. If the query still reports,
   it is dismissed as a false positive, never as unused — the memory backend
   ships in the binary and is what an unconfigured binary runs.
-- Three defects found during design, filed separately: Cloud does not validate
-  `caas_org_id` where it mints it; an uppercase-UUID tenant registers an OIDC
-  provider it can never read back (`internal/auth/oidc/kv_store.go:43` writes the
-  canonical lowercase form, `:58`/`:77`/`:105` read the caller's raw tenant); and
-  `writeTokenError` (`internal/auth/token.go:272`) returns no ticket UUID on a
-  500, which Gate 3 requires.
+- **Cloud's own validation of `caas_org_id`** — tracked as CP-3968. That ticket
+  also asks the one question the source cannot answer: whether any live legal
+  entity already falls outside the grammar.
