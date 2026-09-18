@@ -2,10 +2,13 @@ package grpc
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"errors"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -13,6 +16,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
 )
 
 // mockAuthService is a test double for contract.AuthenticationService.
@@ -175,5 +179,75 @@ func TestInterceptor_StreamAuthFailure(t *testing.T) {
 	}
 	if strings.Contains(st.Message(), "expired token") {
 		t.Error("error message must not contain internal auth error details")
+	}
+}
+
+// TestInterceptor_UnaryRejectsTenantOutsideGrammar proves gRPC inherits door 1:
+// the interceptor delegates to the same AuthenticationService the HTTP
+// middleware uses, so a claim outside the tenant grammar is Unauthenticated
+// here too, with the same generic message.
+func TestInterceptor_UnaryRejectsTenantOutsideGrammar(t *testing.T) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	const kid = "grpc-tenant-test"
+	const issuer = "cyoda-grpc-test"
+
+	ks := auth.NewInMemoryKeyStore()
+	if err := ks.Save(&auth.KeyPair{
+		KID:        kid,
+		Audience:   "client",
+		Algorithm:  "RS256",
+		PublicKey:  &priv.PublicKey,
+		PrivateKey: priv,
+		Active:     true,
+		ValidFrom:  time.Now().Add(-time.Minute),
+	}, auth.RotateOptions{}); err != nil {
+		t.Fatalf("save key: %v", err)
+	}
+
+	validator := auth.NewValidatorFromSource(auth.NewLocalKeySource(ks), issuer)
+	authSvc := auth.NewDelegatingAuthenticator(validator)
+	interceptor := UnaryAuthInterceptor(authSvc)
+
+	now := time.Now()
+	tok, err := auth.Sign(map[string]any{
+		"iss":          issuer,
+		"sub":          "user-1",
+		"caas_user_id": "user-1",
+		"caas_org_id":  "../victim",
+		"iat":          float64(now.Unix()),
+		"exp":          float64(now.Add(time.Hour).Unix()),
+	}, priv, kid)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	ctx := metadata.NewIncomingContext(context.Background(),
+		metadata.MD{"authorization": []string{"Bearer " + tok}})
+
+	handler := func(_ context.Context, _ any) (any, error) {
+		t.Fatal("handler must not be called when the tenant claim is rejected")
+		return nil, nil
+	}
+
+	_, err = interceptor(ctx, "request",
+		&googlegrpc.UnaryServerInfo{FullMethod: "/test.Service/Method"}, handler)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected a gRPC status error, got %v", err)
+	}
+	if st.Code() != codes.Unauthenticated {
+		t.Errorf("code = %v, want Unauthenticated", st.Code())
+	}
+	if st.Message() != "authentication failed" {
+		t.Errorf("message = %q, want the generic %q", st.Message(), "authentication failed")
+	}
+	if strings.Contains(st.Message(), "victim") {
+		t.Error("gRPC status echoes the rejected tenant")
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 // JWKSValidator validates JWT tokens against a KeySource. The transport —
@@ -113,6 +114,18 @@ func (v *JWKSValidator) buildUserContext(claims map[string]any) (*spi.UserContex
 	orgID, _ := claims["caas_org_id"].(string)
 	if orgID == "" {
 		return nil, fmt.Errorf("missing caas_org_id claim")
+	}
+
+	// Door 1. The caas_org_id claim is one of only two places a tenant id
+	// enters cyoda-go from outside it (the other is CYODA_BOOTSTRAP_TENANT_ID),
+	// and it covers every HTTP and gRPC request — the gRPC interceptor
+	// delegates to this same authenticator. Validating here is what lets every
+	// downstream consumer treat the tenant as well-formed without rechecking.
+	//
+	// The error deliberately carries no part of the claim: it reaches slog via
+	// logAuthFailure's detail field, and the claim is attacker-chosen.
+	if err := common.ValidateTenantID(spi.TenantID(orgID)); err != nil {
+		return nil, fmt.Errorf("caas_org_id claim rejected: %w", err)
 	}
 
 	// Kind branches on claim-KEY presence, not on how many roles it carries:
