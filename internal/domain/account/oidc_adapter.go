@@ -69,6 +69,38 @@ func NewOidcAdapter(service *oidc.Service, defaultRolesClaim string, requireHTTP
 	return &OidcAdapter{adapter: newOidcAdapter(service, defaultRolesClaim, requireHTTPS, allowPrivate)}
 }
 
+// oidcTenantFromCtx returns the caller's tenant in the canonical UUID spelling
+// the provider store keys by, plus the parsed UUID for the owner field.
+//
+// The store keys a provider's blob and its URI index by
+// OwnerLegalEntityID.String(), which is always canonical lowercase, and reads
+// them back under whatever the caller's tenant happens to say. uuid.Parse
+// accepts spellings String() normalises away — uppercase, braced, and
+// urn:uuid: prefixed — so a caller whose caas_org_id is spelled any other way
+// would address a different key on every read, update and delete than the one
+// registration wrote. Canonicalising here, at the single entry point to the
+// OIDC service, is what makes every operation address the same key.
+//
+// A tenant that is not UUID-shaped at all has no key to address: the data
+// model types OwnerLegalEntityID as uuid.UUID (matching cyoda-cloud's
+// JWKOIDCEntity.ownerLegalEntityId), and coercing such a tenant to uuid.Nil
+// would collide in storage across every non-UUID tenant and produce a
+// synthetic "nil tenant" identity at token-validation time. It is rejected.
+//
+// On failure the response has already been written and ok is false.
+func oidcTenantFromCtx(w http.ResponseWriter, r *http.Request) (spi.TenantID, uuid.UUID, bool) {
+	owner, err := uuid.Parse(string(tenantFromCtx(r)))
+	if err != nil {
+		common.WriteError(w, r, common.Operational(
+			http.StatusBadRequest,
+			common.ErrCodeOidcInvalidTenant,
+			"oidc provider operations require a uuid-shaped tenant identifier; bootstrap deployments using the literal 'default-tenant' string must migrate to real tenant uuids",
+		))
+		return "", uuid.Nil, false
+	}
+	return spi.TenantID(owner.String()), owner, true
+}
+
 // RegisterOidcProvider implements POST /oauth/oidc/providers. ROLE_ADMIN required.
 func (a *oidcAdapter) RegisterOidcProvider(w http.ResponseWriter, r *http.Request) {
 	if !auth.RequireAdmin(w, r) {
@@ -145,20 +177,8 @@ func (a *oidcAdapter) RegisterOidcProvider(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	tenantID := tenantFromCtx(r)
-
-	// OwnerLegalEntityID: the data model types this field as uuid.UUID (matching
-	// cyoda-cloud's JWKOIDCEntity.ownerLegalEntityId). Non-UUID tenant IDs (e.g.
-	// the bootstrap convenience string "default-tenant") must be rejected — silent
-	// coercion to uuid.Nil would collide in KV storage across all non-UUID tenants
-	// and produce a synthetic "nil tenant" identity at token-validation time.
-	ownerID, parseErr := uuid.Parse(string(tenantID))
-	if parseErr != nil {
-		common.WriteError(w, r, common.Operational(
-			http.StatusBadRequest,
-			common.ErrCodeOidcInvalidTenant,
-			"oidc provider registration requires a uuid-shaped tenant identifier; bootstrap deployments using the literal 'default-tenant' string must migrate to real tenant uuids",
-		))
+	tenantID, ownerID, ok := oidcTenantFromCtx(w, r)
+	if !ok {
 		return
 	}
 
@@ -198,13 +218,15 @@ func (a *oidcAdapter) RegisterOidcProvider(w http.ResponseWriter, r *http.Reques
 // ListOidcProviders implements GET /oauth/oidc/providers. D21: any authenticated
 // tenant member (not ROLE_ADMIN restricted).
 func (a *oidcAdapter) ListOidcProviders(w http.ResponseWriter, r *http.Request, params genapi.ListOidcProvidersParams) {
-	uc := spi.GetUserContext(r.Context())
-	if uc == nil {
+	if uc := spi.GetUserContext(r.Context()); uc == nil {
 		common.WriteError(w, r, common.Operational(http.StatusUnauthorized, common.ErrCodeUnauthorized, "not authenticated"))
 		return
 	}
 
-	tenantID := spi.TenantID(uc.Tenant.ID)
+	tenantID, _, ok := oidcTenantFromCtx(w, r)
+	if !ok {
+		return
+	}
 
 	activeOnly := params.ActiveOnly != nil && *params.ActiveOnly
 
@@ -234,8 +256,13 @@ func (a *oidcAdapter) UpdateOidcProvider(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
+	tenantID, _, ok := oidcTenantFromCtx(w, r)
+	if !ok {
+		return
+	}
+
 	in := oidc.UpdateInput{
-		TenantID:   tenantFromCtx(r),
+		TenantID:   tenantID,
 		ProviderID: id.String(),
 	}
 
@@ -308,7 +335,10 @@ func (a *oidcAdapter) InvalidateOidcProvider(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	tenantID := tenantFromCtx(r)
+	tenantID, _, ok := oidcTenantFromCtx(w, r)
+	if !ok {
+		return
+	}
 	if err := a.service.Invalidate(r.Context(), tenantID, id.String()); err != nil {
 		if errors.Is(err, oidc.ErrProviderNotFound) {
 			common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeOIDCProviderNotFound, "OIDC provider not found"))
@@ -341,8 +371,13 @@ func (a *oidcAdapter) ReactivateOidcProvider(w http.ResponseWriter, r *http.Requ
 		reactivateKeys = *req.ReactivateKeys
 	}
 
+	tenantID, _, ok := oidcTenantFromCtx(w, r)
+	if !ok {
+		return
+	}
+
 	in := oidc.ReactivateInput{
-		TenantID:       tenantFromCtx(r),
+		TenantID:       tenantID,
 		ProviderID:     id.String(),
 		ReactivateKeys: reactivateKeys,
 	}
@@ -366,7 +401,10 @@ func (a *oidcAdapter) DeleteOidcProvider(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	tenantID := tenantFromCtx(r)
+	tenantID, _, ok := oidcTenantFromCtx(w, r)
+	if !ok {
+		return
+	}
 	if err := a.service.Delete(r.Context(), tenantID, id.String()); err != nil {
 		if errors.Is(err, oidc.ErrProviderNotFound) {
 			common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeOIDCProviderNotFound, "OIDC provider not found"))

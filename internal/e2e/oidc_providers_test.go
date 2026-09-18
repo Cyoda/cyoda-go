@@ -161,3 +161,137 @@ func TestOidcProviderLifecycle(t *testing.T) {
 		t.Fatalf("deleteOidcProvider: expected 200, got %d: %s", deleteResp.StatusCode, deleteRaw)
 	}
 }
+
+// oidcUppercaseTenantUUID is the same class of identifier as oidcTenantUUID —
+// a real UUID — spelled in upper case.  The tenant grammar admits it, so a
+// deployment whose caas_org_id is written this way is a deployment that
+// exists, not a hypothetical.
+const oidcUppercaseTenantUUID = "E2E00000-0000-0000-0000-000000000002"
+
+// TestOidcProviderLifecycle_UppercaseUUIDTenant drives the full provider
+// lifecycle as a tenant whose UUID is spelled in upper case.
+//
+// The store keys a provider by OwnerLegalEntityID.String(), which is always
+// canonical lowercase, and used to read it back under the caller's raw tenant
+// string.  For this tenant the two differed: registration wrote one key and
+// every later operation addressed another, so the provider was unreachable the
+// moment it was created.  Each step below asserts a 2xx, and the list steps
+// assert the provider is actually there and actually gone.
+func TestOidcProviderLifecycle_UppercaseUUIDTenant(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+
+	clientID, clientSecret := createM2MClient(t, oidcUppercaseTenantUUID, "oidc-upper-user",
+		[]string{"ROLE_ADMIN", "ROLE_M2M"})
+
+	do := func(t *testing.T, method, path string, body []byte) (int, []byte) {
+		t.Helper()
+		resp := adminRequestAs(t, clientID, clientSecret, method, path, body)
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, raw
+	}
+
+	// listIDs returns the provider ids this tenant can see.
+	listIDs := func(t *testing.T) []string {
+		t.Helper()
+		status, raw := do(t, http.MethodGet, "/oauth/oidc/providers", nil)
+		if status != http.StatusOK {
+			t.Fatalf("listOidcProviders: expected 200, got %d: %s", status, raw)
+		}
+		var listed []struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(raw, &listed); err != nil {
+			t.Fatalf("listOidcProviders: expected JSON array; parse error: %v; body: %s", err, raw)
+		}
+		ids := make([]string, 0, len(listed))
+		for _, p := range listed {
+			ids = append(ids, p.ID)
+		}
+		return ids
+	}
+
+	wellKnown := fmt.Sprintf("http://oidc-e2e-upper-%d.local/.well-known/openid-configuration",
+		time.Now().UnixNano())
+
+	status, raw := do(t, http.MethodPost, "/oauth/oidc/providers",
+		mustJSON(t, map[string]any{"wellKnownConfigUri": wellKnown}))
+	if status != http.StatusOK {
+		t.Fatalf("registerOidcProvider: expected 200, got %d: %s", status, raw)
+	}
+	var registered struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &registered); err != nil {
+		t.Fatalf("registerOidcProvider: decode response: %v; body: %s", err, raw)
+	}
+	if registered.ID == "" {
+		t.Fatal("registerOidcProvider: expected non-empty id in response")
+	}
+	providerID := registered.ID
+
+	if !containsString(listIDs(t), providerID) {
+		t.Fatalf("listOidcProviders: provider %s is missing — it was registered under a key this tenant cannot address", providerID)
+	}
+
+	if status, raw := do(t, http.MethodPatch, "/oauth/oidc/providers/"+providerID,
+		mustJSON(t, map[string]any{"issuers": []string{"https://issuer.oidc-e2e-upper.local"}})); status != http.StatusOK {
+		t.Fatalf("updateOidcProvider: expected 200, got %d: %s", status, raw)
+	}
+	if status, raw := do(t, http.MethodPost, "/oauth/oidc/providers/"+providerID+"/invalidate", nil); status != http.StatusOK {
+		t.Fatalf("invalidateOidcProvider: expected 200, got %d: %s", status, raw)
+	}
+	if status, raw := do(t, http.MethodPost, "/oauth/oidc/providers/"+providerID+"/reactivate", nil); status != http.StatusOK {
+		t.Fatalf("reactivateOidcProvider: expected 200, got %d: %s", status, raw)
+	}
+	if status, raw := do(t, http.MethodDelete, "/oauth/oidc/providers/"+providerID, nil); status != http.StatusOK {
+		t.Fatalf("deleteOidcProvider: expected 200, got %d: %s", status, raw)
+	}
+
+	if containsString(listIDs(t), providerID) {
+		t.Fatalf("listOidcProviders: provider %s survived its own delete", providerID)
+	}
+}
+
+// TestOidc_NonUUIDTenant_RejectedOnEveryOperation pins the behaviour change
+// that ships with the keying fix.
+//
+// A non-UUID tenant — here the bootstrap "test-tenant" behind
+// testclient/testsecret — used to get an empty 200 from the list endpoint,
+// because its prefix scan matched nothing, and a 404 from the id-addressed
+// ops.  Both implied a registration that could never have succeeded:
+// registration has always answered such a tenant with 400 OIDC_INVALID_TENANT.
+// Every provider operation now gives it that same answer.
+//
+// reloadOidcProviders takes no tenant and is deliberately absent from this
+// table; registerOidcProvider is covered by
+// TestOIDC_Register_InvalidTenant_ProblemDetail.
+func TestOidc_NonUUIDTenant_RejectedOnEveryOperation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+
+	const someProvider = "/oauth/oidc/providers/00000000-0000-0000-0000-0000000000fe"
+
+	for _, op := range []struct {
+		name   string
+		method string
+		path   string
+		body   []byte
+	}{
+		{"listOidcProviders", http.MethodGet, "/oauth/oidc/providers", nil},
+		{"updateOidcProvider", http.MethodPatch, someProvider, []byte(`{}`)},
+		{"invalidateOidcProvider", http.MethodPost, someProvider + "/invalidate", nil},
+		{"reactivateOidcProvider", http.MethodPost, someProvider + "/reactivate", nil},
+		{"deleteOidcProvider", http.MethodDelete, someProvider, nil},
+	} {
+		t.Run(op.name, func(t *testing.T) {
+			// testclient/testsecret belong to the bootstrap tenant "test-tenant",
+			// which is not UUID-shaped.
+			resp := adminRequestAs(t, "testclient", "testsecret", op.method, op.path, op.body)
+			assertProblemJSON(t, resp, http.StatusBadRequest, "OIDC_INVALID_TENANT")
+		})
+	}
+}

@@ -844,3 +844,185 @@ func openapi_types_UUID(t *testing.T, s string) openapi_types.UUID {
 	}
 	return u
 }
+
+// ---------- Tenant identity, not tenant spelling ----------
+
+// withOidcAdminCtxForTenant is withOidcTenantAdminCtx with the tenant under the
+// caller's control. The hardcoded helper covers every other test in this file;
+// varying the tenant's spelling is the one thing it cannot do.
+func withOidcAdminCtxForTenant(req *http.Request, tenant string) *http.Request {
+	return req.WithContext(spi.WithUserContext(req.Context(), &spi.UserContext{
+		UserID:   "admin-user",
+		UserName: "Admin User",
+		Tenant:   spi.Tenant{ID: spi.TenantID(tenant), Name: tenant},
+		Roles:    []string{"ROLE_ADMIN"},
+	}))
+}
+
+// registerProviderAs registers uri as tenant and returns the raw recorder so
+// the caller can assert on a non-200 as well.
+func registerProviderAs(t *testing.T, h *Handler, tenant, uri string) *httptest.ResponseRecorder {
+	t.Helper()
+	body := rawBody(`{"wellKnownConfigUri":"` + uri + `"}`)
+	req := withOidcAdminCtxForTenant(
+		httptest.NewRequest(http.MethodPost, "/oauth/oidc/providers", body), tenant)
+	rr := httptest.NewRecorder()
+	h.RegisterOidcProvider(rr, req)
+	return rr
+}
+
+// listProvidersAs lists as tenant and returns the status plus the decoded body
+// (nil on a non-200).
+func listProvidersAs(t *testing.T, h *Handler, tenant string) (int, []genapi.OidcProviderResponseDto) {
+	t.Helper()
+	req := withOidcAdminCtxForTenant(
+		httptest.NewRequest(http.MethodGet, "/oauth/oidc/providers", nil), tenant)
+	rr := httptest.NewRecorder()
+	h.ListOidcProviders(rr, req, genapi.ListOidcProvidersParams{})
+	if rr.Code != http.StatusOK {
+		return rr.Code, nil
+	}
+	var out []genapi.OidcProviderResponseDto
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("list decode: %v; body=%s", err, rr.Body.String())
+	}
+	return rr.Code, out
+}
+
+// TestOidcAdapter_NonCanonicalUUIDTenantRoundTrips is the regression for the
+// provider store keying by spelling rather than by identity.
+//
+// Register keyed the provider blob and the URI index by
+// OwnerLegalEntityID.String() — always canonical lowercase — while Get,
+// GetByURI, Delete, ListByTenant and RaceValidateIndex keyed by the caller's
+// raw tenant. uuid.Parse accepts uppercase, braced and urn:uuid: spellings
+// that String() normalises away, so a tenant spelled any of those ways
+// registered a provider it could then never list, update, invalidate,
+// reactivate or delete.
+//
+// Of the three non-canonical spellings only the uppercase one can reach the
+// adapter over HTTP today — common.ValidateTenantID admits it and rejects the
+// braced and urn: forms at the auth boundary. They are exercised anyway
+// because the adapter's contract is with uuid.Parse, not with the grammar in
+// front of it: the two must not be allowed to drift apart silently.
+func TestOidcAdapter_NonCanonicalUUIDTenantRoundTrips(t *testing.T) {
+	const canonical = "1a2b3c4d-5e6f-4a8b-9c0d-1e2f3a4b5c6d"
+	const uri = "https://idp.example/.well-known/openid-configuration"
+
+	for name, tenant := range map[string]string{
+		"canonical": canonical,
+		"uppercase": strings.ToUpper(canonical),
+		"braced":    "{" + canonical + "}",
+		"urn":       "urn:uuid:" + canonical,
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newOidcAdapterFixture(t)
+
+			rr := registerProviderAs(t, h, tenant, uri)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("register: status %d, body=%s", rr.Code, rr.Body.String())
+			}
+			var created genapi.OidcProviderResponseDto
+			if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+				t.Fatalf("register decode: %v; body=%s", err, rr.Body.String())
+			}
+
+			// List must find what Register wrote.
+			code, listed := listProvidersAs(t, h, tenant)
+			if code != http.StatusOK {
+				t.Fatalf("list: status %d, want 200", code)
+			}
+			if len(listed) != 1 {
+				t.Fatalf("list returned %d providers, want 1 — the blob is stranded under a key this tenant cannot address", len(listed))
+			}
+			if listed[0].Id != created.Id {
+				t.Errorf("list returned provider %s, want %s", listed[0].Id, created.Id)
+			}
+
+			// Every id-addressed lifecycle op must reach the same blob.
+			updReq := withOidcAdminCtxForTenant(httptest.NewRequest(http.MethodPatch,
+				"/oauth/oidc/providers/"+created.Id.String(),
+				rawBody(`{"issuers":["https://idp.example"]}`)), tenant)
+			updRec := httptest.NewRecorder()
+			h.UpdateOidcProvider(updRec, updReq, created.Id)
+			if updRec.Code != http.StatusOK {
+				t.Fatalf("update: status %d, want 200, body=%s", updRec.Code, updRec.Body.String())
+			}
+
+			invReq := withOidcAdminCtxForTenant(httptest.NewRequest(http.MethodPost,
+				"/oauth/oidc/providers/"+created.Id.String()+"/invalidate", nil), tenant)
+			invRec := httptest.NewRecorder()
+			h.InvalidateOidcProvider(invRec, invReq, created.Id)
+			if invRec.Code != http.StatusOK {
+				t.Fatalf("invalidate: status %d, want 200, body=%s", invRec.Code, invRec.Body.String())
+			}
+
+			reReq := withOidcAdminCtxForTenant(httptest.NewRequest(http.MethodPost,
+				"/oauth/oidc/providers/"+created.Id.String()+"/reactivate", nil), tenant)
+			reRec := httptest.NewRecorder()
+			h.ReactivateOidcProvider(reRec, reReq, created.Id)
+			if reRec.Code != http.StatusOK {
+				t.Fatalf("reactivate: status %d, want 200, body=%s", reRec.Code, reRec.Body.String())
+			}
+
+			delReq := withOidcAdminCtxForTenant(httptest.NewRequest(http.MethodDelete,
+				"/oauth/oidc/providers/"+created.Id.String(), nil), tenant)
+			delRec := httptest.NewRecorder()
+			h.DeleteOidcProvider(delRec, delReq, created.Id)
+			if delRec.Code != http.StatusOK {
+				t.Fatalf("delete: status %d, want 200, body=%s", delRec.Code, delRec.Body.String())
+			}
+
+			code, remaining := listProvidersAs(t, h, tenant)
+			if code != http.StatusOK || len(remaining) != 0 {
+				t.Fatalf("list after delete: status %d with %d providers, want 200 with 0", code, len(remaining))
+			}
+		})
+	}
+}
+
+// TestOidcAdapter_NonUUIDTenantIsRejectedEverywhere records the behaviour
+// change that ships with the keying fix. A non-UUID tenant such as
+// default-tenant used to receive an empty 200 from the list endpoint, because
+// its prefix scan matched nothing — a success implying a registration that
+// could never have happened. Every OIDC operation now gives it the same 400
+// registration always gave it.
+func TestOidcAdapter_NonUUIDTenantIsRejectedEverywhere(t *testing.T) {
+	const tenant = "default-tenant"
+	id := uuid.New()
+
+	for name, call := range map[string]func(*Handler, *httptest.ResponseRecorder, *http.Request){
+		"list": func(h *Handler, rr *httptest.ResponseRecorder, req *http.Request) {
+			h.ListOidcProviders(rr, req, genapi.ListOidcProvidersParams{})
+		},
+		"update": func(h *Handler, rr *httptest.ResponseRecorder, req *http.Request) {
+			h.UpdateOidcProvider(rr, req, id)
+		},
+		"invalidate": func(h *Handler, rr *httptest.ResponseRecorder, req *http.Request) {
+			h.InvalidateOidcProvider(rr, req, id)
+		},
+		"reactivate": func(h *Handler, rr *httptest.ResponseRecorder, req *http.Request) {
+			h.ReactivateOidcProvider(rr, req, id)
+		},
+		"delete": func(h *Handler, rr *httptest.ResponseRecorder, req *http.Request) {
+			h.DeleteOidcProvider(rr, req, id)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newOidcAdapterFixture(t)
+			// A body every op will accept; the ops that take none ignore it.
+			req := withOidcAdminCtxForTenant(
+				httptest.NewRequest(http.MethodPost, "/oauth/oidc/providers", rawBody(`{}`)), tenant)
+			rr := httptest.NewRecorder()
+
+			call(h, rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status: got %d want 400 OIDC_INVALID_TENANT, body=%s", rr.Code, rr.Body.String())
+			}
+			if code := decodeErrCode(t, rr.Body.Bytes()); code != common.ErrCodeOidcInvalidTenant {
+				t.Errorf("errorCode: got %q want %q", code, common.ErrCodeOidcInvalidTenant)
+			}
+		})
+	}
+}
