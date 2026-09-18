@@ -42,7 +42,34 @@ func (h *Handler) HandleGetTransitions(w http.ResponseWriter, r *http.Request) {
 	if txIDStr != "" {
 		submitTime, err := h.txMgr.GetSubmitTime(r.Context(), txIDStr)
 		if err != nil {
-			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error()))
+			// "No such transaction" and "that transaction belongs to another
+			// tenant" must be one indistinguishable answer. They are different
+			// conditions internally, and reporting the difference tells a
+			// caller that someone else's transaction exists and committed —
+			// an existence oracle across the tenant boundary. The text is
+			// fixed and omits the submitted txID: echoing it back would make
+			// the two responses differ again, byte for byte, for no gain (the
+			// caller supplied it). Pinned by
+			// internal/e2e/transitions_crosstenant_txid_test.go.
+			if errors.Is(err, spi.ErrTxNotFound) || errors.Is(err, spi.ErrTxTenantMismatch) {
+				common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+					"no such transaction"))
+				return
+			}
+			// A transaction that exists and is still in flight is a
+			// caller-visible condition, not a failure.
+			if errors.Is(err, spi.ErrTxNotCommitted) {
+				common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+					"transaction has not committed yet"))
+				return
+			}
+			// Anything else is a storage failure, not caller error. Rendering
+			// err.Error() here put raw pgconn text — SQLSTATE and server
+			// message — into a 400 body, breaching output sanitisation and
+			// reporting an outage as the caller's fault. common.Internal maps
+			// a storage outage to the retryable 503 this endpoint already
+			// declares, and anything else to 500 with a ticket.
+			common.WriteError(w, r, common.Internal("failed to resolve transaction submit time", err))
 			return
 		}
 		pointInTime, usePointInTime = submitTime, true

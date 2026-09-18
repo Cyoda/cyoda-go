@@ -123,7 +123,19 @@ test-driven-development → verification-before-completion → requesting-code-r
 receiving-code-review
 
 All workflow skills are in the `superpowers:` namespace.
-Security review uses `antigravity-bundle-security-developer:cc-skill-security-review`.
+Security review uses `antigravity-bundle-security-engineer:security-auditor` —
+an audit method (trace data flow across trust boundaries, find privileged logic
+that bypasses database-level protection, hunt IDOR on global resources), which
+is what this codebase needs. Not
+`antigravity-bundle-security-developer:cc-skill-security-review`: that is a
+generic Next.js / Supabase / Solana checklist — CSRF tokens, file uploads, `localStorage`, wallet signatures — and
+has almost nothing to say about a Go storage engine.
+
+The security review is a gate, not a nicety, and the `security` CI job is a
+scanner rather than a substitute for it. Run it against Gate 3's rules: no
+credentials logged at any level, tenant isolation verified on **every** data
+path, input validated at boundaries, 4xx carrying domain detail while 5xx carry
+a generic message and a ticket UUID with no internals.
 
 Do not skip steps. Brainstorming prevents building the wrong thing.
 TDD prevents shipping untested code. Verification prevents false "done" claims.

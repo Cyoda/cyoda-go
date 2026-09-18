@@ -36,7 +36,49 @@ func TestRLS_PoliciesExist(t *testing.T) {
 
 	ctx := context.Background()
 
-	tables := []string{"entities", "entity_versions", "sm_audit_events", "models", "kv_store", "messages"}
+	// Driven from the schema, not a hardcoded list: a hardcoded one silently
+	// stops covering every table added after it was written. It missed
+	// unique_claims, model_schema_extensions and submit_times.
+	rows, err := pool.Query(ctx,
+		`SELECT table_name FROM information_schema.columns
+		 WHERE table_schema = 'public' AND column_name = 'tenant_id'
+		 ORDER BY table_name`)
+	if err != nil {
+		t.Fatalf("failed to enumerate tenant-scoped tables: %v", err)
+	}
+	// One table is deliberately not enrolled, and it is not an oversight to
+	// close: ScanDue is a trusted cross-tenant system read, so scoping
+	// scheduled_tasks to a single tenant would break the scheduler the moment
+	// enforcement is strengthened (FORCE + a non-owner role) — which is the
+	// F7 decision, pinned from the opposite side by
+	// TestPostgres_ScheduledTasksTable_NotRLSEnrolled. The two tests must
+	// agree; adding an entry here without revisiting that one will simply
+	// swap which of them fails.
+	exempt := map[string]string{
+		"scheduled_tasks": "ScanDue is a trusted cross-tenant system read (F7)",
+	}
+
+	var tables []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan table name: %v", err)
+		}
+		if reason, ok := exempt[name]; ok {
+			t.Logf("skipping %s: %s", name, reason)
+			continue
+		}
+		tables = append(tables, name)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("enumerate tenant-scoped tables: %v", err)
+	}
+	if len(tables) < 6 {
+		t.Fatalf("found only %d tenant-scoped tables (%v) — the schema query is wrong, "+
+			"not the schema", len(tables), tables)
+	}
+
 	for _, table := range tables {
 		// Verify RLS is enabled (policies are defined)
 		var rlsEnabled bool
@@ -51,8 +93,15 @@ func TestRLS_PoliciesExist(t *testing.T) {
 
 		// Verify a tenant_isolation policy exists
 		var policyCount int
+		// Both naming shapes are in use: tenant_isolation_<table> in 000001 and
+		// 000003, <table>_tenant_isolation in model_schema_extensions and
+		// submit_times. Matching only the prefix silently passed tables whose
+		// policy used the suffix form.
 		err = pool.QueryRow(ctx,
-			"SELECT count(*) FROM pg_policies WHERE tablename = $1 AND policyname LIKE 'tenant_isolation%'", table).Scan(&policyCount)
+			`SELECT count(*) FROM pg_policies
+			 WHERE tablename = $1
+			   AND (policyname LIKE 'tenant_isolation%' OR policyname LIKE '%\_tenant\_isolation')`,
+			table).Scan(&policyCount)
 		if err != nil {
 			t.Fatalf("failed to check policies for %s: %v", table, err)
 		}

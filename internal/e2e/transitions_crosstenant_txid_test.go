@@ -73,4 +73,16 @@ func TestTransitions_CrossTenantTransactionID_Rejected(t *testing.T) {
 	if statusBogus != http.StatusBadRequest {
 		t.Errorf("tenant B transitions?transactionId=<bogus>: got %d, want 400; body: %s", statusBogus, bodyBogus)
 	}
+
+	// (3) The BODY must not distinguish them either. Matching status codes
+	// close only half the oracle: GetSubmitTime answers ErrTxTenantMismatch
+	// for a foreign transaction and ErrTxNotFound for one that exists
+	// nowhere, and the handler renders err.Error() verbatim into the detail —
+	// so tenant B can still read off whether tenant A's transaction exists
+	// and committed. The two responses must be byte-identical, which also
+	// means neither may echo the submitted txID back.
+	if bodyReal != bodyBogus {
+		t.Errorf("cross-tenant and nonexistent txID must be indistinguishable to the caller\n"+
+			" foreign txID: %s\n nonexistent : %s", bodyReal, bodyBogus)
+	}
 }

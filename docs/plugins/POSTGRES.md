@@ -227,9 +227,19 @@ CREATE POLICY tenant_isolation_entities ON entities
     USING (tenant_id = current_setting('app.current_tenant', true));
 ```
 
-This is defense-in-depth: even a tenant-scoping bug in application
-code cannot leak data, because PostgreSQL enforces the isolation at
-the row level.
+**These policies are inert in the posture cyoda-go supports today.** The
+application connects as the table owner, and RLS is `ENABLE`d but not
+`FORCE`d — an owner bypasses every policy. The live mechanism is the explicit
+`WHERE tenant_id = $1` predicate every statement carries; the policies are
+staged for a future hardening step, not a second line of defence you can rely
+on now. A tenant-scoping bug in application code **would** leak data.
+
+Making them load-bearing needs three things together, not just one: `FORCE ROW
+LEVEL SECURITY`, a non-owner role, and `app.current_tenant` set on the pool
+path for the whole plugin (a `pgxpool` `AfterConnect`/`BeforeAcquire` hook).
+The GUC is set with `set_config(..., true)`, which is transaction-local, so no
+pool-routed statement carries it today — under a non-owner role those reads
+would match no row and answer a confident, wrong "not found".
 
 **Schema (all tables):**
 

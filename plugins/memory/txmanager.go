@@ -918,7 +918,7 @@ func (m *TransactionManager) GetSubmitTime(ctx context.Context, txID string) (ti
 		if uc == nil || uc.Tenant.ID != tx.TenantID {
 			return time.Time{}, fmt.Errorf("GetSubmitTime: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
 		}
-		return time.Time{}, fmt.Errorf("transaction not yet committed: %s", txID)
+		return time.Time{}, fmt.Errorf("%w (txID=%s)", spi.ErrTxNotCommitted, txID)
 	}
 
 	if e, ok := m.submitTimes[txID]; ok {
