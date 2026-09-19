@@ -28,20 +28,8 @@ func TestApp_StopGRPC_OnlyDrainsOnce(t *testing.T) {
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- a.GRPCServer().Serve(lis) }()
 
-	// Wait until Serve has bound the listener so GracefulStop has a real
-	// running server to wind down.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		c, dialErr := net.DialTimeout("tcp", lis.Addr().String(), 200*time.Millisecond)
-		if dialErr == nil {
-			c.Close()
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("gRPC server did not start: %v", dialErr)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	// No wait for Serve: the drain is once-guarded whether it lands before or
+	// after Serve registers the listener, and Serve's error is not inspected.
 
 	// First drain — does the actual graceful-stop work.
 	a.StopGRPC()

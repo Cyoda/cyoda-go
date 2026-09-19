@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -117,6 +116,17 @@ func main() {
 	printBanner(cfg)
 	printMockAuthWarningTo(os.Stdout, cfg)
 
+	os.Exit(runServe(cfg))
+}
+
+// runServe runs the server until it is signalled to stop and returns the
+// process exit code. It returns rather than calling os.Exit so that its
+// deferred cleanups — the OTel flush above all — run when a port cannot be
+// bound or a server fails: os.Exit skips deferred calls. Two exits still
+// bypass them. app.New exits directly on a startup failure of its own
+// (configuration, bootstrap, the storage backend), and the second-signal hard
+// exit abandons the drain on purpose.
+func runServe(cfg app.Config) int {
 	// OTel: the Prometheus scrape pipeline is always initialized (so /metrics
 	// carries app metrics with no collector); OTLP push + tracing are gated
 	// inside Init by the flag.
@@ -127,9 +137,18 @@ func main() {
 	shutdown, err := observability.Init(context.Background(), "cyoda", nodeID, cfg.OTelEnabled)
 	if err != nil {
 		slog.Error("failed to initialize OTel", "error", err)
-		os.Exit(1)
+		return 1
 	}
-	defer shutdown(context.Background())
+	// The flush gets the same budget as a server drain. An exporter facing a
+	// collector that accepts and never answers would otherwise hold the exit
+	// for its own timeouts, past the point an orchestrator stops waiting.
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), shutdownDrainBudget)
+		defer cancel()
+		// Always nil: observability logs a provider's shutdown failure
+		// itself, a flush cut short by this deadline included.
+		_ = shutdown(flushCtx)
+	}()
 
 	a := app.New(cfg)
 
@@ -174,21 +193,27 @@ func main() {
 		os.Exit(2)
 	}()
 
-	// gRPC listen happens here (before runServers) so a bind error fails
-	// fast with a clear non-zero exit — the deferred OTel flush still
-	// runs because we use os.Exit only after the deferred-flush guard.
-	grpcAddr := fmt.Sprintf(":%d", cfg.GRPC.Port)
-	lis, err := net.Listen("tcp", grpcAddr)
+	// Every listen happens here (before runServers) so a bind error fails
+	// fast with a clear non-zero exit, before any server is accepting. The
+	// App already exists by now — registered with the cluster, scheduler
+	// running — so it is torn down on this path exactly as runServers
+	// tears it down on its own failure paths.
+	ls, err := listenAll(cfg)
 	if err != nil {
-		slog.Error("gRPC listen failed", "error", err)
-		os.Exit(1)
+		slog.Error("listen failed", "error", err)
+		a.Shutdown()
+		if closeErr := a.Close(); closeErr != nil {
+			slog.Error("app close failed", "error", closeErr)
+		}
+		return 1
 	}
 
-	if err := runServers(rootCtx, a, cfg, lis); err != nil {
+	if err := runServers(rootCtx, a, cfg, ls); err != nil {
 		// runServers has already triggered a.Shutdown / a.Close before
 		// returning; surface the failure as a non-zero exit code.
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 // logCORSMode emits a single startup line describing the resolved CORS

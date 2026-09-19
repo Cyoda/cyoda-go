@@ -48,7 +48,7 @@ var rootConfigVars = []ConfigVar{
 
 	// --- admin ---
 	{Name: "CYODA_ADMIN_PORT", Topic: "admin", Type: "int", Default: "9091", Description: "Admin port for health and metrics."},
-	{Name: "CYODA_ADMIN_BIND_ADDRESS", Topic: "admin", Type: "string", Default: "127.0.0.1", Description: "Admin listener bind address."},
+	{Name: "CYODA_ADMIN_BIND_ADDRESS", Topic: "admin", Type: "string", Default: "127.0.0.1", Description: "Admin listener bind address: a bare host, IPv4 or IPv6, without brackets."},
 	{Name: "CYODA_METRICS_REQUIRE_AUTH", Topic: "admin", Type: "bool", Default: "false", Description: "Require Bearer auth on /metrics; startup fails if true and CYODA_METRICS_BEARER is empty."},
 	{Name: "CYODA_METRICS_BEARER", Topic: "admin", Type: "string", Default: "", Description: "Static Bearer token for GET /metrics. Supports _FILE suffix."},
 	{Name: "CYODA_OTEL_ENABLED", Topic: "admin", Type: "bool", Default: "false", Description: "Enable OpenTelemetry tracing and metrics."},

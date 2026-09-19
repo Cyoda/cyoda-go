@@ -936,8 +936,9 @@ func (a *App) TokenSigner() *token.Signer                   { return a.tokenSign
 func (a *App) NodeRegistry() contract.NodeRegistry          { return a.nodeRegistry }
 
 // gRPCGracefulStopBudget is the upper bound on graceful drain at shutdown.
-// Matched to the HTTP server's drain deadline in cmd/cyoda/main.go so a
-// caller can predict total stop time as ~max(http, grpc) drain budgets.
+// Matched to shutdownDrainBudget, the HTTP and admin drain deadline in
+// cmd/cyoda/run.go, so a caller can predict total stop time as
+// ~max(http, admin, grpc) drain budgets.
 const gRPCGracefulStopBudget = 10 * time.Second
 
 // searchDrainBudget bounds how long Shutdown waits for in-flight async

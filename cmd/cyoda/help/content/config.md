@@ -82,7 +82,7 @@ loads `cyoda.postgres.env` and `cyoda.otel.env` from the working directory.
 ### Admin and metrics
 
 - `CYODA_ADMIN_PORT` (int, default: `9091`) — admin port for health and metrics.
-- `CYODA_ADMIN_BIND_ADDRESS` (string, default: `127.0.0.1`) — admin listener bind address.
+- `CYODA_ADMIN_BIND_ADDRESS` (string, default: `127.0.0.1`) — admin listener bind address: a bare host, IPv4 or IPv6, without brackets (`::1`, not `[::1]`).
 - `CYODA_METRICS_REQUIRE_AUTH` (bool, default: `false`) — require Bearer auth on `/metrics`; startup fails if `true` and `CYODA_METRICS_BEARER` is empty.
 - `CYODA_METRICS_BEARER` (string, default: unset) — static Bearer token for `GET /metrics`. Supports `_FILE` suffix.
 - `CYODA_OTEL_ENABLED` (bool, default: `false`) — enable OpenTelemetry tracing and metrics.

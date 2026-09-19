@@ -47,7 +47,7 @@ helm install cyoda ./deploy/helm/cyoda \
 
 cyoda-go is a single-process, multi-tenant REST and gRPC API server. It starts in serving mode when invoked with no subcommand. All configuration is via environment variables with a `CYODA_` prefix. The binary, Docker image, and Helm chart run the same binary; only the environment configuration differs across run modes.
 
-The process binds three TCP listeners concurrently: the REST API (default port 8080), gRPC (default port 9090), and an admin server (default port 9091). The admin server hosts health probes and the Prometheus metrics endpoint. On receiving `SIGINT` or `SIGTERM`, the server drains in-flight HTTP and admin requests within a 10-second deadline, then closes the storage backend and exits.
+The process binds three TCP listeners before it serves on any of them: gRPC (default port 9090), the REST API (default port 8080), and an admin server (default port 9091). A port that cannot be bound stops the process with exit status `1` and a `listen failed` log naming the listener, before a single request is served. The admin server hosts health probes and the Prometheus metrics endpoint. On receiving `SIGINT` or `SIGTERM`, the server drains in-flight HTTP, admin and gRPC requests within a 10-second deadline each, then closes the storage backend and exits.
 
 No systemd unit files ship in the repository. Process supervision (systemd, runit, s6, etc.) is the operator's responsibility when running the binary directly outside of Docker or Kubernetes.
 
@@ -282,22 +282,18 @@ The `cyoda health` subcommand calls `/readyz` on the admin port with a 2-second 
 
 ## SHUTDOWN TIMING
 
-The graceful shutdown deadline is **10 seconds**, applied separately to the HTTP server and the admin server. This value is hardcoded in `cmd/cyoda/main.go`:
+The graceful shutdown deadline is **10 seconds**, applied separately to the HTTP server, the admin server and the gRPC server; the three drain concurrently, so the server drains take about 10 seconds in total, not 30. The value is not configurable. A gRPC drain that outlives its deadline is cut off with a hard stop.
 
-```go
-shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-```
+Three steps follow the server drains, in order: `app.Shutdown()` gives in-flight async search jobs up to 5 seconds to finish before releasing them for another node to reclaim, stops the scheduler, and takes the node out of the cluster; `app.Close()` releases backend resources (database connection pools), with no timeout of its own; and the telemetry flush gets up to 10 seconds. The worst case from signal to exit is therefore about 25 seconds plus the cluster leave and the storage close. An idle node exits in well under a second.
 
-After both HTTP servers shut down, `app.Close()` is called to release backend resources (database connection pools, cluster membership). There is no separate configurable timeout for `app.Close()` — it runs to completion after the HTTP deadline.
-
-In Kubernetes, the pod `terminationGracePeriodSeconds` (default 30s) must be greater than 10s to allow the HTTP drain to complete before the kubelet sends `SIGKILL`.
+In Kubernetes, the pod `terminationGracePeriodSeconds` (default 30s) must cover that worst case, or the kubelet sends `SIGKILL` before the node has finished releasing its work.
 
 ## PORT LAYOUT
 
 All ports are configurable via environment variables. The defaults:
 
 - **HTTP REST API** — port `8080`, bind address `0.0.0.0` (all interfaces). Controlled by `CYODA_HTTP_PORT`. All entity, model, workflow, search, and auth endpoints, plus `GET /health` (a health summary for humans and simple scripts — not the deployment probe; see HEALTH PROBES above). Context path prefix: `CYODA_CONTEXT_PATH` (default `/api`).
-- **gRPC** — port `9090`, bind address `0.0.0.0` (all interfaces). Controlled by `CYODA_GRPC_PORT`. Externalized-processor streaming (processor and criteria dispatch). The bind expression is `fmt.Sprintf(":%d", cfg.GRPC.Port)` — all interfaces, not loopback.
+- **gRPC** — port `9090`, bind address `0.0.0.0` (all interfaces). Controlled by `CYODA_GRPC_PORT`. Externalized-processor streaming (processor and criteria dispatch). All interfaces, not loopback.
 - **Admin** — port `9091`, bind address `127.0.0.1` (loopback) by default. Controlled by `CYODA_ADMIN_PORT` and `CYODA_ADMIN_BIND_ADDRESS`. Hosts `/livez`, `/readyz`, and `/metrics` — the deployment probes. Set `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` in Docker/Kubernetes to make probes reachable.
 - **Gossip (cluster mode only)** — port `7946` TCP+UDP. Controlled by `CYODA_GOSSIP_ADDR` (default `:7946`). Used by the memberlist gossip protocol for cluster membership and SWIM health checking. Active only when `CYODA_CLUSTER_ENABLED=true`.
 

@@ -228,6 +228,58 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `error_description` is already a declared string.
   ([#588](https://github.com/cyoda/cyoda-go/issues/588))
 
+- **A shutdown signal that arrives during startup is a clean exit.** The
+  goroutine that serves gRPC and the one that stops it on `SIGTERM` /
+  `SIGINT` start side by side, so a signal landing before the gRPC server
+  had begun serving stopped it first; grpc-go then reports
+  `the server has been stopped` from `Serve`, and cyoda-go took that for a
+  serve failure — logging `server group exited with error` and exiting with
+  status `1` after a shutdown that had in fact drained normally. An
+  orchestrator that reads the exit status (a Kubernetes rollout replacing a
+  pod that was still starting, a systemd unit) saw a crash where there was
+  none. That outcome is now the clean shutdown it always was, exit status
+  `0`, the same as a stop that lands once the server is serving. A gRPC
+  server that genuinely cannot serve still fails the process, and still
+  brings the HTTP and admin listeners down with it rather than leaving them
+  up with no gRPC server behind them.
+
+- **A port that cannot be bound fails startup before anything is served.**
+  Only the gRPC port was bound up front; the HTTP and admin ports were bound
+  by their servers as they started, so a conflict on either surfaced after
+  the gRPC server was already accepting, as a `server group exited with
+  error` from a process that had briefly been up. All three sockets are now
+  bound before any server starts. A conflict is a `listen failed` log naming
+  the listener (`http listener: listen tcp :8080: bind: address already in
+  use`) and exit status `1`, with nothing having served a request — and the
+  node is torn down on the way out, so a clustered node deregisters from its
+  peers instead of leaving them to find out by failure detection. The gRPC
+  bind failure, which already failed fast, skipped that teardown; it no
+  longer does. Bind addresses are unchanged: the application and gRPC
+  surfaces on every interface, the admin surface on
+  `CYODA_ADMIN_BIND_ADDRESS`. That value is now a bare host: an IPv6
+  literal is written `::1`, which used to be rejected as a malformed
+  address, and the bracketed `[::1]`, which used to be the only spelling
+  that worked, no longer is one. Two log lines read
+  differently: the HTTP and admin `server starting` lines carry the address
+  actually bound (`[::]:8080`, not `:8080`), and the line after a drain is
+  `shutdown requested, servers stopped`.
+
+- **Telemetry is flushed when a port cannot be bound or a server fails.**
+  Both ended the process with `os.Exit`, which skips deferred calls, so the
+  OTel flush registered at startup never ran and the spans and metrics
+  describing the failure were the ones most likely to be lost. The serving
+  path now returns its exit status to `main` instead. Two exits still flush
+  nothing: a startup failure inside `app.New` (configuration, bootstrap, the
+  storage backend), which exits directly, and the hard exit forced by a
+  second signal (status `2`), which is meant to. The flush is also bounded
+  now, on every exit including a clean one: it gets 10 seconds, the same
+  budget as a server drain, where it used to run on the exporter's own
+  timeouts — about 30 seconds against a collector that accepts and never
+  answers, longer than the default Kubernetes termination grace period
+  leaves once the drains are done. A flush cut short is reported by the
+  existing `OTel meter provider shutdown error` / `OTel trace provider
+  shutdown error` warnings.
+
 ## [0.8.4] — 2026-09-09
 
 ### Breaking

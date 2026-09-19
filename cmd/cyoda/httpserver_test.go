@@ -19,7 +19,7 @@ func serve(t *testing.T, h http.Handler, cfg app.HTTPConfig) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := newHTTPServer(lis.Addr().String(), h, cfg)
+	srv := newHTTPServer(h, cfg)
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -31,7 +31,7 @@ func serve(t *testing.T, h http.Handler, cfg app.HTTPConfig) string {
 
 func TestNewHTTPServer_CarriesTheFourTimeouts(t *testing.T) {
 	cfg := app.HTTPConfig{ReadHeaderTimeout: 1 * time.Second, ReadTimeout: 2 * time.Second, WriteTimeout: 3 * time.Second, IdleTimeout: 4 * time.Second}
-	srv := newHTTPServer(":0", http.NotFoundHandler(), cfg)
+	srv := newHTTPServer(http.NotFoundHandler(), cfg)
 	if srv.ReadHeaderTimeout != cfg.ReadHeaderTimeout || srv.ReadTimeout != cfg.ReadTimeout ||
 		srv.WriteTimeout != cfg.WriteTimeout || srv.IdleTimeout != cfg.IdleTimeout {
 		t.Fatalf("server timeouts %v/%v/%v/%v do not match config", srv.ReadHeaderTimeout, srv.ReadTimeout, srv.WriteTimeout, srv.IdleTimeout)

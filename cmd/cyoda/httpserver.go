@@ -8,9 +8,10 @@ import (
 
 // newHTTPServer is the one place an http.Server is built for this binary, so
 // the API server and the admin server carry the same receive-side timeouts.
-func newHTTPServer(addr string, handler http.Handler, t app.HTTPConfig) *http.Server {
+// It carries no address: every server is served on a listener bound by the
+// caller.
+func newHTTPServer(handler http.Handler, t app.HTTPConfig) *http.Server {
 	return &http.Server{
-		Addr:              addr,
 		Handler:           handler,
 		ReadHeaderTimeout: t.ReadHeaderTimeout,
 		ReadTimeout:       t.ReadTimeout,

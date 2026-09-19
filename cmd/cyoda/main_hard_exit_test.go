@@ -3,13 +3,8 @@
 package main
 
 import (
-	"bytes"
 	"errors"
 	"net"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -34,60 +29,9 @@ func TestShutdown_SecondSignal_ForcesHardExit(t *testing.T) {
 		t.Skip("skipping subprocess shutdown test in -short mode")
 	}
 
-	tmp := t.TempDir()
-	bin := filepath.Join(tmp, "cyoda-test")
-	build := exec.Command("go", "build", "-o", bin, ".")
-	build.Stderr = os.Stderr
-	if err := build.Run(); err != nil {
-		t.Fatalf("go build cyoda: %v", err)
-	}
-
-	httpPort := freePortIO(t)
-	grpcPort := freePortIO(t)
-	adminPort := freePortIO(t)
-
-	cmd := exec.Command(bin)
-	cmd.Env = append(os.Environ(),
-		"CYODA_HTTP_PORT="+strconv.Itoa(httpPort),
-		"CYODA_GRPC_PORT="+strconv.Itoa(grpcPort),
-		"CYODA_ADMIN_PORT="+strconv.Itoa(adminPort),
-		"CYODA_ADMIN_BIND_ADDRESS=127.0.0.1",
-		"CYODA_SUPPRESS_BANNER=true",
-		"CYODA_LOG_LEVEL=info",
-		"CYODA_OTEL_ENABLED=false",
-		"CYODA_IAM_MODE=mock",
-	)
-	// Isolate the child in its own process group so signals stay scoped.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	// Logging goes to stdout (see internal/logging.Init); capture both
-	// streams so the warn-log assertion below can find the line.
-	var combined bytes.Buffer
-	cmd.Stdout = &combined
-	cmd.Stderr = &combined
-
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	defer func() {
-		if cmd.Process != nil {
-			_ = cmd.Process.Signal(syscall.SIGKILL)
-		}
-	}()
-
-	// Wait until admin listener responds.
-	deadline := time.Now().Add(15 * time.Second)
-	adminAddr := "127.0.0.1:" + strconv.Itoa(adminPort)
-	for {
-		c, err := net.DialTimeout("tcp", adminAddr, 200*time.Millisecond)
-		if err == nil {
-			c.Close()
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("child did not start admin listener: %v", err)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	child := startCyoda(t)
+	cmd := child.cmd
+	httpAddr := child.loopbackAddr(t, "HTTP")
 
 	// Pin an in-flight HTTP request on the application server so the
 	// graceful drain has something to wait on. Without this, an idle
@@ -114,7 +58,6 @@ func TestShutdown_SecondSignal_ForcesHardExit(t *testing.T) {
 	// connection as StateActive and waits for the full drain budget,
 	// keeping the graceful-shutdown path open long enough for the
 	// second SIGTERM to exercise the hard-exit branch.
-	httpAddr := "127.0.0.1:" + strconv.Itoa(httpPort)
 	hold, err := net.Dial("tcp", httpAddr)
 	if err != nil {
 		t.Fatalf("hold-open dial: %v", err)
@@ -173,31 +116,11 @@ func TestShutdown_SecondSignal_ForcesHardExit(t *testing.T) {
 		t.Fatalf("send second SIGTERM: %v", err)
 	}
 
-	exitCh := make(chan error, 1)
-	go func() { exitCh <- cmd.Wait() }()
-
-	select {
-	case err := <-exitCh:
-		if err == nil {
-			t.Fatalf("child exited 0; expected non-zero exit code 2")
-		}
-		exitErr, ok := err.(*exec.ExitError)
-		if !ok {
-			t.Fatalf("child exited with non-ExitError %T: %v", err, err)
-		}
-		ws, ok := exitErr.Sys().(syscall.WaitStatus)
-		if !ok {
-			t.Fatalf("WaitStatus unavailable on this platform: %T", exitErr.Sys())
-		}
-		if ws.ExitStatus() != 2 {
-			t.Errorf("exit code %d; want 2 (forced by second signal)", ws.ExitStatus())
-		}
-	case <-time.After(20 * time.Second):
-		_ = cmd.Process.Signal(syscall.SIGKILL)
-		t.Fatal("child did not exit within 20s of second SIGTERM — hard-exit not wired")
+	if code := child.wait(t, 20*time.Second); code != 2 {
+		t.Errorf("exit code %d; want 2 (forced by second signal)", code)
 	}
 
-	if got := combined.String(); !strings.Contains(got, "hard exit forced by second signal") {
+	if got := child.out.String(); !strings.Contains(got, "hard exit forced by second signal") {
 		t.Errorf("expected 'hard exit forced by second signal' warn log; got:\n%s", got)
 	}
 }
