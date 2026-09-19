@@ -399,6 +399,113 @@ func TestValidator_AcceptsShippedTenantShapes(t *testing.T) {
 	}
 }
 
+// TestValidator_RejectsUserIDOutsideOIDCShape pins door 1's user claim:
+// caas_user_id / sub is attacker-chosen, lands in slog and audit
+// attribution, and must meet the same length+control-char bar as OIDC sub.
+func TestValidator_RejectsUserIDOutsideOIDCShape(t *testing.T) {
+	key, kid, srv := setupTestJWKS(t)
+	defer srv.Close()
+
+	issuer := "test-issuer"
+	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+
+	cases := map[string]string{
+		"newline":  "user\ninjected",
+		"nul":      "user\x00",
+		"cr":       "user\r",
+		"tab":      "user\tid",
+		"del":      "user\x7f",
+		"too-long": strings.Repeat("u", 256),
+	}
+	for name, user := range cases {
+		t.Run(name, func(t *testing.T) {
+			claims := map[string]any{
+				"iss":          issuer,
+				"exp":          float64(time.Now().Add(time.Hour).Unix()),
+				"iat":          float64(time.Now().Unix()),
+				"caas_user_id": user,
+				"caas_org_id":  "org-7",
+				"scopes":       []any{"read"},
+			}
+			tok := signTestToken(t, key, kid, claims)
+			uc, err := v.Validate(tok)
+			if err == nil {
+				t.Fatalf("Validate accepted user id %q, got UserContext %+v", user, uc)
+			}
+			if uc != nil {
+				t.Errorf("Validate returned a UserContext alongside an error: %+v", uc)
+			}
+			if strings.Contains(err.Error(), user) {
+				t.Errorf("validator error echoes the rejected user id: %q", err.Error())
+			}
+			if !strings.Contains(err.Error(), "invalid_user_id") {
+				t.Errorf("err = %v, want invalid_user_id", err)
+			}
+		})
+	}
+}
+
+func TestValidator_RejectsControlCharInSubFallback(t *testing.T) {
+	key, kid, srv := setupTestJWKS(t)
+	defer srv.Close()
+
+	issuer := "test-issuer"
+	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	bad := "sub\nvalue"
+	claims := map[string]any{
+		"iss":         issuer,
+		"exp":         float64(time.Now().Add(time.Hour).Unix()),
+		"iat":         float64(time.Now().Unix()),
+		"sub":         bad,
+		"caas_org_id": "org-7",
+		"scopes":      []any{"read"},
+	}
+	tok := signTestToken(t, key, kid, claims)
+	_, err := v.Validate(tok)
+	if err == nil {
+		t.Fatal("Validate accepted control character in sub fallback")
+	}
+	if strings.Contains(err.Error(), bad) {
+		t.Errorf("validator error echoes the rejected sub: %q", err.Error())
+	}
+}
+
+func TestValidator_AcceptsShippedUserIDShapes(t *testing.T) {
+	key, kid, srv := setupTestJWKS(t)
+	defer srv.Close()
+
+	issuer := "test-issuer"
+	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+
+	for _, user := range []string{
+		"user-42",
+		"user-1",
+		strings.Repeat("a", 255),
+		"alice@example.com",
+		"oidc-style/sub",
+		"用户",
+	} {
+		t.Run(user, func(t *testing.T) {
+			claims := map[string]any{
+				"iss":          issuer,
+				"exp":          float64(time.Now().Add(time.Hour).Unix()),
+				"iat":          float64(time.Now().Unix()),
+				"caas_user_id": user,
+				"caas_org_id":  "org-7",
+				"scopes":       []any{"read"},
+			}
+			tok := signTestToken(t, key, kid, claims)
+			uc, err := v.Validate(tok)
+			if err != nil {
+				t.Fatalf("Validate(%q) = %v, want nil", user, err)
+			}
+			if uc.UserID != user {
+				t.Errorf("UserID = %q, want %q", uc.UserID, user)
+			}
+		})
+	}
+}
+
 func join(strs []string, sep string) string {
 	if len(strs) == 0 {
 		return ""

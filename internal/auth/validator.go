@@ -4,10 +4,17 @@ import (
 	"fmt"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
+
+// maxUserIDLength is the same cap the OIDC path applies to `sub`
+// (internal/auth/oidc/usercontext.go). A user id is not a path segment,
+// so the accepted set is a length cap plus no control characters rather
+// than the tenant grammar.
+const maxUserIDLength = 255
 
 // JWKSValidator validates JWT tokens against a KeySource. The transport —
 // in-process lookup, HTTPS JWKS fetch, or any future alternative — is pluggable
@@ -110,6 +117,13 @@ func (v *JWKSValidator) buildUserContext(claims map[string]any) (*spi.UserContex
 	if userID == "" {
 		return nil, fmt.Errorf("missing user identity (caas_user_id or sub claim)")
 	}
+	// Same call site as the tenant claim: the first-party JWT path is
+	// currently looser than OIDC about user identity. The error carries a
+	// reason and an offset, never the value — it reaches slog via
+	// logAuthFailure's detail field, and the claim is attacker-chosen.
+	if err := validateUserID(userID); err != nil {
+		return nil, fmt.Errorf("caas_user_id/sub claim rejected: %w", err)
+	}
 
 	orgID, _ := claims["caas_org_id"].(string)
 	if orgID == "" {
@@ -190,6 +204,24 @@ func checkAudience(claim any, expected string) error {
 	default:
 		return fmt.Errorf("aud claim has unsupported type %T", claim)
 	}
+}
+
+// validateUserID admits a first-party user identity the same way the OIDC
+// path admits `sub`: present (caller already checked), at most 255 runes,
+// no ASCII control characters. The error never includes the claim value.
+func validateUserID(id string) error {
+	n := utf8.RuneCountInString(id)
+	if n > maxUserIDLength {
+		return fmt.Errorf("invalid_user_id: %d chars > %d", n, maxUserIDLength)
+	}
+	off := 0
+	for _, r := range id {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("invalid_user_id: contains control character U+%04X at rune %d", r, off)
+		}
+		off++
+	}
+	return nil
 }
 
 // extractStringSlice converts a claim value to []string, handling both []interface{} and []string.
