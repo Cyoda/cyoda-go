@@ -2,6 +2,15 @@
 
 All notable changes to Cyoda-Go are documented here. The project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) conventions and [Semantic Versioning](https://semver.org/) — pre-1.0, where the minor component signals a breaking change and new features ship in patches (see [README — Versioning](./README.md#versioning)).
 
+## [Unreleased]
+
+### Security
+
+- First-party JWT `caas_user_id` / `sub` is now admitted only when it matches
+  the OIDC `sub` shape (at most 255 runes, no ASCII control characters). The
+  rejection error carries a reason and a rune offset, never the claim value,
+  because it reaches `logAuthFailure`. See #594.
+
 ## [0.8.4] — 2026-09-09
 
 ### Breaking
