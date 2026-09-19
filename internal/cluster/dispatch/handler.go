@@ -52,6 +52,25 @@ func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// A dispatch request carries two tenants: TenantID, which becomes the
+	// UserContext this callout runs as, and EntityMeta.TenantID, which is
+	// handed to the local dispatcher as the entity's own. They must agree, or
+	// the callout runs as one tenant over another's entity.
+	//
+	// The equality is unconditional, including for an absent
+	// EntityMeta.TenantID. Every callout kind — processor, criteria and
+	// function alike — is built from a live stored entity whose Meta.TenantID
+	// is set at construction and carried forward on update, so the field is
+	// never empty on the real wire; an empty one can only come from a
+	// hand-crafted peer body, and exempting it would be exempting exactly the
+	// caller this check exists for.
+	//
+	// The response names neither value: both are peer-supplied.
+	if string(req.EntityMeta.TenantID) != req.TenantID {
+		http.Error(w, "entity tenant does not match request tenant", http.StatusBadRequest)
+		return
+	}
+
 	ctx := h.buildContext(r, identity, req.TenantID, req.UserID, req.PrincipalKind, req.Roles)
 	ctx = internalgrpc.WithTxToken(ctx, req.TxToken)
 

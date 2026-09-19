@@ -86,8 +86,9 @@ func TestOIDC_RegisterDuplicate_Returns409(t *testing.T) {
 
 // TestOIDC_ActiveOnly_BooleanFilter covers the valuable boolean-parsing behavior
 // (?activeOnly=1 → 200). Unparseable values (e.g. "yes") yield a uniform
-// framework binding-layer 400 (plain text, like every typed param in the API);
-// that is not a per-op documented response, so it is intentionally not asserted here.
+// framework binding-layer 400 carrying BAD_REQUEST, built by
+// internal/api.BindingErrorHandler like every typed param in the API, and so
+// covered wherever that handler is covered rather than once per operation.
 func TestOIDC_ActiveOnly_BooleanFilter(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")

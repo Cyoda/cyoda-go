@@ -1054,25 +1054,6 @@ func RunOidcMultiProvider_Isolation(t *testing.T, fix BackendFixture) {
 	assertProbeStatus(t, http.StatusUnauthorized, status, body)
 }
 
-// assertErrCodeOptional logs an error code mismatch as a note without
-// failing the test — used in JWT-validation scenarios where the error body
-// shape is not the primary assertion (status code is sufficient).
-func assertErrCodeOptional(t *testing.T, raw []byte, wantCode string) {
-	t.Helper()
-	var envelope struct {
-		Properties struct {
-			ErrorCode string `json:"errorCode"`
-		} `json:"properties"`
-	}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		// 401 responses from the auth middleware may not be Problem Detail format.
-		return
-	}
-	if envelope.Properties.ErrorCode != "" && envelope.Properties.ErrorCode != wantCode {
-		t.Logf("note: properties.errorCode got %q, expected %q (non-fatal)", envelope.Properties.ErrorCode, wantCode)
-	}
-}
-
 // --- Phase 9.4 — OIDC divergences (rows 28-46) ---
 //
 // These scenarios cover cyoda-go-specific behaviours (D5, D17, D3, D6, D11,
@@ -2884,12 +2865,16 @@ func RunOidcE2E_MultiNodeEviction(t *testing.T, _ BackendFixture) {
 }
 
 // RunOidcInvalidTenantUUIDRejected_Skip documents the unit-level coverage for
-// the non-UUID tenant rejection on OIDC provider registration (Critical-2 fix).
+// the non-UUID tenant rejection on OIDC provider operations.
 //
 // Covered by: internal/domain/account unit test
 // TestOidcAdapter_NonUUIDTenantRejected — that test constructs a request with a
 // non-UUID tenant context ("default-tenant"), calls RegisterOidcProvider, and
-// asserts 400 + OIDC_INVALID_TENANT.
+// asserts 400 + OIDC_INVALID_TENANT. The rejection is not registration-only:
+// TestOidcAdapter_NonUUIDTenantIsRejectedEverywhere asserts the same 400 from
+// list, update, invalidate, reactivate and delete, and
+// internal/e2e's TestOidc_NonUUIDTenant_RejectedOnEveryOperation drives that
+// same set over HTTP against a running backend.
 //
 // Why skipped here: the parity fixture's NewTenant always returns UUID-shaped
 // tenant IDs (the parity HTTP server requires valid JWTs, which carry a UUID

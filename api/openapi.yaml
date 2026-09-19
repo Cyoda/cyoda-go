@@ -5690,6 +5690,17 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/OidcProviderResponseDto"
+        "400":
+          description: >-
+            Bad request (an unparseable `activeOnly`, or a tenant identifier
+            that is not a UUID in its canonical lowercase form and so can own
+            no provider). Body is an
+            RFC-9457 problem document; the machine-readable code is in
+            `properties.errorCode` (`BAD_REQUEST`, `OIDC_INVALID_TENANT`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: >-
             Unauthorized. Body is an RFC-9457 problem document;
@@ -5891,6 +5902,17 @@ paths:
         "200":
           description: OIDC provider deleted successfully
           content: {}
+        "400":
+          description: >-
+            Bad request (an unparseable provider `{id}`, or a tenant identifier
+            that is not a UUID in its canonical lowercase form and so can own
+            no provider). Body is an RFC-9457 problem document; the
+            machine-readable code is in `properties.errorCode`
+            (`BAD_REQUEST`, `OIDC_INVALID_TENANT`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: >-
             Unauthorized. Body is an RFC-9457 problem document;
@@ -5979,11 +6001,13 @@ paths:
                 $ref: "#/components/schemas/OidcProviderResponseDto"
         "400":
           description: >-
-            Bad request (invalid body / issuers / expectedAudiences / rolesClaim).
-            Body is an RFC-9457 problem document; the machine-readable code is in
-            `properties.errorCode` (`BAD_REQUEST`). This op accepts no discovery
-            URI, so it never emits `OIDC_SSRF_BLOCKED` / `OIDC_INVALID_TENANT` —
-            those are `registerOidcProvider` only.
+            Bad request (invalid body / issuers / expectedAudiences / rolesClaim,
+            or a tenant identifier that is not a UUID in its canonical lowercase
+            form). Body is an RFC-9457
+            problem document; the machine-readable code is in
+            `properties.errorCode` (`BAD_REQUEST`, `OIDC_INVALID_TENANT`). This
+            op accepts no discovery URI, so it never emits `OIDC_SSRF_BLOCKED` —
+            that is `registerOidcProvider` only.
           content:
             application/problem+json:
               schema:
@@ -6069,6 +6093,17 @@ paths:
         "200":
           description: OIDC provider invalidated successfully
           content: {}
+        "400":
+          description: >-
+            Bad request (an unparseable provider `{id}`, or a tenant identifier
+            that is not a UUID in its canonical lowercase form and so can own
+            no provider). Body is an RFC-9457 problem document; the
+            machine-readable code is in `properties.errorCode`
+            (`BAD_REQUEST`, `OIDC_INVALID_TENANT`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: >-
             Unauthorized. Body is an RFC-9457 problem document;
@@ -6149,6 +6184,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OidcProviderResponseDto"
+        "400":
+          description: >-
+            Bad request (an unparseable provider `{id}`, an invalid request
+            body, or a tenant identifier that is not a UUID in its canonical
+            lowercase form and so can own no provider). Body is an RFC-9457
+            problem document; the
+            machine-readable code is in `properties.errorCode` (`BAD_REQUEST`,
+            `OIDC_INVALID_TENANT`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: >-
             Unauthorized. Body is an RFC-9457 problem document;

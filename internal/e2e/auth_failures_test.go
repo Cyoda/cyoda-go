@@ -7,12 +7,20 @@ package e2e_test
 // detail — routing and wiring the unit tests cannot see.
 
 import (
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
 )
 
 // unauthRequest issues a request to path with the given Authorization header
@@ -79,19 +87,27 @@ func TestAuth_MissingOrInvalidCredentials_401(t *testing.T) {
 	}
 }
 
-// assertUnauthorizedProblem checks the RFC 9457 shape of a 401 body.
-func assertUnauthorizedProblem(t *testing.T, resp *http.Response) {
+// assertUnauthorizedProblem checks the RFC 9457 shape of a 401 body and
+// returns the raw bytes it read, so a caller can go on to assert on the body
+// text. The body is read once with io.ReadAll and decoded from those bytes: a
+// json.Decoder consumes the whole of a small body on its first refill, leaving
+// nothing for a subsequent read and turning any later body assertion vacuous.
+func assertUnauthorizedProblem(t *testing.T, resp *http.Response) []byte {
 	t.Helper()
 	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/problem+json") {
 		t.Errorf("content-type=%q, want application/problem+json", ct)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read problem detail: %v", err)
 	}
 	var pd struct {
 		Status     int            `json:"status"`
 		Detail     string         `json:"detail"`
 		Properties map[string]any `json:"properties"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&pd); err != nil {
-		t.Fatalf("decode problem detail: %v", err)
+	if err := json.Unmarshal(raw, &pd); err != nil {
+		t.Fatalf("decode problem detail: %v; body=%s", err, raw)
 	}
 	if pd.Status != http.StatusUnauthorized {
 		t.Errorf("problem.status=%d, want 401", pd.Status)
@@ -99,6 +115,7 @@ func assertUnauthorizedProblem(t *testing.T, resp *http.Response) {
 	if got := pd.Properties["errorCode"]; got != "UNAUTHORIZED" {
 		t.Errorf("errorCode=%v, want UNAUTHORIZED", got)
 	}
+	return raw
 }
 
 // TestAuth_RejectionCarriesNoEnumerationSignal asserts that the 401 a
@@ -155,5 +172,88 @@ func TestAuth_ValidCredentialsStillPass(t *testing.T) {
 	body := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("authenticated GET /api/admin/log-level: status=%d, want 200; body: %s", resp.StatusCode, body)
+	}
+}
+
+// mintTokenWithTenant signs a first-party token carrying an arbitrary
+// caas_org_id, so a test can present a claim no legitimate client could
+// obtain. The kid is the one app.NewAuthService derives from the signing key's
+// public part (sha256(SPKI)[:16] hex).
+func mintTokenWithTenant(t *testing.T, tenant string) string {
+	t.Helper()
+	pubDER, err := x509.MarshalPKIXPublicKey(&e2eSignKey.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal public key: %v", err)
+	}
+	sum := sha256.Sum256(pubDER)
+	kid := hex.EncodeToString(sum[:16])
+
+	now := time.Now()
+	tok, err := auth.Sign(map[string]any{
+		"sub":          "e2e-tenant-probe",
+		"iss":          e2eIssuer,
+		"caas_user_id": "e2e-tenant-probe",
+		"caas_org_id":  tenant,
+		"user_roles":   []string{"ROLE_ADMIN"},
+		"exp":          now.Add(time.Hour).Unix(),
+		"iat":          now.Unix(),
+		"jti":          uuid.NewString(),
+	}, e2eSignKey, kid)
+	if err != nil {
+		t.Fatalf("mint token: %v", err)
+	}
+	return tok
+}
+
+// TestAuth_TenantClaimOutsideGrammar_401 proves door 1 holds through the full
+// HTTP stack, on a token this server itself would accept but for the claim.
+// The rejection must be indistinguishable from any other bad token.
+func TestAuth_TenantClaimOutsideGrammar_401(t *testing.T) {
+	for name, tenant := range map[string]string{
+		"traversal": "../victim",
+		"dotdot":    "..",
+		"slash":     "a/b",
+		"colon":     "a:b",
+		"newline":   "tenant\ninjected",
+		"too-long":  strings.Repeat("x", 101),
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp := unauthRequest(t, http.MethodGet, "/api/entity/e2e-auth-probe/1",
+				"Bearer "+mintTokenWithTenant(t, tenant))
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusUnauthorized {
+				raw, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status=%d, want 401; body: %s", resp.StatusCode, raw)
+			}
+			raw := assertUnauthorizedProblem(t, resp)
+
+			if strings.Contains(string(raw), "victim") || strings.Contains(string(raw), "injected") {
+				t.Errorf("response echoes the rejected tenant: %s", raw)
+			}
+		})
+	}
+}
+
+// TestAuth_AcceptedTenantShapesStillAuthenticate is the regression half: the
+// grammar must not lock out a shape that works today. 401 here would be a
+// production lockout; anything else means the token was accepted.
+func TestAuth_AcceptedTenantShapesStillAuthenticate(t *testing.T) {
+	for _, tenant := range []string{
+		"SYSTEM",
+		"default-tenant",
+		"tenant-abc-123",
+		"9f8c7b6a5d4e3f2a1b0c9d8e7f6a5b4c",
+		"1a2b3c4d-5e6f-4a8b-9c0d-1e2f3a4b5c6d",
+		"conformance-1a2b3c4d-5e6f-4a8b-9c0d-1e2f3a4b5c6d",
+	} {
+		t.Run(tenant, func(t *testing.T) {
+			resp := unauthRequest(t, http.MethodGet, "/api/model/",
+				"Bearer "+mintTokenWithTenant(t, tenant))
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusUnauthorized {
+				raw, _ := io.ReadAll(resp.Body)
+				t.Fatalf("tenant %q was rejected — this is a lockout; body: %s", tenant, raw)
+			}
+		})
 	}
 }

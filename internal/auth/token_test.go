@@ -1,16 +1,21 @@
 package auth_test
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
@@ -542,5 +547,87 @@ func TestTokenExchangeInactiveTrustedKey(t *testing.T) {
 	resp := decodeResponse(t, rr)
 	if resp["error"] != "invalid_grant" {
 		t.Errorf("expected error invalid_grant, got %v", resp["error"])
+	}
+}
+
+// failingKeyStore is an auth.KeyStore whose GetActive always fails; the
+// other methods are not exercised by this test and return zero values or
+// the same error, whichever the interface requires.
+type failingKeyStore struct{ err error }
+
+func (f failingKeyStore) Save(*auth.KeyPair, auth.RotateOptions) error { return f.err }
+func (f failingKeyStore) Get(string) (*auth.KeyPair, error)            { return nil, f.err }
+func (f failingKeyStore) GetActive(string) (*auth.KeyPair, error)      { return nil, f.err }
+func (f failingKeyStore) List() []*auth.KeyPair                        { return nil }
+func (f failingKeyStore) ListForVerification() []*auth.KeyPair         { return nil }
+func (f failingKeyStore) Delete(string) error                          { return f.err }
+func (f failingKeyStore) Invalidate(string, int64) error               { return f.err }
+func (f failingKeyStore) Reactivate(string, time.Time, time.Time) error {
+	return f.err
+}
+
+// TestTokenEndpoint_ServerErrorCarriesTicket pins Gate 3 for this endpoint:
+// every 5xx carries a generic message plus a ticket UUID and no internals.
+// The OAuth2 body shape has no dedicated field, so the ticket rides in
+// error_description, which the schema already declares as a string.
+//
+// A ticket is only worth minting if an operator can find it: the same UUID
+// must appear in the log record that carries the underlying cause, which is
+// what ties a caller's report to the failure. The log is captured here rather
+// than asserted through a running stack, because inducing a key-store failure
+// over HTTP would need a production seam this project forbids.
+func TestTokenEndpoint_ServerErrorCarriesTicket(t *testing.T) {
+	env := setupTokenEnv(t)
+
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	// A key store whose GetActive always fails drives the server_error path.
+	// The trusted-key store, M2M store and client credentials come from the
+	// shared env so the request authenticates normally before hitting the
+	// failing key store.
+	cause := errors.New("hsm unreachable at 10.0.0.5:8443")
+	h := auth.NewTokenHandler(
+		failingKeyStore{err: cause},
+		env.trustedKeyStore,
+		env.m2mStore,
+		"cyoda-test",
+		3600,
+	)
+
+	req := makeTokenRequest("client_credentials", basicAuth(env.clientID, env.clientSecret), nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500: %s", rr.Code, rr.Body.String())
+	}
+
+	resp := decodeResponse(t, rr)
+	if resp["error"] != "server_error" {
+		t.Errorf("error = %v, want server_error", resp["error"])
+	}
+	desc, _ := resp["error_description"].(string)
+	if !strings.HasPrefix(desc, "server_error [ticket: ") {
+		t.Fatalf("error_description = %q, want a ticket", desc)
+	}
+	ticket := strings.TrimSuffix(strings.TrimPrefix(desc, "server_error [ticket: "), "]")
+	if _, err := uuid.Parse(ticket); err != nil {
+		t.Errorf("ticket %q is not a uuid: %v", ticket, err)
+	}
+	if strings.Contains(rr.Body.String(), "hsm") || strings.Contains(rr.Body.String(), "10.0.0.5") {
+		t.Errorf("response leaks the underlying cause: %s", rr.Body.String())
+	}
+
+	// The same ticket reaches the log, with the cause the response withheld.
+	logged := logBuf.String()
+	if !strings.Contains(logged, ticket) {
+		t.Errorf("ticket %q never reaches the log; an operator cannot correlate the caller's report:\n%s",
+			ticket, logged)
+	}
+	if !strings.Contains(logged, "hsm unreachable") {
+		t.Errorf("the underlying cause is missing from the log record:\n%s", logged)
 	}
 }

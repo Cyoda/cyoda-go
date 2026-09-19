@@ -105,7 +105,7 @@ func TestHandler_ProcessorSuccess(t *testing.T) {
 	req := DispatchCalloutRequest{
 		Kind:           "processor",
 		Entity:         json.RawMessage(`{"foo":"bar"}`),
-		EntityMeta:     spi.EntityMeta{ID: "ent-1"},
+		EntityMeta:     spi.EntityMeta{ID: "ent-1", TenantID: "tenant-a"},
 		Processor:      &processor,
 		WorkflowName:   "wf",
 		TransitionName: "t1",
@@ -147,7 +147,7 @@ func TestHandler_CriteriaSuccess(t *testing.T) {
 	req := DispatchCalloutRequest{
 		Kind:           "criteria",
 		Entity:         json.RawMessage(`{"foo":"bar"}`),
-		EntityMeta:     spi.EntityMeta{ID: "ent-2"},
+		EntityMeta:     spi.EntityMeta{ID: "ent-2", TenantID: "tenant-a"},
 		Criterion:      json.RawMessage(`{"type":"eq","field":"x","value":1}`),
 		Target:         "target",
 		WorkflowName:   "wf",
@@ -232,7 +232,7 @@ func TestHandler_RejectsReplayedRequest(t *testing.T) {
 		TenantID: "t", UserID: "u",
 		Processor:    &processor,
 		WorkflowName: "w", TransitionName: "t", TxID: "x",
-		EntityMeta: spi.EntityMeta{ID: "e"},
+		EntityMeta: spi.EntityMeta{ID: "e", TenantID: "t"},
 		Entity:     json.RawMessage(`{}`),
 	})
 	first := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
@@ -274,7 +274,7 @@ func TestHandler_PopulatesPeerIdentityInContext(t *testing.T) {
 		TenantID: "t", UserID: "u", TxID: "tx",
 		Processor:    &processor,
 		WorkflowName: "w", TransitionName: "t",
-		EntityMeta: spi.EntityMeta{ID: "e"},
+		EntityMeta: spi.EntityMeta{ID: "e", TenantID: "t"},
 		Entity:     json.RawMessage(`{}`),
 	})
 	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
@@ -323,7 +323,7 @@ func TestHandler_ReconstructsPrincipalKindInContext(t *testing.T) {
 				TxID:          "tx",
 				Processor:     &processor,
 				WorkflowName:  "w", TransitionName: "t",
-				EntityMeta: spi.EntityMeta{ID: "e"},
+				EntityMeta: spi.EntityMeta{ID: "e", TenantID: "t"},
 				Entity:     json.RawMessage(`{}`),
 			})
 			httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
@@ -368,7 +368,7 @@ func TestHandler_ProcessorError_SanitizedResponse(t *testing.T) {
 	plain, _ := json.Marshal(DispatchCalloutRequest{
 		Kind:           "processor",
 		Entity:         json.RawMessage(`{"foo":"bar"}`),
-		EntityMeta:     spi.EntityMeta{ID: "ent-1"},
+		EntityMeta:     spi.EntityMeta{ID: "ent-1", TenantID: "tenant-a"},
 		Processor:      &processor,
 		WorkflowName:   "wf",
 		TransitionName: "t1",
@@ -406,7 +406,7 @@ func TestHandleCriteria_PropagatesReason(t *testing.T) {
 	req := DispatchCalloutRequest{
 		Kind:           "criteria",
 		Entity:         json.RawMessage(`{"foo":"bar"}`),
-		EntityMeta:     spi.EntityMeta{ID: "ent-2"},
+		EntityMeta:     spi.EntityMeta{ID: "ent-2", TenantID: "tenant-a"},
 		Criterion:      json.RawMessage(`{"type":"eq","field":"x","value":1}`),
 		Target:         "target",
 		WorkflowName:   "wf",
@@ -448,7 +448,7 @@ func TestHandler_CriteriaError_SanitizedResponse(t *testing.T) {
 	plain, _ := json.Marshal(DispatchCalloutRequest{
 		Kind:           "criteria",
 		Entity:         json.RawMessage(`{"foo":"bar"}`),
-		EntityMeta:     spi.EntityMeta{ID: "ent-2"},
+		EntityMeta:     spi.EntityMeta{ID: "ent-2", TenantID: "tenant-a"},
 		Criterion:      json.RawMessage(`{"type":"eq"}`),
 		Target:         "target",
 		WorkflowName:   "wf",
@@ -496,7 +496,7 @@ func TestHandler_ErrorTaxonomy_AppError(t *testing.T) {
 				Processor:      &spi.ProcessorDefinition{Name: "p", Type: "SCRIPT"},
 				WorkflowName:   "w",
 				TransitionName: "t",
-				EntityMeta:     spi.EntityMeta{ID: "e"},
+				EntityMeta:     spi.EntityMeta{ID: "e", TenantID: "t"},
 				Entity:         json.RawMessage(`{}`),
 			},
 			fake: &fakeLocalDispatcher{processorErr: appErr},
@@ -510,7 +510,7 @@ func TestHandler_ErrorTaxonomy_AppError(t *testing.T) {
 				WorkflowName:   "w",
 				TransitionName: "t",
 				ProcessorName:  "p",
-				EntityMeta:     spi.EntityMeta{ID: "e"},
+				EntityMeta:     spi.EntityMeta{ID: "e", TenantID: "t"},
 				Entity:         json.RawMessage(`{}`),
 			},
 			fake: &fakeLocalDispatcher{criteriaErr: appErr},
@@ -522,7 +522,7 @@ func TestHandler_ErrorTaxonomy_AppError(t *testing.T) {
 				Function:       &spi.ScheduleFunction{Name: "fn", ResultKind: "Schedule"},
 				WorkflowName:   "w",
 				TransitionName: "t",
-				EntityMeta:     spi.EntityMeta{ID: "e"},
+				EntityMeta:     spi.EntityMeta{ID: "e", TenantID: "t"},
 				Entity:         json.RawMessage(`{}`),
 			},
 			fake: &fakeLocalDispatcher{functionErr: appErr},
@@ -586,7 +586,7 @@ func TestHandler_ErrorTaxonomy_NoMatchingMember(t *testing.T) {
 				Processor:      &spi.ProcessorDefinition{Name: "p", Type: "SCRIPT"},
 				WorkflowName:   "w",
 				TransitionName: "t",
-				EntityMeta:     spi.EntityMeta{ID: "e"},
+				EntityMeta:     spi.EntityMeta{ID: "e", TenantID: "t"},
 				Entity:         json.RawMessage(`{}`),
 			},
 			fake: &fakeLocalDispatcher{processorErr: noMemberErr},
@@ -600,7 +600,7 @@ func TestHandler_ErrorTaxonomy_NoMatchingMember(t *testing.T) {
 				WorkflowName:   "w",
 				TransitionName: "t",
 				ProcessorName:  "p",
-				EntityMeta:     spi.EntityMeta{ID: "e"},
+				EntityMeta:     spi.EntityMeta{ID: "e", TenantID: "t"},
 				Entity:         json.RawMessage(`{}`),
 			},
 			fake: &fakeLocalDispatcher{criteriaErr: noMemberErr},
@@ -612,7 +612,7 @@ func TestHandler_ErrorTaxonomy_NoMatchingMember(t *testing.T) {
 				Function:       &spi.ScheduleFunction{Name: "fn", ResultKind: "Schedule"},
 				WorkflowName:   "w",
 				TransitionName: "t",
-				EntityMeta:     spi.EntityMeta{ID: "e"},
+				EntityMeta:     spi.EntityMeta{ID: "e", TenantID: "t"},
 				Entity:         json.RawMessage(`{}`),
 			},
 			fake: &fakeLocalDispatcher{functionErr: noMemberErr},
@@ -661,7 +661,7 @@ func TestHandler_UnknownCalloutKind(t *testing.T) {
 
 	plain, _ := json.Marshal(DispatchCalloutRequest{
 		Kind: "bogus-kind", TenantID: "t", UserID: "u",
-		EntityMeta: spi.EntityMeta{ID: "e"},
+		EntityMeta: spi.EntityMeta{ID: "e", TenantID: "t"},
 		Entity:     json.RawMessage(`{}`),
 	})
 	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
@@ -674,5 +674,118 @@ func TestHandler_UnknownCalloutKind(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "unknown callout kind") {
 		t.Errorf("expected body to mention unknown callout kind, got %q", rec.Body.String())
+	}
+}
+
+// TestHandleCallout_RejectsEntityMetaTenantMismatch closes a cross-tenant gap
+// that has nothing to do with spelling. A dispatch request carries two
+// tenants: TenantID, which becomes the UserContext the callout runs as, and
+// EntityMeta.TenantID, which is handed to the local dispatcher as the entity's
+// own. Nothing compared them, so a peer could run a callout as tenant B over
+// tenant A's entity.
+func TestHandleCallout_RejectsEntityMetaTenantMismatch(t *testing.T) {
+	auth := newAEAD(t)
+	fake := &fakeLocalDispatcher{
+		processorResult: &spi.Entity{Meta: spi.EntityMeta{ID: "entity-1"}, Data: []byte(`{}`)},
+	}
+	handler := NewDispatchHandler(fake, auth)
+	mux := http.NewServeMux()
+	handler.Register(mux)
+
+	req := DispatchCalloutRequest{
+		Kind:   "processor",
+		Entity: json.RawMessage(`{"foo":"bar"}`),
+		EntityMeta: spi.EntityMeta{
+			ID:       "entity-1",
+			TenantID: "tenant-b", // disagrees with TenantID
+		},
+		TenantID: "tenant-a",
+		UserID:   "user-1",
+		Roles:    []string{"ROLE_USER"},
+	}
+	plain, _ := json.Marshal(req)
+	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httpReq)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "tenant-a") || strings.Contains(rec.Body.String(), "tenant-b") {
+		t.Errorf("response echoes a tenant id: %s", rec.Body.String())
+	}
+}
+
+// TestHandleCallout_RejectsAbsentEntityMetaTenant pins that the equality is
+// unconditional. Every builder populates EntityMeta from the live stored
+// entity, whose Meta.TenantID is set at construction and carried forward on
+// update, so on the real wire the field is never empty for ANY kind — an
+// absent one only ever comes from a hand-crafted peer body, and exempting it
+// would hand a peer the ability to skip the check outright.
+//
+// The table runs all three kinds rather than standing one in for the others:
+// the claim being refuted here — that criteria and function callouts carry no
+// entity — survived earlier review precisely because it was only ever tested
+// through a "processor" request.
+func TestHandleCallout_RejectsAbsentEntityMetaTenant(t *testing.T) {
+	kinds := []struct {
+		name string
+		req  DispatchCalloutRequest
+	}{
+		{
+			name: "processor",
+			req: DispatchCalloutRequest{
+				Kind:      "processor",
+				Processor: &spi.ProcessorDefinition{Name: "p"},
+			},
+		},
+		{
+			name: "criteria",
+			req: DispatchCalloutRequest{
+				Kind:      "criteria",
+				Criterion: json.RawMessage(`{"type":"simple"}`),
+				Target:    "entity",
+			},
+		},
+		{
+			name: "function",
+			req: DispatchCalloutRequest{
+				Kind:     "function",
+				Function: &spi.ScheduleFunction{Name: "fn", ResultKind: "Schedule"},
+			},
+		},
+	}
+
+	for _, tc := range kinds {
+		t.Run(tc.name, func(t *testing.T) {
+			auth := newAEAD(t)
+			fake := &fakeLocalDispatcher{
+				processorResult: &spi.Entity{Meta: spi.EntityMeta{ID: "entity-1"}, Data: []byte(`{}`)},
+			}
+			handler := NewDispatchHandler(fake, auth)
+			mux := http.NewServeMux()
+			handler.Register(mux)
+
+			req := tc.req
+			req.Entity = json.RawMessage(`{"foo":"bar"}`)
+			req.EntityMeta = spi.EntityMeta{ID: "entity-1"} // TenantID empty
+			req.TenantID = "tenant-a"
+			req.UserID = "user-1"
+			req.Roles = []string{"ROLE_USER"}
+
+			plain, _ := json.Marshal(req)
+			httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
+
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httpReq)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+			}
+			if strings.Contains(rec.Body.String(), "tenant-a") {
+				t.Errorf("response echoes a tenant id: %s", rec.Body.String())
+			}
+		})
 	}
 }

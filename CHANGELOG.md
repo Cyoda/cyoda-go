@@ -4,6 +4,49 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ## [Unreleased]
 
+### Breaking
+
+- **A tenant identifier has a grammar:
+  `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`.** 1 to 100 bytes, the first an ASCII
+  letter or digit, the rest letters, digits, `.`, `_` and `-`; case is
+  preserved and significant. It is enforced at the two places a tenant id
+  enters cyoda-go from outside it, and only those: the `caas_org_id` JWT
+  claim — which covers every authenticated HTTP request and every
+  authenticated gRPC method, since gRPC delegates to the same authenticator
+  — and `CYODA_BOOTSTRAP_TENANT_ID` at startup. A token whose claim falls
+  outside the grammar is an **ordinary `401`** with the uniform RFC 9457
+  problem detail, indistinguishable from any other bad token; over gRPC it
+  is `codes.Unauthenticated`. A `CYODA_BOOTSTRAP_TENANT_ID` outside it
+  **refuses to start**, but only when a bootstrap client is configured — a
+  deployment that configures none is unaffected even when the variable is
+  explicitly empty. Every tenant either tier ships or uses today is
+  admitted: `SYSTEM`, `CYODA`, `default-tenant`, `mock-tenant`,
+  `riskblocs`, `tenant-abc-123`, canonical UUIDs, 32-character hex ids and
+  bare numerics. One further operator-facing tenant value, the non-JWT IAM
+  mode's `MockTenantID`, is covered by a test rather than by the check: it
+  has no environment binding, so it is a compiled-in default rather than an
+  ingress, and a unit test pins it — with every other shipped tenant
+  constant — against the grammar. No new error code. The contract, the
+  evidence behind the
+  charset and the 100-byte cap, and the Cloud-side action item (**CP-3968**
+  — Cloud constrains `caas_org_id` nowhere today, so a Cloud-issued token
+  outside the grammar becomes a silent `401` rather than a diagnosable
+  rejection) are recorded in `docs/cloud-parity/tenant-id-grammar.md`.
+
+- **Every OIDC provider operation answers `400 OIDC_INVALID_TENANT` unless
+  the caller's tenant is a UUID in its canonical lowercase form.**
+  `GET /oauth/oidc/providers` previously returned an empty `200` to a
+  non-UUID tenant, because its prefix scan matched nothing — reporting "you
+  have no providers" to a caller that could never have had one. The read and
+  lifecycle forms returned `404` for the same reason. All of them now give
+  the answer registration already gave. The same `400` now also answers a
+  tenant whose id is a UUID spelled any other way — upper case, or the
+  32-character hyphenless form — because the canonical spelling is required
+  rather than normalised to; see the entry under Fixed for why.
+  `POST /oauth/oidc/providers/reload` takes no tenant and is unaffected. See
+  `docs/cloud-parity/tenant-id-grammar.md` and
+  `cyoda help errors OIDC_INVALID_TENANT`.
+
 ### Added
 
 - **`ENTITY_MODEL_MISMATCH` (`400`).** An entity's model reference — its
@@ -120,6 +163,70 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   endpoint derives a point in time from the transaction's submit time;
   because `CompareAndSave` dated its version after that submit time, the
   lookup could miss its own write.
+
+- **Two tenants whose ids differ only in case no longer share a blob
+  directory (memory).** The in-memory backend built a message blob's path
+  from the raw tenant id and message id, so on a case-insensitive
+  filesystem — APFS and Windows, both release targets — `tenant-a` and
+  `tenant-A` were one directory: the second `Save` overwrote the first, and
+  a `Get` by one tenant could return the other's bytes. The in-memory
+  backend is what an unconfigured binary runs. Both segments are now
+  hex-encoded under an `os.Root`, so a traversing, colliding, case-folding,
+  empty or reserved name is **unrepresentable** rather than rejected, and
+  the hand-rolled path check it replaces is gone. Encoding doubles each
+  segment: a tenant is capped at 100 bytes where it enters the engine, and
+  a message id — server-generated, 36 bytes — is usable to 127 before the
+  filename limit, beyond which an over-long id is an ordinary write error.
+
+- **`Save` and `Get` pair a blob with its own metadata (memory).** `Save`
+  renamed the blob into place and inserted its metadata as two separate
+  steps, so two concurrent saves of one id could leave one writer's blob
+  paired with the other's header; `Get` had the same split on the read
+  side, copying the header under the read lock and opening the blob after
+  releasing it. Both are now single critical sections. The payload copy
+  stays outside the lock. Unreachable over HTTP, where message ids are
+  server-generated, but the SPI admits any id.
+
+- **A callout may not run as one tenant over another's entity.** A peer
+  dispatch request carries two tenants — its own, which becomes the user
+  context, and the entity metadata's, which is handed to the local
+  dispatcher — and nothing compared them. A mismatch is now `400`, and so
+  is an absent entity tenant: every callout kind — processor, criteria and
+  function alike — is built from a live stored entity whose tenant is
+  always set, so an empty one can only come from a hand-crafted peer body.
+
+- **The OIDC provider store no longer writes under one key and reads under
+  another.** It wrote a record and its URI index under the canonical
+  lowercase UUID but read them back under the caller's raw tenant string.
+  `uuid.Parse` accepts spellings `String()` folds away — upper case and the
+  32-character hyphenless form both satisfy the tenant grammar — so a tenant
+  spelled either way addressed a different key on every operation than the
+  one registration wrote, and registration itself failed: the post-write
+  index read-back missed its own entry, the service rolled back and answered
+  `500`, and the rollback, keyed the same wrong way, left the provider blob
+  behind. The single entry point to the OIDC service now **requires** the
+  canonical spelling instead of normalising to it: register and read address
+  the same key, nothing strands, and a tenant spelled otherwise gets a
+  diagnosable `400 OIDC_INVALID_TENANT` (see Breaking). Normalising would
+  have closed the stranding by aliasing two tenants that are distinct
+  everywhere else in the product — entities, KV, audit and messages all
+  compare a tenant as raw text — which would have let either list, modify
+  and delete the other's providers and register a provider owned by the
+  other, an authentication trust anchor for a tenant it is not. Token
+  validation was never affected — the provider registry is built from the
+  stored record's own owner id. This is engine code over
+  `spi.KeyValueStore`, so it behaved the same on every backend.
+  ([#587](https://github.com/cyoda/cyoda-go/issues/587))
+
+- **A `500` from `POST /oauth/token` carries a ticket.** The endpoint's
+  four `server_error` paths emitted the bare RFC 6749 §5.2 pair and logged
+  nothing correlatable, so an operator had no way to tie a caller's report
+  to a log record. The ticket now rides in `error_description` as
+  `server_error [ticket: <uuid>]` — the RFC fixes the body shape and has no
+  dedicated field — and the same ticket is logged with the underlying
+  cause, which stays out of the response. No OpenAPI change:
+  `error_description` is already a declared string.
+  ([#588](https://github.com/cyoda/cyoda-go/issues/588))
 
 ## [0.8.4] — 2026-09-09
 

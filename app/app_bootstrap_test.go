@@ -5,6 +5,9 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 // TestBootstrapSecret_JwtMode_IDSetSecretUnset_Rejects verifies that in jwt mode,
@@ -80,4 +83,73 @@ func bootstrapTestConfig(iamMode, clientID, clientSecret string) *Config {
 	cfg.Bootstrap.ClientID = clientID
 	cfg.Bootstrap.ClientSecret = clientSecret
 	return &cfg
+}
+
+// TestValidateBootstrapConfig_TenantGrammar pins door 2. A bootstrap tenant is
+// operator-supplied configuration, so it is validated at startup and the
+// process refuses to come up rather than running with a tenant that cannot be
+// addressed consistently.
+func TestValidateBootstrapConfig_TenantGrammar(t *testing.T) {
+	base := func(tenant string) *Config {
+		cfg := DefaultConfig()
+		cfg.IAM.Mode = "jwt"
+		cfg.Bootstrap.ClientID = "bootstrap-client"
+		cfg.Bootstrap.ClientSecret = "bootstrap-secret"
+		cfg.Bootstrap.TenantID = tenant
+		return &cfg
+	}
+
+	for name, tenant := range map[string]string{
+		"traversal": "../victim",
+		"slash":     "a/b",
+		"empty":     "",
+		"too-long":  strings.Repeat("x", 101),
+	} {
+		t.Run("reject/"+name, func(t *testing.T) {
+			if _, err := validateBootstrapConfig(base(tenant)); err == nil {
+				t.Fatalf("validateBootstrapConfig accepted tenant %q", tenant)
+			}
+		})
+	}
+
+	for _, tenant := range []string{"default-tenant", "SYSTEM", "1a2b3c4d-5e6f-4a8b-9c0d-1e2f3a4b5c6d"} {
+		t.Run("accept/"+tenant, func(t *testing.T) {
+			if _, err := validateBootstrapConfig(base(tenant)); err != nil {
+				t.Fatalf("validateBootstrapConfig(%q) = %v, want nil", tenant, err)
+			}
+		})
+	}
+}
+
+// TestValidateBootstrapConfig_EmptyTenantWithoutBootstrapClient guards the one
+// deployment shape the check could otherwise break. envString uses LookupEnv,
+// so an explicitly-empty CYODA_BOOTSTRAP_TENANT_ID overrides the default — and
+// a deployment that configures no bootstrap client never consumes the tenant
+// at all, so it must still start.
+func TestValidateBootstrapConfig_EmptyTenantWithoutBootstrapClient(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.IAM.Mode = "jwt"
+	cfg.Bootstrap.ClientID = ""
+	cfg.Bootstrap.ClientSecret = ""
+	cfg.Bootstrap.TenantID = ""
+
+	if _, err := validateBootstrapConfig(&cfg); err != nil {
+		t.Fatalf("validateBootstrapConfig = %v, want nil when no bootstrap client is configured", err)
+	}
+}
+
+// TestShippedTenantConstantsSatisfyGrammar stops a later change to a default
+// from producing a binary that cannot start, or a mock mode that cannot
+// authenticate.
+func TestShippedTenantConstantsSatisfyGrammar(t *testing.T) {
+	cfg := DefaultConfig()
+	for name, id := range map[string]spi.TenantID{
+		"spi.SystemTenantID":             spi.SystemTenantID,
+		"IAM.MockTenantID":               spi.TenantID(cfg.IAM.MockTenantID),
+		"CYODA_BOOTSTRAP_TENANT_ID dflt": spi.TenantID(cfg.Bootstrap.TenantID),
+	} {
+		if err := common.ValidateTenantID(id); err != nil {
+			t.Errorf("%s (%q) fails the tenant grammar: %v", name, id, err)
+		}
+	}
 }

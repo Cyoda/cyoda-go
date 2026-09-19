@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -310,6 +311,89 @@ func TestJWKSValidator_PrincipalKind(t *testing.T) {
 			}
 			if uc.Kind != tt.wantKnd {
 				t.Errorf("Kind = %q, want %q", uc.Kind, tt.wantKnd)
+			}
+		})
+	}
+}
+
+// TestValidator_RejectsTenantOutsideGrammar pins door 1: the caas_org_id claim
+// is the one place a tenant id enters cyoda-go on a request, covering HTTP and
+// gRPC alike, so a claim outside the grammar must not produce a UserContext.
+func TestValidator_RejectsTenantOutsideGrammar(t *testing.T) {
+	key, kid, srv := setupTestJWKS(t)
+	defer srv.Close()
+
+	issuer := "test-issuer"
+	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+
+	for name, org := range map[string]string{
+		"traversal": "../victim",
+		"dotdot":    "..",
+		"slash":     "a/b",
+		"colon":     "a:b",
+		"newline":   "tenant\ninjected",
+		"nul":       "tenant\x00",
+		"too-long":  strings.Repeat("x", 101),
+	} {
+		t.Run(name, func(t *testing.T) {
+			claims := map[string]any{
+				"iss":          issuer,
+				"exp":          float64(time.Now().Add(time.Hour).Unix()),
+				"iat":          float64(time.Now().Unix()),
+				"caas_user_id": "user-1",
+				"caas_org_id":  org,
+				"scopes":       []any{"read"},
+			}
+			tok := signTestToken(t, key, kid, claims)
+
+			uc, err := v.Validate(tok)
+			if err == nil {
+				t.Fatalf("Validate accepted tenant %q, got UserContext %+v", org, uc)
+			}
+			if uc != nil {
+				t.Errorf("Validate returned a UserContext alongside an error: %+v", uc)
+			}
+			if strings.Contains(err.Error(), org) {
+				t.Errorf("validator error echoes the rejected tenant: %q", err.Error())
+			}
+		})
+	}
+}
+
+// TestValidator_AcceptsShippedTenantShapes is the regression half: the grammar
+// must not lock out anything that authenticates today.
+func TestValidator_AcceptsShippedTenantShapes(t *testing.T) {
+	key, kid, srv := setupTestJWKS(t)
+	defer srv.Close()
+
+	issuer := "test-issuer"
+	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+
+	for _, org := range []string{
+		"SYSTEM",
+		"default-tenant",
+		"mock-tenant",
+		"tenant-abc-123",
+		"9f8c7b6a5d4e3f2a1b0c9d8e7f6a5b4c",
+		"1a2b3c4d-5e6f-4a8b-9c0d-1e2f3a4b5c6d",
+	} {
+		t.Run(org, func(t *testing.T) {
+			claims := map[string]any{
+				"iss":          issuer,
+				"exp":          float64(time.Now().Add(time.Hour).Unix()),
+				"iat":          float64(time.Now().Unix()),
+				"caas_user_id": "user-1",
+				"caas_org_id":  org,
+				"scopes":       []any{"read"},
+			}
+			tok := signTestToken(t, key, kid, claims)
+
+			uc, err := v.Validate(tok)
+			if err != nil {
+				t.Fatalf("Validate(%q) = %v, want nil", org, err)
+			}
+			if string(uc.Tenant.ID) != org {
+				t.Errorf("tenant = %q, want %q", uc.Tenant.ID, org)
 			}
 		})
 	}

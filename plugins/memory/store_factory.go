@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -111,9 +112,14 @@ type StoreFactory struct {
 	// because the stamp refuses an empty transaction id.
 	smAuditTxIndex map[spi.TenantID]map[string][]auditEventRef
 	blobDir        string
-	txManager      *TransactionManager
-	searchStore    *AsyncSearchStore
-	applyFunc      ApplyFunc
+	// blobRoot confines every blob operation to blobDir at the OS level.
+	// Encoding governs the name a blob can have; the root governs what that
+	// name is allowed to resolve to, which is what a symlink planted under
+	// blobDir would otherwise subvert.
+	blobRoot    *os.Root
+	txManager   *TransactionManager
+	searchStore *AsyncSearchStore
+	applyFunc   ApplyFunc
 
 	// uniqueClaims and claimsByEntity maintain the in-memory unique-key claim index.
 	// Both are guarded by entityMu (write lock for mutation, read lock for lookup).
@@ -133,6 +139,13 @@ func NewStoreFactory(opts ...Option) *StoreFactory {
 	if err != nil {
 		panic(fmt.Sprintf("failed to create blob temp dir: %v", err))
 	}
+	blobRoot, err := os.OpenRoot(blobDir)
+	if err != nil {
+		// The temp tree has already been created; unwinding it here is the
+		// only chance to, since no factory exists to Close.
+		os.RemoveAll(blobDir)
+		panic(fmt.Sprintf("failed to open blob root: %v", err))
+	}
 	f := &StoreFactory{
 		clock:          wallClock{},
 		entityData:     make(map[spi.TenantID]map[string][]entityVersion),
@@ -144,6 +157,7 @@ func NewStoreFactory(opts ...Option) *StoreFactory {
 		smAudit:        make(map[spi.TenantID]map[string][]spi.StateMachineEvent),
 		smAuditTxIndex: make(map[spi.TenantID]map[string][]auditEventRef),
 		blobDir:        blobDir,
+		blobRoot:       blobRoot,
 		uniqueClaims:   make(map[claimKey]string),
 		claimsByEntity: make(map[entityTenantKey][]claimKey),
 		scheduledTasks: make(map[string]spi.ScheduledTask),
@@ -228,7 +242,19 @@ func (f *StoreFactory) ScheduledTaskStore(_ context.Context) (spi.ScheduledTaskS
 }
 
 func (f *StoreFactory) Close() error {
-	return os.RemoveAll(f.blobDir)
+	// Close the root before removing the tree: on Windows an open handle
+	// blocks the removal. NewStoreFactory panics if OpenRoot fails, so
+	// blobRoot is never nil on a constructed factory and no nil check is
+	// warranted; a second Close is harmless, as os.Root.Close is idempotent.
+	//
+	// The removal runs whatever the close returned: this is a cleanup path, and
+	// returning early on a close error would strand the temp tree with nothing
+	// left to retry it. Both errors are reported.
+	closeErr := f.blobRoot.Close()
+	if closeErr != nil {
+		closeErr = fmt.Errorf("failed to close blob root: %w", closeErr)
+	}
+	return errors.Join(closeErr, os.RemoveAll(f.blobDir))
 }
 
 // releaseClaims removes all unique-key claims held by (tenantID, entityID) from

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
+	"sync"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -261,52 +263,193 @@ func TestMessageSave_FailureDoesNotLeaveMetadata(t *testing.T) {
 	}
 }
 
-// TestMessageStoreRejectsPathTraversal pins the blob-path confinement.
+// TestMessageStore_EmptyTenantRefusedByFactory pins the invariant the blob
+// layer relies on instead of re-checking it: hex("") is "", which would
+// collapse a tenant directory into the blob root, so the factory must never
+// hand out a store with an empty tenant. MessageStore is constructed in
+// exactly one place (store_factory.go MessageStore), behind resolveTenant.
+func TestMessageStore_EmptyTenantRefusedByFactory(t *testing.T) {
+	f := memory.NewStoreFactory()
+	defer f.Close()
+
+	if _, err := f.MessageStore(ctxWithTenant("")); err == nil {
+		t.Fatal("MessageStore accepted an empty tenant")
+	}
+}
+
+// TestMessageStore_SaveRejectsEmptyID is the id half of the same invariant.
+// hex("") is "", so an empty id names the tenant directory itself rather than a
+// blob in it. Save has to state that as a precondition on its argument: left to
+// the filesystem it still fails, but as
+// "failed to rename blob file: renameat 70726f6265/tmp-…  70726f6265/: not a
+// directory" — an error that describes neither the caller's mistake nor
+// anything the caller can act on, and leaks the encoded layout doing it. The
+// assertion is therefore on the message, not merely on non-nil.
+func TestMessageStore_SaveRejectsEmptyID(t *testing.T) {
+	f := memory.NewStoreFactory()
+	defer f.Close()
+
+	ctx := ctxWithTenant("tenant-empty-id")
+	store, err := f.MessageStore(ctx)
+	if err != nil {
+		t.Fatalf("MessageStore: %v", err)
+	}
+	err = store.Save(ctx, "", spi.MessageHeader{}, spi.MessageMetaData{},
+		bytes.NewBufferString("payload"))
+	if err == nil {
+		t.Fatal("Save accepted an empty message id")
+	}
+	if !strings.Contains(err.Error(), "message id") {
+		t.Errorf("Save(%q) = %v; want an error naming the message id", "", err)
+	}
+}
+
+// blobPayload is the uniform payload writer w publishes, and the size every
+// concurrency test in this file agrees on.
+const blobPayloadSize = 256
+
+func blobPayload(w string) string { return strings.Repeat(w, blobPayloadSize) }
+
+// TestMessageStore_ConcurrentGetPairsHeaderWithBlob is the READ half of the
+// atomicity Save promises, and it needs a reader running concurrently with the
+// writers to see it — TestMessageStore_ConcurrentSaveSameID below only reads
+// after wg.Wait(), when no rename can still be in flight, so it cannot.
 //
-// The message id is caller-supplied through the SPI and reaches the filesystem
-// as a path segment. filepath.Join cleans a path but does not confine it, so a
-// ".." id previously escaped the blob directory — and Delete removes whatever
-// the path resolves to. Save and Get are covered too: a traversing id must not
-// be able to write outside the tenant directory or read a file back from it.
-func TestMessageStoreRejectsPathTraversal(t *testing.T) {
-	factory := memory.NewStoreFactory()
-	defer factory.Close()
-	ctx := ctxWithTenant("tenant-A")
-	store, err := factory.MessageStore(ctx)
+// Get copies the header and metadata from the map and opens the blob. If those
+// two steps do not share one critical section, a Save that wins the write lock
+// between them renames a new blob into place and the reader returns one
+// writer's header with another writer's payload. Every Get here must report a
+// single writer across header, metadata and bytes.
+func TestMessageStore_ConcurrentGetPairsHeaderWithBlob(t *testing.T) {
+	f := memory.NewStoreFactory()
+	defer f.Close()
+
+	ctx := ctxWithTenant("pairing-tenant")
+	store, err := f.MessageStore(ctx)
 	if err != nil {
 		t.Fatalf("MessageStore: %v", err)
 	}
 
-	evil := []string{
-		"../escape",
-		"../../escape",
-		"a/../../escape",
-		"sub/dir",
-		"..",
-		".",
-		"",
+	const id = "contended"
+	save := func(w string) error {
+		return store.Save(ctx, id, spi.MessageHeader{Subject: w},
+			spi.MessageMetaData{Values: map[string]any{"who": w}},
+			strings.NewReader(blobPayload(w)))
 	}
-	for _, id := range evil {
-		t.Run("save/"+id, func(t *testing.T) {
-			err := store.Save(ctx, id, spi.MessageHeader{}, spi.MessageMetaData{},
-				bytes.NewReader([]byte("payload")))
-			if err == nil {
-				t.Fatalf("Save(%q) succeeded; want rejection", id)
+
+	// Seed, so the first read always finds a message.
+	if err := save("A"); err != nil {
+		t.Fatalf("seed Save: %v", err)
+	}
+
+	stop := make(chan struct{})
+	var writers, readers sync.WaitGroup
+
+	for _, w := range []string{"A", "B"} {
+		writers.Add(1)
+		go func(w string) {
+			defer writers.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if err := save(w); err != nil {
+					t.Errorf("Save(%q): %v", w, err)
+					return
+				}
 			}
-		})
-		t.Run("get/"+id, func(t *testing.T) {
-			if _, _, _, err := store.Get(ctx, id); err == nil {
-				t.Fatalf("Get(%q) succeeded; want rejection", id)
+		}(w)
+	}
+
+	for r := 0; r < 4; r++ {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for i := 0; i < 3000; i++ {
+				header, meta, rc, err := store.Get(ctx, id)
+				if err != nil {
+					t.Errorf("Get: %v", err)
+					return
+				}
+				got, readErr := io.ReadAll(rc)
+				rc.Close()
+				if readErr != nil {
+					t.Errorf("read blob: %v", readErr)
+					return
+				}
+				if len(got) == 0 {
+					t.Error("Get returned an empty blob")
+					return
+				}
+				wrote := string(got[:1])
+				if string(got) != blobPayload(wrote) {
+					t.Errorf("payload is torn: starts %q but is not uniform", wrote)
+					return
+				}
+				if header.Subject != wrote || meta.Values["who"] != wrote {
+					t.Errorf("Get paired header %q and metadata %v with a blob written by %q",
+						header.Subject, meta.Values["who"], wrote)
+					return
+				}
 			}
-		})
-		t.Run("delete/"+id, func(t *testing.T) {
-			// Delete is best-effort by contract and returns nil, but it must
-			// not remove anything outside the tenant directory. The assertion
-			// that matters is that it does not panic or escape; blobPath
-			// returning an error makes the os.Remove unreachable.
-			if err := store.Delete(ctx, id); err != nil {
-				t.Fatalf("Delete(%q) = %v; want nil (best-effort)", id, err)
+		}()
+	}
+
+	readers.Wait()
+	close(stop)
+	writers.Wait()
+}
+
+// TestMessageStore_ConcurrentSaveSameID asserts Save is atomic across its blob
+// rename and its metadata insert: whichever writer wins, the payload the
+// reader gets must be the one that writer wrote, never a mix.
+func TestMessageStore_ConcurrentSaveSameID(t *testing.T) {
+	f := memory.NewStoreFactory()
+	defer f.Close()
+
+	ctx := ctxWithTenant("concurrent-tenant")
+	store, err := f.MessageStore(ctx)
+	if err != nil {
+		t.Fatalf("MessageStore: %v", err)
+	}
+
+	const id = "contended"
+	payloads := []string{blobPayload("A"), blobPayload("B")}
+
+	var wg sync.WaitGroup
+	for _, p := range payloads {
+		wg.Add(1)
+		go func(p string) {
+			defer wg.Done()
+			if err := store.Save(ctx, id, spi.MessageHeader{Subject: p[:1]},
+				spi.MessageMetaData{Values: map[string]any{"who": p[:1]}},
+				strings.NewReader(p)); err != nil {
+				t.Errorf("Save: %v", err)
 			}
-		})
+		}(p)
+	}
+	wg.Wait()
+
+	header, meta, rc, err := store.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	got, _ := io.ReadAll(rc)
+	rc.Close()
+
+	if len(got) == 0 {
+		t.Fatal("blob is empty: neither writer's payload survived")
+	}
+	winner := string(got[:1])
+	if string(got) != blobPayload(winner) {
+		t.Fatalf("payload is torn: starts %q but is not uniform", winner)
+	}
+	if header.Subject != winner {
+		t.Errorf("header came from %q but the blob from %q", header.Subject, winner)
+	}
+	if meta.Values["who"] != winner {
+		t.Errorf("metadata came from %v but the blob from %q", meta.Values["who"], winner)
 	}
 }

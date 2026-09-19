@@ -79,8 +79,9 @@ func (a *DelegatingAuthenticator) Authenticate(_ context.Context, r *http.Reques
 
 // logAuthFailure emits exactly one structured slog.Warn record describing the
 // authentication failure. The detail err (if any) is the validator's
-// description of *why* the token failed — this never contains the raw token
-// (validator errors only reference kid/issuer/aud/algorithm); see
+// description of *why* the token failed — validator errors never carry a raw
+// claim value, only structural detail such as kid/issuer/aud/algorithm or a
+// tenant-grammar rejection reason and byte offset; see
 // internal/auth/validator.go and EnsureAlgRS256.
 func logAuthFailure(r *http.Request, reason string, detail error) {
 	attrs := []any{

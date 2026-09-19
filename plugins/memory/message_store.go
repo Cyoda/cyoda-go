@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -56,93 +54,71 @@ type MessageStore struct {
 	factory *StoreFactory
 }
 
-// blobPath resolves the on-disk path for a message blob and confines it to the
-// store's tenant directory.
-//
-// The message id is caller-supplied through the SPI, and filepath.Join cleans a
-// path without constraining it — a ".." segment escapes blobDir entirely. That
-// matters most for Delete, which removes whatever the path resolves to, but the
-// read and write paths are confined through here too so the invariant holds in
-// one place rather than three. The tenant is folded into the same check because
-// it also reaches the filesystem as a path segment.
-func (s *MessageStore) blobPath(id string) (string, error) {
-	if id == "" || id == "." || id == ".." || strings.ContainsAny(id, `/\`) {
-		return "", fmt.Errorf("invalid message id")
-	}
-	tenant := string(s.tenant)
-	if tenant == "" || tenant == "." || tenant == ".." || strings.ContainsAny(tenant, `/\`) {
-		return "", fmt.Errorf("invalid tenant id")
-	}
-	root := s.factory.blobDir
-	p := filepath.Join(root, tenant, id)
-	rel, err := filepath.Rel(root, p)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("invalid message id")
-	}
-	return p, nil
-}
-
-// tenantBlobDir is blobPath's directory half, for the write path's MkdirAll.
-func (s *MessageStore) tenantBlobDir() (string, error) {
-	p, err := s.blobPath("placeholder")
-	if err != nil {
-		return "", err
-	}
-	return filepath.Dir(p), nil
-}
-
+// Blob I/O goes through the factory's *os.Root and the hex names in
+// blob_path.go. Encoding governs what a name can be; the root governs what
+// that name is allowed to resolve to. Neither subsumes the other — a symlink
+// planted under the blob directory is the root's job, a case-only collision
+// between two tenant directories is the encoding's — and between them a
+// traversing or colliding name is unrepresentable rather than rejected, so
+// there is no spelling check left to keep in step.
 func (s *MessageStore) Save(_ context.Context, id string, header spi.MessageHeader, metaData spi.MessageMetaData, payload io.Reader) error {
-	f := s.factory
-
-	// Step 1: Write blob to a temp file OUTSIDE the lock.
-	tenantDir, err := s.tenantBlobDir()
-	if err != nil {
-		return err
+	if id == "" {
+		// The one precondition the encoding cannot express: hex("") is "",
+		// which names the tenant directory itself rather than a blob in it.
+		// The empty TENANT is refused earlier, by the factory.
+		return fmt.Errorf("message id must not be empty")
 	}
-	if err := os.MkdirAll(tenantDir, 0755); err != nil {
+
+	f := s.factory
+	root := f.blobRoot
+
+	// Step 1: write the blob to a temp file OUTSIDE the lock.
+	dir := tenantBlobDir(s.tenant)
+	if err := root.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("failed to create tenant blob dir: %w", err)
 	}
 
-	tmpFile, err := os.CreateTemp(tenantDir, ".tmp-*")
+	tmpFile, tmpName, err := createTempBlob(root, dir)
 	if err != nil {
-		return fmt.Errorf("failed to create temp blob file: %w", err)
+		return err
 	}
-	tmpPath := tmpFile.Name()
 
 	if _, err := io.Copy(tmpFile, payload); err != nil {
 		tmpFile.Close()
-		os.Remove(tmpPath)
+		root.Remove(tmpName)
 		return fmt.Errorf("failed to write blob payload: %w", err)
 	}
-
 	if err := tmpFile.Close(); err != nil {
-		os.Remove(tmpPath)
+		root.Remove(tmpName)
 		return fmt.Errorf("failed to close temp blob file: %w", err)
 	}
 
-	// Step 2: Atomic rename to final path (POSIX atomic).
-	blobPath, err := s.blobPath(id)
-	if err != nil {
-		os.Remove(tmpPath)
+	// Steps 2 and 3 share one critical section. The rename and the metadata
+	// insert have to land together: two concurrent saves of the same id would
+	// otherwise be free to interleave and leave one writer's blob paired with
+	// the other's header. The payload copy above stays outside the lock, which
+	// is what the split was for.
+	if err := func() error {
+		f.msgMu.Lock()
+		defer f.msgMu.Unlock()
+
+		if err := root.Rename(tmpName, blobName(s.tenant, id)); err != nil {
+			return fmt.Errorf("failed to rename blob file: %w", err)
+		}
+		tenantMap := f.msgData[s.tenant]
+		if tenantMap == nil {
+			tenantMap = make(map[string]*messageEntry)
+			f.msgData[s.tenant] = tenantMap
+		}
+		tenantMap[id] = &messageEntry{
+			header:   header,
+			metaData: copyMessageMetaData(metaData),
+		}
+		return nil
+	}(); err != nil {
+		root.Remove(tmpName)
 		return err
 	}
-	if err := os.Rename(tmpPath, blobPath); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("failed to rename blob file: %w", err)
-	}
-
-	// Step 3: Acquire lock ONLY for metadata map insertion.
-	f.msgMu.Lock()
-	tenantMap := f.msgData[s.tenant]
-	if tenantMap == nil {
-		tenantMap = make(map[string]*messageEntry)
-		f.msgData[s.tenant] = tenantMap
-	}
-	tenantMap[id] = &messageEntry{
-		header:   header,
-		metaData: copyMessageMetaData(metaData),
-	}
-	f.msgMu.Unlock()
 
 	return nil
 }
@@ -150,29 +126,42 @@ func (s *MessageStore) Save(_ context.Context, id string, header spi.MessageHead
 func (s *MessageStore) Get(_ context.Context, id string) (spi.MessageHeader, spi.MessageMetaData, io.ReadCloser, error) {
 	f := s.factory
 
-	// Copy metadata under lock.
-	f.msgMu.RLock()
-	tenantMap := f.msgData[s.tenant]
-	entry, ok := tenantMap[id]
+	// The metadata copy and the blob OPEN share one critical section, the
+	// mirror of Save's rename-plus-insert. Copying the header under the read
+	// lock and opening the blob after releasing it would let a Save that won
+	// the write lock in between rename a new blob into place, and this reader
+	// would return one writer's header with another writer's payload — the
+	// exact pairing Save is at pains to make atomic.
+	//
+	// Holding the read lock across the openat is the same order of work Save
+	// already holds the write lock across for its renameat. Nothing is held
+	// for the duration of the READ: once the fd exists it refers to that
+	// inode, so a later rename over the name cannot change what this reader
+	// sees, and the lock is gone before a single byte is delivered.
 	var header spi.MessageHeader
 	var metaData spi.MessageMetaData
-	if ok {
+	var file *os.File
+	if err := func() error {
+		f.msgMu.RLock()
+		defer f.msgMu.RUnlock()
+
+		entry, found := f.msgData[s.tenant][id]
+		if !found {
+			// Answered from the map alone: an id that was never saved does
+			// not reach the filesystem.
+			return spi.ErrNotFound
+		}
 		header = entry.header
 		metaData = copyMessageMetaData(entry.metaData)
-	}
-	f.msgMu.RUnlock()
 
-	if !ok {
-		return spi.MessageHeader{}, spi.MessageMetaData{}, nil, spi.ErrNotFound
-	}
-
-	blobPath, err := s.blobPath(id)
-	if err != nil {
+		var openErr error
+		file, openErr = f.blobRoot.Open(blobName(s.tenant, id))
+		if openErr != nil {
+			return fmt.Errorf("failed to open blob file: %w", openErr)
+		}
+		return nil
+	}(); err != nil {
 		return spi.MessageHeader{}, spi.MessageMetaData{}, nil, err
-	}
-	file, err := os.Open(blobPath)
-	if err != nil {
-		return spi.MessageHeader{}, spi.MessageMetaData{}, nil, fmt.Errorf("failed to open blob file: %w", err)
 	}
 
 	return header, metaData, &idempotentCloser{rc: file}, nil
@@ -181,18 +170,26 @@ func (s *MessageStore) Get(_ context.Context, id string) (spi.MessageHeader, spi
 func (s *MessageStore) Delete(_ context.Context, id string) error {
 	f := s.factory
 
-	// Remove metadata under lock.
-	f.msgMu.Lock()
-	tenantMap := f.msgData[s.tenant]
-	if tenantMap != nil {
-		delete(tenantMap, id)
-	}
-	f.msgMu.Unlock()
+	// The metadata removal and the unlink share one critical section, the
+	// third side of the pairing Save and Get establish. Unlinking after
+	// releasing the lock would let a concurrent Save of the same id land in
+	// between — inserting fresh metadata and renaming a fresh blob into place —
+	// and this unlink would then take that blob out from under it, leaving
+	// metadata with no blob and turning a later Get into an open error instead
+	// of spi.ErrNotFound. Save already holds the write lock across a renameat,
+	// so an unlinkat here sets no new precedent.
+	//
+	// The unlink stays best-effort: the metadata removal is what makes the
+	// message gone, and an already-absent blob is not an error.
+	func() {
+		f.msgMu.Lock()
+		defer f.msgMu.Unlock()
 
-	// Remove blob file outside lock (best-effort).
-	if blobPath, err := s.blobPath(id); err == nil {
-		os.Remove(blobPath)
-	}
+		if tenantMap := f.msgData[s.tenant]; tenantMap != nil {
+			delete(tenantMap, id)
+		}
+		f.blobRoot.Remove(blobName(s.tenant, id))
+	}()
 
 	return nil
 }
