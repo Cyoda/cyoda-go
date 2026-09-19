@@ -26,7 +26,8 @@ depends on it.
   `DispatchCriteria`, `DispatchFunction` (R§2.1).
 - **Try** — one attempt to hand a callout's work to one chosen cnode, whether or
   not the hand-off succeeds. Looking for a cnode and finding none is *not* a
-  try, and neither is failing to reach another pnode.
+  try, and neither is failing to *connect to* another pnode. A hand-over whose
+  answer is lost counts as one try: the other pnode may have chosen a cnode.
 - **Hand-off** — `Member.Send` returning nil: the single writer goroutine has
   taken the event from the member's unbuffered outbox (R§11). Before it, the
   work provably never left the pnode. After it, the work may have reached the
@@ -62,9 +63,9 @@ depends on it.
 | D3 | `retryPolicy` selects the number of tries: `NONE` → 1; `FIXED` or unset → 1 + `CYODA_RETRY_FIXED_NUM_RETRIES`. It is added to `spi.ScheduleFunction` and validated at import on criteria and functions as it already is on processors. |
 | D4 | Every pnode runs the same **local procedure** over its own cnodes. There is no pause between cnodes. The next cnode is chosen by a replaceable selector; the first is round robin. |
 | D5 | The owner runs the local procedure first, then hands the callout to one alive pnode advertising the tag **with the tries left**. A pnode that receives a hand-over runs the local procedure only and never hands on. |
-| D6 | The number of tries is the normal number, not a hard limit. A lost hand-over answer counts as one try. |
+| D6 | The number of tries is the normal number, not a hard limit: a lost hand-over answer counts as one try. The **time** a callout may take is a hard limit, fixed when it starts. |
 | D7 | **Patience** is separate from tries. `CYODA_DISPATCH_WAIT_TIMEOUT` is kept and becomes the one waiting mechanism: single pnode and cluster, regardless of `retryPolicy`, event-driven, one allowance per callout. `CYODA_RETRY_FIXED_DELAY_MS` from #254 is not introduced. |
-| D8 | A pass names its callout. When a callout ends the owner closes it and then drains the transaction's gate; a callback bearing a closed callout's pass is refused. |
+| D8 | A pass names its callout and is valid only while that callout is open on the owner. When the callout ends the owner drains the transaction's gate; a joined operation bearing an ended callout's pass is refused on entry, and abandoned if it comes back from a nested callout. |
 | D9 | The hand-over carries the request id, tries left, answer limit and owner id; its answer states explicitly whether there was a hand-off, and is authenticated and encrypted like the request. |
 | D10 | The default answer limit and an upper bound on it become configuration (#565). |
 | D11 | Tenants and tags leave the 512-byte memberlist node metadata. The metadata keeps identity and a list version; lists travel by reliable message and are fetched by any pnode that is behind. |
@@ -148,8 +149,11 @@ a `*CalloutFailure`, `TriesUsed`, and `Attempts`.
 - Every try sends the same `RequestID` as CloudEvent `id` and as `requestId`.
   Correlation is per member (R§2.3), so two tries in flight cannot be confused.
 - Every try mints its own pass (§7).
-- Between tries `RunLocal` checks `ctx.Err()`, so a cancelled owner, a client
-  that went away, or a pnode shutting down ends the procedure promptly.
+- Between tries `RunLocal` checks `ctx.Err()`, so a cancelled owner or a client
+  that went away ends the procedure promptly. A pnode shutting down does not:
+  `http.Server.Shutdown` waits for requests in progress without cancelling their
+  contexts (`cmd/cyoda/run.go`), so a callout in progress runs on until the
+  drain budget is spent, as today.
 - When no untried matching cnode remains it returns `NoHandOff` with the tries
   it used. It does not wait; waiting is the owner's (§6).
 
@@ -159,17 +163,20 @@ selector:
 
 ```go
 type MemberSelector interface {
-    // Select picks one of candidates (never empty). key identifies the
-    // (tenant, tags) pair the choice is being made for.
-    Select(key string, candidates []*Member) *Member
+    // Select picks one of candidates (never empty; already-tried cnodes are
+    // not among them).
+    Select(candidates []*Member) *Member
 }
 ```
 
-`RoundRobinSelector` keeps, per key, the id it returned last and returns the
-candidate after it in the stable order (the first if that id is gone). Its map
-is bounded by dropping a key when `Candidates` for it is empty. No test today
-depends on which of several matching cnodes is chosen (R§11). The peer selector
-(`PeerSelector`, random) is unchanged.
+`RoundRobinSelector` returns the candidate that was picked longest ago, ties
+broken by the stable order, and stamps it. The stamp is a field on `Member`, set
+from one counter on the registry, so there is no per-tag state to grow — tag
+strings are tenant-supplied — and cnodes that come and go are handled without
+bookkeeping: a new one has never been picked and goes first. `RunLocal` passes
+the selector only the candidates it has not tried, so "never twice" and the
+selector compose. No test today depends on which of several matching cnodes is
+chosen (R§11). The peer selector (`PeerSelector`, random) is unchanged.
 
 ## 5. The owner's loop (`internal/callout`, new)
 
@@ -181,21 +188,23 @@ pnode mode its peer router is nil. `TracingExternalProcessingService` still wrap
 the outside.
 
 ```
-resolve tries from retryPolicy (D3); create RequestID; start patience clock at 0
+resolve tries from retryPolicy (D3); create RequestID; open the callout (§7)
+deadline := now + tries × answer limit + patience + hand-over allowance
 loop:
+    take both Changed() channels            # before looking, so no wake-up is lost
     r := local.RunLocal(ctx, call, triesLeft)            # §4
     triesLeft -= r.TriesUsed; record r.Attempts
     if r ok                      -> return result
     if r stops (table in §3)     -> return failure        # §8 decides the error
-    if triesLeft == 0            -> return exhaustion
+    if triesLeft <= 0            -> return exhaustion
     for each alive peer advertising the tag, in selector order, not yet asked
     in this pass:
         a := peers.HandOver(ctx, peer, call, triesLeft)   # §6
         triesLeft -= a.TriesUsed; record a.Attempts
-        if a ok / a stops / triesLeft == 0 -> as above
-    # nothing anywhere had a cnode to offer
-    if patience used up          -> return NO_COMPUTE_MEMBER_FOR_TAG
-    wait for a membership change, or the rest of the patience, or ctx
+        if a ok / a stops / triesLeft <= 0 -> as above
+    # no cnode anywhere took the work in this pass
+    if patience used up or deadline passed -> return per the precedence below
+    wait for either channel, or the rest of the patience, or ctx
     start a new pass (the asked set is cleared)
 ```
 
@@ -204,13 +213,27 @@ loop:
   `MemberRegistry` and the node registry each expose `Changed() <-chan struct{}`,
   a channel closed and replaced on every change (a cnode attaching or detaching
   locally; a peer's list arriving, a peer joining or leaving). The allowance is
-  cumulative across the callout: `CYODA_DISPATCH_WAIT_TIMEOUT` in total, not per
-  wait. `0` disables waiting.
+  cumulative across the callout and counts elapsed waiting time:
+  `CYODA_DISPATCH_WAIT_TIMEOUT` in total, not per wait. `0` disables waiting. A
+  pass that made tries may still wait: a cnode that dropped and is coming back
+  is the case the patience exists for.
+- **Precedence when nothing more can be done.** If the callout recorded any
+  attempt, the error reports the attempts (the single attempt's own code, or
+  `CALLOUT_TRIES_EXHAUSTED` with the list). `NO_COMPUTE_MEMBER_FOR_TAG` is
+  returned only when no try was ever made.
+- **A hard limit on time, though not on tries (D6).** A lost hand-over answer
+  counts one try while the peer may have made more, so the *number* of tries can
+  exceed the setting. The *time* cannot: the deadline above is fixed when the
+  callout starts, no try or hand-over starts after it, and one in progress is
+  cut off at it (as `NoAnswer`). Without it a peer that hangs on every hand-over
+  would cost `(4+3+2+1) × 30 s + 4 × 30 s` = 7 minutes at the defaults, past
+  PostgreSQL's five-minute ceiling.
 - `findPeerWithPolling` and its 200 ms poll are deleted. `forwardWithFailover`
   is deleted; its behaviour on an unreachable peer is the loop's "uses no try,
   ask the next".
-- **Worst case** for one callout, normal case: `tries × answer limit +
-  patience`, plus one connect timeout per unreachable peer per pass.
+- **Worst case** for one callout: `tries × answer limit + patience + hand-over
+  allowance` — at the defaults 4 × 30 s + 5 s + 30 s = 155 s; at the upper bound
+  of the answer limit, 4 × 60 s + 35 s = 275 s.
 
 ## 6. The hand-over (`internal/cluster/dispatch`)
 
@@ -249,77 +272,126 @@ made more; that is the case in which the total exceeds the setting. **A connecti
 opened** — `*net.OpError` with `Op == "dial"`, including the connect timeout —
 is `no_handoff` and uses no try.
 
+`triesUsed` is accepted only when `0 ≤ triesUsed ≤ triesLeft`; anything else
+makes the answer `no_answer`. A refusal by the peer's handler before it does
+anything — 403 for a failed or replayed authentication, which includes pnode
+clocks more than 30 s apart — is a non-2xx and therefore `no_answer` too: it
+cannot be authenticated, so it is not taken as proof. Clocks that far apart fail
+non-repeat-safe operations rather than being quietly routed around.
+
 **Transport.**
-- The forwarder sets `Request.GetBody`, so `net/http` retries the one case it can
-  prove wrote nothing (a stale pooled connection) instead of reporting it as an
-  ambiguous failure.
+- **Every hand-over opens its own connection** (`DisableKeepAlives` on the
+  hand-over transport). With a kept-alive connection a peer that died is
+  discovered only when the read fails — after the whole wait, and
+  indistinguishable from a peer that took the work and then died. With a fresh
+  connection the rule "could not connect → no hand-off" is the whole rule. The
+  cost is one TCP handshake per hand-over.
 - A connect timeout separate from the wait: `CYODA_DISPATCH_CONNECT_TIMEOUT`,
   default `2s`, on the transport's dialer.
 - The owner's wait for the answer is `triesLeft × answerLimit +
-  CYODA_DISPATCH_FORWARD_TIMEOUT`. That setting's meaning narrows from "the whole
-  wait" to "the allowance on top of what the cnodes may take"; its default (30 s)
-  and its use by the scheduler RPC client are unchanged. The forwarder therefore
-  takes a per-request deadline from `ctx` rather than a client-wide `Timeout`.
-- **The response is wrapped** with the request's AEAD scheme. The peer encrypts
-  the response body under the same derived key with the request's nonce and
-  timestamp bound in as associated data, so an answer cannot be forged or
-  replayed onto another request. `Content-Type: application/cyoda-dispatch-v1`
-  on both legs. An answer that fails to open is `no_answer`.
+  CYODA_CALLOUT_HANDOVER_ALLOWANCE` (§9), and never past the callout's deadline
+  (§5). It is a per-request deadline on `ctx`; the hand-over client has no
+  client-wide `Timeout`. `CYODA_DISPATCH_FORWARD_TIMEOUT` keeps its name and its
+  meaning — the whole wait — for the scheduler RPC client, which has its own
+  `http.Client`, and no longer governs hand-overs.
+- **The response is authenticated and encrypted** with the key the request uses.
+  It gets **a fresh random nonce of its own** — reusing the request's would break
+  the cipher. Its associated data is a direction label (`"response"`; requests
+  gain `"request"`), the path, and the request's nonce and timestamp, so an
+  answer cannot be forged, reflected back as a request, or replayed onto another
+  request. Responses do not enter the replay cache: the binding to a request
+  nonce the owner chose is what makes them single-use. An owner asking the same
+  peer again on a later pass uses a new request nonce, so the fail-closed cache
+  does not get in the way. `Content-Type: application/cyoda-dispatch-v1` on both
+  legs. An answer that fails to open is `no_answer`.
 
 ## 7. The pass ends with its callout
 
 **Claims.** `token.Claims` gains `CalloutID` (`"c"`), set to the callout's
 `RequestID`. A pass is minted per try by the pnode that makes the hand-off —
 every pnode holds the cluster secret — with `NodeID` = the owner's id and
-`ExpiresAt = now + answer limit + CYODA_TX_TOKEN_TTL`. `CYODA_TX_TOKEN_TTL`'s
-meaning narrows from "the pass's whole life" to "the allowance beyond the answer
-limit" (routing, clock difference between pnodes); default unchanged. The
-`resolveTxToken` rule "a token already on ctx wins" is removed: no pass is minted
-before the try it belongs to.
+`ExpiresAt = now + answer limit + CYODA_CALLOUT_PASS_ALLOWANCE` (§9). The
+`resolveTxToken` rule "a token already on ctx wins" is removed, and with it
+`DispatchCalloutRequest.TxToken`, `WithTxToken` and `TxTokenFromContext`: no pass
+is minted before the try it belongs to. `Signer.Issue` gains the callout id; its
+two production callers and the ten test files that call it change with it.
 
-**Closing.** `txgate.Registry` gains:
+**A pass is valid only while its callout is open on the owner.** The rule is
+stated this way round — open, not "not yet closed" — so that it fails closed and
+needs no clean-up keyed by transaction:
 
 ```go
-// CloseCallout marks calloutID closed for txID, then acquires and releases
-// txID's gate, so that on return no callback of that callout holds the gate
-// and none can take it.
-func (r *Registry) CloseCallout(txID, calloutID string)
+// package callout
+// open registers calloutID and returns the func that ends it. The Coordinator
+// calls it at the start of a callout and defers the returned func, so a callout
+// is ended on every exit path, a panic included.
+func (r *OpenCallouts) open(calloutID string) (end func())
 
-// CalloutClosed reports whether calloutID was closed for txID. It is
-// meaningful only while the caller holds txID's gate.
-func (r *Registry) CalloutClosed(txID, calloutID string) bool
-
-// Forget drops everything held for txID. Called when the owner's
-// transaction scope is released.
-func (r *Registry) Forget(txID string)
+// IsOpen reports whether calloutID is currently open on this pnode.
+func (r *OpenCallouts) IsOpen(calloutID string) bool
 ```
 
-The `Coordinator` calls `CloseCallout` on the owner when a callout ends — with a
-result, a failure, or a cancelled context — before it returns to the engine.
-While tries of one callout are in progress its passes stay open: two cnodes
-working at once is what `idempotent` promises to tolerate.
+There is nothing to forget when a transaction ends, and nothing depends on the
+transaction id, which changes mid-operation under `COMMIT_BEFORE_DISPATCH` and is
+owned by the scheduler, not the entity service, on a scheduled fire.
 
-A callback is checked **every time it takes the gate** — on entry, and again
-whenever it takes the gate back. The second matters for nested callouts: a
-callback can itself run a workflow that makes a callout, and it releases the
-gate for the length of that inner callout (`txgate.Suspend`). If the outer
-callout is given up in that window the barrier finds the gate free and passes,
-so the check on re-acquiring is what stops the callback from carrying on. `resume`
-therefore reports a closed callout, and the joined operation is abandoned with
-`CALLOUT_ENDED` without touching the transaction again (**V-1**: the call sites
-that acquire the gate for a joined request, HTTP and gRPC, and the unwinding
-path after a failed `resume`; `suspend_call_sites_test.go` lists the engine
-side).
+All tries of one callout share its id. A cnode that was given up on therefore
+keeps a valid pass until the callout ends: two cnodes working at once is what
+`idempotent` promises to tolerate. What no promise covers is a write arriving
+after the callout, and the processors that follow it, are done.
 
-`CloseCallout` takes the gate, so it must run where the calling chain does not
-hold it: inside the window in which the engine has suspended the gate around the
-dispatch, which is where the `Coordinator` runs. The owner's own chain never
-holds the gate.
+**Three places enforce it**, because a callback has three ways to be running:
 
-A closed callout's pass is refused with `CALLOUT_ENDED` (§8). A pass without
-`CalloutID` is refused as invalid: passes are minted only for callouts
-(`grpc/dispatch.go:67` and `cluster_dispatcher.go:213` are the only callers of
-`Signer.Issue`), so after this change none exists.
+1. *On entry.* `txjoin.JoinFromToken` — the one function both doors and every
+   proxied request pass through on the owner (`httpmw/txjoin_mw.go:33`,
+   `grpc/txroute_interceptor.go:147, 188`) — refuses a verified pass whose
+   callout is not open, with `CALLOUT_ENDED` (§8), and puts the callout id on the
+   context. This covers every joined operation: reads, searches and non-entity
+   endpoints as well as entity writes, none of which take the gate
+   (`entity/service.go:427`, `search/handler.go:175-185`).
+2. *In progress when the callout ends.* The callout's `end` func removes it from
+   the open set and then takes and releases the transaction's gate once. Entity
+   writes hold the gate for their whole length (`acquireJoinedGate`,
+   `entity/handler.go:121-125`, nine callers), so on return none is still
+   running. `end` runs deferred, inside the window in which the engine has
+   released the gate around the dispatch; the owner's own chain never holds it.
+   It can wait as long as a callback's store call takes; it cannot deadlock —
+   one mutex per transaction, nested callbacks release it, and the registry lock
+   is never held across a gate wait.
+3. *Coming back from a nested callout.* A callback can itself run a workflow
+   that makes a callout, releasing the gate for its length (`txgate.Suspend`).
+   If its own callout ends in that window, step 2 finds the gate free. `resume`
+   **always** re-acquires — the caller's deferred release would otherwise unlock
+   an unheld mutex, which is a fatal no `recover` catches. Each of the five sites
+   that resume then asks, through one helper, whether the chain's callout is
+   still open, **before touching the transaction**, and abandons the operation
+   with `CALLOUT_ENDED` if not:
+
+   | Site | After `resume()`, if the callout has ended |
+   |---|---|
+   | `engine_processors.go:204` (SYNC) | return the error; no result is applied |
+   | `engine_processors.go:233` (ASYNC_NEW_TX, no tx manager) | return the error |
+   | `engine_processors.go:249` (ASYNC_NEW_TX, savepoint) | return the error **without** `RollbackToSavepoint`; the abandoned chain makes no further use of the transaction |
+   | `engine.go:1014` (criterion) | `resume` is no longer only deferred: its result is checked before the verdict is used |
+   | `arm.go:239` (function) | return the error |
+
+   The per-item loop at `entity/service.go:2640-2655` stops at this error rather
+   than continuing to the next item. What an abandoned chain had already written
+   stays in the owner's transaction: in `ASYNC_NEW_TX` the owner's savepoint
+   rollback removes it; otherwise it is "partly run", which is what `idempotent`
+   declares tolerable.
+
+The two `COMMIT_BEFORE_DISPATCH` dispatch sites (`engine_processors.go:333,
+365`) do not release the gate around their dispatch. They are unchanged; a joined
+chain that reaches them holds the gate through the inner callout, and step 2
+waits for it.
+
+**What is guaranteed.** Once a callout has ended, no joined operation bearing its
+pass starts, and no entity write bearing it is in progress or resumes. A joined
+*read* already in progress may complete. A pass without `CalloutID` is refused as
+invalid: passes are minted only for callouts (`grpc/dispatch.go:67` and
+`cluster_dispatcher.go:213` are the only production callers of `Signer.Issue`),
+so after this change none exists.
 
 This closes, for every backend and without a plugin change, both the case this
 change introduces (a given-up cnode of an idempotent processor writing after its
@@ -365,11 +437,13 @@ envelopes (`CLIENT_ERROR` / `SERVER_ERROR` with the code as the message prefix,
 | `NoAnswer`, processor not idempotent | 503 | the try's own code | yes | as today |
 | Every try used, more than one attempt | 503 | **`CALLOUT_TRIES_EXHAUSTED`** (new) | yes | `all tries exhausted, got N failures: [member<id>: cause], [member<id>: cause (2 times)]` — Cloud's shape (R§5): N counts before collapsing; identical entries collapse |
 | Every try used, exactly one attempt recorded | 503 | that attempt's own code | yes | not wrapped |
-| `MemberFailed`, verdict true | 400 | `WORKFLOW_FAILED` | **yes** | `processor <name> failed: <cnode message>` |
+| `MemberFailed`, verdict true | 400 | `WORKFLOW_FAILED` | **yes** | `processor <name> failed: <cnode message>`; for a criterion `failed to evaluate transition criterion: <cnode message>` (or `…workflow criterion for "<wf>"…`); for a function the arming wrap. Today's inner `processor dispatch failed:` segment goes |
 | `MemberFailed`, verdict false or absent | 400 | `WORKFLOW_FAILED` | no | same |
 | `Terminal` | as today (500 ticketed for auth-context; 400 `WORKFLOW_FAILED` otherwise) | | no | as today |
-| Hand-over could not be made to any peer and no local cnode | 503 | `NO_COMPUTE_MEMBER_FOR_TAG` | yes | as today; `DISPATCH_FORWARD_FAILED` is **retired** with `forwardWithFailover` |
-| Callback bearing a closed callout's pass | 410 | **`CALLOUT_ENDED`** (new) | no | `the callout this transaction pass was issued for has ended` |
+| A hand-over's answer was lost — no reply, a broken connection, an answer that does not authenticate — and the callout is not repeat-safe, or it was the only attempt | 503 | `DISPATCH_FORWARD_FAILED` (kept) | yes | the sanitised message it has today; recorded as an attempt with member `-` |
+| No peer could be connected to, and no local cnode | 503 | `NO_COMPUTE_MEMBER_FOR_TAG` | yes | as today |
+| Joined request bearing the pass of a callout that has ended (on entry, or on coming back from a nested callout) | 410 | **`CALLOUT_ENDED`** (new) | no | `the callout this transaction pass was issued for has ended` |
+| Joined request bearing a pass with no callout id | 401 | `UNAUTHORIZED` | no | `invalid transaction token`, as any malformed pass today |
 | Import: criterion or function `retryPolicy` not `NONE`/`FIXED`/unset | 400 | `VALIDATION_FAILED` | no | names the workflow, state, transition |
 | Import: `responseTimeoutMs` above the upper bound, or negative | 400 | `VALIDATION_FAILED` | no | names the bound |
 
@@ -397,24 +471,42 @@ processor did outside cyoda is the application's to reconcile.
 | `CYODA_RETRY_FIXED_NUM_RETRIES` | `3` | int ≥ 0 | new. Retries after the first try |
 | `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS` | `30000` | int ≥ 1, ≤ the max | new. Replaces `defaultResponseTimeoutMs` |
 | `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` | `60000` | int ≥ 1 | new (#565). Import refuses a larger `responseTimeoutMs` |
-| `CYODA_DISPATCH_WAIT_TIMEOUT` | `5s` | duration ≥ 0 | kept; meaning widened to the patience (D7) |
+| `CYODA_DISPATCH_WAIT_TIMEOUT` | `5s` | duration ≥ 0 | kept; meaning widened to the patience (D7); validated for the first time |
 | `CYODA_DISPATCH_CONNECT_TIMEOUT` | `2s` | duration > 0 | new |
-| `CYODA_DISPATCH_FORWARD_TIMEOUT` | `30s` | unchanged | meaning narrowed (§6) |
-| `CYODA_TX_TOKEN_TTL` | `90s` | unchanged | meaning narrowed (§7) |
+| `CYODA_CALLOUT_HANDOVER_ALLOWANCE` | `30s` | duration > 0 | new. What the owner allows a hand-over on top of `tries × answer limit` |
+| `CYODA_CALLOUT_PASS_ALLOWANCE` | `30s` | duration > 0 | new. How long a pass outlives its try's answer limit (routing; clocks that differ between pnodes) |
+| `CYODA_DISPATCH_FORWARD_TIMEOUT` | `30s` | duration > 0 | name and meaning unchanged; now used by the scheduler RPC client only; validated for the first time |
+| `CYODA_TX_TOKEN_TTL` | — | — | **removed**: a pass no longer has a fixed life |
 
-Invalid values are startup errors, not clamps (`app/config.go:756-760`). Each new
+New names rather than old names with new meanings: an operator who lowered
+`CYODA_DISPATCH_FORWARD_TIMEOUT` to tighten hand-overs would otherwise cut off
+delegated scheduled fires.
+
+Out-of-range values are startup errors, not clamps (`app/config.go:756-760`). A
+value that does not parse falls back to the default silently — that is how every
+setting behaves today (`envInt`, `envDuration`), and changing it is not part of
+this work. Each new
 key passes the four guards in R§7 and is validated both in `Config.Validate()`
 and by name in `cmd/cyoda/main.go`.
 
 The answer limit for a callout is its `responseTimeoutMs` if positive, else
 `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS`. A stored workflow whose value exceeds a
-bound that was lowered later is clamped to the bound at fire time and a WARN is
-logged; import is where it is refused.
+bound that was lowered after it was imported is **not** quietly clamped — a
+substituted value is what `correctness-over-availability.md` rules out. The
+callout fails as `Terminal`, naming the setting. Because the bound is a server
+setting, a workflow exported from one deployment can be refused by another with
+a lower bound; the help text says so.
 
 The relation to PostgreSQL's idle-in-transaction ceiling
 (`CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`, 5 m) is documented, not enforced: the root
-module does not read plugin configuration. With every default, `4 × 60 s + 5 s`
-stays under it.
+module does not read plugin configuration. §5's deadline is what makes the
+arithmetic hold: 275 s at the upper bound with every other default.
+
+**The scheduler.** `CYODA_SCHEDULER_REDISPATCH_BACKOFF` (30 s) is a throttle, not
+a lease (`scheduler/service.go:42-47`): a scheduled fire still running after it
+is dispatched again, and its processors run a second time, concurrently. Today
+that takes a fire longer than 30 s; with this change one timed-out try on an
+idempotent processor is enough. **Open — §17.**
 
 ## 10. Workflow configuration, SPI, schema version
 
@@ -463,28 +555,47 @@ largest possible version and **refuses to start** if it exceeds
 `CYODA_GRPC_NODE_ADDR`. The oversize branch in `gossipDelegate.NodeMeta` becomes
 unreachable and is deleted.
 
-**Lists.** Each pnode holds `map[nodeID]{version, tags}`. Versions order by
-`(epoch, seq)`, so a pnode restarted under the same id — the Helm chart's normal
-case — supersedes its former self. A pnode never accepts a foreign copy of its
-own list.
+**Lists.** Each pnode holds `map[nodeID]{version, tags}`. **The version a pnode
+announces in its own metadata is the authority** for which of its lists is
+current. A peer holds the right list when the version it holds *equals* the
+announced one; on any difference it fetches. Versions are never ordered across
+epochs — only compared for equality — so a pnode that restarts under the same id
+(the Helm chart's normal case), even with a clock that stepped backwards or on a
+host whose clock is behind, cannot be mistaken for an older self and ignored.
+The epoch only has to differ between two lives of one pnode; epochs of different
+pnodes are never compared. A pnode never accepts a foreign copy of its own list.
 
 - *Publish.* On a change the pnode bumps `seq`, updates its metadata
-  (`UpdateNode`, off the publish lock and without the blocking wait: a bounded
-  timeout rather than `0`), and sends `{nodeID, version, tags}` to every alive
-  member with `memberlist.SendReliable`, concurrently, each send bounded by
-  memberlist's TCP timeout. Tags are sorted, so an unchanged set marshals
-  identically.
-- *Receive.* Reliable user messages arrive at `NotifyMsg` beside gossip
-  broadcasts, so they use the existing topic framing (`cluster.tags`,
-  `cluster.tags.request`) and are handed to a worker: handlers on memberlist's
-  receive goroutine must not block. A list older than the one held is ignored.
+  (`UpdateNode` with a bounded timeout, off the publish lock; a timeout leaves the
+  broadcast queued, so its error is logged at DEBUG and otherwise ignored), and
+  sends `{nodeID, version, tags}` to every other alive member with
+  `memberlist.SendReliable`, concurrently, each send bounded by memberlist's TCP
+  timeout. Tags are sorted, so an unchanged set marshals identically.
+- *Receive.* A list is stored when its version equals the one announced in the
+  sender's metadata, or is a later `seq` of that epoch (the list can arrive
+  before the metadata does). Anything else is dropped; the mismatch that remains
+  triggers a fetch.
 - *Catch up.* An `EventDelegate` is registered. On `NotifyJoin` and
-  `NotifyUpdate`, a pnode that holds a version older than the one in the node's
-  metadata — or none — sends `cluster.tags.request`; the node answers with its
-  list. One path covers a lost message, a late joiner and a healed partition.
-  A request that gets no list is repeated on the next metadata event for that
-  node and, as a floor, on a slow timer while the mismatch lasts.
+  `NotifyUpdate`, a pnode that holds no list for the node, or one whose version
+  differs from the announced one, sends `cluster.tags.request`; the node answers
+  with its list. One path covers a lost message, a late joiner, a restarted
+  pnode and a healed partition. A request that gets no list is repeated on the
+  next metadata event for that node and, as a floor, on a slow timer while the
+  mismatch lasts. Twenty pnodes starting together exchange about 380 small
+  messages; no throttling is needed.
 - *Leave.* `NotifyLeave` drops the node's list.
+- **Nothing calls into memberlist from inside one of its callbacks.**
+  `NotifyJoin`, `NotifyUpdate` and `NotifyLeave` run under memberlist's node lock
+  (`state.go:941-943`): a `SendReliable` there stalls all membership processing
+  for up to the TCP timeout, and `Members()` or `UpdateNode` deadlocks.
+  `NotifyMsg` runs on the receive goroutine. All four only copy what they were
+  given — `NotifyMsg`'s buffer is reused by the library — and enqueue it for one
+  worker goroutine, which does the sending, fetching and storing. `NotifyJoin`
+  fires for the pnode itself inside `memberlist.Create`, before the registry
+  holds its `*Memberlist`; the worker starts after `Create` returns and ignores
+  events about self. Reliable user messages arrive at `NotifyMsg` beside gossip
+  broadcasts (`net.go:1344`), so they use the existing topic framing
+  (`cluster.tags`, `cluster.tags.request`).
 - `List` returns each member's identity with its held tags (empty if not yet
   known). `List` and `Lookup` treat unparseable metadata the same way — not
   alive, with a WARN — so HTTP transaction routing answers 503, not 500.
@@ -513,61 +624,103 @@ own list.
 
 Layers: **U** unit · **E** running-backend e2e (`internal/e2e`, PostgreSQL) ·
 **G** gRPC envelope (`internal/grpc`) · **P** cross-backend parity
-(`e2e/parity`) · **M** multi-pnode parity (`e2e/parity/multinode`).
+(`e2e/parity`) · **M** multi-pnode parity (`e2e/parity/multinode`). A **w** is a
+waiver, with its reason below the table.
 
-Harness work this needs, as tasks of their own:
-- `internal/e2e`'s callback harness attaches **several** scripted cnodes (it
-  attaches one today).
-- `cmd/compute-test-client` takes its tags and a behaviour from the environment
-  (`stall`, `fail`, `fail-retryable`, `late-callback`), and the parity fixtures
-  gain an optional capability to start and stop extra compute clients. A backend
-  fixture without it skips those scenarios, so the commercial backend's suite is
-  not broken by their arrival.
-- Round robin over a stable order makes "the first cnode attached is tried
-  first" deterministic; scenarios rely on that, never on timing.
+**What each harness can do, and what it needs.**
+- `internal/e2e` builds a server per test and its callback harness already has
+  `newComputeMember` and `stop()` (`callback_harness_test.go:533, 653`); it is
+  extended to attach **several** scripted cnodes. Per-test server configuration
+  (`newCallbackHarnessConfigured`) makes patience and tries settable per test.
+  This is the layer for anything that depends on order or timing.
+- The parity suites share one server, one tenant and one tag across all
+  scenarios (`fixtureutil.go:206`; `compute-test-client/dispatch.go:88-93`), so
+  selector state carries over between scenarios. `cmd/compute-test-client`
+  therefore takes its **tags** and a **behaviour** from the environment —
+  `stall`, `fail`, `fail-retryable`, `late-callback`, `drop` (close the stream
+  on receiving work) — and the fixtures gain an optional capability to start and
+  stop extra compute clients. Each failover scenario uses a tag of its own and
+  attaches its cnodes one after the other, which is what makes "the cnode
+  attached first is tried first" hold. A backend fixture without the capability
+  skips those scenarios, so the commercial backend's suite is not broken by
+  their arrival.
+- Parity fixtures set `CYODA_DISPATCH_WAIT_TIMEOUT` low for the whole package
+  (the precedent is `CYODA_SCHEDULER_SCAN_INTERVAL=50ms`), so the existing "no
+  compute member" scenario does not gain five seconds on every backend.
 
 | Scenario | U | E | G | P | M |
 |---|---|---|---|---|---|
 | Every dispatcher error site → its kind (§3) | ✓ | | | | |
-| `NoHandOff` → next local cnode answers | ✓ | ✓ | | ✓ | |
+| `NoHandOff` → next local cnode answers | ✓ | w¹ | | w¹ | |
+| `NoHandOff`, tries = 1 → the try's own code | ✓ | w¹ | ✓ | | |
 | `NoAnswer`, processor not idempotent → stop, 503 own code | ✓ | ✓ | ✓ | ✓ | |
-| `NoAnswer`, `idempotent` → next cnode answers | ✓ | ✓ | | ✓ (09_10) | |
-| `NoAnswer`, criterion / function → next cnode answers | ✓ | ✓ | | ✓ | |
+| `NoAnswer`, `idempotent` → next cnode answers (09_10) | ✓ | ✓ | | ✓ | |
+| `NoAnswer`, criterion; function → next cnode answers | ✓ | ✓ | | ✓ | |
 | cnode drops after hand-off (09_09, 09_11) — both settings | ✓ | ✓ | | ✓ | |
 | `MemberFailed` verdict true → 400 retryable, one try | ✓ | ✓ | ✓ | ✓ | |
 | `MemberFailed` verdict false / absent → 400, one try | ✓ | ✓ | ✓ | ✓ | |
-| `retryPolicy: NONE` → one try | ✓ | ✓ | | ✓ | |
-| Every try used → 503 `CALLOUT_TRIES_EXHAUSTED`, message shape | ✓ | ✓ | ✓ | | |
-| No cnode → waits, one attaches → succeeds, no try used | ✓ | ✓ | | ✓ | ✓ |
-| No cnode within patience → 503 `NO_COMPUTE_MEMBER_FOR_TAG`; patience 0 → at once | ✓ | ✓ | ✓ | | |
-| `ASYNC_NEW_TX`: callout fails → operation succeeds | ✓ | ✓ | | | |
-| Late callback after the callout ended → 410 `CALLOUT_ENDED` (HTTP and gRPC doors) | ✓ | ✓ | ✓ | | |
+| `Terminal` → stop, as today | ✓ | ✓ | ✓ | | |
+| `retryPolicy: NONE` on a processor, a criterion, a function → one try | ✓ | ✓ | | ✓ | |
+| Every try used → 503 `CALLOUT_TRIES_EXHAUSTED`, message shape | ✓ | ✓ | ✓ | ✓ | |
+| Exactly one attempt recorded → not wrapped | ✓ | ✓ | | | |
+| Attempts on record beat "no cnode" (§5 precedence) | ✓ | ✓ | | | |
+| Same request id on every try | ✓ | ✓ | | | |
+| Callout deadline cuts off a try in progress | ✓ | | | | |
+| Client timeout (408) / cancellation during a wait and during a try | ✓ | ✓ | ✓ | | |
+| No cnode → waits, one attaches → succeeds, no try used | ✓ | ✓ | | w² | w² |
+| Patience is one allowance across several waits | ✓ | | | | |
+| Patience applies with `retryPolicy: NONE` | ✓ | ✓ | | | |
+| No cnode within patience → 503 `NO_COMPUTE_MEMBER_FOR_TAG`; patience 0 → at once | ✓ | ✓ | ✓ | ✓ | |
+| `ASYNC_NEW_TX`: callout fails → operation succeeds, nothing reported | ✓ | ✓ | | | |
+| `COMMIT_BEFORE_DISPATCH`, both variants: failure leaves TX_pre committed (§8.1) | ✓ | ✓ | | | |
+| Callouts made from a scheduled fire follow the same rules | ✓ | ✓ | | | |
+| Late callback after the callout ended → 410 `CALLOUT_ENDED`, HTTP and gRPC doors, write and read | ✓ | ✓ | ✓ | | |
 | Late callback in `ASYNC_NEW_TX` after failure → 410 | | ✓ | | | |
 | Callback during the callout, second cnode working → accepted | ✓ | ✓ | | | |
-| Outer callout given up while its callback is inside a nested callout → the callback is abandoned on taking the gate back, 410 | ✓ | ✓ | | | |
-| Round robin across two cnodes | ✓ | ✓ | | | |
+| Outer callout ends while its callback is in a nested callout → abandoned on coming back, at each of the five sites | ✓ | ✓ | | | |
+| Callout ended by a panic → its pass is refused | ✓ | | | | |
+| Pass without a callout id → 401; expired pass → 410 `TRANSACTION_EXPIRED` | ✓ | ✓ | | | |
+| Pass lifetime follows the answer limit | ✓ | | | | |
+| Round robin across two cnodes; a new cnode goes first | ✓ | ✓ | | | |
+| Two tenants share a tag on one pnode: each callout goes only to its tenant's cnode; attempts name only that tenant's cnodes | ✓ | ✓ | | | ✓ |
 | Import: criterion / function `retryPolicy` invalid → 400 | ✓ | ✓ | | ✓ | |
-| Import: `responseTimeoutMs` over the bound → 400 | ✓ | ✓ | | ✓ | |
+| Import: `responseTimeoutMs` over the bound; negative → 400 | ✓ | ✓ | | ✓ | |
+| Stored `responseTimeoutMs` over a lowered bound → `Terminal` | ✓ | | | | |
 | Import / export round-trip of `idempotent`, function `retryPolicy`; schema 1.5 | ✓ | ✓ | | ✓ | |
-| Owner has a cnode that fails `NoHandOff` → hand-over succeeds | ✓ | | | | ✓ |
-| Hand-over: peer makes two tries in one exchange | ✓ | | | | ✓ |
-| Hand-over answer lost → one try counted; not idempotent → stop | ✓ | | | | |
-| Peer unreachable (dial) → no try used, next peer | ✓ | | | | ✓ |
+| Owner's cnode fails → hand-over succeeds | ✓ | | | | ✓ |
+| Hand-over: peer makes two tries in one exchange; honours the owner's answer limit | ✓ | | | | ✓ |
+| A pnode that receives a hand-over never hands on | ✓ | | | | |
+| Hand-over answer lost → one try counted; not repeat-safe → 503 `DISPATCH_FORWARD_FAILED` | ✓ | | | | |
+| `triesUsed` out of range → `no_answer` | ✓ | | | | |
+| Peer cannot be connected to → no try used, next peer | ✓ | | | | w³ |
+| No peer can be connected to, no local cnode → 503 `NO_COMPUTE_MEMBER_FOR_TAG` | ✓ | | | | |
 | Non-2xx / truncated / unauthenticated answer → `no_answer` | ✓ | | | | |
 | cnode message and verdict survive the hand-over | ✓ | | | | ✓ |
-| Response AEAD: forged or replayed answer refused | ✓ | | | | |
-| Pass minted by a peer joins the owner's transaction; closed after | ✓ | | | | ✓ |
+| Response protection: forged, reflected or replayed answer refused; nonce never reused | ✓ | | | | |
+| Pass minted by a peer joins the owner's transaction; refused once the callout ended | ✓ | | | | ✓ |
 | Many tenants on one pnode stay visible (R§12 sizes) | ✓ | | | | ✓ |
-| Restart under the same id supersedes the old list | ✓ | | | | |
+| Restart under the same id, with an earlier clock → new list accepted | ✓ | | | | |
 | Late joiner / lost list message → fetched | ✓ | | | | |
 | Leaving pnode's list dropped | ✓ | | | | |
+| No call into memberlist from inside a callback (review + a test that a slow peer does not stall membership events) | ✓ | | | | |
 | Identity over 512 bytes → refuses to start | ✓ | | | | |
-| Each new setting: default, valid, invalid → startup error | ✓ | | | | |
+| Unparseable metadata → not alive; HTTP transaction routing 503, not 500 | ✓ | | | | |
+| Each new or newly validated setting: default, valid, out of range → startup error | ✓ | | | | |
+
+¹ A hand-off cannot be made to fail from outside the process. A cnode that has
+gone is evicted and is no longer a candidate; a frozen cnode's first event is
+taken by the writer, which *is* a hand-off. The unit tests drive `Member.Send`
+directly.
+² Starting a subprocess inside a few seconds of patience is a race on a slow CI
+runner, and the fixture's patience is fixed per package. The e2e layer attaches
+an in-process cnode, which is deterministic.
+³ The peer selector is random, so the assertion would hold by luck half the
+time, and killing a node damages the shared fixture for later scenarios.
 
 Concurrency (two callouts racing on one cnode; attach and detach during a
-callout; a callback racing `CloseCallout`) is tested in isolated single-backend
-e2e and unit tests under `-race`, never in the shared parity suite, asserting
-consistency — one outcome, no torn write — not an interleaving.
+callout; a callback racing the end of its callout) is tested in isolated
+single-backend e2e and unit tests under `-race`, never in the shared parity
+suite, asserting consistency — one outcome, no torn write — not an interleaving.
 
 The existing tests that pin single-shot behaviour (R§7) are each revisited: most
 stay true for a callout with one matching cnode and `NoAnswer` on a
@@ -584,9 +737,14 @@ non-idempotent processor; those asserting `forwardWithFailover` or
   it will do; criteria and functions must have no effects); `cluster.md`;
   `errors/CALLOUT_TRIES_EXHAUSTED.md`, `errors/CALLOUT_ENDED.md` (new);
   `errors/WORKFLOW_FAILED.md`, `DISPATCH_TIMEOUT.md`,
-  `COMPUTE_MEMBER_DISCONNECTED.md`, `NO_COMPUTE_MEMBER_FOR_TAG.md` (revised);
-  `errors/DISPATCH_FORWARD_FAILED.md` removed with its code; `errors.md` index,
-  and its false sentence about gRPC trailer metadata corrected.
+  `COMPUTE_MEMBER_DISCONNECTED.md`, `NO_COMPUTE_MEMBER_FOR_TAG.md`,
+  `DISPATCH_FORWARD_FAILED.md` (revised); `errors.md` index, and its false
+  sentence about gRPC trailer metadata corrected; `telemetry.md` (the
+  `cyoda.dispatch.duration` buckets stop at 10 s, below one answer limit; new
+  counters); `config/scheduler.md`; `workflows/schema-version.md`; `search.md:201`
+  and any other mention of the 30000 default; `cloudevents.md` and the see-also
+  lists that name changed topics.
+- `docs/cloud-parity/scheduled-transitions.md:273`.
 - `README.md` configuration reference; `DefaultConfig()`; `config_registry.go`.
 - `docs/ARCHITECTURE.md`: cluster discovery, DD-7, the operational-limits row,
   the dispatch section (incl. the stale "no failover to a second peer" row), the
@@ -609,10 +767,11 @@ pnode of this version reads an answer without `outcome` as `no_answer` and one
 without `triesUsed` as one try, so it degrades safely and cannot loop. Workflows
 at schema 1.1–1.4 import unchanged, except that a criterion carrying an invalid
 `retryPolicy`, or any callout with a `responseTimeoutMs` above the new bound, is
-now refused. `### Breaking` in the CHANGELOG records: `DISPATCH_FORWARD_FAILED`
-retired; a single pnode with no cnode waits out the patience before failing; the
-narrowed meanings of `CYODA_DISPATCH_FORWARD_TIMEOUT` and `CYODA_TX_TOKEN_TTL`;
-passes minted by earlier versions are refused.
+now refused. `### Breaking` in the CHANGELOG records: a single pnode with no
+cnode waits out the patience before failing; `CYODA_TX_TOKEN_TTL` removed;
+`CYODA_DISPATCH_FORWARD_TIMEOUT` no longer governs hand-overs; passes minted by
+earlier versions are refused; a joined request arriving after its callout ended
+is refused, where it was accepted until the transaction closed.
 
 ## 16. Out of scope
 
@@ -620,4 +779,35 @@ A cluster-wide list of individual cnodes. Enforcing that criteria and functions
 have no effects. Choosing cnodes by load. `EPOCH_MISMATCH` being defined,
 documented and never raised (R§6) — to be filed. The scheduler treating an empty
 cluster view as "I am the coordinator": unreachable once a pnode is always in its
-own view, noted for whoever next touches `scheduler/coordinator.go`.
+own view, noted for whoever next touches `scheduler/coordinator.go`. Parse
+failures of settings falling back silently to defaults.
+
+Seen by the specification's reviewer and **not verified**, to be checked and
+filed on its own: a joined callback whose workflow contains a
+`COMMIT_BEFORE_DISPATCH` processor appears able to commit the owner's
+transaction — the engine has no guard, and the service's guard runs only
+afterwards (`entity/service.go:336`).
+
+## 17. Open — needs the product owner
+
+**Scheduled fires and the 30-second redispatch.** A scheduled transition is
+dispatched again if its fire has not finished within
+`CYODA_SCHEDULER_REDISPATCH_BACKOFF` (30 s); that value is a throttle, not a
+lease, and the fire it overtakes keeps running
+(`scheduler/service.go:42-47, 174`; `cluster/scheduler_rpc.go:155, 273`). Both
+fires run the transition's processors; one commit wins and the other is rolled
+back, but the processors — and whatever they do outside cyoda — ran twice. That
+is cyoda repeating a processor on its own initiative, which D1 exists to prevent.
+It can happen today to any fire that takes longer than 30 s. This change makes it
+ordinary: one timed-out try on an idempotent processor, at the default answer
+limit, is already 30 s.
+
+Two ways to settle it, not exclusive:
+
+- **Now, small:** require at startup that the redispatch backoff exceed the
+  longest a callout can take (§5's worst case) and raise its default to match —
+  about five minutes. Cost: a fire that is genuinely lost (its pnode died) is
+  picked up after five minutes instead of thirty seconds.
+- **Properly, its own piece of work:** give a scheduled task a real lease, so
+  that a fire in progress cannot be overtaken however long it runs, and a lost
+  one is reclaimed promptly when its holder is seen to be gone.
