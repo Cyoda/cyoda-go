@@ -40,6 +40,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 	"github.com/cyoda-platform/cyoda-go/internal/httpmw"
 	mockiam "github.com/cyoda-platform/cyoda-go/internal/iam/mock"
@@ -58,6 +59,7 @@ type App struct {
 	authSvc            *auth.AuthService // non-nil only in JWT IAM mode; nil in mock IAM mode
 	workflowEngine     *workflow.Engine
 	txGate             *txgate.Registry // per-tx application gate serialising joined callbacks and the owner's commit
+	fence              *fence.Fence     // one arbiter per process; both callback doors and every callout judge a callback by it
 	searchService      *search.SearchService
 	auditService       contract.AuditService
 	clusterService     contract.ClusterService
@@ -438,6 +440,10 @@ func New(cfg Config) *App {
 	a.authzService = mockiam.NewAuthorizationService()
 
 	a.memberRegistry = internalgrpc.NewMemberRegistry()
+	// One lock registry and one fence per process: both callback doors, the
+	// entity service and every callout judge a callback by the same state.
+	a.txGate = txgate.New()
+	a.fence = fence.New(a.txGate)
 	localDispatcher := internalgrpc.NewProcessorDispatcher(a.memberRegistry, common.NewDefaultUUIDGenerator(), a.tokenSigner, a.selfNodeID, cfg.Cluster.TxTokenTTL)
 	searchStore, err := a.storeFactory.AsyncSearchStore(context.Background())
 	if err != nil {
@@ -553,8 +559,14 @@ func New(cfg Config) *App {
 			a.tokenSigner,
 			cfg.Cluster.TxTokenTTL,
 		)
+		// TEMPORARY (deleted by stream O's Coordinator): makes every dispatch
+		// a fenced callout of one try, so a callback names a callout the
+		// fence knows. See app/once_fenced.go.
+		extProc = newOnceFenced(extProc, a.fence, a.tokenSigner, a.selfNodeID, cfg.Cluster.TxTokenTTL, common.NewDefaultUUIDGenerator())
 	} else {
 		extProc = localDispatcher
+		// TEMPORARY (deleted by stream O's Coordinator): see above.
+		extProc = newOnceFenced(extProc, a.fence, a.tokenSigner, a.selfNodeID, cfg.Cluster.TxTokenTTL, common.NewDefaultUUIDGenerator())
 	}
 	if cfg.OTelEnabled {
 		extProc = observability.NewTracingExternalProcessingService(extProc, observability.Meter())
@@ -641,7 +653,6 @@ func New(cfg Config) *App {
 	a.scheduler.Start()
 
 	// Domain handlers
-	a.txGate = txgate.New()
 	entityHandler := entity.New(a.storeFactory, a.transactionManager, common.NewDefaultUUIDGenerator(), a.workflowEngine, a.txGate)
 	modelHandler := model.New(a.storeFactory)
 	server := internalapi.NewServer()
@@ -933,6 +944,7 @@ func (a *App) ClusterService() contract.ClusterService      { return a.clusterSe
 func (a *App) GRPCServer() *internalgrpc.Server             { return a.grpcServer }
 func (a *App) MemberRegistry() *internalgrpc.MemberRegistry { return a.memberRegistry }
 func (a *App) TokenSigner() *token.Signer                   { return a.tokenSigner }
+func (a *App) Fence() *fence.Fence                          { return a.fence }
 func (a *App) NodeRegistry() contract.NodeRegistry          { return a.nodeRegistry }
 
 // gRPCGracefulStopBudget is the upper bound on graceful drain at shutdown.
