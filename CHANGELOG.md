@@ -47,6 +47,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `docs/cloud-parity/tenant-id-grammar.md` and
   `cyoda help errors OIDC_INVALID_TENANT`.
 
+- **Workflow import refuses two things it used to accept**, under every schema
+  version: a `retryPolicy` other than `NONE`, `FIXED` or empty on a
+  `function`-type criterion (it was accepted and ignored), and a
+  `responseTimeoutMs` — on a processor, a criterion function or a schedule
+  function — that is negative or above `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`
+  (default `60000`). Both answer `400 VALIDATION_FAILED` naming the workflow,
+  state, transition and callout. The bound is a server setting: a workflow
+  exported from one deployment can be refused by another with a lower bound.
+  See `docs/workflow-schema-versioning.md`.
+
 ### Added
 
 - **`ENTITY_MODEL_MISMATCH` (`400`).** An entity's model reference — its
@@ -84,6 +94,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `CYODA_DISPATCH_FORWARD_TIMEOUT` are validated for the first time (negative,
   respectively non-positive, values now fail startup). See
   `cyoda help config grpc` and `cyoda help config cluster`.
+
+- **Workflow schema 1.5.** `idempotent` (boolean, default false) on a
+  processor's `config`, and `retryPolicy` (`NONE` / `FIXED`) on
+  `schedule.function`. 1.1 through 1.4 stay accepted. Needs the matching
+  `cyoda-go-spi` release (`ProcessorConfig.Idempotent`,
+  `ScheduleFunction.RetryPolicy`); no storage backend changes.
 
 ### Changed
 
