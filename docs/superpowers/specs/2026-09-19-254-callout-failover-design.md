@@ -65,7 +65,7 @@ depends on it.
 | D5 | The owner runs the local procedure first, then hands the callout to one alive pnode advertising the tag **with the tries left**. A pnode that receives a hand-over runs the local procedure only and never hands on. |
 | D6 | The number of tries is the normal number, not a hard limit: a lost hand-over answer counts as one try. The **time** a callout may take is a hard limit, fixed when it starts. |
 | D7 | **Patience** is separate from tries. `CYODA_DISPATCH_WAIT_TIMEOUT` is kept and becomes the one waiting mechanism: single pnode and cluster, regardless of `retryPolicy`, event-driven, one allowance per callout. `CYODA_RETRY_FIXED_DELAY_MS` from #254 is not introduced. |
-| D8 | A cnode that was replaced is **fenced**, on the model the commercial backend uses for a returning processing node: each callout has a number that rises when the work is given to another cnode; the pass carries it; the owner admits a callback only under the current number, in one step that also hands out a context which is cancelled when the number rises or the callout ends. |
+| D8 | A cnode that was replaced is **fenced**, on the model the commercial backend uses for a returning processing node: each callout has a number that rises when the work is given to another cnode; the pass carries it; the owner admits a callback only under the current number, checks it again under the transaction's write lock, and waits for a write in progress to finish before the work goes to the next cnode or the engine carries on. No database statement is interrupted. |
 | D9 | The hand-over carries the request id, tries left, answer limit and owner id; its answer states explicitly whether there was a hand-off, and is authenticated and encrypted like the request. |
 | D10 | The default answer limit and an upper bound on it become configuration (#565). |
 | D11 | Tenants and tags leave the 512-byte memberlist node metadata. The metadata keeps identity and a list version; lists travel by reliable message and are fetched by any pnode that is behind. |
@@ -140,8 +140,24 @@ func (d *ProcessorDispatcher) RunLocal(ctx context.Context, call Callout, maxTri
 
 `Callout` holds what the three entry points build today — kind, tenant, tags,
 the request builder, the response mapper — plus `RequestID`, `AnswerLimit`,
-`RepeatSafe`, `OwnerNodeID` and `TxID`. `LocalResult` holds the mapped result or
-a `*CalloutFailure`, `TriesUsed`, and `Attempts`.
+`RepeatSafe`, `OwnerNodeID`, `TxID`, `Outer` (the enclosing pairs, §7) and
+`Number`. `LocalResult` holds the mapped result or a `*CalloutFailure`,
+`TriesUsed`, and `Attempts`.
+
+```go
+// TryNumberer gives the fencing number for the next try (§7). RunLocal calls
+// it once before each try, before it mints that try's pass.
+type TryNumberer interface {
+    Next() (major, minor uint32)
+}
+```
+
+On the owner the `Coordinator` supplies it: `Next` raises `major`, calls
+`Fence.Advance` — which shuts the earlier cnode out and waits for its write in
+progress — and returns `(major, 0)`. On a pnode that received a hand-over it
+counts `minor = 1, 2, …` under the `major` the request carried and touches no
+fence: the arbiter is the owner's. This is what lets one `RunLocal` make several
+tries while the number still rises before each.
 
 - A cnode is never tried twice within one `RunLocal`. The tried set lives in the
   call and is not shared between calls or pnodes (brief §4: a second visit may
@@ -188,7 +204,8 @@ pnode mode its peer router is nil. `TracingExternalProcessingService` still wrap
 the outside.
 
 ```
-resolve tries from retryPolicy (D3); create RequestID; open the callout (§7)
+resolve tries from retryPolicy (D3); create RequestID
+ctx, end := fence.Begin(ctx, RequestID, TxID, fence.Pairs(ctx)); defer end()   # §7
 deadline := now + tries × answer limit + patience + hand-over allowance
 loop:
     take both Changed() channels            # before looking, so no wake-up is lost
@@ -199,6 +216,7 @@ loop:
     if triesLeft <= 0            -> return exhaustion
     for each alive peer advertising the tag, in selector order, not yet asked
     in this pass:
+        major++; fence.Advance(RequestID, major)          # §7
         a := peers.HandOver(ctx, peer, call, triesLeft)   # §6
         triesLeft -= a.TriesUsed; record a.Attempts
         if a ok / a stops / triesLeft <= 0 -> as above
@@ -253,6 +271,8 @@ loop:
 | `triesLeft` | the most tries the peer may make; ≥ 1 |
 | `answerLimitMs` | resolved by the owner (§9), so two pnodes cannot disagree |
 | `ownerNodeID` | the node id the peer puts in the passes it mints (§7) |
+| `major` | the fencing number of this hand-over; the peer numbers its tries `minor = 1, 2, …` under it (§7) |
+| `outer` | the enclosing pairs, copied into every pass the peer mints (§7); empty unless the callout was made from inside a callback |
 | `repeatSafe` | decided by the owner from D1/D2 |
 
 `DispatchCalloutResponse` is restated:
@@ -338,13 +358,15 @@ callback from a cnode that was replaced is accepted for as long as the
 transaction is open. The relevant case: a slow cnode's callback arrives after
 its replacement answered and a *later* processor of the same transition has
 run; its write lands last and is committed. The same is possible today in
-`ASYNC_NEW_TX`, where a failed callout does not fail the operation.
+`ASYNC_NEW_TX`, where a failed callout does not fail the operation: the write of
+a processor that *failed* lands after its savepoint was undone, and is
+committed.
 
 **The model** is the one the commercial storage backend uses to fence a
 processing node that returns after its shards were taken over: a number that
-only goes up decides who holds the work; the check and the right to proceed are
-obtained in one step; that right is a handle which is pulled when the holder is
-replaced, stopping work in progress; "too slow" is kept distinct from
+only goes up decides who holds the work; the check is made in the same step
+that gives the right to write; whoever takes the work over waits until the
+earlier holder is out before it proceeds; "too slow" is kept distinct from
 "replaced"; and what cannot be stopped is stated rather than denied. Here the
 arbiter needs no database step: every callback is already routed to the pnode
 that holds the transaction, so that pnode decides, in memory, for as long as
@@ -352,11 +374,11 @@ the callout lasts.
 
 **The fencing number.** Each callout has one, a pair `(major, minor)` ordered
 lexicographically. The owner raises `major` each time it gives the work to a
-cnode of its own and each time it hands the callout over to another pnode. A
-pnode that receives a hand-over numbers the tries it makes `minor = 1, 2, …`
-under the `major` it was given. The number rises **only** when the work is given
-to another cnode: a timeout that fails the operation rolls the transaction back
-and needs no fencing.
+cnode of its own and each time it hands the callout over to another pnode; its
+own tries carry `minor = 0`. A pnode that receives a hand-over numbers the tries
+it makes `minor = 1, 2, …` under the `major` it was given. The number rises
+**only** when the work is given to another cnode: a timeout that fails the
+operation rolls the transaction back and needs no fencing.
 
 **Claims.** `token.Claims` gains `Callout` (the callout's `RequestID`), `Major`,
 `Minor`, and `Outer` — the `(callout, major, minor)` of every enclosing callout,
@@ -369,42 +391,83 @@ ctx wins" is removed, with `DispatchCalloutRequest.TxToken`, `WithTxToken` and
 callers (`grpc/dispatch.go:67`, `cluster_dispatcher.go:213`) and the ten test
 files that call it change with it.
 
-**The arbiter** (`internal/callout`):
+**The arbiter** is a leaf package, `internal/fence`. It cannot live in
+`internal/callout`: `internal/grpc` imports `domain/entity`, which imports
+`domain/workflow`, and `internal/grpc` imports `domain/txjoin`; a package that
+imports `internal/grpc` for `RunLocal` cannot be imported by any of the places
+that enforce the fence. `internal/fence` imports only `internal/txgate` and
+`internal/common`.
 
 ```go
-// Begin registers a callout, under the enclosing callouts named by outer, and
-// returns the func that ends it. The Coordinator defers end, so a callout is
-// ended on every exit path, a panic included.
-func (f *Fence) Begin(calloutID string, outer []Pair) (end func())
+// Pair names one callout at one fencing number.
+type Pair struct {
+    Callout      string
+    Major, Minor uint32
+}
 
-// Advance makes major the callout's current number and pulls the handle of
-// every callback admitted under a lower one. The Coordinator calls it before
-// each local try and before each hand-over.
+// Begin registers a callout on transaction txID, under the enclosing callouts
+// named by outer, and returns the context the callout runs under and the func
+// that ends it. The context is cancelled, with ErrSuperseded as its cause, when
+// one of the outer pairs stops being current. The Coordinator defers end, so a
+// callout is ended on every exit path, a panic included.
+func (f *Fence) Begin(ctx context.Context, calloutID, txID string, outer []Pair) (context.Context, func())
+
+// Advance raises the callout's number to (major, 0), which shuts out every
+// pass issued under a lower one, and then waits until no joined write is in
+// progress on the transaction (see "The wait"). It is called before each local
+// try and before each hand-over.
 func (f *Fence) Advance(calloutID string, major uint32)
 
-// Admit is the one check. Under one lock it verifies that every pair the pass
-// names is current, and returns a context that is cancelled — with
-// ErrSuperseded as its cause — the moment any of them stops being current.
+// Admit is the check on entry. Under one lock it verifies that every pair the
+// pass names is current, absorbs a higher minor, and returns a context that
+// carries the pairs. It cancels nothing.
 func (f *Fence) Admit(ctx context.Context, pairs []Pair) (context.Context, error)
+
+// Check reports CALLOUT_SUPERSEDED if ctx carries pairs (it was admitted) and
+// one of them is no longer current. A context that was never admitted — the
+// owner's own chain, an ordinary request — always passes.
+func Check(ctx context.Context) error
+
+// Pairs returns the pairs ctx was admitted under: the outer of a callout begun
+// from inside this callback.
+func Pairs(ctx context.Context) []Pair
 ```
 
 A pair is current when its callout is registered, its `major` equals the
-registered one, and its `minor` is not lower than the highest seen. A higher
-`minor` is **absorbed**: it becomes the current one and the handles of callbacks
-admitted under lower ones are pulled. That is how the owner learns that another
-pnode moved on to its next try, with no message between them: from the first
-callback that carries the new number. Until that callback arrives, or the
-callout ends, the earlier cnode of a hand-over is still admitted — so the
-`idempotent` declaration keeps the words "possibly at the same time on two
-cnodes". For the owner's own tries the earlier cnode is shut out before the
-later one is given the work. Checking and handing out the context in one locked
-step leaves no gap between the two, the reason the commercial backend has no
-separate "validate" call.
+registered one, and its `minor` is not lower than the highest seen under that
+`major`. A higher `minor` is **absorbed**: it becomes the current one, and
+passes carrying a lower one are refused from then on. That is how the owner
+learns that another pnode moved on to its next try, with no message between
+them: from the first callback that carries the new number. Two rules make this
+sound. The highest `minor` seen is reset to zero by `Advance`, so the first
+callback of a *second* hand-over (`minor = 1`) is not measured against the last
+try of the first. And a higher `minor` is absorbed only after *every* pair on
+the pass has been verified, so a pass that is refused for an enclosing callout
+changes nothing. The `minor` is covered by the pass's HMAC like every other
+claim. Until a callback with the higher `minor` arrives, or the callout ends,
+the earlier cnode of a hand-over is still admitted — so the `idempotent`
+declaration keeps the words "possibly at the same time on two cnodes".
 
-`end` unregisters the callout: all its passes are refused from then on and every
-handle admitted under it is pulled. Nothing is kept per transaction and nothing
-depends on the transaction id, which changes mid-operation under
-`COMMIT_BEFORE_DISPATCH` and belongs to the scheduler on a scheduled fire.
+`end` unregisters the callout: all its passes are refused from then on. Nothing
+is kept per transaction or per request, and nothing depends on the transaction
+id staying the same across an operation, which it does not under
+`COMMIT_BEFORE_DISPATCH`; a callout's own `txID` — the one its passes carry —
+is fixed for its life.
+
+**The fence never cancels a callback's context.** A callback runs on the
+transaction of the operation it belongs to — on PostgreSQL, on the owner's own
+connection (`plugins/postgres/store_factory.go:135-148`). Cancelling a context
+in the middle of a statement makes the driver close that connection
+(`transaction_manager.go:138-141` records the same hazard for rollback), and the
+owner's next statement, or its commit, then fails: a successful failover would
+turn into a failed operation because the replaced cnode happened to be reading.
+In-transaction writes on the memory and SQLite backends do not consult the
+context at all (`plugins/memory/entity_store.go:229-277`,
+`plugins/sqlite/entity_store.go:289-327`), so cancellation would stop nothing
+there either (this settles **V-4**). The fence therefore works by **checks** and
+by **the wait**, which hold on every backend alike, and the only context it ever
+cancels is the one `Begin` returns — a Coordinator's own, under which no
+statement of the shared transaction runs.
 
 **Where it is enforced.**
 
@@ -416,32 +479,75 @@ depends on the transaction id, which changes mid-operation under
    check comes first so that a stolen pass tells another tenant nothing about
    which callouts exist. The request then runs under the context `Admit`
    returned. A refusal is `CALLOUT_SUPERSEDED` (§8). This covers every joined
-   operation, reads and searches included.
-2. *In progress when the number rises or the callout ends.* The handle is
-   pulled. PostgreSQL and SQLite calls bound to the context stop (**V-4**: what
-   the memory backend's write path does with a cancelled context). A callback
-   waiting on a callout of its own is released too: its `Coordinator` runs under
-   the same context, returns, and ends the inner callout.
-3. *At the write.* `acquireJoinedGate` (`entity/handler.go:121-125`) is the one
-   place a joined entity write takes the transaction's write lock. After taking
-   it, it checks the context and abandons the write with `CALLOUT_SUPERSEDED` if
-   the handle was pulled. This stops a write that was admitted, queued behind
-   another callback, and reached the lock after its cnode was replaced.
-4. *In the engine.* `executeProcessors` checks the context at the top of each
-   iteration and returns the cause if it is `ErrSuperseded` — in every mode,
-   `ASYNC_NEW_TX` included, whose "log and continue" would otherwise carry a
-   superseded chain on to the next processor (`engine_processors.go:137-144`).
-   `context.WithCancelCause` distinguishes this from a client that went away, so
-   it is reported as `CALLOUT_SUPERSEDED`, not as a cancelled request.
+   operation, reads and searches included. Because `Join` comes first, a
+   callback that arrives after the *transaction* has ended is answered
+   `TRANSACTION_NOT_FOUND`, as today; `CALLOUT_SUPERSEDED` is the answer while
+   the transaction is still open.
+2. *Every time a joined chain takes the transaction's write lock.* That is
+   `acquireJoinedGate` (`entity/handler.go:121-125`), which every joined entity
+   write calls, **and** the re-acquisition after a callout of the callback's own
+   (`txgate`'s `resume`, reached from `engine_processors.go:204, 233, 249`,
+   `engine.go:1014` and `arm.go:239`). Once the lock is held, `fence.Check` runs;
+   on refusal the chain returns `CALLOUT_SUPERSEDED` without touching the
+   transaction, and its deferred release frees the lock. This is the check that
+   gives the right to write: it is made *under* the lock, and the owner's wait
+   (below) takes the same lock.
+3. *In the engine, after each processor returns* and before the mode-specific
+   handling of its result — not only at the top of the loop, which never sees
+   the last processor. In `ASYNC_NEW_TX` the "log and continue" would otherwise
+   carry a superseded chain on to the next processor, and past the last one to
+   the handler's final save (`engine_processors.go:137-145, 186`).
+4. *Before the final write of a joined operation* (the `owned == false` arm of
+   each finalize block in `entity/service.go`), so that a superseded callback is
+   answered `CALLOUT_SUPERSEDED` rather than 200.
+5. *A callback waiting on a callout of its own* is released: the inner
+   `Coordinator` runs under the context `Begin` returned, which is cancelled
+   with cause `ErrSuperseded` when an enclosing pair stops being current; it
+   returns `CALLOUT_SUPERSEDED` and ends the inner callout, which shuts out the
+   inner cnode in turn. The pairs travel as a context *value*, so an inner
+   callout is begun under them, and released with them, even where the engine
+   has detached the context from cancellation under `COMMIT_BEFORE_DISPATCH`
+   (`engine_processors.go:361, 376, 503`).
 
-The owner's own chain carries no pass and is never subject to any of this.
+**The wait.** After shutting out the earlier pass — in `Advance`, and in `end` —
+the fence acquires the transaction's write lock once and releases it, outside
+its own lock. A joined write either made its check under the write lock *before*
+the number rose, in which case it still holds the lock and the owner waits for
+it to finish; or it takes the lock afterwards, and its check refuses it. There
+is no third case, and no dependence on which waiter the mutex favours. So:
 
-**What is not stopped, and why that is acceptable.** One write that has already
-passed the check at the lock when the number rises still completes. It is a
-repeat of an idempotent processor's own write, and it cannot land after a write
-of a later processor: that processor must first reach a cnode, run, and call
-back. Audit rows written on the error path of a superseded chain fail on the
-cancelled context; they are not suppressed specially.
+- when the owner gives the work to the next cnode, no write of the earlier cnode
+  is in progress on the owner and none can start;
+- when a callout has ended — answered, failed or abandoned — the same holds
+  before the engine does anything else: the savepoint of a failed `ASYNC_NEW_TX`
+  processor is undone *after* that processor's last write, never before it;
+- between callouts nothing but the owner's own chain writes to the transaction.
+
+The wait costs at most the joined write in progress — statements bounded by the
+database, never a wait on a cnode, because a callback gives the lock up for the
+length of any callout of its own. It comes on top of the callout's deadline
+(§5). It cannot deadlock: the chain that runs a Coordinator holds no write lock
+(the owner never does during `engine.Execute`, `entity/service.go:356-361`; a
+callback has given it up for the callout), and a holder of the lock waits on
+nothing but the database.
+
+The owner's own chain carries no pairs and is never subject to any check.
+
+**What is not stopped, and why that is acceptable.**
+
+- For tries made by another pnode, the earlier cnode stays admitted until the
+  first callback of the later one arrives (above). Its writes are repeats of an
+  idempotent processor's own writes, and the wait at the end of the callout
+  still puts all of them before anything the engine does next.
+- A joined *read* in progress when its cnode is replaced runs to completion, and
+  its result goes to a cnode whose next callback is refused. Reads take no write
+  lock.
+- A joined create extends the model, where the model allows it, before it takes
+  the write lock (`entity/service.go:246, 1908`). The extension is additive and
+  belongs to the transaction; a superseded create can leave one behind in an
+  operation that commits.
+- Audit rows that a superseded chain writes on its error path are written, as
+  for any callback that fails today.
 
 **Not part of this design, by ruling.** An EdgeMessage saved by a superseded
 callback: the application must make that save idempotent and attach the id to
@@ -453,7 +559,9 @@ so. A workflow that runs inside a callback and contains a
 afterwards) — a defect of its own, filed separately.
 
 Callouts with no transaction (`COMMIT_BEFORE_DISPATCH` with
-`startNewTxOnDispatch: false`) carry no pass, as today.
+`startNewTxOnDispatch: false`) carry no pass, as today. They are still begun and
+ended, with an empty `txID`, so that a callout made from inside a callback is
+released with the callback; the wait is then a no-op.
 
 ## 8. What the client sees
 
@@ -494,7 +602,8 @@ envelopes (`CLIENT_ERROR` / `SERVER_ERROR` with the code as the message prefix,
 | `Terminal` | as today (500 ticketed for auth-context; 400 `WORKFLOW_FAILED` otherwise) | | no | as today |
 | A hand-over's answer was lost — no reply, a broken connection, an answer that does not authenticate — and the callout is not repeat-safe, or it was the only attempt | 503 | `DISPATCH_FORWARD_FAILED` (kept) | yes | the sanitised message it has today; recorded as an attempt with member `-` |
 | No peer could be connected to, and no local cnode | 503 | `NO_COMPUTE_MEMBER_FOR_TAG` | yes | as today |
-| Callback from a cnode that was replaced, or whose callout has ended (refused on entry, or stopped in progress) | 410 | **`CALLOUT_SUPERSEDED`** (new) | no | `this compute node was replaced, or its callout has ended` |
+| Callback from a cnode that was replaced, or whose callout has ended, while the transaction is still open (refused on entry, at the write lock, between processors, or before its final write) | 410 | **`CALLOUT_SUPERSEDED`** (new) | no | `this compute node was replaced, or its callout has ended` |
+| The same callback after the transaction has ended | 404 | `TRANSACTION_NOT_FOUND` | no | as today: the transaction is looked up, and its tenant checked, before the fence is consulted |
 | Callback bearing a pass with no callout and number | 401 | `UNAUTHORIZED` | no | `invalid transaction token`, as any malformed pass today |
 | Import: criterion or function `retryPolicy` not `NONE`/`FIXED`/unset | 400 | `VALIDATION_FAILED` | no | names the workflow, state, transition |
 | Import: `responseTimeoutMs` above the upper bound, or negative | 400 | `VALIDATION_FAILED` | no | names the bound |
@@ -732,14 +841,20 @@ waiver, with its reason below the table.
 | `ASYNC_NEW_TX`: callout fails → operation succeeds, nothing reported | ✓ | ✓ | | | |
 | `COMMIT_BEFORE_DISPATCH`, both variants: failure leaves TX_pre committed (§8.1) | ✓ | ✓ | | | |
 | Callouts made from a scheduled fire follow the same rules | ✓ | ✓ | | | |
-| Late callback after the callout ended → 410 `CALLOUT_SUPERSEDED`, HTTP and gRPC doors, write and read | ✓ | ✓ | ✓ | | |
+| Late callback after the callout ended, transaction still open (a later processor of the same transition is in progress) → 410 `CALLOUT_SUPERSEDED`, HTTP and gRPC doors, write and read | ✓ | ✓ | ✓ | | |
+| Late callback after the transaction ended → 404 `TRANSACTION_NOT_FOUND`, as today | ✓ | ✓ | ✓ | | |
 | Late callback in `ASYNC_NEW_TX` after failure → 410 | | ✓ | | | |
 | Owner gives the work to a second cnode of its own → the first cnode's callback is refused at once, while the callout is still in progress | ✓ | ✓ | ✓ | | |
-| A callback in progress when its cnode is replaced → stopped (context cancelled with `ErrSuperseded`); a write queued for the transaction's lock is abandoned on reaching it | ✓ | ✓ | | | |
-| A callback waiting on a callout of its own when its cnode is replaced → released; the inner callout ends; nothing further is written, in every processor mode incl. `ASYNC_NEW_TX` | ✓ | ✓ | | | |
-| Tries made by another pnode: a higher `minor` is absorbed from the first callback that carries it, and lower ones are refused from then on | ✓ | | | | ✓ |
+| A write queued for the transaction's lock when its cnode is replaced → refused on taking the lock, nothing written | ✓ | ✓ | | | |
+| A joined write in progress when its cnode is replaced → the next cnode is not given the work, and the engine does not carry on, until that write has finished (the wait) | ✓ | ✓ | | | |
+| `ASYNC_NEW_TX`: a failed processor's write in progress lands before its savepoint is undone — it is not in the committed result, on any backend | ✓ | ✓ | | w⁴ | |
+| A callback waiting on a callout of its own when its cnode is replaced → released; the inner callout ends; refused on re-taking the lock; nothing further is written, in every processor mode incl. `ASYNC_NEW_TX` as the *last* processor; the callback is answered 410, not 200 | ✓ | ✓ | | | |
+| A joined read in progress when its cnode is replaced → completes; no statement is interrupted; the owner's operation succeeds (PostgreSQL) | | ✓ | | | |
+| Tries made by another pnode: a higher `minor` is absorbed from the first callback that carries it, and lower ones are refused from then on; a second hand-over's `minor = 1` is admitted | ✓ | | | | ✓ |
+| A pass refused for an enclosing pair absorbs nothing | ✓ | | | | |
 | A pass naming an enclosing callout that is no longer current → refused | ✓ | ✓ | | | |
-| Superseded is reported as `CALLOUT_SUPERSEDED`, a client that went away as today — `context.Cause` tells them apart | ✓ | | | | |
+| A Coordinator released by the fence reports `CALLOUT_SUPERSEDED`, a client that went away as today — `context.Cause` tells them apart | ✓ | | | | |
+| The wait cannot deadlock: a callout made from inside a callback, replaced while its own inner cnode's callback holds the lock | ✓ | ✓ | | | |
 | Callout ended by a panic → its passes are refused | ✓ | | | | |
 | Pass without callout and number → 401; expired pass → 410 `TRANSACTION_EXPIRED` | ✓ | ✓ | | | |
 | Stolen pass presented by another tenant → 403 before any fencing answer is given | ✓ | ✓ | | | |
@@ -779,6 +894,11 @@ runner, and the fixture's patience is fixed per package. The e2e layer attaches
 an in-process cnode, which is deterministic.
 ³ The peer selector is random, so the assertion would hold by luck half the
 time, and killing a node damages the shared fixture for later scenarios.
+⁴ The scenario is an interleaving of a callback against the owner, and
+interleavings stay out of the shared parity suite. The unit layer runs it on the
+memory backend, whose in-transaction writes ignore the context — the backend on
+which a cancelled context would have stopped nothing — and the e2e layer on
+PostgreSQL.
 
 Concurrency (two callouts racing on one cnode; attach and detach during a
 callout; a callback racing the end of its callout) is tested in isolated
@@ -844,6 +964,17 @@ documented and never raised (R§6) — to be filed. The scheduler treating an em
 cluster view as "I am the coordinator": unreachable once a pnode is always in its
 own view, noted for whoever next touches `scheduler/coordinator.go`. Parse
 failures of settings falling back silently to defaults.
+
+Joined *reads* are not serialised with anything: they take no write lock, and on
+PostgreSQL they run on the owner's own connection
+(`plugins/postgres/store_factory.go:135-148`; `entity/service.go:427-441`). A
+read by a cnode that is still working while the owner, or another callback, runs
+a statement uses one connection from two goroutines. That exists today — two
+callbacks of one cnode are enough — and a replaced cnode that keeps reading makes
+it more likely. It fails closed (the second user gets an error), is **not
+verified** beyond the code read, and is to be checked and filed on its own; the
+fence's wait is built on the write lock so that a fix which puts reads under the
+lock is covered by it without change.
 
 Seen by the specification's reviewer and **not verified**, to be checked and
 filed on its own: a joined callback whose workflow contains a
