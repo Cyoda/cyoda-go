@@ -58,6 +58,8 @@ func (r *fakeRegistry) Deregister(_ context.Context, nodeID string) error {
 	return nil
 }
 
+func (r *fakeRegistry) Changed() <-chan struct{} { return nil }
+
 // mustNewSigner creates a token.Signer or panics — for use in tests only.
 func mustNewSigner(secret []byte) *token.Signer {
 	s, err := token.NewSigner(secret)

@@ -151,6 +151,7 @@ func (r *fakeRegistry) Lookup(context.Context, string) (string, bool, error) {
 }
 func (r *fakeRegistry) List(context.Context) ([]contract.NodeInfo, error) { return nil, nil }
 func (r *fakeRegistry) Deregister(context.Context, string) error          { return nil }
+func (r *fakeRegistry) Changed() <-chan struct{}                          { return nil }
 
 var _ contract.NodeRegistry = (*fakeRegistry)(nil)
 

@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/hashicorp/memberlist"
+
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 // TestTagEvents_CallbacksNeverBlock is the "slow peer does not stall
@@ -16,7 +18,7 @@ import (
 // between memberlist.Create and the worker's start — every callback must
 // still return at once, dropping what does not fit.
 func TestTagEvents_CallbacksNeverBlock(t *testing.T) {
-	q := newTagEvents(newDirectory())
+	q := newTagEvents("self", newDirectory(), common.NewChangeSignal())
 	node := &memberlist.Node{Name: "peer"}
 
 	done := make(chan struct{})
@@ -42,7 +44,7 @@ func TestTagEvents_CallbacksNeverBlock(t *testing.T) {
 }
 
 func TestTagEvents_CopyWhatTheyAreGiven(t *testing.T) {
-	q := newTagEvents(newDirectory())
+	q := newTagEvents("self", newDirectory(), common.NewChangeSignal())
 	buf := []byte(`{"n":"peer"}`)
 	q.onList(buf)
 	copy(buf, `XXXXXXXXXXXX`) // memberlist reuses the buffer

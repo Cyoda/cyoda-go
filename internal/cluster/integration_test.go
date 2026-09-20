@@ -110,3 +110,4 @@ func (r *testRegistry) Lookup(_ context.Context, nodeID string) (string, bool, e
 	return addr, ok, nil
 }
 func (r *testRegistry) List(_ context.Context) ([]contract.NodeInfo, error) { return nil, nil }
+func (r *testRegistry) Changed() <-chan struct{}                            { return nil }

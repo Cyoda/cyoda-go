@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/hashicorp/memberlist"
+
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 // topicTags carries one pnode's complete tag list to a peer, and
@@ -61,14 +63,16 @@ type tagEvent struct {
 // stalls all membership processing for up to the TCP timeout and Members or
 // UpdateNode deadlocks.
 type tagEvents struct {
-	dir *directory
-	ch  chan tagEvent
+	self   string
+	dir    *directory
+	signal *common.ChangeSignal
+	ch     chan tagEvent
 }
 
 var _ memberlist.EventDelegate = (*tagEvents)(nil)
 
-func newTagEvents(dir *directory) *tagEvents {
-	return &tagEvents{dir: dir, ch: make(chan tagEvent, tagEventQueueDepth)}
+func newTagEvents(self string, dir *directory, signal *common.ChangeSignal) *tagEvents {
+	return &tagEvents{self: self, dir: dir, signal: signal, ch: make(chan tagEvent, tagEventQueueDepth)}
 }
 
 func (q *tagEvents) offer(ev tagEvent) {
@@ -79,9 +83,13 @@ func (q *tagEvents) offer(ev tagEvent) {
 }
 
 // The directory first, then the nudge: the nudge may be dropped, the directory
-// entry cannot.
+// entry cannot. A metadata update does not fire Changed: the list that
+// follows it does, when it arrives.
 func (q *tagEvents) NotifyJoin(n *memberlist.Node) {
 	q.dir.set(n)
+	if n.Name != q.self {
+		q.signal.Fire()
+	}
 	q.offer(tagEvent{kind: evMember, node: n.Name})
 }
 
@@ -92,6 +100,9 @@ func (q *tagEvents) NotifyUpdate(n *memberlist.Node) {
 
 func (q *tagEvents) NotifyLeave(n *memberlist.Node) {
 	q.dir.remove(n.Name)
+	if n.Name != q.self {
+		q.signal.Fire()
+	}
 	q.offer(tagEvent{kind: evLeave, node: n.Name})
 }
 

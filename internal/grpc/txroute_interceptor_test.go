@@ -45,6 +45,7 @@ func (f fakeRouteRegistry) List(_ context.Context) ([]contract.NodeInfo, error) 
 	return nodes, nil
 }
 func (f fakeRouteRegistry) Deregister(context.Context, string) error { return nil }
+func (f fakeRouteRegistry) Changed() <-chan struct{}                 { return nil }
 
 // fakeJoinTM satisfies spi.TransactionManager, injecting a joined tx into ctx.
 type fakeJoinTM struct {

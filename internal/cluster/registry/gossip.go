@@ -88,6 +88,7 @@ type Gossip struct {
 	dir      *directory
 	tags     *tagStore
 	events   *tagEvents
+	signal   *common.ChangeSignal
 
 	publish chan struct{} // one slot: this pnode's list changed
 	stop    chan struct{}
@@ -119,16 +120,18 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 		meta: metaBytes,
 		subs: make(map[string][]func([]byte)),
 	}
+	signal := common.NewChangeSignal()
 	dir := newDirectory()
-	events := newTagEvents(dir)
+	events := newTagEvents(cfg.NodeID, dir, signal)
 	del.subscribe(topicTags, events.onList)
 	del.subscribe(topicTagsRequest, events.onRequest)
 	g := &Gossip{
 		cfg:      cfg,
 		delegate: del,
 		dir:      dir,
-		tags:     newTagStore(cfg.NodeID, epoch, common.NewChangeSignal()),
+		tags:     newTagStore(cfg.NodeID, epoch, signal),
 		events:   events,
+		signal:   signal,
 		publish:  make(chan struct{}, 1),
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
@@ -314,6 +317,11 @@ func (g *Gossip) Deregister(_ context.Context, _ string) error {
 		)
 	})
 	return g.deregisterErr
+}
+
+// Changed returns the channel closed at the next change of the cluster view.
+func (g *Gossip) Changed() <-chan struct{} {
+	return g.signal.Changed()
 }
 
 // filterSelf removes any seed that resolves to this node's own bind address.
