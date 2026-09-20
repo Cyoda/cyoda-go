@@ -7,7 +7,9 @@
 // (e2e/parity/{memory,sqlite,postgres}). Each fixture passes the cyoda gRPC
 // endpoint via the CYODA_COMPUTE_GRPC_ENDPOINT environment variable.
 //
-// A separate /healthz HTTP endpoint on an ephemeral port (printed to
+// A separate local HTTP endpoint (/healthz for readiness; /record and
+// /release for a scenario to read what the client received and to trigger a
+// late-callback client's callbacks) on an ephemeral port (printed to
 // stdout at startup) lets the fixture's readiness probe confirm the
 // compute client is connected and ready before running scenarios.
 //
@@ -79,7 +81,7 @@ func main() {
 
 	// Start the health server first so the fixture can poll it before
 	// the gRPC connection settles.
-	hs, err := newHealthServer()
+	hs, err := newHealthServer(rec, disp.release)
 	if err != nil {
 		slog.Error("health server failed", "pkg", "compute-test-client", "error", err)
 		os.Exit(1)

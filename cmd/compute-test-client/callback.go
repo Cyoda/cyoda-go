@@ -248,6 +248,20 @@ func entityDataStatus(body string) string {
 	return s
 }
 
+// problemErrorCode extracts properties.errorCode from an RFC 9457 problem
+// body, or "" when the body is not one.
+func problemErrorCode(body string) string {
+	var pd struct {
+		Properties struct {
+			ErrorCode string `json:"errorCode"`
+		} `json:"properties"`
+	}
+	if json.Unmarshal([]byte(body), &pd) != nil {
+		return ""
+	}
+	return pd.Properties.ErrorCode
+}
+
 // callbackProcessorFunc is a processor that may issue joined callbacks. It
 // receives the tx-token (echoed on callbacks) and the callback client.
 type callbackProcessorFunc func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error)

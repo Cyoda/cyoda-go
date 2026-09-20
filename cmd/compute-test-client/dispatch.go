@@ -303,6 +303,52 @@ func (d *dispatcher) handleCallout(ctx context.Context, msg *cepb.CloudEvent, pa
 	return reply, false, err
 }
 
+// release makes the late callback for every held callout and records what
+// each door answered.
+func (d *dispatcher) release(ctx context.Context) {
+	for _, hc := range d.takeHeld() {
+		d.rec.setCallback(hc.seq, d.lateCallback(ctx, hc))
+	}
+}
+
+// lateCallback presents a held pass on the HTTP door and, when a gRPC callback
+// client exists, on the gRPC door, with an entity create on each.
+func (d *dispatcher) lateCallback(ctx context.Context, hc heldCallout) callbackOutcome {
+	var out callbackOutcome
+	switch {
+	case hc.cfgErr != "":
+		out.Error = hc.cfgErr
+		return out
+	case hc.cfg.SecondaryModel == "":
+		out.Error = "late-callback needs secondaryModel in the callout's context"
+		return out
+	case d.cat.cb == nil:
+		out.Error = "callback client unavailable (CYODA_COMPUTE_HTTP_BASE unset)"
+		return out
+	}
+	res, _, _, err := d.cat.cb.createSecondary(ctx, hc.cfg, hc.pass, hc.cfg.Marker)
+	if err != nil {
+		out.Error = "http callback: " + err.Error()
+		return out
+	}
+	out.HTTPStatus = res.Status
+	out.HTTPErrorCode = problemErrorCode(res.Body)
+
+	if d.gcb == nil {
+		return out
+	}
+	out.GRPCAttempted = true
+	g, err := d.gcb.createSecondary(ctx, hc.cfg, hc.pass, hc.cfg.Marker)
+	if err != nil {
+		out.Error = "grpc callback: " + err.Error()
+		return out
+	}
+	out.GRPCSuccess = g.Success
+	out.GRPCErrorCode = g.ErrorCode
+	out.GRPCErrorMessage = g.ErrorMsg
+	return out
+}
+
 // close tears down the gRPC connection.
 func (d *dispatcher) close() {
 	if d.conn != nil {
