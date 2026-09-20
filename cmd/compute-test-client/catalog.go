@@ -108,7 +108,20 @@ func newCatalog(cb *callbackClient, gcb *grpcCallbackClient) *catalog {
 				var cfg struct {
 					SleepMS int `json:"sleep_ms"`
 				}
-				_ = json.Unmarshal(config, &cfg)
+				// The server delivers the processor's context as a JSON
+				// string in parameters (dispatch.go passes req.Parameters
+				// through unchanged); unwrap it before reading sleep_ms,
+				// while still accepting a bare object for unit callers.
+				raw := []byte(config)
+				var asString string
+				if err := json.Unmarshal(raw, &asString); err == nil {
+					raw = []byte(asString)
+				}
+				if len(raw) > 0 {
+					if err := json.Unmarshal(raw, &cfg); err != nil {
+						return nil, fmt.Errorf("slow-configurable: invalid config: %w", err)
+					}
+				}
 				if cfg.SleepMS > 0 {
 					select {
 					case <-time.After(time.Duration(cfg.SleepMS) * time.Millisecond):
