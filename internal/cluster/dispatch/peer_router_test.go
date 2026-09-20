@@ -348,6 +348,21 @@ func TestHandOver_ForbiddenAddress_IsNotConnected_NoTryUsed(t *testing.T) {
 	assertNotConnected(t, realRouter(t, false).HandOver(testContext(), contract.NodeInfo{NodeID: "p", Addr: "http://127.0.0.1:9"}, ownerCallout(t, "processor"), 3, 1))
 }
 
+// TestHandOver_WaitRunsOut_IsOneTry pins what must stay true once the
+// forwarder's client-wide Timeout is gone: the wait for the answer is bounded
+// by ctx's own deadline, and running out counts as one try, lost.
+func TestHandOver_WaitRunsOut_IsOneTry(t *testing.T) {
+	peerAuth := newAEAD(t)
+	release := make(chan struct{})
+	runner := &fakeRunner{onRun: func(context.Context) { <-release }}
+	srv := httptest.NewServer(newHandlerMux(t, runner, peerAuth))
+	t.Cleanup(func() { close(release); srv.Close() })
+
+	ctx, cancel := context.WithTimeout(testContext(), 150*time.Millisecond)
+	defer cancel()
+	assertLost(t, realRouter(t, true).HandOver(ctx, contract.NodeInfo{NodeID: "slow", Addr: srv.URL}, ownerCallout(t, "processor"), 3, 1))
+}
+
 func TestHandOver_OverTheWire_BadAnswersAreNoAnswer(t *testing.T) {
 	peerAuth := newAEAD(t)
 	var replay []byte

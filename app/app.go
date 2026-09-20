@@ -537,7 +537,7 @@ func New(cfg Config) *App {
 	if cfg.ExternalProcessing != nil {
 		extProc = cfg.ExternalProcessing
 	} else if cfg.Cluster.Enabled {
-		forwarder := clusterdispatch.NewHTTPForwarder(peerAuth, cfg.Cluster.DispatchForwardTimeout)
+		forwarder := clusterdispatch.NewHTTPForwarder(peerAuth, cfg.Cluster.DispatchConnectTimeout)
 		if cfg.Cluster.DispatchAllowLoopback {
 			// Test-only: multi-node E2E fixtures run every node on 127.0.0.1.
 			// Never set in production (SSRF guard stays active by default).
