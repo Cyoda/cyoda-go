@@ -16,6 +16,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/fence"
 )
 
 // CloudEventsServiceImpl implements the Cyoda CloudEventsService gRPC service.
@@ -56,6 +57,9 @@ type KeepAliveConfig struct {
 // allowLoopback must match cfg.Cluster.DispatchAllowLoopback; it gates the
 // peer-address SSRF guard on the gRPC forward path (symmetric with the
 // dispatch forwarder and HTTP proxy).
+// f is the process's fence: the tx-route interceptor asks it whether a
+// callback's pass still names the callout that compute node holds, and refuses
+// the callback if it does not.
 // healthFlag is the same flag the HTTP Recovery middleware stores into — a
 // panic recovered on either door marks the node unhealthy. May be nil in
 // tests that don't care about health-flag observation.
@@ -67,6 +71,7 @@ func NewServer(
 	modelHandler *model.Handler,
 	searchService *search.SearchService,
 	tokenSigner *token.Signer,
+	f *fence.Fence,
 	nodeRegistry contract.NodeRegistry,
 	selfNodeID string,
 	otelEnabled bool,
@@ -83,7 +88,7 @@ func NewServer(
 	// Auth runs second so the tx-route interceptor sees the authenticated
 	// UserContext (JoinFromToken's tenant check depends on it); tx-route runs
 	// third, joining the referenced transaction or forwarding to its owner.
-	txRoute := newTxRouteInterceptor(tokenSigner, nodeRegistry, selfNodeID, txMgr, localGRPCPort, allowLoopback)
+	txRoute := newTxRouteInterceptor(tokenSigner, nodeRegistry, selfNodeID, txMgr, f, localGRPCPort, allowLoopback)
 	opts = append(opts,
 		googlegrpc.ChainUnaryInterceptor(
 			UnaryRecoveryInterceptor(healthFlag),

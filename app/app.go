@@ -720,7 +720,7 @@ func New(cfg Config) *App {
 
 	// Entity transition routes (with auth, outside generated API mux).
 	// TxJoin is nested inside authMW so UserContext is available for tenant checks.
-	txJoinMW := httpmw.TxJoin(a.tokenSigner, a.transactionManager)
+	txJoinMW := httpmw.TxJoin(a.tokenSigner, a.transactionManager, a.fence)
 	mux.Handle("GET /entity/{entityId}/transitions", authMW(txJoinMW(http.HandlerFunc(entityHandler.HandleGetTransitions))))
 	mux.Handle("GET /platform-api/entity/fetch/transitions", authMW(txJoinMW(http.HandlerFunc(entityHandler.HandleFetchTransitions))))
 
@@ -835,7 +835,7 @@ func New(cfg Config) *App {
 	a.handler = middleware.Recovery(a.healthFlag)(a.handler)
 
 	// gRPC server — uses inner handler (without context path prefix)
-	a.grpcServer = internalgrpc.NewServer(a.authService, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, a.healthFlag, internalgrpc.KeepAliveConfig{Interval: time.Duration(cfg.GRPC.KeepAliveInterval) * time.Second, Timeout: time.Duration(cfg.GRPC.KeepAliveTimeout) * time.Second})
+	a.grpcServer = internalgrpc.NewServer(a.authService, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.fence, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, a.healthFlag, internalgrpc.KeepAliveConfig{Interval: time.Duration(cfg.GRPC.KeepAliveInterval) * time.Second, Timeout: time.Duration(cfg.GRPC.KeepAliveTimeout) * time.Second})
 
 	return a
 }

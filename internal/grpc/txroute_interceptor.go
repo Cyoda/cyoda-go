@@ -18,6 +18,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/txjoin"
+	"github.com/cyoda-platform/cyoda-go/internal/fence"
 )
 
 // forwardUnaryFn re-issues a unary CloudEvent RPC to a peer node.
@@ -47,6 +48,7 @@ type txRouteInterceptor struct {
 	registry      contract.NodeRegistry
 	selfNodeID    string
 	txMgr         spi.TransactionManager
+	fence         *fence.Fence
 	pool          *proxy.ClientPool
 	localGRPCPort int
 
@@ -57,12 +59,13 @@ type txRouteInterceptor struct {
 	forwardSearchStream forwardStreamFn
 }
 
-func newTxRouteInterceptor(signer *token.Signer, reg contract.NodeRegistry, selfNodeID string, txMgr spi.TransactionManager, localGRPCPort int, allowLoopback bool) *txRouteInterceptor {
+func newTxRouteInterceptor(signer *token.Signer, reg contract.NodeRegistry, selfNodeID string, txMgr spi.TransactionManager, f *fence.Fence, localGRPCPort int, allowLoopback bool) *txRouteInterceptor {
 	return &txRouteInterceptor{
 		signer:              signer,
 		registry:            reg,
 		selfNodeID:          selfNodeID,
 		txMgr:               txMgr,
+		fence:               f,
 		pool:                proxy.NewClientPool(allowLoopback),
 		localGRPCPort:       localGRPCPort,
 		forwardUnary:        proxy.ForwardEntityManage,
@@ -144,7 +147,7 @@ func (i *txRouteInterceptor) unary() googlegrpc.UnaryServerInterceptor {
 			return resp, nil
 		}
 
-		joinedCtx, jerr := txjoin.JoinFromToken(ctx, i.signer, i.txMgr, tok)
+		joinedCtx, jerr := txjoin.JoinFromToken(ctx, i.signer, i.txMgr, i.fence, tok)
 		if jerr != nil {
 			return i.unaryErr(ctx, ce, envelope, jerr)
 		}
@@ -185,7 +188,7 @@ func (i *txRouteInterceptor) stream() googlegrpc.StreamServerInterceptor {
 			return i.proxyStream(ctx, ss, forward, envelope, grpcAddr)
 		}
 
-		joinedCtx, jerr := txjoin.JoinFromToken(ctx, i.signer, i.txMgr, tok)
+		joinedCtx, jerr := txjoin.JoinFromToken(ctx, i.signer, i.txMgr, i.fence, tok)
 		if jerr != nil {
 			return i.streamErr(ss, "", envelope, jerr)
 		}

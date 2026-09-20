@@ -202,6 +202,25 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 		}
 	})
 
+	// A pass with no callout and number — what an earlier version minted — is
+	// malformed: 401, as any invalid pass.
+	t.Run("NoCalloutAndNumber_401", func(t *testing.T) {
+		tok, err := h.app.TokenSigner().Issue(token.Claims{
+			NodeID: "local", TxRef: "tx-" + randSuffix(t), ExpiresAt: time.Now().Add(time.Minute).Unix(),
+		})
+		if err != nil {
+			t.Fatalf("Issue: %v", err)
+		}
+		resp := h.DoAuth(t, http.MethodGet, probePath, "", tok)
+		body := h.readBody(t, resp)
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("status = %d; want 401 (body: %s)", resp.StatusCode, body)
+		}
+		if code := problemErrorCode(body); code != "UNAUTHORIZED" {
+			t.Fatalf("errorCode = %q; want UNAUTHORIZED (body: %s)", code, body)
+		}
+	})
+
 	// empty token (control) → 2xx standalone. No X-Tx-Token header: the middleware
 	// passes through and the create runs as a standalone (non-joined) operation.
 	t.Run("EmptyToken_Standalone_2xx", func(t *testing.T) {
