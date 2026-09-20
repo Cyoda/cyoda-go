@@ -47,6 +47,19 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `docs/cloud-parity/tenant-id-grammar.md` and
   `cyoda help errors OIDC_INVALID_TENANT`.
 
+- **Nodes of different versions cannot share a cluster.** The message by which
+  one node hands a callout to another changed: requests are bound to their
+  direction, the answer is encrypted and authenticated like the request, and
+  the payload states the outcome explicitly. A node of this version treats an
+  answer it cannot authenticate as lost. The scheduler's peer RPC signs with
+  the same envelope and changes with it. Stop the cluster to upgrade it.
+
+- **`CYODA_DISPATCH_FORWARD_TIMEOUT` no longer governs handing a callout to
+  another node.** Opening the connection is bounded by the new
+  `CYODA_DISPATCH_CONNECT_TIMEOUT`; the wait for the answer follows from the
+  callout's tries and answer limit plus `CYODA_CALLOUT_HANDOVER_ALLOWANCE`.
+  The setting keeps its name and meaning for the scheduler's peer RPC.
+
 ### Added
 
 - **`ENTITY_MODEL_MISMATCH` (`400`).** An entity's model reference — its
@@ -84,6 +97,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `CYODA_DISPATCH_FORWARD_TIMEOUT` are validated for the first time (negative,
   respectively non-positive, values now fail startup). See
   `cyoda help config grpc` and `cyoda help config cluster`.
+
+- **`cyoda.callout.handovers`** (counter, by `outcome`): callouts handed over
+  to another node.
 
 ### Changed
 
@@ -207,13 +223,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   stays outside the lock. Unreachable over HTTP, where message ids are
   server-generated, but the SPI admits any id.
 
-- **A callout may not run as one tenant over another's entity.** A peer
-  dispatch request carries two tenants — its own, which becomes the user
-  context, and the entity metadata's, which is handed to the local
-  dispatcher — and nothing compared them. A mismatch is now `400`, and so
-  is an absent entity tenant: every callout kind — processor, criteria and
-  function alike — is built from a live stored entity whose tenant is
-  always set, so an empty one can only come from a hand-crafted peer body.
+- **A callout may not run as one tenant over another's entity.** A hand-over
+  carries two tenants — its own, which becomes the user context, and the
+  entity metadata's, which is handed to the local dispatcher — and nothing
+  compared them. A mismatch is now answered, under seal, as a `terminal`
+  refusal with no try made, and so is an absent entity tenant: every callout
+  kind — processor, criteria and function alike — is built from a live
+  stored entity whose tenant is always set, so an empty one can only come
+  from a hand-crafted peer body. The owner reports a ticketed `500`.
 
 - **The OIDC provider store no longer writes under one key and reads under
   another.** It wrote a record and its URI index under the canonical
@@ -317,6 +334,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **A transaction routed to a node whose membership metadata cannot be read
   answers `503 TRANSACTION_NODE_UNAVAILABLE`**, as for any other node that is
   not available. It answered `500`.
+
+- **A compute node's own failure message and its `retryable` verdict now reach
+  the client when the compute node is attached to another node.** They were
+  replaced by `peer dispatch failed` on the way. Its warnings, which were
+  dropped on the same path, arrive too.
+
+- **A node whose dispatch replay cache is full no longer fails callouts handed
+  to it**; it answers that it took no work, and the next node is asked.
 
 ## [0.8.4] — 2026-09-09
 

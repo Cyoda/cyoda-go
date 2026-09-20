@@ -33,7 +33,7 @@ A member that is not draining is evicted within `CYODA_KEEPALIVE_TIMEOUT` second
 
 Retryable. Completion on the remote node is not guaranteed; retries must be idempotent or carry an idempotency key.
 
-If timeouts recur, check compute member load and network latency. `CYODA_DISPATCH_WAIT_TIMEOUT` and `CYODA_DISPATCH_FORWARD_TIMEOUT` govern cross-node forwarding between cluster nodes, not this timeout — see `cyoda help config cluster`.
+If timeouts recur, check compute member load and network latency. `CYODA_DISPATCH_WAIT_TIMEOUT` governs how long a node polls for a peer that serves the tag; `CYODA_DISPATCH_CONNECT_TIMEOUT` bounds only opening the connection for a hand-over to another node; `CYODA_DISPATCH_FORWARD_TIMEOUT` governs the scheduler's node-to-node call only. None of the three is this timeout — see `cyoda help config cluster`.
 
 ## SEE ALSO
 
