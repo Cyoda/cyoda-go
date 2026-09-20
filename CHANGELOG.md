@@ -74,6 +74,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   1-hour retention is unchanged; pruning runs after commit rather than
   inside it.
 
+- **Callout settings.** `CYODA_RETRY_FIXED_NUM_RETRIES` (default `3`),
+  `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS` (default `30000`, until now a constant),
+  `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` (default `60000`),
+  `CYODA_DISPATCH_CONNECT_TIMEOUT` (default `2s`),
+  `CYODA_CALLOUT_HANDOVER_ALLOWANCE` (default `30s`) and
+  `CYODA_CALLOUT_PASS_ALLOWANCE` (default `30s`). Out-of-range values are
+  startup errors. `CYODA_DISPATCH_WAIT_TIMEOUT` and
+  `CYODA_DISPATCH_FORWARD_TIMEOUT` are validated for the first time (negative,
+  respectively non-positive, values now fail startup). See
+  `cyoda help config grpc` and `cyoda help config cluster`.
+
 ### Changed
 
 - **A write is dated at the instant its transaction commits, not at the

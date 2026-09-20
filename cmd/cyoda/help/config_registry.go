@@ -75,8 +75,11 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_SEED_NODES", Topic: "cluster", Type: "csv", Default: "", Description: "Comma-separated list of seed node addresses."},
 	{Name: "CYODA_HMAC_SECRET", Topic: "cluster", Type: "string", Default: "", Description: "Hex-encoded HMAC secret for inter-node dispatch authentication; required when CYODA_CLUSTER_ENABLED=true. Supports _FILE suffix."},
 	{Name: "CYODA_PROXY_TIMEOUT", Topic: "cluster", Type: "duration", Default: "30s", Description: "Request proxy timeout."},
-	{Name: "CYODA_DISPATCH_WAIT_TIMEOUT", Topic: "cluster", Type: "duration", Default: "5s", Description: "How long the dispatcher polls gossip for a compute member with matching tags."},
-	{Name: "CYODA_DISPATCH_FORWARD_TIMEOUT", Topic: "cluster", Type: "duration", Default: "30s", Description: "HTTP timeout for the cross-node forwarding call."},
+	{Name: "CYODA_DISPATCH_WAIT_TIMEOUT", Topic: "cluster", Type: "duration", Default: "5s", Description: "How long one callout waits, in total, for a compute member with matching tags to exist — on a single node as in a cluster, whatever its retryPolicy. 0 disables waiting. Must not be negative; startup fails otherwise."},
+	{Name: "CYODA_DISPATCH_CONNECT_TIMEOUT", Topic: "cluster", Type: "duration", Default: "2s", Description: "Time allowed to open the connection when a callout is handed over to another node; a node that cannot be connected to costs no try. Must be > 0; startup fails otherwise."},
+	{Name: "CYODA_DISPATCH_FORWARD_TIMEOUT", Topic: "cluster", Type: "duration", Default: "30s", Description: "Whole-request timeout of the node-to-node call that delegates a scheduled transition. Does not govern callout hand-overs. Must be > 0; startup fails otherwise."},
+	{Name: "CYODA_CALLOUT_HANDOVER_ALLOWANCE", Topic: "cluster", Type: "duration", Default: "30s", Description: "What the owning node allows a callout hand-over on top of (tries left x answer limit); also the last term of a callout's overall deadline. Must be > 0; startup fails otherwise."},
+	{Name: "CYODA_CALLOUT_PASS_ALLOWANCE", Topic: "cluster", Type: "duration", Default: "30s", Description: "How long the transaction token given to a compute member outlives its try's answer limit — the margin for routing a callback and for clocks that differ between nodes. Must be > 0; startup fails otherwise."},
 	{Name: "CYODA_TX_TOKEN_TTL", Topic: "cluster", Type: "duration", Default: "1m30s", Description: "TTL of the signed transaction routing token minted on processor/criteria dispatch."},
 
 	// --- auth ---

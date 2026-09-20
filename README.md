@@ -244,6 +244,11 @@ A processor, criterion or function request to a compute member is a *callout*.
 | `CYODA_RETRY_FIXED_NUM_RETRIES` | `3` | Retries after the first try when `retryPolicy` is `FIXED` or unset. |
 | `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS` | `30000` | Answer limit when the callout sets no `responseTimeoutMs`. |
 | `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` | `60000` | Upper bound on `responseTimeoutMs`; workflow import refuses more. |
+| `CYODA_DISPATCH_WAIT_TIMEOUT` | `5s` | The patience: how long a callout waits, in total, for a compute member to exist. `0` disables waiting. |
+| `CYODA_DISPATCH_CONNECT_TIMEOUT` | `2s` | Time allowed to open the connection when a callout is handed over to another node. |
+| `CYODA_CALLOUT_HANDOVER_ALLOWANCE` | `30s` | What the owning node allows a hand-over on top of `tries left × answer limit`. |
+| `CYODA_CALLOUT_PASS_ALLOWANCE` | `30s` | How long a compute member's transaction token outlives its try's answer limit. |
+| `CYODA_DISPATCH_FORWARD_TIMEOUT` | `30s` | Whole-request timeout of the node-to-node call delegating a scheduled transition. |
 
 See `cyoda help config grpc` and `cyoda help config cluster`.
 

@@ -16,6 +16,7 @@ func validConfig() Config {
 		SearchJobMaxAttempts:       3,
 		GRPC:                       GRPCConfig{KeepAliveInterval: 10, KeepAliveTimeout: 30},
 		Callout:                    validCalloutConfig(),
+		Cluster:                    validDispatchConfig(),
 	}
 }
 
@@ -41,6 +42,8 @@ func TestConfig_Validate(t *testing.T) {
 		{"stale-after too close to heartbeat", func(c *Config) { c.SearchJobStaleAfter = 20 * time.Second }},
 		{"zero max attempts", func(c *Config) { c.SearchJobMaxAttempts = 0 }},
 		{"answer limit above its upper bound", func(c *Config) { c.Callout.ResponseTimeout = 2 * time.Minute }},
+		{"negative patience", func(c *Config) { c.Cluster.DispatchWaitTimeout = -time.Second }},
+		{"zero pass allowance", func(c *Config) { c.Callout.PassAllowance = 0 }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

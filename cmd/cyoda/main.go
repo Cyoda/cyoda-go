@@ -115,6 +115,10 @@ func main() {
 		slog.Error("callout config validation failed", "error", err)
 		os.Exit(1)
 	}
+	if err := app.ValidateDispatch(cfg.Cluster); err != nil {
+		slog.Error("dispatch config validation failed", "error", err)
+		os.Exit(1)
+	}
 	logCORSMode(cfg.CORS)
 
 	printBanner(cfg)

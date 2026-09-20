@@ -53,6 +53,16 @@ member. These settings apply on a single node and in a cluster alike.
   naming this setting. Must be `>= 1`; startup fails otherwise
   (default: `60000`)
 
+Tries multiply the answer limit. With the PostgreSQL backend a callout holds
+its transaction's connection idle while it waits, and
+`CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` (default `5m`) reclaims a connection idle
+that long. The relation is documented, not enforced: keep
+`(retries + 1) × the upper bound`, plus `CYODA_DISPATCH_WAIT_TIMEOUT` and
+`CYODA_CALLOUT_HANDOVER_ALLOWANCE`, under that ceiling — 275 s at the upper
+bound with every other default. The transaction token a compute member
+receives outlives its try by `CYODA_CALLOUT_PASS_ALLOWANCE`, on a single node
+too. These three are described in `config cluster`.
+
 ### Compute-node client
 
 These variables are used by compute-node clients that connect to a running cyoda instance.
