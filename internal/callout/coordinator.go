@@ -7,6 +7,8 @@ package callout
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -27,6 +29,9 @@ type Config struct {
 	// FixedNumRetries is the number of tries after the first under retryPolicy
 	// FIXED or none.
 	FixedNumRetries int
+	// Patience is how long one callout waits, in total, for a cnode to exist.
+	// Zero disables waiting.
+	Patience time.Duration
 }
 
 // Coordinator implements contract.ExternalProcessingService on the owner.
@@ -120,37 +125,58 @@ func (c *Coordinator) run(ctx context.Context, call internalgrpc.Callout) (inter
 	return result, err
 }
 
-// loop runs the local procedure and decides what its outcome means for the
-// callout.
+// loop makes passes over this pnode's cnodes until one answers, a failure
+// forbids another try, the tries are used up, or no cnode appeared within the
+// patience.
 func (c *Coordinator) loop(cctx context.Context, call internalgrpc.Callout, p *progress) (internalgrpc.CalloutResult, error) {
 	none := internalgrpc.CalloutResult{}
+	patienceLeft := c.cfg.Patience
+	for {
+		// The channel is taken before looking, so a change that happens while
+		// this pass looks is not lost to the wait that follows it.
+		localChanged := c.members.Changed()
 
-	r := c.local.RunLocal(cctx, call, p.triesLeft)
-	p.triesLeft -= r.TriesUsed
-	p.attempts = append(p.attempts, r.Attempts...)
-	for _, a := range r.Attempts {
-		p.stats.Tries = append(p.stats.Tries, a.Kind.String())
-	}
-	switch {
-	case r.CtxErr != nil:
-		if r.TriesUsed > len(r.Attempts) {
-			p.stats.Tries = append(p.stats.Tries, contract.CalloutOutcomeAbandoned)
+		r := c.local.RunLocal(cctx, call, p.triesLeft)
+		p.triesLeft -= r.TriesUsed
+		p.attempts = append(p.attempts, r.Attempts...)
+		for _, a := range r.Attempts {
+			p.stats.Tries = append(p.stats.Tries, a.Kind.String())
 		}
-		return none, ended(cctx, r.CtxErr)
-	case r.OK():
-		p.stats.Tries = append(p.stats.Tries, contract.CalloutOutcomeOK)
-		return r.Result, nil
-	case r.TriesUsed == 0:
-		p.noCnode = r.Failure
-	default:
-		p.lastTried = r.Failure
-		if done, err := p.verdict(call.RepeatSafe); done {
-			return none, err
+		switch {
+		case r.CtxErr != nil:
+			if r.TriesUsed > len(r.Attempts) {
+				p.stats.Tries = append(p.stats.Tries, contract.CalloutOutcomeAbandoned)
+			}
+			return none, ended(cctx, r.CtxErr)
+		case r.OK():
+			p.stats.Tries = append(p.stats.Tries, contract.CalloutOutcomeOK)
+			return r.Result, nil
+		case r.TriesUsed == 0:
+			p.noCnode = r.Failure
+		default:
+			p.lastTried = r.Failure
+			if done, err := p.verdict(call.RepeatSafe); done {
+				return none, err
+			}
 		}
-	}
 
-	// No cnode took the work.
-	return none, p.stop(cctx)
+		// No cnode took the work in this pass. A pass that made tries may still
+		// wait: a cnode that dropped and is coming back is the case the patience
+		// exists for.
+		if patienceLeft <= 0 || cctx.Err() != nil {
+			return none, p.stop(cctx)
+		}
+		slog.Debug("callout waits for a cnode", "pkg", "callout", "kind", call.Kind.String(), "name", call.Name,
+			"requestId", call.RequestID, "tags", call.Tags, "patienceLeftMs", patienceLeft.Milliseconds())
+		waited, changed := waitForChange(cctx, localChanged, patienceLeft)
+		patienceLeft -= waited
+		p.stats.Waited += waited
+		// A wait the patience or the context ended starts no further pass:
+		// nothing changed, so the same cnodes would only be tried again.
+		if !changed {
+			return none, p.stop(cctx)
+		}
+	}
 }
 
 // verdict decides what a failed try means for the callout: done with the
@@ -177,6 +203,23 @@ func (p *progress) stop(cctx context.Context) error {
 		return attemptsFailure(p.attempts, p.lastTried)
 	}
 	return p.noCnode
+}
+
+// waitForChange blocks until a cnode came or went, the rest of the patience is
+// spent, or ctx ends. It reports the time spent and whether a change ended the
+// wait. The wait is on a signal, never a poll.
+func waitForChange(ctx context.Context, localChanged <-chan struct{}, patienceLeft time.Duration) (time.Duration, bool) {
+	start := time.Now()
+	timer := time.NewTimer(patienceLeft)
+	defer timer.Stop()
+	select {
+	case <-localChanged:
+		return time.Since(start), true
+	case <-timer.C:
+		return patienceLeft, false
+	case <-ctx.Done():
+		return time.Since(start), false
+	}
 }
 
 // ended is the error for a callout whose context ended. context.Cause tells
