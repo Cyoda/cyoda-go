@@ -657,7 +657,12 @@ func New(cfg Config) *App {
 	// The join layer: every request that carries a pass runs through it, on
 	// either door — joined, checked under the transaction's lock, and holding
 	// that lock for the length of the handler.
-	a.joiner = txjoin.NewJoiner(a.tokenSigner, a.transactionManager, a.fence, a.txGate)
+	joiner, err := txjoin.NewJoiner(a.tokenSigner, a.transactionManager, a.fence, a.txGate, observability.Meter())
+	if err != nil {
+		slog.Error("startup failure", "phase", "joiner-metrics-init", "error", err.Error())
+		os.Exit(1)
+	}
+	a.joiner = joiner
 
 	// Domain handlers
 	entityHandler := entity.New(a.storeFactory, a.transactionManager, common.NewDefaultUUIDGenerator(), a.workflowEngine, a.txGate)

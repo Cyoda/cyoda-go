@@ -106,6 +106,11 @@ attribute (`postgres`):
 
 `cyoda.storage.pool.empty_acquire_wait` is the saturation signal to alarm on — it isolates the time callers spent waiting because the pool was empty; `cyoda.storage.pool.acquire_duration` includes instant acquires alongside it and so dilutes the signal.
 
+Callout fencing metrics are registered on the join layer at startup and, like
+the storage pool metrics, are always on regardless of `CYODA_OTEL_ENABLED`:
+
+- `cyoda.callout.superseded` — `Int64Counter` — callbacks refused or overtaken because their compute member was replaced or its callout ended; labeled by `outcome`: `refused_on_entry` (the pass was already stale when the callback joined its transaction), `refused_at_lock` (the pass was current on entry but had gone stale by the time the callback's chain took the transaction's write lock), `superseded_in_progress` (the callback ran to completion, but its pass had gone stale by the time it finished — recorded, not refused: the callback's work already landed). No tenant, callout id or pass ever appears on this metric.
+
 **Logs**
 
 cyoda-go uses `log/slog` for structured logging. OTel log emission (OTLP log exporter) is not currently wired. Logs are written to stderr only.

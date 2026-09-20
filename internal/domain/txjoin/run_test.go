@@ -60,8 +60,12 @@ func newRunEnv(t *testing.T) (*runEnv, string) {
 	t.Cleanup(end)
 	f.Advance("req-1", 1)
 	pass, _ := signer.Issue(token.Claims{NodeID: "local", TxRef: txID, ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-1", Major: 1})
+	joiner, err := NewJoiner(signer, txMgr, f, gate, nil)
+	if err != nil {
+		t.Fatalf("NewJoiner: %v", err)
+	}
 	return &runEnv{ctx: ctx, factory: factory, txMgr: txMgr, gate: gate, fence: f, signer: signer,
-		joiner: NewJoiner(signer, txMgr, f, gate), txID: txID, txCtx: txCtx, end: end}, pass
+		joiner: joiner, txID: txID, txCtx: txCtx, end: end}, pass
 }
 
 // Two parallel joined reads, and reads against a joined write, on one

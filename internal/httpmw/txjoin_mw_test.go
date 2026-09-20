@@ -59,16 +59,22 @@ func liveFence(t *testing.T, calloutID, txID string) (*fence.Fence, *txgate.Regi
 }
 
 // joinerOver builds the Joiner the middleware takes, over signer, txMgr and a
-// fence whose wait takes gate's locks.
-func joinerOver(s *token.Signer, txMgr spi.TransactionManager, f *fence.Fence, gate *txgate.Registry) *txjoin.Joiner {
-	return txjoin.NewJoiner(s, txMgr, f, gate)
+// fence whose wait takes gate's locks. A nil meter (the no-op meter).
+func joinerOver(t *testing.T, s *token.Signer, txMgr spi.TransactionManager, f *fence.Fence, gate *txgate.Registry) *txjoin.Joiner {
+	t.Helper()
+	j, err := txjoin.NewJoiner(s, txMgr, f, gate, nil)
+	if err != nil {
+		t.Fatalf("NewJoiner: %v", err)
+	}
+	return j
 }
 
 // noCalloutJoiner returns a Joiner over a fence that knows no callout: every
 // pass it is given is refused.
-func noCalloutJoiner(s *token.Signer, txMgr spi.TransactionManager) *txjoin.Joiner {
+func noCalloutJoiner(t *testing.T, s *token.Signer, txMgr spi.TransactionManager) *txjoin.Joiner {
+	t.Helper()
 	f, gate := gatedFence()
-	return joinerOver(s, txMgr, f, gate)
+	return joinerOver(t, s, txMgr, f, gate)
 }
 
 // liveJoiner returns a Joiner whose fence has the callout of txID in progress at
@@ -84,7 +90,7 @@ func liveJoiner(t *testing.T, txID string) (*txjoin.Joiner, *txgate.Registry, st
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	return joinerOver(s, fakeJoinTM{}, f, gate), gate, pass
+	return joinerOver(t, s, fakeJoinTM{}, f, gate), gate, pass
 }
 
 // withUserCtx attaches a minimal UserContext to the request so TxJoin's
@@ -116,7 +122,7 @@ func TestTxJoin_JoinsAndPassesCtx(t *testing.T) {
 		}
 		w.WriteHeader(200)
 	})
-	h := TxJoin(joinerOver(s, fakeJoinTM{}, f, gate))(next)
+	h := TxJoin(joinerOver(t, s, fakeJoinTM{}, f, gate))(next)
 	req := httptest.NewRequest("POST", "/entity", nil)
 	req.Header.Set(proxy.TxTokenHeader, tok)
 	req = withUserCtx(req)
@@ -129,7 +135,7 @@ func TestTxJoin_JoinsAndPassesCtx(t *testing.T) {
 func TestTxJoin_NotFoundReturns404(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
 	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-x", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-x", Major: 1})
-	h := TxJoin(noCalloutJoiner(s, fakeJoinTM{joinErr: spi.ErrTxNotFound}))(okHandler())
+	h := TxJoin(noCalloutJoiner(t, s, fakeJoinTM{joinErr: spi.ErrTxNotFound}))(okHandler())
 	req := httptest.NewRequest("POST", "/entity", nil)
 	req.Header.Set(proxy.TxTokenHeader, tok)
 	req = withUserCtx(req)
@@ -142,7 +148,7 @@ func TestTxJoin_NotFoundReturns404(t *testing.T) {
 
 func TestTxJoin_NoToken_Passthrough(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	h := TxJoin(noCalloutJoiner(s, fakeJoinTM{}))(okHandler())
+	h := TxJoin(noCalloutJoiner(t, s, fakeJoinTM{}))(okHandler())
 	req := httptest.NewRequest("GET", "/entity/123", nil)
 	// No X-Tx-Token header set.
 	rec := httptest.NewRecorder()
@@ -157,7 +163,7 @@ func TestTxJoin_TamperedTokenReturns401(t *testing.T) {
 	// Issue with a different signer so verification fails.
 	s2, _ := token.NewSigner([]byte("different-secret-key-at-least-32b!"))
 	tok, _ := s2.Issue(token.Claims{NodeID: "local", TxRef: "tx-bad", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-bad", Major: 1})
-	h := TxJoin(noCalloutJoiner(s, fakeJoinTM{}))(okHandler())
+	h := TxJoin(noCalloutJoiner(t, s, fakeJoinTM{}))(okHandler())
 	req := httptest.NewRequest("POST", "/entity", nil)
 	req.Header.Set(proxy.TxTokenHeader, tok)
 	req = withUserCtx(req)
@@ -201,7 +207,7 @@ func TestTxJoin_CalloutEnded_410(t *testing.T) {
 		req := withUserCtx(httptest.NewRequest(method, "/entity/x", nil))
 		req.Header.Set(proxy.TxTokenHeader, tok)
 		rec := httptest.NewRecorder()
-		TxJoin(joinerOver(s, fakeJoinTM{}, f, gate))(next).ServeHTTP(rec, req)
+		TxJoin(joinerOver(t, s, fakeJoinTM{}, f, gate))(next).ServeHTTP(rec, req)
 		if rec.Code != http.StatusGone {
 			t.Fatalf("%s: status = %d; want 410", method, rec.Code)
 		}
@@ -238,7 +244,7 @@ func TestTxJoin_TenantMismatchIsOneAnswerWhateverTheFenceKnows(t *testing.T) {
 			req := withUserCtx(httptest.NewRequest(http.MethodGet, "/entity/x", nil))
 			req.Header.Set(proxy.TxTokenHeader, tok)
 			rec := httptest.NewRecorder()
-			TxJoin(joinerOver(s, fakeJoinTM{joinErr: spi.ErrTxTenantMismatch}, f, gate))(next).ServeHTTP(rec, req)
+			TxJoin(joinerOver(t, s, fakeJoinTM{joinErr: spi.ErrTxTenantMismatch}, f, gate))(next).ServeHTTP(rec, req)
 			if rec.Code != http.StatusForbidden {
 				t.Fatalf("status = %d; want 403", rec.Code)
 			}
@@ -312,7 +318,7 @@ func TestTxJoin_EveryRouteRunsUnderTheLock(t *testing.T) {
 		req := withUserCtx(httptest.NewRequest(http.MethodPost, route, nil))
 		req.Header.Set(proxy.TxTokenHeader, stale)
 		rec := httptest.NewRecorder()
-		TxJoin(joinerOver(s, fakeJoinTM{}, replaced, replacedGate))(
+		TxJoin(joinerOver(t, s, fakeJoinTM{}, replaced, replacedGate))(
 			http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatalf("%s: handler must not run", route) }),
 		).ServeHTTP(rec, req)
 		if rec.Code != http.StatusGone || problemProps(t, rec).ErrorCode != "CALLOUT_SUPERSEDED" {

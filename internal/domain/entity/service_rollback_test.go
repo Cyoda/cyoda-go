@@ -213,8 +213,12 @@ func TestJoinedSegmentedFlow_KeepsGateEntryAcrossReleaseAndTakesOnlyTheSegments(
 		waitForGateContention(t, competitorDone)
 	}
 
+	joiner, err := txjoin.NewJoiner(signer, hn.tracker, f, hn.h.gate, nil)
+	if err != nil {
+		t.Fatalf("NewJoiner: %v", err)
+	}
 	var createErr error
-	if err := txjoin.NewJoiner(signer, hn.tracker, f, hn.h.gate).Run(hn.ctx, pass, func(ctx context.Context) {
+	if err := joiner.Run(hn.ctx, pass, func(ctx context.Context) {
 		_, createErr = hn.h.CreateEntity(ctx, rollbackWidgetInput())
 	}); err != nil {
 		t.Fatalf("Run: %v", err)

@@ -11,6 +11,10 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/metric/noop"
+
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/fence"
@@ -93,14 +97,33 @@ func JoinFromToken(ctx context.Context, signer *token.Signer, txMgr spi.Transact
 // Joiner is what a callback door needs to run a request as a joined request of
 // the transaction its pass names.
 type Joiner struct {
-	signer *token.Signer
-	txMgr  spi.TransactionManager
-	fence  *fence.Fence
-	gate   *txgate.Registry
+	signer     *token.Signer
+	txMgr      spi.TransactionManager
+	fence      *fence.Fence
+	gate       *txgate.Registry
+	superseded metric.Int64Counter
 }
 
-func NewJoiner(signer *token.Signer, txMgr spi.TransactionManager, f *fence.Fence, gate *txgate.Registry) *Joiner {
-	return &Joiner{signer: signer, txMgr: txMgr, fence: f, gate: gate}
+// NewJoiner builds a Joiner. meter is where the "cyoda.callout.superseded"
+// counter is registered; a nil meter is the no-op meter, so callers that have
+// none (tests) need not stand one up.
+func NewJoiner(signer *token.Signer, txMgr spi.TransactionManager, f *fence.Fence, gate *txgate.Registry, meter metric.Meter) (*Joiner, error) {
+	if meter == nil {
+		meter = noop.NewMeterProvider().Meter("")
+	}
+	superseded, err := meter.Int64Counter("cyoda.callout.superseded",
+		metric.WithDescription("Callbacks refused or overtaken because their compute member was replaced or its callout ended"))
+	if err != nil {
+		return nil, err
+	}
+	return &Joiner{signer: signer, txMgr: txMgr, fence: f, gate: gate, superseded: superseded}, nil
+}
+
+// count records one refusal or supersession under outcome. No tenant, callout
+// id or pass ever appears in the attribute: the label is the outcome class
+// alone.
+func (j *Joiner) count(ctx context.Context, outcome string) {
+	j.superseded.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", outcome)))
 }
 
 // Run runs handler as a joined request. The storage contract leaves it to the
@@ -132,6 +155,9 @@ func (j *Joiner) Run(ctx context.Context, tok string, handler func(ctx context.C
 	}
 	joined, err := JoinFromToken(ctx, j.signer, j.txMgr, j.fence, tok)
 	if err != nil {
+		if errors.Is(err, fence.ErrSuperseded) {
+			j.count(ctx, "refused_on_entry")
+		}
 		return err
 	}
 	txID := spi.GetTransaction(joined).ID
@@ -143,8 +169,12 @@ func (j *Joiner) Run(ctx context.Context, tok string, handler func(ctx context.C
 	joined, _ = txgate.WithHeld(joined, j.gate, txID, &release)
 
 	if err := fence.Check(joined); err != nil {
+		j.count(ctx, "refused_at_lock")
 		return err
 	}
 	handler(joined)
+	if fence.Check(joined) != nil {
+		j.count(ctx, "superseded_in_progress")
+	}
 	return nil
 }

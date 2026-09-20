@@ -70,8 +70,13 @@ func TestJoinedGetTransitions_HoldsTheLock_AndGivesItUpForTheCallout(t *testing.
 	f.Advance("req-1", 1)
 	pass, _ := signer.Issue(token.Claims{NodeID: "local", TxRef: txID, ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-1", Major: 1})
 
+	joiner, err := txjoin.NewJoiner(signer, txMgr, f, gate, nil)
+	if err != nil {
+		t.Fatalf("NewJoiner: %v", err)
+	}
+
 	heldBefore, heldAfter := false, false
-	err = txjoin.NewJoiner(signer, txMgr, f, gate).Run(base, pass, func(ctx context.Context) {
+	err = joiner.Run(base, pass, func(ctx context.Context) {
 		heldBefore = !free()
 		entity := makeEntity("jt-1", modelRef, map[string]any{"x": 1})
 		entity.Meta.State = "INITIAL"
