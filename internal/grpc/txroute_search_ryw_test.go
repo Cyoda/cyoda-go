@@ -154,7 +154,7 @@ func TestTxRouteInterceptor_SearchForwardReturnsOwnerUncommittedWrites(t *testin
 	}
 	// The owner's fence has that callout in progress at the pass's number, so
 	// the local join below admits it. liveRouteFence names it "req-"+txID.
-	ownerFence, _ := liveRouteFence(t, txID)
+	ownerFence, _, _ := liveRouteFence(t, txID)
 
 	// --- node A owner-side forward target: join the LIVE tx exactly as the
 	// interceptor's local-join branch does (txjoin.JoinFromToken with node A's
@@ -183,7 +183,7 @@ func TestTxRouteInterceptor_SearchForwardReturnsOwnerUncommittedWrites(t *testin
 	regB := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
 		"node-A": {NodeID: "node-A", Addr: "http://node-a:8080", Alive: true},
 	}}
-	nodeB := newTxRouteInterceptor(signer, regB, "node-B", fakeJoinTM{}, noCalloutFence(), 9090, true)
+	nodeB := newTxRouteInterceptor(signer, regB, "node-B", noCalloutJoiner(signer, fakeJoinTM{}), 9090, true)
 
 	var forwardedAddr string
 	nodeB.forwardSearchStream = func(_ context.Context, _ *proxy.ClientPool, addr string, ce *cepb.CloudEvent) (googlegrpc.ServerStreamingClient[cepb.CloudEvent], error) {

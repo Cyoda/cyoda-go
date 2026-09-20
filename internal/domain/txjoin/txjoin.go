@@ -14,6 +14,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/fence"
+	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
 
 // JoinFromToken resolves an inbound transaction routing token into a joined
@@ -87,4 +88,63 @@ func JoinFromToken(ctx context.Context, signer *token.Signer, txMgr spi.Transact
 		return ctx, err
 	}
 	return context.WithoutCancel(admitted), nil
+}
+
+// Joiner is what a callback door needs to run a request as a joined request of
+// the transaction its pass names.
+type Joiner struct {
+	signer *token.Signer
+	txMgr  spi.TransactionManager
+	fence  *fence.Fence
+	gate   *txgate.Registry
+}
+
+func NewJoiner(signer *token.Signer, txMgr spi.TransactionManager, f *fence.Fence, gate *txgate.Registry) *Joiner {
+	return &Joiner{signer: signer, txMgr: txMgr, fence: f, gate: gate}
+}
+
+// Run runs handler as a joined request. The storage contract leaves it to the
+// application to serialise its own concurrent operations on one transaction, so
+// EVERY joined request — a read as much as a write, an entity request or not —
+// holds the transaction's lock from before its first store operation until its
+// handler returns: during a callout the transaction's users are its current
+// compute node's callbacks, one at a time.
+//
+// Order: verify → Join (tenant) → Admit → take the lock → Check under the lock
+// → handler → release. The check under the lock is the one that gives the right
+// to touch the transaction: the owner's wait takes the same lock, so a request
+// either passed this check before the number rose — and the owner waits for it
+// — or is refused here. The engine gives the lock up for the length of a
+// callout of the callback's own through the handle installed here
+// (txgate.Suspend).
+//
+// A non-nil error is a refusal: handler did not run. The caller sends its
+// response only after Run has returned, so that a compute node that does not
+// read its response holds nothing. The caller must also have the whole request
+// in memory before it calls Run: what the lock waits on must never be the
+// client.
+//
+// An empty tok is not a joined request: handler runs on ctx as it is.
+func (j *Joiner) Run(ctx context.Context, tok string, handler func(ctx context.Context)) error {
+	if tok == "" {
+		handler(ctx)
+		return nil
+	}
+	joined, err := JoinFromToken(ctx, j.signer, j.txMgr, j.fence, tok)
+	if err != nil {
+		return err
+	}
+	txID := spi.GetTransaction(joined).ID
+
+	release := j.gate.Acquire(txID)
+	// The closure reads `release` when it runs: a Suspend/resume in between
+	// stores the re-acquired lock's release through the pointer below.
+	defer func() { release() }()
+	joined, _ = txgate.WithHeld(joined, j.gate, txID, &release)
+
+	if err := fence.Check(joined); err != nil {
+		return err
+	}
+	handler(joined)
+	return nil
 }

@@ -258,21 +258,15 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	// Begin a fresh transaction, or PARTICIPATE in a joined tx already on ctx
 	// (a routed compute-node callback). A joined callback does not Begin
 	// and does not commit; the owner does. Its whole body is one gated critical
-	// section on the shared tx buffer (acquired below).
+	// section on the shared tx buffer — the join layer took the gate before this
+	// handler ran and holds it until it returns.
 	scope, err := h.beginScope(ctx)
 	if err != nil {
 		return nil, classifyBeginErr(err)
 	}
-	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
-	// see txScope's type comment for why the ordering is pinned.
 	defer scope.Release()
 
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
-	if !owned {
-		var releaseGate func()
-		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
-		defer releaseGate()
-	}
 
 	entityID := uuid.UUID(h.uuids.NewTimeUUID())
 	now := time.Now()
@@ -355,10 +349,10 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 
 	// Finalize: for the OWNER, gate the final Save+Commit so an in-flight joined
 	// callback's Save cannot race the owner's buffer mutation/commit (the SPI
-	// delegates within-tx serialisation to the application). The joined path
-	// already holds the gate for its whole body, so it must NOT re-acquire here.
-	// The gate is NEVER held across engine.Execute (above) — that would deadlock
-	// against callbacks that need the gate.
+	// delegates within-tx serialisation to the application). On the joined path
+	// the join layer holds the gate for the whole request, so it must NOT
+	// re-acquire here. The gate is NEVER held across engine.Execute (above) —
+	// that would deadlock against callbacks that need the gate.
 	if appErr := func() *common.AppError {
 		if owned {
 			defer h.gate.Acquire(finalTxID)()
@@ -665,16 +659,9 @@ func (h *Handler) DeleteEntity(ctx context.Context, entityID string) (*deleteEnt
 	if err != nil {
 		return nil, classifyBeginErr(err)
 	}
-	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
-	// see txScope's type comment for why the ordering is pinned.
 	defer scope.Release()
 
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
-	if !owned {
-		var releaseGate func()
-		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
-		defer releaseGate()
-	}
 
 	entityStore, err := h.factory.EntityStore(txCtx)
 	if err != nil {
@@ -699,7 +686,7 @@ func (h *Handler) DeleteEntity(ctx context.Context, entityID string) (*deleteEnt
 	}
 
 	// Finalize: gate the OWNER's Delete+Commit against a concurrent joined
-	// callback's buffer write; the joined path already holds the gate.
+	// callback's buffer write; on the joined path the join layer holds the gate.
 	if appErr := func() *common.AppError {
 		if owned {
 			defer h.gate.Acquire(txID)()
@@ -799,16 +786,9 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 	if err != nil {
 		return nil, classifyBeginErr(err)
 	}
-	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
-	// see txScope's type comment for why the ordering is pinned.
 	defer scope.Release()
 
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
-	if !owned {
-		var releaseGate func()
-		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
-		defer releaseGate()
-	}
 
 	entityStore, err := h.factory.EntityStore(txCtx)
 	if err != nil {
@@ -846,7 +826,7 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 	}
 
 	// Finalize: gate the OWNER's DeleteAll+Commit against a concurrent joined
-	// callback's buffer write; the joined path already holds the gate.
+	// callback's buffer write; on the joined path the join layer holds the gate.
 	if appErr := func() *common.AppError {
 		if owned {
 			defer h.gate.Acquire(txID)()
@@ -1264,16 +1244,9 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 	if err != nil {
 		return nil, classifyBeginErr(err)
 	}
-	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
-	// see txScope's type comment for why the ordering is pinned.
 	defer scope.Release()
 
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
-	if !owned {
-		var releaseGate func()
-		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
-		defer releaseGate()
-	}
 
 	modelStore, err := h.factory.ModelStore(txCtx)
 	if err != nil {
@@ -1473,16 +1446,9 @@ func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond pred
 	if err != nil {
 		return nil, classifyBeginErr(err)
 	}
-	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
-	// see txScope's type comment for why the ordering is pinned.
 	defer scope.Release()
 
-	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
-	if !owned {
-		var releaseGate func()
-		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
-		defer releaseGate()
-	}
+	txCtx := scope.Ctx()
 
 	modelStore, err := h.factory.ModelStore(txCtx)
 	if err != nil {
@@ -1693,16 +1659,9 @@ func (h *Handler) deleteOneBatch(ctx context.Context, chunk []batchTarget, resul
 	if err != nil {
 		return classifyBeginErr(err)
 	}
-	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
-	// see txScope's type comment for why the ordering is pinned.
 	defer scope.Release()
 
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
-	if !owned {
-		var releaseGate func()
-		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
-		defer releaseGate()
-	}
 
 	entityStore, err := h.factory.EntityStore(txCtx)
 	if err != nil {
@@ -1944,16 +1903,9 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 	if err != nil {
 		return nil, classifyBeginErr(err)
 	}
-	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
-	// see txScope's type comment for why the ordering is pinned.
 	defer scope.Release()
 
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
-	if !owned {
-		var releaseGate func()
-		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
-		defer releaseGate()
-	}
 
 	now := time.Now()
 
@@ -2050,8 +2002,8 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 
 		// Finalize this item's Save. For the OWNER, gate each per-item Save so a
 		// callback in-flight from this item's dispatch cannot race the buffer
-		// write; the joined path already holds the gate for its whole body. The
-		// gate is never held across engine.Execute (above).
+		// write; on the joined path the join layer holds the gate for the whole
+		// request. The gate is never held across engine.Execute (above).
 		if appErr := func() *common.AppError {
 			if owned {
 				defer h.gate.Acquire(currentTxID)()
@@ -2146,16 +2098,9 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	if err != nil {
 		return nil, classifyBeginErr(err)
 	}
-	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
-	// see txScope's type comment for why the ordering is pinned.
 	defer scope.Release()
 
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
-	if !owned {
-		var releaseGate func()
-		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
-		defer releaseGate()
-	}
 
 	// Load existing entity within transaction (adds to read set).
 	entityStore, err := h.factory.EntityStore(txCtx)
@@ -2314,8 +2259,8 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 
 	// Finalize: gate the OWNER's Save/CompareAndSave + Commit (and the abort-
 	// audit buffer write on the conflict path) against a concurrent joined
-	// callback's write; the joined path already holds the gate for its whole
-	// body. The gate is NEVER held across engine.Execute (above).
+	// callback's write; on the joined path the join layer holds the gate for the
+	// whole request. The gate is NEVER held across engine.Execute (above).
 	if appErr := func() *common.AppError {
 		if owned {
 			defer h.gate.Acquire(finalTxID)()
@@ -2503,16 +2448,9 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 	if err != nil {
 		return nil, classifyBeginErr(err)
 	}
-	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
-	// see txScope's type comment for why the ordering is pinned.
 	defer scope.Release()
 
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
-	if !owned {
-		var releaseGate func()
-		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
-		defer releaseGate()
-	}
 
 	now := time.Now()
 

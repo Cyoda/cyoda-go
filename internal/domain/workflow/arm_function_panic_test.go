@@ -49,7 +49,7 @@ func TestArmViaFunction_PanickingCalloutLeavesGateHeld(t *testing.T) {
 	const txID = "tx-arm-panic"
 
 	// Stand in for the joined callback path: hold gate(T) and record it on ctx
-	// exactly as Handler.acquireJoinedGate does.
+	// exactly as the join layer (txjoin.Joiner.Run) does.
 	release := reg.Acquire(txID)
 	ctx, _ := txgate.WithHeld(ctxWithTenant(testTenant), reg, txID, &release)
 

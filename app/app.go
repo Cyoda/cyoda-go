@@ -39,6 +39,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/txjoin"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
@@ -60,6 +61,7 @@ type App struct {
 	workflowEngine     *workflow.Engine
 	txGate             *txgate.Registry // per-tx application gate serialising joined callbacks and the owner's commit
 	fence              *fence.Fence     // one arbiter per process; both callback doors and every callout judge a callback by it
+	joiner             *txjoin.Joiner   // the join layer both callback doors run a request carrying a pass through
 	searchService      *search.SearchService
 	auditService       contract.AuditService
 	clusterService     contract.ClusterService
@@ -652,6 +654,11 @@ func New(cfg Config) *App {
 	)
 	a.scheduler.Start()
 
+	// The join layer: every request that carries a pass runs through it, on
+	// either door — joined, checked under the transaction's lock, and holding
+	// that lock for the length of the handler.
+	a.joiner = txjoin.NewJoiner(a.tokenSigner, a.transactionManager, a.fence, a.txGate)
+
 	// Domain handlers
 	entityHandler := entity.New(a.storeFactory, a.transactionManager, common.NewDefaultUUIDGenerator(), a.workflowEngine, a.txGate)
 	modelHandler := model.New(a.storeFactory)
@@ -720,7 +727,7 @@ func New(cfg Config) *App {
 
 	// Entity transition routes (with auth, outside generated API mux).
 	// TxJoin is nested inside authMW so UserContext is available for tenant checks.
-	txJoinMW := httpmw.TxJoin(a.tokenSigner, a.transactionManager, a.fence)
+	txJoinMW := httpmw.TxJoin(a.joiner)
 	mux.Handle("GET /entity/{entityId}/transitions", authMW(txJoinMW(http.HandlerFunc(entityHandler.HandleGetTransitions))))
 	mux.Handle("GET /platform-api/entity/fetch/transitions", authMW(txJoinMW(http.HandlerFunc(entityHandler.HandleFetchTransitions))))
 
@@ -835,7 +842,7 @@ func New(cfg Config) *App {
 	a.handler = middleware.Recovery(a.healthFlag)(a.handler)
 
 	// gRPC server — uses inner handler (without context path prefix)
-	a.grpcServer = internalgrpc.NewServer(a.authService, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.fence, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, a.healthFlag, internalgrpc.KeepAliveConfig{Interval: time.Duration(cfg.GRPC.KeepAliveInterval) * time.Second, Timeout: time.Duration(cfg.GRPC.KeepAliveTimeout) * time.Second})
+	a.grpcServer = internalgrpc.NewServer(a.authService, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.joiner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, a.healthFlag, internalgrpc.KeepAliveConfig{Interval: time.Duration(cfg.GRPC.KeepAliveInterval) * time.Second, Timeout: time.Duration(cfg.GRPC.KeepAliveTimeout) * time.Second})
 
 	return a
 }

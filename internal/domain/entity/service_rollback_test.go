@@ -15,10 +15,13 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/txjoin"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
@@ -147,31 +150,27 @@ func TestPanickingWrite_ReleasesBufferedState(t *testing.T) {
 	}
 }
 
-// TestJoinedSegmentedFlow_FreesTheGateBeforeReleaseRollsBack pins the defer
-// ordering the conversion introduces.
-//
-//	defer scope.Release()   // registered FIRST
-//	...
-//	defer releaseGate()     // registered SECOND
-//
-// LIFO frees the joined gate before Release runs, which is what lets Release
-// re-acquire a gate on the same registry without hold-and-wait. Registering them
-// the other way round leaves the flow holding gate(entry) while Release takes
-// gate(segment) — two gates at once, and a self-deadlock the moment Release is
-// hardened to gate the entry transaction too.
+// TestJoinedSegmentedFlow_KeepsGateEntryAcrossReleaseAndTakesOnlyTheSegments
+// pins the lock ordering of a joined request that segmented. The join layer
+// holds gate(entry) for the whole request — that is what makes one transaction
+// one user's at a time — so it is still held while Release rolls the segment
+// back, and Release must take gate(segment) only: it returns early for the entry
+// transaction of a joined chain, and the segment is a DIFFERENT txID, so there
+// is no hold-and-wait on the non-reentrant gate.
 //
 // The observation is an event ordering, not a sleep: a competitor for
-// gate(entry) is launched from inside the rollback and the rollback does not
-// return until that competitor has reached a decided outcome — either it holds
-// the gate (freed first: correct) or it is parked inside txgate.Acquire (still
-// held: the defect). A reversal therefore FAILS rather than hangs.
+// gate(entry) is launched from inside the rollback, and the rollback does not
+// return until that competitor is parked inside txgate.Acquire (gate(entry) held
+// by the join layer: correct) or has acquired (it was free: the join layer would
+// not be serialising the transaction's users at all). The competitor then
+// acquires once the join layer releases, after the handler has returned.
 //
 // The scenario is the joined-segmented can't-happen branch, which is also the
 // only shape where Release rolls anything back on a joined call: the engine's
 // COMMIT_BEFORE_DISPATCH processor commits the entry transaction and opens a
 // segment that belongs to nobody, the handler's guard rejects the call, and the
 // segment must not survive it.
-func TestJoinedSegmentedFlow_FreesTheGateBeforeReleaseRollsBack(t *testing.T) {
+func TestJoinedSegmentedFlow_KeepsGateEntryAcrossReleaseAndTakesOnlyTheSegments(t *testing.T) {
 	hn := newTrackingHandler(t)
 	hn.registerSegmentingWorkflow(t)
 
@@ -179,9 +178,21 @@ func TestJoinedSegmentedFlow_FreesTheGateBeforeReleaseRollsBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("owner Begin: %v", err)
 	}
-	joinedCtx, err := hn.tracker.Join(hn.ctx, ownerTxID)
+
+	// The join layer of this transaction, with the callout its pass names in
+	// progress: Run takes gate(entry) and holds it for the whole handler.
+	signer, err := token.NewSigner([]byte("rollback-secret-at-least-32-bytes!"))
 	if err != nil {
-		t.Fatalf("Join: %v", err)
+		t.Fatalf("NewSigner: %v", err)
+	}
+	f := fence.New(hn.h.gate)
+	_, endCallout := f.Begin(hn.ctx, "req-1", ownerTxID, nil)
+	defer endCallout()
+	f.Advance("req-1", 1)
+	pass, err := signer.Issue(token.Claims{NodeID: "local", TxRef: ownerTxID,
+		ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-1", Major: 1})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
 	}
 
 	competitorDone := make(chan struct{})
@@ -202,24 +213,29 @@ func TestJoinedSegmentedFlow_FreesTheGateBeforeReleaseRollsBack(t *testing.T) {
 		waitForGateContention(t, competitorDone)
 	}
 
-	_, err = hn.h.CreateEntity(joinedCtx, rollbackWidgetInput())
-	if err == nil {
+	var createErr error
+	if err := txjoin.NewJoiner(signer, hn.tracker, f, hn.h.gate).Run(hn.ctx, pass, func(ctx context.Context) {
+		_, createErr = hn.h.CreateEntity(ctx, rollbackWidgetInput())
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if createErr == nil {
 		t.Fatal("a joined call that segmented must be rejected, not committed")
 	}
 	var appErr *common.AppError
-	if !errors.As(err, &appErr) || appErr.Status != 500 {
-		t.Fatalf("joined-segmented guard returned %v, want a 500 AppError", err)
+	if !errors.As(createErr, &appErr) || appErr.Status != 500 {
+		t.Fatalf("joined-segmented guard returned %v, want a 500 AppError", createErr)
 	}
 
 	select {
 	case <-competitorDone:
 	case <-time.After(10 * time.Second):
-		t.Fatal("joined flow never freed gate(entry); a hardened Release would deadlock here")
+		t.Fatal("gate(entry) was never freed: the join layer's release did not run")
 	}
 
-	want := []string{"rollback-start", "competitor-acquired", "rollback-end"}
+	want := []string{"rollback-start", "rollback-end", "competitor-acquired"}
 	if got := hn.tracker.trace(); !slices.Equal(got, want) {
-		t.Fatalf("gate(entry) was still held while Release rolled the segment back: events = %v, want %v", got, want)
+		t.Fatalf("events = %v, want %v: Release must roll the segment back while the join layer still holds gate(entry)", got, want)
 	}
 	// ...and the segment the guard rejected is gone, which is the behaviour the
 	// guard-plus-scope pairing exists to deliver.
