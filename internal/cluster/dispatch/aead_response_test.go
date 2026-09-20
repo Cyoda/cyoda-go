@@ -94,6 +94,7 @@ func TestAEADResponse_Refused(t *testing.T) {
 		{"the request reflected back as its own answer", goodHeader, bindingA, wireA},
 		{"replayed onto another request", goodHeader, bindingB, good},
 		{"truncated", goodHeader, bindingA, good[:len(good)/2]},
+		{"truncated above the envelope minimum, so the auth tag fails", goodHeader, bindingA, good[:len(good)-5]},
 		{"shorter than an envelope", goodHeader, bindingA, []byte{1, 2, 3}},
 		{"not marked as a dispatch envelope", http.Header{"Content-Type": {"application/json"}}, bindingA, good},
 		{"opened without a binding", goodHeader, ResponseBinding{}, good},

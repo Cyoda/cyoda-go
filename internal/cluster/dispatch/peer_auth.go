@@ -56,8 +56,11 @@ type PeerAuth interface {
 	// answer. A non-nil error means the request is refused. The binding is
 	// valid when err is nil and when errors.Is(err, ErrReplayRefused); for any
 	// other error it is the zero value and the caller must respond with 403.
-	// The returned identity MUST be populated (even if degenerate) so
-	// handlers can attach it to the request context unconditionally.
+	// identity is meaningful exactly when binding is: for any other error it is
+	// also the zero value and MUST NOT be acted on or attached to a context —
+	// the caller has not authenticated a peer. The returned identity MUST be
+	// populated (even if degenerate) so handlers can attach it to the request
+	// context unconditionally in the cases where binding is valid.
 	Verify(r *http.Request) (body []byte, identity PeerIdentity, binding ResponseBinding, err error)
 
 	// SealResponse wraps an answer for the request binding names, setting the
