@@ -358,13 +358,25 @@ type MemberRegistry struct {
 	// pickMu makes "find the least recently picked and stamp it" one step.
 	pickMu      sync.Mutex
 	pickCounter uint64
+	// changed is closed and replaced on every membership change. A callout
+	// that found no cnode waits on it instead of polling.
+	changed *common.ChangeSignal
 }
 
 // NewMemberRegistry creates a new, empty MemberRegistry.
 func NewMemberRegistry() *MemberRegistry {
 	return &MemberRegistry{
 		members: make(map[string]*Member),
+		changed: common.NewChangeSignal(),
 	}
+}
+
+// Changed returns the channel that is closed on the next membership change —
+// a cnode attaching or detaching on this pnode. Take it before looking at
+// Candidates: a change between the look and the wait then still ends the
+// wait.
+func (r *MemberRegistry) Changed() <-chan struct{} {
+	return r.changed.Changed()
 }
 
 // SetOnChange registers a callback that is invoked (in a goroutine) whenever
@@ -401,6 +413,7 @@ func (r *MemberRegistry) Register(memberID string, tenantID spi.TenantID, tags [
 		old := r.members[memberID]
 		r.members[memberID] = m
 		r.tagsVersion++
+		r.changed.Fire()
 		return old
 	}()
 	go m.writeLoop(greet)
@@ -437,6 +450,7 @@ func (r *MemberRegistry) Unregister(m *Member) {
 		}
 		delete(r.members, m.ID)
 		r.tagsVersion++
+		r.changed.Fire()
 		return true
 	}()
 	m.Evict(status.Error(codes.Unavailable, "member unregistered"))
