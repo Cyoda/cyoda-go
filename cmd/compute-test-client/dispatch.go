@@ -273,30 +273,30 @@ func (d *dispatcher) handleProcessorRequest(ctx context.Context, payload json.Ra
 	if cbFn, ok := d.cat.callbackProcessor(name); ok {
 		cfg, err := parseCallbackConfig(req.Parameters)
 		if err != nil {
-			return d.buildProcessorResponse(req.RequestID, req.EntityID, nil, false, err.Error())
+			return d.buildProcessorResponse(req.RequestID, req.EntityID, nil, false, err.Error(), nil)
 		}
 		result, err := cbFn(ctx, entity, cfg, txToken, d.cat.cb)
 		if err != nil {
-			return d.buildProcessorResponse(req.RequestID, req.EntityID, nil, false, err.Error())
+			return d.buildProcessorResponse(req.RequestID, req.EntityID, nil, false, err.Error(), verdictOf(err))
 		}
-		return d.buildProcessorResponse(req.RequestID, req.EntityID, result.Data, true, "")
+		return d.buildProcessorResponse(req.RequestID, req.EntityID, result.Data, true, "", nil)
 	}
 
 	procFn, ok := d.cat.processor(name)
 	if !ok {
-		return d.buildProcessorResponse(req.RequestID, req.EntityID, nil, false, fmt.Sprintf("unknown processor: %s", name))
+		return d.buildProcessorResponse(req.RequestID, req.EntityID, nil, false, fmt.Sprintf("unknown processor: %s", name), nil)
 	}
 
 	result, err := procFn(ctx, entity, req.Parameters)
 	if err != nil {
-		return d.buildProcessorResponse(req.RequestID, req.EntityID, nil, false, err.Error())
+		return d.buildProcessorResponse(req.RequestID, req.EntityID, nil, false, err.Error(), verdictOf(err))
 	}
 
-	return d.buildProcessorResponse(req.RequestID, req.EntityID, result.Data, true, "")
+	return d.buildProcessorResponse(req.RequestID, req.EntityID, result.Data, true, "", nil)
 }
 
 // buildProcessorResponse constructs an EntityProcessorCalculationResponse CloudEvent.
-func (d *dispatcher) buildProcessorResponse(requestID, entityID string, data json.RawMessage, success bool, errMsg string) (*cepb.CloudEvent, error) {
+func (d *dispatcher) buildProcessorResponse(requestID, entityID string, data json.RawMessage, success bool, errMsg string, retryable *bool) (*cepb.CloudEvent, error) {
 	resp := map[string]any{
 		"id":        uuid.NewString(),
 		"requestId": requestID,
@@ -310,10 +310,7 @@ func (d *dispatcher) buildProcessorResponse(requestID, entityID string, data jso
 		}
 	}
 	if errMsg != "" {
-		resp["error"] = map[string]any{
-			"code":    "PROCESSOR_ERROR",
-			"message": errMsg,
-		}
+		resp["error"] = errorNode("PROCESSOR_ERROR", errMsg, retryable)
 	}
 	return newCloudEvent(ceTypeProcessorResponse, resp)
 }
@@ -353,26 +350,26 @@ func (d *dispatcher) handleCriteriaRequest(ctx context.Context, payload json.Raw
 	if cbFn, ok := d.cat.callbackCriterion(name); ok {
 		cfg, err := parseCallbackConfig(req.Parameters)
 		if err != nil {
-			return d.buildCriteriaResponse(req.RequestID, req.EntityID, false, false, err.Error())
+			return d.buildCriteriaResponse(req.RequestID, req.EntityID, false, false, err.Error(), nil)
 		}
 		matches, err := cbFn(ctx, entity, cfg, txToken, d.cat.cb)
 		if err != nil {
-			return d.buildCriteriaResponse(req.RequestID, req.EntityID, false, false, err.Error())
+			return d.buildCriteriaResponse(req.RequestID, req.EntityID, false, false, err.Error(), verdictOf(err))
 		}
-		return d.buildCriteriaResponse(req.RequestID, req.EntityID, matches, true, "")
+		return d.buildCriteriaResponse(req.RequestID, req.EntityID, matches, true, "", nil)
 	}
 
 	critFn, ok := d.cat.criterion(name)
 	if !ok {
-		return d.buildCriteriaResponse(req.RequestID, req.EntityID, false, false, fmt.Sprintf("unknown criterion: %s", name))
+		return d.buildCriteriaResponse(req.RequestID, req.EntityID, false, false, fmt.Sprintf("unknown criterion: %s", name), nil)
 	}
 
 	matches, err := critFn(ctx, entity, req.Parameters)
 	if err != nil {
-		return d.buildCriteriaResponse(req.RequestID, req.EntityID, false, false, err.Error())
+		return d.buildCriteriaResponse(req.RequestID, req.EntityID, false, false, err.Error(), verdictOf(err))
 	}
 
-	return d.buildCriteriaResponse(req.RequestID, req.EntityID, matches, true, "")
+	return d.buildCriteriaResponse(req.RequestID, req.EntityID, matches, true, "", nil)
 }
 
 // handleFunctionRequest dispatches a generic Function calculation request
@@ -409,19 +406,19 @@ func (d *dispatcher) handleFunctionRequest(ctx context.Context, payload json.Raw
 
 	fn, ok := d.cat.function(name)
 	if !ok {
-		return d.buildFunctionResponse(req.RequestID, "", nil, false, fmt.Sprintf("unknown function: %s", name))
+		return d.buildFunctionResponse(req.RequestID, "", nil, false, fmt.Sprintf("unknown function: %s", name), nil)
 	}
 
 	resultKind, result, err := fn(ctx, entity, req.Parameters)
 	if err != nil {
-		return d.buildFunctionResponse(req.RequestID, "", nil, false, err.Error())
+		return d.buildFunctionResponse(req.RequestID, "", nil, false, err.Error(), verdictOf(err))
 	}
 
-	return d.buildFunctionResponse(req.RequestID, resultKind, result, true, "")
+	return d.buildFunctionResponse(req.RequestID, resultKind, result, true, "", nil)
 }
 
 // buildFunctionResponse constructs an EntityFunctionCalculationResponse CloudEvent.
-func (d *dispatcher) buildFunctionResponse(requestID, resultKind string, result map[string]any, success bool, errMsg string) (*cepb.CloudEvent, error) {
+func (d *dispatcher) buildFunctionResponse(requestID, resultKind string, result map[string]any, success bool, errMsg string, retryable *bool) (*cepb.CloudEvent, error) {
 	resp := map[string]any{
 		"id":        uuid.NewString(),
 		"requestId": requestID,
@@ -434,16 +431,13 @@ func (d *dispatcher) buildFunctionResponse(requestID, resultKind string, result 
 		resp["result"] = result
 	}
 	if errMsg != "" {
-		resp["error"] = map[string]any{
-			"code":    "FUNCTION_ERROR",
-			"message": errMsg,
-		}
+		resp["error"] = errorNode("FUNCTION_ERROR", errMsg, retryable)
 	}
 	return newCloudEvent(ceTypeFunctionResponse, resp)
 }
 
 // buildCriteriaResponse constructs an EntityCriteriaCalculationResponse CloudEvent.
-func (d *dispatcher) buildCriteriaResponse(requestID, entityID string, matches, success bool, errMsg string) (*cepb.CloudEvent, error) {
+func (d *dispatcher) buildCriteriaResponse(requestID, entityID string, matches, success bool, errMsg string, retryable *bool) (*cepb.CloudEvent, error) {
 	resp := map[string]any{
 		"id":        uuid.NewString(),
 		"requestId": requestID,
@@ -452,10 +446,7 @@ func (d *dispatcher) buildCriteriaResponse(requestID, entityID string, matches, 
 		"matches":   matches,
 	}
 	if errMsg != "" {
-		resp["error"] = map[string]any{
-			"code":    "CRITERIA_ERROR",
-			"message": errMsg,
-		}
+		resp["error"] = errorNode("CRITERIA_ERROR", errMsg, retryable)
 	}
 	return newCloudEvent(ceTypeCriteriaResponse, resp)
 }
