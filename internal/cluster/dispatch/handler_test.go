@@ -74,18 +74,71 @@ func newAEAD(t *testing.T) *AEADPeerAuth {
 	return a
 }
 
-// signedRequest builds an AEAD-wrapped POST request ready for the handler
-// to verify. Convenience for tests that need an authenticated request body.
-func signedRequest(t *testing.T, auth *AEADPeerAuth, method, path string, plain []byte) *http.Request {
+// signedRequestWithBinding builds an AEAD-wrapped request ready for the handler
+// to verify, and returns the binding its answer opens under.
+func signedRequestWithBinding(t *testing.T, auth *AEADPeerAuth, method, path string, plain []byte) (*http.Request, ResponseBinding) {
 	t.Helper()
 	req := httptest.NewRequest(method, path, nil)
-	wire, _, err := auth.Sign(req, plain)
+	wire, binding, err := auth.Sign(req, plain)
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
 	req.Body = io.NopCloser(bytes.NewReader(wire))
 	req.ContentLength = int64(len(wire))
+	return req, binding
+}
+
+// signedRequest is signedRequestWithBinding for a test that does not read the answer.
+func signedRequest(t *testing.T, auth *AEADPeerAuth, method, path string, plain []byte) *http.Request {
+	t.Helper()
+	req, _ := signedRequestWithBinding(t, auth, method, path, plain)
 	return req
+}
+
+// decodeSealed opens the handler's answer as the owner would.
+func decodeSealed(t *testing.T, auth *AEADPeerAuth, binding ResponseBinding, rec *httptest.ResponseRecorder) DispatchCalloutResponse {
+	t.Helper()
+	plain, err := auth.OpenResponse(rec.Header(), binding, rec.Body.Bytes())
+	if err != nil {
+		t.Fatalf("the answer does not open under its request's binding: %v (status %d)", err, rec.Code)
+	}
+	var resp DispatchCalloutResponse
+	if err := json.Unmarshal(plain, &resp); err != nil {
+		t.Fatalf("decode answer: %v", err)
+	}
+	return resp
+}
+
+func TestHandler_AnswerIsSealedForItsRequest(t *testing.T) {
+	auth := newAEAD(t)
+	handler := NewDispatchHandler(&fakeLocalDispatcher{
+		processorResult: &spi.Entity{Meta: spi.EntityMeta{ID: "ent-1"}, Data: []byte(`{"output":42}`)},
+	}, auth)
+	mux := http.NewServeMux()
+	handler.Register(mux)
+
+	processor := spi.ProcessorDefinition{Name: "proc1"}
+	plain, _ := json.Marshal(DispatchCalloutRequest{
+		Kind: "processor", Entity: json.RawMessage(`{}`),
+		EntityMeta: spi.EntityMeta{ID: "ent-1", TenantID: "tenant-a"}, TenantID: "tenant-a",
+		Processor: &processor, UserID: "u", PrincipalKind: spi.PrincipalUser,
+	})
+	httpReq, binding := signedRequestWithBinding(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httpReq)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != DispatchContentType {
+		t.Errorf("Content-Type = %q, want %q", got, DispatchContentType)
+	}
+	if bytes.Contains(rec.Body.Bytes(), []byte("output")) {
+		t.Error("the answer is on the wire in the clear")
+	}
+	if resp := decodeSealed(t, auth, binding, rec); string(resp.EntityData) != `{"output":42}` {
+		t.Errorf("EntityData = %s", resp.EntityData)
+	}
 }
 
 func TestHandler_ProcessorSuccess(t *testing.T) {
@@ -115,7 +168,7 @@ func TestHandler_ProcessorSuccess(t *testing.T) {
 		Roles:          []string{"ROLE_USER"},
 	}
 	plain, _ := json.Marshal(req)
-	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
+	httpReq, binding := signedRequestWithBinding(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httpReq)
@@ -124,10 +177,7 @@ func TestHandler_ProcessorSuccess(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	var resp DispatchCalloutResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	resp := decodeSealed(t, auth, binding, rec)
 	if !resp.Success {
 		t.Errorf("expected success=true, got false (error: %s)", resp.Error)
 	}
@@ -159,7 +209,7 @@ func TestHandler_CriteriaSuccess(t *testing.T) {
 		Roles:          []string{"ROLE_USER"},
 	}
 	plain, _ := json.Marshal(req)
-	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
+	httpReq, binding := signedRequestWithBinding(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httpReq)
@@ -168,10 +218,7 @@ func TestHandler_CriteriaSuccess(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	var resp DispatchCalloutResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	resp := decodeSealed(t, auth, binding, rec)
 	if !resp.Success {
 		t.Errorf("expected success=true")
 	}
@@ -377,13 +424,12 @@ func TestHandler_ProcessorError_SanitizedResponse(t *testing.T) {
 		UserID:         "user-1",
 		Roles:          []string{"ROLE_USER"},
 	})
-	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
+	httpReq, binding := signedRequestWithBinding(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httpReq)
 
-	var resp DispatchCalloutResponse
-	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	resp := decodeSealed(t, auth, binding, rec)
 	if resp.Success {
 		t.Fatal("expected success=false")
 	}
@@ -418,7 +464,7 @@ func TestHandleCriteria_PropagatesReason(t *testing.T) {
 		Roles:          []string{"ROLE_USER"},
 	}
 	plain, _ := json.Marshal(req)
-	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
+	httpReq, binding := signedRequestWithBinding(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httpReq)
@@ -427,10 +473,7 @@ func TestHandleCriteria_PropagatesReason(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	var resp DispatchCalloutResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	resp := decodeSealed(t, auth, binding, rec)
 	if resp.Reason != "peer reason here" {
 		t.Errorf("expected peer reason propagated, got %q", resp.Reason)
 	}
@@ -459,13 +502,12 @@ func TestHandler_CriteriaError_SanitizedResponse(t *testing.T) {
 		UserID:         "user-1",
 		Roles:          []string{"ROLE_USER"},
 	})
-	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
+	httpReq, binding := signedRequestWithBinding(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httpReq)
 
-	var resp DispatchCalloutResponse
-	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	resp := decodeSealed(t, auth, binding, rec)
 	if resp.Success {
 		t.Fatal("expected success=false")
 	}
@@ -536,15 +578,12 @@ func TestHandler_ErrorTaxonomy_AppError(t *testing.T) {
 			handler.Register(mux)
 
 			plain, _ := json.Marshal(tc.req)
-			httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
+			httpReq, binding := signedRequestWithBinding(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
 
 			rec := httptest.NewRecorder()
 			mux.ServeHTTP(rec, httpReq)
 
-			var resp DispatchCalloutResponse
-			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-				t.Fatalf("decode response: %v", err)
-			}
+			resp := decodeSealed(t, auth, binding, rec)
 			if resp.Success {
 				t.Fatal("expected success=false")
 			}
@@ -626,15 +665,12 @@ func TestHandler_ErrorTaxonomy_NoMatchingMember(t *testing.T) {
 			handler.Register(mux)
 
 			plain, _ := json.Marshal(tc.req)
-			httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
+			httpReq, binding := signedRequestWithBinding(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
 
 			rec := httptest.NewRecorder()
 			mux.ServeHTTP(rec, httpReq)
 
-			var resp DispatchCalloutResponse
-			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-				t.Fatalf("decode response: %v", err)
-			}
+			resp := decodeSealed(t, auth, binding, rec)
 			if resp.Success {
 				t.Fatal("expected success=false")
 			}

@@ -74,10 +74,9 @@ func ensureScheme(addr string) string {
 }
 
 // forward marshals reqBody as JSON, hands it to the PeerAuth for wire
-// encoding, POSTs the resulting bytes, and decodes the (plaintext) JSON
-// response. Response bodies are not AEAD-wrapped — integrity of the
-// peer's reply relies on TLS (future) or the trust boundary that auth
-// established for the request.
+// encoding, POSTs the resulting bytes, and decodes the JSON response. The
+// answer comes back sealed for this request and is opened with the binding
+// Sign returned.
 func (f *HTTPForwarder) forward(ctx context.Context, url string, reqBody any, respBody any) error {
 	plain, err := json.Marshal(reqBody)
 	if err != nil {
@@ -96,7 +95,7 @@ func (f *HTTPForwarder) forward(ctx context.Context, url string, reqBody any, re
 	// mTLS can leave it alone.
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	wire, _, err := f.auth.Sign(httpReq, plain)
+	wire, binding, err := f.auth.Sign(httpReq, plain)
 	if err != nil {
 		return fmt.Errorf("dispatch forward: sign body: %w", err)
 	}
@@ -114,7 +113,15 @@ func (f *HTTPForwarder) forward(ctx context.Context, url string, reqBody any, re
 		return fmt.Errorf("dispatch forward: peer returned %d: %s", httpResp.StatusCode, raw)
 	}
 
-	if err := json.NewDecoder(httpResp.Body).Decode(respBody); err != nil {
+	sealed, err := io.ReadAll(io.LimitReader(httpResp.Body, dispatchMaxBodySize+1))
+	if err != nil {
+		return fmt.Errorf("dispatch forward: read response from %s: %w", url, err)
+	}
+	opened, err := f.auth.OpenResponse(httpResp.Header, binding, sealed)
+	if err != nil {
+		return fmt.Errorf("dispatch forward: open response from %s: %w", url, err)
+	}
+	if err := json.Unmarshal(opened, respBody); err != nil {
 		return fmt.Errorf("dispatch forward: decode response from %s: %w", url, err)
 	}
 	return nil

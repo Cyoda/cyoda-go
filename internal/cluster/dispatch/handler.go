@@ -41,7 +41,7 @@ func (h *DispatchHandler) Register(mux *http.ServeMux) {
 // the local ExternalProcessingService method matching req.Kind and maps the
 // result into the union DispatchCalloutResponse.
 func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) {
-	body, identity, ok := h.verifyRequest(w, r)
+	body, identity, binding, ok := h.verifyRequest(w, r)
 	if !ok {
 		return
 	}
@@ -88,10 +88,10 @@ func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) 
 		result, err := h.local.DispatchProcessor(ctx, entity, processor, req.WorkflowName, req.TransitionName, req.TxID)
 		if err != nil {
 			slog.Error("dispatch processor failed", "pkg", "dispatch", "err", err)
-			writeJSON(w, http.StatusOK, dispatchErrorResponse("dispatch processor failed", err))
+			h.writeSealed(w, binding, dispatchErrorResponse("dispatch processor failed", err))
 			return
 		}
-		writeJSON(w, http.StatusOK, DispatchCalloutResponse{
+		h.writeSealed(w, binding, DispatchCalloutResponse{
 			Success:    true,
 			EntityData: result.Data,
 		})
@@ -99,10 +99,10 @@ func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) 
 		matches, reason, err := h.local.DispatchCriteria(ctx, entity, req.Criterion, req.Target, req.WorkflowName, req.TransitionName, req.ProcessorName, req.TxID)
 		if err != nil {
 			slog.Error("dispatch criteria failed", "pkg", "dispatch", "err", err)
-			writeJSON(w, http.StatusOK, dispatchErrorResponse("dispatch criteria failed", err))
+			h.writeSealed(w, binding, dispatchErrorResponse("dispatch criteria failed", err))
 			return
 		}
-		writeJSON(w, http.StatusOK, DispatchCalloutResponse{
+		h.writeSealed(w, binding, DispatchCalloutResponse{
 			Success: true,
 			Matches: &matches,
 			Reason:  reason,
@@ -115,10 +115,10 @@ func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) 
 		result, err := h.local.DispatchFunction(ctx, entity, fn, req.WorkflowName, req.TransitionName, req.TxID)
 		if err != nil {
 			slog.Error("dispatch function failed", "pkg", "dispatch", "err", err)
-			writeJSON(w, http.StatusOK, dispatchErrorResponse("dispatch function failed", err))
+			h.writeSealed(w, binding, dispatchErrorResponse("dispatch function failed", err))
 			return
 		}
-		writeJSON(w, http.StatusOK, DispatchCalloutResponse{
+		h.writeSealed(w, binding, DispatchCalloutResponse{
 			Success:    true,
 			Result:     result.Value,
 			ResultKind: result.Kind,
@@ -130,19 +130,20 @@ func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) 
 
 // verifyRequest runs peer authentication over the incoming request. On
 // failure it writes 403 and returns ok=false; on success it returns the
-// authenticated plaintext body and the peer's identity. Error messages
-// are deliberately generic to avoid leaking which step failed.
-func (h *DispatchHandler) verifyRequest(w http.ResponseWriter, r *http.Request) ([]byte, PeerIdentity, bool) {
-	body, identity, _, err := h.auth.Verify(r)
+// authenticated plaintext body, the peer's identity and the binding the
+// answer to this request is sealed under. Error messages are deliberately
+// generic to avoid leaking which step failed.
+func (h *DispatchHandler) verifyRequest(w http.ResponseWriter, r *http.Request) ([]byte, PeerIdentity, ResponseBinding, bool) {
+	body, identity, binding, err := h.auth.Verify(r)
 	if err != nil {
 		slog.Warn("dispatch request auth failed",
 			"pkg", "dispatch",
 			"remoteAddr", r.RemoteAddr,
 			"err", err)
 		http.Error(w, "forbidden", http.StatusForbidden)
-		return nil, PeerIdentity{}, false
+		return nil, PeerIdentity{}, ResponseBinding{}, false
 	}
-	return body, identity, true
+	return body, identity, binding, true
 }
 
 // buildContext constructs a context.Context carrying the UserContext from
@@ -207,11 +208,24 @@ func dispatchErrorResponse(genericMsg string, err error) DispatchCalloutResponse
 	return resp
 }
 
-// writeJSON encodes v as JSON and writes it with the given status code.
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		slog.Error("dispatch handler: failed to write JSON response", "pkg", "dispatch", "err", err)
+// writeSealed answers the request binding names, under seal. The owner trusts
+// nothing else: a status line or a body it cannot open tells it only that the
+// answer was lost.
+func (h *DispatchHandler) writeSealed(w http.ResponseWriter, binding ResponseBinding, v DispatchCalloutResponse) {
+	plain, err := json.Marshal(v)
+	if err != nil {
+		slog.Error("failed to marshal dispatch answer", "pkg", "dispatch", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	wire, err := h.auth.SealResponse(w.Header(), binding, plain)
+	if err != nil {
+		slog.Error("failed to seal dispatch answer", "pkg", "dispatch", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(wire); err != nil {
+		slog.Warn("failed to write dispatch answer", "pkg", "dispatch", "err", err)
 	}
 }
