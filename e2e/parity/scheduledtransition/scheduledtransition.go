@@ -70,10 +70,10 @@ const (
 
 // fireTimeout bounds every poll loop in this file. It is sized generously
 // above the worst case a tuned-down scan interval should need (the parity
-// fixtures set CYODA_SCHEDULER_SCAN_INTERVAL=50ms — see each backend's
-// fixture.go) while still tolerating the untuned 1s default plus slow-CI /
-// postgres-subprocess startup overhead, so a real bug (not scheduler
-// cadence) is what trips this timeout.
+// fixtures set CYODA_SCHEDULER_SCAN_INTERVAL to 50ms — see
+// fixtureutil.TunedServerEnv) while still tolerating the untuned 1s default
+// plus slow-CI / postgres-subprocess startup overhead, so a real bug (not
+// scheduler cadence) is what trips this timeout.
 const fireTimeout = 15 * time.Second
 
 // pollInterval is the sleep between polls in awaitEntityState /

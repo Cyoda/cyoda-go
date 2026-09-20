@@ -226,19 +226,19 @@ func RunExternalAPI_09_04_AsyncNewTxExceptionKeepsInitialSave(t *testing.T, fixt
 // RunExternalAPI_09_05_SyncErrorFlagRollsBack — dictionary 09/05.
 func RunExternalAPI_09_05_SyncErrorFlagRollsBack(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending: cmd/compute-test-client/catalog.go has no error-flag processor; processorFunc signature does not expose the gRPC ProcessorResponse warnings/errors path. Adding it would require extending the processor signature — out of tranche-3 scope. Compute-test-client extension scheduled for a future tranche.")
+	t.Skip("pending: cmd/compute-test-client has no processor that sets the response's warnings/errors flags.")
 }
 
 // RunExternalAPI_09_06_AsyncSameTxErrorFlagRollsBack — dictionary 09/06.
 func RunExternalAPI_09_06_AsyncSameTxErrorFlagRollsBack(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending: cmd/compute-test-client/catalog.go has no error-flag processor; processorFunc signature does not expose the gRPC ProcessorResponse warnings/errors path. Adding it would require extending the processor signature — out of tranche-3 scope. Compute-test-client extension scheduled for a future tranche.")
+	t.Skip("pending: cmd/compute-test-client has no processor that sets the response's warnings/errors flags.")
 }
 
 // RunExternalAPI_09_07_AsyncNewTxErrorFlagKeepsInitialSave — dictionary 09/07.
 func RunExternalAPI_09_07_AsyncNewTxErrorFlagKeepsInitialSave(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending: cmd/compute-test-client/catalog.go has no error-flag processor; processorFunc signature does not expose the gRPC ProcessorResponse warnings/errors path. Adding it would require extending the processor signature — out of tranche-3 scope. Compute-test-client extension scheduled for a future tranche.")
+	t.Skip("pending: cmd/compute-test-client has no processor that sets the response's warnings/errors flags.")
 }
 
 // RunExternalAPI_09_08_NoExternalRegisteredFails — dictionary 09/08.
