@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/app"
@@ -48,6 +49,41 @@ func doWorkflowImport(t *testing.T, base, entityName string, version int, body s
 		t.Fatalf("workflow import request failed: %v", err)
 	}
 	return resp
+}
+
+// TestImport_ResponseTimeoutBound_FollowsServerSetting pins the wiring from
+// the server setting to the import handler: the same payload is accepted or
+// refused depending on the bound the App was built with.
+func TestImport_ResponseTimeoutBound_FollowsServerSetting(t *testing.T) {
+	cfg := app.DefaultConfig()
+	cfg.ContextPath = ""
+	cfg.Callout.ResponseTimeout = 5 * time.Second
+	cfg.Callout.ResponseTimeoutMax = 5 * time.Second
+	srv := httptest.NewServer(app.New(cfg).Handler())
+	t.Cleanup(srv.Close)
+	importModel(t, srv.URL, "Order", 1)
+
+	body := func(ms int) string {
+		return `{"importMode":"REPLACE","workflows":[{
+			"version":"1.1","name":"bound-wf","initialState":"S1","active":true,
+			"states":{"S1":{"transitions":[{"name":"go","next":"S2","manual":true,
+				"processors":[{"type":"externalized","name":"p","executionMode":"SYNC",
+					"config":{"calculationNodesTags":"workers","responseTimeoutMs":` + strconv.Itoa(ms) + `}}]}]},
+				"S2":{}}}]}`
+	}
+
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body(5000))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("responseTimeoutMs at the bound: expected 200, got %d", resp.StatusCode)
+	}
+
+	resp = doWorkflowImport(t, srv.URL, "Order", 1, body(5001))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("responseTimeoutMs over the bound: expected 400, got %d", resp.StatusCode)
+	}
+	commontest.ExpectErrorCode(t, resp, common.ErrCodeValidationFailed)
 }
 
 func doWorkflowExport(t *testing.T, base, entityName string, version int) *http.Response {

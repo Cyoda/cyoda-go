@@ -280,8 +280,10 @@ payload or a boolean:
   entity payload is attached to the request.
 - `context` (string, optional) — pass-through string forwarded verbatim
   as the request's `parameters`; omitted when empty.
-- `responseTimeoutMs` (integer, optional) — response timeout for this
-  callout.
+- `responseTimeoutMs` (integer, optional) — how long to wait for this
+  callout's answer, in milliseconds; `0` or absent means the server's
+  `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS`; must not exceed
+  `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`.
 
 The function responds with `resultKind: "Schedule"` and a `result`
 object giving the fire time and, optionally, an expiry:
@@ -494,6 +496,7 @@ Static validation runs on the incoming request before saving. Any of the followi
 - A criterion `LIKE` or `MATCHES_PATTERN` value that is not a valid pattern.
 - A criterion `lifecycle` clause naming an unknown metadata field, or comparing a temporal field (`creationDate`, `lastUpdateTime`) against a non-timestamp operand.
 - A criterion `group` clause whose `operator` is not `AND`, `OR`, or `NOT`, or whose `operator` is `NOT` with `conditions` other than exactly one entry.
+- A `responseTimeoutMs` on a processor, a `function`-type criterion or a `schedule.function` that is negative, or larger than the server's `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` (default `60000`). The bound is a server setting: a workflow exported from one deployment can be refused by another with a lower bound.
 
 The new structural rules (state graph, name uniqueness, `executionMode` enum, `retryPolicy` enum) run on the incoming request only — existing stored workflows are not retroactively re-checked against them. The cycle-detection and `startNewTxOnDispatch` coherence checks continue to run against the merged result, so a legacy stored cycle or incoherent flag still surfaces at any subsequent import.
 

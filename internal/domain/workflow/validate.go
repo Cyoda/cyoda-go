@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
@@ -85,6 +86,93 @@ func checkRetryPolicy(policy, location string) error {
 		return fmt.Errorf("%s: unknown retryPolicy %q (allowed: NONE, FIXED, or empty)", location, policy)
 	}
 	return nil
+}
+
+// validateCalloutLimits enforces the server's bound on responseTimeoutMs for
+// every callout an incoming workflow configures: each processor, each
+// schedule function, and each top-level function criterion (workflow-level and
+// transition-level). A negative value is refused whatever the bound. Zero
+// means "use the server default" and is always accepted.
+//
+// Separate from validateWorkflowStructure because the bound is a server
+// setting (CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS) handed to the Handler at
+// construction, and the structural rules are setting-free. States are walked
+// in name order so a workflow with several violations always reports the same
+// one.
+func validateCalloutLimits(workflows []spi.WorkflowDefinition, maxResponseTimeout time.Duration) error {
+	maxMs := maxResponseTimeout.Milliseconds()
+	for _, wf := range workflows {
+		wfLoc := fmt.Sprintf("workflow %q", wf.Name)
+		if err := checkCriterionResponseTimeout(wf.Criterion, wfLoc, maxMs); err != nil {
+			return err
+		}
+		for _, stateName := range sortedStateNames(wf) {
+			for _, tr := range wf.States[stateName].Transitions {
+				trLoc := fmt.Sprintf("workflow %q state %q transition %q", wf.Name, stateName, tr.Name)
+				if err := checkCriterionResponseTimeout(tr.Criterion, trLoc, maxMs); err != nil {
+					return err
+				}
+				if tr.Schedule != nil && tr.Schedule.Function != nil {
+					if err := checkResponseTimeout(tr.Schedule.Function.ResponseTimeoutMs, maxMs,
+						trLoc+" schedule.function"); err != nil {
+						return err
+					}
+				}
+				for _, p := range tr.Processors {
+					if err := checkResponseTimeout(p.Config.ResponseTimeoutMs, maxMs,
+						fmt.Sprintf("%s processor %q", trLoc, p.Name)); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// checkCriterionResponseTimeout applies checkResponseTimeout to a top-level
+// function criterion; any other criterion has no callout and passes.
+func checkCriterionResponseTimeout(criterion json.RawMessage, location string, maxMs int64) error {
+	trimmed := bytes.TrimSpace(criterion)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	cond, err := predicate.ParseCondition(trimmed)
+	if err != nil {
+		return nil // not this rule's to report; see validateCriterion
+	}
+	if _, ok := cond.(*predicate.FunctionCondition); !ok {
+		return nil
+	}
+	fn, err := contract.ParseCriterionFunction(trimmed)
+	if err != nil {
+		return fmt.Errorf("%s: %w", location, err)
+	}
+	return checkResponseTimeout(fn.Config.ResponseTimeoutMs, maxMs,
+		fmt.Sprintf("%s criterion function %q", location, fn.Name))
+}
+
+// checkResponseTimeout compares in milliseconds: converting an arbitrary
+// client int64 to a time.Duration first could overflow.
+func checkResponseTimeout(ms, maxMs int64, location string) error {
+	if ms < 0 {
+		return fmt.Errorf("%s: responseTimeoutMs must not be negative (got %d)", location, ms)
+	}
+	if ms > maxMs {
+		return fmt.Errorf("%s: responseTimeoutMs %d exceeds this server's upper bound of %d ms (CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS)",
+			location, ms, maxMs)
+	}
+	return nil
+}
+
+// sortedStateNames returns wf's state names in lexicographic order.
+func sortedStateNames(wf spi.WorkflowDefinition) []string {
+	names := make([]string, 0, len(wf.States))
+	for name := range wf.States {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // maxIdentifierLen caps the length of workflow / state / transition /
@@ -711,11 +799,7 @@ func validateWorkflowLoops(wf spi.WorkflowDefinition) error {
 	// randomised per process, which previously made the reported cycle
 	// vary across CI runs on a workflow with multiple disjoint cycles.
 	// Lexicographic order is an arbitrary but stable choice.
-	stateNames := make([]string, 0, len(wf.States))
-	for stateName := range wf.States {
-		stateNames = append(stateNames, stateName)
-	}
-	sort.Strings(stateNames)
+	stateNames := sortedStateNames(wf)
 	for _, stateName := range stateNames {
 		if color[stateName] == white {
 			if err := dfs(stateName); err != nil {

@@ -90,3 +90,37 @@ func TestWorkflowImport_CalloutRetryPolicyValid_200(t *testing.T) {
 		t.Fatalf("function retryPolicy FIXED: expected 200, got %d: %s", status, body)
 	}
 }
+
+// The e2e server runs with the default bound, 60000 ms.
+func TestWorkflowImport_ResponseTimeoutOutOfRange_400(t *testing.T) {
+	const entity = "wf-callout-timeout-bound"
+	importModelE2E(t, entity, 1)
+
+	procCfg := func(ms int) string {
+		return fmt.Sprintf(`{"calculationNodesTags":"workers","responseTimeoutMs":%d}`, ms)
+	}
+	crit := func(ms int) string {
+		return fmt.Sprintf(`{"type":"function","function":{"name":"min-amount","config":{"calculationNodesTags":"pricing","responseTimeoutMs":%d}}}`, ms)
+	}
+	sched := func(ms int) string {
+		return fmt.Sprintf(`{"function":{"name":"computeFire","resultKind":"Schedule","calculationNodesTags":"scheduler","responseTimeoutMs":%d}}`, ms)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		payload func(ms int) string
+		where   string
+	}{
+		{"processor", func(ms int) string { return calloutWorkflow("bound-proc-wf", "", "", procCfg(ms)) }, `processor "p"`},
+		{"criterion", func(ms int) string { return calloutWorkflow("bound-crit-wf", crit(ms), "", "") }, `criterion function "min-amount"`},
+		{"function", func(ms int) string { return calloutWorkflow("bound-fn-wf", "", sched(ms), "") }, "schedule.function"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if status, body := importWorkflowE2E(t, entity, 1, tc.payload(60000)); status != http.StatusOK {
+				t.Fatalf("at the bound: expected 200, got %d: %s", status, body)
+			}
+			importRejection(t, entity, tc.payload(60001), tc.where, "60001", "60000", "CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS")
+			importRejection(t, entity, tc.payload(-1), tc.where, "must not be negative")
+		})
+	}
+}

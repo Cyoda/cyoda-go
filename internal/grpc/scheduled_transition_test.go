@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
@@ -45,7 +46,7 @@ func newTestEnvWithWorkflow(t *testing.T) (*CloudEventsServiceImpl, *workflow.Ha
 	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)
 	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
 	modelHandler := model.New(factory)
-	workflowHandler := workflow.New(factory, engine)
+	workflowHandler := workflow.New(factory, engine, 60*time.Second)
 
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
