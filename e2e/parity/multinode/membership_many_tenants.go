@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -48,12 +49,26 @@ func membershipWorkflow(wfName string) string {
 	return string(b)
 }
 
+// membershipHostNode is the pnode the 16 further tenants' cnodes attach to.
+// membershipDriveNode is a peer that hosts none of them: every callout this
+// scenario drives is routed there, so it only succeeds if the peer still
+// sees membershipHostNode and the tags it advertises.
+const (
+	membershipHostNode  = 0
+	membershipDriveNode = 1
+)
+
 // RunMembership_ManyTenantsStayVisible attaches cnodes of
 // membershipManyTenantsCount further tenants, three 40-character tags each,
 // to node 0 — comfortably past the old 512-byte metadata cap on tenant ids
-// and tags alone. A callout driven from node 1 for the shared compute
-// tenant's computeMemberTag must still be handed over to node 0, and node 0
-// must still see itself.
+// and tags alone. Three callouts, each driven from node 1 (which hosts none
+// of the attached cnodes), must still be handed over to node 0: one for the
+// fixture's own built-in computeMemberTag, and — because a per-node tag-list
+// defect could drop exactly one element (e.g. the first or the last) while
+// leaving the rest and the built-in tag intact — one for the FIRST tenant
+// attached and one for the LAST, each routed by that tenant's own unique tag
+// and observed on that tenant's own compute-client handle. Node 0 must also
+// still see itself.
 func RunMembership_ManyTenantsStayVisible(t *testing.T, fixture MultiNodeFixture) {
 	t.Helper()
 	urls := fixture.BaseURLs()
@@ -61,40 +76,99 @@ func RunMembership_ManyTenantsStayVisible(t *testing.T, fixture MultiNodeFixture
 		t.Fatalf("needs ≥2 nodes, got %d", len(urls))
 	}
 
+	var first, last membershipAttachedTenant
 	for i := range membershipManyTenantsCount {
 		tags := make([]string, 3)
 		for j := range tags {
 			tags[j] = fmt.Sprintf("membership-%d-%d-%s", i, j, strings.Repeat("x", 25))
 		}
-		StartComputeClientOrSkip(t, fixture, 0, parity.ComputeClientSpec{
-			TenantID: uuid.NewString(),
-			Tags:     tags,
-		})
+
+		switch i {
+		case 0, membershipManyTenantsCount - 1:
+			// The FIRST and LAST tenant attached must be real fixture
+			// tenants, able to authenticate an HTTP create against their
+			// own tag below — a bare uuid.NewString() joins the compute
+			// client's gRPC member fine but cannot mint an HTTP bearer.
+			tenant := fixture.NewTenant(t)
+			cc := StartComputeClientOrSkip(t, fixture, membershipHostNode, parity.ComputeClientSpec{
+				TenantID: tenant.ID,
+				Tags:     tags,
+			})
+			at := membershipAttachedTenant{tenant: tenant, tag: tags[0], cc: cc}
+			if i == 0 {
+				first = at
+			} else {
+				last = at
+			}
+		default:
+			// The middle tenants only need to bulk out node 0's metadata;
+			// nothing observes them, so a bare fresh tenant id is enough.
+			StartComputeClientOrSkip(t, fixture, membershipHostNode, parity.ComputeClientSpec{
+				TenantID: uuid.NewString(),
+				Tags:     tags,
+			})
+		}
 	}
 
+	// The fixture's own built-in compute member, under the shared compute
+	// tenant, must still be reachable too.
 	tenant := fixture.ComputeTenant(t)
 	const model = "membership-many-tenants"
-	cbRouteSetupModel(t, client.NewClient(urls[0], tenant.Token), model,
+	cbRouteSetupModel(t, client.NewClient(urls[membershipHostNode], tenant.Token), model,
 		cbRouteSampleNoWriteback, membershipWorkflow("membership-many-tenants-wf"))
 
-	// Node 1 hosts no cnode for computeMemberTag: the callout succeeds only if
-	// node 1 still sees node 0 and the tag it hosts.
-	owner := client.NewClient(urls[1], tenant.Token)
+	owner := client.NewClient(urls[membershipDriveNode], tenant.Token)
 	id, err := owner.CreateEntity(t, model, 1, `{"name":"e","amount":1,"status":"new"}`)
 	if err != nil {
-		t.Fatalf("create via node 1 with %d tenants attached to node 0: %v — node 0 has dropped out of node 1's view", membershipManyTenantsCount, err)
+		t.Fatalf("create via node %d with %d tenants attached to node %d: %v — node %d has dropped out of node %d's view",
+			membershipDriveNode, membershipManyTenantsCount, membershipHostNode, err, membershipHostNode, membershipDriveNode)
 	}
 	got, err := owner.GetEntity(t, id)
 	if err != nil {
 		t.Fatalf("GetEntity: %v", err)
 	}
 	if got.Meta.State != "ACTIVE" {
-		t.Fatalf("state = %q, want ACTIVE (the callout was not handed to node 0)", got.Meta.State)
+		t.Fatalf("state = %q, want ACTIVE (the callout was not handed to node %d)", got.Meta.State, membershipHostNode)
 	}
 
 	// And node 0 must still see itself: a create on it runs the callout
 	// locally too.
-	if _, err := client.NewClient(urls[0], tenant.Token).CreateEntity(t, model, 1, `{"name":"e0","amount":1,"status":"new"}`); err != nil {
-		t.Fatalf("create via node 0: %v", err)
+	if _, err := client.NewClient(urls[membershipHostNode], tenant.Token).CreateEntity(t, model, 1, `{"name":"e0","amount":1,"status":"new"}`); err != nil {
+		t.Fatalf("create via node %d: %v", membershipHostNode, err)
+	}
+
+	// The FIRST and LAST tenant attached must each still be individually
+	// reachable by their own tag, not merely the built-in one above.
+	membershipAssertOwnTagReachable(t, urls, "first", first)
+	membershipAssertOwnTagReachable(t, urls, "last", last)
+}
+
+// membershipAttachedTenant is one of the FIRST/LAST tenants this scenario
+// observes directly: its own tenant, the unique tag its cnode joined under,
+// and the handle on that cnode.
+type membershipAttachedTenant struct {
+	tenant parity.Tenant
+	tag    string
+	cc     parity.ComputeClient
+}
+
+// membershipAssertOwnTagReachable drives one callout, tagged with at's own
+// unique tag, from membershipDriveNode (which hosts no cnode for it) and
+// asserts it was handed to at's own compute-client handle — following the
+// pattern of RunComputeClient_AttachToNode (compute_client.go).
+func membershipAssertOwnTagReachable(t *testing.T, urls []string, label string, at membershipAttachedTenant) {
+	t.Helper()
+	model := "membership-many-tenants-" + label
+	cSetup := client.NewClient(urls[membershipHostNode], at.tenant.Token)
+	cbRouteSetupModel(t, cSetup, model, cbRouteSampleNoWriteback,
+		parity.ComputeClientWorkflow("membership-many-tenants-"+label+"-wf", "noop", at.tag, "", nil))
+
+	c := client.NewClient(urls[membershipDriveNode], at.tenant.Token)
+	if _, err := c.CreateEntity(t, model, 1, `{"name":"Test","amount":10,"status":"new"}`); err != nil {
+		t.Fatalf("%s tenant attached: create via node %d routed by its own tag to node %d: %v",
+			label, membershipDriveNode, membershipHostNode, err)
+	}
+	if got := parity.AwaitReceived(t, at.cc, 1, 5*time.Second); got[0].Name != "noop" || !got[0].PassPresent {
+		t.Errorf("%s tenant attached: record = %+v", label, got[0])
 	}
 }
