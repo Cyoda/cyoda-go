@@ -430,6 +430,34 @@ func TestSchedulerRPCClient_TruncatedAnswerRefused(t *testing.T) {
 	}
 }
 
+// TestSchedulerRPCClient_FollowsNoRedirect: a 3xx on the path between nodes
+// must not send the signed task on to an address that never passed the
+// peer-address guard. Every redirect is refused, whatever its status.
+func TestSchedulerRPCClient_FollowsNoRedirect(t *testing.T) {
+	for _, status := range []int{http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var reached bool
+			elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				reached = true
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(elsewhere.Close)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, elsewhere.URL+schedulerTaskPath, status)
+			}))
+			t.Cleanup(srv.Close)
+
+			client := NewSchedulerRPCClient(newTestAuth(t), 5*time.Second).AllowLoopbackForTesting()
+			if err := client.ExecuteScheduledTask(context.Background(), srv.URL, spi.ScheduledTask{ID: "t-redirect", TenantID: testTenant}); err == nil {
+				t.Fatal("a redirected task was accepted as a fire")
+			}
+			if reached {
+				t.Error("the task was sent on to an address that never passed the peer-address guard")
+			}
+		})
+	}
+}
+
 // TestSchedulerRPC_SealedRoundTrip proves the real handler and the real client
 // agree on the sealed answer over a real HTTP round trip: a fire that ran
 // arrives as success, and one the peer's engine refused arrives as that

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/netip"
 	"net/url"
 	"strings"
@@ -19,6 +20,18 @@ import (
 // range. Sentinel so callers can distinguish SSRF-guard rejections from
 // network errors.
 var ErrForbiddenPeerAddress = errors.New("peer address is forbidden")
+
+// ErrRedirectRefused is what RefuseRedirects returns. Sentinel so a caller can
+// tell a peer that tried to redirect it from a peer that failed to answer.
+var ErrRedirectRefused = errors.New("refusing to follow a redirect to another node address")
+
+// RefuseRedirects is the http.Client CheckRedirect for every client that talks
+// to another cluster node. A 3xx injected on the path between nodes would
+// otherwise send the signed request on to an address Validate never saw — the
+// pivot Validate exists to close, reached from the network instead of from the
+// registry. It returns an error rather than http.ErrUseLastResponse, so the 3xx
+// is not read as an answer either.
+func RefuseRedirects(_ *http.Request, _ []*http.Request) error { return ErrRedirectRefused }
 
 // Validate parses a cluster registry address and rejects addresses pointing
 // at ranges the cluster must never dial: loopback, link-local

@@ -152,7 +152,7 @@ type SchedulerRPCClient struct {
 func NewSchedulerRPCClient(auth dispatch.PeerAuth, timeout time.Duration) *SchedulerRPCClient {
 	return &SchedulerRPCClient{
 		auth:       auth,
-		httpClient: &http.Client{Timeout: timeout},
+		httpClient: &http.Client{Timeout: timeout, CheckRedirect: peeraddr.RefuseRedirects},
 	}
 }
 

@@ -72,7 +72,8 @@ func NewHTTPForwarder(auth PeerAuth, timeout time.Duration) *HTTPForwarder {
 	return &HTTPForwarder{
 		auth: auth,
 		client: &http.Client{
-			Timeout: timeout,
+			Timeout:       timeout,
+			CheckRedirect: refuseRedirects,
 			Transport: &http.Transport{
 				MaxIdleConns:        20,
 				MaxIdleConnsPerHost: 5,

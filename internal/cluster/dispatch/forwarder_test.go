@@ -289,8 +289,42 @@ func TestHTTPForwarder_AnswerSealedForAnotherRequestRefused(t *testing.T) {
 	if _, err := f.ForwardCallout(context.Background(), srv.URL, makeProcessorReq()); err != nil {
 		t.Fatalf("first hand-over: %v", err)
 	}
-	if _, err := f.ForwardCallout(context.Background(), srv.URL, makeProcessorReq()); err == nil {
+	_, err := f.ForwardCallout(context.Background(), srv.URL, makeProcessorReq())
+	if err == nil {
 		t.Fatal("an answer replayed from an earlier request was accepted")
+	}
+	// The refusal is pinned to the seal failing to open under this request's
+	// binding, not to whatever the decode that follows would have made of it.
+	if !strings.Contains(err.Error(), "open response") {
+		t.Errorf("refused for the wrong reason: %v", err)
+	}
+}
+
+// TestHTTPForwarder_FollowsNoRedirect: a 3xx on the path between nodes must not
+// send the signed hand-over on to an address that never passed the peer-address
+// guard. Every redirect is refused, whatever its status.
+func TestHTTPForwarder_FollowsNoRedirect(t *testing.T) {
+	for _, status := range []int{http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var reached bool
+			elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				reached = true
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer elsewhere.Close()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, elsewhere.URL+"/internal/dispatch/callout", status)
+			}))
+			defer srv.Close()
+
+			f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
+			if _, err := f.ForwardCallout(context.Background(), srv.URL, makeProcessorReq()); err == nil {
+				t.Fatal("a redirected hand-over was accepted")
+			}
+			if reached {
+				t.Error("the hand-over was sent on to an address that never passed the peer-address guard")
+			}
+		})
 	}
 }
 

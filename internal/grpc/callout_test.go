@@ -168,10 +168,16 @@ func TestCallout_SourceIsWhatItWasBuiltFrom(t *testing.T) {
 		c.Source.WorkflowName != "wf1" || c.Source.TransitionName != "t1" {
 		t.Errorf("criteria source = %+v", c.Source)
 	}
+	if c.Source.Processor != nil || c.Source.Function != nil {
+		t.Errorf("a criteria callout carries only a criterion: %+v", c.Source)
+	}
 
 	f := NewFunctionCallout(testTenantID, entity, fn, "wf1", "t1", "tx-1")
 	if f.Source.Entity != entity || f.Source.Function == nil || f.Source.Function.Name != "f" ||
 		f.Source.WorkflowName != "wf1" || f.Source.TransitionName != "t1" {
 		t.Errorf("function source = %+v", f.Source)
+	}
+	if f.Source.Processor != nil || f.Source.Criterion != nil || f.Source.Target != "" || f.Source.ProcessorName != "" {
+		t.Errorf("a function callout carries only a function: %+v", f.Source)
 	}
 }
