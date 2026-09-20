@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 277 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 280 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -47,6 +47,11 @@ var allTests = []NamedTest{
 	{"ModelListModels", RunModelListModels},
 	{"ModelDelete", RunModelDelete},
 	{"WorkflowImportExport", RunWorkflowImportExport},
+	// What import accepts and refuses in a callout's configuration, and that
+	// the accepted fields survive each backend's storage.
+	{"WorkflowImportCalloutRetryPolicyValidated", RunWorkflowImportCalloutRetryPolicyValidated},
+	{"WorkflowImportResponseTimeoutBounded", RunWorkflowImportResponseTimeoutBounded},
+	{"WorkflowCalloutFieldsRoundTrip", RunWorkflowCalloutFieldsRoundTrip},
 	{"WorkflowAnnotationsRoundTrip", RunWorkflowAnnotationsRoundTrip},
 	{"WorkflowProcCriterionAnnotationsRoundTrip", RunWorkflowProcCriterionAnnotationsRoundTrip},
 	{"WorkflowProcAttachEntityDefaultRoundTrip", RunWorkflowProcAttachEntityDefaultRoundTrip},
