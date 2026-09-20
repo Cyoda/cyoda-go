@@ -560,6 +560,33 @@ func TestTxRouteInterceptor_DeadNodeUnavailableEnvelope(t *testing.T) {
 	assertEnvelopeCode(t, resp, "req-down", "TRANSACTION_NODE_UNAVAILABLE")
 }
 
+// A valid token naming a peer the registry does not list at all — exactly what
+// registry.Gossip.List yields for a member whose gossip metadata does not
+// parse (internal/cluster/registry/gossip_badmeta_internal_test.go covers the
+// HTTP door for the same condition) — also yields TRANSACTION_NODE_UNAVAILABLE
+// (503) in the envelope. This exercises ResolveNodeInfo's fall-through when the
+// token's node is missing from List entirely, distinct from
+// TestTxRouteInterceptor_DeadNodeUnavailableEnvelope above, where the node is
+// listed but marked not-Alive.
+func TestTxRouteInterceptor_NodeMissingFromRegistryUnavailableEnvelope(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	tok, _ := s.Issue("node-ghost", "tx-ghost", time.Now().Add(time.Minute))
+	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
+		"node-other": {NodeID: "node-other", Addr: "http://node-other:8080", Alive: true},
+	}}
+	ic := newTxRouteInterceptor(s, reg, "local", fakeJoinTM{}, 9090, true)
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-ghost"}, entityManageInfo(), func(context.Context, any) (any, error) {
+		t.Fatal("handler must not run when the token names a node the registry does not list")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("expected envelope response, got gRPC err: %v", err)
+	}
+	assertEnvelopeCode(t, resp, "req-ghost", "TRANSACTION_NODE_UNAVAILABLE")
+}
+
 // A valid self-node token for a transaction owned by a different tenant yields
 // FORBIDDEN (mapped from spi.ErrTxTenantMismatch in JoinFromToken).
 func TestTxRouteInterceptor_TenantMismatchEnvelope(t *testing.T) {
