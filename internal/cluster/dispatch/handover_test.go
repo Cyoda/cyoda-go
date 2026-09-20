@@ -129,6 +129,10 @@ func TestRequestValidate(t *testing.T) {
 		{"unknown kind", func(r *DispatchCalloutRequest) { r.Kind = "bogus" }},
 		{"entity of another tenant", func(r *DispatchCalloutRequest) { r.EntityMeta.TenantID = "tenant-2" }},
 		{"entity with no tenant", func(r *DispatchCalloutRequest) { r.EntityMeta.TenantID = "" }},
+		{"no request tenant", func(r *DispatchCalloutRequest) { r.TenantID = "" }},
+		// The equality alone passes this one, and the callout would run under no
+		// tenant at all.
+		{"no tenant on either half", func(r *DispatchCalloutRequest) { r.TenantID, r.EntityMeta.TenantID = "", "" }},
 		{"no request id", func(r *DispatchCalloutRequest) { r.RequestID = "" }},
 		{"no tries", func(r *DispatchCalloutRequest) { r.TriesLeft = 0 }},
 		{"no answer limit", func(r *DispatchCalloutRequest) { r.AnswerLimitMs = 0 }},

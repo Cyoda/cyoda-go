@@ -780,7 +780,7 @@ func New(cfg Config) *App {
 		internalapi.RegisterHelpRoutes(outerMux, help.BuildTree(), contextPath, cfg.Version)
 		// Internal dispatch routes at root (AEAD-authenticated, not under context path)
 		if cfg.Cluster.Enabled {
-			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth, cfg.Callout.FixedNumRetries+1)
+			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth)
 			dispatchHandler.Register(outerMux)
 			cluster.NewSchedulerRPCHandler(schedEngine, peerAuth).Register(outerMux)
 		}
@@ -793,7 +793,7 @@ func New(cfg Config) *App {
 		internalapi.RegisterHelpRoutes(mux, help.BuildTree(), "", cfg.Version)
 		// Internal dispatch routes (AEAD-authenticated)
 		if cfg.Cluster.Enabled {
-			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth, cfg.Callout.FixedNumRetries+1)
+			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth)
 			dispatchHandler.Register(mux)
 			cluster.NewSchedulerRPCHandler(schedEngine, peerAuth).Register(mux)
 		}

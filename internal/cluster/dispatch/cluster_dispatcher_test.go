@@ -126,10 +126,6 @@ func (s stubRunner) RunLocal(ctx context.Context, call internalgrpc.Callout, _ i
 	}
 }
 
-func (s stubRunner) ResolveAnswerLimit(ms int64) (time.Duration, *contract.CalloutFailure) {
-	return testAnswerLimit(ms)
-}
-
 // --- tests ---
 
 func TestClusterDispatcher_LocalFirst(t *testing.T) {
@@ -214,7 +210,7 @@ func TestClusterDispatcher_ForwardsToPeer(t *testing.T) {
 				Data: []byte(`{"key":"peer-processed"}`),
 			},
 		}
-		handler := NewDispatchHandler(stubRunner{peerLocal}, auth, testMaxTries)
+		handler := NewDispatchHandler(stubRunner{peerLocal}, auth)
 		mux := http.NewServeMux()
 		handler.Register(mux)
 		peer := httptest.NewServer(mux)
@@ -248,7 +244,7 @@ func TestClusterDispatcher_ForwardsToPeer(t *testing.T) {
 			criteriaResult: true,
 			criteriaReason: "peer-evaluated reason",
 		}
-		handler := NewDispatchHandler(stubRunner{peerLocal}, auth, testMaxTries)
+		handler := NewDispatchHandler(stubRunner{peerLocal}, auth)
 		mux := http.NewServeMux()
 		handler.Register(mux)
 		peer := httptest.NewServer(mux)
@@ -288,7 +284,7 @@ func TestClusterDispatcher_ForwardsToPeer(t *testing.T) {
 				Value: json.RawMessage(`{"fireAfterMs":2000}`),
 			},
 		}
-		handler := NewDispatchHandler(stubRunner{peerLocal}, auth, testMaxTries)
+		handler := NewDispatchHandler(stubRunner{peerLocal}, auth)
 		mux := http.NewServeMux()
 		handler.Register(mux)
 		peer := httptest.NewServer(mux)
@@ -660,7 +656,7 @@ func TestClusterDispatcher_PeerLocalDispatchErrorTaxonomyPropagatesOverWire(t *t
 
 	newForwardingDispatcher := func(t *testing.T, peerLocal *stubDispatcher) *ClusterDispatcher {
 		t.Helper()
-		handler := NewDispatchHandler(stubRunner{peerLocal}, auth, testMaxTries)
+		handler := NewDispatchHandler(stubRunner{peerLocal}, auth)
 		mux := http.NewServeMux()
 		handler.Register(mux)
 		peer := httptest.NewServer(mux)

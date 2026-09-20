@@ -36,8 +36,8 @@ const peerUnreachableClientMessage = "the peer node could not be reached"
 // time.Duration once multiplied by time.Millisecond. Above it the product
 // wraps negative and the receiving pnode would give a cnode a deadline in the
 // past. This is the representable range, not a policy: the policy bound is
-// ResolveAnswerLimit's configured maximum, which the receiver applies to the
-// callout it builds.
+// ResolveAnswerLimit's configured maximum, which the OWNER applies before it
+// hands the callout over. The receiver runs the limit it was sent.
 const maxAnswerLimitMs = int64(math.MaxInt64) / int64(time.Millisecond)
 
 // maxOuterPairs bounds how many enclosing callouts a hand-over may name. It is
@@ -132,22 +132,25 @@ func newHandOverRequest(uc *spi.UserContext, ownerNodeID string, call internalgr
 // validate is the receiving pnode's check of a hand-over it has authenticated.
 //
 // A request carries two tenants: TenantID, which becomes the UserContext the
-// callout runs as, and EntityMeta.TenantID, the entity's own. They must agree,
-// or the callout runs as one tenant over another's entity. The equality is
-// unconditional, an absent EntityMeta.TenantID included: every callout is built
-// from a live stored entity whose tenant is always set, so an empty one can
-// only come from a hand-crafted body. The error names neither value: both are
-// peer-supplied.
+// callout runs as, and EntityMeta.TenantID, the entity's own. Each must be
+// named, and the two must agree. Both halves are needed: the equality alone
+// passes a body with both tenants empty, and the callout would then run under no
+// tenant at all. The equality is likewise unconditional, an absent
+// EntityMeta.TenantID included: every callout is built from a live stored entity
+// whose tenant is always set, so an empty one can only come from a hand-crafted
+// body. The error names neither value: both are peer-supplied.
 //
 // Everything else it checks is likewise a value the callout cannot be run
 // without, and each is refused rather than substituted or clamped: the
 // receiving pnode would otherwise dispatch an unidentifiable entity, give a
-// cnode a deadline in the past, or mint passes carrying pairs the fence
-// cannot judge. The bounds that need configuration — how many tries this
-// pnode will make, how long an answer limit it allows — are applied where the
-// configuration is, not here.
+// cnode a deadline in the past, or mint passes carrying pairs the fence cannot
+// judge. None of them needs configuration to judge, and that is the whole of
+// what the receiver checks: how many tries the hand-over may make and how long
+// a cnode is given to answer are the owner's decisions, run as sent.
 func (req *DispatchCalloutRequest) validate() error {
 	switch {
+	case req.TenantID == "":
+		return errors.New("tenantID is empty")
 	case string(req.EntityMeta.TenantID) != req.TenantID:
 		return errors.New("entity tenant does not match request tenant")
 	case req.EntityMeta.ID == "":

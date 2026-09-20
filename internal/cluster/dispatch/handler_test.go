@@ -20,13 +20,15 @@ import (
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 )
 
-// testMaxTries is the ceiling a test pnode accepts on a hand-over's triesLeft:
-// CYODA_RETRY_FIXED_NUM_RETRIES's default of 3 plus the first try.
-const testMaxTries = 4
-
-// testAnswerLimitMax is the ceiling a test pnode accepts on a hand-over's
-// answerLimitMs: CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS's default.
-const testAnswerLimitMax = 60 * time.Second
+// testOwnRetries and testOwnAnswerLimitMax are what a test pnode's OWN
+// configuration says — CYODA_RETRY_FIXED_NUM_RETRIES's default of 3 plus the
+// first try, and CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS's default. They bound
+// what this node decides for itself; a hand-over's numbers are the owner's and
+// are not held against them.
+const (
+	testOwnMaxTries       = 4
+	testOwnAnswerLimitMax = 60 * time.Second
+)
 
 // fakeRunner is the local procedure of the pnode that receives a hand-over.
 type fakeRunner struct {
@@ -36,10 +38,6 @@ type fakeRunner struct {
 	gotTries int
 	gotCtx   context.Context
 	calls    int
-
-	// answerLimitMax stands for this pnode's configured maximum answer limit;
-	// the zero value is testAnswerLimitMax.
-	answerLimitMax time.Duration
 }
 
 func (f *fakeRunner) RunLocal(ctx context.Context, call internalgrpc.Callout, maxTries int) internalgrpc.LocalResult {
@@ -51,24 +49,10 @@ func (f *fakeRunner) RunLocal(ctx context.Context, call internalgrpc.Callout, ma
 	return f.result
 }
 
-// ResolveAnswerLimit mirrors (*grpc.ProcessorDispatcher).ResolveAnswerLimit:
-// a stored value above the configured bound is refused, never clamped.
-func (f *fakeRunner) ResolveAnswerLimit(responseTimeoutMs int64) (time.Duration, *contract.CalloutFailure) {
-	max := f.answerLimitMax
-	if max == 0 {
-		max = testAnswerLimitMax
-	}
-	if responseTimeoutMs > max.Milliseconds() {
-		err := fmt.Errorf("responseTimeoutMs %d exceeds the upper bound of %d ms", responseTimeoutMs, max.Milliseconds())
-		return 0, &contract.CalloutFailure{Kind: contract.Terminal, Message: err.Error(), Err: err}
-	}
-	return time.Duration(responseTimeoutMs) * time.Millisecond, nil
-}
-
 func newHandlerMux(t *testing.T, runner LocalRunner, auth PeerAuth) *http.ServeMux {
 	t.Helper()
 	mux := http.NewServeMux()
-	NewDispatchHandler(runner, auth, testMaxTries).Register(mux)
+	NewDispatchHandler(runner, auth).Register(mux)
 	return mux
 }
 
@@ -261,7 +245,7 @@ func TestHandler_PassMintedOnThePeerNamesTheOwner(t *testing.T) {
 	}
 	reg, cnode := attachedCnode(t, "tenant-1", "python")
 	local := internalgrpc.NewProcessorDispatcher(reg, internalgrpc.NewRoundRobinSelector(reg),
-		common.NewDefaultUUIDGenerator(), signer, "receiver-node", 5*time.Second, testAnswerLimitMax, 30*time.Second)
+		common.NewDefaultUUIDGenerator(), signer, "receiver-node", 5*time.Second, testOwnAnswerLimitMax, 30*time.Second)
 
 	auth := newAEAD(t)
 	resp := postHandOver(t, newHandlerMux(t, local, auth), auth, validRequest(t, "processor"))
@@ -406,9 +390,12 @@ func TestHandler_RequestThatCannotBeRun_IsAnAuthenticatedTerminal(t *testing.T) 
 				r.Outer[i] = WirePair{Callout: fmt.Sprintf("outer-%d", i), Major: 1}
 			}
 		}},
-		{"more tries than this node's retry setting can grant", func(r *DispatchCalloutRequest) { r.TriesLeft = testMaxTries + 1 }},
-		{"an answer limit above this node's maximum", func(r *DispatchCalloutRequest) {
-			r.AnswerLimitMs = testAnswerLimitMax.Milliseconds() + 1
+		{"no tenant at all", func(r *DispatchCalloutRequest) { r.TenantID, r.EntityMeta.TenantID = "", "" }},
+		// This one is refused by toCallout rather than validate: both refusals
+		// must reach the owner in the same shape.
+		{"a criterion that does not parse", func(r *DispatchCalloutRequest) {
+			r.Kind, r.Processor = "criteria", nil
+			r.Criterion = json.RawMessage(`{"function":7}`)
 		}},
 	}
 	for _, tt := range tests {
@@ -418,7 +405,8 @@ func TestHandler_RequestThatCannotBeRun_IsAnAuthenticatedTerminal(t *testing.T) 
 			req := validRequest(t, "processor")
 			tt.mutate(&req)
 			resp := postHandOver(t, newHandlerMux(t, runner, auth), auth, req)
-			if resp.Outcome != "terminal" || resp.TriesUsed == nil || *resp.TriesUsed != 0 || resp.ErrorStatus != http.StatusInternalServerError {
+			if resp.Outcome != "terminal" || resp.TriesUsed == nil || *resp.TriesUsed != 0 ||
+				resp.ErrorStatus != http.StatusInternalServerError || resp.ErrorCode != common.ErrCodeServerError {
 				t.Errorf("%+v", resp)
 			}
 			if runner.calls != 0 {
@@ -432,38 +420,28 @@ func TestHandler_RequestThatCannotBeRun_IsAnAuthenticatedTerminal(t *testing.T) 
 	}
 }
 
-// The bounds this pnode applies to a hand-over are bounds, not rejections of
-// everything near them: a request exactly at each is run.
-func TestHandler_RequestAtThisNodesBounds_IsRun(t *testing.T) {
-	tests := []struct {
-		name   string
-		mutate func(*DispatchCalloutRequest)
-	}{
-		{"as many tries as the retry setting grants", func(r *DispatchCalloutRequest) { r.TriesLeft = testMaxTries }},
-		{"the largest answer limit allowed", func(r *DispatchCalloutRequest) {
-			r.AnswerLimitMs = testAnswerLimitMax.Milliseconds()
-		}},
-		{"as many enclosing pairs as are allowed", func(r *DispatchCalloutRequest) {
-			r.Outer = make([]WirePair, maxOuterPairs)
-			for i := range r.Outer {
-				r.Outer[i] = WirePair{Callout: fmt.Sprintf("outer-%d", i), Major: 1}
-			}
-		}},
+// How many tries the hand-over may make and how long a cnode is given to answer
+// are the OWNER's decisions: the receiving pnode runs them as sent, even where
+// its own configuration would have chosen smaller ones. Holding them against its
+// own settings would fail a serviceable callout whenever two nodes' settings
+// differ — which they do through any rolling configuration change.
+func TestHandler_RunsTheOwnersTriesAndAnswerLimitWhateverThisNodesSettings(t *testing.T) {
+	auth := newAEAD(t)
+	runner := &fakeRunner{result: internalgrpc.LocalResult{TriesUsed: 1,
+		Result: internalgrpc.CalloutResult{Entity: &spi.Entity{Data: []byte(`{}`)}}}}
+
+	req := validRequest(t, "processor")
+	req.TriesLeft = testOwnMaxTries + 3
+	req.AnswerLimitMs = testOwnAnswerLimitMax.Milliseconds() * 2
+
+	if resp := postHandOver(t, newHandlerMux(t, runner, auth), auth, req); resp.Outcome != OutcomeOK {
+		t.Fatalf("%+v", resp)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			auth := newAEAD(t)
-			runner := &fakeRunner{result: internalgrpc.LocalResult{TriesUsed: 1,
-				Result: internalgrpc.CalloutResult{Entity: &spi.Entity{Data: []byte(`{}`)}}}}
-			req := validRequest(t, "processor")
-			tt.mutate(&req)
-			if resp := postHandOver(t, newHandlerMux(t, runner, auth), auth, req); resp.Outcome != OutcomeOK {
-				t.Errorf("%+v", resp)
-			}
-			if runner.calls != 1 {
-				t.Errorf("RunLocal called %d times", runner.calls)
-			}
-		})
+	if runner.gotTries != req.TriesLeft {
+		t.Errorf("maxTries = %d, want the owner's %d", runner.gotTries, req.TriesLeft)
+	}
+	if want := time.Duration(req.AnswerLimitMs) * time.Millisecond; runner.gotCall.AnswerLimit != want {
+		t.Errorf("AnswerLimit = %s, want the owner's %s", runner.gotCall.AnswerLimit, want)
 	}
 }
 

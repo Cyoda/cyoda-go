@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -18,34 +17,34 @@ import (
 // LocalRunner is the local procedure: the callout tried on this pnode's own
 // cnodes. It is everything a pnode that receives a hand-over may do with one —
 // the handler holds nothing through which it could hand the callout on.
-//
-// ResolveAnswerLimit is this pnode's own bound on an answer limit, and is here
-// rather than in the handler so that the one bound serves both doors: a callout
-// dispatched locally and a callout handed over are held to the same
-// configuration. *internalgrpc.ProcessorDispatcher satisfies both methods.
 type LocalRunner interface {
 	RunLocal(ctx context.Context, call internalgrpc.Callout, maxTries int) internalgrpc.LocalResult
-	ResolveAnswerLimit(responseTimeoutMs int64) (time.Duration, *contract.CalloutFailure)
 }
 
 // DispatchHandler serves POST /internal/dispatch/callout: a callout handed over
 // by the pnode that owns its transaction. Requests are authenticated via
 // PeerAuth and every answer is sealed for its request; the owner believes
 // nothing else.
+//
+// How many tries the hand-over may make and how long a cnode is given to answer
+// are the OWNER's decisions, and the receiving pnode runs them as sent. It does
+// not hold them against its own settings: the owner resolves the answer limit
+// precisely so that the two pnodes cannot disagree about it, and refusing a
+// serviceable callout because the two nodes' configurations differ — as they do
+// through any rolling change — would fail it for no reason the caller can act
+// on. What the receiver does check are the values the callout cannot run
+// without at all, which need no configuration to judge; they are in validate.
 type DispatchHandler struct {
 	local LocalRunner
 	auth  PeerAuth
-	// maxTries is the most tries this pnode's own retry setting could ever
-	// grant a callout. A hand-over asking for more is refused, not trimmed.
-	maxTries int
 }
 
 // NewDispatchHandler constructs a DispatchHandler over the local procedure and
 // the peer-authentication impl. Auth is already validated at construction time
 // (NewAEADPeerAuth etc. check secret length), so this constructor returns no
-// error. maxTries comes from the same configuration the owner's loop reads.
-func NewDispatchHandler(local LocalRunner, auth PeerAuth, maxTries int) *DispatchHandler {
-	return &DispatchHandler{local: local, auth: auth, maxTries: maxTries}
+// error.
+func NewDispatchHandler(local LocalRunner, auth PeerAuth) *DispatchHandler {
+	return &DispatchHandler{local: local, auth: auth}
 }
 
 // Register registers the dispatch routes on the provided ServeMux.
@@ -86,13 +85,11 @@ func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) 
 		h.refuse(w, binding, fmt.Errorf("failed to validate hand-over: %w", err))
 		return
 	}
-	if err := h.withinOwnBounds(&req); err != nil {
-		h.refuse(w, binding, err)
-		return
-	}
 	call, failure := req.toCallout()
 	if failure != nil {
-		h.writeSealed(w, binding, refusal(failure))
+		// Through the same helper as the checks above, so that the owner renders
+		// every refusal of a hand-over it made identically.
+		h.refuse(w, binding, fmt.Errorf("failed to build the callout from the hand-over: %w", failure))
 		return
 	}
 
@@ -104,23 +101,6 @@ func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) 
 	slog.Debug("hand-over answered", "pkg", "dispatch", "kind", req.Kind, "requestId", req.RequestID,
 		"owner", req.OwnerNodeID, "outcome", resp.Outcome, "triesUsed", res.TriesUsed)
 	h.writeSealed(w, binding, resp)
-}
-
-// withinOwnBounds refuses a hand-over whose numbers this pnode's own
-// configuration could never have produced: more tries than its retry setting
-// grants, or a longer answer limit than it allows. Neither is trimmed to fit —
-// a substituted number is a wrong-but-available answer, and the owner's budget
-// and the cnode's deadline would then differ between the two pnodes. The
-// answer-limit bound is the local procedure's, applied rather than restated.
-func (h *DispatchHandler) withinOwnBounds(req *DispatchCalloutRequest) error {
-	if req.TriesLeft > h.maxTries {
-		return fmt.Errorf("failed to accept the hand-over: triesLeft %d is above the %d tries this node's retry setting grants",
-			req.TriesLeft, h.maxTries)
-	}
-	if _, failure := h.local.ResolveAnswerLimit(req.AnswerLimitMs); failure != nil {
-		return fmt.Errorf("failed to accept the hand-over: %w", failure)
-	}
-	return nil
 }
 
 // refuse answers a hand-over that was authenticated but cannot be run. It would
