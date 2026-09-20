@@ -21,9 +21,11 @@ const (
 	DispatchContentType  = "application/cyoda-dispatch-v1"
 	DispatchTimestampHdr = "X-Dispatch-Timestamp"
 
-	// dispatchMaxBodySize caps how much an attacker can force the handler
-	// to buffer before we reject the envelope.
-	dispatchMaxBodySize = 10 * 1024 * 1024
+	// MaxEnvelopeSize caps how much an attacker can force either end to
+	// buffer before the envelope is rejected. Exported because every leg that
+	// reads a peer envelope — callout dispatch and the scheduler RPC alike —
+	// bounds its read by the one ceiling.
+	MaxEnvelopeSize = 10 * 1024 * 1024
 
 	// nonceCacheCapacity is the replay-cache ceiling — see nonceCache.
 	nonceCacheCapacity = 100_000
@@ -170,7 +172,7 @@ func (a *AEADPeerAuth) Verify(r *http.Request) ([]byte, PeerIdentity, ResponseBi
 		return nil, PeerIdentity{}, none, fmt.Errorf("timestamp outside skew window: %v > %v", diff, a.skew)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, dispatchMaxBodySize))
+	body, err := io.ReadAll(io.LimitReader(r.Body, MaxEnvelopeSize))
 	if err != nil {
 		return nil, PeerIdentity{}, none, fmt.Errorf("failed to read body: %w", err)
 	}

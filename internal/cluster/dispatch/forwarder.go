@@ -113,7 +113,7 @@ func (f *HTTPForwarder) forward(ctx context.Context, url string, reqBody any, re
 		return fmt.Errorf("dispatch forward: peer returned %d: %s", httpResp.StatusCode, raw)
 	}
 
-	sealed, err := io.ReadAll(io.LimitReader(httpResp.Body, dispatchMaxBodySize+1))
+	sealed, err := io.ReadAll(io.LimitReader(httpResp.Body, MaxEnvelopeSize+1))
 	if err != nil {
 		return fmt.Errorf("dispatch forward: read response from %s: %w", url, err)
 	}
