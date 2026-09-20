@@ -30,6 +30,13 @@ func (a *asked) count() int {
 	return len(a.requestIDs)
 }
 
+// seen returns copies of the request and payload ids recorded so far.
+func (a *asked) seen() (requestIDs, payloadIDs []string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.requestIDs...), append([]string(nil), a.payloadIDs...)
+}
+
 // script is what a scripted cnode does with a request; nil stays silent.
 type script func(m *Member, requestID string)
 
@@ -338,11 +345,10 @@ func TestRunLocal_SameRequestIDOnEveryTry(t *testing.T) {
 		t.Fatalf("answered by %s after %d tries, want m-3 after 3", by, res.TriesUsed)
 	}
 	for i, a := range []*asked{a1, a2, a3} {
-		a.mu.Lock()
-		if len(a.requestIDs) != 1 || a.requestIDs[0] != "req-fixed" || a.payloadIDs[0] != "req-fixed" {
-			t.Errorf("cnode %d saw requestId=%v id=%v, want one request with both req-fixed", i+1, a.requestIDs, a.payloadIDs)
+		requestIDs, payloadIDs := a.seen()
+		if len(requestIDs) != 1 || requestIDs[0] != "req-fixed" || payloadIDs[0] != "req-fixed" {
+			t.Errorf("cnode %d saw requestId=%v id=%v, want one request with both req-fixed", i+1, requestIDs, payloadIDs)
 		}
-		a.mu.Unlock()
 	}
 }
 
@@ -357,8 +363,8 @@ func TestRunLocal_NeverTheSameCnodeTwice_AndStopsWhenTheyAreUsedUp(t *testing.T)
 	if res.TriesUsed != 2 || a1.count() != 1 || a2.count() != 1 {
 		t.Fatalf("TriesUsed = %d, asked = %d/%d; want 2 tries, one per cnode", res.TriesUsed, a1.count(), a2.count())
 	}
-	if res.Failure == nil || res.Failure.Kind != contract.NoAnswer || len(res.Attempts) != 2 {
-		t.Errorf("failure = %+v attempts = %+v; want the last try's NoAnswer and two attempts", res.Failure, res.Attempts)
+	if res.Failure == nil || res.Failure.Kind != contract.NoAnswer || len(res.Attempts) != 2 || appCode(res.Err()) != common.ErrCodeDispatchTimeout {
+		t.Errorf("failure = %+v attempts = %+v code = %q; want the last try's NoAnswer, its DISPATCH_TIMEOUT code surviving, and two attempts", res.Failure, res.Attempts, appCode(res.Err()))
 	}
 	if res.Failure.Attempts != nil {
 		t.Error("RunLocal reports its tries in LocalResult.Attempts, not on the failure")
