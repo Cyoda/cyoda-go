@@ -109,6 +109,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   window** — the index builds block writers, and the column backfill
   scales with history. See `docs/plugins/POSTGRES.md`.
 
+- **A compute member's own failure message reaches the client without the
+  inner `processor dispatch failed:` segment.** `WORKFLOW_FAILED` now reads
+  `processor <name> failed: <the member's message>` (for a criterion,
+  `failed to evaluate transition criterion: <the member's message>`).
+
 ### Fixed
 
 - **A point-in-time read costs what the model costs, not what the history

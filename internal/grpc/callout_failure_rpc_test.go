@@ -3,6 +3,7 @@ package grpc
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -54,5 +55,49 @@ func TestRPC_Processor_StoredTimeoutOverLoweredBound_Envelope(t *testing.T) {
 	case <-sent:
 		t.Fatal("no cnode may be asked")
 	default:
+	}
+}
+
+// A cnode that answers "I failed": one try, 400 WORKFLOW_FAILED, the message
+// names the processor and carries the cnode's own text — and no longer the
+// inner "processor dispatch failed:" segment. (Whether the envelope is marked
+// retryable for verdict=true is decided where workflow errors are classified,
+// outside this package; this pins code and message for all three verdicts.)
+func TestRPC_ProcessorMemberFailed_EnvelopeCarriesTheMemberMessage(t *testing.T) {
+	yes, no := true, false
+	for name, verdict := range map[string]*bool{"verdict true": &yes, "verdict false": &no, "verdict absent": nil} {
+		t.Run(name, func(t *testing.T) {
+			const modelName = "grpc-proc-member-failed"
+			const tag = "member-failed-tag"
+			svc, wfHandler, ctx := newTestEnvWithDispatch(t)
+			setupScheduledWorkflowRPCEnv(t, svc, wfHandler, ctx, modelName,
+				processorRPCWorkflowJSON("member-failed-wf", "charge", tag, 5000))
+
+			var asked atomic.Int32
+			for _, id := range []string{"m-1", "m-2"} {
+				svc.registry.Register(id, testTenant, []string{tag}, func(ce *cepb.CloudEvent) error {
+					asked.Add(1)
+					reqID, err := extractRequestID(ce)
+					if err != nil {
+						t.Errorf("extractRequestID: %v", err)
+						return nil
+					}
+					svc.registry.Get(id).CompleteRequest(reqID, &ProcessingResponse{Success: false, Error: "card declined", Retryable: verdict})
+					return nil
+				}, nil)
+			}
+
+			typed := createScheduledEntity(t, svc, ctx, modelName)
+			assertClientErrorEnvelope(t, typed, "WORKFLOW_FAILED")
+			if !strings.Contains(typed.Error.Message, "processor charge failed: card declined") {
+				t.Errorf("message = %s", typed.Error.Message)
+			}
+			if strings.Contains(typed.Error.Message, "dispatch failed") {
+				t.Errorf("the inner \"dispatch failed:\" segment must be gone: %s", typed.Error.Message)
+			}
+			if got := asked.Load(); got != 1 {
+				t.Errorf("%d cnodes were asked, want exactly one try", got)
+			}
+		})
 	}
 }

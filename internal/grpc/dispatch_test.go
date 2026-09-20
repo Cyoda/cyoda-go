@@ -48,6 +48,39 @@ func testProcessor(tags string, responseTimeoutMs int64) spi.ProcessorDefinition
 	}
 }
 
+// tryOnce makes one try against member with a raw payload carrying only the
+// request id, and folds the three outcomes of a try into (response, error) —
+// the shape the tests of the single try were written against. timeoutMs is the
+// answer limit.
+func tryOnce(d *ProcessorDispatcher, ctx context.Context, member *Member, requestID, txID string, timeoutMs int64) (*ProcessingResponse, error) {
+	var got *ProcessingResponse
+	call := Callout{
+		Kind:        ProcessorCallout,
+		Name:        "my-proc",
+		TenantID:    member.TenantID,
+		TxID:        txID,
+		RequestID:   requestID,
+		AnswerLimit: time.Duration(timeoutMs) * time.Millisecond,
+		OwnerNodeID: "node-test",
+		eventType:   EntityProcessorCalculationRequest,
+		buildRequest: func(id string) any {
+			return map[string]any{"requestId": id}
+		},
+		mapResponse: func(resp *ProcessingResponse) (CalloutResult, error) {
+			got = resp
+			return CalloutResult{}, nil
+		},
+	}
+	_, failure, ctxErr := d.dispatchCalloutToMember(ctx, member, call, d.resolveTxToken(ctx, txID))
+	switch {
+	case ctxErr != nil:
+		return nil, ctxErr
+	case failure != nil:
+		return nil, failure
+	}
+	return got, nil
+}
+
 func testContext() context.Context {
 	return spi.WithUserContext(context.Background(), &spi.UserContext{
 		UserID:   "user-1",
@@ -684,8 +717,7 @@ func TestDispatchCalloutToMember_SuccessAndTimeout(t *testing.T) {
 		member.CompleteRequest(reqID, &ProcessingResponse{Success: true, Payload: json.RawMessage(`{"data":{}}`)})
 	}()
 
-	req := map[string]any{"requestId": "req-success"}
-	resp, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-success", "tx-1", 5000, "processor", "my-proc")
+	resp, err := tryOnce(dispatcher, ctx, member, "req-success", "tx-1", 5000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -694,8 +726,7 @@ func TestDispatchCalloutToMember_SuccessAndTimeout(t *testing.T) {
 	}
 
 	// Timeout: nobody answers the second request.
-	req2 := map[string]any{"requestId": "req-timeout"}
-	_, err = dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req2, "req-timeout", "tx-1", 20, "processor", "my-proc")
+	_, err = tryOnce(dispatcher, ctx, member, "req-timeout", "tx-1", 20)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -731,8 +762,7 @@ func TestDispatchCalloutToMember_MemberDisconnects(t *testing.T) {
 		member.Evict(errors.New("compute member disconnected"))
 	}()
 
-	req := map[string]any{"requestId": "req-disconnect"}
-	_, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-disconnect", "tx-1", 5000, "processor", "my-proc")
+	_, err := tryOnce(dispatcher, ctx, member, "req-disconnect", "tx-1", 5000)
 	if err == nil {
 		t.Fatal("expected error for member disconnect")
 	}
@@ -758,8 +788,7 @@ func TestDispatchCalloutToMember_NilUserContext(t *testing.T) {
 	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
 	member := registry.Get(memberID)
 
-	req := map[string]any{"requestId": "req-no-uc"}
-	_, err := dispatcher.dispatchCalloutToMember(context.Background(), member, EntityProcessorCalculationRequest, req, "req-no-uc", "tx-1", 5000, "processor", "my-proc")
+	_, err := tryOnce(dispatcher, context.Background(), member, "req-no-uc", "tx-1", 5000)
 	if err == nil {
 		t.Fatal("expected error for missing user context")
 	}
@@ -780,8 +809,7 @@ func TestDispatchCalloutToMember_UnsetKind(t *testing.T) {
 		Tenant: spi.Tenant{ID: testTenantID, Name: "Test Tenant"},
 	})
 
-	req := map[string]any{"requestId": "req-unset-kind"}
-	_, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-unset-kind", "tx-1", 5000, "processor", "my-proc")
+	_, err := tryOnce(dispatcher, ctx, member, "req-unset-kind", "tx-1", 5000)
 	if err == nil {
 		t.Fatal("expected error for unset principal kind")
 	}
@@ -805,8 +833,7 @@ func TestDispatchCalloutToMember_InvalidKind(t *testing.T) {
 		Tenant: spi.Tenant{ID: testTenantID, Name: "Test Tenant"},
 	})
 
-	req := map[string]any{"requestId": "req-invalid-kind"}
-	_, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-invalid-kind", "tx-1", 5000, "processor", "my-proc")
+	_, err := tryOnce(dispatcher, ctx, member, "req-invalid-kind", "tx-1", 5000)
 	if err == nil {
 		t.Fatal("expected error for invalid principal kind")
 	}
@@ -863,8 +890,7 @@ func TestDispatchCalloutToMember_KindDrivenAuthType(t *testing.T) {
 				member.CompleteRequest(reqID, &ProcessingResponse{Success: true, Payload: json.RawMessage(`{"data":{}}`)})
 			}()
 
-			req := map[string]any{"requestId": "req-kind-driven"}
-			resp, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-kind-driven", "tx-1", 5000, "processor", "my-proc")
+			resp, err := tryOnce(dispatcher, ctx, member, "req-kind-driven", "tx-1", 5000)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1067,8 +1093,7 @@ func TestDispatchCalloutToMember_AbandonOnCtxCancel(t *testing.T) {
 		cancel()
 	}()
 
-	req := map[string]any{"requestId": "req-ctx-cancel"}
-	_, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-ctx-cancel", "tx-1", 5000, "processor", "my-proc")
+	_, err := tryOnce(dispatcher, ctx, member, "req-ctx-cancel", "tx-1", 5000)
 	if err == nil {
 		t.Fatal("expected error from cancelled context")
 	}
@@ -1085,8 +1110,7 @@ func TestDispatchCalloutToMember_AbandonOnTimeout(t *testing.T) {
 	member := registry.Get(memberID)
 	ctx := testContext()
 
-	req := map[string]any{"requestId": "req-timeout-abandon"}
-	_, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-timeout-abandon", "tx-1", 1, "processor", "my-proc")
+	_, err := tryOnce(dispatcher, ctx, member, "req-timeout-abandon", "tx-1", 1)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -1109,8 +1133,7 @@ func TestDispatchCalloutToMember_AbandonOnWriterFailure(t *testing.T) {
 	dispatcher := newTestDispatcher(t, registry)
 	ctx := testContext()
 
-	req := map[string]any{"requestId": "req-send-fail"}
-	_, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-send-fail", "tx-1", 5000, "processor", "my-proc")
+	_, err := tryOnce(dispatcher, ctx, member, "req-send-fail", "tx-1", 5000)
 	var appErr *common.AppError
 	if !errors.As(err, &appErr) || appErr.Code != common.ErrCodeComputeMemberDisconnected {
 		t.Fatalf("err = %v, want COMPUTE_MEMBER_DISCONNECTED", err)
@@ -1180,8 +1203,7 @@ func TestDispatch_MemberGoneBeforeTrack_IsDisconnectedImmediately(t *testing.T) 
 	registry.Unregister(member)
 
 	start := time.Now()
-	_, err := dispatcher.dispatchCalloutToMember(testContext(), member, EntityProcessorCalculationRequest,
-		map[string]any{"requestId": "r1"}, "r1", "", 30_000, "processor", "p")
+	_, err := tryOnce(dispatcher, testContext(), member, "r1", "", 30_000)
 	if time.Since(start) > 2*time.Second {
 		t.Fatalf("took %v; should not wait out the response timeout", time.Since(start))
 	}
@@ -1198,8 +1220,7 @@ func TestDispatch_EnqueueTimeout_IsDispatchTimeoutNotDraining(t *testing.T) {
 	dispatcher, member := newWedgedDispatcher(t)
 
 	start := time.Now()
-	_, err := dispatcher.dispatchCalloutToMember(testContext(), member, EntityProcessorCalculationRequest,
-		map[string]any{"requestId": "r1"}, "r1", "", 100, "processor", "p")
+	_, err := tryOnce(dispatcher, testContext(), member, "r1", "", 100)
 	var appErr *common.AppError
 	if !errors.As(err, &appErr) || appErr.Code != common.ErrCodeDispatchTimeout {
 		t.Fatalf("err = %v, want DISPATCH_TIMEOUT", err)
@@ -1219,8 +1240,7 @@ func TestDispatch_ParentCancelDuringEnqueue_IsCtxErr(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(testContext())
 	go func() { time.Sleep(30 * time.Millisecond); cancel() }()
-	_, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest,
-		map[string]any{"requestId": "r1"}, "r1", "", 30_000, "processor", "p")
+	_, err := tryOnce(dispatcher, ctx, member, "r1", "", 30_000)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
@@ -1240,8 +1260,7 @@ func TestDispatch_MemberEvictedDuringEnqueue_IsDisconnectedPromptly(t *testing.T
 	}()
 
 	start := time.Now()
-	_, err := dispatcher.dispatchCalloutToMember(testContext(), member, EntityProcessorCalculationRequest,
-		map[string]any{"requestId": "r1"}, "r1", "", 30_000, "processor", "p")
+	_, err := tryOnce(dispatcher, testContext(), member, "r1", "", 30_000)
 	var appErr *common.AppError
 	if !errors.As(err, &appErr) || appErr.Code != common.ErrCodeComputeMemberDisconnected {
 		t.Fatalf("err = %v, want COMPUTE_MEMBER_DISCONNECTED", err)

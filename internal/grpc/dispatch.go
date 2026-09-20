@@ -116,73 +116,85 @@ func buildEntityPayload(entity *spi.Entity) *events.DataPayloadJson {
 	}
 }
 
-// dispatchCalloutToMember carries out the transport sequence shared by every
-// calculation callout: attach auth/tx-token to a CloudEvent wrapping req,
-// track the request, send it, and wait for the tracked response or a
-// timeout. Member resolution (Candidates/ErrNoMatchingMember), request-struct
-// construction, and response parsing stay with the caller — this handles only
-// the wire protocol common to processor and criteria dispatch.
+// dispatchCalloutToMember makes one try: it wraps the callout's request in a
+// CloudEvent carrying the auth context and pass, tracks the request, hands it
+// to the member's writer, and waits for the tracked response or the answer
+// limit. Exactly one of its three results is meaningful:
 //
-// label is the callout kind ("processor"/"criteria") and name is the
-// configured processor/criteria name; both flow into client-facing
-// diagnostics (warnings/errors surface in the gRPC warnings array and HTTP
-// body — see .claude/rules/error-handling.md) and server logs, so operators
-// and clients keep name-based correlation.
-func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, member *Member, ceType string, req any, requestID, txID string, timeoutMs int64, label, name string) (*ProcessingResponse, error) {
-	ce, err := NewCloudEvent(ceType, req)
+//   - the mapped result, when the cnode answered success;
+//   - a CalloutFailure, whose Kind says whether another cnode may be tried.
+//     The line is the hand-off: until Member.Send returns nil the work provably
+//     never left this pnode (NoHandOff); after it, silence or a dropped stream
+//     is NoAnswer. Codes, statuses and messages are the ones a client has
+//     always seen — the kind travels beside them;
+//   - ctx.Err(), unchanged, when the caller's own context ended.
+//
+// One deadline — the answer limit — bounds the hand-off and the wait together,
+// so a cnode that is attached but not taking data costs up to one answer limit
+// before it is classified NoHandOff.
+//
+// The callout kind and name flow into client-facing diagnostics (warnings and
+// errors surface in the gRPC warnings array and the HTTP body — see
+// .claude/rules/error-handling.md) and into server logs.
+func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, member *Member, call Callout, pass string) (CalloutResult, *contract.CalloutFailure, error) {
+	label, name, requestID := call.Kind.String(), call.Name, call.RequestID
+	limitMs := call.AnswerLimit.Milliseconds()
+
+	ce, err := NewCloudEvent(call.eventType, call.buildRequest(requestID))
 	if err != nil {
-		return nil, fmt.Errorf("failed to build %s cloud event: %w", label, err)
+		return CalloutResult{}, terminalFailure(fmt.Errorf("failed to build %s cloud event: %w", label, err)), nil
 	}
 	if err := AttachAuthContext(ctx, ce); err != nil {
-		return nil, fmt.Errorf("failed to attach auth context to %s cloud event: %w", label, err)
+		// The cause names the principal; the client-safe Message does not.
+		return CalloutResult{}, &contract.CalloutFailure{
+			Kind:    contract.Terminal,
+			Message: "auth context unavailable for dispatch",
+			Err:     fmt.Errorf("failed to attach auth context to %s cloud event: %w", label, err),
+		}, nil
 	}
-	AttachTxToken(ce, d.resolveTxToken(ctx, txID))
+	AttachTxToken(ce, pass)
 
-	ceData := ce.GetTextData()
-	slog.Debug("dispatch request", "pkg", "grpc", "requestId", requestID, "payload", logging.PayloadPreview([]byte(ceData), 200))
+	slog.Debug("dispatch request", "pkg", "grpc", "requestId", requestID, "memberId", member.ID,
+		"payload", logging.PayloadPreview([]byte(ce.GetTextData()), 200))
 
-	timeout := time.Duration(timeoutMs) * time.Millisecond
-	// One deadline bounds the whole callout: handing the request to the
-	// member's writer AND waiting for the response. A member whose writer is
-	// stalled cannot hold a dispatcher past this.
-	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	callCtx, cancel := context.WithTimeout(ctx, call.AnswerLimit)
 	defer cancel()
 
 	// TrackRequest fails closed with ErrMemberEvicted the instant the member
 	// is torn down, even in the window before Evict has finished closing the
-	// evicted channel (see Member.closed): that is what keeps a dispatcher
-	// from selecting on a nil/never-tracked channel until its timeout and
+	// evicted channel (see Member.closed): that is what keeps a try from
+	// selecting on a never-tracked channel until its answer limit and
 	// misreporting DISPATCH_TIMEOUT for a member that was already gone.
 	ch, err := member.TrackRequest(requestID)
 	if err != nil {
-		// The member left between being chosen and the request being tracked.
 		slog.Warn("member gone before dispatch", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
-		return nil, disconnectedErr(label)
+		return CalloutResult{}, appFailure(contract.NoHandOff, disconnectedErr(label)), nil
 	}
-	// Spec D11: every exit that does not consume the response must clear the
-	// tracking entry, or a late compute-node reply finds a dangling channel
-	// and the map entry leaks. The response arm's normal completion path
-	// already cleared it; clearing again is a no-op.
+	// Every exit that does not consume the response must clear the tracking
+	// entry, or a late reply finds a dangling channel and the map entry leaks.
+	// The response arm's normal completion already cleared it; clearing again
+	// is a no-op.
 	defer member.AbandonRequest(requestID)
 
 	if err := member.Send(callCtx, ce); err != nil {
 		switch {
 		case errors.Is(err, ErrMemberEvicted):
 			slog.Error("member evicted while enqueueing dispatch", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
-			return nil, disconnectedErr(label)
+			return CalloutResult{}, appFailure(contract.NoHandOff, disconnectedErr(label)), nil
 		case ctx.Err() != nil:
-			return nil, ctx.Err()
+			return CalloutResult{}, nil, ctx.Err()
 		default:
-			slog.Error("dispatch timeout", "pkg", "grpc", "phase", "enqueue", "memberId", member.ID, "label", label, "name", name, "requestId", requestID, "timeout", timeout)
-			return nil, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchTimeout,
-				fmt.Sprintf("%s dispatch timed out after %dms: member not draining", label, timeoutMs)).AsRetryable()
+			slog.Error("dispatch timeout", "pkg", "grpc", "phase", "enqueue", "memberId", member.ID, "label", label, "name", name, "requestId", requestID, "timeout", call.AnswerLimit)
+			return CalloutResult{}, appFailure(contract.NoHandOff, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchTimeout,
+				fmt.Sprintf("%s dispatch timed out after %dms: member not draining", label, limitMs)).AsRetryable()), nil
 		}
 	}
 
+	// The hand-off happened: from here on the work may have reached the cnode.
 	select {
 	case resp := <-ch:
-		// Propagate warnings to request diagnostics, keyed by callout name
-		// so the client sees which processor/criteria warned.
+		// Warnings first, keyed by callout name, so that a failed try still
+		// surfaces them and the client sees which callout warned.
 		if resp != nil {
 			for _, w := range resp.Warnings {
 				common.AddWarning(ctx, fmt.Sprintf("%s %s: %s", label, name, w))
@@ -190,32 +202,49 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 		}
 		if resp != nil && resp.Disconnected {
 			slog.Error("member disconnected mid-dispatch", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
-			return nil, disconnectedErr(label)
+			return CalloutResult{}, appFailure(contract.NoAnswer, disconnectedErr(label)), nil
 		}
 		if resp == nil || !resp.Success {
-			errMsg := label + " returned failure"
-			if resp != nil && resp.Error != "" {
-				errMsg = resp.Error
-				common.AddError(ctx, fmt.Sprintf("%s %s: %s", label, name, errMsg))
+			failure := &contract.CalloutFailure{Kind: contract.MemberFailed, Message: label + " returned failure"}
+			if resp != nil {
+				failure.Retryable = resp.Retryable
+				if resp.Error != "" {
+					failure.Message = resp.Error
+					common.AddError(ctx, fmt.Sprintf("%s %s: %s", label, name, resp.Error))
+				}
 			}
-			return nil, fmt.Errorf("%s dispatch failed: %s", label, errMsg)
+			return CalloutResult{}, failure, nil
 		}
-		slog.Info("dispatch completed", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID, "success", true)
-		return resp, nil
+		result, err := call.mapResponse(resp)
+		if err != nil {
+			return CalloutResult{}, terminalFailure(err), nil
+		}
+		slog.Debug("dispatch completed", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
+		return result, nil, nil
 	case <-callCtx.Done():
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			return CalloutResult{}, nil, ctx.Err()
 		}
-		slog.Error("dispatch timeout", "pkg", "grpc", "phase", "response", "memberId", member.ID, "label", label, "name", name, "requestId", requestID, "timeout", timeout)
-		return nil, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchTimeout,
-			fmt.Sprintf("%s dispatch timed out after %dms: no response", label, timeoutMs)).AsRetryable()
+		slog.Error("dispatch timeout", "pkg", "grpc", "phase", "response", "memberId", member.ID, "label", label, "name", name, "requestId", requestID, "timeout", call.AnswerLimit)
+		return CalloutResult{}, appFailure(contract.NoAnswer, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchTimeout,
+			fmt.Sprintf("%s dispatch timed out after %dms: no response", label, limitMs)).AsRetryable()), nil
 	}
 }
 
-// disconnectedErr is the retryable 503 a caller gets when the compute member
-// it was routed to is gone; another member (or the same one, reconnected) may
-// serve the retry.
-func disconnectedErr(label string) error {
+// appFailure is a failure of the given kind carrying appErr, with its code and
+// client-safe message repeated beside the kind.
+func appFailure(kind contract.CalloutFailureKind, appErr *common.AppError) *contract.CalloutFailure {
+	return &contract.CalloutFailure{Kind: kind, Code: appErr.Code, Message: appErr.Message, Err: appErr}
+}
+
+// terminalFailure is a failure that would repeat identically on any cnode.
+func terminalFailure(err error) *contract.CalloutFailure {
+	return &contract.CalloutFailure{Kind: contract.Terminal, Message: err.Error(), Err: err}
+}
+
+// disconnectedErr is the retryable 503 for a cnode that is gone — before the
+// hand-off (NoHandOff) or after it (NoAnswer); the kind beside it tells which.
+func disconnectedErr(label string) *common.AppError {
 	return common.Operational(http.StatusServiceUnavailable, common.ErrCodeComputeMemberDisconnected,
 		fmt.Sprintf("compute member disconnected during %s dispatch", label)).AsRetryable()
 }
@@ -237,11 +266,14 @@ func (d *ProcessorDispatcher) dispatchOnce(ctx context.Context, call Callout) (C
 	call.OwnerNodeID = d.selfNodeID
 
 	slog.Info("dispatching "+call.Kind.String(), "pkg", "grpc", "memberId", member.ID, "name", call.Name, "entityId", call.EntityID)
-	resp, err := d.dispatchCalloutToMember(ctx, member, call.eventType, call.buildRequest(call.RequestID), call.RequestID, call.TxID, limit.Milliseconds(), call.Kind.String(), call.Name)
-	if err != nil {
-		return CalloutResult{}, err
+	result, failure, ctxErr := d.dispatchCalloutToMember(ctx, member, call, d.resolveTxToken(ctx, call.TxID))
+	switch {
+	case ctxErr != nil:
+		return CalloutResult{}, ctxErr
+	case failure != nil:
+		return CalloutResult{}, failure
 	}
-	return call.mapResponse(resp)
+	return result, nil
 }
 
 // DispatchProcessor sends an entity processor calculation request to a matching

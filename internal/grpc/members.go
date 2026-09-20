@@ -51,9 +51,9 @@ type ProcessingResponse struct {
 	// CloudEvent error shape (api/grpc/events/types.go: every *EventJsonError
 	// variant declares Retryable *bool). The pointer is nil when the wire
 	// omitted the key or when no error was present, distinguishing "wire
-	// said so" from "wire didn't say". Captured here for the future retry
-	// loop; the current dispatcher is single-shot and does not consult
-	// this field.
+	// said so" from "wire didn't say". A failed try carries it on as
+	// contract.CalloutFailure.Retryable: it never decides whether another
+	// cnode is tried, only whether the client is told a re-run may help.
 	Retryable *bool
 	// Disconnected is true when this response was synthesized by
 	// failAllPending because the member's stream dropped while the request
