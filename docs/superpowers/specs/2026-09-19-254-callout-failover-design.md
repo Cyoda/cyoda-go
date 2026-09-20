@@ -65,7 +65,7 @@ depends on it.
 | D5 | The owner runs the local procedure first, then hands the callout to one alive pnode advertising the tag **with the tries left**. A pnode that receives a hand-over runs the local procedure only and never hands on. |
 | D6 | The number of tries is the normal number, not a hard limit: a lost hand-over answer counts as one try. The **time** a callout may take is a hard limit, fixed when it starts. |
 | D7 | **Patience** is separate from tries. `CYODA_DISPATCH_WAIT_TIMEOUT` is kept and becomes the one waiting mechanism: single pnode and cluster, regardless of `retryPolicy`, event-driven, one allowance per callout. `CYODA_RETRY_FIXED_DELAY_MS` from #254 is not introduced. |
-| D8 | A cnode that was replaced is **fenced**, on the model the commercial backend uses for a returning processing node: each callout has a number that rises when the work is given to another cnode; the pass carries it; the owner admits a callback only under the current number, checks it again under the transaction's write lock, and waits for a write in progress to finish before the work goes to the next cnode or the engine carries on. No database statement is interrupted. |
+| D8 | A cnode that was replaced is **fenced**, on the model the commercial backend uses for a returning processing node: each callout has a number that rises when the work is given to another cnode; the pass carries it; the owner admits a callback only under the current number, checks it again under the transaction's lock — which every joined request, read or write, now holds for its whole handling — and waits for a request in progress to finish before the work goes to the next cnode or the engine carries on. No database statement is interrupted, by the fence or by a cnode going away. |
 | D9 | The hand-over carries the request id, tries left, answer limit and owner id; its answer states explicitly whether there was a hand-off, and is authenticated and encrypted like the request. |
 | D10 | The default answer limit and an upper bound on it become configuration (#565). |
 | D11 | Tenants and tags leave the 512-byte memberlist node metadata. The metadata keeps identity and a list version; lists travel by reliable message and are fetched by any pnode that is behind. |
@@ -416,7 +416,7 @@ type Pair struct {
 func (f *Fence) Begin(ctx context.Context, calloutID, txID string, outer []Pair) (context.Context, func())
 
 // Advance raises the callout's number to (major, 0), which shuts out every
-// pass issued under a lower one, and then waits until no joined write is in
+// pass issued under a lower one, and then waits until no joined request is in
 // progress on the transaction (see "The wait"). It is called before each local
 // try and before each hand-over.
 func (f *Fence) Advance(calloutID string, major uint32)
@@ -490,38 +490,51 @@ statement of the shared transaction runs.
    callback that arrives after the *transaction* has ended is answered
    `TRANSACTION_NOT_FOUND`, as today; `CALLOUT_SUPERSEDED` is the answer while
    the transaction is still open.
-2. *Every time a joined chain takes the transaction's write lock.* That is
-   `acquireJoinedGate` (`entity/handler.go:121-125`), which every joined entity
-   write calls (nine sites in `entity/service.go`), **and** the re-acquisition
-   after a callout of the callback's own (`txgate`'s `resume`, reached from
-   `engine_processors.go:204, 233, 249`, `engine.go:1014` and `arm.go:239`).
-   Once the lock is held, `fence.Check` runs. This is the check that gives the
-   right to write: it is made *under* the lock, and the owner's wait (below)
-   takes the same lock. `acquireJoinedGate` gains an error return. `resume`
-   stays a plain func; each of the five sites calls `fence.Check` right after
-   it — `engine.go:1014`, which today has only a deferred `resume`, gains the
-   explicit call the other four have.
+2. *Under the transaction's lock, for every joined request.* After `Admit`, the
+   join layer — `JoinFromToken`'s three callers, through one helper in `txjoin`
+   — takes the transaction's lock (`txgate`), installs the suspendable handle
+   the engine uses (`txgate.WithHeld`), runs `fence.Check` **under the lock**,
+   and only then calls the handler; the lock is released when the handler
+   returns. This is the check that gives the right to touch the transaction,
+   and the owner's wait (below) takes the same lock. It covers every joined
+   operation alike — entity writes, reads and searches, the model load and
+   model extension of a create, and every non-entity handler behind the join
+   middleware — because it sits where they all pass, not in each of them.
+   `acquireJoinedGate` and its nine call sites in `entity/service.go` are
+   deleted; the `owned == false` arms keep nothing of their own. See "One
+   transaction, one user at a time" below for why reads are included.
+
+   The lock is taken again after a callout of the callback's own (`txgate`'s
+   `resume`, reached from `engine_processors.go:204, 233, 249`, `engine.go:1014`
+   and `arm.go:239`). `resume` stays a plain func; each of the five sites calls
+   `fence.Check` right after it — `engine.go:1014`, which today has only a
+   deferred `resume`, gains the explicit call the other four have.
 
    **A refused chain performs no store operation of any kind** — no write, no
-   read, no audit row. The engine's error path records an audit event
-   (`engine.go:832, 955`), which on PostgreSQL is an `INSERT` on the
-   operation's connection; it is skipped when the error is the supersede error.
-   In `executeAsyncNewTx` the check comes immediately after `resume`
-   (`engine_processors.go:252`), *before* the savepoint is looked at, and on
-   refusal the savepoint is neither undone nor released: by then the
+   read, no audit row. The engine records audit events on its error paths
+   (`engine.go:832, 955`) and after every processor, failed or not
+   (`engine_processors.go:177`); on PostgreSQL each is an `INSERT` on the
+   operation's connection. One guard in `recordEvent` (`engine.go:1240`) skips
+   the write for a chain that `fence.Check` refuses, so that no further site can
+   appear later. In `executeAsyncNewTx` the check comes immediately after
+   `resume` (`engine_processors.go:252`), *before* the savepoint is looked at,
+   and on refusal the savepoint is neither undone nor released: by then the
    replacement cnode may have written, and undoing a savepoint restores the
    whole buffer on memory and SQLite (`plugins/memory/txmanager.go:1096-1100`)
    and everything since on PostgreSQL. An abandoned savepoint is harmless on
    every backend (an id-keyed entry on memory and SQLite; PostgreSQL's stack
    copes, `plugins/postgres/txstate.go:214-239, 272-287`).
-3. *In the engine, after each processor returns* and before the mode-specific
-   handling of its result. It is needed for `ASYNC_NEW_TX`, whose "log and
-   continue" would swallow the refusal from point 2 and carry a superseded
-   chain on to the next processor — writing after the owner's wait has already
-   passed — and past the last processor to the handler's final save
-   (`engine_processors.go:137-145, 186`). In the other modes the refusal is
-   already fatal. A check at the top of the loop alone would never see the last
-   processor.
+3. *In the engine, after each processor returns* — directly after the mode
+   switch, before the processor's audit event and the mode-specific handling of
+   its result. It is needed for `ASYNC_NEW_TX`, whose "log and continue" would
+   swallow the refusal from point 2 and carry a superseded chain on to the next
+   processor — writing after the owner's wait has already passed — and past the
+   last processor to the handler's final save (`engine_processors.go:137-145,
+   186`). In the other modes the refusal is already fatal. A check at the top of
+   the loop alone would never see the last processor. Every other engine return
+   after a `resume` already passes a check: a criterion in `evaluateCriterion`,
+   which serves all three call sites; the arming function before
+   `ReconcileForEntity`; a transition with no processors never gives the lock up.
 4. *A callback waiting on a callout of its own* is released: the inner
    `Coordinator` runs under the context `Begin` returned, which is cancelled
    with cause `ErrSuperseded` when an enclosing pair stops being current —
@@ -535,35 +548,39 @@ statement of the shared transaction runs.
 There is deliberately no check before a joined operation's final write. A chain
 that reaches it has held the lock since its last check, so the owner is still
 waiting for it, and its write lands before anything the owner does next. It is
-answered 200 because what it wrote is in the transaction — for a joined
-collection, all of it rather than the items up to the moment of the check. The
-case is a cnode that answers before its own callback has finished.
+answered 200 because what it wrote is in the transaction — a joined collection
+lands whole, on both doors, because the lock is held for the request and not
+per item. The case is a cnode that answers before its own callback has
+finished.
 
 **The wait.** After shutting out the earlier pass — in `Advance`, and in `end` —
-the fence acquires the transaction's write lock once and releases it, outside
-its own lock. A joined write either made its check under the write lock *before*
-the number rose, in which case it still holds the lock and the owner waits for
-it to finish; or it takes the lock afterwards, and its check refuses it. There
-is no third case, and no dependence on which waiter the mutex favours
+the fence acquires the transaction's lock once and releases it, outside its own
+mutex. A joined request either made its check under the lock *before* the
+number rose, in which case it still holds the lock and the owner waits for it to
+finish; or it takes the lock afterwards, and its check refuses it. There is no
+third case, and no dependence on which waiter the mutex favours
 (`Registry.Acquire` counts a waiter before it blocks, `txgate.go:34-43`, so a
 lock with waiters is never discarded). So:
 
-- when the owner gives the work to the next cnode, no locked write of the
-  earlier cnode is in progress on the owner and none can start;
+- when the owner gives the work to the next cnode, nothing of the earlier cnode
+  is in progress on the transaction — no write, no read — and nothing can start;
 - when a callout has ended — answered, failed or abandoned — the same holds
   before the engine does anything else: the savepoint of a failed `ASYNC_NEW_TX`
   processor is undone *after* that processor's last write, never before it;
-- between callouts no joined chain holds the write lock.
+- between callouts no joined chain holds the lock, and during a callout the
+  owner's chain is waiting in the Coordinator and touches no store.
 
-The wait costs the joined writes that hold or are queued for the lock ahead of
-it — statements bounded by the database. It comes on top of the callout's
-deadline (§5). A callback gives the lock up for the length of any callout of its
-own, so the wait is not a wait on a cnode — with one exception, a
-`COMMIT_BEFORE_DISPATCH` processor reached inside a callback, whose dispatch
-keeps the lock (`engine_processors.go:333, 365`); that is part of the defect
-filed separately (below), and when the chain holding the lock is the superseded
-one, point 4 has already released it. The wait cannot deadlock: the chain that
-runs a Coordinator holds no write lock (the owner never does during
+The wait costs the joined requests that hold or are queued for the lock ahead of
+it: their database statements and their in-process work — a joined collection or
+conditional delete is one such request, however many items it has. It comes on
+top of the callout's deadline (§5). It is never a wait on a cnode: a callback
+gives the lock up for the length of any callout of its own, and a joined
+request's response is sent only after the lock is released (below). The one
+exception is a `COMMIT_BEFORE_DISPATCH` processor reached inside a callback,
+whose dispatch keeps the lock (`engine_processors.go:333, 365`); that is part of
+the defect filed separately (below), and when the chain holding the lock is the
+superseded one, point 4 has already released it. The wait cannot deadlock: the
+chain that runs a Coordinator holds no lock (the owner never does during
 `engine.Execute`, `entity/service.go:356-361`; a callback has given it up for
 the callout, and an inner `end` runs before its `resume`), a holder of the lock
 waits on nothing but the database, and the fence never waits under its own
@@ -571,37 +588,76 @@ mutex.
 
 The owner's own chain carries no pairs and is never subject to any check.
 
-**One connection, several users (PostgreSQL).** A joined request runs on the
-operation's own `pgx.Tx` (`plugins/postgres/store_factory.go:135-148`), and the
-write lock covers entity writes only: a joined read, the model load and model
-extension of a joined create (`entity/service.go:206, 246, 1908`), and every
-non-entity handler behind the join middleware (`app/app.go:771`) issue their
-statements without it, while the owner — which takes no lock during
-`engine.Execute` — issues its own. pgx refuses a second concurrent user with
-`conn busy` and guards its status field with nothing. This exists today: two
-callbacks of one cnode are enough. Failover widens it, because the owner now
-carries on productively while a cnode it gave up on may still be reading — the
-very outcome this section avoids by not cancelling statements. Two changes close
-it:
+**One transaction, one user at a time.** The storage contract leaves it to the
+application to serialise its own concurrent operations on one transaction, and
+says what happens otherwise (`cyoda-go-spi` `txcontext.go:45-53`). Today the
+application serialises joined entity *writes* and nothing else: a joined read
+(`entity/service.go:427-441`), the model load and model extension of a joined
+create (`:206, 246, 1908`, before the lock at `:273, 1954`), and every
+non-entity handler behind the join middleware (`app/app.go:771`) run unlocked,
+while the owner takes no lock during `engine.Execute`.
 
-- **The postgres plugin serialises the statements of one transaction.** The
-  querier it hands out for a transaction (`resolveRaw`) and the transaction
-  manager's own statements on it (commit, rollback, savepoints) take one mutex
-  per transaction; `Query` holds it until its rows are closed, `QueryRow` until
-  `Scan`. No code can be holding rows open while issuing a second statement on
-  the same transaction today — that is `conn busy`. **V-5**: no rows of a
-  transaction-bound query are held across a network write to a client (a
-  slow reader would otherwise hold the owner's next statement); the plan reads
-  every `Query` call site that can run joined and states the answer. The
-  memory and SQLite transaction buffers already carry their own locks; the
-  commercial backend is asked the same question in its own repository.
-- **A savepoint that cannot be created, undone or released fails the
-  operation.** Today a failed `RollbackToSavepoint` is a warning
-  (`engine_processors.go:254-258`), which commits the writes of a processor
-  that failed, and a failed `Savepoint` counts as the `ASYNC_NEW_TX` processor's
-  own non-fatal failure (`:138-145`), which silently skips a processor. Neither
-  is a processor failure; both are the transaction being unusable
-  (`correctness-over-availability.md`).
+- On memory and SQLite every in-transaction operation mutates plain maps under a
+  *read* lock — a `Get` writes `tx.ReadSet` (`plugins/memory/entity_store.go:515-536`,
+  `plugins/sqlite/entity_store.go:612-634`), a `Savepoint` iterates all four
+  maps (`plugins/memory/txmanager.go:978-1016`). Two users at once end in the Go
+  runtime's `concurrent map writes`, which cannot be recovered: the pnode goes
+  down, for every tenant. Two parallel reads by one cnode are enough, today.
+- On PostgreSQL a joined request runs on the operation's own `pgx.Tx`
+  (`plugins/postgres/store_factory.go:135-148`). pgx refuses a second concurrent
+  user with `conn busy` and synchronises neither its status field nor its
+  statement cache.
+
+Failover widens both, because the owner now carries on productively while a
+cnode it gave up on may still be reading. Taking the lock in the join layer for
+*every* joined request (point 2) closes it on every backend with no plugin
+change: during a callout the transaction's users are its current cnode's
+callbacks, one at a time; between callouts, the owner alone. Three things follow
+from holding the lock for the whole request:
+
+- **The response is sent after the lock is released.** For a joined request the
+  join layer hands the handler a buffering response writer (HTTP) or a stream
+  whose sends are held (gRPC server-streaming), releases the lock when the
+  handler returns, and then sends. Joined responses are materialised today —
+  search, list, statistics and audit return slices; the one iterator that
+  escapes a function is drained before any response (`grouped_stats.go:143`) —
+  so nothing is buffered that was not already in memory. A cnode that does not
+  read its response holds nothing. **V-5**: the plan lists every route behind
+  the join middleware and confirms none streams without end.
+- **A joined request is not interrupted by its cnode going away.** Its
+  statements run on the request's context, and a cnode that crashes or
+  disconnects — the usual reason it is given up on — cancels that context in the
+  middle of a statement, which makes pgx close the operation's connection
+  (`pgconn.go:344`): the same outcome the fence avoids on its own side. The join
+  layer therefore runs a joined request under `context.WithoutCancel`. It ends
+  by finishing or by being refused at a check; a callback waiting on a callout
+  of its own is released by the fence (point 4), not by its client. Its
+  statements stay bounded by the database's own limits. `transactionTimeoutMillis`
+  is already refused on a joined request, so no deadline is lost.
+- **Rollback and commit never overlap a joined statement.** `txScope.Release`
+  already takes the lock before it derives its rollback budget
+  (`entity/txscope.go:145-152`), and the owner's finalize blocks take it before
+  the final save and commit; with every joined request under the same lock, that
+  is now the whole story.
+
+**A savepoint that cannot be created, undone or released fails the operation.**
+Today a failed `RollbackToSavepoint` is a warning
+(`engine_processors.go:254-258`), which commits the writes of a processor that
+failed; a failed `Savepoint` or `ReleaseSavepoint` counts as the `ASYNC_NEW_TX`
+processor's own non-fatal failure (`:138-145, 262-264`), which silently skips a
+processor or keeps its writes while reporting it failed. None of these is a
+processor failure; each means the transaction is unusable
+(`correctness-over-availability.md`) — a transaction that is gone, a savepoint
+that is missing, on PostgreSQL a transaction a callback's failed statement has
+already aborted. The engine marks them with a sentinel so that they cannot pass
+as a processor's error, and `classifyWorkflowError` answers a ticketed 5xx for
+it, keeping the conflict and storage-unavailable mappings; the postgres
+plugin's three savepoint methods go through `classifyTxError` like its other
+statements (`transaction_manager.go:770-771, 805-806, 836-837` return the
+driver's error raw today, which the catch-all would put in a 400 body). The
+`e.txMgr == nil` branch of `executeAsyncNewTx` (`:228-238`), which dispatches
+with no savepoint at all, is unreachable in production (`app/app.go:233-241`)
+and is deleted.
 
 **What is not stopped, and why that is acceptable.**
 
@@ -609,14 +665,8 @@ it:
   first callback of the later one arrives (above). Its writes are repeats of an
   idempotent processor's own writes, and the wait at the end of the callout
   still puts all of them before anything the engine does next.
-- A joined *read* in progress when its cnode is replaced runs to completion, and
-  its result goes to a cnode whose next callback is refused. Reads take no write
-  lock; on PostgreSQL the owner's next statement queues behind it.
-- A joined create loads and, where the model allows it, extends the model before
-  it takes the write lock (`entity/service.go:246, 1908`), so a create admitted
-  just before the number rises can issue that statement after the wait. The
-  extension is additive and belongs to the transaction; a superseded create can
-  leave one behind in an operation that commits.
+- A joined request in progress when its cnode is replaced — a read as much as a
+  write — runs to completion, and the owner waits for it.
 
 **Not part of this design, by ruling.** An EdgeMessage saved by a superseded
 callback: the application must make that save idempotent and attach the id to
@@ -671,8 +721,9 @@ envelopes (`CLIENT_ERROR` / `SERVER_ERROR` with the code as the message prefix,
 | `Terminal` | as today (500 ticketed for auth-context; 400 `WORKFLOW_FAILED` otherwise) | | no | as today |
 | A hand-over's answer was lost — no reply, a broken connection, an answer that does not authenticate — and the callout is not repeat-safe, or it was the only attempt | 503 | `DISPATCH_FORWARD_FAILED` (kept) | yes | the sanitised message it has today; recorded as an attempt with member `-` |
 | No peer could be connected to, and no local cnode | 503 | `NO_COMPUTE_MEMBER_FOR_TAG` | yes | as today |
-| Callback from a cnode that was replaced, or whose callout has ended, while the transaction is still open (refused on entry, at the write lock, or between processors) | 410 | **`CALLOUT_SUPERSEDED`** (new) | no | `this compute node was replaced, or its callout has ended` |
+| Callback from a cnode that was replaced, or whose callout has ended, while the transaction is still open (refused on entry, on taking the transaction's lock, or between processors) | 410 | **`CALLOUT_SUPERSEDED`** (new) | no | `this compute node was replaced, or its callout has ended` |
 | The same callback after the transaction has ended | 404 | `TRANSACTION_NOT_FOUND` | no | as today: the transaction is looked up, and its tenant checked, before the fence is consulted |
+| `ASYNC_NEW_TX`: the processor's savepoint cannot be created, undone or released | 500 | generic, ticketed (a conflict stays 409 `CONFLICT`, an unavailable store 503 `STORAGE_UNAVAILABLE`) | as today for those two | the operation fails and nothing is committed; never reported as the processor's own failure |
 | Callback bearing a pass with no callout and number | 401 | `UNAUTHORIZED` | no | `invalid transaction token`, as any malformed pass today |
 | Import: criterion or function `retryPolicy` not `NONE`/`FIXED`/unset | 400 | `VALIDATION_FAILED` | no | names the workflow, state, transition |
 | Import: `responseTimeoutMs` above the upper bound, or negative | 400 | `VALIDATION_FAILED` | no | names the bound |
@@ -930,15 +981,18 @@ waiver, with its reason below the table.
 | Late callback after the transaction ended → 404 `TRANSACTION_NOT_FOUND`, as today | ✓ | ✓ | ✓ | | |
 | Late callback in `ASYNC_NEW_TX` after failure → 410 | | ✓ | | | |
 | Owner gives the work to a second cnode of its own → the first cnode's callback is refused at once, while the callout is still in progress | ✓ | ✓ | ✓ | | |
-| A write queued for the transaction's lock when its cnode is replaced → refused on taking the lock, nothing written | ✓ | ✓ | | | |
-| A joined write in progress when its cnode is replaced → the next cnode is not given the work, and the engine does not carry on, until that write has finished (the wait) | ✓ | ✓ | | | |
+| A joined request queued for the transaction's lock when its cnode is replaced → refused on taking the lock, nothing written or read | ✓ | ✓ | | | |
+| A joined request in progress when its cnode is replaced → the next cnode is not given the work, and the engine does not carry on, until that request has finished (the wait) | ✓ | ✓ | | | |
 | `ASYNC_NEW_TX`: a failed processor's write in progress lands before its savepoint is undone — it is not in the committed result, on any backend | ✓ | ✓ | | w⁴ | |
 | A callback waiting on a callout of its own when its cnode is replaced → released; the inner callout ends; refused on re-taking the lock; nothing further is written — no audit row either — in every processor mode incl. `ASYNC_NEW_TX` as the *last* processor; the callback is answered 410, not 200 | ✓ | ✓ | | | |
 | The same in `ASYNC_NEW_TX`: the superseded chain neither undoes nor releases its savepoint; what the replacement cnode wrote meanwhile is kept | ✓ | | | | |
 | A callback past its last check when its callout ends → its write lands, it is answered 200, and the owner proceeds only afterwards; a joined collection lands whole | ✓ | ✓ | | | |
-| A joined read in progress when its cnode is replaced → completes; no statement is interrupted; the owner's operation succeeds (PostgreSQL) | | ✓ | | | |
-| Two goroutines on one PostgreSQL transaction (a joined read against the owner's statements, commit and savepoints) are serialised: no `conn busy`, clean under `-race` | ✓ | | | | |
-| `ASYNC_NEW_TX`: a savepoint that cannot be created, undone or released → the operation fails, nothing is committed | ✓ | | | | |
+| A joined read in progress when its cnode is replaced → completes; no statement is interrupted; the owner waits for it; the owner's operation succeeds (PostgreSQL) | | ✓ | | | |
+| Two parallel joined reads, and a joined read against a joined write, on one transaction are serialised by the join layer: clean under `-race` on the memory backend (today: `concurrent map writes`, the process dies); no `conn busy` on PostgreSQL | ✓ | ✓ | | | |
+| A non-entity joined request (model, message, search, statistics, audit) holds the transaction's lock and is refused once its cnode is replaced | ✓ | ✓ | | | |
+| A joined request's response is sent after the lock is released: a cnode that does not read its response does not hold the transaction (HTTP; gRPC server-streaming) | ✓ | | | | |
+| A cnode disconnects in the middle of its callback → the callback is not cancelled; the owner's operation is unaffected (PostgreSQL) | ✓ | ✓ | | | |
+| `ASYNC_NEW_TX`: a savepoint that cannot be created, undone or released → the operation fails with a ticketed 5xx (conflict and unavailable-store mappings kept), nothing is committed, no driver text in the response | ✓ | | | | |
 | Tries made by another pnode: a higher `minor` is absorbed from the first callback that carries it, and lower ones are refused from then on; a second hand-over's `minor = 1` is admitted | ✓ | | | | ✓ |
 | A pass refused for an enclosing pair absorbs nothing | ✓ | | | | |
 | A pass naming an enclosing callout that is no longer current → refused | ✓ | ✓ | | | |
@@ -1026,8 +1080,10 @@ non-idempotent processor; those asserting `forwardWithFailover` or
 - `docs/cloud-parity/callout-failover.md` (new) and a row in its README: the
   departures from Cloud listed in the brief, as a contract Cloud can implement.
 - `CHANGELOG.md` `[Unreleased]`: Added, Changed, Fixed (the membership defect,
-  the late-callback hole, concurrent statements on one PostgreSQL transaction,
-  a savepoint failure no longer passing as a processor failure), and the retired
+  the late-callback hole, concurrent use of one transaction by joined requests
+  — a process crash on memory and SQLite, a failed operation on PostgreSQL —
+  a cnode's disconnect destroying the operation's PostgreSQL connection, a
+  savepoint failure no longer passing as a processor failure), and the retired
   setting semantics.
 - `COMPATIBILITY.md`: the SPI pin.
 - Stale comments: `members.go:48-55`, `validate.go:66-68`,
@@ -1056,8 +1112,11 @@ cluster view as "I am the coordinator": unreachable once a pnode is always in it
 own view, noted for whoever next touches `scheduler/coordinator.go`. Parse
 failures of settings falling back silently to defaults.
 
-Whether the commercial backend tolerates two users of one transaction at once (a
-joined read against the owner's statements, §7) is asked in its own repository.
+Seen while checking §7 and **not verified**: two callbacks of one transaction
+that each run a workflow with an `ASYNC_NEW_TX` processor can interleave their
+savepoints across their own callouts (`a`, `b`, release `a`, release `b`); on
+PostgreSQL releasing `a` destroys `b`. With this design it fails the operation
+instead of passing unnoticed. To be checked and filed on its own.
 
 Seen by the specification's reviewer and **not verified**, to be checked and
 filed on its own: a joined callback whose workflow contains a
