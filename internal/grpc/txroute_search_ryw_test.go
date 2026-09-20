@@ -148,7 +148,7 @@ func TestTxRouteInterceptor_SearchForwardReturnsOwnerUncommittedWrites(t *testin
 	}
 
 	// --- token names node A; the referenced tx is the one we just buffered into.
-	tok, err := signer.Issue("node-A", txID, time.Now().Add(time.Minute))
+	tok, err := signer.Issue(token.Claims{NodeID: "node-A", TxRef: txID, ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-" + txID, Major: 1})
 	if err != nil {
 		t.Fatalf("Issue token: %v", err)
 	}

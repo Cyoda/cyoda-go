@@ -8,6 +8,7 @@ import (
 	"google.golang.org/grpc/metadata"
 
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
@@ -33,7 +34,7 @@ func TestGRPCResolveTarget_Self(t *testing.T) {
 	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
 	reg := newFakeRegistry(contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true})
 
-	tok, err := signer.Issue("node-1", "tx-123", time.Now().Add(5*time.Minute))
+	tok, err := signer.Issue(token.Claims{NodeID: "node-1", TxRef: "tx-123", ExpiresAt: time.Now().Add(5 * time.Minute).Unix(), Callout: "req-tx-123", Major: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +74,7 @@ func TestGRPCResolveTarget_OtherNode(t *testing.T) {
 		contract.NodeInfo{NodeID: "node-2", Addr: "http://localhost:8888", Alive: true},
 	)
 
-	tok, err := signer.Issue("node-2", "tx-456", time.Now().Add(5*time.Minute))
+	tok, err := signer.Issue(token.Claims{NodeID: "node-2", TxRef: "tx-456", ExpiresAt: time.Now().Add(5 * time.Minute).Unix(), Callout: "req-tx-456", Major: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +98,7 @@ func TestGRPCResolveTarget_DeadNode(t *testing.T) {
 		contract.NodeInfo{NodeID: "node-2", Addr: "http://localhost:8888", Alive: false},
 	)
 
-	tok, err := signer.Issue("node-2", "tx-789", time.Now().Add(5*time.Minute))
+	tok, err := signer.Issue(token.Claims{NodeID: "node-2", TxRef: "tx-789", ExpiresAt: time.Now().Add(5 * time.Minute).Unix(), Callout: "req-tx-789", Major: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

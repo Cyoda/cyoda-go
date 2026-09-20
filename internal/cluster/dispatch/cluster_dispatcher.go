@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
+
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -210,7 +212,13 @@ func (d *ClusterDispatcher) mintTxToken(txID string) string {
 	if txID == "" || d.signer == nil {
 		return ""
 	}
-	t, err := d.signer.Issue(d.selfNodeID, txID, time.Now().Add(d.tokenTTL))
+	t, err := d.signer.Issue(token.Claims{
+		NodeID:    d.selfNodeID,
+		TxRef:     txID,
+		ExpiresAt: time.Now().Add(d.tokenTTL).Unix(),
+		Callout:   uuid.NewString(),
+		Major:     1,
+	})
 	if err != nil {
 		slog.Error("failed to mint tx-token", "pkg", "dispatch", "err", err)
 		return ""

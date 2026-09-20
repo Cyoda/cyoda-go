@@ -59,6 +59,7 @@ The `retryable` property is present and `true` only when the operation is safe t
 ## ERROR CODE INDEX
 
 - `errors.BAD_REQUEST` — `400` — not retryable — request body, query parameter, or header is malformed or structurally invalid
+- `errors.CALLOUT_SUPERSEDED` — `410` — not retryable — request carrying a transaction token belongs to a compute node that was replaced, or to a callout that has ended
 - `errors.CLUSTER_NODE_NOT_REGISTERED` — `503` — retryable — target cluster node is not present in the gossip registry
 - `errors.COMPUTE_MEMBER_DISCONNECTED` — `503` — retryable — compute member holding a processor assignment has disconnected
 - `errors.CONFLICT` — `409` — retryable — generic 409 used by storage-level transaction serialization aborts (`RetryableConflict`); permanent business-logic conflicts use a specific code instead (e.g. `MODEL_ALREADY_LOCKED`, `ENTITY_MODIFIED`)
@@ -103,7 +104,7 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.SEARCH_TIMEOUT` — `408` — retryable — client-requested search timeout expired before the result set was collected
 - `errors.SERVER_ERROR` — `500` — retryable with caution — unclassified internal error; response includes `ticket` UUID for log correlation
 - `errors.STORAGE_UNAVAILABLE` — `503` — retryable — storage layer could not supply a connection within its acquire deadline, or the transaction was reclaimed by the idle-in-transaction ceiling
-- `errors.TRANSACTION_EXPIRED` — `400` — not retryable — transaction token's `exp` claim is in the past
+- `errors.TRANSACTION_EXPIRED` — `410` — not retryable — transaction token's `exp` claim is in the past
 - `errors.TRANSACTION_NODE_UNAVAILABLE` — `503` — retryable — cluster node that owns the open transaction is unreachable
 - `errors.TRANSACTION_NOT_FOUND` — `404` — not retryable — transaction ID does not correspond to an active transaction on this node
 - `errors.TRANSACTION_TIMEOUT` — `408` — retryable — client-requested transaction timeout expired before commit

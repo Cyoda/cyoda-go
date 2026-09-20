@@ -79,14 +79,20 @@ func (d *ProcessorDispatcher) ResolveAnswerLimit(responseTimeoutMs int64) (time.
 // pre-minted by an upstream ClusterDispatcher (carried on ctx, NodeID = owner)
 // wins so a forwarded dispatch routes callbacks to the owner, not this node.
 // Otherwise self-mint {selfNodeID, txID}. Empty txID → no token (standalone).
-func (d *ProcessorDispatcher) resolveTxToken(ctx context.Context, txID string) string {
+func (d *ProcessorDispatcher) resolveTxToken(ctx context.Context, txID, requestID string) string {
 	if tok := TxTokenFromContext(ctx); tok != "" {
 		return tok
 	}
 	if txID == "" || d.signer == nil {
 		return ""
 	}
-	tok, err := d.signer.Issue(d.selfNodeID, txID, time.Now().Add(d.tokenTTL))
+	tok, err := d.signer.Issue(token.Claims{
+		NodeID:    d.selfNodeID,
+		TxRef:     txID,
+		ExpiresAt: time.Now().Add(d.tokenTTL).Unix(),
+		Callout:   requestID,
+		Major:     1,
+	})
 	if err != nil {
 		slog.Error("failed to mint tx-token", "pkg", "grpc", "err", err)
 		return ""

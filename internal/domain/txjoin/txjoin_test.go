@@ -52,7 +52,7 @@ func TestJoinFromToken_JoinsValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
 	}
-	tok, err := s.Issue("local", "tx-1", time.Now().Add(time.Minute))
+	tok, err := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-1", Major: 1})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestJoinFromToken_ExpiredMaps410(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
 	}
-	tok, err := s.Issue("local", "tx-exp", time.Now().Add(-time.Second))
+	tok, err := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-exp", ExpiresAt: time.Now().Add(-time.Second).Unix(), Callout: "req-tx-exp", Major: 1})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestJoinFromToken_ForgedMaps401(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSigner s2: %v", err)
 	}
-	tok, err := s2.Issue("local", "tx-x", time.Now().Add(time.Minute))
+	tok, err := s2.Issue(token.Claims{NodeID: "local", TxRef: "tx-x", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-x", Major: 1})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestJoinFromToken_NotFoundMaps404(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
 	}
-	tok, err := s.Issue("local", "tx-x", time.Now().Add(time.Minute))
+	tok, err := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-x", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-x", Major: 1})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestJoinFromToken_RolledBackMaps404(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
 	}
-	tok, err := s.Issue("local", "tx-x", time.Now().Add(time.Minute))
+	tok, err := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-x", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-x", Major: 1})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestJoinFromToken_AlreadyCommittedMaps404(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
 	}
-	tok, err := s.Issue("local", "tx-x", time.Now().Add(time.Minute))
+	tok, err := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-x", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-x", Major: 1})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestJoinFromToken_UnknownJoinErrorMaps5xx(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
 	}
-	tok, err := s.Issue("local", "tx-x", time.Now().Add(time.Minute))
+	tok, err := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-x", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-x", Major: 1})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestJoinFromToken_TenantMismatchMaps403(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
 	}
-	tok, err := s.Issue("local", "tx-x", time.Now().Add(time.Minute))
+	tok, err := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-x", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-x", Major: 1})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}

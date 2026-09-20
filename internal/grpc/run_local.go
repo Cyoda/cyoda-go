@@ -110,7 +110,7 @@ func (d *ProcessorDispatcher) RunLocal(ctx context.Context, call Callout, maxTri
 			"memberId", member.ID, "entityId", call.EntityID, "requestId", call.RequestID,
 			"try", res.TriesUsed, "major", major, "minor", minor)
 
-		result, failure, ctxErr := d.dispatchCalloutToMember(ctx, member, call, d.resolveTxToken(ctx, call.TxID))
+		result, failure, ctxErr := d.dispatchCalloutToMember(ctx, member, call, d.resolveTxToken(ctx, call.TxID, call.RequestID))
 		if ctxErr != nil {
 			res.CtxErr = ctxErr
 			return res
