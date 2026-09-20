@@ -1,6 +1,16 @@
 package contract
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+// ErrCalloutDeadline is the cause an owner gives the context it derives for a
+// callout's hard limit on time (context.WithDeadlineCause). The local procedure
+// reads it with context.Cause to tell "the callout ran out of time" — the try
+// in progress is classified and no further try starts — from "the caller went
+// away", which is returned as ctx.Err(), unchanged.
+var ErrCalloutDeadline = errors.New("callout deadline passed")
 
 // CalloutFailureKind says what happened to a try that produced no result. The
 // one question it answers is whether another cnode may be given the work.

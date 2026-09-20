@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
@@ -85,6 +86,9 @@ func (d *ProcessorDispatcher) RunLocal(ctx context.Context, call Callout, maxTri
 
 	for res.TriesUsed < maxTries {
 		if err := ctx.Err(); err != nil {
+			if calloutDeadlinePassed(ctx) {
+				break // no try starts after the callout's deadline
+			}
 			res.CtxErr = err
 			return res
 		}
@@ -122,6 +126,11 @@ func (d *ProcessorDispatcher) RunLocal(ctx context.Context, call Callout, maxTri
 		}
 	}
 
+	if last == nil && calloutDeadlinePassed(ctx) {
+		appErr := common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchTimeout,
+			"the callout deadline passed before a try could start").AsRetryable().WithCause(contract.ErrCalloutDeadline)
+		last = appFailure(contract.NoHandOff, appErr)
+	}
 	if last == nil {
 		slog.Debug("no matching calculation member", "pkg", "grpc", "tags", call.Tags, "entityId", call.EntityID)
 		last = &contract.CalloutFailure{

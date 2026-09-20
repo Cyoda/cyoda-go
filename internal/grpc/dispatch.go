@@ -182,6 +182,11 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 			slog.Error("member evicted while enqueueing dispatch", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
 			return CalloutResult{}, appFailure(contract.NoHandOff, disconnectedErr(label)), nil
 		case ctx.Err() != nil:
+			if calloutDeadlinePassed(ctx) {
+				slog.Error("dispatch cut off by the callout deadline", "pkg", "grpc", "phase", "enqueue", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
+				return CalloutResult{}, appFailure(contract.NoHandOff, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchTimeout,
+					fmt.Sprintf("%s dispatch cut off at the callout deadline: member not draining", label)).AsRetryable()), nil
+			}
 			return CalloutResult{}, nil, ctx.Err()
 		default:
 			slog.Error("dispatch timeout", "pkg", "grpc", "phase", "enqueue", "memberId", member.ID, "label", label, "name", name, "requestId", requestID, "timeout", call.AnswerLimit)
@@ -223,6 +228,11 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 		return result, nil, nil
 	case <-callCtx.Done():
 		if ctx.Err() != nil {
+			if calloutDeadlinePassed(ctx) {
+				slog.Error("dispatch cut off by the callout deadline", "pkg", "grpc", "phase", "response", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
+				return CalloutResult{}, appFailure(contract.NoAnswer, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchTimeout,
+					fmt.Sprintf("%s dispatch cut off at the callout deadline: no response", label)).AsRetryable()), nil
+			}
 			return CalloutResult{}, nil, ctx.Err()
 		}
 		slog.Error("dispatch timeout", "pkg", "grpc", "phase", "response", "memberId", member.ID, "label", label, "name", name, "requestId", requestID, "timeout", call.AnswerLimit)
@@ -240,6 +250,12 @@ func appFailure(kind contract.CalloutFailureKind, appErr *common.AppError) *cont
 // terminalFailure is a failure that would repeat identically on any cnode.
 func terminalFailure(err error) *contract.CalloutFailure {
 	return &contract.CalloutFailure{Kind: contract.Terminal, Message: err.Error(), Err: err}
+}
+
+// calloutDeadlinePassed reports whether ctx ended because the callout's own
+// deadline passed, as opposed to its caller going away.
+func calloutDeadlinePassed(ctx context.Context) bool {
+	return errors.Is(context.Cause(ctx), contract.ErrCalloutDeadline)
 }
 
 // disconnectedErr is the retryable 503 for a cnode that is gone — before the
