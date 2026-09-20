@@ -31,7 +31,7 @@ date.
 | H4 — unknown `ExecutionMode` silently coerced to SYNC | **Resolved in v0.8.0** | #255 | Closed by #255 — validator now rejects unknown ExecutionMode values at import. |
 | H5 — default-workflow fallback masks REPLACE-with-empty and criterion mismatches | **Tracked** | #256 | Bundled with H2/M3. |
 | H6 — no state-graph validation at import (InitialState, Next, name uniqueness, criterion well-formedness) | **Partially resolved in v0.8.0** | #255 | H6.a–e closed by #255 (initialState, next, name uniqueness, transition uniqueness). H6.f (per-state unguarded-automated cap) and Criterion / Version well-formedness rows remain deferred. |
-| M1 — boundary-accepted fields with no consumer | **Tracked (split)** | #250 (`ProcessorDefinition.Type` via schema reshape), #253 (`Context` pass-through), #254 (`RetryPolicy`), #257 (`Workflow.Description` cleanup as part of the boundary hygiene sweep) | `Workflow.Version` reserved as forward-looking per §L5 — out of scope of any cleanup. |
+| M1 — boundary-accepted fields with no consumer | **Tracked (split)**; **Resolved** for `RetryPolicy` at import: validated on processors, criterion functions and schedule functions. Not yet honoured at dispatch — the dispatcher remains single-shot. | #250 (`ProcessorDefinition.Type` via schema reshape), #253 (`Context` pass-through), #254 (`RetryPolicy`), #257 (`Workflow.Description` cleanup as part of the boundary hygiene sweep) | `Workflow.Version` reserved as forward-looking per §L5 — out of scope of any cleanup. |
 | M2 — export does not check model existence; 404 conflates two cases | **Tracked** | #257 (boundary hygiene sweep) | |
 | M3 — empty `workflows` array silently destructive in REPLACE/ACTIVATE | **Tracked** | #256 | Bundled with H2/H5. |
 | M4 — MERGE silently coalesces duplicate / empty workflow names | **Resolved in v0.8.0** | #255 | Closed by #255 — validator now rejects duplicate or empty workflow names within a request. |
@@ -328,7 +328,7 @@ Verified via repository-wide grep of non-test code:
 
 | Field | OpenAPI / SPI | Consumed? |
 |---|---|---|
-| `ProcessorConfig.RetryPolicy` | `api/openapi.yaml:8120–8128`, `cyoda-go-spi@v0.7.1/types.go:152` | **Validated at import (#262).** Rejected at import unless ∈ {NONE, FIXED, ""}. Dispatcher still single-shot; full retry loop deferred to #254. |
+| `ProcessorConfig.RetryPolicy` | `api/openapi.yaml:8120–8128`, `cyoda-go-spi@v0.7.1/types.go:152` | **Validated at import.** Rejected unless ∈ {NONE, FIXED, ""} on a processor, a criterion function and a schedule function. `CYODA_RETRY_FIXED_NUM_RETRIES` will select the number of tries once the dispatcher's retry loop lands; today the dispatcher remains single-shot, and full retry loop is deferred to #254. |
 | `ProcessorConfig.Context` | `api/openapi.yaml:8622–8624`, `types.go:153` | **Resolved in v0.8.0.** Wired as a pass-through string into the dispatch `parameters` JSON node at `internal/grpc/dispatch.go:71, 221`. Historical analysis below retained for context. |
 | `ProcessorDefinition.Type` | `api/openapi.yaml:8674–8679`, `types.go:141` | **No.** Discriminator carried for parity, no engine branch uses it. |
 

@@ -42,7 +42,14 @@ import (
 // accepted on a criterion's `group` clause. Dual-shape: 1.1, 1.2 and 1.3
 // stay in SupportedSchemaRanges (every prior payload remains valid). See
 // docs/workflow-schema-versioning.md §"1.4 — v0.8.4 contract".
-const CurrentSchemaVersion = "1.4"
+//
+// 1.4 → 1.5 in v0.9.0: additive MINOR — `idempotent` on a processor's config
+// and `retryPolicy` on a schedule function. Dual-shape: 1.1 through 1.4 stay
+// in SupportedSchemaRanges. The same release validates `retryPolicy` on a
+// criterion function and bounds `responseTimeoutMs` on every callout; those
+// tightenings are taken in this MINOR, with the reason, in
+// docs/workflow-schema-versioning.md §"1.5 — v0.9.0 contract".
+const CurrentSchemaVersion = "1.5"
 
 // SchemaRange is a closed integer interval [MinMinor..MaxMinor] on
 // the MINOR axis of a given MAJOR. A range models a single contiguous
@@ -63,7 +70,7 @@ type SchemaRange struct {
 // exercise alternative range configurations without changing
 // production defaults.
 var SupportedSchemaRanges = []SchemaRange{
-	{Major: 1, MinMinor: 1, MaxMinor: 4},
+	{Major: 1, MinMinor: 1, MaxMinor: 5},
 }
 
 // Sentinel errors returned by Supports. Callers use errors.Is to

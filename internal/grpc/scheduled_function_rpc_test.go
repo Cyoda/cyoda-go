@@ -77,7 +77,7 @@ func newTestEnvWithDispatchLimits(t *testing.T, answerLimitDefault, answerLimitM
 	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)
 	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
 	modelHandler := model.New(factory)
-	workflowHandler := workflow.New(factory, engine)
+	workflowHandler := workflow.New(factory, engine, 60*time.Second)
 
 	svc := &CloudEventsServiceImpl{
 		registry:      registry,

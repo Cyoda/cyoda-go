@@ -31,7 +31,7 @@ func TestScheduleFunctionDtoSchema(t *testing.T) {
 			t.Errorf("ScheduleFunctionDto.required missing %q", want)
 		}
 	}
-	for _, want := range []string{"name", "resultKind", "calculationNodesTags", "attachEntity", "context", "responseTimeoutMs"} {
+	for _, want := range []string{"name", "resultKind", "calculationNodesTags", "attachEntity", "context", "responseTimeoutMs", "retryPolicy"} {
 		if schema.Properties[want] == nil {
 			t.Errorf("ScheduleFunctionDto.properties missing %q", want)
 		}
@@ -66,6 +66,7 @@ func TestScheduleFunctionDtoSchema(t *testing.T) {
 func TestScheduleFunctionDtoJSONRoundTrip(t *testing.T) {
 	attach := true
 	timeout := int64(5000)
+	retry := ScheduleFunctionDtoRetryPolicyNONE
 	fn := ScheduleFunctionDto{
 		Name:                 "computeNextFireTime",
 		ResultKind:           ScheduleFunctionDtoResultKind("Schedule"),
@@ -73,6 +74,7 @@ func TestScheduleFunctionDtoJSONRoundTrip(t *testing.T) {
 		AttachEntity:         &attach,
 		Context:              strPtr("role=nightly"),
 		ResponseTimeoutMs:    &timeout,
+		RetryPolicy:          &retry,
 	}
 
 	b, err := json.Marshal(fn)
@@ -84,7 +86,7 @@ func TestScheduleFunctionDtoJSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(b, &raw); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	for _, key := range []string{"name", "resultKind", "calculationNodesTags", "attachEntity", "context", "responseTimeoutMs"} {
+	for _, key := range []string{"name", "resultKind", "calculationNodesTags", "attachEntity", "context", "responseTimeoutMs", "retryPolicy"} {
 		if _, ok := raw[key]; !ok {
 			t.Errorf("marshaled JSON missing key %q: %s", key, b)
 		}
