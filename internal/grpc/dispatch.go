@@ -161,7 +161,7 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 
 	ce, err := NewCloudEvent(call.eventType, call.buildRequest(requestID))
 	if err != nil {
-		return CalloutResult{}, terminalFailure(fmt.Errorf("failed to build %s cloud event: %w", label, err)), nil
+		return CalloutResult{}, terminalFailure(fmt.Errorf("failed to build %s cloud event: %w", label, err), member.ID, requestID), nil
 	}
 	if err := AttachAuthContext(ctx, ce); err != nil {
 		// The cause names the principal; the client-safe Message does not.
@@ -241,7 +241,7 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 		}
 		result, err := call.mapResponse(resp)
 		if err != nil {
-			return CalloutResult{}, terminalFailure(err), nil
+			return CalloutResult{}, memberResponseUnreadable(err, label, name, member.ID, requestID), nil
 		}
 		slog.Debug("dispatch completed", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
 		return result, nil, nil
@@ -266,9 +266,53 @@ func appFailure(kind contract.CalloutFailureKind, appErr *common.AppError) *cont
 	return &contract.CalloutFailure{Kind: kind, Code: appErr.Code, Message: appErr.Message, Err: appErr}
 }
 
-// terminalFailure is a failure that would repeat identically on any cnode.
-func terminalFailure(err error) *contract.CalloutFailure {
-	return &contract.CalloutFailure{Kind: contract.Terminal, Message: err.Error(), Err: err}
+// terminalFailure is an internal failure that would repeat identically on any
+// cnode: this pnode could not build its own request. The client sees the
+// fixed literal every internal callout failure in this file carries; the real
+// error — which can quote a byte of the entity payload being marshalled — is
+// logged here by shape only, never by text, and kept solely behind the
+// AppError's cause, a place common.WriteError never renders (it exposes only
+// a ticket for a LevelInternal error), so errors.Is/As on it still reach the
+// underlying cause.
+func terminalFailure(err error, memberID, requestID string) *contract.CalloutFailure {
+	slog.Error("dispatch could not build its own request", "pkg", "grpc", "memberId", memberID,
+		"requestId", requestID, "error", jsonErrorShape(err))
+	appErr := common.Internal("internal error", nil).WithCause(err)
+	return &contract.CalloutFailure{Kind: contract.Terminal, Code: appErr.Code, Message: appErr.Message, Err: appErr}
+}
+
+// memberResponseUnreadable is the compute member's own fault, not this node's:
+// it answered success, but its payload does not decode into the shape this
+// callout expects. The client sees a fixed, client-safe message; the decode
+// error — which can quote a byte of the member's own response — is logged
+// here by shape only. It is not attached to the failure at all: a MemberFailed
+// failure carries no Err (contract.CalloutFailure's own doc states why —
+// Error() returns Err's text verbatim when Err is set, bypassing Message
+// entirely, which would undo the sanitizing done here).
+func memberResponseUnreadable(err error, label, name, memberID, requestID string) *contract.CalloutFailure {
+	slog.Error("compute member response could not be read", "pkg", "grpc", "label", label, "name", name,
+		"memberId", memberID, "requestId", requestID, "error", jsonErrorShape(err))
+	return &contract.CalloutFailure{Kind: contract.MemberFailed, Message: "the compute member's response could not be read"}
+}
+
+// jsonErrorShape renders a decode/encode error for the server log without the
+// value it failed on: json.SyntaxError and json.UnmarshalTypeError can quote a
+// fragment of the payload — the tenant's entity data on the outbound side, the
+// compute member's own response on the inbound side — that a log line must
+// never carry. It logs the error's Go type and, where present, the byte
+// offset (SyntaxError) or the struct field named (UnmarshalTypeError; the
+// Struct and Field names come from this file's own fixed request/response
+// shapes, never from payload content).
+func jsonErrorShape(err error) string {
+	var syn *json.SyntaxError
+	if errors.As(err, &syn) {
+		return fmt.Sprintf("%T at offset %d", syn, syn.Offset)
+	}
+	var ute *json.UnmarshalTypeError
+	if errors.As(err, &ute) {
+		return fmt.Sprintf("%T (struct %s field %s)", ute, ute.Struct, ute.Field)
+	}
+	return fmt.Sprintf("%T", err)
 }
 
 // calloutDeadlinePassed reports whether ctx ended because the callout's own

@@ -164,9 +164,24 @@ func TestTryKind_CloudEventBuild_IsTerminal(t *testing.T) {
 	call := rawCall(5 * time.Second)
 	call.buildRequest = func(string) any { return make(chan int) } // json cannot marshal a channel
 	failure, ctxErr := kindOf(d, testContext(), registry.Get(memberID), call)
-	assertKindAndCode(t, failure, ctxErr, contract.Terminal, "")
-	if !strings.HasPrefix(failure.Error(), "failed to build processor cloud event: ") {
-		t.Errorf("message = %q", failure.Error())
+	if ctxErr != nil {
+		t.Fatalf("unexpected ctx error: %v", ctxErr)
+	}
+	if failure == nil || failure.Kind != contract.Terminal {
+		t.Fatalf("failure = %+v, want Terminal", failure)
+	}
+	// This pnode failed to build its own request: internal, sanitized. The
+	// real error (which could otherwise name a Go type from the callout's own
+	// construction) must never reach Message/Error() — only a ticketed 500
+	// carries it, behind the AppError's cause.
+	const wantMsg = "SERVER_ERROR: internal error"
+	if failure.Code != common.ErrCodeServerError || failure.Message != wantMsg || failure.Error() != wantMsg {
+		t.Errorf("Code/Message/Error = %q/%q/%q, want %q/%q/%q",
+			failure.Code, failure.Message, failure.Error(), common.ErrCodeServerError, wantMsg, wantMsg)
+	}
+	var appErr *common.AppError
+	if !errors.As(failure, &appErr) || appErr.Level != common.LevelInternal {
+		t.Errorf("carried AppError = %+v, want a LevelInternal error", appErr)
 	}
 	select {
 	case <-sentCh:
@@ -195,7 +210,7 @@ func TestTryKind_AuthContext_IsTerminalAndNamesNoPrincipal(t *testing.T) {
 	}
 }
 
-func TestTryKind_ResponsePayloadUnmarshal_IsTerminal(t *testing.T) {
+func TestTryKind_ResponsePayloadUnmarshal_IsMemberFailed(t *testing.T) {
 	registry := NewMemberRegistry()
 	m := registry.Register("m-1", testTenantID, []string{"python"}, func(ce *cepb.CloudEvent) error {
 		reqID, err := extractRequestID(ce)
@@ -212,8 +227,25 @@ func TestTryKind_ResponsePayloadUnmarshal_IsTerminal(t *testing.T) {
 	call := NewProcessorCallout(testTenantID, testEntity(), testProcessor("python", 0), "wf1", "t1", "tx-1")
 	call.RequestID, call.AnswerLimit, call.OwnerNodeID = "r1", 5*time.Second, "node-test"
 	failure, ctxErr := kindOf(d, testContext(), m, call)
-	assertKindAndCode(t, failure, ctxErr, contract.Terminal, "")
-	if !strings.HasPrefix(failure.Error(), "failed to unmarshal processor response payload: ") {
-		t.Errorf("message = %q", failure.Error())
+	if ctxErr != nil {
+		t.Fatalf("unexpected ctx error: %v", ctxErr)
+	}
+	// The member answered success, but its own payload does not decode: that
+	// is its fault, not this node's, so it is MemberFailed, not Terminal. The
+	// real decode error (which could otherwise quote a byte of the member's
+	// response) must never reach Message/Error().
+	if failure == nil || failure.Kind != contract.MemberFailed {
+		t.Fatalf("failure = %+v, want MemberFailed", failure)
+	}
+	const wantMsg = "the compute member's response could not be read"
+	if failure.Message != wantMsg || failure.Error() != wantMsg {
+		t.Errorf("Message/Error = %q/%q, want %q", failure.Message, failure.Error(), wantMsg)
+	}
+	if failure.Code != "" {
+		t.Errorf("Code = %q, want empty: MemberFailed carries none", failure.Code)
+	}
+	var appErr *common.AppError
+	if errors.As(failure, &appErr) {
+		t.Errorf("MemberFailed must carry no AppError, got %v", appErr)
 	}
 }
