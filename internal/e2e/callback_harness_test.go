@@ -143,6 +143,10 @@ type callbackHarness struct {
 	// member is the default cnode; nil on a harness built by newCalloutHarness.
 	member *computeMember
 
+	// callouts is the harness-wide record of what every scripted cnode
+	// received, in arrival order. The zero value is ready.
+	callouts calloutLog
+
 	// signKey is this stack's JWT signing key (same key app.New parsed from
 	// cfg.IAM.JWTSigningKey). Exposed so attribution tests can mint tokens for
 	// DISTINCT principals — a user token (user_roles claim → Kind=user) vs the
@@ -269,8 +273,7 @@ func newCallbackHarnessConfigured(t *testing.T, configure func(*app.Config)) *ca
 	// calculationNodesTags is validated non-empty at import — can route to it.
 	// Processor/criteria tests configure calculationNodesTags:"" which matches
 	// any cnode of the tenant.
-	h.member = newComputeMember(t, h, memberSpec{tags: []string{"sched-fn"}, handle: h.handleRegistered})
-	t.Cleanup(h.member.stop)
+	h.member = h.AttachCnode(t, cnodeSpec{name: "default", tags: []string{"sched-fn"}, script: h.registeredScript}).m
 	return h
 }
 
@@ -739,11 +742,6 @@ func (h *callbackHarness) registeredReply(kind, name string, rc *reqCtx) cnodeRe
 		}
 		return answerData(data)
 	}
-}
-
-// handleRegistered is the default cnode's handler.
-func (h *callbackHarness) handleRegistered(_ *computeMember, send func(*cepb.CloudEvent) error, req calcRequest) {
-	sendReply(send, req, h.registeredReply(req.kind, req.name, req.rc))
 }
 
 // calcHandler handles one calculation request a cnode received. It runs on a
