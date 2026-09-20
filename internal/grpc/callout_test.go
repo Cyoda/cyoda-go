@@ -185,3 +185,25 @@ func TestCallout_SourceIsWhatItWasBuiltFrom(t *testing.T) {
 		t.Errorf("a function callout carries only a function: %+v", f.Source)
 	}
 }
+
+func TestCalloutBuilders_CarryTheRetryPolicy(t *testing.T) {
+	proc := testProcessor("x", 0)
+	proc.Config.RetryPolicy = "NONE"
+	if got := NewProcessorCallout(testTenantID, testEntity(), proc, "wf1", "t1", "tx-1").RetryPolicy; got != "NONE" {
+		t.Errorf("processor RetryPolicy = %q, want NONE", got)
+	}
+
+	criterion := json.RawMessage(`{"type":"function","function":{"name":"isEligible","config":{"calculationNodesTags":"x","retryPolicy":"NONE"}}}`)
+	call, failure := NewCriteriaCallout(testTenantID, testEntity(), criterion, "TRANSITION", "wf1", "t1", "", "tx-1")
+	if failure != nil {
+		t.Fatalf("NewCriteriaCallout: %v", failure)
+	}
+	if call.RetryPolicy != "NONE" {
+		t.Errorf("criterion RetryPolicy = %q, want NONE", call.RetryPolicy)
+	}
+
+	fn := spi.ScheduleFunction{Name: "calcFire", ResultKind: "Schedule", CalculationNodesTags: "x", RetryPolicy: "NONE"}
+	if got := NewFunctionCallout(testTenantID, testEntity(), fn, "wf1", "t1", "tx-1").RetryPolicy; got != "NONE" {
+		t.Errorf("function RetryPolicy = %q, want NONE", got)
+	}
+}

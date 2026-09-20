@@ -25,7 +25,7 @@ func attemptsFailure(attempts []contract.CalloutAttempt, last *contract.CalloutF
 		Kind:     last.Kind,
 		Code:     appErr.Code,
 		Message:  appErr.Message,
-		Attempts: attempts,
+		Attempts: ownAttempts(attempts),
 		Err:      appErr,
 	}
 }
@@ -33,8 +33,16 @@ func attemptsFailure(attempts []contract.CalloutAttempt, last *contract.CalloutF
 // withAttempts returns a copy of failure that carries the callout's attempts.
 func withAttempts(failure *contract.CalloutFailure, attempts []contract.CalloutAttempt) *contract.CalloutFailure {
 	out := *failure
-	out.Attempts = attempts
+	out.Attempts = ownAttempts(attempts)
 	return &out
+}
+
+// ownAttempts copies the attempts onto a slice of the returned failure's own.
+// The owner's loop keeps recording tries into the slice it passed — appending
+// to it, and a later pass rewriting what an earlier one put there — and a
+// failure already handed to a caller must not change under it.
+func ownAttempts(attempts []contract.CalloutAttempt) []contract.CalloutAttempt {
+	return append([]contract.CalloutAttempt(nil), attempts...)
 }
 
 // attemptsMessage renders the attempts the way Cyoda Cloud renders an

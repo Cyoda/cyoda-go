@@ -68,8 +68,11 @@ type Callout struct {
 	// ResponseTimeoutMs is the value stored in the workflow; the owner turns it
 	// into AnswerLimit with ResolveAnswerLimit.
 	ResponseTimeoutMs int64
-	TxID              string // empty when the callout runs outside a transaction
-	EntityID          string
+	// RetryPolicy is the value stored in the workflow (NONE, FIXED or empty);
+	// the owner turns it into the callout's number of tries.
+	RetryPolicy string
+	TxID        string // empty when the callout runs outside a transaction
+	EntityID    string
 
 	// RequestID is sent on every try, as the request's id and requestId.
 	RequestID string
@@ -105,6 +108,7 @@ func NewProcessorCallout(tenantID spi.TenantID, entity *spi.Entity, processor sp
 		TenantID:          tenantID,
 		Tags:              processor.Config.CalculationNodesTags,
 		ResponseTimeoutMs: processor.Config.ResponseTimeoutMs,
+		RetryPolicy:       processor.Config.RetryPolicy,
 		TxID:              txID,
 		EntityID:          entity.Meta.ID,
 		Source:            CalloutSource{Entity: entity, WorkflowName: workflowName, TransitionName: transitionName, Processor: &processor},
@@ -179,6 +183,7 @@ func NewCriteriaCallout(tenantID spi.TenantID, entity *spi.Entity, criterion jso
 		TenantID:          tenantID,
 		Tags:              config.CalculationNodesTags,
 		ResponseTimeoutMs: config.ResponseTimeoutMs,
+		RetryPolicy:       config.RetryPolicy,
 		TxID:              txID,
 		EntityID:          entity.Meta.ID,
 		RepeatSafe:        true,
@@ -224,6 +229,7 @@ func NewFunctionCallout(tenantID spi.TenantID, entity *spi.Entity, fn spi.Schedu
 		TenantID:          tenantID,
 		Tags:              fn.CalculationNodesTags,
 		ResponseTimeoutMs: fn.ResponseTimeoutMs,
+		RetryPolicy:       fn.RetryPolicy,
 		TxID:              txID,
 		EntityID:          entity.Meta.ID,
 		RepeatSafe:        true,
