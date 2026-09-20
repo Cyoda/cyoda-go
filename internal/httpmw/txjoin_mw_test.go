@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -344,7 +345,7 @@ func TestTxJoin_EveryRouteRunsUnderTheLock(t *testing.T) {
 // body does not hold the transaction.
 func TestTxJoin_BodyIsReadBeforeTheLockIsTaken(t *testing.T) {
 	j, gate, pass := liveJoiner(t, "tx-1")
-	body := &lockProbeBody{Reader: strings.NewReader(`{"a":1}`), gate: gate, txID: "tx-1"}
+	body := newLockProbeBody(strings.NewReader(`{"a":1}`), gate, "tx-1")
 	var got string
 	next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
@@ -362,15 +363,24 @@ func TestTxJoin_BodyIsReadBeforeTheLockIsTaken(t *testing.T) {
 }
 
 // lockProbeBody mirrors lockProbeWriter on Read: it notes, on every read of the
-// client's body, whether the transaction's lock is free.
+// client's body, whether the transaction's lock is free. reading is closed on the
+// FIRST read, so a test waiting for the middleware to be inside the body read
+// waits for that rather than guessing how long it takes.
 type lockProbeBody struct {
 	io.Reader
 	gate                  *txgate.Registry
 	txID                  string
+	reading               chan struct{}
+	readingOnce           sync.Once
 	reads, readsUnderLock int
 }
 
+func newLockProbeBody(r io.Reader, gate *txgate.Registry, txID string) *lockProbeBody {
+	return &lockProbeBody{Reader: r, gate: gate, txID: txID, reading: make(chan struct{})}
+}
+
 func (b *lockProbeBody) Read(p []byte) (int, error) {
+	b.readingOnce.Do(func() { close(b.reading) })
 	b.reads++
 	free := make(chan struct{})
 	go func() { b.gate.Acquire(b.txID)(); close(free) }()
@@ -386,18 +396,26 @@ func (b *lockProbeBody) Read(p []byte) (int, error) {
 // hold the transaction's lock: another joined request on the same transaction
 // completes meanwhile.
 func TestTxJoin_StalledBodyDoesNotHoldTheLock(t *testing.T) {
-	j, _, pass := liveJoiner(t, "tx-1")
+	j, gate, pass := liveJoiner(t, "tx-1")
 	mw := TxJoin(j)
 
 	stalled, unblock := io.Pipe() // headers sent, body never arrives
+	body := newLockProbeBody(stalled, gate, "tx-1")
 	stalledDone := make(chan struct{})
 	go func() {
 		defer close(stalledDone)
-		req := withUserCtx(httptest.NewRequest(http.MethodPost, "/entity", stalled))
+		req := withUserCtx(httptest.NewRequest(http.MethodPost, "/entity", body))
 		req.Header.Set(proxy.TxTokenHeader, pass)
 		mw(okHandler()).ServeHTTP(httptest.NewRecorder(), req)
 	}()
-	time.Sleep(50 * time.Millisecond) // the stalled request is inside the middleware, reading
+	// Wait for the stalled request to be inside the body read, rather than
+	// sleeping: a sleep that ran out too early would pass vacuously, before the
+	// middleware had reached the read this test is about.
+	select {
+	case <-body.reading:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stalled request never reached the body read")
+	}
 
 	otherDone := make(chan int, 1)
 	go func() {

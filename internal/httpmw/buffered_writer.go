@@ -8,6 +8,10 @@ import (
 // bufferedWriter holds a handler's response until flushTo. A joined request's
 // handler runs under its transaction's lock; writing to the client there would
 // make the lock wait on the client.
+//
+// It deliberately implements neither http.Flusher nor http.Hijacker: a handler
+// that wants to stream must fail loudly on the type assertion rather than buffer
+// its whole stream here without bound.
 type bufferedWriter struct {
 	header http.Header
 	status int
