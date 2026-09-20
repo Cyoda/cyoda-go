@@ -206,7 +206,7 @@ This section enumerates only what cluster mode promises and what it does not.
   node may still commit; clients on the other side cannot observe.
 - **Token expiry.** The token has a bounded `ExpiresAt`. If the
   client holds it past expiry, the proxy returns
-  `400 TRANSACTION_EXPIRED`. The client must abandon the tx and
+  `410 TRANSACTION_EXPIRED`. The client must abandon the tx and
   retry with a fresh `Begin()`.
 - **Double-commit / idempotent retry.** First-committer-wins +
   TOCTOU guards (`m.committing[txID]` for memory/sqlite; `pgxTx`
