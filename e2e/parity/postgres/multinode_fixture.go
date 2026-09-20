@@ -176,13 +176,14 @@ func MustSetupMultiNodeWithEnv(t *testing.T, n int, extraEnv []string) (multinod
 
 	// 3. Launch n cyoda-go subprocesses + one compute-test-client.
 	//    Auto-migrate handling (leader-only) is in the fixtureutil helper.
-	//    extraEnv is appended after the standard backend env so a caller can
-	//    override cadences (e.g. search-job heartbeat/stale) per node.
+	//    extraEnv comes last so a caller can override any of the above,
+	//    including the tuned cluster patience.
 	launchEnv := append([]string{
 		"CYODA_STORAGE_BACKEND=postgres",
 		fmt.Sprintf("CYODA_POSTGRES_URL=%s", connStr),
 		"CYODA_POSTGRES_AUTO_MIGRATE=true",
-	}, extraEnv...)
+	}, fixtureutil.TunedClusterEnv()...)
+	launchEnv = append(launchEnv, extraEnv...)
 	result, processCleanup, err := fixtureutil.LaunchCyodaClusterAndCompute(ks, n, launchEnv)
 	if err != nil {
 		containerCleanup()

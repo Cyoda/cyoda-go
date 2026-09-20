@@ -88,17 +88,11 @@ func setup() (*sqliteFixture, func(), error) {
 	}
 
 	// 3. Launch cyoda-go + compute-test-client with sqlite backend.
-	result, processCleanup, err := fixtureutil.LaunchCyodaAndCompute(ks, []string{
+	result, processCleanup, err := fixtureutil.LaunchCyodaAndCompute(ks, append([]string{
 		"CYODA_STORAGE_BACKEND=sqlite",
 		"CYODA_SQLITE_PATH=" + dbPath,
 		"CYODA_SQLITE_AUTO_MIGRATE=true",
-		// Tuned down from the 1s production default so the
-		// scheduledtransition parity scenarios (e2e/parity/scheduledtransition)
-		// observe fires within a small, bounded poll window instead of
-		// needing multi-second timeouts. Harmless to every other parity
-		// scenario — an empty ScanDue is a cheap no-op query.
-		"CYODA_SCHEDULER_SCAN_INTERVAL=50ms",
-	})
+	}, fixtureutil.TunedServerEnv()...))
 	if err != nil {
 		tmpCleanup()
 		return nil, nil, err
