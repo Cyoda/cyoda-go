@@ -87,6 +87,7 @@ Metrics are exported via `otlpmetrichttp` with a periodic reader. The following 
 - `cyoda.tx.conflicts` — `Int64Counter` — count of transaction serialization conflicts (commit returning `spi.ErrConflict`)
 - `cyoda.dispatch.duration` — `Float64Histogram`, unit `s` — processor/criteria dispatch duration; labeled by `type` (`processor`, `criteria`)
 - `cyoda.dispatch.count` — `Int64Counter` — total processor/criteria dispatch calls; labeled by `type` (`processor`, `criteria`)
+- `cyoda.callout.handovers` — `Int64Counter` — callouts handed over to another node; labeled by `outcome` (`ok`, `no_handoff`, `no_answer`, `member_failed`, `terminal`, `not_connected`). `not_connected` is a node the connection to which could not be opened — no try was used; `no_answer` includes every hand-over whose answer was lost (no reply, a non-2xx status, an answer that does not authenticate). A rising `no_answer` share with healthy compute nodes points at the network between nodes or at node clocks more than 30 s apart.
 
 OIDC subsystem metrics (`oidc_*`) are exposed at `/metrics` whenever IAM runs in `jwt` mode, regardless of `CYODA_OTEL_ENABLED`.
 
@@ -136,6 +137,7 @@ Cyoda-specific span attribute keys defined in `internal/observability/attrs.go`:
 - `criterion.target` — criteria target type (`TRANSITION`, `WORKFLOW`)
 - `criteria.matches` — boolean result of a criteria evaluation
 - `type` — dispatch type label for `cyoda.dispatch.duration` and `cyoda.dispatch.count` (`processor` or `criteria`)
+- `outcome` — hand-over outcome label for `cyoda.callout.handovers`
 - `entity.count` — count of entities in a batch operation
 - `cql.name` — CQL statement name (Cassandra plugin)
 - `cql.op` — CQL operation type (Cassandra plugin)
