@@ -52,15 +52,15 @@ type KeepAliveConfig struct {
 // NewServer creates a new gRPC server with auth interceptors and the
 // CloudEventsService registered. When otelEnabled is true, OTel tracing
 // is added via a stats handler before the auth interceptors.
+// j is the join layer: the tx-route interceptor hands it every request that
+// carries a pass, and it joins the transaction, refuses a pass that no longer
+// names the callout that compute node holds, and holds the transaction's lock
+// for the length of the handler.
 // localGRPCPort is this node's gRPC listen port; it is used as the fallback
 // when deriving a peer's gRPC address from its HTTP address (advertise-or-derive).
 // allowLoopback must match cfg.Cluster.DispatchAllowLoopback; it gates the
 // peer-address SSRF guard on the gRPC forward path (symmetric with the
 // dispatch forwarder and HTTP proxy).
-// j is the join layer: the tx-route interceptor hands it every request that
-// carries a pass, and it joins the transaction, refuses a pass that no longer
-// names the callout that compute node holds, and holds the transaction's lock
-// for the length of the handler.
 // healthFlag is the same flag the HTTP Recovery middleware stores into — a
 // panic recovered on either door marks the node unhealthy. May be nil in
 // tests that don't care about health-flag observation.

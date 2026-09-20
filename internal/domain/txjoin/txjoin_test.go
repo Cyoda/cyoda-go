@@ -338,8 +338,7 @@ func TestJoinFromToken_TenantMismatchIsOneAnswerWhateverTheFenceKnows(t *testing
 			return f, claims
 		},
 		"callout unknown": func(t *testing.T) (*fence.Fence, token.Claims) {
-			_, claims := liveFence(t, "req-1", "tx-1")
-			return noCalloutFence(), claims
+			return noCalloutFence(), token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-1", Major: 1}
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

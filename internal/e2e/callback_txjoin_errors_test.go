@@ -25,6 +25,7 @@ import (
 //	non-empty token, unknown/closed txID → 404 TRANSACTION_NOT_FOUND
 //	expired token                        → 410 TRANSACTION_EXPIRED
 //	forged / bad-HMAC token              → 401 UNAUTHORIZED
+//	pass with no callout and number      → 401 UNAUTHORIZED
 //	token tenant ≠ caller tenant         → 403 FORBIDDEN
 //	empty token (control)                → 2xx standalone
 //

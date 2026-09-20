@@ -512,6 +512,11 @@ func TestTxRouteInterceptor_BadTokenEnvelope(t *testing.T) {
 // failure whose operational code (rendered as the "CODE: detail" message prefix
 // on the CLIENT_ERROR class) matches wantCode. Covers the gRPC entry point's
 // loud-fail contract for one callback-token error class.
+//
+// Unlike assertRefusalEnvelope, which reads the fields both envelope shapes
+// share, this one decodes as EntityTransactionResponseJson and so also pins the
+// write RPCs' response shape: a refusal that came back in some other shape
+// fails here rather than passing on its code alone.
 func assertEnvelopeCode(t *testing.T, resp any, wantReqID, wantCode string) {
 	t.Helper()
 	ce, ok := resp.(*cepb.CloudEvent)
@@ -646,9 +651,8 @@ func TestTxRouteInterceptor_TenantMismatchIsOneAnswerWhateverTheFenceKnows(t *te
 			return f, gate, claims
 		},
 		"callout unknown": func(t *testing.T) (*fence.Fence, *txgate.Registry, token.Claims) {
-			_, _, claims := liveRouteFence(t, "tx-1")
 			f, gate := gatedFence()
-			return f, gate, claims
+			return f, gate, token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-1", Major: 1}
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
