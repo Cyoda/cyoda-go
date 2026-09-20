@@ -8,6 +8,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
 
@@ -137,13 +138,6 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 		case ExecutionModeAsyncNewTx:
 			procErr = e.executeAsyncNewTx(currentCtx, entity, proc, workflow, transition, currentTxID)
 			success = procErr == nil
-
-			// ASYNC_NEW_TX failures are non-fatal: log warning, continue pipeline.
-			if procErr != nil {
-				slog.Warn("ASYNC_NEW_TX processor failed, continuing pipeline",
-					"pkg", "workflow", "processor", proc.Name, "error", procErr)
-			}
-
 		case ExecutionModeCommitBeforeDispatch:
 			var nCtx context.Context
 			var nTxID string
@@ -157,6 +151,22 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 		default: // SYNC, ASYNC_SAME_TX — both inline in caller's transaction.
 			procErr = e.executeSyncProcessor(currentCtx, entity, desc, proc, workflow, transition, currentTxID)
 			success = procErr == nil
+		}
+
+		// Directly after the mode switch, before the processor's audit event
+		// and before any mode decides what its result means. ASYNC_NEW_TX's
+		// "log and continue" below would otherwise swallow the refusal and
+		// carry a superseded chain on to the next processor, and past the last
+		// one to the handler's final save. A check at the top of the loop alone
+		// would never see the last processor.
+		if cerr := fence.Check(currentCtx); cerr != nil {
+			return currentCtx, currentTxID, cerr
+		}
+
+		// ASYNC_NEW_TX failures are non-fatal: log warning, continue pipeline.
+		if procErr != nil && proc.ExecutionMode == ExecutionModeAsyncNewTx {
+			slog.Warn("ASYNC_NEW_TX processor failed, continuing pipeline",
+				"pkg", "workflow", "processor", proc.Name, "error", procErr)
 		}
 
 		auditData := map[string]any{
@@ -205,6 +215,9 @@ func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, d
 	defer resume()
 	modifiedEntity, err := e.extProc.DispatchProcessor(ctx, entity, proc, workflow, transition, txID)
 	resume()
+	if cerr := fence.Check(ctx); cerr != nil {
+		return cerr
+	}
 	if err != nil {
 		return err
 	}
@@ -234,6 +247,9 @@ func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc
 		defer resume()
 		_, err := e.extProc.DispatchProcessor(ctx, entity, proc, workflow, transition, txID)
 		resume()
+		if cerr := fence.Check(ctx); cerr != nil {
+			return cerr
+		}
 		return err
 	}
 
@@ -250,6 +266,13 @@ func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc
 	defer resume()
 	_, dispatchErr := e.extProc.DispatchProcessor(ctx, entity, proc, workflow, transition, txID)
 	resume()
+	// Before the savepoint is looked at. A chain that was superseded neither
+	// undoes nor releases its savepoint: by now the replacement compute node may
+	// have written, and undoing would take those writes with it. An abandoned
+	// savepoint is harmless on every backend.
+	if cerr := fence.Check(ctx); cerr != nil {
+		return cerr
+	}
 	if dispatchErr != nil {
 		if rbErr := e.txMgr.RollbackToSavepoint(ctx, txID, spID); rbErr != nil {
 			slog.Warn("failed to rollback savepoint after processor error",
