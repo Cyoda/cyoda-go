@@ -1,7 +1,6 @@
 package dispatch
 
 import (
-	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -29,10 +28,7 @@ func TestIntegration_ClusterDispatch_FullFlow(t *testing.T) {
 				Data: []byte(`{"result":"from-peer-processor"}`),
 			},
 		}
-		handler := NewDispatchHandler(nodeBLocal, auth)
-		mux := http.NewServeMux()
-		handler.Register(mux)
-		nodeBServer := httptest.NewServer(mux)
+		nodeBServer := httptest.NewServer(newHandlerMux(t, stubRunner{nodeBLocal}, auth))
 		defer nodeBServer.Close()
 
 		// Node A: local dispatcher has no matching member.
@@ -45,7 +41,7 @@ func TestIntegration_ClusterDispatch_FullFlow(t *testing.T) {
 		}
 		selector := NewRandomSelector()
 		forwarder := NewHTTPForwarder(auth, 5*time.Second).AllowLoopbackForTesting()
-		d := NewClusterDispatcher(nodeALocal, registry, "node-a", selector, forwarder, 2*time.Second, nil, 0)
+		d := newTestClusterDispatcher(t, nodeALocal, registry, "node-a", selector, forwarder, 2*time.Second)
 
 		ctx := testContext()
 		result, err := d.DispatchProcessor(ctx, testEntity(), testProcessor(), "wf", "tr", "tx-integration-1")
@@ -62,10 +58,7 @@ func TestIntegration_ClusterDispatch_FullFlow(t *testing.T) {
 		nodeBLocal := &stubDispatcher{
 			criteriaResult: true,
 		}
-		handler := NewDispatchHandler(nodeBLocal, auth)
-		mux := http.NewServeMux()
-		handler.Register(mux)
-		nodeBServer := httptest.NewServer(mux)
+		nodeBServer := httptest.NewServer(newHandlerMux(t, stubRunner{nodeBLocal}, auth))
 		defer nodeBServer.Close()
 
 		// Node A: local dispatcher has no matching member.
@@ -78,7 +71,7 @@ func TestIntegration_ClusterDispatch_FullFlow(t *testing.T) {
 		}
 		selector := NewRandomSelector()
 		forwarder := NewHTTPForwarder(auth, 5*time.Second).AllowLoopbackForTesting()
-		d := NewClusterDispatcher(nodeALocal, registry, "node-a", selector, forwarder, 2*time.Second, nil, 0)
+		d := newTestClusterDispatcher(t, nodeALocal, registry, "node-a", selector, forwarder, 2*time.Second)
 
 		ctx := testContext()
 		matches, _, err := d.DispatchCriteria(ctx, testEntity(), testCriterion(), "TRANSITION", "wf", "tr", "proc", "tx-integration-2")
@@ -113,7 +106,7 @@ func TestIntegration_ClusterDispatch_NoMemberTimeout(t *testing.T) {
 	forwarder := NewHTTPForwarder(timeoutAuth, 5*time.Second).AllowLoopbackForTesting()
 
 	const waitTimeout = 300 * time.Millisecond
-	d := NewClusterDispatcher(local, registry, "node-a", selector, forwarder, waitTimeout, nil, 0)
+	d := newTestClusterDispatcher(t, local, registry, "node-a", selector, forwarder, waitTimeout)
 
 	t.Run("processor_timeout", func(t *testing.T) {
 		ctx := testContext()

@@ -193,9 +193,13 @@ func (a *AEADPeerAuth) Verify(r *http.Request) ([]byte, PeerIdentity, ResponseBi
 
 	// Record the nonce only after successful decrypt. A flood of bogus
 	// nonces that fail AEAD.Open never enters the cache. From here on the
-	// sender is known to hold the key, so a refusal can be answered under seal.
-	if a.nonces.checkAndRecord(nonce, tsTime) {
-		return nil, identity, binding, fmt.Errorf("duplicate nonce or replay cache full: %w", ErrReplayRefused)
+	// sender is known to hold the key, so the cache being full can be answered
+	// under seal — but a replay cannot: see ErrNonceReplayed.
+	switch a.nonces.checkAndRecord(nonce, tsTime) {
+	case nonceDuplicate:
+		return nil, PeerIdentity{}, none, ErrNonceReplayed
+	case nonceCacheFull:
+		return nil, identity, binding, ErrReplayCacheFull
 	}
 	return pt, identity, binding, nil
 }

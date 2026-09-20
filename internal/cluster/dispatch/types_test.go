@@ -10,6 +10,8 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
 )
 
+func triesUsed(n int) *int { return &n }
+
 func TestDispatchCalloutRequest_ProcessorJSONRoundTrip(t *testing.T) {
 	entityData := json.RawMessage(`{"foo":"bar","count":42}`)
 	processor := spi.ProcessorDefinition{
@@ -95,9 +97,8 @@ func TestDispatchCalloutRequest_ProcessorJSONRoundTrip(t *testing.T) {
 func TestDispatchCalloutResponse_ProcessorJSONRoundTrip(t *testing.T) {
 	entityData := []byte(`{"updated":true}`)
 	resp := dispatch.DispatchCalloutResponse{
+		Outcome:    dispatch.OutcomeOK,
 		EntityData: entityData,
-		Success:    true,
-		Error:      "",
 		Warnings:   []string{"warn1", "warn2"},
 	}
 
@@ -111,11 +112,8 @@ func TestDispatchCalloutResponse_ProcessorJSONRoundTrip(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	if !got.Success {
-		t.Error("Success = false, want true")
-	}
-	if got.Error != "" {
-		t.Errorf("Error = %q, want empty", got.Error)
+	if got.Outcome != dispatch.OutcomeOK {
+		t.Errorf("Outcome = %q, want %q", got.Outcome, dispatch.OutcomeOK)
 	}
 	if len(got.Warnings) != 2 {
 		t.Errorf("len(Warnings) = %d, want 2", len(got.Warnings))
@@ -127,9 +125,10 @@ func TestDispatchCalloutResponse_ProcessorJSONRoundTrip(t *testing.T) {
 
 func TestDispatchCalloutResponse_ProcessorError_JSONRoundTrip(t *testing.T) {
 	resp := dispatch.DispatchCalloutResponse{
-		Success:  false,
-		Error:    "PROCESSOR_FAILED: something went wrong",
-		Warnings: nil,
+		Outcome:   "no_answer",
+		TriesUsed: triesUsed(1),
+		ErrorCode: "DISPATCH_TIMEOUT",
+		Warnings:  nil,
 	}
 
 	b, err := json.Marshal(resp)
@@ -142,11 +141,11 @@ func TestDispatchCalloutResponse_ProcessorError_JSONRoundTrip(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	if got.Success {
-		t.Error("Success = true, want false")
+	if got.Outcome != "no_answer" || got.TriesUsed == nil || *got.TriesUsed != 1 {
+		t.Errorf("Outcome/TriesUsed = %q/%v, want no_answer after one try", got.Outcome, got.TriesUsed)
 	}
-	if got.Error != "PROCESSOR_FAILED: something went wrong" {
-		t.Errorf("Error = %q, want PROCESSOR_FAILED message", got.Error)
+	if got.ErrorCode != "DISPATCH_TIMEOUT" {
+		t.Errorf("ErrorCode = %q, want DISPATCH_TIMEOUT", got.ErrorCode)
 	}
 	if got.EntityData != nil {
 		t.Errorf("EntityData should be nil/omitted, got %s", got.EntityData)
@@ -227,7 +226,7 @@ func TestDispatchCalloutRequest_CriteriaJSONRoundTrip(t *testing.T) {
 
 func TestDispatchCalloutResponse_CriteriaReasonRoundTrip(t *testing.T) {
 	matches := false
-	in := dispatch.DispatchCalloutResponse{Matches: &matches, Success: true, Reason: "amount 5 below minimum 10"}
+	in := dispatch.DispatchCalloutResponse{Matches: &matches, Outcome: dispatch.OutcomeOK, Reason: "amount 5 below minimum 10"}
 	b, err := json.Marshal(in)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -245,8 +244,7 @@ func TestDispatchCalloutResponse_CriteriaJSONRoundTrip(t *testing.T) {
 	matches := true
 	resp := dispatch.DispatchCalloutResponse{
 		Matches:  &matches,
-		Success:  true,
-		Error:    "",
+		Outcome:  dispatch.OutcomeOK,
 		Warnings: []string{"w1"},
 	}
 
@@ -263,8 +261,8 @@ func TestDispatchCalloutResponse_CriteriaJSONRoundTrip(t *testing.T) {
 	if got.Matches == nil || !*got.Matches {
 		t.Error("Matches = false, want true")
 	}
-	if !got.Success {
-		t.Error("Success = false, want true")
+	if got.Outcome != dispatch.OutcomeOK {
+		t.Errorf("Outcome = %q, want %q", got.Outcome, dispatch.OutcomeOK)
 	}
 	if len(got.Warnings) != 1 || got.Warnings[0] != "w1" {
 		t.Errorf("Warnings = %v, want [w1]", got.Warnings)
@@ -275,7 +273,7 @@ func TestDispatchCalloutResponse_CriteriaNoMatch_JSONRoundTrip(t *testing.T) {
 	matches := false
 	resp := dispatch.DispatchCalloutResponse{
 		Matches: &matches,
-		Success: true,
+		Outcome: dispatch.OutcomeOK,
 	}
 
 	b, err := json.Marshal(resp)
@@ -291,8 +289,8 @@ func TestDispatchCalloutResponse_CriteriaNoMatch_JSONRoundTrip(t *testing.T) {
 	if got.Matches == nil || *got.Matches {
 		t.Error("Matches = true, want false")
 	}
-	if !got.Success {
-		t.Error("Success = false, want true")
+	if got.Outcome != dispatch.OutcomeOK {
+		t.Errorf("Outcome = %q, want %q", got.Outcome, dispatch.OutcomeOK)
 	}
 }
 
@@ -365,8 +363,6 @@ func TestDispatchCalloutResponse_WireNames(t *testing.T) {
 		},
 		MemberError:     "card declined",
 		MemberRetryable: &yes,
-		Success:         true,
-		Error:           "boom",
 		ErrorCode:       "DISPATCH_TIMEOUT",
 		ErrorStatus:     503,
 		ErrorRetryable:  true,
@@ -388,8 +384,6 @@ func TestDispatchCalloutResponse_WireNames(t *testing.T) {
 		`"attempts":[{"memberID":"m1","kind":"no_answer","cause":"timed out"}]`,
 		`"memberError":"card declined"`,
 		`"memberRetryable":true`,
-		`"success":true`,
-		`"error":"boom"`,
 		`"errorCode":"DISPATCH_TIMEOUT"`,
 		`"errorStatus":503`,
 		`"errorRetryable":true`,
@@ -418,6 +412,28 @@ func TestDispatchCalloutResponse_WireNames(t *testing.T) {
 		string(got.Result) != string(resp.Result) || got.ResultKind != resp.ResultKind ||
 		len(got.Warnings) != 1 || len(got.Errors) != 1 {
 		t.Errorf("round trip lost fields: %+v", got)
+	}
+}
+
+// The outcome is the whole verdict. success and error are gone from both sides
+// of the wire: a peer that sent them would be believed about nothing, and a
+// reader that looked for them would read a failure as a success.
+func TestDispatchCallout_SuccessAndErrorAreOffTheWire(t *testing.T) {
+	answer, err := json.Marshal(dispatch.DispatchCalloutResponse{Outcome: dispatch.OutcomeOK, TriesUsed: triesUsed(1)})
+	if err != nil {
+		t.Fatalf("marshal the answer: %v", err)
+	}
+	request, err := json.Marshal(dispatch.DispatchCalloutRequest{Kind: "processor"})
+	if err != nil {
+		t.Fatalf("marshal the request: %v", err)
+	}
+	for _, gone := range []string{`"success"`, `"error"`} {
+		if strings.Contains(string(answer), gone) {
+			t.Errorf("the answer still carries %s: %s", gone, answer)
+		}
+	}
+	if strings.Contains(string(request), `"txToken"`) {
+		t.Errorf("the request still carries a pass: %s", request)
 	}
 }
 

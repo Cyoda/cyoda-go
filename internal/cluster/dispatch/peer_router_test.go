@@ -15,6 +15,7 @@ import (
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 )
 
 // inOrderSelector picks the first candidate, so "selector order" is list order.
@@ -338,6 +339,37 @@ func TestHandOver_OverTheWire_BadAnswersAreNoAnswer(t *testing.T) {
 			}
 			assertLost(t, router.HandOver(testContext(), peer, ownerCallout(t, "processor"), 3, 1))
 		})
+	}
+}
+
+// The cnode's own message and verdict reach the owner through a hand-over, and
+// the peer's two tries are counted as two.
+func TestHandOver_ThroughTheHandler_MemberMessageAndVerdictSurvive(t *testing.T) {
+	yes := true
+	peerAuth := newAEAD(t)
+	runner := &fakeRunner{result: internalgrpc.LocalResult{
+		TriesUsed: 2,
+		Failure:   &contract.CalloutFailure{Kind: contract.MemberFailed, Message: "card declined", Retryable: &yes},
+		Attempts: []contract.CalloutAttempt{
+			{MemberID: "m1", Kind: contract.NoHandOff, Cause: "COMPUTE_MEMBER_DISCONNECTED: processor compute member disconnected"},
+			{MemberID: "m2", Kind: contract.MemberFailed, Cause: "card declined"},
+		}}}
+	srv := httptest.NewServer(newHandlerMux(t, runner, peerAuth))
+	defer srv.Close()
+
+	a := realRouter(t, true).HandOver(testContext(), contract.NodeInfo{NodeID: "peer-1", Addr: srv.URL}, ownerCallout(t, "processor"), 3, 4)
+
+	if a.Failure == nil || a.Failure.Kind != contract.MemberFailed || a.Failure.Message != "card declined" || a.Failure.Retryable == nil || !*a.Failure.Retryable {
+		t.Fatalf("Failure = %+v", a.Failure)
+	}
+	if !a.Connected || a.TriesUsed != 2 || len(a.Attempts) != 2 || a.Attempts[1].MemberID != "m2" {
+		t.Errorf("%+v", a)
+	}
+	if runner.gotTries != 3 || runner.gotCall.OwnerNodeID != "self-node" {
+		t.Errorf("peer got tries=%d owner=%q", runner.gotTries, runner.gotCall.OwnerNodeID)
+	}
+	if major, minor := runner.gotCall.Number.Next(); major != 4 || minor != 1 {
+		t.Errorf("peer numbers its tries (%d,%d), want (4,1)", major, minor)
 	}
 }
 

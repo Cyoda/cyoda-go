@@ -543,16 +543,14 @@ func New(cfg Config) *App {
 			// Never set in production (SSRF guard stays active by default).
 			forwarder = forwarder.AllowLoopbackForTesting()
 		}
-		extProc = clusterdispatch.NewClusterDispatcher(
-			localDispatcher,
-			a.nodeRegistry,
-			cfg.Cluster.NodeID,
-			clusterdispatch.NewRandomSelector(),
-			forwarder,
-			cfg.Cluster.DispatchWaitTimeout,
-			a.tokenSigner,
-			cfg.Cluster.TxTokenTTL,
-		)
+		peerRouter, err := clusterdispatch.NewPeerRouter(a.nodeRegistry, cfg.Cluster.NodeID,
+			clusterdispatch.NewRandomSelector(), forwarder, observability.Meter())
+		if err != nil {
+			slog.Error("failed to construct the peer router", "pkg", "cluster", "err", err)
+			os.Exit(1)
+		}
+		extProc = clusterdispatch.NewClusterDispatcher(localDispatcher, peerRouter,
+			localDispatcher.ResolveAnswerLimit, cfg.Cluster.DispatchWaitTimeout, cfg.Callout.HandoverAllowance)
 	} else {
 		extProc = localDispatcher
 	}
@@ -782,7 +780,7 @@ func New(cfg Config) *App {
 		internalapi.RegisterHelpRoutes(outerMux, help.BuildTree(), contextPath, cfg.Version)
 		// Internal dispatch routes at root (AEAD-authenticated, not under context path)
 		if cfg.Cluster.Enabled {
-			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth)
+			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth, cfg.Callout.FixedNumRetries+1)
 			dispatchHandler.Register(outerMux)
 			cluster.NewSchedulerRPCHandler(schedEngine, peerAuth).Register(outerMux)
 		}
@@ -795,7 +793,7 @@ func New(cfg Config) *App {
 		internalapi.RegisterHelpRoutes(mux, help.BuildTree(), "", cfg.Version)
 		// Internal dispatch routes (AEAD-authenticated)
 		if cfg.Cluster.Enabled {
-			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth)
+			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth, cfg.Callout.FixedNumRetries+1)
 			dispatchHandler.Register(mux)
 			cluster.NewSchedulerRPCHandler(schedEngine, peerAuth).Register(mux)
 		}

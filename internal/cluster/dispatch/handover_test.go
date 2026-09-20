@@ -145,6 +145,12 @@ func TestRequestValidate(t *testing.T) {
 		{"enclosing pair with no fencing number", func(r *DispatchCalloutRequest) {
 			r.Outer = []WirePair{{Callout: "outer-rid", Major: 0, Minor: 1}}
 		}},
+		// json.Unmarshal reads "entity": null into the four bytes `null`, which
+		// is not an empty slice. It is no entity all the same.
+		{"entity that is JSON null", func(r *DispatchCalloutRequest) { r.Entity = json.RawMessage(`null`) }},
+		{"more enclosing pairs than can be sane", func(r *DispatchCalloutRequest) {
+			r.Outer = outerPairs(maxOuterPairs + 1)
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -159,6 +165,31 @@ func TestRequestValidate(t *testing.T) {
 				t.Errorf("the refusal names a tenant: %q", msg)
 			}
 		})
+	}
+}
+
+// outerPairs builds n distinct enclosing pairs, each at a usable number.
+func outerPairs(n int) []WirePair {
+	out := make([]WirePair, n)
+	for i := range out {
+		out[i] = WirePair{Callout: fmt.Sprintf("outer-%d", i), Major: 1}
+	}
+	return out
+}
+
+// The nesting bound is a bound: exactly as many enclosing pairs as are allowed
+// still validate, one more does not. Nothing in the tree nests callbacks this
+// deep; the bound is on untrusted input, since every pair is copied into every
+// pass the receiving pnode mints.
+func TestRequestValidate_EnclosingPairsBound(t *testing.T) {
+	req := validRequest(t, "processor")
+	req.Outer = outerPairs(maxOuterPairs)
+	if err := req.validate(); err != nil {
+		t.Errorf("%d enclosing pairs must validate: %v", maxOuterPairs, err)
+	}
+	req.Outer = outerPairs(maxOuterPairs + 1)
+	if err := req.validate(); err == nil {
+		t.Errorf("%d enclosing pairs must be refused", maxOuterPairs+1)
 	}
 }
 

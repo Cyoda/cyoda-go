@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -13,23 +15,37 @@ import (
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 )
 
-// DispatchHandler serves the internal dispatch endpoint (POST
-// /internal/dispatch/callout) that a peer node forwards processor, criteria,
-// and function callouts to. Authenticates each request via PeerAuth — today
-// AEAD over a shared secret, tomorrow potentially mTLS — and annotates the
-// request context with the authenticated PeerIdentity so downstream code
-// can audit origin regardless of the transport.
-type DispatchHandler struct {
-	local contract.ExternalProcessingService
-	auth  PeerAuth
+// LocalRunner is the local procedure: the callout tried on this pnode's own
+// cnodes. It is everything a pnode that receives a hand-over may do with one —
+// the handler holds nothing through which it could hand the callout on.
+//
+// ResolveAnswerLimit is this pnode's own bound on an answer limit, and is here
+// rather than in the handler so that the one bound serves both doors: a callout
+// dispatched locally and a callout handed over are held to the same
+// configuration. *internalgrpc.ProcessorDispatcher satisfies both methods.
+type LocalRunner interface {
+	RunLocal(ctx context.Context, call internalgrpc.Callout, maxTries int) internalgrpc.LocalResult
+	ResolveAnswerLimit(responseTimeoutMs int64) (time.Duration, *contract.CalloutFailure)
 }
 
-// NewDispatchHandler constructs a DispatchHandler backed by the given local
-// ExternalProcessingService and peer-authentication impl. Auth is already
-// validated at construction time (NewAEADPeerAuth etc. check secret length),
-// so this constructor does not return an error.
-func NewDispatchHandler(local contract.ExternalProcessingService, auth PeerAuth) *DispatchHandler {
-	return &DispatchHandler{local: local, auth: auth}
+// DispatchHandler serves POST /internal/dispatch/callout: a callout handed over
+// by the pnode that owns its transaction. Requests are authenticated via
+// PeerAuth and every answer is sealed for its request; the owner believes
+// nothing else.
+type DispatchHandler struct {
+	local LocalRunner
+	auth  PeerAuth
+	// maxTries is the most tries this pnode's own retry setting could ever
+	// grant a callout. A hand-over asking for more is refused, not trimmed.
+	maxTries int
+}
+
+// NewDispatchHandler constructs a DispatchHandler over the local procedure and
+// the peer-authentication impl. Auth is already validated at construction time
+// (NewAEADPeerAuth etc. check secret length), so this constructor returns no
+// error. maxTries comes from the same configuration the owner's loop reads.
+func NewDispatchHandler(local LocalRunner, auth PeerAuth, maxTries int) *DispatchHandler {
+	return &DispatchHandler{local: local, auth: auth, maxTries: maxTries}
 }
 
 // Register registers the dispatch routes on the provided ServeMux.
@@ -37,120 +53,95 @@ func (h *DispatchHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /internal/dispatch/callout", h.handleCallout)
 }
 
-// handleCallout handles POST /internal/dispatch/callout. It dispatches to
-// the local ExternalProcessingService method matching req.Kind and maps the
-// result into the union DispatchCalloutResponse.
+// handleCallout runs the local procedure over a hand-over and answers what
+// became of it. Every answer to a request that opened is sealed for that
+// request: a bare status would reach the owner as a lost answer, which for a
+// callout that is not repeat-safe fails the operation.
 func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) {
-	body, identity, binding, ok := h.verifyRequest(w, r)
-	if !ok {
+	body, identity, binding, err := h.auth.Verify(r)
+	switch {
+	case errors.Is(err, ErrReplayCacheFull):
+		// Opened and authenticated, then refused by the replay cache's
+		// capacity: nothing was handed to a cnode, and the owner can be told so
+		// under seal. A bare status would read as a lost answer and fail an
+		// operation that is not repeat-safe — which a saturated cache must not
+		// do. A replayed nonce is a different matter: it gets the bare 403
+		// below, because there is no request to bind that answer to but the one
+		// the replay copies.
+		slog.Warn("hand-over refused: the replay cache is full", "pkg", "dispatch", "remoteAddr", r.RemoteAddr)
+		h.writeSealed(w, binding, refusal(noCnodeFailure()))
+		return
+	case err != nil:
+		slog.Warn("dispatch request auth failed", "pkg", "dispatch", "remoteAddr", r.RemoteAddr, "err", err)
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
 	var req DispatchCalloutRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		h.refuse(w, binding, fmt.Errorf("failed to parse hand-over: %w", err))
+		return
+	}
+	if err := req.validate(); err != nil {
+		h.refuse(w, binding, fmt.Errorf("failed to validate hand-over: %w", err))
+		return
+	}
+	if err := h.withinOwnBounds(&req); err != nil {
+		h.refuse(w, binding, err)
+		return
+	}
+	call, failure := req.toCallout()
+	if failure != nil {
+		h.writeSealed(w, binding, refusal(failure))
 		return
 	}
 
-	// A dispatch request carries two tenants: TenantID, which becomes the
-	// UserContext this callout runs as, and EntityMeta.TenantID, which is
-	// handed to the local dispatcher as the entity's own. They must agree, or
-	// the callout runs as one tenant over another's entity.
-	//
-	// The equality is unconditional, including for an absent
-	// EntityMeta.TenantID. Every callout kind — processor, criteria and
-	// function alike — is built from a live stored entity whose Meta.TenantID
-	// is set at construction and carried forward on update, so the field is
-	// never empty on the real wire; an empty one can only come from a
-	// hand-crafted peer body, and exempting it would be exempting exactly the
-	// caller this check exists for.
-	//
-	// The response names neither value: both are peer-supplied.
-	if string(req.EntityMeta.TenantID) != req.TenantID {
-		http.Error(w, "entity tenant does not match request tenant", http.StatusBadRequest)
-		return
-	}
+	ctx := common.WithDiagnostics(h.buildContext(r, identity, req.TenantID, req.UserID, req.PrincipalKind, req.Roles))
+	res := h.local.RunLocal(ctx, call, req.TriesLeft)
 
-	ctx := h.buildContext(r, identity, req.TenantID, req.UserID, req.PrincipalKind, req.Roles)
-	ctx = internalgrpc.WithTxToken(ctx, req.TxToken)
-
-	entity := &spi.Entity{
-		Meta: req.EntityMeta,
-		Data: []byte(req.Entity),
-	}
-
-	switch req.Kind {
-	case "processor":
-		var processor spi.ProcessorDefinition
-		if req.Processor != nil {
-			processor = *req.Processor
-		}
-		result, err := h.local.DispatchProcessor(ctx, entity, processor, req.WorkflowName, req.TransitionName, req.TxID)
-		if err != nil {
-			slog.Error("dispatch processor failed", "pkg", "dispatch", "err", err)
-			h.writeSealed(w, binding, dispatchErrorResponse("dispatch processor failed", err))
-			return
-		}
-		h.writeSealed(w, binding, DispatchCalloutResponse{
-			Success:    true,
-			EntityData: result.Data,
-		})
-	case "criteria":
-		matches, reason, err := h.local.DispatchCriteria(ctx, entity, req.Criterion, req.Target, req.WorkflowName, req.TransitionName, req.ProcessorName, req.TxID)
-		if err != nil {
-			slog.Error("dispatch criteria failed", "pkg", "dispatch", "err", err)
-			h.writeSealed(w, binding, dispatchErrorResponse("dispatch criteria failed", err))
-			return
-		}
-		h.writeSealed(w, binding, DispatchCalloutResponse{
-			Success: true,
-			Matches: &matches,
-			Reason:  reason,
-		})
-	case "function":
-		var fn spi.ScheduleFunction
-		if req.Function != nil {
-			fn = *req.Function
-		}
-		result, err := h.local.DispatchFunction(ctx, entity, fn, req.WorkflowName, req.TransitionName, req.TxID)
-		if err != nil {
-			slog.Error("dispatch function failed", "pkg", "dispatch", "err", err)
-			h.writeSealed(w, binding, dispatchErrorResponse("dispatch function failed", err))
-			return
-		}
-		h.writeSealed(w, binding, DispatchCalloutResponse{
-			Success:    true,
-			Result:     result.Value,
-			ResultKind: result.Kind,
-		})
-	default:
-		http.Error(w, "unknown callout kind", http.StatusBadRequest)
-	}
+	diag := common.GetDiagnostics(ctx)
+	resp := responseFromLocal(call, res, diag.GetWarnings(), diag.GetErrors())
+	slog.Debug("hand-over answered", "pkg", "dispatch", "kind", req.Kind, "requestId", req.RequestID,
+		"owner", req.OwnerNodeID, "outcome", resp.Outcome, "triesUsed", res.TriesUsed)
+	h.writeSealed(w, binding, resp)
 }
 
-// verifyRequest runs peer authentication over the incoming request. On
-// failure it writes 403 and returns ok=false; on success it returns the
-// authenticated plaintext body, the peer's identity and the binding the
-// answer to this request is sealed under. Error messages are deliberately
-// generic to avoid leaking which step failed.
-func (h *DispatchHandler) verifyRequest(w http.ResponseWriter, r *http.Request) ([]byte, PeerIdentity, ResponseBinding, bool) {
-	body, identity, binding, err := h.auth.Verify(r)
-	if err != nil {
-		slog.Warn("dispatch request auth failed",
-			"pkg", "dispatch",
-			"remoteAddr", r.RemoteAddr,
-			"err", err)
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return nil, PeerIdentity{}, ResponseBinding{}, false
+// withinOwnBounds refuses a hand-over whose numbers this pnode's own
+// configuration could never have produced: more tries than its retry setting
+// grants, or a longer answer limit than it allows. Neither is trimmed to fit —
+// a substituted number is a wrong-but-available answer, and the owner's budget
+// and the cnode's deadline would then differ between the two pnodes. The
+// answer-limit bound is the local procedure's, applied rather than restated.
+func (h *DispatchHandler) withinOwnBounds(req *DispatchCalloutRequest) error {
+	if req.TriesLeft > h.maxTries {
+		return fmt.Errorf("failed to accept the hand-over: triesLeft %d is above the %d tries this node's retry setting grants",
+			req.TriesLeft, h.maxTries)
 	}
-	return body, identity, binding, true
+	if _, failure := h.local.ResolveAnswerLimit(req.AnswerLimitMs); failure != nil {
+		return fmt.Errorf("failed to accept the hand-over: %w", failure)
+	}
+	return nil
 }
 
-// buildContext constructs a context.Context carrying the UserContext from
-// the dispatch request fields and the authenticated PeerIdentity. Even in
+// refuse answers a hand-over that was authenticated but cannot be run. It would
+// be refused identically by every pnode: terminal, with no try made. The reason
+// is logged here; the answer carries none of it, since the body is peer-supplied.
+func (h *DispatchHandler) refuse(w http.ResponseWriter, binding ResponseBinding, err error) {
+	slog.Error("hand-over refused", "pkg", "dispatch", "err", err)
+	appErr := common.Internal("the hand-over was refused", err)
+	h.writeSealed(w, binding, refusal(&contract.CalloutFailure{Kind: contract.Terminal, Code: appErr.Code, Message: appErr.Message, Err: appErr}))
+}
+
+// buildContext constructs the context.Context the callout runs under: the
+// UserContext the hand-over named, and the authenticated PeerIdentity. Even in
 // the shared-key regime where PeerIdentity is degenerate, propagating it
 // through context means downstream audit / tracing can read origin without
 // being rewritten when transport evolves.
+//
+// The tenant is the wire's, named by its id alone: a peer is authenticated by
+// the cluster-wide key and its identity carries no tenant, so nothing about the
+// tenant may be filled in here that the peer did not send. validate has already
+// held the entity's own tenant to the same value.
 //
 // principalKind is forwarded verbatim from the originating node's
 // DispatchCalloutRequest.PrincipalKind so the peer's local dispatch — which
@@ -170,42 +161,6 @@ func (h *DispatchHandler) buildContext(r *http.Request, identity PeerIdentity, t
 	ctx := spi.WithUserContext(r.Context(), uc)
 	ctx = WithPeerIdentity(ctx, identity)
 	return ctx
-}
-
-// dispatchErrorResponse builds the client-facing DispatchCalloutResponse for
-// a failed local dispatch (processor/criteria/function). genericMsg is the
-// sanitized, kind-specific message that goes in Error — never internal
-// detail from err (matches the existing sanitization the surrounding tests
-// enforce). The ErrorCode/ErrorStatus/ErrorRetryable trio classifies err
-// using the same taxonomy single-node dispatch uses, so a forwarding node
-// can re-mint the identical *common.AppError instead of collapsing every
-// peer failure into a generic 400 (see B1, scheduled-transition-function
-// final review):
-//   - An *common.AppError (matched via errors.As, so it's found even
-//     several layers deep behind %w-wrapping) contributes its own
-//     Code/Status/Retryable.
-//   - contract.ErrNoMatchingMember (the peer lost its matching calculation
-//     member between gossip advertisement and forward) maps to the same
-//     NO_COMPUTE_MEMBER_FOR_TAG/503/retryable trio single-node dispatch
-//     uses for the equivalent condition.
-//   - Anything else leaves the trio zero-valued; the forwarding node falls
-//     back to its historical plain-error behavior.
-func dispatchErrorResponse(genericMsg string, err error) DispatchCalloutResponse {
-	resp := DispatchCalloutResponse{Success: false, Error: genericMsg}
-
-	var appErr *common.AppError
-	if errors.As(err, &appErr) {
-		resp.ErrorCode = appErr.Code
-		resp.ErrorStatus = appErr.Status
-		resp.ErrorRetryable = appErr.Retryable
-		return resp
-	}
-	if errors.Is(err, contract.ErrNoMatchingMember) {
-		resp.ErrorCode = common.ErrCodeNoComputeMemberForTag
-		resp.ErrorStatus = http.StatusServiceUnavailable
-		resp.ErrorRetryable = true
-	}
-	return resp
 }
 
 // writeSealed answers the request binding names, under seal. The owner trusts

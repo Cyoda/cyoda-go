@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,6 +39,12 @@ const peerUnreachableClientMessage = "the peer node could not be reached"
 // ResolveAnswerLimit's configured maximum, which the receiver applies to the
 // callout it builds.
 const maxAnswerLimitMs = int64(math.MaxInt64) / int64(time.Millisecond)
+
+// maxOuterPairs bounds how many enclosing callouts a hand-over may name. It is
+// a sanity bound on untrusted input, not a feature limit: callbacks nested
+// sixteen deep do not occur, and every pair is copied into every pass the
+// receiving pnode mints, so an unbounded list would be paid for on every try.
+const maxOuterPairs = 16
 
 // HandOverAnswer is what the owner learns from one hand-over.
 type HandOverAnswer struct {
@@ -140,7 +147,7 @@ func (req *DispatchCalloutRequest) validate() error {
 		return errors.New("entity tenant does not match request tenant")
 	case req.EntityMeta.ID == "":
 		return errors.New("entity id is empty")
-	case len(req.Entity) == 0:
+	case noEntity(req.Entity):
 		return errors.New("entity is empty")
 	case req.RequestID == "":
 		return errors.New("requestID is empty")
@@ -154,6 +161,9 @@ func (req *DispatchCalloutRequest) validate() error {
 		return errors.New("ownerNodeID is empty")
 	case req.Major < 1:
 		return errors.New("major is below 1")
+	}
+	if len(req.Outer) > maxOuterPairs {
+		return errors.New("the hand-over names more enclosing callouts than can be sane")
 	}
 	for _, p := range req.Outer {
 		// The same rule the pass verifier applies to an enclosing pair.
@@ -178,6 +188,15 @@ func (req *DispatchCalloutRequest) validate() error {
 		return errors.New("unknown callout kind")
 	}
 	return nil
+}
+
+// noEntity reports whether a hand-over carries no entity to run the callout
+// over. JSON's null decodes into a RawMessage of four bytes, not an empty one,
+// and it is no entity all the same: a callout is always built from a stored
+// entity, so neither form can come from a genuine hand-over.
+func noEntity(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null"))
 }
 
 // toCallout builds, on the receiving pnode, the Callout the owner built — with
