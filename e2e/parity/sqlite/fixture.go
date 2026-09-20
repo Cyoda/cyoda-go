@@ -21,7 +21,10 @@ type sqliteFixture struct {
 	baseURL      string
 	grpcEndpoint string
 	keySet       *fixtureutil.JWTKeySet
+	computeBin   string
 }
+
+var _ parity.ComputeClientFixture = (*sqliteFixture)(nil)
 
 // BaseURL implements parity.BackendFixture.
 func (f *sqliteFixture) BaseURL() string { return f.baseURL }
@@ -55,6 +58,12 @@ func (f *sqliteFixture) NewNonAdminTenant(t *testing.T) parity.Tenant {
 // entity write still leaves its paired STATE_MACHINE_START +
 // TRANSITION_ABORTED events durable.
 func (f *sqliteFixture) IsTxBoundAuditStore() bool { return false }
+
+// StartComputeClient implements parity.ComputeClientFixture.
+func (f *sqliteFixture) StartComputeClient(t *testing.T, spec parity.ComputeClientSpec) parity.ComputeClient {
+	t.Helper()
+	return fixtureutil.StartComputeClientForFixture(t, f.keySet, f.computeBin, f.grpcEndpoint, f.baseURL, spec)
+}
 
 // setup creates a temp directory for the SQLite database, builds
 // binaries, launches subprocesses, and waits for readiness. It returns
@@ -104,6 +113,7 @@ func setup() (*sqliteFixture, func(), error) {
 		baseURL:      result.BaseURL,
 		grpcEndpoint: result.GRPCEndpoint,
 		keySet:       ks,
+		computeBin:   result.ComputeBin,
 	}
 
 	return fix, cleanup, nil

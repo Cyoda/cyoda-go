@@ -21,7 +21,10 @@ type postgresFixture struct {
 	baseURL      string
 	grpcEndpoint string
 	keySet       *fixtureutil.JWTKeySet
+	computeBin   string
 }
+
+var _ parity.ComputeClientFixture = (*postgresFixture)(nil)
 
 // BaseURL implements parity.BackendFixture.
 func (f *postgresFixture) BaseURL() string { return f.baseURL }
@@ -55,6 +58,12 @@ func (f *postgresFixture) NewNonAdminTenant(t *testing.T) parity.Tenant {
 // discards its paired STATE_MACHINE_START + TRANSITION_ABORTED events.
 // Audit-shape parity scenarios branch on this property.
 func (f *postgresFixture) IsTxBoundAuditStore() bool { return true }
+
+// StartComputeClient implements parity.ComputeClientFixture.
+func (f *postgresFixture) StartComputeClient(t *testing.T, spec parity.ComputeClientSpec) parity.ComputeClient {
+	t.Helper()
+	return fixtureutil.StartComputeClientForFixture(t, f.keySet, f.computeBin, f.grpcEndpoint, f.baseURL, spec)
+}
 
 // setup boots a Postgres testcontainer, builds binaries, launches
 // subprocesses, and waits for readiness. It returns a teardown function
@@ -117,6 +126,7 @@ func setup() (*postgresFixture, func(), error) {
 		baseURL:      result.BaseURL,
 		grpcEndpoint: result.GRPCEndpoint,
 		keySet:       ks,
+		computeBin:   result.ComputeBin,
 	}
 
 	return fix, cleanup, nil
