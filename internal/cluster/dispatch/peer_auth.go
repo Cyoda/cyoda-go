@@ -6,11 +6,22 @@ import (
 	"net/http"
 )
 
-// ErrReplayRefused is returned by Verify when a request was opened and
-// authenticated and only the replay cache refused it — its nonce was seen
-// before, or the cache is full. The binding returned beside it is valid, so the
-// handler can answer under seal instead of with a bare status.
-var ErrReplayRefused = errors.New("request refused by the replay cache")
+// ErrNonceReplayed is returned by Verify for a request whose nonce was seen
+// before. No binding comes with it: there is no request to bind an answer to
+// that is not also the request the replay copies. An answer sealed under it
+// would be indistinguishable from the genuine one, so an attacker who captures
+// a hand-over, lets the peer run it, replays it and delivers the replay's
+// answer could have the owner give a non-repeat-safe callout to a second
+// compute member. A bare status leaves that attacker able only to lose the
+// answer, as before.
+var ErrNonceReplayed = errors.New("request nonce was seen before")
+
+// ErrReplayCacheFull is returned by Verify when a request opened and
+// authenticated and only the replay cache's capacity refused it. Nothing ran,
+// and only a holder of the key can fill the cache, so the binding returned
+// beside it is valid: the handler answers under seal rather than with a bare
+// status, which would fail an operation that is not repeat-safe.
+var ErrReplayCacheFull = errors.New("replay cache is full")
 
 // ResponseBinding is what ties an answer to the one request it answers: the
 // request's path, nonce and timestamp. Sign returns it to the sender; Verify
@@ -54,8 +65,9 @@ type PeerAuth interface {
 	// Verify reads the request body, validates it, and returns the
 	// authenticated plaintext, the peer's identity and the binding for the
 	// answer. A non-nil error means the request is refused. The binding is
-	// valid when err is nil and when errors.Is(err, ErrReplayRefused); for any
-	// other error it is the zero value and the caller must respond with 403.
+	// valid when err is nil and when errors.Is(err, ErrReplayCacheFull); for
+	// any other error — ErrNonceReplayed included — it is the zero value and
+	// the caller must respond with 403.
 	// identity is meaningful exactly when binding is: for any other error it is
 	// also the zero value and MUST NOT be acted on or attached to a context —
 	// the caller has not authenticated a peer. The returned identity MUST be

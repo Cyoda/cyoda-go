@@ -81,6 +81,51 @@ func (f *stubDispatcher) DispatchFunction(_ context.Context, _ *spi.Entity, _ sp
 // The shared fixtures — stubNodeRegistry, testContext, testEntity,
 // testProcessor, testCriterion, testFunction — live in fixtures_test.go.
 
+// testAnswerLimit stands for (*grpc.ProcessorDispatcher).ResolveAnswerLimit in
+// the tests that still drive ClusterDispatcher.
+func testAnswerLimit(ms int64) (time.Duration, *contract.CalloutFailure) {
+	if ms > 0 {
+		return time.Duration(ms) * time.Millisecond, nil
+	}
+	return 5 * time.Second, nil
+}
+
+func newTestClusterDispatcher(t *testing.T, local contract.ExternalProcessingService, registry contract.NodeRegistry, selfNodeID string, selector PeerSelector, fwd DispatchForwarder, wait time.Duration) *ClusterDispatcher {
+	t.Helper()
+	router, err := NewPeerRouter(registry, selfNodeID, selector, fwd, nil)
+	if err != nil {
+		t.Fatalf("NewPeerRouter: %v", err)
+	}
+	return NewClusterDispatcher(local, router, testAnswerLimit, wait, time.Second)
+}
+
+// stubRunner lets a stubDispatcher stand for the peer's local procedure.
+type stubRunner struct{ stub *stubDispatcher }
+
+func (s stubRunner) RunLocal(ctx context.Context, call internalgrpc.Callout, _ int) internalgrpc.LocalResult {
+	src := call.Source
+	var res internalgrpc.CalloutResult
+	var err error
+	switch call.Kind {
+	case internalgrpc.ProcessorCallout:
+		res.Entity, err = s.stub.DispatchProcessor(ctx, src.Entity, *src.Processor, src.WorkflowName, src.TransitionName, call.TxID)
+	case internalgrpc.CriteriaCallout:
+		res.Matches, res.Reason, err = s.stub.DispatchCriteria(ctx, src.Entity, src.Criterion, src.Target, src.WorkflowName, src.TransitionName, src.ProcessorName, call.TxID)
+	default:
+		res.Function, err = s.stub.DispatchFunction(ctx, src.Entity, *src.Function, src.WorkflowName, src.TransitionName, call.TxID)
+	}
+	switch {
+	case err == nil:
+		return internalgrpc.LocalResult{Result: res, TriesUsed: 1}
+	case errors.Is(err, internalgrpc.ErrNoMatchingMember):
+		return internalgrpc.LocalResult{Failure: &contract.CalloutFailure{Kind: contract.NoHandOff, Code: common.ErrCodeNoComputeMemberForTag, Message: err.Error(), Err: err}}
+	default:
+		return internalgrpc.LocalResult{TriesUsed: 1,
+			Failure:  &contract.CalloutFailure{Kind: contract.NoAnswer, Message: err.Error(), Err: err},
+			Attempts: []contract.CalloutAttempt{{MemberID: "m1", Kind: contract.NoAnswer, Cause: err.Error()}}}
+	}
+}
+
 // --- tests ---
 
 func TestClusterDispatcher_LocalFirst(t *testing.T) {
@@ -99,7 +144,7 @@ func TestClusterDispatcher_LocalFirst(t *testing.T) {
 	auth, _ := NewAEADPeerAuth(testSecret32, 30*time.Second)
 	forwarder := NewHTTPForwarder(auth, 5*time.Second).AllowLoopbackForTesting()
 
-	d := NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 1*time.Second, nil, 0)
+	d := newTestClusterDispatcher(t, local, registry, "self-node", selector, forwarder, 1*time.Second)
 
 	t.Run("processor_local_success", func(t *testing.T) {
 		ctx := testContext()
@@ -141,7 +186,7 @@ func TestClusterDispatcher_LocalFirst(t *testing.T) {
 		localErr := &stubDispatcher{
 			otherErr: fmt.Errorf("connection reset"),
 		}
-		d2 := NewClusterDispatcher(localErr, registry, "self-node", selector, forwarder, 1*time.Second, nil, 0)
+		d2 := newTestClusterDispatcher(t, localErr, registry, "self-node", selector, forwarder, 1*time.Second)
 		ctx := testContext()
 
 		_, err := d2.DispatchProcessor(ctx, testEntity(), testProcessor(), "wf", "tr", "tx1")
@@ -165,7 +210,7 @@ func TestClusterDispatcher_ForwardsToPeer(t *testing.T) {
 				Data: []byte(`{"key":"peer-processed"}`),
 			},
 		}
-		handler := NewDispatchHandler(peerLocal, auth)
+		handler := NewDispatchHandler(stubRunner{peerLocal}, auth)
 		mux := http.NewServeMux()
 		handler.Register(mux)
 		peer := httptest.NewServer(mux)
@@ -182,7 +227,7 @@ func TestClusterDispatcher_ForwardsToPeer(t *testing.T) {
 		selector := NewRandomSelector()
 		forwarder := NewHTTPForwarder(auth, 5*time.Second).AllowLoopbackForTesting()
 
-		d := NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 1*time.Second, nil, 0)
+		d := newTestClusterDispatcher(t, local, registry, "self-node", selector, forwarder, 1*time.Second)
 
 		ctx := testContext()
 		result, err := d.DispatchProcessor(ctx, testEntity(), testProcessor(), "wf", "tr", "tx1")
@@ -199,7 +244,7 @@ func TestClusterDispatcher_ForwardsToPeer(t *testing.T) {
 			criteriaResult: true,
 			criteriaReason: "peer-evaluated reason",
 		}
-		handler := NewDispatchHandler(peerLocal, auth)
+		handler := NewDispatchHandler(stubRunner{peerLocal}, auth)
 		mux := http.NewServeMux()
 		handler.Register(mux)
 		peer := httptest.NewServer(mux)
@@ -215,7 +260,7 @@ func TestClusterDispatcher_ForwardsToPeer(t *testing.T) {
 		selector := NewRandomSelector()
 		forwarder := NewHTTPForwarder(auth, 5*time.Second).AllowLoopbackForTesting()
 
-		d := NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 1*time.Second, nil, 0)
+		d := newTestClusterDispatcher(t, local, registry, "self-node", selector, forwarder, 1*time.Second)
 
 		ctx := testContext()
 		matches, reason, err := d.DispatchCriteria(ctx, testEntity(), testCriterion(), "TRANSITION", "wf", "tr", "proc", "tx1")
@@ -239,7 +284,7 @@ func TestClusterDispatcher_ForwardsToPeer(t *testing.T) {
 				Value: json.RawMessage(`{"fireAfterMs":2000}`),
 			},
 		}
-		handler := NewDispatchHandler(peerLocal, auth)
+		handler := NewDispatchHandler(stubRunner{peerLocal}, auth)
 		mux := http.NewServeMux()
 		handler.Register(mux)
 		peer := httptest.NewServer(mux)
@@ -255,7 +300,7 @@ func TestClusterDispatcher_ForwardsToPeer(t *testing.T) {
 		selector := NewRandomSelector()
 		forwarder := NewHTTPForwarder(auth, 5*time.Second).AllowLoopbackForTesting()
 
-		d := NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 1*time.Second, nil, 0)
+		d := newTestClusterDispatcher(t, local, registry, "self-node", selector, forwarder, 1*time.Second)
 
 		ctx := testContext()
 		result, err := d.DispatchFunction(ctx, testEntity(), testFunction(), "wf", "tr", "tx1")
@@ -307,8 +352,8 @@ func TestClusterDispatcher_ForwardsPrincipalKind(t *testing.T) {
 			})
 
 			t.Run("processor", func(t *testing.T) {
-				fwd := &fakeForwarder{resp: &DispatchCalloutResponse{Success: true}}
-				d := NewClusterDispatcher(local, registry, "self-node", selector, fwd, 1*time.Second, nil, 0)
+				fwd := &fakeForwarder{resp: &DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1), EntityData: []byte(`{}`)}}
+				d := newTestClusterDispatcher(t, local, registry, "self-node", selector, fwd, 1*time.Second)
 				if _, err := d.DispatchProcessor(ctx, testEntity(), testProcessor(), "wf", "tr", "tx1"); err != nil {
 					t.Fatalf("unexpected error: %v", err)
 				}
@@ -318,8 +363,8 @@ func TestClusterDispatcher_ForwardsPrincipalKind(t *testing.T) {
 			})
 
 			t.Run("criteria", func(t *testing.T) {
-				fwd := &fakeForwarder{resp: &DispatchCalloutResponse{Success: true}}
-				d := NewClusterDispatcher(local, registry, "self-node", selector, fwd, 1*time.Second, nil, 0)
+				fwd := &fakeForwarder{resp: &DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1), Matches: new(bool)}}
+				d := newTestClusterDispatcher(t, local, registry, "self-node", selector, fwd, 1*time.Second)
 				if _, _, err := d.DispatchCriteria(ctx, testEntity(), testCriterion(), "TRANSITION", "wf", "tr", "proc", "tx1"); err != nil {
 					t.Fatalf("unexpected error: %v", err)
 				}
@@ -329,8 +374,8 @@ func TestClusterDispatcher_ForwardsPrincipalKind(t *testing.T) {
 			})
 
 			t.Run("function", func(t *testing.T) {
-				fwd := &fakeForwarder{resp: &DispatchCalloutResponse{Success: true}}
-				d := NewClusterDispatcher(local, registry, "self-node", selector, fwd, 1*time.Second, nil, 0)
+				fwd := &fakeForwarder{resp: &DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1)}}
+				d := newTestClusterDispatcher(t, local, registry, "self-node", selector, fwd, 1*time.Second)
 				if _, err := d.DispatchFunction(ctx, testEntity(), testFunction(), "wf", "tr", "tx1"); err != nil {
 					t.Fatalf("unexpected error: %v", err)
 				}
@@ -356,7 +401,7 @@ func TestClusterDispatcher_NoMemberAnywhere(t *testing.T) {
 	forwarder := NewHTTPForwarder(auth, 5*time.Second).AllowLoopbackForTesting()
 
 	// Use a very short wait timeout so the test completes quickly.
-	d := NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 500*time.Millisecond, nil, 0)
+	d := newTestClusterDispatcher(t, local, registry, "self-node", selector, forwarder, 500*time.Millisecond)
 
 	t.Run("processor_no_member_anywhere", func(t *testing.T) {
 		ctx := testContext()
@@ -407,24 +452,25 @@ func TestClusterDispatcher_NoMemberAnywhere(t *testing.T) {
 	})
 }
 
-// TestClusterDispatcher_ForwardFailure covers the terminal case where a peer
-// IS selected (it advertises the required tag) but the transport-level
-// forward to that peer fails (e.g. connection refused). This must surface a
-// retryable 503 DISPATCH_FORWARD_FAILED, distinct from the no-peer-found
-// case (NO_COMPUTE_MEMBER_FOR_TAG).
+// TestClusterDispatcher_ForwardFailure covers the case where a peer IS selected
+// (it advertises the required tag) and the hand-over's answer is lost after the
+// connection was opened. That must surface a retryable 503
+// DISPATCH_FORWARD_FAILED, distinct from the no-peer-found case
+// (NO_COMPUTE_MEMBER_FOR_TAG) — and carry none of the peer's topology.
 func TestClusterDispatcher_ForwardFailure(t *testing.T) {
 	registry := &stubNodeRegistry{
 		nodes: []contract.NodeInfo{
-			// Peer advertises the tag but is unreachable — forward transport fails.
 			{NodeID: "peer-1", Addr: "http://localhost:1", Alive: true, Tags: map[string][]string{"tenant-1": {"python"}}},
 		},
 	}
 	selector := NewRandomSelector()
-	auth, _ := NewAEADPeerAuth(testSecret32, 30*time.Second)
-	forwarder := NewHTTPForwarder(auth, 2*time.Second).AllowLoopbackForTesting()
+	// The answer is lost after the connection was opened: the peer may have the
+	// work, so it is not routed around and the try is spent.
+	forwarder := &fakeForwarder{err: &ForwardError{Stage: StageAfterConnect,
+		Err: errors.New("dispatch forward: HTTP POST http://localhost:1/internal/dispatch/callout: read: connection reset")}}
 
 	local := &stubDispatcher{noMember: true}
-	d := NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 1*time.Second, nil, 0)
+	d := newTestClusterDispatcher(t, local, registry, "self-node", selector, forwarder, 1*time.Second)
 
 	// assertForwardFailureSanitized checks the shared taxonomy assertions
 	// AND (B2) that the client-facing Message carries no peer topology —
@@ -492,13 +538,13 @@ func TestClusterDispatcher_RemintsPeerErrorTaxonomy(t *testing.T) {
 
 	t.Run("503_retryable_code_reminted_operational_retryable", func(t *testing.T) {
 		fwd := &fakeForwarder{resp: &DispatchCalloutResponse{
-			Success:        false,
-			Error:          "dispatch processor failed",
+			Outcome:        "no_answer",
+			TriesUsed:      intPtr(1),
 			ErrorCode:      common.ErrCodeDispatchTimeout,
 			ErrorStatus:    http.StatusServiceUnavailable,
 			ErrorRetryable: true,
 		}}
-		d := NewClusterDispatcher(local, registry, "self-node", selector, fwd, 1*time.Second, nil, 0)
+		d := newTestClusterDispatcher(t, local, registry, "self-node", selector, fwd, 1*time.Second)
 		ctx := testContext()
 		_, err := d.DispatchProcessor(ctx, testEntity(), testProcessor(), "wf", "tr", "tx1")
 		if err == nil {
@@ -524,12 +570,12 @@ func TestClusterDispatcher_RemintsPeerErrorTaxonomy(t *testing.T) {
 
 	t.Run("500_code_reminted_internal_with_code", func(t *testing.T) {
 		fwd := &fakeForwarder{resp: &DispatchCalloutResponse{
-			Success:     false,
-			Error:       "dispatch function failed",
+			Outcome:     "terminal",
+			TriesUsed:   intPtr(1),
 			ErrorCode:   common.ErrCodeScheduleFunctionInvalidResult,
 			ErrorStatus: http.StatusInternalServerError,
 		}}
-		d := NewClusterDispatcher(local, registry, "self-node", selector, fwd, 1*time.Second, nil, 0)
+		d := newTestClusterDispatcher(t, local, registry, "self-node", selector, fwd, 1*time.Second)
 		ctx := testContext()
 		_, err := d.DispatchFunction(ctx, testEntity(), testFunction(), "wf", "tr", "tx1")
 		if err == nil {
@@ -550,71 +596,52 @@ func TestClusterDispatcher_RemintsPeerErrorTaxonomy(t *testing.T) {
 		}
 	})
 
-	t.Run("empty_error_code_falls_back_to_plain_error", func(t *testing.T) {
-		fwd := &fakeForwarder{resp: &DispatchCalloutResponse{
-			Success: false,
-			Error:   "dispatch criteria failed",
-		}}
-		d := NewClusterDispatcher(local, registry, "self-node", selector, fwd, 1*time.Second, nil, 0)
-		ctx := testContext()
-		_, _, err := d.DispatchCriteria(ctx, testEntity(), testCriterion(), "TRANSITION", "wf", "tr", "proc", "tx1")
-		if err == nil {
-			t.Fatal("expected error")
+	// A failure the cnode itself declared carries no code of the answering
+	// pnode's: its own message and verdict travel instead, and they reach the
+	// caller unchanged. Before this they were replaced by a generic text.
+	t.Run("the_cnodes_own_message_and_verdict_reach_the_caller", func(t *testing.T) {
+		no := false
+		answer := func() *DispatchCalloutResponse {
+			return &DispatchCalloutResponse{Outcome: "member_failed", TriesUsed: intPtr(1),
+				MemberError: "boom", MemberRetryable: &no}
 		}
-		var appErr *common.AppError
-		if errors.As(err, &appErr) {
-			t.Fatalf("expected plain fallback error (no AppError), got %+v", appErr)
+		assertMemberFailed := func(t *testing.T, err error) {
+			t.Helper()
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			var failure *contract.CalloutFailure
+			if !errors.As(err, &failure) {
+				t.Fatalf("expected a *contract.CalloutFailure, got %T: %v", err, err)
+			}
+			if failure.Kind != contract.MemberFailed || failure.Message != "boom" {
+				t.Errorf("failure = %+v, want the cnode's own message", failure)
+			}
+			var appErr *common.AppError
+			if errors.As(err, &appErr) {
+				t.Errorf("a cnode's own failure was minted as this node's error: %+v", appErr)
+			}
+			// Cluster topology stays out of what the caller sees.
+			if strings.Contains(err.Error(), "peer-1") {
+				t.Errorf("the caller's error leaks the peer node id: %q", err.Error())
+			}
 		}
-		// B1 (final review): the fallback error must not embed the peer's
-		// NodeID — that's cluster topology, and classifyWorkflowError maps
-		// this plain error straight to a 400 WORKFLOW_FAILED whose Message
-		// is copied verbatim into the client-facing problem+json detail.
-		if strings.Contains(err.Error(), "peer-1") {
-			t.Errorf("client-facing fallback error leaks peer NodeID: %q", err.Error())
-		}
-	})
 
-	// TestClusterDispatcher_RemintsPeerErrorTaxonomy/empty_error_code_* above
-	// covers criteria; the two subtests below cover the processor and
-	// function fallback sites (B1) with the same NodeID-redaction assertion.
-	t.Run("empty_error_code_processor_fallback_redacts_node_id", func(t *testing.T) {
-		fwd := &fakeForwarder{resp: &DispatchCalloutResponse{
-			Success: false,
-			Error:   "dispatch processor failed",
-		}}
-		d := NewClusterDispatcher(local, registry, "self-node", selector, fwd, 1*time.Second, nil, 0)
-		ctx := testContext()
-		_, err := d.DispatchProcessor(ctx, testEntity(), testProcessor(), "wf", "tr", "tx1")
-		if err == nil {
-			t.Fatal("expected error")
-		}
-		var appErr *common.AppError
-		if errors.As(err, &appErr) {
-			t.Fatalf("expected plain fallback error (no AppError), got %+v", appErr)
-		}
-		if strings.Contains(err.Error(), "peer-1") {
-			t.Errorf("client-facing fallback error leaks peer NodeID: %q", err.Error())
-		}
-	})
-
-	t.Run("empty_error_code_function_fallback_redacts_node_id", func(t *testing.T) {
-		fwd := &fakeForwarder{resp: &DispatchCalloutResponse{
-			Success: false,
-			Error:   "dispatch function failed",
-		}}
-		d := NewClusterDispatcher(local, registry, "self-node", selector, fwd, 1*time.Second, nil, 0)
-		ctx := testContext()
-		_, err := d.DispatchFunction(ctx, testEntity(), testFunction(), "wf", "tr", "tx1")
-		if err == nil {
-			t.Fatal("expected error")
-		}
-		var appErr *common.AppError
-		if errors.As(err, &appErr) {
-			t.Fatalf("expected plain fallback error (no AppError), got %+v", appErr)
-		}
-		if strings.Contains(err.Error(), "peer-1") {
-			t.Errorf("client-facing fallback error leaks peer NodeID: %q", err.Error())
-		}
+		t.Run("criteria", func(t *testing.T) {
+			d := newTestClusterDispatcher(t, local, registry, "self-node", selector, &fakeForwarder{resp: answer()}, 1*time.Second)
+			_, _, err := d.DispatchCriteria(testContext(), testEntity(), testCriterion(), "TRANSITION", "wf", "tr", "proc", "tx1")
+			assertMemberFailed(t, err)
+		})
+		t.Run("processor", func(t *testing.T) {
+			d := newTestClusterDispatcher(t, local, registry, "self-node", selector, &fakeForwarder{resp: answer()}, 1*time.Second)
+			_, err := d.DispatchProcessor(testContext(), testEntity(), testProcessor(), "wf", "tr", "tx1")
+			assertMemberFailed(t, err)
+		})
+		t.Run("function", func(t *testing.T) {
+			d := newTestClusterDispatcher(t, local, registry, "self-node", selector, &fakeForwarder{resp: answer()}, 1*time.Second)
+			_, err := d.DispatchFunction(testContext(), testEntity(), testFunction(), "wf", "tr", "tx1")
+			assertMemberFailed(t, err)
+		})
 	})
 }
 
@@ -629,7 +656,7 @@ func TestClusterDispatcher_PeerLocalDispatchErrorTaxonomyPropagatesOverWire(t *t
 
 	newForwardingDispatcher := func(t *testing.T, peerLocal *stubDispatcher) *ClusterDispatcher {
 		t.Helper()
-		handler := NewDispatchHandler(peerLocal, auth)
+		handler := NewDispatchHandler(stubRunner{peerLocal}, auth)
 		mux := http.NewServeMux()
 		handler.Register(mux)
 		peer := httptest.NewServer(mux)
@@ -643,7 +670,7 @@ func TestClusterDispatcher_PeerLocalDispatchErrorTaxonomyPropagatesOverWire(t *t
 		}
 		selector := NewRandomSelector()
 		forwarder := NewHTTPForwarder(auth, 5*time.Second).AllowLoopbackForTesting()
-		return NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 1*time.Second, nil, 0)
+		return newTestClusterDispatcher(t, local, registry, "self-node", selector, forwarder, 1*time.Second)
 	}
 
 	t.Run("peer_dispatch_timeout_appError_propagates_as_503_retryable", func(t *testing.T) {

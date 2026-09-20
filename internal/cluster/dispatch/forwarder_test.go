@@ -96,9 +96,11 @@ func sealingPeer(t *testing.T, auth dispatch.PeerAuth, answer func(r *http.Reque
 }
 
 func TestHTTPForwarder_ProcessorSuccess(t *testing.T) {
+	used := 1
 	wantResp := dispatch.DispatchCalloutResponse{
+		Outcome:    dispatch.OutcomeOK,
+		TriesUsed:  &used,
 		EntityData: []byte(`{"amount":200}`),
-		Success:    true,
 		Warnings:   []string{"adjusted"},
 	}
 
@@ -118,8 +120,8 @@ func TestHTTPForwarder_ProcessorSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ForwardCallout: %v", err)
 	}
-	if !resp.Success {
-		t.Errorf("Success = false, want true")
+	if resp.Outcome != dispatch.OutcomeOK {
+		t.Errorf("Outcome = %q, want %q", resp.Outcome, dispatch.OutcomeOK)
 	}
 	if string(resp.EntityData) != `{"amount":200}` {
 		t.Errorf("EntityData = %s, want {\"amount\":200}", resp.EntityData)
@@ -131,9 +133,11 @@ func TestHTTPForwarder_ProcessorSuccess(t *testing.T) {
 
 func TestHTTPForwarder_CriteriaSuccess(t *testing.T) {
 	matches := true
+	used := 1
 	wantResp := dispatch.DispatchCalloutResponse{
-		Matches: &matches,
-		Success: true,
+		Outcome:   dispatch.OutcomeOK,
+		TriesUsed: &used,
+		Matches:   &matches,
 	}
 
 	srv := sealingPeer(t, newTestPeerAuth(t), func(r *http.Request, plain []byte) any {
@@ -152,8 +156,8 @@ func TestHTTPForwarder_CriteriaSuccess(t *testing.T) {
 	if resp.Matches == nil || !*resp.Matches {
 		t.Errorf("Matches = %v, want true", resp.Matches)
 	}
-	if !resp.Success {
-		t.Errorf("Success = false, want true")
+	if resp.Outcome != dispatch.OutcomeOK {
+		t.Errorf("Outcome = %q, want %q", resp.Outcome, dispatch.OutcomeOK)
 	}
 }
 
@@ -180,7 +184,7 @@ func TestHTTPForwarder_WireBodyIsEncrypted(t *testing.T) {
 	// The peer seals its answer, so the request body is read by Verify; the
 	// wrapper captures the wire bytes and hands the body back unread.
 	sealing := sealingHandler(t, newTestPeerAuth(t), func(r *http.Request, plain []byte) any {
-		return dispatch.DispatchCalloutResponse{Success: true}
+		return dispatch.DispatchCalloutResponse{Outcome: dispatch.OutcomeOK}
 	})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedBody, _ = io.ReadAll(r.Body)
@@ -212,7 +216,7 @@ func TestHTTPForwarder_WireBodyIsEncrypted(t *testing.T) {
 // "cyoda-go-node-2:8123"). Regression test for unsupported protocol error.
 func TestHTTPForwarder_AddrWithoutScheme(t *testing.T) {
 	srv := sealingPeer(t, newTestPeerAuth(t), func(r *http.Request, plain []byte) any {
-		return dispatch.DispatchCalloutResponse{Success: true}
+		return dispatch.DispatchCalloutResponse{Outcome: dispatch.OutcomeOK}
 	})
 
 	// Strip the "http://" from the test server URL to simulate gossip NODE_ADDR
@@ -223,8 +227,8 @@ func TestHTTPForwarder_AddrWithoutScheme(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ForwardCallout with schemeless addr should work: %v", err)
 	}
-	if !resp.Success {
-		t.Error("expected Success=true")
+	if resp.Outcome != dispatch.OutcomeOK {
+		t.Errorf("Outcome = %q, want %q", resp.Outcome, dispatch.OutcomeOK)
 	}
 }
 
@@ -248,7 +252,7 @@ func TestHTTPForwarder_PlaintextAnswerRefused(t *testing.T) {
 			t.Errorf("Verify: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"success":true}`))
+		_, _ = w.Write([]byte(`{"outcome":"ok"}`))
 	}))
 	defer srv.Close()
 
@@ -268,7 +272,7 @@ func TestHTTPForwarder_AnswerSealedForAnotherRequestRefused(t *testing.T) {
 			t.Errorf("Verify: %v", err)
 			return
 		}
-		wire, err := auth.SealResponse(w.Header(), binding, []byte(`{"success":true}`))
+		wire, err := auth.SealResponse(w.Header(), binding, []byte(`{"outcome":"ok"}`))
 		if err != nil {
 			t.Errorf("SealResponse: %v", err)
 			return
@@ -336,7 +340,7 @@ func TestHTTPForwarder_TruncatedAnswerRefused(t *testing.T) {
 			t.Errorf("Verify: %v", err)
 			return
 		}
-		wire, _ := auth.SealResponse(w.Header(), binding, []byte(`{"success":true,"entityData":"AAAAAAAAAAAAAAAA"}`))
+		wire, _ := auth.SealResponse(w.Header(), binding, []byte(`{"outcome":"ok","entityData":"AAAAAAAAAAAAAAAA"}`))
 		_, _ = w.Write(wire[:len(wire)/2])
 	}))
 	defer srv.Close()

@@ -180,23 +180,53 @@ func TestAEADRequest_WithoutDirectionLabelRefused(t *testing.T) {
 	}
 }
 
-// A replay is refused, but — unlike a request that does not authenticate — the
-// refusal comes with the binding, so the peer can say so under seal.
-func TestAEADVerify_ReplayIsRefusedWithAUsableBinding(t *testing.T) {
+// A replayed nonce yields NO binding. There is no verified request to bind a
+// sealed answer to a replay of: an answer bound to the captured request's nonce
+// is indistinguishable from the genuine one, so an attacker who captures a
+// request, lets it run and replays it could deliver "nothing was handed over"
+// in place of the real answer. The refusal is a bare status.
+func TestAEADVerify_ReplayedNonceYieldsNoBinding(t *testing.T) {
 	owner, peer := newAEAD(t), newAEAD(t)
-	first, wire, ownerBinding := newBoundRequest(t, owner, handOverPath, []byte(`{}`))
+	first, wire, _ := newBoundRequest(t, owner, handOverPath, []byte(`{}`))
 	if _, _, _, err := peer.Verify(first); err != nil {
 		t.Fatalf("first Verify: %v", err)
 	}
 	again := httptest.NewRequest(http.MethodPost, handOverPath, bytes.NewReader(wire))
 	again.Header.Set(DispatchTimestampHdr, first.Header.Get(DispatchTimestampHdr))
 
-	body, _, binding, err := peer.Verify(again)
-	if !errors.Is(err, ErrReplayRefused) {
-		t.Fatalf("err = %v, want ErrReplayRefused", err)
+	body, identity, binding, err := peer.Verify(again)
+	if !errors.Is(err, ErrNonceReplayed) {
+		t.Fatalf("err = %v, want ErrNonceReplayed", err)
+	}
+	if errors.Is(err, ErrReplayCacheFull) {
+		t.Error("a replayed nonce must not be reported as a full cache")
 	}
 	if body != nil {
 		t.Error("a refused request must not yield its body")
+	}
+	if identity != (PeerIdentity{}) {
+		t.Errorf("identity = %+v, want the zero value", identity)
+	}
+	if _, err := peer.SealResponse(http.Header{}, binding, []byte(`{}`)); err == nil {
+		t.Error("a binding came back for a replayed nonce")
+	}
+}
+
+// A full cache is this node failing closed on a request it authenticated:
+// nothing ran, only a holder of the key could have filled the cache, and the
+// owner is told so under seal rather than left with a lost answer.
+func TestAEADVerify_FullReplayCacheIsRefusedWithAUsableBinding(t *testing.T) {
+	owner, peer := newAEAD(t), newAEAD(t)
+	peer.nonces = newNonceCache(time.Minute, 1, time.Now)
+
+	one, _, _ := newBoundRequest(t, owner, handOverPath, []byte(`{}`))
+	if _, _, _, err := peer.Verify(one); err != nil {
+		t.Fatalf("first Verify: %v", err)
+	}
+	two, _, ownerBinding := newBoundRequest(t, owner, handOverPath, []byte(`{}`))
+	_, _, binding, err := peer.Verify(two)
+	if !errors.Is(err, ErrReplayCacheFull) {
+		t.Fatalf("err = %v, want ErrReplayCacheFull", err)
 	}
 	h := http.Header{}
 	sealed, err := peer.SealResponse(h, binding, []byte(`{"outcome":"no_handoff"}`))
@@ -208,24 +238,6 @@ func TestAEADVerify_ReplayIsRefusedWithAUsableBinding(t *testing.T) {
 	}
 }
 
-func TestAEADVerify_FullReplayCacheIsRefusedWithAUsableBinding(t *testing.T) {
-	owner, peer := newAEAD(t), newAEAD(t)
-	peer.nonces = newNonceCache(time.Minute, 1, time.Now)
-
-	one, _, _ := newBoundRequest(t, owner, handOverPath, []byte(`{}`))
-	if _, _, _, err := peer.Verify(one); err != nil {
-		t.Fatalf("first Verify: %v", err)
-	}
-	two, _, _ := newBoundRequest(t, owner, handOverPath, []byte(`{}`))
-	_, _, binding, err := peer.Verify(two)
-	if !errors.Is(err, ErrReplayRefused) {
-		t.Fatalf("err = %v, want ErrReplayRefused", err)
-	}
-	if _, err := peer.SealResponse(http.Header{}, binding, []byte(`{}`)); err != nil {
-		t.Fatalf("binding not usable: %v", err)
-	}
-}
-
 // A request that does not authenticate yields no binding: there is nothing to
 // seal an answer to, and the peer answers a bare 403.
 func TestAEADVerify_UnauthenticatedYieldsNoBinding(t *testing.T) {
@@ -233,7 +245,7 @@ func TestAEADVerify_UnauthenticatedYieldsNoBinding(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, handOverPath, bytes.NewReader(bytes.Repeat([]byte{7}, 64)))
 	req.Header.Set(DispatchTimestampHdr, strconv.FormatInt(time.Now().Unix(), 10))
 	_, _, binding, err := a.Verify(req)
-	if err == nil || errors.Is(err, ErrReplayRefused) {
+	if err == nil || errors.Is(err, ErrReplayCacheFull) {
 		t.Fatalf("err = %v, want an authentication failure", err)
 	}
 	if _, err := a.SealResponse(http.Header{}, binding, []byte(`{}`)); err == nil {

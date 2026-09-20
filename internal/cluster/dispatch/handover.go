@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,9 +36,15 @@ const peerUnreachableClientMessage = "the peer node could not be reached"
 // time.Duration once multiplied by time.Millisecond. Above it the product
 // wraps negative and the receiving pnode would give a cnode a deadline in the
 // past. This is the representable range, not a policy: the policy bound is
-// ResolveAnswerLimit's configured maximum, which the receiver applies to the
-// callout it builds.
+// ResolveAnswerLimit's configured maximum, which the OWNER applies before it
+// hands the callout over. The receiver runs the limit it was sent.
 const maxAnswerLimitMs = int64(math.MaxInt64) / int64(time.Millisecond)
+
+// maxOuterPairs bounds how many enclosing callouts a hand-over may name. It is
+// a sanity bound on untrusted input, not a feature limit: callbacks nested
+// sixteen deep do not occur, and every pair is copied into every pass the
+// receiving pnode mints, so an unbounded list would be paid for on every try.
+const maxOuterPairs = 16
 
 // HandOverAnswer is what the owner learns from one hand-over.
 type HandOverAnswer struct {
@@ -63,6 +70,11 @@ type HandOverAnswer struct {
 	// peerErrors are the answering pnode's error diagnostics; HandOver adds
 	// them to the owner's request diagnostics.
 	peerErrors []string
+
+	// lost marks an answer that never arrived, did not authenticate, or could
+	// not be believed. None of the peer's own text is relayed on such an
+	// answer, whatever the peer sent.
+	lost bool
 }
 
 // newHandOverRequest puts call on the wire for a peer that may make triesLeft
@@ -120,27 +132,30 @@ func newHandOverRequest(uc *spi.UserContext, ownerNodeID string, call internalgr
 // validate is the receiving pnode's check of a hand-over it has authenticated.
 //
 // A request carries two tenants: TenantID, which becomes the UserContext the
-// callout runs as, and EntityMeta.TenantID, the entity's own. They must agree,
-// or the callout runs as one tenant over another's entity. The equality is
-// unconditional, an absent EntityMeta.TenantID included: every callout is built
-// from a live stored entity whose tenant is always set, so an empty one can
-// only come from a hand-crafted body. The error names neither value: both are
-// peer-supplied.
+// callout runs as, and EntityMeta.TenantID, the entity's own. Each must be
+// named, and the two must agree. Both halves are needed: the equality alone
+// passes a body with both tenants empty, and the callout would then run under no
+// tenant at all. The equality is likewise unconditional, an absent
+// EntityMeta.TenantID included: every callout is built from a live stored entity
+// whose tenant is always set, so an empty one can only come from a hand-crafted
+// body. The error names neither value: both are peer-supplied.
 //
 // Everything else it checks is likewise a value the callout cannot be run
 // without, and each is refused rather than substituted or clamped: the
 // receiving pnode would otherwise dispatch an unidentifiable entity, give a
-// cnode a deadline in the past, or mint passes carrying pairs the fence
-// cannot judge. The bounds that need configuration — how many tries this
-// pnode will make, how long an answer limit it allows — are applied where the
-// configuration is, not here.
+// cnode a deadline in the past, or mint passes carrying pairs the fence cannot
+// judge. None of them needs configuration to judge, and that is the whole of
+// what the receiver checks: how many tries the hand-over may make and how long
+// a cnode is given to answer are the owner's decisions, run as sent.
 func (req *DispatchCalloutRequest) validate() error {
 	switch {
+	case req.TenantID == "":
+		return errors.New("tenantID is empty")
 	case string(req.EntityMeta.TenantID) != req.TenantID:
 		return errors.New("entity tenant does not match request tenant")
 	case req.EntityMeta.ID == "":
 		return errors.New("entity id is empty")
-	case len(req.Entity) == 0:
+	case noEntity(req.Entity):
 		return errors.New("entity is empty")
 	case req.RequestID == "":
 		return errors.New("requestID is empty")
@@ -154,6 +169,9 @@ func (req *DispatchCalloutRequest) validate() error {
 		return errors.New("ownerNodeID is empty")
 	case req.Major < 1:
 		return errors.New("major is below 1")
+	}
+	if len(req.Outer) > maxOuterPairs {
+		return errors.New("the hand-over names more enclosing callouts than can be sane")
 	}
 	for _, p := range req.Outer {
 		// The same rule the pass verifier applies to an enclosing pair.
@@ -178,6 +196,15 @@ func (req *DispatchCalloutRequest) validate() error {
 		return errors.New("unknown callout kind")
 	}
 	return nil
+}
+
+// noEntity reports whether a hand-over carries no entity to run the callout
+// over. JSON's null decodes into a RawMessage of four bytes, not an empty one,
+// and it is no entity all the same: a callout is always built from a stored
+// entity, so neither form can come from a genuine hand-over.
+func noEntity(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null"))
 }
 
 // toCallout builds, on the receiving pnode, the Callout the owner built — with
@@ -453,6 +480,7 @@ func lostAnswerAfter(used int) HandOverAnswer {
 		TriesUsed: used,
 		Failure:   &contract.CalloutFailure{Kind: contract.NoAnswer, Code: appErr.Code, Message: appErr.Message, Err: appErr},
 		Attempts:  []contract.CalloutAttempt{{MemberID: "-", Kind: contract.NoAnswer, Cause: forwardFailedClientMessage}},
+		lost:      true,
 	}
 }
 

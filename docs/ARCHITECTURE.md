@@ -542,14 +542,17 @@ base64url for both the JSON payload and the HMAC signature:
 `base64url(json_payload).base64url(hmac_sha256(json_payload, secret))`.
 
 Inter-node dispatch authentication uses AEAD (AES-256-GCM) over an
-HKDF-SHA256-derived key (info string `"cyoda-dispatch-v1"`), which
-separates the dispatch key from the raw gossip-encryption secret
-despite both being derived from the same `CYODA_HMAC_SECRET`. Wire
-format is `[nonce(12) || ciphertext||tag]` with Content-Type
-`application/cyoda-dispatch-v1`; `X-Dispatch-Timestamp` is bound as
-associated data along with HTTP method and path, preventing
-cross-endpoint and timestamp-strip replays. A bounded, TTL-evicted
-nonce cache rejects replays within the 30s skew window.
+HKDF-SHA256-derived key (info string `"cyoda-dispatch-v1"`), which separates
+the dispatch key from the raw gossip-encryption secret despite both being
+derived from the same `CYODA_HMAC_SECRET`. Wire format is `[nonce(12) ||
+ciphertext||tag]` with Content-Type `application/cyoda-dispatch-v1`, in both
+directions. A request's associated data is the label `request`, the HTTP
+method, the path and `X-Dispatch-Timestamp`; an answer's is the label
+`response`, the path, and the timestamp and nonce of the request it answers,
+under a fresh nonce of its own. That prevents cross-endpoint replay,
+reflection, and an answer being moved onto another request. A bounded,
+TTL-evicted nonce cache rejects replayed requests within the 30s skew window;
+the scheduler's peer RPC signs its requests and answers the same way.
 
 The token is opaque to the client. The router decodes it to extract `nodeID` without any network call -- address resolution is a local scan over `list.Members()`.
 
@@ -630,9 +633,13 @@ Three strategy interfaces, each with a default implementation:
    - Peer verifies envelope, decrypts, calls local dispatch, returns result
 ```
 
-Dispatch forwarding reuses a shared `http.Transport` (`MaxIdleConns: 20`,
-`MaxIdleConnsPerHost: 5`, timeout via `CYODA_DISPATCH_FORWARD_TIMEOUT`,
-default 30s) across all peer requests.
+Every hand-over opens its own connection (`DisableKeepAlives`), so that a node
+that cannot be connected to is told apart from one that took the work and then
+died. Opening the connection is bounded by `CYODA_DISPATCH_CONNECT_TIMEOUT`
+(TCP connect and TLS handshake); the wait for the answer is a deadline on the
+request's context, set by the owner. The transport uses no proxy and follows
+no redirect. `CYODA_DISPATCH_FORWARD_TIMEOUT` bounds the scheduler's peer RPC
+only.
 
 **Internal dispatch endpoint:**
 
@@ -642,27 +649,36 @@ POST /internal/dispatch/callout
 
 - Single route for every callout kind (processor, criteria, function); `Kind` in
   the request body discriminates
-- Authenticated and encrypted with the AES-256-GCM AEAD envelope described in §4.2
+- Authenticated and encrypted with the AES-256-GCM AEAD envelope described in §4.2 — the answer too
 - 10MB max body size
 - Reconstruct `UserContext` from request fields (tenantID, userID, roles, principal kind)
-- A request carries two tenants — its own `TenantID`, which the reconstructed `UserContext` runs as, and `EntityMeta.TenantID`, which is handed to the local dispatcher as the entity's own. They must agree, or the callout would run as one tenant over another's entity; a mismatch is `400`. The equality is unconditional and covers an absent `EntityMeta.TenantID`: every callout kind is built from a live stored entity whose `Meta.TenantID` is always set, so an empty one can only come from a hand-crafted peer body. The response names neither value — both are peer-supplied.
+- A request carries two tenants — its own `TenantID`, which the reconstructed `UserContext` runs as, and `EntityMeta.TenantID`, which is handed to the local dispatcher as the entity's own. They must agree, or the callout would run as one tenant over another's entity; a mismatch is answered, under seal, as a `terminal` refusal with no try made — as is any authenticated request that cannot be run. The equality is unconditional and covers an absent `EntityMeta.TenantID`: every callout kind is built from a live stored entity whose `Meta.TenantID` is always set, so an empty one can only come from a hand-crafted peer body. The response names neither value — both are peer-supplied.
+- Runs the local procedure (`RunLocal`) with the tries the owner allows, and never hands the callout on
+- A request that does not authenticate is a bare `403`; one that authenticates but is refused by the replay cache is answered, under seal, `no_handoff`
 
 **Dispatch request/response types** (`internal/cluster/dispatch/types.go`): the
-request carries the entity payload and meta, the workflow/transition names, the
-callout txID and tx-token, the caller's tenant/user/roles/principal, the required
-tags, and one kind-specific member (`Processor`, `Criterion` + `Target` +
-`ProcessorName`, or `Function`). The response carries a success flag, the
-kind-specific result (`EntityData` for a processor, `Matches` + `Reason` for a
-criterion, `Result` + `ResultKind` for a function), accumulated warnings, and —
-on failure — the peer's error code, HTTP status and retryable flag so the
-originating node re-mints the same `AppError` the peer would have returned.
+request carries the entity payload and meta, the workflow/transition names,
+the callout's txID, the caller's tenant/user/roles/principal, a request id the
+owner mints and uses for every try, how many tries and how long an answer may
+take, the owner's node id and the fencing number the peer's tries are numbered
+under, the enclosing callouts (empty unless the callout was made from inside a
+callback), whether the work may be given to a second compute node after a
+hand-off, and one kind-specific member (`Processor`, `Criterion` + `Target` +
+`ProcessorName`, or `Function`). The response carries the outcome (`ok`, `no_handoff`,
+`no_answer`, `member_failed`, `terminal`), the tries used, one entry per failed
+try, the kind-specific result (`EntityData` for a processor, `Matches` +
+`Reason` for a criterion, `Result` + `ResultKind` for a function),
+accumulated warnings and diagnostics, and — on failure — either the compute
+node's own message and verdict (`member_failed`) or the peer's classified
+error code, HTTP status and retryable flag so the owner re-mints the same
+`AppError` the peer would have returned.
 
 **Error handling:**
 
 | Scenario | Behavior | Error Code |
 |----------|----------|------------|
 | No local member, no peer with tag | Poll gossip for wait timeout, then fail | `NO_COMPUTE_MEMBER_FOR_TAG` |
-| Peer selected but unreachable | Fail (one peer, one attempt; no server-side failover to a second candidate). Marked retryable, so the client may retry | `DISPATCH_FORWARD_FAILED` |
+| Peer selected but unreachable | The peer could not be connected to: nothing left this node, no try is used, and another tag-matching peer is asked | `NO_COMPUTE_MEMBER_FOR_TAG` (once every peer is exhausted) |
 | Peer dispatch times out | HTTP timeout, transaction rolls back | `DISPATCH_TIMEOUT` |
 | Peer's local member disconnects | Peer returns error, propagated | `COMPUTE_MEMBER_DISCONNECTED` |
 | Gossip metadata stale | Peer returns "no member for tag" | `NO_COMPUTE_MEMBER_FOR_TAG` |

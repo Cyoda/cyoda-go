@@ -3,9 +3,13 @@ package dispatch
 import (
 	"context"
 	"encoding/json"
+	"sync"
+	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 )
 
 // stubNodeRegistry returns a fixed list of nodes.
@@ -72,4 +76,57 @@ func testFunction() spi.ScheduleFunction {
 		CalculationNodesTags: "python",
 		AttachEntity:         true,
 	}
+}
+
+// scriptedCnode is a compute member of a real MemberRegistry: it records the
+// pass of every request it is sent and answers each one with success, so a test
+// can run the real local procedure over it and read what the pass says.
+type scriptedCnode struct {
+	mu     sync.Mutex
+	passes []string
+}
+
+func (c *scriptedCnode) onlyPass(t *testing.T) string {
+	t.Helper()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.passes) != 1 {
+		t.Fatalf("the cnode was sent %d requests, want 1", len(c.passes))
+	}
+	return c.passes[0]
+}
+
+// attachedCnode registers one scripted cnode for tenantID under tag, on a
+// registry of its own.
+func attachedCnode(t *testing.T, tenantID spi.TenantID, tag string) (*internalgrpc.MemberRegistry, *scriptedCnode) {
+	t.Helper()
+	const id = "cnode-1"
+	reg := internalgrpc.NewMemberRegistry()
+	cnode := &scriptedCnode{}
+	member := reg.Register(id, tenantID, []string{tag}, func(ce *cepb.CloudEvent) error {
+		_, payload, err := internalgrpc.ParseCloudEvent(ce)
+		if err != nil {
+			t.Errorf("ParseCloudEvent: %v", err)
+			return nil
+		}
+		var body struct {
+			RequestID string `json:"requestId"`
+		}
+		if err := json.Unmarshal(payload, &body); err != nil {
+			t.Errorf("request payload: %v", err)
+			return nil
+		}
+		func() {
+			cnode.mu.Lock()
+			defer cnode.mu.Unlock()
+			cnode.passes = append(cnode.passes, internalgrpc.TxTokenFromCloudEvent(ce))
+		}()
+		if m := reg.Get(id); m != nil {
+			m.CompleteRequest(body.RequestID, &internalgrpc.ProcessingResponse{
+				Success: true, Payload: json.RawMessage(`{"data":{"by":"` + id + `"}}`)})
+		}
+		return nil
+	}, nil)
+	t.Cleanup(func() { reg.Unregister(member) })
+	return reg, cnode
 }

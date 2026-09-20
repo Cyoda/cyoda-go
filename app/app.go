@@ -545,22 +545,20 @@ func New(cfg Config) *App {
 	if cfg.ExternalProcessing != nil {
 		extProc = cfg.ExternalProcessing
 	} else if cfg.Cluster.Enabled {
-		forwarder := clusterdispatch.NewHTTPForwarder(peerAuth, cfg.Cluster.DispatchForwardTimeout)
+		forwarder := clusterdispatch.NewHTTPForwarder(peerAuth, cfg.Cluster.DispatchConnectTimeout)
 		if cfg.Cluster.DispatchAllowLoopback {
 			// Test-only: multi-node E2E fixtures run every node on 127.0.0.1.
 			// Never set in production (SSRF guard stays active by default).
 			forwarder = forwarder.AllowLoopbackForTesting()
 		}
-		extProc = clusterdispatch.NewClusterDispatcher(
-			localDispatcher,
-			a.nodeRegistry,
-			cfg.Cluster.NodeID,
-			clusterdispatch.NewRandomSelector(),
-			forwarder,
-			cfg.Cluster.DispatchWaitTimeout,
-			a.tokenSigner,
-			cfg.Cluster.TxTokenTTL,
-		)
+		peerRouter, err := clusterdispatch.NewPeerRouter(a.nodeRegistry, cfg.Cluster.NodeID,
+			clusterdispatch.NewRandomSelector(), forwarder, observability.Meter())
+		if err != nil {
+			slog.Error("failed to construct the peer router", "pkg", "cluster", "err", err)
+			os.Exit(1)
+		}
+		extProc = clusterdispatch.NewClusterDispatcher(localDispatcher, peerRouter,
+			localDispatcher.ResolveAnswerLimit, cfg.Cluster.DispatchWaitTimeout, cfg.Callout.HandoverAllowance)
 		// TEMPORARY (deleted by stream O's Coordinator): makes every dispatch
 		// a fenced callout of one try, so a callback names a callout the
 		// fence knows. See app/once_fenced.go.

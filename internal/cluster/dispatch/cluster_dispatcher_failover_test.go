@@ -72,30 +72,38 @@ func twoPeerRegistry(badAddr, goodAddr string) *stubNodeRegistry {
 	}
 }
 
+// noMemberResponse is the answer of a peer that had no cnode to try: nothing
+// was handed off, and no try was used.
 func noMemberResponse() *DispatchCalloutResponse {
 	return &DispatchCalloutResponse{
-		Success:        false,
-		Error:          "dispatch processor failed",
+		Outcome:        "no_handoff",
+		TriesUsed:      intPtr(0),
 		ErrorCode:      common.ErrCodeNoComputeMemberForTag,
 		ErrorStatus:    http.StatusServiceUnavailable,
 		ErrorRetryable: true,
 	}
 }
 
-// TestClusterDispatcher_FailoverOnTransportError: the selected peer is
-// unreachable at the transport level; the dispatcher must retry the other
-// healthy tag-matching peer instead of surfacing DISPATCH_FORWARD_FAILED.
+// notConnectedError is the forwarder's report of a peer that could not be
+// connected to: nothing left this pnode, so the loop goes on to the next peer.
+func notConnectedError() error {
+	return &ForwardError{Stage: StageNotConnected, Err: errors.New("dial tcp: connection refused")}
+}
+
+// TestClusterDispatcher_FailoverOnTransportError: the selected peer cannot be
+// connected to; the dispatcher must ask the other healthy tag-matching peer
+// instead of surfacing DISPATCH_FORWARD_FAILED.
 func TestClusterDispatcher_FailoverOnTransportError(t *testing.T) {
 	local := &stubDispatcher{noMember: true}
 
 	newDispatcher := func(fwd DispatchForwarder) *ClusterDispatcher {
-		return NewClusterDispatcher(local, twoPeerRegistry("http://bad", "http://good"), "self-node", firstSelector{}, fwd, 1*time.Second, nil, 0)
+		return newTestClusterDispatcher(t, local, twoPeerRegistry("http://bad", "http://good"), "self-node", firstSelector{}, fwd, 1*time.Second)
 	}
 
 	t.Run("processor", func(t *testing.T) {
 		fwd := newScriptedForwarder()
-		fwd.script("http://bad", nil, errors.New("connection refused"))
-		fwd.script("http://good", &DispatchCalloutResponse{Success: true, EntityData: []byte(`{"key":"peer-processed"}`)}, nil)
+		fwd.script("http://bad", nil, notConnectedError())
+		fwd.script("http://good", &DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1), EntityData: []byte(`{"key":"peer-processed"}`)}, nil)
 		d := newDispatcher(fwd)
 
 		result, err := d.DispatchProcessor(testContext(), testEntity(), testProcessor(), "wf", "tr", "tx1")
@@ -112,9 +120,9 @@ func TestClusterDispatcher_FailoverOnTransportError(t *testing.T) {
 
 	t.Run("criteria", func(t *testing.T) {
 		fwd := newScriptedForwarder()
-		fwd.script("http://bad", nil, errors.New("connection refused"))
+		fwd.script("http://bad", nil, notConnectedError())
 		matches := true
-		fwd.script("http://good", &DispatchCalloutResponse{Success: true, Matches: &matches, Reason: "peer reason"}, nil)
+		fwd.script("http://good", &DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1), Matches: &matches, Reason: "peer reason"}, nil)
 		d := newDispatcher(fwd)
 
 		got, reason, err := d.DispatchCriteria(testContext(), testEntity(), testCriterion(), "TRANSITION", "wf", "tr", "proc", "tx1")
@@ -131,8 +139,8 @@ func TestClusterDispatcher_FailoverOnTransportError(t *testing.T) {
 
 	t.Run("function", func(t *testing.T) {
 		fwd := newScriptedForwarder()
-		fwd.script("http://bad", nil, errors.New("connection refused"))
-		fwd.script("http://good", &DispatchCalloutResponse{Success: true, ResultKind: "Schedule", Result: []byte(`{"fireAfterMs":1000}`)}, nil)
+		fwd.script("http://bad", nil, notConnectedError())
+		fwd.script("http://good", &DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1), ResultKind: "Schedule", Result: []byte(`{"fireAfterMs":1000}`)}, nil)
 		d := newDispatcher(fwd)
 
 		result, err := d.DispatchFunction(testContext(), testEntity(), testFunction(), "wf", "tr", "tx1")
@@ -156,8 +164,8 @@ func TestClusterDispatcher_FailoverOnPeerNoMember(t *testing.T) {
 	local := &stubDispatcher{noMember: true}
 	fwd := newScriptedForwarder()
 	fwd.script("http://bad", noMemberResponse(), nil)
-	fwd.script("http://good", &DispatchCalloutResponse{Success: true, EntityData: []byte(`{"key":"peer-processed"}`)}, nil)
-	d := NewClusterDispatcher(local, twoPeerRegistry("http://bad", "http://good"), "self-node", firstSelector{}, fwd, 1*time.Second, nil, 0)
+	fwd.script("http://good", &DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1), EntityData: []byte(`{"key":"peer-processed"}`)}, nil)
+	d := newTestClusterDispatcher(t, local, twoPeerRegistry("http://bad", "http://good"), "self-node", firstSelector{}, fwd, 1*time.Second)
 
 	result, err := d.DispatchProcessor(testContext(), testEntity(), testProcessor(), "wf", "tr", "tx1")
 	if err != nil {
@@ -180,14 +188,14 @@ func TestClusterDispatcher_NoFailoverOnExecutedCalloutFailure(t *testing.T) {
 	local := &stubDispatcher{noMember: true}
 	fwd := newScriptedForwarder()
 	fwd.script("http://bad", &DispatchCalloutResponse{
-		Success:        false,
-		Error:          "dispatch processor failed",
+		Outcome:        "no_answer",
+		TriesUsed:      intPtr(1),
 		ErrorCode:      common.ErrCodeDispatchTimeout,
 		ErrorStatus:    http.StatusServiceUnavailable,
 		ErrorRetryable: true,
 	}, nil)
-	fwd.script("http://good", &DispatchCalloutResponse{Success: true}, nil)
-	d := NewClusterDispatcher(local, twoPeerRegistry("http://bad", "http://good"), "self-node", firstSelector{}, fwd, 1*time.Second, nil, 0)
+	fwd.script("http://good", &DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1), EntityData: []byte(`{}`)}, nil)
+	d := newTestClusterDispatcher(t, local, twoPeerRegistry("http://bad", "http://good"), "self-node", firstSelector{}, fwd, 1*time.Second)
 
 	_, err := d.DispatchProcessor(testContext(), testEntity(), testProcessor(), "wf", "tr", "tx1")
 	if err == nil {
@@ -211,11 +219,13 @@ func TestClusterDispatcher_NoFailoverOnExecutedCalloutFailure(t *testing.T) {
 func TestClusterDispatcher_FailoverExhaustion(t *testing.T) {
 	local := &stubDispatcher{noMember: true}
 
-	t.Run("all_transport_errors_surface_forward_failed", func(t *testing.T) {
+	// No peer could be connected to, and there is no local cnode either: the
+	// callout never reached one, and that is what the caller is told.
+	t.Run("all_peers_unreachable_surface_no_compute_member", func(t *testing.T) {
 		fwd := newScriptedForwarder()
-		fwd.script("http://bad", nil, errors.New("connection refused"))
-		fwd.script("http://good", nil, errors.New("connection refused"))
-		d := NewClusterDispatcher(local, twoPeerRegistry("http://bad", "http://good"), "self-node", firstSelector{}, fwd, 1*time.Second, nil, 0)
+		fwd.script("http://bad", nil, notConnectedError())
+		fwd.script("http://good", nil, notConnectedError())
+		d := newTestClusterDispatcher(t, local, twoPeerRegistry("http://bad", "http://good"), "self-node", firstSelector{}, fwd, 1*time.Second)
 
 		_, err := d.DispatchProcessor(testContext(), testEntity(), testProcessor(), "wf", "tr", "tx1")
 		if err == nil {
@@ -225,8 +235,8 @@ func TestClusterDispatcher_FailoverExhaustion(t *testing.T) {
 		if !errors.As(err, &appErr) {
 			t.Fatalf("expected *common.AppError, got %T: %v", err, err)
 		}
-		if appErr.Code != common.ErrCodeDispatchForwardFailed {
-			t.Fatalf("expected code %s, got %s", common.ErrCodeDispatchForwardFailed, appErr.Code)
+		if appErr.Code != common.ErrCodeNoComputeMemberForTag {
+			t.Fatalf("expected code %s, got %s", common.ErrCodeNoComputeMemberForTag, appErr.Code)
 		}
 		if appErr.Status != http.StatusServiceUnavailable || !appErr.Retryable {
 			t.Fatalf("expected retryable 503, got status=%d retryable=%v", appErr.Status, appErr.Retryable)
@@ -240,7 +250,7 @@ func TestClusterDispatcher_FailoverExhaustion(t *testing.T) {
 		fwd := newScriptedForwarder()
 		fwd.script("http://bad", noMemberResponse(), nil)
 		fwd.script("http://good", noMemberResponse(), nil)
-		d := NewClusterDispatcher(local, twoPeerRegistry("http://bad", "http://good"), "self-node", firstSelector{}, fwd, 1*time.Second, nil, 0)
+		d := newTestClusterDispatcher(t, local, twoPeerRegistry("http://bad", "http://good"), "self-node", firstSelector{}, fwd, 1*time.Second)
 
 		_, err := d.DispatchProcessor(testContext(), testEntity(), testProcessor(), "wf", "tr", "tx1")
 		if err == nil {
@@ -287,7 +297,7 @@ func TestClusterDispatcher_CtxCancelledMidForwardKeepsTaxonomy(t *testing.T) {
 	defer cancel()
 
 	fwd := &cancellingForwarder{cancel: cancel}
-	d := NewClusterDispatcher(local, twoPeerRegistry("http://bad", "http://good"), "self-node", firstSelector{}, fwd, 1*time.Second, nil, 0)
+	d := newTestClusterDispatcher(t, local, twoPeerRegistry("http://bad", "http://good"), "self-node", firstSelector{}, fwd, 1*time.Second)
 
 	_, err := d.DispatchProcessor(ctx, testEntity(), testProcessor(), "wf", "tr", "tx1")
 	if err == nil {
@@ -321,10 +331,7 @@ func TestClusterDispatcher_FailoverOverWire(t *testing.T) {
 			Data: []byte(`{"key":"peer-processed"}`),
 		},
 	}
-	handler := NewDispatchHandler(peerLocal, auth)
-	mux := http.NewServeMux()
-	handler.Register(mux)
-	healthy := httptest.NewServer(mux)
+	healthy := httptest.NewServer(newHandlerMux(t, stubRunner{peerLocal}, auth))
 	defer healthy.Close()
 
 	// A server that is immediately closed: its address refuses connections.
@@ -335,7 +342,7 @@ func TestClusterDispatcher_FailoverOverWire(t *testing.T) {
 	local := &stubDispatcher{noMember: true}
 	registry := twoPeerRegistry(degradedURL, healthy.URL)
 	forwarder := NewHTTPForwarder(auth, 5*time.Second).AllowLoopbackForTesting()
-	d := NewClusterDispatcher(local, registry, "self-node", firstSelector{}, forwarder, 1*time.Second, nil, 0)
+	d := newTestClusterDispatcher(t, local, registry, "self-node", firstSelector{}, forwarder, 1*time.Second)
 
 	result, err := d.DispatchProcessor(testContext(), testEntity(), testProcessor(), "wf", "tr", "tx1")
 	if err != nil {

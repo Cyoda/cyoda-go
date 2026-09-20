@@ -5,14 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/google/uuid"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
@@ -20,268 +18,113 @@ import (
 
 const gossipPollInterval = 200 * time.Millisecond
 
+// AnswerLimitResolver resolves a callout's stored responseTimeoutMs to its
+// answer limit; in production (*grpc.ProcessorDispatcher).ResolveAnswerLimit.
+type AnswerLimitResolver func(responseTimeoutMs int64) (time.Duration, *contract.CalloutFailure)
+
 // ClusterDispatcher implements contract.ExternalProcessingService with cluster-aware
 // dispatch. It tries the local node first, and if no local calculation member
-// matches the required tags, it looks up peers via gossip and forwards the
-// request to a peer that advertises the tag.
+// matches the required tags, it looks up peers via gossip and hands the callout
+// over to a peer that advertises the tag.
 type ClusterDispatcher struct {
-	local       contract.ExternalProcessingService
-	registry    contract.NodeRegistry
-	selfNodeID  string
-	selector    PeerSelector
-	forwarder   DispatchForwarder
-	waitTimeout time.Duration
-	signer      *token.Signer
-	tokenTTL    time.Duration
+	local             contract.ExternalProcessingService
+	router            *PeerRouter
+	answerLimit       AnswerLimitResolver
+	waitTimeout       time.Duration
+	handoverAllowance time.Duration
 }
 
 // NewClusterDispatcher constructs a ClusterDispatcher.
-func NewClusterDispatcher(
-	local contract.ExternalProcessingService,
-	registry contract.NodeRegistry,
-	selfNodeID string,
-	selector PeerSelector,
-	forwarder DispatchForwarder,
-	waitTimeout time.Duration,
-	signer *token.Signer,
-	tokenTTL time.Duration,
-) *ClusterDispatcher {
-	return &ClusterDispatcher{
-		local:       local,
-		registry:    registry,
-		selfNodeID:  selfNodeID,
-		selector:    selector,
-		forwarder:   forwarder,
-		waitTimeout: waitTimeout,
-		signer:      signer,
-		tokenTTL:    tokenTTL,
-	}
+func NewClusterDispatcher(local contract.ExternalProcessingService, router *PeerRouter, answerLimit AnswerLimitResolver, waitTimeout, handoverAllowance time.Duration) *ClusterDispatcher {
+	return &ClusterDispatcher{local: local, router: router, answerLimit: answerLimit, waitTimeout: waitTimeout, handoverAllowance: handoverAllowance}
 }
 
 // DispatchProcessor tries the local node first. If the local node has no matching
-// calculation member, it looks up peers via gossip and forwards the request.
+// calculation member, it looks up peers via gossip and hands the callout over.
 func (d *ClusterDispatcher) DispatchProcessor(ctx context.Context, entity *spi.Entity, processor spi.ProcessorDefinition, workflowName string, transitionName string, txID string) (*spi.Entity, error) {
-	// Mint the owner token once before the local-vs-forward split so that
-	// a callback landing on a peer node routes back to this (owner) node.
-	tok := d.mintTxToken(ctx, txID)
-	ctx = internalgrpc.WithTxToken(ctx, tok)
-
-	// Try local first.
 	result, err := d.local.DispatchProcessor(ctx, entity, processor, workflowName, transitionName, txID)
-	if err == nil {
-		return result, nil
+	if err == nil || !isNoMatchingMember(err) {
+		return result, err
 	}
-	if !isNoMatchingMember(err) {
-		return nil, err
-	}
-
-	tags := processor.Config.CalculationNodesTags
 	uc := spi.MustGetUserContext(ctx)
-	tenantID := string(uc.Tenant.ID)
-
-	slog.Debug("local dispatch found no member, looking up cluster peers",
-		"pkg", "dispatch", "tenantID", tenantID, "tags", tags)
-
-	req := d.buildProcessorRequest(entity, processor, workflowName, transitionName, txID, uc, tags, tok)
-
-	resp, peerID, err := d.forwardWithFailover(ctx, tenantID, tags, "processor", req)
+	res, err := d.forwardWithFailover(ctx, internalgrpc.NewProcessorCallout(uc.Tenant.ID, entity, processor, workflowName, transitionName, txID))
 	if err != nil {
 		return nil, err
 	}
-	if !resp.Success {
-		if resp.ErrorCode != "" {
-			return nil, remintPeerError(*resp)
-		}
-		slog.Warn("peer processor dispatch failed", "pkg", "dispatch", "peer", peerID, "error", resp.Error)
-		return nil, fmt.Errorf("peer dispatch failed")
-	}
-	for _, w := range resp.Warnings {
-		common.AddWarning(ctx, w)
-	}
-
-	updated := &spi.Entity{
-		Meta: entity.Meta,
-		Data: resp.EntityData,
-	}
-	return updated, nil
+	return res.Entity, nil
 }
 
 // DispatchCriteria tries the local node first. If the local node has no matching
-// calculation member, it looks up peers via gossip and forwards the request.
+// calculation member, it looks up peers via gossip and hands the callout over.
 func (d *ClusterDispatcher) DispatchCriteria(ctx context.Context, entity *spi.Entity, criterion json.RawMessage, target string, workflowName string, transitionName string, processorName string, txID string) (bool, string, error) {
-	// Mint the owner token once before the local-vs-forward split so that
-	// a callback landing on a peer node routes back to this (owner) node.
-	tok := d.mintTxToken(ctx, txID)
-	ctx = internalgrpc.WithTxToken(ctx, tok)
-
-	// Try local first.
 	matches, reason, err := d.local.DispatchCriteria(ctx, entity, criterion, target, workflowName, transitionName, processorName, txID)
-	if err == nil {
-		return matches, reason, nil
+	if err == nil || !isNoMatchingMember(err) {
+		return matches, reason, err
 	}
-	if !isNoMatchingMember(err) {
-		return false, "", err
-	}
-
-	tags := extractCriteriaTags(criterion)
 	uc := spi.MustGetUserContext(ctx)
-	tenantID := string(uc.Tenant.ID)
-
-	slog.Debug("local criteria dispatch found no member, looking up cluster peers",
-		"pkg", "dispatch", "tenantID", tenantID, "tags", tags)
-
-	req := d.buildCriteriaRequest(entity, criterion, target, workflowName, transitionName, processorName, txID, uc, tags, tok)
-
-	resp, peerID, err := d.forwardWithFailover(ctx, tenantID, tags, "criteria", req)
+	call, failure := internalgrpc.NewCriteriaCallout(uc.Tenant.ID, entity, criterion, target, workflowName, transitionName, processorName, txID)
+	if failure != nil {
+		return false, "", failure
+	}
+	res, err := d.forwardWithFailover(ctx, call)
 	if err != nil {
 		return false, "", err
 	}
-	if !resp.Success {
-		if resp.ErrorCode != "" {
-			return false, "", remintPeerError(*resp)
-		}
-		slog.Warn("peer criteria dispatch failed", "pkg", "dispatch", "peer", peerID, "error", resp.Error)
-		return false, "", fmt.Errorf("peer dispatch failed")
-	}
-	for _, w := range resp.Warnings {
-		common.AddWarning(ctx, w)
-	}
-
-	peerMatches := resp.Matches != nil && *resp.Matches
-	return peerMatches, resp.Reason, nil
+	return res.Matches, res.Reason, nil
 }
 
 // DispatchFunction tries the local node first. If the local node has no matching
-// calculation member, it looks up peers via gossip and forwards the request.
+// calculation member, it looks up peers via gossip and hands the callout over.
 func (d *ClusterDispatcher) DispatchFunction(ctx context.Context, entity *spi.Entity, fn spi.ScheduleFunction, workflowName string, transitionName string, txID string) (contract.FunctionResult, error) {
-	// Mint the owner token once before the local-vs-forward split so that
-	// a callback landing on a peer node routes back to this (owner) node.
-	tok := d.mintTxToken(ctx, txID)
-	ctx = internalgrpc.WithTxToken(ctx, tok)
-
-	// Try local first.
 	result, err := d.local.DispatchFunction(ctx, entity, fn, workflowName, transitionName, txID)
-	if err == nil {
-		return result, nil
+	if err == nil || !isNoMatchingMember(err) {
+		return result, err
 	}
-	if !isNoMatchingMember(err) {
-		return contract.FunctionResult{}, err
-	}
-
-	tags := fn.CalculationNodesTags
 	uc := spi.MustGetUserContext(ctx)
-	tenantID := string(uc.Tenant.ID)
-
-	slog.Debug("local function dispatch found no member, looking up cluster peers",
-		"pkg", "dispatch", "tenantID", tenantID, "tags", tags)
-
-	req := d.buildFunctionRequest(entity, fn, workflowName, transitionName, txID, uc, tags, tok)
-
-	resp, peerID, err := d.forwardWithFailover(ctx, tenantID, tags, "function", req)
+	res, err := d.forwardWithFailover(ctx, internalgrpc.NewFunctionCallout(uc.Tenant.ID, entity, fn, workflowName, transitionName, txID))
 	if err != nil {
 		return contract.FunctionResult{}, err
 	}
-	if !resp.Success {
-		if resp.ErrorCode != "" {
-			return contract.FunctionResult{}, remintPeerError(*resp)
-		}
-		slog.Warn("peer function dispatch failed", "pkg", "dispatch", "peer", peerID, "error", resp.Error)
-		return contract.FunctionResult{}, fmt.Errorf("peer dispatch failed")
-	}
-	for _, w := range resp.Warnings {
-		common.AddWarning(ctx, w)
-	}
-
-	return contract.FunctionResult{Kind: resp.ResultKind, Value: resp.Result}, nil
+	return res.Function, nil
 }
 
-// mintTxToken issues the signed tx-routing token for txID, or "" when there
-// is no transaction or no signer. A pass already on ctx — minted by the
-// onceFenced decorator that wraps this dispatcher — wins, so its callout stays
-// the one the fence knows; this dispatcher's own minting is reachable only from
-// its unit tests and from a caller with no decorator in front of it. Mint
-// failure is logged, not fatal: the dispatch proceeds without cross-node
-// callback routing.
-func (d *ClusterDispatcher) mintTxToken(ctx context.Context, txID string) string {
-	if tok := internalgrpc.TxTokenFromContext(ctx); tok != "" {
-		return tok
+// forwardWithFailover hands the callout over with one try, to one peer after
+// another for as long as the failure allows another cnode to be tried: always
+// when nothing was handed off, and after a hand-off only if the callout is
+// repeat-safe. Each peer is asked at most once; the last failure surfaces.
+func (d *ClusterDispatcher) forwardWithFailover(ctx context.Context, call internalgrpc.Callout) (internalgrpc.CalloutResult, error) {
+	limit, failure := d.answerLimit(call.ResponseTimeoutMs)
+	if failure != nil {
+		return internalgrpc.CalloutResult{}, failure
 	}
-	if txID == "" || d.signer == nil {
-		return ""
-	}
-	t, err := d.signer.Issue(token.Claims{
-		NodeID:    d.selfNodeID,
-		TxRef:     txID,
-		ExpiresAt: time.Now().Add(d.tokenTTL).Unix(),
-		Callout:   uuid.NewString(),
-		Major:     1,
-	})
-	if err != nil {
-		slog.Error("failed to mint tx-token", "pkg", "dispatch", "err", err)
-		return ""
-	}
-	return t
-}
+	call.RequestID = uuid.NewString()
+	call.AnswerLimit = limit
 
-// forwardWithFailover forwards req to a tag-matching peer, failing over to
-// the next tag-matching peer when the attempt provably did not dispatch the
-// callout: a transport-level forward error (peer unreachable/degraded — this
-// class also covers peer HTTP-status rejections such as a 403 auth/replay
-// refusal, which the forwarder folds into the forward error), or a
-// peer answering NO_COMPUTE_MEMBER_FOR_TAG (it lost its matching calculation
-// member between gossip advertisement and forward — nothing executed). Any
-// other peer-classified failure means the callout was actually dispatched;
-// re-executing it on another peer is not the dispatcher's call, so the
-// response is returned unchanged for the caller to remint.
-//
-// Note on the transport-error case: the request may have reached the peer
-// before the connection died, so a failover retry can re-execute the callout.
-// That does not weaken existing semantics — this failure class already
-// surfaces as retryable (DISPATCH_FORWARD_FAILED), telling the client to
-// re-drive the whole dispatch; the failover hop automates that same retry.
-//
-// Each peer is tried at most once. When all tag-matching peers are exhausted,
-// the LAST failure surfaces with the same taxonomy the single-attempt path
-// produced. Returns the responding peer's NodeID alongside the response for
-// caller-side logging.
-func (d *ClusterDispatcher) forwardWithFailover(ctx context.Context, tenantID, tags, kind string, req DispatchCalloutRequest) (*DispatchCalloutResponse, string, error) {
+	tenantID := string(call.TenantID)
 	tried := make(map[string]bool)
-	peer, err := d.findPeerWithPolling(ctx, tenantID, tags, tried)
+	peer, err := d.findPeerWithPolling(ctx, tenantID, call.Tags, tried)
 	if err != nil {
-		return nil, "", err
+		return internalgrpc.CalloutResult{}, err
 	}
-
 	for {
-		slog.Debug("forwarding callout to peer",
-			"pkg", "dispatch", "kind", kind, "peer", peer.NodeID, "addr", peer.Addr, "tags", tags)
-
-		resp, fwdErr := d.forwarder.ForwardCallout(ctx, peer.Addr, req)
-		if fwdErr == nil && (resp.Success || resp.ErrorCode != common.ErrCodeNoComputeMemberForTag) {
-			return resp, peer.NodeID, nil
+		ans := func() HandOverAnswer {
+			hctx, cancel := context.WithTimeout(ctx, limit+d.handoverAllowance)
+			defer cancel()
+			return d.router.HandOver(hctx, peer, call, 1, 1)
+		}()
+		for _, w := range ans.Warnings {
+			common.AddWarning(ctx, w)
 		}
-
+		if ans.Failure == nil {
+			return *ans.Result, nil
+		}
 		tried[peer.NodeID] = true
-		if fwdErr != nil {
-			slog.Error("forward callout to peer failed", "pkg", "dispatch", "kind", kind, "peer", peer.NodeID, "err", fwdErr)
-		} else {
-			slog.Warn("peer lost matching calculation member, trying next peer",
-				"pkg", "dispatch", "kind", kind, "peer", peer.NodeID, "tags", tags)
+		if !ans.Failure.Kind.MayTryAnother(call.RepeatSafe) || ctx.Err() != nil {
+			return internalgrpc.CalloutResult{}, ans.Failure
 		}
-
-		// A dead context ends the failover exactly like peer exhaustion: the
-		// last failure surfaces with its usual taxonomy (retryable 503) — not
-		// a bare ctx error, which classifyWorkflowError would collapse into a
-		// non-retryable 400 WORKFLOW_FAILED.
-		next, found := contract.NodeInfo{}, false
-		if ctx.Err() == nil {
-			next, found = d.findPeer(ctx, tenantID, tags, tried)
-		}
+		next, found := d.findPeer(tenantID, call.Tags, tried)
 		if !found {
-			if fwdErr != nil {
-				return nil, "", common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchForwardFailed,
-					forwardFailedClientMessage).AsRetryable()
-			}
-			return resp, peer.NodeID, nil
+			return internalgrpc.CalloutResult{}, ans.Failure
 		}
 		peer = next
 	}
@@ -297,7 +140,7 @@ func (d *ClusterDispatcher) findPeerWithPolling(ctx context.Context, tenantID st
 
 	// Try immediately first, then poll.
 	for {
-		peer, found := d.findPeer(ctx, tenantID, tags, exclude)
+		peer, found := d.findPeer(tenantID, tags, exclude)
 		if found {
 			return peer, nil
 		}
@@ -314,151 +157,19 @@ func (d *ClusterDispatcher) findPeerWithPolling(ctx context.Context, tenantID st
 	}
 }
 
-// findPeer queries the registry and returns a peer (not self, alive, not in
-// exclude) whose tags for the given tenant overlap with the required tags.
-func (d *ClusterDispatcher) findPeer(ctx context.Context, tenantID string, tags string, exclude map[string]bool) (contract.NodeInfo, bool) {
-	nodes, err := d.registry.List(ctx)
-	if err != nil {
-		slog.Debug("failed to list cluster nodes", "pkg", "dispatch", "err", err)
-		return contract.NodeInfo{}, false
-	}
-
-	var candidates []contract.NodeInfo
-	for _, n := range nodes {
-		if n.NodeID == d.selfNodeID {
-			continue
-		}
-		if !n.Alive {
-			continue
-		}
-		if exclude[n.NodeID] {
-			continue
-		}
-		if common.TagsOverlap(n.Tags[tenantID], tags) {
-			candidates = append(candidates, n)
+// findPeer returns the first peer advertising the tags, in selector order, that
+// is not in exclude.
+func (d *ClusterDispatcher) findPeer(tenantID, tags string, exclude map[string]bool) (contract.NodeInfo, bool) {
+	for _, n := range d.router.Peers(tenantID, tags) {
+		if !exclude[n.NodeID] {
+			return n, true
 		}
 	}
-
-	if len(candidates) == 0 {
-		return contract.NodeInfo{}, false
-	}
-
-	peer, err := d.selector.Select(candidates)
-	if err != nil {
-		slog.Debug("peer selection failed", "pkg", "dispatch", "err", err)
-		return contract.NodeInfo{}, false
-	}
-	return peer, true
-}
-
-// buildProcessorRequest constructs the cross-node dispatch request for a processor.
-func (d *ClusterDispatcher) buildProcessorRequest(entity *spi.Entity, processor spi.ProcessorDefinition, workflowName, transitionName, txID string, uc *spi.UserContext, tags string, tok string) DispatchCalloutRequest {
-	return DispatchCalloutRequest{
-		Kind:           "processor",
-		Entity:         json.RawMessage(entity.Data),
-		EntityMeta:     entity.Meta,
-		Processor:      &processor,
-		WorkflowName:   workflowName,
-		TransitionName: transitionName,
-		TxID:           txID,
-		TenantID:       string(uc.Tenant.ID),
-		Tags:           tags,
-		UserID:         uc.UserID,
-		PrincipalKind:  uc.Kind,
-		Roles:          uc.Roles,
-		TxToken:        tok,
-	}
-}
-
-// buildCriteriaRequest constructs the cross-node dispatch request for criteria.
-func (d *ClusterDispatcher) buildCriteriaRequest(entity *spi.Entity, criterion json.RawMessage, target, workflowName, transitionName, processorName, txID string, uc *spi.UserContext, tags string, tok string) DispatchCalloutRequest {
-	return DispatchCalloutRequest{
-		Kind:           "criteria",
-		Entity:         json.RawMessage(entity.Data),
-		EntityMeta:     entity.Meta,
-		Criterion:      criterion,
-		Target:         target,
-		WorkflowName:   workflowName,
-		TransitionName: transitionName,
-		ProcessorName:  processorName,
-		TxID:           txID,
-		TenantID:       string(uc.Tenant.ID),
-		Tags:           tags,
-		UserID:         uc.UserID,
-		PrincipalKind:  uc.Kind,
-		Roles:          uc.Roles,
-		TxToken:        tok,
-	}
-}
-
-// buildFunctionRequest constructs the cross-node dispatch request for a function callout.
-func (d *ClusterDispatcher) buildFunctionRequest(entity *spi.Entity, fn spi.ScheduleFunction, workflowName, transitionName, txID string, uc *spi.UserContext, tags string, tok string) DispatchCalloutRequest {
-	return DispatchCalloutRequest{
-		Kind:           "function",
-		Entity:         json.RawMessage(entity.Data),
-		EntityMeta:     entity.Meta,
-		Function:       &fn,
-		WorkflowName:   workflowName,
-		TransitionName: transitionName,
-		TxID:           txID,
-		TenantID:       string(uc.Tenant.ID),
-		Tags:           tags,
-		UserID:         uc.UserID,
-		PrincipalKind:  uc.Kind,
-		Roles:          uc.Roles,
-		TxToken:        tok,
-	}
-}
-
-// remintPeerError re-mints a peer's classified dispatch failure (see
-// dispatchErrorResponse in handler.go, which populates the
-// ErrorCode/ErrorStatus/ErrorRetryable trio) as a fresh *common.AppError on
-// the forwarding node, so the caller sees the SAME taxonomy single-node
-// dispatch would have produced for the equivalent failure — not a plain
-// error that classifyWorkflowError collapses into 400 WORKFLOW_FAILED (B1,
-// final review). Only called when resp.ErrorCode != "".
-//
-// The message is a generic, sanitized string — never resp.Error verbatim —
-// matching the same client-safety posture as forwardFailedClientMessage
-// (B2): the peer's local dispatch failure text (e.g. a compute-node error)
-// must not leak through an untrusted intermediate hop unreviewed.
-//
-// Status 500 re-mints via InternalWithCode (matching how single-node
-// dispatch mints SCHEDULE_FUNCTION_INVALID_RESULT — LevelInternal, sanitized
-// ticket response). Every other status re-mints via Operational, chaining
-// .AsRetryable() iff the peer classified it retryable — matching how
-// single-node dispatch mints DISPATCH_TIMEOUT / NO_COMPUTE_MEMBER_FOR_TAG /
-// COMPUTE_MEMBER_DISCONNECTED (LevelOperational, 503, retryable).
-func remintPeerError(resp DispatchCalloutResponse) error {
-	const genericMsg = "peer node dispatch failed"
-	if resp.ErrorStatus == http.StatusInternalServerError {
-		return common.InternalWithCode(resp.ErrorCode, genericMsg, nil)
-	}
-	appErr := common.Operational(resp.ErrorStatus, resp.ErrorCode, genericMsg)
-	if resp.ErrorRetryable {
-		appErr = appErr.AsRetryable()
-	}
-	return appErr
+	return contract.NodeInfo{}, false
 }
 
 // isNoMatchingMember returns true if the error indicates no local calculation
 // member was found (tests against the sentinel from ProcessorDispatcher).
 func isNoMatchingMember(err error) bool {
 	return errors.Is(err, internalgrpc.ErrNoMatchingMember)
-}
-
-// extractCriteriaTags extracts the calculationNodesTags from a criterion JSON.
-// The expected structure is: {"type":"function","function":{"config":{"calculationNodesTags":"..."}}}
-func extractCriteriaTags(criterion json.RawMessage) string {
-	var parsed struct {
-		Function struct {
-			Config struct {
-				CalculationNodesTags string `json:"calculationNodesTags"`
-			} `json:"config"`
-		} `json:"function"`
-	}
-	if err := json.Unmarshal(criterion, &parsed); err != nil {
-		return ""
-	}
-	return parsed.Function.Config.CalculationNodesTags
 }

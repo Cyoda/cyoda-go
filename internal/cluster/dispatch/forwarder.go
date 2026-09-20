@@ -66,18 +66,32 @@ type HTTPForwarder struct {
 	allowLoopback bool
 }
 
-// NewHTTPForwarder constructs an HTTPForwarder. Loopback peer addresses
-// are rejected by default; see AllowLoopbackForTesting.
-func NewHTTPForwarder(auth PeerAuth, timeout time.Duration) *HTTPForwarder {
+// NewHTTPForwarder constructs an HTTPForwarder. connectTimeout bounds opening
+// the connection — the TCP connect and, for an https:// node address, the TLS
+// handshake — and nothing else: how long to wait for the answer is the
+// deadline on the context of each hand-over. Loopback peer addresses are
+// rejected by default; see AllowLoopbackForTesting.
+func NewHTTPForwarder(auth PeerAuth, connectTimeout time.Duration) *HTTPForwarder {
+	dialer := &net.Dialer{Timeout: connectTimeout}
 	return &HTTPForwarder{
 		auth: auth,
 		client: &http.Client{
-			Timeout:       timeout,
+			// No Timeout: a hand-over may rightly take several answer limits.
 			CheckRedirect: refuseRedirects,
 			Transport: &http.Transport{
-				MaxIdleConns:        20,
-				MaxIdleConnsPerHost: 5,
-				IdleConnTimeout:     90 * time.Second,
+				// Every hand-over opens its own connection. On a kept-alive one
+				// a peer that died is discovered only when the read fails —
+				// after the whole wait, and indistinguishable from a peer that
+				// took the work and then died. On a fresh one "could not
+				// connect" is proof that nothing left this pnode.
+				DisableKeepAlives: true,
+				DialContext:       dialer.DialContext,
+				// A failed handshake is not a dial error; it is at least
+				// bounded like one.
+				TLSHandshakeTimeout: connectTimeout,
+				// Never a proxy: through one, a peer that is down is reported
+				// as "proxyconnect", not "dial", and the rule above is lost.
+				Proxy: nil,
 			},
 		},
 	}
