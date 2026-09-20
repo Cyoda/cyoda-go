@@ -1173,6 +1173,7 @@ func mustNewGossip(c cluster.Config) *registry.Gossip {
 		StabilityWindow:  c.StabilityWindow,
 		SecretKey:        c.HMACSecret,
 		ListScanInterval: registry.ScanIntervalFor(c.DispatchWaitTimeout),
+		Meter:            observability.Meter(),
 	})
 	if err != nil {
 		slog.Error("failed to create gossip registry", "pkg", "cluster", "err", err)

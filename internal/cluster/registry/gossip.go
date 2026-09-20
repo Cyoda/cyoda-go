@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/memberlist"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
@@ -36,6 +37,8 @@ type GossipConfig struct {
 	// Zero means one second. app.go derives it from the callout patience with
 	// ScanIntervalFor.
 	ListScanInterval time.Duration
+	// Meter registers the membership instruments. Nil means no instruments.
+	Meter metric.Meter
 }
 
 // nodeMeta is serialized as JSON in memberlist node metadata. It holds the
@@ -89,6 +92,7 @@ type Gossip struct {
 	tags     *tagStore
 	events   *tagEvents
 	signal   *common.ChangeSignal
+	metrics  *tagMetrics
 
 	publish chan struct{} // one slot: this pnode's list changed
 	stop    chan struct{}
@@ -161,6 +165,13 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 		NumNodes:       list.NumMembers,
 		RetransmitMult: mlCfg.RetransmitMult,
 	}
+
+	metrics, err := newTagMetrics(cfg.Meter, g.outstandingLists)
+	if err != nil {
+		_ = list.Shutdown()
+		return nil, fmt.Errorf("failed to create membership metrics: %w", err)
+	}
+	g.metrics = metrics
 
 	// Started only now: the worker needs g.list. What the callbacks left in
 	// the queue in between is still there.
@@ -306,12 +317,32 @@ func (g *Gossip) List(_ context.Context) ([]contract.NodeInfo, error) {
 	return nodes, nil
 }
 
+// outstandingLists counts the alive peers whose announced list is not the one
+// held. It runs on the metrics reader's goroutine and reads the directory.
+func (g *Gossip) outstandingLists() int64 {
+	var n int64
+	for _, m := range g.dir.all() {
+		if m.Name == g.cfg.NodeID {
+			continue
+		}
+		nm, err := parseMeta(m.Meta)
+		if err != nil {
+			continue
+		}
+		if !g.tags.current(m.Name, nm.Tags) {
+			n++
+		}
+	}
+	return n
+}
+
 // Deregister stops the tag worker and gracefully leaves the cluster. A second
 // call returns the first call's result.
 func (g *Gossip) Deregister(_ context.Context, _ string) error {
 	g.deregisterOnce.Do(func() {
 		close(g.stop)
 		<-g.done
+		g.metrics.close()
 		if err := g.list.Leave(5 * time.Second); err != nil {
 			g.deregisterErr = fmt.Errorf("leave cluster: %w", err)
 			return

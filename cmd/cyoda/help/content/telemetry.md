@@ -106,6 +106,12 @@ attribute (`postgres`):
 
 `cyoda.storage.pool.empty_acquire_wait` is the saturation signal to alarm on — it isolates the time callers spent waiting because the pool was empty; `cyoda.storage.pool.acquire_duration` includes instant acquires alongside it and so dilutes the signal.
 
+Cluster membership metrics are exposed whenever `CYODA_CLUSTER_ENABLED=true`,
+regardless of `CYODA_OTEL_ENABLED`:
+
+- `cyoda.cluster.tags.send_failures` — `Int64Counter` — reliable tag-list messages to a peer that failed to send; labeled by `msg` (`list`, `request`). A failed send is repaired by the peer fetching the list; a steady rate points at a peer that gossip reaches and TCP does not.
+- `cyoda.cluster.tags.lists_outstanding` — `Int64ObservableGauge` — alive peers whose announced tag list this node does not hold yet. Briefly non-zero after a join or a compute node attaching; alarm when it stays non-zero, because callouts are not handed to a peer whose tags are unknown.
+
 **Logs**
 
 cyoda-go uses `log/slog` for structured logging. OTel log emission (OTLP log exporter) is not currently wired. Logs are written to stderr only.

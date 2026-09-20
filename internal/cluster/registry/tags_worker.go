@@ -286,6 +286,7 @@ func (g *Gossip) sendAsync(to *memberlist.Node, kind string, msg []byte) {
 			return // shutting down; the send was never going to matter
 		default:
 		}
+		g.metrics.sendFailed(kind)
 		slog.Warn("failed to send tag list message; the peer will fetch it",
 			"pkg", "cluster/registry", "peer", to.Name, "msg", kind, "err", err)
 	}()
