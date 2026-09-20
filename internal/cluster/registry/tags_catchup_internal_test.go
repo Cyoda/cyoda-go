@@ -104,12 +104,26 @@ func TestGossip_LostListIsFetchedAndScanRepeats(t *testing.T) {
 	if got := p.requestCount(); got > settled+1 {
 		t.Errorf("%d more requests after the list was held; the scan keeps fetching a current list", got-settled)
 	}
+}
+
+// TestGossip_MetadataUpdateFetchesAtOnce isolates the metadata-update fetch
+// from the scan: an hour-long scan interval means the second request can only
+// be the fetch that the update nudge (NotifyUpdate -> evMember ->
+// handleMember) sent.
+func TestGossip_MetadataUpdateFetchesAtOnce(t *testing.T) {
+	startInternalGossip(t, "update-1", 25958, time.Hour)
+	v1 := listVersion{Epoch: 777, Seq: 1}
+	p := startRawPeer(t, "update-peer", 25959, rawMeta(t, "update-peer", v1), "127.0.0.1:25958")
+
+	waitFor(t, 5*time.Second, "the join request", func() bool {
+		return p.requestCount() >= 1
+	})
 
 	// A new version announced without its list: the metadata event fetches.
 	v2 := listVersion{Epoch: 777, Seq: 2}
 	before := p.requestCount()
-	p.announce(t, rawMeta(t, "fetch-peer", v2))
-	waitFor(t, 5*time.Second, "a request after the announced version moved on", func() bool {
+	p.announce(t, rawMeta(t, "update-peer", v2))
+	waitFor(t, 5*time.Second, "a second request after the announced version moved on", func() bool {
 		return p.requestCount() > before
 	})
 }
@@ -159,8 +173,11 @@ func TestGossip_OlderListTriggersAFetchAtOnce(t *testing.T) {
 }
 
 func TestGossip_LeaveDropsList(t *testing.T) {
-	g1 := startInternalGossip(t, "leave-1", 24952, 200*time.Millisecond)
-	g2 := startInternalGossip(t, "leave-2", 24953, 200*time.Millisecond, "127.0.0.1:24952")
+	// An hour-long scan on both pnodes: retain(alive) would drop the departed
+	// peer's list on its own, so a scan-driven pass would not prove that
+	// handleLeave does the work.
+	g1 := startInternalGossip(t, "leave-1", 24952, time.Hour)
+	g2 := startInternalGossip(t, "leave-2", 24953, time.Hour, "127.0.0.1:24952")
 	if err := g2.UpdateTags(map[string][]string{"tenant-a": {"python"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -174,4 +191,24 @@ func TestGossip_LeaveDropsList(t *testing.T) {
 	waitFor(t, 5*time.Second, "leave-2's list is dropped", func() bool {
 		return len(g1.tags.tagsOf("leave-2")) == 0
 	})
+}
+
+// TestGossip_RequestFromUnparseableMember_NoAnswer: a directory entry whose
+// metadata does not parse is what List skips and the registry treats as not
+// alive. handleRequest must answer the same way it does everywhere else in
+// the registry: nothing sent, not this pnode's tag list.
+func TestGossip_RequestFromUnparseableMember_NoAnswer(t *testing.T) {
+	g := startInternalGossip(t, "reqbad-1", 25956, time.Hour)
+	p := startRawPeer(t, "reqbad-stranger", 25957, []byte("not json"), "127.0.0.1:25956")
+	waitFor(t, 5*time.Second, "reqbad-1 has the stranger as a member", func() bool {
+		_, ok := g.member("reqbad-stranger")
+		return ok
+	})
+
+	p.send(t, "reqbad-1", 25956, topicTagsRequest, tagRequestMsg{From: "reqbad-stranger"})
+
+	time.Sleep(500 * time.Millisecond)
+	if lists := p.receivedLists(); len(lists) != 0 {
+		t.Errorf("a member whose metadata does not parse got an answer to its request: %v", lists)
+	}
 }

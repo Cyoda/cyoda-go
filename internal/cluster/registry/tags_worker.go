@@ -194,9 +194,9 @@ func (g *Gossip) handleRequest(payload []byte) {
 	if req.From == g.cfg.NodeID {
 		return
 	}
-	m, ok := g.member(req.From)
+	m, _, ok := g.announced(req.From)
 	if !ok {
-		return // the requester is not an alive member; its next event asks again
+		return // the requester is not an announced member; its next event asks again
 	}
 	version, tags := g.tags.ownList()
 	g.sendAsync(m, "list", encodeTagMsg(topicTags, tagListMsg{NodeID: g.cfg.NodeID, Version: version, Tags: tags}))
@@ -232,7 +232,8 @@ func (g *Gossip) scanLists() {
 // ScanIntervalFor returns the scan interval that suits a callout patience:
 // half of it, so a list lost together with its events is fetched while a
 // callout can still wait for it, within 100 ms … 1 s. With waiting disabled
-// it is 1 s.
+// it is 1 s. — below a 200 ms patience the floor wins and the scan is no
+// faster than the wait; the event path still fetches at once.
 func ScanIntervalFor(patience time.Duration) time.Duration {
 	const (
 		shortest = 100 * time.Millisecond
