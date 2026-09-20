@@ -6,6 +6,7 @@ see_also:
   - errors
   - errors.TRANSACTION_EXPIRED
   - errors.TRANSACTION_NODE_UNAVAILABLE
+  - errors.CALLOUT_SUPERSEDED
 ---
 
 # errors.TRANSACTION_NOT_FOUND
@@ -29,3 +30,4 @@ Not retryable. Transaction state (committed, rolled back, expired) determines wh
 - errors
 - errors.TRANSACTION_EXPIRED
 - errors.TRANSACTION_NODE_UNAVAILABLE
+- errors.CALLOUT_SUPERSEDED
