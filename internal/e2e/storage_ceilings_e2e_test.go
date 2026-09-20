@@ -638,8 +638,8 @@ type txEnvelope struct {
 	} `json:"error"`
 }
 
-// createEntityGRPC issues an EntityCreateRequest over the real gRPC entity API
-// (the member's connection), unjoined.
+// createEntityGRPC issues an EntityCreateRequest over the real gRPC entity API,
+// unjoined.
 func (h *callbackHarness) createEntityGRPC(model string, version int, payload string) (txEnvelope, error) {
 	var data map[string]any
 	if err := json.Unmarshal([]byte(payload), &data); err != nil {
@@ -656,7 +656,7 @@ func (h *callbackHarness) createEntityGRPC(model string, version int, payload st
 	if err != nil {
 		return txEnvelope{}, err
 	}
-	client := cyodapb.NewCloudEventsServiceClient(h.member.conn)
+	client := cyodapb.NewCloudEventsServiceClient(h.apiConn)
 	respCE, err := client.EntityManage(h.grpcCtx(""), reqCE)
 	if err != nil {
 		return txEnvelope{}, err
@@ -664,9 +664,9 @@ func (h *callbackHarness) createEntityGRPC(model string, version int, payload st
 	return parseTxEnvelope(respCE)
 }
 
-// updateEntityGRPC issues an EntityUpdateRequest over the real gRPC entity API
-// (the member's connection), unjoined, with no transition — a loopback update,
-// the gRPC twin of PUT /api/entity/{format}/{entityId}.
+// updateEntityGRPC issues an EntityUpdateRequest over the real gRPC entity API,
+// unjoined, with no transition — a loopback update, the gRPC twin of
+// PUT /api/entity/{format}/{entityId}.
 func (h *callbackHarness) updateEntityGRPC(entityID, payload string) (txEnvelope, error) {
 	var data map[string]any
 	if err := json.Unmarshal([]byte(payload), &data); err != nil {
@@ -683,7 +683,7 @@ func (h *callbackHarness) updateEntityGRPC(entityID, payload string) (txEnvelope
 	if err != nil {
 		return txEnvelope{}, err
 	}
-	client := cyodapb.NewCloudEventsServiceClient(h.member.conn)
+	client := cyodapb.NewCloudEventsServiceClient(h.apiConn)
 	respCE, err := client.EntityManage(h.grpcCtx(""), reqCE)
 	if err != nil {
 		return txEnvelope{}, err
@@ -691,9 +691,9 @@ func (h *callbackHarness) updateEntityGRPC(entityID, payload string) (txEnvelope
 	return parseTxEnvelope(respCE)
 }
 
-// deleteEntityGRPC issues an EntityDeleteRequest over the real gRPC entity API
-// (the member's connection), unjoined. EntityDeleteResponse carries the same
-// error envelope shape as EntityTransactionResponse, so txEnvelope reads both.
+// deleteEntityGRPC issues an EntityDeleteRequest over the real gRPC entity API,
+// unjoined. EntityDeleteResponse carries the same error envelope shape as
+// EntityTransactionResponse, so txEnvelope reads both.
 func (h *callbackHarness) deleteEntityGRPC(entityID string) (txEnvelope, error) {
 	reqCE, err := internalgrpc.NewCloudEvent(internalgrpc.EntityDeleteRequest, map[string]any{
 		"id":       "storage-ceiling-delete",
@@ -702,7 +702,7 @@ func (h *callbackHarness) deleteEntityGRPC(entityID string) (txEnvelope, error) 
 	if err != nil {
 		return txEnvelope{}, err
 	}
-	client := cyodapb.NewCloudEventsServiceClient(h.member.conn)
+	client := cyodapb.NewCloudEventsServiceClient(h.apiConn)
 	respCE, err := client.EntityManage(h.grpcCtx(""), reqCE)
 	if err != nil {
 		return txEnvelope{}, err

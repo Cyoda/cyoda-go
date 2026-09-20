@@ -133,7 +133,15 @@ type callbackFunc func(rc *reqCtx) (resultKind string, result map[string]any, er
 type callbackHarness struct {
 	app     *app.App
 	baseURL string // e.g. http://127.0.0.1:PORT
-	member  *computeMember
+
+	// grpcAddr is the stack's gRPC listener address; cnodes dial it.
+	grpcAddr string
+	// apiConn carries the harness's own gRPC API calls (EntityManage,
+	// EntitySearch, …). It belongs to no cnode, so it works on a stack with no
+	// cnode attached and survives a cnode closing its stream.
+	apiConn *grpc.ClientConn
+	// member is the default cnode; nil on a harness built by newCalloutHarness.
+	member *computeMember
 
 	// signKey is this stack's JWT signing key (same key app.New parsed from
 	// cfg.IAM.JWTSigningKey). Exposed so attribution tests can mint tokens for
@@ -163,15 +171,10 @@ func newCallbackHarness(t *testing.T) *callbackHarness {
 	return newCallbackHarnessConfigured(t, nil)
 }
 
-// newCallbackHarnessConfigured is newCallbackHarness with an optional cfg
-// mutator applied to app.DefaultConfig() just before app.New — e.g. Task
-// 9.2's expiry-elapsed-before-scan scenario disables this stack's built-in
-// scheduler (cfg.Scheduler.Enabled = false) so it can drive its own
-// bespoke, precisely-timed scheduler.Service instead (mirrors
-// TestE2E_ScheduledTransition_RestartDurability's approach), eliminating
-// the race window a live default-cadence scheduler ticking mid-flight would
-// otherwise create. configure may be nil (identical to newCallbackHarness).
-func newCallbackHarnessConfigured(t *testing.T, configure func(*app.Config)) *callbackHarness {
+// newCalloutHarness stands up the full stack with NO cnode attached. Tests
+// that script their own cnodes — several of them, attached and detached
+// mid-test — start here. configure may be nil.
+func newCalloutHarness(t *testing.T, configure func(*app.Config)) *callbackHarness {
 	t.Helper()
 
 	// Fresh JWT signing key for this stack (self-contained OAuth + JWKS).
@@ -237,10 +240,33 @@ func newCallbackHarnessConfigured(t *testing.T, configure func(*app.Config)) *ca
 	// cors_e2e_test.go and iam_gated_fixtures_test.go).
 	t.Cleanup(a.Shutdown)
 
-	// Connect the compute member and wait for it to be ready.
-	h.member = newComputeMember(t, h, grpcLis.Addr().String())
-	t.Cleanup(h.member.stop)
+	h.grpcAddr = grpcLis.Addr().String()
+	apiConn, err := grpc.NewClient(h.grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial gRPC API connection: %v", err)
+	}
+	h.apiConn = apiConn
+	t.Cleanup(func() { _ = apiConn.Close() })
 
+	// Seed the cached bearer on the test goroutine: callback() and grpcCtx()
+	// read it from other goroutines and cannot fetch it themselves.
+	h.token(t)
+	return h
+}
+
+// newCallbackHarnessConfigured is newCallbackHarness with an optional cfg
+// mutator applied to app.DefaultConfig() just before app.New — e.g. Task
+// 9.2's expiry-elapsed-before-scan scenario disables this stack's built-in
+// scheduler (cfg.Scheduler.Enabled = false) so it can drive its own
+// bespoke, precisely-timed scheduler.Service instead (mirrors
+// TestE2E_ScheduledTransition_RestartDurability's approach), eliminating
+// the race window a live default-cadence scheduler ticking mid-flight would
+// otherwise create. configure may be nil (identical to newCallbackHarness).
+func newCallbackHarnessConfigured(t *testing.T, configure func(*app.Config)) *callbackHarness {
+	t.Helper()
+	h := newCalloutHarness(t, configure)
+	h.member = newComputeMember(t, h, h.grpcAddr)
+	t.Cleanup(h.member.stop)
 	return h
 }
 
