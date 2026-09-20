@@ -26,19 +26,12 @@ import (
 //	...
 //	err := scope.Commit()
 //
-// beginScope deliberately does NOT touch the joined gate. Folding it in would
-// leave the gate permanently held on the joined path, where Release is a no-op —
-// and it is a non-reentrant mutex, so every later joined callback on that txID
-// would block forever.
-//
-// Flows therefore acquire it themselves and register `defer releaseGate()` AFTER
-// `defer scope.Release()`, so LIFO frees the gate before Release runs. That
-// ordering is lock-order hygiene, NOT a fix for a live deadlock: Release acquires
-// nothing on the joined-entry path (it returns early), and on the joined-segment
-// path it takes a DIFFERENT txID's gate, so reversing the two defers today merely
-// holds both at once. It becomes a self-deadlock the moment Release is hardened to
-// gate the entry transaction too — which is why the ordering is pinned by a test
-// rather than left to be rediscovered.
+// beginScope deliberately does NOT touch the joined gate: a joined request's
+// gate is the join layer's, taken before the handler ran and released after it
+// returns — hence after Release. The gate is a non-reentrant mutex, so nothing
+// in a joined chain may take the entry transaction's gate again; Release returns
+// early for a joined chain on its entry transaction, and takes the gate only for
+// a segment the engine opened, which is a DIFFERENT txID.
 type txScope struct {
 	h *Handler
 
@@ -134,7 +127,10 @@ func (s *txScope) Release() {
 	// Acquire the per-tx gate so the rollback is mutually exclusive with any
 	// joined callback's access to the same transaction handle. No self-deadlock:
 	// every `defer h.gate.Acquire(...)()` site in this package is inside an IIFE,
-	// so the gate is free by outer-defer time.
+	// so the gate is free by outer-defer time — and the one gate a joined chain
+	// still holds here is its ENTRY transaction's, taken by the join layer, while
+	// the early return above means this line is only ever reached for a segment
+	// the engine opened, a different txID.
 	//
 	// What this does NOT preserve is failed-Save-then-rollback as one atomic
 	// gated section: a joined callback can win the gate in the window between an

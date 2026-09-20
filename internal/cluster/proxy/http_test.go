@@ -100,7 +100,7 @@ func TestHTTPProxy_TokenForSelf_ServesLocally(t *testing.T) {
 	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
 	reg := newFakeRegistry(contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true})
 
-	tok, err := signer.Issue("node-1", "tx-123", time.Now().Add(5*time.Minute))
+	tok, err := signer.Issue(token.Claims{NodeID: "node-1", TxRef: "tx-123", ExpiresAt: time.Now().Add(5 * time.Minute).Unix(), Callout: "req-tx-123", Major: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestHTTPProxy_TokenForOtherNode_Proxies(t *testing.T) {
 		contract.NodeInfo{NodeID: "node-2", Addr: remote.URL, Alive: true},
 	)
 
-	tok, err := signer.Issue("node-2", "tx-456", time.Now().Add(5*time.Minute))
+	tok, err := signer.Issue(token.Claims{NodeID: "node-2", TxRef: "tx-456", ExpiresAt: time.Now().Add(5 * time.Minute).Unix(), Callout: "req-tx-456", Major: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestHTTPProxy_TokenForDeadNode_Returns503(t *testing.T) {
 		contract.NodeInfo{NodeID: "node-2", Addr: "http://localhost:9998", Alive: false},
 	)
 
-	tok, err := signer.Issue("node-2", "tx-789", time.Now().Add(5*time.Minute))
+	tok, err := signer.Issue(token.Claims{NodeID: "node-2", TxRef: "tx-789", ExpiresAt: time.Now().Add(5 * time.Minute).Unix(), Callout: "req-tx-789", Major: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func TestHTTPProxy_ExpiredToken_Returns410(t *testing.T) {
 	reg := newFakeRegistry(contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true})
 
 	// Issue a token that expired in the past.
-	tok, err := signer.Issue("node-2", "tx-expired", time.Now().Add(-1*time.Minute))
+	tok, err := signer.Issue(token.Claims{NodeID: "node-2", TxRef: "tx-expired", ExpiresAt: time.Now().Add(-1 * time.Minute).Unix(), Callout: "req-tx-expired", Major: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestHTTPProxy_TamperedToken_Returns401(t *testing.T) {
 	signer2 := mustNewSigner([]byte("other-secret-key-at-least-32-bytes"))
 	reg := newFakeRegistry(contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true})
 
-	tok, err := signer2.Issue("node-2", "tx-tampered", time.Now().Add(5*time.Minute))
+	tok, err := signer2.Issue(token.Claims{NodeID: "node-2", TxRef: "tx-tampered", ExpiresAt: time.Now().Add(5 * time.Minute).Unix(), Callout: "req-tx-tampered", Major: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestHTTPProxy_RoundTrip_SingleACAO(t *testing.T) {
 		contract.NodeInfo{NodeID: "node-2", Addr: peer.URL, Alive: true},
 	)
 
-	tok, err := signer.Issue("node-2", "tx-acao-roundtrip", time.Now().Add(5*time.Minute))
+	tok, err := signer.Issue(token.Claims{NodeID: "node-2", TxRef: "tx-acao-roundtrip", ExpiresAt: time.Now().Add(5 * time.Minute).Unix(), Callout: "req-tx-acao-roundtrip", Major: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +300,7 @@ func TestHTTPProxy_SSRFGuard_RejectsLoopback(t *testing.T) {
 		contract.NodeInfo{NodeID: "node-2", Addr: "http://127.0.0.1:9999", Alive: true},
 	)
 
-	tok, err := signer.Issue("node-2", "tx-ssrf", time.Now().Add(5*time.Minute))
+	tok, err := signer.Issue(token.Claims{NodeID: "node-2", TxRef: "tx-ssrf", ExpiresAt: time.Now().Add(5 * time.Minute).Unix(), Callout: "req-tx-ssrf", Major: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +336,7 @@ func TestHTTPProxy_SSRFGuard_AllowsLoopbackWhenPermitted(t *testing.T) {
 		contract.NodeInfo{NodeID: "node-2", Addr: remote.URL, Alive: true},
 	)
 
-	tok, err := signer.Issue("node-2", "tx-loopback-ok", time.Now().Add(5*time.Minute))
+	tok, err := signer.Issue(token.Claims{NodeID: "node-2", TxRef: "tx-loopback-ok", ExpiresAt: time.Now().Add(5 * time.Minute).Unix(), Callout: "req-tx-loopback-ok", Major: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +381,7 @@ func TestProxy_PreservesQueryString(t *testing.T) {
 		contract.NodeInfo{NodeID: "node-2", Addr: remote.URL, Alive: true},
 	)
 
-	tok, err := signer.Issue("node-2", "tx-query-string", time.Now().Add(5*time.Minute))
+	tok, err := signer.Issue(token.Claims{NodeID: "node-2", TxRef: "tx-query-string", ExpiresAt: time.Now().Add(5 * time.Minute).Unix(), Callout: "req-tx-query-string", Major: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,7 +422,7 @@ func TestHTTPProxy_UpstreamHangupMidBody_DoesNotLatchHealth(t *testing.T) {
 		contract.NodeInfo{NodeID: "node-2", Addr: upstream.URL, Alive: true},
 	)
 
-	tok, err := signer.Issue("node-2", "tx-hangup", time.Now().Add(5*time.Minute))
+	tok, err := signer.Issue(token.Claims{NodeID: "node-2", TxRef: "tx-hangup", ExpiresAt: time.Now().Add(5 * time.Minute).Unix(), Callout: "req-tx-hangup", Major: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

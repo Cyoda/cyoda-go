@@ -31,25 +31,28 @@ func (r *Registry) Acquire(txID string) func() {
 	if txID == "" {
 		return func() {}
 	}
-	r.mu.Lock()
-	g := r.gates[txID]
-	if g == nil {
-		g = &gate{}
-		r.gates[txID] = g
-	}
-	g.refs++
-	r.mu.Unlock()
+	g := func() *gate {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		g := r.gates[txID]
+		if g == nil {
+			g = &gate{}
+			r.gates[txID] = g
+		}
+		g.refs++
+		return g
+	}()
 
-	g.mu.Lock()
+	g.mu.Lock() // held until the returned release runs; not a critical section of this func
 
 	return func() {
 		g.mu.Unlock()
 		r.mu.Lock()
+		defer r.mu.Unlock()
 		g.refs--
 		if g.refs == 0 {
 			delete(r.gates, txID)
 		}
-		r.mu.Unlock()
 	}
 }
 

@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
+
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -71,7 +73,7 @@ func NewClusterDispatcher(
 func (d *ClusterDispatcher) DispatchProcessor(ctx context.Context, entity *spi.Entity, processor spi.ProcessorDefinition, workflowName string, transitionName string, txID string) (*spi.Entity, error) {
 	// Mint the owner token once before the local-vs-forward split so that
 	// a callback landing on a peer node routes back to this (owner) node.
-	tok := d.mintTxToken(txID)
+	tok := d.mintTxToken(ctx, txID)
 	ctx = internalgrpc.WithTxToken(ctx, tok)
 
 	// Try local first.
@@ -119,7 +121,7 @@ func (d *ClusterDispatcher) DispatchProcessor(ctx context.Context, entity *spi.E
 func (d *ClusterDispatcher) DispatchCriteria(ctx context.Context, entity *spi.Entity, criterion json.RawMessage, target string, workflowName string, transitionName string, processorName string, txID string) (bool, string, error) {
 	// Mint the owner token once before the local-vs-forward split so that
 	// a callback landing on a peer node routes back to this (owner) node.
-	tok := d.mintTxToken(txID)
+	tok := d.mintTxToken(ctx, txID)
 	ctx = internalgrpc.WithTxToken(ctx, tok)
 
 	// Try local first.
@@ -164,7 +166,7 @@ func (d *ClusterDispatcher) DispatchCriteria(ctx context.Context, entity *spi.En
 func (d *ClusterDispatcher) DispatchFunction(ctx context.Context, entity *spi.Entity, fn spi.ScheduleFunction, workflowName string, transitionName string, txID string) (contract.FunctionResult, error) {
 	// Mint the owner token once before the local-vs-forward split so that
 	// a callback landing on a peer node routes back to this (owner) node.
-	tok := d.mintTxToken(txID)
+	tok := d.mintTxToken(ctx, txID)
 	ctx = internalgrpc.WithTxToken(ctx, tok)
 
 	// Try local first.
@@ -204,13 +206,26 @@ func (d *ClusterDispatcher) DispatchFunction(ctx context.Context, entity *spi.En
 }
 
 // mintTxToken issues the signed tx-routing token for txID, or "" when there
-// is no transaction or no signer. Mint failure is logged, not fatal: the
-// dispatch proceeds without cross-node callback routing.
-func (d *ClusterDispatcher) mintTxToken(txID string) string {
+// is no transaction or no signer. A pass already on ctx — minted by the
+// onceFenced decorator that wraps this dispatcher — wins, so its callout stays
+// the one the fence knows; this dispatcher's own minting is reachable only from
+// its unit tests and from a caller with no decorator in front of it. Mint
+// failure is logged, not fatal: the dispatch proceeds without cross-node
+// callback routing.
+func (d *ClusterDispatcher) mintTxToken(ctx context.Context, txID string) string {
+	if tok := internalgrpc.TxTokenFromContext(ctx); tok != "" {
+		return tok
+	}
 	if txID == "" || d.signer == nil {
 		return ""
 	}
-	t, err := d.signer.Issue(d.selfNodeID, txID, time.Now().Add(d.tokenTTL))
+	t, err := d.signer.Issue(token.Claims{
+		NodeID:    d.selfNodeID,
+		TxRef:     txID,
+		ExpiresAt: time.Now().Add(d.tokenTTL).Unix(),
+		Callout:   uuid.NewString(),
+		Major:     1,
+	})
 	if err != nil {
 		slog.Error("failed to mint tx-token", "pkg", "dispatch", "err", err)
 		return ""

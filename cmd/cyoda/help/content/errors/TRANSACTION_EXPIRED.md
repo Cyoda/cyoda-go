@@ -6,6 +6,7 @@ see_also:
   - errors
   - errors.TRANSACTION_NOT_FOUND
   - errors.TRANSACTION_NODE_UNAVAILABLE
+  - errors.CALLOUT_SUPERSEDED
 ---
 
 # errors.TRANSACTION_EXPIRED
@@ -29,3 +30,4 @@ Not retryable with the same token. The original transaction must be committed or
 - errors
 - errors.TRANSACTION_NOT_FOUND
 - errors.TRANSACTION_NODE_UNAVAILABLE
+- errors.CALLOUT_SUPERSEDED

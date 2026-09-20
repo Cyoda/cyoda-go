@@ -45,7 +45,7 @@ func TestGossipRegistry_UnparseableMetadata_NotAlive_HTTP503(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tok, err := signer.Issue("badmeta-stranger", "tx-1", time.Now().Add(time.Minute))
+	tok, err := signer.Issue(token.Claims{NodeID: "badmeta-stranger", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-1", Major: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

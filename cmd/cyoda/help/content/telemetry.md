@@ -112,6 +112,11 @@ regardless of `CYODA_OTEL_ENABLED`:
 - `cyoda.cluster.tags.send_failures` — `Int64Counter` — reliable tag-list messages to a peer that failed to send; labeled by `msg` (`list`, `request`). A failed send is repaired by the peer fetching the list; a steady rate points at a peer that gossip reaches and TCP does not.
 - `cyoda.cluster.tags.lists_outstanding` — `Int64ObservableGauge` — alive peers whose announced tag list this node does not hold yet. Briefly non-zero after a join or a compute node attaching; alarm when it stays non-zero, because callouts are not handed to a peer whose tags are unknown.
 
+Callout fencing metrics are registered on the join layer at startup and, like
+the storage pool metrics, are always on regardless of `CYODA_OTEL_ENABLED`:
+
+- `cyoda.callout.superseded` — `Int64Counter` — callbacks refused or overtaken because their compute member was replaced or its callout ended; labeled by `outcome`: `refused_on_entry` (the pass was already stale when the callback joined its transaction), `refused_at_lock` (the pass was current on entry but had gone stale by the time the callback's chain took the transaction's write lock), `superseded_in_progress` (the callback ran to completion, but its pass had gone stale by the time it finished — recorded, not refused: the callback's work already landed). No tenant, callout id or pass ever appears on this metric.
+
 **Logs**
 
 cyoda-go uses `log/slog` for structured logging. OTel log emission (OTLP log exporter) is not currently wired. Logs are written to stderr only.

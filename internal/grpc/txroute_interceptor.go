@@ -9,8 +9,8 @@ import (
 	"net/http"
 
 	googlegrpc "google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
@@ -46,7 +46,7 @@ type txRouteInterceptor struct {
 	signer        *token.Signer
 	registry      contract.NodeRegistry
 	selfNodeID    string
-	txMgr         spi.TransactionManager
+	joiner        *txjoin.Joiner
 	pool          *proxy.ClientPool
 	localGRPCPort int
 
@@ -57,12 +57,12 @@ type txRouteInterceptor struct {
 	forwardSearchStream forwardStreamFn
 }
 
-func newTxRouteInterceptor(signer *token.Signer, reg contract.NodeRegistry, selfNodeID string, txMgr spi.TransactionManager, localGRPCPort int, allowLoopback bool) *txRouteInterceptor {
+func newTxRouteInterceptor(signer *token.Signer, reg contract.NodeRegistry, selfNodeID string, j *txjoin.Joiner, localGRPCPort int, allowLoopback bool) *txRouteInterceptor {
 	return &txRouteInterceptor{
 		signer:              signer,
 		registry:            reg,
 		selfNodeID:          selfNodeID,
-		txMgr:               txMgr,
+		joiner:              j,
 		pool:                proxy.NewClientPool(allowLoopback),
 		localGRPCPort:       localGRPCPort,
 		forwardUnary:        proxy.ForwardEntityManage,
@@ -144,11 +144,14 @@ func (i *txRouteInterceptor) unary() googlegrpc.UnaryServerInterceptor {
 			return resp, nil
 		}
 
-		joinedCtx, jerr := txjoin.JoinFromToken(ctx, i.signer, i.txMgr, tok)
-		if jerr != nil {
+		// The message is complete before the interceptor runs, so a unary call
+		// needs nothing read ahead of the lock.
+		var resp any
+		var herr error
+		if jerr := i.joiner.Run(ctx, tok, func(joined context.Context) { resp, herr = handler(joined, req) }); jerr != nil {
 			return i.unaryErr(ctx, ce, envelope, jerr)
 		}
-		return handler(joinedCtx, req)
+		return resp, herr
 	}
 }
 
@@ -185,12 +188,71 @@ func (i *txRouteInterceptor) stream() googlegrpc.StreamServerInterceptor {
 			return i.proxyStream(ctx, ss, forward, envelope, grpcAddr)
 		}
 
-		joinedCtx, jerr := txjoin.JoinFromToken(ctx, i.signer, i.txMgr, tok)
-		if jerr != nil {
-			return i.streamErr(ss, "", envelope, jerr)
+		if tok == "" {
+			return handler(srv, ss)
 		}
-		return handler(srv, &wrappedStream{ServerStream: ss, ctx: joinedCtx})
+		// Receive the request before the lock is taken (see heldStream).
+		var first cepb.CloudEvent
+		if err := ss.RecvMsg(&first); err != nil {
+			return err
+		}
+		held := &heldStream{ServerStream: ss, ctx: ctx, first: &first}
+		var herr error
+		if jerr := i.joiner.Run(ctx, tok, func(joined context.Context) {
+			held.ctx = joined
+			herr = handler(srv, held)
+		}); jerr != nil {
+			return i.streamErr(ss, first.Id, envelope, jerr)
+		}
+		// What the handler wrote is delivered even when it then failed: a joined
+		// chunked collection that fails at chunk n still answers chunks 1…n-1,
+		// as an unheld stream does.
+		if err := held.flush(); err != nil {
+			return err
+		}
+		return herr
 	}
+}
+
+// heldStream is the stream a joined server-streaming handler sees. The handler
+// runs under its transaction's lock, and neither end of the stream may make
+// that lock wait on the compute node: the request message was received before
+// the lock was taken and is replayed here, and every response frame is held
+// until the handler has returned and the lock is released.
+type heldStream struct {
+	googlegrpc.ServerStream
+	ctx   context.Context
+	first *cepb.CloudEvent
+	held  []any
+}
+
+func (s *heldStream) Context() context.Context { return s.ctx }
+
+func (s *heldStream) RecvMsg(m any) error {
+	if s.first == nil {
+		return s.ServerStream.RecvMsg(m) // io.EOF for a server-streaming RPC
+	}
+	dst, ok := m.(proto.Message)
+	if !ok {
+		return fmt.Errorf("failed to replay request: %T is not a proto message", m)
+	}
+	proto.Merge(dst, s.first)
+	s.first = nil
+	return nil
+}
+
+func (s *heldStream) SendMsg(m any) error {
+	s.held = append(s.held, m)
+	return nil
+}
+
+func (s *heldStream) flush() error {
+	for _, m := range s.held {
+		if err := s.ServerStream.SendMsg(m); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // proxyStream consumes the inbound request message, re-issues the

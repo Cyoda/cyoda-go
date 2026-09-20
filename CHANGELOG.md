@@ -47,6 +47,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `docs/cloud-parity/tenant-id-grammar.md` and
   `cyoda help errors OIDC_INVALID_TENANT`.
 
+- **A request carrying a transaction token is accepted only while the processor,
+  criterion or function request it was issued for is still that compute node's.**
+  Until now it was accepted until the transaction closed. Once cyoda has given
+  the work to another compute node, or the request has ended, the answer is
+  `410 CALLOUT_SUPERSEDED` (not retryable); once the transaction has ended it is
+  `404 TRANSACTION_NOT_FOUND`, as before. Tokens minted by earlier versions carry
+  no callout and are refused with `401`.
+
 ### Added
 
 - **`ENTITY_MODEL_MISMATCH` (`400`).** An entity's model reference — its
@@ -297,6 +305,25 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **A transaction routed to a node whose membership metadata cannot be read
   answers `503 TRANSACTION_NODE_UNAVAILABLE`**, as for any other node that is
   not available. It answered `500`.
+- A compute node that was given up on could still write into the operation's
+  transaction — after its replacement had answered, or, under `ASYNC_NEW_TX`,
+  after the savepoint of its failed processor had been undone — and the write
+  was committed. Its requests are now refused, and a request already in progress
+  finishes before the work moves on.
+- Requests joined to one transaction ran concurrently with each other unless
+  both were entity writes. Two parallel reads were enough: on the memory and
+  SQLite backends the process died with `concurrent map writes`; on PostgreSQL
+  the operation failed with `conn busy`. Every joined request now holds the
+  transaction's lock for its whole length, and its response is sent after the
+  lock is released.
+- A compute node that disconnected in the middle of a request joined to a
+  transaction cancelled a statement on the operation's PostgreSQL connection,
+  which destroyed the connection and failed the operation. A joined request is
+  no longer cancelled by its client.
+- Under `ASYNC_NEW_TX`, a savepoint that could not be created, undone or
+  released was treated as the processor's own non-fatal failure — silently
+  skipping a processor, or committing the writes of one that failed. It now
+  fails the operation.
 
 ## [0.8.4] — 2026-09-09
 

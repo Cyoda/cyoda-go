@@ -61,6 +61,18 @@ const TransitionAbortedReasonEntityModified = "ENTITY_MODIFIED"
 // times stay comparable with the scheduled-transition timings computed from it;
 // callers without an injectable clock pass time.Now. A nil now defaults to
 // time.Now.
+//
+// This records an audit row, and LookupActualTxID beside it reads the entity
+// store, without consulting the fence — deliberately, because a chain the fence
+// has refused cannot reach either. Both call sites run only on an
+// spi.ErrConflict from a CompareAndSave: the engine's COMMIT_BEFORE_DISPATCH
+// first-segment flush, which happens before that processor's dispatch, and the
+// handler's post-engine save, which a refused chain never reaches because the
+// engine returns the refusal first. Neither window contains a callout, so the
+// chain holds the transaction's lock across it, and the owner's wait takes that
+// same lock before it hands the work on — the fencing number cannot rise
+// underneath a chain that is already there. A guard here would be an
+// unreachable branch.
 func EmitTransitionAborted(
 	ctx context.Context,
 	auditStore spi.StateMachineAuditStore,

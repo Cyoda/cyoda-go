@@ -14,8 +14,16 @@ commit atomically — the whole nested chain succeeds or rolls back together.
 ## Invariant Cloud must uphold
 
 Access to a transaction's shared buffer / connection is serialised by a
-**per-transaction exclusive gate** (a non-reentrant mutex keyed by tx id). Every
-holder of that gate — the transaction owner **and** every joined callback — MUST
+**per-transaction exclusive gate** (a non-reentrant mutex keyed by tx id). The
+gate covers **every** joined request, not only entity writes: a joined read, a
+joined search, the model load and model extension of a joined create, and
+every non-entity handler behind the callback door all take it for their whole
+length too, from before the request's first store operation to when its
+handler returns. Two joined requests at once — a read alongside a write, or two
+reads — are otherwise unsafe on every backend: `concurrent map writes` on
+memory and SQLite, `conn busy` on PostgreSQL.
+
+Every holder of that gate — the transaction owner **and** every joined callback — MUST
 **release the gate for the duration of any blocking external dispatch** (every
 processor dispatch — SYNC / ASYNC_SAME_TX / ASYNC_NEW_TX — and FUNCTION criterion
 call-out) and re-acquire it before touching the buffer again. Where the dispatch

@@ -75,6 +75,11 @@ const (
 	ErrCodeDispatchForwardFailed     = "DISPATCH_FORWARD_FAILED"
 	ErrCodeDispatchTimeout           = "DISPATCH_TIMEOUT"
 	ErrCodeComputeMemberDisconnected = "COMPUTE_MEMBER_DISCONNECTED"
+	// ErrCodeCalloutSuperseded is returned to a compute node's callback when
+	// the callout it belongs to was given to another compute node or has ended
+	// while the transaction is still open. Not retryable: the compute node must
+	// stop working on that request.
+	ErrCodeCalloutSuperseded = "CALLOUT_SUPERSEDED"
 )
 
 const (

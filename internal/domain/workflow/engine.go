@@ -22,6 +22,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	"github.com/cyoda-platform/cyoda-go/internal/match"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
@@ -180,7 +181,8 @@ type Engine struct {
 	commitBudget time.Duration
 }
 
-// NewEngine creates a new workflow engine.
+// NewEngine creates a new workflow engine. txMgr is required and must not be
+// nil: the engine takes savepoints and rolls back segments through it.
 func NewEngine(factory spi.StoreFactory, uuids spi.UUIDGenerator, txMgr spi.TransactionManager, opts ...EngineOption) *Engine {
 	e := &Engine{factory: factory, uuids: uuids, txMgr: txMgr, maxStateVisits: defaultMaxStateVisits, clock: time.Now, expiryGraceMs: defaultExpiryGraceMs, commitBudget: common.CommitBudget}
 	for _, opt := range opts {
@@ -259,11 +261,8 @@ func (e *Engine) now() time.Time {
 // every normal return, so their guards fire only when a nil named ctx return says
 // the stack is unwinding through a panic. None of them recover: surviving a panic
 // is the request door's decision, not the engine's.
-//
-// Nil-safe on txMgr: segmentation implies a transaction manager, so this cannot
-// be nil in production, but the engine is constructed without one in unit tests.
 func (e *Engine) rollbackSegment(ctx context.Context, openTxID, entryTxID string) {
-	if e.txMgr == nil || openTxID == "" || openTxID == entryTxID {
+	if openTxID == "" || openTxID == entryTxID {
 		return
 	}
 	rbCtx, cancel := common.RollbackContext(ctx)
@@ -1010,10 +1009,17 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *cri
 		// Release any per-tx gate this call chain holds across the blocking
 		// FUNCTION-criterion dispatch — same H3 rationale as executeSyncProcessor:
 		// the callout can re-enter with a descendant joined callback on the same
-		// txID. No-op for the owner / non-joined calls.
+		// txID. No-op for the owner / non-joined calls. The explicit resume
+		// re-acquires the lock so the fence's check below is made while holding
+		// it, which is what gives the chain the right to carry on; the deferred
+		// one covers a panicking dispatch.
 		resume := txgate.Suspend(cc.ctx)
 		defer resume()
 		matches, reason, err := e.extProc.DispatchCriteria(cc.ctx, entity, criterion, cc.target, cc.workflowName, cc.transitionName, "", cc.txID)
+		resume()
+		if cerr := fence.Check(cc.ctx); cerr != nil {
+			return false, "", cerr
+		}
 		return matches, capReason(reason), err
 	}
 
@@ -1238,6 +1244,14 @@ func (e *Engine) logDefaultFallback(ctx context.Context, entity *spi.Entity, rea
 
 // recordEvent records a single audit event.
 func (e *Engine) recordEvent(auditStore spi.StateMachineAuditStore, ctx context.Context, entityID, txID, state string, eventType spi.StateMachineEventType, details string, data map[string]any) {
+	// A chain the fence refuses performs no store operation of any kind, an
+	// audit row included: on PostgreSQL it would be a statement on the
+	// operation's connection, after the owner has stopped waiting for this
+	// chain. The guard is here, and not at the error paths that record, so that
+	// no further site can appear later.
+	if fence.Check(ctx) != nil {
+		return
+	}
 	event := spi.StateMachineEvent{
 		EventType:     eventType,
 		EntityID:      entityID,
