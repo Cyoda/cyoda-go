@@ -65,7 +65,15 @@ func TestRPC_Processor_StoredTimeoutOverLoweredBound_Envelope(t *testing.T) {
 // outside this package; this pins code and message for all three verdicts.)
 func TestRPC_ProcessorMemberFailed_EnvelopeCarriesTheMemberMessage(t *testing.T) {
 	yes, no := true, false
-	for name, verdict := range map[string]*bool{"verdict true": &yes, "verdict false": &no, "verdict absent": nil} {
+	for name, tc := range map[string]struct {
+		verdict   *bool
+		retryable bool
+	}{
+		"verdict true":   {&yes, true},
+		"verdict false":  {&no, false},
+		"verdict absent": {nil, false},
+	} {
+		verdict := tc.verdict
 		t.Run(name, func(t *testing.T) {
 			const modelName = "grpc-proc-member-failed"
 			const tag = "member-failed-tag"
@@ -97,6 +105,9 @@ func TestRPC_ProcessorMemberFailed_EnvelopeCarriesTheMemberMessage(t *testing.T)
 			}
 			if got := asked.Load(); got != 1 {
 				t.Errorf("%d cnodes were asked, want exactly one try", got)
+			}
+			if got := typed.Error.Retryable != nil && *typed.Error.Retryable; got != tc.retryable {
+				t.Errorf("envelope retryable = %v, want %v: the cnode's verdict decides it", got, tc.retryable)
 			}
 		})
 	}
