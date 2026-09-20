@@ -22,7 +22,7 @@ HTTP: `503` `Service Unavailable`.
 
 ## DESCRIPTION
 
-A workflow processor, criteria evaluation, or function callout was dispatched to a compute member but the response did not arrive within the callout's own `responseTimeoutMs` (a field on the processor, criteria, or function config; default `30000` ms) — not any cluster forwarding timeout.
+A workflow processor, criteria evaluation, or function callout was dispatched to a compute member but the response did not arrive within the callout's own `responseTimeoutMs` (a field on the processor, criteria, or function config; default `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS`, `30000` ms) — not any cluster forwarding timeout.
 
 The error message names which of two phases timed out:
 

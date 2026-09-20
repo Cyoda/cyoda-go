@@ -31,6 +31,28 @@ connect to the endpoint specified by `CYODA_COMPUTE_GRPC_ENDPOINT`.
   a compute member is evicted; also the transport keepalive ack timeout
   (default: `30`)
 
+### Compute-node callouts
+
+A callout is one processor, criterion or function request sent to a compute
+member. These settings apply on a single node and in a cluster alike.
+
+- `CYODA_RETRY_FIXED_NUM_RETRIES` — retries after the first try, for a callout
+  whose `retryPolicy` is `FIXED` or unset; `retryPolicy: NONE` always means one
+  try. The normal number of tries is this plus one. Must be `>= 0`; startup
+  fails otherwise (default: `3`)
+- `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS` — how long a node waits for one compute
+  member's answer when the callout sets no `responseTimeoutMs` of its own.
+  Must be `>= 1` and no larger than `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`;
+  startup fails otherwise (default: `30000`)
+- `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` — upper bound on `responseTimeoutMs`
+  for processors, criterion functions and scheduled-transition functions.
+  Workflow import refuses a larger value with `400 VALIDATION_FAILED`. The
+  bound is a server setting, so a workflow exported from one deployment can be
+  refused by another with a lower bound. A stored workflow whose value exceeds
+  a bound lowered after it was imported is not clamped: its callout fails,
+  naming this setting. Must be `>= 1`; startup fails otherwise
+  (default: `60000`)
+
 ### Compute-node client
 
 These variables are used by compute-node clients that connect to a running cyoda instance.

@@ -235,6 +235,18 @@ A workflow transition with a `schedule` fires automatically after a delay, drive
 | `CYODA_SCHEDULER_REDISPATCH_BACKOFF` | `30s` | Best-effort re-dispatch throttle window after a due task is picked up. |
 | `CYODA_SCHEDULER_EXPIRY_GRACE` | `100ms` | Grace band above a transition's `timeoutMs` before it expires instead of firing late; size to at least the max inter-node clock skew. |
 
+## Compute-node callouts
+
+A processor, criterion or function request to a compute member is a *callout*.
+
+| Variable | Default | Description |
+|---|---|---|
+| `CYODA_RETRY_FIXED_NUM_RETRIES` | `3` | Retries after the first try when `retryPolicy` is `FIXED` or unset. |
+| `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS` | `30000` | Answer limit when the callout sets no `responseTimeoutMs`. |
+| `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` | `60000` | Upper bound on `responseTimeoutMs`; workflow import refuses more. |
+
+See `cyoda help config grpc` and `cyoda help config cluster`.
+
 ## Where to go next
 
 Online docs at [docs.cyoda.net](https://docs.cyoda.net) mirror the `cyoda help` topic tree — the same content is available offline via `cyoda help <topic>`.

@@ -188,7 +188,7 @@ Import-time validation rejects any `executionMode` value not in the list above (
 
 - `attachEntity` — boolean, optional, default `true` — when `true`, the full entity payload is sent to the processor; set `false` to omit it
 - `calculationNodesTags` — string — comma-separated tags for routing to registered calculation nodes; the engine selects a node that declares all required tags; returns `errors.NO_COMPUTE_MEMBER_FOR_TAG` if no node matches
-- `responseTimeoutMs` — int64 — timeout in milliseconds for `SYNC` processor response; `0` means use node default
+- `responseTimeoutMs` — int64 — how long to wait for the compute member's answer, in milliseconds; `0` or absent means the server's `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS`; must not exceed `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`
 - `retryPolicy` — string — selects the server-resolved retry strategy.
   Valid values: `NONE` (single attempt, no retry), `FIXED` (up to N
   additional attempts with fixed delay between tries, where N and delay
