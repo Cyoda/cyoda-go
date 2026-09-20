@@ -1164,14 +1164,16 @@ func mustNewGossip(c cluster.Config) *registry.Gossip {
 		os.Exit(1)
 	}
 	g, err := registry.NewGossip(registry.GossipConfig{
-		NodeID:          c.NodeID,
-		NodeAddr:        c.NodeAddr,
-		GRPCNodeAddr:    c.GRPCNodeAddr,
-		BindAddr:        gossipHost,
-		BindPort:        gossipPort,
-		Seeds:           c.SeedNodes,
-		StabilityWindow: c.StabilityWindow,
-		SecretKey:       c.HMACSecret,
+		NodeID:           c.NodeID,
+		NodeAddr:         c.NodeAddr,
+		GRPCNodeAddr:     c.GRPCNodeAddr,
+		BindAddr:         gossipHost,
+		BindPort:         gossipPort,
+		Seeds:            c.SeedNodes,
+		StabilityWindow:  c.StabilityWindow,
+		SecretKey:        c.HMACSecret,
+		ListScanInterval: registry.ScanIntervalFor(c.DispatchWaitTimeout),
+		Meter:            observability.Meter(),
 	})
 	if err != nil {
 		slog.Error("failed to create gossip registry", "pkg", "cluster", "err", err)

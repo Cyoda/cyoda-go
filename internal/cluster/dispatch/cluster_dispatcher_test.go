@@ -91,6 +91,7 @@ func (r *stubNodeRegistry) List(_ context.Context) ([]contract.NodeInfo, error) 
 	return r.nodes, nil
 }
 func (r *stubNodeRegistry) Deregister(_ context.Context, _ string) error { return nil }
+func (r *stubNodeRegistry) Changed() <-chan struct{}                     { return nil }
 
 // testContext builds a context with UserContext set.
 func testContext() context.Context {

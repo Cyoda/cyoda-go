@@ -70,9 +70,11 @@ func TestGossipBroadcaster_TwoNodeRoundTrip(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		mu.Lock()
-		n := len(received)
-		mu.Unlock()
+		n := func() int {
+			mu.Lock()
+			defer mu.Unlock()
+			return len(received)
+		}()
 		if n >= 1 {
 			break
 		}

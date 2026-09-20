@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 func TestLocalRegistry_LookupSelf(t *testing.T) {
@@ -57,5 +58,21 @@ func TestLocalRegistry_ListReturnsSelf(t *testing.T) {
 	}
 	if nodes[0].NodeID != "node-1" {
 		t.Errorf("NodeID = %q, want %q", nodes[0].NodeID, "node-1")
+	}
+}
+
+func TestLocalRegistry_ChangedNeverFires(t *testing.T) {
+	var r contract.NodeRegistry = registry.NewLocal("node-1", "localhost:8080")
+	ch := r.Changed()
+	if ch == nil {
+		t.Fatal("Changed returned nil")
+	}
+	select {
+	case <-ch:
+		t.Fatal("a single pnode has no peers; its view never changes")
+	default:
+	}
+	if r.Changed() != ch {
+		t.Error("Changed returned a different channel although nothing changed")
 	}
 }

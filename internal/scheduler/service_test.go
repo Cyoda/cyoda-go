@@ -54,6 +54,7 @@ func (r *fakeRegistry) List(_ context.Context) ([]contract.NodeInfo, error) {
 	return r.members, nil
 }
 func (r *fakeRegistry) Deregister(_ context.Context, _ string) error { return nil }
+func (r *fakeRegistry) Changed() <-chan struct{}                     { return nil }
 
 // capturingExecutor records every (task, target) pair passed to Execute.
 // Since tick() now dispatches Execute from its own goroutine, Execute may be

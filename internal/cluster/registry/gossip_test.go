@@ -2,7 +2,6 @@ package registry_test
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -77,7 +76,7 @@ func TestGossipRegistry_TwoNodes(t *testing.T) {
 	if len(nodes) != 2 {
 		t.Errorf("len = %d, want 2", len(nodes))
 		for _, n := range nodes {
-			fmt.Printf("  node: %s addr: %s alive: %v\n", n.NodeID, n.Addr, n.Alive)
+			t.Logf("  node: %s addr: %s alive: %v", n.NodeID, n.Addr, n.Alive)
 		}
 	}
 }

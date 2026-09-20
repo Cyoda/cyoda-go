@@ -43,6 +43,10 @@ PostgreSQL is the only stateful component. Cluster size is bounded below by quor
 
 Peer discovery uses SWIM gossip via HashiCorp `memberlist`. Cluster membership is eventually consistent across nodes. New nodes join via a seed-list — at least one peer's `host:gossip_port`. Nodes leave gracefully on SIGTERM and are evicted by gossip after a configurable suspect-then-confirm timeout if they crash.
 
+Each node announces, in its gossip metadata, who it is — its id and its HTTP and gRPC addresses — and the version of the list of compute tags it hosts. The list itself, one entry per tenant with a compute node attached, is sent to every peer over the membership layer's reliable (TCP) channel whenever it changes, and a node that finds it holds a different version from the one a peer announces asks that peer for it. One mechanism covers a lost message, a node that joins late, a node restarted under the same id, and a healed partition. The number of tenants and tags a node can host is not limited by the membership layer.
+
+The metadata is limited to 512 bytes by `memberlist`. Its size depends only on `CYODA_NODE_ID`, `CYODA_NODE_ADDR` and `CYODA_GRPC_NODE_ADDR`; a node whose identity would not fit refuses to start and names the three settings. All membership traffic, the tag lists included, is encrypted with `CYODA_HMAC_SECRET`.
+
 The gossip protocol is operationally invisible — there are no per-message logs at INFO level. `memberlist`'s own log output is routed to `slog` at DEBUG.
 
 ## TRANSACTION ROUTING
