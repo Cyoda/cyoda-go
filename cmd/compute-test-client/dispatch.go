@@ -33,16 +33,33 @@ const (
 
 // dispatcher manages the gRPC connection to cyoda and the dispatch loop.
 type dispatcher struct {
-	endpoint string
-	token    string
-	cat      *catalog
-	conn     *grpc.ClientConn
-	memberID string
+	endpoint  string
+	token     string
+	cat       *catalog
+	gcb       *grpcCallbackClient
+	tags      []string
+	behaviour behaviour
+	rec       *recorder
+	conn      *grpc.ClientConn
+	memberID  string
 
 	// sendMu serialises every write to the stream: the request loop and the
 	// keep-alive ticker both send, and grpc-go forbids concurrent SendMsg on
 	// one stream. Compute-node implementations must do the same.
 	sendMu sync.Mutex
+
+	// held are the callouts a late-callback client took and has not yet
+	// called back for.
+	heldMu sync.Mutex
+	held   []heldCallout
+}
+
+// heldCallout is a callout whose pass is kept, in memory only, for a late callback.
+type heldCallout struct {
+	seq    int
+	cfg    cbConfig
+	cfgErr string
+	pass   string
 }
 
 // send is the only place this client writes to its stream.
@@ -53,11 +70,32 @@ func (d *dispatcher) send(stream grpc.BidiStreamingClient[cepb.CloudEvent, cepb.
 }
 
 // newDispatcher creates a dispatcher targeting the given cyoda gRPC endpoint.
-func newDispatcher(endpoint, token string, cat *catalog) *dispatcher {
-	return &dispatcher{
-		endpoint: endpoint,
-		token:    token,
-		cat:      cat,
+func newDispatcher(endpoint, token string, cat *catalog, gcb *grpcCallbackClient, tags []string, beh behaviour, rec *recorder) *dispatcher {
+	return &dispatcher{endpoint: endpoint, token: token, cat: cat, gcb: gcb, tags: tags, behaviour: beh, rec: rec}
+}
+
+func (d *dispatcher) hold(hc heldCallout) {
+	d.heldMu.Lock()
+	defer d.heldMu.Unlock()
+	d.held = append(d.held, hc)
+}
+
+// takeHeld returns the held callouts and forgets them.
+func (d *dispatcher) takeHeld() []heldCallout {
+	d.heldMu.Lock()
+	defer d.heldMu.Unlock()
+	held := d.held
+	d.held = nil
+	return held
+}
+
+// joinPayload is the join event's payload.
+func (d *dispatcher) joinPayload() map[string]any {
+	return map[string]any{
+		"id":                  uuid.NewString(),
+		"tags":                d.tags,
+		"joinedLegalEntityId": "",
+		"success":             true,
 	}
 }
 
@@ -85,13 +123,7 @@ func (d *dispatcher) connect(ctx context.Context) (grpc.BidiStreamingClient[cepb
 	}
 
 	// Send join event.
-	joinPayload := map[string]any{
-		"id":                  uuid.NewString(),
-		"tags":                []string{"compute-test-client"},
-		"joinedLegalEntityId": "",
-		"success":             true,
-	}
-	joinCE, err := newCloudEvent(ceTypeJoin, joinPayload)
+	joinCE, err := newCloudEvent(ceTypeJoin, d.joinPayload())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create join event: %w", err)
 	}
@@ -119,6 +151,7 @@ func (d *dispatcher) connect(ctx context.Context) (grpc.BidiStreamingClient[cepb
 		return nil, fmt.Errorf("failed to unmarshal greet: %w", err)
 	}
 	d.memberID = greet.MemberID
+	d.rec.setMemberID(d.memberID)
 	slog.Info("greet received", "pkg", "compute-test-client", "memberId", d.memberID)
 
 	return stream, nil
@@ -128,6 +161,9 @@ func (d *dispatcher) connect(ctx context.Context) (grpc.BidiStreamingClient[cepb
 // them to the catalog. It also starts a keep-alive goroutine. This method
 // blocks until the context is cancelled or the stream is closed.
 func (d *dispatcher) run(ctx context.Context, stream grpc.BidiStreamingClient[cepb.CloudEvent, cepb.CloudEvent]) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	// Start keep-alive goroutine.
 	go d.keepAliveLoop(ctx, stream)
 
@@ -148,46 +184,23 @@ func (d *dispatcher) run(ctx context.Context, stream grpc.BidiStreamingClient[ce
 			continue
 		}
 
-		// The signed tx-token rides as a CloudEvent extension
-		// attribute; it is echoed on joined callbacks. Empty when the dispatch
-		// carries no transaction context. Never logged (Gate 3).
-		txToken := txTokenFromCloudEvent(msg)
-
-		// authtype (CloudEvents Auth Context extension) carries the executor's
-		// principal kind. Surfaced to processors via Entity.AuthType so an
-		// attribution scenario can observe the faithful kind a cross-node
-		// forwarded dispatch reconstructs (Task 7).
-		authType := authTypeFromCloudEvent(msg)
-
 		switch msg.Type {
-		case ceTypeProcessorRequest:
-			resp, err := d.handleProcessorRequest(ctx, payload, txToken, authType)
+		case ceTypeProcessorRequest, ceTypeCriteriaRequest, ceTypeFunctionRequest:
+			reply, drop, err := d.handleCallout(ctx, msg, payload)
 			if err != nil {
-				slog.Error("processor dispatch failed", "pkg", "compute-test-client", "error", err)
+				slog.Error("calculation request failed", "pkg", "compute-test-client", "type", msg.Type, "error", err)
 				continue
 			}
-			if err := d.send(stream, resp); err != nil {
-				slog.Error("failed to send processor response", "pkg", "compute-test-client", "error", err)
+			if drop {
+				slog.Info("closing the stream on receiving work", "pkg", "compute-test-client", "type", msg.Type)
+				d.close()
+				return nil
 			}
-
-		case ceTypeCriteriaRequest:
-			resp, err := d.handleCriteriaRequest(ctx, payload, txToken)
-			if err != nil {
-				slog.Error("criteria dispatch failed", "pkg", "compute-test-client", "error", err)
+			if reply == nil {
 				continue
 			}
-			if err := d.send(stream, resp); err != nil {
-				slog.Error("failed to send criteria response", "pkg", "compute-test-client", "error", err)
-			}
-
-		case ceTypeFunctionRequest:
-			resp, err := d.handleFunctionRequest(ctx, payload, txToken)
-			if err != nil {
-				slog.Error("function dispatch failed", "pkg", "compute-test-client", "error", err)
-				continue
-			}
-			if err := d.send(stream, resp); err != nil {
-				slog.Error("failed to send function response", "pkg", "compute-test-client", "error", err)
+			if err := d.send(stream, reply); err != nil {
+				slog.Error("failed to send calculation response", "pkg", "compute-test-client", "type", msg.Type, "error", err)
 			}
 
 		case ceTypeKeepAlive:
@@ -197,6 +210,97 @@ func (d *dispatcher) run(ctx context.Context, stream grpc.BidiStreamingClient[ce
 			slog.Debug("ignoring unknown event type", "pkg", "compute-test-client", "type", msg.Type)
 		}
 	}
+}
+
+// handleCallout records one calculation request and decides what this client
+// does with it: a reply to send (nil = stay silent) and whether to close the
+// stream. The pass is read here and goes no further than the callback that
+// presents it; it is never logged or recorded.
+func (d *dispatcher) handleCallout(ctx context.Context, msg *cepb.CloudEvent, payload json.RawMessage) (*cepb.CloudEvent, bool, error) {
+	var head struct {
+		RequestID     string          `json:"requestId"`
+		EntityID      string          `json:"entityId"`
+		ProcessorName string          `json:"processorName"`
+		ProcessorID   string          `json:"processorId"`
+		CriteriaName  string          `json:"criteriaName"`
+		CriteriaID    string          `json:"criteriaId"`
+		FunctionName  string          `json:"functionName"`
+		FunctionID    string          `json:"functionId"`
+		Parameters    json.RawMessage `json:"parameters"`
+	}
+	if err := json.Unmarshal(payload, &head); err != nil {
+		return nil, false, fmt.Errorf("failed to unmarshal calculation request: %w", err)
+	}
+	kind, name := "processor", head.ProcessorName
+	if name == "" {
+		name = head.ProcessorID
+	}
+	switch msg.Type {
+	case ceTypeCriteriaRequest:
+		kind, name = "criterion", head.CriteriaName
+		if name == "" {
+			name = head.CriteriaID
+		}
+	case ceTypeFunctionRequest:
+		kind, name = "function", head.FunctionName
+		if name == "" {
+			name = head.FunctionID
+		}
+	}
+
+	pass := txTokenFromCloudEvent(msg)
+	seq := d.rec.add(calloutRecord{
+		Kind: kind, Name: name, RequestID: head.RequestID, EventID: msg.Id,
+		EntityID: head.EntityID, PassPresent: pass != "",
+	})
+
+	switch d.behaviour {
+	case behaviourStall:
+		return nil, false, nil
+	case behaviourDrop:
+		return nil, true, nil
+	case behaviourLateCallback:
+		hc := heldCallout{seq: seq, pass: pass}
+		cfg, err := parseCallbackConfig(head.Parameters)
+		if err != nil {
+			hc.cfgErr = err.Error()
+		}
+		hc.cfg = cfg
+		d.hold(hc)
+		return nil, false, nil
+	case behaviourFail, behaviourFailRetryable:
+		var verdict *bool
+		if d.behaviour == behaviourFailRetryable {
+			v := true
+			verdict = &v
+		}
+		msgText := "scripted failure: " + string(d.behaviour)
+		var reply *cepb.CloudEvent
+		var err error
+		switch kind {
+		case "criterion":
+			reply, err = d.buildCriteriaResponse(head.RequestID, head.EntityID, false, false, msgText, verdict)
+		case "function":
+			reply, err = d.buildFunctionResponse(head.RequestID, "", nil, false, msgText, verdict)
+		default:
+			reply, err = d.buildProcessorResponse(head.RequestID, head.EntityID, nil, false, msgText, verdict)
+		}
+		return reply, false, err
+	}
+
+	var reply *cepb.CloudEvent
+	var err error
+	switch msg.Type {
+	case ceTypeCriteriaRequest:
+		reply, err = d.handleCriteriaRequest(ctx, payload, pass)
+	case ceTypeFunctionRequest:
+		reply, err = d.handleFunctionRequest(ctx, payload, pass)
+	default:
+		// authtype carries the executor's principal kind; processors see it as
+		// Entity.AuthType.
+		reply, err = d.handleProcessorRequest(ctx, payload, pass, authTypeFromCloudEvent(msg))
+	}
+	return reply, false, err
 }
 
 // close tears down the gRPC connection.

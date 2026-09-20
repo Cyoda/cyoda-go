@@ -4,12 +4,18 @@
 // and criteria, and serves them indefinitely until SIGTERM.
 //
 // The binary is launched as a subprocess by per-backend test fixtures
-// (e2e/parity/{memory,postgres}). Each fixture passes the cyoda gRPC
+// (e2e/parity/{memory,sqlite,postgres}). Each fixture passes the cyoda gRPC
 // endpoint via the CYODA_COMPUTE_GRPC_ENDPOINT environment variable.
 //
 // A separate /healthz HTTP endpoint on an ephemeral port (printed to
 // stdout at startup) lets the fixture's readiness probe confirm the
 // compute client is connected and ready before running scenarios.
+//
+// Two optional variables let a fixture start further clients for one
+// scenario: CYODA_TEST_COMPUTE_TAGS (comma-separated join tags) and
+// CYODA_TEST_COMPUTE_BEHAVIOUR (stall, fail, fail-retryable, late-callback,
+// drop). Unset, the client joins as `compute-test-client` and serves its
+// catalog.
 package main
 
 import (
@@ -60,6 +66,17 @@ func main() {
 		"callbackProcessors", len(cat.callbackProcessors), "callbackCriteria", len(cat.callbackCriteria),
 		"callbackEnabled", cb != nil, "grpcCallbackEnabled", gcb != nil)
 
+	tags := parseTags(os.Getenv("CYODA_TEST_COMPUTE_TAGS"))
+	beh, err := parseBehaviour(os.Getenv("CYODA_TEST_COMPUTE_BEHAVIOUR"))
+	if err != nil {
+		slog.Error("invalid CYODA_TEST_COMPUTE_BEHAVIOUR", "pkg", "compute-test-client", "error", err)
+		os.Exit(1)
+	}
+
+	rec := newRecorder()
+	disp := newDispatcher(endpoint, token, cat, gcb, tags, beh, rec)
+	slog.Info("behaviour", "pkg", "compute-test-client", "tags", tags, "behaviour", string(beh))
+
 	// Start the health server first so the fixture can poll it before
 	// the gRPC connection settles.
 	hs, err := newHealthServer()
@@ -77,8 +94,6 @@ func main() {
 	// Connect to cyoda gRPC and start dispatching.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	disp := newDispatcher(endpoint, token, cat)
 
 	stream, err := disp.connect(ctx)
 	if err != nil {
