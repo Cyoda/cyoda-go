@@ -143,3 +143,35 @@ func TestNewFunctionCallout(t *testing.T) {
 		t.Errorf("mapResponse = (%+v, %v)", got, err)
 	}
 }
+
+func TestCallout_SourceIsWhatItWasBuiltFrom(t *testing.T) {
+	entity := testEntity()
+	processor := testProcessor("python", 1500)
+	criterion := json.RawMessage(`{"type":"function","function":{"name":"c","config":{"calculationNodesTags":"python"}}}`)
+	fn := spi.ScheduleFunction{Name: "f", CalculationNodesTags: "python"}
+
+	p := NewProcessorCallout(testTenantID, entity, processor, "wf1", "t1", "tx-1")
+	if p.Source.Entity != entity || p.Source.WorkflowName != "wf1" || p.Source.TransitionName != "t1" ||
+		p.Source.Processor == nil || p.Source.Processor.Name != processor.Name {
+		t.Errorf("processor source = %+v", p.Source)
+	}
+	if p.Source.Criterion != nil || p.Source.Function != nil {
+		t.Errorf("a processor callout carries only a processor: %+v", p.Source)
+	}
+
+	c, failure := NewCriteriaCallout(testTenantID, entity, criterion, "transition", "wf1", "t1", "proc-1", "tx-1")
+	if failure != nil {
+		t.Fatalf("NewCriteriaCallout: %v", failure)
+	}
+	if c.Source.Entity != entity || string(c.Source.Criterion) != string(criterion) ||
+		c.Source.Target != "transition" || c.Source.ProcessorName != "proc-1" ||
+		c.Source.WorkflowName != "wf1" || c.Source.TransitionName != "t1" {
+		t.Errorf("criteria source = %+v", c.Source)
+	}
+
+	f := NewFunctionCallout(testTenantID, entity, fn, "wf1", "t1", "tx-1")
+	if f.Source.Entity != entity || f.Source.Function == nil || f.Source.Function.Name != "f" ||
+		f.Source.WorkflowName != "wf1" || f.Source.TransitionName != "t1" {
+		t.Errorf("function source = %+v", f.Source)
+	}
+}

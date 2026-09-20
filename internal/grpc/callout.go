@@ -44,6 +44,17 @@ type CalloutResult struct {
 	Function contract.FunctionResult // function
 }
 
+// CalloutSource is what a Callout was built from: what another pnode needs to
+// build the same Callout with the same builder.
+type CalloutSource struct {
+	Entity                       *spi.Entity
+	WorkflowName, TransitionName string
+	Processor                    *spi.ProcessorDefinition // ProcessorCallout
+	Criterion                    json.RawMessage          // CriteriaCallout
+	Target, ProcessorName        string                   // CriteriaCallout
+	Function                     *spi.ScheduleFunction    // FunctionCallout
+}
+
 // Callout is one processor, criterion or function request, in the form the
 // local procedure tries on cnodes. Build it with NewProcessorCallout,
 // NewCriteriaCallout or NewFunctionCallout; the caller then fills RequestID,
@@ -74,6 +85,9 @@ type Callout struct {
 	// Outer names every enclosing callout, for a callout made from inside a
 	// callback; it is copied into every pass.
 	Outer []token.Pair
+	// Source is what the callout was built from. A hand-over sends it, and the
+	// pnode that receives it builds the same Callout with the same builder.
+	Source CalloutSource
 
 	eventType    string
 	buildRequest func(requestID string) any
@@ -92,6 +106,7 @@ func NewProcessorCallout(tenantID spi.TenantID, entity *spi.Entity, processor sp
 		ResponseTimeoutMs: processor.Config.ResponseTimeoutMs,
 		TxID:              txID,
 		EntityID:          entity.Meta.ID,
+		Source:            CalloutSource{Entity: entity, WorkflowName: workflowName, TransitionName: transitionName, Processor: &processor},
 		eventType:         EntityProcessorCalculationRequest,
 		buildRequest: func(requestID string) any {
 			req := events.EntityProcessorCalculationRequestJson{
@@ -149,7 +164,9 @@ func NewCriteriaCallout(tenantID spi.TenantID, entity *spi.Entity, criterion jso
 		TxID:              txID,
 		EntityID:          entity.Meta.ID,
 		RepeatSafe:        true,
-		eventType:         EntityCriteriaCalculationRequest,
+		Source: CalloutSource{Entity: entity, WorkflowName: workflowName, TransitionName: transitionName,
+			Criterion: criterion, Target: target, ProcessorName: processorName},
+		eventType: EntityCriteriaCalculationRequest,
 		buildRequest: func(requestID string) any {
 			req := events.EntityCriteriaCalculationRequestJson{
 				ID:            requestID,
@@ -192,6 +209,7 @@ func NewFunctionCallout(tenantID spi.TenantID, entity *spi.Entity, fn spi.Schedu
 		TxID:              txID,
 		EntityID:          entity.Meta.ID,
 		RepeatSafe:        true,
+		Source:            CalloutSource{Entity: entity, WorkflowName: workflowName, TransitionName: transitionName, Function: &fn},
 		eventType:         EntityFunctionCalculationRequest,
 		buildRequest: func(requestID string) any {
 			req := events.EntityFunctionCalculationRequestJson{
