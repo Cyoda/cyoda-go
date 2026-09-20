@@ -45,7 +45,11 @@ type LocalResult struct {
 	// may be asked is Failure.Kind.MayTryAnother(call.RepeatSafe).
 	Failure *contract.CalloutFailure
 	// CtxErr is the caller's ctx.Err(), unchanged, when its context ended
-	// during a try or between tries. Failure is then nil.
+	// during a try or between tries. Failure is then nil. Exception: when the
+	// context ended because the callout's own deadline passed
+	// (contract.ErrCalloutDeadline as its cause), that try is classified
+	// instead — NoAnswer, or NoHandOff when the work had not been handed
+	// off — and CtxErr stays nil.
 	CtxErr error
 	// TriesUsed counts every cnode chosen, whether or not the hand-off
 	// succeeded, a try in progress when the caller went away included.

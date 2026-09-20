@@ -82,13 +82,18 @@ func (d *ProcessorDispatcher) ResolveAnswerLimit(responseTimeoutMs int64) (time.
 // plus an allowance for routing and for clocks that differ between pnodes. A
 // callout outside a transaction carries no pass.
 //
-// A pass already on ctx wins: the hand-over still pre-mints one.
+// A pass already on ctx wins: the hand-over still pre-mints one. A callout
+// inside a transaction that names no owner is refused here, before the
+// hand-off, rather than minting a pass whose callbacks could never be routed.
 func (d *ProcessorDispatcher) mintPass(ctx context.Context, call Callout, major, minor uint32) (string, error) {
 	if pass := TxTokenFromContext(ctx); pass != "" {
 		return pass, nil
 	}
 	if call.TxID == "" {
 		return "", nil
+	}
+	if call.OwnerNodeID == "" {
+		return "", fmt.Errorf("failed to mint transaction pass: the callout names no owner")
 	}
 	pass, err := d.signer.Issue(token.Claims{
 		NodeID:    call.OwnerNodeID,
@@ -138,7 +143,10 @@ func buildEntityPayload(entity *spi.Entity) *events.DataPayloadJson {
 //     never left this pnode (NoHandOff); after it, silence or a dropped stream
 //     is NoAnswer. Codes, statuses and messages are the ones a client has
 //     always seen — the kind travels beside them;
-//   - ctx.Err(), unchanged, when the caller's own context ended.
+//   - ctx.Err(), unchanged, when the caller's own context ended. When it ended
+//     instead because the callout's own deadline passed (contract.ErrCalloutDeadline
+//     as its cause), the try is classified as a CalloutFailure instead — NoAnswer
+//     after the hand-off, NoHandOff before it — and ctx.Err() is not returned.
 //
 // One deadline — the answer limit — bounds the hand-off and the wait together,
 // so a cnode that is attached but not taking data costs up to one answer limit

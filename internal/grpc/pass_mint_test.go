@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 func verifyPass(t *testing.T, pass string) *token.Claims {
@@ -115,6 +116,44 @@ func TestRunLocal_NoTransaction_NoPass_ButStillNumbered(t *testing.T) {
 	}
 	if numberer.major != 1 {
 		t.Errorf("Next was called %d times, want 1", numberer.major)
+	}
+}
+
+// A callout inside a transaction that names no owner must be refused before
+// the hand-off: minting a pass with an empty NodeID would let the work reach
+// the cnode while every callback it makes is later refused as node-unavailable.
+func TestRunLocal_NoOwnerMeansNothingIsSent(t *testing.T) {
+	reg := NewMemberRegistry()
+	_, a := attach(t, reg, "m-1", testTenantID, "x", answersAs("m-1"))
+	d := newTestDispatcher(t, reg)
+	call := processorCall("x", false, 5*time.Second)
+	call.OwnerNodeID = ""
+
+	res := d.RunLocal(testContext(), call, 4)
+	if res.Failure == nil || res.Failure.Kind != contract.Terminal {
+		t.Fatalf("failure = %+v, want Terminal", res.Failure)
+	}
+	if a.count() != 0 {
+		t.Errorf("cnode was sent %d requests, want 0: no pass may go out for a callout with no owner", a.count())
+	}
+	if len(res.Attempts) != 1 || res.Attempts[0].Cause != "internal error" {
+		t.Errorf("Attempts = %+v, want one attempt with Cause \"internal error\"", res.Attempts)
+	}
+}
+
+// The owner guard must not reach a transaction-less callout: with no TxID,
+// mintPass returns before the OwnerNodeID check, so an empty OwnerNodeID too
+// still goes out with no pass. armed() always sets OwnerNodeID, so this is
+// built by hand rather than reused from processorCall/armed.
+func TestMintPass_NoTransaction_EmptyOwnerToo_StillNoPass(t *testing.T) {
+	d := newTestDispatcher(t, NewMemberRegistry())
+	call := NewProcessorCallout(testTenantID, testEntity(), testProcessor("x", 0), "wf1", "t1", "")
+	if call.OwnerNodeID != "" {
+		t.Fatalf("precondition: OwnerNodeID = %q, want empty", call.OwnerNodeID)
+	}
+	pass, err := d.mintPass(testContext(), call, 1, 0)
+	if err != nil || pass != "" {
+		t.Fatalf("mintPass = (%q, %v), want (\"\", nil)", pass, err)
 	}
 }
 
