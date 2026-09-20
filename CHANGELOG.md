@@ -300,6 +300,24 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   existing `OTel meter provider shutdown error` / `OTel trace provider
   shutdown error` warnings.
 
+- **A node hosting compute nodes of more than a handful of tenants vanished
+  from the cluster.** Tenants and tags rode in the membership layer's node
+  metadata, which the library caps at 512 bytes — the eighth tenant with a
+  36-character id, or the fourth with a 100-character one. Past it the node
+  published empty metadata: every peer dropped it, no callout was handed to
+  it for any of its tenants, a callback routed through a peer could not find
+  the transaction's owner, the scheduler gave it no work, and it dropped out
+  of its own view; nothing reported it beyond one warning line. The metadata
+  now carries identity and a list version only; the lists travel over the
+  membership layer's reliable channel, and a node that is behind fetches
+  them. A node whose identity (`CYODA_NODE_ID`, `CYODA_NODE_ADDR`,
+  `CYODA_GRPC_NODE_ADDR`) cannot fit the metadata **refuses to start**. Two
+  instruments, `cyoda.cluster.tags.send_failures` and
+  `cyoda.cluster.tags.lists_outstanding`, make the channel observable.
+- **A transaction routed to a node whose membership metadata cannot be read
+  answers `503 TRANSACTION_NODE_UNAVAILABLE`**, as for any other node that is
+  not available. It answered `500`.
+
 ## [0.8.4] — 2026-09-09
 
 ### Breaking

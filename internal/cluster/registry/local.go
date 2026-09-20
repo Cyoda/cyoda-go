@@ -10,13 +10,14 @@ import (
 // exactly one node — itself — as alive. It satisfies the contract.NodeRegistry
 // interface and is the default implementation when cluster mode is disabled.
 type Local struct {
-	nodeID string
-	addr   string
+	nodeID  string
+	addr    string
+	changed chan struct{} // never closed: a single pnode has no peers
 }
 
 // NewLocal constructs a Local registry representing a single node.
 func NewLocal(nodeID, addr string) *Local {
-	return &Local{nodeID: nodeID, addr: addr}
+	return &Local{nodeID: nodeID, addr: addr, changed: make(chan struct{})}
 }
 
 // Register is a no-op for a single-node registry: the node is already known
@@ -42,4 +43,10 @@ func (l *Local) List(_ context.Context) ([]contract.NodeInfo, error) {
 // Deregister is a no-op for a single-node registry.
 func (l *Local) Deregister(_ context.Context, _ string) error {
 	return nil
+}
+
+// Changed returns a channel that is never closed: the view of a single pnode
+// does not change.
+func (l *Local) Changed() <-chan struct{} {
+	return l.changed
 }

@@ -34,6 +34,21 @@ type pgMultiNode struct {
 	// invisible at the HTTP data plane. Off the shared interface for the same
 	// reason as KillNode/NodeLogs.
 	connStr string
+	// computeBin and grpcEndpoints back the optional ComputeClientCapable
+	// capability: a further compute client attached to a chosen pnode.
+	computeBin    string
+	grpcEndpoints []string
+}
+
+var _ multinode.ComputeClientCapable = (*pgMultiNode)(nil)
+
+// StartComputeClient implements multinode.ComputeClientCapable.
+func (f *pgMultiNode) StartComputeClient(t *testing.T, node int, spec parity.ComputeClientSpec) parity.ComputeClient {
+	t.Helper()
+	if node < 0 || node >= len(f.baseURLs) || node >= len(f.grpcEndpoints) {
+		t.Fatalf("StartComputeClient: pnode %d out of range (cluster has %d)", node, len(f.baseURLs))
+	}
+	return fixtureutil.StartComputeClientForFixture(t, f.keySet, f.computeBin, f.grpcEndpoints[node], f.baseURLs[node], spec)
 }
 
 // BaseURLs implements multinode.MultiNodeFixture.
@@ -161,13 +176,14 @@ func MustSetupMultiNodeWithEnv(t *testing.T, n int, extraEnv []string) (multinod
 
 	// 3. Launch n cyoda-go subprocesses + one compute-test-client.
 	//    Auto-migrate handling (leader-only) is in the fixtureutil helper.
-	//    extraEnv is appended after the standard backend env so a caller can
-	//    override cadences (e.g. search-job heartbeat/stale) per node.
+	//    extraEnv comes last so a caller can override any of the above,
+	//    including the tuned cluster patience.
 	launchEnv := append([]string{
 		"CYODA_STORAGE_BACKEND=postgres",
 		fmt.Sprintf("CYODA_POSTGRES_URL=%s", connStr),
 		"CYODA_POSTGRES_AUTO_MIGRATE=true",
-	}, extraEnv...)
+	}, fixtureutil.TunedClusterEnv()...)
+	launchEnv = append(launchEnv, extraEnv...)
 	result, processCleanup, err := fixtureutil.LaunchCyodaClusterAndCompute(ks, n, launchEnv)
 	if err != nil {
 		containerCleanup()
@@ -180,10 +196,12 @@ func MustSetupMultiNodeWithEnv(t *testing.T, n int, extraEnv []string) (multinod
 	}
 
 	return &pgMultiNode{
-		baseURLs: result.BaseURLs,
-		keySet:   ks,
-		nodeLogs: result.NodeLogs,
-		killNode: result.KillNode,
-		connStr:  connStr,
+		baseURLs:      result.BaseURLs,
+		keySet:        ks,
+		nodeLogs:      result.NodeLogs,
+		killNode:      result.KillNode,
+		connStr:       connStr,
+		computeBin:    result.ComputeBin,
+		grpcEndpoints: result.GRPCEndpoints,
 	}, cleanup
 }

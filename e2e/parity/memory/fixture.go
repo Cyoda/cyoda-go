@@ -15,7 +15,10 @@ type memoryFixture struct {
 	baseURL      string
 	grpcEndpoint string
 	keySet       *fixtureutil.JWTKeySet
+	computeBin   string
 }
+
+var _ parity.ComputeClientFixture = (*memoryFixture)(nil)
 
 // BaseURL implements parity.BackendFixture.
 func (f *memoryFixture) BaseURL() string { return f.baseURL }
@@ -50,6 +53,12 @@ func (f *memoryFixture) NewNonAdminTenant(t *testing.T) parity.Tenant {
 // durable in the audit log.
 func (f *memoryFixture) IsTxBoundAuditStore() bool { return false }
 
+// StartComputeClient implements parity.ComputeClientFixture.
+func (f *memoryFixture) StartComputeClient(t *testing.T, spec parity.ComputeClientSpec) parity.ComputeClient {
+	t.Helper()
+	return fixtureutil.StartComputeClientForFixture(t, f.keySet, f.computeBin, f.grpcEndpoint, f.baseURL, spec)
+}
+
 // setup builds binaries, launches subprocesses, and waits for readiness.
 // It returns a teardown function that kills the subprocesses.
 func setup() (*memoryFixture, func(), error) {
@@ -58,15 +67,8 @@ func setup() (*memoryFixture, func(), error) {
 		return nil, nil, err
 	}
 
-	result, cleanup, err := fixtureutil.LaunchCyodaAndCompute(ks, []string{
-		"CYODA_STORAGE_BACKEND=memory",
-		// Tuned down from the 1s production default so the
-		// scheduledtransition parity scenarios (e2e/parity/scheduledtransition)
-		// observe fires within a small, bounded poll window instead of
-		// needing multi-second timeouts. Harmless to every other parity
-		// scenario — an empty ScanDue is a cheap no-op query.
-		"CYODA_SCHEDULER_SCAN_INTERVAL=50ms",
-	})
+	result, cleanup, err := fixtureutil.LaunchCyodaAndCompute(ks,
+		append([]string{"CYODA_STORAGE_BACKEND=memory"}, fixtureutil.TunedServerEnv()...))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -75,6 +77,7 @@ func setup() (*memoryFixture, func(), error) {
 		baseURL:      result.BaseURL,
 		grpcEndpoint: result.GRPCEndpoint,
 		keySet:       ks,
+		computeBin:   result.ComputeBin,
 	}
 
 	return fix, cleanup, nil

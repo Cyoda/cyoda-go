@@ -78,7 +78,7 @@ const functionName = "sched-fn-resolve"
 
 // fireTimeout bounds every poll loop in this file — sized generously above
 // the parity fixtures' tuned-down CYODA_SCHEDULER_SCAN_INTERVAL (50ms —
-// see each backend's fixture.go) while still tolerating slow-CI /
+// see fixtureutil.TunedServerEnv) while still tolerating slow-CI /
 // postgres-subprocess overhead, mirroring scheduledtransition.go's
 // identically-named, identically-reasoned constant.
 const fireTimeout = 15 * time.Second

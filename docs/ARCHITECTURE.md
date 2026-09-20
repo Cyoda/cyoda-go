@@ -106,7 +106,8 @@ internal/
     proxy/                HTTP reverse proxy + gRPC routing helpers
     registry/             Gossip (memberlist) and local node registries; the Gossip
                           registry implements spi.ClusterBroadcaster and is passed to
-                          plugins via spi.WithClusterBroadcaster
+                          plugins via spi.WithClusterBroadcaster; tag lists travel
+                          beside the metadata (tags.go, tags_worker.go)
     modelcache/           Model-store caching decorator with gossip invalidation
     dispatch/             Cross-node compute dispatch (dispatcher, selector, forwarder)
     peeraddr/             Peer-address SSRF validation
@@ -477,18 +478,20 @@ drops a message.
 
 **Encryption:** AES-GCM encrypted gossip keyed by the shared secret `CYODA_HMAC_SECRET`. The same secret is used for gossip encryption and transaction token signing; the documented and chart-generated form is 32 hex-decoded bytes, which selects AES-256.
 
-**Node metadata** (JSON, serialized in memberlist node meta):
+**Node metadata** (JSON, serialized in memberlist node meta) is identity plus a list version:
 
 ```go
 type nodeMeta struct {
-    ID       string              `json:"id"`                 // stable, operator-assigned
-    Addr     string              `json:"addr"`               // HTTP address (e.g., "http://node-1:8123")
-    GRPCAddr string              `json:"grpcAddr,omitempty"` // gRPC address, when advertised
-    Tags     map[string][]string `json:"tags,omitempty"`     // tenantID → compute member tags
+    ID       string      `json:"id"`                 // stable, operator-assigned
+    Addr     string      `json:"addr"`               // HTTP address (e.g., "http://node-1:8123")
+    GRPCAddr string      `json:"grpcAddr,omitempty"` // gRPC address, when advertised
+    Tags     listVersion `json:"tv"`                 // {epoch: process start, unix nanos; seq: change counter}
 }
 ```
 
-Tags are updated whenever a compute member joins or leaves a node. The update is pushed to the memberlist via `UpdateNode()`, and gossip propagates the change to all peers within milliseconds.
+Its size depends only on operator settings. `NewGossip` measures it with the longest version there can be and refuses to start past memberlist's `MetaMaxSize` (512 bytes).
+
+**Tag lists** (tenant → compute tags) do not ride in the metadata. Each node holds one list per peer. The version a node announces in its own metadata is the authority for which of its lists is current; versions are compared for equality and ordered only within one epoch, so a node restarted under the same id — with a clock that stepped backwards, even — is never taken for an older self. On a change a node bumps `seq`, re-advertises its metadata and sends `{nodeID, version, tags}` to every alive peer with `memberlist.SendReliable` (topic `cluster.tags`). A peer stores a list whose version equals the announced one, or is a later `seq` of the announced epoch. A peer that holds no list for a node, or another version than the announced one, sends `cluster.tags.request` and the node answers with its list: on `NotifyJoin`, on `NotifyUpdate`, and from a periodic scan of all members that is the floor under both. `NotifyLeave` drops the node's list. memberlist's event callbacks run under its node lock and are the only place a member can be read safely, so they do nothing but copy: the member (name, address, metadata) into the registry's own directory of alive members, and a nudge into a bounded queue. Everything else — `List`, `Lookup`, the fan-out, the scan — reads that directory and never `memberlist.Members()`, whose nodes memberlist rewrites under a lock no caller can take. One worker goroutine stores lists, and every send runs on a goroutine of its own. `NodeRegistry.Changed()` is closed when a list arrives with different tags, when a peer joins and when one leaves.
 
 **Bootstrap algorithm:**
 
@@ -1799,13 +1802,13 @@ Capabilities this document's design implies but the system does not provide. Eac
 
 **Rationale:** Simple, stateless, no coordination needed. Load balancing across peers is acceptable for the expected cluster size. More sophisticated strategies (round-robin, least-loaded) can be added by implementing the `PeerSelector` interface.
 
-### DD-7: Gossip Metadata for Tag Discovery
+### DD-7: Tag Lists Beside Gossip Metadata
 
 **Context:** How to find which node has a compute member with the required tags.
 
-**Decision:** Each node publishes its compute member tags in gossip metadata, organized per tenant. Tag updates are pushed to memberlist on member join/leave and propagated via SWIM gossip.
+**Decision:** Each node announces a tag-list version in its gossip metadata and sends the list itself, organized per tenant, to each peer over memberlist's reliable channel; a peer that is behind fetches it.
 
-**Rationale:** Avoids a centralized registry. Tag lookups are local memory reads against the gossip view. Convergence is within milliseconds for LAN configurations.
+**Rationale:** Avoids a centralized registry. Tag lookups are local memory reads. memberlist caps node metadata at 512 bytes, which a handful of tenants exceeds; the reliable channel has no size limit, and the announced version makes a lost message detectable.
 
 ### DD-8: HTTP for Dispatch Forwarding
 
@@ -1915,7 +1918,7 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 |-----------|----------|--------|
 | **Read-your-own-writes** | Strong (within a transaction) | Guaranteed by `pgx.Tx` — all reads within a transaction see its own buffered writes. Across transactions, reads are snapshot-isolated. |
 | **Snapshot isolation** | Strong (SI+FCW across all plugins; see §3.7 and [docs/CONSISTENCY.md](CONSISTENCY.md)) | Commit-time conflict detection may abort with `ErrConflict` (40001 / 40P01 on PostgreSQL). The application retries. Under high contention, retry storms are possible. |
-| **Cross-node consistency** | Strong (PG is the authority) | All nodes share the same PG instance. There is no eventual consistency between nodes — they all see the same data at the same isolation level. Gossip metadata (node registry, compute tags) is eventually consistent with sub-second convergence. |
+| **Cross-node consistency** | Strong (PG is the authority) | All nodes share the same PG instance. There is no eventual consistency between nodes — they all see the same data at the same isolation level. Cluster membership and the per-node compute-tag lists are eventually consistent with sub-second convergence. |
 | **Temporal consistency** | Strong (point-in-time queries) | `GetAsAt` returns the entity as it was at a specific timestamp. A revision is dated at its transaction's commit instant, so a read at an instant is stable once every transaction that started before it has finished; a read taken *while* a transaction commits can still change (`docs/CONSISTENCY.md` §1a). Resolution is bounded by PG clock precision (microsecond). |
 | **Commit ambiguity** | **Gap** (§12) | If the network partitions between Node A and PG at COMMIT time, Node A cannot determine whether PG committed or not. The client may see a false failure for a transaction that actually committed. |
 | **Idempotency** | **Gap** (§12) | Client retries after timeout may create duplicate entities. There is no built-in idempotency key mechanism; clients must handle deduplication at the application level. |
@@ -1925,7 +1928,7 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 | Parameter | Default | Hard Limit | Notes |
 |-----------|---------|------------|-------|
 | PG connections per node | 25 | Configurable, bounded by PG `max_connections` | Each in-flight transaction holds one connection. |
-| Gossip metadata size | ~100 bytes per node (without tags) | memberlist `MetaMaxSize` = 512 bytes | With many tenants and many tags, metadata could exceed 512 bytes. Monitor and alert. |
+| Gossip metadata size | ~100–150 bytes per node | memberlist `MetaMaxSize` = 512 bytes | Identity and a list version only; tenants and tags travel by reliable message and are unbounded. A node whose identity does not fit refuses to start. Alert on `cyoda.cluster.tags.lists_outstanding` staying non-zero. |
 | Search snapshot TTL | 1 hour | Configurable | Snapshots older than TTL are reaped. Increase for long-running batch workflows. |
 | Transaction lifetime | 5 minutes idle | Configurable | Enforced by PostgreSQL via `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`. Processor `responseTimeoutMs` must fit under it. |
 | Max cascade depth | 100 | Hardcoded | Total cascade steps across all states in one engine invocation. |
