@@ -12,12 +12,14 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
-// A compute member's response that does not decode is the member's own
-// fault, not this node's — it answered success, but sent a payload
-// dispatchCalloutToMember cannot read. The client-visible failure must carry
-// a fixed, sanitized message: never the raw json error text, which can quote
-// a byte of the member's own (mis-)formatted response.
-func TestRunLocal_MemberResponseUnreadable_NoMarkerLeak(t *testing.T) {
+// A compute member's response that does not decode is Terminal — spec §3's
+// site table assigns "response payload unmarshal" Terminal, not MemberFailed
+// (MemberFailed means the cnode itself answered success=false, with its OWN
+// message and verdict; here it answered success, and the message is ours).
+// The client-visible failure must carry a fixed, sanitized message: never
+// the raw json error text, which can quote a byte of the member's own
+// (mis-)formatted response.
+func TestRunLocal_MemberResponseUnreadable_IsTerminal_NoMarkerLeak(t *testing.T) {
 	const marker = "SECRET-MARKER-123"
 	reg := NewMemberRegistry()
 	bad := ProcessingResponse{Success: true, Payload: json.RawMessage(marker + " this is not valid json")}
@@ -26,8 +28,8 @@ func TestRunLocal_MemberResponseUnreadable_NoMarkerLeak(t *testing.T) {
 
 	res := d.RunLocal(testContext(), processorCall("x", true, 5*time.Second), 1)
 
-	if res.Failure == nil || res.Failure.Kind != contract.MemberFailed {
-		t.Fatalf("failure = %+v, want MemberFailed", res.Failure)
+	if res.Failure == nil || res.Failure.Kind != contract.Terminal {
+		t.Fatalf("failure = %+v, want Terminal", res.Failure)
 	}
 	const wantMsg = "the compute member's response could not be read"
 	if res.Failure.Message != wantMsg {

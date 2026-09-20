@@ -162,8 +162,11 @@ func NewCriteriaCallout(tenantID spi.TenantID, entity *spi.Entity, criterion jso
 	// One parser serves import validation and dispatch alike.
 	fn, err := contract.ParseCriterionFunction(criterion)
 	if err != nil {
-		slog.Error("workflow criterion function could not be parsed", "pkg", "grpc", "workflowName", workflowName,
-			"transitionName", transitionName, "error", jsonErrorShape(err))
+		// transitionName is empty for a workflow-level criterion, so target
+		// ("WORKFLOW"/"TRANSITION"/"PROCESSOR") is what lets an operator on a
+		// multi-tenant node tell which criterion that was.
+		slog.Error("workflow criterion function could not be parsed", "pkg", "grpc", "tenantId", string(tenantID),
+			"workflowName", workflowName, "transitionName", transitionName, "target", target, "error", jsonErrorShape(err))
 		return Callout{}, &contract.CalloutFailure{Kind: contract.Terminal, Message: "the workflow's criterion function could not be parsed"}
 	}
 	name := fn.Name

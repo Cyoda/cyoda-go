@@ -210,7 +210,7 @@ func TestTryKind_AuthContext_IsTerminalAndNamesNoPrincipal(t *testing.T) {
 	}
 }
 
-func TestTryKind_ResponsePayloadUnmarshal_IsMemberFailed(t *testing.T) {
+func TestTryKind_ResponsePayloadUnmarshal_IsTerminal(t *testing.T) {
 	registry := NewMemberRegistry()
 	m := registry.Register("m-1", testTenantID, []string{"python"}, func(ce *cepb.CloudEvent) error {
 		reqID, err := extractRequestID(ce)
@@ -230,22 +230,25 @@ func TestTryKind_ResponsePayloadUnmarshal_IsMemberFailed(t *testing.T) {
 	if ctxErr != nil {
 		t.Fatalf("unexpected ctx error: %v", ctxErr)
 	}
-	// The member answered success, but its own payload does not decode: that
-	// is its fault, not this node's, so it is MemberFailed, not Terminal. The
-	// real decode error (which could otherwise quote a byte of the member's
-	// response) must never reach Message/Error().
-	if failure == nil || failure.Kind != contract.MemberFailed {
-		t.Fatalf("failure = %+v, want MemberFailed", failure)
+	// The member answered success, but its own payload does not decode. Spec
+	// §3's site table assigns "response payload unmarshal" Terminal, not
+	// MemberFailed: MemberFailed means "the cnode answered success=false"
+	// with the cnode's OWN message and verdict (contract.CalloutFailure's
+	// doc) — none of that holds here, the member said success and the text
+	// is ours, not the cnode's. The real decode error (which could otherwise
+	// quote a byte of the member's response) must never reach Message/Error().
+	if failure == nil || failure.Kind != contract.Terminal {
+		t.Fatalf("failure = %+v, want Terminal", failure)
 	}
 	const wantMsg = "the compute member's response could not be read"
 	if failure.Message != wantMsg || failure.Error() != wantMsg {
 		t.Errorf("Message/Error = %q/%q, want %q", failure.Message, failure.Error(), wantMsg)
 	}
 	if failure.Code != "" {
-		t.Errorf("Code = %q, want empty: MemberFailed carries none", failure.Code)
+		t.Errorf("Code = %q, want empty: this Terminal failure has none of its own", failure.Code)
 	}
 	var appErr *common.AppError
 	if errors.As(failure, &appErr) {
-		t.Errorf("MemberFailed must carry no AppError, got %v", appErr)
+		t.Errorf("must carry no AppError (a cause would re-leak via Error()), got %v", appErr)
 	}
 }

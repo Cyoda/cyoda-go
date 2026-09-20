@@ -239,8 +239,8 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 			if resp != nil {
 				failure.Retryable = resp.Retryable
 				if resp.Error != "" {
-					failure.Message = resp.Error
-					common.AddError(ctx, fmt.Sprintf("%s %s: %s", label, name, resp.Error))
+					failure.Message = boundMemberText(resp.Error)
+					common.AddError(ctx, fmt.Sprintf("%s %s: %s", label, name, failure.Message))
 				}
 			}
 			return CalloutResult{}, failure, nil
@@ -287,18 +287,25 @@ func terminalFailure(err error, memberID, requestID string) *contract.CalloutFai
 	return &contract.CalloutFailure{Kind: contract.Terminal, Code: appErr.Code, Message: appErr.Message, Err: appErr}
 }
 
-// memberResponseUnreadable is the compute member's own fault, not this node's:
-// it answered success, but its payload does not decode into the shape this
-// callout expects. The client sees a fixed, client-safe message; the decode
-// error — which can quote a byte of the member's own response — is logged
-// here by shape only. It is not attached to the failure at all: a MemberFailed
-// failure carries no Err (contract.CalloutFailure's own doc states why —
-// Error() returns Err's text verbatim when Err is set, bypassing Message
-// entirely, which would undo the sanitizing done here).
+// memberResponseUnreadable is Terminal: spec §3's site table assigns
+// "response payload unmarshal" Terminal, not MemberFailed. MemberFailed means
+// the cnode itself answered success=false, with the cnode's OWN message and
+// its own retryable verdict (contract.CalloutFailure's doc); here the member
+// answered success, and the message is ours, not the cnode's — reporting it
+// as MemberFailed would also mislabel it over the wire, since fillFailure
+// (internal/cluster/dispatch/handover.go) places a MemberFailed failure's
+// Message into memberError, claiming it as the member's own words. The
+// client sees a fixed, client-safe message; the decode error — which can
+// quote a byte of the member's own response — is logged here by shape only.
+// It is not attached to the failure at all (no Err, no Code — this Terminal
+// failure has none of its own, like ResolveAnswerLimit's and
+// NewCriteriaCallout's): CalloutFailure.Error() returns Err's text verbatim
+// once Err is set, bypassing Message entirely, which would undo the
+// sanitizing done here.
 func memberResponseUnreadable(err error, label, name, memberID, requestID string) *contract.CalloutFailure {
 	slog.Error("compute member response could not be read", "pkg", "grpc", "label", label, "name", name,
 		"memberId", memberID, "requestId", requestID, "error", jsonErrorShape(err))
-	return &contract.CalloutFailure{Kind: contract.MemberFailed, Message: "the compute member's response could not be read"}
+	return &contract.CalloutFailure{Kind: contract.Terminal, Message: "the compute member's response could not be read"}
 }
 
 // jsonErrorShape renders a decode/encode error for the server log without the
@@ -332,6 +339,30 @@ func calloutDeadlinePassed(ctx context.Context) bool {
 func disconnectedErr(label string) *common.AppError {
 	return common.Operational(http.StatusServiceUnavailable, common.ErrCodeComputeMemberDisconnected,
 		fmt.Sprintf("compute member disconnected during %s dispatch", label)).AsRetryable()
+}
+
+// maxMemberMessageRunes bounds a compute member's own free text before it
+// becomes client text: a MemberFailed failure's Message, which flows into a
+// 400 body directly and, once several tries are exhausted, is concatenated
+// into a CALLOUT_FAILED list (internal/callout/failure.go's attemptsMessage)
+// alongside every other try's cause. Unbounded, one talkative or malicious
+// cnode could make that list arbitrarily large.
+const maxMemberMessageRunes = 512
+
+// boundMemberText keeps the first maxMemberMessageRunes runes of s, appending
+// "…" when anything was cut so a reader can tell a shortened message from a
+// short one. Runes, not bytes: a cut must never split a multi-byte rune (see
+// boundLine, internal/cluster/dispatch/peer_router.go, for the same shape
+// applied to a hand-over answer's diagnostics).
+func boundMemberText(s string) string {
+	if len(s) <= maxMemberMessageRunes {
+		return s // bytes never outnumber runes: nothing to cut
+	}
+	r := []rune(s)
+	if len(r) <= maxMemberMessageRunes {
+		return s
+	}
+	return string(r[:maxMemberMessageRunes]) + "…"
 }
 
 // singleTryNumberer numbers the one try an entry point below makes: the
