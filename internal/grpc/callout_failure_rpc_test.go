@@ -101,3 +101,56 @@ func TestRPC_ProcessorMemberFailed_EnvelopeCarriesTheMemberMessage(t *testing.T)
 		})
 	}
 }
+
+// NoHandOff with one try: the try's own code reaches the envelope, retryable.
+func TestRPC_Processor_NoHandOff_OwnCodeEnvelope(t *testing.T) {
+	const modelName = "grpc-proc-no-handoff"
+	const tag = "no-handoff-tag"
+	svc, wfHandler, ctx := newTestEnvWithDispatch(t)
+	setupScheduledWorkflowRPCEnv(t, svc, wfHandler, ctx, modelName,
+		processorRPCWorkflowJSON("no-handoff-wf", "charge", tag, 100))
+
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	wedged := svc.registry.Register("m-1", testTenant, []string{tag}, func(*cepb.CloudEvent) error { <-release; return nil }, nil)
+	_ = wedged.Send(ctx, mustCE(t)) // park the writer: the next enqueue has nowhere to go
+
+	typed := createScheduledEntity(t, svc, ctx, modelName)
+	assertClientErrorEnvelope(t, typed, "DISPATCH_TIMEOUT")
+	if !strings.Contains(typed.Error.Message, "member not draining") {
+		t.Errorf("message = %s", typed.Error.Message)
+	}
+	if typed.Error.Retryable == nil || !*typed.Error.Retryable {
+		t.Error("expected retryable=true")
+	}
+}
+
+// NoAnswer on a processor that is not idempotent: stop, the try's own code,
+// and a second matching cnode is never asked.
+func TestRPC_Processor_NoAnswer_NotIdempotent_OwnCodeEnvelope(t *testing.T) {
+	const modelName = "grpc-proc-no-answer"
+	const tag = "no-answer-tag"
+	svc, wfHandler, ctx := newTestEnvWithDispatch(t)
+	setupScheduledWorkflowRPCEnv(t, svc, wfHandler, ctx, modelName,
+		processorRPCWorkflowJSON("no-answer-wf", "charge", tag, 50))
+
+	var asked atomic.Int32
+	for _, id := range []string{"m-1", "m-2"} {
+		svc.registry.Register(id, testTenant, []string{tag}, func(*cepb.CloudEvent) error {
+			asked.Add(1)
+			return nil // takes the work, never answers
+		}, nil)
+	}
+
+	typed := createScheduledEntity(t, svc, ctx, modelName)
+	assertClientErrorEnvelope(t, typed, "DISPATCH_TIMEOUT")
+	if !strings.Contains(typed.Error.Message, "no response") {
+		t.Errorf("message = %s", typed.Error.Message)
+	}
+	if typed.Error.Retryable == nil || !*typed.Error.Retryable {
+		t.Error("expected retryable=true")
+	}
+	if got := asked.Load(); got != 1 {
+		t.Errorf("%d cnodes were asked, want 1", got)
+	}
+}

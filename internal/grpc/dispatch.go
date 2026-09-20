@@ -249,38 +249,33 @@ func disconnectedErr(label string) *common.AppError {
 		fmt.Sprintf("compute member disconnected during %s dispatch", label)).AsRetryable()
 }
 
-// dispatchOnce makes the single try the three Dispatch* methods make.
-func (d *ProcessorDispatcher) dispatchOnce(ctx context.Context, call Callout) (CalloutResult, error) {
+// singleTryNumberer numbers the one try an entry point below makes: the
+// owner's first, (1, 0).
+type singleTryNumberer struct{}
+
+func (singleTryNumberer) Next() (uint32, uint32) { return 1, 0 }
+
+// runSingleTry is the local procedure with one try, as the owner of the
+// callout: what DispatchProcessor, DispatchCriteria and DispatchFunction do
+// until the owner's loop takes their place.
+func (d *ProcessorDispatcher) runSingleTry(ctx context.Context, call Callout) (CalloutResult, error) {
 	limit, failure := d.ResolveAnswerLimit(call.ResponseTimeoutMs)
 	if failure != nil {
 		return CalloutResult{}, failure
 	}
-	candidates := d.registry.Candidates(call.TenantID, call.Tags)
-	if len(candidates) == 0 {
-		slog.Warn("no matching calculation member", "pkg", "grpc", "tags", call.Tags, "entityId", call.EntityID)
-		return CalloutResult{}, fmt.Errorf("%w: tags %q", ErrNoMatchingMember, call.Tags)
-	}
-	member := d.selector.Select(candidates)
 	call.RequestID = uuid.UUID(d.uuids.NewTimeUUID()).String()
 	call.AnswerLimit = limit
 	call.OwnerNodeID = d.selfNodeID
-
-	slog.Info("dispatching "+call.Kind.String(), "pkg", "grpc", "memberId", member.ID, "name", call.Name, "entityId", call.EntityID)
-	result, failure, ctxErr := d.dispatchCalloutToMember(ctx, member, call, d.resolveTxToken(ctx, call.TxID))
-	switch {
-	case ctxErr != nil:
-		return CalloutResult{}, ctxErr
-	case failure != nil:
-		return CalloutResult{}, failure
-	}
-	return result, nil
+	call.Number = singleTryNumberer{}
+	res := d.RunLocal(ctx, call, 1)
+	return res.Result, res.Err()
 }
 
 // DispatchProcessor sends an entity processor calculation request to a matching
 // calculation member and waits for the response.
 func (d *ProcessorDispatcher) DispatchProcessor(ctx context.Context, entity *spi.Entity, processor spi.ProcessorDefinition, workflowName string, transitionName string, txID string) (*spi.Entity, error) {
 	uc := spi.MustGetUserContext(ctx)
-	res, err := d.dispatchOnce(ctx, NewProcessorCallout(uc.Tenant.ID, entity, processor, workflowName, transitionName, txID))
+	res, err := d.runSingleTry(ctx, NewProcessorCallout(uc.Tenant.ID, entity, processor, workflowName, transitionName, txID))
 	if err != nil {
 		return nil, err
 	}
@@ -318,7 +313,7 @@ func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.
 	if failure != nil {
 		return false, "", failure
 	}
-	res, err := d.dispatchOnce(ctx, call)
+	res, err := d.runSingleTry(ctx, call)
 	if err != nil {
 		return false, "", err
 	}
@@ -330,7 +325,7 @@ func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.
 // and returns its typed result.
 func (d *ProcessorDispatcher) DispatchFunction(ctx context.Context, entity *spi.Entity, fn spi.ScheduleFunction, workflowName string, transitionName string, txID string) (contract.FunctionResult, error) {
 	uc := spi.MustGetUserContext(ctx)
-	res, err := d.dispatchOnce(ctx, NewFunctionCallout(uc.Tenant.ID, entity, fn, workflowName, transitionName, txID))
+	res, err := d.runSingleTry(ctx, NewFunctionCallout(uc.Tenant.ID, entity, fn, workflowName, transitionName, txID))
 	if err != nil {
 		return contract.FunctionResult{}, err
 	}

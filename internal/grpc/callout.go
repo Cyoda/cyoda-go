@@ -67,6 +67,9 @@ type Callout struct {
 	// OwnerNodeID is the pnode that holds the transaction; a cnode's callbacks
 	// are routed there.
 	OwnerNodeID string
+	// Number gives the fencing number of each try. RunLocal calls Next once
+	// before every try, before it mints that try's pass.
+	Number TryNumberer
 
 	eventType    string
 	buildRequest func(requestID string) any

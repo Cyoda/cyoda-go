@@ -407,6 +407,8 @@ A compute member declares its tags in `CalculationMemberJoinEvent.tags` as a str
 
 Among the members of the authenticated tenant whose tags match, the server picks **round robin**: the member that was picked longest ago goes next, and a member that has just joined has never been picked and goes first. Tag matching uses intersection: the member must declare at least one tag that appears in the callout's `calculationNodesTags`. A member of another tenant is never chosen, whatever its tags. Clients that need one particular member to receive a callout must give that member a tag of its own.
 
+A callout may be tried on more than one member. **Every try carries the same `requestId`** (and the same `id`) in its payload, and the same `transactionId`. A member that de-duplicates on `requestId` will therefore treat a second delivery of the same callout — to itself after a reconnect, or seen by a shared de-duplication store behind several members — as a repeat, which is the intent. Criteria and functions must have no effects: they may be given to another member whenever one does not answer. A processor is given to another member after it was handed the work only if its configuration declares it `idempotent`.
+
 When `calculationNodesTags` is empty, every member of the authenticated tenant matches, and the same round robin applies.
 
 In cluster mode, the `ClusterDispatcher` propagates member tag sets across nodes via gossip so any node can forward dispatches to a node that has a matching member.
