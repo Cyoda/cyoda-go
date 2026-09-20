@@ -501,10 +501,13 @@ statement of the shared transaction runs.
    the transaction is still open.
 2. *Under the transaction's lock, for every joined request.* After `Admit`, the
    join layer — `JoinFromToken`'s three callers, through one helper in `txjoin`
-   — takes the transaction's lock (`txgate`), installs the suspendable handle
-   the engine uses (`txgate.WithHeld`), runs `fence.Check` **under the lock**,
-   and only then calls the handler; the lock is released when the handler
-   returns. This is the check that gives the right to touch the transaction,
+   — first has the whole request in memory (below), then takes the
+   transaction's lock (`txgate`), installs the suspendable handle the engine
+   uses (`txgate.WithHeld`), runs `fence.Check` **under the lock**, and only
+   then calls the handler. The release is deferred, so a handler that panics
+   gives the lock back: the recovery layers sit outside the join layer on both
+   doors (`app/app.go:824`, `internal/grpc/server.go:88-97`), and a lock left
+   held would block the owner's wait for ever. This is the check that gives the right to touch the transaction,
    and the owner's wait (below) takes the same lock. It covers every joined
    operation alike — entity writes, reads and searches, the model load and
    model extension of a create, and every non-entity handler behind the join
@@ -592,8 +595,12 @@ superseded one, point 4 has already released it. The wait cannot deadlock: the
 chain that runs a Coordinator holds no lock (the owner never does during
 `engine.Execute`, `entity/service.go:356-361`; a callback has given it up for
 the callout, and an inner `end` runs before its `resume`), a holder of the lock
-waits on nothing but the database, and the fence never waits under its own
-mutex.
+waits on nothing but the database, its connection pool, or another request's
+database read (the model cache's single-flight,
+`cluster/modelcache/cache.go:160-181`, whose leader waits only on the database),
+and the fence never waits under its own mutex. This keeps true what
+`common/rollback.go:8-15` relies on: the lock is never held across anything
+unbounded.
 
 The owner's own chain carries no pairs and is never subject to any check.
 
@@ -624,12 +631,27 @@ change: during a callout the transaction's users are its current cnode's
 callbacks, one at a time; between callouts, the owner alone. Three things follow
 from holding the lock for the whole request:
 
-- **The response is sent after the lock is released.** For a joined request the
-  join layer hands the handler a buffering response writer (HTTP) or a stream
-  whose sends are held (gRPC server-streaming), releases the lock when the
-  handler returns, and then sends. Joined responses are materialised today —
+- **The lock is held only while the request is wholly in memory — in and out.**
+  Handlers read the request body themselves, after the join middleware has run
+  (`entity/handler.go:~575`, `messaging/handler.go:~57`, `search/handler.go:~229`,
+  every generated-API decode), and the generated gRPC server-streaming handler
+  calls `RecvMsg` after the interceptor; a cnode that sends its headers and
+  then stalls — just the kind that gets replaced — would hold the lock for up
+  to `CYODA_HTTP_READ_TIMEOUT` (5 minutes; 0 disables it). So for a joined
+  request the join layer reads the body **before** it takes the lock, under the
+  size limit the API already applies, and hands the handler a reader over the
+  bytes (HTTP; a proxied callback included, whose body the reverse proxy
+  streams), or receives the one request message and hands the handler a stream
+  that replays it, as `proxyStream` already does
+  (`txroute_interceptor.go:200-203`). gRPC unary needs nothing: the message is
+  complete before the interceptor runs. On the way out the join layer hands the
+  handler a buffering response writer (HTTP) or a stream whose sends are held
+  (gRPC server-streaming), releases the lock when the handler returns, and then
+  sends. Because the body is already read, a handler's own
+  `http.MaxBytesReader(w, …)` has nothing left to signal through the wrapped
+  writer. Joined responses are materialised today —
   search, list, statistics and audit return slices; the one iterator that
-  escapes a function is drained before any response (`grouped_stats.go:143`) —
+  escapes a function is drained before any response (`entity/grouped_stats_service.go:316-327`) —
   so nothing is buffered that was not already in memory. A cnode that does not
   read its response holds nothing. **V-5**: the plan lists every route behind
   the join middleware and confirms none streams without end.
@@ -640,14 +662,31 @@ from holding the lock for the whole request:
   (`pgconn.go:344`): the same outcome the fence avoids on its own side. The join
   layer therefore runs a joined request under `context.WithoutCancel`. It ends
   by finishing or by being refused at a check; a callback waiting on a callout
-  of its own is released by the fence (point 4), not by its client. Its
-  statements stay bounded by the database's own limits. `transactionTimeoutMillis`
-  is already refused on a joined request, so no deadline is lost.
+  of its own is released by the fence (point 4), not by its client.
+  `transactionTimeoutMillis` and `transactionSize` are already refused on a
+  joined request, on both doors. What is given up, deliberately: a deadline the
+  cnode sets on its own gRPC call; the engine's cascade check of the request
+  context (`engine.go:884`) and the per-item check of a gRPC collection
+  (`grpc/entity.go:388`), which become inert for a joined call; and, on memory
+  and SQLite, the context checks that end a scan early
+  (`plugins/memory/searcher.go:134-269`, `plugins/sqlite/searcher.go:117-321`) —
+  a joined search by a cnode that has gone away runs to the end of its data,
+  which is finite, while PostgreSQL's statements stay bounded by the database's
+  own limits. A **proxied** callback that queues for the lock, or runs a callout
+  of its own, for longer than `CYODA_PROXY_TIMEOUT` (30 s) is answered 503
+  `TRANSACTION_NODE_UNAVAILABLE` by the pnode it arrived at while it runs to
+  completion on the owner: for a cnode, a 503 or a dropped connection on a
+  joined write means the outcome is unknown, and the help says so.
 - **Rollback and commit never overlap a joined statement.** `txScope.Release`
   already takes the lock before it derives its rollback budget
   (`entity/txscope.go:145-152`), and the owner's finalize blocks take it before
-  the final save and commit; with every joined request under the same lock, that
-  is now the whole story.
+  the final save and commit. Three owner-side paths close a transaction without
+  the lock — the scheduler's fire (`workflow/fire_scheduled.go:116, 131-150`),
+  the engine's `rollbackSegment`, and the `COMMIT_BEFORE_DISPATCH` commits
+  (`engine_processors.go:311, 349, 376, 503`); `txgate` is wired into
+  `entity.Handler` alone. They are safe because of the fence's wait at the end
+  of every callout, after which no joined request holds the lock or can pass
+  its check — not because of the lock.
 
 **A savepoint that cannot be created, undone or released fails the operation.**
 Today a failed `RollbackToSavepoint` is a warning
@@ -1000,6 +1039,9 @@ waiver, with its reason below the table.
 | Two parallel joined reads, and a joined read against a joined write, on one transaction are serialised by the join layer: clean under `-race` on the memory backend (today: `concurrent map writes`, the process dies); no `conn busy` on PostgreSQL | ✓ | ✓ | | | |
 | A non-entity joined request (model, message, search, statistics, audit) holds the transaction's lock and is refused once its cnode is replaced | ✓ | ✓ | | | |
 | A joined request's response is sent after the lock is released: a cnode that does not read its response does not hold the transaction (HTTP; gRPC server-streaming) | ✓ | | | | |
+| A joined request's body is read before the lock is taken: a cnode that sends its headers and stalls does not hold the transaction (HTTP; gRPC server-streaming) | ✓ | ✓ | | | |
+| A joined handler that panics gives the lock back | ✓ | | | | |
+| A joined `GetTransitions` that reaches a function criterion holds the lock and gives it up for the callout (today it holds none) | ✓ | | | | |
 | A cnode disconnects in the middle of its callback → the callback is not cancelled; the owner's operation is unaffected (PostgreSQL) | ✓ | ✓ | | | |
 | `ASYNC_NEW_TX`: a savepoint that cannot be created, undone or released → the operation fails with a ticketed 5xx (conflict and unavailable-store mappings kept), nothing is committed, no driver text in the response | ✓ | | | | |
 | Tries made by another pnode: a higher `minor` is absorbed from the first callback that carries it, and lower ones are refused from then on; a second hand-over's `minor = 1` is admitted | ✓ | | | | ✓ |
