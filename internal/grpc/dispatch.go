@@ -274,37 +274,24 @@ func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.
 	uc := spi.MustGetUserContext(ctx)
 	tenantID := uc.Tenant.ID
 
-	// FunctionCondition schema: {"type":"function","function":{"name":"...","config":{...}}}
-	var parsed struct {
-		Function struct {
-			Name   string `json:"name"`
-			Config struct {
-				CalculationNodesTags string `json:"calculationNodesTags"`
-				AttachEntity         *bool  `json:"attachEntity"` // nil = default true
-				ResponseTimeoutMs    int64  `json:"responseTimeoutMs"`
-				// Context — pass-through string surfaced verbatim in the
-				// request's parameters node.
-				Context string `json:"context"`
-			} `json:"config"`
-		} `json:"function"`
-	}
-	if err := json.Unmarshal(criterion, &parsed); err != nil {
+	fn, err := contract.ParseCriterionFunction(criterion)
+	if err != nil {
 		return false, "", fmt.Errorf("invalid criterion JSON: %w", err)
 	}
 
 	// attachEntity defaults to true when not explicitly set.
 	attachEntity := true
-	if parsed.Function.Config.AttachEntity != nil {
-		attachEntity = *parsed.Function.Config.AttachEntity
+	if fn.Config.AttachEntity != nil {
+		attachEntity = *fn.Config.AttachEntity
 	}
 
-	member := d.registry.FindByTags(tenantID, parsed.Function.Config.CalculationNodesTags)
+	member := d.registry.FindByTags(tenantID, fn.Config.CalculationNodesTags)
 	if member == nil {
-		slog.Warn("no matching calculation member", "pkg", "grpc", "tags", parsed.Function.Config.CalculationNodesTags, "entityId", entity.Meta.ID)
-		return false, "", fmt.Errorf("%w: tags %q", ErrNoMatchingMember, parsed.Function.Config.CalculationNodesTags)
+		slog.Warn("no matching calculation member", "pkg", "grpc", "tags", fn.Config.CalculationNodesTags, "entityId", entity.Meta.ID)
+		return false, "", fmt.Errorf("%w: tags %q", ErrNoMatchingMember, fn.Config.CalculationNodesTags)
 	}
 
-	slog.Info("dispatching criteria", "pkg", "grpc", "memberId", member.ID, "criteria", parsed.Function.Name, "entityId", entity.Meta.ID)
+	slog.Info("dispatching criteria", "pkg", "grpc", "memberId", member.ID, "criteria", fn.Name, "entityId", entity.Meta.ID)
 
 	requestID := uuid.UUID(d.uuids.NewTimeUUID()).String()
 
@@ -312,8 +299,8 @@ func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.
 		ID:            requestID,
 		RequestID:     requestID,
 		EntityID:      entity.Meta.ID,
-		CriteriaID:    parsed.Function.Name,
-		CriteriaName:  parsed.Function.Name,
+		CriteriaID:    fn.Name,
+		CriteriaName:  fn.Name,
 		Target:        events.EntityCriteriaCalculationRequestJsonTarget(target),
 		Workflow:      &events.WorkflowInfoJson{ID: workflowName, Name: workflowName},
 		Transition:    &events.TransitionInfoJson{ID: transitionName, Name: transitionName},
@@ -323,14 +310,14 @@ func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.
 	if processorName != "" {
 		req.Processor = &events.ProcessorInfoJson{Name: processorName}
 	}
-	if parsed.Function.Config.Context != "" {
-		req.Parameters = parsed.Function.Config.Context
+	if fn.Config.Context != "" {
+		req.Parameters = fn.Config.Context
 	}
 	if attachEntity {
 		req.Payload = buildEntityPayload(entity)
 	}
 
-	resp, err := d.dispatchCalloutToMember(ctx, member, EntityCriteriaCalculationRequest, req, requestID, txID, parsed.Function.Config.ResponseTimeoutMs, "criteria", parsed.Function.Name)
+	resp, err := d.dispatchCalloutToMember(ctx, member, EntityCriteriaCalculationRequest, req, requestID, txID, fn.Config.ResponseTimeoutMs, "criteria", fn.Name)
 	if err != nil {
 		return false, "", err
 	}
