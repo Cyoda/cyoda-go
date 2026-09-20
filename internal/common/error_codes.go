@@ -75,6 +75,12 @@ const (
 	ErrCodeDispatchForwardFailed     = "DISPATCH_FORWARD_FAILED"
 	ErrCodeDispatchTimeout           = "DISPATCH_TIMEOUT"
 	ErrCodeComputeMemberDisconnected = "COMPUTE_MEMBER_DISCONNECTED"
+	// ErrCodeCalloutFailed is returned when a callout recorded more than one
+	// failed try and nothing more could be done: every try was used, or the
+	// patience or the callout's deadline ran out with tries still left. The
+	// message lists the tries. Exactly one attempt is reported as that
+	// attempt's own code instead — see internal/callout.attemptsFailure.
+	ErrCodeCalloutFailed = "CALLOUT_FAILED"
 	// ErrCodeCalloutSuperseded is returned to a compute node's callback when
 	// the callout it belongs to was given to another compute node or has ended
 	// while the transaction is still open. Not retryable: the compute node must
@@ -261,6 +267,7 @@ const (
 // TestKnownErrorCode_IsExactlyWhatThisFileDefines.
 var knownErrorCodes = map[string]struct{}{
 	ErrCodeBadRequest:                       {},
+	ErrCodeCalloutFailed:                    {},
 	ErrCodeCalloutSuperseded:                {},
 	ErrCodeClusterNodeNotRegistered:         {},
 	ErrCodeCompositeKeyUnsupported:          {},
