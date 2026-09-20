@@ -62,6 +62,15 @@ type callout struct {
 	txID  string
 	major uint32 // 0 until the first Advance: no pass is current yet
 	minor uint32 // highest minor seen under major
+	// inner holds the callouts begun from inside a callback of this one, each
+	// with the pair of this callout it was begun under.
+	inner map[*inner]Pair
+}
+
+// inner is the handle by which an enclosing callout releases a Coordinator
+// that was begun under one of its pairs.
+type inner struct {
+	cancel context.CancelCauseFunc
 }
 
 // New returns a Fence whose wait takes the write locks of gate.
@@ -69,81 +78,140 @@ func New(gate *txgate.Registry) *Fence {
 	return &Fence{gate: gate, callouts: make(map[string]*callout)}
 }
 
-// Begin registers a callout on transaction txID and returns the context the
-// callout runs under and the func that ends it. The caller defers end, so a
-// callout is ended on every exit path, a panic included. end is idempotent.
+// Begin registers a callout on transaction txID, under the enclosing callouts
+// named by outer, and returns the context the callout runs under and the func
+// that ends it. The context is cancelled, with ErrSuperseded as its cause, when
+// one of the outer pairs stops being current — at once if one already is not.
+// The caller defers end, so a callout is ended on every exit path, a panic
+// included. end is idempotent.
 //
-// No pass is current until the first Advance.
+// No pass is current until the first Advance. An empty txID is a callout with
+// no transaction: it is registered so that it is released with an enclosing
+// callback, and its wait is a no-op.
 func (f *Fence) Begin(ctx context.Context, calloutID, txID string, outer []Pair) (context.Context, func()) {
 	cctx, cancel := context.WithCancelCause(ctx)
-	c := &callout{txID: txID}
+	in := &inner{cancel: cancel}
+	c := &callout{txID: txID, inner: make(map[*inner]Pair)}
+	outer = append([]Pair(nil), outer...)
 
-	func() {
+	stale := func() bool {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.callouts[calloutID] = c
+		for _, p := range outer {
+			if !f.currentLocked(p) {
+				return true
+			}
+		}
+		for _, p := range outer {
+			f.callouts[p.Callout].inner[in] = p
+		}
+		return false
 	}()
+	if stale {
+		cancel(ErrSuperseded)
+	}
 
 	var once sync.Once
 	return cctx, func() {
-		once.Do(func() {
-			f.end(calloutID, c)
-			cancel(context.Canceled)
-		})
+		once.Do(func() { f.end(calloutID, c, in, outer) })
 	}
 }
 
-// end unregisters the callout: all its passes are refused from then on.
-func (f *Fence) end(calloutID string, c *callout) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.callouts[calloutID] == c {
-		delete(f.callouts, calloutID)
+// end unregisters the callout — all its passes are refused from then on —
+// releases the Coordinators begun under it, and waits for a joined write in
+// progress on its transaction.
+func (f *Fence) end(calloutID string, c *callout, in *inner, outer []Pair) {
+	released := func() []*inner {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if f.callouts[calloutID] == c {
+			delete(f.callouts, calloutID)
+		}
+		for _, p := range outer {
+			if oc := f.callouts[p.Callout]; oc != nil {
+				delete(oc.inner, in)
+			}
+		}
+		return takeInner(c, func(Pair) bool { return true })
+	}()
+	for _, r := range released {
+		r.cancel(ErrSuperseded)
 	}
+	in.cancel(context.Canceled)
+	f.wait(c.txID)
 }
 
 // Advance raises the callout's number to (major, 0), which shuts out every
-// pass issued under a lower one. It is called before each local try and before
-// each hand-over. A major that is not higher than the current one, or a
-// callout that has ended, changes nothing.
+// pass issued under a lower one, releases the Coordinators begun under those
+// passes, and then waits until no joined write is in progress on the
+// transaction. It is called before each local try and before each hand-over.
+// A major that is not higher than the current one, or a callout that has
+// ended, changes nothing.
 func (f *Fence) Advance(calloutID string, major uint32) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	c := f.callouts[calloutID]
-	if c == nil || major <= c.major {
+	txID, released, raised := func() (string, []*inner, bool) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		c := f.callouts[calloutID]
+		if c == nil || major <= c.major {
+			return "", nil, false
+		}
+		c.major, c.minor = major, 0
+		return c.txID, takeInner(c, func(Pair) bool { return true }), true
+	}()
+	if !raised {
 		return
 	}
-	c.major, c.minor = major, 0
+	for _, r := range released {
+		r.cancel(ErrSuperseded)
+	}
+	f.wait(txID)
+}
+
+// wait is the hand-over of the write lock: a joined write that made its check
+// before the number rose still holds the lock, and this blocks until it has
+// finished; one that takes the lock afterwards is refused by its check. It runs
+// outside f.mu — the fence never waits under its own mutex.
+func (f *Fence) wait(txID string) {
+	release := f.gate.Acquire(txID)
+	release()
 }
 
 // Admit is the check on entry. pairs names the pass's own callout first and
 // then every enclosing one. Under one lock it verifies that every pair is
 // current, and only then absorbs a higher minor — so a pass refused for an
 // enclosing callout changes nothing. It returns a context that carries the
-// pairs. It cancels no callback's context.
+// pairs. It cancels no callback's context; absorbing a higher minor does
+// release the Coordinators of callouts begun under the lower one.
 func (f *Fence) Admit(ctx context.Context, pairs []Pair) (context.Context, error) {
 	pairs = append([]Pair(nil), pairs...)
-	ok := func() bool {
+	released, ok := func() ([]*inner, bool) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		if len(pairs) == 0 {
-			return false
+			return nil, false
 		}
 		for _, p := range pairs {
 			if !f.currentLocked(p) {
-				return false
+				return nil, false
 			}
 		}
+		var released []*inner
 		for _, p := range pairs {
-			if c := f.callouts[p.Callout]; p.Minor > c.minor {
+			c := f.callouts[p.Callout]
+			if p.Minor > c.minor {
 				c.minor = p.Minor
+				released = append(released, takeInner(c, func(under Pair) bool { return under.Minor < p.Minor })...)
 			}
 		}
-		return true
+		return released, true
 	}()
 	if !ok {
 		slog.Debug("callback refused on entry: its pass is no longer current", "pkg", "fence")
 		return ctx, NewSupersededError()
+	}
+	for _, r := range released {
+		r.cancel(ErrSuperseded)
 	}
 	return context.WithValue(ctx, admittedKey{}, &admitted{f: f, pairs: pairs}), nil
 }
@@ -200,4 +268,17 @@ func Pairs(ctx context.Context) []Pair {
 func (f *Fence) currentLocked(p Pair) bool {
 	c := f.callouts[p.Callout]
 	return c != nil && p.Major != 0 && p.Major == c.major && p.Minor >= c.minor
+}
+
+// takeInner removes from c, and returns, every inner handle whose pair
+// satisfies stale. The fence's mutex must be held.
+func takeInner(c *callout, stale func(under Pair) bool) []*inner {
+	var taken []*inner
+	for in, under := range c.inner {
+		if stale(under) {
+			taken = append(taken, in)
+			delete(c.inner, in)
+		}
+	}
+	return taken
 }
