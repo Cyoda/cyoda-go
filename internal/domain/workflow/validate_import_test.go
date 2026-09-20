@@ -1,6 +1,8 @@
 package workflow
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -894,6 +896,111 @@ func TestValidateImportRequest_AcceptsAllKnownRetryPolicies(t *testing.T) {
 				t.Fatalf("expected no error for retryPolicy=%q, got: %v", policy, err)
 			}
 		})
+	}
+}
+
+// --- M1b — retryPolicy on a criterion function and on a schedule function ---
+
+// retryPolicyFunctionCriterion is functionCriterion (criterion_regex_test.go)
+// with a settable retryPolicy; distinct name to avoid colliding with the
+// existing no-arg helper.
+func retryPolicyFunctionCriterion(retryPolicy string) json.RawMessage {
+	return json.RawMessage(fmt.Sprintf(
+		`{"type":"function","function":{"name":"min-amount","config":{"calculationNodesTags":"pricing","retryPolicy":%q}}}`,
+		retryPolicy))
+}
+
+func scheduleFunctionFixture(retryPolicy string) spi.WorkflowDefinition {
+	return spi.WorkflowDefinition{
+		Version: "1.1", Name: "wf-fn", InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{{
+				Name: "t", Next: "S2",
+				Schedule: &spi.TransitionSchedule{Function: &spi.ScheduleFunction{
+					Name: "computeFire", ResultKind: "Schedule",
+					CalculationNodesTags: "scheduler", RetryPolicy: retryPolicy,
+				}},
+			}}},
+			"S2": {},
+		},
+	}
+}
+
+func TestValidateImportRequest_CriterionRetryPolicy(t *testing.T) {
+	for _, policy := range []string{"", RetryPolicyNone, RetryPolicyFixed} {
+		t.Run("accepts "+policy, func(t *testing.T) {
+			for _, wf := range []spi.WorkflowDefinition{
+				wfWithTransitionCriterion(retryPolicyFunctionCriterion(policy)),
+				wfWithWorkflowCriterion(retryPolicyFunctionCriterion(policy)),
+			} {
+				if err := validateImportRequest([]spi.WorkflowDefinition{wf}); err != nil {
+					t.Fatalf("retryPolicy=%q: %v", policy, err)
+				}
+			}
+		})
+	}
+
+	t.Run("rejects an unknown value on a transition criterion", func(t *testing.T) {
+		err := validateImportRequest([]spi.WorkflowDefinition{
+			wfWithTransitionCriterion(retryPolicyFunctionCriterion("LINEAR_BACKOFF"))})
+		if err == nil {
+			t.Fatal("expected an error, got nil")
+		}
+		for _, want := range []string{`workflow "wf-regex"`, `state "S1"`, `transition "go"`,
+			`criterion function "min-amount"`, "unknown retryPolicy", `"LINEAR_BACKOFF"`, "NONE, FIXED, or empty"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error must contain %q; got: %v", want, err)
+			}
+		}
+	})
+
+	t.Run("rejects an unknown value on a workflow criterion", func(t *testing.T) {
+		err := validateImportRequest([]spi.WorkflowDefinition{
+			wfWithWorkflowCriterion(retryPolicyFunctionCriterion("fixed"))})
+		if err == nil {
+			t.Fatal("expected an error: the vocabulary is case-sensitive, as on a processor")
+		}
+		for _, want := range []string{`workflow "wf-regex"`, `criterion function "min-amount"`, "unknown retryPolicy"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error must contain %q; got: %v", want, err)
+			}
+		}
+	})
+
+	t.Run("rejects a function config that cannot be read", func(t *testing.T) {
+		crit := json.RawMessage(`{"type":"function","function":{"name":"f","config":{"retryPolicy":3}}}`)
+		err := validateImportRequest([]spi.WorkflowDefinition{wfWithTransitionCriterion(crit)})
+		if err == nil {
+			t.Fatal("expected an error: this criterion fails every dispatch with 'invalid criterion JSON'")
+		}
+		if !strings.Contains(err.Error(), `transition "go"`) {
+			t.Errorf("error must name the transition; got: %v", err)
+		}
+	})
+
+	t.Run("a simple criterion is untouched", func(t *testing.T) {
+		crit := json.RawMessage(`{"type":"simple","jsonPath":"$.amount","operatorType":"GREATER_THAN","value":1}`)
+		if err := validateImportRequest([]spi.WorkflowDefinition{wfWithTransitionCriterion(crit)}); err != nil {
+			t.Fatalf("simple criterion rejected: %v", err)
+		}
+	})
+}
+
+func TestValidateImportRequest_ScheduleFunctionRetryPolicy(t *testing.T) {
+	for _, policy := range []string{"", RetryPolicyNone, RetryPolicyFixed} {
+		if err := validateImportRequest([]spi.WorkflowDefinition{scheduleFunctionFixture(policy)}); err != nil {
+			t.Errorf("retryPolicy=%q rejected: %v", policy, err)
+		}
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{scheduleFunctionFixture("EXPONENTIAL")})
+	if err == nil {
+		t.Fatal("expected an error for an unknown retryPolicy, got nil")
+	}
+	for _, want := range []string{`workflow "wf-fn"`, `state "S1"`, `transition "t"`,
+		"schedule.function", "unknown retryPolicy", `"EXPONENTIAL"`, "NONE, FIXED, or empty"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must contain %q; got: %v", want, err)
+		}
 	}
 }
 

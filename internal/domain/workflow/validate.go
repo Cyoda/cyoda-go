@@ -9,6 +9,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 )
 
@@ -53,33 +54,37 @@ var validExecutionModes = map[string]struct{}{
 	ExecutionModeCommitBeforeDispatch: {},
 }
 
-// Processor retry-policy tokens. Sourced from the workflow author's
-// selector across the two server-resolved retry strategies (audit §M1).
-// Centralised here as untyped strings so engine logic, validator rules,
-// and tests can compare against a single source — the SPI's
-// ProcessorConfig.RetryPolicy field is itself a plain string, so an enum
-// type would not buy compile-time safety.
+// Callout retry-policy tokens: the workflow author's selector between the two
+// server-resolved strategies, on a processor, a criterion function and a
+// scheduled-transition function alike. Centralised here as untyped strings so
+// engine logic, validator rules, and tests compare against a single source —
+// the SPI fields are plain strings, so an enum type would not buy
+// compile-time safety.
 //
-//   - NONE  — single attempt, no retry on member-level failure.
-//   - FIXED — default when unset. Up to N additional attempts with a
-//     fixed delay between tries; N and delay come from server-side
-//     config and are not carried in the workflow.
-//
-// cyoda-go currently captures the policy at import time but does not yet
-// honour it at dispatch — the dispatcher remains single-shot. The full
-// retry loop is not yet implemented.
+//   - NONE  — one try.
+//   - FIXED — default when unset. The server-configured number of tries. The
+//     number is the normal one, not a hard limit, and there is no pause
+//     between tries; neither is carried in the workflow.
 const (
 	RetryPolicyNone  = "NONE"
 	RetryPolicyFixed = "FIXED"
 )
 
-// validRetryPolicies is the set of accepted RetryPolicy values for
-// import-time validation (audit §M1). Empty string is also accepted —
-// the server defaults to FIXED when RetryPolicy is unset.
+// validRetryPolicies is the set of accepted retryPolicy values for
+// import-time validation. Empty is accepted — the server treats it as FIXED.
 var validRetryPolicies = map[string]struct{}{
 	"":               {},
 	RetryPolicyNone:  {},
 	RetryPolicyFixed: {},
+}
+
+// checkRetryPolicy is the one spelling of the retryPolicy rule. location
+// names the callout, e.g. `workflow "w" state "s" transition "t" processor "p"`.
+func checkRetryPolicy(policy, location string) error {
+	if _, ok := validRetryPolicies[policy]; !ok {
+		return fmt.Errorf("%s: unknown retryPolicy %q (allowed: NONE, FIXED, or empty)", location, policy)
+	}
+	return nil
 }
 
 // maxIdentifierLen caps the length of workflow / state / transition /
@@ -197,8 +202,11 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 	return nil
 }
 
-// validateCriterion rejects a criterion that is malformed in any of four
+// validateCriterion rejects a criterion that is malformed in any of five
 // ways:
+//   - a function criterion whose `function` member cannot be read, or whose
+//     `retryPolicy` is outside NONE/FIXED/empty — it would fail every
+//     dispatch, or be silently ignored.
 //   - a jsonPath that is not JSON Path nomenclature — a bare "amount" is not
 //     a path. Delegates to search.ValidateConditionJSONPath, the same grammar
 //     the search API boundary enforces: a criterion and a search condition are
@@ -260,6 +268,19 @@ func validateCriterion(criterion json.RawMessage, location string) error {
 	cond, err := predicate.ParseCondition(trimmed)
 	if err != nil {
 		return nil
+	}
+	// A function criterion is a callout: its config is checked like a
+	// processor's. Only a top-level function criterion is ever dispatched
+	// (evaluateCriterion), so only that shape is inspected.
+	if _, ok := cond.(*predicate.FunctionCondition); ok {
+		fn, err := contract.ParseCriterionFunction(trimmed)
+		if err != nil {
+			return fmt.Errorf("%s: %w", location, err)
+		}
+		if err := checkRetryPolicy(fn.Config.RetryPolicy,
+			fmt.Sprintf("%s criterion function %q", location, fn.Name)); err != nil {
+			return err
+		}
 	}
 	// Paths and lifecycle type-soundness first, then operator/operand shape,
 	// then pattern operands — a criterion naming a field that does not exist
@@ -352,7 +373,8 @@ func walkCriterion(cond predicate.Condition, location string) error {
 //   - H6.e — Transition Names must be unique within a single state.
 //   - H4  — ExecutionMode must be one of SYNC, ASYNC_SAME_TX,
 //     ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, or empty (defaults to SYNC).
-//   - M1  — RetryPolicy must be one of NONE, FIXED, or empty (defaults to FIXED).
+//   - M1  — retryPolicy ∈ {NONE, FIXED, ""} on every processor, criterion
+//     function and schedule function.
 //
 // Scope: called only on the **incoming** import request. Legacy stored
 // workflows are not retroactively re-checked against these rules, so an
@@ -458,7 +480,8 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 	//   L-1 — Processor Name non-empty.
 	//   L-2 — Processor Name length cap.
 	//   H4  — ExecutionMode ∈ {SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, ""}.
-	//   M1  — RetryPolicy ∈ {NONE, FIXED, ""}.
+	//   M1  — retryPolicy ∈ {NONE, FIXED, ""} on every processor, criterion
+	//     function and schedule function.
 	//   Transition.Criterion — every data-addressing jsonPath must be JSON
 	//     Path; a MATCHES_PATTERN regex, if present, must compile; a
 	//     lifecycle/meta clause, if present, must be type-sound.
@@ -529,6 +552,10 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 							"workflow %q state %q transition %q: schedule.function requires name and calculationNodesTags",
 							wf.Name, stateName, tr.Name)
 					}
+					if err := checkRetryPolicy(f.RetryPolicy, fmt.Sprintf(
+						"workflow %q state %q transition %q schedule.function", wf.Name, stateName, tr.Name)); err != nil {
+						return err
+					}
 				}
 				// No separate `else if DelayMs <= 0` branch: once the XOR
 				// check above has passed with hasFn == false, hasDelay must
@@ -576,9 +603,9 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 					return fmt.Errorf("workflow %q state %q transition %q processor %q: unknown executionMode %q (allowed: SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, or empty)",
 						wf.Name, stateName, tr.Name, p.Name, p.ExecutionMode)
 				}
-				if _, ok := validRetryPolicies[p.Config.RetryPolicy]; !ok {
-					return fmt.Errorf("workflow %q state %q transition %q processor %q: unknown retryPolicy %q (allowed: NONE, FIXED, or empty)",
-						wf.Name, stateName, tr.Name, p.Name, p.Config.RetryPolicy)
+				if err := checkRetryPolicy(p.Config.RetryPolicy, fmt.Sprintf(
+					"workflow %q state %q transition %q processor %q", wf.Name, stateName, tr.Name, p.Name)); err != nil {
+					return err
 				}
 			}
 		}

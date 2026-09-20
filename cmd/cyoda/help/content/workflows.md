@@ -486,7 +486,8 @@ Static validation runs on the incoming request before saving. Any of the followi
 - Workflow / state / transition / processor names longer than 256 characters.
 - Transition `next` not declared in `states`.
 - Unknown `executionMode` value on any processor (allowed: `SYNC`, `ASYNC_SAME_TX`, `ASYNC_NEW_TX`, `COMMIT_BEFORE_DISPATCH`, or empty).
-- Unknown `retryPolicy` value on any processor (allowed: `NONE`, `FIXED`, or empty).
+- Unknown `retryPolicy` value on any processor, `function`-type criterion or `schedule.function` (allowed: `NONE`, `FIXED`, or empty).
+- A `function`-type criterion whose `function.config` cannot be read (for example a `responseTimeoutMs` that is not an integer).
 - `startNewTxOnDispatch=true` on a processor whose `executionMode` is not `COMMIT_BEFORE_DISPATCH`.
 - Empty `workflows` array (or a missing `workflows` key) when `importMode` is `REPLACE` or `ACTIVATE`. `MERGE` with an empty array is a legitimate no-op.
 - A criterion `jsonPath` (on a `simple` or `array` clause, at any nesting depth) that is not JSON Path — see CRITERIA below.
