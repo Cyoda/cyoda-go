@@ -1229,7 +1229,7 @@ join --> greet --> keep-alive --> dispatch/response --> leave
 
 ### 6.3 Tag-Based Member Selection
 
-`MemberRegistry.FindByTags(tenantID, tagsCSV)` returns a member matching the tenant whose tags overlap with the required tags (CSV comparison). If `tagsCSV` is empty, any member for that tenant matches. Selection is the first hit while ranging over a Go map, so among equally-qualified local members it is unordered rather than round-robin.
+`MemberRegistry.Candidates(tenantID, tagsCSV)` lists the tenant's members whose tags overlap the required tags (CSV comparison; every member of the tenant when `tagsCSV` is empty), ordered by `(ConnectedAt, ID)`. A `MemberSelector` picks one of them. `RoundRobinSelector` picks the member picked longest ago and stamps it from one counter on the registry; the stamp is a field on `Member`, so there is no per-tag state, and a member that has just attached goes first.
 
 ### 6.4 Response Correlation
 

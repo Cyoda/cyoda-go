@@ -26,10 +26,26 @@ func setupTestDispatcher(t *testing.T) (*ProcessorDispatcher, *MemberRegistry, s
 		sentCh <- ce
 		return nil
 	}, nil)
-	uuids := common.NewTestUUIDGenerator()
-	signer, _ := token.NewSigner(make32(t))
-	dispatcher := NewProcessorDispatcher(registry, uuids, signer, "node-test", time.Minute)
+	dispatcher := newTestDispatcher(t, registry)
 	return dispatcher, registry, member.ID, sentCh
+}
+
+// newTestDispatcher builds a dispatcher over registry the way app.go does, with
+// node id "node-test".
+func newTestDispatcher(t *testing.T, registry *MemberRegistry) *ProcessorDispatcher {
+	t.Helper()
+	signer, err := token.NewSigner(make32(t))
+	if err != nil {
+		t.Fatalf("token.NewSigner: %v", err)
+	}
+	return NewProcessorDispatcher(registry, NewRoundRobinSelector(registry), common.NewTestUUIDGenerator(), signer, "node-test", time.Minute)
+}
+
+func testProcessor(tags string, responseTimeoutMs int64) spi.ProcessorDefinition {
+	return spi.ProcessorDefinition{
+		Name:   "my-proc",
+		Config: spi.ProcessorConfig{CalculationNodesTags: tags, ResponseTimeoutMs: responseTimeoutMs},
+	}
 }
 
 func testContext() context.Context {
@@ -179,9 +195,7 @@ func TestDispatchProcessor_HappyPath(t *testing.T) {
 
 func TestDispatchProcessor_NoMember(t *testing.T) {
 	registry := NewMemberRegistry()
-	uuids := common.NewTestUUIDGenerator()
-	signer, _ := token.NewSigner(make32(t))
-	dispatcher := NewProcessorDispatcher(registry, uuids, signer, "node-test", time.Minute)
+	dispatcher := newTestDispatcher(t, registry)
 	ctx := testContext()
 	entity := testEntity()
 
@@ -1016,9 +1030,7 @@ func TestDispatchFunction_HappyPath(t *testing.T) {
 
 func TestDispatchFunction_NoMember(t *testing.T) {
 	registry := NewMemberRegistry()
-	uuids := common.NewTestUUIDGenerator()
-	signer, _ := token.NewSigner(make32(t))
-	dispatcher := NewProcessorDispatcher(registry, uuids, signer, "node-test", time.Minute)
+	dispatcher := newTestDispatcher(t, registry)
 	ctx := testContext()
 	entity := testEntity()
 
@@ -1094,9 +1106,7 @@ func TestDispatchCalloutToMember_AbandonOnWriterFailure(t *testing.T) {
 	member := registry.Register("member-send-fail", testTenantID, []string{"python"}, func(_ *cepb.CloudEvent) error {
 		return fmt.Errorf("send boom")
 	}, nil)
-	uuids := common.NewTestUUIDGenerator()
-	signer, _ := token.NewSigner(make32(t))
-	dispatcher := NewProcessorDispatcher(registry, uuids, signer, "node-test", time.Minute)
+	dispatcher := newTestDispatcher(t, registry)
 	ctx := testContext()
 
 	req := map[string]any{"requestId": "req-send-fail"}
@@ -1253,8 +1263,7 @@ func newWedgedDispatcher(t *testing.T) (*ProcessorDispatcher, *Member) {
 		func(*cepb.CloudEvent) error { <-release; return nil }, nil)
 	t.Cleanup(func() { registry.Unregister(member) })
 	_ = member.Send(context.Background(), mustCE(t)) // wedge the writer
-	signer, _ := token.NewSigner(make32(t))
-	return NewProcessorDispatcher(registry, common.NewTestUUIDGenerator(), signer, "node-test", time.Minute), member
+	return newTestDispatcher(t, registry), member
 }
 
 func mustCE(t *testing.T) *cepb.CloudEvent {

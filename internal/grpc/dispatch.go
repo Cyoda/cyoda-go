@@ -36,6 +36,7 @@ const defaultResponseTimeoutMs = 30000
 // calculation members via the MemberRegistry.
 type ProcessorDispatcher struct {
 	registry   *MemberRegistry
+	selector   MemberSelector
 	uuids      spi.UUIDGenerator
 	signer     *token.Signer
 	selfNodeID string
@@ -43,9 +44,10 @@ type ProcessorDispatcher struct {
 }
 
 // NewProcessorDispatcher creates a new ProcessorDispatcher.
-func NewProcessorDispatcher(registry *MemberRegistry, uuids spi.UUIDGenerator, signer *token.Signer, selfNodeID string, tokenTTL time.Duration) *ProcessorDispatcher {
+func NewProcessorDispatcher(registry *MemberRegistry, selector MemberSelector, uuids spi.UUIDGenerator, signer *token.Signer, selfNodeID string, tokenTTL time.Duration) *ProcessorDispatcher {
 	return &ProcessorDispatcher{
 		registry:   registry,
+		selector:   selector,
 		uuids:      uuids,
 		signer:     signer,
 		selfNodeID: selfNodeID,
@@ -212,7 +214,7 @@ func (d *ProcessorDispatcher) DispatchProcessor(ctx context.Context, entity *spi
 		slog.Warn("no matching calculation member", "pkg", "grpc", "tags", processor.Config.CalculationNodesTags, "entityId", entity.Meta.ID)
 		return nil, fmt.Errorf("%w: tags %q", ErrNoMatchingMember, processor.Config.CalculationNodesTags)
 	}
-	member := candidates[0]
+	member := d.selector.Select(candidates)
 
 	slog.Info("dispatching processor", "pkg", "grpc", "memberId", member.ID, "processor", processor.Name, "entityId", entity.Meta.ID)
 
@@ -304,7 +306,7 @@ func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.
 		slog.Warn("no matching calculation member", "pkg", "grpc", "tags", parsed.Function.Config.CalculationNodesTags, "entityId", entity.Meta.ID)
 		return false, "", fmt.Errorf("%w: tags %q", ErrNoMatchingMember, parsed.Function.Config.CalculationNodesTags)
 	}
-	member := candidates[0]
+	member := d.selector.Select(candidates)
 
 	slog.Info("dispatching criteria", "pkg", "grpc", "memberId", member.ID, "criteria", parsed.Function.Name, "entityId", entity.Meta.ID)
 
@@ -354,7 +356,7 @@ func (d *ProcessorDispatcher) DispatchFunction(ctx context.Context, entity *spi.
 		slog.Warn("no matching calculation member", "pkg", "grpc", "tags", fn.CalculationNodesTags, "entityId", entity.Meta.ID)
 		return contract.FunctionResult{}, fmt.Errorf("%w: tags %q", ErrNoMatchingMember, fn.CalculationNodesTags)
 	}
-	member := candidates[0]
+	member := d.selector.Select(candidates)
 
 	slog.Info("dispatching function", "pkg", "grpc", "memberId", member.ID, "function", fn.Name, "entityId", entity.Meta.ID)
 

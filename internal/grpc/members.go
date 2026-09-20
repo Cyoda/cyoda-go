@@ -96,6 +96,9 @@ type Member struct {
 	TenantID    spi.TenantID
 	Tags        []string
 	ConnectedAt time.Time
+	// pickStamp is the registry's pick counter at the moment this member was
+	// last chosen for a try; 0 means never. Guarded by MemberRegistry.pickMu.
+	pickStamp uint64
 
 	send       SendFunc // raw stream write; called ONLY by writeLoop
 	outbox     chan outboxItem
@@ -352,6 +355,9 @@ type MemberRegistry struct {
 	tagsVersion      uint64
 	publishMu        sync.Mutex
 	publishedVersion uint64
+	// pickMu makes "find the least recently picked and stamp it" one step.
+	pickMu      sync.Mutex
+	pickCounter uint64
 }
 
 // NewMemberRegistry creates a new, empty MemberRegistry.
@@ -486,6 +492,22 @@ func (r *MemberRegistry) Candidates(tenantID spi.TenantID, tagsCSV string) []*Me
 		return cmp.Compare(x.ID, y.ID)
 	})
 	return out
+}
+
+// pickLeastRecent returns the candidate with the lowest pick stamp — the first
+// such in the order given — and stamps it with the next counter value.
+func (r *MemberRegistry) pickLeastRecent(candidates []*Member) *Member {
+	r.pickMu.Lock()
+	defer r.pickMu.Unlock()
+	best := candidates[0]
+	for _, m := range candidates[1:] {
+		if m.pickStamp < best.pickStamp {
+			best = m
+		}
+	}
+	r.pickCounter++
+	best.pickStamp = r.pickCounter
+	return best
 }
 
 // notifyChange publishes the current aggregate tags in a goroutine. The

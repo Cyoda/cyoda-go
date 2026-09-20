@@ -76,6 +76,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Changed
 
+- **A callout picks among a tenant's matching compute members round robin.**
+  The member picked longest ago goes next; one that has just joined goes first.
+  Until now the choice was whatever a Go map iteration returned first.
+
 - **A write is dated at the instant its transaction commits, not at the
   instant it started.** This changes the timestamps PostgreSQL-backed
   deployments report. `CURRENT_TIMESTAMP` is fixed at transaction start, so
