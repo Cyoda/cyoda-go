@@ -220,58 +220,43 @@ func disconnectedErr(label string) error {
 		fmt.Sprintf("compute member disconnected during %s dispatch", label)).AsRetryable()
 }
 
+// dispatchOnce makes the single try the three Dispatch* methods make.
+func (d *ProcessorDispatcher) dispatchOnce(ctx context.Context, call Callout) (CalloutResult, error) {
+	limit, failure := d.ResolveAnswerLimit(call.ResponseTimeoutMs)
+	if failure != nil {
+		return CalloutResult{}, failure
+	}
+	candidates := d.registry.Candidates(call.TenantID, call.Tags)
+	if len(candidates) == 0 {
+		slog.Warn("no matching calculation member", "pkg", "grpc", "tags", call.Tags, "entityId", call.EntityID)
+		return CalloutResult{}, fmt.Errorf("%w: tags %q", ErrNoMatchingMember, call.Tags)
+	}
+	member := d.selector.Select(candidates)
+	call.RequestID = uuid.UUID(d.uuids.NewTimeUUID()).String()
+	call.AnswerLimit = limit
+	call.OwnerNodeID = d.selfNodeID
+
+	slog.Info("dispatching "+call.Kind.String(), "pkg", "grpc", "memberId", member.ID, "name", call.Name, "entityId", call.EntityID)
+	resp, err := d.dispatchCalloutToMember(ctx, member, call.eventType, call.buildRequest(call.RequestID), call.RequestID, call.TxID, limit.Milliseconds(), call.Kind.String(), call.Name)
+	if err != nil {
+		return CalloutResult{}, err
+	}
+	return call.mapResponse(resp)
+}
+
 // DispatchProcessor sends an entity processor calculation request to a matching
 // calculation member and waits for the response.
 func (d *ProcessorDispatcher) DispatchProcessor(ctx context.Context, entity *spi.Entity, processor spi.ProcessorDefinition, workflowName string, transitionName string, txID string) (*spi.Entity, error) {
 	uc := spi.MustGetUserContext(ctx)
-	tenantID := uc.Tenant.ID
-
-	limit, failure := d.ResolveAnswerLimit(processor.Config.ResponseTimeoutMs)
-	if failure != nil {
-		return nil, failure
-	}
-
-	candidates := d.registry.Candidates(tenantID, processor.Config.CalculationNodesTags)
-	if len(candidates) == 0 {
-		slog.Warn("no matching calculation member", "pkg", "grpc", "tags", processor.Config.CalculationNodesTags, "entityId", entity.Meta.ID)
-		return nil, fmt.Errorf("%w: tags %q", ErrNoMatchingMember, processor.Config.CalculationNodesTags)
-	}
-	member := d.selector.Select(candidates)
-
-	slog.Info("dispatching processor", "pkg", "grpc", "memberId", member.ID, "processor", processor.Name, "entityId", entity.Meta.ID)
-
-	requestID := uuid.UUID(d.uuids.NewTimeUUID()).String()
-
-	req := events.EntityProcessorCalculationRequestJson{
-		ID:            requestID,
-		RequestID:     requestID,
-		EntityID:      entity.Meta.ID,
-		ProcessorID:   processor.Name,
-		ProcessorName: processor.Name,
-		Workflow:      events.WorkflowInfoJson{ID: workflowName, Name: workflowName},
-		Transition:    &events.TransitionInfoJson{ID: transitionName, Name: transitionName},
-		TransactionID: &txID,
-		Success:       true,
-	}
-	// ProcessorConfig.Context is a pass-through string surfaced verbatim in
-	// the request's parameters node. One processor implementation can serve
-	// multiple workflow roles distinguished by Context.
-	if processor.Config.Context != "" {
-		req.Parameters = processor.Config.Context
-	}
-	if processor.Config.AttachEntity {
-		req.Payload = buildEntityPayload(entity)
-	}
-
-	resp, err := d.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, requestID, txID, limit.Milliseconds(), "processor", processor.Name)
+	res, err := d.dispatchOnce(ctx, NewProcessorCallout(uc.Tenant.ID, entity, processor, workflowName, transitionName, txID))
 	if err != nil {
 		return nil, err
 	}
-	return d.applyProcessorResponse(entity, resp)
+	return res.Entity, nil
 }
 
 // applyProcessorResponse extracts updated entity data from the response payload.
-func (d *ProcessorDispatcher) applyProcessorResponse(entity *spi.Entity, resp *ProcessingResponse) (*spi.Entity, error) {
+func applyProcessorResponse(entity *spi.Entity, resp *ProcessingResponse) (*spi.Entity, error) {
 	if resp.Payload == nil {
 		return entity, nil
 	}
@@ -297,65 +282,15 @@ func (d *ProcessorDispatcher) applyProcessorResponse(entity *spi.Entity, resp *P
 // calculation member and waits for the boolean result.
 func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.Entity, criterion json.RawMessage, target string, workflowName string, transitionName string, processorName string, txID string) (bool, string, error) {
 	uc := spi.MustGetUserContext(ctx)
-	tenantID := uc.Tenant.ID
-
-	fn, err := contract.ParseCriterionFunction(criterion)
-	if err != nil {
-		return false, "", fmt.Errorf("invalid criterion JSON: %w", err)
-	}
-
-	// attachEntity defaults to true when not explicitly set.
-	attachEntity := true
-	if fn.Config.AttachEntity != nil {
-		attachEntity = *fn.Config.AttachEntity
-	}
-
-	limit, failure := d.ResolveAnswerLimit(fn.Config.ResponseTimeoutMs)
+	call, failure := NewCriteriaCallout(uc.Tenant.ID, entity, criterion, target, workflowName, transitionName, processorName, txID)
 	if failure != nil {
 		return false, "", failure
 	}
-
-	candidates := d.registry.Candidates(tenantID, fn.Config.CalculationNodesTags)
-	if len(candidates) == 0 {
-		slog.Warn("no matching calculation member", "pkg", "grpc", "tags", fn.Config.CalculationNodesTags, "entityId", entity.Meta.ID)
-		return false, "", fmt.Errorf("%w: tags %q", ErrNoMatchingMember, fn.Config.CalculationNodesTags)
-	}
-	member := d.selector.Select(candidates)
-
-	slog.Info("dispatching criteria", "pkg", "grpc", "memberId", member.ID, "criteria", fn.Name, "entityId", entity.Meta.ID)
-
-	requestID := uuid.UUID(d.uuids.NewTimeUUID()).String()
-
-	req := events.EntityCriteriaCalculationRequestJson{
-		ID:            requestID,
-		RequestID:     requestID,
-		EntityID:      entity.Meta.ID,
-		CriteriaID:    fn.Name,
-		CriteriaName:  fn.Name,
-		Target:        events.EntityCriteriaCalculationRequestJsonTarget(target),
-		Workflow:      &events.WorkflowInfoJson{ID: workflowName, Name: workflowName},
-		Transition:    &events.TransitionInfoJson{ID: transitionName, Name: transitionName},
-		TransactionID: &txID,
-		Success:       true,
-	}
-	if processorName != "" {
-		req.Processor = &events.ProcessorInfoJson{Name: processorName}
-	}
-	if fn.Config.Context != "" {
-		req.Parameters = fn.Config.Context
-	}
-	if attachEntity {
-		req.Payload = buildEntityPayload(entity)
-	}
-
-	resp, err := d.dispatchCalloutToMember(ctx, member, EntityCriteriaCalculationRequest, req, requestID, txID, limit.Milliseconds(), "criteria", fn.Name)
+	res, err := d.dispatchOnce(ctx, call)
 	if err != nil {
 		return false, "", err
 	}
-	if resp.Matches != nil {
-		return *resp.Matches, resp.Reason, nil
-	}
-	return false, resp.Reason, nil
+	return res.Matches, res.Reason, nil
 }
 
 // DispatchFunction sends a generic Function calculation request (e.g. a
@@ -363,45 +298,9 @@ func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.
 // and returns its typed result.
 func (d *ProcessorDispatcher) DispatchFunction(ctx context.Context, entity *spi.Entity, fn spi.ScheduleFunction, workflowName string, transitionName string, txID string) (contract.FunctionResult, error) {
 	uc := spi.MustGetUserContext(ctx)
-	tenantID := uc.Tenant.ID
-
-	limit, failure := d.ResolveAnswerLimit(fn.ResponseTimeoutMs)
-	if failure != nil {
-		return contract.FunctionResult{}, failure
-	}
-
-	candidates := d.registry.Candidates(tenantID, fn.CalculationNodesTags)
-	if len(candidates) == 0 {
-		slog.Warn("no matching calculation member", "pkg", "grpc", "tags", fn.CalculationNodesTags, "entityId", entity.Meta.ID)
-		return contract.FunctionResult{}, fmt.Errorf("%w: tags %q", ErrNoMatchingMember, fn.CalculationNodesTags)
-	}
-	member := d.selector.Select(candidates)
-
-	slog.Info("dispatching function", "pkg", "grpc", "memberId", member.ID, "function", fn.Name, "entityId", entity.Meta.ID)
-
-	requestID := uuid.UUID(d.uuids.NewTimeUUID()).String()
-
-	req := events.EntityFunctionCalculationRequestJson{
-		ID:            requestID,
-		RequestID:     requestID,
-		EntityID:      entity.Meta.ID,
-		FunctionID:    fn.Name,
-		FunctionName:  fn.Name,
-		Workflow:      events.WorkflowInfoJson{ID: workflowName, Name: workflowName},
-		Transition:    &events.TransitionInfoJson{ID: transitionName, Name: transitionName},
-		TransactionID: &txID,
-		Success:       true,
-	}
-	if fn.Context != "" {
-		req.Parameters = fn.Context
-	}
-	if fn.AttachEntity {
-		req.Payload = buildEntityPayload(entity)
-	}
-
-	resp, err := d.dispatchCalloutToMember(ctx, member, EntityFunctionCalculationRequest, req, requestID, txID, limit.Milliseconds(), "function", fn.Name)
+	res, err := d.dispatchOnce(ctx, NewFunctionCallout(uc.Tenant.ID, entity, fn, workflowName, transitionName, txID))
 	if err != nil {
 		return contract.FunctionResult{}, err
 	}
-	return contract.FunctionResult{Kind: resp.ResultKind, Value: resp.Result}, nil
+	return res.Function, nil
 }
