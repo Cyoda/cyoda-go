@@ -316,13 +316,32 @@ clocks more than 30 s apart — is a non-2xx and therefore `no_answer` too: it
 cannot be authenticated, so it is not taken as proof. Clocks that far apart fail
 non-repeat-safe operations rather than being quietly routed around.
 
-What the owner can prove *before* it connects — a peer address that fails
-validation, a request that cannot be marshalled or signed
-(`forwarder.go:58, 82, 99`) — would fail identically for every try and is
-`Terminal`, not a lost answer. And where the peer refuses a request it has
-already opened and authenticated — a replayed nonce, a full replay cache — it
-answers with an authenticated `no_handoff` rather than a bare 403, so that a
-saturated cache does not fail non-repeat-safe operations.
+What the owner can prove *before* it connects: a request that cannot be
+marshalled or signed (`forwarder.go:82, 99`) would fail identically for every
+try and is `Terminal`, not a lost answer. A peer *address* that fails validation
+(`forwarder.go:58`) is a property of that one peer: it is not asked, no try is
+used, a WARN is logged, and the loop goes on to the next peer.
+
+Where the peer refuses a request it has already opened and authenticated:
+
+- **A full replay cache** is answered with an authenticated `no_handoff` rather
+  than a bare 403, so that a saturated cache does not fail non-repeat-safe
+  operations. Nothing ran, and only a holder of the key could have filled the
+  cache.
+- **A duplicate nonce keeps its bare 403**, which the owner reads as
+  `no_answer`, and the duplicate check comes before the fullness check. An
+  authenticated "nothing was handed over" for a replay would be a weapon: an
+  attacker on the network between pnodes who captures a request, lets the peer
+  run it, replays it, and delivers the replay's sealed answer in place of the
+  genuine one — both are bound to the same request nonce — would have the owner
+  give a non-idempotent processor to a second cnode. With the bare 403 the same
+  attacker can only lose the answer, as today.
+- **A request the peer can open but not accept** — a body that does not parse,
+  a tenant in the body that disagrees with the authenticated one, an unknown
+  kind (`handler.go:51, 70, 127`, bare 400s today) — is answered with an
+  authenticated `terminal` and zero tries: every pnode would refuse it
+  identically, so it must neither use a try nor be reported as a retryable 503.
+  The owner reports a ticketed 500.
 
 **Transport.**
 - **Every hand-over opens its own connection** (`DisableKeepAlives` on the
