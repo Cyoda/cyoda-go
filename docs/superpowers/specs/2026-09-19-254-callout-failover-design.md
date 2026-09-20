@@ -110,6 +110,7 @@ kind; none is left to a default (R§11):
 | response wait → parent ctx cancelled | returns `ctx.Err()` unchanged; the loop ends |
 | `resp.Success == false` | `MemberFailed`, with `resp.Error` and `resp.Retryable` |
 | CloudEvent build, auth-context attach | `Terminal` |
+| the try's pass cannot be minted | `Terminal`; nothing is sent (today the work goes out without a pass, `dispatch.go:67-71`) |
 | response payload unmarshal | `Terminal` |
 
 `disconnectedErr` and the two `DISPATCH_TIMEOUT` constructions keep their codes,
@@ -162,16 +163,22 @@ tries while the number still rises before each.
 - A cnode is never tried twice within one `RunLocal`. The tried set lives in the
   call and is not shared between calls or pnodes (brief §4: a second visit may
   try a cnode again; accepted).
-- Every try sends the same `RequestID` as CloudEvent `id` and as `requestId`.
-  Correlation is per member (R§2.3), so two tries in flight cannot be confused.
+- Every try sends the same `RequestID` as the request's `id` and `requestId`.
+  The CloudEvent envelope's own id stays unique per event, as today
+  (`cloudevent.go:25`). Correlation is per member (R§2.3), so two tries in
+  flight on different cnodes cannot be confused. A cnode visited a second time
+  in a later pass may answer the later try with its late answer to the earlier
+  one — the same work, under the same request id; accepted with the revisit.
 - Every try mints its own pass (§7).
 - Between tries `RunLocal` checks `ctx.Err()`, so a cancelled owner or a client
   that went away ends the procedure promptly. A pnode shutting down does not:
   `http.Server.Shutdown` waits for requests in progress without cancelling their
   contexts (`cmd/cyoda/run.go`), so a callout in progress runs on until the
   drain budget is spent, as today.
-- When no untried matching cnode remains it returns `NoHandOff` with the tries
-  it used. It does not wait; waiting is the owner's (§6).
+- When no untried matching cnode remains it returns the last try's failure
+  unchanged, with the tries it used — a `NoAnswer` keeps its kind and its code.
+  Only when it made no try at all does it return `NoHandOff` (no matching
+  cnode). It does not wait; waiting is the owner's (§5).
 
 **Selection.** `FindByTags` is replaced by `Candidates(tenantID, tagsCSV)
 []*Member`, ordered by `(ConnectedAt, ID)` so the order is stable, and a
@@ -247,7 +254,9 @@ loop:
   would cost `(4+3+2+1) × 30 s + 4 × 30 s` = 7 minutes at the defaults, past
   PostgreSQL's five-minute ceiling.
 - **The deadline is a context derived from the caller's**, never the caller's
-  own. A try cut off by it is `NoAnswer`; only the caller's context ending — the
+  own, with a cause of its own (`context.WithDeadlineCause`,
+  `contract.ErrCalloutDeadline`), which is how `RunLocal`, given one context,
+  tells the two apart. A try cut off by it is `NoAnswer`; only the caller's context ending — the
   client went away, or its `transactionTimeoutMillis` fired — returns
   `ctx.Err()` unchanged (408 or a cancelled request, as today). This is how
   `dispatch.go:186-192` already tells a per-try timeout from a dead parent.
