@@ -16,7 +16,7 @@ config.cluster — multi-node clustering, gossip, and cross-node dispatch env va
 ## DESCRIPTION
 
 - `CYODA_CLUSTER_ENABLED` (bool, default: `false`) — enable multi-node clustering.
-- `CYODA_NODE_ID` (string, default: unset) — unique node identifier; required when `CYODA_CLUSTER_ENABLED=true`; any non-empty string is accepted.
+- `CYODA_NODE_ID` (string, default: unset) — unique node identifier; required when `CYODA_CLUSTER_ENABLED=true`; any non-empty string is accepted. Together with `CYODA_NODE_ADDR` and `CYODA_GRPC_NODE_ADDR` it must fit the 512-byte gossip metadata (about 420 bytes for the three values together; 89 bytes are framing and the longest list version); a node whose identity does not fit refuses to start.
 - `CYODA_NODE_ADDR` (string, default: `http://localhost:8080`) — this node's HTTP base URL; must include scheme (`http://` or `https://`).
 - `CYODA_GRPC_NODE_ADDR` (string, default: unset) — this node's gRPC endpoint advertised to peers (`host:port`, no scheme). When set, peers dial this address for cross-node gRPC callback forwarding. When unset, peers derive the gRPC address from this node's HTTP host plus their own `CYODA_GRPC_PORT` (uniform-deployment default).
 - `CYODA_GOSSIP_ADDR` (string, default: `:7946`) — gossip protocol listen address; format `[host]:port` — parsed via `net.SplitHostPort`; invalid format causes startup failure.
