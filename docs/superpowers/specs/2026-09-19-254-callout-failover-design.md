@@ -241,7 +241,10 @@ loop:
   cumulative across the callout and counts elapsed waiting time:
   `CYODA_DISPATCH_WAIT_TIMEOUT` in total, not per wait. `0` disables waiting. A
   pass that made tries may still wait: a cnode that dropped and is coming back
-  is the case the patience exists for.
+  is the case the patience exists for. A wait that ends on a change signal
+  starts a new pass; a wait that ends because the patience ran out does **not**
+  — the callout returns per the precedence below. Nothing changed, so another
+  pass would only try the same cnodes again.
 - **Precedence when nothing more can be done.** If the callout recorded any
   attempt, the error reports the attempts (the single attempt's own code, or
   `CALLOUT_FAILED` with the list). `NO_COMPUTE_MEMBER_FOR_TAG` is
@@ -781,7 +784,7 @@ envelopes (`CLIENT_ERROR` / `SERVER_ERROR` with the code as the message prefix,
 | No cnode appeared within the patience | 503 | `NO_COMPUTE_MEMBER_FOR_TAG` | yes | as today |
 | One try, `NoHandOff`, tries = 1 | 503 | the try's own code (`COMPUTE_MEMBER_DISCONNECTED`, `DISPATCH_TIMEOUT`) | yes | as today |
 | `NoAnswer`, processor not idempotent | 503 | the try's own code | yes | as today |
-| Every try used, more than one attempt | 503 | **`CALLOUT_FAILED`** (new) | yes | `the callout could not be completed, got N failures: [member<id>: cause], [member<id>: cause (2 times)]` — Cloud's shape (R§5): N counts before collapsing; identical entries collapse. The same code and shape when the patience or the deadline ran out with attempts on record and tries still left |
+| Every try used, more than one attempt | 503 | **`CALLOUT_FAILED`** (new) | yes | `the callout could not be completed, got N failures: [member<id>: cause], [member<id>: cause (2 times)]` — Cloud's shape (R§5): the angle brackets are literal and enclose the member id (`member<->` for an attempt with no member, a lost hand-over answer); N counts before collapsing; identical entries collapse. The same code and shape when the patience or the deadline ran out with attempts on record and tries still left |
 | Every try used, exactly one attempt recorded | 503 | that attempt's own code | yes | not wrapped |
 | `MemberFailed`, verdict true | 400 | `WORKFLOW_FAILED` | **yes** | `processor <name> failed: <cnode message>`; for a criterion `failed to evaluate transition criterion: <cnode message>` (or `…workflow criterion for "<wf>"…`); for a function the arming wrap. Today's inner `processor dispatch failed:` segment goes |
 | `MemberFailed`, verdict false or absent | 400 | `WORKFLOW_FAILED` | no | same |
