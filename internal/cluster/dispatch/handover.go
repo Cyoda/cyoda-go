@@ -70,6 +70,11 @@ type HandOverAnswer struct {
 	// peerErrors are the answering pnode's error diagnostics; HandOver adds
 	// them to the owner's request diagnostics.
 	peerErrors []string
+
+	// lost marks an answer that never arrived, did not authenticate, or could
+	// not be believed. None of the peer's own text is relayed on such an
+	// answer, whatever the peer sent.
+	lost bool
 }
 
 // newHandOverRequest puts call on the wire for a peer that may make triesLeft
@@ -472,6 +477,7 @@ func lostAnswerAfter(used int) HandOverAnswer {
 		TriesUsed: used,
 		Failure:   &contract.CalloutFailure{Kind: contract.NoAnswer, Code: appErr.Code, Message: appErr.Message, Err: appErr},
 		Attempts:  []contract.CalloutAttempt{{MemberID: "-", Kind: contract.NoAnswer, Cause: forwardFailedClientMessage}},
+		lost:      true,
 	}
 }
 

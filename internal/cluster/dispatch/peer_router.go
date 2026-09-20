@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"syscall"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -141,13 +143,18 @@ func (r *PeerRouter) handOver(ctx context.Context, peer contract.NodeInfo, call 
 		}
 		switch stage {
 		case StageBeforeConnect:
-			slog.Warn("hand-over refused before connecting", "pkg", "dispatch", "peer", peer.NodeID, "requestId", call.RequestID, "err", err)
+			// The error can embed the URL the request was built for, so only the
+			// stage is logged. The error itself stays in the returned failure's
+			// wrapped cause, which no response renderer reads.
+			slog.Warn("hand-over could not be built or signed; nothing was sent",
+				"pkg", "dispatch", "peer", peer.NodeID, "requestId", call.RequestID)
 			return provedBeforeConnecting(err), contract.Terminal.String()
 		case StageNotConnected:
 			// The cause names the address — a refused address in its own words,
 			// a dial error in the socket's — so the peer is named by its node id
-			// and the cause is not logged.
-			slog.Warn("peer was not asked; no try used", "pkg", "dispatch", "peer", peer.NodeID, "requestId", call.RequestID)
+			// and the cause travels as its class, never as its text.
+			slog.Warn("peer was not asked; no try used", "pkg", "dispatch", "peer", peer.NodeID,
+				"requestId", call.RequestID, "reason", notConnectedReason(err))
 			return notConnected(), outcomeNotConnected
 		default:
 			// The address and route are in err: logged here, never returned.
@@ -158,13 +165,44 @@ func (r *PeerRouter) handOver(ctx context.Context, peer contract.NodeInfo, call 
 
 	omitted := r.boundPeerText(resp, peer, call.RequestID)
 	ans := readAnswer(call, resp, triesLeft)
-	if omitted {
+	// Only an answer that was read relays the peer's text; a lost one relays
+	// none of it, and a note about what was left out would refer to nothing.
+	if omitted && !ans.lost {
 		ans.Warnings = append(ans.Warnings, peerDiagnosticsOmittedWarning)
 	}
 	if ans.Failure == nil {
 		return ans, OutcomeOK
 	}
 	return ans, ans.Failure.Kind.String()
+}
+
+// notConnectedReason classifies, in a closed vocabulary, why a peer could not
+// be connected to. The vocabulary is closed on purpose: the error's own text
+// names the peer's address and the route, and an operator needs the class —
+// a refused address is a misconfiguration, a timeout is the network, a refused
+// port is a peer that is gone. "other" is the honest answer where the socket
+// gave nothing this node recognises.
+func notConnectedReason(err error) string {
+	if errors.Is(err, ErrForbiddenPeerAddress) {
+		return "address_refused"
+	}
+	// Before the timeout check: a name lookup that timed out is still a name
+	// lookup, which is the more useful class of the two.
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return "dns"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "timeout"
+	}
+	switch {
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "refused"
+	case errors.Is(err, syscall.EHOSTUNREACH), errors.Is(err, syscall.ENETUNREACH):
+		return "unreachable"
+	}
+	return "other"
 }
 
 // boundPeerText makes an answer's peer-written text fit to relay, and reports
@@ -191,8 +229,9 @@ func (r *PeerRouter) boundPeerText(resp *DispatchCalloutResponse, peer contract.
 		// not define is dropped rather than minted: the answer is then
 		// classified exactly as an answer that carried no code at all, which
 		// gives the hand-over's own code for that outcome.
+		// The code is a peer's text like any other: bounded before it is logged.
 		slog.Warn("peer node classified a failure with an error code this node does not define",
-			"pkg", "dispatch", "peer", peer.NodeID, "requestId", requestID, "peerErrorCode", code)
+			"pkg", "dispatch", "peer", peer.NodeID, "requestId", requestID, "peerErrorCode", boundLine(code))
 		resp.ErrorCode, resp.ErrorStatus, resp.ErrorRetryable = "", 0, false
 	}
 	return omitted
@@ -213,7 +252,7 @@ func boundLines(in []string) []string {
 // reader can tell a shortened text from a short one.
 func boundLine(s string) string {
 	if len(s) <= maxPeerDiagnosticRunes {
-		return s // bytes never outnumber runes: nothing to cut
+		return s // runes never outnumber bytes: nothing to cut
 	}
 	r := []rune(s)
 	if len(r) <= maxPeerDiagnosticRunes {

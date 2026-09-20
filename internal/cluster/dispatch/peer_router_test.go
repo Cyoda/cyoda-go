@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -196,6 +199,48 @@ func TestHandOver_AddsThePeersErrorsToTheRequestDiagnostics(t *testing.T) {
 	}
 }
 
+// --- why a peer was not connected to, by class ---
+
+// timeoutErr is a net.Error that timed out, as the dialer reports a connect
+// timeout it hit.
+type timeoutErr struct{}
+
+func (timeoutErr) Error() string   { return "i/o timeout" }
+func (timeoutErr) Timeout() bool   { return true }
+func (timeoutErr) Temporary() bool { return true }
+
+// The class of a failure to connect is what an operator acts on — a refused
+// address is a misconfiguration, a timeout is a network, a refused port is a
+// dead peer — and today they are all one log line. The vocabulary is closed:
+// the error's own text names the address and never becomes an attribute.
+func TestNotConnectedReason(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"the address guard refused it", ErrForbiddenPeerAddress, "address_refused"},
+		{"the address guard, as the forwarder reports it",
+			&ForwardError{Stage: StageNotConnected, Err: fmt.Errorf("validate peer address: %w", ErrForbiddenPeerAddress)}, "address_refused"},
+		{"the name does not resolve", &net.DNSError{Err: "no such host", Name: "peer-1", IsNotFound: true}, "dns"},
+		{"a name lookup that timed out is reported as the lookup it was",
+			&net.DNSError{Err: "i/o timeout", Name: "peer-1", IsTimeout: true}, "dns"},
+		{"the connect timeout ran out", &net.OpError{Op: "dial", Err: timeoutErr{}}, "timeout"},
+		{"nothing is listening", &net.OpError{Op: "dial", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}, "refused"},
+		{"the host cannot be reached", &net.OpError{Op: "dial", Err: os.NewSyscallError("connect", syscall.EHOSTUNREACH)}, "unreachable"},
+		{"the network cannot be reached", &net.OpError{Op: "dial", Err: os.NewSyscallError("connect", syscall.ENETUNREACH)}, "unreachable"},
+		{"anything else", errors.New("something the socket did not name"), "other"},
+		{"no error at all", nil, "other"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := notConnectedReason(tt.err); got != tt.want {
+				t.Errorf("notConnectedReason = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // --- what a peer writes is bounded before it reaches the client ---
 
 func TestHandOver_BoundsThePeersDiagnostics(t *testing.T) {
@@ -227,6 +272,24 @@ func TestHandOver_BoundsThePeersDiagnostics(t *testing.T) {
 		if len([]rune(at.Cause)) != maxPeerDiagnosticRunes+1 || len([]rune(at.MemberID)) != maxPeerDiagnosticRunes+1 {
 			t.Errorf("an attempt's text was not cut: %d/%d runes", len([]rune(at.MemberID)), len([]rune(at.Cause)))
 		}
+	}
+}
+
+// An answer that was not believed relays none of the peer's text, so there is
+// nothing left for a note about what was left out to refer to.
+func TestHandOver_LostAnswerGetsNoOmittedNote(t *testing.T) {
+	many := make([]string, 0, maxPeerDiagnostics+4)
+	for i := range maxPeerDiagnostics + 4 {
+		many = append(many, fmt.Sprintf("line %d", i))
+	}
+	// triesUsed above triesLeft: the answer is not believed at all.
+	fwd := &answeringForwarder{resp: &DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(9),
+		EntityData: []byte(`{}`), Warnings: many}}
+	a := newTestRouter(t, &stubNodeRegistry{}, fwd).HandOver(testContext(), node("peer-1", true, "tenant-1", "python"), ownerCallout(t, "processor"), 1, 1)
+
+	assertLost(t, a)
+	if len(a.Warnings) != 0 {
+		t.Errorf("Warnings = %v, want none: nothing of the peer's text was relayed", a.Warnings)
 	}
 }
 
