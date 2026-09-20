@@ -1601,6 +1601,9 @@ These variables apply globally to all tenant-registered OIDC providers. Per-prov
 | `CYODA_GRPC_PORT` | `9090` | gRPC server listen port |
 | `CYODA_KEEPALIVE_INTERVAL` | `10` | Seconds between server keep-alive pings to each compute member; also the transport keepalive idle time |
 | `CYODA_KEEPALIVE_TIMEOUT` | `30` | Seconds of inbound silence or write stall before a compute member is evicted; also the transport keepalive ack timeout |
+| `CYODA_RETRY_FIXED_NUM_RETRIES` | `3` | Retries after the first try when `retryPolicy` is `FIXED` or unset. |
+| `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS` | `30000` | Answer limit when the callout sets no `responseTimeoutMs`. |
+| `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` | `60000` | Upper bound on `responseTimeoutMs`; workflow import refuses more. |
 
 ### Cluster
 

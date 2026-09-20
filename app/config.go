@@ -87,6 +87,9 @@ type Config struct {
 	// Scheduler configures the coordinator-only scan loop that fires due
 	// ScheduledTasks (scheduled-transition runtime). See SchedulerConfig.
 	Scheduler SchedulerConfig
+	// Callout frames one compute-node callout: how many tries it gets and how
+	// long a pnode waits for one cnode's answer. See CalloutConfig.
+	Callout CalloutConfig
 }
 
 // HTTPConfig holds the receive-side timeouts applied to both the API server
@@ -176,6 +179,26 @@ type SchedulerConfig struct {
 	// firing it. Size to at least the max inter-node clock skew.
 	// CYODA_SCHEDULER_EXPIRY_GRACE, default 100ms.
 	ExpiryGrace time.Duration
+}
+
+// CalloutConfig holds the server-side settings of a compute-node callout
+// (a processor, criterion or function request).
+type CalloutConfig struct {
+	// FixedNumRetries is the number of retries after the first try for a
+	// callout whose retryPolicy is FIXED or unset; NONE always means one try.
+	// CYODA_RETRY_FIXED_NUM_RETRIES, default 3, must be >= 0.
+	FixedNumRetries int
+	// ResponseTimeout is the answer limit used when the workflow author set no
+	// positive responseTimeoutMs on the callout.
+	// CYODA_CALLOUT_RESPONSE_TIMEOUT_MS, default 30000, must be >= 1 and no
+	// larger than ResponseTimeoutMax.
+	ResponseTimeout time.Duration
+	// ResponseTimeoutMax is the largest responseTimeoutMs a workflow may carry.
+	// Workflow import refuses a larger value; a stored workflow whose value
+	// exceeds a bound lowered after import fails its callout rather than
+	// being clamped. CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS, default 60000,
+	// must be >= 1.
+	ResponseTimeoutMax time.Duration
 }
 
 type AdminConfig struct {
@@ -427,6 +450,11 @@ func DefaultConfig() Config {
 			Coordinator:       envString("CYODA_SCHEDULER_COORDINATOR", "lowest-node-id"),
 			RedispatchBackoff: envDuration("CYODA_SCHEDULER_REDISPATCH_BACKOFF", 30*time.Second),
 			ExpiryGrace:       envDuration("CYODA_SCHEDULER_EXPIRY_GRACE", 100*time.Millisecond),
+		},
+		Callout: CalloutConfig{
+			FixedNumRetries:    envInt("CYODA_RETRY_FIXED_NUM_RETRIES", 3),
+			ResponseTimeout:    envMillis("CYODA_CALLOUT_RESPONSE_TIMEOUT_MS", 30*time.Second),
+			ResponseTimeoutMax: envMillis("CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS", 60*time.Second),
 		},
 		HTTP: HTTPConfig{
 			ReadHeaderTimeout: envDuration("CYODA_HTTP_READ_HEADER_TIMEOUT", 10*time.Second),
@@ -732,6 +760,9 @@ func (c Config) Validate() error {
 	if err := ValidateSearchJobMaxAttempts(c.SearchJobMaxAttempts); err != nil {
 		return err
 	}
+	if err := ValidateCallout(c.Callout); err != nil {
+		return err
+	}
 	return ValidateHTTP(c.HTTP)
 }
 
@@ -825,6 +856,28 @@ func ValidateSearchJobStaleAfter(staleAfter, interval time.Duration) error {
 func ValidateSearchJobMaxAttempts(n int) error {
 	if n < 1 {
 		return fmt.Errorf("CYODA_SEARCH_JOB_MAX_ATTEMPTS must be >= 1, got %d", n)
+	}
+	return nil
+}
+
+// ValidateCallout rejects callout settings no callout could be run under.
+// Config is a QA'd artefact: an out-of-range value is a hard startup error,
+// not a clamp. A default answer limit above the upper bound is rejected
+// because import would then refuse a workflow that merely spells out the
+// default.
+func ValidateCallout(c CalloutConfig) error {
+	if c.FixedNumRetries < 0 {
+		return fmt.Errorf("CYODA_RETRY_FIXED_NUM_RETRIES must be >= 0, got %d", c.FixedNumRetries)
+	}
+	if c.ResponseTimeout < time.Millisecond {
+		return fmt.Errorf("CYODA_CALLOUT_RESPONSE_TIMEOUT_MS must be >= 1, got %d", c.ResponseTimeout.Milliseconds())
+	}
+	if c.ResponseTimeoutMax < time.Millisecond {
+		return fmt.Errorf("CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS must be >= 1, got %d", c.ResponseTimeoutMax.Milliseconds())
+	}
+	if c.ResponseTimeout > c.ResponseTimeoutMax {
+		return fmt.Errorf("CYODA_CALLOUT_RESPONSE_TIMEOUT_MS (%d) must not exceed CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS (%d)",
+			c.ResponseTimeout.Milliseconds(), c.ResponseTimeoutMax.Milliseconds())
 	}
 	return nil
 }

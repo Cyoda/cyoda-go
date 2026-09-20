@@ -63,8 +63,8 @@ func renderDuration(d time.Duration) string {
 }
 
 // renderMillis renders a time.Duration stored from an integer-milliseconds
-// env var (the three CYODA_OIDC_*_TIMEOUT_MS vars) back to its millisecond
-// count, matching the table's "5000" form rather than Duration.String()'s "5s".
+// env var (every integer-milliseconds var) back to its millisecond count,
+// matching the table's "5000" form rather than Duration.String()'s "5s".
 func renderMillis(d time.Duration) string {
 	return strconv.FormatInt(int64(d/time.Millisecond), 10)
 }
@@ -157,7 +157,10 @@ func defaultFor(c app.Config) map[string]string {
 		"CYODA_CORS_ALLOWED_ORIGINS": strings.Join(c.CORS.AllowedOrigins, ","),
 
 		// --- grpc ---
-		"CYODA_GRPC_PORT": strconv.Itoa(c.GRPC.Port),
+		"CYODA_GRPC_PORT":                       strconv.Itoa(c.GRPC.Port),
+		"CYODA_RETRY_FIXED_NUM_RETRIES":         strconv.Itoa(c.Callout.FixedNumRetries),
+		"CYODA_CALLOUT_RESPONSE_TIMEOUT_MS":     renderMillis(c.Callout.ResponseTimeout),
+		"CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS": renderMillis(c.Callout.ResponseTimeoutMax),
 
 		// --- scheduler ---
 		"CYODA_SCHEDULER_ENABLED":            strconv.FormatBool(c.Scheduler.Enabled),

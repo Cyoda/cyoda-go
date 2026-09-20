@@ -111,6 +111,10 @@ func main() {
 		slog.Error("search job max-attempts config validation failed", "error", err)
 		os.Exit(1)
 	}
+	if err := app.ValidateCallout(cfg.Callout); err != nil {
+		slog.Error("callout config validation failed", "error", err)
+		os.Exit(1)
+	}
 	logCORSMode(cfg.CORS)
 
 	printBanner(cfg)
