@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -134,6 +135,16 @@ func TestRequestValidate(t *testing.T) {
 		{"no owner", func(r *DispatchCalloutRequest) { r.OwnerNodeID = "" }},
 		{"no fencing number", func(r *DispatchCalloutRequest) { r.Major = 0 }},
 		{"processor missing", func(r *DispatchCalloutRequest) { r.Processor = nil }},
+		{"no entity id", func(r *DispatchCalloutRequest) { r.EntityMeta.ID = "" }},
+		{"no entity", func(r *DispatchCalloutRequest) { r.Entity = nil }},
+		// time.Duration(ms) * time.Millisecond wraps negative above this.
+		{"answer limit that does not fit a duration", func(r *DispatchCalloutRequest) { r.AnswerLimitMs = 9_300_000_000_000 }},
+		{"enclosing pair with no callout", func(r *DispatchCalloutRequest) {
+			r.Outer = []WirePair{{Callout: "", Major: 2, Minor: 1}}
+		}},
+		{"enclosing pair with no fencing number", func(r *DispatchCalloutRequest) {
+			r.Outer = []WirePair{{Callout: "outer-rid", Major: 0, Minor: 1}}
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -197,6 +208,34 @@ func TestToCallout_CriterionThatDoesNotParseIsTerminal(t *testing.T) {
 	req.Criterion = json.RawMessage(`{"function":`)
 	if _, failure := req.toCallout(); failure == nil || failure.Kind != contract.Terminal {
 		t.Fatalf("failure = %+v, want Terminal", failure)
+	}
+}
+
+// validate refuses all of these before toCallout is reached; toCallout refuses
+// them again rather than dereference a definition that is not there.
+func TestToCallout_RefusesWhatItCannotBuild(t *testing.T) {
+	tests := []struct {
+		name   string
+		kind   string
+		mutate func(*DispatchCalloutRequest)
+	}{
+		{"unknown kind", "processor", func(r *DispatchCalloutRequest) { r.Kind = "bogus" }},
+		{"no kind at all", "processor", func(r *DispatchCalloutRequest) { r.Kind = "" }},
+		{"processor missing", "processor", func(r *DispatchCalloutRequest) { r.Processor = nil }},
+		{"function missing", "function", func(r *DispatchCalloutRequest) { r.Function = nil }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := validRequest(t, tt.kind)
+			tt.mutate(&req)
+			call, failure := req.toCallout()
+			if failure == nil || failure.Kind != contract.Terminal {
+				t.Fatalf("failure = %+v, want Terminal", failure)
+			}
+			if call.RequestID != "" {
+				t.Errorf("a refused request still built a callout: %+v", call)
+			}
+		})
 	}
 }
 
@@ -345,6 +384,69 @@ func TestReadAnswer_OK(t *testing.T) {
 		if a.Failure != nil || a.Result.Function.Kind != "Schedule" {
 			t.Errorf("%+v", a)
 		}
+	})
+}
+
+// An ok answer that carries no result is malformed: a genuine peer always
+// sends the entity and the criterion's verdict. Reading the absence as an
+// empty entity or as "does not match" would put an invented value where the
+// cnode's answer belongs.
+func TestReadAnswer_OKWithNoResultIsNotBelieved(t *testing.T) {
+	tests := []struct {
+		name string
+		kind string
+		resp DispatchCalloutResponse
+	}{
+		{"processor, no entity data", "processor", DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1)}},
+		{"processor, empty entity data", "processor", DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1), EntityData: []byte{}}},
+		{"criteria, no verdict", "criteria", DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1), Reason: "big"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := tt.resp
+			assertLost(t, readAnswer(ownerCallout(t, tt.kind), &resp, 3))
+		})
+	}
+}
+
+// A failure outcome that also carries a payload: the payload is ignored and
+// the failure stands. Nothing a failed answer carries can become a result.
+func TestReadAnswer_FailureThatCarriesAPayload(t *testing.T) {
+	yes := true
+	for _, outcome := range []string{"no_handoff", "no_answer", "member_failed", "terminal"} {
+		t.Run(outcome, func(t *testing.T) {
+			a := readAnswer(ownerCallout(t, "processor"), &DispatchCalloutResponse{
+				Outcome: outcome, TriesUsed: intPtr(1), ErrorCode: common.ErrCodeDispatchTimeout, ErrorStatus: 503, ErrorRetryable: true,
+				EntityData: []byte(`{"out":1}`), Matches: &yes, Reason: "big", ResultKind: "Schedule", Result: json.RawMessage(`{}`),
+			}, 3)
+			if a.Result != nil {
+				t.Errorf("a failed answer produced a result: %+v", a.Result)
+			}
+			if a.Failure == nil {
+				t.Fatal("the failure did not stand")
+			}
+		})
+	}
+}
+
+// The owner's budget must not be understated: an answer it cannot read still
+// says how many tries the peer spent, and that number is believed when it is
+// in range.
+func TestReadAnswer_UnreadableAnswerSpendsTheTriesItClaims(t *testing.T) {
+	t.Run("in range", func(t *testing.T) {
+		a := readAnswer(ownerCallout(t, "processor"), &DispatchCalloutResponse{Outcome: "maybe", TriesUsed: intPtr(2)}, 3)
+		if a.Failure == nil || a.Failure.Code != common.ErrCodeDispatchForwardFailed || a.TriesUsed != 2 {
+			t.Errorf("%+v", a)
+		}
+	})
+	t.Run("zero still counts as one", func(t *testing.T) {
+		assertLost(t, readAnswer(ownerCallout(t, "processor"), &DispatchCalloutResponse{Outcome: "maybe", TriesUsed: intPtr(0)}, 3))
+	})
+	t.Run("absent counts as one", func(t *testing.T) {
+		assertLost(t, readAnswer(ownerCallout(t, "processor"), &DispatchCalloutResponse{Outcome: "maybe"}, 3))
+	})
+	t.Run("out of range counts as one", func(t *testing.T) {
+		assertLost(t, readAnswer(ownerCallout(t, "processor"), &DispatchCalloutResponse{Outcome: "maybe", TriesUsed: intPtr(9)}, 3))
 	})
 }
 
@@ -501,6 +603,14 @@ func TestNotConnected(t *testing.T) {
 		a.Failure.Code != common.ErrCodeNoComputeMemberForTag {
 		t.Errorf("%+v", a)
 	}
+	// A peer that was never reached did not run out of compute members; the
+	// message the client sees must say what actually happened.
+	if strings.Contains(a.Failure.Message, "compute member") {
+		t.Errorf("a peer that was never reached is reported as having no compute member: %q", a.Failure.Message)
+	}
+	if !strings.Contains(a.Failure.Message, "could not be reached") {
+		t.Errorf("Message = %q", a.Failure.Message)
+	}
 }
 
 // A hand-over proved impossible before any connection — a request that cannot
@@ -518,5 +628,28 @@ func TestProvedBeforeConnecting(t *testing.T) {
 	}
 	if strings.Contains(a.Failure.Message, "169.254") {
 		t.Errorf("the client-safe message names a peer address: %q", a.Failure.Message)
+	}
+}
+
+// Nothing the constructor puts in the error may reach a client in ANY error
+// mode. Verbose mode returns AppError.Detail in the response body, so the
+// error's own text goes in the wrapped cause, which no renderer reads.
+func TestProvedBeforeConnecting_NothingRendersThePeerAddress(t *testing.T) {
+	common.SetErrorResponseMode("verbose")
+	t.Cleanup(func() { common.SetErrorResponseMode("sanitized") })
+
+	a := provedBeforeConnecting(errors.New("dial peer at 169.254.1.1:8080: seal failed"))
+	var appErr *common.AppError
+	if !errors.As(a.Failure, &appErr) {
+		t.Fatalf("Failure = %+v", a.Failure)
+	}
+	rec := httptest.NewRecorder()
+	common.WriteError(rec, httptest.NewRequest(http.MethodPost, "/entity", nil), appErr)
+	if body := rec.Body.String(); strings.Contains(body, "169.254") || strings.Contains(body, "8080") {
+		t.Errorf("the rendered error names the peer address: %s", body)
+	}
+	// The cause stays inspectable for the caller that logs it.
+	if !strings.Contains(errors.Unwrap(appErr).Error(), "169.254.1.1") {
+		t.Error("the cause was dropped instead of kept out of the response")
 	}
 }

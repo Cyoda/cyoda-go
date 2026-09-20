@@ -351,6 +351,76 @@ func TestDispatchCalloutRequest_HandOverFieldsRoundTrip(t *testing.T) {
 	}
 }
 
+// Every wire name of the answer is pinned: both pnodes of a pair read the
+// same JSON, and a renamed tag silently loses a field rather than failing to
+// compile.
+func TestDispatchCalloutResponse_WireNames(t *testing.T) {
+	yes := true
+	used := 2
+	resp := dispatch.DispatchCalloutResponse{
+		Outcome:   "member_failed",
+		TriesUsed: &used,
+		Attempts: []dispatch.WireAttempt{
+			{MemberID: "m1", Kind: "no_answer", Cause: "timed out"},
+		},
+		MemberError:     "card declined",
+		MemberRetryable: &yes,
+		Success:         true,
+		Error:           "boom",
+		ErrorCode:       "DISPATCH_TIMEOUT",
+		ErrorStatus:     503,
+		ErrorRetryable:  true,
+		EntityData:      []byte(`x`),
+		Matches:         &yes,
+		Reason:          "big",
+		Result:          json.RawMessage(`{"fireAfterMs":1}`),
+		ResultKind:      "Schedule",
+		Warnings:        []string{"w"},
+		Errors:          []string{"e"},
+	}
+	raw, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, key := range []string{
+		`"outcome":"member_failed"`,
+		`"triesUsed":2`,
+		`"attempts":[{"memberID":"m1","kind":"no_answer","cause":"timed out"}]`,
+		`"memberError":"card declined"`,
+		`"memberRetryable":true`,
+		`"success":true`,
+		`"error":"boom"`,
+		`"errorCode":"DISPATCH_TIMEOUT"`,
+		`"errorStatus":503`,
+		`"errorRetryable":true`,
+		`"entityData":"eA=="`,
+		`"matches":true`,
+		`"reason":"big"`,
+		`"result":{"fireAfterMs":1}`,
+		`"resultKind":"Schedule"`,
+		`"warnings":["w"]`,
+		`"errors":["e"]`,
+	} {
+		if !strings.Contains(string(raw), key) {
+			t.Errorf("wire form lacks %s: %s", key, raw)
+		}
+	}
+
+	var got dispatch.DispatchCalloutResponse
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Outcome != resp.Outcome || got.TriesUsed == nil || *got.TriesUsed != used ||
+		len(got.Attempts) != 1 || got.Attempts[0] != resp.Attempts[0] ||
+		got.MemberError != resp.MemberError || got.MemberRetryable == nil || !*got.MemberRetryable ||
+		got.ErrorCode != resp.ErrorCode || got.ErrorStatus != resp.ErrorStatus || !got.ErrorRetryable ||
+		string(got.EntityData) != "x" || got.Matches == nil || !*got.Matches || got.Reason != resp.Reason ||
+		string(got.Result) != string(resp.Result) || got.ResultKind != resp.ResultKind ||
+		len(got.Warnings) != 1 || len(got.Errors) != 1 {
+		t.Errorf("round trip lost fields: %+v", got)
+	}
+}
+
 func TestDispatchCalloutResponse_TriesUsedZeroIsNotAbsent(t *testing.T) {
 	zero := 0
 	with, _ := json.Marshal(dispatch.DispatchCalloutResponse{Outcome: "no_handoff", TriesUsed: &zero})

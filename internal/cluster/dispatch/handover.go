@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -24,6 +25,19 @@ const forwardFailedClientMessage = "forwarding the callout to a peer node failed
 // peerFailedClientMessage stands in where the answering pnode gave no
 // client-safe text of its own.
 const peerFailedClientMessage = "peer node dispatch failed"
+
+// peerUnreachableClientMessage is what the client sees for a peer that was
+// never asked — the connection could not be opened, or its address failed
+// validation. It names no address and no node.
+const peerUnreachableClientMessage = "the peer node could not be reached"
+
+// maxAnswerLimitMs is the largest answerLimitMs that still fits a
+// time.Duration once multiplied by time.Millisecond. Above it the product
+// wraps negative and the receiving pnode would give a cnode a deadline in the
+// past. This is the representable range, not a policy: the policy bound is
+// ResolveAnswerLimit's configured maximum, which the receiver applies to the
+// callout it builds.
+const maxAnswerLimitMs = int64(math.MaxInt64) / int64(time.Millisecond)
 
 // HandOverAnswer is what the owner learns from one hand-over.
 type HandOverAnswer struct {
@@ -112,20 +126,40 @@ func newHandOverRequest(uc *spi.UserContext, ownerNodeID string, call internalgr
 // from a live stored entity whose tenant is always set, so an empty one can
 // only come from a hand-crafted body. The error names neither value: both are
 // peer-supplied.
+//
+// Everything else it checks is likewise a value the callout cannot be run
+// without, and each is refused rather than substituted or clamped: the
+// receiving pnode would otherwise dispatch an unidentifiable entity, give a
+// cnode a deadline in the past, or mint passes carrying pairs the fence
+// cannot judge. The bounds that need configuration — how many tries this
+// pnode will make, how long an answer limit it allows — are applied where the
+// configuration is, not here.
 func (req *DispatchCalloutRequest) validate() error {
 	switch {
 	case string(req.EntityMeta.TenantID) != req.TenantID:
 		return errors.New("entity tenant does not match request tenant")
+	case req.EntityMeta.ID == "":
+		return errors.New("entity id is empty")
+	case len(req.Entity) == 0:
+		return errors.New("entity is empty")
 	case req.RequestID == "":
 		return errors.New("requestID is empty")
 	case req.TriesLeft < 1:
 		return errors.New("triesLeft is below 1")
 	case req.AnswerLimitMs < 1:
 		return errors.New("answerLimitMs is below 1")
+	case req.AnswerLimitMs > maxAnswerLimitMs:
+		return errors.New("answerLimitMs does not fit a duration")
 	case req.OwnerNodeID == "":
 		return errors.New("ownerNodeID is empty")
 	case req.Major < 1:
 		return errors.New("major is below 1")
+	}
+	for _, p := range req.Outer {
+		// The same rule the pass verifier applies to an enclosing pair.
+		if !token.Named(token.Pair{Callout: p.Callout, Major: p.Major}) {
+			return errors.New("an enclosing pair names no callout at a usable number")
+		}
 	}
 	switch req.Kind {
 	case internalgrpc.ProcessorCallout.String():
@@ -158,6 +192,9 @@ func (req *DispatchCalloutRequest) toCallout() (internalgrpc.Callout, *contract.
 	var call internalgrpc.Callout
 	switch req.Kind {
 	case internalgrpc.ProcessorCallout.String():
+		if req.Processor == nil {
+			return internalgrpc.Callout{}, unacceptableRequest()
+		}
 		call = internalgrpc.NewProcessorCallout(tenant, entity, *req.Processor, req.WorkflowName, req.TransitionName, req.TxID)
 	case internalgrpc.CriteriaCallout.String():
 		var failure *contract.CalloutFailure
@@ -165,8 +202,13 @@ func (req *DispatchCalloutRequest) toCallout() (internalgrpc.Callout, *contract.
 		if failure != nil {
 			return internalgrpc.Callout{}, failure
 		}
-	default:
+	case internalgrpc.FunctionCallout.String():
+		if req.Function == nil {
+			return internalgrpc.Callout{}, unacceptableRequest()
+		}
 		call = internalgrpc.NewFunctionCallout(tenant, entity, *req.Function, req.WorkflowName, req.TransitionName, req.TxID)
+	default:
+		return internalgrpc.Callout{}, unacceptableRequest()
 	}
 	call.RequestID = req.RequestID
 	call.AnswerLimit = time.Duration(req.AnswerLimitMs) * time.Millisecond
@@ -177,6 +219,16 @@ func (req *DispatchCalloutRequest) toCallout() (internalgrpc.Callout, *contract.
 		call.Outer = append(call.Outer, token.Pair{Callout: p.Callout, Major: p.Major, Minor: p.Minor})
 	}
 	return call, nil
+}
+
+// unacceptableRequest is the refusal for a hand-over that cannot be turned
+// into a callout: an unknown kind, or a kind whose definition is missing.
+// validate refuses both before toCallout is reached; the refusal is there so
+// that no path can dereference a definition that is not present. Every pnode
+// would refuse it identically, so it is Terminal.
+func unacceptableRequest() *contract.CalloutFailure {
+	appErr := common.Internal("the hand-over could not be accepted", nil)
+	return &contract.CalloutFailure{Kind: contract.Terminal, Code: appErr.Code, Message: appErr.Message, Err: appErr}
 }
 
 // responseFromLocal is the answer to a hand-over: what the local procedure
@@ -277,11 +329,28 @@ func readAnswer(call internalgrpc.Callout, resp *DispatchCalloutResponse, triesL
 		result := internalgrpc.CalloutResult{}
 		switch call.Kind {
 		case internalgrpc.ProcessorCallout:
+			// responseFromLocal always sends the entity on the ok path: the
+			// local procedure's result carries it, and a processor that
+			// changed nothing returns the one it was given. No entity is a
+			// malformed answer, and reading it as an empty one would have the
+			// owner commit an entity with no data.
+			if len(resp.EntityData) == 0 {
+				return lostAnswer()
+			}
 			result.Entity = &spi.Entity{Meta: call.Source.Entity.Meta, Data: resp.EntityData}
 		case internalgrpc.CriteriaCallout:
-			result.Matches = resp.Matches != nil && *resp.Matches
+			// matches is always on the wire from a genuine peer. A missing
+			// verdict must not be read as "does not match": that is an
+			// invented answer to the criterion, and it decides a transition.
+			if resp.Matches == nil {
+				return lostAnswer()
+			}
+			result.Matches = *resp.Matches
 			result.Reason = resp.Reason
 		case internalgrpc.FunctionCallout:
+			// Both fields are relayed exactly as the cnode gave them — an
+			// empty resultKind is the cnode's answer, not a malformed one, and
+			// the engine refuses it where it refuses it for a local callout.
 			result.Function = contract.FunctionResult{Kind: resp.ResultKind, Value: resp.Result}
 		}
 		ans.Result = &result
@@ -305,7 +374,10 @@ func readAnswer(call internalgrpc.Callout, resp *DispatchCalloutResponse, triesL
 	case contract.Terminal.String():
 		ans.Failure = classifiedFailure(contract.Terminal, resp, ans.Attempts)
 	default:
-		return lostAnswer()
+		// An outcome this version cannot read. The answer is not believed —
+		// but the tries it says it spent are, so the owner's budget is not
+		// understated by an answer it happens not to understand.
+		return lostAnswerAfter(used)
 	}
 	return ans
 }
@@ -365,11 +437,20 @@ func noCnodeFailure() *contract.CalloutFailure {
 // lostAnswer is a hand-over whose answer never arrived, did not authenticate,
 // or cannot be believed. The peer may have handed the work to a cnode — to more
 // than one — so it counts as one try and is NoAnswer.
-func lostAnswer() HandOverAnswer {
+func lostAnswer() HandOverAnswer { return lostAnswerAfter(1) }
+
+// lostAnswerAfter is a lost answer that spent the tries the peer said it
+// spent. Never fewer than one: an answer the owner cannot read may still have
+// reached a cnode, and a hand-over that used no try would let the loop ask
+// forever.
+func lostAnswerAfter(used int) HandOverAnswer {
+	if used < 1 {
+		used = 1
+	}
 	appErr := common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchForwardFailed, forwardFailedClientMessage).AsRetryable()
 	return HandOverAnswer{
 		Connected: true,
-		TriesUsed: 1,
+		TriesUsed: used,
 		Failure:   &contract.CalloutFailure{Kind: contract.NoAnswer, Code: appErr.Code, Message: appErr.Message, Err: appErr},
 		Attempts:  []contract.CalloutAttempt{{MemberID: "-", Kind: contract.NoAnswer, Cause: forwardFailedClientMessage}},
 	}
@@ -377,16 +458,26 @@ func lostAnswer() HandOverAnswer {
 
 // notConnected is a peer that was not asked: the connection to it could not be
 // opened, or its address failed validation. Nothing left this pnode, and no try
-// is used.
+// is used. It carries the same code as a peer with no cnode, because the
+// owner's loop reads both the same way — go on to the next peer — but its
+// message says what happened rather than claiming a compute member was looked
+// for and not found.
 func notConnected() HandOverAnswer {
-	return HandOverAnswer{Failure: noCnodeFailure()}
+	appErr := common.Operational(http.StatusServiceUnavailable, common.ErrCodeNoComputeMemberForTag,
+		peerUnreachableClientMessage).AsRetryable()
+	return HandOverAnswer{Failure: &contract.CalloutFailure{Kind: contract.NoHandOff, Code: appErr.Code, Message: appErr.Message, Err: appErr}}
 }
 
 // provedBeforeConnecting is a hand-over that failed before any connection was
 // attempted — a request that cannot be built, marshalled or signed. It would
-// fail identically on every try: Terminal. Whatever the error says stays out of
-// the client-safe message; it is logged where the hand-over is made.
+// fail identically on every try: Terminal.
+//
+// The error goes in the wrapped cause and nowhere else. AppError.Detail is
+// returned to the client in the verbose error mode, so nothing that reaches a
+// response renderer may carry the error's text — it names a peer, and may name
+// its address. Nothing logs it here either: the CALLER logs it, at WARN, with
+// the node id and never the address.
 func provedBeforeConnecting(err error) HandOverAnswer {
-	appErr := common.Internal("the callout could not be handed over", err)
+	appErr := common.Internal("the callout could not be handed over", nil).WithCause(err)
 	return HandOverAnswer{Failure: &contract.CalloutFailure{Kind: contract.Terminal, Code: appErr.Code, Message: appErr.Message, Err: appErr}}
 }
