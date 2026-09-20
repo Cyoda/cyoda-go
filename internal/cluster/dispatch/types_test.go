@@ -2,6 +2,7 @@ package dispatch_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -324,5 +325,40 @@ func TestDispatchCalloutRequest_EntityMetaTimestamps(t *testing.T) {
 	}
 	if !got.EntityMeta.LastModifiedDate.Equal(now.Add(time.Hour)) {
 		t.Errorf("LastModifiedDate = %v, want %v", got.EntityMeta.LastModifiedDate, now.Add(time.Hour))
+	}
+}
+
+func TestDispatchCalloutRequest_HandOverFieldsRoundTrip(t *testing.T) {
+	req := dispatch.DispatchCalloutRequest{
+		Kind: "processor", RequestID: "rid", TriesLeft: 3, AnswerLimitMs: 30000, OwnerNodeID: "n1",
+		Major: 4, RepeatSafe: true, Outer: []dispatch.WirePair{{Callout: "o", Major: 2, Minor: 1}},
+	}
+	raw, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, key := range []string{`"requestID":"rid"`, `"triesLeft":3`, `"answerLimitMs":30000`, `"ownerNodeID":"n1"`, `"major":4`, `"repeatSafe":true`, `"outer":[{"callout":"o","major":2,"minor":1}]`} {
+		if !strings.Contains(string(raw), key) {
+			t.Errorf("wire form lacks %s: %s", key, raw)
+		}
+	}
+	var got dispatch.DispatchCalloutRequest
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.RequestID != "rid" || got.TriesLeft != 3 || got.Major != 4 || len(got.Outer) != 1 {
+		t.Errorf("round trip lost fields: %+v", got)
+	}
+}
+
+func TestDispatchCalloutResponse_TriesUsedZeroIsNotAbsent(t *testing.T) {
+	zero := 0
+	with, _ := json.Marshal(dispatch.DispatchCalloutResponse{Outcome: "no_handoff", TriesUsed: &zero})
+	without, _ := json.Marshal(dispatch.DispatchCalloutResponse{Outcome: "no_handoff"})
+	if !strings.Contains(string(with), `"triesUsed":0`) {
+		t.Errorf("triesUsed 0 must be on the wire: %s", with)
+	}
+	if strings.Contains(string(without), "triesUsed") {
+		t.Errorf("an absent triesUsed must stay absent: %s", without)
 	}
 }

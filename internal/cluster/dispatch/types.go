@@ -32,7 +32,28 @@ type DispatchCalloutRequest struct {
 	// outside {user,service,system} — see internal/grpc/cloudevent.go.
 	PrincipalKind spi.PrincipalKind `json:"principalKind"`
 	Roles         []string          `json:"roles"`
-	TxToken       string            `json:"txToken,omitempty"`
+
+	// RequestID is created by the owner and sent on every try, by every pnode.
+	RequestID string `json:"requestID"`
+	// TriesLeft is the most tries the receiving pnode may make; at least 1.
+	TriesLeft int `json:"triesLeft"`
+	// AnswerLimitMs is the answer limit as the owner resolved it, so that two
+	// pnodes cannot disagree about it.
+	AnswerLimitMs int64 `json:"answerLimitMs"`
+	// OwnerNodeID is the pnode that holds the transaction; the receiving pnode
+	// puts it in every pass it mints, so that callbacks are routed there.
+	OwnerNodeID string `json:"ownerNodeID"`
+	// Major is the fencing number of this hand-over. The receiving pnode
+	// numbers its tries minor = 1, 2, … under it.
+	Major uint32 `json:"major"`
+	// Outer names the enclosing callouts, copied into every pass minted; empty
+	// unless the callout was made from inside a callback.
+	Outer []WirePair `json:"outer,omitempty"`
+	// RepeatSafe is the owner's decision whether the work may be given to
+	// another cnode after a hand-off.
+	RepeatSafe bool `json:"repeatSafe"`
+
+	TxToken string `json:"txToken,omitempty"`
 
 	// Processor is set when Kind == "processor".
 	Processor *spi.ProcessorDefinition `json:"processor,omitempty"`
@@ -52,6 +73,20 @@ type DispatchCalloutRequest struct {
 //   - Kind == "criteria": Matches and Reason are populated.
 //   - Kind == "function": Result and ResultKind are populated.
 type DispatchCalloutResponse struct {
+	// Outcome is "ok", or the kind of the failure: "no_handoff", "no_answer",
+	// "member_failed", "terminal". Only an authenticated "no_handoff" tells the
+	// owner that nothing was handed to a cnode.
+	Outcome string `json:"outcome"`
+	// TriesUsed is the number of tries made. A pointer, because absent (read
+	// as one try) and zero (nothing was tried) are different answers.
+	TriesUsed *int `json:"triesUsed,omitempty"`
+	// Attempts is one entry per failed try.
+	Attempts []WireAttempt `json:"attempts,omitempty"`
+	// MemberError and MemberRetryable are the cnode's own message and verdict
+	// ("member_failed" only).
+	MemberError     string `json:"memberError,omitempty"`
+	MemberRetryable *bool  `json:"memberRetryable,omitempty"`
+
 	Success bool   `json:"success"`
 	Error   string `json:"error,omitempty"`
 
@@ -82,4 +117,24 @@ type DispatchCalloutResponse struct {
 	ResultKind string          `json:"resultKind,omitempty"`
 
 	Warnings []string `json:"warnings,omitempty"`
+	// Errors are the diagnostics the tries added on the answering pnode.
+	Errors []string `json:"errors,omitempty"`
+}
+
+// OutcomeOK is the outcome of a hand-over that a cnode answered. The other
+// outcomes are the words of contract.CalloutFailureKind.
+const OutcomeOK = "ok"
+
+// WirePair is one (callout, major, minor) on the wire.
+type WirePair struct {
+	Callout string `json:"callout"`
+	Major   uint32 `json:"major"`
+	Minor   uint32 `json:"minor"`
+}
+
+// WireAttempt is one failed try on the wire.
+type WireAttempt struct {
+	MemberID string `json:"memberID"`
+	Kind     string `json:"kind"`
+	Cause    string `json:"cause"`
 }

@@ -18,17 +18,7 @@ import (
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 )
 
-const (
-	gossipPollInterval = 200 * time.Millisecond
-
-	// forwardFailedClientMessage is the sanitized, client-facing message for
-	// a DISPATCH_FORWARD_FAILED error. The underlying transport error (from
-	// HTTPForwarder.forward) embeds the peer's internal address, port, and
-	// route — that detail must never reach the client (topology leak, see
-	// .claude/rules/security.md and B2 in the final review); it is logged
-	// server-side instead via slog at the call site.
-	forwardFailedClientMessage = "forwarding the callout to a peer node failed"
-)
+const gossipPollInterval = 200 * time.Millisecond
 
 // ClusterDispatcher implements contract.ExternalProcessingService with cluster-aware
 // dispatch. It tries the local node first, and if no local calculation member
