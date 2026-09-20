@@ -205,14 +205,18 @@ func MintTenantJWT(t *testing.T, ks *JWTKeySet) parity.Tenant {
 // the string.
 const ComputeTenantID = "system-tenant"
 
-// MintM2MJWT creates an M2M JWT for the compute-test-client.
-func MintM2MJWT(ks *JWTKeySet) (string, error) {
+// MintM2MJWT creates the M2M JWT of the fixture's own compute-test-client.
+func MintM2MJWT(ks *JWTKeySet) (string, error) { return MintM2MJWTForTenant(ks, ComputeTenantID) }
+
+// MintM2MJWTForTenant creates an M2M JWT under which a compute-test-client
+// joins as a compute node of tenantID.
+func MintM2MJWTForTenant(ks *JWTKeySet, tenantID string) (string, error) {
 	now := time.Now()
 	claims := map[string]any{
 		"sub":          "compute-test",
 		"iss":          ks.Issuer,
 		"caas_user_id": "compute-admin",
-		"caas_org_id":  ComputeTenantID,
+		"caas_org_id":  tenantID,
 		"scopes":       []string{"ROLE_ADMIN", "ROLE_M2M"},
 		"caas_tier":    "unlimited",
 		"exp":          now.Add(2 * time.Hour).Unix(),
@@ -501,6 +505,9 @@ type LaunchResult struct {
 	GRPCEndpoint string
 	CyodaCmd     *exec.Cmd
 	ComputeCmd   *exec.Cmd
+	// ComputeBin is the built compute-test-client, so a fixture can start
+	// further clients for a scenario (fixtureutil.StartComputeClientForFixture).
+	ComputeBin string
 }
 
 // LaunchOpts configures optional behavior for LaunchCyodaAndCompute.
@@ -655,58 +662,29 @@ func LaunchCyodaAndComputeWithBinaries(cyodaBin, computeBin string, ks *JWTKeySe
 		return nil, nil, fmt.Errorf("failed to mint M2M JWT: %w", err)
 	}
 
-	// Launch compute-test-client.
 	grpcEndpoint := fmt.Sprintf("127.0.0.1:%d", grpcPort)
-	computeCmd := exec.Command(computeBin)
-	computeCmd.WaitDelay = 3 * time.Second
-	computeCmd.Env = append(os.Environ(),
-		fmt.Sprintf("CYODA_COMPUTE_GRPC_ENDPOINT=%s", grpcEndpoint),
-		fmt.Sprintf("CYODA_COMPUTE_TOKEN=%s", m2mToken),
-		// HTTP base for callback-join processors (callbacks target
-		// the same single node that dispatched them).
-		fmt.Sprintf("CYODA_COMPUTE_HTTP_BASE=%s", baseURL),
-	)
-	computeCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
-	computeStdout, err := computeCmd.StdoutPipe()
+	// Callbacks target the same single node that dispatched them.
+	compute, err := StartComputeClient(ComputeClientOpts{
+		ComputeBin: computeBin, GRPCEndpoint: grpcEndpoint, HTTPBase: baseURL, Token: m2mToken,
+	})
 	if err != nil {
 		cleanup()
-		return nil, nil, fmt.Errorf("failed to create compute stdout pipe: %w", err)
-	}
-	if err := computeCmd.Start(); err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("failed to start compute-test-client: %w", err)
+		return nil, nil, err
 	}
 	cleanup = func() {
-		// computeCmd has no monitor goroutine, so KillProcessGroup (which owns
-		// its Wait) is correct. cyoda IS monitored, so it must be torn down
-		// kill-only + exit-signal wait — never KillProcessGroup, which would
-		// double-Wait.
-		KillProcessGroup(computeCmd)
+		// The client owns its own Wait; cyoda is reaped by its monitor
+		// goroutine, so it is torn down kill-only + exit-signal wait.
+		compute.Stop()
 		killCyoda()
 	}
-
-	// Parse HEALTH_ADDR from stdout.
-	healthAddr, err := ParseHealthAddr(computeStdout, 15*time.Second)
-	if err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("failed to parse HEALTH_ADDR from compute-test-client: %w", err)
-	}
-	go func() { _, _ = io.Copy(io.Discard, computeStdout) }()
-
-	// Wait for compute-test-client health.
-	computeHealthURL := fmt.Sprintf("http://%s/healthz", healthAddr)
-	if err := WaitForHTTPHealth(computeHealthURL, 30*time.Second); err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("compute-test-client health probe failed: %w", err)
-	}
-	slog.Info("compute-test-client is ready", "pkg", "fixtureutil", "healthAddr", healthAddr)
+	slog.Info("compute-test-client is ready", "pkg", "fixtureutil", "controlURL", compute.ControlURL())
 
 	return &LaunchResult{
 		BaseURL:      baseURL,
 		GRPCEndpoint: grpcEndpoint,
 		CyodaCmd:     cyodaCmd,
-		ComputeCmd:   computeCmd,
+		ComputeCmd:   compute.Cmd(),
+		ComputeBin:   computeBin,
 	}, cleanup, nil
 }
 
@@ -722,6 +700,10 @@ type ClusterLaunchResult struct {
 	// GRPCEndpoint is node 0's gRPC endpoint; the compute-test-client
 	// connects here.
 	GRPCEndpoint string
+	// GRPCEndpoints is the per-node gRPC endpoint list, same order as BaseURLs.
+	GRPCEndpoints []string
+	// ComputeBin is the built compute-test-client (see LaunchResult.ComputeBin).
+	ComputeBin string
 	// CyodaCmds holds one *exec.Cmd per node, in the same order as
 	// BaseURLs. Exposed mainly for diagnostics; cleanup handles
 	// process termination.
@@ -1075,51 +1057,26 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 		return nil, nil, fmt.Errorf("failed to mint M2M JWT: %w", err)
 	}
 
-	// Compute-test-client points at node 0's gRPC.
-	grpcEndpoint := fmt.Sprintf("127.0.0.1:%d", grpcPorts[0])
-	computeCmd := exec.Command(computeBin)
-	computeCmd.WaitDelay = 3 * time.Second
-	computeCmd.Env = append(os.Environ(),
-		fmt.Sprintf("CYODA_COMPUTE_GRPC_ENDPOINT=%s", grpcEndpoint),
-		fmt.Sprintf("CYODA_COMPUTE_TOKEN=%s", m2mToken),
-		// HTTP base for callback-join processors. Callbacks target
-		// node 0 (where the compute client connects and dispatch originates);
-		// cross-node callback forwarding is covered separately, not here.
-		fmt.Sprintf("CYODA_COMPUTE_HTTP_BASE=http://127.0.0.1:%d", httpPorts[0]),
-	)
-	computeCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
-	computeStdout, err := computeCmd.StdoutPipe()
+	// The fixture's own client attaches to node 0, and its callbacks target
+	// node 0; cross-node callback forwarding is covered by scenarios.
+	grpcEndpoints := make([]string, n)
+	for i := 0; i < n; i++ {
+		grpcEndpoints[i] = fmt.Sprintf("127.0.0.1:%d", grpcPorts[i])
+	}
+	compute, err := StartComputeClient(ComputeClientOpts{
+		ComputeBin: computeBin, GRPCEndpoint: grpcEndpoints[0],
+		HTTPBase: fmt.Sprintf("http://127.0.0.1:%d", httpPorts[0]), Token: m2mToken,
+		ReadyTimeout: defaultCyodaReadinessTimeout,
+	})
 	if err != nil {
 		cleanup()
-		return nil, nil, fmt.Errorf("failed to create compute stdout pipe: %w", err)
-	}
-	if err := computeCmd.Start(); err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("failed to start compute-test-client: %w", err)
+		return nil, nil, err
 	}
 	cleanup = func() {
-		// computeCmd has no monitor goroutine, so KillProcessGroup (which owns
-		// its Wait) is correct. The cyoda nodes are reaped by their monitor
-		// goroutines, so they must be torn down kill-only + exit-signal wait —
-		// never KillProcessGroup, which would double-Wait.
-		KillProcessGroup(computeCmd)
+		compute.Stop()
 		killNodes(nodes)
 	}
-
-	healthAddr, err := ParseHealthAddr(computeStdout, defaultComputeHealthAddrTimeout)
-	if err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("failed to parse HEALTH_ADDR from compute-test-client: %w", err)
-	}
-	go func() { _, _ = io.Copy(io.Discard, computeStdout) }()
-
-	computeHealthURL := fmt.Sprintf("http://%s/healthz", healthAddr)
-	if err := WaitForHTTPHealth(computeHealthURL, defaultCyodaReadinessTimeout); err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("compute-test-client health probe failed: %w", err)
-	}
-	slog.Info("compute-test-client (cluster) is ready", "pkg", "fixtureutil", "healthAddr", healthAddr, "nodes", n)
+	slog.Info("compute-test-client (cluster) is ready", "pkg", "fixtureutil", "controlURL", compute.ControlURL(), "nodes", n)
 
 	baseURLs := make([]string, n)
 	for i := 0; i < n; i++ {
@@ -1127,11 +1084,13 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 	}
 
 	return &ClusterLaunchResult{
-		BaseURLs:     baseURLs,
-		GRPCEndpoint: grpcEndpoint,
-		CyodaCmds:    cyodaCmds,
-		ComputeCmd:   computeCmd,
-		NodeLogs:     nodeLogBufs,
-		KillNode:     killNode,
+		BaseURLs:      baseURLs,
+		GRPCEndpoint:  grpcEndpoints[0],
+		GRPCEndpoints: grpcEndpoints,
+		ComputeBin:    computeBin,
+		CyodaCmds:     cyodaCmds,
+		ComputeCmd:    compute.Cmd(),
+		NodeLogs:      nodeLogBufs,
+		KillNode:      killNode,
 	}, cleanup, nil
 }

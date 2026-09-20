@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"sync/atomic"
+	"time"
 )
 
 // healthServer serves /healthz on a chosen port. The fixture uses this
@@ -15,10 +18,10 @@ type healthServer struct {
 	ready    *atomic.Bool
 }
 
-// newHealthServer constructs a health server bound to an ephemeral port.
-// Returns the bound listener so the caller can read the chosen port via
-// listener.Addr().
-func newHealthServer() (*healthServer, error) {
+// newHealthServer constructs the client's local HTTP server, bound to an
+// ephemeral port: /healthz for the fixture's readiness probe, /record and
+// /release as the test's control surface.
+func newHealthServer(rec *recorder, release func(context.Context)) (*healthServer, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
@@ -26,6 +29,10 @@ func newHealthServer() (*healthServer, error) {
 	hs := &healthServer{
 		listener: ln,
 		ready:    new(atomic.Bool),
+	}
+	writeRecord := func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(rec.snapshot())
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -36,6 +43,27 @@ func newHealthServer() (*healthServer, error) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"UP"}`))
+	})
+	// /record: every calculation request this client received, in order.
+	mux.HandleFunc("/record", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		writeRecord(w)
+	})
+	// /release: make the held late callbacks, then answer with the record,
+	// which now carries their outcomes. Not bound to the request's context: a
+	// caller that gives up must not cut a callback off half-way.
+	mux.HandleFunc("/release", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		release(ctx)
+		writeRecord(w)
 	})
 	hs.srv = &http.Server{Handler: mux}
 	return hs, nil
