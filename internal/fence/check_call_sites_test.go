@@ -1,14 +1,27 @@
 package fence
 
 // check_call_sites_test.go — after a callout of its own a joined chain re-takes
-// the transaction's lock, and the statement that follows the re-acquire must be
-// the fence's check. Otherwise the chain carries on writing to a transaction the
-// owner has already given to another compute node.
+// the transaction's lock, and the statement that follows the re-acquire must
+// refuse the chain if its pass is no longer current. Otherwise the chain carries
+// on writing to a transaction the owner has already given to another compute
+// node.
 //
 // The guard is the companion of internal/txgate's suspend_call_sites_test.go:
 // that one insists every Suspend defers its resume, this one insists every
-// Suspend ALSO re-acquires explicitly and checks straight afterwards. A sixth
+// Suspend ALSO re-acquires explicitly and refuses straight afterwards. A sixth
 // Suspend site therefore cannot be added without its check.
+//
+// Three things make it hard to slip past:
+//
+//   - The Suspend calls are counted from the AST, not from the file's text, so
+//     a doc comment that happens to mention txgate.Suspend( neither inflates the
+//     count nor breaks the guard.
+//   - Counts are compared PER FUNCTION. A module-wide sum lets a function with
+//     two explicit resumes pay for one with none.
+//   - The statement after resume() must be an `if` that calls fence.Check in its
+//     init or condition AND returns from its body. A statement that merely
+//     mentions fence.Check — an ignored result, a check that only logs — is not
+//     a refusal and is reported.
 //
 // The scan is AST-based, so gofmt-legal blank lines and comments between the
 // resume and the check are invisible to it.
@@ -24,69 +37,158 @@ import (
 	"testing"
 )
 
-// uncheckedResumes reports every statement `resume()` in src whose next
-// statement does not call fence.Check, and how many explicit `resume()`
-// statements the file has at all — a site that only defers its resume never
-// reaches a check, so the count is checked against the number of Suspend sites.
-func uncheckedResumes(filename string, src any) (offenders []string, explicit int, err error) {
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, filename, src, parser.SkipObjectResolution)
-	if err != nil {
-		return nil, 0, err
+// stmtList returns the statement list a node owns, and whether it owns one.
+// Every place Go admits a sequence of statements is covered: ordinary blocks,
+// and the case/comm clauses of switch and select, whose bodies are bare []Stmt.
+func stmtList(n ast.Node) ([]ast.Stmt, bool) {
+	switch s := n.(type) {
+	case *ast.BlockStmt:
+		return s.List, true
+	case *ast.CaseClause:
+		return s.Body, true
+	case *ast.CommClause:
+		return s.Body, true
 	}
-	callsCheck := func(n ast.Node) bool {
-		found := false
-		ast.Inspect(n, func(c ast.Node) bool {
-			if call, ok := c.(*ast.CallExpr); ok {
-				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Check" {
-					if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "fence" {
-						found = true
-					}
-				}
-			}
-			return !found
-		})
-		return found
-	}
-	// isResume matches the bare `resume()` statement, not `defer resume()`:
-	// a DeferStmt is not an ExprStmt.
-	isResume := func(s ast.Stmt) bool {
-		es, ok := s.(*ast.ExprStmt)
+	return nil, false
+}
+
+// countSuspends returns the number of txgate.Suspend calls in n, from the AST.
+func countSuspends(n ast.Node) int {
+	found := 0
+	ast.Inspect(n, func(c ast.Node) bool {
+		call, ok := c.(*ast.CallExpr)
 		if !ok {
-			return false
-		}
-		call, ok := es.X.(*ast.CallExpr)
-		if !ok || len(call.Args) != 0 {
-			return false
-		}
-		id, ok := call.Fun.(*ast.Ident)
-		return ok && id.Name == "resume"
-	}
-	ast.Inspect(file, func(n ast.Node) bool {
-		var list []ast.Stmt
-		switch s := n.(type) {
-		case *ast.BlockStmt:
-			list = s.List
-		case *ast.CaseClause:
-			list = s.Body
-		case *ast.CommClause:
-			list = s.Body
-		default:
 			return true
 		}
-		for i, stmt := range list {
-			if !isResume(stmt) {
-				continue
-			}
-			explicit++
-			if i+1 >= len(list) || !callsCheck(list[i+1]) {
-				p := fset.Position(stmt.Pos())
-				offenders = append(offenders, filename+":"+strconv.Itoa(p.Line))
+		if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Suspend" {
+			if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "txgate" {
+				found++
 			}
 		}
 		return true
 	})
-	return offenders, explicit, nil
+	return found
+}
+
+// isResume reports whether s is the bare statement `resume()`. A DeferStmt is
+// not an ExprStmt, so `defer resume()` is deliberately not matched: the deferred
+// call re-acquires the lock as the frame unwinds, past every check.
+func isResume(s ast.Stmt) bool {
+	es, ok := s.(*ast.ExprStmt)
+	if !ok {
+		return false
+	}
+	call, ok := es.X.(*ast.CallExpr)
+	if !ok || len(call.Args) != 0 {
+		return false
+	}
+	id, ok := call.Fun.(*ast.Ident)
+	return ok && id.Name == "resume"
+}
+
+// callsFenceCheck reports whether n contains a call to fence.Check.
+func callsFenceCheck(n ast.Node) bool {
+	if n == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(n, func(c ast.Node) bool {
+		if call, ok := c.(*ast.CallExpr); ok {
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Check" {
+				if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "fence" {
+					found = true
+				}
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+// isRefusalCheck reports whether s refuses the chain: an `if` that calls
+// fence.Check in its init or its condition and returns from its body. Both
+// halves matter. A statement that only mentions fence.Check proves nothing —
+// `_ = fence.Check(ctx)` throws the answer away, and a body that logs and falls
+// through lets the refused chain carry on to the store operation the check
+// exists to prevent.
+func isRefusalCheck(s ast.Stmt) bool {
+	ifStmt, ok := s.(*ast.IfStmt)
+	if !ok {
+		return false
+	}
+	if !callsFenceCheck(ifStmt.Init) && !callsFenceCheck(ifStmt.Cond) {
+		return false
+	}
+	for _, body := range ifStmt.Body.List {
+		if _, isReturn := body.(*ast.ReturnStmt); isReturn {
+			return true
+		}
+	}
+	return false
+}
+
+// scanResumeSites reports how many txgate.Suspend calls src makes and every way
+// it fails the rule: a resume() whose next statement does not refuse the chain,
+// a function whose Suspend and explicit-resume counts disagree, and a Suspend
+// outside any function declaration, which this guard cannot judge.
+//
+// Counts are attributed to the enclosing function declaration, function
+// literals included. Two Suspends and two resumes inside one function is the
+// correct shape; the per-resume rule above judges each of them on its own.
+func scanResumeSites(filename string, src any) (suspends int, offenders []string, err error) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filename, src, parser.SkipObjectResolution)
+	if err != nil {
+		return 0, nil, err
+	}
+	at := func(n ast.Node) string {
+		return filename + ":" + strconv.Itoa(fset.Position(n.Pos()).Line)
+	}
+
+	// resumesIn counts the explicit resume() statements in n and reports the ones
+	// not followed by a refusal.
+	resumesIn := func(n ast.Node) (count int, bad []string) {
+		ast.Inspect(n, func(c ast.Node) bool {
+			list, owns := stmtList(c)
+			if !owns {
+				return true
+			}
+			for i, stmt := range list {
+				if !isResume(stmt) {
+					continue
+				}
+				count++
+				if i+1 >= len(list) || !isRefusalCheck(list[i+1]) {
+					bad = append(bad, at(stmt)+": the statement after resume() must be `if err := fence.Check(ctx); err != nil { return ... }`")
+				}
+			}
+			return true
+		})
+		return count, bad
+	}
+
+	suspends = countSuspends(file)
+	inFuncs := 0
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		s := countSuspends(fn)
+		inFuncs += s
+		r, bad := resumesIn(fn.Body)
+		offenders = append(offenders, bad...)
+		if s != r {
+			offenders = append(offenders, at(fn)+": func "+fn.Name.Name+" makes "+strconv.Itoa(s)+
+				" txgate.Suspend call(s) but has "+strconv.Itoa(r)+
+				" explicit resume() statement(s); every site re-acquires explicitly so a check can follow it")
+		}
+	}
+	if inFuncs != suspends {
+		offenders = append(offenders, filename+": "+strconv.Itoa(suspends-inFuncs)+
+			" txgate.Suspend call(s) sit outside any function declaration, where this guard cannot judge them")
+	}
+	return suspends, offenders, nil
 }
 
 func TestEveryResumeIsFollowedByACheck(t *testing.T) {
@@ -95,7 +197,7 @@ func TestEveryResumeIsFollowedByACheck(t *testing.T) {
 		t.Fatalf("module root: %v", err)
 	}
 	var offenders []string
-	sites, explicit := 0, 0
+	sites := 0
 	// The whole module, on the same terms as txgate's sibling guard: a Suspend
 	// site outside internal/ — in app/ or cmd/ — must be checked too. Separate
 	// modules cannot import cyoda-go/internal, and vendored or hidden trees are
@@ -124,12 +226,11 @@ func TestEveryResumeIsFollowedByACheck(t *testing.T) {
 		if readErr != nil {
 			return readErr
 		}
-		sites += strings.Count(string(src), "txgate.Suspend(")
 		// rel names the file in the message; src is what is parsed, so the
 		// test's own working directory is irrelevant.
-		found, n, scanErr := uncheckedResumes(rel, src)
+		n, found, scanErr := scanResumeSites(rel, src)
+		sites += n
 		offenders = append(offenders, found...)
-		explicit += n
 		return scanErr
 	})
 	if err != nil {
@@ -139,26 +240,196 @@ func TestEveryResumeIsFollowedByACheck(t *testing.T) {
 		t.Fatal("no txgate.Suspend site found: the scan looked in the wrong place")
 	}
 	if len(offenders) > 0 {
-		t.Fatalf("after a callout of its own a joined chain re-takes the transaction's lock; the statement after resume() must be the fence's check:\n%s", strings.Join(offenders, "\n"))
-	}
-	// A site that only defers its resume re-acquires the lock as the frame
-	// unwinds, past every check: the explicit call is what a check can follow.
-	if explicit != sites {
-		t.Fatalf("%d txgate.Suspend sites but %d explicit resume() statements; every site re-acquires explicitly so a check can follow it", sites, explicit)
+		t.Fatalf("after a callout of its own a joined chain re-takes the transaction's lock; it must then refuse a pass that is no longer current:\n%s", strings.Join(offenders, "\n"))
 	}
 }
 
-func TestUncheckedResumes_Discriminates(t *testing.T) {
-	bad := "package p\n\nfunc f() {\n\tresume := s()\n\tdefer resume()\n\td()\n\tresume()\n\tuse()\n}\n"
-	good := "package p\n\nfunc f() error {\n\tresume := s()\n\tdefer resume()\n\td()\n\tresume()\n\tif err := fence.Check(ctx); err != nil {\n\t\treturn err\n\t}\n\treturn nil\n}\n"
-	deferredOnly := "package p\n\nfunc f() {\n\tresume := s()\n\tdefer resume()\n\td()\n}\n"
-	if got, n, _ := uncheckedResumes("bad.go", bad); len(got) != 1 || n != 1 {
-		t.Fatalf("bad: offenders %v, explicit %d; want 1 and 1", got, n)
+// TestResumeSiteScanner_Discriminates proves the guard earns its keep in both
+// directions. Every case is a shape someone could plausibly write, and each bad
+// one is a way a superseded chain would reach a store.
+func TestResumeSiteScanner_Discriminates(t *testing.T) {
+	cases := []struct {
+		name    string
+		src     string
+		wantBad bool
+	}{
+		{
+			name: "explicit resume followed by a refusal",
+			src: `package p
+
+func f() error {
+	resume := txgate.Suspend(ctx)
+	defer resume()
+	dispatch()
+	resume()
+	if cerr := fence.Check(ctx); cerr != nil {
+		return cerr
 	}
-	if got, n, _ := uncheckedResumes("good.go", good); len(got) != 0 || n != 1 {
-		t.Fatalf("good: offenders %v, explicit %d; want none and 1", got, n)
+	return nil
+}
+`,
+		},
+		{
+			name: "the check reads ctx in the condition rather than the init",
+			src: `package p
+
+func f() error {
+	resume := txgate.Suspend(ctx)
+	defer resume()
+	dispatch()
+	resume()
+	if fence.Check(ctx) != nil {
+		return errRefused
 	}
-	if got, n, _ := uncheckedResumes("deferred_only.go", deferredOnly); len(got) != 0 || n != 0 {
-		t.Fatalf("deferred only: offenders %v, explicit %d; want none and 0 — the count is what catches it", got, n)
+	return nil
+}
+`,
+		},
+		{
+			name: "a comment between the resume and the check",
+			src: `package p
+
+func f() error {
+	resume := txgate.Suspend(ctx)
+	defer resume()
+	dispatch()
+	resume()
+	// Before the savepoint is looked at.
+	if cerr := fence.Check(ctx); cerr != nil {
+		return cerr
+	}
+	return nil
+}
+`,
+		},
+		{
+			name: "a doc comment mentioning txgate.Suspend( does not count as a site",
+			src: `package p
+
+// g releases the gate (txgate.Suspend(ctx)) across the dispatch.
+func g() {
+	dispatch()
+}
+`,
+		},
+		{
+			name: "no explicit resume at all: the deferred one re-acquires past every check",
+			src: `package p
+
+func f() {
+	resume := txgate.Suspend(ctx)
+	defer resume()
+	dispatch()
+}
+`,
+			wantBad: true,
+		},
+		{
+			name: "the refusal is missing",
+			src: `package p
+
+func f() {
+	resume := txgate.Suspend(ctx)
+	defer resume()
+	dispatch()
+	resume()
+	use()
+}
+`,
+			wantBad: true,
+		},
+		{
+			name: "the check's result is thrown away",
+			src: `package p
+
+func f() {
+	resume := txgate.Suspend(ctx)
+	defer resume()
+	dispatch()
+	resume()
+	_ = fence.Check(ctx)
+	use()
+}
+`,
+			wantBad: true,
+		},
+		{
+			name: "the check only logs and falls through",
+			src: `package p
+
+func f() {
+	resume := txgate.Suspend(ctx)
+	defer resume()
+	dispatch()
+	resume()
+	if cerr := fence.Check(ctx); cerr != nil {
+		slog.Warn("superseded", "err", cerr)
+	}
+	use()
+}
+`,
+			wantBad: true,
+		},
+		{
+			name: "two checked resumes in one func cannot pay for another func's none",
+			src: `package p
+
+func f() error {
+	resume := txgate.Suspend(ctx)
+	defer resume()
+	dispatch()
+	resume()
+	if cerr := fence.Check(ctx); cerr != nil {
+		return cerr
+	}
+	dispatch()
+	resume()
+	if cerr := fence.Check(ctx); cerr != nil {
+		return cerr
+	}
+	return nil
+}
+
+func g() {
+	resume := txgate.Suspend(ctx)
+	defer resume()
+	dispatch()
+}
+`,
+			wantBad: true,
+		},
+		{
+			name: "a Suspend outside any function declaration cannot be judged",
+			src: `package p
+
+var resume = txgate.Suspend(ctx)
+`,
+			wantBad: true,
+		},
+		{
+			name: "a file with no Suspend at all is untouched",
+			src: `package p
+
+func f() {
+	dispatch()
+	other()
+}
+`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, offenders, err := scanResumeSites("synthetic.go", tc.src)
+			if err != nil {
+				t.Fatalf("parsing the synthetic source: %v\n%s", err, tc.src)
+			}
+			if tc.wantBad && len(offenders) == 0 {
+				t.Errorf("this shape lets a superseded chain reach a store but the guard passed it:\n%s", tc.src)
+			}
+			if !tc.wantBad && len(offenders) > 0 {
+				t.Errorf("the guard fired on a correct shape (%v):\n%s", offenders, tc.src)
+			}
+		})
 	}
 }
