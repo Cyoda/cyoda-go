@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -272,6 +273,27 @@ func TestHandOver_BoundsThePeersDiagnostics(t *testing.T) {
 		if len([]rune(at.Cause)) != maxPeerDiagnosticRunes+1 || len([]rune(at.MemberID)) != maxPeerDiagnosticRunes+1 {
 			t.Errorf("an attempt's text was not cut: %d/%d runes", len([]rune(at.MemberID)), len([]rune(at.Cause)))
 		}
+	}
+}
+
+// A peer relays the cnode's own message, which becomes the client's 400 body
+// exactly as a local try's does — so it is bounded exactly as a local try's is,
+// and cut on a rune boundary. The text here is built so that a cut counted in
+// bytes would fall inside a multi-byte rune.
+func TestHandOver_BoundsThePeersRelayedMemberMessage(t *testing.T) {
+	long := strings.Repeat("a", maxPeerDiagnosticRunes-1) + strings.Repeat("é", 101)
+	fwd := &answeringForwarder{resp: &DispatchCalloutResponse{Outcome: "member_failed", TriesUsed: intPtr(1), MemberError: long}}
+	a := newTestRouter(t, &stubNodeRegistry{}, fwd).HandOver(testContext(), node("peer-1", true, "tenant-1", "python"), ownerCallout(t, "processor"), 1, 1)
+
+	if a.Failure == nil || a.Failure.Kind != contract.MemberFailed {
+		t.Fatalf("answer = %+v, want the peer's member_failed relayed", a)
+	}
+	got := []rune(a.Failure.Message)
+	if len(got) != maxPeerDiagnosticRunes+1 || got[len(got)-1] != '…' {
+		t.Errorf("the member's message was not cut with a mark: %d runes", len(got))
+	}
+	if !utf8.ValidString(a.Failure.Message) || got[maxPeerDiagnosticRunes-1] != 'é' {
+		t.Errorf("the cut split a multi-byte rune: %q", string(got[maxPeerDiagnosticRunes-2:]))
 	}
 }
 

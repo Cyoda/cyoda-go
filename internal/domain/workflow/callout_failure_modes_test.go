@@ -24,8 +24,10 @@ func noAnswerFailure() *contract.CalloutFailure {
 }
 
 // calloutModeEngine runs one transition with one externalized processor in the
-// given mode, whose callout fails with failure.
-func calloutModeEngine(t *testing.T, mode string, startNewTx *bool, failure error) (result *EngineResult, execErr error, cnt *segCounter, entity *spi.Entity) {
+// given mode, whose callout fails with failure. The context it returns is the
+// one the transition ran under, diagnostics and all: what the request would
+// carry to the client.
+func calloutModeEngine(t *testing.T, mode string, startNewTx *bool, failure error) (result *EngineResult, execErr error, cnt *segCounter, entity *spi.Entity, runCtx context.Context) {
 	t.Helper()
 	factory := memory.NewStoreFactory()
 	t.Cleanup(func() { factory.Close() })
@@ -39,7 +41,7 @@ func calloutModeEngine(t *testing.T, mode string, startNewTx *bool, failure erro
 	}
 	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
 
-	ctx := ctxWithTenant(testTenant)
+	ctx := common.WithDiagnostics(ctxWithTenant(testTenant))
 	modelRef := spi.ModelRef{EntityName: "callout-mode-" + mode, ModelVersion: "1.0"}
 	wf := spi.WorkflowDefinition{
 		Version: "1.1", Name: "CalloutModeWF", InitialState: "OPEN", Active: true,
@@ -68,7 +70,7 @@ func calloutModeEngine(t *testing.T, mode string, startNewTx *bool, failure erro
 		Data: []byte(`{"x":1}`),
 	}
 	result, execErr = engine.Execute(txCtx, entity, "")
-	return result, execErr, cnt, entity
+	return result, execErr, cnt, entity, txCtx
 }
 
 // SYNC and ASYNC_SAME_TX: the operation fails, the engine's wrap names the
@@ -77,7 +79,7 @@ func calloutModeEngine(t *testing.T, mode string, startNewTx *bool, failure erro
 func TestCalloutFailure_SyncModes_FailTheOperationAndKeepTheFailure(t *testing.T) {
 	for _, mode := range []string{ExecutionModeSync, ExecutionModeAsyncSameTx} {
 		t.Run(mode, func(t *testing.T) {
-			_, err, cnt, _ := calloutModeEngine(t, mode, nil, memberFailed("card declined", true))
+			_, err, cnt, _, _ := calloutModeEngine(t, mode, nil, memberFailed("card declined", true))
 			if err == nil {
 				t.Fatal("expected the operation to fail")
 			}
@@ -103,32 +105,63 @@ func TestCalloutFailure_AsyncNewTx_OperationContinuesNothingReported(t *testing.
 		"no answer":                   noAnswerFailure(),
 	} {
 		t.Run(name, func(t *testing.T) {
-			result, err, _, entity := calloutModeEngine(t, ExecutionModeAsyncNewTx, nil, failure)
+			result, err, _, entity, runCtx := calloutModeEngine(t, ExecutionModeAsyncNewTx, nil, failure)
 			if err != nil {
 				t.Fatalf("Execute = %v, want success: an ASYNC_NEW_TX callout failure does not fail the operation", err)
 			}
 			if !result.Success || entity.Meta.State != "DONE" {
 				t.Errorf("success = %v state = %q, want true and DONE", result.Success, entity.Meta.State)
 			}
+			// Nothing reaches the client — not even the cnode's verdict — so
+			// the request's diagnostics carry no error for the processor either.
+			diags := common.GetDiagnostics(runCtx)
+			if diags == nil {
+				t.Fatal("the transition ran without a diagnostics bag: the assertions below would prove nothing")
+			}
+			if got := diags.GetErrors(); len(got) != 0 {
+				t.Errorf("errors = %v, want none: an ASYNC_NEW_TX callout failure is not reported", got)
+			}
+			if got := diags.GetWarnings(); len(got) != 0 {
+				t.Errorf("warnings = %v, want none: an ASYNC_NEW_TX callout failure is not reported", got)
+			}
 		})
 	}
 }
 
-// COMMIT_BEFORE_DISPATCH, both variants: the operation fails with the try's own
-// error, and TX_pre stays committed.
+// COMMIT_BEFORE_DISPATCH, both variants: the operation fails with the failure
+// the callout produced — whichever kind it was — and TX_pre stays committed.
 func TestCalloutFailure_CommitBeforeDispatch_FailsAndLeavesTxPreCommitted(t *testing.T) {
 	yes, no := true, false
-	for name, startNewTx := range map[string]*bool{"new tx on dispatch": &yes, "no tx on dispatch": &no} {
-		t.Run(name, func(t *testing.T) {
-			_, err, cnt, _ := calloutModeEngine(t, ExecutionModeCommitBeforeDispatch, startNewTx, noAnswerFailure())
+	kinds := map[string]struct {
+		failure error
+		assert  func(t *testing.T, err error)
+	}{
+		"no answer": {noAnswerFailure(), func(t *testing.T, err error) {
 			var appErr *common.AppError
 			if !errors.As(err, &appErr) || appErr.Code != common.ErrCodeDispatchTimeout || !appErr.Retryable {
 				t.Fatalf("error = %v, want the try's own retryable DISPATCH_TIMEOUT", err)
 			}
-			if cnt.commits != 1 {
-				t.Errorf("engine commits = %d, want 1: TX_pre is committed before the callout and stays committed", cnt.commits)
+		}},
+		"the member failed": {memberFailed("card declined", true), func(t *testing.T, err error) {
+			var failure *contract.CalloutFailure
+			if !errors.As(err, &failure) || failure.Kind != contract.MemberFailed {
+				t.Fatalf("error = %v, want the cnode's own MemberFailed failure", err)
 			}
-		})
+			if failure.Message != "card declined" || failure.Retryable == nil || !*failure.Retryable {
+				t.Errorf("failure = %+v, want the cnode's own message and verdict", failure)
+			}
+		}},
+	}
+	for kind, k := range kinds {
+		for name, startNewTx := range map[string]*bool{"new tx on dispatch": &yes, "no tx on dispatch": &no} {
+			t.Run(kind+", "+name, func(t *testing.T) {
+				_, err, cnt, _, _ := calloutModeEngine(t, ExecutionModeCommitBeforeDispatch, startNewTx, k.failure)
+				k.assert(t, err)
+				if cnt.commits != 1 {
+					t.Errorf("engine commits = %d, want 1: TX_pre is committed before the callout and stays committed", cnt.commits)
+				}
+			})
+		}
 	}
 }
 

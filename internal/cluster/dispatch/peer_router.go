@@ -217,6 +217,10 @@ func (r *PeerRouter) boundPeerText(resp *DispatchCalloutResponse, peer contract.
 	omitted := len(resp.Warnings) > maxPeerDiagnostics || len(resp.Errors) > maxPeerDiagnostics || len(resp.Attempts) > maxPeerDiagnostics
 	resp.Warnings = boundLines(resp.Warnings)
 	resp.Errors = boundLines(resp.Errors)
+	// The cnode's own message becomes the MemberFailed failure's, and from
+	// there the client's 400 body — the same text a local try bounds where the
+	// member speaks it (boundMemberText, internal/grpc/dispatch.go).
+	resp.MemberError = boundLine(resp.MemberError)
 	if len(resp.Attempts) > maxPeerDiagnostics {
 		resp.Attempts = resp.Attempts[:maxPeerDiagnostics:maxPeerDiagnostics]
 	}
