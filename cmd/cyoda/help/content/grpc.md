@@ -11,6 +11,7 @@ see_also:
   - errors.DISPATCH_TIMEOUT
   - errors.SCHEDULE_FUNCTION_INVALID_RESULT
   - errors.DISPATCH_FORWARD_FAILED
+  - errors.CALLOUT_SUPERSEDED
 ---
 
 # grpc
@@ -360,6 +361,26 @@ declared `resultKind` is rejected by the caller (a scheduled transition's
 `SCHEDULE_FUNCTION_INVALID_RESULT`), not by this wire contract. Full JSON
 Schemas for both messages: `docs/cyoda/schema/processing/EntityFunctionCalculationRequest.json`
 and `EntityFunctionCalculationResponse.json` (see `cyoda help cloudevents`).
+
+**API requests made under a transaction token:**
+
+An API request made under a transaction token is not cancelled when its client
+goes away: once admitted it runs to completion on the node that holds the
+transaction. If the connection drops, or the node the request arrived at
+answers `503` because forwarding it took longer than `CYODA_PROXY_TIMEOUT`, the
+outcome of a write is **unknown** — it may have been applied to the
+transaction. Do not assume it failed. A deadline the compute member sets on its
+own gRPC call does not stop the request on the server either.
+
+The token is issued for one request on one compute node. If cyoda gives the
+same work to another compute node — this one did not answer within its answer
+limit, or its connection dropped — or once the request has ended, every further
+API request under that token is refused with `410 CALLOUT_SUPERSEDED`; a request
+that was already in progress finishes and is answered normally. A compute node
+that receives `CALLOUT_SUPERSEDED` must stop working on that request. While a
+compute node's request is in progress it has the transaction to itself: API
+requests under one token run one at a time, and cyoda does not interrupt one
+because its client went away.
 
 **Auth context on dispatched events:**
 

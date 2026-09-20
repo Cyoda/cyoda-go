@@ -272,6 +272,38 @@ func TestClassifyWorkflowError_ScheduledTaskInfraMapsTo5xx(t *testing.T) {
 	}
 }
 
+// TestClassifyWorkflowError_SavepointInfra — a savepoint the plugin could not
+// create, undo or release says the transaction is unusable, never that the
+// ASYNC_NEW_TX processor around it misbehaved. Unclassified it reaches the
+// catch-all, which puts the driver's own text — SQLSTATE, host — into a 400
+// WORKFLOW_FAILED body. The two mappings that ARE the caller's business survive:
+// a serialization abort stays a retryable 409, a transient outage a retryable 503.
+func TestClassifyWorkflowError_SavepointInfra(t *testing.T) {
+	driver := errors.New(`ERROR: current transaction is aborted (SQLSTATE 25P02) host=db-1`)
+	tests := []struct {
+		name      string
+		err       error
+		status    int
+		code      string
+		retryable bool
+	}{
+		{"ticketed 5xx, no driver text", fmt.Errorf("processor p failed: %w", errors.Join(wfengine.ErrSavepointInfra, driver)), http.StatusInternalServerError, common.ErrCodeServerError, false},
+		{"a conflict stays 409", fmt.Errorf("processor p failed: %w", errors.Join(wfengine.ErrSavepointInfra, spi.ErrConflict)), http.StatusConflict, common.ErrCodeConflict, true},
+		{"an unavailable store stays 503", fmt.Errorf("processor p failed: %w", errors.Join(wfengine.ErrSavepointInfra, &markedStorageOutage{detail: "acquire: host=db-1: context deadline exceeded"})), http.StatusServiceUnavailable, common.ErrCodeStorageUnavailable, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyWorkflowError(tc.err)
+			if got.Status != tc.status || got.Code != tc.code || got.Retryable != tc.retryable {
+				t.Fatalf("got %d %s retryable=%v; want %d %s retryable=%v", got.Status, got.Code, got.Retryable, tc.status, tc.code, tc.retryable)
+			}
+			if strings.Contains(got.Message, "SQLSTATE") || strings.Contains(got.Message, "db-1") {
+				t.Fatalf("driver text reached the client: %q", got.Message)
+			}
+		})
+	}
+}
+
 // TestClassifyWorkflowError_DeadlineExceeded_PreservesChainFor408 is the
 // regression test for the review finding: a CBD/cascade segment whose
 // pre-commit ctx check fails (see workflow.flushAndCommitSegment, which

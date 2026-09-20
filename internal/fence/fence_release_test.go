@@ -92,8 +92,9 @@ func TestBegin_OuterAlreadyStale_ReleasesAtOnce(t *testing.T) {
 	}
 }
 
-// A callout with no transaction is still begun and ended, so that it is
-// released with an enclosing callback; its wait is a no-op.
+// A callout with no transaction is registered like any other, so that it is
+// released with an enclosing callback, and its end runs through without a
+// transaction to wait on.
 func TestBegin_NoTransaction(t *testing.T) {
 	f := newFence()
 	begin(t, f, context.Background(), "outer", "tx", nil)

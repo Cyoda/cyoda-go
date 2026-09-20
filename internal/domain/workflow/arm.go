@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
 
@@ -240,6 +241,9 @@ func (e *Engine) armViaFunction(ctx context.Context, entity *spi.Entity, wf *spi
 	defer resume()
 	res, derr := e.extProc.DispatchFunction(ctx, entity, *tr.Schedule.Function, wf.Name, tr.Name, txID)
 	resume() // BEFORE any tx-buffer write — see doc comment above.
+	if cerr := fence.Check(ctx); cerr != nil {
+		return nil, nil, cerr
+	}
 	if derr != nil {
 		return nil, nil, derr // already a classified AppError (503) — fails the write, fail-closed
 	}

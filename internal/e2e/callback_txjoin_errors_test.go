@@ -25,6 +25,7 @@ import (
 //	non-empty token, unknown/closed txID → 404 TRANSACTION_NOT_FOUND
 //	expired token                        → 410 TRANSACTION_EXPIRED
 //	forged / bad-HMAC token              → 401 UNAUTHORIZED
+//	pass with no callout and number      → 401 UNAUTHORIZED
 //	token tenant ≠ caller tenant         → 403 FORBIDDEN
 //	empty token (control)                → 2xx standalone
 //
@@ -189,6 +190,25 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 		}
 		txRef := "tx-" + randSuffix(t)
 		tok, err := forger.Issue(token.Claims{NodeID: "local", TxRef: txRef, ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-" + txRef, Major: 1})
+		if err != nil {
+			t.Fatalf("Issue: %v", err)
+		}
+		resp := h.DoAuth(t, http.MethodGet, probePath, "", tok)
+		body := h.readBody(t, resp)
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("status = %d; want 401 (body: %s)", resp.StatusCode, body)
+		}
+		if code := problemErrorCode(body); code != "UNAUTHORIZED" {
+			t.Fatalf("errorCode = %q; want UNAUTHORIZED (body: %s)", code, body)
+		}
+	})
+
+	// A pass with no callout and number — what an earlier version minted — is
+	// malformed: 401, as any invalid pass.
+	t.Run("NoCalloutAndNumber_401", func(t *testing.T) {
+		tok, err := h.app.TokenSigner().Issue(token.Claims{
+			NodeID: "local", TxRef: "tx-" + randSuffix(t), ExpiresAt: time.Now().Add(time.Minute).Unix(),
+		})
 		if err != nil {
 			t.Fatalf("Issue: %v", err)
 		}

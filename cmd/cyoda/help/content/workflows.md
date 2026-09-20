@@ -141,6 +141,11 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 A processor may return modified entity data. That data is governed by the model exactly as a client's write is: it must be storable, and it must satisfy the schema. Introducing a field the model does not declare requires the model's `changeLevel` to permit it; otherwise the transition fails with `WORKFLOW_FAILED` and rolls back, leaving neither the entity nor any schema change behind.
 
+A processor must not change a model or a workflow through the API while it
+runs; that is not supported. An EdgeMessage a processor saves is outside the
+entity transaction: make the save idempotent and attach the message id to the
+owning entity, so that a repeat after a failover leaves at most an orphan.
+
 **ProcessorDefinition fields:**
 
 - `type` — string — execution-location axis; see below for valid values
@@ -161,7 +166,7 @@ Any value other than `"internalized"` (including the empty string, the canonical
 
 - `"SYNC"` — the engine dispatches the processor and blocks until a response is received; the entity write transaction remains open during the wait; processor failure (including timeout and `success=false` in the response) returns `errors.WORKFLOW_FAILED` (`400`) and the entity remains in the source state
 - `"ASYNC_SAME_TX"` — same dispatch mechanics as `SYNC` (blocks inline, transaction stays open); failure semantics are identical to `SYNC`
-- `"ASYNC_NEW_TX"` — dispatched within a savepoint; on failure the savepoint is rolled back and the error is logged as a warning; the pipeline continues to the next processor and the transition completes; returned entity modifications are discarded
+- `"ASYNC_NEW_TX"` — dispatched within a savepoint; on a processor failure the savepoint is rolled back and the error is logged as a warning; the pipeline continues to the next processor and the transition completes; returned entity modifications are discarded. The processor's failure does not fail the operation. A failure of the savepoint itself — it cannot be created, undone or released — does.
 - `"COMMIT_BEFORE_DISPATCH"` — the engine splits the cascade into two transactions around this processor. `TX_pre` flushes the pre-callout state of the transition and **commits before the processor is dispatched**, releasing the storage connection for the duration of the external compute. The processor runs outside any transaction (entity already durable in the pre-callout state). When the processor returns, the engine opens `TX_post` on the same node, reapplies the result via `CompareAndSave` (CAS expects the txID stamped at `TX_pre`'s commit), runs any subsequent SYNC processors and cascade transitions, then commits. CAS conflict at the boundary surfaces as `409 retryable`; entity remains durable in the pre-callout state, no engine-side retry, no automatic compensation. Failure of the dispatched processor (`success=false`, timeout, member crash) returns `errors.WORKFLOW_FAILED` (`400`) and the entity remains in the pre-callout state. Designed to relieve connection-pool pressure for slow processors and supersedes `ASYNC_NEW_TX` as the recommended mode for slow external work.
 
 **`COMMIT_BEFORE_DISPATCH` configuration flag:**

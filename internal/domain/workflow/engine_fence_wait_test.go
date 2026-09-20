@@ -50,9 +50,11 @@ func TestAsyncNewTx_FailedProcessorsWriteLandsBeforeSavepointIsUndone(t *testing
 				return nil, err
 			}
 			go func() {
-				defer close(writeLanded)
 				release := gate.Acquire(txID)
 				defer release()
+				// Closed before the lock is released (defers run last in, first
+				// out), so end's wait cannot return until writeLanded is closed.
+				defer close(writeLanded)
 				if err := fence.Check(admitted); err != nil {
 					t.Errorf("Check: %v", err)
 					return
