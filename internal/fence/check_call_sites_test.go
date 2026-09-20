@@ -148,23 +148,32 @@ func identAppears(name string, expr ast.Expr) bool {
 	return found
 }
 
-// isRefusalCheck reports whether s refuses the chain: an `if` that calls
-// fence.Check in its init or its condition and returns from its body — and,
-// where the init binds the check's result to a name, returns that identifier
-// (directly, or wrapped in a call). Every part matters. A statement that only
-// mentions fence.Check proves nothing — `_ = fence.Check(ctx)` throws the
-// answer away; a body that logs and falls through lets the refused chain carry
-// on to the store operation the check exists to prevent; and
-// `if cerr := fence.Check(ctx); cerr != nil { return nil }` calls the check,
-// returns from the body, and still discards the refusal — the bound `cerr`
-// never reaches the return.
-func isRefusalCheck(s ast.Stmt) bool {
+// refusalCheckDefect reports why s fails to refuse the chain, or "" when it
+// does. s must be an `if` that calls fence.Check in its init or its condition
+// and returns from its body.
+//
+// Where the init binds the check's result to a name (`cerr := fence.Check(ctx)`),
+// the return must carry that identifier — directly, or wrapped in a call —
+// so a swap for an unrelated value is caught: `_ = fence.Check(ctx)` throws
+// the answer away, a body that logs and falls through never returns at all,
+// and `if cerr := fence.Check(ctx); cerr != nil { return nil }` calls the
+// check, returns from the body, and still discards the refusal.
+//
+// Where nothing is bound (`if fence.Check(ctx) != nil { … }`), there is no
+// name to check the return against, so a returned value cannot be told apart
+// from one that only coincidentally looks like a refusal. The condition form
+// is therefore accepted only when its body returns no value at all — a bare
+// `return`, the shape recordEvent's own fence.Check guard uses
+// (engine.go's recordEvent). Any value-carrying return in the condition form
+// is rejected: the author must bind the result in the if's init and return
+// it, which is what the init-form rule above then verifies.
+func refusalCheckDefect(s ast.Stmt) string {
 	ifStmt, ok := s.(*ast.IfStmt)
 	if !ok {
-		return false
+		return "must be `if cerr := fence.Check(ctx); cerr != nil { return ... }`"
 	}
 	if !callsFenceCheck(ifStmt.Init) && !callsFenceCheck(ifStmt.Cond) {
-		return false
+		return "must call fence.Check in its init or its condition"
 	}
 	ident := boundFenceCheckIdent(ifStmt.Init)
 	for _, body := range ifStmt.Body.List {
@@ -172,17 +181,25 @@ func isRefusalCheck(s ast.Stmt) bool {
 		if !isReturn {
 			continue
 		}
-		if ident == "" {
-			return true
-		}
-		for _, result := range ret.Results {
-			if identAppears(ident, result) {
-				return true
+		if ident != "" {
+			for _, result := range ret.Results {
+				if identAppears(ident, result) {
+					return ""
+				}
 			}
+			return "must return " + ident + " (directly, or wrapped in a call such as fmt.Errorf(\"…: %w\", " + ident + ")), not discard it"
 		}
-		return false
+		if len(ret.Results) == 0 {
+			return ""
+		}
+		return "a condition-form check (fence.Check's result is bound to no name) may only return with no value; bind the result in the if's init instead — `if cerr := fence.Check(ctx); cerr != nil { return cerr }` — and return it"
 	}
-	return false
+	return "its body must return"
+}
+
+// isRefusalCheck reports whether s refuses the chain: see refusalCheckDefect.
+func isRefusalCheck(s ast.Stmt) bool {
+	return refusalCheckDefect(s) == ""
 }
 
 // scanResumeSites reports how many txgate.Suspend calls src makes and every way
@@ -216,8 +233,12 @@ func scanResumeSites(filename string, src any) (suspends int, offenders []string
 					continue
 				}
 				count++
-				if i+1 >= len(list) || !isRefusalCheck(list[i+1]) {
+				if i+1 >= len(list) {
 					bad = append(bad, at(stmt)+": the statement after resume() must be `if err := fence.Check(ctx); err != nil { return ... }`")
+					continue
+				}
+				if defect := refusalCheckDefect(list[i+1]); defect != "" {
+					bad = append(bad, at(list[i+1])+": the statement after resume() "+defect)
 				}
 			}
 			return true
@@ -328,7 +349,7 @@ func f() error {
 `,
 		},
 		{
-			name: "the check reads ctx in the condition rather than the init",
+			name: "the condition form returning a value is rejected: nothing is bound to tell a real refusal from a coincidence",
 			src: `package p
 
 func f() error {
@@ -340,6 +361,40 @@ func f() error {
 		return errRefused
 	}
 	return nil
+}
+`,
+			wantBad: true,
+		},
+		{
+			name: "the condition form returning nil is rejected: the same shape as the swallow above, with nothing bound to catch it",
+			src: `package p
+
+func f() error {
+	resume := txgate.Suspend(ctx)
+	defer resume()
+	dispatch()
+	resume()
+	if fence.Check(ctx) != nil {
+		return nil
+	}
+	return nil
+}
+`,
+			wantBad: true,
+		},
+		{
+			name: "the condition form with a bare return passes: a void function has nothing to swallow, the shape recordEvent uses",
+			src: `package p
+
+func f() {
+	resume := txgate.Suspend(ctx)
+	defer resume()
+	dispatch()
+	resume()
+	if fence.Check(ctx) != nil {
+		return
+	}
+	use()
 }
 `,
 		},

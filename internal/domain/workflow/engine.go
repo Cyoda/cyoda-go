@@ -181,7 +181,8 @@ type Engine struct {
 	commitBudget time.Duration
 }
 
-// NewEngine creates a new workflow engine.
+// NewEngine creates a new workflow engine. txMgr is required and must not be
+// nil: the engine takes savepoints and rolls back segments through it.
 func NewEngine(factory spi.StoreFactory, uuids spi.UUIDGenerator, txMgr spi.TransactionManager, opts ...EngineOption) *Engine {
 	e := &Engine{factory: factory, uuids: uuids, txMgr: txMgr, maxStateVisits: defaultMaxStateVisits, clock: time.Now, expiryGraceMs: defaultExpiryGraceMs, commitBudget: common.CommitBudget}
 	for _, opt := range opts {

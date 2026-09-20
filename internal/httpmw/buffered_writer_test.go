@@ -17,8 +17,9 @@ import (
 func TestTxJoin_TheWriterHandlersGetCannotStream(t *testing.T) {
 	j, _, pass := liveJoiner(t, "tx-1")
 
-	var flusher, hijacker bool
+	var ran, flusher, hijacker bool
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		ran = true
 		_, flusher = w.(http.Flusher)
 		_, hijacker = w.(http.Hijacker)
 		w.WriteHeader(http.StatusOK)
@@ -27,6 +28,9 @@ func TestTxJoin_TheWriterHandlersGetCannotStream(t *testing.T) {
 	req.Header.Set(proxy.TxTokenHeader, pass)
 	TxJoin(j)(next).ServeHTTP(httptest.NewRecorder(), req)
 
+	if !ran {
+		t.Fatal("the handler never ran: flusher/hijacker default to false, which would pass this test vacuously")
+	}
 	if flusher {
 		t.Error("the buffered writer implements http.Flusher: a streaming handler would buffer its whole stream instead of failing")
 	}
