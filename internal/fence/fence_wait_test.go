@@ -37,6 +37,24 @@ func mustStillBlock(t *testing.T, what string, done <-chan struct{}) {
 	}
 }
 
+// mustShutOut polls until pair is refused. The call under test shuts the earlier
+// pass out before it waits, so the refusal is the signal that it has reached the
+// wait — and how soon its goroutine is scheduled is not the test's subject.
+func mustShutOut(t *testing.T, f *Fence, pair Pair) {
+	t.Helper()
+	deadline := time.Now().Add(watchdog)
+	for {
+		_, err := f.Admit(context.Background(), []Pair{pair})
+		if errors.Is(err, ErrSuperseded) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the earlier pass must be refused before the wait, got %v", err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // A joined write that made its check before the number rose still holds the
 // write lock; Advance and end wait for it. The earlier pass is shut out at
 // once — before the wait — so no further write of the earlier cnode can start.
@@ -71,12 +89,10 @@ func TestWait_BlocksUntilAWriteInProgressHasFinished(t *testing.T) {
 				defer close(done)
 				tc.call(f, end)
 			}()
-			mustStillBlock(t, tc.name, done)
 
 			// Shut out already, although the call has not returned.
-			if _, err := f.Admit(context.Background(), []Pair{{Callout: "c", Major: 1}}); !errors.Is(err, ErrSuperseded) {
-				t.Fatalf("the earlier pass must be refused before the wait, got %v", err)
-			}
+			mustShutOut(t, f, Pair{Callout: "c", Major: 1})
+			mustStillBlock(t, tc.name, done)
 
 			release()
 			mustFinish(t, tc.name, done)
