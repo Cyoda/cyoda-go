@@ -2,8 +2,25 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"net/http"
 )
+
+// ErrReplayRefused is returned by Verify when a request was opened and
+// authenticated and only the replay cache refused it — its nonce was seen
+// before, or the cache is full. The binding returned beside it is valid, so the
+// handler can answer under seal instead of with a bare status.
+var ErrReplayRefused = errors.New("request refused by the replay cache")
+
+// ResponseBinding is what ties an answer to the one request it answers: the
+// request's path, nonce and timestamp. Sign returns it to the sender; Verify
+// returns the same value to the receiver. The zero value binds to nothing and
+// neither seals nor opens.
+type ResponseBinding struct {
+	path  string
+	nonce []byte
+	ts    string
+}
 
 // PeerAuth authenticates inter-node dispatch HTTP requests at the message
 // layer. Implementations wrap outbound bodies on the client and verify them
@@ -22,20 +39,35 @@ import (
 //   - forward replaces req.Body with the returned wireBody after Sign.
 //     Impls may return body unchanged if authentication is fully transport
 //     layer.
+//   - forward keeps the binding Sign returned and opens the answer with it; a
+//     transport-auth-only impl returns the body unchanged from both
+//     SealResponse and OpenResponse.
 type PeerAuth interface {
 	// Sign transforms the plaintext body into an on-the-wire body, setting
-	// any required headers on req. The returned slice replaces req.Body at
-	// the call site. Implementations MAY write to req.Header (including
-	// overriding Content-Type) but MUST NOT capture or retain req past the
-	// call. A no-op impl may return body unchanged.
-	Sign(req *http.Request, body []byte) (wireBody []byte, err error)
+	// any required headers on req, and returns the binding under which the
+	// answer to this request must be opened. The returned slice replaces
+	// req.Body at the call site. Implementations MAY write to req.Header
+	// (including overriding Content-Type) but MUST NOT capture or retain req
+	// past the call.
+	Sign(req *http.Request, body []byte) (wireBody []byte, binding ResponseBinding, err error)
 
 	// Verify reads the request body, validates it, and returns the
-	// authenticated plaintext plus the peer's identity. A non-nil error
-	// means authentication failed and the caller must respond with 403.
+	// authenticated plaintext, the peer's identity and the binding for the
+	// answer. A non-nil error means the request is refused. The binding is
+	// valid when err is nil and when errors.Is(err, ErrReplayRefused); for any
+	// other error it is the zero value and the caller must respond with 403.
 	// The returned identity MUST be populated (even if degenerate) so
 	// handlers can attach it to the request context unconditionally.
-	Verify(r *http.Request) (body []byte, identity PeerIdentity, err error)
+	Verify(r *http.Request) (body []byte, identity PeerIdentity, binding ResponseBinding, err error)
+
+	// SealResponse wraps an answer for the request binding names, setting the
+	// headers the wire format needs on h.
+	SealResponse(h http.Header, binding ResponseBinding, body []byte) (wireBody []byte, err error)
+
+	// OpenResponse is the inverse, on the side that sent the request. It
+	// fails for an answer that was not sealed, with this key, for exactly the
+	// request binding names.
+	OpenResponse(h http.Header, binding ResponseBinding, wireBody []byte) (body []byte, err error)
 }
 
 // PeerIdentity describes an authenticated cluster peer. Today (shared-key

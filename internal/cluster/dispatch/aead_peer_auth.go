@@ -42,10 +42,14 @@ var ErrSharedSecretTooShort = errors.New("shared secret must be at least 32 byte
 
 // AEADPeerAuth implements PeerAuth using AES-256-GCM with an HKDF-derived key.
 //
-// On the wire, the request body is [nonce(12) || ciphertext||tag]. The
-// associated data binds HTTP method, path, and timestamp — preventing
-// cross-endpoint replays without re-encrypting on each route. A sliding
-// nonce cache rejects repeated envelopes within the skew window.
+// On the wire, a body is [nonce(12) || ciphertext||tag], in both directions.
+// The associated data of a request binds a direction label, the HTTP method,
+// the path and the timestamp; that of an answer binds the other direction
+// label, the path, and the timestamp and nonce of the request it answers. So an
+// envelope cannot be replayed across endpoints, reflected back in the other
+// direction, or moved onto another request. A sliding nonce cache rejects
+// repeated requests within the skew window; answers need none, being bound to a
+// request nonce their receiver chose.
 type AEADPeerAuth struct {
 	gcm     cipher.AEAD
 	nonces  *nonceCache
@@ -115,90 +119,133 @@ func deriveDispatchKey(sharedSecret []byte) []byte {
 	return out
 }
 
+// The direction labels that keep an envelope in the leg it was sealed for.
+const (
+	directionRequest  = "request"
+	directionResponse = "response"
+)
+
 // Sign wraps body in an AEAD envelope, sets the Content-Type and timestamp
-// headers, and returns the wire bytes. The caller replaces the request body
-// with the returned slice.
-func (a *AEADPeerAuth) Sign(req *http.Request, body []byte) ([]byte, error) {
+// headers, and returns the wire bytes and the binding for the answer.
+func (a *AEADPeerAuth) Sign(req *http.Request, body []byte) ([]byte, ResponseBinding, error) {
 	ts := strconv.FormatInt(a.clockFn().Unix(), 10)
 
 	nonce := make([]byte, a.gcm.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
-		return nil, fmt.Errorf("generate nonce: %w", err)
+		return nil, ResponseBinding{}, fmt.Errorf("failed to generate nonce: %w", err)
 	}
 
-	ad := buildAD(req.Method, req.URL.Path, ts)
-	ct := a.gcm.Seal(nil, nonce, body, ad)
-
+	ct := a.gcm.Seal(nil, nonce, body, buildRequestAD(req.Method, req.URL.Path, ts))
 	wire := make([]byte, 0, len(nonce)+len(ct))
 	wire = append(wire, nonce...)
 	wire = append(wire, ct...)
 
 	req.Header.Set("Content-Type", DispatchContentType)
 	req.Header.Set(DispatchTimestampHdr, ts)
-	return wire, nil
+	return wire, ResponseBinding{path: req.URL.Path, nonce: nonce, ts: ts}, nil
 }
 
 // Verify validates the request's timestamp skew, AEAD envelope, and nonce
-// freshness. On success it returns the decrypted plaintext and a PeerIdentity
-// describing the authenticated peer.
-func (a *AEADPeerAuth) Verify(r *http.Request) ([]byte, PeerIdentity, error) {
+// freshness. On success it returns the decrypted plaintext, a PeerIdentity
+// describing the authenticated peer, and the binding for the answer.
+func (a *AEADPeerAuth) Verify(r *http.Request) ([]byte, PeerIdentity, ResponseBinding, error) {
+	none := ResponseBinding{}
 	tsStr := r.Header.Get(DispatchTimestampHdr)
 	if tsStr == "" {
-		return nil, PeerIdentity{}, errors.New("missing X-Dispatch-Timestamp header")
+		return nil, PeerIdentity{}, none, errors.New("missing X-Dispatch-Timestamp header")
 	}
 	tsUnix, err := strconv.ParseInt(tsStr, 10, 64)
 	if err != nil {
-		return nil, PeerIdentity{}, fmt.Errorf("malformed timestamp: %w", err)
+		return nil, PeerIdentity{}, none, fmt.Errorf("malformed timestamp: %w", err)
 	}
 	tsTime := time.Unix(tsUnix, 0)
 
 	// Skew check happens first — cheap rejection of stale/future envelopes
 	// before we touch the body.
-	now := a.clockFn()
-	diff := now.Sub(tsTime)
+	diff := a.clockFn().Sub(tsTime)
 	if diff < 0 {
 		diff = -diff
 	}
 	if diff > a.skew {
-		return nil, PeerIdentity{}, fmt.Errorf("timestamp outside skew window: %v > %v", diff, a.skew)
+		return nil, PeerIdentity{}, none, fmt.Errorf("timestamp outside skew window: %v > %v", diff, a.skew)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, dispatchMaxBodySize))
 	if err != nil {
-		return nil, PeerIdentity{}, fmt.Errorf("read body: %w", err)
+		return nil, PeerIdentity{}, none, fmt.Errorf("failed to read body: %w", err)
 	}
-
 	nonceSize := a.gcm.NonceSize()
 	if len(body) < nonceSize+a.gcm.Overhead() {
-		return nil, PeerIdentity{}, errors.New("body too short for AEAD envelope")
+		return nil, PeerIdentity{}, none, errors.New("body too short for AEAD envelope")
 	}
-	nonce := body[:nonceSize]
-	ct := body[nonceSize:]
+	// The binding outlives body, so it keeps a copy of the nonce rather than a
+	// slice of the buffer the answer is sealed from.
+	nonce := append([]byte(nil), body[:nonceSize]...)
 
-	ad := buildAD(r.Method, r.URL.Path, tsStr)
-	pt, err := a.gcm.Open(nil, nonce, ct, ad)
+	pt, err := a.gcm.Open(nil, nonce, body[nonceSize:], buildRequestAD(r.Method, r.URL.Path, tsStr))
 	if err != nil {
-		return nil, PeerIdentity{}, fmt.Errorf("AEAD open failed: %w", err)
+		return nil, PeerIdentity{}, none, fmt.Errorf("AEAD open failed: %w", err)
 	}
+	identity := PeerIdentity{authMethod: authMethodAEADv1}
+	binding := ResponseBinding{path: r.URL.Path, nonce: nonce, ts: tsStr}
 
 	// Record the nonce only after successful decrypt. A flood of bogus
-	// nonces that fail AEAD.Open never enters the cache.
+	// nonces that fail AEAD.Open never enters the cache. From here on the
+	// sender is known to hold the key, so a refusal can be answered under seal.
 	if a.nonces.checkAndRecord(nonce, tsTime) {
-		return nil, PeerIdentity{}, errors.New("duplicate nonce — replay rejected")
+		return nil, identity, binding, fmt.Errorf("duplicate nonce or replay cache full: %w", ErrReplayRefused)
 	}
-
-	return pt, PeerIdentity{authMethod: authMethodAEADv1}, nil
+	return pt, identity, binding, nil
 }
 
-// buildAD constructs the Associated Data for AES-GCM. Binding method, path,
-// and timestamp to ciphertext prevents cross-endpoint and timestamp-strip
-// replays without adding an outer signature.
-func buildAD(method, path, ts string) []byte {
-	ad := make([]byte, 0, len(method)+1+len(path)+1+len(ts))
-	ad = append(ad, method...)
-	ad = append(ad, '\n')
-	ad = append(ad, path...)
-	ad = append(ad, '\n')
-	ad = append(ad, ts...)
-	return ad
+// SealResponse wraps an answer under a nonce of its own — the request's nonce
+// must never be used twice under the one key — and binds it to the request.
+func (a *AEADPeerAuth) SealResponse(h http.Header, binding ResponseBinding, body []byte) ([]byte, error) {
+	if len(binding.nonce) == 0 {
+		return nil, errors.New("no request to bind the answer to")
+	}
+	nonce := make([]byte, a.gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, fmt.Errorf("failed to generate nonce: %w", err)
+	}
+	ct := a.gcm.Seal(nil, nonce, body, buildResponseAD(binding))
+	wire := make([]byte, 0, len(nonce)+len(ct))
+	wire = append(wire, nonce...)
+	wire = append(wire, ct...)
+	h.Set("Content-Type", DispatchContentType)
+	return wire, nil
+}
+
+// OpenResponse opens an answer sealed for the request binding names.
+func (a *AEADPeerAuth) OpenResponse(h http.Header, binding ResponseBinding, wireBody []byte) ([]byte, error) {
+	if len(binding.nonce) == 0 {
+		return nil, errors.New("no request the answer could be bound to")
+	}
+	if ct := h.Get("Content-Type"); ct != DispatchContentType {
+		return nil, fmt.Errorf("answer is not a dispatch envelope: Content-Type %q", ct)
+	}
+	nonceSize := a.gcm.NonceSize()
+	if len(wireBody) < nonceSize+a.gcm.Overhead() {
+		return nil, errors.New("answer too short for AEAD envelope")
+	}
+	pt, err := a.gcm.Open(nil, wireBody[:nonceSize], wireBody[nonceSize:], buildResponseAD(binding))
+	if err != nil {
+		return nil, fmt.Errorf("AEAD open failed: %w", err)
+	}
+	return pt, nil
+}
+
+// buildRequestAD is the associated data of a request. Binding the direction,
+// method, path and timestamp to the ciphertext prevents reflection,
+// cross-endpoint and timestamp-strip replays without an outer signature.
+func buildRequestAD(method, path, ts string) []byte {
+	return []byte(directionRequest + "\n" + method + "\n" + path + "\n" + ts)
+}
+
+// buildResponseAD is the associated data of an answer: the other direction
+// label, the path, and the timestamp and nonce of the request it answers. The
+// nonce comes last because it is binary and of fixed length.
+func buildResponseAD(b ResponseBinding) []byte {
+	ad := []byte(directionResponse + "\n" + b.path + "\n" + b.ts + "\n")
+	return append(ad, b.nonce...)
 }

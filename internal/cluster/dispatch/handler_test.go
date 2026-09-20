@@ -79,7 +79,7 @@ func newAEAD(t *testing.T) *AEADPeerAuth {
 func signedRequest(t *testing.T, auth *AEADPeerAuth, method, path string, plain []byte) *http.Request {
 	t.Helper()
 	req := httptest.NewRequest(method, path, nil)
-	wire, err := auth.Sign(req, plain)
+	wire, _, err := auth.Sign(req, plain)
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}

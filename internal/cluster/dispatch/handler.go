@@ -133,7 +133,7 @@ func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) 
 // authenticated plaintext body and the peer's identity. Error messages
 // are deliberately generic to avoid leaking which step failed.
 func (h *DispatchHandler) verifyRequest(w http.ResponseWriter, r *http.Request) ([]byte, PeerIdentity, bool) {
-	body, identity, err := h.auth.Verify(r)
+	body, identity, _, err := h.auth.Verify(r)
 	if err != nil {
 		slog.Warn("dispatch request auth failed",
 			"pkg", "dispatch",

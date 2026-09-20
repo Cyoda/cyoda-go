@@ -187,7 +187,7 @@ func (c *SchedulerRPCClient) ExecuteScheduledTask(ctx context.Context, addr stri
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	wire, err := c.auth.Sign(httpReq, plain)
+	wire, _, err := c.auth.Sign(httpReq, plain)
 	if err != nil {
 		return fmt.Errorf("scheduler rpc: sign body: %w", err)
 	}
@@ -252,7 +252,7 @@ func (h *SchedulerRPCHandler) Register(mux *http.ServeMux) {
 // UserContext scoped to the task's tenant, and fires it — the worker side
 // of design doc §6.2.
 func (h *SchedulerRPCHandler) handle(w http.ResponseWriter, r *http.Request) {
-	body, identity, err := h.auth.Verify(r)
+	body, identity, _, err := h.auth.Verify(r)
 	if err != nil {
 		slog.Warn("scheduled task dispatch auth failed",
 			"pkg", "cluster", "remoteAddr", r.RemoteAddr, "err", err)

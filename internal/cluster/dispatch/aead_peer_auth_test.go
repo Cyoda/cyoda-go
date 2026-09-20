@@ -27,7 +27,7 @@ func aeadFixedClock(t time.Time) func() time.Time {
 func signAndBuildRequest(t *testing.T, auth dispatch.PeerAuth, method, path string, body []byte) *http.Request {
 	t.Helper()
 	req := httptest.NewRequest(method, path, nil)
-	wire, err := auth.Sign(req, body)
+	wire, _, err := auth.Sign(req, body)
 	if err != nil {
 		t.Fatalf("Sign failed: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestAEADPeerAuth_RoundTrip(t *testing.T) {
 	plaintext := []byte(`{"hello":"world"}`)
 	req := signAndBuildRequest(t, a, "POST", "/internal/dispatch/processor", plaintext)
 
-	got, id, err := a.Verify(req)
+	got, id, _, err := a.Verify(req)
 	if err != nil {
 		t.Fatalf("Verify failed: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestAEADPeerAuth_TamperedCiphertextFails(t *testing.T) {
 	wire[len(wire)-1] ^= 0x01
 	req.Body = io.NopCloser(bytes.NewReader(wire))
 
-	if _, _, err := a.Verify(req); err == nil {
+	if _, _, _, err := a.Verify(req); err == nil {
 		t.Fatal("tampered ciphertext was accepted")
 	}
 }
@@ -90,7 +90,7 @@ func TestAEADPeerAuth_TamperedNonceFails(t *testing.T) {
 	wire[0] ^= 0xFF
 	req.Body = io.NopCloser(bytes.NewReader(wire))
 
-	if _, _, err := a.Verify(req); err == nil {
+	if _, _, _, err := a.Verify(req); err == nil {
 		t.Fatal("tampered nonce was accepted")
 	}
 }
@@ -105,7 +105,7 @@ func TestAEADPeerAuth_CrossEndpointReplayRejected(t *testing.T) {
 	replay.Header.Set("X-Dispatch-Timestamp", req.Header.Get("X-Dispatch-Timestamp"))
 	replay.Header.Set("Content-Type", req.Header.Get("Content-Type"))
 
-	if _, _, err := a.Verify(replay); err == nil {
+	if _, _, _, err := a.Verify(replay); err == nil {
 		t.Fatal("cross-endpoint replay (processor → criteria) was accepted")
 	}
 }
@@ -119,7 +119,7 @@ func TestAEADPeerAuth_MethodChangeRejected(t *testing.T) {
 	replay.Header.Set("X-Dispatch-Timestamp", req.Header.Get("X-Dispatch-Timestamp"))
 	replay.Header.Set("Content-Type", req.Header.Get("Content-Type"))
 
-	if _, _, err := a.Verify(replay); err == nil {
+	if _, _, _, err := a.Verify(replay); err == nil {
 		t.Fatal("method change (POST → PUT) was accepted")
 	}
 }
@@ -130,7 +130,7 @@ func TestAEADPeerAuth_StaleTimestampRejected(t *testing.T) {
 
 	// Sign at T.
 	req := httptest.NewRequest("POST", "/internal/dispatch/processor", nil)
-	wire, err := a.Sign(req, []byte(`{"a":1}`))
+	wire, _, err := a.Sign(req, []byte(`{"a":1}`))
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestAEADPeerAuth_StaleTimestampRejected(t *testing.T) {
 	req2.Header.Set("X-Dispatch-Timestamp", ts)
 	req2.Header.Set("Content-Type", "application/cyoda-dispatch-v1")
 
-	_, _, err = a.Verify(req2)
+	_, _, _, err = a.Verify(req2)
 	if err == nil {
 		t.Fatal("expected stale-timestamp rejection, got nil")
 	}
@@ -157,7 +157,7 @@ func TestAEADPeerAuth_ReplayWithinWindowRejected(t *testing.T) {
 	a, _ := dispatch.NewAEADPeerAuth(testSecret, 30*time.Second)
 
 	req := httptest.NewRequest("POST", "/internal/dispatch/processor", nil)
-	wire, err := a.Sign(req, []byte(`{"a":1}`))
+	wire, _, err := a.Sign(req, []byte(`{"a":1}`))
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
@@ -170,10 +170,10 @@ func TestAEADPeerAuth_ReplayWithinWindowRejected(t *testing.T) {
 		return r
 	}
 
-	if _, _, err := a.Verify(buildReq()); err != nil {
+	if _, _, _, err := a.Verify(buildReq()); err != nil {
 		t.Fatalf("first verify should succeed: %v", err)
 	}
-	if _, _, err := a.Verify(buildReq()); err == nil {
+	if _, _, _, err := a.Verify(buildReq()); err == nil {
 		t.Fatal("replay within window should be rejected, got nil error")
 	}
 }
@@ -184,14 +184,14 @@ func TestAEADPeerAuth_DifferentSecretsIncompatible(t *testing.T) {
 	a2, _ := dispatch.NewAEADPeerAuth(otherSecret, 30*time.Second)
 
 	req := httptest.NewRequest("POST", "/internal/dispatch/processor", nil)
-	wire, _ := a1.Sign(req, []byte(`{"a":1}`))
+	wire, _, _ := a1.Sign(req, []byte(`{"a":1}`))
 	ts := req.Header.Get("X-Dispatch-Timestamp")
 
 	recv := httptest.NewRequest("POST", "/internal/dispatch/processor", bytes.NewReader(wire))
 	recv.Header.Set("X-Dispatch-Timestamp", ts)
 	recv.Header.Set("Content-Type", "application/cyoda-dispatch-v1")
 
-	if _, _, err := a2.Verify(recv); err == nil {
+	if _, _, _, err := a2.Verify(recv); err == nil {
 		t.Fatal("a2 accepted an envelope sealed by a1 with a different secret")
 	}
 }
@@ -227,7 +227,7 @@ func TestAEADPeerAuth_SkewBoundaryReplayStillRejected(t *testing.T) {
 
 	// Sign at T.
 	req := httptest.NewRequest("POST", "/internal/dispatch/processor", nil)
-	wire, err := a.Sign(req, []byte(`{"a":1}`))
+	wire, _, err := a.Sign(req, []byte(`{"a":1}`))
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
@@ -242,14 +242,14 @@ func TestAEADPeerAuth_SkewBoundaryReplayStillRejected(t *testing.T) {
 
 	// First verify at T+25s (inside skew). Must succeed.
 	clock = base.Add(25 * time.Second)
-	if _, _, err := a.Verify(build()); err != nil {
+	if _, _, _, err := a.Verify(build()); err != nil {
 		t.Fatalf("first verify at T+25s should succeed: %v", err)
 	}
 
 	// Replay at T+30s (skew boundary). Must be rejected as replay, not
 	// accepted due to premature eviction.
 	clock = base.Add(30 * time.Second)
-	if _, _, err := a.Verify(build()); err == nil {
+	if _, _, _, err := a.Verify(build()); err == nil {
 		t.Fatal("replay at skew boundary was accepted — nonce cache evicted too aggressively")
 	}
 
@@ -257,7 +257,7 @@ func TestAEADPeerAuth_SkewBoundaryReplayStillRejected(t *testing.T) {
 	// the skew check, not the nonce cache. Either rejection is correct;
 	// the invariant is that it's NOT accepted.
 	clock = base.Add(31 * time.Second)
-	if _, _, err := a.Verify(build()); err == nil {
+	if _, _, _, err := a.Verify(build()); err == nil {
 		t.Fatal("replay just past skew boundary was accepted")
 	}
 }
@@ -267,7 +267,7 @@ func TestAEADPeerAuth_ZeroTimestampRejected(t *testing.T) {
 	req := httptest.NewRequest("POST", "/internal/dispatch/processor", bytes.NewReader([]byte{}))
 	req.Header.Set(dispatch.DispatchTimestampHdr, "0")
 	req.Header.Set("Content-Type", dispatch.DispatchContentType)
-	if _, _, err := a.Verify(req); err == nil {
+	if _, _, _, err := a.Verify(req); err == nil {
 		t.Fatal("ts=0 (1970-01-01) was accepted")
 	}
 }
@@ -277,7 +277,7 @@ func TestAEADPeerAuth_NegativeTimestampRejected(t *testing.T) {
 	req := httptest.NewRequest("POST", "/internal/dispatch/processor", bytes.NewReader([]byte{}))
 	req.Header.Set(dispatch.DispatchTimestampHdr, "-1")
 	req.Header.Set("Content-Type", dispatch.DispatchContentType)
-	if _, _, err := a.Verify(req); err == nil {
+	if _, _, _, err := a.Verify(req); err == nil {
 		t.Fatal("negative ts was accepted")
 	}
 }
@@ -288,7 +288,7 @@ func TestAEADPeerAuth_FarFutureTimestampRejected(t *testing.T) {
 	// Year 4000 or so.
 	req.Header.Set(dispatch.DispatchTimestampHdr, "64060588800")
 	req.Header.Set("Content-Type", dispatch.DispatchContentType)
-	if _, _, err := a.Verify(req); err == nil {
+	if _, _, _, err := a.Verify(req); err == nil {
 		t.Fatal("year-4000 ts was accepted")
 	}
 }
@@ -299,7 +299,7 @@ func TestAEADPeerAuth_EmptyPlaintextRoundTrips(t *testing.T) {
 	// len() >= nonceSize + overhead guard accepts the boundary case.
 	a, _ := dispatch.NewAEADPeerAuth(testSecret, 30*time.Second)
 	req := httptest.NewRequest("POST", "/internal/dispatch/processor", nil)
-	wire, err := a.Sign(req, []byte{})
+	wire, _, err := a.Sign(req, []byte{})
 	if err != nil {
 		t.Fatalf("Sign empty body: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestAEADPeerAuth_EmptyPlaintextRoundTrips(t *testing.T) {
 	req2.Header.Set(dispatch.DispatchTimestampHdr, req.Header.Get(dispatch.DispatchTimestampHdr))
 	req2.Header.Set("Content-Type", dispatch.DispatchContentType)
 
-	pt, _, err := a.Verify(req2)
+	pt, _, _, err := a.Verify(req2)
 	if err != nil {
 		t.Fatalf("Verify at envelope minimum: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestAEADPeerAuth_ShortBodyRejected(t *testing.T) {
 	req := httptest.NewRequest("POST", "/internal/dispatch/processor", bytes.NewReader(tooShort))
 	req.Header.Set(dispatch.DispatchTimestampHdr, strconv.FormatInt(time.Now().Unix(), 10))
 	req.Header.Set("Content-Type", dispatch.DispatchContentType)
-	if _, _, err := a.Verify(req); err == nil {
+	if _, _, _, err := a.Verify(req); err == nil {
 		t.Fatal("short body (below envelope min) was accepted")
 	}
 }
@@ -341,7 +341,7 @@ func TestAEADPeerAuth_WireBodyIsNotPlaintextJSON(t *testing.T) {
 	secret := `{"secret_marker":"SENSITIVE_PAYLOAD_7f3a9b"}`
 
 	req := httptest.NewRequest("POST", "/internal/dispatch/processor", nil)
-	wire, err := a.Sign(req, []byte(secret))
+	wire, _, err := a.Sign(req, []byte(secret))
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}

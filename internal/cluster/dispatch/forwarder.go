@@ -96,7 +96,7 @@ func (f *HTTPForwarder) forward(ctx context.Context, url string, reqBody any, re
 	// mTLS can leave it alone.
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	wire, err := f.auth.Sign(httpReq, plain)
+	wire, _, err := f.auth.Sign(httpReq, plain)
 	if err != nil {
 		return fmt.Errorf("dispatch forward: sign body: %w", err)
 	}
