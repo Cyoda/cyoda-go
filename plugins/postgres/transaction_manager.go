@@ -768,7 +768,7 @@ func (tm *TransactionManager) Savepoint(ctx context.Context, txID string) (strin
 	spID := uuid.UUID(tm.uuids.NewTimeUUID()).String()
 	spName := "sp_" + spID
 	if _, err := pgxTx.Exec(ctx, "SAVEPOINT "+pgx.Identifier{spName}.Sanitize()); err != nil {
-		return "", fmt.Errorf("Savepoint: %w", err)
+		return "", tm.classifyTxError(txID, fmt.Errorf("Savepoint: %w", err))
 	}
 
 	state.PushSavepoint(spID)
@@ -803,7 +803,7 @@ func (tm *TransactionManager) RollbackToSavepoint(ctx context.Context, txID stri
 	}
 	spName := "sp_" + savepointID
 	if _, err := pgxTx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+pgx.Identifier{spName}.Sanitize()); err != nil {
-		return fmt.Errorf("RollbackToSavepoint: %w", err)
+		return tm.classifyTxError(txID, fmt.Errorf("RollbackToSavepoint: %w", err))
 	}
 	if err := state.RestoreSavepoint(savepointID); err != nil {
 		return fmt.Errorf("RollbackToSavepoint: %w", err)
@@ -834,7 +834,7 @@ func (tm *TransactionManager) ReleaseSavepoint(ctx context.Context, txID string,
 	}
 	spName := "sp_" + savepointID
 	if _, err := pgxTx.Exec(ctx, "RELEASE SAVEPOINT "+pgx.Identifier{spName}.Sanitize()); err != nil {
-		return fmt.Errorf("ReleaseSavepoint: %w", err)
+		return tm.classifyTxError(txID, fmt.Errorf("ReleaseSavepoint: %w", err))
 	}
 	if err := state.ReleaseSavepoint(savepointID); err != nil {
 		return fmt.Errorf("ReleaseSavepoint: %w", err)

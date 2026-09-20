@@ -510,6 +510,64 @@ func TestCommitAfterSavepointRollback_StillReportsAConflict(t *testing.T) {
 	}
 }
 
+// TestSavepointOps_StatementErrorIsClassified — the three savepoint methods run
+// a statement like any other method here, and their statement's failure must go
+// through the same classifier. Returning the driver's error raw hands the
+// workflow engine something with no domain meaning: the transaction is gone, yet
+// the caller is told neither that a retry in a moment would work (503) nor, for
+// the shape the server reclaimed, that the per-transaction bookkeeping is stale.
+//
+// The condition is provoked with the idle-in-transaction ceiling, so the
+// savepoint statement is the FIRST operation after the session went away and
+// nothing else has classified the transaction first.
+func TestSavepointOps_StatementErrorIsClassified(t *testing.T) {
+	ops := []struct {
+		name string
+		// preSavepoint reports whether the op needs a savepoint to exist first.
+		preSavepoint bool
+		run          func(fx *abortFixture, ctx context.Context, txID, spID string) error
+	}{
+		{name: "Savepoint", run: func(fx *abortFixture, ctx context.Context, txID, _ string) error {
+			_, err := fx.tm.Savepoint(ctx, txID)
+			return err
+		}},
+		{name: "RollbackToSavepoint", preSavepoint: true, run: func(fx *abortFixture, ctx context.Context, txID, spID string) error {
+			return fx.tm.RollbackToSavepoint(ctx, txID, spID)
+		}},
+		{name: "ReleaseSavepoint", preSavepoint: true, run: func(fx *abortFixture, ctx context.Context, txID, spID string) error {
+			return fx.tm.ReleaseSavepoint(ctx, txID, spID)
+		}},
+	}
+	for _, op := range ops {
+		t.Run(op.name, func(t *testing.T) {
+			fx := newAbortFixture(t, 300*time.Millisecond)
+			ctx := classifyTestCtx()
+			txID, _ := beginGuarded(t, fx.tm, ctx)
+
+			var spID string
+			if op.preSavepoint {
+				var err error
+				if spID, err = fx.tm.Savepoint(ctx, txID); err != nil {
+					t.Fatalf("savepoint: %v", err)
+				}
+			}
+			time.Sleep(2 * time.Second) // well past the fixture's ceiling
+
+			err := op.run(fx, ctx, txID, spID)
+			if err == nil {
+				t.Fatal("the savepoint operation succeeded on a reclaimed session; there is nothing to classify")
+			}
+			if !hasStorageUnavailableMarker(err) {
+				t.Fatalf("a savepoint operation on a reclaimed transaction was not reported as storage-unavailable: %v", err)
+			}
+			if registry, tenant, origin, state := fx.tm.txResidue(txID); registry || tenant || origin || state {
+				t.Fatalf("per-transaction bookkeeping survived the abort: registry=%v tenant=%v origin=%v txState=%v",
+					registry, tenant, origin, state)
+			}
+		})
+	}
+}
+
 // TestCommitAfterSerializationFailure_IsStillAConflict is the control: the
 // ordinary reason a transaction is found aborted must keep its retryable 409.
 func TestCommitAfterSerializationFailure_IsStillAConflict(t *testing.T) {

@@ -21,6 +21,14 @@ import (
 // are NOT wrapped — they remain client-attributable and stay 4xx.
 var ErrCommitBeforeDispatchInfra = errors.New("commit-before-dispatch infrastructure failure")
 
+// ErrSavepointInfra marks a savepoint that could not be created, undone or
+// released around an ASYNC_NEW_TX processor. It is never the processor's
+// failure: the transaction is unusable — gone, missing the savepoint, or on
+// PostgreSQL already aborted by an earlier failed statement — so the operation
+// fails instead of committing the writes of a processor that failed, or
+// silently skipping one. Handlers map it to a sanitized 5xx.
+var ErrSavepointInfra = errors.New("savepoint failure")
+
 // ErrPostSegmentConflict marks a CAS conflict raised AFTER a
 // COMMIT_BEFORE_DISPATCH segment has committed and its external dispatch has
 // fired — the apply-result CAS below. It is not a precondition failure a caller
@@ -62,7 +70,8 @@ func clientAttributableStoreErr(err error) bool {
 
 // executeProcessors runs each processor in the transition's processor pipeline
 // sequentially. Processors are dispatched according to their ExecutionMode:
-// ASYNC_NEW_TX runs within a savepoint (failures are non-fatal); SYNC and
+// ASYNC_NEW_TX runs within a savepoint (the processor's failure is non-fatal; a
+// savepoint failure is fatal); SYNC and
 // ASYNC_SAME_TX run inline in the caller's transaction context;
 // COMMIT_BEFORE_DISPATCH commits the current segment before dispatch and
 // continues the cascade in a fresh segment.
@@ -163,8 +172,12 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 			return currentCtx, currentTxID, cerr
 		}
 
-		// ASYNC_NEW_TX failures are non-fatal: log warning, continue pipeline.
-		if procErr != nil && proc.ExecutionMode == ExecutionModeAsyncNewTx {
+		// An ASYNC_NEW_TX processor's own failure is non-fatal: log warning,
+		// continue pipeline. A savepoint that could not be created, undone or
+		// released is not that — the transaction is unusable, so it kills the
+		// pipeline like any other mode's failure.
+		nonFatal := proc.ExecutionMode == ExecutionModeAsyncNewTx && !errors.Is(procErr, ErrSavepointInfra)
+		if procErr != nil && nonFatal {
 			slog.Warn("ASYNC_NEW_TX processor failed, continuing pipeline",
 				"pkg", "workflow", "processor", proc.Name, "error", procErr)
 		}
@@ -188,8 +201,9 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 			spi.SMEventStateProcessResult,
 			fmt.Sprintf("Processor %q completed", proc.Name), auditData)
 
-		// For SYNC/ASYNC_SAME_TX/COMMIT_BEFORE_DISPATCH, failure kills the pipeline.
-		if procErr != nil && proc.ExecutionMode != ExecutionModeAsyncNewTx {
+		// For SYNC/ASYNC_SAME_TX/COMMIT_BEFORE_DISPATCH, and for an ASYNC_NEW_TX
+		// savepoint failure, failure kills the pipeline.
+		if procErr != nil && !nonFatal {
 			return currentCtx, currentTxID, fmt.Errorf("processor %s failed: %w", proc.Name, procErr)
 		}
 	}
@@ -232,30 +246,18 @@ func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, d
 // ASYNC_NEW_TX processors perform side-effects only. On dispatch failure the
 // savepoint is rolled back and the error is returned; on success the savepoint
 // is released.
+//
+// A savepoint that cannot be created, undone or released is marked with
+// ErrSavepointInfra and fails the operation: it says the transaction is
+// unusable, not that the processor misbehaved.
 func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, workflow, transition, txID string) error {
 	if e.extProc == nil {
 		return nil
 	}
 
-	// Without a transaction manager, fall back to plain dispatch (no savepoint).
-	if e.txMgr == nil {
-		// Release any per-tx gate this chain holds across the blocking dispatch
-		// (H3 invariant) — this dispatch reuses the gated txID and can re-enter
-		// with a descendant joined callback on the same tx, so holding the gate
-		// here deadlocks exactly like the SYNC path.
-		resume := txgate.Suspend(ctx)
-		defer resume()
-		_, err := e.extProc.DispatchProcessor(ctx, entity, proc, workflow, transition, txID)
-		resume()
-		if cerr := fence.Check(ctx); cerr != nil {
-			return cerr
-		}
-		return err
-	}
-
 	spID, err := e.txMgr.Savepoint(ctx, txID)
 	if err != nil {
-		return fmt.Errorf("savepoint creation failed: %w", err)
+		return fmt.Errorf("failed to create savepoint: %w", errors.Join(ErrSavepointInfra, err))
 	}
 
 	// Release the per-tx gate across the blocking dispatch (H3 invariant). The
@@ -275,15 +277,17 @@ func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc
 	}
 	if dispatchErr != nil {
 		if rbErr := e.txMgr.RollbackToSavepoint(ctx, txID, spID); rbErr != nil {
-			slog.Warn("failed to rollback savepoint after processor error",
-				"pkg", "workflow", "processor", proc.Name,
-				"savepointID", spID, "rollbackError", rbErr)
+			// The processor's own error is not joined in: it may be a classified
+			// client error, and errors.As would then answer with it.
+			slog.Warn("ASYNC_NEW_TX processor failed and its savepoint could not be undone",
+				"pkg", "workflow", "processor", proc.Name, "processorError", dispatchErr)
+			return fmt.Errorf("failed to undo savepoint: %w", errors.Join(ErrSavepointInfra, rbErr))
 		}
 		return dispatchErr
 	}
 
 	if err := e.txMgr.ReleaseSavepoint(ctx, txID, spID); err != nil {
-		return fmt.Errorf("savepoint release failed: %w", err)
+		return fmt.Errorf("failed to release savepoint: %w", errors.Join(ErrSavepointInfra, err))
 	}
 	return nil
 }

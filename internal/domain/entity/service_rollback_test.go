@@ -466,7 +466,77 @@ func TestUpdateEntity_PostSegmentConflict_Still412(t *testing.T) {
 	}
 }
 
+// TestCreateEntity_AsyncNewTxSavepointFailure_NothingCommitted is the
+// handler-level half of the savepoint contract. An ASYNC_NEW_TX processor whose
+// savepoint cannot be released leaves the transaction unusable; treating that as
+// the processor's own (non-fatal) failure carries the pipeline on to the final
+// save and commits a write nobody can vouch for. The create must fail with a
+// ticketed 5xx and leave the store exactly as it found it.
+func TestCreateEntity_AsyncNewTxSavepointFailure_NothingCommitted(t *testing.T) {
+	boom := errors.New(`ERROR: current transaction is aborted (SQLSTATE 25P02) host=db-1`)
+	hn := newTrackingHandlerWrapping(t, "memory", func(tm spi.TransactionManager) spi.TransactionManager {
+		return failingSavepoints{TransactionManager: tm, failRelease: boom}
+	})
+	hn.registerAsyncNewTxWorkflow(t)
+
+	var dispatchedIDs []string
+	hn.proc.dispatchProcessor = func(_ context.Context, e *spi.Entity, _ spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
+		dispatchedIDs = append(dispatchedIDs, e.Meta.ID)
+		return nil, nil
+	}
+
+	_, err := hn.h.CreateEntity(hn.ctx, rollbackWidgetInput())
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("create returned %v, want an AppError", err)
+	}
+	if appErr.Status != http.StatusInternalServerError || appErr.Code != common.ErrCodeServerError {
+		t.Fatalf("create returned %d %s, want 500 %s", appErr.Status, appErr.Code, common.ErrCodeServerError)
+	}
+	if strings.Contains(appErr.Message, "SQLSTATE") || strings.Contains(appErr.Message, "db-1") {
+		t.Fatalf("the driver's text reached the client: %q", appErr.Message)
+	}
+	if len(dispatchedIDs) == 0 {
+		t.Fatal("the processor never ran, so no savepoint was released; the case proves nothing")
+	}
+	for _, id := range dispatchedIDs {
+		if hn.committedVisible(t, id) {
+			t.Fatalf("entity %s was committed although the savepoint around its processor could not be released", id)
+		}
+	}
+	if open := hn.tracker.openTxIDs(); len(open) != 0 {
+		t.Fatalf("the failed create left %d transaction(s) open: %v", len(open), open)
+	}
+}
+
 // --- harness ---
+
+// failingSavepoints fails one of the three savepoint operations, as a plugin
+// does for a transaction that is gone, a savepoint that is missing, or (on
+// PostgreSQL) a transaction an earlier failed statement has already aborted.
+type failingSavepoints struct {
+	spi.TransactionManager
+	failCreate, failUndo, failRelease error
+}
+
+func (m failingSavepoints) Savepoint(ctx context.Context, txID string) (string, error) {
+	if m.failCreate != nil {
+		return "", m.failCreate
+	}
+	return m.TransactionManager.Savepoint(ctx, txID)
+}
+func (m failingSavepoints) RollbackToSavepoint(ctx context.Context, txID, sp string) error {
+	if m.failUndo != nil {
+		return m.failUndo
+	}
+	return m.TransactionManager.RollbackToSavepoint(ctx, txID, sp)
+}
+func (m failingSavepoints) ReleaseSavepoint(ctx context.Context, txID, sp string) error {
+	if m.failRelease != nil {
+		return m.failRelease
+	}
+	return m.TransactionManager.ReleaseSavepoint(ctx, txID, sp)
+}
 
 // rollbackModel is the locked model every flow in this file writes against.
 var rollbackModel = spi.ModelRef{EntityName: "RollbackWidget", ModelVersion: "1"}
@@ -719,6 +789,14 @@ func newTrackingHandler(t *testing.T) *rollbackHarness {
 
 func newTrackingHandlerFor(t *testing.T, backend string) *rollbackHarness {
 	t.Helper()
+	return newTrackingHandlerWrapping(t, backend, nil)
+}
+
+// newTrackingHandlerWrapping is newTrackingHandlerFor with a seam between the
+// plugin's manager and the tracker, for a test that needs one SPI method to
+// misbehave. wrap may be nil.
+func newTrackingHandlerWrapping(t *testing.T, backend string, wrap func(spi.TransactionManager) spi.TransactionManager) *rollbackHarness {
+	t.Helper()
 	ctx := rollbackTestCtx()
 
 	var raw spi.StoreFactory
@@ -741,6 +819,9 @@ func newTrackingHandlerFor(t *testing.T, backend string) *rollbackHarness {
 	tm, err := raw.TransactionManager(ctx)
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
+	}
+	if wrap != nil {
+		tm = wrap(tm)
 	}
 	tracker := &trackingTxMgr{TransactionManager: tm, probeCtx: ctx}
 
@@ -839,6 +920,27 @@ func (hn *rollbackHarness) registerSegmentingWorkflow(t *testing.T) {
 					Name:          "segmenter",
 					ExecutionMode: wfengine.ExecutionModeCommitBeforeDispatch,
 					Config:        spi.ProcessorConfig{StartNewTxOnDispatch: &startNewTx},
+				}},
+			}}},
+			"B": {},
+		},
+	})
+}
+
+// registerAsyncNewTxWorkflow puts an ASYNC_NEW_TX processor on rollbackModel's
+// automated transition, so an ordinary create runs one savepoint around one
+// dispatch.
+func (hn *rollbackHarness) registerAsyncNewTxWorkflow(t *testing.T) {
+	t.Helper()
+	hn.saveWorkflow(t, rollbackModel, spi.WorkflowDefinition{
+		Version: "1.1", Name: "RollbackAsyncNewTxWF", InitialState: "A", Active: true,
+		States: map[string]spi.StateDefinition{
+			"A": {Transitions: []spi.TransitionDefinition{{
+				Name: "sideEffect", Next: "B",
+				Processors: []spi.ProcessorDefinition{{
+					Type:          wfengine.ProcessorTypeExternalized,
+					Name:          "sideEffect",
+					ExecutionMode: wfengine.ExecutionModeAsyncNewTx,
 				}},
 			}}},
 			"B": {},
@@ -955,6 +1057,24 @@ func (hn *rollbackHarness) committedEntity(t *testing.T, id string) *spi.Entity 
 		t.Fatalf("Get %s: %v", id, err)
 	}
 	return e
+}
+
+// committedVisible reports whether an entity is readable outside any
+// transaction, i.e. whether it was committed. committedEntity's sibling for the
+// case where absence is the expected answer.
+func (hn *rollbackHarness) committedVisible(t *testing.T, id string) bool {
+	t.Helper()
+	es, err := hn.raw.EntityStore(hn.ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	if _, err := es.Get(hn.ctx, id); err != nil {
+		if errors.Is(err, spi.ErrNotFound) {
+			return false
+		}
+		t.Fatalf("Get %s: %v", id, err)
+	}
+	return true
 }
 
 // committedName reads the "name" field of an entity's committed payload.

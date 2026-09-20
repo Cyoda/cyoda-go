@@ -2774,6 +2774,10 @@ func classifySaveErr(internalMsg, entityID string, err error) *common.AppError {
 //     arm/cancel pass writes through failed) → sanitized 5xx, same reason.
 //     Every save of an entity on a scheduled workflow re-arms, so this store
 //     is on the ordinary write path.
+//   - ErrSavepointInfra (the savepoint around an ASYNC_NEW_TX processor could
+//     not be created, undone or released) → sanitized 5xx, same reason. It says
+//     the transaction is unusable, never that the processor failed, so it must
+//     not reach the catch-all and become a 400 carrying the driver's own text.
 //   - ErrAuthContextUnavailable (AttachAuthContext could not populate a
 //     dispatch CloudEvent's Auth Context — no UserContext, unset/unrecognized
 //     principal Kind, or nil CloudEvent) → sanitized 5xx via common.Internal.
@@ -2816,6 +2820,9 @@ func classifyWorkflowError(err error) *common.AppError {
 	}
 	if errors.Is(err, wfengine.ErrScheduledTaskInfra) {
 		return common.Internal("scheduled task reconciliation failed", err)
+	}
+	if errors.Is(err, wfengine.ErrSavepointInfra) {
+		return common.Internal("workflow savepoint failed", err)
 	}
 	if errors.Is(err, contract.ErrAuthContextUnavailable) {
 		return common.Internal("auth context unavailable for dispatch", err)
