@@ -138,6 +138,19 @@ func RunWorkflowImportResponseTimeoutBounded(t *testing.T, fixture BackendFixtur
 			if !containsErrorCode(resp, "VALIDATION_FAILED") {
 				t.Errorf("[%s] responseTimeoutMs %d: expected errorCode VALIDATION_FAILED, body=%s", kind, bad, resp)
 			}
+			if !bytes.Contains(resp, []byte("responseTimeoutMs")) {
+				t.Errorf("[%s] responseTimeoutMs %d: detail must name the field, body=%s", kind, bad, resp)
+			}
+			if !bytes.Contains(resp, []byte("bound-wf")) {
+				t.Errorf("[%s] responseTimeoutMs %d: detail must name the workflow, body=%s", kind, bad, resp)
+			}
+			// Only the over-the-bound message names the setting
+			// (checkResponseTimeout in internal/domain/workflow/validate.go);
+			// the negative-value message does not, so this assertion is
+			// scoped to that case rather than asserted for both.
+			if bad > 0 && !bytes.Contains(resp, []byte("CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS")) {
+				t.Errorf("[%s] responseTimeoutMs %d: detail must name the bound setting, body=%s", kind, bad, resp)
+			}
 		}
 	}
 }
