@@ -265,7 +265,11 @@ func newCalloutHarness(t *testing.T, configure func(*app.Config)) *callbackHarne
 func newCallbackHarnessConfigured(t *testing.T, configure func(*app.Config)) *callbackHarness {
 	t.Helper()
 	h := newCalloutHarness(t, configure)
-	h.member = newComputeMember(t, h, h.grpcAddr)
+	// Tagged "sched-fn" so a schedule.function callout — whose
+	// calculationNodesTags is validated non-empty at import — can route to it.
+	// Processor/criteria tests configure calculationNodesTags:"" which matches
+	// any cnode of the tenant.
+	h.member = newComputeMember(t, h, memberSpec{tags: []string{"sched-fn"}, handle: h.handleRegistered})
 	t.Cleanup(h.member.stop)
 	return h
 }
@@ -537,54 +541,273 @@ func (h *callbackHarness) GetSMAuditEvents(t *testing.T, entityID string) []map[
 
 // --- compute member (real gRPC calc member) ---
 
+// The three kinds of callout a cnode receives.
+const (
+	calloutProcessor = "processor"
+	calloutCriterion = "criterion"
+	calloutFunction  = "function"
+)
+
+// calcRequest is one calculation request as a cnode received it.
+type calcRequest struct {
+	kind      string // calloutProcessor | calloutCriterion | calloutFunction
+	name      string // processor / criterion / function name
+	requestID string // the payload's requestId, exactly as sent
+	replyID   string // what the reply echoes: requestId, else the payload id
+	eventID   string // the CloudEvent id
+	rc        *reqCtx
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
+// parseCalcRequest decodes a calculation request of any kind. The pass rides
+// as a CloudEvent attribute and lands in rc.token; it is never logged.
+func (h *callbackHarness) parseCalcRequest(evtType string, ce *cepb.CloudEvent, payload []byte) calcRequest {
+	var body struct {
+		RequestID     string `json:"requestId"`
+		ID            string `json:"id"`
+		EntityID      string `json:"entityId"`
+		ProcessorName string `json:"processorName"`
+		ProcessorID   string `json:"processorId"`
+		CriteriaName  string `json:"criteriaName"`
+		CriteriaID    string `json:"criteriaId"`
+		FunctionName  string `json:"functionName"`
+		FunctionID    string `json:"functionId"`
+		Payload       *struct {
+			Data json.RawMessage `json:"data"`
+			Meta map[string]any  `json:"meta"`
+		} `json:"payload"`
+	}
+	_ = json.Unmarshal(payload, &body)
+
+	req := calcRequest{
+		requestID: body.RequestID,
+		replyID:   firstNonEmpty(body.RequestID, body.ID),
+		eventID:   ce.GetId(),
+	}
+	switch evtType {
+	case internalgrpc.EntityCriteriaCalculationRequest:
+		req.kind, req.name = calloutCriterion, firstNonEmpty(body.CriteriaName, body.CriteriaID)
+	case internalgrpc.EntityFunctionCalculationRequest:
+		req.kind, req.name = calloutFunction, firstNonEmpty(body.FunctionName, body.FunctionID)
+	default:
+		req.kind, req.name = calloutProcessor, firstNonEmpty(body.ProcessorName, body.ProcessorID)
+	}
+	req.rc = &reqCtx{
+		token:     internalgrpc.TxTokenFromCloudEvent(ce),
+		requestID: req.replyID,
+		entityID:  body.EntityID,
+		h:         h,
+	}
+	if body.Payload != nil {
+		req.rc.entityMeta = body.Payload.Meta
+		var d map[string]any
+		if json.Unmarshal(body.Payload.Data, &d) == nil {
+			req.rc.entityData = d
+		}
+	}
+	return req
+}
+
+type cnodeReplyKind int
+
+const (
+	replyOK cnodeReplyKind = iota
+	replyFail
+	replySilent
+	replyCloseStream
+)
+
+// cnodeReply is what a cnode does with one callout.
+type cnodeReply struct {
+	kind       cnodeReplyKind
+	data       map[string]any // replyOK, processor: the entity's new data; nil = unchanged
+	matches    bool           // replyOK, criterion
+	resultKind string         // replyOK, function
+	result     map[string]any // replyOK, function
+	message    string         // replyFail
+	retryable  *bool          // replyFail: the cnode's verdict; nil = none given
+}
+
+// answerOK answers success: a processor leaves the entity unchanged, a
+// criterion matches. A function needs answerResult — it has no neutral answer.
+func answerOK() cnodeReply                      { return cnodeReply{kind: replyOK, matches: true} }
+func answerData(data map[string]any) cnodeReply { return cnodeReply{kind: replyOK, data: data} }
+func answerMatches(m bool) cnodeReply           { return cnodeReply{kind: replyOK, matches: m} }
+func answerResult(resultKind string, result map[string]any) cnodeReply {
+	return cnodeReply{kind: replyOK, resultKind: resultKind, result: result}
+}
+
+// answerFail answers success=false with no verdict on retrying.
+func answerFail(msg string) cnodeReply { return cnodeReply{kind: replyFail, message: msg} }
+
+// answerFailVerdict answers success=false and states whether a retry is worthwhile.
+func answerFailVerdict(msg string, retryable bool) cnodeReply {
+	return cnodeReply{kind: replyFail, message: msg, retryable: &retryable}
+}
+
+// neverAnswer takes the work and stays silent; the stream stays open.
+func neverAnswer() cnodeReply { return cnodeReply{kind: replySilent} }
+
+// closeStream closes the cnode's stream on receiving the work, without answering.
+func closeStream() cnodeReply { return cnodeReply{kind: replyCloseStream} }
+
+// cloudEvent builds the reply for req, or (nil, nil) when nothing is sent.
+func (r cnodeReply) cloudEvent(req calcRequest) (*cepb.CloudEvent, error) {
+	if r.kind == replySilent || r.kind == replyCloseStream {
+		return nil, nil
+	}
+	respType := internalgrpc.EntityProcessorCalculationResponse
+	switch req.kind {
+	case calloutCriterion:
+		respType = internalgrpc.EntityCriteriaCalculationResponse
+	case calloutFunction:
+		respType = internalgrpc.EntityFunctionCalculationResponse
+	}
+	body := map[string]any{"requestId": req.replyID, "success": r.kind == replyOK}
+	if r.kind == replyFail {
+		e := map[string]any{"message": r.message}
+		if r.retryable != nil {
+			e["retryable"] = *r.retryable
+		}
+		body["error"] = e
+		return internalgrpc.NewCloudEvent(respType, body)
+	}
+	switch req.kind {
+	case calloutCriterion:
+		body["matches"] = r.matches
+	case calloutFunction:
+		body["resultKind"] = r.resultKind
+		body["result"] = r.result
+	default:
+		if r.data != nil {
+			body["payload"] = map[string]any{"data": r.data}
+		}
+	}
+	return internalgrpc.NewCloudEvent(respType, body)
+}
+
+// sendReply puts reply on the wire. A reply that cannot be built is reported
+// to the server as a failure rather than dropped.
+func sendReply(send func(*cepb.CloudEvent) error, req calcRequest, reply cnodeReply) {
+	ce, err := reply.cloudEvent(req)
+	if err != nil {
+		ce, _ = answerFail(fmt.Sprintf("failed to build response: %v", err)).cloudEvent(req)
+	}
+	if ce != nil {
+		_ = send(ce)
+	}
+}
+
+// registeredReply runs the closure registered under name (RegisterProc /
+// RegisterCriteria / RegisterFunction) and turns its outcome into a reply.
+func (h *callbackHarness) registeredReply(kind, name string, rc *reqCtx) cnodeReply {
+	switch kind {
+	case calloutCriterion:
+		fn, ok := h.lookupCrit(name)
+		if !ok {
+			return answerFail(fmt.Sprintf("no callback criterion registered for %q", name))
+		}
+		matches, err := fn(rc)
+		if err != nil {
+			return answerFail(err.Error())
+		}
+		return answerMatches(matches)
+	case calloutFunction:
+		fn, ok := h.lookupFunc(name)
+		if !ok {
+			return answerFail(fmt.Sprintf("no callback function registered for %q", name))
+		}
+		resultKind, result, err := fn(rc)
+		if err != nil {
+			return answerFail(err.Error())
+		}
+		return answerResult(resultKind, result)
+	default:
+		fn, ok := h.lookupProc(name)
+		if !ok {
+			return answerFail(fmt.Sprintf("no callback processor registered for %q", name))
+		}
+		data, err := fn(rc)
+		if err != nil {
+			return answerFail(err.Error())
+		}
+		return answerData(data)
+	}
+}
+
+// handleRegistered is the default cnode's handler.
+func (h *callbackHarness) handleRegistered(_ *computeMember, send func(*cepb.CloudEvent) error, req calcRequest) {
+	sendReply(send, req, h.registeredReply(req.kind, req.name, req.rc))
+}
+
+// calcHandler handles one calculation request a cnode received. It runs on a
+// goroutine of its own, so it may block and must not call t.Fatal.
+type calcHandler func(m *computeMember, send func(*cepb.CloudEvent) error, req calcRequest)
+
+// memberSpec says how a cnode joins and what it does with work.
+type memberSpec struct {
+	bearer string   // M2M bearer to join with; "" = the harness's own tenant
+	tags   []string // join tags
+	handle calcHandler
+}
+
 type computeMember struct {
+	id     string // member id the server gave in the greet
 	conn   *grpc.ClientConn
+	ctx    context.Context // ends when the cnode stops or closes its stream
 	cancel context.CancelFunc
 	done   chan struct{}
 
 	// sendMu serialises stream.Send — gRPC bidi streams are not safe for
-	// concurrent Send, and calc requests are now dispatched to concurrent
-	// handler goroutines (mirroring a real compute node's thread pool, which a
-	// depth-2 nested cascade requires: the member must run the inner processor
+	// concurrent Send, and calc requests are handled on concurrent goroutines
+	// (a depth-2 nested cascade needs the cnode to run the inner processor
 	// while the outer processor's callback is still in flight).
 	sendMu sync.Mutex
-	// handlers tracks in-flight concurrent calc handlers so teardown can drain
-	// them before closing the connection.
+	// handlers tracks in-flight handlers so teardown can drain them.
 	handlers sync.WaitGroup
 }
 
-// newComputeMember dials the stack's gRPC server, opens StartStreaming with an
-// M2M bearer, joins, waits for the greet, then runs a receive loop dispatching
-// EntityProcessorCalculationRequests to the harness's registered processors.
-func newComputeMember(t *testing.T, h *callbackHarness, grpcAddr string) *computeMember {
-	t.Helper()
+// closeStream ends the cnode's stream from the client side, as a crashed or
+// partitioned compute program would. The server sees the stream end and evicts
+// the member; work it was given and has not answered fails as disconnected.
+func (m *computeMember) closeStream() { m.cancel() }
 
-	conn, err := grpc.NewClient(grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+// newComputeMember dials the stack's gRPC server, opens StartStreaming with
+// spec.bearer, joins with spec.tags, waits for the greet, then runs a receive
+// loop handing each calculation request to spec.handle on its own goroutine.
+func newComputeMember(t *testing.T, h *callbackHarness, spec memberSpec) *computeMember {
+	t.Helper()
+	bearer := spec.bearer
+	if bearer == "" {
+		bearer = h.token(t)
+	}
+
+	conn, err := grpc.NewClient(h.grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatalf("dial gRPC: %v", err)
 	}
 	client := cyodapb.NewCloudEventsServiceClient(conn)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+h.token(t))
-
-	stream, err := client.StartStreaming(ctx)
+	stream, err := client.StartStreaming(metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+bearer))
 	if err != nil {
 		cancel()
 		conn.Close()
 		t.Fatalf("StartStreaming: %v", err)
 	}
 
-	// Send the join event. Tagged "sched-fn" (not empty) so a schedule.function
-	// callout — whose calculationNodesTags is validated non-empty at import
-	// (validate.go) — can route to this member via MemberRegistry.FindByTags.
-	// Existing processor/criteria tests are unaffected: they configure
-	// calculationNodesTags:"" which common.TagsOverlap always matches
-	// regardless of the member's tags.
+	// joinedLegalEntityId is left empty: the server takes the tenant from the
+	// bearer, so one join shape serves every tenant.
 	joinCE, err := internalgrpc.NewCloudEvent(internalgrpc.CalculationMemberJoinEvent, map[string]any{
 		"id":                  "callback-member-join",
-		"tags":                []string{"sched-fn"},
-		"joinedLegalEntityId": "test-tenant",
+		"tags":                spec.tags,
+		"joinedLegalEntityId": "",
 	})
 	if err != nil {
 		cancel()
@@ -597,12 +820,9 @@ func newComputeMember(t *testing.T, h *callbackHarness, grpcAddr string) *comput
 		t.Fatalf("send join: %v", err)
 	}
 
-	// Wait for the greet (proves registration completed) before returning.
 	greeted := make(chan struct{})
-	m := &computeMember{conn: conn, cancel: cancel, done: make(chan struct{})}
+	m := &computeMember{conn: conn, ctx: ctx, cancel: cancel, done: make(chan struct{})}
 
-	// send serialises all outbound frames (keep-alive replies + concurrent calc
-	// responses) so no two goroutines call stream.Send at once.
 	send := func(ce *cepb.CloudEvent) error {
 		m.sendMu.Lock()
 		defer m.sendMu.Unlock()
@@ -623,9 +843,17 @@ func newComputeMember(t *testing.T, h *callbackHarness, grpcAddr string) *comput
 			}
 			switch evtType {
 			case internalgrpc.CalculationMemberGreetEvent:
-				greetOnce.Do(func() { close(greeted) })
+				greetOnce.Do(func() {
+					var greet struct {
+						MemberID string `json:"memberId"`
+					}
+					_ = json.Unmarshal(payload, &greet)
+					// Written before greeted closes and before any handler
+					// goroutine starts: the server writes the greet first.
+					m.id = greet.MemberID
+					close(greeted)
+				})
 			case internalgrpc.CalculationMemberKeepAliveEvent:
-				// Reply so the server refreshes our LastSeen (avoids keep-alive timeout).
 				ka, kerr := internalgrpc.NewCloudEvent(internalgrpc.CalculationMemberKeepAliveEvent, map[string]any{
 					"id":      ce.Id,
 					"success": true,
@@ -633,33 +861,17 @@ func newComputeMember(t *testing.T, h *callbackHarness, grpcAddr string) *comput
 				if kerr == nil {
 					_ = send(ka)
 				}
-			case internalgrpc.EntityProcessorCalculationRequest:
-				// Dispatch concurrently: a processor callback may block on an HTTP
-				// call that drives a further dispatch to this same member (depth-2
-				// cascade). Handling inline on the receive loop would deadlock the
-				// member before the txgate is ever exercised.
+			case internalgrpc.EntityProcessorCalculationRequest,
+				internalgrpc.EntityCriteriaCalculationRequest,
+				internalgrpc.EntityFunctionCalculationRequest:
+				// Handled concurrently: a handler may block on a callback that
+				// drives a further callout to this same cnode.
+				req := h.parseCalcRequest(evtType, ce, payload)
 				m.handlers.Add(1)
-				go func(ce *cepb.CloudEvent, payload []byte) {
+				go func() {
 					defer m.handlers.Done()
-					h.handleCalcRequest(send, ce, payload)
-				}(ce, payload)
-			case internalgrpc.EntityCriteriaCalculationRequest:
-				// Same concurrency rationale as processors: a FUNCTION criterion
-				// may block on a joined callback that drives a further dispatch.
-				m.handlers.Add(1)
-				go func(ce *cepb.CloudEvent, payload []byte) {
-					defer m.handlers.Done()
-					h.handleCriteriaRequest(send, ce, payload)
-				}(ce, payload)
-			case internalgrpc.EntityFunctionCalculationRequest:
-				// Generic Function callout (e.g. scheduled-transition arm-time
-				// timing computation). Dispatched concurrently for
-				// the same reason as processors/criteria above.
-				m.handlers.Add(1)
-				go func(ce *cepb.CloudEvent, payload []byte) {
-					defer m.handlers.Done()
-					h.handleFunctionRequest(send, ce, payload)
-				}(ce, payload)
+					spec.handle(m, send, req)
+				}()
 			default:
 				// ignore other server events
 			}
@@ -694,230 +906,6 @@ func (m *computeMember) stop() {
 		// Receive loop hung (already a failing test); skip the drain rather than
 		// race handlers.Add against Wait.
 	}
-}
-
-// handleCalcRequest runs the registered processor for an inbound calc request
-// and replies with an EntityProcessorCalculationResponse. It is dispatched on a
-// per-request goroutine; send serialises the reply against other concurrent
-// handlers and the receive loop's keep-alive replies.
-func (h *callbackHarness) handleCalcRequest(send func(*cepb.CloudEvent) error, ce *cepb.CloudEvent, payload []byte) {
-	var req struct {
-		RequestID     string `json:"requestId"`
-		ID            string `json:"id"`
-		EntityID      string `json:"entityId"`
-		ProcessorName string `json:"processorName"`
-		ProcessorID   string `json:"processorId"`
-		Payload       *struct {
-			Data json.RawMessage `json:"data"`
-			Meta map[string]any  `json:"meta"`
-		} `json:"payload"`
-	}
-	_ = json.Unmarshal(payload, &req)
-	reqID := req.RequestID
-	if reqID == "" {
-		reqID = req.ID
-	}
-	procName := req.ProcessorName
-	if procName == "" {
-		procName = req.ProcessorID
-	}
-
-	sendErr := func(msg string) {
-		resp, _ := internalgrpc.NewCloudEvent(internalgrpc.EntityProcessorCalculationResponse, map[string]any{
-			"requestId": reqID,
-			"success":   false,
-			"error":     map[string]any{"message": msg},
-		})
-		_ = send(resp)
-	}
-
-	fn, ok := h.lookupProc(procName)
-	if !ok {
-		sendErr(fmt.Sprintf("no callback processor registered for %q", procName))
-		return
-	}
-
-	rc := &reqCtx{
-		token:     internalgrpc.TxTokenFromCloudEvent(ce),
-		requestID: reqID,
-		entityID:  req.EntityID,
-		h:         h,
-	}
-	if req.Payload != nil {
-		rc.entityMeta = req.Payload.Meta
-		var d map[string]any
-		if json.Unmarshal(req.Payload.Data, &d) == nil {
-			rc.entityData = d
-		}
-	}
-
-	applyData, procErr := fn(rc)
-	if procErr != nil {
-		sendErr(procErr.Error())
-		return
-	}
-
-	respPayload := map[string]any{
-		"requestId": reqID,
-		"success":   true,
-	}
-	if applyData != nil {
-		respPayload["payload"] = map[string]any{"data": applyData}
-	}
-	resp, err := internalgrpc.NewCloudEvent(internalgrpc.EntityProcessorCalculationResponse, respPayload)
-	if err != nil {
-		sendErr(fmt.Sprintf("failed to build response: %v", err))
-		return
-	}
-	_ = send(resp)
-}
-
-// handleCriteriaRequest runs the registered FUNCTION criterion for an inbound
-// criteria calc request and replies with an EntityCriteriaCalculationResponse
-// (success + matches). Dispatched on a per-request goroutine; send serialises
-// the reply.
-func (h *callbackHarness) handleCriteriaRequest(send func(*cepb.CloudEvent) error, ce *cepb.CloudEvent, payload []byte) {
-	var req struct {
-		RequestID    string `json:"requestId"`
-		ID           string `json:"id"`
-		EntityID     string `json:"entityId"`
-		CriteriaName string `json:"criteriaName"`
-		CriteriaID   string `json:"criteriaId"`
-		Payload      *struct {
-			Data json.RawMessage `json:"data"`
-			Meta map[string]any  `json:"meta"`
-		} `json:"payload"`
-	}
-	_ = json.Unmarshal(payload, &req)
-	reqID := req.RequestID
-	if reqID == "" {
-		reqID = req.ID
-	}
-	critName := req.CriteriaName
-	if critName == "" {
-		critName = req.CriteriaID
-	}
-
-	sendErr := func(msg string) {
-		resp, _ := internalgrpc.NewCloudEvent(internalgrpc.EntityCriteriaCalculationResponse, map[string]any{
-			"requestId": reqID,
-			"success":   false,
-			"error":     map[string]any{"message": msg},
-		})
-		_ = send(resp)
-	}
-
-	fn, ok := h.lookupCrit(critName)
-	if !ok {
-		sendErr(fmt.Sprintf("no callback criterion registered for %q", critName))
-		return
-	}
-
-	rc := &reqCtx{
-		token:     internalgrpc.TxTokenFromCloudEvent(ce),
-		requestID: reqID,
-		entityID:  req.EntityID,
-		h:         h,
-	}
-	if req.Payload != nil {
-		rc.entityMeta = req.Payload.Meta
-		var d map[string]any
-		if json.Unmarshal(req.Payload.Data, &d) == nil {
-			rc.entityData = d
-		}
-	}
-
-	matches, critErr := fn(rc)
-	if critErr != nil {
-		sendErr(critErr.Error())
-		return
-	}
-	resp, err := internalgrpc.NewCloudEvent(internalgrpc.EntityCriteriaCalculationResponse, map[string]any{
-		"requestId": reqID,
-		"success":   true,
-		"matches":   matches,
-	})
-	if err != nil {
-		sendErr(fmt.Sprintf("failed to build response: %v", err))
-		return
-	}
-	_ = send(resp)
-}
-
-// handleFunctionRequest runs the registered Function callback for an inbound
-// EntityFunctionCalculationRequest and replies with an
-// EntityFunctionCalculationResponse carrying resultKind/result (e.g.
-// resultKind:"Schedule" for a scheduled-transition arm-time computation).
-// Dispatched on a per-request goroutine; send serialises the
-// reply against other concurrent handlers and the receive loop's keep-alive
-// replies.
-func (h *callbackHarness) handleFunctionRequest(send func(*cepb.CloudEvent) error, ce *cepb.CloudEvent, payload []byte) {
-	var req struct {
-		RequestID    string `json:"requestId"`
-		ID           string `json:"id"`
-		EntityID     string `json:"entityId"`
-		FunctionName string `json:"functionName"`
-		FunctionID   string `json:"functionId"`
-		Payload      *struct {
-			Data json.RawMessage `json:"data"`
-			Meta map[string]any  `json:"meta"`
-		} `json:"payload"`
-	}
-	_ = json.Unmarshal(payload, &req)
-	reqID := req.RequestID
-	if reqID == "" {
-		reqID = req.ID
-	}
-	fnName := req.FunctionName
-	if fnName == "" {
-		fnName = req.FunctionID
-	}
-
-	sendErr := func(msg string) {
-		resp, _ := internalgrpc.NewCloudEvent(internalgrpc.EntityFunctionCalculationResponse, map[string]any{
-			"requestId": reqID,
-			"success":   false,
-			"error":     map[string]any{"message": msg},
-		})
-		_ = send(resp)
-	}
-
-	fn, ok := h.lookupFunc(fnName)
-	if !ok {
-		sendErr(fmt.Sprintf("no callback function registered for %q", fnName))
-		return
-	}
-
-	rc := &reqCtx{
-		token:     internalgrpc.TxTokenFromCloudEvent(ce),
-		requestID: reqID,
-		entityID:  req.EntityID,
-		h:         h,
-	}
-	if req.Payload != nil {
-		rc.entityMeta = req.Payload.Meta
-		var d map[string]any
-		if json.Unmarshal(req.Payload.Data, &d) == nil {
-			rc.entityData = d
-		}
-	}
-
-	resultKind, result, fnErr := fn(rc)
-	if fnErr != nil {
-		sendErr(fnErr.Error())
-		return
-	}
-	resp, err := internalgrpc.NewCloudEvent(internalgrpc.EntityFunctionCalculationResponse, map[string]any{
-		"requestId":  reqID,
-		"success":    true,
-		"resultKind": resultKind,
-		"result":     result,
-	})
-	if err != nil {
-		sendErr(fmt.Sprintf("failed to build response: %v", err))
-		return
-	}
-	_ = send(resp)
 }
 
 // cloneData returns a shallow copy of an entity data map (nil-safe), so a

@@ -27,10 +27,10 @@ import (
 //
 // Arm happy-path cases need a real Function callout, so they use the
 // callback-harness's gRPC compute member (callback_harness_test.go),
-// extended in this change with RegisterFunction/handleFunctionRequest to
-// answer EntityFunctionCalculationRequest with a configurable
-// resultKind/result — the shared, reusable "fake Function-serving compute
-// node" tasks 9.2/9.3 build on. The member joins with tags ["sched-fn"] so
+// extended in this change with RegisterFunction, answered by the default
+// cnode's handleRegistered with a configurable resultKind/result — the
+// shared, reusable "fake Function-serving compute node" tasks 9.2/9.3 build
+// on. The member joins with tags ["sched-fn"] so
 // a schedule.function config's calculationNodesTags (validated non-empty at
 // import, unlike the processor/criteria tests' calculationNodesTags:"")
 // resolves to it via MemberRegistry.FindByTags.
