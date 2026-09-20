@@ -2,7 +2,6 @@ package grpc
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -123,8 +122,13 @@ func TestNewCriteriaCallout_InvalidJSONIsTerminal(t *testing.T) {
 	if failure == nil || failure.Kind != contract.Terminal {
 		t.Fatalf("failure = %+v, want Terminal", failure)
 	}
-	if !strings.HasPrefix(failure.Error(), "invalid criterion JSON: ") {
-		t.Errorf("message = %q, want today's text", failure.Error())
+	// A criterion is a workflow configuration value, not this node's or a
+	// compute member's fault; the client sees a fixed, sanitized message,
+	// never the raw json parse error (see
+	// TestNewCriteriaCallout_InvalidJSON_NoMarkerLeak for why).
+	const wantMsg = "the workflow's criterion function could not be parsed"
+	if failure.Message != wantMsg || failure.Error() != wantMsg {
+		t.Errorf("Message/Error = %q/%q, want %q", failure.Message, failure.Error(), wantMsg)
 	}
 }
 

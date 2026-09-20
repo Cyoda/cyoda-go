@@ -68,9 +68,15 @@ func (d *ProcessorDispatcher) ResolveAnswerLimit(responseTimeoutMs int64) (time.
 	}
 	// Compared in milliseconds: a huge stored value would overflow a Duration.
 	if responseTimeoutMs > d.answerLimitMax.Milliseconds() {
-		err := fmt.Errorf("responseTimeoutMs %d exceeds the upper bound of %d ms set by CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS",
+		// Both numbers are configuration (the callout's own stored value, the
+		// server's configured bound), never client-request or entity-payload
+		// content, so composing this message directly is safe; it is written
+		// as an authored Sprintf rather than an error's .Error() so nothing
+		// here depends on an intermediate error's text ever being safe by
+		// construction.
+		msg := fmt.Sprintf("responseTimeoutMs %d exceeds the upper bound of %d ms set by CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS",
 			responseTimeoutMs, d.answerLimitMax.Milliseconds())
-		return 0, &contract.CalloutFailure{Kind: contract.Terminal, Message: err.Error(), Err: err}
+		return 0, &contract.CalloutFailure{Kind: contract.Terminal, Message: msg}
 	}
 	return time.Duration(responseTimeoutMs) * time.Millisecond, nil
 }

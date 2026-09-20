@@ -3,6 +3,7 @@ package grpc
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -144,12 +145,26 @@ func NewProcessorCallout(tenantID spi.TenantID, entity *spi.Entity, processor sp
 // NewCriteriaCallout builds the callout for a FUNCTION criterion. A criterion
 // computes and does not write, so it is repeat-safe by rule. A criterion that
 // does not parse would fail identically on any cnode: Terminal.
+//
+// A criterion is a workflow configuration value — authored ahead of time and
+// deliberately left unvalidated at import for one shape, an unparseable
+// FUNCTION criterion (see validateCriterion's doc in
+// internal/domain/workflow/validate.go) — not this node's own fault and not a
+// compute member's: no member is ever contacted here. It is therefore neither
+// terminalFailure's internal case nor memberResponseUnreadable's; per spec
+// §8.2's Terminal row ("500 ticketed for auth-context; 400 WORKFLOW_FAILED
+// otherwise") it takes the "otherwise" branch — a domain 400 — but with a
+// fixed, sanitized message. The real parse error, which can quote a byte of
+// the criterion's own JSON, is logged by shape only and never attached as a
+// cause: nothing here needs errors.Is/As to reach it, and attaching it would
+// only risk a future caller reading Err instead of Message.
 func NewCriteriaCallout(tenantID spi.TenantID, entity *spi.Entity, criterion json.RawMessage, target, workflowName, transitionName, processorName, txID string) (Callout, *contract.CalloutFailure) {
 	// One parser serves import validation and dispatch alike.
 	fn, err := contract.ParseCriterionFunction(criterion)
 	if err != nil {
-		wrapped := fmt.Errorf("invalid criterion JSON: %w", err)
-		return Callout{}, &contract.CalloutFailure{Kind: contract.Terminal, Message: wrapped.Error(), Err: wrapped}
+		slog.Error("workflow criterion function could not be parsed", "pkg", "grpc", "workflowName", workflowName,
+			"transitionName", transitionName, "error", jsonErrorShape(err))
+		return Callout{}, &contract.CalloutFailure{Kind: contract.Terminal, Message: "the workflow's criterion function could not be parsed"}
 	}
 	name := fn.Name
 	config := fn.Config
