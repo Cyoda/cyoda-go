@@ -1,10 +1,12 @@
 package grpc
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -464,18 +466,26 @@ func (r *MemberRegistry) List() []*Member {
 	return result
 }
 
-// FindByTags returns the first member matching the given tenant whose tags
-// overlap with tagsCSV. If tagsCSV is empty, any member for that tenant
-// matches.
-func (r *MemberRegistry) FindByTags(tenantID spi.TenantID, tagsCSV string) *Member {
+// Candidates returns every member of the tenant whose tags overlap tagsCSV —
+// every member of the tenant when tagsCSV is empty — ordered by (ConnectedAt,
+// ID), so that the order is the same on every call. A member of another tenant
+// is never a candidate, whatever its tags.
+func (r *MemberRegistry) Candidates(tenantID spi.TenantID, tagsCSV string) []*Member {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	var out []*Member
 	for _, m := range r.members {
 		if m.TenantID == tenantID && common.TagsOverlap(m.Tags, tagsCSV) {
-			return m
+			out = append(out, m)
 		}
 	}
-	return nil
+	slices.SortFunc(out, func(x, y *Member) int {
+		if c := x.ConnectedAt.Compare(y.ConnectedAt); c != 0 {
+			return c
+		}
+		return cmp.Compare(x.ID, y.ID)
+	})
+	return out
 }
 
 // notifyChange publishes the current aggregate tags in a goroutine. The

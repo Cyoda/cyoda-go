@@ -551,7 +551,7 @@ func newComputeMember(t *testing.T, h *callbackHarness, grpcAddr string) *comput
 
 	// Send the join event. Tagged "sched-fn" (not empty) so a schedule.function
 	// callout — whose calculationNodesTags is validated non-empty at import
-	// (validate.go) — can route to this member via MemberRegistry.FindByTags.
+	// (validate.go) — can route to this member via MemberRegistry.Candidates.
 	// Existing processor/criteria tests are unaffected: they configure
 	// calculationNodesTags:"" which common.TagsOverlap always matches
 	// regardless of the member's tags.

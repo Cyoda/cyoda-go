@@ -93,7 +93,7 @@ func newTestEnvWithDispatch(t *testing.T) (*CloudEventsServiceImpl, *workflow.Ha
 
 // testTenant is the tenant ID every test in this file registers gRPC
 // compute members under — it must match newTestEnvWithDispatch's
-// spi.UserContext.Tenant.ID ("test-tenant") for MemberRegistry.FindByTags
+// spi.UserContext.Tenant.ID ("test-tenant") for MemberRegistry.Candidates
 // to resolve them.
 const testTenant = spi.TenantID("test-tenant")
 

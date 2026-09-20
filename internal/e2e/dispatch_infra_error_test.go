@@ -13,7 +13,7 @@ package e2e_test
 // MemberRegistry, so it cannot reproduce grpc.ErrNoMatchingMember. Leaving
 // cfg.ExternalProcessing nil here selects the REAL
 // internal/grpc.ProcessorDispatcher wired over an empty MemberRegistry (no
-// compute member ever connects), so FindByTags deterministically returns no
+// compute member ever connects), so Candidates deterministically returns no
 // match for any tag and DispatchProcessor returns the genuine sentinel.
 //
 // Mock IAM mode (the default) auto-authenticates every request as the

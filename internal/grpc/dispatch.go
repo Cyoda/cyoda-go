@@ -97,7 +97,7 @@ func buildEntityPayload(entity *spi.Entity) *events.DataPayloadJson {
 // dispatchCalloutToMember carries out the transport sequence shared by every
 // calculation callout: attach auth/tx-token to a CloudEvent wrapping req,
 // track the request, send it, and wait for the tracked response or a
-// timeout. Member resolution (FindByTags/ErrNoMatchingMember), request-struct
+// timeout. Member resolution (Candidates/ErrNoMatchingMember), request-struct
 // construction, and response parsing stay with the caller — this handles only
 // the wire protocol common to processor and criteria dispatch.
 //
@@ -207,11 +207,12 @@ func (d *ProcessorDispatcher) DispatchProcessor(ctx context.Context, entity *spi
 	uc := spi.MustGetUserContext(ctx)
 	tenantID := uc.Tenant.ID
 
-	member := d.registry.FindByTags(tenantID, processor.Config.CalculationNodesTags)
-	if member == nil {
+	candidates := d.registry.Candidates(tenantID, processor.Config.CalculationNodesTags)
+	if len(candidates) == 0 {
 		slog.Warn("no matching calculation member", "pkg", "grpc", "tags", processor.Config.CalculationNodesTags, "entityId", entity.Meta.ID)
 		return nil, fmt.Errorf("%w: tags %q", ErrNoMatchingMember, processor.Config.CalculationNodesTags)
 	}
+	member := candidates[0]
 
 	slog.Info("dispatching processor", "pkg", "grpc", "memberId", member.ID, "processor", processor.Name, "entityId", entity.Meta.ID)
 
@@ -298,11 +299,12 @@ func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.
 		attachEntity = *parsed.Function.Config.AttachEntity
 	}
 
-	member := d.registry.FindByTags(tenantID, parsed.Function.Config.CalculationNodesTags)
-	if member == nil {
+	candidates := d.registry.Candidates(tenantID, parsed.Function.Config.CalculationNodesTags)
+	if len(candidates) == 0 {
 		slog.Warn("no matching calculation member", "pkg", "grpc", "tags", parsed.Function.Config.CalculationNodesTags, "entityId", entity.Meta.ID)
 		return false, "", fmt.Errorf("%w: tags %q", ErrNoMatchingMember, parsed.Function.Config.CalculationNodesTags)
 	}
+	member := candidates[0]
 
 	slog.Info("dispatching criteria", "pkg", "grpc", "memberId", member.ID, "criteria", parsed.Function.Name, "entityId", entity.Meta.ID)
 
@@ -347,11 +349,12 @@ func (d *ProcessorDispatcher) DispatchFunction(ctx context.Context, entity *spi.
 	uc := spi.MustGetUserContext(ctx)
 	tenantID := uc.Tenant.ID
 
-	member := d.registry.FindByTags(tenantID, fn.CalculationNodesTags)
-	if member == nil {
+	candidates := d.registry.Candidates(tenantID, fn.CalculationNodesTags)
+	if len(candidates) == 0 {
 		slog.Warn("no matching calculation member", "pkg", "grpc", "tags", fn.CalculationNodesTags, "entityId", entity.Meta.ID)
 		return contract.FunctionResult{}, fmt.Errorf("%w: tags %q", ErrNoMatchingMember, fn.CalculationNodesTags)
 	}
+	member := candidates[0]
 
 	slog.Info("dispatching function", "pkg", "grpc", "memberId", member.ID, "function", fn.Name, "entityId", entity.Meta.ID)
 
