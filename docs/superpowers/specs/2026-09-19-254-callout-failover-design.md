@@ -804,8 +804,14 @@ pnodes are never compared. A pnode never accepts a foreign copy of its own list.
 - *Receive.* A list is stored when its version equals the one announced in the
   sender's metadata, or is a later `seq` of that epoch **and** later than the
   `seq` already held for it (the list can arrive before the metadata does; two
-  lists can arrive out of order). Anything else is dropped, and if what is held
-  still differs from what is announced the pnode fetches again at once. The
+  lists can arrive out of order). Anything else is dropped. A held list that is
+  a later `seq` of the announced epoch counts as current — the metadata is on
+  its way — so it triggers no fetch. After a drop the pnode fetches again at once
+  only when the dropped list is of the *announced* epoch; a list of another
+  epoch (a peer that restarted, whose new metadata has not arrived yet) waits
+  for the metadata event that must follow, or for the scan. Read without these
+  two rules, "fetch whenever held differs from announced" is a tight loop in
+  both cases. The
   sender takes version and tags in one locked step and writes its metadata under
   the same lock, so one version never names two different lists.
 - *Catch up.* An `EventDelegate` is registered. On `NotifyJoin` and
@@ -826,7 +832,13 @@ pnodes are never compared. A pnode never accepts a foreign copy of its own list.
   for up to the TCP timeout, and `Members()` or `UpdateNode` deadlocks.
   `NotifyMsg` runs on the receive goroutine. All four only copy what they were
   given — `NotifyMsg`'s buffer is reused by the library — and enqueue it for one
-  worker goroutine, which does the sending, fetching and storing. `NotifyJoin`
+  worker goroutine, which does the sending, fetching and storing. The three
+  membership callbacks also copy the member into a **directory the registry
+  owns**, and `List`, `Lookup` and the worker read that directory; nothing in the
+  package calls `Members()`. `Members()` returns pointers to nodes whose `Meta`
+  memberlist rewrites under its own lock (`state.go:1131`), so reading them is a
+  data race — hidden today only because `UpdateTags` blocks in `UpdateNode(0)`
+  until the broadcast is out, and exposed the moment it stops blocking. `NotifyJoin`
   fires for the pnode itself inside `memberlist.Create`, before the registry
   holds its `*Memberlist`; the worker starts after `Create` returns and ignores
   events about self. Reliable user messages arrive at `NotifyMsg` beside gossip
@@ -875,7 +887,11 @@ waiver, with its reason below the table.
   therefore takes its **tags** and a **behaviour** from the environment —
   `stall`, `fail`, `fail-retryable`, `late-callback`, `drop` (close the stream
   on receiving work) — and the fixtures gain an optional capability to start and
-  stop extra compute clients. Each failover scenario uses a tag of its own and
+  stop extra compute clients, each given a **tenant**, tags, a behaviour and, in
+  the multi-pnode fixture, the pnode to attach to. A tag alone does not isolate
+  a scenario: a callout whose `calculationNodesTags` is empty matches every
+  cnode of its tenant, and a stopped client is evicted asynchronously. Each
+  failover scenario therefore uses a tenant and a tag of its own and
   attaches its cnodes one after the other, which is what makes "the cnode
   attached first is tried first" hold. A backend fixture without the capability
   skips those scenarios, so the commercial backend's suite is not broken by
