@@ -258,7 +258,8 @@ func (g *Gossip) Register(ctx context.Context, _ string, _ string) error {
 }
 
 // Lookup returns the address and alive status for the given nodeID from the
-// member directory. If the node is not found, alive is false.
+// member directory. If the node is not found, alive is false. A member whose
+// metadata does not parse is reported as not alive.
 func (g *Gossip) Lookup(_ context.Context, nodeID string) (string, bool, error) {
 	m, ok := g.dir.get(nodeID)
 	if !ok {
@@ -266,7 +267,15 @@ func (g *Gossip) Lookup(_ context.Context, nodeID string) (string, bool, error) 
 	}
 	nm, err := parseMeta(m.Meta)
 	if err != nil {
-		return "", false, fmt.Errorf("unmarshal metadata for %s: %w", nodeID, err)
+		// Same verdict as List: a member that cannot be read is not a pnode
+		// work can be sent to. Not an error — callers answer an error with a
+		// 500, and this is a 503.
+		slog.Warn("member has unparseable metadata; treating it as not alive",
+			"pkg", "cluster/registry",
+			"memberName", m.Name,
+			"err", err,
+		)
+		return "", false, nil
 	}
 	return nm.Addr, true, nil
 }
