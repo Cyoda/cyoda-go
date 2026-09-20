@@ -199,6 +199,14 @@ type CalloutConfig struct {
 	// being clamped. CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS, default 60000,
 	// must be >= 1.
 	ResponseTimeoutMax time.Duration
+	// HandoverAllowance is what the owner allows a hand-over to another node
+	// on top of (tries left × answer limit), and the last term of a callout's
+	// deadline. CYODA_CALLOUT_HANDOVER_ALLOWANCE, default 30s, must be > 0.
+	HandoverAllowance time.Duration
+	// PassAllowance is how long a pass outlives its try's answer limit: the
+	// margin for routing a callback and for clocks that differ between nodes.
+	// CYODA_CALLOUT_PASS_ALLOWANCE, default 30s, must be > 0.
+	PassAllowance time.Duration
 }
 
 type AdminConfig struct {
@@ -432,6 +440,7 @@ func DefaultConfig() Config {
 			ProxyTimeout:           envDuration("CYODA_PROXY_TIMEOUT", 30*time.Second),
 			HMACSecret:             hmacSecret,
 			DispatchWaitTimeout:    envDuration("CYODA_DISPATCH_WAIT_TIMEOUT", 5*time.Second),
+			DispatchConnectTimeout: envDuration("CYODA_DISPATCH_CONNECT_TIMEOUT", 2*time.Second),
 			DispatchForwardTimeout: envDuration("CYODA_DISPATCH_FORWARD_TIMEOUT", 30*time.Second),
 			// TxTokenTTL must outlive the full dispatch round-trip plus the callback's
 			// verify step, including the forwarded-chain case where two budgets stack
@@ -455,6 +464,8 @@ func DefaultConfig() Config {
 			FixedNumRetries:    envInt("CYODA_RETRY_FIXED_NUM_RETRIES", 3),
 			ResponseTimeout:    envMillis("CYODA_CALLOUT_RESPONSE_TIMEOUT_MS", 30*time.Second),
 			ResponseTimeoutMax: envMillis("CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS", 60*time.Second),
+			HandoverAllowance:  envDuration("CYODA_CALLOUT_HANDOVER_ALLOWANCE", 30*time.Second),
+			PassAllowance:      envDuration("CYODA_CALLOUT_PASS_ALLOWANCE", 30*time.Second),
 		},
 		HTTP: HTTPConfig{
 			ReadHeaderTimeout: envDuration("CYODA_HTTP_READ_HEADER_TIMEOUT", 10*time.Second),
@@ -763,6 +774,9 @@ func (c Config) Validate() error {
 	if err := ValidateCallout(c.Callout); err != nil {
 		return err
 	}
+	if err := ValidateDispatch(c.Cluster); err != nil {
+		return err
+	}
 	return ValidateHTTP(c.HTTP)
 }
 
@@ -878,6 +892,30 @@ func ValidateCallout(c CalloutConfig) error {
 	if c.ResponseTimeout > c.ResponseTimeoutMax {
 		return fmt.Errorf("CYODA_CALLOUT_RESPONSE_TIMEOUT_MS (%d) must not exceed CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS (%d)",
 			c.ResponseTimeout.Milliseconds(), c.ResponseTimeoutMax.Milliseconds())
+	}
+	if c.HandoverAllowance <= 0 {
+		return fmt.Errorf("CYODA_CALLOUT_HANDOVER_ALLOWANCE must be > 0, got %s", c.HandoverAllowance)
+	}
+	if c.PassAllowance <= 0 {
+		return fmt.Errorf("CYODA_CALLOUT_PASS_ALLOWANCE must be > 0, got %s", c.PassAllowance)
+	}
+	return nil
+}
+
+// ValidateDispatch rejects dispatch durations that cannot be honoured. The
+// patience may be zero (waiting disabled) but not negative; the connect and
+// forward timeouts bound network calls and must be positive. They are checked
+// whether or not clustering is enabled: a value that would fail the moment
+// clustering is switched on is a configuration error today.
+func ValidateDispatch(c cluster.Config) error {
+	if c.DispatchWaitTimeout < 0 {
+		return fmt.Errorf("CYODA_DISPATCH_WAIT_TIMEOUT must not be negative (0 disables waiting), got %s", c.DispatchWaitTimeout)
+	}
+	if c.DispatchConnectTimeout <= 0 {
+		return fmt.Errorf("CYODA_DISPATCH_CONNECT_TIMEOUT must be > 0, got %s", c.DispatchConnectTimeout)
+	}
+	if c.DispatchForwardTimeout <= 0 {
+		return fmt.Errorf("CYODA_DISPATCH_FORWARD_TIMEOUT must be > 0, got %s", c.DispatchForwardTimeout)
 	}
 	return nil
 }

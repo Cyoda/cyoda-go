@@ -23,6 +23,8 @@ func validCalloutConfig() CalloutConfig {
 		FixedNumRetries:    3,
 		ResponseTimeout:    30 * time.Second,
 		ResponseTimeoutMax: 60 * time.Second,
+		HandoverAllowance:  30 * time.Second,
+		PassAllowance:      30 * time.Second,
 	}
 }
 
@@ -83,6 +85,49 @@ func TestValidateCallout_TriesAndAnswerLimit(t *testing.T) {
 		{"answer limit above the upper bound", func(c *CalloutConfig) {
 			c.ResponseTimeout = c.ResponseTimeoutMax + time.Millisecond
 		}, "CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validCalloutConfig()
+			tc.mutate(&c)
+			err := ValidateCallout(c)
+			if err == nil {
+				t.Fatalf("ValidateCallout(%+v) = nil, want an error", c)
+			}
+			if !strings.Contains(err.Error(), tc.wantName) {
+				t.Errorf("error must name %s; got: %v", tc.wantName, err)
+			}
+		})
+	}
+}
+
+func TestDefaultConfig_CalloutAllowances(t *testing.T) {
+	unsetEnv(t, "CYODA_CALLOUT_HANDOVER_ALLOWANCE", "CYODA_CALLOUT_PASS_ALLOWANCE")
+	got := DefaultConfig().Callout
+	if got.HandoverAllowance != 30*time.Second {
+		t.Errorf("default HandoverAllowance = %s, want 30s", got.HandoverAllowance)
+	}
+	if got.PassAllowance != 30*time.Second {
+		t.Errorf("default PassAllowance = %s, want 30s", got.PassAllowance)
+	}
+	t.Setenv("CYODA_CALLOUT_HANDOVER_ALLOWANCE", "10s")
+	t.Setenv("CYODA_CALLOUT_PASS_ALLOWANCE", "45s")
+	got = DefaultConfig().Callout
+	if got.HandoverAllowance != 10*time.Second || got.PassAllowance != 45*time.Second {
+		t.Errorf("overrides not bound: %+v", got)
+	}
+}
+
+func TestValidateCallout_Allowances(t *testing.T) {
+	cases := []struct {
+		name     string
+		mutate   func(*CalloutConfig)
+		wantName string
+	}{
+		{"zero hand-over allowance", func(c *CalloutConfig) { c.HandoverAllowance = 0 }, "CYODA_CALLOUT_HANDOVER_ALLOWANCE"},
+		{"negative hand-over allowance", func(c *CalloutConfig) { c.HandoverAllowance = -time.Second }, "CYODA_CALLOUT_HANDOVER_ALLOWANCE"},
+		{"zero pass allowance", func(c *CalloutConfig) { c.PassAllowance = 0 }, "CYODA_CALLOUT_PASS_ALLOWANCE"},
+		{"negative pass allowance", func(c *CalloutConfig) { c.PassAllowance = -time.Second }, "CYODA_CALLOUT_PASS_ALLOWANCE"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

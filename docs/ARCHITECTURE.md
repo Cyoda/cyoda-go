@@ -1618,8 +1618,11 @@ These variables apply globally to all tenant-registered OIDC providers. Per-prov
 | `CYODA_PROXY_TIMEOUT` | `30s` | HTTP proxy response header timeout |
 | `CYODA_TX_TOKEN_TTL` | `1m30s` | TTL of the signed transaction routing token minted on dispatch |
 | `CYODA_HMAC_SECRET` (with `_FILE` variant) | (none) | Hex-encoded secret for token signing + gossip encryption (required if cluster enabled). See §4.2 for encoding details. |
-| `CYODA_DISPATCH_WAIT_TIMEOUT` | `5s` | How long to poll for a compute member with matching tags |
-| `CYODA_DISPATCH_FORWARD_TIMEOUT` | `30s` | HTTP timeout for cross-node dispatch forwarding |
+| `CYODA_DISPATCH_WAIT_TIMEOUT` | `5s` | The patience: how long one callout waits, in total, for a compute member with matching tags to exist, on a single node as in a cluster. `0` disables waiting. Must not be negative; startup fails otherwise. |
+| `CYODA_DISPATCH_CONNECT_TIMEOUT` | `2s` | Time allowed to open the connection when a callout is handed over to another node; a node that cannot be connected to costs no try. Must be `> 0`; startup fails otherwise. |
+| `CYODA_CALLOUT_HANDOVER_ALLOWANCE` | `30s` | What the owning node allows a callout hand-over on top of `tries left × answer limit`; also the last term of a callout's overall deadline. Must be `> 0`; startup fails otherwise. |
+| `CYODA_CALLOUT_PASS_ALLOWANCE` | `30s` | How long the transaction token given to a compute member outlives its try's answer limit. Must be `> 0`; startup fails otherwise. |
+| `CYODA_DISPATCH_FORWARD_TIMEOUT` | `30s` | Whole-request timeout of the node-to-node call that delegates a scheduled transition. Does not govern callout hand-overs. Must be `> 0`; startup fails otherwise. |
 
 ### Search
 
