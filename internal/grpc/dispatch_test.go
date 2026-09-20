@@ -18,6 +18,16 @@ import (
 
 const testTenantID = spi.TenantID("tenant-1")
 
+// make32 returns a 32-byte secret for token signing in tests.
+func make32(t *testing.T) []byte {
+	t.Helper()
+	b := make([]byte, 32)
+	for i := range b {
+		b[i] = byte(i + 1)
+	}
+	return b
+}
+
 func setupTestDispatcher(t *testing.T) (*ProcessorDispatcher, *MemberRegistry, string, chan *cepb.CloudEvent) {
 	t.Helper()
 	registry := NewMemberRegistry()
@@ -38,7 +48,7 @@ func newTestDispatcher(t *testing.T, registry *MemberRegistry) *ProcessorDispatc
 	if err != nil {
 		t.Fatalf("token.NewSigner: %v", err)
 	}
-	return NewProcessorDispatcher(registry, NewRoundRobinSelector(registry), common.NewTestUUIDGenerator(), signer, "node-test", time.Minute, 30*time.Second, 60*time.Second)
+	return NewProcessorDispatcher(registry, NewRoundRobinSelector(registry), common.NewTestUUIDGenerator(), signer, "node-test", 30*time.Second, 60*time.Second, 3*time.Second)
 }
 
 func testProcessor(tags string, responseTimeoutMs int64) spi.ProcessorDefinition {
@@ -71,7 +81,11 @@ func tryOnce(d *ProcessorDispatcher, ctx context.Context, member *Member, reques
 			return CalloutResult{}, nil
 		},
 	}
-	_, failure, ctxErr := d.dispatchCalloutToMember(ctx, member, call, d.resolveTxToken(ctx, txID, requestID))
+	pass, err := d.mintPass(ctx, call, 1, 0)
+	if err != nil {
+		return nil, err
+	}
+	_, failure, ctxErr := d.dispatchCalloutToMember(ctx, member, call, pass)
 	switch {
 	case ctxErr != nil:
 		return nil, ctxErr

@@ -38,22 +38,22 @@ type ProcessorDispatcher struct {
 	uuids              spi.UUIDGenerator
 	signer             *token.Signer
 	selfNodeID         string
-	tokenTTL           time.Duration
 	answerLimitDefault time.Duration
 	answerLimitMax     time.Duration
+	passAllowance      time.Duration
 }
 
 // NewProcessorDispatcher creates a new ProcessorDispatcher.
-func NewProcessorDispatcher(registry *MemberRegistry, selector MemberSelector, uuids spi.UUIDGenerator, signer *token.Signer, selfNodeID string, tokenTTL, answerLimitDefault, answerLimitMax time.Duration) *ProcessorDispatcher {
+func NewProcessorDispatcher(registry *MemberRegistry, selector MemberSelector, uuids spi.UUIDGenerator, signer *token.Signer, selfNodeID string, answerLimitDefault, answerLimitMax, passAllowance time.Duration) *ProcessorDispatcher {
 	return &ProcessorDispatcher{
 		registry:           registry,
 		selector:           selector,
 		uuids:              uuids,
 		signer:             signer,
 		selfNodeID:         selfNodeID,
-		tokenTTL:           tokenTTL,
 		answerLimitDefault: answerLimitDefault,
 		answerLimitMax:     answerLimitMax,
+		passAllowance:      passAllowance,
 	}
 }
 
@@ -75,29 +75,34 @@ func (d *ProcessorDispatcher) ResolveAnswerLimit(responseTimeoutMs int64) (time.
 	return time.Duration(responseTimeoutMs) * time.Millisecond, nil
 }
 
-// resolveTxToken returns the tx-token to attach to a calc request. A token
-// pre-minted by an upstream ClusterDispatcher (carried on ctx, NodeID = owner)
-// wins so a forwarded dispatch routes callbacks to the owner, not this node.
-// Otherwise self-mint {selfNodeID, txID}. Empty txID → no token (standalone).
-func (d *ProcessorDispatcher) resolveTxToken(ctx context.Context, txID, requestID string) string {
-	if tok := TxTokenFromContext(ctx); tok != "" {
-		return tok
+// mintPass issues the pass one try gives its cnode: the transaction token the
+// cnode's callbacks carry. It names the owner — callbacks are routed there
+// whichever pnode made the hand-off — the transaction, the callout and the
+// try's fencing number, and it lives as long as the try may: the answer limit
+// plus an allowance for routing and for clocks that differ between pnodes. A
+// callout outside a transaction carries no pass.
+//
+// A pass already on ctx wins: the hand-over still pre-mints one.
+func (d *ProcessorDispatcher) mintPass(ctx context.Context, call Callout, major, minor uint32) (string, error) {
+	if pass := TxTokenFromContext(ctx); pass != "" {
+		return pass, nil
 	}
-	if txID == "" || d.signer == nil {
-		return ""
+	if call.TxID == "" {
+		return "", nil
 	}
-	tok, err := d.signer.Issue(token.Claims{
-		NodeID:    d.selfNodeID,
-		TxRef:     txID,
-		ExpiresAt: time.Now().Add(d.tokenTTL).Unix(),
-		Callout:   requestID,
-		Major:     1,
+	pass, err := d.signer.Issue(token.Claims{
+		NodeID:    call.OwnerNodeID,
+		TxRef:     call.TxID,
+		ExpiresAt: time.Now().Add(call.AnswerLimit + d.passAllowance).Unix(),
+		Callout:   call.RequestID,
+		Major:     major,
+		Minor:     minor,
+		Outer:     call.Outer,
 	})
 	if err != nil {
-		slog.Error("failed to mint tx-token", "pkg", "grpc", "err", err)
-		return ""
+		return "", fmt.Errorf("failed to mint transaction pass: %w", err)
 	}
-	return tok
+	return pass, nil
 }
 
 // buildEntityPayload builds the DataPayloadJson attached to a calc request when

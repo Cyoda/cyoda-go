@@ -7,6 +7,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
@@ -70,6 +71,9 @@ type Callout struct {
 	// Number gives the fencing number of each try. RunLocal calls Next once
 	// before every try, before it mints that try's pass.
 	Number TryNumberer
+	// Outer names every enclosing callout, for a callout made from inside a
+	// callback; it is copied into every pass.
+	Outer []token.Pair
 
 	eventType    string
 	buildRequest func(requestID string) any

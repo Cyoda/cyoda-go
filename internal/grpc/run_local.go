@@ -110,7 +110,15 @@ func (d *ProcessorDispatcher) RunLocal(ctx context.Context, call Callout, maxTri
 			"memberId", member.ID, "entityId", call.EntityID, "requestId", call.RequestID,
 			"try", res.TriesUsed, "major", major, "minor", minor)
 
-		result, failure, ctxErr := d.dispatchCalloutToMember(ctx, member, call, d.resolveTxToken(ctx, call.TxID, call.RequestID))
+		pass, err := d.mintPass(ctx, call, major, minor)
+		if err != nil {
+			// Would fail identically for any cnode; and a try without its pass
+			// would leave the cnode's callbacks outside the transaction.
+			last = appFailure(contract.Terminal, common.Internal("failed to mint transaction pass", err))
+			res.Attempts = append(res.Attempts, contract.CalloutAttempt{MemberID: member.ID, Kind: contract.Terminal, Cause: "internal error"})
+			break
+		}
+		result, failure, ctxErr := d.dispatchCalloutToMember(ctx, member, call, pass)
 		if ctxErr != nil {
 			res.CtxErr = ctxErr
 			return res

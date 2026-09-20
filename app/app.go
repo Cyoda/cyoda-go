@@ -438,7 +438,7 @@ func New(cfg Config) *App {
 	a.authzService = mockiam.NewAuthorizationService()
 
 	a.memberRegistry = internalgrpc.NewMemberRegistry()
-	localDispatcher := internalgrpc.NewProcessorDispatcher(a.memberRegistry, internalgrpc.NewRoundRobinSelector(a.memberRegistry), common.NewDefaultUUIDGenerator(), a.tokenSigner, a.selfNodeID, cfg.Cluster.TxTokenTTL, cfg.Callout.ResponseTimeout, cfg.Callout.ResponseTimeoutMax)
+	localDispatcher := internalgrpc.NewProcessorDispatcher(a.memberRegistry, internalgrpc.NewRoundRobinSelector(a.memberRegistry), common.NewDefaultUUIDGenerator(), a.tokenSigner, a.selfNodeID, cfg.Callout.ResponseTimeout, cfg.Callout.ResponseTimeoutMax, cfg.Callout.PassAllowance)
 	searchStore, err := a.storeFactory.AsyncSearchStore(context.Background())
 	if err != nil {
 		slog.Error("startup failure",

@@ -70,7 +70,7 @@ func newTestEnvWithDispatchLimits(t *testing.T, answerLimitDefault, answerLimitM
 	if err != nil {
 		t.Fatalf("token.NewSigner: %v", err)
 	}
-	dispatcher := NewProcessorDispatcher(registry, NewRoundRobinSelector(registry), common.NewDefaultUUIDGenerator(), signer, "node-test", time.Minute, answerLimitDefault, answerLimitMax)
+	dispatcher := NewProcessorDispatcher(registry, NewRoundRobinSelector(registry), common.NewDefaultUUIDGenerator(), signer, "node-test", answerLimitDefault, answerLimitMax, 30*time.Second)
 
 	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, workflow.WithExternalProcessing(dispatcher))
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
