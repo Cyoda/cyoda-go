@@ -38,7 +38,7 @@ func newTestDispatcher(t *testing.T, registry *MemberRegistry) *ProcessorDispatc
 	if err != nil {
 		t.Fatalf("token.NewSigner: %v", err)
 	}
-	return NewProcessorDispatcher(registry, NewRoundRobinSelector(registry), common.NewTestUUIDGenerator(), signer, "node-test", time.Minute)
+	return NewProcessorDispatcher(registry, NewRoundRobinSelector(registry), common.NewTestUUIDGenerator(), signer, "node-test", time.Minute, 30*time.Second, 60*time.Second)
 }
 
 func testProcessor(tags string, responseTimeoutMs int64) spi.ProcessorDefinition {

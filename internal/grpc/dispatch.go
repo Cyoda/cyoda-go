@@ -30,29 +30,49 @@ import (
 // doc comment for the full rationale.
 var ErrNoMatchingMember = contract.ErrNoMatchingMember
 
-const defaultResponseTimeoutMs = 30000
-
 // ProcessorDispatcher dispatches processor and criteria calculations to external
 // calculation members via the MemberRegistry.
 type ProcessorDispatcher struct {
-	registry   *MemberRegistry
-	selector   MemberSelector
-	uuids      spi.UUIDGenerator
-	signer     *token.Signer
-	selfNodeID string
-	tokenTTL   time.Duration
+	registry           *MemberRegistry
+	selector           MemberSelector
+	uuids              spi.UUIDGenerator
+	signer             *token.Signer
+	selfNodeID         string
+	tokenTTL           time.Duration
+	answerLimitDefault time.Duration
+	answerLimitMax     time.Duration
 }
 
 // NewProcessorDispatcher creates a new ProcessorDispatcher.
-func NewProcessorDispatcher(registry *MemberRegistry, selector MemberSelector, uuids spi.UUIDGenerator, signer *token.Signer, selfNodeID string, tokenTTL time.Duration) *ProcessorDispatcher {
+func NewProcessorDispatcher(registry *MemberRegistry, selector MemberSelector, uuids spi.UUIDGenerator, signer *token.Signer, selfNodeID string, tokenTTL, answerLimitDefault, answerLimitMax time.Duration) *ProcessorDispatcher {
 	return &ProcessorDispatcher{
-		registry:   registry,
-		selector:   selector,
-		uuids:      uuids,
-		signer:     signer,
-		selfNodeID: selfNodeID,
-		tokenTTL:   tokenTTL,
+		registry:           registry,
+		selector:           selector,
+		uuids:              uuids,
+		signer:             signer,
+		selfNodeID:         selfNodeID,
+		tokenTTL:           tokenTTL,
+		answerLimitDefault: answerLimitDefault,
+		answerLimitMax:     answerLimitMax,
 	}
+}
+
+// ResolveAnswerLimit gives the answer limit of a callout: its stored
+// responseTimeoutMs if positive, else the configured default. A stored value
+// above the configured upper bound — possible when the bound was lowered after
+// the workflow was imported — is not clamped: the callout fails as Terminal. A
+// substituted limit would be a wrong-but-available answer.
+func (d *ProcessorDispatcher) ResolveAnswerLimit(responseTimeoutMs int64) (time.Duration, *contract.CalloutFailure) {
+	if responseTimeoutMs <= 0 {
+		return d.answerLimitDefault, nil
+	}
+	// Compared in milliseconds: a huge stored value would overflow a Duration.
+	if responseTimeoutMs > d.answerLimitMax.Milliseconds() {
+		err := fmt.Errorf("responseTimeoutMs %d exceeds the upper bound of %d ms set by CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS",
+			responseTimeoutMs, d.answerLimitMax.Milliseconds())
+		return 0, &contract.CalloutFailure{Kind: contract.Terminal, Message: err.Error(), Err: err}
+	}
+	return time.Duration(responseTimeoutMs) * time.Millisecond, nil
 }
 
 // resolveTxToken returns the tx-token to attach to a calc request. A token
@@ -121,9 +141,6 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 	ceData := ce.GetTextData()
 	slog.Debug("dispatch request", "pkg", "grpc", "requestId", requestID, "payload", logging.PayloadPreview([]byte(ceData), 200))
 
-	if timeoutMs <= 0 {
-		timeoutMs = defaultResponseTimeoutMs
-	}
 	timeout := time.Duration(timeoutMs) * time.Millisecond
 	// One deadline bounds the whole callout: handing the request to the
 	// member's writer AND waiting for the response. A member whose writer is
@@ -209,6 +226,11 @@ func (d *ProcessorDispatcher) DispatchProcessor(ctx context.Context, entity *spi
 	uc := spi.MustGetUserContext(ctx)
 	tenantID := uc.Tenant.ID
 
+	limit, failure := d.ResolveAnswerLimit(processor.Config.ResponseTimeoutMs)
+	if failure != nil {
+		return nil, failure
+	}
+
 	candidates := d.registry.Candidates(tenantID, processor.Config.CalculationNodesTags)
 	if len(candidates) == 0 {
 		slog.Warn("no matching calculation member", "pkg", "grpc", "tags", processor.Config.CalculationNodesTags, "entityId", entity.Meta.ID)
@@ -241,7 +263,7 @@ func (d *ProcessorDispatcher) DispatchProcessor(ctx context.Context, entity *spi
 		req.Payload = buildEntityPayload(entity)
 	}
 
-	resp, err := d.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, requestID, txID, processor.Config.ResponseTimeoutMs, "processor", processor.Name)
+	resp, err := d.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, requestID, txID, limit.Milliseconds(), "processor", processor.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -301,6 +323,11 @@ func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.
 		attachEntity = *parsed.Function.Config.AttachEntity
 	}
 
+	limit, failure := d.ResolveAnswerLimit(parsed.Function.Config.ResponseTimeoutMs)
+	if failure != nil {
+		return false, "", failure
+	}
+
 	candidates := d.registry.Candidates(tenantID, parsed.Function.Config.CalculationNodesTags)
 	if len(candidates) == 0 {
 		slog.Warn("no matching calculation member", "pkg", "grpc", "tags", parsed.Function.Config.CalculationNodesTags, "entityId", entity.Meta.ID)
@@ -334,7 +361,7 @@ func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.
 		req.Payload = buildEntityPayload(entity)
 	}
 
-	resp, err := d.dispatchCalloutToMember(ctx, member, EntityCriteriaCalculationRequest, req, requestID, txID, parsed.Function.Config.ResponseTimeoutMs, "criteria", parsed.Function.Name)
+	resp, err := d.dispatchCalloutToMember(ctx, member, EntityCriteriaCalculationRequest, req, requestID, txID, limit.Milliseconds(), "criteria", parsed.Function.Name)
 	if err != nil {
 		return false, "", err
 	}
@@ -350,6 +377,11 @@ func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.
 func (d *ProcessorDispatcher) DispatchFunction(ctx context.Context, entity *spi.Entity, fn spi.ScheduleFunction, workflowName string, transitionName string, txID string) (contract.FunctionResult, error) {
 	uc := spi.MustGetUserContext(ctx)
 	tenantID := uc.Tenant.ID
+
+	limit, failure := d.ResolveAnswerLimit(fn.ResponseTimeoutMs)
+	if failure != nil {
+		return contract.FunctionResult{}, failure
+	}
 
 	candidates := d.registry.Candidates(tenantID, fn.CalculationNodesTags)
 	if len(candidates) == 0 {
@@ -380,7 +412,7 @@ func (d *ProcessorDispatcher) DispatchFunction(ctx context.Context, entity *spi.
 		req.Payload = buildEntityPayload(entity)
 	}
 
-	resp, err := d.dispatchCalloutToMember(ctx, member, EntityFunctionCalculationRequest, req, requestID, txID, fn.ResponseTimeoutMs, "function", fn.Name)
+	resp, err := d.dispatchCalloutToMember(ctx, member, EntityFunctionCalculationRequest, req, requestID, txID, limit.Milliseconds(), "function", fn.Name)
 	if err != nil {
 		return contract.FunctionResult{}, err
 	}

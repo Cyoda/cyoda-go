@@ -50,7 +50,7 @@ import (
 // processor/criterion dispatch actually runs (rather than failing with "no
 // external processing configured") and tests can register a member to answer
 // requests, or leave the registry empty to exercise the no-member path.
-func newTestEnvWithDispatch(t *testing.T) (*CloudEventsServiceImpl, *workflow.Handler, context.Context) {
+func newTestEnvWithDispatchLimits(t *testing.T, answerLimitDefault, answerLimitMax time.Duration) (*CloudEventsServiceImpl, *workflow.Handler, context.Context) {
 	t.Helper()
 
 	factory := memory.NewStoreFactory()
@@ -70,7 +70,7 @@ func newTestEnvWithDispatch(t *testing.T) (*CloudEventsServiceImpl, *workflow.Ha
 	if err != nil {
 		t.Fatalf("token.NewSigner: %v", err)
 	}
-	dispatcher := NewProcessorDispatcher(registry, NewRoundRobinSelector(registry), common.NewDefaultUUIDGenerator(), signer, "node-test", time.Minute)
+	dispatcher := NewProcessorDispatcher(registry, NewRoundRobinSelector(registry), common.NewDefaultUUIDGenerator(), signer, "node-test", time.Minute, answerLimitDefault, answerLimitMax)
 
 	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, workflow.WithExternalProcessing(dispatcher))
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
@@ -89,6 +89,11 @@ func newTestEnvWithDispatch(t *testing.T) (*CloudEventsServiceImpl, *workflow.Ha
 
 	ctx := spi.WithUserContext(context.Background(), uc)
 	return svc, workflowHandler, ctx
+}
+
+func newTestEnvWithDispatch(t *testing.T) (*CloudEventsServiceImpl, *workflow.Handler, context.Context) {
+	t.Helper()
+	return newTestEnvWithDispatchLimits(t, 30*time.Second, 60*time.Second)
 }
 
 // testTenant is the tenant ID every test in this file registers gRPC
