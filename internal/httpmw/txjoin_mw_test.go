@@ -53,7 +53,7 @@ func okHandler() http.Handler {
 
 func TestTxJoin_JoinsAndPassesCtx(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("local", "tx-1", time.Now().Add(time.Minute))
+	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-1", Major: 1})
 	var sawTx string
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if tx := spi.GetTransaction(r.Context()); tx != nil {
@@ -73,7 +73,7 @@ func TestTxJoin_JoinsAndPassesCtx(t *testing.T) {
 
 func TestTxJoin_NotFoundReturns404(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("local", "tx-x", time.Now().Add(time.Minute))
+	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-x", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-x", Major: 1})
 	h := TxJoin(s, fakeJoinTM{joinErr: spi.ErrTxNotFound})(okHandler())
 	req := httptest.NewRequest("POST", "/entity", nil)
 	req.Header.Set(proxy.TxTokenHeader, tok)
@@ -101,7 +101,7 @@ func TestTxJoin_TamperedTokenReturns401(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
 	// Issue with a different signer so verification fails.
 	s2, _ := token.NewSigner([]byte("different-secret-key-at-least-32b!"))
-	tok, _ := s2.Issue("local", "tx-bad", time.Now().Add(time.Minute))
+	tok, _ := s2.Issue(token.Claims{NodeID: "local", TxRef: "tx-bad", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-bad", Major: 1})
 	h := TxJoin(s, fakeJoinTM{})(okHandler())
 	req := httptest.NewRequest("POST", "/entity", nil)
 	req.Header.Set(proxy.TxTokenHeader, tok)

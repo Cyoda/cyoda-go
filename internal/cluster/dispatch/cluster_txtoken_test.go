@@ -13,7 +13,7 @@ func TestBuildProcessorRequest_CarriesOwnerToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
 	}
-	tok, err := signer.Issue("node-A", "tx-9", time.Now().Add(time.Minute))
+	tok, err := signer.Issue(token.Claims{NodeID: "node-A", TxRef: "tx-9", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-9", Major: 1})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}

@@ -147,7 +147,8 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 	// HMAC-valid (server's own signer) but references a tx that was never
 	// registered, so Join fails ErrTxNotFound rather than being rejected as forged.
 	t.Run("NotFound_404", func(t *testing.T) {
-		tok, err := h.app.TokenSigner().Issue("local", "no-such-tx-"+randSuffix(t), time.Now().Add(time.Minute))
+		txRef := "no-such-tx-" + randSuffix(t)
+		tok, err := h.app.TokenSigner().Issue(token.Claims{NodeID: "local", TxRef: txRef, ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-" + txRef, Major: 1})
 		if err != nil {
 			t.Fatalf("Issue: %v", err)
 		}
@@ -164,7 +165,8 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 	// expired token → 410 TRANSACTION_EXPIRED. HMAC-valid but past its deadline,
 	// so Verify fails ErrTokenExpired before any Join is attempted.
 	t.Run("Expired_410", func(t *testing.T) {
-		tok, err := h.app.TokenSigner().Issue("local", "tx-"+randSuffix(t), time.Now().Add(-10*time.Second))
+		txRef := "tx-" + randSuffix(t)
+		tok, err := h.app.TokenSigner().Issue(token.Claims{NodeID: "local", TxRef: txRef, ExpiresAt: time.Now().Add(-10 * time.Second).Unix(), Callout: "req-" + txRef, Major: 1})
 		if err != nil {
 			t.Fatalf("Issue: %v", err)
 		}
@@ -185,7 +187,8 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewSigner(forger): %v", err)
 		}
-		tok, err := forger.Issue("local", "tx-"+randSuffix(t), time.Now().Add(time.Minute))
+		txRef := "tx-" + randSuffix(t)
+		tok, err := forger.Issue(token.Claims{NodeID: "local", TxRef: txRef, ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-" + txRef, Major: 1})
 		if err != nil {
 			t.Fatalf("Issue: %v", err)
 		}

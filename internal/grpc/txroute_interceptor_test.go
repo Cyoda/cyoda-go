@@ -164,7 +164,7 @@ func decodeEntityRespCE(t *testing.T, ce *cepb.CloudEvent) events.EntityResponse
 // A valid self-node token results in a joined ctx handed to the handler.
 func TestTxRouteInterceptor_LocalJoin(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("local", "tx-1", time.Now().Add(time.Minute))
+	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-1", Major: 1})
 	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 
@@ -186,7 +186,7 @@ func TestTxRouteInterceptor_LocalJoin(t *testing.T) {
 // within its still-open transaction must observe its own uncommitted writes.
 func TestTxRouteInterceptor_SearchLocalJoin(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("local", "tx-search-1", time.Now().Add(time.Minute))
+	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-search-1", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-search-1", Major: 1})
 	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 
@@ -207,7 +207,7 @@ func TestTxRouteInterceptor_SearchLocalJoin(t *testing.T) {
 // the stream context, symmetric with EntityManageCollection.
 func TestTxRouteInterceptor_SearchStreamLocalJoin(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("local", "tx-search-7", time.Now().Add(time.Minute))
+	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-search-7", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-search-7", Major: 1})
 	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
 	baseCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 	ss := &fakeServerStream{ctx: baseCtx}
@@ -232,7 +232,7 @@ func TestTxRouteInterceptor_SearchStreamLocalJoin(t *testing.T) {
 // peer-owned transaction's reads execute on the owner (where T is live).
 func TestTxRouteInterceptor_SearchForeignProxies(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("node-B", "tx-search-9", time.Now().Add(time.Minute))
+	tok, _ := s.Issue(token.Claims{NodeID: "node-B", TxRef: "tx-search-9", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-search-9", Major: 1})
 	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
 		"node-B": {NodeID: "node-B", Addr: "http://node-b:8080", Alive: true},
 	}}
@@ -272,7 +272,7 @@ func TestTxRouteInterceptor_SearchForeignProxies(t *testing.T) {
 // the owner via the search stream forward seam and copies frames back.
 func TestTxRouteInterceptor_SearchStreamForeignProxies(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("node-B", "tx-search-11", time.Now().Add(time.Minute))
+	tok, _ := s.Issue(token.Claims{NodeID: "node-B", TxRef: "tx-search-11", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-search-11", Major: 1})
 	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
 		"node-B": {NodeID: "node-B", Addr: "http://node-b:8080", Alive: true},
 	}}
@@ -363,7 +363,7 @@ func TestTxRouteInterceptor_SearchStreamBadTokenEnvelope(t *testing.T) {
 // When the peer has no explicit GRPCAddr, the addr is derived from its HTTP host + local gRPC port.
 func TestTxRouteInterceptor_ForeignProxies(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("node-B", "tx-9", time.Now().Add(time.Minute))
+	tok, _ := s.Issue(token.Claims{NodeID: "node-B", TxRef: "tx-9", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-9", Major: 1})
 	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
 		"node-B": {NodeID: "node-B", Addr: "http://node-b:8080", Alive: true},
 	}}
@@ -398,7 +398,7 @@ func TestTxRouteInterceptor_ForeignProxies(t *testing.T) {
 // A token for a peer that advertises an explicit GRPCAddr uses it verbatim.
 func TestTxRouteInterceptor_ForeignProxiesAdvertisedGRPCAddr(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("node-B", "tx-10", time.Now().Add(time.Minute))
+	tok, _ := s.Issue(token.Claims{NodeID: "node-B", TxRef: "tx-10", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-10", Major: 1})
 	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
 		"node-B": {NodeID: "node-B", Addr: "http://node-b:8080", GRPCAddr: "node-b:19090", Alive: true},
 	}}
@@ -483,7 +483,7 @@ func assertEnvelopeCode(t *testing.T, resp any, wantReqID, wantCode string) {
 // TRANSACTION_EXPIRED (mapped from token.ErrTokenExpired), never a raw status.
 func TestTxRouteInterceptor_ExpiredEnvelope(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("local", "tx-exp", time.Now().Add(-time.Second))
+	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-exp", ExpiresAt: time.Now().Add(-time.Second).Unix(), Callout: "req-tx-exp", Major: 1})
 	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 
@@ -501,7 +501,7 @@ func TestTxRouteInterceptor_ExpiredEnvelope(t *testing.T) {
 func TestTxRouteInterceptor_ForgedEnvelope(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
 	forger, _ := token.NewSigner([]byte("forged-secret-key-at-least-32-byte!"))
-	tok, _ := forger.Issue("local", "tx-forged", time.Now().Add(time.Minute))
+	tok, _ := forger.Issue(token.Claims{NodeID: "local", TxRef: "tx-forged", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-forged", Major: 1})
 	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 
@@ -519,7 +519,7 @@ func TestTxRouteInterceptor_ForgedEnvelope(t *testing.T) {
 // TRANSACTION_NOT_FOUND (mapped from spi.ErrTxNotFound in JoinFromToken).
 func TestTxRouteInterceptor_NotFoundEnvelope(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("local", "tx-gone", time.Now().Add(time.Minute))
+	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-gone", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-gone", Major: 1})
 	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeErrTM{err: spi.ErrTxNotFound}, 9090, true)
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 
@@ -542,7 +542,7 @@ func TestTxRouteInterceptor_NotFoundEnvelope(t *testing.T) {
 // than a raw gRPC error. Covers classifyRouteErr's proxy.ErrNodeUnavailable arm.
 func TestTxRouteInterceptor_DeadNodeUnavailableEnvelope(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("node-owner", "tx-owner-down", time.Now().Add(time.Minute))
+	tok, _ := s.Issue(token.Claims{NodeID: "node-owner", TxRef: "tx-owner-down", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-owner-down", Major: 1})
 	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
 		"node-owner": {NodeID: "node-owner", Addr: "http://node-owner:8080", Alive: false},
 	}}
@@ -563,7 +563,7 @@ func TestTxRouteInterceptor_DeadNodeUnavailableEnvelope(t *testing.T) {
 // FORBIDDEN (mapped from spi.ErrTxTenantMismatch in JoinFromToken).
 func TestTxRouteInterceptor_TenantMismatchEnvelope(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("local", "tx-other-tenant", time.Now().Add(time.Minute))
+	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-other-tenant", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-other-tenant", Major: 1})
 	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeErrTM{err: spi.ErrTxTenantMismatch}, 9090, true)
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 
@@ -605,7 +605,7 @@ func TestTxRouteInterceptor_NonEntityManagePassThrough(t *testing.T) {
 // A valid self-node token joins the tx onto the stream context.
 func TestTxRouteInterceptor_StreamLocalJoin(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("local", "tx-7", time.Now().Add(time.Minute))
+	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-7", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-7", Major: 1})
 	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
 	baseCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 	ss := &fakeServerStream{ctx: baseCtx}
@@ -657,7 +657,7 @@ func TestTxRouteInterceptor_StreamNonEntityManagePassThrough(t *testing.T) {
 // (derived from HTTP host + local gRPC port) and copies frames back to the caller's stream.
 func TestTxRouteInterceptor_StreamForeignProxies(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("node-B", "tx-11", time.Now().Add(time.Minute))
+	tok, _ := s.Issue(token.Claims{NodeID: "node-B", TxRef: "tx-11", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-11", Major: 1})
 	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
 		"node-B": {NodeID: "node-B", Addr: "http://node-b:8080", Alive: true},
 	}}
@@ -691,7 +691,7 @@ func TestTxRouteInterceptor_StreamForeignProxies(t *testing.T) {
 // gRPC status), and the envelope must echo the original RequestID.
 func TestTxRouteInterceptor_ForeignProxiesForwardErr(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("node-B", "tx-99", time.Now().Add(time.Minute))
+	tok, _ := s.Issue(token.Claims{NodeID: "node-B", TxRef: "tx-99", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-99", Major: 1})
 	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
 		"node-B": {NodeID: "node-B", Addr: "http://node-b:8080", Alive: true},
 	}}
@@ -725,7 +725,7 @@ func TestTxRouteInterceptor_ForeignProxiesForwardErr(t *testing.T) {
 // of the already-consumed inbound message (not empty from a second RecvMsg).
 func TestTxRouteInterceptor_StreamForwardErrPreservesRequestID(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("node-B", "tx-88", time.Now().Add(time.Minute))
+	tok, _ := s.Issue(token.Claims{NodeID: "node-B", TxRef: "tx-88", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-88", Major: 1})
 	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
 		"node-B": {NodeID: "node-B", Addr: "http://node-b:8080", Alive: true},
 	}}

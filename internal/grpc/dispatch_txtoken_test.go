@@ -23,7 +23,7 @@ func TestDispatch_MintsTxTokenFromTxID(t *testing.T) {
 	signer, _ := token.NewSigner(make32(t))
 	d := NewProcessorDispatcher(NewMemberRegistry(), common.NewTestUUIDGenerator(), signer, "node-A", time.Minute)
 
-	tok := d.resolveTxToken(context.Background(), "tx-42")
+	tok := d.resolveTxToken(context.Background(), "tx-42", "req-42")
 	claims, err := signer.Verify(tok)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
@@ -31,12 +31,15 @@ func TestDispatch_MintsTxTokenFromTxID(t *testing.T) {
 	if claims.NodeID != "node-A" || claims.TxRef != "tx-42" {
 		t.Fatalf("claims=%+v", claims)
 	}
+	if claims.Callout != "req-42" || claims.Major != 1 {
+		t.Fatalf("claims=%+v", claims)
+	}
 }
 
 func TestDispatch_EmptyTxIDNoToken(t *testing.T) {
 	signer, _ := token.NewSigner(make32(t))
 	d := NewProcessorDispatcher(NewMemberRegistry(), common.NewTestUUIDGenerator(), signer, "node-A", time.Minute)
-	if tok := d.resolveTxToken(context.Background(), ""); tok != "" {
+	if tok := d.resolveTxToken(context.Background(), "", "req-empty"); tok != "" {
 		t.Fatalf("expected empty token, got %q", tok)
 	}
 }
@@ -45,7 +48,7 @@ func TestDispatch_CtxTokenOverridesSelfMint(t *testing.T) {
 	signer, _ := token.NewSigner(make32(t))
 	d := NewProcessorDispatcher(NewMemberRegistry(), common.NewTestUUIDGenerator(), signer, "node-B", time.Minute)
 	ctx := WithTxToken(context.Background(), "pre-minted-A")
-	if tok := d.resolveTxToken(ctx, "tx-42"); tok != "pre-minted-A" {
+	if tok := d.resolveTxToken(ctx, "tx-42", "req-42"); tok != "pre-minted-A" {
 		t.Fatalf("expected ctx token, got %q", tok)
 	}
 }
