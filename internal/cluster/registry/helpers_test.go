@@ -13,12 +13,13 @@ import (
 // stability window, an HTTP address derived from the id.
 func gossipCfg(id string, port int, seeds ...string) registry.GossipConfig {
 	return registry.GossipConfig{
-		NodeID:          id,
-		NodeAddr:        "http://" + id + ".test:8080",
-		BindAddr:        "127.0.0.1",
-		BindPort:        port,
-		Seeds:           seeds,
-		StabilityWindow: 200 * time.Millisecond,
+		NodeID:           id,
+		NodeAddr:         "http://" + id + ".test:8080",
+		BindAddr:         "127.0.0.1",
+		BindPort:         port,
+		Seeds:            seeds,
+		StabilityWindow:  200 * time.Millisecond,
+		ListScanInterval: 200 * time.Millisecond,
 	}
 }
 

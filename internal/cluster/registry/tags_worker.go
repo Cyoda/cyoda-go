@@ -9,11 +9,14 @@ import (
 	"github.com/hashicorp/memberlist"
 )
 
-// topicTags carries one pnode's complete tag list to a peer over memberlist's
-// reliable channel. memberlist delivers reliable user messages and gossip
-// broadcasts to the same NotifyMsg, so it uses the topic framing of
-// Broadcast/Subscribe.
-const topicTags = "cluster.tags"
+// topicTags carries one pnode's complete tag list to a peer, and
+// topicTagsRequest asks a peer for its list, over memberlist's reliable
+// channel. memberlist delivers reliable user messages and gossip broadcasts to
+// the same NotifyMsg, so they use the topic framing of Broadcast/Subscribe.
+const (
+	topicTags        = "cluster.tags"
+	topicTagsRequest = "cluster.tags.request"
+)
 
 const (
 	// tagEventQueueDepth bounds what memberlist's callbacks may leave for the
@@ -31,15 +34,24 @@ type tagListMsg struct {
 	Tags    map[string][]string `json:"t,omitempty"`
 }
 
+// tagRequestMsg is the payload of topicTagsRequest: "send me your list".
+type tagRequestMsg struct {
+	From string `json:"from"`
+}
+
 type tagEventKind int
 
 const (
 	evList tagEventKind = iota
+	evRequest
+	evMember // a member joined or changed its metadata: look at it
+	evLeave
 )
 
 type tagEvent struct {
 	kind    tagEventKind
-	payload []byte // a copy of the message payload
+	node    string // evMember, evLeave: the member's name
+	payload []byte // evList, evRequest: a copy of the message payload
 }
 
 // tagEvents is everything memberlist's callbacks are allowed to do: copy what
@@ -66,14 +78,32 @@ func (q *tagEvents) offer(ev tagEvent) {
 	}
 }
 
-func (q *tagEvents) NotifyJoin(n *memberlist.Node)   { q.dir.set(n) }
-func (q *tagEvents) NotifyUpdate(n *memberlist.Node) { q.dir.set(n) }
-func (q *tagEvents) NotifyLeave(n *memberlist.Node)  { q.dir.remove(n.Name) }
+// The directory first, then the nudge: the nudge may be dropped, the directory
+// entry cannot.
+func (q *tagEvents) NotifyJoin(n *memberlist.Node) {
+	q.dir.set(n)
+	q.offer(tagEvent{kind: evMember, node: n.Name})
+}
+
+func (q *tagEvents) NotifyUpdate(n *memberlist.Node) {
+	q.dir.set(n)
+	q.offer(tagEvent{kind: evMember, node: n.Name})
+}
+
+func (q *tagEvents) NotifyLeave(n *memberlist.Node) {
+	q.dir.remove(n.Name)
+	q.offer(tagEvent{kind: evLeave, node: n.Name})
+}
 
 // onList is the topicTags handler. memberlist reuses the buffer it passes to
 // NotifyMsg, so the payload is copied before the handler returns.
 func (q *tagEvents) onList(payload []byte) {
 	q.offer(tagEvent{kind: evList, payload: bytes.Clone(payload)})
+}
+
+// onRequest is the topicTagsRequest handler.
+func (q *tagEvents) onRequest(payload []byte) {
+	q.offer(tagEvent{kind: evRequest, payload: bytes.Clone(payload)})
 }
 
 func encodeTagMsg(topic string, v any) []byte {
@@ -90,6 +120,8 @@ func encodeTagMsg(topic string, v any) []byte {
 // started after memberlist.Create returns, so g.list is set before it runs.
 func (g *Gossip) runTagWorker() {
 	defer close(g.done)
+	scan := time.NewTicker(g.cfg.ListScanInterval)
+	defer scan.Stop()
 	for {
 		select {
 		case <-g.stop:
@@ -98,6 +130,8 @@ func (g *Gossip) runTagWorker() {
 			g.publishOwnList()
 		case ev := <-g.events.ch:
 			g.handleTagEvent(ev)
+		case <-scan.C:
+			g.scanLists()
 		}
 	}
 }
@@ -106,7 +140,97 @@ func (g *Gossip) handleTagEvent(ev tagEvent) {
 	switch ev.kind {
 	case evList:
 		g.handleList(ev.payload)
+	case evRequest:
+		g.handleRequest(ev.payload)
+	case evMember:
+		g.handleMember(ev.node)
+	case evLeave:
+		g.handleLeave(ev.node)
 	}
+}
+
+// handleMember runs for a pnode that joined or changed its metadata: if the
+// list held for it is not the one it announces, ask for it. Events about this
+// pnode are ignored — NotifyJoin fires for it inside memberlist.Create and
+// NotifyUpdate inside every UpdateNode.
+func (g *Gossip) handleMember(name string) {
+	if name == g.cfg.NodeID {
+		return
+	}
+	m, announced, ok := g.announced(name)
+	if !ok {
+		return
+	}
+	if !g.tags.current(name, announced) {
+		g.requestList(m)
+	}
+}
+
+func (g *Gossip) handleLeave(name string) {
+	if name == g.cfg.NodeID {
+		return
+	}
+	g.tags.drop(name)
+}
+
+func (g *Gossip) handleRequest(payload []byte) {
+	var req tagRequestMsg
+	if err := json.Unmarshal(payload, &req); err != nil {
+		slog.Warn("malformed tag list request",
+			"pkg", "cluster/registry", "size", len(payload), "err", err)
+		return
+	}
+	if req.From == g.cfg.NodeID {
+		return
+	}
+	m, ok := g.member(req.From)
+	if !ok {
+		return // the requester is not an alive member; its next event asks again
+	}
+	version, tags := g.tags.ownList()
+	g.sendAsync(m, "list", encodeTagMsg(topicTags, tagListMsg{NodeID: g.cfg.NodeID, Version: version, Tags: tags}))
+}
+
+func (g *Gossip) requestList(m *memberlist.Node) {
+	g.sendAsync(m, "request", encodeTagMsg(topicTagsRequest, tagRequestMsg{From: g.cfg.NodeID}))
+}
+
+// scanLists is the floor under the events: it compares every alive member's
+// announced version with the list held and fetches wherever they differ, and
+// it forgets the lists of pnodes that are gone. It is a full scan, not a list
+// of outstanding requests, because an event dropped from a full queue leaves
+// no request behind.
+func (g *Gossip) scanLists() {
+	alive := make(map[string]struct{})
+	for _, m := range g.dir.all() {
+		if m.Name == g.cfg.NodeID {
+			continue
+		}
+		alive[m.Name] = struct{}{}
+		nm, err := parseMeta(m.Meta)
+		if err != nil {
+			continue
+		}
+		if !g.tags.current(m.Name, nm.Tags) {
+			g.requestList(m)
+		}
+	}
+	g.tags.retain(alive)
+}
+
+// ScanIntervalFor returns the scan interval that suits a callout patience:
+// half of it, so a list lost together with its events is fetched while a
+// callout can still wait for it, within 100 ms … 1 s. With waiting disabled
+// it is 1 s.
+func ScanIntervalFor(patience time.Duration) time.Duration {
+	const (
+		shortest = 100 * time.Millisecond
+		longest  = time.Second
+	)
+	if patience <= 0 {
+		return longest
+	}
+	return min(max(patience/2, shortest), longest)
 }
 
 // publishOwnList re-advertises the metadata, which now names the new version,
@@ -162,11 +286,18 @@ func (g *Gossip) handleList(payload []byte) {
 			"pkg", "cluster/registry", "size", len(payload), "err", err)
 		return
 	}
-	_, announced, ok := g.announced(msg.NodeID)
+	m, announced, ok := g.announced(msg.NodeID)
 	stored := g.tags.put(msg.NodeID, msg.Version, msg.Tags, announced, ok)
 	slog.Debug("tag list received",
 		"pkg", "cluster/registry", "peer", msg.NodeID,
 		"seq", msg.Version.Seq, "tenants", len(msg.Tags), "stored", stored)
+	// Still not the announced list: fetch at once — but only within the
+	// announced epoch. A list of another epoch means this pnode's view of the
+	// sender's metadata is behind; the answer to a fetch would be refused the
+	// same way, so the metadata event (or the scan) fetches instead.
+	if ok && msg.NodeID != g.cfg.NodeID && msg.Version.Epoch == announced.Epoch && !g.tags.current(msg.NodeID, announced) {
+		g.requestList(m)
+	}
 }
 
 // member returns a copy of the alive member called name.

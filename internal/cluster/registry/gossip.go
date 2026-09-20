@@ -31,6 +31,11 @@ type GossipConfig struct {
 	Seeds           []string
 	StabilityWindow time.Duration
 	SecretKey       []byte
+	// ListScanInterval is how often every member's announced list version is
+	// compared with the list held, as the floor under the membership events.
+	// Zero means one second. app.go derives it from the callout patience with
+	// ScanIntervalFor.
+	ListScanInterval time.Duration
 }
 
 // nodeMeta is serialized as JSON in memberlist node metadata. It holds the
@@ -100,6 +105,9 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 	if err := checkIdentityFits(cfg); err != nil {
 		return nil, err
 	}
+	if cfg.ListScanInterval <= 0 {
+		cfg.ListScanInterval = time.Second
+	}
 	// The epoch only has to differ between two lives of this pnode.
 	epoch := time.Now().UnixNano()
 	metaBytes, err := marshalMeta(cfg, listVersion{Epoch: epoch})
@@ -114,6 +122,7 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 	dir := newDirectory()
 	events := newTagEvents(dir)
 	del.subscribe(topicTags, events.onList)
+	del.subscribe(topicTagsRequest, events.onRequest)
 	g := &Gossip{
 		cfg:      cfg,
 		delegate: del,
