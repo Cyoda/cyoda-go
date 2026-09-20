@@ -224,10 +224,19 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 	select {
 	case resp := <-ch:
 		// Warnings first, keyed by callout name, so that a failed try still
-		// surfaces them and the client sees which callout warned.
+		// surfaces them and the client sees which callout warned. Bounded here,
+		// where the member's own text becomes the client's, in the same way and
+		// for the same reason as its failure message below.
 		if resp != nil {
-			for _, w := range resp.Warnings {
-				common.AddWarning(ctx, fmt.Sprintf("%s %s: %s", label, name, w))
+			kept := resp.Warnings
+			if len(kept) > maxMemberWarnings {
+				kept = kept[:maxMemberWarnings]
+			}
+			for _, w := range kept {
+				common.AddWarning(ctx, fmt.Sprintf("%s %s: %s", label, name, boundMemberText(w)))
+			}
+			if len(resp.Warnings) > maxMemberWarnings {
+				common.AddWarning(ctx, fmt.Sprintf("%s %s: further warnings from the compute member were omitted", label, name))
 			}
 		}
 		if resp != nil && resp.Disconnected {
@@ -341,13 +350,20 @@ func disconnectedErr(label string) *common.AppError {
 		fmt.Sprintf("compute member disconnected during %s dispatch", label)).AsRetryable()
 }
 
-// maxMemberMessageRunes bounds a compute member's own free text before it
-// becomes client text: a MemberFailed failure's Message, which flows into a
-// 400 body directly and, once several tries are exhausted, is concatenated
-// into a CALLOUT_FAILED list (internal/callout/failure.go's attemptsMessage)
-// alongside every other try's cause. Unbounded, one talkative or malicious
-// cnode could make that list arbitrarily large.
+// maxMemberMessageRunes bounds each piece of a compute member's own free text
+// before it becomes client text: a MemberFailed failure's Message, which flows
+// into a 400 body directly and, once several tries are exhausted, is
+// concatenated into a CALLOUT_FAILED list (internal/callout/failure.go's
+// attemptsMessage) alongside every other try's cause; and each of the
+// member's warnings, which are returned in the response. Unbounded, one
+// talkative or malicious cnode could make either arbitrarily large.
 const maxMemberMessageRunes = 512
+
+// maxMemberWarnings bounds how many of a compute member's warnings become
+// client text for one try. They are added to the request's diagnostics and
+// returned in the response, so an unbounded list is a response a single cnode
+// decides the size of. Past the bound one warning says the rest were left out.
+const maxMemberWarnings = 32
 
 // boundMemberText keeps the first maxMemberMessageRunes runes of s, appending
 // "…" when anything was cut so a reader can tell a shortened message from a
