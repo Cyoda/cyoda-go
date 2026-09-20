@@ -34,6 +34,21 @@ type pgMultiNode struct {
 	// invisible at the HTTP data plane. Off the shared interface for the same
 	// reason as KillNode/NodeLogs.
 	connStr string
+	// computeBin and grpcEndpoints back the optional ComputeClientCapable
+	// capability: a further compute client attached to a chosen pnode.
+	computeBin    string
+	grpcEndpoints []string
+}
+
+var _ multinode.ComputeClientCapable = (*pgMultiNode)(nil)
+
+// StartComputeClient implements multinode.ComputeClientCapable.
+func (f *pgMultiNode) StartComputeClient(t *testing.T, node int, spec parity.ComputeClientSpec) parity.ComputeClient {
+	t.Helper()
+	if node < 0 || node >= len(f.baseURLs) || node >= len(f.grpcEndpoints) {
+		t.Fatalf("StartComputeClient: pnode %d out of range (cluster has %d)", node, len(f.baseURLs))
+	}
+	return fixtureutil.StartComputeClientForFixture(t, f.keySet, f.computeBin, f.grpcEndpoints[node], f.baseURLs[node], spec)
 }
 
 // BaseURLs implements multinode.MultiNodeFixture.
@@ -180,10 +195,12 @@ func MustSetupMultiNodeWithEnv(t *testing.T, n int, extraEnv []string) (multinod
 	}
 
 	return &pgMultiNode{
-		baseURLs: result.BaseURLs,
-		keySet:   ks,
-		nodeLogs: result.NodeLogs,
-		killNode: result.KillNode,
-		connStr:  connStr,
+		baseURLs:      result.BaseURLs,
+		keySet:        ks,
+		nodeLogs:      result.NodeLogs,
+		killNode:      result.KillNode,
+		connStr:       connStr,
+		computeBin:    result.ComputeBin,
+		grpcEndpoints: result.GRPCEndpoints,
 	}, cleanup
 }
