@@ -260,11 +260,8 @@ func (e *Engine) now() time.Time {
 // every normal return, so their guards fire only when a nil named ctx return says
 // the stack is unwinding through a panic. None of them recover: surviving a panic
 // is the request door's decision, not the engine's.
-//
-// Nil-safe on txMgr: segmentation implies a transaction manager, so this cannot
-// be nil in production, but the engine is constructed without one in unit tests.
 func (e *Engine) rollbackSegment(ctx context.Context, openTxID, entryTxID string) {
-	if e.txMgr == nil || openTxID == "" || openTxID == entryTxID {
+	if openTxID == "" || openTxID == entryTxID {
 		return
 	}
 	rbCtx, cancel := common.RollbackContext(ctx)

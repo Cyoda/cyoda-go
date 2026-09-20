@@ -105,12 +105,59 @@ func callsFenceCheck(n ast.Node) bool {
 	return found
 }
 
+// boundFenceCheckIdent returns the identifier the if statement's init binds a
+// call to fence.Check to — `cerr` in `if cerr := fence.Check(ctx); …` — or ""
+// when init has no such shape, including the condition form
+// (`if fence.Check(ctx) != nil { … }`), which binds the result to no name at
+// all, so there is nothing for the body to swallow by naming something else.
+func boundFenceCheckIdent(init ast.Stmt) string {
+	assign, ok := init.(*ast.AssignStmt)
+	if !ok || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
+		return ""
+	}
+	ident, ok := assign.Lhs[0].(*ast.Ident)
+	if !ok {
+		return ""
+	}
+	call, ok := assign.Rhs[0].(*ast.CallExpr)
+	if !ok {
+		return ""
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Check" {
+		return ""
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	if !ok || pkg.Name != "fence" {
+		return ""
+	}
+	return ident.Name
+}
+
+// identAppears reports whether an identifier named name occurs anywhere inside
+// expr — as the expression itself, or as an argument buried in a wrapping call
+// such as fmt.Errorf("…: %w", cerr).
+func identAppears(name string, expr ast.Expr) bool {
+	found := false
+	ast.Inspect(expr, func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok && id.Name == name {
+			found = true
+		}
+		return !found
+	})
+	return found
+}
+
 // isRefusalCheck reports whether s refuses the chain: an `if` that calls
-// fence.Check in its init or its condition and returns from its body. Both
-// halves matter. A statement that only mentions fence.Check proves nothing —
-// `_ = fence.Check(ctx)` throws the answer away, and a body that logs and falls
-// through lets the refused chain carry on to the store operation the check
-// exists to prevent.
+// fence.Check in its init or its condition and returns from its body — and,
+// where the init binds the check's result to a name, returns that identifier
+// (directly, or wrapped in a call). Every part matters. A statement that only
+// mentions fence.Check proves nothing — `_ = fence.Check(ctx)` throws the
+// answer away; a body that logs and falls through lets the refused chain carry
+// on to the store operation the check exists to prevent; and
+// `if cerr := fence.Check(ctx); cerr != nil { return nil }` calls the check,
+// returns from the body, and still discards the refusal — the bound `cerr`
+// never reaches the return.
 func isRefusalCheck(s ast.Stmt) bool {
 	ifStmt, ok := s.(*ast.IfStmt)
 	if !ok {
@@ -119,10 +166,21 @@ func isRefusalCheck(s ast.Stmt) bool {
 	if !callsFenceCheck(ifStmt.Init) && !callsFenceCheck(ifStmt.Cond) {
 		return false
 	}
+	ident := boundFenceCheckIdent(ifStmt.Init)
 	for _, body := range ifStmt.Body.List {
-		if _, isReturn := body.(*ast.ReturnStmt); isReturn {
+		ret, isReturn := body.(*ast.ReturnStmt)
+		if !isReturn {
+			continue
+		}
+		if ident == "" {
 			return true
 		}
+		for _, result := range ret.Results {
+			if identAppears(ident, result) {
+				return true
+			}
+		}
+		return false
 	}
 	return false
 }
@@ -366,6 +424,23 @@ func f() {
 		slog.Warn("superseded", "err", cerr)
 	}
 	use()
+}
+`,
+			wantBad: true,
+		},
+		{
+			name: "swallows the refusal: returns nil instead of the checked error",
+			src: `package p
+
+func f() error {
+	resume := txgate.Suspend(ctx)
+	defer resume()
+	dispatch()
+	resume()
+	if cerr := fence.Check(ctx); cerr != nil {
+		return nil
+	}
+	return nil
 }
 `,
 			wantBad: true,
