@@ -3,13 +3,17 @@ package e2e_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
+	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 )
 
 // scripted_cnode_test.go lets a test attach SEVERAL cnodes to one callout
@@ -217,4 +221,67 @@ func procWorkflowJSON(wfName, procName, mode string, config map[string]any) stri
 		}},
 	})
 	return string(b)
+}
+
+// scriptLateCallback holds a callout until release is closed (or the cnode
+// ends), then runs callback with the pass the callout was given, then gives
+// then. callback runs off the test goroutine: hand results back on a channel.
+func scriptLateCallback(release <-chan struct{}, callback func(rc *reqCtx), then cnodeReply) cnodeScript {
+	return func(ctx context.Context, _ receivedCallout, rc *reqCtx) cnodeReply {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return neverAnswer()
+		}
+		callback(rc)
+		return then
+	}
+}
+
+var errReplayNeedsPass = errors.New("replay needs a recorded pass; an empty one would send an unjoined request")
+
+// ReplayCreateHTTP presents a recorded pass on the HTTP door with an entity create.
+func (h *callbackHarness) ReplayCreateHTTP(pass, entityName string, version int, payload string) (callbackResult, error) {
+	if pass == "" {
+		return callbackResult{}, errReplayNeedsPass
+	}
+	return h.callback(http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/%d", entityName, version), payload, pass)
+}
+
+// ReplayGetHTTP presents a recorded pass on the HTTP door with an entity read.
+func (h *callbackHarness) ReplayGetHTTP(pass, entityID string) (callbackResult, error) {
+	if pass == "" {
+		return callbackResult{}, errReplayNeedsPass
+	}
+	return h.callback(http.MethodGet, "/api/entity/"+entityID, "", pass)
+}
+
+// ReplayCreateGRPC presents a recorded pass on the gRPC door with EntityManage
+// (EntityCreateRequest) and returns the response envelope.
+func (h *callbackHarness) ReplayCreateGRPC(pass, model string, version int, payload string) (txEnvelope, error) {
+	if pass == "" {
+		return txEnvelope{}, errReplayNeedsPass
+	}
+	return h.createEntityGRPCJoined(model, version, payload, pass)
+}
+
+// ReplayGetGRPC presents a recorded pass on the gRPC door with EntitySearch
+// (EntityGetRequest). EntityResponse carries the same success/error envelope
+// as EntityTransactionResponse, so txEnvelope reads it.
+func (h *callbackHarness) ReplayGetGRPC(pass, entityID string) (txEnvelope, error) {
+	if pass == "" {
+		return txEnvelope{}, errReplayNeedsPass
+	}
+	reqCE, err := internalgrpc.NewCloudEvent(internalgrpc.EntityGetRequest, map[string]any{
+		"id":       "replay-grpc-get",
+		"entityId": entityID,
+	})
+	if err != nil {
+		return txEnvelope{}, fmt.Errorf("failed to build get request: %w", err)
+	}
+	respCE, err := cyodapb.NewCloudEventsServiceClient(h.apiConn).EntitySearch(h.grpcCtx(pass), reqCE)
+	if err != nil {
+		return txEnvelope{}, fmt.Errorf("failed to call EntitySearch: %w", err)
+	}
+	return parseTxEnvelope(respCE)
 }

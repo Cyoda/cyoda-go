@@ -641,12 +641,18 @@ type txEnvelope struct {
 // createEntityGRPC issues an EntityCreateRequest over the real gRPC entity API,
 // unjoined.
 func (h *callbackHarness) createEntityGRPC(model string, version int, payload string) (txEnvelope, error) {
+	return h.createEntityGRPCJoined(model, version, payload, "")
+}
+
+// createEntityGRPCJoined is createEntityGRPC presenting joinTok as the
+// tx-token metadata, so the create joins that transaction ("" = unjoined).
+func (h *callbackHarness) createEntityGRPCJoined(model string, version int, payload, joinTok string) (txEnvelope, error) {
 	var data map[string]any
 	if err := json.Unmarshal([]byte(payload), &data); err != nil {
 		return txEnvelope{}, err
 	}
 	reqCE, err := internalgrpc.NewCloudEvent(internalgrpc.EntityCreateRequest, map[string]any{
-		"id":         "storage-ceiling-create",
+		"id":         "harness-grpc-create",
 		"dataFormat": "JSON",
 		"payload": map[string]any{
 			"model": map[string]any{"name": model, "version": version},
@@ -657,7 +663,7 @@ func (h *callbackHarness) createEntityGRPC(model string, version int, payload st
 		return txEnvelope{}, err
 	}
 	client := cyodapb.NewCloudEventsServiceClient(h.apiConn)
-	respCE, err := client.EntityManage(h.grpcCtx(""), reqCE)
+	respCE, err := client.EntityManage(h.grpcCtx(joinTok), reqCE)
 	if err != nil {
 		return txEnvelope{}, err
 	}

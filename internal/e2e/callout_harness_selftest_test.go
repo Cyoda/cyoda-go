@@ -311,3 +311,81 @@ func TestScriptedCnode_RecordsCriterionAndFunction(t *testing.T) {
 		t.Errorf("second record = %v; want function h3-fn", recs[1])
 	}
 }
+
+// TestScriptedCnode_LateCallbackAndReplay: a cnode makes a callback with the
+// pass it was given only after the test says so, and the recorded pass can be
+// presented again on the HTTP door and on the gRPC door.
+func TestScriptedCnode_LateCallbackAndReplay(t *testing.T) {
+	h := newCalloutHarness(t, nil)
+	const primary, secondary, tag = "h4-primary", "h4-secondary", "h4-tag"
+	const child = `{"name":"child","amount":1,"status":"h4"}`
+	h.SetupModelWithWorkflow(t, secondary, secondaryWorkflow)
+	h.SetupModelWithWorkflow(t, primary, procWorkflowJSON("h4-wf", "h4-proc", "SYNC",
+		map[string]any{"calculationNodesTags": tag}))
+
+	release := make(chan struct{})
+	inCallout := make(chan callbackResult, 1)
+	h.AttachCnode(t, cnodeSpec{name: "late", tags: []string{tag}, script: scriptLateCallback(release,
+		func(rc *reqCtx) {
+			res, err := rc.CreateEntity(secondary, 1, child)
+			if err != nil {
+				res = callbackResult{StatusCode: -1, Body: err.Error()}
+			}
+			inCallout <- res
+		}, answerOK())})
+
+	created := make(chan createEntityResult, 1)
+	go func() { created <- h.CreateEntityRaw(primary, 1, workflowSampleModel) }()
+
+	recs := h.AwaitCallouts(t, 1, 10*time.Second)
+	select {
+	case res := <-inCallout:
+		t.Fatalf("the cnode called back before the test released it: %d", res.StatusCode)
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+
+	if res := <-inCallout; res.StatusCode != http.StatusOK {
+		t.Fatalf("callback made during the callout: %d %s; want 200 (it joins the open transaction)", res.StatusCode, res.Body)
+	}
+	if res := <-created; res.err != nil || res.status != http.StatusOK {
+		t.Fatalf("primary create: status=%d err=%v body=%s", res.status, res.err, res.body)
+	}
+
+	// The callout has ended and its transaction is committed. The same pass,
+	// presented again, is evaluated and refused on both doors.
+	pass := recs[0].Pass()
+	httpRes, err := h.ReplayCreateHTTP(pass, secondary, 1, child)
+	if err != nil {
+		t.Fatalf("ReplayCreateHTTP: %v", err)
+	}
+	if httpRes.StatusCode == http.StatusOK {
+		t.Error("HTTP door accepted a pass whose callout has ended")
+	}
+	if got, err := h.ReplayGetHTTP(pass, recs[0].EntityID); err != nil || got.StatusCode == http.StatusOK {
+		t.Errorf("HTTP read with the ended pass: status=%d err=%v; want a refusal", got.StatusCode, err)
+	}
+	grpcRes, err := h.ReplayCreateGRPC(pass, secondary, 1, child)
+	if err != nil {
+		t.Fatalf("ReplayCreateGRPC: %v", err)
+	}
+	if grpcRes.Success {
+		t.Error("gRPC door accepted a pass whose callout has ended")
+	}
+	if got, err := h.ReplayGetGRPC(pass, recs[0].EntityID); err != nil || got.Success {
+		t.Errorf("gRPC read with the ended pass: success=%t err=%v; want a refusal", got.Success, err)
+	}
+
+	// Control: the same requests without a pass succeed, so the refusals above
+	// are about the pass and nothing else.
+	if res, err := h.callback(http.MethodPost, "/api/entity/JSON/"+secondary+"/1", child, ""); err != nil || res.StatusCode != http.StatusOK {
+		t.Errorf("unjoined HTTP create: status=%d err=%v", res.StatusCode, err)
+	}
+	if env, err := h.createEntityGRPC(secondary, 1, child); err != nil || !env.Success {
+		t.Errorf("unjoined gRPC create: success=%t err=%v", env.Success, err)
+	}
+
+	if _, err := h.ReplayCreateHTTP("", secondary, 1, child); err == nil {
+		t.Error("ReplayCreateHTTP accepted an empty pass; it must refuse, or a test could pass unjoined")
+	}
+}
