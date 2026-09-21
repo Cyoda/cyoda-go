@@ -656,6 +656,7 @@ type cnodeReply struct {
 	result     map[string]any // replyOK, function
 	message    string         // replyFail
 	retryable  *bool          // replyFail: the cnode's verdict; nil = none given
+	noSuccess  bool           // replyOK: leave the `success` key off the wire entirely
 }
 
 // answerOK answers success: a processor leaves the entity unchanged, a
@@ -665,6 +666,13 @@ func answerData(data map[string]any) cnodeReply { return cnodeReply{kind: replyO
 func answerMatches(m bool) cnodeReply           { return cnodeReply{kind: replyOK, matches: m} }
 func answerResult(resultKind string, result map[string]any) cnodeReply {
 	return cnodeReply{kind: replyOK, resultKind: resultKind, result: result}
+}
+
+// answerDataNoSuccessKey answers with the entity's new data and no `success`
+// key at all — the shape the published schema calls a success, the field being
+// optional with the default `true`.
+func answerDataNoSuccessKey(data map[string]any) cnodeReply {
+	return cnodeReply{kind: replyOK, data: data, noSuccess: true}
 }
 
 // answerFail answers success=false with no verdict on retrying.
@@ -722,6 +730,9 @@ func (r cnodeReply) cloudEvent(req calcRequest) (*cepb.CloudEvent, error) {
 		if r.data != nil {
 			body["payload"] = map[string]any{"data": r.data}
 		}
+	}
+	if r.noSuccess {
+		delete(body, "success")
 	}
 	return internalgrpc.NewCloudEvent(respType, body)
 }
