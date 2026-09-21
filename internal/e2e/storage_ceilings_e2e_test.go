@@ -35,6 +35,11 @@ const (
 	// Short enough that a saturated write reports in well under the test's
 	// fail-fast budget, long enough not to fire on ordinary scheduling jitter.
 	storageCeilingAcquireTimeout = "500ms"
+	// stmtCeilingLockerAppName identifies holdRowLock's own connection in
+	// pg_stat_activity, so a caller waiting for a DIFFERENT backend to block on
+	// the row lock (callout_fencing_wait_test.go's awaitBlockedStatement) can
+	// exclude the lock holder's own session from the match.
+	stmtCeilingLockerAppName = "stmt-ceiling-locker"
 )
 
 // storageCeilingModel derives a per-test model name. Each test here stands up
@@ -369,7 +374,7 @@ func holdRowLockOn(t *testing.T, query, entityID string) func() {
 		t.Fatalf(format, args...)
 	}
 
-	pool, err := pgxpool.New(ctx, withAppName(t, pgURLFromEnv(t), "stmt-ceiling-locker"))
+	pool, err := pgxpool.New(ctx, withAppName(t, pgURLFromEnv(t), stmtCeilingLockerAppName))
 	if err != nil {
 		fail("open locker pool: %v", err)
 	}

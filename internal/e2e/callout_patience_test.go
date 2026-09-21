@@ -18,10 +18,11 @@ import (
 func TestCalloutPatience_WaitsForACnode(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(0, 15*time.Second))
 	_ = h.token(t)
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
 
 	for _, policy := range []string{"FIXED", "NONE"} {
 		t.Run(policy, func(t *testing.T) {
-			tag, model := "s4-wait-"+policy, "s4-model-wait-"+policy
+			tag, model := "s4-wait-"+sfx+"-"+policy, "s4-model-wait-"+sfx+"-"+policy
 			h.SetupModelWithWorkflow(t, model, chainWorkflowJSON("s4-wait-wf-"+policy, procSpec{"s4-proc", "SYNC",
 				map[string]any{"calculationNodesTags": tag, "retryPolicy": policy}}))
 
@@ -72,7 +73,7 @@ func TestCalloutPatience_NoCnode(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newCalloutHarness(t, calloutTuning(3, tc.patience))
-			model := "s4-model-" + tc.name
+			model := "s4-model-" + randSuffix(t) + "-" + tc.name
 			h.SetupModelWithWorkflow(t, model, chainWorkflowJSON("s4-wf-"+tc.name, procSpec{"s4-proc", "SYNC",
 				map[string]any{"calculationNodesTags": "s4-nobody"}}))
 
@@ -93,10 +94,11 @@ func TestCalloutPatience_NoCnode(t *testing.T) {
 func TestCalloutCallerEnds(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(3, 30*time.Second))
 	_ = h.token(t)
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
 
 	setup := func(t *testing.T, name string, cfg map[string]any) (model, tag string) {
 		t.Helper()
-		model, tag = "s4-model-"+name, "s4-"+name
+		model, tag = "s4-model-"+sfx+"-"+name, "s4-"+sfx+"-"+name
 		cfg["calculationNodesTags"] = tag
 		h.SetupModelWithWorkflow(t, model, chainWorkflowJSON("s4-wf-"+name, procSpec{"s4-proc", "SYNC", cfg}))
 		return model, tag

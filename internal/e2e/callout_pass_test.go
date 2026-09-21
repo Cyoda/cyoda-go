@@ -64,7 +64,8 @@ func tamperSignature(pass string) string {
 func TestCalloutPass(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(3, 100*time.Millisecond))
 	_ = h.token(t)
-	const model, secondary, tagA, tagB = "s10-pass", "s10-pass-secondary", "s10-pass-a", "s10-pass-b"
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
+	model, secondary, tagA, tagB := "s10-pass-"+sfx, "s10-pass-secondary-"+sfx, "s10-pass-a-"+sfx, "s10-pass-b-"+sfx
 	h.SetupModelWithWorkflow(t, secondary, secondaryWorkflow)
 	h.SetupModelWithWorkflow(t, model, chainWorkflowJSON("s10-pass-wf",
 		procSpec{"s10-proc-a", "SYNC", map[string]any{"calculationNodesTags": tagA}},
@@ -119,7 +120,7 @@ func TestCalloutPass(t *testing.T) {
 
 	var bearerB string
 	t.Run("another-tenant-403", func(t *testing.T) {
-		clientB, secretB := h.provisionTenant(t, "s10-tenant-b", "s10-user-b")
+		clientB, secretB := h.provisionTenant(t, "s10-tenant-b-"+sfx, "s10-user-b-"+sfx)
 		bearerB = h.fetchTokenFor(t, clientB, secretB)
 		// Tenant B gets its own copy of the target model, so an entity count
 		// in B's space means something (an endpoint erroring on an unknown

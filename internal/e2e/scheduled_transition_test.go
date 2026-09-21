@@ -16,8 +16,8 @@ import (
 // column). Mirrors the awaitEntityState/awaitStateMachineEvent idiom already
 // established in e2e/parity/scheduledtransition/scheduledtransition.go:
 // small Schedule.DelayMs plus generous, bounded polling — never a bare
-// time.Sleep as the sole detector of a positive outcome (this repo's #1 CI
-// flake source is wall-clock e2e timing).
+// time.Sleep as the sole detector of a positive outcome (wall-clock e2e
+// timing is this repo's leading source of CI flakes).
 
 // scheduledFireTimeout bounds every poll loop in this file. The package-level
 // testApp's own scheduler is disabled (internal/e2e/e2e_test.go's TestMain:

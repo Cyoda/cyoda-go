@@ -32,7 +32,8 @@ import (
 // serial execution of the successful ones.
 func TestCalloutFence_ParallelJoinedRequests(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(3, 100*time.Millisecond))
-	const model, secondary, tag = "s9-parallel", "s9-parallel-secondary", "s9-parallel"
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
+	model, secondary, tag := "s9-parallel-"+sfx, "s9-parallel-secondary-"+sfx, "s9-parallel-"+sfx
 	const reads, writes, rounds = 8, 4, 3
 	h.SetupModelWithWorkflow(t, secondary, secondaryWorkflow)
 	h.SetupModelWithWorkflow(t, model, chainWorkflowJSON("s9-parallel-wf",
@@ -41,7 +42,7 @@ func TestCalloutFence_ParallelJoinedRequests(t *testing.T) {
 	// primary is saved when the transition completes, so it is not there to be
 	// read while the processor runs. A joined read of it passes the same join
 	// layer either way.
-	target := h.seedVictim(t, "s9-parallel-target")
+	target := h.seedVictim(t, "s9-parallel-target-"+sfx)
 
 	var mu sync.Mutex
 	var bad []string
@@ -99,7 +100,8 @@ func TestCalloutFence_ParallelJoinedRequests(t *testing.T) {
 // unary and server-streaming; both join through the same helper.
 func TestCalloutFence_NonEntityJoinedRequests(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(3, 100*time.Millisecond))
-	const model, committedModel, tagA, tagB = "s9-nonentity", "s9-nonentity-committed", "s9-nonentity-a", "s9-nonentity-b"
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
+	model, committedModel, tagA, tagB := "s9-nonentity-"+sfx, "s9-nonentity-committed-"+sfx, "s9-nonentity-a-"+sfx, "s9-nonentity-b-"+sfx
 	h.SetupModelWithWorkflow(t, model, chainWorkflowJSON("s9-nonentity-wf",
 		procSpec{"s9-proc-a", "SYNC", map[string]any{"calculationNodesTags": tagA}},
 		procSpec{"s9-proc-b", "SYNC", map[string]any{"calculationNodesTags": tagB}}))
@@ -119,6 +121,9 @@ func TestCalloutFence_NonEntityJoinedRequests(t *testing.T) {
 	done := make(chan createEntityResult, 1)
 	go func() { done <- h.CreateEntityRaw(model, 1, workflowSampleModel) }()
 	current := awaitCnodeReceived(t, b, 1, 15*time.Second)[0].Pass()
+	if got := a.Received(); len(got) == 0 {
+		t.Fatalf("cnode a received no callouts; want at least 1 before b was given the work")
+	}
 	ended := a.Received()[0].Pass()
 
 	requests := []struct{ name, method, path, body string }{
@@ -183,11 +188,12 @@ func TestCalloutFence_NonEntityJoinedRequests(t *testing.T) {
 // taking the lock there makes this scenario hang.
 func TestCalloutFence_StalledBodyHoldsNothing(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(3, 100*time.Millisecond))
-	const model, secondary, tag = "s9-stall", "s9-stall-secondary", "s9-stall"
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
+	model, secondary, tag := "s9-stall-"+sfx, "s9-stall-secondary-"+sfx, "s9-stall-"+sfx
 	h.SetupModelWithWorkflow(t, secondary, secondaryWorkflow)
 	h.SetupModelWithWorkflow(t, model, chainWorkflowJSON("s9-stall-wf",
 		procSpec{"s9-proc", "SYNC", map[string]any{"calculationNodesTags": tag}}))
-	target := h.seedVictim(t, "s9-stall-target") // see ParallelJoinedRequests on why not the primary
+	target := h.seedVictim(t, "s9-stall-target-"+sfx) // see ParallelJoinedRequests on why not the primary
 
 	u, err := url.Parse(h.baseURL)
 	if err != nil {

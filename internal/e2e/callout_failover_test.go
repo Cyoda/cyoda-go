@@ -17,6 +17,7 @@ import (
 // processor is declared idempotent, decides whether the second is asked.
 func TestCalloutFailover_Processor(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(3, 100*time.Millisecond))
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
 
 	cases := []struct {
 		name          string
@@ -49,7 +50,7 @@ func TestCalloutFailover_Processor(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			tag, model := "s1-"+tc.name, "s1-model-"+tc.name
+			tag, model := "s1-"+sfx+"-"+tc.name, "s1-model-"+sfx+"-"+tc.name
 			first := h.AttachCnode(t, cnodeSpec{name: "first", tags: []string{tag}, script: scriptAlways(tc.first)})
 			second := h.AttachCnode(t, cnodeSpec{name: "second", tags: []string{tag}})
 			defer second.Detach(t)
@@ -106,6 +107,7 @@ func TestCalloutFailover_Processor(t *testing.T) {
 // the author; retryPolicy NONE keeps each to one try.
 func TestCalloutFailover_CriterionAndFunction(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(3, 100*time.Millisecond))
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
 
 	fnJSON := func(name, tag, policy string) string {
 		fn := map[string]any{"name": name, "resultKind": "Schedule", "calculationNodesTags": tag, "responseTimeoutMs": 300}
@@ -147,7 +149,7 @@ func TestCalloutFailover_CriterionAndFunction(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			tag, model := "s2-"+tc.name, "s2-model-"+tc.name
+			tag, model := "s2-"+sfx+"-"+tc.name, "s2-model-"+sfx+"-"+tc.name
 			first := h.AttachCnode(t, cnodeSpec{name: "first", tags: []string{tag}, script: scriptAlways(neverAnswer())})
 			second := h.AttachCnode(t, cnodeSpec{name: "second", tags: []string{tag}, script: scriptAlways(tc.second)})
 			defer second.Detach(t)

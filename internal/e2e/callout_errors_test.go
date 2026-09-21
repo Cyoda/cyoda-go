@@ -55,7 +55,8 @@ func TestCalloutErrors_EveryTryUsed(t *testing.T) {
 		calloutTuning(1, 0)(cfg)
 		cfg.Cluster.NodeID = nodeID
 	})
-	const tag, model = "s3-all-used", "s3-model-all-used"
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
+	tag, model := "s3-all-used-"+sfx, "s3-model-all-used-"+sfx
 	a := h.AttachCnode(t, cnodeSpec{name: "a", tags: []string{tag}, script: scriptAlways(neverAnswer())})
 	b := h.AttachCnode(t, cnodeSpec{name: "b", tags: []string{tag}, script: scriptAlways(neverAnswer())})
 	h.SetupModelWithWorkflow(t, model, chainWorkflowJSON("s3-all-used-wf", procSpec{"s3-proc", "SYNC",
@@ -91,7 +92,8 @@ func TestCalloutErrors_EveryTryUsed(t *testing.T) {
 // available but never asked -> the try's own code, unwrapped.
 func TestCalloutErrors_OneAttemptIsNotWrapped(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(0, 0))
-	const tag, model = "s3-one", "s3-model-one"
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
+	tag, model := "s3-one-"+sfx, "s3-model-one-"+sfx
 	h.AttachCnode(t, cnodeSpec{name: "silent", tags: []string{tag}, script: scriptAlways(neverAnswer())})
 	spare := h.AttachCnode(t, cnodeSpec{name: "spare", tags: []string{tag}})
 	h.SetupModelWithWorkflow(t, model, chainWorkflowJSON("s3-one-wf", procSpec{"s3-proc", "SYNC",
@@ -112,9 +114,10 @@ func TestCalloutErrors_OneAttemptIsNotWrapped(t *testing.T) {
 // made, and the error reports them, not NO_COMPUTE_MEMBER_FOR_TAG.
 func TestCalloutErrors_AttemptsBeatNoCnode(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(3, 200*time.Millisecond))
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
 
 	t.Run("one-attempt", func(t *testing.T) {
-		const tag, model = "s3-beat-1", "s3-model-beat-1"
+		tag, model := "s3-beat-1-"+sfx, "s3-model-beat-1-"+sfx
 		c := h.AttachCnode(t, cnodeSpec{name: "drop", tags: []string{tag}, script: scriptAlways(closeStream())})
 		h.SetupModelWithWorkflow(t, model, chainWorkflowJSON("s3-beat-1-wf", procSpec{"s3-proc", "SYNC",
 			map[string]any{"calculationNodesTags": tag, "idempotent": true}}))
@@ -124,7 +127,7 @@ func TestCalloutErrors_AttemptsBeatNoCnode(t *testing.T) {
 	})
 
 	t.Run("two-attempts-tries-left", func(t *testing.T) {
-		const tag, model = "s3-beat-2", "s3-model-beat-2"
+		tag, model := "s3-beat-2-"+sfx, "s3-model-beat-2-"+sfx
 		a := h.AttachCnode(t, cnodeSpec{name: "drop-a", tags: []string{tag}, script: scriptAlways(closeStream())})
 		b := h.AttachCnode(t, cnodeSpec{name: "drop-b", tags: []string{tag}, script: scriptAlways(closeStream())})
 		h.SetupModelWithWorkflow(t, model, chainWorkflowJSON("s3-beat-2-wf", procSpec{"s3-proc", "SYNC",
@@ -149,7 +152,8 @@ func TestCalloutErrors_AttemptsBeatNoCnode(t *testing.T) {
 // failures collapse into one bracketed entry with "(k times)" (§8.2, R§5).
 func TestCalloutErrors_CollapsedRepeat(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(1, time.Second))
-	const tag, model = "s3-collapse", "s3-model-collapse"
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
+	tag, model := "s3-collapse-"+sfx, "s3-model-collapse-"+sfx
 	solo := h.AttachCnode(t, cnodeSpec{name: "solo", tags: []string{tag}, script: scriptAlways(neverAnswer())})
 	h.SetupModelWithWorkflow(t, model, chainWorkflowJSON("s3-collapse-wf", procSpec{"s3-proc", "SYNC",
 		map[string]any{"calculationNodesTags": tag, "responseTimeoutMs": 300, "idempotent": true}}))

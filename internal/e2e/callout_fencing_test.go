@@ -2,7 +2,6 @@ package e2e_test
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -81,6 +80,7 @@ func committedTarget(t *testing.T, h *callbackHarness, model string) (entityID s
 // the entity and its audit trail (assertNothingLanded) rather than about the
 // response.
 func assertUpdateRefused(t *testing.T, h *callbackHarness, pass, entityID string, wantStatus int, wantCode string) {
+	t.Helper()
 	t.Run("http-update", func(t *testing.T) {
 		res, err := h.callback(http.MethodPut, "/api/entity/JSON/"+entityID,
 			fmt.Sprintf(`{"name":%q,"amount":1,"status":"late"}`, refusedUpdateName), pass)
@@ -92,21 +92,12 @@ func assertUpdateRefused(t *testing.T, h *callbackHarness, pass, entityID string
 }
 
 // auditEventCount is how many audit events an entity has, of every type the door
-// reports by default (StateMachine and EntityChange).
+// reports by default (StateMachine and EntityChange) — the len of
+// GetAllAuditEvents, the one spelling of the audit-door call and decode
+// (callback_harness_test.go).
 func (h *callbackHarness) auditEventCount(t *testing.T, entityID string) int {
 	t.Helper()
-	resp := h.DoAuth(t, http.MethodGet, "/api/audit/entity/"+entityID, "", "")
-	body := h.readBody(t, resp)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("audit of %s: %d %s", entityID, resp.StatusCode, body)
-	}
-	var page struct {
-		Items []map[string]any `json:"items"`
-	}
-	if err := json.Unmarshal([]byte(body), &page); err != nil {
-		t.Fatalf("decode the audit page: %v (body: %s)", err, body)
-	}
-	return len(page.Items)
+	return len(h.GetAllAuditEvents(t, entityID))
 }
 
 // assertNothingLanded is the store-side half of a refusal: the target a refused
@@ -132,6 +123,7 @@ func assertNothingLanded(t *testing.T, h *callbackHarness, targetID string, audi
 // has ended the same pass is 404, as it always was.
 func TestCalloutFence_LateCallback(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(3, 100*time.Millisecond))
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
 
 	cases := []struct {
 		name   string
@@ -143,10 +135,10 @@ func TestCalloutFence_LateCallback(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			model, secondary := "s6-model-"+tc.name, "s6-secondary-"+tc.name
-			tagA, tagB := "s6-a-"+tc.name, "s6-b-"+tc.name
+			model, secondary := "s6-model-"+sfx+"-"+tc.name, "s6-secondary-"+sfx+"-"+tc.name
+			tagA, tagB := "s6-a-"+sfx+"-"+tc.name, "s6-b-"+sfx+"-"+tc.name
 			h.SetupModelWithWorkflow(t, secondary, secondaryWorkflow)
-			targetID, auditBefore := committedTarget(t, h, "s6-target-"+tc.name)
+			targetID, auditBefore := committedTarget(t, h, "s6-target-"+sfx+"-"+tc.name)
 			h.SetupModelWithWorkflow(t, model, chainWorkflowJSON("s6-wf-"+tc.name,
 				procSpec{"s6-proc-a", tc.mode, map[string]any{"calculationNodesTags": tagA}},
 				procSpec{"s6-proc-b", "SYNC", map[string]any{"calculationNodesTags": tagB}}))
@@ -199,10 +191,12 @@ func TestCalloutFence_LateCallback(t *testing.T) {
 // second's is admitted.
 func TestCalloutFence_FirstCnodeRefusedOnceReplaced(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(3, 100*time.Millisecond))
-	const model, refused, control, tag = "s7-replaced", "s7-replaced-refused", "s7-replaced-control", "s7-replaced"
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
+	model, refused, control, controlGRPC, tag := "s7-replaced-"+sfx, "s7-replaced-refused-"+sfx, "s7-replaced-control-"+sfx, "s7-replaced-control-grpc-"+sfx, "s7-replaced-"+sfx
 	h.SetupModelWithWorkflow(t, refused, secondaryWorkflow)
 	h.SetupModelWithWorkflow(t, control, secondaryWorkflow)
-	targetID, auditBefore := committedTarget(t, h, "s7-replaced-target")
+	h.SetupModelWithWorkflow(t, controlGRPC, secondaryWorkflow)
+	targetID, auditBefore := committedTarget(t, h, "s7-replaced-target-"+sfx)
 	h.SetupModelWithWorkflow(t, model, chainWorkflowJSON("s7-replaced-wf", procSpec{"s7-proc", "SYNC",
 		map[string]any{"calculationNodesTags": tag, "responseTimeoutMs": 400, "idempotent": true}}))
 
@@ -222,12 +216,19 @@ func TestCalloutFence_FirstCnodeRefusedOnceReplaced(t *testing.T) {
 		http.StatusGone, "CALLOUT_SUPERSEDED", supersededDetail)
 	assertUpdateRefused(t, h, replaced.Pass(), targetID, http.StatusGone, "CALLOUT_SUPERSEDED")
 
-	// Control: the cnode that holds the work now is admitted, read and write.
+	// Control: the cnode that holds the work now is admitted, read and write,
+	// on both doors.
 	if res, err := h.ReplayGetHTTP(current.Pass(), targetID); err != nil || res.StatusCode != http.StatusOK {
-		t.Fatalf("the current cnode's joined read: status=%d err=%v body=%s; want 200", res.StatusCode, err, res.Body)
+		t.Fatalf("the current cnode's joined read (http): status=%d err=%v body=%s; want 200", res.StatusCode, err, res.Body)
 	}
 	if res, err := h.ReplayCreateHTTP(current.Pass(), control, 1, `{"name":"current-child","amount":1,"status":"ok"}`); err != nil || res.StatusCode != http.StatusOK {
-		t.Fatalf("the current cnode's joined write: status=%d err=%v body=%s; want 200", res.StatusCode, err, res.Body)
+		t.Fatalf("the current cnode's joined write (http): status=%d err=%v body=%s; want 200", res.StatusCode, err, res.Body)
+	}
+	if env, err := h.ReplayGetGRPC(current.Pass(), targetID); err != nil || !env.Success {
+		t.Fatalf("the current cnode's joined read (grpc): success=%t err=%v error=%v; want a success", env.Success, err, env.Error)
+	}
+	if env, err := h.ReplayCreateGRPC(current.Pass(), controlGRPC, 1, `{"name":"current-child-grpc","amount":1,"status":"ok"}`); err != nil || !env.Success {
+		t.Fatalf("the current cnode's joined write (grpc): success=%t err=%v error=%v; want a success", env.Success, err, env.Error)
 	}
 
 	releaseNow()
@@ -236,6 +237,9 @@ func TestCalloutFence_FirstCnodeRefusedOnceReplaced(t *testing.T) {
 	}
 	if n := h.countEntities(t, control); n != 1 {
 		t.Errorf("%d entities committed in %s; want exactly the current cnode's one", n, control)
+	}
+	if n := h.countEntities(t, controlGRPC); n != 1 {
+		t.Errorf("%d entities committed in %s; want exactly the current cnode's one (grpc)", n, controlGRPC)
 	}
 	assertNothingLanded(t, h, targetID, auditBefore, refused)
 	if n := len(first.Received()); n != 1 {
@@ -255,10 +259,11 @@ func TestCalloutFence_FirstCnodeRefusedOnceReplaced(t *testing.T) {
 // by a race between the callback and the answer limit.
 func TestCalloutFence_WriteUnderTheEarlierPassIsKept(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(3, 100*time.Millisecond))
-	const model, written, refused, tag = "s7-kept", "s7-kept-written", "s7-kept-refused", "s7-kept"
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
+	model, written, refused, tag := "s7-kept-"+sfx, "s7-kept-written-"+sfx, "s7-kept-refused-"+sfx, "s7-kept-"+sfx
 	h.SetupModelWithWorkflow(t, written, secondaryWorkflow)
 	h.SetupModelWithWorkflow(t, refused, secondaryWorkflow)
-	targetID, auditBefore := committedTarget(t, h, "s7-kept-target")
+	targetID, auditBefore := committedTarget(t, h, "s7-kept-target-"+sfx)
 	h.SetupModelWithWorkflow(t, model, chainWorkflowJSON("s7-kept-wf", procSpec{"s7-kept-proc", "SYNC",
 		map[string]any{"calculationNodesTags": tag, "responseTimeoutMs": 2000, "idempotent": true}}))
 
@@ -303,6 +308,24 @@ func TestCalloutFence_WriteUnderTheEarlierPassIsKept(t *testing.T) {
 	if res := awaitCreate(t, done, 15*time.Second); res.status != http.StatusOK {
 		t.Fatalf("create: %d %s; want 200", res.status, res.body)
 	}
+	// WAIVER (S-cleanup item 2): no single-line revert reaches this assertion.
+	// Rolling back a joined write once its compute member is replaced would
+	// need a savepoint around this attempt, and this codebase only ever takes
+	// one around an ASYNC_NEW_TX processor (engine_processors.go's
+	// executeAsyncNewTx) — a SYNC/ASYNC_SAME_TX attempt (this test's
+	// "s7-kept-proc") runs inline in the caller's transaction with no
+	// savepoint boundary of its own, so there is nothing for any revert to
+	// disable that would undo it without also disabling the retry/fencing
+	// machinery itself. Confirmed empirically: reverting majorCounter.Next to
+	// hand every try the same fencing number (the revert already recorded
+	// against this file's sibling scenarios, ac60a68e) does make the first
+	// cnode's pass stay admitted — but that fails EARLIER, on the
+	// assertRefusedOnAllDoors/assertUpdateRefused calls above ("status = 200;
+	// want 410 CALLOUT_SUPERSEDED" on all seven doors) and again below on
+	// assertNothingLanded ("3 entities committed in
+	// s7-kept-refused-<sfx>") — this line itself still passed under it,
+	// because the write it checks completed, and was never a candidate for
+	// undo, well before the fence had any opinion on the second try.
 	if n := h.countEntities(t, written); n != 1 {
 		t.Errorf("%d entities committed in %s; want the one the replaced cnode wrote before the work moved", n, written)
 	}
@@ -323,10 +346,11 @@ func TestCalloutFence_WriteUnderTheEarlierPassIsKept(t *testing.T) {
 // nothing of the chain is committed.
 func TestCalloutFence_NestedCalloutReleased(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(3, 100*time.Millisecond))
+	runSfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
 
 	for _, innerMode := range []string{"SYNC", "ASYNC_SAME_TX", "ASYNC_NEW_TX"} {
 		t.Run(innerMode, func(t *testing.T) {
-			sfx := strings.ToLower(strings.ReplaceAll(innerMode, "_", "-"))
+			sfx := strings.ToLower(strings.ReplaceAll(innerMode, "_", "-")) + "-" + runSfx
 			outer, inner, third := "s7-outer-"+sfx, "s7-inner-"+sfx, "s7-third-"+sfx
 			tagOut, tagIn := "s7-out-"+sfx, "s7-in-"+sfx
 			h.SetupModelWithWorkflow(t, third, secondaryWorkflow)

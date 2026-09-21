@@ -11,7 +11,8 @@ import (
 // cnode that attaches later goes first.
 func TestCalloutSelection_RoundRobin(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(3, 0))
-	const model, tag = "s11-rr", "s11-rr"
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
+	model, tag := "s11-rr-"+sfx, "s11-rr-"+sfx
 	h.SetupModelWithWorkflow(t, model, chainWorkflowJSON("s11-rr-wf",
 		procSpec{"s11-proc", "SYNC", map[string]any{"calculationNodesTags": tag}}))
 	h.AttachCnode(t, cnodeSpec{name: "x", tags: []string{tag}})
@@ -44,7 +45,8 @@ func TestCalloutSelection_RoundRobin(t *testing.T) {
 func TestCalloutSelection_TwoTenantsOneTag(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(1, 0))
 	_ = h.token(t)
-	clientB, secretB := h.provisionTenant(t, "s11-tenant-b", "s11-user-b")
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
+	clientB, secretB := h.provisionTenant(t, "s11-tenant-b-"+sfx, "s11-user-b-"+sfx)
 	bearerB := h.fetchTokenFor(t, clientB, secretB)
 
 	asB := func(method, path, body string) (int, string) {
@@ -65,15 +67,16 @@ func TestCalloutSelection_TwoTenantsOneTag(t *testing.T) {
 	}
 
 	t.Run("routing", func(t *testing.T) {
-		const tag = "s11-shared"
+		tag := "s11-shared-" + sfx
+		modelA, modelB := "s11-shared-a-"+sfx, "s11-shared-b-"+sfx
 		wf := chainWorkflowJSON("s11-shared-wf", procSpec{"s11-proc", "SYNC", map[string]any{"calculationNodesTags": tag}})
-		h.SetupModelWithWorkflow(t, "s11-shared-a", wf)
-		setupAsB("s11-shared-b", wf)
+		h.SetupModelWithWorkflow(t, modelA, wf)
+		setupAsB(modelB, wf)
 		a := h.AttachCnode(t, cnodeSpec{name: "tenant-a", tags: []string{tag}})
 		b := h.AttachCnode(t, cnodeSpec{name: "tenant-b", tags: []string{tag}, bearer: bearerB})
 
 		for i := 0; i < 2; i++ { // twice: round robin would alternate if the tenants shared a pool
-			if _, status, body := h.CreateEntity(t, "s11-shared-a", 1, workflowSampleModel); status != http.StatusOK {
+			if _, status, body := h.CreateEntity(t, modelA, 1, workflowSampleModel); status != http.StatusOK {
 				t.Fatalf("tenant A create: %d %s", status, body)
 			}
 		}
@@ -81,7 +84,7 @@ func TestCalloutSelection_TwoTenantsOneTag(t *testing.T) {
 			t.Fatalf("after tenant A's two creates: A's cnode received %d, B's %d; want 2 and 0", na, nb)
 		}
 		for i := 0; i < 2; i++ {
-			if status, body := asB(http.MethodPost, "/api/entity/JSON/s11-shared-b/1", workflowSampleModel); status != http.StatusOK {
+			if status, body := asB(http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/1", modelB), workflowSampleModel); status != http.StatusOK {
 				t.Fatalf("tenant B create: %d %s", status, body)
 			}
 		}
@@ -91,8 +94,9 @@ func TestCalloutSelection_TwoTenantsOneTag(t *testing.T) {
 	})
 
 	t.Run("a-failure-names-only-the-tenants-own-cnodes", func(t *testing.T) {
-		const tag = "s11-shared-fail"
-		h.SetupModelWithWorkflow(t, "s11-shared-fail-a", chainWorkflowJSON("s11-shared-fail-wf", procSpec{"s11-proc", "SYNC",
+		tag := "s11-shared-fail-" + sfx
+		modelA := "s11-shared-fail-a-" + sfx
+		h.SetupModelWithWorkflow(t, modelA, chainWorkflowJSON("s11-shared-fail-wf", procSpec{"s11-proc", "SYNC",
 			map[string]any{"calculationNodesTags": tag, "responseTimeoutMs": 300, "idempotent": true}}))
 		// b-healthy attaches FIRST: without the tenant comparison in
 		// MemberRegistry.Candidates, round robin's "never picked yet" tie-break
@@ -104,7 +108,7 @@ func TestCalloutSelection_TwoTenantsOneTag(t *testing.T) {
 		a1 := h.AttachCnode(t, cnodeSpec{name: "a1", tags: []string{tag}, script: scriptAlways(neverAnswer())})
 		a2 := h.AttachCnode(t, cnodeSpec{name: "a2", tags: []string{tag}, script: scriptAlways(neverAnswer())})
 
-		_, status, body := h.CreateEntity(t, "s11-shared-fail-a", 1, workflowSampleModel)
+		_, status, body := h.CreateEntity(t, modelA, 1, workflowSampleModel)
 		pd := assertProblem(t, status, body, http.StatusServiceUnavailable, "CALLOUT_FAILED", true)
 		msg := parseCalloutFailed(t, pd.Detail)
 		if msg.n != 2 || msg.perMember[a1.MemberID()] != 1 || msg.perMember[a2.MemberID()] != 1 {
@@ -124,12 +128,13 @@ func TestCalloutSelection_TwoTenantsOneTag(t *testing.T) {
 	// tenant B does. Tenant A must be told NO_COMPUTE_MEMBER_FOR_TAG — never
 	// served by borrowing tenant B's cnode.
 	t.Run("a-tenant-with-no-member-of-its-own-gets-none-of-anothers", func(t *testing.T) {
-		const tag = "s11-only-b"
-		h.SetupModelWithWorkflow(t, "s11-only-b-a", chainWorkflowJSON("s11-only-b-wf",
+		tag := "s11-only-b-" + sfx
+		modelA := "s11-only-b-a-" + sfx
+		h.SetupModelWithWorkflow(t, modelA, chainWorkflowJSON("s11-only-b-wf",
 			procSpec{"s11-proc", "SYNC", map[string]any{"calculationNodesTags": tag}}))
 		b := h.AttachCnode(t, cnodeSpec{name: "b-only", tags: []string{tag}, bearer: bearerB})
 
-		_, status, body := h.CreateEntity(t, "s11-only-b-a", 1, workflowSampleModel)
+		_, status, body := h.CreateEntity(t, modelA, 1, workflowSampleModel)
 		pd := assertProblem(t, status, body, http.StatusServiceUnavailable, "NO_COMPUTE_MEMBER_FOR_TAG", true)
 		if strings.Contains(pd.Detail, b.MemberID()) {
 			t.Errorf("detail = %q; it names tenant B's cnode %s", pd.Detail, b.MemberID())

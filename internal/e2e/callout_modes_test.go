@@ -21,6 +21,7 @@ import (
 // are the same as in every other mode.
 func TestCalloutModes_AsyncNewTx(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(3, 100*time.Millisecond))
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
 	cases := []struct {
 		name       string
 		first      cnodeReply
@@ -33,7 +34,7 @@ func TestCalloutModes_AsyncNewTx(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			tag, model := "s5-async-"+tc.name, "s5-model-async-"+tc.name
+			tag, model := "s5-async-"+sfx+"-"+tc.name, "s5-model-async-"+sfx+"-"+tc.name
 			first := h.AttachCnode(t, cnodeSpec{name: "first", tags: []string{tag}, script: scriptAlways(tc.first)})
 			second := h.AttachCnode(t, cnodeSpec{name: "second", tags: []string{tag}})
 			defer second.Detach(t)
@@ -66,11 +67,12 @@ func TestCalloutModes_AsyncNewTx(t *testing.T) {
 // tried on the next cnode.
 func TestCalloutModes_CommitBeforeDispatch(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(3, 100*time.Millisecond))
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
 	for _, newTx := range []bool{true, false} {
 		for _, idempotent := range []bool{false, true} {
 			name := map[bool]string{true: "newtx", false: "notx"}[newTx] + map[bool]string{true: "-idempotent", false: "-not-idempotent"}[idempotent]
 			t.Run(name, func(t *testing.T) {
-				tag, model := "s5-cbd-"+name, "s5-model-cbd-"+name
+				tag, model := "s5-cbd-"+sfx+"-"+name, "s5-model-cbd-"+sfx+"-"+name
 				first := h.AttachCnode(t, cnodeSpec{name: "first", tags: []string{tag}, script: scriptAlways(neverAnswer())})
 				second := h.AttachCnode(t, cnodeSpec{name: "second", tags: []string{tag}})
 				defer second.Detach(t)

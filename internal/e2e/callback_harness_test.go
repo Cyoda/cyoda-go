@@ -525,7 +525,27 @@ func (h *callbackHarness) GetEntityData(t *testing.T, entityID string) map[strin
 // separate stack.
 func (h *callbackHarness) GetSMAuditEvents(t *testing.T, entityID string) []map[string]any {
 	t.Helper()
-	resp := h.DoAuth(t, http.MethodGet, fmt.Sprintf("/api/audit/entity/%s?eventType=StateMachine", entityID), "", "")
+	return h.getAuditEvents(t, entityID, "StateMachine")
+}
+
+// GetAllAuditEvents retrieves every audit event an entity has, of every type
+// the door reports by default (StateMachine and EntityChange) — the
+// unfiltered sibling of GetSMAuditEvents.
+func (h *callbackHarness) GetAllAuditEvents(t *testing.T, entityID string) []map[string]any {
+	t.Helper()
+	return h.getAuditEvents(t, entityID, "")
+}
+
+// getAuditEvents is the shared audit-door call and decode behind
+// GetSMAuditEvents and GetAllAuditEvents: eventType filters the query when
+// non-empty, else the door's default set is returned.
+func (h *callbackHarness) getAuditEvents(t *testing.T, entityID, eventType string) []map[string]any {
+	t.Helper()
+	path := fmt.Sprintf("/api/audit/entity/%s", entityID)
+	if eventType != "" {
+		path += "?eventType=" + eventType
+	}
+	resp := h.DoAuth(t, http.MethodGet, path, "", "")
 	body := h.readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("audit GET %s: expected 200, got %d: %s", entityID, resp.StatusCode, body)

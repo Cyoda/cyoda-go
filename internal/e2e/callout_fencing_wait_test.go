@@ -32,19 +32,39 @@ import (
 const (
 	victimUpdate = `{"name": "Test Order", "amount": 100, "status": "held"}`
 	lateChild    = `{"name":"late-child","amount":1,"status":"late"}`
+	// calloutFenceLockerAppName identifies holdMessagesTableLock's own
+	// connection in pg_stat_activity — see awaitBlockedStatement.
+	calloutFenceLockerAppName = "callout-fence-locker"
 )
 
-// awaitBlockedStatement returns once some backend is waiting on a lock while
-// running a statement that names table, so a scenario never guesses whether the
-// joined request has reached the database.
-func awaitBlockedStatement(t *testing.T, table string) {
+// awaitBlockedStatement returns once some backend OTHER than the one holding
+// the lock (lockerAppName, the application_name holdRowLock/
+// holdMessagesTableLock give their own connection) is waiting on a lock while
+// running a statement that names table, so a scenario never guesses whether
+// the joined request has reached the database.
+//
+// Matching on table name and wait_event_type alone is not enough: this
+// package's shared stack runs its own background loops (the scheduler scan,
+// the reaper) that routinely touch entities/messages too and can themselves
+// be waiting on an unrelated lock at the same moment, which would let the
+// check succeed before the joined request under test has even reached the
+// database. Naming the victim row's id in the query text would rule that out
+// more precisely, but every write in this codebase goes through pgx's
+// parameterized (extended-protocol) queries, so pg_stat_activity.query always
+// shows the "$1"-style placeholders and never the bound value — a query
+// carries no id text to match against, on the write path or the read path.
+// Excluding the lock holder's own session is the tightening that is actually
+// available, and it is the one the read/table-lock case already needed for a
+// different reason (see holdMessagesTableLock).
+func awaitBlockedStatement(t *testing.T, table, lockerAppName string) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		var n int
 		err := dbPool.QueryRow(context.Background(),
 			`SELECT count(*) FROM pg_stat_activity
-			  WHERE wait_event_type = 'Lock' AND state = 'active' AND query ILIKE '%' || $1 || '%'`, table).Scan(&n)
+			  WHERE wait_event_type = 'Lock' AND state = 'active' AND query ILIKE '%' || $1 || '%'
+			    AND application_name <> $2`, table, lockerAppName).Scan(&n)
 		if err != nil {
 			t.Fatalf("pg_stat_activity: %v", err)
 		}
@@ -66,7 +86,7 @@ func awaitBlockedStatement(t *testing.T, table string) {
 func holdMessagesTableLock(t *testing.T) func() {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	pool, err := pgxpool.New(ctx, withAppName(t, pgURLFromEnv(t), "callout-fence-locker"))
+	pool, err := pgxpool.New(ctx, withAppName(t, pgURLFromEnv(t), calloutFenceLockerAppName))
 	if err != nil {
 		cancel()
 		t.Fatalf("open locker pool: %v", err)
@@ -138,8 +158,9 @@ func awaitResult(t *testing.T, what string, ch <-chan callbackResult) callbackRe
 // nothing.
 func TestCalloutFence_OwnerWaitsForARequestInProgress(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(3, 100*time.Millisecond))
-	const model, secondary, tag = "s8-wait", "s8-wait-secondary", "s8-wait"
-	victim := h.seedVictim(t, "s8-wait-victim")
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
+	model, secondary, tag := "s8-wait-"+sfx, "s8-wait-secondary-"+sfx, "s8-wait-"+sfx
+	victim := h.seedVictim(t, "s8-wait-victim-"+sfx)
 	h.SetupModelWithWorkflow(t, secondary, secondaryWorkflow)
 	h.SetupModelWithWorkflow(t, model, chainWorkflowJSON("s8-wait-wf", procSpec{"s8-proc", "SYNC",
 		map[string]any{"calculationNodesTags": tag, "responseTimeoutMs": 1500, "idempotent": true}}))
@@ -173,7 +194,7 @@ func TestCalloutFence_OwnerWaitsForARequestInProgress(t *testing.T) {
 	go func() { done <- h.CreateEntityRaw(model, 1, workflowSampleModel) }()
 
 	writeRes := <-inProgress
-	awaitBlockedStatement(t, "entities")
+	awaitBlockedStatement(t, "entities", stmtCeilingLockerAppName)
 	queueNext()
 
 	time.Sleep(2 * time.Second) // the first try's 1.5s answer limit has passed
@@ -212,8 +233,9 @@ func TestCalloutFence_OwnerWaitsForARequestInProgress(t *testing.T) {
 // the write is then undone with the processor's savepoint.
 func TestCalloutFence_AsyncNewTxFailedWriteIsNotCommitted(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(3, 100*time.Millisecond))
-	const model, tagA, tagB = "s8-async", "s8-async-a", "s8-async-b"
-	victim := h.seedVictim(t, "s8-async-victim")
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
+	model, tagA, tagB := "s8-async-"+sfx, "s8-async-a-"+sfx, "s8-async-b-"+sfx
+	victim := h.seedVictim(t, "s8-async-victim-"+sfx)
 	h.SetupModelWithWorkflow(t, model, chainWorkflowJSON("s8-async-wf",
 		procSpec{"s8-proc-a", "ASYNC_NEW_TX", map[string]any{"calculationNodesTags": tagA, "responseTimeoutMs": 1000}},
 		procSpec{"s8-proc-b", "SYNC", map[string]any{"calculationNodesTags": tagB}}))
@@ -233,7 +255,7 @@ func TestCalloutFence_AsyncNewTxFailedWriteIsNotCommitted(t *testing.T) {
 	go func() { done <- h.CreateEntityRaw(model, 1, workflowSampleModel) }()
 
 	writeRes := <-inProgress
-	awaitBlockedStatement(t, "entities")
+	awaitBlockedStatement(t, "entities", stmtCeilingLockerAppName)
 	time.Sleep(1500 * time.Millisecond) // A's answer limit has passed; its callout has failed
 	if got := b.Received(); len(got) != 0 {
 		t.Fatalf("the engine carried on to processor B while A's write is in progress: %v", got)
@@ -263,7 +285,8 @@ func TestCalloutFence_AsyncNewTxFailedWriteIsNotCommitted(t *testing.T) {
 // collection lands whole and is answered 200.
 func TestCalloutFence_CallbackPastItsLastCheckLandsWhole(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(3, 100*time.Millisecond))
-	const model, victimModel, tagA, tagB = "s8-whole", "s8-whole-victim", "s8-whole-a", "s8-whole-b"
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
+	model, victimModel, tagA, tagB := "s8-whole-"+sfx, "s8-whole-victim-"+sfx, "s8-whole-a-"+sfx, "s8-whole-b-"+sfx
 	v1 := h.seedVictim(t, victimModel)
 	v2, status, body := h.CreateEntity(t, victimModel, 1, workflowSampleModel)
 	if status != http.StatusOK {
@@ -304,7 +327,7 @@ func TestCalloutFence_CallbackPastItsLastCheckLandsWhole(t *testing.T) {
 	go func() { done <- h.CreateEntityRaw(model, 1, workflowSampleModel) }()
 
 	collRes := <-inProgress
-	awaitBlockedStatement(t, "entities")
+	awaitBlockedStatement(t, "entities", stmtCeilingLockerAppName)
 	answerNext()
 	time.Sleep(700 * time.Millisecond)
 	if got := b.Received(); len(got) != 0 {
@@ -334,11 +357,12 @@ func TestCalloutFence_CallbackPastItsLastCheckLandsWhole(t *testing.T) {
 // mid-statement. Either way the statement is not interrupted, the owner waits
 // for it, and the owner's operation succeeds.
 func TestCalloutFence_JoinedReadInProgress(t *testing.T) {
+	runSfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
 	for _, disconnect := range []bool{false, true} {
 		name := map[bool]string{false: "answer-limit-passes", true: "cnode-disconnects-mid-callback"}[disconnect]
 		t.Run(name, func(t *testing.T) {
 			h := newCalloutHarness(t, calloutTuning(3, 100*time.Millisecond))
-			model, tag := "s8-read-"+name, "s8-read-"+name
+			model, tag := "s8-read-"+runSfx+"-"+name, "s8-read-"+runSfx+"-"+name
 			h.SetupModelWithWorkflow(t, model, chainWorkflowJSON("s8-read-wf", procSpec{"s8-proc", "SYNC",
 				map[string]any{"calculationNodesTags": tag, "responseTimeoutMs": 1000, "idempotent": true}}))
 
@@ -349,6 +373,9 @@ func TestCalloutFence_JoinedReadInProgress(t *testing.T) {
 				t.Fatalf("seed message: %d %s", resp.StatusCode, msgBody)
 			}
 			ids, _ := created[0]["entityIds"].([]any)
+			if len(ids) == 0 {
+				t.Fatalf("seed message: no entityIds in %s", msgBody)
+			}
 			msgID, _ := ids[0].(string)
 
 			unlock := holdMessagesTableLock(t)
@@ -383,7 +410,7 @@ func TestCalloutFence_JoinedReadInProgress(t *testing.T) {
 			done := make(chan createEntityResult, 1)
 			go func() { done <- h.CreateEntityRaw(model, 1, workflowSampleModel) }()
 
-			awaitBlockedStatement(t, "messages")
+			awaitBlockedStatement(t, "messages", calloutFenceLockerAppName)
 			if disconnect {
 				abandonRead() // the cnode walks away from its callback mid-statement …
 				dropStream()  // … and drops its stream
@@ -417,8 +444,9 @@ func TestCalloutFence_JoinedReadInProgress(t *testing.T) {
 // unwinds once the database lets the write through.
 func TestCalloutFence_WaitDoesNotDeadlock(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(3, 100*time.Millisecond))
-	const outer, inner, tagOut, tagIn = "s8-dl-outer", "s8-dl-inner", "s8-dl-out", "s8-dl-in"
-	victim := h.seedVictim(t, "s8-dl-victim")
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
+	outer, inner, tagOut, tagIn := "s8-dl-outer-"+sfx, "s8-dl-inner-"+sfx, "s8-dl-out-"+sfx, "s8-dl-in-"+sfx
+	victim := h.seedVictim(t, "s8-dl-victim-"+sfx)
 	h.SetupModelWithWorkflow(t, inner, chainWorkflowJSON("s8-dl-inner-wf",
 		procSpec{"s8-in", "SYNC", map[string]any{"calculationNodesTags": tagIn}}))
 	h.SetupModelWithWorkflow(t, outer, chainWorkflowJSON("s8-dl-outer-wf",
@@ -455,7 +483,7 @@ func TestCalloutFence_WaitDoesNotDeadlock(t *testing.T) {
 	go func() { done <- h.CreateEntityRaw(outer, 1, workflowSampleModel) }()
 
 	writeRes := <-inWrite
-	awaitBlockedStatement(t, "entities")
+	awaitBlockedStatement(t, "entities", stmtCeilingLockerAppName)
 	time.Sleep(2 * time.Second) // OUT's 1.5s answer limit has passed
 	if got := out2.Received(); len(got) != 0 {
 		t.Fatalf("out2 was given the work while the inner cnode's write holds the transaction: %v", got)
