@@ -150,6 +150,7 @@ func TestGossipRegistry_RestartUnderDepartedNodeID(t *testing.T) {
 		return ok
 	})
 
+	firstAddr := addrOf(first)
 	if err := first.Deregister(context.Background(), "restarting-node"); err != nil {
 		t.Fatalf("Deregister first: %v", err)
 	}
@@ -160,11 +161,7 @@ func TestGossipRegistry_RestartUnderDepartedNodeID(t *testing.T) {
 
 	// The watcher still holds the departed record, now in state "left"; the
 	// same id coming back at a new address must be admitted.
-	second, err := registry.NewGossip(gossipCfg("restarting-node", addrOf(watcher)))
-	if err != nil {
-		t.Fatalf("NewGossip second: %v", err)
-	}
-	t.Cleanup(func() { _ = second.Deregister(context.Background(), "restarting-node") })
+	second := newGossipAtAnotherAddress(t, gossipCfg("restarting-node", addrOf(watcher)), firstAddr)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()

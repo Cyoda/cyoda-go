@@ -39,11 +39,12 @@ func TestGossipRegistry_RestartUnderSameID(t *testing.T) {
 		return reflect.DeepEqual(n.Tags, map[string][]string{"t": {"old"}})
 	})
 
+	firstAddr := addrOf(first)
 	if err := first.Deregister(ctx, "restart-2"); err != nil {
 		t.Fatalf("Deregister: %v", err)
 	}
 	// Same id, another address, as a rescheduled pod has.
-	second := startGossipSeededBy(t, "restart-2", r1)
+	second := startGossipAtAnotherAddress(t, "restart-2", r1, firstAddr)
 	if err := second.UpdateTags(map[string][]string{"t": {"new"}}); err != nil {
 		t.Fatal(err)
 	}

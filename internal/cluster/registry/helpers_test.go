@@ -111,6 +111,50 @@ func startGossipSeededBy(t *testing.T, id string, r *registry.Gossip) *registry.
 	return startGossip(t, gossipCfg(id, addrOf(r)))
 }
 
+// newGossipAtAnotherAddress creates a pnode whose bound address is not
+// notThis, and leaves the cluster at cleanup. It does not join: a caller that
+// wants the join is testing what the join does with it.
+//
+// The retry is the point. A restart scenario is about an id coming back at a
+// DIFFERENT address, and an ephemeral port is free to be handed out again the
+// moment the node that held it has gone — so a second life that lands on the
+// first life's port would quietly exercise the same-address case instead. The
+// fixed ports these helpers replaced guaranteed the difference by construction;
+// this restores that guarantee without going back to literals.
+func newGossipAtAnotherAddress(t *testing.T, cfg registry.GossipConfig, notThis string) *registry.Gossip {
+	t.Helper()
+	const attempts = 10
+	for range attempts {
+		r, err := registry.NewGossip(cfg)
+		if err != nil {
+			t.Fatalf("NewGossip %s: %v", cfg.NodeID, err)
+		}
+		captureAddr(r)
+		if addrOf(r) != notThis {
+			t.Cleanup(func() { _ = r.Deregister(context.Background(), cfg.NodeID) })
+			return r
+		}
+		// The OS handed back the address under test. Give it up and ask again.
+		if err := r.Deregister(context.Background(), cfg.NodeID); err != nil {
+			t.Fatalf("release a node that landed on the address under test: %v", err)
+		}
+	}
+	t.Fatalf("no address other than %s in %d attempts", notThis, attempts)
+	return nil
+}
+
+// startGossipAtAnotherAddress is newGossipAtAnotherAddress plus the join, for
+// a caller that only needs the node to be in the cluster.
+func startGossipAtAnotherAddress(t *testing.T, id string, seed *registry.Gossip, notThis string) *registry.Gossip {
+	t.Helper()
+	cfg := gossipCfg(id, addrOf(seed))
+	r := newGossipAtAnotherAddress(t, cfg, notThis)
+	if err := r.Register(context.Background(), cfg.NodeID, cfg.NodeAddr); err != nil {
+		t.Fatalf("Register %s: %v", cfg.NodeID, err)
+	}
+	return r
+}
+
 // eventually polls cond until it holds or the time is up.
 func eventually(t *testing.T, within time.Duration, what string, cond func() bool) {
 	t.Helper()
