@@ -588,7 +588,13 @@ func assertLost(t *testing.T, a HandOverAnswer) {
 		t.Errorf("Message = %q", a.Failure.Message)
 	}
 	if len(a.Attempts) != 1 || a.Attempts[0].MemberID != "-" || a.Attempts[0].Kind != contract.NoAnswer {
-		t.Errorf("Attempts = %+v, want one attempt with member \"-\"", a.Attempts)
+		t.Fatalf("Attempts = %+v, want one attempt with member \"-\"", a.Attempts)
+	}
+	// The attempt's cause carries the code, as every local try's does
+	// (run_local.go uses failure.Message): CALLOUT_FAILED renders each entry as
+	// "[member<->: CODE: text]" and the help topic documents that shape.
+	if want := common.ErrCodeDispatchForwardFailed + ": " + forwardFailedClientMessage; a.Attempts[0].Cause != want {
+		t.Errorf("Cause = %q, want %q", a.Attempts[0].Cause, want)
 	}
 }
 

@@ -481,8 +481,12 @@ func lostAnswerAfter(used int) HandOverAnswer {
 		Connected: true,
 		TriesUsed: used,
 		Failure:   &contract.CalloutFailure{Kind: contract.NoAnswer, Code: appErr.Code, Message: appErr.Message, Err: appErr},
-		Attempts:  []contract.CalloutAttempt{{MemberID: "-", Kind: contract.NoAnswer, Cause: forwardFailedClientMessage}},
-		lost:      true,
+		// The cause carries the code, as every local try's attempt does
+		// (run_local.go records failure.Message): CALLOUT_FAILED renders each
+		// entry as "[member<->: CODE: text]", and the help topic for that code
+		// documents exactly this line.
+		Attempts: []contract.CalloutAttempt{{MemberID: "-", Kind: contract.NoAnswer, Cause: appErr.Message}},
+		lost:     true,
 	}
 }
 

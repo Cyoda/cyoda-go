@@ -246,6 +246,26 @@ func TestNotConnectedReason(t *testing.T) {
 	}
 }
 
+// The attempt a lost hand-over records is what CALLOUT_FAILED renders, and the
+// help topic states that each entry carries the error code the try would have
+// had on its own. This pins the string the REAL router produces, so that a
+// scripted router cannot pin a shape production does not produce.
+func TestHandOver_LostAnswer_AttemptCarriesTheCode(t *testing.T) {
+	fwd := &answeringForwarder{err: &ForwardError{Stage: StageAfterConnect, Err: errors.New("peer returned 502")}}
+	a := newTestRouter(t, &stubNodeRegistry{}, fwd).HandOver(testContext(), node("peer-1", true, "tenant-1", "python"), ownerCallout(t, "processor"), 3, 1)
+
+	if len(a.Attempts) != 1 {
+		t.Fatalf("Attempts = %+v, want one", a.Attempts)
+	}
+	const want = "DISPATCH_FORWARD_FAILED: forwarding the callout to a peer node failed"
+	if a.Attempts[0].Cause != want {
+		t.Errorf("Cause = %q, want %q", a.Attempts[0].Cause, want)
+	}
+	if a.Attempts[0].Cause != a.Failure.Message {
+		t.Errorf("the attempt and the failure disagree: %q vs %q", a.Attempts[0].Cause, a.Failure.Message)
+	}
+}
+
 // --- what a peer writes is bounded before it reaches the client ---
 
 func TestHandOver_BoundsThePeersDiagnostics(t *testing.T) {
