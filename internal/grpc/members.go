@@ -32,7 +32,14 @@ type SendFunc func(ce *cepb.CloudEvent) error
 type ProcessingResponse struct {
 	Payload json.RawMessage
 	Success bool
-	Error   string
+	// NullSuccess is true when the answer's `success` key carried the literal
+	// null: neither the schema's default, which belongs to an absent key, nor
+	// a boolean. Such an answer cannot be read at all, so the dispatch refuses
+	// it before it reads a verdict, a payload or a result out of it (see
+	// reportedSuccess, in streaming.go). Success is left false beside it, so a
+	// reader that knows only the flag still fails closed.
+	NullSuccess bool
+	Error       string
 	Matches *bool // for criteria responses (nil for processor responses)
 	// Reason is the criteria-response explanation for a matches=false result
 	// (EntityCriteriaCalculationResponse.reason). Empty for processor

@@ -21,6 +21,11 @@ import (
 // left out; it never stands in for a verdict the member never gave, so an
 // answer that carries no verdict, and an answer that cannot be read, are
 // refused exactly as before — see the "no verdict" and "unreadable" cases here.
+//
+// The default belongs to an absent key alone. An explicit `success: null` is
+// not a boolean and not the default: it is an answer that cannot be read, and
+// nothing else in it — no verdict, no payload, no result — is read either. The
+// "explicit null" case of each of the three callouts pins that.
 
 // replyOnWire answers the one request the member is sent with the bytes a
 // compute member would put on the wire, read by the same decoder the stream
@@ -41,6 +46,14 @@ func replyOnWire(t *testing.T, registry *MemberRegistry, memberID string, sentCh
 	}()
 }
 
+// The two client-safe sentences an unreadable answer ends with, written out
+// here rather than read from the production constants: what the client is told
+// is the contract these tests pin.
+const (
+	wantUnreadableMessage  = "the compute member's response could not be read"
+	wantNullSuccessMessage = wantUnreadableMessage + ": success was null"
+)
+
 // memberFailure asserts that err is a MemberFailed carrying the member's own
 // message, and returns it.
 func memberFailure(t *testing.T, err error) *contract.CalloutFailure {
@@ -50,6 +63,56 @@ func memberFailure(t *testing.T, err error) *contract.CalloutFailure {
 		t.Fatalf("error is not a *contract.CalloutFailure: %v", err)
 	}
 	return failure
+}
+
+// decodeAnswer runs one of the three response decoders over the bytes a member
+// put on the wire and returns the ProcessingResponse it produced.
+func decodeAnswer(t *testing.T, decode func(*Member, json.RawMessage), body string) *ProcessingResponse {
+	t.Helper()
+	registry := NewMemberRegistry()
+	member := registry.Register("m-1", testTenantID, []string{"python"},
+		func(*cepb.CloudEvent) error { return nil }, nil)
+	ch, err := member.TrackRequest("r-1")
+	if err != nil {
+		t.Fatalf("TrackRequest: %v", err)
+	}
+	decode(member, json.RawMessage(body))
+	return <-ch
+}
+
+// The three states of the `success` key stay apart in the decode, for every one
+// of the three answer shapes: absent is the schema's default and reports
+// success, a boolean reports itself, and the literal null reports nothing at
+// all. A *bool cannot tell the first from the last — it is nil for both.
+// A null answer is left reporting no success as well as unreadable, so a reader
+// that only knows the flag still fails closed.
+func TestHandleResponses_SuccessKeepsItsThreeStates(t *testing.T) {
+	for kind, decode := range map[string]func(*Member, json.RawMessage){
+		"processor": handleProcessorResponse,
+		"criteria":  handleCriteriaResponse,
+		"function":  handleFunctionResponse,
+	} {
+		for state, tc := range map[string]struct {
+			body            string
+			wantSuccess     bool
+			wantNullSuccess bool
+		}{
+			"absent": {`{"requestId":"r-1"}`, true, false},
+			"true":   {`{"requestId":"r-1","success":true}`, true, false},
+			"false":  {`{"requestId":"r-1","success":false}`, false, false},
+			"null":   {`{"requestId":"r-1","success":null}`, false, true},
+		} {
+			t.Run(kind+"/"+state, func(t *testing.T) {
+				resp := decodeAnswer(t, decode, tc.body)
+				if resp.Success != tc.wantSuccess {
+					t.Errorf("success = %t; want %t", resp.Success, tc.wantSuccess)
+				}
+				if resp.NullSuccess != tc.wantNullSuccess {
+					t.Errorf("nullSuccess = %t; want %t", resp.NullSuccess, tc.wantNullSuccess)
+				}
+			})
+		}
+	}
 }
 
 // A processor's answer: the flag may be left out, and leaving it out is not a
@@ -78,7 +141,11 @@ func TestDispatchProcessor_SuccessDefaultsToTrue(t *testing.T) {
 		},
 		"omitted, unreadable payload": {
 			body:     `{"requestId":%q,"payload":"not-an-object"}`,
-			wantKind: contract.Terminal, wantMsg: "the compute member's response could not be read",
+			wantKind: contract.Terminal, wantMsg: wantUnreadableMessage,
+		},
+		"explicit null": {
+			body:     `{"requestId":%q,"success":null,"payload":{"data":{"foo":"changed"}}}`,
+			wantKind: contract.Terminal, wantMsg: wantNullSuccessMessage,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -97,6 +164,11 @@ func TestDispatchProcessor_SuccessDefaultsToTrue(t *testing.T) {
 				}
 				if failure.Message != tc.wantMsg {
 					t.Errorf("message = %q; want %q", failure.Message, tc.wantMsg)
+				}
+				// A failed callout returns no entity: nothing the answer
+				// carried was read out of it.
+				if entity != nil {
+					t.Errorf("entity data = %s; want no entity from a failed callout", entity.Data)
 				}
 				return
 			}
@@ -167,7 +239,14 @@ func TestDispatchCriteria_SuccessDefaultsToTrue(t *testing.T) {
 		},
 		"omitted, no verdict": {
 			body:     `{"requestId":%q,"reason":"no verdict here"}`,
-			wantKind: contract.Terminal, wantMsg: "the compute member's response could not be read",
+			wantKind: contract.Terminal, wantMsg: wantUnreadableMessage,
+		},
+		// The shape where reading the wrong field would do real damage: a
+		// verdict is there to be read, and reading it would let a member whose
+		// answer says nothing about success decide a transition.
+		"explicit null": {
+			body:     `{"requestId":%q,"success":null,"matches":true}`,
+			wantKind: contract.Terminal, wantMsg: wantNullSuccessMessage,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -186,6 +265,10 @@ func TestDispatchCriteria_SuccessDefaultsToTrue(t *testing.T) {
 				}
 				if failure.Message != tc.wantMsg {
 					t.Errorf("message = %q; want %q", failure.Message, tc.wantMsg)
+				}
+				// No verdict is read out of an answer the callout refused.
+				if matches || reason != "" {
+					t.Errorf("matches = %t reason = %q; want neither read from a refused answer", matches, reason)
 				}
 				return
 			}
@@ -206,10 +289,11 @@ func TestDispatchCriteria_SuccessDefaultsToTrue(t *testing.T) {
 // there is no verdict here for the default to stand in for.
 func TestDispatchFunction_SuccessDefaultsToTrue(t *testing.T) {
 	for name, tc := range map[string]struct {
-		body     string
-		wantKind string
-		wantVal  string
-		wantMsg  string
+		body         string
+		wantKind     string
+		wantVal      string
+		wantFailKind contract.CalloutFailureKind
+		wantMsg      string
 	}{
 		"omitted": {
 			body:     `{"requestId":%q,"resultKind":"Schedule","result":{"fireAfterMs":1}}`,
@@ -220,8 +304,12 @@ func TestDispatchFunction_SuccessDefaultsToTrue(t *testing.T) {
 			wantKind: "Schedule", wantVal: `{"fireAfterMs":1}`,
 		},
 		"explicit false": {
-			body:    `{"requestId":%q,"success":false,"error":{"message":"the member says no"}}`,
-			wantMsg: "the member says no",
+			body:         `{"requestId":%q,"success":false,"error":{"message":"the member says no"}}`,
+			wantFailKind: contract.MemberFailed, wantMsg: "the member says no",
+		},
+		"explicit null": {
+			body:         `{"requestId":%q,"success":null,"resultKind":"Schedule","result":{"fireAfterMs":1}}`,
+			wantFailKind: contract.Terminal, wantMsg: wantNullSuccessMessage,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -239,11 +327,15 @@ func TestDispatchFunction_SuccessDefaultsToTrue(t *testing.T) {
 					t.Fatalf("the callout succeeded with resultKind %q; want the failure %q", res.Kind, tc.wantMsg)
 				}
 				failure := memberFailure(t, err)
-				if failure.Kind != contract.MemberFailed {
-					t.Errorf("kind = %s; want %s", failure.Kind, contract.MemberFailed)
+				if failure.Kind != tc.wantFailKind {
+					t.Errorf("kind = %s; want %s", failure.Kind, tc.wantFailKind)
 				}
 				if failure.Message != tc.wantMsg {
 					t.Errorf("message = %q; want %q", failure.Message, tc.wantMsg)
+				}
+				// Nothing is relayed out of an answer the callout refused.
+				if res.Kind != "" || len(res.Value) != 0 {
+					t.Errorf("resultKind = %q result = %s; want neither read from a refused answer", res.Kind, res.Value)
 				}
 				return
 			}

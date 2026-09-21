@@ -231,6 +231,13 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 			slog.Error("member disconnected mid-dispatch", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
 			return CalloutResult{}, appFailure(contract.NoAnswer, disconnectedErr(label)), nil
 		}
+		// Before the flag is read as a verdict on the work, and before
+		// anything else in the answer is read at all: an answer whose
+		// `success` is the literal null reports neither success nor failure,
+		// and the same answer is refused for every one of the three kinds.
+		if resp.NullSuccess {
+			return CalloutResult{}, memberResponseUnreadable(nullSuccessError{}, nullSuccessMessage, label, name, member.ID, requestID), nil
+		}
 		if !resp.Success {
 			failure := &contract.CalloutFailure{Kind: contract.MemberFailed, Message: label + " returned failure", Retryable: resp.Retryable}
 			if resp.Error != "" {
@@ -241,7 +248,7 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 		}
 		result, err := call.mapResponse(resp)
 		if err != nil {
-			return CalloutResult{}, memberResponseUnreadable(err, label, name, member.ID, requestID), nil
+			return CalloutResult{}, memberResponseUnreadable(err, unreadableAnswerMessage, label, name, member.ID, requestID), nil
 		}
 		slog.Debug("dispatch completed", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
 		return result, nil, nil
@@ -281,25 +288,45 @@ func terminalFailure(err error, memberID, requestID string) *contract.CalloutFai
 	return &contract.CalloutFailure{Kind: contract.Terminal, Code: appErr.Code, Message: appErr.Message, Err: appErr}
 }
 
+// The client-safe sentences memberResponseUnreadable carries. Both are this
+// node's own fixed text: nothing a member sent is quoted, and the second says
+// only which key of the schema was unreadable, which is what a member's author
+// needs to hear in the 400 the callout ends with.
+const (
+	unreadableAnswerMessage = "the compute member's response could not be read"
+	nullSuccessMessage      = unreadableAnswerMessage + ": success was null"
+)
+
 // memberResponseUnreadable is Terminal: spec §3's site table assigns
 // "response payload unmarshal" Terminal, not MemberFailed. MemberFailed means
 // the cnode itself answered success=false, with the cnode's OWN message and
 // its own retryable verdict (contract.CalloutFailure's doc); here the member
-// answered success, and the message is ours, not the cnode's — reporting it
-// as MemberFailed would also mislabel it over the wire, since fillFailure
-// (internal/cluster/dispatch/handover.go) places a MemberFailed failure's
-// Message into memberError, claiming it as the member's own words. The
-// client sees a fixed, client-safe message; the decode error — which can
-// quote a byte of the member's own response — is logged here by shape only.
-// It is not attached to the failure at all (no Err, no Code — this Terminal
-// failure has none of its own, like ResolveAnswerLimit's and
+// did not report a failure, and the message is ours, not the cnode's —
+// reporting it as MemberFailed would also mislabel it over the wire, since
+// fillFailure (internal/cluster/dispatch/handover.go) places a MemberFailed
+// failure's Message into memberError, claiming it as the member's own words.
+// The client sees msg, one of the fixed sentences above; the decode error —
+// which can quote a byte of the member's own response — is logged here by
+// shape only. It is not attached to the failure at all (no Err, no Code — this
+// Terminal failure has none of its own, like ResolveAnswerLimit's and
 // NewCriteriaCallout's): CalloutFailure.Error() returns Err's text verbatim
 // once Err is set, bypassing Message entirely, which would undo the
 // sanitizing done here.
-func memberResponseUnreadable(err error, label, name, memberID, requestID string) *contract.CalloutFailure {
+func memberResponseUnreadable(err error, msg, label, name, memberID, requestID string) *contract.CalloutFailure {
 	slog.Error("compute member response could not be read", "pkg", "grpc", "label", label, "name", name,
 		"memberId", memberID, "requestId", requestID, "error", common.JSONErrorShape(err))
-	return &contract.CalloutFailure{Kind: contract.Terminal, Message: "the compute member's response could not be read"}
+	return &contract.CalloutFailure{Kind: contract.Terminal, Message: msg}
+}
+
+// nullSuccessError is the unreadable-answer error for an answer whose
+// `success` key carried the literal null. Like noCriterionVerdictError it is a
+// type of its own rather than a sentinel value, so that the log line
+// memberResponseUnreadable writes — which renders the error by shape, never by
+// text — still names this condition.
+type nullSuccessError struct{}
+
+func (nullSuccessError) Error() string {
+	return "the response reported success: null"
 }
 
 // calloutDeadlinePassed reports whether ctx ended because the callout's own

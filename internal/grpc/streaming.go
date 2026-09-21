@@ -214,27 +214,60 @@ func (s *CloudEventsServiceImpl) keepAliveLoop(ctx context.Context, member *Memb
 	}
 }
 
-// reportedSuccess resolves the `success` flag of a calculation response.
-// The published schema (docs/cyoda/schema/common/BaseEvent.json) declares the
-// field optional with the default `true`, so a member that omits it has
-// reported success; a member reporting a failure sends `success: false`. The
-// three decoders take it as a pointer and resolve it here, so the default is
-// applied once and ProcessingResponse.Success stays a plain bool that every
-// reader downstream can trust.
+// reportedSuccess is the `success` flag of a calculation response, decoded so
+// that the three states of the key stay apart: absent, present and null, and
+// present and boolean.
+//
+// Absent is the schema's default. docs/cyoda/schema/common/BaseEvent.json
+// declares the field optional with the default `true`, so a member that omits
+// it has reported success; a member reporting a failure sends `success: false`.
+// The literal null is neither: `null` is not a boolean, so it is not the
+// default and not a flag, and an answer carrying it cannot be read at all.
+//
+// A `*bool` cannot express that — encoding/json leaves it nil for an absent key
+// and for an explicit null alike. A type with an UnmarshalJSON method is
+// instead handed the literal `null` to decode, which is what tells the two
+// apart here. The three decoders resolve the flag through this one type, so
+// ProcessingResponse.Success stays a plain bool that every reader downstream
+// can trust, beside the NullSuccess that marks the answer unreadable.
 //
 // The default stands in for a flag, never for a verdict: `matches` on a
 // criteria response is kept absent (see handleCriteriaResponse) and an answer
 // that cannot be read is still refused.
-func reportedSuccess(reported *bool) bool {
-	return reported == nil || *reported
+type reportedSuccess struct {
+	present bool // the key was in the response at all
+	null    bool // ... and carried the literal null rather than a boolean
+	value   bool // ... and, when not null, the boolean it carried
+}
+
+// UnmarshalJSON records which of the three states the key was in.
+func (s *reportedSuccess) UnmarshalJSON(data []byte) error {
+	s.present = true
+	if string(data) == "null" {
+		s.null = true
+		return nil
+	}
+	return json.Unmarshal(data, &s.value)
+}
+
+// succeeded reports whether the member reported success, the schema's default
+// standing in for an absent key. An unreadable flag reports no success, so a
+// reader that consults this alone fails closed.
+func (s reportedSuccess) succeeded() bool {
+	return !s.present || s.value
+}
+
+// unreadable reports whether the key carried the literal null.
+func (s reportedSuccess) unreadable() bool {
+	return s.null
 }
 
 // handleProcessorResponse routes a processor calculation response to the
 // pending request on the given member.
 func handleProcessorResponse(member *Member, payload json.RawMessage) {
 	var resp struct {
-		RequestID string `json:"requestId"`
-		Success   *bool  `json:"success"`
+		RequestID string          `json:"requestId"`
+		Success   reportedSuccess `json:"success"`
 		Error     *struct {
 			Message   string `json:"message"`
 			Retryable *bool  `json:"retryable"`
@@ -254,11 +287,12 @@ func handleProcessorResponse(member *Member, payload json.RawMessage) {
 		retryable = resp.Error.Retryable
 	}
 	member.CompleteRequest(resp.RequestID, &ProcessingResponse{
-		Payload:   resp.Payload,
-		Success:   reportedSuccess(resp.Success),
-		Error:     errMsg,
-		Warnings:  resp.Warnings,
-		Retryable: retryable,
+		Payload:     resp.Payload,
+		Success:     resp.Success.succeeded(),
+		NullSuccess: resp.Success.unreadable(),
+		Error:       errMsg,
+		Warnings:    resp.Warnings,
+		Retryable:   retryable,
 	})
 }
 
@@ -266,8 +300,8 @@ func handleProcessorResponse(member *Member, payload json.RawMessage) {
 // pending request on the given member.
 func handleCriteriaResponse(member *Member, payload json.RawMessage) {
 	var resp struct {
-		RequestID string `json:"requestId"`
-		Success   *bool  `json:"success"`
+		RequestID string          `json:"requestId"`
+		Success   reportedSuccess `json:"success"`
 		// A pointer: a response that says nothing about matches must arrive
 		// at the callout saying nothing. Decoded into a bool it would arrive
 		// as "does not match" — a verdict on a criterion that decides a
@@ -292,12 +326,13 @@ func handleCriteriaResponse(member *Member, payload json.RawMessage) {
 		retryable = resp.Error.Retryable
 	}
 	member.CompleteRequest(resp.RequestID, &ProcessingResponse{
-		Success:   reportedSuccess(resp.Success),
-		Error:     errMsg,
-		Matches:   resp.Matches,
-		Reason:    resp.Reason,
-		Warnings:  resp.Warnings,
-		Retryable: retryable,
+		Success:     resp.Success.succeeded(),
+		NullSuccess: resp.Success.unreadable(),
+		Error:       errMsg,
+		Matches:     resp.Matches,
+		Reason:      resp.Reason,
+		Warnings:    resp.Warnings,
+		Retryable:   retryable,
 	})
 }
 
@@ -306,7 +341,7 @@ func handleCriteriaResponse(member *Member, payload json.RawMessage) {
 func handleFunctionResponse(member *Member, payload json.RawMessage) {
 	var resp struct {
 		RequestID  string           `json:"requestId"`
-		Success    *bool            `json:"success"`
+		Success    reportedSuccess  `json:"success"`
 		Result     *json.RawMessage `json:"result"`
 		ResultKind *string          `json:"resultKind"`
 		Error      *struct {
@@ -335,11 +370,12 @@ func handleFunctionResponse(member *Member, payload json.RawMessage) {
 		resultKind = *resp.ResultKind
 	}
 	member.CompleteRequest(resp.RequestID, &ProcessingResponse{
-		Success:    reportedSuccess(resp.Success),
-		Error:      errMsg,
-		Result:     result,
-		ResultKind: resultKind,
-		Warnings:   resp.Warnings,
-		Retryable:  retryable,
+		Success:     resp.Success.succeeded(),
+		NullSuccess: resp.Success.unreadable(),
+		Error:       errMsg,
+		Result:      result,
+		ResultKind:  resultKind,
+		Warnings:    resp.Warnings,
+		Retryable:   retryable,
 	})
 }
