@@ -114,7 +114,7 @@ func (d *ProcessorDispatcher) RunLocal(ctx context.Context, call Callout, maxTri
 			"memberId", member.ID, "entityId", call.EntityID, "requestId", call.RequestID,
 			"try", res.TriesUsed, "major", major, "minor", minor)
 
-		pass, err := d.mintPass(ctx, call, major, minor)
+		pass, err := d.mintPass(call, major, minor)
 		if err != nil {
 			// Would fail identically for any cnode; and a try without its pass
 			// would leave the cnode's callbacks outside the transaction.

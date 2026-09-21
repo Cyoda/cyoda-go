@@ -1,7 +1,6 @@
 package grpc
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -151,19 +150,28 @@ func TestMintPass_NoTransaction_EmptyOwnerToo_StillNoPass(t *testing.T) {
 	if call.OwnerNodeID != "" {
 		t.Fatalf("precondition: OwnerNodeID = %q, want empty", call.OwnerNodeID)
 	}
-	pass, err := d.mintPass(testContext(), call, 1, 0)
+	pass, err := d.mintPass(call, 1, 0)
 	if err != nil || pass != "" {
 		t.Fatalf("mintPass = (%q, %v), want (\"\", nil)", pass, err)
 	}
 }
 
-// Until the hand-over stops pre-minting (the last task of this stream), a pass
-// already on the context still wins.
-func TestMintPass_PassOnContextWins(t *testing.T) {
-	d := newTestDispatcher(t, NewMemberRegistry())
-	ctx := WithTxToken(context.Background(), "pre-minted-by-the-owner")
-	pass, err := d.mintPass(ctx, processorCall("x", false, time.Second), 1, 0)
-	if err != nil || pass != "pre-minted-by-the-owner" {
-		t.Fatalf("mintPass = (%q, %v)", pass, err)
+// A pnode that received a hand-over mints the passes of its own tries, naming
+// the owner — nothing reaches a cnode that the pnode making the hand-off did
+// not mint for that try.
+func TestRunLocal_OnAPnodeThatIsNotTheOwner_MintsPassesNamingTheOwner(t *testing.T) {
+	reg := NewMemberRegistry()
+	_, a := attach(t, reg, "m-1", testTenantID, "x", answersAs("m-1"))
+	d := newTestDispatcher(t, reg) // this pnode is "node-test"
+	call := processorCall("x", true, 5*time.Second)
+	call.OwnerNodeID = "node-owner"
+	call.Number = NewMinorNumberer(3)
+
+	if res := d.RunLocal(testContext(), call, 1); !res.OK() {
+		t.Fatalf("res = %+v", res)
+	}
+	claims := verifyPass(t, onlyPass(t, a))
+	if claims.NodeID != "node-owner" || claims.Major != 3 || claims.Minor != 1 {
+		t.Errorf("claims = %+v, want NodeID node-owner and number (3,1)", claims)
 	}
 }

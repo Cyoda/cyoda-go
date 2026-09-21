@@ -76,13 +76,10 @@ func (d *ProcessorDispatcher) ResolveAnswerLimit(responseTimeoutMs int64) (time.
 // plus an allowance for routing and for clocks that differ between pnodes. A
 // callout outside a transaction carries no pass.
 //
-// A pass already on ctx wins: the hand-over still pre-mints one. A callout
-// inside a transaction that names no owner is refused here, before the
-// hand-off, rather than minting a pass whose callbacks could never be routed.
-func (d *ProcessorDispatcher) mintPass(ctx context.Context, call Callout, major, minor uint32) (string, error) {
-	if pass := TxTokenFromContext(ctx); pass != "" {
-		return pass, nil
-	}
+// A callout inside a transaction that names no owner is refused here, before
+// the hand-off, rather than minting a pass whose callbacks could never be
+// routed.
+func (d *ProcessorDispatcher) mintPass(call Callout, major, minor uint32) (string, error) {
 	if call.TxID == "" {
 		return "", nil
 	}

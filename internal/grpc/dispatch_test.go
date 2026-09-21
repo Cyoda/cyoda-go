@@ -128,7 +128,7 @@ func tryOnce(d *ProcessorDispatcher, ctx context.Context, member *Member, reques
 			return CalloutResult{}, nil
 		},
 	}
-	pass, err := d.mintPass(ctx, call, 1, 0)
+	pass, err := d.mintPass(call, 1, 0)
 	if err != nil {
 		return nil, err
 	}
