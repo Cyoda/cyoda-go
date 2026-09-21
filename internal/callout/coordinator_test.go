@@ -78,6 +78,23 @@ func TestOwner_RetryPolicyFixedOrUnset_OneTryPlusTheConfiguredRetries(t *testing
 	}
 }
 
+// No retries configured is one try: the setting is what is added to the first
+// try, and with nothing added the second cnode is never asked.
+func TestOwner_NoRetriesConfigured_OneTry(t *testing.T) {
+	e := newEnv(t, Config{FixedNumRetries: 0})
+	first := e.attach(t, "m-1", tenantA, "x", nil) // takes the work, never answers
+	second := e.attach(t, "m-2", tenantA, "x", nil)
+
+	_, err := e.dispatchFunction(userCtx(tenantA), "x", "")
+
+	if first.count() != 1 || second.count() != 0 {
+		t.Errorf("asked m-1 %d times and m-2 %d times, want 1 and 0", first.count(), second.count())
+	}
+	if got := appErrOf(t, err).Code; got != common.ErrCodeDispatchTimeout {
+		t.Errorf("code = %s, want the one try's own DISPATCH_TIMEOUT", got)
+	}
+}
+
 // --- what the client is told ---
 
 func TestOwner_EveryTryUsed_IsCalloutFailedAndListsTheTries(t *testing.T) {
@@ -477,7 +494,7 @@ func TestOwner_CallerGoesAwayDuringATry_CtxErrUnchanged(t *testing.T) {
 			ctx, cancel := tt.ctx()
 			defer cancel()
 
-			_, err := e.dispatchFunction(ctx, "x", "")
+			err := e.dispatchPatientFunction(ctx, "x")
 
 			if err != tt.wantErr {
 				t.Errorf("err = %v, want %v unchanged", err, tt.wantErr)
@@ -507,7 +524,7 @@ func TestOwner_ReleasedByTheFenceDuringATry_IsCalloutSuperseded(t *testing.T) {
 		e.fence.Advance("outer-callout", 2) // the outer cnode is replaced
 	}()
 
-	_, err = e.dispatchFunction(callback, "x", "")
+	err = e.dispatchPatientFunction(callback, "x")
 
 	appErr := appErrOf(t, err)
 	if appErr.Status != 410 || appErr.Code != common.ErrCodeCalloutSuperseded {

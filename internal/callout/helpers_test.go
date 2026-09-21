@@ -177,6 +177,21 @@ func functionDef(tag, retryPolicy string) spi.ScheduleFunction {
 	return spi.ScheduleFunction{Name: "calcFire", ResultKind: "Schedule", CalculationNodesTags: tag, ResponseTimeoutMs: limitMs, RetryPolicy: retryPolicy}
 }
 
+// patientLimitMs is the answer limit for a test whose try must be ended by
+// something other than the limit — a caller that goes away, the fence releasing
+// the callout. A cnode has half a minute to answer, so the thing under test is
+// always what ends the try, whatever the machine is doing meanwhile.
+const patientLimitMs = 30_000
+
+// dispatchPatientFunction makes the callout of dispatchFunction with an answer
+// limit no test waits out.
+func (e *env) dispatchPatientFunction(ctx context.Context, tag string) error {
+	fn := functionDef(tag, "")
+	fn.ResponseTimeoutMs = patientLimitMs
+	_, err := e.owner.DispatchFunction(ctx, testEntity(), fn, "wf1", "t1", "tx-1")
+	return err
+}
+
 // dispatchFunction is the callout most tests make: a function is repeat-safe by
 // rule, so every kind of failure that permits another cnode can be shown on it.
 func (e *env) dispatchFunction(ctx context.Context, tag, retryPolicy string) (string, error) {
