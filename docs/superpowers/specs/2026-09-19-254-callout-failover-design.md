@@ -1001,7 +1001,13 @@ waiver, with its reason below the table.
   `newComputeMember` and `stop()` (`callback_harness_test.go:533, 653`); it is
   extended to attach **several** scripted cnodes. Per-test server configuration
   (`newCallbackHarnessConfigured`) makes patience and tries settable per test.
-  This is the layer for anything that depends on order or timing.
+  This is the layer for anything that depends on order or timing. It can also
+  put a **stand-in peer** in the owner's cluster registry — a node of the gossip
+  cluster, advertising the tag, whose dispatch door opens the sealed hand-over
+  and then answers as the scenario says (a sealed "no compute member", an answer
+  that does not authenticate, a connection closed with no reply). That is how
+  the hand-over outcomes an owner cannot cause from the outside reach a running
+  backend without starting a second server.
 - The parity suites share one server, one tenant and one tag across all
   scenarios (`fixtureutil.go:206`; `compute-test-client/dispatch.go:88-93`), so
   selector state carries over between scenarios. `cmd/compute-test-client`
@@ -1087,7 +1093,8 @@ waiver, with its reason below the table.
 | Owner's cnode fails → hand-over succeeds | ✓ | | | | ✓ |
 | Hand-over: peer makes two tries in one exchange; honours the owner's answer limit | ✓ | | | | ✓ |
 | A pnode that receives a hand-over never hands on | ✓ | | | | |
-| Hand-over answer lost → one try counted; not repeat-safe → 503 `DISPATCH_FORWARD_FAILED` | ✓ | | | | |
+| Hand-over answer lost → one try counted; not repeat-safe → 503 `DISPATCH_FORWARD_FAILED`, no second peer and no compute member asked; HTTP and gRPC create doors | ✓ | ✓ | | | |
+| The same lost hand-over listed in `CALLOUT_FAILED` as `member<->` carrying its own code, beside a local try's entry; HTTP and gRPC create doors | ✓ | ✓ | | | |
 | `triesUsed` out of range → `no_answer` | ✓ | | | | |
 | Peer cannot be connected to → no try used, next peer | ✓ | | | | w³ |
 | No peer can be connected to, no local cnode → 503 `NO_COMPUTE_MEMBER_FOR_TAG` | ✓ | | | | |
