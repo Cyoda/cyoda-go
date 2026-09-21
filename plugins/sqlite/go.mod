@@ -3,7 +3,7 @@ module github.com/cyoda-platform/cyoda-go/plugins/sqlite
 go 1.26.7
 
 require (
-	github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20260918004138-1ab57a60382c
+	github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20260921181211-7a75d2d335ee
 	github.com/gofrs/flock v0.13.1
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0

@@ -28,6 +28,8 @@ github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20260917062317-6220cff99db2 h1:i
 github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20260917062317-6220cff99db2/go.mod h1:AcwgAIrvssNIUXbChpZM0/BaXhPmFDLRM+T19iCfD3k=
 github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20260918004138-1ab57a60382c h1:w8+aJ98KwfDHazkxx3KOYy8VnBgacYAnqUQoSBoM+ew=
 github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20260918004138-1ab57a60382c/go.mod h1:AcwgAIrvssNIUXbChpZM0/BaXhPmFDLRM+T19iCfD3k=
+github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20260921181211-7a75d2d335ee h1:OkqTh6C+ORKOVZ/hLhQgpdZhpkrY9LA5KbRtEpH9+6Q=
+github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20260921181211-7a75d2d335ee/go.mod h1:AcwgAIrvssNIUXbChpZM0/BaXhPmFDLRM+T19iCfD3k=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/dhui/dktest v0.4.6 h1:+DPKyScKSEp3VLtbMDHcUq6V5Lm5zfZZVb0Sk7Ahom4=
 github.com/dhui/dktest v0.4.6/go.mod h1:JHTSYDtKkvFNFHJKqCzVzqXecyv+tKt8EzceOmQOgbU=
