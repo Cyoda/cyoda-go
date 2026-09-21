@@ -41,4 +41,5 @@ Without the member's `retryable: true` the failure is not retryable unless the u
 - errors
 - errors.WORKFLOW_NOT_FOUND
 - errors.TRANSITION_NOT_FOUND
+- errors.NO_COMPUTE_MEMBER_FOR_TAG
 - errors.CALLOUT_FAILED

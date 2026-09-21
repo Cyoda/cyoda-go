@@ -13,14 +13,6 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// ErrNotFound is a sentinel error for entity/resource not-found conditions.
-
-// ErrEpochMismatch is a sentinel error returned when a node attempts to write
-// to a shard it no longer owns (or never owned). Mapped to a retryable HTTP
-// error so clients re-route to the new owner.
-
-// ErrConflict is a sentinel error for MVCC conflicts (entity modified concurrently).
-
 // ErrorLevel classifies errors into three tiers for response handling.
 type ErrorLevel int
 
