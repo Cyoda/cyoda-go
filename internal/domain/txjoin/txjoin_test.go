@@ -74,7 +74,7 @@ func joinFromToken(ctx context.Context, s *token.Signer, txMgr spi.TransactionMa
 	return j.join(ctx, pass)
 }
 
-func TestJoinFromToken_EmptyPassThrough(t *testing.T) {
+func TestVerify_EmptyPassIsNotAJoinedRequest(t *testing.T) {
 	ctx := context.Background()
 	got, err := joinFromToken(ctx, nil, fakeTM{}, noCalloutFence(), "")
 	if err != nil {
@@ -88,7 +88,7 @@ func TestJoinFromToken_EmptyPassThrough(t *testing.T) {
 	}
 }
 
-func TestJoinFromToken_JoinsValid(t *testing.T) {
+func TestJoin_ValidPassJoinsTheTransaction(t *testing.T) {
 	s, err := token.NewSigner(make32(t))
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
@@ -108,7 +108,7 @@ func TestJoinFromToken_JoinsValid(t *testing.T) {
 	}
 }
 
-func TestJoinFromToken_ExpiredMaps410(t *testing.T) {
+func TestVerify_ExpiredMaps410(t *testing.T) {
 	s, err := token.NewSigner(make32(t))
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
@@ -130,7 +130,7 @@ func TestJoinFromToken_ExpiredMaps410(t *testing.T) {
 	}
 }
 
-func TestJoinFromToken_ForgedMaps401(t *testing.T) {
+func TestVerify_ForgedMaps401(t *testing.T) {
 	s, err := token.NewSigner(make32(t))
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
@@ -157,7 +157,7 @@ func TestJoinFromToken_ForgedMaps401(t *testing.T) {
 	}
 }
 
-func TestJoinFromToken_NotFoundMaps404(t *testing.T) {
+func TestJoin_NotFoundMaps404(t *testing.T) {
 	s, err := token.NewSigner(make32(t))
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
@@ -179,7 +179,7 @@ func TestJoinFromToken_NotFoundMaps404(t *testing.T) {
 	}
 }
 
-func TestJoinFromToken_RolledBackMaps404(t *testing.T) {
+func TestJoin_RolledBackMaps404(t *testing.T) {
 	s, err := token.NewSigner(make32(t))
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
@@ -201,7 +201,7 @@ func TestJoinFromToken_RolledBackMaps404(t *testing.T) {
 	}
 }
 
-func TestJoinFromToken_AlreadyCommittedMaps404(t *testing.T) {
+func TestJoin_AlreadyCommittedMaps404(t *testing.T) {
 	s, err := token.NewSigner(make32(t))
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
@@ -223,7 +223,7 @@ func TestJoinFromToken_AlreadyCommittedMaps404(t *testing.T) {
 	}
 }
 
-func TestJoinFromToken_UnknownJoinErrorMaps5xx(t *testing.T) {
+func TestJoin_UnknownJoinErrorMaps5xx(t *testing.T) {
 	s, err := token.NewSigner(make32(t))
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
@@ -243,7 +243,7 @@ func TestJoinFromToken_UnknownJoinErrorMaps5xx(t *testing.T) {
 	}
 }
 
-func TestJoinFromToken_TenantMismatchMaps403(t *testing.T) {
+func TestJoin_TenantMismatchMaps403(t *testing.T) {
 	s, err := token.NewSigner(make32(t))
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
@@ -265,7 +265,7 @@ func TestJoinFromToken_TenantMismatchMaps403(t *testing.T) {
 	}
 }
 
-func TestJoinFromToken_AdmitsUnderTheCurrentNumber(t *testing.T) {
+func TestJoin_AdmitsUnderTheCurrentNumber(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
 	f, claims := liveFence(t, "req-1", "tx-1")
 	tok, _ := s.Issue(claims)
@@ -281,7 +281,7 @@ func TestJoinFromToken_AdmitsUnderTheCurrentNumber(t *testing.T) {
 	}
 }
 
-func TestJoinFromToken_CalloutEnded_410(t *testing.T) {
+func TestJoin_CalloutEnded_410(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
 	f := fence.New(txgate.New())
 	_, end := f.Begin(context.Background(), "req-1", "tx-1", nil)
@@ -296,7 +296,7 @@ func TestJoinFromToken_CalloutEnded_410(t *testing.T) {
 	}
 }
 
-func TestJoinFromToken_ReplacedWhileCalloutInProgress_410(t *testing.T) {
+func TestJoin_ReplacedWhileCalloutInProgress_410(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
 	f, claims := liveFence(t, "req-1", "tx-1")
 	tok, _ := s.Issue(claims)
@@ -305,7 +305,7 @@ func TestJoinFromToken_ReplacedWhileCalloutInProgress_410(t *testing.T) {
 	assertAppErr(t, err, http.StatusGone, common.ErrCodeCalloutSuperseded)
 }
 
-func TestJoinFromToken_EnclosingCalloutNotCurrent_410(t *testing.T) {
+func TestJoin_EnclosingCalloutNotCurrent_410(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
 	f, claims := liveFence(t, "req-inner", "tx-1")
 	claims.Outer = []token.Pair{{Callout: "req-outer", Major: 1}} // never begun
@@ -316,7 +316,7 @@ func TestJoinFromToken_EnclosingCalloutNotCurrent_410(t *testing.T) {
 
 // The transaction is looked up, and its tenant checked, BEFORE the fence is
 // consulted.
-func TestJoinFromToken_JoinComesBeforeTheFence(t *testing.T) {
+func TestJoin_JoinComesBeforeTheFence(t *testing.T) {
 	tests := []struct {
 		name    string
 		joinErr error
@@ -341,7 +341,7 @@ func TestJoinFromToken_JoinComesBeforeTheFence(t *testing.T) {
 // A pass presented by the wrong tenant is answered 403 whatever the fence knows
 // about the callout it names — current, superseded or never registered — so a
 // stolen pass tells another tenant nothing about which callouts exist.
-func TestJoinFromToken_TenantMismatchIsOneAnswerWhateverTheFenceKnows(t *testing.T) {
+func TestJoin_TenantMismatchIsOneAnswerWhateverTheFenceKnows(t *testing.T) {
 	for name, setup := range map[string]func(*testing.T) (*fence.Fence, token.Claims){
 		"callout current": func(t *testing.T) (*fence.Fence, token.Claims) {
 			return liveFence(t, "req-1", "tx-1")
@@ -367,7 +367,7 @@ func TestJoinFromToken_TenantMismatchIsOneAnswerWhateverTheFenceKnows(t *testing
 
 // A stolen pass absorbs nothing: another tenant presenting a higher minor must
 // not shut the rightful cnode out.
-func TestJoinFromToken_TenantMismatch_AbsorbsNothing(t *testing.T) {
+func TestJoin_TenantMismatch_AbsorbsNothing(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
 	f, claims := liveFence(t, "req-1", "tx-1")
 	rightful, err := f.Admit(context.Background(), []fence.Pair{{Callout: "req-1", Major: 1, Minor: 1}})
@@ -383,7 +383,7 @@ func TestJoinFromToken_TenantMismatch_AbsorbsNothing(t *testing.T) {
 	}
 }
 
-func TestJoinFromToken_NoCalloutAndNumber_401(t *testing.T) {
+func TestVerify_NoCalloutAndNumber_401(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
 	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix()})
 	_, err := joinFromToken(context.Background(), s, fakeTM{}, fence.New(txgate.New()), tok)
