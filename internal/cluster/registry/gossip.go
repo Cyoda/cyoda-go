@@ -11,6 +11,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hashicorp/memberlist"
@@ -120,9 +121,25 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 		return nil, fmt.Errorf("failed to marshal node metadata: %w", err)
 	}
 
+	// The memberlist this node will hold, published once Create returns. The
+	// broadcast queue needs a NumNodes callback and must exist BEFORE Create:
+	// Create starts the gossip goroutine, which reads the delegate's queue, so
+	// assigning it afterwards is a write racing that read. The callback answers
+	// 1 — this node alone — until the memberlist is published.
+	var list atomic.Pointer[memberlist.Memberlist]
 	del := &gossipDelegate{
 		meta: metaBytes,
 		subs: make(map[string][]func([]byte)),
+		queue: &memberlist.TransmitLimitedQueue{
+			NumNodes: func() int {
+				if ml := list.Load(); ml != nil {
+					return ml.NumMembers()
+				}
+				return 1
+			},
+			// Retransmit multiplier follows the memberlist default.
+			RetransmitMult: memberlist.DefaultLANConfig().RetransmitMult,
+		},
 	}
 	signal := common.NewChangeSignal()
 	dir := newDirectory()
@@ -153,22 +170,16 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 	mlCfg.Events = events
 	mlCfg.LogOutput = &slogWriter{logger: slog.Default()}
 
-	list, err := memberlist.Create(mlCfg)
+	ml, err := memberlist.Create(mlCfg)
 	if err != nil {
 		return nil, fmt.Errorf("create memberlist: %w", err)
 	}
-	g.list = list
-
-	// The broadcast queue needs a NumNodes callback; wire it up now that the
-	// memberlist exists. Retransmit multiplier follows the memberlist default.
-	del.queue = &memberlist.TransmitLimitedQueue{
-		NumNodes:       list.NumMembers,
-		RetransmitMult: mlCfg.RetransmitMult,
-	}
+	g.list = ml
+	list.Store(ml)
 
 	metrics, err := newTagMetrics(cfg.Meter, g.outstandingLists)
 	if err != nil {
-		_ = list.Shutdown()
+		_ = ml.Shutdown()
 		return nil, fmt.Errorf("failed to create membership metrics: %w", err)
 	}
 	g.metrics = metrics
@@ -413,8 +424,11 @@ type gossipDelegate struct {
 
 	// Broadcast multiplexing. queue holds outbound messages and is populated
 	// by Gossip.Broadcast; subs maps topic -> handlers called from NotifyMsg
-	// when a broadcast is delivered. queue is set in NewGossip after the
-	// memberlist instance exists (it needs a NumNodes callback).
+	// when a broadcast is delivered. queue is set in NewGossip BEFORE
+	// memberlist.Create, which starts the goroutine that reads it through
+	// GetBroadcasts: its NumNodes callback reads the memberlist through an
+	// atomic pointer rather than the queue being assigned once one exists.
+	// It is never nil on a delegate NewGossip built.
 	queue  *memberlist.TransmitLimitedQueue
 	subs   map[string][]func([]byte)
 	subsMu sync.RWMutex
@@ -450,9 +464,6 @@ func (d *gossipDelegate) NotifyMsg(msg []byte) {
 }
 
 func (d *gossipDelegate) GetBroadcasts(overhead, limit int) [][]byte {
-	if d.queue == nil {
-		return nil
-	}
 	return d.queue.GetBroadcasts(overhead, limit)
 }
 func (d *gossipDelegate) LocalState(bool) []byte        { return nil }
