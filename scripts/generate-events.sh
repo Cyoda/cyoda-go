@@ -44,6 +44,7 @@ mkdir -p "$(dirname "$OUT")"
 # Post-process: remove omitempty from the 'success' bool field.
 # With omitempty, false values are dropped from JSON — but error responses
 # MUST include "success": false explicitly.
+# shellcheck disable=SC2016 # the backticks are the Go struct tag sed matches
 sed -i '' 's/Success bool `json:"success,omitempty"/Success bool `json:"success"/g' "$OUT"
 
 # Post-process: route every generated UnmarshalJSON call through
