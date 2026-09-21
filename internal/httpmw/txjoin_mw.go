@@ -79,6 +79,12 @@ func TxJoin(j *txjoin.Joiner) func(http.Handler) http.Handler {
 				writeJoinError(w, r, err)
 				return
 			}
+			if buffered.tooLarge() {
+				// Fail closed: the answer is not sent in part. The lock has
+				// already been given back.
+				common.WriteError(w, r, common.Internal("joined response too large to hold", txjoin.ErrHeldResponseTooLarge))
+				return
+			}
 			buffered.flushTo(w)
 		})
 	}

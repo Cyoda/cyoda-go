@@ -1135,6 +1135,37 @@ func TestTxRouteInterceptor_HeldStreamSendsWhatItHeldThenReturnsTheHandlerError(
 	}
 }
 
+// The frames a joined server-streaming handler produces are held in memory
+// while the transaction's lock is held, so they have a ceiling of their own.
+// Past it the call fails with a ticketed envelope and no frame is sent: a
+// collection answered in part would be a wrong answer.
+func TestTxRouteInterceptor_HeldFramesOverTheCeiling_FailWithoutSendingAny(t *testing.T) {
+	ic, lockFree, tok := joinedRouteInterceptor(t, "tx-1")
+	ss := newFakeServerStream(metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok)))
+	ss.request = &cepb.CloudEvent{Id: "req-1"}
+	chunk := strings.Repeat("a", 1<<20)
+
+	err := ic.stream()(nil, ss, entityManageCollectionInfo(),
+		func(_ any, stream googlegrpc.ServerStream) error {
+			for held := 0; held <= txjoin.MaxHeldResponseBytes; held += len(chunk) {
+				if serr := stream.SendMsg(&cepb.CloudEvent{Id: "f", Data: &cepb.CloudEvent_TextData{TextData: chunk}}); serr != nil {
+					return serr
+				}
+			}
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("stream: %v; the refusal travels as the RPC's error envelope", err)
+	}
+	if len(ss.sent) != 1 {
+		t.Fatalf("sent %d messages; want the error envelope alone", len(ss.sent))
+	}
+	assertEnvelopeCode(t, ss.sent[0], "req-1", "SERVER_ERROR")
+	if !lockFree() {
+		t.Error("the transaction's lock was not released")
+	}
+}
+
 // gRPC unary: the handler runs under the transaction's lock, which is free once
 // the interceptor has returned. The message is already complete, so nothing is
 // read ahead of the lock.

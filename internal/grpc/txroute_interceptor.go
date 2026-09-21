@@ -224,6 +224,11 @@ func (i *txRouteInterceptor) stream() googlegrpc.StreamServerInterceptor {
 			}
 			return i.streamErr(ss, first.Id, envelope, jerr)
 		}
+		if held.tooLarge() {
+			// Fail closed: nothing of an over-size answer is sent. The lock has
+			// already been given back.
+			return i.streamErr(ss, first.Id, envelope, common.Internal("joined response too large to hold", txjoin.ErrHeldResponseTooLarge))
+		}
 		// What the handler wrote is delivered even when it then failed: a joined
 		// chunked collection that fails at chunk n still answers chunks 1…n-1,
 		// as an unheld stream does.
@@ -239,11 +244,17 @@ func (i *txRouteInterceptor) stream() googlegrpc.StreamServerInterceptor {
 // that lock wait on the compute node: the request message was received before
 // the lock was taken and is replayed here, and every response frame is held
 // until the handler has returned and the lock is released.
+//
+// What is held is bounded by txjoin.MaxHeldResponseBytes — the owner's next move
+// waits behind these bytes. Past the ceiling the frames are let go of and the
+// call fails: a collection answered in part would be a wrong answer.
 type heldStream struct {
 	googlegrpc.ServerStream
 	ctx   context.Context
 	first *cepb.CloudEvent
 	held  []any
+	bytes int
+	over  bool
 }
 
 func (s *heldStream) Context() context.Context { return s.ctx }
@@ -266,9 +277,24 @@ func (s *heldStream) RecvMsg(m any) error {
 }
 
 func (s *heldStream) SendMsg(m any) error {
+	// Every frame of these RPCs is a CloudEvent; its encoded size is what the
+	// node holds until the lock is released.
+	if pm, ok := m.(proto.Message); ok {
+		s.bytes += proto.Size(pm)
+	}
+	if s.over || s.bytes > txjoin.MaxHeldResponseBytes {
+		s.over = true
+		s.held = nil // held under the transaction's lock: let it go at once
+		return txjoin.ErrHeldResponseTooLarge
+	}
 	s.held = append(s.held, m)
 	return nil
 }
+
+// tooLarge reports whether the handler's frames passed the ceiling. The
+// interceptor asks after the handler has returned: a handler that swallows the
+// refusal must not have its collection answered in part either.
+func (s *heldStream) tooLarge() bool { return s.over }
 
 func (s *heldStream) flush() error {
 	for _, m := range s.held {

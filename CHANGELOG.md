@@ -126,8 +126,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   callback still waiting for the lock, which has touched nothing, is dropped
   when its member goes away. An over-size joined body is refused with `413`, the
   same as an unjoined one; a pass that fails verification is refused before the
-  body is read. The lock is still given up for the length of any callout the
-  callback itself makes.
+  body is read; and a joined answer over the same 10 MB, held in memory while
+  the lock is, fails the request rather than being sent in part. The lock is
+  still given up for the length of any callout the callback itself makes.
   See `docs/cloud-parity/callout-failover.md`.
 
 - **`CYODA_DISPATCH_FORWARD_TIMEOUT` no longer governs handing a callout to

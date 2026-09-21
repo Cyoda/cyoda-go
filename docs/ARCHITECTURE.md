@@ -501,7 +501,10 @@ rollback (`internal/domain/entity/txscope.go`), and never holds it across
   it; a gRPC unary message is already complete when the interceptor runs. On the
   way out the handler writes into a buffering response writer (HTTP) or a stream
   whose frames are held (gRPC server-streaming), and the response is sent once
-  the lock is released. A joined chunked collection that fails at frame *n*
+  the lock is released. What is held on the way out has the same 10 MB ceiling as
+  the body on the way in — the owner's next move waits behind those bytes — and
+  an answer past it fails the request with a ticketed 5xx rather than being sent
+  in part. A joined chunked collection that fails at frame *n*
   still delivers frames 1…*n*-1 and then the error. A compute member that
   sends its headers and stalls, or never reads its response, holds nothing.
 - **A joined request is not interrupted by its compute member going away.** From

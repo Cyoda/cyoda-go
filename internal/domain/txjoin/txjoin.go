@@ -46,6 +46,23 @@ func NewJoiner(signer *token.Signer, txMgr spi.TransactionManager, f *fence.Fenc
 	return &Joiner{signer: signer, txMgr: txMgr, fence: f, gate: gate, superseded: superseded}, nil
 }
 
+// MaxHeldResponseBytes is the most a joined request may hold on its way out
+// while it has the transaction's lock: the buffered response on the HTTP door,
+// the held frames on the gRPC one. It is the same 10 MiB the request's own body
+// is capped at on the way in (httpmw's maxJoinedBodySize, which is every
+// handler's own cap) and the size of a node-to-node envelope — one request's
+// worth of bytes in each direction, and no new setting to get wrong.
+//
+// Past it the request FAILS, with a ticketed 5xx: the owner's Advance and the
+// end of the callout wait behind these bytes, and a truncated answer would be a
+// wrong answer given as an available one.
+const MaxHeldResponseBytes = 10 * 1024 * 1024
+
+// ErrHeldResponseTooLarge is what a door's held writer reports to a handler
+// whose answer passes MaxHeldResponseBytes. The handler's own error, if it
+// returns one, is not what the caller is told: the join layer's refusal is.
+var ErrHeldResponseTooLarge = errors.New("the answer of a joined request exceeds what it may hold under the transaction's lock")
+
 // Pass is a pass whose own claims have been verified. It is what a door holds
 // between Verify and RunVerified; only the Joiner that verified it can read it.
 type Pass struct{ claims token.Claims }

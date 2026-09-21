@@ -304,6 +304,10 @@ the lock is taken:
   fails partway through a joined chunked collection, the frames already
   produced are sent before the handler's error is returned, exactly as an
   unjoined stream would deliver them.
+- A joined answer is held in memory while the transaction's lock is held, under
+  the same 10 MB ceiling as the request body. An answer past it fails the
+  request — a ticketed 5xx on either door — and is never sent in part: a
+  truncated answer would be a wrong one.
 
 ## 8. What Cloud has to decide
 
