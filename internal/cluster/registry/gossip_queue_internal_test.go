@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -26,7 +27,10 @@ func TestGossip_TheBroadcastQueueIsUsableAtOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGossip: %v", err)
 	}
-	t.Cleanup(func() { _ = g.list.Shutdown() })
+	// Deregister, not a bare Shutdown: it stops the tag worker and closes the
+	// metrics as well, so nothing of this node is left running for the rest of
+	// the package's tests.
+	t.Cleanup(func() { _ = g.Deregister(context.Background(), "queue-1") })
 
 	if g.delegate.queue == nil {
 		t.Fatal("the delegate has no broadcast queue although the gossip goroutine is already running")
