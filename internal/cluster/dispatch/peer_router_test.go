@@ -162,9 +162,16 @@ func TestHandOver_SendsTheHandOverFields(t *testing.T) {
 	fwd := &answeringForwarder{resp: &DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1)}}
 	call := ownerCallout(t, "criteria")
 	call.OwnerNodeID = "" // the router knows who the owner is
-	newTestRouter(t, &stubNodeRegistry{}, fwd).HandOver(testContext(), node("peer-1", true, "tenant-1", "python"), call, 3, 2)
+	peer := node("peer-1", true, "tenant-1", "python")
+	newTestRouter(t, &stubNodeRegistry{}, fwd).HandOver(testContext(), peer, call, 3, 2)
 	if fwd.got.TriesLeft != 3 || fwd.got.Major != 2 || fwd.got.OwnerNodeID != "self-node" || fwd.got.RequestID != "rid-1" || fwd.got.AnswerLimitMs != 1500 {
 		t.Errorf("request = %+v", fwd.got)
+	}
+	// The node the envelope is sealed for and the address it is sent to are both
+	// this peer's, from the one registry entry: a hand-over sealed for anything
+	// else would not open where it lands.
+	if fwd.gotPeer != peer.NodeID || fwd.gotAddr != peer.Addr {
+		t.Errorf("sealed for %q and sent to %q, want %q and %q", fwd.gotPeer, fwd.gotAddr, peer.NodeID, peer.Addr)
 	}
 }
 

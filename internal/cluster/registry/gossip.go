@@ -121,6 +121,18 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 		return nil, fmt.Errorf("failed to marshal node metadata: %w", err)
 	}
 
+	// This node's memberlist configuration, built before the delegate so that
+	// the broadcast queue takes its retransmit multiplier from the settings this
+	// node actually gossips under rather than from the library default they
+	// happen to equal today.
+	mlCfg := memberlist.DefaultLANConfig()
+	mlCfg.Name = cfg.NodeID
+	mlCfg.BindAddr = cfg.BindAddr
+	mlCfg.BindPort = cfg.BindPort
+	mlCfg.AdvertisePort = cfg.BindPort
+	mlCfg.SecretKey = cfg.SecretKey
+	mlCfg.LogOutput = &slogWriter{logger: slog.Default()}
+
 	// The memberlist this node will hold, published once Create returns. The
 	// broadcast queue needs a NumNodes callback and must exist BEFORE Create:
 	// Create starts the gossip goroutine, which reads the delegate's queue, so
@@ -137,8 +149,7 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 				}
 				return 1
 			},
-			// Retransmit multiplier follows the memberlist default.
-			RetransmitMult: memberlist.DefaultLANConfig().RetransmitMult,
+			RetransmitMult: mlCfg.RetransmitMult,
 		},
 	}
 	signal := common.NewChangeSignal()
@@ -158,17 +169,10 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 		done:     make(chan struct{}),
 	}
 
-	mlCfg := memberlist.DefaultLANConfig()
-	mlCfg.Name = cfg.NodeID
-	mlCfg.BindAddr = cfg.BindAddr
-	mlCfg.BindPort = cfg.BindPort
-	mlCfg.AdvertisePort = cfg.BindPort
-	mlCfg.SecretKey = cfg.SecretKey
 	mlCfg.Delegate = del
 	// Registered before Create: NotifyJoin fires for this pnode inside it, and
 	// the directory must hold every member from the first one on.
 	mlCfg.Events = events
-	mlCfg.LogOutput = &slogWriter{logger: slog.Default()}
 
 	ml, err := memberlist.Create(mlCfg)
 	if err != nil {

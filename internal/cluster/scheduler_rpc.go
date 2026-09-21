@@ -142,10 +142,11 @@ func (c *ClusterExecutor) Execute(ctx context.Context, task spi.ScheduledTask, t
 // interface is scoped to callout dispatch.
 type SchedulerRPCClient struct {
 	auth dispatch.PeerAuth
-	// timeout is the whole-call budget (CYODA_DISPATCH_FORWARD_TIMEOUT). The
-	// HTTP client applies it to the request; it bounds the name lookup that
-	// precedes the request too, so a resolver that is down cannot hold the
-	// scan loop's goroutine for the resolver's own timeout instead.
+	// timeout is the whole-call budget (CYODA_DISPATCH_FORWARD_TIMEOUT).
+	// ExecuteScheduledTask puts it on the context once, over the name lookup and
+	// the request together, so the call cannot take it twice; the HTTP client
+	// carries the same figure as a floor for a caller whose own context outlives
+	// it.
 	timeout       time.Duration
 	httpClient    *http.Client
 	allowLoopback bool
@@ -191,9 +192,13 @@ func (c *SchedulerRPCClient) AllowLoopbackForTesting() *SchedulerRPCClient {
 // caller (ClusterExecutor) logs and drops it rather than retrying inline,
 // relying on the scan loop's at-least-once redispatch.
 func (c *SchedulerRPCClient) ExecuteScheduledTask(ctx context.Context, target, addr string, task spi.ScheduledTask) error {
-	lookupCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	// One deadline over the whole call, resolving the address included: the
+	// budget is CYODA_DISPATCH_FORWARD_TIMEOUT, and a lookup that spends it must
+	// leave the request none — two separate bounds of the same figure would let
+	// the call take twice as long as the setting says.
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	if err := peeraddr.Validate(lookupCtx, addr, c.allowLoopback); err != nil {
+	if err := peeraddr.Validate(ctx, addr, c.allowLoopback); err != nil {
 		return err
 	}
 

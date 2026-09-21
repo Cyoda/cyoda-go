@@ -128,10 +128,13 @@ func (c *nonceCache) checkAndRecord(nonce []byte, observed time.Time) replayVerd
 // order, so it stops at the first that is still inside the window rather than
 // scanning the whole cache. Caller holds c.mu.
 //
-// Arrival order is not timestamp order — two nodes' clocks differ by up to the
-// skew — so an entry a little out of order can outlive its TTL by up to that
-// much. It is refused by the skew check long before, and refusing longer than
-// necessary is the safe direction for a replay cache.
+// Arrival order is not timestamp order — two senders' clocks differ by up to the
+// skew each way — so an entry behind one stamped later is held until that one
+// leaves: up to 2 × skew past its own TTL in the worst case (a front entry at
+// +30 s and those behind it at −30 s). Nothing leaves early, because each entry
+// is judged by its own timestamp; holding longer than necessary is the safe
+// direction for a replay cache, and it costs only effective capacity — about
+// 1 100 requests/s rather than 1 600 in that worst case.
 func (c *nonceCache) evictLocked() {
 	cutoff := c.nowFn().Add(-c.ttl)
 	for {
