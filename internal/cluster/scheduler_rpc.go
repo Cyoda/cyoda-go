@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -276,11 +277,15 @@ func ensureScheme(addr string) string {
 }
 
 // SchedulerRPCHandler serves the peer-authenticated ExecuteScheduledTask
-// route. Mirrors dispatch.DispatchHandler's auth pattern exactly — the same
-// PeerAuth.Verify-or-403 gate, every answer to a verified request sealed for
-// that request, the same "never log the task payload beyond ids" discipline —
-// so the scheduled-task peer surface carries the identical security posture as
-// processor/criteria dispatch (Gate 3: no new unauthenticated cluster surface).
+// route. It keeps dispatch.DispatchHandler's auth pattern over the same
+// PeerAuth: the same Verify-or-403 gate, a full replay cache answered under
+// seal while a replayed nonce gets the bare status, every answer to a request
+// that opened sealed for that request, and the same "never log the task payload
+// beyond ids, nor a decode error's text" discipline — so the scheduled-task
+// peer surface carries the same security posture as processor/criteria dispatch
+// (Gate 3: no new unauthenticated cluster surface). What it does not share is
+// the answer itself: a fire is acked, not classified into the callout
+// taxonomy.
 type SchedulerRPCHandler struct {
 	engine scheduler.Engine
 	auth   dispatch.PeerAuth
@@ -302,7 +307,19 @@ func (h *SchedulerRPCHandler) Register(mux *http.ServeMux) {
 // of design doc §6.2.
 func (h *SchedulerRPCHandler) handle(w http.ResponseWriter, r *http.Request) {
 	body, identity, binding, err := h.auth.Verify(r)
-	if err != nil {
+	switch {
+	case errors.Is(err, dispatch.ErrReplayCacheFull):
+		// Opened and authenticated, then refused by the replay cache's
+		// capacity: nothing fired, and the coordinator is told so under seal —
+		// the same answer dispatch.DispatchHandler gives for the same refusal. A
+		// replayed nonce is a different matter and keeps the bare status below:
+		// there is no request to bind that answer to but the one the replay
+		// copies.
+		slog.Warn("scheduled task refused: the replay cache is full",
+			"pkg", "cluster", "remoteAddr", r.RemoteAddr)
+		h.writeSealed(w, binding, SchedulerTaskResponse{Success: false, Error: "the node could not take the scheduled task"})
+		return
+	case err != nil:
 		slog.Warn("scheduled task dispatch auth failed",
 			"pkg", "cluster", "remoteAddr", r.RemoteAddr, "err", err)
 		http.Error(w, "forbidden", http.StatusForbidden)
@@ -311,7 +328,15 @@ func (h *SchedulerRPCHandler) handle(w http.ResponseWriter, r *http.Request) {
 
 	var req SchedulerTaskRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		// Sealed, like every other answer to a request that opened: a bare
+		// status is indistinguishable from one written by whoever is on the path
+		// between the nodes, so it would reach the coordinator as a lost answer
+		// rather than as what this node decided. Logged by the error's shape —
+		// a decode error quotes the literal it failed on, and the body is
+		// another node's.
+		slog.Error("a scheduled task request could not be read",
+			"pkg", "cluster", "error", common.JSONErrorShape(err))
+		h.writeSealed(w, binding, SchedulerTaskResponse{Success: false, Error: "the scheduled task request could not be read"})
 		return
 	}
 

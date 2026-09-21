@@ -604,3 +604,93 @@ func TestSchedulerRPCClient_TransportRules(t *testing.T) {
 		t.Error("the scheduler RPC client follows redirects")
 	}
 }
+
+// cacheFullAuth is a PeerAuth that authenticates a request and then refuses it
+// for the replay cache's capacity, which is the one refusal that comes with a
+// usable binding. The cache itself is not reachable from this package.
+type cacheFullAuth struct{ *dispatch.AEADPeerAuth }
+
+func (a cacheFullAuth) Verify(r *http.Request) ([]byte, dispatch.PeerIdentity, dispatch.ResponseBinding, error) {
+	body, id, binding, err := a.AEADPeerAuth.Verify(r)
+	if err != nil {
+		return body, id, binding, err
+	}
+	return nil, id, binding, dispatch.ErrReplayCacheFull
+}
+
+// TestSchedulerRPCHandler_EveryAnswerToAVerifiedRequestIsSealed: the handler's
+// own comment says every answer to a verified request is sealed for that
+// request, and the dispatch handler over the same PeerAuth does exactly that.
+// These two answers were a bare 400 and a bare 403 — a coordinator cannot tell
+// either from anything written by whoever is on the path between the nodes, so
+// they arrive as "the answer was lost" rather than as what the peer decided.
+func TestSchedulerRPCHandler_EveryAnswerToAVerifiedRequestIsSealed(t *testing.T) {
+	t.Run("a body that does not parse", func(t *testing.T) {
+		auth := newTestAuth(t)
+		fake := &fakeSchedEngine{}
+		mux := http.NewServeMux()
+		NewSchedulerRPCHandler(fake, auth).Register(mux)
+
+		plain := []byte(`{"task":"not-an-object"}`)
+		req := httptest.NewRequest(http.MethodPost, schedulerTaskPath, nil)
+		wire, binding, err := auth.Sign(req, testPeerNodeID, plain)
+		if err != nil {
+			t.Fatalf("Sign: %v", err)
+		}
+		req.Body = io.NopCloser(bytes.NewReader(wire))
+		req.ContentLength = int64(len(wire))
+
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 with a sealed refusal: %s", rec.Code, rec.Body.String())
+		}
+		resp := openSchedulerAnswer(t, auth, binding, rec)
+		if resp.Success {
+			t.Errorf("Success = true for a request that could not be read: %+v", resp)
+		}
+		if resp.Error == "" {
+			t.Error("the sealed refusal says nothing")
+		}
+		if fake.calls != 0 {
+			t.Error("a request that could not be read reached the engine")
+		}
+	})
+
+	t.Run("a full replay cache", func(t *testing.T) {
+		auth := newTestAuth(t)
+		fake := &fakeSchedEngine{}
+		mux := http.NewServeMux()
+		NewSchedulerRPCHandler(fake, cacheFullAuth{auth}).Register(mux)
+
+		req, binding := signedSchedulerRequest(t, auth, spi.ScheduledTask{ID: "cache-full", TenantID: testTenant})
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 with a sealed refusal: %s", rec.Code, rec.Body.String())
+		}
+		resp := openSchedulerAnswer(t, auth, binding, rec)
+		if resp.Success {
+			t.Errorf("Success = true although nothing fired: %+v", resp)
+		}
+		if fake.calls != 0 {
+			t.Error("a request the replay cache refused reached the engine")
+		}
+	})
+}
+
+// openSchedulerAnswer opens the handler's answer as the coordinator would.
+func openSchedulerAnswer(t *testing.T, auth *dispatch.AEADPeerAuth, binding dispatch.ResponseBinding, rec *httptest.ResponseRecorder) SchedulerTaskResponse {
+	t.Helper()
+	plain, err := auth.OpenResponse(rec.Header(), binding, rec.Body.Bytes())
+	if err != nil {
+		t.Fatalf("the answer does not open under its request's binding: %v (status %d)", err, rec.Code)
+	}
+	var resp SchedulerTaskResponse
+	if err := json.Unmarshal(plain, &resp); err != nil {
+		t.Fatalf("decode answer: %v", err)
+	}
+	return resp
+}
