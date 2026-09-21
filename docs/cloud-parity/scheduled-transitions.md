@@ -263,8 +263,8 @@ A compute node being unreachable, disconnected mid-request, or timing out is
 an **infrastructure** failure, not a request-validation failure — it applies
 identically regardless of which of the three callout kinds (externalized
 processor, externalized/FUNCTION criterion, or a scheduled transition's
-`function`) triggered the dispatch. cyoda-go surfaces exactly one retryable
-`503` outcome for this failure class, uniformly across all three:
+`function`) triggered the dispatch. cyoda-go surfaces one retryable
+`503` class for this failure class, uniformly across all three:
 
 | Condition | Code |
 |---|---|
@@ -272,18 +272,22 @@ processor, externalized/FUNCTION criterion, or a scheduled transition's
 | The dispatch round-trip exceeds its deadline | `DISPATCH_TIMEOUT` |
 | A cluster peer forward of the callout fails | `DISPATCH_FORWARD_FAILED` |
 | The target compute member disconnects mid-request | `COMPUTE_MEMBER_DISCONNECTED` |
+| Several tries of the callout failed | `CALLOUT_FAILED` |
 
-All four are `503`, all four are `retryable: true`. The entity write that
-triggered the callout is rejected (nothing commits); the client's own retry
-is expected to succeed once the compute-node infrastructure recovers — no
-engine-side retry loop is implied. This is a request-time surface: a
-`function` callout dispatched synchronously inside an entity write hits it
-exactly like a processor or criterion callout would.
+All five are `503`, all five are `retryable: true`. The entity write that
+triggered the callout is rejected (nothing commits). Before it fails, the
+callout has been tried on other matching compute members as
+`callout-failover.md` describes — a function is always safe to repeat, and
+`schedule.function.retryPolicy` selects the number of tries. A member that
+answers `success: false` is not part of this class: it fails the write as
+`400 WORKFLOW_FAILED`, carrying the member's message and verdict. This is a
+request-time surface: a `function` callout dispatched synchronously inside an
+entity write hits it exactly like a processor or criterion callout would.
 
 **Background re-arm on the fire path.** A scheduled transition's own fire
 can itself trigger a *downstream* arm (the cascade lands the entity in a new
 state that has its own `function`-timed schedule — §2). If that downstream
-arm's callout hits one of the four conditions above, the entire fire
+arm's callout fails, the entire fire
 transaction rolls back (same CAS/atomicity guarantee as any other failed
 write) and the task is left in place, retried on a later scan under the
 existing best-effort redispatch throttle (§7) — there is no separate error
