@@ -40,8 +40,13 @@ type rpcCalloutCase struct {
 	// wantRetryable is the envelope's Error.Retryable, which is set only when
 	// true.
 	wantRetryable bool
-	// wantMemberText is the compute member's own words the message must carry.
-	wantMemberText string
+	// wantMessage builds the message the client must get, character for
+	// character. prefix is "item 0: " on a door that runs its items through the
+	// entity handler's collection loop and this failure keeps the prefix, and
+	// "" otherwise; tag is the callout's tag. Every case fixes its message:
+	// §8.2 fixes the CALLOUT_FAILED shape and the MemberFailed wrap, and the
+	// rest are the codes' own authored text.
+	wantMessage func(prefix, tag string) string
 	// wantItemPrefix is whether "item 0: " reaches the client on a door that
 	// runs its items through the entity handler's collection loop.
 	wantItemPrefix bool
@@ -51,33 +56,55 @@ type rpcCalloutCase struct {
 
 func rpcCalloutCases() []rpcCalloutCase {
 	yes, no := true, false
+	// The engine's wrap names the processor for every failure that reaches the
+	// classifier's catch-all or its MemberFailed branch; a failure carrying an
+	// *AppError is returned as it is, wrap and item prefix alike dropped.
+	wrapped := func(inner string) func(string, string) string {
+		return func(prefix, _ string) string { return prefix + "processor proc failed: " + inner }
+	}
 	return []rpcCalloutCase{
 		{
 			name: "no-member", members: 0,
 			wantCode: "NO_COMPUTE_MEMBER_FOR_TAG", wantRetryable: true, wantItemPrefix: true, wantAsked: 0,
+			wantMessage: func(prefix, tag string) string {
+				return prefix + `processor proc failed: no matching calculation member: tags "` + tag + `"`
+			},
 		},
 		{
 			name: "one-try-no-answer", members: 1, policy: "NONE",
 			wantCode: "DISPATCH_TIMEOUT", wantRetryable: true, wantAsked: 1,
+			wantMessage: func(string, string) string {
+				return "processor dispatch timed out after 50ms: no response"
+			},
 		},
 		{
 			name: "every-try-used", members: 2, idempotent: true,
 			wantCode: "CALLOUT_FAILED", wantRetryable: true, wantAsked: 2,
+			// §8.2's shape, character for character: the angle brackets are
+			// literal, the count precedes collapsing, the entries keep the order
+			// the members were tried in (Candidates orders by ConnectedAt then
+			// id), and each carries the try's own "CODE: text".
+			wantMessage: func(string, string) string {
+				const cause = "DISPATCH_TIMEOUT: processor dispatch timed out after 50ms: no response"
+				return "the callout could not be completed, got 2 failures: " +
+					"[member<m-0>: " + cause + "], [member<m-1>: " + cause + "]"
+			},
 		},
 		{
 			name: "member-failed-retryable", members: 1,
 			answer: func() *ProcessingResponse {
 				return &ProcessingResponse{Success: false, Error: "boom", Retryable: &yes}
 			},
-			wantCode: "WORKFLOW_FAILED", wantRetryable: true, wantMemberText: "boom",
-			wantItemPrefix: true, wantAsked: 1,
+			wantCode: "WORKFLOW_FAILED", wantRetryable: true,
+			wantItemPrefix: true, wantAsked: 1, wantMessage: wrapped("boom"),
 		},
 		{
 			name: "member-failed", members: 1,
 			answer: func() *ProcessingResponse {
 				return &ProcessingResponse{Success: false, Error: "boom", Retryable: &no}
 			},
-			wantCode: "WORKFLOW_FAILED", wantMemberText: "boom", wantItemPrefix: true, wantAsked: 1,
+			wantCode: "WORKFLOW_FAILED", wantItemPrefix: true, wantAsked: 1,
+			wantMessage: wrapped("boom"),
 		},
 		{
 			name: "terminal", members: 1,
@@ -87,6 +114,7 @@ func rpcCalloutCases() []rpcCalloutCase {
 				return &ProcessingResponse{Success: true, Payload: json.RawMessage(`"not-an-object"`)}
 			},
 			wantCode: "WORKFLOW_FAILED", wantItemPrefix: true, wantAsked: 1,
+			wantMessage: wrapped("the compute member's response could not be read"),
 		},
 	}
 }
@@ -138,14 +166,16 @@ func TestRPC_CalloutEndpoints_EveryDoorEveryCode(t *testing.T) {
 					}
 					env := door.drive(t, svc, ctx, model, entityID)
 
-					assertCalloutEnvelope(t, env, tc)
-					if door.itemLooped {
-						if got := strings.Contains(env.message, "item 0: "); got != tc.wantItemPrefix {
-							t.Errorf("message = %q; \"item 0: \" present = %t, want %t", env.message, got, tc.wantItemPrefix)
-						}
-					} else if strings.Contains(env.message, "item 0: ") {
-						t.Errorf("message = %q; this door runs no collection loop and must add no item prefix", env.message)
+					// The "item 0: " prefix is part of the expected message, so
+					// the exact comparison below carries the prefix assertion
+					// too: a door with no collection loop expects none, and a
+					// door with one expects it exactly where the classifier
+					// keeps it.
+					prefix := ""
+					if door.itemLooped && tc.wantItemPrefix {
+						prefix = "item 0: "
 					}
+					assertCalloutEnvelope(t, env, tc, prefix, tag)
 					if got := asked(); got != tc.wantAsked {
 						t.Errorf("%d requests reached compute members; want %d", got, tc.wantAsked)
 					}
@@ -155,10 +185,15 @@ func TestRPC_CalloutEndpoints_EveryDoorEveryCode(t *testing.T) {
 	}
 }
 
-// assertCalloutEnvelope checks the envelope class, the code prefix and the
-// retryable flag, plus the compute member's own words where the case names
-// them.
-func assertCalloutEnvelope(t *testing.T, env rpcEnvelope, tc rpcCalloutCase) {
+// assertCalloutEnvelope checks the envelope class, the code, the retryable flag
+// and the whole message.
+//
+// The code is asserted as the message's PREFIX, not as a substring: the envelope
+// contract is "the code, a colon, then the detail", and CALLOUT_FAILED's detail
+// lists each attempt's own code — so a substring test would let a one-try cell
+// pass on a CALLOUT_FAILED envelope that named DISPATCH_TIMEOUT only inside its
+// attempt list.
+func assertCalloutEnvelope(t *testing.T, env rpcEnvelope, tc rpcCalloutCase, prefix, tag string) {
 	t.Helper()
 	if env.success {
 		t.Fatalf("the call succeeded; want a refusal with %s", tc.wantCode)
@@ -166,14 +201,15 @@ func assertCalloutEnvelope(t *testing.T, env rpcEnvelope, tc rpcCalloutCase) {
 	if env.class != "CLIENT_ERROR" {
 		t.Errorf("Error.Code = %q; want CLIENT_ERROR", env.class)
 	}
-	if !strings.Contains(env.message, tc.wantCode) {
-		t.Errorf("Error.Message = %q; want it to carry %s", env.message, tc.wantCode)
+	if !strings.HasPrefix(env.message, tc.wantCode+": ") {
+		t.Errorf("Error.Message = %q; want it to BEGIN with %q", env.message, tc.wantCode+": ")
 	}
 	if env.retryable != tc.wantRetryable {
 		t.Errorf("Error.Retryable = %t; want %t (message: %q)", env.retryable, tc.wantRetryable, env.message)
 	}
-	if tc.wantMemberText != "" && !strings.Contains(env.message, tc.wantMemberText) {
-		t.Errorf("Error.Message = %q; want the compute member's own %q", env.message, tc.wantMemberText)
+	want := tc.wantCode + ": " + tc.wantMessage(prefix, tag)
+	if env.message != want {
+		t.Errorf("Error.Message = %q;\n want the literal %q", env.message, want)
 	}
 }
 
