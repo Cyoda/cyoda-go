@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/cyoda-platform/cyoda-go/app"
 )
 
@@ -49,6 +51,9 @@ func TestCalloutModes_AsyncNewTx(t *testing.T) {
 			if st, _ := h.GetEntityState(t, id); st != "DONE" {
 				t.Errorf("state = %q; want DONE", st)
 			}
+			if got := first.Received(); len(got) != 1 {
+				t.Errorf("first cnode received %d callouts; want exactly 1", len(got))
+			}
 			if got := second.Received(); len(got) != tc.wantSecond {
 				t.Errorf("second cnode received %d callouts; want %d", len(got), tc.wantSecond)
 			}
@@ -75,6 +80,9 @@ func TestCalloutModes_CommitBeforeDispatch(t *testing.T) {
 						"idempotent": idempotent, "startNewTxOnDispatch": newTx}}))
 
 				_, status, body := h.CreateEntity(t, model, 1, workflowSampleModel)
+				if got := first.Received(); len(got) != 1 {
+					t.Errorf("first cnode received %d callouts; want exactly 1", len(got))
+				}
 				if idempotent {
 					if status != http.StatusOK {
 						t.Fatalf("create: %d %s; want 200 (the second cnode answers)", status, body)
@@ -99,31 +107,15 @@ func TestCalloutModes_CommitBeforeDispatch(t *testing.T) {
 // TestCalloutModes_ScheduledFire: the processor of a scheduled transition is
 // tried on the next cnode like any other, under one request id.
 func TestCalloutModes_ScheduledFire(t *testing.T) {
-	// This harness shares the package's Postgres tenant ("test-tenant") and
-	// the same scheduled_tasks table with the package-level shared testApp
-	// (internal/e2e/e2e_test.go's TestMain), whose own scheduler runs
-	// continuously for the whole test binary's life. Neither app is
-	// clustered with the other (no gossip), so each independently believes
-	// itself the sole scheduling coordinator (scheduler.LowestLiveNodeID
-	// with an empty/self-only membership list) and both scan the SAME due
-	// rows: whichever ticks first calls MarkRedispatch, which throttles
-	// every scanner — including this harness's own — from retrying that row
-	// for CYODA_SCHEDULER_REDISPATCH_BACKOFF (30s default), win or lose. If
-	// the shared testApp's scheduler wins the race it fails outright (its
-	// ExternalProcessingService is the package's localproc, which has no
-	// "s5-sched-proc" registered — this harness's Coordinator/gRPC path is
-	// unreachable from there), so this test tightens its own scan interval
-	// to improve its odds of winning first, and budgets the deadline for the
-	// documented worst case where it doesn't: the backoff window plus normal
-	// fire latency. This is a property of running two independent,
-	// non-clustered app instances against one shared Postgres tenant within
-	// one test binary, not a production defect (see spec §17 / #598 for the
-	// separate, already-tracked "nothing owns a scheduled run" gap).
+	// testApp's own scheduler is disabled (internal/e2e/e2e_test.go's
+	// TestMain), so this harness's own scan of its own stack is the only
+	// scanner that can ever see this fire's due row.
 	h := newCalloutHarness(t, func(cfg *app.Config) {
 		calloutTuning(3, 100*time.Millisecond)(cfg)
 		cfg.Scheduler.ScanInterval = 50 * time.Millisecond
 	})
-	const tag, model = "s5-sched", "s5-model-sched"
+	suffix := uuid.NewString()
+	tag, model := "s5-sched-"+suffix, "s5-model-sched-"+suffix
 	first := h.AttachCnode(t, cnodeSpec{name: "first", tags: []string{tag}, script: scriptAlways(neverAnswer())})
 	second := h.AttachCnode(t, cnodeSpec{name: "second", tags: []string{tag}})
 
@@ -149,7 +141,7 @@ func TestCalloutModes_ScheduledFire(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("create: %d %s", status, body)
 	}
-	deadline := time.Now().Add(40 * time.Second)
+	deadline := time.Now().Add(scheduledFireTimeout)
 	for {
 		if st, _ := h.GetEntityState(t, id); st == "Closed" {
 			break
@@ -160,8 +152,8 @@ func TestCalloutModes_ScheduledFire(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	got1, got2 := first.Received(), second.Received()
-	if len(got1) < 1 || len(got2) < 1 {
-		t.Fatalf("first received %d, second %d; want the silent cnode tried and the second to answer", len(got1), len(got2))
+	if len(got1) != 1 || len(got2) != 1 {
+		t.Fatalf("first received %d, second %d; want exactly 1 each (the silent cnode tried once, the second answers once)", len(got1), len(got2))
 	}
 	if got1[0].RequestID != got2[0].RequestID {
 		t.Errorf("request ids differ across the tries of one fire: %q then %q", got1[0].RequestID, got2[0].RequestID)
