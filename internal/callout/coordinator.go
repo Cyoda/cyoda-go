@@ -205,7 +205,7 @@ func (c *Coordinator) loop(cctx context.Context, call internalgrpc.Callout, numb
 			p.stats.Tries = append(p.stats.Tries, contract.CalloutOutcomeOK)
 			return r.Result, nil
 		case r.TriesUsed == 0:
-			p.noCnode = r.Failure
+			p.noTry(r.Failure)
 		default:
 			p.lastTried = r.Failure
 			if done, err := p.verdict(call.RepeatSafe); done {
@@ -331,6 +331,17 @@ func nextPeer(peers []contract.NodeInfo, asked map[string]struct{}) (contract.No
 		}
 	}
 	return contract.NodeInfo{}, false
+}
+
+// noTry records what a pass that made no try reported. A pass the callout's
+// deadline stopped before it could look does not replace what a pass that did
+// look found: whenever no try was ever made the answer is the absence of a
+// compute member, not the deadline.
+func (p *progress) noTry(failure *contract.CalloutFailure) {
+	if p.noCnode != nil && errors.Is(failure, contract.ErrCalloutDeadline) {
+		return
+	}
+	p.noCnode = failure
 }
 
 // verdict decides what a failed try means for the callout: done with the

@@ -234,6 +234,48 @@ func TestOwner_AttemptsOnRecordBeatNoCnode(t *testing.T) {
 	}
 }
 
+// A pass that made no try because the callout's deadline had already passed
+// looked for no compute member, so it must not replace what a pass that did look
+// reported: with no try ever made the answer is NO_COMPUTE_MEMBER_FOR_TAG.
+func TestProgress_APassStoppedByTheDeadlineDoesNotReplaceNoComputeMember(t *testing.T) {
+	deadlinePassed := &contract.CalloutFailure{
+		Kind:    contract.NoHandOff,
+		Code:    common.ErrCodeDispatchTimeout,
+		Message: common.ErrCodeDispatchTimeout + ": the callout deadline passed before a try could start",
+		Err:     contract.ErrCalloutDeadline,
+	}
+	noCnode := &contract.CalloutFailure{
+		Kind:    contract.NoHandOff,
+		Code:    common.ErrCodeNoComputeMemberForTag,
+		Message: common.ErrCodeNoComputeMemberForTag + `: no compute member for tags "x"`,
+		Err:     contract.ErrNoMatchingMember,
+	}
+
+	t.Run("the deadline does not overwrite what a pass that looked found", func(t *testing.T) {
+		p := &progress{}
+		p.noTry(noCnode)
+		p.noTry(deadlinePassed)
+		if got := p.stop(context.Background()); !errors.Is(got, contract.ErrNoMatchingMember) {
+			t.Errorf("stop = %v, want the NO_COMPUTE_MEMBER_FOR_TAG the first pass found", got)
+		}
+	})
+	t.Run("the deadline is reported when no pass ever looked for a member", func(t *testing.T) {
+		p := &progress{}
+		p.noTry(deadlinePassed)
+		if got := p.stop(context.Background()); !errors.Is(got, contract.ErrCalloutDeadline) {
+			t.Errorf("stop = %v, want the deadline: a member was there and nothing was tried", got)
+		}
+	})
+	t.Run("one pass with no compute member after another is the latest of them", func(t *testing.T) {
+		p := &progress{}
+		p.noTry(deadlinePassed)
+		p.noTry(noCnode)
+		if got := p.stop(context.Background()); !errors.Is(got, contract.ErrNoMatchingMember) {
+			t.Errorf("stop = %v, want NO_COMPUTE_MEMBER_FOR_TAG", got)
+		}
+	})
+}
+
 // A failure the owner returns owns its attempts: the loop goes on recording
 // tries into its own slice, and nothing of that reaches the value already
 // handed to the caller.
