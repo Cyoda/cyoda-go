@@ -30,6 +30,11 @@ const (
 
 	AttrDispatchType = attribute.Key("type")
 
+	AttrCalloutTries    = attribute.Key("callout.tries")
+	AttrCalloutHandOver = attribute.Key("callout.handover")
+	AttrCalloutWaitedMs = attribute.Key("callout.waited_ms")
+	AttrCalloutOutcome  = attribute.Key("outcome")
+
 	AttrEntityCount = attribute.Key("entity.count")
 	AttrCQLName     = attribute.Key("cql.name")
 	AttrCQLOp       = attribute.Key("cql.op")

@@ -145,14 +145,28 @@ func (c *Coordinator) run(ctx context.Context, call internalgrpc.Callout) (inter
 	// cause of its own, never the caller's: that is how the local procedure
 	// tells "this callout ran out of time" — the try in progress is NoAnswer —
 	// from "the caller went away".
-	deadline := time.Now().Add(time.Duration(tries)*limit + c.cfg.Patience + c.cfg.HandoverAllowance)
+	start := time.Now()
+	deadline := start.Add(time.Duration(tries)*limit + c.cfg.Patience + c.cfg.HandoverAllowance)
 	cctx, cancel := context.WithDeadlineCause(cctx, deadline, contract.ErrCalloutDeadline)
 	defer cancel()
 
 	p := &progress{triesLeft: tries}
 	result, err := c.loop(cctx, call, number, p)
+
+	used := tries - p.triesLeft
 	if stats := contract.CalloutStatsFrom(ctx); stats != nil {
 		*stats = p.stats
+	}
+	// The one INFO line of a callout, and only for a callout that was not
+	// ordinary: one try, answered, no wait. The cnode's own failure text is
+	// tenant content; it goes to the client and is not repeated here.
+	if used > 1 || p.stats.Waited > 0 {
+		slog.Info("callout needed more than one try or waited", "pkg", "callout",
+			"kind", call.Kind.String(), "name", call.Name, "tenantId", string(call.TenantID), "tags", call.Tags,
+			"entityId", call.EntityID, "requestId", call.RequestID,
+			"tries", used, "handOvers", len(p.stats.HandOvers),
+			"waitedMs", p.stats.Waited.Milliseconds(), "elapsedMs", time.Since(start).Milliseconds(),
+			"succeeded", err == nil)
 	}
 	return result, err
 }
