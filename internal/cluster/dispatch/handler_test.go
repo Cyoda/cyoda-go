@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -459,6 +460,36 @@ func TestHandler_BodyThatDoesNotParse_IsAnAuthenticatedTerminal(t *testing.T) {
 	newHandlerMux(t, runner, auth).ServeHTTP(rec, httpReq)
 	if resp := decodeSealed(t, auth, binding, rec); resp.Outcome != "terminal" || runner.calls != 0 {
 		t.Errorf("%+v", resp)
+	}
+}
+
+// A body that does not parse is a peer's text like any other, and the hand-over
+// it came in carries a tenant's entity: json.UnmarshalTypeError and
+// json.SyntaxError quote the literal they failed on, so the refusal is logged
+// by the error's shape and never by its text — the rule the compute-member side
+// of the same branch already keeps.
+func TestHandler_ABodyThatDoesNotParseIsLoggedByItsShapeOnly(t *testing.T) {
+	const marker = "SECRET_ENTITY_MARKER_7f3a9b"
+	var logged bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	auth := newAEAD(t)
+	runner := &fakeRunner{}
+	body := []byte(`{"kind":"processor","triesLeft":"` + marker + `"}`)
+	httpReq, binding := signedRequestWithBinding(t, auth, http.MethodPost, "/internal/dispatch/callout", body)
+	rec := httptest.NewRecorder()
+	newHandlerMux(t, runner, auth).ServeHTTP(rec, httpReq)
+
+	if resp := decodeSealed(t, auth, binding, rec); resp.Outcome != "terminal" || runner.calls != 0 {
+		t.Errorf("%+v", resp)
+	}
+	if strings.Contains(logged.String(), marker) {
+		t.Errorf("the refusal logged the body it failed on: %s", logged.String())
+	}
+	if !strings.Contains(logged.String(), "UnmarshalTypeError") {
+		t.Errorf("the refusal does not say what shape of failure it was: %s", logged.String())
 	}
 }
 

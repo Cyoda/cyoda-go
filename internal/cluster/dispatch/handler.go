@@ -78,7 +78,11 @@ func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) 
 
 	var req DispatchCalloutRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		h.refuse(w, binding, fmt.Errorf("failed to parse hand-over: %w", err))
+		// By its shape, never by its text: a decode error quotes the literal it
+		// failed on, and the body is a hand-over carrying a tenant's entity.
+		// The errors below are this node's own authored constants and may be
+		// logged as they are.
+		h.refuse(w, binding, fmt.Errorf("failed to parse hand-over: %s", common.JSONErrorShape(err)))
 		return
 	}
 	if err := req.validate(); err != nil {

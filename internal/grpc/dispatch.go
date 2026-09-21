@@ -302,25 +302,12 @@ func memberResponseUnreadable(err error, label, name, memberID, requestID string
 	return &contract.CalloutFailure{Kind: contract.Terminal, Message: "the compute member's response could not be read"}
 }
 
-// jsonErrorShape renders a decode/encode error for the server log without the
-// value it failed on: json.SyntaxError and json.UnmarshalTypeError can quote a
-// fragment of the payload — the tenant's entity data on the outbound side, the
-// compute member's own response on the inbound side — that a log line must
-// never carry. It logs the error's Go type and, where present, the byte
-// offset (SyntaxError) or the struct field named (UnmarshalTypeError; the
-// Struct and Field names come from this file's own fixed request/response
-// shapes, never from payload content).
-func jsonErrorShape(err error) string {
-	var syn *json.SyntaxError
-	if errors.As(err, &syn) {
-		return fmt.Sprintf("%T at offset %d", syn, syn.Offset)
-	}
-	var ute *json.UnmarshalTypeError
-	if errors.As(err, &ute) {
-		return fmt.Sprintf("%T (struct %s field %s)", ute, ute.Struct, ute.Field)
-	}
-	return fmt.Sprintf("%T", err)
-}
+// jsonErrorShape is common.JSONErrorShape under this package's own name. The
+// rule it keeps — a decode error is logged by its shape, never by the text it
+// failed on — holds at every boundary that reads a payload someone else wrote,
+// so the one spelling lives in internal/common and the node-to-node hand-over
+// uses it too.
+func jsonErrorShape(err error) string { return common.JSONErrorShape(err) }
 
 // calloutDeadlinePassed reports whether ctx ended because the callout's own
 // deadline passed, as opposed to its caller going away.
