@@ -70,25 +70,33 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   callout answers once more than one of its tries failed, and it lists them. A
   callout that made exactly one try still answers that try's own code —
   `DISPATCH_TIMEOUT`, `COMPUTE_MEMBER_DISCONNECTED` or
-  `DISPATCH_FORWARD_FAILED`. A client that switches on the code should treat it
-  as it treats those. See `cyoda help errors CALLOUT_FAILED`.
+  `DISPATCH_FORWARD_FAILED`, for example. A client that switches on the code
+  should treat it as it treats those. See `cyoda help errors CALLOUT_FAILED`.
 
 - **A client's own timeout ending a callout answers `408 TRANSACTION_TIMEOUT`,
   not a retryable `503 DISPATCH_FORWARD_FAILED`.** A request cancelled by its
   client during a cross-node callout ends with the request's own cancellation
   rather than with the callout's. A client that retried on the `503` should read
-  the `408` instead.
+  the `408` instead. See `docs/cloud-parity/callout-failover.md`.
 
 - **A request carrying a transaction token is accepted only while the callout it
   was issued for is still that compute member's.** Until now it was accepted
-  until the transaction closed. Once cyoda-go has given the work to another
-  compute member, or the callout has ended, the answer is
-  `410 CALLOUT_SUPERSEDED` (not retryable); once the transaction has ended it is
-  `404 TRANSACTION_NOT_FOUND`, as before; past the token's own life it is
-  `410 TRANSACTION_EXPIRED`. A compute member that is refused must stop working
-  on that callout: nothing further it sends under that token is accepted, and an
-  answer it does send for the callout is discarded. A token minted by an earlier
-  version names no callout and is refused with `401`. See
+  until the transaction closed. The refusals are decided in this order, and the
+  first that applies is the answer: `401` for a token that does not verify, or
+  that names no callout because an earlier version minted it;
+  `410 TRANSACTION_EXPIRED` past the token's own life — so an expired token on a
+  transaction that has also ended reads `410`, not `404`; `403` for a token
+  presented by another tenant; `404 TRANSACTION_NOT_FOUND` once the transaction
+  has ended, as before; and `410 CALLOUT_SUPERSEDED` (not retryable) once
+  cyoda-go has given the work to another compute member or the callout has
+  ended. A compute member that is refused must stop working on that callout:
+  nothing further it sends under that token is accepted, and an answer it does
+  send for the callout is discarded. A refused joined gRPC server-streaming
+  request now carries the request id in its error envelope where it used to
+  carry none: the request message is received before the token is judged, so
+  the `403`, the `404` and the `410 CALLOUT_SUPERSEDED` name it. The two
+  decided before the message is read at all — the `401` and the
+  `410 TRANSACTION_EXPIRED` — carry no id. See
   `docs/cloud-parity/callout-failover.md`.
 
 - **`CYODA_TX_TOKEN_TTL` is removed.** The transaction token given to a compute
@@ -124,7 +132,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   mixed-version cluster can therefore neither hand a callout over nor forward a
   scheduled transition: a node of this version treats an answer it cannot
   authenticate as lost, and an older node cannot read what this one sends. Stop
-  the cluster to upgrade it; there is no rolling upgrade across this change.
+  the cluster to upgrade it; there is no rolling upgrade across this change. See
+  `docs/cloud-parity/callout-failover.md`.
 
 - **A node whose identity does not fit the cluster's membership metadata refuses
   to start.** The metadata carries `CYODA_NODE_ID`, `CYODA_NODE_ADDR` and
@@ -160,10 +169,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   selects the number of tries (`NONE`: one; `FIXED` or unset: one plus
   `CYODA_RETRY_FIXED_NUM_RETRIES`, default `3`) and is honoured on a scheduled
   transition's `function` too. In a cluster the node holding the transaction
-  tries its own compute members and then offers the callout, with the tries
-  left, to one peer node after another; a node that receives it tries its own
-  members and never passes it on. The number of tries is the normal number,
-  while the time is the hard limit: `tries × answer limit +
+  tries its own compute members and then offers the callout to one peer node
+  after another; a node that receives it runs with the owner's tries left and
+  the owner's answer limit, tries its own members, and never passes it on — the
+  bound on `responseTimeoutMs` is the owner's to apply. The number of tries is
+  the normal number, while the time is the hard limit: `tries × answer limit +
   CYODA_DISPATCH_WAIT_TIMEOUT + CYODA_CALLOUT_HANDOVER_ALLOWANCE`, 155 s at the
   defaults. Every try carries the same `requestId`, so a compute member that
   de-duplicates on it recognises a repeat. When more than one try failed the
@@ -246,8 +256,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **A stored answer limit above the server's bound is not clamped.** Import
   bounds `responseTimeoutMs` by `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`, but a
   workflow stored before a deployment lowered that bound keeps its value; its
-  callout fails, naming the setting, rather than running under a limit nobody
-  asked for.
+  callout fails with `400 WORKFLOW_FAILED`, the message naming
+  `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`, rather than running under a limit
+  nobody asked for. No try is made.
 
 - `cyoda.dispatch.duration` measures a whole callout, all its tries, waits and
   hand-overs included; its buckets stopped at 10 s — below a single answer
@@ -501,6 +512,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   validation was never affected — the provider registry is built from the
   stored record's own owner id. This is engine code over
   `spi.KeyValueStore`, so it behaved the same on every backend.
+  ([#587](https://github.com/cyoda/cyoda-go/issues/587))
 
 - **A `500` from `POST /oauth/token` carries a ticket.** The endpoint's
   four `server_error` paths emitted the bare RFC 6749 §5.2 pair and logged
@@ -510,6 +522,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   dedicated field — and the same ticket is logged with the underlying
   cause, which stays out of the response. No OpenAPI change:
   `error_description` is already a declared string.
+  ([#588](https://github.com/cyoda/cyoda-go/issues/588))
 
 - **A shutdown signal that arrives during startup is a clean exit.** The
   goroutine that serves gRPC and the one that stops it on `SIGTERM` /
