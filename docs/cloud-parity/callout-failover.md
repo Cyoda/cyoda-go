@@ -54,7 +54,9 @@ work to another member — only a `success: false` answer whose `retryable` is
 absent or false stops its loop. cyoda-go stops on any `success: false` and
 passes the verdict to the client: another member inside the same transaction
 would be likely to fail the same way, while the client running the whole
-operation again can succeed.
+operation again can succeed. The published schema's `retryable` description
+(`docs/cyoda/schema/common/BaseEvent.json`) now states cyoda-go's own
+behaviour rather than Cloud's — see `cyoda help grpc`.
 
 ## 2. What the client sees
 

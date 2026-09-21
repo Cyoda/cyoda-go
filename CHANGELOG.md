@@ -269,6 +269,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   written is unchanged — a request whose own feature deadline expired is
   unaffected and still classified to `408`.
 
+- **The published schema's `retryable` description now states cyoda-go's own
+  behaviour.** `docs/cyoda/schema/common/BaseEvent.json`'s `error.retryable`
+  said cyoda "should retry the calculation request" on it — cyoda-go never
+  does; it passes the verdict on to the client and does not give the work to
+  another compute member because of it (Cloud does retry on it, which is a
+  recorded departure). See `docs/cloud-parity/callout-failover.md`.
+
 - **A callout picks among a tenant's matching compute members round robin.**
   The member picked longest ago goes next; one that has just joined goes first.
   Until now the choice was whatever a Go map iteration returned first.

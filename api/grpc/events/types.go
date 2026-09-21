@@ -29,8 +29,10 @@ type BaseEventJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -104,8 +106,10 @@ type CalculationMemberGreetEventJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -182,8 +186,10 @@ type CalculationMemberJoinEventJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -254,8 +260,10 @@ type CalculationMemberKeepAliveEventJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -466,8 +474,10 @@ type EntityChangesMetadataGetRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -544,8 +554,10 @@ type EntityChangesMetadataResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -634,8 +646,10 @@ type EntityCreateCollectionRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -747,8 +761,10 @@ type EntityCreateRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -855,8 +871,10 @@ type EntityCriteriaCalculationRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -988,8 +1006,10 @@ type EntityCriteriaCalculationResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -1075,8 +1095,10 @@ type EntityDeleteAllRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -1166,8 +1188,10 @@ type EntityDeleteAllResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -1253,8 +1277,10 @@ type EntityDeleteRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -1337,8 +1363,10 @@ type EntityDeleteResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -1445,8 +1473,10 @@ type EntityFunctionCalculationRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -1541,8 +1571,10 @@ type EntityFunctionCalculationResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -1628,8 +1660,10 @@ type EntityGetAllRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -1713,8 +1747,10 @@ type EntityGetRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -1788,8 +1824,10 @@ type EntityModelDeleteRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -1860,8 +1898,10 @@ type EntityModelDeleteResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -1935,8 +1975,10 @@ type EntityModelExportRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -2020,8 +2062,10 @@ type EntityModelExportResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -2098,8 +2142,10 @@ type EntityModelGetAllRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -2170,8 +2216,10 @@ type EntityModelGetAllResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -2254,8 +2302,10 @@ type EntityModelImportRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -2338,8 +2388,10 @@ type EntityModelImportResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -2416,8 +2468,10 @@ type EntityModelTransitionRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -2527,8 +2581,10 @@ type EntityModelTransitionResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -2647,8 +2703,10 @@ type EntityPatchRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -2749,8 +2807,10 @@ type EntityProcessorCalculationRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -2842,8 +2902,10 @@ type EntityProcessorCalculationResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -2923,8 +2985,10 @@ type EntityResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -3027,8 +3091,10 @@ type EntitySearchRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -3189,8 +3255,10 @@ type EntitySnapshotSearchRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -3336,8 +3404,10 @@ type EntitySnapshotSearchResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -3419,8 +3489,10 @@ type EntityStatsByStateGetRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -3503,8 +3575,10 @@ type EntityStatsByStateResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -3594,8 +3668,10 @@ type EntityStatsGetRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -3675,8 +3751,10 @@ type EntityStatsResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -3788,8 +3866,10 @@ type EntityTransactionResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -3869,8 +3949,10 @@ type EntityTransitionRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -3947,8 +4029,10 @@ type EntityTransitionResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -4031,8 +4115,10 @@ type EntityUpdateCollectionRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -4147,8 +4233,10 @@ type EntityUpdateRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -4225,8 +4313,10 @@ type EventAckResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -4530,8 +4620,10 @@ type SnapshotCancelRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -4614,8 +4706,10 @@ type SnapshotGetRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -4695,8 +4789,10 @@ type SnapshotGetStatusRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
