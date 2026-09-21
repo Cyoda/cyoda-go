@@ -437,7 +437,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   could not be read, and a processor payload that cannot be read still fails the
   callout. The criteria response schema now requires `matches` on any response
   but an explicit `success: false` one, where it used to require it only of an
-  explicit `success: true` one. See `cyoda help grpc` and
+  explicit `success: true` one. The default belongs to an absent key alone: an
+  explicit `"success": null` is not a boolean, so it is neither the default nor
+  a flag, and an answer carrying it is refused as one that could not be read —
+  for all three callouts alike, and before anything else in it is read, so a
+  criterion answering `{"success": null, "matches": true}` decides no
+  transition. Cyoda Cloud fails on those same bytes rather than reading success
+  out of them. See `cyoda help grpc` and
   `docs/cloud-parity/callout-failover.md`.
 
 - **A callout is never given to a compute member that has already gone.** A

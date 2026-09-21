@@ -54,6 +54,18 @@ The default fills in a flag, never a verdict: a criteria answer that omits
 `success` still owes its `matches`, and the criteria response schema states
 that as "required on any response but an explicit `success: false` one".
 
+The default belongs to an absent key alone, and here too the tiers now agree.
+An explicit `"success": null` is not a boolean: it is neither the default nor a
+flag, and cyoda-go refuses the answer as one that could not be read, for all
+three callouts alike and before anything else in it is read — so a criterion
+answering `{"success": null, "matches": true}` decides no transition. Cloud
+reaches the same end by its own route: its generated `BaseEvent` declares
+`Boolean success` initialised to `true`, Jackson sets it to null for an
+explicit null, and `ExternalizerBase.kt:322` reads it non-null
+(`if (!(response.payload as BaseEvent).success)`), which throws on the null
+rather than reading success out of it. cyoda-go read those bytes as success
+until this change; it no longer does, so this asks nothing of Cloud either.
+
 **Departure 1 — `idempotent`, default `false`.** A boolean on a processor's
 `config` (workflow schema 1.5). It is the author's declaration that the
 processor may be run more than once for one callout — possibly only partly,

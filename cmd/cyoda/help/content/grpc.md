@@ -291,6 +291,12 @@ says what went wrong once it has. A response carrying an `error` and no
 `success: false` is a success, and its message reaches nobody — not the client,
 not the warnings, not the audit trail.
 
+The default belongs to an absent key alone. An explicit `"success": null` is
+not a boolean, so it is neither the default nor a flag: the answer cannot be
+read at all and is refused (`400 WORKFLOW_FAILED`, not retryable), with nothing
+else in it read either — no `payload`, and for a criterion no `matches`. A
+member that means success must omit the key or send `true`.
+
 The smallest successful answer is `{"requestId": "<same requestId>"}`: it says
 the processor ran, changed nothing, and the workflow should carry on. There is
 no shape that means "I did nothing and something is wrong" — that is
@@ -335,7 +341,9 @@ Client responds with `EntityCriteriaCalculationResponse`:
 `success` is optional here too and defaults to `true`, so a response that
 leaves the key out has reported success; a member reporting a failure must send
 `success: false` explicitly, an `error` object on its own being no more a
-failure report here than it is for a processor.
+failure report here than it is for a processor. An explicit `"success": null`
+is refused here too, and the `matches` beside it is not read: a member whose
+answer says nothing about success decides no transition.
 
 `matches` is required on a successful criteria response — which is any response
 but an explicit `success: false` one. A response that omits it is not read as
@@ -394,8 +402,9 @@ Response replaces criteria's `matches`/`reason` with `result` (an arbitrary JSON
 `resultKind: "Schedule"` is the only shape currently defined — it drives a
 scheduled transition's `schedule.function` (see `cyoda help workflows`).
 `success` defaults to `true` here as everywhere, so a response that omits it
-has reported success, and an `error` object on its own is not a failure report.
-`success: false` — which a member reporting a failure
+has reported success, and an `error` object on its own is not a failure report;
+an explicit `"success": null` is refused here as everywhere, and the `result`
+beside it is not relayed. `success: false` — which a member reporting a failure
 must send explicitly — fails the callout as it does for a processor: no other
 member is tried, and the message and `retryable` verdict reach the client;
 a `result` that doesn't parse against the
