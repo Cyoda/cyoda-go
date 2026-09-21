@@ -33,6 +33,7 @@ func TestCalloutPatience_WaitsForACnode(t *testing.T) {
 				t.Fatalf("answered %d before any cnode attached: %s", res.status, res.body)
 			case <-time.After(500 * time.Millisecond):
 			}
+			attachedAt := time.Now()
 			c := h.AttachCnode(t, cnodeSpec{name: "late-" + policy, tags: []string{tag}})
 			defer c.Detach(t)
 
@@ -40,6 +41,11 @@ func TestCalloutPatience_WaitsForACnode(t *testing.T) {
 			case res := <-done:
 				if res.err != nil || res.status != http.StatusOK {
 					t.Fatalf("create: status=%d err=%v body=%s; want 200 once a cnode attached", res.status, res.err, res.body)
+				}
+				// Event-driven, not a poll interval: today's only bound is the
+				// 15s patience, which a slow poll loop would also satisfy.
+				if el := time.Since(attachedAt); el > time.Second {
+					t.Errorf("create answered %v after the cnode attached; want well under a second (event-driven, not polled)", el)
 				}
 			case <-time.After(15 * time.Second):
 				t.Fatal("the callout did not notice the cnode that attached")
@@ -104,6 +110,9 @@ func TestCalloutCallerEnds(t *testing.T) {
 		if el := time.Since(start); el > 10*time.Second {
 			t.Errorf("408 after %v; the wait must end with the caller's deadline", el)
 		}
+		if n := h.countEntities(t, model); n != 0 {
+			t.Errorf("%d entities committed for a 408 during a wait; want 0", n)
+		}
 	})
 
 	t.Run("408-during-a-try", func(t *testing.T) {
@@ -112,6 +121,12 @@ func TestCalloutCallerEnds(t *testing.T) {
 		defer c.Detach(t)
 		resp := h.DoAuth(t, http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/1?transactionTimeoutMillis=700", model), workflowSampleModel, "")
 		txctlAssert408(t, h, resp)
+		if n := h.countEntities(t, model); n != 0 {
+			t.Errorf("%d entities committed for a 408 during a try; want 0", n)
+		}
+		if got := c.Received(); len(got) != 1 {
+			t.Errorf("the compute member received %d requests; want exactly 1", len(got))
+		}
 	})
 
 	t.Run("cancelled-during-a-wait", func(t *testing.T) {
@@ -126,6 +141,9 @@ func TestCalloutCallerEnds(t *testing.T) {
 		time.Sleep(700 * time.Millisecond)
 		if got := c.Received(); len(got) != 0 {
 			t.Errorf("a cnode attached after the caller went away received %d callouts; the callout had ended", len(got))
+		}
+		if n := h.countEntities(t, model); n != 0 {
+			t.Errorf("%d entities committed for an abandoned create; want 0", n)
 		}
 	})
 
