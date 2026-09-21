@@ -488,6 +488,49 @@ func TestTxJoin_BadPassIsRefusedBeforeTheBodyIsRead(t *testing.T) {
 	}
 }
 
+// A compute node that goes away while its request queues for the transaction's
+// lock: the handler never runs, the door returns at once — and it still answers.
+// Leaving without writing would have net/http answer an implicit 200 for a
+// request that did nothing, which a later middleware putting a deadline on the
+// request context would turn into a lie about a write.
+func TestTxJoin_ClientGoesAwayWhileQueued_HandlerNeverRuns_NeverAnImplicit200(t *testing.T) {
+	j, gate, pass := liveJoiner(t, "tx-1")
+	holder := gate.Acquire("tx-1") // another request of the same compute node
+	defer holder()
+
+	ran := false
+	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { ran = true })
+	req := httptest.NewRequest(http.MethodPost, "/entity", strings.NewReader(`{}`))
+	ctx, disconnect := context.WithCancel(req.Context())
+	defer disconnect()
+	req = withUserCtx(req.WithContext(ctx))
+	req.Header.Set(proxy.TxTokenHeader, pass)
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		TxJoin(j)(next).ServeHTTP(rec, req)
+	}()
+	time.Sleep(50 * time.Millisecond) // verified and read; now queued for the lock
+	disconnect()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the door stayed parked on the lock after its client went away")
+	}
+	if ran {
+		t.Fatal("the handler ran for a client that had gone")
+	}
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d; want the ticketed 500 an aborted request gets — never an implicit 200", rec.Code)
+	}
+	if code := problemProps(t, rec).ErrorCode; code != "SERVER_ERROR" {
+		t.Errorf("errorCode = %q; want SERVER_ERROR", code)
+	}
+}
+
 // A body over the join layer's limit is refused before any lock is taken.
 func TestTxJoin_OversizeBody_413(t *testing.T) {
 	j, _, pass := liveJoiner(t, "tx-1")

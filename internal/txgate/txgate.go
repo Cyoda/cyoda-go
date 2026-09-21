@@ -71,6 +71,12 @@ func (r *Registry) acquire(ctx context.Context, txID string) (func(), error) {
 		return g
 	}()
 
+	// When the gate frees and ctx ends at the same instant, select takes either:
+	// a caller that wins the send holds the gate with a context that has just
+	// ended, and its request runs. That is deliberate, and not re-checked
+	// afterwards — it is the same case as a client that went away one
+	// instruction after acquiring, which runs to completion by contract, and no
+	// caller can tell the two apart.
 	select {
 	case g.held <- struct{}{}: // held until the returned release runs
 	case <-ctx.Done():

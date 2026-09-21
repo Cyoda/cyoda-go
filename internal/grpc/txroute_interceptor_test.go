@@ -10,7 +10,9 @@ import (
 	"time"
 
 	googlegrpc "google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -1008,9 +1010,9 @@ func TestTxRouteInterceptor_StreamForwardErrPreservesRequestID(t *testing.T) {
 // --- the transaction's lock on this door -------------------------------------
 
 // joinedRouteInterceptor returns an interceptor whose join layer has the callout
-// of txID in progress at major 1, a probe that reports whether the
-// transaction's lock is free, and the pass that names the callout.
-func joinedRouteInterceptor(t *testing.T, txID string) (*txRouteInterceptor, func() bool, string) {
+// of txID in progress at major 1, the gate the transaction's lock comes from,
+// and the pass that names the callout.
+func joinedRouteInterceptor(t *testing.T, txID string) (*txRouteInterceptor, *txgate.Registry, string) {
 	t.Helper()
 	s, err := token.NewSigner(make32(t))
 	if err != nil {
@@ -1021,7 +1023,13 @@ func joinedRouteInterceptor(t *testing.T, txID string) (*txRouteInterceptor, fun
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	lockFree := func() bool {
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", mustJoiner(t, s, fakeJoinTM{}, f, gate), 9090, true)
+	return ic, gate, tok
+}
+
+// lockFreeOn reports whether txID's lock is free right now.
+func lockFreeOn(gate *txgate.Registry, txID string) func() bool {
+	return func() bool {
 		free := make(chan struct{})
 		go func() { gate.Acquire(txID)(); close(free) }()
 		select {
@@ -1031,14 +1039,91 @@ func joinedRouteInterceptor(t *testing.T, txID string) (*txRouteInterceptor, fun
 			return false
 		}
 	}
-	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", mustJoiner(t, s, fakeJoinTM{}, f, gate), 9090, true)
-	return ic, lockFree, tok
+}
+
+// A compute node that goes away while its call queues for the transaction's
+// lock is answered by gRPC itself — codes.Canceled — not with an error envelope
+// naming an internal failure: nothing was touched, and there is nobody to read
+// an envelope. Both routed doors, unary and server-streaming.
+func TestTxRouteInterceptor_ClientGoesAwayWhileQueued_IsCancelled_NoEnvelope(t *testing.T) {
+	t.Run("unary", func(t *testing.T) {
+		ic, gate, tok := joinedRouteInterceptor(t, "tx-1")
+		holder := gate.Acquire("tx-1") // another call of the same compute node
+		defer holder()
+		ctx, disconnect := context.WithCancel(metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok)))
+		defer disconnect()
+
+		ran := false
+		type result struct {
+			resp any
+			err  error
+		}
+		done := make(chan result, 1)
+		go func() {
+			resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-1"}, entityManageInfo(),
+				func(context.Context, any) (any, error) { ran = true; return "ok", nil })
+			done <- result{resp, err}
+		}()
+		time.Sleep(50 * time.Millisecond) // queued for the lock
+		disconnect()
+
+		var got result
+		select {
+		case got = <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the door stayed parked on the lock after its client went away")
+		}
+		if ran {
+			t.Error("the handler ran for a client that had gone")
+		}
+		if got.resp != nil {
+			t.Errorf("resp = %v; want nothing: an envelope is for a client that is still there", got.resp)
+		}
+		if status.Code(got.err) != codes.Canceled {
+			t.Errorf("status = %v (%v); want codes.Canceled", status.Code(got.err), got.err)
+		}
+	})
+	t.Run("server-streaming", func(t *testing.T) {
+		ic, gate, tok := joinedRouteInterceptor(t, "tx-1")
+		holder := gate.Acquire("tx-1")
+		defer holder()
+		ctx, disconnect := context.WithCancel(metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok)))
+		defer disconnect()
+		ss := newFakeServerStream(ctx)
+		ss.request = &cepb.CloudEvent{Id: "req-1"}
+
+		ran := false
+		done := make(chan error, 1)
+		go func() {
+			done <- ic.stream()(nil, ss, entityManageCollectionInfo(),
+				func(any, googlegrpc.ServerStream) error { ran = true; return nil })
+		}()
+		time.Sleep(50 * time.Millisecond) // the request is in, now queued for the lock
+		disconnect()
+
+		var err error
+		select {
+		case err = <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the door stayed parked on the lock after its client went away")
+		}
+		if ran {
+			t.Error("the handler ran for a client that had gone")
+		}
+		if len(ss.sent) != 0 {
+			t.Errorf("sent %d messages; want none: nothing to answer and nobody to answer to", len(ss.sent))
+		}
+		if status.Code(err) != codes.Canceled {
+			t.Errorf("status = %v (%v); want codes.Canceled", status.Code(err), err)
+		}
+	})
 }
 
 // gRPC server-streaming: the handler's sends are held until the lock is
 // released, and the request message is received before the lock is taken.
 func TestTxRouteInterceptor_StreamSendsAreHeldUntilTheLockIsReleased(t *testing.T) {
-	ic, lockFree, tok := joinedRouteInterceptor(t, "tx-1")
+	ic, gate, tok := joinedRouteInterceptor(t, "tx-1")
+	lockFree := lockFreeOn(gate, "tx-1")
 
 	ss := newFakeServerStream(metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok)))
 	ss.request = &cepb.CloudEvent{Id: "req-1"}
@@ -1140,7 +1225,8 @@ func TestTxRouteInterceptor_HeldStreamSendsWhatItHeldThenReturnsTheHandlerError(
 // Past it the call fails with a ticketed envelope and no frame is sent: a
 // collection answered in part would be a wrong answer.
 func TestTxRouteInterceptor_HeldFramesOverTheCeiling_FailWithoutSendingAny(t *testing.T) {
-	ic, lockFree, tok := joinedRouteInterceptor(t, "tx-1")
+	ic, gate, tok := joinedRouteInterceptor(t, "tx-1")
+	lockFree := lockFreeOn(gate, "tx-1")
 	ss := newFakeServerStream(metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok)))
 	ss.request = &cepb.CloudEvent{Id: "req-1"}
 	chunk := strings.Repeat("a", 1<<20)
@@ -1170,7 +1256,8 @@ func TestTxRouteInterceptor_HeldFramesOverTheCeiling_FailWithoutSendingAny(t *te
 // the interceptor has returned. The message is already complete, so nothing is
 // read ahead of the lock.
 func TestTxRouteInterceptor_UnaryHandlerRunsUnderTheLock(t *testing.T) {
-	ic, lockFree, tok := joinedRouteInterceptor(t, "tx-1")
+	ic, gate, tok := joinedRouteInterceptor(t, "tx-1")
+	lockFree := lockFreeOn(gate, "tx-1")
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 
 	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-1"}, entityManageInfo(),

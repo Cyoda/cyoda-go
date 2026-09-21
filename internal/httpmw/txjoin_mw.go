@@ -70,12 +70,6 @@ func TxJoin(j *txjoin.Joiner) func(http.Handler) http.Handler {
 				next.ServeHTTP(buffered, r.WithContext(ctx))
 			})
 			if err != nil {
-				// The client went away while its request queued for the
-				// transaction's lock: it touched nothing, and there is nobody
-				// left to tell.
-				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					return
-				}
 				writeJoinError(w, r, err)
 				return
 			}
@@ -90,12 +84,18 @@ func TxJoin(j *txjoin.Joiner) func(http.Handler) http.Handler {
 	}
 }
 
-// writeJoinError renders a refusal by the join layer. Anything that is not an
-// operational error is the server's own and is ticketed.
+// writeJoinError renders a refusal by the join layer. Every refusal on the pass
+// is operational and carries its own status; the one error that is not is the
+// request's own context ending while it queued for the transaction's lock — a
+// request that touched nothing and whose client has gone. That is answered the
+// way the entity service answers any cancellation that is not a domain failure:
+// a ticketed 5xx with the cause kept on the chain. It is answered, rather than
+// returned from silently, because net/http would otherwise send an implicit 200
+// for a request that never ran.
 func writeJoinError(w http.ResponseWriter, r *http.Request, err error) {
 	var appErr *common.AppError
 	if !errors.As(err, &appErr) {
-		appErr = common.Internal("failed to join transaction", err)
+		appErr = common.Internal("joined request ended before it took the transaction's lock", err)
 	}
 	common.WriteError(w, r, appErr)
 }
