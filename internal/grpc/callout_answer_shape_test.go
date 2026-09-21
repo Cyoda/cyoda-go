@@ -34,6 +34,44 @@ func replyOnce(t *testing.T, registry *MemberRegistry, memberID string, sentCh c
 	}()
 }
 
+// The wire's silence about `matches` must reach the callout as silence. If the
+// decode reads an absent field as `false`, the callout can no longer tell a
+// member that answered "no" from one that answered nothing, and the refusal
+// below can never fire.
+func TestHandleCriteriaResponse_AbsentMatchesStaysAbsent(t *testing.T) {
+	no := false
+	for name, tc := range map[string]struct {
+		body string
+		want *bool
+	}{
+		"absent":     {`{"requestId":"r-1","success":true}`, nil},
+		"false":      {`{"requestId":"r-1","success":true,"matches":false}`, &no},
+		"null":       {`{"requestId":"r-1","success":true,"matches":null}`, nil},
+		"with-a-no":  {`{"requestId":"r-1","success":true,"matches":false,"reason":"too small"}`, &no},
+		"no-verdict": {`{"requestId":"r-1","success":true,"reason":"too small"}`, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			registry := NewMemberRegistry()
+			member := registry.Register("m-1", testTenantID, []string{"python"},
+				func(*cepb.CloudEvent) error { return nil }, nil)
+			ch, err := member.TrackRequest("r-1")
+			if err != nil {
+				t.Fatalf("TrackRequest: %v", err)
+			}
+			handleCriteriaResponse(member, json.RawMessage(tc.body))
+			resp := <-ch
+			switch {
+			case tc.want == nil && resp.Matches != nil:
+				t.Errorf("matches = %t; the wire said nothing and the verdict must stay absent", *resp.Matches)
+			case tc.want != nil && resp.Matches == nil:
+				t.Errorf("matches is absent; the wire said %t", *tc.want)
+			case tc.want != nil && *resp.Matches != *tc.want:
+				t.Errorf("matches = %t; want %t", *resp.Matches, *tc.want)
+			}
+		})
+	}
+}
+
 // A criterion answer with no `matches` is not a verdict: reading it as "does
 // not match" would invent an answer that decides a transition. It is an
 // unreadable answer — Terminal, with the fixed client-safe message, and none of

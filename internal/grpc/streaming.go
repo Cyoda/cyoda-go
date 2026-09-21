@@ -227,7 +227,7 @@ func handleProcessorResponse(member *Member, payload json.RawMessage) {
 		Payload  json.RawMessage `json:"payload"`
 	}
 	if err := json.Unmarshal(payload, &resp); err != nil {
-		slog.Warn("failed to unmarshal processor response", "pkg", "grpc", "memberId", member.ID, "error", err)
+		slog.Warn("failed to unmarshal processor response", "pkg", "grpc", "memberId", member.ID, "error", jsonErrorShape(err))
 		return
 	}
 
@@ -252,16 +252,20 @@ func handleCriteriaResponse(member *Member, payload json.RawMessage) {
 	var resp struct {
 		RequestID string `json:"requestId"`
 		Success   bool   `json:"success"`
-		Matches   bool   `json:"matches"`
-		Reason    string `json:"reason"`
-		Error     *struct {
+		// A pointer: a response that says nothing about matches must arrive
+		// at the callout saying nothing. Decoded into a bool it would arrive
+		// as "does not match" — a verdict on a criterion that decides a
+		// transition, invented here, which the callout could no longer refuse.
+		Matches *bool  `json:"matches"`
+		Reason  string `json:"reason"`
+		Error   *struct {
 			Message   string `json:"message"`
 			Retryable *bool  `json:"retryable"`
 		} `json:"error"`
 		Warnings []string `json:"warnings"`
 	}
 	if err := json.Unmarshal(payload, &resp); err != nil {
-		slog.Warn("failed to unmarshal criteria response", "pkg", "grpc", "memberId", member.ID, "error", err)
+		slog.Warn("failed to unmarshal criteria response", "pkg", "grpc", "memberId", member.ID, "error", jsonErrorShape(err))
 		return
 	}
 
@@ -271,11 +275,10 @@ func handleCriteriaResponse(member *Member, payload json.RawMessage) {
 		errMsg = resp.Error.Message
 		retryable = resp.Error.Retryable
 	}
-	matches := resp.Matches
 	member.CompleteRequest(resp.RequestID, &ProcessingResponse{
 		Success:   resp.Success,
 		Error:     errMsg,
-		Matches:   &matches,
+		Matches:   resp.Matches,
 		Reason:    resp.Reason,
 		Warnings:  resp.Warnings,
 		Retryable: retryable,
@@ -297,7 +300,7 @@ func handleFunctionResponse(member *Member, payload json.RawMessage) {
 		Warnings []string `json:"warnings"`
 	}
 	if err := json.Unmarshal(payload, &resp); err != nil {
-		slog.Warn("failed to unmarshal function response", "pkg", "grpc", "memberId", member.ID, "error", err)
+		slog.Warn("failed to unmarshal function response", "pkg", "grpc", "memberId", member.ID, "error", jsonErrorShape(err))
 		return
 	}
 
