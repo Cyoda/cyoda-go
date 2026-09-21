@@ -103,9 +103,12 @@ func tooManyJoinedRequests() *common.AppError {
 // other way about — the caller is told the same thing either way, and the
 // refusal is retryable.
 //
-// It touches nothing of the transaction: the reading is of this node's queue
-// for a transaction the caller's own verified pass already names, and a
-// transaction with nothing queued reads the same as one that does not exist.
+// It reaches nothing of the transaction — not even to resolve it. The reading
+// is of this node's queue for a transaction the caller's own verified pass
+// already names, and a transaction with nothing queued reads the same as one
+// that does not exist, so the reading says nothing about which transactions
+// there are. (The gate's own refusal, later in RunVerified, has joined and been
+// admitted by then; it still mutates nothing.)
 //
 // A nil pass is not a joined request: it queues for nothing.
 func (j *Joiner) CheckRoom(pass *Pass) error {

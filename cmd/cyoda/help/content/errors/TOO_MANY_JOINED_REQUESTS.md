@@ -23,7 +23,7 @@ HTTP: `503` `Service Unavailable`. Retryable: `yes`.
 
 Callbacks of one transaction are served **one at a time**: each holds the transaction for the time the server works on it, so callbacks sent in parallel are served in turn. Every callback waiting its turn holds its whole request in memory until it runs, and it may wait for as long as the callout lasts. The queue behind the callback being served is therefore bounded by `CYODA_CALLOUT_JOINED_MAX_WAITERS` (default `128`), and a callback that arrives when the queue is full is refused rather than parked.
 
-The refused callback touched nothing: it is turned away before its request body is read where the door allows that, and it never reaches the transaction. The callback holding the transaction and the ones already queued are unaffected.
+The refused callback changes nothing: it is turned away before its request body is read where the door allows that, and otherwise before it takes the transaction, so it reads and writes nothing and leaves no trace. The callback holding the transaction and the ones already queued are unaffected, and the transaction itself carries on.
 
 Retryable, and the action is the usual one for a capacity refusal: back off briefly and send the callback again. Firing many callbacks at one transaction at once buys no speed, because they are served in turn either way — the refusal enforces that rather than introducing it. A processor that lets this error escape fails its callout, and the operation is rolled back, so a compute member should handle it rather than propagate it.
 

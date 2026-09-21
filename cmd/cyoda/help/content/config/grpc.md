@@ -69,11 +69,17 @@ member. These settings apply on a single node and in a cluster alike.
   transaction are served one at a time, and a waiting one holds its whole
   request in memory for as long as the callout lasts, so the queue is bounded:
   past the cap a callback is refused with `503 TOO_MANY_JOINED_REQUESTS`,
-  retryable, having touched nothing. Firing many callbacks at one transaction
-  at once buys a member no speed, so the cap enforces documented advice rather
-  than introducing a rule. Raise it for a member that legitimately submits in
-  bursts, at the cost of memory held on the owning node. Must be `> 0`; startup
-  fails otherwise — there is no "unlimited" value (default: `128`)
+  retryable, having touched nothing. The count is deliberately conservative: it
+  includes callers that are about to be admitted, and the waits that are never
+  refused (the node's own work on the transaction, and a callback resuming
+  after a callout of its own) take a place in it too. Read the value as a floor
+  on how many callbacks are served, not an exact admission count — at a small
+  setting a callback can be refused while the transaction is in fact free a
+  moment later. Firing many callbacks at one transaction at once buys a member
+  no speed, so the cap enforces documented advice rather than introducing a
+  rule. Raise it for a member that legitimately submits in bursts, at the cost
+  of memory held on the owning node. Must be `> 0`; startup fails otherwise —
+  there is no "unlimited" value (default: `128`)
 
 Tries multiply the answer limit. With the PostgreSQL backend a callout holds
 its transaction's connection idle while it waits, and
