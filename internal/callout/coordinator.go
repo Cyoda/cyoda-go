@@ -257,6 +257,13 @@ func (c *Coordinator) askPeers(cctx context.Context, call internalgrpc.Callout, 
 		// The same counter RunLocal draws from: the cnode that held the work
 		// is shut out before the work goes to another pnode.
 		major, _ := number.Next()
+		// Raising the number waits for the transaction's lock, and a joined
+		// write in progress can hold it past the callout's deadline. No
+		// hand-over starts after that: the loop's tail hands the callout to
+		// stop, which reports what is on record.
+		if cctx.Err() != nil {
+			break
+		}
 		wait := time.Duration(p.triesLeft)*call.AnswerLimit + c.cfg.HandoverAllowance
 		hctx, cancel := context.WithDeadlineCause(cctx, time.Now().Add(wait), contract.ErrCalloutDeadline)
 		slog.Debug("callout hand-over", "pkg", "callout", "kind", call.Kind.String(), "name", call.Name,

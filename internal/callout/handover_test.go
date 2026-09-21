@@ -378,6 +378,35 @@ func TestOwner_CalloutDeadline_DuringAWait_FallsToThePrecedence(t *testing.T) {
 	}
 }
 
+// Raising the fencing number before a hand-over waits for the transaction's
+// lock: a joined write of the earlier compute member that is still in progress
+// holds it, and that wait can outlast the callout's deadline. No hand-over
+// starts after the deadline — it charges no try, names no member, and the
+// callout reports what it had on record.
+func TestOwner_NumberingOutlastsTheCalloutDeadline_NoHandOverIsMade(t *testing.T) {
+	// One try of 60 ms and 50 ms of allowance: the callout may take 110 ms. A
+	// joined write holds the transaction's lock for 400 ms, so the number the
+	// hand-over draws cannot rise before the callout's deadline has passed.
+	router := newScriptedRouter("p-1")
+	router.script("p-1", hangs())
+	e := newClusterEnv(t, Config{HandoverAllowance: 50 * time.Millisecond}, router)
+	joinedWrite := e.gate.Acquire("tx-1")
+	time.AfterFunc(400*time.Millisecond, joinedWrite)
+
+	_, err := e.dispatchFunction(userCtx(tenantA), "x", "NONE")
+
+	if calls := router.made(); len(calls) != 0 {
+		t.Errorf("hand-overs = %+v, want none: no hand-over starts after the callout's deadline", calls)
+	}
+	if !errors.Is(err, contract.ErrNoMatchingMember) {
+		t.Fatalf("err = %v, want ErrNoMatchingMember: no try was ever made", err)
+	}
+	var failure *contract.CalloutFailure
+	if errors.As(err, &failure) && len(failure.Attempts) != 0 {
+		t.Errorf("attempts = %+v, want none: nothing was handed over", failure.Attempts)
+	}
+}
+
 func TestOwner_LocalNoAnswer_ProcessorNotIdempotent_IsNotHandedOver(t *testing.T) {
 	router := newScriptedRouter("p-1")
 	router.script("p-1", peerAnswers("cnode-on-p-1"))
