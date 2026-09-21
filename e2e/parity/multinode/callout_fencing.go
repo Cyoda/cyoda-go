@@ -124,13 +124,15 @@ func RunCallout_PassFromAnotherPnode(t *testing.T, fixture MultiNodeFixture) {
 		// owner's transaction open (inline, via ASYNC_NEW_TX's savepoint) just
 		// long enough for the assertion below, then answers normally after a
 		// short, bounded sleep rather than never answering — catalog.go's
-		// sleep_ms is honoured, so a used-up hold costs milliseconds, not the
-		// full answer limit.
+		// sleep_ms is honoured, so the hold costs its sleep, not a full answer
+		// limit. The sleep is the window in which the late callback must reach
+		// the owner across processes and nodes; it is generous on purpose — a
+		// callback arriving after it would be answered 404, not 410.
 		hold := StartComputeClientOrSkip(t, fixture, 1, parity.ComputeClientSpec{TenantID: tenant.ID, Tags: []string{tagHold}})
 		mnWarmUp(t, fixture, owner, tenant, 1, "mn-pass-ended-w")
 		cbRouteSetupModel(t, owner, primary, cbRouteSampleNoWriteback, mnWorkflow("mn-pass-ended-wf",
 			mnProc("late", "ASYNC_NEW_TX", tagLate, cbRouteContext(secondary, "mn-pass-ended"), map[string]any{"responseTimeoutMs": 500}),
-			mnProc("slow-configurable", "ASYNC_NEW_TX", tagHold, `{"sleep_ms": 300}`, map[string]any{"responseTimeoutMs": 1500})))
+			mnProc("slow-configurable", "ASYNC_NEW_TX", tagHold, `{"sleep_ms": 1500}`, map[string]any{"responseTimeoutMs": 4000})))
 
 		done := mnGoCreate(t, owner, primary, mnSample)
 		parity.AwaitReceived(t, hold, 1, 15*time.Second) // the first callout has ended; the transaction is open
