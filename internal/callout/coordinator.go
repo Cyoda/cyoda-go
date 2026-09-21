@@ -351,19 +351,24 @@ func (p *progress) stop(cctx context.Context) error {
 // patience is spent, or ctx ends. It reports the time spent and whether a
 // change ended the wait. The wait is on a signal, never a poll. A nil
 // peersChanged — a Coordinator with no peers — never fires.
+//
+// A change and the timer can both be ready, and select then picks either: the
+// time a change-ended wait reports is capped at the patience it was given, so
+// the callout is never charged more patience than it has and the loop never
+// starts a pass on an allowance that is already spent.
 func waitForChange(ctx context.Context, localChanged, peersChanged <-chan struct{}, patienceLeft time.Duration) (time.Duration, bool) {
 	start := time.Now()
 	timer := time.NewTimer(patienceLeft)
 	defer timer.Stop()
 	select {
 	case <-localChanged:
-		return time.Since(start), true
+		return min(time.Since(start), patienceLeft), true
 	case <-peersChanged:
-		return time.Since(start), true
+		return min(time.Since(start), patienceLeft), true
 	case <-timer.C:
 		return patienceLeft, false
 	case <-ctx.Done():
-		return time.Since(start), false
+		return min(time.Since(start), patienceLeft), false
 	}
 }
 

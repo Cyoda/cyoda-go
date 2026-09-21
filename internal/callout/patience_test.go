@@ -58,12 +58,16 @@ func TestOwner_NoCnodeWithinThePatience_IsNoComputeMember(t *testing.T) {
 // that bring no matching cnode start a new pass and a new wait, and the waits
 // add up to the setting.
 func TestOwner_PatienceIsOneAllowanceAcrossSeveralWaits(t *testing.T) {
-	const patience = 600 * time.Millisecond
+	const patience = 300 * time.Millisecond
+	const slack = 150 * time.Millisecond
 	e := newEnv(t, Config{FixedNumRetries: 3, Patience: patience})
-	// Two changes that do not help: a cnode for another tag comes at 200 ms and
-	// another at 400 ms. Per-wait patience would end at 400 + 600 ms.
-	time.AfterFunc(200*time.Millisecond, func() { e.attach(t, "other-1", tenantA, "other", nil) })
-	time.AfterFunc(400*time.Millisecond, func() { e.attach(t, "other-2", tenantA, "other", nil) })
+	// Two changes that do not help: a cnode for another tag comes at 100 ms and
+	// another at 250 ms. One allowance spends 100 ms on the first wait, 150 ms on
+	// the second and the last 50 ms on the third, so the callout ends at 300 ms,
+	// inside the 450 ms ceiling. A per-wait allowance would start a fresh 300 ms
+	// on the 250 ms change and end at 550 ms, past it.
+	time.AfterFunc(100*time.Millisecond, func() { e.attach(t, "other-1", tenantA, "other", nil) })
+	time.AfterFunc(250*time.Millisecond, func() { e.attach(t, "other-2", tenantA, "other", nil) })
 	start := time.Now()
 
 	_, err := e.dispatchFunction(userCtx(tenantA), "x", "")
@@ -72,8 +76,48 @@ func TestOwner_PatienceIsOneAllowanceAcrossSeveralWaits(t *testing.T) {
 	if !errors.Is(err, contract.ErrNoMatchingMember) {
 		t.Fatalf("err = %v, want ErrNoMatchingMember", err)
 	}
-	if elapsed < patience || elapsed > patience+250*time.Millisecond {
+	if elapsed < patience || elapsed > patience+slack {
 		t.Errorf("gave up after %v, want about %v in total", elapsed, patience)
+	}
+}
+
+// A change and the rest of the patience can both be ready when the wait looks:
+// select then picks either, and the change branch must not charge the callout
+// the time it really spent, which is past the allowance. Charging it would take
+// the patience below zero, put more on stats.Waited than the setting allows and
+// let one more pass run on a patience that was already spent. Both branches are
+// ready on every round here, so one round in the loop is enough to show it.
+func TestWaitForChange_ChargesNoMoreThanThePatienceLeft(t *testing.T) {
+	const patienceLeft = time.Nanosecond
+	changed := make(chan struct{})
+	close(changed)
+
+	for i := 0; i < 200; i++ {
+		waited, _ := waitForChange(context.Background(), changed, nil, patienceLeft)
+		if waited > patienceLeft {
+			t.Fatalf("round %d waited %v, want no more than the %v it had left", i, waited, patienceLeft)
+		}
+	}
+}
+
+// The same invariant through the loop: whatever ends a wait, the callout is
+// never charged more patience than the setting. The cnode drops the moment it is
+// tried, which both fails the try and fires the change signal, so the wait that
+// follows finds a change already waiting for it and returns at once. Which of
+// the two ready cases select picks is its own business, so the invariant is
+// checked over several callouts rather than provoked once.
+func TestOwner_WaitedNeverExceedsThePatience(t *testing.T) {
+	const patience = time.Nanosecond
+	for i := 0; i < 64; i++ {
+		e := newEnv(t, Config{FixedNumRetries: 3, Patience: patience})
+		e.attach(t, "m-1", tenantA, "x", detaches())
+		ctx, stats := contract.WithCalloutStats(userCtx(tenantA))
+
+		_, _ = e.dispatchFunction(ctx, "x", "")
+
+		if stats.Waited > patience {
+			t.Fatalf("callout %d: Waited = %v, want no more than the patience of %v", i, stats.Waited, patience)
+		}
 	}
 }
 
