@@ -531,10 +531,12 @@ func TestReadAnswer_ClassifiedFailures(t *testing.T) {
 			DispatchCalloutResponse{Outcome: "no_handoff", TriesUsed: intPtr(0), ErrorCode: common.ErrCodeNoComputeMemberForTag, ErrorStatus: 503, ErrorRetryable: true},
 			contract.NoHandOff, common.ErrCodeNoComputeMemberForTag, 503, true, "", 0, false},
 		{"the peer tried two cnodes and handed off to neither",
-			DispatchCalloutResponse{Outcome: "no_handoff", TriesUsed: intPtr(2), ErrorCode: common.ErrCodeComputeMemberDisconnected, ErrorStatus: 503, ErrorRetryable: true},
+			DispatchCalloutResponse{Outcome: "no_handoff", TriesUsed: intPtr(2), ErrorCode: common.ErrCodeComputeMemberDisconnected, ErrorStatus: 503, ErrorRetryable: true,
+				Attempts: []WireAttempt{{MemberID: "m1", Kind: "no_handoff", Cause: "gone"}, {MemberID: "m2", Kind: "no_handoff", Cause: "gone"}}},
 			contract.NoHandOff, common.ErrCodeComputeMemberDisconnected, 503, true, "", 2, true},
 		{"terminal with a ticketed 500",
-			DispatchCalloutResponse{Outcome: "terminal", TriesUsed: intPtr(1), ErrorCode: common.ErrCodeServerError, ErrorStatus: 500},
+			DispatchCalloutResponse{Outcome: "terminal", TriesUsed: intPtr(1), ErrorCode: common.ErrCodeServerError, ErrorStatus: 500,
+				Attempts: []WireAttempt{{MemberID: "m1", Kind: "terminal", Cause: "internal error"}}},
 			contract.Terminal, common.ErrCodeServerError, 500, false, "", 1, true},
 		{"terminal refused before any try",
 			DispatchCalloutResponse{Outcome: "terminal", TriesUsed: intPtr(0), ErrorCode: common.ErrCodeServerError, ErrorStatus: 500},
@@ -615,6 +617,19 @@ func TestReadAnswer_OutcomeThatNeedsATryWithNone(t *testing.T) {
 	for _, outcome := range []string{OutcomeOK, "no_answer", "member_failed"} {
 		t.Run(outcome, func(t *testing.T) {
 			assertLost(t, readAnswer(ownerCallout(t, "processor"), &DispatchCalloutResponse{Outcome: outcome, TriesUsed: intPtr(0)}, 3))
+		})
+	}
+}
+
+// A peer that spent a try on a failure always names the try that failed
+// (responseFromLocal). An answer with a failure, tries spent and no attempt
+// contradicts itself: it is not believed, and is read as a lost answer that
+// spent the tries it claims.
+func TestReadAnswer_FailureWithTriesAndNoAttempt(t *testing.T) {
+	for _, outcome := range []string{"no_answer", "member_failed", "no_handoff", "terminal"} {
+		t.Run(outcome, func(t *testing.T) {
+			assertLost(t, readAnswer(ownerCallout(t, "processor"), &DispatchCalloutResponse{Outcome: outcome, TriesUsed: intPtr(1),
+				ErrorCode: common.ErrCodeDispatchTimeout, ErrorStatus: http.StatusServiceUnavailable, MemberError: "the rates service is down"}, 3))
 		})
 	}
 }

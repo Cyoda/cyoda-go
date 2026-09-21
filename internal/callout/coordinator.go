@@ -287,14 +287,6 @@ func (c *Coordinator) askPeers(cctx context.Context, call internalgrpc.Callout, 
 			continue
 		}
 		p.triesLeft -= a.TriesUsed
-		if a.TriesUsed > 0 && a.Failure != nil && len(a.Attempts) == 0 {
-			// The answer was lost: no cnode is known. It counts as a try and is
-			// recorded as one, under the member id "-". Connected alone is not
-			// enough: a peer-answered Terminal keeps Connected true even when it
-			// used no try (dispatch.refusal), and a lost answer always used at
-			// least one (dispatch.lostAnswer, dispatch.lostAnswerAfter).
-			a.Attempts = []contract.CalloutAttempt{{MemberID: "-", Kind: a.Failure.Kind, Cause: a.Failure.Message}}
-		}
 		p.attempts = append(p.attempts, a.Attempts...)
 		for _, at := range a.Attempts {
 			p.stats.Tries = append(p.stats.Tries, at.Kind.String())

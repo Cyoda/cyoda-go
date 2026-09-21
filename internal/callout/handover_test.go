@@ -112,13 +112,25 @@ func peerFails(failure *contract.CalloutFailure, triesUsed int, attempts ...cont
 	}
 }
 
-// lostAnswer is what the router reports when the peer was connected to and no
-// usable answer came back: one try, NoAnswer, DISPATCH_FORWARD_FAILED, no cnode
-// known.
-func lostAnswer() *contract.CalloutFailure {
+// lostAnswer is what the real router (dispatch.lostAnswerAfter) answers when
+// the peer was connected to and no usable answer came back: the tries it says
+// it spent, NoAnswer, DISPATCH_FORWARD_FAILED, and the one attempt it records
+// under the member id "-" — whose cause carries the code, as every attempt's
+// cause does.
+func lostAnswer(triesUsed int) dispatch.HandOverAnswer {
 	appErr := common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchForwardFailed,
 		"forwarding the callout to a peer node failed").AsRetryable()
-	return &contract.CalloutFailure{Kind: contract.NoAnswer, Code: appErr.Code, Message: appErr.Message, Err: appErr}
+	return dispatch.HandOverAnswer{
+		Connected: true,
+		TriesUsed: triesUsed,
+		Failure:   &contract.CalloutFailure{Kind: contract.NoAnswer, Code: appErr.Code, Message: appErr.Message, Err: appErr},
+		Attempts:  []contract.CalloutAttempt{{MemberID: "-", Kind: contract.NoAnswer, Cause: appErr.Message}},
+	}
+}
+
+// losesTheAnswer is a peer that was connected to and whose answer was lost.
+func losesTheAnswer(triesUsed int) func(context.Context) dispatch.HandOverAnswer {
+	return func(context.Context) dispatch.HandOverAnswer { return lostAnswer(triesUsed) }
 }
 
 // hangs is a peer that was connected to and never answers: the router gives up
@@ -126,7 +138,7 @@ func lostAnswer() *contract.CalloutFailure {
 func hangs() func(context.Context) dispatch.HandOverAnswer {
 	return func(ctx context.Context) dispatch.HandOverAnswer {
 		<-ctx.Done()
-		return dispatch.HandOverAnswer{Connected: true, TriesUsed: 1, Failure: lostAnswer()}
+		return lostAnswer(1)
 	}
 }
 
@@ -564,7 +576,7 @@ func TestOwner_ANewPassAsksEveryPeerAgain(t *testing.T) {
 func TestOwner_HandOverAnswerLost(t *testing.T) {
 	t.Run("not repeat-safe: DISPATCH_FORWARD_FAILED, recorded under member -", func(t *testing.T) {
 		router := newScriptedRouter("p-1", "p-2")
-		router.script("p-1", peerFails(lostAnswer(), 1))
+		router.script("p-1", losesTheAnswer(1))
 		router.script("p-2", peerAnswers("cnode-on-p-2"))
 		e := newClusterEnv(t, Config{FixedNumRetries: 3, HandoverAllowance: time.Second}, router)
 
@@ -584,8 +596,8 @@ func TestOwner_HandOverAnswerLost(t *testing.T) {
 	})
 	t.Run("repeat-safe: one try counted, the next peer is asked", func(t *testing.T) {
 		router := newScriptedRouter("p-1", "p-2")
-		router.script("p-1", peerFails(lostAnswer(), 1))
-		router.script("p-2", peerFails(lostAnswer(), 1))
+		router.script("p-1", losesTheAnswer(1))
+		router.script("p-2", losesTheAnswer(1))
 		e := newClusterEnv(t, Config{FixedNumRetries: 3, HandoverAllowance: time.Second}, router)
 
 		_, err := e.dispatchFunction(userCtx(tenantA), "x", "")
@@ -632,7 +644,7 @@ func TestOwner_PeersCnodeFailed_ItsMessageAndVerdictSurvive_NobodyElseIsAsked(t 
 // actually made, and a pass that left it behind would be a nil dereference.
 func TestOwner_AHandOverThatRecordsAnAttemptAlsoRecordsItsFailure(t *testing.T) {
 	router := newScriptedRouter("p-1")
-	router.script("p-1", peerFails(lostAnswer(), 1))
+	router.script("p-1", losesTheAnswer(1))
 	e := newClusterEnv(t, Config{FixedNumRetries: 3, HandoverAllowance: time.Second}, router)
 
 	// Three tries are left and no peer is, so the callout stops with only the
@@ -673,8 +685,8 @@ func TestOwner_AFailureFromAPeerDoesNotShareThePeersAttempts(t *testing.T) {
 // what it used is taken off, and the total never exceeds the setting.
 func TestOwner_TheBudgetSpansLocalTriesAndPeers_AndIsNeverExceeded(t *testing.T) {
 	router := newScriptedRouter("p-1", "p-2", "p-3")
-	router.script("p-1", peerFails(lostAnswer(), 2))
-	router.script("p-2", peerFails(lostAnswer(), 1))
+	router.script("p-1", losesTheAnswer(2))
+	router.script("p-2", losesTheAnswer(1))
 	router.script("p-3", peerAnswers("never-asked"))
 	e := newClusterEnv(t, Config{FixedNumRetries: 3, HandoverAllowance: time.Second}, router)
 	e.attach(t, "m-1", tenantA, "x", detaches()) // one local try

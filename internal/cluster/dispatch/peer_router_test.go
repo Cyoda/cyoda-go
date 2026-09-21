@@ -189,6 +189,7 @@ func TestHandOver_AddsThePeersErrorsToTheRequestDiagnostics(t *testing.T) {
 	no := false
 	fwd := &answeringForwarder{resp: &DispatchCalloutResponse{Outcome: "member_failed", TriesUsed: intPtr(1),
 		MemberError: "card declined", MemberRetryable: &no,
+		Attempts: []WireAttempt{{MemberID: "m1", Kind: "member_failed", Cause: "card declined"}},
 		Warnings: []string{"processor p: slow"}, Errors: []string{"processor p: card declined"}}}
 	ctx := common.WithDiagnostics(testContext())
 	a := newTestRouter(t, &stubNodeRegistry{}, fwd).HandOver(ctx, node("peer-1", true, "tenant-1", "python"), ownerCallout(t, "processor"), 1, 1)
@@ -306,7 +307,8 @@ func TestHandOver_BoundsThePeersDiagnostics(t *testing.T) {
 // bytes would fall inside a multi-byte rune.
 func TestHandOver_BoundsThePeersRelayedMemberMessage(t *testing.T) {
 	long := strings.Repeat("a", maxPeerDiagnosticRunes-1) + strings.Repeat("é", 101)
-	fwd := &answeringForwarder{resp: &DispatchCalloutResponse{Outcome: "member_failed", TriesUsed: intPtr(1), MemberError: long}}
+	fwd := &answeringForwarder{resp: &DispatchCalloutResponse{Outcome: "member_failed", TriesUsed: intPtr(1), MemberError: long,
+		Attempts: []WireAttempt{{MemberID: "m1", Kind: "member_failed", Cause: "the member failed"}}}}
 	a := newTestRouter(t, &stubNodeRegistry{}, fwd).HandOver(testContext(), node("peer-1", true, "tenant-1", "python"), ownerCallout(t, "processor"), 1, 1)
 
 	if a.Failure == nil || a.Failure.Kind != contract.MemberFailed {
@@ -544,8 +546,12 @@ func TestPeerRouter_CountsHandOversByOutcome(t *testing.T) {
 		{&DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1), EntityData: []byte(`{}`)}, nil},
 		{&DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1), EntityData: []byte(`{}`)}, nil},
 		{&DispatchCalloutResponse{Outcome: "no_handoff", TriesUsed: intPtr(0)}, nil},
-		{&DispatchCalloutResponse{Outcome: "member_failed", TriesUsed: intPtr(1), MemberError: "x"}, nil},
-		{&DispatchCalloutResponse{Outcome: "terminal", TriesUsed: intPtr(1)}, nil},
+		// A try that failed always names the member that made it, as
+		// responseFromLocal sends it; an answer without that is a lost one.
+		{&DispatchCalloutResponse{Outcome: "member_failed", TriesUsed: intPtr(1), MemberError: "x",
+			Attempts: []WireAttempt{{MemberID: "m1", Kind: "member_failed", Cause: "x"}}}, nil},
+		{&DispatchCalloutResponse{Outcome: "terminal", TriesUsed: intPtr(1),
+			Attempts: []WireAttempt{{MemberID: "m1", Kind: "terminal", Cause: "bad payload"}}}, nil},
 		{nil, errors.New("reset")},
 		{nil, &ForwardError{Stage: StageNotConnected, Err: errors.New("refused")}},
 	}

@@ -408,6 +408,12 @@ func readAnswer(call internalgrpc.Callout, resp *DispatchCalloutResponse, triesL
 		// understated by an answer it happens not to understand.
 		return lostAnswerAfter(used)
 	}
+	// A peer that spent a try on a failure always names the try that failed
+	// (responseFromLocal). An answer that says otherwise contradicts itself and
+	// is not believed either: it spent what it claims, under no member.
+	if ans.Failure != nil && used > 0 && len(ans.Attempts) == 0 {
+		return lostAnswerAfter(used)
+	}
 	return ans
 }
 
