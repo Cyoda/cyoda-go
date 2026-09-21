@@ -147,15 +147,14 @@ non-fatal. The engine code is `executeAsyncNewTx` at
 1. Inside the caller's transaction `T`, the engine creates a savepoint
    `S` via `txMgr.Savepoint(ctx, T)`.
 2. It dispatches the processor. **The processor's returned entity mutations
-   are intentionally discarded** — see the explicit `_, dispatchErr := …` at
-   line 174 and the comment at line 153.
+   are intentionally discarded** — see the explicit `_, dispatchErr := …` in
+   `executeAsyncNewTx` and the comment above it.
 3. On failure: `RollbackToSavepoint(T, S)` undoes any writes the processor
    made via gRPC callbacks; a warning is logged at WARN level; **the pipeline
    continues** to the next processor. A savepoint that cannot be created,
    undone or released is not a processor failure: it fails the operation with
-   a ticketed `5xx` and nothing commits. A processor's compute member that was
-   replaced is shut out before the savepoint is undone, so none of its writes
-   lands after it.
+   a ticketed `5xx` and nothing commits. A replaced compute member is shut out
+   before the savepoint is undone, so none of its writes lands after it.
 4. On success: `ReleaseSavepoint(T, S)` discards the savepoint marker.
 
 ### Why mutations are discarded
@@ -548,7 +547,7 @@ currently a labelling-only variant.
   do not rely on it.
 - `classifyWorkflowError` maps engine outputs to HTTP:
   - `ErrCommitBeforeDispatchInfra` → sanitized 5xx with ticket UUID
-  - `ErrTransitionNotFound` → 404 `TRANSITION_NOT_FOUND`
+  - `ErrTransitionNotFound` → 400 `TRANSITION_NOT_FOUND`
   - `spi.ErrConflict` from CAS → 409 retryable (or 412 if `If-Match`)
   - a processor's `success:false` verdict → 400 `WORKFLOW_FAILED` with the
     member's message
