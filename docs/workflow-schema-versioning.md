@@ -44,6 +44,7 @@ Document the choice (dual-shape vs retirement, with rationale) in the per-versio
 
 - Adding a new HTTP endpoint or response field that's outside `WorkflowConfigurationDto`. The version contract scopes the import DTO, not the wider workflow API.
 - Bug-fixing a validator that was already supposed to reject something — i.e., the rejection was always documented and the validator was the bug. Add a test, ship the fix; no schema bump. (Borderline cases: if a validator was widely-relied-upon-via-its-absence, treat as a tightening release per §above.)
+- Bug-fixing an exporter that emitted a wire shape the published schema already forbade — i.e., the schema was already correct and the serialiser was the bug. No accepted-input set moves and no document's documented shape changes; only the serialisation defect goes away. Add a test, ship the fix; no schema bump.
 - Internal refactoring of the engine, store, or audit shape. The wire contract is unchanged.
 
 ### Malformed-regex criteria rejected at import (v0.8.3)
@@ -138,6 +139,28 @@ declaration is a modelling step, not an import-validation one. No
 Not to be confused with the `NOT` group operator entry under the Changelog
 below, which **is** a bump: the two are separate changes shipped in the same
 release, and neither's bump decision generalises to the other.
+
+### Exported schedule omits `delayMs` when function-driven (v0.9.0)
+
+A scheduled transition's exported `schedule` object no longer carries
+`"delayMs": 0` when the schedule is driven by a `function` and has no static
+delay. The exporter marshalled the schedule's wire type directly, and that
+type's delay field had no `omitempty`, so a function-driven schedule — which
+has no static delay by definition — still emitted a meaningless zero
+alongside `function`. The published `TransitionScheduleDto.delayMs` already
+gave the field `minimum: 1` and documented it as mutually exclusive with
+`function`, so the old export was never a valid document against the
+server's own schema; the exporter was the bug, not the schema.
+
+This is the §"When NOT to bump" "the serialiser was the bug" case, the exact
+analogue of the v0.8.3 malformed-regex entry above: the schema never allowed
+`delayMs: 0`, so no *valid* document's shape changes and the accepted-input
+set is unchanged — only what a function-driven schedule serialises to at
+export changes, from a document the schema rejects to one it accepts. Import
+is unaffected either way: `delayMs > 0` was already how import distinguishes
+"static delay present" from "absent", so an absent key and an explicit `0`
+were always equivalent on that path. No `CurrentSchemaVersion` or
+`SupportedSchemaRanges` change.
 
 ## Required commit-/PR-time checks
 

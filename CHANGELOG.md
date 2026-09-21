@@ -172,6 +172,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **A workflow export of a function-driven scheduled transition carried
+  `"delayMs": 0`, which the API's own schema rejects.** The exporter
+  marshalled the schedule's wire type directly, and its delay field had no
+  `omitempty`, so a schedule fired by a Function callout — which has no
+  static delay at all — still emitted a meaningless zero delay alongside
+  `function`, violating the published schema's `minimum: 1` and its
+  documented mutual exclusion between `delayMs` and `function`. The key is
+  now omitted when there is no static delay. Import is unchanged: an absent
+  delay together with a function was always the accepted form.
+
 - **A point-in-time read costs what the model costs, not what the history
   costs (PostgreSQL).** The point-in-time base query resolved the latest
   revision per entity with `DISTINCT ON (entity_id)` over
