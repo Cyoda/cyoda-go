@@ -60,9 +60,23 @@ func assertAppErr(t *testing.T, err error, status int, code string) {
 	}
 }
 
+// joinFromToken is the entry of a joined request as Run runs it, short of the
+// transaction's lock: verify the pass, then join and admit. The tests of the
+// entry drive the Joiner's own two halves in that order.
+func joinFromToken(ctx context.Context, s *token.Signer, txMgr spi.TransactionManager, f *fence.Fence, tok string) (context.Context, error) {
+	// NewJoiner fails only when the meter cannot register its counter, and the
+	// no-op meter cannot.
+	j, _ := NewJoiner(s, txMgr, f, txgate.New(), nil)
+	pass, err := j.Verify(tok)
+	if err != nil || pass == nil {
+		return ctx, err
+	}
+	return j.join(ctx, pass)
+}
+
 func TestJoinFromToken_EmptyPassThrough(t *testing.T) {
 	ctx := context.Background()
-	got, err := JoinFromToken(ctx, nil, fakeTM{}, noCalloutFence(), "")
+	got, err := joinFromToken(ctx, nil, fakeTM{}, noCalloutFence(), "")
 	if err != nil {
 		t.Fatalf("empty token must not error; err=%v", err)
 	}
@@ -84,7 +98,7 @@ func TestJoinFromToken_JoinsValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	ctx, err := JoinFromToken(context.Background(), s, fakeTM{}, f, tok)
+	ctx, err := joinFromToken(context.Background(), s, fakeTM{}, f, tok)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -103,7 +117,7 @@ func TestJoinFromToken_ExpiredMaps410(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	_, err = JoinFromToken(context.Background(), s, fakeTM{}, noCalloutFence(), tok)
+	_, err = joinFromToken(context.Background(), s, fakeTM{}, noCalloutFence(), tok)
 	var op *common.AppError
 	if !errors.As(err, &op) {
 		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
@@ -130,7 +144,7 @@ func TestJoinFromToken_ForgedMaps401(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	_, err = JoinFromToken(context.Background(), s, fakeTM{}, noCalloutFence(), tok)
+	_, err = joinFromToken(context.Background(), s, fakeTM{}, noCalloutFence(), tok)
 	var op *common.AppError
 	if !errors.As(err, &op) {
 		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
@@ -152,7 +166,7 @@ func TestJoinFromToken_NotFoundMaps404(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	_, err = JoinFromToken(context.Background(), s, fakeTM{joinErr: spi.ErrTxNotFound}, noCalloutFence(), tok)
+	_, err = joinFromToken(context.Background(), s, fakeTM{joinErr: spi.ErrTxNotFound}, noCalloutFence(), tok)
 	var op *common.AppError
 	if !errors.As(err, &op) {
 		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
@@ -174,7 +188,7 @@ func TestJoinFromToken_RolledBackMaps404(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	_, err = JoinFromToken(context.Background(), s, fakeTM{joinErr: spi.ErrTxRolledBack}, noCalloutFence(), tok)
+	_, err = joinFromToken(context.Background(), s, fakeTM{joinErr: spi.ErrTxRolledBack}, noCalloutFence(), tok)
 	var op *common.AppError
 	if !errors.As(err, &op) {
 		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
@@ -196,7 +210,7 @@ func TestJoinFromToken_AlreadyCommittedMaps404(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	_, err = JoinFromToken(context.Background(), s, fakeTM{joinErr: spi.ErrTxAlreadyCommitted}, noCalloutFence(), tok)
+	_, err = joinFromToken(context.Background(), s, fakeTM{joinErr: spi.ErrTxAlreadyCommitted}, noCalloutFence(), tok)
 	var op *common.AppError
 	if !errors.As(err, &op) {
 		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
@@ -219,7 +233,7 @@ func TestJoinFromToken_UnknownJoinErrorMaps5xx(t *testing.T) {
 		t.Fatalf("Issue: %v", err)
 	}
 	unknownErr := errors.New("db unavailable")
-	_, err = JoinFromToken(context.Background(), s, fakeTM{joinErr: unknownErr}, noCalloutFence(), tok)
+	_, err = joinFromToken(context.Background(), s, fakeTM{joinErr: unknownErr}, noCalloutFence(), tok)
 	var op *common.AppError
 	if !errors.As(err, &op) {
 		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
@@ -238,7 +252,7 @@ func TestJoinFromToken_TenantMismatchMaps403(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	_, err = JoinFromToken(context.Background(), s, fakeTM{joinErr: spi.ErrTxTenantMismatch}, noCalloutFence(), tok)
+	_, err = joinFromToken(context.Background(), s, fakeTM{joinErr: spi.ErrTxTenantMismatch}, noCalloutFence(), tok)
 	var op *common.AppError
 	if !errors.As(err, &op) {
 		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
@@ -255,7 +269,7 @@ func TestJoinFromToken_AdmitsUnderTheCurrentNumber(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
 	f, claims := liveFence(t, "req-1", "tx-1")
 	tok, _ := s.Issue(claims)
-	ctx, err := JoinFromToken(context.Background(), s, fakeTM{}, f, tok)
+	ctx, err := joinFromToken(context.Background(), s, fakeTM{}, f, tok)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -275,7 +289,7 @@ func TestJoinFromToken_CalloutEnded_410(t *testing.T) {
 	end()
 	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-1", Major: 1})
 	base := context.Background()
-	ctx, err := JoinFromToken(base, s, fakeTM{}, f, tok)
+	ctx, err := joinFromToken(base, s, fakeTM{}, f, tok)
 	assertAppErr(t, err, http.StatusGone, common.ErrCodeCalloutSuperseded)
 	if ctx != base {
 		t.Fatal("a refused join must hand back the caller's context")
@@ -287,7 +301,7 @@ func TestJoinFromToken_ReplacedWhileCalloutInProgress_410(t *testing.T) {
 	f, claims := liveFence(t, "req-1", "tx-1")
 	tok, _ := s.Issue(claims)
 	f.Advance("req-1", 2)
-	_, err := JoinFromToken(context.Background(), s, fakeTM{}, f, tok)
+	_, err := joinFromToken(context.Background(), s, fakeTM{}, f, tok)
 	assertAppErr(t, err, http.StatusGone, common.ErrCodeCalloutSuperseded)
 }
 
@@ -296,7 +310,7 @@ func TestJoinFromToken_EnclosingCalloutNotCurrent_410(t *testing.T) {
 	f, claims := liveFence(t, "req-inner", "tx-1")
 	claims.Outer = []token.Pair{{Callout: "req-outer", Major: 1}} // never begun
 	tok, _ := s.Issue(claims)
-	_, err := JoinFromToken(context.Background(), s, fakeTM{}, f, tok)
+	_, err := joinFromToken(context.Background(), s, fakeTM{}, f, tok)
 	assertAppErr(t, err, http.StatusGone, common.ErrCodeCalloutSuperseded)
 }
 
@@ -318,7 +332,7 @@ func TestJoinFromToken_JoinComesBeforeTheFence(t *testing.T) {
 			// Callout ended: the fence alone would answer 410.
 			f := fence.New(txgate.New())
 			tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-1", Major: 1})
-			_, err := JoinFromToken(context.Background(), s, fakeTM{joinErr: tc.joinErr}, f, tok)
+			_, err := joinFromToken(context.Background(), s, fakeTM{joinErr: tc.joinErr}, f, tok)
 			assertAppErr(t, err, tc.status, tc.code)
 		})
 	}
@@ -345,7 +359,7 @@ func TestJoinFromToken_TenantMismatchIsOneAnswerWhateverTheFenceKnows(t *testing
 			s, _ := token.NewSigner(make32(t))
 			f, claims := setup(t)
 			tok, _ := s.Issue(claims)
-			_, err := JoinFromToken(context.Background(), s, fakeTM{joinErr: spi.ErrTxTenantMismatch}, f, tok)
+			_, err := joinFromToken(context.Background(), s, fakeTM{joinErr: spi.ErrTxTenantMismatch}, f, tok)
 			assertAppErr(t, err, http.StatusForbidden, common.ErrCodeForbidden)
 		})
 	}
@@ -362,7 +376,7 @@ func TestJoinFromToken_TenantMismatch_AbsorbsNothing(t *testing.T) {
 	}
 	claims.Minor = 9
 	tok, _ := s.Issue(claims)
-	_, err = JoinFromToken(context.Background(), s, fakeTM{joinErr: spi.ErrTxTenantMismatch}, f, tok)
+	_, err = joinFromToken(context.Background(), s, fakeTM{joinErr: spi.ErrTxTenantMismatch}, f, tok)
 	assertAppErr(t, err, http.StatusForbidden, common.ErrCodeForbidden)
 	if err := fence.Check(rightful); err != nil {
 		t.Fatalf("a refused join changed the fence: %v", err)
@@ -372,31 +386,11 @@ func TestJoinFromToken_TenantMismatch_AbsorbsNothing(t *testing.T) {
 func TestJoinFromToken_NoCalloutAndNumber_401(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
 	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix()})
-	_, err := JoinFromToken(context.Background(), s, fakeTM{}, fence.New(txgate.New()), tok)
+	_, err := joinFromToken(context.Background(), s, fakeTM{}, fence.New(txgate.New()), tok)
 	assertAppErr(t, err, http.StatusUnauthorized, common.ErrCodeUnauthorized)
 	var appErr *common.AppError
 	_ = errors.As(err, &appErr)
 	if appErr.Message != "UNAUTHORIZED: invalid transaction token" {
 		t.Fatalf("message = %q", appErr.Message)
-	}
-}
-
-// A cnode that disconnects in the middle of its callback cancels the request's
-// context; the joined request must not see it.
-func TestJoinFromToken_JoinedContextIsNotCancelledByItsClient(t *testing.T) {
-	s, _ := token.NewSigner(make32(t))
-	f, claims := liveFence(t, "req-1", "tx-1")
-	tok, _ := s.Issue(claims)
-	request, disconnect := context.WithCancel(context.Background())
-	joined, err := JoinFromToken(request, s, fakeTM{}, f, tok)
-	if err != nil {
-		t.Fatalf("join: %v", err)
-	}
-	disconnect()
-	if joined.Err() != nil {
-		t.Fatalf("the joined context was cancelled by its client: %v", joined.Err())
-	}
-	if spi.GetTransaction(joined) == nil || len(fence.Pairs(joined)) != 1 {
-		t.Fatal("detaching cancellation must keep the transaction and the pairs")
 	}
 }

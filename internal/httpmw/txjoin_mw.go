@@ -26,12 +26,14 @@ const maxJoinedBodySize = 10 * 1024 * 1024
 // inside txMgr.Join.
 //
 // If the X-Tx-Token header is absent the request passes through unchanged.
-// Otherwise the whole request is brought into memory first, the joiner takes
-// the transaction's lock and checks the pass under it, the handler runs on the
-// joined context, and the response is sent once the lock has been released — so
-// neither end of the request makes the lock wait on the compute node. On an
-// invalid/expired/not-found/superseded token the error is rendered via
-// common.WriteError and the next handler never runs.
+// Otherwise the pass itself is verified first — before a byte of the body is
+// read, so a forged or expired pass costs no buffer — then the whole request is
+// brought into memory, the joiner takes the transaction's lock and checks the
+// pass under it, the handler runs on the joined context, and the response is
+// sent once the lock has been released, so neither end of the request makes the
+// lock wait on the compute node. On an invalid/expired/not-found/superseded
+// token the error is rendered via common.WriteError and the next handler never
+// runs.
 //
 // The token value is never logged.
 func TxJoin(j *txjoin.Joiner) func(http.Handler) http.Handler {
@@ -40,6 +42,11 @@ func TxJoin(j *txjoin.Joiner) func(http.Handler) http.Handler {
 			tok := r.Header.Get(proxy.TxTokenHeader)
 			if tok == "" {
 				next.ServeHTTP(w, r)
+				return
+			}
+			pass, err := j.Verify(tok)
+			if err != nil {
+				writeJoinError(w, r, err)
 				return
 			}
 			// Read the body before the lock is taken: what the lock waits on
@@ -59,18 +66,24 @@ func TxJoin(j *txjoin.Joiner) func(http.Handler) http.Handler {
 			r.Body = io.NopCloser(bytes.NewReader(body))
 
 			buffered := newBufferedWriter()
-			err = j.Run(r.Context(), tok, func(ctx context.Context) {
+			err = j.RunVerified(r.Context(), pass, func(ctx context.Context) {
 				next.ServeHTTP(buffered, r.WithContext(ctx))
 			})
 			if err != nil {
-				var appErr *common.AppError
-				if !errors.As(err, &appErr) {
-					appErr = common.Internal("failed to join transaction", err)
-				}
-				common.WriteError(w, r, appErr)
+				writeJoinError(w, r, err)
 				return
 			}
 			buffered.flushTo(w)
 		})
 	}
+}
+
+// writeJoinError renders a refusal by the join layer. Anything that is not an
+// operational error is the server's own and is ticketed.
+func writeJoinError(w http.ResponseWriter, r *http.Request, err error) {
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		appErr = common.Internal("failed to join transaction", err)
+	}
+	common.WriteError(w, r, appErr)
 }

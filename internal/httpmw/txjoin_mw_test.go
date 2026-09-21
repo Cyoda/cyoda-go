@@ -443,6 +443,51 @@ func TestTxJoin_StalledBodyDoesNotHoldTheLock(t *testing.T) {
 	<-stalledDone
 }
 
+// countingBody is a request body that records how often it was read, and is
+// empty: a door that reads it at all is reading it too early.
+type countingBody struct{ reads int }
+
+func (b *countingBody) Read([]byte) (int, error) { b.reads++; return 0, io.EOF }
+
+// A pass this door refuses on the pass alone costs it no buffer: the signature,
+// the shape and the expiry are judged before a byte of the body is read.
+func TestTxJoin_BadPassIsRefusedBeforeTheBodyIsRead(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	other, _ := token.NewSigner([]byte("different-secret-key-at-least-32b!"))
+	forged, _ := other.Issue(token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-1", Major: 1})
+	expired, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(-time.Second).Unix(), Callout: "req-tx-1", Major: 1})
+	shapeless, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix()})
+
+	for name, tc := range map[string]struct {
+		tok    string
+		status int
+		code   string
+	}{
+		"forged":            {forged, http.StatusUnauthorized, "UNAUTHORIZED"},
+		"expired":           {expired, http.StatusGone, "TRANSACTION_EXPIRED"},
+		"naming no callout": {shapeless, http.StatusUnauthorized, "UNAUTHORIZED"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, gate, _ := liveFence(t, "req-tx-1", "tx-1")
+			body := &countingBody{}
+			req := withUserCtx(httptest.NewRequest(http.MethodPost, "/entity", body))
+			req.Header.Set(proxy.TxTokenHeader, tc.tok)
+			rec := httptest.NewRecorder()
+
+			TxJoin(joinerOver(t, s, fakeJoinTM{}, f, gate))(
+				http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("handler must not run") }),
+			).ServeHTTP(rec, req)
+
+			if rec.Code != tc.status || problemProps(t, rec).ErrorCode != tc.code {
+				t.Fatalf("status = %d, problem = %+v; want %d %s", rec.Code, problemProps(t, rec), tc.status, tc.code)
+			}
+			if body.reads != 0 {
+				t.Errorf("the body was read %d times for a pass that was refused", body.reads)
+			}
+		})
+	}
+}
+
 // A body over the join layer's limit is refused before any lock is taken.
 func TestTxJoin_OversizeBody_413(t *testing.T) {
 	j, _, pass := liveJoiner(t, "tx-1")

@@ -21,79 +21,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
 
-// JoinFromToken resolves an inbound transaction routing token into a joined
-// transaction context.
-//
-// Empty tok: returns ctx unchanged and nil error — downstream begins a
-// standalone (non-tx) operation.
-//
-// Non-empty tok: verifies the token with signer, calls txMgr.Join with the
-// embedded TxRef, and then asks the fence whether the callout the pass names is
-// still this compute node's. On success, returns the joined, admitted context.
-// On failure, returns the original ctx alongside a mapped operational error so
-// callers always have a valid context regardless of outcome — a caller that
-// drops the error would otherwise run the request unfenced.
-//
-// Order: verify the pass → Join, which checks the tenant → the fence. The
-// tenant check comes first so that a stolen pass tells another tenant nothing
-// about which callouts exist, and a callback that arrives after the TRANSACTION
-// has ended is answered TRANSACTION_NOT_FOUND as before; CALLOUT_SUPERSEDED is
-// the answer while the transaction is still open.
-//
-// The returned context is detached from the request's cancellation: a joined
-// request runs on the transaction of the operation it belongs to, and a compute
-// node that goes away in the middle of a statement must not take that
-// operation's connection with it. A joined request ends by finishing or by
-// being refused at a check.
-//
-// Error mapping:
-//
-//	token.ErrTokenExpired              → 410 TRANSACTION_EXPIRED
-//	token.ErrTokenTampered/Invalid     → 401 UNAUTHORIZED
-//	spi.ErrTxTenantMismatch            → 403 FORBIDDEN
-//	spi.ErrTxNotFound/RolledBack/AlreadyCommitted → 404 TRANSACTION_NOT_FOUND
-//	a pass that is no longer current    → 410 CALLOUT_SUPERSEDED
-//
-// The token is never logged.
-func JoinFromToken(ctx context.Context, signer *token.Signer, txMgr spi.TransactionManager, f *fence.Fence, tok string) (context.Context, error) {
-	if tok == "" {
-		return ctx, nil
-	}
-
-	claims, err := signer.Verify(tok)
-	if err != nil {
-		switch {
-		case errors.Is(err, token.ErrTokenExpired):
-			return ctx, common.Operational(http.StatusGone, common.ErrCodeTransactionExpired, "transaction token has expired")
-		default: // ErrTokenTampered or ErrTokenInvalid
-			return ctx, common.Operational(http.StatusUnauthorized, common.ErrCodeUnauthorized, "invalid transaction token")
-		}
-	}
-
-	joined, err := txMgr.Join(ctx, claims.TxRef)
-	if err != nil {
-		switch {
-		case errors.Is(err, spi.ErrTxTenantMismatch):
-			return ctx, common.Operational(http.StatusForbidden, common.ErrCodeForbidden, "transaction belongs to a different tenant")
-		case errors.Is(err, spi.ErrTxNotFound),
-			errors.Is(err, spi.ErrTxRolledBack),
-			errors.Is(err, spi.ErrTxAlreadyCommitted):
-			return ctx, common.Operational(http.StatusNotFound, common.ErrCodeTransactionNotFound, "transaction not found or no longer active")
-		default:
-			return ctx, common.Internal("failed to join transaction", err)
-		}
-	}
-
-	pairs := make([]fence.Pair, 0, 1+len(claims.Outer))
-	pairs = append(pairs, fence.Pair{Callout: claims.Callout, Major: claims.Major, Minor: claims.Minor})
-	pairs = append(pairs, claims.Outer...)
-	admitted, err := f.Admit(joined, pairs)
-	if err != nil {
-		return ctx, err
-	}
-	return context.WithoutCancel(admitted), nil
-}
-
 // Joiner is what a callback door needs to run a request as a joined request of
 // the transaction its pass names.
 type Joiner struct {
@@ -119,6 +46,85 @@ func NewJoiner(signer *token.Signer, txMgr spi.TransactionManager, f *fence.Fenc
 	return &Joiner{signer: signer, txMgr: txMgr, fence: f, gate: gate, superseded: superseded}, nil
 }
 
+// Pass is a pass whose own claims have been verified. It is what a door holds
+// between Verify and RunVerified; only the Joiner that verified it can read it.
+type Pass struct{ claims token.Claims }
+
+// Verify checks the pass itself: its signature, then its shape — the callout
+// and the number it names — then its expiry. It needs neither the transaction's
+// lock nor the request, so a door verifies before it reads anything the compute
+// node sends: a pass that is refused costs no buffer.
+//
+// An empty pass is not a joined request: it returns (nil, nil), and
+// RunVerified then runs the handler on the caller's own context.
+//
+// Error mapping:
+//
+//	token.ErrTokenExpired          → 410 TRANSACTION_EXPIRED
+//	token.ErrTokenTampered/Invalid → 401 UNAUTHORIZED
+//
+// The pass is never logged.
+func (j *Joiner) Verify(tok string) (*Pass, error) {
+	if tok == "" {
+		return nil, nil
+	}
+	claims, err := j.signer.Verify(tok)
+	if err != nil {
+		switch {
+		case errors.Is(err, token.ErrTokenExpired):
+			return nil, common.Operational(http.StatusGone, common.ErrCodeTransactionExpired, "transaction token has expired")
+		default: // ErrTokenTampered or ErrTokenInvalid
+			return nil, common.Operational(http.StatusUnauthorized, common.ErrCodeUnauthorized, "invalid transaction token")
+		}
+	}
+	return &Pass{claims: *claims}, nil
+}
+
+// join resolves a verified pass into a joined transaction context: it calls
+// txMgr.Join with the embedded TxRef, and then asks the fence whether the
+// callout the pass names is still this compute node's. On success it returns
+// the joined, admitted context. On failure it returns the original ctx
+// alongside a mapped operational error, so callers always have a valid context
+// regardless of outcome — a caller that dropped the error would otherwise run
+// the request unfenced.
+//
+// Order: Join, which checks the tenant → the fence. The tenant check comes
+// first so that a stolen pass tells another tenant nothing about which callouts
+// exist, and a callback that arrives after the TRANSACTION has ended is
+// answered TRANSACTION_NOT_FOUND as before; CALLOUT_SUPERSEDED is the answer
+// while the transaction is still open.
+//
+// Error mapping:
+//
+//	spi.ErrTxTenantMismatch                      → 403 FORBIDDEN
+//	spi.ErrTxNotFound/RolledBack/AlreadyCommitted → 404 TRANSACTION_NOT_FOUND
+//	a pass that is no longer current              → 410 CALLOUT_SUPERSEDED
+func (j *Joiner) join(ctx context.Context, pass *Pass) (context.Context, error) {
+	claims := pass.claims
+	joined, err := j.txMgr.Join(ctx, claims.TxRef)
+	if err != nil {
+		switch {
+		case errors.Is(err, spi.ErrTxTenantMismatch):
+			return ctx, common.Operational(http.StatusForbidden, common.ErrCodeForbidden, "transaction belongs to a different tenant")
+		case errors.Is(err, spi.ErrTxNotFound),
+			errors.Is(err, spi.ErrTxRolledBack),
+			errors.Is(err, spi.ErrTxAlreadyCommitted):
+			return ctx, common.Operational(http.StatusNotFound, common.ErrCodeTransactionNotFound, "transaction not found or no longer active")
+		default:
+			return ctx, common.Internal("failed to join transaction", err)
+		}
+	}
+
+	pairs := make([]fence.Pair, 0, 1+len(claims.Outer))
+	pairs = append(pairs, fence.Pair{Callout: claims.Callout, Major: claims.Major, Minor: claims.Minor})
+	pairs = append(pairs, claims.Outer...)
+	admitted, err := j.fence.Admit(joined, pairs)
+	if err != nil {
+		return ctx, err
+	}
+	return admitted, nil
+}
+
 // count records one refusal or supersession under outcome. No tenant, callout
 // id or pass ever appears in the attribute: the label is the outcome class
 // alone.
@@ -126,34 +132,49 @@ func (j *Joiner) count(ctx context.Context, outcome string) {
 	j.superseded.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", outcome)))
 }
 
-// Run runs handler as a joined request. The storage contract leaves it to the
-// application to serialise its own concurrent operations on one transaction, so
-// EVERY joined request — a read as much as a write, an entity request or not —
-// holds the transaction's lock from before its first store operation until its
-// handler returns: during a callout the transaction's users are its current
-// compute node's callbacks, one at a time.
-//
-// Order: verify → Join (tenant) → Admit → take the lock → Check under the lock
-// → handler → release. The check under the lock is the one that gives the right
-// to touch the transaction: the owner's wait takes the same lock, so a request
-// either passed this check before the number rose — and the owner waits for it
-// — or is refused here. The engine gives the lock up for the length of a
-// callout of the callback's own through the handle installed here
-// (txgate.Suspend).
-//
-// A non-nil error is a refusal: handler did not run. The caller sends its
-// response only after Run has returned, so that a compute node that does not
-// read its response holds nothing. The caller must also have the whole request
-// in memory before it calls Run: what the lock waits on must never be the
-// client.
+// Run verifies tok and runs handler as a joined request of the transaction it
+// names. A door that has to read the request before the handler can run
+// verifies first (Verify) and calls RunVerified once it has the request in
+// memory, so that a refused pass costs it no buffer.
 //
 // An empty tok is not a joined request: handler runs on ctx as it is.
 func (j *Joiner) Run(ctx context.Context, tok string, handler func(ctx context.Context)) error {
-	if tok == "" {
+	pass, err := j.Verify(tok)
+	if err != nil {
+		return err
+	}
+	return j.RunVerified(ctx, pass, handler)
+}
+
+// RunVerified runs handler as a joined request under an already verified pass.
+// The storage contract leaves it to the application to serialise its own
+// concurrent operations on one transaction, so EVERY joined request — a read as
+// much as a write, an entity request or not — holds the transaction's lock from
+// before its first store operation until its handler returns: during a callout
+// the transaction's users are its current compute node's callbacks, one at a
+// time.
+//
+// Order: verify (done) → Join (tenant) → Admit → take the lock → Check under
+// the lock → handler → release. The check under the lock is the one that gives
+// the right to touch the transaction: the owner's wait takes the same lock, so
+// a request either passed this check before the number rose — and the owner
+// waits for it — or is refused here. The engine gives the lock up for the
+// length of a callout of the callback's own through the handle installed here
+// (txgate.Suspend).
+//
+// A non-nil error is a refusal: handler did not run. The caller sends its
+// response only after RunVerified has returned, so that a compute node that
+// does not read its response holds nothing. The caller must also have the whole
+// request in memory before it calls: what the lock waits on must never be the
+// client.
+//
+// A nil pass is not a joined request: handler runs on ctx as it is.
+func (j *Joiner) RunVerified(ctx context.Context, pass *Pass, handler func(ctx context.Context)) error {
+	if pass == nil {
 		handler(ctx)
 		return nil
 	}
-	joined, err := JoinFromToken(ctx, j.signer, j.txMgr, j.fence, tok)
+	joined, err := j.join(ctx, pass)
 	if err != nil {
 		if errors.Is(err, fence.ErrSuperseded) {
 			j.count(ctx, "refused_on_entry")
@@ -161,6 +182,12 @@ func (j *Joiner) Run(ctx context.Context, tok string, handler func(ctx context.C
 		return err
 	}
 	txID := spi.GetTransaction(joined).ID
+
+	// The joined request is detached from the request's cancellation: it runs on
+	// the transaction of the operation it belongs to, and a compute node that
+	// goes away in the middle of a statement must not take that operation's
+	// connection with it. It ends by finishing or by being refused at a check.
+	joined = context.WithoutCancel(joined)
 
 	release := j.gate.Acquire(txID)
 	// The closure reads `release` when it runs: a Suspend/resume in between

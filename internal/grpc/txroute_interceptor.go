@@ -97,7 +97,7 @@ func (i *txRouteInterceptor) streamRoute(fullMethod string) (forward forwardStre
 }
 
 // classifyRouteErr maps a proxy.ResolveNodeInfo error onto the canonical
-// operational codes (mirroring txjoin.JoinFromToken), so the envelope carries a
+// operational codes (mirroring the join layer's own), so the envelope carries a
 // client-facing code rather than a generic server error. Registry-lookup and
 // unknown failures fall through unchanged and surface as SERVER_ERROR.
 func classifyRouteErr(err error) error {
@@ -114,7 +114,7 @@ func classifyRouteErr(err error) error {
 }
 
 // unary returns the unary interceptor. It runs after the auth interceptor, so
-// the authenticated UserContext is already on ctx for JoinFromToken's tenant
+// the authenticated UserContext is already on ctx for the join layer's tenant
 // check.
 func (i *txRouteInterceptor) unary() googlegrpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *googlegrpc.UnaryServerInfo, handler googlegrpc.UnaryHandler) (any, error) {
@@ -191,6 +191,12 @@ func (i *txRouteInterceptor) stream() googlegrpc.StreamServerInterceptor {
 		if tok == "" {
 			return handler(srv, ss)
 		}
+		// The pass itself has been checked before this line: ResolveNodeInfo
+		// verifies it — signature, shape, expiry — to decide which node serves
+		// the call, and classifyRouteErr answers a bad one with the join
+		// layer's own 401 / 410 above, before any message is received. What is
+		// left for the joiner needs the request's identity and the fence.
+		//
 		// Receive the request before the lock is taken (see heldStream).
 		var first cepb.CloudEvent
 		if err := ss.RecvMsg(&first); err != nil {

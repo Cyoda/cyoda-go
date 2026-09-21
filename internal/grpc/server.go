@@ -87,7 +87,7 @@ func NewServer(
 	}
 	// Recovery runs first so it also covers a panic inside auth or tx-routing.
 	// Auth runs second so the tx-route interceptor sees the authenticated
-	// UserContext (JoinFromToken's tenant check depends on it); tx-route runs
+	// UserContext (the join layer's tenant check depends on it); tx-route runs
 	// third, joining the referenced transaction or forwarding to its owner.
 	txRoute := newTxRouteInterceptor(tokenSigner, nodeRegistry, selfNodeID, j, localGRPCPort, allowLoopback)
 	opts = append(opts,

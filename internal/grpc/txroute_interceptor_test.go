@@ -60,7 +60,7 @@ func (fakeJoinTM) Join(ctx context.Context, txID string) (context.Context, error
 }
 
 // fakeErrTM satisfies spi.TransactionManager, failing Join with a fixed error so
-// the local-join path exercises JoinFromToken's error mapping in the interceptor.
+// the local-join path exercises the join layer's error mapping in the interceptor.
 type fakeErrTM struct {
 	spi.TransactionManager
 	err error
@@ -588,7 +588,7 @@ func TestTxRouteInterceptor_ForgedEnvelope(t *testing.T) {
 }
 
 // A valid self-node token whose transaction is unknown/closed yields
-// TRANSACTION_NOT_FOUND (mapped from spi.ErrTxNotFound in JoinFromToken).
+// TRANSACTION_NOT_FOUND (mapped from spi.ErrTxNotFound by the join layer).
 func TestTxRouteInterceptor_NotFoundEnvelope(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
 	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-gone", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-gone", Major: 1})
@@ -659,7 +659,7 @@ func TestTxRouteInterceptor_NodeMissingFromRegistryUnavailableEnvelope(t *testin
 }
 
 // A valid self-node token for a transaction owned by a different tenant yields
-// FORBIDDEN (mapped from spi.ErrTxTenantMismatch in JoinFromToken).
+// FORBIDDEN (mapped from spi.ErrTxTenantMismatch by the join layer).
 func TestTxRouteInterceptor_TenantMismatchEnvelope(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
 	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-other-tenant", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-other-tenant", Major: 1})

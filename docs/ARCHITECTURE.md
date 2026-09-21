@@ -493,9 +493,11 @@ rollback (`internal/domain/entity/txscope.go`), and never holds it across
 
 - **What the lock waits on is never the compute member.** The join layer has
   the whole request in memory before it takes the lock: the HTTP middleware
-  reads the body under a 10 MB ceiling and hands the handler a reader over the
-  bytes (a body past the ceiling is `413`), and the gRPC stream interceptor
-  receives the one request message and hands the handler a stream that replays
+  verifies the pass, then reads the body under a 10 MB ceiling and hands the
+  handler a reader over the bytes (a body past the ceiling is `413`; a pass that
+  fails verification is refused before a byte is read), and the gRPC stream
+  interceptor receives the one request message — after the same verification,
+  which the routing decision has already made — and hands the handler a stream that replays
   it; a gRPC unary message is already complete when the interceptor runs. On the
   way out the handler writes into a buffering response writer (HTTP) or a stream
   whose frames are held (gRPC server-streaming), and the response is sent once
@@ -595,10 +597,11 @@ current. Every callback is already routed to the node holding the transaction
 
 **Where the fence is enforced.**
 
-1. *On entry.* `txjoin.JoinFromToken` is the one function every callback passes
-   on the owner — both doors, and a callback that arrived at another node and was
+1. *On entry.* `txjoin.Joiner` is the one door every callback passes on the
+   owner — both transports, and a callback that arrived at another node and was
    proxied. Its order is: verify the pass → `txMgr.Join`, which checks the tenant
-   → `Fence.Admit`. The tenant check comes first, so a stolen pass tells another
+   → `Fence.Admit`. The pass is verified on its own first (`Joiner.Verify`), so a
+   forged or expired one is refused before the request is read into memory. The tenant check comes first, so a stolen pass tells another
    tenant nothing about which callouts exist, and a callback that arrives after
    the *transaction* has ended is answered `404 TRANSACTION_NOT_FOUND`;
    `410 CALLOUT_SUPERSEDED` is the answer while the transaction is still open. A

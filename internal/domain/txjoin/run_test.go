@@ -263,6 +263,38 @@ func TestRun_PanickingHandlerGivesTheLockBack(t *testing.T) {
 	}
 }
 
+// A compute node that disconnects in the middle of its callback cancels the
+// request's context; a joined request that holds the transaction's lock must
+// not see it — its statements run on the operation's connection.
+func TestRun_AJoinedRequestHoldingTheLockIsNotCancelledByItsClient(t *testing.T) {
+	env, pass := newRunEnv(t)
+	request, disconnect := context.WithCancel(env.ctx)
+	defer disconnect()
+
+	var joined context.Context
+	err := env.joiner.Run(request, pass, func(ctx context.Context) {
+		joined = ctx
+		disconnect() // the compute node goes away mid-callback
+		es, err := env.factory.EntityStore(ctx)
+		if err != nil {
+			t.Errorf("EntityStore: %v", err)
+			return
+		}
+		if _, err := es.Get(ctx, "e-1"); err != nil {
+			t.Errorf("a statement of a joined request was cut off by its client: %v", err)
+		}
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if joined.Err() != nil {
+		t.Fatalf("the joined context was cancelled by its client: %v", joined.Err())
+	}
+	if spi.GetTransaction(joined) == nil || len(fence.Pairs(joined)) != 1 {
+		t.Fatal("detaching cancellation must keep the transaction and the pairs")
+	}
+}
+
 func TestRun_NoPass_RunsWithoutALock(t *testing.T) {
 	env, _ := newRunEnv(t)
 	held := env.gate.Acquire(env.txID)
