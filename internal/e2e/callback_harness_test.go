@@ -624,6 +624,7 @@ const (
 	replyFail
 	replySilent
 	replyCloseStream
+	replyMalformed
 )
 
 // cnodeReply is what a cnode does with one callout.
@@ -660,6 +661,11 @@ func neverAnswer() cnodeReply { return cnodeReply{kind: replySilent} }
 // closeStream closes the cnode's stream on receiving the work, without answering.
 func closeStream() cnodeReply { return cnodeReply{kind: replyCloseStream} }
 
+// answerMalformedPayload answers success=true with a payload that is a JSON
+// string, not an object: the one failure a cnode can cause that would fail
+// identically on any other cnode.
+func answerMalformedPayload() cnodeReply { return cnodeReply{kind: replyMalformed} }
+
 // cloudEvent builds the reply for req, or (nil, nil) when nothing is sent.
 func (r cnodeReply) cloudEvent(req calcRequest) (*cepb.CloudEvent, error) {
 	if r.kind == replySilent || r.kind == replyCloseStream {
@@ -679,6 +685,11 @@ func (r cnodeReply) cloudEvent(req calcRequest) (*cepb.CloudEvent, error) {
 			e["retryable"] = *r.retryable
 		}
 		body["error"] = e
+		return internalgrpc.NewCloudEvent(respType, body)
+	}
+	if r.kind == replyMalformed {
+		body["success"] = true
+		body["payload"] = "not-an-object"
 		return internalgrpc.NewCloudEvent(respType, body)
 	}
 	switch req.kind {

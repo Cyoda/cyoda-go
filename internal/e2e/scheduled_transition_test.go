@@ -19,14 +19,51 @@ import (
 // time.Sleep as the sole detector of a positive outcome (this repo's #1 CI
 // flake source is wall-clock e2e timing).
 
-// scheduledFireTimeout bounds every poll loop in this file. Sized generously
-// above the untuned default CYODA_SCHEDULER_SCAN_INTERVAL (1s — this shared
-// harness's TestMain does not tune it down, unlike the parity fixtures) plus
-// slow-CI overhead, so a real bug — not scan cadence — trips the timeout.
+// scheduledFireTimeout bounds every poll loop in this file. The package-level
+// testApp's own scheduler is disabled (internal/e2e/e2e_test.go's TestMain:
+// several harnesses share this Postgres, and a scan is cross-tenant and
+// node-blind, so exactly one scheduler may scan it), so every test in this
+// file that needs a fire starts its own bespoke scheduler.Service via
+// startTestScheduler — a 100ms scan cadence — and this timeout is sized
+// generously above that plus slow-CI overhead, so a real bug — not scan
+// cadence — trips it.
 const scheduledFireTimeout = 15 * time.Second
 
 // scheduledPollInterval is the sleep between polls.
 const scheduledPollInterval = 75 * time.Millisecond
+
+// startTestScheduler starts a bespoke scheduler.Service against testApp's own
+// already-exported collaborators (StoreFactory, NodeRegistry, WorkflowEngine)
+// and registers t.Cleanup(Stop). testApp's own scheduler is disabled (see
+// scheduledFireTimeout above), so this is the one scanner a test in this file
+// that needs a scheduled fire relies on. A 100ms scan cadence and a 5s
+// redispatch backoff keep it fast; the shape is the one
+// TestE2E_ScheduledTransition_RestartDurability originated, generalised for
+// every caller that needs a fire rather than duplicated per test.
+func startTestScheduler(t *testing.T) {
+	t.Helper()
+	schedEngine := cluster.NewSchedulerEngine(testApp.WorkflowEngine())
+	executor := cluster.NewClusterExecutor(schedEngine, "local", testApp.NodeRegistry(), nil)
+	svc := scheduler.NewService(
+		scheduler.Config{
+			Enabled:           true,
+			ScanInterval:      100 * time.Millisecond,
+			RedispatchBackoff: 5 * time.Second,
+			BatchSize:         100,
+		},
+		scheduler.Deps{
+			Store:        testApp.StoreFactory(),
+			Registry:     testApp.NodeRegistry(),
+			Coordinator:  scheduler.LowestLiveNodeID{},
+			Distribution: scheduler.Self{},
+			Clock:        scheduler.NewRealClock(),
+			Executor:     executor,
+			SelfID:       "local",
+		},
+	)
+	svc.Start()
+	t.Cleanup(svc.Stop)
+}
 
 // awaitEntityStateE2E polls getEntityState until it equals wantState, or
 // fails the test once timeout elapses.
@@ -226,12 +263,11 @@ func TestE2E_ExplicitFireOfScheduledTransition_ReturnsTransitionNotFound(t *test
 // TestE2E_ScheduledTransition_FiresThroughHTTPStack proves the real scan
 // loop fires a no-criterion scheduled transition end-to-end through the
 // full HTTP stack (design §5.1/§5.2): create lands the entity in a state
-// with a scheduled transition, the running server's scheduler.Service scans
-// real Postgres on its own cadence (default CYODA_SCHEDULER_SCAN_INTERVAL,
-// 1s — this harness does not tune it down), fires it, and the entity
-// advances. The 200ms delay is small; the 15s poll bound is generous
-// (§11 "Time control": e2e covers coarse happy-path firing, never exact
-// thresholds).
+// with a scheduled transition, a scheduler.Service of this test's own
+// (testApp's own scheduler is disabled — see scheduledFireTimeout) scans
+// real Postgres, fires it, and the entity advances. The 200ms delay is
+// small; the 15s poll bound is generous (§11 "Time control": e2e covers
+// coarse happy-path firing, never exact thresholds).
 func TestE2E_ScheduledTransition_FiresThroughHTTPStack(t *testing.T) {
 	const model = "e2e-scheduled-fires-http"
 	const delayMs = 200
@@ -247,6 +283,7 @@ func TestE2E_ScheduledTransition_FiresThroughHTTPStack(t *testing.T) {
 		}]
 	}`
 	setupModelWithWorkflow(t, model, wf)
+	startTestScheduler(t)
 
 	entityID := createEntityE2E(t, model, 1, `{"name":"Test Order","amount":100,"status":"draft"}`)
 
@@ -321,6 +358,7 @@ func TestE2E_ScheduledTransition_LoopbackDefersTimer(t *testing.T) {
 		}]
 	}`
 	setupModelWithWorkflow(t, model, wf)
+	startTestScheduler(t)
 
 	entityID := createEntityE2E(t, model, 1, `{"name":"Test Order","amount":0,"status":"draft"}`)
 
@@ -387,46 +425,23 @@ func TestE2E_ScheduledTransition_LoopbackDefersTimer(t *testing.T) {
 }
 
 // TestE2E_ScheduledTransition_RestartDurability exercises the strongest
-// durable-survival variant available in this shared-harness package: the
-// package-level testApp (internal/e2e/e2e_test.go's TestMain) constructs and
-// starts exactly one scheduler.Service, kept as an unexported field with no
-// public Stop/Start accessor (app/app.go's `a.scheduler`), and it is shared
-// by every test in this package — stopping it here would break every other
-// test running against the same server. A full second `app.New` against the
-// same Postgres container was considered and rejected: it would duplicate
-// the entire app (its own JWT/JWKS wiring, HTTP handler, etc.) purely to
-// exercise one collaborator, and per Task D4's finding any e2e test that
-// starts its own app instance must call Shutdown() — extra teardown
-// surface for no additional signal over the approach below.
-//
-// Instead this test:
+// durable-survival variant available in this shared-harness package.
+// testApp's own scheduler is disabled (see scheduledFireTimeout), so this
+// test:
 //  1. Arms a task via the shared production HTTP stack, then reads the
 //     scheduled_tasks row directly out of Postgres (design §5.1: the arm is
 //     atomic with the entity write) — proving the pending task is durable,
 //     persisted storage, not in-memory scheduler state, well before the
 //     delay elapses.
-//  2. Constructs a brand-new scheduler.Service from scratch — zero prior
-//     state, wired only to the app's already-exported collaborators
-//     (StoreFactory, NodeRegistry, WorkflowEngine) via the same
-//     cluster.NewSchedulerEngine/NewClusterExecutor adapters app.go itself
-//     uses — the same shape a freshly restarted process's scheduler would
-//     take, reading only from the durable store (internal/scheduler's Deps
-//     godoc: "the scan loop calls factory.ScheduledTaskStore... fresh on
-//     each tick" — no cached in-memory task state to lose across restarts
-//     by design).
+//  2. Starts a brand-new scheduler.Service via startTestScheduler — zero
+//     prior state, wired only to the app's already-exported collaborators —
+//     the same shape a freshly restarted process's scheduler would take,
+//     reading only from the durable store (internal/scheduler's Deps godoc:
+//     "the scan loop calls factory.ScheduledTaskStore... fresh on each
+//     tick" — no cached in-memory task state to lose across restarts by
+//     design).
 //  3. Bounded-polls for the entity to reach the fired state and asserts the
 //     FIRE audit event.
-//
-// Limitation (reported, not silently skipped): the shared production
-// scheduler is also running throughout and may independently observe and
-// fire the same task first — the design's guard (§5.3, fire-time re-read +
-// first-flush CAS) makes that race safe (at most one fire either way), but
-// it means this test cannot cryptographically prove *which* scheduler
-// instance performed the fire. What it does prove end-to-end is that the
-// durably-persisted task is discoverable and fireable by a scheduler
-// instance with no relationship to whichever one armed it — the essence of
-// restart durability — without modifying production code to add a
-// test-only Stop/Start hook on the app's own scheduler.
 func TestE2E_ScheduledTransition_RestartDurability(t *testing.T) {
 	const model = "e2e-scheduled-restart-durability"
 
@@ -455,29 +470,8 @@ func TestE2E_ScheduledTransition_RestartDurability(t *testing.T) {
 	}
 
 	// 2: A brand-new scheduler.Service — the closest available proxy for "a
-	// freshly restarted process's scheduler" in this shared-app harness —
-	// wired only to the app's already-exported collaborators.
-	schedEngine := cluster.NewSchedulerEngine(testApp.WorkflowEngine())
-	freshExecutor := cluster.NewClusterExecutor(schedEngine, "local", testApp.NodeRegistry(), nil)
-	freshScheduler := scheduler.NewService(
-		scheduler.Config{
-			Enabled:           true,
-			ScanInterval:      100 * time.Millisecond,
-			RedispatchBackoff: 5 * time.Second,
-			BatchSize:         100,
-		},
-		scheduler.Deps{
-			Store:        testApp.StoreFactory(),
-			Registry:     testApp.NodeRegistry(),
-			Coordinator:  scheduler.LowestLiveNodeID{},
-			Distribution: scheduler.Self{},
-			Clock:        scheduler.NewRealClock(),
-			Executor:     freshExecutor,
-			SelfID:       "local",
-		},
-	)
-	freshScheduler.Start()
-	defer freshScheduler.Stop()
+	// freshly restarted process's scheduler" in this shared-app harness.
+	startTestScheduler(t)
 
 	// 3: The durably-persisted task must still be discoverable and fireable.
 	awaitEntityStateE2E(t, entityID, "Closed", scheduledFireTimeout)

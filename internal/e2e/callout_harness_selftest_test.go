@@ -101,6 +101,8 @@ func TestCnodeReply_CloudEvent(t *testing.T) {
 			`{"requestId":"r-1","success":false,"error":{"message":"boom","retryable":true}}`},
 		{"failure, not retryable", calloutFunction, answerFailVerdict("boom", false), internalgrpc.EntityFunctionCalculationResponse,
 			`{"requestId":"r-1","success":false,"error":{"message":"boom","retryable":false}}`},
+		{"malformed payload", calloutProcessor, answerMalformedPayload(), internalgrpc.EntityProcessorCalculationResponse,
+			`{"requestId":"r-1","success":true,"payload":"not-an-object"}`},
 		{"never answer", calloutProcessor, neverAnswer(), "", ""},
 		{"close stream", calloutProcessor, closeStream(), "", ""},
 	}
