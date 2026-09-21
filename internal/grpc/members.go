@@ -196,6 +196,17 @@ func (m *Member) Evicted() <-chan struct{} { return m.evicted }
 // has fired; the channel close is what publishes the write.
 func (m *Member) EvictErr() error { return m.evictErr }
 
+// gone reports whether the member has been evicted. The closed channel is the
+// one source of truth for it, so this needs no lock and no second flag.
+func (m *Member) gone() bool {
+	select {
+	case <-m.evicted:
+		return true
+	default:
+		return false
+	}
+}
+
 // WriteInFlightSince is when the writer's current raw send began, or the zero
 // time when no send is in flight.
 func (m *Member) WriteInFlightSince() time.Time {
@@ -490,12 +501,20 @@ func (r *MemberRegistry) List() []*Member {
 // every member of the tenant when tagsCSV is empty — ordered by (ConnectedAt,
 // ID), so that the order is the same on every call. A member of another tenant
 // is never a candidate, whatever its tags.
+//
+// A member that has been evicted is not a candidate either. Eviction comes
+// first and the registration is removed only when the member's stream handler
+// returns, so between the two the member is still in the map while every
+// request against it already fails: a try given to it would be a try spent on a
+// cnode known to be gone, and an attempt reported that was never made. The
+// remaining window — evicted between this look and the try registering its
+// request — is inherent, and TrackRequest closes it with ErrMemberEvicted.
 func (r *MemberRegistry) Candidates(tenantID spi.TenantID, tagsCSV string) []*Member {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	var out []*Member
 	for _, m := range r.members {
-		if m.TenantID == tenantID && common.TagsOverlap(m.Tags, tagsCSV) {
+		if m.TenantID == tenantID && !m.gone() && common.TagsOverlap(m.Tags, tagsCSV) {
 			out = append(out, m)
 		}
 	}

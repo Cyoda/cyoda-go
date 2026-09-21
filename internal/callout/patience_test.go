@@ -179,6 +179,35 @@ func TestOwner_PatienceSpentWithAnAttemptOnRecord_ReportsTheAttempt(t *testing.T
 	}
 }
 
+// A cnode whose stream drops is evicted the instant the drop is noticed, and
+// unregistered only when its stream handler returns — later, and on its own
+// goroutine. Another cnode coming or going in between wakes the wait into a new
+// pass, and that pass must not spend a try on the cnode it has just recorded as
+// gone: the client would be told of two attempts where one was made.
+func TestOwner_AWokenPass_DoesNotTryACnodeItAlreadyKnowsIsGone(t *testing.T) {
+	e := newEnv(t, Config{FixedNumRetries: 3, Patience: 80 * time.Millisecond})
+	only := e.attach(t, "m-1", tenantA, "x", func(_ *internalgrpc.MemberRegistry, m *internalgrpc.Member, _ string) {
+		// The stream dropped: evicted, still listed.
+		m.Evict(errors.New("stream dropped"))
+		// And some other cnode attaches, for a tag this callout does not want:
+		// a change that wakes the wait without bringing anywhere to go.
+		e.attach(t, "other-1", tenantA, "other", nil)
+	})
+	ctx, stats := contract.WithCalloutStats(userCtx(tenantA))
+
+	_, err := e.dispatchFunction(ctx, "x", "")
+
+	if got := appErrOf(t, err).Code; got != common.ErrCodeComputeMemberDisconnected {
+		t.Errorf("code = %s, want the one attempt's own COMPUTE_MEMBER_DISCONNECTED", got)
+	}
+	if only.count() != 1 {
+		t.Errorf("m-1 was asked %d times, want 1", only.count())
+	}
+	if got := strings.Join(stats.Tries, ","); got != "no_answer" {
+		t.Errorf("Tries = %s, want the one try that was made", got)
+	}
+}
+
 func TestOwner_CallerGoesAwayDuringAWait_EndsAtOnce(t *testing.T) {
 	e := newEnv(t, Config{FixedNumRetries: 3, Patience: 30 * time.Second})
 	ctx, cancel := context.WithCancel(userCtx(tenantA))

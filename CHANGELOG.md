@@ -209,6 +209,21 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **A callout is never given to a compute member that has already gone.** A
+  compute member whose stream drops is failed and detached the instant the
+  drop is noticed; its registration is removed a moment later, when its stream
+  handler returns. In between it was still eligible, so a callout could be
+  routed to a member every request against which already failed — answering
+  `503 COMPUTE_MEMBER_DISCONNECTED` although another compute member for the
+  same tags was connected and ready. A member that has been detached is no
+  longer a candidate, so the callout goes to a live one, and none of a
+  callout's tries is spent on a member already known to be gone — nor is such
+  a try reported to the client as an attempt. The one remaining instant — the
+  member leaving between being chosen and the request being registered against
+  it — still ends that try, as `cyoda help errors
+  COMPUTE_MEMBER_DISCONNECTED` describes, and the callout moves on to the next
+  member.
+
 - **A workflow export of a function-driven scheduled transition carried
   `"delayMs": 0`, which the API's own schema rejects.** The exporter
   marshalled the schedule's wire type directly, and its delay field had no
