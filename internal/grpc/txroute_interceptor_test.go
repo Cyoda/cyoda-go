@@ -1079,6 +1079,36 @@ func TestTxRouteInterceptor_StreamSendsAreHeldUntilTheLockIsReleased(t *testing.
 	}
 }
 
+// The request of a server-streaming RPC is one message: once it has been
+// replayed the held stream is at its end, and a second RecvMsg says so without
+// asking the compute node — nothing the handler does may make the transaction's
+// lock wait on it.
+func TestTxRouteInterceptor_HeldStreamSecondRecvIsEOF_WithoutAskingTheClient(t *testing.T) {
+	ic, _, tok := joinedRouteInterceptor(t, "tx-1")
+	ss := newFakeServerStream(metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok)))
+	ss.request = &cepb.CloudEvent{Id: "req-1"}
+	recvs := 0
+	ss.onRecv = func() { recvs++ }
+
+	err := ic.stream()(nil, ss, entitySearchCollectionInfo(),
+		func(_ any, stream googlegrpc.ServerStream) error {
+			var first, second cepb.CloudEvent
+			if err := stream.RecvMsg(&first); err != nil || first.Id != "req-1" {
+				t.Errorf("first RecvMsg = %v, id %q; want the request replayed", err, first.Id)
+			}
+			if err := stream.RecvMsg(&second); !errors.Is(err, io.EOF) {
+				t.Errorf("second RecvMsg = %v; want io.EOF", err)
+			}
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if recvs != 1 {
+		t.Errorf("the client was asked for %d messages; want the one the interceptor took before the lock", recvs)
+	}
+}
+
 // A joined chunked collection that fails at chunk n still delivers the answers
 // of chunks 1…n-1, as an unheld stream does, and the handler's error is the
 // stream's outcome.

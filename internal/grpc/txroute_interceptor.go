@@ -230,7 +230,11 @@ func (s *heldStream) Context() context.Context { return s.ctx }
 
 func (s *heldStream) RecvMsg(m any) error {
 	if s.first == nil {
-		return s.ServerStream.RecvMsg(m) // io.EOF for a server-streaming RPC
+		// The request of a server-streaming RPC is one message, and it has been
+		// replayed: the stream is at its end. Delegating instead would wait on
+		// the compute node — for its half-close — while the handler holds the
+		// transaction's lock.
+		return io.EOF
 	}
 	dst, ok := m.(proto.Message)
 	if !ok {
