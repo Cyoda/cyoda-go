@@ -281,7 +281,7 @@ func (d *dispatcher) handleCallout(ctx context.Context, msg *cepb.CloudEvent, pa
 		case "criterion":
 			reply, err = d.buildCriteriaResponse(head.RequestID, head.EntityID, false, false, msgText, verdict)
 		case "function":
-			reply, err = d.buildFunctionResponse(head.RequestID, "", nil, false, msgText, verdict)
+			reply, err = d.buildFunctionResponse(head.RequestID, head.EntityID, "", nil, false, msgText, verdict)
 		default:
 			reply, err = d.buildProcessorResponse(head.RequestID, head.EntityID, nil, false, msgText, verdict)
 		}
@@ -556,22 +556,23 @@ func (d *dispatcher) handleFunctionRequest(ctx context.Context, payload json.Raw
 
 	fn, ok := d.cat.function(name)
 	if !ok {
-		return d.buildFunctionResponse(req.RequestID, "", nil, false, fmt.Sprintf("unknown function: %s", name), nil)
+		return d.buildFunctionResponse(req.RequestID, req.EntityID, "", nil, false, fmt.Sprintf("unknown function: %s", name), nil)
 	}
 
 	resultKind, result, err := fn(ctx, entity, req.Parameters)
 	if err != nil {
-		return d.buildFunctionResponse(req.RequestID, "", nil, false, err.Error(), verdictOf(err))
+		return d.buildFunctionResponse(req.RequestID, req.EntityID, "", nil, false, err.Error(), verdictOf(err))
 	}
 
-	return d.buildFunctionResponse(req.RequestID, resultKind, result, true, "", nil)
+	return d.buildFunctionResponse(req.RequestID, req.EntityID, resultKind, result, true, "", nil)
 }
 
 // buildFunctionResponse constructs an EntityFunctionCalculationResponse CloudEvent.
-func (d *dispatcher) buildFunctionResponse(requestID, resultKind string, result map[string]any, success bool, errMsg string, retryable *bool) (*cepb.CloudEvent, error) {
+func (d *dispatcher) buildFunctionResponse(requestID, entityID, resultKind string, result map[string]any, success bool, errMsg string, retryable *bool) (*cepb.CloudEvent, error) {
 	resp := map[string]any{
 		"id":        uuid.NewString(),
 		"requestId": requestID,
+		"entityId":  entityID,
 		"success":   success,
 	}
 	if resultKind != "" {
