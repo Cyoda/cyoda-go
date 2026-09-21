@@ -582,10 +582,18 @@ func (r *MemberRegistry) notifyChange() {
 
 // computeTagsLocked builds an aggregate map of tenantID → deduplicated tags
 // from all currently connected members. Caller holds r.mu (read or write).
+//
+// These are the tags this pnode tells the cluster it can serve, so they answer
+// the same question Candidates does and skip a member for the same reason: an
+// evicted member serves nothing, and advertising its tags would invite a peer to
+// hand work over for a cnode that is already gone.
 func (r *MemberRegistry) computeTagsLocked() map[string][]string {
 	// Use a set per tenant for deduplication.
 	sets := make(map[string]map[string]struct{})
 	for _, m := range r.members {
+		if m.gone() {
+			continue // evicted: it serves nothing, and Candidates skips it too
+		}
 		tid := string(m.TenantID)
 		if sets[tid] == nil {
 			sets[tid] = make(map[string]struct{})

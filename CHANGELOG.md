@@ -218,7 +218,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   same tags was connected and ready. A member that has been detached is no
   longer a candidate, so the callout goes to a live one, and none of a
   callout's tries is spent on a member already known to be gone — nor is such
-  a try reported to the client as an attempt. The one remaining instant — the
+  a try reported to the client as an attempt. Its tags are no longer advertised
+  to the other nodes either, so a node stops inviting work it cannot serve.
+  Where the leaving member was the only one matching the callout's
+  `calculationNodesTags`, the callout now waits for a compute member to appear —
+  for `CYODA_DISPATCH_WAIT_TIMEOUT`, as it does whenever there is none — and
+  answers `503 NO_COMPUTE_MEMBER_FOR_TAG` if none does, instead of spending a
+  try on the member that had gone and answering
+  `503 COMPUTE_MEMBER_DISCONNECTED` at once. The one remaining instant — the
   member leaving between being chosen and the request being registered against
   it — still ends that try, as `cyoda help errors
   COMPUTE_MEMBER_DISCONNECTED` describes, and the callout moves on to the next
