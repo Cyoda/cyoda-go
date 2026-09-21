@@ -224,14 +224,15 @@ type expiredSchedule struct {
 // The per-tx gate is released (txgate.Suspend) across the blocking dispatch
 // and re-acquired immediately on return — BEFORE this function's caller
 // does any further tx-buffer work — because the callout can re-enter with a
-// descendant callback joined on the same txID (same H3 rationale as
-// evaluateCriterion's FUNCTION-criterion dispatch and
-// executeSyncProcessor). resume is both deferred AND called explicitly, as at
-// every other Suspend site: the explicit call re-acquires before returning, so
-// reconcileScheduledTasks's later buffer write (ReconcileForEntity) is gated;
-// the deferred call covers the path where the dispatch panics, so the caller's
-// own deferred gate release never unlocks an unheld mutex — a runtime fatal no
-// recover() can catch. resume is sync.Once-guarded, so having both is free.
+// descendant callback joined on the same txID, and because the fence's wait
+// takes the same gate (the same reason as at evaluateCriterion's
+// FUNCTION-criterion dispatch and at executeSyncProcessor). resume is both
+// deferred AND called explicitly, as at every other Suspend site: the explicit
+// call re-acquires before returning, so reconcileScheduledTasks's later buffer
+// write (ReconcileForEntity) is gated; the deferred call covers the path where
+// the dispatch panics, so the caller's own deferred release gives back a gate
+// that is held rather than one that was already given up. resume is
+// sync.Once-guarded, so having both is free.
 func (e *Engine) armViaFunction(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, tr *spi.TransitionDefinition, state, id string, armMs int64, modelVersion int, txID string) (task *spi.ScheduledTask, expired *expiredSchedule, err error) {
 	if e.extProc == nil {
 		return nil, nil, fmt.Errorf("no external processing service configured for scheduled-transition Function %q", tr.Schedule.Function.Name)

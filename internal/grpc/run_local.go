@@ -155,7 +155,7 @@ func (d *ProcessorDispatcher) RunLocal(ctx context.Context, call Callout, maxTri
 		last = appFailure(contract.NoHandOff, appErr)
 	}
 	if last == nil {
-		slog.Debug("no matching calculation member", "pkg", "grpc", "tags", call.Tags, "entityId", call.EntityID)
+		slog.Debug("no matching compute member", "pkg", "grpc", "tags", call.Tags, "entityId", call.EntityID)
 		last = &contract.CalloutFailure{
 			Kind:    contract.NoHandOff,
 			Code:    common.ErrCodeNoComputeMemberForTag,

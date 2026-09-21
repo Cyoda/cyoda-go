@@ -226,7 +226,7 @@ func (c *Coordinator) loop(cctx context.Context, call internalgrpc.Callout, numb
 		if patienceLeft <= 0 || cctx.Err() != nil {
 			return none, p.stop(cctx)
 		}
-		slog.Debug("callout waits for a cnode", "pkg", "callout", "kind", call.Kind.String(), "name", call.Name,
+		slog.Debug("callout waits for a compute member", "pkg", "callout", "kind", call.Kind.String(), "name", call.Name,
 			"requestId", call.RequestID, "tags", call.Tags, "patienceLeftMs", patienceLeft.Milliseconds())
 		waited, changed := waitForChange(cctx, localChanged, peersChanged, patienceLeft)
 		patienceLeft -= waited
@@ -370,8 +370,9 @@ func (p *progress) stop(cctx context.Context) error {
 //
 // A change and the timer can both be ready, and select then picks either: the
 // time a change-ended wait reports is capped at the patience it was given, so
-// the callout is never charged more patience than it has and the loop never
-// starts a pass on an allowance that is already spent.
+// the callout is never charged more patience than it has. A wait that ended on
+// a change starts a new pass even when that leaves no patience at all — the
+// change is what the patience was being spent on.
 func waitForChange(ctx context.Context, localChanged, peersChanged <-chan struct{}, patienceLeft time.Duration) (time.Duration, bool) {
 	start := time.Now()
 	timer := time.NewTimer(patienceLeft)

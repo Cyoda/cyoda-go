@@ -1,7 +1,10 @@
-// Package txgate provides per-transaction exclusive gates. A joined callback
-// and the transaction owner's commit both Acquire the same txID's gate so their
-// access to the shared tx buffer / pgx.Tx is serialised. This is the
-// application-side concurrency contract the SPI delegates
+// Package txgate provides per-transaction exclusive gates. Three users take the
+// same txID's gate: every joined request, for the whole of its handler; the
+// transaction owner's final save, commit and rollback; and the fence's wait,
+// which takes the gate once after it has shut a compute member out, so that
+// nothing that member had in progress is still running when the work moves on.
+// Their access to the shared tx buffer / pgx.Tx is thereby serialised, which is
+// the application-side concurrency contract the SPI delegates
 // (cyoda-go-spi transaction.go: "the application must serialise its own
 // concurrent in-flight ops on the same tx").
 package txgate
@@ -70,11 +73,13 @@ type heldKeyT struct{}
 var heldKey = heldKeyT{}
 
 // held is the ctx-scoped handle to a gate the current call chain holds. The
-// engine releases it across a blocking callout (SYNC processor / FUNCTION
-// criterion dispatch) via Suspend and re-acquires it afterward — the one window
-// that touches no local buffer yet can re-enter with a descendant callback on
-// the same txID. This generalises the owner's H3 invariant ("never hold the
-// gate across engine.Execute") to the joined-callback path.
+// engine releases it across every blocking callout — a SYNC or ASYNC_SAME_TX
+// processor, an ASYNC_NEW_TX processor, a FUNCTION criterion, and the
+// scheduled-transition arming function — via Suspend, and re-acquires it
+// afterward: the one window that touches no local buffer yet can re-enter with
+// a descendant callback on the same txID, and the fence's wait takes the same
+// gate. The transaction owner's own chain never holds the gate across
+// engine.Execute; this extends that rule to the joined-callback path.
 //
 // The handle is single-goroutine by construction: Suspend/resume and the
 // caller's deferred release all run on the synchronous handler→engine→dispatch
