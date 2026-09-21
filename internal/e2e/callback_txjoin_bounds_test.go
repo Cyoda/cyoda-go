@@ -58,8 +58,9 @@ func TestCallbackBounds_AnswerOverTheCeiling_413(t *testing.T) {
 		cfg.Callout.JoinedResponseMaxBytes = ceiling
 	})
 
-	const primary = "cbb-ceiling-primary"
-	const secondary = "cbb-ceiling-secondary"
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
+	primary, secondary := "cbb-ceiling-primary-"+sfx, "cbb-ceiling-secondary-"+sfx
+	proc := "cbb-read-over-ceiling-" + sfx
 	h.SetupModelWithWorkflow(t, secondary, secondaryWorkflow)
 
 	// A committed entity for the callback to read. Created without a token, so
@@ -74,7 +75,7 @@ func TestCallbackBounds_AnswerOverTheCeiling_413(t *testing.T) {
 		body   string
 	}
 	got := make(chan readResult, 1)
-	h.RegisterProc("cbb-read-over-ceiling", func(rc *reqCtx) (map[string]any, error) {
+	h.RegisterProc(proc, func(rc *reqCtx) (map[string]any, error) {
 		res, err := rc.GetEntity(readID)
 		if err != nil {
 			return nil, fmt.Errorf("callback read failed: %w", err)
@@ -84,7 +85,7 @@ func TestCallbackBounds_AnswerOverTheCeiling_413(t *testing.T) {
 		// callout and its transaction carry on.
 		return nil, nil
 	})
-	h.SetupModelWithWorkflow(t, primary, boundsWorkflow("cbb-ceiling-wf", "cbb-read-over-ceiling"))
+	h.SetupModelWithWorkflow(t, primary, boundsWorkflow("cbb-ceiling-wf-"+sfx, proc))
 
 	primaryID, status, body := h.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 	if status != http.StatusOK {
@@ -141,8 +142,9 @@ func TestCallbackBounds_TooManyQueuedCallbacks_503(t *testing.T) {
 		cfg.Callout.JoinedMaxWaiters = 1 // whoever holds the transaction, plus one queued
 	})
 
-	const primary = "cbb-waiters-primary"
-	const secondary = "cbb-waiters-secondary"
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
+	primary, secondary := "cbb-waiters-primary-"+sfx, "cbb-waiters-secondary-"+sfx
+	proc := "cbb-burst-" + sfx
 	h.SetupModelWithWorkflow(t, secondary, secondaryWorkflow)
 
 	readID, status, body := h.CreateEntity(t, secondary, 1, `{"name":"target","amount":1,"status":"new"}`)
@@ -151,7 +153,7 @@ func TestCallbackBounds_TooManyQueuedCallbacks_503(t *testing.T) {
 	}
 
 	outcome := make(chan burstOutcome, 1)
-	h.RegisterProc("cbb-burst", func(rc *reqCtx) (map[string]any, error) {
+	h.RegisterProc(proc, func(rc *reqCtx) (map[string]any, error) {
 		const clients, rounds = 8, 3
 		start := make(chan struct{})
 		results := make(chan callbackResult, clients*rounds)
@@ -195,7 +197,7 @@ func TestCallbackBounds_TooManyQueuedCallbacks_503(t *testing.T) {
 		// The member swallows the refusals; the callout must still succeed.
 		return nil, nil
 	})
-	h.SetupModelWithWorkflow(t, primary, boundsWorkflow("cbb-waiters-wf", "cbb-burst"))
+	h.SetupModelWithWorkflow(t, primary, boundsWorkflow("cbb-waiters-wf-"+sfx, proc))
 
 	primaryID, status, body := h.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 	if status != http.StatusOK {
