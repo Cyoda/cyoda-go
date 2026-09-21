@@ -89,6 +89,7 @@ type Gossip struct {
 	cfg      GossipConfig
 	list     *memberlist.Memberlist
 	delegate *gossipDelegate
+	identity *identityGuard
 	dir      *directory
 	tags     *tagStore
 	events   *tagEvents
@@ -154,6 +155,17 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 			RetransmitMult: mlCfg.RetransmitMult,
 		},
 	}
+	// The guard compares a peer's record against what this node advertises,
+	// which it reads through the same pointer the broadcast queue uses.
+	// memberlist derives the advertised address from the bind address, so it
+	// cannot be composed here: with the default CYODA_GOSSIP_ADDR the bind
+	// host is empty and the advertised one is the host's own.
+	guard := newIdentityGuard(cfg.NodeID, func() string {
+		if ml := list.Load(); ml != nil {
+			return ml.LocalNode().Address()
+		}
+		return ""
+	})
 	signal := common.NewChangeSignal()
 	dir := newDirectory()
 	events := newTagEvents(cfg.NodeID, dir, signal)
@@ -162,6 +174,7 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 	g := &Gossip{
 		cfg:      cfg,
 		delegate: del,
+		identity: guard,
 		dir:      dir,
 		tags:     newTagStore(cfg.NodeID, epoch, signal),
 		events:   events,
@@ -177,6 +190,10 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 	// Registered before Create: NotifyJoin fires for this pnode inside it, and
 	// the directory must hold every member from the first one on.
 	mlCfg.Events = events
+	// Both halves of the duplicate-id check: Merge refuses the join exchange
+	// that would establish one, Conflict reports one this node only witnesses.
+	mlCfg.Merge = guard
+	mlCfg.Conflict = guard
 
 	ml, err := memberlist.Create(mlCfg)
 	if err != nil {
@@ -235,9 +252,15 @@ func (g *Gossip) Register(ctx context.Context, _ string, _ string) error {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("join seeds after %v: %w", time.Since(start), err)
 		}
-		_, err := g.list.Join(seeds)
+		err := g.joinSeeds(seeds)
 		if err == nil {
 			break
+		}
+		// A second node answering to this node's id is not a condition the
+		// next attempt clears, and this node must not serve under an id
+		// another node can open its hand-overs with.
+		if errors.Is(err, errDuplicateNodeID) {
+			return err
 		}
 		slog.Warn("failed to join seeds, retrying",
 			"pkg", "cluster/registry",
@@ -286,6 +309,35 @@ func (g *Gossip) Register(ctx context.Context, _ string, _ string) error {
 	)
 
 	return nil
+}
+
+// joinSeeds contacts every seed, as memberlist's own Join does, one at a time
+// so that a seed can be named when the exchange with it shows this node's id
+// already held. The join succeeds when any seed answered.
+//
+// A peer joining this node runs the same delegate, so what a seed's exchange
+// found can in principle have come from an inbound one instead. Only the seed
+// named in the message is then wrong: a duplicate was found either way, and
+// the id really is held twice.
+func (g *Gossip) joinSeeds(seeds []string) error {
+	var errs error
+	joined := 0
+	for _, seed := range seeds {
+		g.identity.forget()
+		if _, err := g.list.Join([]string{seed}); err != nil {
+			if addr := g.identity.duplicate(); addr != "" {
+				return fmt.Errorf("%w: CYODA_NODE_ID %q is already held by the node at %s, learned from seed %s; every node of a cluster needs an id of its own",
+					errDuplicateNodeID, g.cfg.NodeID, addr, seed)
+			}
+			errs = errors.Join(errs, err)
+			continue
+		}
+		joined++
+	}
+	if joined > 0 {
+		return nil
+	}
+	return errs
 }
 
 // Lookup returns the address and alive status for the given nodeID from the

@@ -258,6 +258,19 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   1-hour retention is unchanged; pruning runs after commit rather than
   inside it.
 
+- **Two nodes sharing one `CYODA_NODE_ID` are no longer silent.** The id
+  seals a hand-over and its answer for the node they are sent to, so two
+  nodes holding one id open each other's hand-overs. Until now a duplicate
+  joined happily: the membership layer dropped the conflicting record on
+  both sides, the node served traffic while being invisible to every peer,
+  and the library's own conflict line reached `slog` at DEBUG. A node that
+  sees one id claimed from two addresses now logs it at **ERROR** with the
+  id and both addresses, once per address — including where the startup
+  check below cannot reach: two nodes starting at the same instant, a
+  partition healing, or a node started with no seeds. It does not stop:
+  seeing the conflict does not say which of the two is the misconfigured
+  one. See `cyoda help cluster` and `cyoda help config.cluster`.
+
 ### Changed
 
 - **A client that goes away mid-request is logged at DEBUG, with no ticket** —
@@ -275,6 +288,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   does; it passes the verdict on to the client and does not give the work to
   another compute member because of it (Cloud does retry on it, which is a
   recorded departure). See `docs/cloud-parity/callout-failover.md`.
+
+- **A node whose `CYODA_NODE_ID` is already held refuses to start.** During
+  the join exchange with a seed, a node that finds its own id on a live node
+  at another address fails the join and exits at once — it is not retried
+  until `CYODA_STARTUP_TIMEOUT`, because no retry clears it. The message
+  names `CYODA_NODE_ID`, the address the id was found at and the seed it was
+  learned from. The node already holding the id keeps serving. A restart
+  under the id of a node that left or died is unaffected, and so is a node
+  with no seeds.
 
 - **A callout picks among a tenant's matching compute members round robin.**
   The member picked longest ago goes next; one that has just joined goes first.
