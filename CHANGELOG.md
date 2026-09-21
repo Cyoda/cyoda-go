@@ -442,9 +442,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   explicit `success: true` one. The default belongs to an absent key alone: an
   explicit `"success": null` is not a boolean, so it is neither the default nor
   a flag, and an answer carrying it is refused as one that could not be read —
-  for all three callouts alike, with nothing in it read at all, not even its
-  warnings, so a criterion answering `{"success": null, "matches": true}`
-  decides no transition. Cyoda Cloud fails on those same bytes rather than reading success
+  for all three callouts alike, so a criterion answering
+  `{"success": null, "matches": true}` decides no transition. **Nothing at all
+  is read out of an answer the server could not read**, and that is now one
+  rule for every such answer rather than two: a member's `warnings` are
+  surfaced only from an answer that could be read, so an answer refused for a
+  null `success`, for a `payload` that is not an object, or for a criterion
+  with no `matches` no longer has its warnings passed on to the client either.
+  A member that reports a failure has been read perfectly well and its warnings
+  still reach the client beside its message. Cyoda Cloud fails on those same bytes rather than reading success
   out of them. See `cyoda help grpc` and
   `docs/cloud-parity/callout-failover.md`.
 

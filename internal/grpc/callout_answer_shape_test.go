@@ -9,6 +9,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
@@ -98,6 +99,47 @@ func TestDispatchCriteria_MissingMatchesIsUnreadable(t *testing.T) {
 	}
 	if strings.Contains(failure.Message, "no verdict here") {
 		t.Errorf("message = %q; the member's own text must not reach the client here", failure.Message)
+	}
+}
+
+// One rule for every unreadable answer: a warning is surfaced only from an
+// answer that could be read. A warning is the member's own text reaching the
+// client, and an answer the platform could not read is not trusted in part —
+// the client still hears that something was wrong, from the unreadable-answer
+// message. This is the `mapResponse` path: the answer reports success and owes
+// a verdict it did not give.
+func TestDispatchCriteria_UnreadableAnswerSurfacesNoWarning(t *testing.T) {
+	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
+	ctx := common.WithDiagnostics(testContext())
+	replyOnce(t, registry, memberID, sentCh, &ProcessingResponse{
+		Success: true, Reason: "no verdict here", Warnings: []string{"the member warns"}})
+
+	matches, _, err := dispatchCriteria(dispatcher, ctx, testEntity(),
+		json.RawMessage(answerCriterion), "transition", "wf1", "t1", "", "tx-1")
+	if err == nil {
+		t.Fatalf("a criterion answer with no matches was accepted as matches=%t", matches)
+	}
+	if got := common.GetDiagnostics(ctx).GetWarnings(); len(got) != 0 {
+		t.Errorf("warnings = %v; want none: nothing is read out of an answer that could not be read", got)
+	}
+}
+
+// The other half of that rule, and the boundary the ordering must not cross: a
+// member that reports a failure has been read perfectly well. Its warnings say
+// what went wrong alongside its message, and they still reach the client.
+func TestDispatchCriteria_ReportedFailureStillSurfacesItsWarnings(t *testing.T) {
+	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
+	ctx := common.WithDiagnostics(testContext())
+	replyOnce(t, registry, memberID, sentCh, &ProcessingResponse{
+		Success: false, Error: "the member says no", Warnings: []string{"the member warns"}})
+
+	if _, _, err := dispatchCriteria(dispatcher, ctx, testEntity(),
+		json.RawMessage(answerCriterion), "transition", "wf1", "t1", "", "tx-1"); err == nil {
+		t.Fatal("a criterion answering success=false was accepted")
+	}
+	got := common.GetDiagnostics(ctx).GetWarnings()
+	if len(got) != 1 || !strings.Contains(got[0], "the member warns") {
+		t.Errorf("warnings = %v; want the one the member sent with its failure", got)
 	}
 }
 

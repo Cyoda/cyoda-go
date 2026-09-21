@@ -57,8 +57,11 @@ that as "required on any response but an explicit `success: false` one".
 The default belongs to an absent key alone, and here too the tiers now agree.
 An explicit `"success": null` is not a boolean: it is neither the default nor a
 flag, and cyoda-go refuses the answer as one that could not be read, for all
-three callouts alike and with nothing in it read at all — so a criterion
-answering `{"success": null, "matches": true}` decides no transition. Cloud
+three callouts alike — so a criterion answering
+`{"success": null, "matches": true}` decides no transition. Nothing at all is
+read out of an answer that could not be read, and that holds for every one of
+them, not only this shape: a member's warnings reach the client only from an
+answer that could be read, the refusal's own message saying what was wrong. Cloud
 reaches the same end by its own route: its generated `BaseEvent` declares
 `Boolean success` initialised to `true`, Jackson sets it to null for an
 explicit null, and `ExternalizerBase.kt:322` reads it non-null

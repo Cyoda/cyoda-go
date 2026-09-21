@@ -213,20 +213,38 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 	// nil response could ever have earned.
 	select {
 	case resp := <-ch:
-		// An answer whose `success` is the literal null is read no further, and
-		// that is decided before anything in it is read at all — including its
-		// warnings, which are the member's own text reaching the client. The
-		// answer reports neither success nor failure, so surfacing its text
-		// while discarding the verdict beside it would be trusting the same
-		// answer the callout has just refused. Refused for every one of the
-		// three kinds alike.
+		// Read the answer before anything in it is believed. An answer whose
+		// `success` is the literal null reports neither success nor failure,
+		// and one whose content the callout's own mapResponse cannot make
+		// sense of is no better: both are refused here, for all three kinds
+		// alike, and nothing in either reaches the client — not a verdict, not
+		// a payload, not a result, and not a warning. Trusting a member's text
+		// out of an answer whose verdict has just been discarded would be
+		// trusting the same answer twice over; what was wrong reaches the
+		// client in the unreadable-answer message instead.
 		if resp.NullSuccess {
 			return CalloutResult{}, memberResponseUnreadable(nullSuccessError{}, nullSuccessMessage, label, name, member.ID, requestID), nil
 		}
-		// Warnings next, keyed by callout name, so that a failed try still
-		// surfaces them and the client sees which callout warned. Bounded here,
-		// where the member's own text becomes the client's, in the same way and
-		// for the same reason as its failure message below.
+		if resp.Disconnected {
+			slog.Error("member disconnected mid-dispatch", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
+			return CalloutResult{}, appFailure(contract.NoAnswer, disconnectedErr(label)), nil
+		}
+		// mapResponse reads what the answer says it did, which only an answer
+		// reporting success has said. A member reporting a failure owes no
+		// verdict, payload or result, and its answer is perfectly readable.
+		var result CalloutResult
+		if resp.Success {
+			var err error
+			if result, err = call.mapResponse(resp); err != nil {
+				return CalloutResult{}, memberResponseUnreadable(err, unreadableAnswerMessage, label, name, member.ID, requestID), nil
+			}
+		}
+		// The answer could be read, so its warnings are the member's own and
+		// are surfaced, keyed by callout name so the client sees which callout
+		// warned — including from a member that reported a failure, whose
+		// warnings say what went wrong beside its message. Bounded here, where
+		// the member's own text becomes the client's, in the same way and for
+		// the same reason as its failure message below.
 		kept := resp.Warnings
 		if len(kept) > maxMemberWarnings {
 			kept = kept[:maxMemberWarnings]
@@ -237,10 +255,6 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 		if len(resp.Warnings) > maxMemberWarnings {
 			common.AddWarning(ctx, fmt.Sprintf("%s %s: further warnings from the compute member were omitted", label, name))
 		}
-		if resp.Disconnected {
-			slog.Error("member disconnected mid-dispatch", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
-			return CalloutResult{}, appFailure(contract.NoAnswer, disconnectedErr(label)), nil
-		}
 		if !resp.Success {
 			failure := &contract.CalloutFailure{Kind: contract.MemberFailed, Message: label + " returned failure", Retryable: resp.Retryable}
 			if resp.Error != "" {
@@ -248,10 +262,6 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 				common.AddError(ctx, fmt.Sprintf("%s %s: %s", label, name, failure.Message))
 			}
 			return CalloutResult{}, failure, nil
-		}
-		result, err := call.mapResponse(resp)
-		if err != nil {
-			return CalloutResult{}, memberResponseUnreadable(err, unreadableAnswerMessage, label, name, member.ID, requestID), nil
 		}
 		slog.Debug("dispatch completed", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
 		return result, nil, nil

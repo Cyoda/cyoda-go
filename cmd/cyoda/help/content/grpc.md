@@ -302,9 +302,16 @@ not the warnings, not the audit trail.
 
 The default belongs to an absent key alone. An explicit `"success": null` is
 not a boolean, so it is neither the default nor a flag: the answer cannot be
-read at all and is refused (`400 WORKFLOW_FAILED`, not retryable). Nothing else
-in it is read either — not its `payload`, not a criterion's `matches`, not even
-its `warnings`. A member that means success must omit the key or send `true`.
+read at all and is refused (`400 WORKFLOW_FAILED`, not retryable). A member
+that means success must omit the key or send `true`.
+
+One rule covers every answer the server cannot read — this one, a `payload`
+that is not an object, a criterion with no `matches`: **nothing in such an
+answer is read.** Not its `payload`, not its `matches`, not its `result`, and
+not its `warnings`, which reach the client only from an answer that could be
+read. What was wrong reaches the client in the refusal's own message instead.
+A member that reports a failure has been read perfectly well, and its warnings
+are passed on with its message.
 
 The smallest successful answer is
 `{"id": "<a new event id>", "requestId": "<same requestId>", "entityId": "<entityUUID>"}`
@@ -360,9 +367,10 @@ answer says nothing about success decides no transition.
 but an explicit `success: false` one. A response that omits it is not read as
 `false` — a missing verdict would be an invented answer to the criterion, and
 the criterion decides a transition — so the callout ends as an answer that
-could not be read (`400 WORKFLOW_FAILED`, not retryable) and no other compute
-member is tried. Omitting `success` therefore does not excuse omitting
-`matches`: the default fills in the flag, never the verdict.
+could not be read (`400 WORKFLOW_FAILED`, not retryable), its `warnings` go
+unread with the rest of it, and no other compute member is tried. Omitting
+`success` therefore does not excuse omitting `matches`: the default fills in
+the flag, never the verdict.
 
 On `matches: false`, the response may also carry a `reason` string explaining
 why the criterion blocked the passage. The reason is the criterion's own
