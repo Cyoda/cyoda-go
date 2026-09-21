@@ -263,11 +263,14 @@ does send for the callout is discarded.
 
 **Departure 10 — one transaction, one user at a time.** Every callback, a read
 or a search as much as a write, holds its transaction's lock for the whole time
-the platform works on it. The request is read in full before the lock is taken
-and the response is sent after it is released, so a member that stalls holds
-nothing, and a member that disconnects does not cancel the callback. This
-extends `nested-join-tx-serialisation.md`: the lock is still given up for the
-length of any callout the callback itself makes.
+the platform works on it. The pass is verified before the request is read, the
+request is read in full before the lock is taken and the response is sent after
+it is released, so a member that stalls holds nothing, and a member that
+disconnects once its callback holds the lock does not cancel it. A callback
+still waiting for the lock is the one that its member can still call off: it has
+touched nothing, so it is simply dropped. This extends
+`nested-join-tx-serialisation.md`: the lock is still given up for the length of
+any callout the callback itself makes.
 
 What is not stopped, stated plainly: the owner's own next try shuts the member
 before it out at once, because the owner opens the round before it mints. A try
@@ -294,7 +297,9 @@ the lock is taken:
 - An over-size body on a joined HTTP request is refused with `413`, the same
   as an unjoined one: the body is read into memory, under the same size cap a
   handler would apply, before the lock is taken, so the join layer never
-  accepts a body a handler would reject.
+  accepts a body a handler would reject. A pass that fails verification —
+  `401 UNAUTHORIZED`, `410 TRANSACTION_EXPIRED` — is refused before the body is
+  read at all, so it costs no buffer.
 - A held gRPC server-streaming response is not all-or-nothing: if the handler
   fails partway through a joined chunked collection, the frames already
   produced are sent before the handler's error is returned, exactly as an

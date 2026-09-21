@@ -70,6 +70,12 @@ func TxJoin(j *txjoin.Joiner) func(http.Handler) http.Handler {
 				next.ServeHTTP(buffered, r.WithContext(ctx))
 			})
 			if err != nil {
+				// The client went away while its request queued for the
+				// transaction's lock: it touched nothing, and there is nobody
+				// left to tell.
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return
+				}
 				writeJoinError(w, r, err)
 				return
 			}

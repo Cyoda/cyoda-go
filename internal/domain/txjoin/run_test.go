@@ -263,6 +263,41 @@ func TestRun_PanickingHandlerGivesTheLockBack(t *testing.T) {
 	}
 }
 
+// A joined request still queued for the transaction's lock when its client
+// goes away returns at once and never runs: it has touched nothing, so there
+// is nothing to protect, and the handler goroutine must not stay parked.
+func TestRun_AWaiterWhoseClientGoesAwayNeverRuns(t *testing.T) {
+	env, pass := newRunEnv(t)
+	holder := env.gate.Acquire(env.txID) // another request of the same compute node
+	defer holder()
+
+	request, disconnect := context.WithCancel(env.ctx)
+	ran := false
+	returned := make(chan error, 1)
+	go func() {
+		returned <- env.joiner.Run(request, pass, func(context.Context) { ran = true })
+	}()
+	time.Sleep(50 * time.Millisecond) // admitted on entry, now queued for the lock
+
+	select {
+	case err := <-returned:
+		t.Fatalf("Run returned %v while the lock was held elsewhere", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	disconnect()
+	select {
+	case err := <-returned:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v; want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a joined request whose client went away stayed parked on the lock")
+	}
+	if ran {
+		t.Fatal("the handler of a request whose client had gone ran")
+	}
+}
+
 // A compute node that disconnects in the middle of its callback cancels the
 // request's context; a joined request that holds the transaction's lock must
 // not see it — its statements run on the operation's connection.

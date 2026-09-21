@@ -2,6 +2,7 @@ package txgate
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -44,6 +45,84 @@ func TestRegistry_DifferentTxIDsDoNotBlock(t *testing.T) {
 		t.Fatal("Acquire on a different txID blocked")
 	}
 	rel1()
+}
+
+// A waiter whose own context ends gives the wait up: it holds nothing, it is
+// told why, and it leaves no entry behind. Nothing of the transaction has been
+// touched before the gate is held, so there is nothing to undo.
+func TestRegistry_AcquireCtx_AWaiterWhoseContextEndsGivesUp(t *testing.T) {
+	r := New()
+	holder := r.Acquire("tx-1")
+	ctx, cancel := context.WithCancel(context.Background())
+	gaveUp := make(chan error, 1)
+	go func() {
+		release, err := r.AcquireCtx(ctx, "tx-1")
+		if release != nil {
+			t.Error("a waiter that gave up was handed a release func")
+		}
+		gaveUp <- err
+	}()
+
+	select {
+	case err := <-gaveUp:
+		t.Fatalf("AcquireCtx returned %v while the gate was held", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case err := <-gaveUp:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v; want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a waiter whose context ended did not return")
+	}
+
+	holder()
+	if n := r.len(); n != 0 {
+		t.Fatalf("gate map = %d entries; a waiter that gave up left one behind", n)
+	}
+}
+
+// Once the gate is held, the holder's context no longer bears on it: a joined
+// request whose compute node goes away mid-statement keeps the gate until it
+// releases it.
+func TestRegistry_AcquireCtx_OnceHeldTheContextDoesNotMatter(t *testing.T) {
+	r := New()
+	ctx, cancel := context.WithCancel(context.Background())
+	release, err := r.AcquireCtx(ctx, "tx-1")
+	if err != nil {
+		t.Fatalf("AcquireCtx: %v", err)
+	}
+	cancel()
+
+	free := make(chan struct{})
+	go func() { r.Acquire("tx-1")(); close(free) }()
+	select {
+	case <-free:
+		t.Fatal("the gate was given up when the holder's context ended")
+	case <-time.After(30 * time.Millisecond):
+	}
+	release()
+	select {
+	case <-free:
+	case <-time.After(time.Second):
+		t.Fatal("the gate was not released")
+	}
+}
+
+// A context that has already ended never takes the gate, even when it is free:
+// the caller is gone, so its request must not start.
+func TestRegistry_AcquireCtx_ContextAlreadyEnded_TakesNothing(t *testing.T) {
+	r := New()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if release, err := r.AcquireCtx(ctx, "tx-1"); !errors.Is(err, context.Canceled) || release != nil {
+		t.Fatalf("AcquireCtx handed out a gate (%v) or the wrong error: %v", release != nil, err)
+	}
+	if n := r.len(); n != 0 {
+		t.Fatalf("gate map = %d entries", n)
+	}
 }
 
 func TestRegistry_ReleasesMapEntry(t *testing.T) {

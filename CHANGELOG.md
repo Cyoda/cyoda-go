@@ -118,12 +118,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **Every request that joins a transaction holds that transaction's lock — a
   read as much as a write.** Two callbacks of one transaction used to run at
   once; they are served one at a time, so a compute member that parallelises its
-  callbacks for speed gains nothing by it. The request is read whole before the
-  lock is taken and its response is sent after the lock is released, and a
-  joined request is not cancelled by its client going away: a deadline a compute
-  member sets on its own callback no longer abandons work already under way. An
-  over-size joined body is refused with `413`, the same as an unjoined one. The
-  lock is still given up for the length of any callout the callback itself makes.
+  callbacks for speed gains nothing by it. The pass is verified before the
+  request is read, the request is read whole before the lock is taken and its
+  response is sent after the lock is released, and a joined request that holds
+  the lock is not cancelled by its client going away: a deadline a compute
+  member sets on its own callback no longer abandons work already under way. A
+  callback still waiting for the lock, which has touched nothing, is dropped
+  when its member goes away. An over-size joined body is refused with `413`, the
+  same as an unjoined one; a pass that fails verification is refused before the
+  body is read. The lock is still given up for the length of any callout the
+  callback itself makes.
   See `docs/cloud-parity/callout-failover.md`.
 
 - **`CYODA_DISPATCH_FORWARD_TIMEOUT` no longer governs handing a callout to

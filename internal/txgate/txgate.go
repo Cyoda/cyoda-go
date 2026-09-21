@@ -15,7 +15,11 @@ import (
 )
 
 type gate struct {
-	mu   sync.Mutex
+	// held is the gate itself: one token, and holding the gate is holding the
+	// one slot. A channel rather than a sync.Mutex, so that a caller that has
+	// not taken the gate yet can give the wait up when its own context ends —
+	// it has touched nothing of the transaction, so there is nothing to undo.
+	held chan struct{}
 	refs int
 }
 
@@ -30,32 +34,69 @@ func New() *Registry { return &Registry{gates: make(map[string]*gate)} }
 
 // Acquire blocks until the caller holds the exclusive gate for txID, then
 // returns a release func. Empty txID returns a no-op release (never gated).
+// The wait has no end: the transaction owner's own chain and the fence's wait
+// take the gate this way, and neither may give up on it.
 func (r *Registry) Acquire(txID string) func() {
+	release, _ := r.acquire(context.Background(), txID) // a background wait cannot fail
+	return release
+}
+
+// AcquireCtx is Acquire for a caller that may go away before it has the gate:
+// when ctx ends first it returns ctx.Err() and no release func, and the caller
+// holds nothing. Once a release func has been returned the gate is held, and
+// ctx no longer bears on it — a holder gives the gate up by releasing it, never
+// by being cancelled.
+func (r *Registry) AcquireCtx(ctx context.Context, txID string) (func(), error) {
+	return r.acquire(ctx, txID)
+}
+
+func (r *Registry) acquire(ctx context.Context, txID string) (func(), error) {
 	if txID == "" {
-		return func() {}
+		return func() {}, nil
+	}
+	// A caller that has already gone takes nothing, free gate or not: the
+	// select below would otherwise pick either.
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	g := func() *gate {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		g := r.gates[txID]
 		if g == nil {
-			g = &gate{}
+			g = &gate{held: make(chan struct{}, 1)}
 			r.gates[txID] = g
 		}
 		g.refs++
 		return g
 	}()
 
-	g.mu.Lock() // held until the returned release runs; not a critical section of this func
+	select {
+	case g.held <- struct{}{}: // held until the returned release runs
+	case <-ctx.Done():
+		r.unref(txID, g)
+		return nil, ctx.Err()
+	}
 
+	// The release is taken once: the suspend handle below releases through a
+	// pointer the caller also defers, and one of the two runs second.
+	var once sync.Once
 	return func() {
-		g.mu.Unlock()
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		g.refs--
-		if g.refs == 0 {
-			delete(r.gates, txID)
-		}
+		once.Do(func() {
+			<-g.held
+			r.unref(txID, g)
+		})
+	}, nil
+}
+
+// unref drops one reference to txID's gate and forgets the gate once no
+// goroutine holds or waits on it.
+func (r *Registry) unref(txID string, g *gate) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	g.refs--
+	if g.refs == 0 {
+		delete(r.gates, txID)
 	}
 }
 

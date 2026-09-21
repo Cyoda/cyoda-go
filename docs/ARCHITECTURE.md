@@ -504,12 +504,16 @@ rollback (`internal/domain/entity/txscope.go`), and never holds it across
   the lock is released. A joined chunked collection that fails at frame *n*
   still delivers frames 1…*n*-1 and then the error. A compute member that
   sends its headers and stalls, or never reads its response, holds nothing.
-- **A joined request is not interrupted by its compute member going away.** It
-  runs under `context.WithoutCancel`: a member that disconnects in the middle of
-  a statement would otherwise cancel the context its statements run on, and pgx
-  closes the operation's connection when that happens — the owner's next
-  statement, or its commit, would then fail. A joined request ends by finishing
-  or by being refused at a check. What this gives up is deliberate: a deadline
+- **A joined request is not interrupted by its compute member going away.** From
+  the moment it holds the lock it runs under `context.WithoutCancel`: a member
+  that disconnects in the middle of a statement would otherwise cancel the
+  context its statements run on, and pgx closes the operation's connection when
+  that happens — the owner's next statement, or its commit, would then fail. A
+  joined request ends by finishing or by being refused at a check. The one part
+  that its client can still call off is the wait for the lock itself: a request
+  still queued has touched nothing, so a member that goes away there takes
+  nothing with it, its handler never runs and the handler goroutine returns at
+  once rather than parking for the life of the callout. What this gives up is deliberate: a deadline
   the member sets on its own call, the engine's cascade check of the request
   context, the per-item check of a gRPC collection, and the context checks that
   end a scan early on memory and sqlite — a joined search by a member that has
@@ -2074,7 +2078,7 @@ Capabilities this document's design implies but the system does not provide. Eac
 | Gap | What it would give |
 |---------|---------|
 | Commit markers (PostgreSQL plugin) | Resolve transaction commit ambiguity (L5 partition at COMMIT — see §4.5 Phase 4). Today a torn connection at COMMIT is reported as retryable; it is never disambiguated. |
-| Strict context deadline propagation | A deadline derived from the inbound request and inherited by every downstream operation. The server bounds how long a request may take to *arrive* (`CYODA_HTTP_READ_TIMEOUT`, §9) but derives no deadline from it for handler execution; a callout enforces its own independent wall clock (§4.3), and a joined request runs detached from its client's cancellation altogether (§3.8). |
+| Strict context deadline propagation | A deadline derived from the inbound request and inherited by every downstream operation. The server bounds how long a request may take to *arrive* (`CYODA_HTTP_READ_TIMEOUT`, §9) but derives no deadline from it for handler execution; a callout enforces its own independent wall clock (§4.3), and a joined request runs detached from its client's cancellation from the moment it holds the transaction's lock (§3.8). |
 | Idempotency keys | Client-provided keys preventing duplicate operations on retry. The `IDEMPOTENCY_CONFLICT` code is reserved, but no handler reads an `Idempotency-Key` header. |
 | Trace propagation through the search pipeline | A unified search trace waterfall. The search packages emit no spans, and the async-search goroutine starts from a fresh context, severing the parent span. |
 | Outbound trace propagation to external processors | End-to-end workflow tracing. Inbound gRPC trace context is extracted and dispatches are wrapped in spans, but no `traceparent` is injected into the dispatched CloudEvent or the peer-forward request. |

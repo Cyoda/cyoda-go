@@ -162,11 +162,12 @@ func (j *Joiner) Run(ctx context.Context, tok string, handler func(ctx context.C
 // length of a callout of the callback's own through the handle installed here
 // (txgate.Suspend).
 //
-// A non-nil error is a refusal: handler did not run. The caller sends its
-// response only after RunVerified has returned, so that a compute node that
-// does not read its response holds nothing. The caller must also have the whole
-// request in memory before it calls: what the lock waits on must never be the
-// client.
+// A non-nil error means the handler did not run: a refusal, or — while the
+// request was still queued for the lock, having touched nothing — ctx's own
+// error, the compute node having gone away. The caller sends its response only
+// after RunVerified has returned, so that a compute node that does not read its
+// response holds nothing. The caller must also have the whole request in memory
+// before it calls: what the lock waits on must never be the client.
 //
 // A nil pass is not a joined request: handler runs on ctx as it is.
 func (j *Joiner) RunVerified(ctx context.Context, pass *Pass, handler func(ctx context.Context)) error {
@@ -183,13 +184,19 @@ func (j *Joiner) RunVerified(ctx context.Context, pass *Pass, handler func(ctx c
 	}
 	txID := spi.GetTransaction(joined).ID
 
-	// The joined request is detached from the request's cancellation: it runs on
-	// the transaction of the operation it belongs to, and a compute node that
+	// The wait for the lock is the one part of a joined request that its client
+	// may still call off: nothing of the transaction has been touched yet, so a
+	// compute node that goes away while its request is queued takes nothing
+	// with it and the handler never runs.
+	release, err := j.gate.AcquireCtx(joined, txID)
+	if err != nil {
+		return err
+	}
+	// From here the request is detached from its client's cancellation: it runs
+	// on the transaction of the operation it belongs to, and a compute node that
 	// goes away in the middle of a statement must not take that operation's
 	// connection with it. It ends by finishing or by being refused at a check.
 	joined = context.WithoutCancel(joined)
-
-	release := j.gate.Acquire(txID)
 	// The closure reads `release` when it runs: a Suspend/resume in between
 	// stores the re-acquired lock's release through the pointer below.
 	defer func() { release() }()

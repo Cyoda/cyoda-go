@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	googlegrpc "google.golang.org/grpc"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
@@ -149,10 +150,20 @@ func (i *txRouteInterceptor) unary() googlegrpc.UnaryServerInterceptor {
 		var resp any
 		var herr error
 		if jerr := i.joiner.Run(ctx, tok, func(joined context.Context) { resp, herr = handler(joined, req) }); jerr != nil {
+			if clientGone(jerr) {
+				return nil, status.FromContextError(jerr).Err()
+			}
 			return i.unaryErr(ctx, ce, envelope, jerr)
 		}
 		return resp, herr
 	}
+}
+
+// clientGone reports whether err is the call's own context ending: the compute
+// node went away while its request was queued for the transaction's lock, so
+// nothing was touched and there is nobody to answer with an envelope.
+func clientGone(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // unaryErr renders err as the routed RPC's error envelope. If the request could
@@ -208,6 +219,9 @@ func (i *txRouteInterceptor) stream() googlegrpc.StreamServerInterceptor {
 			held.ctx = joined
 			herr = handler(srv, held)
 		}); jerr != nil {
+			if clientGone(jerr) {
+				return status.FromContextError(jerr).Err()
+			}
 			return i.streamErr(ss, first.Id, envelope, jerr)
 		}
 		// What the handler wrote is delivered even when it then failed: a joined
