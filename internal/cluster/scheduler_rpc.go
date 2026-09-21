@@ -193,6 +193,12 @@ func (c *SchedulerRPCClient) ExecuteScheduledTask(ctx context.Context, target, a
 	if err != nil {
 		return fmt.Errorf("scheduler rpc: sign body: %w", err)
 	}
+	if len(wire) > dispatch.MaxEnvelopeSize {
+		// The peer reads at most the ceiling, so these bytes would be truncated
+		// and refused there. Refused here instead, before a connection is
+		// opened: the coordinator logs it and the next scan redispatches.
+		return fmt.Errorf("scheduler rpc: the request is %d bytes sealed and the envelope holds %d", len(wire), dispatch.MaxEnvelopeSize)
+	}
 	httpReq.Body = io.NopCloser(bytes.NewReader(wire))
 	httpReq.ContentLength = int64(len(wire))
 
@@ -214,9 +220,15 @@ func (c *SchedulerRPCClient) ExecuteScheduledTask(ctx context.Context, target, a
 	// binding Sign returned. An answer that does not open is a lost answer —
 	// there is no plaintext fallback, or a forged success would tell this node
 	// a task fired that never ran.
+	// One byte past the ceiling is read so that an answer above it can be told
+	// apart from one at it; without the check that follows, an oversized answer
+	// arrives truncated and is blamed on the cipher.
 	sealed, err := io.ReadAll(io.LimitReader(httpResp.Body, dispatch.MaxEnvelopeSize+1))
 	if err != nil {
 		return fmt.Errorf("scheduler rpc: read response from %s: %w", url, err)
+	}
+	if len(sealed) > dispatch.MaxEnvelopeSize {
+		return fmt.Errorf("scheduler rpc: the answer from %s is too large for the envelope, which holds %d bytes", url, dispatch.MaxEnvelopeSize)
 	}
 	opened, err := c.auth.OpenResponse(httpResp.Header, binding, sealed)
 	if err != nil {

@@ -925,8 +925,8 @@ lost answer counts as **one** try — never zero, so the loop
 always makes progress — and is recorded as an attempt with the member id `-`. A
 peer that answers `no_handoff` having tried members costs the tries it made, and
 the loop goes on to the next peer. A hand-over this node cannot build, marshal
-or sign is `Terminal`: it would fail identically for every peer, so the loop
-stops rather than trying the next one.
+or sign — or that does not fit the envelope — is `Terminal`: it would fail
+identically for every peer, so the loop stops rather than trying the next one.
 
 **Internal dispatch endpoint:**
 
@@ -937,7 +937,11 @@ POST /internal/dispatch/callout
 - Single route for every callout kind (processor, criteria, function); `Kind` in
   the request body discriminates
 - Authenticated and encrypted with the AES-256-GCM AEAD envelope described in §4.2 — the answer too
-- 10MB max body size
+- 12 MB max envelope, on both legs — above the 10 MB an entity write may carry,
+  so that an entity the API stores can always be handed over. An envelope above
+  it is refused by whichever end builds it: a hand-over that cannot fit is
+  `Terminal` and uses no try (it would fail identically on every peer), and an
+  answer that cannot fit is not written, so the owner reads the lost answer it is
 - Reconstruct `UserContext` from request fields (tenantID, userID, roles, principal kind)
 - A request carries two tenants — its own `TenantID`, which the reconstructed `UserContext` runs as, and `EntityMeta.TenantID`, which is handed to the local dispatcher as the entity's own. They must agree, or the callout would run as one tenant over another's entity; a mismatch is answered, under seal, as a `terminal` refusal with no try made — as is any authenticated request that cannot be run. The equality is unconditional and covers an absent `EntityMeta.TenantID`: every callout kind is built from a live stored entity whose `Meta.TenantID` is always set, so an empty one can only come from a hand-crafted peer body. The response names neither value — both are peer-supplied.
 - Runs the local procedure (`RunLocal`) with the tries the owner allows, and never hands the callout on

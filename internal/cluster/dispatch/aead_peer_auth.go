@@ -25,7 +25,15 @@ const (
 	// buffer before the envelope is rejected. Exported because every leg that
 	// reads a peer envelope — callout dispatch and the scheduler RPC alike —
 	// bounds its read by the one ceiling.
-	MaxEnvelopeSize = 10 * 1024 * 1024
+	//
+	// It sits above the 10 MiB an entity write may carry, with room for the
+	// meta, the definition, the roles, the tags and the envelope's own 28
+	// bytes, so that an entity the API stores can always be handed over: at the
+	// same ceiling, an entity within a few KiB of the limit would make a
+	// callout that no peer could take, while the same callout served by a local
+	// compute member succeeds. Above this an envelope is refused by whichever
+	// end builds it, which for a hand-over is Terminal and uses no try.
+	MaxEnvelopeSize = 12 * 1024 * 1024
 
 	// nonceCacheCapacity is the replay-cache ceiling — see nonceCache.
 	nonceCacheCapacity = 100_000

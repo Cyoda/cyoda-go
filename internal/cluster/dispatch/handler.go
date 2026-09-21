@@ -159,6 +159,16 @@ func (h *DispatchHandler) writeSealed(w http.ResponseWriter, binding ResponseBin
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	if len(wire) > MaxEnvelopeSize {
+		// The owner reads at most the ceiling, so writing these bytes would
+		// send it a truncated answer while this node recorded that it had
+		// answered. A status instead: the owner reads the lost answer it is,
+		// and an operator is told which callout produced an answer too large.
+		slog.Error("the answer to a hand-over does not fit the envelope and was not sent",
+			"pkg", "dispatch", "outcome", v.Outcome, "sealedBytes", len(wire), "maxBytes", MaxEnvelopeSize)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(wire); err != nil {
 		slog.Warn("failed to write dispatch answer", "pkg", "dispatch", "err", err)
