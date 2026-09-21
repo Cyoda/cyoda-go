@@ -1,9 +1,11 @@
 package httpmw
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,6 +21,18 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
+
+// captureSlog redirects the default logger into a buffer for the duration of
+// the test, restoring the previous default on cleanup. DEBUG and above are
+// captured so a test can assert a log line was (or was not) emitted at DEBUG.
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
 
 // fakeJoinTM satisfies spi.TransactionManager by embedding the interface and
 // overriding only Join. Unimplemented methods panic if unexpectedly called.
@@ -492,8 +506,13 @@ func TestTxJoin_BadPassIsRefusedBeforeTheBodyIsRead(t *testing.T) {
 // lock: the handler never runs, the door returns at once — and it still answers.
 // Leaving without writing would have net/http answer an implicit 200 for a
 // request that did nothing, which a later middleware putting a deadline on the
-// request context would turn into a lie about a write.
+// request context would turn into a lie about a write. Nothing was wrong with
+// the server and there is nobody to quote a ticket to, so this is logged at
+// DEBUG with no ticket — never the ERROR-per-queued-callback that a failing-over
+// compute member would otherwise produce right when an operator most wants a
+// clean log.
 func TestTxJoin_ClientGoesAwayWhileQueued_HandlerNeverRuns_NeverAnImplicit200(t *testing.T) {
+	buf := captureSlog(t)
 	j, gate, pass := liveJoiner(t, "tx-1")
 	holder := gate.Acquire("tx-1") // another request of the same compute node
 	defer holder()
@@ -524,10 +543,23 @@ func TestTxJoin_ClientGoesAwayWhileQueued_HandlerNeverRuns_NeverAnImplicit200(t 
 		t.Fatal("the handler ran for a client that had gone")
 	}
 	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d; want the ticketed 500 an aborted request gets — never an implicit 200", rec.Code)
+		t.Fatalf("status = %d; want the same 500 an aborted request gets today — never an implicit 200", rec.Code)
 	}
 	if code := problemProps(t, rec).ErrorCode; code != "SERVER_ERROR" {
 		t.Errorf("errorCode = %q; want SERVER_ERROR", code)
+	}
+	var pd map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &pd); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	if pd["ticket"] != nil {
+		t.Errorf("a client disconnect must not carry a ticket nobody can be quoted: %v", pd["ticket"])
+	}
+	if strings.Contains(buf.String(), `"level":"ERROR"`) {
+		t.Errorf("a client disconnect must not log at ERROR: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), `"level":"DEBUG"`) {
+		t.Errorf("a client disconnect must log at DEBUG: %s", buf.String())
 	}
 }
 

@@ -2,6 +2,7 @@ package common_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -203,12 +204,13 @@ func TestWriteError_OperationalLogsCause(t *testing.T) {
 }
 
 // captureSlog redirects the default logger into a buffer for the duration of
-// the test.
+// the test. DEBUG and above are captured so a test can assert a log line was
+// (or was not) emitted at DEBUG.
 func captureSlog(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	var buf bytes.Buffer
 	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 	return &buf
 }
@@ -564,5 +566,90 @@ func TestAppError_WithCause_PreservesErrorsIs(t *testing.T) {
 	}
 	if ae.Status != http.StatusBadRequest || ae.Code != "SOME_CODE" {
 		t.Errorf("got status=%d code=%q, want 400/SOME_CODE", ae.Status, ae.Code)
+	}
+}
+
+// TestWriteError_ClientGoneCancellation_LogsDebugNoTicket: a client that
+// disconnects while its request is in flight is not a server fault. Nothing
+// was wrong, there is nobody to quote a ticket to, and this is exactly the
+// moment (a compute member failing over) an operator wants a clean log.
+func TestWriteError_ClientGoneCancellation_LogsDebugNoTicket(t *testing.T) {
+	buf := captureSlog(t)
+	common.SetErrorResponseMode("sanitized")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/test", nil)
+	ctx, cancel := context.WithCancel(r.Context())
+	cancel()
+	r = r.WithContext(ctx)
+
+	appErr := common.Internal("joined request ended before it took the transaction's lock", context.Canceled)
+	common.WriteError(w, r, appErr)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d — the door writes the same status it writes today", w.Code, http.StatusInternalServerError)
+	}
+	if strings.Contains(buf.String(), `"level":"ERROR"`) {
+		t.Errorf("a client disconnect must not log at ERROR: %s", buf.String())
+	}
+	if strings.Contains(buf.String(), `"ticket"`) {
+		t.Errorf("a client disconnect must not mint or log a ticket: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), `"level":"DEBUG"`) {
+		t.Errorf("a client disconnect must log at DEBUG: %s", buf.String())
+	}
+	var pd map[string]any
+	json.NewDecoder(w.Body).Decode(&pd)
+	if pd["ticket"] != nil {
+		t.Errorf("the response must not carry a ticket nobody can be quoted: %v", pd["ticket"])
+	}
+}
+
+// TestWriteError_OrdinaryInternalError_StillLogsErrorWithTicket pins the
+// regression this task must not cause: an internal error on a request whose
+// context is NOT done still mints a ticket and logs at ERROR.
+func TestWriteError_OrdinaryInternalError_StillLogsErrorWithTicket(t *testing.T) {
+	buf := captureSlog(t)
+	common.SetErrorResponseMode("sanitized")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/test", nil) // context is live, not cancelled
+
+	appErr := common.Internal("something broke", errors.New("db connection failed"))
+	common.WriteError(w, r, appErr)
+
+	if !strings.Contains(buf.String(), `"level":"ERROR"`) {
+		t.Errorf("an ordinary internal error must still log at ERROR: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), `"ticket"`) {
+		t.Errorf("an ordinary internal error must still mint a ticket: %s", buf.String())
+	}
+	var pd map[string]any
+	json.NewDecoder(w.Body).Decode(&pd)
+	if pd["ticket"] == nil || pd["ticket"] == "" {
+		t.Error("expected a ticket in the response")
+	}
+}
+
+// TestWriteError_FeatureDeadlineTimeout_Untouched: a request whose own
+// feature deadline expired carries context.DeadlineExceeded, not
+// context.Canceled, and must not be caught by the client-gone rule even
+// though the request's context is also done.
+func TestWriteError_FeatureDeadlineTimeout_Untouched(t *testing.T) {
+	buf := captureSlog(t)
+	common.SetErrorResponseMode("sanitized")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/test", nil)
+	ctx, cancel := context.WithTimeout(r.Context(), 0) // already expired
+	defer cancel()
+	<-ctx.Done()
+	r = r.WithContext(ctx)
+
+	appErr := common.Internal("workflow aborted by context cancellation", context.DeadlineExceeded)
+	common.WriteError(w, r, appErr)
+
+	if !strings.Contains(buf.String(), `"level":"ERROR"`) {
+		t.Errorf("a DeadlineExceeded cause must still log at ERROR, not be treated as a client disconnect: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), `"ticket"`) {
+		t.Errorf("a DeadlineExceeded cause must still mint a ticket: %s", buf.String())
 	}
 }

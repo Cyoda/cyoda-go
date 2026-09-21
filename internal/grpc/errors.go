@@ -13,6 +13,20 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
+// isClientGoneCancellation reports whether err's chain carries
+// context.Canceled — the client having gone away mid-request, not a genuine
+// server fault. Unlike common.WriteError's HTTP-side check, there is no
+// request/stream context available here to confirm independently that the
+// serving context is done; every context.Canceled a *common.AppError carries
+// on this door already originates from the request's own context (see
+// internal/domain/entity/service.go's classifyError/classifyWorkflowError,
+// shared with the HTTP door), so the chain check alone is the recognition. A
+// feature-deadline timeout carries context.DeadlineExceeded, not
+// context.Canceled, and is unaffected.
+func isClientGoneCancellation(err error) bool {
+	return errors.Is(err, context.Canceled)
+}
+
 const nilUUID = "00000000-0000-0000-0000-000000000000"
 
 func strPtr(s string) *string { return &s }
@@ -46,6 +60,16 @@ func buildErrorFields(err error) (code, message string, retryable *bool) {
 			}
 			return
 		}
+		// The client having gone away mid-request is not a server fault:
+		// nothing was wrong, and there is nobody to quote a ticket to. This is
+		// exactly the moment (a compute member failing over) an operator wants
+		// a clean log, so no ticket is minted.
+		if isClientGoneCancellation(appErr.Err) {
+			slog.Debug("client gone before request completed", "code", appErr.Code, "detail", appErr.Detail)
+			code = "SERVER_ERROR"
+			message = "SERVER_ERROR: internal error"
+			return
+		}
 		// Internal/Fatal — reuse the caller's pinned ticket when it has one
 		// (it has already logged the detail under it; a second one would name
 		// nothing), otherwise mint.
@@ -70,6 +94,14 @@ func buildErrorFields(err error) (code, message string, retryable *bool) {
 	// the only place the check belongs.
 	if appErr := common.StorageUnavailable(err); appErr != nil {
 		return buildErrorFields(appErr)
+	}
+	// A bare context.Canceled that never passed through an *AppError is still
+	// the client having gone away, not an unclassified failure.
+	if isClientGoneCancellation(err) {
+		slog.Debug("client gone before request completed", "detail", err.Error())
+		code = "SERVER_ERROR"
+		message = "SERVER_ERROR: internal error"
+		return
 	}
 	// Raw error — should not happen
 	ticket := uuid.New().String()

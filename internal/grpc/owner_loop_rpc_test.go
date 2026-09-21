@@ -134,9 +134,10 @@ func TestRPC_ClientTimeoutDuringAWaitAndDuringATry_TransactionTimeoutEnvelope(t 
 	}
 }
 
-// A client that went away is not a domain failure: a ticketed SERVER_ERROR, no
-// callout detail, and no waiting out the patience.
-func TestRPC_ClientGoesAwayDuringAWait_TicketedServerErrorEnvelope(t *testing.T) {
+// A client that went away is not a domain failure and not a server fault
+// either: a SERVER_ERROR envelope with no callout detail and no waiting out
+// the patience, but — since nobody is left to quote a ticket to — no ticket.
+func TestRPC_ClientGoesAwayDuringAWait_ServerErrorEnvelopeNoTicket(t *testing.T) {
 	const modelName = "grpc-owner-client-gone"
 	svc, wfHandler, ctx := newTestEnvWithOwner(t, 30*time.Second, 60*time.Second, OwnerTestConfig{FixedNumRetries: 3, Patience: 30 * time.Second})
 	setupScheduledWorkflowRPCEnv(t, svc, wfHandler, ctx, modelName,
@@ -150,8 +151,11 @@ func TestRPC_ClientGoesAwayDuringAWait_TicketedServerErrorEnvelope(t *testing.T)
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Errorf("answered after %v: a cancelled caller ends the wait at once", elapsed)
 	}
-	if typed.Success || typed.Error == nil || typed.Error.Code != "SERVER_ERROR" || !strings.Contains(typed.Error.Message, "ticket") {
-		t.Errorf("envelope = %+v, want a ticketed SERVER_ERROR", typed.Error)
+	if typed.Success || typed.Error == nil || typed.Error.Code != "SERVER_ERROR" {
+		t.Errorf("envelope = %+v, want a SERVER_ERROR", typed.Error)
+	}
+	if typed.Error != nil && strings.Contains(typed.Error.Message, "ticket") {
+		t.Errorf("message = %s: a client disconnect must not mint a ticket nobody can be quoted", typed.Error.Message)
 	}
 	if typed.Error != nil && strings.Contains(typed.Error.Message, "NO_COMPUTE_MEMBER") {
 		t.Errorf("message = %s: a cancelled request is not reported as a missing compute member", typed.Error.Message)

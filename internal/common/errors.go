@@ -1,6 +1,7 @@
 package common
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -249,8 +250,28 @@ type ProblemDetail struct {
 	Props    map[string]any `json:"properties,omitempty"`
 }
 
+// isClientGoneCancellation reports whether appErr's cause is the request's
+// client having gone away while the request was in flight, rather than a
+// genuine server fault: the cause chain carries context.Canceled AND the
+// request's own context is currently done. Both conjuncts matter — a cause
+// that merely contains context.Canceled from some unrelated, already-settled
+// cancellation must not be quietened while the request itself is still live.
+// A request whose own feature deadline expired carries context.DeadlineExceeded,
+// not context.Canceled, and is excluded by construction — it is already
+// classified to 408 upstream by ClassifyRequestTimeout before it would reach
+// here.
+func isClientGoneCancellation(appErr *AppError, r *http.Request) bool {
+	return errors.Is(appErr.Err, context.Canceled) && r.Context().Err() != nil
+}
+
 // WriteError writes an AppError as an RFC 9457 Problem Details JSON response.
-// For INTERNAL and FATAL errors, a ticket UUID is generated for correlation.
+// For INTERNAL and FATAL errors, a ticket UUID is generated for correlation —
+// except when the cause is the client having gone away mid-request (see
+// isClientGoneCancellation): nothing was wrong, there is nobody to quote a
+// ticket to, and that is logged at DEBUG with no ticket. The status written is
+// unchanged either way — an implicit 200 is what writing a status at all
+// exists to prevent (internal/httpmw/txjoin_mw.go's writeJoinError explains
+// why for the joined door, but every HTTP door funnels through here).
 //
 // SECURITY NOTE: The Detail field (from err.Error()) may contain connection
 // strings or secrets when real persistence is added. Review logging of Detail
@@ -285,6 +306,20 @@ func WriteError(w http.ResponseWriter, r *http.Request, appErr *AppError) {
 		pd.Detail = appErr.Message
 
 	case LevelInternal:
+		if isClientGoneCancellation(appErr, r) {
+			// Routine: the client disconnected, nothing was wrong on this end,
+			// and there is nobody to quote a ticket to. No ticket is minted.
+			slog.Debug("client gone before request completed",
+				"message", appErr.Message,
+				"path", path,
+			)
+			if getErrorResponseMode() == "verbose" {
+				pd.Detail = appErr.Detail
+			} else {
+				pd.Detail = "SERVER_ERROR: internal error"
+			}
+			break
+		}
 		ticket := appErr.ticketOr()
 		// SECURITY NOTE: appErr.Detail may contain secrets (connection strings,
 		// credentials) once real persistence is added. Review before deploying

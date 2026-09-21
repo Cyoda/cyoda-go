@@ -258,6 +258,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Changed
 
+- **A client that goes away mid-request is logged at DEBUG, with no ticket** —
+  on HTTP (`common.WriteError`) and in gRPC (`buildErrorFields`), the two
+  funnels every error response and envelope goes through. Nothing was wrong
+  with the server and there is nobody to quote a ticket to; a compute member
+  failing over used to produce one `ERROR` line and one minted ticket per
+  queued callback, exactly when an operator wants a clean log. The status
+  written is unchanged — a request whose own feature deadline expired is
+  unaffected and still classified to `408`.
+
 - **A callout picks among a tenant's matching compute members round robin.**
   The member picked longest ago goes next; one that has just joined goes first.
   Until now the choice was whatever a Go map iteration returned first.
