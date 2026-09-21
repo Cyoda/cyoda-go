@@ -293,9 +293,9 @@ not the warnings, not the audit trail.
 
 The default belongs to an absent key alone. An explicit `"success": null` is
 not a boolean, so it is neither the default nor a flag: the answer cannot be
-read at all and is refused (`400 WORKFLOW_FAILED`, not retryable), with nothing
-else in it read either — no `payload`, and for a criterion no `matches`. A
-member that means success must omit the key or send `true`.
+read at all and is refused (`400 WORKFLOW_FAILED`, not retryable). Nothing else
+in it is read either — not its `payload`, not a criterion's `matches`, not even
+its `warnings`. A member that means success must omit the key or send `true`.
 
 The smallest successful answer is `{"requestId": "<same requestId>"}`: it says
 the processor ran, changed nothing, and the workflow should carry on. There is

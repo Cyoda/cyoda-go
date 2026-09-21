@@ -285,6 +285,30 @@ func TestDispatchCriteria_SuccessDefaultsToTrue(t *testing.T) {
 	}
 }
 
+// Nothing in an answer that cannot be read is read — not even its warnings. A
+// warning is the member's own text, and an answer whose `success` is null has
+// said nothing the platform can act on: surfacing that text while discarding
+// the verdict beside it would be trusting the same answer it has just refused.
+func TestDispatchCriteria_NullSuccessSurfacesNothing(t *testing.T) {
+	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
+	ctx := common.WithDiagnostics(testContext())
+	replyOnWire(t, registry, memberID, sentCh, handleCriteriaResponse,
+		`{"requestId":%q,"success":null,"matches":true,"warnings":["the member warns"]}`)
+
+	matches, _, err := dispatchCriteria(dispatcher, ctx, testEntity(),
+		json.RawMessage(answerCriterion), "transition", "wf1", "t1", "", "tx-1")
+	if err == nil {
+		t.Fatalf("an answer whose `success` was null was accepted as matches=%t", matches)
+	}
+	diag := common.GetDiagnostics(ctx)
+	if got := diag.GetWarnings(); len(got) != 0 {
+		t.Errorf("warnings = %v; want none: nothing is read out of an answer that could not be read", got)
+	}
+	if got := diag.GetErrors(); len(got) != 0 {
+		t.Errorf("errors = %v; want none: the member's text is read only on the failure branch", got)
+	}
+}
+
 // A function's answer: the same default. Its result is relayed, not judged, so
 // there is no verdict here for the default to stand in for.
 func TestDispatchFunction_SuccessDefaultsToTrue(t *testing.T) {

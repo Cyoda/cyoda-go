@@ -213,7 +213,17 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 	// nil response could ever have earned.
 	select {
 	case resp := <-ch:
-		// Warnings first, keyed by callout name, so that a failed try still
+		// An answer whose `success` is the literal null is read no further, and
+		// that is decided before anything in it is read at all — including its
+		// warnings, which are the member's own text reaching the client. The
+		// answer reports neither success nor failure, so surfacing its text
+		// while discarding the verdict beside it would be trusting the same
+		// answer the callout has just refused. Refused for every one of the
+		// three kinds alike.
+		if resp.NullSuccess {
+			return CalloutResult{}, memberResponseUnreadable(nullSuccessError{}, nullSuccessMessage, label, name, member.ID, requestID), nil
+		}
+		// Warnings next, keyed by callout name, so that a failed try still
 		// surfaces them and the client sees which callout warned. Bounded here,
 		// where the member's own text becomes the client's, in the same way and
 		// for the same reason as its failure message below.
@@ -230,15 +240,6 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 		if resp.Disconnected {
 			slog.Error("member disconnected mid-dispatch", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
 			return CalloutResult{}, appFailure(contract.NoAnswer, disconnectedErr(label)), nil
-		}
-		// Before the flag is read as a verdict on the work, and before a
-		// verdict, a payload or a result is read out of the answer: an answer
-		// whose `success` is the literal null reports neither success nor
-		// failure, and it is refused for every one of the three kinds alike.
-		// Its warnings have already been surfaced, as any other unreadable
-		// answer's are — a warning decides nothing.
-		if resp.NullSuccess {
-			return CalloutResult{}, memberResponseUnreadable(nullSuccessError{}, nullSuccessMessage, label, name, member.ID, requestID), nil
 		}
 		if !resp.Success {
 			failure := &contract.CalloutFailure{Kind: contract.MemberFailed, Message: label + " returned failure", Retryable: resp.Retryable}
