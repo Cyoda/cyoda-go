@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc/metadata"
+
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
 	"github.com/cyoda-platform/cyoda-go/app"
@@ -83,8 +85,11 @@ func assertEnvelope(t *testing.T, door string, env txEnvelope, err error, wantDo
 //
 // Each door is a subtest, so a door that answers wrongly neither hides the
 // others nor stops the scenario: what every door did is in the report.
-// wantDetail "" skips the message check.
-func assertRefusedOnAllDoors(t *testing.T, h *callbackHarness, pass, writeModel, readEntityID string, wantStatus int, wantCode, wantDetail string) {
+// wantDetail "" skips the message check. forbidden, when given, is a list of
+// secret substrings (a pass, a node id) that must not appear anywhere in any
+// door's raw response; a leak is reported by position, never by printing the
+// value.
+func assertRefusedOnAllDoors(t *testing.T, h *callbackHarness, pass, writeModel, readEntityID string, wantStatus int, wantCode, wantDetail string, forbidden ...string) {
 	t.Helper()
 	const child = `{"name":"late-child","amount":1,"status":"late"}`
 	problem := func(door string, call func() (callbackResult, error)) {
@@ -97,15 +102,21 @@ func assertRefusedOnAllDoors(t *testing.T, h *callbackHarness, pass, writeModel,
 			if wantDetail != "" && !strings.Contains(pd.Detail, wantDetail) {
 				t.Errorf("detail = %q; want it to contain %q", pd.Detail, wantDetail)
 			}
+			assertNoLeak(t, door, res.Body, forbidden)
 		})
 	}
 	envelope := func(door string, call func() (txEnvelope, error)) {
 		t.Run(door, func(t *testing.T) {
 			env, err := call()
 			assertEnvelope(t, door, env, err, wantCode, false)
-			if wantDetail != "" && env.Error != nil && !strings.Contains(env.Error.Message, wantDetail) {
-				t.Errorf("%s: message = %q; want it to contain %q", door, env.Error.Message, wantDetail)
+			var msg string
+			if env.Error != nil {
+				msg = env.Error.Message
 			}
+			if wantDetail != "" && !strings.Contains(msg, wantDetail) {
+				t.Errorf("%s: message = %q; want it to contain %q", door, msg, wantDetail)
+			}
+			assertNoLeak(t, door, msg, forbidden)
 		})
 	}
 	problem("http-write", func() (callbackResult, error) { return h.ReplayCreateHTTP(pass, writeModel, 1, child) })
@@ -116,6 +127,193 @@ func assertRefusedOnAllDoors(t *testing.T, h *callbackHarness, pass, writeModel,
 		return h.ReplayCreateCollectionGRPC(pass, writeModel, 1, child)
 	})
 	envelope("grpc-stream-read", func() (txEnvelope, error) { return h.ReplaySearchCollectionGRPC(pass, writeModel, 1) })
+}
+
+// assertNoLeak fails t if raw contains any of forbidden's non-empty entries —
+// a pass, a node id, or other internal text that must never reach a client.
+// The failure names the door and the entry's position only; it never prints
+// the forbidden value itself, so the assertion cannot become the leak.
+func assertNoLeak(t *testing.T, door, raw string, forbidden []string) {
+	t.Helper()
+	for i, f := range forbidden {
+		if f != "" && strings.Contains(raw, f) {
+			t.Errorf("%s: response contains forbidden value #%d (a pass, a node id, or internal text) — value withheld from this failure message", door, i)
+		}
+	}
+}
+
+// doorResult is the door-agnostic shape of a refusal: an HTTP problem
+// document and a gRPC CLIENT_ERROR envelope both reduce to it, because both
+// carry an AppError's "<code>: <message>" as the one string the client sees
+// (WriteError puts appErr.Message straight into the problem document's
+// detail; the gRPC envelope's Error.Message is the same string). Two
+// doorResults compare with ==, which is what a stolen-pass scenario needs
+// when it presents more than one pass and must show the door answered them
+// identically, not just that each matched a hardcoded expectation.
+type doorResult struct {
+	Status    int
+	Code      string
+	Retryable bool
+	Detail    string
+}
+
+// assertRefusedOnAllDoorsAs is assertRefusedOnAllDoors for a caller identity
+// other than the harness's own cached bearer. Every Replay* call and
+// assertRefusedOnAllDoors itself authenticate as the harness's own tenant, so
+// neither can express "tenant B presents tenant A's pass" — the shape a
+// stolen-pass scenario needs. wantDetail, when non-empty, is matched for
+// EQUALITY against the literal text the code gives, not a substring: a
+// stolen-pass scenario needs the exact wording the client sees, not a
+// superset of it. It returns each door's actual result keyed by name, so a
+// caller can compare what two different passes produced on the very same
+// door.
+// forbidden, when given, is a list of secret substrings (a pass, a node id)
+// that must not appear anywhere in any door's raw response; a leak is
+// reported by position, never by printing the value (see assertNoLeak).
+func assertRefusedOnAllDoorsAs(t *testing.T, h *callbackHarness, bearer, pass, writeModel, readEntityID string, wantStatus int, wantCode, wantDetail string, forbidden ...string) map[string]doorResult {
+	t.Helper()
+	const child = `{"name":"late-child","amount":1,"status":"late"}`
+	out := make(map[string]doorResult, 6)
+	httpDoor := func(door, method, path, body string) {
+		t.Run(door, func(t *testing.T) {
+			resp := h.doAuthBearer(t, bearer, method, path, body, pass)
+			raw := h.readBody(t, resp)
+			pd := assertProblem(t, resp.StatusCode, raw, wantStatus, wantCode, false)
+			if wantDetail != "" && pd.Detail != wantDetail {
+				t.Errorf("detail = %q; want exactly %q", pd.Detail, wantDetail)
+			}
+			assertNoLeak(t, door, raw, forbidden)
+			code, _ := pd.Properties["errorCode"].(string)
+			retryable, _ := pd.Properties["retryable"].(bool)
+			out[door] = doorResult{Status: resp.StatusCode, Code: code, Retryable: retryable, Detail: pd.Detail}
+		})
+	}
+	grpcDoor := func(door string, call func() (txEnvelope, error)) {
+		t.Run(door, func(t *testing.T) {
+			env, err := call()
+			assertEnvelope(t, door, env, err, wantCode, false)
+			var msg string
+			var retryable bool
+			if env.Error != nil {
+				msg = env.Error.Message
+				retryable = env.Error.Retryable != nil && *env.Error.Retryable
+			}
+			if wantDetail != "" && msg != wantDetail {
+				t.Errorf("%s: message = %q; want exactly %q", door, msg, wantDetail)
+			}
+			assertNoLeak(t, door, msg, forbidden)
+			code, _, _ := strings.Cut(msg, ": ")
+			out[door] = doorResult{Status: 0, Code: code, Retryable: retryable, Detail: msg}
+		})
+	}
+	httpDoor("http-write", http.MethodPost, "/api/entity/JSON/"+writeModel+"/1", child)
+	httpDoor("http-read", http.MethodGet, "/api/entity/"+readEntityID, "")
+	grpcDoor("grpc-write", func() (txEnvelope, error) { return h.replayCreateGRPCAs(bearer, pass, writeModel, 1, child) })
+	grpcDoor("grpc-read", func() (txEnvelope, error) { return h.replayGetGRPCAs(bearer, pass, readEntityID) })
+	grpcDoor("grpc-stream-write", func() (txEnvelope, error) {
+		return h.replayCreateCollectionGRPCAs(bearer, pass, writeModel, 1, child)
+	})
+	grpcDoor("grpc-stream-read", func() (txEnvelope, error) { return h.replaySearchCollectionGRPCAs(bearer, pass, writeModel, 1) })
+	return out
+}
+
+// grpcCtxAs is grpcCtx for an explicit bearer instead of the harness's own
+// cached one.
+func (h *callbackHarness) grpcCtxAs(bearer, joinTok string) context.Context {
+	ctx := context.Background()
+	ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+bearer)
+	if joinTok != "" {
+		ctx = metadata.AppendToOutgoingContext(ctx, internalgrpcTxTokenKey, joinTok)
+	}
+	return ctx
+}
+
+// replayCreateGRPCAs is ReplayCreateGRPC under an explicit bearer.
+func (h *callbackHarness) replayCreateGRPCAs(bearer, pass, model string, version int, payload string) (txEnvelope, error) {
+	var data map[string]any
+	if err := json.Unmarshal([]byte(payload), &data); err != nil {
+		return txEnvelope{}, fmt.Errorf("failed to read the payload: %w", err)
+	}
+	reqCE, err := internalgrpc.NewCloudEvent(internalgrpc.EntityCreateRequest, map[string]any{
+		"id":         "replay-grpc-create-as",
+		"dataFormat": "JSON",
+		"payload": map[string]any{
+			"model": map[string]any{"name": model, "version": version},
+			"data":  data,
+		},
+	})
+	if err != nil {
+		return txEnvelope{}, fmt.Errorf("failed to build create request: %w", err)
+	}
+	respCE, err := cyodapb.NewCloudEventsServiceClient(h.apiConn).EntityManage(h.grpcCtxAs(bearer, pass), reqCE)
+	if err != nil {
+		return txEnvelope{}, fmt.Errorf("failed to call EntityManage: %w", err)
+	}
+	return parseTxEnvelope(respCE)
+}
+
+// replayGetGRPCAs is ReplayGetGRPC under an explicit bearer.
+func (h *callbackHarness) replayGetGRPCAs(bearer, pass, entityID string) (txEnvelope, error) {
+	reqCE, err := internalgrpc.NewCloudEvent(internalgrpc.EntityGetRequest, map[string]any{
+		"id":       "replay-grpc-get-as",
+		"entityId": entityID,
+	})
+	if err != nil {
+		return txEnvelope{}, fmt.Errorf("failed to build get request: %w", err)
+	}
+	respCE, err := cyodapb.NewCloudEventsServiceClient(h.apiConn).EntitySearch(h.grpcCtxAs(bearer, pass), reqCE)
+	if err != nil {
+		return txEnvelope{}, fmt.Errorf("failed to call EntitySearch: %w", err)
+	}
+	return parseTxEnvelope(respCE)
+}
+
+// replayCreateCollectionGRPCAs is ReplayCreateCollectionGRPC under an
+// explicit bearer.
+func (h *callbackHarness) replayCreateCollectionGRPCAs(bearer, pass, model string, version int, payload string) (txEnvelope, error) {
+	var data map[string]any
+	if err := json.Unmarshal([]byte(payload), &data); err != nil {
+		return txEnvelope{}, fmt.Errorf("failed to read the payload: %w", err)
+	}
+	reqCE, err := internalgrpc.NewCloudEvent(internalgrpc.EntityCreateCollectionRequest, map[string]any{
+		"id":         "replay-grpc-create-collection-as",
+		"dataFormat": "JSON",
+		"payloads": []any{map[string]any{
+			"model": map[string]any{"name": model, "version": version},
+			"data":  data,
+		}},
+	})
+	if err != nil {
+		return txEnvelope{}, fmt.Errorf("failed to build create-collection request: %w", err)
+	}
+	stream, err := cyodapb.NewCloudEventsServiceClient(h.apiConn).EntityManageCollection(h.grpcCtxAs(bearer, pass), reqCE)
+	if err != nil {
+		return txEnvelope{}, fmt.Errorf("failed to call EntityManageCollection: %w", err)
+	}
+	return firstStreamEnvelope(stream)
+}
+
+// replaySearchCollectionGRPCAs is ReplaySearchCollectionGRPC under an
+// explicit bearer.
+func (h *callbackHarness) replaySearchCollectionGRPCAs(bearer, pass, model string, version int) (txEnvelope, error) {
+	reqCE, err := internalgrpc.NewCloudEvent(internalgrpc.EntitySearchRequest, map[string]any{
+		"id":    "replay-grpc-search-collection-as",
+		"model": map[string]any{"name": model, "version": version},
+		"condition": map[string]any{
+			"type":         "simple",
+			"jsonPath":     "$.status",
+			"operatorType": "EQUALS",
+			"value":        "late",
+		},
+	})
+	if err != nil {
+		return txEnvelope{}, fmt.Errorf("failed to build search request: %w", err)
+	}
+	stream, err := cyodapb.NewCloudEventsServiceClient(h.apiConn).EntitySearchCollection(h.grpcCtxAs(bearer, pass), reqCE)
+	if err != nil {
+		return txEnvelope{}, fmt.Errorf("failed to call EntitySearchCollection: %w", err)
+	}
+	return firstStreamEnvelope(stream)
 }
 
 // ReplayCreateCollectionGRPC presents a recorded pass on the gRPC
@@ -268,6 +466,43 @@ func (h *callbackHarness) countEntities(t *testing.T, model string) int {
 		t.Fatalf("decode list of %s: %v (body: %s)", model, err, body)
 	}
 	return len(list)
+}
+
+// countEntitiesAs is countEntities under an explicit bearer, for asserting
+// that a refused write did not land in ANOTHER tenant's space either — the
+// space the pass's own tenant does not own and countEntities cannot see.
+func (h *callbackHarness) countEntitiesAs(t *testing.T, bearer, model string) int {
+	t.Helper()
+	resp := h.doAuthBearer(t, bearer, http.MethodGet, fmt.Sprintf("/api/entity/%s/1", model), "", "")
+	body := h.readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list %s: %d %s", model, resp.StatusCode, body)
+	}
+	var list []map[string]any
+	if err := json.Unmarshal([]byte(body), &list); err != nil {
+		t.Fatalf("decode list of %s: %v (body: %s)", model, err, body)
+	}
+	return len(list)
+}
+
+// setupModelWithWorkflowAs is SetupModelWithWorkflow under an explicit
+// bearer, so a scenario can give a second tenant its own copy of a model —
+// needed to make an entity count in that tenant's space meaningful rather
+// than an artifact of the model never having existed there.
+func (h *callbackHarness) setupModelWithWorkflowAs(t *testing.T, bearer, entityName, workflowJSON string) {
+	t.Helper()
+	resp := h.doAuthBearer(t, bearer, http.MethodPost, fmt.Sprintf("/api/model/import/JSON/SAMPLE_DATA/%s/1", entityName), workflowSampleModel, "")
+	if body := h.readBody(t, resp); resp.StatusCode != http.StatusOK {
+		t.Fatalf("import model %s: %d %s", entityName, resp.StatusCode, body)
+	}
+	resp = h.doAuthBearer(t, bearer, http.MethodPut, fmt.Sprintf("/api/model/%s/1/lock", entityName), "", "")
+	if body := h.readBody(t, resp); resp.StatusCode != http.StatusOK {
+		t.Fatalf("lock model %s: %d %s", entityName, resp.StatusCode, body)
+	}
+	resp = h.doAuthBearer(t, bearer, http.MethodPost, fmt.Sprintf("/api/model/%s/1/workflow/import", entityName), workflowJSON, "")
+	if body := h.readBody(t, resp); resp.StatusCode != http.StatusOK {
+		t.Fatalf("import workflow %s: %d %s", entityName, resp.StatusCode, body)
+	}
 }
 
 // joinedRequest is h.callback with a context of the caller's, so a scenario
