@@ -38,7 +38,11 @@ for f in glob.glob(os.path.join(CLEAN, '**', '*.json'), recursive=True):
     content = content.replace('\"type\": \"any\"', '\"description\": \"arbitrary JSON\"')
     content = re.sub(r',(\s*[}\]])', r'\1', content)
 
-    # Step 3: Inline BaseEvent fields into schemas that extend it.
+    # Step 3: Inline BaseEvent's fields into the schemas that compose with it.
+    # go-jsonschema resolves the allOf itself, but into a different shape:
+    # BaseEvent declared twice, and the per-schema error object collapsed into
+    # one type named after whichever schema was read first — a rename of public
+    # wire types. Inline here instead, and keep the generated output stable.
     try:
         schema = json.loads(content)
     except json.JSONDecodeError:
