@@ -579,3 +579,28 @@ func TestSchedulerRPC_SealedForOneNodeRefusedByAnother(t *testing.T) {
 		t.Error("a fire sealed for another node reached the engine")
 	}
 }
+
+// TestSchedulerRPCClient_TransportRules reads the client's transport rather
+// than exercising it: Go exempts loopback from proxying, so a test server on
+// 127.0.0.1 could never show a proxy being used. The rule is the hand-over
+// transport's — a sealed request goes only to the address peeraddr.Validate
+// saw, and a proxy taken from the environment sends it somewhere that address
+// never was. Unlike the hand-over client, this one keeps its whole-call
+// Timeout: CYODA_DISPATCH_FORWARD_TIMEOUT is the delegated fire's whole budget.
+func TestSchedulerRPCClient_TransportRules(t *testing.T) {
+	c := NewSchedulerRPCClient(newTestAuth(t), 5*time.Second)
+
+	tr, ok := c.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport = %T, want a transport of the client's own — the default one proxies from the environment", c.httpClient.Transport)
+	}
+	if tr.Proxy != nil {
+		t.Error("the scheduler RPC transport has a proxy: a sealed fire would go to an address the guard never saw")
+	}
+	if c.httpClient.Timeout != 5*time.Second {
+		t.Errorf("Timeout = %v, want the whole-call budget it was constructed with", c.httpClient.Timeout)
+	}
+	if c.httpClient.CheckRedirect == nil {
+		t.Error("the scheduler RPC client follows redirects")
+	}
+}

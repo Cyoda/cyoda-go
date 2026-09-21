@@ -908,9 +908,16 @@ died. Opening the connection is bounded by `CYODA_DISPATCH_CONNECT_TIMEOUT`
 (TCP connect and TLS handshake); the wait for the answer is a deadline the owner
 puts on the request's context — tries left × answer limit +
 `CYODA_CALLOUT_HANDOVER_ALLOWANCE`, never past the callout's deadline — and the
-transport has no timeout of its own beyond the connect. It uses no proxy and
-follows no redirect. `CYODA_DISPATCH_FORWARD_TIMEOUT` bounds the scheduler's
-peer RPC only.
+transport has no timeout of its own beyond the connect. Opening the connection
+includes resolving a node address that is a hostname, so the name lookup the
+SSRF guard makes runs under the connect timeout too, inside the hand-over's own
+context.
+
+No client that talks to another node uses a proxy or follows a redirect — the
+hand-over transport, the scheduler's peer RPC, the HTTP reverse proxy and the
+pooled gRPC client alike. Both would send a request to an address the peer
+address guard never validated, which is the pivot that guard exists to close.
+`CYODA_DISPATCH_FORWARD_TIMEOUT` bounds the scheduler's peer RPC only.
 
 **How the owner reads an answer.** Only a decoded, authenticated answer whose
 outcome is `no_handoff` with no try used means nothing reached a compute member;

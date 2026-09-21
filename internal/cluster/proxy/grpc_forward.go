@@ -59,7 +59,12 @@ func (p *ClientPool) Get(ctx context.Context, addr string) (*grpc.ClientConn, er
 	if conn, ok := p.conns[target]; ok {
 		return conn, nil
 	}
-	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// Never a proxy: grpc-go's default dialer reads the environment's proxy
+	// settings, and through one the call goes to an address the guard above
+	// never validated.
+	conn, err := grpc.NewClient(target,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithNoProxy())
 	if err != nil {
 		return nil, err
 	}

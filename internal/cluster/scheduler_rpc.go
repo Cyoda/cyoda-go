@@ -156,9 +156,20 @@ type SchedulerRPCClient struct {
 // dispatch.NewDispatchHandler for processor/criteria dispatch.
 func NewSchedulerRPCClient(auth dispatch.PeerAuth, timeout time.Duration) *SchedulerRPCClient {
 	return &SchedulerRPCClient{
-		auth:       auth,
-		timeout:    timeout,
-		httpClient: &http.Client{Timeout: timeout, CheckRedirect: peeraddr.RefuseRedirects},
+		auth:    auth,
+		timeout: timeout,
+		httpClient: &http.Client{
+			Timeout:       timeout,
+			CheckRedirect: peeraddr.RefuseRedirects,
+			// A transport of its own, never http.DefaultTransport: that one
+			// takes a proxy from the environment, and through it the sealed
+			// fire goes to an address peeraddr.Validate never saw — the same
+			// pivot refusing redirects closes, reached from the environment
+			// instead of from the network. Keep-alives are kept: unlike a
+			// hand-over, nothing here turns on telling a peer that is down
+			// from one that took the work.
+			Transport: &http.Transport{Proxy: nil},
+		},
 	}
 }
 
