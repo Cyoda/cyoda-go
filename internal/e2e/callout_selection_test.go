@@ -94,9 +94,15 @@ func TestCalloutSelection_TwoTenantsOneTag(t *testing.T) {
 		const tag = "s11-shared-fail"
 		h.SetupModelWithWorkflow(t, "s11-shared-fail-a", chainWorkflowJSON("s11-shared-fail-wf", procSpec{"s11-proc", "SYNC",
 			map[string]any{"calculationNodesTags": tag, "responseTimeoutMs": 300, "idempotent": true}}))
+		// b-healthy attaches FIRST: without the tenant comparison in
+		// MemberRegistry.Candidates, round robin's "never picked yet" tie-break
+		// would put it first in tenant A's own pool and try 1 would go to it —
+		// giving this scenario teeth against that revert (see the report for
+		// the failure text). With the tenant comparison in place, b-healthy is
+		// never a candidate for tenant A's callout regardless of attach order.
+		b := h.AttachCnode(t, cnodeSpec{name: "b-healthy", tags: []string{tag}, bearer: bearerB})
 		a1 := h.AttachCnode(t, cnodeSpec{name: "a1", tags: []string{tag}, script: scriptAlways(neverAnswer())})
 		a2 := h.AttachCnode(t, cnodeSpec{name: "a2", tags: []string{tag}, script: scriptAlways(neverAnswer())})
-		b := h.AttachCnode(t, cnodeSpec{name: "b-healthy", tags: []string{tag}, bearer: bearerB})
 
 		_, status, body := h.CreateEntity(t, "s11-shared-fail-a", 1, workflowSampleModel)
 		pd := assertProblem(t, status, body, http.StatusServiceUnavailable, "CALLOUT_FAILED", true)
@@ -109,6 +115,27 @@ func TestCalloutSelection_TwoTenantsOneTag(t *testing.T) {
 		}
 		if got := b.Received(); len(got) != 0 {
 			t.Errorf("tenant B's healthy cnode received %d of tenant A's callouts", len(got))
+		}
+	})
+
+	// TestCalloutSelection_TwoTenantsOneTag/a-tenant-with-no-member-of-its-own
+	// covers the matrix cell distinct from "routing": there, both tenants had
+	// their own cnode; here, tenant A has none at all for this tag, and only
+	// tenant B does. Tenant A must be told NO_COMPUTE_MEMBER_FOR_TAG — never
+	// served by borrowing tenant B's cnode.
+	t.Run("a-tenant-with-no-member-of-its-own-gets-none-of-anothers", func(t *testing.T) {
+		const tag = "s11-only-b"
+		h.SetupModelWithWorkflow(t, "s11-only-b-a", chainWorkflowJSON("s11-only-b-wf",
+			procSpec{"s11-proc", "SYNC", map[string]any{"calculationNodesTags": tag}}))
+		b := h.AttachCnode(t, cnodeSpec{name: "b-only", tags: []string{tag}, bearer: bearerB})
+
+		_, status, body := h.CreateEntity(t, "s11-only-b-a", 1, workflowSampleModel)
+		pd := assertProblem(t, status, body, http.StatusServiceUnavailable, "NO_COMPUTE_MEMBER_FOR_TAG", true)
+		if strings.Contains(pd.Detail, b.MemberID()) {
+			t.Errorf("detail = %q; it names tenant B's cnode %s", pd.Detail, b.MemberID())
+		}
+		if got := b.Received(); len(got) != 0 {
+			t.Errorf("tenant B's cnode received %d of tenant A's callouts; want 0 — tenant A has no member of its own for this tag", len(got))
 		}
 	})
 }
