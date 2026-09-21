@@ -428,13 +428,25 @@ func criterionWorkflowJSON(wfName, critName string, config map[string]any) strin
 }
 
 // workflowDocJSON wraps states in a schema 1.5 import document — the minor
-// that accepts a processor's idempotent and a criterion's retryPolicy.
+// that accepts a processor's idempotent and a criterion's retryPolicy — with
+// no workflow-level criterion.
 func workflowDocJSON(wfName string, states map[string]any) string {
+	return workflowDocWithCriterionJSON(wfName, nil, states)
+}
+
+// workflowDocWithCriterionJSON is workflowDocJSON with the workflow's own
+// criterion — the one a transitions query evaluates, since listing a state's
+// transitions evaluates none of theirs. A nil criterion is left out.
+func workflowDocWithCriterionJSON(wfName string, criterion any, states map[string]any) string {
+	wf := map[string]any{
+		"version": "1.5", "name": wfName, "initialState": "NONE", "active": true, "states": states,
+	}
+	if criterion != nil {
+		wf["criterion"] = criterion
+	}
 	b, _ := json.Marshal(map[string]any{
 		"importMode": "REPLACE",
-		"workflows": []any{map[string]any{
-			"version": "1.5", "name": wfName, "initialState": "NONE", "active": true, "states": states,
-		}},
+		"workflows":  []any{wf},
 	})
 	return string(b)
 }
