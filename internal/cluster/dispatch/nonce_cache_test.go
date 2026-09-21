@@ -121,3 +121,61 @@ func TestNonceCache_DifferentNonceLengthsDistinct(t *testing.T) {
 		t.Fatalf("verdict = %d for b, want nonceFresh: the cache is not byte-distinct", got)
 	}
 }
+
+// A request refused for capacity leaves no entry behind, so without a
+// watermark the very same envelope is accepted once the cache has room: an
+// attacker on the path between nodes who captured it re-delivers it, the node
+// runs it, and a processor that is not repeat-safe runs a second time — the
+// owner having been told, under seal, that nothing was handed over.
+//
+// The refusal therefore raises a "refuse at or before" watermark to the refused
+// request's own timestamp. The replay is refused identically for as long as it
+// could still verify, and a genuine request caught by it costs no try.
+func TestNonceCache_ARefusalForCapacityIsNotUndoneByRoom(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	now := base
+	c := newNonceCache(60*time.Second, 1, func() time.Time { return now })
+
+	recorded := []byte("aaaaaaaaaaaa")
+	refused := []byte("bbbbbbbbbbbb")
+	if got := c.checkAndRecord(recorded, base); got != nonceFresh {
+		t.Fatalf("verdict = %d, want nonceFresh", got)
+	}
+	if got := c.checkAndRecord(refused, base); got != nonceCacheFull {
+		t.Fatalf("verdict = %d, want nonceCacheFull", got)
+	}
+
+	// The cache empties: the one entry ages out.
+	now = base.Add(90 * time.Second)
+	if got := c.checkAndRecord(refused, base); got != nonceCacheFull {
+		t.Fatalf("verdict = %d, want nonceCacheFull — the refused envelope is replayable again", got)
+	}
+
+	// A request stamped after the watermark is unaffected: the node is working
+	// normally again.
+	later := []byte("cccccccccccc")
+	if got := c.checkAndRecord(later, base.Add(time.Second)); got != nonceFresh {
+		t.Fatalf("verdict = %d, want nonceFresh for a request stamped after the refusal", got)
+	}
+}
+
+// The watermark only ever rises: a refusal of an older request does not lower
+// it, which would re-open the envelopes a later refusal closed.
+func TestNonceCache_TheWatermarkOnlyRises(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	now := base
+	c := newNonceCache(60*time.Second, 1, func() time.Time { return now })
+
+	c.checkAndRecord([]byte("aaaaaaaaaaaa"), base)
+	if got := c.checkAndRecord([]byte("bbbbbbbbbbbb"), base.Add(10*time.Second)); got != nonceCacheFull {
+		t.Fatalf("verdict = %d, want nonceCacheFull", got)
+	}
+	// An older request is refused too, and must not pull the watermark back.
+	if got := c.checkAndRecord([]byte("cccccccccccc"), base.Add(2*time.Second)); got != nonceCacheFull {
+		t.Fatalf("verdict = %d, want nonceCacheFull", got)
+	}
+	now = base.Add(90 * time.Second)
+	if got := c.checkAndRecord([]byte("dddddddddddd"), base.Add(5*time.Second)); got != nonceCacheFull {
+		t.Fatalf("verdict = %d, want nonceCacheFull — the watermark was pulled back", got)
+	}
+}
