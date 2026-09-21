@@ -36,21 +36,21 @@ gRPC error envelope example (returned in the CloudEvent response payload):
 
 ```json
 {
+  "success": false,
   "error": {
-    "code": "ENTITY_NOT_FOUND",
-    "message": "entity id=abc not found",
-    "retryable": false
+    "code": "CLIENT_ERROR",
+    "message": "ENTITY_NOT_FOUND: entity id=abc not found"
   }
 }
 ```
 
-The gRPC response also carries `errorCode` and `retryable` in trailer metadata.
+The envelope's `code` is coarse — `CLIENT_ERROR` for a `4xx` and for a retryable `503`, `SERVER_ERROR` for a ticketed `5xx`. The error code of this index is the prefix of `message`, up to the first colon. `retryable` is present, and `true`, only when the operation may be run again as it is; it is omitted otherwise. Nothing is carried in gRPC metadata or trailers.
 
 ## DESCRIPTION
 
 Every error response from the Cyoda REST API carries a structured `errorCode` in the `properties` object. Multiple codes may share the same HTTP status. Programmatic handling keys on `errorCode`, not HTTP status.
 
-The `retryable` property is present and `true` only when the operation is safe to retry as-is (e.g., transient cluster conditions). When absent or `false`, the request or system state must change before retrying.
+The `retryable` property is present and `true` only when the operation is safe to retry as-is (e.g., transient cluster conditions). When absent or `false`, the request or system state must change before retrying. For a failed processor, criterion or function callout, `retryable: true` speaks for Cyoda's own state only — see `errors.DISPATCH_TIMEOUT`.
 
 5xx responses include a `ticket` UUID for server-side log correlation. Share this value when reporting issues.
 
@@ -62,11 +62,11 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.CALLOUT_FAILED` — `503` — retryable — a processor, criterion or function callout was tried on more than one compute member and no try produced an answer; the message lists the tries
 - `errors.CALLOUT_SUPERSEDED` — `410` — not retryable — request carrying a transaction token belongs to a compute node that was replaced, or to a callout that has ended
 - `errors.CLUSTER_NODE_NOT_REGISTERED` — `503` — retryable — target cluster node is not present in the gossip registry
-- `errors.COMPUTE_MEMBER_DISCONNECTED` — `503` — retryable — compute member holding a processor assignment has disconnected
+- `errors.COMPUTE_MEMBER_DISCONNECTED` — `503` — retryable — the compute member tried for a callout went away, before or after it was handed the work
 - `errors.CONFLICT` — `409` — retryable — generic 409 used by storage-level transaction serialization aborts (`RetryableConflict`); permanent business-logic conflicts use a specific code instead (e.g. `MODEL_ALREADY_LOCKED`, `ENTITY_MODIFIED`)
 - `errors.DELETE_NOT_CONVERGED` — `409` — retryable — batched delete (`transactionSize`) kept finding newly created matching entities and was stopped at its batch cap; earlier batches stay deleted
-- `errors.DISPATCH_FORWARD_FAILED` — `503` — retryable — HTTP forwarding call to peer node failed
-- `errors.DISPATCH_TIMEOUT` — `503` — retryable (see note) — compute member did not respond within the dispatch timeout; completion on the remote node is not guaranteed
+- `errors.DISPATCH_FORWARD_FAILED` — `503` — retryable — a callout was handed over to another cluster node and no usable answer came back; the work may have run
+- `errors.DISPATCH_TIMEOUT` — `503` — retryable (see note) — a compute member did not take, or did not answer, a callout within its answer limit; the work may have run
 - `errors.DUPLICATE_AGGREGATION_ALIAS` — `400` — not retryable — two grouped-stats aggregations over different `(op, field)` pairs resolve to the same response key
 - `errors.DUPLICATE_GROUP_BY` — `400` — not retryable — the same grouped-stats `groupBy` dimension was listed twice
 - `errors.ENTITY_MODEL_MISMATCH` — `400` — not retryable — a save targeted an existing entity under a different model; an entity's model is fixed at creation
@@ -94,7 +94,7 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.MODEL_HAS_ENTITIES` — `409` — not retryable — unlock or delete blocked because at least one entity of the model exists
 - `errors.MODEL_NOT_FOUND` — `404` — not retryable — referenced entity model does not exist in the tenant's model registry
 - `errors.MODEL_NOT_LOCKED` — `409` — not retryable — model exists but is not in `LOCKED` state; entity writes require a locked model
-- `errors.NO_COMPUTE_MEMBER_FOR_TAG` — `503` — retryable — no live cluster node advertises the compute tag required by the processor
+- `errors.NO_COMPUTE_MEMBER_FOR_TAG` — `503` — retryable — no compute member for the required tag appeared, on any cluster node, within `CYODA_DISPATCH_WAIT_TIMEOUT`; no try was made
 - `errors.NOT_FOUND` — `404` — not retryable — generic resource not found, used by admin endpoints (key pair lifecycle, trusted-key lifecycle); domain-specific resources have their own codes
 - `errors.NOT_IMPLEMENTED` — `501` — not retryable — endpoint is defined but has no functional implementation in this version
 - `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — not retryable — operation attempted on a search job that has already completed, failed, or been cancelled
@@ -120,7 +120,7 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.UNSUPPORTED_ALGORITHM` — `400` — not retryable — Requested JWT algorithm not supported in this version.
 - `errors.UNSUPPORTED_KEY_TYPE` — `400` — not retryable — JWK `kty` not supported in this version.
 - `errors.VALIDATION_FAILED` — `400` — not retryable — payload is structurally valid JSON but fails the model's schema or workflow validation rules
-- `errors.WORKFLOW_FAILED` — `400` — not retryable — workflow processor or guard condition returned a failure during state transition
+- `errors.WORKFLOW_FAILED` — `400` — retryable only when the compute member said so — a workflow processor, criterion or schedule function returned a failure, or the workflow configuration cannot be evaluated
 - `errors.WORKFLOW_NOT_FOUND` — `404` — not retryable — workflow definition referenced by the entity model does not exist
 
 ## SEE ALSO

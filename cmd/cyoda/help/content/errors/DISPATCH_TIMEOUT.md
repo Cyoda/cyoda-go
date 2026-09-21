@@ -7,6 +7,7 @@ see_also:
   - errors.DISPATCH_FORWARD_FAILED
   - errors.NO_COMPUTE_MEMBER_FOR_TAG
   - errors.COMPUTE_MEMBER_DISCONNECTED
+  - errors.CALLOUT_FAILED
   - grpc
 ---
 
@@ -14,26 +15,30 @@ see_also:
 
 ## NAME
 
-DISPATCH_TIMEOUT — the dispatcher waited longer than the configured timeout for a compute member to accept and complete a task.
+DISPATCH_TIMEOUT — a compute member did not take, or did not answer, a processor, criterion or function callout within the callout's answer limit.
 
 ## SYNOPSIS
 
-HTTP: `503` `Service Unavailable`.
+HTTP: `503` `Service Unavailable`. Retryable: `yes`.
 
 ## DESCRIPTION
 
-A workflow processor, criteria evaluation, or function callout was dispatched to a compute member but the response did not arrive within the callout's own `responseTimeoutMs` (a field on the processor, criteria, or function config; default `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS`, `30000` ms) — not any cluster forwarding timeout.
+The answer limit is the callout's own `responseTimeoutMs` (a field on the processor, criterion or function config), or `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS` when that is not set.
 
-The error message names which of two phases timed out:
+The error message names which of two phases ran out of time:
 
-- **member not draining** — the compute member had stopped reading its stream, so the request could not even be handed to it.
-- **no response** — the member took the request but did not answer in time.
+- **member not draining** — the compute member had stopped reading its stream, so the request could not even be handed to it. The work provably never left the node, and another compute member is tried, whatever the callout is.
+- **no response** — the member took the request but did not answer in time. The work may have run. Another member is tried only for a criterion, a function, or a processor whose configuration declares `idempotent: true`.
 
-A member that is not draining is evicted within `CYODA_KEEPALIVE_TIMEOUT` seconds; dispatches to it after that return `errors.COMPUTE_MEMBER_DISCONNECTED` and route to another member instead.
+A message that says **cut off at the callout deadline** is the same failure, caused by the limit on the time one callout may take as a whole rather than by one member's answer limit.
 
-Retryable. Completion on the remote node is not guaranteed; retries must be idempotent or carry an idempotency key.
+This code reaches the client when it was the only try made — `retryPolicy: NONE`, a processor that is not idempotent, or no other compute member to try. When more than one try failed the code is `errors.CALLOUT_FAILED`, which lists them.
 
-If timeouts recur, check compute member load and network latency. `CYODA_DISPATCH_WAIT_TIMEOUT` governs how long a node polls for a peer that serves the tag; `CYODA_DISPATCH_CONNECT_TIMEOUT` bounds only opening the connection for a hand-over to another node; `CYODA_DISPATCH_FORWARD_TIMEOUT` governs the scheduler's node-to-node call only. None of the three is this timeout — see `cyoda help config cluster`.
+A member that is not draining is evicted within `CYODA_KEEPALIVE_TIMEOUT` seconds.
+
+Retryable. `retryable: true` speaks for Cyoda's state only. With a `SYNC` or `ASYNC_SAME_TX` processor, a criterion, or a schedule function, the operation failed and its transaction was rolled back, so running it again starts clean — unless an earlier `COMMIT_BEFORE_DISPATCH` processor of the same request had already committed. With a `COMMIT_BEFORE_DISPATCH` processor the part of the operation before the callout stays committed. (An `ASYNC_NEW_TX` processor's failure never reaches the client: the operation continues.) A compute member that was handed the work may have carried it out; what it did outside Cyoda is the application's to reconcile.
+
+If timeouts recur, check compute member load and network latency. `CYODA_DISPATCH_WAIT_TIMEOUT` is how long a callout waits for a compute member to exist; it is not this limit — see `cyoda help config cluster`.
 
 ## SEE ALSO
 
@@ -41,4 +46,5 @@ If timeouts recur, check compute member load and network latency. `CYODA_DISPATC
 - errors.DISPATCH_FORWARD_FAILED
 - errors.NO_COMPUTE_MEMBER_FOR_TAG
 - errors.COMPUTE_MEMBER_DISCONNECTED
+- errors.CALLOUT_FAILED
 - grpc

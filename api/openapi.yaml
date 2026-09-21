@@ -11938,9 +11938,12 @@ components:
           schema:
             $ref: '#/components/schemas/ProblemDetail'
     ServiceUnavailable:
-      description: The storage layer could not serve the request — no connection
-        available within the acquire timeout, the transaction was reclaimed by the
-        idle-in-transaction ceiling, or the connection was lost. Retryable.
+      description: The request could not be served — the storage layer could not
+        supply a connection within the acquire timeout, the transaction was
+        reclaimed by the idle-in-transaction ceiling, the connection was lost, or a
+        processor, criterion or function callout could not be completed
+        (CALLOUT_FAILED, NO_COMPUTE_MEMBER_FOR_TAG, DISPATCH_TIMEOUT,
+        COMPUTE_MEMBER_DISCONNECTED, DISPATCH_FORWARD_FAILED). Retryable.
       content:
         application/problem+json:
           schema:

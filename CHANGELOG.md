@@ -83,6 +83,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   try's answer limit plus `CYODA_CALLOUT_PASS_ALLOWANCE` (default `30s`). The
   variable is ignored if set; remove it from deployment configuration.
 
+- **A single node with no matching compute member waits out
+  `CYODA_DISPATCH_WAIT_TIMEOUT` (default 5 s) before failing** with
+  `NO_COMPUTE_MEMBER_FOR_TAG`; it used to fail at once. Set the value to `0`
+  to keep the old behaviour.
+
 ### Added
 
 - **`ENTITY_MODEL_MISMATCH` (`400`).** An entity's model reference — its
@@ -130,6 +135,24 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **`cyoda.callout.handovers`** (counter, by `outcome`): callouts handed over
   to another node.
 
+- **A callout is tried on more than one compute member.** `retryPolicy`
+  selects the number of tries for a processor, a criterion and a schedule
+  function: `NONE` is one try, `FIXED` or unset is one plus
+  `CYODA_RETRY_FIXED_NUM_RETRIES`. A member that could not be handed the work
+  is always replaced; after the hand-off, only a criterion, a function, or a
+  processor declaring `idempotent: true` moves on. The node that owns the
+  request tries its own members first and then hands the callout, with the
+  tries left, to one cluster node after another. New error code
+  `CALLOUT_FAILED` (`503`, retryable) lists the failed tries when there was
+  more than one. See `docs/cloud-parity/callout-failover.md`.
+
+- **A compute member's `retryable: true` reaches the client**:
+  `WORKFLOW_FAILED` is marked retryable exactly when the member that failed
+  said so, on HTTP and in the gRPC envelope, and across cluster nodes.
+
+- Metrics `cyoda.callout.tries`, `cyoda.callout.wait.duration`; span
+  attributes `callout.tries`, `callout.handover`, `callout.waited_ms`.
+
 ### Changed
 
 - **A callout picks among a tenant's matching compute members round robin.**
@@ -169,6 +192,20 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   inner `processor dispatch failed:` segment.** `WORKFLOW_FAILED` now reads
   `processor <name> failed: <the member's message>` (for a criterion,
   `failed to evaluate transition criterion: <the member's message>`).
+
+- `CYODA_DISPATCH_WAIT_TIMEOUT` is how long a callout waits for a compute
+  member to exist — once per callout, event-driven, on a single node as in a
+  cluster.
+
+- A schedule function's failure names the function:
+  `schedule function <name> failed: <the member's message>`.
+
+- `cyoda.dispatch.duration` measures a whole callout, all tries included;
+  its buckets run to 300 s.
+
+- A request cancelled by its client during a cross-node callout ends with
+  the request's own cancellation (408 `TRANSACTION_TIMEOUT` when the
+  client's limit fired), no longer with a retryable `DISPATCH_FORWARD_FAILED`.
 
 ### Fixed
 
@@ -400,6 +437,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 - **A node whose dispatch replay cache is full no longer fails callouts handed
   to it**; it answers that it took no work, and the next node is asked.
+
+- The help index claimed gRPC responses carry `errorCode` and `retryable` in
+  trailer metadata, and showed an envelope `code` that is never sent. Neither
+  was true; `errors` now shows the envelope as it is.
 
 ## [0.8.4] — 2026-09-09
 
