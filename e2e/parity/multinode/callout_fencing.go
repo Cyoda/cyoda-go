@@ -120,11 +120,17 @@ func RunCallout_PassFromAnotherPnode(t *testing.T, fixture MultiNodeFixture) {
 		cbRouteSetupModel(t, owner, secondary, cbRouteSampleSecondary, cbRouteSecondaryWorkflow)
 
 		late := StartComputeClientOrSkip(t, fixture, 1, parity.ComputeClientSpec{TenantID: tenant.ID, Tags: []string{tagLate}, Behaviour: parity.ComputeBehaviourLateCallback})
-		hold := StartComputeClientOrSkip(t, fixture, 1, parity.ComputeClientSpec{TenantID: tenant.ID, Tags: []string{tagHold}, Behaviour: parity.ComputeBehaviourStall})
+		// hold serves the catalog's slow-configurable processor: it keeps the
+		// owner's transaction open (inline, via ASYNC_NEW_TX's savepoint) just
+		// long enough for the assertion below, then answers normally after a
+		// short, bounded sleep rather than never answering — catalog.go's
+		// sleep_ms is honoured, so a used-up hold costs milliseconds, not the
+		// full answer limit.
+		hold := StartComputeClientOrSkip(t, fixture, 1, parity.ComputeClientSpec{TenantID: tenant.ID, Tags: []string{tagHold}})
 		mnWarmUp(t, fixture, owner, tenant, 1, "mn-pass-ended-w")
 		cbRouteSetupModel(t, owner, primary, cbRouteSampleNoWriteback, mnWorkflow("mn-pass-ended-wf",
 			mnProc("late", "ASYNC_NEW_TX", tagLate, cbRouteContext(secondary, "mn-pass-ended"), map[string]any{"responseTimeoutMs": 500}),
-			mnProc("hold", "ASYNC_NEW_TX", tagHold, "", map[string]any{"responseTimeoutMs": 5000})))
+			mnProc("slow-configurable", "ASYNC_NEW_TX", tagHold, `{"sleep_ms": 300}`, map[string]any{"responseTimeoutMs": 1500})))
 
 		done := mnGoCreate(t, owner, primary, mnSample)
 		parity.AwaitReceived(t, hold, 1, 15*time.Second) // the first callout has ended; the transaction is open
@@ -162,8 +168,13 @@ func RunCallout_MinorAbsorbedAcrossHandOvers(t *testing.T, fixture MultiNodeFixt
 	try2 := StartComputeClientOrSkip(t, fixture, 1, parity.ComputeClientSpec{TenantID: tenant.ID, Tags: []string{tag}, Behaviour: parity.ComputeBehaviourLateCallback})
 	mnWarmUp(t, fixture, owner, tenant, 1, "mn-minor-w1")
 	mnWarmUp(t, fixture, owner, tenant, 2, "mn-minor-w2", tag) // the healthy one, on pnode 2
+	// Not answering IS the behaviour under test here (both tries, then the
+	// hand-over), so responseTimeoutMs stays a real dispatch timeout — just
+	// the smallest one that stays deterministic on a real cluster (the same
+	// bound calloutShortLimit uses elsewhere for a compute client that never
+	// answers).
 	cbRouteSetupModel(t, owner, primary, cbRouteSampleCreateSecondary, mnWorkflow("mn-minor-wf",
-		mnProc("cb-create-secondary", "SYNC", tag, cbRouteContext(secondary, "mn-minor"), map[string]any{"idempotent": true, "responseTimeoutMs": 4000})))
+		mnProc("cb-create-secondary", "SYNC", tag, cbRouteContext(secondary, "mn-minor"), map[string]any{"idempotent": true, "responseTimeoutMs": 300})))
 
 	for attempt := 1; attempt <= 10; attempt++ {
 		done := mnGoCreate(t, owner, primary, cbRouteSampleCreateSecondary)
@@ -186,7 +197,7 @@ func RunCallout_MinorAbsorbedAcrossHandOvers(t *testing.T, fixture MultiNodeFixt
 		}
 
 		// pnode 1 was asked first: try (M,1) went to try1, which holds it.
-		parity.AwaitReceived(t, try2, 1, 15*time.Second) // after 4s: try (M,2) went to try2
+		parity.AwaitReceived(t, try2, 1, 15*time.Second) // after 300ms: try (M,2) went to try2
 		cb2 := mnLastCallback(t, try2.Release(t))
 		if cb2.HTTPStatus != http.StatusOK || (cb2.GRPCAttempted && !cb2.GRPCSuccess) {
 			t.Fatalf("the second try's callback: HTTP %d %s, gRPC success=%t; want admitted — a higher minor is absorbed",
