@@ -200,7 +200,7 @@ func newCallbackHarnessConfigured(t *testing.T, configure func(*app.Config)) *ca
 		Roles:        "ROLE_ADMIN,ROLE_M2M",
 	}
 	// IMPORTANT: do NOT set cfg.ExternalProcessing — leaving it nil selects the
-	// real gRPC ProcessorDispatcher, which mints and attaches the cyodatxtoken.
+	// owner's loop over the real dispatcher, which mints and attaches the cyodatxtoken.
 
 	// Discover the HTTP port before constructing the app (the JWKS validator URL
 	// is built from cfg.HTTPPort and must match the live server).

@@ -1964,5 +1964,4 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 | Max state visits per workflow | 10 | Configurable | Prevents infinite loops in workflow cascading. Increase for deeply nested state machines. |
 | HTTP body limit | 10 MB | Hardcoded in entity handler | Increase requires code change. |
 | gRPC keep-alive interval | 10 seconds | Configurable | Shorter intervals detect compute member failure faster but increase network overhead. |
-| Dispatch poll interval | 200 ms | Hardcoded | Polls local gossip metadata (no network I/O). Low overhead. |
-| Dispatch wait timeout | 5 seconds | Configurable | Time to wait for a compute member when none is available for the required tag. |
+| Dispatch wait timeout | 5 seconds | Configurable | One allowance in total per callout: how long a callout waits for a compute member with matching tags to exist, on a single node as in a cluster. Event-driven — a signal wakes the wait the moment a member appears, no polling. `0` disables waiting. |
