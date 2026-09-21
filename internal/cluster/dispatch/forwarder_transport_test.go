@@ -123,3 +123,34 @@ func TestHTTPForwarder_StalledTLSHandshake_IsAfterConnect_AndBounded(t *testing.
 		t.Fatalf("a stalled handshake held the hand-over for %s", elapsed)
 	}
 }
+
+// A hand-over whose context has ALREADY ended before the request is sent never
+// left this node: nothing was written to a connection, so no compute member can
+// have the work, and the answer is "not connected", not "the answer was lost".
+// A lost answer would spend a try and, for a callout that is not repeat-safe,
+// fail the operation over a request that was never made. The owner's loop checks
+// its context too; the proof must not depend on every caller doing so.
+func TestHTTPForwarder_ContextAlreadyEnded_IsNotConnected(t *testing.T) {
+	auth := newTestPeerAuth(t)
+	var reached atomic.Bool
+	srv := sealingPeer(t, auth, func(r *http.Request, p []byte) any {
+		reached.Store(true)
+		return okAnswer(r, p)
+	})
+
+	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), time.Second).AllowLoopbackForTesting()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := f.ForwardCallout(ctx, testNodeID, srv.URL, makeProcessorReq())
+	var fe *dispatch.ForwardError
+	if !errors.As(err, &fe) {
+		t.Fatalf("err = %v, want a ForwardError", err)
+	}
+	if fe.Stage != dispatch.StageNotConnected {
+		t.Errorf("stage = %v, want StageNotConnected — nothing left this node", fe.Stage)
+	}
+	if reached.Load() {
+		t.Error("a hand-over whose time was already spent reached the peer")
+	}
+}

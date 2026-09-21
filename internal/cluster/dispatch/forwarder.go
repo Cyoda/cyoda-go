@@ -30,8 +30,9 @@ const (
 	// every peer.
 	StageBeforeConnect ForwardStage = iota
 	// StageNotConnected: nothing was sent to this peer — its address failed
-	// validation, or the connection could not be opened (a dial error, the
-	// connect timeout included). Another peer may still take the work.
+	// validation, the hand-over's time was spent before anything was written,
+	// or the connection could not be opened (a dial error, the connect timeout
+	// included). Another peer may still take the work.
 	StageNotConnected
 	// StageAfterConnect: anything later — a transport error, the wait running
 	// out, a non-2xx status, an answer that is truncated or does not open.
@@ -178,6 +179,15 @@ func (f *HTTPForwarder) forward(ctx context.Context, peerNodeID, url string, req
 	httpReq.Body = io.NopCloser(bytes.NewReader(wire))
 	httpReq.ContentLength = int64(len(wire))
 
+	if err := ctx.Err(); err != nil {
+		// The time was already spent before anything was written: nothing left
+		// this node, so no compute member can have the work. RoundTrip would
+		// report the same context error, but not as a dial error, and the
+		// hand-over would be read as an answer lost over a request never made —
+		// one try spent, and a callout that is not repeat-safe failed. The
+		// proof does not depend on every caller checking its context first.
+		return stageErr(StageNotConnected, fmt.Errorf("dispatch forward: the hand-over's time was spent before it was sent: %w", err))
+	}
 	httpResp, err := f.client.Do(httpReq)
 	if err != nil {
 		stage := StageAfterConnect

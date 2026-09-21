@@ -921,8 +921,9 @@ address guard never validated, which is the pivot that guard exists to close.
 
 **How the owner reads an answer.** Only a decoded, authenticated answer whose
 outcome is `no_handoff` with no try used means nothing reached a compute member;
-so does a connection that could not be opened, or a peer address that fails
-SSRF validation. Everything else that is not `ok`, `member_failed` or `terminal`
+so does a connection that could not be opened, a peer address that fails
+SSRF validation, and a hand-over whose time was spent before anything was
+written to a connection. Everything else that is not `ok`, `member_failed` or `terminal`
 is read as a lost answer: a transport error after the connection opened, any
 non-2xx status, a truncated or unauthenticated body, an outcome this version
 cannot read, an `ok` missing the result it promises, a `triesUsed` outside
