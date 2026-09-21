@@ -55,10 +55,10 @@ func TestRunLocal_PassLifetimeFollowsTheAnswerLimit(t *testing.T) {
 
 func TestRunLocal_EveryTryMintsItsOwnPass(t *testing.T) {
 	reg := NewMemberRegistry()
-	attachGone(t, reg, "m-1", testTenantID, "x")           // try 1: numbered (1,0), no hand-off
+	attach(t, reg, "m-1", testTenantID, "x", nil)          // try 1: numbered (1,0), gone on pick, no hand-off
 	_, a2 := attach(t, reg, "m-2", testTenantID, "x", nil) // try 2: (2,0), no answer
 	_, a3 := attach(t, reg, "m-3", testTenantID, "x", answersAs("m-3"))
-	d := newTestDispatcher(t, reg)
+	d := dispatcherGoneOnPick(t, reg, "m-1")
 	call := processorCall("x", true, 50*time.Millisecond)
 	call.OwnerNodeID = "node-owner"
 	call.Outer = []token.Pair{{Callout: "outer-req", Major: 4, Minor: 2}}

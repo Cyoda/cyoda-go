@@ -47,11 +47,17 @@ func setupTestDispatcher(t *testing.T) (*ProcessorDispatcher, *MemberRegistry, s
 // node id "node-test".
 func newTestDispatcher(t *testing.T, registry *MemberRegistry) *ProcessorDispatcher {
 	t.Helper()
+	return newTestDispatcherWith(t, registry, NewRoundRobinSelector(registry))
+}
+
+// newTestDispatcherWith is newTestDispatcher with a selector of the test's own.
+func newTestDispatcherWith(t *testing.T, registry *MemberRegistry, selector MemberSelector) *ProcessorDispatcher {
+	t.Helper()
 	signer, err := token.NewSigner(make32(t))
 	if err != nil {
 		t.Fatalf("token.NewSigner: %v", err)
 	}
-	return NewProcessorDispatcher(registry, NewRoundRobinSelector(registry), signer, "node-test", 30*time.Second, 60*time.Second, 3*time.Second)
+	return NewProcessorDispatcher(registry, selector, signer, "node-test", 30*time.Second, 60*time.Second, 3*time.Second)
 }
 
 // oneTry is the local procedure with one try, armed the way an owner arms a

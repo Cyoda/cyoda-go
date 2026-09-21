@@ -90,13 +90,36 @@ func attach(t *testing.T, reg *MemberRegistry, id string, tenant spi.TenantID, t
 	return m, a
 }
 
-// attachGone registers a cnode and evicts it without unregistering: it is still
-// listed, and the try on it fails before the hand-off.
-func attachGone(t *testing.T, reg *MemberRegistry, id string, tenant spi.TenantID, tag string) *asked {
+// goneOnPick evicts the cnode it picks, when that cnode is one of ids. It stands
+// in for the one window in which a hand-off can still fail: the cnode was a
+// candidate when the registry was looked at and is gone by the time the try
+// registers its request. A cnode that was already gone when the registry was
+// looked at is no candidate at all, so evicting one beforehand stages nothing;
+// and nothing outside the process can aim at that window. The selector runs
+// inside it, which is what makes this deterministic.
+type goneOnPick struct {
+	inner MemberSelector
+	ids   map[string]struct{}
+}
+
+func (s goneOnPick) Select(candidates []*Member) *Member {
+	m := s.inner.Select(candidates)
+	if _, leaves := s.ids[m.ID]; leaves {
+		m.Evict(errors.New("gone"))
+	}
+	return m
+}
+
+// dispatcherGoneOnPick is the local procedure over reg whose cnodes named in ids
+// go away at the instant they are picked, so the try on each fails before the
+// hand-off.
+func dispatcherGoneOnPick(t *testing.T, reg *MemberRegistry, ids ...string) *ProcessorDispatcher {
 	t.Helper()
-	m, a := attach(t, reg, id, tenant, tag, nil)
-	m.Evict(errors.New("gone"))
-	return a
+	set := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		set[id] = struct{}{}
+	}
+	return newTestDispatcherWith(t, reg, goneOnPick{inner: NewRoundRobinSelector(reg), ids: set})
 }
 
 // countingNumberer is the owner's numbering: major rises before each try.
@@ -144,9 +167,9 @@ func appCode(err error) string {
 
 func TestRunLocal_NoHandOff_NextCnodeAnswers(t *testing.T) {
 	reg := NewMemberRegistry()
-	gone := attachGone(t, reg, "m-1", testTenantID, "x")
+	_, gone := attach(t, reg, "m-1", testTenantID, "x", nil)
 	attach(t, reg, "m-2", testTenantID, "x", answersAs("m-2"))
-	d := newTestDispatcher(t, reg)
+	d := dispatcherGoneOnPick(t, reg, "m-1")
 
 	// not repeat-safe: a failed hand-off permits another cnode all the same
 	res := d.RunLocal(testContext(), processorCall("x", false, 5*time.Second), 4)
@@ -167,9 +190,9 @@ func TestRunLocal_NoHandOff_NextCnodeAnswers(t *testing.T) {
 func TestRunLocal_NoHandOff_OneTry_ReportsTheTrysOwnCode(t *testing.T) {
 	t.Run("cnode gone", func(t *testing.T) {
 		reg := NewMemberRegistry()
-		attachGone(t, reg, "m-1", testTenantID, "x")
+		attach(t, reg, "m-1", testTenantID, "x", nil)
 		_, second := attach(t, reg, "m-2", testTenantID, "x", answersAs("m-2"))
-		d := newTestDispatcher(t, reg)
+		d := dispatcherGoneOnPick(t, reg, "m-1")
 
 		res := d.RunLocal(testContext(), processorCall("x", false, 5*time.Second), 1)
 		if res.Failure == nil || res.Failure.Kind != contract.NoHandOff || appCode(res.Err()) != common.ErrCodeComputeMemberDisconnected {
@@ -411,6 +434,29 @@ func TestRunLocal_NoMatchingCnode_IsNoHandOffWithNoTry_AndDoesNotWait(t *testing
 	}
 }
 
+// A cnode that was evicted but whose registration has not been removed yet is
+// not tried: looking at it and finding it gone is not a try, so the callout
+// keeps every one of its tries for a cnode that might still answer, and the
+// client is told of no attempt that was never made.
+func TestRunLocal_ACnodeAlreadyKnownToBeGone_CostsNoTry(t *testing.T) {
+	reg := NewMemberRegistry()
+	m, a := attach(t, reg, "m-1", testTenantID, "x", nil)
+	m.Evict(errors.New("stream dropped"))
+	d := newTestDispatcher(t, reg)
+
+	res := d.RunLocal(testContext(), processorCall("x", true, 5*time.Second), 4)
+
+	if res.Failure == nil || res.Failure.Kind != contract.NoHandOff || !errors.Is(res.Err(), contract.ErrNoMatchingMember) {
+		t.Fatalf("failure = %+v, want NoHandOff wrapping contract.ErrNoMatchingMember", res.Failure)
+	}
+	if res.TriesUsed != 0 || len(res.Attempts) != 0 {
+		t.Errorf("TriesUsed = %d, Attempts = %+v; a cnode already known to be gone is not tried at all", res.TriesUsed, res.Attempts)
+	}
+	if a.count() != 0 {
+		t.Error("nothing may have been sent to the cnode that was gone")
+	}
+}
+
 func TestRunLocal_CallerCancelled_EndsTheRun(t *testing.T) {
 	reg := NewMemberRegistry()
 	ctx, cancel := context.WithCancel(testContext())
@@ -430,8 +476,8 @@ func TestRunLocal_CallerCancelled_EndsTheRun(t *testing.T) {
 func TestRunLocal_TwoTenantsShareATag(t *testing.T) {
 	reg := NewMemberRegistry()
 	_, other := attach(t, reg, "m-other", "tenant-2", "shared", answersAs("m-other"))
-	attachGone(t, reg, "m-mine", testTenantID, "shared")
-	d := newTestDispatcher(t, reg)
+	attach(t, reg, "m-mine", testTenantID, "shared", nil)
+	d := dispatcherGoneOnPick(t, reg, "m-mine")
 
 	res := d.RunLocal(testContext(), processorCall("shared", true, 5*time.Second), 4)
 	if res.OK() {
@@ -480,9 +526,9 @@ func TestRunLocal_SeesACnodeAttachedDuringTheRun(t *testing.T) {
 
 func TestRunLocal_NumbersEveryTryBeforeItIsMade(t *testing.T) {
 	reg := NewMemberRegistry()
-	attachGone(t, reg, "m-1", testTenantID, "x") // the hand-off fails: still a try, still numbered
+	attach(t, reg, "m-1", testTenantID, "x", nil) // gone on pick: the hand-off fails, still a try, still numbered
 	attach(t, reg, "m-2", testTenantID, "x", answersAs("m-2"))
-	d := newTestDispatcher(t, reg)
+	d := dispatcherGoneOnPick(t, reg, "m-1")
 	call := processorCall("x", false, 5*time.Second)
 	numberer := call.Number.(*countingNumberer)
 

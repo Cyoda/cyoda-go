@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -41,6 +42,34 @@ func TestCandidates_TenantAndTagFilter(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A cnode that has been evicted is on its way out: its pending requests have
+// been failed and its stream is being torn down. Its registration is removed
+// only when its stream handler returns, so for a moment it is still listed —
+// and in that moment it must not be a candidate, or a try is spent on a cnode
+// already known to be gone.
+func TestCandidates_AnEvictedMemberIsNotACandidate(t *testing.T) {
+	reg := NewMemberRegistry()
+	gone := reg.Register("m-gone", "tenant-1", []string{"x"}, noopSend, nil)
+	here := reg.Register("m-here", "tenant-1", []string{"x"}, noopSend, nil)
+	for _, m := range []*Member{gone, here} {
+		t.Cleanup(func() { reg.Unregister(m) })
+	}
+
+	gone.Evict(errors.New("stream dropped")) // evicted, not unregistered
+
+	if reg.Get("m-gone") != gone {
+		t.Fatal("the evicted member is no longer registered: that window is what this test is about")
+	}
+	got := reg.Candidates("tenant-1", "x")
+	if len(got) != 1 || got[0] != here {
+		ids := make([]string, len(got))
+		for i, m := range got {
+			ids[i] = m.ID
+		}
+		t.Errorf("candidates = %v, want only m-here", ids)
 	}
 }
 
