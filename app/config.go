@@ -214,6 +214,16 @@ type CalloutConfig struct {
 	// CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES, default 10485760 (10 MiB),
 	// must be > 0.
 	JoinedResponseMaxBytes int
+	// JoinedMaxWaiters is how many of a compute member's callbacks may queue
+	// for one transaction behind the callback that holds it. Callbacks of one
+	// transaction are served one at a time, so a member that fires many at once
+	// buys no speed by it and would otherwise park a request's worth of memory
+	// each for the life of the callout. Past the cap a callback is refused with
+	// 503 TOO_MANY_JOINED_REQUESTS, retryable.
+	// CYODA_CALLOUT_JOINED_MAX_WAITERS, default 128, must be > 0 — there is no
+	// "unlimited" value, an unbounded queue being what the cap exists to
+	// prevent.
+	JoinedMaxWaiters int
 }
 
 type AdminConfig struct {
@@ -470,6 +480,7 @@ func DefaultConfig() Config {
 			HandoverAllowance:      envDuration("CYODA_CALLOUT_HANDOVER_ALLOWANCE", 30*time.Second),
 			PassAllowance:          envDuration("CYODA_CALLOUT_PASS_ALLOWANCE", 30*time.Second),
 			JoinedResponseMaxBytes: envInt("CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES", 10485760),
+			JoinedMaxWaiters:       envInt("CYODA_CALLOUT_JOINED_MAX_WAITERS", 128),
 		},
 		HTTP: HTTPConfig{
 			ReadHeaderTimeout: envDuration("CYODA_HTTP_READ_HEADER_TIMEOUT", 10*time.Second),
@@ -905,6 +916,9 @@ func ValidateCallout(c CalloutConfig) error {
 	}
 	if c.JoinedResponseMaxBytes <= 0 {
 		return fmt.Errorf("CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES must be > 0, got %d", c.JoinedResponseMaxBytes)
+	}
+	if c.JoinedMaxWaiters <= 0 {
+		return fmt.Errorf("CYODA_CALLOUT_JOINED_MAX_WAITERS must be > 0, got %d", c.JoinedMaxWaiters)
 	}
 	return nil
 }

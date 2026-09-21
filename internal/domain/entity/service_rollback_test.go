@@ -213,7 +213,7 @@ func TestJoinedSegmentedFlow_KeepsGateEntryAcrossReleaseAndTakesOnlyTheSegments(
 		waitForGateContention(t, competitorDone)
 	}
 
-	joiner, err := txjoin.NewJoiner(signer, hn.tracker, f, hn.h.gate, 10<<20, nil)
+	joiner, err := txjoin.NewJoiner(signer, hn.tracker, f, hn.h.gate, 10<<20, 128, nil)
 	if err != nil {
 		t.Fatalf("NewJoiner: %v", err)
 	}

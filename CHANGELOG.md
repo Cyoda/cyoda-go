@@ -285,6 +285,20 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   It governs neither ordinary, unjoined requests nor the callback's own request
   body, which keeps its fixed 10 MiB cap.
 
+- **`CYODA_CALLOUT_JOINED_MAX_WAITERS` (default `128`) bounds how many of a
+  compute member's callbacks may queue for one transaction**, and a new
+  retryable `503` `TOO_MANY_JOINED_REQUESTS` is what the member is told past
+  it. Callbacks of one transaction are served one at a time, so firing many at
+  once buys a member no speed — but each one waiting held its whole request in
+  memory for as long as the callout lasted, with nothing bounding how many
+  there could be. The refusal comes before the request body is read where the
+  door allows that, and touches neither the transaction nor the callbacks
+  already queued. On it, back off and send the callback again; a processor that
+  lets it escape fails its callout, and the operation is rolled back. Zero or
+  negative refuses to start — an unbounded queue is what the cap exists to
+  prevent. The transaction owner's own wait, the fence's, and a suspended
+  callback's resume are never refused.
+
 ### Changed
 
 - **A client that goes away mid-request is logged at DEBUG, with no ticket** —

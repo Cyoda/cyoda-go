@@ -20,6 +20,11 @@ import (
 // this package writes an answer, so the figure only has to be a valid one.
 const testResponseMax = 10 << 20
 
+// testMaxWaiters is the queue cap these tests build a Joiner with — the shipped
+// default of CYODA_CALLOUT_JOINED_MAX_WAITERS. It has to be comfortably above
+// what the parallel-callbacks test queues on one transaction.
+const testMaxWaiters = 128
+
 // fakeTM satisfies spi.TransactionManager by embedding the interface and
 // overriding only Join. Unimplemented methods panic if unexpectedly called.
 type fakeTM struct {
@@ -71,7 +76,7 @@ func assertAppErr(t *testing.T, err error, status int, code string) {
 func joinFromToken(ctx context.Context, s *token.Signer, txMgr spi.TransactionManager, f *fence.Fence, tok string) (context.Context, error) {
 	// NewJoiner fails only when the meter cannot register its counter, and the
 	// no-op meter cannot.
-	j, _ := NewJoiner(s, txMgr, f, txgate.New(), testResponseMax, nil)
+	j, _ := NewJoiner(s, txMgr, f, txgate.New(), testResponseMax, testMaxWaiters, nil)
 	pass, err := j.Verify(tok)
 	if err != nil || pass == nil {
 		return ctx, err

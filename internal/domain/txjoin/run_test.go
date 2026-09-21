@@ -3,6 +3,7 @@ package txjoin
 import (
 	"context"
 	"errors"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -33,6 +34,12 @@ type runEnv struct {
 // progress on it, and seeds two committed entities to read.
 func newRunEnv(t *testing.T) (*runEnv, string) {
 	t.Helper()
+	return newRunEnvCapped(t, testMaxWaiters)
+}
+
+// newRunEnvCapped is newRunEnv with the queue cap the test wants to reach.
+func newRunEnvCapped(t *testing.T, maxWaiters int) (*runEnv, string) {
+	t.Helper()
 	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
 		UserID: "u", Tenant: spi.Tenant{ID: "run-tenant", Name: "run"}, Roles: []string{"user"},
 	})
@@ -60,12 +67,73 @@ func newRunEnv(t *testing.T) (*runEnv, string) {
 	t.Cleanup(end)
 	f.Advance("req-1", 1)
 	pass, _ := signer.Issue(token.Claims{NodeID: "local", TxRef: txID, ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-1", Major: 1})
-	joiner, err := NewJoiner(signer, txMgr, f, gate, testResponseMax, nil)
+	joiner, err := NewJoiner(signer, txMgr, f, gate, testResponseMax, maxWaiters, nil)
 	if err != nil {
 		t.Fatalf("NewJoiner: %v", err)
 	}
 	return &runEnv{ctx: ctx, factory: factory, txMgr: txMgr, gate: gate, fence: f, signer: signer,
 		joiner: joiner, txID: txID, txCtx: txCtx, end: end}, pass
+}
+
+// A compute member's callbacks queue for the transaction one behind another,
+// and the queue is bounded: past the cap the callback is refused, retryably,
+// rather than parked holding its request for the life of the callout. The
+// holder and the callback already queued are unaffected.
+func TestRunVerified_PastTheWaiterCap_IsRefusedRetryably(t *testing.T) {
+	env, pass := newRunEnvCapped(t, 1)
+	verified, err := env.joiner.Verify(pass)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	holder := env.gate.Acquire(env.txID) // a callback already has the transaction
+	// Released explicitly below; the defer is so that a failing assertion does
+	// not leave the queued callback parked and hang the package.
+	defer holder()
+
+	ran := make(chan struct{})
+	queued := make(chan error, 1)
+	go func() {
+		queued <- env.joiner.RunVerified(env.ctx, verified, func(context.Context) { close(ran) })
+	}()
+	waitForCapacity(t, env.gate, env.txID, 1)
+
+	err = env.joiner.RunVerified(env.ctx, verified, func(context.Context) {
+		t.Error("the refused callback's handler ran")
+	})
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("RunVerified = %v; want an operational refusal", err)
+	}
+	if appErr.Status != http.StatusServiceUnavailable || appErr.Code != common.ErrCodeTooManyJoinedRequests {
+		t.Errorf("refusal = %d %s; want 503 %s", appErr.Status, appErr.Code, common.ErrCodeTooManyJoinedRequests)
+	}
+	if !appErr.Retryable {
+		t.Error("the refusal is not retryable; the queue drains, so it is")
+	}
+
+	holder()
+	select {
+	case qerr := <-queued:
+		if qerr != nil {
+			t.Fatalf("the callback already queued was refused: %v", qerr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the callback already queued never ran")
+	}
+	<-ran
+}
+
+// waitForCapacity waits until maxWaiters callers are queued for txID.
+func waitForCapacity(t *testing.T, gate *txgate.Registry, txID string, maxWaiters int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if gate.AtCapacity(txID, maxWaiters) {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d callers to queue for %s", maxWaiters, txID)
 }
 
 // Two parallel joined reads, and reads against a joined write, on one

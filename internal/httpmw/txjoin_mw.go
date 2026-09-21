@@ -26,14 +26,15 @@ const maxJoinedBodySize = 10 * 1024 * 1024
 // inside txMgr.Join.
 //
 // If the X-Tx-Token header is absent the request passes through unchanged.
-// Otherwise the pass itself is verified first — before a byte of the body is
-// read, so a forged or expired pass costs no buffer — then the whole request is
-// brought into memory, the joiner takes the transaction's lock and checks the
-// pass under it, the handler runs on the joined context, and the response is
-// sent once the lock has been released, so neither end of the request makes the
-// lock wait on the compute node. On an invalid/expired/not-found/superseded
-// token the error is rendered via common.WriteError and the next handler never
-// runs.
+// Otherwise the pass itself is verified first, and the transaction's queue is
+// asked whether it has room — both before a byte of the body is read, so a
+// forged or expired pass and a callback past the queue's cap each cost no
+// buffer. Then the whole request is brought into memory, the joiner takes the
+// transaction's lock and checks the pass under it, the handler runs on the
+// joined context, and the response is sent once the lock has been released, so
+// neither end of the request makes the lock wait on the compute node. On an
+// invalid/expired/not-found/superseded token, or a full queue, the error is
+// rendered via common.WriteError and the next handler never runs.
 //
 // The token value is never logged.
 func TxJoin(j *txjoin.Joiner) func(http.Handler) http.Handler {
@@ -46,6 +47,15 @@ func TxJoin(j *txjoin.Joiner) func(http.Handler) http.Handler {
 			}
 			pass, err := j.Verify(tok)
 			if err != nil {
+				writeJoinError(w, r, err)
+				return
+			}
+			// How many callbacks may queue for one transaction is bounded, and
+			// the bound is read before the body is: a compute member firing
+			// callbacks at one transaction costs this node no buffer per
+			// refusal. The gate applies the same bound again when the lock is
+			// taken, and that answer is the binding one.
+			if err := j.CheckRoom(pass); err != nil {
 				writeJoinError(w, r, err)
 				return
 			}

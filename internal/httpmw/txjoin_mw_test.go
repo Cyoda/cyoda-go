@@ -38,6 +38,11 @@ func captureSlog(t *testing.T) *bytes.Buffer {
 // so the ceiling's behaviour is pinned without allocating megabytes to do it.
 const testResponseMax = 64 << 10
 
+// testMaxWaiters is the queue cap these tests build a Joiner with — the shipped
+// default of CYODA_CALLOUT_JOINED_MAX_WAITERS, high enough that no test reaches
+// it by accident. The test that means to reach it says so.
+const testMaxWaiters = 128
+
 // fakeJoinTM satisfies spi.TransactionManager by embedding the interface and
 // overriding only Join. Unimplemented methods panic if unexpectedly called.
 type fakeJoinTM struct {
@@ -80,7 +85,13 @@ func liveFence(t *testing.T, calloutID, txID string) (*fence.Fence, *txgate.Regi
 // fence whose wait takes gate's locks. A nil meter (the no-op meter).
 func joinerOver(t *testing.T, s *token.Signer, txMgr spi.TransactionManager, f *fence.Fence, gate *txgate.Registry) *txjoin.Joiner {
 	t.Helper()
-	j, err := txjoin.NewJoiner(s, txMgr, f, gate, testResponseMax, nil)
+	return joinerCapped(t, s, txMgr, f, gate, testMaxWaiters)
+}
+
+// joinerCapped is joinerOver with the queue cap the test wants to reach.
+func joinerCapped(t *testing.T, s *token.Signer, txMgr spi.TransactionManager, f *fence.Fence, gate *txgate.Registry, maxWaiters int) *txjoin.Joiner {
+	t.Helper()
+	j, err := txjoin.NewJoiner(s, txMgr, f, gate, testResponseMax, maxWaiters, nil)
 	if err != nil {
 		t.Fatalf("NewJoiner: %v", err)
 	}
@@ -99,6 +110,12 @@ func noCalloutJoiner(t *testing.T, s *token.Signer, txMgr spi.TransactionManager
 // major 1, the gate its lock is taken from, and the pass that names it.
 func liveJoiner(t *testing.T, txID string) (*txjoin.Joiner, *txgate.Registry, string) {
 	t.Helper()
+	return liveJoinerCapped(t, txID, testMaxWaiters)
+}
+
+// liveJoinerCapped is liveJoiner with the queue cap the test wants to reach.
+func liveJoinerCapped(t *testing.T, txID string, maxWaiters int) (*txjoin.Joiner, *txgate.Registry, string) {
+	t.Helper()
 	s, err := token.NewSigner(make32(t))
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
@@ -108,7 +125,7 @@ func liveJoiner(t *testing.T, txID string) (*txjoin.Joiner, *txgate.Registry, st
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	return joinerOver(t, s, fakeJoinTM{}, f, gate), gate, pass
+	return joinerCapped(t, s, fakeJoinTM{}, f, gate, maxWaiters), gate, pass
 }
 
 // withUserCtx attaches a minimal UserContext to the request so TxJoin's
@@ -582,3 +599,84 @@ func TestTxJoin_OversizeBody_413(t *testing.T) {
 type zeroes struct{}
 
 func (zeroes) Read(p []byte) (int, error) { clear(p); return len(p), nil }
+
+// Callbacks of one transaction are served one at a time, and the queue behind
+// the one being served is bounded. Past the cap the callback is refused with a
+// retryable 503 — and refused before its body is read, so a member firing
+// callbacks at one transaction costs the node no buffer per refusal. The
+// callback holding the transaction and the ones already queued are unaffected.
+func TestTxJoin_PastTheWaiterCap_503_BeforeTheBodyIsRead(t *testing.T) {
+	j, gate, pass := liveJoinerCapped(t, "tx-1", 1)
+	holder := gate.Acquire("tx-1") // a callback already has the transaction
+	// Released explicitly below; the defer is so that a failing assertion does
+	// not leave the queued callback parked and hang the package.
+	defer holder()
+
+	queued := make(chan int, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		TxJoin(j)(okHandler()).ServeHTTP(rec, joinedRequest(t, pass, nil))
+		queued <- rec.Code
+	}()
+	waitForCapacity(t, gate, "tx-1", 1)
+
+	var bodyRead bool
+	rec := httptest.NewRecorder()
+	req := joinedRequest(t, pass, readMarker{read: &bodyRead})
+	TxJoin(j)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("the refused callback's handler ran")
+	})).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d; want 503", rec.Code)
+	}
+	props := problemProps(t, rec)
+	if props.ErrorCode != "TOO_MANY_JOINED_REQUESTS" {
+		t.Errorf("errorCode = %q; want TOO_MANY_JOINED_REQUESTS", props.ErrorCode)
+	}
+	if !props.Retryable {
+		t.Error("the refusal is not retryable; the queue drains, so it is")
+	}
+	if bodyRead {
+		t.Error("the body was read: a callback refused for capacity must cost no buffer")
+	}
+
+	holder()
+	select {
+	case code := <-queued:
+		if code != http.StatusOK {
+			t.Fatalf("the callback already queued answered %d; want 200", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the callback already queued never ran")
+	}
+}
+
+// joinedRequest builds a request carrying pass, with body as its body.
+func joinedRequest(t *testing.T, pass string, body io.Reader) *http.Request {
+	t.Helper()
+	req := withUserCtx(httptest.NewRequest(http.MethodPost, "/entity", body))
+	req.Header.Set(proxy.TxTokenHeader, pass)
+	return req
+}
+
+// readMarker records whether anything read it.
+type readMarker struct{ read *bool }
+
+func (m readMarker) Read(p []byte) (int, error) {
+	*m.read = true
+	return 0, io.EOF
+}
+
+// waitForCapacity waits until maxWaiters callers are queued for txID.
+func waitForCapacity(t *testing.T, gate *txgate.Registry, txID string, maxWaiters int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if gate.AtCapacity(txID, maxWaiters) {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d callers to queue for %s", maxWaiters, txID)
+}

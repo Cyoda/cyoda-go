@@ -92,6 +92,13 @@ const (
 	// owner's next move waits behind it. Not retryable: the same callback
 	// answers the same bytes again — the caller pages the read instead.
 	ErrCodeJoinedResponseTooLarge = "JOINED_RESPONSE_TOO_LARGE"
+	// ErrCodeTooManyJoinedRequests is returned to a compute node's callback
+	// when CYODA_CALLOUT_JOINED_MAX_WAITERS callbacks are already queued for
+	// its transaction. Callbacks of one transaction are served one at a time,
+	// so the queue is bounded rather than each waiting callback holding its
+	// request for the life of the callout. Retryable: the queue drains as the
+	// callbacks ahead of it finish.
+	ErrCodeTooManyJoinedRequests = "TOO_MANY_JOINED_REQUESTS"
 )
 
 const (
@@ -333,6 +340,7 @@ var knownErrorCodes = map[string]struct{}{
 	ErrCodeSearchTimeout:                    {},
 	ErrCodeServerError:                      {},
 	ErrCodeStorageUnavailable:               {},
+	ErrCodeTooManyJoinedRequests:            {},
 	ErrCodeTransactionExpired:               {},
 	ErrCodeTransactionNodeUnavailable:       {},
 	ErrCodeTransactionNotFound:              {},

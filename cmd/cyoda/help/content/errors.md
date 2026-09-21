@@ -106,6 +106,7 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.SEARCH_TIMEOUT` — `408` — retryable — client-requested search timeout expired before the result set was collected
 - `errors.SERVER_ERROR` — `500` — retryable with caution — unclassified internal error; response includes `ticket` UUID for log correlation
 - `errors.STORAGE_UNAVAILABLE` — `503` — retryable — storage layer could not supply a connection within its acquire deadline, or the transaction was reclaimed by the idle-in-transaction ceiling
+- `errors.TOO_MANY_JOINED_REQUESTS` — `503` — retryable — `CYODA_CALLOUT_JOINED_MAX_WAITERS` requests made under a transaction token are already waiting for that transaction; back off and send the callback again
 - `errors.TRANSACTION_EXPIRED` — `410` — not retryable — transaction token's `exp` claim is in the past
 - `errors.TRANSACTION_NODE_UNAVAILABLE` — `503` — retryable — cluster node that owns the open transaction is unreachable
 - `errors.TRANSACTION_NOT_FOUND` — `404` — not retryable — transaction ID does not correspond to an active transaction on this node

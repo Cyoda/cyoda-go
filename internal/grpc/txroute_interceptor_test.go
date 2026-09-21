@@ -139,6 +139,11 @@ func (c *fakeClientStream) Recv() (*cepb.CloudEvent, error) {
 // it.
 const testResponseMax = 64 << 10
 
+// testMaxWaiters is the queue cap these tests build a Joiner with — the shipped
+// default of CYODA_CALLOUT_JOINED_MAX_WAITERS, high enough that no test reaches
+// it by accident. The tests that mean to reach it say so.
+const testMaxWaiters = 128
+
 // gatedFence returns a fence and the gate registry its wait takes: the join
 // layer must take the lock the fence waits on, so the two share one registry.
 func gatedFence() (*fence.Fence, *txgate.Registry) {
@@ -150,7 +155,13 @@ func gatedFence() (*fence.Fence, *txgate.Registry) {
 // fence whose wait takes gate's locks. A nil meter (the no-op meter).
 func mustJoiner(t *testing.T, s *token.Signer, txMgr spi.TransactionManager, f *fence.Fence, gate *txgate.Registry) *txjoin.Joiner {
 	t.Helper()
-	j, err := txjoin.NewJoiner(s, txMgr, f, gate, testResponseMax, nil)
+	return mustJoinerCapped(t, s, txMgr, f, gate, testMaxWaiters)
+}
+
+// mustJoinerCapped is mustJoiner with the queue cap the test wants to reach.
+func mustJoinerCapped(t *testing.T, s *token.Signer, txMgr spi.TransactionManager, f *fence.Fence, gate *txgate.Registry, maxWaiters int) *txjoin.Joiner {
+	t.Helper()
+	j, err := txjoin.NewJoiner(s, txMgr, f, gate, testResponseMax, maxWaiters, nil)
 	if err != nil {
 		t.Fatalf("NewJoiner: %v", err)
 	}
@@ -1020,6 +1031,13 @@ func TestTxRouteInterceptor_StreamForwardErrPreservesRequestID(t *testing.T) {
 // and the pass that names the callout.
 func joinedRouteInterceptor(t *testing.T, txID string) (*txRouteInterceptor, *txgate.Registry, string) {
 	t.Helper()
+	return joinedRouteInterceptorCapped(t, txID, testMaxWaiters)
+}
+
+// joinedRouteInterceptorCapped is joinedRouteInterceptor with the queue cap the
+// test wants to reach.
+func joinedRouteInterceptorCapped(t *testing.T, txID string, maxWaiters int) (*txRouteInterceptor, *txgate.Registry, string) {
+	t.Helper()
 	s, err := token.NewSigner(make32(t))
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
@@ -1029,8 +1047,21 @@ func joinedRouteInterceptor(t *testing.T, txID string) (*txRouteInterceptor, *tx
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", mustJoiner(t, s, fakeJoinTM{}, f, gate), 9090, true)
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", mustJoinerCapped(t, s, fakeJoinTM{}, f, gate, maxWaiters), 9090, true)
 	return ic, gate, tok
+}
+
+// waitForCapacity waits until maxWaiters callers are queued for txID.
+func waitForCapacity(t *testing.T, gate *txgate.Registry, txID string, maxWaiters int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if gate.AtCapacity(txID, maxWaiters) {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d callers to queue for %s", maxWaiters, txID)
 }
 
 // lockFreeOn reports whether txID's lock is free right now.
@@ -1281,6 +1312,97 @@ func TestTxRouteInterceptor_HeldFramesUnderTheCeiling_AreAllSent(t *testing.T) {
 	}
 	if len(ss.sent) != want {
 		t.Fatalf("sent %d frames; want all %d", len(ss.sent), want)
+	}
+}
+
+// gRPC server-streaming: past the cap on callbacks queued for one transaction
+// the call is refused with the retryable 503 envelope — and refused before the
+// request message is taken off the stream, so the refusal costs the node no
+// buffer.
+func TestTxRouteInterceptor_StreamPastTheWaiterCap_IsRefusedBeforeTheRequestIsRead(t *testing.T) {
+	ic, gate, tok := joinedRouteInterceptorCapped(t, "tx-1", 1)
+	holder := gate.Acquire("tx-1") // a callback already has the transaction
+	// Released explicitly below; the defer is so that a failing assertion does
+	// not leave the queued callback parked and hang the package.
+	defer holder()
+
+	queued := make(chan error, 1)
+	go func() {
+		qss := newFakeServerStream(metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok)))
+		qss.request = &cepb.CloudEvent{Id: "req-queued"}
+		queued <- ic.stream()(nil, qss, entityManageCollectionInfo(),
+			func(any, googlegrpc.ServerStream) error { return nil })
+	}()
+	waitForCapacity(t, gate, "tx-1", 1)
+
+	ss := newFakeServerStream(metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok)))
+	ss.request = &cepb.CloudEvent{Id: "req-1"}
+	recvs := 0
+	ss.onRecv = func() { recvs++ }
+
+	err := ic.stream()(nil, ss, entityManageCollectionInfo(),
+		func(any, googlegrpc.ServerStream) error {
+			t.Error("the refused callback's handler ran")
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("stream: %v; the refusal travels as the RPC's error envelope", err)
+	}
+	if len(ss.sent) != 1 {
+		t.Fatalf("sent %d messages; want the error envelope alone", len(ss.sent))
+	}
+	// No request id: the request was never taken off the stream.
+	assertEnvelopeCode(t, ss.sent[0], "", "TOO_MANY_JOINED_REQUESTS")
+	if recvs != 0 {
+		t.Errorf("the client was asked for %d messages; a callback refused for capacity must cost no buffer", recvs)
+	}
+
+	holder()
+	select {
+	case qerr := <-queued:
+		if qerr != nil {
+			t.Fatalf("the callback already queued was refused: %v", qerr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the callback already queued never ran")
+	}
+}
+
+// gRPC unary: the message is complete before the interceptor runs, so there is
+// nothing to save by refusing earlier — the cap is applied at the gate, and the
+// envelope carries the same code.
+func TestTxRouteInterceptor_UnaryPastTheWaiterCap_IsRefused(t *testing.T) {
+	ic, gate, tok := joinedRouteInterceptorCapped(t, "tx-1", 1)
+	holder := gate.Acquire("tx-1")
+	defer holder() // see above: a failing assertion must not park the queued callback
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+
+	queued := make(chan error, 1)
+	go func() {
+		_, qerr := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-queued"}, entityManageInfo(),
+			func(context.Context, any) (any, error) { return "ok", nil })
+		queued <- qerr
+	}()
+	waitForCapacity(t, gate, "tx-1", 1)
+
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-1"}, entityManageInfo(),
+		func(context.Context, any) (any, error) {
+			t.Error("the refused callback's handler ran")
+			return nil, nil
+		})
+	if err != nil {
+		t.Fatalf("unary: %v; the refusal travels as the RPC's error envelope", err)
+	}
+	assertEnvelopeCode(t, resp, "req-1", "TOO_MANY_JOINED_REQUESTS")
+
+	holder()
+	select {
+	case qerr := <-queued:
+		if qerr != nil {
+			t.Fatalf("the callback already queued was refused: %v", qerr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the callback already queued never ran")
 	}
 }
 

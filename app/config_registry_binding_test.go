@@ -162,6 +162,7 @@ func defaultFor(c app.Config) map[string]string {
 		"CYODA_CALLOUT_RESPONSE_TIMEOUT_MS":       renderMillis(c.Callout.ResponseTimeout),
 		"CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS":   renderMillis(c.Callout.ResponseTimeoutMax),
 		"CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES": strconv.Itoa(c.Callout.JoinedResponseMaxBytes),
+		"CYODA_CALLOUT_JOINED_MAX_WAITERS":        strconv.Itoa(c.Callout.JoinedMaxWaiters),
 		"CYODA_CALLOUT_HANDOVER_ALLOWANCE":        renderDuration(c.Callout.HandoverAllowance),
 		"CYODA_CALLOUT_PASS_ALLOWANCE":            renderDuration(c.Callout.PassAllowance),
 

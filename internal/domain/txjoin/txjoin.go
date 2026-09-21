@@ -30,15 +30,18 @@ type Joiner struct {
 	fence            *fence.Fence
 	gate             *txgate.Registry
 	maxResponseBytes int
+	maxWaiters       int
 	superseded       metric.Int64Counter
 }
 
 // NewJoiner builds a Joiner. maxResponseBytes is the ceiling on what one joined
 // request may answer with while it holds the transaction's lock
-// (CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES). meter is where the
+// (CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES); maxWaiters is how many joined
+// requests may queue for one transaction behind the one holding it
+// (CYODA_CALLOUT_JOINED_MAX_WAITERS). meter is where the
 // "cyoda.callout.superseded" counter is registered; a nil meter is the no-op
 // meter, so callers that have none (tests) need not stand one up.
-func NewJoiner(signer *token.Signer, txMgr spi.TransactionManager, f *fence.Fence, gate *txgate.Registry, maxResponseBytes int, meter metric.Meter) (*Joiner, error) {
+func NewJoiner(signer *token.Signer, txMgr spi.TransactionManager, f *fence.Fence, gate *txgate.Registry, maxResponseBytes, maxWaiters int, meter metric.Meter) (*Joiner, error) {
 	if meter == nil {
 		meter = noop.NewMeterProvider().Meter("")
 	}
@@ -53,6 +56,7 @@ func NewJoiner(signer *token.Signer, txMgr spi.TransactionManager, f *fence.Fenc
 		fence:            f,
 		gate:             gate,
 		maxResponseBytes: maxResponseBytes,
+		maxWaiters:       maxWaiters,
 		superseded:       superseded,
 	}, nil
 }
@@ -80,6 +84,39 @@ func (j *Joiner) ResponseTooLargeError() *common.AppError {
 // whose answer passes the ceiling. The handler's own error, if it returns one,
 // is not what the caller is told: the join layer's refusal is.
 var ErrHeldResponseTooLarge = errors.New("the answer of a joined request exceeds what it may hold under the transaction's lock")
+
+// tooManyJoinedRequests is what a compute member is told when its transaction
+// already has as many callbacks queued as it may have. Retryable, the capacity
+// idiom of this codebase: the queue drains as the callbacks ahead of it finish.
+// The figure is not in the message — which bound was met is operator
+// information, and the help topic names the setting.
+func tooManyJoinedRequests() *common.AppError {
+	return common.Operational(http.StatusServiceUnavailable, common.ErrCodeTooManyJoinedRequests,
+		"too many requests of this transaction are already waiting — retry later").AsRetryable()
+}
+
+// CheckRoom reports whether the transaction a verified pass names has room for
+// another waiting request. A door that must read its request before the handler
+// can run asks here first, so that a refused callback costs it no buffer;
+// RunVerified asks again, at the gate itself, and that answer is the binding
+// one. Between the two a request may be admitted here and refused there, or the
+// other way about — the caller is told the same thing either way, and the
+// refusal is retryable.
+//
+// It touches nothing of the transaction: the reading is of this node's queue
+// for a transaction the caller's own verified pass already names, and a
+// transaction with nothing queued reads the same as one that does not exist.
+//
+// A nil pass is not a joined request: it queues for nothing.
+func (j *Joiner) CheckRoom(pass *Pass) error {
+	if pass == nil {
+		return nil
+	}
+	if j.gate.AtCapacity(pass.claims.TxRef, j.maxWaiters) {
+		return tooManyJoinedRequests()
+	}
+	return nil
+}
 
 // Pass is a pass whose own claims have been verified. It is what a door holds
 // between Verify and RunVerified; only the Joiner that verified it can read it.
@@ -169,8 +206,9 @@ func (j *Joiner) count(ctx context.Context, outcome string) {
 
 // Run verifies tok and runs handler as a joined request of the transaction it
 // names. A door that has to read the request before the handler can run
-// verifies first (Verify) and calls RunVerified once it has the request in
-// memory, so that a refused pass costs it no buffer.
+// verifies first (Verify), asks CheckRoom, and calls RunVerified once it has
+// the request in memory, so that a refused pass or a full queue costs it no
+// buffer.
 //
 // An empty tok is not a joined request: handler runs on ctx as it is.
 func (j *Joiner) Run(ctx context.Context, tok string, handler func(ctx context.Context)) error {
@@ -189,8 +227,9 @@ func (j *Joiner) Run(ctx context.Context, tok string, handler func(ctx context.C
 // the transaction's users are its current compute node's callbacks, one at a
 // time.
 //
-// Order: verify (done) → Join (tenant) → Admit → take the lock → Check under
-// the lock → handler → release. The check under the lock is the one that gives
+// Order: verify (done) → Join (tenant) → Admit → take the lock, which is where
+// the queue's cap is applied → Check under the lock → handler → release. The
+// check under the lock is the one that gives
 // the right to touch the transaction: the owner's wait takes the same lock, so
 // a request either passed this check before the number rose — and the owner
 // waits for it — or is refused here. The engine gives the lock up for the
@@ -223,8 +262,11 @@ func (j *Joiner) RunVerified(ctx context.Context, pass *Pass, handler func(ctx c
 	// may still call off: nothing of the transaction has been touched yet, so a
 	// compute node that goes away while its request is queued takes nothing
 	// with it and the handler never runs.
-	release, err := j.gate.AcquireCtx(joined, txID)
+	release, err := j.gate.AcquireCtx(joined, txID, j.maxWaiters)
 	if err != nil {
+		if errors.Is(err, txgate.ErrTooManyWaiters) {
+			return tooManyJoinedRequests()
+		}
 		return err
 	}
 	// From here the request is detached from its client's cancellation: it runs

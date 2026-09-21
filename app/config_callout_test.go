@@ -26,6 +26,7 @@ func validCalloutConfig() CalloutConfig {
 		HandoverAllowance:      30 * time.Second,
 		PassAllowance:          30 * time.Second,
 		JoinedResponseMaxBytes: 10485760,
+		JoinedMaxWaiters:       128,
 	}
 }
 
@@ -148,6 +149,42 @@ func TestValidateCallout_JoinedResponseMaxBytes(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES") {
 				t.Errorf("error must name CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES; got: %v", err)
+			}
+		})
+	}
+}
+
+func TestDefaultConfig_CalloutJoinedMaxWaiters(t *testing.T) {
+	unsetEnv(t, "CYODA_CALLOUT_JOINED_MAX_WAITERS")
+	if got := DefaultConfig().Callout.JoinedMaxWaiters; got != 128 {
+		t.Errorf("default JoinedMaxWaiters = %d, want 128", got)
+	}
+	t.Setenv("CYODA_CALLOUT_JOINED_MAX_WAITERS", "16")
+	if got := DefaultConfig().Callout.JoinedMaxWaiters; got != 16 {
+		t.Errorf("JoinedMaxWaiters override = %d, want 16", got)
+	}
+}
+
+func TestValidateCallout_JoinedMaxWaiters(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*CalloutConfig)
+	}{
+		// There is no "unlimited" value: an unbounded queue is the thing the
+		// cap exists to prevent.
+		{"zero waiter cap", func(c *CalloutConfig) { c.JoinedMaxWaiters = 0 }},
+		{"negative waiter cap", func(c *CalloutConfig) { c.JoinedMaxWaiters = -1 }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validCalloutConfig()
+			tc.mutate(&c)
+			err := ValidateCallout(c)
+			if err == nil {
+				t.Fatalf("ValidateCallout(%+v) = nil, want an error", c)
+			}
+			if !strings.Contains(err.Error(), "CYODA_CALLOUT_JOINED_MAX_WAITERS") {
+				t.Errorf("error must name CYODA_CALLOUT_JOINED_MAX_WAITERS; got: %v", err)
 			}
 		})
 	}

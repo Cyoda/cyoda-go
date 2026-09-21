@@ -205,9 +205,20 @@ func (i *txRouteInterceptor) stream() googlegrpc.StreamServerInterceptor {
 		// The pass itself has been checked before this line: ResolveNodeInfo
 		// verifies it — signature, shape, expiry — to decide which node serves
 		// the call, and classifyRouteErr answers a bad one with the join
-		// layer's own 401 / 410 above, before any message is received. What is
-		// left for the joiner needs the request's identity and the fence.
-		//
+		// layer's own 401 / 410 above, before any message is received. The
+		// joiner verifies it again to hold it as a Pass; what is left after
+		// that needs the request's identity and the fence.
+		pass, err := i.joiner.Verify(tok)
+		if err != nil {
+			return i.streamErr(ss, "", envelope, err)
+		}
+		// How many callbacks may queue for one transaction is bounded, and the
+		// bound is read before the request message is taken off the stream: a
+		// refusal costs this node no buffer. The gate applies the same bound
+		// again when the lock is taken, and that answer is the binding one.
+		if err := i.joiner.CheckRoom(pass); err != nil {
+			return i.streamErr(ss, "", envelope, err)
+		}
 		// Receive the request before the lock is taken (see heldStream).
 		var first cepb.CloudEvent
 		if err := ss.RecvMsg(&first); err != nil {
@@ -215,7 +226,7 @@ func (i *txRouteInterceptor) stream() googlegrpc.StreamServerInterceptor {
 		}
 		held := &heldStream{ServerStream: ss, ctx: ctx, first: &first, limit: i.joiner.MaxResponseBytes()}
 		var herr error
-		if jerr := i.joiner.Run(ctx, tok, func(joined context.Context) {
+		if jerr := i.joiner.RunVerified(ctx, pass, func(joined context.Context) {
 			held.ctx = joined
 			herr = handler(srv, held)
 		}); jerr != nil {

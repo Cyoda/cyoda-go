@@ -250,6 +250,7 @@ A processor, criterion or function request to a compute member is a *callout*.
 | `CYODA_CALLOUT_PASS_ALLOWANCE` | `30s` | How long a compute member's transaction token outlives its try's answer limit. |
 | `CYODA_DISPATCH_FORWARD_TIMEOUT` | `30s` | Whole-request timeout of the node-to-node call delegating a scheduled transition. |
 | `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES` | `10485760` | Ceiling on the answer to a compute member's callback, held in memory while the transaction is. A larger answer fails with `413 JOINED_RESPONSE_TOO_LARGE`. |
+| `CYODA_CALLOUT_JOINED_MAX_WAITERS` | `128` | How many of a compute member's callbacks may queue for one transaction. Past the cap: `503 TOO_MANY_JOINED_REQUESTS`, retryable. |
 
 See `cyoda help config grpc` and `cyoda help config cluster`.
 

@@ -11,8 +11,14 @@ package txgate
 
 import (
 	"context"
+	"errors"
 	"sync"
 )
+
+// ErrTooManyWaiters is what AcquireCtx returns when the transaction's gate
+// already has maxWaiters callers queued behind whoever holds it. The refused
+// caller holds nothing and has touched nothing of the transaction.
+var ErrTooManyWaiters = errors.New("too many callers are waiting for the transaction's gate")
 
 type gate struct {
 	// held is the gate itself: one token, and holding the gate is holding the
@@ -21,6 +27,14 @@ type gate struct {
 	// it has touched nothing of the transaction, so there is nothing to undo.
 	held chan struct{}
 	refs int
+	// waiting counts the callers queued for the slot — not the one holding it,
+	// which drops out of the count the moment it wins the slot. It is what the
+	// cap is applied to, so a cap of n admits the holder plus n queued. An
+	// uncapped wait (Acquire) is counted like any other: it cannot be refused
+	// itself, but it is one of the callers a capped one would queue behind, so
+	// a cap read while the owner waits is a shade conservative rather than
+	// wrong.
+	waiting int
 }
 
 // Registry hands out exclusive per-txID gates, cleaning up entries once no
@@ -34,10 +48,12 @@ func New() *Registry { return &Registry{gates: make(map[string]*gate)} }
 
 // Acquire blocks until the caller holds the exclusive gate for txID, then
 // returns a release func. Empty txID returns a no-op release (never gated).
-// The wait has no end: the transaction owner's own chain and the fence's wait
-// take the gate this way, and neither may give up on it.
+// The wait has no end and is never refused for capacity: the transaction
+// owner's own chain, the fence's wait and a suspended callback's resume all
+// take the gate this way, and each holds state that neither giving up nor a
+// refusal could undo.
 func (r *Registry) Acquire(txID string) func() {
-	release, _ := r.acquire(context.Background(), txID) // a background wait cannot fail
+	release, _ := r.acquire(context.Background(), txID, 0) // a background, uncapped wait cannot fail
 	return release
 }
 
@@ -46,11 +62,35 @@ func (r *Registry) Acquire(txID string) func() {
 // holds nothing. Once a release func has been returned the gate is held, and
 // ctx no longer bears on it — a holder gives the gate up by releasing it, never
 // by being cancelled.
-func (r *Registry) AcquireCtx(ctx context.Context, txID string) (func(), error) {
-	return r.acquire(ctx, txID)
+//
+// maxWaiters bounds the queue: when that many callers are already waiting the
+// call returns ErrTooManyWaiters at once rather than joining them, having
+// touched nothing. A caller that sits on one transaction can otherwise park
+// callbacks on it without bound, each holding its request for the life of the
+// callout. Zero or less is no cap.
+func (r *Registry) AcquireCtx(ctx context.Context, txID string, maxWaiters int) (func(), error) {
+	return r.acquire(ctx, txID, maxWaiters)
 }
 
-func (r *Registry) acquire(ctx context.Context, txID string) (func(), error) {
+// AtCapacity reports whether txID's gate already has maxWaiters callers queued.
+// It is a reading, not a reservation: a door that asks before it reads its
+// request — so that a refused request costs it no buffer — may still be refused
+// by AcquireCtx, and may be admitted by it having read full here. AcquireCtx's
+// answer is the binding one.
+//
+// A transaction with no gate reads the same as one nobody is queued for, so the
+// reading never says whether a transaction exists.
+func (r *Registry) AtCapacity(txID string, maxWaiters int) bool {
+	if txID == "" || maxWaiters <= 0 {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	g := r.gates[txID]
+	return g != nil && g.waiting >= maxWaiters
+}
+
+func (r *Registry) acquire(ctx context.Context, txID string, maxWaiters int) (func(), error) {
 	if txID == "" {
 		return func() {}, nil
 	}
@@ -59,7 +99,7 @@ func (r *Registry) acquire(ctx context.Context, txID string) (func(), error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	g := func() *gate {
+	g, err := func() (*gate, error) {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		g := r.gates[txID]
@@ -67,9 +107,18 @@ func (r *Registry) acquire(ctx context.Context, txID string) (func(), error) {
 			g = &gate{held: make(chan struct{}, 1)}
 			r.gates[txID] = g
 		}
+		if maxWaiters > 0 && g.waiting >= maxWaiters {
+			// Nothing was added: a gate created a line above has no waiters,
+			// so this branch only ever sees one the caller found.
+			return nil, ErrTooManyWaiters
+		}
 		g.refs++
-		return g
+		g.waiting++
+		return g, nil
 	}()
+	if err != nil {
+		return nil, err
+	}
 
 	// When the gate frees and ctx ends at the same instant, select takes either:
 	// a caller that wins the send holds the gate with a context that has just
@@ -79,7 +128,9 @@ func (r *Registry) acquire(ctx context.Context, txID string) (func(), error) {
 	// caller can tell the two apart.
 	select {
 	case g.held <- struct{}{}: // held until the returned release runs
+		r.stopWaiting(g)
 	case <-ctx.Done():
+		r.stopWaiting(g)
 		r.unref(txID, g)
 		return nil, ctx.Err()
 	}
@@ -93,6 +144,14 @@ func (r *Registry) acquire(ctx context.Context, txID string) (func(), error) {
 			r.unref(txID, g)
 		})
 	}, nil
+}
+
+// stopWaiting takes the caller out of the queue count, whether it won the slot
+// or gave the wait up.
+func (r *Registry) stopWaiting(g *gate) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	g.waiting--
 }
 
 // unref drops one reference to txID's gate and forgets the gate once no

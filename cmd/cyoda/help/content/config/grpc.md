@@ -64,6 +64,16 @@ member. These settings apply on a single node and in a cluster alike.
   the owning node. It does not govern ordinary, unjoined requests, nor the
   callback's own request body. Must be `> 0`; startup fails otherwise
   (default: `10485760`, 10 MiB)
+- `CYODA_CALLOUT_JOINED_MAX_WAITERS` — how many of a compute member's callbacks
+  may queue for one transaction behind the one holding it. Callbacks of one
+  transaction are served one at a time, and a waiting one holds its whole
+  request in memory for as long as the callout lasts, so the queue is bounded:
+  past the cap a callback is refused with `503 TOO_MANY_JOINED_REQUESTS`,
+  retryable, having touched nothing. Firing many callbacks at one transaction
+  at once buys a member no speed, so the cap enforces documented advice rather
+  than introducing a rule. Raise it for a member that legitimately submits in
+  bursts, at the cost of memory held on the owning node. Must be `> 0`; startup
+  fails otherwise — there is no "unlimited" value (default: `128`)
 
 Tries multiply the answer limit. With the PostgreSQL backend a callout holds
 its transaction's connection idle while it waits, and

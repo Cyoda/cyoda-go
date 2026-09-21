@@ -59,7 +59,7 @@ func newJoinerEnv(t *testing.T) *joinerEnv {
 	f := fence.New(gate)
 	reader := sdkmetric.NewManualReader()
 	meter := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("txjoin-test")
-	joiner, err := NewJoiner(signer, txMgr, f, gate, testResponseMax, meter)
+	joiner, err := NewJoiner(signer, txMgr, f, gate, testResponseMax, testMaxWaiters, meter)
 	if err != nil {
 		t.Fatalf("NewJoiner: %v", err)
 	}

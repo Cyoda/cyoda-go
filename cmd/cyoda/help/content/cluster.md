@@ -121,6 +121,8 @@ The owner admits a callback only while the token's callout is in progress and th
 
 A callback's request and its answer are both held in memory on the owner while the transaction is held, each under its own ceiling: an over-size request body is refused with `413 BAD_REQUEST` (HTTP) at a fixed 10 MiB, and an answer past `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES` (default 10 MiB) fails the callback with `413 JOINED_RESPONSE_TOO_LARGE`, naming the ceiling, rather than being cut short. Page a large read instead. A callback still waiting its turn when its member goes away is dropped — it has touched nothing, and the drop is logged at `DEBUG` with no ticket, since nothing was wrong on the server and there is nobody left to quote a ticket to; one that already has the transaction runs to completion.
 
+How many callbacks may wait for one transaction is bounded too, by `CYODA_CALLOUT_JOINED_MAX_WAITERS` (default 128) — each one waiting holds its whole request for as long as the callout lasts. Because callbacks of one transaction are served one at a time, firing many at once buys a compute member no speed; past the cap a callback is refused with `503 TOO_MANY_JOINED_REQUESTS` before its request is read, having touched nothing, while the callback holding the transaction and those already queued are unaffected. On that refusal, back off and send the callback again. A processor that lets the refusal escape fails its callout, and the operation is rolled back.
+
 See `workflows` and `docs/PROCESSOR_EXECUTION_MODES.md` for mode-specific
 semantics (`SYNC`, `ASYNC_NEW_TX`, `COMMIT_BEFORE_DISPATCH`).
 

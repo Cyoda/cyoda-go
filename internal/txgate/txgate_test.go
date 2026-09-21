@@ -56,7 +56,7 @@ func TestRegistry_AcquireCtx_AWaiterWhoseContextEndsGivesUp(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	gaveUp := make(chan error, 1)
 	go func() {
-		release, err := r.AcquireCtx(ctx, "tx-1")
+		release, err := r.AcquireCtx(ctx, "tx-1", 0)
 		if release != nil {
 			t.Error("a waiter that gave up was handed a release func")
 		}
@@ -90,7 +90,7 @@ func TestRegistry_AcquireCtx_AWaiterWhoseContextEndsGivesUp(t *testing.T) {
 func TestRegistry_AcquireCtx_OnceHeldTheContextDoesNotMatter(t *testing.T) {
 	r := New()
 	ctx, cancel := context.WithCancel(context.Background())
-	release, err := r.AcquireCtx(ctx, "tx-1")
+	release, err := r.AcquireCtx(ctx, "tx-1", 0)
 	if err != nil {
 		t.Fatalf("AcquireCtx: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestRegistry_AcquireCtx_ContextAlreadyEnded_TakesNothing(t *testing.T) {
 	r := New()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if release, err := r.AcquireCtx(ctx, "tx-1"); !errors.Is(err, context.Canceled) || release != nil {
+	if release, err := r.AcquireCtx(ctx, "tx-1", 0); !errors.Is(err, context.Canceled) || release != nil {
 		t.Fatalf("AcquireCtx handed out a gate (%v) or the wrong error: %v", release != nil, err)
 	}
 	if n := r.len(); n != 0 {
@@ -220,5 +220,126 @@ func TestRegistry_EmptyTxID_Noop(t *testing.T) {
 	rel() // must not panic
 	if n := r.len(); n != 0 {
 		t.Fatalf("expected empty gate map after release of empty txID, got %d", n)
+	}
+}
+
+// waitFor polls cond until it holds. The queue on a gate is built by other
+// goroutines, so a test that has to see a caller waiting waits for it rather
+// than sleeping a guessed interval.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+// A transaction's gate takes a bounded queue. Past the cap AcquireCtx refuses
+// instead of parking another caller: a compute member that fires callbacks
+// faster than they are served would otherwise hold a request's worth of memory
+// per callback for the life of the callout.
+func TestRegistry_AcquireCtx_RefusesPastTheWaiterCap(t *testing.T) {
+	r := New()
+	holder := r.Acquire("tx-1")
+
+	queued := make(chan func(), 1)
+	go func() {
+		release, err := r.AcquireCtx(context.Background(), "tx-1", 1)
+		if err != nil {
+			t.Errorf("the one waiter a cap of 1 admits was refused: %v", err)
+			return
+		}
+		queued <- release
+	}()
+	waitFor(t, "the first waiter to reach the gate", func() bool { return r.AtCapacity("tx-1", 1) })
+
+	release, err := r.AcquireCtx(context.Background(), "tx-1", 1)
+	if !errors.Is(err, ErrTooManyWaiters) {
+		t.Fatalf("AcquireCtx err = %v; want ErrTooManyWaiters", err)
+	}
+	if release != nil {
+		t.Fatal("a refused caller was handed a gate")
+	}
+
+	// The holder and the waiter already queued are untouched: the queue drains.
+	holder()
+	select {
+	case rel := <-queued:
+		rel()
+	case <-time.After(5 * time.Second):
+		t.Fatal("the queued waiter never got the gate")
+	}
+	if n := r.len(); n != 0 {
+		t.Errorf("gate map = %d entries; a refusal must leave nothing behind", n)
+	}
+}
+
+// The count is of callers waiting, not of the holder: a cap of n admits the
+// holder plus n queued.
+func TestRegistry_AcquireCtx_TheHolderIsNotAWaiter(t *testing.T) {
+	r := New()
+	release, err := r.AcquireCtx(context.Background(), "tx-1", 1)
+	if err != nil {
+		t.Fatalf("the first caller of a free gate was refused: %v", err)
+	}
+	defer release()
+	if r.AtCapacity("tx-1", 1) {
+		t.Error("a gate with a holder and nobody queued reports itself full")
+	}
+}
+
+// Acquire is the wait the transaction owner's own chain, the fence and a
+// suspended callback's resume take, and none of them may be refused: each holds
+// state a refusal could not undo. The cap belongs to the joined doors alone.
+func TestRegistry_Acquire_IsNeverRefusedForCapacity(t *testing.T) {
+	r := New()
+	holder := r.Acquire("tx-1")
+	go func() {
+		if release, err := r.AcquireCtx(context.Background(), "tx-1", 1); err == nil {
+			release()
+		}
+	}()
+	waitFor(t, "the gate to fill", func() bool { return r.AtCapacity("tx-1", 1) })
+
+	got := make(chan struct{})
+	go func() { r.Acquire("tx-1")(); close(got) }()
+	holder()
+	select {
+	case <-got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("an uncapped wait never got the gate")
+	}
+}
+
+// A transaction nothing is queued for is never at capacity, whether it has a
+// gate or has never had one — the two read the same, which is what keeps the
+// reading from saying whether a transaction exists.
+func TestRegistry_AtCapacity_NothingQueued(t *testing.T) {
+	r := New()
+	if r.AtCapacity("tx-never-seen", 1) {
+		t.Error("a transaction with no gate reports itself full")
+	}
+	release := r.Acquire("tx-1")
+	defer release()
+	if r.AtCapacity("tx-1", 1) {
+		t.Error("a gate nobody is queued for reports itself full")
+	}
+}
+
+// An empty txID is not a joined request and was never gated, so no cap bears on
+// it.
+func TestRegistry_AcquireCtx_EmptyTxID_IsNotCapped(t *testing.T) {
+	r := New()
+	release, err := r.AcquireCtx(context.Background(), "", 1)
+	if err != nil || release == nil {
+		t.Fatalf(`AcquireCtx("") = %v, %v; want a no-op release`, release != nil, err)
+	}
+	release()
+	if r.AtCapacity("", 1) {
+		t.Error("the empty txID reports itself full")
 	}
 }
