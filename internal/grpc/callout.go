@@ -150,11 +150,12 @@ func NewProcessorCallout(tenantID spi.TenantID, entity *spi.Entity, processor sp
 // computes and does not write, so it is repeat-safe by rule. A criterion that
 // does not parse would fail identically on any cnode: Terminal.
 //
-// A criterion is a workflow configuration value — authored ahead of time and
-// deliberately left unvalidated at import for one shape, an unparseable
-// FUNCTION criterion (see validateCriterion's doc in
-// internal/domain/workflow/validate.go) — not this node's own fault and not a
-// compute member's: no member is ever contacted here. It is therefore neither
+// A criterion is a workflow configuration value — authored ahead of time, not
+// this node's own fault and not a compute member's: no member is ever
+// contacted here. Import refuses this shape (validateCriterion, in
+// internal/domain/workflow/validate.go, parses every function criterion), so
+// what reaches here is a workflow stored before that rule existed, or a
+// criterion that arrived with a hand-over. It is therefore neither
 // terminalFailure's internal case nor memberResponseUnreadable's; per spec
 // §8.2's Terminal row ("500 ticketed for auth-context; 400 WORKFLOW_FAILED
 // otherwise") it takes the "otherwise" branch — a domain 400 — but with a

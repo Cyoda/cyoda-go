@@ -146,7 +146,11 @@ func checkCriterionResponseTimeout(criterion json.RawMessage, location string, m
 	}
 	fn, err := contract.ParseCriterionFunction(trimmed)
 	if err != nil {
-		return fmt.Errorf("%s: %w", location, err)
+		// Not this rule's to report either: validateCriterion parses the very
+		// same criteria, with the very same location strings, and the import
+		// handler runs it first — a function criterion that does not parse has
+		// already been refused before this rule is reached.
+		return nil
 	}
 	return checkResponseTimeout(fn.Config.ResponseTimeoutMs, maxMs,
 		fmt.Sprintf("%s criterion function %q", location, fn.Name))
@@ -327,7 +331,7 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 // errored nowhere and simply resolved, so the criterion worked. An unknown
 // operator is worse again: it fails closed on every subsequent evaluation
 // with no error surfaced anywhere, so the transition it guards silently
-// never fires. These four checks are grammar-only and belong at import,
+// never fires. The last four of the five are grammar-only and belong at import,
 // which a stored workflow crosses exactly once, rather than at evaluation,
 // where the failure would land on a save (or, for the unknown-operator case,
 // never surface at all).

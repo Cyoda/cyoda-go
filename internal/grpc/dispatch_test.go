@@ -57,7 +57,7 @@ func newTestDispatcherWith(t *testing.T, registry *MemberRegistry, selector Memb
 	if err != nil {
 		t.Fatalf("token.NewSigner: %v", err)
 	}
-	return NewProcessorDispatcher(registry, selector, signer, "node-test", 30*time.Second, 60*time.Second, 3*time.Second)
+	return NewProcessorDispatcher(registry, selector, signer, 30*time.Second, 60*time.Second, 3*time.Second)
 }
 
 // oneTry is the local procedure with one try, armed the way an owner arms a

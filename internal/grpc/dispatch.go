@@ -26,19 +26,19 @@ type ProcessorDispatcher struct {
 	registry           *MemberRegistry
 	selector           MemberSelector
 	signer             *token.Signer
-	selfNodeID         string
 	answerLimitDefault time.Duration
 	answerLimitMax     time.Duration
 	passAllowance      time.Duration
 }
 
-// NewProcessorDispatcher creates a new ProcessorDispatcher.
-func NewProcessorDispatcher(registry *MemberRegistry, selector MemberSelector, signer *token.Signer, selfNodeID string, answerLimitDefault, answerLimitMax, passAllowance time.Duration) *ProcessorDispatcher {
+// NewProcessorDispatcher creates a new ProcessorDispatcher. It holds no node
+// identity of its own: the owner a pass names is the callout's, whichever
+// pnode is running the try.
+func NewProcessorDispatcher(registry *MemberRegistry, selector MemberSelector, signer *token.Signer, answerLimitDefault, answerLimitMax, passAllowance time.Duration) *ProcessorDispatcher {
 	return &ProcessorDispatcher{
 		registry:           registry,
 		selector:           selector,
 		signer:             signer,
-		selfNodeID:         selfNodeID,
 		answerLimitDefault: answerLimitDefault,
 		answerLimitMax:     answerLimitMax,
 		passAllowance:      passAllowance,
@@ -206,36 +206,36 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 	}
 
 	// The hand-off happened: from here on the work may have reached the cnode.
+	// Every response on ch is non-nil — CompleteRequest and failAllPending are
+	// its only producers and neither sends nil, and the channel is never
+	// closed — so a nil one is not guarded for: doing so would give the
+	// resulting failure a kind (MemberFailed says the cnode answered) that no
+	// nil response could ever have earned.
 	select {
 	case resp := <-ch:
 		// Warnings first, keyed by callout name, so that a failed try still
 		// surfaces them and the client sees which callout warned. Bounded here,
 		// where the member's own text becomes the client's, in the same way and
 		// for the same reason as its failure message below.
-		if resp != nil {
-			kept := resp.Warnings
-			if len(kept) > maxMemberWarnings {
-				kept = kept[:maxMemberWarnings]
-			}
-			for _, w := range kept {
-				common.AddWarning(ctx, fmt.Sprintf("%s %s: %s", label, name, boundMemberText(w)))
-			}
-			if len(resp.Warnings) > maxMemberWarnings {
-				common.AddWarning(ctx, fmt.Sprintf("%s %s: further warnings from the compute member were omitted", label, name))
-			}
+		kept := resp.Warnings
+		if len(kept) > maxMemberWarnings {
+			kept = kept[:maxMemberWarnings]
 		}
-		if resp != nil && resp.Disconnected {
+		for _, w := range kept {
+			common.AddWarning(ctx, fmt.Sprintf("%s %s: %s", label, name, boundMemberText(w)))
+		}
+		if len(resp.Warnings) > maxMemberWarnings {
+			common.AddWarning(ctx, fmt.Sprintf("%s %s: further warnings from the compute member were omitted", label, name))
+		}
+		if resp.Disconnected {
 			slog.Error("member disconnected mid-dispatch", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
 			return CalloutResult{}, appFailure(contract.NoAnswer, disconnectedErr(label)), nil
 		}
-		if resp == nil || !resp.Success {
-			failure := &contract.CalloutFailure{Kind: contract.MemberFailed, Message: label + " returned failure"}
-			if resp != nil {
-				failure.Retryable = resp.Retryable
-				if resp.Error != "" {
-					failure.Message = boundMemberText(resp.Error)
-					common.AddError(ctx, fmt.Sprintf("%s %s: %s", label, name, failure.Message))
-				}
+		if !resp.Success {
+			failure := &contract.CalloutFailure{Kind: contract.MemberFailed, Message: label + " returned failure", Retryable: resp.Retryable}
+			if resp.Error != "" {
+				failure.Message = boundMemberText(resp.Error)
+				common.AddError(ctx, fmt.Sprintf("%s %s: %s", label, name, failure.Message))
 			}
 			return CalloutResult{}, failure, nil
 		}
@@ -357,7 +357,7 @@ const maxMemberWarnings = 32
 // applied to a hand-over answer's diagnostics).
 func boundMemberText(s string) string {
 	if len(s) <= maxMemberMessageRunes {
-		return s // bytes never outnumber runes: nothing to cut
+		return s // runes never outnumber bytes: nothing to cut
 	}
 	r := []rune(s)
 	if len(r) <= maxMemberMessageRunes {

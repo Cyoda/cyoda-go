@@ -2790,7 +2790,8 @@ func classifySaveErr(internalMsg, entityID string, err error) *common.AppError {
 //     member's own verdict said so. Its text is the member's, behind the
 //     engine's wrap naming the processor, criterion or function.
 //   - Everything else (processor-domain failures, criterion mismatches, CAS
-//     conflicts already mapped upstream) → 400 WORKFLOW_FAILED.
+//     conflicts already mapped upstream, and a Terminal callout failure that
+//     carries no code of its own) → 400 WORKFLOW_FAILED.
 func classifyWorkflowError(err error) *common.AppError {
 	var appErr *common.AppError
 	if errors.As(err, &appErr) {
@@ -2858,8 +2859,13 @@ func classifyWorkflowError(err error) *common.AppError {
 	// behind the engine's wrap, which names the processor; its verdict decides
 	// whether the client is told that running the operation again may help.
 	// The verdict never decides whether another cnode is tried — a cnode that
-	// answered is never replaced. Every other kind of callout failure carries
-	// an *AppError and left through the first branch.
+	// answered is never replaced. Most other kinds of callout failure carry an
+	// *AppError and left through the first branch; the three Terminal ones
+	// that have no code of their own — an answer limit above the server's
+	// bound, a compute member's answer that could not be read, a workflow
+	// criterion that could not be parsed — carry none by design and reach the
+	// catch-all below, where their own sanitized text becomes a 400
+	// WORKFLOW_FAILED.
 	var failure *contract.CalloutFailure
 	if errors.As(err, &failure) && failure.Kind == contract.MemberFailed {
 		appErr := common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed, err.Error())

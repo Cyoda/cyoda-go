@@ -245,7 +245,7 @@ func TestHandler_PassMintedOnThePeerNamesTheOwner(t *testing.T) {
 	}
 	reg, cnode := attachedCnode(t, "tenant-1", "python")
 	local := internalgrpc.NewProcessorDispatcher(reg, internalgrpc.NewRoundRobinSelector(reg),
-		signer, "receiver-node", 5*time.Second, testOwnAnswerLimitMax, 30*time.Second)
+		signer, 5*time.Second, testOwnAnswerLimitMax, 30*time.Second)
 
 	auth := newAEAD(t)
 	resp := postHandOver(t, newHandlerMux(t, local, auth), auth, validRequest(t, "processor"))

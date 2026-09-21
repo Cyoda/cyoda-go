@@ -447,7 +447,7 @@ func New(cfg Config) *App {
 	// entity service and every callout judge a callback by the same state.
 	a.txGate = txgate.New()
 	a.fence = fence.New(a.txGate)
-	localDispatcher := internalgrpc.NewProcessorDispatcher(a.memberRegistry, internalgrpc.NewRoundRobinSelector(a.memberRegistry), a.tokenSigner, a.selfNodeID, cfg.Callout.ResponseTimeout, cfg.Callout.ResponseTimeoutMax, cfg.Callout.PassAllowance)
+	localDispatcher := internalgrpc.NewProcessorDispatcher(a.memberRegistry, internalgrpc.NewRoundRobinSelector(a.memberRegistry), a.tokenSigner, cfg.Callout.ResponseTimeout, cfg.Callout.ResponseTimeoutMax, cfg.Callout.PassAllowance)
 	searchStore, err := a.storeFactory.AsyncSearchStore(context.Background())
 	if err != nil {
 		slog.Error("startup failure",

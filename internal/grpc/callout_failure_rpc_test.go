@@ -60,9 +60,8 @@ func TestRPC_Processor_StoredTimeoutOverLoweredBound_Envelope(t *testing.T) {
 
 // A cnode that answers "I failed": one try, 400 WORKFLOW_FAILED, the message
 // names the processor and carries the cnode's own text — and no longer the
-// inner "processor dispatch failed:" segment. (Whether the envelope is marked
-// retryable for verdict=true is decided where workflow errors are classified,
-// outside this package; this pins code and message for all three verdicts.)
+// inner "processor dispatch failed:" segment. All three verdicts are pinned:
+// code, message, and the envelope's retryable flag.
 func TestRPC_ProcessorMemberFailed_EnvelopeCarriesTheMemberMessage(t *testing.T) {
 	yes, no := true, false
 	for name, tc := range map[string]struct {
