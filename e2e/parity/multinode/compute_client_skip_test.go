@@ -35,6 +35,8 @@ func TestCalloutHandOverScenariosSkipAndAreRegistered(t *testing.T) {
 		"Callout_HandOverTwoTriesInOneExchange":    RunCallout_HandOverTwoTriesInOneExchange,
 		"Callout_HandOverCarriesMessageAndVerdict": RunCallout_HandOverCarriesMessageAndVerdict,
 		"Callout_TwoTenantsShareATag":              RunCallout_TwoTenantsShareATag,
+		"Callout_PassFromAnotherPnode":             RunCallout_PassFromAnotherPnode,
+		"Callout_MinorAbsorbedAcrossHandOvers":     RunCallout_MinorAbsorbedAcrossHandOvers,
 	}
 	registered := map[string]bool{}
 	for _, nt := range AllTests() {
