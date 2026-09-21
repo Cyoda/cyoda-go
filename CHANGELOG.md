@@ -763,6 +763,25 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   the tree still uses the old keyword, so the two are not byte-identical until
   it follows; see `docs/cloud-parity/event-schema-composition.md`.
 
+  The same change removes `"type": "any"` from the ten properties that carried
+  it. That is the `jsonschema2pojo` spelling of "any value", not a JSON Schema
+  type name, and a conformant validator does not read it permissively — it
+  refuses to compile the document, and with it every clause the document does
+  state. Sixteen of the sixty-six schemas were unusable that way, including
+  `common/DataPayload.json` and the six that reach it, so the composition above
+  bought those sixteen nothing until this was resolved. 2020-12 spells "any
+  value" by omitting `type`, which is what the tree now does; the sibling
+  `existingJavaType` stays, being the generator extension Cloud's copy needs.
+  `api/grpc/events/types.go` regenerates byte-identically here too. Cloud's
+  copy still carries the construct.
+
+- **The reference compute member sent a function answer the published tree
+  refuses.** `cmd/compute-test-client`'s function response omitted `entityId`,
+  which all three calculation responses require and which its processor and
+  criteria responses both send. A customer copying it as the worked example got
+  an answer that would not validate. It now names the entity it answers about,
+  on the successful and the failure path alike.
+
 ## [0.8.4] — 2026-09-09
 
 ### Breaking

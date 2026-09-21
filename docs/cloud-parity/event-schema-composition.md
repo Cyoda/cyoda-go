@@ -1,4 +1,4 @@
-# Event schemas compose with `allOf`
+# Event schemas say what their own dialect reads
 
 ## Contract
 
@@ -27,8 +27,34 @@ base: a criteria response validated as its own three fields, not as a
 type, nothing applied `BaseEvent`'s `required` list, and nothing checked the
 `error` object's shape — `{"success": "yes", "matches": true}` validated.
 
-The composition now decides those three things. Nothing else in the documents
-moved.
+The composition now decides those three things.
+
+## `"type": "any"` is gone
+
+Ten properties across nine documents declared
+
+```json
+"type": "any"
+```
+
+`any` is not one of the seven JSON Schema type names. It is the
+`jsonschema2pojo` spelling of "any value", and a conformant validator does not
+read it permissively: the document fails the meta-schema and **will not
+compile at all**. Not "allows anything" — refused at the door, taking every
+clause the document does state with it.
+
+Because a `$ref` is only as compilable as what it points at, that reached
+further than the nine. Sixteen of the sixty-six schemas could not be compiled,
+`common/DataPayload.json` and the six that reference it included — among them
+`EntityProcessorCalculationResponse`, one of the three answers a compute member
+sends. The composition above therefore bought those sixteen nothing until this
+was resolved: a validator never got far enough to read it.
+
+2020-12 spells "any value" by **omitting `type`**, which is what the tree now
+does. The sibling `existingJavaType` is deliberately untouched: it is a
+`jsonschema2pojo` extension naming the Java class Cloud's generator emits,
+cyoda-go's generator drops it from the scratch copy it hands `go-jsonschema`,
+and Cloud still needs it in the published document.
 
 ## What the tightening reaches
 
@@ -69,15 +95,24 @@ of whichever schema was read first — so the inlining stays.
 ## The two trees are no longer byte-identical
 
 cyoda-go defines the integration contract and Cloud mirrors it, so until Cloud
-follows, its copy of this tree differs from ours in these 47 files. That is a
+follows, its copy of this tree differs from ours in 47 files on the composition
+keyword and 9 more on `"type": "any"` (the two sets overlap in three). That is a
 known, temporary difference, not an accepted divergence.
 
 ## Cloud obligation
 
-Compose with `allOf` in Cloud's copy of the tree, so the two are byte-identical
-again.
+Compose with `allOf` and drop `"type": "any"` in Cloud's copy of the tree, so
+the two are byte-identical again. Keep `existingJavaType` — it is what
+`jsonschema2pojo` needs once the type name is gone, and cyoda-go's copy carries
+it for that reason.
 
-The open question is entirely on Cloud's generator. `jsonschema2pojo` honours
+Dropping `"type": "any"` should be inert for `jsonschema2pojo`: the property's
+Java type comes from `existingJavaType`, which is untouched. If that is not so,
+the generated sources will say, and the decision is the same one as below —
+find the shape that is both a conformant 2020-12 document and the Java
+hierarchy Cloud already has.
+
+The open question on the composition is entirely on Cloud's generator. `jsonschema2pojo` honours
 the legacy keyword and turns it into Java inheritance — the generated
 `EntityCriteriaCalculationResponse` literally `extends BaseEvent`, which is
 where its `success` field comes from and what the `payload as BaseEvent` casts
