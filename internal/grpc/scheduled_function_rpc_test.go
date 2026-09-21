@@ -20,6 +20,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -50,7 +51,10 @@ import (
 // processor/criterion dispatch actually runs (rather than failing with "no
 // external processing configured") and tests can register a member to answer
 // requests, or leave the registry empty to exercise the no-member path.
-func newTestEnvWithDispatch(t *testing.T) (*CloudEventsServiceImpl, *workflow.Handler, context.Context) {
+// newTestEnvWithOwner wires the production callout path: a real
+// ProcessorDispatcher over the returned service's own MemberRegistry, and over
+// it the owner's loop, which is what the workflow engine calls.
+func newTestEnvWithOwner(t *testing.T, answerLimitDefault, answerLimitMax time.Duration, owner OwnerTestConfig) (*CloudEventsServiceImpl, *workflow.Handler, context.Context) {
 	t.Helper()
 
 	factory := memory.NewStoreFactory()
@@ -70,14 +74,19 @@ func newTestEnvWithDispatch(t *testing.T) (*CloudEventsServiceImpl, *workflow.Ha
 	if err != nil {
 		t.Fatalf("token.NewSigner: %v", err)
 	}
-	dispatcher := NewProcessorDispatcher(registry, common.NewDefaultUUIDGenerator(), signer, "node-test", time.Minute)
+	dispatcher := NewProcessorDispatcher(registry, NewRoundRobinSelector(registry), signer, "node-test", answerLimitDefault, answerLimitMax, 30*time.Second)
+	if NewOwnerForTest == nil {
+		t.Fatal("owner_wiring_test.go did not set NewOwnerForTest")
+	}
+	gate := txgate.New()
+	extProc := NewOwnerForTest(dispatcher, registry, fence.New(gate), owner)
 
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, workflow.WithExternalProcessing(dispatcher))
+	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, workflow.WithExternalProcessing(extProc))
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
 	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)
-	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, gate)
 	modelHandler := model.New(factory)
-	workflowHandler := workflow.New(factory, engine)
+	workflowHandler := workflow.New(factory, engine, 60*time.Second)
 
 	svc := &CloudEventsServiceImpl{
 		registry:      registry,
@@ -91,9 +100,21 @@ func newTestEnvWithDispatch(t *testing.T) (*CloudEventsServiceImpl, *workflow.Ha
 	return svc, workflowHandler, ctx
 }
 
+// newTestEnvWithDispatchLimits is newTestEnvWithOwner with the default number
+// of tries and no patience: a callout with no cnode fails at once.
+func newTestEnvWithDispatchLimits(t *testing.T, answerLimitDefault, answerLimitMax time.Duration) (*CloudEventsServiceImpl, *workflow.Handler, context.Context) {
+	t.Helper()
+	return newTestEnvWithOwner(t, answerLimitDefault, answerLimitMax, OwnerTestConfig{FixedNumRetries: 3})
+}
+
+func newTestEnvWithDispatch(t *testing.T) (*CloudEventsServiceImpl, *workflow.Handler, context.Context) {
+	t.Helper()
+	return newTestEnvWithDispatchLimits(t, 30*time.Second, 60*time.Second)
+}
+
 // testTenant is the tenant ID every test in this file registers gRPC
 // compute members under — it must match newTestEnvWithDispatch's
-// spi.UserContext.Tenant.ID ("test-tenant") for MemberRegistry.FindByTags
+// spi.UserContext.Tenant.ID ("test-tenant") for MemberRegistry.Candidates
 // to resolve them.
 const testTenant = spi.TenantID("test-tenant")
 

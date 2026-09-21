@@ -2785,6 +2785,10 @@ func classifySaveErr(internalMsg, entityID string, err error) *common.AppError {
 //     the raw message (which may include the principal id) never reaches the
 //     client via 4xx WORKFLOW_FAILED.
 //   - ErrTransitionNotFound → 400 TRANSITION_NOT_FOUND (client-attributable).
+//   - A contract.CalloutFailure of kind MemberFailed (the compute member
+//     answered "I failed") → 400 WORKFLOW_FAILED, retryable exactly when the
+//     member's own verdict said so. Its text is the member's, behind the
+//     engine's wrap naming the processor, criterion or function.
 //   - Everything else (processor-domain failures, criterion mismatches, CAS
 //     conflicts already mapped upstream) → 400 WORKFLOW_FAILED.
 func classifyWorkflowError(err error) *common.AppError {
@@ -2849,6 +2853,20 @@ func classifyWorkflowError(err error) *common.AppError {
 	// 500 rather than a misleading 400.
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return common.Internal("workflow aborted by context cancellation", err)
+	}
+	// A cnode that answered "I failed". Its own message reaches the client
+	// behind the engine's wrap, which names the processor; its verdict decides
+	// whether the client is told that running the operation again may help.
+	// The verdict never decides whether another cnode is tried — a cnode that
+	// answered is never replaced. Every other kind of callout failure carries
+	// an *AppError and left through the first branch.
+	var failure *contract.CalloutFailure
+	if errors.As(err, &failure) && failure.Kind == contract.MemberFailed {
+		appErr := common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed, err.Error())
+		if failure.Retryable != nil && *failure.Retryable {
+			appErr = appErr.AsRetryable()
+		}
+		return appErr
 	}
 	return common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed, err.Error())
 }

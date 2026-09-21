@@ -9,12 +9,13 @@ import (
 
 // TestWorkflowSchemaVersion_ImportAcceptsCurrent — happy path: a
 // workflow stamped with a supported MINOR imports successfully. As of
-// v0.8.4, "1.4" is CurrentSchemaVersion; "1.1", "1.2" and "1.3" remain
+// v0.9.0, "1.5" is CurrentSchemaVersion; "1.1" through "1.4" remain
 // accepted under dual-shape retention (SupportedSchemaRanges is
-// {1, 1, 4}). This test exercises the still-accepted "1.1" shape;
+// {1, 1, 5}). This test exercises the still-accepted "1.1" shape;
 // TestWorkflowSchemaVersion_ImportAccepts12 covers the "1.2" shape,
-// TestWorkflowSchemaVersion_ImportAccepts13 covers the "1.3" shape, and
-// TestWorkflowSchemaVersion_ImportAccepts14 covers the new "1.4" shape.
+// TestWorkflowSchemaVersion_ImportAccepts13 covers the "1.3" shape,
+// TestWorkflowSchemaVersion_ImportAccepts14 covers the "1.4" shape, and
+// TestWorkflowSchemaVersion_ImportAccepts15 covers the new "1.5" shape.
 func TestWorkflowSchemaVersion_ImportAcceptsCurrent(t *testing.T) {
 	const entity = "wf-schema-accept"
 	importModelE2E(t, entity, 1)
@@ -171,8 +172,8 @@ func TestWorkflowSchemaVersion_ExportStampsCurrent(t *testing.T) {
 		if !ok {
 			t.Fatalf("workflow[%d] not a map: %T", i, raw)
 		}
-		if m["version"] != "1.4" {
-			t.Fatalf("workflow[%d] version = %v; want \"1.4\"", i, m["version"])
+		if m["version"] != "1.5" {
+			t.Fatalf("workflow[%d] version = %v; want \"1.5\"", i, m["version"])
 		}
 	}
 }
@@ -194,15 +195,15 @@ func TestWorkflowSchemaVersion_HelpVersionsAction(t *testing.T) {
 	if err := json.Unmarshal([]byte(respBody), &got); err != nil {
 		t.Fatalf("decode: %v; raw: %s", err, respBody)
 	}
-	if got.Current != "1.4" {
-		t.Fatalf("current = %q; want 1.4", got.Current)
+	if got.Current != "1.5" {
+		t.Fatalf("current = %q; want 1.5", got.Current)
 	}
 	if len(got.Supported) != 1 {
 		t.Fatalf("supported length = %d; want 1; got %+v", len(got.Supported), got.Supported)
 	}
 	s := got.Supported[0]
-	if s["major"] != 1 || s["minMinor"] != 1 || s["maxMinor"] != 4 {
-		t.Fatalf("supported[0] = %+v; want {major:1, minMinor:1, maxMinor:4}", s)
+	if s["major"] != 1 || s["minMinor"] != 1 || s["maxMinor"] != 5 {
+		t.Fatalf("supported[0] = %+v; want {major:1, minMinor:1, maxMinor:5}", s)
 	}
 }
 
@@ -263,6 +264,46 @@ func TestWorkflowSchemaVersion_ImportAccepts14(t *testing.T) {
 	}`
 	if status, body := importWorkflowE2E(t, entity, version, payload); status != http.StatusOK {
 		t.Fatalf("import 1.4: expected 200, got %d: %s", status, body)
+	}
+}
+
+// TestWorkflowSchemaVersion_ImportAccepts15 proves the new current MINOR is
+// accepted with the two fields 1.4 → 1.5 introduces — idempotent on a
+// processor and retryPolicy on a schedule function — and that both come back
+// on export.
+func TestWorkflowSchemaVersion_ImportAccepts15(t *testing.T) {
+	const entity, version = "schemaver-15", 1
+	importModelE2E(t, entity, version)
+	payload := `{
+	  "importMode": "REPLACE",
+	  "workflows": [{
+	    "version": "1.5", "name": "v15-wf", "initialState": "S", "active": true,
+	    "states": { "S": { "transitions": [
+	      { "name": "go", "next": "Done", "manual": true,
+	        "processors": [ { "type": "externalized", "name": "p", "executionMode": "SYNC",
+	          "config": { "calculationNodesTags": "workers", "idempotent": true } } ] },
+	      { "name": "later", "next": "Done",
+	        "schedule": { "function": { "name": "computeFire", "resultKind": "Schedule",
+	          "calculationNodesTags": "scheduler", "retryPolicy": "NONE" } } }
+	    ] }, "Done": {} }
+	  }]
+	}`
+	if status, body := importWorkflowE2E(t, entity, version, payload); status != http.StatusOK {
+		t.Fatalf("import 1.5: expected 200, got %d: %s", status, body)
+	}
+
+	status, exported := exportWorkflowE2E(t, entity, version)
+	if status != http.StatusOK {
+		t.Fatalf("export: expected 200, got %d", status)
+	}
+	raw, err := json.Marshal(exported)
+	if err != nil {
+		t.Fatalf("re-marshal export: %v", err)
+	}
+	for _, want := range []string{`"idempotent":true`, `"retryPolicy":"NONE"`, `"version":"1.5"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("export must contain %s; got: %s", want, raw)
+		}
 	}
 }
 

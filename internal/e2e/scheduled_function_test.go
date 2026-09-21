@@ -33,7 +33,7 @@ import (
 // build on. The member joins with tags ["sched-fn"] so
 // a schedule.function config's calculationNodesTags (validated non-empty at
 // import, unlike the processor/criteria tests' calculationNodesTags:"")
-// resolves to it via MemberRegistry.FindByTags.
+// resolves to it via MemberRegistry.Candidates.
 //
 // The shared harness's scheduler runs with its default cadence
 // (CYODA_SCHEDULER_SCAN_INTERVAL, 1s — see scheduled_transition_test.go's

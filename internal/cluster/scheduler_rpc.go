@@ -35,10 +35,10 @@ type SchedulerTaskRequest struct {
 	Task spi.ScheduledTask `json:"task"`
 }
 
-// SchedulerTaskResponse acks a peer-delegated fire. The coordinator does
-// not depend on its content — Execute is fire-and-forget (design doc §6.2)
-// — but Success/Error are populated for diagnostics; Error is sanitized,
-// never the raw underlying error text.
+// SchedulerTaskResponse acks a peer-delegated fire. Error is sanitized, never
+// the raw underlying error text. It travels sealed for the request it answers,
+// so the coordinator either reads what the peer wrote or knows the answer was
+// lost — there is no third case in which something else speaks for the peer.
 type SchedulerTaskResponse struct {
 	Success bool   `json:"success"`
 	Error   string `json:"error,omitempty"`
@@ -133,7 +133,7 @@ func (c *ClusterExecutor) Execute(ctx context.Context, task spi.ScheduledTask, t
 
 // SchedulerRPCClient forwards ExecuteScheduledTask calls to a peer over the
 // PeerAuth-authenticated channel. Mirrors
-// dispatch.HTTPForwarder.ForwardCallout's sign/POST/decode shape
+// dispatch.HTTPForwarder.ForwardCallout's sign/POST/open shape
 // (internal/cluster/dispatch/forwarder.go) so it reuses the exact same auth
 // implementation instance the app wires for callout dispatch; it is a
 // separate ~small type rather than a method on HTTPForwarder because its
@@ -152,7 +152,7 @@ type SchedulerRPCClient struct {
 func NewSchedulerRPCClient(auth dispatch.PeerAuth, timeout time.Duration) *SchedulerRPCClient {
 	return &SchedulerRPCClient{
 		auth:       auth,
-		httpClient: &http.Client{Timeout: timeout},
+		httpClient: &http.Client{Timeout: timeout, CheckRedirect: peeraddr.RefuseRedirects},
 	}
 }
 
@@ -167,7 +167,8 @@ func (c *SchedulerRPCClient) AllowLoopbackForTesting() *SchedulerRPCClient {
 // ExecuteScheduledTask POSTs task to the peer at addr's scheduled-task
 // route, authenticated via the wrapped PeerAuth. The call is
 // fire-and-forget from the coordinator's point of view — a non-nil error
-// means the peer could not be reached or rejected the request; the caller
+// means the peer could not be reached, rejected the request, or answered
+// something this node could not open under its request's binding; the caller
 // (ClusterExecutor) logs and drops it rather than retrying inline, relying
 // on the scan loop's at-least-once redispatch.
 func (c *SchedulerRPCClient) ExecuteScheduledTask(ctx context.Context, addr string, task spi.ScheduledTask) error {
@@ -187,7 +188,7 @@ func (c *SchedulerRPCClient) ExecuteScheduledTask(ctx context.Context, addr stri
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	wire, err := c.auth.Sign(httpReq, plain)
+	wire, binding, err := c.auth.Sign(httpReq, plain)
 	if err != nil {
 		return fmt.Errorf("scheduler rpc: sign body: %w", err)
 	}
@@ -200,13 +201,29 @@ func (c *SchedulerRPCClient) ExecuteScheduledTask(ctx context.Context, addr stri
 	}
 	defer httpResp.Body.Close()
 
+	// A refusal is decided by its status alone. The body that comes with it is
+	// not sealed — anyone on the path can write one — so it is never parsed,
+	// only excerpted into the error for an operator to read.
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(httpResp.Body, 512))
 		return fmt.Errorf("scheduler rpc: peer returned %d: %s", httpResp.StatusCode, raw)
 	}
 
+	// The answer comes back sealed for this request and is opened under the
+	// binding Sign returned. An answer that does not open is a lost answer —
+	// there is no plaintext fallback, or a forged success would tell this node
+	// a task fired that never ran.
+	sealed, err := io.ReadAll(io.LimitReader(httpResp.Body, dispatch.MaxEnvelopeSize+1))
+	if err != nil {
+		return fmt.Errorf("scheduler rpc: read response from %s: %w", url, err)
+	}
+	opened, err := c.auth.OpenResponse(httpResp.Header, binding, sealed)
+	if err != nil {
+		return fmt.Errorf("failed to open scheduler response: %w", err)
+	}
+
 	var resp SchedulerTaskResponse
-	if err := json.NewDecoder(httpResp.Body).Decode(&resp); err != nil {
+	if err := json.Unmarshal(opened, &resp); err != nil {
 		return fmt.Errorf("scheduler rpc: decode response from %s: %w", url, err)
 	}
 	if !resp.Success {
@@ -228,10 +245,10 @@ func ensureScheme(addr string) string {
 
 // SchedulerRPCHandler serves the peer-authenticated ExecuteScheduledTask
 // route. Mirrors dispatch.DispatchHandler's auth pattern exactly — the same
-// PeerAuth.Verify-or-403 gate, the same "never log the task payload beyond
-// ids" discipline — so the scheduled-task peer surface carries the
-// identical security posture as processor/criteria dispatch (Gate 3: no
-// new unauthenticated cluster surface).
+// PeerAuth.Verify-or-403 gate, every answer to a verified request sealed for
+// that request, the same "never log the task payload beyond ids" discipline —
+// so the scheduled-task peer surface carries the identical security posture as
+// processor/criteria dispatch (Gate 3: no new unauthenticated cluster surface).
 type SchedulerRPCHandler struct {
 	engine scheduler.Engine
 	auth   dispatch.PeerAuth
@@ -252,7 +269,7 @@ func (h *SchedulerRPCHandler) Register(mux *http.ServeMux) {
 // UserContext scoped to the task's tenant, and fires it — the worker side
 // of design doc §6.2.
 func (h *SchedulerRPCHandler) handle(w http.ResponseWriter, r *http.Request) {
-	body, identity, err := h.auth.Verify(r)
+	body, identity, binding, err := h.auth.Verify(r)
 	if err != nil {
 		slog.Warn("scheduled task dispatch auth failed",
 			"pkg", "cluster", "remoteAddr", r.RemoteAddr, "err", err)
@@ -275,7 +292,7 @@ func (h *SchedulerRPCHandler) handle(w http.ResponseWriter, r *http.Request) {
 	if fireErr != nil {
 		slog.Error("scheduled task peer fire failed",
 			"pkg", "cluster", "taskId", req.Task.ID, "err", fireErr)
-		writeSchedulerJSON(w, http.StatusOK, SchedulerTaskResponse{
+		h.writeSealed(w, binding, SchedulerTaskResponse{
 			Success: false,
 			Error:   "scheduled task fire failed",
 		})
@@ -284,13 +301,28 @@ func (h *SchedulerRPCHandler) handle(w http.ResponseWriter, r *http.Request) {
 
 	slog.Debug("scheduled task peer fire resolved",
 		"pkg", "cluster", "taskId", req.Task.ID, "outcome", outcome)
-	writeSchedulerJSON(w, http.StatusOK, SchedulerTaskResponse{Success: true})
+	h.writeSealed(w, binding, SchedulerTaskResponse{Success: true})
 }
 
-func writeSchedulerJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		slog.Error("scheduler rpc handler: failed to write JSON response", "pkg", "cluster", "err", err)
+// writeSealed answers the request binding names, under seal — the same
+// discipline dispatch.DispatchHandler.writeSealed keeps. A coordinator trusts
+// nothing else: a status line, or a body it cannot open, tells it only that the
+// answer was lost, never that the task fired.
+func (h *SchedulerRPCHandler) writeSealed(w http.ResponseWriter, binding dispatch.ResponseBinding, resp SchedulerTaskResponse) {
+	plain, err := json.Marshal(resp)
+	if err != nil {
+		slog.Error("failed to marshal scheduled task answer", "pkg", "cluster", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	wire, err := h.auth.SealResponse(w.Header(), binding, plain)
+	if err != nil {
+		slog.Error("failed to seal scheduled task answer", "pkg", "cluster", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(wire); err != nil {
+		slog.Warn("failed to write scheduled task answer", "pkg", "cluster", "err", err)
 	}
 }

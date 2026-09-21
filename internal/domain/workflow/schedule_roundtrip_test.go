@@ -107,14 +107,14 @@ func TestSchedule_RoundTrip_Function(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// spi.TransitionSchedule.DelayMs has no `omitempty` (see the
-	// TimeoutMsPointerStates cases above for the analogous TimeoutMs
-	// contrast), so a function-only schedule still emits `"delayMs":0` —
-	// this is the SPI wire shape, not a round-trip defect; the delayMs/
-	// function XOR is an import-time validation rule (validate.go), not a
-	// marshalling one.
-	if !strings.Contains(string(bs), `"delayMs":0`) {
-		t.Errorf("expected delayMs:0 (SPI has no omitempty on DelayMs): %s", bs)
+	// A function-driven schedule has no static delay, and the published
+	// TransitionScheduleDto gives `delayMs` `minimum: 1` and documents it as
+	// mutually exclusive with `function` — so the wire shape must omit the key
+	// rather than emit a meaningless zero. DelayMs > 0 is an invariant of the
+	// static shape (validate.go's delayMs/function XOR), so `omitempty` maps
+	// "no static delay" to "absent" both ways.
+	if strings.Contains(string(bs), "delayMs") {
+		t.Errorf("expected no delayMs key on a function-driven schedule: %s", bs)
 	}
 	for _, want := range []string{
 		`"name":"computeNextFireTime"`,
@@ -138,5 +138,22 @@ func TestSchedule_RoundTrip_Function(t *testing.T) {
 	got := *back.Schedule.Function
 	if got != fn {
 		t.Errorf("Function round-trip mismatch: got %+v, want %+v", got, fn)
+	}
+
+	// The wire shape a real export would produce (delayMs omitted, function
+	// present) must import unchanged through the real import validation —
+	// not just decode without error. An absent delayMs and a function are
+	// the accepted shape validate.go's delayMs/function XOR expects, so a
+	// workflow built from the round-tripped transition must pass
+	// validateImportRequest cleanly.
+	wf := spi.WorkflowDefinition{
+		Version: "1.5", Name: "wf-schedule-roundtrip", InitialState: "S0", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S0":     {Transitions: []spi.TransitionDefinition{back}},
+			"Closed": {},
+		},
+	}
+	if err := validateImportRequest([]spi.WorkflowDefinition{wf}); err != nil {
+		t.Errorf("exported-then-reimported function schedule must pass import validation unchanged: %v", err)
 	}
 }

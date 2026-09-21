@@ -633,7 +633,7 @@ func postSchedulerRPC(t *testing.T, h *callbackHarness, task spi.ScheduledTask) 
 		t.Fatalf("new request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	wire, err := auth.Sign(req, plain)
+	wire, _, err := auth.Sign(req, plain)
 	if err != nil {
 		t.Fatalf("sign request: %v", err)
 	}

@@ -17,8 +17,8 @@ import (
 // different cyoda-go nodes:
 //
 //  1. Forwarded dispatch A→B: the owner node (A) has no local compute member for
-//     the processor's tag, so the ClusterDispatcher forwards the processor
-//     dispatch to the peer (B) that advertises the tag. B's member runs while A's
+//     the processor's tag, so the owner hands the processor over to the peer (B)
+//     that advertises the tag. B's member runs while A's
 //     transaction T is open, and the engine-minted cyodatxtoken carries A's
 //     NodeID as owner.
 //  2. Callback routing back to the owner: the member fires a callback presenting
@@ -148,7 +148,7 @@ func cbRouteSetupModel(t *testing.T, c *client.Client, modelName, sampleDoc, wor
 //
 //   - The primary transition is driven from node 1 (the OWNER), which hosts no
 //     compute member. Its processor requires the "compute-test-client" tag, so the
-//     ClusterDispatcher forwards the dispatch to node 0 (A→B forward).
+//     owner hands the processor over to node 0 (A→B forward).
 //   - Node 0's member fires an HTTP callback (X-Tx-Token owner=node 1) to node 0's
 //     HTTP base. Node 0 is NOT the owner, so the tx-token proxy reverse-proxies the
 //     request to node 1, where it joins T and writes the secondary.

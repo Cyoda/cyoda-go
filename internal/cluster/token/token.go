@@ -95,11 +95,11 @@ func (s *Signer) Verify(tok string) (*Claims, error) {
 		return nil, ErrTokenInvalid
 	}
 
-	if !named(Pair{Callout: claims.Callout, Major: claims.Major}) {
+	if !Named(Pair{Callout: claims.Callout, Major: claims.Major}) {
 		return nil, ErrTokenInvalid
 	}
 	for _, p := range claims.Outer {
-		if !named(p) {
+		if !Named(p) {
 			return nil, ErrTokenInvalid
 		}
 	}
@@ -111,9 +111,11 @@ func (s *Signer) Verify(tok string) (*Claims, error) {
 	return &claims, nil
 }
 
-// named reports whether p names a callout at a number that can ever be
-// current: the first try of a callout carries major 1.
-func named(p Pair) bool { return p.Callout != "" && p.Major != 0 }
+// Named reports whether p names a callout at a number that can ever be
+// current: the first try of a callout carries major 1. Verify refuses a pass
+// that fails it, and so does every boundary that accepts pairs to be minted
+// into one — there is one rule for what a pair must say, not one per door.
+func Named(p Pair) bool { return p.Callout != "" && p.Major != 0 }
 
 func (s *Signer) sign(payload []byte) []byte {
 	mac := hmac.New(sha256.New, s.secret)

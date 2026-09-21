@@ -542,14 +542,17 @@ base64url for both the JSON payload and the HMAC signature:
 `base64url(json_payload).base64url(hmac_sha256(json_payload, secret))`.
 
 Inter-node dispatch authentication uses AEAD (AES-256-GCM) over an
-HKDF-SHA256-derived key (info string `"cyoda-dispatch-v1"`), which
-separates the dispatch key from the raw gossip-encryption secret
-despite both being derived from the same `CYODA_HMAC_SECRET`. Wire
-format is `[nonce(12) || ciphertext||tag]` with Content-Type
-`application/cyoda-dispatch-v1`; `X-Dispatch-Timestamp` is bound as
-associated data along with HTTP method and path, preventing
-cross-endpoint and timestamp-strip replays. A bounded, TTL-evicted
-nonce cache rejects replays within the 30s skew window.
+HKDF-SHA256-derived key (info string `"cyoda-dispatch-v1"`), which separates
+the dispatch key from the raw gossip-encryption secret despite both being
+derived from the same `CYODA_HMAC_SECRET`. Wire format is `[nonce(12) ||
+ciphertext||tag]` with Content-Type `application/cyoda-dispatch-v1`, in both
+directions. A request's associated data is the label `request`, the HTTP
+method, the path and `X-Dispatch-Timestamp`; an answer's is the label
+`response`, the path, and the timestamp and nonce of the request it answers,
+under a fresh nonce of its own. That prevents cross-endpoint replay,
+reflection, and an answer being moved onto another request. A bounded,
+TTL-evicted nonce cache rejects replayed requests within the 30s skew window;
+the scheduler's peer RPC signs its requests and answers the same way.
 
 The token is opaque to the client. The router decodes it to extract `nodeID` without any network call -- address resolution is a local scan over `list.Members()`.
 
@@ -601,38 +604,53 @@ Three strategy interfaces, each with a default implementation:
 
 | Component | Interface | Default Impl | Purpose |
 |-----------|-----------|--------------|---------|
-| Dispatch Strategy | `contract.ExternalProcessingService` | `ClusterDispatcher` | Local first, then cluster |
+| Callout strategy | `contract.ExternalProcessingService` | `callout.Coordinator` | The owner's loop: own compute members first, then one peer after another |
 | Peer Selection | `PeerSelector` | `RandomSelector` | Pick from candidates |
 | Forwarding Transport | `DispatchForwarder` | `HTTPForwarder` | HTTP POST to peer |
 
-**`ClusterDispatcher` algorithm:**
+**The owner's loop (`internal/callout`).** The node that holds the operation's
+transaction — the owner — runs every callout, in single-node and cluster mode
+alike (a single node has no peer router):
 
 ```
-1. Try local dispatch: registry.FindByTags(tenantID, tags)
-   - If found → dispatch locally (existing gRPC stream path)
-   - If error is NOT "no matching member" → return error
-
-2. Cluster lookup with polling:
-   a. Query gossip: registry.List() → filter by:
-      - Not self
-      - Alive
-      - Tags[tenantID] overlaps required tags
-   b. If candidates found → PeerSelector.Select(candidates) → forward
-   c. If no candidates → wait 200ms, retry
-   d. After CYODA_DISPATCH_WAIT_TIMEOUT (default 5s) → fail
-      with NO_COMPUTE_MEMBER_FOR_TAG
-
-3. Forward to selected peer:
-   HTTPForwarder.ForwardCallout(ctx, peer.Addr, request)
-   - POST to http://peer/internal/dispatch/callout
-   - AES-256-GCM AEAD envelope over the request body
-     (Content-Type: application/cyoda-dispatch-v1)
-   - Peer verifies envelope, decrypts, calls local dispatch, returns result
+tries := 1 for retryPolicy NONE, else 1 + CYODA_RETRY_FIXED_NUM_RETRIES
+the callout gets one request id, and a deadline:
+    tries × answer limit + CYODA_DISPATCH_WAIT_TIMEOUT + CYODA_CALLOUT_HANDOVER_ALLOWANCE
+loop (one pass):
+  1. Local procedure (ProcessorDispatcher.RunLocal): try the node's own
+     matching compute members one after another, never the same one twice in a
+     pass, chosen round robin.
+       answered                         → done
+       failed before the hand-off       → next member
+       no answer after the hand-off     → next member only for a criterion, a
+                                          function, or an idempotent processor
+       member answered "failed"         → stop; its message and verdict go to the client
+  2. With tries left: hand the callout over, with the tries left, to each alive
+     peer advertising the tag for the tenant (PeerSelector order), each at most
+     once per pass. The peer runs the local procedure only and never hands on.
+       could not connect / peer has no member → no try used, next peer
+       answer lost                            → one try used
+  3. Nobody took the work: wait for a membership change (a member attaching
+     here, a peer's tag list arriving) — event-driven, CYODA_DISPATCH_WAIT_TIMEOUT
+     in total per callout, 0 disables — and start a new pass.
 ```
 
-Dispatch forwarding reuses a shared `http.Transport` (`MaxIdleConns: 20`,
-`MaxIdleConnsPerHost: 5`, timeout via `CYODA_DISPATCH_FORWARD_TIMEOUT`,
-default 30s) across all peer requests.
+Before the work is given to another compute member the callout's fencing number
+rises, which refuses the earlier member's callbacks, and the owner waits for a
+callback of that member that is still in progress (`internal/fence`).
+
+A hand-over is a POST to `http://peer/internal/dispatch/callout` under the
+AES-256-GCM AEAD envelope of §4.2 (Content-Type
+`application/cyoda-dispatch-v1`); the peer verifies the envelope, decrypts it,
+runs its own local procedure and seals the answer.
+
+Every hand-over opens its own connection (`DisableKeepAlives`), so that a node
+that cannot be connected to is told apart from one that took the work and then
+died. Opening the connection is bounded by `CYODA_DISPATCH_CONNECT_TIMEOUT`
+(TCP connect and TLS handshake); the wait for the answer is a deadline on the
+request's context, set by the owner. The transport uses no proxy and follows
+no redirect. `CYODA_DISPATCH_FORWARD_TIMEOUT` bounds the scheduler's peer RPC
+only.
 
 **Internal dispatch endpoint:**
 
@@ -642,30 +660,42 @@ POST /internal/dispatch/callout
 
 - Single route for every callout kind (processor, criteria, function); `Kind` in
   the request body discriminates
-- Authenticated and encrypted with the AES-256-GCM AEAD envelope described in §4.2
+- Authenticated and encrypted with the AES-256-GCM AEAD envelope described in §4.2 — the answer too
 - 10MB max body size
 - Reconstruct `UserContext` from request fields (tenantID, userID, roles, principal kind)
-- A request carries two tenants — its own `TenantID`, which the reconstructed `UserContext` runs as, and `EntityMeta.TenantID`, which is handed to the local dispatcher as the entity's own. They must agree, or the callout would run as one tenant over another's entity; a mismatch is `400`. The equality is unconditional and covers an absent `EntityMeta.TenantID`: every callout kind is built from a live stored entity whose `Meta.TenantID` is always set, so an empty one can only come from a hand-crafted peer body. The response names neither value — both are peer-supplied.
+- A request carries two tenants — its own `TenantID`, which the reconstructed `UserContext` runs as, and `EntityMeta.TenantID`, which is handed to the local dispatcher as the entity's own. They must agree, or the callout would run as one tenant over another's entity; a mismatch is answered, under seal, as a `terminal` refusal with no try made — as is any authenticated request that cannot be run. The equality is unconditional and covers an absent `EntityMeta.TenantID`: every callout kind is built from a live stored entity whose `Meta.TenantID` is always set, so an empty one can only come from a hand-crafted peer body. The response names neither value — both are peer-supplied.
+- Runs the local procedure (`RunLocal`) with the tries the owner allows, and never hands the callout on
+- A request that does not authenticate is a bare `403`; one that authenticates but is refused by the replay cache is answered, under seal, `no_handoff`
 
 **Dispatch request/response types** (`internal/cluster/dispatch/types.go`): the
-request carries the entity payload and meta, the workflow/transition names, the
-callout txID and tx-token, the caller's tenant/user/roles/principal, the required
-tags, and one kind-specific member (`Processor`, `Criterion` + `Target` +
-`ProcessorName`, or `Function`). The response carries a success flag, the
-kind-specific result (`EntityData` for a processor, `Matches` + `Reason` for a
-criterion, `Result` + `ResultKind` for a function), accumulated warnings, and —
-on failure — the peer's error code, HTTP status and retryable flag so the
-originating node re-mints the same `AppError` the peer would have returned.
+request carries the entity payload and meta, the workflow/transition names,
+the callout's txID, the caller's tenant/user/roles/principal, a request id the
+owner mints and uses for every try, how many tries and how long an answer may
+take, the owner's node id and the fencing number the peer's tries are numbered
+under, the enclosing callouts (empty unless the callout was made from inside a
+callback), whether the work may be given to a second compute node after a
+hand-off, and one kind-specific member (`Processor`, `Criterion` + `Target` +
+`ProcessorName`, or `Function`). The response carries the outcome (`ok`, `no_handoff`,
+`no_answer`, `member_failed`, `terminal`), the tries used, one entry per failed
+try, the kind-specific result (`EntityData` for a processor, `Matches` +
+`Reason` for a criterion, `Result` + `ResultKind` for a function),
+accumulated warnings and diagnostics, and — on failure — either the compute
+node's own message and verdict (`member_failed`) or the peer's classified
+error code, HTTP status and retryable flag so the owner re-mints the same
+`AppError` the peer would have returned.
 
 **Error handling:**
 
 | Scenario | Behavior | Error Code |
 |----------|----------|------------|
-| No local member, no peer with tag | Poll gossip for wait timeout, then fail | `NO_COMPUTE_MEMBER_FOR_TAG` |
-| Peer selected but unreachable | Fail (one peer, one attempt; no server-side failover to a second candidate). Marked retryable, so the client may retry | `DISPATCH_FORWARD_FAILED` |
-| Peer dispatch times out | HTTP timeout, transaction rolls back | `DISPATCH_TIMEOUT` |
-| Peer's local member disconnects | Peer returns error, propagated | `COMPUTE_MEMBER_DISCONNECTED` |
-| Gossip metadata stale | Peer returns "no member for tag" | `NO_COMPUTE_MEMBER_FOR_TAG` |
+| No matching member anywhere within the patience, no try made | Fail after `CYODA_DISPATCH_WAIT_TIMEOUT` | `NO_COMPUTE_MEMBER_FOR_TAG` |
+| Exactly one try made, and it failed | That try's own error | `DISPATCH_TIMEOUT`, `COMPUTE_MEMBER_DISCONNECTED`, `DISPATCH_FORWARD_FAILED` |
+| More than one try made, none answered | The tries are listed | `CALLOUT_FAILED` |
+| No answer after the hand-off, processor not idempotent | Stop after that try | the try's own code |
+| A member answered "failed" | Stop; `400`, retryable if the member said so | `WORKFLOW_FAILED` |
+| A peer cannot be connected to, or has no matching member | No try used; the next peer is asked | — |
+| A hand-over's answer is lost | One try used; the next peer only for a repeat-safe callout | `DISPATCH_FORWARD_FAILED` when it is the only attempt |
+| The client's `transactionTimeoutMillis` fires, or the client goes away | The callout ends at once, from a wait as from a try | `TRANSACTION_TIMEOUT` (408) / none |
 
 ### 4.4 Transaction Flow -- Complete Swimlane
 
@@ -1153,7 +1183,7 @@ After any transition fires, the engine cascades: it scans the automatic transiti
 
 ### 5.4 Processor Execution
 
-Processors are dispatched via the `ExternalProcessingService` SPI. In multi-node mode, this is the `ClusterDispatcher` (see Section 4.3). Four execution modes are defined in the Cyoda model:
+Processors are dispatched via the `ExternalProcessingService` SPI, implemented by the owner's loop, `callout.Coordinator` (see Section 4.3). Four execution modes are defined in the Cyoda model:
 
 | Mode | Behavior |
 |------|----------|
@@ -1232,7 +1262,7 @@ join --> greet --> keep-alive --> dispatch/response --> leave
 
 ### 6.3 Tag-Based Member Selection
 
-`MemberRegistry.FindByTags(tenantID, tagsCSV)` returns a member matching the tenant whose tags overlap with the required tags (CSV comparison). If `tagsCSV` is empty, any member for that tenant matches. Selection is the first hit while ranging over a Go map, so among equally-qualified local members it is unordered rather than round-robin.
+`MemberRegistry.Candidates(tenantID, tagsCSV)` lists the tenant's members whose tags overlap the required tags (CSV comparison; every member of the tenant when `tagsCSV` is empty), ordered by `(ConnectedAt, ID)`. A `MemberSelector` picks one of them. `RoundRobinSelector` picks the member picked longest ago and stamps it from one counter on the registry; the stamp is a field on `Member`, so there is no per-tag state, and a member that has just attached goes first.
 
 ### 6.4 Response Correlation
 
@@ -1604,6 +1634,9 @@ These variables apply globally to all tenant-registered OIDC providers. Per-prov
 | `CYODA_GRPC_PORT` | `9090` | gRPC server listen port |
 | `CYODA_KEEPALIVE_INTERVAL` | `10` | Seconds between server keep-alive pings to each compute member; also the transport keepalive idle time |
 | `CYODA_KEEPALIVE_TIMEOUT` | `30` | Seconds of inbound silence or write stall before a compute member is evicted; also the transport keepalive ack timeout |
+| `CYODA_RETRY_FIXED_NUM_RETRIES` | `3` | Retries after the first try when `retryPolicy` is `FIXED` or unset. |
+| `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS` | `30000` | Answer limit when the callout sets no `responseTimeoutMs`. |
+| `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` | `60000` | Upper bound on `responseTimeoutMs`; workflow import refuses more. |
 
 ### Cluster
 
@@ -1616,10 +1649,12 @@ These variables apply globally to all tenant-registered OIDC providers. Per-prov
 | `CYODA_SEED_NODES` | (none) | Comma-separated `host:port` for gossip seeds |
 | `CYODA_GOSSIP_STABILITY_WINDOW` | `2s` | Wait for stable membership count after join |
 | `CYODA_PROXY_TIMEOUT` | `30s` | HTTP proxy response header timeout |
-| `CYODA_TX_TOKEN_TTL` | `1m30s` | TTL of the signed transaction routing token minted on dispatch |
 | `CYODA_HMAC_SECRET` (with `_FILE` variant) | (none) | Hex-encoded secret for token signing + gossip encryption (required if cluster enabled). See §4.2 for encoding details. |
-| `CYODA_DISPATCH_WAIT_TIMEOUT` | `5s` | How long to poll for a compute member with matching tags |
-| `CYODA_DISPATCH_FORWARD_TIMEOUT` | `30s` | HTTP timeout for cross-node dispatch forwarding |
+| `CYODA_DISPATCH_WAIT_TIMEOUT` | `5s` | The patience: how long one callout waits, in total, for a compute member with matching tags to exist, on a single node as in a cluster. `0` disables waiting. Must not be negative; startup fails otherwise. |
+| `CYODA_DISPATCH_CONNECT_TIMEOUT` | `2s` | Time allowed to open the connection when a callout is handed over to another node; a node that cannot be connected to costs no try. Must be `> 0`; startup fails otherwise. |
+| `CYODA_CALLOUT_HANDOVER_ALLOWANCE` | `30s` | What the owning node allows a callout hand-over on top of `tries left × answer limit`; also the last term of a callout's overall deadline. Must be `> 0`; startup fails otherwise. |
+| `CYODA_CALLOUT_PASS_ALLOWANCE` | `30s` | How long the transaction token given to a compute member outlives its try's answer limit. Must be `> 0`; startup fails otherwise. |
+| `CYODA_DISPATCH_FORWARD_TIMEOUT` | `30s` | Whole-request timeout of the node-to-node call that delegates a scheduled transition. Does not govern callout hand-overs. Must be `> 0`; startup fails otherwise. |
 
 ### Search
 
@@ -1705,7 +1740,7 @@ OpenTelemetry is integrated end-to-end. The OTel SDK is initialised in `internal
 
 **Transaction manager decorator:** `TracingTransactionManager` wraps the underlying transaction manager and adds spans (`tx.begin`, `tx.commit`, `tx.rollback`, `tx.savepoint`, `tx.rollback_to_savepoint`, `tx.release_savepoint`) plus metrics (`cyoda.tx.duration`, `cyoda.tx.active`, `cyoda.tx.conflicts`). This decorator is active when `CYODA_OTEL_ENABLED=true`.
 
-**Workflow and dispatch:** spans for `workflow.execute`, `workflow.manual_transition`, `workflow.loopback`, `workflow.cascade`; `dispatch.processor`, `dispatch.criteria` and `dispatch.function` with `cyoda.dispatch.duration` and `cyoda.dispatch.count` metrics. These are active when `CYODA_OTEL_ENABLED=true`.
+**Workflow and dispatch:** spans for `workflow.execute`, `workflow.manual_transition`, `workflow.loopback`, `workflow.cascade`; `dispatch.processor`, `dispatch.criteria` and `dispatch.function` with `cyoda.dispatch.duration`, `cyoda.dispatch.count`, `cyoda.callout.tries` and `cyoda.callout.wait.duration` metrics. These are active when `CYODA_OTEL_ENABLED=true`. Two more `cyoda.callout.*` counters are registered elsewhere and are exposed regardless of it: `cyoda.callout.handovers` on the peer router, in cluster mode, and `cyoda.callout.superseded` where a compute member's callback joins its transaction. The `cmd/cyoda/help/content/telemetry.md` help topic is the full reference.
 
 **Plugin-level instrumentation:** plugins are free to add their own
 spans and metrics under a plugin-specific namespace. The `memory`
@@ -1812,13 +1847,13 @@ Capabilities this document's design implies but the system does not provide. Eac
 
 **Rationale:** Reuses the existing HTTP infrastructure. The dispatch payload is a single request-response pair (not a stream), making HTTP a natural fit. AEAD gives integrity, confidentiality and replay resistance (via timestamp skew + nonce cache) in one primitive. Identity is cluster-scoped rather than per-node; making it per-node is a transport change behind the `PeerAuth` seam, not a protocol change.
 
-### DD-9: Poll-Based Wait for Missing Compute Members
+### DD-9: Event-Driven Wait for Missing Compute Members
 
 **Context:** What to do when no compute member matches the required tags.
 
-**Decision:** Poll gossip metadata every 200ms for up to `CYODA_DISPATCH_WAIT_TIMEOUT` (default 5s).
+**Decision:** The owner's loop waits on change signals — the local member registry's and the cluster registry's `Changed()` channel, closed and replaced on every change — for up to `CYODA_DISPATCH_WAIT_TIMEOUT` (default 5s) in total per callout, in single-node and cluster mode alike. `0` disables waiting.
 
-**Rationale:** Compute members may be joining. A brief wait avoids spurious failures during cluster startup or member reconnection. The 200ms interval is short enough to be responsive but does not hammer the gossip view. After the timeout, the failure is deterministic.
+**Rationale:** Compute members may be joining or reconnecting; a brief wait avoids spurious failures. A signal wakes the callout the moment a member appears and costs nothing while nothing changes. The allowance is per callout, not per wait, so a callout's worst-case duration is known when it starts.
 
 ### DD-10: Store Entity IDs Only in Search Results
 
@@ -1929,5 +1964,4 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 | Max state visits per workflow | 10 | Configurable | Prevents infinite loops in workflow cascading. Increase for deeply nested state machines. |
 | HTTP body limit | 10 MB | Hardcoded in entity handler | Increase requires code change. |
 | gRPC keep-alive interval | 10 seconds | Configurable | Shorter intervals detect compute member failure faster but increase network overhead. |
-| Dispatch poll interval | 200 ms | Hardcoded | Polls local gossip metadata (no network I/O). Low overhead. |
-| Dispatch wait timeout | 5 seconds | Configurable | Time to wait for a compute member when none is available for the required tag. |
+| Dispatch wait timeout | 5 seconds | Configurable | One allowance in total per callout: how long a callout waits for a compute member with matching tags to exist, on a single node as in a cluster. Event-driven — a signal wakes the wait the moment a member appears, no polling. `0` disables waiting. |

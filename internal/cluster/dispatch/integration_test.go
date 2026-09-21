@@ -1,152 +1,70 @@
 package dispatch
 
 import (
-	"net/http"
+	"encoding/json"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 )
 
-// TestIntegration_ClusterDispatch_FullFlow tests the complete end-to-end flow:
-//  1. Create a "peer" Node B with a local dispatcher that returns success.
-//  2. Create Node B's internal dispatch handler (with HMAC auth) and start it as httptest.NewServer.
-//  3. Create Node A's ClusterDispatcher: local dispatcher fails (no member),
-//     registry knows about the peer with matching tags.
-//  4. Call DispatchProcessor on Node A's ClusterDispatcher.
-//  5. Verify the result comes from the peer (forwarded successfully).
-func TestIntegration_ClusterDispatch_FullFlow(t *testing.T) {
-	auth, _ := NewAEADPeerAuth(testSecret32, 30*time.Second)
-
-	t.Run("processor_full_flow", func(t *testing.T) {
-		// Node B: local dispatcher returns peer-processed result.
-		nodeBLocal := &stubDispatcher{
-			processorResp: &spi.Entity{
-				Meta: testEntity().Meta,
-				Data: []byte(`{"result":"from-peer-processor"}`),
+// TestIntegration_HandOver_FullFlow walks a hand-over the whole way over the
+// wire: the owner's router seals the request, the peer's dispatch handler opens
+// it, runs its local procedure and seals what came back, and the owner reads
+// the answer. The pieces are covered on their own (handover_test.go builds and
+// reads, handler_test.go serves, forwarder_test.go carries); this pins the
+// three kinds' results surviving the round trip composed.
+func TestIntegration_HandOver_FullFlow(t *testing.T) {
+	tests := []struct {
+		kind   string
+		result internalgrpc.CalloutResult
+		check  func(t *testing.T, res internalgrpc.CalloutResult)
+	}{
+		{
+			kind:   "processor",
+			result: internalgrpc.CalloutResult{Entity: &spi.Entity{Meta: testEntity().Meta, Data: []byte(`{"result":"from-peer-processor"}`)}},
+			check: func(t *testing.T, res internalgrpc.CalloutResult) {
+				if res.Entity == nil || string(res.Entity.Data) != `{"result":"from-peer-processor"}` {
+					t.Fatalf("entity = %+v, want the peer's data", res.Entity)
+				}
 			},
-		}
-		handler := NewDispatchHandler(nodeBLocal, auth)
-		mux := http.NewServeMux()
-		handler.Register(mux)
-		nodeBServer := httptest.NewServer(mux)
-		defer nodeBServer.Close()
-
-		// Node A: local dispatcher has no matching member.
-		nodeALocal := &stubDispatcher{noMember: true}
-		registry := &stubNodeRegistry{
-			nodes: []contract.NodeInfo{
-				{NodeID: "node-a", Addr: "http://localhost:9999", Alive: true, Tags: map[string][]string{}},
-				{NodeID: "node-b", Addr: nodeBServer.URL, Alive: true, Tags: map[string][]string{"tenant-1": {"python"}}},
+		},
+		{
+			kind:   "criteria",
+			result: internalgrpc.CalloutResult{Matches: true, Reason: "amount above the minimum"},
+			check: func(t *testing.T, res internalgrpc.CalloutResult) {
+				if !res.Matches || res.Reason != "amount above the minimum" {
+					t.Fatalf("matches = %v, reason = %q, want the peer's verdict", res.Matches, res.Reason)
+				}
 			},
-		}
-		selector := NewRandomSelector()
-		forwarder := NewHTTPForwarder(auth, 5*time.Second).AllowLoopbackForTesting()
-		d := NewClusterDispatcher(nodeALocal, registry, "node-a", selector, forwarder, 2*time.Second, nil, 0)
-
-		ctx := testContext()
-		result, err := d.DispatchProcessor(ctx, testEntity(), testProcessor(), "wf", "tr", "tx-integration-1")
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
-		if string(result.Data) != `{"result":"from-peer-processor"}` {
-			t.Fatalf("expected peer result, got %s", string(result.Data))
-		}
-	})
-
-	t.Run("criteria_full_flow", func(t *testing.T) {
-		// Node B: local dispatcher returns criteria match = true.
-		nodeBLocal := &stubDispatcher{
-			criteriaResult: true,
-		}
-		handler := NewDispatchHandler(nodeBLocal, auth)
-		mux := http.NewServeMux()
-		handler.Register(mux)
-		nodeBServer := httptest.NewServer(mux)
-		defer nodeBServer.Close()
-
-		// Node A: local dispatcher has no matching member.
-		nodeALocal := &stubDispatcher{noMember: true}
-		registry := &stubNodeRegistry{
-			nodes: []contract.NodeInfo{
-				{NodeID: "node-a", Addr: "http://localhost:9999", Alive: true, Tags: map[string][]string{}},
-				{NodeID: "node-b", Addr: nodeBServer.URL, Alive: true, Tags: map[string][]string{"tenant-1": {"python"}}},
+		},
+		{
+			kind:   "function",
+			result: internalgrpc.CalloutResult{Function: contract.FunctionResult{Kind: "Schedule", Value: json.RawMessage(`{"fireAfterMs":5}`)}},
+			check: func(t *testing.T, res internalgrpc.CalloutResult) {
+				if res.Function.Kind != "Schedule" || string(res.Function.Value) != `{"fireAfterMs":5}` {
+					t.Fatalf("function = %+v, want the peer's result", res.Function)
+				}
 			},
-		}
-		selector := NewRandomSelector()
-		forwarder := NewHTTPForwarder(auth, 5*time.Second).AllowLoopbackForTesting()
-		d := NewClusterDispatcher(nodeALocal, registry, "node-a", selector, forwarder, 2*time.Second, nil, 0)
-
-		ctx := testContext()
-		matches, _, err := d.DispatchCriteria(ctx, testEntity(), testCriterion(), "TRANSITION", "wf", "tr", "proc", "tx-integration-2")
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
-		if !matches {
-			t.Fatal("expected matches=true from peer")
-		}
-	})
-}
-
-// TestIntegration_ClusterDispatch_NoMemberTimeout tests the timeout behaviour:
-//  1. Local dispatcher fails (no member).
-//  2. Registry has no peers with matching tags.
-//  3. Wait timeout is short (300ms).
-//  4. Verify error is returned after waiting.
-//  5. Verify elapsed time shows the poll waited.
-func TestIntegration_ClusterDispatch_NoMemberTimeout(t *testing.T) {
-	local := &stubDispatcher{noMember: true}
-
-	// Registry contains no peers with the required "python" tag for tenant-1.
-	registry := &stubNodeRegistry{
-		nodes: []contract.NodeInfo{
-			{NodeID: "node-a", Addr: "http://localhost:9999", Alive: true, Tags: map[string][]string{}},
-			{NodeID: "node-b", Addr: "http://localhost:9998", Alive: true, Tags: map[string][]string{"other-tenant": {"python"}}},
-			{NodeID: "node-c", Addr: "http://localhost:9997", Alive: false, Tags: map[string][]string{"tenant-1": {"python"}}},
 		},
 	}
-	selector := NewRandomSelector()
-	timeoutAuth, _ := NewAEADPeerAuth(testSecret32, 30*time.Second)
-	forwarder := NewHTTPForwarder(timeoutAuth, 5*time.Second).AllowLoopbackForTesting()
+	for _, tt := range tests {
+		t.Run(tt.kind, func(t *testing.T) {
+			peerAuth := newAEAD(t)
+			runner := &fakeRunner{result: internalgrpc.LocalResult{TriesUsed: 1, Result: tt.result}}
+			peer := httptest.NewServer(newHandlerMux(t, runner, peerAuth))
+			defer peer.Close()
 
-	const waitTimeout = 300 * time.Millisecond
-	d := NewClusterDispatcher(local, registry, "node-a", selector, forwarder, waitTimeout, nil, 0)
-
-	t.Run("processor_timeout", func(t *testing.T) {
-		ctx := testContext()
-		start := time.Now()
-		_, err := d.DispatchProcessor(ctx, testEntity(), testProcessor(), "wf", "tr", "tx-timeout-1")
-		elapsed := time.Since(start)
-
-		if err == nil {
-			t.Fatal("expected error, got nil")
-		}
-		if !containsStr(err.Error(), common.ErrCodeNoComputeMemberForTag) {
-			t.Fatalf("expected NO_COMPUTE_MEMBER_FOR_TAG error, got %v", err)
-		}
-		// Should have polled for approximately the wait timeout.
-		if elapsed < 250*time.Millisecond {
-			t.Fatalf("expected elapsed >= 250ms (poll waited), got %v", elapsed)
-		}
-	})
-
-	t.Run("criteria_timeout", func(t *testing.T) {
-		ctx := testContext()
-		start := time.Now()
-		_, _, err := d.DispatchCriteria(ctx, testEntity(), testCriterion(), "TRANSITION", "wf", "tr", "proc", "tx-timeout-2")
-		elapsed := time.Since(start)
-
-		if err == nil {
-			t.Fatal("expected error, got nil")
-		}
-		if !containsStr(err.Error(), common.ErrCodeNoComputeMemberForTag) {
-			t.Fatalf("expected NO_COMPUTE_MEMBER_FOR_TAG error, got %v", err)
-		}
-		if elapsed < 250*time.Millisecond {
-			t.Fatalf("expected elapsed >= 250ms (poll waited), got %v", elapsed)
-		}
-	})
+			a := realRouter(t, true).HandOver(testContext(), contract.NodeInfo{NodeID: "peer-b", Addr: peer.URL}, ownerCallout(t, tt.kind), 3, 1)
+			if a.Failure != nil {
+				t.Fatalf("Failure = %+v, want the peer's answer", a.Failure)
+			}
+			if !a.Connected || a.TriesUsed != 1 || a.Result == nil {
+				t.Fatalf("%+v", a)
+			}
+			tt.check(t, *a.Result)
+		})
+	}
 }

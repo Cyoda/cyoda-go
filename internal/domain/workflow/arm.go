@@ -245,7 +245,11 @@ func (e *Engine) armViaFunction(ctx context.Context, entity *spi.Entity, wf *spi
 		return nil, nil, cerr
 	}
 	if derr != nil {
-		return nil, nil, derr // already a classified AppError (503) — fails the write, fail-closed
+		// Fails the write, fail-closed. The wrap names the function for the one
+		// failure whose text reaches the client through it — a compute node
+		// that answered "failed"; every other callout failure carries its own
+		// classified error, which the wrap leaves intact.
+		return nil, nil, fmt.Errorf("schedule function %s failed: %w", tr.Schedule.Function.Name, derr)
 	}
 	if res.Kind != "Schedule" {
 		return nil, nil, invalidScheduleResult("function %q returned resultKind %q, want %q", tr.Schedule.Function.Name, res.Kind, "Schedule")

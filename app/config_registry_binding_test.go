@@ -63,8 +63,8 @@ func renderDuration(d time.Duration) string {
 }
 
 // renderMillis renders a time.Duration stored from an integer-milliseconds
-// env var (the three CYODA_OIDC_*_TIMEOUT_MS vars) back to its millisecond
-// count, matching the table's "5000" form rather than Duration.String()'s "5s".
+// env var (every integer-milliseconds var) back to its millisecond count,
+// matching the table's "5000" form rather than Duration.String()'s "5s".
 func renderMillis(d time.Duration) string {
 	return strconv.FormatInt(int64(d/time.Millisecond), 10)
 }
@@ -118,8 +118,8 @@ func defaultFor(c app.Config) map[string]string {
 		"CYODA_HMAC_SECRET":              "", // secret
 		"CYODA_PROXY_TIMEOUT":            renderDuration(c.Cluster.ProxyTimeout),
 		"CYODA_DISPATCH_WAIT_TIMEOUT":    renderDuration(c.Cluster.DispatchWaitTimeout),
+		"CYODA_DISPATCH_CONNECT_TIMEOUT": renderDuration(c.Cluster.DispatchConnectTimeout),
 		"CYODA_DISPATCH_FORWARD_TIMEOUT": renderDuration(c.Cluster.DispatchForwardTimeout),
-		"CYODA_TX_TOKEN_TTL":             renderDuration(c.Cluster.TxTokenTTL),
 		"CYODA_KEEPALIVE_INTERVAL":       strconv.Itoa(c.GRPC.KeepAliveInterval),
 		"CYODA_KEEPALIVE_TIMEOUT":        strconv.Itoa(c.GRPC.KeepAliveTimeout),
 
@@ -157,7 +157,12 @@ func defaultFor(c app.Config) map[string]string {
 		"CYODA_CORS_ALLOWED_ORIGINS": strings.Join(c.CORS.AllowedOrigins, ","),
 
 		// --- grpc ---
-		"CYODA_GRPC_PORT": strconv.Itoa(c.GRPC.Port),
+		"CYODA_GRPC_PORT":                       strconv.Itoa(c.GRPC.Port),
+		"CYODA_RETRY_FIXED_NUM_RETRIES":         strconv.Itoa(c.Callout.FixedNumRetries),
+		"CYODA_CALLOUT_RESPONSE_TIMEOUT_MS":     renderMillis(c.Callout.ResponseTimeout),
+		"CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS": renderMillis(c.Callout.ResponseTimeoutMax),
+		"CYODA_CALLOUT_HANDOVER_ALLOWANCE":      renderDuration(c.Callout.HandoverAllowance),
+		"CYODA_CALLOUT_PASS_ALLOWANCE":          renderDuration(c.Callout.PassAllowance),
 
 		// --- scheduler ---
 		"CYODA_SCHEDULER_ENABLED":            strconv.FormatBool(c.Scheduler.Enabled),

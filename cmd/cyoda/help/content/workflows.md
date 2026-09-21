@@ -48,7 +48,7 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 ```json
 {
-  "version": "1.4",
+  "version": "1.5",
   "name": "prize-lifecycle",
   "desc": "State machine for Nobel Prize entities",
   "initialState": "NEW",
@@ -193,7 +193,7 @@ Import-time validation rejects any `executionMode` value not in the list above (
 
 - `attachEntity` — boolean, optional, default `true` — when `true`, the full entity payload is sent to the processor; set `false` to omit it
 - `calculationNodesTags` — string — comma-separated tags for routing to registered calculation nodes; the engine selects a node that declares all required tags; returns `errors.NO_COMPUTE_MEMBER_FOR_TAG` if no node matches
-- `responseTimeoutMs` — int64 — timeout in milliseconds for `SYNC` processor response; `0` means use node default
+- `responseTimeoutMs` — int64 — how long to wait for the compute member's answer, in milliseconds; `0` or absent means the server's `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS`; must not exceed `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`
 - `retryPolicy` — string — selects the server-resolved retry strategy.
   Valid values: `NONE` (single attempt, no retry), `FIXED` (up to N
   additional attempts with fixed delay between tries, where N and delay
@@ -285,8 +285,10 @@ payload or a boolean:
   entity payload is attached to the request.
 - `context` (string, optional) — pass-through string forwarded verbatim
   as the request's `parameters`; omitted when empty.
-- `responseTimeoutMs` (integer, optional) — response timeout for this
-  callout.
+- `responseTimeoutMs` (integer, optional) — how long to wait for this
+  callout's answer, in milliseconds; `0` or absent means the server's
+  `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS`; must not exceed
+  `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`.
 
 The function responds with `resultKind: "Schedule"` and a `result`
 object giving the fire time and, optionally, an expiry:
@@ -491,13 +493,15 @@ Static validation runs on the incoming request before saving. Any of the followi
 - Workflow / state / transition / processor names longer than 256 characters.
 - Transition `next` not declared in `states`.
 - Unknown `executionMode` value on any processor (allowed: `SYNC`, `ASYNC_SAME_TX`, `ASYNC_NEW_TX`, `COMMIT_BEFORE_DISPATCH`, or empty).
-- Unknown `retryPolicy` value on any processor (allowed: `NONE`, `FIXED`, or empty).
+- Unknown `retryPolicy` value on any processor, `function`-type criterion or `schedule.function` (allowed: `NONE`, `FIXED`, or empty).
+- A `function`-type criterion whose `function.config` cannot be read (for example a `responseTimeoutMs` that is not an integer).
 - `startNewTxOnDispatch=true` on a processor whose `executionMode` is not `COMMIT_BEFORE_DISPATCH`.
 - Empty `workflows` array (or a missing `workflows` key) when `importMode` is `REPLACE` or `ACTIVATE`. `MERGE` with an empty array is a legitimate no-op.
 - A criterion `jsonPath` (on a `simple` or `array` clause, at any nesting depth) that is not JSON Path — see CRITERIA below.
 - A criterion `LIKE` or `MATCHES_PATTERN` value that is not a valid pattern.
 - A criterion `lifecycle` clause naming an unknown metadata field, or comparing a temporal field (`creationDate`, `lastUpdateTime`) against a non-timestamp operand.
 - A criterion `group` clause whose `operator` is not `AND`, `OR`, or `NOT`, or whose `operator` is `NOT` with `conditions` other than exactly one entry.
+- A `responseTimeoutMs` on a processor, a `function`-type criterion or a `schedule.function` that is negative, or larger than the server's `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` (default `60000`). The bound is a server setting: a workflow exported from one deployment can be refused by another with a lower bound.
 
 The new structural rules (state graph, name uniqueness, `executionMode` enum, `retryPolicy` enum) run on the incoming request only — existing stored workflows are not retroactively re-checked against them. The cycle-detection and `startNewTxOnDispatch` coherence checks continue to run against the merged result, so a legacy stored cycle or incoherent flag still surfaces at any subsequent import.
 
@@ -571,7 +575,7 @@ curl -s -X POST \
     "importMode": "MERGE",
     "workflows": [
       {
-        "version": "1.4",
+        "version": "1.5",
         "name": "prize-lifecycle",
         "initialState": "NEW",
         "active": true,
@@ -623,7 +627,7 @@ curl -s -X POST \
     "importMode": "REPLACE",
     "workflows": [
       {
-        "version": "1.4",
+        "version": "1.5",
         "name": "simple-wf",
         "initialState": "OPEN",
         "active": true,

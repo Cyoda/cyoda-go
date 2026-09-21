@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/app"
@@ -48,6 +49,41 @@ func doWorkflowImport(t *testing.T, base, entityName string, version int, body s
 		t.Fatalf("workflow import request failed: %v", err)
 	}
 	return resp
+}
+
+// TestImport_ResponseTimeoutBound_FollowsServerSetting pins the wiring from
+// the server setting to the import handler: the same payload is accepted or
+// refused depending on the bound the App was built with.
+func TestImport_ResponseTimeoutBound_FollowsServerSetting(t *testing.T) {
+	cfg := app.DefaultConfig()
+	cfg.ContextPath = ""
+	cfg.Callout.ResponseTimeout = 5 * time.Second
+	cfg.Callout.ResponseTimeoutMax = 5 * time.Second
+	srv := httptest.NewServer(app.New(cfg).Handler())
+	t.Cleanup(srv.Close)
+	importModel(t, srv.URL, "Order", 1)
+
+	body := func(ms int) string {
+		return `{"importMode":"REPLACE","workflows":[{
+			"version":"1.1","name":"bound-wf","initialState":"S1","active":true,
+			"states":{"S1":{"transitions":[{"name":"go","next":"S2","manual":true,
+				"processors":[{"type":"externalized","name":"p","executionMode":"SYNC",
+					"config":{"calculationNodesTags":"workers","responseTimeoutMs":` + strconv.Itoa(ms) + `}}]}]},
+				"S2":{}}}]}`
+	}
+
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body(5000))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("responseTimeoutMs at the bound: expected 200, got %d", resp.StatusCode)
+	}
+
+	resp = doWorkflowImport(t, srv.URL, "Order", 1, body(5001))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("responseTimeoutMs over the bound: expected 400, got %d", resp.StatusCode)
+	}
+	commontest.ExpectErrorCode(t, resp, common.ErrCodeValidationFailed)
 }
 
 func doWorkflowExport(t *testing.T, base, entityName string, version int) *http.Response {
@@ -1795,4 +1831,78 @@ func semanticJSONEqual(t *testing.T, a, b json.RawMessage) bool {
 		return string(out)
 	}
 	return norm(a) == norm(b)
+}
+
+// TestImportExport_CalloutFields_RoundTrip pins that idempotent on a processor
+// and retryPolicy on a schedule function are accepted by the strict decoder,
+// stored, and exported, and that a workflow which never mentions them exports
+// without them.
+func TestImportExport_CalloutFields_RoundTrip(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	body := `{"importMode":"REPLACE","workflows":[{
+		"version":"1.5","name":"callout-fields-wf","initialState":"S1","active":true,
+		"states":{
+			"S1":{"transitions":[
+				{"name":"go","next":"S2","manual":true,
+				 "processors":[
+					{"type":"externalized","name":"safe","executionMode":"SYNC",
+					 "config":{"calculationNodesTags":"workers","idempotent":true,"retryPolicy":"FIXED"}},
+					{"type":"externalized","name":"plain","executionMode":"SYNC",
+					 "config":{"calculationNodesTags":"workers"}}]},
+				{"name":"later","next":"S2",
+				 "schedule":{"function":{"name":"computeFire","resultKind":"Schedule",
+					"calculationNodesTags":"scheduler","retryPolicy":"NONE"}}}]},
+			"S2":{}}}]}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("import: expected 200, got %d: %s", resp.StatusCode, b)
+	}
+	resp.Body.Close()
+
+	exp := doWorkflowExport(t, srv.URL, "Order", 1)
+	defer exp.Body.Close()
+	raw, err := io.ReadAll(exp.Body)
+	if err != nil {
+		t.Fatalf("read export: %v", err)
+	}
+	var out struct {
+		Workflows []struct {
+			Version string `json:"version"`
+			States  map[string]struct {
+				Transitions []struct {
+					Name       string `json:"name"`
+					Processors []struct {
+						Name   string         `json:"name"`
+						Config map[string]any `json:"config"`
+					} `json:"processors"`
+					Schedule *struct {
+						Function map[string]any `json:"function"`
+					} `json:"schedule"`
+				} `json:"transitions"`
+			} `json:"states"`
+		} `json:"workflows"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode export: %v; raw: %s", err, raw)
+	}
+	if len(out.Workflows) != 1 || out.Workflows[0].Version != "1.5" {
+		t.Fatalf("export must stamp 1.5; raw: %s", raw)
+	}
+	trs := out.Workflows[0].States["S1"].Transitions
+	if len(trs) != 2 || len(trs[0].Processors) != 2 {
+		t.Fatalf("unexpected export shape: %s", raw)
+	}
+	if got := trs[0].Processors[0].Config["idempotent"]; got != true {
+		t.Errorf(`processor "safe": idempotent = %v, want true`, got)
+	}
+	if _, present := trs[0].Processors[1].Config["idempotent"]; present {
+		t.Errorf(`processor "plain": idempotent must be omitted when never set; raw: %s`, raw)
+	}
+	if trs[1].Schedule == nil || trs[1].Schedule.Function["retryPolicy"] != "NONE" {
+		t.Errorf("schedule.function.retryPolicy lost on round-trip; raw: %s", raw)
+	}
 }

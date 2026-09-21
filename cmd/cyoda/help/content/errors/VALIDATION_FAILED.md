@@ -29,7 +29,7 @@ Unlike `BAD_REQUEST` (which covers parse failures, bad parameters, and unstorabl
 - a change the model's `changeLevel` does not permit
 - a field name the wire `jsonPath` grammar cannot address
 
-On a workflow import (`POST /model/{entityName}/{modelVersion}/workflow/import`), this is also the code for a structural content violation, including a criterion `group` clause whose `operator` is not `AND`, `OR`, or `NOT`, or a `NOT` group whose `conditions` does not hold exactly one entry — see `workflows` and `predicates`. This is a grammar-only check at import time; it does not verify that the model declares every field a criterion names (see `errors.WORKFLOW_FAILED`).
+On a workflow import (`POST /model/{entityName}/{modelVersion}/workflow/import`), this is also the code for a structural content violation, including a criterion `group` clause whose `operator` is not `AND`, `OR`, or `NOT`, or a `NOT` group whose `conditions` does not hold exactly one entry, an unknown `retryPolicy` on a processor, criterion function or schedule function, or a `responseTimeoutMs` that is negative or above the server's `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` — see `workflows` and `predicates`. This is a grammar-only check at import time; it does not verify that the model declares every field a criterion names (see `errors.WORKFLOW_FAILED`).
 
 It is also returned by the model import for sample data that is neither a document nor a collection of documents, and by the workflow import for a structural violation. The error detail names the offending path or key.
 

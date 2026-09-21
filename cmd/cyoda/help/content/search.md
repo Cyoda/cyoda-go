@@ -198,7 +198,7 @@ Each non-null entry is a positional test: `values[i]` compared against element `
 - `function.name`: string — identifies the function; becomes `criteriaId` / `criteriaName` in the dispatch request; required for routing
 - `function.config.calculationNodesTags`: string — comma-separated tags used to select a registered compute member; follows the same tag-intersection rules as processor dispatch
 - `function.config.attachEntity`: boolean (optional, default `true`) — when `true`, the full entity payload is included in the dispatch request
-- `function.config.responseTimeoutMs`: int64 (optional, default `30000`) — timeout in milliseconds
+- `function.config.responseTimeoutMs`: int64 (optional; when absent or `0` the server's `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS` applies, default `30000`; bounded by `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`) — how long to wait for the compute member's answer, in milliseconds
 
 When used as a criterion, the function is dispatched as `EntityCriteriaCalculationRequest` to the matching compute member — see the `grpc` topic for the request/response shape — and must be the whole criterion; one nested inside a `group` fails the evaluation. Search has no dispatcher: `FunctionCondition` cannot be translated to a storage-plugin pushdown filter and the in-process kernel has no evaluator for it, which is why it is rejected up front rather than attempted.
 

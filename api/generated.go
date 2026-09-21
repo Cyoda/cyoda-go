@@ -898,6 +898,24 @@ func (e ScheduleFunctionDtoResultKind) Valid() bool {
 	}
 }
 
+// Defines values for ScheduleFunctionDtoRetryPolicy.
+const (
+	ScheduleFunctionDtoRetryPolicyFIXED ScheduleFunctionDtoRetryPolicy = "FIXED"
+	ScheduleFunctionDtoRetryPolicyNONE  ScheduleFunctionDtoRetryPolicy = "NONE"
+)
+
+// Valid indicates whether the value is a known member of the ScheduleFunctionDtoRetryPolicy enum.
+func (e ScheduleFunctionDtoRetryPolicy) Valid() bool {
+	switch e {
+	case ScheduleFunctionDtoRetryPolicyFIXED:
+		return true
+	case ScheduleFunctionDtoRetryPolicyNONE:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SimpleConditionDtoOperatorType.
 const (
 	SimpleConditionDtoOperatorTypeAND                 SimpleConditionDtoOperatorType = "AND"
@@ -2120,22 +2138,31 @@ type ExternalizedFunctionConfigDto struct {
 	// implementation without registering a separate name per role.
 	Context *string `json:"context,omitempty"`
 
-	// ResponseTimeoutMs Response timeout in milliseconds
+	// ResponseTimeoutMs How long to wait for the compute member's answer, in milliseconds.
+	// When absent or 0 the server's CYODA_CALLOUT_RESPONSE_TIMEOUT_MS
+	// applies (default 30000). Must not exceed the server's
+	// CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS (default 60000); import
+	// rejects a larger or a negative value with HTTP 400
+	// VALIDATION_FAILED. The bound is a server setting, so a workflow
+	// exported from one deployment can be refused by another with a
+	// lower bound.
 	ResponseTimeoutMs *int64 `json:"responseTimeoutMs,omitempty"`
 
-	// RetryPolicy Retry policy selector. NONE → single attempt, no retry. FIXED →
-	// up to N additional attempts with fixed delay between tries
-	// (N and delay are server-configured). When omitted, defaults
-	// to FIXED at engine fire. Import-time validation rejects any
-	// other value.
+	// RetryPolicy Retry policy selector. NONE → one try. FIXED → the
+	// server-configured number of tries (CYODA_RETRY_FIXED_NUM_RETRIES
+	// retries after the first). The number of tries is
+	// server-configured, and is the normal number, not a hard limit.
+	// When omitted, FIXED applies. Import-time validation rejects any
+	// other value with HTTP 400 VALIDATION_FAILED.
 	RetryPolicy *ExternalizedFunctionConfigDtoRetryPolicy `json:"retryPolicy,omitempty"`
 }
 
-// ExternalizedFunctionConfigDtoRetryPolicy Retry policy selector. NONE → single attempt, no retry. FIXED →
-// up to N additional attempts with fixed delay between tries
-// (N and delay are server-configured). When omitted, defaults
-// to FIXED at engine fire. Import-time validation rejects any
-// other value.
+// ExternalizedFunctionConfigDtoRetryPolicy Retry policy selector. NONE → one try. FIXED → the
+// server-configured number of tries (CYODA_RETRY_FIXED_NUM_RETRIES
+// retries after the first). The number of tries is
+// server-configured, and is the normal number, not a hard limit.
+// When omitted, FIXED applies. Import-time validation rejects any
+// other value with HTTP 400 VALIDATION_FAILED.
 type ExternalizedFunctionConfigDtoRetryPolicy string
 
 // ExternalizedFunctionDto defines model for ExternalizedFunctionDto.
@@ -2184,22 +2211,40 @@ type ExternalizedProcessorConfigDto struct {
 	// HTTP 400 VALIDATION_FAILED.
 	CrossoverToAsyncMs *int64 `json:"crossoverToAsyncMs,omitempty"`
 
-	// ResponseTimeoutMs Response timeout in milliseconds
+	// Idempotent The workflow author's declaration that running this processor
+	// again is safe — for cyoda and for every system the processor
+	// touches. When true, the work may be given to another compute
+	// member after a member that received it went silent or dropped
+	// its connection. When false (the default) it is not, because the
+	// first member may have acted. Criteria and functions are always
+	// treated as safe to repeat and carry no such field.
+	Idempotent *bool `json:"idempotent,omitempty"`
+
+	// ResponseTimeoutMs How long to wait for the compute member's answer, in milliseconds.
+	// When absent or 0 the server's CYODA_CALLOUT_RESPONSE_TIMEOUT_MS
+	// applies (default 30000). Must not exceed the server's
+	// CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS (default 60000); import
+	// rejects a larger or a negative value with HTTP 400
+	// VALIDATION_FAILED. The bound is a server setting, so a workflow
+	// exported from one deployment can be refused by another with a
+	// lower bound.
 	ResponseTimeoutMs *int64 `json:"responseTimeoutMs,omitempty"`
 
-	// RetryPolicy Retry policy selector. NONE → single attempt, no retry. FIXED →
-	// up to N additional attempts with fixed delay between tries
-	// (N and delay are server-configured). When omitted, defaults
-	// to FIXED at engine fire. Import-time validation rejects any
-	// other value.
+	// RetryPolicy Retry policy selector. NONE → one try. FIXED → the
+	// server-configured number of tries (CYODA_RETRY_FIXED_NUM_RETRIES
+	// retries after the first). The number of tries is
+	// server-configured, and is the normal number, not a hard limit.
+	// When omitted, FIXED applies. Import-time validation rejects any
+	// other value with HTTP 400 VALIDATION_FAILED.
 	RetryPolicy *ExternalizedProcessorConfigDtoRetryPolicy `json:"retryPolicy,omitempty"`
 }
 
-// ExternalizedProcessorConfigDtoRetryPolicy Retry policy selector. NONE → single attempt, no retry. FIXED →
-// up to N additional attempts with fixed delay between tries
-// (N and delay are server-configured). When omitted, defaults
-// to FIXED at engine fire. Import-time validation rejects any
-// other value.
+// ExternalizedProcessorConfigDtoRetryPolicy Retry policy selector. NONE → one try. FIXED → the
+// server-configured number of tries (CYODA_RETRY_FIXED_NUM_RETRIES
+// retries after the first). The number of tries is
+// server-configured, and is the normal number, not a hard limit.
+// When omitted, FIXED applies. Import-time validation rejects any
+// other value with HTTP 400 VALIDATION_FAILED.
 type ExternalizedProcessorConfigDtoRetryPolicy string
 
 // ExternalizedProcessorDefinitionDto defines model for ExternalizedProcessorDefinitionDto.
@@ -2660,17 +2705,40 @@ type ScheduleFunctionDto struct {
 	// Name Name of the registered function to call.
 	Name string `json:"name"`
 
-	// ResponseTimeoutMs Response timeout in milliseconds.
+	// ResponseTimeoutMs How long to wait for the compute member's answer, in milliseconds.
+	// When absent or 0 the server's CYODA_CALLOUT_RESPONSE_TIMEOUT_MS
+	// applies (default 30000). Must not exceed the server's
+	// CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS (default 60000); import
+	// rejects a larger or a negative value with HTTP 400
+	// VALIDATION_FAILED. The bound is a server setting, so a workflow
+	// exported from one deployment can be refused by another with a
+	// lower bound.
 	ResponseTimeoutMs *int64 `json:"responseTimeoutMs,omitempty"`
 
 	// ResultKind Result-shape discriminator the calculation node must echo back.
 	// Only `Schedule` is supported for scheduled-transition timing.
 	ResultKind ScheduleFunctionDtoResultKind `json:"resultKind"`
+
+	// RetryPolicy Retry policy selector. NONE → one try. FIXED → the
+	// server-configured number of tries (CYODA_RETRY_FIXED_NUM_RETRIES
+	// retries after the first). The number of tries is
+	// server-configured, and is the normal number, not a hard limit.
+	// When omitted, FIXED applies. Import-time validation rejects any
+	// other value with HTTP 400 VALIDATION_FAILED.
+	RetryPolicy *ScheduleFunctionDtoRetryPolicy `json:"retryPolicy,omitempty"`
 }
 
 // ScheduleFunctionDtoResultKind Result-shape discriminator the calculation node must echo back.
 // Only `Schedule` is supported for scheduled-transition timing.
 type ScheduleFunctionDtoResultKind string
+
+// ScheduleFunctionDtoRetryPolicy Retry policy selector. NONE → one try. FIXED → the
+// server-configured number of tries (CYODA_RETRY_FIXED_NUM_RETRIES
+// retries after the first). The number of tries is
+// server-configured, and is the normal number, not a hard limit.
+// When omitted, FIXED applies. Import-time validation rejects any
+// other value with HTTP 400 VALIDATION_FAILED.
+type ScheduleFunctionDtoRetryPolicy string
 
 // SetUniqueKeysRequest defines model for SetUniqueKeysRequest.
 type SetUniqueKeysRequest struct {

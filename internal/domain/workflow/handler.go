@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -57,11 +58,16 @@ func truncateForLog(s string, maxRunes int) string {
 type Handler struct {
 	factory spi.StoreFactory
 	engine  *Engine
+	// maxResponseTimeout is the server's upper bound on a callout's
+	// responseTimeoutMs; import refuses a workflow that exceeds it.
+	maxResponseTimeout time.Duration
 }
 
 // New returns a new Handler wired to the given StoreFactory and Engine.
-func New(factory spi.StoreFactory, engine *Engine) *Handler {
-	return &Handler{factory: factory, engine: engine}
+// maxResponseTimeout is the server's upper bound on responseTimeoutMs
+// (app.Config.Callout.ResponseTimeoutMax).
+func New(factory spi.StoreFactory, engine *Engine, maxResponseTimeout time.Duration) *Handler {
+	return &Handler{factory: factory, engine: engine, maxResponseTimeout: maxResponseTimeout}
 }
 
 // workflowImportDef mirrors spi.WorkflowDefinition but uses *bool for Active
@@ -318,6 +324,14 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	// the merged result below, preserving pre-v0.8.0 semantics for those
 	// specific invariants.
 	if err := validateImportRequest(incoming); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
+		return
+	}
+
+	// Callout limits are a server setting, so they are checked here rather
+	// than in the setting-free structural validator. Incoming request only,
+	// like every structural rule.
+	if err := validateCalloutLimits(incoming, h.maxResponseTimeout); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
 		return
 	}

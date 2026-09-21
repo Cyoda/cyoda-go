@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -503,7 +504,7 @@ func TestScenarioStaticLoopDetectionViaImport(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	txMgr2 := factory.NewTransactionManager(uuids)
 	engine := NewEngine(factory, uuids, txMgr2)
-	handler := New(factory, engine)
+	handler := New(factory, engine, 60*time.Second)
 
 	ctx := ctxWithTenant(testTenant)
 
@@ -660,7 +661,7 @@ func TestScenarioStartNewTxOnDispatchRejectionViaImport(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	txMgr2 := factory.NewTransactionManager(uuids)
 	engine := NewEngine(factory, uuids, txMgr2)
-	handler := New(factory, engine)
+	handler := New(factory, engine, 60*time.Second)
 
 	ctx := ctxWithTenant(testTenant)
 
