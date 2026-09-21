@@ -155,17 +155,7 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 			RetransmitMult: mlCfg.RetransmitMult,
 		},
 	}
-	// The guard compares a peer's record against what this node advertises,
-	// which it reads through the same pointer the broadcast queue uses.
-	// memberlist derives the advertised address from the bind address, so it
-	// cannot be composed here: with the default CYODA_GOSSIP_ADDR the bind
-	// host is empty and the advertised one is the host's own.
-	guard := newIdentityGuard(cfg.NodeID, func() string {
-		if ml := list.Load(); ml != nil {
-			return ml.LocalNode().Address()
-		}
-		return ""
-	})
+	guard := newIdentityGuard(cfg.NodeID)
 	signal := common.NewChangeSignal()
 	dir := newDirectory()
 	events := newTagEvents(cfg.NodeID, dir, signal)
@@ -195,10 +185,18 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 	mlCfg.Merge = guard
 	mlCfg.Conflict = guard
 
+	// Create can accept an exchange a peer starts before it returns, and the
+	// guard judges a record against the address this node advertises — which
+	// memberlist derives, so it cannot be composed from the configuration:
+	// under the default CYODA_GOSSIP_ADDR the bind host is empty while peers
+	// hold the host's own address. The deferred publish covers the path where
+	// there is never an address, so that no exchange waits forever.
+	defer guard.publish("")
 	ml, err := memberlist.Create(mlCfg)
 	if err != nil {
 		return nil, fmt.Errorf("create memberlist: %w", err)
 	}
+	guard.publish(ml.LocalNode().Address())
 	g.list = ml
 	list.Store(ml)
 
@@ -237,7 +235,7 @@ func (g *Gossip) Register(ctx context.Context, _ string, _ string) error {
 			"pkg", "cluster/registry",
 			"nodeId", g.cfg.NodeID,
 		)
-		return nil
+		return g.identityProven()
 	}
 
 	const (
@@ -301,6 +299,12 @@ func (g *Gossip) Register(ctx context.Context, _ string, _ string) error {
 		}
 	}
 
+	// The last word before this node serves: the wait is long enough for a
+	// second holder of the id to have appeared since the join.
+	if err := g.identityProven(); err != nil {
+		return err
+	}
+
 	slog.Info("joined cluster",
 		"pkg", "cluster/registry",
 		"nodeId", g.cfg.NodeID,
@@ -315,20 +319,21 @@ func (g *Gossip) Register(ctx context.Context, _ string, _ string) error {
 // so that a seed can be named when the exchange with it shows this node's id
 // already held. The join succeeds when any seed answered.
 //
-// A peer joining this node runs the same delegate, so what a seed's exchange
-// found can in principle have come from an inbound one instead. Only the seed
-// named in the message is then wrong: a duplicate was found either way, and
-// the id really is held twice.
+// What the guard found is read after every exchange, whatever Join returned.
+// A join that answers success is no evidence that none of its exchanges
+// refused: one seed name resolves to several addresses, memberlist clears the
+// errors it collected as soon as one of them answers, and a peer joining this
+// node runs the same delegate on an exchange this node did not start. Only the
+// seed named in the message can be the wrong one; the finding cannot.
 func (g *Gossip) joinSeeds(seeds []string) error {
 	var errs error
 	joined := 0
 	for _, seed := range seeds {
-		g.identity.forget()
-		if _, err := g.list.Join([]string{seed}); err != nil {
-			if addr := g.identity.duplicate(); addr != "" {
-				return fmt.Errorf("%w: CYODA_NODE_ID %q is already held by the node at %s, learned from seed %s; every node of a cluster needs an id of its own",
-					errDuplicateNodeID, g.cfg.NodeID, addr, seed)
-			}
+		_, err := g.list.Join([]string{seed})
+		if addr := g.identity.duplicate(); addr != "" {
+			return g.duplicateIDError(addr, seed)
+		}
+		if err != nil {
 			errs = errors.Join(errs, err)
 			continue
 		}
@@ -338,6 +343,30 @@ func (g *Gossip) joinSeeds(seeds []string) error {
 		return nil
 	}
 	return errs
+}
+
+// identityProven fails when any exchange this node has taken part in, its own
+// or one a peer started, has shown its id on another node. A node that cannot
+// show the id is its own does not serve under it.
+func (g *Gossip) identityProven() error {
+	if addr := g.identity.duplicate(); addr != "" {
+		return g.duplicateIDError(addr, "")
+	}
+	return nil
+}
+
+// duplicateIDError is what an operator reads. It names the setting, where the
+// id was found and, when the exchange was this node's own, the seed it was
+// learned from. The second cause is named too: nothing separates an impostor
+// from a record of this node's own previous life, which its peers keep after a
+// crash because it never left, and which they hold at the old address.
+func (g *Gossip) duplicateIDError(addr, seed string) error {
+	where := "found in an exchange a peer started"
+	if seed != "" {
+		where = "learned from seed " + seed
+	}
+	return fmt.Errorf("%w: CYODA_NODE_ID %q is already held by the node at %s, %s; every node of a cluster needs an id of its own. A node that crashed and came back at another address is refused the same way, because that record is its own previous life: it starts once its peers have reaped it",
+		errDuplicateNodeID, g.cfg.NodeID, addr, where)
 }
 
 // Lookup returns the address and alive status for the given nodeID from the

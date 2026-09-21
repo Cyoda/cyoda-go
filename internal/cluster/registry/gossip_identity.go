@@ -30,20 +30,21 @@ const (
 // As the conflict delegate it reports a duplicate this node only witnesses.
 type identityGuard struct {
 	nodeID string
-	// selfAddr answers this node's own advertised gossip address — the one
-	// peers hold for it. It reads the memberlist through the pointer
-	// NewGossip publishes, because a delegate has to be installed before
-	// Create and is only ever called after it. Before then it answers the
-	// empty string, which matches no record: a merge that cannot be vouched
-	// for is refused. Only NotifyMerge may call it — memberlist holds its
-	// node lock across NotifyConflict, and reading the local node takes that
-	// same lock.
-	selfAddr func() string
+	// self is this node's own advertised gossip address — the one peers hold
+	// for it, which memberlist derives and only knows once it is created. A
+	// delegate has to be installed before that, and an exchange a peer starts
+	// can reach one in between, so selfAddr holds such a caller until the
+	// address is known rather than judging a record against nothing. It is
+	// written once, before ready is closed.
+	self  string
+	ready chan struct{}
+	once  sync.Once
 
 	mu sync.Mutex
-	// found is the address of the node holding this node's id, as the last
-	// join exchange saw it. Register clears it before each seed so that it
-	// reads only what that attempt found.
+	// found is the address of a node holding this node's id, as some exchange
+	// saw it — this node's own or one a peer started. It is never cleared: an
+	// id shown to be held twice stays held twice, and Register reads it after
+	// every exchange it takes part in.
 	found string
 	// reported holds the duplicates already logged. The key is the report,
 	// the id and the two addresses, so a correctly configured cluster adds
@@ -60,12 +61,33 @@ var (
 	_ memberlist.ConflictDelegate = (*identityGuard)(nil)
 )
 
-func newIdentityGuard(nodeID string, selfAddr func() string) *identityGuard {
+func newIdentityGuard(nodeID string) *identityGuard {
 	return &identityGuard{
 		nodeID:   nodeID,
-		selfAddr: selfAddr,
+		ready:    make(chan struct{}),
 		reported: make(map[string]struct{}),
 	}
+}
+
+// publish hands the guard this node's advertised address and releases any
+// exchange waiting for it. The first call wins: NewGossip publishes what
+// memberlist derived, and publishes the empty string on the path where
+// memberlist never came up, so that nothing waits for an address there will
+// never be.
+func (g *identityGuard) publish(addr string) {
+	g.once.Do(func() {
+		g.self = addr
+		close(g.ready)
+	})
+}
+
+// selfAddr answers this node's own advertised address, waiting for it when the
+// exchange arrived before memberlist had derived one. NotifyMerge is its only
+// caller: NotifyConflict runs under memberlist's node lock and must not block
+// there, and it is handed both addresses it needs.
+func (g *identityGuard) selfAddr() string {
+	<-g.ready
+	return g.self
 }
 
 // NotifyMerge refuses the join exchange when the peer's node list shows this
@@ -121,15 +143,8 @@ func (g *identityGuard) note(addr string) {
 	}
 }
 
-// forget clears what an earlier join exchange found.
-func (g *identityGuard) forget() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.found = ""
-}
-
-// duplicate returns the address this node's id was found at, or "" if the last
-// join exchange found none.
+// duplicate returns the address this node's id was found at, or "" if no
+// exchange has found one.
 func (g *identityGuard) duplicate() string {
 	g.mu.Lock()
 	defer g.mu.Unlock()

@@ -289,14 +289,18 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   another compute member because of it (Cloud does retry on it, which is a
   recorded departure). See `docs/cloud-parity/callout-failover.md`.
 
-- **A node whose `CYODA_NODE_ID` is already held refuses to start.** During
-  the join exchange with a seed, a node that finds its own id on a live node
-  at another address fails the join and exits at once — it is not retried
-  until `CYODA_STARTUP_TIMEOUT`, because no retry clears it. The message
-  names `CYODA_NODE_ID`, the address the id was found at and the seed it was
-  learned from. The node already holding the id keeps serving. A restart
-  under the id of a node that left or died is unaffected, and so is a node
-  with no seeds.
+- **A node whose `CYODA_NODE_ID` is already held refuses to start.** A node
+  that sees its own id on a live node at another address — in an exchange
+  with a seed, or in one a peer started with it — exits at once rather than
+  retrying until `CYODA_STARTUP_TIMEOUT`, because no retry clears it. The
+  message names `CYODA_NODE_ID`, the address the id was found at and, where
+  there is one, the seed it was learned from. The node already holding the id
+  keeps serving. A restart under the id of a node that left or died is
+  unaffected, and so is a node with no seeds. A node that **crashed** and
+  comes back at another address is refused the same way, because its peers
+  still hold the record of its previous life and nothing tells that record
+  apart from a second node's; it starts once they have reaped it, and the
+  message names that cause too.
 
 - **A callout picks among a tenant's matching compute members round robin.**
   The member picked longest ago goes next; one that has just joined goes first.
