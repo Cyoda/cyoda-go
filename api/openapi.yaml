@@ -534,6 +534,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/StateMachineAuditEventDto"
+        "400":
+          description: >-
+            Bad Request - Invalid parameters; `properties.errorCode` carries the domain
+            code. A request sending `X-Tx-Token` more than once is refused here, as is one
+            whose body cannot be read.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: >-
             Unauthorized - Authentication is required. An `X-Tx-Token` that is not a valid
@@ -888,6 +897,15 @@ paths:
                 - modelName: flight-ticket
                   modelVersion: 1
                   count: 3458659339
+        "400":
+          description: >-
+            Bad Request - Invalid parameters; `properties.errorCode` carries the domain
+            code. A request sending `X-Tx-Token` more than once is refused here, as is one
+            whose body cannot be read.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -1151,6 +1169,15 @@ paths:
                 modelName: nobel-prize
                 modelVersion: 1
                 count: 960
+        "400":
+          description: >-
+            Bad Request - Invalid parameters; `properties.errorCode` carries the domain
+            code. A request sending `X-Tx-Token` more than once is refused here, as is one
+            whose body cannot be read.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: >-
             Entity model not found. A request carrying an `X-Tx-Token` is also answered 404
@@ -7489,6 +7516,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AsyncSearchStatusDto"
+        "400":
+          description: >-
+            Bad Request - Invalid parameters; `properties.errorCode` carries the domain
+            code. A request sending `X-Tx-Token` more than once is refused here, as is one
+            whose body cannot be read.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
         "404":
           description: >-
             Search job not found. A request carrying an `X-Tx-Token` is also answered 404
@@ -12267,7 +12303,12 @@ components:
         reclaimed by the idle-in-transaction ceiling, the connection was lost, or a
         processor, criterion or function callout could not be completed
         (CALLOUT_FAILED, NO_COMPUTE_MEMBER_FOR_TAG, DISPATCH_TIMEOUT,
-        COMPUTE_MEMBER_DISCONNECTED, DISPATCH_FORWARD_FAILED). Retryable.
+        COMPUTE_MEMBER_DISCONNECTED, DISPATCH_FORWARD_FAILED), or a request
+        carrying an `X-Tx-Token` could not reach the transaction it names — the
+        node owning that transaction is not in the cluster's registry, is marked
+        dead, or is unreachable (TRANSACTION_NODE_UNAVAILABLE), or the
+        transaction already has as many callbacks waiting as it may have
+        (TOO_MANY_JOINED_REQUESTS). Retryable.
       content:
         application/problem+json:
           schema:
