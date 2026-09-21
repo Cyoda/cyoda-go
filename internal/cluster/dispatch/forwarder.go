@@ -119,6 +119,14 @@ func (f *HTTPForwarder) AllowLoopbackForTesting() *HTTPForwarder {
 // ForwardCallout POSTs a callout dispatch request to the peer at addr, sealed
 // for peerNodeID, and returns the response.
 func (f *HTTPForwarder) ForwardCallout(ctx context.Context, peerNodeID, addr string, req DispatchCalloutRequest) (*DispatchCalloutResponse, error) {
+	if peerNodeID == "" {
+		// A peer that cannot be named cannot be sealed for. Like an address the
+		// guard refuses, that is a property of this one peer: nothing is sent,
+		// no try is used, and the loop goes on to the next peer. Sign would
+		// refuse it too, but as a request that could not be built — which is the
+		// reading reserved for what would fail towards every peer.
+		return nil, stageErr(StageNotConnected, errors.New("the peer node has no id to seal the hand-over for"))
+	}
 	// The lookup a hostname address needs is bounded like the connection it
 	// precedes, and never outlives the hand-over's own deadline.
 	lookupCtx, cancel := context.WithTimeout(ctx, f.connectTimeout)

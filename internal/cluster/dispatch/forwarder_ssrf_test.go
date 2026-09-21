@@ -120,3 +120,23 @@ func TestHTTPForwarder_AcceptsRoutableAddress(t *testing.T) {
 		t.Fatalf("expected error to reference the target addr, got: %v", err)
 	}
 }
+
+// A peer the registry names with no node id cannot be sealed for, and that is a
+// property of this one peer: nothing is sent, no try is used, and the owner's
+// loop goes on to the next peer — the same reading as an address the guard
+// refuses. Staged before-connect instead, it would be Terminal and stop the
+// callout, which is the reading reserved for what would fail towards every peer.
+func TestHTTPForwarder_PeerWithNoNodeID_IsNotConnected(t *testing.T) {
+	fw := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 50*time.Millisecond)
+	_, err := fw.ForwardCallout(context.Background(), "", "192.0.2.1:8080", makeProcessorReq())
+	if err == nil {
+		t.Fatal("a hand-over was sent to a peer with no node id")
+	}
+	var fe *dispatch.ForwardError
+	if !errors.As(err, &fe) {
+		t.Fatalf("err = %v, want a ForwardError", err)
+	}
+	if fe.Stage != dispatch.StageNotConnected {
+		t.Errorf("stage = %v, want StageNotConnected — this is a property of one peer, not of the callout", fe.Stage)
+	}
+}
