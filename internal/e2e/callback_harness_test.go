@@ -39,7 +39,7 @@ import (
 // calculation member connects, receives EntityProcessorCalculationRequests
 // carrying the signed cyodatxtoken CloudEvent attribute, echoes that token as
 // the X-Tx-Token header on HTTP callbacks into the same node, and thereby
-// exercises the JoinFromToken -> participate path end-to-end.
+// exercises the Joiner.Run -> participate path end-to-end.
 //
 // The localproc harness cannot exercise this: it bypasses gRPC entirely, so no
 // token is ever minted, transmitted, echoed, or joined. This is the harness the

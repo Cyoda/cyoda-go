@@ -23,7 +23,7 @@ import (
 // All tests run against the full HTTP+gRPC stack (real Postgres) via the
 // callback-capable compute member (callback_harness_test.go). The token
 // round-trip — engine mints cyodatxtoken → gRPC calc request → member echoes
-// it as X-Tx-Token → TxJoin middleware → JoinFromToken → participate — is
+// it as X-Tx-Token → TxJoin middleware → Joiner.Run → participate — is
 // exercised in every test (or proven absent in the CBD-default case).
 //
 // The token value is never logged (Gate 3 / spec §8-H10).
@@ -182,7 +182,7 @@ func TestCallback_AsyncNewTx_KeptOnSuccess(t *testing.T) {
 //   - TX_pre commits before dispatch (entity durably in pre-callout state).
 //   - The dispatcher opens TX_post and mints a token for it.
 //   - The callback echoes the TX_post token (X-Tx-Token) → TxJoin middleware
-//     → JoinFromToken → the write participates in TX_post.
+//     → Joiner.Run → the write participates in TX_post.
 //   - TX_post commits with both the primary apply-result and the secondary entity.
 //
 // This is the spec §4.4 / §16 case B (create-time entry point) counterpart
@@ -266,7 +266,7 @@ func TestCallback_CBDPost_JoinsTxPost(t *testing.T) {
 //
 // By the time this criterion runs the entry txID names an already-committed
 // transaction; a callback that joins on it gets 404 TRANSACTION_NOT_FOUND
-// (internal/domain/txjoin.JoinFromToken) instead of participating in the
+// (internal/domain/txjoin.Joiner.Run) instead of participating in the
 // still-open segment. The criterion callback below treats a non-200 joined
 // create as a failure, which fails criterion evaluation and keeps the primary
 // in WAITING — the observable symptom of the bug this test guards against.

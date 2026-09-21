@@ -16,7 +16,7 @@ import (
 //
 // These are the FIRST tests that exercise the real token round-trip: engine
 // mints cyodatxtoken -> gRPC calc request -> member echoes it as X-Tx-Token ->
-// HTTP TxJoin middleware -> JoinFromToken -> participate. The localproc harness
+// HTTP TxJoin middleware -> Joiner.Run -> participate. The localproc harness
 // used by the other workflow tests cannot reach this path (it never goes over
 // gRPC, so no token exists).
 
