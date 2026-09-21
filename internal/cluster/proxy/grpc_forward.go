@@ -43,10 +43,12 @@ func NewClientPool(allowLoopback bool) *ClientPool {
 // The peer address is validated via the SSRF guard before any dial is
 // attempted; forbidden addresses (loopback when disallowed, link-local,
 // unspecified, multicast) are rejected with peeraddr.ErrForbiddenPeerAddress.
-func (p *ClientPool) Get(addr string) (*grpc.ClientConn, error) {
+// ctx bounds the name lookup that guard makes, so a forwarded call whose caller
+// has gone does not wait on a resolver.
+func (p *ClientPool) Get(ctx context.Context, addr string) (*grpc.ClientConn, error) {
 	// Validate BEFORE converting to gRPC target — peeraddr.Validate handles
 	// both "http://host:port" and bare "host:port" forms.
-	if err := peeraddr.Validate(addr, p.allowLoopback); err != nil {
+	if err := peeraddr.Validate(ctx, addr, p.allowLoopback); err != nil {
 		return nil, err
 	}
 
@@ -95,7 +97,7 @@ func grpcTarget(addr string) string {
 // call, propagating the inbound metadata (auth + tx-token) onto the outgoing
 // call. Connections are cached per addr. The token is never logged.
 func ForwardEntityManage(ctx context.Context, pool *ClientPool, addr string, ce *cepb.CloudEvent) (*cepb.CloudEvent, error) {
-	conn, err := pool.Get(addr)
+	conn, err := pool.Get(ctx, addr)
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +109,7 @@ func ForwardEntityManage(ctx context.Context, pool *ClientPool, addr string, ce 
 // server-streaming EntityManageCollection call, returning the client stream so
 // the caller can copy frames back to the inbound stream.
 func ForwardEntityManageCollection(ctx context.Context, pool *ClientPool, addr string, ce *cepb.CloudEvent) (grpc.ServerStreamingClient[cepb.CloudEvent], error) {
-	conn, err := pool.Get(addr)
+	conn, err := pool.Get(ctx, addr)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +122,7 @@ func ForwardEntityManageCollection(ctx context.Context, pool *ClientPool, addr s
 // the referenced transaction and the read observes its uncommitted writes.
 // Connections are cached per addr. The token is never logged.
 func ForwardEntitySearch(ctx context.Context, pool *ClientPool, addr string, ce *cepb.CloudEvent) (*cepb.CloudEvent, error) {
-	conn, err := pool.Get(addr)
+	conn, err := pool.Get(ctx, addr)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +134,7 @@ func ForwardEntitySearch(ctx context.Context, pool *ClientPool, addr string, ce 
 // server-streaming EntitySearchCollection call, returning the client stream so
 // the caller can copy frames back to the inbound stream.
 func ForwardEntitySearchCollection(ctx context.Context, pool *ClientPool, addr string, ce *cepb.CloudEvent) (grpc.ServerStreamingClient[cepb.CloudEvent], error) {
-	conn, err := pool.Get(addr)
+	conn, err := pool.Get(ctx, addr)
 	if err != nil {
 		return nil, err
 	}

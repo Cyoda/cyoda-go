@@ -140,7 +140,12 @@ func (c *ClusterExecutor) Execute(ctx context.Context, task spi.ScheduledTask, t
 // request/response payload is scheduler-specific and DispatchForwarder's
 // interface is scoped to callout dispatch.
 type SchedulerRPCClient struct {
-	auth          dispatch.PeerAuth
+	auth dispatch.PeerAuth
+	// timeout is the whole-call budget (CYODA_DISPATCH_FORWARD_TIMEOUT). The
+	// HTTP client applies it to the request; it bounds the name lookup that
+	// precedes the request too, so a resolver that is down cannot hold the
+	// scan loop's goroutine for the resolver's own timeout instead.
+	timeout       time.Duration
 	httpClient    *http.Client
 	allowLoopback bool
 }
@@ -152,6 +157,7 @@ type SchedulerRPCClient struct {
 func NewSchedulerRPCClient(auth dispatch.PeerAuth, timeout time.Duration) *SchedulerRPCClient {
 	return &SchedulerRPCClient{
 		auth:       auth,
+		timeout:    timeout,
 		httpClient: &http.Client{Timeout: timeout, CheckRedirect: peeraddr.RefuseRedirects},
 	}
 }
@@ -173,7 +179,9 @@ func (c *SchedulerRPCClient) AllowLoopbackForTesting() *SchedulerRPCClient {
 // caller (ClusterExecutor) logs and drops it rather than retrying inline,
 // relying on the scan loop's at-least-once redispatch.
 func (c *SchedulerRPCClient) ExecuteScheduledTask(ctx context.Context, target, addr string, task spi.ScheduledTask) error {
-	if err := peeraddr.Validate(addr, c.allowLoopback); err != nil {
+	lookupCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	if err := peeraddr.Validate(lookupCtx, addr, c.allowLoopback); err != nil {
 		return err
 	}
 

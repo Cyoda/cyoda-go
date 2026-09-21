@@ -6,6 +6,7 @@
 package peeraddr
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -40,9 +41,18 @@ func RefuseRedirects(_ *http.Request, _ []*http.Request) error { return ErrRedir
 // answer must pass.
 //
 // This guards against the SSRF vector where an attacker who can write to the
-// cluster registry pivots HMAC-authenticated dispatch or callback-proxy
-// requests to an internal service (Postgres on 127.0.0.1, cloud metadata at
+// cluster registry pivots authenticated dispatch or callback-proxy requests to
+// an internal service (Postgres on 127.0.0.1, cloud metadata at
 // 169.254.169.254, etc.).
+//
+// The name lookup runs under ctx, which is the caller's own bound on the whole
+// operation — for a hand-over, the connect timeout inside the callout's
+// deadline. Without it a resolver that is slow or down blocks the caller for
+// the resolver's own timeout, once per peer, with the transaction open and the
+// callout's time already counted against it. A lookup the context ends is a
+// refusal like any other: nothing about the address was established, so the
+// address is not dialled. A literal needs no resolver and is judged whatever
+// the context says.
 //
 // DNS resolution at validation time is a best-effort defence; a full defence
 // against DNS rebinding would also pin the resolved IP on the dialer. That is
@@ -51,7 +61,7 @@ func RefuseRedirects(_ *http.Request, _ []*http.Request) error { return ErrRedir
 // When allowLoopback is true, 127.0.0.0/8 and ::1 are permitted so test
 // harnesses that bind cluster nodes on 127.0.0.1 can still forward. Link-local,
 // unspecified, and multicast remain rejected even with the flag set.
-func Validate(raw string, allowLoopback bool) error {
+func Validate(ctx context.Context, raw string, allowLoopback bool) error {
 	hostPort := raw
 	if strings.Contains(raw, "://") {
 		u, err := url.Parse(raw)
@@ -82,16 +92,19 @@ func Validate(raw string, allowLoopback bool) error {
 		return nil
 	}
 
-	ips, err := net.LookupIP(host)
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return fmt.Errorf("%w: resolve %q: %v", ErrForbiddenPeerAddress, host, err)
+		// %w twice: callers test the guard's sentinel, and a caller that wants
+		// to know the lookup was abandoned rather than answered tests the
+		// context's own error.
+		return fmt.Errorf("%w: resolve %q: %w", ErrForbiddenPeerAddress, host, err)
 	}
 	if len(ips) == 0 {
 		return fmt.Errorf("%w: %q resolved to no addresses", ErrForbiddenPeerAddress, host)
 	}
 	for _, ip := range ips {
-		if err := checkIP(ip, allowLoopback); err != nil {
-			return fmt.Errorf("%w: %q resolved to %s (%v)", ErrForbiddenPeerAddress, host, ip, err)
+		if err := checkIP(ip.IP, allowLoopback); err != nil {
+			return fmt.Errorf("%w: %q resolved to %s (%v)", ErrForbiddenPeerAddress, host, ip.IP, err)
 		}
 	}
 	return nil

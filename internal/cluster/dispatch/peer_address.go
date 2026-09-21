@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/peeraddr"
@@ -12,9 +13,10 @@ import (
 var ErrForbiddenPeerAddress = peeraddr.ErrForbiddenPeerAddress
 
 // validatePeerAddress delegates to the shared peeraddr guard. See
-// peeraddr.Validate for the full contract and commentary.
-func validatePeerAddress(raw string, allowLoopback bool) error {
-	return peeraddr.Validate(raw, allowLoopback)
+// peeraddr.Validate for the full contract and commentary; ctx bounds the name
+// lookup a hostname address needs.
+func validatePeerAddress(ctx context.Context, raw string, allowLoopback bool) error {
+	return peeraddr.Validate(ctx, raw, allowLoopback)
 }
 
 // refuseRedirects delegates to the shared guard. See peeraddr.RefuseRedirects:

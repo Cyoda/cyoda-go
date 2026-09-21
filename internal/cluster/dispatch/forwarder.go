@@ -63,9 +63,13 @@ func isDialError(err error) bool {
 // a shared secret, tomorrow potentially an mTLS variant — owns signing and
 // verification; the forwarder itself is transport plumbing.
 type HTTPForwarder struct {
-	auth          PeerAuth
-	client        *http.Client
-	allowLoopback bool
+	auth PeerAuth
+	// connectTimeout bounds opening the connection on the dialer, and the name
+	// lookup that precedes it: a resolver that is slow or down must not hold
+	// the owner's goroutine past what dialling the same peer would cost.
+	connectTimeout time.Duration
+	client         *http.Client
+	allowLoopback  bool
 }
 
 // NewHTTPForwarder constructs an HTTPForwarder. connectTimeout bounds opening
@@ -76,7 +80,8 @@ type HTTPForwarder struct {
 func NewHTTPForwarder(auth PeerAuth, connectTimeout time.Duration) *HTTPForwarder {
 	dialer := &net.Dialer{Timeout: connectTimeout}
 	return &HTTPForwarder{
-		auth: auth,
+		auth:           auth,
+		connectTimeout: connectTimeout,
 		client: &http.Client{
 			// No Timeout: a hand-over may rightly take several answer limits.
 			CheckRedirect: refuseRedirects,
@@ -113,7 +118,11 @@ func (f *HTTPForwarder) AllowLoopbackForTesting() *HTTPForwarder {
 // ForwardCallout POSTs a callout dispatch request to the peer at addr, sealed
 // for peerNodeID, and returns the response.
 func (f *HTTPForwarder) ForwardCallout(ctx context.Context, peerNodeID, addr string, req DispatchCalloutRequest) (*DispatchCalloutResponse, error) {
-	if err := validatePeerAddress(addr, f.allowLoopback); err != nil {
+	// The lookup a hostname address needs is bounded like the connection it
+	// precedes, and never outlives the hand-over's own deadline.
+	lookupCtx, cancel := context.WithTimeout(ctx, f.connectTimeout)
+	defer cancel()
+	if err := validatePeerAddress(lookupCtx, addr, f.allowLoopback); err != nil {
 		// A property of this one peer, not of the callout: nothing was sent,
 		// and another peer may still take the work.
 		return nil, stageErr(StageNotConnected, err)

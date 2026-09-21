@@ -14,7 +14,7 @@ import (
 // the cluster forwarder. Registry entries are trusted by default, but if
 // an attacker can influence them (e.g. via a rogue node join, a config
 // mistake, or a compromise of a peer) the forwarder must not proxy
-// HMAC-signed requests to loopback or link-local addresses — doing so
+// sealed requests to loopback or link-local addresses — doing so
 // would let that attacker reach in-process databases, cloud metadata
 // endpoints, or other services bound on 127.0.0.1.
 //
