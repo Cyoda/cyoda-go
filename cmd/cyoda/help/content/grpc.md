@@ -134,8 +134,7 @@ message CloudEvent {
   "id": "<uuid for this ack message>",
   "sourceEventId": "<id of the server event being acknowledged>",
   "success": true,
-  "warnings": [],
-  "error": null
+  "warnings": []
 }
 ```
 
@@ -271,16 +270,26 @@ Client responds with `EntityProcessorCalculationResponse`:
 
 ```json
 {
+  "id": "<a new event id>",
   "requestId": "<same requestId>",
+  "entityId": "<entityUUID>",
   "success": true,
   "payload": {
     "type": "JSON",
     "data": {<optionally updated entity JSON body>}
   },
-  "warnings": [],
-  "error": null
+  "warnings": []
 }
 ```
+
+Every calculation response carries three identifying fields, all three required
+by the published schema: its own `id` — the response event's identity, not the
+request's, and what `BaseEvent` requires of every event — plus the `requestId`
+that correlates it with the request and the `entityId` it answers about.
+`error` is sent only on a failure: it is declared an object, so an explicit
+`"error": null` is not a valid response. The server is more forgiving than the
+schema on all four counts, but an answer built to the published tree validates
+against it.
 
 `success` is optional and defaults to `true`, as the published schema says: a
 response that leaves the key out has reported success. A member reporting a
@@ -297,10 +306,11 @@ read at all and is refused (`400 WORKFLOW_FAILED`, not retryable). Nothing else
 in it is read either — not its `payload`, not a criterion's `matches`, not even
 its `warnings`. A member that means success must omit the key or send `true`.
 
-The smallest successful answer is `{"requestId": "<same requestId>"}`: it says
-the processor ran, changed nothing, and the workflow should carry on. There is
-no shape that means "I did nothing and something is wrong" — that is
-`success: false`.
+The smallest successful answer is
+`{"id": "<a new event id>", "requestId": "<same requestId>", "entityId": "<entityUUID>"}`
+— the three identifying fields and nothing else: it says the processor ran,
+changed nothing, and the workflow should carry on. There is no shape that means
+"I did nothing and something is wrong" — that is `success: false`.
 
 When `success=false`, no other member is tried. The client's operation fails with `400 WORKFLOW_FAILED` carrying `error.message`, and `error.retryable: true` is passed on as the client's `retryable: true` — it tells the client that running the whole operation again may succeed; it does not make the server try another member. (An `ASYNC_NEW_TX` processor is the exception: its failure is logged and the operation continues.) When `payload.data` is non-null, the engine replaces the entity's data with the returned value before continuing the workflow; when `payload` is absent, or its `data` is null, the entity is left as it was and the transition continues.
 
@@ -330,11 +340,12 @@ Client responds with `EntityCriteriaCalculationResponse`:
 
 ```json
 {
+  "id": "<a new event id>",
   "requestId": "<same requestId>",
+  "entityId": "<entityUUID>",
   "success": true,
   "matches": true,
-  "warnings": [],
-  "error": null
+  "warnings": []
 }
 ```
 
@@ -390,12 +401,13 @@ Response replaces criteria's `matches`/`reason` with `result` (an arbitrary JSON
 
 ```json
 {
+  "id": "<a new event id>",
   "requestId": "<same requestId>",
+  "entityId": "<entityUUID>",
   "success": true,
   "result": {"fireAt": 1},
   "resultKind": "Schedule",
-  "warnings": [],
-  "error": null
+  "warnings": []
 }
 ```
 

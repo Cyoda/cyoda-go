@@ -30,6 +30,27 @@ type, nothing applied `BaseEvent`'s `required` list, and nothing checked the
 The composition now decides those three things. Nothing else in the documents
 moved.
 
+## What the tightening reaches
+
+This is not an abstract statement about composition: it binds the three
+calculation responses a compute member sends, and every other schema in the 47.
+Concretely, against the published tree a response must now carry its own `id`
+(`BaseEvent`'s `required`), must type `success` as a boolean, and must send
+`error` as an object or not at all — an explicit `"error": null` no longer
+validates. Alongside `id`, the three calculation responses have always required
+`requestId` and `entityId` in their own right; what changes is that `id` joins
+them, and that the other two checks now run at all.
+
+**Payloads that were accepted before are still accepted.** Nothing validates
+against the tree at run time, and the generated types already required `id` and
+typed `success`, so a member whose answers work today keeps working. What
+changes is that a member *validating* its answers against the published schema
+— which is the point of publishing it — now gets those checks, and shapes that
+passed a validator only because the composition was ignored will be flagged.
+cyoda-go's own published examples were among them: `cyoda help grpc` showed
+calculation responses without `id` and with `"error": null`, and they have been
+corrected in the same change.
+
 ## What did not change
 
 Nothing at runtime validates a payload against this tree — cyoda-go decodes in

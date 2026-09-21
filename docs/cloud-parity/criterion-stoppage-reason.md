@@ -13,7 +13,9 @@ alongside `matches: false`:
 
 ```jsonc
 {
+  "id": "<a new event id>",
   "requestId": "<requestId>",
+  "entityId": "<entityUUID>",
   "success": true,
   "matches": false,
   "reason": "credit score 540 below threshold 600"

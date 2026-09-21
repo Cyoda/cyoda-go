@@ -427,9 +427,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `success: false` explicitly** — an empty or partial response is not a failure
   report, and neither is an `error` object on its own: a response carrying an
   `error` and no `success: false` succeeds, and its message reaches nobody.
-  What this widens, plainly: a processor answering `{"requestId": "…"}` and
-  nothing else now succeeds, leaves the entity as it was and lets the transition
-  continue, where before it ended the operation. A member whose framework emits
+  What this widens, plainly: a processor answering
+  `{"id": "…", "requestId": "…", "entityId": "…"}` — the three identifying
+  fields the published schema requires, and nothing else — now succeeds, leaves
+  the entity as it was and lets the transition continue, where before it ended
+  the operation. A member whose framework emits
   a bare or truncated response on a crash therefore no longer fails the
   operation by accident — it must report the failure itself. The default fills
   in the flag, never a verdict, so what actually decides something is unchanged:
@@ -747,7 +749,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   generator already inlined the base's fields and required list (it now keys
   that off `allOf`). This is the published contract catching up with what the
   code already did. Anyone validating a compute member's answer against the
-  tree gets the checks the composition always implied. Cyoda Cloud's copy of
+  tree gets the checks the composition always implied: a calculation response
+  owes its own `id`, and sends `error` as an object or not at all. Payloads the
+  server accepted before are still accepted — but `cyoda help grpc` showed
+  response examples without an `id` and with an explicit `"error": null`, which
+  would not have validated, and those are corrected here. Cyoda Cloud's copy of
   the tree still uses the old keyword, so the two are not byte-identical until
   it follows; see `docs/cloud-parity/event-schema-composition.md`.
 
