@@ -657,6 +657,11 @@ type cnodeReply struct {
 	message    string         // replyFail
 	retryable  *bool          // replyFail: the cnode's verdict; nil = none given
 	noSuccess  bool           // replyOK: leave the `success` key off the wire entirely
+	// nullSuccess puts `"success": null` on the wire: present, and neither the
+	// schema's default nor a boolean. The reply is assembled as a map for this
+	// reason — the generated events.*Json types declare `success` a bool and
+	// cannot express it.
+	nullSuccess bool // replyOK
 }
 
 // answerOK answers success: a processor leaves the entity unchanged, a
@@ -673,6 +678,14 @@ func answerResult(resultKind string, result map[string]any) cnodeReply {
 // optional with the default `true`.
 func answerDataNoSuccessKey(data map[string]any) cnodeReply {
 	return cnodeReply{kind: replyOK, data: data, noSuccess: true}
+}
+
+// answerMatchesNullSuccess answers a criterion with a verdict and an explicit
+// `"success": null` — the shape the default does not cover, null being no
+// boolean. The verdict is put on the wire precisely so that a server reading
+// it can be caught doing so.
+func answerMatchesNullSuccess(m bool) cnodeReply {
+	return cnodeReply{kind: replyOK, matches: m, nullSuccess: true}
 }
 
 // answerFail answers success=false with no verdict on retrying.
@@ -731,8 +744,11 @@ func (r cnodeReply) cloudEvent(req calcRequest) (*cepb.CloudEvent, error) {
 			body["payload"] = map[string]any{"data": r.data}
 		}
 	}
-	if r.noSuccess {
+	switch {
+	case r.noSuccess:
 		delete(body, "success")
+	case r.nullSuccess:
+		body["success"] = nil
 	}
 	return internalgrpc.NewCloudEvent(respType, body)
 }

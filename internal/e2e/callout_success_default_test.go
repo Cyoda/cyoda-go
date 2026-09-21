@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -9,6 +10,10 @@ import (
 // with the default `true` (docs/cyoda/schema/common/BaseEvent.json). A member
 // that omits it has answered success, and the operation behind the callout
 // completes — the published schema and the running server agree.
+//
+// The default belongs to an absent key alone: an explicit `"success": null` is
+// not a boolean, and the operation behind such an answer fails rather than
+// reading a verdict out of it.
 
 // TestCalloutOmittedSuccess_ProcessorSucceeds: a processor answers with the
 // entity's new data and no `success` key. The transition runs, the data is
@@ -35,5 +40,35 @@ func TestCalloutOmittedSuccess_ProcessorSucceeds(t *testing.T) {
 	}
 	if state, st := h.GetEntityState(t, id); state != "DONE" {
 		t.Errorf("state = %q (GET %d); want DONE", state, st)
+	}
+}
+
+// TestCalloutNullSuccess_CriterionIsUnreadable: a criterion answers
+// `{"success":null,"matches":true}`. The verdict is there to be read and
+// reading it would let a member whose answer says nothing about success decide
+// a transition — so the running server refuses the whole answer instead: 400
+// WORKFLOW_FAILED naming the unreadable key, not retryable, no entity
+// committed, and no second try, the refusal being one another member would
+// answer no better.
+func TestCalloutNullSuccess_CriterionIsUnreadable(t *testing.T) {
+	h := newCalloutHarness(t, nil)
+	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
+	model, wf, crit, tag := "nullsuccess-"+sfx, "nullsuccess-wf-"+sfx, "nullsuccess-crit-"+sfx, "nullsuccess-tag-"+sfx
+
+	cn := h.AttachCnode(t, cnodeSpec{name: "nullsuccess", tags: []string{tag},
+		script: scriptAlways(answerMatchesNullSuccess(true))})
+	h.SetupModelWithWorkflow(t, model, criterionWorkflowJSON(wf, crit,
+		map[string]any{"calculationNodesTags": tag, "responseTimeoutMs": 2000}))
+
+	_, status, body := h.CreateEntity(t, model, 1, workflowSampleModel)
+	pd := assertProblem(t, status, body, http.StatusBadRequest, "WORKFLOW_FAILED", false)
+	if !strings.Contains(pd.Detail, "success was null") {
+		t.Errorf("detail = %q; want it to name the key that could not be read", pd.Detail)
+	}
+	if n := h.countEntities(t, model); n != 0 {
+		t.Errorf("%d entities committed; want none: the verdict was not read and the transition did not run", n)
+	}
+	if got := cn.Received(); len(got) != 1 {
+		t.Errorf("the member received %d callouts; want 1: an unreadable answer is not tried again", len(got))
 	}
 }
