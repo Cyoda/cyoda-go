@@ -103,8 +103,13 @@ const defaultMaxStateVisits = 10
 
 // maxCriterionReasonLen bounds the criterion reason stored in the audit and
 // reflected into the 400 body. The reason is compute-node-supplied and the
-// audit is durable storage, so it is capped defensively.
-const maxCriterionReasonLen = 2048
+// audit is durable storage, so it is capped defensively — but the bound
+// expected to bite is the member-side one (internal/grpc's
+// MaxCriterionReasonRunes, 2048 runes, marked with "…"), applied upstream of
+// this. 8195 is that bound's worst case in bytes — 2048 runes at up to 4
+// bytes each plus the 3-byte ellipsis — so this cap cannot silently cut a
+// second time, unmarked, for text made of multi-byte runes.
+const maxCriterionReasonLen = 8195
 
 // defaultCriterionReason is recorded when a criterion returns false without an
 // explanatory reason (inline predicates, or a FUNCTION criterion that supplies

@@ -346,6 +346,31 @@ func boundMemberText(s string) string {
 	return string(r[:maxMemberMessageRunes]) + "…"
 }
 
+// MaxCriterionReasonRunes bounds a criterion's reason alone, wider than
+// maxMemberMessageRunes. The reason is not a diagnostic: it is the business
+// explanation a criterion gives for refusing a transition, and it reaches a
+// 400 body and the state-machine audit trail (internal/domain/workflow's
+// capReason, applied after this bound), so it keeps the allowance it had
+// before it was swept into the general member-text bound. Exported so the
+// cross-node relay (internal/cluster/dispatch/peer_router.go) can be pinned
+// to the same value — a reason relayed from a peer must not be cut shorter
+// than one answered locally.
+const MaxCriterionReasonRunes = 2048
+
+// boundCriterionReason keeps the first MaxCriterionReasonRunes runes of s,
+// appending "…" when anything was cut — the same marking boundMemberText
+// uses, at the reason's own wider allowance.
+func boundCriterionReason(s string) string {
+	if len(s) <= MaxCriterionReasonRunes {
+		return s // runes never outnumber bytes: nothing to cut
+	}
+	r := []rune(s)
+	if len(r) <= MaxCriterionReasonRunes {
+		return s
+	}
+	return string(r[:MaxCriterionReasonRunes]) + "…"
+}
+
 // applyProcessorResponse extracts updated entity data from the response payload.
 func applyProcessorResponse(entity *spi.Entity, resp *ProcessingResponse) (*spi.Entity, error) {
 	if resp.Payload == nil {

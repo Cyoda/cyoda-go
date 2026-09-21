@@ -66,9 +66,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   now agree. A compute member that relied on omitting the field must send it, and
   the published schema tree (`cyoda help cloudevents json`) states the
   requirement, so a generated SDK carries it.
-  The member's `reason` is also kept to its first 512 characters, marked with
-  `…` when cut, where it used to reach the client and the audit trail at up to
-  2 KiB. See `cyoda help grpc` and `docs/cloud-parity/callout-failover.md`.
+  The member's `reason` is kept to its first 2048 characters, marked with `…`
+  when cut — its own wider allowance, unlike every other piece of a member's
+  free text, since the reason is the criterion's business explanation for
+  refusing a transition rather than a diagnostic. See `cyoda help grpc` and
+  `docs/cloud-parity/callout-failover.md`.
 
 - **A callout with no compute member waits before it fails, on a single node
   too.** `CYODA_DISPATCH_WAIT_TIMEOUT` (default `5s`) was a cluster-only poll;

@@ -227,9 +227,12 @@ func NewCriteriaCallout(tenantID spi.TenantID, entity *spi.Entity, criterion jso
 				return CalloutResult{}, noCriterionVerdictError{}
 			}
 			// The reason is the member's own free text and reaches a 400 body
-			// and the audit trail, so it is bounded where the member speaks
-			// it, like a failure message and a warning.
-			return CalloutResult{Matches: *resp.Matches, Reason: boundMemberText(resp.Reason)}, nil
+			// and the audit trail, but it is the business explanation a
+			// criterion gives for refusing a transition rather than a
+			// diagnostic, so it keeps its own wider allowance
+			// (MaxCriterionReasonRunes) instead of the bound a failure
+			// message and a warning get.
+			return CalloutResult{Matches: *resp.Matches, Reason: boundCriterionReason(resp.Reason)}, nil
 		},
 	}, nil
 }

@@ -101,13 +101,16 @@ func TestDispatchCriteria_MissingMatchesIsUnreadable(t *testing.T) {
 	}
 }
 
-// A criterion's reason is the member's own free text and reaches a 400 body and
-// the audit trail, so it is bounded where the member speaks it — the same bound
-// a MemberFailed message and a warning get.
+// A criterion's reason is the member's own free text and reaches a 400 body
+// and the audit trail, so it is bounded where the member speaks it — but the
+// reason is not a diagnostic, it is the business explanation a criterion gives
+// for refusing a transition, so it keeps its own wider allowance
+// (MaxCriterionReasonRunes) instead of the general member-text bound a
+// MemberFailed message and a warning get.
 func TestDispatchCriteria_ReasonIsBounded(t *testing.T) {
 	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
 	matchesFalse := false
-	long := strings.Repeat("é", maxMemberMessageRunes+50)
+	long := strings.Repeat("é", MaxCriterionReasonRunes+50)
 	replyOnce(t, registry, memberID, sentCh, &ProcessingResponse{Success: true, Matches: &matchesFalse, Reason: long})
 
 	_, reason, err := dispatchCriteria(dispatcher, testContext(), testEntity(),
@@ -115,8 +118,8 @@ func TestDispatchCriteria_ReasonIsBounded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if n := utf8.RuneCountInString(reason); n != maxMemberMessageRunes+1 {
-		t.Errorf("reason is %d runes; want %d (%d kept plus the ellipsis)", n, maxMemberMessageRunes+1, maxMemberMessageRunes)
+	if n := utf8.RuneCountInString(reason); n != MaxCriterionReasonRunes+1 {
+		t.Errorf("reason is %d runes; want %d (%d kept plus the ellipsis)", n, MaxCriterionReasonRunes+1, MaxCriterionReasonRunes)
 	}
 	if !strings.HasSuffix(reason, "…") {
 		t.Error("reason does not end in an ellipsis, so a reader cannot tell a shortened reason from a short one")

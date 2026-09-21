@@ -324,9 +324,11 @@ an answer that could not be read (`400 WORKFLOW_FAILED`, not retryable) and no
 other compute member is tried.
 
 On `matches: false`, the response may also carry a `reason` string explaining
-why the criterion blocked the passage. The member's own text is kept to its
-first 512 characters, marked with `…` when it was cut, and the stored or
-reflected reason is capped at 2 KiB overall. It surfaces in two
+why the criterion blocked the passage. The reason is the criterion's own
+business explanation, not a diagnostic, so it keeps a wider allowance than the
+rest of a member's free text: it is kept to its first 2048 characters, marked
+with `…` when it was cut, and the stored or reflected reason is capped well
+above that so this second cap is never what bites. It surfaces in two
 places: the manual-transition `400 WORKFLOW_FAILED` body
 (`detail: transition "<name>" criterion not matched: <reason>` — the
 guaranteed, backend-independent delivery for a manual rejection), and the

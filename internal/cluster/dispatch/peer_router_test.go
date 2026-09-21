@@ -330,14 +330,15 @@ func TestHandOver_BoundsThePeersRelayedMemberMessage(t *testing.T) {
 	}
 }
 
-// A criterion's reason and a function's resultKind are the answering node's
-// free text too: a criterion's reason reaches the client where a transition is
-// refused, and a resultKind reaches the error the engine raises for a result it
-// cannot use. Both are bounded like every other text a peer writes — one node
-// does not decide how much of another's diagnostics, or of a client's message,
-// a single answer may carry.
-func TestHandOver_BoundsTheCriterionReasonAndTheResultKind(t *testing.T) {
-	long := strings.Repeat("é", maxPeerDiagnosticRunes+10)
+// A criterion's reason is the answering node's free text too, but it is the
+// business explanation a criterion gives for refusing a transition rather than
+// a diagnostic, so the relay keeps it at the same wider allowance a locally
+// answered reason gets (internalgrpc.MaxCriterionReasonRunes) instead of the
+// general diagnostic bound — a relayed reason cut shorter than a local one
+// would be exactly the backend-divergence-shaped defect this tree treats as a
+// bug, in the cluster dimension.
+func TestHandOver_BoundsTheCriterionReason(t *testing.T) {
+	long := strings.Repeat("é", maxPeerCriterionReasonRunes+10)
 	yes := true
 
 	criteria := &answeringForwarder{resp: &DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1), Matches: &yes, Reason: long}}
@@ -345,9 +346,18 @@ func TestHandOver_BoundsTheCriterionReasonAndTheResultKind(t *testing.T) {
 	if a.Result == nil {
 		t.Fatalf("answer = %+v, want the criterion's verdict", a)
 	}
-	if got := []rune(a.Result.Reason); len(got) != maxPeerDiagnosticRunes+1 || got[len(got)-1] != '…' {
+	if got := []rune(a.Result.Reason); len(got) != maxPeerCriterionReasonRunes+1 || got[len(got)-1] != '…' {
 		t.Errorf("the criterion's reason was not cut with a mark: %d runes", len(got))
 	}
+}
+
+// A function's resultKind is the answering node's free text too: it reaches
+// the error the engine raises for a result it cannot use, and — unlike the
+// criterion's reason — it is bounded like every other piece of a peer's
+// diagnostics; one node does not decide how much of another's diagnostics, or
+// of a client's message, a single answer may carry.
+func TestHandOver_BoundsTheResultKind(t *testing.T) {
+	long := strings.Repeat("é", maxPeerDiagnosticRunes+10)
 
 	function := &answeringForwarder{resp: &DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1), ResultKind: long, Result: []byte(`{}`)}}
 	f := newTestRouter(t, &stubNodeRegistry{}, function).HandOver(testContext(), node("peer-1", true, "tenant-1", "python"), ownerCallout(t, "function"), 1, 1)
@@ -356,6 +366,17 @@ func TestHandOver_BoundsTheCriterionReasonAndTheResultKind(t *testing.T) {
 	}
 	if got := []rune(f.Result.Function.Kind); len(got) != maxPeerDiagnosticRunes+1 || got[len(got)-1] != '…' {
 		t.Errorf("the function's resultKind was not cut with a mark: %d runes", len(got))
+	}
+}
+
+// The relay bound and the member bound must never drift apart: a criterion's
+// reason answered locally and one relayed from a peer must be cut at the same
+// length, or a client's read of a rejected transition would depend on which
+// node happened to run the callout.
+func TestCriterionReasonBound_AgreesWithTheMemberBound(t *testing.T) {
+	if maxPeerCriterionReasonRunes != internalgrpc.MaxCriterionReasonRunes {
+		t.Errorf("maxPeerCriterionReasonRunes = %d, internalgrpc.MaxCriterionReasonRunes = %d; the relay and member bounds must agree",
+			maxPeerCriterionReasonRunes, internalgrpc.MaxCriterionReasonRunes)
 	}
 }
 
