@@ -3,9 +3,11 @@
   "$id": "https://cyoda.com/cloud/event/processing/CalculationMemberJoinEvent.json",
   "title": "CalculationMemberJoinEvent",
   "type": "object",
-  "extends": {
-    "$ref": "../common/BaseEvent.json"
-  },
+  "allOf": [
+    {
+      "$ref": "../common/BaseEvent.json"
+    }
+  ],
   "properties": {
     "tags": {
       "type": "array",

@@ -3,6 +3,8 @@ package cyodaschemas
 import (
 	"bytes"
 	"encoding/json"
+	"io/fs"
+	"path"
 	"strings"
 	"testing"
 
@@ -21,6 +23,52 @@ func readSchema(t *testing.T, path string) map[string]any {
 		t.Fatalf("%s is not valid JSON: %v", path, err)
 	}
 	return obj
+}
+
+// schemaPaths lists every embedded schema, by its path within the tree.
+func schemaPaths(t *testing.T) []string {
+	t.Helper()
+	var out []string
+	err := fs.WalkDir(FS, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && path.Ext(p) == ".json" {
+			out = append(out, p)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk the schema tree: %v", err)
+	}
+	return out
+}
+
+// compileSchema compiles one schema with the whole tree available to it, each
+// document registered under the `$id` its siblings reference it by. A schema
+// that composes with `$ref` says nothing until the reference resolves, so a
+// validator-backed test has to be given the tree, not the one file.
+func compileSchema(t *testing.T, target string) *jsonschema.Schema {
+	t.Helper()
+	compiler := jsonschema.NewCompiler()
+	for _, p := range schemaPaths(t) {
+		raw, err := FS.ReadFile(p)
+		if err != nil {
+			t.Fatalf("read %s: %v", p, err)
+		}
+		doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+		if err != nil {
+			t.Fatalf("%s is not valid JSON: %v", p, err)
+		}
+		if err := compiler.AddResource(BaseID+p, doc); err != nil {
+			t.Fatalf("AddResource %s: %v", p, err)
+		}
+	}
+	schema, err := compiler.Compile(BaseID + target)
+	if err != nil {
+		t.Fatalf("compile %s: %v", target, err)
+	}
+	return schema
 }
 
 // The criteria response's `matches` is the verdict on a criterion, and a
@@ -92,27 +140,12 @@ func TestCriteriaResponse_MatchesRequiredOnSuccess(t *testing.T) {
 // against it, actually get. The structural test says how the clause is
 // written; this says what it decides.
 func TestCriteriaResponse_MatchesRequiredValidation(t *testing.T) {
-	const path = "processing/EntityCriteriaCalculationResponse.json"
-	raw, err := FS.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
-	if err != nil {
-		t.Fatalf("%s is not valid JSON: %v", path, err)
-	}
-	compiler := jsonschema.NewCompiler()
-	if err := compiler.AddResource(path, doc); err != nil {
-		t.Fatalf("AddResource: %v", err)
-	}
-	schema, err := compiler.Compile(path)
-	if err != nil {
-		t.Fatalf("compile %s: %v", path, err)
-	}
+	schema := compileSchema(t, "processing/EntityCriteriaCalculationResponse.json")
 
-	// Every instance carries the two unconditionally required fields, so what
-	// each case turns on is the verdict clause alone.
-	const ids = `"requestId":"r-1","entityId":"1b4e28ba-2fa1-11d2-883f-0016d3cca427"`
+	// Every instance carries the unconditionally required fields — the two of
+	// the response itself and BaseEvent's `id` — so what each case turns on is
+	// the verdict clause alone.
+	const ids = `"id":"e-1","requestId":"r-1","entityId":"1b4e28ba-2fa1-11d2-883f-0016d3cca427"`
 	for name, tc := range map[string]struct {
 		instance string
 		want     bool
@@ -136,6 +169,84 @@ func TestCriteriaResponse_MatchesRequiredValidation(t *testing.T) {
 			}
 			if !tc.want && err == nil {
 				t.Errorf("%s validates; a response that is not an explicit failure owes a verdict", tc.instance)
+			}
+		})
+	}
+}
+
+// The tree composes with `allOf`, the keyword its declared dialect reads.
+// `extends` is draft-03: under 2020-12 it is an unrecognised keyword, so a
+// document composing with it is valid and asserts nothing — the composition
+// looks present and decides nothing.
+func TestSchemaTree_ComposesWithAllOf(t *testing.T) {
+	composing := 0
+	for _, p := range schemaPaths(t) {
+		schema := readSchema(t, p)
+		if _, ok := schema["extends"]; ok {
+			t.Errorf("%s composes with `extends`, a draft-03 keyword the declared dialect ignores", p)
+		}
+		list, ok := schema["allOf"].([]any)
+		if !ok {
+			continue
+		}
+		composing++
+		if len(list) == 0 {
+			t.Errorf("%s has an empty `allOf`", p)
+		}
+		for i, e := range list {
+			member, ok := e.(map[string]any)
+			if !ok {
+				t.Errorf("%s allOf[%d] is not a schema object", p, i)
+				continue
+			}
+			if _, ok := member["$ref"].(string); !ok {
+				t.Errorf("%s allOf[%d] carries no `$ref`", p, i)
+			}
+		}
+	}
+	if composing == 0 {
+		t.Error("no schema in the tree composes at all; the event schemas extend BaseEvent")
+	}
+}
+
+// What the composition decides, read by a validator. Each case was accepted
+// before the keyword swap, because an ignored `extends` asserts nothing about
+// the base: nothing checked `success`'s declared type, nothing applied
+// BaseEvent's `required`, and nothing checked the `error` object's shape. Each
+// case pairs the refused instance with the accepted one it differs from in a
+// single field, so what refuses it is the composition and not some other
+// clause of the response's own schema.
+func TestResponse_ComposesWithBaseEvent(t *testing.T) {
+	schema := compileSchema(t, "processing/EntityCriteriaCalculationResponse.json")
+
+	const ids = `"requestId":"r-1","entityId":"1b4e28ba-2fa1-11d2-883f-0016d3cca427"`
+	for name, tc := range map[string]struct {
+		instance string
+		want     bool
+	}{
+		// BaseEvent declares `success` boolean.
+		"success is a string":  {`{"id":"e-1",` + ids + `,"success":"yes","matches":true}`, false},
+		"success is a boolean": {`{"id":"e-1",` + ids + `,"success":true,"matches":true}`, true},
+
+		// BaseEvent's `required` applies to the composed response.
+		"no id": {`{` + ids + `,"matches":true}`, false},
+		"an id": {`{"id":"e-1",` + ids + `,"matches":true}`, true},
+
+		// BaseEvent declares the `error` object's own required fields.
+		"an error missing its message": {`{"id":"e-1",` + ids + `,"success":false,"error":{"code":"E"}}`, false},
+		"a whole error":                {`{"id":"e-1",` + ids + `,"success":false,"error":{"code":"E","message":"boom"}}`, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			inst, err := jsonschema.UnmarshalJSON(strings.NewReader(tc.instance))
+			if err != nil {
+				t.Fatalf("instance is not valid JSON: %v", err)
+			}
+			err = schema.Validate(inst)
+			if tc.want && err != nil {
+				t.Errorf("%s is refused: %v", tc.instance, err)
+			}
+			if !tc.want && err == nil {
+				t.Errorf("%s validates; the response composes with BaseEvent, which says otherwise", tc.instance)
 			}
 		})
 	}

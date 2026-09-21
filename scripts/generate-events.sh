@@ -46,9 +46,9 @@ for f in glob.glob(os.path.join(CLEAN, '**', '*.json'), recursive=True):
             fh.write(content)
         continue
 
-    extends = schema.get('extends', {})
-    ref = extends.get('\$ref', '') if isinstance(extends, dict) else ''
-    if 'BaseEvent.json' in ref:
+    composed = schema.get('allOf', [])
+    refs = [m.get('\$ref', '') for m in composed if isinstance(m, dict)]
+    if any('BaseEvent.json' in r for r in refs):
         # Merge BaseEvent properties into this schema.
         props = schema.get('properties', {})
         for k, v in base_props.items():
@@ -63,8 +63,8 @@ for f in glob.glob(os.path.join(CLEAN, '**', '*.json'), recursive=True):
                 req.append(r_field)
         schema['required'] = req
 
-        # Remove the extends field (not standard JSON Schema).
-        del schema['extends']
+        # Drop the composition: the base's fields are now inlined above.
+        del schema['allOf']
 
         content = json.dumps(schema, indent=2)
 

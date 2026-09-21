@@ -3,9 +3,11 @@
   "$id": "https://cyoda.com/cloud/event/entity/EntityDeleteRequest.json",
   "title": "EntityDeleteRequest",
   "type": "object",
-  "extends": {
-    "$ref": "../common/BaseEvent.json"
-  },
+  "allOf": [
+    {
+      "$ref": "../common/BaseEvent.json"
+    }
+  ],
   "properties": {
     "entityId": {
       "type": "string",
