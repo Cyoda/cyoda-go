@@ -30,7 +30,6 @@ config.cluster — multi-node clustering, gossip, and cross-node dispatch env va
 - `CYODA_CALLOUT_HANDOVER_ALLOWANCE` (duration, default: `30s`) — what the owning node allows a hand-over on top of `tries left × answer limit`, and the last term of a callout's overall deadline (`tries × answer limit + CYODA_DISPATCH_WAIT_TIMEOUT + this`; 155 s at the defaults). Must be `> 0`; startup fails otherwise.
 - `CYODA_CALLOUT_PASS_ALLOWANCE` (duration, default: `30s`) — how long the transaction token given to a compute member outlives its try's answer limit: the margin for routing a callback between nodes and for clocks that differ between them. Must be `> 0`; startup fails otherwise.
 - `CYODA_DISPATCH_FORWARD_TIMEOUT` (duration, default: `30s`) — whole-request timeout of the node-to-node call that delegates a scheduled transition to another node. It does not govern callout hand-overs. Must be `> 0`; startup fails otherwise.
-- `CYODA_TX_TOKEN_TTL` (duration, default: `90s`) — TTL of the signed transaction routing token minted on processor/criteria dispatch; must be ≥ `CYODA_DISPATCH_FORWARD_TIMEOUT` so the token remains valid through the full round-trip and callback verification, including the forwarded-chain case where two budgets stack.
 
 The tries and answer-limit settings for a callout are in `config grpc`.
 

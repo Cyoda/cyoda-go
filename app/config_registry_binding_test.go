@@ -120,7 +120,6 @@ func defaultFor(c app.Config) map[string]string {
 		"CYODA_DISPATCH_WAIT_TIMEOUT":    renderDuration(c.Cluster.DispatchWaitTimeout),
 		"CYODA_DISPATCH_CONNECT_TIMEOUT": renderDuration(c.Cluster.DispatchConnectTimeout),
 		"CYODA_DISPATCH_FORWARD_TIMEOUT": renderDuration(c.Cluster.DispatchForwardTimeout),
-		"CYODA_TX_TOKEN_TTL":             renderDuration(c.Cluster.TxTokenTTL),
 		"CYODA_KEEPALIVE_INTERVAL":       strconv.Itoa(c.GRPC.KeepAliveInterval),
 		"CYODA_KEEPALIVE_TIMEOUT":        strconv.Itoa(c.GRPC.KeepAliveTimeout),
 

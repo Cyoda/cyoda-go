@@ -80,7 +80,6 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_DISPATCH_FORWARD_TIMEOUT", Topic: "cluster", Type: "duration", Default: "30s", Description: "Whole-request timeout of the node-to-node call that delegates a scheduled transition. Does not govern callout hand-overs. Must be > 0; startup fails otherwise."},
 	{Name: "CYODA_CALLOUT_HANDOVER_ALLOWANCE", Topic: "cluster", Type: "duration", Default: "30s", Description: "What the owning node allows a callout hand-over on top of (tries left x answer limit); also the last term of a callout's overall deadline. Must be > 0; startup fails otherwise."},
 	{Name: "CYODA_CALLOUT_PASS_ALLOWANCE", Topic: "cluster", Type: "duration", Default: "30s", Description: "How long the transaction token given to a compute member outlives its try's answer limit — the margin for routing a callback and for clocks that differ between nodes. Must be > 0; startup fails otherwise."},
-	{Name: "CYODA_TX_TOKEN_TTL", Topic: "cluster", Type: "duration", Default: "1m30s", Description: "TTL of the signed transaction routing token minted on processor/criteria dispatch."},
 
 	// --- auth ---
 	{Name: "CYODA_IAM_MODE", Topic: "auth", Type: "string", Default: "mock", Description: "Authentication mode: mock or jwt."},

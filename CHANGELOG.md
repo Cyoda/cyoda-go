@@ -78,6 +78,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   exported from one deployment can be refused by another with a lower bound.
   See `docs/workflow-schema-versioning.md`.
 
+- **`CYODA_TX_TOKEN_TTL` is removed.** The transaction token given to a compute
+  member no longer has a fixed life: it is minted per try and lives for that
+  try's answer limit plus `CYODA_CALLOUT_PASS_ALLOWANCE` (default `30s`). The
+  variable is ignored if set; remove it from deployment configuration.
+
 ### Added
 
 - **`ENTITY_MODEL_MISMATCH` (`400`).** An entity's model reference — its

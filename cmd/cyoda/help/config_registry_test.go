@@ -3,6 +3,7 @@ package help
 import (
 	"bytes"
 	"encoding/json"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -162,6 +163,28 @@ func TestWriteConfigAllText_ShowsType(t *testing.T) {
 		}
 	}
 	t.Error("CYODA_HTTP_PORT row not found")
+}
+
+// TestRetiredSettings_Absent pins that a setting the server no longer reads
+// is gone from the registry and from the config help, so `cyoda help config`
+// does not advertise a knob that does nothing. (A retired name left in Go
+// source is caught the other way round, by TestConfig_EnvVarCoverage.)
+func TestRetiredSettings_Absent(t *testing.T) {
+	retired := []string{"CYODA_TX_TOKEN_TTL"}
+
+	for _, v := range RootConfigVars() {
+		for _, name := range retired {
+			if v.Name == name {
+				t.Errorf("%s is retired but still in rootConfigVars", name)
+			}
+		}
+	}
+	documented := scanEnvVarsInConfigDocs(t, filepath.Join(repoRoot(t), "cmd/cyoda/help/content"))
+	for _, name := range retired {
+		if documented[name] {
+			t.Errorf("%s is retired but still documented under content/config", name)
+		}
+	}
 }
 
 func TestWriteConfigAllText_ListsVars(t *testing.T) {
