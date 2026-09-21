@@ -40,10 +40,10 @@ has no documented dispatch semantics yet.
 
 | Mode | Synchrony | Open TX during dispatch | Result mutations applied | Failure | Suitable for |
 |---|---|---|---|---|---|
-| `SYNC` | blocks inline | yes (caller's TX) | yes | fatal — `WORKFLOW_FAILED` 400, entity stays in source state | fast, in-TX work; standard processor |
+| `SYNC` | blocks inline | yes (caller's TX) | yes | fatal — the callout's error (see `cyoda help workflows`), entity stays in source state | fast, in-TX work; standard processor |
 | `ASYNC_SAME_TX` | blocks inline | yes (caller's TX) | yes | fatal — same as `SYNC` | indistinguishable from `SYNC` today; reserved label |
-| `ASYNC_NEW_TX` | blocks inline | yes (savepoint inside caller's TX) | **no — discarded** | non-fatal — warning logged, pipeline continues | fire-and-forget side effects (notifications, audit pings) |
-| `COMMIT_BEFORE_DISPATCH` | blocks inline | **no** — `TX_pre` committed first | yes, via `CompareAndSave` against `T_pre` | fatal — `WORKFLOW_FAILED` 400, entity durable in pre-callout state | slow external work; connection-pool relief |
+| `ASYNC_NEW_TX` | blocks inline | yes (savepoint inside caller's TX) | **no — discarded** | non-fatal for the processor's own failure — warning logged, pipeline continues; a savepoint that cannot be created, undone or released fails the operation instead (ticketed `5xx`), and a superseded enclosing callout is not swallowed either | fire-and-forget side effects (notifications, audit pings) |
+| `COMMIT_BEFORE_DISPATCH` | blocks inline | **no** — `TX_pre` committed first | yes, via `CompareAndSave` against `T_pre` | fatal — the callout's error (see `cyoda help workflows`), entity durable in pre-callout state | slow external work; connection-pool relief |
 
 The engine implementation is in
 [`internal/domain/workflow/engine_processors.go`](../internal/domain/workflow/engine_processors.go).
@@ -76,11 +76,14 @@ which of the two strings was used.
    round-trip deadline.
 5. On a successful response, `entity.Data` is replaced with the processor's
    returned mutations and the pipeline continues to the next processor.
-6. On any failure — gRPC error, timeout, member disconnect, processor reply
-   with `success:false` — the engine returns
-   `processor X failed: …`, the cascade aborts, the caller's handler rolls
-   back `T`, and the response is `400 WORKFLOW_FAILED`. The entity is **not
-   persisted in the target state**; it remains in the source state.
+6. On any failure the engine returns `processor X failed: …`, wrapping
+   whatever error ended the callout: the member's own `400 WORKFLOW_FAILED`
+   when it answered `success:false`, or a retryable `5xx`
+   (`CALLOUT_FAILED`, `COMPUTE_MEMBER_DISCONNECTED`, `DISPATCH_TIMEOUT` or
+   `NO_COMPUTE_MEMBER_FOR_TAG`) when every try ran out without an answer —
+   see `cyoda help workflows`. Either way the cascade aborts, the caller's
+   handler rolls back `T`, and the entity is **not persisted in the target
+   state**; it remains in the source state.
 
 ### Transaction-bound callbacks
 
@@ -137,7 +140,7 @@ HTTP and gRPC callbacks.
 `ASYNC_NEW_TX` is **synchronous in wall-clock terms** (the cascade blocks on
 the dispatch) but its writes are isolated in a savepoint and its failure is
 non-fatal. The engine code is `executeAsyncNewTx` at
-`engine_processors.go:158-188`.
+`engine_processors.go:253-293`.
 
 ### Lifecycle
 
@@ -148,7 +151,11 @@ non-fatal. The engine code is `executeAsyncNewTx` at
    line 174 and the comment at line 153.
 3. On failure: `RollbackToSavepoint(T, S)` undoes any writes the processor
    made via gRPC callbacks; a warning is logged at WARN level; **the pipeline
-   continues** to the next processor.
+   continues** to the next processor. A savepoint that cannot be created,
+   undone or released is not a processor failure: it fails the operation with
+   a ticketed `5xx` and nothing commits. A processor's compute member that was
+   replaced is shut out before the savepoint is undone, so none of its writes
+   lands after it.
 4. On success: `ReleaseSavepoint(T, S)` discards the savepoint marker.
 
 ### Why mutations are discarded
@@ -175,7 +182,10 @@ directly (via `txMgr.Join`). The engine independently scopes the entire
 dispatch in a savepoint `S`: if the processor fails, `RollbackToSavepoint(T, S)`
 undoes all callback writes and the pipeline continues; if the processor
 succeeds, `ReleaseSavepoint(T, S)` retains those writes inside `T` (subject
-to `T`'s eventual commit).
+to `T`'s eventual commit). A savepoint that cannot be created, undone or
+released fails the operation instead of continuing the pipeline (a ticketed
+`5xx`); a chain superseded by fencing does not touch its savepoint at all, so
+a replaced compute member's writes never land after it.
 
 ### Pitfalls
 
@@ -276,17 +286,18 @@ chained-CAS against the prior segment's commit-stamped txID; no further
 
 | Failure | Outcome |
 |---|---|
-| Processor returns `success:false` or times out | `T_post` rolled back, entity durable in pre-callout state, `400 WORKFLOW_FAILED`, no engine retry |
+| Processor's member answers `success:false` | `T_post` rolled back, entity durable in pre-callout state, `400 WORKFLOW_FAILED` with the member's message |
+| No answer, or the member disconnects | another member is tried only if the processor is `idempotent`; otherwise `T_post` rolled back, `503` with the try's own code |
 | CAS conflict at apply-result boundary | `T_post` rolled back, entity durable in pre-callout state, error bubbles as `409 retryable`, client may retry |
 | `If-Match` mismatch at first-segment flush | `T_pre` rolled back, no dispatch, `412 Precondition Failed`, `TRANSITION_ABORTED` audit event emitted |
 | Infrastructure failure (Begin, Commit, EntityStore lookup) | wrapped with `ErrCommitBeforeDispatchInfra`, mapped to sanitized 5xx with ticket UUID — not 4xx (we don't leak driver text) |
-| Calculation member disconnects mid-dispatch | `400 WORKFLOW_FAILED`, entity durable in pre-callout state |
 | Engine crash between segments | entity durable in pre-callout state; in-flight cascade is gone; client must retry the same API call to re-fire the cascade from the start |
 
-There is **no engine-side retry** and **no automatic compensation**. The
-workflow author is responsible for designing the cascade so that the
-pre-callout state is a sensible resting place on its own (e.g. a `PROCESSING`
-state from which both `SUCCESS` and `FAILED` transitions exist).
+A callout that gets no answer is given to another compute member only when
+the processor is declared `idempotent`; there is **no automatic
+compensation**. The workflow author is responsible for designing the cascade
+so that the pre-callout state is a sensible resting place on its own (e.g. a
+`PROCESSING` state from which both `SUCCESS` and `FAILED` transitions exist).
 
 ### Idempotency requirement
 
@@ -539,7 +550,12 @@ currently a labelling-only variant.
   - `ErrCommitBeforeDispatchInfra` → sanitized 5xx with ticket UUID
   - `ErrTransitionNotFound` → 404 `TRANSITION_NOT_FOUND`
   - `spi.ErrConflict` from CAS → 409 retryable (or 412 if `If-Match`)
-  - everything else (processor `success:false`, criterion mismatches, timeouts) → 400 `WORKFLOW_FAILED`
+  - a processor's `success:false` verdict → 400 `WORKFLOW_FAILED` with the
+    member's message
+  - a callout that used every try without an answer → a retryable `5xx`
+    (`CALLOUT_FAILED`, `COMPUTE_MEMBER_DISCONNECTED`, `DISPATCH_TIMEOUT` or
+    `NO_COMPUTE_MEMBER_FOR_TAG`)
+  - everything else (criterion mismatches, …) → 400 `WORKFLOW_FAILED`
 
 ---
 
