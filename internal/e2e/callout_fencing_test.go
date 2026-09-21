@@ -1,9 +1,11 @@
 package e2e_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -186,6 +188,219 @@ func TestCalloutFence_LateCallback(t *testing.T) {
 			}
 			if n := len(b.Received()); n != 1 {
 				t.Errorf("cnode b received %d callouts; want 1", n)
+			}
+		})
+	}
+}
+
+// TestCalloutFence_FirstCnodeRefusedOnceReplaced (shape F-replaced): the owner
+// gave the work to a second cnode of its own; while that callout is still in
+// progress the first cnode's pass is refused at once on every door, and the
+// second's is admitted.
+func TestCalloutFence_FirstCnodeRefusedOnceReplaced(t *testing.T) {
+	h := newCalloutHarness(t, calloutTuning(3, 100*time.Millisecond))
+	const model, refused, control, tag = "s7-replaced", "s7-replaced-refused", "s7-replaced-control", "s7-replaced"
+	h.SetupModelWithWorkflow(t, refused, secondaryWorkflow)
+	h.SetupModelWithWorkflow(t, control, secondaryWorkflow)
+	targetID, auditBefore := committedTarget(t, h, "s7-replaced-target")
+	h.SetupModelWithWorkflow(t, model, chainWorkflowJSON("s7-replaced-wf", procSpec{"s7-proc", "SYNC",
+		map[string]any{"calculationNodesTags": tag, "responseTimeoutMs": 400, "idempotent": true}}))
+
+	release := make(chan struct{})
+	releaseNow := closeOnce(release)
+	t.Cleanup(releaseNow)
+	first := h.AttachCnode(t, cnodeSpec{name: "first", tags: []string{tag}, script: scriptAlways(neverAnswer())})
+	second := h.AttachCnode(t, cnodeSpec{name: "second", tags: []string{tag}, script: scriptHold(release, answerOK())})
+
+	done := make(chan createEntityResult, 1)
+	go func() { done <- h.CreateEntityRaw(model, 1, workflowSampleModel) }()
+
+	current := awaitCnodeReceived(t, second, 1, 15*time.Second)[0]
+	replaced := first.Received()[0]
+
+	assertRefusedOnAllDoors(t, h, replaced.Pass(), refused, targetID,
+		http.StatusGone, "CALLOUT_SUPERSEDED", supersededDetail)
+	assertUpdateRefused(t, h, replaced.Pass(), targetID, http.StatusGone, "CALLOUT_SUPERSEDED")
+
+	// Control: the cnode that holds the work now is admitted, read and write.
+	if res, err := h.ReplayGetHTTP(current.Pass(), targetID); err != nil || res.StatusCode != http.StatusOK {
+		t.Fatalf("the current cnode's joined read: status=%d err=%v body=%s; want 200", res.StatusCode, err, res.Body)
+	}
+	if res, err := h.ReplayCreateHTTP(current.Pass(), control, 1, `{"name":"current-child","amount":1,"status":"ok"}`); err != nil || res.StatusCode != http.StatusOK {
+		t.Fatalf("the current cnode's joined write: status=%d err=%v body=%s; want 200", res.StatusCode, err, res.Body)
+	}
+
+	releaseNow()
+	if res := awaitCreate(t, done, 15*time.Second); res.status != http.StatusOK {
+		t.Fatalf("create: %d %s; want 200", res.status, res.body)
+	}
+	if n := h.countEntities(t, control); n != 1 {
+		t.Errorf("%d entities committed in %s; want exactly the current cnode's one", n, control)
+	}
+	assertNothingLanded(t, h, targetID, auditBefore, refused)
+	if n := len(first.Received()); n != 1 {
+		t.Errorf("the first cnode received %d callouts; want 1", n)
+	}
+	if n := len(second.Received()); n != 1 {
+		t.Errorf("the second cnode received %d callouts; want 1", n)
+	}
+}
+
+// TestCalloutFence_WriteUnderTheEarlierPassIsKept (shape F-kept) is the other
+// half of "replaced": a callback the first cnode had already made is neither
+// interrupted nor undone. It is answered 200, what it wrote is in the committed
+// result, and it is the pass alone that is shut out, from the moment the work
+// moved. The first cnode drops its stream once its callback has returned, so the
+// hand-over to the second cnode is driven by something the test causes and never
+// by a race between the callback and the answer limit.
+func TestCalloutFence_WriteUnderTheEarlierPassIsKept(t *testing.T) {
+	h := newCalloutHarness(t, calloutTuning(3, 100*time.Millisecond))
+	const model, written, refused, tag = "s7-kept", "s7-kept-written", "s7-kept-refused", "s7-kept"
+	h.SetupModelWithWorkflow(t, written, secondaryWorkflow)
+	h.SetupModelWithWorkflow(t, refused, secondaryWorkflow)
+	targetID, auditBefore := committedTarget(t, h, "s7-kept-target")
+	h.SetupModelWithWorkflow(t, model, chainWorkflowJSON("s7-kept-wf", procSpec{"s7-kept-proc", "SYNC",
+		map[string]any{"calculationNodesTags": tag, "responseTimeoutMs": 2000, "idempotent": true}}))
+
+	release := make(chan struct{})
+	releaseNow := closeOnce(release)
+	t.Cleanup(releaseNow)
+	firstWrote := make(chan callbackResult, 1)
+	first := h.AttachCnode(t, cnodeSpec{name: "first", tags: []string{tag},
+		script: func(_ context.Context, _ receivedCallout, rc *reqCtx) cnodeReply {
+			res, err := rc.CreateEntity(written, 1, `{"name":"under-the-earlier-pass","amount":1,"status":"kept"}`)
+			if err != nil {
+				res = callbackResult{StatusCode: -1, Body: err.Error()}
+			}
+			firstWrote <- res
+			return closeStream()
+		}})
+	second := h.AttachCnode(t, cnodeSpec{name: "second", tags: []string{tag}, script: scriptHold(release, answerOK())})
+
+	done := make(chan createEntityResult, 1)
+	go func() { done <- h.CreateEntityRaw(model, 1, workflowSampleModel) }()
+
+	var wrote callbackResult
+	select {
+	case wrote = <-firstWrote:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the first cnode's callback never finished")
+	}
+	if wrote.StatusCode != http.StatusOK {
+		t.Fatalf("the first cnode's joined write: %d %s; want 200 — a callback made under the pass that is current is not refused",
+			wrote.StatusCode, wrote.Body)
+	}
+
+	// The work has moved: from here the first cnode's pass is refused, while what
+	// it wrote before the move stands.
+	awaitCnodeReceived(t, second, 1, 15*time.Second)
+	replaced := first.Received()[0]
+	assertRefusedOnAllDoors(t, h, replaced.Pass(), refused, targetID,
+		http.StatusGone, "CALLOUT_SUPERSEDED", supersededDetail)
+	assertUpdateRefused(t, h, replaced.Pass(), targetID, http.StatusGone, "CALLOUT_SUPERSEDED")
+
+	releaseNow()
+	if res := awaitCreate(t, done, 15*time.Second); res.status != http.StatusOK {
+		t.Fatalf("create: %d %s; want 200", res.status, res.body)
+	}
+	if n := h.countEntities(t, written); n != 1 {
+		t.Errorf("%d entities committed in %s; want the one the replaced cnode wrote before the work moved", n, written)
+	}
+	assertNothingLanded(t, h, targetID, auditBefore, refused)
+	if n := len(first.Received()); n != 1 {
+		t.Errorf("the first cnode received %d callouts; want 1", n)
+	}
+	if n := len(second.Received()); n != 1 {
+		t.Errorf("the second cnode received %d callouts; want 1", n)
+	}
+}
+
+// TestCalloutFence_NestedCalloutReleased (shape F-nested): out1's callback is
+// waiting on a callout of its own when out1 is replaced. The inner callout
+// ends, the callback is answered 410 — not 200 — in every processor mode of the
+// inner processor, ASYNC_NEW_TX as the last processor included; the inner
+// cnode's pass, which names the replaced callout as enclosing, is refused; and
+// nothing of the chain is committed.
+func TestCalloutFence_NestedCalloutReleased(t *testing.T) {
+	h := newCalloutHarness(t, calloutTuning(3, 100*time.Millisecond))
+
+	for _, innerMode := range []string{"SYNC", "ASYNC_SAME_TX", "ASYNC_NEW_TX"} {
+		t.Run(innerMode, func(t *testing.T) {
+			sfx := strings.ToLower(strings.ReplaceAll(innerMode, "_", "-"))
+			outer, inner, third := "s7-outer-"+sfx, "s7-inner-"+sfx, "s7-third-"+sfx
+			tagOut, tagIn := "s7-out-"+sfx, "s7-in-"+sfx
+			h.SetupModelWithWorkflow(t, third, secondaryWorkflow)
+			targetID, auditBefore := committedTarget(t, h, "s7-target-"+sfx)
+			h.SetupModelWithWorkflow(t, inner, chainWorkflowJSON("s7-inner-wf-"+sfx,
+				procSpec{"s7-in", innerMode, map[string]any{"calculationNodesTags": tagIn}}))
+			h.SetupModelWithWorkflow(t, outer, chainWorkflowJSON("s7-outer-wf-"+sfx,
+				procSpec{"s7-out", "SYNC", map[string]any{"calculationNodesTags": tagOut, "responseTimeoutMs": 700, "idempotent": true}}))
+
+			holdIn, holdOut2 := make(chan struct{}), make(chan struct{})
+			releaseIn, releaseOut2 := closeOnce(holdIn), closeOnce(holdOut2)
+			t.Cleanup(releaseIn)
+			t.Cleanup(releaseOut2)
+
+			out1Res := make(chan callbackResult, 1)
+			out1 := h.AttachCnode(t, cnodeSpec{name: "out1", tags: []string{tagOut},
+				script: func(_ context.Context, _ receivedCallout, rc *reqCtx) cnodeReply {
+					res, err := rc.CreateEntity(inner, 1, workflowSampleModel)
+					if err != nil {
+						res = callbackResult{StatusCode: -1, Body: err.Error()}
+					}
+					out1Res <- res
+					return neverAnswer()
+				}})
+			in1 := h.AttachCnode(t, cnodeSpec{name: "in1", tags: []string{tagIn}, script: scriptHold(holdIn, answerOK())})
+			out2 := h.AttachCnode(t, cnodeSpec{name: "out2", tags: []string{tagOut}, script: scriptHold(holdOut2, answerOK())})
+			defer out2.Detach(t)
+			defer in1.Detach(t)
+			defer out1.Detach(t)
+
+			done := make(chan createEntityResult, 1)
+			go func() { done <- h.CreateEntityRaw(outer, 1, workflowSampleModel) }()
+
+			innerCall := awaitCnodeReceived(t, in1, 1, 15*time.Second)[0] // out1's callback is now waiting on IN
+			awaitCnodeReceived(t, out2, 1, 15*time.Second)                // OUT was given to out2: the wait is over
+
+			select {
+			case res := <-out1Res:
+				// A subtest, so an answer of the wrong shape does not stop the
+				// scenario: what the transaction then committed is the other half
+				// of the claim.
+				t.Run("released-callback", func(t *testing.T) {
+					pd := assertProblem(t, res.StatusCode, res.Body, http.StatusGone, "CALLOUT_SUPERSEDED", false)
+					if !strings.Contains(pd.Detail, supersededDetail) {
+						t.Errorf("detail = %q; want %q", pd.Detail, supersededDetail)
+					}
+				})
+			case <-time.After(10 * time.Second):
+				t.Fatal("out1's callback was not released when out1 was replaced")
+			}
+
+			// in1 still holds the inner work; its pass names the replaced callout
+			// as enclosing, and its own callout has been ended.
+			assertRefusedOnAllDoors(t, h, innerCall.Pass(), third, targetID,
+				http.StatusGone, "CALLOUT_SUPERSEDED", supersededDetail)
+			assertUpdateRefused(t, h, innerCall.Pass(), targetID, http.StatusGone, "CALLOUT_SUPERSEDED")
+
+			releaseIn()
+			releaseOut2()
+			if res := awaitCreate(t, done, 15*time.Second); res.status != http.StatusOK {
+				t.Fatalf("outer create: %d %s; want 200", res.status, res.body)
+			}
+			if n := h.countEntities(t, inner); n != 0 {
+				t.Errorf("%d inner entities committed; the superseded chain must write nothing further", n)
+			}
+			assertNothingLanded(t, h, targetID, auditBefore, third)
+			if n := len(out1.Received()); n != 1 {
+				t.Errorf("out1 received %d callouts; want 1", n)
+			}
+			if n := len(in1.Received()); n != 1 {
+				t.Errorf("in1 received %d callouts; want 1", n)
+			}
+			if n := len(out2.Received()); n != 1 {
+				t.Errorf("out2 received %d callouts; want 1", n)
 			}
 		})
 	}
