@@ -44,11 +44,15 @@ func NewClientPool(allowLoopback bool) *ClientPool {
 // attempted; forbidden addresses (loopback when disallowed, link-local,
 // unspecified, multicast) are rejected with peeraddr.ErrForbiddenPeerAddress.
 // ctx bounds the name lookup that guard makes, so a forwarded call whose caller
-// has gone does not wait on a resolver.
+// has gone does not wait on a resolver — and, since a forwarded call carries no
+// deadline of its own, peeraddr's own bound for a lookup that precedes a dial is
+// applied on top of it.
 func (p *ClientPool) Get(ctx context.Context, addr string) (*grpc.ClientConn, error) {
 	// Validate BEFORE converting to gRPC target — peeraddr.Validate handles
 	// both "http://host:port" and bare "host:port" forms.
-	if err := peeraddr.Validate(ctx, addr, p.allowLoopback); err != nil {
+	lookupCtx, cancel := context.WithTimeout(ctx, peeraddr.LookupTimeout)
+	defer cancel()
+	if err := peeraddr.Validate(lookupCtx, addr, p.allowLoopback); err != nil {
 		return nil, err
 	}
 

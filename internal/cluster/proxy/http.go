@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -110,9 +111,13 @@ func proxyTo(w http.ResponseWriter, r *http.Request, addr string, transport http
 	// proxy. Matches the same guard on the dispatch forwarder. On failure the
 	// request is rejected with 503 TRANSACTION_NODE_UNAVAILABLE — the node
 	// address is untrusted (same semantics as a dead node from the client's view).
-	// The lookup runs under the client's own request context: a client that has
-	// gone must not leave a handler waiting on a resolver.
-	if err := peeraddr.Validate(r.Context(), addr, allowLoopback); err != nil {
+	// The lookup runs under the client's own request context, bounded: a client
+	// that has gone must not leave a handler waiting on a resolver, and a client
+	// that stays must not either — an inbound request carries no deadline of its
+	// own, so peeraddr's own bound for a lookup that precedes a dial applies.
+	lookupCtx, cancel := context.WithTimeout(r.Context(), peeraddr.LookupTimeout)
+	defer cancel()
+	if err := peeraddr.Validate(lookupCtx, addr, allowLoopback); err != nil {
 		slog.Warn("proxy target address rejected by SSRF guard",
 			"pkg", "proxy",
 			"addr", addr,

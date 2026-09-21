@@ -14,6 +14,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // ErrForbiddenPeerAddress is returned when the caller is asked to dial an
@@ -33,6 +34,17 @@ var ErrRedirectRefused = errors.New("refusing to follow a redirect to another no
 // registry. It returns an error rather than http.ErrUseLastResponse, so the 3xx
 // is not read as an answer either.
 func RefuseRedirects(_ *http.Request, _ []*http.Request) error { return ErrRedirectRefused }
+
+// LookupTimeout bounds the name lookup for a caller that has no figure of its
+// own to bound it with — the tx-affinity proxy and the pooled gRPC client, whose
+// requests carry no deadline by the project's own ruling. It is the order of
+// CYODA_DISPATCH_CONNECT_TIMEOUT's default, because a lookup that precedes a
+// dial belongs with the dial and not with the whole request it serves: a
+// resolver that is down would otherwise hold the handler's goroutine for the
+// resolver's own timeout, retries included. Callers that DO have a figure — the
+// hand-over its connect timeout, the scheduler RPC its whole-call timeout — pass
+// theirs instead.
+const LookupTimeout = 2 * time.Second
 
 // Validate parses a cluster registry address and rejects addresses pointing
 // at ranges the cluster must never dial: loopback, link-local
