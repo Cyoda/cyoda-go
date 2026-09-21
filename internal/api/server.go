@@ -37,6 +37,14 @@ func NewServer() *Server {
 	}
 }
 
+// joinParams is the name the methods below give a generated params struct whose
+// only field is the X-Tx-Token header. The join middleware wraps the generated
+// router, so by the time a method here runs it has already read that header,
+// verified the pass and either refused the request or joined it to the
+// transaction the token names: the header is spent, and no handler reads it.
+// The argument exists because the published contract declares the parameter,
+// and it travels no further than the Unimplemented fallback.
+
 // ---------------------------------------------------------------------------
 // Entity delegation (15 methods)
 // ---------------------------------------------------------------------------
@@ -73,12 +81,12 @@ func (s *Server) GetEntityStatisticsForModel(w http.ResponseWriter, r *http.Requ
 	s.Unimplemented.GetEntityStatisticsForModel(w, r, entityName, modelVersion, params)
 }
 
-func (s *Server) DeleteSingleEntity(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID) {
+func (s *Server) DeleteSingleEntity(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, joinParams genapi.DeleteSingleEntityParams) {
 	if s.Entity != nil {
 		s.Entity.DeleteSingleEntity(w, r, entityId)
 		return
 	}
-	s.Unimplemented.DeleteSingleEntity(w, r, entityId)
+	s.Unimplemented.DeleteSingleEntity(w, r, entityId, joinParams)
 }
 
 func (s *Server) GetOneEntity(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, params genapi.GetOneEntityParams) {
@@ -116,8 +124,8 @@ func (s *Server) FetchEntityTransitions(w http.ResponseWriter, r *http.Request, 
 // QueryGroupedEntityStatisticsForModel is routed directly in app/app.go before the
 // generated API mux — this method satisfies ServerInterface but is never reached in
 // production.
-func (s *Server) QueryGroupedEntityStatisticsForModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32) {
-	s.Unimplemented.QueryGroupedEntityStatisticsForModel(w, r, entityName, modelVersion)
+func (s *Server) QueryGroupedEntityStatisticsForModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, joinParams genapi.QueryGroupedEntityStatisticsForModelParams) {
+	s.Unimplemented.QueryGroupedEntityStatisticsForModel(w, r, entityName, modelVersion, joinParams)
 }
 
 func (s *Server) DeleteEntities(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params genapi.DeleteEntitiesParams) {
@@ -308,20 +316,20 @@ func (s *Server) GetAsyncSearchResults(w http.ResponseWriter, r *http.Request, j
 	s.Unimplemented.GetAsyncSearchResults(w, r, jobId, params)
 }
 
-func (s *Server) CancelAsyncSearch(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID) {
+func (s *Server) CancelAsyncSearch(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID, joinParams genapi.CancelAsyncSearchParams) {
 	if s.Search != nil {
 		s.Search.CancelAsyncSearch(w, r, jobId)
 		return
 	}
-	s.Unimplemented.CancelAsyncSearch(w, r, jobId)
+	s.Unimplemented.CancelAsyncSearch(w, r, jobId, joinParams)
 }
 
-func (s *Server) GetAsyncSearchStatus(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID) {
+func (s *Server) GetAsyncSearchStatus(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID, joinParams genapi.GetAsyncSearchStatusParams) {
 	if s.Search != nil {
 		s.Search.GetAsyncSearchStatus(w, r, jobId)
 		return
 	}
-	s.Unimplemented.GetAsyncSearchStatus(w, r, jobId)
+	s.Unimplemented.GetAsyncSearchStatus(w, r, jobId, joinParams)
 }
 
 func (s *Server) SearchEntities(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params genapi.SearchEntitiesParams) {
@@ -344,12 +352,12 @@ func (s *Server) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request,
 	s.Unimplemented.SearchEntityAuditEvents(w, r, entityId, params)
 }
 
-func (s *Server) GetStateMachineFinishedEvent(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, transactionId openapi_types.UUID) {
+func (s *Server) GetStateMachineFinishedEvent(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, transactionId openapi_types.UUID, joinParams genapi.GetStateMachineFinishedEventParams) {
 	if s.Audit != nil {
 		s.Audit.GetStateMachineFinishedEvent(w, r, entityId, transactionId)
 		return
 	}
-	s.Unimplemented.GetStateMachineFinishedEvent(w, r, entityId, transactionId)
+	s.Unimplemented.GetStateMachineFinishedEvent(w, r, entityId, transactionId, joinParams)
 }
 
 // ---------------------------------------------------------------------------
@@ -372,20 +380,20 @@ func (s *Server) NewMessage(w http.ResponseWriter, r *http.Request, subject stri
 	s.Unimplemented.NewMessage(w, r, subject, params)
 }
 
-func (s *Server) DeleteMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID) {
+func (s *Server) DeleteMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID, joinParams genapi.DeleteMessageParams) {
 	if s.Messaging != nil {
 		s.Messaging.DeleteMessage(w, r, messageId)
 		return
 	}
-	s.Unimplemented.DeleteMessage(w, r, messageId)
+	s.Unimplemented.DeleteMessage(w, r, messageId, joinParams)
 }
 
-func (s *Server) GetMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID) {
+func (s *Server) GetMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID, joinParams genapi.GetMessageParams) {
 	if s.Messaging != nil {
 		s.Messaging.GetMessage(w, r, messageId)
 		return
 	}
-	s.Unimplemented.GetMessage(w, r, messageId)
+	s.Unimplemented.GetMessage(w, r, messageId, joinParams)
 }
 
 // ---------------------------------------------------------------------------
