@@ -731,6 +731,26 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   trailer metadata, and showed an envelope `code` that is never sent. Neither
   was true; `errors` now shows the envelope as it is.
 
+- **The published event schemas now assert the composition they always appeared
+  to.** Every document in `docs/cyoda/schema/` declares JSON Schema Draft
+  2020-12, and the 47 that build on `BaseEvent` composed with `extends` — a
+  draft-03 keyword, dropped in draft-04 and replaced by `allOf`. Under 2020-12
+  an unrecognised keyword is ignored, so those documents were valid and
+  asserted nothing about the base: a criteria response validated as its own
+  three fields, with nothing checking `success`'s declared boolean type,
+  nothing applying `BaseEvent`'s `required` list and nothing checking the
+  `error` object's shape. `{"success": "yes", "matches": true}` validated.
+  They now compose with `allOf`, and those three things are decided. **No wire
+  type and no runtime behaviour changed**: nothing in cyoda-go validates a
+  payload against this tree — it decodes in Go, from types generated from it —
+  and `api/grpc/events/types.go` regenerates byte-identically, because the
+  generator already inlined the base's fields and required list (it now keys
+  that off `allOf`). This is the published contract catching up with what the
+  code already did. Anyone validating a compute member's answer against the
+  tree gets the checks the composition always implied. Cyoda Cloud's copy of
+  the tree still uses the old keyword, so the two are not byte-identical until
+  it follows; see `docs/cloud-parity/event-schema-composition.md`.
+
 ## [0.8.4] — 2026-09-09
 
 ### Breaking

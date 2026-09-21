@@ -40,7 +40,7 @@ The canonical schema tree lives at `docs/cyoda/schema/` in this repo and is embe
 
 The tree is organized by domain:
 
-- **`common/`** — shared envelope fragments: `BaseEvent`, `DataPayload`, `CloudEventType`, `ModelSpec`, `ErrorCode`. Every domain-specific payload extends `BaseEvent`.
+- **`common/`** — shared envelope fragments: `BaseEvent`, `DataPayload`, `CloudEventType`, `ModelSpec`, `ErrorCode`. Every domain-specific payload composes with `BaseEvent`, through the `allOf` the declared 2020-12 dialect reads.
 - **`common/statemachine/`** — workflow metadata descriptors: `WorkflowInfo`, `TransitionInfo`, `ProcessorInfo`.
 - **`entity/`** — entity create / update / delete / transition / audit requests and responses.
 - **`model/`** — model snapshot events and management requests.
