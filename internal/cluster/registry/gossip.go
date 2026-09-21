@@ -162,13 +162,13 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 	del.subscribe(topicTags, events.onList)
 	del.subscribe(topicTagsRequest, events.onRequest)
 	g := &Gossip{
-		cfg:      cfg,
-		delegate: del,
-		identity: guard,
-		dir:      dir,
-		tags:     newTagStore(cfg.NodeID, epoch, signal),
-		events:   events,
-		signal:   signal,
+		cfg:         cfg,
+		delegate:    del,
+		identity:    guard,
+		dir:         dir,
+		tags:        newTagStore(cfg.NodeID, epoch, signal),
+		events:      events,
+		signal:      signal,
 		publish:     make(chan struct{}, 1),
 		readvertise: make(chan struct{}, 1),
 		stop:        make(chan struct{}),

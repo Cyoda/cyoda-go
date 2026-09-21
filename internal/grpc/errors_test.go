@@ -169,7 +169,7 @@ func TestBuildErrorFields_JoinedHandlerContextNeverDone_KeepsTicket(t *testing.T
 	records := captureSlog(t)
 
 	parent, cancel := context.WithCancel(context.Background())
-	cancel() // the client that queued for the lock has gone
+	cancel()                                // the client that queued for the lock has gone
 	joined := context.WithoutCancel(parent) // ...but the joined ctx detaches, as txjoin.go does
 
 	appErr := common.Internal("workflow aborted by context cancellation", context.Canceled)

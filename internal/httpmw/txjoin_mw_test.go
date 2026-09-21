@@ -33,6 +33,7 @@ func captureSlog(t *testing.T) *bytes.Buffer {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 	return &buf
 }
+
 // testResponseMax is the joined-answer ceiling these tests build a Joiner with.
 // It is the shipped default's shape at a size a test writes past in one line,
 // so the ceiling's behaviour is pinned without allocating megabytes to do it.
