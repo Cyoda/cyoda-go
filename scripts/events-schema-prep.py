@@ -18,9 +18,13 @@ def strip_existing_java_type(node):
     """Removes every `existingJavaType` key, at any depth.
 
     It is a jsonschema2pojo extension naming the Java class that tool emits
-    for a property. go-jsonschema does not read it and warns about it, and
-    Cloud's generator needs it, so it stays in the published tree and is
-    dropped from this scratch copy.
+    for a property. go-jsonschema does not read it, and Cloud's generator
+    needs it, so it stays in the published tree and is dropped from this
+    scratch copy.
+
+    Structural rather than textual: it used to be a regex that took the comma
+    in front of the key, which held only while `"type": "any"` was always
+    there to put one there.
     """
     if isinstance(node, dict):
         node.pop('existingJavaType', None)
