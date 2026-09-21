@@ -961,7 +961,10 @@ type EntityCriteriaCalculationResponseJson struct {
 	// Event ID.
 	ID string `json:"id" yaml:"id" mapstructure:"id"`
 
-	// Criteria check result.
+	// Criteria check result. Required when `success` is true: a criterion decides a
+	// transition, so a successful response that omits it, or sends null, is refused
+	// as an answer that could not be read rather than read as false. A `success:
+	// false` response carries no result.
 	Matches *bool `json:"matches,omitempty" yaml:"matches,omitempty" mapstructure:"matches,omitempty"`
 
 	// Reason for the criteria check result.

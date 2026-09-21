@@ -18,7 +18,7 @@
     },
     "matches": {
       "type": "boolean",
-      "description": "Criteria check result."
+      "description": "Criteria check result. Required when `success` is true: a criterion decides a transition, so a successful response that omits it, or sends null, is refused as an answer that could not be read rather than read as false. A `success: false` response carries no result."
     },
     "reason": {
       "type": "string",
@@ -28,5 +28,20 @@
   "required": [
     "requestId",
     "entityId"
-  ]
+  ],
+  "if": {
+    "properties": {
+      "success": {
+        "const": true
+      }
+    },
+    "required": [
+      "success"
+    ]
+  },
+  "then": {
+    "required": [
+      "matches"
+    ]
+  }
 }

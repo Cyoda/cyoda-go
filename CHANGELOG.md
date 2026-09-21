@@ -63,7 +63,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   callout now ends as an answer that could not be read (`400 WORKFLOW_FAILED`,
   not retryable) where it used to block the transition as if the member had said
   `false`. A member of another node's was already refused this way; both sides
-  now agree. A compute member that relied on omitting the field must send it.
+  now agree. A compute member that relied on omitting the field must send it, and
+  the published schema tree (`cyoda help cloudevents json`) states the
+  requirement, so a generated SDK carries it.
   The member's `reason` is also kept to its first 512 characters, marked with
   `…` when cut, where it used to reach the client and the audit trail at up to
   2 KiB. See `cyoda help grpc` and `docs/cloud-parity/callout-failover.md`.
