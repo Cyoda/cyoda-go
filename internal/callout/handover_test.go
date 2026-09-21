@@ -163,6 +163,23 @@ func provedUnhandoverable() func(context.Context) dispatch.HandOverAnswer {
 	}
 }
 
+// peerNotConnected is the shape the real router (internal/cluster/dispatch)
+// answers with for a peer that could not be connected to, or that answered it
+// has no compute member for the work — dispatch.notConnected and
+// dispatch.readAnswer's no_handoff-with-zero-tries branch both build exactly
+// this: Connected false, a NoHandOff failure carrying NO_COMPUTE_MEMBER_FOR_TAG,
+// no attempt. The scripted router's zero value (`return
+// dispatch.HandOverAnswer{}`, used when a peer has no script at all) is a
+// DIFFERENT shape — Failure nil — that happens to be read the same way by
+// notAsked; nothing before this test scripted the real one.
+func peerNotConnected() func(context.Context) dispatch.HandOverAnswer {
+	return func(context.Context) dispatch.HandOverAnswer {
+		appErr := common.Operational(http.StatusServiceUnavailable, common.ErrCodeNoComputeMemberForTag,
+			"the peer node could not be reached").AsRetryable()
+		return dispatch.HandOverAnswer{Failure: &contract.CalloutFailure{Kind: contract.NoHandOff, Code: appErr.Code, Message: appErr.Message, Err: appErr}}
+	}
+}
+
 func newClusterEnv(t *testing.T, cfg Config, router PeerRouter) *env {
 	t.Helper()
 	e := newEnv(t, cfg)
@@ -400,6 +417,57 @@ func TestOwner_PeerCannotBeConnectedTo_UsesNoTry_NextPeerIsAsked(t *testing.T) {
 	}
 	if got := strings.Join(stats.HandOvers, ","); got != "unreachable,ok" {
 		t.Errorf("HandOvers = %s, want unreachable,ok", got)
+	}
+}
+
+// The real router's "not connected" / "the peer has no compute member" answer
+// (peerNotConnected, above) uses no try, is not recorded as an attempt, and is
+// tallied as unreachable — the same as the scripted router's bare zero value,
+// which is a different shape from what the real router actually sends.
+func TestOwner_PeerAnswersTheRealNotConnectedShape_NoAttempt_Unreachable_NoComputeMemberEnvelope(t *testing.T) {
+	router := newScriptedRouter("p-1")
+	router.script("p-1", peerNotConnected())
+	e := newClusterEnv(t, Config{FixedNumRetries: 3, HandoverAllowance: time.Second}, router)
+	ctx, stats := contract.WithCalloutStats(userCtx(tenantA))
+
+	_, err := e.dispatchFunction(ctx, "x", "")
+
+	if !errors.Is(err, contract.ErrNoMatchingMember) {
+		t.Fatalf("err = %v, want ErrNoMatchingMember: no try was ever made", err)
+	}
+	var failure *contract.CalloutFailure
+	if errors.As(err, &failure) && len(failure.Attempts) != 0 {
+		t.Errorf("attempts = %+v, want none: no try was used", failure.Attempts)
+	}
+	if got := strings.Join(stats.HandOvers, ","); got != "unreachable" {
+		t.Errorf("HandOvers = %s, want unreachable", got)
+	}
+}
+
+// A peer that refuses before it could run anything (its own toCallout could
+// not build the request) answers Terminal, Connected: true, TriesUsed: 0 —
+// dispatch.refusal sends exactly that. A try that never ran must not be
+// recorded as an attempt or counted in the stats: only the Terminal failure
+// itself reaches the caller.
+func TestOwner_PeerAnswersTerminalWithZeroTriesUsed_NoAttemptSynthesized_NotCountedAsATry(t *testing.T) {
+	appErr := common.Internal("the hand-over could not be accepted", nil)
+	terminal := &contract.CalloutFailure{Kind: contract.Terminal, Code: appErr.Code, Message: appErr.Message, Err: appErr}
+	router := newScriptedRouter("p-1")
+	router.script("p-1", peerFails(terminal, 0))
+	e := newClusterEnv(t, Config{FixedNumRetries: 3, HandoverAllowance: time.Second}, router)
+	ctx, stats := contract.WithCalloutStats(userCtx(tenantA))
+
+	_, err := e.dispatchFunction(ctx, "x", "")
+
+	var failure *contract.CalloutFailure
+	if !errors.As(err, &failure) || failure.Kind != contract.Terminal {
+		t.Fatalf("failure = %+v, want the peer's own Terminal failure", failure)
+	}
+	if len(failure.Attempts) != 0 {
+		t.Errorf("attempts = %+v, want none: no try was ever used", failure.Attempts)
+	}
+	if len(stats.Tries) != 0 {
+		t.Errorf("Tries = %v, want none: a try that never ran must not be counted", stats.Tries)
 	}
 }
 

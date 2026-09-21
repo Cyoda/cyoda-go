@@ -194,6 +194,9 @@ func (c *Coordinator) loop(cctx context.Context, call internalgrpc.Callout, numb
 		}
 		switch {
 		case r.CtxErr != nil:
+			// No calloutDeadlinePassed filter here: RunLocal never returns CtxErr
+			// for the callout's own deadline — that ends a try as NoAnswer or
+			// NoHandOff instead, and CtxErr stays nil.
 			if r.TriesUsed > len(r.Attempts) {
 				p.stats.Tries = append(p.stats.Tries, contract.CalloutOutcomeAbandoned)
 			}
@@ -277,9 +280,12 @@ func (c *Coordinator) askPeers(cctx context.Context, call internalgrpc.Callout, 
 			continue
 		}
 		p.triesLeft -= a.TriesUsed
-		if a.Connected && a.Failure != nil && len(a.Attempts) == 0 {
+		if a.TriesUsed > 0 && a.Failure != nil && len(a.Attempts) == 0 {
 			// The answer was lost: no cnode is known. It counts as a try and is
-			// recorded as one, under the member id "-".
+			// recorded as one, under the member id "-". Connected alone is not
+			// enough: a peer-answered Terminal keeps Connected true even when it
+			// used no try (dispatch.refusal), and a lost answer always used at
+			// least one (dispatch.lostAnswer, dispatch.lostAnswerAfter).
 			a.Attempts = []contract.CalloutAttempt{{MemberID: "-", Kind: a.Failure.Kind, Cause: a.Failure.Message}}
 		}
 		p.attempts = append(p.attempts, a.Attempts...)
