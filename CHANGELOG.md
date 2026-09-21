@@ -425,8 +425,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   payload meant the opposite on Cyoda Cloud, which applied the default. All three
   responses now apply it. **A compute member reporting a failure must send
   `success: false` explicitly** — an empty or partial response is not a failure
-  report. Nothing else changes: the default fills in the flag, never a verdict,
-  so a criteria answer that omits `matches` is still refused as an answer that
+  report, and neither is an `error` object on its own: a response carrying an
+  `error` and no `success: false` succeeds, and its message reaches nobody.
+  What this widens, plainly: a processor answering `{"requestId": "…"}` and
+  nothing else now succeeds, leaves the entity as it was and lets the transition
+  continue, where before it ended the operation. A member whose framework emits
+  a bare or truncated response on a crash therefore no longer fails the
+  operation by accident — it must report the failure itself. The default fills
+  in the flag, never a verdict, so what actually decides something is unchanged:
+  a criteria answer that omits `matches` is still refused as an answer that
   could not be read, and a processor payload that cannot be read still fails the
   callout. The criteria response schema now requires `matches` on any response
   but an explicit `success: false` one, where it used to require it only of an

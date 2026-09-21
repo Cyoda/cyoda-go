@@ -8,6 +8,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
@@ -106,6 +107,37 @@ func TestDispatchProcessor_SuccessDefaultsToTrue(t *testing.T) {
 				t.Errorf("entity data = %s; want %s", entity.Data, tc.wantData)
 			}
 		})
+	}
+}
+
+// An `error` object on its own does not report a failure. The flag is what
+// says "failed"; `error` only says what went wrong once it has. With the flag
+// absent the answer is a success, and the member's text is not merely
+// disregarded as a verdict — it is dropped, because the dispatch reads it only
+// on the failure branch, not even as a warning. Cyoda Cloud reads these bytes
+// the same way, so this is the agreed reading and not a cyoda-go choice; it is
+// pinned here because it is the shape a member author is most likely to send
+// by mistake, and `cyoda help grpc` says so for the same reason.
+func TestDispatchProcessor_ErrorObjectAloneIsNotAFailure(t *testing.T) {
+	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
+	ctx := common.WithDiagnostics(testContext())
+	replyOnWire(t, registry, memberID, sentCh, handleProcessorResponse,
+		`{"requestId":%q,"error":{"code":"E_BOOM","message":"the member meant to report a failure"}}`)
+
+	entity, err := dispatchProcessor(dispatcher, ctx, testEntity(),
+		testProcessor("python", 5000), "wf1", "t1", "tx-1")
+	if err != nil {
+		t.Fatalf("an answer carrying only an `error` object failed the callout: %v", err)
+	}
+	if string(entity.Data) != `{"foo":"bar"}` {
+		t.Errorf("entity data = %s; want the entity unchanged", entity.Data)
+	}
+	diag := common.GetDiagnostics(ctx)
+	if got := diag.GetErrors(); len(got) != 0 {
+		t.Errorf("errors = %v; want none: the member's text is read only on the failure branch", got)
+	}
+	if got := diag.GetWarnings(); len(got) != 0 {
+		t.Errorf("warnings = %v; want none: the text is dropped, not downgraded to a warning", got)
 	}
 }
 

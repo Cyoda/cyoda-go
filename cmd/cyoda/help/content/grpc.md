@@ -285,9 +285,18 @@ Client responds with `EntityProcessorCalculationResponse`:
 `success` is optional and defaults to `true`, as the published schema says: a
 response that leaves the key out has reported success. A member reporting a
 failure must therefore send `success: false` explicitly — an empty or partial
-response is not read as a failure.
+response is not read as a failure. **An `error` object on its own does not
+report one either**: `success` is what says the work failed, and `error` only
+says what went wrong once it has. A response carrying an `error` and no
+`success: false` is a success, and its message reaches nobody — not the client,
+not the warnings, not the audit trail.
 
-When `success=false`, no other member is tried. The client's operation fails with `400 WORKFLOW_FAILED` carrying `error.message`, and `error.retryable: true` is passed on as the client's `retryable: true` — it tells the client that running the whole operation again may succeed; it does not make the server try another member. (An `ASYNC_NEW_TX` processor is the exception: its failure is logged and the operation continues.) When `payload.data` is non-null, the engine replaces the entity's data with the returned value before continuing the workflow.
+The smallest successful answer is `{"requestId": "<same requestId>"}`: it says
+the processor ran, changed nothing, and the workflow should carry on. There is
+no shape that means "I did nothing and something is wrong" — that is
+`success: false`.
+
+When `success=false`, no other member is tried. The client's operation fails with `400 WORKFLOW_FAILED` carrying `error.message`, and `error.retryable: true` is passed on as the client's `retryable: true` — it tells the client that running the whole operation again may succeed; it does not make the server try another member. (An `ASYNC_NEW_TX` processor is the exception: its failure is logged and the operation continues.) When `payload.data` is non-null, the engine replaces the entity's data with the returned value before continuing the workflow; when `payload` is absent, or its `data` is null, the entity is left as it was and the transition continues.
 
 Returned data is subject to the same checks as an HTTP client write: it must be storable, and it must satisfy the model's schema. A processor may introduce a field the model does not declare only where the model's `changeLevel` would allow a client to — otherwise the transition fails with `WORKFLOW_FAILED` and rolls back. The engine holds no privilege here: whatever it stores, the API must be able to accept back.
 
@@ -325,7 +334,8 @@ Client responds with `EntityCriteriaCalculationResponse`:
 
 `success` is optional here too and defaults to `true`, so a response that
 leaves the key out has reported success; a member reporting a failure must send
-`success: false` explicitly.
+`success: false` explicitly, an `error` object on its own being no more a
+failure report here than it is for a processor.
 
 `matches` is required on a successful criteria response — which is any response
 but an explicit `success: false` one. A response that omits it is not read as
@@ -384,7 +394,8 @@ Response replaces criteria's `matches`/`reason` with `result` (an arbitrary JSON
 `resultKind: "Schedule"` is the only shape currently defined — it drives a
 scheduled transition's `schedule.function` (see `cyoda help workflows`).
 `success` defaults to `true` here as everywhere, so a response that omits it
-has reported success. `success: false` — which a member reporting a failure
+has reported success, and an `error` object on its own is not a failure report.
+`success: false` — which a member reporting a failure
 must send explicitly — fails the callout as it does for a processor: no other
 member is tried, and the message and `retryable` verdict reach the client;
 a `result` that doesn't parse against the
