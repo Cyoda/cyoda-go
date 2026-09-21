@@ -532,11 +532,12 @@ func New(cfg Config) *App {
 	// Wire external processing dispatcher
 	var extProc contract.ExternalProcessingService
 	// Peer-auth for inter-node dispatch. AES-256-GCM + HKDF-derived key over
-	// the shared cluster secret. 30-second timestamp skew window. Constructed
+	// the shared cluster secret. 30-second timestamp skew window. This node's
+	// id is what every inbound envelope must have been sealed for. Constructed
 	// once and shared by forwarder and handler so rotation is atomic.
 	var peerAuth clusterdispatch.PeerAuth
 	if cfg.Cluster.Enabled {
-		auth, err := clusterdispatch.NewAEADPeerAuth(cfg.Cluster.HMACSecret, 30*time.Second)
+		auth, err := clusterdispatch.NewAEADPeerAuth(cfg.Cluster.HMACSecret, a.selfNodeID, 30*time.Second)
 		if err != nil {
 			slog.Error("failed to construct dispatch peer auth", "pkg", "cluster", "err", err)
 			os.Exit(1)

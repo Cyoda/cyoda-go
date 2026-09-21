@@ -134,7 +134,7 @@ func (r *PeerRouter) handOver(ctx context.Context, peer contract.NodeInfo, call 
 		return provedBeforeConnecting(err), contract.Terminal.String()
 	}
 
-	resp, err := r.forwarder.ForwardCallout(ctx, peer.Addr, req)
+	resp, err := r.forwarder.ForwardCallout(ctx, peer.NodeID, peer.Addr, req)
 	if err != nil {
 		stage := StageAfterConnect
 		var fe *ForwardError

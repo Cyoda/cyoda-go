@@ -745,13 +745,19 @@ the dispatch key from the raw gossip-encryption secret despite both being
 derived from the same `CYODA_HMAC_SECRET`. Wire format is `[nonce(12) ||
 ciphertext||tag]` with Content-Type `application/cyoda-dispatch-v1`, in both
 directions. A request's associated data is the label `request`, the HTTP
-method, the path and `X-Dispatch-Timestamp`; an answer's is the label
-`response`, the path, and the timestamp and nonce of the request it answers,
-under a fresh nonce of its own. That prevents cross-endpoint replay,
-reflection, and an answer being moved onto another request. A bounded,
-TTL-evicted nonce cache rejects replayed requests within the 30s skew window;
-answers do not enter it, being bound to a request nonce their receiver chose.
-The scheduler's peer RPC signs its requests and answers the same way.
+method, the path, `X-Dispatch-Timestamp` and the node id the request is sealed
+**for**; an answer's is the label `response`, the path, the timestamp, that same
+recipient and the nonce of the request it answers, under a fresh nonce of its
+own. That prevents cross-endpoint replay, reflection, an answer being moved onto
+another request, and — the reason the recipient is bound in both — a captured
+request being delivered to another node, which holds the same cluster key and
+would otherwise accept it and seal an answer the owner could not tell from the
+genuine one. The recipient is never on the wire: the sender names the node whose
+address it looked up, the receiver names itself, and the envelope opens only
+where the two agree. A bounded, TTL-evicted nonce cache rejects replayed
+requests within the 30s skew window; answers do not enter it, being bound to a
+request nonce their receiver chose. The scheduler's peer RPC signs its requests
+and answers the same way.
 
 The token is a **pass**: it is minted per try, by the node that makes the
 hand-off, and `NodeID` is always the owner's — so a callback is routed to the

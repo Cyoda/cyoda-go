@@ -32,17 +32,21 @@ func (inOrderSelector) Select(c []contract.NodeInfo) (contract.NodeInfo, error) 
 	return c[0], nil
 }
 
-// answeringForwarder answers every hand-over with resp/err and keeps the request.
+// answeringForwarder answers every hand-over with resp/err and keeps the
+// request, the node it was sealed for and the address it was sent to.
 type answeringForwarder struct {
-	resp  *DispatchCalloutResponse
-	err   error
-	got   DispatchCalloutRequest
-	calls int
+	resp    *DispatchCalloutResponse
+	err     error
+	got     DispatchCalloutRequest
+	gotPeer string
+	gotAddr string
+	calls   int
 }
 
-func (f *answeringForwarder) ForwardCallout(_ context.Context, _ string, req DispatchCalloutRequest) (*DispatchCalloutResponse, error) {
+func (f *answeringForwarder) ForwardCallout(_ context.Context, peerNodeID, addr string, req DispatchCalloutRequest) (*DispatchCalloutResponse, error) {
 	f.calls++
 	f.got = req
+	f.gotPeer, f.gotAddr = peerNodeID, addr
 	return f.resp, f.err
 }
 
@@ -382,7 +386,7 @@ func TestHandOver_WaitRunsOut_IsOneTry(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(testContext(), 150*time.Millisecond)
 	defer cancel()
-	assertLost(t, realRouter(t, true).HandOver(ctx, contract.NodeInfo{NodeID: "slow", Addr: srv.URL}, ownerCallout(t, "processor"), 3, 1))
+	assertLost(t, realRouter(t, true).HandOver(ctx, contract.NodeInfo{NodeID: testSelfNodeID, Addr: srv.URL}, ownerCallout(t, "processor"), 3, 1))
 }
 
 func TestHandOver_OverTheWire_BadAnswersAreNoAnswer(t *testing.T) {
@@ -430,7 +434,7 @@ func TestHandOver_OverTheWire_BadAnswersAreNoAnswer(t *testing.T) {
 			}))
 			defer srv.Close()
 			router := realRouter(t, true)
-			peer := contract.NodeInfo{NodeID: "p", Addr: srv.URL}
+			peer := contract.NodeInfo{NodeID: testSelfNodeID, Addr: srv.URL}
 			if tt.name == "sealed for an earlier request" {
 				// the first answer is genuine — a sealed no_handoff — and is believed
 				if first := router.HandOver(testContext(), peer, ownerCallout(t, "processor"), 3, 1); first.Connected || first.TriesUsed != 0 {
@@ -457,7 +461,7 @@ func TestHandOver_ThroughTheHandler_MemberMessageAndVerdictSurvive(t *testing.T)
 	srv := httptest.NewServer(newHandlerMux(t, runner, peerAuth))
 	defer srv.Close()
 
-	a := realRouter(t, true).HandOver(testContext(), contract.NodeInfo{NodeID: "peer-1", Addr: srv.URL}, ownerCallout(t, "processor"), 3, 4)
+	a := realRouter(t, true).HandOver(testContext(), contract.NodeInfo{NodeID: testSelfNodeID, Addr: srv.URL}, ownerCallout(t, "processor"), 3, 4)
 
 	if a.Failure == nil || a.Failure.Kind != contract.MemberFailed || a.Failure.Message != "card declined" || a.Failure.Retryable == nil || !*a.Failure.Retryable {
 		t.Fatalf("Failure = %+v", a.Failure)

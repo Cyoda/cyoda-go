@@ -160,11 +160,16 @@ var _ contract.NodeRegistry = (*fakeRegistry)(nil)
 
 var testSecret32 = bytes.Repeat([]byte{0xCD}, 32)
 
+// testPeerNodeID is the node id the server side of these tests answers to, and
+// therefore the target every client call names: a delegated fire is sealed for
+// the one node the coordinator resolved, and opens nowhere else.
+const testPeerNodeID = "peer-node"
+
 // newTestAuth builds the AEADPeerAuth both ends of the scheduler RPC share in
 // these tests. Mirrors dispatch's own newAEAD test helper.
 func newTestAuth(t *testing.T) *dispatch.AEADPeerAuth {
 	t.Helper()
-	auth, err := dispatch.NewAEADPeerAuth(testSecret32, 30*time.Second)
+	auth, err := dispatch.NewAEADPeerAuth(testSecret32, testPeerNodeID, 30*time.Second)
 	if err != nil {
 		t.Fatalf("NewAEADPeerAuth: %v", err)
 	}
@@ -181,7 +186,7 @@ func signedSchedulerRequest(t *testing.T, auth dispatch.PeerAuth, task spi.Sched
 		t.Fatalf("marshal request: %v", err)
 	}
 	req := httptest.NewRequest(http.MethodPost, schedulerTaskPath, nil)
-	wire, binding, err := auth.Sign(req, plain)
+	wire, binding, err := auth.Sign(req, testPeerNodeID, plain)
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
@@ -196,7 +201,7 @@ func signedSchedulerRequest(t *testing.T, auth dispatch.PeerAuth, task spi.Sched
 // call to the same server handler is rejected — no unauthenticated path
 // exists to reach the engine.
 func TestExecutor_ForwardsWithPeerAuth(t *testing.T) {
-	auth, err := dispatch.NewAEADPeerAuth(testSecret32, 30*time.Second)
+	auth, err := dispatch.NewAEADPeerAuth(testSecret32, testPeerNodeID, 30*time.Second)
 	if err != nil {
 		t.Fatalf("NewAEADPeerAuth: %v", err)
 	}
@@ -237,7 +242,7 @@ func TestExecutor_ForwardsWithPeerAuth(t *testing.T) {
 // surface" guarantee (Gate 3): the scheduled-task RPC rides the identical
 // authentication as processor/criteria dispatch.
 func TestSchedulerRPCHandler_RejectsUnauthenticated(t *testing.T) {
-	auth, err := dispatch.NewAEADPeerAuth(testSecret32, 30*time.Second)
+	auth, err := dispatch.NewAEADPeerAuth(testSecret32, testPeerNodeID, 30*time.Second)
 	if err != nil {
 		t.Fatalf("NewAEADPeerAuth: %v", err)
 	}
@@ -270,7 +275,7 @@ func TestSchedulerRPCHandler_RejectsUnauthenticated(t *testing.T) {
 func TestExecutor_PeerLookupFailure_DropsWithoutLocalFallback(t *testing.T) {
 	fake := &fakeSchedEngine{}
 	registry := &fakeRegistry{addr: "", alive: false}
-	auth, err := dispatch.NewAEADPeerAuth(testSecret32, 30*time.Second)
+	auth, err := dispatch.NewAEADPeerAuth(testSecret32, testPeerNodeID, 30*time.Second)
 	if err != nil {
 		t.Fatalf("NewAEADPeerAuth: %v", err)
 	}
@@ -348,7 +353,7 @@ func TestSchedulerRPCClient_PlaintextAnswerRefused(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	client := NewSchedulerRPCClient(newTestAuth(t), 5*time.Second).AllowLoopbackForTesting()
-	err := client.ExecuteScheduledTask(context.Background(), srv.URL, spi.ScheduledTask{ID: "t-plain", TenantID: testTenant})
+	err := client.ExecuteScheduledTask(context.Background(), testPeerNodeID, srv.URL, spi.ScheduledTask{ID: "t-plain", TenantID: testTenant})
 	if err == nil {
 		t.Fatal("an answer that was not sealed was accepted as a fire")
 	}
@@ -388,10 +393,10 @@ func TestSchedulerRPCClient_AnswerSealedForAnotherRequestRefused(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	client := NewSchedulerRPCClient(newTestAuth(t), 5*time.Second).AllowLoopbackForTesting()
-	if err := client.ExecuteScheduledTask(context.Background(), srv.URL, spi.ScheduledTask{ID: "t-1", TenantID: testTenant}); err != nil {
+	if err := client.ExecuteScheduledTask(context.Background(), testPeerNodeID, srv.URL, spi.ScheduledTask{ID: "t-1", TenantID: testTenant}); err != nil {
 		t.Fatalf("first call: %v", err)
 	}
-	err := client.ExecuteScheduledTask(context.Background(), srv.URL, spi.ScheduledTask{ID: "t-2", TenantID: testTenant})
+	err := client.ExecuteScheduledTask(context.Background(), testPeerNodeID, srv.URL, spi.ScheduledTask{ID: "t-2", TenantID: testTenant})
 	if err == nil {
 		t.Fatal("an answer replayed from an earlier request was accepted")
 	}
@@ -421,7 +426,7 @@ func TestSchedulerRPCClient_TruncatedAnswerRefused(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	client := NewSchedulerRPCClient(newTestAuth(t), 5*time.Second).AllowLoopbackForTesting()
-	err := client.ExecuteScheduledTask(context.Background(), srv.URL, spi.ScheduledTask{ID: "t-trunc", TenantID: testTenant})
+	err := client.ExecuteScheduledTask(context.Background(), testPeerNodeID, srv.URL, spi.ScheduledTask{ID: "t-trunc", TenantID: testTenant})
 	if err == nil {
 		t.Fatal("a truncated answer was accepted")
 	}
@@ -448,7 +453,7 @@ func TestSchedulerRPCClient_FollowsNoRedirect(t *testing.T) {
 			t.Cleanup(srv.Close)
 
 			client := NewSchedulerRPCClient(newTestAuth(t), 5*time.Second).AllowLoopbackForTesting()
-			if err := client.ExecuteScheduledTask(context.Background(), srv.URL, spi.ScheduledTask{ID: "t-redirect", TenantID: testTenant}); err == nil {
+			if err := client.ExecuteScheduledTask(context.Background(), testPeerNodeID, srv.URL, spi.ScheduledTask{ID: "t-redirect", TenantID: testTenant}); err == nil {
 				t.Fatal("a redirected task was accepted as a fire")
 			}
 			if reached {
@@ -477,7 +482,7 @@ func TestSchedulerRPC_SealedRoundTrip(t *testing.T) {
 		srv := serve(t, fake)
 		client := NewSchedulerRPCClient(newTestAuth(t), 5*time.Second).AllowLoopbackForTesting()
 
-		if err := client.ExecuteScheduledTask(context.Background(), srv.URL, spi.ScheduledTask{ID: "rt-ok", TenantID: testTenant}); err != nil {
+		if err := client.ExecuteScheduledTask(context.Background(), testPeerNodeID, srv.URL, spi.ScheduledTask{ID: "rt-ok", TenantID: testTenant}); err != nil {
 			t.Fatalf("ExecuteScheduledTask: %v", err)
 		}
 		if fake.calls != 1 || fake.gotTask.ID != "rt-ok" {
@@ -490,7 +495,7 @@ func TestSchedulerRPC_SealedRoundTrip(t *testing.T) {
 		srv := serve(t, fake)
 		client := NewSchedulerRPCClient(newTestAuth(t), 5*time.Second).AllowLoopbackForTesting()
 
-		err := client.ExecuteScheduledTask(context.Background(), srv.URL, spi.ScheduledTask{ID: "rt-fail", TenantID: testTenant})
+		err := client.ExecuteScheduledTask(context.Background(), testPeerNodeID, srv.URL, spi.ScheduledTask{ID: "rt-fail", TenantID: testTenant})
 		if err == nil {
 			t.Fatal("expected the peer's reported failure to reach the coordinator")
 		}
@@ -541,5 +546,36 @@ func TestSchedulerRPCHandler_AnswerIsSealedForItsRequest(t *testing.T) {
 	}
 	if !resp.Success {
 		t.Errorf("Success = false, want true: %+v", resp)
+	}
+}
+
+// TestSchedulerRPC_SealedForOneNodeRefusedByAnother proves a delegated fire is
+// sealed for the one node the coordinator resolved: the same bytes delivered to
+// another node of the cluster — which holds the same key — are refused there,
+// and its engine never runs the task. Without the binding a captured fire
+// replays on every node, firing the transition once per node.
+//
+// The answer's half of the same binding is pinned where the associated data is
+// built, in internal/cluster/dispatch: both surfaces sign through the one
+// PeerAuth.
+func TestSchedulerRPC_SealedForOneNodeRefusedByAnother(t *testing.T) {
+	elsewhere, err := dispatch.NewAEADPeerAuth(testSecret32, "another-node", 30*time.Second)
+	if err != nil {
+		t.Fatalf("NewAEADPeerAuth: %v", err)
+	}
+	fake := &fakeSchedEngine{outcome: "fired"}
+	mux := http.NewServeMux()
+	NewSchedulerRPCHandler(fake, elsewhere).Register(mux)
+
+	// Sealed for testPeerNodeID, delivered to the node named another-node.
+	req, _ := signedSchedulerRequest(t, newTestAuth(t), spi.ScheduledTask{ID: "replayed-task", TenantID: testTenant})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 for a fire sealed for another node", rec.Code)
+	}
+	if fake.calls != 0 {
+		t.Error("a fire sealed for another node reached the engine")
 	}
 }

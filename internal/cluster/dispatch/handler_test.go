@@ -58,10 +58,16 @@ func newHandlerMux(t *testing.T, runner LocalRunner, auth PeerAuth) *http.ServeM
 
 var testSecret32 = bytes.Repeat([]byte{0xAB}, 32)
 
-// newAEAD builds an AEADPeerAuth keyed by testSecret32. Internal test helper.
+// testSelfNodeID is the node id every AEADPeerAuth in these tests answers to.
+// A test that needs two nodes that must NOT open each other's envelopes builds
+// them with NewAEADPeerAuth and ids of its own (aead_recipient_test.go).
+const testSelfNodeID = "node-self"
+
+// newAEAD builds an AEADPeerAuth keyed by testSecret32, for testSelfNodeID.
+// Internal test helper.
 func newAEAD(t *testing.T) *AEADPeerAuth {
 	t.Helper()
-	a, err := NewAEADPeerAuth(testSecret32, 30*time.Second)
+	a, err := NewAEADPeerAuth(testSecret32, testSelfNodeID, 30*time.Second)
 	if err != nil {
 		t.Fatalf("NewAEADPeerAuth: %v", err)
 	}
@@ -73,7 +79,7 @@ func newAEAD(t *testing.T) *AEADPeerAuth {
 func signedRequestWithBinding(t *testing.T, auth *AEADPeerAuth, method, path string, plain []byte) (*http.Request, ResponseBinding) {
 	t.Helper()
 	req := httptest.NewRequest(method, path, nil)
-	wire, binding, err := auth.Sign(req, plain)
+	wire, binding, err := auth.Sign(req, testSelfNodeID, plain)
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
@@ -540,7 +546,7 @@ func TestHandler_ReconstructsPrincipalKindInContext(t *testing.T) {
 }
 
 func TestNewAEADPeerAuth_SecretTooShort(t *testing.T) {
-	_, err := NewAEADPeerAuth([]byte("short"), 30*time.Second)
+	_, err := NewAEADPeerAuth([]byte("short"), testSelfNodeID, 30*time.Second)
 	if err == nil {
 		t.Fatal("expected error for short secret")
 	}

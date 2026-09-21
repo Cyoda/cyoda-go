@@ -42,41 +42,65 @@ const (
 // shared secret is under the 32-byte minimum.
 var ErrSharedSecretTooShort = errors.New("shared secret must be at least 32 bytes")
 
+// ErrNodeIDRequired is returned by NewAEADPeerAuth when no node id is given. A
+// node that cannot name itself cannot tell an envelope sealed for it from one
+// sealed for another node, which is the whole of what the recipient binding is
+// for.
+var ErrNodeIDRequired = errors.New("peer auth needs this node's id")
+
+// ErrRecipientRequired is returned by Sign when no recipient is named. The
+// envelope would be sealed under associated data no node builds, so it is
+// refused here rather than sent to fail at the far end as a lost answer.
+var ErrRecipientRequired = errors.New("an envelope must name the node it is sealed for")
+
 // AEADPeerAuth implements PeerAuth using AES-256-GCM with an HKDF-derived key.
 //
 // On the wire, a body is [nonce(12) || ciphertext||tag], in both directions.
 // The associated data of a request binds a direction label, the HTTP method,
-// the path and the timestamp; that of an answer binds the other direction
-// label, the path, and the timestamp and nonce of the request it answers. So an
-// envelope cannot be replayed across endpoints, reflected back in the other
-// direction, or moved onto another request. A sliding nonce cache rejects
-// repeated requests within the skew window; answers need none, being bound to a
-// request nonce their receiver chose.
+// the path, the timestamp and the id of the node it is sealed FOR; that of an
+// answer binds the other direction label, the path, the timestamp, the same
+// recipient and the nonce of the request it answers. So an envelope cannot be
+// replayed across endpoints, reflected back in the other direction, moved onto
+// another request, or — the reason the recipient is in both — delivered to
+// another node of the cluster, which holds the same key and would otherwise
+// both accept it and seal an answer the owner could not tell from the genuine
+// one. The recipient is never on the wire: the sender names the node it looked
+// up, the receiver names itself, and the two agree only when the envelope
+// reached the node it was meant for.
+//
+// A sliding nonce cache rejects repeated requests within the skew window;
+// answers need none, being bound to a request nonce their receiver chose.
 type AEADPeerAuth struct {
-	gcm     cipher.AEAD
-	nonces  *nonceCache
-	skew    time.Duration
-	clockFn func() time.Time
+	gcm        cipher.AEAD
+	selfNodeID string
+	nonces     *nonceCache
+	skew       time.Duration
+	clockFn    func() time.Time
 }
 
 // NewAEADPeerAuth returns an AEADPeerAuth keyed by HKDF-SHA256 over the
-// given shared secret. The secret is the same cluster-wide value as
-// CYODA_HMAC_SECRET; HKDF separates the dispatch key from the memberlist
-// gossip key so a compromise of one primitive does not extend to the other.
-func NewAEADPeerAuth(sharedSecret []byte, skew time.Duration) (*AEADPeerAuth, error) {
-	return newAEADPeerAuth(sharedSecret, skew, time.Now)
+// given shared secret, for the node named selfNodeID. The secret is the same
+// cluster-wide value as CYODA_HMAC_SECRET; HKDF separates the dispatch key from
+// the memberlist gossip key so a compromise of one primitive does not extend to
+// the other. selfNodeID is this node's own id, which is what every inbound
+// envelope must have been sealed for.
+func NewAEADPeerAuth(sharedSecret []byte, selfNodeID string, skew time.Duration) (*AEADPeerAuth, error) {
+	return newAEADPeerAuth(sharedSecret, selfNodeID, skew, time.Now)
 }
 
 // NewAEADPeerAuthWithClockForTesting is an AEADPeerAuth whose notion of "now"
 // is controlled by the caller. Reserved for tests that exercise timestamp
 // skew and replay-TTL behaviour. Production code MUST use NewAEADPeerAuth.
-func NewAEADPeerAuthWithClockForTesting(sharedSecret []byte, skew time.Duration, clockFn func() time.Time) (*AEADPeerAuth, error) {
-	return newAEADPeerAuth(sharedSecret, skew, clockFn)
+func NewAEADPeerAuthWithClockForTesting(sharedSecret []byte, selfNodeID string, skew time.Duration, clockFn func() time.Time) (*AEADPeerAuth, error) {
+	return newAEADPeerAuth(sharedSecret, selfNodeID, skew, clockFn)
 }
 
-func newAEADPeerAuth(sharedSecret []byte, skew time.Duration, clockFn func() time.Time) (*AEADPeerAuth, error) {
+func newAEADPeerAuth(sharedSecret []byte, selfNodeID string, skew time.Duration, clockFn func() time.Time) (*AEADPeerAuth, error) {
 	if len(sharedSecret) < 32 {
 		return nil, ErrSharedSecretTooShort
+	}
+	if selfNodeID == "" {
+		return nil, ErrNodeIDRequired
 	}
 	key := deriveDispatchKey(sharedSecret)
 	block, err := aes.NewCipher(key)
@@ -88,10 +112,11 @@ func newAEADPeerAuth(sharedSecret []byte, skew time.Duration, clockFn func() tim
 		return nil, fmt.Errorf("build AES-GCM: %w", err)
 	}
 	return &AEADPeerAuth{
-		gcm:     gcm,
-		nonces:  newNonceCache(skew*2, nonceCacheCapacity, clockFn),
-		skew:    skew,
-		clockFn: clockFn,
+		gcm:        gcm,
+		selfNodeID: selfNodeID,
+		nonces:     newNonceCache(skew*2, nonceCacheCapacity, clockFn),
+		skew:       skew,
+		clockFn:    clockFn,
 	}, nil
 }
 
@@ -127,9 +152,13 @@ const (
 	directionResponse = "response"
 )
 
-// Sign wraps body in an AEAD envelope, sets the Content-Type and timestamp
-// headers, and returns the wire bytes and the binding for the answer.
-func (a *AEADPeerAuth) Sign(req *http.Request, body []byte) ([]byte, ResponseBinding, error) {
+// Sign wraps body in an AEAD envelope sealed for recipientNodeID, sets the
+// Content-Type and timestamp headers, and returns the wire bytes and the
+// binding for the answer.
+func (a *AEADPeerAuth) Sign(req *http.Request, recipientNodeID string, body []byte) ([]byte, ResponseBinding, error) {
+	if recipientNodeID == "" {
+		return nil, ResponseBinding{}, ErrRecipientRequired
+	}
 	ts := strconv.FormatInt(a.clockFn().Unix(), 10)
 
 	nonce := make([]byte, a.gcm.NonceSize())
@@ -137,14 +166,14 @@ func (a *AEADPeerAuth) Sign(req *http.Request, body []byte) ([]byte, ResponseBin
 		return nil, ResponseBinding{}, fmt.Errorf("failed to generate nonce: %w", err)
 	}
 
-	ct := a.gcm.Seal(nil, nonce, body, buildRequestAD(req.Method, req.URL.Path, ts))
+	ct := a.gcm.Seal(nil, nonce, body, buildRequestAD(req.Method, req.URL.Path, ts, recipientNodeID))
 	wire := make([]byte, 0, len(nonce)+len(ct))
 	wire = append(wire, nonce...)
 	wire = append(wire, ct...)
 
 	req.Header.Set("Content-Type", DispatchContentType)
 	req.Header.Set(DispatchTimestampHdr, ts)
-	return wire, ResponseBinding{path: req.URL.Path, nonce: nonce, ts: ts}, nil
+	return wire, ResponseBinding{recipient: recipientNodeID, path: req.URL.Path, nonce: nonce, ts: ts}, nil
 }
 
 // Verify validates the request's timestamp skew, AEAD envelope, and nonce
@@ -184,12 +213,15 @@ func (a *AEADPeerAuth) Verify(r *http.Request) ([]byte, PeerIdentity, ResponseBi
 	// slice of the buffer the answer is sealed from.
 	nonce := append([]byte(nil), body[:nonceSize]...)
 
-	pt, err := a.gcm.Open(nil, nonce, body[nonceSize:], buildRequestAD(r.Method, r.URL.Path, tsStr))
+	// The associated data names THIS node as the recipient. A hand-over sealed
+	// for another node — a capture delivered here by an attacker on the path
+	// between nodes — fails to open, although this node holds the same key.
+	pt, err := a.gcm.Open(nil, nonce, body[nonceSize:], buildRequestAD(r.Method, r.URL.Path, tsStr, a.selfNodeID))
 	if err != nil {
 		return nil, PeerIdentity{}, none, fmt.Errorf("AEAD open failed: %w", err)
 	}
 	identity := PeerIdentity{authMethod: authMethodAEADv1}
-	binding := ResponseBinding{path: r.URL.Path, nonce: nonce, ts: tsStr}
+	binding := ResponseBinding{recipient: a.selfNodeID, path: r.URL.Path, nonce: nonce, ts: tsStr}
 
 	// Record the nonce only after successful decrypt. A flood of bogus
 	// nonces that fail AEAD.Open never enters the cache. From here on the
@@ -243,15 +275,20 @@ func (a *AEADPeerAuth) OpenResponse(h http.Header, binding ResponseBinding, wire
 
 // buildRequestAD is the associated data of a request. Binding the direction,
 // method, path and timestamp to the ciphertext prevents reflection,
-// cross-endpoint and timestamp-strip replays without an outer signature.
-func buildRequestAD(method, path, ts string) []byte {
-	return []byte(directionRequest + "\n" + method + "\n" + path + "\n" + ts)
+// cross-endpoint and timestamp-strip replays without an outer signature; the
+// recipient's node id binds it to the one node of the cluster it was sent to.
+// The recipient comes last, so that a node id carrying the separator cannot
+// shift the meaning of any field before it.
+func buildRequestAD(method, path, ts, recipient string) []byte {
+	return []byte(directionRequest + "\n" + method + "\n" + path + "\n" + ts + "\n" + recipient)
 }
 
 // buildResponseAD is the associated data of an answer: the other direction
-// label, the path, and the timestamp and nonce of the request it answers. The
-// nonce comes last because it is binary and of fixed length.
+// label, the path, the timestamp of the request it answers, the node that
+// answers it, and that request's nonce. The nonce comes last because it is
+// binary and of fixed length, which is also what keeps the recipient before it
+// unambiguous.
 func buildResponseAD(b ResponseBinding) []byte {
-	ad := []byte(directionResponse + "\n" + b.path + "\n" + b.ts + "\n")
+	ad := []byte(directionResponse + "\n" + b.path + "\n" + b.ts + "\n" + b.recipient + "\n")
 	return append(ad, b.nonce...)
 }

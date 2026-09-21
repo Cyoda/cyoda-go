@@ -24,13 +24,17 @@ var ErrNonceReplayed = errors.New("request nonce was seen before")
 var ErrReplayCacheFull = errors.New("replay cache is full")
 
 // ResponseBinding is what ties an answer to the one request it answers: the
-// request's path, nonce and timestamp. Sign returns it to the sender; Verify
-// returns the same value to the receiver. The zero value binds to nothing and
-// neither seals nor opens.
+// request's path, nonce and timestamp, and the node it was sealed for. Sign
+// returns it to the sender, naming the node it asked; Verify returns the same
+// value to the receiver, naming itself. The two agree only where the request
+// reached the node it was meant for, so an answer from any other node of the
+// cluster — which holds the same key — does not open. The zero value binds to
+// nothing and neither seals nor opens.
 type ResponseBinding struct {
-	path  string
-	nonce []byte
-	ts    string
+	recipient string
+	path      string
+	nonce     []byte
+	ts        string
 }
 
 // PeerAuth authenticates inter-node dispatch HTTP requests at the message
@@ -54,17 +58,22 @@ type ResponseBinding struct {
 //     transport-auth-only impl returns the body unchanged from both
 //     SealResponse and OpenResponse.
 type PeerAuth interface {
-	// Sign transforms the plaintext body into an on-the-wire body, setting
-	// any required headers on req, and returns the binding under which the
-	// answer to this request must be opened. The returned slice replaces
-	// req.Body at the call site. Implementations MAY write to req.Header
-	// (including overriding Content-Type) but MUST NOT capture or retain req
-	// past the call.
-	Sign(req *http.Request, body []byte) (wireBody []byte, binding ResponseBinding, err error)
+	// Sign transforms the plaintext body into an on-the-wire body sealed for
+	// recipientNodeID — the id of the node the caller resolved the address of,
+	// which only that node can open the envelope under — setting any required
+	// headers on req, and returns the binding under which the answer to this
+	// request must be opened. An empty recipientNodeID is refused: the caller
+	// has not established which node it is talking to. The returned slice
+	// replaces req.Body at the call site. Implementations MAY write to
+	// req.Header (including overriding Content-Type) but MUST NOT capture or
+	// retain req past the call.
+	Sign(req *http.Request, recipientNodeID string, body []byte) (wireBody []byte, binding ResponseBinding, err error)
 
-	// Verify reads the request body, validates it, and returns the
-	// authenticated plaintext, the peer's identity and the binding for the
-	// answer. A non-nil error means the request is refused. The binding is
+	// Verify reads the request body, validates it — including that it was
+	// sealed for THIS node — and returns the authenticated plaintext, the
+	// peer's identity and the binding for the answer. A non-nil error means the
+	// request is refused, an envelope sealed for another node included. The
+	// binding is
 	// valid when err is nil and when errors.Is(err, ErrReplayCacheFull); for
 	// any other error — ErrNonceReplayed included — it is the zero value and
 	// the caller must respond with 403.

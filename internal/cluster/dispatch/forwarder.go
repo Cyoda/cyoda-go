@@ -13,9 +13,11 @@ import (
 	"time"
 )
 
-// DispatchForwarder sends a callout dispatch request to a peer node.
+// DispatchForwarder sends a callout dispatch request to a peer node. The peer
+// is named twice: by its node id, which the envelope is sealed for, and by the
+// address the registry gave for it, which is dialled.
 type DispatchForwarder interface {
-	ForwardCallout(ctx context.Context, addr string, req DispatchCalloutRequest) (*DispatchCalloutResponse, error)
+	ForwardCallout(ctx context.Context, peerNodeID, addr string, req DispatchCalloutRequest) (*DispatchCalloutResponse, error)
 }
 
 // ForwardStage says how far a hand-over got before it failed. It is what lets
@@ -108,15 +110,16 @@ func (f *HTTPForwarder) AllowLoopbackForTesting() *HTTPForwarder {
 	return f
 }
 
-// ForwardCallout POSTs a callout dispatch request to the peer at addr and returns the response.
-func (f *HTTPForwarder) ForwardCallout(ctx context.Context, addr string, req DispatchCalloutRequest) (*DispatchCalloutResponse, error) {
+// ForwardCallout POSTs a callout dispatch request to the peer at addr, sealed
+// for peerNodeID, and returns the response.
+func (f *HTTPForwarder) ForwardCallout(ctx context.Context, peerNodeID, addr string, req DispatchCalloutRequest) (*DispatchCalloutResponse, error) {
 	if err := validatePeerAddress(addr, f.allowLoopback); err != nil {
 		// A property of this one peer, not of the callout: nothing was sent,
 		// and another peer may still take the work.
 		return nil, stageErr(StageNotConnected, err)
 	}
 	var resp DispatchCalloutResponse
-	if err := f.forward(ctx, ensureScheme(addr)+"/internal/dispatch/callout", &req, &resp); err != nil {
+	if err := f.forward(ctx, peerNodeID, ensureScheme(addr)+"/internal/dispatch/callout", &req, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -131,10 +134,10 @@ func ensureScheme(addr string) string {
 }
 
 // forward marshals reqBody as JSON, hands it to the PeerAuth for wire
-// encoding, POSTs the resulting bytes, and decodes the JSON response. The
-// answer comes back sealed for this request and is opened with the binding
-// Sign returned.
-func (f *HTTPForwarder) forward(ctx context.Context, url string, reqBody any, respBody any) error {
+// encoding sealed for peerNodeID, POSTs the resulting bytes, and decodes the
+// JSON response. The answer comes back sealed for this request and is opened
+// with the binding Sign returned.
+func (f *HTTPForwarder) forward(ctx context.Context, peerNodeID, url string, reqBody any, respBody any) error {
 	plain, err := json.Marshal(reqBody)
 	if err != nil {
 		return stageErr(StageBeforeConnect, fmt.Errorf("dispatch forward: marshal request: %w", err))
@@ -152,7 +155,7 @@ func (f *HTTPForwarder) forward(ctx context.Context, url string, reqBody any, re
 	// mTLS can leave it alone.
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	wire, binding, err := f.auth.Sign(httpReq, plain)
+	wire, binding, err := f.auth.Sign(httpReq, peerNodeID, plain)
 	if err != nil {
 		return stageErr(StageBeforeConnect, fmt.Errorf("dispatch forward: sign body: %w", err))
 	}

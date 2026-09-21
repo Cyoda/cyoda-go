@@ -33,7 +33,7 @@ func TestHTTPForwarder_EveryHandOverOpensItsOwnConnection(t *testing.T) {
 
 	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), time.Second).AllowLoopbackForTesting()
 	for i := 0; i < 3; i++ {
-		if _, err := f.ForwardCallout(context.Background(), srv.URL, makeProcessorReq()); err != nil {
+		if _, err := f.ForwardCallout(context.Background(), testNodeID, srv.URL, makeProcessorReq()); err != nil {
 			t.Fatalf("hand-over %d: %v", i, err)
 		}
 	}
@@ -49,7 +49,7 @@ func TestHTTPForwarder_TheWaitIsNotBoundedByTheConnectTimeout(t *testing.T) {
 		return okAnswer(r, p)
 	})
 	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 50*time.Millisecond).AllowLoopbackForTesting()
-	if _, err := f.ForwardCallout(context.Background(), srv.URL, makeProcessorReq()); err != nil {
+	if _, err := f.ForwardCallout(context.Background(), testNodeID, srv.URL, makeProcessorReq()); err != nil {
 		t.Fatalf("the connect timeout cut off the wait for the answer: %v", err)
 	}
 }
@@ -68,7 +68,7 @@ func TestHTTPForwarder_TheWaitIsTheContextsDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	_, err := f.ForwardCallout(ctx, srv.URL, makeProcessorReq())
+	_, err := f.ForwardCallout(ctx, testNodeID, srv.URL, makeProcessorReq())
 
 	var fe *dispatch.ForwardError
 	if !errors.As(err, &fe) || fe.Stage != dispatch.StageAfterConnect {
@@ -113,7 +113,7 @@ func TestHTTPForwarder_StalledTLSHandshake_IsAfterConnect_AndBounded(t *testing.
 
 	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 200*time.Millisecond).AllowLoopbackForTesting()
 	start := time.Now()
-	_, err = f.ForwardCallout(context.Background(), "https://"+ln.Addr().String(), makeProcessorReq())
+	_, err = f.ForwardCallout(context.Background(), testNodeID, "https://"+ln.Addr().String(), makeProcessorReq())
 
 	var fe *dispatch.ForwardError
 	if !errors.As(err, &fe) || fe.Stage != dispatch.StageAfterConnect {

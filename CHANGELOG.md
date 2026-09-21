@@ -135,16 +135,20 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   name and meaning for the node-to-node call that delegates a scheduled
   transition.
 
-- **Every node of a cluster must run this version.** The message by which one
-  node hands a callout to another changed: requests are bound to their
-  direction, the answer is sealed for the one request it answers, and the
-  payload states the outcome explicitly. The node-to-node call that delegates a
-  scheduled transition travels in the same envelope and changed with it. A
-  mixed-version cluster can therefore neither hand a callout over nor forward a
-  scheduled transition: a node of this version treats an answer it cannot
-  authenticate as lost, and an older node cannot read what this one sends. Stop
-  the cluster to upgrade it; there is no rolling upgrade across this change. See
-  `docs/cloud-parity/callout-failover.md`.
+- **Every node of a cluster must run this version, and every node needs its own
+  `CYODA_NODE_ID`.** The message by which one node hands a callout to another
+  changed: requests are bound to their direction and to the id of the node they
+  are sealed for, the answer is sealed for the one request it answers and for
+  that same node, and the payload states the outcome explicitly. The node id is
+  not sent — the sender names the node whose address it looked up, the receiver
+  names itself — so a hand-over opens only on the node it was meant for, and two
+  nodes sharing one id would open each other's. The node-to-node call that
+  delegates a scheduled transition travels in the same envelope and changed with
+  it. A mixed-version cluster can therefore neither hand a callout over nor
+  forward a scheduled transition: a node of this version treats an answer it
+  cannot authenticate as lost, and an older node cannot read what this one
+  sends. Stop the cluster to upgrade it; there is no rolling upgrade across this
+  change. See `docs/cloud-parity/callout-failover.md`.
 
 - **A node whose identity does not fit the cluster's membership metadata refuses
   to start.** The metadata carries `CYODA_NODE_ID`, `CYODA_NODE_ADDR` and

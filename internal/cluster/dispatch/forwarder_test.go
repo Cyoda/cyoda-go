@@ -116,7 +116,7 @@ func TestHTTPForwarder_ProcessorSuccess(t *testing.T) {
 	})
 
 	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
-	resp, err := f.ForwardCallout(context.Background(), srv.URL, makeProcessorReq())
+	resp, err := f.ForwardCallout(context.Background(), testNodeID, srv.URL, makeProcessorReq())
 	if err != nil {
 		t.Fatalf("ForwardCallout: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestHTTPForwarder_CriteriaSuccess(t *testing.T) {
 	})
 
 	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
-	resp, err := f.ForwardCallout(context.Background(), srv.URL, makeCriteriaReq())
+	resp, err := f.ForwardCallout(context.Background(), testNodeID, srv.URL, makeCriteriaReq())
 	if err != nil {
 		t.Fatalf("ForwardCallout: %v", err)
 	}
@@ -165,12 +165,12 @@ func TestHTTPForwarder_PeerUnreachable(t *testing.T) {
 	// localhost:1 is guaranteed unreachable (privileged port, never listening)
 	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 2*time.Second).AllowLoopbackForTesting()
 
-	_, err := f.ForwardCallout(context.Background(), "http://localhost:1", makeProcessorReq())
+	_, err := f.ForwardCallout(context.Background(), testNodeID, "http://localhost:1", makeProcessorReq())
 	if err == nil {
 		t.Fatal("expected error for unreachable peer, got nil")
 	}
 
-	_, err = f.ForwardCallout(context.Background(), "http://localhost:1", makeCriteriaReq())
+	_, err = f.ForwardCallout(context.Background(), testNodeID, "http://localhost:1", makeCriteriaReq())
 	if err == nil {
 		t.Fatal("expected error for unreachable peer, got nil")
 	}
@@ -194,7 +194,7 @@ func TestHTTPForwarder_WireBodyIsEncrypted(t *testing.T) {
 	defer srv.Close()
 
 	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
-	if _, err := f.ForwardCallout(context.Background(), srv.URL, makeProcessorReq()); err != nil {
+	if _, err := f.ForwardCallout(context.Background(), testNodeID, srv.URL, makeProcessorReq()); err != nil {
 		t.Fatalf("ForwardCallout: %v", err)
 	}
 
@@ -223,7 +223,7 @@ func TestHTTPForwarder_AddrWithoutScheme(t *testing.T) {
 	addrWithoutScheme := srv.Listener.Addr().String() // e.g., "127.0.0.1:PORT"
 
 	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
-	resp, err := f.ForwardCallout(context.Background(), addrWithoutScheme, makeProcessorReq())
+	resp, err := f.ForwardCallout(context.Background(), testNodeID, addrWithoutScheme, makeProcessorReq())
 	if err != nil {
 		t.Fatalf("ForwardCallout with schemeless addr should work: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestHTTPForwarder_PeerReturnsError(t *testing.T) {
 	defer srv.Close()
 
 	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
-	_, err := f.ForwardCallout(context.Background(), srv.URL, makeProcessorReq())
+	_, err := f.ForwardCallout(context.Background(), testNodeID, srv.URL, makeProcessorReq())
 	if err == nil {
 		t.Fatal("expected error for 500 response, got nil")
 	}
@@ -257,7 +257,7 @@ func TestHTTPForwarder_PlaintextAnswerRefused(t *testing.T) {
 	defer srv.Close()
 
 	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
-	if _, err := f.ForwardCallout(context.Background(), srv.URL, makeProcessorReq()); err == nil {
+	if _, err := f.ForwardCallout(context.Background(), testNodeID, srv.URL, makeProcessorReq()); err == nil {
 		t.Fatal("an answer that was not sealed was accepted")
 	}
 }
@@ -290,10 +290,10 @@ func TestHTTPForwarder_AnswerSealedForAnotherRequestRefused(t *testing.T) {
 	defer srv.Close()
 
 	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
-	if _, err := f.ForwardCallout(context.Background(), srv.URL, makeProcessorReq()); err != nil {
+	if _, err := f.ForwardCallout(context.Background(), testNodeID, srv.URL, makeProcessorReq()); err != nil {
 		t.Fatalf("first hand-over: %v", err)
 	}
-	_, err := f.ForwardCallout(context.Background(), srv.URL, makeProcessorReq())
+	_, err := f.ForwardCallout(context.Background(), testNodeID, srv.URL, makeProcessorReq())
 	if err == nil {
 		t.Fatal("an answer replayed from an earlier request was accepted")
 	}
@@ -322,7 +322,7 @@ func TestHTTPForwarder_FollowsNoRedirect(t *testing.T) {
 			defer srv.Close()
 
 			f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
-			if _, err := f.ForwardCallout(context.Background(), srv.URL, makeProcessorReq()); err == nil {
+			if _, err := f.ForwardCallout(context.Background(), testNodeID, srv.URL, makeProcessorReq()); err == nil {
 				t.Fatal("a redirected hand-over was accepted")
 			}
 			if reached {
@@ -346,7 +346,7 @@ func TestHTTPForwarder_TruncatedAnswerRefused(t *testing.T) {
 	defer srv.Close()
 
 	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
-	_, err := f.ForwardCallout(context.Background(), srv.URL, makeProcessorReq())
+	_, err := f.ForwardCallout(context.Background(), testNodeID, srv.URL, makeProcessorReq())
 	if err == nil {
 		t.Fatal("a truncated answer was accepted")
 	}

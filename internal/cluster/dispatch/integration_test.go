@@ -57,7 +57,7 @@ func TestIntegration_HandOver_FullFlow(t *testing.T) {
 			peer := httptest.NewServer(newHandlerMux(t, runner, peerAuth))
 			defer peer.Close()
 
-			a := realRouter(t, true).HandOver(testContext(), contract.NodeInfo{NodeID: "peer-b", Addr: peer.URL}, ownerCallout(t, tt.kind), 3, 1)
+			a := realRouter(t, true).HandOver(testContext(), contract.NodeInfo{NodeID: testSelfNodeID, Addr: peer.URL}, ownerCallout(t, tt.kind), 3, 1)
 			if a.Failure != nil {
 				t.Fatalf("Failure = %+v, want the peer's answer", a.Failure)
 			}

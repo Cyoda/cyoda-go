@@ -27,7 +27,7 @@ func aeadFixedClock(t time.Time) func() time.Time {
 func signAndBuildRequest(t *testing.T, auth dispatch.PeerAuth, method, path string, body []byte) *http.Request {
 	t.Helper()
 	req := httptest.NewRequest(method, path, nil)
-	wire, _, err := auth.Sign(req, body)
+	wire, _, err := auth.Sign(req, testNodeID, body)
 	if err != nil {
 		t.Fatalf("Sign failed: %v", err)
 	}
@@ -39,7 +39,7 @@ func signAndBuildRequest(t *testing.T, auth dispatch.PeerAuth, method, path stri
 }
 
 func TestAEADPeerAuth_RoundTrip(t *testing.T) {
-	a, err := dispatch.NewAEADPeerAuth(testSecret, 30*time.Second)
+	a, err := dispatch.NewAEADPeerAuth(testSecret, testNodeID, 30*time.Second)
 	if err != nil {
 		t.Fatalf("NewAEADPeerAuth: %v", err)
 	}
@@ -64,13 +64,13 @@ func TestAEADPeerAuth_RoundTrip(t *testing.T) {
 
 func TestAEADPeerAuth_RejectsShortSecret(t *testing.T) {
 	short := bytes.Repeat([]byte{0xAB}, 31)
-	if _, err := dispatch.NewAEADPeerAuth(short, 30*time.Second); err == nil {
+	if _, err := dispatch.NewAEADPeerAuth(short, testNodeID, 30*time.Second); err == nil {
 		t.Fatal("expected error for secret < 32 bytes")
 	}
 }
 
 func TestAEADPeerAuth_TamperedCiphertextFails(t *testing.T) {
-	a, _ := dispatch.NewAEADPeerAuth(testSecret, 30*time.Second)
+	a, _ := dispatch.NewAEADPeerAuth(testSecret, testNodeID, 30*time.Second)
 	req := signAndBuildRequest(t, a, "POST", "/internal/dispatch/processor", []byte(`{"a":1}`))
 
 	wire, _ := io.ReadAll(req.Body)
@@ -84,7 +84,7 @@ func TestAEADPeerAuth_TamperedCiphertextFails(t *testing.T) {
 }
 
 func TestAEADPeerAuth_TamperedNonceFails(t *testing.T) {
-	a, _ := dispatch.NewAEADPeerAuth(testSecret, 30*time.Second)
+	a, _ := dispatch.NewAEADPeerAuth(testSecret, testNodeID, 30*time.Second)
 	req := signAndBuildRequest(t, a, "POST", "/internal/dispatch/processor", []byte(`{"a":1}`))
 	wire, _ := io.ReadAll(req.Body)
 	wire[0] ^= 0xFF
@@ -96,7 +96,7 @@ func TestAEADPeerAuth_TamperedNonceFails(t *testing.T) {
 }
 
 func TestAEADPeerAuth_CrossEndpointReplayRejected(t *testing.T) {
-	a, _ := dispatch.NewAEADPeerAuth(testSecret, 30*time.Second)
+	a, _ := dispatch.NewAEADPeerAuth(testSecret, testNodeID, 30*time.Second)
 	// Sign for processor, try to verify as criteria.
 	req := signAndBuildRequest(t, a, "POST", "/internal/dispatch/processor", []byte(`{"a":1}`))
 	wire, _ := io.ReadAll(req.Body)
@@ -111,7 +111,7 @@ func TestAEADPeerAuth_CrossEndpointReplayRejected(t *testing.T) {
 }
 
 func TestAEADPeerAuth_MethodChangeRejected(t *testing.T) {
-	a, _ := dispatch.NewAEADPeerAuth(testSecret, 30*time.Second)
+	a, _ := dispatch.NewAEADPeerAuth(testSecret, testNodeID, 30*time.Second)
 	req := signAndBuildRequest(t, a, "POST", "/internal/dispatch/processor", []byte(`{"a":1}`))
 	wire, _ := io.ReadAll(req.Body)
 
@@ -126,11 +126,11 @@ func TestAEADPeerAuth_MethodChangeRejected(t *testing.T) {
 
 func TestAEADPeerAuth_StaleTimestampRejected(t *testing.T) {
 	base := time.Unix(1_700_000_000, 0)
-	a, _ := dispatch.NewAEADPeerAuthWithClockForTesting(testSecret, 30*time.Second, aeadFixedClock(base))
+	a, _ := dispatch.NewAEADPeerAuthWithClockForTesting(testSecret, testNodeID, 30*time.Second, aeadFixedClock(base))
 
 	// Sign at T.
 	req := httptest.NewRequest("POST", "/internal/dispatch/processor", nil)
-	wire, _, err := a.Sign(req, []byte(`{"a":1}`))
+	wire, _, err := a.Sign(req, testNodeID, []byte(`{"a":1}`))
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
@@ -154,10 +154,10 @@ func TestAEADPeerAuth_StaleTimestampRejected(t *testing.T) {
 }
 
 func TestAEADPeerAuth_ReplayWithinWindowRejected(t *testing.T) {
-	a, _ := dispatch.NewAEADPeerAuth(testSecret, 30*time.Second)
+	a, _ := dispatch.NewAEADPeerAuth(testSecret, testNodeID, 30*time.Second)
 
 	req := httptest.NewRequest("POST", "/internal/dispatch/processor", nil)
-	wire, _, err := a.Sign(req, []byte(`{"a":1}`))
+	wire, _, err := a.Sign(req, testNodeID, []byte(`{"a":1}`))
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
@@ -179,12 +179,12 @@ func TestAEADPeerAuth_ReplayWithinWindowRejected(t *testing.T) {
 }
 
 func TestAEADPeerAuth_DifferentSecretsIncompatible(t *testing.T) {
-	a1, _ := dispatch.NewAEADPeerAuth(testSecret, 30*time.Second)
+	a1, _ := dispatch.NewAEADPeerAuth(testSecret, testNodeID, 30*time.Second)
 	otherSecret := bytes.Repeat([]byte{0xCD}, 32)
-	a2, _ := dispatch.NewAEADPeerAuth(otherSecret, 30*time.Second)
+	a2, _ := dispatch.NewAEADPeerAuth(otherSecret, testNodeID, 30*time.Second)
 
 	req := httptest.NewRequest("POST", "/internal/dispatch/processor", nil)
-	wire, _, _ := a1.Sign(req, []byte(`{"a":1}`))
+	wire, _, _ := a1.Sign(req, testNodeID, []byte(`{"a":1}`))
 	ts := req.Header.Get("X-Dispatch-Timestamp")
 
 	recv := httptest.NewRequest("POST", "/internal/dispatch/processor", bytes.NewReader(wire))
@@ -220,14 +220,14 @@ func TestAEADPeerAuth_SkewBoundaryReplayStillRejected(t *testing.T) {
 	clock := base
 	clockFn := func() time.Time { return clock }
 
-	a, err := dispatch.NewAEADPeerAuthWithClockForTesting(testSecret, 30*time.Second, clockFn)
+	a, err := dispatch.NewAEADPeerAuthWithClockForTesting(testSecret, testNodeID, 30*time.Second, clockFn)
 	if err != nil {
 		t.Fatalf("NewAEADPeerAuth: %v", err)
 	}
 
 	// Sign at T.
 	req := httptest.NewRequest("POST", "/internal/dispatch/processor", nil)
-	wire, _, err := a.Sign(req, []byte(`{"a":1}`))
+	wire, _, err := a.Sign(req, testNodeID, []byte(`{"a":1}`))
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
@@ -263,7 +263,7 @@ func TestAEADPeerAuth_SkewBoundaryReplayStillRejected(t *testing.T) {
 }
 
 func TestAEADPeerAuth_ZeroTimestampRejected(t *testing.T) {
-	a, _ := dispatch.NewAEADPeerAuth(testSecret, 30*time.Second)
+	a, _ := dispatch.NewAEADPeerAuth(testSecret, testNodeID, 30*time.Second)
 	req := httptest.NewRequest("POST", "/internal/dispatch/processor", bytes.NewReader([]byte{}))
 	req.Header.Set(dispatch.DispatchTimestampHdr, "0")
 	req.Header.Set("Content-Type", dispatch.DispatchContentType)
@@ -273,7 +273,7 @@ func TestAEADPeerAuth_ZeroTimestampRejected(t *testing.T) {
 }
 
 func TestAEADPeerAuth_NegativeTimestampRejected(t *testing.T) {
-	a, _ := dispatch.NewAEADPeerAuth(testSecret, 30*time.Second)
+	a, _ := dispatch.NewAEADPeerAuth(testSecret, testNodeID, 30*time.Second)
 	req := httptest.NewRequest("POST", "/internal/dispatch/processor", bytes.NewReader([]byte{}))
 	req.Header.Set(dispatch.DispatchTimestampHdr, "-1")
 	req.Header.Set("Content-Type", dispatch.DispatchContentType)
@@ -283,7 +283,7 @@ func TestAEADPeerAuth_NegativeTimestampRejected(t *testing.T) {
 }
 
 func TestAEADPeerAuth_FarFutureTimestampRejected(t *testing.T) {
-	a, _ := dispatch.NewAEADPeerAuth(testSecret, 30*time.Second)
+	a, _ := dispatch.NewAEADPeerAuth(testSecret, testNodeID, 30*time.Second)
 	req := httptest.NewRequest("POST", "/internal/dispatch/processor", bytes.NewReader([]byte{}))
 	// Year 4000 or so.
 	req.Header.Set(dispatch.DispatchTimestampHdr, "64060588800")
@@ -297,9 +297,9 @@ func TestAEADPeerAuth_EmptyPlaintextRoundTrips(t *testing.T) {
 	// Body at the envelope minimum: empty plaintext seals to
 	// nonceSize(12) + overhead(16) = 28 bytes on the wire. Confirms the
 	// len() >= nonceSize + overhead guard accepts the boundary case.
-	a, _ := dispatch.NewAEADPeerAuth(testSecret, 30*time.Second)
+	a, _ := dispatch.NewAEADPeerAuth(testSecret, testNodeID, 30*time.Second)
 	req := httptest.NewRequest("POST", "/internal/dispatch/processor", nil)
-	wire, _, err := a.Sign(req, []byte{})
+	wire, _, err := a.Sign(req, testNodeID, []byte{})
 	if err != nil {
 		t.Fatalf("Sign empty body: %v", err)
 	}
@@ -323,7 +323,7 @@ func TestAEADPeerAuth_EmptyPlaintextRoundTrips(t *testing.T) {
 func TestAEADPeerAuth_ShortBodyRejected(t *testing.T) {
 	// One byte below the envelope minimum must be rejected before any
 	// decrypt attempt.
-	a, _ := dispatch.NewAEADPeerAuth(testSecret, 30*time.Second)
+	a, _ := dispatch.NewAEADPeerAuth(testSecret, testNodeID, 30*time.Second)
 	tooShort := make([]byte, 12+16-1)
 	req := httptest.NewRequest("POST", "/internal/dispatch/processor", bytes.NewReader(tooShort))
 	req.Header.Set(dispatch.DispatchTimestampHdr, strconv.FormatInt(time.Now().Unix(), 10))
@@ -337,11 +337,11 @@ func TestAEADPeerAuth_WireBodyIsNotPlaintextJSON(t *testing.T) {
 	// Confidentiality smoke test: the wire body does not contain the
 	// plaintext JSON secret, proving the envelope encrypts rather than
 	// merely authenticates.
-	a, _ := dispatch.NewAEADPeerAuth(testSecret, 30*time.Second)
+	a, _ := dispatch.NewAEADPeerAuth(testSecret, testNodeID, 30*time.Second)
 	secret := `{"secret_marker":"SENSITIVE_PAYLOAD_7f3a9b"}`
 
 	req := httptest.NewRequest("POST", "/internal/dispatch/processor", nil)
-	wire, _, err := a.Sign(req, []byte(secret))
+	wire, _, err := a.Sign(req, testNodeID, []byte(secret))
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}

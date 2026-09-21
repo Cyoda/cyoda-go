@@ -19,7 +19,7 @@ const handOverPath = "/internal/dispatch/callout"
 func newBoundRequest(t *testing.T, a *AEADPeerAuth, path string, body []byte) (*http.Request, []byte, ResponseBinding) {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, nil)
-	wire, binding, err := a.Sign(req, body)
+	wire, binding, err := a.Sign(req, testSelfNodeID, body)
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestAEADResponse_RoundTrip(t *testing.T) {
 
 func TestAEADResponse_Refused(t *testing.T) {
 	owner, peer := newAEAD(t), newAEAD(t)
-	stranger, err := NewAEADPeerAuth(bytes.Repeat([]byte{0xCD}, 32), 30*time.Second)
+	stranger, err := NewAEADPeerAuth(bytes.Repeat([]byte{0xCD}, 32), testSelfNodeID, 30*time.Second)
 	if err != nil {
 		t.Fatalf("NewAEADPeerAuth: %v", err)
 	}

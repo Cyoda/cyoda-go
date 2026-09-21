@@ -125,7 +125,7 @@ func (c *ClusterExecutor) Execute(ctx context.Context, task spi.ScheduledTask, t
 		return
 	}
 
-	if err := c.client.ExecuteScheduledTask(ctx, addr, task); err != nil {
+	if err := c.client.ExecuteScheduledTask(ctx, target, addr, task); err != nil {
 		slog.Warn("scheduled task peer forward failed, dropping (next scan redispatches)",
 			"pkg", "cluster", "taskId", task.ID, "target", target, "err", err)
 	}
@@ -165,13 +165,14 @@ func (c *SchedulerRPCClient) AllowLoopbackForTesting() *SchedulerRPCClient {
 }
 
 // ExecuteScheduledTask POSTs task to the peer at addr's scheduled-task
-// route, authenticated via the wrapped PeerAuth. The call is
-// fire-and-forget from the coordinator's point of view — a non-nil error
-// means the peer could not be reached, rejected the request, or answered
-// something this node could not open under its request's binding; the caller
-// (ClusterExecutor) logs and drops it rather than retrying inline, relying
-// on the scan loop's at-least-once redispatch.
-func (c *SchedulerRPCClient) ExecuteScheduledTask(ctx context.Context, addr string, task spi.ScheduledTask) error {
+// route, authenticated via the wrapped PeerAuth and sealed for the node named
+// target — the node whose address the registry gave, and the only one that can
+// open it. The call is fire-and-forget from the coordinator's point of view — a
+// non-nil error means the peer could not be reached, rejected the request, or
+// answered something this node could not open under its request's binding; the
+// caller (ClusterExecutor) logs and drops it rather than retrying inline,
+// relying on the scan loop's at-least-once redispatch.
+func (c *SchedulerRPCClient) ExecuteScheduledTask(ctx context.Context, target, addr string, task spi.ScheduledTask) error {
 	if err := peeraddr.Validate(addr, c.allowLoopback); err != nil {
 		return err
 	}
@@ -188,7 +189,7 @@ func (c *SchedulerRPCClient) ExecuteScheduledTask(ctx context.Context, addr stri
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	wire, binding, err := c.auth.Sign(httpReq, plain)
+	wire, binding, err := c.auth.Sign(httpReq, target, plain)
 	if err != nil {
 		return fmt.Errorf("scheduler rpc: sign body: %w", err)
 	}
