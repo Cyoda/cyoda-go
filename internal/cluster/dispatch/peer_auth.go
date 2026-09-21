@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 )
 
@@ -17,11 +18,19 @@ import (
 var ErrNonceReplayed = errors.New("request nonce was seen before")
 
 // ErrReplayCacheFull is returned by Verify when a request opened and
-// authenticated and only the replay cache's capacity refused it. Nothing ran,
-// and only a holder of the key can fill the cache, so the binding returned
+// authenticated and only the replay cache refused it. Nothing ran, and only a
+// holder of the key can bring the cache to that state, so the binding returned
 // beside it is valid: the handler answers under seal rather than with a bare
 // status, which would fail an operation that is not repeat-safe.
-var ErrReplayCacheFull = errors.New("replay cache is full")
+var ErrReplayCacheFull = errors.New("the replay cache is at capacity")
+
+// ErrReplayWatermarked is the other half of the same class: the cache has room,
+// but the request is stamped at or before the last one capacity refused, so it
+// may be that refused request replayed (see nonceCache). It answers to
+// errors.Is(err, ErrReplayCacheFull), so callers judge one class and the log
+// still says which of the two happened — a saturated cache is a flood, and this
+// is the aftermath of one.
+var ErrReplayWatermarked = fmt.Errorf("%w: a request at or before it was refused for capacity", ErrReplayCacheFull)
 
 // ResponseBinding is what ties an answer to the one request it answers: the
 // request's path, nonce and timestamp, and the node it was sealed for. Sign

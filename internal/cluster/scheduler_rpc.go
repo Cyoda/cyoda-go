@@ -309,14 +309,15 @@ func (h *SchedulerRPCHandler) handle(w http.ResponseWriter, r *http.Request) {
 	body, identity, binding, err := h.auth.Verify(r)
 	switch {
 	case errors.Is(err, dispatch.ErrReplayCacheFull):
-		// Opened and authenticated, then refused by the replay cache's
-		// capacity: nothing fired, and the coordinator is told so under seal —
-		// the same answer dispatch.DispatchHandler gives for the same refusal. A
-		// replayed nonce is a different matter and keeps the bare status below:
-		// there is no request to bind that answer to but the one the replay
-		// copies.
-		slog.Warn("scheduled task refused: the replay cache is full",
-			"pkg", "cluster", "remoteAddr", r.RemoteAddr)
+		// Opened and authenticated, then refused by the replay cache — at
+		// capacity, or on the watermark a capacity refusal left behind. Nothing
+		// fired, and the coordinator is told so under seal, the same answer
+		// dispatch.DispatchHandler gives for the same refusal; the error says
+		// which of the two it was. A replayed nonce is a different matter and
+		// keeps the bare status below: there is no request to bind that answer to
+		// but the one the replay copies.
+		slog.Warn("scheduled task refused by the replay cache",
+			"pkg", "cluster", "remoteAddr", r.RemoteAddr, "reason", err)
 		h.writeSealed(w, binding, SchedulerTaskResponse{Success: false, Error: "the node could not take the scheduled task"})
 		return
 	case err != nil:

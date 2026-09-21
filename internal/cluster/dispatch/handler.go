@@ -60,15 +60,17 @@ func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) 
 	body, identity, binding, err := h.auth.Verify(r)
 	switch {
 	case errors.Is(err, ErrReplayCacheFull):
-		// Opened and authenticated, then refused by the replay cache's
-		// capacity: nothing was handed to a cnode, and the owner can be told so
-		// under seal. A bare status would read as a lost answer and fail an
-		// operation that is not repeat-safe — which a saturated cache must not
-		// do. A replayed nonce is a different matter: it gets the bare 403
-		// below, because there is no request to bind that answer to but the one
-		// the replay copies.
-		slog.Warn("hand-over refused: the replay cache is full", "pkg", "dispatch", "remoteAddr", r.RemoteAddr)
-		h.writeSealed(w, binding, refusal(noCnodeFailure()))
+		// Opened and authenticated, then refused by the replay cache — at
+		// capacity, or on the watermark a capacity refusal left behind. Nothing
+		// was handed to a cnode, and the owner can be told so under seal. A bare
+		// status would read as a lost answer and fail an operation that is not
+		// repeat-safe, which neither refusal may do. The error says which one it
+		// was: a saturated cache is a flood, a watermark refusal its aftermath.
+		// A replayed nonce is a different matter: it gets the bare 403 below,
+		// because there is no request to bind that answer to but the one the
+		// replay copies.
+		slog.Warn("hand-over refused by the replay cache", "pkg", "dispatch", "remoteAddr", r.RemoteAddr, "reason", err)
+		h.writeSealed(w, binding, refusal(noCnodeFailure()), "")
 		return
 	case err != nil:
 		slog.Warn("dispatch request auth failed", "pkg", "dispatch", "remoteAddr", r.RemoteAddr, "err", err)
@@ -82,18 +84,18 @@ func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) 
 		// failed on, and the body is a hand-over carrying a tenant's entity.
 		// The errors below are this node's own authored constants and may be
 		// logged as they are.
-		h.refuse(w, binding, fmt.Errorf("failed to parse hand-over: %s", common.JSONErrorShape(err)))
+		h.refuse(w, binding, "", fmt.Errorf("failed to parse hand-over: %s", common.JSONErrorShape(err)))
 		return
 	}
 	if err := req.validate(); err != nil {
-		h.refuse(w, binding, fmt.Errorf("failed to validate hand-over: %w", err))
+		h.refuse(w, binding, req.RequestID, fmt.Errorf("failed to validate hand-over: %w", err))
 		return
 	}
 	call, failure := req.toCallout()
 	if failure != nil {
 		// Through the same helper as the checks above, so that the owner renders
 		// every refusal of a hand-over it made identically.
-		h.refuse(w, binding, fmt.Errorf("failed to build the callout from the hand-over: %w", failure))
+		h.refuse(w, binding, req.RequestID, fmt.Errorf("failed to build the callout from the hand-over: %w", failure))
 		return
 	}
 
@@ -104,16 +106,17 @@ func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) 
 	resp := responseFromLocal(call, res, diag.GetWarnings(), diag.GetErrors())
 	slog.Debug("hand-over answered", "pkg", "dispatch", "kind", req.Kind, "requestId", req.RequestID,
 		"owner", req.OwnerNodeID, "outcome", resp.Outcome, "triesUsed", res.TriesUsed)
-	h.writeSealed(w, binding, resp)
+	h.writeSealed(w, binding, resp, req.RequestID)
 }
 
 // refuse answers a hand-over that was authenticated but cannot be run. It would
 // be refused identically by every pnode: terminal, with no try made. The reason
 // is logged here; the answer carries none of it, since the body is peer-supplied.
-func (h *DispatchHandler) refuse(w http.ResponseWriter, binding ResponseBinding, err error) {
-	slog.Error("hand-over refused", "pkg", "dispatch", "err", err)
+// requestID is empty where the body did not parse far enough to carry one.
+func (h *DispatchHandler) refuse(w http.ResponseWriter, binding ResponseBinding, requestID string, err error) {
+	slog.Error("hand-over refused", "pkg", "dispatch", "requestId", boundLine(requestID), "err", err)
 	appErr := common.Internal("the hand-over was refused", err)
-	h.writeSealed(w, binding, refusal(&contract.CalloutFailure{Kind: contract.Terminal, Code: appErr.Code, Message: appErr.Message, Err: appErr}))
+	h.writeSealed(w, binding, refusal(&contract.CalloutFailure{Kind: contract.Terminal, Code: appErr.Code, Message: appErr.Message, Err: appErr}), requestID)
 }
 
 // buildContext constructs the context.Context the callout runs under: the
@@ -150,7 +153,7 @@ func (h *DispatchHandler) buildContext(r *http.Request, identity PeerIdentity, t
 // writeSealed answers the request binding names, under seal. The owner trusts
 // nothing else: a status line or a body it cannot open tells it only that the
 // answer was lost.
-func (h *DispatchHandler) writeSealed(w http.ResponseWriter, binding ResponseBinding, v DispatchCalloutResponse) {
+func (h *DispatchHandler) writeSealed(w http.ResponseWriter, binding ResponseBinding, v DispatchCalloutResponse, requestID string) {
 	plain, err := encodePeerBody(v)
 	if err != nil {
 		slog.Error("failed to marshal dispatch answer", "pkg", "dispatch", "err", err)
@@ -168,8 +171,11 @@ func (h *DispatchHandler) writeSealed(w http.ResponseWriter, binding ResponseBin
 		// send it a truncated answer while this node recorded that it had
 		// answered. A status instead: the owner reads the lost answer it is,
 		// and an operator is told which callout produced an answer too large.
+		// The request id is the owner's own, echoed back on this leg like any
+		// other peer-written field, so it is bounded before it is logged.
 		slog.Error("the answer to a hand-over does not fit the envelope and was not sent",
-			"pkg", "dispatch", "outcome", v.Outcome, "sealedBytes", len(wire), "maxBytes", MaxEnvelopeSize)
+			"pkg", "dispatch", "requestId", boundLine(requestID), "outcome", v.Outcome,
+			"sealedBytes", len(wire), "maxBytes", MaxEnvelopeSize)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

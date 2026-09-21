@@ -269,6 +269,10 @@ func (a *AEADPeerAuth) Verify(r *http.Request) ([]byte, PeerIdentity, ResponseBi
 		return nil, PeerIdentity{}, none, ErrNonceReplayed
 	case nonceCacheFull:
 		return nil, identity, binding, ErrReplayCacheFull
+	case nonceWatermarked:
+		// The same class and the same answer as a full cache; a different error
+		// so that the log says which of the two this was.
+		return nil, identity, binding, ErrReplayWatermarked
 	}
 	return pt, identity, binding, nil
 }

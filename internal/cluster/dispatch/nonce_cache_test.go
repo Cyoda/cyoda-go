@@ -1,6 +1,9 @@
 package dispatch
 
 import (
+	"container/list"
+	"errors"
+	"net/http"
 	"testing"
 	"time"
 )
@@ -147,8 +150,8 @@ func TestNonceCache_ARefusalForCapacityIsNotUndoneByRoom(t *testing.T) {
 
 	// The cache empties: the one entry ages out.
 	now = base.Add(90 * time.Second)
-	if got := c.checkAndRecord(refused, base); got != nonceCacheFull {
-		t.Fatalf("verdict = %d, want nonceCacheFull — the refused envelope is replayable again", got)
+	if got := c.checkAndRecord(refused, base); got != nonceWatermarked {
+		t.Fatalf("verdict = %d, want nonceWatermarked — the refused envelope is replayable again", got)
 	}
 
 	// A request stamped after the watermark is unaffected: the node is working
@@ -175,7 +178,46 @@ func TestNonceCache_TheWatermarkOnlyRises(t *testing.T) {
 		t.Fatalf("verdict = %d, want nonceCacheFull", got)
 	}
 	now = base.Add(90 * time.Second)
-	if got := c.checkAndRecord([]byte("dddddddddddd"), base.Add(5*time.Second)); got != nonceCacheFull {
-		t.Fatalf("verdict = %d, want nonceCacheFull — the watermark was pulled back", got)
+	if got := c.checkAndRecord([]byte("dddddddddddd"), base.Add(5*time.Second)); got != nonceWatermarked {
+		t.Fatalf("verdict = %d, want nonceWatermarked — the watermark was pulled back", got)
+	}
+}
+
+// The two capacity-side refusals are one class to a caller and two lines to an
+// operator: a saturated cache is a flood, the watermark is its aftermath, and
+// the answer to the owner is the same for both.
+func TestVerify_TellsAFullCacheFromAWatermarkRefusal(t *testing.T) {
+	a := newAEAD(t)
+	a.nonces = newNonceCache(time.Minute, 1, time.Now)
+
+	first, _, _ := newBoundRequest(t, a, handOverPath, []byte(`{}`))
+	if _, _, _, err := a.Verify(first); err != nil {
+		t.Fatalf("first Verify: %v", err)
+	}
+
+	// The cache is at capacity: refused for capacity, and the watermark rises.
+	full, _, _ := newBoundRequest(t, a, handOverPath, []byte(`{}`))
+	_, _, binding, err := a.Verify(full)
+	if !errors.Is(err, ErrReplayCacheFull) {
+		t.Fatalf("err = %v, want the replay-cache class", err)
+	}
+	if errors.Is(err, ErrReplayWatermarked) {
+		t.Errorf("a refusal for capacity was reported as a watermark refusal: %v", err)
+	}
+	if _, sealErr := a.SealResponse(http.Header{}, binding, []byte(`{}`)); sealErr != nil {
+		t.Errorf("the binding that came with the refusal does not seal: %v", sealErr)
+	}
+
+	// Room again, but the watermark stands: same class, different reason, same
+	// sealed answer.
+	a.nonces.entries = map[string]*list.Element{}
+	a.nonces.order = list.New()
+	marked, _, _ := newBoundRequest(t, a, handOverPath, []byte(`{}`))
+	_, _, binding, err = a.Verify(marked)
+	if !errors.Is(err, ErrReplayWatermarked) || !errors.Is(err, ErrReplayCacheFull) {
+		t.Fatalf("err = %v, want a watermark refusal inside the replay-cache class", err)
+	}
+	if _, sealErr := a.SealResponse(http.Header{}, binding, []byte(`{}`)); sealErr != nil {
+		t.Errorf("the binding that came with the refusal does not seal: %v", sealErr)
 	}
 }

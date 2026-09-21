@@ -6,11 +6,13 @@ import (
 	"time"
 )
 
-// replayVerdict is what the replay cache made of a nonce. The two refusals are
-// told apart because they mean different things to the caller: a duplicate is a
-// replay of a request that was already answered, and nothing about it may be
-// confirmed under seal; a full cache is this node failing closed on a request
-// it authenticated, which it can say so.
+// replayVerdict is what the replay cache made of a nonce. The refusals are told
+// apart because they mean different things: a duplicate is a replay of a request
+// that was already answered, and nothing about it may be confirmed under seal;
+// the other two are this node failing closed on a request it authenticated,
+// which it can say so — and an operator reading the log needs to know which,
+// because a saturated cache is a flood and a watermark refusal is the aftermath
+// of one.
 type replayVerdict int
 
 const (
@@ -18,10 +20,13 @@ const (
 	nonceFresh replayVerdict = iota
 	// nonceDuplicate: seen within the window.
 	nonceDuplicate
-	// nonceCacheFull: at capacity after eviction, or stamped at or before the
-	// last request capacity refused. The nonce is refused although it may well
-	// be a first sighting.
+	// nonceCacheFull: at capacity after eviction. The nonce is refused although
+	// it may well be a first sighting.
 	nonceCacheFull
+	// nonceWatermarked: room in the cache, but the request is stamped at or
+	// before the last one capacity refused, so it may be that refused request
+	// replayed. Refused the same way and with the same answer.
+	nonceWatermarked
 )
 
 // nonceCache is a bounded, TTL-expiring set used to reject replayed AEAD
@@ -111,7 +116,7 @@ func (c *nonceCache) checkAndRecord(nonce []byte, observed time.Time) replayVerd
 		// At or before a request capacity refused, and not held: either that
 		// refused envelope replayed, or a request of the same moment. Refused
 		// the same way, which uses no try.
-		return nonceCacheFull
+		return nonceWatermarked
 	}
 
 	el := c.order.PushBack(nonceEntry{key: key, observed: observed})
