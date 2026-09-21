@@ -486,9 +486,9 @@ txID. Every joined request takes it in one place — `txjoin.Joiner.Run`, which
 both callback doors go through — from before its first store operation until its
 handler returns. A read takes it as much as a write, an entity request as much
 as a search, a model load or a message save: the lock sits where they all pass
-rather than in each of them. The owner's own chain takes the same lock around
-its final `Save` + `Commit` and around a rollback
-(`internal/domain/entity/txscope.go`), and never holds it across
+rather than in each of them. The owner's own chain takes the same lock around its
+final `Save` + `Commit` (`internal/domain/entity/service.go`) and around a
+rollback (`internal/domain/entity/txscope.go`), and never holds it across
 `engine.Execute`. Three things follow from holding it for a whole request:
 
 - **What the lock waits on is never the compute member.** The join layer has
@@ -577,8 +577,9 @@ current. Every callback is already routed to the node holding the transaction
   statement makes pgx close the operation's connection, so a successful failover
   would turn into a failed operation because the member being replaced happened
   to be reading; on memory an in-transaction write consults no context at all,
-  and on sqlite the one context-bound step is a read that is skipped once the
-  entity is in the buffer, so cancellation would stop nothing there either. The
+  and on sqlite a cancelled context can only fail a read — the model-reference
+  lookup on an entity's first save in the transaction, or a `Get` that misses
+  the buffer — never the buffered write and never the transaction. The
   fence therefore works by **checks** and by **the wait**, which hold on every
   backend alike. The only context it cancels is the one `Begin` returns — a
   callout's own, under which no statement of the shared transaction runs.
@@ -814,7 +815,7 @@ single-node and cluster mode alike. Six parts:
 |-----------|------|---------|
 | Owner's loop | `callout.Coordinator`, implementing `contract.ExternalProcessingService` | Tries, hand-overs, waiting, the callout deadline. Built in both modes; its peer router is nil on a single node |
 | Local procedure | `grpc.ProcessorDispatcher.RunLocal` | Tries a callout on this node's own matching compute members |
-| Member selection | `grpc.MemberSelector` → `RoundRobinSelector` | Picks among the candidates not yet tried (§6.3) |
+| Member selection | `grpc.MemberSelector` → `RoundRobinSelector` | Picks among the candidates not yet tried — never an evicted member (§6.3) |
 | Peers | `dispatch.PeerRouter` | The alive peers advertising the tag, and the hand-over to one of them |
 | Peer selection | `PeerSelector` → `RandomSelector` | The order in which peers are asked |
 | Fencing | `fence.Fence` | Which passes are current (§3.8) |
@@ -912,7 +913,9 @@ SSRF validation. Everything else that is not `ok`, `member_failed` or `terminal`
 is read as a lost answer: a transport error after the connection opened, any
 non-2xx status, a truncated or unauthenticated body, an outcome this version
 cannot read, an `ok` missing the result it promises, a `triesUsed` outside
-`0…triesLeft`. A lost answer counts as **one** try — never zero, so the loop
+`0…triesLeft`. So is an `ok`, `member_failed` or `no_answer` that claims *no*
+try was used — only a `no_handoff` and a `terminal` may say that truthfully. A
+lost answer counts as **one** try — never zero, so the loop
 always makes progress — and is recorded as an attempt with the member id `-`. A
 peer that answers `no_handoff` having tried members costs the tries it made, and
 the loop goes on to the next peer. A hand-over this node cannot build, marshal
@@ -1067,7 +1070,7 @@ Segment-boundary observations:
 | L3 | Compute <-> Node B | gRPC / HTTP (CRUD callback) |
 | L4 | Node B <-> Node A | Internal proxy (HTTP) |
 | L5 | Node A <-> PostgreSQL | TCP (pgx connection) |
-| L6 | Node B <-> PostgreSQL | TCP (proxy resolution only, not tx) |
+| L6 | Node B <-> PostgreSQL | TCP (pgx connection). Carries no part of this cascade: Node B holds none of tx-123, and it resolves the proxy target from its own local member directory (§4.1), not from PostgreSQL |
 | L7 | Node A <-> Node B | HTTP POST /internal/dispatch/callout (callout hand-over) |
 
 ---
@@ -1277,9 +1280,9 @@ heartbeat and let the reaper seize a healthy job. A background reaper
 atomically bumps the job's `Epoch` so concurrent claimers obtain disjoint
 jobs — clears the prior epoch's partial results (`ClearResults`), and
 re-executes the job on this node at the claimed epoch, as-at its
-originally stored `PointInTime`: a crashed node's async job now completes
-`SUCCESSFUL` on a live node instead of staying `RUNNING` forever or simply
-being failed. Every executor-side write (`Heartbeat`, `SaveResults`, the
+originally stored `PointInTime`, so a crashed node's async job completes
+`SUCCESSFUL` on a live node rather than staying `RUNNING` forever or being
+failed outright. Every executor-side write (`Heartbeat`, `SaveResults`, the
 terminal `UpdateJobStatus`) carries the epoch the executor was started or
 claimed with; a store refuses a write whose epoch does not match the job's
 current epoch with `spi.ErrStaleClaim`, so a deposed executor that later
@@ -1409,8 +1412,8 @@ full-history-with-payloads `GetVersionHistory` (removed, pre-1.0, no shim):
   `limit >= 1` requirement: this read is bounded by one entity's own
   history, never a model-wide scan. `Deleted` is canonical (derived from
   change type), replacing a backend-divergent "is the entity payload nil"
-  probe — this is also what `HasEntity` in the wire response now derives
-  from (`!Deleted`), so a tombstone's `hasEntity` reads uniformly across
+  probe — and it is what `HasEntity` in the wire response derives from
+  (`!Deleted`), so a tombstone's `hasEntity` reads uniformly across
   backends.
 
 Both reads push their filtering into the store where possible: postgres and
@@ -1539,7 +1542,7 @@ join --> greet --> keep-alive --> dispatch/response --> leave
 
 ### 6.3 Tag-Based Member Selection
 
-`MemberRegistry.Candidates(tenantID, tagsCSV)` lists the tenant's members whose tags overlap the required tags (CSV comparison; every member of the tenant when `tagsCSV` is empty), ordered by `(ConnectedAt, ID)`. A `MemberSelector` picks one of them. `RoundRobinSelector` picks the member picked longest ago and stamps it from one counter on the registry; the stamp is a field on `Member`, so there is no per-tag state, and a member that has just attached goes first.
+`MemberRegistry.Candidates(tenantID, tagsCSV)` lists the tenant's members whose tags overlap the required tags (CSV comparison; every member of the tenant when `tagsCSV` is empty), ordered by `(ConnectedAt, ID)`. A `MemberSelector` picks one of them. `RoundRobinSelector` picks the member picked longest ago and stamps it from one counter on the registry; the stamp is a field on `Member`, so there is no per-tag state, and a member that has just attached goes first. A member that has been evicted is not a candidate either, even before its registration is removed, and the tag lists the node publishes to its peers skip it too.
 
 ### 6.4 Response Correlation
 
@@ -2182,7 +2185,7 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 | Constraint | Value | Consequence |
 |------------|-------|-------------|
 | **PG statement timeout** | Default 5m (`CYODA_POSTGRES_STATEMENT_TIMEOUT`) | PostgreSQL aborts any single statement that exceeds it. The abort is **not** retryable — re-running the statement would exceed the same ceiling — so it surfaces as a `500` with a ticket, not a `503` (§3.4). |
-| **PG idle-in-transaction timeout** | Default 5m (`CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`) | PostgreSQL aborts a transaction whose connection sits idle past it — which is what a transaction waiting on an external callout is doing. This is the authoritative bound on transaction lifetime; a processor's `responseTimeoutMs` must fit under it. |
+| **PG idle-in-transaction timeout** | Default 5m (`CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`) | PostgreSQL aborts a transaction whose connection sits idle past it — which is what a transaction waiting on an external callout is doing. This is the authoritative bound on transaction lifetime; the callout deadline below must fit under it. |
 | **Pool acquire timeout** | Default 10s (`CYODA_POSTGRES_ACQUIRE_TIMEOUT`) | An operation that cannot get a connection within it fails fast with `503 STORAGE_UNAVAILABLE` rather than queueing behind a saturated pool. Applies to writes, and to reads needing a *second* connection while the caller's transaction holds one — a point-in-time read or an async-search submit issued inside a transaction. Unbounded otherwise, so ordinary pool contention on a non-transactional read does not fail spuriously. |
 | **Connection hold time** | Duration of entire flow chain (BEGIN → workflow → compute dispatch → callbacks → COMMIT) | Each in-flight transaction consumes one PG connection for its full lifetime. With 25 connections per node and 10 nodes, the cluster supports ~250 concurrent transactions. |
 | **Proxy timeout** | Default 30s (configurable) | Cross-node proxy hops for CRUD callbacks must complete within this window. |
@@ -2237,7 +2240,7 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 | PG connections per node | 25 | Configurable, bounded by PG `max_connections` | Each in-flight transaction holds one connection. |
 | Gossip metadata size | ~100–150 bytes per node | memberlist `MetaMaxSize` = 512 bytes | Identity and a list version only; tenants and tags travel by reliable message and are unbounded. A node whose identity does not fit refuses to start. Alert on `cyoda.cluster.tags.lists_outstanding` staying non-zero. |
 | Search snapshot TTL | 1 hour | Configurable | Snapshots older than TTL are reaped. Increase for long-running batch workflows. |
-| Transaction lifetime | 5 minutes idle | Configurable | Enforced by PostgreSQL via `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`. Processor `responseTimeoutMs` must fit under it. |
+| Transaction lifetime | 5 minutes idle | Configurable | Enforced by PostgreSQL via `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`. The callout deadline must fit under it (§4.3). |
 | Max cascade depth | 100 | Hardcoded | Total cascade steps across all states in one engine invocation. |
 | Max state visits per workflow | 10 | Configurable | Prevents infinite loops in workflow cascading. Increase for deeply nested state machines. |
 | HTTP body limit | 10 MB | Hardcoded in entity handler | Increase requires code change. |
