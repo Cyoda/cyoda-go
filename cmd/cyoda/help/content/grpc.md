@@ -379,12 +379,14 @@ and `EntityFunctionCalculationResponse.json` (see `cyoda help cloudevents`).
 **API requests made under a transaction token:**
 
 An API request made under a transaction token is not cancelled when its client
-goes away: once admitted it runs to completion on the node that holds the
-transaction. If the connection drops, or the node the request arrived at
-answers `503` because forwarding it took longer than `CYODA_PROXY_TIMEOUT`, the
-outcome of a write is **unknown** — it may have been applied to the
-transaction. Do not assume it failed. A deadline the compute member sets on its
-own gRPC call does not stop the request on the server either.
+goes away: once it has the transaction to itself it runs to completion on the
+node that holds the transaction. Until then — while it waits its turn behind
+another request under the same token — it has touched nothing, and a client that
+goes away is simply dropped. If the connection drops, or the node the request
+arrived at answers `503` because forwarding it took longer than
+`CYODA_PROXY_TIMEOUT`, the outcome of a write is **unknown** — it may have been
+applied to the transaction. Do not assume it failed. A deadline the compute
+member sets on its own gRPC call does not stop the request on the server either.
 
 The token is issued for one request on one compute node. If cyoda gives the
 same work to another compute node — this one did not answer within its answer

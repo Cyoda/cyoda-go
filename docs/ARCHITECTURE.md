@@ -522,11 +522,12 @@ rollback (`internal/domain/entity/txscope.go`), and never holds it across
   end a scan early on memory and sqlite — a joined search by a member that has
   gone away runs to the end of its data, which is finite, while postgres
   statements stay bounded by the ceilings of §3.4. A **proxied** callback that
-  queues for the lock, or runs a callout of its own, for longer than
-  `CYODA_PROXY_TIMEOUT` is answered `503 TRANSACTION_NODE_UNAVAILABLE` by the
-  node it arrived at while it runs to completion on the owner: for a compute
-  member, a 503 or a dropped connection on a joined write means the outcome is
-  unknown.
+  runs a callout of its own for longer than `CYODA_PROXY_TIMEOUT` is answered
+  `503 TRANSACTION_NODE_UNAVAILABLE` by the node it arrived at while it runs to
+  completion on the owner; one still *queued* for the lock when that timeout
+  closes the proxy's connection is dropped on the owner, having touched nothing.
+  For a compute member either way, a 503 or a dropped connection on a joined
+  write means the outcome is unknown.
 - **The lock is not held across a callout.** A callback that reaches a processor
   or a `function` criterion of its own gives the lock up for the length of that
   callout (`txgate.Suspend`, installed by the join layer) and re-takes it
