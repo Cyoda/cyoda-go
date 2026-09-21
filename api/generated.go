@@ -3316,17 +3316,29 @@ type WorkflowImportSuccessDto struct {
 	Success bool `json:"success"`
 }
 
+// TxToken defines model for TxToken.
+type TxToken = string
+
 // Forbidden defines model for Forbidden.
 type Forbidden = ProblemDetail
 
 // InternalServerError defines model for InternalServerError.
 type InternalServerError = ProblemDetail
 
+// JoinedPayloadTooLarge defines model for JoinedPayloadTooLarge.
+type JoinedPayloadTooLarge = ProblemDetail
+
 // NotImplemented defines model for NotImplemented.
 type NotImplemented = ProblemDetail
 
 // ServiceUnavailable defines model for ServiceUnavailable.
 type ServiceUnavailable = ProblemDetail
+
+// TransactionGone defines model for TransactionGone.
+type TransactionGone = ProblemDetail
+
+// TransactionNotFound defines model for TransactionNotFound.
+type TransactionNotFound = ProblemDetail
 
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = ProblemDetail
@@ -3359,6 +3371,15 @@ type SearchEntityAuditEventsParams struct {
 
 	// Limit Maximum number of audit events to return per page
 	Limit *string `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // SearchEntityAuditEventsParamsEventType defines parameters for SearchEntityAuditEvents.
@@ -3366,6 +3387,18 @@ type SearchEntityAuditEventsParamsEventType string
 
 // SearchEntityAuditEventsParamsSeverity defines parameters for SearchEntityAuditEvents.
 type SearchEntityAuditEventsParamsSeverity string
+
+// GetStateMachineFinishedEventParams defines parameters for GetStateMachineFinishedEvent.
+type GetStateMachineFinishedEventParams struct {
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
+}
 
 // CreateTechnicalUserParams defines parameters for CreateTechnicalUser.
 type CreateTechnicalUserParams struct {
@@ -3377,6 +3410,15 @@ type CreateTechnicalUserParams struct {
 type GetEntityStatisticsParams struct {
 	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // GetEntityStatisticsByStateParams defines parameters for GetEntityStatisticsByState.
@@ -3386,6 +3428,15 @@ type GetEntityStatisticsByStateParams struct {
 
 	// States Optional list of states for which to calculate statistics. If not provided, statistics will be calculated for all current workflow states
 	States *[]string `form:"states,omitempty" json:"states,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // GetEntityStatisticsByStateForModelParams defines parameters for GetEntityStatisticsByStateForModel.
@@ -3395,12 +3446,54 @@ type GetEntityStatisticsByStateForModelParams struct {
 
 	// States Optional list of states for which to calculate statistics. If not provided, statistics will be calculated for all current workflow states
 	States *[]string `form:"states,omitempty" json:"states,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // GetEntityStatisticsForModelParams defines parameters for GetEntityStatisticsForModel.
 type GetEntityStatisticsForModelParams struct {
 	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
+}
+
+// QueryGroupedEntityStatisticsForModelParams defines parameters for QueryGroupedEntityStatisticsForModel.
+type QueryGroupedEntityStatisticsForModelParams struct {
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
+}
+
+// DeleteSingleEntityParams defines parameters for DeleteSingleEntity.
+type DeleteSingleEntityParams struct {
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // GetOneEntityParams defines parameters for GetOneEntity.
@@ -3410,12 +3503,30 @@ type GetOneEntityParams struct {
 
 	// TransactionId Load the entity as it was at the end of the specified transaction with the given transactionId
 	TransactionId *openapi_types.UUID `form:"transactionId,omitempty" json:"transactionId,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // GetEntityChangesMetadataParams defines parameters for GetEntityChangesMetadata.
 type GetEntityChangesMetadataParams struct {
 	// PointInTime The point-in-time for loading the entity changes, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // GetEntityTransitionsParams defines parameters for GetEntityTransitions.
@@ -3425,6 +3536,15 @@ type GetEntityTransitionsParams struct {
 
 	// TransactionId Evaluate available transitions as of the submit time of this transaction. Mutually exclusive with pointInTime. The transaction must belong to the caller's tenant; an unknown or foreign transaction ID is rejected with 400.
 	TransactionId *openapi_types.UUID `form:"transactionId,omitempty" json:"transactionId,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // DeleteEntitiesParams defines parameters for DeleteEntities.
@@ -3447,6 +3567,15 @@ type DeleteEntitiesParams struct {
 	// response; an ID whose delete failed also appears in idToError.
 	// When false, only statistics are returned.
 	Verbose *bool `form:"verbose,omitempty" json:"verbose,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // GetAllEntitiesParams defines parameters for GetAllEntities.
@@ -3459,6 +3588,15 @@ type GetAllEntitiesParams struct {
 
 	// PointInTime The point-in-time for loading the entities, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // CreateCollectionJSONBody defines parameters for CreateCollection.
@@ -3486,6 +3624,15 @@ type CreateCollectionParams struct {
 	// supported on requests joining an open transaction (400). Absent
 	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // CreateCollectionParamsFormat defines parameters for CreateCollection.
@@ -3530,6 +3677,15 @@ type UpdateCollectionParams struct {
 	// supported on requests joining an open transaction (400). Absent
 	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // UpdateCollectionParamsFormat defines parameters for UpdateCollection.
@@ -3552,6 +3708,15 @@ type PatchSingleWithLoopbackParams struct {
 
 	// IfMatch transactionId from the last read, or "*" for unconditional. Absent returns 428.
 	IfMatch *string `json:"If-Match,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // PatchSingleWithLoopbackParamsFormat defines parameters for PatchSingleWithLoopback.
@@ -3571,6 +3736,15 @@ type UpdateSingleWithLoopbackParams struct {
 
 	// IfMatch Transaction ID of the entity version the client last read. If the entity has been modified since, returns 412 Precondition Failed.
 	IfMatch *string `json:"If-Match,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // UpdateSingleWithLoopbackParamsFormat defines parameters for UpdateSingleWithLoopback.
@@ -3593,6 +3767,15 @@ type PatchSingleParams struct {
 
 	// IfMatch transactionId from the last read, or "*" for unconditional. Absent returns 428.
 	IfMatch *string `json:"If-Match,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // PatchSingleParamsFormat defines parameters for PatchSingle.
@@ -3612,6 +3795,15 @@ type UpdateSingleParams struct {
 
 	// IfMatch Transaction ID of the entity version the client last read. If the entity has been modified since, returns 412 Precondition Failed.
 	IfMatch *string `json:"If-Match,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // UpdateSingleParamsFormat defines parameters for UpdateSingle.
@@ -3640,6 +3832,15 @@ type CreateParams struct {
 	// supported on requests joining an open transaction (400). Absent
 	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // CreateParamsFormat defines parameters for Create.
@@ -3662,6 +3863,15 @@ type DeleteMessagesParams struct {
 	// requests joining an open transaction (400). Absent means a
 	// single call.
 	TransactionSize *int32 `form:"transactionSize,omitempty" json:"transactionSize,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // NewMessageParams defines parameters for NewMessage.
@@ -3696,6 +3906,39 @@ type NewMessageParams struct {
 
 	// XCorrelationID Correlation ID for message tracking
 	XCorrelationID *string `json:"X-Correlation-ID,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
+}
+
+// DeleteMessageParams defines parameters for DeleteMessage.
+type DeleteMessageParams struct {
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
+}
+
+// GetMessageParams defines parameters for GetMessage.
+type GetMessageParams struct {
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // ExportMetadataParamsConverter defines parameters for ExportMetadata.
@@ -3768,6 +4011,15 @@ type FetchEntityTransitionsParams struct {
 
 	// EntityId The unique identifier (UUID) of the entity
 	EntityId openapi_types.UUID `form:"entityId" json:"entityId"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // SubmitAsyncSearchJobJSONBody defines parameters for SubmitAsyncSearchJob.
@@ -3782,6 +4034,15 @@ type SubmitAsyncSearchJobParams struct {
 
 	// Sort Repeatable sort key. Grammar: [@]path[:asc|desc], direction defaults to asc. A bare path sorts by a scalar entity-data field; a leading '@' selects a meta field (state, creationDate, lastUpdateTime, transitionForLatestSave, transactionId, id). Repetition order is sort precedence; entity id is the final tiebreaker. Absent/null values sort last.
 	Sort *[]string `form:"sort,omitempty" json:"sort,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // GetAsyncSearchResultsParams defines parameters for GetAsyncSearchResults.
@@ -3791,6 +4052,39 @@ type GetAsyncSearchResultsParams struct {
 
 	// PageNumber Zero-based page number
 	PageNumber *string `form:"pageNumber,omitempty" json:"pageNumber,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
+}
+
+// CancelAsyncSearchParams defines parameters for CancelAsyncSearch.
+type CancelAsyncSearchParams struct {
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
+}
+
+// GetAsyncSearchStatusParams defines parameters for GetAsyncSearchStatus.
+type GetAsyncSearchStatusParams struct {
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // SearchEntitiesJSONBody defines parameters for SearchEntities.
@@ -3817,6 +4111,15 @@ type SearchEntitiesParams struct {
 	// partial results are returned. Absent means no server-side timeout.
 	// Not supported on requests joining an open transaction (400).
 	TimeoutMillis *int64 `form:"timeoutMillis,omitempty" json:"timeoutMillis,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // QueryGroupedEntityStatisticsForModelJSONRequestBody defines body for QueryGroupedEntityStatisticsForModel for application/json ContentType.
@@ -5017,7 +5320,7 @@ type ServerInterface interface {
 	SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, params SearchEntityAuditEventsParams)
 	// Get latest workflow finished event for transaction
 	// (GET /audit/entity/{entityId}/workflow/{transactionId}/finished)
-	GetStateMachineFinishedEvent(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, transactionId openapi_types.UUID)
+	GetStateMachineFinishedEvent(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, transactionId openapi_types.UUID, params GetStateMachineFinishedEventParams)
 	// List all M2M clients
 	// (GET /clients)
 	ListTechnicalUsers(w http.ResponseWriter, r *http.Request)
@@ -5044,10 +5347,10 @@ type ServerInterface interface {
 	GetEntityStatisticsForModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params GetEntityStatisticsForModelParams)
 	// Query grouped entity statistics for a specific model
 	// (POST /entity/stats/{entityName}/{modelVersion}/query)
-	QueryGroupedEntityStatisticsForModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32)
+	QueryGroupedEntityStatisticsForModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params QueryGroupedEntityStatisticsForModelParams)
 	// Delete a single entity
 	// (DELETE /entity/{entityId})
-	DeleteSingleEntity(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID)
+	DeleteSingleEntity(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, params DeleteSingleEntityParams)
 	// Get a  single entity
 	// (GET /entity/{entityId})
 	GetOneEntity(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, params GetOneEntityParams)
@@ -5092,10 +5395,10 @@ type ServerInterface interface {
 	NewMessage(w http.ResponseWriter, r *http.Request, subject string, params NewMessageParams)
 	// Delete a single edge message by ID
 	// (DELETE /message/{messageId})
-	DeleteMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID)
+	DeleteMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID, params DeleteMessageParams)
 	// Retrieve an edge message by ID
 	// (GET /message/{messageId})
-	GetMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID)
+	GetMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID, params GetMessageParams)
 	// List Available Entity Models
 	// (GET /model/)
 	GetAvailableEntityModels(w http.ResponseWriter, r *http.Request)
@@ -5194,10 +5497,10 @@ type ServerInterface interface {
 	GetAsyncSearchResults(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID, params GetAsyncSearchResultsParams)
 	// Cancel a running async search job
 	// (PUT /search/async/{jobId}/cancel)
-	CancelAsyncSearch(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID)
+	CancelAsyncSearch(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID, params CancelAsyncSearchParams)
 	// Get async search job status
 	// (GET /search/async/{jobId}/status)
-	GetAsyncSearchStatus(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID)
+	GetAsyncSearchStatus(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID, params GetAsyncSearchStatusParams)
 	// Perform synchronous entity search
 	// (POST /search/direct/{entityName}/{modelVersion})
 	SearchEntities(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params SearchEntitiesParams)
@@ -5367,6 +5670,27 @@ func (siw *ServerInterfaceWrapper) SearchEntityAuditEvents(w http.ResponseWriter
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.SearchEntityAuditEvents(w, r, entityId, params)
 	}))
@@ -5408,8 +5732,32 @@ func (siw *ServerInterfaceWrapper) GetStateMachineFinishedEvent(w http.ResponseW
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetStateMachineFinishedEventParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetStateMachineFinishedEvent(w, r, entityId, transactionId)
+		siw.Handler.GetStateMachineFinishedEvent(w, r, entityId, transactionId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -5570,6 +5918,27 @@ func (siw *ServerInterfaceWrapper) GetEntityStatistics(w http.ResponseWriter, r 
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetEntityStatistics(w, r, params)
 	}))
@@ -5620,6 +5989,27 @@ func (siw *ServerInterfaceWrapper) GetEntityStatisticsByState(w http.ResponseWri
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "states", Err: err})
 		}
 		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -5692,6 +6082,27 @@ func (siw *ServerInterfaceWrapper) GetEntityStatisticsByStateForModel(w http.Res
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetEntityStatisticsByStateForModel(w, r, entityName, modelVersion, params)
 	}))
@@ -5749,6 +6160,27 @@ func (siw *ServerInterfaceWrapper) GetEntityStatisticsForModel(w http.ResponseWr
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetEntityStatisticsForModel(w, r, entityName, modelVersion, params)
 	}))
@@ -5790,8 +6222,32 @@ func (siw *ServerInterfaceWrapper) QueryGroupedEntityStatisticsForModel(w http.R
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params QueryGroupedEntityStatisticsForModelParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.QueryGroupedEntityStatisticsForModel(w, r, entityName, modelVersion)
+		siw.Handler.QueryGroupedEntityStatisticsForModel(w, r, entityName, modelVersion, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -5822,8 +6278,32 @@ func (siw *ServerInterfaceWrapper) DeleteSingleEntity(w http.ResponseWriter, r *
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DeleteSingleEntityParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.DeleteSingleEntity(w, r, entityId)
+		siw.Handler.DeleteSingleEntity(w, r, entityId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -5883,6 +6363,27 @@ func (siw *ServerInterfaceWrapper) GetOneEntity(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetOneEntity(w, r, entityId, params)
 	}))
@@ -5929,6 +6430,27 @@ func (siw *ServerInterfaceWrapper) GetEntityChangesMetadata(w http.ResponseWrite
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "pointInTime", Err: err})
 		}
 		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -5990,6 +6512,27 @@ func (siw *ServerInterfaceWrapper) GetEntityTransitions(w http.ResponseWriter, r
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "transactionId", Err: err})
 		}
 		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -6075,6 +6618,27 @@ func (siw *ServerInterfaceWrapper) DeleteEntities(w http.ResponseWriter, r *http
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.DeleteEntities(w, r, entityName, modelVersion, params)
 	}))
@@ -6158,6 +6722,27 @@ func (siw *ServerInterfaceWrapper) GetAllEntities(w http.ResponseWriter, r *http
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetAllEntities(w, r, entityName, modelVersion, params)
 	}))
@@ -6219,6 +6804,27 @@ func (siw *ServerInterfaceWrapper) CreateCollection(w http.ResponseWriter, r *ht
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateCollection(w, r, format, params)
 	}))
@@ -6278,6 +6884,27 @@ func (siw *ServerInterfaceWrapper) UpdateCollection(w http.ResponseWriter, r *ht
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "transactionTimeoutMillis", Err: err})
 		}
 		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -6358,6 +6985,25 @@ func (siw *ServerInterfaceWrapper) PatchSingleWithLoopback(w http.ResponseWriter
 
 	}
 
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PatchSingleWithLoopback(w, r, format, entityId, params)
 	}))
@@ -6433,6 +7079,25 @@ func (siw *ServerInterfaceWrapper) UpdateSingleWithLoopback(w http.ResponseWrite
 		}
 
 		params.IfMatch = &IfMatch
+
+	}
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
 
 	}
 
@@ -6523,6 +7188,25 @@ func (siw *ServerInterfaceWrapper) PatchSingle(w http.ResponseWriter, r *http.Re
 
 	}
 
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PatchSingle(w, r, format, entityId, transition, params)
 	}))
@@ -6610,6 +7294,25 @@ func (siw *ServerInterfaceWrapper) UpdateSingle(w http.ResponseWriter, r *http.R
 
 	}
 
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.UpdateSingle(w, r, format, entityId, transition, params)
 	}))
@@ -6689,6 +7392,27 @@ func (siw *ServerInterfaceWrapper) Create(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.Create(w, r, format, entityName, modelVersion, params)
 	}))
@@ -6726,6 +7450,27 @@ func (siw *ServerInterfaceWrapper) DeleteMessages(w http.ResponseWriter, r *http
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "transactionSize", Err: err})
 		}
 		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -6938,6 +7683,25 @@ func (siw *ServerInterfaceWrapper) NewMessage(w http.ResponseWriter, r *http.Req
 
 	}
 
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.NewMessage(w, r, subject, params)
 	}))
@@ -6970,8 +7734,32 @@ func (siw *ServerInterfaceWrapper) DeleteMessage(w http.ResponseWriter, r *http.
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DeleteMessageParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.DeleteMessage(w, r, messageId)
+		siw.Handler.DeleteMessage(w, r, messageId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -7002,8 +7790,32 @@ func (siw *ServerInterfaceWrapper) GetMessage(w http.ResponseWriter, r *http.Req
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetMessageParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetMessage(w, r, messageId)
+		siw.Handler.GetMessage(w, r, messageId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -8065,6 +8877,27 @@ func (siw *ServerInterfaceWrapper) FetchEntityTransitions(w http.ResponseWriter,
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.FetchEntityTransitions(w, r, params)
 	}))
@@ -8135,6 +8968,27 @@ func (siw *ServerInterfaceWrapper) SubmitAsyncSearchJob(w http.ResponseWriter, r
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.SubmitAsyncSearchJob(w, r, entityName, modelVersion, params)
 	}))
@@ -8196,6 +9050,27 @@ func (siw *ServerInterfaceWrapper) GetAsyncSearchResults(w http.ResponseWriter, 
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetAsyncSearchResults(w, r, jobId, params)
 	}))
@@ -8228,8 +9103,32 @@ func (siw *ServerInterfaceWrapper) CancelAsyncSearch(w http.ResponseWriter, r *h
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params CancelAsyncSearchParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.CancelAsyncSearch(w, r, jobId)
+		siw.Handler.CancelAsyncSearch(w, r, jobId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -8260,8 +9159,32 @@ func (siw *ServerInterfaceWrapper) GetAsyncSearchStatus(w http.ResponseWriter, r
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetAsyncSearchStatusParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetAsyncSearchStatus(w, r, jobId)
+		siw.Handler.GetAsyncSearchStatus(w, r, jobId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -8367,6 +9290,27 @@ func (siw *ServerInterfaceWrapper) SearchEntities(w http.ResponseWriter, r *http
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "timeoutMillis", Err: err})
 		}
 		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -443,6 +443,7 @@ paths:
             type: string
             maximum: 1000
             minimum: 1
+        - $ref: '#/components/parameters/TxToken'
       responses:
         "200":
           description: Audit events retrieved successfully
@@ -457,23 +458,35 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "401":
-          description: Unauthorized - Authentication is required
+          description: >-
+            Unauthorized - Authentication is required. An `X-Tx-Token` that is not a valid
+            transaction routing token is refused here too, with `properties.errorCode`
+            UNAUTHORIZED.
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Forbidden - Insufficient permissions
+          description: >-
+            Forbidden - Insufficient permissions. An `X-Tx-Token` naming a transaction of
+            another tenant is refused here too, with `properties.errorCode` FORBIDDEN.
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Entity not found
+          description: >-
+            Entity not found. A request carrying an `X-Tx-Token` is also answered 404 when
+            the transaction the token names is no longer open, with `properties.errorCode`
+            TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "500":
           description: Internal Server Error - An unexpected error occurred
           content:
@@ -513,6 +526,7 @@ paths:
           schema:
             type: string
             format: uuid
+        - $ref: '#/components/parameters/TxToken'
       responses:
         "200":
           description: Workflow finished event retrieved successfully
@@ -521,23 +535,35 @@ paths:
               schema:
                 $ref: "#/components/schemas/StateMachineAuditEventDto"
         "401":
-          description: Unauthorized - Authentication is required
+          description: >-
+            Unauthorized - Authentication is required. An `X-Tx-Token` that is not a valid
+            transaction routing token is refused here too, with `properties.errorCode`
+            UNAUTHORIZED.
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Forbidden - Insufficient permissions
+          description: >-
+            Forbidden - Insufficient permissions. An `X-Tx-Token` naming a transaction of
+            another tenant is refused here too, with `properties.errorCode` FORBIDDEN.
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Entity or transaction not found
+          description: >-
+            Entity or transaction not found. A request carrying an `X-Tx-Token` is also
+            answered 404 when the transaction the token names is no longer open, with
+            `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "500":
           description: Internal server error
           content:
@@ -845,6 +871,7 @@ paths:
           schema:
             type: string
             format: date-time
+        - $ref: '#/components/parameters/TxToken'
       responses:
         "200":
           description: Statistics retrieved successfully
@@ -865,6 +892,12 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/TransactionNotFound'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
         default:
@@ -897,6 +930,7 @@ paths:
             items:
               type: string
             uniqueItems: true
+        - $ref: '#/components/parameters/TxToken'
       responses:
         "200":
           description: Statistics by state retrieved successfully
@@ -953,6 +987,12 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/TransactionNotFound'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
         default:
@@ -1001,6 +1041,7 @@ paths:
             items:
               type: string
             uniqueItems: true
+        - $ref: '#/components/parameters/TxToken'
       responses:
         "200":
           description: Statistics by state retrieved successfully
@@ -1028,7 +1069,10 @@ paths:
                   state: DECLINED
                   count: 5
         "404":
-          description: Entity model not found
+          description: >-
+            Entity model not found. A request carrying an `X-Tx-Token` is also answered 404
+            when the transaction the token names is no longer open, with
+            `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -1055,6 +1099,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
         default:
@@ -1091,6 +1139,7 @@ paths:
           schema:
             type: string
             format: date-time
+        - $ref: '#/components/parameters/TxToken'
       responses:
         "200":
           description: Statistics retrieved successfully
@@ -1103,7 +1152,10 @@ paths:
                 modelVersion: 1
                 count: 960
         "404":
-          description: Entity model not found
+          description: >-
+            Entity model not found. A request carrying an `X-Tx-Token` is also answered 404
+            when the transaction the token names is no longer open, with
+            `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -1124,6 +1176,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
         default:
@@ -1171,6 +1227,7 @@ paths:
             type: integer
             format: int32
           example: 1
+        - $ref: '#/components/parameters/TxToken'
       requestBody:
         required: true
         content:
@@ -1247,13 +1304,22 @@ paths:
         "403":
           $ref: '#/components/responses/Forbidden'
         "404":
-          description: Entity model not found (MODEL_NOT_FOUND)
+          description: >-
+            Entity model not found (MODEL_NOT_FOUND). A request carrying an `X-Tx-Token` is
+            also answered 404 when the transaction the token names is no longer open, with
+            `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "410":
+          $ref: '#/components/responses/TransactionGone'
         "413":
-          description: Request body exceeds the 10 MiB maximum
+          description: >-
+            Request body exceeds the 10 MiB maximum. A request carrying an `X-Tx-Token` is
+            also answered 413 when it passes one of the join layer's ceilings —
+            `properties.errorCode` BAD_REQUEST for the request body,
+            JOINED_RESPONSE_TOO_LARGE for the answer held under the transaction's lock.
           content:
             application/problem+json:
               schema:
@@ -1308,6 +1374,7 @@ paths:
             type: string
             format: uuid
           example: 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16
+        - $ref: '#/components/parameters/TxToken'
       responses:
         "200":
           description: Successfully retrieved the entity
@@ -1363,7 +1430,10 @@ paths:
                   pointInTime: 2024-05-08T04:04:04Z
                   transactionId: ffef9680-26e6-11ef-bf3f-ae468cd3ed16
         "404":
-          description: Entity not found
+          description: >-
+            Entity not found. A request carrying an `X-Tx-Token` is also answered 404 when
+            the transaction the token names is no longer open, with `properties.errorCode`
+            TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -1380,6 +1450,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
         default:
@@ -1399,6 +1473,7 @@ paths:
             type: string
             format: uuid
           example: 123e4567-e89b-12d3-a456-426614174000
+        - $ref: '#/components/parameters/TxToken'
       responses:
         "200":
           description: Successfully deleted the entity
@@ -1431,7 +1506,10 @@ paths:
                   parameter: entityId
                   errorCode: BAD_REQUEST
         "404":
-          description: Entity not found
+          description: >-
+            Entity not found. A request carrying an `X-Tx-Token` is also answered 404 when
+            the transaction the token names is no longer open, with `properties.errorCode`
+            TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -1448,6 +1526,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
         default:
@@ -1516,6 +1598,7 @@ paths:
             type: string
             format: date-time
           example: 2035-01-01T12:00:00Z
+        - $ref: '#/components/parameters/TxToken'
       responses:
         "200":
           description: Successfully retrieved entity changes metadata
@@ -1560,7 +1643,10 @@ paths:
                   parameter: entityId
                   errorCode: BAD_REQUEST
         "404":
-          description: Entity not found
+          description: >-
+            Entity not found. A request carrying an `X-Tx-Token` is also answered 404 when
+            the transaction the token names is no longer open, with `properties.errorCode`
+            TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -1577,6 +1663,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
         default:
@@ -1631,6 +1721,7 @@ paths:
             type: string
             format: uuid
           example: 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16
+        - $ref: '#/components/parameters/TxToken'
       responses:
         "200":
           description: Successfully retrieved available transitions
@@ -1655,8 +1746,15 @@ paths:
                 status: 400
                 detail: "pointInTime and transactionId are mutually exclusive"
                 instance: /api/entity/1d1e1b10-1155-11f0-bcd5-ae468cd3ed16/transitions
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
         "404":
-          description: Entity not found
+          description: >-
+            Entity not found. A request carrying an `X-Tx-Token` is also answered 404 when
+            the transaction the token names is no longer open, with `properties.errorCode`
+            TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -1667,6 +1765,10 @@ paths:
                 status: 404
                 detail: entity 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16 not found
                 instance: /api/entity/1d1e1b10-1155-11f0-bcd5-ae468cd3ed16/transitions
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "503":
           description: Retryable. Either a `function` workflow selection criterion
             needs a compute member for its tags and none is connected, or the storage
@@ -1765,6 +1867,7 @@ paths:
             type: string
             format: date-time
           example: 2035-01-01T12:00:00Z
+        - $ref: '#/components/parameters/TxToken'
       responses:
         "200":
           description: Successfully retrieved entities
@@ -1851,7 +1954,10 @@ paths:
                       pageSize: "110"
                       reason: Page size is outside of the bounds [1,100]
         "404":
-          description: Entity model not found
+          description: >-
+            Entity model not found. A request carrying an `X-Tx-Token` is also answered 404
+            when the transaction the token names is no longer open, with
+            `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -1872,6 +1978,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
         default:
@@ -1948,6 +2058,7 @@ paths:
             type: boolean
             default: false
           example: true
+        - $ref: '#/components/parameters/TxToken'
       requestBody:
         content:
           application/json:
@@ -2038,7 +2149,10 @@ paths:
                     properties:
                       errorCode: INVALID_CONDITION
         "404":
-          description: Entity model not found
+          description: >-
+            Entity model not found. A request carrying an `X-Tx-Token` is also answered 404
+            when the transaction the token names is no longer open, with
+            `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -2086,6 +2200,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
         default:
@@ -2139,6 +2257,7 @@ paths:
           schema:
             type: integer
             format: int64
+        - $ref: '#/components/parameters/TxToken'
       requestBody:
         content:
           application/json:
@@ -2260,7 +2379,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: One or more entities not found
+          description: >-
+            One or more entities not found. A request carrying an `X-Tx-Token` is also
+            answered 404 when the transaction the token names is no longer open, with
+            `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -2271,6 +2393,10 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "422":
           description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
           content:
@@ -2355,6 +2481,7 @@ paths:
           schema:
             type: integer
             format: int64
+        - $ref: '#/components/parameters/TxToken'
       requestBody:
         content:
           application/json:
@@ -2461,7 +2588,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: "Not Found — MODEL_NOT_FOUND: one or more entity models are not registered."
+          description: >-
+            Not Found — MODEL_NOT_FOUND: one or more entity models are not registered. A
+            request carrying an `X-Tx-Token` is also answered 404 when the transaction the
+            token names is no longer open, with `properties.errorCode`
+            TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -2472,6 +2603,10 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "422":
           description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
           content:
@@ -2557,6 +2692,7 @@ paths:
             type: integer
             format: int64
           example: 30000
+        - $ref: '#/components/parameters/TxToken'
       requestBody:
         content:
           application/json:
@@ -2632,7 +2768,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Entity not found
+          description: >-
+            Entity not found. A request carrying an `X-Tx-Token` is also answered 404 when
+            the transaction the token names is no longer open, with `properties.errorCode`
+            TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -2643,12 +2782,16 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "410":
+          $ref: '#/components/responses/TransactionGone'
         "412":
           description: Precondition Failed — If-Match header does not match current version
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "422":
           description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
           content:
@@ -2723,6 +2866,7 @@ paths:
             type: integer
             format: int64
           example: 30000
+        - $ref: '#/components/parameters/TxToken'
       requestBody:
         required: true
         content:
@@ -2754,7 +2898,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Entity not found
+          description: >-
+            Entity not found. A request carrying an `X-Tx-Token` is also answered 404 when
+            the transaction the token names is no longer open, with `properties.errorCode`
+            TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -2765,12 +2912,16 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "410":
+          $ref: '#/components/responses/TransactionGone'
         "412":
           description: "Precondition Failed — ENTITY_MODIFIED: If-Match transactionId no longer matches the current version."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "415":
           description: "Unsupported Media Type — UNSUPPORTED_MEDIA_TYPE: non-JSON format path or unrecognised Content-Type."
           content:
@@ -2879,6 +3030,7 @@ paths:
             type: integer
             format: int64
           example: 30000
+        - $ref: '#/components/parameters/TxToken'
       requestBody:
         content:
           application/json:
@@ -2954,7 +3106,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: "Not Found — ENTITY_NOT_FOUND: entity UUID does not exist."
+          description: >-
+            Not Found — ENTITY_NOT_FOUND: entity UUID does not exist. A request carrying an
+            `X-Tx-Token` is also answered 404 when the transaction the token names is no
+            longer open, with `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -2965,12 +3120,16 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "410":
+          $ref: '#/components/responses/TransactionGone'
         "412":
           description: "Precondition Failed — ENTITY_MODIFIED: If-Match header does not match current version."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "422":
           description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
           content:
@@ -3055,6 +3214,7 @@ paths:
             type: integer
             format: int64
           example: 30000
+        - $ref: '#/components/parameters/TxToken'
       requestBody:
         required: true
         content:
@@ -3086,7 +3246,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Entity not found
+          description: >-
+            Entity not found. A request carrying an `X-Tx-Token` is also answered 404 when
+            the transaction the token names is no longer open, with `properties.errorCode`
+            TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -3097,12 +3260,16 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "410":
+          $ref: '#/components/responses/TransactionGone'
         "412":
           description: "Precondition Failed — ENTITY_MODIFIED: If-Match transactionId no longer matches the current version."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "415":
           description: "Unsupported Media Type — UNSUPPORTED_MEDIA_TYPE: non-JSON format path or unrecognised Content-Type."
           content:
@@ -3219,6 +3386,7 @@ paths:
           schema:
             type: integer
             format: int64
+        - $ref: '#/components/parameters/TxToken'
       requestBody:
         content:
           application/json:
@@ -3318,7 +3486,10 @@ paths:
                 detail: "validation failed: field x is required"
                 instance: /api/entity/JSON/nobel-prize/1
         "404":
-          description: "Not Found — MODEL_NOT_FOUND: the entity model is not registered."
+          description: >-
+            Not Found — MODEL_NOT_FOUND: the entity model is not registered. A request
+            carrying an `X-Tx-Token` is also answered 404 when the transaction the token
+            names is no longer open, with `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -3335,6 +3506,10 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "422":
           description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
           content:
@@ -3391,6 +3566,7 @@ paths:
           schema:
             type: integer
             format: int32
+        - $ref: '#/components/parameters/TxToken'
       requestBody:
         description: List of message IDs to delete.
         content:
@@ -3441,8 +3617,16 @@ paths:
                     instance: /api/message
                     properties:
                       errorCode: BAD_REQUEST
+        "404":
+          $ref: '#/components/responses/TransactionNotFound'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
         "413":
-          description: Payload too large
+          description: >-
+            Payload too large. A request carrying an `X-Tx-Token` is also answered 413 when
+            it passes one of the join layer's ceilings — `properties.errorCode` BAD_REQUEST
+            for the request body, JOINED_RESPONSE_TOO_LARGE for the answer held under the
+            transaction's lock.
           content:
             application/problem+json:
               schema:
@@ -3556,6 +3740,7 @@ paths:
           schema:
             type: integer
             format: int64
+        - $ref: '#/components/parameters/TxToken'
       requestBody:
         description: >
           A single JSON object. It must contain a `payload` field (any valid JSON
@@ -3641,8 +3826,16 @@ paths:
                     instance: /api/message/new/nobel.prize.events
                     properties:
                       errorCode: BAD_REQUEST
+        "404":
+          $ref: '#/components/responses/TransactionNotFound'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
         "413":
-          description: Payload too large
+          description: >-
+            Payload too large. A request carrying an `X-Tx-Token` is also answered 413 when
+            it passes one of the join layer's ceilings — `properties.errorCode` BAD_REQUEST
+            for the request body, JOINED_RESPONSE_TOO_LARGE for the answer held under the
+            transaction's lock.
           content:
             application/problem+json:
               schema:
@@ -3691,6 +3884,7 @@ paths:
             type: string
             format: uuid
           example: 825ba31c-0b5b-11f0-91f5-667325248341
+        - $ref: '#/components/parameters/TxToken'
       responses:
         "200":
           description: Message successfully retrieved
@@ -3748,7 +3942,10 @@ paths:
                   errorCode: BAD_REQUEST
                   parameter: messageId
         "404":
-          description: Message not found
+          description: >-
+            Message not found. A request carrying an `X-Tx-Token` is also answered 404 when
+            the transaction the token names is no longer open, with `properties.errorCode`
+            TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -3769,6 +3966,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
         default:
@@ -3789,6 +3990,7 @@ paths:
             type: string
             format: uuid
           example: 825ba31c-0b5b-11f0-91f5-667325248341
+        - $ref: '#/components/parameters/TxToken'
       responses:
         "200":
           description: Message successfully deleted
@@ -3818,7 +4020,10 @@ paths:
                   errorCode: BAD_REQUEST
                   parameter: messageId
         "404":
-          description: Message not found
+          description: >-
+            Message not found. A request carrying an `X-Tx-Token` is also answered 404 when
+            the transaction the token names is no longer open, with `properties.errorCode`
+            TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -3839,6 +4044,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
         default:
@@ -6808,6 +7017,7 @@ paths:
             type: string
             format: uuid
           example: 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16
+        - $ref: '#/components/parameters/TxToken'
       responses:
         "200":
           description: Successfully retrieved available transitions
@@ -6830,8 +7040,15 @@ paths:
                 status: 400
                 detail: "entityClass must be in format Name.Version (e.g., Offer.1)"
                 instance: /api/platform-api/entity/fetch/transitions
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
         "404":
-          description: Entity not found
+          description: >-
+            Entity not found. A request carrying an `X-Tx-Token` is also answered 404 when
+            the transaction the token names is no longer open, with `properties.errorCode`
+            TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -6842,6 +7059,10 @@ paths:
                 status: 404
                 detail: entity 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16 not found
                 instance: /api/platform-api/entity/fetch/transitions
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "503":
           description: Retryable. Either a `function` workflow selection criterion
             needs a compute member for its tags and none is connected, or the storage
@@ -7009,6 +7230,7 @@ paths:
               type: string
           style: form
           explode: true
+        - $ref: '#/components/parameters/TxToken'
       requestBody:
         content:
           application/json:
@@ -7034,7 +7256,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProblemDetail'
         "404":
-          description: Entity model not found
+          description: >-
+            Entity model not found. A request carrying an `X-Tx-Token` is also answered 404
+            when the transaction the token names is no longer open, with
+            `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -7043,6 +7268,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "503":
           description: >
             Service temporarily unavailable. Retryable. Two distinct causes
@@ -7124,6 +7353,7 @@ paths:
           required: false
           schema:
             type: string
+        - $ref: '#/components/parameters/TxToken'
       responses:
         "200":
           description: Successfully retrieved page of results
@@ -7138,7 +7368,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProblemDetail'
         "404":
-          description: Search job not found or expired
+          description: >-
+            Search job not found or expired. A request carrying an `X-Tx-Token` is also
+            answered 404 when the transaction the token names is no longer open, with
+            `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -7147,6 +7380,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
         default:
@@ -7172,6 +7409,7 @@ paths:
           schema:
             type: string
             format: uuid
+        - $ref: '#/components/parameters/TxToken'
       responses:
         "200":
           description: Cancellation request processed
@@ -7186,7 +7424,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProblemDetail'
         "404":
-          description: Search job not found
+          description: >-
+            Search job not found. A request carrying an `X-Tx-Token` is also answered 404
+            when the transaction the token names is no longer open, with
+            `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -7195,6 +7436,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
         default:
@@ -7236,6 +7481,7 @@ paths:
           schema:
             type: string
             format: uuid
+        - $ref: '#/components/parameters/TxToken'
       responses:
         "200":
           description: Successfully retrieved search job status
@@ -7244,7 +7490,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/AsyncSearchStatusDto"
         "404":
-          description: Search job not found
+          description: >-
+            Search job not found. A request carrying an `X-Tx-Token` is also answered 404
+            when the transaction the token names is no longer open, with
+            `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -7253,6 +7502,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
         default:
@@ -7390,6 +7643,7 @@ paths:
           schema:
             type: integer
             format: int64
+        - $ref: '#/components/parameters/TxToken'
       requestBody:
         content:
           application/json:
@@ -7415,7 +7669,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProblemDetail'
         "404":
-          description: Entity model not found
+          description: >-
+            Entity model not found. A request carrying an `X-Tx-Token` is also answered 404
+            when the transaction the token names is no longer open, with
+            `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -7430,6 +7687,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
         default:
@@ -11906,7 +12167,70 @@ components:
       required:
         - clientId
         - message
+  parameters:
+    TxToken:
+      name: X-Tx-Token
+      in: header
+      description: >
+        Transaction routing token. A processor, criterion or function callout
+        receives one with its request (gRPC metadata key `tx-token`, CloudEvent
+        extension attribute `cyodatxtoken`); echoing it here runs this request
+        inside the open transaction the token names, so the request sees that
+        transaction's uncommitted writes and its own writes commit with it.
+
+
+        Optional. A request without the header opens its own transaction, as
+        any other client request does.
+
+
+        The token is checked before the operation runs: one that is malformed
+        or not signed by this cluster is refused 401, one naming another
+        tenant's transaction 403, one whose transaction is no longer open 404,
+        and one that has expired or whose callout has been handed to another
+        compute member 410. A joined request that passes the join layer's size
+        ceilings is refused 413.
+
+
+        Declared on the operations a callout calls back into. It is not
+        declared on the entity-model and workflow operations, because changing
+        a model or a workflow from inside a callout is not supported, nor on
+        the administrative OAuth, client and account operations.
+      required: false
+      schema:
+        type: string
   responses:
+    TransactionNotFound:
+      description: >-
+        The transaction named by the `X-Tx-Token` is not open — it was never
+        registered on this node, or it has already committed or rolled back.
+        `properties.errorCode` is TRANSACTION_NOT_FOUND.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    TransactionGone:
+      description: >-
+        The `X-Tx-Token` can no longer be used. Two error codes share this
+        status and `properties.errorCode` distinguishes them —
+        TRANSACTION_EXPIRED: the token has passed its own expiry;
+        CALLOUT_SUPERSEDED: the callout the token names has been handed to
+        another compute member, so the caller no longer owns the work it is
+        calling back about. Neither is retryable with the same token.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    JoinedPayloadTooLarge:
+      description: >-
+        A request carrying an `X-Tx-Token` passed one of the join layer's size
+        ceilings. `properties.errorCode` distinguishes them — BAD_REQUEST: the
+        request body exceeds the 10 MiB a joined request may buffer;
+        JOINED_RESPONSE_TOO_LARGE: the answer exceeds what a joined request may
+        hold under the transaction's lock, so page the read.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
     Unauthorized:
       description: Unauthorized — missing or invalid bearer token
       content:
