@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -83,18 +84,13 @@ func refusalBy(addr string) []string {
 func TestGossipRegistry_DuplicateNodeIDRefusesToStart(t *testing.T) {
 	logged := captureErrors(t)
 
-	const (
-		incumbentPort = 29946
-		duplicatePort = 29947
-		seed          = "127.0.0.1:29946"
-	)
+	incumbent := startGossip(t, gossipCfg("dup-id-node"))
 
-	incumbent := startGossip(t, gossipCfg("dup-id-node", incumbentPort))
-
-	duplicate, err := registry.NewGossip(gossipCfg("dup-id-node", duplicatePort, seed))
+	duplicate, err := registry.NewGossip(gossipCfg("dup-id-node", addrOf(incumbent)))
 	if err != nil {
 		t.Fatalf("NewGossip duplicate: %v", err)
 	}
+	captureAddr(duplicate)
 	t.Cleanup(func() { _ = duplicate.Deregister(context.Background(), "dup-id-node") })
 
 	// A generous deadline: the point is that Register does not spend it. A
@@ -115,7 +111,7 @@ func TestGossipRegistry_DuplicateNodeIDRefusesToStart(t *testing.T) {
 	// The setting, the address, the seed — and the other cause of the same
 	// refusal, since nothing separates an impostor from a record of this
 	// node's own previous life left behind by a crash.
-	for _, want := range []string{"CYODA_NODE_ID", "dup-id-node", "127.0.0.1:29946", "crash"} {
+	for _, want := range []string{"CYODA_NODE_ID", "dup-id-node", addrOf(incumbent), "crash"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("Register err = %v; want it to name %q", err, want)
 		}
@@ -137,8 +133,8 @@ func TestGossipRegistry_DuplicateNodeIDRefusesToStart(t *testing.T) {
 	// that refused the exchange establishing the duplicate. Neither is silent,
 	// and each writes its own line once.
 	eventually(t, 5*time.Second, "both nodes log the duplicate at ERROR", func() bool {
-		return countLines(logged.String(), refusalBy("127.0.0.1:29946")...) == 1 &&
-			countLines(logged.String(), refusalBy("127.0.0.1:29947")...) == 1
+		return countLines(logged.String(), refusalBy(addrOf(incumbent))...) == 1 &&
+			countLines(logged.String(), refusalBy(addrOf(duplicate))...) == 1
 	})
 }
 
@@ -146,14 +142,8 @@ func TestGossipRegistry_DuplicateNodeIDRefusesToStart(t *testing.T) {
 // makes the check safe: a node that left gracefully does not hold its name, so
 // a restart under the same id is the documented, intended case.
 func TestGossipRegistry_RestartUnderDepartedNodeID(t *testing.T) {
-	const (
-		firstPort   = 29948
-		watcherPort = 29949
-		secondPort  = 29950
-	)
-
-	first := startGossip(t, gossipCfg("restarting-node", firstPort))
-	watcher := startGossip(t, gossipCfg("restart-watcher", watcherPort, "127.0.0.1:29948"))
+	first := startGossip(t, gossipCfg("restarting-node"))
+	watcher := startGossipSeededBy(t, "restart-watcher", first)
 
 	eventually(t, 5*time.Second, "the watcher sees the restarting node", func() bool {
 		_, ok := nodeIn(t, watcher, "restarting-node")
@@ -170,7 +160,7 @@ func TestGossipRegistry_RestartUnderDepartedNodeID(t *testing.T) {
 
 	// The watcher still holds the departed record, now in state "left"; the
 	// same id coming back at a new address must be admitted.
-	second, err := registry.NewGossip(gossipCfg("restarting-node", secondPort, "127.0.0.1:29949"))
+	second, err := registry.NewGossip(gossipCfg("restarting-node", addrOf(watcher)))
 	if err != nil {
 		t.Fatalf("NewGossip second: %v", err)
 	}
@@ -187,7 +177,7 @@ func TestGossipRegistry_RestartUnderDepartedNodeID(t *testing.T) {
 // with no seeds there is no join exchange and nothing to check against, and
 // the node is a cluster of one.
 func TestGossipRegistry_NoSeedsStartsWithoutJoin(t *testing.T) {
-	r, err := registry.NewGossip(gossipCfg("lone-node", 29951))
+	r, err := registry.NewGossip(gossipCfg("lone-node"))
 	if err != nil {
 		t.Fatalf("NewGossip: %v", err)
 	}
@@ -205,14 +195,8 @@ func TestGossipRegistry_NoSeedsStartsWithoutJoin(t *testing.T) {
 // misconfigured one, so it keeps serving and says so at ERROR — once per
 // address, however many gossip messages carry the record.
 func TestGossipRegistry_ConflictLoggedOnceAtError(t *testing.T) {
-	const (
-		holderPort  = 29952
-		watcherPort = 29953
-		claimerPort = 29954
-	)
-
-	startGossip(t, gossipCfg("witnessed-id", holderPort))
-	watcher := startGossip(t, gossipCfg("conflict-watcher", watcherPort, "127.0.0.1:29952"))
+	holder := startGossip(t, gossipCfg("witnessed-id"))
+	watcher := startGossipSeededBy(t, "conflict-watcher", holder)
 
 	eventually(t, 5*time.Second, "the watcher sees the id's holder", func() bool {
 		_, ok := nodeIn(t, watcher, "witnessed-id")
@@ -222,9 +206,15 @@ func TestGossipRegistry_ConflictLoggedOnceAtError(t *testing.T) {
 	// Only now: the watcher's own ERROR lines are what the test counts.
 	logged := captureErrors(t)
 
+	// The claimer must answer at the same address both times below — the
+	// point of the second claim is that a repeat from that address is not
+	// logged again — so its port is discovered once and reused, rather than
+	// left to a fresh ephemeral pick on every call.
+	claimerPort := freePort(t)
+	claimerAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(claimerPort))
 	claim := func() {
 		t.Helper()
-		claimer, err := registry.NewGossip(gossipCfg("witnessed-id", claimerPort, "127.0.0.1:29953"))
+		claimer, err := registry.NewGossip(gossipCfgAt("witnessed-id", claimerPort, addrOf(watcher)))
 		if err != nil {
 			t.Fatalf("NewGossip claimer: %v", err)
 		}
@@ -242,8 +232,8 @@ func TestGossipRegistry_ConflictLoggedOnceAtError(t *testing.T) {
 		return countLines(logged.String(),
 			`msg="`+wantConflictLogMsg+`"`,
 			"nodeId=witnessed-id",
-			"heldBy=127.0.0.1:29952",
-			"claimedBy=127.0.0.1:29954",
+			"heldBy="+addrOf(holder),
+			"claimedBy="+claimerAddr,
 		)
 	}
 
@@ -269,27 +259,23 @@ func TestGossipRegistry_ConflictLoggedOnceAtError(t *testing.T) {
 func TestGossipRegistry_DuplicateFoundByInboundExchangeRefusesToStart(t *testing.T) {
 	logged := captureErrors(t)
 
-	const (
-		seedPort     = 29955
-		joinerPort   = 29956
-		impostorPort = 29957
-	)
-
 	// A seed under an id of its own: the joiner's own join has nothing to
 	// object to.
-	startGossip(t, gossipCfg("inbound-seed", seedPort))
+	seedNode := startGossip(t, gossipCfg("inbound-seed"))
 
 	// Listening, but not joined: Register has not been called yet.
-	joiner, err := registry.NewGossip(gossipCfg("inbound-dup", joinerPort, "127.0.0.1:29955"))
+	joiner, err := registry.NewGossip(gossipCfg("inbound-dup", addrOf(seedNode)))
 	if err != nil {
 		t.Fatalf("NewGossip joiner: %v", err)
 	}
+	captureAddr(joiner)
 	t.Cleanup(func() { _ = joiner.Deregister(context.Background(), "inbound-dup") })
 
-	impostor, err := registry.NewGossip(gossipCfg("inbound-dup", impostorPort, "127.0.0.1:29956"))
+	impostor, err := registry.NewGossip(gossipCfg("inbound-dup", addrOf(joiner)))
 	if err != nil {
 		t.Fatalf("NewGossip impostor: %v", err)
 	}
+	captureAddr(impostor)
 	t.Cleanup(func() { _ = impostor.Deregister(context.Background(), "inbound-dup") })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -300,7 +286,7 @@ func TestGossipRegistry_DuplicateFoundByInboundExchangeRefusesToStart(t *testing
 
 	// The joiner has run its merge delegate on that inbound exchange.
 	eventually(t, 5*time.Second, "the joiner refuses the inbound exchange", func() bool {
-		return countLines(logged.String(), refusalBy("127.0.0.1:29956")...) == 1
+		return countLines(logged.String(), refusalBy(addrOf(impostor))...) == 1
 	})
 
 	err = joiner.Register(ctx, "inbound-dup", "http://inbound-dup.test:8080")
@@ -318,8 +304,6 @@ func TestGossipRegistry_DuplicateFoundByInboundExchangeRefusesToStart(t *testing
 // the errors it collected as soon as one answers, so the exchange that refused
 // leaves no trace in what Join returns.
 func TestGossipRegistry_DuplicateFoundWhileJoinSucceedsRefusesToStart(t *testing.T) {
-	const port = 29961
-
 	ips, err := net.LookupIP("localhost")
 	if err != nil {
 		t.Skipf("localhost does not resolve: %v", err)
@@ -336,8 +320,13 @@ func TestGossipRegistry_DuplicateFoundWhileJoinSucceedsRefusesToStart(t *testing
 		t.Skipf("localhost resolves to %v; this test needs both loopback families", ips)
 	}
 
+	// The two nodes below must share one port across the two address
+	// families — discovered, not literal, so two test processes on the same
+	// machine cannot collide on it either.
+	port := freePort(t)
+
 	// The duplicate's holder answers on one of the two addresses.
-	holderCfg := gossipCfg("resolved-dup", port)
+	holderCfg := gossipCfgAt("resolved-dup", port)
 	holderCfg.BindAddr = "::1"
 	holder, err := registry.NewGossip(holderCfg)
 	if err != nil {
@@ -347,9 +336,9 @@ func TestGossipRegistry_DuplicateFoundWhileJoinSucceedsRefusesToStart(t *testing
 
 	// A node under an id of its own answers on the other, so the join as a
 	// whole succeeds.
-	startGossip(t, gossipCfg("resolved-seed", port))
+	startGossip(t, gossipCfgAt("resolved-seed", port))
 
-	joiner, err := registry.NewGossip(gossipCfg("resolved-dup", 29962, "localhost:29961"))
+	joiner, err := registry.NewGossip(gossipCfg("resolved-dup", net.JoinHostPort("localhost", strconv.Itoa(port))))
 	if err != nil {
 		t.Fatalf("NewGossip joiner: %v", err)
 	}
@@ -370,20 +359,15 @@ func TestGossipRegistry_DuplicateFoundWhileJoinSucceedsRefusesToStart(t *testing
 // the last stretch of Register: the join is done and the node is waiting for
 // the cluster view to settle when a second holder of its id appears.
 func TestGossipRegistry_DuplicateFoundDuringStabilityWindowRefusesToStart(t *testing.T) {
-	const (
-		seedPort     = 29958
-		joinerPort   = 29959
-		impostorPort = 29960
-	)
+	seed := startGossip(t, gossipCfg("stability-seed"))
 
-	seed := startGossip(t, gossipCfg("stability-seed", seedPort))
-
-	cfg := gossipCfg("stability-dup", joinerPort, "127.0.0.1:29958")
+	cfg := gossipCfg("stability-dup", addrOf(seed))
 	cfg.StabilityWindow = 5 * time.Second
 	joiner, err := registry.NewGossip(cfg)
 	if err != nil {
 		t.Fatalf("NewGossip joiner: %v", err)
 	}
+	captureAddr(joiner)
 	t.Cleanup(func() { _ = joiner.Deregister(context.Background(), "stability-dup") })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -401,7 +385,7 @@ func TestGossipRegistry_DuplicateFoundDuringStabilityWindowRefusesToStart(t *tes
 		return ok
 	})
 
-	impostor, err := registry.NewGossip(gossipCfg("stability-dup", impostorPort, "127.0.0.1:29959"))
+	impostor, err := registry.NewGossip(gossipCfg("stability-dup", addrOf(joiner)))
 	if err != nil {
 		t.Fatalf("NewGossip impostor: %v", err)
 	}

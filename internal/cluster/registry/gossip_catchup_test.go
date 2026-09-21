@@ -8,14 +8,14 @@ import (
 )
 
 func TestGossipRegistry_LateJoinerFetchesList(t *testing.T) {
-	r1 := startGossip(t, gossipCfg("late-1", 24954))
+	r1 := startGossip(t, gossipCfg("late-1"))
 	want := map[string][]string{"tenant-a": {"ml", "python"}}
 	if err := r1.UpdateTags(want); err != nil {
 		t.Fatalf("UpdateTags: %v", err)
 	}
 
 	// late-2 was not a member when the list was sent.
-	r2 := startGossip(t, gossipCfg("late-2", 24955, "127.0.0.1:24954"))
+	r2 := startGossipSeededBy(t, "late-2", r1)
 	eventually(t, 5*time.Second, "the late joiner holds late-1's list", func() bool {
 		n, ok := nodeIn(t, r2, "late-1")
 		return ok && reflect.DeepEqual(n.Tags, want)
@@ -27,8 +27,8 @@ func TestGossipRegistry_LateJoinerFetchesList(t *testing.T) {
 // the first life's even though its seq is lower.
 func TestGossipRegistry_RestartUnderSameID(t *testing.T) {
 	ctx := context.Background()
-	r1 := startGossip(t, gossipCfg("restart-1", 24956))
-	first := startGossip(t, gossipCfg("restart-2", 24957, "127.0.0.1:24956"))
+	r1 := startGossip(t, gossipCfg("restart-1"))
+	first := startGossipSeededBy(t, "restart-2", r1)
 	for _, tags := range []map[string][]string{{"t": {"a"}}, {"t": {"a", "b"}}, {"t": {"old"}}} {
 		if err := first.UpdateTags(tags); err != nil {
 			t.Fatal(err)
@@ -43,7 +43,7 @@ func TestGossipRegistry_RestartUnderSameID(t *testing.T) {
 		t.Fatalf("Deregister: %v", err)
 	}
 	// Same id, another address, as a rescheduled pod has.
-	second := startGossip(t, gossipCfg("restart-2", 24958, "127.0.0.1:24956"))
+	second := startGossipSeededBy(t, "restart-2", r1)
 	if err := second.UpdateTags(map[string][]string{"t": {"new"}}); err != nil {
 		t.Fatal(err)
 	}

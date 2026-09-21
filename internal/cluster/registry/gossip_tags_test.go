@@ -18,8 +18,8 @@ import (
 // its own included.
 func TestGossipRegistry_ManyTenantsStayVisible(t *testing.T) {
 	ctx := context.Background()
-	r1 := startGossip(t, gossipCfg("many-1", 23946))
-	r2 := startGossip(t, gossipCfg("many-2", 23947, "127.0.0.1:23946"))
+	r1 := startGossip(t, gossipCfg("many-1"))
+	r2 := startGossipSeededBy(t, "many-2", r1)
 
 	want := make(map[string][]string, 12)
 	for i := range 12 {
@@ -49,8 +49,8 @@ func TestGossipRegistry_ManyTenantsStayVisible(t *testing.T) {
 }
 
 func TestGossipRegistry_TagsAreReplacedAndRemoved(t *testing.T) {
-	r1 := startGossip(t, gossipCfg("repl-1", 23948))
-	r2 := startGossip(t, gossipCfg("repl-2", 23949, "127.0.0.1:23948"))
+	r1 := startGossip(t, gossipCfg("repl-1"))
+	r2 := startGossipSeededBy(t, "repl-2", r1)
 
 	if err := r1.UpdateTags(map[string][]string{"tenant-a": {"python"}, "tenant-b": {"go"}}); err != nil {
 		t.Fatalf("UpdateTags: %v", err)
@@ -71,7 +71,7 @@ func TestGossipRegistry_TagsAreReplacedAndRemoved(t *testing.T) {
 }
 
 func TestNewGossip_IdentityTooLarge_RefusesToStart(t *testing.T) {
-	cfg := gossipCfg("identity-too-large", 23950)
+	cfg := gossipCfg("identity-too-large")
 	cfg.NodeAddr = "http://" + strings.Repeat("a", 600) + ".test:8080"
 
 	r, err := registry.NewGossip(cfg)
@@ -89,7 +89,7 @@ func TestNewGossip_IdentityTooLarge_RefusesToStart(t *testing.T) {
 func TestNewGossip_LargestIdentityThatFits_Starts(t *testing.T) {
 	// The check uses the longest version there can be, so an identity that
 	// passes it at startup passes it for the life of the process.
-	cfg := gossipCfg("identity-fits", 23951)
+	cfg := gossipCfg("identity-fits")
 	cfg.NodeAddr = "http://" + strings.Repeat("a", 300) + ".test:8080"
 	r := startGossip(t, cfg)
 	if _, ok := nodeIn(t, r, "identity-fits"); !ok {
@@ -106,8 +106,8 @@ func TestNewGossip_LargestIdentityThatFits_Starts(t *testing.T) {
 // set a caller made is the set its peers end up holding, however many updates
 // were coalesced on the way.
 func TestGossipRegistry_TagUpdatesInQuickSuccessionPublishOneAtATime(t *testing.T) {
-	r1 := startGossip(t, gossipCfg("quick-1", 25952))
-	r2 := startGossip(t, gossipCfg("quick-2", 25953, "127.0.0.1:25952"))
+	r1 := startGossip(t, gossipCfg("quick-1"))
+	r2 := startGossipSeededBy(t, "quick-2", r1)
 
 	eventually(t, 5*time.Second, "quick-2 sees quick-1", func() bool {
 		_, ok := nodeIn(t, r2, "quick-1")
@@ -130,7 +130,7 @@ func TestGossipRegistry_TagUpdatesInQuickSuccessionPublishOneAtATime(t *testing.
 }
 
 func TestGossipRegistry_DeregisterTwice(t *testing.T) {
-	r := startGossip(t, gossipCfg("dereg-twice", 23952))
+	r := startGossip(t, gossipCfg("dereg-twice"))
 	if err := r.Deregister(context.Background(), "dereg-twice"); err != nil {
 		t.Fatalf("first Deregister: %v", err)
 	}

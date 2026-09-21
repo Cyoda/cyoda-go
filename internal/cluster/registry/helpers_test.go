@@ -2,6 +2,8 @@ package registry_test
 
 import (
 	"context"
+	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -10,8 +12,18 @@ import (
 )
 
 // gossipCfg is the configuration the two-pnode tests share: loopback, a short
-// stability window, an HTTP address derived from the id.
-func gossipCfg(id string, port int, seeds ...string) registry.GossipConfig {
+// stability window, a gossip port the OS assigns rather than a fixed one — a
+// second test process on the same machine must not collide with this one on
+// a literal port. A node other nodes must seed off is looked up afterwards
+// through Gossip.LocalAddr (gossip_export_test.go), never guessed in advance.
+func gossipCfg(id string, seeds ...string) registry.GossipConfig {
+	return gossipCfgAt(id, 0, seeds...)
+}
+
+// gossipCfgAt is gossipCfg with an explicit bind port, for the rare test
+// where two lives of a node must bind the identical address. The port itself
+// still comes from freePort, never a literal.
+func gossipCfgAt(id string, port int, seeds ...string) registry.GossipConfig {
 	return registry.GossipConfig{
 		NodeID:           id,
 		NodeAddr:         "http://" + id + ".test:8080",
@@ -23,18 +35,80 @@ func gossipCfg(id string, port int, seeds ...string) registry.GossipConfig {
 	}
 }
 
-// startGossip creates and joins one pnode and leaves the cluster at cleanup.
+// freePort returns a loopback port that was free a moment ago. Only used
+// where a test needs a port in hand before a node binds it (a seed address
+// configured before the cluster exists, or two nodes sharing one address); a
+// port free now can be taken by the time it is bound, which is a flake to
+// retry, not a literal to fall back to.
+func freePort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve a loopback port: %v", err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	if err := l.Close(); err != nil {
+		t.Fatalf("release the reserved port: %v", err)
+	}
+	return port
+}
+
+// addrMu guards nodeAddr, the address captureAddr reads from each node
+// exactly once, right after NewGossip returns. memberlist's LocalNode()
+// hands out a live, unlocked pointer into the node's own record, and once a
+// node's UpdateTags has ever been called, its re-advertiser goroutine
+// rewrites that same record's Addr/Port fields (to the same values, but a
+// write nonetheless) on every re-advertise — so a live read of Gossip.LocalAddr
+// at any later point races with it. Capturing once, before a test can have
+// called UpdateTags, and caching it here is what addrOf reads; nothing calls
+// LocalAddr again after that.
+var (
+	addrMu   sync.Mutex
+	nodeAddr = map[*registry.Gossip]string{}
+)
+
+// captureAddr records r's bound address for addrOf and returns r unchanged,
+// so a construction site can wrap its result: `r := captureAddr(mustCreate())`.
+func captureAddr(r *registry.Gossip) *registry.Gossip {
+	addrMu.Lock()
+	defer addrMu.Unlock()
+	nodeAddr[r] = r.LocalAddr()
+	return r
+}
+
+// addrOf returns the address captureAddr recorded for r.
+func addrOf(r *registry.Gossip) string {
+	addrMu.Lock()
+	defer addrMu.Unlock()
+	a, ok := nodeAddr[r]
+	if !ok {
+		panic("addrOf: address was never captured for this node; wrap its construction in captureAddr")
+	}
+	return a
+}
+
+// startGossip creates and joins one pnode on the port the OS assigned it and
+// leaves the cluster at cleanup.
 func startGossip(t *testing.T, cfg registry.GossipConfig) *registry.Gossip {
 	t.Helper()
 	r, err := registry.NewGossip(cfg)
 	if err != nil {
 		t.Fatalf("NewGossip %s: %v", cfg.NodeID, err)
 	}
+	captureAddr(r)
 	t.Cleanup(func() { _ = r.Deregister(context.Background(), cfg.NodeID) })
 	if err := r.Register(context.Background(), cfg.NodeID, cfg.NodeAddr); err != nil {
 		t.Fatalf("Register %s: %v", cfg.NodeID, err)
 	}
 	return r
+}
+
+// startGossipSeededBy creates and joins a pnode that seeds off r, at the
+// address memberlist actually bound for r rather than a literal, and leaves
+// the cluster at cleanup.
+func startGossipSeededBy(t *testing.T, id string, r *registry.Gossip) *registry.Gossip {
+	t.Helper()
+	return startGossip(t, gossipCfg(id, addrOf(r)))
 }
 
 // eventually polls cond until it holds or the time is up.

@@ -78,9 +78,9 @@ func TestScanIntervalFor(t *testing.T) {
 // event, and — when that request too goes unanswered and no further metadata
 // event comes — ask again from the scan.
 func TestGossip_LostListIsFetchedAndScanRepeats(t *testing.T) {
-	g := startInternalGossip(t, "fetch-1", 24946, 200*time.Millisecond)
+	g := startInternalGossip(t, "fetch-1", 200*time.Millisecond)
 	v1 := listVersion{Epoch: 777, Seq: 1}
-	p := startRawPeer(t, "fetch-peer", 24947, rawMeta(t, "fetch-peer", v1), "127.0.0.1:24946")
+	p := startRawPeer(t, "fetch-peer", rawMeta(t, "fetch-peer", v1), gossipAddr(g))
 
 	waitFor(t, 5*time.Second, "a second request, which only the scan can have sent", func() bool {
 		return p.requestCount() >= 2
@@ -93,7 +93,7 @@ func TestGossip_LostListIsFetchedAndScanRepeats(t *testing.T) {
 	}
 
 	want := map[string][]string{"tenant-a": {"python"}}
-	p.send(t, "fetch-1", 24946, topicTags, tagListMsg{NodeID: "fetch-peer", Version: v1, Tags: want})
+	p.send(t, "fetch-1", gossipPort(g), topicTags, tagListMsg{NodeID: "fetch-peer", Version: v1, Tags: want})
 	waitFor(t, 3*time.Second, "the fetched list is held", func() bool {
 		return reflect.DeepEqual(g.tags.tagsOf("fetch-peer"), want)
 	})
@@ -111,9 +111,9 @@ func TestGossip_LostListIsFetchedAndScanRepeats(t *testing.T) {
 // be the fetch that the update nudge (NotifyUpdate -> evMember ->
 // handleMember) sent.
 func TestGossip_MetadataUpdateFetchesAtOnce(t *testing.T) {
-	startInternalGossip(t, "update-1", 25958, time.Hour)
+	g := startInternalGossip(t, "update-1", time.Hour)
 	v1 := listVersion{Epoch: 777, Seq: 1}
-	p := startRawPeer(t, "update-peer", 25959, rawMeta(t, "update-peer", v1), "127.0.0.1:25958")
+	p := startRawPeer(t, "update-peer", rawMeta(t, "update-peer", v1), gossipAddr(g))
 
 	waitFor(t, 5*time.Second, "the join request", func() bool {
 		return p.requestCount() >= 1
@@ -129,18 +129,18 @@ func TestGossip_MetadataUpdateFetchesAtOnce(t *testing.T) {
 }
 
 func TestGossip_AnswersARequestWithItsOwnList(t *testing.T) {
-	g := startInternalGossip(t, "answer-1", 24948, 200*time.Millisecond)
+	g := startInternalGossip(t, "answer-1", 200*time.Millisecond)
 	own := map[string][]string{"tenant-a": {"go", "python"}}
 	if err := g.UpdateTags(own); err != nil {
 		t.Fatal(err)
 	}
-	p := startRawPeer(t, "answer-peer", 24949, rawMeta(t, "answer-peer", listVersion{Epoch: 1}), "127.0.0.1:24948")
+	p := startRawPeer(t, "answer-peer", rawMeta(t, "answer-peer", listVersion{Epoch: 1}), gossipAddr(g))
 
 	waitFor(t, 3*time.Second, "answer-1 sees the raw peer", func() bool {
 		_, ok := g.member("answer-peer")
 		return ok
 	})
-	p.send(t, "answer-1", 24948, topicTagsRequest, tagRequestMsg{From: "answer-peer"})
+	p.send(t, "answer-1", gossipPort(g), topicTagsRequest, tagRequestMsg{From: "answer-peer"})
 
 	version, _ := g.tags.ownList()
 	waitFor(t, 3*time.Second, "the raw peer receives answer-1's list", func() bool {
@@ -156,13 +156,13 @@ func TestGossip_AnswersARequestWithItsOwnList(t *testing.T) {
 func TestGossip_OlderListTriggersAFetchAtOnce(t *testing.T) {
 	// No scan within this test: the second request can only be the fetch that
 	// follows the dropped list.
-	g := startInternalGossip(t, "stale-1", 24950, time.Hour)
+	g := startInternalGossip(t, "stale-1", time.Hour)
 	v5 := listVersion{Epoch: 9, Seq: 5}
-	p := startRawPeer(t, "stale-peer", 24951, rawMeta(t, "stale-peer", v5), "127.0.0.1:24950")
+	p := startRawPeer(t, "stale-peer", rawMeta(t, "stale-peer", v5), gossipAddr(g))
 	waitFor(t, 5*time.Second, "the first request", func() bool { return p.requestCount() >= 1 })
 
 	before := p.requestCount()
-	p.send(t, "stale-1", 24950, topicTags, tagListMsg{NodeID: "stale-peer", Version: listVersion{Epoch: 9, Seq: 4}, Tags: map[string][]string{"t": {"old"}}})
+	p.send(t, "stale-1", gossipPort(g), topicTags, tagListMsg{NodeID: "stale-peer", Version: listVersion{Epoch: 9, Seq: 4}, Tags: map[string][]string{"t": {"old"}}})
 
 	if got := g.tags.tagsOf("stale-peer"); len(got) != 0 {
 		t.Errorf("a list older than the announced version was stored: %v", got)
@@ -176,8 +176,8 @@ func TestGossip_LeaveDropsList(t *testing.T) {
 	// An hour-long scan on both pnodes: retain(alive) would drop the departed
 	// peer's list on its own, so a scan-driven pass would not prove that
 	// handleLeave does the work.
-	g1 := startInternalGossip(t, "leave-1", 24952, time.Hour)
-	g2 := startInternalGossip(t, "leave-2", 24953, time.Hour, "127.0.0.1:24952")
+	g1 := startInternalGossip(t, "leave-1", time.Hour)
+	g2 := startInternalGossip(t, "leave-2", time.Hour, gossipAddr(g1))
 	if err := g2.UpdateTags(map[string][]string{"tenant-a": {"python"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -198,14 +198,14 @@ func TestGossip_LeaveDropsList(t *testing.T) {
 // alive. handleRequest must answer the same way it does everywhere else in
 // the registry: nothing sent, not this pnode's tag list.
 func TestGossip_RequestFromUnparseableMember_NoAnswer(t *testing.T) {
-	g := startInternalGossip(t, "reqbad-1", 25956, time.Hour)
-	p := startRawPeer(t, "reqbad-stranger", 25957, []byte("not json"), "127.0.0.1:25956")
+	g := startInternalGossip(t, "reqbad-1", time.Hour)
+	p := startRawPeer(t, "reqbad-stranger", []byte("not json"), gossipAddr(g))
 	waitFor(t, 5*time.Second, "reqbad-1 has the stranger as a member", func() bool {
 		_, ok := g.member("reqbad-stranger")
 		return ok
 	})
 
-	p.send(t, "reqbad-1", 25956, topicTagsRequest, tagRequestMsg{From: "reqbad-stranger"})
+	p.send(t, "reqbad-1", gossipPort(g), topicTagsRequest, tagRequestMsg{From: "reqbad-stranger"})
 
 	time.Sleep(500 * time.Millisecond)
 	if lists := p.receivedLists(); len(lists) != 0 {

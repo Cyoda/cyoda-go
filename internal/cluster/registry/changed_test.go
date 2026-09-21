@@ -18,8 +18,8 @@ func closedWithin(ch <-chan struct{}, d time.Duration) bool {
 }
 
 func TestGossipRegistry_Changed_FiresOnListArrival(t *testing.T) {
-	r1 := startGossip(t, gossipCfg("chg-list-1", 25946))
-	r2 := startGossip(t, gossipCfg("chg-list-2", 25947, "127.0.0.1:25946"))
+	r1 := startGossip(t, gossipCfg("chg-list-1"))
+	r2 := startGossipSeededBy(t, "chg-list-2", r1)
 	eventually(t, 5*time.Second, "chg-list-2 sees chg-list-1", func() bool {
 		_, ok := nodeIn(t, r2, "chg-list-1")
 		return ok
@@ -51,10 +51,10 @@ func TestGossipRegistry_Changed_FiresOnListArrival(t *testing.T) {
 }
 
 func TestGossipRegistry_Changed_FiresOnJoinAndLeave(t *testing.T) {
-	r1 := startGossip(t, gossipCfg("chg-join-1", 25948))
+	r1 := startGossip(t, gossipCfg("chg-join-1"))
 
 	ch := r1.Changed()
-	r2 := startGossip(t, gossipCfg("chg-join-2", 25949, "127.0.0.1:25948"))
+	r2 := startGossipSeededBy(t, "chg-join-2", r1)
 	if !closedWithin(ch, 5*time.Second) {
 		t.Fatal("a peer joined and Changed was not closed")
 	}
@@ -74,8 +74,8 @@ func TestGossipRegistry_Changed_FiresOnJoinAndLeave(t *testing.T) {
 }
 
 func TestGossipRegistry_Changed_QuietClusterStaysOpen(t *testing.T) {
-	r1 := startGossip(t, gossipCfg("chg-quiet-1", 25950))
-	startGossip(t, gossipCfg("chg-quiet-2", 25951, "127.0.0.1:25950"))
+	r1 := startGossip(t, gossipCfg("chg-quiet-1"))
+	startGossipSeededBy(t, "chg-quiet-2", r1)
 	time.Sleep(time.Second) // joins and first fetches settle
 	ch := r1.Changed()
 	// Several scans pass; nothing changed, so nobody may be woken.

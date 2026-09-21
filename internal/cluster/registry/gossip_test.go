@@ -15,13 +15,14 @@ func TestGossipRegistry_TwoNodes(t *testing.T) {
 		NodeID:          "node-1",
 		NodeAddr:        "localhost:18080",
 		BindAddr:        "127.0.0.1",
-		BindPort:        17946,
+		BindPort:        0,
 		Seeds:           nil,
 		StabilityWindow: 500 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("NewGossip node-1: %v", err)
 	}
+	captureAddr(r1)
 	defer r1.Deregister(ctx, "node-1")
 
 	if err := r1.Register(ctx, "node-1", "localhost:18080"); err != nil {
@@ -32,8 +33,8 @@ func TestGossipRegistry_TwoNodes(t *testing.T) {
 		NodeID:          "node-2",
 		NodeAddr:        "localhost:18081",
 		BindAddr:        "127.0.0.1",
-		BindPort:        17947,
-		Seeds:           []string{"127.0.0.1:17946"},
+		BindPort:        0,
+		Seeds:           []string{addrOf(r1)},
 		StabilityWindow: 500 * time.Millisecond,
 	})
 	if err != nil {
@@ -88,13 +89,14 @@ func TestGossipRegistry_TagPropagation(t *testing.T) {
 		NodeID:          "tag-node-1",
 		NodeAddr:        "localhost:19080",
 		BindAddr:        "127.0.0.1",
-		BindPort:        19946,
+		BindPort:        0,
 		Seeds:           nil,
 		StabilityWindow: 500 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("NewGossip tag-node-1: %v", err)
 	}
+	captureAddr(r1)
 	defer r1.Deregister(ctx, "tag-node-1")
 
 	if err := r1.Register(ctx, "tag-node-1", "localhost:19080"); err != nil {
@@ -105,8 +107,8 @@ func TestGossipRegistry_TagPropagation(t *testing.T) {
 		NodeID:          "tag-node-2",
 		NodeAddr:        "localhost:19081",
 		BindAddr:        "127.0.0.1",
-		BindPort:        19947,
-		Seeds:           []string{"127.0.0.1:19946"},
+		BindPort:        0,
+		Seeds:           []string{addrOf(r1)},
 		StabilityWindow: 500 * time.Millisecond,
 	})
 	if err != nil {
@@ -171,13 +173,14 @@ func TestGossipRegistry_GRPCAddrPropagation(t *testing.T) {
 		NodeAddr:        "http://localhost:21080",
 		GRPCNodeAddr:    "localhost:21090",
 		BindAddr:        "127.0.0.1",
-		BindPort:        21946,
+		BindPort:        0,
 		Seeds:           nil,
 		StabilityWindow: 500 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("NewGossip grpc-node-1: %v", err)
 	}
+	captureAddr(r1)
 	defer r1.Deregister(ctx, "grpc-node-1")
 	if err := r1.Register(ctx, "grpc-node-1", "http://localhost:21080"); err != nil {
 		t.Fatalf("Register grpc-node-1: %v", err)
@@ -188,8 +191,8 @@ func TestGossipRegistry_GRPCAddrPropagation(t *testing.T) {
 		NodeAddr:        "http://localhost:21081",
 		GRPCNodeAddr:    "",
 		BindAddr:        "127.0.0.1",
-		BindPort:        21947,
-		Seeds:           []string{"127.0.0.1:21946"},
+		BindPort:        0,
+		Seeds:           []string{addrOf(r1)},
 		StabilityWindow: 500 * time.Millisecond,
 	})
 	if err != nil {
@@ -241,7 +244,7 @@ func TestGossipRegistry_LookupUnknown(t *testing.T) {
 		NodeID:          "node-1",
 		NodeAddr:        "localhost:18082",
 		BindAddr:        "127.0.0.1",
-		BindPort:        17948,
+		BindPort:        0,
 		Seeds:           nil,
 		StabilityWindow: 500 * time.Millisecond,
 	})

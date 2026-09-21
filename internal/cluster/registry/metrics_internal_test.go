@@ -9,7 +9,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
-func startMeteredGossip(t *testing.T, id string, port int) (*Gossip, *sdkmetric.ManualReader) {
+func startMeteredGossip(t *testing.T, id string) (*Gossip, *sdkmetric.ManualReader) {
 	t.Helper()
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
@@ -18,7 +18,7 @@ func startMeteredGossip(t *testing.T, id string, port int) (*Gossip, *sdkmetric.
 		NodeID:           id,
 		NodeAddr:         "http://" + id + ".test:8080",
 		BindAddr:         "127.0.0.1",
-		BindPort:         port,
+		BindPort:         0,
 		StabilityWindow:  200 * time.Millisecond,
 		ListScanInterval: 200 * time.Millisecond,
 		Meter:            mp.Meter("test"),
@@ -26,6 +26,7 @@ func startMeteredGossip(t *testing.T, id string, port int) (*Gossip, *sdkmetric.
 	if err != nil {
 		t.Fatalf("NewGossip: %v", err)
 	}
+	captureGossipAddr(g)
 	t.Cleanup(func() { _ = g.Deregister(context.Background(), id) })
 	return g, reader
 }
@@ -62,9 +63,9 @@ func int64Value(t *testing.T, reader *sdkmetric.ManualReader, name string) (int6
 }
 
 func TestGossipMetrics_ListsOutstanding(t *testing.T) {
-	g, reader := startMeteredGossip(t, "metric-out-1", 27946)
+	g, reader := startMeteredGossip(t, "metric-out-1")
 	v1 := listVersion{Epoch: 5, Seq: 1}
-	p := startRawPeer(t, "metric-out-peer", 27947, rawMeta(t, "metric-out-peer", v1), "127.0.0.1:27946")
+	p := startRawPeer(t, "metric-out-peer", rawMeta(t, "metric-out-peer", v1), gossipAddr(g))
 
 	waitFor(t, 5*time.Second, "one peer's list is outstanding", func() bool {
 		v, ok := int64Value(t, reader, "cyoda.cluster.tags.lists_outstanding")
@@ -72,7 +73,7 @@ func TestGossipMetrics_ListsOutstanding(t *testing.T) {
 	})
 
 	waitFor(t, 5*time.Second, "the peer is asked", func() bool { return p.requestCount() >= 1 })
-	p.send(t, "metric-out-1", 27946, topicTags, tagListMsg{NodeID: "metric-out-peer", Version: v1, Tags: map[string][]string{"t": {"x"}}})
+	p.send(t, "metric-out-1", gossipPort(g), topicTags, tagListMsg{NodeID: "metric-out-peer", Version: v1, Tags: map[string][]string{"t": {"x"}}})
 	waitFor(t, 5*time.Second, "nothing is outstanding once the list is held", func() bool {
 		v, ok := int64Value(t, reader, "cyoda.cluster.tags.lists_outstanding")
 		return ok && v == 0
@@ -81,8 +82,8 @@ func TestGossipMetrics_ListsOutstanding(t *testing.T) {
 }
 
 func TestGossipMetrics_SendFailures(t *testing.T) {
-	g, reader := startMeteredGossip(t, "metric-fail-1", 27948)
-	p := startRawPeer(t, "metric-fail-peer", 27949, rawMeta(t, "metric-fail-peer", listVersion{Epoch: 5}), "127.0.0.1:27948")
+	g, reader := startMeteredGossip(t, "metric-fail-1")
+	p := startRawPeer(t, "metric-fail-peer", rawMeta(t, "metric-fail-peer", listVersion{Epoch: 5}), gossipAddr(g))
 	waitFor(t, 5*time.Second, "metric-fail-1 sees the peer", func() bool {
 		_, ok := g.member("metric-fail-peer")
 		return ok

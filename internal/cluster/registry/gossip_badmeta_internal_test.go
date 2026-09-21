@@ -15,10 +15,10 @@ import (
 
 func TestGossipRegistry_UnparseableMetadata_NotAlive_HTTP503(t *testing.T) {
 	ctx := context.Background()
-	r := startInternalGossip(t, "badmeta-1", 26946, 200*time.Millisecond)
+	r := startInternalGossip(t, "badmeta-1", 200*time.Millisecond)
 
 	// A member of the gossip cluster whose metadata is not a pnode's.
-	startRawPeer(t, "badmeta-stranger", 26947, []byte("not json"), "127.0.0.1:26946")
+	startRawPeer(t, "badmeta-stranger", []byte("not json"), gossipAddr(r))
 	waitFor(t, 5*time.Second, "memberlist on badmeta-1 has the stranger as an alive member", func() bool {
 		_, ok := r.member("badmeta-stranger")
 		return ok

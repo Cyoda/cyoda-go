@@ -21,7 +21,7 @@ func TestGossip_TheBroadcastQueueIsUsableAtOnce(t *testing.T) {
 		NodeID:          "queue-1",
 		NodeAddr:        "localhost:18190",
 		BindAddr:        "127.0.0.1",
-		BindPort:        18052,
+		BindPort:        0,
 		StabilityWindow: 10 * time.Millisecond,
 	})
 	if err != nil {
