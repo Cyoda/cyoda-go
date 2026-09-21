@@ -66,19 +66,19 @@ func TestPublishedExamples_Validate(t *testing.T) {
 // covers that clause; listing it here would assert the opposite.
 func TestSmallestDocumentedAnswer_Validates(t *testing.T) {
 	const smallest = `{"id":"e-1","requestId":"r-1","entityId":"1b4e28ba-2fa1-11d2-883f-0016d3cca427"}`
-	for _, path := range []string{
+	for _, schemaPath := range []string{
 		"processing/EntityProcessorCalculationResponse.json",
 		"processing/EntityFunctionCalculationResponse.json",
 	} {
-		t.Run(path, func(t *testing.T) {
-			schema := compileSchema(t, path)
+		t.Run(schemaPath, func(t *testing.T) {
+			schema := compileSchema(t, schemaPath)
 			inst, err := jsonschema.UnmarshalJSON(strings.NewReader(smallest))
 			if err != nil {
 				t.Fatalf("the instance is not valid JSON: %v", err)
 			}
 			if err := schema.Validate(inst); err != nil {
 				t.Errorf("%s refuses the smallest answer the help topic documents:\n%s\n%v",
-					path, smallest, err)
+					schemaPath, smallest, err)
 			}
 		})
 	}
