@@ -57,6 +57,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   is safe everywhere it reaches — in cyoda-go and in every system it touches.
   See `docs/cloud-parity/callout-failover.md`.
 
+- **A criteria answer that omits `matches` is refused instead of read as
+  `false`.** A compute member that answers `success: true` without a verdict
+  gave no answer to the criterion, and a criterion decides a transition: the
+  callout now ends as an answer that could not be read (`400 WORKFLOW_FAILED`,
+  not retryable) where it used to block the transition as if the member had said
+  `false`. A member of another node's was already refused this way; both sides
+  now agree. A compute member that relied on omitting the field must send it.
+  The member's `reason` is also kept to its first 512 characters, marked with
+  `…` when cut, where it used to reach the client and the audit trail at up to
+  2 KiB. See `cyoda help grpc` and `docs/cloud-parity/callout-failover.md`.
+
 - **A callout with no compute member waits before it fails, on a single node
   too.** `CYODA_DISPATCH_WAIT_TIMEOUT` (default `5s`) was a cluster-only poll;
   it is the one way a callout waits for a compute member to exist — once per

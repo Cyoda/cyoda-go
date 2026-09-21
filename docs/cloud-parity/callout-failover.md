@@ -33,6 +33,13 @@ that leaves Cloud to decide.
 | The member answered `success: false` | **stop**, whatever `error.retryable` says | **stop** |
 | A failure that would be identical on any member — the request cannot be built, the principal cannot be attached, the member's answer cannot be read | stop | stop |
 
+"The member's answer cannot be read" includes a criteria answer that reports
+`success: true` without a `matches` verdict: a missing verdict is not read as
+`false`, because that would be an answer the platform invented to a criterion
+that decides a transition. It is the same conclusion the platform reaches for a
+verdict relayed by another node, and it applies to a member of the node holding
+the transaction and to a member of a node that received the callout alike.
+
 **Departure 1 — `idempotent`, default `false`.** A boolean on a processor's
 `config` (workflow schema 1.5). It is the author's declaration that the
 processor may be run more than once for one callout — possibly only partly,
@@ -311,6 +318,8 @@ counterpart there; §1 to §5 do. The visible contract to match is:
 6. The upper bound on `responseTimeoutMs`, refused at import rather than
    clamped.
 7. `retryPolicy` accepted, validated and acted on for all three callout kinds.
+8. A criteria answer with no `matches` treated as unreadable rather than as
+   `false`.
 
 The three wire behaviours of §7 are what a client written against either server
 relies on identically, so they hold wherever a joined request exists. Where

@@ -215,9 +215,32 @@ func NewCriteriaCallout(tenantID spi.TenantID, entity *spi.Entity, criterion jso
 			return req
 		},
 		mapResponse: func(resp *ProcessingResponse) (CalloutResult, error) {
-			return CalloutResult{Matches: resp.Matches != nil && *resp.Matches, Reason: resp.Reason}, nil
+			// An answer with no verdict is not a verdict. Reading a missing
+			// `matches` as "does not match" would invent an answer to the
+			// criterion, and that answer decides a transition: it is an
+			// answer that cannot be read, which spec §3 classifies Terminal.
+			// readAnswer (internal/cluster/dispatch/handover.go) refuses the
+			// same absence from a peer, for the same reason.
+			if resp.Matches == nil {
+				return CalloutResult{}, noCriterionVerdictError{}
+			}
+			// The reason is the member's own free text and reaches a 400 body
+			// and the audit trail, so it is bounded where the member speaks
+			// it, like a failure message and a warning.
+			return CalloutResult{Matches: *resp.Matches, Reason: boundMemberText(resp.Reason)}, nil
 		},
 	}, nil
+}
+
+// noCriterionVerdictError is the unreadable-answer error for a criteria
+// response that answered success without a `matches` verdict. It is a type of
+// its own rather than a sentinel value so that the log line
+// memberResponseUnreadable writes — which renders the error by shape, never by
+// text — still names this condition.
+type noCriterionVerdictError struct{}
+
+func (noCriterionVerdictError) Error() string {
+	return "the criteria response carries no matches verdict"
 }
 
 // NewFunctionCallout builds the callout for a generic Function (e.g. a
@@ -256,7 +279,14 @@ func NewFunctionCallout(tenantID spi.TenantID, entity *spi.Entity, fn spi.Schedu
 			return req
 		},
 		mapResponse: func(resp *ProcessingResponse) (CalloutResult, error) {
-			return CalloutResult{Function: contract.FunctionResult{Kind: resp.ResultKind, Value: resp.Result}}, nil
+			// resultKind is relayed, not judged: the engine holds the closed
+			// vocabulary and refuses a word it does not know, naming it in the
+			// refusal. Naming it is why the bound is here — otherwise the
+			// member would decide how long that text is.
+			return CalloutResult{Function: contract.FunctionResult{
+				Kind:  boundMemberText(resp.ResultKind),
+				Value: resp.Result,
+			}}, nil
 		},
 	}
 }

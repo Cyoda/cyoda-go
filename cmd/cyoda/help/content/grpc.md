@@ -316,8 +316,16 @@ Client responds with `EntityCriteriaCalculationResponse`:
 }
 ```
 
+`matches` is required on a successful criteria response. A response that omits
+it is not read as `false` — a missing verdict would be an invented answer to
+the criterion, and the criterion decides a transition — so the callout ends as
+an answer that could not be read (`400 WORKFLOW_FAILED`, not retryable) and no
+other compute member is tried.
+
 On `matches: false`, the response may also carry a `reason` string explaining
-why the criterion blocked the passage (capped at 2 KiB). It surfaces in two
+why the criterion blocked the passage. The member's own text is kept to its
+first 512 characters, marked with `…` when it was cut, and the stored or
+reflected reason is capped at 2 KiB overall. It surfaces in two
 places: the manual-transition `400 WORKFLOW_FAILED` body
 (`detail: transition "<name>" criterion not matched: <reason>` — the
 guaranteed, backend-independent delivery for a manual rejection), and the

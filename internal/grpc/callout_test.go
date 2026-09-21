@@ -111,9 +111,12 @@ func TestNewCriteriaCallout(t *testing.T) {
 	if err != nil || !got.Matches || got.Reason != "big" {
 		t.Errorf("mapResponse = (%+v, %v)", got, err)
 	}
+	// An absent verdict is an answer that cannot be read, not a "false":
+	// see TestDispatchCriteria_MissingMatchesIsUnreadable for what the callout
+	// then reports.
 	got, err = call.mapResponse(&ProcessingResponse{Success: true, Reason: "none given"})
-	if err != nil || got.Matches || got.Reason != "none given" {
-		t.Errorf("absent matches must read as false: (%+v, %v)", got, err)
+	if err == nil {
+		t.Errorf("absent matches was read as a verdict: %+v", got)
 	}
 }
 

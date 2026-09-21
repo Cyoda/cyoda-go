@@ -20,7 +20,15 @@ alongside `matches: false`:
 }
 ```
 
-`reason` is capped at **2 KiB**; longer values are truncated once, server-side.
+`matches` itself is required on a successful response; an answer that omits it
+is unreadable rather than `false` (`docs/cloud-parity/callout-failover.md` §1).
+
+A compute node's own `reason` is kept to its first **512 characters**, with `…`
+appended when it was cut — the bound every piece of a compute node's free text
+gets where it becomes the platform's text (see
+`docs/cloud-parity/callout-failover.md`). Whatever reaches the audit trail or an
+error message is capped at **2 KiB** on top of that, which is what also bounds a
+reason the platform itself composes.
 When a criterion evaluates false without a compute-node-supplied reason
 (inline predicate criteria, or a `FUNCTION` criterion that returns none), the
 engine substitutes the inline default `"criterion did not match"`.
