@@ -1033,6 +1033,9 @@ waiver, with its reason below the table.
 | `MemberFailed` verdict true → 400 retryable, one try | ✓ | ✓ | ✓ | ✓ | |
 | `MemberFailed` verdict false / absent → 400, one try | ✓ | ✓ | ✓ | ✓ | |
 | `Terminal` → stop, as today | ✓ | ✓ | ✓ | | |
+| Every door §8.2 names × every code a callout answers with — HTTP create-collection, update with a transition, loopback, update-collection and the transitions query; gRPC update, transition and both collection envelopes | | ✓ | w⁵ | | |
+| A collection door's `item N:` prefix: it reaches the client for `NO_COMPUTE_MEMBER_FOR_TAG` and both `WORKFLOW_FAILED` shapes and is lost for the codes whose failure carries an `*AppError`; the gRPC update-collection envelope, which loops over single updates, adds none | | ✓ | ✓ | | |
+| A criteria answer reporting success with no `matches` → `Terminal`, never read as "does not match" | ✓ | ✓ | | | |
 | `retryPolicy: NONE` on a processor, a criterion, a function → one try | ✓ | ✓ | | ✓ | |
 | Every try used → 503 `CALLOUT_FAILED`, message shape | ✓ | ✓ | ✓ | ✓ | |
 | Exactly one attempt recorded → not wrapped | ✓ | ✓ | | | |
@@ -1115,6 +1118,12 @@ interleavings stay out of the shared parity suite. The unit layer runs it on the
 memory backend, whose in-transaction writes ignore the context — the backend on
 which a cancelled context would have stopped nothing — and the e2e layer on
 PostgreSQL.
+⁵ `COMPUTE_MEMBER_DISCONNECTED` is the one code of the set the gRPC door matrix
+does not drive: evicting a member mid-try needs the streaming handler, which
+those tests do not stand up, and it is the same `appFailure(…, disconnectedErr)`
+construction as `DISPATCH_TIMEOUT` beside it — which every gRPC door does drive.
+The HTTP door matrix covers it on all five doors, and the gRPC create envelope
+covers it. Every other cell of the row is a real test on both layers.
 
 Concurrency (two callouts racing on one cnode; attach and detach during a
 callout; a callback racing the end of its callout) is tested in isolated
