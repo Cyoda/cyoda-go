@@ -40,7 +40,7 @@ type ProcessingResponse struct {
 	// reader that knows only the flag still fails closed.
 	NullSuccess bool
 	Error       string
-	Matches *bool // for criteria responses (nil for processor responses)
+	Matches     *bool // for criteria responses (nil for processor responses)
 	// Reason is the criteria-response explanation for a matches=false result
 	// (EntityCriteriaCalculationResponse.reason). Empty for processor
 	// responses and for criteria that supply no reason.
