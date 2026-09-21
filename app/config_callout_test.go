@@ -20,11 +20,12 @@ func unsetEnv(t *testing.T, keys ...string) {
 // environment — the baseline each validation case perturbs by one field.
 func validCalloutConfig() CalloutConfig {
 	return CalloutConfig{
-		FixedNumRetries:    3,
-		ResponseTimeout:    30 * time.Second,
-		ResponseTimeoutMax: 60 * time.Second,
-		HandoverAllowance:  30 * time.Second,
-		PassAllowance:      30 * time.Second,
+		FixedNumRetries:        3,
+		ResponseTimeout:        30 * time.Second,
+		ResponseTimeoutMax:     60 * time.Second,
+		HandoverAllowance:      30 * time.Second,
+		PassAllowance:          30 * time.Second,
+		JoinedResponseMaxBytes: 10485760,
 	}
 }
 
@@ -115,6 +116,40 @@ func TestDefaultConfig_CalloutAllowances(t *testing.T) {
 	got = DefaultConfig().Callout
 	if got.HandoverAllowance != 10*time.Second || got.PassAllowance != 45*time.Second {
 		t.Errorf("overrides not bound: %+v", got)
+	}
+}
+
+func TestDefaultConfig_CalloutJoinedResponseMaxBytes(t *testing.T) {
+	unsetEnv(t, "CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES")
+	if got := DefaultConfig().Callout.JoinedResponseMaxBytes; got != 10485760 {
+		t.Errorf("default JoinedResponseMaxBytes = %d, want 10485760 (10 MiB)", got)
+	}
+	t.Setenv("CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES", "2097152")
+	if got := DefaultConfig().Callout.JoinedResponseMaxBytes; got != 2097152 {
+		t.Errorf("JoinedResponseMaxBytes override = %d, want 2097152", got)
+	}
+}
+
+func TestValidateCallout_JoinedResponseMaxBytes(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*CalloutConfig)
+	}{
+		{"zero answer ceiling", func(c *CalloutConfig) { c.JoinedResponseMaxBytes = 0 }},
+		{"negative answer ceiling", func(c *CalloutConfig) { c.JoinedResponseMaxBytes = -1 }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validCalloutConfig()
+			tc.mutate(&c)
+			err := ValidateCallout(c)
+			if err == nil {
+				t.Fatalf("ValidateCallout(%+v) = nil, want an error", c)
+			}
+			if !strings.Contains(err.Error(), "CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES") {
+				t.Errorf("error must name CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES; got: %v", err)
+			}
+		})
 	}
 }
 

@@ -86,6 +86,12 @@ const (
 	// while the transaction is still open. Not retryable: the compute node must
 	// stop working on that request.
 	ErrCodeCalloutSuperseded = "CALLOUT_SUPERSEDED"
+	// ErrCodeJoinedResponseTooLarge is returned to a compute node's callback
+	// whose answer is larger than CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES. The
+	// answer is held in memory while the transaction's lock is held, so the
+	// owner's next move waits behind it. Not retryable: the same callback
+	// answers the same bytes again — the caller pages the read instead.
+	ErrCodeJoinedResponseTooLarge = "JOINED_RESPONSE_TOO_LARGE"
 )
 
 const (
@@ -298,6 +304,7 @@ var knownErrorCodes = map[string]struct{}{
 	ErrCodeInvalidLimit:                     {},
 	ErrCodeInvalidUniqueKey:                 {},
 	ErrCodeInvalidUniqueKeyDefinition:       {},
+	ErrCodeJoinedResponseTooLarge:           {},
 	ErrCodeKeyOwnedByDifferentTenant:        {},
 	ErrCodeKeypairNotFound:                  {},
 	ErrCodeM2MClientNotFound:                {},

@@ -133,6 +133,12 @@ func (c *fakeClientStream) Recv() (*cepb.CloudEvent, error) {
 	return f, nil
 }
 
+// testResponseMax is the joined-answer ceiling these tests build a Joiner with.
+// It is the shipped default's shape at a size a test sends past in a few
+// frames, so the ceiling's behaviour is pinned without holding megabytes to do
+// it.
+const testResponseMax = 64 << 10
+
 // gatedFence returns a fence and the gate registry its wait takes: the join
 // layer must take the lock the fence waits on, so the two share one registry.
 func gatedFence() (*fence.Fence, *txgate.Registry) {
@@ -144,7 +150,7 @@ func gatedFence() (*fence.Fence, *txgate.Registry) {
 // fence whose wait takes gate's locks. A nil meter (the no-op meter).
 func mustJoiner(t *testing.T, s *token.Signer, txMgr spi.TransactionManager, f *fence.Fence, gate *txgate.Registry) *txjoin.Joiner {
 	t.Helper()
-	j, err := txjoin.NewJoiner(s, txMgr, f, gate, nil)
+	j, err := txjoin.NewJoiner(s, txMgr, f, gate, testResponseMax, nil)
 	if err != nil {
 		t.Fatalf("NewJoiner: %v", err)
 	}
@@ -1222,18 +1228,18 @@ func TestTxRouteInterceptor_HeldStreamSendsWhatItHeldThenReturnsTheHandlerError(
 
 // The frames a joined server-streaming handler produces are held in memory
 // while the transaction's lock is held, so they have a ceiling of their own.
-// Past it the call fails with a ticketed envelope and no frame is sent: a
-// collection answered in part would be a wrong answer.
+// Past it the call fails with an envelope naming the ceiling and no frame is
+// sent: a collection answered in part would be a wrong answer.
 func TestTxRouteInterceptor_HeldFramesOverTheCeiling_FailWithoutSendingAny(t *testing.T) {
 	ic, gate, tok := joinedRouteInterceptor(t, "tx-1")
 	lockFree := lockFreeOn(gate, "tx-1")
 	ss := newFakeServerStream(metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok)))
 	ss.request = &cepb.CloudEvent{Id: "req-1"}
-	chunk := strings.Repeat("a", 1<<20)
+	chunk := strings.Repeat("a", 8<<10)
 
 	err := ic.stream()(nil, ss, entityManageCollectionInfo(),
 		func(_ any, stream googlegrpc.ServerStream) error {
-			for held := 0; held <= txjoin.MaxHeldResponseBytes; held += len(chunk) {
+			for held := 0; held <= testResponseMax; held += len(chunk) {
 				if serr := stream.SendMsg(&cepb.CloudEvent{Id: "f", Data: &cepb.CloudEvent_TextData{TextData: chunk}}); serr != nil {
 					return serr
 				}
@@ -1246,9 +1252,35 @@ func TestTxRouteInterceptor_HeldFramesOverTheCeiling_FailWithoutSendingAny(t *te
 	if len(ss.sent) != 1 {
 		t.Fatalf("sent %d messages; want the error envelope alone", len(ss.sent))
 	}
-	assertEnvelopeCode(t, ss.sent[0], "req-1", "SERVER_ERROR")
+	assertEnvelopeCode(t, ss.sent[0], "req-1", "JOINED_RESPONSE_TOO_LARGE")
 	if !lockFree() {
 		t.Error("the transaction's lock was not released")
+	}
+}
+
+// A collection whose held frames stay under the ceiling is answered whole: the
+// ceiling refuses an answer, it never trims one.
+func TestTxRouteInterceptor_HeldFramesUnderTheCeiling_AreAllSent(t *testing.T) {
+	ic, _, tok := joinedRouteInterceptor(t, "tx-1")
+	ss := newFakeServerStream(metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok)))
+	ss.request = &cepb.CloudEvent{Id: "req-1"}
+	frame := &cepb.CloudEvent{Id: "f", Data: &cepb.CloudEvent_TextData{TextData: strings.Repeat("a", 8<<10)}}
+	want := testResponseMax / proto.Size(frame) // every one of these fits under the ceiling
+
+	err := ic.stream()(nil, ss, entityManageCollectionInfo(),
+		func(_ any, stream googlegrpc.ServerStream) error {
+			for i := 0; i < want; i++ {
+				if serr := stream.SendMsg(proto.Clone(frame).(*cepb.CloudEvent)); serr != nil {
+					return serr
+				}
+			}
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if len(ss.sent) != want {
+		t.Fatalf("sent %d frames; want all %d", len(ss.sent), want)
 	}
 }
 

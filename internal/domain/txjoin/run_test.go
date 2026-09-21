@@ -60,7 +60,7 @@ func newRunEnv(t *testing.T) (*runEnv, string) {
 	t.Cleanup(end)
 	f.Advance("req-1", 1)
 	pass, _ := signer.Issue(token.Claims{NodeID: "local", TxRef: txID, ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-1", Major: 1})
-	joiner, err := NewJoiner(signer, txMgr, f, gate, nil)
+	joiner, err := NewJoiner(signer, txMgr, f, gate, testResponseMax, nil)
 	if err != nil {
 		t.Fatalf("NewJoiner: %v", err)
 	}

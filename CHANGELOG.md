@@ -130,8 +130,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   callback still waiting for the lock, which has touched nothing, is dropped
   when its member goes away. An over-size joined body is refused with `413`, the
   same as an unjoined one; a pass that fails verification is refused before the
-  body is read; and a joined answer over the same 10 MB, held in memory while
-  the lock is, fails the request rather than being sent in part. The lock is
+  body is read; and a joined answer over
+  `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES` (default 10 MiB), held in memory
+  while the lock is, fails the request with `413 JOINED_RESPONSE_TOO_LARGE`
+  rather than being sent in part. The lock is
   still given up for the length of any callout the callback itself makes.
   See `docs/cloud-parity/callout-failover.md`.
 
@@ -271,6 +273,18 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   seeing the conflict does not say which of the two is the misconfigured
   one. See `cyoda help cluster` and `cyoda help config.cluster`.
 
+- **`CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES` (default `10485760`, 10 MiB)
+  sets the ceiling on the answer to a compute member's callback.** That answer
+  is built in memory and sent only once the transaction has been let go of, so
+  everything waiting on the transaction — the end of the callout included —
+  waits behind those bytes; the ceiling is what bounds that wait. It was a
+  compiled-in 10 MiB, which a joined get-all or search at the documented
+  maximum page size passes over ordinary entities. An operator whose compute
+  members legitimately read that much in one callback now raises it, at the
+  cost of memory held on the owning node. Zero or negative refuses to start.
+  It governs neither ordinary, unjoined requests nor the callback's own request
+  body, which keeps its fixed 10 MiB cap.
+
 ### Changed
 
 - **A client that goes away mid-request is logged at DEBUG, with no ticket** —
@@ -360,6 +374,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   by `(tenant_id, transaction_id)`. **Operators: schedule a maintenance
   window** — the index builds block writers, and the column backfill
   scales with history. See `docs/plugins/POSTGRES.md`.
+
+- **A callback's answer over the ceiling is refused with `413`
+  `JOINED_RESPONSE_TOO_LARGE`, not a ticketed `500`.** The refusal names the
+  ceiling in bytes and tells the member to page the read, which is the one
+  thing it can act on; a ticket told it nothing about a page size it chose
+  itself. Not retryable — the same request builds the same answer again. Both
+  doors answer the same code, the gRPC one through its error envelope. The
+  answer is still never truncated: the request fails.
 
 ### Fixed
 

@@ -213,7 +213,7 @@ func (i *txRouteInterceptor) stream() googlegrpc.StreamServerInterceptor {
 		if err := ss.RecvMsg(&first); err != nil {
 			return err
 		}
-		held := &heldStream{ServerStream: ss, ctx: ctx, first: &first}
+		held := &heldStream{ServerStream: ss, ctx: ctx, first: &first, limit: i.joiner.MaxResponseBytes()}
 		var herr error
 		if jerr := i.joiner.Run(ctx, tok, func(joined context.Context) {
 			held.ctx = joined
@@ -227,7 +227,7 @@ func (i *txRouteInterceptor) stream() googlegrpc.StreamServerInterceptor {
 		if held.tooLarge() {
 			// Fail closed: nothing of an over-size answer is sent. The lock has
 			// already been given back.
-			return i.streamErr(ss, first.Id, envelope, common.Internal("joined response too large to hold", txjoin.ErrHeldResponseTooLarge))
+			return i.streamErr(ss, first.Id, envelope, i.joiner.ResponseTooLargeError())
 		}
 		// What the handler wrote is delivered even when it then failed: a joined
 		// chunked collection that fails at chunk n still answers chunks 1…n-1,
@@ -245,15 +245,17 @@ func (i *txRouteInterceptor) stream() googlegrpc.StreamServerInterceptor {
 // the lock was taken and is replayed here, and every response frame is held
 // until the handler has returned and the lock is released.
 //
-// What is held is bounded by txjoin.MaxHeldResponseBytes — the owner's next move
-// waits behind these bytes. Past the ceiling the frames are let go of and the
-// call fails: a collection answered in part would be a wrong answer.
+// What is held is bounded by the joiner's own ceiling
+// (CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES) — the owner's next move waits behind
+// these bytes. Past the ceiling the frames are let go of and the call fails: a
+// collection answered in part would be a wrong answer.
 type heldStream struct {
 	googlegrpc.ServerStream
 	ctx   context.Context
 	first *cepb.CloudEvent
 	held  []any
 	bytes int
+	limit int
 	over  bool
 }
 
@@ -282,7 +284,7 @@ func (s *heldStream) SendMsg(m any) error {
 	if pm, ok := m.(proto.Message); ok {
 		s.bytes += proto.Size(pm)
 	}
-	if s.over || s.bytes > txjoin.MaxHeldResponseBytes {
+	if s.over || s.bytes > s.limit {
 		s.over = true
 		s.held = nil // held under the transaction's lock: let it go at once
 		return txjoin.ErrHeldResponseTooLarge

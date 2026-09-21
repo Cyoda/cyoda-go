@@ -7,6 +7,7 @@ package txjoin
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -24,17 +25,20 @@ import (
 // Joiner is what a callback door needs to run a request as a joined request of
 // the transaction its pass names.
 type Joiner struct {
-	signer     *token.Signer
-	txMgr      spi.TransactionManager
-	fence      *fence.Fence
-	gate       *txgate.Registry
-	superseded metric.Int64Counter
+	signer           *token.Signer
+	txMgr            spi.TransactionManager
+	fence            *fence.Fence
+	gate             *txgate.Registry
+	maxResponseBytes int
+	superseded       metric.Int64Counter
 }
 
-// NewJoiner builds a Joiner. meter is where the "cyoda.callout.superseded"
-// counter is registered; a nil meter is the no-op meter, so callers that have
-// none (tests) need not stand one up.
-func NewJoiner(signer *token.Signer, txMgr spi.TransactionManager, f *fence.Fence, gate *txgate.Registry, meter metric.Meter) (*Joiner, error) {
+// NewJoiner builds a Joiner. maxResponseBytes is the ceiling on what one joined
+// request may answer with while it holds the transaction's lock
+// (CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES). meter is where the
+// "cyoda.callout.superseded" counter is registered; a nil meter is the no-op
+// meter, so callers that have none (tests) need not stand one up.
+func NewJoiner(signer *token.Signer, txMgr spi.TransactionManager, f *fence.Fence, gate *txgate.Registry, maxResponseBytes int, meter metric.Meter) (*Joiner, error) {
 	if meter == nil {
 		meter = noop.NewMeterProvider().Meter("")
 	}
@@ -43,24 +47,38 @@ func NewJoiner(signer *token.Signer, txMgr spi.TransactionManager, f *fence.Fenc
 	if err != nil {
 		return nil, err
 	}
-	return &Joiner{signer: signer, txMgr: txMgr, fence: f, gate: gate, superseded: superseded}, nil
+	return &Joiner{
+		signer:           signer,
+		txMgr:            txMgr,
+		fence:            f,
+		gate:             gate,
+		maxResponseBytes: maxResponseBytes,
+		superseded:       superseded,
+	}, nil
 }
 
-// MaxHeldResponseBytes is the most a joined request may hold on its way out
-// while it has the transaction's lock: the buffered response on the HTTP door,
-// the held frames on the gRPC one. It is the same 10 MiB the request's own body
-// is capped at on the way in (httpmw's maxJoinedBodySize, which is every
-// handler's own cap) and the size of a node-to-node envelope — one request's
-// worth of bytes in each direction, and no new setting to get wrong.
+// MaxResponseBytes is the most a joined request may hold on its way out while
+// it has the transaction's lock: the buffered response on the HTTP door, the
+// held frames on the gRPC one. The owner's Advance and the end of the callout
+// wait behind these bytes.
 //
-// Past it the request FAILS, with a ticketed 5xx: the owner's Advance and the
-// end of the callout wait behind these bytes, and a truncated answer would be a
-// wrong answer given as an available one.
-const MaxHeldResponseBytes = 10 * 1024 * 1024
+// Past it the request FAILS, with the 413 ResponseTooLargeError builds: a
+// truncated answer would be a wrong answer given as an available one.
+func (j *Joiner) MaxResponseBytes() int { return j.maxResponseBytes }
+
+// ResponseTooLargeError is what a door tells a compute member whose answer
+// passed the ceiling. Built once here so the status/code/message triple has one
+// source of truth across the two doors. Not retryable: the same request answers
+// the same bytes again, so the detail names the ceiling and the way out — page
+// the read.
+func (j *Joiner) ResponseTooLargeError() *common.AppError {
+	return common.Operational(http.StatusRequestEntityTooLarge, common.ErrCodeJoinedResponseTooLarge,
+		fmt.Sprintf("the answer of a joined request exceeds the %d bytes it may hold under the transaction's lock — page the read", j.maxResponseBytes))
+}
 
 // ErrHeldResponseTooLarge is what a door's held writer reports to a handler
-// whose answer passes MaxHeldResponseBytes. The handler's own error, if it
-// returns one, is not what the caller is told: the join layer's refusal is.
+// whose answer passes the ceiling. The handler's own error, if it returns one,
+// is not what the caller is told: the join layer's refusal is.
 var ErrHeldResponseTooLarge = errors.New("the answer of a joined request exceeds what it may hold under the transaction's lock")
 
 // Pass is a pass whose own claims have been verified. It is what a door holds

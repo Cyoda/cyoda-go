@@ -52,6 +52,18 @@ member. These settings apply on a single node and in a cluster alike.
   a bound lowered after it was imported is not clamped: its callout fails,
   naming this setting. Must be `>= 1`; startup fails otherwise
   (default: `60000`)
+- `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES` — ceiling on the answer to a
+  callback, a request a compute member makes under its transaction token. Such
+  an answer is built in memory and sent only once the transaction has been let
+  go of, so everything waiting on that transaction — the end of the callout
+  included — waits behind those bytes. A larger answer fails the callback with
+  `413 JOINED_RESPONSE_TOO_LARGE` and is never sent in part, on the HTTP door
+  and on the gRPC one, where the frames of a chunked collection count together.
+  The member's remedy is to page the read; raise this when a deployment's
+  members legitimately read more in one callback, at the cost of memory held on
+  the owning node. It does not govern ordinary, unjoined requests, nor the
+  callback's own request body. Must be `> 0`; startup fails otherwise
+  (default: `10485760`, 10 MiB)
 
 Tries multiply the answer limit. With the PostgreSQL backend a callout holds
 its transaction's connection idle while it waits, and

@@ -659,7 +659,8 @@ func New(cfg Config) *App {
 	// The join layer: every request that carries a pass runs through it, on
 	// either door — joined, checked under the transaction's lock, and holding
 	// that lock for the length of the handler.
-	joiner, err := txjoin.NewJoiner(a.tokenSigner, a.transactionManager, a.fence, a.txGate, observability.Meter())
+	joiner, err := txjoin.NewJoiner(a.tokenSigner, a.transactionManager, a.fence, a.txGate,
+		cfg.Callout.JoinedResponseMaxBytes, observability.Meter())
 	if err != nil {
 		slog.Error("startup failure", "phase", "joiner-metrics-init", "error", err.Error())
 		os.Exit(1)

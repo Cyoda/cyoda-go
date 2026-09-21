@@ -207,6 +207,13 @@ type CalloutConfig struct {
 	// margin for routing a callback and for clocks that differ between nodes.
 	// CYODA_CALLOUT_PASS_ALLOWANCE, default 30s, must be > 0.
 	PassAllowance time.Duration
+	// JoinedResponseMaxBytes is the most a compute member's callback may
+	// answer with while it holds its transaction's lock — the owner's next
+	// move waits behind those bytes. An answer past it fails the callback with
+	// 413 JOINED_RESPONSE_TOO_LARGE rather than being cut short.
+	// CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES, default 10485760 (10 MiB),
+	// must be > 0.
+	JoinedResponseMaxBytes int
 }
 
 type AdminConfig struct {
@@ -457,11 +464,12 @@ func DefaultConfig() Config {
 			ExpiryGrace:       envDuration("CYODA_SCHEDULER_EXPIRY_GRACE", 100*time.Millisecond),
 		},
 		Callout: CalloutConfig{
-			FixedNumRetries:    envInt("CYODA_RETRY_FIXED_NUM_RETRIES", 3),
-			ResponseTimeout:    envMillis("CYODA_CALLOUT_RESPONSE_TIMEOUT_MS", 30*time.Second),
-			ResponseTimeoutMax: envMillis("CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS", 60*time.Second),
-			HandoverAllowance:  envDuration("CYODA_CALLOUT_HANDOVER_ALLOWANCE", 30*time.Second),
-			PassAllowance:      envDuration("CYODA_CALLOUT_PASS_ALLOWANCE", 30*time.Second),
+			FixedNumRetries:        envInt("CYODA_RETRY_FIXED_NUM_RETRIES", 3),
+			ResponseTimeout:        envMillis("CYODA_CALLOUT_RESPONSE_TIMEOUT_MS", 30*time.Second),
+			ResponseTimeoutMax:     envMillis("CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS", 60*time.Second),
+			HandoverAllowance:      envDuration("CYODA_CALLOUT_HANDOVER_ALLOWANCE", 30*time.Second),
+			PassAllowance:          envDuration("CYODA_CALLOUT_PASS_ALLOWANCE", 30*time.Second),
+			JoinedResponseMaxBytes: envInt("CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES", 10485760),
 		},
 		HTTP: HTTPConfig{
 			ReadHeaderTimeout: envDuration("CYODA_HTTP_READ_HEADER_TIMEOUT", 10*time.Second),
@@ -894,6 +902,9 @@ func ValidateCallout(c CalloutConfig) error {
 	}
 	if c.PassAllowance <= 0 {
 		return fmt.Errorf("CYODA_CALLOUT_PASS_ALLOWANCE must be > 0, got %s", c.PassAllowance)
+	}
+	if c.JoinedResponseMaxBytes <= 0 {
+		return fmt.Errorf("CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES must be > 0, got %d", c.JoinedResponseMaxBytes)
 	}
 	return nil
 }

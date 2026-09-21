@@ -33,6 +33,10 @@ func captureSlog(t *testing.T) *bytes.Buffer {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 	return &buf
 }
+// testResponseMax is the joined-answer ceiling these tests build a Joiner with.
+// It is the shipped default's shape at a size a test writes past in one line,
+// so the ceiling's behaviour is pinned without allocating megabytes to do it.
+const testResponseMax = 64 << 10
 
 // fakeJoinTM satisfies spi.TransactionManager by embedding the interface and
 // overriding only Join. Unimplemented methods panic if unexpectedly called.
@@ -76,7 +80,7 @@ func liveFence(t *testing.T, calloutID, txID string) (*fence.Fence, *txgate.Regi
 // fence whose wait takes gate's locks. A nil meter (the no-op meter).
 func joinerOver(t *testing.T, s *token.Signer, txMgr spi.TransactionManager, f *fence.Fence, gate *txgate.Registry) *txjoin.Joiner {
 	t.Helper()
-	j, err := txjoin.NewJoiner(s, txMgr, f, gate, nil)
+	j, err := txjoin.NewJoiner(s, txMgr, f, gate, testResponseMax, nil)
 	if err != nil {
 		t.Fatalf("NewJoiner: %v", err)
 	}

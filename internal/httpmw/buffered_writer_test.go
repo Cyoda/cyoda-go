@@ -3,23 +3,25 @@ package httpmw
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/txjoin"
 )
 
 // A joined response is held in memory while the transaction's lock is held, so
-// it has a ceiling of its own. Past it the request fails with a ticketed 5xx:
-// the alternative would be to send a truncated answer, which is a wrong answer.
+// it has a ceiling of its own. Past it the request fails, and the caller is told
+// what the ceiling is so it can page the read: the alternative would be to send
+// a truncated answer, which is a wrong answer.
 func TestTxJoin_AResponseOverTheCeilingFails_AndIsNotTruncated(t *testing.T) {
 	j, gate, pass := liveJoiner(t, "tx-1")
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		chunk := make([]byte, 1<<20)
-		for written := 0; written <= txjoin.MaxHeldResponseBytes; written += len(chunk) {
+		chunk := make([]byte, 4<<10)
+		for written := 0; written <= testResponseMax; written += len(chunk) {
 			// The writer reports the refusal; a handler that ignores it, as most
 			// do on a write error, must still not have its answer truncated.
 			_, _ = w.Write(chunk)
@@ -31,11 +33,20 @@ func TestTxJoin_AResponseOverTheCeilingFails_AndIsNotTruncated(t *testing.T) {
 
 	TxJoin(j)(next).ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d; want a ticketed 500", rec.Code)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d; want 413", rec.Code)
 	}
-	if props := problemProps(t, rec); props.ErrorCode != "SERVER_ERROR" {
-		t.Errorf("errorCode = %q; want SERVER_ERROR", props.ErrorCode)
+	props := problemProps(t, rec)
+	if props.ErrorCode != "JOINED_RESPONSE_TOO_LARGE" {
+		t.Errorf("errorCode = %q; want JOINED_RESPONSE_TOO_LARGE", props.ErrorCode)
+	}
+	if props.Retryable {
+		t.Error("retryable: the same request answers the same bytes again; the caller pages the read instead")
+	}
+	// The caller is told the ceiling it passed, which is the one thing it can
+	// act on: a ticket would tell it nothing.
+	if !strings.Contains(rec.Body.String(), strconv.Itoa(testResponseMax)) {
+		t.Errorf("body does not name the %d-byte ceiling: %s", testResponseMax, rec.Body.String())
 	}
 	if rec.Body.Len() > 4096 {
 		t.Errorf("the client got %d bytes: a refused response must not be sent at all", rec.Body.Len())
@@ -53,7 +64,7 @@ func TestTxJoin_AResponseOverTheCeilingFails_AndIsNotTruncated(t *testing.T) {
 // A response at the ceiling is answered whole.
 func TestTxJoin_AResponseAtTheCeilingIsSentWhole(t *testing.T) {
 	j, _, pass := liveJoiner(t, "tx-1")
-	body := make([]byte, txjoin.MaxHeldResponseBytes)
+	body := make([]byte, testResponseMax)
 	for i := range body {
 		body[i] = 'a'
 	}

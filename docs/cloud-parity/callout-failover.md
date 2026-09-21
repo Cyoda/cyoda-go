@@ -307,9 +307,10 @@ the lock is taken:
   produced are sent before the handler's error is returned, exactly as an
   unjoined stream would deliver them.
 - A joined answer is held in memory while the transaction's lock is held, under
-  the same 10 MB ceiling as the request body. An answer past it fails the
-  request — a ticketed 5xx on either door — and is never sent in part: a
-  truncated answer would be a wrong one.
+  a ceiling of its own: `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES`, default
+  10 MiB. An answer past it fails the request — `413
+  JOINED_RESPONSE_TOO_LARGE`, naming the ceiling, on either door — and is never
+  sent in part: a truncated answer would be a wrong one.
 
 ## 8. What Cloud has to decide
 
