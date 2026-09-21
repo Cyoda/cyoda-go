@@ -29,6 +29,10 @@ func TestPublishedExamples_Validate(t *testing.T) {
 		"a criteria refusal with a reason": {
 			"processing/EntityCriteriaCalculationResponse.json",
 			`{"id":"e-1","requestId":"r-1",` + eid + `,"success":true,"matches":false,"reason":"credit score 540 below threshold 600"}`},
+		// cmd/cyoda/help/content/grpc.md — processor response
+		"a processor result": {
+			"processing/EntityProcessorCalculationResponse.json",
+			`{"id":"e-1","requestId":"r-1",` + eid + `,"success":true,"payload":{"type":"JSON","data":{"amount":42}},"warnings":[]}`},
 		// cmd/cyoda/help/content/grpc.md — function response
 		"a function result": {
 			"processing/EntityFunctionCalculationResponse.json",
@@ -52,22 +56,30 @@ func TestPublishedExamples_Validate(t *testing.T) {
 	}
 }
 
-// The processor response is checked against its required list rather than by a
-// validator: EntityProcessorCalculationResponse cannot be compiled by a
-// conformant one, because it references common/DataPayload.json, which
-// declares `"type": "any"` — a jsonschema2pojo Java-ism, not a JSON Schema
-// type. The generator strips it before handing the tree to go-jsonschema; the
-// published copy still carries it.
+// The prose around those examples tells a compute-member author that every
+// calculation response carries three identifying fields and that the rest is
+// optional. That is a claim about the smallest answer the tree accepts, so it
+// is checked the same way: the three fields alone and nothing else.
 //
-// What this pins is the smallest successful processor answer `cyoda help grpc`
-// documents: the three identifying fields and nothing else.
-func TestSmallestProcessorAnswer_CarriesEveryRequiredField(t *testing.T) {
-	documented := map[string]bool{"id": true, "requestId": true, "entityId": true}
-	schema := readSchema(t, "processing/EntityProcessorCalculationResponse.json")
-	base := readSchema(t, "common/BaseEvent.json")
-	for _, r := range append(toStrings(schema["required"]), toStrings(base["required"])...) {
-		if !documented[r] {
-			t.Errorf("the documented smallest successful answer omits the required %q", r)
-		}
+// The criteria response is deliberately absent. It owes one thing more — the
+// verdict the criterion was asked for — and TestCriteriaResponse_Matches…
+// covers that clause; listing it here would assert the opposite.
+func TestSmallestDocumentedAnswer_Validates(t *testing.T) {
+	const smallest = `{"id":"e-1","requestId":"r-1","entityId":"1b4e28ba-2fa1-11d2-883f-0016d3cca427"}`
+	for _, path := range []string{
+		"processing/EntityProcessorCalculationResponse.json",
+		"processing/EntityFunctionCalculationResponse.json",
+	} {
+		t.Run(path, func(t *testing.T) {
+			schema := compileSchema(t, path)
+			inst, err := jsonschema.UnmarshalJSON(strings.NewReader(smallest))
+			if err != nil {
+				t.Fatalf("the instance is not valid JSON: %v", err)
+			}
+			if err := schema.Validate(inst); err != nil {
+				t.Errorf("%s refuses the smallest answer the help topic documents:\n%s\n%v",
+					path, smallest, err)
+			}
+		})
 	}
 }

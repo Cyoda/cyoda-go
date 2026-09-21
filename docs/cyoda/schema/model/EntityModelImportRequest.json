@@ -20,7 +20,6 @@
       "$ref": "../common/DataFormat.json"
     },
     "payload": {
-      "type": "any",
       "existingJavaType": "com.fasterxml.jackson.databind.JsonNode",
       "description": "The data to be used for importing the model."
     }

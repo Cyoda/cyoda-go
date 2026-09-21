@@ -10,7 +10,6 @@
       "format": "uuid"
     },
     "patch": {
-      "type": "any",
       "existingJavaType": "com.fasterxml.jackson.databind.JsonNode",
       "description": "The patch document (RFC 7386 merge patch)."
     },

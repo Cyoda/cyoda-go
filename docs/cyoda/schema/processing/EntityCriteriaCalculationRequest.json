@@ -53,7 +53,6 @@
       "description": "Transaction ID."
     },
     "parameters": {
-      "type": "any",
       "existingJavaType": "com.fasterxml.jackson.databind.JsonNode",
       "description": "Configured parameters, if any."
     },

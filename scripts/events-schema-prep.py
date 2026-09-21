@@ -11,8 +11,24 @@ scripts/generate-events_test.sh.
 import glob
 import json
 import os
-import re
 import sys
+
+
+def strip_existing_java_type(node):
+    """Removes every `existingJavaType` key, at any depth.
+
+    It is a jsonschema2pojo extension naming the Java class that tool emits
+    for a property. go-jsonschema does not read it and warns about it, and
+    Cloud's generator needs it, so it stays in the published tree and is
+    dropped from this scratch copy.
+    """
+    if isinstance(node, dict):
+        node.pop('existingJavaType', None)
+        for value in node.values():
+            strip_existing_java_type(value)
+    elif isinstance(node, list):
+        for value in node:
+            strip_existing_java_type(value)
 
 
 def main(clean):
@@ -20,18 +36,16 @@ def main(clean):
     base_event_path = os.path.join(clean, 'common', 'BaseEvent.json')
     with open(base_event_path) as fh:
         base_event = json.load(fh)
+    strip_existing_java_type(base_event)
     base_props = base_event.get('properties', {})
     base_required = base_event.get('required', [])
 
     # Step 2: Process all schemas.
     for f in glob.glob(os.path.join(clean, '**', '*.json'), recursive=True):
         with open(f) as fh:
-            content = fh.read()
+            schema = json.load(fh)
 
-        # Fix Java-specific 'type': 'any' (not valid JSON Schema).
-        content = re.sub(r',?\s*"existingJavaType":\s*"[^"]*"', '', content)
-        content = content.replace('"type": "any"', '"description": "arbitrary JSON"')
-        content = re.sub(r',(\s*[}\]])', r'\1', content)
+        strip_existing_java_type(schema)
 
         # Step 3: Inline BaseEvent's fields into the schemas that compose with
         # it. go-jsonschema resolves the allOf itself, but into a different
@@ -39,13 +53,6 @@ def main(clean):
         # collapsed into one type named after whichever schema was read first —
         # a rename of public wire types. Inline here instead, and keep the
         # generated output stable.
-        try:
-            schema = json.loads(content)
-        except json.JSONDecodeError:
-            with open(f, 'w') as fh:
-                fh.write(content)
-            continue
-
         composed = schema.get('allOf', [])
         base_members = [
             m for m in composed
@@ -75,10 +82,8 @@ def main(clean):
             else:
                 del schema['allOf']
 
-            content = json.dumps(schema, indent=2)
-
         with open(f, 'w') as fh:
-            fh.write(content)
+            json.dump(schema, fh, indent=2)
 
 
 if __name__ == '__main__':

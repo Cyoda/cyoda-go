@@ -71,6 +71,21 @@ func compileSchema(t *testing.T, target string) *jsonschema.Schema {
 	return schema
 }
 
+// Every schema in the tree compiles under the dialect it declares. A schema a
+// conformant validator refuses to *compile* asserts nothing at all, and not in
+// the permissive sense: the SDK generator, the compute-member author checking
+// an answer and any conformance tooling all stop at the door, so every clause
+// the document does state is lost with it. A composition makes that reach
+// further than the one file — a schema is only as compilable as the tree it
+// references.
+func TestSchemaTree_Compiles(t *testing.T) {
+	for _, p := range schemaPaths(t) {
+		t.Run(p, func(t *testing.T) {
+			compileSchema(t, p)
+		})
+	}
+}
+
 // The criteria response's `matches` is the verdict on a criterion, and a
 // criterion decides a transition. A response that is not an explicit failure
 // and carries no verdict is refused (internal/grpc: the decode keeps the

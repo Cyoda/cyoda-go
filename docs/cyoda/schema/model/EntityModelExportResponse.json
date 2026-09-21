@@ -19,7 +19,6 @@
       "description": "Entity model specification."
     },
     "payload": {
-      "type": "any",
       "existingJavaType": "com.fasterxml.jackson.databind.JsonNode",
       "description": "The content format of the exported entity model depends on the selected converter."
     }
