@@ -40,6 +40,20 @@ that decides a transition. It is the same conclusion the platform reaches for a
 verdict relayed by another node, and it applies to a member of the node holding
 the transaction and to a member of a node that received the callout alike.
 
+**A difference that is gone — an omitted `success` means success.** The
+published schema (`docs/cyoda/schema/common/BaseEvent.json`) declares `success`
+optional with the default `true`. Cloud applied that default; cyoda-go read an
+absent key as `false` and turned the answer into a failed callout, so one
+payload meant opposite things on the two tiers. cyoda-go now applies the
+default: a member that omits the key has answered success, and a member
+reporting a failure sends `success: false` explicitly. The same bytes now mean
+the same thing on both tiers, so this asks nothing of Cloud and appears in
+neither the table above nor §8.
+
+The default fills in a flag, never a verdict: a criteria answer that omits
+`success` still owes its `matches`, and the criteria response schema states
+that as "required on any response but an explicit `success: false` one".
+
 **Departure 1 — `idempotent`, default `false`.** A boolean on a processor's
 `config` (workflow schema 1.5). It is the author's declaration that the
 processor may be run more than once for one callout — possibly only partly,

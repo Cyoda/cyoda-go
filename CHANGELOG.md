@@ -58,7 +58,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   See `docs/cloud-parity/callout-failover.md`.
 
 - **A criteria answer that omits `matches` is refused instead of read as
-  `false`.** A compute member that answers `success: true` without a verdict
+  `false`.** A compute member that reports no failure and gives no verdict
   gave no answer to the criterion, and a criterion decides a transition: the
   callout now ends as an answer that could not be read (`400 WORKFLOW_FAILED`,
   not retryable) where it used to block the transition as if the member had said
@@ -398,6 +398,23 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   answer is still never truncated: the request fails.
 
 ### Fixed
+
+- **A compute member's answer that omits `success` is read as success, as the
+  published schema says it is.** `success` is declared optional with the default
+  `true` (`docs/cyoda/schema/common/BaseEvent.json`), and cyoda-go read an absent
+  key as `false`: a processor, criterion or function response that left the key
+  out ended the operation with `400 WORKFLOW_FAILED` and the message `… returned
+  failure`, although the member had reported nothing of the kind. The same
+  payload meant the opposite on Cyoda Cloud, which applied the default. All three
+  responses now apply it. **A compute member reporting a failure must send
+  `success: false` explicitly** — an empty or partial response is not a failure
+  report. Nothing else changes: the default fills in the flag, never a verdict,
+  so a criteria answer that omits `matches` is still refused as an answer that
+  could not be read, and a processor payload that cannot be read still fails the
+  callout. The criteria response schema now requires `matches` on any response
+  but an explicit `success: false` one, where it used to require it only of an
+  explicit `success: true` one. See `cyoda help grpc` and
+  `docs/cloud-parity/callout-failover.md`.
 
 - **A callout is never given to a compute member that has already gone.** A
   compute member whose stream drops is failed and detached the instant the

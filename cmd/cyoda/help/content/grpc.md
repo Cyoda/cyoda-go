@@ -282,6 +282,11 @@ Client responds with `EntityProcessorCalculationResponse`:
 }
 ```
 
+`success` is optional and defaults to `true`, as the published schema says: a
+response that leaves the key out has reported success. A member reporting a
+failure must therefore send `success: false` explicitly — an empty or partial
+response is not read as a failure.
+
 When `success=false`, no other member is tried. The client's operation fails with `400 WORKFLOW_FAILED` carrying `error.message`, and `error.retryable: true` is passed on as the client's `retryable: true` — it tells the client that running the whole operation again may succeed; it does not make the server try another member. (An `ASYNC_NEW_TX` processor is the exception: its failure is logged and the operation continues.) When `payload.data` is non-null, the engine replaces the entity's data with the returned value before continuing the workflow.
 
 Returned data is subject to the same checks as an HTTP client write: it must be storable, and it must satisfy the model's schema. A processor may introduce a field the model does not declare only where the model's `changeLevel` would allow a client to — otherwise the transition fails with `WORKFLOW_FAILED` and rolls back. The engine holds no privilege here: whatever it stores, the API must be able to accept back.
@@ -318,11 +323,17 @@ Client responds with `EntityCriteriaCalculationResponse`:
 }
 ```
 
-`matches` is required on a successful criteria response. A response that omits
-it is not read as `false` — a missing verdict would be an invented answer to
-the criterion, and the criterion decides a transition — so the callout ends as
-an answer that could not be read (`400 WORKFLOW_FAILED`, not retryable) and no
-other compute member is tried.
+`success` is optional here too and defaults to `true`, so a response that
+leaves the key out has reported success; a member reporting a failure must send
+`success: false` explicitly.
+
+`matches` is required on a successful criteria response — which is any response
+but an explicit `success: false` one. A response that omits it is not read as
+`false` — a missing verdict would be an invented answer to the criterion, and
+the criterion decides a transition — so the callout ends as an answer that
+could not be read (`400 WORKFLOW_FAILED`, not retryable) and no other compute
+member is tried. Omitting `success` therefore does not excuse omitting
+`matches`: the default fills in the flag, never the verdict.
 
 On `matches: false`, the response may also carry a `reason` string explaining
 why the criterion blocked the passage. The reason is the criterion's own
@@ -372,7 +383,9 @@ Response replaces criteria's `matches`/`reason` with `result` (an arbitrary JSON
 
 `resultKind: "Schedule"` is the only shape currently defined — it drives a
 scheduled transition's `schedule.function` (see `cyoda help workflows`).
-`success: false` fails the callout as it does for a processor: no other
+`success` defaults to `true` here as everywhere, so a response that omits it
+has reported success. `success: false` — which a member reporting a failure
+must send explicitly — fails the callout as it does for a processor: no other
 member is tried, and the message and `retryable` verdict reach the client;
 a `result` that doesn't parse against the
 declared `resultKind` is rejected by the caller (a scheduled transition's
