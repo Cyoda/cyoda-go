@@ -197,7 +197,7 @@ func (c *SchedulerRPCClient) ExecuteScheduledTask(ctx context.Context, target, a
 		return err
 	}
 
-	plain, err := json.Marshal(SchedulerTaskRequest{Task: task})
+	plain, err := dispatch.EncodePeerBody(SchedulerTaskRequest{Task: task})
 	if err != nil {
 		return fmt.Errorf("scheduler rpc: marshal request: %w", err)
 	}
@@ -366,7 +366,7 @@ func (h *SchedulerRPCHandler) handle(w http.ResponseWriter, r *http.Request) {
 // nothing else: a status line, or a body it cannot open, tells it only that the
 // answer was lost, never that the task fired.
 func (h *SchedulerRPCHandler) writeSealed(w http.ResponseWriter, binding dispatch.ResponseBinding, resp SchedulerTaskResponse) {
-	plain, err := json.Marshal(resp)
+	plain, err := dispatch.EncodePeerBody(resp)
 	if err != nil {
 		slog.Error("failed to marshal scheduled task answer", "pkg", "cluster", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)

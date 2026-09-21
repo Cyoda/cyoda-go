@@ -151,7 +151,7 @@ func (h *DispatchHandler) buildContext(r *http.Request, identity PeerIdentity, t
 // nothing else: a status line or a body it cannot open tells it only that the
 // answer was lost.
 func (h *DispatchHandler) writeSealed(w http.ResponseWriter, binding ResponseBinding, v DispatchCalloutResponse) {
-	plain, err := json.Marshal(v)
+	plain, err := encodePeerBody(v)
 	if err != nil {
 		slog.Error("failed to marshal dispatch answer", "pkg", "dispatch", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)

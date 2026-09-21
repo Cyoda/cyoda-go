@@ -768,7 +768,17 @@ address it looked up, the receiver names itself, and the envelope opens only
 where the two agree. A bounded, TTL-evicted nonce cache rejects replayed
 requests within the 30s skew window; answers do not enter it, being bound to a
 request nonce their receiver chose. The scheduler's peer RPC signs its requests
-and answers the same way.
+and answers the same way. Both bodies are JSON encoded with HTML escaping off,
+and the entity's payload travels base64 so that it is neither compacted nor
+rewritten (§the internal dispatch endpoint).
+
+What the seal binds is a request to one recipient, one endpoint, one timestamp
+and one nonce, and an answer to one request. What it does not bind is a node's
+lifetime: the replay cache is in memory, so a node restarted inside the
+30-second skew window accepts a replay of a request its previous life ran. That
+is accepted — binding the recipient's list epoch instead would fail every
+hand-over to a peer whose epoch has not yet gossiped, turning a rare
+attacker-dependent hole into a routine failure on every peer restart.
 
 The token is a **pass**: it is minted per try, by the node that makes the
 hand-off, and `NodeID` is always the owner's — so a callback is routed to the
@@ -956,11 +966,25 @@ POST /internal/dispatch/callout
 - Single route for every callout kind (processor, criteria, function); `Kind` in
   the request body discriminates
 - Authenticated and encrypted with the AES-256-GCM AEAD envelope described in §4.2 — the answer too
-- 12 MB max envelope, on both legs — above the 10 MB an entity write may carry,
-  so that an entity the API stores can always be handed over. An envelope above
-  it is refused by whichever end builds it: a hand-over that cannot fit is
-  `Terminal` and uses no try (it would fail identically on every peer), and an
-  answer that cannot fit is not written, so the owner reads the lost answer it is
+- Max envelope, on both legs: `base64(10 MB) + 512 KB` ≈ 13.8 MB — derived from
+  the 10 MB an entity write may carry, so that an entity the API stores can
+  always be handed over. The payload travels base64 (see below), the headroom
+  covers the meta, the definition, the roles, the tags and the envelope's 28
+  bytes, and the JSON is encoded with HTML escaping off so that a payload holding
+  HTML or XML text is not multiplied sixfold. An answer carries one compute
+  member's entity, which arrived over gRPC under that server's receive limit
+  (grpc-go's 4 MB default — nothing here sets `MaxRecvMsgSize`), so it is well
+  under the ceiling. An envelope above the ceiling is refused by whichever end
+  builds it: a hand-over that cannot fit is `Terminal` and uses no try (it would
+  fail identically on every peer), and an answer that cannot fit is not written,
+  so the owner reads the lost answer it is
+- The entity's payload travels **base64, byte for byte**, in both directions. It
+  is what the store holds and what the compute member is handed, and both must be
+  the same bytes: inside a JSON envelope a raw payload would be compacted (its
+  insignificant whitespace dropped) and, with escaping on, rewritten character by
+  character. A processor that changes nothing answers with the entity it was
+  given and the owner persists that answer, so a rewrite on either leg would
+  rewrite a tenant's stored data
 - Reconstruct `UserContext` from request fields (tenantID, userID, roles, principal kind)
 - A request carries two tenants — its own `TenantID`, which the reconstructed `UserContext` runs as, and `EntityMeta.TenantID`, which is handed to the local dispatcher as the entity's own. They must agree, or the callout would run as one tenant over another's entity; a mismatch is answered, under seal, as a `terminal` refusal with no try made — as is any authenticated request that cannot be run. The equality is unconditional and covers an absent `EntityMeta.TenantID`: every callout kind is built from a live stored entity whose `Meta.TenantID` is always set, so an empty one can only come from a hand-crafted peer body. The response names neither value — both are peer-supplied.
 - Runs the local procedure (`RunLocal`) with the tries the owner allows, and never hands the callout on

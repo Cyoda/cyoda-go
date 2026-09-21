@@ -149,7 +149,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   that same node, and the payload states the outcome explicitly. The node id is
   not sent — the sender names the node whose address it looked up, the receiver
   names itself — so a hand-over opens only on the node it was meant for, and two
-  nodes sharing one id would open each other's. The node-to-node call that
+  nodes sharing one id would open each other's. The entity's payload travels
+  base64-encoded, byte for byte in both directions, so that what a compute member
+  is handed and what the platform persists are the bytes the store holds. The node-to-node call that
   delegates a scheduled transition travels in the same envelope and changed with
   it. A mixed-version cluster can therefore neither hand a callout over nor
   forward a scheduled transition: a node of this version treats an answer it

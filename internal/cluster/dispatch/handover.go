@@ -2,7 +2,6 @@ package dispatch
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -98,7 +97,7 @@ func newHandOverRequest(uc *spi.UserContext, ownerNodeID string, call internalgr
 	}
 	req := DispatchCalloutRequest{
 		Kind:           call.Kind.String(),
-		Entity:         json.RawMessage(src.Entity.Data),
+		Entity:         src.Entity.Data,
 		EntityMeta:     src.Entity.Meta,
 		WorkflowName:   src.WorkflowName,
 		TransitionName: src.TransitionName,
@@ -199,11 +198,12 @@ func (req *DispatchCalloutRequest) validate() error {
 }
 
 // noEntity reports whether a hand-over carries no entity to run the callout
-// over. JSON's null decodes into a RawMessage of four bytes, not an empty one,
-// and it is no entity all the same: a callout is always built from a stored
-// entity, so neither form can come from a genuine hand-over.
-func noEntity(raw json.RawMessage) bool {
-	trimmed := bytes.TrimSpace(raw)
+// over. An absent or JSON-null field decodes into no bytes at all; a payload
+// whose own bytes are the four of "null" is no entity either. A callout is
+// always built from a stored entity, so neither can come from a genuine
+// hand-over.
+func noEntity(payload []byte) bool {
+	trimmed := bytes.TrimSpace(payload)
 	return len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null"))
 }
 
@@ -213,7 +213,10 @@ func noEntity(raw json.RawMessage) bool {
 // enclosing pairs, and a numberer that counts minor = 1, 2, … under the
 // hand-over's major. The request must have passed validate.
 func (req *DispatchCalloutRequest) toCallout() (internalgrpc.Callout, *contract.CalloutFailure) {
-	entity := &spi.Entity{Meta: req.EntityMeta, Data: []byte(req.Entity)}
+	// The payload as it was stored: the wire carried the bytes, not a re-encoding
+	// of them, so this is what the owner's store holds and what the compute
+	// member is given.
+	entity := &spi.Entity{Meta: req.EntityMeta, Data: req.Entity}
 	tenant := spi.TenantID(req.TenantID)
 
 	var call internalgrpc.Callout

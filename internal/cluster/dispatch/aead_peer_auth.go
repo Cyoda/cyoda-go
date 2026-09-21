@@ -21,19 +21,48 @@ const (
 	DispatchContentType  = "application/cyoda-dispatch-v1"
 	DispatchTimestampHdr = "X-Dispatch-Timestamp"
 
+	// maxStoredEntitySize is the largest payload an entity can be stored with:
+	// internal/domain/entity's maxEntityBodySize bounds a whole write body, and
+	// the payload is a field inside it. Named here, not imported — this package
+	// must not depend on the entity domain — and pinned by a test beside the
+	// hand-over of an entity that size.
+	maxStoredEntitySize = 10 * 1024 * 1024
+
+	// entityOnWire is what base64 makes of maxStoredEntitySize: four output
+	// bytes per three input bytes, rounded up to a group. The entity travels
+	// base64 because that is the only encoding that carries opaque bytes
+	// through a JSON envelope without rewriting them (see
+	// DispatchCalloutRequest.Entity).
+	entityOnWire = ((maxStoredEntitySize + 2) / 3) * 4
+
+	// envelopeHeadroom is for everything else a hand-over carries: the entity's
+	// meta, the processor definition or criterion, the roles, the tags, the
+	// field names, and the envelope's own 28 bytes of nonce and tag.
+	envelopeHeadroom = 512 * 1024
+
 	// MaxEnvelopeSize caps how much an attacker can force either end to
 	// buffer before the envelope is rejected. Exported because every leg that
 	// reads a peer envelope — callout dispatch and the scheduler RPC alike —
 	// bounds its read by the one ceiling.
 	//
-	// It sits above the 10 MiB an entity write may carry, with room for the
-	// meta, the definition, the roles, the tags and the envelope's own 28
-	// bytes, so that an entity the API stores can always be handed over: at the
-	// same ceiling, an entity within a few KiB of the limit would make a
-	// callout that no peer could take, while the same callout served by a local
-	// compute member succeeds. Above this an envelope is refused by whichever
-	// end builds it, which for a hand-over is Terminal and uses no try.
-	MaxEnvelopeSize = 12 * 1024 * 1024
+	// It is derived so that an entity at the API's own storable limit is always
+	// hand-over-able: below that, an entity the API stores would make a callout
+	// no peer could take while a local compute member served the same callout
+	// (which is what the fixed ceiling did before, sixfold, for any entity
+	// holding HTML or XML text). The entity is the only field with a stated
+	// maximum; the rest is a workflow's own configuration and the entity's meta,
+	// kilobytes in practice but not separately bounded, which is what the
+	// headroom is for. An envelope above the ceiling is refused by whichever end
+	// builds it — for a hand-over that is Terminal, nothing sent, no try — and
+	// never truncated.
+	//
+	// The answer leg is well under it: an answer carries one compute member's
+	// entity, which reached this node over gRPC, and no server here sets
+	// MaxRecvMsgSize, so grpc-go's 4 MiB default bounds it — about 5.4 MiB once
+	// base64'd. That is a dependency on the gRPC server's limit, not a
+	// coincidence: raising it past three quarters of this ceiling would make a
+	// member's largest answer unable to travel back.
+	MaxEnvelopeSize = entityOnWire + envelopeHeadroom
 
 	// nonceCacheCapacity is the replay-cache ceiling — see nonceCache.
 	nonceCacheCapacity = 100_000

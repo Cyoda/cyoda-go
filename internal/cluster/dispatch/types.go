@@ -20,14 +20,23 @@ import (
 type DispatchCalloutRequest struct {
 	Kind string `json:"kind"`
 
-	Entity         json.RawMessage `json:"entity"`
-	EntityMeta     spi.EntityMeta  `json:"entityMeta"`
-	WorkflowName   string          `json:"workflowName"`
-	TransitionName string          `json:"transitionName"`
-	TxID           string          `json:"txID"`
-	TenantID       string          `json:"tenantID"`
-	Tags           string          `json:"tags"`
-	UserID         string          `json:"userID"`
+	// Entity is the entity's payload, byte for byte as it is stored. A []byte
+	// travels base64-encoded, which is the only way to put opaque bytes inside a
+	// JSON envelope without rewriting them: encoding/json runs a
+	// json.RawMessage through compact, which drops the insignificant whitespace
+	// a stored payload may carry and — unless escaping is off — turns every "<",
+	// ">" and "&" into six bytes. The payload is persisted as it arrives and is
+	// handed to a compute member as it was stored, so neither rewrite is
+	// acceptable here. DispatchCalloutResponse.EntityData is a []byte for the
+	// same reason, in the same direction.
+	Entity         []byte         `json:"entity"`
+	EntityMeta     spi.EntityMeta `json:"entityMeta"`
+	WorkflowName   string         `json:"workflowName"`
+	TransitionName string         `json:"transitionName"`
+	TxID           string         `json:"txID"`
+	TenantID       string         `json:"tenantID"`
+	Tags           string         `json:"tags"`
+	UserID         string         `json:"userID"`
 	// PrincipalKind is the originating principal's explicit kind
 	// (spi.PrincipalUser/Service/System). The peer reconstructs a
 	// UserContext from this request (handler.go buildContext) and
@@ -99,7 +108,12 @@ type DispatchCalloutResponse struct {
 	ErrorStatus    int    `json:"errorStatus,omitempty"`
 	ErrorRetryable bool   `json:"errorRetryable,omitempty"`
 
-	// EntityData is populated for a processor callout response.
+	// EntityData is populated for a processor callout response: the payload the
+	// compute member answered with, byte for byte, which the owner persists. A
+	// []byte for the reason DispatchCalloutRequest.Entity is one — base64 is
+	// what carries opaque bytes through a JSON envelope unrewritten. It is the
+	// answer of one compute member, which arrives over gRPC and is therefore
+	// bounded by that server's receive limit (see MaxEnvelopeSize).
 	EntityData []byte `json:"entityData,omitempty"`
 
 	// Matches and Reason are populated for a criteria callout response.

@@ -149,9 +149,10 @@ func TestRequestValidate(t *testing.T) {
 		{"enclosing pair with no fencing number", func(r *DispatchCalloutRequest) {
 			r.Outer = []WirePair{{Callout: "outer-rid", Major: 0, Minor: 1}}
 		}},
-		// json.Unmarshal reads "entity": null into the four bytes `null`, which
-		// is not an empty slice. It is no entity all the same.
-		{"entity that is JSON null", func(r *DispatchCalloutRequest) { r.Entity = json.RawMessage(`null`) }},
+		// The payload travels as bytes, so an absent or JSON-null field arrives
+		// as no bytes at all (the case above). A payload whose own four bytes
+		// are "null" is no entity either.
+		{"entity whose payload is the JSON null literal", func(r *DispatchCalloutRequest) { r.Entity = []byte(`null`) }},
 		{"more enclosing pairs than can be sane", func(r *DispatchCalloutRequest) {
 			r.Outer = outerPairs(maxOuterPairs + 1)
 		}},

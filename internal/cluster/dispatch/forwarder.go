@@ -156,7 +156,7 @@ func ensureScheme(addr string) string {
 // JSON response. The answer comes back sealed for this request and is opened
 // with the binding Sign returned.
 func (f *HTTPForwarder) forward(ctx context.Context, peerNodeID, url string, reqBody any, respBody any) error {
-	plain, err := json.Marshal(reqBody)
+	plain, err := encodePeerBody(reqBody)
 	if err != nil {
 		return stageErr(StageBeforeConnect, fmt.Errorf("dispatch forward: marshal request: %w", err))
 	}
