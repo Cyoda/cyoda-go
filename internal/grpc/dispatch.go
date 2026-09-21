@@ -231,10 +231,12 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 			slog.Error("member disconnected mid-dispatch", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
 			return CalloutResult{}, appFailure(contract.NoAnswer, disconnectedErr(label)), nil
 		}
-		// Before the flag is read as a verdict on the work, and before
-		// anything else in the answer is read at all: an answer whose
-		// `success` is the literal null reports neither success nor failure,
-		// and the same answer is refused for every one of the three kinds.
+		// Before the flag is read as a verdict on the work, and before a
+		// verdict, a payload or a result is read out of the answer: an answer
+		// whose `success` is the literal null reports neither success nor
+		// failure, and it is refused for every one of the three kinds alike.
+		// Its warnings have already been surfaced, as any other unreadable
+		// answer's are — a warning decides nothing.
 		if resp.NullSuccess {
 			return CalloutResult{}, memberResponseUnreadable(nullSuccessError{}, nullSuccessMessage, label, name, member.ID, requestID), nil
 		}
