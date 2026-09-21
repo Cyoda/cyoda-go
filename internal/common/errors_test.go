@@ -604,6 +604,41 @@ func TestWriteError_ClientGoneCancellation_LogsDebugNoTicket(t *testing.T) {
 	}
 }
 
+// TestWriteError_ClientGoneCancellation_VerboseModeKeepsDetailNoTicket covers
+// the verbose arm of the client-gone branch, which the sanitized-mode test
+// above does not exercise: verbose mode still shows appErr.Detail (as it does
+// for every other internal error) and still omits the ticket — there is
+// nobody to quote it to regardless of response mode.
+func TestWriteError_ClientGoneCancellation_VerboseModeKeepsDetailNoTicket(t *testing.T) {
+	buf := captureSlog(t)
+	common.SetErrorResponseMode("verbose")
+	defer common.SetErrorResponseMode("sanitized")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/test", nil)
+	ctx, cancel := context.WithCancel(r.Context())
+	cancel()
+	r = r.WithContext(ctx)
+
+	appErr := common.Internal("joined request ended before it took the transaction's lock", context.Canceled)
+	common.WriteError(w, r, appErr)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+	if strings.Contains(buf.String(), `"level":"ERROR"`) {
+		t.Errorf("a client disconnect must not log at ERROR, even in verbose mode: %s", buf.String())
+	}
+	var pd map[string]any
+	json.NewDecoder(w.Body).Decode(&pd)
+	if pd["ticket"] != nil {
+		t.Errorf("verbose mode must still omit the ticket nobody can be quoted: %v", pd["ticket"])
+	}
+	detail, _ := pd["detail"].(string)
+	if detail != "context canceled" {
+		t.Errorf("detail = %q, want appErr.Detail (%q) in verbose mode", detail, "context canceled")
+	}
+}
+
 // TestWriteError_OrdinaryInternalError_StillLogsErrorWithTicket pins the
 // regression this task must not cause: an internal error on a request whose
 // context is NOT done still mints a ticket and logs at ERROR.
