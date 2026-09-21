@@ -95,9 +95,11 @@ type Gossip struct {
 	signal   *common.ChangeSignal
 	metrics  *tagMetrics
 
-	publish chan struct{} // one slot: this pnode's list changed
-	stop    chan struct{}
-	done    chan struct{}
+	publish     chan struct{} // one slot: this pnode's list changed
+	readvertise chan struct{} // one slot: the metadata must be re-advertised
+	stop        chan struct{}
+	done        chan struct{} // the tag worker has returned
+	advertised  chan struct{} // the re-advertiser has returned
 
 	deregisterOnce sync.Once
 	deregisterErr  error
@@ -164,9 +166,11 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 		tags:     newTagStore(cfg.NodeID, epoch, signal),
 		events:   events,
 		signal:   signal,
-		publish:  make(chan struct{}, 1),
-		stop:     make(chan struct{}),
-		done:     make(chan struct{}),
+		publish:     make(chan struct{}, 1),
+		readvertise: make(chan struct{}, 1),
+		stop:        make(chan struct{}),
+		done:        make(chan struct{}),
+		advertised:  make(chan struct{}),
 	}
 
 	mlCfg.Delegate = del
@@ -188,9 +192,10 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 	}
 	g.metrics = metrics
 
-	// Started only now: the worker needs g.list. What the callbacks left in
-	// the queue in between is still there.
+	// Started only now: both need g.list. What the callbacks left in the queue
+	// in between is still there.
 	go g.runTagWorker()
+	go g.runReadvertiser()
 
 	slog.Info("gossip registry created",
 		"pkg", "cluster/registry",
@@ -351,12 +356,17 @@ func (g *Gossip) outstandingLists() int64 {
 	return n
 }
 
-// Deregister stops the tag worker and gracefully leaves the cluster. A second
-// call returns the first call's result.
+// Deregister stops the tag worker and the re-advertiser and gracefully leaves
+// the cluster. A second call returns the first call's result.
 func (g *Gossip) Deregister(_ context.Context, _ string) error {
 	g.deregisterOnce.Do(func() {
 		close(g.stop)
 		<-g.done
+		// A re-advertise in flight waits for its broadcast, so this can take
+		// up to metaBroadcastTimeout. It is waited for rather than left
+		// running: Leave and Shutdown below are calls into the same
+		// memberlist, and two at once is what this goroutine exists to avoid.
+		<-g.advertised
 		g.metrics.close()
 		if err := g.list.Leave(5 * time.Second); err != nil {
 			g.deregisterErr = fmt.Errorf("leave cluster: %w", err)

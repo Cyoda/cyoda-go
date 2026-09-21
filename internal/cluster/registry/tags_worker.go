@@ -25,8 +25,12 @@ const (
 	// worker. A full queue drops the event; the scan makes it good.
 	tagEventQueueDepth = 256
 	// metaBroadcastTimeout bounds the wait for the metadata broadcast. On a
-	// timeout the broadcast stays queued in memberlist and still goes out.
-	metaBroadcastTimeout = 5 * time.Second
+	// timeout the broadcast stays queued in memberlist and still goes out, so
+	// the wait buys nothing but pacing — and it is paid twice over: it holds
+	// the one re-advertise this pnode may have in flight, and Deregister waits
+	// for that one before it leaves the cluster. Hence a short bound: a
+	// re-advertise that has not been gossiped within it is left to memberlist.
+	metaBroadcastTimeout = time.Second
 )
 
 // tagListMsg is the payload of topicTags.
@@ -245,16 +249,38 @@ func ScanIntervalFor(patience time.Duration) time.Duration {
 	return min(max(patience/2, shortest), longest)
 }
 
+// runReadvertiser is the one goroutine that re-advertises this pnode's
+// metadata. It is a goroutine of its own because UpdateNode waits for the
+// broadcast to reach a peer, which the worker must not wait for; and it is
+// ONE goroutine because UpdateNode reads this pnode's own address and port
+// while another call to it writes them, so two at once is a data race inside
+// memberlist. A poke that arrives while a re-advertise is running is dropped:
+// UpdateNode reads the metadata when it starts, so the next one carries
+// whatever the newest list is, and the metadata is always stored before the
+// poke is offered.
+func (g *Gossip) runReadvertiser() {
+	defer close(g.advertised)
+	for {
+		select {
+		case <-g.stop:
+			return
+		case <-g.readvertise:
+			if err := g.list.UpdateNode(metaBroadcastTimeout); err != nil {
+				slog.Debug("metadata broadcast still queued",
+					"pkg", "cluster/registry", "nodeId", g.cfg.NodeID, "err", err)
+			}
+		}
+	}
+}
+
 // publishOwnList re-advertises the metadata, which now names the new version,
 // and sends the list to every other alive pnode. Neither waits on the worker.
 func (g *Gossip) publishOwnList() {
 	version, tags := g.tags.ownList()
-	go func() {
-		if err := g.list.UpdateNode(metaBroadcastTimeout); err != nil {
-			slog.Debug("metadata broadcast still queued",
-				"pkg", "cluster/registry", "nodeId", g.cfg.NodeID, "err", err)
-		}
-	}()
+	select {
+	case g.readvertise <- struct{}{}:
+	default: // a re-advertise is pending or running; it reads the newest metadata
+	}
 	msg := encodeTagMsg(topicTags, tagListMsg{NodeID: g.cfg.NodeID, Version: version, Tags: tags})
 	peers := 0
 	for _, m := range g.dir.all() {

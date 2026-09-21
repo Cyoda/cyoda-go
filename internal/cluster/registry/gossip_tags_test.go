@@ -97,6 +97,38 @@ func TestNewGossip_LargestIdentityThatFits_Starts(t *testing.T) {
 	}
 }
 
+// TestGossipRegistry_TagUpdatesInQuickSuccessionPublishOneAtATime pins that
+// re-advertising the metadata is one thing at a time. Re-advertising waits for
+// the broadcast to reach a peer, so updates arriving faster than that overlap;
+// memberlist's UpdateNode reads this node's own address and port while another
+// call to it is writing them, which is a data race in the library and shows as
+// one under -race. The assertion a reader sees is the functional half: the last
+// set a caller made is the set its peers end up holding, however many updates
+// were coalesced on the way.
+func TestGossipRegistry_TagUpdatesInQuickSuccessionPublishOneAtATime(t *testing.T) {
+	r1 := startGossip(t, gossipCfg("quick-1", 25952))
+	r2 := startGossip(t, gossipCfg("quick-2", 25953, "127.0.0.1:25952"))
+
+	eventually(t, 5*time.Second, "quick-2 sees quick-1", func() bool {
+		_, ok := nodeIn(t, r2, "quick-1")
+		return ok
+	})
+
+	// Every set differs from the one before it, so every call publishes.
+	var last map[string][]string
+	for i := range 20 {
+		last = map[string][]string{"tenant-a": {fmt.Sprintf("compute-%02d", i)}}
+		if err := r1.UpdateTags(last); err != nil {
+			t.Fatalf("UpdateTags %d: %v", i, err)
+		}
+	}
+
+	eventually(t, 10*time.Second, "quick-2 holds the last tag set quick-1 published", func() bool {
+		n, ok := nodeIn(t, r2, "quick-1")
+		return ok && reflect.DeepEqual(n.Tags, last)
+	})
+}
+
 func TestGossipRegistry_DeregisterTwice(t *testing.T) {
 	r := startGossip(t, gossipCfg("dereg-twice", 23952))
 	if err := r.Deregister(context.Background(), "dereg-twice"); err != nil {
