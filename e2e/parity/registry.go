@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 280 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 286 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -221,6 +221,16 @@ var allTests = []NamedTest{
 	// compute clients proves it here; one that cannot skips.
 	{"ComputeClientJoinServeLeave", RunComputeClientJoinServeLeave},
 	{"ComputeClientBehaviours", RunComputeClientBehaviours},
+
+	// Callout failover: what ends a callout and what the client is told. Each
+	// case starts its own compute clients under a fresh tenant; a fixture that
+	// cannot start them skips.
+	{"CalloutNoAnswerNotIdempotentStops", RunCalloutNoAnswerNotIdempotentStops},
+	{"CalloutCriterionFailsOver", RunCalloutCriterionFailsOver},
+	{"CalloutFunctionFailsOver", RunCalloutFunctionFailsOver},
+	{"CalloutMemberFailedStops", RunCalloutMemberFailedStops},
+	{"CalloutRetryPolicyNoneOneTry", RunCalloutRetryPolicyNoneOneTry},
+	{"CalloutEveryTryUsed", RunCalloutEveryTryUsed},
 
 	// A.1 — numeric classifier parity (HTTP round-trip)
 	{"NumericClassification18DigitDecimal", RunNumericClassification18DigitDecimal},
