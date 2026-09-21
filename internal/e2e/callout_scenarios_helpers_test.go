@@ -3,6 +3,7 @@ package e2e_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,7 +11,10 @@ import (
 	"testing"
 	"time"
 
+	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
 	"github.com/cyoda-platform/cyoda-go/app"
+	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 )
 
 // callout_scenarios_helpers_test.go holds what the callout scenario files
@@ -69,34 +73,122 @@ func assertEnvelope(t *testing.T, door string, env txEnvelope, err error, wantDo
 	}
 }
 
-// assertRefusedOnAllDoors presents pass as a write and as a read on the HTTP
-// door and on the gRPC door and expects the same refusal from all four.
+// assertRefusedOnAllDoors presents pass on every door a compute node can call
+// back through and expects the same refusal from all six: the HTTP entity
+// routes, write and read; the gRPC unary methods, EntityManage and
+// EntitySearch; and the gRPC server-streaming methods, EntityManageCollection
+// and EntitySearchCollection, whose join runs a path of its own — the request
+// message is received before the transaction's lock is taken and every response
+// frame is held until it has been released.
+//
+// Each door is a subtest, so a door that answers wrongly neither hides the
+// others nor stops the scenario: what every door did is in the report.
 // wantDetail "" skips the message check.
 func assertRefusedOnAllDoors(t *testing.T, h *callbackHarness, pass, writeModel, readEntityID string, wantStatus int, wantCode, wantDetail string) {
 	t.Helper()
 	const child = `{"name":"late-child","amount":1,"status":"late"}`
-	check := func(door string, res callbackResult, err error) {
-		t.Helper()
-		if err != nil {
-			t.Fatalf("%s: %v", door, err)
-		}
-		pd := assertProblem(t, res.StatusCode, res.Body, wantStatus, wantCode, false)
-		if wantDetail != "" && !strings.Contains(pd.Detail, wantDetail) {
-			t.Errorf("%s: detail = %q; want it to contain %q", door, pd.Detail, wantDetail)
-		}
+	problem := func(door string, call func() (callbackResult, error)) {
+		t.Run(door, func(t *testing.T) {
+			res, err := call()
+			if err != nil {
+				t.Fatalf("%v", err)
+			}
+			pd := assertProblem(t, res.StatusCode, res.Body, wantStatus, wantCode, false)
+			if wantDetail != "" && !strings.Contains(pd.Detail, wantDetail) {
+				t.Errorf("detail = %q; want it to contain %q", pd.Detail, wantDetail)
+			}
+		})
 	}
-	res, err := h.ReplayCreateHTTP(pass, writeModel, 1, child)
-	check("HTTP write", res, err)
-	res, err = h.ReplayGetHTTP(pass, readEntityID)
-	check("HTTP read", res, err)
+	envelope := func(door string, call func() (txEnvelope, error)) {
+		t.Run(door, func(t *testing.T) {
+			env, err := call()
+			assertEnvelope(t, door, env, err, wantCode, false)
+			if wantDetail != "" && env.Error != nil && !strings.Contains(env.Error.Message, wantDetail) {
+				t.Errorf("%s: message = %q; want it to contain %q", door, env.Error.Message, wantDetail)
+			}
+		})
+	}
+	problem("http-write", func() (callbackResult, error) { return h.ReplayCreateHTTP(pass, writeModel, 1, child) })
+	problem("http-read", func() (callbackResult, error) { return h.ReplayGetHTTP(pass, readEntityID) })
+	envelope("grpc-write", func() (txEnvelope, error) { return h.ReplayCreateGRPC(pass, writeModel, 1, child) })
+	envelope("grpc-read", func() (txEnvelope, error) { return h.ReplayGetGRPC(pass, readEntityID) })
+	envelope("grpc-stream-write", func() (txEnvelope, error) {
+		return h.ReplayCreateCollectionGRPC(pass, writeModel, 1, child)
+	})
+	envelope("grpc-stream-read", func() (txEnvelope, error) { return h.ReplaySearchCollectionGRPC(pass, writeModel, 1) })
+}
 
-	env, err := h.ReplayCreateGRPC(pass, writeModel, 1, child)
-	assertEnvelope(t, "gRPC write", env, err, wantCode, false)
-	if wantDetail != "" && env.Error != nil && !strings.Contains(env.Error.Message, wantDetail) {
-		t.Errorf("gRPC write: message = %q; want it to contain %q", env.Error.Message, wantDetail)
+// ReplayCreateCollectionGRPC presents a recorded pass on the gRPC
+// server-streaming write door (EntityManageCollection) with a one-item create
+// collection, and returns the first frame's envelope.
+func (h *callbackHarness) ReplayCreateCollectionGRPC(pass, model string, version int, payload string) (txEnvelope, error) {
+	if pass == "" {
+		return txEnvelope{}, errReplayNeedsPass
 	}
-	env, err = h.ReplayGetGRPC(pass, readEntityID)
-	assertEnvelope(t, "gRPC read", env, err, wantCode, false)
+	var data map[string]any
+	if err := json.Unmarshal([]byte(payload), &data); err != nil {
+		return txEnvelope{}, fmt.Errorf("failed to read the payload: %w", err)
+	}
+	reqCE, err := internalgrpc.NewCloudEvent(internalgrpc.EntityCreateCollectionRequest, map[string]any{
+		"id":         "replay-grpc-create-collection",
+		"dataFormat": "JSON",
+		"payloads": []any{map[string]any{
+			"model": map[string]any{"name": model, "version": version},
+			"data":  data,
+		}},
+	})
+	if err != nil {
+		return txEnvelope{}, fmt.Errorf("failed to build create-collection request: %w", err)
+	}
+	stream, err := cyodapb.NewCloudEventsServiceClient(h.apiConn).EntityManageCollection(h.grpcCtx(pass), reqCE)
+	if err != nil {
+		return txEnvelope{}, fmt.Errorf("failed to call EntityManageCollection: %w", err)
+	}
+	return firstStreamEnvelope(stream)
+}
+
+// ReplaySearchCollectionGRPC presents a recorded pass on the gRPC
+// server-streaming read door (EntitySearchCollection) and returns the first
+// frame's envelope.
+func (h *callbackHarness) ReplaySearchCollectionGRPC(pass, model string, version int) (txEnvelope, error) {
+	if pass == "" {
+		return txEnvelope{}, errReplayNeedsPass
+	}
+	reqCE, err := internalgrpc.NewCloudEvent(internalgrpc.EntitySearchRequest, map[string]any{
+		"id":    "replay-grpc-search-collection",
+		"model": map[string]any{"name": model, "version": version},
+		"condition": map[string]any{
+			"type":         "simple",
+			"jsonPath":     "$.status",
+			"operatorType": "EQUALS",
+			"value":        "late",
+		},
+	})
+	if err != nil {
+		return txEnvelope{}, fmt.Errorf("failed to build search request: %w", err)
+	}
+	stream, err := cyodapb.NewCloudEventsServiceClient(h.apiConn).EntitySearchCollection(h.grpcCtx(pass), reqCE)
+	if err != nil {
+		return txEnvelope{}, fmt.Errorf("failed to call EntitySearchCollection: %w", err)
+	}
+	return firstStreamEnvelope(stream)
+}
+
+// firstStreamEnvelope reads a server-streaming reply's first frame as an
+// envelope. A refusal is that one frame; a stream that ends without any frame
+// is reported as a success carrying no error, which is what a refused door must
+// never answer.
+func firstStreamEnvelope(stream interface {
+	Recv() (*cepb.CloudEvent, error)
+}) (txEnvelope, error) {
+	frame, err := stream.Recv()
+	if errors.Is(err, io.EOF) {
+		return txEnvelope{Success: true}, nil
+	}
+	if err != nil {
+		return txEnvelope{}, fmt.Errorf("failed to read the stream's first frame: %w", err)
+	}
+	return parseTxEnvelope(frame)
 }
 
 // procSpec is one processor of a chain workflow. config is merged over
