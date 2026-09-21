@@ -221,6 +221,15 @@ func (r *PeerRouter) boundPeerText(resp *DispatchCalloutResponse, peer contract.
 	// there the client's 400 body — the same text a local try bounds where the
 	// member speaks it (boundMemberText, internal/grpc/dispatch.go).
 	resp.MemberError = boundLine(resp.MemberError)
+	// A criterion's reason reaches the client where a transition is refused, and
+	// a function's resultKind reaches the error the engine raises for a result
+	// it cannot use. Both are the answering node's free text, bounded like the
+	// rest of it. The vocabulary resultKind belongs to is not judged here: which
+	// kinds exist is the caller's question, and the one use site
+	// (workflow.armScheduled) refuses a kind it cannot use for a hand-over
+	// exactly as it does for a local callout.
+	resp.Reason = boundLine(resp.Reason)
+	resp.ResultKind = boundLine(resp.ResultKind)
 	if len(resp.Attempts) > maxPeerDiagnostics {
 		resp.Attempts = resp.Attempts[:maxPeerDiagnostics:maxPeerDiagnostics]
 	}

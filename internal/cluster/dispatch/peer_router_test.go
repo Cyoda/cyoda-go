@@ -301,6 +301,35 @@ func TestHandOver_BoundsThePeersRelayedMemberMessage(t *testing.T) {
 	}
 }
 
+// A criterion's reason and a function's resultKind are the answering node's
+// free text too: a criterion's reason reaches the client where a transition is
+// refused, and a resultKind reaches the error the engine raises for a result it
+// cannot use. Both are bounded like every other text a peer writes — one node
+// does not decide how much of another's diagnostics, or of a client's message,
+// a single answer may carry.
+func TestHandOver_BoundsTheCriterionReasonAndTheResultKind(t *testing.T) {
+	long := strings.Repeat("é", maxPeerDiagnosticRunes+10)
+	yes := true
+
+	criteria := &answeringForwarder{resp: &DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1), Matches: &yes, Reason: long}}
+	a := newTestRouter(t, &stubNodeRegistry{}, criteria).HandOver(testContext(), node("peer-1", true, "tenant-1", "python"), ownerCallout(t, "criteria"), 1, 1)
+	if a.Result == nil {
+		t.Fatalf("answer = %+v, want the criterion's verdict", a)
+	}
+	if got := []rune(a.Result.Reason); len(got) != maxPeerDiagnosticRunes+1 || got[len(got)-1] != '…' {
+		t.Errorf("the criterion's reason was not cut with a mark: %d runes", len(got))
+	}
+
+	function := &answeringForwarder{resp: &DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1), ResultKind: long, Result: []byte(`{}`)}}
+	f := newTestRouter(t, &stubNodeRegistry{}, function).HandOver(testContext(), node("peer-1", true, "tenant-1", "python"), ownerCallout(t, "function"), 1, 1)
+	if f.Result == nil {
+		t.Fatalf("answer = %+v, want the function's result", f)
+	}
+	if got := []rune(f.Result.Function.Kind); len(got) != maxPeerDiagnosticRunes+1 || got[len(got)-1] != '…' {
+		t.Errorf("the function's resultKind was not cut with a mark: %d runes", len(got))
+	}
+}
+
 // An answer that was not believed relays none of the peer's text, so there is
 // nothing left for a note about what was left out to refer to.
 func TestHandOver_LostAnswerGetsNoOmittedNote(t *testing.T) {

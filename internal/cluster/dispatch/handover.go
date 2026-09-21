@@ -375,9 +375,11 @@ func readAnswer(call internalgrpc.Callout, resp *DispatchCalloutResponse, triesL
 			result.Matches = *resp.Matches
 			result.Reason = resp.Reason
 		case internalgrpc.FunctionCallout:
-			// Both fields are relayed exactly as the cnode gave them — an
-			// empty resultKind is the cnode's answer, not a malformed one, and
-			// the engine refuses it where it refuses it for a local callout.
+			// Both fields are relayed as the cnode gave them, the kind bounded
+			// like every other text the answering node writes (boundPeerText):
+			// an empty or unusable resultKind is the cnode's answer, not a
+			// malformed one, and the engine refuses it where it refuses it for a
+			// local callout.
 			result.Function = contract.FunctionResult{Kind: resp.ResultKind, Value: resp.Result}
 		}
 		ans.Result = &result
