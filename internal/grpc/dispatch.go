@@ -276,7 +276,7 @@ func appFailure(kind contract.CalloutFailureKind, appErr *common.AppError) *cont
 // underlying cause.
 func terminalFailure(err error, memberID, requestID string) *contract.CalloutFailure {
 	slog.Error("dispatch could not build its own request", "pkg", "grpc", "memberId", memberID,
-		"requestId", requestID, "error", jsonErrorShape(err))
+		"requestId", requestID, "error", common.JSONErrorShape(err))
 	appErr := common.Internal("internal error", nil).WithCause(err)
 	return &contract.CalloutFailure{Kind: contract.Terminal, Code: appErr.Code, Message: appErr.Message, Err: appErr}
 }
@@ -298,16 +298,9 @@ func terminalFailure(err error, memberID, requestID string) *contract.CalloutFai
 // sanitizing done here.
 func memberResponseUnreadable(err error, label, name, memberID, requestID string) *contract.CalloutFailure {
 	slog.Error("compute member response could not be read", "pkg", "grpc", "label", label, "name", name,
-		"memberId", memberID, "requestId", requestID, "error", jsonErrorShape(err))
+		"memberId", memberID, "requestId", requestID, "error", common.JSONErrorShape(err))
 	return &contract.CalloutFailure{Kind: contract.Terminal, Message: "the compute member's response could not be read"}
 }
-
-// jsonErrorShape is common.JSONErrorShape under this package's own name. The
-// rule it keeps — a decode error is logged by its shape, never by the text it
-// failed on — holds at every boundary that reads a payload someone else wrote,
-// so the one spelling lives in internal/common and the node-to-node hand-over
-// uses it too.
-func jsonErrorShape(err error) string { return common.JSONErrorShape(err) }
 
 // calloutDeadlinePassed reports whether ctx ended because the callout's own
 // deadline passed, as opposed to its caller going away.

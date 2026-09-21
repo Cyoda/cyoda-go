@@ -14,6 +14,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
 )
 
@@ -227,7 +228,7 @@ func handleProcessorResponse(member *Member, payload json.RawMessage) {
 		Payload  json.RawMessage `json:"payload"`
 	}
 	if err := json.Unmarshal(payload, &resp); err != nil {
-		slog.Warn("failed to unmarshal processor response", "pkg", "grpc", "memberId", member.ID, "error", jsonErrorShape(err))
+		slog.Warn("failed to unmarshal processor response", "pkg", "grpc", "memberId", member.ID, "error", common.JSONErrorShape(err))
 		return
 	}
 
@@ -265,7 +266,7 @@ func handleCriteriaResponse(member *Member, payload json.RawMessage) {
 		Warnings []string `json:"warnings"`
 	}
 	if err := json.Unmarshal(payload, &resp); err != nil {
-		slog.Warn("failed to unmarshal criteria response", "pkg", "grpc", "memberId", member.ID, "error", jsonErrorShape(err))
+		slog.Warn("failed to unmarshal criteria response", "pkg", "grpc", "memberId", member.ID, "error", common.JSONErrorShape(err))
 		return
 	}
 
@@ -300,7 +301,7 @@ func handleFunctionResponse(member *Member, payload json.RawMessage) {
 		Warnings []string `json:"warnings"`
 	}
 	if err := json.Unmarshal(payload, &resp); err != nil {
-		slog.Warn("failed to unmarshal function response", "pkg", "grpc", "memberId", member.ID, "error", jsonErrorShape(err))
+		slog.Warn("failed to unmarshal function response", "pkg", "grpc", "memberId", member.ID, "error", common.JSONErrorShape(err))
 		return
 	}
 

@@ -9,6 +9,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
@@ -171,7 +172,7 @@ func NewCriteriaCallout(tenantID spi.TenantID, entity *spi.Entity, criterion jso
 		// ("WORKFLOW"/"TRANSITION"/"PROCESSOR") is what lets an operator on a
 		// multi-tenant node tell which criterion that was.
 		slog.Error("workflow criterion function could not be parsed", "pkg", "grpc", "tenantId", string(tenantID),
-			"workflowName", workflowName, "transitionName", transitionName, "target", target, "error", jsonErrorShape(err))
+			"workflowName", workflowName, "transitionName", transitionName, "target", target, "error", common.JSONErrorShape(err))
 		return Callout{}, &contract.CalloutFailure{Kind: contract.Terminal, Message: "the workflow's criterion function could not be parsed"}
 	}
 	name := fn.Name
