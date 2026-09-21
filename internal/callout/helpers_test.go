@@ -67,7 +67,7 @@ func newEnv(t *testing.T, cfg Config) *env {
 	if cfg.SelfNodeID == "" {
 		cfg.SelfNodeID = "node-owner"
 	}
-	return &env{reg: reg, gate: gate, fence: f, signer: signer, owner: New(local, reg, f, common.NewTestUUIDGenerator(), cfg)}
+	return &env{reg: reg, gate: gate, fence: f, signer: signer, owner: New(local, reg, nil, f, common.NewTestUUIDGenerator(), cfg)}
 }
 
 // cnode records what one scripted cnode was sent.
