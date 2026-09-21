@@ -220,7 +220,7 @@ Import-time validation rejects any `executionMode` value not in the list above (
 - **Whether another member is tried depends on how far the first one got.** The work never reaching the member — it had gone, or was not taking data — always gets another member tried, whether or not a processor is `idempotent`.
 - The work reaching the member, then no answer within `responseTimeoutMs`, or its connection dropping: another member is tried for a criterion, a function, or an `idempotent: true` processor; for any other processor **nothing else is tried** and the callout fails.
 - The member answering `success: false`, or its answer being unreadable: nothing else is tried, whatever `idempotent` says. A `success: false` answer carries the member's own message and its `retryable` verdict to the client; an unreadable answer fails the callout with no message of the member's own.
-- **The number of tries is the normal number, not a hard limit.** In a cluster the node holding the transaction can hand the callout to another node together with the tries that are left. If that node's answer is lost, one try is counted although it may have made more. **Time is the hard limit:** a callout never runs longer than `tries × answer limit + CYODA_DISPATCH_WAIT_TIMEOUT + CYODA_CALLOUT_HANDOVER_ALLOWANCE`, fixed when it starts — 155 s at the defaults. A client's own deadline is separate: if it ends the request first, the client sees its own error, not a callout error. See `cyoda help config grpc`.
+- **The number of tries is the normal number, not a hard limit.** In a cluster the node holding the transaction can hand the callout on to peers, one node after another, together with the tries that are left. If a peer's answer is lost, one try is counted although it may have made more. **Time is the hard limit:** a callout never runs longer than `tries × answer limit + CYODA_DISPATCH_WAIT_TIMEOUT + CYODA_CALLOUT_HANDOVER_ALLOWANCE`, fixed when it starts — 155 s at the defaults. A client's own deadline is separate: if it ends the request first, the client sees its own error, not a callout error. See `cyoda help config grpc`.
 
 **Repeating a processor.** A compute member that was given the work and then went quiet has not necessarily stopped, and what it has already done does not go away — inside cyoda or outside it.
 
@@ -672,6 +672,7 @@ curl -s -X POST \
 - crud
 - grpc
 - search
+- workflows.schema-version
 - errors.TRANSITION_NOT_FOUND
 - errors.WORKFLOW_NOT_FOUND
 - errors.WORKFLOW_FAILED
@@ -683,4 +684,5 @@ curl -s -X POST \
 - errors.WORKFLOW_SCHEMA_VERSION_UNSUPPORTED
 - errors.VALIDATION_FAILED
 - errors.MODEL_NOT_FOUND
+- errors.SCHEDULE_FUNCTION_INVALID_RESULT
 - config.grpc
