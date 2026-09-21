@@ -1,6 +1,7 @@
 package e2e_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -95,6 +96,81 @@ func TestCalloutFailover_Processor(t *testing.T) {
 				if got1[0].Pass() == got2[0].Pass() {
 					t.Error("both tries carry the same pass; every try mints its own")
 				}
+			}
+		})
+	}
+}
+
+// TestCalloutFailover_CriterionAndFunction: a criterion and a schedule function
+// go to the next cnode after a try that got no answer, with no declaration by
+// the author; retryPolicy NONE keeps each to one try.
+func TestCalloutFailover_CriterionAndFunction(t *testing.T) {
+	h := newCalloutHarness(t, calloutTuning(3, 100*time.Millisecond))
+
+	fnJSON := func(name, tag, policy string) string {
+		fn := map[string]any{"name": name, "resultKind": "Schedule", "calculationNodesTags": tag, "responseTimeoutMs": 300}
+		if policy != "" {
+			fn["retryPolicy"] = policy
+		}
+		b, _ := json.Marshal(fn)
+		return string(b)
+	}
+	critCfg := func(tag, policy string) map[string]any {
+		cfg := map[string]any{"calculationNodesTags": tag, "responseTimeoutMs": 300}
+		if policy != "" {
+			cfg["retryPolicy"] = policy
+		}
+		return cfg
+	}
+	schedule := answerResult("Schedule", map[string]any{"fireAfterMs": int64(3600000)})
+
+	cases := []struct {
+		name       string
+		workflow   func(tag string) string
+		second     cnodeReply
+		wantOK     bool
+		wantState  string
+		wantSecond int
+	}{
+		{"criterion", func(tag string) string { return criterionWorkflowJSON("s2-crit-wf", "s2-crit", critCfg(tag, "")) },
+			answerMatches(true), true, "DONE", 1},
+		{"criterion-none", func(tag string) string {
+			return criterionWorkflowJSON("s2-crit-none-wf", "s2-crit", critCfg(tag, "NONE"))
+		},
+			answerMatches(true), false, "", 0},
+		{"function", func(tag string) string { return scheduleFunctionWorkflowJSON("s2-fn-wf", fnJSON("s2-fn", tag, "")) },
+			schedule, true, "Open", 1},
+		{"function-none", func(tag string) string {
+			return scheduleFunctionWorkflowJSON("s2-fn-none-wf", fnJSON("s2-fn", tag, "NONE"))
+		},
+			schedule, false, "", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tag, model := "s2-"+tc.name, "s2-model-"+tc.name
+			first := h.AttachCnode(t, cnodeSpec{name: "first", tags: []string{tag}, script: scriptAlways(neverAnswer())})
+			second := h.AttachCnode(t, cnodeSpec{name: "second", tags: []string{tag}, script: scriptAlways(tc.second)})
+			defer second.Detach(t)
+			defer first.Detach(t)
+			h.SetupModelWithWorkflow(t, model, tc.workflow(tag))
+
+			id, status, body := h.CreateEntity(t, model, 1, workflowSampleModel)
+			if tc.wantOK {
+				if status != http.StatusOK {
+					t.Fatalf("create: %d %s; want 200", status, body)
+				}
+				if st, _ := h.GetEntityState(t, id); st != tc.wantState {
+					t.Errorf("state = %q; want %q", st, tc.wantState)
+				}
+			} else {
+				assertProblem(t, status, body, http.StatusServiceUnavailable, "DISPATCH_TIMEOUT", true)
+			}
+			got1, got2 := first.Received(), second.Received()
+			if len(got1) != 1 || len(got2) != tc.wantSecond {
+				t.Fatalf("first received %d, second %d; want 1 and %d", len(got1), len(got2), tc.wantSecond)
+			}
+			if tc.wantSecond == 1 && got1[0].RequestID != got2[0].RequestID {
+				t.Errorf("request ids differ across tries: %q then %q", got1[0].RequestID, got2[0].RequestID)
 			}
 		})
 	}
