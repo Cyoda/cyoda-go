@@ -1098,7 +1098,7 @@ waiver, with its reason below the table.
 | `triesUsed` out of range → `no_answer` | ✓ | | | | |
 | Peer cannot be connected to → no try used, next peer | ✓ | | | | w³ |
 | No peer can be connected to, no local cnode → 503 `NO_COMPUTE_MEMBER_FOR_TAG` | ✓ | | | | |
-| Non-2xx / truncated / unauthenticated answer → `no_answer` | ✓ | | | | |
+| Non-2xx / truncated / unauthenticated answer → `no_answer` — all three shapes, plus a connection closed with no reply, against a stand-in peer whose whole answer would have made the callout succeed | ✓ | ✓ | | | |
 | cnode message and verdict survive the hand-over | ✓ | | | | ✓ |
 | Response protection: forged, reflected or replayed answer refused; nonce never reused | ✓ | | | | |
 | Pass minted by another pnode joins the owner's transaction; refused once the callout ended | ✓ | | | | ✓ |

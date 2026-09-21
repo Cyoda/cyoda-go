@@ -21,8 +21,9 @@ import (
 
 // callout_handover_lost_test.go covers the one hand-over outcome no
 // running-backend test reached: the owner hands a callout over to a peer node,
-// the request IS delivered and read there, and the ANSWER IS LOST — it does
-// not authenticate, or the connection is closed with no reply at all. The peer
+// the request IS delivered and read there, and the ANSWER IS LOST — it does not
+// authenticate, the connection is closed with no reply, an intermediary answers
+// a non-2xx, or a sealed answer arrives cut short. The peer
 // may have given the work to a compute member, so the try counts; what the
 // client is told is `DISPATCH_FORWARD_FAILED` when that was the only try, and
 // a `CALLOUT_FAILED` listing it as `member<->` when another try failed too.
@@ -68,6 +69,12 @@ const (
 	// own, as an intermediary in front of a peer that has gone does. It is not
 	// sealed, so it proves nothing: the answer is lost.
 	peerAnswerRefusedStatus
+	// peerAnswerTruncated seals a genuine answer — a compute member there ran
+	// the processor and gave the entity back — declares its length, and then
+	// sends half of it and closes. Had it arrived whole, the callout would have
+	// SUCCEEDED; cut short it is lost, and must be, because half an envelope
+	// proves nothing about what the peer did.
+	peerAnswerTruncated
 	// peerAnswerNoComputeMember is a genuine, sealed "nothing was handed to a
 	// compute member": no try is used and the owner goes on to the next peer.
 	peerAnswerNoComputeMember
@@ -192,20 +199,33 @@ func (p *standInPeer) serveHandOver(auth dispatch.PeerAuth, w http.ResponseWrite
 		panic(http.ErrAbortHandler)
 	case peerAnswerRefusedStatus:
 		http.Error(w, gatewayRefusalText, http.StatusBadGateway)
-	case peerAnswerNoComputeMember:
-		zero := 0
-		plain, merr := json.Marshal(dispatch.DispatchCalloutResponse{
-			Outcome: contract.NoHandOff.String(), TriesUsed: &zero,
+	case peerAnswerTruncated:
+		one := 1
+		wire, ok := p.seal(auth, w, binding, dispatch.DispatchCalloutResponse{
+			Outcome: dispatch.OutcomeOK, TriesUsed: &one, EntityData: []byte(req.Entity),
 		})
-		if merr != nil {
-			p.fault("the answer could not be built")
-			w.WriteHeader(http.StatusInternalServerError)
+		if !ok {
 			return
 		}
-		wire, serr := auth.SealResponse(w.Header(), binding, plain)
-		if serr != nil {
-			p.fault("the answer could not be sealed")
-			w.WriteHeader(http.StatusInternalServerError)
+		// The length is declared and not delivered: the owner's read of the
+		// envelope ends before the envelope does. The half that is sent is
+		// flushed before the connection goes, or it would never leave this
+		// process and the owner would see a reply that never started — which is
+		// peerAnswerDropsConnection, not a truncated answer.
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(wire)))
+		_, _ = w.Write(wire[:len(wire)/2])
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		} else {
+			p.fault("the answer could not be flushed, so it could not be cut short")
+		}
+		panic(http.ErrAbortHandler)
+	case peerAnswerNoComputeMember:
+		zero := 0
+		wire, ok := p.seal(auth, w, binding, dispatch.DispatchCalloutResponse{
+			Outcome: contract.NoHandOff.String(), TriesUsed: &zero,
+		})
+		if !ok {
 			return
 		}
 		_, _ = w.Write(wire)
@@ -215,6 +235,25 @@ func (p *standInPeer) serveHandOver(auth dispatch.PeerAuth, w http.ResponseWrite
 		w.Header().Set("Content-Type", dispatch.DispatchContentType)
 		_, _ = w.Write(bytes.Repeat([]byte{0x2a}, 64))
 	}
+}
+
+// seal marshals resp and seals it for the request binding names, setting the
+// headers the wire format needs. It reports false — having answered 500 and
+// recorded a fault — when the peer cannot produce the answer it was meant to.
+func (p *standInPeer) seal(auth dispatch.PeerAuth, w http.ResponseWriter, binding dispatch.ResponseBinding, resp dispatch.DispatchCalloutResponse) ([]byte, bool) {
+	plain, err := json.Marshal(resp)
+	if err != nil {
+		p.fault("the answer could not be built")
+		w.WriteHeader(http.StatusInternalServerError)
+		return nil, false
+	}
+	wire, err := auth.SealResponse(w.Header(), binding, plain)
+	if err != nil {
+		p.fault("the answer could not be sealed")
+		w.WriteHeader(http.StatusInternalServerError)
+		return nil, false
+	}
+	return wire, true
 }
 
 func (p *standInPeer) setAnswer(a peerAnswer) {
@@ -264,7 +303,12 @@ func (p *standInPeer) addr() string {
 }
 
 // freeLoopbackPort returns a loopback port that was free a moment ago.
-// memberlist listens on it for both TCP and UDP.
+// memberlist listens on it for both TCP and UDP. Only a stand-in peer takes a
+// port this way, because it must be known before the node binds it — a seed
+// address is configured before the cluster exists — and because a peer that
+// loses the race fails its own test rather than the process: registry.NewGossip
+// returns an error, which newStandInPeer retries and finally reports. The owner
+// cannot use this (see newLostHandOverHarness).
 func freeLoopbackPort(t *testing.T) int {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -282,9 +326,16 @@ func freeLoopbackPort(t *testing.T) int {
 // stand-in peers, with the loopback guard opened as every multi-node fixture
 // opens it. Four tries, and no patience at all — a pass is never retried, so
 // what each peer and each compute member received is exact.
+//
+// The owner's gossip port is 0: the kernel picks it and memberlist advertises
+// the one it got (memberlist.Create retries the TCP/UDP pair ten times for a
+// dynamic port, and mustNewGossip passes the port through as configured). It
+// must not be a port this test reserved and released, because a bind error
+// there is not a test failure — app.New logs and exits the process, taking the
+// whole e2e binary with it. Nobody needs to know this port: the owner seeds at
+// the peers, never the other way round.
 func newLostHandOverHarness(t *testing.T, nodeID string, seeds []string) *callbackHarness {
 	t.Helper()
-	gossipPort := freeLoopbackPort(t)
 	return newCalloutHarness(t, func(cfg *app.Config) {
 		calloutTuning(3, 0)(cfg)
 		// Nothing of this file is scheduled; a scan loop would be the one other
@@ -293,7 +344,7 @@ func newLostHandOverHarness(t *testing.T, nodeID string, seeds []string) *callba
 		cfg.Cluster.Enabled = true
 		cfg.Cluster.NodeID = nodeID
 		cfg.Cluster.NodeAddr = fmt.Sprintf("http://127.0.0.1:%d", cfg.HTTPPort)
-		cfg.Cluster.GossipAddr = net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", gossipPort))
+		cfg.Cluster.GossipAddr = "127.0.0.1:0"
 		cfg.Cluster.SeedNodes = seeds
 		cfg.Cluster.StabilityWindow = 0
 		cfg.Cluster.HMACSecret = clusterHMACSecret32
@@ -359,6 +410,7 @@ func TestCalloutHandOver_AnswerLost_NotRepeatSafe(t *testing.T) {
 		{"answer-does-not-open", peerAnswerDoesNotOpen},
 		{"connection-dropped", peerAnswerDropsConnection},
 		{"non-2xx-status", peerAnswerRefusedStatus},
+		{"answer-truncated", peerAnswerTruncated},
 	} {
 		t.Run(mode.name, func(t *testing.T) {
 			peerA.setAnswer(mode.answer)
@@ -418,8 +470,9 @@ func TestCalloutHandOver_AnswerLost_NotRepeatSafe(t *testing.T) {
 }
 
 // TestCalloutHandOver_AnswerLost_RepeatSafe_CalloutFailed: an idempotent
-// processor, one compute member of the owner that answers nothing, and a peer
-// whose answer is lost. Two tries failed, so the client gets CALLOUT_FAILED —
+// processor, a compute member of the owner that answers nothing (one per door,
+// so each door's counts are its own), and a peer whose answer is lost. Two
+// tries failed, so the client gets CALLOUT_FAILED —
 // and the lost hand-over is listed as `member<->` carrying its own code, the
 // form errors/CALLOUT_FAILED.md documents. The local pass necessarily runs
 // first, so the lost hand-over is the second of the two entries; the second
@@ -435,21 +488,24 @@ func TestCalloutHandOver_AnswerLost_RepeatSafe_CalloutFailed(t *testing.T) {
 	h := newLostHandOverHarness(t, ownerNodeID, []string{peerLost.gossipAddr, peerNoMember.gossipAddr})
 	awaitPeerTag(t, h, tenantID, tag, 2)
 
-	silent := h.AttachCnode(t, cnodeSpec{name: "silent", tags: []string{tag}, script: scriptAlways(neverAnswer())})
-	defer silent.Detach(t)
-
 	forbidden := []string{
 		peerLost.nodeID, peerNoMember.nodeID, ownerNodeID, peerLost.addr(), peerNoMember.addr(),
 		"127.0.0.1", "localhost", "dispatch forward", "AEAD", "EOF", dispatchCalloutPathForTest,
 	}
-	// The whole message, character for character (§8.2's shape): the local
-	// try's own code and text, then the lost hand-over under the member id
-	// "-", each entry bracketed, N counted before collapsing.
-	wantDetail := fmt.Sprintf("CALLOUT_FAILED: the callout could not be completed, got 2 failures: [member<%s>: DISPATCH_TIMEOUT: processor dispatch timed out after 300ms: no response], %s",
-		silent.MemberID(), forwardFailedEntry)
 
-	for i, door := range []string{"http", "grpc"} {
+	for _, door := range []string{"http", "grpc"} {
 		t.Run(door, func(t *testing.T) {
+			// A compute member of this door's own, so that what it received is
+			// this subtest's whole story and neither door depends on the other
+			// having run.
+			silent := h.AttachCnode(t, cnodeSpec{name: "silent-" + door, tags: []string{tag}, script: scriptAlways(neverAnswer())})
+			defer silent.Detach(t)
+			// The whole message, character for character (§8.2's shape): the
+			// local try's own code and text, then the lost hand-over under the
+			// member id "-", each entry bracketed, N counted before collapsing.
+			wantDetail := fmt.Sprintf("CALLOUT_FAILED: the callout could not be completed, got 2 failures: [member<%s>: DISPATCH_TIMEOUT: processor dispatch timed out after 300ms: no response], %s",
+				silent.MemberID(), forwardFailedEntry)
+
 			model := fmt.Sprintf("lostrs-%s-%s", sfx, door)
 			h.SetupModelWithWorkflow(t, model, chainWorkflowJSON("lostrs-wf-"+door,
 				procSpec{"lostrs-proc", "SYNC", map[string]any{
@@ -484,8 +540,8 @@ func TestCalloutHandOver_AnswerLost_RepeatSafe_CalloutFailed(t *testing.T) {
 			if none := peerNoMember.take(); len(none) != 1 {
 				t.Errorf("the peer with no compute member opened %d hand-overs; want 1 — an authenticated no-hand-off uses no try, so the peer after it is still asked: %+v", len(none), none)
 			}
-			if recs := silent.Received(); len(recs) != i+1 {
-				t.Errorf("the owner's compute member received %d callouts in total; want %d (one per door): %v", len(recs), i+1, recs)
+			if recs := silent.Received(); len(recs) != 1 {
+				t.Errorf("the owner's compute member received %d callouts; want exactly 1: %v", len(recs), recs)
 			}
 			if n := h.countEntities(t, model); n != 0 {
 				t.Errorf("%d entities committed by a failed SYNC create; want 0", n)
