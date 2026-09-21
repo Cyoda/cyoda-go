@@ -111,6 +111,15 @@ owner. The compute member MUST echo this token on every callback:
 - HTTP CRUD callbacks: `X-Tx-Token` request header
 - gRPC EntityManage callbacks: `tx-token` metadata key
 
+The published API document declares the HTTP form: `X-Tx-Token` is an optional
+header parameter on the thirty entity, search, message, audit and platform-api
+operations a callback may reach, and each of those declares the statuses the
+join layer answers with — `401`, `403`, `404`, `410` and `413`. A client
+generated from the document can therefore make a callback and read its refusal
+without extra hand-written code. The entity-model and workflow operations do
+not declare it, because changing a model or a workflow from inside a callout is
+not supported.
+
 The receiving node verifies the token's HMAC and routes the callback to the
 transaction-owning node (same proxy mechanism as `TRANSACTION ROUTING` above).
 Without the echo the callback runs in a standalone transaction and cannot see

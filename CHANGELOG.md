@@ -299,6 +299,23 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   prevent. The transaction owner's own wait, the fence's, and a suspended
   callback's resume are never refused.
 
+- **The published API document declares the transaction routing token and the
+  statuses a joined request is refused with.** `X-Tx-Token` is a new optional
+  header parameter (`components.parameters.TxToken`) on the thirty entity,
+  search, message, audit and platform-api operations a compute member's
+  callback may reach, and each of those now declares `401`, `403`, `404`,
+  `410` and `413` — three of them new shared response components,
+  `TransactionNotFound`, `TransactionGone` and `JoinedPayloadTooLarge`. `410`
+  appeared nowhere in the document before, so a client generated from it had
+  no way to send a callback and no way to read the refusal, and an operation
+  declaring no `default` response could not describe one at all. The `410`
+  response names both codes that share the status, `TRANSACTION_EXPIRED` and
+  `CALLOUT_SUPERSEDED`; `properties.errorCode` tells them apart. The eleven
+  entity-model and workflow operations are deliberately excluded — changing a
+  model or a workflow from inside a callout is not supported — as are the
+  OAuth, client and account operations. Nothing existing changed: the
+  parameter is optional and the responses are additions.
+
 ### Changed
 
 - **A client that goes away mid-request is logged at DEBUG, with no ticket** —
