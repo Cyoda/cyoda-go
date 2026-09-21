@@ -60,7 +60,7 @@ func TestRunLocal_CalloutDeadline_AlreadyPassed_MakesNoTry(t *testing.T) {
 	if res.Failure == nil || res.Failure.Kind != contract.NoHandOff || !errors.Is(res.Err(), contract.ErrCalloutDeadline) {
 		t.Errorf("failure = %+v, want NoHandOff wrapping ErrCalloutDeadline", res.Failure)
 	}
-	if errors.Is(res.Err(), ErrNoMatchingMember) {
+	if errors.Is(res.Err(), contract.ErrNoMatchingMember) {
 		t.Error("a cnode was there; this must not read as \"no compute member\"")
 	}
 }

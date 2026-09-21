@@ -397,8 +397,8 @@ func TestRunLocal_NoMatchingCnode_IsNoHandOffWithNoTry_AndDoesNotWait(t *testing
 	d := newTestDispatcher(t, NewMemberRegistry())
 	start := time.Now()
 	res := d.RunLocal(testContext(), processorCall("x", false, 5*time.Second), 4)
-	if res.Failure == nil || res.Failure.Kind != contract.NoHandOff || !errors.Is(res.Err(), ErrNoMatchingMember) {
-		t.Fatalf("failure = %+v, want NoHandOff wrapping ErrNoMatchingMember", res.Failure)
+	if res.Failure == nil || res.Failure.Kind != contract.NoHandOff || !errors.Is(res.Err(), contract.ErrNoMatchingMember) {
+		t.Fatalf("failure = %+v, want NoHandOff wrapping contract.ErrNoMatchingMember", res.Failure)
 	}
 	if res.Failure.Code != common.ErrCodeNoComputeMemberForTag {
 		t.Errorf("Code = %q", res.Failure.Code)

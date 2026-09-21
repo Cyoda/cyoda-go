@@ -41,8 +41,8 @@ type LocalResult struct {
 	// Result is the cnode's answer; meaningful when OK.
 	Result CalloutResult
 	// Failure is the last try's failure, or — when no matching cnode was there
-	// to try — NoHandOff wrapping ErrNoMatchingMember. Whether another pnode
-	// may be asked is Failure.Kind.MayTryAnother(call.RepeatSafe).
+	// to try — NoHandOff wrapping contract.ErrNoMatchingMember. Whether another
+	// pnode may be asked is Failure.Kind.MayTryAnother(call.RepeatSafe).
 	Failure *contract.CalloutFailure
 	// CtxErr is the caller's ctx.Err(), unchanged, when its context ended
 	// during a try or between tries. Failure is then nil. Exception: when the
@@ -149,7 +149,7 @@ func (d *ProcessorDispatcher) RunLocal(ctx context.Context, call Callout, maxTri
 			Kind:    contract.NoHandOff,
 			Code:    common.ErrCodeNoComputeMemberForTag,
 			Message: fmt.Sprintf("%s: no compute member for tags %q", common.ErrCodeNoComputeMemberForTag, call.Tags),
-			Err:     fmt.Errorf("%w: tags %q", ErrNoMatchingMember, call.Tags),
+			Err:     fmt.Errorf("%w: tags %q", contract.ErrNoMatchingMember, call.Tags),
 		}
 	}
 	res.Failure = last

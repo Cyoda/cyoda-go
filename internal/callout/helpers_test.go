@@ -62,7 +62,7 @@ func newEnv(t *testing.T, cfg Config) *env {
 	reg := internalgrpc.NewMemberRegistry()
 	gate := txgate.New()
 	f := fence.New(gate)
-	local := internalgrpc.NewProcessorDispatcher(reg, internalgrpc.NewRoundRobinSelector(reg), common.NewTestUUIDGenerator(),
+	local := internalgrpc.NewProcessorDispatcher(reg, internalgrpc.NewRoundRobinSelector(reg),
 		signer, "node-owner", 30*time.Second, 60*time.Second, 30*time.Second)
 	if cfg.SelfNodeID == "" {
 		cfg.SelfNodeID = "node-owner"

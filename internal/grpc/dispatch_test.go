@@ -9,11 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 const testTenantID = spi.TenantID("tenant-1")
@@ -48,7 +51,51 @@ func newTestDispatcher(t *testing.T, registry *MemberRegistry) *ProcessorDispatc
 	if err != nil {
 		t.Fatalf("token.NewSigner: %v", err)
 	}
-	return NewProcessorDispatcher(registry, NewRoundRobinSelector(registry), common.NewTestUUIDGenerator(), signer, "node-test", 30*time.Second, 60*time.Second, 3*time.Second)
+	return NewProcessorDispatcher(registry, NewRoundRobinSelector(registry), signer, "node-test", 30*time.Second, 60*time.Second, 3*time.Second)
+}
+
+// oneTry is the local procedure with one try, armed the way an owner arms a
+// callout: what these tests pin is what one try sends and how its answer is
+// read.
+func oneTry(d *ProcessorDispatcher, ctx context.Context, call Callout) (CalloutResult, error) {
+	limit, failure := d.ResolveAnswerLimit(call.ResponseTimeoutMs)
+	if failure != nil {
+		return CalloutResult{}, failure
+	}
+	call.RequestID = uuid.NewString()
+	call.AnswerLimit = limit
+	call.OwnerNodeID = "node-test"
+	call.Number = &countingNumberer{}
+	res := d.RunLocal(ctx, call, 1)
+	return res.Result, res.Err()
+}
+
+func dispatchProcessor(d *ProcessorDispatcher, ctx context.Context, entity *spi.Entity, processor spi.ProcessorDefinition, workflowName, transitionName, txID string) (*spi.Entity, error) {
+	res, err := oneTry(d, ctx, NewProcessorCallout(spi.MustGetUserContext(ctx).Tenant.ID, entity, processor, workflowName, transitionName, txID))
+	if err != nil {
+		return nil, err
+	}
+	return res.Entity, nil
+}
+
+func dispatchCriteria(d *ProcessorDispatcher, ctx context.Context, entity *spi.Entity, criterion json.RawMessage, target, workflowName, transitionName, processorName, txID string) (bool, string, error) {
+	call, failure := NewCriteriaCallout(spi.MustGetUserContext(ctx).Tenant.ID, entity, criterion, target, workflowName, transitionName, processorName, txID)
+	if failure != nil {
+		return false, "", failure
+	}
+	res, err := oneTry(d, ctx, call)
+	if err != nil {
+		return false, "", err
+	}
+	return res.Matches, res.Reason, nil
+}
+
+func dispatchFunction(d *ProcessorDispatcher, ctx context.Context, entity *spi.Entity, fn spi.ScheduleFunction, workflowName, transitionName, txID string) (contract.FunctionResult, error) {
+	res, err := oneTry(d, ctx, NewFunctionCallout(spi.MustGetUserContext(ctx).Tenant.ID, entity, fn, workflowName, transitionName, txID))
+	if err != nil {
+		return contract.FunctionResult{}, err
+	}
+	return res.Function, nil
 }
 
 func testProcessor(tags string, responseTimeoutMs int64) spi.ProcessorDefinition {
@@ -223,7 +270,7 @@ func TestDispatchProcessor_HappyPath(t *testing.T) {
 		})
 	}()
 
-	result, err := dispatcher.DispatchProcessor(ctx, entity, processor, "wf1", "t1", "tx-1")
+	result, err := dispatchProcessor(dispatcher, ctx, entity, processor, "wf1", "t1", "tx-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -253,12 +300,12 @@ func TestDispatchProcessor_NoMember(t *testing.T) {
 		},
 	}
 
-	_, err := dispatcher.DispatchProcessor(ctx, entity, processor, "wf1", "t1", "tx-1")
+	_, err := dispatchProcessor(dispatcher, ctx, entity, processor, "wf1", "t1", "tx-1")
 	if err == nil {
 		t.Fatal("expected error for missing member")
 	}
-	if !errors.Is(err, ErrNoMatchingMember) {
-		t.Errorf("expected ErrNoMatchingMember, got: %s", err)
+	if !errors.Is(err, contract.ErrNoMatchingMember) {
+		t.Errorf("expected contract.ErrNoMatchingMember, got: %s", err)
 	}
 }
 
@@ -279,7 +326,7 @@ func TestDispatchProcessor_Timeout(t *testing.T) {
 		},
 	}
 
-	_, err := dispatcher.DispatchProcessor(ctx, entity, processor, "wf1", "t1", "tx-1")
+	_, err := dispatchProcessor(dispatcher, ctx, entity, processor, "wf1", "t1", "tx-1")
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -337,7 +384,7 @@ func TestDispatchProcessor_NoAttachEntity(t *testing.T) {
 		})
 	}()
 
-	result, err := dispatcher.DispatchProcessor(ctx, entity, processor, "wf1", "t1", "tx-1")
+	result, err := dispatchProcessor(dispatcher, ctx, entity, processor, "wf1", "t1", "tx-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -380,7 +427,7 @@ func TestDispatchCriteria_MatchesTrue(t *testing.T) {
 		})
 	}()
 
-	result, _, err := dispatcher.DispatchCriteria(ctx, entity, criterion, "transition", "wf1", "t1", "proc1", "tx-1")
+	result, _, err := dispatchCriteria(dispatcher, ctx, entity, criterion, "transition", "wf1", "t1", "proc1", "tx-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -419,7 +466,7 @@ func TestDispatchCriteria_MatchesFalse(t *testing.T) {
 		})
 	}()
 
-	result, reason, err := dispatcher.DispatchCriteria(ctx, entity, criterion, "transition", "wf1", "t1", "", "tx-1")
+	result, reason, err := dispatchCriteria(dispatcher, ctx, entity, criterion, "transition", "wf1", "t1", "", "tx-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -510,7 +557,7 @@ func TestDispatchProcessor_ContextSurfacesAsParametersString(t *testing.T) {
 		member.CompleteRequest(reqID, &ProcessingResponse{Success: true})
 	}()
 
-	if _, err := dispatcher.DispatchProcessor(ctx, entity, processor, "wf1", "t1", "tx-1"); err != nil {
+	if _, err := dispatchProcessor(dispatcher, ctx, entity, processor, "wf1", "t1", "tx-1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -549,7 +596,7 @@ func TestDispatchProcessor_EmptyContextOmitsParameters(t *testing.T) {
 		member.CompleteRequest(reqID, &ProcessingResponse{Success: true})
 	}()
 
-	if _, err := dispatcher.DispatchProcessor(ctx, entity, processor, "wf1", "t1", "tx-1"); err != nil {
+	if _, err := dispatchProcessor(dispatcher, ctx, entity, processor, "wf1", "t1", "tx-1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -605,7 +652,7 @@ func TestDispatchCriteria_ContextSurfacesAsParametersString(t *testing.T) {
 		member.CompleteRequest(reqID, &ProcessingResponse{Success: true, Matches: &matchesTrue})
 	}()
 
-	if _, _, err := dispatcher.DispatchCriteria(ctx, entity, criterion, "transition", "wf1", "t1", "proc1", "tx-1"); err != nil {
+	if _, _, err := dispatchCriteria(dispatcher, ctx, entity, criterion, "transition", "wf1", "t1", "proc1", "tx-1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -646,7 +693,7 @@ func TestDispatchCriteria_EmptyContextOmitsParameters(t *testing.T) {
 		member.CompleteRequest(reqID, &ProcessingResponse{Success: true, Matches: &matchesTrue})
 	}()
 
-	if _, _, err := dispatcher.DispatchCriteria(ctx, entity, criterion, "transition", "wf1", "t1", "proc1", "tx-1"); err != nil {
+	if _, _, err := dispatchCriteria(dispatcher, ctx, entity, criterion, "transition", "wf1", "t1", "proc1", "tx-1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -698,7 +745,7 @@ func TestDispatchProcessor_AnnotationsNotSentToMember(t *testing.T) {
 	}()
 
 	// Dispatch should succeed (no error path) despite the processor carrying annotations.
-	_, err := dispatcher.DispatchProcessor(ctx, entity, processor, "wf", "t", "tx-1")
+	_, err := dispatchProcessor(dispatcher, ctx, entity, processor, "wf", "t", "tx-1")
 	if err != nil {
 		t.Fatalf("DispatchProcessor: %v", err)
 	}
@@ -948,7 +995,7 @@ func TestDispatchProcessor_WarningPropagatesName(t *testing.T) {
 		})
 	}()
 
-	if _, err := dispatcher.DispatchProcessor(ctx, entity, processor, "wf1", "t1", "tx-1"); err != nil {
+	if _, err := dispatchProcessor(dispatcher, ctx, entity, processor, "wf1", "t1", "tx-1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -997,7 +1044,7 @@ func TestDispatchCriteria_FailurePropagatesName(t *testing.T) {
 		})
 	}()
 
-	if _, _, err := dispatcher.DispatchCriteria(ctx, entity, criterion, "transition", "wf1", "t1", "", "tx-1"); err == nil {
+	if _, _, err := dispatchCriteria(dispatcher, ctx, entity, criterion, "transition", "wf1", "t1", "", "tx-1"); err == nil {
 		t.Fatal("expected dispatch failure error")
 	}
 
@@ -1056,7 +1103,7 @@ func TestDispatchFunction_HappyPath(t *testing.T) {
 		})
 	}()
 
-	result, err := dispatcher.DispatchFunction(ctx, entity, fn, "wf1", "t1", "tx-1")
+	result, err := dispatchFunction(dispatcher, ctx, entity, fn, "wf1", "t1", "tx-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1080,12 +1127,12 @@ func TestDispatchFunction_NoMember(t *testing.T) {
 		CalculationNodesTags: "java",
 	}
 
-	_, err := dispatcher.DispatchFunction(ctx, entity, fn, "wf1", "t1", "tx-1")
+	_, err := dispatchFunction(dispatcher, ctx, entity, fn, "wf1", "t1", "tx-1")
 	if err == nil {
 		t.Fatal("expected error for missing member")
 	}
-	if !errors.Is(err, ErrNoMatchingMember) {
-		t.Errorf("expected ErrNoMatchingMember, got: %s", err)
+	if !errors.Is(err, contract.ErrNoMatchingMember) {
+		t.Errorf("expected contract.ErrNoMatchingMember, got: %s", err)
 	}
 }
 

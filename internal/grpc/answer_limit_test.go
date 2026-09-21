@@ -63,7 +63,7 @@ func TestDispatch_StoredTimeoutOverTheBound_IsTerminalAndNothingIsSent(t *testin
 	t.Cleanup(func() { registry.Unregister(m) })
 	d := newTestDispatcher(t, registry)
 
-	_, err := d.DispatchProcessor(testContext(), testEntity(), testProcessor("python", 60_001), "wf1", "t1", "tx-1")
+	_, err := dispatchProcessor(d, testContext(), testEntity(), testProcessor("python", 60_001), "wf1", "t1", "tx-1")
 	var failure *contract.CalloutFailure
 	if !errors.As(err, &failure) || failure.Kind != contract.Terminal {
 		t.Fatalf("err = %v, want a Terminal CalloutFailure", err)

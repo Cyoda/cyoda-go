@@ -24,6 +24,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/api/middleware"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/auth/oidc"
+	"github.com/cyoda-platform/cyoda-go/internal/callout"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster"
 	clusterdispatch "github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
@@ -446,7 +447,7 @@ func New(cfg Config) *App {
 	// entity service and every callout judge a callback by the same state.
 	a.txGate = txgate.New()
 	a.fence = fence.New(a.txGate)
-	localDispatcher := internalgrpc.NewProcessorDispatcher(a.memberRegistry, internalgrpc.NewRoundRobinSelector(a.memberRegistry), common.NewDefaultUUIDGenerator(), a.tokenSigner, a.selfNodeID, cfg.Callout.ResponseTimeout, cfg.Callout.ResponseTimeoutMax, cfg.Callout.PassAllowance)
+	localDispatcher := internalgrpc.NewProcessorDispatcher(a.memberRegistry, internalgrpc.NewRoundRobinSelector(a.memberRegistry), a.tokenSigner, a.selfNodeID, cfg.Callout.ResponseTimeout, cfg.Callout.ResponseTimeoutMax, cfg.Callout.PassAllowance)
 	searchStore, err := a.storeFactory.AsyncSearchStore(context.Background())
 	if err != nil {
 		slog.Error("startup failure",
@@ -544,29 +545,31 @@ func New(cfg Config) *App {
 	}
 	if cfg.ExternalProcessing != nil {
 		extProc = cfg.ExternalProcessing
-	} else if cfg.Cluster.Enabled {
-		forwarder := clusterdispatch.NewHTTPForwarder(peerAuth, cfg.Cluster.DispatchConnectTimeout)
-		if cfg.Cluster.DispatchAllowLoopback {
-			// Test-only: multi-node E2E fixtures run every node on 127.0.0.1.
-			// Never set in production (SSRF guard stays active by default).
-			forwarder = forwarder.AllowLoopbackForTesting()
-		}
-		peerRouter, err := clusterdispatch.NewPeerRouter(a.nodeRegistry, cfg.Cluster.NodeID,
-			clusterdispatch.NewRandomSelector(), forwarder, observability.Meter())
-		if err != nil {
-			slog.Error("failed to construct the peer router", "pkg", "cluster", "err", err)
-			os.Exit(1)
-		}
-		extProc = clusterdispatch.NewClusterDispatcher(localDispatcher, peerRouter,
-			localDispatcher.ResolveAnswerLimit, cfg.Cluster.DispatchWaitTimeout, cfg.Callout.HandoverAllowance)
-		// TEMPORARY (deleted by stream O's Coordinator): makes every dispatch
-		// a fenced callout of one try, so a callback names a callout the
-		// fence knows. See app/once_fenced.go.
-		extProc = newOnceFenced(extProc, a.fence, a.tokenSigner, a.selfNodeID, cfg.Cluster.TxTokenTTL, common.NewDefaultUUIDGenerator())
 	} else {
-		extProc = localDispatcher
-		// TEMPORARY (deleted by stream O's Coordinator): see above.
-		extProc = newOnceFenced(extProc, a.fence, a.tokenSigner, a.selfNodeID, cfg.Cluster.TxTokenTTL, common.NewDefaultUUIDGenerator())
+		// The owner's loop, in both modes. On a single node it has no peer
+		// router: peers stays a nil interface (a nil *PeerRouter would not be).
+		var peers callout.PeerRouter
+		if cfg.Cluster.Enabled {
+			forwarder := clusterdispatch.NewHTTPForwarder(peerAuth, cfg.Cluster.DispatchConnectTimeout)
+			if cfg.Cluster.DispatchAllowLoopback {
+				// Test-only: multi-node E2E fixtures run every node on 127.0.0.1.
+				// Never set in production (SSRF guard stays active by default).
+				forwarder = forwarder.AllowLoopbackForTesting()
+			}
+			peerRouter, err := clusterdispatch.NewPeerRouter(a.nodeRegistry, a.selfNodeID,
+				clusterdispatch.NewRandomSelector(), forwarder, observability.Meter())
+			if err != nil {
+				slog.Error("failed to construct the peer router", "pkg", "cluster", "err", err)
+				os.Exit(1)
+			}
+			peers = peerRouter
+		}
+		extProc = callout.New(localDispatcher, a.memberRegistry, peers, a.fence, common.NewDefaultUUIDGenerator(), callout.Config{
+			SelfNodeID:        a.selfNodeID,
+			FixedNumRetries:   cfg.Callout.FixedNumRetries,
+			Patience:          cfg.Cluster.DispatchWaitTimeout,
+			HandoverAllowance: cfg.Callout.HandoverAllowance,
+		})
 	}
 	if cfg.OTelEnabled {
 		extProc = observability.NewTracingExternalProcessingService(extProc, observability.Meter())

@@ -102,7 +102,7 @@ func TestDispatchProcessor_RoundRobinAcrossTwoMembers(t *testing.T) {
 	dispatcher := newTestDispatcher(t, registry)
 	processor := testProcessor("python", 5000)
 	for i := 0; i < 4; i++ {
-		if _, err := dispatcher.DispatchProcessor(testContext(), testEntity(), processor, "wf1", "t1", "tx-1"); err != nil {
+		if _, err := dispatchProcessor(dispatcher, testContext(), testEntity(), processor, "wf1", "t1", "tx-1"); err != nil {
 			t.Fatalf("dispatch %d: %v", i, err)
 		}
 	}

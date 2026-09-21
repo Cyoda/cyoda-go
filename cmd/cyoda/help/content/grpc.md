@@ -432,7 +432,7 @@ A callout may be tried on more than one member. **Every try carries the same `re
 
 When `calculationNodesTags` is empty, every member of the authenticated tenant matches, and the same round robin applies.
 
-In cluster mode, the `ClusterDispatcher` propagates member tag sets across nodes via gossip so any node can forward dispatches to a node that has a matching member.
+In cluster mode every node publishes the tags of its members per tenant, and the node that owns a request hands a callout over to a node that has a matching member when it has none of its own, or when its own did not take the work.
 
 ## ERRORS
 

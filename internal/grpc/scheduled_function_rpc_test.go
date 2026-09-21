@@ -74,7 +74,7 @@ func newTestEnvWithOwner(t *testing.T, answerLimitDefault, answerLimitMax time.D
 	if err != nil {
 		t.Fatalf("token.NewSigner: %v", err)
 	}
-	dispatcher := NewProcessorDispatcher(registry, NewRoundRobinSelector(registry), common.NewDefaultUUIDGenerator(), signer, "node-test", answerLimitDefault, answerLimitMax, 30*time.Second)
+	dispatcher := NewProcessorDispatcher(registry, NewRoundRobinSelector(registry), signer, "node-test", answerLimitDefault, answerLimitMax, 30*time.Second)
 	if NewOwnerForTest == nil {
 		t.Fatal("owner_wiring_test.go did not set NewOwnerForTest")
 	}

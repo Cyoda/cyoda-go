@@ -9,8 +9,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/google/uuid"
-
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
@@ -19,23 +17,14 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
 )
 
-// ErrNoMatchingMember is returned when no calculation member is registered for
-// the requested tags. Callers (e.g. ClusterDispatcher) test for this sentinel
-// via errors.Is rather than string matching.
-//
-// Aliased from contract.ErrNoMatchingMember (the canonical definition lives
-// in the leaf internal/contract package) so error-classification code in
-// internal/domain/entity, which internal/grpc already depends on, can match
-// this sentinel without an import cycle. See contract.ErrNoMatchingMember's
-// doc comment for the full rationale.
-var ErrNoMatchingMember = contract.ErrNoMatchingMember
-
-// ProcessorDispatcher dispatches processor and criteria calculations to external
-// calculation members via the MemberRegistry.
+// ProcessorDispatcher is the local procedure: it tries a callout on this node's
+// own calculation members, one after another, for as many tries as the owner's
+// loop gives it. The pnode that holds the transaction runs it through
+// internal/callout.Coordinator; a pnode that received a hand-over runs it
+// through the dispatch handler.
 type ProcessorDispatcher struct {
 	registry           *MemberRegistry
 	selector           MemberSelector
-	uuids              spi.UUIDGenerator
 	signer             *token.Signer
 	selfNodeID         string
 	answerLimitDefault time.Duration
@@ -44,11 +33,10 @@ type ProcessorDispatcher struct {
 }
 
 // NewProcessorDispatcher creates a new ProcessorDispatcher.
-func NewProcessorDispatcher(registry *MemberRegistry, selector MemberSelector, uuids spi.UUIDGenerator, signer *token.Signer, selfNodeID string, answerLimitDefault, answerLimitMax, passAllowance time.Duration) *ProcessorDispatcher {
+func NewProcessorDispatcher(registry *MemberRegistry, selector MemberSelector, signer *token.Signer, selfNodeID string, answerLimitDefault, answerLimitMax, passAllowance time.Duration) *ProcessorDispatcher {
 	return &ProcessorDispatcher{
 		registry:           registry,
 		selector:           selector,
-		uuids:              uuids,
 		signer:             signer,
 		selfNodeID:         selfNodeID,
 		answerLimitDefault: answerLimitDefault,
@@ -381,39 +369,6 @@ func boundMemberText(s string) string {
 	return string(r[:maxMemberMessageRunes]) + "…"
 }
 
-// singleTryNumberer numbers the one try an entry point below makes: the
-// owner's first, (1, 0).
-type singleTryNumberer struct{}
-
-func (singleTryNumberer) Next() (uint32, uint32) { return 1, 0 }
-
-// runSingleTry is the local procedure with one try, as the owner of the
-// callout: what DispatchProcessor, DispatchCriteria and DispatchFunction do
-// until the owner's loop takes their place.
-func (d *ProcessorDispatcher) runSingleTry(ctx context.Context, call Callout) (CalloutResult, error) {
-	limit, failure := d.ResolveAnswerLimit(call.ResponseTimeoutMs)
-	if failure != nil {
-		return CalloutResult{}, failure
-	}
-	call.RequestID = uuid.UUID(d.uuids.NewTimeUUID()).String()
-	call.AnswerLimit = limit
-	call.OwnerNodeID = d.selfNodeID
-	call.Number = singleTryNumberer{}
-	res := d.RunLocal(ctx, call, 1)
-	return res.Result, res.Err()
-}
-
-// DispatchProcessor sends an entity processor calculation request to a matching
-// calculation member and waits for the response.
-func (d *ProcessorDispatcher) DispatchProcessor(ctx context.Context, entity *spi.Entity, processor spi.ProcessorDefinition, workflowName string, transitionName string, txID string) (*spi.Entity, error) {
-	uc := spi.MustGetUserContext(ctx)
-	res, err := d.runSingleTry(ctx, NewProcessorCallout(uc.Tenant.ID, entity, processor, workflowName, transitionName, txID))
-	if err != nil {
-		return nil, err
-	}
-	return res.Entity, nil
-}
-
 // applyProcessorResponse extracts updated entity data from the response payload.
 func applyProcessorResponse(entity *spi.Entity, resp *ProcessingResponse) (*spi.Entity, error) {
 	if resp.Payload == nil {
@@ -435,31 +390,4 @@ func applyProcessorResponse(entity *spi.Entity, resp *ProcessingResponse) (*spi.
 		Data: []byte(envelope.Data),
 	}
 	return updated, nil
-}
-
-// DispatchCriteria sends an entity criteria calculation request to a matching
-// calculation member and waits for the boolean result.
-func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.Entity, criterion json.RawMessage, target string, workflowName string, transitionName string, processorName string, txID string) (bool, string, error) {
-	uc := spi.MustGetUserContext(ctx)
-	call, failure := NewCriteriaCallout(uc.Tenant.ID, entity, criterion, target, workflowName, transitionName, processorName, txID)
-	if failure != nil {
-		return false, "", failure
-	}
-	res, err := d.runSingleTry(ctx, call)
-	if err != nil {
-		return false, "", err
-	}
-	return res.Matches, res.Reason, nil
-}
-
-// DispatchFunction sends a generic Function calculation request (e.g. a
-// scheduled-transition timing computation) to a matching calculation member
-// and returns its typed result.
-func (d *ProcessorDispatcher) DispatchFunction(ctx context.Context, entity *spi.Entity, fn spi.ScheduleFunction, workflowName string, transitionName string, txID string) (contract.FunctionResult, error) {
-	uc := spi.MustGetUserContext(ctx)
-	res, err := d.runSingleTry(ctx, NewFunctionCallout(uc.Tenant.ID, entity, fn, workflowName, transitionName, txID))
-	if err != nil {
-		return contract.FunctionResult{}, err
-	}
-	return res.Function, nil
 }
