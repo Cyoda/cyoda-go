@@ -72,11 +72,13 @@ only when it is true.
 | Import: `responseTimeoutMs` negative, or above the server's bound (§5) | 400 | `VALIDATION_FAILED` | no |
 
 A processor whose execution mode is `ASYNC_NEW_TX` is the one exception to the
-table: however its callout fails, nothing reaches the client — not even the
-member's own verdict. The processor's savepoint is undone, the operation carries
-on, and the rest of the transaction commits. A savepoint that cannot be created,
-undone or released is not that: it fails the operation, as the 500 row above
-says.
+table: its callout's own failure reaches nobody — not even the member's verdict.
+The savepoint is undone, a warning is logged, the operation carries on, and the
+rest of the transaction commits. Two failures around it are not swallowed: a
+savepoint that cannot be created, undone or released fails the operation, as the
+500 row above says; and when the processor is running inside a compute member's
+callback whose token has stopped being current, that refusal ends the workflow
+rather than being logged and passed over — see §6.
 
 **Departure 3 — the member's message and verdict reach the client**, from
 whichever node the member was attached to. `WORKFLOW_FAILED` reads
@@ -84,23 +86,26 @@ whichever node the member was attached to. `WORKFLOW_FAILED` reads
 `failed to evaluate transition criterion: <the member's message>` or
 `failed to evaluate workflow criterion for "<workflow>": …`. The member's own
 `retryable` is what sets the response's retryable flag. In Cloud the member's
-code and message reach the processor's fail reason and its audit trace, and
-once more than one try has failed they are replaced by an aggregate whose code
-is `-`; no `retryable` verdict reaches the caller at all.
+code and message reach the processor's fail reason and its audit trace; once more
+than one try has failed the *code* becomes `-`, while the members' own *texts*
+stay embedded in the aggregate message; and no `retryable` verdict reaches the
+caller at all.
 
-Each piece of a member's own free text is cut to 512 characters where it
-becomes client text: the message of a `success: false` answer, and each of its
-warnings. A member may contribute at most 32 warnings to one try's response;
-past that, one warning says the rest were left out.
+Each piece of a member's own free text is cut to 512 characters where it becomes
+client text: the message of a `success: false` answer, and each of its warnings.
+A cut piece ends with `…`, so a reader can tell a shortened message from a short
+one. A member may contribute at most 32 warnings to one try's response; past
+that, one warning says the rest were left out.
 
 `CALLOUT_FAILED` uses the shape of Cloud's exhaustion message:
 
 ```
-the callout could not be completed, got 3 failures: [member<3f2a…>: cause], [member<->: cause (2 times)]
+the callout could not be completed, got 3 failures: [member<ID>: cause], [member<->: cause (2 times)]
 ```
 
-The angle brackets are literal and enclose the member id; `member<->` is a
-hand-over whose answer was lost, where no member is known. The count is taken
+The angle brackets are literal and enclose the member id, which is never
+shortened; `member<->` is a hand-over whose answer was lost, where no member is
+known. The count is taken
 before identical entries are collapsed, an entry that occurs more than once is
 written once with `(k times)`, and entries keep the order in which they first
 occurred. A single failure is not wrapped — the client gets that try's own code.
@@ -136,9 +141,13 @@ refused at import rather than ignored.
 
 **Departure 6 — the number of tries is the normal number, not a hard limit; the
 time is the hard limit.** The node holding the transaction tries its own
-members, then hands the callout to one other node with the tries that are left;
-that node tries its own members and never hands on. If its answer is lost, one
-try is counted though it may have made more. The time a callout may take is
+members, then offers the callout to one other node after another — every node
+that advertises the tag, each asked at most once before the callout waits again
+(§4) — handing over the tries that are left. A node that receives the callout
+tries its own members and never hands it on. A node that cannot be reached, and a
+node that answers that it has no matching member, costs no try. If a node's
+answer is lost, one try is counted though it may have made more. The time a
+callout may take is
 fixed when it starts — `tries × answer limit + the wait of §4 +
 CYODA_CALLOUT_HANDOVER_ALLOWANCE`, 155 s at the defaults — and no try starts
 after it; one in progress is cut off at it and counts as "no answer".
@@ -151,10 +160,11 @@ cyoda-go a callout with nothing to try waits, up to
 `CYODA_DISPATCH_WAIT_TIMEOUT` (default 5 s) in total, and is woken by a member
 attaching or by another node announcing one — a signal, never a poll. The wait
 costs no try, applies with `retryPolicy: NONE`, and applies on a single node. A
-pass that made tries may still wait: a member that dropped and is coming back is
-the case the wait exists for. A wait that the allowance ends starts no further
-try; nothing changed, so the same members would only be tried again. `0`
-disables waiting.
+callout that has already made tries may still wait: a member that dropped and is
+coming back is the case the wait exists for, and every node may be offered the
+work again once something has changed. A wait that the allowance ends offers the
+callout to nobody further; nothing changed, so the same members would only be
+tried again. `0` disables waiting.
 
 A wait that ends with no try ever made is `NO_COMPUTE_MEMBER_FOR_TAG`. Tries on
 record beat it: once any try has been made, the client is told about the tries.
@@ -184,30 +194,53 @@ answered, and after later processors of the same transition have run.
 
 **Departure 9.**
 
-- Each callout has a number that rises before every try, so the token of the
-  try before it is shut out whichever member the next try goes to. The
-  transaction token is minted per try and names the owner node, the
-  transaction, the callout and that number, together with the enclosing
-  callouts when the callout was made from inside a callback. It lives for that
-  try's answer limit plus `CYODA_CALLOUT_PASS_ALLOWANCE`.
-- A callback is admitted only under the callout's latest number and while the
-  callout is in progress. A token minted for an earlier try is refused; a token
-  minted for a later try is admitted and becomes the latest, which is how the
-  owner learns of a try another node made, as the end of this section says. A
-  refusal is
-  `410 CALLOUT_SUPERSEDED`, not retryable, message `this compute node was
-  replaced, or its callout has ended`. Once the transaction has ended the answer
-  is `404 TRANSACTION_NOT_FOUND`. A token that names no callout and number is
-  `401 UNAUTHORIZED`, `invalid transaction token`, like any malformed token.
-- The order of the checks is fixed: the token is verified, then the transaction
-  is joined — which checks the tenant — and only then is the number judged. A
-  stolen or forged token therefore tells another tenant nothing about which
-  callouts exist.
-- The check is repeated under the transaction's lock: when the callback takes
-  it, each time it takes it back after a callout of its own, and between the
-  processors of a workflow it started. A refused callback performs no store
+- Each callout is numbered by a **pair**: a **round**, and a **try within the
+  round**. The owner opens the next round before every try it makes itself and
+  before every hand-over to another node, and it waits for the transaction's lock
+  each time it does (below). A node that received a hand-over opens no round: it
+  numbers its own tries within the round it was given — 1, then 2, and so on —
+  and touches nothing on the owner.
+- The transaction token is minted per try. It names the owner node, the
+  transaction, the callout, that try's pair, and the enclosing callouts when the
+  callout was made from inside a callback. It lives for that try's answer limit
+  plus `CYODA_CALLOUT_PASS_ALLOWANCE`.
+- **The admission rule.** A token is admitted if and only if all three of these
+  hold:
+  1. the callout it names is still registered on the owner — the callout has not
+     ended;
+  2. its round **equals** the callout's current round. Equality, not "at least":
+     the owner opens the round before it mints the token, so a round higher than
+     the current one is never presented;
+  3. its try within the round is **not below** the highest the owner has seen for
+     that round.
+
+  A token whose try within the round is *higher* than any the owner has seen is
+  admitted and raises that floor — which is how the owner learns that a node
+  running a hand-over has moved on to a further try. Anything else is refused.
+- A refused callback is answered, in each case not retryable:
+  - `410 CALLOUT_SUPERSEDED`, message `this compute node was replaced, or its
+    callout has ended` — the token fails the admission rule while the
+    transaction is still open.
+  - `404 TRANSACTION_NOT_FOUND` — the transaction itself has ended.
+  - `410 TRANSACTION_EXPIRED` — the token is past the life stated above. The try
+    it was minted for cannot still be waiting for an answer, so a member that
+    sees it stops: the work is not its to finish, and no fresh token is issued
+    for the same try.
+  - `403 FORBIDDEN` — the token is presented with the credentials of a tenant
+    other than the one it was issued for.
+  - `401 UNAUTHORIZED`, `invalid transaction token` — the token does not verify,
+    or names no callout and pair, as any malformed token.
+- The order of the checks is fixed: the token is verified (a malformed one is
+  `401`, one past its life `410 TRANSACTION_EXPIRED`), then the transaction is
+  joined — which checks the tenant (`403`) and whether the transaction is still
+  active (`404`) — and only then is the admission rule applied
+  (`410 CALLOUT_SUPERSEDED`). A stolen or forged token therefore tells another
+  tenant nothing about which callouts exist.
+- The rule is applied again under the transaction's lock: when the callback
+  takes it, each time it takes it back after a callout of its own, and between
+  the processors of a workflow it started. A refused callback performs no store
   operation of any kind — no write, no read, no audit record.
-- When the number rises, and when a callout ends, the platform takes the
+- When the owner opens a round, and when a callout ends, the platform takes the
   transaction's lock once before it proceeds: whatever the earlier member had in
   progress finishes first, and nothing of it can start afterwards.
 - No database statement is interrupted — not by the fence, and not by the
@@ -215,7 +248,7 @@ answered, and after later processors of the same transition have run.
   when the work moved on is allowed to finish and is answered normally; the wait
   above is what makes that safe.
 - "Too slow" is not "replaced": a timeout that fails the operation rolls the
-  transaction back and raises no number.
+  transaction back and opens no round.
 
 A compute member that receives `CALLOUT_SUPERSEDED` must stop working on that
 callout: nothing further it sends under that token is accepted, and an answer it
@@ -229,12 +262,14 @@ nothing, and a member that disconnects does not cancel the callback. This
 extends `nested-join-tx-serialisation.md`: the lock is still given up for the
 length of any callout the callback itself makes.
 
-What is not stopped, stated plainly: when the tries are made by another node,
-that node numbers them under the number the hand-over carried, and the owner
-learns of a later try from the first callback that carries its number. Until
-then the earlier member of that hand-over is still admitted. Its writes are
-repeats of an idempotent processor's own, and the wait at the end of the callout
-still puts them before anything the workflow does next.
+What is not stopped, stated plainly: the owner's own next try shuts the member
+before it out at once, because the owner opens the round before it mints. A try
+made by a node running a hand-over does not: that node numbers its tries within
+the round it was given and tells the owner nothing, so the owner learns of a
+later try only from the first callback that carries it. Until then the member of
+the earlier try is still admitted. Its writes are repeats of an idempotent
+processor's own, and the wait at the end of the callout still puts them before
+anything the workflow does next.
 
 ## 7. Joined-request wire behaviour Cloud must replicate
 
@@ -280,7 +315,7 @@ counterpart there; §1 to §5 do. The visible contract to match is:
 The three wire behaviours of §7 are what a client written against either server
 relies on identically, so they hold wherever a joined request exists. Where
 Cloud adopts the joined-callback model, §6's fencing becomes its contract too:
-the number rises before every try and a callback is admitted only under the
-latest one; the tenant is checked before the number; every joined request, a
-read as much as a write, serialises on its transaction; and the owner waits for
-one in progress before moving the callout on or committing past it.
+the pair, the admission rule as stated, and who may raise which half of it; the
+tenant checked before the rule is applied; every joined request, a read as much
+as a write, serialising on its transaction; and the owner waiting for one in
+progress before moving the callout on or committing past it.

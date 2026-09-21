@@ -3,8 +3,7 @@
 This document is the contract Cyoda Cloud implements to stay aligned with
 cyoda-go's scheduled-transition runtime. cyoda-go is the authoritative
 implementation; the behaviour described here is derived directly from its
-design spec ([#251](https://github.com/Cyoda-platform/cyoda-go/issues/251))
-and implemented code.
+design spec and its implemented code.
 
 ## 1. Timing contract
 
@@ -275,11 +274,12 @@ processor, externalized/FUNCTION criterion, or a scheduled transition's
 | Several tries of the callout failed | `CALLOUT_FAILED` |
 
 All five are `503`, all five are `retryable: true`. The entity write that
-triggered the callout is rejected (nothing commits). Before it fails, the
-callout has been tried on other matching compute members as
-`callout-failover.md` describes — a function is always safe to repeat, and
-`schedule.function.retryPolicy` selects the number of tries. A member that
-answers `success: false` is not part of this class: it fails the write as
+triggered the callout is rejected (nothing commits). Except for the first row,
+where no compute member matched and the callout waited for one to exist rather
+than trying, the callout has been tried on other matching compute members before
+it fails, as `callout-failover.md` describes — a function is always safe to
+repeat, and `schedule.function.retryPolicy` selects the number of tries. A member
+that answers `success: false` is not part of this class: it fails the write as
 `400 WORKFLOW_FAILED`, carrying the member's message and verdict. This is a
 request-time surface: a `function` callout dispatched synchronously inside an
 entity write hits it exactly like a processor or criterion callout would.
