@@ -87,7 +87,10 @@ internal/
   auth/                   JWT (RS256, JWKS, M2M, OBO), key management; auth/oidc/ provider registry
   iam/mock/               Mock authentication for development
   httpmw/                 Transaction-join middleware
-  txgate/                 Per-transaction mutual exclusion
+  txgate/                 Per-transaction lock; held by every joined request for
+                          its whole handling
+  fence/                  Which compute member holds a callout's work; refuses
+                          the rest
   scheduler/              Scheduled-transition dispatch loop
   domain/
     entity/               Entity CRUD, state machine integration, transaction scope
@@ -98,8 +101,12 @@ internal/
     messaging/            Edge message store
     audit/                Audit trail
     pagination/           Cursor paging
-    txjoin/               Callback transaction-join resolution
-  grpc/                   CloudEventsService, streaming, dispatch
+    txjoin/               Callback transaction-join: the pass, the tenant, the
+                          fence, and the transaction's lock for the whole request
+  callout/                The owner's loop: tries, hand-overs, patience, the
+                          callout deadline
+  grpc/                   CloudEventsService, streaming, the local procedure of
+                          a callout
   api/                    HTTP handlers (generated OpenAPI types); middleware/
   cluster/
     token/                HMAC-signed transaction routing tokens
@@ -404,13 +411,13 @@ How an abort surfaces depends on whether retrying could plausibly work:
 
 In all three cases the server log names the setting that fired, which is what turns an otherwise unexplained failure into a diagnosable one. See `cyoda help errors STORAGE_UNAVAILABLE` for the caller-facing statement of the retryable/non-retryable split.
 
-**Processor timeouts must fit under the idle ceiling.** A `SYNC` or `ASYNC_SAME_TX` callout holds its transaction's connection idle for the whole dispatch, so a processor's `responseTimeoutMs` (default 30s) has to be shorter than `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`. It is not currently capped against it: a workflow may configure a callout longer than the ceiling, in which case PostgreSQL aborts the transaction mid-dispatch and the caller sees `503 STORAGE_UNAVAILABLE`. `COMMIT_BEFORE_DISPATCH` (§5.4) removes the constraint for a given processor by committing before the dispatch and holding no connection across it.
+**Callout timeouts must fit under the idle ceiling.** A `SYNC` or `ASYNC_SAME_TX` callout holds its transaction's connection idle for its whole duration — and that duration is the callout's deadline, not one try's answer limit: the owner may try several compute members, and several nodes, under one deadline (§4.3). So the arithmetic that has to fit under `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` is `tries × answer limit + patience + hand-over allowance`, which is 155s at the defaults and 275s with the answer limit at its configured upper bound. `responseTimeoutMs` is bounded at import by `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` but not against the idle ceiling, and the two are set independently: a deployment that raises the retry count or the allowances past the ceiling gets a transaction PostgreSQL aborts mid-callout, and the caller sees `503 STORAGE_UNAVAILABLE`. `COMMIT_BEFORE_DISPATCH` (§5.4) removes the constraint for a given processor by committing before the callout and holding no connection across it.
 
 ### 3.5 `pgx.Tx` Single-Owner Property
 
 Extracted to [docs/plugins/POSTGRES.md](plugins/POSTGRES.md).
 
-The property remains load-bearing for the cluster design: see DD-2 in [Section 13](#13-design-decisions-log) — fencing tokens are not required because no two nodes can share a PostgreSQL transaction.
+The property remains load-bearing for the cluster design: see DD-2 in [Section 13](#13-design-decisions-log) — fencing a transaction's *ownership* is not required, because no two nodes can share a PostgreSQL transaction. It is also why a transaction admits one user at a time rather than relying on the store to arbitrate (§3.8).
 
 ### 3.6 Plugin-Specific Transaction Managers
 
@@ -455,6 +462,192 @@ covers and what it does not — see
 [docs/CONCURRENCY.md](CONCURRENCY.md). It complements CONSISTENCY.md
 (which covers the cross-plugin isolation contract) with the
 in-process and per-node mechanics.
+
+### 3.8 One User of a Transaction at a Time
+
+An open transaction has more than one candidate user. The request chain that
+opened it — the **owner** — runs the workflow engine; while a callout is out,
+the compute member handling it makes callbacks that carry the transaction's
+pass and join the same transaction. The storage contract leaves serialising
+concurrent operations on one transaction to the application (`cyoda-go-spi`
+`transaction.go`), and two users at once is not a degradation but a process-wide
+failure: on memory and sqlite every in-transaction operation mutates plain maps
+— a `Get` writes the transaction's read-set — so two users end in the Go
+runtime's unrecoverable `concurrent map writes`; on postgres a joined request
+runs on the operation's own `pgx.Tx`, which refuses a second concurrent user
+with `conn busy` and synchronises neither its status field nor its statement
+cache. This applies in single-node mode exactly as in a cluster.
+
+Two mechanisms sit over it: a lock that admits one user at a time, and a fence
+that decides *which* compute member is the current user.
+
+**The transaction's lock.** `txgate.Registry` hands out one exclusive lock per
+txID. Every joined request takes it in one place — `txjoin.Joiner.Run`, which
+both callback doors go through — from before its first store operation until its
+handler returns. A read takes it as much as a write, an entity request as much
+as a search, a model load or a message save: the lock sits where they all pass
+rather than in each of them. The owner's own chain takes the same lock around
+its final `Save` + `Commit` and around a rollback
+(`internal/domain/entity/txscope.go`), and never holds it across
+`engine.Execute`. Three things follow from holding it for a whole request:
+
+- **What the lock waits on is never the compute member.** The join layer has
+  the whole request in memory before it takes the lock: the HTTP middleware
+  reads the body under a 10 MB ceiling and hands the handler a reader over the
+  bytes (a body past the ceiling is `413`), and the gRPC stream interceptor
+  receives the one request message and hands the handler a stream that replays
+  it; a gRPC unary message is already complete when the interceptor runs. On the
+  way out the handler writes into a buffering response writer (HTTP) or a stream
+  whose frames are held (gRPC server-streaming), and the response is sent once
+  the lock is released. A joined chunked collection that fails at frame *n*
+  still delivers frames 1…*n*-1 and then the error. A compute member that
+  sends its headers and stalls, or never reads its response, holds nothing.
+- **A joined request is not interrupted by its compute member going away.** It
+  runs under `context.WithoutCancel`: a member that disconnects in the middle of
+  a statement would otherwise cancel the context its statements run on, and pgx
+  closes the operation's connection when that happens — the owner's next
+  statement, or its commit, would then fail. A joined request ends by finishing
+  or by being refused at a check. What this gives up is deliberate: a deadline
+  the member sets on its own call, the engine's cascade check of the request
+  context, the per-item check of a gRPC collection, and the context checks that
+  end a scan early on memory and sqlite — a joined search by a member that has
+  gone away runs to the end of its data, which is finite, while postgres
+  statements stay bounded by the ceilings of §3.4. A **proxied** callback that
+  queues for the lock, or runs a callout of its own, for longer than
+  `CYODA_PROXY_TIMEOUT` is answered `503 TRANSACTION_NODE_UNAVAILABLE` by the
+  node it arrived at while it runs to completion on the owner: for a compute
+  member, a 503 or a dropped connection on a joined write means the outcome is
+  unknown.
+- **The lock is not held across a callout.** A callback that reaches a processor
+  or a `function` criterion of its own gives the lock up for the length of that
+  callout (`txgate.Suspend`, installed by the join layer) and re-takes it
+  afterwards, so the lock is never held across anything unbounded. The engine
+  suspends it at every dispatch site, which is also what keeps the owner's loop
+  free of self-deadlock: `fence.Advance` and the end of a callout take this same
+  lock, so a chain that ran a callout while holding it would wait for itself.
+  One case keeps the lock: a `COMMIT_BEFORE_DISPATCH` processor reached inside a
+  callback dispatches without suspending it — its own callout runs on a
+  different transaction, or on none, so nothing deadlocks, but the fence's wait
+  on the enclosing transaction can then wait on a compute member for the length
+  of that callout.
+
+**The fence.** Giving up on a compute member does not stop it. Its late
+*answer* is discarded by request correlation (§6.4), but while it works it makes
+callbacks — ordinary API requests carrying a pass. A pass that named only the
+transaction would be accepted for as long as the transaction is open, so a slow
+member's write could land after its replacement has answered and a later
+processor of the same transition has run. `internal/fence` is the arbiter, and
+what the pass names is a callout at a number: one `Fence` per process,
+which decides in memory, for as long as a callout lasts, which passes are
+current. Every callback is already routed to the node holding the transaction
+(§4.2), so that node's fence is the only judge, and no database step is needed.
+
+- **The number.** Each callout has a fencing number, the pair `(major, minor)`,
+  ordered lexicographically. `Fence.Begin` registers a callout on a transaction
+  and returns the context the callout runs under and the func that ends it; the
+  owner's loop defers that func, so a callout is ended on every exit path, a
+  panic included. No pass is current until the first `Advance`. `Fence.Advance`
+  raises the number to `(major, 0)`, which shuts out every pass issued under a
+  lower one. The owner raises it **before every try** — before each of its own
+  and before each hand-over, not only when the work moves to another member — so
+  the pass of each try is minted under a number of its own. A node that received
+  a hand-over numbers the tries it makes `minor = 1, 2, …` under the major it
+  was given and touches no fence: the arbiter is the owner's.
+- **Admission.** `Fence.Admit` is the check on entry, made under one lock over
+  the pass's own pair and the pair of every enclosing callout. A pair is current
+  when its callout is registered, its `major` equals the registered one, and its
+  `minor` is not lower than the highest seen under that `major`. A **higher
+  minor is admitted and absorbed** — it becomes the current one, and passes
+  carrying a lower one are refused from then on. That is how the owner learns,
+  with no message between the two nodes, that the node it handed the callout to
+  has moved on to its next try: from the first callback carrying the new number.
+  `Advance` resets the highest minor to zero, so the first try of a second
+  hand-over is not measured against the last try of the first, and a higher
+  minor is absorbed only after every pair on the pass has been verified, so a
+  pass refused for an enclosing callout changes nothing. `minor` is covered by
+  the pass's HMAC like every other claim. Until a callback with the higher minor
+  arrives, or the callout ends, the earlier member of a hand-over is still
+  admitted — which is why the `idempotent` declaration a workflow author makes
+  says "possibly at the same time on two compute members".
+- **`fence.Check`** reports the refusal for a context that was admitted and one
+  of whose pairs is no longer current; it absorbs nothing. A context that was
+  never admitted — the owner's own chain, an ordinary request — always passes,
+  so the owner is never subject to a check.
+- **The fence cancels no callback's context.** Cancelling one in the middle of a
+  statement makes pgx close the operation's connection, so a successful failover
+  would turn into a failed operation because the member being replaced happened
+  to be reading; on memory an in-transaction write consults no context at all,
+  and on sqlite the one context-bound step is a read that is skipped once the
+  entity is in the buffer, so cancellation would stop nothing there either. The
+  fence therefore works by **checks** and by **the wait**, which hold on every
+  backend alike. The only context it cancels is the one `Begin` returns — a
+  callout's own, under which no statement of the shared transaction runs.
+- **The wait.** After shutting the earlier pass out — in `Advance`, and at the
+  end of a callout — the fence takes the transaction's lock once and releases
+  it, outside its own mutex. A joined request either made its check under the
+  lock *before* the number rose, in which case it still holds the lock and the
+  fence waits for it to finish; or it takes the lock afterwards, and its check
+  refuses it. There is no third case. So when the work is given to the next
+  compute member, nothing of the earlier one is in progress on the transaction —
+  no write, no read — and nothing can start; and when a callout has ended,
+  answered or failed, the same holds before the engine does anything else.
+
+**Where the fence is enforced.**
+
+1. *On entry.* `txjoin.JoinFromToken` is the one function every callback passes
+   on the owner — both doors, and a callback that arrived at another node and was
+   proxied. Its order is: verify the pass → `txMgr.Join`, which checks the tenant
+   → `Fence.Admit`. The tenant check comes first, so a stolen pass tells another
+   tenant nothing about which callouts exist, and a callback that arrives after
+   the *transaction* has ended is answered `404 TRANSACTION_NOT_FOUND`;
+   `410 CALLOUT_SUPERSEDED` is the answer while the transaction is still open. A
+   pass naming no callout and no number is `401 UNAUTHORIZED`, as any malformed
+   pass. A refused callback performs no store operation of any kind.
+2. *Under the transaction's lock.* `txjoin.Joiner.Run` runs `fence.Check` after
+   it has taken the lock and before it calls the handler. This is the check that
+   gives the right to touch the transaction, and the fence's wait takes the same
+   lock. The check is repeated after every `txgate` resume — after each processor
+   callout, after a `function` criterion and after the scheduled-transition
+   arming callout — and once more directly after each processor returns, before
+   its audit event and before any mode decides what its result means; without
+   that last one `ASYNC_NEW_TX`'s "log and continue" would carry a refused chain
+   on to the next processor and past the last one to the final save. One guard in
+   the engine's `recordEvent` keeps a refused chain from writing an audit row, so
+   no further recording site can appear later. There is deliberately **no check
+   before a joined request's final write**: a chain that reaches it has held the
+   lock since its last check, so the fence is still waiting for it and its write
+   lands before anything the owner does next. It is answered 200, because what it
+   wrote is in the transaction.
+3. *A callback waiting on a callout of its own* is released rather than checked:
+   the inner callout runs under the context `Begin` returned, which is cancelled
+   — with the fence's own cause — when an enclosing pair stops being current,
+   through `Advance`, through the end of the enclosing callout, or through a
+   higher minor absorbed by `Admit`. It returns `410 CALLOUT_SUPERSEDED` and ends
+   the inner callout, which shuts the inner compute member out in turn. The pairs
+   travel as a context value, so an inner callout is begun under them even where
+   the engine has detached the context from cancellation.
+
+**Savepoints under `ASYNC_NEW_TX`.** The processor runs inside a savepoint of
+the parent transaction. Its own failure is non-fatal: the savepoint is undone
+and the pipeline continues. A savepoint that cannot be **created, undone or
+released** is not a processor failure — it says the transaction is unusable — so
+it is marked with `workflow.ErrSavepointInfra` and **fails the operation** with a
+ticketed 5xx (an unavailable store keeps its `503 STORAGE_UNAVAILABLE`, which is
+classified first); it is never reported as the processor's own error. A chain the fence refuses after its
+callout neither undoes nor releases its savepoint: by then the replacement
+member may have written, and undoing a savepoint restores the whole buffer on
+memory and sqlite and everything since on postgres. An abandoned savepoint is
+harmless on every backend.
+
+**What is not stopped, and why that is acceptable.** For tries made by another
+node, the earlier compute member stays admitted until the first callback of the
+later one arrives; its writes are repeats of an idempotent processor's own
+writes, and the wait at the end of the callout still puts all of them before
+anything the engine does next. A joined request already in progress when its
+member is replaced — a read as much as a write — runs to completion, and the
+fence waits for it. What a processor did outside cyoda is outside every one of
+these mechanisms: a rollback does not undo it and a repeat does it again, which
+is what the `idempotent` declaration is about.
 
 ---
 
@@ -526,9 +719,13 @@ itself and it proceeds as a cluster of one.
 
 ```go
 type Claims struct {
-    NodeID    string `json:"n"`   // ID of the node holding the transaction
-    TxRef     string `json:"t"`   // UUID, key into the node's local tx map
-    ExpiresAt int64  `json:"e"`   // Unix timestamp
+    NodeID    string `json:"n"`           // the owner: the node holding the transaction
+    TxRef     string `json:"t"`           // UUID, key into the owner's local tx map
+    ExpiresAt int64  `json:"e"`           // Unix seconds: the try's answer limit + CYODA_CALLOUT_PASS_ALLOWANCE
+    Callout   string `json:"c"`           // the callout's request id
+    Major     uint32 `json:"j"`           // raised by the owner before every try
+    Minor     uint32 `json:"i,omitempty"` // counted by a node that received a hand-over; 0 on the owner's own tries
+    Outer     []Pair `json:"o,omitempty"` // the (callout, major, minor) of every enclosing callout
 }
 ```
 
@@ -552,9 +749,15 @@ method, the path and `X-Dispatch-Timestamp`; an answer's is the label
 under a fresh nonce of its own. That prevents cross-endpoint replay,
 reflection, and an answer being moved onto another request. A bounded,
 TTL-evicted nonce cache rejects replayed requests within the 30s skew window;
-the scheduler's peer RPC signs its requests and answers the same way.
+answers do not enter it, being bound to a request nonce their receiver chose.
+The scheduler's peer RPC signs its requests and answers the same way.
 
-The token is opaque to the client. The router decodes it to extract `nodeID` without any network call -- address resolution is a local scan over `list.Members()`.
+The token is a **pass**: it is minted per try, by the node that makes the
+hand-off, and `NodeID` is always the owner's — so a callback is routed to the
+node holding the transaction whichever node handed the work out. Which passes
+are current is the fence's decision (§3.8).
+
+The token is opaque to the client. The router decodes it to extract `nodeID` without any network call -- the address is a local lookup in the registry's own directory of alive members (§4.1).
 
 **HTTP reverse proxy middleware (`proxy.HTTPRouting`):**
 
@@ -580,6 +783,8 @@ The proxy is near-transparent: the target node receives the original request inc
 | Target node dead | 503 | `TRANSACTION_NODE_UNAVAILABLE` |
 | Target node unreachable | 503 | `TRANSACTION_NODE_UNAVAILABLE` |
 
+A pass that names no callout and no fencing number is invalid format, so `401 UNAUTHORIZED` covers it. Routing is only the first half of what a callback passes: once the request is on the owner, joining the transaction can still answer `404 TRANSACTION_NOT_FOUND`, `403 FORBIDDEN` for another tenant's transaction, or `410 CALLOUT_SUPERSEDED` for a pass the fence no longer holds current (§3.8).
+
 gRPC applies the same mapping: `classifyRouteErr` in `internal/grpc/txroute_interceptor.go` yields `410 TRANSACTION_EXPIRED`, `401 UNAUTHORIZED` and `503 TRANSACTION_NODE_UNAVAILABLE` for the same conditions, rendered into the RPC's error envelope.
 
 **gRPC routing:**
@@ -600,57 +805,119 @@ gRPC routing forwards rather than redirecting. A `txRouteInterceptor` — unary 
 
 ### 4.3 Compute Dispatch Routing
 
-Three strategy interfaces, each with a default implementation:
+A **callout** is a call out to a compute member: an externalized processor, a
+`function` criterion, or the `function` that times a scheduled transition. The
+node that holds the operation's transaction — the owner — runs every callout, in
+single-node and cluster mode alike. Six parts:
 
-| Component | Interface | Default Impl | Purpose |
-|-----------|-----------|--------------|---------|
-| Callout strategy | `contract.ExternalProcessingService` | `callout.Coordinator` | The owner's loop: own compute members first, then one peer after another |
-| Peer Selection | `PeerSelector` | `RandomSelector` | Pick from candidates |
-| Forwarding Transport | `DispatchForwarder` | `HTTPForwarder` | HTTP POST to peer |
+| Component | Type | Purpose |
+|-----------|------|---------|
+| Owner's loop | `callout.Coordinator`, implementing `contract.ExternalProcessingService` | Tries, hand-overs, waiting, the callout deadline. Built in both modes; its peer router is nil on a single node |
+| Local procedure | `grpc.ProcessorDispatcher.RunLocal` | Tries a callout on this node's own matching compute members |
+| Member selection | `grpc.MemberSelector` → `RoundRobinSelector` | Picks among the candidates not yet tried (§6.3) |
+| Peers | `dispatch.PeerRouter` | The alive peers advertising the tag, and the hand-over to one of them |
+| Peer selection | `PeerSelector` → `RandomSelector` | The order in which peers are asked |
+| Fencing | `fence.Fence` | Which passes are current (§3.8) |
 
-**The owner's loop (`internal/callout`).** The node that holds the operation's
-transaction — the owner — runs every callout, in single-node and cluster mode
-alike (a single node has no peer router):
+**A try** is one attempt to hand a callout's work to one compute member. **The
+hand-off** is `Member.Send` returning nil: before it the work provably never
+left this node; after it the member may be working on it. Every failed try
+carries a kind (`contract.CalloutFailureKind`), and the kind — together with
+whether the callout is repeat-safe, which a criterion and a function are by rule
+and a processor is only when its author declared it `idempotent` — decides
+whether another compute member may be tried:
+
+| Kind | What happened | Repeat-safe callout | Processor, `idempotent` false |
+|---|---|---|---|
+| `NoHandOff` | The member was gone, or not draining, before the hand-off — or there was no matching member to try at all, in which case no try is used | another member is tried | another member is tried |
+| `NoAnswer` | Hand-off made, then no answer within the answer limit, or the stream dropped | another member is tried | **stop** |
+| `MemberFailed` | The member answered `success: false` | stop | stop |
+| `Terminal` | This node could not build the request, mint the try's pass, or read the answer | stop | stop |
+
+**The owner's loop (`internal/callout`).**
 
 ```
-tries := 1 for retryPolicy NONE, else 1 + CYODA_RETRY_FIXED_NUM_RETRIES
-the callout gets one request id, and a deadline:
-    tries × answer limit + CYODA_DISPATCH_WAIT_TIMEOUT + CYODA_CALLOUT_HANDOVER_ALLOWANCE
+tries        = 1 for retryPolicy NONE, else 1 + CYODA_RETRY_FIXED_NUM_RETRIES
+answer limit = the callout's responseTimeoutMs, else CYODA_CALLOUT_RESPONSE_TIMEOUT_MS
+deadline     = now + tries × answer limit + CYODA_DISPATCH_WAIT_TIMEOUT
+                   + CYODA_CALLOUT_HANDOVER_ALLOWANCE
+one request id for the whole callout; fence.Begin, ended on every exit path
 loop (one pass):
-  1. Local procedure (ProcessorDispatcher.RunLocal): try the node's own
-     matching compute members one after another, never the same one twice in a
-     pass, chosen round robin.
-       answered                         → done
-       failed before the hand-off       → next member
-       no answer after the hand-off     → next member only for a criterion, a
-                                          function, or an idempotent processor
-       member answered "failed"         → stop; its message and verdict go to the client
-  2. With tries left: hand the callout over, with the tries left, to each alive
-     peer advertising the tag for the tenant (PeerSelector order), each at most
-     once per pass. The peer runs the local procedure only and never hands on.
-       could not connect / peer has no member → no try used, next peer
-       answer lost                            → one try used
-  3. Nobody took the work: wait for a membership change (a member attaching
-     here, a peer's tag list arriving) — event-driven, CYODA_DISPATCH_WAIT_TIMEOUT
-     in total per callout, 0 disables — and start a new pass.
+  take MemberRegistry.Changed() and NodeRegistry.Changed()  # before looking, so no signal is lost
+  RunLocal(call, tries left): the node's own matching members, one after
+    another, never the same one twice in a pass, chosen round robin. The
+    fencing number rises before each try.
+      answered → done
+      a kind that forbids another member → stop
+      tries used up → the attempts are reported
+  with tries left, for each alive peer advertising the tag for the tenant,
+  in peer-selector order, each at most once per pass:
+      the fencing number rises; PeerRouter.HandOver(peer, call, tries left)
+      could not connect, or the peer gave the work to nobody → no try used, next peer
+      answered → done · a kind that forbids another member → stop
+  nothing anywhere took the work → wait on either channel within the patience,
+  then start a new pass
 ```
 
-Before the work is given to another compute member the callout's fencing number
-rises, which refuses the earlier member's callbacks, and the owner waits for a
-callback of that member that is still in progress (`internal/fence`).
+**The patience** is `CYODA_DISPATCH_WAIT_TIMEOUT`: one allowance for the whole
+callout, counted in elapsed waiting time, `0` disables it. The wait is on the
+two change channels — a compute member attaching or detaching here, a peer
+joining or leaving or its tag list arriving — never a timer loop, so it costs
+nothing while nothing changes and ends the moment something does. A pass that
+made tries may still wait: a member that dropped and is coming back is the case
+the patience exists for. A wait a change signal ends starts a new pass, in which
+every peer may be asked again; a wait the patience ends does not, because
+nothing changed and the same members would only be tried again. Waiting is not
+a try.
 
-A hand-over is a POST to `http://peer/internal/dispatch/callout` under the
-AES-256-GCM AEAD envelope of §4.2 (Content-Type
-`application/cyoda-dispatch-v1`); the peer verifies the envelope, decrypts it,
-runs its own local procedure and seals the answer.
+**The deadline is the hard limit, the number of tries is not.** A hand-over
+whose answer is lost counts as one try although the peer may have made more, so
+the total can exceed the setting; the time cannot. The deadline is fixed when
+the callout starts, no try or hand-over begins after it, and one in progress is
+cut off at it. It is a context derived from the caller's with a cause of its own
+(`context.WithDeadlineCause`, `contract.ErrCalloutDeadline`), which is how one
+context tells the two apart: a try the callout's own deadline cuts off is
+classified (`NoAnswer` after the hand-off, `NoHandOff` before it), while the
+caller's own context ending — the client went away, or its
+`transactionTimeoutMillis` fired — is returned unchanged. At the defaults the
+limit is 4 × 30 s + 5 s + 30 s = 155 s; with the answer limit at its configured
+upper bound, 275 s. Both sit inside PostgreSQL's idle-in-transaction ceiling
+(§3.4).
+
+**Fencing.** The callout's number rises before every try, which refuses the
+earlier compute member's callbacks, and the fence then waits for a joined
+request of that member still in progress. The full account — the number, the
+pass, admission, the wait, and the join layer the checks sit in — is §3.8.
+
+**The hand-over** is a POST to `http://peer/internal/dispatch/callout` under the
+AES-256-GCM AEAD envelope of §4.2; the peer verifies the envelope, decrypts it,
+runs its own local procedure and seals the answer for that one request. The peer
+runs with the tries and the answer limit the owner sent, and never hands the
+callout on.
 
 Every hand-over opens its own connection (`DisableKeepAlives`), so that a node
 that cannot be connected to is told apart from one that took the work and then
 died. Opening the connection is bounded by `CYODA_DISPATCH_CONNECT_TIMEOUT`
-(TCP connect and TLS handshake); the wait for the answer is a deadline on the
-request's context, set by the owner. The transport uses no proxy and follows
-no redirect. `CYODA_DISPATCH_FORWARD_TIMEOUT` bounds the scheduler's peer RPC
-only.
+(TCP connect and TLS handshake); the wait for the answer is a deadline the owner
+puts on the request's context — tries left × answer limit +
+`CYODA_CALLOUT_HANDOVER_ALLOWANCE`, never past the callout's deadline — and the
+transport has no timeout of its own beyond the connect. It uses no proxy and
+follows no redirect. `CYODA_DISPATCH_FORWARD_TIMEOUT` bounds the scheduler's
+peer RPC only.
+
+**How the owner reads an answer.** Only a decoded, authenticated answer whose
+outcome is `no_handoff` with no try used means nothing reached a compute member;
+so does a connection that could not be opened, or a peer address that fails
+SSRF validation. Everything else that is not `ok`, `member_failed` or `terminal`
+is read as a lost answer: a transport error after the connection opened, any
+non-2xx status, a truncated or unauthenticated body, an outcome this version
+cannot read, an `ok` missing the result it promises, a `triesUsed` outside
+`0…triesLeft`. A lost answer counts as **one** try — never zero, so the loop
+always makes progress — and is recorded as an attempt with the member id `-`. A
+peer that answers `no_handoff` having tried members costs the tries it made, and
+the loop goes on to the next peer. A hand-over this node cannot build, marshal
+or sign is `Terminal`: it would fail identically for every peer, so the loop
+stops rather than trying the next one.
 
 **Internal dispatch endpoint:**
 
@@ -665,7 +932,7 @@ POST /internal/dispatch/callout
 - Reconstruct `UserContext` from request fields (tenantID, userID, roles, principal kind)
 - A request carries two tenants — its own `TenantID`, which the reconstructed `UserContext` runs as, and `EntityMeta.TenantID`, which is handed to the local dispatcher as the entity's own. They must agree, or the callout would run as one tenant over another's entity; a mismatch is answered, under seal, as a `terminal` refusal with no try made — as is any authenticated request that cannot be run. The equality is unconditional and covers an absent `EntityMeta.TenantID`: every callout kind is built from a live stored entity whose `Meta.TenantID` is always set, so an empty one can only come from a hand-crafted peer body. The response names neither value — both are peer-supplied.
 - Runs the local procedure (`RunLocal`) with the tries the owner allows, and never hands the callout on
-- A request that does not authenticate is a bare `403`; one that authenticates but is refused by the replay cache is answered, under seal, `no_handoff`
+- A request that does not authenticate is a bare `403`, and so is a replayed one; a request that authenticates but meets a full replay cache is answered, under seal, `no_handoff` with no try used, so that a saturated cache does not fail a callout that is not repeat-safe
 
 **Dispatch request/response types** (`internal/cluster/dispatch/types.go`): the
 request carries the entity payload and meta, the workflow/transition names,
@@ -673,29 +940,38 @@ the callout's txID, the caller's tenant/user/roles/principal, a request id the
 owner mints and uses for every try, how many tries and how long an answer may
 take, the owner's node id and the fencing number the peer's tries are numbered
 under, the enclosing callouts (empty unless the callout was made from inside a
-callback), whether the work may be given to a second compute node after a
+callback), whether the work may be given to a second compute member after a
 hand-off, and one kind-specific member (`Processor`, `Criterion` + `Target` +
 `ProcessorName`, or `Function`). The response carries the outcome (`ok`, `no_handoff`,
 `no_answer`, `member_failed`, `terminal`), the tries used, one entry per failed
 try, the kind-specific result (`EntityData` for a processor, `Matches` +
 `Reason` for a criterion, `Result` + `ResultKind` for a function),
 accumulated warnings and diagnostics, and — on failure — either the compute
-node's own message and verdict (`member_failed`) or the peer's classified
+member's own message and verdict (`member_failed`) or the peer's classified
 error code, HTTP status and retryable flag so the owner re-mints the same
-`AppError` the peer would have returned.
+`AppError` the peer would have returned. Text a peer wrote — warnings, errors,
+attempt causes, the member's own message — is bounded in count and length before
+it is relayed, and an error code this build does not define is dropped rather
+than minted.
 
-**Error handling:**
+**What the client sees:**
 
-| Scenario | Behavior | Error Code |
+| Scenario | Behavior | Status, error code |
 |----------|----------|------------|
-| No matching member anywhere within the patience, no try made | Fail after `CYODA_DISPATCH_WAIT_TIMEOUT` | `NO_COMPUTE_MEMBER_FOR_TAG` |
-| Exactly one try made, and it failed | That try's own error | `DISPATCH_TIMEOUT`, `COMPUTE_MEMBER_DISCONNECTED`, `DISPATCH_FORWARD_FAILED` |
-| More than one try made, none answered | The tries are listed | `CALLOUT_FAILED` |
-| No answer after the hand-off, processor not idempotent | Stop after that try | the try's own code |
-| A member answered "failed" | Stop; `400`, retryable if the member said so | `WORKFLOW_FAILED` |
-| A peer cannot be connected to, or has no matching member | No try used; the next peer is asked | — |
-| A hand-over's answer is lost | One try used; the next peer only for a repeat-safe callout | `DISPATCH_FORWARD_FAILED` when it is the only attempt |
+| No matching member anywhere within the patience, no try made | Fail once the patience is spent | 503 `NO_COMPUTE_MEMBER_FOR_TAG` |
+| Exactly one attempt on record | That attempt's own error, not wrapped | 503 `DISPATCH_TIMEOUT`, `COMPUTE_MEMBER_DISCONNECTED` or `DISPATCH_FORWARD_FAILED` |
+| More than one attempt on record — tries used up, or the patience or the deadline spent with tries left | The attempts are listed: `… got N failures: [member<id>: cause], …`, identical entries collapsed | 503 `CALLOUT_FAILED` |
+| No answer after the hand-off, processor not `idempotent` | Stop after that try | 503, the try's own code |
+| A member answered `success: false` | Stop; its message reaches the client, retryable exactly when the member said so | 400 `WORKFLOW_FAILED` |
+| A peer cannot be connected to, or gave the work to nobody | No try used; the next peer is asked | — |
+| A hand-over's answer is lost | One try used, recorded as member `-`; the next peer only for a repeat-safe callout | 503 `DISPATCH_FORWARD_FAILED` when it is the only attempt |
+| A callout's `responseTimeoutMs` exceeds `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` | `Terminal`, naming the setting; the limit is never silently clamped | 400 `WORKFLOW_FAILED` |
 | The client's `transactionTimeoutMillis` fires, or the client goes away | The callout ends at once, from a wait as from a try | `TRANSACTION_TIMEOUT` (408) / none |
+| A callback from a compute member that was replaced, or whose callout has ended, while the transaction is open | Refused; no store operation (§3.8) | 410 `CALLOUT_SUPERSEDED` |
+
+Member ids appear in client-visible text: they identify the tenant's own
+connections and are already given to the compute member in its greet. Node ids
+and peer addresses never do.
 
 ### 4.4 Transaction Flow -- Complete Swimlane
 
@@ -713,24 +989,26 @@ Participants:
 
 ```
 t0   Client --> POST /entity create --> Node A
-t1   Node A: BEGIN tx-123, generate txToken --> PG: BEGIN REPEATABLE READ
+t1   Node A: BEGIN tx-123 --> PG: BEGIN REPEATABLE READ
 t2   Node A: Save entity --> PG: INSERT entity (in tx-123)
 t3   Node A: SM engine dispatches to processor
-t3a  Node A: Check local MemberRegistry --> not found
-t3b  Node A: Query gossip --> Node B has tag for this tenant
-t3c  Node A: PeerSelector picks Node B (random from candidates)
-t3d  Node A: Mint signed tx-token {NodeID=A, TxRef=tx-123}, attach as cyodatxtoken attribute
-t3e  Node A: HTTPForwarder --> POST Node B /internal/dispatch/callout
-t3f  Node B: Receives forwarded dispatch, finds local member, dispatches via gRPC stream
+t3a  Node A: Coordinator begins the callout; RunLocal finds no local member
+t3b  Node A: PeerRouter.Peers --> Node B advertises the tag for this tenant
+t3c  Node A: raises the callout's fencing number; hands the callout over to
+             Node B with the tries left
+t3d  Node B: RunLocal picks a member, mints that try's pass
+             {NodeID=A, TxRef=tx-123, callout, number}
+t3e  Node B: sends the request on the member's gRPC stream (the hand-off)
 t4   Compute: Receives CloudEvent with cyodatxtoken (signed tx-token referencing Node A / tx-123)
 t5   Compute: Executes business logic
 t6   Compute: CRUD callback; echoes cyodatxtoken as X-Tx-Token (HTTP) or tx-token (gRPC metadata)
               --> Node B receives request with X-Tx-Token header
 t7   Node B: Decode txToken --> extract Node A from claims --> proxy to Node A
-t8   Node A: Receive proxied CRUD, Join tx-123 --> PG: INSERT/UPDATE (in tx-123)
-t9   Node A: CRUD OK --> respond to Node B --> Node B forwards to Compute
+t8   Node A: Receive proxied CRUD, Join tx-123, admit the pass, take the
+             transaction's lock --> PG: INSERT/UPDATE (in tx-123)
+t9   Node A: release the lock, CRUD OK --> respond to Node B --> Node B forwards to Compute
 t10  Compute: Receive CRUD OK --> finish logic
-t11  Compute: Respond OK to Node A (via Node B dispatch return)
+t11  Compute: Respond OK on the stream to Node B, which seals the answer for Node A
 t12  Node A: SM complete, all processors finished
 t13  Node A: COMMIT tx-123 --> PG: COMMIT
 t14  Node A: 200 OK {entityId, transactionId} --> Client
@@ -738,7 +1016,8 @@ t14  Node A: 200 OK {entityId, transactionId} --> Client
 
 Key observations:
 - Node A is the single transaction owner throughout. All writes go through Node A.
-- Node A mints the tx-token and embeds it in the CloudEvent (`cyodatxtoken`). The compute node echoes it on callbacks — `X-Tx-Token` header (HTTP) or `tx-token` metadata (gRPC). Without the echo the callback runs in a standalone transaction rather than joining T.
+- The node that makes the hand-off mints the pass — here Node B — naming Node A as owner, and embeds it in the CloudEvent (`cyodatxtoken`). The compute member echoes it on callbacks — `X-Tx-Token` header (HTTP) or `tx-token` metadata (gRPC). Without the echo the callback runs in a standalone transaction rather than joining T.
+- Node A admits the callback at t8 only under the callout's current fencing number, and holds the transaction's lock for the whole of it (§3.8). Its response leaves after the lock is released, so the lock never waits on the compute member.
 - Node B acts as a transparent proxy for CRUD callbacks (via `X-Tx-Token`) and as a local dispatch host for its compute members.
 - Callback acks are provisional: writes are not durable until Node A commits T at t13.
 - The compute member is stateless -- it receives entity data via CloudEvent payload and returns modified data the same way.
@@ -789,7 +1068,7 @@ Segment-boundary observations:
 | L4 | Node B <-> Node A | Internal proxy (HTTP) |
 | L5 | Node A <-> PostgreSQL | TCP (pgx connection) |
 | L6 | Node B <-> PostgreSQL | TCP (proxy resolution only, not tx) |
-| L7 | Node A <-> Node B | HTTP POST /internal/dispatch (NEW) |
+| L7 | Node A <-> Node B | HTTP POST /internal/dispatch/callout (callout hand-over) |
 
 ---
 
@@ -818,11 +1097,11 @@ SAFE: PG operation fails -> Node A rolls back -> client gets error.
 
 **L2 partitions (Node A <-> Compute):**
 
-Node A dispatched the CloudEvent to compute. gRPC stream breaks. Node A's dispatch call returns error or times out (gRPC keepalive). Node A detects failure -> rolls back tx-123.
+The hand-off was made, so the try is classified `NoAnswer`: the stream breaking, or the answer limit passing with no answer, both read the same way. For a repeat-safe callout — a criterion, a function, or a processor declared `idempotent` — the owner's loop gives the work to the next compute member with the tries left. Otherwise the callout ends there and the transaction rolls back.
 
-Meanwhile: Compute may still be executing business logic, unaware the stream is dead. When it tries to callback (t6), it will fail.
+Meanwhile: Compute may still be executing business logic, unaware the stream is dead. Its callbacks are refused from the moment the fencing number rises or the callout ends (§3.8) — `410 CALLOUT_SUPERSEDED` while tx-123 is open, `404 TRANSACTION_NOT_FOUND` once it has rolled back — and a callback already in progress finishes before the work is given to anyone else.
 
-SAFE: Node A rolls back. Compute's work is discarded (stateless).
+SAFE: either another member completes the callout, or Node A rolls back with the earlier member fenced. Compute's work inside cyoda is discarded; what it did outside cyoda is the application's to reconcile.
 
 **L5 partitions (Node A <-> PG):**
 
@@ -839,7 +1118,7 @@ SAFE: Either PG kills the tx, or partition heals and flow continues.
 
 **L3 partitions (Compute <-> Node B):**
 
-Compute's CRUD callback cannot reach Node B. Compute gets connection error. Compute reports failure back to Node A (via the gRPC stream, if L2 is still up). Node A receives processor failure -> rolls back tx-123.
+Compute's CRUD callback cannot reach Node B. Compute gets connection error and answers `success: false` on the dispatch stream, which Node B relays to Node A under seal (if L2 is still up). That is `MemberFailed`: no other compute member is tried, whatever the callout's retry policy, and the member's own message and verdict go to the client. Node A rolls back tx-123.
 
 SAFE: Clean failure propagation up the chain.
 
@@ -889,19 +1168,17 @@ ISSUE: Committed but client does not know. **Idempotency key** would detect the 
 
 #### L7 partition analysis (dispatch forward: Node A <-> Node B)
 
-**Before forward sent:** Node A detects connection error, tries another peer (if available) or fails with `NO_COMPUTE_MEMBER_FOR_TAG`.
+**The connection cannot be opened:** no try is used. Node A asks the next peer advertising the tag, or waits out the patience and fails with `NO_COMPUTE_MEMBER_FOR_TAG`.
 
-**Forward sent, waiting for response:** HTTP timeout fires. Node A returns timeout error to workflow engine -> transaction rolls back. Node B may still be dispatching -- its local dispatch will eventually complete or timeout, but the result is discarded (no one listening).
+**The hand-over was sent and the answer never arrives, or arrives unreadable:** one try is counted. For a repeat-safe callout Node A carries on with the tries left; otherwise the operation fails with `DISPATCH_FORWARD_FAILED` and the transaction rolls back. Node B's compute member may still be working, and Node B's own local procedure may still be making further tries: those members' callbacks are refused from the moment Node A raises the fencing number or ends the callout (§3.8), and the result Node B eventually produces is discarded — nobody is listening.
 
-**Response lost:** Same as above -- timeout -> rollback. No split-brain because the dispatch is read-only from Node A's perspective (the entity update has not been applied yet).
-
-SAFE: All cases lead to rollback or retry. No data corruption possible because the dispatch response must be received by Node A before it updates the entity.
+SAFE: every case ends in a rollback, or in a further try of a callout declared safe to repeat, with the earlier compute member fenced. No data corruption is possible because the answer must reach Node A before the entity is updated.
 
 ---
 
 #### Phase 5: `COMMIT_BEFORE_DISPATCH` segment-boundary partition
 
-This phase covers the new partition windows opened by the segmented cascade described in §4.4 (variant). The boundary sits between `TX_pre.Commit` (entity durable in pre-callout state) and `TX_post.Begin` (engine resumes after dispatch returns).
+This phase covers the partition windows the segmented cascade described in §4.4 (variant) opens. The boundary sits between `TX_pre.Commit` (entity durable in pre-callout state) and `TX_post.Begin` (engine resumes after dispatch returns).
 
 **L5 partitions (Node A <-> PG) between segments:**
 
@@ -938,7 +1215,7 @@ Same shape as L5 + home-node-crash above: stranded entity, possible external sid
 | **Consistency** | All partition scenarios lead to rollback or clean commit. No split-brain possible because `pgx.Tx` is single-owner. PG `REPEATABLE READ` + commit-time read-set validation (SI+FCW, see §3.7) catches conflicting concurrent writes. | None (inherently safe) |
 | **Duplicate operations** | Client <-> Node A partition at any point can cause the client to retry, creating a second transaction for the same intent. Both may commit without conflicting. | Idempotency keys |
 | **Commit ambiguity** | L5 partition at COMMIT time: Node A cannot tell if PG committed or not. | Commit marker (write marker row before COMMIT; check on reconnect) |
-| **Timeout / liveness** | A dispatch to a dead compute node is bounded by the callout's `responseTimeoutMs` and, behind it, by `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` — the connection is idle inside its transaction for the whole callout, not running a statement, so the statement ceiling does not apply (§3.4). What is not bounded is the inbound request itself — no deadline is derived from it and propagated downstream. | Deadline propagation via context |
+| **Timeout / liveness** | One try to a dead compute member is bounded by the callout's answer limit, and the callout as a whole by its deadline — tries × answer limit + the patience + the hand-over allowance, fixed when it starts and 155 s at the defaults (§4.3). Behind that sits `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`: the connection is idle inside its transaction for the whole callout, not running a statement, so the statement ceiling does not apply (§3.4). What is not bounded is the inbound request itself — no deadline is derived from it and propagated downstream. | Deadline propagation via context |
 | **Resource exhaustion** | A transaction holds one PG connection for its lifetime; the idle-in-transaction ceiling caps that lifetime and a saturated pool fails fast with `503 STORAGE_UNAVAILABLE` after `CYODA_POSTGRES_ACQUIRE_TIMEOUT` rather than queueing (§3.4). | Covered by the DB-side ceilings |
 | **Observability** | No cluster-wide view of open transactions, their owners, or their age. Per-node transaction counts and durations are exported as `cyoda.tx.active` / `cyoda.tx.duration` when OTel is enabled (§11); PostgreSQL's `pg_stat_activity` is the cross-node view. | Cluster-wide transaction registry |
 
@@ -1064,8 +1341,8 @@ re-executes it promptly rather than waiting for the stale-heartbeat
 timeout, so a graceful shutdown or rolling restart hands work off within
 one `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL` — a `Release` never counts
 against `SearchJob.StaleClaims`, so a clean rolling restart chain never
-pushes a job toward the attempt cap. A shutdown never leaves a job stuck
-`RUNNING` forever, but it no longer terminates it as `FAILED` either.
+pushes a job toward the attempt cap. A shutdown neither leaves a job stuck
+`RUNNING` forever nor terminates it as `FAILED`.
 
 **TTL-based cleanup.** Independent of the stale-job reaper above, a
 background reaper goroutine runs on `CYODA_SEARCH_REAP_INTERVAL` (default
@@ -1189,8 +1466,8 @@ Processors are dispatched via the `ExternalProcessingService` SPI, implemented b
 |------|----------|
 | `SYNC` | Processor executes within the current transaction. Entity data is updated in-place before the next transition. |
 | `ASYNC_SAME_TX` | Executes inline in the caller's transaction, exactly as `SYNC` does. CRUD callbacks are routed back to the transaction owner. The `ASYNC` label is preserved for Cyoda Cloud configuration compatibility; execution in cyoda-go is not asynchronous. |
-| `ASYNC_NEW_TX` | Processor executes sequentially within a SAVEPOINT of the parent transaction. Fire-and-forget error semantics: failure rolls back the SAVEPOINT only, parent pipeline continues. Entity mutations returned by the processor are discarded. Parent rollback discards all ASYNC_NEW_TX work. The `ASYNC` label is preserved for Cyoda Cloud configuration compatibility — execution is sequential in cyoda-go. |
-| `COMMIT_BEFORE_DISPATCH` | Engine splits the cascade into two transactions around this processor. `TX_pre` flushes the pre-callout entity state and commits **before** the processor is dispatched, releasing the storage connection during the external compute window. The processor runs outside any transaction. When the processor returns, the engine opens `TX_post` on the same node, reapplies the result via `CompareAndSave` (CAS expects the txID stamped at `TX_pre`'s commit), runs subsequent SYNC processors and cascade transitions inline, then commits. CAS conflict at the boundary surfaces `ErrConflict` → `409 retryable`; entity remains durable in the pre-callout state, no engine-side retry, no automatic compensation. Companion field `startNewTxOnDispatch: bool` (default `false`, sibling on the same processor object, validator rejects `true` for any other mode) controls whether a fresh transaction context is supplied to the dispatched call for processor-side CRUD on entities other than the cascade-anchor. **Audit-trail durability change**: the existing `SMEventProcessingPaused` is recorded in `TX_pre` and durably committed at the segment boundary; the existing `SMEventStateProcessResult` is recorded in `TX_post`. No new event types are introduced. See [docs/CONSISTENCY.md](CONSISTENCY.md) §10 for visibility caveats and idempotency requirements. |
+| `ASYNC_NEW_TX` | Processor executes sequentially within a SAVEPOINT of the parent transaction. Fire-and-forget error semantics: the processor's own failure rolls back the SAVEPOINT only, the parent pipeline continues, and nothing reaches the client — not even the member's `retryable` verdict. A savepoint that cannot be created, undone or released is **not** a processor failure: the transaction is unusable, so the operation fails with a ticketed 5xx (§3.8). Entity mutations returned by the processor are discarded. Parent rollback discards all ASYNC_NEW_TX work. The `ASYNC` label is preserved for Cyoda Cloud configuration compatibility — execution is sequential in cyoda-go. |
+| `COMMIT_BEFORE_DISPATCH` | Engine splits the cascade into two transactions around this processor. `TX_pre` flushes the pre-callout entity state and commits **before** the processor is dispatched, releasing the storage connection during the external compute window. The processor runs outside any transaction. When the processor returns, the engine opens `TX_post` on the same node, reapplies the result via `CompareAndSave` (CAS expects the txID stamped at `TX_pre`'s commit), runs subsequent SYNC processors and cascade transitions inline, then commits. CAS conflict at the boundary surfaces `ErrConflict` → `409 retryable`; entity remains durable in the pre-callout state, no engine-side retry, no automatic compensation. Companion field `startNewTxOnDispatch: bool` (default `false`, sibling on the same processor object, validator rejects `true` for any other mode) controls whether a fresh transaction context is supplied to the dispatched call for processor-side CRUD on entities other than the cascade-anchor. **Audit-trail placement**: `SMEventProcessingPaused` is recorded in `TX_pre` and durably committed at the segment boundary; `SMEventStateProcessResult` is recorded in `TX_post`. The mode has no event types of its own. See [docs/CONSISTENCY.md](CONSISTENCY.md) §10 for visibility caveats and idempotency requirements. |
 
 ### 5.5 Audit Trail
 
@@ -1217,7 +1494,7 @@ The engine records state machine events to `StateMachineAuditStore` throughout e
 | `SCHEDULED_TRANSITION_EXPIRE` | `SMEventScheduledTransitionExpired` | Scheduled transition passed its expiry unfired |
 | `SCHEDULED_TRANSITION_CANCEL` | `SMEventScheduledTransitionCancelled` | Scheduled transition cancelled before firing |
 
-**Segment-boundary placement for `COMMIT_BEFORE_DISPATCH`** (§5.4): when the engine segments a cascade around a `COMMIT_BEFORE_DISPATCH` processor, the existing `SMEventProcessingPaused` is recorded in `TX_pre` (and durably committed at the segment boundary, surviving an engine crash before the dispatch returns) and the existing `SMEventStateProcessResult` is recorded in `TX_post`. **No event spans both transactions; no new event types are introduced.** Audit consumers can detect a stranded mid-cascade entity by the presence of `SMEventProcessingPaused` without a matching `SMEventStateProcessResult` for the same dispatch.
+**Segment-boundary placement for `COMMIT_BEFORE_DISPATCH`** (§5.4): when the engine segments a cascade around a `COMMIT_BEFORE_DISPATCH` processor, `SMEventProcessingPaused` is recorded in `TX_pre` (and durably committed at the segment boundary, surviving an engine crash before the dispatch returns) and `SMEventStateProcessResult` is recorded in `TX_post`. **No event spans both transactions, and the mode has no event types of its own.** Audit consumers can detect a stranded mid-cascade entity by the presence of `SMEventProcessingPaused` without a matching `SMEventStateProcessResult` for the same dispatch.
 
 ---
 
@@ -1258,7 +1535,7 @@ join --> greet --> keep-alive --> dispatch/response --> leave
 
 3. **Dispatch/Response:** Server sends `EntityProcessorCalculationRequest` or `EntityCriteriaCalculationRequest`. Client processes and returns the corresponding `Response` type. Correlation is by `requestID` field in the CloudEvent payload.
 
-4. **Leave:** Stream closes (client disconnect or server eviction). `MemberRegistry.Unregister()` is called, which fails all pending requests for that member.
+4. **Leave:** Stream closes (client disconnect or server eviction). `MemberRegistry.Unregister` drops the member and evicts it, which refuses new tracked requests and fails every pending one; the registry's change signal fires, waking any callout waiting for a member (§4.3).
 
 ### 6.3 Tag-Based Member Selection
 
@@ -1266,13 +1543,13 @@ join --> greet --> keep-alive --> dispatch/response --> leave
 
 ### 6.4 Response Correlation
 
-Each dispatch request generates a unique `requestID` (TimeUUID). The dispatcher:
+A callout gets one `requestID` (TimeUUID), minted by the owner and sent on **every** try of that callout — so a compute member that already holds the request can recognise a repeat by it, and it is the key an application uses to make an outside effect safe to repeat. The CloudEvent envelope's own id stays unique per event. For each try the local procedure:
 
 1. Creates a buffered channel: `member.TrackRequest(requestID) -> chan *ProcessingResponse`
 2. Sends the CloudEvent to the member's stream
-3. Waits on the channel with a configurable timeout
+3. Waits on the channel until the callout's answer limit passes
 
-When the member responds, the streaming handler matches the response's `requestID` to the pending channel and delivers the result. If the member disconnects, `FailAllPending()` sends error responses to all waiting channels.
+When the member responds, the streaming handler matches the response's `requestID` to the pending channel and delivers the result. Correlation is **per member**, so two tries of one callout in flight on different members cannot be confused; a try that ends without its answer abandons its tracking entry, so a late reply finds nothing and is discarded. If the member disconnects, `Member.Evict` fails every pending request with `Disconnected`, and the try is classified `NoAnswer` (`NoHandOff` if the member was already gone when the request was tracked). One deadline — the answer limit — bounds the enqueue and the wait together, so a member that is attached but not draining costs up to one answer limit before the try is classified.
 
 ### 6.5 CloudEvent Types
 
@@ -1773,7 +2050,7 @@ Capabilities this document's design implies but the system does not provide. Eac
 | Gap | What it would give |
 |---------|---------|
 | Commit markers (PostgreSQL plugin) | Resolve transaction commit ambiguity (L5 partition at COMMIT — see §4.5 Phase 4). Today a torn connection at COMMIT is reported as retryable; it is never disambiguated. |
-| Strict context deadline propagation | A deadline derived from the inbound request and inherited by every downstream operation. Today the HTTP server sets no read/write timeout and no request deadline is propagated; only dispatch enforces its own independent wall clock. |
+| Strict context deadline propagation | A deadline derived from the inbound request and inherited by every downstream operation. The server bounds how long a request may take to *arrive* (`CYODA_HTTP_READ_TIMEOUT`, §9) but derives no deadline from it for handler execution; a callout enforces its own independent wall clock (§4.3), and a joined request runs detached from its client's cancellation altogether (§3.8). |
 | Idempotency keys | Client-provided keys preventing duplicate operations on retry. The `IDEMPOTENCY_CONFLICT` code is reserved, but no handler reads an `Idempotency-Key` header. |
 | Trace propagation through the search pipeline | A unified search trace waterfall. The search packages emit no spans, and the async-search goroutine starts from a fresh context, severing the parent span. |
 | Outbound trace propagation to external processors | End-to-end workflow tracing. Inbound gRPC trace context is extracted and dispatches are wrapped in spans, but no `traceparent` is injected into the dispatched CloudEvent or the peer-forward request. |
@@ -1787,17 +2064,17 @@ Capabilities this document's design implies but the system does not provide. Eac
 
 **Context:** How to route requests to the correct transaction-owning node.
 
-**Decision:** HMAC-signed opaque token containing `{nodeID, txRef, expiresAt}`. The `txRef` is a separate UUID used as a key into the node's local transaction map. The `nodeID` is extracted locally (no network call) for routing.
+**Decision:** HMAC-signed opaque token — a **pass** — containing `{nodeID, txRef, expiresAt}` plus the callout it was minted for and that try's fencing number. The `txRef` is a separate UUID used as a key into the owner's local transaction map. The `nodeID` is extracted locally (no network call) for routing.
 
-**Rationale:** The token is opaque to clients. HMAC verification is a CPU-local operation. No distributed registry lookup is needed for routing decisions.
+**Rationale:** The token is opaque to clients. HMAC verification is a CPU-local operation. No distributed registry lookup is needed for routing decisions, and because the callout and the number ride under the same signature, the node that routes the callback is also the node that can judge whether it is still current (§3.8).
 
-### DD-2: Fencing Tokens Not Required
+### DD-2: Fencing Tokens Not Required for Transaction Ownership
 
-**Context:** Whether to use fencing tokens to prevent stale writes from zombie transactions.
+**Context:** Whether to use fencing tokens to prevent stale writes from zombie transactions — two *nodes* believing they hold the same one.
 
 **Decision:** Not required. The `pgx.Tx` single-owner property guarantees that only one goroutine on one node holds a physical PostgreSQL transaction.
 
-**Rationale:** Fencing tokens exist to stop a process that believes it still owns a resource from writing after ownership has moved. That situation is unreachable here: a transaction is a connection, a connection has exactly one holder, and there is no mechanism by which two nodes come to hold the same one. The decision rests on that property alone — not on any liveness or expiry mechanism. If the owning node dies its connection drops and PostgreSQL rolls the transaction back; the ceilings in §3.4 bound how long an abandoned one can occupy a connection, but they are resource hygiene, not the reason fencing is unnecessary.
+**Rationale:** Fencing tokens exist to stop a process that believes it still owns a resource from writing after ownership has moved. That situation is unreachable here: a transaction is a connection, a connection has exactly one holder, and there is no mechanism by which two nodes come to hold the same one. The decision rests on that property alone — not on any liveness or expiry mechanism. If the owning node dies its connection drops and PostgreSQL rolls the transaction back; the ceilings in §3.4 bound how long an abandoned one can occupy a connection, but they are resource hygiene, not the reason fencing is unnecessary. A **compute member** that was replaced is a different case: it can still send callbacks into a transaction that is open and correctly owned, so ownership of a *callout's work* is fenced — by a number in the pass, decided in memory by the owner (§3.8).
 
 ### DD-3: Transparent Proxy
 
@@ -1827,9 +2104,9 @@ Capabilities this document's design implies but the system does not provide. Eac
 
 **Context:** How to pick among multiple peers with matching compute tags.
 
-**Decision:** `RandomSelector` -- uniform random selection from alive candidates.
+**Decision:** `RandomSelector` -- uniform random selection from the alive candidates, applied repeatedly to produce the order in which the owner's loop asks them. Each peer is asked at most once per pass.
 
-**Rationale:** Simple, stateless, no coordination needed. Load balancing across peers is acceptable for the expected cluster size. More sophisticated strategies (round-robin, least-loaded) can be added by implementing the `PeerSelector` interface.
+**Rationale:** Simple, stateless, no coordination needed. Load balancing across peers is acceptable for the expected cluster size. More sophisticated strategies (round-robin, least-loaded) can be added by implementing the `PeerSelector` interface, which decides order only — whether a peer is asked at all, and what its answer costs, is the owner's loop's (§4.3).
 
 ### DD-7: Tag Lists Beside Gossip Metadata
 
@@ -1909,8 +2186,9 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 | **Pool acquire timeout** | Default 10s (`CYODA_POSTGRES_ACQUIRE_TIMEOUT`) | An operation that cannot get a connection within it fails fast with `503 STORAGE_UNAVAILABLE` rather than queueing behind a saturated pool. Applies to writes, and to reads needing a *second* connection while the caller's transaction holds one — a point-in-time read or an async-search submit issued inside a transaction. Unbounded otherwise, so ordinary pool contention on a non-transactional read does not fail spuriously. |
 | **Connection hold time** | Duration of entire flow chain (BEGIN → workflow → compute dispatch → callbacks → COMMIT) | Each in-flight transaction consumes one PG connection for its full lifetime. With 25 connections per node and 10 nodes, the cluster supports ~250 concurrent transactions. |
 | **Proxy timeout** | Default 30s (configurable) | Cross-node proxy hops for CRUD callbacks must complete within this window. |
-| **Dispatch forward timeout** | Default 30s (configurable) | Cross-node compute dispatch forwarding must complete within this window. |
-| **Compute member response timeout** | Per-processor `responseTimeoutMs` (default 30s) | If a compute member doesn't respond within this window, the dispatch fails and the transaction rolls back. Not validated against the idle-in-transaction ceiling — a value above it means PostgreSQL aborts the transaction first (§3.4). |
+| **Callout deadline** | tries × answer limit + patience + hand-over allowance; 155s at the defaults | Fixed when the callout starts. No try or hand-over begins after it and one in progress is cut off at it, so the *time* a callout can take is bounded even though a lost hand-over answer can make the number of tries exceed the setting (§4.3). |
+| **Hand-over answer wait** | tries left × answer limit + `CYODA_CALLOUT_HANDOVER_ALLOWANCE`, never past the callout deadline | The owner's wait for a peer's sealed answer. `CYODA_DISPATCH_CONNECT_TIMEOUT` (2s) bounds opening the connection only; `CYODA_DISPATCH_FORWARD_TIMEOUT` (30s) bounds the scheduler's peer RPC, not this. |
+| **Compute member response timeout** | Per-callout `responseTimeoutMs` (default `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS`, 30s) | The answer limit of one try: a member that does not answer within it ends that try, and whether another member is tried depends on the failure kind (§4.3). Bounded at import by `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` (60s), but not against the idle-in-transaction ceiling — a callout deadline above it means PostgreSQL aborts the transaction first (§3.4). |
 
 **Expected bottleneck:** The dominant limit is long-running compute phases holding PG connections. A processor that runs for N seconds holds one connection for at least N seconds, so a node's concurrent-transaction ceiling is its pool size and its throughput is that ceiling divided by processor duration.
 
@@ -1934,7 +2212,7 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 | **Node network partition (from cluster)** | Partitioned node continues operating if it can reach PG. Other nodes cannot proxy to it. Transactions owned by the partitioned node continue normally if PG link is up. | Gossip re-merges when partition heals. Outstanding tokens for the partitioned node fail on other nodes. |
 | **Node partition from PostgreSQL** | PG kills the connection after TCP timeout. All open transactions on that node are rolled back by PG. Node detects dead connection on next PG operation. | Node must reconnect to PG. All in-flight work is lost (rolled back). Clients get errors and retry. |
 | **PostgreSQL failure** | All nodes lose write capability simultaneously. No new transactions can begin. Existing transactions cannot commit. | Requires PG recovery (HA failover, restart). Cyoda-Go nodes reconnect automatically via pgx pool. |
-| **Compute member disconnect** | Pending dispatch requests fail with "member disconnected." Gossip tag metadata updated within seconds. Subsequent dispatches route to other members with the same tag. | Automatic if other members exist. If no member for the tag, dispatches fail after poll timeout. |
+| **Compute member disconnect** | A callout in flight on the member is classified: given to another member when that is safe — the hand-off had not been made, or the callout is repeat-safe — and failed with `COMPUTE_MEMBER_DISCONNECTED` otherwise. The member's tag list is republished to peers within seconds, and the local change signal wakes any callout waiting for a member. | Automatic if other members exist. If no member for the tag, callouts fail once the patience is used up. |
 | **nginx LB failure** | All external traffic stops. Nodes are healthy but unreachable. | LB must be restored. Nodes continue gossiping and can handle direct traffic if clients bypass the LB. |
 
 **Single point of failure:** PostgreSQL. If PG is down, the cluster is effectively down for writes. This is by design — PG is the consistency authority. HA PostgreSQL (streaming replication with automatic failover) is the recommended mitigation.
