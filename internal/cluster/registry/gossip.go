@@ -180,8 +180,9 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 	// Registered before Create: NotifyJoin fires for this pnode inside it, and
 	// the directory must hold every member from the first one on.
 	mlCfg.Events = events
-	// Both halves of the duplicate-id check: Merge refuses the join exchange
-	// that would establish one, Conflict reports one this node only witnesses.
+	// Both halves of the duplicate-id check: Merge sees the join exchange,
+	// Conflict the membership gossip that follows it. Neither reaches a node
+	// that has already started — see gossip_identity.go.
 	mlCfg.Merge = guard
 	mlCfg.Conflict = guard
 
@@ -385,9 +386,10 @@ func (g *Gossip) joinSeeds(seeds []string) error {
 	return errs
 }
 
-// identityProven fails when any exchange this node has taken part in, its own
-// or one a peer started, has shown its id on another node. A node that cannot
-// show the id is its own does not serve under it.
+// identityProven fails when anything this attempt saw — an exchange of its
+// own, one a peer started, or the membership gossip that followed — showed
+// this node's id on another node. A node that cannot show the id is its own
+// does not serve under it.
 func (g *Gossip) identityProven() error {
 	if addr := g.identity.duplicate(); addr != "" {
 		return g.duplicateIDError(addr, "")
@@ -401,7 +403,7 @@ func (g *Gossip) identityProven() error {
 // from a record of this node's own previous life, which its peers keep after a
 // crash because it never left, and which they hold at the old address.
 func (g *Gossip) duplicateIDError(addr, seed string) error {
-	where := "found in an exchange a peer started"
+	where := "found in gossip this node did not start"
 	if seed != "" {
 		where = "learned from seed " + seed
 	}
