@@ -527,7 +527,9 @@ func TestE2E_AsyncSearch_ShutdownReleases_NoFailedWrite(t *testing.T) {
 		cfg.StorageBackend = backend
 	})
 
-	const model = "shutdown-release-e2e"
+	// Repeated runs (go test -count=N) share this package's Postgres
+	// testcontainer, so a fixed model name meets itself as MODEL_ALREADY_LOCKED.
+	model := "shutdown-release-e2e-" + randSuffix(t)
 	const seeded = 4
 	seedStandalone(t, a, model, seeded)
 
