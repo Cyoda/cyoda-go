@@ -358,6 +358,14 @@ func TestRun_AWaiterWhoseClientGoesAwayNeverRuns(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("err = %v; want context.Canceled", err)
 		}
+		// The join layer is the one place that knows this error IS the client's
+		// departure rather than an internal failure that happens to carry a
+		// cancellation, so it says so. A door's error funnel files a departed
+		// client by this marker alone: guessing from context.Canceled on the
+		// chain would quieten a genuine fault to DEBUG with no ticket.
+		if !errors.Is(err, common.ErrClientGone) {
+			t.Fatalf("err = %v; want it marked common.ErrClientGone", err)
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("a joined request whose client went away stayed parked on the lock")
 	}

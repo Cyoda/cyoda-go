@@ -246,9 +246,23 @@ func TestOwner_LocalCnodeAnswers_NoHandOver(t *testing.T) {
 	}
 }
 
+// assertClientGone checks that err is the caller's own cancellation, marked as
+// its departure: what a door's error funnel needs to log it quietly and without
+// a ticket instead of guessing from the cancellation on the chain.
+func assertClientGone(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled on the chain", err)
+	}
+	if !errors.Is(err, common.ErrClientGone) {
+		t.Errorf("err = %v, want it marked as the caller's departure", err)
+	}
+}
+
 // A caller that goes away during a hand-over ends the callout with its own
-// context error — not with a retryable 503, and not by asking the next peer.
-func TestOwner_CallerGoesAwayDuringAHandOver_CtxErrUnchanged(t *testing.T) {
+// context error, marked as the caller's departure — not with a retryable 503,
+// and not by asking the next peer.
+func TestOwner_CallerGoesAwayDuringAHandOver_CtxErrMarkedClientGone(t *testing.T) {
 	router := newScriptedRouter("p-1", "p-2")
 	router.script("p-1", hangs())
 	router.script("p-2", peerAnswers("cnode-on-p-2"))
@@ -259,9 +273,7 @@ func TestOwner_CallerGoesAwayDuringAHandOver_CtxErrUnchanged(t *testing.T) {
 
 	_, err := e.dispatchFunction(ctx, "x", "")
 
-	if err != context.Canceled {
-		t.Errorf("err = %v, want context.Canceled unchanged", err)
-	}
+	assertClientGone(t, err)
 	if calls := router.made(); len(calls) != 1 {
 		t.Errorf("hand-overs = %+v, want p-2 never asked", calls)
 	}
@@ -281,7 +293,7 @@ func TestOwner_WhoseContextEndedDuringAHandOver(t *testing.T) {
 		check func(t *testing.T, err error)
 	}{
 		{
-			name: "the caller went away: its own error, unchanged",
+			name: "the caller went away: its own error, marked as its departure",
 			cfg:  Config{FixedNumRetries: 1, HandoverAllowance: 30 * time.Second},
 			ctx: func(t *testing.T, _ *env) context.Context {
 				ctx, cancel := context.WithCancel(userCtx(tenantA))
@@ -289,11 +301,7 @@ func TestOwner_WhoseContextEndedDuringAHandOver(t *testing.T) {
 				time.AfterFunc(40*time.Millisecond, cancel)
 				return ctx
 			},
-			check: func(t *testing.T, err error) {
-				if err != context.Canceled {
-					t.Errorf("err = %v, want context.Canceled unchanged", err)
-				}
-			},
+			check: assertClientGone,
 		},
 		{
 			name: "the fence released the callout: CALLOUT_SUPERSEDED",

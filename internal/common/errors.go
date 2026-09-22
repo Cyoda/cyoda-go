@@ -1,7 +1,6 @@
 package common
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +21,31 @@ const (
 	LevelInternal                      // 500 unexpected errors
 	LevelFatal                         // unrecoverable, marks system unhealthy
 )
+
+// ErrClientGone marks an error as the request's own client having gone away
+// before the request did anything — not a server fault. Only the layer that was
+// waiting on the client may mark a cause with it: internal/domain/txjoin does,
+// for a joined request whose context ended while it queued for the
+// transaction's lock, having touched nothing. A door's error funnel files a
+// departed client on this marker and on nothing else, because a cancellation
+// somewhere on an error's chain says only that something was called off, not
+// that this is what went wrong — see isClientGoneCancellation.
+//
+// An error marked with it is logged at DEBUG and carries no ticket: there is
+// nobody left to quote one to.
+var ErrClientGone = errors.New("the request's client went away before the request ran")
+
+// ClientGone marks err — a context error a layer read off the caller's own
+// context — as that client's departure. Only a layer that was waiting on the
+// client may call it: internal/domain/txjoin, for a joined request whose
+// context ended while it queued for the transaction's lock, and
+// internal/callout, for a callout whose caller's context ended during or
+// between tries. Everything under the marker is left intact, so errors.Is still
+// finds the context error and status.FromContextError still reads the right
+// gRPC code off it.
+func ClientGone(err error) error {
+	return fmt.Errorf("%w: %w", ErrClientGone, err)
+}
 
 // AppError represents a classified application error with client-safe and
 // internal details separated for security.
@@ -251,17 +275,21 @@ type ProblemDetail struct {
 }
 
 // isClientGoneCancellation reports whether appErr's cause is the request's
-// client having gone away while the request was in flight, rather than a
-// genuine server fault: the cause chain carries context.Canceled AND the
-// request's own context is currently done. Both conjuncts matter — a cause
-// that merely contains context.Canceled from some unrelated, already-settled
-// cancellation must not be quietened while the request itself is still live.
-// A request whose own feature deadline expired carries context.DeadlineExceeded,
-// not context.Canceled, and is excluded by construction — it is already
-// classified to 408 upstream by ClassifyRequestTimeout before it would reach
-// here.
-func isClientGoneCancellation(appErr *AppError, r *http.Request) bool {
-	return errors.Is(appErr.Err, context.Canceled) && r.Context().Err() != nil
+// client having gone away before the request did anything, rather than a
+// genuine server fault. It asks the one question that settles it: did the layer
+// that was waiting on the client SAY so, by marking the cause ErrClientGone?
+//
+// Nothing weaker will do. A cancellation on the chain proves only that
+// something, somewhere, was called off: a joined request is deliberately
+// detached from its client (internal/domain/txjoin uses context.WithoutCancel),
+// so work that outlives its caller can fail carrying an unrelated
+// context.Canceled — classifyWorkflowError wraps any such cause as Internal —
+// and "the request's context is also done" says nothing about whether that is
+// what went wrong. Guessing from the two together files genuine faults as
+// departed clients, and a fault filed that way is logged at DEBUG with no
+// ticket, below the default level: no trace at all.
+func isClientGoneCancellation(appErr *AppError) bool {
+	return errors.Is(appErr.Err, ErrClientGone)
 }
 
 // WriteError writes an AppError as an RFC 9457 Problem Details JSON response.
@@ -306,11 +334,16 @@ func WriteError(w http.ResponseWriter, r *http.Request, appErr *AppError) {
 		pd.Detail = appErr.Message
 
 	case LevelInternal:
-		if isClientGoneCancellation(appErr, r) {
+		if isClientGoneCancellation(appErr) {
 			// Routine: the client disconnected, nothing was wrong on this end,
 			// and there is nobody to quote a ticket to. No ticket is minted.
+			// The gRPC funnel (internal/grpc/errors.go) logs this same event
+			// under the same message and the same fields, so the two collate;
+			// path is this door's own addition.
 			slog.Debug("client gone before request completed",
+				"code", appErr.Code,
 				"message", appErr.Message,
+				"detail", appErr.Detail,
 				"path", path,
 			)
 			if getErrorResponseMode() == "verbose" {

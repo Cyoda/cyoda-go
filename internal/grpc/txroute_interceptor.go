@@ -178,11 +178,14 @@ func overJoinedCeiling(resp any, limit int) bool {
 	return ok && proto.Size(pm) > limit
 }
 
-// clientGone reports whether err is the call's own context ending: the compute
-// node went away while its request was queued for the transaction's lock, so
-// nothing was touched and there is nobody to answer with an envelope.
+// clientGone reports whether err is the call's own context ending, as the join
+// layer marks it: the compute node went away while its request was queued for
+// the transaction's lock, so nothing was touched and there is nobody to answer
+// with an envelope. A join that FAILED carrying an unrelated cancellation is
+// not this — its client is still there, waiting for an answer, and gets the
+// envelope and the ticket that name the fault.
 func clientGone(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+	return errors.Is(err, common.ErrClientGone)
 }
 
 // unaryErr renders err as the routed RPC's error envelope. If the request could

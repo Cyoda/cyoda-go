@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -582,6 +583,43 @@ func TestTxJoin_ClientGoesAwayWhileQueued_HandlerNeverRuns_NeverAnImplicit200(t 
 	}
 	if !strings.Contains(buf.String(), `"level":"DEBUG"`) {
 		t.Errorf("a client disconnect must log at DEBUG: %s", buf.String())
+	}
+}
+
+// A join that FAILS with an internal error which merely wraps a cancellation is
+// not a departed client, even when the client has in fact also gone: the two
+// are different events, and only the join layer's own "the request ended before
+// it took the transaction's lock" is the second. Filing this as a departed
+// client would log a genuine fault at DEBUG with no ticket, below the default
+// level — the fault would leave no trace at all.
+func TestTxJoin_JoinFailureWrappingACancellation_KeepsItsTicket(t *testing.T) {
+	buf := captureSlog(t)
+	s, _ := token.NewSigner(make32(t))
+	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-1", Major: 1})
+	joinFailed := fmt.Errorf("resolve transaction: %w", context.Canceled)
+	h := TxJoin(noCalloutJoiner(t, s, fakeJoinTM{joinErr: joinFailed}))(
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("the handler of a failed join ran") }))
+
+	req := httptest.NewRequest(http.MethodPost, "/entity", strings.NewReader(`{}`))
+	ctx, disconnect := context.WithCancel(req.Context())
+	disconnect() // the client has gone too — but that is not what went wrong
+	req = withUserCtx(req.WithContext(ctx))
+	req.Header.Set(proxy.TxTokenHeader, tok)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d; want 500", rec.Code)
+	}
+	var pd map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &pd); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	if pd["ticket"] == nil || pd["ticket"] == "" {
+		t.Error("a genuine fault must carry a ticket the caller can quote")
+	}
+	if !strings.Contains(buf.String(), `"level":"ERROR"`) {
+		t.Errorf("a genuine fault must log at ERROR: %s", buf.String())
 	}
 }
 

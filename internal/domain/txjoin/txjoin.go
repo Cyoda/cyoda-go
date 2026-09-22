@@ -270,7 +270,12 @@ func (j *Joiner) RunVerified(ctx context.Context, pass *Pass, handler func(ctx c
 		if errors.Is(err, txgate.ErrTooManyWaiters) {
 			return tooManyJoinedRequests()
 		}
-		return err
+		// What is left is the request's own context ending while it queued. This
+		// is one of the two places that KNOW the error is the client's departure
+		// rather than a failure that happens to carry a cancellation, so it says
+		// so: the doors' error funnels file a departed client — quietly, without
+		// a ticket — on this marker alone.
+		return common.ClientGone(err)
 	}
 	// From here the request is detached from its client's cancellation: it runs
 	// on the transaction of the operation it belongs to, and a compute node that

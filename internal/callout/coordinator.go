@@ -399,10 +399,17 @@ func calloutDeadlinePassed(ctx context.Context) bool {
 // its own deadline. context.Cause tells the two apart: released by the fence —
 // the callback this callout was made from belongs to a cnode that was replaced
 // — is CALLOUT_SUPERSEDED; the caller going away, or its
-// transactionTimeoutMillis, is ctxErr, unchanged.
+// transactionTimeoutMillis, is ctxErr, marked as the caller's departure.
+//
+// This is one of the two places that KNOW an error is the caller's own context
+// ending rather than a failure that happens to carry a cancellation, so it says
+// so: a door's error funnel logs a departed client quietly and without a
+// ticket, and it does that on this marker alone. The marker leaves the context
+// error itself intact, so a transactionTimeoutMillis that expired is still
+// classified 408 upstream before any funnel sees it.
 func ended(cctx context.Context, ctxErr error) error {
 	if errors.Is(context.Cause(cctx), fence.ErrSuperseded) {
 		return fence.NewSupersededError()
 	}
-	return ctxErr
+	return common.ClientGone(ctxErr)
 }

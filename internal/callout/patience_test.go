@@ -217,9 +217,7 @@ func TestOwner_CallerGoesAwayDuringAWait_EndsAtOnce(t *testing.T) {
 
 	_, err := e.dispatchFunction(ctx, "x", "")
 
-	if err != context.Canceled {
-		t.Errorf("err = %v, want context.Canceled unchanged", err)
-	}
+	assertClientGone(t, err)
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Errorf("took %v: a cancelled caller ends the wait at once", elapsed)
 	}

@@ -513,7 +513,10 @@ func TestOwner_CalloutFromInsideACallback_ItsPassesCarryTheOuterPairs(t *testing
 
 // --- whose context ended ---
 
-func TestOwner_CallerGoesAwayDuringATry_CtxErrUnchanged(t *testing.T) {
+// A caller whose context ends during a try ends the callout with its own
+// context error, marked as the caller's departure so a door's error funnel can
+// log it quietly and without a ticket rather than guess from the cancellation.
+func TestOwner_CallerGoesAwayDuringATry_CtxErrMarkedClientGone(t *testing.T) {
 	tests := []struct {
 		name    string
 		ctx     func() (context.Context, context.CancelFunc)
@@ -538,8 +541,11 @@ func TestOwner_CallerGoesAwayDuringATry_CtxErrUnchanged(t *testing.T) {
 
 			err := e.dispatchPatientFunction(ctx, "x")
 
-			if err != tt.wantErr {
-				t.Errorf("err = %v, want %v unchanged", err, tt.wantErr)
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("err = %v, want %v on the chain", err, tt.wantErr)
+			}
+			if !errors.Is(err, common.ErrClientGone) {
+				t.Errorf("err = %v, want it marked as the caller's departure", err)
 			}
 			if second.count() != 0 {
 				t.Error("a caller that went away ends the callout; the work does not move to the next cnode")

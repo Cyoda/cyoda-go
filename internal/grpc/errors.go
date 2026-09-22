@@ -13,21 +13,22 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
-// isClientGoneCancellation reports whether err's chain carries
-// context.Canceled AND the serving RPC's own context (ctx) is currently
-// done — the same two conjuncts as common.WriteError's HTTP-side check. Both
-// matter: internal/domain/txjoin/txjoin.go detaches a joined request's
-// context with context.WithoutCancel once it holds the transaction, so a
-// compute member going away mid-statement cannot take the connection with
-// it — and classifyWorkflowError (internal/domain/entity/service.go) still
-// wraps any context.Canceled it sees as a ticketed common.Internal, by its
-// own comment, because the cancellation may be unrelated to this (detached,
-// still-live) request. Recognising client-gone on the error chain alone
-// would wrongly quieten that genuine failure to DEBUG with no ticket. A
-// feature-deadline timeout carries context.DeadlineExceeded, not
-// context.Canceled, and is unaffected regardless of ctx.
-func isClientGoneCancellation(err error, ctx context.Context) bool {
-	return errors.Is(err, context.Canceled) && ctx.Err() != nil
+// isClientGoneCancellation reports whether err is the request's own client
+// having gone away before the request did anything — the same single question
+// common.WriteError's HTTP-side check asks: did the layer that was waiting on
+// the client mark the cause common.ErrClientGone?
+//
+// A cancellation on the chain does not answer it.
+// internal/domain/txjoin/txjoin.go detaches a joined request's context with
+// context.WithoutCancel once it holds the transaction, so a compute member
+// going away mid-statement cannot take the connection with it — and
+// classifyWorkflowError (internal/domain/entity/service.go) still wraps any
+// context.Canceled it sees as a ticketed common.Internal, by its own comment,
+// because the cancellation may be unrelated to this (detached, still-live)
+// request. Quietening that would put a genuine fault at DEBUG with no ticket,
+// below the default level, leaving it no trace at all.
+func isClientGoneCancellation(err error) bool {
+	return errors.Is(err, common.ErrClientGone)
 }
 
 const nilUUID = "00000000-0000-0000-0000-000000000000"
@@ -37,12 +38,10 @@ func strPtr(s string) *string { return &s }
 // buildErrorFields extracts code, message, and retryable flag from an error.
 // For operational AppErrors the client-safe message is returned directly.
 // For internal/fatal AppErrors and raw errors a ticket UUID is generated and
-// the detail is logged server-side only — unless the cause is the client
-// having gone away mid-request (isClientGoneCancellation), in which case no
-// ticket is minted and the log is at DEBUG. ctx is the serving RPC's own
-// context, needed to tell that case apart from an unrelated cancellation
-// reaching a still-connected request (see isClientGoneCancellation).
-func buildErrorFields(ctx context.Context, err error) (code, message string, retryable *bool) {
+// the detail is logged server-side only — unless the cause is marked as the
+// client having gone away mid-request (isClientGoneCancellation), in which case
+// no ticket is minted and the log is at DEBUG.
+func buildErrorFields(err error) (code, message string, retryable *bool) {
 	var appErr *common.AppError
 	if errors.As(err, &appErr) {
 		if appErr.Level == common.LevelOperational {
@@ -71,8 +70,12 @@ func buildErrorFields(ctx context.Context, err error) (code, message string, ret
 		// nothing was wrong, and there is nobody to quote a ticket to. This is
 		// exactly the moment (a compute member failing over) an operator wants
 		// a clean log, so no ticket is minted.
-		if isClientGoneCancellation(appErr.Err, ctx) {
-			slog.Debug("client gone before request completed", "code", appErr.Code, "detail", appErr.Detail)
+		// The HTTP funnel (common.WriteError) logs this same event under the
+		// same message and the same fields, so the two collate; it adds the
+		// request path, which this door has no equivalent of.
+		if isClientGoneCancellation(appErr.Err) {
+			slog.Debug("client gone before request completed",
+				"code", appErr.Code, "message", appErr.Message, "detail", appErr.Detail)
 			code = "SERVER_ERROR"
 			message = "SERVER_ERROR: internal error"
 			return
@@ -100,11 +103,12 @@ func buildErrorFields(ctx context.Context, err error) (code, message string, ret
 	// does. Every one of this file's envelopes funnels through here, so this is
 	// the only place the check belongs.
 	if appErr := common.StorageUnavailable(err); appErr != nil {
-		return buildErrorFields(ctx, appErr)
+		return buildErrorFields(appErr)
 	}
-	// A bare context.Canceled that never passed through an *AppError is still
-	// the client having gone away, not an unclassified failure.
-	if isClientGoneCancellation(err, ctx) {
+	// A departed client that never passed through an *AppError is still a
+	// departed client, not an unclassified failure. Same message as the branch
+	// above; a raw error has no code or message of its own to carry.
+	if isClientGoneCancellation(err) {
 		slog.Debug("client gone before request completed", "detail", err.Error())
 		code = "SERVER_ERROR"
 		message = "SERVER_ERROR: internal error"
@@ -126,7 +130,7 @@ func ctxWarnings(ctx context.Context) []string {
 
 // entityTransactionError builds a schema-valid EntityTransactionResponse error.
 func entityTransactionError(ctx context.Context, ceID string, err error) (*cepb.CloudEvent, error) {
-	code, msg, retryable := buildErrorFields(ctx, err)
+	code, msg, retryable := buildErrorFields(err)
 	resp := events.EntityTransactionResponseJson{
 		ID:        ceID,
 		Success:   false,
@@ -146,7 +150,7 @@ func entityTransactionError(ctx context.Context, ceID string, err error) (*cepb.
 
 // entityDeleteError builds a schema-valid EntityDeleteResponse error.
 func entityDeleteError(ctx context.Context, ceID, entityID string, err error) (*cepb.CloudEvent, error) {
-	code, msg, retryable := buildErrorFields(ctx, err)
+	code, msg, retryable := buildErrorFields(err)
 	resp := events.EntityDeleteResponseJson{
 		ID:            ceID,
 		Success:       false,
@@ -166,7 +170,7 @@ func entityDeleteError(ctx context.Context, ceID, entityID string, err error) (*
 
 // entityDeleteAllError builds a schema-valid EntityDeleteAllResponse error.
 func entityDeleteAllError(ctx context.Context, ceID string, err error) (*cepb.CloudEvent, error) {
-	code, msg, retryable := buildErrorFields(ctx, err)
+	code, msg, retryable := buildErrorFields(err)
 	resp := events.EntityDeleteAllResponseJson{
 		ID:        ceID,
 		Success:   false,
@@ -184,7 +188,7 @@ func entityDeleteAllError(ctx context.Context, ceID string, err error) (*cepb.Cl
 
 // entityTransitionError builds a schema-valid EntityTransitionResponse error.
 func entityTransitionError(ctx context.Context, ceID string, err error) (*cepb.CloudEvent, error) {
-	code, msg, retryable := buildErrorFields(ctx, err)
+	code, msg, retryable := buildErrorFields(err)
 	resp := events.EntityTransitionResponseJson{
 		ID:       ceID,
 		Success:  false,
@@ -200,7 +204,7 @@ func entityTransitionError(ctx context.Context, ceID string, err error) (*cepb.C
 
 // modelImportError builds a schema-valid EntityModelImportResponse error.
 func modelImportError(ctx context.Context, ceID string, err error) (*cepb.CloudEvent, error) {
-	code, msg, retryable := buildErrorFields(ctx, err)
+	code, msg, retryable := buildErrorFields(err)
 	resp := events.EntityModelImportResponseJson{
 		ID:       ceID,
 		Success:  false,
@@ -217,7 +221,7 @@ func modelImportError(ctx context.Context, ceID string, err error) (*cepb.CloudE
 
 // modelExportError builds a schema-valid EntityModelExportResponse error.
 func modelExportError(ctx context.Context, ceID string, err error) (*cepb.CloudEvent, error) {
-	code, msg, retryable := buildErrorFields(ctx, err)
+	code, msg, retryable := buildErrorFields(err)
 	resp := events.EntityModelExportResponseJson{
 		ID:       ceID,
 		Success:  false,
@@ -236,7 +240,7 @@ func modelExportError(ctx context.Context, ceID string, err error) (*cepb.CloudE
 
 // modelTransitionError builds a schema-valid EntityModelTransitionResponse error.
 func modelTransitionError(ctx context.Context, ceID string, err error) (*cepb.CloudEvent, error) {
-	code, msg, retryable := buildErrorFields(ctx, err)
+	code, msg, retryable := buildErrorFields(err)
 	resp := events.EntityModelTransitionResponseJson{
 		ID:       ceID,
 		Success:  false,
@@ -254,7 +258,7 @@ func modelTransitionError(ctx context.Context, ceID string, err error) (*cepb.Cl
 
 // modelDeleteError builds a schema-valid EntityModelDeleteResponse error.
 func modelDeleteError(ctx context.Context, ceID string, err error) (*cepb.CloudEvent, error) {
-	code, msg, retryable := buildErrorFields(ctx, err)
+	code, msg, retryable := buildErrorFields(err)
 	resp := events.EntityModelDeleteResponseJson{
 		ID:       ceID,
 		Success:  false,
@@ -271,7 +275,7 @@ func modelDeleteError(ctx context.Context, ceID string, err error) (*cepb.CloudE
 // modelSetUniqueKeysError builds a schema-valid set-unique-keys response error,
 // reusing the EntityModelTransitionResponse envelope.
 func modelSetUniqueKeysError(ctx context.Context, ceID string, err error) (*cepb.CloudEvent, error) {
-	code, msg, retryable := buildErrorFields(ctx, err)
+	code, msg, retryable := buildErrorFields(err)
 	resp := events.EntityModelTransitionResponseJson{
 		ID:       ceID,
 		Success:  false,
@@ -289,7 +293,7 @@ func modelSetUniqueKeysError(ctx context.Context, ceID string, err error) (*cepb
 
 // modelGetAllError builds a schema-valid EntityModelGetAllResponse error.
 func modelGetAllError(ctx context.Context, ceID string, err error) (*cepb.CloudEvent, error) {
-	code, msg, retryable := buildErrorFields(ctx, err)
+	code, msg, retryable := buildErrorFields(err)
 	resp := events.EntityModelGetAllResponseJson{
 		ID:       ceID,
 		Success:  false,
@@ -306,7 +310,7 @@ func modelGetAllError(ctx context.Context, ceID string, err error) (*cepb.CloudE
 
 // entityResponseError builds a schema-valid EntityResponse error.
 func entityResponseError(ctx context.Context, ceID string, err error) (*cepb.CloudEvent, error) {
-	code, msg, retryable := buildErrorFields(ctx, err)
+	code, msg, retryable := buildErrorFields(err)
 	resp := events.EntityResponseJson{
 		ID:        ceID,
 		Success:   false,
@@ -324,7 +328,7 @@ func entityResponseError(ctx context.Context, ceID string, err error) (*cepb.Clo
 
 // snapshotSearchError builds a schema-valid EntitySnapshotSearchResponse error.
 func snapshotSearchError(ctx context.Context, ceID string, err error) (*cepb.CloudEvent, error) {
-	code, msg, retryable := buildErrorFields(ctx, err)
+	code, msg, retryable := buildErrorFields(err)
 	resp := events.EntitySnapshotSearchResponseJson{
 		ID:       ceID,
 		Success:  false,
@@ -344,7 +348,7 @@ func snapshotSearchError(ctx context.Context, ceID string, err error) (*cepb.Clo
 
 // entityStatsError builds a schema-valid EntityStatsResponse error.
 func entityStatsError(ctx context.Context, ceID string, err error) (*cepb.CloudEvent, error) {
-	code, msg, retryable := buildErrorFields(ctx, err)
+	code, msg, retryable := buildErrorFields(err)
 	resp := events.EntityStatsResponseJson{
 		ID:        ceID,
 		Success:   false,
@@ -361,7 +365,7 @@ func entityStatsError(ctx context.Context, ceID string, err error) (*cepb.CloudE
 
 // entityStatsByStateError builds a schema-valid EntityStatsByStateResponse error.
 func entityStatsByStateError(ctx context.Context, ceID string, err error) (*cepb.CloudEvent, error) {
-	code, msg, retryable := buildErrorFields(ctx, err)
+	code, msg, retryable := buildErrorFields(err)
 	resp := events.EntityStatsByStateResponseJson{
 		ID:        ceID,
 		Success:   false,
@@ -378,7 +382,7 @@ func entityStatsByStateError(ctx context.Context, ceID string, err error) (*cepb
 
 // entityChangesMetadataError builds a schema-valid EntityChangesMetadataResponse error.
 func entityChangesMetadataError(ctx context.Context, ceID string, err error) (*cepb.CloudEvent, error) {
-	code, msg, retryable := buildErrorFields(ctx, err)
+	code, msg, retryable := buildErrorFields(err)
 	resp := events.EntityChangesMetadataResponseJson{
 		ID:         ceID,
 		Success:    false,

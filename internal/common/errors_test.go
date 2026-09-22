@@ -569,6 +569,13 @@ func TestAppError_WithCause_PreservesErrorsIs(t *testing.T) {
 	}
 }
 
+// clientGone is the join layer's own "the request ended before it took the
+// transaction's lock", as internal/domain/txjoin marks it. It is the one cause
+// a door's funnel may file as a departed client.
+func clientGone() error {
+	return fmt.Errorf("%w: %w", common.ErrClientGone, context.Canceled)
+}
+
 // TestWriteError_ClientGoneCancellation_LogsDebugNoTicket: a client that
 // disconnects while its request is in flight is not a server fault. Nothing
 // was wrong, there is nobody to quote a ticket to, and this is exactly the
@@ -582,7 +589,7 @@ func TestWriteError_ClientGoneCancellation_LogsDebugNoTicket(t *testing.T) {
 	cancel()
 	r = r.WithContext(ctx)
 
-	appErr := common.Internal("joined request ended before it took the transaction's lock", context.Canceled)
+	appErr := common.Internal("joined request ended before it took the transaction's lock", clientGone())
 	common.WriteError(w, r, appErr)
 
 	if w.Code != http.StatusInternalServerError {
@@ -597,10 +604,51 @@ func TestWriteError_ClientGoneCancellation_LogsDebugNoTicket(t *testing.T) {
 	if !strings.Contains(buf.String(), `"level":"DEBUG"`) {
 		t.Errorf("a client disconnect must log at DEBUG: %s", buf.String())
 	}
+	// The gRPC funnel logs this same event; the two must collate, so they carry
+	// the same fields. The path is the HTTP door's own addition.
+	for _, field := range []string{`"code"`, `"message"`, `"detail"`, `"path"`} {
+		if !strings.Contains(buf.String(), field) {
+			t.Errorf("the client-gone line is missing %s, so it does not collate with the gRPC funnel's: %s", field, buf.String())
+		}
+	}
 	var pd map[string]any
 	json.NewDecoder(w.Body).Decode(&pd)
 	if pd["ticket"] != nil {
 		t.Errorf("the response must not carry a ticket nobody can be quoted: %v", pd["ticket"])
+	}
+}
+
+// TestWriteError_InternalFailureWrappingACancellation_KeepsItsTicket is the
+// regression that matters: a joined request is deliberately detached from its
+// client (txjoin uses context.WithoutCancel), so work that outlives its caller
+// can fail with an internal error that merely wraps an unrelated
+// context.Canceled — classifyWorkflowError wraps any such cause as Internal —
+// while the request's own context is long since done. Filing that as a departed
+// client would log a genuine fault at DEBUG with no ticket, below the default
+// level: the fault would leave no trace at all.
+func TestWriteError_InternalFailureWrappingACancellation_KeepsItsTicket(t *testing.T) {
+	buf := captureSlog(t)
+	common.SetErrorResponseMode("sanitized")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/test", nil)
+	ctx, cancel := context.WithCancel(r.Context())
+	cancel() // the client has gone — but that is not what went wrong
+	r = r.WithContext(ctx)
+
+	appErr := common.Internal("workflow aborted by context cancellation",
+		fmt.Errorf("failed to join transaction: %w", context.Canceled))
+	common.WriteError(w, r, appErr)
+
+	if !strings.Contains(buf.String(), `"level":"ERROR"`) {
+		t.Errorf("a genuine fault must log at ERROR even when the client has also gone: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), `"ticket"`) {
+		t.Errorf("a genuine fault must mint a ticket: %s", buf.String())
+	}
+	var pd map[string]any
+	json.NewDecoder(w.Body).Decode(&pd)
+	if pd["ticket"] == nil || pd["ticket"] == "" {
+		t.Error("expected a ticket in the response")
 	}
 }
 
@@ -619,7 +667,8 @@ func TestWriteError_ClientGoneCancellation_VerboseModeKeepsDetailNoTicket(t *tes
 	cancel()
 	r = r.WithContext(ctx)
 
-	appErr := common.Internal("joined request ended before it took the transaction's lock", context.Canceled)
+	cause := clientGone()
+	appErr := common.Internal("joined request ended before it took the transaction's lock", cause)
 	common.WriteError(w, r, appErr)
 
 	if w.Code != http.StatusInternalServerError {
@@ -634,8 +683,8 @@ func TestWriteError_ClientGoneCancellation_VerboseModeKeepsDetailNoTicket(t *tes
 		t.Errorf("verbose mode must still omit the ticket nobody can be quoted: %v", pd["ticket"])
 	}
 	detail, _ := pd["detail"].(string)
-	if detail != "context canceled" {
-		t.Errorf("detail = %q, want appErr.Detail (%q) in verbose mode", detail, "context canceled")
+	if detail != cause.Error() {
+		t.Errorf("detail = %q, want appErr.Detail (%q) in verbose mode", detail, cause.Error())
 	}
 }
 

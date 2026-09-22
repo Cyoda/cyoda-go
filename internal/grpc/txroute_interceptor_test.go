@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -1154,6 +1155,34 @@ func TestTxRouteInterceptor_ClientGoesAwayWhileQueued_IsCancelled_NoEnvelope(t *
 			t.Errorf("status = %v (%v); want codes.Canceled", status.Code(err), err)
 		}
 	})
+}
+
+// A join that FAILS with an internal error which merely wraps a cancellation is
+// not a departed client: the client is still there, waiting for an answer. It
+// must get the RPC's error envelope with a ticket on it, not the bare
+// codes.Canceled a departed client gets — which would leave the fault with no
+// trace at all.
+func TestTxRouteInterceptor_JoinFailureWrappingACancellation_IsAnEnvelopeWithATicket(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-1", Major: 1})
+	joinFailed := fmt.Errorf("resolve transaction: %w", context.Canceled)
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local",
+		noCalloutJoiner(t, s, fakeErrTM{err: joinFailed}), 9090, true)
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-1"}, entityManageInfo(),
+		func(context.Context, any) (any, error) {
+			t.Error("the handler of a failed join ran")
+			return nil, nil
+		})
+	if err != nil {
+		t.Fatalf("unary = %v; a client that is still there is answered with the RPC's envelope", err)
+	}
+	assertEnvelopeCode(t, resp, "req-1", "SERVER_ERROR")
+	r := decodeTxResp(t, resp.(*cepb.CloudEvent))
+	if !strings.Contains(r.Error.Message, "ticket") {
+		t.Errorf("Error.Message = %q; want a ticket — a genuine fault must be traceable", r.Error.Message)
+	}
 }
 
 // gRPC server-streaming: the handler's sends are held until the lock is

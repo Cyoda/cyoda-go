@@ -6,6 +6,7 @@ package grpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -31,7 +32,7 @@ func TestBuildErrorFields_OperationalCauseIsLogged(t *testing.T) {
 		"storage is temporarily unavailable — retry",
 	).AsRetryable().WithCause(cause)
 
-	code, message, retryable := buildErrorFields(context.Background(), appErr)
+	code, message, retryable := buildErrorFields(appErr)
 
 	if code != "CLIENT_ERROR" {
 		t.Errorf("code = %q, want CLIENT_ERROR (the envelope class)", code)
@@ -61,7 +62,7 @@ func TestBuildErrorFields_OperationalWithoutCauseLogsNothing(t *testing.T) {
 	records := captureSlog(t)
 
 	appErr := common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound, "model not found")
-	if code, _, _ := buildErrorFields(context.Background(), appErr); code != "CLIENT_ERROR" {
+	if code, _, _ := buildErrorFields(appErr); code != "CLIENT_ERROR" {
 		t.Errorf("code = %q, want CLIENT_ERROR", code)
 	}
 
@@ -80,7 +81,7 @@ func TestBuildErrorFields_HonoursAPinnedTicket(t *testing.T) {
 	const pinned = "11111111-2222-4333-8444-555555555555"
 	appErr := common.Internal("something broke", errors.New("detail for the log")).WithTicket(pinned)
 
-	code, message, _ := buildErrorFields(context.Background(), appErr)
+	code, message, _ := buildErrorFields(appErr)
 
 	if code != "SERVER_ERROR" {
 		t.Errorf("code = %q, want SERVER_ERROR", code)
@@ -90,26 +91,22 @@ func TestBuildErrorFields_HonoursAPinnedTicket(t *testing.T) {
 	}
 }
 
-// cancelledContext returns a context.Context that is already Done with
-// context.Canceled — the serving RPC's own context after its client has gone
-// away.
-func cancelledContext() context.Context {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	return ctx
+// clientGoneCause is the join layer's own "the request ended before it took the
+// transaction's lock", as internal/domain/txjoin marks it. It is the one cause
+// a door's funnel may file as a departed client.
+func clientGoneCause() error {
+	return fmt.Errorf("%w: %w", common.ErrClientGone, context.Canceled)
 }
 
 // TestBuildErrorFields_ClientGoneCancellation_LogsDebugNoTicket — a client
 // that goes away mid-request is not a server fault. Nothing was wrong and
 // there is nobody to quote a ticket to; this is exactly the moment (a
-// compute member failing over) an operator wants a clean log. Both conjuncts
-// of the recognition hold here: the cause carries context.Canceled AND the
-// serving context itself is done.
+// compute member failing over) an operator wants a clean log.
 func TestBuildErrorFields_ClientGoneCancellation_LogsDebugNoTicket(t *testing.T) {
 	records := captureSlog(t)
 
-	appErr := common.Internal("dispatch request ended before it took the transaction's lock", context.Canceled)
-	code, message, _ := buildErrorFields(cancelledContext(), appErr)
+	appErr := common.Internal("dispatch request ended before it took the transaction's lock", clientGoneCause())
+	code, message, _ := buildErrorFields(appErr)
 
 	if code != "SERVER_ERROR" {
 		t.Errorf("code = %q, want SERVER_ERROR", code)
@@ -125,17 +122,25 @@ func TestBuildErrorFields_ClientGoneCancellation_LogsDebugNoTicket(t *testing.T)
 			t.Errorf("a client disconnect must not mint or log a ticket: %+v", r)
 		}
 	}
-	findRecord(t, records, "client gone before request completed")
+	rec := findRecord(t, records, "client gone before request completed")
+	// The HTTP funnel logs this same event; the two must collate, so they carry
+	// the same fields (the HTTP door adds the request path, which this door has
+	// no equivalent of).
+	for _, field := range []string{"code", "message", "detail"} {
+		if _, ok := rec.attrs[field]; !ok {
+			t.Errorf("the client-gone line is missing %q, so it does not collate with the HTTP funnel's: %+v", field, rec)
+		}
+	}
 }
 
 // TestBuildErrorFields_ClientGoneCancellation_RawError — the same recognition
 // on the unclassified-raw-error branch (which the comment there calls
-// "should not happen", but the client having gone can still surface as a bare
-// context.Canceled that never passed through an *AppError).
+// "should not happen", but a departed client can still reach this funnel as a
+// marked cause that never passed through an *AppError).
 func TestBuildErrorFields_ClientGoneCancellation_RawError(t *testing.T) {
 	records := captureSlog(t)
 
-	code, message, _ := buildErrorFields(cancelledContext(), context.Canceled)
+	code, message, _ := buildErrorFields(clientGoneCause())
 
 	if code != "SERVER_ERROR" {
 		t.Errorf("code = %q, want SERVER_ERROR", code)
@@ -150,36 +155,25 @@ func TestBuildErrorFields_ClientGoneCancellation_RawError(t *testing.T) {
 	}
 }
 
-// TestBuildErrorFields_JoinedHandlerContextNeverDone_KeepsTicket is the case
-// the fresh-context review caught: internal/domain/txjoin/txjoin.go:212 does
-// `joined = context.WithoutCancel(joined)` once a joined request has the
-// transaction, precisely so a compute member going away mid-statement cannot
-// take the connection with it. From there classifyWorkflowError
-// (internal/domain/entity/service.go:2853-2855) still mints
-// common.Internal("workflow aborted by context cancellation", err) from any
-// context.Canceled it sees — by its own comment, that case must stay a
-// ticketed 500, because the cancellation may be unrelated to this (detached,
-// still-live) request. Recognising client-gone on the error chain alone would
-// wrongly quieten a genuine failure on a client that is still connected and
-// waiting for its answer. The two-conjunct test — chain carries
-// context.Canceled AND the passed-in ctx is itself done — must not fire here,
-// because ctx.Err() is nil on a WithoutCancel-derived context no matter what
-// its parent is doing.
-func TestBuildErrorFields_JoinedHandlerContextNeverDone_KeepsTicket(t *testing.T) {
+// TestBuildErrorFields_InternalFailureWrappingACancellation_KeepsItsTicket is
+// the regression that matters: a joined request is deliberately detached from
+// its client (txjoin uses context.WithoutCancel), so work that outlives its
+// caller can fail with an internal error that merely wraps an unrelated
+// context.Canceled — classifyWorkflowError wraps any such cause as Internal.
+// Filing that as a departed client would log a genuine fault at DEBUG with no
+// ticket, below the default level: the fault would leave no trace at all.
+func TestBuildErrorFields_InternalFailureWrappingACancellation_KeepsItsTicket(t *testing.T) {
 	records := captureSlog(t)
 
-	parent, cancel := context.WithCancel(context.Background())
-	cancel()                                // the client that queued for the lock has gone
-	joined := context.WithoutCancel(parent) // ...but the joined ctx detaches, as txjoin.go does
-
-	appErr := common.Internal("workflow aborted by context cancellation", context.Canceled)
-	code, message, _ := buildErrorFields(joined, appErr)
+	appErr := common.Internal("workflow aborted by context cancellation",
+		fmt.Errorf("failed to join transaction: %w", context.Canceled))
+	code, message, _ := buildErrorFields(appErr)
 
 	if code != "SERVER_ERROR" {
 		t.Errorf("code = %q, want SERVER_ERROR", code)
 	}
 	if !strings.Contains(message, "ticket") {
-		t.Errorf("message = %q, want a ticket — a WithoutCancel-derived context is never done, so this is not a client disconnect", message)
+		t.Errorf("message = %q, want a ticket — an internal failure that merely wraps a cancellation is a fault", message)
 	}
 	rec := findRecord(t, records, "internal error")
 	if rec.level != slog.LevelError {
@@ -190,19 +184,19 @@ func TestBuildErrorFields_JoinedHandlerContextNeverDone_KeepsTicket(t *testing.T
 	}
 }
 
-// TestBuildErrorFields_RawError_ContextNotDone_KeepsTicket mirrors the joined
-// case above on the raw-error branch: a bare context.Canceled whose passed-in
-// ctx is not done must not be quietened either.
-func TestBuildErrorFields_RawError_ContextNotDone_KeepsTicket(t *testing.T) {
+// TestBuildErrorFields_RawCancellation_KeepsTicket — a bare context.Canceled
+// that reaches this funnel unmarked is not a departed client: nothing said it
+// was. It keeps its ticket, and the operator has a trace of it.
+func TestBuildErrorFields_RawCancellation_KeepsTicket(t *testing.T) {
 	records := captureSlog(t)
 
-	code, message, _ := buildErrorFields(context.Background(), context.Canceled)
+	code, message, _ := buildErrorFields(context.Canceled)
 
 	if code != "SERVER_ERROR" {
 		t.Errorf("code = %q, want SERVER_ERROR", code)
 	}
 	if !strings.Contains(message, "ticket") {
-		t.Errorf("message = %q, want a ticket — the passed-in context is not done", message)
+		t.Errorf("message = %q, want a ticket — an unmarked cancellation is not a departed client", message)
 	}
 	rec := findRecord(t, records, "unclassified error")
 	if rec.level != slog.LevelError {
@@ -217,7 +211,7 @@ func TestBuildErrorFields_OrdinaryInternalError_StillLogsErrorWithTicket(t *test
 	records := captureSlog(t)
 
 	appErr := common.Internal("something broke", errors.New("db connection failed"))
-	code, message, _ := buildErrorFields(context.Background(), appErr)
+	code, message, _ := buildErrorFields(appErr)
 
 	if code != "SERVER_ERROR" {
 		t.Errorf("code = %q, want SERVER_ERROR", code)
@@ -237,17 +231,12 @@ func TestBuildErrorFields_OrdinaryInternalError_StillLogsErrorWithTicket(t *test
 // TestBuildErrorFields_FeatureDeadlineTimeout_Untouched: a cause carrying
 // context.DeadlineExceeded (a feature-deadline timeout, already classified to
 // 408 upstream by ClassifyRequestTimeout before it would ever reach here) must
-// not be treated as a client disconnect, even when the serving context is
-// itself done via that same deadline.
+// not be treated as a client disconnect.
 func TestBuildErrorFields_FeatureDeadlineTimeout_Untouched(t *testing.T) {
 	records := captureSlog(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 0) // already expired
-	defer cancel()
-	<-ctx.Done()
-
 	appErr := common.Internal("workflow aborted by context cancellation", context.DeadlineExceeded)
-	code, message, _ := buildErrorFields(ctx, appErr)
+	code, message, _ := buildErrorFields(appErr)
 
 	if code != "SERVER_ERROR" {
 		t.Errorf("code = %q, want SERVER_ERROR", code)
