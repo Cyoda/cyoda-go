@@ -3,7 +3,9 @@
   "$id": "https://cyoda.com/cloud/event/model/EntityModelGetAllRequest.json",
   "title": "EntityModelGetAllRequest",
   "type": "object",
-  "extends": {
-    "$ref": "../common/BaseEvent.json"
-  }
+  "allOf": [
+    {
+      "$ref": "../common/BaseEvent.json"
+    }
+  ]
 }

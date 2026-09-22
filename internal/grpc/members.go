@@ -1,10 +1,12 @@
 package grpc
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,8 +32,15 @@ type SendFunc func(ce *cepb.CloudEvent) error
 type ProcessingResponse struct {
 	Payload json.RawMessage
 	Success bool
-	Error   string
-	Matches *bool // for criteria responses (nil for processor responses)
+	// NullSuccess is true when the answer's `success` key carried the literal
+	// null: neither the schema's default, which belongs to an absent key, nor
+	// a boolean. Such an answer cannot be read at all, so the dispatch refuses
+	// it before it reads a verdict, a payload or a result out of it (see
+	// reportedSuccess, in streaming.go). Success is left false beside it, so a
+	// reader that knows only the flag still fails closed.
+	NullSuccess bool
+	Error       string
+	Matches     *bool // for criteria responses (nil for processor responses)
 	// Reason is the criteria-response explanation for a matches=false result
 	// (EntityCriteriaCalculationResponse.reason). Empty for processor
 	// responses and for criteria that supply no reason.
@@ -49,9 +58,9 @@ type ProcessingResponse struct {
 	// CloudEvent error shape (api/grpc/events/types.go: every *EventJsonError
 	// variant declares Retryable *bool). The pointer is nil when the wire
 	// omitted the key or when no error was present, distinguishing "wire
-	// said so" from "wire didn't say". Captured here for the future retry
-	// loop; the current dispatcher is single-shot and does not consult
-	// this field.
+	// said so" from "wire didn't say". A failed try carries it on as
+	// contract.CalloutFailure.Retryable: it never decides whether another
+	// cnode is tried, only whether the client is told a re-run may help.
 	Retryable *bool
 	// Disconnected is true when this response was synthesized by
 	// failAllPending because the member's stream dropped while the request
@@ -94,6 +103,9 @@ type Member struct {
 	TenantID    spi.TenantID
 	Tags        []string
 	ConnectedAt time.Time
+	// pickStamp is the registry's pick counter at the moment this member was
+	// last chosen for a try; 0 means never. Guarded by MemberRegistry.pickMu.
+	pickStamp uint64
 
 	send       SendFunc // raw stream write; called ONLY by writeLoop
 	outbox     chan outboxItem
@@ -190,6 +202,17 @@ func (m *Member) Evicted() <-chan struct{} { return m.evicted }
 // EvictErr is the error passed to the first Evict. Only valid after Evicted()
 // has fired; the channel close is what publishes the write.
 func (m *Member) EvictErr() error { return m.evictErr }
+
+// gone reports whether the member has been evicted. The closed channel is the
+// one source of truth for it, so this needs no lock and no second flag.
+func (m *Member) gone() bool {
+	select {
+	case <-m.evicted:
+		return true
+	default:
+		return false
+	}
+}
 
 // WriteInFlightSince is when the writer's current raw send began, or the zero
 // time when no send is in flight.
@@ -350,13 +373,28 @@ type MemberRegistry struct {
 	tagsVersion      uint64
 	publishMu        sync.Mutex
 	publishedVersion uint64
+	// pickMu makes "find the least recently picked and stamp it" one step.
+	pickMu      sync.Mutex
+	pickCounter uint64
+	// changed is closed and replaced on every membership change. A callout
+	// that found no cnode waits on it instead of polling.
+	changed *common.ChangeSignal
 }
 
 // NewMemberRegistry creates a new, empty MemberRegistry.
 func NewMemberRegistry() *MemberRegistry {
 	return &MemberRegistry{
 		members: make(map[string]*Member),
+		changed: common.NewChangeSignal(),
 	}
+}
+
+// Changed returns the channel that is closed on the next membership change —
+// a cnode attaching or detaching on this pnode. Take it before looking at
+// Candidates: a change between the look and the wait then still ends the
+// wait.
+func (r *MemberRegistry) Changed() <-chan struct{} {
+	return r.changed.Changed()
 }
 
 // SetOnChange registers a callback that is invoked (in a goroutine) whenever
@@ -393,6 +431,7 @@ func (r *MemberRegistry) Register(memberID string, tenantID spi.TenantID, tags [
 		old := r.members[memberID]
 		r.members[memberID] = m
 		r.tagsVersion++
+		r.changed.Fire()
 		return old
 	}()
 	go m.writeLoop(greet)
@@ -429,6 +468,7 @@ func (r *MemberRegistry) Unregister(m *Member) {
 		}
 		delete(r.members, m.ID)
 		r.tagsVersion++
+		r.changed.Fire()
 		return true
 	}()
 	m.Evict(status.Error(codes.Unavailable, "member unregistered"))
@@ -464,18 +504,50 @@ func (r *MemberRegistry) List() []*Member {
 	return result
 }
 
-// FindByTags returns the first member matching the given tenant whose tags
-// overlap with tagsCSV. If tagsCSV is empty, any member for that tenant
-// matches.
-func (r *MemberRegistry) FindByTags(tenantID spi.TenantID, tagsCSV string) *Member {
+// Candidates returns every member of the tenant whose tags overlap tagsCSV —
+// every member of the tenant when tagsCSV is empty — ordered by (ConnectedAt,
+// ID), so that the order is the same on every call. A member of another tenant
+// is never a candidate, whatever its tags.
+//
+// A member that has been evicted is not a candidate either. Eviction comes
+// first and the registration is removed only when the member's stream handler
+// returns, so between the two the member is still in the map while every
+// request against it already fails: a try given to it would be a try spent on a
+// cnode known to be gone, and an attempt reported that was never made. The
+// remaining window — evicted between this look and the try registering its
+// request — is inherent, and TrackRequest closes it with ErrMemberEvicted.
+func (r *MemberRegistry) Candidates(tenantID spi.TenantID, tagsCSV string) []*Member {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	var out []*Member
 	for _, m := range r.members {
-		if m.TenantID == tenantID && common.TagsOverlap(m.Tags, tagsCSV) {
-			return m
+		if m.TenantID == tenantID && !m.gone() && common.TagsOverlap(m.Tags, tagsCSV) {
+			out = append(out, m)
 		}
 	}
-	return nil
+	slices.SortFunc(out, func(x, y *Member) int {
+		if c := x.ConnectedAt.Compare(y.ConnectedAt); c != 0 {
+			return c
+		}
+		return cmp.Compare(x.ID, y.ID)
+	})
+	return out
+}
+
+// pickLeastRecent returns the candidate with the lowest pick stamp — the first
+// such in the order given — and stamps it with the next counter value.
+func (r *MemberRegistry) pickLeastRecent(candidates []*Member) *Member {
+	r.pickMu.Lock()
+	defer r.pickMu.Unlock()
+	best := candidates[0]
+	for _, m := range candidates[1:] {
+		if m.pickStamp < best.pickStamp {
+			best = m
+		}
+	}
+	r.pickCounter++
+	best.pickStamp = r.pickCounter
+	return best
 }
 
 // notifyChange publishes the current aggregate tags in a goroutine. The
@@ -517,10 +589,18 @@ func (r *MemberRegistry) notifyChange() {
 
 // computeTagsLocked builds an aggregate map of tenantID → deduplicated tags
 // from all currently connected members. Caller holds r.mu (read or write).
+//
+// These are the tags this pnode tells the cluster it can serve, so they answer
+// the same question Candidates does and skip a member for the same reason: an
+// evicted member serves nothing, and advertising its tags would invite a peer to
+// hand work over for a cnode that is already gone.
 func (r *MemberRegistry) computeTagsLocked() map[string][]string {
 	// Use a set per tenant for deduplication.
 	sets := make(map[string]map[string]struct{})
 	for _, m := range r.members {
+		if m.gone() {
+			continue // evicted: it serves nothing, and Candidates skips it too
+		}
 		tid := string(m.TenantID)
 		if sets[tid] == nil {
 			sets[tid] = make(map[string]struct{})

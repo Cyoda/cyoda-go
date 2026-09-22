@@ -15,10 +15,13 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/txjoin"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
@@ -147,31 +150,27 @@ func TestPanickingWrite_ReleasesBufferedState(t *testing.T) {
 	}
 }
 
-// TestJoinedSegmentedFlow_FreesTheGateBeforeReleaseRollsBack pins the defer
-// ordering the conversion introduces.
-//
-//	defer scope.Release()   // registered FIRST
-//	...
-//	defer releaseGate()     // registered SECOND
-//
-// LIFO frees the joined gate before Release runs, which is what lets Release
-// re-acquire a gate on the same registry without hold-and-wait. Registering them
-// the other way round leaves the flow holding gate(entry) while Release takes
-// gate(segment) — two gates at once, and a self-deadlock the moment Release is
-// hardened to gate the entry transaction too.
+// TestJoinedSegmentedFlow_KeepsGateEntryAcrossReleaseAndTakesOnlyTheSegments
+// pins the lock ordering of a joined request that segmented. The join layer
+// holds gate(entry) for the whole request — that is what makes one transaction
+// one user's at a time — so it is still held while Release rolls the segment
+// back, and Release must take gate(segment) only: it returns early for the entry
+// transaction of a joined chain, and the segment is a DIFFERENT txID, so there
+// is no hold-and-wait on the non-reentrant gate.
 //
 // The observation is an event ordering, not a sleep: a competitor for
-// gate(entry) is launched from inside the rollback and the rollback does not
-// return until that competitor has reached a decided outcome — either it holds
-// the gate (freed first: correct) or it is parked inside txgate.Acquire (still
-// held: the defect). A reversal therefore FAILS rather than hangs.
+// gate(entry) is launched from inside the rollback, and the rollback does not
+// return until that competitor is parked inside txgate.Acquire (gate(entry) held
+// by the join layer: correct) or has acquired (it was free: the join layer would
+// not be serialising the transaction's users at all). The competitor then
+// acquires once the join layer releases, after the handler has returned.
 //
 // The scenario is the joined-segmented can't-happen branch, which is also the
 // only shape where Release rolls anything back on a joined call: the engine's
 // COMMIT_BEFORE_DISPATCH processor commits the entry transaction and opens a
 // segment that belongs to nobody, the handler's guard rejects the call, and the
 // segment must not survive it.
-func TestJoinedSegmentedFlow_FreesTheGateBeforeReleaseRollsBack(t *testing.T) {
+func TestJoinedSegmentedFlow_KeepsGateEntryAcrossReleaseAndTakesOnlyTheSegments(t *testing.T) {
 	hn := newTrackingHandler(t)
 	hn.registerSegmentingWorkflow(t)
 
@@ -179,9 +178,21 @@ func TestJoinedSegmentedFlow_FreesTheGateBeforeReleaseRollsBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("owner Begin: %v", err)
 	}
-	joinedCtx, err := hn.tracker.Join(hn.ctx, ownerTxID)
+
+	// The join layer of this transaction, with the callout its pass names in
+	// progress: Run takes gate(entry) and holds it for the whole handler.
+	signer, err := token.NewSigner([]byte("rollback-secret-at-least-32-bytes!"))
 	if err != nil {
-		t.Fatalf("Join: %v", err)
+		t.Fatalf("NewSigner: %v", err)
+	}
+	f := fence.New(hn.h.gate)
+	_, endCallout := f.Begin(hn.ctx, "req-1", ownerTxID, nil)
+	defer endCallout()
+	f.Advance("req-1", 1)
+	pass, err := signer.Issue(token.Claims{NodeID: "local", TxRef: ownerTxID,
+		ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-1", Major: 1})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
 	}
 
 	competitorDone := make(chan struct{})
@@ -202,24 +213,33 @@ func TestJoinedSegmentedFlow_FreesTheGateBeforeReleaseRollsBack(t *testing.T) {
 		waitForGateContention(t, competitorDone)
 	}
 
-	_, err = hn.h.CreateEntity(joinedCtx, rollbackWidgetInput())
-	if err == nil {
+	joiner, err := txjoin.NewJoiner(signer, hn.tracker, f, hn.h.gate, 10<<20, 128, nil)
+	if err != nil {
+		t.Fatalf("NewJoiner: %v", err)
+	}
+	var createErr error
+	if err := joiner.Run(hn.ctx, pass, func(ctx context.Context) {
+		_, createErr = hn.h.CreateEntity(ctx, rollbackWidgetInput())
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if createErr == nil {
 		t.Fatal("a joined call that segmented must be rejected, not committed")
 	}
 	var appErr *common.AppError
-	if !errors.As(err, &appErr) || appErr.Status != 500 {
-		t.Fatalf("joined-segmented guard returned %v, want a 500 AppError", err)
+	if !errors.As(createErr, &appErr) || appErr.Status != 500 {
+		t.Fatalf("joined-segmented guard returned %v, want a 500 AppError", createErr)
 	}
 
 	select {
 	case <-competitorDone:
 	case <-time.After(10 * time.Second):
-		t.Fatal("joined flow never freed gate(entry); a hardened Release would deadlock here")
+		t.Fatal("gate(entry) was never freed: the join layer's release did not run")
 	}
 
-	want := []string{"rollback-start", "competitor-acquired", "rollback-end"}
+	want := []string{"rollback-start", "rollback-end", "competitor-acquired"}
 	if got := hn.tracker.trace(); !slices.Equal(got, want) {
-		t.Fatalf("gate(entry) was still held while Release rolled the segment back: events = %v, want %v", got, want)
+		t.Fatalf("events = %v, want %v: Release must roll the segment back while the join layer still holds gate(entry)", got, want)
 	}
 	// ...and the segment the guard rejected is gone, which is the behaviour the
 	// guard-plus-scope pairing exists to deliver.
@@ -450,7 +470,77 @@ func TestUpdateEntity_PostSegmentConflict_Still412(t *testing.T) {
 	}
 }
 
+// TestCreateEntity_AsyncNewTxSavepointFailure_NothingCommitted is the
+// handler-level half of the savepoint contract. An ASYNC_NEW_TX processor whose
+// savepoint cannot be released leaves the transaction unusable; treating that as
+// the processor's own (non-fatal) failure carries the pipeline on to the final
+// save and commits a write nobody can vouch for. The create must fail with a
+// ticketed 5xx and leave the store exactly as it found it.
+func TestCreateEntity_AsyncNewTxSavepointFailure_NothingCommitted(t *testing.T) {
+	boom := errors.New(`ERROR: current transaction is aborted (SQLSTATE 25P02) host=db-1`)
+	hn := newTrackingHandlerWrapping(t, "memory", func(tm spi.TransactionManager) spi.TransactionManager {
+		return failingSavepoints{TransactionManager: tm, failRelease: boom}
+	})
+	hn.registerAsyncNewTxWorkflow(t)
+
+	var dispatchedIDs []string
+	hn.proc.dispatchProcessor = func(_ context.Context, e *spi.Entity, _ spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
+		dispatchedIDs = append(dispatchedIDs, e.Meta.ID)
+		return nil, nil
+	}
+
+	_, err := hn.h.CreateEntity(hn.ctx, rollbackWidgetInput())
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("create returned %v, want an AppError", err)
+	}
+	if appErr.Status != http.StatusInternalServerError || appErr.Code != common.ErrCodeServerError {
+		t.Fatalf("create returned %d %s, want 500 %s", appErr.Status, appErr.Code, common.ErrCodeServerError)
+	}
+	if strings.Contains(appErr.Message, "SQLSTATE") || strings.Contains(appErr.Message, "db-1") {
+		t.Fatalf("the driver's text reached the client: %q", appErr.Message)
+	}
+	if len(dispatchedIDs) == 0 {
+		t.Fatal("the processor never ran, so no savepoint was released; the case proves nothing")
+	}
+	for _, id := range dispatchedIDs {
+		if hn.committedVisible(t, id) {
+			t.Fatalf("entity %s was committed although the savepoint around its processor could not be released", id)
+		}
+	}
+	if open := hn.tracker.openTxIDs(); len(open) != 0 {
+		t.Fatalf("the failed create left %d transaction(s) open: %v", len(open), open)
+	}
+}
+
 // --- harness ---
+
+// failingSavepoints fails one of the three savepoint operations, as a plugin
+// does for a transaction that is gone, a savepoint that is missing, or (on
+// PostgreSQL) a transaction an earlier failed statement has already aborted.
+type failingSavepoints struct {
+	spi.TransactionManager
+	failCreate, failUndo, failRelease error
+}
+
+func (m failingSavepoints) Savepoint(ctx context.Context, txID string) (string, error) {
+	if m.failCreate != nil {
+		return "", m.failCreate
+	}
+	return m.TransactionManager.Savepoint(ctx, txID)
+}
+func (m failingSavepoints) RollbackToSavepoint(ctx context.Context, txID, sp string) error {
+	if m.failUndo != nil {
+		return m.failUndo
+	}
+	return m.TransactionManager.RollbackToSavepoint(ctx, txID, sp)
+}
+func (m failingSavepoints) ReleaseSavepoint(ctx context.Context, txID, sp string) error {
+	if m.failRelease != nil {
+		return m.failRelease
+	}
+	return m.TransactionManager.ReleaseSavepoint(ctx, txID, sp)
+}
 
 // rollbackModel is the locked model every flow in this file writes against.
 var rollbackModel = spi.ModelRef{EntityName: "RollbackWidget", ModelVersion: "1"}
@@ -703,6 +793,14 @@ func newTrackingHandler(t *testing.T) *rollbackHarness {
 
 func newTrackingHandlerFor(t *testing.T, backend string) *rollbackHarness {
 	t.Helper()
+	return newTrackingHandlerWrapping(t, backend, nil)
+}
+
+// newTrackingHandlerWrapping is newTrackingHandlerFor with a seam between the
+// plugin's manager and the tracker, for a test that needs one SPI method to
+// misbehave. wrap may be nil.
+func newTrackingHandlerWrapping(t *testing.T, backend string, wrap func(spi.TransactionManager) spi.TransactionManager) *rollbackHarness {
+	t.Helper()
 	ctx := rollbackTestCtx()
 
 	var raw spi.StoreFactory
@@ -725,6 +823,9 @@ func newTrackingHandlerFor(t *testing.T, backend string) *rollbackHarness {
 	tm, err := raw.TransactionManager(ctx)
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
+	}
+	if wrap != nil {
+		tm = wrap(tm)
 	}
 	tracker := &trackingTxMgr{TransactionManager: tm, probeCtx: ctx}
 
@@ -823,6 +924,27 @@ func (hn *rollbackHarness) registerSegmentingWorkflow(t *testing.T) {
 					Name:          "segmenter",
 					ExecutionMode: wfengine.ExecutionModeCommitBeforeDispatch,
 					Config:        spi.ProcessorConfig{StartNewTxOnDispatch: &startNewTx},
+				}},
+			}}},
+			"B": {},
+		},
+	})
+}
+
+// registerAsyncNewTxWorkflow puts an ASYNC_NEW_TX processor on rollbackModel's
+// automated transition, so an ordinary create runs one savepoint around one
+// dispatch.
+func (hn *rollbackHarness) registerAsyncNewTxWorkflow(t *testing.T) {
+	t.Helper()
+	hn.saveWorkflow(t, rollbackModel, spi.WorkflowDefinition{
+		Version: "1.1", Name: "RollbackAsyncNewTxWF", InitialState: "A", Active: true,
+		States: map[string]spi.StateDefinition{
+			"A": {Transitions: []spi.TransitionDefinition{{
+				Name: "sideEffect", Next: "B",
+				Processors: []spi.ProcessorDefinition{{
+					Type:          wfengine.ProcessorTypeExternalized,
+					Name:          "sideEffect",
+					ExecutionMode: wfengine.ExecutionModeAsyncNewTx,
 				}},
 			}}},
 			"B": {},
@@ -939,6 +1061,24 @@ func (hn *rollbackHarness) committedEntity(t *testing.T, id string) *spi.Entity 
 		t.Fatalf("Get %s: %v", id, err)
 	}
 	return e
+}
+
+// committedVisible reports whether an entity is readable outside any
+// transaction, i.e. whether it was committed. committedEntity's sibling for the
+// case where absence is the expected answer.
+func (hn *rollbackHarness) committedVisible(t *testing.T, id string) bool {
+	t.Helper()
+	es, err := hn.raw.EntityStore(hn.ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	if _, err := es.Get(hn.ctx, id); err != nil {
+		if errors.Is(err, spi.ErrNotFound) {
+			return false
+		}
+		t.Fatalf("Get %s: %v", id, err)
+	}
+	return true
 }
 
 // committedName reads the "name" field of an entity's committed payload.

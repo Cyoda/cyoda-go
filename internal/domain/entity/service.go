@@ -258,21 +258,15 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	// Begin a fresh transaction, or PARTICIPATE in a joined tx already on ctx
 	// (a routed compute-node callback). A joined callback does not Begin
 	// and does not commit; the owner does. Its whole body is one gated critical
-	// section on the shared tx buffer (acquired below).
+	// section on the shared tx buffer — the join layer took the gate before this
+	// handler ran and holds it until it returns.
 	scope, err := h.beginScope(ctx)
 	if err != nil {
 		return nil, classifyBeginErr(err)
 	}
-	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
-	// see txScope's type comment for why the ordering is pinned.
 	defer scope.Release()
 
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
-	if !owned {
-		var releaseGate func()
-		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
-		defer releaseGate()
-	}
 
 	entityID := uuid.UUID(h.uuids.NewTimeUUID())
 	now := time.Now()
@@ -355,10 +349,10 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 
 	// Finalize: for the OWNER, gate the final Save+Commit so an in-flight joined
 	// callback's Save cannot race the owner's buffer mutation/commit (the SPI
-	// delegates within-tx serialisation to the application). The joined path
-	// already holds the gate for its whole body, so it must NOT re-acquire here.
-	// The gate is NEVER held across engine.Execute (above) — that would deadlock
-	// against callbacks that need the gate.
+	// delegates within-tx serialisation to the application). On the joined path
+	// the join layer holds the gate for the whole request, so it must NOT
+	// re-acquire here. The gate is NEVER held across engine.Execute (above) —
+	// that would deadlock against callbacks that need the gate.
 	if appErr := func() *common.AppError {
 		if owned {
 			defer h.gate.Acquire(finalTxID)()
@@ -665,16 +659,9 @@ func (h *Handler) DeleteEntity(ctx context.Context, entityID string) (*deleteEnt
 	if err != nil {
 		return nil, classifyBeginErr(err)
 	}
-	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
-	// see txScope's type comment for why the ordering is pinned.
 	defer scope.Release()
 
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
-	if !owned {
-		var releaseGate func()
-		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
-		defer releaseGate()
-	}
 
 	entityStore, err := h.factory.EntityStore(txCtx)
 	if err != nil {
@@ -699,7 +686,7 @@ func (h *Handler) DeleteEntity(ctx context.Context, entityID string) (*deleteEnt
 	}
 
 	// Finalize: gate the OWNER's Delete+Commit against a concurrent joined
-	// callback's buffer write; the joined path already holds the gate.
+	// callback's buffer write; on the joined path the join layer holds the gate.
 	if appErr := func() *common.AppError {
 		if owned {
 			defer h.gate.Acquire(txID)()
@@ -799,16 +786,9 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 	if err != nil {
 		return nil, classifyBeginErr(err)
 	}
-	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
-	// see txScope's type comment for why the ordering is pinned.
 	defer scope.Release()
 
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
-	if !owned {
-		var releaseGate func()
-		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
-		defer releaseGate()
-	}
 
 	entityStore, err := h.factory.EntityStore(txCtx)
 	if err != nil {
@@ -846,7 +826,7 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 	}
 
 	// Finalize: gate the OWNER's DeleteAll+Commit against a concurrent joined
-	// callback's buffer write; the joined path already holds the gate.
+	// callback's buffer write; on the joined path the join layer holds the gate.
 	if appErr := func() *common.AppError {
 		if owned {
 			defer h.gate.Acquire(txID)()
@@ -1264,16 +1244,9 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 	if err != nil {
 		return nil, classifyBeginErr(err)
 	}
-	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
-	// see txScope's type comment for why the ordering is pinned.
 	defer scope.Release()
 
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
-	if !owned {
-		var releaseGate func()
-		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
-		defer releaseGate()
-	}
 
 	modelStore, err := h.factory.ModelStore(txCtx)
 	if err != nil {
@@ -1473,16 +1446,9 @@ func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond pred
 	if err != nil {
 		return nil, classifyBeginErr(err)
 	}
-	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
-	// see txScope's type comment for why the ordering is pinned.
 	defer scope.Release()
 
-	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
-	if !owned {
-		var releaseGate func()
-		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
-		defer releaseGate()
-	}
+	txCtx := scope.Ctx()
 
 	modelStore, err := h.factory.ModelStore(txCtx)
 	if err != nil {
@@ -1693,16 +1659,9 @@ func (h *Handler) deleteOneBatch(ctx context.Context, chunk []batchTarget, resul
 	if err != nil {
 		return classifyBeginErr(err)
 	}
-	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
-	// see txScope's type comment for why the ordering is pinned.
 	defer scope.Release()
 
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
-	if !owned {
-		var releaseGate func()
-		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
-		defer releaseGate()
-	}
 
 	entityStore, err := h.factory.EntityStore(txCtx)
 	if err != nil {
@@ -1944,16 +1903,9 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 	if err != nil {
 		return nil, classifyBeginErr(err)
 	}
-	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
-	// see txScope's type comment for why the ordering is pinned.
 	defer scope.Release()
 
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
-	if !owned {
-		var releaseGate func()
-		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
-		defer releaseGate()
-	}
 
 	now := time.Now()
 
@@ -2050,8 +2002,8 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 
 		// Finalize this item's Save. For the OWNER, gate each per-item Save so a
 		// callback in-flight from this item's dispatch cannot race the buffer
-		// write; the joined path already holds the gate for its whole body. The
-		// gate is never held across engine.Execute (above).
+		// write; on the joined path the join layer holds the gate for the whole
+		// request. The gate is never held across engine.Execute (above).
 		if appErr := func() *common.AppError {
 			if owned {
 				defer h.gate.Acquire(currentTxID)()
@@ -2146,16 +2098,9 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	if err != nil {
 		return nil, classifyBeginErr(err)
 	}
-	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
-	// see txScope's type comment for why the ordering is pinned.
 	defer scope.Release()
 
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
-	if !owned {
-		var releaseGate func()
-		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
-		defer releaseGate()
-	}
 
 	// Load existing entity within transaction (adds to read set).
 	entityStore, err := h.factory.EntityStore(txCtx)
@@ -2314,8 +2259,8 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 
 	// Finalize: gate the OWNER's Save/CompareAndSave + Commit (and the abort-
 	// audit buffer write on the conflict path) against a concurrent joined
-	// callback's write; the joined path already holds the gate for its whole
-	// body. The gate is NEVER held across engine.Execute (above).
+	// callback's write; on the joined path the join layer holds the gate for the
+	// whole request. The gate is NEVER held across engine.Execute (above).
 	if appErr := func() *common.AppError {
 		if owned {
 			defer h.gate.Acquire(finalTxID)()
@@ -2503,16 +2448,9 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 	if err != nil {
 		return nil, classifyBeginErr(err)
 	}
-	// Registered BEFORE the joined gate's release so LIFO frees the gate first;
-	// see txScope's type comment for why the ordering is pinned.
 	defer scope.Release()
 
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
-	if !owned {
-		var releaseGate func()
-		txCtx, releaseGate = h.acquireJoinedGate(txCtx, txID)
-		defer releaseGate()
-	}
 
 	now := time.Now()
 
@@ -2836,6 +2774,10 @@ func classifySaveErr(internalMsg, entityID string, err error) *common.AppError {
 //     arm/cancel pass writes through failed) → sanitized 5xx, same reason.
 //     Every save of an entity on a scheduled workflow re-arms, so this store
 //     is on the ordinary write path.
+//   - ErrSavepointInfra (the savepoint around an ASYNC_NEW_TX processor could
+//     not be created, undone or released) → sanitized 5xx, same reason. It says
+//     the transaction is unusable, never that the processor failed, so it must
+//     not reach the catch-all and become a 400 carrying the driver's own text.
 //   - ErrAuthContextUnavailable (AttachAuthContext could not populate a
 //     dispatch CloudEvent's Auth Context — no UserContext, unset/unrecognized
 //     principal Kind, or nil CloudEvent) → sanitized 5xx via common.Internal.
@@ -2843,8 +2785,13 @@ func classifySaveErr(internalMsg, entityID string, err error) *common.AppError {
 //     the raw message (which may include the principal id) never reaches the
 //     client via 4xx WORKFLOW_FAILED.
 //   - ErrTransitionNotFound → 400 TRANSITION_NOT_FOUND (client-attributable).
+//   - A contract.CalloutFailure of kind MemberFailed (the compute member
+//     answered "I failed") → 400 WORKFLOW_FAILED, retryable exactly when the
+//     member's own verdict said so. Its text is the member's, behind the
+//     engine's wrap naming the processor, criterion or function.
 //   - Everything else (processor-domain failures, criterion mismatches, CAS
-//     conflicts already mapped upstream) → 400 WORKFLOW_FAILED.
+//     conflicts already mapped upstream, and a Terminal callout failure that
+//     carries no code of its own) → 400 WORKFLOW_FAILED.
 func classifyWorkflowError(err error) *common.AppError {
 	var appErr *common.AppError
 	if errors.As(err, &appErr) {
@@ -2879,6 +2826,9 @@ func classifyWorkflowError(err error) *common.AppError {
 	if errors.Is(err, wfengine.ErrScheduledTaskInfra) {
 		return common.Internal("scheduled task reconciliation failed", err)
 	}
+	if errors.Is(err, wfengine.ErrSavepointInfra) {
+		return common.Internal("workflow savepoint failed", err)
+	}
 	if errors.Is(err, contract.ErrAuthContextUnavailable) {
 		return common.Internal("auth context unavailable for dispatch", err)
 	}
@@ -2904,6 +2854,25 @@ func classifyWorkflowError(err error) *common.AppError {
 	// 500 rather than a misleading 400.
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return common.Internal("workflow aborted by context cancellation", err)
+	}
+	// A cnode that answered "I failed". Its own message reaches the client
+	// behind the engine's wrap, which names the processor; its verdict decides
+	// whether the client is told that running the operation again may help.
+	// The verdict never decides whether another cnode is tried — a cnode that
+	// answered is never replaced. Most other kinds of callout failure carry an
+	// *AppError and left through the first branch; the three Terminal ones
+	// that have no code of their own — an answer limit above the server's
+	// bound, a compute member's answer that could not be read, a workflow
+	// criterion that could not be parsed — carry none by design and reach the
+	// catch-all below, where their own sanitized text becomes a 400
+	// WORKFLOW_FAILED.
+	var failure *contract.CalloutFailure
+	if errors.As(err, &failure) && failure.Kind == contract.MemberFailed {
+		appErr := common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed, err.Error())
+		if failure.Retryable != nil && *failure.Retryable {
+			appErr = appErr.AsRetryable()
+		}
+		return appErr
 	}
 	return common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed, err.Error())
 }

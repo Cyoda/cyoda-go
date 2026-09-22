@@ -1,9 +1,16 @@
 package httpmw
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,7 +18,32 @@ import (
 
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/txjoin"
+	"github.com/cyoda-platform/cyoda-go/internal/fence"
+	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
+
+// captureSlog redirects the default logger into a buffer for the duration of
+// the test, restoring the previous default on cleanup. DEBUG and above are
+// captured so a test can assert a log line was (or was not) emitted at DEBUG.
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+// testResponseMax is the joined-answer ceiling these tests build a Joiner with.
+// It is the shipped default's shape at a size a test writes past in one line,
+// so the ceiling's behaviour is pinned without allocating megabytes to do it.
+const testResponseMax = 64 << 10
+
+// testMaxWaiters is the queue cap these tests build a Joiner with — the shipped
+// default of CYODA_CALLOUT_JOINED_MAX_WAITERS, high enough that no test reaches
+// it by accident. The test that means to reach it says so.
+const testMaxWaiters = 128
 
 // fakeJoinTM satisfies spi.TransactionManager by embedding the interface and
 // overriding only Join. Unimplemented methods panic if unexpectedly called.
@@ -31,6 +63,71 @@ func (f fakeJoinTM) Join(ctx context.Context, txID string) (context.Context, err
 func make32(t *testing.T) []byte {
 	t.Helper()
 	return []byte("test-secret-key-at-least-32byte!")
+}
+
+// gatedFence returns a fence and the gate registry its wait takes: the join
+// layer must take the lock the fence waits on, so the two share one registry.
+func gatedFence() (*fence.Fence, *txgate.Registry) {
+	gate := txgate.New()
+	return fence.New(gate), gate
+}
+
+// liveFence returns a fence on which calloutID is in progress on txID at
+// major 1, the gate its wait takes, and the pass claims that name it.
+func liveFence(t *testing.T, calloutID, txID string) (*fence.Fence, *txgate.Registry, token.Claims) {
+	t.Helper()
+	f, gate := gatedFence()
+	_, end := f.Begin(context.Background(), calloutID, txID, nil)
+	t.Cleanup(end)
+	f.Advance(calloutID, 1)
+	return f, gate, token.Claims{NodeID: "local", TxRef: txID, ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: calloutID, Major: 1}
+}
+
+// joinerOver builds the Joiner the middleware takes, over signer, txMgr and a
+// fence whose wait takes gate's locks. A nil meter (the no-op meter).
+func joinerOver(t *testing.T, s *token.Signer, txMgr spi.TransactionManager, f *fence.Fence, gate *txgate.Registry) *txjoin.Joiner {
+	t.Helper()
+	return joinerCapped(t, s, txMgr, f, gate, testMaxWaiters)
+}
+
+// joinerCapped is joinerOver with the queue cap the test wants to reach.
+func joinerCapped(t *testing.T, s *token.Signer, txMgr spi.TransactionManager, f *fence.Fence, gate *txgate.Registry, maxWaiters int) *txjoin.Joiner {
+	t.Helper()
+	j, err := txjoin.NewJoiner(s, txMgr, f, gate, testResponseMax, maxWaiters, nil)
+	if err != nil {
+		t.Fatalf("NewJoiner: %v", err)
+	}
+	return j
+}
+
+// noCalloutJoiner returns a Joiner over a fence that knows no callout: every
+// pass it is given is refused.
+func noCalloutJoiner(t *testing.T, s *token.Signer, txMgr spi.TransactionManager) *txjoin.Joiner {
+	t.Helper()
+	f, gate := gatedFence()
+	return joinerOver(t, s, txMgr, f, gate)
+}
+
+// liveJoiner returns a Joiner whose fence has the callout of txID in progress at
+// major 1, the gate its lock is taken from, and the pass that names it.
+func liveJoiner(t *testing.T, txID string) (*txjoin.Joiner, *txgate.Registry, string) {
+	t.Helper()
+	return liveJoinerCapped(t, txID, testMaxWaiters)
+}
+
+// liveJoinerCapped is liveJoiner with the queue cap the test wants to reach.
+func liveJoinerCapped(t *testing.T, txID string, maxWaiters int) (*txjoin.Joiner, *txgate.Registry, string) {
+	t.Helper()
+	s, err := token.NewSigner(make32(t))
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	f, gate, claims := liveFence(t, "req-"+txID, txID)
+	pass, err := s.Issue(claims)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	return joinerCapped(t, s, fakeJoinTM{}, f, gate, maxWaiters), gate, pass
 }
 
 // withUserCtx attaches a minimal UserContext to the request so TxJoin's
@@ -53,7 +150,8 @@ func okHandler() http.Handler {
 
 func TestTxJoin_JoinsAndPassesCtx(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("local", "tx-1", time.Now().Add(time.Minute))
+	f, gate, claims := liveFence(t, "req-tx-1", "tx-1")
+	tok, _ := s.Issue(claims)
 	var sawTx string
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if tx := spi.GetTransaction(r.Context()); tx != nil {
@@ -61,7 +159,7 @@ func TestTxJoin_JoinsAndPassesCtx(t *testing.T) {
 		}
 		w.WriteHeader(200)
 	})
-	h := TxJoin(s, fakeJoinTM{})(next)
+	h := TxJoin(joinerOver(t, s, fakeJoinTM{}, f, gate))(next)
 	req := httptest.NewRequest("POST", "/entity", nil)
 	req.Header.Set(proxy.TxTokenHeader, tok)
 	req = withUserCtx(req)
@@ -73,8 +171,8 @@ func TestTxJoin_JoinsAndPassesCtx(t *testing.T) {
 
 func TestTxJoin_NotFoundReturns404(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("local", "tx-x", time.Now().Add(time.Minute))
-	h := TxJoin(s, fakeJoinTM{joinErr: spi.ErrTxNotFound})(okHandler())
+	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-x", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-x", Major: 1})
+	h := TxJoin(noCalloutJoiner(t, s, fakeJoinTM{joinErr: spi.ErrTxNotFound}))(okHandler())
 	req := httptest.NewRequest("POST", "/entity", nil)
 	req.Header.Set(proxy.TxTokenHeader, tok)
 	req = withUserCtx(req)
@@ -87,7 +185,7 @@ func TestTxJoin_NotFoundReturns404(t *testing.T) {
 
 func TestTxJoin_NoToken_Passthrough(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	h := TxJoin(s, fakeJoinTM{})(okHandler())
+	h := TxJoin(noCalloutJoiner(t, s, fakeJoinTM{}))(okHandler())
 	req := httptest.NewRequest("GET", "/entity/123", nil)
 	// No X-Tx-Token header set.
 	rec := httptest.NewRecorder()
@@ -101,8 +199,8 @@ func TestTxJoin_TamperedTokenReturns401(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
 	// Issue with a different signer so verification fails.
 	s2, _ := token.NewSigner([]byte("different-secret-key-at-least-32b!"))
-	tok, _ := s2.Issue("local", "tx-bad", time.Now().Add(time.Minute))
-	h := TxJoin(s, fakeJoinTM{})(okHandler())
+	tok, _ := s2.Issue(token.Claims{NodeID: "local", TxRef: "tx-bad", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-bad", Major: 1})
+	h := TxJoin(noCalloutJoiner(t, s, fakeJoinTM{}))(okHandler())
 	req := httptest.NewRequest("POST", "/entity", nil)
 	req.Header.Set(proxy.TxTokenHeader, tok)
 	req = withUserCtx(req)
@@ -111,4 +209,513 @@ func TestTxJoin_TamperedTokenReturns401(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", rec.Code)
 	}
+}
+
+// problemProperties is the RFC 9457 extension block the error writer fills.
+type problemProperties struct {
+	ErrorCode string `json:"errorCode"`
+	Retryable bool   `json:"retryable"`
+}
+
+// problemProps decodes the problem body's extension properties.
+func problemProps(t *testing.T, rec *httptest.ResponseRecorder) problemProperties {
+	t.Helper()
+	var pd struct {
+		Properties problemProperties `json:"properties"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &pd); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	return pd.Properties
+}
+
+// A callback whose callout has ended is refused 410 CALLOUT_SUPERSEDED before
+// the handler runs — on a read and on a write alike.
+func TestTxJoin_CalloutEnded_410(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	f, gate := gatedFence()
+	_, end := f.Begin(context.Background(), "req-1", "tx-1", nil)
+	f.Advance("req-1", 1)
+	end()
+	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-1", Major: 1})
+
+	for _, method := range []string{http.MethodGet, http.MethodPost} { // a read and a write
+		next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("handler must not run") })
+		req := withUserCtx(httptest.NewRequest(method, "/entity/x", nil))
+		req.Header.Set(proxy.TxTokenHeader, tok)
+		rec := httptest.NewRecorder()
+		TxJoin(joinerOver(t, s, fakeJoinTM{}, f, gate))(next).ServeHTTP(rec, req)
+		if rec.Code != http.StatusGone {
+			t.Fatalf("%s: status = %d; want 410", method, rec.Code)
+		}
+		props := problemProps(t, rec)
+		if props.ErrorCode != "CALLOUT_SUPERSEDED" || props.Retryable {
+			t.Fatalf("%s: problem = %+v", method, props)
+		}
+	}
+}
+
+// A pass presented by the wrong tenant is answered 403 on this door too,
+// whatever the fence knows about the callout it names, and the handler never
+// runs.
+func TestTxJoin_TenantMismatchIsOneAnswerWhateverTheFenceKnows(t *testing.T) {
+	for name, setup := range map[string]func(*testing.T) (*fence.Fence, *txgate.Registry, token.Claims){
+		"callout current": func(t *testing.T) (*fence.Fence, *txgate.Registry, token.Claims) {
+			return liveFence(t, "req-1", "tx-1")
+		},
+		"callout superseded": func(t *testing.T) (*fence.Fence, *txgate.Registry, token.Claims) {
+			f, gate, claims := liveFence(t, "req-1", "tx-1")
+			f.Advance("req-1", 2)
+			return f, gate, claims
+		},
+		"callout unknown": func(t *testing.T) (*fence.Fence, *txgate.Registry, token.Claims) {
+			f, gate := gatedFence()
+			return f, gate, token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-1", Major: 1}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _ := token.NewSigner(make32(t))
+			f, gate, claims := setup(t)
+			tok, _ := s.Issue(claims)
+			next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("handler must not run") })
+			req := withUserCtx(httptest.NewRequest(http.MethodGet, "/entity/x", nil))
+			req.Header.Set(proxy.TxTokenHeader, tok)
+			rec := httptest.NewRecorder()
+			TxJoin(joinerOver(t, s, fakeJoinTM{joinErr: spi.ErrTxTenantMismatch}, f, gate))(next).ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d; want 403", rec.Code)
+			}
+			if code := problemProps(t, rec).ErrorCode; code != "FORBIDDEN" {
+				t.Fatalf("errorCode = %q; want FORBIDDEN", code)
+			}
+		})
+	}
+}
+
+// The response is sent after the lock is released: a cnode that does not read
+// its response does not hold the transaction.
+func TestTxJoin_ResponseIsSentAfterTheLockIsReleased(t *testing.T) {
+	j, gate, pass := liveJoiner(t, "tx-1")
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	w := &lockProbeWriter{ResponseRecorder: httptest.NewRecorder(), gate: gate, txID: "tx-1"}
+	req := withUserCtx(httptest.NewRequest(http.MethodPost, "/entity", strings.NewReader(`{}`)))
+	req.Header.Set(proxy.TxTokenHeader, pass)
+	TxJoin(j)(next).ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated || w.Body.String() != `{"ok":true}` || w.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("response = %d %q %v", w.Code, w.Body.String(), w.Header())
+	}
+	if w.writes == 0 || w.writesUnderLock != 0 {
+		t.Fatalf("%d of %d writes to the client were made while the transaction's lock was held", w.writesUnderLock, w.writes)
+	}
+}
+
+// lockProbeWriter notes, on every write to the client, whether the
+// transaction's lock is free.
+type lockProbeWriter struct {
+	*httptest.ResponseRecorder
+	gate                    *txgate.Registry
+	txID                    string
+	writes, writesUnderLock int
+}
+
+func (w *lockProbeWriter) probe() {
+	w.writes++
+	free := make(chan struct{})
+	go func() { w.gate.Acquire(w.txID)(); close(free) }()
+	select {
+	case <-free:
+	case <-time.After(50 * time.Millisecond):
+		w.writesUnderLock++
+	}
+}
+func (w *lockProbeWriter) WriteHeader(code int)        { w.probe(); w.ResponseRecorder.WriteHeader(code) }
+func (w *lockProbeWriter) Write(b []byte) (int, error) { w.probe(); return w.ResponseRecorder.Write(b) }
+
+// Every route behind the middleware runs under the lock, whatever it serves —
+// model, message, search, statistics, audit are all just `next` to it — and is
+// refused once its cnode is replaced.
+func TestTxJoin_EveryRouteRunsUnderTheLock(t *testing.T) {
+	routes := []string{"/model/export/x/1", "/message/new/s", "/search/direct/x/1", "/entity/stats", "/audit/entity/x"}
+
+	// The same routes, once the cnode that held the callout has been replaced.
+	s, _ := token.NewSigner(make32(t))
+	replaced, replacedGate := gatedFence()
+	_, endReplaced := replaced.Begin(context.Background(), "req-1", "tx-1", nil)
+	t.Cleanup(endReplaced)
+	replaced.Advance("req-1", 1)
+	stale, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-1",
+		ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-1", Major: 1})
+	replaced.Advance("req-1", 2)
+	for _, route := range routes {
+		req := withUserCtx(httptest.NewRequest(http.MethodPost, route, nil))
+		req.Header.Set(proxy.TxTokenHeader, stale)
+		rec := httptest.NewRecorder()
+		TxJoin(joinerOver(t, s, fakeJoinTM{}, replaced, replacedGate))(
+			http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatalf("%s: handler must not run", route) }),
+		).ServeHTTP(rec, req)
+		if rec.Code != http.StatusGone || problemProps(t, rec).ErrorCode != "CALLOUT_SUPERSEDED" {
+			t.Fatalf("%s: status = %d, problem = %+v; want 410 CALLOUT_SUPERSEDED", route, rec.Code, problemProps(t, rec))
+		}
+	}
+
+	j, gate, pass := liveJoiner(t, "tx-1")
+	for _, route := range routes {
+		held := false
+		next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			free := make(chan struct{})
+			go func() { gate.Acquire("tx-1")(); close(free) }()
+			select {
+			case <-free:
+			case <-time.After(50 * time.Millisecond):
+				held = true
+			}
+		})
+		req := withUserCtx(httptest.NewRequest(http.MethodPost, route, nil))
+		req.Header.Set(proxy.TxTokenHeader, pass)
+		TxJoin(j)(next).ServeHTTP(httptest.NewRecorder(), req)
+		if !held {
+			t.Fatalf("%s ran without the transaction's lock", route)
+		}
+	}
+}
+
+// The request body is read before the lock is taken: a cnode that trickles its
+// body does not hold the transaction.
+func TestTxJoin_BodyIsReadBeforeTheLockIsTaken(t *testing.T) {
+	j, gate, pass := liveJoiner(t, "tx-1")
+	body := newLockProbeBody(strings.NewReader(`{"a":1}`), gate, "tx-1")
+	var got string
+	next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = string(b)
+	})
+	req := withUserCtx(httptest.NewRequest(http.MethodPost, "/entity", body))
+	req.Header.Set(proxy.TxTokenHeader, pass)
+	TxJoin(j)(next).ServeHTTP(httptest.NewRecorder(), req)
+	if got != `{"a":1}` {
+		t.Fatalf("handler read %q", got)
+	}
+	if body.reads == 0 || body.readsUnderLock != 0 {
+		t.Fatalf("%d of %d reads of the client's body were made under the transaction's lock", body.readsUnderLock, body.reads)
+	}
+}
+
+// lockProbeBody mirrors lockProbeWriter on Read: it notes, on every read of the
+// client's body, whether the transaction's lock is free. reading is closed on the
+// FIRST read, so a test waiting for the middleware to be inside the body read
+// waits for that rather than guessing how long it takes.
+type lockProbeBody struct {
+	io.Reader
+	gate                  *txgate.Registry
+	txID                  string
+	reading               chan struct{}
+	readingOnce           sync.Once
+	reads, readsUnderLock int
+}
+
+func newLockProbeBody(r io.Reader, gate *txgate.Registry, txID string) *lockProbeBody {
+	return &lockProbeBody{Reader: r, gate: gate, txID: txID, reading: make(chan struct{})}
+}
+
+func (b *lockProbeBody) Read(p []byte) (int, error) {
+	b.readingOnce.Do(func() { close(b.reading) })
+	b.reads++
+	free := make(chan struct{})
+	go func() { b.gate.Acquire(b.txID)(); close(free) }()
+	select {
+	case <-free:
+	case <-time.After(50 * time.Millisecond):
+		b.readsUnderLock++
+	}
+	return b.Reader.Read(p)
+}
+
+// A joined request whose client sends its headers and then stalls does not
+// hold the transaction's lock: another joined request on the same transaction
+// completes meanwhile.
+func TestTxJoin_StalledBodyDoesNotHoldTheLock(t *testing.T) {
+	j, gate, pass := liveJoiner(t, "tx-1")
+	mw := TxJoin(j)
+
+	stalled, unblock := io.Pipe() // headers sent, body never arrives
+	body := newLockProbeBody(stalled, gate, "tx-1")
+	stalledDone := make(chan struct{})
+	go func() {
+		defer close(stalledDone)
+		req := withUserCtx(httptest.NewRequest(http.MethodPost, "/entity", body))
+		req.Header.Set(proxy.TxTokenHeader, pass)
+		mw(okHandler()).ServeHTTP(httptest.NewRecorder(), req)
+	}()
+	// Wait for the stalled request to be inside the body read, rather than
+	// sleeping: a sleep that ran out too early would pass vacuously, before the
+	// middleware had reached the read this test is about.
+	select {
+	case <-body.reading:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stalled request never reached the body read")
+	}
+
+	otherDone := make(chan int, 1)
+	go func() {
+		req := withUserCtx(httptest.NewRequest(http.MethodGet, "/entity/x", nil))
+		req.Header.Set(proxy.TxTokenHeader, pass)
+		rec := httptest.NewRecorder()
+		mw(okHandler()).ServeHTTP(rec, req)
+		otherDone <- rec.Code
+	}()
+	select {
+	case code := <-otherDone:
+		if code != http.StatusOK {
+			t.Fatalf("the other joined request = %d; want 200", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a stalled body held the transaction's lock: the other joined request did not complete")
+	}
+	_ = unblock.Close()
+	<-stalledDone
+}
+
+// countingBody is a request body that records how often it was read, and is
+// empty: a door that reads it at all is reading it too early.
+type countingBody struct{ reads int }
+
+func (b *countingBody) Read([]byte) (int, error) { b.reads++; return 0, io.EOF }
+
+// A pass this door refuses on the pass alone costs it no buffer: the signature,
+// the shape and the expiry are judged before a byte of the body is read.
+func TestTxJoin_BadPassIsRefusedBeforeTheBodyIsRead(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	other, _ := token.NewSigner([]byte("different-secret-key-at-least-32b!"))
+	forged, _ := other.Issue(token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-1", Major: 1})
+	expired, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(-time.Second).Unix(), Callout: "req-tx-1", Major: 1})
+	shapeless, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix()})
+
+	for name, tc := range map[string]struct {
+		tok    string
+		status int
+		code   string
+	}{
+		"forged":            {forged, http.StatusUnauthorized, "UNAUTHORIZED"},
+		"expired":           {expired, http.StatusGone, "TRANSACTION_EXPIRED"},
+		"naming no callout": {shapeless, http.StatusUnauthorized, "UNAUTHORIZED"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, gate, _ := liveFence(t, "req-tx-1", "tx-1")
+			body := &countingBody{}
+			req := withUserCtx(httptest.NewRequest(http.MethodPost, "/entity", body))
+			req.Header.Set(proxy.TxTokenHeader, tc.tok)
+			rec := httptest.NewRecorder()
+
+			TxJoin(joinerOver(t, s, fakeJoinTM{}, f, gate))(
+				http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("handler must not run") }),
+			).ServeHTTP(rec, req)
+
+			if rec.Code != tc.status || problemProps(t, rec).ErrorCode != tc.code {
+				t.Fatalf("status = %d, problem = %+v; want %d %s", rec.Code, problemProps(t, rec), tc.status, tc.code)
+			}
+			if body.reads != 0 {
+				t.Errorf("the body was read %d times for a pass that was refused", body.reads)
+			}
+		})
+	}
+}
+
+// A compute node that goes away while its request queues for the transaction's
+// lock: the handler never runs, the door returns at once — and it still answers.
+// Leaving without writing would have net/http answer an implicit 200 for a
+// request that did nothing, which a later middleware putting a deadline on the
+// request context would turn into a lie about a write. Nothing was wrong with
+// the server and there is nobody to quote a ticket to, so this is logged at
+// DEBUG with no ticket — never the ERROR-per-queued-callback that a failing-over
+// compute member would otherwise produce right when an operator most wants a
+// clean log.
+func TestTxJoin_ClientGoesAwayWhileQueued_HandlerNeverRuns_NeverAnImplicit200(t *testing.T) {
+	buf := captureSlog(t)
+	j, gate, pass := liveJoiner(t, "tx-1")
+	holder := gate.Acquire("tx-1") // another request of the same compute node
+	defer holder()
+
+	ran := false
+	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { ran = true })
+	req := httptest.NewRequest(http.MethodPost, "/entity", strings.NewReader(`{}`))
+	ctx, disconnect := context.WithCancel(req.Context())
+	defer disconnect()
+	req = withUserCtx(req.WithContext(ctx))
+	req.Header.Set(proxy.TxTokenHeader, pass)
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		TxJoin(j)(next).ServeHTTP(rec, req)
+	}()
+	time.Sleep(50 * time.Millisecond) // verified and read; now queued for the lock
+	disconnect()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the door stayed parked on the lock after its client went away")
+	}
+	if ran {
+		t.Fatal("the handler ran for a client that had gone")
+	}
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d; want the same 500 an aborted request gets today — never an implicit 200", rec.Code)
+	}
+	if code := problemProps(t, rec).ErrorCode; code != "SERVER_ERROR" {
+		t.Errorf("errorCode = %q; want SERVER_ERROR", code)
+	}
+	var pd map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &pd); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	if pd["ticket"] != nil {
+		t.Errorf("a client disconnect must not carry a ticket nobody can be quoted: %v", pd["ticket"])
+	}
+	if strings.Contains(buf.String(), `"level":"ERROR"`) {
+		t.Errorf("a client disconnect must not log at ERROR: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), `"level":"DEBUG"`) {
+		t.Errorf("a client disconnect must log at DEBUG: %s", buf.String())
+	}
+}
+
+// A join that FAILS with an internal error which merely wraps a cancellation is
+// not a departed client, even when the client has in fact also gone: the two
+// are different events, and only the join layer's own "the request ended before
+// it took the transaction's lock" is the second. Filing this as a departed
+// client would log a genuine fault at DEBUG with no ticket, below the default
+// level — the fault would leave no trace at all.
+func TestTxJoin_JoinFailureWrappingACancellation_KeepsItsTicket(t *testing.T) {
+	buf := captureSlog(t)
+	s, _ := token.NewSigner(make32(t))
+	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-1", Major: 1})
+	joinFailed := fmt.Errorf("resolve transaction: %w", context.Canceled)
+	h := TxJoin(noCalloutJoiner(t, s, fakeJoinTM{joinErr: joinFailed}))(
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("the handler of a failed join ran") }))
+
+	req := httptest.NewRequest(http.MethodPost, "/entity", strings.NewReader(`{}`))
+	ctx, disconnect := context.WithCancel(req.Context())
+	disconnect() // the client has gone too — but that is not what went wrong
+	req = withUserCtx(req.WithContext(ctx))
+	req.Header.Set(proxy.TxTokenHeader, tok)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d; want 500", rec.Code)
+	}
+	var pd map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &pd); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	if pd["ticket"] == nil || pd["ticket"] == "" {
+		t.Error("a genuine fault must carry a ticket the caller can quote")
+	}
+	if !strings.Contains(buf.String(), `"level":"ERROR"`) {
+		t.Errorf("a genuine fault must log at ERROR: %s", buf.String())
+	}
+}
+
+// A body over the join layer's limit is refused before any lock is taken.
+func TestTxJoin_OversizeBody_413(t *testing.T) {
+	j, _, pass := liveJoiner(t, "tx-1")
+	req := withUserCtx(httptest.NewRequest(http.MethodPost, "/entity", io.LimitReader(zeroes{}, maxJoinedBodySize+1)))
+	req.Header.Set(proxy.TxTokenHeader, pass)
+	rec := httptest.NewRecorder()
+	TxJoin(j)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("handler must not run") })).ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d; want 413", rec.Code)
+	}
+}
+
+type zeroes struct{}
+
+func (zeroes) Read(p []byte) (int, error) { clear(p); return len(p), nil }
+
+// Callbacks of one transaction are served one at a time, and the queue behind
+// the one being served is bounded. Past the cap the callback is refused with a
+// retryable 503 — and refused before its body is read, so a member firing
+// callbacks at one transaction costs the node no buffer per refusal. The
+// callback holding the transaction and the ones already queued are unaffected.
+func TestTxJoin_PastTheWaiterCap_503_BeforeTheBodyIsRead(t *testing.T) {
+	j, gate, pass := liveJoinerCapped(t, "tx-1", 1)
+	holder := gate.Acquire("tx-1") // a callback already has the transaction
+	// Released explicitly below; the defer is so that a failing assertion does
+	// not leave the queued callback parked and hang the package.
+	defer holder()
+
+	queued := make(chan int, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		TxJoin(j)(okHandler()).ServeHTTP(rec, joinedRequest(t, pass, nil))
+		queued <- rec.Code
+	}()
+	waitForCapacity(t, gate, "tx-1", 1)
+
+	var bodyRead bool
+	rec := httptest.NewRecorder()
+	req := joinedRequest(t, pass, readMarker{read: &bodyRead})
+	TxJoin(j)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("the refused callback's handler ran")
+	})).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d; want 503", rec.Code)
+	}
+	props := problemProps(t, rec)
+	if props.ErrorCode != "TOO_MANY_JOINED_REQUESTS" {
+		t.Errorf("errorCode = %q; want TOO_MANY_JOINED_REQUESTS", props.ErrorCode)
+	}
+	if !props.Retryable {
+		t.Error("the refusal is not retryable; the queue drains, so it is")
+	}
+	if bodyRead {
+		t.Error("the body was read: a callback refused for capacity must cost no buffer")
+	}
+
+	holder()
+	select {
+	case code := <-queued:
+		if code != http.StatusOK {
+			t.Fatalf("the callback already queued answered %d; want 200", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the callback already queued never ran")
+	}
+}
+
+// joinedRequest builds a request carrying pass, with body as its body.
+func joinedRequest(t *testing.T, pass string, body io.Reader) *http.Request {
+	t.Helper()
+	req := withUserCtx(httptest.NewRequest(http.MethodPost, "/entity", body))
+	req.Header.Set(proxy.TxTokenHeader, pass)
+	return req
+}
+
+// readMarker records whether anything read it.
+type readMarker struct{ read *bool }
+
+func (m readMarker) Read(p []byte) (int, error) {
+	*m.read = true
+	return 0, io.EOF
+}
+
+// waitForCapacity waits until maxWaiters callers are queued for txID.
+func waitForCapacity(t *testing.T, gate *txgate.Registry, txID string, maxWaiters int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if gate.AtCapacity(txID, maxWaiters) {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d callers to queue for %s", maxWaiters, txID)
 }

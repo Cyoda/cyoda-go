@@ -17,6 +17,10 @@ func (u *Unimplemented) stub(w http.ResponseWriter, r *http.Request) {
 	common.WriteError(w, r, common.Operational(http.StatusNotImplemented, common.ErrCodeNotImplemented, "not yet implemented"))
 }
 
+// joinParams is the name the methods below give a generated params struct whose
+// only field is the X-Tx-Token header: the join middleware consumed that header
+// before the generated router ran, so nothing here reads it. See server.go.
+
 func (u *Unimplemented) AccountGet(w http.ResponseWriter, r *http.Request) {
 	u.stub(w, r)
 }
@@ -29,7 +33,7 @@ func (u *Unimplemented) SearchEntityAuditEvents(w http.ResponseWriter, r *http.R
 	u.stub(w, r)
 }
 
-func (u *Unimplemented) GetStateMachineFinishedEvent(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, transactionId openapi_types.UUID) {
+func (u *Unimplemented) GetStateMachineFinishedEvent(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, transactionId openapi_types.UUID, joinParams genapi.GetStateMachineFinishedEventParams) {
 	u.stub(w, r)
 }
 
@@ -65,7 +69,7 @@ func (u *Unimplemented) GetEntityStatisticsForModel(w http.ResponseWriter, r *ht
 	u.stub(w, r)
 }
 
-func (u *Unimplemented) DeleteSingleEntity(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID) {
+func (u *Unimplemented) DeleteSingleEntity(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, joinParams genapi.DeleteSingleEntityParams) {
 	u.stub(w, r)
 }
 
@@ -135,11 +139,11 @@ func (u *Unimplemented) NewMessage(w http.ResponseWriter, r *http.Request, subje
 	u.stub(w, r)
 }
 
-func (u *Unimplemented) DeleteMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID) {
+func (u *Unimplemented) DeleteMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID, joinParams genapi.DeleteMessageParams) {
 	u.stub(w, r)
 }
 
-func (u *Unimplemented) GetMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID) {
+func (u *Unimplemented) GetMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID, joinParams genapi.GetMessageParams) {
 	u.stub(w, r)
 }
 
@@ -267,11 +271,11 @@ func (u *Unimplemented) GetAsyncSearchResults(w http.ResponseWriter, r *http.Req
 	u.stub(w, r)
 }
 
-func (u *Unimplemented) CancelAsyncSearch(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID) {
+func (u *Unimplemented) CancelAsyncSearch(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID, joinParams genapi.CancelAsyncSearchParams) {
 	u.stub(w, r)
 }
 
-func (u *Unimplemented) GetAsyncSearchStatus(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID) {
+func (u *Unimplemented) GetAsyncSearchStatus(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID, joinParams genapi.GetAsyncSearchStatusParams) {
 	u.stub(w, r)
 }
 
@@ -282,6 +286,6 @@ func (u *Unimplemented) SearchEntities(w http.ResponseWriter, r *http.Request, e
 // QueryGroupedEntityStatisticsForModel is never called via this path — the real
 // handler is mounted directly on the outer mux in app/app.go before the generated
 // API handler fires.
-func (u *Unimplemented) QueryGroupedEntityStatisticsForModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32) {
+func (u *Unimplemented) QueryGroupedEntityStatisticsForModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, joinParams genapi.QueryGroupedEntityStatisticsForModelParams) {
 	u.stub(w, r)
 }

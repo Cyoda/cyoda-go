@@ -165,7 +165,10 @@ jobs:
             sudo apt-get install -y shellcheck
           fi
           shellcheck --version
-          shellcheck scripts/install.sh scripts/dev/run-docker-dev.sh scripts/check-spi-pin-sync.sh scripts/check-spi-pin-sync_test.sh scripts/check-generated-in-sync.sh scripts/preflight-docker.sh
+          # Every script under scripts/, found rather than listed: an explicit
+          # list silently leaves each new script unlinted, which is how the
+          # generator's own harness went uncovered.
+          find scripts -name '*.sh' -print0 | xargs -0 shellcheck
 
   # Continuous security gates (issue #67):
   #   - govulncheck scans the call graph for exploitable stdlib and third-party CVEs,

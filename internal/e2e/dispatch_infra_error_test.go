@@ -10,11 +10,12 @@ package e2e_test
 // server. The shared server wires cfg.ExternalProcessing = procSvc (see
 // e2e_test.go), a stub *localproc.LocalProcessingService that resolves
 // processors by name only — it never consults calculationNodesTags or a
-// MemberRegistry, so it cannot reproduce grpc.ErrNoMatchingMember. Leaving
-// cfg.ExternalProcessing nil here selects the REAL
-// internal/grpc.ProcessorDispatcher wired over an empty MemberRegistry (no
-// compute member ever connects), so FindByTags deterministically returns no
-// match for any tag and DispatchProcessor returns the genuine sentinel.
+// MemberRegistry, so it cannot reproduce contract.ErrNoMatchingMember. Leaving
+// cfg.ExternalProcessing nil here selects the REAL owner's loop
+// (internal/callout.Coordinator) over internal/grpc.ProcessorDispatcher and an
+// empty MemberRegistry (no compute member ever connects), so Candidates
+// deterministically returns no match for any tag and the callout ends, after
+// its patience, with the genuine sentinel.
 //
 // Mock IAM mode (the default) auto-authenticates every request as the
 // default user (ROLE_ADMIN, ROLE_M2M) with no Authorization header needed
@@ -28,20 +29,27 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cyoda-platform/cyoda-go/app"
 )
 
 // newDispatchInfraErrorServer builds a standalone in-process stack with the
-// real gRPC-backed processor dispatcher and zero connected compute members.
+// real owner's loop over the gRPC-backed local procedure and zero connected
+// compute members.
 func newDispatchInfraErrorServer(t *testing.T) (string, func()) {
 	t.Helper()
 	cfg := app.DefaultConfig()
 	cfg.StorageBackend = "memory"
 	cfg.Cluster.Enabled = false
 	// cfg.IAM.Mode defaults to "mock" — no bearer token required.
-	// cfg.ExternalProcessing left nil — real ProcessorDispatcher, empty
-	// MemberRegistry (no compute member connects in this test).
+	// cfg.ExternalProcessing left nil — the real owner's loop over the real
+	// local procedure, with an empty MemberRegistry (no compute member
+	// connects in this test).
+	// The patience is the one thing shortened: a callout that can never find a
+	// compute member waits it out in full, and the default 5s per callout only
+	// makes the test slow.
+	cfg.Cluster.DispatchWaitTimeout = 200 * time.Millisecond
 
 	a := app.New(cfg)
 	srv := httptest.NewServer(a.Handler())
@@ -85,7 +93,7 @@ func doInfraErrRequest(t *testing.T, base, method, path, body string) (int, stri
 // transition carries a SYNC processor with a calculationNodesTags value that
 // no connected compute member can ever satisfy (no member connects at all in
 // this harness). Firing the transition via entity creation must surface the
-// dispatcher's grpc.ErrNoMatchingMember as HTTP 503, errorCode
+// callout's contract.ErrNoMatchingMember as HTTP 503, errorCode
 // NO_COMPUTE_MEMBER_FOR_TAG, properties.retryable=true — not the pre-fix 400
 // WORKFLOW_FAILED default.
 func TestProcessorNoMember_Returns503(t *testing.T) {
@@ -132,8 +140,8 @@ func TestProcessorNoMember_Returns503(t *testing.T) {
 
 	// Create an entity — fires the "init" automated transition, which
 	// dispatches to a calculation member matching tag "no-such-tag". No
-	// member is connected in this harness, so the dispatcher returns
-	// grpc.ErrNoMatchingMember.
+	// member is connected in this harness, so the callout ends with
+	// contract.ErrNoMatchingMember.
 	status, body = doInfraErrRequest(t, base, http.MethodPost,
 		fmt.Sprintf("/api/entity/JSON/%s/%d", model, modelVersion),
 		`{"name":"Test","amount":1}`)
@@ -165,8 +173,8 @@ func TestProcessorNoMember_Returns503(t *testing.T) {
 // with a calculationNodesTags value no connected compute member can ever
 // satisfy (no member connects at all in this harness — same empty
 // MemberRegistry as the processor case). Arming the transition at entity
-// creation dispatches via internal/grpc.ProcessorDispatcher.DispatchFunction,
-// which resolves the same grpc.ErrNoMatchingMember sentinel
+// creation dispatches via the owner's loop, which resolves the same
+// contract.ErrNoMatchingMember sentinel
 // classifyWorkflowError maps to a retryable 503 NO_COMPUTE_MEMBER_FOR_TAG —
 // proving the Function dispatch path shares the processor path's
 // compute-infra-error classification, not the pre-fix 400 WORKFLOW_FAILED
@@ -214,7 +222,7 @@ func TestScheduledFunctionNoMember_Returns503(t *testing.T) {
 
 	// Create an entity — arming "init"'s schedule.function dispatches to a
 	// calculation member matching tag "no-such-tag". No member is connected
-	// in this harness, so DispatchFunction returns grpc.ErrNoMatchingMember.
+	// in this harness, so the callout ends with contract.ErrNoMatchingMember.
 	status, body = doInfraErrRequest(t, base, http.MethodPost,
 		fmt.Sprintf("/api/entity/JSON/%s/%d", model, modelVersion),
 		`{"name":"Test","amount":1}`)

@@ -13,14 +13,26 @@ alongside `matches: false`:
 
 ```jsonc
 {
+  "id": "<a new event id>",
   "requestId": "<requestId>",
+  "entityId": "<entityUUID>",
   "success": true,
   "matches": false,
   "reason": "credit score 540 below threshold 600"
 }
 ```
 
-`reason` is capped at **2 KiB**; longer values are truncated once, server-side.
+`matches` itself is required on a successful response; an answer that omits it
+is unreadable rather than `false` (`docs/cloud-parity/callout-failover.md` §1).
+
+A compute node's own `reason` is kept to its first **2048 characters**, with
+`…` appended when it was cut. Unlike every other piece of a compute node's
+free text (see `docs/cloud-parity/callout-failover.md`), the reason keeps a
+wider allowance of its own: it is the criterion's business explanation for
+refusing a transition, not a diagnostic. Whatever reaches the audit trail or an
+error message is capped well above that on top of it — generously enough that
+this second cap is never what bites — which is what also bounds a reason the
+platform itself composes.
 When a criterion evaluates false without a compute-node-supplied reason
 (inline predicate criteria, or a `FUNCTION` criterion that returns none), the
 engine substitutes the inline default `"criterion did not match"`.

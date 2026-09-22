@@ -73,11 +73,11 @@ func TestClientPool_ReusesConnections(t *testing.T) {
 	pool := proxy.NewClientPool(true) // allowLoopback=true: test server binds on 127.0.0.1
 	defer pool.Close()
 
-	c1, err := pool.Get(addr)
+	c1, err := pool.Get(context.Background(), addr)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	c2, err := pool.Get(addr)
+	c2, err := pool.Get(context.Background(), addr)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestClientPool_SSRFGuard_RejectsLoopback(t *testing.T) {
 	pool := proxy.NewClientPool(false) // production posture — loopback forbidden
 	defer pool.Close()
 
-	_, err := pool.Get("127.0.0.1:9090")
+	_, err := pool.Get(context.Background(), "127.0.0.1:9090")
 	if err == nil {
 		t.Fatal("Get(loopback) succeeded with allowLoopback=false, expected error")
 	}
@@ -113,7 +113,7 @@ func TestClientPool_SSRFGuard_AllowsLoopback(t *testing.T) {
 	pool := proxy.NewClientPool(true) // test-fixture posture
 	defer pool.Close()
 
-	conn, err := pool.Get(addr)
+	conn, err := pool.Get(context.Background(), addr)
 	if err != nil {
 		t.Fatalf("Get(loopback) with allowLoopback=true: %v", err)
 	}

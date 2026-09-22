@@ -1,6 +1,11 @@
 package dispatch
 
-import "github.com/cyoda-platform/cyoda-go/internal/cluster/peeraddr"
+import (
+	"context"
+	"net/http"
+
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/peeraddr"
+)
 
 // ErrForbiddenPeerAddress is the sentinel returned when an address is rejected
 // by the SSRF guard. It is re-exported from peeraddr so callers of the dispatch
@@ -8,7 +13,15 @@ import "github.com/cyoda-platform/cyoda-go/internal/cluster/peeraddr"
 var ErrForbiddenPeerAddress = peeraddr.ErrForbiddenPeerAddress
 
 // validatePeerAddress delegates to the shared peeraddr guard. See
-// peeraddr.Validate for the full contract and commentary.
-func validatePeerAddress(raw string, allowLoopback bool) error {
-	return peeraddr.Validate(raw, allowLoopback)
+// peeraddr.Validate for the full contract and commentary; ctx bounds the name
+// lookup a hostname address needs.
+func validatePeerAddress(ctx context.Context, raw string, allowLoopback bool) error {
+	return peeraddr.Validate(ctx, raw, allowLoopback)
+}
+
+// refuseRedirects delegates to the shared guard. See peeraddr.RefuseRedirects:
+// a validated address is the only one a hand-over is ever sent to, so a 3xx
+// answered on the way is refused rather than followed.
+func refuseRedirects(req *http.Request, via []*http.Request) error {
+	return peeraddr.RefuseRedirects(req, via)
 }

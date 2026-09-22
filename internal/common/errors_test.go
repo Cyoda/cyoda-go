@@ -2,6 +2,7 @@ package common_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -203,12 +204,13 @@ func TestWriteError_OperationalLogsCause(t *testing.T) {
 }
 
 // captureSlog redirects the default logger into a buffer for the duration of
-// the test.
+// the test. DEBUG and above are captured so a test can assert a log line was
+// (or was not) emitted at DEBUG.
 func captureSlog(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	var buf bytes.Buffer
 	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 	return &buf
 }
@@ -564,5 +566,174 @@ func TestAppError_WithCause_PreservesErrorsIs(t *testing.T) {
 	}
 	if ae.Status != http.StatusBadRequest || ae.Code != "SOME_CODE" {
 		t.Errorf("got status=%d code=%q, want 400/SOME_CODE", ae.Status, ae.Code)
+	}
+}
+
+// clientGone is the join layer's own "the request ended before it took the
+// transaction's lock", as internal/domain/txjoin marks it. It is the one cause
+// a door's funnel may file as a departed client.
+func clientGone() error {
+	return fmt.Errorf("%w: %w", common.ErrClientGone, context.Canceled)
+}
+
+// TestWriteError_ClientGoneCancellation_LogsDebugNoTicket: a client that
+// disconnects while its request is in flight is not a server fault. Nothing
+// was wrong, there is nobody to quote a ticket to, and this is exactly the
+// moment (a compute member failing over) an operator wants a clean log.
+func TestWriteError_ClientGoneCancellation_LogsDebugNoTicket(t *testing.T) {
+	buf := captureSlog(t)
+	common.SetErrorResponseMode("sanitized")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/test", nil)
+	ctx, cancel := context.WithCancel(r.Context())
+	cancel()
+	r = r.WithContext(ctx)
+
+	appErr := common.Internal("joined request ended before it took the transaction's lock", clientGone())
+	common.WriteError(w, r, appErr)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d — the door writes the same status it writes today", w.Code, http.StatusInternalServerError)
+	}
+	if strings.Contains(buf.String(), `"level":"ERROR"`) {
+		t.Errorf("a client disconnect must not log at ERROR: %s", buf.String())
+	}
+	if strings.Contains(buf.String(), `"ticket"`) {
+		t.Errorf("a client disconnect must not mint or log a ticket: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), `"level":"DEBUG"`) {
+		t.Errorf("a client disconnect must log at DEBUG: %s", buf.String())
+	}
+	// The gRPC funnel logs this same event; the two must collate, so they carry
+	// the same fields. The path is the HTTP door's own addition.
+	for _, field := range []string{`"code"`, `"message"`, `"detail"`, `"path"`} {
+		if !strings.Contains(buf.String(), field) {
+			t.Errorf("the client-gone line is missing %s, so it does not collate with the gRPC funnel's: %s", field, buf.String())
+		}
+	}
+	var pd map[string]any
+	json.NewDecoder(w.Body).Decode(&pd)
+	if pd["ticket"] != nil {
+		t.Errorf("the response must not carry a ticket nobody can be quoted: %v", pd["ticket"])
+	}
+}
+
+// TestWriteError_InternalFailureWrappingACancellation_KeepsItsTicket is the
+// regression that matters: a joined request is deliberately detached from its
+// client (txjoin uses context.WithoutCancel), so work that outlives its caller
+// can fail with an internal error that merely wraps an unrelated
+// context.Canceled — classifyWorkflowError wraps any such cause as Internal —
+// while the request's own context is long since done. Filing that as a departed
+// client would log a genuine fault at DEBUG with no ticket, below the default
+// level: the fault would leave no trace at all.
+func TestWriteError_InternalFailureWrappingACancellation_KeepsItsTicket(t *testing.T) {
+	buf := captureSlog(t)
+	common.SetErrorResponseMode("sanitized")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/test", nil)
+	ctx, cancel := context.WithCancel(r.Context())
+	cancel() // the client has gone — but that is not what went wrong
+	r = r.WithContext(ctx)
+
+	appErr := common.Internal("workflow aborted by context cancellation",
+		fmt.Errorf("failed to join transaction: %w", context.Canceled))
+	common.WriteError(w, r, appErr)
+
+	if !strings.Contains(buf.String(), `"level":"ERROR"`) {
+		t.Errorf("a genuine fault must log at ERROR even when the client has also gone: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), `"ticket"`) {
+		t.Errorf("a genuine fault must mint a ticket: %s", buf.String())
+	}
+	var pd map[string]any
+	json.NewDecoder(w.Body).Decode(&pd)
+	if pd["ticket"] == nil || pd["ticket"] == "" {
+		t.Error("expected a ticket in the response")
+	}
+}
+
+// TestWriteError_ClientGoneCancellation_VerboseModeKeepsDetailNoTicket covers
+// the verbose arm of the client-gone branch, which the sanitized-mode test
+// above does not exercise: verbose mode still shows appErr.Detail (as it does
+// for every other internal error) and still omits the ticket — there is
+// nobody to quote it to regardless of response mode.
+func TestWriteError_ClientGoneCancellation_VerboseModeKeepsDetailNoTicket(t *testing.T) {
+	buf := captureSlog(t)
+	common.SetErrorResponseMode("verbose")
+	defer common.SetErrorResponseMode("sanitized")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/test", nil)
+	ctx, cancel := context.WithCancel(r.Context())
+	cancel()
+	r = r.WithContext(ctx)
+
+	cause := clientGone()
+	appErr := common.Internal("joined request ended before it took the transaction's lock", cause)
+	common.WriteError(w, r, appErr)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+	if strings.Contains(buf.String(), `"level":"ERROR"`) {
+		t.Errorf("a client disconnect must not log at ERROR, even in verbose mode: %s", buf.String())
+	}
+	var pd map[string]any
+	json.NewDecoder(w.Body).Decode(&pd)
+	if pd["ticket"] != nil {
+		t.Errorf("verbose mode must still omit the ticket nobody can be quoted: %v", pd["ticket"])
+	}
+	detail, _ := pd["detail"].(string)
+	if detail != cause.Error() {
+		t.Errorf("detail = %q, want appErr.Detail (%q) in verbose mode", detail, cause.Error())
+	}
+}
+
+// TestWriteError_OrdinaryInternalError_StillLogsErrorWithTicket pins the
+// regression this task must not cause: an internal error on a request whose
+// context is NOT done still mints a ticket and logs at ERROR.
+func TestWriteError_OrdinaryInternalError_StillLogsErrorWithTicket(t *testing.T) {
+	buf := captureSlog(t)
+	common.SetErrorResponseMode("sanitized")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/test", nil) // context is live, not cancelled
+
+	appErr := common.Internal("something broke", errors.New("db connection failed"))
+	common.WriteError(w, r, appErr)
+
+	if !strings.Contains(buf.String(), `"level":"ERROR"`) {
+		t.Errorf("an ordinary internal error must still log at ERROR: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), `"ticket"`) {
+		t.Errorf("an ordinary internal error must still mint a ticket: %s", buf.String())
+	}
+	var pd map[string]any
+	json.NewDecoder(w.Body).Decode(&pd)
+	if pd["ticket"] == nil || pd["ticket"] == "" {
+		t.Error("expected a ticket in the response")
+	}
+}
+
+// TestWriteError_FeatureDeadlineTimeout_Untouched: a request whose own
+// feature deadline expired carries context.DeadlineExceeded, not
+// context.Canceled, and must not be caught by the client-gone rule even
+// though the request's context is also done.
+func TestWriteError_FeatureDeadlineTimeout_Untouched(t *testing.T) {
+	buf := captureSlog(t)
+	common.SetErrorResponseMode("sanitized")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/test", nil)
+	ctx, cancel := context.WithTimeout(r.Context(), 0) // already expired
+	defer cancel()
+	<-ctx.Done()
+	r = r.WithContext(ctx)
+
+	appErr := common.Internal("workflow aborted by context cancellation", context.DeadlineExceeded)
+	common.WriteError(w, r, appErr)
+
+	if !strings.Contains(buf.String(), `"level":"ERROR"`) {
+		t.Errorf("a DeadlineExceeded cause must still log at ERROR, not be treated as a client disconnect: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), `"ticket"`) {
+		t.Errorf("a DeadlineExceeded cause must still mint a ticket: %s", buf.String())
 	}
 }

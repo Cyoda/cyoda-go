@@ -206,7 +206,7 @@ This section enumerates only what cluster mode promises and what it does not.
   node may still commit; clients on the other side cannot observe.
 - **Token expiry.** The token has a bounded `ExpiresAt`. If the
   client holds it past expiry, the proxy returns
-  `400 TRANSACTION_EXPIRED`. The client must abandon the tx and
+  `410 TRANSACTION_EXPIRED`. The client must abandon the tx and
   retry with a fresh `Begin()`.
 - **Double-commit / idempotent retry.** First-committer-wins +
   TOCTOU guards (`m.committing[txID]` for memory/sqlite; `pgxTx`
@@ -251,14 +251,7 @@ The third class is the application's responsibility:
    or recover from this. The application must serialise its own per-tx
    ops externally.
 
-In practice cyoda's domain layer ensures this naturally: HTTP/gRPC
-handlers process requests sequentially per request; the workflow
-engine executes processors sequentially within a single transition.
-At the time of writing no production callsite outside the
-`internal/observability/tx_tracing.go` pass-through decorator invokes
-`TransactionManager.Join`. Any future feature that fans out work across
-multiple goroutines on a single tx must either add its own per-tx
-mutex or split work across transactions, AND must update this section.
+cyoda's domain layer serialises them with a per-transaction lock (`internal/txgate`). The operation that owns the transaction is one chain of calls. Every other user is a **joined request** — a callback from a compute member, carrying the transaction's pass — and the join layer (`txjoin`, reached from the HTTP join middleware and the gRPC routing interceptor) takes the lock for the request's whole handling: reads and searches as well as writes, entity and non-entity handlers alike. The request is read in full before the lock is taken and the response is sent after it is released. A holder gives the lock up for the length of any callout it makes (`txgate.Suspend`) and takes it back before it touches the transaction again. During a callout the transaction's users are therefore the callbacks of the member that currently has the work, one at a time; between callouts, the owner alone. `internal/fence` decides which member that is, and makes the owner wait for a joined request in progress before the work goes on. Any feature that fans work out across goroutines on one transaction must take the same lock, and must update this section.
 
 A fourth class is the workflow author's responsibility:
 
@@ -270,8 +263,9 @@ A fourth class is the workflow author's responsibility:
    from an engine crash between segments (entity is durable in the
    pre-callout state, in-flight orchestration is gone, caller retries,
    the cascade re-fires from the beginning — see §6). The engine
-   has no per-cascade replay log, no dispatch-ID stability across
-   retries, and no automatic compensation transition. Idempotency
+   has no per-cascade replay log, no dispatch-id stability across a
+   *client's* re-run (the tries of one callout do share a request id),
+   and no automatic compensation transition. Idempotency
    must be designed at the processor level on application-meaningful
    keys (a write-once external resource ID, a deterministic external
    resource name derived from entity ID + a stable timestamp, etc.).

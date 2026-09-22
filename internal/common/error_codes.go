@@ -75,6 +75,30 @@ const (
 	ErrCodeDispatchForwardFailed     = "DISPATCH_FORWARD_FAILED"
 	ErrCodeDispatchTimeout           = "DISPATCH_TIMEOUT"
 	ErrCodeComputeMemberDisconnected = "COMPUTE_MEMBER_DISCONNECTED"
+	// ErrCodeCalloutFailed is returned when a callout recorded more than one
+	// failed try and nothing more could be done: every try was used, or the
+	// patience or the callout's deadline ran out with tries still left. The
+	// message lists the tries. Exactly one attempt is reported as that
+	// attempt's own code instead — see internal/callout.attemptsFailure.
+	ErrCodeCalloutFailed = "CALLOUT_FAILED"
+	// ErrCodeCalloutSuperseded is returned to a compute node's callback when
+	// the callout it belongs to was given to another compute node or has ended
+	// while the transaction is still open. Not retryable: the compute node must
+	// stop working on that request.
+	ErrCodeCalloutSuperseded = "CALLOUT_SUPERSEDED"
+	// ErrCodeJoinedResponseTooLarge is returned to a compute node's callback
+	// whose answer is larger than CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES. The
+	// answer is held in memory while the transaction's lock is held, so the
+	// owner's next move waits behind it. Not retryable: the same callback
+	// answers the same bytes again — the caller pages the read instead.
+	ErrCodeJoinedResponseTooLarge = "JOINED_RESPONSE_TOO_LARGE"
+	// ErrCodeTooManyJoinedRequests is returned to a compute node's callback
+	// when CYODA_CALLOUT_JOINED_MAX_WAITERS callbacks are already queued for
+	// its transaction. Callbacks of one transaction are served one at a time,
+	// so the queue is bounded rather than each waiting callback holding its
+	// request for the life of the callout. Retryable: the queue drains as the
+	// callbacks ahead of it finish.
+	ErrCodeTooManyJoinedRequests = "TOO_MANY_JOINED_REQUESTS"
 )
 
 const (
@@ -247,3 +271,100 @@ const (
 //
 // The per-cause diagnostic path is the server-side log stream — see the
 // auth.oidc help topic.
+
+// knownErrorCodes is every error code this build defines. It exists because an
+// error code is part of the contract a client reads: a code arriving from
+// outside this process — a peer node classifying a failure it handled — must be
+// recognised before it is passed on, or one process's vocabulary becomes
+// another's. Kept exactly in step with the constants above by
+// TestKnownErrorCode_IsExactlyWhatThisFileDefines.
+var knownErrorCodes = map[string]struct{}{
+	ErrCodeBadRequest:                       {},
+	ErrCodeCalloutFailed:                    {},
+	ErrCodeCalloutSuperseded:                {},
+	ErrCodeClusterNodeNotRegistered:         {},
+	ErrCodeCompositeKeyUnsupported:          {},
+	ErrCodeComputeMemberDisconnected:        {},
+	ErrCodeConditionTypeMismatch:            {},
+	ErrCodeConflict:                         {},
+	ErrCodeDeleteNotConverged:               {},
+	ErrCodeDispatchForwardFailed:            {},
+	ErrCodeDispatchTimeout:                  {},
+	ErrCodeDuplicateAggregationAlias:        {},
+	ErrCodeDuplicateGroupBy:                 {},
+	ErrCodeEntityModelMismatch:              {},
+	ErrCodeEntityModified:                   {},
+	ErrCodeEntityNotFound:                   {},
+	ErrCodeEpochMismatch:                    {},
+	ErrCodeFeatureDisabled:                  {},
+	ErrCodeForbidden:                        {},
+	ErrCodeGroupCardinalityExceeded:         {},
+	ErrCodeHelpTopicNotFound:                {},
+	ErrCodeIdempotencyConflict:              {},
+	ErrCodeIncompatibleType:                 {},
+	ErrCodeInvalidAggregationField:          {},
+	ErrCodeInvalidAggregationOp:             {},
+	ErrCodeInvalidChangeLevel:               {},
+	ErrCodeInvalidCondition:                 {},
+	ErrCodeInvalidFieldPath:                 {},
+	ErrCodeInvalidGroupByPath:               {},
+	ErrCodeInvalidLimit:                     {},
+	ErrCodeInvalidUniqueKey:                 {},
+	ErrCodeInvalidUniqueKeyDefinition:       {},
+	ErrCodeJoinedResponseTooLarge:           {},
+	ErrCodeKeyOwnedByDifferentTenant:        {},
+	ErrCodeKeypairNotFound:                  {},
+	ErrCodeM2MClientNotFound:                {},
+	ErrCodeMalformedRequest:                 {},
+	ErrCodeMissingGroupBy:                   {},
+	ErrCodeModelAlreadyLocked:               {},
+	ErrCodeModelAlreadyUnlocked:             {},
+	ErrCodeModelHasEntities:                 {},
+	ErrCodeModelNotFound:                    {},
+	ErrCodeModelNotLocked:                   {},
+	ErrCodeNoComputeMemberForTag:            {},
+	ErrCodeNotFound:                         {},
+	ErrCodeNotImplemented:                   {},
+	ErrCodeOidcInvalidTenant:                {},
+	ErrCodeOIDCProviderDuplicate:            {},
+	ErrCodeOIDCProviderInactive:             {},
+	ErrCodeOIDCProviderNotFound:             {},
+	ErrCodeOIDCSSRFBlocked:                  {},
+	ErrCodePreconditionRequired:             {},
+	ErrCodeScheduleFunctionInvalidResult:    {},
+	ErrCodeSearchJobAlreadyTerminal:         {},
+	ErrCodeSearchJobNotFound:                {},
+	ErrCodeSearchQueueFull:                  {},
+	ErrCodeSearchResultLimit:                {},
+	ErrCodeSearchShardTimeout:               {},
+	ErrCodeSearchTimeout:                    {},
+	ErrCodeServerError:                      {},
+	ErrCodeStorageUnavailable:               {},
+	ErrCodeTooManyJoinedRequests:            {},
+	ErrCodeTransactionExpired:               {},
+	ErrCodeTransactionNodeUnavailable:       {},
+	ErrCodeTransactionNotFound:              {},
+	ErrCodeTransactionTimeout:               {},
+	ErrCodeTransitionNotFound:               {},
+	ErrCodeTrustedKeyCapReached:             {},
+	ErrCodeTrustedKeyNotFound:               {},
+	ErrCodeTxConflict:                       {},
+	ErrCodeTxCoordinatorNotConfigured:       {},
+	ErrCodeTxNoState:                        {},
+	ErrCodeTxRequired:                       {},
+	ErrCodeUnauthorized:                     {},
+	ErrCodeUniqueViolation:                  {},
+	ErrCodeUnsupportedAlgorithm:             {},
+	ErrCodeUnsupportedKeyType:               {},
+	ErrCodeUnsupportedMediaType:             {},
+	ErrCodeValidationFailed:                 {},
+	ErrCodeWorkflowFailed:                   {},
+	ErrCodeWorkflowNotFound:                 {},
+	ErrCodeWorkflowSchemaVersionUnsupported: {},
+}
+
+// KnownErrorCode reports whether code is an error code this build defines.
+func KnownErrorCode(code string) bool {
+	_, ok := knownErrorCodes[code]
+	return ok
+}

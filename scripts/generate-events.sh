@@ -16,61 +16,7 @@ trap 'rm -rf "$CLEAN_DIR"' EXIT
 
 # Copy schemas and pre-process for Go code generation.
 cp -r "$SCHEMA_DIR"/* "$CLEAN_DIR/"
-python3 -c "
-import os, json, glob, re
-
-CLEAN = '$CLEAN_DIR'
-
-# Step 1: Load BaseEvent properties and required fields.
-base_event_path = os.path.join(CLEAN, 'common', 'BaseEvent.json')
-with open(base_event_path) as fh:
-    base_event = json.load(fh)
-base_props = base_event.get('properties', {})
-base_required = base_event.get('required', [])
-
-# Step 2: Process all schemas.
-for f in glob.glob(os.path.join(CLEAN, '**', '*.json'), recursive=True):
-    with open(f) as fh:
-        content = fh.read()
-
-    # Fix Java-specific 'type': 'any' (not valid JSON Schema).
-    content = re.sub(r',?\s*\"existingJavaType\":\s*\"[^\"]*\"', '', content)
-    content = content.replace('\"type\": \"any\"', '\"description\": \"arbitrary JSON\"')
-    content = re.sub(r',(\s*[}\]])', r'\1', content)
-
-    # Step 3: Inline BaseEvent fields into schemas that extend it.
-    try:
-        schema = json.loads(content)
-    except json.JSONDecodeError:
-        with open(f, 'w') as fh:
-            fh.write(content)
-        continue
-
-    extends = schema.get('extends', {})
-    ref = extends.get('\$ref', '') if isinstance(extends, dict) else ''
-    if 'BaseEvent.json' in ref:
-        # Merge BaseEvent properties into this schema.
-        props = schema.get('properties', {})
-        for k, v in base_props.items():
-            if k not in props:
-                props[k] = v
-        schema['properties'] = props
-
-        # Merge required fields.
-        req = schema.get('required', [])
-        for r_field in base_required:
-            if r_field not in req:
-                req.append(r_field)
-        schema['required'] = req
-
-        # Remove the extends field (not standard JSON Schema).
-        del schema['extends']
-
-        content = json.dumps(schema, indent=2)
-
-    with open(f, 'w') as fh:
-        fh.write(content)
-"
+python3 "$(dirname "$0")/events-schema-prep.py" "$CLEAN_DIR"
 
 mkdir -p "$(dirname "$OUT")"
 
@@ -98,6 +44,7 @@ mkdir -p "$(dirname "$OUT")"
 # Post-process: remove omitempty from the 'success' bool field.
 # With omitempty, false values are dropped from JSON — but error responses
 # MUST include "success": false explicitly.
+# shellcheck disable=SC2016 # the backticks are the Go struct tag sed matches
 sed -i '' 's/Success bool `json:"success,omitempty"/Success bool `json:"success"/g' "$OUT"
 
 # Post-process: route every generated UnmarshalJSON call through

@@ -6,11 +6,14 @@ see_also:
   - config.grpc
   - workflows
   - cloudevents
+  - cluster
   - errors.COMPUTE_MEMBER_DISCONNECTED
   - errors.NO_COMPUTE_MEMBER_FOR_TAG
   - errors.DISPATCH_TIMEOUT
   - errors.SCHEDULE_FUNCTION_INVALID_RESULT
   - errors.DISPATCH_FORWARD_FAILED
+  - errors.CALLOUT_FAILED
+  - errors.CALLOUT_SUPERSEDED
 ---
 
 # grpc
@@ -131,8 +134,7 @@ message CloudEvent {
   "id": "<uuid for this ack message>",
   "sourceEventId": "<id of the server event being acknowledged>",
   "success": true,
-  "warnings": [],
-  "error": null
+  "warnings": []
 }
 ```
 
@@ -226,6 +228,11 @@ The compute member protocol allows external processes to serve as workflow proce
 - Read the stream continuously — a member that stops reading is treated as frozen and evicted after `CYODA_KEEPALIVE_TIMEOUT` seconds, and every callout in flight on it fails with `COMPUTE_MEMBER_DISCONNECTED`.
 - Write to the stream from one goroutine at a time — the gRPC streaming API forbids concurrent sends on one stream.
 - Answer requests, acknowledge events, or echo the server's keep-alive at least once per `CYODA_KEEPALIVE_TIMEOUT` seconds.
+- Echo the transaction token (`cyodatxtoken`) on every callback — see `cyoda help cluster` for how the HTTP and gRPC doors carry it. A token belongs to one try of one callout. Once the server has given the callout to another member, or the callout has ended, a callback bearing the token is refused with `errors.CALLOUT_SUPERSEDED` (`410`) for as long as the transaction is open, and with `errors.TRANSACTION_NOT_FOUND` (`404`) once it has closed; a token naming no callout and try number at all is refused with `errors.UNAUTHORIZED` (`401`), the same as any malformed token; a token past its own expiry is refused with `errors.TRANSACTION_EXPIRED` (`410`). None of the four is retryable: stop working on that request.
+- Expect callbacks of one transaction to run **one after another**. Every callback — a read or a search as much as a write — holds its transaction for the time the server works on it, so two callbacks sent in parallel are served in turn, not at once. The server reads the whole request before it takes the transaction and sends the response after it has let go, so a slow upload or a slow reader holds nothing up; a callback body over 10 MiB is refused with `413` before that happens (HTTP only).
+- Do not queue callbacks without limit on one transaction. Because they are served one at a time, firing many at once buys no speed, and each one waiting holds its whole request in memory until its turn comes. At most `CYODA_CALLOUT_JOINED_MAX_WAITERS` (default 128) may wait; past that a callback is refused with `503` `errors.TOO_MANY_JOINED_REQUESTS`, having touched nothing. It is retryable: back off briefly and send the callback again. A processor that lets the refusal escape fails its callout, and the operation is rolled back.
+- Keep a callback's **answer** under `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES` (default 10 MiB). The answer is held in memory for the same reason the request is: an answer that would pass the ceiling fails the callback with `413` `errors.JOINED_RESPONSE_TOO_LARGE`, naming the ceiling, rather than being cut short — on either door, and on the gRPC one the frames of a chunked collection count together. Not retryable: page a large read — `pageSize` and `pageNumber` on a get-all or a search — instead of asking for everything in one callback.
+- A callback is not abandoned by its member's connection dropping, nor by a deadline the member sets on its own callback call — see "API requests made under a transaction token" below for what continues, and what does not.
 
 **Processor dispatch (server → client):**
 
@@ -263,18 +270,56 @@ Client responds with `EntityProcessorCalculationResponse`:
 
 ```json
 {
+  "id": "<a new event id>",
   "requestId": "<same requestId>",
+  "entityId": "<entityUUID>",
   "success": true,
   "payload": {
     "type": "JSON",
     "data": {<optionally updated entity JSON body>}
   },
-  "warnings": [],
-  "error": null
+  "warnings": []
 }
 ```
 
-When `success=false`, the workflow engine fails the processor dispatch. When `payload.data` is non-null, the engine replaces the entity's data with the returned value before continuing the workflow.
+Every calculation response carries three identifying fields, all three required
+by the published schema: its own `id` — the response event's identity, not the
+request's, and what `BaseEvent` requires of every event — plus the `requestId`
+that correlates it with the request and the `entityId` it answers about.
+`error` is sent only on a failure: it is declared an object, so an explicit
+`"error": null` is not a valid response. The server is more forgiving than the
+schema on all four counts, but an answer built to the published tree validates
+against it.
+
+`success` is optional and defaults to `true`, as the published schema says: a
+response that leaves the key out has reported success. A member reporting a
+failure must therefore send `success: false` explicitly — an empty or partial
+response is not read as a failure. **An `error` object on its own does not
+report one either**: `success` is what says the work failed, and `error` only
+says what went wrong once it has. A response carrying an `error` and no
+`success: false` is a success, and its message reaches nobody — not the client,
+not the warnings, not the audit trail.
+
+The default belongs to an absent key alone. An explicit `"success": null` is
+not a boolean, so it is neither the default nor a flag: the answer cannot be
+read at all and is refused (`400 WORKFLOW_FAILED`, not retryable). A member
+that means success must omit the key or send `true`.
+
+One rule covers every answer the server cannot read — this one, a `payload`
+that is not an object, a criterion with no `matches`: **nothing in such an
+answer is read.** Not its `payload`, not its `matches`, not its `result`, and
+not its `warnings`, which reach the client only from an answer that could be
+read. What was wrong reaches the client in the refusal's own message instead.
+A member that reports a failure has been read perfectly well, and its warnings
+are passed on with its message.
+
+The smallest successful answer is
+`{"id": "<a new event id>", "requestId": "<same requestId>", "entityId": "<entityUUID>"}`
+— the three identifying fields and nothing else: it says the processor ran,
+changed nothing, and the workflow should carry on. There is no shape that means
+"I did nothing and something is wrong" — that is `success: false`.
+
+When `success=false`, no other member is tried. The client's operation fails with `400 WORKFLOW_FAILED` carrying `error.message`, and `error.retryable: true` is passed on as the client's `retryable: true` — it tells the client that running the whole operation again may succeed; it does not make the server try another member. (An `ASYNC_NEW_TX` processor is the exception: its failure is logged and the operation continues.) When `payload.data` is non-null, the engine replaces the entity's data with the returned value before continuing the workflow; when `payload` is absent, or its `data` is null, the entity is left as it was and the transition continues.
 
 Returned data is subject to the same checks as an HTTP client write: it must be storable, and it must satisfy the model's schema. A processor may introduce a field the model does not declare only where the model's `changeLevel` would allow a client to — otherwise the transition fails with `WORKFLOW_FAILED` and rolls back. The engine holds no privilege here: whatever it stores, the API must be able to accept back.
 
@@ -302,16 +347,37 @@ Client responds with `EntityCriteriaCalculationResponse`:
 
 ```json
 {
+  "id": "<a new event id>",
   "requestId": "<same requestId>",
+  "entityId": "<entityUUID>",
   "success": true,
   "matches": true,
-  "warnings": [],
-  "error": null
+  "warnings": []
 }
 ```
 
+`success` is optional here too and defaults to `true`, so a response that
+leaves the key out has reported success; a member reporting a failure must send
+`success: false` explicitly, an `error` object on its own being no more a
+failure report here than it is for a processor. An explicit `"success": null`
+is refused here too, and the `matches` beside it is not read: a member whose
+answer says nothing about success decides no transition.
+
+`matches` is required on a successful criteria response — which is any response
+but an explicit `success: false` one. A response that omits it is not read as
+`false` — a missing verdict would be an invented answer to the criterion, and
+the criterion decides a transition — so the callout ends as an answer that
+could not be read (`400 WORKFLOW_FAILED`, not retryable), its `warnings` go
+unread with the rest of it, and no other compute member is tried. Omitting
+`success` therefore does not excuse omitting `matches`: the default fills in
+the flag, never the verdict.
+
 On `matches: false`, the response may also carry a `reason` string explaining
-why the criterion blocked the passage (capped at 2 KiB). It surfaces in two
+why the criterion blocked the passage. The reason is the criterion's own
+business explanation, not a diagnostic, so it keeps a wider allowance than the
+rest of a member's free text: it is kept to its first 2048 characters, marked
+with `…` when it was cut, and the stored or reflected reason is capped well
+above that so this second cap is never what bites. It surfaces in two
 places: the manual-transition `400 WORKFLOW_FAILED` body
 (`detail: transition "<name>" criterion not matched: <reason>` — the
 guaranteed, backend-independent delivery for a manual rejection), and the
@@ -343,23 +409,51 @@ Response replaces criteria's `matches`/`reason` with `result` (an arbitrary JSON
 
 ```json
 {
+  "id": "<a new event id>",
   "requestId": "<same requestId>",
+  "entityId": "<entityUUID>",
   "success": true,
   "result": {"fireAt": 1},
   "resultKind": "Schedule",
-  "warnings": [],
-  "error": null
+  "warnings": []
 }
 ```
 
 `resultKind: "Schedule"` is the only shape currently defined — it drives a
 scheduled transition's `schedule.function` (see `cyoda help workflows`).
-`success: false` or an `error` fails the dispatch the same way a processor
-or criteria failure does; a `result` that doesn't parse against the
+`success` defaults to `true` here as everywhere, so a response that omits it
+has reported success, and an `error` object on its own is not a failure report;
+an explicit `"success": null` is refused here as everywhere, and the `result`
+beside it is not relayed. `success: false` — which a member reporting a failure
+must send explicitly — fails the callout as it does for a processor: no other
+member is tried, and the message and `retryable` verdict reach the client;
+a `result` that doesn't parse against the
 declared `resultKind` is rejected by the caller (a scheduled transition's
 `SCHEDULE_FUNCTION_INVALID_RESULT`), not by this wire contract. Full JSON
 Schemas for both messages: `docs/cyoda/schema/processing/EntityFunctionCalculationRequest.json`
 and `EntityFunctionCalculationResponse.json` (see `cyoda help cloudevents`).
+
+**API requests made under a transaction token:**
+
+An API request made under a transaction token is not cancelled when its client
+goes away: once it has the transaction to itself it runs to completion on the
+node that holds the transaction. Until then — while it waits its turn behind
+another request under the same token — it has touched nothing, and a client that
+goes away is simply dropped. If the connection drops, or the node the request
+arrived at answers `503` because forwarding it took longer than
+`CYODA_PROXY_TIMEOUT`, the outcome of a write is **unknown** — it may have been
+applied to the transaction. Do not assume it failed. A deadline the compute
+member sets on its own gRPC call does not stop the request on the server either.
+
+The token is issued for one request on one compute node. If cyoda gives the
+same work to another compute node — this one did not answer within its answer
+limit, or its connection dropped — or once the request has ended, every further
+API request under that token is refused with `410 CALLOUT_SUPERSEDED`; a request
+that was already in progress finishes and is answered normally. A compute node
+that receives `CALLOUT_SUPERSEDED` must stop working on that request. While a
+compute node's request is in progress it has the transaction to itself: API
+requests under one token run one at a time, and cyoda does not interrupt one
+because its client went away.
 
 **Auth context on dispatched events:**
 
@@ -405,11 +499,13 @@ falls back to the default.
 
 A compute member declares its tags in `CalculationMemberJoinEvent.tags` as a string slice. The server routes a processor or criteria request to a member whose tags overlap with `calculationNodesTags` (comma-separated) from the processor or criteria config.
 
-`FindByTags` selects the first matching member for the authenticated tenant by iterating over the internal member map. Tag matching uses intersection: the member must declare at least one tag that appears in the processor's `calculationNodesTags`. Because the internal store is a Go map, iteration order is random (non-deterministic per Go specification). When multiple members share a tag, the selected member is chosen at random on each dispatch. Clients requiring deterministic routing must use distinct tags per member.
+Among the members of the authenticated tenant whose tags match, the server picks **round robin**: the member that was picked longest ago goes next, and a member that has just joined has never been picked and goes first. Tag matching uses intersection: the member must declare at least one tag that appears in the callout's `calculationNodesTags`. A member of another tenant is never chosen, whatever its tags. Clients that need one particular member to receive a callout must give that member a tag of its own.
 
-When `calculationNodesTags` is empty, any member for the authenticated tenant matches (still chosen at random when multiple exist).
+A callout may be tried on more than one member. **Every try carries the same `requestId`** (and the same `id`) in its payload, and the same `transactionId`. A member that de-duplicates on `requestId` will therefore treat a second delivery of the same callout — to itself after a reconnect, or seen by a shared de-duplication store behind several members — as a repeat, which is the intent. Criteria and functions must have no effects: they may be given to another member whenever one does not answer. A processor is given to another member after it was handed the work only if its configuration declares it `idempotent`.
 
-In cluster mode, the `ClusterDispatcher` propagates member tag sets across nodes via gossip so any node can forward dispatches to a node that has a matching member.
+When `calculationNodesTags` is empty, every member of the authenticated tenant matches, and the same round robin applies.
+
+In cluster mode each node tells its peers which tags its members serve, per tenant. A node tries its own matching members first and then hands the callout, with the tries that are left, to a peer that advertises the tag — see `cyoda help cluster`.
 
 ## ERRORS
 
@@ -436,12 +532,20 @@ Within `text_data` payloads, errors are reported as:
 
 Operational 4xx errors carry the domain code (e.g. `CLIENT_ERROR`) and a human-readable message. Internal errors use `SERVER_ERROR` with a ticket UUID for server-side log correlation.
 
-Processor dispatch errors surfaced to the workflow engine:
+Callout errors the client of the failed operation sees (all `503`, retryable):
 
-- `errors.NO_COMPUTE_MEMBER_FOR_TAG` — no member registered for the requested tags
-- `errors.COMPUTE_MEMBER_DISCONNECTED` — member disconnected while a dispatch was in flight (all pending requests receive `"member disconnected"` error)
-- `errors.DISPATCH_TIMEOUT` — processor or criteria response not received within `responseTimeoutMs`
-- `errors.DISPATCH_FORWARD_FAILED` — cluster forwarder failed to forward dispatch to remote node
+- `errors.NO_COMPUTE_MEMBER_FOR_TAG` — no matching member appeared within `CYODA_DISPATCH_WAIT_TIMEOUT`
+- `errors.COMPUTE_MEMBER_DISCONNECTED` — the member's stream dropped after it was given the work
+- `errors.DISPATCH_TIMEOUT` — no answer within `responseTimeoutMs`
+- `errors.DISPATCH_FORWARD_FAILED` — the answer of the node a callout was handed to was lost
+- `errors.CALLOUT_FAILED` — more than one try failed; the message lists them
+
+Errors a compute member sees on a callback:
+
+- `errors.CALLOUT_SUPERSEDED` — `410` — the member was replaced, or its callout has ended
+- `errors.TRANSACTION_NOT_FOUND` — `404` — the transaction has ended
+- `errors.TRANSACTION_EXPIRED` — `410` — the token is past its expiry
+- `errors.UNAUTHORIZED` — `401` — the token does not name a callout and a try number at all
 
 ## EXAMPLES
 
@@ -499,7 +603,12 @@ grpcurl -plaintext \
 
 - config.grpc
 - workflows
+- cloudevents
+- cluster
 - errors.COMPUTE_MEMBER_DISCONNECTED
 - errors.NO_COMPUTE_MEMBER_FOR_TAG
 - errors.DISPATCH_TIMEOUT
+- errors.SCHEDULE_FUNCTION_INVALID_RESULT
 - errors.DISPATCH_FORWARD_FAILED
+- errors.CALLOUT_FAILED
+- errors.CALLOUT_SUPERSEDED

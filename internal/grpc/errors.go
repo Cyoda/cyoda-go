@@ -13,6 +13,24 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
+// isClientGoneCancellation reports whether err is the request's own client
+// having gone away before the request did anything — the same single question
+// common.WriteError's HTTP-side check asks: did the layer that was waiting on
+// the client mark the cause common.ErrClientGone?
+//
+// A cancellation on the chain does not answer it.
+// internal/domain/txjoin/txjoin.go detaches a joined request's context with
+// context.WithoutCancel once it holds the transaction, so a compute member
+// going away mid-statement cannot take the connection with it — and
+// classifyWorkflowError (internal/domain/entity/service.go) still wraps any
+// context.Canceled it sees as a ticketed common.Internal, by its own comment,
+// because the cancellation may be unrelated to this (detached, still-live)
+// request. Quietening that would put a genuine fault at DEBUG with no ticket,
+// below the default level, leaving it no trace at all.
+func isClientGoneCancellation(err error) bool {
+	return errors.Is(err, common.ErrClientGone)
+}
+
 const nilUUID = "00000000-0000-0000-0000-000000000000"
 
 func strPtr(s string) *string { return &s }
@@ -20,7 +38,9 @@ func strPtr(s string) *string { return &s }
 // buildErrorFields extracts code, message, and retryable flag from an error.
 // For operational AppErrors the client-safe message is returned directly.
 // For internal/fatal AppErrors and raw errors a ticket UUID is generated and
-// the detail is logged server-side only.
+// the detail is logged server-side only — unless the cause is marked as the
+// client having gone away mid-request (isClientGoneCancellation), in which case
+// no ticket is minted and the log is at DEBUG.
 func buildErrorFields(err error) (code, message string, retryable *bool) {
 	var appErr *common.AppError
 	if errors.As(err, &appErr) {
@@ -44,6 +64,20 @@ func buildErrorFields(err error) (code, message string, retryable *bool) {
 				slog.Info("operational error", "pkg", "grpc",
 					"code", appErr.Code, "message", appErr.Message, "cause", appErr.Err.Error())
 			}
+			return
+		}
+		// The client having gone away mid-request is not a server fault:
+		// nothing was wrong, and there is nobody to quote a ticket to. This is
+		// exactly the moment (a compute member failing over) an operator wants
+		// a clean log, so no ticket is minted.
+		// The HTTP funnel (common.WriteError) logs this same event under the
+		// same message and the same fields, so the two collate; it adds the
+		// request path, which this door has no equivalent of.
+		if isClientGoneCancellation(appErr.Err) {
+			slog.Debug("client gone before request completed",
+				"code", appErr.Code, "message", appErr.Message, "detail", appErr.Detail)
+			code = "SERVER_ERROR"
+			message = "SERVER_ERROR: internal error"
 			return
 		}
 		// Internal/Fatal — reuse the caller's pinned ticket when it has one
@@ -70,6 +104,15 @@ func buildErrorFields(err error) (code, message string, retryable *bool) {
 	// the only place the check belongs.
 	if appErr := common.StorageUnavailable(err); appErr != nil {
 		return buildErrorFields(appErr)
+	}
+	// A departed client that never passed through an *AppError is still a
+	// departed client, not an unclassified failure. Same message as the branch
+	// above; a raw error has no code or message of its own to carry.
+	if isClientGoneCancellation(err) {
+		slog.Debug("client gone before request completed", "detail", err.Error())
+		code = "SERVER_ERROR"
+		message = "SERVER_ERROR: internal error"
+		return
 	}
 	// Raw error — should not happen
 	ticket := uuid.New().String()

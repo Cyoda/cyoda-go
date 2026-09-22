@@ -9,7 +9,6 @@
       "description": "Entity model to use for this payload."
     },
     "data": {
-      "type": "any",
       "existingJavaType": "com.fasterxml.jackson.databind.JsonNode",
       "description": "Payload data."
     }

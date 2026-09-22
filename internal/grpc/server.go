@@ -16,6 +16,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/txjoin"
 )
 
 // CloudEventsServiceImpl implements the Cyoda CloudEventsService gRPC service.
@@ -51,6 +52,10 @@ type KeepAliveConfig struct {
 // NewServer creates a new gRPC server with auth interceptors and the
 // CloudEventsService registered. When otelEnabled is true, OTel tracing
 // is added via a stats handler before the auth interceptors.
+// j is the join layer: the tx-route interceptor hands it every request that
+// carries a pass, and it joins the transaction, refuses a pass that no longer
+// names the callout that compute node holds, and holds the transaction's lock
+// for the length of the handler.
 // localGRPCPort is this node's gRPC listen port; it is used as the fallback
 // when deriving a peer's gRPC address from its HTTP address (advertise-or-derive).
 // allowLoopback must match cfg.Cluster.DispatchAllowLoopback; it gates the
@@ -67,6 +72,7 @@ func NewServer(
 	modelHandler *model.Handler,
 	searchService *search.SearchService,
 	tokenSigner *token.Signer,
+	j *txjoin.Joiner,
 	nodeRegistry contract.NodeRegistry,
 	selfNodeID string,
 	otelEnabled bool,
@@ -81,9 +87,9 @@ func NewServer(
 	}
 	// Recovery runs first so it also covers a panic inside auth or tx-routing.
 	// Auth runs second so the tx-route interceptor sees the authenticated
-	// UserContext (JoinFromToken's tenant check depends on it); tx-route runs
+	// UserContext (the join layer's tenant check depends on it); tx-route runs
 	// third, joining the referenced transaction or forwarding to its owner.
-	txRoute := newTxRouteInterceptor(tokenSigner, nodeRegistry, selfNodeID, txMgr, localGRPCPort, allowLoopback)
+	txRoute := newTxRouteInterceptor(tokenSigner, nodeRegistry, selfNodeID, j, localGRPCPort, allowLoopback)
 	opts = append(opts,
 		googlegrpc.ChainUnaryInterceptor(
 			UnaryRecoveryInterceptor(healthFlag),

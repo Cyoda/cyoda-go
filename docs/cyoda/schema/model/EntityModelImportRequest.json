@@ -3,9 +3,11 @@
   "$id": "https://cyoda.com/cloud/event/model/EntityModelImportRequest.json",
   "title": "EntityModelImportRequest",
   "type": "object",
-  "extends": {
-    "$ref": "../common/BaseEvent.json"
-  },
+  "allOf": [
+    {
+      "$ref": "../common/BaseEvent.json"
+    }
+  ],
   "properties": {
     "model": {
       "$ref": "../common/ModelSpec.json",
@@ -18,7 +20,6 @@
       "$ref": "../common/DataFormat.json"
     },
     "payload": {
-      "type": "any",
       "existingJavaType": "com.fasterxml.jackson.databind.JsonNode",
       "description": "The data to be used for importing the model."
     }

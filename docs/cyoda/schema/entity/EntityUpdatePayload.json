@@ -10,7 +10,6 @@
       "format": "uuid"
     },
     "data": {
-      "type": "any",
       "existingJavaType": "com.fasterxml.jackson.databind.JsonNode",
       "description": "Entity payload data."
     },

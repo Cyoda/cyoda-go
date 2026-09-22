@@ -11,7 +11,7 @@ import (
 // a silent member is evicted in well under a second (it would take 30s at
 // the old hard-wired defaults).
 func TestNewServer_KeepAliveConfigReachesService(t *testing.T) {
-	srv := NewServer(&fixedAuthService{uc: m2mUser()}, NewMemberRegistry(), nil, nil, nil, nil, nil, nil,
+	srv := NewServer(&fixedAuthService{uc: m2mUser()}, NewMemberRegistry(), nil, nil, nil, nil, nil, noCalloutJoiner(t, nil, nil), nil,
 		"n", false, 0, true, nil, KeepAliveConfig{Interval: 20 * time.Millisecond, Timeout: 60 * time.Millisecond})
 	if srv.service.keepAliveInterval != 20*time.Millisecond || srv.service.keepAliveTimeout != 60*time.Millisecond {
 		t.Fatalf("service keep-alive = %v/%v, want 20ms/60ms", srv.service.keepAliveInterval, srv.service.keepAliveTimeout)

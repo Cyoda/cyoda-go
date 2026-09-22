@@ -21,7 +21,10 @@ type postgresFixture struct {
 	baseURL      string
 	grpcEndpoint string
 	keySet       *fixtureutil.JWTKeySet
+	computeBin   string
 }
+
+var _ parity.ComputeClientFixture = (*postgresFixture)(nil)
 
 // BaseURL implements parity.BackendFixture.
 func (f *postgresFixture) BaseURL() string { return f.baseURL }
@@ -55,6 +58,12 @@ func (f *postgresFixture) NewNonAdminTenant(t *testing.T) parity.Tenant {
 // discards its paired STATE_MACHINE_START + TRANSITION_ABORTED events.
 // Audit-shape parity scenarios branch on this property.
 func (f *postgresFixture) IsTxBoundAuditStore() bool { return true }
+
+// StartComputeClient implements parity.ComputeClientFixture.
+func (f *postgresFixture) StartComputeClient(t *testing.T, spec parity.ComputeClientSpec) parity.ComputeClient {
+	t.Helper()
+	return fixtureutil.StartComputeClientForFixture(t, f.keySet, f.computeBin, f.grpcEndpoint, f.baseURL, spec)
+}
 
 // setup boots a Postgres testcontainer, builds binaries, launches
 // subprocesses, and waits for readiness. It returns a teardown function
@@ -92,17 +101,11 @@ func setup() (*postgresFixture, func(), error) {
 	}
 
 	// 3. Launch cyoda-go + compute-test-client with postgres backend.
-	result, processCleanup, err := fixtureutil.LaunchCyodaAndCompute(ks, []string{
+	result, processCleanup, err := fixtureutil.LaunchCyodaAndCompute(ks, append([]string{
 		"CYODA_STORAGE_BACKEND=postgres",
 		fmt.Sprintf("CYODA_POSTGRES_URL=%s", connStr),
 		"CYODA_POSTGRES_AUTO_MIGRATE=true",
-		// Tuned down from the 1s production default so the
-		// scheduledtransition parity scenarios (e2e/parity/scheduledtransition)
-		// observe fires within a small, bounded poll window instead of
-		// needing multi-second timeouts. Harmless to every other parity
-		// scenario — an empty ScanDue is a cheap no-op query.
-		"CYODA_SCHEDULER_SCAN_INTERVAL=50ms",
-	})
+	}, fixtureutil.TunedServerEnv()...))
 	if err != nil {
 		containerCleanup()
 		return nil, nil, err
@@ -117,6 +120,7 @@ func setup() (*postgresFixture, func(), error) {
 		baseURL:      result.BaseURL,
 		grpcEndpoint: result.GRPCEndpoint,
 		keySet:       ks,
+		computeBin:   result.ComputeBin,
 	}
 
 	return fix, cleanup, nil

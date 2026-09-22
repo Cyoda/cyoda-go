@@ -620,7 +620,9 @@ func findScheduledTask(t *testing.T, factory spi.StoreFactory, entityID string) 
 // to draw.
 func postSchedulerRPC(t *testing.T, h *callbackHarness, task spi.ScheduledTask) (*http.Response, error) {
 	t.Helper()
-	auth, err := dispatch.NewAEADPeerAuth(clusterHMACSecret32, 30*time.Second)
+	// Signed for the harness node by name: an envelope opens only on the node
+	// it was sealed for, and cfg.Cluster.NodeID is what that node answers to.
+	auth, err := dispatch.NewAEADPeerAuth(clusterHMACSecret32, harnessAppName(t), 30*time.Second)
 	if err != nil {
 		t.Fatalf("NewAEADPeerAuth: %v", err)
 	}
@@ -633,7 +635,7 @@ func postSchedulerRPC(t *testing.T, h *callbackHarness, task spi.ScheduledTask) 
 		t.Fatalf("new request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	wire, err := auth.Sign(req, plain)
+	wire, _, err := auth.Sign(req, harnessAppName(t), plain)
 	if err != nil {
 		t.Fatalf("sign request: %v", err)
 	}

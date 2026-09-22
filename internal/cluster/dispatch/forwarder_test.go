@@ -1,12 +1,14 @@
 package dispatch_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -60,14 +62,49 @@ func verifyAEADHeaders(t *testing.T, r *http.Request) {
 	}
 }
 
+// sealingHandler verifies the request and seals whatever answer returns, as
+// the real handler does.
+func sealingHandler(t *testing.T, auth dispatch.PeerAuth, answer func(r *http.Request, plain []byte) any) http.Handler {
+	t.Helper()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		plain, _, binding, err := auth.Verify(r)
+		if err != nil {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		out, err := json.Marshal(answer(r, plain))
+		if err != nil {
+			t.Errorf("marshal answer: %v", err)
+			return
+		}
+		wire, err := auth.SealResponse(w.Header(), binding, out)
+		if err != nil {
+			t.Errorf("SealResponse: %v", err)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(wire)
+	})
+}
+
+// sealingPeer is a running peer built from sealingHandler.
+func sealingPeer(t *testing.T, auth dispatch.PeerAuth, answer func(r *http.Request, plain []byte) any) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(sealingHandler(t, auth, answer))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
 func TestHTTPForwarder_ProcessorSuccess(t *testing.T) {
+	used := 1
 	wantResp := dispatch.DispatchCalloutResponse{
+		Outcome:    dispatch.OutcomeOK,
+		TriesUsed:  &used,
 		EntityData: []byte(`{"amount":200}`),
-		Success:    true,
 		Warnings:   []string{"adjusted"},
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := sealingPeer(t, newTestPeerAuth(t), func(r *http.Request, plain []byte) any {
 		if r.URL.Path != "/internal/dispatch/callout" {
 			t.Errorf("unexpected path %q", r.URL.Path)
 		}
@@ -75,19 +112,16 @@ func TestHTTPForwarder_ProcessorSuccess(t *testing.T) {
 			t.Errorf("unexpected method %q", r.Method)
 		}
 		verifyAEADHeaders(t, r)
-
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(wantResp)
-	}))
-	defer srv.Close()
+		return wantResp
+	})
 
 	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
-	resp, err := f.ForwardCallout(context.Background(), srv.URL, makeProcessorReq())
+	resp, err := f.ForwardCallout(context.Background(), testNodeID, srv.URL, makeProcessorReq())
 	if err != nil {
 		t.Fatalf("ForwardCallout: %v", err)
 	}
-	if !resp.Success {
-		t.Errorf("Success = false, want true")
+	if resp.Outcome != dispatch.OutcomeOK {
+		t.Errorf("Outcome = %q, want %q", resp.Outcome, dispatch.OutcomeOK)
 	}
 	if string(resp.EntityData) != `{"amount":200}` {
 		t.Errorf("EntityData = %s, want {\"amount\":200}", resp.EntityData)
@@ -99,32 +133,31 @@ func TestHTTPForwarder_ProcessorSuccess(t *testing.T) {
 
 func TestHTTPForwarder_CriteriaSuccess(t *testing.T) {
 	matches := true
+	used := 1
 	wantResp := dispatch.DispatchCalloutResponse{
-		Matches: &matches,
-		Success: true,
+		Outcome:   dispatch.OutcomeOK,
+		TriesUsed: &used,
+		Matches:   &matches,
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := sealingPeer(t, newTestPeerAuth(t), func(r *http.Request, plain []byte) any {
 		if r.URL.Path != "/internal/dispatch/callout" {
 			t.Errorf("unexpected path %q", r.URL.Path)
 		}
 		verifyAEADHeaders(t, r)
-
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(wantResp)
-	}))
-	defer srv.Close()
+		return wantResp
+	})
 
 	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
-	resp, err := f.ForwardCallout(context.Background(), srv.URL, makeCriteriaReq())
+	resp, err := f.ForwardCallout(context.Background(), testNodeID, srv.URL, makeCriteriaReq())
 	if err != nil {
 		t.Fatalf("ForwardCallout: %v", err)
 	}
 	if resp.Matches == nil || !*resp.Matches {
 		t.Errorf("Matches = %v, want true", resp.Matches)
 	}
-	if !resp.Success {
-		t.Errorf("Success = false, want true")
+	if resp.Outcome != dispatch.OutcomeOK {
+		t.Errorf("Outcome = %q, want %q", resp.Outcome, dispatch.OutcomeOK)
 	}
 }
 
@@ -132,12 +165,12 @@ func TestHTTPForwarder_PeerUnreachable(t *testing.T) {
 	// localhost:1 is guaranteed unreachable (privileged port, never listening)
 	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 2*time.Second).AllowLoopbackForTesting()
 
-	_, err := f.ForwardCallout(context.Background(), "http://localhost:1", makeProcessorReq())
+	_, err := f.ForwardCallout(context.Background(), testNodeID, "http://localhost:1", makeProcessorReq())
 	if err == nil {
 		t.Fatal("expected error for unreachable peer, got nil")
 	}
 
-	_, err = f.ForwardCallout(context.Background(), "http://localhost:1", makeCriteriaReq())
+	_, err = f.ForwardCallout(context.Background(), testNodeID, "http://localhost:1", makeCriteriaReq())
 	if err == nil {
 		t.Fatal("expected error for unreachable peer, got nil")
 	}
@@ -148,15 +181,20 @@ func TestHTTPForwarder_PeerUnreachable(t *testing.T) {
 func TestHTTPForwarder_WireBodyIsEncrypted(t *testing.T) {
 	var capturedBody []byte
 
+	// The peer seals its answer, so the request body is read by Verify; the
+	// wrapper captures the wire bytes and hands the body back unread.
+	sealing := sealingHandler(t, newTestPeerAuth(t), func(r *http.Request, plain []byte) any {
+		return dispatch.DispatchCalloutResponse{Outcome: dispatch.OutcomeOK}
+	})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedBody, _ = io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(dispatch.DispatchCalloutResponse{Success: true})
+		r.Body = io.NopCloser(bytes.NewReader(capturedBody))
+		sealing.ServeHTTP(w, r)
 	}))
 	defer srv.Close()
 
 	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
-	if _, err := f.ForwardCallout(context.Background(), srv.URL, makeProcessorReq()); err != nil {
+	if _, err := f.ForwardCallout(context.Background(), testNodeID, srv.URL, makeProcessorReq()); err != nil {
 		t.Fatalf("ForwardCallout: %v", err)
 	}
 
@@ -177,21 +215,20 @@ func TestHTTPForwarder_WireBodyIsEncrypted(t *testing.T) {
 // addresses without http:// scheme (as produced by gossip NODE_ADDR like
 // "cyoda-go-node-2:8123"). Regression test for unsupported protocol error.
 func TestHTTPForwarder_AddrWithoutScheme(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(dispatch.DispatchCalloutResponse{Success: true})
-	}))
-	defer srv.Close()
+	srv := sealingPeer(t, newTestPeerAuth(t), func(r *http.Request, plain []byte) any {
+		return dispatch.DispatchCalloutResponse{Outcome: dispatch.OutcomeOK}
+	})
 
 	// Strip the "http://" from the test server URL to simulate gossip NODE_ADDR
 	addrWithoutScheme := srv.Listener.Addr().String() // e.g., "127.0.0.1:PORT"
 
 	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
-	resp, err := f.ForwardCallout(context.Background(), addrWithoutScheme, makeProcessorReq())
+	resp, err := f.ForwardCallout(context.Background(), testNodeID, addrWithoutScheme, makeProcessorReq())
 	if err != nil {
 		t.Fatalf("ForwardCallout with schemeless addr should work: %v", err)
 	}
-	if !resp.Success {
-		t.Error("expected Success=true")
+	if resp.Outcome != dispatch.OutcomeOK {
+		t.Errorf("Outcome = %q, want %q", resp.Outcome, dispatch.OutcomeOK)
 	}
 }
 
@@ -202,8 +239,120 @@ func TestHTTPForwarder_PeerReturnsError(t *testing.T) {
 	defer srv.Close()
 
 	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
-	_, err := f.ForwardCallout(context.Background(), srv.URL, makeProcessorReq())
+	_, err := f.ForwardCallout(context.Background(), testNodeID, srv.URL, makeProcessorReq())
 	if err == nil {
 		t.Fatal("expected error for 500 response, got nil")
+	}
+}
+
+func TestHTTPForwarder_PlaintextAnswerRefused(t *testing.T) {
+	auth := newTestPeerAuth(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, _, _, err := auth.Verify(r); err != nil {
+			t.Errorf("Verify: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"outcome":"ok"}`))
+	}))
+	defer srv.Close()
+
+	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
+	if _, err := f.ForwardCallout(context.Background(), testNodeID, srv.URL, makeProcessorReq()); err == nil {
+		t.Fatal("an answer that was not sealed was accepted")
+	}
+}
+
+func TestHTTPForwarder_AnswerSealedForAnotherRequestRefused(t *testing.T) {
+	auth := newTestPeerAuth(t)
+	var mu sync.Mutex
+	var firstWire []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _, binding, err := auth.Verify(r)
+		if err != nil {
+			t.Errorf("Verify: %v", err)
+			return
+		}
+		wire, err := auth.SealResponse(w.Header(), binding, []byte(`{"outcome":"ok"}`))
+		if err != nil {
+			t.Errorf("SealResponse: %v", err)
+			return
+		}
+		func() {
+			mu.Lock()
+			defer mu.Unlock()
+			if firstWire == nil {
+				firstWire = wire
+			}
+			wire = firstWire // every later request is answered with the first answer
+		}()
+		_, _ = w.Write(wire)
+	}))
+	defer srv.Close()
+
+	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
+	if _, err := f.ForwardCallout(context.Background(), testNodeID, srv.URL, makeProcessorReq()); err != nil {
+		t.Fatalf("first hand-over: %v", err)
+	}
+	_, err := f.ForwardCallout(context.Background(), testNodeID, srv.URL, makeProcessorReq())
+	if err == nil {
+		t.Fatal("an answer replayed from an earlier request was accepted")
+	}
+	// The refusal is pinned to the seal failing to open under this request's
+	// binding, not to whatever the decode that follows would have made of it.
+	if !strings.Contains(err.Error(), "open response") {
+		t.Errorf("refused for the wrong reason: %v", err)
+	}
+}
+
+// TestHTTPForwarder_FollowsNoRedirect: a 3xx on the path between nodes must not
+// send the signed hand-over on to an address that never passed the peer-address
+// guard. Every redirect is refused, whatever its status.
+func TestHTTPForwarder_FollowsNoRedirect(t *testing.T) {
+	for _, status := range []int{http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var reached bool
+			elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				reached = true
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer elsewhere.Close()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, elsewhere.URL+"/internal/dispatch/callout", status)
+			}))
+			defer srv.Close()
+
+			f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
+			if _, err := f.ForwardCallout(context.Background(), testNodeID, srv.URL, makeProcessorReq()); err == nil {
+				t.Fatal("a redirected hand-over was accepted")
+			}
+			if reached {
+				t.Error("the hand-over was sent on to an address that never passed the peer-address guard")
+			}
+		})
+	}
+}
+
+func TestHTTPForwarder_TruncatedAnswerRefused(t *testing.T) {
+	auth := newTestPeerAuth(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _, binding, err := auth.Verify(r)
+		if err != nil {
+			t.Errorf("Verify: %v", err)
+			return
+		}
+		wire, _ := auth.SealResponse(w.Header(), binding, []byte(`{"outcome":"ok","entityData":"AAAAAAAAAAAAAAAA"}`))
+		_, _ = w.Write(wire[:len(wire)/2])
+	}))
+	defer srv.Close()
+
+	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
+	_, err := f.ForwardCallout(context.Background(), testNodeID, srv.URL, makeProcessorReq())
+	if err == nil {
+		t.Fatal("a truncated answer was accepted")
+	}
+	// A half-envelope is also not valid JSON, so the refusal is pinned to the
+	// seal failing to open rather than to the decode that followed it before.
+	if !strings.Contains(err.Error(), "open response") {
+		t.Errorf("refused for the wrong reason: %v", err)
 	}
 }

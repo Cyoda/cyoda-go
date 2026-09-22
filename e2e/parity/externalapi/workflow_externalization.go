@@ -39,7 +39,9 @@ package externalapi
 
 import (
 	"encoding/json"
+	"net/http"
 	"testing"
+	"time"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/driver"
 	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/errorcontract"
@@ -226,19 +228,19 @@ func RunExternalAPI_09_04_AsyncNewTxExceptionKeepsInitialSave(t *testing.T, fixt
 // RunExternalAPI_09_05_SyncErrorFlagRollsBack — dictionary 09/05.
 func RunExternalAPI_09_05_SyncErrorFlagRollsBack(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending: cmd/compute-test-client/catalog.go has no error-flag processor; processorFunc signature does not expose the gRPC ProcessorResponse warnings/errors path. Adding it would require extending the processor signature — out of tranche-3 scope. Compute-test-client extension scheduled for a future tranche.")
+	t.Skip("pending: cmd/compute-test-client has no processor that sets the response's warnings/errors flags.")
 }
 
 // RunExternalAPI_09_06_AsyncSameTxErrorFlagRollsBack — dictionary 09/06.
 func RunExternalAPI_09_06_AsyncSameTxErrorFlagRollsBack(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending: cmd/compute-test-client/catalog.go has no error-flag processor; processorFunc signature does not expose the gRPC ProcessorResponse warnings/errors path. Adding it would require extending the processor signature — out of tranche-3 scope. Compute-test-client extension scheduled for a future tranche.")
+	t.Skip("pending: cmd/compute-test-client has no processor that sets the response's warnings/errors flags.")
 }
 
 // RunExternalAPI_09_07_AsyncNewTxErrorFlagKeepsInitialSave — dictionary 09/07.
 func RunExternalAPI_09_07_AsyncNewTxErrorFlagKeepsInitialSave(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending: cmd/compute-test-client/catalog.go has no error-flag processor; processorFunc signature does not expose the gRPC ProcessorResponse warnings/errors path. Adding it would require extending the processor signature — out of tranche-3 scope. Compute-test-client extension scheduled for a future tranche.")
+	t.Skip("pending: cmd/compute-test-client has no processor that sets the response's warnings/errors flags.")
 }
 
 // RunExternalAPI_09_08_NoExternalRegisteredFails — dictionary 09/08.
@@ -294,22 +296,114 @@ func RunExternalAPI_09_08_NoExternalRegisteredFails(t *testing.T, fixture parity
 	}
 }
 
+// failoverPair starts, under a FRESH tenant, a compute client with the given
+// behaviour and then a healthy one, both on tag — so the misbehaving one is
+// tried first — and imports a model whose one SYNC processor is routed to tag.
+// A fixture that cannot start compute clients skips here, before the server is
+// touched.
+func failoverPair(t *testing.T, fixture parity.BackendFixture, name, behaviour string, extraConfig map[string]any) (c *parityclient.Client, model string, bad, good parity.ComputeClient) {
+	t.Helper()
+	tenant := fixture.NewTenant(t)
+	tag := "ext-" + name
+	bad = parity.StartComputeClientOrSkip(t, fixture, parity.ComputeClientSpec{TenantID: tenant.ID, Tags: []string{tag}, Behaviour: behaviour})
+	good = parity.StartComputeClientOrSkip(t, fixture, parity.ComputeClientSpec{TenantID: tenant.ID, Tags: []string{tag}})
+	c = parityclient.NewClient(fixture.BaseURL(), tenant.Token)
+	model = "ext-" + name
+	setupExternalModel(t, c, model, 1, `{"k":1}`, parity.ComputeClientWorkflow("ext-"+name+"-wf", "noop", tag, "", extraConfig))
+	return c, model, bad, good
+}
+
+// assertRetryableProblem matches status and errorCode and requires
+// properties.retryable=true.
+func assertRetryableProblem(t *testing.T, status int, body []byte, wantStatus int, wantCode string) {
+	t.Helper()
+	errorcontract.Match(t, status, body, errorcontract.ExpectedError{HTTPStatus: wantStatus, ErrorCode: wantCode})
+	var problem struct {
+		Properties struct {
+			Retryable bool `json:"retryable"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(body, &problem); err != nil {
+		t.Fatalf("failed to parse response body as JSON: %v\nbody: %s", err, body)
+	}
+	if !problem.Properties.Retryable {
+		t.Errorf("expected properties.retryable=true (body: %s)", body)
+	}
+}
+
+// assertTriedThenServed: bad received the work first, good served the same
+// request afterwards.
+func assertTriedThenServed(t *testing.T, bad, good parity.ComputeClient) {
+	t.Helper()
+	b := parity.AwaitReceived(t, bad, 1, 5*time.Second)
+	g := parity.AwaitReceived(t, good, 1, 5*time.Second)
+	if len(b) != 1 || len(g) != 1 {
+		t.Fatalf("first client received %d requests, second %d; want 1 and 1", len(b), len(g))
+	}
+	if b[0].RequestID == "" || b[0].RequestID != g[0].RequestID {
+		t.Errorf("request ids differ across tries: %q then %q", b[0].RequestID, g[0].RequestID)
+	}
+}
+
 // RunExternalAPI_09_09_ExternalDisconnectSucceedsOnRetry — dictionary 09/09.
+// The first compute node drops its connection on receiving the work; the
+// processor is declared idempotent, so the second is asked and the entity is
+// created.
 func RunExternalAPI_09_09_ExternalDisconnectSucceedsOnRetry(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending: requires multi-member orchestration (one disconnects, another responds). The parity fixture exposes a single compute-test-client; adding member-lifecycle hooks is out of tranche-3 scope.")
+	c, model, bad, good := failoverPair(t, fixture, "0909", parity.ComputeBehaviourDrop, map[string]any{"idempotent": true})
+	id, err := c.CreateEntity(t, model, 1, `{"k":1}`)
+	if err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+	if got, err := c.GetEntity(t, id); err != nil || got.Meta.State != "ACTIVE" {
+		t.Errorf("state = %q err=%v; want ACTIVE", got.Meta.State, err)
+	}
+	assertTriedThenServed(t, bad, good)
 }
 
 // RunExternalAPI_09_10_ExternalTimeoutFailover — dictionary 09/10.
+// The first compute node never answers; after the processor's own
+// responseTimeoutMs the second is asked.
 func RunExternalAPI_09_10_ExternalTimeoutFailover(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending: requires per-call timeout config tunable from the test side AND multi-member failover. cyoda-go has ProcessorConfig.ResponseTimeoutMs but the parity fixture does not provide a fast/slow member pair. Out of tranche-3 scope.")
+	c, model, bad, good := failoverPair(t, fixture, "0910", parity.ComputeBehaviourStall,
+		map[string]any{"idempotent": true, "responseTimeoutMs": 300})
+	if _, err := c.CreateEntity(t, model, 1, `{"k":1}`); err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+	assertTriedThenServed(t, bad, good)
 }
 
 // RunExternalAPI_09_11_ProcessingNodeDisconnectsMidRequest — dictionary 09/11.
+// A compute node disconnects with the request in its hands while another
+// remains. What happens next is the workflow author's declaration: without
+// `idempotent` the operation fails with the try's own code and the other node
+// is never asked; with it, the other node serves the request.
 func RunExternalAPI_09_11_ProcessingNodeDisconnectsMidRequest(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending: requires deterministic mid-request gRPC disconnect of a calc member while another member remains. The parity fixture exposes a single compute-test-client and no disconnect hook. Out of tranche-3 scope.")
+	t.Run("not-idempotent", func(t *testing.T) {
+		c, model, bad, good := failoverPair(t, fixture, "0911n", parity.ComputeBehaviourDrop, nil)
+		status, body, err := c.CreateEntityRaw(t, model, 1, `{"k":1}`)
+		if err != nil {
+			t.Fatalf("CreateEntityRaw: %v", err)
+		}
+		assertRetryableProblem(t, status, body, http.StatusServiceUnavailable, "COMPUTE_MEMBER_DISCONNECTED")
+		parity.AwaitReceived(t, bad, 1, 5*time.Second)
+		if got := good.Received(t); len(got) != 0 {
+			t.Errorf("the remaining compute node received %d requests; a processor not declared idempotent is not repeated", len(got))
+		}
+		if list, err := c.ListEntitiesByModel(t, model, 1); err != nil || len(list) != 0 {
+			t.Errorf("entities after the failed create: %d err=%v; want 0", len(list), err)
+		}
+	})
+	t.Run("idempotent", func(t *testing.T) {
+		c, model, bad, good := failoverPair(t, fixture, "0911i", parity.ComputeBehaviourDrop, map[string]any{"idempotent": true})
+		if _, err := c.CreateEntity(t, model, 1, `{"k":1}`); err != nil {
+			t.Fatalf("CreateEntity: %v", err)
+		}
+		assertTriedThenServed(t, bad, good)
+	})
 }
 
 // RunExternalAPI_09_12_ExternalizedCriterionSkipsCall — dictionary 09/12.

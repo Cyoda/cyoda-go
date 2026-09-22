@@ -25,6 +25,7 @@ import (
 //	non-empty token, unknown/closed txID → 404 TRANSACTION_NOT_FOUND
 //	expired token                        → 410 TRANSACTION_EXPIRED
 //	forged / bad-HMAC token              → 401 UNAUTHORIZED
+//	pass with no callout and number      → 401 UNAUTHORIZED
 //	token tenant ≠ caller tenant         → 403 FORBIDDEN
 //	empty token (control)                → 2xx standalone
 //
@@ -147,7 +148,8 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 	// HMAC-valid (server's own signer) but references a tx that was never
 	// registered, so Join fails ErrTxNotFound rather than being rejected as forged.
 	t.Run("NotFound_404", func(t *testing.T) {
-		tok, err := h.app.TokenSigner().Issue("local", "no-such-tx-"+randSuffix(t), time.Now().Add(time.Minute))
+		txRef := "no-such-tx-" + randSuffix(t)
+		tok, err := h.app.TokenSigner().Issue(token.Claims{NodeID: "local", TxRef: txRef, ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-" + txRef, Major: 1})
 		if err != nil {
 			t.Fatalf("Issue: %v", err)
 		}
@@ -164,7 +166,8 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 	// expired token → 410 TRANSACTION_EXPIRED. HMAC-valid but past its deadline,
 	// so Verify fails ErrTokenExpired before any Join is attempted.
 	t.Run("Expired_410", func(t *testing.T) {
-		tok, err := h.app.TokenSigner().Issue("local", "tx-"+randSuffix(t), time.Now().Add(-10*time.Second))
+		txRef := "tx-" + randSuffix(t)
+		tok, err := h.app.TokenSigner().Issue(token.Claims{NodeID: "local", TxRef: txRef, ExpiresAt: time.Now().Add(-10 * time.Second).Unix(), Callout: "req-" + txRef, Major: 1})
 		if err != nil {
 			t.Fatalf("Issue: %v", err)
 		}
@@ -185,7 +188,27 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewSigner(forger): %v", err)
 		}
-		tok, err := forger.Issue("local", "tx-"+randSuffix(t), time.Now().Add(time.Minute))
+		txRef := "tx-" + randSuffix(t)
+		tok, err := forger.Issue(token.Claims{NodeID: "local", TxRef: txRef, ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-" + txRef, Major: 1})
+		if err != nil {
+			t.Fatalf("Issue: %v", err)
+		}
+		resp := h.DoAuth(t, http.MethodGet, probePath, "", tok)
+		body := h.readBody(t, resp)
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("status = %d; want 401 (body: %s)", resp.StatusCode, body)
+		}
+		if code := problemErrorCode(body); code != "UNAUTHORIZED" {
+			t.Fatalf("errorCode = %q; want UNAUTHORIZED (body: %s)", code, body)
+		}
+	})
+
+	// A pass with no callout and number — what an earlier version minted — is
+	// malformed: 401, as any invalid pass.
+	t.Run("NoCalloutAndNumber_401", func(t *testing.T) {
+		tok, err := h.app.TokenSigner().Issue(token.Claims{
+			NodeID: "local", TxRef: "tx-" + randSuffix(t), ExpiresAt: time.Now().Add(time.Minute).Unix(),
+		})
 		if err != nil {
 			t.Fatalf("Issue: %v", err)
 		}

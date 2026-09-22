@@ -1,19 +1,40 @@
-// Package txgate provides per-transaction exclusive gates. A joined callback
-// and the transaction owner's commit both Acquire the same txID's gate so their
-// access to the shared tx buffer / pgx.Tx is serialised. This is the
-// application-side concurrency contract the SPI delegates
+// Package txgate provides per-transaction exclusive gates. Three users take the
+// same txID's gate: every joined request, for the whole of its handler; the
+// transaction owner's final save, commit and rollback; and the fence's wait,
+// which takes the gate once after it has shut a compute member out, so that
+// nothing that member had in progress is still running when the work moves on.
+// Their access to the shared tx buffer / pgx.Tx is thereby serialised, which is
+// the application-side concurrency contract the SPI delegates
 // (cyoda-go-spi transaction.go: "the application must serialise its own
 // concurrent in-flight ops on the same tx").
 package txgate
 
 import (
 	"context"
+	"errors"
 	"sync"
 )
 
+// ErrTooManyWaiters is what AcquireCtx returns when the transaction's gate
+// already has maxWaiters callers queued behind whoever holds it. The refused
+// caller holds nothing and has touched nothing of the transaction.
+var ErrTooManyWaiters = errors.New("too many callers are waiting for the transaction's gate")
+
 type gate struct {
-	mu   sync.Mutex
+	// held is the gate itself: one token, and holding the gate is holding the
+	// one slot. A channel rather than a sync.Mutex, so that a caller that has
+	// not taken the gate yet can give the wait up when its own context ends —
+	// it has touched nothing of the transaction, so there is nothing to undo.
+	held chan struct{}
 	refs int
+	// waiting counts the callers queued for the slot — not the one holding it,
+	// which drops out of the count the moment it wins the slot. It is what the
+	// cap is applied to, so a cap of n admits the holder plus n queued. An
+	// uncapped wait (Acquire) is counted like any other: it cannot be refused
+	// itself, but it is one of the callers a capped one would queue behind, so
+	// a cap read while the owner waits is a shade conservative rather than
+	// wrong.
+	waiting int
 }
 
 // Registry hands out exclusive per-txID gates, cleaning up entries once no
@@ -27,29 +48,120 @@ func New() *Registry { return &Registry{gates: make(map[string]*gate)} }
 
 // Acquire blocks until the caller holds the exclusive gate for txID, then
 // returns a release func. Empty txID returns a no-op release (never gated).
+// The wait has no end and is never refused for capacity: the transaction
+// owner's own chain, the fence's wait and a suspended callback's resume all
+// take the gate this way, and each holds state that neither giving up nor a
+// refusal could undo.
 func (r *Registry) Acquire(txID string) func() {
-	if txID == "" {
-		return func() {}
+	release, _ := r.acquire(context.Background(), txID, 0) // a background, uncapped wait cannot fail
+	return release
+}
+
+// AcquireCtx is Acquire for a caller that may go away before it has the gate:
+// when ctx ends first it returns ctx.Err() and no release func, and the caller
+// holds nothing. Once a release func has been returned the gate is held, and
+// ctx no longer bears on it — a holder gives the gate up by releasing it, never
+// by being cancelled.
+//
+// maxWaiters bounds the queue: when that many callers are already waiting the
+// call returns ErrTooManyWaiters at once rather than joining them, having
+// touched nothing. A caller that sits on one transaction can otherwise park
+// callbacks on it without bound, each holding its request for the life of the
+// callout. Zero or less is no cap.
+func (r *Registry) AcquireCtx(ctx context.Context, txID string, maxWaiters int) (func(), error) {
+	return r.acquire(ctx, txID, maxWaiters)
+}
+
+// AtCapacity reports whether txID's gate already has maxWaiters callers queued.
+// It is a reading, not a reservation: a door that asks before it reads its
+// request — so that a refused request costs it no buffer — may still be refused
+// by AcquireCtx, and may be admitted by it having read full here. AcquireCtx's
+// answer is the binding one.
+//
+// A transaction with no gate reads the same as one nobody is queued for, so the
+// reading never says whether a transaction exists.
+func (r *Registry) AtCapacity(txID string, maxWaiters int) bool {
+	if txID == "" || maxWaiters <= 0 {
+		return false
 	}
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	g := r.gates[txID]
-	if g == nil {
-		g = &gate{}
-		r.gates[txID] = g
+	return g != nil && g.waiting >= maxWaiters
+}
+
+func (r *Registry) acquire(ctx context.Context, txID string, maxWaiters int) (func(), error) {
+	if txID == "" {
+		return func() {}, nil
 	}
-	g.refs++
-	r.mu.Unlock()
-
-	g.mu.Lock()
-
-	return func() {
-		g.mu.Unlock()
+	// A caller that has already gone takes nothing, free gate or not: the
+	// select below would otherwise pick either.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	g, err := func() (*gate, error) {
 		r.mu.Lock()
-		g.refs--
-		if g.refs == 0 {
-			delete(r.gates, txID)
+		defer r.mu.Unlock()
+		g := r.gates[txID]
+		if g == nil {
+			g = &gate{held: make(chan struct{}, 1)}
+			r.gates[txID] = g
 		}
-		r.mu.Unlock()
+		if maxWaiters > 0 && g.waiting >= maxWaiters {
+			// Nothing was added: a gate created a line above has no waiters,
+			// so this branch only ever sees one the caller found.
+			return nil, ErrTooManyWaiters
+		}
+		g.refs++
+		g.waiting++
+		return g, nil
+	}()
+	if err != nil {
+		return nil, err
+	}
+
+	// When the gate frees and ctx ends at the same instant, select takes either:
+	// a caller that wins the send holds the gate with a context that has just
+	// ended, and its request runs. That is deliberate, and not re-checked
+	// afterwards — it is the same case as a client that went away one
+	// instruction after acquiring, which runs to completion by contract, and no
+	// caller can tell the two apart.
+	select {
+	case g.held <- struct{}{}: // held until the returned release runs
+		r.stopWaiting(g)
+	case <-ctx.Done():
+		r.stopWaiting(g)
+		r.unref(txID, g)
+		return nil, ctx.Err()
+	}
+
+	// The release is taken once: the suspend handle below releases through a
+	// pointer the caller also defers, and one of the two runs second.
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			<-g.held
+			r.unref(txID, g)
+		})
+	}, nil
+}
+
+// stopWaiting takes the caller out of the queue count, whether it won the slot
+// or gave the wait up.
+func (r *Registry) stopWaiting(g *gate) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	g.waiting--
+}
+
+// unref drops one reference to txID's gate and forgets the gate once no
+// goroutine holds or waits on it.
+func (r *Registry) unref(txID string, g *gate) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	g.refs--
+	if g.refs == 0 {
+		delete(r.gates, txID)
 	}
 }
 
@@ -67,11 +179,13 @@ type heldKeyT struct{}
 var heldKey = heldKeyT{}
 
 // held is the ctx-scoped handle to a gate the current call chain holds. The
-// engine releases it across a blocking callout (SYNC processor / FUNCTION
-// criterion dispatch) via Suspend and re-acquires it afterward — the one window
-// that touches no local buffer yet can re-enter with a descendant callback on
-// the same txID. This generalises the owner's H3 invariant ("never hold the
-// gate across engine.Execute") to the joined-callback path.
+// engine releases it across every blocking callout — a SYNC or ASYNC_SAME_TX
+// processor, an ASYNC_NEW_TX processor, a FUNCTION criterion, and the
+// scheduled-transition arming function — via Suspend, and re-acquires it
+// afterward: the one window that touches no local buffer yet can re-enter with
+// a descendant callback on the same txID, and the fence's wait takes the same
+// gate. The transaction owner's own chain never holds the gate across
+// engine.Execute; this extends that rule to the joined-callback path.
 //
 // The handle is single-goroutine by construction: Suspend/resume and the
 // caller's deferred release all run on the synchronous handler→engine→dispatch

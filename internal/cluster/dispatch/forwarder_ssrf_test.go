@@ -14,7 +14,7 @@ import (
 // the cluster forwarder. Registry entries are trusted by default, but if
 // an attacker can influence them (e.g. via a rogue node join, a config
 // mistake, or a compromise of a peer) the forwarder must not proxy
-// HMAC-signed requests to loopback or link-local addresses — doing so
+// sealed requests to loopback or link-local addresses — doing so
 // would let that attacker reach in-process databases, cloud metadata
 // endpoints, or other services bound on 127.0.0.1.
 //
@@ -32,7 +32,7 @@ func TestHTTPForwarder_RejectsLoopbackAddresses(t *testing.T) {
 		"http://[::1]:8080",
 	}
 	for _, addr := range cases {
-		_, err := fw.ForwardCallout(context.Background(), addr, makeProcessorReq())
+		_, err := fw.ForwardCallout(context.Background(), testNodeID, addr, makeProcessorReq())
 		if err == nil {
 			t.Errorf("ForwardCallout(%q) accepted loopback address", addr)
 			continue
@@ -53,7 +53,7 @@ func TestHTTPForwarder_RejectsLoopbackAddresses(t *testing.T) {
 func TestHTTPForwarder_RejectsIPv6LinkLocalWithZoneID(t *testing.T) {
 	fw := dispatch.NewHTTPForwarder(newTestPeerAuth(t), time.Second)
 
-	_, err := fw.ForwardCallout(context.Background(), "[fe80::1%eth0]:8080", makeProcessorReq())
+	_, err := fw.ForwardCallout(context.Background(), testNodeID, "[fe80::1%eth0]:8080", makeProcessorReq())
 	if err == nil {
 		t.Fatal("forwarder accepted IPv6 link-local with zone ID")
 	}
@@ -86,7 +86,7 @@ func TestHTTPForwarder_RejectsLinkLocalAddresses(t *testing.T) {
 		"[fe80::1]:8080",                     // IPv6 link-local
 	}
 	for _, addr := range cases {
-		_, err := fw.ForwardCallout(context.Background(), addr, makeCriteriaReq())
+		_, err := fw.ForwardCallout(context.Background(), testNodeID, addr, makeCriteriaReq())
 		if err == nil {
 			t.Errorf("ForwardCallout(%q) accepted link-local address", addr)
 			continue
@@ -106,7 +106,7 @@ func TestHTTPForwarder_AcceptsRoutableAddress(t *testing.T) {
 	// the guard must let it through and the call must fail with a
 	// *network* error, not ErrForbiddenPeerAddress.
 	fw := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 50*time.Millisecond)
-	_, err := fw.ForwardCallout(context.Background(), "192.0.2.1:8080", makeProcessorReq())
+	_, err := fw.ForwardCallout(context.Background(), testNodeID, "192.0.2.1:8080", makeProcessorReq())
 	if err == nil {
 		t.Fatal("expected network error for unreachable TEST-NET-1 address")
 	}

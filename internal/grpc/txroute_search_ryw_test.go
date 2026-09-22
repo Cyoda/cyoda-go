@@ -18,7 +18,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/txjoin"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
@@ -86,7 +85,7 @@ func (o *ownerNode) ctx() context.Context {
 //
 //	node B interceptor (non-owner) — recognises the token names node A, proxies
 //	  └─ forwardSearchStream seam (stands in for the gRPC wire to node A)
-//	       └─ txjoin.JoinFromToken(node A's txMgr)  — owner joins the LIVE tx
+//	       └─ txjoin.Joiner.Run(node A's txMgr)  — owner joins the LIVE tx
 //	            └─ node A's real EntitySearchCollection → overlay Searcher.Search
 //	                 └─ returns the owner's UNCOMMITTED buffered row (RYW)
 //
@@ -148,29 +147,38 @@ func TestTxRouteInterceptor_SearchForwardReturnsOwnerUncommittedWrites(t *testin
 	}
 
 	// --- token names node A; the referenced tx is the one we just buffered into.
-	tok, err := signer.Issue("node-A", txID, time.Now().Add(time.Minute))
+	tok, err := signer.Issue(token.Claims{NodeID: "node-A", TxRef: txID, ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-" + txID, Major: 1})
 	if err != nil {
 		t.Fatalf("Issue token: %v", err)
 	}
+	// The owner's fence has that callout in progress at the pass's number, so
+	// the local join below admits it. liveRouteFence names it "req-"+txID.
+	ownerFence, ownerGate, _ := liveRouteFence(t, txID)
+	ownerJoiner := mustJoiner(t, signer, owner.txMgr, ownerFence, ownerGate)
 
 	// --- node A owner-side forward target: join the LIVE tx exactly as the
-	// interceptor's local-join branch does (txjoin.JoinFromToken with node A's
-	// txMgr), then run node A's REAL search handler on that tx-joined context.
-	// This is the co-location: the overlay Searcher only sees the buffer because
-	// it executes on the node that holds the tx.
+	// interceptor's local-join branch does (the one join door, txjoin.Joiner.Run,
+	// over node A's txMgr), then run node A's REAL search handler on that
+	// tx-joined context. This is the co-location: the overlay Searcher only sees
+	// the buffer because it executes on the node that holds the tx.
 	ownerHandle := func(ce *cepb.CloudEvent) (*fakeClientStream, error) {
-		ownerCtx, jerr := txjoin.JoinFromToken(owner.ctx(), signer, owner.txMgr, tok)
+		var captured *mockEntityStream
+		var herr error
+		jerr := ownerJoiner.Run(owner.ctx(), tok, func(ownerCtx context.Context) {
+			if spi.GetTransaction(ownerCtx) == nil {
+				t.Error("owner must join the live tx from the token (co-location precondition)")
+				return
+			}
+			captured = &mockEntityStream{ctx: ownerCtx}
+			herr = owner.svc.EntitySearchCollection(ce, captured)
+		})
 		if jerr != nil {
 			return nil, jerr
 		}
-		if spi.GetTransaction(ownerCtx) == nil {
-			t.Fatal("owner must join the live tx from the token (co-location precondition)")
-		}
-		cap := &mockEntityStream{ctx: ownerCtx}
-		if herr := owner.svc.EntitySearchCollection(ce, cap); herr != nil {
+		if herr != nil {
 			return nil, herr
 		}
-		return &fakeClientStream{frames: cap.sent}, nil
+		return &fakeClientStream{frames: captured.sent}, nil
 	}
 
 	// --- node B (non-owner): interceptor with its OWN empty txMgr (it does not
@@ -180,7 +188,7 @@ func TestTxRouteInterceptor_SearchForwardReturnsOwnerUncommittedWrites(t *testin
 	regB := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
 		"node-A": {NodeID: "node-A", Addr: "http://node-a:8080", Alive: true},
 	}}
-	nodeB := newTxRouteInterceptor(signer, regB, "node-B", fakeJoinTM{}, 9090, true)
+	nodeB := newTxRouteInterceptor(signer, regB, "node-B", noCalloutJoiner(t, signer, fakeJoinTM{}), 9090, true)
 
 	var forwardedAddr string
 	nodeB.forwardSearchStream = func(_ context.Context, _ *proxy.ClientPool, addr string, ce *cepb.CloudEvent) (googlegrpc.ServerStreamingClient[cepb.CloudEvent], error) {

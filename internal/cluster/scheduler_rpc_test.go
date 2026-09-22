@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -151,10 +154,46 @@ func (r *fakeRegistry) Lookup(context.Context, string) (string, bool, error) {
 }
 func (r *fakeRegistry) List(context.Context) ([]contract.NodeInfo, error) { return nil, nil }
 func (r *fakeRegistry) Deregister(context.Context, string) error          { return nil }
+func (r *fakeRegistry) Changed() <-chan struct{}                          { return nil }
 
 var _ contract.NodeRegistry = (*fakeRegistry)(nil)
 
 var testSecret32 = bytes.Repeat([]byte{0xCD}, 32)
+
+// testPeerNodeID is the node id the server side of these tests answers to, and
+// therefore the target every client call names: a delegated fire is sealed for
+// the one node the coordinator resolved, and opens nowhere else.
+const testPeerNodeID = "peer-node"
+
+// newTestAuth builds the AEADPeerAuth both ends of the scheduler RPC share in
+// these tests. Mirrors dispatch's own newAEAD test helper.
+func newTestAuth(t *testing.T) *dispatch.AEADPeerAuth {
+	t.Helper()
+	auth, err := dispatch.NewAEADPeerAuth(testSecret32, testPeerNodeID, 30*time.Second)
+	if err != nil {
+		t.Fatalf("NewAEADPeerAuth: %v", err)
+	}
+	return auth
+}
+
+// signedSchedulerRequest builds a peer-authenticated scheduled-task request
+// ready for the handler to verify, and returns the binding its answer opens
+// under.
+func signedSchedulerRequest(t *testing.T, auth dispatch.PeerAuth, task spi.ScheduledTask) (*http.Request, dispatch.ResponseBinding) {
+	t.Helper()
+	plain, err := json.Marshal(SchedulerTaskRequest{Task: task})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, schedulerTaskPath, nil)
+	wire, binding, err := auth.Sign(req, testPeerNodeID, plain)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	req.Body = io.NopCloser(bytes.NewReader(wire))
+	req.ContentLength = int64(len(wire))
+	return req, binding
+}
 
 // TestExecutor_ForwardsWithPeerAuth proves a non-self target is forwarded
 // over the PeerAuth-authenticated channel end-to-end (real HTTP round trip
@@ -162,7 +201,7 @@ var testSecret32 = bytes.Repeat([]byte{0xCD}, 32)
 // call to the same server handler is rejected — no unauthenticated path
 // exists to reach the engine.
 func TestExecutor_ForwardsWithPeerAuth(t *testing.T) {
-	auth, err := dispatch.NewAEADPeerAuth(testSecret32, 30*time.Second)
+	auth, err := dispatch.NewAEADPeerAuth(testSecret32, testPeerNodeID, 30*time.Second)
 	if err != nil {
 		t.Fatalf("NewAEADPeerAuth: %v", err)
 	}
@@ -203,7 +242,7 @@ func TestExecutor_ForwardsWithPeerAuth(t *testing.T) {
 // surface" guarantee (Gate 3): the scheduled-task RPC rides the identical
 // authentication as processor/criteria dispatch.
 func TestSchedulerRPCHandler_RejectsUnauthenticated(t *testing.T) {
-	auth, err := dispatch.NewAEADPeerAuth(testSecret32, 30*time.Second)
+	auth, err := dispatch.NewAEADPeerAuth(testSecret32, testPeerNodeID, 30*time.Second)
 	if err != nil {
 		t.Fatalf("NewAEADPeerAuth: %v", err)
 	}
@@ -236,7 +275,7 @@ func TestSchedulerRPCHandler_RejectsUnauthenticated(t *testing.T) {
 func TestExecutor_PeerLookupFailure_DropsWithoutLocalFallback(t *testing.T) {
 	fake := &fakeSchedEngine{}
 	registry := &fakeRegistry{addr: "", alive: false}
-	auth, err := dispatch.NewAEADPeerAuth(testSecret32, 30*time.Second)
+	auth, err := dispatch.NewAEADPeerAuth(testSecret32, testPeerNodeID, 30*time.Second)
 	if err != nil {
 		t.Fatalf("NewAEADPeerAuth: %v", err)
 	}
@@ -293,4 +332,365 @@ func TestExecutor_MisWiredNonSelfTarget_WarnsThenFiresLocally(t *testing.T) {
 			t.Errorf("expected no warning for an empty target, got: %s", buf.String())
 		}
 	})
+}
+
+// TestSchedulerRPCClient_PlaintextAnswerRefused proves the coordinator trusts
+// only an answer sealed for the request it sent. An unsealed `{"success":true}`
+// from a peer that never ran the task — anyone on the network path can write
+// one without holding the cluster key — must not be read as a fire: the
+// coordinator treats a reported success as the task having run and drops it, so
+// the task would silently never run.
+func TestSchedulerRPCClient_PlaintextAnswerRefused(t *testing.T) {
+	auth := newTestAuth(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, _, _, err := auth.Verify(r); err != nil {
+			t.Errorf("Verify: %v", err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewSchedulerRPCClient(newTestAuth(t), 5*time.Second).AllowLoopbackForTesting()
+	err := client.ExecuteScheduledTask(context.Background(), testPeerNodeID, srv.URL, spi.ScheduledTask{ID: "t-plain", TenantID: testTenant})
+	if err == nil {
+		t.Fatal("an answer that was not sealed was accepted as a fire")
+	}
+	if !strings.Contains(err.Error(), "open scheduler response") {
+		t.Errorf("refused for the wrong reason: %v", err)
+	}
+}
+
+// TestSchedulerRPCClient_AnswerSealedForAnotherRequestRefused proves an answer
+// sealed for a different request does not answer this one: a recorded sealed
+// success replayed onto a later call is refused.
+func TestSchedulerRPCClient_AnswerSealedForAnotherRequestRefused(t *testing.T) {
+	auth := newTestAuth(t)
+	var mu sync.Mutex
+	var firstWire []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _, binding, err := auth.Verify(r)
+		if err != nil {
+			t.Errorf("Verify: %v", err)
+			return
+		}
+		wire, err := auth.SealResponse(w.Header(), binding, []byte(`{"success":true}`))
+		if err != nil {
+			t.Errorf("SealResponse: %v", err)
+			return
+		}
+		func() {
+			mu.Lock()
+			defer mu.Unlock()
+			if firstWire == nil {
+				firstWire = wire
+			}
+			wire = firstWire // every later request is answered with the first answer
+		}()
+		_, _ = w.Write(wire)
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewSchedulerRPCClient(newTestAuth(t), 5*time.Second).AllowLoopbackForTesting()
+	if err := client.ExecuteScheduledTask(context.Background(), testPeerNodeID, srv.URL, spi.ScheduledTask{ID: "t-1", TenantID: testTenant}); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	err := client.ExecuteScheduledTask(context.Background(), testPeerNodeID, srv.URL, spi.ScheduledTask{ID: "t-2", TenantID: testTenant})
+	if err == nil {
+		t.Fatal("an answer replayed from an earlier request was accepted")
+	}
+	if !strings.Contains(err.Error(), "open scheduler response") {
+		t.Errorf("refused for the wrong reason: %v", err)
+	}
+}
+
+// TestSchedulerRPCClient_TruncatedAnswerRefused proves a sealed answer whose
+// last byte is missing — long enough to pass the envelope's length floor, so it
+// is the authentication tag that refuses it — is not read as a fire.
+func TestSchedulerRPCClient_TruncatedAnswerRefused(t *testing.T) {
+	auth := newTestAuth(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _, binding, err := auth.Verify(r)
+		if err != nil {
+			t.Errorf("Verify: %v", err)
+			return
+		}
+		wire, err := auth.SealResponse(w.Header(), binding, []byte(`{"success":true}`))
+		if err != nil {
+			t.Errorf("SealResponse: %v", err)
+			return
+		}
+		_, _ = w.Write(wire[:len(wire)-1])
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewSchedulerRPCClient(newTestAuth(t), 5*time.Second).AllowLoopbackForTesting()
+	err := client.ExecuteScheduledTask(context.Background(), testPeerNodeID, srv.URL, spi.ScheduledTask{ID: "t-trunc", TenantID: testTenant})
+	if err == nil {
+		t.Fatal("a truncated answer was accepted")
+	}
+	if !strings.Contains(err.Error(), "open scheduler response") {
+		t.Errorf("refused for the wrong reason: %v", err)
+	}
+}
+
+// TestSchedulerRPCClient_FollowsNoRedirect: a 3xx on the path between nodes
+// must not send the signed task on to an address that never passed the
+// peer-address guard. Every redirect is refused, whatever its status.
+func TestSchedulerRPCClient_FollowsNoRedirect(t *testing.T) {
+	for _, status := range []int{http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var reached bool
+			elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				reached = true
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(elsewhere.Close)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, elsewhere.URL+schedulerTaskPath, status)
+			}))
+			t.Cleanup(srv.Close)
+
+			client := NewSchedulerRPCClient(newTestAuth(t), 5*time.Second).AllowLoopbackForTesting()
+			if err := client.ExecuteScheduledTask(context.Background(), testPeerNodeID, srv.URL, spi.ScheduledTask{ID: "t-redirect", TenantID: testTenant}); err == nil {
+				t.Fatal("a redirected task was accepted as a fire")
+			}
+			if reached {
+				t.Error("the task was sent on to an address that never passed the peer-address guard")
+			}
+		})
+	}
+}
+
+// TestSchedulerRPC_SealedRoundTrip proves the real handler and the real client
+// agree on the sealed answer over a real HTTP round trip: a fire that ran
+// arrives as success, and one the peer's engine refused arrives as that
+// failure's sanitized error rather than as a lost answer.
+func TestSchedulerRPC_SealedRoundTrip(t *testing.T) {
+	serve := func(t *testing.T, fake *fakeSchedEngine) *httptest.Server {
+		t.Helper()
+		mux := http.NewServeMux()
+		NewSchedulerRPCHandler(fake, newTestAuth(t)).Register(mux)
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+		return srv
+	}
+
+	t.Run("success", func(t *testing.T) {
+		fake := &fakeSchedEngine{outcome: "fired"}
+		srv := serve(t, fake)
+		client := NewSchedulerRPCClient(newTestAuth(t), 5*time.Second).AllowLoopbackForTesting()
+
+		if err := client.ExecuteScheduledTask(context.Background(), testPeerNodeID, srv.URL, spi.ScheduledTask{ID: "rt-ok", TenantID: testTenant}); err != nil {
+			t.Fatalf("ExecuteScheduledTask: %v", err)
+		}
+		if fake.calls != 1 || fake.gotTask.ID != "rt-ok" {
+			t.Errorf("peer engine calls = %d, task = %q", fake.calls, fake.gotTask.ID)
+		}
+	})
+
+	t.Run("application failure", func(t *testing.T) {
+		fake := &fakeSchedEngine{err: errors.New("engine said no")}
+		srv := serve(t, fake)
+		client := NewSchedulerRPCClient(newTestAuth(t), 5*time.Second).AllowLoopbackForTesting()
+
+		err := client.ExecuteScheduledTask(context.Background(), testPeerNodeID, srv.URL, spi.ScheduledTask{ID: "rt-fail", TenantID: testTenant})
+		if err == nil {
+			t.Fatal("expected the peer's reported failure to reach the coordinator")
+		}
+		if !strings.Contains(err.Error(), "scheduled task fire failed") {
+			t.Errorf("the peer's sanitized failure did not arrive intact: %v", err)
+		}
+		if strings.Contains(err.Error(), "engine said no") {
+			t.Errorf("the peer leaked its internal error: %v", err)
+		}
+	})
+}
+
+// TestSchedulerRPCHandler_AnswerIsSealedForItsRequest proves the handler's
+// answer to a verified request is on the wire under seal — the sealed content
+// type, bytes that are neither readable JSON nor carry the plaintext marker —
+// and opens only under that request's binding.
+func TestSchedulerRPCHandler_AnswerIsSealedForItsRequest(t *testing.T) {
+	auth := newTestAuth(t)
+	fake := &fakeSchedEngine{outcome: "fired"}
+	mux := http.NewServeMux()
+	NewSchedulerRPCHandler(fake, auth).Register(mux)
+
+	req, binding := signedSchedulerRequest(t, auth, spi.ScheduledTask{ID: "sealed-task", TenantID: testTenant})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != dispatch.DispatchContentType {
+		t.Errorf("Content-Type = %q, want %q", got, dispatch.DispatchContentType)
+	}
+	wire := rec.Body.Bytes()
+	if json.Valid(wire) {
+		t.Errorf("the answer is readable JSON on the wire: %s", wire)
+	}
+	if bytes.Contains(wire, []byte("success")) {
+		t.Error("the answer carries its plaintext marker on the wire")
+	}
+
+	plain, err := auth.OpenResponse(rec.Header(), binding, wire)
+	if err != nil {
+		t.Fatalf("the answer does not open under its request's binding: %v", err)
+	}
+	var resp SchedulerTaskResponse
+	if err := json.Unmarshal(plain, &resp); err != nil {
+		t.Fatalf("decode answer: %v", err)
+	}
+	if !resp.Success {
+		t.Errorf("Success = false, want true: %+v", resp)
+	}
+}
+
+// TestSchedulerRPC_SealedForOneNodeRefusedByAnother proves a delegated fire is
+// sealed for the one node the coordinator resolved: the same bytes delivered to
+// another node of the cluster — which holds the same key — are refused there,
+// and its engine never runs the task. Without the binding a captured fire
+// replays on every node, firing the transition once per node.
+//
+// The answer's half of the same binding is pinned where the associated data is
+// built, in internal/cluster/dispatch: both surfaces sign through the one
+// PeerAuth.
+func TestSchedulerRPC_SealedForOneNodeRefusedByAnother(t *testing.T) {
+	elsewhere, err := dispatch.NewAEADPeerAuth(testSecret32, "another-node", 30*time.Second)
+	if err != nil {
+		t.Fatalf("NewAEADPeerAuth: %v", err)
+	}
+	fake := &fakeSchedEngine{outcome: "fired"}
+	mux := http.NewServeMux()
+	NewSchedulerRPCHandler(fake, elsewhere).Register(mux)
+
+	// Sealed for testPeerNodeID, delivered to the node named another-node.
+	req, _ := signedSchedulerRequest(t, newTestAuth(t), spi.ScheduledTask{ID: "replayed-task", TenantID: testTenant})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 for a fire sealed for another node", rec.Code)
+	}
+	if fake.calls != 0 {
+		t.Error("a fire sealed for another node reached the engine")
+	}
+}
+
+// TestSchedulerRPCClient_TransportRules reads the client's transport rather
+// than exercising it: Go exempts loopback from proxying, so a test server on
+// 127.0.0.1 could never show a proxy being used. The rule is the hand-over
+// transport's — a sealed request goes only to the address peeraddr.Validate
+// saw, and a proxy taken from the environment sends it somewhere that address
+// never was. Unlike the hand-over client, this one keeps its whole-call
+// Timeout: CYODA_DISPATCH_FORWARD_TIMEOUT is the delegated fire's whole budget.
+func TestSchedulerRPCClient_TransportRules(t *testing.T) {
+	c := NewSchedulerRPCClient(newTestAuth(t), 5*time.Second)
+
+	tr, ok := c.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport = %T, want a transport of the client's own — the default one proxies from the environment", c.httpClient.Transport)
+	}
+	if tr.Proxy != nil {
+		t.Error("the scheduler RPC transport has a proxy: a sealed fire would go to an address the guard never saw")
+	}
+	if c.httpClient.Timeout != 5*time.Second {
+		t.Errorf("Timeout = %v, want the whole-call budget it was constructed with", c.httpClient.Timeout)
+	}
+	if c.httpClient.CheckRedirect == nil {
+		t.Error("the scheduler RPC client follows redirects")
+	}
+}
+
+// cacheFullAuth is a PeerAuth that authenticates a request and then refuses it
+// for the replay cache's capacity, which is the one refusal that comes with a
+// usable binding. The cache itself is not reachable from this package.
+type cacheFullAuth struct{ *dispatch.AEADPeerAuth }
+
+func (a cacheFullAuth) Verify(r *http.Request) ([]byte, dispatch.PeerIdentity, dispatch.ResponseBinding, error) {
+	body, id, binding, err := a.AEADPeerAuth.Verify(r)
+	if err != nil {
+		return body, id, binding, err
+	}
+	return nil, id, binding, dispatch.ErrReplayCacheFull
+}
+
+// TestSchedulerRPCHandler_EveryAnswerToAVerifiedRequestIsSealed: the handler's
+// own comment says every answer to a verified request is sealed for that
+// request, and the dispatch handler over the same PeerAuth does exactly that.
+// These two answers were a bare 400 and a bare 403 — a coordinator cannot tell
+// either from anything written by whoever is on the path between the nodes, so
+// they arrive as "the answer was lost" rather than as what the peer decided.
+func TestSchedulerRPCHandler_EveryAnswerToAVerifiedRequestIsSealed(t *testing.T) {
+	t.Run("a body that does not parse", func(t *testing.T) {
+		auth := newTestAuth(t)
+		fake := &fakeSchedEngine{}
+		mux := http.NewServeMux()
+		NewSchedulerRPCHandler(fake, auth).Register(mux)
+
+		plain := []byte(`{"task":"not-an-object"}`)
+		req := httptest.NewRequest(http.MethodPost, schedulerTaskPath, nil)
+		wire, binding, err := auth.Sign(req, testPeerNodeID, plain)
+		if err != nil {
+			t.Fatalf("Sign: %v", err)
+		}
+		req.Body = io.NopCloser(bytes.NewReader(wire))
+		req.ContentLength = int64(len(wire))
+
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 with a sealed refusal: %s", rec.Code, rec.Body.String())
+		}
+		resp := openSchedulerAnswer(t, auth, binding, rec)
+		if resp.Success {
+			t.Errorf("Success = true for a request that could not be read: %+v", resp)
+		}
+		if resp.Error == "" {
+			t.Error("the sealed refusal says nothing")
+		}
+		if fake.calls != 0 {
+			t.Error("a request that could not be read reached the engine")
+		}
+	})
+
+	t.Run("a full replay cache", func(t *testing.T) {
+		auth := newTestAuth(t)
+		fake := &fakeSchedEngine{}
+		mux := http.NewServeMux()
+		NewSchedulerRPCHandler(fake, cacheFullAuth{auth}).Register(mux)
+
+		req, binding := signedSchedulerRequest(t, auth, spi.ScheduledTask{ID: "cache-full", TenantID: testTenant})
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 with a sealed refusal: %s", rec.Code, rec.Body.String())
+		}
+		resp := openSchedulerAnswer(t, auth, binding, rec)
+		if resp.Success {
+			t.Errorf("Success = true although nothing fired: %+v", resp)
+		}
+		if fake.calls != 0 {
+			t.Error("a request the replay cache refused reached the engine")
+		}
+	})
+}
+
+// openSchedulerAnswer opens the handler's answer as the coordinator would.
+func openSchedulerAnswer(t *testing.T, auth *dispatch.AEADPeerAuth, binding dispatch.ResponseBinding, rec *httptest.ResponseRecorder) SchedulerTaskResponse {
+	t.Helper()
+	plain, err := auth.OpenResponse(rec.Header(), binding, rec.Body.Bytes())
+	if err != nil {
+		t.Fatalf("the answer does not open under its request's binding: %v (status %d)", err, rec.Code)
+	}
+	var resp SchedulerTaskResponse
+	if err := json.Unmarshal(plain, &resp); err != nil {
+		t.Fatalf("decode answer: %v", err)
+	}
+	return resp
 }

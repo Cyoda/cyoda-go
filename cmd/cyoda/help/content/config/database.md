@@ -92,7 +92,7 @@ rows or imposes a scan budget of its own. Bounding search **time** is the caller
 
 `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` reclaims a transaction nothing is driving any more.
 It must clear the longest legitimate idle gap, which is a compute-node callout bounded by
-`responseTimeoutMs` (default `30s`) — set it below that and healthy work is killed
+`responseTimeoutMs` (default `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS`, `30s`; at most `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`, `60s`) — set it below that and healthy work is killed
 mid-flight. It applies per gap, not per transaction: a cascade writes between callouts,
 which restarts the clock, so a long cascade need only keep each gap under the ceiling.
 

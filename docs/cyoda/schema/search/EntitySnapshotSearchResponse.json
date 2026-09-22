@@ -3,9 +3,11 @@
   "$id": "https://cyoda.com/cloud/event/search/EntitySnapshotSearchResponse.json",
   "title": "EntitySnapshotSearchResponse",
   "type": "object",
-  "extends": {
-    "$ref": "../common/BaseEvent.json"
-  },
+  "allOf": [
+    {
+      "$ref": "../common/BaseEvent.json"
+    }
+  ],
   "properties": {
     "status": {
       "$ref": "./SearchSnapshotStatus.json",

@@ -16,7 +16,7 @@ import (
 // callback.go — callback-capable processors/criteria for the
 // compute-test-client. These read the signed cyodatxtoken the engine attaches
 // to a calc request and echo it as the X-Tx-Token HTTP header on a callback into
-// cyoda-go, exercising the transaction-join path (JoinFromToken → participate)
+// cyoda-go, exercising the transaction-join path (Joiner.Run → participate)
 // across all backends in the parity suite.
 //
 // The token value is never logged (Gate 3 / spec §8-H10) — only its emptiness
@@ -246,6 +246,20 @@ func entityDataStatus(body string) string {
 	}
 	s, _ := env.Data["status"].(string)
 	return s
+}
+
+// problemErrorCode extracts properties.errorCode from an RFC 9457 problem
+// body, or "" when the body is not one.
+func problemErrorCode(body string) string {
+	var pd struct {
+		Properties struct {
+			ErrorCode string `json:"errorCode"`
+		} `json:"properties"`
+	}
+	if json.Unmarshal([]byte(body), &pd) != nil {
+		return ""
+	}
+	return pd.Properties.ErrorCode
 }
 
 // callbackProcessorFunc is a processor that may issue joined callbacks. It

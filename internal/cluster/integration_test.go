@@ -44,7 +44,7 @@ func TestEndToEnd_ProxyRouting(t *testing.T) {
 	defer nodeB.Close()
 
 	// Issue a token for node-a
-	tok, err := signer.Issue("node-a", "tx-123", time.Now().Add(30*time.Second))
+	tok, err := signer.Issue(token.Claims{NodeID: "node-a", TxRef: "tx-123", ExpiresAt: time.Now().Add(30 * time.Second).Unix(), Callout: "req-tx-123", Major: 1})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -110,3 +110,4 @@ func (r *testRegistry) Lookup(_ context.Context, nodeID string) (string, bool, e
 	return addr, ok, nil
 }
 func (r *testRegistry) List(_ context.Context) ([]contract.NodeInfo, error) { return nil, nil }
+func (r *testRegistry) Changed() <-chan struct{}                            { return nil }

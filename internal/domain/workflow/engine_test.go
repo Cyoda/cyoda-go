@@ -934,10 +934,9 @@ func TestProcessorDispatchWithExtProc(t *testing.T) {
 }
 
 func TestProcessorDispatchWithExtProcAsyncNewTx(t *testing.T) {
-	// ASYNC_NEW_TX processors run inside a savepoint. The engine's Execute
-	// generates a logical txID that is not backed by a real Begin() call,
-	// so Savepoint will fail. ASYNC_NEW_TX failures are non-fatal — the
-	// pipeline continues and the entity still transitions to the next state.
+	// ASYNC_NEW_TX processors run inside a savepoint of the caller's
+	// transaction: the processor is dispatched, its savepoint is released, and
+	// the entity transitions to the next state.
 	factory := memory.NewStoreFactory()
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
@@ -963,27 +962,29 @@ func TestProcessorDispatchWithExtProcAsyncNewTx(t *testing.T) {
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
+	txID, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
 	entity := makeEntity("ext-async-1", modelRef, map[string]any{"x": 1})
-	result, err := engine.Execute(ctx, entity, "")
+	entity.Meta.TransactionID = txID
+
+	result, err := engine.Execute(txCtx, entity, "")
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
 	if !result.Success {
 		t.Errorf("expected success=true")
 	}
-	// Entity should still reach DONE even though the ASYNC_NEW_TX savepoint
-	// failed — ASYNC_NEW_TX failures are non-fatal.
 	if entity.Meta.State != "DONE" {
 		t.Errorf("expected state=DONE, got %q", entity.Meta.State)
 	}
 
-	// DispatchProcessor is NOT called because the savepoint creation fails
-	// before dispatch is attempted.
 	mock.mu.Lock()
 	calls := mock.dispatchProcessorCalls
 	mock.mu.Unlock()
-	if calls != 0 {
-		t.Errorf("expected DispatchProcessor called 0 times (savepoint fails), got %d", calls)
+	if calls != 1 {
+		t.Errorf("expected DispatchProcessor called 1 time, got %d", calls)
 	}
 }
 
@@ -1672,8 +1673,14 @@ func TestAsyncNewTxFailureDoesNotKillPipeline(t *testing.T) {
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
+	txID, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
 	entity := makeEntity("async-fail-1", modelRef, map[string]any{"original": true})
-	result, err := engine.Execute(ctx, entity, "")
+	entity.Meta.TransactionID = txID
+
+	result, err := engine.Execute(txCtx, entity, "")
 	if err != nil {
 		t.Fatalf("Execute should succeed despite ASYNC_NEW_TX failure, got: %v", err)
 	}
@@ -1726,12 +1733,17 @@ func TestAsyncNewTxEntityMutationsDiscarded(t *testing.T) {
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
+	txID, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
 	originalData := map[string]any{"original": "data"}
 	entity := makeEntity("async-discard-1", modelRef, originalData)
+	entity.Meta.TransactionID = txID
 	originalBytes := make([]byte, len(entity.Data))
 	copy(originalBytes, entity.Data)
 
-	result, err := engine.Execute(ctx, entity, "")
+	result, err := engine.Execute(txCtx, entity, "")
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
@@ -1843,13 +1855,14 @@ func TestSyncProcessorsSequentialCumulativeMutations(t *testing.T) {
 }
 
 func TestAsyncNewTx_SeesSyncChanges(t *testing.T) {
-	// Use an engine without a txMgr so that ASYNC_NEW_TX falls back to plain
-	// dispatch (no savepoint), allowing the processor to actually be called
-	// and receive the entity data as modified by the preceding SYNC processor.
+	// The ASYNC_NEW_TX processor runs inside a savepoint of the caller's
+	// transaction and receives the entity data as modified by the preceding
+	// SYNC processor.
 	factory := memory.NewStoreFactory()
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
-	engine := NewEngine(factory, uuids, nil)
+	txMgr := factory.NewTransactionManager(uuids)
+	engine := NewEngine(factory, uuids, txMgr)
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "async-sees-sync", ModelVersion: "1.0"}
 
@@ -1892,9 +1905,14 @@ func TestAsyncNewTx_SeesSyncChanges(t *testing.T) {
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
-	entity := makeEntity("async-sees-sync-e1", modelRef, map[string]any{"original": true})
-	_, err := engine.Execute(ctx, entity, "")
+	txID, txCtx, err := txMgr.Begin(ctx)
 	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	entity := makeEntity("async-sees-sync-e1", modelRef, map[string]any{"original": true})
+	entity.Meta.TransactionID = txID
+
+	if _, err := engine.Execute(txCtx, entity, ""); err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
 

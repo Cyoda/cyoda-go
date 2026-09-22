@@ -13,10 +13,14 @@ see_also:
   - errors.WORKFLOW_FAILED
   - errors.NO_COMPUTE_MEMBER_FOR_TAG
   - errors.COMPUTE_MEMBER_DISCONNECTED
+  - errors.DISPATCH_TIMEOUT
+  - errors.CALLOUT_FAILED
+  - errors.CALLOUT_SUPERSEDED
   - errors.WORKFLOW_SCHEMA_VERSION_UNSUPPORTED
   - errors.VALIDATION_FAILED
   - errors.MODEL_NOT_FOUND
   - errors.SCHEDULE_FUNCTION_INVALID_RESULT
+  - config.grpc
 ---
 
 # workflows
@@ -48,7 +52,7 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 ```json
 {
-  "version": "1.4",
+  "version": "1.5",
   "name": "prize-lifecycle",
   "desc": "State machine for Nobel Prize entities",
   "initialState": "NEW",
@@ -141,6 +145,11 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 A processor may return modified entity data. That data is governed by the model exactly as a client's write is: it must be storable, and it must satisfy the schema. Introducing a field the model does not declare requires the model's `changeLevel` to permit it; otherwise the transition fails with `WORKFLOW_FAILED` and rolls back, leaving neither the entity nor any schema change behind.
 
+A processor must not change a model or a workflow through the API while it
+runs; that is not supported. An EdgeMessage a processor saves is outside the
+entity transaction: make the save idempotent and attach the message id to the
+owning entity, so that a repeat after a failover leaves at most an orphan.
+
 **ProcessorDefinition fields:**
 
 - `type` — string — execution-location axis; see below for valid values
@@ -151,7 +160,7 @@ A processor may return modified entity data. That data is governed by the model 
 
 **Processor `type` (execution-location axis):**
 
-- `"externalized"` (default when omitted) — dispatched via gRPC to a calculation node selected by `Config.calculationNodesTags`. This is the only execution location implemented today; all the `executionMode` semantics below apply to externalized processors.
+- `"externalized"` (default when omitted) — dispatched via gRPC to a compute member selected by `config.calculationNodesTags`. This is the only execution location implemented today; all the `executionMode` semantics below apply to externalized processors.
 
 The engine reserves the value `"internalized"` for an in-process execution location not yet implemented. Any transition that fires a processor with `type: "internalized"` is rejected at dispatch with `WORKFLOW_FAILED` (400) and the operator-visible error `processor X failed: execution type "internalized" is not yet implemented`. The reserved value is intentionally absent from the OpenAPI enum until the subtype lands; workflow authors who include it in import payloads will not be rejected at import, but their entities cannot transit past the affected step.
 
@@ -159,10 +168,10 @@ Any value other than `"internalized"` (including the empty string, the canonical
 
 **Valid `executionMode` values (exhaustive):**
 
-- `"SYNC"` — the engine dispatches the processor and blocks until a response is received; the entity write transaction remains open during the wait; processor failure (including timeout and `success=false` in the response) returns `errors.WORKFLOW_FAILED` (`400`) and the entity remains in the source state
+- `"SYNC"` — the engine dispatches the processor and blocks until a response is received; the entity write transaction remains open during the wait; a failed callout fails the operation and the entity remains in the source state; the error is set out under **What a failed callout leaves behind** below
 - `"ASYNC_SAME_TX"` — same dispatch mechanics as `SYNC` (blocks inline, transaction stays open); failure semantics are identical to `SYNC`
-- `"ASYNC_NEW_TX"` — dispatched within a savepoint; on failure the savepoint is rolled back and the error is logged as a warning; the pipeline continues to the next processor and the transition completes; returned entity modifications are discarded
-- `"COMMIT_BEFORE_DISPATCH"` — the engine splits the cascade into two transactions around this processor. `TX_pre` flushes the pre-callout state of the transition and **commits before the processor is dispatched**, releasing the storage connection for the duration of the external compute. The processor runs outside any transaction (entity already durable in the pre-callout state). When the processor returns, the engine opens `TX_post` on the same node, reapplies the result via `CompareAndSave` (CAS expects the txID stamped at `TX_pre`'s commit), runs any subsequent SYNC processors and cascade transitions, then commits. CAS conflict at the boundary surfaces as `409 retryable`; entity remains durable in the pre-callout state, no engine-side retry, no automatic compensation. Failure of the dispatched processor (`success=false`, timeout, member crash) returns `errors.WORKFLOW_FAILED` (`400`) and the entity remains in the pre-callout state. Designed to relieve connection-pool pressure for slow processors and supersedes `ASYNC_NEW_TX` as the recommended mode for slow external work.
+- `"ASYNC_NEW_TX"` — dispatched within a savepoint; on a processor failure the savepoint is rolled back and the error is logged as a warning; the pipeline continues to the next processor and the transition completes; returned entity modifications are discarded. The processor's failure does not fail the operation. A failure of the savepoint itself — it cannot be created, undone or released — does.
+- `"COMMIT_BEFORE_DISPATCH"` — the engine splits the cascade into two transactions around this processor. `TX_pre` flushes the pre-callout state of the transition and **commits before the processor is dispatched**, releasing the storage connection for the duration of the external compute. The processor runs outside any transaction (entity already durable in the pre-callout state). When the processor returns, the engine opens `TX_post` on the same node, reapplies the result via `CompareAndSave` (CAS expects the txID stamped at `TX_pre`'s commit), runs any subsequent SYNC processors and cascade transitions, then commits. CAS conflict at the boundary surfaces as `409 retryable`; entity remains durable in the pre-callout state, no engine-side retry, no automatic compensation. A failed callout fails the operation — the error is as for `SYNC` — and the entity remains in the pre-callout state. Designed to relieve connection-pool pressure for slow processors and supersedes `ASYNC_NEW_TX` as the recommended mode for slow external work.
 
 **`COMMIT_BEFORE_DISPATCH` configuration flag:**
 
@@ -170,7 +179,7 @@ Any value other than `"internalized"` (including the empty string, the canonical
 
 **`COMMIT_BEFORE_DISPATCH` workflow-author requirements:**
 
-- **Idempotency.** A `COMMIT_BEFORE_DISPATCH` processor must be **idempotent or have an external mechanism for detecting prior completion** (e.g., a write-once external resource ID). Replays can fire from two distinct places: (a) CAS conflict during continuation — the caller's retry of the same API call restarts the cascade and re-dispatches the processor; (b) engine crash between segments — the entity is durable in the pre-callout state, the in-flight orchestration is gone, the caller retries, the cascade re-fires from the beginning, the processor is re-dispatched. The engine cannot deduplicate replays; idempotency is the workflow author's responsibility.
+- **Idempotency.** A `COMMIT_BEFORE_DISPATCH` processor must be **idempotent or have an external mechanism for detecting prior completion** (e.g., a write-once external resource ID). Replays can fire from two distinct places: (a) CAS conflict during continuation — the caller's retry of the same API call restarts the cascade and re-dispatches the processor; (b) engine crash between segments — the entity is durable in the pre-callout state, the in-flight orchestration is gone, the caller retries, the cascade re-fires from the beginning, the processor is re-dispatched. The engine cannot deduplicate replays; idempotency is the workflow author's responsibility. Setting `idempotent: true` on the processor is the matching declaration for a *repeat within one callout*; it does not replace the requirement here, which is about the *client* running the operation again.
 - **Visibility of segment-boundary states.** States on a segment boundary (the pre-callout state of a `COMMIT_BEFORE_DISPATCH` processor) are **publicly observable** to readers between segments. A concurrent transaction's `Get`/`GetPage`/`Iterate`/`Search`/`Count` will see the entity in the pre-callout state, and a second cascade may decide to fire criteria-driven transitions based on that observed state. Workflow authors using `COMMIT_BEFORE_DISPATCH` must treat segment-boundary states as committed states — design state-machine criteria, transition guards, and external monitoring accordingly. If invisibility of an intermediate state is required, model it as a workflow-level `DRAFT` parent state with sub-stages in payload, or do not expose the entity until a designated terminal state.
 - **Attribution handover with `startNewTxOnDispatch=false`.** With no transaction context supplied, the dispatched processor's callback writes are ordinary independent requests — the platform tracks no causal chain for them. Each is attributed to whatever identity it presents (its own service credentials, or an OBO user token it forwards). The dispatch's AuthContext (`authtype`/`authid`/`authclaims`) carries the causal principal so the application can self-attribute if it wants user-level attribution; the platform supplies no separate carrier for this mode.
 - **Best-practice: a processor must not save the entity it is processing for.**
@@ -187,16 +196,10 @@ Import-time validation rejects any `executionMode` value not in the list above (
 **ProcessorConfig fields:**
 
 - `attachEntity` — boolean, optional, default `true` — when `true`, the full entity payload is sent to the processor; set `false` to omit it
-- `calculationNodesTags` — string — comma-separated tags for routing to registered calculation nodes; the engine selects a node that declares all required tags; returns `errors.NO_COMPUTE_MEMBER_FOR_TAG` if no node matches
-- `responseTimeoutMs` — int64 — timeout in milliseconds for `SYNC` processor response; `0` means use node default
-- `retryPolicy` — string — selects the server-resolved retry strategy.
-  Valid values: `NONE` (single attempt, no retry), `FIXED` (up to N
-  additional attempts with fixed delay between tries, where N and delay
-  are server-configured). When omitted, defaults to `FIXED` at engine
-  fire. Import-time validation rejects any other value with `400
-  VALIDATION_FAILED`. **cyoda-go status:** captured but not consumed —
-  the dispatcher is single-shot regardless of policy; the full retry
-  loop ships in a later release. Cloud honours both policies.
+- `calculationNodesTags` — string — comma-separated tags that select the compute members this callout may go to. A member matches when it declares **at least one** of the tags; when the list is empty every compute member of the tenant matches. With no matching member attached anywhere in the cluster the callout waits for one (see **Tries, waiting and time** below) and then fails with `errors.NO_COMPUTE_MEMBER_FOR_TAG`
+- `responseTimeoutMs` — int64 — how long to wait for the compute member's answer, in milliseconds; `0` or absent means the server's `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS`; must not exceed `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`
+- `retryPolicy` — string — whether the callout may be given to more than one compute member. `NONE`: one try. `FIXED`, or omitted: one try plus the server's `CYODA_RETRY_FIXED_NUM_RETRIES` (default `3`, so four tries). The number is configured on the server, not in the workflow, and it is the normal number, not a hard limit — see **Tries, waiting and time**. There is no pause between one member and the next, and no delay setting. Import rejects any other value with `400 VALIDATION_FAILED`.
+- `idempotent` — boolean, optional, default `false` — a declaration by the workflow author, not something cyoda can check. Setting it says: *this processor may be run more than once for the same callout — possibly only partly, possibly at the same time on two compute members — and the outcome is the same as running it once, in cyoda **and in every system the processor touches**.* See **Repeating a processor** below for what qualifies.
 - `context` — string — pass-through string forwarded **verbatim** as the `parameters` JSON node of the outgoing `EntityProcessorCalculationRequest` (and `EntityCriteriaCalculationRequest` when used on a `function`-typed criterion's `config`). Marshalling shape is **pass-as-string**: the value is encoded as a JSON string, not parsed as JSON. The receiver gets a JSON-quoted string in `parameters`. Empty `context` causes `parameters` to be omitted entirely. Use to distinguish multiple workflow roles served by a single externalized processor or criterion implementation without registering a separate name per role.
 - `asyncResult` — boolean (pointer; nil-default) — declared in the
   OpenAPI for Cloud parity; the runtime does **not** implement
@@ -209,6 +212,33 @@ Import-time validation rejects any `executionMode` value not in the list above (
   for Cloud parity; the runtime does **not** implement it. Imports
   that set any non-nil value are rejected with `400 VALIDATION_FAILED`,
   including the orphan case where `asyncResult` is absent or false.
+
+**Tries, waiting and time.** A processor, a `function`-type criterion and a `schedule.function` are all *callouts*, and the same rules apply to all three.
+
+- A **try** is one attempt to hand the callout's work to one compute member. A member is never tried twice in one run over a node's members, and every try of one callout carries the same `requestId` (see `cyoda help grpc`).
+- **Waiting for a member to exist is not a try.** When no matching member is attached anywhere, the callout waits up to `CYODA_DISPATCH_WAIT_TIMEOUT` (default `5s`, one allowance for the whole callout) and wakes the moment one attaches. This applies on a single node as in a cluster, and with `retryPolicy: NONE` too. `0` switches the wait off.
+- **Whether another member is tried depends on how far the first one got.** The work never reaching the member — it had gone, or was not taking data — always gets another member tried, whether or not a processor is `idempotent`.
+- The work reaching the member, then no answer within `responseTimeoutMs`, or its connection dropping: another member is tried for a criterion, a function, or an `idempotent: true` processor; for any other processor **nothing else is tried** and the callout fails.
+- The member answering `success: false`, or its answer being unreadable: nothing else is tried, whatever `idempotent` says. A `success: false` answer carries the member's own message and its `retryable` verdict to the client; an unreadable answer fails the callout with no message of the member's own.
+- **The number of tries is the normal number, not a hard limit.** In a cluster the node holding the transaction can hand the callout on to peers, one node after another, together with the tries that are left. If a peer's answer is lost, one try is counted although it may have made more. **Time is the hard limit:** a callout never runs longer than `tries × answer limit + CYODA_DISPATCH_WAIT_TIMEOUT + CYODA_CALLOUT_HANDOVER_ALLOWANCE`, fixed when it starts — 155 s at the defaults. A client's own deadline is separate: if it ends the request first, the client sees its own error, not a callout error. See `cyoda help config grpc`.
+
+**Repeating a processor.** A compute member that was given the work and then went quiet has not necessarily stopped, and what it has already done does not go away — inside cyoda or outside it.
+
+- *Inside cyoda.* A member that has been replaced is shut out: its callbacks are refused with `errors.CALLOUT_SUPERSEDED`, and one that was in progress finishes before the next member is given the work. "Set this field to X" is safe to repeat. "Add 10 to the balance" is not. **"Create an entity" is never safe to repeat as it stands:** without a composite unique key on the model the repeat stores a second entity; with one, no duplicate is stored, but cyoda refuses the second create and the whole operation fails with a uniqueness error — the data is safe, the operation is lost. A processor that creates entities is repeat-safe only if it first checks whether its entity already exists.
+- *Outside cyoda.* A processor may charge a card, send a message, call another service. None of that is part of a cyoda transaction: **a rollback does not undo it, and a repeat does it again.** Making an outside action safe to repeat, or compensating for it when the operation fails — a saga, a compensating step, a key the other system uses to recognise a repeat — is the application's responsibility. The `requestId`, which is the same on every try of one callout, is a ready-made key for that. It does not cover the client running the whole operation again: that is a new callout with a new id.
+- A processor that only returns a changed entity — no callbacks, no outside systems — qualifies trivially; mark it `idempotent` so that it benefits.
+- Criteria and functions are treated as repeat-safe by rule. **They must have no effects, inside cyoda or outside it.** cyoda does not enforce this.
+- An **EdgeMessage** saved from a processor is not removed when the processor's member is replaced. Make that save idempotent and attach the message id to the entity that owns it, so that an orphan costs disk space and nothing else.
+- **Changing a model or a workflow from inside a processor is not supported.**
+
+**What a failed callout leaves behind, by `executionMode`.** In every mode below another member is tried, after "no answer", only if `idempotent`. A failure marked `retryable: true` speaks for cyoda's state only, and only where this list says "clean".
+
+- **`SYNC`, `ASYNC_SAME_TX`.** The operation fails. cyoda's state: rolled back; clean for a re-run — unless an earlier `COMMIT_BEFORE_DISPATCH` processor of the same cascade had already committed.
+- **`ASYNC_NEW_TX`.** **The operation continues:** the processor's savepoint is undone and a warning is logged. Nothing reaches the client, not even a member's `retryable` verdict. cyoda's state: the rest of the transaction commits. A savepoint that cannot be created, undone or released is not a processor failure: it fails the operation with a `5xx` and nothing commits.
+- **`COMMIT_BEFORE_DISPATCH`, `startNewTxOnDispatch: true`.** The operation fails. cyoda's state: `TX_pre` **stays committed**; `TX_post` is rolled back. Not clean for a re-run.
+- **`COMMIT_BEFORE_DISPATCH`, `startNewTxOnDispatch: false`.** The operation fails. cyoda's state: `TX_pre` stays committed; the member's callbacks were transactions of their own and stand.
+
+The error a client sees: no member within the wait → `503 NO_COMPUTE_MEMBER_FOR_TAG`; a single failed try → that try's own code (`503 DISPATCH_TIMEOUT`, `503 COMPUTE_MEMBER_DISCONNECTED`, `503 DISPATCH_FORWARD_FAILED`); several failed tries → `503 CALLOUT_FAILED`, listing them; a member that answered `success: false` → `400 WORKFLOW_FAILED` carrying the member's own message, `retryable: true` when the member said so.
 
 ## SCHEDULED TRANSITIONS
 
@@ -280,8 +310,11 @@ payload or a boolean:
   entity payload is attached to the request.
 - `context` (string, optional) — pass-through string forwarded verbatim
   as the request's `parameters`; omitted when empty.
-- `responseTimeoutMs` (integer, optional) — response timeout for this
-  callout.
+- `responseTimeoutMs` (integer, optional) — how long to wait for this
+  callout's answer, in milliseconds; `0` or absent means the server's
+  `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS`; must not exceed
+  `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`.
+- `retryPolicy` (string, optional) — `NONE` or `FIXED`, as on a processor; omitted means `FIXED`. A function is always treated as safe to repeat, so after a try that got no answer another compute member is tried.
 
 The function responds with `resultKind: "Schedule"` and a `result`
 object giving the fire time and, optionally, an expiry:
@@ -306,10 +339,7 @@ object giving the fire time and, optionally, an expiry:
 
 *Fail-closed.* The callout runs synchronously inside the entity-write
 transaction (see **Arming** below), so a callout failure fails that
-write. If the compute node is unreachable, disconnected, or times out,
-the write fails as a retryable `503` with the same dispatch error codes
-as a processor or criterion (`NO_COMPUTE_MEMBER_FOR_TAG`,
-`DISPATCH_TIMEOUT`, `COMPUTE_MEMBER_DISCONNECTED`) — no state change
+write. If no compute member can be reached, or none answers, the write fails as a retryable `503` with the same codes as a processor or criterion callout (`NO_COMPUTE_MEMBER_FOR_TAG`, `DISPATCH_TIMEOUT`, `COMPUTE_MEMBER_DISCONNECTED`, `DISPATCH_FORWARD_FAILED`, or `CALLOUT_FAILED` when several tries failed); a member that answers `success: false` fails it as `400 WORKFLOW_FAILED` with the member's message — no state change
 commits against an unschedulable transition. A structurally valid
 response with the wrong `resultKind`, or a malformed `Schedule` value,
 fails with `500 SCHEDULE_FUNCTION_INVALID_RESULT` (see that error topic).
@@ -486,13 +516,15 @@ Static validation runs on the incoming request before saving. Any of the followi
 - Workflow / state / transition / processor names longer than 256 characters.
 - Transition `next` not declared in `states`.
 - Unknown `executionMode` value on any processor (allowed: `SYNC`, `ASYNC_SAME_TX`, `ASYNC_NEW_TX`, `COMMIT_BEFORE_DISPATCH`, or empty).
-- Unknown `retryPolicy` value on any processor (allowed: `NONE`, `FIXED`, or empty).
+- Unknown `retryPolicy` value on any processor, `function`-type criterion or `schedule.function` (allowed: `NONE`, `FIXED`, or empty).
+- A `function`-type criterion whose `function.config` cannot be read (for example a `responseTimeoutMs` that is not an integer).
 - `startNewTxOnDispatch=true` on a processor whose `executionMode` is not `COMMIT_BEFORE_DISPATCH`.
 - Empty `workflows` array (or a missing `workflows` key) when `importMode` is `REPLACE` or `ACTIVATE`. `MERGE` with an empty array is a legitimate no-op.
 - A criterion `jsonPath` (on a `simple` or `array` clause, at any nesting depth) that is not JSON Path — see CRITERIA below.
 - A criterion `LIKE` or `MATCHES_PATTERN` value that is not a valid pattern.
 - A criterion `lifecycle` clause naming an unknown metadata field, or comparing a temporal field (`creationDate`, `lastUpdateTime`) against a non-timestamp operand.
 - A criterion `group` clause whose `operator` is not `AND`, `OR`, or `NOT`, or whose `operator` is `NOT` with `conditions` other than exactly one entry.
+- A `responseTimeoutMs` on a processor, a `function`-type criterion or a `schedule.function` that is negative, or larger than the server's `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` (default `60000`). The bound is a server setting: a workflow exported from one deployment can be refused by another with a lower bound.
 
 The new structural rules (state graph, name uniqueness, `executionMode` enum, `retryPolicy` enum) run on the incoming request only — existing stored workflows are not retroactively re-checked against them. The cycle-detection and `startNewTxOnDispatch` coherence checks continue to run against the merged result, so a legacy stored cycle or incoherent flag still surfaces at any subsequent import.
 
@@ -548,9 +580,12 @@ Per-state visit limit (default 10) and total cascade depth limit (100) are enfor
 
 - `errors.TRANSITION_NOT_FOUND` — `400` — named transition does not exist in the current state's workflow
 - `errors.WORKFLOW_NOT_FOUND` — `404` — no workflows found for the model (export endpoint)
-- `errors.WORKFLOW_FAILED` — workflow engine encountered an unrecoverable error during execution
-- `errors.NO_COMPUTE_MEMBER_FOR_TAG` — no registered calculation node matches the required `calculationNodesTags`
-- `errors.COMPUTE_MEMBER_DISCONNECTED` — a calculation node disconnected during processor dispatch
+- `errors.WORKFLOW_FAILED` — `400` — the engine could not complete the transition; for a compute member that answered `success: false`, carries the member's message (cut to 512 characters) and its `retryable` verdict
+- `errors.NO_COMPUTE_MEMBER_FOR_TAG` — `503` — no compute member matching `calculationNodesTags` appeared within `CYODA_DISPATCH_WAIT_TIMEOUT`
+- `errors.COMPUTE_MEMBER_DISCONNECTED` — `503` — the compute member's connection dropped after it was given the work
+- `errors.DISPATCH_TIMEOUT` — `503` — the compute member did not answer within `responseTimeoutMs`
+- `errors.CALLOUT_FAILED` — `503` — every try of a callout failed; the message lists them
+- `errors.CALLOUT_SUPERSEDED` — `410` — seen by a compute member, not by the client: a callback from a member that was replaced, or whose callout has ended
 - `errors.WORKFLOW_SCHEMA_VERSION_UNSUPPORTED` — `400` — workflow declares a schema version this server does not accept
 - `errors.VALIDATION_FAILED` — `400` — workflow import validation failed; see IMPORT REQUEST above for the enumerated rules
 
@@ -566,7 +601,7 @@ curl -s -X POST \
     "importMode": "MERGE",
     "workflows": [
       {
-        "version": "1.4",
+        "version": "1.5",
         "name": "prize-lifecycle",
         "initialState": "NEW",
         "active": true,
@@ -618,7 +653,7 @@ curl -s -X POST \
     "importMode": "REPLACE",
     "workflows": [
       {
-        "version": "1.4",
+        "version": "1.5",
         "name": "simple-wf",
         "initialState": "OPEN",
         "active": true,
@@ -637,11 +672,17 @@ curl -s -X POST \
 - crud
 - grpc
 - search
+- workflows.schema-version
 - errors.TRANSITION_NOT_FOUND
 - errors.WORKFLOW_NOT_FOUND
 - errors.WORKFLOW_FAILED
 - errors.NO_COMPUTE_MEMBER_FOR_TAG
 - errors.COMPUTE_MEMBER_DISCONNECTED
+- errors.DISPATCH_TIMEOUT
+- errors.CALLOUT_FAILED
+- errors.CALLOUT_SUPERSEDED
 - errors.WORKFLOW_SCHEMA_VERSION_UNSUPPORTED
 - errors.VALIDATION_FAILED
 - errors.MODEL_NOT_FOUND
+- errors.SCHEDULE_FUNCTION_INVALID_RESULT
+- config.grpc

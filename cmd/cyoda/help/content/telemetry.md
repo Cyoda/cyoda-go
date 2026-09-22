@@ -76,7 +76,7 @@ Traces are exported via `otlptracehttp`. Spans are created by:
 - `otelhttp.NewMiddleware("cyoda")` — wraps the HTTP API handler when `CYODA_OTEL_ENABLED=true`; creates one span per inbound HTTP request.
 - `otelgrpc.NewServerHandler()` — installed as a gRPC stats handler when `CYODA_OTEL_ENABLED=true`; creates one span per inbound gRPC RPC.
 - `observability.TracingTransactionManager` — decorator around the storage `TransactionManager`; creates spans for `tx.begin`, `tx.commit`, `tx.rollback`, `tx.savepoint`, `tx.rollback_to_savepoint`, `tx.release_savepoint`.
-- `observability.TracingExternalProcessingService` — decorator around the processor dispatcher; creates spans for `dispatch.processor` and `dispatch.criteria`.
+- `observability.TracingExternalProcessingService` — decorator around the callout path; creates one span per callout, `dispatch.processor`, `dispatch.criteria` or `dispatch.function`, however many tries the callout takes. The span carries `callout.tries`, `callout.handover` and `callout.waited_ms`.
 
 **Metrics**
 
@@ -85,8 +85,20 @@ Metrics are exported via `otlpmetrichttp` with a periodic reader. The following 
 - `cyoda.tx.duration` — `Float64Histogram`, unit `s` — transaction operation duration; labeled by `op` (`begin`, `commit`, `rollback`)
 - `cyoda.tx.active` — `Int64UpDownCounter` — count of active (begun but not committed/rolled-back) transactions
 - `cyoda.tx.conflicts` — `Int64Counter` — count of transaction serialization conflicts (commit returning `spi.ErrConflict`)
-- `cyoda.dispatch.duration` — `Float64Histogram`, unit `s` — processor/criteria dispatch duration; labeled by `type` (`processor`, `criteria`)
-- `cyoda.dispatch.count` — `Int64Counter` — total processor/criteria dispatch calls; labeled by `type` (`processor`, `criteria`)
+- `cyoda.dispatch.duration` — `Float64Histogram`, unit `s` — duration of one whole callout, all its tries, waits and hand-overs included; labeled by `type` (`processor`, `criteria`, `function`). Bucket boundaries run to 300 s: a callout may take `tries × answer limit + CYODA_DISPATCH_WAIT_TIMEOUT + CYODA_CALLOUT_HANDOVER_ALLOWANCE` — 155 s at the defaults
+- `cyoda.dispatch.count` — `Int64Counter` — callouts, however many tries each took; labeled by `type`
+
+The `cyoda.callout.*` instruments are one family, and they break down one callout
+into tries, waits, hand-overs and callbacks the fence overtook. Where each is
+registered differs, and so does what turns it on:
+
+- `cyoda.callout.tries` — `Int64Counter` — tries made; labeled by `type` and `outcome` (`ok`, `no_handoff`, `no_answer`, `member_failed`, `terminal`, `abandoned` — the caller went away while the try was in progress). A rising share of `no_answer` or `no_handoff` means compute members that do not answer or do not read. On the tracing decorator above, so `CYODA_OTEL_ENABLED=true`
+- `cyoda.callout.wait.duration` — `Float64Histogram`, unit `s` — how long a callout waited for a compute member to exist; recorded only for callouts that waited, so its count is the number of callouts that waited; labeled by `type`. On the same decorator
+- `cyoda.callout.handovers` — `Int64Counter` — callouts handed over to another node; labeled by `outcome` (`ok`, `no_handoff`, `no_answer`, `member_failed`, `terminal`, `not_connected`). `not_connected` is a node the connection to which could not be opened — no try was used; `no_answer` includes every hand-over whose answer was lost (no reply, a non-2xx status, an answer that does not authenticate). A rising `no_answer` share with healthy compute nodes points at the network between nodes or at node clocks more than 30 s apart. On the peer router, so `CYODA_CLUSTER_ENABLED=true`, regardless of `CYODA_OTEL_ENABLED`
+- `cyoda.callout.superseded` — `Int64Counter` — callbacks refused or overtaken because their compute member was replaced or its callout ended; labeled by `outcome`: `refused_on_entry` (the pass was already stale when the callback joined its transaction), `refused_at_lock` (the pass was current on entry but had gone stale by the time the callback's chain took the transaction's write lock), `superseded_in_progress` (the callback ran to completion, but its pass had gone stale by the time it finished — recorded, not refused: the callback's work already landed). On the join layer at startup, regardless of `CYODA_OTEL_ENABLED`
+
+No `cyoda.callout.*` metric carries a tenant, a callout id, a member id, a node
+id or a pass: every label is drawn from a closed vocabulary.
 
 OIDC subsystem metrics (`oidc_*`) are exposed at `/metrics` whenever IAM runs in `jwt` mode, regardless of `CYODA_OTEL_ENABLED`.
 
@@ -105,6 +117,12 @@ attribute (`postgres`):
 - `cyoda.storage.pool.empty_acquire_wait` — `Float64ObservableCounter`, unit `s` — cumulative time callers waited because the pool was empty; labeled by `backend`
 
 `cyoda.storage.pool.empty_acquire_wait` is the saturation signal to alarm on — it isolates the time callers spent waiting because the pool was empty; `cyoda.storage.pool.acquire_duration` includes instant acquires alongside it and so dilutes the signal.
+
+Cluster membership metrics are exposed whenever `CYODA_CLUSTER_ENABLED=true`,
+regardless of `CYODA_OTEL_ENABLED`:
+
+- `cyoda.cluster.tags.send_failures` — `Int64Counter` — reliable tag-list messages to a peer that failed to send; labeled by `msg` (`list`, `request`). A failed send is repaired by the peer fetching the list; a steady rate points at a peer that gossip reaches and TCP does not.
+- `cyoda.cluster.tags.lists_outstanding` — `Int64ObservableGauge` — alive peers whose announced tag list this node does not hold yet. Briefly non-zero after a join or a compute node attaching; alarm when it stays non-zero, because callouts are not handed to a peer whose tags are unknown.
 
 **Logs**
 
@@ -129,7 +147,11 @@ Cyoda-specific span attribute keys defined in `internal/observability/attrs.go`:
 - `processor.tags` — comma-separated `calculationNodesTags` used for member routing
 - `criterion.target` — criteria target type (`TRANSITION`, `WORKFLOW`)
 - `criteria.matches` — boolean result of a criteria evaluation
-- `type` — dispatch type label for `cyoda.dispatch.duration` and `cyoda.dispatch.count` (`processor` or `criteria`)
+- `type` — callout kind label for the `cyoda.dispatch.*` and `cyoda.callout.*` metrics (`processor`, `criteria` or `function`)
+- `outcome` — outcome label of `cyoda.callout.tries`, `cyoda.callout.handovers` and `cyoda.callout.superseded`; a closed set for each
+- `callout.tries` — number of tries a callout made, on its span
+- `callout.handover` — boolean; `true` when the callout was handed over to another cluster node at least once
+- `callout.waited_ms` — milliseconds the callout waited for a compute member to exist
 - `entity.count` — count of entities in a batch operation
 - `cql.name` — CQL statement name (Cassandra plugin)
 - `cql.op` — CQL operation type (Cassandra plugin)

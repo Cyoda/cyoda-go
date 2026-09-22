@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/cyoda-platform/cyoda-go/internal/fence"
 )
 
 var (
@@ -17,10 +19,22 @@ var (
 	ErrSecretTooShort = errors.New("HMAC secret must be at least 32 bytes")
 )
 
+// Pair names one callout at one fencing number. It is the fence's type: the
+// pass carries what the fence judges.
+type Pair = fence.Pair
+
+// Claims is what a pass says. NodeID is the owner — the pnode that holds the
+// transaction and whose fence judges the pass. Callout, Major and Minor name
+// the try the pass was minted for; Outer names every enclosing callout, for a
+// callout made from inside a callback.
 type Claims struct {
 	NodeID    string `json:"n"`
 	TxRef     string `json:"t"`
-	ExpiresAt int64  `json:"e"`
+	ExpiresAt int64  `json:"e"` // Unix seconds
+	Callout   string `json:"c"`
+	Major     uint32 `json:"j"`
+	Minor     uint32 `json:"i,omitempty"`
+	Outer     []Pair `json:"o,omitempty"`
 }
 
 type Signer struct {
@@ -34,15 +48,12 @@ func NewSigner(secret []byte) (*Signer, error) {
 	return &Signer{secret: secret}, nil
 }
 
-func (s *Signer) Issue(nodeID, txRef string, expiresAt time.Time) (string, error) {
-	claims := Claims{
-		NodeID:    nodeID,
-		TxRef:     txRef,
-		ExpiresAt: expiresAt.Unix(),
-	}
+// Issue signs claims as given. Whether they make a valid pass is Verify's to
+// say.
+func (s *Signer) Issue(claims Claims) (string, error) {
 	payload, err := json.Marshal(claims)
 	if err != nil {
-		return "", fmt.Errorf("marshal claims: %w", err)
+		return "", fmt.Errorf("failed to marshal claims: %w", err)
 	}
 
 	sig := s.sign(payload)
@@ -84,12 +95,27 @@ func (s *Signer) Verify(tok string) (*Claims, error) {
 		return nil, ErrTokenInvalid
 	}
 
+	if !Named(Pair{Callout: claims.Callout, Major: claims.Major}) {
+		return nil, ErrTokenInvalid
+	}
+	for _, p := range claims.Outer {
+		if !Named(p) {
+			return nil, ErrTokenInvalid
+		}
+	}
+
 	if time.Now().Unix() > claims.ExpiresAt {
 		return nil, ErrTokenExpired
 	}
 
 	return &claims, nil
 }
+
+// Named reports whether p names a callout at a number that can ever be
+// current: the first try of a callout carries major 1. Verify refuses a pass
+// that fails it, and so does every boundary that accepts pairs to be minted
+// into one — there is one rule for what a pair must say, not one per door.
+func Named(p Pair) bool { return p.Callout != "" && p.Major != 0 }
 
 func (s *Signer) sign(payload []byte) []byte {
 	mac := hmac.New(sha256.New, s.secret)

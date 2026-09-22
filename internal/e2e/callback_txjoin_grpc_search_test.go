@@ -69,7 +69,7 @@ const internalgrpcTxTokenKey = "tx-token"
 // When joinTok is set the read joins T. Returns whether the entity was observed
 // and its data.status marker.
 func (h *callbackHarness) getEntityGRPC(entityID, joinTok string) (found bool, marker string, err error) {
-	client := cyodapb.NewCloudEventsServiceClient(h.member.conn)
+	client := cyodapb.NewCloudEventsServiceClient(h.apiConn)
 	reqCE, err := internalgrpc.NewCloudEvent(internalgrpc.EntityGetRequest, map[string]any{
 		"id":       "cb-grpc-get",
 		"entityId": entityID,
@@ -96,7 +96,7 @@ func (h *callbackHarness) getEntityGRPC(entityID, joinTok string) (found bool, m
 // matching data.status == statusEq over (entityName, version). When joinTok is
 // set the search joins T. Returns the number of matched entities.
 func (h *callbackHarness) searchGRPC(entityName string, version int, statusEq, joinTok string) (count int, err error) {
-	client := cyodapb.NewCloudEventsServiceClient(h.member.conn)
+	client := cyodapb.NewCloudEventsServiceClient(h.apiConn)
 	reqCE, err := internalgrpc.NewCloudEvent(internalgrpc.EntitySearchRequest, map[string]any{
 		"id":    "cb-grpc-search",
 		"model": map[string]any{"name": entityName, "version": version},

@@ -24,8 +24,8 @@ import (
 //
 //   - The primary transition is driven from node 1 (the OWNER of the
 //     resulting transaction), which hosts no compute member. Its processor
-//     requires the "compute-test-client" tag, so the ClusterDispatcher
-//     forwards the dispatch to node 0 (A→B).
+//     requires the "compute-test-client" tag, so the owner hands the
+//     processor over to node 0 (A→B).
 //   - Node 0's member fires an HTTP callback presenting the tx-token
 //     (owner=node 1) to node 0's HTTP base, with
 //     ?transactionTimeoutMillis=5000 appended to the create URL. Node 0 is

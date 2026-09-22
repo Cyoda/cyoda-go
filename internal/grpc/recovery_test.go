@@ -503,7 +503,7 @@ func startRecoveryTestServerWithKeepAlive(t *testing.T, healthFlag *atomic.Bool,
 
 	registry := NewMemberRegistry()
 	srv := NewServer(authSvc, registry, tracker, entityHandler, modelHandler, searchSvc,
-		tokenSigner, nil /* nodeRegistry: unused, no tx-token sent */, "recovery-test-node",
+		tokenSigner, noCalloutJoiner(t, tokenSigner, tracker), nil /* nodeRegistry: unused, no tx-token sent */, "recovery-test-node",
 		false, 0, true, healthFlag, ka)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")

@@ -9,8 +9,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/google/uuid"
-
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
@@ -19,57 +17,88 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
 )
 
-// ErrNoMatchingMember is returned when no calculation member is registered for
-// the requested tags. Callers (e.g. ClusterDispatcher) test for this sentinel
-// via errors.Is rather than string matching.
-//
-// Aliased from contract.ErrNoMatchingMember (the canonical definition lives
-// in the leaf internal/contract package) so error-classification code in
-// internal/domain/entity, which internal/grpc already depends on, can match
-// this sentinel without an import cycle. See contract.ErrNoMatchingMember's
-// doc comment for the full rationale.
-var ErrNoMatchingMember = contract.ErrNoMatchingMember
-
-const defaultResponseTimeoutMs = 30000
-
-// ProcessorDispatcher dispatches processor and criteria calculations to external
-// calculation members via the MemberRegistry.
+// ProcessorDispatcher is the local procedure: it tries a callout on this node's
+// own calculation members, one after another, for as many tries as the owner's
+// loop gives it. The pnode that holds the transaction runs it through
+// internal/callout.Coordinator; a pnode that received a hand-over runs it
+// through the dispatch handler.
 type ProcessorDispatcher struct {
-	registry   *MemberRegistry
-	uuids      spi.UUIDGenerator
-	signer     *token.Signer
-	selfNodeID string
-	tokenTTL   time.Duration
+	registry           *MemberRegistry
+	selector           MemberSelector
+	signer             *token.Signer
+	answerLimitDefault time.Duration
+	answerLimitMax     time.Duration
+	passAllowance      time.Duration
 }
 
-// NewProcessorDispatcher creates a new ProcessorDispatcher.
-func NewProcessorDispatcher(registry *MemberRegistry, uuids spi.UUIDGenerator, signer *token.Signer, selfNodeID string, tokenTTL time.Duration) *ProcessorDispatcher {
+// NewProcessorDispatcher creates a new ProcessorDispatcher. It holds no node
+// identity of its own: the owner a pass names is the callout's, whichever
+// pnode is running the try.
+func NewProcessorDispatcher(registry *MemberRegistry, selector MemberSelector, signer *token.Signer, answerLimitDefault, answerLimitMax, passAllowance time.Duration) *ProcessorDispatcher {
 	return &ProcessorDispatcher{
-		registry:   registry,
-		uuids:      uuids,
-		signer:     signer,
-		selfNodeID: selfNodeID,
-		tokenTTL:   tokenTTL,
+		registry:           registry,
+		selector:           selector,
+		signer:             signer,
+		answerLimitDefault: answerLimitDefault,
+		answerLimitMax:     answerLimitMax,
+		passAllowance:      passAllowance,
 	}
 }
 
-// resolveTxToken returns the tx-token to attach to a calc request. A token
-// pre-minted by an upstream ClusterDispatcher (carried on ctx, NodeID = owner)
-// wins so a forwarded dispatch routes callbacks to the owner, not this node.
-// Otherwise self-mint {selfNodeID, txID}. Empty txID → no token (standalone).
-func (d *ProcessorDispatcher) resolveTxToken(ctx context.Context, txID string) string {
-	if tok := TxTokenFromContext(ctx); tok != "" {
-		return tok
+// ResolveAnswerLimit gives the answer limit of a callout: its stored
+// responseTimeoutMs if positive, else the configured default. A stored value
+// above the configured upper bound — possible when the bound was lowered after
+// the workflow was imported — is not clamped: the callout fails as Terminal. A
+// substituted limit would be a wrong-but-available answer.
+func (d *ProcessorDispatcher) ResolveAnswerLimit(responseTimeoutMs int64) (time.Duration, *contract.CalloutFailure) {
+	if responseTimeoutMs <= 0 {
+		return d.answerLimitDefault, nil
 	}
-	if txID == "" || d.signer == nil {
-		return ""
+	// Compared in milliseconds: a huge stored value would overflow a Duration.
+	if responseTimeoutMs > d.answerLimitMax.Milliseconds() {
+		// Both numbers are configuration (the callout's own stored value, the
+		// server's configured bound), never client-request or entity-payload
+		// content, so composing this message directly is safe; it is written
+		// as an authored Sprintf rather than an error's .Error() so nothing
+		// here depends on an intermediate error's text ever being safe by
+		// construction.
+		msg := fmt.Sprintf("responseTimeoutMs %d exceeds the upper bound of %d ms set by CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS",
+			responseTimeoutMs, d.answerLimitMax.Milliseconds())
+		return 0, &contract.CalloutFailure{Kind: contract.Terminal, Message: msg}
 	}
-	tok, err := d.signer.Issue(d.selfNodeID, txID, time.Now().Add(d.tokenTTL))
+	return time.Duration(responseTimeoutMs) * time.Millisecond, nil
+}
+
+// mintPass issues the pass one try gives its cnode: the transaction token the
+// cnode's callbacks carry. It names the owner — callbacks are routed there
+// whichever pnode made the hand-off — the transaction, the callout and the
+// try's fencing number, and it lives as long as the try may: the answer limit
+// plus an allowance for routing and for clocks that differ between pnodes. A
+// callout outside a transaction carries no pass.
+//
+// A callout inside a transaction that names no owner is refused here, before
+// the hand-off, rather than minting a pass whose callbacks could never be
+// routed.
+func (d *ProcessorDispatcher) mintPass(call Callout, major, minor uint32) (string, error) {
+	if call.TxID == "" {
+		return "", nil
+	}
+	if call.OwnerNodeID == "" {
+		return "", fmt.Errorf("failed to mint transaction pass: the callout names no owner")
+	}
+	pass, err := d.signer.Issue(token.Claims{
+		NodeID:    call.OwnerNodeID,
+		TxRef:     call.TxID,
+		ExpiresAt: time.Now().Add(call.AnswerLimit + d.passAllowance).Unix(),
+		Callout:   call.RequestID,
+		Major:     major,
+		Minor:     minor,
+		Outer:     call.Outer,
+	})
 	if err != nil {
-		slog.Error("failed to mint tx-token", "pkg", "grpc", "err", err)
-		return ""
+		return "", fmt.Errorf("failed to mint transaction pass: %w", err)
 	}
-	return tok
+	return pass, nil
 }
 
 // buildEntityPayload builds the DataPayloadJson attached to a calc request when
@@ -94,159 +123,296 @@ func buildEntityPayload(entity *spi.Entity) *events.DataPayloadJson {
 	}
 }
 
-// dispatchCalloutToMember carries out the transport sequence shared by every
-// calculation callout: attach auth/tx-token to a CloudEvent wrapping req,
-// track the request, send it, and wait for the tracked response or a
-// timeout. Member resolution (FindByTags/ErrNoMatchingMember), request-struct
-// construction, and response parsing stay with the caller — this handles only
-// the wire protocol common to processor and criteria dispatch.
+// dispatchCalloutToMember makes one try: it wraps the callout's request in a
+// CloudEvent carrying the auth context and pass, tracks the request, hands it
+// to the member's writer, and waits for the tracked response or the answer
+// limit. Exactly one of its three results is meaningful:
 //
-// label is the callout kind ("processor"/"criteria") and name is the
-// configured processor/criteria name; both flow into client-facing
-// diagnostics (warnings/errors surface in the gRPC warnings array and HTTP
-// body — see .claude/rules/error-handling.md) and server logs, so operators
-// and clients keep name-based correlation.
-func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, member *Member, ceType string, req any, requestID, txID string, timeoutMs int64, label, name string) (*ProcessingResponse, error) {
-	ce, err := NewCloudEvent(ceType, req)
+//   - the mapped result, when the cnode answered success;
+//   - a CalloutFailure, whose Kind says whether another cnode may be tried.
+//     The line is the hand-off: until Member.Send returns nil the work provably
+//     never left this pnode (NoHandOff); after it, silence or a dropped stream
+//     is NoAnswer. Codes, statuses and messages are the ones a client has
+//     always seen — the kind travels beside them;
+//   - ctx.Err(), unchanged, when the caller's own context ended. When it ended
+//     instead because the callout's own deadline passed (contract.ErrCalloutDeadline
+//     as its cause), the try is classified as a CalloutFailure instead — NoAnswer
+//     after the hand-off, NoHandOff before it — and ctx.Err() is not returned.
+//
+// One deadline — the answer limit — bounds the hand-off and the wait together,
+// so a cnode that is attached but not taking data costs up to one answer limit
+// before it is classified NoHandOff.
+//
+// The callout kind and name flow into client-facing diagnostics (warnings and
+// errors surface in the gRPC warnings array and the HTTP body — see
+// .claude/rules/error-handling.md) and into server logs.
+func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, member *Member, call Callout, pass string) (CalloutResult, *contract.CalloutFailure, error) {
+	label, name, requestID := call.Kind.String(), call.Name, call.RequestID
+	limitMs := call.AnswerLimit.Milliseconds()
+
+	ce, err := NewCloudEvent(call.eventType, call.buildRequest(requestID))
 	if err != nil {
-		return nil, fmt.Errorf("failed to build %s cloud event: %w", label, err)
+		return CalloutResult{}, terminalFailure(fmt.Errorf("failed to build %s cloud event: %w", label, err), member.ID, requestID), nil
 	}
 	if err := AttachAuthContext(ctx, ce); err != nil {
-		return nil, fmt.Errorf("failed to attach auth context to %s cloud event: %w", label, err)
+		// The cause names the principal; the client-safe Message does not.
+		return CalloutResult{}, &contract.CalloutFailure{
+			Kind:    contract.Terminal,
+			Message: "auth context unavailable for dispatch",
+			Err:     fmt.Errorf("failed to attach auth context to %s cloud event: %w", label, err),
+		}, nil
 	}
-	AttachTxToken(ce, d.resolveTxToken(ctx, txID))
+	AttachTxToken(ce, pass)
 
-	ceData := ce.GetTextData()
-	slog.Debug("dispatch request", "pkg", "grpc", "requestId", requestID, "payload", logging.PayloadPreview([]byte(ceData), 200))
+	slog.Debug("dispatch request", "pkg", "grpc", "requestId", requestID, "memberId", member.ID,
+		"payload", logging.PayloadPreview([]byte(ce.GetTextData()), 200))
 
-	if timeoutMs <= 0 {
-		timeoutMs = defaultResponseTimeoutMs
-	}
-	timeout := time.Duration(timeoutMs) * time.Millisecond
-	// One deadline bounds the whole callout: handing the request to the
-	// member's writer AND waiting for the response. A member whose writer is
-	// stalled cannot hold a dispatcher past this.
-	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	callCtx, cancel := context.WithTimeout(ctx, call.AnswerLimit)
 	defer cancel()
 
 	// TrackRequest fails closed with ErrMemberEvicted the instant the member
 	// is torn down, even in the window before Evict has finished closing the
-	// evicted channel (see Member.closed): that is what keeps a dispatcher
-	// from selecting on a nil/never-tracked channel until its timeout and
+	// evicted channel (see Member.closed): that is what keeps a try from
+	// selecting on a never-tracked channel until its answer limit and
 	// misreporting DISPATCH_TIMEOUT for a member that was already gone.
 	ch, err := member.TrackRequest(requestID)
 	if err != nil {
-		// The member left between being chosen and the request being tracked.
 		slog.Warn("member gone before dispatch", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
-		return nil, disconnectedErr(label)
+		return CalloutResult{}, appFailure(contract.NoHandOff, disconnectedErr(label)), nil
 	}
-	// Spec D11: every exit that does not consume the response must clear the
-	// tracking entry, or a late compute-node reply finds a dangling channel
-	// and the map entry leaks. The response arm's normal completion path
-	// already cleared it; clearing again is a no-op.
+	// Every exit that does not consume the response must clear the tracking
+	// entry, or a late reply finds a dangling channel and the map entry leaks.
+	// The response arm's normal completion already cleared it; clearing again
+	// is a no-op.
 	defer member.AbandonRequest(requestID)
 
 	if err := member.Send(callCtx, ce); err != nil {
 		switch {
 		case errors.Is(err, ErrMemberEvicted):
 			slog.Error("member evicted while enqueueing dispatch", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
-			return nil, disconnectedErr(label)
+			return CalloutResult{}, appFailure(contract.NoHandOff, disconnectedErr(label)), nil
 		case ctx.Err() != nil:
-			return nil, ctx.Err()
+			if calloutDeadlinePassed(ctx) {
+				slog.Error("dispatch cut off by the callout deadline", "pkg", "grpc", "phase", "enqueue", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
+				return CalloutResult{}, appFailure(contract.NoHandOff, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchTimeout,
+					fmt.Sprintf("%s dispatch cut off at the callout deadline: member not draining", label)).AsRetryable()), nil
+			}
+			return CalloutResult{}, nil, ctx.Err()
 		default:
-			slog.Error("dispatch timeout", "pkg", "grpc", "phase", "enqueue", "memberId", member.ID, "label", label, "name", name, "requestId", requestID, "timeout", timeout)
-			return nil, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchTimeout,
-				fmt.Sprintf("%s dispatch timed out after %dms: member not draining", label, timeoutMs)).AsRetryable()
+			slog.Error("dispatch timeout", "pkg", "grpc", "phase", "enqueue", "memberId", member.ID, "label", label, "name", name, "requestId", requestID, "timeout", call.AnswerLimit)
+			return CalloutResult{}, appFailure(contract.NoHandOff, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchTimeout,
+				fmt.Sprintf("%s dispatch timed out after %dms: member not draining", label, limitMs)).AsRetryable()), nil
 		}
 	}
 
+	// The hand-off happened: from here on the work may have reached the cnode.
+	// Every response on ch is non-nil — CompleteRequest and failAllPending are
+	// its only producers and neither sends nil, and the channel is never
+	// closed — so a nil one is not guarded for: doing so would give the
+	// resulting failure a kind (MemberFailed says the cnode answered) that no
+	// nil response could ever have earned.
 	select {
 	case resp := <-ch:
-		// Propagate warnings to request diagnostics, keyed by callout name
-		// so the client sees which processor/criteria warned.
-		if resp != nil {
-			for _, w := range resp.Warnings {
-				common.AddWarning(ctx, fmt.Sprintf("%s %s: %s", label, name, w))
-			}
+		// Read the answer before anything in it is believed. An answer whose
+		// `success` is the literal null reports neither success nor failure,
+		// and one whose content the callout's own mapResponse cannot make
+		// sense of is no better: both are refused here, for all three kinds
+		// alike, and nothing in either reaches the client — not a verdict, not
+		// a payload, not a result, and not a warning. Trusting a member's text
+		// out of an answer whose verdict has just been discarded would be
+		// trusting the same answer twice over; what was wrong reaches the
+		// client in the unreadable-answer message instead.
+		if resp.NullSuccess {
+			return CalloutResult{}, memberResponseUnreadable(nullSuccessError{}, nullSuccessMessage, label, name, member.ID, requestID), nil
 		}
-		if resp != nil && resp.Disconnected {
+		if resp.Disconnected {
 			slog.Error("member disconnected mid-dispatch", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
-			return nil, disconnectedErr(label)
+			return CalloutResult{}, appFailure(contract.NoAnswer, disconnectedErr(label)), nil
 		}
-		if resp == nil || !resp.Success {
-			errMsg := label + " returned failure"
-			if resp != nil && resp.Error != "" {
-				errMsg = resp.Error
-				common.AddError(ctx, fmt.Sprintf("%s %s: %s", label, name, errMsg))
+		// mapResponse reads what the answer says it did, which only an answer
+		// reporting success has said. A member reporting a failure owes no
+		// verdict, payload or result, and its answer is perfectly readable.
+		var result CalloutResult
+		if resp.Success {
+			var err error
+			if result, err = call.mapResponse(resp); err != nil {
+				return CalloutResult{}, memberResponseUnreadable(err, unreadableAnswerMessage, label, name, member.ID, requestID), nil
 			}
-			return nil, fmt.Errorf("%s dispatch failed: %s", label, errMsg)
 		}
-		slog.Info("dispatch completed", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID, "success", true)
-		return resp, nil
+		// The answer could be read, so its warnings are the member's own and
+		// are surfaced, keyed by callout name so the client sees which callout
+		// warned — including from a member that reported a failure, whose
+		// warnings say what went wrong beside its message. Bounded here, where
+		// the member's own text becomes the client's, in the same way and for
+		// the same reason as its failure message below.
+		kept := resp.Warnings
+		if len(kept) > maxMemberWarnings {
+			kept = kept[:maxMemberWarnings]
+		}
+		for _, w := range kept {
+			common.AddWarning(ctx, fmt.Sprintf("%s %s: %s", label, name, boundMemberText(w)))
+		}
+		if len(resp.Warnings) > maxMemberWarnings {
+			common.AddWarning(ctx, fmt.Sprintf("%s %s: further warnings from the compute member were omitted", label, name))
+		}
+		if !resp.Success {
+			failure := &contract.CalloutFailure{Kind: contract.MemberFailed, Message: label + " returned failure", Retryable: resp.Retryable}
+			if resp.Error != "" {
+				failure.Message = boundMemberText(resp.Error)
+				common.AddError(ctx, fmt.Sprintf("%s %s: %s", label, name, failure.Message))
+			}
+			return CalloutResult{}, failure, nil
+		}
+		slog.Debug("dispatch completed", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
+		return result, nil, nil
 	case <-callCtx.Done():
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			if calloutDeadlinePassed(ctx) {
+				slog.Error("dispatch cut off by the callout deadline", "pkg", "grpc", "phase", "response", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
+				return CalloutResult{}, appFailure(contract.NoAnswer, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchTimeout,
+					fmt.Sprintf("%s dispatch cut off at the callout deadline: no response", label)).AsRetryable()), nil
+			}
+			return CalloutResult{}, nil, ctx.Err()
 		}
-		slog.Error("dispatch timeout", "pkg", "grpc", "phase", "response", "memberId", member.ID, "label", label, "name", name, "requestId", requestID, "timeout", timeout)
-		return nil, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchTimeout,
-			fmt.Sprintf("%s dispatch timed out after %dms: no response", label, timeoutMs)).AsRetryable()
+		slog.Error("dispatch timeout", "pkg", "grpc", "phase", "response", "memberId", member.ID, "label", label, "name", name, "requestId", requestID, "timeout", call.AnswerLimit)
+		return CalloutResult{}, appFailure(contract.NoAnswer, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchTimeout,
+			fmt.Sprintf("%s dispatch timed out after %dms: no response", label, limitMs)).AsRetryable()), nil
 	}
 }
 
-// disconnectedErr is the retryable 503 a caller gets when the compute member
-// it was routed to is gone; another member (or the same one, reconnected) may
-// serve the retry.
-func disconnectedErr(label string) error {
+// appFailure is a failure of the given kind carrying appErr, with its code and
+// client-safe message repeated beside the kind.
+func appFailure(kind contract.CalloutFailureKind, appErr *common.AppError) *contract.CalloutFailure {
+	return &contract.CalloutFailure{Kind: kind, Code: appErr.Code, Message: appErr.Message, Err: appErr}
+}
+
+// terminalFailure is an internal failure that would repeat identically on any
+// cnode: this pnode could not build its own request. The client sees the
+// fixed literal every internal callout failure in this file carries; the real
+// error — which can quote a byte of the entity payload being marshalled — is
+// logged here by shape only, never by text, and kept solely behind the
+// AppError's cause, a place common.WriteError never renders (it exposes only
+// a ticket for a LevelInternal error), so errors.Is/As on it still reach the
+// underlying cause.
+func terminalFailure(err error, memberID, requestID string) *contract.CalloutFailure {
+	slog.Error("dispatch could not build its own request", "pkg", "grpc", "memberId", memberID,
+		"requestId", requestID, "error", common.JSONErrorShape(err))
+	appErr := common.Internal("internal error", nil).WithCause(err)
+	return &contract.CalloutFailure{Kind: contract.Terminal, Code: appErr.Code, Message: appErr.Message, Err: appErr}
+}
+
+// The client-safe sentences memberResponseUnreadable carries. Both are this
+// node's own fixed text: nothing a member sent is quoted, and the second says
+// only which key of the schema was unreadable, which is what a member's author
+// needs to hear in the 400 the callout ends with.
+const (
+	unreadableAnswerMessage = "the compute member's response could not be read"
+	nullSuccessMessage      = unreadableAnswerMessage + ": success was null"
+)
+
+// memberResponseUnreadable is Terminal: spec §3's site table assigns
+// "response payload unmarshal" Terminal, not MemberFailed. MemberFailed means
+// the cnode itself answered success=false, with the cnode's OWN message and
+// its own retryable verdict (contract.CalloutFailure's doc); here the member
+// did not report a failure, and the message is ours, not the cnode's —
+// reporting it as MemberFailed would also mislabel it over the wire, since
+// fillFailure (internal/cluster/dispatch/handover.go) places a MemberFailed
+// failure's Message into memberError, claiming it as the member's own words.
+// The client sees msg, one of the fixed sentences above; the decode error —
+// which can quote a byte of the member's own response — is logged here by
+// shape only. It is not attached to the failure at all (no Err, no Code — this
+// Terminal failure has none of its own, like ResolveAnswerLimit's and
+// NewCriteriaCallout's): CalloutFailure.Error() returns Err's text verbatim
+// once Err is set, bypassing Message entirely, which would undo the
+// sanitizing done here.
+func memberResponseUnreadable(err error, msg, label, name, memberID, requestID string) *contract.CalloutFailure {
+	slog.Error("compute member response could not be read", "pkg", "grpc", "label", label, "name", name,
+		"memberId", memberID, "requestId", requestID, "error", common.JSONErrorShape(err))
+	return &contract.CalloutFailure{Kind: contract.Terminal, Message: msg}
+}
+
+// nullSuccessError is the unreadable-answer error for an answer whose
+// `success` key carried the literal null. Like noCriterionVerdictError it is a
+// type of its own rather than a sentinel value, so that the log line
+// memberResponseUnreadable writes — which renders the error by shape, never by
+// text — still names this condition.
+type nullSuccessError struct{}
+
+func (nullSuccessError) Error() string {
+	return "the response reported success: null"
+}
+
+// calloutDeadlinePassed reports whether ctx ended because the callout's own
+// deadline passed, as opposed to its caller going away.
+func calloutDeadlinePassed(ctx context.Context) bool {
+	return errors.Is(context.Cause(ctx), contract.ErrCalloutDeadline)
+}
+
+// disconnectedErr is the retryable 503 for a cnode that is gone — before the
+// hand-off (NoHandOff) or after it (NoAnswer); the kind beside it tells which.
+func disconnectedErr(label string) *common.AppError {
 	return common.Operational(http.StatusServiceUnavailable, common.ErrCodeComputeMemberDisconnected,
 		fmt.Sprintf("compute member disconnected during %s dispatch", label)).AsRetryable()
 }
 
-// DispatchProcessor sends an entity processor calculation request to a matching
-// calculation member and waits for the response.
-func (d *ProcessorDispatcher) DispatchProcessor(ctx context.Context, entity *spi.Entity, processor spi.ProcessorDefinition, workflowName string, transitionName string, txID string) (*spi.Entity, error) {
-	uc := spi.MustGetUserContext(ctx)
-	tenantID := uc.Tenant.ID
+// maxMemberMessageRunes bounds each piece of a compute member's own free text
+// before it becomes client text: a MemberFailed failure's Message, which flows
+// into a 400 body directly and, once several tries are exhausted, is
+// concatenated into a CALLOUT_FAILED list (internal/callout/failure.go's
+// attemptsMessage) alongside every other try's cause; and each of the
+// member's warnings, which are returned in the response. Unbounded, one
+// talkative or malicious cnode could make either arbitrarily large.
+const maxMemberMessageRunes = 512
 
-	member := d.registry.FindByTags(tenantID, processor.Config.CalculationNodesTags)
-	if member == nil {
-		slog.Warn("no matching calculation member", "pkg", "grpc", "tags", processor.Config.CalculationNodesTags, "entityId", entity.Meta.ID)
-		return nil, fmt.Errorf("%w: tags %q", ErrNoMatchingMember, processor.Config.CalculationNodesTags)
-	}
+// maxMemberWarnings bounds how many of a compute member's warnings become
+// client text for one try. They are added to the request's diagnostics and
+// returned in the response, so an unbounded list is a response a single cnode
+// decides the size of. Past the bound one warning says the rest were left out.
+const maxMemberWarnings = 32
 
-	slog.Info("dispatching processor", "pkg", "grpc", "memberId", member.ID, "processor", processor.Name, "entityId", entity.Meta.ID)
+// boundMemberText keeps the first maxMemberMessageRunes runes of s, appending
+// "…" when anything was cut so a reader can tell a shortened message from a
+// short one. Runes, not bytes: a cut must never split a multi-byte rune (see
+// boundLine, internal/cluster/dispatch/peer_router.go, for the same shape
+// applied to a hand-over answer's diagnostics).
+func boundMemberText(s string) string {
+	if len(s) <= maxMemberMessageRunes {
+		return s // runes never outnumber bytes: nothing to cut
+	}
+	r := []rune(s)
+	if len(r) <= maxMemberMessageRunes {
+		return s
+	}
+	return string(r[:maxMemberMessageRunes]) + "…"
+}
 
-	requestID := uuid.UUID(d.uuids.NewTimeUUID()).String()
+// MaxCriterionReasonRunes bounds a criterion's reason alone, wider than
+// maxMemberMessageRunes. The reason is not a diagnostic: it is the business
+// explanation a criterion gives for refusing a transition, and it reaches a
+// 400 body and the state-machine audit trail (internal/domain/workflow's
+// capReason, applied after this bound), so it keeps the allowance it had
+// before it was swept into the general member-text bound. Exported so the
+// cross-node relay (internal/cluster/dispatch/peer_router.go) can be pinned
+// to the same value — a reason relayed from a peer must not be cut shorter
+// than one answered locally.
+const MaxCriterionReasonRunes = 2048
 
-	req := events.EntityProcessorCalculationRequestJson{
-		ID:            requestID,
-		RequestID:     requestID,
-		EntityID:      entity.Meta.ID,
-		ProcessorID:   processor.Name,
-		ProcessorName: processor.Name,
-		Workflow:      events.WorkflowInfoJson{ID: workflowName, Name: workflowName},
-		Transition:    &events.TransitionInfoJson{ID: transitionName, Name: transitionName},
-		TransactionID: &txID,
-		Success:       true,
+// boundCriterionReason keeps the first MaxCriterionReasonRunes runes of s,
+// appending "…" when anything was cut — the same marking boundMemberText
+// uses, at the reason's own wider allowance.
+func boundCriterionReason(s string) string {
+	if len(s) <= MaxCriterionReasonRunes {
+		return s // runes never outnumber bytes: nothing to cut
 	}
-	// ProcessorConfig.Context is a pass-through string surfaced verbatim in
-	// the request's parameters node. One processor implementation can serve
-	// multiple workflow roles distinguished by Context.
-	if processor.Config.Context != "" {
-		req.Parameters = processor.Config.Context
+	r := []rune(s)
+	if len(r) <= MaxCriterionReasonRunes {
+		return s
 	}
-	if processor.Config.AttachEntity {
-		req.Payload = buildEntityPayload(entity)
-	}
-
-	resp, err := d.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, requestID, txID, processor.Config.ResponseTimeoutMs, "processor", processor.Name)
-	if err != nil {
-		return nil, err
-	}
-	return d.applyProcessorResponse(entity, resp)
+	return string(r[:MaxCriterionReasonRunes]) + "…"
 }
 
 // applyProcessorResponse extracts updated entity data from the response payload.
-func (d *ProcessorDispatcher) applyProcessorResponse(entity *spi.Entity, resp *ProcessingResponse) (*spi.Entity, error) {
+func applyProcessorResponse(entity *spi.Entity, resp *ProcessingResponse) (*spi.Entity, error) {
 	if resp.Payload == nil {
 		return entity, nil
 	}
@@ -266,118 +432,4 @@ func (d *ProcessorDispatcher) applyProcessorResponse(entity *spi.Entity, resp *P
 		Data: []byte(envelope.Data),
 	}
 	return updated, nil
-}
-
-// DispatchCriteria sends an entity criteria calculation request to a matching
-// calculation member and waits for the boolean result.
-func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.Entity, criterion json.RawMessage, target string, workflowName string, transitionName string, processorName string, txID string) (bool, string, error) {
-	uc := spi.MustGetUserContext(ctx)
-	tenantID := uc.Tenant.ID
-
-	// FunctionCondition schema: {"type":"function","function":{"name":"...","config":{...}}}
-	var parsed struct {
-		Function struct {
-			Name   string `json:"name"`
-			Config struct {
-				CalculationNodesTags string `json:"calculationNodesTags"`
-				AttachEntity         *bool  `json:"attachEntity"` // nil = default true
-				ResponseTimeoutMs    int64  `json:"responseTimeoutMs"`
-				// Context — pass-through string surfaced verbatim in the
-				// request's parameters node.
-				Context string `json:"context"`
-			} `json:"config"`
-		} `json:"function"`
-	}
-	if err := json.Unmarshal(criterion, &parsed); err != nil {
-		return false, "", fmt.Errorf("invalid criterion JSON: %w", err)
-	}
-
-	// attachEntity defaults to true when not explicitly set.
-	attachEntity := true
-	if parsed.Function.Config.AttachEntity != nil {
-		attachEntity = *parsed.Function.Config.AttachEntity
-	}
-
-	member := d.registry.FindByTags(tenantID, parsed.Function.Config.CalculationNodesTags)
-	if member == nil {
-		slog.Warn("no matching calculation member", "pkg", "grpc", "tags", parsed.Function.Config.CalculationNodesTags, "entityId", entity.Meta.ID)
-		return false, "", fmt.Errorf("%w: tags %q", ErrNoMatchingMember, parsed.Function.Config.CalculationNodesTags)
-	}
-
-	slog.Info("dispatching criteria", "pkg", "grpc", "memberId", member.ID, "criteria", parsed.Function.Name, "entityId", entity.Meta.ID)
-
-	requestID := uuid.UUID(d.uuids.NewTimeUUID()).String()
-
-	req := events.EntityCriteriaCalculationRequestJson{
-		ID:            requestID,
-		RequestID:     requestID,
-		EntityID:      entity.Meta.ID,
-		CriteriaID:    parsed.Function.Name,
-		CriteriaName:  parsed.Function.Name,
-		Target:        events.EntityCriteriaCalculationRequestJsonTarget(target),
-		Workflow:      &events.WorkflowInfoJson{ID: workflowName, Name: workflowName},
-		Transition:    &events.TransitionInfoJson{ID: transitionName, Name: transitionName},
-		TransactionID: &txID,
-		Success:       true,
-	}
-	if processorName != "" {
-		req.Processor = &events.ProcessorInfoJson{Name: processorName}
-	}
-	if parsed.Function.Config.Context != "" {
-		req.Parameters = parsed.Function.Config.Context
-	}
-	if attachEntity {
-		req.Payload = buildEntityPayload(entity)
-	}
-
-	resp, err := d.dispatchCalloutToMember(ctx, member, EntityCriteriaCalculationRequest, req, requestID, txID, parsed.Function.Config.ResponseTimeoutMs, "criteria", parsed.Function.Name)
-	if err != nil {
-		return false, "", err
-	}
-	if resp.Matches != nil {
-		return *resp.Matches, resp.Reason, nil
-	}
-	return false, resp.Reason, nil
-}
-
-// DispatchFunction sends a generic Function calculation request (e.g. a
-// scheduled-transition timing computation) to a matching calculation member
-// and returns its typed result.
-func (d *ProcessorDispatcher) DispatchFunction(ctx context.Context, entity *spi.Entity, fn spi.ScheduleFunction, workflowName string, transitionName string, txID string) (contract.FunctionResult, error) {
-	uc := spi.MustGetUserContext(ctx)
-	tenantID := uc.Tenant.ID
-
-	member := d.registry.FindByTags(tenantID, fn.CalculationNodesTags)
-	if member == nil {
-		slog.Warn("no matching calculation member", "pkg", "grpc", "tags", fn.CalculationNodesTags, "entityId", entity.Meta.ID)
-		return contract.FunctionResult{}, fmt.Errorf("%w: tags %q", ErrNoMatchingMember, fn.CalculationNodesTags)
-	}
-
-	slog.Info("dispatching function", "pkg", "grpc", "memberId", member.ID, "function", fn.Name, "entityId", entity.Meta.ID)
-
-	requestID := uuid.UUID(d.uuids.NewTimeUUID()).String()
-
-	req := events.EntityFunctionCalculationRequestJson{
-		ID:            requestID,
-		RequestID:     requestID,
-		EntityID:      entity.Meta.ID,
-		FunctionID:    fn.Name,
-		FunctionName:  fn.Name,
-		Workflow:      events.WorkflowInfoJson{ID: workflowName, Name: workflowName},
-		Transition:    &events.TransitionInfoJson{ID: transitionName, Name: transitionName},
-		TransactionID: &txID,
-		Success:       true,
-	}
-	if fn.Context != "" {
-		req.Parameters = fn.Context
-	}
-	if fn.AttachEntity {
-		req.Payload = buildEntityPayload(entity)
-	}
-
-	resp, err := d.dispatchCalloutToMember(ctx, member, EntityFunctionCalculationRequest, req, requestID, txID, fn.ResponseTimeoutMs, "function", fn.Name)
-	if err != nil {
-		return contract.FunctionResult{}, err
-	}
-	return contract.FunctionResult{Kind: resp.ResultKind, Value: resp.Result}, nil
 }

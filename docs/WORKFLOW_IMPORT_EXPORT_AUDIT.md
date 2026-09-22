@@ -31,7 +31,7 @@ date.
 | H4 — unknown `ExecutionMode` silently coerced to SYNC | **Resolved in v0.8.0** | #255 | Closed by #255 — validator now rejects unknown ExecutionMode values at import. |
 | H5 — default-workflow fallback masks REPLACE-with-empty and criterion mismatches | **Tracked** | #256 | Bundled with H2/M3. |
 | H6 — no state-graph validation at import (InitialState, Next, name uniqueness, criterion well-formedness) | **Partially resolved in v0.8.0** | #255 | H6.a–e closed by #255 (initialState, next, name uniqueness, transition uniqueness). H6.f (per-state unguarded-automated cap) and Criterion / Version well-formedness rows remain deferred. |
-| M1 — boundary-accepted fields with no consumer | **Tracked (split)** | #250 (`ProcessorDefinition.Type` via schema reshape), #253 (`Context` pass-through), #254 (`RetryPolicy`), #257 (`Workflow.Description` cleanup as part of the boundary hygiene sweep) | `Workflow.Version` reserved as forward-looking per §L5 — out of scope of any cleanup. |
+| M1 — boundary-accepted fields with no consumer | **Tracked (split)**; **Resolved** for `RetryPolicy`: validated at import on processors, criterion functions and schedule functions, and honoured at dispatch. | #250 (`ProcessorDefinition.Type` via schema reshape), #253 (`Context` pass-through), #254 (`RetryPolicy`), #257 (`Workflow.Description` cleanup as part of the boundary hygiene sweep) | `Workflow.Version` reserved as forward-looking per §L5 — out of scope of any cleanup. |
 | M2 — export does not check model existence; 404 conflates two cases | **Tracked** | #257 (boundary hygiene sweep) | |
 | M3 — empty `workflows` array silently destructive in REPLACE/ACTIVATE | **Tracked** | #256 | Bundled with H2/H5. |
 | M4 — MERGE silently coalesces duplicate / empty workflow names | **Resolved in v0.8.0** | #255 | Closed by #255 — validator now rejects duplicate or empty workflow names within a request. |
@@ -328,15 +328,15 @@ Verified via repository-wide grep of non-test code:
 
 | Field | OpenAPI / SPI | Consumed? |
 |---|---|---|
-| `ProcessorConfig.RetryPolicy` | `api/openapi.yaml:8120–8128`, `cyoda-go-spi@v0.7.1/types.go:152` | **Validated at import (#262).** Rejected at import unless ∈ {NONE, FIXED, ""}. Dispatcher still single-shot; full retry loop deferred to #254. |
+| `ProcessorConfig.RetryPolicy` | `api/openapi.yaml:8120–8128`, `cyoda-go-spi@v0.7.1/types.go:152` | **Validated at import and consumed at dispatch.** Rejected unless ∈ {NONE, FIXED, ""} on a processor, a criterion function and a schedule function; selects the number of tries (`CYODA_RETRY_FIXED_NUM_RETRIES`). |
 | `ProcessorConfig.Context` | `api/openapi.yaml:8622–8624`, `types.go:153` | **Resolved in v0.8.0.** Wired as a pass-through string into the dispatch `parameters` JSON node at `internal/grpc/dispatch.go:71, 221`. Historical analysis below retained for context. |
 | `ProcessorDefinition.Type` | `api/openapi.yaml:8674–8679`, `types.go:141` | **No.** Discriminator carried for parity, no engine branch uses it. |
 
 The other ProcessorConfig fields **are** consumed by the gRPC dispatcher
 (`internal/grpc/dispatch.go`), specifically:
 `CalculationNodesTags` at lines 47/187, `AttachEntity` at line 68/183,
-`ResponseTimeoutMs` at line 104 (with a 30-second default at line 24,
-`defaultResponseTimeoutMs`). The engine itself passes the whole
+`ResponseTimeoutMs` at line 104, with the default taken from
+`CYODA_CALLOUT_RESPONSE_TIMEOUT_MS`. The engine itself passes the whole
 `ProcessorDefinition` through to `extProc.DispatchProcessor` unchanged
 (`engine_processors.go:143, 159, 174, 235, 268`), so the consumption happens
 on the dispatcher side, not at the engine layer.
@@ -399,7 +399,7 @@ that lists each tried member with the per-member exception, deduplicated by
 count — operators see one error per dispatch with the full failover trail
 attached.
 
-**Current state of cyoda-go.** The dispatcher at
+**At the audit date** (resolved since — see the M1 row): **Current state of cyoda-go.** The dispatcher at
 `internal/grpc/dispatch.go:46–135` is a single-shot send-and-wait: one
 `FindByTags` lookup, one `member.Send`, one select on response / timeout /
 ctx.Done — and any failure propagates immediately. There is no retry, no

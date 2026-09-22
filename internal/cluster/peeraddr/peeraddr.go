@@ -6,12 +6,15 @@
 package peeraddr
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/netip"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // ErrForbiddenPeerAddress is returned when the caller is asked to dial an
@@ -20,6 +23,29 @@ import (
 // network errors.
 var ErrForbiddenPeerAddress = errors.New("peer address is forbidden")
 
+// ErrRedirectRefused is what RefuseRedirects returns. Sentinel so a caller can
+// tell a peer that tried to redirect it from a peer that failed to answer.
+var ErrRedirectRefused = errors.New("refusing to follow a redirect to another node address")
+
+// RefuseRedirects is the http.Client CheckRedirect for every client that talks
+// to another cluster node. A 3xx injected on the path between nodes would
+// otherwise send the signed request on to an address Validate never saw — the
+// pivot Validate exists to close, reached from the network instead of from the
+// registry. It returns an error rather than http.ErrUseLastResponse, so the 3xx
+// is not read as an answer either.
+func RefuseRedirects(_ *http.Request, _ []*http.Request) error { return ErrRedirectRefused }
+
+// LookupTimeout bounds the name lookup for a caller that has no figure of its
+// own to bound it with — the tx-affinity proxy and the pooled gRPC client, whose
+// requests carry no deadline by the project's own ruling. It is the order of
+// CYODA_DISPATCH_CONNECT_TIMEOUT's default, because a lookup that precedes a
+// dial belongs with the dial and not with the whole request it serves: a
+// resolver that is down would otherwise hold the handler's goroutine for the
+// resolver's own timeout, retries included. Callers that DO have a figure — the
+// hand-over its connect timeout, the scheduler RPC its whole-call timeout — pass
+// theirs instead.
+const LookupTimeout = 2 * time.Second
+
 // Validate parses a cluster registry address and rejects addresses pointing
 // at ranges the cluster must never dial: loopback, link-local
 // (169.254.0.0/16, fe80::/10), IPv4/IPv6 unspecified, multicast. Literal IPs
@@ -27,9 +53,18 @@ var ErrForbiddenPeerAddress = errors.New("peer address is forbidden")
 // answer must pass.
 //
 // This guards against the SSRF vector where an attacker who can write to the
-// cluster registry pivots HMAC-authenticated dispatch or callback-proxy
-// requests to an internal service (Postgres on 127.0.0.1, cloud metadata at
+// cluster registry pivots authenticated dispatch or callback-proxy requests to
+// an internal service (Postgres on 127.0.0.1, cloud metadata at
 // 169.254.169.254, etc.).
+//
+// The name lookup runs under ctx, which is the caller's own bound on the whole
+// operation — for a hand-over, the connect timeout inside the callout's
+// deadline. Without it a resolver that is slow or down blocks the caller for
+// the resolver's own timeout, once per peer, with the transaction open and the
+// callout's time already counted against it. A lookup the context ends is a
+// refusal like any other: nothing about the address was established, so the
+// address is not dialled. A literal needs no resolver and is judged whatever
+// the context says.
 //
 // DNS resolution at validation time is a best-effort defence; a full defence
 // against DNS rebinding would also pin the resolved IP on the dialer. That is
@@ -38,7 +73,7 @@ var ErrForbiddenPeerAddress = errors.New("peer address is forbidden")
 // When allowLoopback is true, 127.0.0.0/8 and ::1 are permitted so test
 // harnesses that bind cluster nodes on 127.0.0.1 can still forward. Link-local,
 // unspecified, and multicast remain rejected even with the flag set.
-func Validate(raw string, allowLoopback bool) error {
+func Validate(ctx context.Context, raw string, allowLoopback bool) error {
 	hostPort := raw
 	if strings.Contains(raw, "://") {
 		u, err := url.Parse(raw)
@@ -69,16 +104,19 @@ func Validate(raw string, allowLoopback bool) error {
 		return nil
 	}
 
-	ips, err := net.LookupIP(host)
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return fmt.Errorf("%w: resolve %q: %v", ErrForbiddenPeerAddress, host, err)
+		// %w twice: callers test the guard's sentinel, and a caller that wants
+		// to know the lookup was abandoned rather than answered tests the
+		// context's own error.
+		return fmt.Errorf("%w: resolve %q: %w", ErrForbiddenPeerAddress, host, err)
 	}
 	if len(ips) == 0 {
 		return fmt.Errorf("%w: %q resolved to no addresses", ErrForbiddenPeerAddress, host)
 	}
 	for _, ip := range ips {
-		if err := checkIP(ip, allowLoopback); err != nil {
-			return fmt.Errorf("%w: %q resolved to %s (%v)", ErrForbiddenPeerAddress, host, ip, err)
+		if err := checkIP(ip.IP, allowLoopback); err != nil {
+			return fmt.Errorf("%w: %q resolved to %s (%v)", ErrForbiddenPeerAddress, host, ip.IP, err)
 		}
 	}
 	return nil

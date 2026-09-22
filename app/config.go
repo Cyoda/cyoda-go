@@ -87,6 +87,9 @@ type Config struct {
 	// Scheduler configures the coordinator-only scan loop that fires due
 	// ScheduledTasks (scheduled-transition runtime). See SchedulerConfig.
 	Scheduler SchedulerConfig
+	// Callout frames one compute-node callout: how many tries it gets and how
+	// long a pnode waits for one cnode's answer. See CalloutConfig.
+	Callout CalloutConfig
 }
 
 // HTTPConfig holds the receive-side timeouts applied to both the API server
@@ -176,6 +179,58 @@ type SchedulerConfig struct {
 	// firing it. Size to at least the max inter-node clock skew.
 	// CYODA_SCHEDULER_EXPIRY_GRACE, default 100ms.
 	ExpiryGrace time.Duration
+}
+
+// CalloutConfig holds the server-side settings of a compute-node callout
+// (a processor, criterion or function request).
+type CalloutConfig struct {
+	// FixedNumRetries is the number of retries after the first try for a
+	// callout whose retryPolicy is FIXED or unset; NONE always means one try.
+	// CYODA_RETRY_FIXED_NUM_RETRIES, default 3, must be >= 0.
+	FixedNumRetries int
+	// ResponseTimeout is the answer limit used when the workflow author set no
+	// positive responseTimeoutMs on the callout.
+	// CYODA_CALLOUT_RESPONSE_TIMEOUT_MS, default 30000, must be >= 1 and no
+	// larger than ResponseTimeoutMax.
+	ResponseTimeout time.Duration
+	// ResponseTimeoutMax is the largest responseTimeoutMs a workflow may carry.
+	// Workflow import refuses a larger value; a stored workflow whose value
+	// exceeds a bound lowered after import fails its callout rather than
+	// being clamped. CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS, default 60000,
+	// must be >= 1.
+	ResponseTimeoutMax time.Duration
+	// HandoverAllowance is what the owner allows a hand-over to another node
+	// on top of (tries left × answer limit), and the last term of a callout's
+	// deadline. CYODA_CALLOUT_HANDOVER_ALLOWANCE, default 30s, must be > 0.
+	HandoverAllowance time.Duration
+	// PassAllowance is how long a pass outlives its try's answer limit: the
+	// margin for routing a callback and for clocks that differ between nodes.
+	// CYODA_CALLOUT_PASS_ALLOWANCE, default 30s, must be > 0.
+	PassAllowance time.Duration
+	// JoinedResponseMaxBytes is the most a compute member's callback may
+	// answer with while it holds its transaction's lock — the owner's next
+	// move waits behind those bytes. An answer past it fails the callback with
+	// 413 JOINED_RESPONSE_TOO_LARGE rather than being cut short.
+	// CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES, default 10485760 (10 MiB),
+	// must be > 0.
+	JoinedResponseMaxBytes int
+	// JoinedMaxWaiters is how many of a compute member's callbacks may queue
+	// for one transaction behind the callback that holds it. Callbacks of one
+	// transaction are served one at a time, so a member that fires many at once
+	// buys no speed by it. Past the cap a callback is refused with
+	// 503 TOO_MANY_JOINED_REQUESTS, retryable.
+	//
+	// It bounds the queue's LENGTH, not its bytes. The cap is read before a
+	// callback's body is, so a refusal costs no buffer, but the reading
+	// reserves nothing — callbacks that arrive together can all pass it — and
+	// each then buffers its whole request, up to httpmw's compile-time 10 MiB,
+	// before it queues. The request side has no setting, and the queue has no
+	// byte ceiling: at this default, 10 MiB bodies reach a gigabyte for one
+	// transaction. JoinedResponseMaxBytes bounds the answers, not these.
+	// CYODA_CALLOUT_JOINED_MAX_WAITERS, default 128, must be > 0 — there is no
+	// "unlimited" value, an unbounded queue being what the cap exists to
+	// prevent.
+	JoinedMaxWaiters int
 }
 
 type AdminConfig struct {
@@ -409,11 +464,8 @@ func DefaultConfig() Config {
 			ProxyTimeout:           envDuration("CYODA_PROXY_TIMEOUT", 30*time.Second),
 			HMACSecret:             hmacSecret,
 			DispatchWaitTimeout:    envDuration("CYODA_DISPATCH_WAIT_TIMEOUT", 5*time.Second),
+			DispatchConnectTimeout: envDuration("CYODA_DISPATCH_CONNECT_TIMEOUT", 2*time.Second),
 			DispatchForwardTimeout: envDuration("CYODA_DISPATCH_FORWARD_TIMEOUT", 30*time.Second),
-			// TxTokenTTL must outlive the full dispatch round-trip plus the callback's
-			// verify step, including the forwarded-chain case where two budgets stack
-			// (local dispatch + peer forward). Default ≥3× the dispatch/forward timeout (30s).
-			TxTokenTTL: envDuration("CYODA_TX_TOKEN_TTL", 90*time.Second),
 			// Test-only: allow the dispatch HTTP forwarder to target loopback peers.
 			// Multi-node E2E fixtures run every node on 127.0.0.1; production leaves
 			// this false so the SSRF guard stays active.
@@ -427,6 +479,15 @@ func DefaultConfig() Config {
 			Coordinator:       envString("CYODA_SCHEDULER_COORDINATOR", "lowest-node-id"),
 			RedispatchBackoff: envDuration("CYODA_SCHEDULER_REDISPATCH_BACKOFF", 30*time.Second),
 			ExpiryGrace:       envDuration("CYODA_SCHEDULER_EXPIRY_GRACE", 100*time.Millisecond),
+		},
+		Callout: CalloutConfig{
+			FixedNumRetries:        envInt("CYODA_RETRY_FIXED_NUM_RETRIES", 3),
+			ResponseTimeout:        envMillis("CYODA_CALLOUT_RESPONSE_TIMEOUT_MS", 30*time.Second),
+			ResponseTimeoutMax:     envMillis("CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS", 60*time.Second),
+			HandoverAllowance:      envDuration("CYODA_CALLOUT_HANDOVER_ALLOWANCE", 30*time.Second),
+			PassAllowance:          envDuration("CYODA_CALLOUT_PASS_ALLOWANCE", 30*time.Second),
+			JoinedResponseMaxBytes: envInt("CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES", 10485760),
+			JoinedMaxWaiters:       envInt("CYODA_CALLOUT_JOINED_MAX_WAITERS", 128),
 		},
 		HTTP: HTTPConfig{
 			ReadHeaderTimeout: envDuration("CYODA_HTTP_READ_HEADER_TIMEOUT", 10*time.Second),
@@ -732,6 +793,12 @@ func (c Config) Validate() error {
 	if err := ValidateSearchJobMaxAttempts(c.SearchJobMaxAttempts); err != nil {
 		return err
 	}
+	if err := ValidateCallout(c.Callout); err != nil {
+		return err
+	}
+	if err := ValidateDispatch(c.Cluster); err != nil {
+		return err
+	}
 	return ValidateHTTP(c.HTTP)
 }
 
@@ -825,6 +892,58 @@ func ValidateSearchJobStaleAfter(staleAfter, interval time.Duration) error {
 func ValidateSearchJobMaxAttempts(n int) error {
 	if n < 1 {
 		return fmt.Errorf("CYODA_SEARCH_JOB_MAX_ATTEMPTS must be >= 1, got %d", n)
+	}
+	return nil
+}
+
+// ValidateCallout rejects callout settings no callout could be run under.
+// Config is a QA'd artefact: an out-of-range value is a hard startup error,
+// not a clamp. A default answer limit above the upper bound is rejected
+// because import would then refuse a workflow that merely spells out the
+// default.
+func ValidateCallout(c CalloutConfig) error {
+	if c.FixedNumRetries < 0 {
+		return fmt.Errorf("CYODA_RETRY_FIXED_NUM_RETRIES must be >= 0, got %d", c.FixedNumRetries)
+	}
+	if c.ResponseTimeout < time.Millisecond {
+		return fmt.Errorf("CYODA_CALLOUT_RESPONSE_TIMEOUT_MS must be >= 1, got %d", c.ResponseTimeout.Milliseconds())
+	}
+	if c.ResponseTimeoutMax < time.Millisecond {
+		return fmt.Errorf("CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS must be >= 1, got %d", c.ResponseTimeoutMax.Milliseconds())
+	}
+	if c.ResponseTimeout > c.ResponseTimeoutMax {
+		return fmt.Errorf("CYODA_CALLOUT_RESPONSE_TIMEOUT_MS (%d) must not exceed CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS (%d)",
+			c.ResponseTimeout.Milliseconds(), c.ResponseTimeoutMax.Milliseconds())
+	}
+	if c.HandoverAllowance <= 0 {
+		return fmt.Errorf("CYODA_CALLOUT_HANDOVER_ALLOWANCE must be > 0, got %s", c.HandoverAllowance)
+	}
+	if c.PassAllowance <= 0 {
+		return fmt.Errorf("CYODA_CALLOUT_PASS_ALLOWANCE must be > 0, got %s", c.PassAllowance)
+	}
+	if c.JoinedResponseMaxBytes <= 0 {
+		return fmt.Errorf("CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES must be > 0, got %d", c.JoinedResponseMaxBytes)
+	}
+	if c.JoinedMaxWaiters <= 0 {
+		return fmt.Errorf("CYODA_CALLOUT_JOINED_MAX_WAITERS must be > 0, got %d", c.JoinedMaxWaiters)
+	}
+	return nil
+}
+
+// ValidateDispatch rejects dispatch durations that cannot be honoured. The
+// patience may be zero (waiting disabled) but not negative; the connect and
+// forward timeouts bound network calls and must be positive. They are checked
+// whether or not clustering is enabled: a value that would fail the moment
+// clustering is switched on is a configuration error today.
+func ValidateDispatch(c cluster.Config) error {
+	if c.DispatchWaitTimeout < 0 {
+		return fmt.Errorf("CYODA_DISPATCH_WAIT_TIMEOUT must not be negative (0 disables waiting), got %s", c.DispatchWaitTimeout)
+	}
+	if c.DispatchConnectTimeout <= 0 {
+		return fmt.Errorf("CYODA_DISPATCH_CONNECT_TIMEOUT must be > 0, got %s", c.DispatchConnectTimeout)
+	}
+	if c.DispatchForwardTimeout <= 0 {
+		return fmt.Errorf("CYODA_DISPATCH_FORWARD_TIMEOUT must be > 0, got %s", c.DispatchForwardTimeout)
 	}
 	return nil
 }

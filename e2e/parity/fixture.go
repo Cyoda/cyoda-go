@@ -11,8 +11,10 @@ import "testing"
 //   - There is no Backend() accessor — scenarios cannot ask which backend
 //     they are running against, because the contract is that they pass
 //     identically on all of them.
-//   - There is no compute-client handle — the compute-test-client is a
-//     separate subprocess reached via gRPC, not via Go state.
+//   - There is no compute-client handle on this interface — the fixture's own
+//     compute-test-client is a separate subprocess reached via gRPC. A fixture
+//     that can start FURTHER compute clients for a scenario advertises it
+//     through the optional ComputeClientFixture (compute_client.go).
 //   - There is no storage handle — verification is API-only.
 type BackendFixture interface {
 	// BaseURL returns the cyoda HTTP base URL with scheme, host, port, and any

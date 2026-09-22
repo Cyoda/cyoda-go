@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,176 +15,511 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 )
 
-// fakeLocalDispatcher implements contract.ExternalProcessingService for testing.
-// capturedCtx records the ctx from the most recent dispatch call so tests can
-// assert identity propagation.
-type fakeLocalDispatcher struct {
-	processorResult *spi.Entity
-	processorErr    error
-	criteriaResult  bool
-	criteriaReason  string
-	criteriaErr     error
-	functionResult  contract.FunctionResult
-	functionErr     error
-	capturedCtx     context.Context
+// testOwnRetries and testOwnAnswerLimitMax are what a test pnode's OWN
+// configuration says — CYODA_RETRY_FIXED_NUM_RETRIES's default of 3 plus the
+// first try, and CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS's default. They bound
+// what this node decides for itself; a hand-over's numbers are the owner's and
+// are not held against them.
+const (
+	testOwnMaxTries       = 4
+	testOwnAnswerLimitMax = 60 * time.Second
+)
+
+// fakeRunner is the local procedure of the pnode that receives a hand-over.
+type fakeRunner struct {
+	result   internalgrpc.LocalResult
+	onRun    func(ctx context.Context)
+	gotCall  internalgrpc.Callout
+	gotTries int
+	gotCtx   context.Context
+	calls    int
 }
 
-func (f *fakeLocalDispatcher) DispatchProcessor(
-	ctx context.Context,
-	_ *spi.Entity,
-	_ spi.ProcessorDefinition,
-	_, _, _ string,
-) (*spi.Entity, error) {
-	f.capturedCtx = ctx
-	return f.processorResult, f.processorErr
+func (f *fakeRunner) RunLocal(ctx context.Context, call internalgrpc.Callout, maxTries int) internalgrpc.LocalResult {
+	f.calls++
+	f.gotCtx, f.gotCall, f.gotTries = ctx, call, maxTries
+	if f.onRun != nil {
+		f.onRun(ctx)
+	}
+	return f.result
 }
 
-func (f *fakeLocalDispatcher) DispatchCriteria(
-	ctx context.Context,
-	_ *spi.Entity,
-	_ json.RawMessage,
-	_, _, _, _, _ string,
-) (bool, string, error) {
-	f.capturedCtx = ctx
-	return f.criteriaResult, f.criteriaReason, f.criteriaErr
-}
-
-func (f *fakeLocalDispatcher) DispatchFunction(
-	ctx context.Context,
-	_ *spi.Entity,
-	_ spi.ScheduleFunction,
-	_, _, _ string,
-) (contract.FunctionResult, error) {
-	f.capturedCtx = ctx
-	return f.functionResult, f.functionErr
+func newHandlerMux(t *testing.T, runner LocalRunner, auth PeerAuth) *http.ServeMux {
+	t.Helper()
+	mux := http.NewServeMux()
+	NewDispatchHandler(runner, auth).Register(mux)
+	return mux
 }
 
 var testSecret32 = bytes.Repeat([]byte{0xAB}, 32)
 
-// newAEAD builds an AEADPeerAuth keyed by testSecret32. Internal test helper.
+// testSelfNodeID is the node id every AEADPeerAuth in these tests answers to.
+// A test that needs two nodes that must NOT open each other's envelopes builds
+// them with NewAEADPeerAuth and ids of its own (aead_recipient_test.go).
+const testSelfNodeID = "node-self"
+
+// newAEAD builds an AEADPeerAuth keyed by testSecret32, for testSelfNodeID.
+// Internal test helper.
 func newAEAD(t *testing.T) *AEADPeerAuth {
 	t.Helper()
-	a, err := NewAEADPeerAuth(testSecret32, 30*time.Second)
+	a, err := NewAEADPeerAuth(testSecret32, testSelfNodeID, 30*time.Second)
 	if err != nil {
 		t.Fatalf("NewAEADPeerAuth: %v", err)
 	}
 	return a
 }
 
-// signedRequest builds an AEAD-wrapped POST request ready for the handler
-// to verify. Convenience for tests that need an authenticated request body.
-func signedRequest(t *testing.T, auth *AEADPeerAuth, method, path string, plain []byte) *http.Request {
+// signedRequestWithBinding builds an AEAD-wrapped request ready for the handler
+// to verify, and returns the binding its answer opens under.
+func signedRequestWithBinding(t *testing.T, auth *AEADPeerAuth, method, path string, plain []byte) (*http.Request, ResponseBinding) {
 	t.Helper()
 	req := httptest.NewRequest(method, path, nil)
-	wire, err := auth.Sign(req, plain)
+	wire, binding, err := auth.Sign(req, testSelfNodeID, plain)
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
 	req.Body = io.NopCloser(bytes.NewReader(wire))
 	req.ContentLength = int64(len(wire))
+	return req, binding
+}
+
+// signedRequest is signedRequestWithBinding for a test that does not read the answer.
+func signedRequest(t *testing.T, auth *AEADPeerAuth, method, path string, plain []byte) *http.Request {
+	t.Helper()
+	req, _ := signedRequestWithBinding(t, auth, method, path, plain)
 	return req
 }
 
-func TestHandler_ProcessorSuccess(t *testing.T) {
-	auth := newAEAD(t)
-	fake := &fakeLocalDispatcher{
-		processorResult: &spi.Entity{
-			Meta: spi.EntityMeta{ID: "ent-1"},
-			Data: []byte(`{"output":42}`),
-		},
+// decodeSealed opens the handler's answer as the owner would.
+func decodeSealed(t *testing.T, auth *AEADPeerAuth, binding ResponseBinding, rec *httptest.ResponseRecorder) DispatchCalloutResponse {
+	t.Helper()
+	plain, err := auth.OpenResponse(rec.Header(), binding, rec.Body.Bytes())
+	if err != nil {
+		t.Fatalf("the answer does not open under its request's binding: %v (status %d)", err, rec.Code)
 	}
-
-	handler := NewDispatchHandler(fake, auth)
-	mux := http.NewServeMux()
-	handler.Register(mux)
-
-	processor := spi.ProcessorDefinition{Name: "proc1", Type: "SCRIPT"}
-	req := DispatchCalloutRequest{
-		Kind:           "processor",
-		Entity:         json.RawMessage(`{"foo":"bar"}`),
-		EntityMeta:     spi.EntityMeta{ID: "ent-1", TenantID: "tenant-a"},
-		Processor:      &processor,
-		WorkflowName:   "wf",
-		TransitionName: "t1",
-		TxID:           "tx-1",
-		TenantID:       "tenant-a",
-		UserID:         "user-1",
-		Roles:          []string{"ROLE_USER"},
+	var resp DispatchCalloutResponse
+	if err := json.Unmarshal(plain, &resp); err != nil {
+		t.Fatalf("decode answer: %v", err)
 	}
-	plain, _ := json.Marshal(req)
-	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
+	return resp
+}
 
+// postHandOver sends req as the owner would and opens the sealed answer.
+func postHandOver(t *testing.T, mux *http.ServeMux, auth *AEADPeerAuth, req DispatchCalloutRequest) DispatchCalloutResponse {
+	t.Helper()
+	plain, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	httpReq, binding := signedRequestWithBinding(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httpReq)
-
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
 	}
+	return decodeSealed(t, auth, binding, rec)
+}
 
-	var resp DispatchCalloutResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
+func TestHandler_Outcomes(t *testing.T) {
+	yes := true
+	tests := []struct {
+		name   string
+		kind   string
+		result internalgrpc.LocalResult
+		check  func(t *testing.T, r DispatchCalloutResponse)
+	}{
+		{"processor answered", "processor",
+			internalgrpc.LocalResult{TriesUsed: 1, Result: internalgrpc.CalloutResult{Entity: &spi.Entity{Data: []byte(`{"output":42}`)}}},
+			func(t *testing.T, r DispatchCalloutResponse) {
+				if r.Outcome != OutcomeOK || string(r.EntityData) != `{"output":42}` {
+					t.Errorf("%+v", r)
+				}
+			}},
+		{"criterion answered, with its reason", "criteria",
+			internalgrpc.LocalResult{TriesUsed: 1, Result: internalgrpc.CalloutResult{Matches: true, Reason: "amount 5 below minimum 10"}},
+			func(t *testing.T, r DispatchCalloutResponse) {
+				if r.Outcome != OutcomeOK || r.Matches == nil || !*r.Matches || r.Reason != "amount 5 below minimum 10" {
+					t.Errorf("%+v", r)
+				}
+			}},
+		{"function answered", "function",
+			internalgrpc.LocalResult{TriesUsed: 1, Result: internalgrpc.CalloutResult{Function: contract.FunctionResult{Kind: "Schedule", Value: json.RawMessage(`{"fireAfterMs":5}`)}}},
+			func(t *testing.T, r DispatchCalloutResponse) {
+				if r.Outcome != OutcomeOK || r.ResultKind != "Schedule" || string(r.Result) != `{"fireAfterMs":5}` {
+					t.Errorf("%+v", r)
+				}
+			}},
+		{"the cnode said it failed", "processor",
+			internalgrpc.LocalResult{TriesUsed: 1, Failure: &contract.CalloutFailure{Kind: contract.MemberFailed, Message: "card declined", Retryable: &yes}},
+			func(t *testing.T, r DispatchCalloutResponse) {
+				if r.Outcome != "member_failed" || r.MemberError != "card declined" || r.MemberRetryable == nil || !*r.MemberRetryable {
+					t.Errorf("%+v", r)
+				}
+			}},
 	}
-	if !resp.Success {
-		t.Errorf("expected success=true, got false (error: %s)", resp.Error)
-	}
-	if string(resp.EntityData) != `{"output":42}` {
-		t.Errorf("unexpected entity data: %s", resp.EntityData)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			auth := newAEAD(t)
+			runner := &fakeRunner{result: tt.result}
+			tt.check(t, postHandOver(t, newHandlerMux(t, runner, auth), auth, validRequest(t, tt.kind)))
+			if runner.calls != 1 {
+				t.Errorf("RunLocal called %d times", runner.calls)
+			}
+		})
 	}
 }
 
-func TestHandler_CriteriaSuccess(t *testing.T) {
+func TestHandler_GivesRunLocalTheOwnersTriesAndAnswerLimit(t *testing.T) {
 	auth := newAEAD(t)
-	fake := &fakeLocalDispatcher{criteriaResult: true}
+	runner := &fakeRunner{result: internalgrpc.LocalResult{
+		TriesUsed: 2,
+		Result:    internalgrpc.CalloutResult{Matches: true},
+		Attempts:  []contract.CalloutAttempt{{MemberID: "m1", Kind: contract.NoAnswer, Cause: "DISPATCH_TIMEOUT: criteria dispatch timed out after 1500ms: no response"}},
+	}}
+	req := validRequest(t, "criteria") // triesLeft 2, answerLimitMs 1500
+	resp := postHandOver(t, newHandlerMux(t, runner, auth), auth, req)
 
-	handler := NewDispatchHandler(fake, auth)
-	mux := http.NewServeMux()
-	handler.Register(mux)
-
-	req := DispatchCalloutRequest{
-		Kind:           "criteria",
-		Entity:         json.RawMessage(`{"foo":"bar"}`),
-		EntityMeta:     spi.EntityMeta{ID: "ent-2", TenantID: "tenant-a"},
-		Criterion:      json.RawMessage(`{"type":"eq","field":"x","value":1}`),
-		Target:         "target",
-		WorkflowName:   "wf",
-		TransitionName: "t1",
-		ProcessorName:  "proc1",
-		TxID:           "tx-2",
-		TenantID:       "tenant-a",
-		UserID:         "user-1",
-		Roles:          []string{"ROLE_USER"},
+	if runner.gotTries != 2 {
+		t.Errorf("maxTries = %d, want the hand-over's triesLeft", runner.gotTries)
 	}
-	plain, _ := json.Marshal(req)
-	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
+	if runner.gotCall.AnswerLimit != 1500*time.Millisecond {
+		t.Errorf("AnswerLimit = %s, want the owner's", runner.gotCall.AnswerLimit)
+	}
+	if resp.Outcome != OutcomeOK || resp.TriesUsed == nil || *resp.TriesUsed != 2 || len(resp.Attempts) != 1 || resp.Attempts[0].MemberID != "m1" {
+		t.Errorf("two tries in one exchange must be reported as two: %+v", resp)
+	}
+}
 
+func TestHandler_BuildsTheCalloutFromTheRequest(t *testing.T) {
+	auth := newAEAD(t)
+	runner := &fakeRunner{result: internalgrpc.LocalResult{TriesUsed: 1, Result: internalgrpc.CalloutResult{Entity: &spi.Entity{Data: []byte(`{}`)}}}}
+	req := validRequest(t, "processor") // owner-node, major 5, outer (outer-rid,3,1)
+	postHandOver(t, newHandlerMux(t, runner, auth), auth, req)
+
+	call := runner.gotCall
+	if call.OwnerNodeID != "owner-node" || call.RequestID != "rid-1" || call.TxID != "tx-1" {
+		t.Errorf("callout = %+v", call)
+	}
+	if len(call.Outer) != 1 || call.Outer[0] != (token.Pair{Callout: "outer-rid", Major: 3, Minor: 1}) {
+		t.Errorf("Outer = %+v", call.Outer)
+	}
+	if major, minor := call.Number.Next(); major != 5 || minor != 1 {
+		t.Errorf("first try numbered (%d,%d), want (5,1)", major, minor)
+	}
+	uc := spi.GetUserContext(runner.gotCtx)
+	if uc == nil || uc.Tenant.ID != "tenant-1" || uc.UserID != "user-1" || uc.Kind != spi.PrincipalUser {
+		t.Errorf("user context = %+v", uc)
+	}
+	if id, ok := PeerIdentityFromContext(runner.gotCtx); !ok || id.AuthMethod() != "aead-v1" {
+		t.Errorf("peer identity = %+v, %v", id, ok)
+	}
+}
+
+// The context the local procedure runs under carries exactly what the peer
+// sent, and nothing more: the tenant is the wire's, named by its id alone. A
+// peer is authenticated by the cluster-wide key and its identity names no
+// tenant, so nothing else about the tenant may be invented here.
+func TestHandler_ContextCarriesOnlyWhatThePeerSent(t *testing.T) {
+	auth := newAEAD(t)
+	runner := &fakeRunner{result: internalgrpc.LocalResult{TriesUsed: 1, Result: internalgrpc.CalloutResult{Entity: &spi.Entity{Data: []byte(`{}`)}}}}
+	postHandOver(t, newHandlerMux(t, runner, auth), auth, validRequest(t, "processor"))
+
+	uc := spi.GetUserContext(runner.gotCtx)
+	if uc == nil {
+		t.Fatal("no user context")
+	}
+	if uc.Tenant.Name != "" {
+		t.Errorf("Tenant.Name = %q, want empty: the peer sent no tenant name", uc.Tenant.Name)
+	}
+	if len(uc.Roles) != 1 || uc.Roles[0] != "ROLE_USER" {
+		t.Errorf("Roles = %v, want the request's", uc.Roles)
+	}
+}
+
+// The pass the receiving pnode mints names the OWNER's node, not its own, so a
+// callback from the cnode it hands the work to is routed to the pnode that holds
+// the transaction. The real local procedure mints it, over a real signer.
+func TestHandler_PassMintedOnThePeerNamesTheOwner(t *testing.T) {
+	signer, err := token.NewSigner(testSecret32)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	reg, cnode := attachedCnode(t, "tenant-1", "python")
+	local := internalgrpc.NewProcessorDispatcher(reg, internalgrpc.NewRoundRobinSelector(reg),
+		signer, 5*time.Second, testOwnAnswerLimitMax, 30*time.Second)
+
+	auth := newAEAD(t)
+	resp := postHandOver(t, newHandlerMux(t, local, auth), auth, validRequest(t, "processor"))
+	if resp.Outcome != OutcomeOK {
+		t.Fatalf("%+v", resp)
+	}
+
+	claims, err := signer.Verify(cnode.onlyPass(t))
+	if err != nil {
+		t.Fatalf("verify the pass the cnode was given: %v", err)
+	}
+	if claims.NodeID != "owner-node" {
+		t.Errorf("pass NodeID = %q, want the owner's, not the receiving pnode's", claims.NodeID)
+	}
+	if claims.TxRef != "tx-1" || claims.Callout != "rid-1" {
+		t.Errorf("pass TxRef/Callout = %q/%q", claims.TxRef, claims.Callout)
+	}
+	if claims.Major != 5 || claims.Minor != 1 {
+		t.Errorf("pass numbered (%d,%d), want (5,1) — minor 1 under the hand-over's major", claims.Major, claims.Minor)
+	}
+	if len(claims.Outer) != 1 || claims.Outer[0] != (token.Pair{Callout: "outer-rid", Major: 3, Minor: 1}) {
+		t.Errorf("pass Outer = %+v, want the hand-over's enclosing pairs", claims.Outer)
+	}
+}
+
+// The handler holds a LocalRunner and nothing that could reach another pnode:
+// with no cnode of its own it says so, and the owner asks the next pnode.
+func TestHandler_NoLocalCnode_AnswersNoHandOff(t *testing.T) {
+	auth := newAEAD(t)
+	runner := &fakeRunner{result: internalgrpc.LocalResult{Failure: &contract.CalloutFailure{
+		Kind: contract.NoHandOff, Code: common.ErrCodeNoComputeMemberForTag,
+		Err: fmt.Errorf("%w: tags %q", contract.ErrNoMatchingMember, "python")}}}
+	resp := postHandOver(t, newHandlerMux(t, runner, auth), auth, validRequest(t, "processor"))
+	if resp.Outcome != "no_handoff" || resp.TriesUsed == nil || *resp.TriesUsed != 0 || resp.ErrorCode != common.ErrCodeNoComputeMemberForTag {
+		t.Errorf("%+v", resp)
+	}
+}
+
+func TestHandler_DiagnosticsOfTheTriesTravelBack(t *testing.T) {
+	auth := newAEAD(t)
+	runner := &fakeRunner{
+		result: internalgrpc.LocalResult{TriesUsed: 1, Failure: &contract.CalloutFailure{Kind: contract.MemberFailed, Message: "card declined"}},
+		onRun: func(ctx context.Context) {
+			common.AddWarning(ctx, "processor myProcessor: slow")
+			common.AddError(ctx, "processor myProcessor: card declined")
+		},
+	}
+	resp := postHandOver(t, newHandlerMux(t, runner, auth), auth, validRequest(t, "processor"))
+	if len(resp.Warnings) != 1 || resp.Warnings[0] != "processor myProcessor: slow" || len(resp.Errors) != 1 || resp.Errors[0] != "processor myProcessor: card declined" {
+		t.Errorf("warnings %v, errors %v", resp.Warnings, resp.Errors)
+	}
+}
+
+// What the peer logged for itself stays there: only client-safe text travels.
+func TestHandler_InternalDetailStaysOnThePeer(t *testing.T) {
+	auth := newAEAD(t)
+	runner := &fakeRunner{result: internalgrpc.LocalResult{TriesUsed: 1,
+		Failure:  &contract.CalloutFailure{Kind: contract.Terminal, Message: "auth context unavailable for dispatch", Err: errors.New("principal svc-7 at 10.0.0.5:5432")},
+		Attempts: []contract.CalloutAttempt{{MemberID: "m1", Kind: contract.Terminal, Cause: "auth context unavailable for dispatch"}}}}
+	mux := newHandlerMux(t, runner, auth)
+	plain, _ := json.Marshal(validRequest(t, "processor"))
+	httpReq, binding := signedRequestWithBinding(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httpReq)
+	opened, err := auth.OpenResponse(rec.Header(), binding, rec.Body.Bytes())
+	if err != nil {
+		t.Fatalf("OpenResponse: %v", err)
+	}
+	if strings.Contains(string(opened), "10.0.0.5") || strings.Contains(string(opened), "svc-7") {
+		t.Errorf("the answer carries the peer's internal detail: %s", opened)
+	}
+}
+
+// A replayed request keeps its bare 403. The owner reads it as a lost answer,
+// which is what it could read before; an authenticated "nothing was handed
+// over" for a replay would be a weapon — see ErrNonceReplayed.
+func TestHandler_ReplayedRequest_IsABareForbidden(t *testing.T) {
+	auth := newAEAD(t)
+	runner := &fakeRunner{result: internalgrpc.LocalResult{TriesUsed: 1, Result: internalgrpc.CalloutResult{Entity: &spi.Entity{Data: []byte(`{}`)}}}}
+	mux := newHandlerMux(t, runner, auth)
+
+	plain, _ := json.Marshal(validRequest(t, "processor"))
+	first, binding := signedRequestWithBinding(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
+	wire, _ := io.ReadAll(first.Body)
+	build := func() *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/internal/dispatch/callout", bytes.NewReader(wire))
+		r.Header.Set("Content-Type", DispatchContentType)
+		r.Header.Set(DispatchTimestampHdr, first.Header.Get(DispatchTimestampHdr))
+		return r
+	}
+
+	rec1 := httptest.NewRecorder()
+	mux.ServeHTTP(rec1, build())
+	if resp := decodeSealed(t, auth, binding, rec1); resp.Outcome != OutcomeOK {
+		t.Fatalf("first: %+v", resp)
+	}
+	rec2 := httptest.NewRecorder()
+	mux.ServeHTTP(rec2, build())
+	if rec2.Code != http.StatusForbidden {
+		t.Fatalf("replay: status %d, want 403", rec2.Code)
+	}
+	// The owner cannot read a "nothing was handed over" out of it: there is no
+	// sealed answer bound to the request at all.
+	if _, err := auth.OpenResponse(rec2.Header(), binding, rec2.Body.Bytes()); err == nil {
+		t.Error("the replay was answered with something the owner can open as an outcome")
+	}
+	if runner.calls != 1 {
+		t.Errorf("RunLocal called %d times: the replay reached a cnode", runner.calls)
+	}
+}
+
+func TestHandler_FullReplayCache_IsAnAuthenticatedNoHandOff(t *testing.T) {
+	auth := newAEAD(t)
+	auth.nonces = newNonceCache(time.Minute, 1, time.Now)
+	runner := &fakeRunner{result: internalgrpc.LocalResult{TriesUsed: 1, Result: internalgrpc.CalloutResult{Entity: &spi.Entity{Data: []byte(`{}`)}}}}
+	mux := newHandlerMux(t, runner, auth)
+
+	if resp := postHandOver(t, mux, auth, validRequest(t, "processor")); resp.Outcome != OutcomeOK {
+		t.Fatalf("first: %+v", resp)
+	}
+	resp := postHandOver(t, mux, auth, validRequest(t, "processor"))
+	if resp.Outcome != "no_handoff" || *resp.TriesUsed != 0 || runner.calls != 1 {
+		t.Errorf("second: %+v, RunLocal calls %d", resp, runner.calls)
+	}
+}
+
+func TestHandler_RequestThatCannotBeRun_IsAnAuthenticatedTerminal(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*DispatchCalloutRequest)
+	}{
+		{"unknown kind", func(r *DispatchCalloutRequest) { r.Kind = "bogus" }},
+		{"entity of another tenant", func(r *DispatchCalloutRequest) { r.EntityMeta.TenantID = "tenant-2" }},
+		{"entity with no tenant", func(r *DispatchCalloutRequest) { r.EntityMeta.TenantID = "" }},
+		{"no tries", func(r *DispatchCalloutRequest) { r.TriesLeft = 0 }},
+		{"no answer limit", func(r *DispatchCalloutRequest) { r.AnswerLimitMs = 0 }},
+		{"no owner", func(r *DispatchCalloutRequest) { r.OwnerNodeID = "" }},
+		{"entity that is JSON null", func(r *DispatchCalloutRequest) { r.Entity = json.RawMessage(`null`) }},
+		{"more enclosing pairs than can be sane", func(r *DispatchCalloutRequest) {
+			r.Outer = make([]WirePair, maxOuterPairs+1)
+			for i := range r.Outer {
+				r.Outer[i] = WirePair{Callout: fmt.Sprintf("outer-%d", i), Major: 1}
+			}
+		}},
+		{"no tenant at all", func(r *DispatchCalloutRequest) { r.TenantID, r.EntityMeta.TenantID = "", "" }},
+		// This one is refused by toCallout rather than validate: both refusals
+		// must reach the owner in the same shape.
+		{"a criterion that does not parse", func(r *DispatchCalloutRequest) {
+			r.Kind, r.Processor = "criteria", nil
+			r.Criterion = json.RawMessage(`{"function":7}`)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			auth := newAEAD(t)
+			runner := &fakeRunner{}
+			req := validRequest(t, "processor")
+			tt.mutate(&req)
+			resp := postHandOver(t, newHandlerMux(t, runner, auth), auth, req)
+			if resp.Outcome != "terminal" || resp.TriesUsed == nil || *resp.TriesUsed != 0 ||
+				resp.ErrorStatus != http.StatusInternalServerError || resp.ErrorCode != common.ErrCodeServerError {
+				t.Errorf("%+v", resp)
+			}
+			if runner.calls != 0 {
+				t.Error("RunLocal was called for a request that must not run")
+			}
+			raw, _ := json.Marshal(resp)
+			if strings.Contains(string(raw), "tenant-2") {
+				t.Errorf("the answer names a peer-supplied tenant: %s", raw)
+			}
+		})
+	}
+}
+
+// How many tries the hand-over may make and how long a cnode is given to answer
+// are the OWNER's decisions: the receiving pnode runs them as sent, even where
+// its own configuration would have chosen smaller ones. Holding them against its
+// own settings would fail a serviceable callout whenever two nodes' settings
+// differ — which they do through any rolling configuration change.
+func TestHandler_RunsTheOwnersTriesAndAnswerLimitWhateverThisNodesSettings(t *testing.T) {
+	auth := newAEAD(t)
+	runner := &fakeRunner{result: internalgrpc.LocalResult{TriesUsed: 1,
+		Result: internalgrpc.CalloutResult{Entity: &spi.Entity{Data: []byte(`{}`)}}}}
+
+	req := validRequest(t, "processor")
+	req.TriesLeft = testOwnMaxTries + 3
+	req.AnswerLimitMs = testOwnAnswerLimitMax.Milliseconds() * 2
+
+	if resp := postHandOver(t, newHandlerMux(t, runner, auth), auth, req); resp.Outcome != OutcomeOK {
+		t.Fatalf("%+v", resp)
+	}
+	if runner.gotTries != req.TriesLeft {
+		t.Errorf("maxTries = %d, want the owner's %d", runner.gotTries, req.TriesLeft)
+	}
+	if want := time.Duration(req.AnswerLimitMs) * time.Millisecond; runner.gotCall.AnswerLimit != want {
+		t.Errorf("AnswerLimit = %s, want the owner's %s", runner.gotCall.AnswerLimit, want)
+	}
+}
+
+func TestHandler_BodyThatDoesNotParse_IsAnAuthenticatedTerminal(t *testing.T) {
+	auth := newAEAD(t)
+	runner := &fakeRunner{}
+	httpReq, binding := signedRequestWithBinding(t, auth, http.MethodPost, "/internal/dispatch/callout", []byte(`{"kind":`))
+	rec := httptest.NewRecorder()
+	newHandlerMux(t, runner, auth).ServeHTTP(rec, httpReq)
+	if resp := decodeSealed(t, auth, binding, rec); resp.Outcome != "terminal" || runner.calls != 0 {
+		t.Errorf("%+v", resp)
+	}
+}
+
+// A body that does not parse is a peer's text like any other, and the hand-over
+// it came in carries a tenant's entity: json.UnmarshalTypeError and
+// json.SyntaxError quote the literal they failed on, so the refusal is logged
+// by the error's shape and never by its text — the rule the compute-member side
+// of the same branch already keeps.
+func TestHandler_ABodyThatDoesNotParseIsLoggedByItsShapeOnly(t *testing.T) {
+	const marker = "SECRET_ENTITY_MARKER_7f3a9b"
+	var logged bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	auth := newAEAD(t)
+	runner := &fakeRunner{}
+	body := []byte(`{"kind":"processor","triesLeft":"` + marker + `"}`)
+	httpReq, binding := signedRequestWithBinding(t, auth, http.MethodPost, "/internal/dispatch/callout", body)
+	rec := httptest.NewRecorder()
+	newHandlerMux(t, runner, auth).ServeHTTP(rec, httpReq)
+
+	if resp := decodeSealed(t, auth, binding, rec); resp.Outcome != "terminal" || runner.calls != 0 {
+		t.Errorf("%+v", resp)
+	}
+	if strings.Contains(logged.String(), marker) {
+		t.Errorf("the refusal logged the body it failed on: %s", logged.String())
+	}
+	if !strings.Contains(logged.String(), "UnmarshalTypeError") {
+		t.Errorf("the refusal does not say what shape of failure it was: %s", logged.String())
+	}
+}
+
+func TestHandler_AnswerIsSealedForItsRequest(t *testing.T) {
+	auth := newAEAD(t)
+	runner := &fakeRunner{result: internalgrpc.LocalResult{TriesUsed: 1,
+		Result: internalgrpc.CalloutResult{Entity: &spi.Entity{Data: []byte(`{"output":42}`)}}}}
+	mux := newHandlerMux(t, runner, auth)
+
+	plain, _ := json.Marshal(validRequest(t, "processor"))
+	httpReq, binding := signedRequestWithBinding(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httpReq)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("status = %d", rec.Code)
 	}
-
-	var resp DispatchCalloutResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
+	if got := rec.Header().Get("Content-Type"); got != DispatchContentType {
+		t.Errorf("Content-Type = %q, want %q", got, DispatchContentType)
 	}
-	if !resp.Success {
-		t.Errorf("expected success=true")
+	if bytes.Contains(rec.Body.Bytes(), []byte("output")) {
+		t.Error("the answer is on the wire in the clear")
 	}
-	if resp.Matches == nil || !*resp.Matches {
-		t.Errorf("expected matches=true")
+	if resp := decodeSealed(t, auth, binding, rec); string(resp.EntityData) != `{"output":42}` {
+		t.Errorf("EntityData = %s", resp.EntityData)
 	}
 }
 
 func TestHandler_MissingAEADHeaders(t *testing.T) {
-	handler := NewDispatchHandler(&fakeLocalDispatcher{}, newAEAD(t))
-	mux := http.NewServeMux()
-	handler.Register(mux)
+	mux := newHandlerMux(t, &fakeRunner{}, newAEAD(t))
 
 	body := []byte(`{}`)
 	httpReq := httptest.NewRequest(http.MethodPost, "/internal/dispatch/callout", bytes.NewReader(body))
@@ -200,9 +536,7 @@ func TestHandler_MissingAEADHeaders(t *testing.T) {
 
 func TestHandler_RejectsPlainJSONWithoutAEAD(t *testing.T) {
 	// Even if someone sets the timestamp header, a plain JSON body fails AEAD.Open.
-	handler := NewDispatchHandler(&fakeLocalDispatcher{}, newAEAD(t))
-	mux := http.NewServeMux()
-	handler.Register(mux)
+	mux := newHandlerMux(t, &fakeRunner{}, newAEAD(t))
 
 	httpReq := httptest.NewRequest(http.MethodPost, "/internal/dispatch/callout",
 		bytes.NewReader([]byte(`{"not":"encrypted"}`)))
@@ -217,126 +551,23 @@ func TestHandler_RejectsPlainJSONWithoutAEAD(t *testing.T) {
 	}
 }
 
-func TestHandler_RejectsReplayedRequest(t *testing.T) {
-	auth := newAEAD(t)
-	handler := NewDispatchHandler(&fakeLocalDispatcher{
-		processorResult: &spi.Entity{Meta: spi.EntityMeta{ID: "e"}, Data: []byte(`{}`)},
-	}, auth)
-	mux := http.NewServeMux()
-	handler.Register(mux)
-
-	// Sign once, then submit the same wire body twice.
-	processor := spi.ProcessorDefinition{Name: "p", Type: "SCRIPT"}
-	plain, _ := json.Marshal(DispatchCalloutRequest{
-		Kind:     "processor",
-		TenantID: "t", UserID: "u",
-		Processor:    &processor,
-		WorkflowName: "w", TransitionName: "t", TxID: "x",
-		EntityMeta: spi.EntityMeta{ID: "e", TenantID: "t"},
-		Entity:     json.RawMessage(`{}`),
-	})
-	first := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
-	wire, _ := io.ReadAll(first.Body)
-	ts := first.Header.Get(DispatchTimestampHdr)
-
-	build := func() *http.Request {
-		r := httptest.NewRequest(http.MethodPost, "/internal/dispatch/callout", bytes.NewReader(wire))
-		r.Header.Set("Content-Type", DispatchContentType)
-		r.Header.Set(DispatchTimestampHdr, ts)
-		return r
-	}
-
-	rec1 := httptest.NewRecorder()
-	mux.ServeHTTP(rec1, build())
-	if rec1.Code != http.StatusOK {
-		t.Fatalf("first request should succeed, got %d: %s", rec1.Code, rec1.Body.String())
-	}
-
-	rec2 := httptest.NewRecorder()
-	mux.ServeHTTP(rec2, build())
-	if rec2.Code != http.StatusForbidden {
-		t.Fatalf("replay should be rejected with 403, got %d", rec2.Code)
-	}
-}
-
-func TestHandler_PopulatesPeerIdentityInContext(t *testing.T) {
-	auth := newAEAD(t)
-	fake := &fakeLocalDispatcher{
-		processorResult: &spi.Entity{Meta: spi.EntityMeta{ID: "e"}, Data: []byte(`{}`)},
-	}
-	handler := NewDispatchHandler(fake, auth)
-	mux := http.NewServeMux()
-	handler.Register(mux)
-
-	processor := spi.ProcessorDefinition{Name: "p", Type: "SCRIPT"}
-	plain, _ := json.Marshal(DispatchCalloutRequest{
-		Kind:     "processor",
-		TenantID: "t", UserID: "u", TxID: "tx",
-		Processor:    &processor,
-		WorkflowName: "w", TransitionName: "t",
-		EntityMeta: spi.EntityMeta{ID: "e", TenantID: "t"},
-		Entity:     json.RawMessage(`{}`),
-	})
-	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
-
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httpReq)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
-	}
-
-	id, ok := PeerIdentityFromContext(fake.capturedCtx)
-	if !ok {
-		t.Fatal("PeerIdentity not found in dispatcher ctx — handler failed to propagate")
-	}
-	if id.AuthMethod() != "aead-v1" {
-		t.Errorf("AuthMethod = %q, want aead-v1", id.AuthMethod())
-	}
-}
-
-// TestHandler_ReconstructsPrincipalKindInContext guards that the peer
-// reconstructs a UserContext carrying the SAME principal Kind the
-// originating node had. Without this, the peer's local dispatch (which
-// calls AttachAuthContext just like single-node dispatch) would fail the
-// forwarded callout closed on an unset Kind, regardless of what the
-// originating principal's real kind was.
+// The peer reconstructs a UserContext carrying the SAME principal Kind the
+// originating node had. Without it, the peer's local dispatch — which calls
+// AttachAuthContext just like single-node dispatch — would fail the callout
+// closed on an unset Kind, whatever the originating principal's real kind was.
 func TestHandler_ReconstructsPrincipalKindInContext(t *testing.T) {
-	auth := newAEAD(t)
-
-	tests := []spi.PrincipalKind{spi.PrincipalUser, spi.PrincipalService, spi.PrincipalSystem}
-
-	for _, kind := range tests {
+	for _, kind := range []spi.PrincipalKind{spi.PrincipalUser, spi.PrincipalService, spi.PrincipalSystem} {
 		t.Run(string(kind), func(t *testing.T) {
-			fake := &fakeLocalDispatcher{
-				processorResult: &spi.Entity{Meta: spi.EntityMeta{ID: "e"}, Data: []byte(`{}`)},
-			}
-			handler := NewDispatchHandler(fake, auth)
-			mux := http.NewServeMux()
-			handler.Register(mux)
+			auth := newAEAD(t)
+			runner := &fakeRunner{result: internalgrpc.LocalResult{TriesUsed: 1,
+				Result: internalgrpc.CalloutResult{Entity: &spi.Entity{Data: []byte(`{}`)}}}}
+			req := validRequest(t, "processor")
+			req.PrincipalKind = kind
+			postHandOver(t, newHandlerMux(t, runner, auth), auth, req)
 
-			processor := spi.ProcessorDefinition{Name: "p", Type: "SCRIPT"}
-			plain, _ := json.Marshal(DispatchCalloutRequest{
-				Kind:          "processor",
-				TenantID:      "t",
-				UserID:        "u",
-				PrincipalKind: kind,
-				TxID:          "tx",
-				Processor:     &processor,
-				WorkflowName:  "w", TransitionName: "t",
-				EntityMeta: spi.EntityMeta{ID: "e", TenantID: "t"},
-				Entity:     json.RawMessage(`{}`),
-			})
-			httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
-
-			rec := httptest.NewRecorder()
-			mux.ServeHTTP(rec, httpReq)
-			if rec.Code != http.StatusOK {
-				t.Fatalf("expected 200, got %d", rec.Code)
-			}
-
-			uc := spi.GetUserContext(fake.capturedCtx)
+			uc := spi.GetUserContext(runner.gotCtx)
 			if uc == nil {
-				t.Fatal("expected UserContext in dispatcher ctx")
+				t.Fatal("expected UserContext in the local procedure's ctx")
 			}
 			if uc.Kind != kind {
 				t.Errorf("Kind = %q, want %q", uc.Kind, kind)
@@ -346,446 +577,11 @@ func TestHandler_ReconstructsPrincipalKindInContext(t *testing.T) {
 }
 
 func TestNewAEADPeerAuth_SecretTooShort(t *testing.T) {
-	_, err := NewAEADPeerAuth([]byte("short"), 30*time.Second)
+	_, err := NewAEADPeerAuth([]byte("short"), testSelfNodeID, 30*time.Second)
 	if err == nil {
 		t.Fatal("expected error for short secret")
 	}
 	if !errors.Is(err, ErrSharedSecretTooShort) {
 		t.Errorf("expected ErrSharedSecretTooShort, got %v", err)
-	}
-}
-
-func TestHandler_ProcessorError_SanitizedResponse(t *testing.T) {
-	auth := newAEAD(t)
-	fake := &fakeLocalDispatcher{
-		processorErr: fmt.Errorf("connection refused: dial tcp 10.0.0.1:5432"),
-	}
-	handler := NewDispatchHandler(fake, auth)
-	mux := http.NewServeMux()
-	handler.Register(mux)
-
-	processor := spi.ProcessorDefinition{Name: "proc1", Type: "SCRIPT"}
-	plain, _ := json.Marshal(DispatchCalloutRequest{
-		Kind:           "processor",
-		Entity:         json.RawMessage(`{"foo":"bar"}`),
-		EntityMeta:     spi.EntityMeta{ID: "ent-1", TenantID: "tenant-a"},
-		Processor:      &processor,
-		WorkflowName:   "wf",
-		TransitionName: "t1",
-		TxID:           "tx-1",
-		TenantID:       "tenant-a",
-		UserID:         "user-1",
-		Roles:          []string{"ROLE_USER"},
-	})
-	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
-
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httpReq)
-
-	var resp DispatchCalloutResponse
-	_ = json.NewDecoder(rec.Body).Decode(&resp)
-	if resp.Success {
-		t.Fatal("expected success=false")
-	}
-	if strings.Contains(resp.Error, "10.0.0.1") {
-		t.Errorf("error response must not contain internal details, got %q", resp.Error)
-	}
-	if strings.Contains(resp.Error, "connection refused") {
-		t.Errorf("error response must not contain internal details, got %q", resp.Error)
-	}
-}
-
-func TestHandleCriteria_PropagatesReason(t *testing.T) {
-	auth := newAEAD(t)
-	fake := &fakeLocalDispatcher{criteriaResult: false, criteriaReason: "peer reason here"}
-
-	handler := NewDispatchHandler(fake, auth)
-	mux := http.NewServeMux()
-	handler.Register(mux)
-
-	req := DispatchCalloutRequest{
-		Kind:           "criteria",
-		Entity:         json.RawMessage(`{"foo":"bar"}`),
-		EntityMeta:     spi.EntityMeta{ID: "ent-2", TenantID: "tenant-a"},
-		Criterion:      json.RawMessage(`{"type":"eq","field":"x","value":1}`),
-		Target:         "target",
-		WorkflowName:   "wf",
-		TransitionName: "t1",
-		ProcessorName:  "proc1",
-		TxID:           "tx-2",
-		TenantID:       "tenant-a",
-		UserID:         "user-1",
-		Roles:          []string{"ROLE_USER"},
-	}
-	plain, _ := json.Marshal(req)
-	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
-
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httpReq)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	var resp DispatchCalloutResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if resp.Reason != "peer reason here" {
-		t.Errorf("expected peer reason propagated, got %q", resp.Reason)
-	}
-}
-
-func TestHandler_CriteriaError_SanitizedResponse(t *testing.T) {
-	auth := newAEAD(t)
-	fake := &fakeLocalDispatcher{
-		criteriaErr: fmt.Errorf("pq: password authentication failed for user admin"),
-	}
-	handler := NewDispatchHandler(fake, auth)
-	mux := http.NewServeMux()
-	handler.Register(mux)
-
-	plain, _ := json.Marshal(DispatchCalloutRequest{
-		Kind:           "criteria",
-		Entity:         json.RawMessage(`{"foo":"bar"}`),
-		EntityMeta:     spi.EntityMeta{ID: "ent-2", TenantID: "tenant-a"},
-		Criterion:      json.RawMessage(`{"type":"eq"}`),
-		Target:         "target",
-		WorkflowName:   "wf",
-		TransitionName: "t1",
-		ProcessorName:  "proc1",
-		TxID:           "tx-2",
-		TenantID:       "tenant-a",
-		UserID:         "user-1",
-		Roles:          []string{"ROLE_USER"},
-	})
-	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
-
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httpReq)
-
-	var resp DispatchCalloutResponse
-	_ = json.NewDecoder(rec.Body).Decode(&resp)
-	if resp.Success {
-		t.Fatal("expected success=false")
-	}
-	if strings.Contains(resp.Error, "password") {
-		t.Errorf("error response must not contain internal details, got %q", resp.Error)
-	}
-}
-
-// TestHandler_ErrorTaxonomy_AppError verifies that when the local dispatch
-// (processor/criteria/function) fails with an *common.AppError, the handler
-// classifies ErrorCode/ErrorStatus/ErrorRetryable on the response from that
-// AppError, so a forwarding node can re-mint the same taxonomy instead of
-// collapsing every peer failure into a generic error (B1, final review).
-func TestHandler_ErrorTaxonomy_AppError(t *testing.T) {
-	auth := newAEAD(t)
-	appErr := common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchTimeout,
-		"processor dispatch timed out after 3000ms").AsRetryable()
-
-	cases := []struct {
-		name string
-		req  DispatchCalloutRequest
-		fake *fakeLocalDispatcher
-	}{
-		{
-			name: "processor",
-			req: DispatchCalloutRequest{
-				Kind: "processor", TenantID: "t", UserID: "u", TxID: "tx",
-				Processor:      &spi.ProcessorDefinition{Name: "p", Type: "SCRIPT"},
-				WorkflowName:   "w",
-				TransitionName: "t",
-				EntityMeta:     spi.EntityMeta{ID: "e", TenantID: "t"},
-				Entity:         json.RawMessage(`{}`),
-			},
-			fake: &fakeLocalDispatcher{processorErr: appErr},
-		},
-		{
-			name: "criteria",
-			req: DispatchCalloutRequest{
-				Kind: "criteria", TenantID: "t", UserID: "u", TxID: "tx",
-				Criterion:      json.RawMessage(`{"type":"eq"}`),
-				Target:         "target",
-				WorkflowName:   "w",
-				TransitionName: "t",
-				ProcessorName:  "p",
-				EntityMeta:     spi.EntityMeta{ID: "e", TenantID: "t"},
-				Entity:         json.RawMessage(`{}`),
-			},
-			fake: &fakeLocalDispatcher{criteriaErr: appErr},
-		},
-		{
-			name: "function",
-			req: DispatchCalloutRequest{
-				Kind: "function", TenantID: "t", UserID: "u", TxID: "tx",
-				Function:       &spi.ScheduleFunction{Name: "fn", ResultKind: "Schedule"},
-				WorkflowName:   "w",
-				TransitionName: "t",
-				EntityMeta:     spi.EntityMeta{ID: "e", TenantID: "t"},
-				Entity:         json.RawMessage(`{}`),
-			},
-			fake: &fakeLocalDispatcher{functionErr: appErr},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			handler := NewDispatchHandler(tc.fake, auth)
-			mux := http.NewServeMux()
-			handler.Register(mux)
-
-			plain, _ := json.Marshal(tc.req)
-			httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
-
-			rec := httptest.NewRecorder()
-			mux.ServeHTTP(rec, httpReq)
-
-			var resp DispatchCalloutResponse
-			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-				t.Fatalf("decode response: %v", err)
-			}
-			if resp.Success {
-				t.Fatal("expected success=false")
-			}
-			if resp.ErrorCode != common.ErrCodeDispatchTimeout {
-				t.Errorf("ErrorCode = %q, want %q", resp.ErrorCode, common.ErrCodeDispatchTimeout)
-			}
-			if resp.ErrorStatus != http.StatusServiceUnavailable {
-				t.Errorf("ErrorStatus = %d, want %d", resp.ErrorStatus, http.StatusServiceUnavailable)
-			}
-			if !resp.ErrorRetryable {
-				t.Error("ErrorRetryable = false, want true")
-			}
-			// The client-facing Error text must stay generic — no AppError
-			// internal message content (coordinated with B2).
-			if strings.Contains(resp.Error, "3000ms") {
-				t.Errorf("Error field leaked AppError detail: %q", resp.Error)
-			}
-		})
-	}
-}
-
-// TestHandler_ErrorTaxonomy_NoMatchingMember verifies that when the local
-// dispatch fails with contract.ErrNoMatchingMember (a peer that lost its
-// matching member between gossip and forward), the handler classifies the
-// response as the NO_COMPUTE_MEMBER_FOR_TAG/503/retryable trio.
-func TestHandler_ErrorTaxonomy_NoMatchingMember(t *testing.T) {
-	auth := newAEAD(t)
-	noMemberErr := fmt.Errorf("%w: tags %q", contract.ErrNoMatchingMember, "python")
-
-	cases := []struct {
-		name string
-		req  DispatchCalloutRequest
-		fake *fakeLocalDispatcher
-	}{
-		{
-			name: "processor",
-			req: DispatchCalloutRequest{
-				Kind: "processor", TenantID: "t", UserID: "u", TxID: "tx",
-				Processor:      &spi.ProcessorDefinition{Name: "p", Type: "SCRIPT"},
-				WorkflowName:   "w",
-				TransitionName: "t",
-				EntityMeta:     spi.EntityMeta{ID: "e", TenantID: "t"},
-				Entity:         json.RawMessage(`{}`),
-			},
-			fake: &fakeLocalDispatcher{processorErr: noMemberErr},
-		},
-		{
-			name: "criteria",
-			req: DispatchCalloutRequest{
-				Kind: "criteria", TenantID: "t", UserID: "u", TxID: "tx",
-				Criterion:      json.RawMessage(`{"type":"eq"}`),
-				Target:         "target",
-				WorkflowName:   "w",
-				TransitionName: "t",
-				ProcessorName:  "p",
-				EntityMeta:     spi.EntityMeta{ID: "e", TenantID: "t"},
-				Entity:         json.RawMessage(`{}`),
-			},
-			fake: &fakeLocalDispatcher{criteriaErr: noMemberErr},
-		},
-		{
-			name: "function",
-			req: DispatchCalloutRequest{
-				Kind: "function", TenantID: "t", UserID: "u", TxID: "tx",
-				Function:       &spi.ScheduleFunction{Name: "fn", ResultKind: "Schedule"},
-				WorkflowName:   "w",
-				TransitionName: "t",
-				EntityMeta:     spi.EntityMeta{ID: "e", TenantID: "t"},
-				Entity:         json.RawMessage(`{}`),
-			},
-			fake: &fakeLocalDispatcher{functionErr: noMemberErr},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			handler := NewDispatchHandler(tc.fake, auth)
-			mux := http.NewServeMux()
-			handler.Register(mux)
-
-			plain, _ := json.Marshal(tc.req)
-			httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
-
-			rec := httptest.NewRecorder()
-			mux.ServeHTTP(rec, httpReq)
-
-			var resp DispatchCalloutResponse
-			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-				t.Fatalf("decode response: %v", err)
-			}
-			if resp.Success {
-				t.Fatal("expected success=false")
-			}
-			if resp.ErrorCode != common.ErrCodeNoComputeMemberForTag {
-				t.Errorf("ErrorCode = %q, want %q", resp.ErrorCode, common.ErrCodeNoComputeMemberForTag)
-			}
-			if resp.ErrorStatus != http.StatusServiceUnavailable {
-				t.Errorf("ErrorStatus = %d, want %d", resp.ErrorStatus, http.StatusServiceUnavailable)
-			}
-			if !resp.ErrorRetryable {
-				t.Error("ErrorRetryable = false, want true")
-			}
-		})
-	}
-}
-
-// TestHandler_UnknownCalloutKind covers the default branch of handleCallout:
-// an unrecognized Kind must return 400 with a descriptive message (C2).
-func TestHandler_UnknownCalloutKind(t *testing.T) {
-	auth := newAEAD(t)
-	handler := NewDispatchHandler(&fakeLocalDispatcher{}, auth)
-	mux := http.NewServeMux()
-	handler.Register(mux)
-
-	plain, _ := json.Marshal(DispatchCalloutRequest{
-		Kind: "bogus-kind", TenantID: "t", UserID: "u",
-		EntityMeta: spi.EntityMeta{ID: "e", TenantID: "t"},
-		Entity:     json.RawMessage(`{}`),
-	})
-	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
-
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httpReq)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "unknown callout kind") {
-		t.Errorf("expected body to mention unknown callout kind, got %q", rec.Body.String())
-	}
-}
-
-// TestHandleCallout_RejectsEntityMetaTenantMismatch closes a cross-tenant gap
-// that has nothing to do with spelling. A dispatch request carries two
-// tenants: TenantID, which becomes the UserContext the callout runs as, and
-// EntityMeta.TenantID, which is handed to the local dispatcher as the entity's
-// own. Nothing compared them, so a peer could run a callout as tenant B over
-// tenant A's entity.
-func TestHandleCallout_RejectsEntityMetaTenantMismatch(t *testing.T) {
-	auth := newAEAD(t)
-	fake := &fakeLocalDispatcher{
-		processorResult: &spi.Entity{Meta: spi.EntityMeta{ID: "entity-1"}, Data: []byte(`{}`)},
-	}
-	handler := NewDispatchHandler(fake, auth)
-	mux := http.NewServeMux()
-	handler.Register(mux)
-
-	req := DispatchCalloutRequest{
-		Kind:   "processor",
-		Entity: json.RawMessage(`{"foo":"bar"}`),
-		EntityMeta: spi.EntityMeta{
-			ID:       "entity-1",
-			TenantID: "tenant-b", // disagrees with TenantID
-		},
-		TenantID: "tenant-a",
-		UserID:   "user-1",
-		Roles:    []string{"ROLE_USER"},
-	}
-	plain, _ := json.Marshal(req)
-	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
-
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httpReq)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
-	}
-	if strings.Contains(rec.Body.String(), "tenant-a") || strings.Contains(rec.Body.String(), "tenant-b") {
-		t.Errorf("response echoes a tenant id: %s", rec.Body.String())
-	}
-}
-
-// TestHandleCallout_RejectsAbsentEntityMetaTenant pins that the equality is
-// unconditional. Every builder populates EntityMeta from the live stored
-// entity, whose Meta.TenantID is set at construction and carried forward on
-// update, so on the real wire the field is never empty for ANY kind — an
-// absent one only ever comes from a hand-crafted peer body, and exempting it
-// would hand a peer the ability to skip the check outright.
-//
-// The table runs all three kinds rather than standing one in for the others:
-// the claim being refuted here — that criteria and function callouts carry no
-// entity — survived earlier review precisely because it was only ever tested
-// through a "processor" request.
-func TestHandleCallout_RejectsAbsentEntityMetaTenant(t *testing.T) {
-	kinds := []struct {
-		name string
-		req  DispatchCalloutRequest
-	}{
-		{
-			name: "processor",
-			req: DispatchCalloutRequest{
-				Kind:      "processor",
-				Processor: &spi.ProcessorDefinition{Name: "p"},
-			},
-		},
-		{
-			name: "criteria",
-			req: DispatchCalloutRequest{
-				Kind:      "criteria",
-				Criterion: json.RawMessage(`{"type":"simple"}`),
-				Target:    "entity",
-			},
-		},
-		{
-			name: "function",
-			req: DispatchCalloutRequest{
-				Kind:     "function",
-				Function: &spi.ScheduleFunction{Name: "fn", ResultKind: "Schedule"},
-			},
-		},
-	}
-
-	for _, tc := range kinds {
-		t.Run(tc.name, func(t *testing.T) {
-			auth := newAEAD(t)
-			fake := &fakeLocalDispatcher{
-				processorResult: &spi.Entity{Meta: spi.EntityMeta{ID: "entity-1"}, Data: []byte(`{}`)},
-			}
-			handler := NewDispatchHandler(fake, auth)
-			mux := http.NewServeMux()
-			handler.Register(mux)
-
-			req := tc.req
-			req.Entity = json.RawMessage(`{"foo":"bar"}`)
-			req.EntityMeta = spi.EntityMeta{ID: "entity-1"} // TenantID empty
-			req.TenantID = "tenant-a"
-			req.UserID = "user-1"
-			req.Roles = []string{"ROLE_USER"}
-
-			plain, _ := json.Marshal(req)
-			httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/callout", plain)
-
-			rec := httptest.NewRecorder()
-			mux.ServeHTTP(rec, httpReq)
-
-			if rec.Code != http.StatusBadRequest {
-				t.Fatalf("status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
-			}
-			if strings.Contains(rec.Body.String(), "tenant-a") {
-				t.Errorf("response echoes a tenant id: %s", rec.Body.String())
-			}
-		})
 	}
 }

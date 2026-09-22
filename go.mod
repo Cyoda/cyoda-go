@@ -4,7 +4,7 @@ go 1.26.7
 
 require (
 	github.com/charmbracelet/glamour v1.0.0
-	github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20260918004138-1ab57a60382c
+	github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20260921181211-7a75d2d335ee
 	github.com/getkin/kin-openapi v0.149.0
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/google/uuid v1.6.0
@@ -17,6 +17,7 @@ require (
 	github.com/oapi-codegen/runtime v1.7.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/otlptranslator v1.0.0
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
 	github.com/tidwall/gjson v1.19.0
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.71.0
@@ -68,7 +69,6 @@ require (
 	github.com/prometheus/procfs v0.21.1 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20200410134404-eec4a21b6bb0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
-	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 // indirect
 	github.com/speakeasy-api/openapi v1.19.2 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/yuin/goldmark v1.7.17 // indirect
@@ -100,9 +100,9 @@ require (
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/containerd/platforms v0.2.1 // indirect
 	github.com/cpuguy83/dockercfg v0.3.2 // indirect
-	github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.4
-	github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.4
-	github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.4
+	github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.5-0.20260921190541-b694950fc8ab
+	github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.5-0.20260921190541-b694950fc8ab
+	github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.5-0.20260921190541-b694950fc8ab
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/go-connections v0.7.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect

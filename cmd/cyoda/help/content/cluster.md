@@ -5,6 +5,10 @@ stability: stable
 see_also:
   - config.database
   - config.auth
+  - config.cluster
+  - config.grpc
+  - grpc
+  - workflows
   - run
   - quickstart
   - helm
@@ -43,15 +47,19 @@ PostgreSQL is the only stateful component. Cluster size is bounded below by quor
 
 Peer discovery uses SWIM gossip via HashiCorp `memberlist`. Cluster membership is eventually consistent across nodes. New nodes join via a seed-list — at least one peer's `host:gossip_port`. Nodes leave gracefully on SIGTERM and are evicted by gossip after a configurable suspect-then-confirm timeout if they crash.
 
+Each node announces, in its gossip metadata, who it is — its id and its HTTP and gRPC addresses — and the version of the list of compute tags it hosts. The list itself, one entry per tenant with a compute node attached, is sent to every peer over the membership layer's reliable (TCP) channel whenever it changes, and a node that finds it holds a different version from the one a peer announces asks that peer for it. One mechanism covers a lost message, a node that joins late, a node restarted under the same id, and a healed partition. The number of tenants and tags a node can host is not limited by the membership layer.
+
+The metadata is limited to 512 bytes by `memberlist`. Its size depends only on `CYODA_NODE_ID`, `CYODA_NODE_ADDR` and `CYODA_GRPC_NODE_ADDR`; a node whose identity would not fit refuses to start and names the three settings. All membership traffic, the tag lists included, is encrypted with `CYODA_HMAC_SECRET`.
+
 The gossip protocol is operationally invisible — there are no per-message logs at INFO level. `memberlist`'s own log output is routed to `slog` at DEBUG.
 
 ## TRANSACTION ROUTING
 
-PostgreSQL transactions are bound to the connection that begins them (`pgx.Tx` is single-owner). When a node begins a transaction, it issues a routing token containing the owning node's identity, an opaque transaction reference, and an expiry, signed with HMAC-SHA256 keyed on `CYODA_HMAC_SECRET`. The token is returned to the client (HTTP header `X-Tx-Token`, gRPC metadata key `tx-token`) and replayed on subsequent requests against that transaction.
+PostgreSQL transactions are bound to the connection that begins them (`pgx.Tx` is single-owner). When a node gives a callout to a compute member it mints a token that names the owning node, an opaque transaction reference, the callout and the try it belongs to, and an expiry, signed with HMAC-SHA256 keyed on `CYODA_HMAC_SECRET`. The compute member echoes it on its callbacks (HTTP header `X-Tx-Token`, gRPC metadata key `tx-token`). A token lives for its try's answer limit plus `CYODA_CALLOUT_PASS_ALLOWANCE`.
 
 The HTTP and gRPC frontends inspect the token, verify the HMAC, and either handle the request locally (token's owner is this node) or reverse-proxy to the owning node. Failure modes:
 
-- Token signature mismatch, malformed token, or expired token — `400 Bad Request` (codes `BAD_REQUEST` / `TRANSACTION_EXPIRED`); the client must restart the transaction.
+- Signature mismatch or malformed token — `401 UNAUTHORIZED`. Expired token — `410 TRANSACTION_EXPIRED`.
 - Owner node not in the registry, marked dead by gossip, or unreachable from the proxy — `503 Service Unavailable` (code `TRANSACTION_NODE_UNAVAILABLE`); PostgreSQL has already aborted the connection's transaction on the dead node, so the client retries from scratch. Fail-closed semantics, no orphaned transactions.
 
 `CYODA_HMAC_SECRET` is a deployment secret. All nodes in a cluster must share the same value; it is also the root key for peer-to-peer dispatch authentication (HKDF-derived AEAD), so rotating it requires a cluster-wide restart — see `SECRET ROTATION`.
@@ -63,9 +71,19 @@ The HTTP and gRPC frontends inspect the token, verify the HMAC, and either handl
 - **Rolling restart.** Restart one node at a time, waiting for `/readyz` to report ready before moving on. Transactions in flight on the restarting node abort; clients retry.
 - **Network partitions.** A node partitioned from peers but still reachable from PostgreSQL continues to serve requests; gossip-level membership is best-effort and does not gate request handling. A node partitioned from PostgreSQL continues to pass `/readyz` (readiness is a static initialization flag plus the panic-recovery health flag, not a live store probe — see `app/app.go ReadinessCheck`); individual requests fail at query time and the client retries. The full partition analysis (5 phases, dispatch and CRUD-callback paths) is in `docs/ARCHITECTURE.md` §4.5.
 
-## CROSS-NODE DISPATCH FAILOVER
+## CALLOUTS ACROSS NODES
 
-When a callout (processor, criterion, or scheduled function) needs a compute tag no local member serves, the node forwards it to a peer advertising the tag. If the forward fails at the transport level (peer unreachable) or the peer reports it no longer has a matching member, the node fails over to the next tag-matching peer, trying each peer at most once. Failures indicating the callout actually ran on the peer (e.g. `DISPATCH_TIMEOUT`) are never retried on another peer. When all peers are exhausted, the last failure surfaces as a retryable `503`.
+A callout (processor, criterion or scheduled function) is run by the node that holds the operation's transaction — the owner. The owner first tries its own matching compute members, one after another. If that does not produce an answer and tries are left, it **hands the callout over** to one peer that advertises the tag, together with the number of tries left, the answer limit and the request id. The peer tries its own members only; it never hands on. The owner then asks the next such peer, and when nobody anywhere has a matching member it waits — up to `CYODA_DISPATCH_WAIT_TIMEOUT` in total — for one to attach or for a peer to announce one.
+
+What counts as a try:
+
+- A peer that **cannot be connected to** within `CYODA_DISPATCH_CONNECT_TIMEOUT`, or that answers that it handed the work to nobody, costs no try; the next peer is asked.
+- A hand-over whose **answer is lost** — no reply, a broken connection, a non-2xx status, an answer that does not authenticate — counts as one try, because the peer may have given the work to a member. For a processor not declared `idempotent` nothing else is tried and the operation fails with `503 DISPATCH_FORWARD_FAILED`.
+- Every hand-over opens a connection of its own, so "could not connect" is the only case in which a dead peer costs nothing. Behind a sidecar or an ingress the connection always opens and a dead peer shows as a `502`–`504`; with an `https://` node address a failed TLS handshake is not a connect failure either. Both count as a lost answer — the safe side.
+
+The number of tries is therefore the normal number, not a hard limit. The time is: see `cyoda help config cluster` (`CYODA_CALLOUT_HANDOVER_ALLOWANCE`) and `cyoda help config grpc`.
+
+Node clocks more than 30 seconds apart make a peer refuse a hand-over before reading it. That refusal cannot be authenticated, so it counts as a lost answer: clocks that far apart fail operations whose processors are not `idempotent` rather than being routed around. Keep node clocks synchronised.
 
 ## SECRET ROTATION
 
@@ -75,22 +93,46 @@ Rotating the secret therefore requires full-cluster downtime: stop all nodes, up
 
 ## DISPATCH REPLAY PROTECTION
 
-Each node keeps an in-memory replay cache of dispatch-envelope nonces: entries live for 60 seconds (twice the 30-second timestamp-skew window) and the cache holds at most 100 000 nonces, per node. The cache is fail-closed: when full, new dispatch envelopes are rejected as replays until entries expire, surfacing to the forwarding node as a retryable failure (which dispatch failover routes around). The ceiling admits roughly 1 600 sustained inbound cross-node dispatches per second per node (100 000 nonces per 60-second window) — far above realistic callout rates; reaching it indicates a flood, not normal load.
+A callout handed over to another node travels as an AES-256-GCM envelope, and so does the answer. Both are keyed from `CYODA_HMAC_SECRET`. A request binds its direction, method, path, timestamp and the id of the node it is sealed for; an answer binds its direction, the path, the timestamp, that same node and the nonce of the one request it answers — so an envelope cannot be replayed onto another endpoint, reflected back in the other direction, moved onto another request, or delivered to a different node of the cluster, which holds the same key and would otherwise answer it. The node id is not sent: the sender names the node whose address it looked up and the receiver names itself, so an envelope opens only on the node it was meant for. This is why `CYODA_NODE_ID` must be distinct on every node of a cluster — two nodes sharing one id can open each other's hand-overs. A duplicate is not left to be discovered while a node is starting: a node whose id a live node of the cluster already holds keeps trying for `CYODA_STARTUP_TIMEOUT` and then exits, naming `CYODA_NODE_ID`, the address the id was found at and the seed it was learned from, while the node already holding the id keeps serving. The budget is given to the commonest cause of the finding, which is not a second node at all: a node that crashed rather than leaving gracefully and came back at another address, whose peers still hold the record of its previous life and cannot tell it from a second node's. That record is reaped within seconds, and the attempt made after it has gone is the one that lets the node in. Two nodes starting at the same instant are caught too, by the membership gossip rather than the join exchange: a node can tell that it is one of the two, because the record its own membership layer holds for the contested id is its own, and a node that has not finished starting refuses to start on that.
+
+This check covers a node up to the moment it serves, and no further. A node that is already serving refuses the exchange that would establish the duplicate, which keeps the second record out of its own view, logs the conflict at ERROR once per address, and carries on. Two clusters that each started healthily under overlapping ids and only later meet — a network policy opened, a namespace split joined up, a partition healed — therefore produce ERROR lines and two nodes serving under one id, each able to open the other's hand-overs. Whether a serving node should stop, or stop accepting hand-overs, when its id is contested is an open question; until it is answered, that ERROR line is what to watch for, and the remedy is to fix the id and restart the node that has the wrong one. Every hand-over opens a connection of its own.
+
+The entity's payload travels base64-encoded, byte for byte, in both directions: it is what the store holds and what the compute member is handed, and a re-encoding on the way would drop whitespace and rewrite characters in a tenant's stored data. The envelope ceiling follows from that — the 10 MiB an entity write may carry, base64-encoded, plus room for the entity's meta, the processor definition or criterion, the roles and the tags — so an entity the API accepts can always be handed over. A body above the ceiling is refused before anything is sent: the callout fails without using a try rather than being retried identically on every node.
+
+Each node keeps an in-memory replay cache of request nonces: entries live for 60 seconds (twice the 30-second timestamp-skew window) and the cache holds at most 100 000 nonces, per node. The cache is fail-closed: when it is full, or a nonce repeats, the request is refused; the duplicate check runs first, so a replay is never turned into something answerable just because the cache also happens to be full. A repeated nonce authenticates like any other request but gets a bare `403` anyway — a replay must not be confirmed under any seal — which the owner cannot trust and reads as a lost answer (`DISPATCH_FORWARD_FAILED`). A request refused only for the cache being full is answered — under seal — that nothing was handed to a compute member; the node that sent the hand-over asks the next peer and no try is used. Such a refusal records no nonce, so the node also remembers the refused request's timestamp and refuses every later request stamped at or before it whose nonce it does not hold — otherwise the refused hand-over would simply be accepted once the cache had room, which is all an attacker holding a captured one has to wait for. A genuine hand-over caught by that rule is refused the same way, and costs no try either. Answers need no cache: each opens only under the nonce of a request the owner itself chose, and is protected the same way requests are — encrypted, with a nonce of its own, bound to the request it answers — but never enters this cache. The ceiling admits roughly 1 600 sustained inbound hand-overs per second per node — far above realistic callout rates; reaching it indicates a flood, not normal load.
+
+The cache lives in memory only, so a node restarted inside the 30-second skew window accepts a replay of a request its previous life ran. Reaching that needs an attacker on the network between nodes holding the cluster secret's traffic and a restart inside the window; binding a node's lifetime into the seal instead would refuse every hand-over to a node whose membership has not yet gossiped after a restart, which is a far more likely failure.
 
 ## COMPUTE CALLBACK TRANSACTION ROUTING
 
-When the workflow engine dispatches to a compute node it mints a signed tx-token
-and includes it as the `cyodatxtoken` CloudEvent extension attribute. The compute
-node MUST echo this token on every callback:
+The node that gives a callout to a compute member mints a signed token for that
+try and includes it as the `cyodatxtoken` CloudEvent extension attribute — also
+when the callout was handed over, in which case the token still names the
+owner. The compute member MUST echo this token on every callback:
 
 - HTTP CRUD callbacks: `X-Tx-Token` request header
 - gRPC EntityManage callbacks: `tx-token` metadata key
+
+The published API document declares the HTTP form: `X-Tx-Token` is an optional
+header parameter on the thirty entity, search, message, audit and platform-api
+operations a callback may reach, and each of those declares the statuses the
+join layer answers with — `401`, `403`, `404`, `410` and `413`. A client
+generated from the document can therefore make a callback and read its refusal
+without extra hand-written code. The entity-model and workflow operations do
+not declare it, because changing a model or a workflow from inside a callout is
+not supported.
 
 The receiving node verifies the token's HMAC and routes the callback to the
 transaction-owning node (same proxy mechanism as `TRANSACTION ROUTING` above).
 Without the echo the callback runs in a standalone transaction and cannot see
 the cascade's uncommitted writes. Callback acks are provisional until the
 owning transaction commits.
+
+The owner admits a callback only while the token's callout is in progress and the token belongs to the member that currently has the work. A callback from a member that was replaced, or whose callout has ended, is refused with `410 CALLOUT_SUPERSEDED` while the transaction is open, and with `404 TRANSACTION_NOT_FOUND` afterwards. Before the owner gives the work to the next member, and before the workflow carries on after a callout, it waits for any callback still in progress on the transaction to finish. Callbacks of one transaction are served one at a time.
+
+A callback's request and its answer are both held in memory on the owner while the transaction is held, each under its own ceiling: an over-size request body is refused with `413 BAD_REQUEST` (HTTP) at a fixed 10 MiB, and an answer past `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES` (default 10 MiB) fails the callback with `413 JOINED_RESPONSE_TOO_LARGE`, naming the ceiling, rather than being cut short. Page a large read instead. A callback still waiting its turn when its member goes away is dropped — it has touched nothing, and the drop is logged at `DEBUG` with no ticket, since nothing was wrong on the server and there is nobody left to quote a ticket to; one that already has the transaction runs to completion.
+
+How many callbacks may wait for one transaction is bounded too, by `CYODA_CALLOUT_JOINED_MAX_WAITERS` (default 128) — each one waiting holds its whole request for as long as the callout lasts. Because callbacks of one transaction are served one at a time, firing many at once buys a compute member no speed; past the cap a callback is refused with `503 TOO_MANY_JOINED_REQUESTS` before its request is read, having touched nothing, while the callback holding the transaction and those already queued are unaffected. On that refusal, back off and send the callback again. A processor that lets the refusal escape fails its callout, and the operation is rolled back.
 
 See `workflows` and `docs/PROCESSOR_EXECUTION_MODES.md` for mode-specific
 semantics (`SYNC`, `ASYNC_NEW_TX`, `COMMIT_BEFORE_DISPATCH`).
@@ -111,6 +153,10 @@ The proper fix — acknowledged model-cache invalidation, where the relock waits
 
 - `config.database` — PostgreSQL is the only multi-node-capable backend
 - `config.auth` — `CYODA_HMAC_SECRET` configuration
+- `config.cluster` — cluster settings, including the callout hand-over ones
+- `config.grpc` — tries, answer limit, the PostgreSQL ceiling
+- `grpc` — the callout envelope, retries and callback routing
+- `workflows` — `retryPolicy`, `idempotent`, and what a failed callout leaves behind
 - `run` — server lifecycle
 - `quickstart` — first-run defaults
 - `helm` — Kubernetes deployment of multi-node clusters

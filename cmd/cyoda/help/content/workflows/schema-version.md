@@ -20,7 +20,7 @@ Every `WorkflowConfigurationDto` carries a `version` field. The server validates
 
 ```json
 {
-  "version": "1.4",
+  "version": "1.5",
   "name": "my-workflow",
   "initialState": "ready",
   "states": { "ready": {} }
@@ -34,7 +34,7 @@ Every `WorkflowConfigurationDto` carries a `version` field. The server validates
 
 Multiple MAJORs may be accepted concurrently during a deprecation window. Within a MAJOR, the server accepts any MINOR in its declared `[minMinor, maxMinor]` range.
 
-Current contract: **1.4**, which added the `NOT` group operator to a criterion's `group` clause (dual-shape: 1.1, 1.2 and 1.3 remain accepted). Not every behaviour change bumps this contract — the evaluation-time change that makes a criterion naming a field the model does not declare abort and roll back the save (see `errors.WORKFLOW_FAILED`) does not, because it alters no import validation, acceptance rule, or export shape. See `docs/workflow-schema-versioning.md` for the full rationale on both.
+Current contract: **1.5**, which added `idempotent` to a processor's `config` and `retryPolicy` to `schedule.function` (dual-shape: 1.1 through 1.4 remain accepted). The same release validates `retryPolicy` on a `function`-type criterion and bounds `responseTimeoutMs` on every callout by the server's `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`; both rules apply to an import under any schema version. Because the bound is a server setting, a workflow exported from one deployment can be refused by another with a lower bound. 1.4 added the `NOT` group operator. Not every behaviour change bumps this contract — see `docs/workflow-schema-versioning.md` for the rationale behind each decision.
 
 ## DISCOVERY
 
@@ -54,9 +54,9 @@ Both emit the same structured JSON:
 
 ```json
 {
-  "current": "1.4",
+  "current": "1.5",
   "supported": [
-    { "major": 1, "minMinor": 1, "maxMinor": 4 }
+    { "major": 1, "minMinor": 1, "maxMinor": 5 }
   ]
 }
 ```
@@ -77,5 +77,5 @@ Pin your authoring tools and CI to the schema version they were tested against:
 ```bash
 # in a CI step
 current=$(curl -s $CYODA_HOST/api/help/workflows/schema-version/versions | jq -r .current)
-test "$current" = "1.4" || { echo "schema drift"; exit 1; }
+test "$current" = "1.5" || { echo "schema drift"; exit 1; }
 ```

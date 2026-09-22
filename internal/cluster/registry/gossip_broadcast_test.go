@@ -20,12 +20,13 @@ func TestGossipBroadcaster_TwoNodeRoundTrip(t *testing.T) {
 		NodeID:          "bcast-1",
 		NodeAddr:        "localhost:18180",
 		BindAddr:        "127.0.0.1",
-		BindPort:        18046,
+		BindPort:        0,
 		StabilityWindow: 200 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("NewGossip bcast-1: %v", err)
 	}
+	captureAddr(r1)
 	defer r1.Deregister(ctx, "bcast-1")
 	if err := r1.Register(ctx, "bcast-1", "localhost:18180"); err != nil {
 		t.Fatalf("Register bcast-1: %v", err)
@@ -35,8 +36,8 @@ func TestGossipBroadcaster_TwoNodeRoundTrip(t *testing.T) {
 		NodeID:          "bcast-2",
 		NodeAddr:        "localhost:18181",
 		BindAddr:        "127.0.0.1",
-		BindPort:        18047,
-		Seeds:           []string{"127.0.0.1:18046"},
+		BindPort:        0,
+		Seeds:           []string{addrOf(r1)},
 		StabilityWindow: 200 * time.Millisecond,
 	})
 	if err != nil {
@@ -70,9 +71,11 @@ func TestGossipBroadcaster_TwoNodeRoundTrip(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		mu.Lock()
-		n := len(received)
-		mu.Unlock()
+		n := func() int {
+			mu.Lock()
+			defer mu.Unlock()
+			return len(received)
+		}()
 		if n >= 1 {
 			break
 		}
@@ -108,7 +111,7 @@ func TestGossipBroadcaster_SingleNodeSelfDoesNotEcho(t *testing.T) {
 		NodeID:          "solo",
 		NodeAddr:        "localhost:18190",
 		BindAddr:        "127.0.0.1",
-		BindPort:        18048,
+		BindPort:        0,
 		StabilityWindow: 100 * time.Millisecond,
 	})
 	if err != nil {

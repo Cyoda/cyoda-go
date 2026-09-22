@@ -47,7 +47,193 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `docs/cloud-parity/tenant-id-grammar.md` and
   `cyoda help errors OIDC_INVALID_TENANT`.
 
+- **A criterion and a scheduled transition's `function` are tried on another
+  compute member when an answer is lost — with no opt-in.** Both are repeat-safe
+  by rule: they must have no effects. One that does have effects can now run
+  twice for a single callout, possibly at the same time on two members. A
+  processor is repeated only when its `config` declares the new
+  `idempotent: true`. Move a criterion or a schedule function that has effects
+  into a processor, and declare `idempotent` on a processor only when a repeat
+  is safe everywhere it reaches — in cyoda-go and in every system it touches.
+  See `docs/cloud-parity/callout-failover.md`.
+
+- **A criteria answer that omits `matches` is refused instead of read as
+  `false`.** A compute member that reports no failure and gives no verdict
+  gave no answer to the criterion, and a criterion decides a transition: the
+  callout now ends as an answer that could not be read (`400 WORKFLOW_FAILED`,
+  not retryable) where it used to block the transition as if the member had said
+  `false`. A member of another node's was already refused this way; both sides
+  now agree. A compute member that relied on omitting the field must send it, and
+  the published schema tree (`cyoda help cloudevents json`) states the
+  requirement, so a generated SDK carries it.
+  The member's `reason` is kept to its first 2048 characters, marked with `…`
+  when cut — its own wider allowance, unlike every other piece of a member's
+  free text, since the reason is the criterion's business explanation for
+  refusing a transition rather than a diagnostic. See `cyoda help grpc` and
+  `docs/cloud-parity/callout-failover.md`.
+
+- **A callout with no compute member waits before it fails, on a single node
+  too.** `CYODA_DISPATCH_WAIT_TIMEOUT` (default `5s`) was a cluster-only poll;
+  it is the one way a callout waits for a compute member to exist — once per
+  callout, in total, woken by a member attaching rather than polled, whatever
+  the `retryPolicy` and whatever the execution mode. A single node with no
+  matching member attached answered `503 NO_COMPUTE_MEMBER_FOR_TAG` at once and
+  answers it after five seconds. The wait costs no try. Set the value to `0` for
+  the old behaviour. See `docs/cloud-parity/callout-failover.md`.
+
+- **A client may see the new `503 CALLOUT_FAILED` (retryable).** It is what a
+  callout answers once more than one of its tries failed, and it lists them. A
+  callout that made exactly one try still answers that try's own code —
+  `DISPATCH_TIMEOUT`, `COMPUTE_MEMBER_DISCONNECTED` or
+  `DISPATCH_FORWARD_FAILED`, for example. A client that switches on the code
+  should treat it as it treats those. See `cyoda help errors CALLOUT_FAILED`.
+
+- **A client's own timeout ending a callout answers `408 TRANSACTION_TIMEOUT`,
+  not a retryable `503 DISPATCH_FORWARD_FAILED`.** A request cancelled by its
+  client during a cross-node callout ends with the request's own cancellation
+  rather than with the callout's. A client that retried on the `503` should read
+  the `408` instead. See `docs/cloud-parity/callout-failover.md`.
+
+- **A request carrying a transaction token is accepted only while the callout it
+  was issued for is still that compute member's.** Until now it was accepted
+  until the transaction closed. The refusals are decided in this order, and the
+  first that applies is the answer: `401` for a token that does not verify, or
+  that names no callout because an earlier version minted it;
+  `410 TRANSACTION_EXPIRED` past the token's own life — so an expired token on a
+  transaction that has also ended reads `410`, not `404`; `403` for a token
+  presented by another tenant; `404 TRANSACTION_NOT_FOUND` once the transaction
+  has ended, as before; and `410 CALLOUT_SUPERSEDED` (not retryable) once
+  cyoda-go has given the work to another compute member or the callout has
+  ended. A compute member that is refused must stop working on that callout:
+  nothing further it sends under that token is accepted, and an answer it does
+  send for the callout is discarded. A refused joined gRPC server-streaming
+  request now carries the request id in its error envelope where it used to
+  carry none: the request message is received before the token is judged, so
+  the `403`, the `404` and the `410 CALLOUT_SUPERSEDED` name it. The two
+  decided before the message is read at all — the `401` and the
+  `410 TRANSACTION_EXPIRED` — carry no id. See
+  `docs/cloud-parity/callout-failover.md`.
+
+- **`CYODA_TX_TOKEN_TTL` is removed.** The transaction token given to a compute
+  member no longer has a fixed life: it is minted per try and lives for that
+  try's answer limit plus `CYODA_CALLOUT_PASS_ALLOWANCE` (default `30s`). The
+  variable is ignored if set; remove it from deployment configuration.
+
+- **Every request that joins a transaction holds that transaction's lock — a
+  read as much as a write.** Two callbacks of one transaction used to run at
+  once; they are served one at a time, so a compute member that parallelises its
+  callbacks for speed gains nothing by it. The pass is verified before the
+  request is read, the request is read whole before the lock is taken and its
+  response is sent after the lock is released, and a joined request that holds
+  the lock is not cancelled by its client going away: a deadline a compute
+  member sets on its own callback no longer abandons work already under way. A
+  callback still waiting for the lock, which has touched nothing, is dropped
+  when its member goes away. An over-size joined body is refused with `413`, the
+  same as an unjoined one; a pass that fails verification is refused before the
+  body is read; and a joined answer over
+  `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES` (default 10 MiB), held in memory
+  while the lock is, fails the request with `413 JOINED_RESPONSE_TOO_LARGE`
+  rather than being sent in part. The lock is
+  still given up for the length of any callout the callback itself makes.
+  See `docs/cloud-parity/callout-failover.md`.
+
+- **`CYODA_DISPATCH_FORWARD_TIMEOUT` no longer governs handing a callout to
+  another node.** Opening the connection is bounded by the new
+  `CYODA_DISPATCH_CONNECT_TIMEOUT` (default `2s`); the wait for the answer
+  follows from the callout's tries left and answer limit plus
+  `CYODA_CALLOUT_HANDOVER_ALLOWANCE`. A value set to bound a hand-over bounds
+  nothing now — the allowance is the setting that does. The variable keeps its
+  name and meaning for the node-to-node call that delegates a scheduled
+  transition.
+
+- **Every node of a cluster must run this version, and every node needs its own
+  `CYODA_NODE_ID`.** The message by which one node hands a callout to another
+  changed: requests are bound to their direction and to the id of the node they
+  are sealed for, the answer is sealed for the one request it answers and for
+  that same node, and the payload states the outcome explicitly. The node id is
+  not sent — the sender names the node whose address it looked up, the receiver
+  names itself — so a hand-over opens only on the node it was meant for, and two
+  nodes sharing one id would open each other's. The entity's payload travels
+  base64-encoded, byte for byte in both directions, so that what a compute member
+  is handed and what the platform persists are the bytes the store holds. The node-to-node call that
+  delegates a scheduled transition travels in the same envelope and changed with
+  it. A mixed-version cluster can therefore neither hand a callout over nor
+  forward a scheduled transition: a node of this version treats an answer it
+  cannot authenticate as lost, and an older node cannot read what this one
+  sends. Stop the cluster to upgrade it; there is no rolling upgrade across this
+  change. See `docs/cloud-parity/callout-failover.md`.
+
+- **A node whose identity does not fit the cluster's membership metadata refuses
+  to start.** The metadata carries `CYODA_NODE_ID`, `CYODA_NODE_ADDR` and
+  `CYODA_GRPC_NODE_ADDR`, and the membership library caps it at 512 bytes; a
+  node that could not publish them used to start and be invisible to its peers
+  (see Fixed). Shorten whichever of the three is long — the startup error names
+  the three and the byte counts.
+
+- **Workflow import refuses three things it used to accept**, under every schema
+  version: a `retryPolicy` other than `NONE`, `FIXED` or empty on a
+  `function`-type criterion and on a scheduled transition's `function` (both
+  were accepted and ignored; a processor's was already refused), and a
+  `responseTimeoutMs` — on a processor, a criterion function or a schedule
+  function — that is negative or above `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`
+  (default `60000`). Each answers `400 VALIDATION_FAILED` naming the workflow,
+  state, transition and callout. The bound is a server setting: a workflow
+  exported from one deployment can be refused by another with a lower bound.
+  See `docs/workflow-schema-versioning.md`.
+
 ### Added
+
+- **Callout failover: a processor, criterion or function request that is not
+  delivered, or not answered, is given to another compute member.** The dividing
+  line is the hand-off — the moment the work is on a member's connection. Work
+  that never got there is always tried elsewhere. Work that did, and then got no
+  answer or lost its connection, is tried elsewhere only when a repeat is safe:
+  every criterion, every scheduled transition's function, and a processor whose
+  `config` declares the new **`idempotent: true`** (default `false`) — the
+  author's statement that running it more than once, possibly at the same time
+  on two members, equals running it once, in cyoda-go and in every system it
+  touches. A member that answers `success: false` ends the callout, whatever its
+  `retryable` says, and so does an answer that cannot be read. `retryPolicy`
+  selects the number of tries (`NONE`: one; `FIXED` or unset: one plus
+  `CYODA_RETRY_FIXED_NUM_RETRIES`, default `3`) and is honoured on a scheduled
+  transition's `function` too. In a cluster the node holding the transaction
+  tries its own compute members and then offers the callout to one peer node
+  after another; a node that receives it runs with the owner's tries left and
+  the owner's answer limit, tries its own members, and never passes it on — the
+  bound on `responseTimeoutMs` is the owner's to apply. The number of tries is
+  the normal number, while the time is the hard limit: `tries × answer limit +
+  CYODA_DISPATCH_WAIT_TIMEOUT + CYODA_CALLOUT_HANDOVER_ALLOWANCE`, 155 s at the
+  defaults. Every try carries the same `requestId`, so a compute member that
+  de-duplicates on it recognises a repeat. When more than one try failed the
+  client gets the new **`503 CALLOUT_FAILED`**, listing them. What a processor
+  does outside cyoda-go is not undone by a rollback and is repeated by a repeat;
+  that stays the application's to design for. See `cyoda help workflows`,
+  `cyoda help cluster` and `docs/cloud-parity/callout-failover.md`.
+
+- **Callout settings.** `CYODA_RETRY_FIXED_NUM_RETRIES` (default `3`),
+  `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS` (default `30000`, until now a constant),
+  `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` (default `60000`),
+  `CYODA_DISPATCH_CONNECT_TIMEOUT` (default `2s`),
+  `CYODA_CALLOUT_HANDOVER_ALLOWANCE` (default `30s`) and
+  `CYODA_CALLOUT_PASS_ALLOWANCE` (default `30s`). Out-of-range values are
+  startup errors. `CYODA_DISPATCH_WAIT_TIMEOUT` and
+  `CYODA_DISPATCH_FORWARD_TIMEOUT` are validated for the first time (negative,
+  respectively non-positive, values now fail startup). See
+  `cyoda help config grpc` and `cyoda help config cluster`.
+
+- **Workflow schema 1.5.** `idempotent` (boolean, default false) on a
+  processor's `config`, and `retryPolicy` (`NONE` / `FIXED`) on
+  `schedule.function`. 1.1 through 1.4 stay accepted. Needs the matching
+  `cyoda-go-spi` release (`ProcessorConfig.Idempotent`,
+  `ScheduleFunction.RetryPolicy`); no storage backend changes.
+
+- **Six instruments for callouts and for the cluster's tag lists.**
+  `cyoda.callout.tries` (by `type` and `outcome`), `cyoda.callout.wait.duration`
+  (by `type`), `cyoda.callout.handovers` and `cyoda.callout.superseded` (each by
+  `outcome`), `cyoda.cluster.tags.send_failures` and
+  `cyoda.cluster.tags.lists_outstanding`; and the span attributes
+  `callout.tries`, `callout.handover` and `callout.waited_ms`. None of them
+  carries a tenant, a callout, a member or a node. See `cyoda help telemetry`.
 
 - **`ENTITY_MODEL_MISMATCH` (`400`).** An entity's model reference — its
   model name and version — is fixed at creation and never changes for the
@@ -74,7 +260,131 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   1-hour retention is unchanged; pruning runs after commit rather than
   inside it.
 
+- **Two nodes sharing one `CYODA_NODE_ID` are no longer silent.** The id
+  seals a hand-over and its answer for the node they are sent to, so two
+  nodes holding one id open each other's hand-overs. Until now a duplicate
+  joined happily: the membership layer dropped the conflicting record on
+  both sides, the node served traffic while being invisible to every peer,
+  and the library's own conflict line reached `slog` at DEBUG. A node that
+  sees one id claimed from two addresses now logs it at **ERROR** with the
+  id and both addresses, once per address. A node that has not finished
+  starting also refuses to start on it, which is how two nodes starting at
+  the same instant are caught — the join exchange carries no record of the
+  other yet, but the gossip that follows does, and a node can tell that the
+  contested record is its own. A node that is **already serving** only logs:
+  it refuses the exchange that would establish the duplicate, keeping the
+  second record out of its own view, and carries on. Two clusters that each
+  started healthily under overlapping ids and only later meet therefore give
+  ERROR lines and two nodes serving under one id; watch for the line, fix
+  the id and restart. See `cyoda help cluster` and
+  `cyoda help config.cluster`.
+
+- **`CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES` (default `10485760`, 10 MiB)
+  sets the ceiling on the answer to a compute member's callback.** That answer
+  is built in memory and sent only once the transaction has been let go of, so
+  everything waiting on the transaction — the end of the callout included —
+  waits behind those bytes; the ceiling is what bounds that wait. It was a
+  compiled-in 10 MiB, which a joined get-all or search at the documented
+  maximum page size passes over ordinary entities. An operator whose compute
+  members legitimately read that much in one callback now raises it, at the
+  cost of memory held on the owning node. Zero or negative refuses to start.
+  It governs neither ordinary, unjoined requests nor the callback's own request
+  body, which keeps its fixed 10 MiB cap.
+
+- **`CYODA_CALLOUT_JOINED_MAX_WAITERS` (default `128`) bounds how many of a
+  compute member's callbacks may queue for one transaction**, and a new
+  retryable `503` `TOO_MANY_JOINED_REQUESTS` is what the member is told past
+  it. Callbacks of one transaction are served one at a time, so firing many at
+  once buys a member no speed — but each one waiting held its whole request in
+  memory for as long as the callout lasted, with nothing bounding how many
+  there could be. The refusal comes before the request body is read where the
+  door allows that, and touches neither the transaction nor the callbacks
+  already queued. On it, back off and send the callback again; a processor that
+  lets it escape fails its callout, and the operation is rolled back. Zero or
+  negative refuses to start — an unbounded queue is what the cap exists to
+  prevent. The transaction owner's own wait, the fence's, and a suspended
+  callback's resume are never refused.
+
+- **The published API document declares the transaction routing token and the
+  statuses a joined request is refused with.** `X-Tx-Token` is a new optional
+  header parameter (`components.parameters.TxToken`) on the thirty entity,
+  search, message, audit and platform-api operations a compute member's
+  callback may reach, and each of those now declares `401`, `403`, `404`,
+  `410` and `413` — three of them new shared response components,
+  `TransactionNotFound`, `TransactionGone` and `JoinedPayloadTooLarge`. `410`
+  appeared nowhere in the document before, so a client generated from it had
+  no way to send a callback and no way to read the refusal, and an operation
+  declaring no `default` response could not describe one at all. The `410`
+  response names both codes that share the status, `TRANSACTION_EXPIRED` and
+  `CALLOUT_SUPERSEDED`; `properties.errorCode` tells them apart. The eleven
+  entity-model and workflow operations are deliberately excluded — changing a
+  model or a workflow from inside a callout is not supported — as are the
+  OAuth, client and account operations. Nothing existing changed: the
+  parameter is optional and the responses are additions.
+
 ### Changed
+
+- **A client that goes away mid-request is logged at DEBUG, with no ticket** —
+  on HTTP (`common.WriteError`) and in gRPC (`buildErrorFields`), the two
+  funnels every error response and envelope goes through. Nothing was wrong
+  with the server and there is nobody to quote a ticket to; a compute member
+  failing over used to produce one `ERROR` line and one minted ticket per
+  queued callback, exactly when an operator wants a clean log. The status
+  written is unchanged — a request whose own feature deadline expired is
+  unaffected and still classified to `408`.
+
+- **The published schema's `retryable` description now states cyoda-go's own
+  behaviour.** `docs/cyoda/schema/common/BaseEvent.json`'s `error.retryable`
+  said cyoda "should retry the calculation request" on it — cyoda-go never
+  does; it passes the verdict on to the client and does not give the work to
+  another compute member because of it (Cloud does retry on it, which is a
+  recorded departure). See `docs/cloud-parity/callout-failover.md`.
+
+- **A node whose `CYODA_NODE_ID` is already held refuses to start.** A node
+  that sees its own id on a live node at another address — in an exchange
+  with a seed, in one a peer started with it, or in the membership gossip
+  that follows — keeps trying for the whole of `CYODA_STARTUP_TIMEOUT` and
+  exits if the id is still held when that budget runs out. The message names
+  `CYODA_NODE_ID`, the address the id was found at and, where there is one,
+  the seed it was learned from. The node already holding the id keeps
+  serving. A restart under the id of a node that left or died is unaffected,
+  and so is a node with no seeds. A node that **crashed** and comes back at
+  another address is refused at first, because its peers still hold the
+  record of its previous life and nothing tells that record apart from a
+  second node's — that record is what the budget is for: the peers reap it
+  within seconds, and the attempt made after that admits the node. The check
+  is a startup check only; what happens when a serving node's id is
+  contested is in the entry above.
+
+- **A callout picks among a tenant's matching compute members round robin.**
+  The member picked longest ago goes next; one that has just joined goes first.
+  Until now the choice was whatever a Go map iteration returned first.
+
+- **A compute member's failure reaches the client whole.**
+  `400 WORKFLOW_FAILED` reads `processor <name> failed: <the member's message>`,
+  for a criterion `failed to evaluate transition criterion: <the member's
+  message>`, and for a scheduled transition's function `schedule function <name>
+  failed: <the member's message>`; the inner `processor dispatch failed:`
+  segment is gone. It carries `retryable: true` exactly when the member's own
+  `error.retryable` said so, on HTTP and in the gRPC envelope — the verdict was
+  read and dropped. The member's warnings arrive too. All of it holds from
+  whichever node the member was attached to: across nodes the message, the
+  verdict and the warnings were replaced by `peer dispatch failed` on the way.
+  Each piece of a member's own free text is cut to 512 characters where it
+  becomes client text, ending with `…` so that a shortened message is
+  recognisable, and one try's response carries at most 32 of its warnings. See
+  `docs/cloud-parity/callout-failover.md`.
+
+- **A stored answer limit above the server's bound is not clamped.** Import
+  bounds `responseTimeoutMs` by `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`, but a
+  workflow stored before a deployment lowered that bound keeps its value; its
+  callout fails with `400 WORKFLOW_FAILED`, the message naming
+  `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`, rather than running under a limit
+  nobody asked for. No try is made.
+
+- `cyoda.dispatch.duration` measures a whole callout, all its tries, waits and
+  hand-overs included; its buckets stopped at 10 s — below a single answer
+  limit — and run to 300 s.
 
 - **A write is dated at the instant its transaction commits, not at the
   instant it started.** This changes the timestamps PostgreSQL-backed
@@ -105,7 +415,169 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   window** — the index builds block writers, and the column backfill
   scales with history. See `docs/plugins/POSTGRES.md`.
 
+- **A callback's answer over the ceiling is refused with `413`
+  `JOINED_RESPONSE_TOO_LARGE`, not a ticketed `500`.** The refusal names the
+  ceiling in bytes and tells the member to page the read, which is the one
+  thing it can act on; a ticket told it nothing about a page size it chose
+  itself. Not retryable — the same request builds the same answer again. Both
+  doors answer the same code, the gRPC one through its error envelope. The
+  answer is still never truncated: the request fails.
+
 ### Fixed
+
+- **A compute member's answer that omits `success` is read as success, as the
+  published schema says it is.** `success` is declared optional with the default
+  `true` (`docs/cyoda/schema/common/BaseEvent.json`), and cyoda-go read an absent
+  key as `false`: a processor, criterion or function response that left the key
+  out ended the operation with `400 WORKFLOW_FAILED` and the message `… returned
+  failure`, although the member had reported nothing of the kind. The same
+  payload meant the opposite on Cyoda Cloud, which applied the default. All three
+  responses now apply it. **A compute member reporting a failure must send
+  `success: false` explicitly** — an empty or partial response is not a failure
+  report, and neither is an `error` object on its own: a response carrying an
+  `error` and no `success: false` succeeds, and its message reaches nobody.
+  What this widens, plainly: a processor answering
+  `{"id": "…", "requestId": "…", "entityId": "…"}` — the three identifying
+  fields the published schema requires, and nothing else — now succeeds, leaves
+  the entity as it was and lets the transition continue, where before it ended
+  the operation. A member whose framework emits
+  a bare or truncated response on a crash therefore no longer fails the
+  operation by accident — it must report the failure itself. The default fills
+  in the flag, never a verdict, so what actually decides something is unchanged:
+  a criteria answer that omits `matches` is still refused as an answer that
+  could not be read, and a processor payload that cannot be read still fails the
+  callout. The criteria response schema now requires `matches` on any response
+  but an explicit `success: false` one, where it used to require it only of an
+  explicit `success: true` one. The default belongs to an absent key alone: an
+  explicit `"success": null` is not a boolean, so it is neither the default nor
+  a flag, and an answer carrying it is refused as one that could not be read —
+  for all three callouts alike, so a criterion answering
+  `{"success": null, "matches": true}` decides no transition. **Nothing at all
+  is read out of an answer the server could not read**, and that is now one
+  rule for every such answer rather than two: a member's `warnings` are
+  surfaced only from an answer that could be read, so an answer refused for a
+  null `success`, for a `payload` that is not an object, or for a criterion
+  with no `matches` no longer has its warnings passed on to the client either.
+  A member that reports a failure has been read perfectly well and its warnings
+  still reach the client beside its message. Cyoda Cloud fails on those same bytes rather than reading success
+  out of them. See `cyoda help grpc` and
+  `docs/cloud-parity/callout-failover.md`.
+
+- **A callout is never given to a compute member that has already gone.** A
+  compute member whose stream drops is failed and detached the instant the
+  drop is noticed; its registration is removed a moment later, when its stream
+  handler returns. In between it was still eligible, so a callout could be
+  routed to a member every request against which already failed — answering
+  `503 COMPUTE_MEMBER_DISCONNECTED` although another compute member for the
+  same tags was connected and ready. A member that has been detached is no
+  longer a candidate, so the callout goes to a live one, and none of a
+  callout's tries is spent on a member already known to be gone — nor is such
+  a try reported to the client as an attempt. Its tags are no longer advertised
+  to the other nodes either, so a node stops inviting work it cannot serve.
+  Where the leaving member was the only one matching the callout's
+  `calculationNodesTags`, the callout now waits for a compute member to appear —
+  for `CYODA_DISPATCH_WAIT_TIMEOUT`, as it does whenever there is none — and
+  answers `503 NO_COMPUTE_MEMBER_FOR_TAG` if none does, instead of spending a
+  try on the member that had gone and answering
+  `503 COMPUTE_MEMBER_DISCONNECTED` at once. The one remaining instant — the
+  member leaving between being chosen and the request being registered against
+  it — still ends that try, as `cyoda help errors
+  COMPUTE_MEMBER_DISCONNECTED` describes, and the callout moves on to the next
+  member.
+
+- **A compute member that had been given up on could still write into the
+  transaction — last.** Its callbacks were accepted until the transaction
+  closed, so the write of a slow member could land after its replacement had
+  answered and after later processors of the same transition had run; under
+  `ASYNC_NEW_TX` the write of a processor that *failed* could land after its
+  savepoint was undone, and be committed. A replaced member is now fenced, and
+  the engine waits for a callback in progress before it carries the callout on.
+  See `docs/cloud-parity/callout-failover.md`.
+
+- **Two callbacks at once on one transaction crashed the node, or failed the
+  operation.** Only entity writes were serialised. On the memory and SQLite
+  backends two parallel reads by one compute member were enough to stop the
+  process for every tenant (`concurrent map writes`); on PostgreSQL the second
+  user of the operation's connection failed with `conn busy`. Every joined
+  request now takes the transaction's lock in the join layer, with no change to
+  any storage plugin.
+
+- **A compute member that disconnected in the middle of a callback destroyed the
+  operation's PostgreSQL connection.** The cancelled statement made the driver
+  close the connection the owning operation was running on, and the operation
+  failed with it. A joined request is no longer cancelled by its client.
+
+- **A savepoint failure in `ASYNC_NEW_TX` passed as a processor failure.** A
+  savepoint that could not be undone was a warning — the failed processor's
+  writes were committed; one that could not be created or released was counted
+  as the processor's own, non-fatal failure, silently skipping it. Each now
+  fails the operation with a ticketed `5xx`, and the PostgreSQL plugin's
+  savepoint errors are classified like its other statements instead of reaching
+  a `400` body raw.
+
+- **A callout whose transaction token could not be minted was sent without
+  one**, so the compute member's callbacks would have run outside the
+  transaction. It now fails before anything is sent.
+
+- **A callout handed to another node and broken off mid-way was tried on the
+  next node regardless**, which for a processor could run it twice. A lost
+  answer counts as a try and is followed by another only when a repeat is safe.
+
+- **A node whose dispatch replay cache is full no longer fails callouts handed
+  to it**; it answers that it took no work, and the next node is asked.
+
+- **A callout may not run as one tenant over another's entity.** A hand-over
+  carries two tenants — its own, which becomes the user context, and the
+  entity metadata's, which is handed to the local dispatcher — and nothing
+  compared them. A mismatch is now answered, under seal, as a `terminal`
+  refusal with no try made, and so is an absent entity tenant: every callout
+  kind — processor, criteria and function alike — is built from a live
+  stored entity whose tenant is always set, so an empty one can only come
+  from a hand-crafted peer body. The owner reports a ticketed `500`.
+
+- **A node's answer to another node's call could be replaced by anyone on the
+  network path.** Neither the answer to a handed-over callout nor the answer to
+  the call that delegates a scheduled transition was authenticated, so speaking
+  for the answering node took no cluster key: a forged success silenced the
+  `peer forward failed` warning while the transition never fired on that peer —
+  the task itself was not lost, a later scan redispatched it, but nothing said
+  so. Both answers are sealed for the one request they answer (see Breaking),
+  and an answer that cannot be opened is a lost answer. Calls between nodes
+  follow no redirect.
+
+- **A node's own internal error text no longer reaches a client in a callout
+  failure.** A request the node could not build, and a member's answer it could
+  not read, put the underlying error's text into a `400` body, where it could
+  quote bytes of the tenant's own entity payload. The client reads
+  `internal error` with a ticket, and the cause is logged by shape, never by
+  text.
+
+- **A node hosting compute members of more than a handful of tenants vanished
+  from the cluster.** Tenants and tags rode in the membership layer's node
+  metadata, which the library caps at 512 bytes — the eighth tenant with a
+  36-character id, or the fourth with a 100-character one. Past it the node
+  published empty metadata: every peer dropped it, no callout was handed to it
+  for any of its tenants, a callback routed through a peer could not find the
+  transaction's owner, the scheduler gave it no work, and it dropped out of its
+  own view; nothing reported it beyond one warning line. The metadata now
+  carries identity and a list version only; the lists travel over the membership
+  layer's reliable channel, and a node that is behind fetches them. A node whose
+  identity cannot fit the metadata refuses to start (see Breaking), and the
+  channel has two instruments of its own (see Added).
+
+- **A transaction routed to a node whose membership metadata cannot be read
+  answers `503 TRANSACTION_NODE_UNAVAILABLE`**, as for any other node that is
+  not available. It answered `500`.
+
+- **A workflow export of a function-driven scheduled transition carried
+  `"delayMs": 0`, which the API's own schema rejects.** The exporter
+  marshalled the schedule's wire type directly, and its delay field had no
+  `omitempty`, so a schedule fired by a Function callout — which has no
+  static delay at all — still emitted a meaningless zero delay alongside
+  `function`, violating the published schema's `minimum: 1` and its
+  documented mutual exclusion between `delayMs` and `function`. The key is
+  now omitted when there is no static delay. Import is unchanged: an absent
+  delay together with a function was always the accepted form.
 
 - **A point-in-time read costs what the model costs, not what the history
   costs (PostgreSQL).** The point-in-time base query resolved the latest
@@ -186,14 +658,6 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   releasing it. Both are now single critical sections. The payload copy
   stays outside the lock. Unreachable over HTTP, where message ids are
   server-generated, but the SPI admits any id.
-
-- **A callout may not run as one tenant over another's entity.** A peer
-  dispatch request carries two tenants — its own, which becomes the user
-  context, and the entity metadata's, which is handed to the local
-  dispatcher — and nothing compared them. A mismatch is now `400`, and so
-  is an absent entity tenant: every callout kind — processor, criteria and
-  function alike — is built from a live stored entity whose tenant is
-  always set, so an empty one can only come from a hand-crafted peer body.
 
 - **The OIDC provider store no longer writes under one key and reads under
   another.** It wrote a record and its URI index under the canonical
@@ -279,6 +743,53 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   leaves once the drains are done. A flush cut short is reported by the
   existing `OTel meter provider shutdown error` / `OTel trace provider
   shutdown error` warnings.
+
+- The help index claimed gRPC responses carry `errorCode` and `retryable` in
+  trailer metadata, and showed an envelope `code` that is never sent. Neither
+  was true; `errors` now shows the envelope as it is.
+
+- **The published event schemas now assert the composition they always appeared
+  to.** Every document in `docs/cyoda/schema/` declares JSON Schema Draft
+  2020-12, and the 47 that build on `BaseEvent` composed with `extends` — a
+  draft-03 keyword, dropped in draft-04 and replaced by `allOf`. Under 2020-12
+  an unrecognised keyword is ignored, so those documents were valid and
+  asserted nothing about the base: a criteria response validated as its own
+  three fields, with nothing checking `success`'s declared boolean type,
+  nothing applying `BaseEvent`'s `required` list and nothing checking the
+  `error` object's shape. `{"success": "yes", "matches": true}` validated.
+  They now compose with `allOf`, and those three things are decided. **No wire
+  type and no runtime behaviour changed**: nothing in cyoda-go validates a
+  payload against this tree — it decodes in Go, from types generated from it —
+  and `api/grpc/events/types.go` regenerates byte-identically, because the
+  generator already inlined the base's fields and required list (it now keys
+  that off `allOf`). This is the published contract catching up with what the
+  code already did. Anyone validating a compute member's answer against the
+  tree gets the checks the composition always implied: a calculation response
+  owes its own `id`, and sends `error` as an object or not at all. Payloads the
+  server accepted before are still accepted — but `cyoda help grpc` showed
+  response examples without an `id` and with an explicit `"error": null`, which
+  would not have validated, and those are corrected here. Cyoda Cloud's copy of
+  the tree still uses the old keyword, so the two are not byte-identical until
+  it follows; see `docs/cloud-parity/event-schema-composition.md`.
+
+  The same change removes `"type": "any"` from the ten properties that carried
+  it. That is the `jsonschema2pojo` spelling of "any value", not a JSON Schema
+  type name, and a conformant validator does not read it permissively — it
+  refuses to compile the document, and with it every clause the document does
+  state. Sixteen of the sixty-six schemas were unusable that way, including
+  `common/DataPayload.json` and the six that reach it, so the composition above
+  bought those sixteen nothing until this was resolved. 2020-12 spells "any
+  value" by omitting `type`, which is what the tree now does; the sibling
+  `existingJavaType` stays, being the generator extension Cloud's copy needs.
+  `api/grpc/events/types.go` regenerates byte-identically here too. Cloud's
+  copy still carries the construct.
+
+- **The reference compute member sent a function answer the published tree
+  refuses.** `cmd/compute-test-client`'s function response omitted `entityId`,
+  which all three calculation responses require and which its processor and
+  criteria responses both send. A customer copying it as the worked example got
+  an answer that would not validate. It now names the entity it answers about,
+  on the successful and the failure path alike.
 
 ## [0.8.4] — 2026-09-09
 

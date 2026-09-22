@@ -44,6 +44,7 @@ Document the choice (dual-shape vs retirement, with rationale) in the per-versio
 
 - Adding a new HTTP endpoint or response field that's outside `WorkflowConfigurationDto`. The version contract scopes the import DTO, not the wider workflow API.
 - Bug-fixing a validator that was already supposed to reject something — i.e., the rejection was always documented and the validator was the bug. Add a test, ship the fix; no schema bump. (Borderline cases: if a validator was widely-relied-upon-via-its-absence, treat as a tightening release per §above.)
+- Bug-fixing an exporter that emitted a wire shape the published schema already forbade — i.e., the schema was already correct and the serialiser was the bug. No accepted-input set moves and no document's documented shape changes; only the serialisation defect goes away. Add a test, ship the fix; no schema bump.
 - Internal refactoring of the engine, store, or audit shape. The wire contract is unchanged.
 
 ### Malformed-regex criteria rejected at import (v0.8.3)
@@ -139,6 +140,28 @@ Not to be confused with the `NOT` group operator entry under the Changelog
 below, which **is** a bump: the two are separate changes shipped in the same
 release, and neither's bump decision generalises to the other.
 
+### Exported schedule omits `delayMs` when function-driven (v0.9.0)
+
+A scheduled transition's exported `schedule` object no longer carries
+`"delayMs": 0` when the schedule is driven by a `function` and has no static
+delay. The exporter marshalled the schedule's wire type directly, and that
+type's delay field had no `omitempty`, so a function-driven schedule — which
+has no static delay by definition — still emitted a meaningless zero
+alongside `function`. The published `TransitionScheduleDto.delayMs` already
+gave the field `minimum: 1` and documented it as mutually exclusive with
+`function`, so the old export was never a valid document against the
+server's own schema; the exporter was the bug, not the schema.
+
+This is the §"When NOT to bump" "the serialiser was the bug" case, the exact
+analogue of the v0.8.3 malformed-regex entry above: the schema never allowed
+`delayMs: 0`, so no *valid* document's shape changes and the accepted-input
+set is unchanged — only what a function-driven schedule serialises to at
+export changes, from a document the schema rejects to one it accepts. Import
+is unaffected either way: `delayMs > 0` was already how import distinguishes
+"static delay present" from "absent", so an absent key and an explicit `0`
+were always equivalent on that path. No `CurrentSchemaVersion` or
+`SupportedSchemaRanges` change.
+
 ## Required commit-/PR-time checks
 
 Before merging a schema bump:
@@ -150,7 +173,70 @@ Before merging a schema bump:
 
 ## Changelog
 
-### 1.4 — v0.8.4 contract (current)
+### 1.5 — v0.9.0 contract (current)
+
+Additive MINOR — two new optional fields:
+
+- **`idempotent` on `ExternalizedProcessorConfigDto`** (a processor's
+  `config`). Boolean, default `false`, omitted on export when false. The
+  author's declaration that the processor may be run again on another compute
+  member after one that received the work went silent.
+- **`retryPolicy` on `ScheduleFunctionDto`** (`schedule.function`). The same
+  `NONE` / `FIXED` selector a processor and a criterion function already carry.
+
+Every payload 1.4 accepted that does not fall under the two tightenings below
+is byte-identical and remains valid; a workflow that never mentions either
+field exports without them.
+
+**Dual-shape retention of 1.1 through 1.4.** Nothing is retired:
+`SupportedSchemaRanges` widens in place to
+`{Major: 1, MinMinor: 1, MaxMinor: 5}`.
+
+**Two tightenings taken in the same MINOR.** Unlike the v0.8.4 entries under
+"When NOT to bump", these are not bug fixes to a validator that was always
+meant to reject — the inputs below imported and *worked* — so they are recorded
+here, under the rubric of §"Tightening releases":
+
+1. **`retryPolicy` on a `function`-type criterion is validated** (`NONE`,
+   `FIXED` or empty), as it has been on a processor since 1.1. Until now any
+   string was accepted there and ignored, because nothing consumed the field.
+   From this release it selects the number of tries, so an unknown value has no
+   meaning to honour. Rubric point 1 applies: fail-loud where the old behaviour
+   was a silent no-op. A `function` member that cannot be read at all (for
+   example a non-integer `responseTimeoutMs`) is refused on the same pass; that
+   criterion already failed every evaluation with "invalid criterion JSON", so
+   no working configuration is affected.
+2. **`responseTimeoutMs` is bounded** on a processor, a criterion function and
+   a schedule function: negative is refused, and so is a value above the
+   server's `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` (default `60000`). This
+   one does reject configurations that worked. It is taken because tries now
+   multiply the answer limit: without a bound, four tries at a generous limit
+   outlast the five minutes PostgreSQL allows a transaction to sit idle, and
+   the operation fails as "storage unavailable" instead of as a callout
+   failure. The bound is a server setting, so whether a given payload imports
+   depends on the deployment; the error names the setting and the bound.
+
+**Why dual-shape and not retirement.** Rubric point 2 asks whether an older
+payload "happens to import only by coincidence". It does not: the two rules
+touch two optional fields, the error names the offending workflow, state,
+transition and callout, and there are no deployments of either tier whose
+stored workflows could be affected. Retiring 1.1–1.4 would turn 298 fixtures
+and every client's existing files into `WORKFLOW_SCHEMA_VERSION_UNSUPPORTED`
+to guard two fields. Both rules apply to an import under **any** schema
+version, 1.1 through 1.5 alike — they are validation-layer rules, not
+DTO-shape ones.
+
+Neither rule is retroactive: a workflow already stored is not re-checked at
+import of another. A stored `responseTimeoutMs` above a bound that was lowered
+later is not clamped; its callout fails, naming the setting.
+
+**Bump-rule step 7 ("update every fixture") is not followed here**, the same
+as at 1.2, 1.3 and 1.4: nothing is retired, so every fixture stamped `"1.1"`
+through `"1.4"` stays valid exactly as imported, and only the tests that
+assert the *current* version — export stamping, the discovery endpoint, the
+dual-shape acceptance test — change.
+
+### 1.4 — v0.8.4 contract
 
 Additive MINOR — one new condition operator, `NOT`, accepted on a criterion's
 `group` clause:
