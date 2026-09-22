@@ -242,11 +242,7 @@ func (g *Gossip) Register(ctx context.Context, _ string, _ string) error {
 			"pkg", "cluster/registry",
 			"nodeId", g.cfg.NodeID,
 		)
-		if err := g.identityProven(); err != nil {
-			return err
-		}
-		g.identity.startServing()
-		return nil
+		return g.proveIdentityAndServe()
 	}
 
 	const (
@@ -303,8 +299,6 @@ func (g *Gossip) Register(ctx context.Context, _ string, _ string) error {
 		backoff = time.Duration(math.Min(float64(backoff*2), float64(maxBackoff)))
 	}
 
-	g.identity.startServing()
-
 	slog.Info("joined cluster",
 		"pkg", "cluster/registry",
 		"nodeId", g.cfg.NodeID,
@@ -326,7 +320,7 @@ func (g *Gossip) attemptJoin(ctx context.Context, seeds []string, start time.Tim
 	if err := g.awaitStability(ctx, start); err != nil {
 		return err
 	}
-	return g.identityProven()
+	return g.proveIdentityAndServe()
 }
 
 // awaitStability waits for gossip to converge: the member count must hold
@@ -386,12 +380,17 @@ func (g *Gossip) joinSeeds(seeds []string) error {
 	return errs
 }
 
-// identityProven fails when anything this attempt saw — an exchange of its
-// own, one a peer started, or the membership gossip that followed — showed
-// this node's id on another node. A node that cannot show the id is its own
-// does not serve under it.
-func (g *Gossip) identityProven() error {
-	if addr := g.identity.duplicate(); addr != "" {
+// proveIdentityAndServe fails when anything this attempt saw — an exchange of
+// its own, one a peer started, or the membership gossip that followed —
+// showed this node's id on another node. A node that cannot show the id is
+// its own does not serve under it.
+//
+// The check and the flip to serving happen as one step, under identityGuard's
+// own lock (identityGuard.proveAndServe): a finding recorded at any point up
+// to this call is the one it sees. There is no separate call afterwards that
+// a finding landing in between could go unread by.
+func (g *Gossip) proveIdentityAndServe() error {
+	if addr := g.identity.proveAndServe(); addr != "" {
 		return g.duplicateIDError(addr, "")
 	}
 	return nil

@@ -207,6 +207,29 @@ func (g *identityGuard) startServing() {
 	g.serving = true
 }
 
+// proveAndServe is identityProven and startServing done as one step under
+// this guard's own lock, rather than as a check and a later, separate flip.
+// Two locked calls with anything in between them — even a few non-blocking
+// instructions — leave a window in which a NotifyMerge or NotifyConflict can
+// record a finding that neither call ever reads again: the check already
+// passed, and the flip does not look at found. Reading found and setting
+// serving in one critical section closes that window: a finding recorded at
+// any point up to and including this call is the one this call sees.
+//
+// It touches only this guard's own fields — no I/O, nothing that can block —
+// so it is safe to hold mu across it. It never calls into memberlist, so it
+// cannot invert the lock order NotifyConflict depends on: NotifyConflict runs
+// under memberlist's own node lock and must never wait on this one.
+func (g *identityGuard) proveAndServe() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.found != "" {
+		return g.found
+	}
+	g.serving = true
+	return ""
+}
+
 // report logs one duplicate-id line, at most once per report and pair of
 // addresses. The gossip message carrying the record repeats, and the line must
 // not.
