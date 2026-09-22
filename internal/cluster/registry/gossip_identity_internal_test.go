@@ -70,3 +70,92 @@ func TestIdentityGuard_DepartedRecordDoesNotHoldTheName(t *testing.T) {
 		}
 	}
 }
+
+// TestIdentityGuard_ForgetDropsWhatAnEarlierAttemptFound is what lets a
+// restarting node in once its peers have reaped the record of its previous
+// life: every join attempt judges the cluster as it is then, not as the first
+// attempt found it.
+func TestIdentityGuard_ForgetDropsWhatAnEarlierAttemptFound(t *testing.T) {
+	guard := newIdentityGuard("node-a")
+	guard.publish("10.1.2.3:7946")
+
+	if err := guard.NotifyMerge([]*memberlist.Node{aliveAt("node-a", "10.1.2.9", 7946)}); err == nil {
+		t.Fatal("a second node under this id was admitted")
+	}
+	guard.forget()
+	if addr := guard.duplicate(); addr != "" {
+		t.Errorf("duplicate = %q after forget; the next attempt must judge the cluster as it is then", addr)
+	}
+}
+
+// TestIdentityGuard_ConflictBeforeStartingRefusesTheNode covers the case no
+// join exchange can carry, and so the merge delegate cannot reach: two nodes
+// under one id starting at the same instant, each learning of the other from
+// the gossip that follows. memberlist takes `existing` from this node's own
+// node map, so a record that is this node's own — its id at its own address —
+// is proof that this node is one of the two.
+func TestIdentityGuard_ConflictBeforeStartingRefusesTheNode(t *testing.T) {
+	guard := newIdentityGuard("node-a")
+	guard.publish("10.1.2.3:7946")
+
+	own := aliveAt("node-a", "10.1.2.3", 7946)
+	other := aliveAt("node-a", "10.1.2.9", 7946)
+	guard.NotifyConflict(own, other)
+
+	if addr := guard.duplicate(); addr != "10.1.2.9:7946" {
+		t.Errorf("duplicate = %q, want the address the id was claimed from", addr)
+	}
+}
+
+// TestIdentityGuard_ConflictWhileServingDoesNotStopTheNode is the other half
+// of the same proof. Taking down a node that is already serving loses
+// availability and gains no correctness, so what a node does about its id
+// being contested after it has started is one ERROR line and nothing else.
+func TestIdentityGuard_ConflictWhileServingDoesNotStopTheNode(t *testing.T) {
+	guard := newIdentityGuard("node-a")
+	guard.publish("10.1.2.3:7946")
+	guard.startServing()
+
+	guard.NotifyConflict(aliveAt("node-a", "10.1.2.3", 7946), aliveAt("node-a", "10.1.2.9", 7946))
+
+	if addr := guard.duplicate(); addr != "" {
+		t.Errorf("duplicate = %q; a node that is already serving does not stop over a contested id", addr)
+	}
+}
+
+// TestIdentityGuard_ConflictBetweenOtherNodesIsOnlyLogged pins the limit of
+// the proof: a witness of somebody else's duplicate is not one of the two and
+// has nothing to refuse.
+func TestIdentityGuard_ConflictBetweenOtherNodesIsOnlyLogged(t *testing.T) {
+	for _, existing := range []*memberlist.Node{
+		aliveAt("node-b", "10.1.2.4", 7946),  // another node's id entirely
+		aliveAt("node-a", "10.1.2.99", 7946), // this node's id, but not this node's record
+	} {
+		guard := newIdentityGuard("node-a")
+		guard.publish("10.1.2.3:7946")
+
+		guard.NotifyConflict(existing, aliveAt(existing.Name, "10.1.2.9", 7946))
+
+		if addr := guard.duplicate(); addr != "" {
+			t.Errorf("existing %s: duplicate = %q; a conflict this node is not part of is only witnessed", existing.Address(), addr)
+		}
+	}
+}
+
+// TestIdentityGuard_MergeWhileServingRefusesTheExchangeOnly says what an
+// established node does with a join that would establish a duplicate: it
+// refuses that one exchange, which keeps the second record out of its view,
+// and records nothing — nothing reads the finding once Register has returned.
+func TestIdentityGuard_MergeWhileServingRefusesTheExchangeOnly(t *testing.T) {
+	guard := newIdentityGuard("node-a")
+	guard.publish("10.1.2.3:7946")
+	guard.startServing()
+
+	err := guard.NotifyMerge([]*memberlist.Node{aliveAt("node-a", "10.1.2.9", 7946)})
+	if !errors.Is(err, errDuplicateNodeID) {
+		t.Errorf("the exchange that would establish a duplicate was admitted: %v", err)
+	}
+	if addr := guard.duplicate(); addr != "" {
+		t.Errorf("duplicate = %q; nothing reads the finding after Register", addr)
+	}
+}

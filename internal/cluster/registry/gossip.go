@@ -228,6 +228,12 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 // The retry loop and stability-window wait are bounded by ctx — callers set
 // the join deadline via context.WithTimeout (typically cfg.StartupTimeout).
 // A nil/background context makes the retry loop unbounded; pass a deadline.
+//
+// Finding this node's id on another node fails an attempt like any other
+// failure, and is retried for the same budget: the commonest cause is a
+// record of this node's own previous life, left behind by a crash, which its
+// peers reap within seconds. What refuses the node is the id still being held
+// when the budget runs out.
 func (g *Gossip) Register(ctx context.Context, _ string, _ string) error {
 	seeds := g.filterSelf(g.cfg.Seeds)
 	if len(seeds) == 0 {
@@ -235,7 +241,11 @@ func (g *Gossip) Register(ctx context.Context, _ string, _ string) error {
 			"pkg", "cluster/registry",
 			"nodeId", g.cfg.NodeID,
 		)
-		return g.identityProven()
+		if err := g.identityProven(); err != nil {
+			return err
+		}
+		g.identity.startServing()
+		return nil
 	}
 
 	const (
@@ -245,65 +255,54 @@ func (g *Gossip) Register(ctx context.Context, _ string, _ string) error {
 
 	start := time.Now()
 	backoff := initialBackoff
+	// The duplicate the last attempt that found one saw. It is what the
+	// operator is told when the budget runs out, in preference to a bare
+	// deadline: the id having been held is the actionable half of it.
+	var duplicate error
 
 	for {
 		if err := ctx.Err(); err != nil {
+			if duplicate != nil {
+				return duplicate
+			}
 			return fmt.Errorf("join seeds after %v: %w", time.Since(start), err)
 		}
-		err := g.joinSeeds(seeds)
+
+		// Each attempt asks about the cluster as it is now. A record that has
+		// since been reaped must not decide an attempt made after it went.
+		g.identity.forget()
+
+		err := g.attemptJoin(ctx, seeds, start)
 		if err == nil {
 			break
 		}
-		// A second node answering to this node's id is not a condition the
-		// next attempt clears, and this node must not serve under an id
-		// another node can open its hand-overs with.
 		if errors.Is(err, errDuplicateNodeID) {
-			return err
+			duplicate = err
+			slog.Warn("CYODA_NODE_ID is held by another node, retrying until the startup budget runs out",
+				"pkg", "cluster/registry",
+				"nodeId", g.cfg.NodeID,
+				"err", err,
+				"backoff", backoff,
+			)
+		} else {
+			slog.Warn("failed to join seeds, retrying",
+				"pkg", "cluster/registry",
+				"nodeId", g.cfg.NodeID,
+				"err", err,
+				"backoff", backoff,
+			)
 		}
-		slog.Warn("failed to join seeds, retrying",
-			"pkg", "cluster/registry",
-			"nodeId", g.cfg.NodeID,
-			"err", err,
-			"backoff", backoff,
-		)
+
 		timer := time.NewTimer(backoff)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return fmt.Errorf("join seeds after %v: %w", time.Since(start), ctx.Err())
 		case <-timer.C:
 		}
 		backoff = time.Duration(math.Min(float64(backoff*2), float64(maxBackoff)))
 	}
 
-	// Wait for the stability window to allow gossip convergence.
-	// Poll every 200ms; only proceed when the member count is stable for the
-	// full window duration. Cancel early if ctx expires.
-	if g.cfg.StabilityWindow > 0 {
-		const pollInterval = 200 * time.Millisecond
-		lastCount := g.list.NumMembers()
-		stableSince := time.Now()
-		for time.Since(stableSince) < g.cfg.StabilityWindow {
-			timer := time.NewTimer(pollInterval)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return fmt.Errorf("stability-window wait aborted after %v: %w", time.Since(start), ctx.Err())
-			case <-timer.C:
-			}
-			current := g.list.NumMembers()
-			if current != lastCount {
-				lastCount = current
-				stableSince = time.Now()
-			}
-		}
-	}
-
-	// The last word before this node serves: the wait is long enough for a
-	// second holder of the id to have appeared since the join.
-	if err := g.identityProven(); err != nil {
-		return err
-	}
+	g.identity.startServing()
 
 	slog.Info("joined cluster",
 		"pkg", "cluster/registry",
@@ -312,6 +311,47 @@ func (g *Gossip) Register(ctx context.Context, _ string, _ string) error {
 		"members", g.list.NumMembers(),
 	)
 
+	return nil
+}
+
+// attemptJoin is one pass at joining: contact the seeds, let the cluster view
+// settle, and only then decide that this node's id is its own. The identity
+// check is last because the wait is long enough for a second holder to have
+// appeared since the join.
+func (g *Gossip) attemptJoin(ctx context.Context, seeds []string, start time.Time) error {
+	if err := g.joinSeeds(seeds); err != nil {
+		return err
+	}
+	if err := g.awaitStability(ctx, start); err != nil {
+		return err
+	}
+	return g.identityProven()
+}
+
+// awaitStability waits for gossip to converge: the member count must hold
+// still for the whole of the configured window. It polls every 200ms and
+// gives up when ctx expires.
+func (g *Gossip) awaitStability(ctx context.Context, start time.Time) error {
+	if g.cfg.StabilityWindow <= 0 {
+		return nil
+	}
+	const pollInterval = 200 * time.Millisecond
+	lastCount := g.list.NumMembers()
+	stableSince := time.Now()
+	for time.Since(stableSince) < g.cfg.StabilityWindow {
+		timer := time.NewTimer(pollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("stability-window wait aborted after %v: %w", time.Since(start), ctx.Err())
+		case <-timer.C:
+		}
+		current := g.list.NumMembers()
+		if current != lastCount {
+			lastCount = current
+			stableSince = time.Now()
+		}
+	}
 	return nil
 }
 

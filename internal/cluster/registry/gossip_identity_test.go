@@ -78,9 +78,10 @@ func refusalBy(addr string) []string {
 
 // TestGossipRegistry_DuplicateNodeIDRefusesToStart is the reason the check
 // exists: the node id seals a hand-over for the node it is sent to, so a
-// second node answering to one id can open the first one's hand-overs. The
-// node that finds the id taken must not start, and must say which setting is
-// wrong; the node already holding it keeps serving.
+// second node answering to one id can open the first one's hand-overs. A
+// duplicate that is still there when the startup budget runs out must not
+// start, and must say which setting is wrong; the node already holding the id
+// keeps serving.
 func TestGossipRegistry_DuplicateNodeIDRefusesToStart(t *testing.T) {
 	logged := captureErrors(t)
 
@@ -93,9 +94,10 @@ func TestGossipRegistry_DuplicateNodeIDRefusesToStart(t *testing.T) {
 	captureAddr(duplicate)
 	t.Cleanup(func() { _ = duplicate.Deregister(context.Background(), "dup-id-node") })
 
-	// A generous deadline: the point is that Register does not spend it. A
-	// duplicate id is not a condition the next join attempt clears.
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	// The incumbent holds the id for the whole of this budget, so every
+	// attempt inside it finds the same answer and the last one fails closed.
+	const budget = 3 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 
 	start := time.Now()
@@ -105,8 +107,13 @@ func TestGossipRegistry_DuplicateNodeIDRefusesToStart(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Register: expected the duplicate to refuse to start, got nil after %v", elapsed)
 	}
-	if elapsed > 3*time.Second {
-		t.Errorf("Register took %v; a duplicate id must be refused at once, not retried", elapsed)
+	// It is refused at the end of the budget, not at the start of it: a record
+	// that ages out inside the window is a node that may start.
+	if elapsed < budget {
+		t.Errorf("Register returned after %v; the whole %v budget must be given to the id coming free", elapsed, budget)
+	}
+	if elapsed > budget+3*time.Second {
+		t.Errorf("Register took %v; it must fail closed once the %v budget is spent", elapsed, budget)
 	}
 	// The setting, the address, the seed — and the other cause of the same
 	// refusal, since nothing separates an impostor from a record of this
@@ -170,6 +177,40 @@ func TestGossipRegistry_RestartUnderDepartedNodeID(t *testing.T) {
 	}
 }
 
+// TestGossipRegistry_StaleRecordAgesOutAndTheNodeStarts is the ordinary case
+// the refusal must not turn into a crash loop: a node crashes, comes back at
+// another address, and its peers still hold the record of its previous life.
+// Nothing tells that record from a second node's, so the first attempts are
+// refused — but the peers reap it within the startup budget, and the attempt
+// made after that is the one that decides.
+func TestGossipRegistry_StaleRecordAgesOutAndTheNodeStarts(t *testing.T) {
+	crashing := startGossip(t, gossipCfg("crashing-node"))
+	watcher := startGossipSeededBy(t, "crash-watcher", crashing)
+
+	eventually(t, 5*time.Second, "the watcher sees the node that is about to crash", func() bool {
+		_, ok := nodeIn(t, watcher, "crashing-node")
+		return ok
+	})
+
+	crashedAddr := addrOf(crashing)
+	crashing.Crash()
+
+	// The watcher was told nothing, so it still holds the record as alive:
+	// only its own failure detector will reap it.
+	second := newGossipAtAnotherAddress(t, gossipCfg("crashing-node", addrOf(watcher)), crashedAddr)
+
+	// Long enough for memberlist's probe and suspicion timers to run their
+	// course, which is what the node is waiting for.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	if err := second.Register(ctx, "crashing-node", "http://crashing-node.test:8080"); err != nil {
+		t.Fatalf("Register second: the stale record aged out inside the budget and the node must be let in: %v", err)
+	}
+	t.Logf("admitted %v after the crash", time.Since(start))
+}
+
 // TestGossipRegistry_NoSeedsStartsWithoutJoin pins the other end of the check:
 // with no seeds there is no join exchange and nothing to check against, and
 // the node is a cluster of one.
@@ -216,7 +257,9 @@ func TestGossipRegistry_ConflictLoggedOnceAtError(t *testing.T) {
 			t.Fatalf("NewGossip claimer: %v", err)
 		}
 		defer func() { _ = claimer.Deregister(context.Background(), "witnessed-id") }()
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		// A short budget: the claimer retries inside it, and the holder is
+		// there for all of it, so the verdict is the same at every attempt.
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		if err := claimer.Register(ctx, "witnessed-id", "http://witnessed-id.test:8080"); err == nil {
 			t.Fatal("Register claimer: expected the second holder of the id to refuse to start")
@@ -246,6 +289,15 @@ func TestGossipRegistry_ConflictLoggedOnceAtError(t *testing.T) {
 	if n := witnessed(); n != 1 {
 		t.Errorf("the conflict was logged %d times; a repeat from the same address must be suppressed:\n%s", n, logged.String())
 	}
+
+	// Logging it is all the witness does. It was serving before the conflict
+	// and is serving after it.
+	if _, ok := nodeIn(t, watcher, "conflict-watcher"); !ok {
+		t.Error("the witness dropped itself from its own view")
+	}
+	if _, ok := nodeIn(t, watcher, "witnessed-id"); !ok {
+		t.Error("the witness dropped the id's rightful holder over the conflict")
+	}
 }
 
 // TestGossipRegistry_DuplicateFoundByInboundExchangeRefusesToStart covers a
@@ -260,8 +312,12 @@ func TestGossipRegistry_DuplicateFoundByInboundExchangeRefusesToStart(t *testing
 	// object to.
 	seedNode := startGossip(t, gossipCfg("inbound-seed"))
 
-	// Listening, but not joined: Register has not been called yet.
-	joiner, err := registry.NewGossip(gossipCfg("inbound-dup", addrOf(seedNode)))
+	// Listening, but not joined: Register has not been called yet. The window
+	// is long enough that the impostor, which keeps trying on a backoff, is
+	// certain to claim the id again inside it.
+	joinerCfg := gossipCfg("inbound-dup", addrOf(seedNode))
+	joinerCfg.StabilityWindow = 2 * time.Second
+	joiner, err := registry.NewGossip(joinerCfg)
 	if err != nil {
 		t.Fatalf("NewGossip joiner: %v", err)
 	}
@@ -275,23 +331,34 @@ func TestGossipRegistry_DuplicateFoundByInboundExchangeRefusesToStart(t *testing
 	captureAddr(impostor)
 	t.Cleanup(func() { _ = impostor.Deregister(context.Background(), "inbound-dup") })
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	if err := impostor.Register(ctx, "inbound-dup", "http://inbound-dup.test:8080"); err == nil {
-		t.Fatal("Register impostor: expected the second holder of the id to refuse to start")
-	}
+	// The impostor holds the claim open for as long as the joiner is
+	// starting. A finding is judged per attempt, so what must keep the joiner
+	// out is a claim that is still live, not one that has been and gone.
+	impostorCtx, stopImpostor := context.WithCancel(context.Background())
+	defer stopImpostor()
+	impostorDone := make(chan error, 1)
+	go func() {
+		impostorDone <- impostor.Register(impostorCtx, "inbound-dup", "http://inbound-dup.test:8080")
+	}()
 
 	// The joiner has run its merge delegate on that inbound exchange.
 	eventually(t, 5*time.Second, "the joiner refuses the inbound exchange", func() bool {
 		return countLines(logged.String(), refusalBy(addrOf(impostor))...) == 1
 	})
 
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
 	err = joiner.Register(ctx, "inbound-dup", "http://inbound-dup.test:8080")
 	if err == nil {
 		t.Fatal("Register joiner: it started although another node holds its id")
 	}
 	if !strings.Contains(err.Error(), "CYODA_NODE_ID") {
 		t.Errorf("Register joiner err = %v; want it to name CYODA_NODE_ID", err)
+	}
+
+	stopImpostor()
+	if err := <-impostorDone; err == nil {
+		t.Error("Register impostor: expected the second holder of the id to refuse to start")
 	}
 }
 
@@ -341,7 +408,9 @@ func TestGossipRegistry_DuplicateFoundWhileJoinSucceedsRefusesToStart(t *testing
 	}
 	t.Cleanup(func() { _ = joiner.Deregister(context.Background(), "resolved-dup") })
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	// The holder answers for the whole budget, so every attempt inside it
+	// finds the same answer.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	err = joiner.Register(ctx, "resolved-dup", "http://resolved-dup.test:8080")
 	if err == nil {
@@ -359,7 +428,7 @@ func TestGossipRegistry_DuplicateFoundDuringStabilityWindowRefusesToStart(t *tes
 	seed := startGossip(t, gossipCfg("stability-seed"))
 
 	cfg := gossipCfg("stability-dup", addrOf(seed))
-	cfg.StabilityWindow = 5 * time.Second
+	cfg.StabilityWindow = 3 * time.Second
 	joiner, err := registry.NewGossip(cfg)
 	if err != nil {
 		t.Fatalf("NewGossip joiner: %v", err)
@@ -367,7 +436,7 @@ func TestGossipRegistry_DuplicateFoundDuringStabilityWindowRefusesToStart(t *tes
 	captureAddr(joiner)
 	t.Cleanup(func() { _ = joiner.Deregister(context.Background(), "stability-dup") })
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
 	registered := make(chan error, 1)
@@ -387,9 +456,16 @@ func TestGossipRegistry_DuplicateFoundDuringStabilityWindowRefusesToStart(t *tes
 		t.Fatalf("NewGossip impostor: %v", err)
 	}
 	t.Cleanup(func() { _ = impostor.Deregister(context.Background(), "stability-dup") })
-	if err := impostor.Register(ctx, "stability-dup", "http://stability-dup.test:8080"); err == nil {
-		t.Fatal("Register impostor: expected the second holder of the id to refuse to start")
-	}
+
+	// The impostor keeps claiming the id until the joiner has given up, so
+	// the claim is live at the end of the joiner's budget and not only inside
+	// one of its attempts.
+	impostorCtx, stopImpostor := context.WithCancel(context.Background())
+	defer stopImpostor()
+	impostorDone := make(chan error, 1)
+	go func() {
+		impostorDone <- impostor.Register(impostorCtx, "stability-dup", "http://stability-dup.test:8080")
+	}()
 
 	select {
 	case err := <-registered:
@@ -399,8 +475,13 @@ func TestGossipRegistry_DuplicateFoundDuringStabilityWindowRefusesToStart(t *tes
 		if !strings.Contains(err.Error(), "CYODA_NODE_ID") {
 			t.Errorf("Register joiner err = %v; want it to name CYODA_NODE_ID", err)
 		}
-	case <-time.After(25 * time.Second):
+	case <-time.After(20 * time.Second):
 		t.Fatal("Register joiner never returned")
+	}
+
+	stopImpostor()
+	if err := <-impostorDone; err == nil {
+		t.Error("Register impostor: expected the second holder of the id to refuse to start")
 	}
 }
 
