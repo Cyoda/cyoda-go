@@ -267,11 +267,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   both sides, the node served traffic while being invisible to every peer,
   and the library's own conflict line reached `slog` at DEBUG. A node that
   sees one id claimed from two addresses now logs it at **ERROR** with the
-  id and both addresses, once per address — including where the startup
-  check below cannot reach: two nodes starting at the same instant, a
-  partition healing, or a node started with no seeds. It does not stop:
-  seeing the conflict does not say which of the two is the misconfigured
-  one. See `cyoda help cluster` and `cyoda help config.cluster`.
+  id and both addresses, once per address. A node that has not finished
+  starting also refuses to start on it, which is how two nodes starting at
+  the same instant are caught — the join exchange carries no record of the
+  other yet, but the gossip that follows does, and a node can tell that the
+  contested record is its own. A node that is **already serving** only logs:
+  it refuses the exchange that would establish the duplicate, keeping the
+  second record out of its own view, and carries on. Two clusters that each
+  started healthily under overlapping ids and only later meet therefore give
+  ERROR lines and two nodes serving under one id; watch for the line, fix
+  the id and restart. See `cyoda help cluster` and
+  `cyoda help config.cluster`.
 
 - **`CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES` (default `10485760`, 10 MiB)
   sets the ceiling on the answer to a compute member's callback.** That answer
@@ -336,16 +342,19 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 - **A node whose `CYODA_NODE_ID` is already held refuses to start.** A node
   that sees its own id on a live node at another address — in an exchange
-  with a seed, or in one a peer started with it — exits at once rather than
-  retrying until `CYODA_STARTUP_TIMEOUT`, because no retry clears it. The
-  message names `CYODA_NODE_ID`, the address the id was found at and, where
-  there is one, the seed it was learned from. The node already holding the id
-  keeps serving. A restart under the id of a node that left or died is
-  unaffected, and so is a node with no seeds. A node that **crashed** and
-  comes back at another address is refused the same way, because its peers
-  still hold the record of its previous life and nothing tells that record
-  apart from a second node's; it starts once they have reaped it, and the
-  message names that cause too.
+  with a seed, in one a peer started with it, or in the membership gossip
+  that follows — keeps trying for the whole of `CYODA_STARTUP_TIMEOUT` and
+  exits if the id is still held when that budget runs out. The message names
+  `CYODA_NODE_ID`, the address the id was found at and, where there is one,
+  the seed it was learned from. The node already holding the id keeps
+  serving. A restart under the id of a node that left or died is unaffected,
+  and so is a node with no seeds. A node that **crashed** and comes back at
+  another address is refused at first, because its peers still hold the
+  record of its previous life and nothing tells that record apart from a
+  second node's — that record is what the budget is for: the peers reap it
+  within seconds, and the attempt made after that admits the node. The check
+  is a startup check only; what happens when a serving node's id is
+  contested is in the entry above.
 
 - **A callout picks among a tenant's matching compute members round robin.**
   The member picked longest ago goes next; one that has just joined goes first.
