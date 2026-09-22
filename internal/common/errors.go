@@ -23,11 +23,12 @@ const (
 )
 
 // ErrClientGone marks an error as the request's own client having gone away
-// before the request did anything — not a server fault. Only the layer that was
-// waiting on the client may mark a cause with it: internal/domain/txjoin does,
-// for a joined request whose context ended while it queued for the
-// transaction's lock, having touched nothing. A door's error funnel files a
-// departed client on this marker and on nothing else, because a cancellation
+// before the request did anything — not a server fault. Only a layer that was
+// waiting on the client may mark a cause with it: internal/domain/txjoin, for a
+// joined request whose context ended while it queued for the transaction's
+// lock, having touched nothing, and internal/callout, for a callout whose
+// caller's context ended during or between tries. A door's error funnel files
+// a departed client on this marker and on nothing else, because a cancellation
 // somewhere on an error's chain says only that something was called off, not
 // that this is what went wrong — see isClientGoneCancellation.
 //

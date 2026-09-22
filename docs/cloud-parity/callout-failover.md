@@ -338,8 +338,11 @@ the lock is taken:
 - A joined answer is held in memory while the transaction's lock is held, under
   a ceiling of its own: `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES`, default
   10 MiB. An answer past it fails the request — `413
-  JOINED_RESPONSE_TOO_LARGE`, naming the ceiling, on either door — and is never
-  sent in part: a truncated answer would be a wrong one.
+  JOINED_RESPONSE_TOO_LARGE`, naming the ceiling — on all three doors that can
+  hold one: the HTTP callback door, the gRPC unary door (`EntityManage`,
+  `EntitySearch`), and the gRPC server-streaming door
+  (`EntityManageCollection`, `EntitySearchCollection`) — and is never sent in
+  part: a truncated answer would be a wrong one.
 
 ## 8. What Cloud has to decide
 
