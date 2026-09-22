@@ -217,9 +217,16 @@ type CalloutConfig struct {
 	// JoinedMaxWaiters is how many of a compute member's callbacks may queue
 	// for one transaction behind the callback that holds it. Callbacks of one
 	// transaction are served one at a time, so a member that fires many at once
-	// buys no speed by it and would otherwise park a request's worth of memory
-	// each for the life of the callout. Past the cap a callback is refused with
+	// buys no speed by it. Past the cap a callback is refused with
 	// 503 TOO_MANY_JOINED_REQUESTS, retryable.
+	//
+	// It bounds the queue's LENGTH, not its bytes. The cap is read before a
+	// callback's body is, so a refusal costs no buffer, but the reading
+	// reserves nothing — callbacks that arrive together can all pass it — and
+	// each then buffers its whole request, up to httpmw's compile-time 10 MiB,
+	// before it queues. The request side has no setting, and the queue has no
+	// byte ceiling: at this default, 10 MiB bodies reach a gigabyte for one
+	// transaction. JoinedResponseMaxBytes bounds the answers, not these.
 	// CYODA_CALLOUT_JOINED_MAX_WAITERS, default 128, must be > 0 — there is no
 	// "unlimited" value, an unbounded queue being what the cap exists to
 	// prevent.

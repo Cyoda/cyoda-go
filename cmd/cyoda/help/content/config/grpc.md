@@ -63,24 +63,34 @@ member. These settings apply on a single node and in a cluster alike.
   The member's remedy is to page the read; raise this when a deployment's
   members legitimately read more in one callback, at the cost of memory held on
   the owning node. It does not govern ordinary, unjoined requests, nor the
-  callback's own request body. Must be `> 0`; startup fails otherwise
-  (default: `10485760`, 10 MiB)
+  callback's own request body — that is a fixed 10 MiB, which no setting moves.
+  Must be `> 0`; startup fails otherwise (default: `10485760`, 10 MiB)
 - `CYODA_CALLOUT_JOINED_MAX_WAITERS` — how many of a compute member's callbacks
   may queue for one transaction behind the one holding it. Callbacks of one
-  transaction are served one at a time, and a waiting one holds its whole
-  request in memory for as long as the callout lasts, so the queue is bounded:
-  past the cap a callback is refused with `503 TOO_MANY_JOINED_REQUESTS`,
-  retryable, having touched nothing. The count is deliberately conservative: it
-  includes callers that are about to be admitted, and the waits that are never
-  refused (the node's own work on the transaction, and a callback resuming
-  after a callout of its own) take a place in it too. Read the value as a floor
-  on how many callbacks are served, not an exact admission count — at a small
-  setting a callback can be refused while the transaction is in fact free a
-  moment later. Firing many callbacks at one transaction at once buys a member
-  no speed, so the cap enforces documented advice rather than introducing a
-  rule. Raise it for a member that legitimately submits in bursts, at the cost
-  of memory held on the owning node. Must be `> 0`; startup fails otherwise —
-  there is no "unlimited" value (default: `128`)
+  transaction are served one at a time; past the cap a callback is refused with
+  `503 TOO_MANY_JOINED_REQUESTS`, retryable, having touched nothing. The count
+  is deliberately conservative: it includes callers that are about to be
+  admitted, and the waits that are never refused (the node's own work on the
+  transaction, and a callback resuming after a callout of its own) take a place
+  in it too. Read the value as a floor on how many callbacks are served, not an
+  exact admission count — at a small setting a callback can be refused while the
+  transaction is in fact free a moment later. Firing many callbacks at one
+  transaction at once buys a member no speed, so the cap enforces documented
+  advice rather than introducing a rule. Must be `> 0`; startup fails otherwise
+  — there is no "unlimited" value (default: `128`)
+
+  This setting bounds how many callbacks may queue, not how many bytes they hold.
+  The cap is read before a callback's body is, so that a refusal costs
+  the node no buffer, but the reading reserves nothing: callbacks that arrive
+  together can all pass it, and each then buffers its whole request — up to the
+  fixed 10 MiB above — before taking its place in the queue. There is no
+  setting for the request side, and no byte ceiling on the queue as a whole.
+  Sizing a node means multiplying: the cap, times the request bodies a member
+  actually sends, times the transactions under callout at once. At the default
+  of `128` the arithmetic reaches a gigabyte of request bodies for a single
+  transaction if its member sends 10 MiB callbacks in bursts. Lower the cap for
+  a member that sends large bodies; raise it for one that legitimately submits
+  small ones in bursts.
 
 Tries multiply the answer limit. With the PostgreSQL backend a callout holds
 its transaction's connection idle while it waits, and
