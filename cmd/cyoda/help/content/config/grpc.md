@@ -58,7 +58,8 @@ member. These settings apply on a single node and in a cluster alike.
   go of, so everything waiting on that transaction — the end of the callout
   included — waits behind those bytes. A larger answer fails the callback with
   `413 JOINED_RESPONSE_TOO_LARGE` and is never sent in part, on the HTTP door
-  and on the gRPC one, where the frames of a chunked collection count together.
+  and on both gRPC doors — the unary one and the server-streaming one, where
+  the frames of a chunked collection count together.
   The member's remedy is to page the read; raise this when a deployment's
   members legitimately read more in one callback, at the cost of memory held on
   the owning node. It does not govern ordinary, unjoined requests, nor the

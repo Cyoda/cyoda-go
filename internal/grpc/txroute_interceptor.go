@@ -155,8 +155,27 @@ func (i *txRouteInterceptor) unary() googlegrpc.UnaryServerInterceptor {
 			}
 			return i.unaryErr(ctx, ce, envelope, jerr)
 		}
+		// The answer is complete by the time the handler returns — as it is on
+		// the HTTP door, where the encoder has materialised it before the
+		// buffered writer sees it — so what the ceiling bounds here is what is
+		// SENT, not the peak this node held while building it. Past it the call
+		// fails with the JOINED_RESPONSE_TOO_LARGE the other two doors give: the
+		// three doors answer one contract, and a truncated answer is not one of
+		// its answers. An unjoined call holds no transaction and is not governed.
+		if tok != "" && overJoinedCeiling(resp, i.joiner.MaxResponseBytes()) {
+			return i.unaryErr(ctx, ce, envelope, i.joiner.ResponseTooLargeError())
+		}
 		return resp, herr
 	}
+}
+
+// overJoinedCeiling reports whether a unary answer passes the joined-answer
+// ceiling. Every answer of these RPCs is a CloudEvent; its encoded size is what
+// the node sends once the transaction's lock has been given back, the same
+// measure heldStream takes of each frame it holds.
+func overJoinedCeiling(resp any, limit int) bool {
+	pm, ok := resp.(proto.Message)
+	return ok && proto.Size(pm) > limit
 }
 
 // clientGone reports whether err is the call's own context ending: the compute

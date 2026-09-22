@@ -23,7 +23,7 @@ HTTP: `413` `Content Too Large`. Retryable: `no`.
 
 A compute member's callback — a request carrying a transaction token — runs while it holds its transaction, and its answer is built in memory and sent only once the transaction has been let go of. Everything else waiting on that transaction, including the end of the callout itself, waits behind those bytes, so the answer has a ceiling: `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES` (default `10485760`, 10 MiB). The message carries the configured figure.
 
-The whole answer is discarded when it passes the ceiling. Nothing is sent in part: a collection cut short would be a wrong answer given as an available one, and the caller could not tell the two apart. The same applies on both doors — the HTTP callback door and the gRPC server-streaming one, where the frames of a chunked collection are counted together.
+The whole answer is discarded when it passes the ceiling. Nothing is sent in part: a collection cut short would be a wrong answer given as an available one, and the caller could not tell the two apart. The same applies on all three doors — the HTTP callback door and the two gRPC ones, the unary door and the server-streaming door, where the frames of a chunked collection are counted together.
 
 The ceiling is on the answer only. A callback's *request* body has its own, separate cap, and a body over it is refused with `413` `BAD_REQUEST` before the transaction is touched.
 

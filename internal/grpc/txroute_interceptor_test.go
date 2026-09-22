@@ -1368,6 +1368,62 @@ func TestTxRouteInterceptor_StreamPastTheWaiterCap_IsRefusedBeforeTheRequestIsRe
 	}
 }
 
+// gRPC unary: the answer of a joined call has the same ceiling as the HTTP
+// door's buffered response and the server-streaming door's held frames. Past it
+// the call fails with JOINED_RESPONSE_TOO_LARGE and the answer is not sent —
+// one contract, the same answer on all three doors.
+func TestTxRouteInterceptor_UnaryAnswerOverTheCeiling_IsRefused(t *testing.T) {
+	ic, gate, tok := joinedRouteInterceptor(t, "tx-1")
+	lockFree := lockFreeOn(gate, "tx-1")
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+	answer := &cepb.CloudEvent{Id: "resp-1", Data: &cepb.CloudEvent_TextData{TextData: strings.Repeat("a", testResponseMax+1)}}
+
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-1"}, entityManageInfo(),
+		func(context.Context, any) (any, error) { return answer, nil })
+	if err != nil {
+		t.Fatalf("unary: %v; the refusal travels as the RPC's error envelope", err)
+	}
+	assertEnvelopeCode(t, resp, "req-1", "JOINED_RESPONSE_TOO_LARGE")
+	if !lockFree() {
+		t.Error("the transaction's lock was not released")
+	}
+}
+
+// A unary answer under the ceiling is handed back exactly as the handler built
+// it: the ceiling refuses an answer, it never trims one.
+func TestTxRouteInterceptor_UnaryAnswerUnderTheCeiling_IsUntouched(t *testing.T) {
+	ic, _, tok := joinedRouteInterceptor(t, "tx-1")
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+	answer := &cepb.CloudEvent{Id: "resp-1", Data: &cepb.CloudEvent_TextData{TextData: strings.Repeat("a", 8<<10)}}
+
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-1"}, entityManageInfo(),
+		func(context.Context, any) (any, error) { return answer, nil })
+	if err != nil {
+		t.Fatalf("unary: %v", err)
+	}
+	if resp != any(answer) {
+		t.Fatalf("resp = %v; want the handler's own answer", resp)
+	}
+}
+
+// An unjoined call on a routed method carries no pass, so the joined-answer
+// ceiling does not govern it — it is an ordinary request that happens to use an
+// RPC callbacks also use.
+func TestTxRouteInterceptor_UnjoinedAnswerOverTheCeiling_IsUntouched(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", noCalloutJoiner(t, s, fakeJoinTM{}), 9090, true)
+	answer := &cepb.CloudEvent{Id: "resp-1", Data: &cepb.CloudEvent_TextData{TextData: strings.Repeat("a", testResponseMax+1)}}
+
+	resp, err := ic.unary()(context.Background(), &cepb.CloudEvent{Id: "req-1"}, entityManageInfo(),
+		func(context.Context, any) (any, error) { return answer, nil })
+	if err != nil {
+		t.Fatalf("unary: %v", err)
+	}
+	if resp != any(answer) {
+		t.Fatalf("resp = %v; want the handler's own answer — the ceiling is the joined door's, not every door's", resp)
+	}
+}
+
 // gRPC unary: the message is complete before the interceptor runs, so there is
 // nothing to save by refusing earlier — the cap is applied at the gate, and the
 // envelope carries the same code.
