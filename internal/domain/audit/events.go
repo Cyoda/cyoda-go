@@ -55,12 +55,16 @@ func entityChangeItem(v spi.EntityVersionMeta, entityID, callerTenant string) au
 }
 
 // stateMachineItem builds one StateMachine audit event. The store assigns
-// every event an id (spi.StateMachineAuditStore); one that does not parse is
-// a store fault, reported rather than emitted with a blank identity.
+// every event an id (spi.StateMachineAuditStore); one that does not parse,
+// or parses to the nil UUID — a value no store ever assigns — is a store
+// fault, reported rather than emitted with a blank identity.
 func stateMachineItem(ev spi.StateMachineEvent) (auditItem, error) {
 	id, err := uuid.Parse(ev.TimeUUID)
 	if err != nil {
 		return auditItem{}, fmt.Errorf("state machine event of entity %s has no valid id: %w", ev.EntityID, err)
+	}
+	if id == uuid.Nil {
+		return auditItem{}, fmt.Errorf("state machine event of entity %s has no valid id: nil UUID", ev.EntityID)
 	}
 	at := ev.Timestamp.UTC()
 	body := map[string]any{

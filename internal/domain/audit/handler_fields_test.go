@@ -75,8 +75,12 @@ func TestAudit_StateMachineEventCarriesEventID(t *testing.T) {
 	seen := map[string]bool{}
 	for i, ev := range first {
 		s, _ := ev["eventId"].(string)
-		if _, err := uuid.Parse(s); err != nil {
+		id, err := uuid.Parse(s)
+		if err != nil {
 			t.Fatalf("event %d eventId %q is not a UUID", i, s)
+		}
+		if id.Version() != 1 {
+			t.Errorf("event %d eventId %q is version %d, want a store-assigned v1 UUID", i, s, id.Version())
 		}
 		if seen[s] {
 			t.Fatalf("eventId %q repeated", s)
@@ -223,7 +227,67 @@ func TestSearch_SMEventWithoutID_Returns500(t *testing.T) {
 	if pd.Ticket == "" {
 		t.Errorf("expected a non-empty ticket on the 500 response; body: %s", w.Body.String())
 	}
-	if want := "sensitive internal detail that must not leak"; strings.Contains(w.Body.String(), want) {
-		t.Errorf("response leaked event internals: %s", w.Body.String())
+	// stateMachineItem's error carries the entity id and the parse failure
+	// text ("state machine event of entity <id> has no valid id: invalid
+	// UUID length: 0") — that is what common.Internal puts in AppError.Detail
+	// and, in sanitized mode, never reaches the response. These are the
+	// internals that could actually leak; Details itself is never part of
+	// the error.
+	body := w.Body.String()
+	if strings.Contains(body, "some-entity-id") {
+		t.Errorf("response leaked the entity id: %s", body)
+	}
+	if strings.Contains(body, "invalid UUID") {
+		t.Errorf("response leaked parse-error internals: %s", body)
+	}
+}
+
+// stubFieldsSMAuditStoreFinished answers GetEventsByTransaction with a
+// single STATE_MACHINE_FINISH event whose TimeUUID is empty — the same
+// store-fault case as TestSearch_SMEventWithoutID_Returns500, but through
+// GetStateMachineFinishedEvent's own store call rather than GetEvents.
+type stubFieldsSMAuditStoreFinished struct {
+	spi.StateMachineAuditStore
+}
+
+func (stubFieldsSMAuditStoreFinished) GetEventsByTransaction(context.Context, string, string) ([]spi.StateMachineEvent, error) {
+	return []spi.StateMachineEvent{
+		{
+			EventType: spi.SMEventFinished,
+			EntityID:  "some-entity-id",
+			TimeUUID:  "",
+			Details:   "sensitive internal detail that must not leak",
+			Timestamp: fieldsTestFixedTime,
+		},
+	}, nil
+}
+
+// TestGetStateMachineFinishedEvent_SMEventWithoutID_Returns500 is the
+// finished-endpoint counterpart of TestSearch_SMEventWithoutID_Returns500:
+// a STATE_MACHINE_FINISH event with no store-assigned id fails the request
+// rather than being answered with a blank eventId.
+func TestGetStateMachineFinishedEvent_SMEventWithoutID_Returns500(t *testing.T) {
+	w := callFinishedEvent(t, stubFieldsSMAuditStoreFinished{})
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %s", w.Code, w.Body.String())
+	}
+	commontest.ExpectErrorCode(t, w.Result(), common.ErrCodeServerError)
+
+	var pd struct {
+		Ticket string `json:"ticket"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
+		t.Fatalf("decode problem detail: %v; body: %s", err, w.Body.String())
+	}
+	if pd.Ticket == "" {
+		t.Errorf("expected a non-empty ticket on the 500 response; body: %s", w.Body.String())
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "some-entity-id") {
+		t.Errorf("response leaked the entity id: %s", body)
+	}
+	if strings.Contains(body, "invalid UUID") {
+		t.Errorf("response leaked parse-error internals: %s", body)
 	}
 }
