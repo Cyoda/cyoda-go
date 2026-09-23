@@ -21,10 +21,14 @@ func (s *StateMachineAuditStore) Record(ctx context.Context, entityID string, ev
 	if s.factory.uuids == nil {
 		return fmt.Errorf("failed to record state machine event for entity %s: no id generator configured", entityID)
 	}
-	event.TimeUUID = uuid.UUID(s.factory.uuids.NewTimeUUID()).String()
 
 	s.factory.smAuditMu.Lock()
 	defer s.factory.smAuditMu.Unlock()
+	// Minted under the lock, so id-assignment order and append order are the
+	// same atomic step: a concurrent Record cannot mint an earlier id yet
+	// append after one minted later (see
+	// TestSMAudit_ConcurrentRecord_IDOrderMatchesAppendOrder).
+	event.TimeUUID = uuid.UUID(s.factory.uuids.NewTimeUUID()).String()
 	if s.factory.smAudit[s.tenant] == nil {
 		s.factory.smAudit[s.tenant] = make(map[string][]spi.StateMachineEvent)
 	}

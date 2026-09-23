@@ -85,12 +85,15 @@ func (f *StoreFactory) SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) 
 	f.applyFunc = ApplyFunc(fn)
 }
 
-// setTransactionManager wires the plugin's own TM into the factory. The
-// field is written exactly once, at construction time, by initTransactionManager
-// (same package) — so reads in resolveRaw are safe without synchronization
-// because the construction return establishes happens-before for every
-// subsequent caller. Keep this unexported: there is no legitimate external
-// caller, and opening it would invite a race the factory isn't designed for.
+// setTransactionManager wires tm into the factory, setting both tm and
+// uuids (mirrored from tm.uuids so StateMachineAuditStore.Record can read
+// the generator without going through the TransactionManager). Called by
+// InitTransactionManager at construction time, and again — after
+// construction, with a fresh TransactionManager — by test helpers that wire
+// their own TM (e.g. NewStoreFactoryWithTMForTest); each call fully
+// replaces both fields. Keep this unexported: there is no legitimate
+// external caller, and opening it would invite a race the factory isn't
+// designed for.
 func (f *StoreFactory) setTransactionManager(tm *TransactionManager) {
 	f.tm = tm
 	f.uuids = tm.uuids
