@@ -181,6 +181,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   exported from one deployment can be refused by another with a lower bound.
   See `docs/workflow-schema-versioning.md`.
 
+- **An audit-events cursor from before this change no longer decodes and
+  answers `400 BAD_REQUEST`.** `nextCursor` is now the sort key (see the
+  Added entry below) of the last event on the page, not an offset into a
+  list rebuilt per request. Until now an unparsable cursor was silently
+  read as offset 0, restarting the walk from the first page. There are no
+  production instances, so no cursor issued before this change needs to
+  keep working. See `cyoda help audit`.
+
 ### Added
 
 - **Callout failover: a processor, criterion or function request that is not
@@ -322,6 +330,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   OAuth, client and account operations. Nothing existing changed: the
   parameter is optional and the responses are additions.
 
+- **Audit events carry `version` (entity change) or `eventId` (state
+  machine).** `EntityChangeAuditEventDto.version` is the entity's version
+  number for that change, strictly increasing over the entity's whole
+  history including across delete and recreate — `(entityId, version)`
+  identifies the event. `StateMachineAuditEventDto.eventId` is a time-based
+  UUID the server assigns when it records the event, the same on every
+  read, returned by the search endpoint and by
+  `.../workflow/{transactionId}/finished` alike. Until now two entity
+  change events of one transaction were identical on the wire and could not
+  be told apart. See `cyoda help audit`.
+
 ### Changed
 
 - **A client that goes away mid-request is logged at DEBUG, with no ticket** —
@@ -422,6 +441,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   itself. Not retryable — the same request builds the same answer again. Both
   doors answer the same code, the gRPC one through its error envelope. The
   answer is still never truncated: the request fails.
+
+- **Audit events of one instant now come back in a fixed order.** The merged
+  entity-change / state-machine list sorts by `utcTime` newest first, then
+  `EntityChange` before `StateMachine`, then `version` descending for entity
+  change events or `eventId` descending for state machine events. Until now
+  events of one instant were sorted by `utcTime` alone with an unstable
+  sort, so their relative order could change between identical requests and
+  an offset-based cursor walk over them could repeat or skip rows. See
+  `cyoda help audit`.
 
 ### Fixed
 
@@ -808,6 +836,25 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   criteria responses both send. A customer copying it as the worked example got
   an answer that would not validate. It now names the entity it answers about,
   on the successful and the failure path alike.
+
+- **A failed state machine audit read answers `503`/`500` instead of a trail
+  with those events silently missing.** The audit search endpoint swallowed a
+  `StateMachineAuditStore` factory or read failure and answered `200` with the
+  state machine events left out — the same failure already answered `503` on
+  the workflow-finished endpoint. It now answers `503 STORAGE_UNAVAILABLE` on
+  a storage outage or a generic `500` with a ticket id otherwise, matching the
+  finished endpoint. A request filtered to `EntityChange` only is unaffected.
+
+- **The memory backend no longer reuses a version number after a delete and a
+  recreate.** It numbered a new version from the last non-tombstone row, so
+  create → delete → save gave the recreate the deleted row's own version
+  number instead of the next one. It now counts from the last row of any
+  kind, matching postgres, sqlite and cassandra.
+
+- **The sqlite backend's generated audit event ids are time-based (UUID
+  version 1), not random (version 4).** Its default generator produced
+  random ids against the SPI's documented time-ordered contract for a state
+  machine event's id.
 
 ## [0.8.4] — 2026-09-09
 
