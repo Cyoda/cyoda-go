@@ -122,19 +122,25 @@ func (h *Handler) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request
 
 	// StateMachine events from SM audit store.
 	if includeStateMachine {
-		smStore, smErr := h.factory.StateMachineAuditStore(ctx)
-		if smErr == nil {
-			smEvents, smErr := smStore.GetEvents(ctx, entityId.String())
-			if smErr == nil {
-				for _, smEvent := range smEvents {
-					item, err := stateMachineItem(smEvent)
-					if err != nil {
-						common.WriteError(w, r, common.Internal("invalid state machine event", err))
-						return
-					}
-					items = append(items, item)
-				}
+		smStore, err := h.factory.StateMachineAuditStore(ctx)
+		if err != nil {
+			common.WriteError(w, r, common.Internal("failed to get state machine audit store", err))
+			return
+		}
+		// A failed read is not an entity without workflow events: answering
+		// 200 without them would present a partial trail as complete.
+		smEvents, err := smStore.GetEvents(ctx, entityId.String())
+		if err != nil {
+			common.WriteError(w, r, common.Internal("failed to get state machine events", err))
+			return
+		}
+		for _, smEvent := range smEvents {
+			item, err := stateMachineItem(smEvent)
+			if err != nil {
+				common.WriteError(w, r, common.Internal("invalid state machine event", err))
+				return
 			}
+			items = append(items, item)
 		}
 	}
 
