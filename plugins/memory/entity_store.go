@@ -80,6 +80,16 @@ func firstNonTombstone(versions []entityVersion) (*spi.Entity, bool) {
 	return nil, false
 }
 
+// lastVersion is the number of the entity's newest row of any kind,
+// tombstones included, or 0 when it has none. A new row takes
+// lastVersion+1, so a number is never reused after a delete.
+func lastVersion(versions []entityVersion) int64 {
+	if len(versions) == 0 {
+		return 0
+	}
+	return versions[len(versions)-1].version
+}
+
 type EntityStore struct {
 	tenant  spi.TenantID
 	factory *StoreFactory
@@ -430,15 +440,7 @@ func (s *EntityStore) saveUnlocked(ctx context.Context, entity *spi.Entity) (int
 	}
 
 	versions := s.factory.entityData[tid][eid]
-	var nextVersion int64 = 1
-	if len(versions) > 0 {
-		for i := len(versions) - 1; i >= 0; i-- {
-			if !versions[i].deleted {
-				nextVersion = versions[i].entity.Meta.Version + 1
-				break
-			}
-		}
-	}
+	nextVersion := lastVersion(versions) + 1
 
 	// Stamped under the monotonic floor a commit uses (nextSubmitTime), not
 	// the raw clock: the floor can stand ahead of the clock, and Begin floors
@@ -674,7 +676,7 @@ func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 	deletedAt := s.factory.txManager.nextSubmitTime()
 	s.factory.entityData[s.tenant][entityID] = append(versions, entityVersion{
 		entity:         nil,
-		version:        latest.entity.Meta.Version + 1,
+		version:        lastVersion(versions) + 1,
 		transactionID:  "",
 		submitTime:     deletedAt,
 		deleted:        true,
@@ -773,7 +775,7 @@ func (s *EntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 		if latest.entity.Meta.ModelRef == modelRef {
 			s.factory.entityData[s.tenant][eid] = append(versions, entityVersion{
 				entity:         nil,
-				version:        latest.entity.Meta.Version + 1,
+				version:        lastVersion(versions) + 1,
 				transactionID:  "",
 				submitTime:     now,
 				deleted:        true,

@@ -629,13 +629,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			}
 
 			versions := m.factory.entityData[tid][entityID]
-			var baseVersion int64
-			for i := len(versions) - 1; i >= 0; i-- {
-				if !versions[i].deleted && versions[i].entity != nil {
-					baseVersion = versions[i].entity.Meta.Version
-					break
-				}
-			}
+			baseVersion := lastVersion(versions)
 			hasPrior := len(versions) > 0
 			// firstNonTombstone, NOT versions[0]: a create and a delete
 			// committed in the same transaction flush a single tombstone
@@ -754,13 +748,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 				m.factory.entityData[tid] = make(map[string][]entityVersion)
 			}
 			versions := m.factory.entityData[tid][entityID]
-			var nextVersion int64 = 1
-			for i := len(versions) - 1; i >= 0; i-- {
-				if !versions[i].deleted && versions[i].entity != nil {
-					nextVersion = versions[i].entity.Meta.Version + 1
-					break
-				}
-			}
+			nextVersion := lastVersion(versions) + 1
 			// The tombstone's model reference is only needed when entityID
 			// has no prior committed version at all: a same-transaction
 			// create-then-delete, whose buffered create Delete evicted from
