@@ -405,3 +405,76 @@ func RunAuditFinishedEventIDMatchesSearch(t *testing.T, fixture BackendFixture) 
 		t.Fatalf("GetWorkflowFinished eventId %q != search's STATE_MACHINE_FINISH eventId %q for the same transaction", gotEventID, wantEventID)
 	}
 }
+
+// RunAuditFinishedEventIsLatestOfTransaction proves the finished endpoint's
+// pick among *multiple* STATE_MACHINE_FINISH events of one transaction: the
+// secondary from auditSetupJoinedSaves carries two — one from its own
+// auto-transition cascade (NONE -> STORED) and one from the callback's later
+// loopback update (internal/domain/workflow/engine.go emits a START/FINISH
+// pair around a loopback save too) — both sharing the transaction the
+// callback ran in. The endpoint must return the one that sorts first in the
+// documented total order (newest instant, then the eventId's time field
+// DESC, then bytes DESC), which is also how the audit search already orders
+// the trail — so the wanted event is the first STATE_MACHINE_FINISH
+// encountered walking the search response for that transaction.
+func RunAuditFinishedEventIsLatestOfTransaction(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.ComputeTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	_, secID := auditSetupJoinedSaves(t, c, "finished-latest")
+
+	secAudit, err := c.GetAuditEvents(t, secID)
+	if err != nil {
+		t.Fatalf("GetAuditEvents: %v", err)
+	}
+	assertAuditOrder(t, secAudit.Items)
+
+	var txID string
+	for _, ev := range secAudit.Items {
+		if ev.TransactionID != "" {
+			txID = ev.TransactionID
+			break
+		}
+	}
+	if txID == "" {
+		t.Fatalf("secondary's audit trail has no event with a transactionId: %v", auditIdentities(t, secAudit.Items))
+	}
+
+	var finishEventIDs []string
+	for _, ev := range secAudit.Items {
+		if ev.AuditEventType != "StateMachine" || ev.TransactionID != txID {
+			continue
+		}
+		sm, err := ev.AsStateMachine()
+		if err != nil {
+			t.Fatalf("AsStateMachine: %v", err)
+		}
+		if sm.EventType == "STATE_MACHINE_FINISH" {
+			finishEventIDs = append(finishEventIDs, sm.EventID)
+		}
+	}
+	if len(finishEventIDs) != 2 {
+		t.Fatalf("secondary's transaction %s has %d STATE_MACHINE_FINISH events; want exactly 2 (own cascade + callback loopback — unambiguous fixture precondition): %v",
+			txID, len(finishEventIDs), auditIdentities(t, secAudit.Items))
+	}
+	// secAudit.Items is already ordered newest-first (asserted above), so the
+	// first STATE_MACHINE_FINISH encountered while walking it is the one
+	// that sorts first under compareKeys — the latest of the two.
+	wantEventID := finishEventIDs[0]
+
+	status, result, err := c.GetWorkflowFinished(t, secID, txID)
+	if err != nil {
+		t.Fatalf("GetWorkflowFinished(%s, %s): status %d, err: %v", secID, txID, status, err)
+	}
+	if status != 200 {
+		t.Fatalf("GetWorkflowFinished(%s, %s) = %d; want 200", secID, txID, status)
+	}
+	gotEventID, _ := result["eventId"].(string)
+	if gotEventID == "" {
+		t.Fatalf("GetWorkflowFinished response missing eventId: %+v", result)
+	}
+	if gotEventID != wantEventID {
+		t.Fatalf("GetWorkflowFinished eventId %q != the latest of the transaction's two STATE_MACHINE_FINISH events %q (search order: %v)",
+			gotEventID, wantEventID, finishEventIDs)
+	}
+}

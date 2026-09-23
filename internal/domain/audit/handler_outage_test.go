@@ -97,6 +97,69 @@ func TestGetStateMachineFinishedEvent_NoEvents_Still404(t *testing.T) {
 	commontest.ExpectErrorCode(t, w.Result(), common.ErrCodeEntityNotFound)
 }
 
+// stubSMAuditStoreFixedEvents answers GetEventsByTransaction with a fixed
+// slice, in the given order — used to pin that the finished endpoint's pick
+// does not depend on the store's listing order.
+type stubSMAuditStoreFixedEvents struct {
+	spi.StateMachineAuditStore
+	events []spi.StateMachineEvent
+}
+
+func (s stubSMAuditStoreFixedEvents) GetEventsByTransaction(context.Context, string, string) ([]spi.StateMachineEvent, error) {
+	return s.events, nil
+}
+
+// TestGetStateMachineFinishedEvent_PicksLatestOfTwoFinishEvents pins that
+// when a transaction carries two STATE_MACHINE_FINISH events for the entity
+// (a joined callback's loopback save emits its own START/FINISH pair — see
+// internal/domain/workflow/engine.go Loopback), the endpoint returns the one
+// that sorts first under compareKeys (newest instant, then the eventId's
+// time field DESC, then bytes DESC) regardless of the store's listing
+// order. Both events carry the same timestamp, so the tie-break rests
+// entirely on the eventId: "newer" has the later v1 time field.
+func TestGetStateMachineFinishedEvent_PicksLatestOfTwoFinishEvents(t *testing.T) {
+	olderID := uuid.MustParse("00000000-0000-1000-8000-000000000001")
+	newerID := uuid.MustParse("00000001-0000-1000-8000-000000000001")
+	if !(newerID.Time() > olderID.Time()) {
+		t.Fatalf("fixture ids not ordered as intended: older.Time()=%d newer.Time()=%d", olderID.Time(), newerID.Time())
+	}
+
+	older := spi.StateMachineEvent{
+		EventType: spi.SMEventFinished,
+		EntityID:  "some-entity-id",
+		TimeUUID:  olderID.String(),
+		Timestamp: fieldsTestFixedTime,
+	}
+	newer := spi.StateMachineEvent{
+		EventType: spi.SMEventFinished,
+		EntityID:  "some-entity-id",
+		TimeUUID:  newerID.String(),
+		Timestamp: fieldsTestFixedTime,
+	}
+
+	for _, tc := range []struct {
+		name   string
+		events []spi.StateMachineEvent
+	}{
+		{"older-then-newer", []spi.StateMachineEvent{older, newer}},
+		{"newer-then-older", []spi.StateMachineEvent{newer, older}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := callFinishedEvent(t, stubSMAuditStoreFixedEvents{events: tc.events})
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+			}
+			var body map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode response: %v; body: %s", err, w.Body.String())
+			}
+			if body["eventId"] != newerID.String() {
+				t.Errorf("eventId = %v, want %v (the latest of the two FINISH events)", body["eventId"], newerID.String())
+			}
+		})
+	}
+}
+
 // --- stubs for the search endpoint's state machine failure paths ---
 
 // stubOutageSMStore answers GetEvents with either a canned failure or the

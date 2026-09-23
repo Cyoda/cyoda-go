@@ -243,17 +243,33 @@ func (h *Handler) GetStateMachineFinishedEvent(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// A joined callback's loopback save emits its own START/FINISH pair
+	// (internal/domain/workflow/engine.go Loopback), so a transaction can
+	// carry more than one STATE_MACHINE_FINISH event for this entity. The
+	// one that sorts first under compareKeys — newest instant, then the
+	// eventId's time field DESC, then bytes DESC — is the entity's final
+	// state machine outcome in that transaction; every backend agrees on
+	// this pick even though the store's listing order is unspecified when
+	// two events share an instant (SQL orders only by timestamp).
+	var latest *auditItem
 	for _, smEvent := range smEvents {
-		if smEvent.EventType == spi.SMEventFinished {
-			item, err := stateMachineItem(smEvent)
-			if err != nil {
-				common.WriteError(w, r, common.Internal("invalid state machine event", err))
-				return
-			}
-			common.WriteJSON(w, http.StatusOK, item.body)
+		if smEvent.EventType != spi.SMEventFinished {
+			continue
+		}
+		item, err := stateMachineItem(smEvent)
+		if err != nil {
+			common.WriteError(w, r, common.Internal("invalid state machine event", err))
 			return
+		}
+		if latest == nil || compareKeys(item.key, latest.key) < 0 {
+			latest = &item
 		}
 	}
 
-	common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, "finished event not found"))
+	if latest == nil {
+		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, "finished event not found"))
+		return
+	}
+
+	common.WriteJSON(w, http.StatusOK, latest.body)
 }
