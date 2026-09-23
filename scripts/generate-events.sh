@@ -79,4 +79,29 @@ if [ "$RAW_COUNT" -ne 3 ]; then
   exit 1
 fi
 
-echo "Generated $OUT ($(wc -l < "$OUT") lines)"
+# Post-process: an explicit `"success": null` is not the schema's default.
+# go-jsonschema emits `if v, ok := raw["success"]; !ok || v == nil` — the key
+# being ABSENT and the key being NULL take the same branch, and both become
+# true. Only the first is the default: `success` is declared `"type":
+# "boolean"`, so a null is an invalid instance, and the server refuses it as an
+# answer it cannot read. A generated type that reads it as success is the one
+# reading in the tree that nothing else agrees with. `%T` names the concrete
+# type at every site, so one substitution serves all of them.
+perl -0777 -i -pe '
+  s/\tif v, ok := raw\["success"\]; !ok \|\| v == nil \{\n\t\tplain\.Success = true\n\t\}\n/\tif v, ok := raw["success"]; ok \&\& v == nil {\n\t\treturn fmt.Errorf("field success in %T: must not be null", *j)\n\t} else if !ok {\n\t\tplain.Success = true\n\t}\n/g;
+' "$OUT"
+
+# Fail loudly if that substitution stops matching (e.g. go-jsonschema changes
+# the shape it emits for a defaulted field): every site must have been rewritten.
+LENIENT_NULL=$(grep -c 'raw\["success"\]; !ok || v == nil' "$OUT" || true)
+if [ "$LENIENT_NULL" -ne 0 ]; then
+  echo "ERROR: $LENIENT_NULL site(s) in $OUT still read an explicit \"success\": null as the default" >&2
+  exit 1
+fi
+STRICT_NULL=$(grep -c 'field success in %T: must not be null' "$OUT" || true)
+if [ "$STRICT_NULL" -eq 0 ]; then
+  echo "ERROR: no success-null refusals in $OUT; the post-processing substitution matched nothing" >&2
+  exit 1
+fi
+
+echo "Generated $OUT ($(wc -l < "$OUT") lines, $STRICT_NULL success-null refusals)"

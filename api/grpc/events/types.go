@@ -71,7 +71,9 @@ func (j *BaseEventJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = BaseEventJson(plain)
@@ -154,7 +156,9 @@ func (j *CalculationMemberGreetEventJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = CalculationMemberGreetEventJson(plain)
@@ -228,7 +232,9 @@ func (j *CalculationMemberJoinEventJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = CalculationMemberJoinEventJson(plain)
@@ -305,7 +311,9 @@ func (j *CalculationMemberKeepAliveEventJson) UnmarshalJSON(value []byte) error 
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = CalculationMemberKeepAliveEventJson(plain)
@@ -519,7 +527,9 @@ func (j *EntityChangesMetadataGetRequestJson) UnmarshalJSON(value []byte) error 
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityChangesMetadataGetRequestJson(plain)
@@ -602,7 +612,9 @@ func (j *EntityChangesMetadataResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityChangesMetadataResponseJson(plain)
@@ -694,7 +706,9 @@ func (j *EntityCreateCollectionRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityCreateCollectionRequestJson(plain)
@@ -809,7 +823,9 @@ func (j *EntityCreateRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityCreateRequestJson(plain)
@@ -962,7 +978,9 @@ func (j *EntityCriteriaCalculationRequestJson) UnmarshalJSON(value []byte) error
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityCriteriaCalculationRequestJson(plain)
@@ -1056,7 +1074,9 @@ func (j *EntityCriteriaCalculationResponseJson) UnmarshalJSON(value []byte) erro
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityCriteriaCalculationResponseJson(plain)
@@ -1142,7 +1162,9 @@ func (j *EntityDeleteAllRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	if v, ok := raw["verbose"]; !ok || v == nil {
@@ -1247,7 +1269,9 @@ func (j *EntityDeleteAllResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityDeleteAllResponseJson(plain)
@@ -1324,7 +1348,9 @@ func (j *EntityDeleteRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityDeleteRequestJson(plain)
@@ -1419,7 +1445,9 @@ func (j *EntityDeleteResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityDeleteResponseJson(plain)
@@ -1532,7 +1560,9 @@ func (j *EntityFunctionCalculationRequestJson) UnmarshalJSON(value []byte) error
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityFunctionCalculationRequestJson(plain)
@@ -1621,7 +1651,9 @@ func (j *EntityFunctionCalculationResponseJson) UnmarshalJSON(value []byte) erro
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityFunctionCalculationResponseJson(plain)
@@ -1713,7 +1745,9 @@ func (j *EntityGetAllRequestJson) UnmarshalJSON(value []byte) error {
 	if v, ok := raw["pageSize"]; !ok || v == nil {
 		plain.PageSize = 20.0
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityGetAllRequestJson(plain)
@@ -1794,7 +1828,9 @@ func (j *EntityGetRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityGetRequestJson(plain)
@@ -1871,7 +1907,9 @@ func (j *EntityModelDeleteRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityModelDeleteRequestJson(plain)
@@ -1942,7 +1980,9 @@ func (j *EntityModelDeleteResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityModelDeleteResponseJson(plain)
@@ -2025,7 +2065,9 @@ func (j *EntityModelExportRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityModelExportRequestJson(plain)
@@ -2115,7 +2157,9 @@ func (j *EntityModelExportResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityModelExportResponseJson(plain)
@@ -2186,7 +2230,9 @@ func (j *EntityModelGetAllRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityModelGetAllRequestJson(plain)
@@ -2263,7 +2309,9 @@ func (j *EntityModelGetAllResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityModelGetAllResponseJson(plain)
@@ -2358,7 +2406,9 @@ func (j *EntityModelImportRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityModelImportRequestJson(plain)
@@ -2435,7 +2485,9 @@ func (j *EntityModelImportResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityModelImportResponseJson(plain)
@@ -2548,7 +2600,9 @@ func (j *EntityModelTransitionRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityModelTransitionRequestJson(plain)
@@ -2631,7 +2685,9 @@ func (j *EntityModelTransitionResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityModelTransitionResponseJson(plain)
@@ -2753,7 +2809,9 @@ func (j *EntityPatchRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityPatchRequestJson(plain)
@@ -2866,7 +2924,9 @@ func (j *EntityProcessorCalculationRequestJson) UnmarshalJSON(value []byte) erro
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityProcessorCalculationRequestJson(plain)
@@ -2952,7 +3012,9 @@ func (j *EntityProcessorCalculationResponseJson) UnmarshalJSON(value []byte) err
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityProcessorCalculationResponseJson(plain)
@@ -3035,7 +3097,9 @@ func (j *EntityResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityResponseJson(plain)
@@ -3210,7 +3274,9 @@ func (j *EntitySearchRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	if v, ok := raw["trackingRead"]; !ok || v == nil {
@@ -3374,7 +3440,9 @@ func (j *EntitySnapshotSearchRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntitySnapshotSearchRequestJson(plain)
@@ -3451,7 +3519,9 @@ func (j *EntitySnapshotSearchResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntitySnapshotSearchResponseJson(plain)
@@ -3533,7 +3603,9 @@ func (j *EntityStatsByStateGetRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityStatsByStateGetRequestJson(plain)
@@ -3634,7 +3706,9 @@ func (j *EntityStatsByStateResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityStatsByStateResponseJson(plain)
@@ -3712,7 +3786,9 @@ func (j *EntityStatsGetRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityStatsGetRequestJson(plain)
@@ -3807,7 +3883,9 @@ func (j *EntityStatsResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityStatsResponseJson(plain)
@@ -3916,7 +3994,9 @@ func (j *EntityTransactionResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityTransactionResponseJson(plain)
@@ -3999,7 +4079,9 @@ func (j *EntityTransitionRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityTransitionRequestJson(plain)
@@ -4073,7 +4155,9 @@ func (j *EntityTransitionResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityTransitionResponseJson(plain)
@@ -4165,7 +4249,9 @@ func (j *EntityUpdateCollectionRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityUpdateCollectionRequestJson(plain)
@@ -4283,7 +4369,9 @@ func (j *EntityUpdateRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityUpdateRequestJson(plain)
@@ -4360,7 +4448,9 @@ func (j *EventAckResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EventAckResponseJson(plain)
@@ -4667,7 +4757,9 @@ func (j *SnapshotCancelRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = SnapshotCancelRequestJson(plain)
@@ -4759,7 +4851,9 @@ func (j *SnapshotGetRequestJson) UnmarshalJSON(value []byte) error {
 	if v, ok := raw["pageSize"]; !ok || v == nil {
 		plain.PageSize = 10.0
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = SnapshotGetRequestJson(plain)
@@ -4836,7 +4930,9 @@ func (j *SnapshotGetStatusRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = SnapshotGetStatusRequestJson(plain)
