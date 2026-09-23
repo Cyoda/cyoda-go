@@ -183,7 +183,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 - **An audit-events cursor from before this change no longer decodes and
   answers `400 BAD_REQUEST`.** `nextCursor` is now the sort key (see the
-  Added entry below) of the last event on the page, not an offset into a
+  Changed entry below) of the last event on the page, not an offset into a
   list rebuilt per request. Until now an unparsable cursor was silently
   read as offset 0, restarting the walk from the first page. There are no
   production instances, so no cursor issued before this change needs to
@@ -849,7 +849,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   recreate.** It numbered a new version from the last non-tombstone row, so
   create → delete → save gave the recreate the deleted row's own version
   number instead of the next one. It now counts from the last row of any
-  kind, matching postgres, sqlite and cassandra.
+  kind, matching postgres, sqlite and the commercial backend.
 
 - **The sqlite backend's generated audit event ids are time-based (UUID
   version 1), not random (version 4).** Its default generator produced

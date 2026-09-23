@@ -50,7 +50,7 @@ Query parameters (all optional):
 - `cursor`: opaque string — encodes the sort key (see order above) of the last event on the previous page; pass `nextCursor` from the previous response to fetch the next page; omit for the first page. Filters may change between pages — the walk continues from the cursor's position under the new filters. A cursor that cannot be decoded or fails validation, including a cursor from an earlier server build, answers `400 BAD_REQUEST`.
 - `limit`: string-encoded integer, 1–1000 (default 20; values above 1000 are clamped to 1000)
 
-A walk that pages through with a fixed `cursor`/`limit` returns every event committed before the walk started exactly once. An event committed while the walk is in progress may be missed; it is never duplicated or skipped among events that existed at the start.
+A walk that pages through with a fixed `cursor`/`limit` returns every event committed before the walk started — read outside a transaction — exactly once. An event committed while the walk is in progress may be missed; it is never duplicated or skipped among events that existed at the start.
 
 Response: `200 OK`, `application/json` — `EntityAuditEventsResponseDto`:
 
