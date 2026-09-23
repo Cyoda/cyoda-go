@@ -3,6 +3,7 @@ package parity
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -424,6 +425,15 @@ func RunTenantIsolationChangesAtPITInvisible(t *testing.T, fixture BackendFixtur
 // transition to CREATED), producing a STATE_MACHINE_FINISH event for its
 // transaction. Tenant B then asks for that same entity/transaction pair
 // on the finished endpoint and must get 404 — never tenant A's event.
+//
+// The body is fetched with DoJSONBodyRaw rather than the typed
+// GetWorkflowFinished client method: that method returns a nil result map
+// on any non-2xx status (it never decodes the body — see its doc comment),
+// so a "resultB has no eventId" check against it would be vacuously true
+// for EVERY response, not just a correctly-isolated one. Reading the raw
+// body and checking it for tenant A's real eventId (captured from tenant
+// A's own successful call) and the STATE_MACHINE_FINISH event-type string
+// makes the assertion capable of failing.
 func RunTenantIsolationWorkflowFinishedInvisible(t *testing.T, fixture BackendFixture) {
 	tenantA := fixture.NewTenant(t)
 	tenantB := fixture.NewTenant(t)
@@ -445,26 +455,54 @@ func RunTenantIsolationWorkflowFinishedInvisible(t *testing.T, fixture BackendFi
 		t.Fatal("tenant A create returned empty transactionId — needed to drive cross-tenant lookup")
 	}
 
-	// Sanity: tenant A can resolve its own finished event (200).
-	statusOwn, resultOwn, err := clientA.GetWorkflowFinished(t, entityID, txIDA)
+	finishedPath := fmt.Sprintf("/api/audit/entity/%s/workflow/%s/finished", entityID.String(), txIDA)
+
+	// Sanity: tenant A can resolve its own finished event (200), and its
+	// body carries a real eventId — the value tenant B's response must
+	// never contain.
+	statusOwn, bodyOwn, err := clientA.DoJSONBodyRaw(t, http.MethodGet, finishedPath, nil)
 	if err != nil {
-		t.Fatalf("tenant A GetWorkflowFinished(own): transport error: %v", err)
+		t.Fatalf("tenant A GET workflow finished (own): transport error: %v", err)
 	}
 	if statusOwn != http.StatusOK {
-		t.Fatalf("tenant A GetWorkflowFinished(own): status got %d, want 200 (body=%v)", statusOwn, resultOwn)
+		t.Fatalf("tenant A GET workflow finished (own): status got %d, want 200 (body=%s)", statusOwn, string(bodyOwn))
+	}
+	var ownResult map[string]any
+	if err := json.Unmarshal(bodyOwn, &ownResult); err != nil {
+		t.Fatalf("decode tenant A's own finished response: %v (body=%s)", err, string(bodyOwn))
+	}
+	ownEventID, _ := ownResult["eventId"].(string)
+	if ownEventID == "" {
+		t.Fatalf("tenant A's own finished response has no eventId: %s", string(bodyOwn))
 	}
 
-	// Tenant B: same entity/transaction pair -> 404, and must not receive
-	// tenant A's event. GetWorkflowFinished returns a non-nil error on any
-	// non-2xx status (by design — see its doc comment), so a 404 here is
-	// the expected outcome, not a transport failure; only the status is
-	// asserted, matching the GetEntityRaw/DeleteEntityRaw pattern used by
-	// the other cross-tenant checks in this file.
-	statusB, resultB, _ := clientB.GetWorkflowFinished(t, entityID, txIDA)
-	if statusB != http.StatusNotFound {
-		t.Errorf("tenant B GetWorkflowFinished(tenant A's entity/tx): status got %d, want 404 (body=%v)", statusB, resultB)
+	// Tenant B: same entity/transaction pair -> 404, and the raw body must
+	// contain neither tenant A's real eventId nor the STATE_MACHINE_FINISH
+	// event-type string.
+	statusB, bodyB, err := clientB.DoJSONBodyRaw(t, http.MethodGet, finishedPath, nil)
+	if err != nil {
+		t.Fatalf("tenant B GET workflow finished (tenant A's entity/tx): transport error: %v", err)
 	}
-	if _, hasEventID := resultB["eventId"]; hasEventID {
-		t.Errorf("tenant B received an eventId from tenant A's finished endpoint: %v", resultB)
+	assertTenantBFinishedResponseIsolated(t, statusB, bodyB, ownEventID)
+}
+
+// assertTenantBFinishedResponseIsolated asserts that a cross-tenant response
+// to the workflow-finished endpoint is a 404 carrying neither the owning
+// tenant's real eventId nor the STATE_MACHINE_FINISH event-type string.
+// Factored out so the non-vacuousness of this check can be demonstrated by
+// calling it with the OWNING tenant's own 200 status/body (see the
+// proof-of-non-vacuousness note in the security fix report): that call
+// must fail, since the owner's own body necessarily contains its own
+// eventId.
+func assertTenantBFinishedResponseIsolated(t *testing.T, status int, body []byte, ownerEventID string) {
+	t.Helper()
+	if status != http.StatusNotFound {
+		t.Errorf("tenant B GET workflow finished (tenant A's entity/tx): status got %d, want 404 (body=%s)", status, string(body))
+	}
+	if bytes.Contains(body, []byte(ownerEventID)) {
+		t.Errorf("tenant B's response contains tenant A's real eventId %q: body=%s", ownerEventID, string(body))
+	}
+	if bytes.Contains(body, []byte("STATE_MACHINE_FINISH")) {
+		t.Errorf("tenant B's response contains STATE_MACHINE_FINISH: body=%s", string(body))
 	}
 }
