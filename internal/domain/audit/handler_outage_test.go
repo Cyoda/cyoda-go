@@ -3,6 +3,7 @@ package audit_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/audit"
@@ -93,4 +95,210 @@ func TestGetStateMachineFinishedEvent_NoEvents_Still404(t *testing.T) {
 		t.Fatalf("status = %d, want 404; body: %s", w.Code, w.Body.String())
 	}
 	commontest.ExpectErrorCode(t, w.Result(), common.ErrCodeEntityNotFound)
+}
+
+// stubSMAuditStoreFixedEvents answers GetEventsByTransaction with a fixed
+// slice, in the given order — used to pin that the finished endpoint's pick
+// does not depend on the store's listing order.
+type stubSMAuditStoreFixedEvents struct {
+	spi.StateMachineAuditStore
+	events []spi.StateMachineEvent
+}
+
+func (s stubSMAuditStoreFixedEvents) GetEventsByTransaction(context.Context, string, string) ([]spi.StateMachineEvent, error) {
+	return s.events, nil
+}
+
+// TestGetStateMachineFinishedEvent_PicksLatestOfTwoFinishEvents pins that
+// when a transaction carries two STATE_MACHINE_FINISH events for the entity
+// (a joined callback's loopback save emits its own START/FINISH pair — see
+// internal/domain/workflow/engine.go Loopback), the endpoint returns the one
+// that sorts first under compareKeys (newest instant, then the eventId's
+// time field DESC, then bytes DESC) regardless of the store's listing
+// order. Both events carry the same timestamp, so the tie-break rests
+// entirely on the eventId: "newer" has the later v1 time field.
+func TestGetStateMachineFinishedEvent_PicksLatestOfTwoFinishEvents(t *testing.T) {
+	olderID := uuid.MustParse("00000000-0000-1000-8000-000000000001")
+	newerID := uuid.MustParse("00000001-0000-1000-8000-000000000001")
+	if !(newerID.Time() > olderID.Time()) {
+		t.Fatalf("fixture ids not ordered as intended: older.Time()=%d newer.Time()=%d", olderID.Time(), newerID.Time())
+	}
+
+	older := spi.StateMachineEvent{
+		EventType: spi.SMEventFinished,
+		EntityID:  "some-entity-id",
+		TimeUUID:  olderID.String(),
+		Timestamp: fieldsTestFixedTime,
+	}
+	newer := spi.StateMachineEvent{
+		EventType: spi.SMEventFinished,
+		EntityID:  "some-entity-id",
+		TimeUUID:  newerID.String(),
+		Timestamp: fieldsTestFixedTime,
+	}
+
+	for _, tc := range []struct {
+		name   string
+		events []spi.StateMachineEvent
+	}{
+		{"older-then-newer", []spi.StateMachineEvent{older, newer}},
+		{"newer-then-older", []spi.StateMachineEvent{newer, older}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := callFinishedEvent(t, stubSMAuditStoreFixedEvents{events: tc.events})
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+			}
+			var body map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode response: %v; body: %s", err, w.Body.String())
+			}
+			if body["eventId"] != newerID.String() {
+				t.Errorf("eventId = %v, want %v (the latest of the two FINISH events)", body["eventId"], newerID.String())
+			}
+		})
+	}
+}
+
+// --- stubs for the search endpoint's state machine failure paths ---
+
+// stubOutageSMStore answers GetEvents with either a canned failure or the
+// empty slice every backend returns for an entity with no state machine
+// events.
+type stubOutageSMStore struct {
+	spi.StateMachineAuditStore
+	err error
+}
+
+func (s stubOutageSMStore) GetEvents(context.Context, string) ([]spi.StateMachineEvent, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return []spi.StateMachineEvent{}, nil
+}
+
+// stubOutageFactory pairs a fixed EntityStore (one valid EntityChange
+// version, reusing stubFieldsEntityStore from handler_fields_test.go) with a
+// StateMachineAuditStore accessor that can fail two different ways: the
+// factory call itself (smStoreErr), or the store it hands back (getEventsErr).
+// Only one of the two is set per test.
+type stubOutageFactory struct {
+	spi.StoreFactory
+	smStoreErr   error
+	getEventsErr error
+}
+
+func (stubOutageFactory) EntityStore(context.Context) (spi.EntityStore, error) {
+	return stubFieldsEntityStore{}, nil
+}
+
+func (f stubOutageFactory) StateMachineAuditStore(context.Context) (spi.StateMachineAuditStore, error) {
+	if f.smStoreErr != nil {
+		return nil, f.smStoreErr
+	}
+	return stubOutageSMStore{err: f.getEventsErr}, nil
+}
+
+func callSearch(t *testing.T, factory spi.StoreFactory, params genapi.SearchEntityAuditEventsParams) *httptest.ResponseRecorder {
+	t.Helper()
+	entityID := uuid.New()
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/audit/entity/"+entityID.String(), nil).
+		WithContext(pushdownTestCtx())
+	audit.New(factory).SearchEntityAuditEvents(w, r, entityID, params)
+	return w
+}
+
+func expect503(t *testing.T, w *httptest.ResponseRecorder) {
+	t.Helper()
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body: %s", w.Code, w.Body.String())
+	}
+	commontest.ExpectErrorCode(t, w.Result(), common.ErrCodeStorageUnavailable)
+	var pd struct {
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
+		t.Fatalf("decode problem detail: %v; body: %s", err, w.Body.String())
+	}
+	if r, _ := pd.Properties["retryable"].(bool); !r {
+		t.Errorf("503 is not advertised as retryable; body: %s", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), smOutageDSN) {
+		t.Errorf("response leaked storage internals: %s", w.Body.String())
+	}
+}
+
+func expect500(t *testing.T, w *httptest.ResponseRecorder) {
+	t.Helper()
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %s", w.Code, w.Body.String())
+	}
+	commontest.ExpectErrorCode(t, w.Result(), common.ErrCodeServerError)
+	var pd struct {
+		Ticket string `json:"ticket"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
+		t.Fatalf("decode problem detail: %v; body: %s", err, w.Body.String())
+	}
+	if pd.Ticket == "" {
+		t.Errorf("expected a non-empty ticket on the 500 response; body: %s", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "plain sm failure") {
+		t.Errorf("response leaked internal error text: %s", w.Body.String())
+	}
+}
+
+// A failed StateMachineAuditStore lookup is not an entity with no workflow
+// events: answering 200 without them would present a partial trail as
+// complete. These four tests cover both places that lookup can fail — the
+// factory accessor and the store's GetEvents — crossed with both failure
+// shapes (a storage outage vs. a plain error).
+
+func TestSearch_SMFactoryOutage_Returns503(t *testing.T) {
+	factory := stubOutageFactory{smStoreErr: fmt.Errorf("failed to acquire connection: %w", smOutageErr{})}
+	w := callSearch(t, factory, genapi.SearchEntityAuditEventsParams{})
+	expect503(t, w)
+}
+
+func TestSearch_SMFactoryFailure_Returns500(t *testing.T) {
+	factory := stubOutageFactory{smStoreErr: errors.New("plain sm failure")}
+	w := callSearch(t, factory, genapi.SearchEntityAuditEventsParams{})
+	expect500(t, w)
+}
+
+func TestSearch_SMGetEventsOutage_Returns503(t *testing.T) {
+	factory := stubOutageFactory{getEventsErr: fmt.Errorf("failed to query events: %w", smOutageErr{})}
+	w := callSearch(t, factory, genapi.SearchEntityAuditEventsParams{})
+	expect503(t, w)
+}
+
+func TestSearch_SMGetEventsFailure_Returns500(t *testing.T) {
+	factory := stubOutageFactory{getEventsErr: errors.New("plain sm failure")}
+	w := callSearch(t, factory, genapi.SearchEntityAuditEventsParams{})
+	expect500(t, w)
+}
+
+// TestSearch_EntityChangeOnly_IgnoresSMStore pins the other side: filtering
+// to EntityChange only must not reach the state machine store at all, even
+// when it is set up to fail — the eventType filter, not the SM store's
+// health, decides whether it is consulted.
+func TestSearch_EntityChangeOnly_IgnoresSMStore(t *testing.T) {
+	factory := stubOutageFactory{smStoreErr: errors.New("must not be reached")}
+	params := genapi.SearchEntityAuditEventsParams{
+		EventType: &[]genapi.SearchEntityAuditEventsParamsEventType{genapi.EntityChange},
+	}
+	w := callSearch(t, factory, params)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v; body: %s", err, w.Body.String())
+	}
+	if len(body.Items) != 1 {
+		t.Fatalf("got %d items, want 1: %v", len(body.Items), body.Items)
+	}
 }

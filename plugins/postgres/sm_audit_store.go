@@ -16,21 +16,16 @@ import (
 type smAuditStore struct {
 	q        Querier
 	tenantID spi.TenantID
+	uuids    spi.UUIDGenerator
 }
 
-// Record appends an audit event for the given entity. It is append-only;
-// no upsert is performed. event.TimeUUID is used as the event_id primary key;
-// if empty, a new UUID is generated so that multiple events for the same
-// entity can be recorded without duplicate-key violations.
+// Record assigns the event its id (see spi.StateMachineAuditStore): a
+// caller's TimeUUID is ignored. It is append-only; no upsert is performed.
 func (s *smAuditStore) Record(ctx context.Context, entityID string, event spi.StateMachineEvent) error {
-	eventID := event.TimeUUID
-	if eventID == "" {
-		// TimeUUID is a time-ordered identifier; use UUID v1 to preserve ordering
-		// semantics. uuid.NewString() is v4 (random) and would break callers that
-		// rely on time-based ordering of auto-generated event IDs.
-		id, _ := uuid.NewUUID() // v1; only fails if the system clock is unavailable
-		eventID = id.String()
+	if s.uuids == nil {
+		return fmt.Errorf("failed to record state machine event for entity %s: no id generator configured", entityID)
 	}
+	event.TimeUUID = uuid.UUID(s.uuids.NewTimeUUID()).String()
 
 	doc, err := json.Marshal(event)
 	if err != nil {
@@ -40,9 +35,9 @@ func (s *smAuditStore) Record(ctx context.Context, entityID string, event spi.St
 	_, err = s.q.Exec(ctx,
 		`INSERT INTO sm_audit_events (tenant_id, entity_id, event_id, transaction_id, timestamp, doc)
 		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		string(s.tenantID), entityID, eventID, event.TransactionID, event.Timestamp, doc)
+		string(s.tenantID), entityID, event.TimeUUID, event.TransactionID, event.Timestamp, doc)
 	if err != nil {
-		return fmt.Errorf("failed to record state machine event %s for entity %s: %w", eventID, entityID, err)
+		return fmt.Errorf("failed to record state machine event %s for entity %s: %w", event.TimeUUID, entityID, err)
 	}
 	return nil
 }
@@ -52,7 +47,7 @@ func (s *smAuditStore) Record(ctx context.Context, entityID string, event spi.St
 // exist for the entity.
 func (s *smAuditStore) GetEvents(ctx context.Context, entityID string) ([]spi.StateMachineEvent, error) {
 	rows, err := s.q.Query(ctx,
-		`SELECT doc, timestamp FROM sm_audit_events
+		`SELECT event_id, doc, timestamp FROM sm_audit_events
 		 WHERE tenant_id = $1 AND entity_id = $2
 		 ORDER BY timestamp ASC`,
 		string(s.tenantID), entityID)
@@ -77,7 +72,7 @@ func (s *smAuditStore) GetEvents(ctx context.Context, entityID string) ([]spi.St
 // match the transaction.
 func (s *smAuditStore) GetEventsByTransaction(ctx context.Context, entityID string, transactionID string) ([]spi.StateMachineEvent, error) {
 	rows, err := s.q.Query(ctx,
-		`SELECT doc, timestamp FROM sm_audit_events
+		`SELECT event_id, doc, timestamp FROM sm_audit_events
 		 WHERE tenant_id = $1 AND entity_id = $2 AND transaction_id = $3
 		 ORDER BY timestamp ASC`,
 		string(s.tenantID), entityID, transactionID)
@@ -93,27 +88,32 @@ func (s *smAuditStore) GetEventsByTransaction(ctx context.Context, entityID stri
 	return events, nil
 }
 
-// scanEventRows reads all rows from a (doc, timestamp) query and unmarshals
-// each into a StateMachineEvent. The caller is responsible for closing rows.
+// scanEventRows reads all rows from a (event_id, doc, timestamp) query and
+// unmarshals each into a StateMachineEvent. The caller is responsible for
+// closing rows.
 //
 // The timestamp COLUMN overrides the copy inside the document. The column is
 // what the commit phase stamps with the transaction's instant
 // (TransactionManager.stampCommitInstant), while the document keeps whatever
 // clock the recording process read — so reporting the document's copy would
 // leave the audit trail dated by a different clock from the version history
-// it accompanies, and ordered by a value it does not report.
+// it accompanies, and ordered by a value it does not report. The event_id
+// column likewise overrides the document's TimeUUID: it is the key the row
+// was stored under.
 func scanEventRows(rows pgx.Rows) ([]spi.StateMachineEvent, error) {
 	var events []spi.StateMachineEvent
 	for rows.Next() {
+		var eventID string
 		var doc []byte
 		var timestamp time.Time
-		if err := rows.Scan(&doc, &timestamp); err != nil {
+		if err := rows.Scan(&eventID, &doc, &timestamp); err != nil {
 			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
 		var e spi.StateMachineEvent
 		if err := json.Unmarshal(doc, &e); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal event doc: %w", err)
 		}
+		e.TimeUUID = eventID
 		e.Timestamp = timestamp
 		events = append(events, e)
 	}

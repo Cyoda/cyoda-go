@@ -18,7 +18,9 @@ func setupSMAuditTest(t *testing.T) *postgres.StoreFactory {
 		t.Fatalf("migration failed: %v", err)
 	}
 	t.Cleanup(func() { _ = postgres.DropSchemaForTest(pool) })
-	return postgres.NewStoreFactory(pool)
+	factory := postgres.NewStoreFactory(pool)
+	factory.InitTransactionManager(newTestUUIDGenerator())
+	return factory
 }
 
 func getSMAuditStore(t *testing.T, factory *postgres.StoreFactory, tid spi.TenantID) spi.StateMachineAuditStore {
@@ -31,11 +33,10 @@ func getSMAuditStore(t *testing.T, factory *postgres.StoreFactory, tid spi.Tenan
 	return store
 }
 
-func makeEvent(eventType spi.StateMachineEventType, entityID, timeUUID, state, txID, details string, ts time.Time) spi.StateMachineEvent {
+func makeEvent(eventType spi.StateMachineEventType, entityID, state, txID, details string, ts time.Time) spi.StateMachineEvent {
 	return spi.StateMachineEvent{
 		EventType:     eventType,
 		EntityID:      entityID,
-		TimeUUID:      timeUUID,
 		State:         state,
 		TransactionID: txID,
 		Details:       details,
@@ -49,8 +50,8 @@ func TestSMAuditStore_RecordAndGetEvents(t *testing.T) {
 	store := getSMAuditStore(t, factory, "sm-tenant")
 
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	e1 := makeEvent(spi.SMEventStarted, "entity-1", "uuid-1", "NEW", "tx-1", "started", now)
-	e2 := makeEvent(spi.SMEventTransitionMade, "entity-1", "uuid-2", "ACTIVE", "tx-1", "transitioned", now.Add(time.Second))
+	e1 := makeEvent(spi.SMEventStarted, "entity-1", "NEW", "tx-1", "started", now)
+	e2 := makeEvent(spi.SMEventTransitionMade, "entity-1", "ACTIVE", "tx-1", "transitioned", now.Add(time.Second))
 
 	if err := store.Record(ctx, "entity-1", e1); err != nil {
 		t.Fatalf("Record e1: %v", err)
@@ -67,12 +68,14 @@ func TestSMAuditStore_RecordAndGetEvents(t *testing.T) {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
 
-	// Verify order (ascending by timestamp)
-	if events[0].TimeUUID != "uuid-1" {
-		t.Errorf("expected first event uuid-1, got %s", events[0].TimeUUID)
+	// Verify order (ascending by timestamp) — by Details, since the store
+	// assigns TimeUUID itself and a caller's value carries no ordering
+	// information (see spi.StateMachineAuditStore).
+	if events[0].Details != "started" {
+		t.Errorf("expected first event 'started', got %s", events[0].Details)
 	}
-	if events[1].TimeUUID != "uuid-2" {
-		t.Errorf("expected second event uuid-2, got %s", events[1].TimeUUID)
+	if events[1].Details != "transitioned" {
+		t.Errorf("expected second event 'transitioned', got %s", events[1].Details)
 	}
 
 	// Verify field preservation
@@ -111,9 +114,9 @@ func TestSMAuditStore_GetEventsByTransaction(t *testing.T) {
 	store := getSMAuditStore(t, factory, "sm-tenant")
 
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	e1 := makeEvent(spi.SMEventStarted, "entity-1", "uuid-1", "NEW", "tx-A", "e1", now)
-	e2 := makeEvent(spi.SMEventTransitionMade, "entity-1", "uuid-2", "ACTIVE", "tx-A", "e2", now.Add(time.Second))
-	e3 := makeEvent(spi.SMEventFinished, "entity-1", "uuid-3", "DONE", "tx-B", "e3", now.Add(2*time.Second))
+	e1 := makeEvent(spi.SMEventStarted, "entity-1", "NEW", "tx-A", "e1", now)
+	e2 := makeEvent(spi.SMEventTransitionMade, "entity-1", "ACTIVE", "tx-A", "e2", now.Add(time.Second))
+	e3 := makeEvent(spi.SMEventFinished, "entity-1", "DONE", "tx-B", "e3", now.Add(2*time.Second))
 
 	for _, e := range []spi.StateMachineEvent{e1, e2, e3} {
 		if err := store.Record(ctx, "entity-1", e); err != nil {
@@ -128,8 +131,8 @@ func TestSMAuditStore_GetEventsByTransaction(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("expected 2 events for tx-A, got %d", len(events))
 	}
-	if events[0].TimeUUID != "uuid-1" || events[1].TimeUUID != "uuid-2" {
-		t.Errorf("unexpected event order: %v, %v", events[0].TimeUUID, events[1].TimeUUID)
+	if events[0].Details != "e1" || events[1].Details != "e2" {
+		t.Errorf("unexpected event order: %v, %v", events[0].Details, events[1].Details)
 	}
 }
 
@@ -139,7 +142,7 @@ func TestSMAuditStore_GetEventsByTransaction_NoMatch(t *testing.T) {
 	store := getSMAuditStore(t, factory, "sm-tenant")
 
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	e1 := makeEvent(spi.SMEventStarted, "entity-1", "uuid-1", "NEW", "tx-A", "started", now)
+	e1 := makeEvent(spi.SMEventStarted, "entity-1", "NEW", "tx-A", "started", now)
 
 	if err := store.Record(ctx, "entity-1", e1); err != nil {
 		t.Fatalf("Record: %v", err)
@@ -169,7 +172,7 @@ func TestSMAuditStore_TenantIsolation(t *testing.T) {
 	}
 
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	e := makeEvent(spi.SMEventStarted, "entity-1", "uuid-1", "NEW", "tx-1", "tenant-A event", now)
+	e := makeEvent(spi.SMEventStarted, "entity-1", "NEW", "tx-1", "tenant-A event", now)
 
 	if err := storeA.Record(ctxA, "entity-1", e); err != nil {
 		t.Fatalf("Record for tenant-A: %v", err)
@@ -195,7 +198,6 @@ func TestSMAuditStore_EventDataPreservation(t *testing.T) {
 	e := spi.StateMachineEvent{
 		EventType:     spi.SMEventStateProcessResult,
 		EntityID:      "entity-1",
-		TimeUUID:      "uuid-data",
 		State:         "PROCESSING",
 		TransactionID: "tx-data",
 		Details:       "data test",

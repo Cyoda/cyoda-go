@@ -12,7 +12,7 @@ import (
 // retrievable via the audit REST API.
 //
 // Port of internal/e2e TestAudit_EntityCreationGeneratesEvents, using the
-// discriminated-union audit types from Task 1.2b:
+// discriminated-union audit response types:
 //   - GetAuditEvents -> EntityAuditEventsResponse -> []AuditEvent
 //   - AsStateMachine() / AsEntityChange() for typed subtype assertions
 //

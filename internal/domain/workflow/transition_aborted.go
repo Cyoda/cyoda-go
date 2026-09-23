@@ -6,8 +6,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/google/uuid"
-
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
@@ -54,8 +52,6 @@ const TransitionAbortedReasonEntityModified = "ENTITY_MODIFIED"
 //
 // Used by both the engine (CBD first-segment-flush conflict) and the entity
 // handler (post-engine CompareAndSave conflict on non-segmenting cascades).
-// The TimeUUID for the event is generated via the supplied uuids generator
-// so engine and handler call sites share the same monotonic ordering.
 //
 // now supplies the event's Timestamp. The engine passes its own clock so audit
 // times stay comparable with the scheduled-transition timings computed from it;
@@ -76,7 +72,6 @@ const TransitionAbortedReasonEntityModified = "ENTITY_MODIFIED"
 func EmitTransitionAborted(
 	ctx context.Context,
 	auditStore spi.StateMachineAuditStore,
-	uuids spi.UUIDGenerator,
 	now func() time.Time,
 	entityID, cascadeEntryTxID, state, transitionName, expectedTxID, actualTxID string,
 ) {
@@ -95,7 +90,6 @@ func EmitTransitionAborted(
 	event := spi.StateMachineEvent{
 		EventType:     SMEventTransitionAborted,
 		EntityID:      entityID,
-		TimeUUID:      uuid.UUID(uuids.NewTimeUUID()).String(),
 		State:         state,
 		TransactionID: cascadeEntryTxID,
 		Details:       fmt.Sprintf("Transition %q aborted: entity has been modified since last read", transitionName),
@@ -147,7 +141,7 @@ func (e *Engine) recordAbortForIfMatchConflict(
 	expectedTxID string,
 ) {
 	actualTxID := LookupActualTxID(ctx, e.factory, entity.Meta.ID)
-	EmitTransitionAborted(ctx, auditStore, e.uuids, e.now,
+	EmitTransitionAborted(ctx, auditStore, e.now,
 		entity.Meta.ID, cascadeEntryTxID, entity.Meta.State,
 		transitionName, expectedTxID, actualTxID)
 }

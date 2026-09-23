@@ -43,6 +43,9 @@ func TestAuditEvent_StateMachine_Decode(t *testing.T) {
 	if sm.EventType != "FINISHED" {
 		t.Errorf("EventType: got %q, want \"FINISHED\"", sm.EventType)
 	}
+	if sm.EventID != "5f1c1b0e-6d1a-11f1-8000-000000000001" {
+		t.Errorf("EventID = %q", sm.EventID)
+	}
 	if len(sm.Data) == 0 {
 		t.Error("Data is empty (fixture has data block)")
 	}
@@ -64,6 +67,9 @@ func TestAuditEvent_EntityChange_Decode(t *testing.T) {
 	}
 	if ec.ChangeType != "CREATE" {
 		t.Errorf("ChangeType: got %q, want \"CREATE\"", ec.ChangeType)
+	}
+	if ec.Version != 2 {
+		t.Errorf("Version = %d, want 2", ec.Version)
 	}
 	if len(ec.Changes) == 0 {
 		t.Error("Changes is empty (fixture has after-block)")

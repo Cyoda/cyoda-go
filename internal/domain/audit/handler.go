@@ -3,9 +3,9 @@ package audit
 import (
 	"errors"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
-	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 
@@ -46,6 +46,32 @@ func (h *Handler) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request
 		}
 	}
 
+	// Validate request parameters (limit, cursor) before any store call, so
+	// a malformed one answers 400 even against a nonexistent entity rather
+	// than falling through to a 404 from the lookup below.
+	limit := 20
+	if params.Limit != nil {
+		parsed, err := strconv.Atoi(*params.Limit)
+		if err != nil || parsed < 1 {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid limit parameter"))
+			return
+		}
+		if parsed > 1000 {
+			parsed = 1000
+		}
+		limit = parsed
+	}
+
+	var after *eventKey
+	if params.Cursor != nil {
+		k, err := decodeCursor(*params.Cursor)
+		if err != nil {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid cursor parameter"))
+			return
+		}
+		after = &k
+	}
+
 	store, err := h.factory.EntityStore(ctx)
 	if err != nil {
 		common.WriteError(w, r, common.Internal("failed to get entity store", err))
@@ -84,160 +110,110 @@ func (h *Handler) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request
 	}
 
 	// Build combined event list.
-	events := make([]map[string]any, 0)
+	items := make([]auditItem, 0)
 
 	// EntityChange events from version history.
 	if includeEntityChange {
 		callerTenant := common.TenantFromContext(ctx)
 		for _, v := range versions {
-			event := map[string]any{
-				"auditEventType": "EntityChange",
-				"changeType":     common.CanonicalChangeType(v.ChangeType),
-				"severity":       "INFO",
-				"utcTime":        v.Timestamp.UTC().Format(time.RFC3339Nano),
-				"microsTime":     v.Timestamp.UnixMicro(),
-				"system":         false,
-				"entityId":       entityId.String(),
-			}
-			if v.TransactionID != "" {
-				event["transactionId"] = v.TransactionID
-			}
-			if v.User != "" {
-				actor := map[string]any{
-					"id":   v.User,
-					"name": v.User,
-				}
-				if callerTenant != "" {
-					actor["legalId"] = callerTenant
-				}
-				event["actor"] = actor
-			}
-			events = append(events, event)
+			items = append(items, entityChangeItem(v, entityId.String(), callerTenant))
 		}
 	}
 
 	// StateMachine events from SM audit store.
 	if includeStateMachine {
-		smStore, smErr := h.factory.StateMachineAuditStore(ctx)
-		if smErr == nil {
-			smEvents, smErr := smStore.GetEvents(ctx, entityId.String())
-			if smErr == nil {
-				for _, smEvent := range smEvents {
-					event := map[string]any{
-						"auditEventType": "StateMachine",
-						"eventType":      string(smEvent.EventType),
-						"severity":       "INFO",
-						"utcTime":        smEvent.Timestamp.UTC().Format(time.RFC3339Nano),
-						"microsTime":     smEvent.Timestamp.UnixMicro(),
-						"entityId":       smEvent.EntityID,
-						"details":        smEvent.Details,
-						"data":           smEvent.Data,
-					}
-					if smEvent.TransactionID != "" {
-						event["transactionId"] = smEvent.TransactionID
-					}
-					if smEvent.State != "" {
-						event["state"] = smEvent.State
-					}
-					events = append(events, event)
-				}
+		smStore, err := h.factory.StateMachineAuditStore(ctx)
+		if err != nil {
+			common.WriteError(w, r, common.Internal("failed to get state machine audit store", err))
+			return
+		}
+		// A failed read is not an entity without workflow events: answering
+		// 200 without them would present a partial trail as complete.
+		smEvents, err := smStore.GetEvents(ctx, entityId.String())
+		if err != nil {
+			common.WriteError(w, r, common.Internal("failed to get state machine events", err))
+			return
+		}
+		for _, smEvent := range smEvents {
+			item, err := stateMachineItem(smEvent)
+			if err != nil {
+				common.WriteError(w, r, common.Internal("invalid state machine event", err))
+				return
 			}
+			items = append(items, item)
 		}
 	}
 
-	// Sort by timestamp: newest first.
-	sort.Slice(events, func(i, j int) bool {
-		tsI, _ := time.Parse(time.RFC3339Nano, events[i]["utcTime"].(string))
-		tsJ, _ := time.Parse(time.RFC3339Nano, events[j]["utcTime"].(string))
-		return tsI.After(tsJ)
-	})
+	// One total order: newest instant first, then compareKeys' tie-break
+	// chain (kind, then version or event id) so events of one instant come
+	// back in a fixed, deterministic order across reads.
+	slices.SortFunc(items, func(x, y auditItem) int { return compareKeys(x.key, y.key) })
 
 	// Apply filters.
 	if params.Severity != nil {
 		requested := string(*params.Severity)
-		filtered := make([]map[string]any, 0, len(events))
-		for _, ev := range events {
-			if sev, ok := ev["severity"].(string); ok && sev == requested {
-				filtered = append(filtered, ev)
+		filtered := make([]auditItem, 0, len(items))
+		for _, item := range items {
+			if sev, ok := item.body["severity"].(string); ok && sev == requested {
+				filtered = append(filtered, item)
 			}
 		}
-		events = filtered
+		items = filtered
 	}
 
 	if params.FromUtcTime != nil {
 		from := *params.FromUtcTime
-		filtered := make([]map[string]any, 0, len(events))
-		for _, ev := range events {
-			ts, _ := time.Parse(time.RFC3339Nano, ev["utcTime"].(string))
-			if !ts.Before(from) {
-				filtered = append(filtered, ev)
+		filtered := make([]auditItem, 0, len(items))
+		for _, item := range items {
+			if !item.key.at.Before(from) {
+				filtered = append(filtered, item)
 			}
 		}
-		events = filtered
+		items = filtered
 	}
 
 	if params.ToUtcTime != nil {
 		to := *params.ToUtcTime
-		filtered := make([]map[string]any, 0, len(events))
-		for _, ev := range events {
-			ts, _ := time.Parse(time.RFC3339Nano, ev["utcTime"].(string))
-			if ts.Before(to) {
-				filtered = append(filtered, ev)
+		filtered := make([]auditItem, 0, len(items))
+		for _, item := range items {
+			if item.key.at.Before(to) {
+				filtered = append(filtered, item)
 			}
 		}
-		events = filtered
+		items = filtered
 	}
 
 	if params.TransactionId != nil {
 		txFilter := params.TransactionId.String()
-		filtered := make([]map[string]any, 0, len(events))
-		for _, ev := range events {
-			if txID, ok := ev["transactionId"].(string); ok && txID == txFilter {
-				filtered = append(filtered, ev)
+		filtered := make([]auditItem, 0, len(items))
+		for _, item := range items {
+			if txID, ok := item.body["transactionId"].(string); ok && txID == txFilter {
+				filtered = append(filtered, item)
 			}
 		}
-		events = filtered
+		items = filtered
 	}
 
-	// Parse pagination params.
-	limit := 20
-	if params.Limit != nil {
-		parsed, err := strconv.Atoi(*params.Limit)
-		if err != nil || parsed < 1 {
-			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid limit parameter"))
-			return
-		}
-		if parsed > 1000 {
-			parsed = 1000
-		}
-		limit = parsed
+	// Page from a position in the total order, not an offset into this
+	// query's filtered result set: a cursor from one filter still locates
+	// the right position after the filter changes, and events committed
+	// after the page was fetched are neither repeated nor skipped.
+	start := 0
+	if after != nil {
+		start = sort.Search(len(items), func(i int) bool { return compareKeys(items[i].key, *after) > 0 })
 	}
-
-	cursor := 0
-	if params.Cursor != nil {
-		if parsed, err := strconv.Atoi(*params.Cursor); err == nil && parsed >= 0 {
-			cursor = parsed
-		}
+	end := min(start+limit, len(items))
+	page := make([]map[string]any, end-start)
+	for i, item := range items[start:end] {
+		page[i] = item.body
 	}
-
-	// Slice for pagination.
-	total := len(events)
-	start := cursor
-	if start > total {
-		start = total
-	}
-	end := start + limit
-	if end > total {
-		end = total
-	}
-	page := events[start:end]
-	hasNext := end < total
+	hasNext := end < len(items)
 
 	paginationMap := map[string]any{
 		"hasNext": hasNext,
 	}
 	if hasNext {
-		paginationMap["nextCursor"] = strconv.Itoa(end)
+		paginationMap["nextCursor"] = encodeCursor(items[end-1].key)
 	}
 
 	resp := map[string]any{
@@ -267,28 +243,36 @@ func (h *Handler) GetStateMachineFinishedEvent(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// A joined callback's loopback save emits its own START/FINISH pair
+	// (internal/domain/workflow/engine.go Loopback), so a transaction can
+	// carry more than one STATE_MACHINE_FINISH event for this entity. The
+	// one that sorts first under compareKeys — newest instant, then the
+	// eventId's time field DESC, then bytes DESC — is the first in the
+	// audit order, normally the last one recorded; every backend agrees on
+	// this pick even though the store's listing order is unspecified when
+	// two events share an instant (SQL orders only by timestamp). Spec §4.4
+	// does not promise recording order for state machine events of one
+	// instant, so this is the deterministic, order-independent pick — not
+	// an assertion that it IS the transaction's final outcome.
+	var latest *auditItem
 	for _, smEvent := range smEvents {
-		if smEvent.EventType == spi.SMEventFinished {
-			event := map[string]any{
-				"auditEventType": "StateMachine",
-				"eventType":      string(smEvent.EventType),
-				"severity":       "INFO",
-				"utcTime":        smEvent.Timestamp.UTC().Format(time.RFC3339Nano),
-				"microsTime":     smEvent.Timestamp.UnixMicro(),
-				"entityId":       smEvent.EntityID,
-				"details":        smEvent.Details,
-				"data":           smEvent.Data,
-			}
-			if smEvent.TransactionID != "" {
-				event["transactionId"] = smEvent.TransactionID
-			}
-			if smEvent.State != "" {
-				event["state"] = smEvent.State
-			}
-			common.WriteJSON(w, http.StatusOK, event)
+		if smEvent.EventType != spi.SMEventFinished {
+			continue
+		}
+		item, err := stateMachineItem(smEvent)
+		if err != nil {
+			common.WriteError(w, r, common.Internal("invalid state machine event", err))
 			return
+		}
+		if latest == nil || compareKeys(item.key, latest.key) < 0 {
+			latest = &item
 		}
 	}
 
-	common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, "finished event not found"))
+	if latest == nil {
+		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, "finished event not found"))
+		return
+	}
+
+	common.WriteJSON(w, http.StatusOK, latest.body)
 }

@@ -1,17 +1,20 @@
 package audit_test
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 
 	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -310,6 +313,270 @@ func TestAuditPagination(t *testing.T) {
 	}
 	if pagination2["hasNext"] != false {
 		t.Errorf("expected hasNext=false on second page, got %v", pagination2["hasNext"])
+	}
+}
+
+// TestCursor_NewEventsMidWalk: a new transaction committing mid-walk adds
+// events at the newest end; the walk must neither repeat nor skip the events
+// that existed when it began.
+func TestCursor_NewEventsMidWalk(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "AuditWalk", 1, `{"name":"A"}`)
+	id := createEntityAndGetID(t, srv.URL, "AuditWalk", 1, `{"name":"v1"}`)
+	for _, n := range []string{"v2", "v3", "v4"} {
+		updateEntity(t, srv.URL, id, `{"name":"`+n+`"}`)
+	}
+	all, _ := getAuditEvents(t, srv.URL, id, "eventType=EntityChange")
+	page1, p1 := getAuditEvents(t, srv.URL, id, "eventType=EntityChange", "limit=2")
+	updateEntity(t, srv.URL, id, `{"name":"v5"}`)
+	page2, _ := getAuditEvents(t, srv.URL, id, "eventType=EntityChange", "limit=10", "cursor="+url.QueryEscape(p1["nextCursor"].(string)))
+	walked := append(page1, page2...)
+	if len(walked) != len(all) {
+		t.Fatalf("walk returned %d events, want the %d that existed at the start", len(walked), len(all))
+	}
+	for i := range all {
+		if walked[i]["version"] != all[i]["version"] {
+			t.Fatalf("position %d: version %v, want %v", i, walked[i]["version"], all[i]["version"])
+		}
+	}
+}
+
+// TestCursor_Undecodable_Returns400: request validation precedes the entity
+// lookup, so a malformed cursor is rejected before any store call runs and
+// answers 400 even against a nonexistent entity — not the 404 a store lookup
+// would otherwise produce.
+func TestCursor_Undecodable_Returns400(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "AuditBadCursor", 1, `{"name":"Alice"}`)
+	entityID := createEntityAndGetID(t, srv.URL, "AuditBadCursor", 1, `{"name":"Bob"}`)
+
+	resp := getAuditEventsRaw(t, srv.URL, entityID, "cursor=20")
+	if resp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400, got %d; body: %s", resp.StatusCode, string(body))
+	}
+	commontest.ExpectErrorCode(t, resp, "BAD_REQUEST")
+	resp.Body.Close()
+
+	// The old offset cursor is rejected before the entity lookup even for an
+	// entity that does not exist: request validation precedes any store
+	// call, so this must not fall through to 404.
+	missingResp := getAuditEventsRaw(t, srv.URL, "00000000-0000-0000-0000-000000000099", "cursor=20")
+	if missingResp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(missingResp.Body)
+		t.Fatalf("expected 400 before the entity lookup, got %d; body: %s", missingResp.StatusCode, string(body))
+	}
+	commontest.ExpectErrorCode(t, missingResp, "BAD_REQUEST")
+	missingResp.Body.Close()
+}
+
+// TestCursor_SurvivesFilterChange: page 1 is fetched unfiltered, then page 2
+// asks for a different eventType using page 1's cursor. Every event on page
+// 2 must still sort after page 1's single event — the cursor is a position
+// in the whole order, not something scoped to the filter that produced it.
+func TestCursor_SurvivesFilterChange(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "AuditCursorFilter", 1, `{"name":"Alice","age":30}`)
+	wfBody := `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.1",
+			"name": "cursor-filter-flow",
+			"initialState": "INITIAL",
+			"active": true,
+			"states": {
+				"INITIAL": {
+					"transitions": [{
+						"name": "auto-go",
+						"next": "DONE",
+						"manual": false
+					}]
+				},
+				"DONE": {}
+			}
+		}]
+	}`
+	importWorkflow(t, srv.URL, "AuditCursorFilter", 1, wfBody)
+	entityID := createEntityAndGetID(t, srv.URL, "AuditCursorFilter", 1, `{"name":"Bob","age":25}`)
+
+	page1, p1 := getAuditEvents(t, srv.URL, entityID, "limit=1")
+	if len(page1) != 1 {
+		t.Fatalf("expected 1 event on first page, got %d", len(page1))
+	}
+	// page1's single event must be the EntityChange CREATE: at the shared
+	// commit instant, EntityChange sorts before every StateMachine event
+	// (compareKeys' kind tie-break), so this is what makes the assertion
+	// below meaningful rather than incidental.
+	if page1[0]["auditEventType"] != "EntityChange" {
+		t.Fatalf("expected page 1's single event to be EntityChange, got %v", page1[0]["auditEventType"])
+	}
+	cursor, ok := p1["nextCursor"].(string)
+	if !ok || cursor == "" {
+		t.Fatalf("expected non-empty nextCursor, got %v", p1["nextCursor"])
+	}
+
+	// Page 2 asks for a different eventType than page 1 did, using page 1's
+	// cursor. Since page 1's event sorts before every StateMachine event,
+	// page 2 (with a limit large enough to exhaust the trail) must equal
+	// the full, unpaged StateMachine list, in the same order — the cursor
+	// is a position in the whole order, not something scoped to the filter
+	// that produced it.
+	page2, _ := getAuditEvents(t, srv.URL, entityID, "eventType=StateMachine", "limit=100", "cursor="+url.QueryEscape(cursor))
+	allStateMachine, _ := getAuditEvents(t, srv.URL, entityID, "eventType=StateMachine", "limit=100")
+	if len(allStateMachine) == 0 {
+		t.Fatal("expected StateMachine events")
+	}
+	if len(page2) != len(allStateMachine) {
+		t.Fatalf("expected page 2 to equal the full StateMachine list (%d events), got %d events", len(allStateMachine), len(page2))
+	}
+	for i := range allStateMachine {
+		if page2[i]["eventId"] != allStateMachine[i]["eventId"] {
+			t.Fatalf("position %d: eventId %v, want %v (page 2 must equal the full StateMachine list, in order)", i, page2[i]["eventId"], allStateMachine[i]["eventId"])
+		}
+	}
+}
+
+// TestCursor_PositionOfMissingEvent crafts a cursor for a sort position that
+// no real event occupies — a real event's own utcTime paired with a version
+// absent at that instant — to prove the search lands strictly between the
+// neighboring real events, not just near them by time. A cursor stamped
+// before every event yields an empty page.
+func TestCursor_PositionOfMissingEvent(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "AuditCursorGap", 1, `{"name":"Alice"}`)
+	entityID := createEntityAndGetID(t, srv.URL, "AuditCursorGap", 1, `{"name":"v1"}`)
+	for _, n := range []string{"v2", "v3", "v4"} {
+		updateEntity(t, srv.URL, entityID, `{"name":"`+n+`"}`)
+	}
+
+	events, _ := getAuditEvents(t, srv.URL, entityID, "eventType=EntityChange")
+	if len(events) != 4 {
+		t.Fatalf("expected 4 EntityChange events, got %d", len(events))
+	}
+	// Newest first: events[0]=v4, [1]=v3, [2]=v2, [3]=v1.
+	gapAt, ok := events[1]["utcTime"].(string)
+	if !ok || gapAt == "" {
+		t.Fatalf("expected non-empty utcTime, got %v", events[1]["utcTime"])
+	}
+	// Precondition: v2 and v3 must have distinct utcTime, or "v2's version
+	// paired with v3's instant" is not actually a gap in the order — it
+	// would just be v3's real position.
+	if v2At, ok := events[2]["utcTime"].(string); !ok || v2At == gapAt {
+		t.Fatalf("precondition failed: v2 and v3 must have distinct utcTime, both got %v", gapAt)
+	}
+	missingVersion := int64(events[2]["version"].(float64))
+	cursorJSON := fmt.Sprintf(`{"v":1,"t":%q,"k":"EntityChange","n":%d}`, gapAt, missingVersion)
+	cursor := base64.RawURLEncoding.EncodeToString([]byte(cursorJSON))
+
+	page, pagination := getAuditEvents(t, srv.URL, entityID, "eventType=EntityChange", "limit=10", "cursor="+url.QueryEscape(cursor))
+	if len(page) != 2 {
+		t.Fatalf("expected 2 older events after the gap cursor, got %d: %v", len(page), page)
+	}
+	if page[0]["version"] != events[2]["version"] || page[1]["version"] != events[3]["version"] {
+		t.Fatalf("expected [v2, v1] after the gap cursor, got %v", page)
+	}
+	if pagination["hasNext"] != false {
+		t.Errorf("expected hasNext=false, got %v", pagination["hasNext"])
+	}
+
+	// A cursor stamped before every event returns nothing.
+	oldJSON := `{"v":1,"t":"0001-01-01T00:00:00Z","k":"EntityChange","n":1}`
+	oldCursor := base64.RawURLEncoding.EncodeToString([]byte(oldJSON))
+	emptyPage, emptyPagination := getAuditEvents(t, srv.URL, entityID, "eventType=EntityChange", "limit=10", "cursor="+url.QueryEscape(oldCursor))
+	if len(emptyPage) != 0 {
+		t.Fatalf("expected 0 events past the end of the trail, got %d", len(emptyPage))
+	}
+	if emptyPagination["hasNext"] != false {
+		t.Errorf("expected hasNext=false, got %v", emptyPagination["hasNext"])
+	}
+}
+
+// TestCursor_ClampedLimitStillPages exercises the >1000 limit clamp: a
+// limit far above the clamp still answers 200, not 400, and pages the small
+// trail in full.
+func TestCursor_ClampedLimitStillPages(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "AuditCursorClamp", 1, `{"name":"Alice"}`)
+	entityID := createEntityAndGetID(t, srv.URL, "AuditCursorClamp", 1, `{"name":"Bob"}`)
+	updateEntity(t, srv.URL, entityID, `{"name":"Carol"}`)
+
+	events, pagination := getAuditEvents(t, srv.URL, entityID, "eventType=EntityChange", "limit=5000")
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+	if pagination["hasNext"] != false {
+		t.Errorf("expected hasNext=false, got %v", pagination["hasNext"])
+	}
+}
+
+// TestCursor_WalkOverOneInstantTie walks limit=1 pages over an entity whose
+// EntityChange event and several StateMachine events share one commit
+// instant. The concatenation of the walk must equal the unpaged list, in
+// order — no page boundary may repeat or skip an event tied on time.
+func TestCursor_WalkOverOneInstantTie(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "AuditCursorTie", 1, `{"name":"Alice","age":30}`)
+	wfBody := `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.1",
+			"name": "cursor-tie-flow",
+			"initialState": "INITIAL",
+			"active": true,
+			"states": {
+				"INITIAL": {
+					"transitions": [{
+						"name": "auto-go",
+						"next": "DONE",
+						"manual": false
+					}]
+				},
+				"DONE": {}
+			}
+		}]
+	}`
+	importWorkflow(t, srv.URL, "AuditCursorTie", 1, wfBody)
+	entityID := createEntityAndGetID(t, srv.URL, "AuditCursorTie", 1, `{"name":"Bob","age":25}`)
+
+	all, _ := getAuditEvents(t, srv.URL, entityID)
+	if len(all) < 3 {
+		t.Fatalf("expected several audit events sharing the commit instant, got %d", len(all))
+	}
+
+	var walked []map[string]any
+	cursor := ""
+	for i := 0; i <= len(all)+1; i++ {
+		args := []string{"limit=1"}
+		if cursor != "" {
+			args = append(args, "cursor="+url.QueryEscape(cursor))
+		}
+		page, pagination := getAuditEvents(t, srv.URL, entityID, args...)
+		if len(page) != 1 {
+			t.Fatalf("expected 1 event per page, got %d", len(page))
+		}
+		walked = append(walked, page...)
+		hasNext, _ := pagination["hasNext"].(bool)
+		if !hasNext {
+			break
+		}
+		cursor, _ = pagination["nextCursor"].(string)
+		if cursor == "" {
+			t.Fatal("hasNext=true but nextCursor missing")
+		}
+		if i == len(all)+1 {
+			t.Fatal("walk did not terminate within the expected number of pages")
+		}
+	}
+
+	if len(walked) != len(all) {
+		t.Fatalf("walk returned %d events, want %d", len(walked), len(all))
+	}
+	for i := range all {
+		if walked[i]["auditEventType"] != all[i]["auditEventType"] ||
+			fmt.Sprintf("%v", walked[i]["version"]) != fmt.Sprintf("%v", all[i]["version"]) ||
+			fmt.Sprintf("%v", walked[i]["eventId"]) != fmt.Sprintf("%v", all[i]["eventId"]) {
+			t.Fatalf("position %d mismatch: got %v, want %v", i, walked[i], all[i])
+		}
 	}
 }
 

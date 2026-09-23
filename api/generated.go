@@ -1781,7 +1781,7 @@ type CursorPaginationInfoDto struct {
 	// HasNext Indicates whether there are more results available
 	HasNext bool `json:"hasNext"`
 
-	// NextCursor Cursor to use for fetching the next page of results. Can be omit when hasNext is false.
+	// NextCursor Opaque position of the last event on this page. Absent when hasNext is false.
 	NextCursor *string `json:"nextCursor,omitempty"`
 }
 
@@ -1885,6 +1885,9 @@ type EntityChangeAuditEventDto struct {
 
 	// UtcTime UTC time when the event occurred
 	UtcTime time.Time `json:"utcTime"`
+
+	// Version The entity's version number for this change. Strictly increasing over the entity's history, across delete and recreate; (entityId, version) identifies the event.
+	Version *int64 `json:"version,omitempty"`
 }
 
 // EntityChangeAuditEventDtoChangeType Type of change that occurred (canonical wire spelling; CREATE/UPDATE/DELETE)
@@ -2794,6 +2797,9 @@ type StateMachineAuditEventDto struct {
 	// EntityModel Type of the entity related to this event (model.version)
 	EntityModel *string `json:"entityModel,omitempty"`
 
+	// EventId The event's identity: a time-based UUID the server assigned when it recorded the event. The same on every read.
+	EventId *openapi_types.UUID `json:"eventId,omitempty"`
+
 	// EventType Type of the state machine event. `TRANSITION_ABORTED` is
 	// a cyoda-go extension emitted as a
 	// compensating event when an in-flight transition is
@@ -3366,7 +3372,7 @@ type SearchEntityAuditEventsParams struct {
 	// TransactionId Filter by transaction identifier
 	TransactionId *openapi_types.UUID `form:"transactionId,omitempty" json:"transactionId,omitempty"`
 
-	// Cursor Cursor for pagination. Use the `nextCursor` value from the previous response to fetch the next page of results. Omit for the first page.
+	// Cursor Position to continue from: pass `nextCursor` from the previous response. Opaque. A cursor that cannot be read is rejected with 400. Omit for the first page.
 	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
 
 	// Limit Maximum number of audit events to return per page

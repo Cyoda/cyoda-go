@@ -346,7 +346,6 @@ func TestCommit_AuditEventsShareTheTransactionsInstant(t *testing.T) {
 	if err := audit.Record(txCtx, id, spi.StateMachineEvent{
 		EventType:     spi.SMEventTransitionMade,
 		EntityID:      id,
-		TimeUUID:      uuid.NewString(),
 		State:         "NEW",
 		TransactionID: txID,
 		Details:       "commit-instant",

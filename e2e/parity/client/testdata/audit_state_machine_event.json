@@ -1,5 +1,6 @@
 {
   "auditEventType": "StateMachine",
+  "eventId": "5f1c1b0e-6d1a-11f1-8000-000000000001",
   "state": "CREATED",
   "eventType": "FINISHED",
   "severity": "INFO",

@@ -16,6 +16,11 @@ type StoreFactory struct {
 	tm                *TransactionManager // may be nil if transactions not configured
 	applyFunc         ApplyFunc           // set via SetApplyFunc; used by modelStore.Get to fold the schema delta log
 	unregisterMetrics func()              // stops the pool-stat OTel callback; nil when NewStoreFactory/newStoreFactoryWithConfig built this factory outside Plugin.NewFactory
+	// uuids is the id generator the transaction manager carries, mirrored
+	// here whenever the manager is wired in (setTransactionManager) so that
+	// StateMachineAuditStore.Record can read it without going through the
+	// TransactionManager (see spi.StateMachineAuditStore).
+	uuids spi.UUIDGenerator
 }
 
 // ApplyFunc replays an opaque SchemaDelta onto a base schema
@@ -80,14 +85,18 @@ func (f *StoreFactory) SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) 
 	f.applyFunc = ApplyFunc(fn)
 }
 
-// setTransactionManager wires the plugin's own TM into the factory. The
-// field is written exactly once, at construction time, by initTransactionManager
-// (same package) — so reads in resolveRaw are safe without synchronization
-// because the construction return establishes happens-before for every
-// subsequent caller. Keep this unexported: there is no legitimate external
-// caller, and opening it would invite a race the factory isn't designed for.
+// setTransactionManager wires tm into the factory, setting both tm and
+// uuids (mirrored from tm.uuids so StateMachineAuditStore.Record can read
+// the generator without going through the TransactionManager). Called by
+// InitTransactionManager at construction time, and again — after
+// construction, with a fresh TransactionManager — by test helpers that wire
+// their own TM (e.g. NewStoreFactoryWithTMForTest); each call fully
+// replaces both fields. Keep this unexported: there is no legitimate
+// external caller, and opening it would invite a race the factory isn't
+// designed for.
 func (f *StoreFactory) setTransactionManager(tm *TransactionManager) {
 	f.tm = tm
+	f.uuids = tm.uuids
 }
 
 // Pool returns the underlying connection pool.
@@ -243,7 +252,7 @@ func (f *StoreFactory) StateMachineAuditStore(ctx context.Context) (spi.StateMac
 	if err != nil {
 		return nil, err
 	}
-	return &smAuditStore{q: f.querier(), tenantID: tid}, nil
+	return &smAuditStore{q: f.querier(), tenantID: tid, uuids: f.uuids}, nil
 }
 
 func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore, error) {

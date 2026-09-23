@@ -1475,6 +1475,23 @@ func (c *Client) GetAuditEvents(t *testing.T, entityID uuid.UUID) (EntityAuditEv
 	return resp, nil
 }
 
+// GetAuditEventsPage issues GET /api/audit/entity/{entityId} with the given
+// query parameters (limit, cursor, eventType, ...) and returns the decoded
+// page, including its CursorPaginationInfo. Used by scenarios that walk the
+// cursor rather than fetching the whole trail via GetAuditEvents.
+func (c *Client) GetAuditEventsPage(t *testing.T, entityID uuid.UUID, query url.Values) (EntityAuditEventsResponse, error) {
+	t.Helper()
+	path := "/api/audit/entity/" + entityID.String()
+	if len(query) > 0 {
+		path += "?" + query.Encode()
+	}
+	var resp EntityAuditEventsResponse
+	if _, err := c.doJSON(t, http.MethodGet, path, nil, &resp); err != nil {
+		return EntityAuditEventsResponse{}, err
+	}
+	return resp, nil
+}
+
 // SetLogLevel issues POST /api/admin/log-level to change the target node's
 // runtime log level (e.g. "debug", "info"). Requires a ROLE_ADMIN token.
 // Used by cross-node scenarios that need a peer node to emit its (Debug-level)
