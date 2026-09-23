@@ -107,6 +107,12 @@ func (rc *reqCtx) GetEntity(entityID string) (callbackResult, error) {
 	return rc.h.callback(http.MethodGet, path, "", rc.token)
 }
 
+// UpdateEntity issues a PUT /entity/JSON/{id} callback echoing the tx-token,
+// so the update joins the primary's transaction T.
+func (rc *reqCtx) UpdateEntity(entityID, payload string) (callbackResult, error) {
+	return rc.h.callback(http.MethodPut, "/api/entity/JSON/"+entityID, payload, rc.token)
+}
+
 // callbackProc is a processor implemented on the compute member. It runs on a
 // per-request handler goroutine while the engine blocks on the dispatch
 // response, so it MUST NOT call t.Fatal (record into test-owned state and assert
