@@ -1,6 +1,8 @@
 package audit_test
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -149,6 +151,144 @@ func TestGetStateMachineFinishedEvent_CarriesEventID(t *testing.T) {
 	}
 	if result["eventId"] != wantEventID {
 		t.Errorf("finished event eventId = %v, want %v", result["eventId"], wantEventID)
+	}
+}
+
+// TestAudit_TotalOrder pins that the merged audit event list follows one
+// deterministic order: newest instant first, EntityChange before
+// StateMachine at the same instant, then version (EntityChange) or the
+// eventId's time field and bytes (StateMachine), each descending.
+// compareKeys itself is unexported, so this re-implements the rule from the
+// emitted wire fields (utcTime, auditEventType, version, eventId) and
+// asserts it holds for every adjacent pair, and that two reads return
+// identical order. An entity created under an auto-transition workflow
+// commits its CREATED EntityChange and every StateMachine event of that
+// transaction with the same commit timestamp on the memory backend, giving
+// an instant shared by 1 EntityChange and >=2 StateMachine events — the
+// exact case the tie-break rules exist for. The test asserts that tie
+// exists so it is not vacuous.
+func TestAudit_TotalOrder(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "AuditOrder", 1, `{"name":"Alice","age":30}`)
+
+	wfBody := `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.1",
+			"name": "audit-order-flow",
+			"initialState": "INITIAL",
+			"active": true,
+			"states": {
+				"INITIAL": {
+					"transitions": [{
+						"name": "auto-validate",
+						"next": "STABLE",
+						"manual": false
+					}]
+				},
+				"STABLE": {}
+			}
+		}]
+	}`
+	importWorkflow(t, srv.URL, "AuditOrder", 1, wfBody)
+
+	entityID := createEntityAndGetID(t, srv.URL, "AuditOrder", 1, `{"name":"Bob","age":25}`)
+
+	first, _ := getAuditEvents(t, srv.URL, entityID)
+	second, _ := getAuditEvents(t, srv.URL, entityID)
+
+	if len(first) < 3 {
+		t.Fatalf("expected at least 3 audit events (1 EntityChange + >=2 StateMachine), got %d", len(first))
+	}
+	if len(first) != len(second) {
+		t.Fatalf("event count changed between reads: %d vs %d", len(first), len(second))
+	}
+	for i := range first {
+		if first[i]["auditEventType"] != second[i]["auditEventType"] ||
+			first[i]["utcTime"] != second[i]["utcTime"] ||
+			first[i]["eventId"] != second[i]["eventId"] ||
+			first[i]["version"] != second[i]["version"] {
+			t.Fatalf("item %d differs between reads: %v vs %v", i, first[i], second[i])
+		}
+	}
+
+	type orderFields struct {
+		at      time.Time
+		kind    string
+		version int64
+		eventID uuid.UUID
+	}
+	fieldsOf := func(ev map[string]any) orderFields {
+		t.Helper()
+		utcStr, _ := ev["utcTime"].(string)
+		at, err := time.Parse(time.RFC3339Nano, utcStr)
+		if err != nil {
+			t.Fatalf("event utcTime %q does not parse: %v", utcStr, err)
+		}
+		kind, _ := ev["auditEventType"].(string)
+		f := orderFields{at: at, kind: kind}
+		if v, ok := ev["version"]; ok {
+			f.version = int64(v.(float64))
+		}
+		if s, ok := ev["eventId"].(string); ok && s != "" {
+			id, err := uuid.Parse(s)
+			if err != nil {
+				t.Fatalf("event eventId %q does not parse: %v", s, err)
+			}
+			f.eventID = id
+		}
+		return f
+	}
+
+	// compare re-implements compareKeys from the emitted wire fields:
+	// negative when a sorts before b (a is newer / first), 0 only for
+	// identical fields.
+	compare := func(a, b orderFields) int {
+		if c := b.at.Compare(a.at); c != 0 {
+			return c
+		}
+		if a.kind != b.kind {
+			return strings.Compare(a.kind, b.kind)
+		}
+		if a.kind == "EntityChange" {
+			return cmp.Compare(b.version, a.version)
+		}
+		if c := cmp.Compare(b.eventID.Time(), a.eventID.Time()); c != 0 {
+			return c
+		}
+		return bytes.Compare(b.eventID[:], a.eventID[:])
+	}
+
+	prev := fieldsOf(first[0])
+	for i := 1; i < len(first); i++ {
+		cur := fieldsOf(first[i])
+		if c := compare(prev, cur); c >= 0 {
+			t.Fatalf("adjacent pair %d/%d not strictly ordered: compare = %d; prev=%v cur=%v", i-1, i, c, first[i-1], first[i])
+		}
+		prev = cur
+	}
+
+	tieFound := false
+	byInstant := map[string]struct{ entityChange, stateMachine int }{}
+	for _, ev := range first {
+		utcStr, _ := ev["utcTime"].(string)
+		kind, _ := ev["auditEventType"].(string)
+		counts := byInstant[utcStr]
+		if kind == "EntityChange" {
+			counts.entityChange++
+		} else {
+			counts.stateMachine++
+		}
+		byInstant[utcStr] = counts
+	}
+	for _, counts := range byInstant {
+		if counts.entityChange >= 1 && counts.stateMachine >= 2 {
+			tieFound = true
+			break
+		}
+	}
+	if !tieFound {
+		t.Fatal("expected an instant shared by an EntityChange event and >=2 StateMachine events; without that tie this test does not exercise the tie-break rules")
 	}
 }
 

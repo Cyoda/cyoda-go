@@ -1,7 +1,10 @@
 package audit
 
 import (
+	"bytes"
+	"cmp"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -85,4 +88,25 @@ func stateMachineItem(ev spi.StateMachineEvent) (auditItem, error) {
 		body["state"] = ev.State
 	}
 	return auditItem{key: eventKey{at: at, kind: "StateMachine", eventID: id}, body: body}, nil
+}
+
+// compareKeys orders audit events newest first and totally: by instant, then
+// EntityChange before StateMachine, then version (entity changes) or the id's
+// time field and bytes (state machine events), each descending. The order is
+// deterministic; for state machine events of one instant it is not promised
+// to be the recording order.
+func compareKeys(a, b eventKey) int {
+	if c := b.at.Compare(a.at); c != 0 {
+		return c
+	}
+	if a.kind != b.kind {
+		return strings.Compare(a.kind, b.kind)
+	}
+	if a.kind == "EntityChange" {
+		return cmp.Compare(b.version, a.version)
+	}
+	if c := cmp.Compare(b.eventID.Time(), a.eventID.Time()); c != 0 {
+		return c
+	}
+	return bytes.Compare(b.eventID[:], a.eventID[:])
 }

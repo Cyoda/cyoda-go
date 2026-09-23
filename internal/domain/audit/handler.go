@@ -3,7 +3,7 @@ package audit
 import (
 	"errors"
 	"net/http"
-	"sort"
+	"slices"
 	"strconv"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -111,10 +111,10 @@ func (h *Handler) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	// Sort by timestamp: newest first.
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].key.at.After(items[j].key.at)
-	})
+	// One total order: newest instant first, then compareKeys' tie-break
+	// chain (kind, then version or event id) so events of one instant come
+	// back in a fixed, deterministic order across reads.
+	slices.SortFunc(items, func(x, y auditItem) int { return compareKeys(x.key, y.key) })
 
 	// Apply filters.
 	if params.Severity != nil {
