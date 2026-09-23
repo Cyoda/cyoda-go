@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"sort"
 	"strconv"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -43,6 +44,32 @@ func (h *Handler) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request
 				includeStateMachine = true
 			}
 		}
+	}
+
+	// Validate request parameters (limit, cursor) before any store call, so
+	// a malformed one answers 400 even against a nonexistent entity rather
+	// than falling through to a 404 from the lookup below.
+	limit := 20
+	if params.Limit != nil {
+		parsed, err := strconv.Atoi(*params.Limit)
+		if err != nil || parsed < 1 {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid limit parameter"))
+			return
+		}
+		if parsed > 1000 {
+			parsed = 1000
+		}
+		limit = parsed
+	}
+
+	var after *eventKey
+	if params.Cursor != nil {
+		k, err := decodeCursor(*params.Cursor)
+		if err != nil {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid cursor parameter"))
+			return
+		}
+		after = &k
 	}
 
 	store, err := h.factory.EntityStore(ctx)
@@ -161,48 +188,26 @@ func (h *Handler) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request
 		items = filtered
 	}
 
-	// Parse pagination params.
-	limit := 20
-	if params.Limit != nil {
-		parsed, err := strconv.Atoi(*params.Limit)
-		if err != nil || parsed < 1 {
-			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid limit parameter"))
-			return
-		}
-		if parsed > 1000 {
-			parsed = 1000
-		}
-		limit = parsed
+	// Page from a position in the total order, not an offset into this
+	// query's filtered result set: a cursor from one filter still locates
+	// the right position after the filter changes, and events committed
+	// after the page was fetched are neither repeated nor skipped.
+	start := 0
+	if after != nil {
+		start = sort.Search(len(items), func(i int) bool { return compareKeys(items[i].key, *after) > 0 })
 	}
-
-	cursor := 0
-	if params.Cursor != nil {
-		if parsed, err := strconv.Atoi(*params.Cursor); err == nil && parsed >= 0 {
-			cursor = parsed
-		}
-	}
-
-	// Slice for pagination.
-	total := len(items)
-	start := cursor
-	if start > total {
-		start = total
-	}
-	end := start + limit
-	if end > total {
-		end = total
-	}
+	end := min(start+limit, len(items))
 	page := make([]map[string]any, end-start)
 	for i, item := range items[start:end] {
 		page[i] = item.body
 	}
-	hasNext := end < total
+	hasNext := end < len(items)
 
 	paginationMap := map[string]any{
 		"hasNext": hasNext,
 	}
 	if hasNext {
-		paginationMap["nextCursor"] = strconv.Itoa(end)
+		paginationMap["nextCursor"] = encodeCursor(items[end-1].key)
 	}
 
 	resp := map[string]any{
