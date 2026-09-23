@@ -45,6 +45,15 @@ func encodeCursor(k eventKey) string {
 // integer-offset cursor format, malformed JSON, an unknown field, a
 // version/eventID mismatched to the wrong kind, or a version below 1 — is
 // rejected as errBadCursor.
+//
+// One spelling per position: a string is only accepted if it is exactly
+// what encodeCursor produces for the key it decodes to
+// (encodeCursor(k) == s). That single check — rather than an enumerated
+// list of malformed shapes — is what rejects trailing data after the JSON
+// object, whitespace, duplicate or non-canonically-cased keys, a non-UTC
+// time offset, and a non-canonical UUID spelling (braces, urn:, no
+// hyphens): each of those decodes to a valid key but re-encodes to a
+// different string than the one the caller sent.
 func decodeCursor(s string) (eventKey, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(s)
 	if err != nil {
@@ -60,12 +69,13 @@ func decodeCursor(s string) (eventKey, error) {
 	if err != nil {
 		return eventKey{}, errBadCursor
 	}
+	var k eventKey
 	switch b.K {
 	case "EntityChange":
 		if b.N == nil || *b.N < 1 || b.E != nil {
 			return eventKey{}, errBadCursor
 		}
-		return eventKey{at: at, kind: b.K, version: *b.N}, nil
+		k = eventKey{at: at, kind: b.K, version: *b.N}
 	case "StateMachine":
 		if b.E == nil || b.N != nil {
 			return eventKey{}, errBadCursor
@@ -74,7 +84,20 @@ func decodeCursor(s string) (eventKey, error) {
 		if err != nil {
 			return eventKey{}, errBadCursor
 		}
-		return eventKey{at: at, kind: b.K, eventID: id}, nil
+		// The nil UUID is not just a non-canonical spelling to catch via
+		// the round-trip check below — a store never assigns it
+		// (stateMachineItem rejects it on the write side too), so it is
+		// rejected outright rather than relying on a spelling that
+		// happens to also round-trip.
+		if id == uuid.Nil {
+			return eventKey{}, errBadCursor
+		}
+		k = eventKey{at: at, kind: b.K, eventID: id}
+	default:
+		return eventKey{}, errBadCursor
 	}
-	return eventKey{}, errBadCursor
+	if encodeCursor(k) != s {
+		return eventKey{}, errBadCursor
+	}
+	return k, nil
 }

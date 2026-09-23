@@ -402,29 +402,35 @@ func TestCursor_SurvivesFilterChange(t *testing.T) {
 	if len(page1) != 1 {
 		t.Fatalf("expected 1 event on first page, got %d", len(page1))
 	}
-	page1At, err := time.Parse(time.RFC3339Nano, page1[0]["utcTime"].(string))
-	if err != nil {
-		t.Fatalf("parse page1 utcTime: %v", err)
+	// page1's single event must be the EntityChange CREATE: at the shared
+	// commit instant, EntityChange sorts before every StateMachine event
+	// (compareKeys' kind tie-break), so this is what makes the assertion
+	// below meaningful rather than incidental.
+	if page1[0]["auditEventType"] != "EntityChange" {
+		t.Fatalf("expected page 1's single event to be EntityChange, got %v", page1[0]["auditEventType"])
 	}
 	cursor, ok := p1["nextCursor"].(string)
 	if !ok || cursor == "" {
 		t.Fatalf("expected non-empty nextCursor, got %v", p1["nextCursor"])
 	}
 
-	page2, _ := getAuditEvents(t, srv.URL, entityID, "eventType=StateMachine", "limit=10", "cursor="+url.QueryEscape(cursor))
-	if len(page2) == 0 {
-		t.Fatal("expected StateMachine events on second page")
+	// Page 2 asks for a different eventType than page 1 did, using page 1's
+	// cursor. Since page 1's event sorts before every StateMachine event,
+	// page 2 (with a limit large enough to exhaust the trail) must equal
+	// the full, unpaged StateMachine list, in the same order — the cursor
+	// is a position in the whole order, not something scoped to the filter
+	// that produced it.
+	page2, _ := getAuditEvents(t, srv.URL, entityID, "eventType=StateMachine", "limit=100", "cursor="+url.QueryEscape(cursor))
+	allStateMachine, _ := getAuditEvents(t, srv.URL, entityID, "eventType=StateMachine", "limit=100")
+	if len(allStateMachine) == 0 {
+		t.Fatal("expected StateMachine events")
 	}
-	for _, ev := range page2 {
-		if ev["auditEventType"] != "StateMachine" {
-			t.Errorf("expected StateMachine event, got %v", ev["auditEventType"])
-		}
-		at, err := time.Parse(time.RFC3339Nano, ev["utcTime"].(string))
-		if err != nil {
-			t.Fatalf("parse event utcTime: %v", err)
-		}
-		if at.Before(page1At) {
-			t.Errorf("event %v is timestamped before page 1's cursor event", ev)
+	if len(page2) != len(allStateMachine) {
+		t.Fatalf("expected page 2 to equal the full StateMachine list (%d events), got %d events", len(allStateMachine), len(page2))
+	}
+	for i := range allStateMachine {
+		if page2[i]["eventId"] != allStateMachine[i]["eventId"] {
+			t.Fatalf("position %d: eventId %v, want %v (page 2 must equal the full StateMachine list, in order)", i, page2[i]["eventId"], allStateMachine[i]["eventId"])
 		}
 	}
 }
@@ -450,6 +456,12 @@ func TestCursor_PositionOfMissingEvent(t *testing.T) {
 	gapAt, ok := events[1]["utcTime"].(string)
 	if !ok || gapAt == "" {
 		t.Fatalf("expected non-empty utcTime, got %v", events[1]["utcTime"])
+	}
+	// Precondition: v2 and v3 must have distinct utcTime, or "v2's version
+	// paired with v3's instant" is not actually a gap in the order — it
+	// would just be v3's real position.
+	if v2At, ok := events[2]["utcTime"].(string); !ok || v2At == gapAt {
+		t.Fatalf("precondition failed: v2 and v3 must have distinct utcTime, both got %v", gapAt)
 	}
 	missingVersion := int64(events[2]["version"].(float64))
 	cursorJSON := fmt.Sprintf(`{"v":1,"t":%q,"k":"EntityChange","n":%d}`, gapAt, missingVersion)
