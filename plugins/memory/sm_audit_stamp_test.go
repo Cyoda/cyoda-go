@@ -52,8 +52,8 @@ func TestSMAuditStamp_StampsTheTransactionsEventsAndNothingElse(t *testing.T) {
 			t.Fatalf("Save %s: %v", id, err)
 		}
 		if err := audit.Record(txCtx, id, spi.StateMachineEvent{
-			EventType: spi.SMEventStarted, EntityID: id, TimeUUID: "u-" + id,
-			TransactionID: txID, Details: "in tx", Timestamp: sentinel,
+			EventType: spi.SMEventStarted, EntityID: id,
+			TransactionID: txID, Details: "u-" + id, Timestamp: sentinel,
 		}); err != nil {
 			t.Fatalf("Record %s: %v", id, err)
 		}
@@ -62,14 +62,14 @@ func TestSMAuditStamp_StampsTheTransactionsEventsAndNothingElse(t *testing.T) {
 	// Two events that must NOT move: one belonging to no transaction, one
 	// labelled with a transaction that never commits here.
 	if err := audit.Record(ctx, "e-1", spi.StateMachineEvent{
-		EventType: spi.SMEventFinished, EntityID: "e-1", TimeUUID: "u-none",
-		Details: "no transaction", Timestamp: sentinel,
+		EventType: spi.SMEventFinished, EntityID: "e-1",
+		Details: "u-none", Timestamp: sentinel,
 	}); err != nil {
 		t.Fatalf("Record unlabelled: %v", err)
 	}
 	if err := audit.Record(ctx, "e-1", spi.StateMachineEvent{
-		EventType: spi.SMEventFinished, EntityID: "e-1", TimeUUID: "u-foreign",
-		TransactionID: "tx-someone-else", Details: "foreign label", Timestamp: sentinel,
+		EventType: spi.SMEventFinished, EntityID: "e-1",
+		TransactionID: "tx-someone-else", Details: "u-foreign", Timestamp: sentinel,
 	}); err != nil {
 		t.Fatalf("Record foreign: %v", err)
 	}
@@ -96,13 +96,13 @@ func TestSMAuditStamp_StampsTheTransactionsEventsAndNothingElse(t *testing.T) {
 			case txID:
 				if !ev.Timestamp.Equal(submit) {
 					t.Errorf("event %s on %s carries %s, want the commit instant %s",
-						ev.TimeUUID, id, ev.Timestamp, submit)
+						ev.Details, id, ev.Timestamp, submit)
 				}
 				stamped++
 			default:
 				if !ev.Timestamp.Equal(sentinel) {
 					t.Errorf("event %s on %s was restamped to %s, but it does not belong to the committing "+
-						"transaction — its recorded time %s must survive", ev.TimeUUID, id, ev.Timestamp, sentinel)
+						"transaction — its recorded time %s must survive", ev.Details, id, ev.Timestamp, sentinel)
 				}
 			}
 		}

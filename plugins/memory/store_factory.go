@@ -120,6 +120,12 @@ type StoreFactory struct {
 	txManager   *TransactionManager
 	searchStore *AsyncSearchStore
 	applyFunc   ApplyFunc
+	// uuids is the id generator the transaction manager was built with. Set
+	// once per NewTransactionManager call (which is how it is always
+	// installed — the factory's own construction and every test helper that
+	// swaps the manager go through it) and read by StateMachineAuditStore's
+	// Record to assign the event id (see spi.StateMachineAuditStore).
+	uuids spi.UUIDGenerator
 
 	// uniqueClaims and claimsByEntity maintain the in-memory unique-key claim index.
 	// Both are guarded by entityMu (write lock for mutation, read lock for lookup).

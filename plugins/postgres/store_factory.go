@@ -16,6 +16,11 @@ type StoreFactory struct {
 	tm                *TransactionManager // may be nil if transactions not configured
 	applyFunc         ApplyFunc           // set via SetApplyFunc; used by modelStore.Get to fold the schema delta log
 	unregisterMetrics func()              // stops the pool-stat OTel callback; nil when NewStoreFactory/newStoreFactoryWithConfig built this factory outside Plugin.NewFactory
+	// uuids is the id generator the transaction manager carries, mirrored
+	// here whenever the manager is wired in (setTransactionManager) so that
+	// StateMachineAuditStore.Record can read it without going through the
+	// TransactionManager (see spi.StateMachineAuditStore).
+	uuids spi.UUIDGenerator
 }
 
 // ApplyFunc replays an opaque SchemaDelta onto a base schema
@@ -88,6 +93,7 @@ func (f *StoreFactory) SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) 
 // caller, and opening it would invite a race the factory isn't designed for.
 func (f *StoreFactory) setTransactionManager(tm *TransactionManager) {
 	f.tm = tm
+	f.uuids = tm.uuids
 }
 
 // Pool returns the underlying connection pool.
@@ -243,7 +249,7 @@ func (f *StoreFactory) StateMachineAuditStore(ctx context.Context) (spi.StateMac
 	if err != nil {
 		return nil, err
 	}
-	return &smAuditStore{q: f.querier(), tenantID: tid}, nil
+	return &smAuditStore{q: f.querier(), tenantID: tid, uuids: f.uuids}, nil
 }
 
 func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore, error) {

@@ -18,7 +18,9 @@ func setupSMAuditTest(t *testing.T) *postgres.StoreFactory {
 		t.Fatalf("migration failed: %v", err)
 	}
 	t.Cleanup(func() { _ = postgres.DropSchemaForTest(pool) })
-	return postgres.NewStoreFactory(pool)
+	factory := postgres.NewStoreFactory(pool)
+	factory.InitTransactionManager(newTestUUIDGenerator())
+	return factory
 }
 
 func getSMAuditStore(t *testing.T, factory *postgres.StoreFactory, tid spi.TenantID) spi.StateMachineAuditStore {
@@ -67,12 +69,14 @@ func TestSMAuditStore_RecordAndGetEvents(t *testing.T) {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
 
-	// Verify order (ascending by timestamp)
-	if events[0].TimeUUID != "uuid-1" {
-		t.Errorf("expected first event uuid-1, got %s", events[0].TimeUUID)
+	// Verify order (ascending by timestamp) — by Details, since the store
+	// assigns TimeUUID itself and a caller's value carries no ordering
+	// information (see spi.StateMachineAuditStore).
+	if events[0].Details != "started" {
+		t.Errorf("expected first event 'started', got %s", events[0].Details)
 	}
-	if events[1].TimeUUID != "uuid-2" {
-		t.Errorf("expected second event uuid-2, got %s", events[1].TimeUUID)
+	if events[1].Details != "transitioned" {
+		t.Errorf("expected second event 'transitioned', got %s", events[1].Details)
 	}
 
 	// Verify field preservation
@@ -128,8 +132,8 @@ func TestSMAuditStore_GetEventsByTransaction(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("expected 2 events for tx-A, got %d", len(events))
 	}
-	if events[0].TimeUUID != "uuid-1" || events[1].TimeUUID != "uuid-2" {
-		t.Errorf("unexpected event order: %v, %v", events[0].TimeUUID, events[1].TimeUUID)
+	if events[0].Details != "e1" || events[1].Details != "e2" {
+		t.Errorf("unexpected event order: %v, %v", events[0].Details, events[1].Details)
 	}
 }
 
@@ -195,7 +199,6 @@ func TestSMAuditStore_EventDataPreservation(t *testing.T) {
 	e := spi.StateMachineEvent{
 		EventType:     spi.SMEventStateProcessResult,
 		EntityID:      "entity-1",
-		TimeUUID:      "uuid-data",
 		State:         "PROCESSING",
 		TransactionID: "tx-data",
 		Details:       "data test",

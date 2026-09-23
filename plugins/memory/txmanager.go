@@ -182,6 +182,7 @@ var _ spi.TransactionManager = (*TransactionManager)(nil)
 // (see seedLastSubmitTime).
 func (f *StoreFactory) NewTransactionManager(uuids spi.UUIDGenerator) *TransactionManager {
 	floor := f.seedLastSubmitTime()
+	f.uuids = uuids
 	tm := &TransactionManager{
 		factory:             f,
 		uuids:               uuids,

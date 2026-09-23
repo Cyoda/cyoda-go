@@ -2,7 +2,10 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"time"
+
+	"github.com/google/uuid"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
@@ -12,7 +15,14 @@ type StateMachineAuditStore struct {
 	factory *StoreFactory
 }
 
+// Record assigns the event its id (see spi.StateMachineAuditStore): a
+// caller's TimeUUID is ignored.
 func (s *StateMachineAuditStore) Record(ctx context.Context, entityID string, event spi.StateMachineEvent) error {
+	if s.factory.uuids == nil {
+		return fmt.Errorf("failed to record state machine event for entity %s: no id generator configured", entityID)
+	}
+	event.TimeUUID = uuid.UUID(s.factory.uuids.NewTimeUUID()).String()
+
 	s.factory.smAuditMu.Lock()
 	defer s.factory.smAuditMu.Unlock()
 	if s.factory.smAudit[s.tenant] == nil {

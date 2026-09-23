@@ -65,6 +65,11 @@ type StoreFactory struct {
 	cfg       config
 	tm        *transactionManager
 	applyFunc ApplyFunc
+	// uuids is the id generator the transaction manager was installed with
+	// (initTransactionManager is the sole caller of newTransactionManager).
+	// StateMachineAuditStore.Record reads it to assign the event id (see
+	// spi.StateMachineAuditStore).
+	uuids spi.UUIDGenerator
 
 	closeMu sync.Mutex
 	closed  bool
@@ -390,7 +395,7 @@ func (f *StoreFactory) StateMachineAuditStore(ctx context.Context) (spi.StateMac
 	if err != nil {
 		return nil, err
 	}
-	return &smAuditStore{db: f.db, tenantID: tid}, nil
+	return &smAuditStore{db: f.db, tenantID: tid, uuids: f.uuids}, nil
 }
 
 func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore, error) {
@@ -445,6 +450,7 @@ func (f *StoreFactory) SupportsCompositeUniqueKeys() bool { return true }
 // Called by Plugin.NewFactory after the factory is created.
 // Seeds lastSubmitTime from the database to maintain monotonicity across restarts.
 func (f *StoreFactory) initTransactionManager(uuids spi.UUIDGenerator) {
+	f.uuids = uuids
 	f.tm = newTransactionManager(f, uuids)
 	f.tm.seedLastSubmitTime()
 }

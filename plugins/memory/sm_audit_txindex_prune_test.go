@@ -56,7 +56,7 @@ func TestSMAuditTxIndex_PrunedOnCommit(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	if err := audit.Record(txCtx, "e-1", spi.StateMachineEvent{
-		EventType: spi.SMEventStarted, EntityID: "e-1", TimeUUID: "u-1",
+		EventType: spi.SMEventStarted, EntityID: "e-1",
 		TransactionID: txID, Details: "in tx", Timestamp: sentinel,
 	}); err != nil {
 		t.Fatalf("Record: %v", err)
@@ -116,7 +116,7 @@ func TestSMAuditTxIndex_PrunedOnRollback(t *testing.T) {
 		t.Fatalf("Begin: %v", err)
 	}
 	if err := audit.Record(txCtx, "e-1", spi.StateMachineEvent{
-		EventType: spi.SMEventStarted, EntityID: "e-1", TimeUUID: "u-1",
+		EventType: spi.SMEventStarted, EntityID: "e-1",
 		TransactionID: txID, Details: "in tx", Timestamp: sentinel,
 	}); err != nil {
 		t.Fatalf("Record: %v", err)

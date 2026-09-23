@@ -16,9 +16,9 @@ func TestSMAuditRecord(t *testing.T) {
 	}
 
 	events := []spi.StateMachineEvent{
-		{EventType: spi.SMEventStarted, EntityID: "e-1", TimeUUID: "t1", Details: "started", TransactionID: "tx-1"},
-		{EventType: spi.SMEventTransitionMade, EntityID: "e-1", TimeUUID: "t2", State: "APPROVED", Details: "transition", TransactionID: "tx-1"},
-		{EventType: spi.SMEventFinished, EntityID: "e-1", TimeUUID: "t3", Details: "done", TransactionID: "tx-1"},
+		{EventType: spi.SMEventStarted, EntityID: "e-1", Details: "started", TransactionID: "tx-1"},
+		{EventType: spi.SMEventTransitionMade, EntityID: "e-1", State: "APPROVED", Details: "transition", TransactionID: "tx-1"},
+		{EventType: spi.SMEventFinished, EntityID: "e-1", Details: "done", TransactionID: "tx-1"},
 	}
 	for _, ev := range events {
 		if err := store.Record(ctx, "e-1", ev); err != nil {
