@@ -247,10 +247,13 @@ func (h *Handler) GetStateMachineFinishedEvent(w http.ResponseWriter, r *http.Re
 	// (internal/domain/workflow/engine.go Loopback), so a transaction can
 	// carry more than one STATE_MACHINE_FINISH event for this entity. The
 	// one that sorts first under compareKeys — newest instant, then the
-	// eventId's time field DESC, then bytes DESC — is the entity's final
-	// state machine outcome in that transaction; every backend agrees on
+	// eventId's time field DESC, then bytes DESC — is the first in the
+	// audit order, normally the last one recorded; every backend agrees on
 	// this pick even though the store's listing order is unspecified when
-	// two events share an instant (SQL orders only by timestamp).
+	// two events share an instant (SQL orders only by timestamp). Spec §4.4
+	// does not promise recording order for state machine events of one
+	// instant, so this is the deterministic, order-independent pick — not
+	// an assertion that it IS the transaction's final outcome.
 	var latest *auditItem
 	for _, smEvent := range smEvents {
 		if smEvent.EventType != spi.SMEventFinished {

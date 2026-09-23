@@ -50,7 +50,7 @@ Query parameters (all optional):
 - `cursor`: opaque string — encodes the sort key (see order above) of the last event on the previous page; pass `nextCursor` from the previous response to fetch the next page; omit for the first page. Filters may change between pages — the walk continues from the cursor's position under the new filters. A cursor that cannot be decoded or fails validation, including a cursor from an earlier server build, answers `400 BAD_REQUEST`.
 - `limit`: string-encoded integer, 1–1000 (default 20; values above 1000 are clamped to 1000)
 
-A walk that pages through with a fixed `cursor`/`limit` returns every event committed before the walk started — read outside a transaction — exactly once. An event committed while the walk is in progress may be missed; it is never duplicated or skipped among events that existed at the start.
+A walk that follows `nextCursor` page by page returns every event committed before the walk started — read outside a transaction — exactly once. An event committed while the walk is in progress may be missed; it is never duplicated or skipped among events that existed at the start.
 
 Response: `200 OK`, `application/json` — `EntityAuditEventsResponseDto`:
 
@@ -103,6 +103,8 @@ Response: `200 OK`, `application/json` — `EntityAuditEventsResponseDto`:
 **GET /api/audit/entity/{entityId}/workflow/{transactionId}/finished** — Get workflow finished event
 
 Retrieves the `STATE_MACHINE_FINISH` audit event for a specific entity and transaction. Provides direct access to the workflow outcome without scanning all audit events.
+
+A transaction can carry more than one `STATE_MACHINE_FINISH` event for the entity — a joined callback's loopback save emits its own START/FINISH pair when it updates an entity whose workflow already ran earlier in the same transaction. When that happens, this endpoint returns the one that sorts first in the audit order (see Order above; normally the last one recorded).
 
 - `entityId` (path): UUID
 - `transactionId` (path): UUID

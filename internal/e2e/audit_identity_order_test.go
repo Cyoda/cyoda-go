@@ -16,7 +16,7 @@ import (
 )
 
 // audit_identity_order_test.go — E2E (Postgres, full HTTP stack) coverage for
-// the audit event identity/order/cursor contract added by Task 8/9:
+// the audit event identity/order/cursor contract:
 //
 //   - EntityChange events carry `version`; StateMachine events carry a
 //     store-assigned `eventId` (a v1 UUID).
@@ -307,6 +307,18 @@ func TestAuditE2E_TwoJoinedSavesHaveDistinctVersions(t *testing.T) {
 		}
 		seen[id] = true
 	}
+
+	// A second read returns the identical eventIds in the identical order —
+	// eventId is a stored identity, not recomputed per request.
+	events2, _ := getAuditPage(t, h, secondaryID, "limit=1000")
+	if len(events2) != len(events) {
+		t.Fatalf("second read returned %d events, want %d", len(events2), len(events))
+	}
+	for i := range events {
+		if events2[i]["eventId"] != events[i]["eventId"] {
+			t.Fatalf("position %d: eventId changed across reads: first=%v second=%v", i, events[i]["eventId"], events2[i]["eventId"])
+		}
+	}
 }
 
 // TestAuditE2E_WalkOverOneInstantTie walks the same kind of secondary
@@ -321,6 +333,7 @@ func TestAuditE2E_WalkOverOneInstantTie(t *testing.T) {
 	if len(all) < 3 {
 		t.Fatalf("expected several audit events sharing the commit instant, got %d", len(all))
 	}
+	assertStrictOrder(t, all)
 
 	var walked []map[string]any
 	cursor := ""
@@ -350,6 +363,7 @@ func TestAuditE2E_WalkOverOneInstantTie(t *testing.T) {
 	if len(walked) != len(all) {
 		t.Fatalf("walk returned %d events, want %d", len(walked), len(all))
 	}
+	assertStrictOrder(t, walked)
 	for i := range all {
 		if walked[i]["auditEventType"] != all[i]["auditEventType"] ||
 			fmt.Sprintf("%v", walked[i]["version"]) != fmt.Sprintf("%v", all[i]["version"]) ||
@@ -450,8 +464,9 @@ func TestAuditE2E_NewEventsMidWalk(t *testing.T) {
 }
 
 // TestAuditE2E_Cursor400 proves every listed malformed-cursor shape is
-// rejected with 400 BAD_REQUEST, even against an entity that DOES exist —
-// the cursor is validated before any store lookup runs.
+// rejected with 400 BAD_REQUEST, both against an entity that exists and
+// against one that does not — the cursor is validated before any store
+// lookup runs, so a nonexistent entity id never turns the answer into 404.
 func TestAuditE2E_Cursor400(t *testing.T) {
 	const model = "audit-e2e-cursor400-5"
 	importModelSampleE2E(t, model, 1, `{"name":"A"}`)
@@ -479,4 +494,11 @@ func TestAuditE2E_Cursor400(t *testing.T) {
 			assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
 		})
 	}
+
+	t.Run("nonexistent-entity", func(t *testing.T) {
+		nonexistentID := uuid.New().String()
+		path := fmt.Sprintf("/api/audit/entity/%s?cursor=%s", nonexistentID, url.QueryEscape("20"))
+		resp := doAuth(t, http.MethodGet, path, "")
+		assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+	})
 }

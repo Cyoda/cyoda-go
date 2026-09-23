@@ -91,3 +91,18 @@ where in the stack it is minted.
 - Move the cursor from a per-source offset to a position cursor (§3),
   encoding the same sort key the order now uses, and reject an unreadable or
   invalid cursor rather than restarting the walk silently.
+- Apply the same tie-break to the finished-event endpoint when a transaction
+  has more than one finished event for the entity (§6).
+
+## 6. The finished-event endpoint's tie-break
+
+A transaction can carry more than one `STATE_MACHINE_FINISH` event for the
+same entity: a joined callback's loopback save emits its own START/FINISH
+pair when it updates an entity whose workflow already ran earlier in the
+same transaction. `GET
+/audit/entity/{entityId}/workflow/{transactionId}/finished` picks among
+them the one that sorts first under the §2 order — normally the last one
+recorded, but not promised to be, since §2 does not promise recording order
+for state machine events of one instant. Cloud should apply the same §2
+comparator when more than one finished event exists for a transaction,
+rather than returning whichever one its store lists first.

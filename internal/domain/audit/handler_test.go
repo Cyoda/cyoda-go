@@ -341,9 +341,10 @@ func TestCursor_NewEventsMidWalk(t *testing.T) {
 	}
 }
 
-// TestCursor_Undecodable_Returns400 covers Ruling R2: a malformed cursor is
-// rejected before any store call runs, so it answers 400 even against a
-// nonexistent entity — not the 404 a store lookup would otherwise produce.
+// TestCursor_Undecodable_Returns400: request validation precedes the entity
+// lookup, so a malformed cursor is rejected before any store call runs and
+// answers 400 even against a nonexistent entity — not the 404 a store lookup
+// would otherwise produce.
 func TestCursor_Undecodable_Returns400(t *testing.T) {
 	srv := newTestServer(t)
 	importAndLockModel(t, srv.URL, "AuditBadCursor", 1, `{"name":"Alice"}`)
@@ -358,7 +359,7 @@ func TestCursor_Undecodable_Returns400(t *testing.T) {
 	resp.Body.Close()
 
 	// The old offset cursor is rejected before the entity lookup even for an
-	// entity that does not exist: R2 validates the request before any store
+	// entity that does not exist: request validation precedes any store
 	// call, so this must not fall through to 404.
 	missingResp := getAuditEventsRaw(t, srv.URL, "00000000-0000-0000-0000-000000000099", "cursor=20")
 	if missingResp.StatusCode != http.StatusBadRequest {

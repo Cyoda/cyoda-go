@@ -27,10 +27,9 @@ import (
 //     stable across repeated GETs.
 //  2. Order: newest first — by instant, EntityChange before StateMachine at a
 //     tied instant, then version DESC (EntityChange) or the eventId's time
-//     field DESC then bytes DESC (StateMachine). This mirrors
-//     internal/domain/audit.compareKeys exactly (audit_identity_test.go has
-//     no local reimplementation to drift from it silently — see
-//     auditKeyLess below).
+//     field DESC then bytes DESC (StateMachine). This mirrors compareKeys in
+//     internal/domain/audit exactly (see auditKeyLess below) — keep the two
+//     in step.
 //  3. Cursor: walking the trail with limit=1 and following nextCursor
 //     reconstructs the same sequence as one unpaged GET.
 //

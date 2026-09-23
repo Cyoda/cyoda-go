@@ -851,10 +851,18 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   number instead of the next one. It now counts from the last row of any
   kind, matching postgres, sqlite and the commercial backend.
 
-- **The sqlite backend's generated audit event ids are time-based (UUID
-  version 1), not random (version 4).** Its default generator produced
-  random ids against the SPI's documented time-ordered contract for a state
-  machine event's id.
+- **sqlite's default id generator returned random (version 4) UUIDs for
+  transaction and savepoint ids, against the SPI's time-ordered contract.**
+  It now returns time-based (version 1) ids, and the same generator now
+  mints state machine event ids too.
+
+- **`GET .../workflow/{transactionId}/finished` could return either of a
+  transaction's two `STATE_MACHINE_FINISH` events on postgres/sqlite.** A
+  second `FINISH` event arises when a joined callback updates an entity
+  whose workflow already ran earlier in the same transaction; the endpoint
+  returned whichever one the store happened to list first. It now returns
+  the one that sorts first in the audit order (normally the last one
+  recorded).
 
 ## [0.8.4] — 2026-09-09
 
