@@ -28,6 +28,36 @@ func TestCursor_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestCursor_LongestReal_FitsCap encodes the longest canonical cursor shape
+// (a StateMachine key with a 9-digit-nanosecond timestamp) and checks it
+// fits under maxCursorLen with room to spare, and that it still round-trips.
+func TestCursor_LongestReal_FitsCap(t *testing.T) {
+	at := time.Date(2026, 9, 23, 10, 0, 0, 123456789, time.UTC)
+	k := eventKey{at: at, kind: "StateMachine", eventID: uuid.MustParse("5f1c1b0e-6d1a-11f1-8000-000000000001")}
+	s := encodeCursor(k)
+	if len(s) > maxCursorLen {
+		t.Fatalf("longest real cursor is %d chars, want <= %d: %q", len(s), maxCursorLen, s)
+	}
+	got, err := decodeCursor(s)
+	if err != nil || compareKeys(got, k) != 0 {
+		t.Fatalf("round trip %+v -> %+v, %v", k, got, err)
+	}
+}
+
+// TestCursor_RejectsOverLength confirms a cursor longer than maxCursorLen is
+// rejected before any base64/JSON decoding is attempted, so an oversized
+// cursor cannot force wasted decode work.
+func TestCursor_RejectsOverLength(t *testing.T) {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	long := make([]byte, maxCursorLen+1)
+	for i := range long {
+		long[i] = alphabet[i%len(alphabet)]
+	}
+	if _, err := decodeCursor(string(long)); err == nil {
+		t.Errorf("%d-char cursor of valid base64url characters accepted, want errBadCursor", len(long))
+	}
+}
+
 func TestCursor_Rejects(t *testing.T) {
 	enc := func(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
 	for name, c := range map[string]string{

@@ -415,3 +415,56 @@ func RunTenantIsolationChangesAtPITInvisible(t *testing.T, fixture BackendFixtur
 			string(bodyReal), string(bodyBogus))
 	}
 }
+
+// RunTenantIsolationWorkflowFinishedInvisible pins the contract that the
+// workflow-finished door (GET /api/audit/entity/{id}/workflow/{txId}/finished)
+// is tenant-isolated the same way as the search door already pinned by
+// RunTenantIsolationEntities' audit check. Tenant A creates an entity
+// through a workflow that finishes (setupSimpleWorkflow — an auto
+// transition to CREATED), producing a STATE_MACHINE_FINISH event for its
+// transaction. Tenant B then asks for that same entity/transaction pair
+// on the finished endpoint and must get 404 — never tenant A's event.
+func RunTenantIsolationWorkflowFinishedInvisible(t *testing.T, fixture BackendFixture) {
+	tenantA := fixture.NewTenant(t)
+	tenantB := fixture.NewTenant(t)
+	clientA := client.NewClient(fixture.BaseURL(), tenantA.Token)
+	clientB := client.NewClient(fixture.BaseURL(), tenantB.Token)
+
+	const modelName = "iso-workflow-finished-test"
+	const modelVersion = 1
+
+	// Tenant A: set up model + workflow + entity, capturing the txID that
+	// produced the STATE_MACHINE_FINISH event.
+	setupSimpleWorkflow(t, clientA, modelName, modelVersion)
+	entityID, txIDA, err := clientA.CreateEntityWithTxID(t, modelName, modelVersion,
+		`{"name":"TenantA","amount":10,"status":"new"}`)
+	if err != nil {
+		t.Fatalf("CreateEntityWithTxID (tenant A): %v", err)
+	}
+	if txIDA == "" {
+		t.Fatal("tenant A create returned empty transactionId — needed to drive cross-tenant lookup")
+	}
+
+	// Sanity: tenant A can resolve its own finished event (200).
+	statusOwn, resultOwn, err := clientA.GetWorkflowFinished(t, entityID, txIDA)
+	if err != nil {
+		t.Fatalf("tenant A GetWorkflowFinished(own): transport error: %v", err)
+	}
+	if statusOwn != http.StatusOK {
+		t.Fatalf("tenant A GetWorkflowFinished(own): status got %d, want 200 (body=%v)", statusOwn, resultOwn)
+	}
+
+	// Tenant B: same entity/transaction pair -> 404, and must not receive
+	// tenant A's event. GetWorkflowFinished returns a non-nil error on any
+	// non-2xx status (by design — see its doc comment), so a 404 here is
+	// the expected outcome, not a transport failure; only the status is
+	// asserted, matching the GetEntityRaw/DeleteEntityRaw pattern used by
+	// the other cross-tenant checks in this file.
+	statusB, resultB, _ := clientB.GetWorkflowFinished(t, entityID, txIDA)
+	if statusB != http.StatusNotFound {
+		t.Errorf("tenant B GetWorkflowFinished(tenant A's entity/tx): status got %d, want 404 (body=%v)", statusB, resultB)
+	}
+	if _, hasEventID := resultB["eventId"]; hasEventID {
+		t.Errorf("tenant B received an eventId from tenant A's finished endpoint: %v", resultB)
+	}
+}

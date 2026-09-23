@@ -477,6 +477,14 @@ func TestAuditE2E_Cursor400(t *testing.T) {
 		return base64.RawURLEncoding.EncodeToString([]byte(jsonBody))
 	}
 
+	// A 257-char string of valid base64url characters: rejected on length
+	// alone, before any base64/JSON decoding is attempted.
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	overLong := make([]byte, 257)
+	for i := range overLong {
+		overLong[i] = alphabet[i%len(alphabet)]
+	}
+
 	cases := []struct {
 		name   string
 		cursor string
@@ -486,6 +494,7 @@ func TestAuditE2E_Cursor400(t *testing.T) {
 		{"unknown-kind", b64(`{"v":1,"t":"2026-09-23T10:00:00Z","k":"System","n":1}`)},
 		{"statemachine-bad-uuid", b64(`{"v":1,"t":"2026-09-23T10:00:00Z","k":"StateMachine","e":"x"}`)},
 		{"entitychange-zero-version", b64(`{"v":1,"t":"2026-09-23T10:00:00Z","k":"EntityChange","n":0}`)},
+		{"over-length", string(overLong)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

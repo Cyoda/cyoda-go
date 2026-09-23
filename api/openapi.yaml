@@ -435,6 +435,7 @@ paths:
           required: false
           schema:
             type: string
+            maxLength: 256
         - name: limit
           in: query
           description: Maximum number of audit events to return per page
