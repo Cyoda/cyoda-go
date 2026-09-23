@@ -1260,7 +1260,6 @@ func (e *Engine) recordEvent(auditStore spi.StateMachineAuditStore, ctx context.
 	event := spi.StateMachineEvent{
 		EventType:     eventType,
 		EntityID:      entityID,
-		TimeUUID:      uuid.UUID(e.uuids.NewTimeUUID()).String(),
 		State:         state,
 		TransactionID: txID,
 		Details:       details,
