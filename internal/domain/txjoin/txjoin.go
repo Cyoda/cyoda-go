@@ -169,6 +169,17 @@ func (j *Joiner) Verify(tok string) (*Pass, error) {
 // answered TRANSACTION_NOT_FOUND as before; CALLOUT_SUPERSEDED is the answer
 // while the transaction is still open.
 //
+// That 403 and 404 are different answers tells a caller nothing it did not
+// already hold. The transaction is the one claims.TxRef names — read from the
+// pass this Joiner has just verified, never from the caller — so there is
+// nothing to vary and nothing to enumerate. Reaching the 403 at all means
+// presenting a JWT for one tenant together with a pass that verifies against
+// this cluster's key and names another tenant's transaction, which cannot be
+// minted and can only be held if a live pass has already leaked; whoever holds
+// it knows that transaction exists, because the pass was minted for it. The
+// three 404 causes are deliberately one answer: a transaction that never
+// existed does not read differently from one that has finished.
+//
 // Error mapping:
 //
 //	spi.ErrTxTenantMismatch                      → 403 FORBIDDEN
