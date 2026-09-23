@@ -31,7 +31,7 @@ func TestRunLocal_MemberResponseUnreadable_IsTerminal_NoMarkerLeak(t *testing.T)
 	if res.Failure == nil || res.Failure.Kind != contract.Terminal {
 		t.Fatalf("failure = %+v, want Terminal", res.Failure)
 	}
-	const wantMsg = "the compute member's response could not be read"
+	const wantMsg = "the compute member's response could not be read: the payload did not decode"
 	if res.Failure.Message != wantMsg {
 		t.Errorf("Message = %q, want %q", res.Failure.Message, wantMsg)
 	}

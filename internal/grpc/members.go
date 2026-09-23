@@ -32,15 +32,21 @@ type SendFunc func(ce *cepb.CloudEvent) error
 type ProcessingResponse struct {
 	Payload json.RawMessage
 	Success bool
-	// NullSuccess is true when the answer's `success` key carried the literal
-	// null: neither the schema's default, which belongs to an absent key, nor
-	// a boolean. Such an answer cannot be read at all, so the dispatch refuses
-	// it before it reads a verdict, a payload or a result out of it (see
-	// reportedSuccess, in streaming.go). Success is left false beside it, so a
-	// reader that knows only the flag still fails closed.
-	NullSuccess bool
-	Error       string
-	Matches     *bool // for criteria responses (nil for processor responses)
+	// Unreadable is this node's own client-safe reason when the answer arrived
+	// but cannot be read — the literal null in `success`, which is neither the
+	// schema's default (that belongs to an absent key) nor a boolean, and a
+	// payload that does not decode into the answer's shape at all. Empty when
+	// the answer is readable. The dispatch refuses such an answer before it
+	// reads a verdict, a payload or a result out of it, and Success is left
+	// false beside it, so a reader that knows only the flag still fails closed.
+	//
+	// It carries a reason rather than a flag per cause: both are the same
+	// event to a caller — the member answered, and the answer said nothing the
+	// platform can act on — and the callout must end on either at once rather
+	// than wait out an answer limit for an answer that has already arrived.
+	Unreadable string
+	Error      string
+	Matches    *bool // for criteria responses (nil for processor responses)
 	// Reason is the criteria-response explanation for a matches=false result
 	// (EntityCriteriaCalculationResponse.reason). Empty for processor
 	// responses and for criteria that supply no reason.

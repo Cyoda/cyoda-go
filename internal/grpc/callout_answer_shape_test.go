@@ -93,7 +93,7 @@ func TestDispatchCriteria_MissingMatchesIsUnreadable(t *testing.T) {
 	if failure.Kind != contract.Terminal {
 		t.Errorf("kind = %s; want %s: another compute member would answer no better", failure.Kind, contract.Terminal)
 	}
-	const want = "the compute member's response could not be read"
+	const want = "the compute member's response could not be read: matches was missing"
 	if failure.Message != want {
 		t.Errorf("message = %q; want %q", failure.Message, want)
 	}

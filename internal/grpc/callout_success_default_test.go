@@ -52,6 +52,9 @@ func replyOnWire(t *testing.T, registry *MemberRegistry, memberID string, sentCh
 const (
 	wantUnreadableMessage  = "the compute member's response could not be read"
 	wantNullSuccessMessage = wantUnreadableMessage + ": success was null"
+	wantUndecodableMessage = wantUnreadableMessage + ": the answer did not decode"
+	wantNoVerdictMessage   = wantUnreadableMessage + ": matches was missing"
+	wantBadPayloadMessage  = wantUnreadableMessage + ": the payload did not decode"
 )
 
 // memberFailure asserts that err is a MemberFailed carrying the member's own
@@ -107,8 +110,9 @@ func TestHandleResponses_SuccessKeepsItsThreeStates(t *testing.T) {
 				if resp.Success != tc.wantSuccess {
 					t.Errorf("success = %t; want %t", resp.Success, tc.wantSuccess)
 				}
-				if resp.NullSuccess != tc.wantNullSuccess {
-					t.Errorf("nullSuccess = %t; want %t", resp.NullSuccess, tc.wantNullSuccess)
+				gotUnreadable := resp.Unreadable != ""
+				if gotUnreadable != tc.wantNullSuccess {
+					t.Errorf("unreadable = %q; want unreadable=%t", resp.Unreadable, tc.wantNullSuccess)
 				}
 			})
 		}
@@ -141,7 +145,7 @@ func TestDispatchProcessor_SuccessDefaultsToTrue(t *testing.T) {
 		},
 		"omitted, unreadable payload": {
 			body:     `{"requestId":%q,"payload":"not-an-object"}`,
-			wantKind: contract.Terminal, wantMsg: wantUnreadableMessage,
+			wantKind: contract.Terminal, wantMsg: wantBadPayloadMessage,
 		},
 		"explicit null": {
 			body:     `{"requestId":%q,"success":null,"payload":{"data":{"foo":"changed"}}}`,
@@ -239,7 +243,7 @@ func TestDispatchCriteria_SuccessDefaultsToTrue(t *testing.T) {
 		},
 		"omitted, no verdict": {
 			body:     `{"requestId":%q,"reason":"no verdict here"}`,
-			wantKind: contract.Terminal, wantMsg: wantUnreadableMessage,
+			wantKind: contract.Terminal, wantMsg: wantNoVerdictMessage,
 		},
 		// The shape where reading the wrong field would do real damage: a
 		// verdict is there to be read, and reading it would let a member whose
@@ -247,6 +251,28 @@ func TestDispatchCriteria_SuccessDefaultsToTrue(t *testing.T) {
 		"explicit null": {
 			body:     `{"requestId":%q,"success":null,"matches":true}`,
 			wantKind: contract.Terminal, wantMsg: wantNullSuccessMessage,
+		},
+		// The same class of defect as the null: the answer arrived and cannot
+		// be read. It must end the callout where the null does, at once — not
+		// by going unanswered until the answer limit runs out, which spends
+		// the whole retry budget and reports a retryable 503 about a member
+		// that did in fact answer.
+		"success is not a boolean": {
+			body:     `{"requestId":%q,"success":"yes","matches":true}`,
+			wantKind: contract.Terminal, wantMsg: wantUndecodableMessage,
+		},
+		"matches is not a boolean": {
+			body:     `{"requestId":%q,"success":true,"matches":"maybe"}`,
+			wantKind: contract.Terminal, wantMsg: wantUndecodableMessage,
+		},
+		// The id AFTER the key that fails, which is the only ordering that
+		// exercises the recovery: encoding/json fills fields in the order the
+		// document lists them, so an id that comes first is already set when
+		// the decode gives up, and the callout would end even without the
+		// second, narrower decode that exists for this case.
+		"success is not a boolean, id last": {
+			body:     `{"success":"yes","matches":true,"requestId":%q}`,
+			wantKind: contract.Terminal, wantMsg: wantUndecodableMessage,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -373,5 +399,70 @@ func TestDispatchFunction_SuccessDefaultsToTrue(t *testing.T) {
 				t.Errorf("result = %s; want %s", res.Value, tc.wantVal)
 			}
 		})
+	}
+}
+
+// The recovery of the request id is the mechanism that turns an answer which
+// does not decode into a callout that ends now rather than one that waits out
+// its answer limit. These drive the three decoders directly, so what is pinned
+// is the completion itself: which reason arrives, and whether anything arrives
+// at all.
+func TestHandleResponses_UndecodableAnswerCompletesTheRequest(t *testing.T) {
+	for kind, decode := range map[string]func(*Member, json.RawMessage){
+		"processor": handleProcessorResponse,
+		"criteria":  handleCriteriaResponse,
+		"function":  handleFunctionResponse,
+	} {
+		for state, body := range map[string]string{
+			// The id before and after the key that fails: only the second
+			// needs the narrower decode, and both must end the callout.
+			"id first": `{"requestId":"r-1","success":"yes"}`,
+			"id last":  `{"success":"yes","requestId":"r-1"}`,
+		} {
+			t.Run(kind+"/"+state, func(t *testing.T) {
+				resp := decodeAnswer(t, decode, body)
+				if resp.Unreadable != "the answer did not decode" {
+					t.Errorf("unreadable = %q; want the undecodable reason", resp.Unreadable)
+				}
+				if resp.Success {
+					t.Error("success = true on an answer that did not decode; a flag-only reader must fail closed")
+				}
+			})
+		}
+	}
+}
+
+// An answer that names no request cannot be matched to the callout waiting for
+// it, so nothing is completed and the answer limit stays the only bound. The
+// callout must not be ended by some other request's id, and the decoder must
+// not panic on bytes that are not JSON at all.
+func TestHandleResponses_AnswerWithNoRequestIDCompletesNothing(t *testing.T) {
+	for kind, decode := range map[string]func(*Member, json.RawMessage){
+		"processor": handleProcessorResponse,
+		"criteria":  handleCriteriaResponse,
+		"function":  handleFunctionResponse,
+	} {
+		for state, body := range map[string]string{
+			"not JSON at all":    `this is not json`,
+			"no requestId":       `{"success":"yes"}`,
+			"requestId is empty": `{"requestId":"","success":"yes"}`,
+			"requestId not text": `{"requestId":7,"success":"yes"}`,
+		} {
+			t.Run(kind+"/"+state, func(t *testing.T) {
+				registry := NewMemberRegistry()
+				member := registry.Register("m-1", testTenantID, []string{"python"},
+					func(*cepb.CloudEvent) error { return nil }, nil)
+				ch, err := member.TrackRequest("r-1")
+				if err != nil {
+					t.Fatalf("TrackRequest: %v", err)
+				}
+				decode(member, json.RawMessage(body))
+				select {
+				case got := <-ch:
+					t.Fatalf("the pending request was completed with %+v; an answer naming no request must complete nothing", got)
+				default:
+				}
+			})
+		}
 	}
 }

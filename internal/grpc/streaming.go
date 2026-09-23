@@ -229,7 +229,7 @@ func (s *CloudEventsServiceImpl) keepAliveLoop(ctx context.Context, member *Memb
 // instead handed the literal `null` to decode, which is what tells the two
 // apart here. The three decoders resolve the flag through this one type, so
 // ProcessingResponse.Success stays a plain bool that every reader downstream
-// can trust, beside the NullSuccess that marks the answer unreadable.
+// can trust, beside the Unreadable reason that marks the answer refused.
 //
 // The default stands in for a flag, never for a verdict: `matches` on a
 // criteria response is kept absent (see handleCriteriaResponse) and an answer
@@ -262,6 +262,53 @@ func (s reportedSuccess) unreadable() bool {
 	return s.null
 }
 
+// The client-safe reasons an answer is unreadable. Both are this node's own
+// fixed text: nothing a member sent is quoted back, and each says as much
+// about what could not be read as it honestly can — the key, where one key is
+// at fault — which is what a member's author needs to hear in the 400 the
+// callout ends with. The decode error's shape goes to the log, never to the
+// caller.
+const (
+	unreadableNullSuccess = "success was null"
+	unreadableUndecodable = "the answer did not decode"
+)
+
+// completeUndecodable ends the pending request an answer names when the answer
+// itself does not decode into the shape its event type promises.
+//
+// Returning without completing anything would leave the callout waiting for an
+// answer that has already arrived, until its answer limit runs out: the try is
+// spent, the operation is told a retryable "no answer came", and a member that
+// did answer is blamed for silence. So the request id is recovered on its own,
+// from a decode narrow enough to survive whatever made the full one fail, and
+// the callout is ended at once.
+//
+// A payload that is not JSON at all has no request id to recover, and then
+// there is genuinely nothing to complete — the answer limit is the only
+// remaining bound, which is correct, because nothing identifies what it was an
+// answer to.
+func completeUndecodable(member *Member, kind string, payload json.RawMessage, cause error) {
+	var ident struct {
+		RequestID string `json:"requestId"`
+	}
+	if err := json.Unmarshal(payload, &ident); err != nil || ident.RequestID == "" {
+		slog.Warn("failed to unmarshal "+kind+" response, and it names no request",
+			"pkg", "grpc", "memberId", member.ID, "error", common.JSONErrorShape(cause))
+		return
+	}
+	slog.Warn("failed to unmarshal "+kind+" response",
+		"pkg", "grpc", "memberId", member.ID, "requestId", ident.RequestID, "error", common.JSONErrorShape(cause))
+	member.CompleteRequest(ident.RequestID, &ProcessingResponse{Unreadable: unreadableUndecodable})
+}
+
+// unreadableReason is the reason a decoded answer still cannot be read, or "".
+func unreadableReason(s reportedSuccess) string {
+	if s.unreadable() {
+		return unreadableNullSuccess
+	}
+	return ""
+}
+
 // handleProcessorResponse routes a processor calculation response to the
 // pending request on the given member.
 func handleProcessorResponse(member *Member, payload json.RawMessage) {
@@ -276,7 +323,7 @@ func handleProcessorResponse(member *Member, payload json.RawMessage) {
 		Payload  json.RawMessage `json:"payload"`
 	}
 	if err := json.Unmarshal(payload, &resp); err != nil {
-		slog.Warn("failed to unmarshal processor response", "pkg", "grpc", "memberId", member.ID, "error", common.JSONErrorShape(err))
+		completeUndecodable(member, "processor", payload, err)
 		return
 	}
 
@@ -287,12 +334,12 @@ func handleProcessorResponse(member *Member, payload json.RawMessage) {
 		retryable = resp.Error.Retryable
 	}
 	member.CompleteRequest(resp.RequestID, &ProcessingResponse{
-		Payload:     resp.Payload,
-		Success:     resp.Success.succeeded(),
-		NullSuccess: resp.Success.unreadable(),
-		Error:       errMsg,
-		Warnings:    resp.Warnings,
-		Retryable:   retryable,
+		Payload:    resp.Payload,
+		Success:    resp.Success.succeeded(),
+		Unreadable: unreadableReason(resp.Success),
+		Error:      errMsg,
+		Warnings:   resp.Warnings,
+		Retryable:  retryable,
 	})
 }
 
@@ -315,7 +362,7 @@ func handleCriteriaResponse(member *Member, payload json.RawMessage) {
 		Warnings []string `json:"warnings"`
 	}
 	if err := json.Unmarshal(payload, &resp); err != nil {
-		slog.Warn("failed to unmarshal criteria response", "pkg", "grpc", "memberId", member.ID, "error", common.JSONErrorShape(err))
+		completeUndecodable(member, "criteria", payload, err)
 		return
 	}
 
@@ -326,13 +373,13 @@ func handleCriteriaResponse(member *Member, payload json.RawMessage) {
 		retryable = resp.Error.Retryable
 	}
 	member.CompleteRequest(resp.RequestID, &ProcessingResponse{
-		Success:     resp.Success.succeeded(),
-		NullSuccess: resp.Success.unreadable(),
-		Error:       errMsg,
-		Matches:     resp.Matches,
-		Reason:      resp.Reason,
-		Warnings:    resp.Warnings,
-		Retryable:   retryable,
+		Success:    resp.Success.succeeded(),
+		Unreadable: unreadableReason(resp.Success),
+		Error:      errMsg,
+		Matches:    resp.Matches,
+		Reason:     resp.Reason,
+		Warnings:   resp.Warnings,
+		Retryable:  retryable,
 	})
 }
 
@@ -351,7 +398,7 @@ func handleFunctionResponse(member *Member, payload json.RawMessage) {
 		Warnings []string `json:"warnings"`
 	}
 	if err := json.Unmarshal(payload, &resp); err != nil {
-		slog.Warn("failed to unmarshal function response", "pkg", "grpc", "memberId", member.ID, "error", common.JSONErrorShape(err))
+		completeUndecodable(member, "function", payload, err)
 		return
 	}
 
@@ -370,12 +417,12 @@ func handleFunctionResponse(member *Member, payload json.RawMessage) {
 		resultKind = *resp.ResultKind
 	}
 	member.CompleteRequest(resp.RequestID, &ProcessingResponse{
-		Success:     resp.Success.succeeded(),
-		NullSuccess: resp.Success.unreadable(),
-		Error:       errMsg,
-		Result:      result,
-		ResultKind:  resultKind,
-		Warnings:    resp.Warnings,
-		Retryable:   retryable,
+		Success:    resp.Success.succeeded(),
+		Unreadable: unreadableReason(resp.Success),
+		Error:      errMsg,
+		Result:     result,
+		ResultKind: resultKind,
+		Warnings:   resp.Warnings,
+		Retryable:  retryable,
 	})
 }

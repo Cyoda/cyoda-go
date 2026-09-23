@@ -305,6 +305,15 @@ not a boolean, so it is neither the default nor a flag: the answer cannot be
 read at all and is refused (`400 WORKFLOW_FAILED`, not retryable). A member
 that means success must omit the key or send `true`.
 
+An answer whose fields do not have the types the schema declares — `"success":
+"yes"`, a `matches` that is not a boolean — is refused the same way, and as
+promptly. The callout ends when the answer arrives, not when its answer limit
+runs out: an answer that came and could not be read is not silence, so it does
+not spend the callout's remaining tries and is never reported as a retryable
+failure of the server. (A reply that is not JSON at all names no `requestId`,
+so nothing matches it to the callout waiting for it and the answer limit ends
+that one.)
+
 One rule covers every answer the server cannot read — this one, a `payload`
 that is not an object, a criterion with no `matches`: **nothing in such an
 answer is read.** Not its `payload`, not its `matches`, not its `result`, and

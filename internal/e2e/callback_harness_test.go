@@ -662,6 +662,10 @@ type cnodeReply struct {
 	// reason — the generated events.*Json types declare `success` a bool and
 	// cannot express it.
 	nullSuccess bool // replyOK
+	// badSuccess puts `"success": "yes"` on the wire: present, and not a
+	// boolean at all, so the answer does not decode into the shape its event
+	// type promises. Assembled as a map for the same reason as nullSuccess.
+	badSuccess bool // replyOK
 }
 
 // answerOK answers success: a processor leaves the entity unchanged, a
@@ -686,6 +690,12 @@ func answerDataNoSuccessKey(data map[string]any) cnodeReply {
 // it can be caught doing so.
 func answerMatchesNullSuccess(m bool) cnodeReply {
 	return cnodeReply{kind: replyOK, matches: m, nullSuccess: true}
+}
+
+// answerMatchesBadSuccess answers with a verdict beside a `success` that is not
+// a boolean, so the answer arrives and does not decode.
+func answerMatchesBadSuccess(m bool) cnodeReply {
+	return cnodeReply{kind: replyOK, matches: m, badSuccess: true}
 }
 
 // answerFail answers success=false with no verdict on retrying.
@@ -749,6 +759,8 @@ func (r cnodeReply) cloudEvent(req calcRequest) (*cepb.CloudEvent, error) {
 		delete(body, "success")
 	case r.nullSuccess:
 		body["success"] = nil
+	case r.badSuccess:
+		body["success"] = "yes"
 	}
 	return internalgrpc.NewCloudEvent(respType, body)
 }

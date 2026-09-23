@@ -222,8 +222,10 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 		// out of an answer whose verdict has just been discarded would be
 		// trusting the same answer twice over; what was wrong reaches the
 		// client in the unreadable-answer message instead.
-		if resp.NullSuccess {
-			return CalloutResult{}, memberResponseUnreadable(nullSuccessError{}, nullSuccessMessage, label, name, member.ID, requestID), nil
+		if resp.Unreadable != "" {
+			return CalloutResult{}, memberResponseUnreadable(
+				unreadableAnswerError{resp.Unreadable}, resp.Unreadable,
+				label, name, member.ID, requestID), nil
 		}
 		if resp.Disconnected {
 			slog.Error("member disconnected mid-dispatch", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
@@ -236,7 +238,7 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 		if resp.Success {
 			var err error
 			if result, err = call.mapResponse(resp); err != nil {
-				return CalloutResult{}, memberResponseUnreadable(err, unreadableAnswerMessage, label, name, member.ID, requestID), nil
+				return CalloutResult{}, memberResponseUnreadable(err, mapResponseReason(err), label, name, member.ID, requestID), nil
 			}
 		}
 		// The answer could be read, so its warnings are the member's own and
@@ -301,14 +303,15 @@ func terminalFailure(err error, memberID, requestID string) *contract.CalloutFai
 	return &contract.CalloutFailure{Kind: contract.Terminal, Code: appErr.Code, Message: appErr.Message, Err: appErr}
 }
 
-// The client-safe sentences memberResponseUnreadable carries. Both are this
-// node's own fixed text: nothing a member sent is quoted, and the second says
-// only which key of the schema was unreadable, which is what a member's author
-// needs to hear in the 400 the callout ends with.
-const (
-	unreadableAnswerMessage = "the compute member's response could not be read"
-	nullSuccessMessage      = unreadableAnswerMessage + ": success was null"
-)
+// The sentence memberResponseUnreadable carries, on its own or followed by a
+// reason. It and every reason are this node's own fixed text: nothing a member
+// sent is quoted into the 400 the callout ends with.
+const unreadableAnswerMessage = "the compute member's response could not be read"
+
+// errProcessorPayload marks a processor answer whose payload does not decode
+// into the envelope the schema declares, so the reason can be named without
+// matching on the wrapped decoder's text.
+var errProcessorPayload = errors.New("the processor response payload did not decode")
 
 // memberResponseUnreadable is Terminal: spec §3's site table assigns
 // "response payload unmarshal" Terminal, not MemberFailed. MemberFailed means
@@ -325,21 +328,54 @@ const (
 // NewCriteriaCallout's): CalloutFailure.Error() returns Err's text verbatim
 // once Err is set, bypassing Message entirely, which would undo the
 // sanitizing done here.
-func memberResponseUnreadable(err error, msg, label, name, memberID, requestID string) *contract.CalloutFailure {
+func memberResponseUnreadable(err error, reason, label, name, memberID, requestID string) *contract.CalloutFailure {
+	msg := unreadableAnswerMessage
+	if reason != "" {
+		msg += ": " + reason
+	}
+	// reason is this node's own fixed text, so it is safe in a log and in the
+	// message alike. It is logged because JSONErrorShape renders a non-JSON
+	// error as its type alone, which no longer tells one unreadable answer
+	// from another now that they share a type.
 	slog.Error("compute member response could not be read", "pkg", "grpc", "label", label, "name", name,
-		"memberId", memberID, "requestId", requestID, "error", common.JSONErrorShape(err))
+		"memberId", memberID, "requestId", requestID, "reason", loggedReason(reason),
+		"error", common.JSONErrorShape(err))
 	return &contract.CalloutFailure{Kind: contract.Terminal, Message: msg}
 }
 
-// nullSuccessError is the unreadable-answer error for an answer whose
-// `success` key carried the literal null. Like noCriterionVerdictError it is a
-// type of its own rather than a sentinel value, so that the log line
-// memberResponseUnreadable writes — which renders the error by shape, never by
-// text — still names this condition.
-type nullSuccessError struct{}
+// loggedReason is the reason for the log line when the caller had none to give.
+func loggedReason(reason string) string {
+	if reason == "" {
+		return "unreadable"
+	}
+	return reason
+}
 
-func (nullSuccessError) Error() string {
-	return "the response reported success: null"
+// mapResponseReason names, in this node's own words, why an answer the callout
+// could otherwise read still said nothing it can act on. The three callouts
+// fail their mapping in exactly these ways; anything else keeps the bare
+// sentence rather than inventing a reason for it.
+func mapResponseReason(err error) string {
+	var noVerdict noCriterionVerdictError
+	switch {
+	case errors.As(err, &noVerdict):
+		return "matches was missing"
+	case errors.Is(err, errProcessorPayload):
+		return "the payload did not decode"
+	default:
+		return ""
+	}
+}
+
+// unreadableAnswerError is the error for an answer that arrived and cannot be
+// read — the reason is the streaming layer's own client-safe text, never a
+// member's. Like noCriterionVerdictError it is a type of its own rather than a
+// sentinel value, so that the log line memberResponseUnreadable writes — which
+// renders the error by shape, never by text — still names the condition.
+type unreadableAnswerError struct{ reason string }
+
+func (e unreadableAnswerError) Error() string {
+	return "the response could not be read: " + e.reason
 }
 
 // calloutDeadlinePassed reports whether ctx ended because the callout's own
@@ -421,7 +457,7 @@ func applyProcessorResponse(entity *spi.Entity, resp *ProcessingResponse) (*spi.
 		Data json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(resp.Payload, &envelope); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal processor response payload: %w", err)
+		return nil, fmt.Errorf("%w: %w", errProcessorPayload, err)
 	}
 	if envelope.Data == nil {
 		return entity, nil

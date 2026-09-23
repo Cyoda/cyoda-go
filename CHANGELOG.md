@@ -425,6 +425,24 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **An answer that arrives and cannot be read ends its callout at once, instead
+  of being waited out.** A member's answer whose fields do not have the types
+  the schema declares — `"success": "yes"`, a non-boolean `matches` — failed to
+  decode, and nothing then told the callout the answer had come: it waited out
+  its answer limit, spent a try, and reported a retryable `503` about a member
+  that had in fact answered. It now ends as what it is, an answer that could not
+  be read (`400 WORKFLOW_FAILED`, not retryable), on the same path an explicit
+  `"success": null` takes. An answer that is not JSON at all names no
+  `requestId`, so nothing identifies the callout it belongs to and the answer
+  limit remains the only bound on it.
+
+- **Every answer the server cannot read now says why.** The `400` carried a
+  bare "the compute member's response could not be read" for a missing
+  `matches` and for a payload that is not an object, while an explicit
+  `"success": null` named its key. All of them now end with the reason — the
+  key that was missing, the part that did not decode — in this node's own
+  fixed words, never a member's. The error code is unchanged.
+
 - **A compute member's answer that omits `success` is read as success, as the
   published schema says it is.** `success` is declared optional with the default
   `true` (`docs/cyoda/schema/common/BaseEvent.json`), and cyoda-go read an absent

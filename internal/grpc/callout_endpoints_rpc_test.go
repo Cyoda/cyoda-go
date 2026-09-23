@@ -114,7 +114,7 @@ func rpcCalloutCases() []rpcCalloutCase {
 				return &ProcessingResponse{Success: true, Payload: json.RawMessage(`"not-an-object"`)}
 			},
 			wantCode: "WORKFLOW_FAILED", wantItemPrefix: true, wantAsked: 1,
-			wantMessage: wrapped("the compute member's response could not be read"),
+			wantMessage: wrapped("the compute member's response could not be read: the payload did not decode"),
 		},
 	}
 }

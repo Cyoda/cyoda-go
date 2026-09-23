@@ -240,7 +240,7 @@ func TestTryKind_ResponsePayloadUnmarshal_IsTerminal(t *testing.T) {
 	if failure == nil || failure.Kind != contract.Terminal {
 		t.Fatalf("failure = %+v, want Terminal", failure)
 	}
-	const wantMsg = "the compute member's response could not be read"
+	const wantMsg = "the compute member's response could not be read: the payload did not decode"
 	if failure.Message != wantMsg || failure.Error() != wantMsg {
 		t.Errorf("Message/Error = %q/%q, want %q", failure.Message, failure.Error(), wantMsg)
 	}
