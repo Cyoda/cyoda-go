@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
-	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 
@@ -84,35 +83,13 @@ func (h *Handler) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request
 	}
 
 	// Build combined event list.
-	events := make([]map[string]any, 0)
+	items := make([]auditItem, 0)
 
 	// EntityChange events from version history.
 	if includeEntityChange {
 		callerTenant := common.TenantFromContext(ctx)
 		for _, v := range versions {
-			event := map[string]any{
-				"auditEventType": "EntityChange",
-				"changeType":     common.CanonicalChangeType(v.ChangeType),
-				"severity":       "INFO",
-				"utcTime":        v.Timestamp.UTC().Format(time.RFC3339Nano),
-				"microsTime":     v.Timestamp.UnixMicro(),
-				"system":         false,
-				"entityId":       entityId.String(),
-			}
-			if v.TransactionID != "" {
-				event["transactionId"] = v.TransactionID
-			}
-			if v.User != "" {
-				actor := map[string]any{
-					"id":   v.User,
-					"name": v.User,
-				}
-				if callerTenant != "" {
-					actor["legalId"] = callerTenant
-				}
-				event["actor"] = actor
-			}
-			events = append(events, event)
+			items = append(items, entityChangeItem(v, entityId.String(), callerTenant))
 		}
 	}
 
@@ -123,80 +100,65 @@ func (h *Handler) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request
 			smEvents, smErr := smStore.GetEvents(ctx, entityId.String())
 			if smErr == nil {
 				for _, smEvent := range smEvents {
-					event := map[string]any{
-						"auditEventType": "StateMachine",
-						"eventType":      string(smEvent.EventType),
-						"severity":       "INFO",
-						"utcTime":        smEvent.Timestamp.UTC().Format(time.RFC3339Nano),
-						"microsTime":     smEvent.Timestamp.UnixMicro(),
-						"entityId":       smEvent.EntityID,
-						"details":        smEvent.Details,
-						"data":           smEvent.Data,
+					item, err := stateMachineItem(smEvent)
+					if err != nil {
+						common.WriteError(w, r, common.Internal("invalid state machine event", err))
+						return
 					}
-					if smEvent.TransactionID != "" {
-						event["transactionId"] = smEvent.TransactionID
-					}
-					if smEvent.State != "" {
-						event["state"] = smEvent.State
-					}
-					events = append(events, event)
+					items = append(items, item)
 				}
 			}
 		}
 	}
 
 	// Sort by timestamp: newest first.
-	sort.Slice(events, func(i, j int) bool {
-		tsI, _ := time.Parse(time.RFC3339Nano, events[i]["utcTime"].(string))
-		tsJ, _ := time.Parse(time.RFC3339Nano, events[j]["utcTime"].(string))
-		return tsI.After(tsJ)
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].key.at.After(items[j].key.at)
 	})
 
 	// Apply filters.
 	if params.Severity != nil {
 		requested := string(*params.Severity)
-		filtered := make([]map[string]any, 0, len(events))
-		for _, ev := range events {
-			if sev, ok := ev["severity"].(string); ok && sev == requested {
-				filtered = append(filtered, ev)
+		filtered := make([]auditItem, 0, len(items))
+		for _, item := range items {
+			if sev, ok := item.body["severity"].(string); ok && sev == requested {
+				filtered = append(filtered, item)
 			}
 		}
-		events = filtered
+		items = filtered
 	}
 
 	if params.FromUtcTime != nil {
 		from := *params.FromUtcTime
-		filtered := make([]map[string]any, 0, len(events))
-		for _, ev := range events {
-			ts, _ := time.Parse(time.RFC3339Nano, ev["utcTime"].(string))
-			if !ts.Before(from) {
-				filtered = append(filtered, ev)
+		filtered := make([]auditItem, 0, len(items))
+		for _, item := range items {
+			if !item.key.at.Before(from) {
+				filtered = append(filtered, item)
 			}
 		}
-		events = filtered
+		items = filtered
 	}
 
 	if params.ToUtcTime != nil {
 		to := *params.ToUtcTime
-		filtered := make([]map[string]any, 0, len(events))
-		for _, ev := range events {
-			ts, _ := time.Parse(time.RFC3339Nano, ev["utcTime"].(string))
-			if ts.Before(to) {
-				filtered = append(filtered, ev)
+		filtered := make([]auditItem, 0, len(items))
+		for _, item := range items {
+			if item.key.at.Before(to) {
+				filtered = append(filtered, item)
 			}
 		}
-		events = filtered
+		items = filtered
 	}
 
 	if params.TransactionId != nil {
 		txFilter := params.TransactionId.String()
-		filtered := make([]map[string]any, 0, len(events))
-		for _, ev := range events {
-			if txID, ok := ev["transactionId"].(string); ok && txID == txFilter {
-				filtered = append(filtered, ev)
+		filtered := make([]auditItem, 0, len(items))
+		for _, item := range items {
+			if txID, ok := item.body["transactionId"].(string); ok && txID == txFilter {
+				filtered = append(filtered, item)
 			}
 		}
-		events = filtered
+		items = filtered
 	}
 
 	// Parse pagination params.
@@ -221,7 +183,7 @@ func (h *Handler) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request
 	}
 
 	// Slice for pagination.
-	total := len(events)
+	total := len(items)
 	start := cursor
 	if start > total {
 		start = total
@@ -230,7 +192,10 @@ func (h *Handler) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request
 	if end > total {
 		end = total
 	}
-	page := events[start:end]
+	page := make([]map[string]any, end-start)
+	for i, item := range items[start:end] {
+		page[i] = item.body
+	}
 	hasNext := end < total
 
 	paginationMap := map[string]any{
@@ -269,23 +234,12 @@ func (h *Handler) GetStateMachineFinishedEvent(w http.ResponseWriter, r *http.Re
 
 	for _, smEvent := range smEvents {
 		if smEvent.EventType == spi.SMEventFinished {
-			event := map[string]any{
-				"auditEventType": "StateMachine",
-				"eventType":      string(smEvent.EventType),
-				"severity":       "INFO",
-				"utcTime":        smEvent.Timestamp.UTC().Format(time.RFC3339Nano),
-				"microsTime":     smEvent.Timestamp.UnixMicro(),
-				"entityId":       smEvent.EntityID,
-				"details":        smEvent.Details,
-				"data":           smEvent.Data,
+			item, err := stateMachineItem(smEvent)
+			if err != nil {
+				common.WriteError(w, r, common.Internal("invalid state machine event", err))
+				return
 			}
-			if smEvent.TransactionID != "" {
-				event["transactionId"] = smEvent.TransactionID
-			}
-			if smEvent.State != "" {
-				event["state"] = smEvent.State
-			}
-			common.WriteJSON(w, http.StatusOK, event)
+			common.WriteJSON(w, http.StatusOK, item.body)
 			return
 		}
 	}
