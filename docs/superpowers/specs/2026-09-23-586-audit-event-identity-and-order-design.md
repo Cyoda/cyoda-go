@@ -82,15 +82,21 @@ Contract (SPI doc comment on `StateMachineAuditStore` and
 `StateMachineEvent.TimeUUID`): `Record` assigns a new time-based UUID to the
 event and ignores any `TimeUUID` the caller set. `GetEvents` and
 `GetEventsByTransaction` return that id in `TimeUUID` on every event, the
-same on every read. `Record` returns an error if it cannot generate one.
+same on every read. `spi.UUIDGenerator` cannot fail, so the only failure is a
+store with no generator configured, which `Record` reports as an error.
 
+- **Each plugin's store factory** keeps the injected `UUIDGenerator` in a
+  field of its own (today only the transaction manager holds it, and on
+  postgres that manager may be nil) and hands it to the audit store.
+- **sqlite's** default generator returns random version-4 UUIDs
+  (`plugins/sqlite/uuid.go:13-17`), against the SPI's documented
+  time-ordered contract (`uuid.go:9-10` in the SPI). It returns version 1,
+  as postgres and memory do.
 - **postgres, sqlite:** `Record` always generates the id with the plugin's
   injected `UUIDGenerator`, writes it into the document and the `event_id`
   column. Reads set `TimeUUID` from the `event_id` column, the same way the
   `timestamp` column already overrides the document copy.
-- **memory:** `Record` generates the id with the injected generator, threaded
-  from the plugin into the store factory (the transaction manager already
-  holds one).
+- **memory:** `Record` generates the id with the injected generator.
 - **cassandra:** already assigns in `Record`. No change expected; the new
   conformance case checks it at cassandra's next SPI pin bump.
 - **engine:** stops setting `TimeUUID` at both record sites. The
@@ -214,7 +220,7 @@ processor that does this if none exists.
 | ties in one instant: EntityChange before StateMachine, versions DESC, eventIds DESC | yes | yes | yes | — |
 | walk page by page (limit 1) over a same-instant tie of both kinds: each event once, in order | yes | yes | yes | — |
 | a new transaction commits mid-walk: no repeat, no skip of events committed before the walk | yes | yes | — (not concurrency; single-backend) | — |
-| create → delete → recreate: three distinct increasing versions in the audit trail | — | yes | yes | `RecreateAfterDelete` |
+| create → delete → recreate: three distinct increasing versions | — | waived ² | waived ² | `RecreateAfterDelete` |
 | undecodable cursor (bad base64 / JSON / old `"20"`) → 400 `BAD_REQUEST` | yes | yes | — | — |
 | decodable but invalid cursor (unknown type, non-UUID `eventId`, version 0) → 400 | yes | yes | — | — |
 | state machine audit store factory fails → 503 (outage) / 500 (other) | yes (stub) | — ¹ | — | — |
@@ -224,6 +230,12 @@ processor that does this if none exists.
 
 ¹ A store outage cannot be produced on a live backend without fault injection;
 the unit stubs follow the existing `handler_outage_test.go` pattern.
+
+² No HTTP path saves over a committed tombstone: `POST /entity` mints a new id
+(`internal/domain/entity/service.go:271`) and an update of a deleted entity is
+`404` because `Get` reports a tombstone as not found (`service.go:2111-2117`).
+The collision is reachable only through the SPI, so it is pinned there and by
+a memory unit test.
 
 ## 7. Documentation and parity
 
