@@ -429,9 +429,9 @@ paths:
             format: uuid
         - name: cursor
           in: query
-          description: "Cursor for pagination. Use the `nextCursor` value from the
-            previous response to fetch the next page of results. Omit for the
-            first page. "
+          description: "Position to continue from: pass `nextCursor` from the
+            previous response. Opaque. A cursor that cannot be read is
+            rejected with 400. Omit for the first page."
           required: false
           schema:
             type: string
@@ -11621,8 +11621,7 @@ components:
           description: Indicates whether there are more results available
         nextCursor:
           type: string
-          description: "Cursor to use for fetching the next page of results. Can be omit
-            when hasNext is false. "
+          description: Opaque position of the last event on this page. Absent when hasNext is false.
       required:
         - hasNext
     EntityAuditEventsResponseDto:
@@ -11661,11 +11660,19 @@ components:
             changes:
               $ref: "#/components/schemas/EntityChangesDto"
               description: Changes made to the entity
+            version:
+              type: integer
+              format: int64
+              description: >
+                The entity's version number for this change. Strictly
+                increasing over the entity's history, across delete and
+                recreate; (entityId, version) identifies the event.
       required:
         - changeType
         - microsTime
         - severity
         - utcTime
+        - version
     EntityChangesDto:
       type: object
       properties:
@@ -11742,7 +11749,14 @@ components:
                 carries {workflowName, reason}, where reason explains why the
                 criterion blocked the passage. Null for most event types.
               additionalProperties: true
+            eventId:
+              type: string
+              format: uuid
+              description: >
+                The event's identity: a time-based UUID the server assigned
+                when it recorded the event. The same on every read.
       required:
+        - eventId
         - eventType
         - microsTime
         - severity

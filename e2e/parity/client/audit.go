@@ -111,6 +111,10 @@ type StateMachineAuditEvent struct {
 	State     string `json:"state"`     // canonical-required
 	EventType string `json:"eventType"` // canonical-required
 
+	// EventID is the event's identity: a time-based UUID the server
+	// assigned when it recorded the event. Canonical-required.
+	EventID string `json:"eventId"`
+
 	// Data carries the StateMachineEvent payload as raw JSON. The
 	// canonical schema (docs/cyoda/api/openapi-audit.yml line 823) is
 	// itself a discriminated union over a dozen state-machine event
@@ -139,6 +143,7 @@ type stateMachineAuditEventFlat struct {
 	System          bool            `json:"system,omitempty"`
 	State           string          `json:"state"`
 	EventType       string          `json:"eventType"`
+	EventID         string          `json:"eventId"`
 	Data            json.RawMessage `json:"data,omitempty"`
 }
 
@@ -168,6 +173,7 @@ func (e *StateMachineAuditEvent) UnmarshalJSON(b []byte) error {
 	}
 	e.State = flat.State
 	e.EventType = flat.EventType
+	e.EventID = flat.EventID
 	e.Data = flat.Data
 	return nil
 }
@@ -177,6 +183,11 @@ func (e *StateMachineAuditEvent) UnmarshalJSON(b []byte) error {
 type EntityChangeAuditEvent struct {
 	AuditEvent
 	ChangeType string `json:"changeType"` // canonical-required: CREATE|UPDATE|DELETE
+
+	// Version is the entity's version number for this change. Strictly
+	// increasing over the entity's history, across delete and recreate;
+	// (entityId, version) identifies the event. Canonical-required.
+	Version int64 `json:"version"`
 
 	// Changes carries the before/after diff as raw JSON. The shape
 	// varies by entity model; parity scenarios that need typed access
@@ -198,6 +209,7 @@ type entityChangeAuditEventFlat struct {
 	Details         string          `json:"details,omitempty"`
 	System          bool            `json:"system,omitempty"`
 	ChangeType      string          `json:"changeType"`
+	Version         int64           `json:"version"`
 	Changes         json.RawMessage `json:"changes,omitempty"`
 }
 
@@ -224,6 +236,7 @@ func (e *EntityChangeAuditEvent) UnmarshalJSON(b []byte) error {
 		System:          flat.System,
 	}
 	e.ChangeType = flat.ChangeType
+	e.Version = flat.Version
 	e.Changes = flat.Changes
 	return nil
 }
