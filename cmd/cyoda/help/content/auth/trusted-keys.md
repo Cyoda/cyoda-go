@@ -36,7 +36,7 @@ A trusted-key JWT is used **only** as a subject token in that grant. cyoda does 
 
 - `CYODA_IAM_MODE=jwt`.
 - `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=true` (gate; see callout above).
-- `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` (default `10`) — per-tenant cap on trusted keys that can verify. It counts every key that can still verify: an active key, and one in its grace period after invalidation, until its `validTo`. A key invalidated with a grace period keeps its slot until the period ends, so to register at the cap, delete an old key or invalidate it with no grace period first.
+- `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` (default `10`) — per-tenant cap on trusted keys that can verify. It counts every key that can still verify: an active key, and one in its grace period after invalidation, until its `validTo`. A key invalidated with a grace period keeps its slot until the period ends — including one invalidated by `invalidatePrevious`, so a rotation frees no slot for the key it registers. Reactivating a key is held to the same cap. To register or reactivate at the cap, delete an old key or invalidate it with no grace period first.
 - `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS` (default `365`) — default validity for trusted keys when not specified at registration.
 
 **Client (you) needs:**
@@ -141,7 +141,7 @@ Management endpoints:
 
 - `errors.FEATURE_DISABLED` (`404`) — trusted-key endpoints called with `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=false`.
 - `errors.TRUSTED_KEY_NOT_FOUND` (`404`) — referenced `keyId` not in the registry (also returned for cross-tenant access — the existence of another tenant's key is never confirmed).
-- `errors.TRUSTED_KEY_CAP_REACHED` (`400`) — per-tenant cap reached; delete or invalidate an old key first.
+- `errors.TRUSTED_KEY_CAP_REACHED` (`400`) — registering or reactivating a key would exceed the per-tenant cap; delete an old key or invalidate it with no grace period first.
 - `errors.KEY_OWNED_BY_DIFFERENT_TENANT` (`409`) — registration request specifies a `keyId` that already belongs to another tenant. Pick a fresh `keyId`.
 - `errors.UNSUPPORTED_KEY_TYPE` (`400`) — `kty` is not `"RSA"`.
 - `errors.UNAUTHORIZED` (`401`) — caller lacks a valid bearer for the management call.

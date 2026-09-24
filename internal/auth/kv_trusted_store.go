@@ -455,10 +455,11 @@ func (s *KVTrustedKeyStore) persistWithKey(kvKey string, tk *TrustedKey) error {
 // which makes the endpoint idempotent / retry-safe during key rotation.
 //
 // Cross-tenant KID collision returns 409 KEY_OWNED_BY_DIFFERENT_TENANT.
-// Per-tenant cap (counts every key that can still verify, excluding the KID being
-// registered so same-KID upserts don't consume a slot) returns
-// 400 TRUSTED_KEY_CAP_REACHED. When opts.Invalidate is true, all other active
-// siblings in the same tenant are marked inactive with a gracePeriod ValidTo.
+// Per-tenant cap (counts every key that can still verify, excluding the KID
+// being registered so same-KID upserts don't consume a slot) returns
+// 400 TRUSTED_KEY_CAP_REACHED. When opts.Invalidate is true, every other key of
+// the tenant whose window is still open is marked inactive with the grace
+// expiry (graceExpiry).
 //
 // Write order: new key FIRST, then siblings. This guarantees that a KV failure
 // mid-sibling-flip never destroys the only active key:
@@ -478,17 +479,8 @@ func (s *KVTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) error {
 	// Per-tenant cap: count every key that can still verify — active, or in
 	// its grace period after invalidation — excluding the KID being
 	// registered, so same-KID upserts don't consume a slot.
-	if s.maxPerTenant > 0 {
-		now := time.Now()
-		count := 0
-		for _, k := range s.keys {
-			if k.TenantID == tk.TenantID && k.KID != tk.KID && windowOpen(k.ValidTo, now) {
-				count++
-			}
-		}
-		if count >= s.maxPerTenant {
-			return common.Operational(http.StatusBadRequest, common.ErrCodeTrustedKeyCapReached, "trusted-key cap reached for tenant")
-		}
+	if capReached(s.keys, tk.TenantID, tk.KID, s.maxPerTenant, time.Now()) {
+		return errTrustedKeyCapReached()
 	}
 
 	// Step 1: persist the new/updated entry to KV FIRST.
@@ -678,6 +670,10 @@ func (s *KVTrustedKeyStore) Reactivate(tenantID spi.TenantID, kid string, validF
 	tk, ok := s.keys[kid]
 	if !ok || tk.TenantID != tenantID {
 		return fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
+	}
+	// A reactivated key verifies again, so it is held to the cap.
+	if capReached(s.keys, tenantID, kid, s.maxPerTenant, time.Now()) {
+		return errTrustedKeyCapReached()
 	}
 	// Clone, mutate, persist to KV first (rollback safety).
 	updated := *tk

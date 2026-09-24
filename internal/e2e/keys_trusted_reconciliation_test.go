@@ -125,6 +125,34 @@ func TestTrustedKey_CapReached_400(t *testing.T) {
 		resp.Body.Close()
 	}
 	assertProblemJSON(t, register(limit), http.StatusBadRequest, "TRUSTED_KEY_CAP_REACHED")
+
+	// A key in its grace period still verifies, so it keeps its slot; one
+	// invalidated with no grace frees it.
+	invalidate := func(i, graceSec int) {
+		t.Helper()
+		resp := adminRequestAs(t, clientID, secret, "POST", fmt.Sprintf("/oauth/keys/trusted/%s-%d/invalidate", tenant, i),
+			mustJSON(t, map[string]any{"gracePeriodSec": graceSec}))
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			raw, _ := io.ReadAll(resp.Body)
+			t.Fatalf("invalidate key %d: status=%d; body: %s", i, resp.StatusCode, raw)
+		}
+	}
+	invalidate(0, 3600)
+	assertProblemJSON(t, register(limit), http.StatusBadRequest, "TRUSTED_KEY_CAP_REACHED")
+	invalidate(0, 0)
+	if resp := register(limit); resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("register after freeing a slot: status=%d; body: %s", resp.StatusCode, raw)
+	} else {
+		resp.Body.Close()
+	}
+
+	// Reactivating a key makes it verify again, so it is held to the cap too.
+	resp := adminRequestAs(t, clientID, secret, "POST", fmt.Sprintf("/oauth/keys/trusted/%s-0/reactivate", tenant),
+		mustJSON(t, map[string]any{"validTo": time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)}))
+	assertProblemJSON(t, resp, http.StatusBadRequest, "TRUSTED_KEY_CAP_REACHED")
 }
 
 // NOTE: KEY_OWNED_BY_DIFFERENT_TENANT — covered by TestE2E_CrossTenant_TrustedKey_409

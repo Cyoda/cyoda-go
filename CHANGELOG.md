@@ -6,6 +6,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **The per-tenant trusted-key cap counts every key that can verify.** It
+  counted only active keys, so a key in its grace period after invalidation
+  — which now verifies until its `validTo` — took no slot, and repeated
+  rotations with long grace periods could keep any number of keys verifying.
+  Such a key now keeps its slot until its grace period ends, and
+  reactivating a key is held to the same cap (`400 TRUSTED_KEY_CAP_REACHED`,
+  which reactivation could not return before). Registrations and
+  reactivations that succeeded before can now be refused: to make room,
+  delete an old key or invalidate it with no grace period first.
+
 - **A tenant identifier has a grammar:
   `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`.** 1 to 100 bytes, the first an ASCII
   letter or digit, the rest letters, digits, `.`, `_` and `-`; case is
@@ -504,13 +514,6 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   sets `validTo` to now plus the grace period or the key's existing `validTo`,
   whichever is earlier. Before, invalidating an expired or already revoked
   key with a grace period made it valid again.
-
-- **The per-tenant trusted-key cap counts every key that can verify.** It
-  counted only active keys, so a key in its grace period after invalidation
-  — which now verifies until its `validTo` — took no slot, and repeated
-  rotations with long grace periods could keep any number of keys verifying.
-  Such a key now keeps its slot until its grace period ends; to register at
-  the cap, delete an old key or invalidate it with no grace period first.
 
 - **`cyoda help auth trusted-keys` described a feature cyoda-go does not
   have.** It said a JWT signed with a trusted key could be sent as a bearer

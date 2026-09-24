@@ -21,6 +21,16 @@ cyoda-go does not accept a trusted-key-signed JWT as a bearer token on API
 calls. Only cyoda's own signing keys and registered OIDC providers verify bearer
 tokens.
 
+## Grace period and cap
+
+An invalidated trusted key keeps verifying subject tokens until its `validTo`
+(the grace period); a grace period never extends a key's window, and rotation
+ends every sibling whose window is open. The per-tenant cap counts every key
+that can still verify, and applies to reactivation as well as registration
+(`400 TRUSTED_KEY_CAP_REACHED`). Cloud already counts keys in their grace
+period (`TrustedKeyRegistrationService.kt:103-107`); Cloud action: apply the
+cap to reactivation too, or record the difference.
+
 ## What changed
 
 An earlier design chose not to compare the key's tenant, to match Cloud, on the

@@ -309,8 +309,8 @@ func NewInMemoryTrustedKeyStoreWithCap(cap int) *InMemoryTrustedKeyStore {
 // Register adds or replaces a trusted key. Cross-tenant KID collision returns
 // 409 KEY_OWNED_BY_DIFFERENT_TENANT. Per-tenant cap (counts every key that
 // can still verify) returns 400 TRUSTED_KEY_CAP_REACHED. When
-// opts.Invalidate is true, all other active siblings in the same tenant
-// partition are marked inactive with a gracePeriod ValidTo. Stores a shallow
+// opts.Invalidate is true, every other key of the tenant whose window is still
+// open is marked inactive with the grace expiry (graceExpiry). Stores a shallow
 // copy of *tk (ownership-mutability rule 4).
 func (s *InMemoryTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) error {
 	s.mu.Lock()
@@ -324,17 +324,8 @@ func (s *InMemoryTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) e
 	// Per-tenant cap: count every key that can still verify — active, or in
 	// its grace period after invalidation — excluding the KID being
 	// registered, so same-KID upserts don't consume a slot.
-	if s.maxPerTenant > 0 {
-		now := time.Now()
-		count := 0
-		for _, k := range s.keys {
-			if k.TenantID == tk.TenantID && k.KID != tk.KID && windowOpen(k.ValidTo, now) {
-				count++
-			}
-		}
-		if count >= s.maxPerTenant {
-			return common.Operational(http.StatusBadRequest, common.ErrCodeTrustedKeyCapReached, "trusted-key cap reached for tenant")
-		}
+	if capReached(s.keys, tk.TenantID, tk.KID, s.maxPerTenant, time.Now()) {
+		return errTrustedKeyCapReached()
 	}
 
 	// Atomic sibling invalidation within the same tenant.
@@ -405,6 +396,26 @@ func graceExpiry(current *time.Time, now time.Time, gracePeriodSec int64) *time.
 	return &expiry
 }
 
+// capReached reports whether tenantID already has max keys that can verify —
+// active, or in a grace period until ValidTo — not counting exceptKID, the key
+// being registered or reactivated. max <= 0 means unbounded.
+func capReached(keys map[string]*TrustedKey, tenantID spi.TenantID, exceptKID string, max int, now time.Time) bool {
+	if max <= 0 {
+		return false
+	}
+	count := 0
+	for _, k := range keys {
+		if k.TenantID == tenantID && k.KID != exceptKID && windowOpen(k.ValidTo, now) {
+			count++
+		}
+	}
+	return count >= max
+}
+
+func errTrustedKeyCapReached() error {
+	return common.Operational(http.StatusBadRequest, common.ErrCodeTrustedKeyCapReached, "trusted-key cap reached for tenant")
+}
+
 // windowOpen reports whether a key whose window ends at validTo is still
 // within it: the lazy expiry filter the verification path applies, and the
 // test for which siblings a rotation still has to end.
@@ -456,6 +467,10 @@ func (s *InMemoryTrustedKeyStore) Reactivate(tenantID spi.TenantID, kid string, 
 	}
 	if !validTo.After(validFrom) {
 		return fmt.Errorf("validTo must be after validFrom")
+	}
+	// A reactivated key verifies again, so it is held to the cap.
+	if capReached(s.keys, tenantID, kid, s.maxPerTenant, time.Now()) {
+		return errTrustedKeyCapReached()
 	}
 	tk.Active = true
 	tk.ValidFrom = validFrom

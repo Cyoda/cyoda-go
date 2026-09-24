@@ -187,6 +187,19 @@ func assertCapCountsVerifyingKeys(t *testing.T, s auth.TrustedKeyStore) {
 	if err := register("c"); err != nil {
 		t.Fatalf("register c after a stopped verifying: %v", err)
 	}
+
+	// Reactivating a key makes it verify again, so it is held to the same
+	// cap: with b and c verifying, a cannot come back.
+	vt := time.Now().Add(time.Hour)
+	if err := s.Reactivate("ta", "a", time.Now().Add(-time.Minute), vt); !capReached(err) {
+		t.Fatalf("reactivate a at the cap: err = %v, want TRUSTED_KEY_CAP_REACHED", err)
+	}
+	if err := s.Invalidate("ta", "c", 0); err != nil {
+		t.Fatalf("invalidate c at once: %v", err)
+	}
+	if err := s.Reactivate("ta", "a", time.Now().Add(-time.Minute), vt); err != nil {
+		t.Fatalf("reactivate a below the cap: %v", err)
+	}
 }
 
 func TestInMemoryTrustedKeyStore_CapCountsVerifyingKeys(t *testing.T) {

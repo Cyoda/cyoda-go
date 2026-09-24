@@ -5870,7 +5870,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/TrustedKeyResponseDto"
         "400":
-          description: "Bad request — BAD_REQUEST: invalid keyId format, missing or past validTo, validTo not after validFrom."
+          description: "Bad request — BAD_REQUEST: invalid keyId format, missing or past validTo, validTo not after validFrom; TRUSTED_KEY_CAP_REACHED: reactivating would exceed the per-tenant trusted-key cap."
           content:
             application/problem+json:
               schema:
