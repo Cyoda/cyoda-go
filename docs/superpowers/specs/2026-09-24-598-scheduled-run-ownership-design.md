@@ -1,9 +1,12 @@
 # #598 — every scheduled run has one owner
 
-Status: spec v4, 2026-09-24. Earlier versions went through three independent
-reviews. Their findings clustered in one place: the claim check inside the
-entity transaction. v4 therefore re-derives that part from the cases that
-matter, and does not patch it again (§10.0).
+Status: spec v5, 2026-09-24. Versions v1 to v3 went through three independent
+reviews. Their findings clustered in the claim check inside the entity
+transaction, so v4 re-derived that part (§10.0). A fourth review of v4 found
+narrower mechanical defects, and v5 fixes them: segment stamps (§5.2), a
+re-checked claim (§10.2), the watchdog margin (§6.3), lock timeouts (§10.2),
+and the SQLite ordering and marks (§10.3). One product decision is open: D1
+in §7.
 
 Milestone v0.9.0. Branch `feat/598-scheduler-ownership`.
 
@@ -121,8 +124,12 @@ A FAILED task is never claimed. It ends in one of these ways (§7):
 After the claim (§6.1), the owner checks these in order:
 
 1. **Mark set for this life** → FAILED `UNSAFE_WORK_NOT_COMPLETED`.
-2. **`lostOwners ≥ MAX_LOST_OWNERS`** → FAILED `OWNER_LOST_REPEATEDLY`.
-3. **Deadline.** When `timeoutMs` is set, the deadline is `scheduledTime +
+2. **A segment stamp in another state than the source state** (§5.2) → FAILED
+   `STOPPED_AFTER_PARTIAL_COMMIT`. An earlier run of this life committed the
+   entity mid-cascade and did not finish. That run may have been cut by a
+   crash.
+3. **`lostOwners ≥ MAX_LOST_OWNERS`** → FAILED `OWNER_LOST_REPEATEDLY`.
+4. **Deadline.** When `timeoutMs` is set, the deadline is `scheduledTime +
    timeoutMs`. The task is **late** in two cases:
    - `attempts == 0 && lostOwners == 0` and `now > deadline`. This is today's
      rule, measured on the owner's clock.
@@ -131,11 +138,13 @@ After the claim (§6.1), the owner checks these in order:
    A late task with no failed attempt and no lost owner is expired: it is
    removed with `SCHEDULED_TRANSITION_EXPIRE`, as today. Any other late task
    is FAILED `EXPIRED_AFTER_FAILED_ATTEMPTS`.
-4. Otherwise, **run** it.
+5. Otherwise, **run** it.
 
-A pnode crash counts as a lost owner. So when a pnode dies, every task it was
-running whose `timeoutMs` is shorter than `STALE_AFTER` ends as
-`EXPIRED_AFTER_FAILED_ATTEMPTS`. That is intended.
+A pnode crash counts as a lost owner. So when a pnode dies, a task it was
+running can end as `EXPIRED_AFTER_FAILED_ATTEMPTS` instead of being expired
+silently. That happens when the reclaim comes after `deadline + RETRY_DELAY`,
+which is certain when `timeoutMs + RETRY_DELAY < STALE_AFTER`. That is
+intended.
 
 The grace band (`fire_scheduled.go:50-63, 276-295`) and
 `CYODA_SCHEDULER_EXPIRY_GRACE` are deleted. Only one owner decides now.
@@ -175,13 +184,31 @@ The grace band (`fire_scheduled.go:50-63, 276-295`) and
   then runs the re-arm step for the final state, as today (`:470-489`). A
   self-loop therefore ends with the same id armed as a new life.
 
-**Why the final transaction needs no claim check.** Data correctness comes from
-the entity's compare-and-save (`fire_scheduled.go:383, 511`): at most one fire
-commits per entity version. A replaced owner's commit also fails on its own
-task row (C1). A replaced owner's intermediate `COMMIT_BEFORE_DISPATCH` commit
-does not write the task row. But it is a compare-and-save on the entity, so the
-data stays correct, and the new owner's run then fails safely and is retried.
-A2 does not depend on commits at all: it depends on the mark (§5.5).
+- **Every intermediate segment commit is stamped.** When a run guard is present,
+  `flushAndCommitSegment` (`engine_processors.go:469-515`) does one thing
+  before it commits a `COMMIT_BEFORE_DISPATCH` segment. As the last write of
+  that segment it calls `StampSegment(tenant, id, armToken, claimToken,
+  committedState)`, which joins the transaction. The stamp:
+  - writes the task row, with both tokens in its condition. If no row matches,
+    the result is `ErrStaleClaim` and the segment does not commit;
+  - records the state in which the segment commits the entity.
+
+  So every commit of a run writes its own task row, and C1 fences each one
+  against a reclaim or a re-arm. The row lock is released at the segment's
+  commit, before the processor is dispatched, so it cannot cause
+  `ErrTaskBusy`.
+
+**Why no other claim check is needed.** Only the first segment compares and
+saves the entity. Later segments and a segmented run's final write use a plain
+`Save` (`fire_scheduled.go:498-507`; `flushAndCommitSegment` with `applyIfMatch`
+false). Three things fence them instead:
+- the re-read at the start of each segment;
+- the task-row write of every commit, through the stamp or the final write
+  (C1);
+- the watchdog margin (§6.3). A replaced owner's shielded commit lands before
+  another pnode can reclaim.
+
+A2 does not depend on commits. It depends on the mark (§5.5).
 
 ### 5.3 The run's context and cancellation
 
@@ -213,10 +240,14 @@ in that step's state (`engine.go:848` sets the state before
 that, the entity is no longer in the source state, and the cascade did not
 finish.
 
-The run knows the state of its last committed segment. If that state differs
-from the task's source state and the run then fails:
-- the outcome is FAILED `STOPPED_AFTER_PARTIAL_COMMIT`;
-- a later claim would otherwise see "moved on" and remove the task silently.
+Suppose a run fails after it has committed a segment, and the state it
+committed (its segment stamp, §5.2) differs from the task's source state.
+
+- **If the run is still alive**, it records FAILED
+  `STOPPED_AFTER_PARTIAL_COMMIT` itself.
+- **If the run died** (a crash, or a kill before the outcome was recorded), the
+  next claim finds the stamp and records the same outcome (§5.1, step 2). The
+  task is therefore never removed silently as "moved on".
 
 If the last committed segment is still in the source state (a
 `COMMIT_BEFORE_DISPATCH` processor on the fired transition itself), the
@@ -237,8 +268,8 @@ unsafe, the following happens at each dispatch site (`engine_processors.go:230,
 | accepted | dispatch |
 | `ErrStaleClaim` | do not dispatch; the run is `superseded` |
 | `ErrMarkedByAnotherClaim` | do not dispatch; FAILED `UNSAFE_WORK_NOT_COMPLETED` (an earlier owner of this life marked it, and its outcome is unknown) |
-| `ErrTaskBusy` (the task row is being changed right now, §10.2) | do not dispatch; safe failure |
-| any other error | do not dispatch; call `ClearUnsafe`. If it is accepted: safe failure. If not: treat the run as marked (FAILED) |
+| `ErrTaskBusy` (an open transaction has written or staged a write to the task row, §10.2, §10.3) | do not dispatch; safe failure |
+| any other error | do not dispatch; the run ends as a safe failure with `RecordAttempt{ClearOwnMark: true}`, which removes any mark written under this claim in the same step. A mark whose write did commit is therefore removed. Nothing was dispatched. `RecordAttempt` is retried as in §5.6 |
 
 **After a failed dispatch** the mark is cleared only if the failure proves
 that nothing was handed off. Proof is one of:
@@ -249,6 +280,19 @@ that nothing was handed off. Proof is one of:
 The engine then calls `ClearUnsafe`, but only if no earlier unsafe processor
 of the run was handed off. A `Terminal` failure is not proof. **Otherwise the
 mark stays.**
+
+**A run cancelled between the mark and the send.** Today the callout layer
+returns a caller's cancellation as `ctx.Err()`, without its attempts
+(`internal/callout/coordinator.go:410-415`). That gives no proof either way. The
+error it returns on cancellation is therefore changed:
+- it carries the attempts made so far, as a `*contract.CalloutFailure` whose
+  `Err` is the cancellation;
+- `errors.Is(err, context.Canceled)` still holds, so every existing caller is
+  unaffected.
+
+A cancellation before any hand-off is then proof of "not handed off", and the
+mark is cleared. A shutdown or self-cancel therefore does not fail a run whose
+unsafe processor was never sent.
 
 How the mark applies:
 - It belongs to the life: every later claim of that life sees it. A re-arm
@@ -264,7 +308,10 @@ How the mark applies:
 entity earlier in the run — the anti-pattern above — the run's own transaction
 holds the task row. A later unsafe processor then gets `ErrTaskBusy`. The
 attempt fails safely and is retried, and the pattern is visible in the query.
-The workflow docs say so.
+In a segmented run, the next segment's re-read sees the life that the callback
+re-armed, so the run ends `superseded`. In a cascade step that leads to the
+case in §5.4. The pattern never hangs and never repeats unsafe work, and it
+stays visible. The workflow docs name it as unsupported for scheduled runs.
 
 **Effect on today's most common failure.** An unsafe processor followed by a
 failing re-arm `schedule.function` (`executor.go:49-55`) now ends FAILED.
@@ -319,7 +366,7 @@ That is where the planned notification feature can publish "timer failed".
 
 The error is shown to tenant users (§8), so it passes an **allow-list**.
 `classifyWorkflowError` cannot be used here: its catch-all is a 400 carrying
-`err.Error()` (`internal/domain/entity/service.go:2872`), and the fire path wraps
+`err.Error()` (`internal/domain/entity/service.go:2871`), and the fire path wraps
 store errors in plain `fmt.Errorf` (`fire_scheduled.go:107, 118, 168, 234`).
 What is shown:
 
@@ -398,8 +445,7 @@ task that carries a mark becomes FAILED on its next claim.
 - **Heartbeat.** A dedicated goroutine writes `Heartbeat(incarnation)` every
   `CYODA_SCHEDULER_HEARTBEAT_INTERVAL` (15 s), from start to stop. The store
   stamps it with the store clock.
-- **Stale period.** `CYODA_SCHEDULER_STALE_AFTER` (1 min) must be ≥ 4 × the
-  interval, as for `CYODA_SEARCH_JOB_STALE_AFTER` (`app/config.go:861-886`).
+- **Stale period.** `CYODA_SCHEDULER_STALE_AFTER` (2 min). It is validated against the watchdog margin (§6.3).
 - **Slow runs.** A slow run keeps its task, and so does a hung run whose pnode
   still heartbeats (as in #509).
 - **Cleanup.** The claim loop removes the liveness records of dead
@@ -407,19 +453,36 @@ task that carries a mark becomes FAILED on its next claim.
 
 ### 6.3 Self-cancel
 
-A **watchdog** goroutine, separate from the heartbeat, reads on the monotonic
-clock when the last successful heartbeat was sent. If that is more than
-`STALE_AFTER − HEARTBEAT_INTERVAL` ago, the pnode:
+**The watchdog.** A goroutine separate from the heartbeat. For each heartbeat
+call it records, on the monotonic clock, the moment **before** the call started
+to acquire its connection. Each call has a 10 s budget, covering both the
+acquire and the statement. The store's stamp is therefore never earlier than
+the recorded moment.
+
+**The rule.** If the recorded moment of the last successful heartbeat is more
+than `W = STALE_AFTER − CommitBudget − 10 s` ago, the pnode:
 - cancels every run in progress (outcome `self_cancelled`);
 - makes no claims until a heartbeat succeeds again.
 
-A frozen VM whose monotonic clock does not advance is not stopped by this. For
-unsafe work it is covered by C3.
+`CommitBudget` is the shielded commit budget, 30 s
+(`internal/common/reqtimeout.go:83-88`).
+
+**Why that margin.** A cancelled run's shielded commit then lands no later than
+`W + CommitBudget = STALE_AFTER − 10 s` after the recorded moment. Another
+pnode may reclaim only `STALE_AFTER` after the store's stamp, which is later.
+So the old owner's last write always comes before a reclaim. That is A1 on
+live pnodes.
+
+**Validation.** `STALE_AFTER ≥ CommitBudget + 10 s + 2 × HEARTBEAT_INTERVAL`,
+so the default `STALE_AFTER` becomes 2 min.
+
+A frozen VM whose monotonic clock does not advance is not stopped by the
+watchdog. For unsafe work it is covered by C3. Its commits are fenced by C1.
 
 ### 6.4 Shutdown
 
 Today the HTTP, admin and gRPC servers drain concurrently in an errgroup
-(`cmd/cyoda/run.go:117-171`), and the scheduler stops afterwards, in
+(`cmd/cyoda/run.go:95-171`), and the scheduler stops afterwards, in
 `a.Shutdown()`. New order on a signal:
 
 1. The scheduler stops claiming.
@@ -427,8 +490,10 @@ Today the HTTP, admin and gRPC servers drain concurrently in an errgroup
    progress. Compute-node streams and callback routes are still open.
 3. It cancels the remaining runs (§5.3) and waits up to 15 s more for each run
    to end and record its outcome. A cut unsafe callout ends FAILED.
-4. `GiveBackIdle(owner, keep = live claim tokens)`. This hands back only the
-   claims whose run has ended but whose outcome did not reach the store. A run
+4. The claim loop, which is the only caller of `GiveBackIdle` (§6.1), calls
+   `GiveBackIdle(owner, keep = live claim tokens)` as its last act. This hands
+   back only the claims whose run has ended but whose outcome did not reach the
+   store. A run
    still live after step 3 is never given back. Its task stays RUNNING and is
    reclaimed after `STALE_AFTER` as a lost owner, once the process has exited.
    Then `RetireOwner` runs, if no run is still live.
@@ -451,8 +516,10 @@ operator replaces the node.
   again on another pnode would spread it.
 - **A latched pnode stops claiming.** It keeps heartbeating, so its runs still
   in progress are not taken over.
-- **A panicking loop, heartbeat or watchdog** latches the node. The runs then
-  cancel themselves through the watchdog.
+- **A panicking loop, heartbeat or watchdog** latches the node, and the
+  recovery itself cancels every run in progress. It does not rely on the
+  watchdog, which may be the goroutine that panicked. The runs record their
+  outcomes as in §5.6.
 
 ### 6.6 Deleted
 
@@ -496,7 +563,30 @@ operator replaces the node.
   - The gRPC doors reach the same functions (`internal/grpc/entity.go:200,
     484`).
 - **These writes carry no claim.** Arm, cancel, import cleanup and delete are
-  the application's decisions. Through C1 they supersede any running owner.
+  the application's decisions. If one commits first, the running owner's next
+  task-row write fails (C1), and the owner is superseded.
+
+- **D1 — decision for the product owner.** C1 works in both directions. A
+  client write, a delete or a workflow import can fail with a retryable 409 if
+  the scheduler changed that task row after the write began. The scheduler
+  changes it by claiming the task, by recording an attempt, or by giving the
+  task back.
+  - **When it happens:** a client writes an entity at the moment its timer is
+    claimed or finishes an attempt. The client transaction must be open across
+    that moment. That takes milliseconds for a plain update, and longer when
+    the update runs processors.
+  - **What a client sees:** the 409 a client already gets today when it races
+    the timer *firing* on the same entity. It is retryable.
+  - **New:** it also arises on memory and SQLite, which are made consistent
+    with PostgreSQL. On PostgreSQL it already happens today through
+    `MarkRedispatch`.
+  - **Recommendation:** accept it, document it, and test it on every door.
+  - **The alternative:** move the scheduler's bookkeeping to a separate row
+    that client writes never touch. That is the v2/v3 design. It needs a claim
+    check inside the entity transaction to fence the run's commits, and that is
+    where three review rounds found their defects (§10.0).
+  - **Coverage** (§13): an isolated E test per door (update, delete,
+    conditional delete, delete-all, workflow import), plus gRPC.
 
 ## 8. The task query — `GET /scheduled-tasks`
 
@@ -623,6 +713,7 @@ type ScheduledTask struct {
     LastError       string
     FailureReason   ScheduledTaskFailureReason
     FailedTime      *int64
+    SegmentState    string     // last committed segment state of this life, "" if none (§5.2)
     Claim           *TaskClaim // RUNNING only: {Token, Owner uuid.UUID}
     UnsafeMarked    bool       // read-only: a mark exists for this life
 }
@@ -639,6 +730,7 @@ missing task counts as stale.
 |---|---|---|
 | `ReconcileForEntity(req)` | joins | arms `req.Arm` (each a new life); removes every other task of the entity; returns the removed tasks |
 | `RemoveLife(tenant, id, armToken)` | joins | removes the task if its current life is `armToken`; else does nothing |
+| `StampSegment(tenant, id, armToken, claimToken, state)` | joins | fenced; writes the task row and records `state` as the life's last committed segment state (§5.2) |
 | `DeleteForEntities(tenant, ids)` | joins | removes those entities' tasks |
 | `DeleteForModel(tenant, name, version, keep)` | joins | removes the model's tasks; with `keep`, only those whose (state, transition) is not kept |
 | `Get(tenant, id)` | may join | tenant-scoped; sees the transaction's own staged operations (C2) |
@@ -648,7 +740,7 @@ missing task counts as stale.
 | `GiveBackIdle(owner, keep)` | never joins | RUNNING under `owner` and not in `keep` → WAITING; not counted |
 | `MarkUnsafe(tenant, id, armToken, claimToken)` | never joins | fenced; serialised with `ClaimDue` (C3); idempotent for the same claim. Errors: `ErrMarkedByAnotherClaim` (a mark by another claim of the life); `ErrTaskBusy` (the row is being changed right now) |
 | `ClearUnsafe(tenant, id, armToken, claimToken)` | never joins | fenced; removes this claim's mark |
-| `RecordAttempt(tenant, id, armToken, claimToken, Attempt)` | never joins | fenced; WAITING; claim cleared; counts per §5.6 |
+| `RecordAttempt(tenant, id, armToken, claimToken, Attempt)` | never joins | fenced; WAITING; claim cleared; counts per §5.6; with `ClearOwnMark`, it removes a mark written under this claim in the same step |
 | `Fail(tenant, id, armToken, claimToken, reason, error, atMs)` | joins the §5.7 transaction, as its first statement | fenced; FAILED; claim cleared |
 | `SweepMarks()` | never joins | removes marks whose life has ended |
 
@@ -672,17 +764,21 @@ and the memory `stage()` join a transaction if there is one.
 - **(C2) Reads by a joining call see the operations staged earlier in the same
   transaction.** Today memory and SQLite read committed state
   (`plugins/memory/scheduled_task_store.go:118-127, 165-176`,
-  `plugins/sqlite/scheduled_task_store.go:188-191, 225-229`), while PostgreSQL
+  `plugins/sqlite/scheduled_task_store.go:188-191, 243-286`), while PostgreSQL
   reads its own writes. That divergence is fixed, and the comment at
   `fire_scheduled.go:476-486` is rewritten.
 - **(C3) A `MarkUnsafe` and a `ClaimDue` that race on one task serialise.**
   Either the mark is refused, or the claim returns `UnsafeMarked`.
 - **(C4) Entity transactions must not starve heartbeats and claims of
   connections.**
-- **(C5) Conflicts have fixed error values.** A commit refused under C1 returns
-  an error for which `errors.Is(err, spi.ErrConflict)` holds. A fenced refusal
-  returns `spi.ErrStaleClaim`. Today the SQLite flush wraps op errors as plain
-  errors (`plugins/sqlite/txmanager.go:889-893`); that changes.
+- **(C5) Conflicts have fixed error values.**
+  - A write or commit refused under C1 returns an error for which
+    `errors.Is(err, spi.ErrConflict)` holds, both at the statement and at
+    commit. PostgreSQL raises the serialisation failure at the writing
+    statement, after any lock wait. The task store maps SQLSTATE 40001 on its
+    own statements to `ErrConflict`, as the transaction manager already does at
+    commit (`plugins/postgres/transaction_manager.go:189`).
+  - A fenced refusal returns `spi.ErrStaleClaim`.
 
 The conformance cases move from `SPI/scheduled_task_store_conformance.go` into
 `SPI/spitest`. They cover every method, refusal and clause, including:
@@ -717,9 +813,18 @@ are simply replaced.
   written only by never-joining methods and swept by `SweepMarks`.
 - **`scheduler_owners`** `(owner PK, heartbeat_at)`.
 
-**The dedicated pool (C4).** `CYODA_POSTGRES_SCHEDULER_CONNS` (3), pinned to
-READ COMMITTED, with `statement_timeout` 30 s and
-`idle_in_transaction_session_timeout` 10 s.
+**The dedicated pool (C4).** `CYODA_POSTGRES_SCHEDULER_CONNS` (3). Its sessions
+are set to:
+- READ COMMITTED;
+- `statement_timeout` 30 s;
+- `idle_in_transaction_session_timeout` 10 s;
+- **`lock_timeout` 2 s**.
+
+A statement that waits on a task-row lock gives up quickly, and the connection
+is released. The lock can belong to an entity transaction that holds the row
+for a long run. `lock_not_available` (SQLSTATE 55P03) is retried with the
+backoff of §5.6 by the caller. For `MarkUnsafe` it is `ErrTaskBusy`. Acquiring
+a connection times out after 5 s.
 - It runs every never-joining method except `Query`, which runs on the main
   pool.
 - `Heartbeat` has one extra connection of its own, with a 5 s acquire timeout.
@@ -733,17 +838,25 @@ READ COMMITTED, with `statement_timeout` 30 s and
    - `NOT EXISTS` for a RUNNING task of the same entity other than itself;
    - `DISTINCT ON (tenant_id, entity_id)`;
    - `row_number() OVER (PARTITION BY tenant_id …)` against the tenant caps.
-2. An outer `SELECT … FOR UPDATE SKIP LOCKED LIMIT $n` over those ids. PostgreSQL
-   does not allow `FOR UPDATE` together with window functions at one query
-   level. SKIP LOCKED after the ranking can yield fewer rows than it could;
-   that is accepted.
-3. `UPDATE … RETURNING`.
+2. An outer `SELECT … FOR UPDATE SKIP LOCKED` over those ids, ordered by id.
+   **Its `WHERE` clause repeats the whole claim condition**: WAITING and due,
+   or RUNNING with the claim token step 1 read and a stale owner, and no other
+   RUNNING task for the entity. PostgreSQL re-checks that condition on the
+   latest row version after the lock, so a row that another pnode claimed in
+   between is dropped.
+   - PostgreSQL does not allow `FOR UPDATE` together with window functions at
+     one query level, so the ranking sits in the subquery.
+   - SKIP LOCKED after the ranking can yield fewer rows than it could. That is
+     accepted.
+3. `UPDATE … WHERE id = ANY($locked) AND <the same condition> RETURNING`.
 4. After the row locks are held, a second statement reads the marks of the
    claimed rows (C3).
 
 Two pnodes that claim two siblings at once collide on the unique index. The
-later one gets a unique violation. Its claim transaction is rolled back and
-claims nothing this tick. It is logged at DEBUG and retried on the next tick.
+later one gets a unique violation, or a deadlock (SQLSTATE 40P01) if two
+claims each hold a sibling the other wants. In both cases its claim
+transaction is rolled back and claims nothing this tick. The event is logged at
+DEBUG, and the claim is retried on the next tick.
 
 **`MarkUnsafe`.** One short transaction:
 1. `SELECT … FROM scheduled_tasks WHERE id, tenant_id, arm_token, claim_token
@@ -783,9 +896,25 @@ These backends run on a single pnode, but they meet the same contract.
   - Task rows get keys in the transaction's write set, next to entity ids, and
     the commit's conflict check covers them (`plugins/memory/txmanager.go:488-513`,
     `plugins/sqlite/txmanager.go:517-535`).
-  - A never-joining write to a task row appends a committed-log entry carrying
-    that key.
+  - A never-joining write that changes a task row (claim, `RecordAttempt`,
+    `GiveBackIdle`, `Fail`) appends a committed-log entry carrying that key.
+    It does so under the same commit gate that `Commit` holds, so it cannot
+    race `Commit`'s check.
+  - **Ordering must be strict.** Memory orders by a sequence number
+    (`plugins/memory/txmanager.go:499-503`). SQLite today compares submit
+    times with `>=` against a snapshot time that can equal the last submit
+    time (`plugins/sqlite/txmanager.go:427-431, 525`). With a frozen or
+    lagging clock, a run would then conflict with its own claim. SQLite moves
+    to a sequence number for this check, as memory has.
   - This is **V1**.
+- **Marks are kept apart from task rows** on memory and SQLite as well.
+  `MarkUnsafe` and `ClearUnsafe` never write a task row and never append to the
+  committed log. Otherwise a run's own mark would make its final commit fail.
+- **`ErrTaskBusy`** means: an open transaction has staged a write to this task
+  row. Both stores already keep staged operations per transaction
+  (`scheduledTaskOps`), and `MarkUnsafe` checks them under the store's lock.
+  This matches PostgreSQL, where any open transaction that wrote the row holds
+  its lock.
 - **C2.** A read by a joining call overlays the transaction's staged
   operations on committed state.
 - **Never-joining methods** apply at once and ignore any transaction on `ctx`:
@@ -793,7 +922,7 @@ These backends run on a single pnode, but they meet the same contract.
   the async-search pattern (`plugins/sqlite/search_store.go:404-496`).
 - **One task per entity** is checked inside the claim, under the store's lock.
 - **Serialisation.** Both backends serialise every never-joining write, so C3
-  and `ErrTaskBusy` reduce to the same checks run under that lock.
+  reduces to checks run under that lock.
 - **Removed.** `Delete`, and with it the unreliable "was it removed?" answer
   (R§2.5 item 9).
 
@@ -806,7 +935,7 @@ These backends run on a single pnode, but they meet the same contract.
 | `CYODA_SCHEDULER_MAX_RUNS` | 8 | ≥ 1 | new |
 | `CYODA_SCHEDULER_MAX_RUNS_PER_TENANT` | 4 | 1..MAX_RUNS | new |
 | `CYODA_SCHEDULER_HEARTBEAT_INTERVAL` | 15s | > 0 | new |
-| `CYODA_SCHEDULER_STALE_AFTER` | 1m | ≥ 4 × heartbeat | new |
+| `CYODA_SCHEDULER_STALE_AFTER` | 2m | ≥ 30 s commit budget + 10 s + 2 × heartbeat (§6.3) | new |
 | `CYODA_SCHEDULER_MAX_LOST_OWNERS` | 3 | ≥ 1 | new |
 | `CYODA_SCHEDULER_RETRY_DELAY` | 30s | > 0 | new |
 | `CYODA_SCHEDULER_RETRY_DELAY_MAX` | 15m | ≥ retry delay | new |
@@ -913,14 +1042,21 @@ Startup fails on an invalid value.
 | an unsafe processor fails → FAILED `UNSAFE_WORK_NOT_COMPLETED`, never re-run | ✓ | | ✓ | ✓ | |
 | a later step fails after an unsafe hand-off → FAILED | ✓ | | ✓ | ✓ | |
 | `MarkUnsafe` transient error → not dispatched; cleared → WAITING; clear fails → FAILED | ✓ | | | | |
+| database outage during `MarkUnsafe` → `RecordAttempt{ClearOwnMark}` after recovery, WAITING, not FAILED | ✓ | ✓ | | | |
 | `ErrMarkedByAnotherClaim` → FAILED under the current claim | ✓ | ✓ | | | |
 | `ErrTaskBusy` → not dispatched, safe failure | ✓ | ✓ | | | |
 | an unsafe `ASYNC_NEW_TX` processor fails and the run commits → completed | ✓ | | ✓ | | |
 | CBD on the fired transition: TX_pre committed, then a failure, all idempotent → retried from the TX_pre state | ✓ | | ✓ | | |
 | CBD in a cascade step, then a failure → FAILED `STOPPED_AFTER_PARTIAL_COMMIT` | ✓ | | ✓ | | |
+| owner killed after a cascade-step segment commit → the next claim records FAILED `STOPPED_AFTER_PARTIAL_COMMIT` | ✓ | ✓ | | | M |
+| a replaced owner's segment commit is refused by its stamp (C1) | ✓ | ✓ | ✓ | | |
+| cancelled between mark and send → mark cleared, safe failure | ✓ | | | | |
 | CBD: cancellation after TX_pre stops the run at the next step | ✓ | | ✓ | | |
 | a joined callback writes the fired entity; no unsafe processor follows → same outcome as an ordinary transition | ✓ | ✓ | ✓ | | |
 | a joined callback writes the fired entity, then an unsafe processor → `ErrTaskBusy`, safe failure, no hang | ✓ | | ✓ | | |
+| the same on memory and SQLite: `ErrTaskBusy` from a staged write, same outcome as PostgreSQL | | ✓ | | | |
+| a client re-arm in flight when an unsafe processor is about to be marked → `ErrTaskBusy` on every backend | | ✓ | | | |
+| a joined callback writes the fired entity inside a segmented run → superseded at the next segment | ✓ | | ✓ | | |
 | a joined callback deletes the fired entity → the run commits | ✓ | ✓ | ✓ | | |
 | FAILED audit event recorded with its reason | ✓ | | ✓ | ✓ | |
 | a panicking run → FAILED `RUN_PANICKED`; node latched; claims stop | ✓ | | | | |
@@ -933,6 +1069,9 @@ Startup fails on an invalid value.
 | concurrent `ClaimDue` calls get disjoint sets | | ✓ | | | M |
 | two due siblings: one claim per call | | ✓ | | | |
 | two due siblings claimed by two pnodes at once: one wins, the other claims nothing that tick | | ✓ | | | M |
+| contended `ClaimDue` loop on PostgreSQL: a task claimed by another pnode between ranking and locking is never re-claimed | | ✓ | | | M |
+| a dedicated-pool statement blocked on a task-row lock gives up after `lock_timeout` and frees its connection | | ✓ | ✓ | | |
+| SQLite: a run never conflicts with its own claim under a frozen clock | | ✓ | | | |
 | per-tenant limit, and turn-taking across tenants | | ✓ | | | |
 | a run longer than 3 × the heartbeat interval is not claimed by another pnode | | | | | M |
 | owner killed, no mark → claimed after `STALE_AFTER`, `lostOwners` 1, fires | | | | | M |
@@ -950,6 +1089,8 @@ Startup fails on an invalid value.
 | a superseded owner sends no unsafe processor | ✓ | | ✓ | | |
 | ABA: the old token is refused after re-arm and a new claim | ✓ | ✓ | | | |
 | heartbeat failure → self-cancel before `STALE_AFTER`; no claims until recovery | ✓ | | | | |
+| a replaced owner's last shielded commit lands before any reclaim (watchdog margin) | ✓ | | | | |
+| a panicking watchdog: the latch cancels the runs directly | ✓ | | | | |
 | a hung heartbeat does not stop the watchdog | ✓ | | | | |
 | no claim before the first heartbeat | ✓ | | | | |
 | heartbeats are not starved when every main-pool connection is busy (C4) | | | ✓ | | |
@@ -983,6 +1124,8 @@ Startup fails on an invalid value.
 | delete-all removes the model's tasks | ✓ | ✓ | ✓ | ✓ | |
 | `DeleteForModel` in tenant A leaves tenant B's tasks alone | | ✓ | ✓ | | |
 | a client write racing a task's claim or outcome gets the same result on every backend (C1) | | ✓ | | | |
+| D1: a client update, delete, conditional delete, delete-all and workflow import racing a claim → retryable 409 (HTTP, isolated) | | | ✓ | | |
+| D1: the same on gRPC entity doors | ✓ (`internal/grpc`) | | | | |
 
 ### Query
 
@@ -1063,7 +1206,12 @@ The `RoundRobin` check is qualified with `scheduler.` because
   the signal path, and last on the server-failure path.
 - **V7.** The engine can compute "does any workflow of this model schedule a
   transition" without an extra store read per write.
-- **V8.** On PostgreSQL, does a unique violation in `ClaimDue` block the other
-  claimer until the first commits, or fail at once? Either way the outcome is
-  the same: one claim, and the loser claims nothing that tick. But the lock
-  wait must stay inside `statement_timeout`.
+- **V8.** On PostgreSQL, a unique-index wait in `ClaimDue` is bounded by
+  `lock_timeout` (2 s). Confirm the loser rolls back and claims nothing that
+  tick.
+- **V9.** The callout layer's cancellation error can carry its attempts while
+  `errors.Is(err, context.Canceled)` still holds for every existing caller
+  (§5.5).
+- **V10.** The shielded commit budget (`common.CommitBudget`) is the upper bound
+  of every segment commit of a scheduled run, including a segment of the
+  final persist (§6.3).
