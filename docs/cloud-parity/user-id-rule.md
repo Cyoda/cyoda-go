@@ -44,7 +44,7 @@ unlike a tenant id, it has no charset grammar.
 | First-party user claim: `caas_user_id`, or `sub` when `caas_user_id` is absent | Every authenticated HTTP request and gRPC method | `401`, the uniform problem detail; `codes.Unauthenticated` over gRPC |
 | OIDC `sub` | Federated tokens | `401`, as before |
 | Token-exchange subject token `sub`, which becomes the issued token's user id | `POST /oauth/token`, token-exchange grant | `400 invalid_grant` |
-| `CYODA_BOOTSTRAP_USER_ID` | Process startup, only when a bootstrap client is configured | Non-zero exit; the chart's `values.schema.json` rejects it at `helm install`, and a unit test keeps its pattern equal to the rule |
+| `CYODA_BOOTSTRAP_USER_ID` | Process startup, only when a bootstrap client is configured | Non-zero exit; the chart's `values.schema.json` rejects it at `helm install`, and a unit test checks that its pattern agrees with the rule on every character |
 
 A `caas_user_id` that is present names the user. If it is empty, not a string,
 or outside the rule, the token is rejected. It never falls back to `sub`, which

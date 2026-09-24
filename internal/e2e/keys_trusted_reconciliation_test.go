@@ -103,7 +103,7 @@ func TestTrusted_RegisterNonRSA_400UnsupportedKeyType(t *testing.T) {
 }
 
 // TestTrustedKey_CapReached_400: registering one key past the per-tenant cap
-// (the default, 10) is 400 TRUSTED_KEY_CAP_REACHED. It runs in a tenant of its
+// (CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT) is 400 TRUSTED_KEY_CAP_REACHED. It runs in a tenant of its
 // own, so filling that tenant's cap does not affect any other test.
 func TestTrustedKey_CapReached_400(t *testing.T) {
 	tenant := fmt.Sprintf("e2e-cap-%d", time.Now().UnixNano())
