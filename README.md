@@ -127,7 +127,7 @@ can exercise service- or system-attributed code paths without real JWT auth.
 
 cyoda-go can accept JWTs issued by external OIDC providers — Auth0, Cognito, Keycloak, or any spec-compliant issuer — alongside its own first-party tokens. Each tenant registers its own providers; tokens are validated against the provider's JWKS endpoint.
 
-**Validation order:** cyoda-go tries the built-in JWKSValidator first (trusted keys registered via `/oauth/keys/trusted/*`), then the OIDCValidator. The first validator that recognises the issuer wins.
+**Validation order:** cyoda-go tries the built-in JWKSValidator first (cyoda's own signing keys), then the OIDCValidator. A token whose `kid` the first does not know goes to the second; any other failure is final. Trusted keys registered via `/oauth/keys/trusted/*` are not in this chain: they verify only the subject token of a token exchange.
 
 **Management endpoints** (JWT mode, `CYODA_IAM_MODE=jwt`):
 

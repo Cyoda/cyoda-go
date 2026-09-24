@@ -490,7 +490,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   user id and roles. The key is now looked up in the client's tenant only; a
   key from another tenant is `400 invalid_grant` ("unknown trusted key"). The
   lookup is also keyed instead of scanning every tenant's keys, and keeps the
-  fail-closed behaviour when the trusted-key cache is stale.
+  fail-closed behaviour when the trusted-key cache is stale. See
+  `docs/cloud-parity/trusted-key-tenant.md`.
+
+- **`cyoda help auth trusted-keys` described a feature cyoda-go does not
+  have.** It said a JWT signed with a trusted key could be sent as a bearer
+  token on API calls. A trusted key verifies only the subject token of the
+  token-exchange grant; the topic, `auth.tokens`, `auth` and the README now
+  say so. The topic's registration and reactivation examples also match the
+  API now (`jwk` and `audience` on registration; `validTo` on reactivation).
 
 - **An answer that arrives and cannot be read ends its callout at once, instead
   of being waited out.** A member's answer whose fields do not have the types
