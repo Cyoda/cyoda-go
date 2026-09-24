@@ -137,8 +137,13 @@ These environment variables tune the IAM admin endpoints under `/oauth/keys/*` a
   in a registered JWK to guard against absurdly large payloads. (default: `20`)
 - `CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS` — default validity for both the
   bootstrap signing key and runtime-issued keypairs via
-  `POST /oauth/keys/keypair`. The startup banner emits a `WARN` if the
-  active bootstrap key expires within 30 days. (default: `365`)
+  `POST /oauth/keys/keypair`. A key pair signs and verifies tokens only
+  inside its window, from `validFrom` to `validTo`: a key pair issued with a
+  future `validFrom` is published in JWKS but not used until then, and once
+  `validTo` passes, tokens it signed are rejected. The bootstrap key's window
+  starts when the node starts, so a node that runs longer than this value
+  needs a new key pair issued before then. The startup banner emits a `WARN`
+  if the active bootstrap key expires within 30 days. (default: `365`)
 
 ### Auth cache reconciliation
 

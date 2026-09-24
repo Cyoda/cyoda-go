@@ -5407,7 +5407,10 @@ paths:
         After invalidation, the key will no longer be used for signing new
         tokens,
 
-        and existing tokens signed with this key pair would not be accepted. If `gracePeriodSec` is omitted or zero, invalidation is immediate.
+        and existing tokens signed with this key pair are no longer accepted by
+        this server, at once. `gracePeriodSec` keeps the public key published in
+        JWKS for that long, for verifiers that
+        cache it; if it is omitted or zero, the key leaves JWKS at once.
       operationId: invalidateJwtKeyPair
       x-cyoda-iam-mode: jwt
       parameters:

@@ -453,6 +453,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **A signing key pair signs and verifies only inside its validity window.**
+  A key pair still marked active kept verifying bearer tokens after its
+  `validTo`, and a key pair issued with a future `validFrom` was used to sign
+  at once. Tokens are now signed only with a key pair inside its window, and a
+  token whose key pair is outside it is an ordinary `401`. JWKS still
+  publishes a key pair ahead of its window. The bootstrap key's window starts
+  when the node starts (`CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS`, default
+  365), so a node running longer needs a new key pair issued before then.
+
 - **An answer that arrives and cannot be read ends its callout at once, instead
   of being waited out.** A member's answer whose fields do not have the types
   the schema declares — `"success": "yes"`, a non-boolean `matches` — failed to
