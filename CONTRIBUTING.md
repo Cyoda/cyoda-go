@@ -2,14 +2,24 @@
 
 ## Methodology
 
-This project follows **strict Red/Green TDD** and **trunk-based development** on `main`.
+This project follows **strict Red/Green TDD**.
+
+## Branches
+
+Work for the next release is staged on a release branch named
+`release/vX.Y.Z`. `main` is updated only when a release is cut, so a change
+merged into `main` is not part of the release being built.
+
+- Branch from the current release branch, and open your PR against it.
+- If you are not sure which release branch is current, open the PR against
+  `main`. A maintainer will retarget it.
 
 ## Delivery Flow
 
 Every feature follows this flow:
 
 ```
-1. Create feature branch from main
+1. Create feature branch from the current release/vX.Y.Z branch
 2. Execute with strict Red/Green TDD:
    a. Write failing test (RED) — run it, verify it fails
    b. Implement minimal code (GREEN) — run it, verify it passes
@@ -22,7 +32,7 @@ Every feature follows this flow:
    -> Fix all Critical/Important findings
 5. Security audit (security-auditor)
    -> Fix all Critical/Important findings
-6. Create PR to main
+6. Create PR to the release branch
 7. Squash merge
 ```
 
