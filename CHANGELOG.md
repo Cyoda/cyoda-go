@@ -499,7 +499,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   period ends, as the invalidate operation promises. The exchange rejected
   every inactive key at once, so the grace period did nothing and a rotation
   cut off tokens signed with the old key immediately. A key now verifies until
-  its `validTo`.
+  its `validTo`. A grace period also no longer lengthens a key's window:
+  invalidating a trusted key or a signing key pair, directly or by rotation,
+  sets `validTo` to now plus the grace period or the key's existing `validTo`,
+  whichever is earlier. Before, invalidating an expired or already revoked
+  key with a grace period made it valid again.
 
 - **`cyoda help auth trusted-keys` described a feature cyoda-go does not
   have.** It said a JWT signed with a trusted key could be sent as a bearer

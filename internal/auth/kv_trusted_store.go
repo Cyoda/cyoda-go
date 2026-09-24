@@ -513,7 +513,6 @@ func (s *KVTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) error {
 	// unchanged — operator can retry Register to clean up stragglers.
 	if opts.Invalidate {
 		now := time.Now()
-		expiry := now.Add(time.Duration(opts.GracePeriodSec) * time.Second)
 		var failed []string
 		for _, k := range s.keys {
 			if k.TenantID != tk.TenantID || !k.Active || k.KID == tk.KID {
@@ -522,8 +521,7 @@ func (s *KVTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) error {
 			// Clone, mutate, persist to KV.
 			sibling := *k
 			sibling.Active = false
-			e := expiry
-			sibling.ValidTo = &e
+			sibling.ValidTo = graceExpiry(k.ValidTo, now, opts.GracePeriodSec)
 			if err := s.persistWithKey(trustedKeyKey(k.TenantID, k.KID), &sibling); err != nil {
 				failed = append(failed, k.KID)
 				continue
@@ -641,8 +639,9 @@ func (s *KVTrustedKeyStore) Delete(tenantID spi.TenantID, kid string) error {
 	return nil
 }
 
-// Invalidate marks a trusted key as inactive, sets ValidTo to
-// now+gracePeriodSec, and persists. Returns an error if the key does not
+// Invalidate marks a trusted key as inactive, sets ValidTo to the grace
+// expiry (graceExpiry: now+gracePeriodSec, never later than the key's current
+// ValidTo), and persists. Returns an error if the key does not
 // exist or belongs to a different tenant.
 func (s *KVTrustedKeyStore) Invalidate(tenantID spi.TenantID, kid string, gracePeriodSec int64) error {
 	s.mu.Lock()
@@ -654,8 +653,7 @@ func (s *KVTrustedKeyStore) Invalidate(tenantID spi.TenantID, kid string, graceP
 	// Clone, mutate, persist to KV first (rollback safety).
 	updated := *tk
 	updated.Active = false
-	expiry := time.Now().Add(time.Duration(gracePeriodSec) * time.Second)
-	updated.ValidTo = &expiry
+	updated.ValidTo = graceExpiry(tk.ValidTo, time.Now(), gracePeriodSec)
 	if err := s.persistWithKey(trustedKeyKey(tenantID, kid), &updated); err != nil {
 		return fmt.Errorf("failed to persist invalidation: %w", err)
 	}

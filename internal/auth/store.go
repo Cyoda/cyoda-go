@@ -141,7 +141,7 @@ func NewInMemoryKeyStore() *InMemoryKeyStore {
 
 // Save stores a key pair. When opts.Invalidate is true, all other active key
 // pairs sharing the same Audience are marked inactive with a ValidTo expiry of
-// now+GracePeriodSec. The new key pair itself is always stored active (it is
+// now+GracePeriodSec, never later than the ValidTo they already had. The new key pair itself is always stored active (it is
 // never self-invalidated). All mutations are performed under a single Lock so
 // concurrent rotations cannot leave two active keys for the same audience.
 func (s *InMemoryKeyStore) Save(kp *KeyPair, opts RotateOptions) error {
@@ -149,12 +149,10 @@ func (s *InMemoryKeyStore) Save(kp *KeyPair, opts RotateOptions) error {
 	defer s.mu.Unlock()
 	if opts.Invalidate {
 		now := time.Now()
-		expiry := now.Add(time.Duration(opts.GracePeriodSec) * time.Second)
 		for _, existing := range s.keys {
 			if existing.Audience == kp.Audience && existing.Active && existing.KID != kp.KID {
 				existing.Active = false
-				e := expiry
-				existing.ValidTo = &e
+				existing.ValidTo = graceExpiry(existing.ValidTo, now, opts.GracePeriodSec)
 			}
 		}
 	}
@@ -243,7 +241,8 @@ func (s *InMemoryKeyStore) Delete(kid string) error {
 }
 
 // Invalidate marks a key pair as inactive and sets its ValidTo to
-// now+gracePeriodSec so grace-period JWKS publishing still includes the key.
+// now+gracePeriodSec, never later than its current ValidTo, so grace-period
+// JWKS publishing still includes the key until then.
 func (s *InMemoryKeyStore) Invalidate(kid string, gracePeriodSec int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -251,9 +250,8 @@ func (s *InMemoryKeyStore) Invalidate(kid string, gracePeriodSec int64) error {
 	if !ok {
 		return fmt.Errorf("key pair not found: %s", kid)
 	}
-	expiry := time.Now().Add(time.Duration(gracePeriodSec) * time.Second)
 	kp.Active = false
-	kp.ValidTo = &expiry
+	kp.ValidTo = graceExpiry(kp.ValidTo, time.Now(), gracePeriodSec)
 	return nil
 }
 
@@ -347,12 +345,10 @@ func (s *InMemoryTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) e
 	// Atomic sibling invalidation within the same tenant.
 	if opts.Invalidate {
 		now := time.Now()
-		expiry := now.Add(time.Duration(opts.GracePeriodSec) * time.Second)
 		for _, k := range s.keys {
 			if k.TenantID == tk.TenantID && k.Active && k.KID != tk.KID {
 				k.Active = false
-				e := expiry
-				k.ValidTo = &e
+				k.ValidTo = graceExpiry(k.ValidTo, now, opts.GracePeriodSec)
 			}
 		}
 	}
@@ -402,6 +398,18 @@ func (s *InMemoryTrustedKeyStore) GetForVerification(tenantID spi.TenantID, kid 
 	return &copied, nil
 }
 
+// graceExpiry is the ValidTo an invalidation leaves on a key: now plus the
+// grace period, but never later than the ValidTo the key already has. A grace
+// period keeps a key valid for at most that long; it never lengthens a key's
+// window, and never brings back a key that has already ended.
+func graceExpiry(current *time.Time, now time.Time, gracePeriodSec int64) *time.Time {
+	expiry := now.Add(time.Duration(gracePeriodSec) * time.Second)
+	if current != nil && current.Before(expiry) {
+		expiry = *current
+	}
+	return &expiry
+}
+
 // withinValidTo reports whether tk has not yet passed its ValidTo, the lazy
 // expiry filter the verification path applies.
 func withinValidTo(tk *TrustedKey, now time.Time) bool {
@@ -421,7 +429,8 @@ func (s *InMemoryTrustedKeyStore) Delete(tenantID spi.TenantID, kid string) erro
 }
 
 // Invalidate marks a trusted key as inactive and sets ValidTo to
-// now+gracePeriodSec so grace-period JWKS publishing still includes the key.
+// now+gracePeriodSec, never later than its current ValidTo, so the key keeps
+// verifying token-exchange subject tokens until then.
 func (s *InMemoryTrustedKeyStore) Invalidate(tenantID spi.TenantID, kid string, gracePeriodSec int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -429,9 +438,8 @@ func (s *InMemoryTrustedKeyStore) Invalidate(tenantID spi.TenantID, kid string, 
 	if !ok || tk.TenantID != tenantID {
 		return fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
 	}
-	expiry := time.Now().Add(time.Duration(gracePeriodSec) * time.Second)
 	tk.Active = false
-	tk.ValidTo = &expiry
+	tk.ValidTo = graceExpiry(tk.ValidTo, time.Now(), gracePeriodSec)
 	return nil
 }
 

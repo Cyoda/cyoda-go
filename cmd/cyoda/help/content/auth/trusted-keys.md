@@ -82,8 +82,8 @@ Returns the tenant's keys with status (active / invalidated) and validity window
 
 ```bash
 # Stop accepting subject tokens signed with this key, without removing the entry.
-# Optional body: {"gracePeriodSec": 3600} keeps it verifying for that many
-# seconds more; without it, it stops at once.
+# Optional body: {"gracePeriodSec": 3600} keeps it verifying for up to that
+# many seconds more, never past its validTo; without it, it stops at once.
 curl -X POST https://cyoda.example.com/api/oauth/keys/trusted/${KEY_ID}/invalidate \
   -H "Authorization: Bearer ${ADMIN_TOKEN}"
 
@@ -148,7 +148,7 @@ Management endpoints:
 
 Token exchange (OAuth error shape, see `auth.tokens`):
 
-- `400 invalid_grant` — the `subject_token_type` is not `urn:ietf:params:oauth:token-type:jwt`; the subject token does not parse, is not RS256, or has no `kid`; the `kid` is not a trusted key of the client's tenant, or the key is outside its validity window; the signature does not verify; `iss` is not among the key's `issuers`; a time claim fails; or `sub` is missing or breaks the user-identifier rule.
+- `400 invalid_grant` — the `subject_token_type` is not `urn:ietf:params:oauth:token-type:jwt`; the subject token does not parse, is not RS256, or has no `kid`; the `kid` is not a trusted key of the client's tenant, or the key is outside its validity window; the signature does not verify; `iss` is not among the key's `issuers`; a time claim fails; or `sub` is missing or breaks the user-identifier rule. The same `unknown trusted key` answer is given while cyoda cannot confirm its trusted-key cache is current, so no key is used that might have been revoked.
 - `403 access_denied` — `caas_org_id` is not the client's tenant.
 
 ## SEE ALSO

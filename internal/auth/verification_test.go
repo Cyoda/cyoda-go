@@ -63,8 +63,99 @@ func assertGetForVerification(t *testing.T, s auth.TrustedKeyStore) {
 	}
 }
 
+// registerWindow registers an active key valid from two hours ago to validTo.
+func registerWindow(t *testing.T, s auth.TrustedKeyStore, kid string, validTo time.Time, opts auth.RotateOptions) {
+	t.Helper()
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	if err := s.Register(&auth.TrustedKey{
+		KID: kid, TenantID: "ta", PublicKey: &priv.PublicKey, Audience: "human",
+		Active: true, ValidFrom: time.Now().Add(-2 * time.Hour), ValidTo: &validTo,
+	}, opts); err != nil {
+		t.Fatalf("register %s: %v", kid, err)
+	}
+}
+
+// assertInvalidateNeverExtends is the contract both stores share: a grace
+// period keeps a key valid for at most that long, and never beyond the end of
+// the window it already had. Invalidating — directly or by rotation — can
+// only shorten a key's life, never bring back a key that had ended.
+func assertInvalidateNeverExtends(t *testing.T, s auth.TrustedKeyStore) {
+	t.Helper()
+	verifiable := func(kid string) bool {
+		_, err := s.GetForVerification("ta", kid)
+		return err == nil
+	}
+
+	// A key already past its window stays dead.
+	registerWindow(t, s, "expired", time.Now().Add(-time.Minute), auth.RotateOptions{})
+	if err := s.Invalidate("ta", "expired", 3600); err != nil {
+		t.Fatalf("invalidate expired: %v", err)
+	}
+	if verifiable("expired") {
+		t.Error("invalidating an expired key with a grace period revived it")
+	}
+
+	// An immediate revoke is not undone by a later invalidation with grace.
+	registerWindow(t, s, "revoked", time.Now().Add(time.Hour), auth.RotateOptions{})
+	if err := s.Invalidate("ta", "revoked", 0); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if err := s.Invalidate("ta", "revoked", 3600); err != nil {
+		t.Fatalf("invalidate revoked: %v", err)
+	}
+	if verifiable("revoked") {
+		t.Error("a second invalidation with a grace period revived a revoked key")
+	}
+
+	// A grace period longer than the remaining window does not lengthen it.
+	end := time.Now().Add(10 * time.Minute)
+	registerWindow(t, s, "short", end, auth.RotateOptions{})
+	if err := s.Invalidate("ta", "short", 3600); err != nil {
+		t.Fatalf("invalidate short: %v", err)
+	}
+	if got := s.List("ta"); !validToAtMost(got, "short", end) {
+		t.Error("a grace period extended a key beyond its window")
+	}
+
+	// Rotation does not revive an expired sibling.
+	registerWindow(t, s, "old", time.Now().Add(-time.Minute), auth.RotateOptions{})
+	registerWindow(t, s, "new", time.Now().Add(time.Hour), auth.RotateOptions{Invalidate: true, GracePeriodSec: 3600})
+	if verifiable("old") {
+		t.Error("rotation with a grace period revived an expired sibling")
+	}
+}
+
+func validToAtMost(keys []*auth.TrustedKey, kid string, limit time.Time) bool {
+	for _, k := range keys {
+		if k.KID == kid {
+			return k.ValidTo != nil && !k.ValidTo.After(limit)
+		}
+	}
+	return false
+}
+
 func TestInMemoryTrustedKeyStore_GetForVerification(t *testing.T) {
 	assertGetForVerification(t, auth.NewInMemoryTrustedKeyStore())
+}
+
+func TestInMemoryTrustedKeyStore_InvalidateNeverExtends(t *testing.T) {
+	assertInvalidateNeverExtends(t, auth.NewInMemoryTrustedKeyStore())
+}
+
+func TestKVTrustedKeyStore_InvalidateNeverExtends(t *testing.T) {
+	ctx := systemCtx()
+	kv, err := memory.NewStoreFactory().KeyValueStore(ctx)
+	if err != nil {
+		t.Fatalf("KeyValueStore: %v", err)
+	}
+	s, err := auth.NewKVTrustedKeyStore(ctx, kv)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	assertInvalidateNeverExtends(t, s)
 }
 
 func TestKVTrustedKeyStore_GetForVerification(t *testing.T) {
