@@ -39,6 +39,9 @@ func NewAuthService(config AuthConfig) (*AuthService, error) {
 	if config.IAMFeatures == (IAMFeatures{}) {
 		config.IAMFeatures = DefaultIAMFeatures()
 	}
+	if err := config.IAMFeatures.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid IAM features: %w", err)
+	}
 
 	privateKey, err := ParseRSAPrivateKeyFromPEM([]byte(config.SigningKeyPEM))
 	if err != nil {

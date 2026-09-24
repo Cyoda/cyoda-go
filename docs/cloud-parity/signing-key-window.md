@@ -15,11 +15,11 @@ inside its window, from `validFrom` (inclusive) to `validTo` (exclusive):
   with the uniform `401`. The invalidate grace period only keeps the public
   key in JWKS, for external verifiers that cache it.
 
-`POST /oauth/keys/keypair` refuses, with `400 BAD_REQUEST`, a request that
-would leave the audience without a signing key:
+`POST /oauth/keys/keypair` refuses, with `400 BAD_REQUEST`:
 
-- `invalidateCurrent: true` together with a `validFrom` in the future;
-- a `validTo` that is not in the future.
+- `invalidateCurrent: true` together with a `validFrom` in the future — it
+  would leave the audience without a signing key until the new window opens;
+- a `validTo` that is not in the future — the key pair could never sign.
 
 `POST /oauth/keys/keypair/{keyId}/reactivate` refuses a `validFrom` in the
 future (`400 BAD_REQUEST`): it would put the key pair outside its own window
@@ -28,7 +28,8 @@ must always work — and leaves the audience without a signing key until a new
 one is issued.
 
 The bootstrap signing key (from configuration) has no window: it lasts as long
-as the configuration supplies it.
+as the configuration supplies it. Reactivating it through the API gives it the
+window the request names, on the node that serves the request.
 
 ## Cloud action
 

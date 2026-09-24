@@ -72,6 +72,9 @@ type M2MClient struct {
 type KeyStore interface {
 	Save(kp *KeyPair, opts RotateOptions) error
 	Get(kid string) (*KeyPair, error)
+	// GetActive returns the key pair that signs new tokens for audience: the
+	// active key pair inside its window with the latest ValidFrom, and on a
+	// tie the greater KID.
 	GetActive(audience string) (*KeyPair, error)
 	List() []*KeyPair
 	ListForVerification() []*KeyPair
@@ -178,7 +181,7 @@ func (s *InMemoryKeyStore) Get(kid string) (*KeyPair, error) {
 
 // GetActive returns the key pair that signs new tokens for the audience: of
 // the active key pairs inside their window (InWindow), the one with the latest
-// ValidFrom. A key pair issued ahead of time does not sign until its window
+// ValidFrom, and on a tie the one with the greater KID. A key pair issued ahead of time does not sign until its window
 // opens, and one past its ValidTo stops even if Active is still set. Returns
 // an error if no key pair qualifies.
 func (s *InMemoryKeyStore) GetActive(audience string) (*KeyPair, error) {

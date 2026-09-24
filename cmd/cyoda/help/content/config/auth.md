@@ -190,12 +190,14 @@ the same PEM (SHA-256 of the public key).
 
 Operators can rotate signing keys at runtime via
 `POST /oauth/keys/keypair` (with `algorithm: RS256` and `audience: client`).
-The newest key pair inside its window signs new tokens. Setting
+Of the active key pairs inside their window, the one with the latest
+`validFrom` signs new tokens (on a tie, the greater key id). Setting
 `invalidateCurrent: true` also invalidates the current key pair: cyoda stops
 accepting tokens it signed at once, and `invalidateGracePeriodSec: N` only
 keeps it published in JWKS for N more seconds, for external verifiers that
 cache it. `invalidateCurrent` cannot be combined with a future `validFrom`,
-and `validTo` must be in the future; both are `400`. To schedule a rotation,
+and `validTo` must be in the future; both are `400`. Reactivating a key pair
+also refuses a future `validFrom`. To schedule a rotation,
 issue the new key pair ahead of time, then invalidate the old one once the
 new window has opened.
 

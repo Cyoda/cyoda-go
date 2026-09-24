@@ -43,15 +43,18 @@ func TestBootstrapKey_HasNoWindow(t *testing.T) {
 	}
 }
 
-// TestBootstrapKey_PartialIAMFeaturesKept: only a wholly unset IAMFeatures
-// takes the defaults; one with any field set is used as given, so its
+// TestBootstrapKey_ConfiguredIAMFeaturesKept: only a wholly unset
+// IAMFeatures takes the defaults; one that is set is used as given, so its
 // BootstrapAudience is not overwritten.
-func TestBootstrapKey_PartialIAMFeaturesKept(t *testing.T) {
+func TestBootstrapKey_ConfiguredIAMFeaturesKept(t *testing.T) {
+	features := auth.DefaultIAMFeatures()
+	features.BootstrapAudience = "human"
+	features.KeypairDefaultValidityDays = 30
 	svc, err := auth.NewAuthService(auth.AuthConfig{
 		SigningKeyPEM: generateTestPEM(t),
 		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
-		IAMFeatures:   auth.IAMFeatures{BootstrapAudience: "human"},
+		IAMFeatures:   features,
 	})
 	if err != nil {
 		t.Fatalf("NewAuthService: %v", err)
@@ -62,6 +65,21 @@ func TestBootstrapKey_PartialIAMFeaturesKept(t *testing.T) {
 	}
 	if kp.Audience != "human" {
 		t.Errorf("audience = %q, want the configured human", kp.Audience)
+	}
+}
+
+// TestNewAuthService_RejectsInvalidIAMFeatures: a partly set IAMFeatures is
+// validated, not silently used — an empty BootstrapAudience would leave the
+// bootstrap key under an audience no token is signed for.
+func TestNewAuthService_RejectsInvalidIAMFeatures(t *testing.T) {
+	_, err := auth.NewAuthService(auth.AuthConfig{
+		SigningKeyPEM: generateTestPEM(t),
+		Issuer:        "cyoda",
+		ExpirySeconds: 3600,
+		IAMFeatures:   auth.IAMFeatures{M2MAdminRoleEnabled: true},
+	})
+	if err == nil {
+		t.Fatal("NewAuthService accepted an IAMFeatures with no bootstrap audience")
 	}
 }
 

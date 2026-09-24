@@ -5471,12 +5471,11 @@ paths:
         - OAuth, Keys
       summary: Reactivate JWT signing key-pair
       description: >
-        Reactivates a previously invalidated JWT signing key-pair.
-
-        This allows the key to be used for signing and validating tokens again.
-
-        This operation is idempotent - if the key-pair is already active, it
-        returns the current state.
+        Reactivates a JWT signing key-pair and sets its window to validFrom
+        (default now; a future value is refused) through validTo. Tokens it
+        signed verify again while it is inside that window. It signs new tokens
+        only if it is also the active key-pair with the latest validFrom for its
+        audience. Reactivating an active key-pair replaces its window.
       operationId: reactivateJwtKeyPair
       x-cyoda-iam-mode: jwt
       parameters:
@@ -5832,21 +5831,12 @@ paths:
         - OAuth, Keys
       summary: Reactivate a trusted public key
       description: >
-        Reactivates a previously invalidated trusted public key, allowing JWTs
-        signed with it to
-
-        be accepted again. This operation is idempotent.
+        Reactivates a trusted public key and sets its window to validFrom
+        (default now) through validTo, which is required and must be in the
+        future. Subject tokens signed with it are accepted again inside that
+        window. Reactivating an active key replaces its window.
 
         Requires ADMIN or ROLE_ADMIN role.
-
-
-        **Important**: Reactivation removes the key's expiration entirely
-        (`validTo` is cleared to null),
-
-        regardless of the original `validTo` value the key was registered with.
-        The key will remain valid
-
-        indefinitely until explicitly invalidated or deleted again.
       operationId: reactivateTrustedKey
       x-cyoda-iam-mode: jwt
       x-cyoda-feature: trusted-key-registration
@@ -10382,7 +10372,8 @@ components:
         validFrom:
           type: string
           format: date-time
-          description: Optional; defaults to now if absent.
+          description: Optional; defaults to now if absent. The key-pair
+            reactivate endpoint refuses a value in the future.
         validTo:
           type: string
           format: date-time

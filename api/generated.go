@@ -2630,7 +2630,7 @@ type QueryConditionDto struct {
 
 // ReactivateKeyRequestDto defines model for ReactivateKeyRequestDto.
 type ReactivateKeyRequestDto struct {
-	// ValidFrom Optional; defaults to now if absent.
+	// ValidFrom Optional; defaults to now if absent. The key-pair reactivate endpoint refuses a value in the future.
 	ValidFrom *time.Time `json:"validFrom,omitempty"`
 
 	// ValidTo Required. Must be > now and > validFrom.
