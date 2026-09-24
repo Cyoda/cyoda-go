@@ -537,9 +537,10 @@ func TestValidator_InvalidUserClaimDoesNotFallBackToSub(t *testing.T) {
 	}
 }
 
-// A caas_user_id that is present but not a string is rejected. Treating it as
-// absent would substitute sub for the identity the token actually carries.
-func TestValidator_RejectsNonStringUserClaim(t *testing.T) {
+// A caas_user_id that is present but empty or not a string is rejected.
+// Treating it as absent would substitute sub for the identity the token
+// actually carries. Only an absent caas_user_id falls back to sub.
+func TestValidator_RejectsMalformedPresentUserClaim(t *testing.T) {
 	key, kid, srv := setupTestJWKS(t)
 	defer srv.Close()
 
@@ -551,6 +552,7 @@ func TestValidator_RejectsNonStringUserClaim(t *testing.T) {
 		"array":  []any{"a"},
 		"object": map[string]any{"id": "a"},
 		"null":   nil,
+		"empty":  "",
 	} {
 		t.Run(name, func(t *testing.T) {
 			claims := map[string]any{
@@ -565,6 +567,9 @@ func TestValidator_RejectsNonStringUserClaim(t *testing.T) {
 			uc, err := v.Validate(signTestToken(t, key, kid, claims))
 			if err == nil {
 				t.Fatalf("Validate accepted a %s caas_user_id as %q, want a rejection", name, uc.UserID)
+			}
+			if !errors.Is(err, common.ErrInvalidUserID) {
+				t.Errorf("err = %v, want it to wrap common.ErrInvalidUserID", err)
 			}
 		})
 	}

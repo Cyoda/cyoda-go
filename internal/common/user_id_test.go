@@ -18,6 +18,10 @@ func TestValidateUserID_Accepts(t *testing.T) {
 		"a",                      // shortest legal
 		strings.Repeat("u", 255), // longest legal, in characters
 		strings.Repeat("é", 255), // 255 characters, 510 bytes
+		"user\u00a0x",            // first character after the C1 range
+		"user\ufdcf\ufdf0",       // either side of the FDD0–FDEF noncharacters
+		"user\ufffc",             // just below U+FFFD
+		"user\U0001f600",         // outside the BMP
 	}
 	for _, id := range accepted {
 		if err := ValidateUserID(id); err != nil {
@@ -36,6 +40,22 @@ func TestValidateUserID_Rejects(t *testing.T) {
 		"tab":      "user\tid",
 		"del":      "user\x7f",
 		"escape":   "user\x1b[31m",
+		// C1 controls and noncharacters: the CloudEvents spec forbids them in
+		// a String attribute, and a user id is sent as the authid attribute.
+		"c1-first":        "user\u0080",
+		"c1-nel":          "user\u0085",
+		"c1-last":         "user\u009f",
+		"nonchar-fdd0":    "user\ufdd0",
+		"nonchar-fdef":    "user\ufdef",
+		"nonchar-fffe":    "user\ufffe",
+		"nonchar-ffff":    "user\uffff",
+		"nonchar-plane1":  "user\U0001fffe",
+		"nonchar-plane16": "user\U0010ffff",
+		// Invalid UTF-8 and U+FFFD: a JSON decoder turns every invalid byte
+		// and lone surrogate into U+FFFD, so admitting it would let distinct
+		// inputs name one user.
+		"invalid-utf8":     "user\xff",
+		"replacement-char": "user\ufffd",
 	}
 	for name, id := range rejected {
 		t.Run(name, func(t *testing.T) {
