@@ -309,18 +309,24 @@ without the attempt being counted.
 A run whose final transaction did not commit always records its outcome with a
 fenced write. The write is issued only after the run's open segment has been
 rolled back, so it never waits on the run's own row lock.
+- **Its context.** The write runs on `context.WithoutCancel(runCtx)`, with a
+  10 s timeout per attempt. It never inherits the run's cancellation.
 - **Errors are retried by default**: after 1 s, then doubling, up to
-  `HEARTBEAT_INTERVAL`. The retries continue until the write is accepted or
-  refused, or until the shutdown deadline of §6.4. This covers every
-  infrastructure condition, such as a failover, a timeout, pool exhaustion or
-  a conflict.
+  `HEARTBEAT_INTERVAL`, until the write is accepted or refused, or until the
+  shutdown deadline of §6.4. This covers every infrastructure condition:
+  outage, failover, timeout, pool exhaustion, conflict. Each failed attempt is
+  logged at WARN, at most once a minute per task.
 - **A refusal** (`ErrStaleClaim`) means the run was superseded.
-- **A deterministic rejection latches the node.** A rejection that retrying
-  cannot cure (SQLSTATE class 22, 23 or 42, or the equivalent sentinel from the
-  memory or SQLite store) is a defect in the scheduler's own bookkeeping. It
-  is logged at ERROR with a ticket and latches the node (§6.5). The task stays
-  RUNNING under the latched owner, visible in the query, the metrics and
-  `/readyz`.
+- **The node latches** (§6.5) on either of two conditions. Both are logged at
+  ERROR with a ticket, and the task stays RUNNING under the latched owner,
+  visible in the query, the metrics and `/readyz`.
+  - A deterministic rejection by the store: an error that satisfies
+    `errors.Is(err, spi.ErrStoreRejected)`. Every store sets this new SPI
+    marker, and a conformance case covers it. PostgreSQL sets it for SQLSTATE
+    classes 22, 23 and 42.
+  - A write that has failed without a break for `STALE_AFTER` while this
+    pnode's heartbeats succeed. The store is then reachable, so the error is
+    not an outage.
 
 The first matching row applies:
 
@@ -362,12 +368,15 @@ transaction.
 
 `lastError` is visible to tenant users, so it passes an allow-list:
 
+The first matching row applies:
+
 | Error | Recorded as |
 |---|---|
-| a `*contract.CalloutFailure` | its `Message`, which already reads `CODE: detail` (`internal/common/errors.go:139`); for `MemberFailed`, the compute node's own message (`internal/contract/callout.go:84`) |
-| a `*common.AppError` of the Operational level, any status | its `Message` (already `CODE: detail`) |
-| a cancellation (shutdown drain, self-cancel) | `CANCELLED: the run was stopped by the scheduler` — logged at WARN, no ticket |
+| a cancellation of the run (shutdown, self-cancel), even when wrapped in a `CalloutFailure` | `CANCELLED: the run was stopped by the scheduler` — logged at WARN, no ticket |
 | `spi.ErrConflict` | `CONFLICT: a concurrent write changed the entity or its task` — logged at WARN, no ticket |
+| a `*contract.CalloutFailure` | its `Message`: `CODE: detail` when the failure has a code, plain client-safe text when it has none (`internal/contract/callout.go:78-84`); for `MemberFailed`, the compute node's own message |
+| a `*common.AppError` of the Operational level, any status | its `Message` (already `CODE: detail`) |
+
 | anything else | `internal error [ticket: <uuid>]`, with the full error logged at ERROR |
 
 `classifyWorkflowError` is not used for this. Its catch-all carries
@@ -441,7 +450,8 @@ uncounted.
   `CYODA_SCHEDULER_HEARTBEAT_INTERVAL` (15 s), from start until shutdown step
   5. `Heartbeat` is an upsert, so a pnode whose record was swept during a long
   outage recreates it. The store stamps it with the store clock. Each call has
-  a 10 s budget, covering both the connection acquire and the statement.
+  a budget of `min(10 s, HEARTBEAT_INTERVAL)`, covering both the connection
+  acquire and the statement. So heartbeats start at a fixed interval.
 - **Stale after.** `CYODA_SCHEDULER_STALE_AFTER` defaults to 2 min and is
   validated in §6.3.
 - **Hung runs.** A pnode that keeps heartbeating keeps its tasks, even if a run
@@ -492,10 +502,16 @@ On a signal, the scheduler runs these steps **before** the servers drain
    The compute-node streams and callback routes are still open.
 3. Cancel every remaining run **except** one whose unsafe processor has been
    handed off and is still in flight. Cutting that run would turn a routine
-   deploy into a FAILED task. So its callout may finish, or reach its own
-   deadline (`internal/callout/coordinator.go:148-151`). After that the run may
-   apply the result and commit. It starts no new callout: its next dispatch or
-   cascade checkpoint counts as cut (§5.3).
+   deploy into a FAILED task.
+   - Its callout may finish, or reach its own deadline
+     (`internal/callout/coordinator.go:148-151`).
+   - After that, the run may go on with safe dispatches (criteria, functions,
+     `idempotent` processors), cascade steps and commits, until the step-4
+     bound.
+   - It dispatches no **new** unsafe processor: reaching one counts as cut
+     (§5.3).
+   - From step 1 on, no run starts a new unsafe dispatch. Reaching one counts
+     as cut.
 4. Wait for every run to record its outcome (§5.6), up to: the longest
    remaining callout deadline + `CommitBudget` + 15 s.
 5. As the loop's last act, `GiveBackIdle(owner, keep = live claim tokens)` hands
@@ -509,9 +525,11 @@ When a server fails, the same sequence runs from `a.Shutdown()` after the
 servers stop.
 
 **Grace period.**
-- A pnode with no unsafe callout in flight exits in about 20 + 15 s plus the
-  existing tail of about 25 s (`help/run.md:287`).
-- A pnode with one in flight can take up to:
+- A pnode with no unsafe callout in flight exits within about 20 + 30 + 15 s,
+  plus the existing tail of about 25 s (`help/run.md:287`).
+- An unsafe callout can only be in flight if it started before step 1, because
+  no new unsafe dispatch starts after the signal. A pnode with one in flight
+  can take up to:
 
   ```
   callout deadline + CommitBudget + 15 s + 25 s
@@ -523,7 +541,8 @@ servers stop.
   (`CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`) it is 275 + 70 = 345 s.
 - The Helm chart sets `terminationGracePeriodSeconds: 360`. `help/run.md` and
   the chart README give the formula, so an operator who raises those settings
-  can raise the grace period too.
+  can raise the grace period too. The step-2 drain overlaps the callout
+  deadline and adds nothing to the bound.
 
 ### 6.5 Panics
 
@@ -582,18 +601,22 @@ existing permanent latch (`docs/ARCHITECTURE.md:382-393`).
   | `DeleteEntitiesConditional` (`:1205`), single-transaction loop (`:1314`) and `deleteBatched` (`:1440`) | `DeleteForEntities` with the ids actually deleted |
   | `DeleteAllEntities` (`:778`, also reached from `:1230`) | `DeleteForModel(tenant, model, version, keep = none)` |
 
-  A delete whose transaction conflicts on a task row (C1) is retried by the
-  server up to 3 times as a whole, the same way import is. Deleting entities is
-  idempotent. Only a conflict that persists after that reaches the client, as
-  a retryable 409.
+  **Server-side retry on a task-row conflict (C1):**
+
+  | Delete path | Retry |
+  |---|---|
+  | single delete, delete-all fast path and the conditional single-transaction loop, when the handler owns the transaction | the whole call, up to 3 times; the rollback makes the re-run idempotent, and no audit event is duplicated. A conflict that persists → 409 |
+  | `deleteBatched` | each batch (`deleteOneBatch`), up to 3 times, against its re-checked version baseline. A conflict that persists goes into that batch's `IDToError`, as batch conflicts do today (`service.go:1703-1729`); it never becomes 409 |
+  | any path that joined a transaction already on the context (`beginScope` not owned, `service.go:657, 785, 1241`) | none; the conflict surfaces at the outer transaction's commit |
 
   The gRPC doors reach the same functions (`internal/grpc/entity.go:200, 484`).
 - **Client writes carry no claim.** If a client write commits first, the
   owner's next task-row write fails (C1), and the owner is superseded.
 - **A client write can get a retryable 409 when it races the scheduler.** C1
-  works both ways. A client write, a delete or a workflow import fails with
-  `409` (retryable) if the scheduler changed that task row after the write
-  began. The scheduler changes a task row when it claims, stamps a segment,
+  works both ways. A client write conflicts if the scheduler changed one of
+  its task rows after the write began. An update then fails with `409`
+  (retryable). A delete or an import retries on the server first (above), and
+  fails with 409 only if the conflict persists. The scheduler changes a task row when it claims, stamps a segment,
   records an attempt, fails a task, or gives one back. This is the same 409 a
   client gets when it races the timer firing. It is documented and tested on
   every door (§13). The OpenAPI spec declares it wherever it is not already
@@ -662,8 +685,9 @@ model or entity, or another tenant's, returns an empty list.
 
 | Endpoint (HTTP) | Status | Code | When | Declared today |
 |---|---|---|---|---|
-| `deleteSingleEntity` | 409 | `CONFLICT` (retryable) | the scheduler changed one of the entity's task rows during the delete | no — added |
-| `deleteEntities` (conditional and delete-all) | 409 | `CONFLICT` (retryable) | same, for any affected task row | yes |
+| `deleteSingleEntity` | 409 | `CONFLICT` (retryable) | a task-row conflict persists after 3 server retries | no — added |
+| `deleteEntities` (conditional loop and delete-all fast path) | 409 | `CONFLICT` (retryable) | same | yes |
+| `deleteEntities` (batched) | 200 | — | a persistent conflict is reported per id in the batch result, not as 409 | — |
 | `updateSingle`, `updateSingleWithLoopback`, `updateCollection` | 409 | `CONFLICT` (retryable) | same, for a task row the update re-arms or cancels | yes |
 | `importEntityModelWorkflow` | 409 | `CONFLICT` (retryable) | the task removal still conflicts after 3 retries (§7) | no — added |
 
@@ -740,7 +764,7 @@ type ScheduledTask struct {
 | `Fail(tenant, id, armToken, claimToken, reason, error, atMs)` | joins the §5.7 transaction | fenced; FAILED; claim cleared |
 | `SweepMarks()` | never joins | removes the marks of ended lives |
 
-- **New errors:** `ErrMarkedByAnotherClaim`, `ErrTaskBusy`.
+- **New errors:** `ErrMarkedByAnotherClaim`, `ErrTaskBusy`, and the marker `ErrStoreRejected` (a deterministic rejection by the store).
 - `ErrStaleClaim`'s doc comment (`SPI/errors.go:155`) covers both stores.
 
 **Clauses:**
@@ -1042,7 +1066,11 @@ Rules:
 | `lastError` of a non-sentinel store error is "internal error [ticket]" only | ✓ | | ✓ | | |
 | `lastError` of a `MemberFailed` message, a callout timeout (`Code: Message`), an Operational `AppError`, `NO_COMPUTE_MEMBER_FOR_TAG` | ✓ | | ✓ | | |
 | `lastError` over 1 024 bytes with multi-byte characters and a NUL → cut at a character boundary, stored on every backend | ✓ | ✓ | | | |
-| a non-transient bookkeeping error → ERROR with ticket, node latched | ✓ | | | | |
+| a bookkeeping write retried through an outage; accepted after recovery | ✓ | ✓ | | | |
+| `spi.ErrStoreRejected` → ERROR with ticket, node latched (every backend sets the marker) | ✓ | ✓ | | | |
+| a write failing for `STALE_AFTER` while heartbeats succeed → node latched | ✓ | | | | |
+| bookkeeping after a self-cancel does not inherit the run's cancellation | ✓ | | | | |
+| `lastError` for a cancelled run and for a conflict: fixed texts, WARN, no ticket | ✓ | | ✓ | | |
 | fire-time CANCEL: transition no longer scheduled; entity with no transaction id | ✓ | | ✓ | ✓ | |
 
 ### Ownership, fencing and liveness
@@ -1098,7 +1126,8 @@ Rules:
 |---|---|---|---|---|---|
 | runs finish within the drain; streams stay open | ✓ | | ✓ | | |
 | run cut after the drain, nothing handed off → WAITING, uncounted, claimed at once elsewhere | ✓ | | | | M |
-| an unsafe callout in flight at shutdown is not cut; the run finishes or reaches the callout deadline | ✓ | | ✓ | | M |
+| an unsafe callout in flight at shutdown is not cut; the run continues with safe steps and commits | ✓ | | ✓ | | M |
+| after the signal, a run reaching a new unsafe dispatch counts as cut | ✓ | | | | |
 | a run with no unsafe callout in flight, cut after the drain, whose unsafe work was handed off earlier → FAILED | ✓ | | ✓ | | |
 | a run still live after step 4 is not given back | ✓ | | | | |
 | bookkeeping stops at its shutdown deadline | ✓ | | | | |
@@ -1116,8 +1145,10 @@ Rules:
 | conditional delete removes tasks: single-tx, batched, fast path | ✓ | ✓ | ✓ | ✓ | |
 | delete-all removes the model's tasks | ✓ | ✓ | ✓ | ✓ | |
 | `DeleteForModel` in tenant A leaves tenant B's tasks | | ✓ | ✓ | | |
-| update, delete, conditional delete, delete-all and import racing a claim → retryable 409 (§8.1), same on every backend | | ✓ | ✓ (isolated) | | |
-| a delete or delete-all that conflicts on a task row is retried by the server up to 3 times; a persistent conflict → 409 | ✓ | | ✓ | | |
+| an update racing a claim → retryable 409; a delete or import racing one claim succeeds after the server retry; same on every backend | | ✓ | ✓ (isolated) | | |
+| an owned single-transaction delete that conflicts on a task row is retried up to 3 times; a persistent conflict → 409 | ✓ | | ✓ | | |
+| batched delete: a conflicting batch retried up to 3 times; a persistent conflict reported per id, never 409 | ✓ | | ✓ | | |
+| a delete in a joined transaction is not retried; the outer commit gets the conflict | ✓ | | ✓ | | |
 | import: workflows saved before task removal; the removal retried; a persistent conflict → 409; re-import succeeds | ✓ | | ✓ | | |
 | gRPC entity doors: tasks removed on delete; 409 on a race | ✓ (`internal/grpc`) | | | | |
 
@@ -1164,17 +1195,18 @@ Rules:
 
 ## 15. Exit checks
 
-Both commands must print nothing when run from the repository root, in bash or
-zsh. The same commands are run inside the SPI.
+Both commands must print nothing when run from the repository root. They check
+tracked files only. The same commands are run inside the SPI.
 
 ```
-grep -rn --exclude-dir=migrations --exclude-dir=plans --exclude-dir=superpowers --exclude-dir=release-notes --exclude-dir=.worktrees --exclude=CHANGELOG.md \
-  -e RedispatchAfter -e RedispatchBackoff -e MarkRedispatch -e AttemptCount -e ScanDue -e redispatch_after -e attempt_count \
-  -e LowestLiveNodeID -e 'scheduler\.RoundRobin' -e SchedulerRPC -e ClusterExecutor -e dispatch/scheduled-task -e DispatchForwardTimeout \
+git grep -n -e RedispatchAfter -e RedispatchBackoff -e MarkRedispatch -e AttemptCount -e ScanDue \
+  -e redispatch_after -e attempt_count -e LowestLiveNodeID -e 'scheduler\.RoundRobin' -e SchedulerRPC \
+  -e ClusterExecutor -e dispatch/scheduled-task -e DispatchForwardTimeout \
   -e CYODA_SCHEDULER_DISTRIBUTION -e CYODA_SCHEDULER_COORDINATOR -e CYODA_SCHEDULER_REDISPATCH_BACKOFF \
   -e CYODA_SCHEDULER_BATCH_SIZE -e CYODA_SCHEDULER_EXPIRY_GRACE -e CYODA_DISPATCH_FORWARD_TIMEOUT \
-  -e ExpiryGrace -e expiryGrace .
-grep -rn --exclude-dir=.worktrees --include='*.go' -e '\.Upsert(ctx, task' -e 'sts\.Delete(' .
+  -e ExpiryGrace -e expiryGrace \
+  -- . ':!*/migrations/*' ':!docs/plans' ':!docs/superpowers' ':!docs/release-notes' ':!CHANGELOG.md'
+git grep -n -e '\.Upsert(ctx, task' -e 'sts\.Delete(' -- '*.go'
 ```
 
 Two exclusions:
