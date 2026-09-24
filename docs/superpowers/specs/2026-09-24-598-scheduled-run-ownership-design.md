@@ -14,8 +14,8 @@ hand-off proof. It is now positive: a missing proof counts as handed off. v7
 also drops `ClearUnsafe`, makes #599 a prerequisite again, and rests the
 no-overlap bound on the task-row lock. v8 closes the last review's
 non-blocking points: a fixed order for the §5.6 table, the "handed off" fact
-set before each dispatch, clause C6, and wording left over from v6. One product
-decision is open: D1 in §7.
+set before each dispatch, clause C6, and wording left over from v6. No decision
+is open.
 
 Milestone v0.9.0. Branch `feat/598-scheduler-ownership`.
 
@@ -669,27 +669,23 @@ operator replaces the node.
   the application's decisions. If one commits first, the running owner's next
   task-row write fails (C1), and the owner is superseded.
 
-- **D1 — decision for the product owner.** C1 works in both directions. A
-  client write, a delete or a workflow import can fail with a retryable 409 if
-  the scheduler changed that task row after the write began. The scheduler
-  changes it by claiming the task, stamping a segment, recording an attempt,
-  failing the task, or giving it back.
-  - **When it happens:** a client writes an entity at the moment its timer is
-    claimed or finishes an attempt. The client transaction must be open across
-    that moment. That takes milliseconds for a plain update, and longer when
-    the update runs processors.
-  - **What a client sees:** the 409 a client already gets today when it races
-    the timer *firing* on the same entity. It is retryable.
-  - **New:** it also arises on memory and SQLite, which are made consistent
-    with PostgreSQL. On PostgreSQL it already happens today through
-    `MarkRedispatch`.
-  - **Recommendation:** accept it, document it, and test it on every door.
-  - **The alternative:** move the scheduler's bookkeeping to a separate row
-    that client writes never touch. That is the v2/v3 design. It needs a claim
-    check inside the entity transaction to fence the run's commits, and that is
-    where three review rounds found their defects (§10.0).
-  - **Coverage** (§13): an isolated E test per door (update, delete,
-    conditional delete, delete-all, workflow import), plus gRPC.
+- **A client write can get a retryable 409 when it races the scheduler.** C1
+  works in both directions. A client write, a delete or a workflow import fails
+  with a retryable 409 if, after the write began, the scheduler changed that
+  task row by:
+  - claiming it;
+  - stamping a segment;
+  - recording an attempt;
+  - failing it;
+  - giving it back.
+
+  This is the same 409 a client gets today when it races the timer firing on
+  that entity. On PostgreSQL it also happens today through `MarkRedispatch`,
+  and memory and SQLite now behave the same way. It is documented in the
+  workflow help and in the parity doc, and it is tested on every door (§13).
+  There is no alternative: keeping the scheduler's bookkeeping off the rows
+  that client writes touch needs a claim check inside the entity transaction,
+  which §10.0 rejects.
 
 ## 8. The task query — `GET /scheduled-tasks`
 
@@ -1252,8 +1248,8 @@ Startup fails on an invalid value.
 | delete-all removes the model's tasks | ✓ | ✓ | ✓ | ✓ | |
 | `DeleteForModel` in tenant A leaves tenant B's tasks alone | | ✓ | ✓ | | |
 | a client write racing a task's claim or outcome gets the same result on every backend (C1) | | ✓ | | | |
-| D1: a client update, delete, conditional delete, delete-all and workflow import racing a claim → retryable 409 (HTTP, isolated) | | | ✓ | | |
-| D1: the same on gRPC entity doors | ✓ (`internal/grpc`) | | | | |
+| a client update, delete, conditional delete, delete-all and workflow import racing a claim → retryable 409 (HTTP, isolated) | | | ✓ | | |
+| the same on gRPC entity doors | ✓ (`internal/grpc`) | | | | |
 
 ### Query
 
