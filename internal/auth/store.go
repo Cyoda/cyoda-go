@@ -139,10 +139,11 @@ func NewInMemoryKeyStore() *InMemoryKeyStore {
 	}
 }
 
-// Save stores a key pair. When opts.Invalidate is true, all other active key
-// pairs sharing the same Audience are marked inactive with a ValidTo expiry of
-// now+GracePeriodSec, never later than the ValidTo they already had. The new key pair itself is always stored active (it is
-// never self-invalidated). All mutations are performed under a single Lock so
+// Save stores a key pair. When opts.Invalidate is true, every other key pair
+// of the same Audience whose window is still open is marked inactive with a
+// ValidTo of now+GracePeriodSec, never later than the ValidTo it already had.
+// The new key pair itself is always stored active (it is never
+// self-invalidated). All mutations are performed under a single Lock so
 // concurrent rotations cannot leave two active keys for the same audience.
 func (s *InMemoryKeyStore) Save(kp *KeyPair, opts RotateOptions) error {
 	s.mu.Lock()
@@ -150,7 +151,7 @@ func (s *InMemoryKeyStore) Save(kp *KeyPair, opts RotateOptions) error {
 	if opts.Invalidate {
 		now := time.Now()
 		for _, existing := range s.keys {
-			if existing.Audience == kp.Audience && existing.Active && existing.KID != kp.KID {
+			if existing.Audience == kp.Audience && existing.KID != kp.KID && windowOpen(existing.ValidTo, now) {
 				existing.Active = false
 				existing.ValidTo = graceExpiry(existing.ValidTo, now, opts.GracePeriodSec)
 			}
@@ -346,7 +347,7 @@ func (s *InMemoryTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) e
 	if opts.Invalidate {
 		now := time.Now()
 		for _, k := range s.keys {
-			if k.TenantID == tk.TenantID && k.Active && k.KID != tk.KID {
+			if k.TenantID == tk.TenantID && k.KID != tk.KID && windowOpen(k.ValidTo, now) {
 				k.Active = false
 				k.ValidTo = graceExpiry(k.ValidTo, now, opts.GracePeriodSec)
 			}
@@ -391,7 +392,7 @@ func (s *InMemoryTrustedKeyStore) GetForVerification(tenantID spi.TenantID, kid 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	tk, ok := s.keys[kid]
-	if !ok || tk.TenantID != tenantID || !withinValidTo(tk, time.Now()) {
+	if !ok || tk.TenantID != tenantID || !windowOpen(tk.ValidTo, time.Now()) {
 		return nil, fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
 	}
 	copied := *tk
@@ -410,10 +411,11 @@ func graceExpiry(current *time.Time, now time.Time, gracePeriodSec int64) *time.
 	return &expiry
 }
 
-// withinValidTo reports whether tk has not yet passed its ValidTo, the lazy
-// expiry filter the verification path applies.
-func withinValidTo(tk *TrustedKey, now time.Time) bool {
-	return tk.ValidTo == nil || now.Before(*tk.ValidTo)
+// windowOpen reports whether a key whose window ends at validTo is still
+// within it: the lazy expiry filter the verification path applies, and the
+// test for which siblings a rotation still has to end.
+func windowOpen(validTo *time.Time, now time.Time) bool {
+	return validTo == nil || now.Before(*validTo)
 }
 
 // Delete removes a trusted key by tenant and KID.

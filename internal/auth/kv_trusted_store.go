@@ -515,7 +515,7 @@ func (s *KVTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) error {
 		now := time.Now()
 		var failed []string
 		for _, k := range s.keys {
-			if k.TenantID != tk.TenantID || !k.Active || k.KID == tk.KID {
+			if k.TenantID != tk.TenantID || k.KID == tk.KID || !windowOpen(k.ValidTo, now) {
 				continue
 			}
 			// Clone, mutate, persist to KV.
@@ -615,7 +615,7 @@ func (s *KVTrustedKeyStore) GetForVerification(tenantID spi.TenantID, kid string
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	tk, ok := s.keys[kid]
-	if !ok || tk.TenantID != tenantID || !withinValidTo(tk, time.Now()) {
+	if !ok || tk.TenantID != tenantID || !windowOpen(tk.ValidTo, time.Now()) {
 		return nil, fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
 	}
 	return copyTrustedKey(tk), nil

@@ -676,6 +676,15 @@ func TestKeyStore_InvalidateNeverExtends(t *testing.T) {
 	if verifiable("old") {
 		t.Error("rotation with a grace period revived an expired key pair")
 	}
+
+	save("graced", time.Now().Add(time.Hour), auth.RotateOptions{})
+	if err := s.Invalidate("graced", 3600); err != nil {
+		t.Fatalf("invalidate graced: %v", err)
+	}
+	save("newest", time.Now().Add(time.Hour), auth.RotateOptions{Invalidate: true, GracePeriodSec: 0})
+	if verifiable("graced") {
+		t.Error("rotation with no grace left a key pair in its grace period published")
+	}
 }
 
 func testRSAPriv(t *testing.T) *rsa.PrivateKey {

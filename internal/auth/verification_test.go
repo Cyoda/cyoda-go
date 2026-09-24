@@ -126,6 +126,17 @@ func assertInvalidateNeverExtends(t *testing.T, s auth.TrustedKeyStore) {
 	if verifiable("old") {
 		t.Error("rotation with a grace period revived an expired sibling")
 	}
+
+	// Rotation also shortens a sibling that is already in a grace period: a
+	// rotation with no grace ends every other key of the tenant now.
+	registerWindow(t, s, "graced", time.Now().Add(time.Hour), auth.RotateOptions{})
+	if err := s.Invalidate("ta", "graced", 3600); err != nil {
+		t.Fatalf("invalidate graced: %v", err)
+	}
+	registerWindow(t, s, "newest", time.Now().Add(time.Hour), auth.RotateOptions{Invalidate: true, GracePeriodSec: 0})
+	if verifiable("graced") {
+		t.Error("rotation with no grace left a sibling in its grace period verifying")
+	}
 }
 
 func validToAtMost(keys []*auth.TrustedKey, kid string, limit time.Time) bool {
