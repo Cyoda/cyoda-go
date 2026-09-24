@@ -186,7 +186,7 @@ func TestKVTrustedKeyStore_Reconcile_SkipsCorruptRecord(t *testing.T) {
 	if err := s2.Reconcile(ctx); err != nil {
 		t.Fatalf("Reconcile with corrupt record must not fail: %v", err)
 	}
-	if !verifiable(s2, "good-key") || verifiable(s2, "corrupt") {
+	if !verifiable(s2, "good-key") || len(s2.List(spi.SystemTenantID)) != 1 {
 		t.Fatal("good key lost during lenient reconcile, or corrupt record admitted")
 	}
 }

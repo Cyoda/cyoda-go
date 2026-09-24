@@ -39,6 +39,16 @@ func assertGetForVerification(t *testing.T, s auth.TrustedKeyStore) {
 	if err != nil || got.KID != "k1" || got.TenantID != "ta" {
 		t.Fatalf("owner tenant: got=%+v err=%v", got, err)
 	}
+
+	// A key invalidated with a grace period is inactive but still within its
+	// window: it is returned, and the caller decides what inactive means.
+	registerForVerification(t, s, "grace", "ta", nil)
+	if err := s.Invalidate("ta", "grace", 3600); err != nil {
+		t.Fatalf("invalidate: %v", err)
+	}
+	if got, err := s.GetForVerification("ta", "grace"); err != nil || got.Active {
+		t.Errorf("grace-period key: got=%+v err=%v, want it returned with Active=false", got, err)
+	}
 	for name, c := range map[string]struct {
 		tenant spi.TenantID
 		kid    string

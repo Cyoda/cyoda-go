@@ -526,8 +526,8 @@ func TestTokenExchangeKeyFromAnotherTenant(t *testing.T) {
 		t.Fatalf("expected 400 for another tenant's key, got %d: %s", rr.Code, rr.Body.String())
 	}
 	resp := decodeResponse(t, rr)
-	if resp["error"] != "invalid_grant" {
-		t.Errorf("expected error invalid_grant, got %v", resp["error"])
+	if resp["error"] != "invalid_grant" || resp["error_description"] != "unknown trusted key" {
+		t.Errorf("got %v / %v, want invalid_grant / unknown trusted key", resp["error"], resp["error_description"])
 	}
 }
 
