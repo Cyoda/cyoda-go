@@ -36,7 +36,7 @@ A trusted-key JWT is used **only** as a subject token in that grant. cyoda does 
 
 - `CYODA_IAM_MODE=jwt`.
 - `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=true` (gate; see callout above).
-- `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` (default `10`) — per-tenant cap on currently-valid trusted keys. Counts active + within-validity entries only.
+- `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` (default `10`) — per-tenant cap on trusted keys that can verify. It counts every key that can still verify: an active key, and one in its grace period after invalidation, until its `validTo`. A key invalidated with a grace period keeps its slot until the period ends, so to register at the cap, delete an old key or invalidate it with no grace period first.
 - `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS` (default `365`) — default validity for trusted keys when not specified at registration.
 
 **Client (you) needs:**

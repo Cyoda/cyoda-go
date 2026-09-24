@@ -505,6 +505,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   whichever is earlier. Before, invalidating an expired or already revoked
   key with a grace period made it valid again.
 
+- **The per-tenant trusted-key cap counts every key that can verify.** It
+  counted only active keys, so a key in its grace period after invalidation
+  — which now verifies until its `validTo` — took no slot, and repeated
+  rotations with long grace periods could keep any number of keys verifying.
+  Such a key now keeps its slot until its grace period ends; to register at
+  the cap, delete an old key or invalidate it with no grace period first.
+
 - **`cyoda help auth trusted-keys` described a feature cyoda-go does not
   have.** It said a JWT signed with a trusted key could be sent as a bearer
   token on API calls. A trusted key verifies only the subject token of the

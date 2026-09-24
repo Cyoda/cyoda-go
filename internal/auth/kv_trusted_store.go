@@ -455,7 +455,7 @@ func (s *KVTrustedKeyStore) persistWithKey(kvKey string, tk *TrustedKey) error {
 // which makes the endpoint idempotent / retry-safe during key rotation.
 //
 // Cross-tenant KID collision returns 409 KEY_OWNED_BY_DIFFERENT_TENANT.
-// Per-tenant cap (counts only currently-valid keys, excluding the KID being
+// Per-tenant cap (counts every key that can still verify, excluding the KID being
 // registered so same-KID upserts don't consume a slot) returns
 // 400 TRUSTED_KEY_CAP_REACHED. When opts.Invalidate is true, all other active
 // siblings in the same tenant are marked inactive with a gracePeriod ValidTo.
@@ -475,22 +475,16 @@ func (s *KVTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) error {
 		return common.Operational(http.StatusConflict, common.ErrCodeKeyOwnedByDifferentTenant, "key with this keyId belongs to a different tenant")
 	}
 
-	// Per-tenant cap: count only currently-valid keys (excluding the KID being
-	// registered so same-KID upserts don't consume a slot).
+	// Per-tenant cap: count every key that can still verify — active, or in
+	// its grace period after invalidation — excluding the KID being
+	// registered, so same-KID upserts don't consume a slot.
 	if s.maxPerTenant > 0 {
 		now := time.Now()
 		count := 0
 		for _, k := range s.keys {
-			if k.TenantID != tk.TenantID || k.KID == tk.KID {
-				continue
+			if k.TenantID == tk.TenantID && k.KID != tk.KID && windowOpen(k.ValidTo, now) {
+				count++
 			}
-			if !k.Active {
-				continue
-			}
-			if k.ValidTo != nil && !now.Before(*k.ValidTo) {
-				continue
-			}
-			count++
 		}
 		if count >= s.maxPerTenant {
 			return common.Operational(http.StatusBadRequest, common.ErrCodeTrustedKeyCapReached, "trusted-key cap reached for tenant")

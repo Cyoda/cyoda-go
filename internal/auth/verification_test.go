@@ -9,6 +9,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -146,6 +147,63 @@ func validToAtMost(keys []*auth.TrustedKey, kid string, limit time.Time) bool {
 		}
 	}
 	return false
+}
+
+// assertCapCountsVerifyingKeys: the per-tenant cap bounds the keys that can
+// verify a subject token. A key in its grace period after invalidation still
+// verifies, so it still takes a slot; a key invalidated with no grace does
+// not. The store must have a cap of 2.
+func assertCapCountsVerifyingKeys(t *testing.T, s auth.TrustedKeyStore) {
+	t.Helper()
+	capReached := func(err error) bool {
+		var ae *common.AppError
+		return errors.As(err, &ae) && ae.Code == common.ErrCodeTrustedKeyCapReached
+	}
+	register := func(kid string) error {
+		priv, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatalf("generate key: %v", err)
+		}
+		vt := time.Now().Add(time.Hour)
+		return s.Register(&auth.TrustedKey{
+			KID: kid, TenantID: "ta", PublicKey: &priv.PublicKey, Audience: "human",
+			Active: true, ValidFrom: time.Now().Add(-time.Hour), ValidTo: &vt,
+		}, auth.RotateOptions{})
+	}
+	for _, kid := range []string{"a", "b"} {
+		if err := register(kid); err != nil {
+			t.Fatalf("register %s: %v", kid, err)
+		}
+	}
+	if err := s.Invalidate("ta", "a", 3600); err != nil {
+		t.Fatalf("invalidate a with grace: %v", err)
+	}
+	if err := register("c"); !capReached(err) {
+		t.Fatalf("register c with a still verifying in its grace period: err = %v, want TRUSTED_KEY_CAP_REACHED", err)
+	}
+	if err := s.Invalidate("ta", "a", 0); err != nil {
+		t.Fatalf("invalidate a at once: %v", err)
+	}
+	if err := register("c"); err != nil {
+		t.Fatalf("register c after a stopped verifying: %v", err)
+	}
+}
+
+func TestInMemoryTrustedKeyStore_CapCountsVerifyingKeys(t *testing.T) {
+	assertCapCountsVerifyingKeys(t, auth.NewInMemoryTrustedKeyStoreWithCap(2))
+}
+
+func TestKVTrustedKeyStore_CapCountsVerifyingKeys(t *testing.T) {
+	ctx := systemCtx()
+	kv, err := memory.NewStoreFactory().KeyValueStore(ctx)
+	if err != nil {
+		t.Fatalf("KeyValueStore: %v", err)
+	}
+	s, err := auth.NewKVTrustedKeyStore(ctx, kv, auth.WithMaxTrustedKeys(2))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	assertCapCountsVerifyingKeys(t, s)
 }
 
 func TestInMemoryTrustedKeyStore_GetForVerification(t *testing.T) {
