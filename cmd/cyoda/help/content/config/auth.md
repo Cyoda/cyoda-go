@@ -123,6 +123,12 @@ from outside it:
   token's user id. A value outside the check is `400 invalid_grant`.
 - **`CYODA_BOOTSTRAP_USER_ID`** (below).
 
+**`oidc:` is a reserved word.** The OIDC path builds every user id it creates
+as `oidc:<providerId>:<sub>`. Every other user id — the first-party claim, the
+token-exchange `sub` and `CYODA_BOOTSTRAP_USER_ID` — must not begin with
+`oidc:`, in any case, so that it can never name the same user as an OIDC
+principal. Such a value is rejected at the door like any other bad user id.
+
 ### HMAC secret (inter-node dispatch authentication)
 
 - `CYODA_HMAC_SECRET` — hex-encoded HMAC secret for inter-node dispatch auth

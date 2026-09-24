@@ -120,11 +120,13 @@ func (v *JWKSValidator) buildUserContext(claims map[string]any) (*spi.UserContex
 			return nil, fmt.Errorf("missing user identity (caas_user_id or sub claim)")
 		}
 	}
-	// The same check the OIDC path applies to sub; it also rejects a present
-	// but empty caas_user_id. The error carries the reason, never the value:
+	// The check the OIDC path applies to sub, plus the reserved "oidc:" prefix
+	// so this principal cannot carry an OIDC principal's user id; it also
+	// rejects a present but empty caas_user_id. The error carries the reason,
+	// never the value:
 	// it reaches slog via logAuthFailure's detail field, and the claim is
 	// attacker-chosen.
-	if err := common.ValidateUserID(userID); err != nil {
+	if err := common.ValidateFirstPartyUserID(userID); err != nil {
 		return nil, fmt.Errorf("caas_user_id/sub claim rejected: %w", err)
 	}
 

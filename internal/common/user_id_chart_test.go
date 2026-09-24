@@ -26,6 +26,9 @@ func TestUserIDRule_MatchesChartSchema(t *testing.T) {
 						MinLength int    `json:"minLength"`
 						MaxLength int    `json:"maxLength"`
 						Pattern   string `json:"pattern"`
+						Not       struct {
+							Pattern string `json:"pattern"`
+						} `json:"not"`
 					} `json:"userId"`
 				} `json:"properties"`
 			} `json:"bootstrap"`
@@ -51,6 +54,23 @@ func TestUserIDRule_MatchesChartSchema(t *testing.T) {
 		binary := ValidateUserID(id) == nil
 		if chart != binary {
 			t.Errorf("U+%04X: chart admits=%v, ValidateUserID admits=%v", r, chart, binary)
+		}
+	}
+
+	// The bootstrap user id is first-party, so the chart also reserves the
+	// OIDC prefix, through a "not" pattern.
+	if u.Not.Pattern == "" {
+		t.Fatal("chart userId has no \"not\" pattern reserving the OIDC prefix")
+	}
+	reserved, err := regexp.Compile(u.Not.Pattern)
+	if err != nil {
+		t.Fatalf("compile chart userId not-pattern: %v", err)
+	}
+	for _, id := range []string{"oidc:x", "OIDC:x", "oIdC:x", "oidc:", "oidc", "oidc-x", "x-oidc:y", "admin"} {
+		chart := re.MatchString(id) && !reserved.MatchString(id)
+		binary := ValidateFirstPartyUserID(id) == nil
+		if chart != binary {
+			t.Errorf("%q: chart admits=%v, ValidateFirstPartyUserID admits=%v", id, chart, binary)
 		}
 	}
 }

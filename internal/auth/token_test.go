@@ -492,6 +492,7 @@ func TestTokenExchangeInvalidSubClaim(t *testing.T) {
 		"newline":  "ext\nuser",
 		"nul":      "ext\x00user",
 		"too-long": strings.Repeat("u", 256),
+		"reserved": "oidc:11111111-2222-3333-4444-555555555555:alice",
 	} {
 		t.Run(name, func(t *testing.T) {
 			subjectClaims := map[string]any{

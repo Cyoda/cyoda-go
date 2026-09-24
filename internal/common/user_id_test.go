@@ -84,3 +84,28 @@ func TestValidateUserID_ReportsCharacterPosition(t *testing.T) {
 		t.Errorf("err = %q, want it to name U+000A at character 2", err.Error())
 	}
 }
+
+// A first-party user id cannot begin with the prefix the OIDC path gives its
+// principals, in any case, or it could name the same user as an OIDC principal.
+func TestValidateFirstPartyUserID_ReservesOIDCPrefix(t *testing.T) {
+	for _, id := range []string{
+		"oidc:11111111-2222-3333-4444-555555555555:alice",
+		"oidc:",
+		"OIDC:x",
+		"Oidc:x",
+	} {
+		err := ValidateFirstPartyUserID(id)
+		if !errors.Is(err, ErrInvalidUserID) {
+			t.Errorf("ValidateFirstPartyUserID(%q) = %v, want ErrInvalidUserID", id, err)
+		}
+	}
+	for _, id := range []string{"oidc", "oidc-user", "my-oidc:x", "admin"} {
+		if err := ValidateFirstPartyUserID(id); err != nil {
+			t.Errorf("ValidateFirstPartyUserID(%q) = %v, want nil", id, err)
+		}
+	}
+	// Everything ValidateUserID rejects, it rejects too.
+	if err := ValidateFirstPartyUserID("a\nb"); !errors.Is(err, ErrInvalidUserID) {
+		t.Errorf("ValidateFirstPartyUserID(control char) = %v, want ErrInvalidUserID", err)
+	}
+}

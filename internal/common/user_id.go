@@ -3,6 +3,7 @@ package common
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -55,6 +56,25 @@ func ValidateUserID(id string) error {
 				ErrInvalidUserID, r, pos)
 		}
 		pos++
+	}
+	return nil
+}
+
+// OIDCUserIDPrefix begins every user id the OIDC path builds
+// ("oidc:<providerId>:<sub>"). It is a reserved word for every other user id.
+const OIDCUserIDPrefix = "oidc:"
+
+// ValidateFirstPartyUserID is ValidateUserID for a user id that does not come
+// from the OIDC path — the first-party JWT claim, a token-exchange subject and
+// CYODA_BOOTSTRAP_USER_ID. It also rejects an id beginning with the reserved
+// OIDCUserIDPrefix, in any case, so a first-party principal can never carry,
+// or appear to carry, the user id of an OIDC principal.
+func ValidateFirstPartyUserID(id string) error {
+	if err := ValidateUserID(id); err != nil {
+		return err
+	}
+	if len(id) >= len(OIDCUserIDPrefix) && strings.EqualFold(id[:len(OIDCUserIDPrefix)], OIDCUserIDPrefix) {
+		return fmt.Errorf("%w: the prefix %q is reserved for OIDC principals", ErrInvalidUserID, OIDCUserIDPrefix)
 	}
 	return nil
 }

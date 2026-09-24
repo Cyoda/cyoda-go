@@ -54,6 +54,16 @@ absent `caas_user_id` falls back to `sub`.
 For an OIDC principal the user id is `oidc:<providerId>:<sub>`. The rule applies
 to `sub`, so the full id can be longer than 255 characters.
 
+### `oidc:` is a reserved word
+
+Every user id that does not come from the OIDC path — the first-party claim, the
+token-exchange `sub` and `CYODA_BOOTSTRAP_USER_ID` — must also not begin with
+`oidc:`, compared without case. Without this, a first-party token could carry
+`oidc:<providerId>:alice`, the exact user id of the OIDC principal `alice`, and
+the audit trail could not tell the two apart. The check is
+`common.ValidateFirstPartyUserID`; the OIDC path builds its ids from the same
+constant, `common.OIDCUserIDPrefix`.
+
 ## Cloud today
 
 Checked against `~/dev/cyoda` and `~/dev/cyoda-platform`:
@@ -77,3 +87,7 @@ Checked against `~/dev/cyoda` and `~/dev/cyoda-platform`:
    prefix, because of the `userName` column. cyoda-go admits 255. A `sub`
    between the two works in cyoda-go and fails enrollment in Cloud. Cloud
    should either admit 255 or record it as a declared divergence.
+3. Reserve `oidc:` (any case) on every user id Cloud does not build from an
+   OIDC `sub`, if Cloud adopts the `oidc:<providerId>:<sub>` form. Cloud's own
+   form today is `<providerId>|<sub>` in `userName`; it has the same question
+   for a first-party id that spells that form.

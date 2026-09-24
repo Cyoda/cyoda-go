@@ -267,6 +267,7 @@ func TestAuth_UserClaimOutsideCheck_401(t *testing.T) {
 		"newline":  "user\ninjected",
 		"nul":      "user\x00injected",
 		"too-long": strings.Repeat("u", 256),
+		"reserved": "oidc:11111111-2222-3333-4444-555555555555:injected",
 	} {
 		t.Run(name, func(t *testing.T) {
 			resp := unauthRequest(t, http.MethodGet, "/api/entity/e2e-auth-probe/1",

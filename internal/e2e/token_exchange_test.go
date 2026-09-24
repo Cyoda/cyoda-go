@@ -123,6 +123,7 @@ func TestToken_TokenExchange_InvalidSub_400(t *testing.T) {
 	for name, sub := range map[string]string{
 		"newline":  "ext\ninjected",
 		"too-long": strings.Repeat("u", 256),
+		"reserved": "oidc:11111111-2222-3333-4444-555555555555:injected",
 	} {
 		t.Run(name, func(t *testing.T) {
 			resp := exchangeSubject(t, priv, kid, sub, "test-tenant")

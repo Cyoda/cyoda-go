@@ -43,7 +43,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   OIDC `sub` had the length limit and the C0/DEL ban already; C1 controls,
   noncharacters and U+FFFD are new for it too. The rule now applies at every
   place a principal's user id enters cyoda-go from outside it, through one
-  check. The first-party `caas_user_id` claim (or `sub` when `caas_user_id`
+  check. **`oidc:` is a reserved word:** a user id that does not come from
+  the OIDC path — the first-party claim, the token-exchange `sub` and
+  `CYODA_BOOTSTRAP_USER_ID` — must not begin with it, in any case, because
+  the OIDC path builds its user ids as `oidc:<providerId>:<sub>` and a
+  first-party principal could otherwise carry an OIDC principal's user id.
+  The first-party `caas_user_id` claim (or `sub` when `caas_user_id`
   is absent) outside the rule is an **ordinary `401`** with the uniform
   problem detail, and `codes.Unauthenticated` over gRPC; the server log gives
   the reason, never the value. A `caas_user_id` that is present but empty,

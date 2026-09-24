@@ -138,6 +138,7 @@ func TestValidateBootstrapConfig_UserID(t *testing.T) {
 		"empty":    "",
 		"newline":  "admin\nx",
 		"too-long": strings.Repeat("u", 256),
+		"reserved": "oidc:admin",
 	} {
 		t.Run("reject/"+name, func(t *testing.T) {
 			if _, err := validateBootstrapConfig(base(user)); err == nil {
@@ -164,7 +165,7 @@ func TestShippedUserIDConstantsPassCheck(t *testing.T) {
 		"IAM.MockUserID":               cfg.IAM.MockUserID,
 		"CYODA_BOOTSTRAP_USER_ID dflt": cfg.Bootstrap.UserID,
 	} {
-		if err := common.ValidateUserID(id); err != nil {
+		if err := common.ValidateFirstPartyUserID(id); err != nil {
 			t.Errorf("%s (%q) fails the user-id check: %v", name, id, err)
 		}
 	}

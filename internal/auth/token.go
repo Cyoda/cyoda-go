@@ -194,7 +194,7 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 	}
 	// sub becomes the issued token's user id, so it passes the check every
 	// door applies to one. The description carries the reason, never the value.
-	if err := common.ValidateUserID(subjectSub); err != nil {
+	if err := common.ValidateFirstPartyUserID(subjectSub); err != nil {
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "subject token sub claim rejected: "+err.Error())
 		return
 	}

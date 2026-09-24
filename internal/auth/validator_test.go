@@ -475,6 +475,37 @@ func TestValidator_RejectsControlCharInSubFallback(t *testing.T) {
 	}
 }
 
+// A first-party token cannot carry a user id beginning with the reserved
+// "oidc:" prefix, from either caas_user_id or the sub fallback: it would name
+// the same user as an OIDC principal.
+func TestValidator_RejectsReservedOIDCPrefix(t *testing.T) {
+	key, kid, srv := setupTestJWKS(t)
+	defer srv.Close()
+
+	issuer := "test-issuer"
+	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	const spoof = "oidc:11111111-2222-3333-4444-555555555555:alice"
+	for name, claim := range map[string]string{"caas_user_id": "caas_user_id", "sub": "sub"} {
+		t.Run(name, func(t *testing.T) {
+			claims := map[string]any{
+				"iss":         issuer,
+				"exp":         float64(time.Now().Add(time.Hour).Unix()),
+				"iat":         float64(time.Now().Unix()),
+				claim:         spoof,
+				"caas_org_id": "org-7",
+				"scopes":      []any{"read"},
+			}
+			uc, err := v.Validate(signTestToken(t, key, kid, claims))
+			if err == nil {
+				t.Fatalf("Validate accepted the reserved prefix as %q", uc.UserID)
+			}
+			if !errors.Is(err, common.ErrInvalidUserID) {
+				t.Errorf("err = %v, want it to wrap common.ErrInvalidUserID", err)
+			}
+		})
+	}
+}
+
 func TestValidator_AcceptsShippedUserIDShapes(t *testing.T) {
 	key, kid, srv := setupTestJWKS(t)
 	defer srv.Close()

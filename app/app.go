@@ -1104,7 +1104,7 @@ func validateBootstrapConfig(cfg *Config) (*Config, error) {
 		}
 		// The user id becomes the caas_user_id of every token the bootstrap
 		// client is issued, and the validator rejects one outside this check.
-		if err := common.ValidateUserID(out.Bootstrap.UserID); err != nil {
+		if err := common.ValidateFirstPartyUserID(out.Bootstrap.UserID); err != nil {
 			return nil, fmt.Errorf("CYODA_BOOTSTRAP_USER_ID is not a valid user id: %w", err)
 		}
 		return &out, nil
