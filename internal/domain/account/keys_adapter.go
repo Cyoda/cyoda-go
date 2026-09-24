@@ -62,6 +62,11 @@ func (h *Handler) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validTo must be > validFrom"))
 		return
 	}
+	// A key pair whose window has already ended could never sign.
+	if !validTo.After(now) {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validTo must be in the future"))
+		return
+	}
 	var grace int64
 	if req.InvalidateGracePeriodSec != nil {
 		grace = *req.InvalidateGracePeriodSec

@@ -189,15 +189,20 @@ The bootstrap signing key derived from `CYODA_JWT_SIGNING_KEY` (or
 the same PEM (SHA-256 of the public key).
 
 Operators can rotate signing keys at runtime via
-`POST /oauth/keys/keypair` (with `algorithm: RS256` and `audience: client`),
-optionally setting `invalidateCurrent: true` and
-`invalidateGracePeriodSec: N` to overlap the old and new keys.
+`POST /oauth/keys/keypair` (with `algorithm: RS256` and `audience: client`).
+The newest key pair inside its window signs new tokens. Setting
+`invalidateCurrent: true` also invalidates the current key pair: cyoda stops
+accepting tokens it signed at once, and `invalidateGracePeriodSec: N` only
+keeps it published in JWKS for N more seconds, for external verifiers that
+cache it. `invalidateCurrent` cannot be combined with a future `validFrom`,
+and `validTo` must be in the future; both are `400`. To schedule a rotation,
+issue the new key pair ahead of time, then invalidate the old one once the
+new window has opened.
 
-v0.8.0 limitations:
+Limitations:
 - Runtime-issued keypairs are held in memory only; they do not survive
   process restart. The bootstrap key survives because its KID is derived
-  deterministically from the PEM input. Persisted signing-key storage is
-  tracked in a v0.8.x follow-up.
+  deterministically from the PEM input.
 - Runtime-issued keypairs exist only on the node that issued them. In a
   cluster, a token signed with one is rejected by the other nodes, so do not
   issue, invalidate or reactivate keypairs through the API in cluster mode

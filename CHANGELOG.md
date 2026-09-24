@@ -458,10 +458,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `validTo`, and a key pair issued with a future `validFrom` was used to sign
   at once. Tokens are now signed only with a key pair inside its window, and a
   token whose key pair is outside it is an ordinary `401`. JWKS still
-  publishes a key pair ahead of its window. Issuing a key pair with a future
-  `validFrom` together with `invalidateCurrent` is now `400 BAD_REQUEST`: it
-  would have left the audience with no signing key until the new window
-  opened. The bootstrap signing key no longer has a window: it used to expire
+  publishes a key pair ahead of its window. Two issue requests that would
+  leave the audience without a signing key are now `400 BAD_REQUEST`: a
+  future `validFrom` together with `invalidateCurrent`, and a `validTo` that
+  is not in the future (such a key pair could never sign). When two key
+  pairs share the latest `validFrom`, the one with the greater key id signs,
+  instead of an arbitrary one. See `docs/cloud-parity/signing-key-window.md`. The bootstrap signing key no longer has a window: it used to expire
   `CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS` after each node's start, which
   differed per node and reset on every restart; it now lasts as long as
   `CYODA_JWT_SIGNING_KEY` supplies it, and the startup warning about its

@@ -500,6 +500,30 @@ func TestKeyStore_GetActive_SkipsKeyNotYetValid(t *testing.T) {
 	}
 }
 
+// Two key pairs with the same ValidFrom (a client may send any validFrom,
+// including the bootstrap key's zero one) resolve the same way every time:
+// the greater KID signs. Map iteration order must not decide.
+func TestKeyStore_GetActive_TieBreakIsDeterministic(t *testing.T) {
+	s := auth.NewInMemoryKeyStore()
+	priv := testRSAPriv(t)
+	from := time.Now().Add(-time.Hour)
+	for _, kid := range []string{"k-a", "k-b", "k-c", "k-d", "k-e"} {
+		if err := s.Save(&auth.KeyPair{
+			KID: kid, Audience: "client", Algorithm: "RS256",
+			PublicKey: &priv.PublicKey, PrivateKey: priv,
+			Active: true, ValidFrom: from,
+		}, auth.RotateOptions{}); err != nil {
+			t.Fatalf("save %s: %v", kid, err)
+		}
+	}
+	for i := 0; i < 50; i++ {
+		got, err := s.GetActive("client")
+		if err != nil || got.KID != "k-e" {
+			t.Fatalf("GetActive = %+v, %v; want k-e every time", got, err)
+		}
+	}
+}
+
 func TestKeyStore_GetActive_MaxValidFrom(t *testing.T) {
 	s := auth.NewInMemoryKeyStore()
 	priv := testRSAPriv(t)

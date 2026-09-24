@@ -195,7 +195,10 @@ func (s *InMemoryKeyStore) GetActive(audience string) (*KeyPair, error) {
 		if !kp.InWindow(now) {
 			continue
 		}
-		if best == nil || kp.ValidFrom.After(best.ValidFrom) {
+		// Latest ValidFrom wins; on a tie the greater KID, so the choice
+		// never depends on map iteration order.
+		if best == nil || kp.ValidFrom.After(best.ValidFrom) ||
+			(kp.ValidFrom.Equal(best.ValidFrom) && kp.KID > best.KID) {
 			best = kp
 		}
 	}

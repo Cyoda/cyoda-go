@@ -33,10 +33,10 @@ type AuthService struct {
 
 // NewAuthService creates a fully wired AuthService from the given config.
 func NewAuthService(config AuthConfig) (*AuthService, error) {
-	// Apply defaults for zero-value IAMFeatures so callers that don't set the
-	// field (e.g. existing tests with no explicit IAMFeatures) still get the
-	// default bootstrap audience and IAM limits.
-	if config.IAMFeatures.KeypairDefaultValidityDays == 0 {
+	// Apply defaults only for a wholly unset IAMFeatures, so callers that
+	// don't set the field (e.g. tests) still get the default bootstrap
+	// audience and IAM limits, and a caller that sets any field keeps it.
+	if config.IAMFeatures == (IAMFeatures{}) {
 		config.IAMFeatures = DefaultIAMFeatures()
 	}
 

@@ -181,6 +181,16 @@ func TestE2E_IssueJwtKeyPair_FutureValidFromWithInvalidateCurrent_400(t *testing
 	}
 }
 
+// TestE2E_IssueJwtKeyPair_ValidToInPast_400: a key pair whose window has
+// already ended could never sign, so issuing one is refused.
+func TestE2E_IssueJwtKeyPair_ValidToInPast_400(t *testing.T) {
+	resp := adminRequest(t, "POST", "/oauth/keys/keypair", mustJSON(t, map[string]any{
+		"algorithm": "RS256", "audience": "client",
+		"validFrom": "2020-01-01T00:00:00Z", "validTo": "2020-01-02T00:00:00Z",
+	}))
+	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+}
+
 func TestE2E_DeleteJwtKeyPair_Happy(t *testing.T) {
 	// Issue a keypair to delete.
 	issueBody := mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "client"})

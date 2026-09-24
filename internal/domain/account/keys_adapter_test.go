@@ -415,6 +415,25 @@ func TestIssueJwtKeyPair_FutureValidFromWithInvalidateCurrent_Rejected(t *testin
 	}
 }
 
+// A key pair whose window has already ended could never sign; issuing one is
+// refused, like reactivating one, and nothing changes.
+func TestIssueJwtKeyPair_ValidToInPast_Rejected(t *testing.T) {
+	h, ks, _ := newHandler(t)
+	current := mkRSAKeyPair(t, "client")
+	_ = ks.Save(current, auth.RotateOptions{})
+
+	body := []byte(`{"algorithm":"RS256","audience":"client","validFrom":"2020-01-01T00:00:00Z","validTo":"2020-01-02T00:00:00Z","invalidateCurrent":true}`)
+	w := httptest.NewRecorder()
+	h.IssueJwtKeyPair(w, adminReq(t, "POST", "/", body))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400; body=%s", w.Code, w.Body.String())
+	}
+	commontest.ExpectErrorCode(t, resultResp(w), "BAD_REQUEST")
+	if got, err := ks.GetActive("client"); err != nil || got.KID != current.KID {
+		t.Errorf("current key changed by a refused request: got=%+v err=%v", got, err)
+	}
+}
+
 func TestIssueJwtKeyPair_GracePeriodOverflow_Rejected(t *testing.T) {
 	h, _, _ := newHandler(t)
 	body := []byte(`{"algorithm":"RS256","audience":"client","invalidateCurrent":true,"invalidateGracePeriodSec":9999999999}`)
