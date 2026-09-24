@@ -103,12 +103,31 @@ func (v *JWKSValidator) Validate(tokenString string) (*spi.UserContext, error) {
 
 // buildUserContext extracts user information from JWT claims.
 func (v *JWKSValidator) buildUserContext(claims map[string]any) (*spi.UserContext, error) {
-	userID, _ := claims["caas_user_id"].(string)
-	if userID == "" {
+	// A caas_user_id that is present names the user, so it must be a string
+	// and it must pass the check. Only an absent caas_user_id falls back to
+	// sub; an empty or malformed one never does, because that would put a
+	// different identity in place of the one the token carries.
+	var userID string
+	if raw, present := claims["caas_user_id"]; present {
+		s, ok := raw.(string)
+		if !ok {
+			return nil, fmt.Errorf("caas_user_id claim rejected: %w: not a string", common.ErrInvalidUserID)
+		}
+		userID = s
+	} else {
 		userID, _ = claims["sub"].(string)
+		if userID == "" {
+			return nil, fmt.Errorf("missing user identity (caas_user_id or sub claim)")
+		}
 	}
-	if userID == "" {
-		return nil, fmt.Errorf("missing user identity (caas_user_id or sub claim)")
+	// The check the OIDC path applies to sub, plus the reserved "oidc:" prefix
+	// so this principal cannot carry an OIDC principal's user id; it also
+	// rejects a present but empty caas_user_id. The error carries the reason,
+	// never the value:
+	// it reaches slog via logAuthFailure's detail field, and the claim is
+	// attacker-chosen.
+	if err := common.ValidateFirstPartyUserID(userID); err != nil {
+		return nil, fmt.Errorf("caas_user_id/sub claim rejected: %w", err)
 	}
 
 	orgID, _ := claims["caas_org_id"].(string)

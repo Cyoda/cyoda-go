@@ -121,6 +121,56 @@ func TestValidateBootstrapConfig_TenantGrammar(t *testing.T) {
 	}
 }
 
+// TestValidateBootstrapConfig_UserID: the bootstrap user id becomes the
+// caas_user_id of every token the bootstrap client is issued, so a value the
+// server would reject on each request refuses to start instead.
+func TestValidateBootstrapConfig_UserID(t *testing.T) {
+	base := func(user string) *Config {
+		cfg := DefaultConfig()
+		cfg.IAM.Mode = "jwt"
+		cfg.Bootstrap.ClientID = "bootstrap-client"
+		cfg.Bootstrap.ClientSecret = "bootstrap-secret"
+		cfg.Bootstrap.UserID = user
+		return &cfg
+	}
+
+	for name, user := range map[string]string{
+		"empty":    "",
+		"newline":  "admin\nx",
+		"too-long": strings.Repeat("u", 256),
+		"reserved": "oidc:admin",
+	} {
+		t.Run("reject/"+name, func(t *testing.T) {
+			if _, err := validateBootstrapConfig(base(user)); err == nil {
+				t.Fatalf("validateBootstrapConfig accepted user id %q", user)
+			}
+		})
+	}
+
+	for _, user := range []string{"admin", "ops@example.com"} {
+		t.Run("accept/"+user, func(t *testing.T) {
+			if _, err := validateBootstrapConfig(base(user)); err != nil {
+				t.Fatalf("validateBootstrapConfig(%q) = %v, want nil", user, err)
+			}
+		})
+	}
+}
+
+// TestShippedUserIDConstantsPassCheck stops a later change to a default from
+// producing a binary that cannot start, or a mock mode whose user fails the
+// check every door applies.
+func TestShippedUserIDConstantsPassCheck(t *testing.T) {
+	cfg := DefaultConfig()
+	for name, id := range map[string]string{
+		"IAM.MockUserID":               cfg.IAM.MockUserID,
+		"CYODA_BOOTSTRAP_USER_ID dflt": cfg.Bootstrap.UserID,
+	} {
+		if err := common.ValidateFirstPartyUserID(id); err != nil {
+			t.Errorf("%s (%q) fails the user-id check: %v", name, id, err)
+		}
+	}
+}
+
 // TestValidateBootstrapConfig_EmptyTenantWithoutBootstrapClient guards the one
 // deployment shape the check could otherwise break. envString uses LookupEnv,
 // so an explicitly-empty CYODA_BOOTSTRAP_TENANT_ID overrides the default — and

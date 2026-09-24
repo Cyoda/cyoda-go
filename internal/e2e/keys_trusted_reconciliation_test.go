@@ -1,9 +1,13 @@
 package e2e_test
 
 import (
+	"fmt"
+	"io"
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/cyoda-platform/cyoda-go/app"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -98,12 +102,30 @@ func TestTrusted_RegisterNonRSA_400UnsupportedKeyType(t *testing.T) {
 	assertProblemJSON(t, resp, http.StatusBadRequest, "UNSUPPORTED_KEY_TYPE")
 }
 
-// NOTE: TRUSTED_KEY_CAP_REACHED — waived at E2E level.
-// The default per-tenant cap is 100 keys; registering 100 keys in a single
-// test run exceeds reasonable test setup cost. The invariant is covered at
-// unit level by TestTrustedKeyStore_CapReached (internal/auth/store_test.go)
-// and TestKVTrustedKeyStore_RegisterRespectsMaxTrustedKeys
-// (internal/auth/kv_trusted_store_test.go).
+// TestTrustedKey_CapReached_400: registering one key past the per-tenant cap
+// (CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT) is 400 TRUSTED_KEY_CAP_REACHED. It runs in a tenant of its
+// own, so filling that tenant's cap does not affect any other test.
+func TestTrustedKey_CapReached_400(t *testing.T) {
+	tenant := fmt.Sprintf("e2e-cap-%d", time.Now().UnixNano())
+	clientID, secret := createM2MClient(t, tenant, "cap-admin", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	limit := app.DefaultConfig().IAM.TrustedKeyMaxPerTenant
+
+	register := func(i int) *http.Response {
+		kid := fmt.Sprintf("%s-%d", tenant, i)
+		return adminRequestAs(t, clientID, secret, "POST", "/oauth/keys/trusted",
+			mustJSON(t, map[string]any{"keyId": kid, "jwk": rsaJWK(t, kid), "audience": "human"}))
+	}
+	for i := range limit {
+		resp := register(i)
+		if resp.StatusCode != http.StatusOK {
+			raw, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			t.Fatalf("key %d of %d: status=%d, want 200; body: %s", i+1, limit, resp.StatusCode, raw)
+		}
+		resp.Body.Close()
+	}
+	assertProblemJSON(t, register(limit), http.StatusBadRequest, "TRUSTED_KEY_CAP_REACHED")
+}
 
 // NOTE: KEY_OWNED_BY_DIFFERENT_TENANT — covered by TestE2E_CrossTenant_TrustedKey_409
 // in oauth_keys_test.go (same package).

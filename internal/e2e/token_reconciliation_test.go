@@ -147,12 +147,8 @@ func TestToken_TokenExchange_InvalidGrant_MalformedToken(t *testing.T) {
 	assertOAuthError(t, resp, http.StatusBadRequest, "invalid_grant")
 }
 
-// NOTE: access_denied (403 tenant mismatch) requires constructing a valid
-// signed JWT whose caas_org_id differs from the authenticating M2M client's
-// tenant. That requires private-key material for a registered trusted key.
-// The E2E harness does not retain private keys after registration (see
-// oauth_keys_test.go NOTE at line ~570). This case is waived at E2E level;
-// the unit-level invariant is asserted in internal/auth tests.
+// NOTE: access_denied (403 tenant mismatch) is covered by
+// TestToken_TokenExchange_TenantMismatch_403 in token_exchange_test.go.
 //
 // NOTE: server_error (500) is an internal-fault path only. No producing test
 // is provided; the enum addition in ErrorResponseDto is sufficient per the

@@ -481,6 +481,54 @@ func TestTokenExchangeMissingSubClaim(t *testing.T) {
 	}
 }
 
+// The exchanged token carries the subject's sub as its user id, so a sub the
+// server would reject on every later request is rejected here, at the grant,
+// rather than minted into a token that can never be used. The response names
+// the reason and never repeats the value.
+func TestTokenExchangeInvalidSubClaim(t *testing.T) {
+	env := setupTokenEnv(t)
+
+	for name, sub := range map[string]string{
+		"newline":  "ext\nuser",
+		"nul":      "ext\x00user",
+		"too-long": strings.Repeat("u", 256),
+		"reserved": "oidc:11111111-2222-3333-4444-555555555555:alice",
+	} {
+		t.Run(name, func(t *testing.T) {
+			subjectClaims := map[string]any{
+				"sub":         sub,
+				"caas_org_id": env.tenantID,
+				"user_roles":  []string{"viewer"},
+				"exp":         float64(time.Now().Add(time.Hour).Unix()),
+				"iat":         float64(time.Now().Unix()),
+			}
+			subjectToken := signSubjectToken(t, env.trustedKey, env.trustedKID, subjectClaims)
+
+			extra := url.Values{}
+			extra.Set("subject_token", subjectToken)
+			extra.Set("subject_token_type", "urn:ietf:params:oauth:token-type:jwt")
+			req := makeTokenRequest(
+				"urn:ietf:params:oauth:grant-type:token-exchange",
+				basicAuth(env.clientID, env.clientSecret),
+				extra,
+			)
+			rr := httptest.NewRecorder()
+			env.handler.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for an invalid sub, got %d: %s", rr.Code, rr.Body.String())
+			}
+			resp := decodeResponse(t, rr)
+			if resp["error"] != "invalid_grant" {
+				t.Errorf("expected error invalid_grant, got %v", resp["error"])
+			}
+			if strings.Contains(rr.Body.String(), sub) {
+				t.Errorf("response echoes the rejected sub: %s", rr.Body.String())
+			}
+		})
+	}
+}
+
 func TestTokenUnsupportedGrantType(t *testing.T) {
 	env := setupTokenEnv(t)
 

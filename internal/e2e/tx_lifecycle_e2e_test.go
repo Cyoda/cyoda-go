@@ -43,18 +43,12 @@ import (
 
 // --- harness ---------------------------------------------------------------
 
-// newTinyPoolHarness builds a postgres-backed app with a pool small enough that
-// a handful of leaked connections exhausts it, so "did the connection come back"
-// is observable rather than inferred.
-func newTinyPoolHarness(t *testing.T, maxConns int32) *callbackHarness {
-	t.Helper()
-	return newTinyPoolHarnessConfigured(t, maxConns, nil)
-}
-
-// newTinyPoolHarnessConfigured is newTinyPoolHarness with an extra cfg mutator
-// applied after the pool sizing. It also stamps a per-test application_name on
-// the harness pool's DSN so the pg_stat_activity probe can be scoped to this
-// harness's own backends — see harnessAppName.
+// newTinyPoolHarnessConfigured builds a postgres-backed app with a pool small
+// enough that a handful of leaked connections exhausts it, so "did the
+// connection come back" is observable rather than inferred. configure, if not
+// nil, is applied after the pool sizing. It also stamps a per-test
+// application_name on the harness pool's DSN so the pg_stat_activity probe can
+// be scoped to this harness's own backends — see harnessAppName.
 func newTinyPoolHarnessConfigured(t *testing.T, maxConns int32, configure func(*app.Config)) *callbackHarness {
 	t.Helper()
 	baseURL := pgURLFromEnv(t)
@@ -73,8 +67,7 @@ func newTinyPoolHarnessConfigured(t *testing.T, maxConns int32, configure func(*
 
 // harnessAppName is the application_name this test's harness pool reports. It is
 // derived from the test name so the probe below and the harness agree without
-// threading a value through newTinyPoolHarness's signature (Tasks 10 and 11
-// consume that signature as published).
+// threading a value through newTinyPoolHarnessConfigured's signature.
 func harnessAppName(t *testing.T) string {
 	t.Helper()
 	name := "txlife-" + strings.Map(func(r rune) rune {
@@ -103,7 +96,7 @@ func withAppName(t *testing.T, dsn, name string) string {
 	return u.String()
 }
 
-// newTinyPoolProcHarness is newTinyPoolHarness with an in-process dispatcher, so
+// newTinyPoolProcHarness is newTinyPoolHarnessConfigured with an in-process dispatcher, so
 // a registered callout runs on the SERVER's request goroutine. The gRPC compute
 // member the callback harness connects is unused by these scenarios.
 func newTinyPoolProcHarness(t *testing.T, maxConns int32) (*callbackHarness, *localproc.LocalProcessingService) {

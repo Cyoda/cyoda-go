@@ -33,6 +33,34 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   outside the grammar becomes a silent `401` rather than a diagnosable
   rejection) are recorded in `docs/cloud-parity/tenant-id-grammar.md`.
 
+- **A user identifier must be valid UTF-8, 1 to 255 characters, with no
+  control character (U+0000–U+001F, U+007F–U+009F), no noncharacter and no
+  U+FFFD.** Characters, not bytes; any other character is admitted and
+  nothing is normalised. The excluded characters are those the CloudEvents
+  spec forbids in a string attribute — the user id is sent to compute nodes
+  as `authid` — plus U+FFFD, which a JSON decoder puts in place of every
+  invalid byte, so two different claims can no longer name one user. The
+  OIDC `sub` had the length limit and the C0/DEL ban already; C1 controls,
+  noncharacters and U+FFFD are new for it too. The rule now applies at every
+  place a principal's user id enters cyoda-go from outside it, through one
+  check. **`oidc:` is a reserved word:** a user id that does not come from
+  the OIDC path — the first-party claim, the token-exchange `sub` and
+  `CYODA_BOOTSTRAP_USER_ID` — must not begin with it, in any case, because
+  the OIDC path builds its user ids as `oidc:<providerId>:<sub>` and a
+  first-party principal could otherwise carry an OIDC principal's user id.
+  The first-party `caas_user_id` claim (or `sub` when `caas_user_id`
+  is absent) outside the rule is an **ordinary `401`** with the uniform
+  problem detail, and `codes.Unauthenticated` over gRPC; the server log gives
+  the reason, never the value. A `caas_user_id` that is present but empty,
+  not a string, or outside the rule is rejected; it no longer falls back to
+  `sub`. A token-exchange subject token whose `sub` is outside the rule is
+  **`400 invalid_grant`** — before, it was exchanged for a token that every
+  later request rejected. A `CYODA_BOOTSTRAP_USER_ID` outside the rule
+  **refuses to start** in jwt mode when a bootstrap client is configured, and
+  the chart's `bootstrap.userId` fails `helm install`. No new error code. The
+  contract and the Cloud comparison are in
+  `docs/cloud-parity/user-id-rule.md`. (#594, from a contribution in #597.)
+
 - **Every OIDC provider operation answers `400 OIDC_INVALID_TENANT` unless
   the caller's tenant is a UUID in its canonical lowercase form.**
   `GET /oauth/oidc/providers` previously returned an empty `200` to a

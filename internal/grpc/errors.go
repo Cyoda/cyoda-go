@@ -33,8 +33,6 @@ func isClientGoneCancellation(err error) bool {
 
 const nilUUID = "00000000-0000-0000-0000-000000000000"
 
-func strPtr(s string) *string { return &s }
-
 // buildErrorFields extracts code, message, and retryable flag from an error.
 // For operational AppErrors the client-safe message is returned directly.
 // For internal/fatal AppErrors and raw errors a ticket UUID is generated and

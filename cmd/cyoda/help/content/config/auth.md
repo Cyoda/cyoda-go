@@ -91,6 +91,44 @@ Nothing downstream re-checks it: peer dispatch, scheduled tasks, search jobs
 and stored client records all carry a value already admitted at one of those
 two doors.
 
+### User identifiers
+
+A user identifier must be valid UTF-8, 1 to 255 characters (not bytes) long,
+and contain none of these:
+
+- a control character: U+0000–U+001F and U+007F–U+009F;
+- a noncharacter: U+FDD0–U+FDEF, and U+FFFE and U+FFFF in every plane;
+- U+FFFD, the replacement character.
+
+Any other character is admitted, including non-ASCII, and nothing is
+normalised. A user id is not a key or a path segment, so it has no grammar
+beyond this and the reserved word `oidc:` described below. The excluded characters are the ones the CloudEvents spec forbids
+in a string attribute — a user id is sent to compute nodes as `authid` — plus
+U+FFFD, which a JSON decoder puts in place of every invalid byte, so that two
+different claims can never name one user.
+
+The same check applies at every place a principal's user id enters the binary
+from outside it:
+
+- **The user claim on an inbound first-party JWT** — `caas_user_id`, or `sub`
+  when `caas_user_id` is absent. A claim outside the check is an ordinary
+  `401`, logged like the tenant claim above: the reason, and for a rejected
+  character its code point and position, never the value. A `caas_user_id`
+  that is present but empty, not a string, or outside the check is rejected;
+  it does not fall back to `sub`.
+- **The `sub` of a federated OIDC token.** The principal's user id is then
+  `oidc:<providerId>:<sub>`, so it can be longer than 255 characters; the
+  limit applies to `sub`.
+- **The `sub` of a token-exchange subject token**, which becomes the issued
+  token's user id. A value outside the check is `400 invalid_grant`.
+- **`CYODA_BOOTSTRAP_USER_ID`** (below).
+
+**`oidc:` is a reserved word.** The OIDC path builds every user id it creates
+as `oidc:<providerId>:<sub>`. Every other user id — the first-party claim, the
+token-exchange `sub` and `CYODA_BOOTSTRAP_USER_ID` — must not begin with
+`oidc:`, in any case, so that it can never name the same user as an OIDC
+principal. Such a value is rejected at the door like any other bad user id.
+
 ### HMAC secret (inter-node dispatch authentication)
 
 - `CYODA_HMAC_SECRET` — hex-encoded HMAC secret for inter-node dispatch auth
@@ -111,7 +149,9 @@ cyoda can provision a machine-to-machine client at startup for automation and CI
   that configures no bootstrap client never reads the value and is unaffected, even when
   it is set to the empty string — and mock mode ignores the whole bootstrap block, so
   the value is not checked there either.
-- `CYODA_BOOTSTRAP_USER_ID` — user ID for the bootstrap client (default: `admin`)
+- `CYODA_BOOTSTRAP_USER_ID` — user ID for the bootstrap client (default: `admin`).
+  Must pass the user-id check above. In jwt mode, when a bootstrap client is configured
+  and this value does not pass, the binary refuses to start.
 - `CYODA_BOOTSTRAP_ROLES` — comma-separated roles granted to the bootstrap client
   (default: `ROLE_ADMIN,ROLE_M2M`)
 

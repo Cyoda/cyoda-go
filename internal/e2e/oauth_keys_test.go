@@ -566,13 +566,3 @@ func TestE2E_CrossTenant_TrustedKey_409(t *testing.T) {
 // the server with the flag flipped to false for a single test within the
 // TestMain harness. Adapter-level TestRegisterTrustedKey_FlagDisabled_404
 // covers the invariant at handler level, which is where the flag is enforced.
-
-// NOTE: E2E token-exchange coverage — verifying the token-exchange grant via
-// a trusted key requires signing a subject_token with the private key material
-// that was used to build the registered JWK. The E2E harness does not retain
-// private keys after registration; fabricating a valid signed token in-test
-// would duplicate the signing logic. The token-exchange principal-tenant
-// invariant is asserted at unit level in internal/auth/store_test.go and
-// internal/auth/kv_trusted_store_test.go.
-// TODO(oauth-token-exchange-e2e): add an E2E token-exchange test once the harness supports
-// embedded fixture keys with private-key material retained across calls.

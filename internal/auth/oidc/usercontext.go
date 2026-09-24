@@ -3,13 +3,11 @@ package oidc
 import (
 	"fmt"
 	"strings"
-	"unicode/utf8"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/google/uuid"
 )
-
-const maxSubLength = 255
 
 // subValidationSentinel is wrapped by buildOIDCUserContext into the OIDCValidator's
 // ErrClaimsFailure error chain. Internal to this package — callers use errors.Is
@@ -26,8 +24,8 @@ var subValidationSentinel = fmt.Errorf("oidc: sub validation failed")
 // `caas_user_id`, `caas_org_id`, `tid`, `tenant`, `org` from the token are
 // explicitly ignored (attacker-controlled when the IdP is external).
 //
-// sub is validated: must be present, non-empty, ≤255 chars, with no ASCII
-// control characters (\x00-\x1f, \x7f). Violations return an error wrapping
+// sub must be present and pass common.ValidateUserID, the check every door
+// applies to a user id. Violations return an error wrapping
 // subValidationSentinel with subcode `missing_sub` or `invalid_sub`.
 func buildOIDCUserContext(p *OidcProvider, claims map[string]any, defaultRolesClaim string) (*spi.UserContext, error) {
 	// Defence-in-depth: if the provider somehow got persisted with a nil
@@ -42,13 +40,8 @@ func buildOIDCUserContext(p *OidcProvider, claims map[string]any, defaultRolesCl
 	if sub == "" {
 		return nil, fmt.Errorf("%w: missing_sub", subValidationSentinel)
 	}
-	if utf8.RuneCountInString(sub) > maxSubLength {
-		return nil, fmt.Errorf("%w: invalid_sub: %d chars > %d", subValidationSentinel, utf8.RuneCountInString(sub), maxSubLength)
-	}
-	for _, r := range sub {
-		if r < 0x20 || r == 0x7f {
-			return nil, fmt.Errorf("%w: invalid_sub: contains control character U+%04X", subValidationSentinel, r)
-		}
+	if err := common.ValidateUserID(sub); err != nil {
+		return nil, fmt.Errorf("%w: invalid_sub: %w", subValidationSentinel, err)
 	}
 
 	rolesClaimName := defaultRolesClaim
@@ -58,7 +51,7 @@ func buildOIDCUserContext(p *OidcProvider, claims map[string]any, defaultRolesCl
 	roles := extractRoles(claims[rolesClaimName])
 
 	return &spi.UserContext{
-		UserID:   "oidc:" + p.ID.String() + ":" + sub,
+		UserID:   common.OIDCUserIDPrefix + p.ID.String() + ":" + sub,
 		UserName: sub,
 		Kind:     spi.PrincipalUser,
 		Tenant: spi.Tenant{

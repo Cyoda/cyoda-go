@@ -47,7 +47,7 @@ func startStream(t *testing.T, svc *CloudEventsServiceImpl, stream bidiStream) (
 	done := make(chan error, 1)
 	go func() { done <- svc.StartStreaming(stream) }()
 	var member *Member
-	for i := 0; i < 400 && member == nil; i++ {
+	for range 400 {
 		if ms := svc.registry.List(); len(ms) == 1 {
 			member = ms[0]
 			break

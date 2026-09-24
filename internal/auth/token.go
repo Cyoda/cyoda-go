@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 // tokenHandler implements the POST /oauth/token endpoint.
@@ -188,6 +190,12 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 	subjectSub, _ := parsed.Claims["sub"].(string)
 	if subjectSub == "" {
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "subject token missing sub claim")
+		return
+	}
+	// sub becomes the issued token's user id, so it passes the check every
+	// door applies to one. The description carries the reason, never the value.
+	if err := common.ValidateFirstPartyUserID(subjectSub); err != nil {
+		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "subject token sub claim rejected: "+err.Error())
 		return
 	}
 	subOrgID, _ := parsed.Claims["caas_org_id"].(string)
