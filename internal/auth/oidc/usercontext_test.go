@@ -1,10 +1,12 @@
 package oidc
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/google/uuid"
 )
 
@@ -89,6 +91,9 @@ func TestBuildOIDCUserContext_SubTooLong(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "invalid_sub") {
 		t.Errorf("err = %v, want invalid_sub", err)
 	}
+	if !errors.Is(err, common.ErrInvalidUserID) {
+		t.Errorf("err = %v, want it to wrap common.ErrInvalidUserID", err)
+	}
 }
 
 func TestBuildOIDCUserContext_SubExact255Accepted(t *testing.T) {
@@ -107,7 +112,10 @@ func TestBuildOIDCUserContext_SubControlCharRejected(t *testing.T) {
 		t.Run(s, func(t *testing.T) {
 			_, err := buildOIDCUserContext(p, map[string]any{"sub": s}, "roles")
 			if err == nil {
-				t.Errorf("sub=%q expected rejection", s)
+				t.Fatalf("sub=%q expected rejection", s)
+			}
+			if !errors.Is(err, common.ErrInvalidUserID) {
+				t.Errorf("err = %v, want it to wrap common.ErrInvalidUserID", err)
 			}
 		})
 	}

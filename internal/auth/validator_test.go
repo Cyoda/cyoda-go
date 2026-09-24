@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 func setupTestJWKS(t *testing.T) (*rsa.PrivateKey, string, *httptest.Server) {
@@ -399,7 +401,7 @@ func TestValidator_AcceptsShippedTenantShapes(t *testing.T) {
 	}
 }
 
-// TestValidator_RejectsUserIDOutsideOIDCShape pins door 1's user claim:
+// TestValidator_RejectsUserIDOutsideOIDCShape pins the first-party user claim:
 // caas_user_id / sub is attacker-chosen, lands in slog and audit
 // attribution, and must meet the same length+control-char bar as OIDC sub.
 func TestValidator_RejectsUserIDOutsideOIDCShape(t *testing.T) {
@@ -438,8 +440,8 @@ func TestValidator_RejectsUserIDOutsideOIDCShape(t *testing.T) {
 			if strings.Contains(err.Error(), user) {
 				t.Errorf("validator error echoes the rejected user id: %q", err.Error())
 			}
-			if !strings.Contains(err.Error(), "invalid_user_id") {
-				t.Errorf("err = %v, want invalid_user_id", err)
+			if !errors.Is(err, common.ErrInvalidUserID) {
+				t.Errorf("err = %v, want it to wrap common.ErrInvalidUserID", err)
 			}
 		})
 	}
@@ -467,6 +469,9 @@ func TestValidator_RejectsControlCharInSubFallback(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), bad) {
 		t.Errorf("validator error echoes the rejected sub: %q", err.Error())
+	}
+	if !errors.Is(err, common.ErrInvalidUserID) {
+		t.Errorf("err = %v, want it to wrap common.ErrInvalidUserID", err)
 	}
 }
 
@@ -501,6 +506,65 @@ func TestValidator_AcceptsShippedUserIDShapes(t *testing.T) {
 			}
 			if uc.UserID != user {
 				t.Errorf("UserID = %q, want %q", uc.UserID, user)
+			}
+		})
+	}
+}
+
+// A caas_user_id that is present but fails the check does not fall back to
+// sub: the token named its user, and that user is not admitted.
+func TestValidator_InvalidUserClaimDoesNotFallBackToSub(t *testing.T) {
+	key, kid, srv := setupTestJWKS(t)
+	defer srv.Close()
+
+	issuer := "test-issuer"
+	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	claims := map[string]any{
+		"iss":          issuer,
+		"exp":          float64(time.Now().Add(time.Hour).Unix()),
+		"iat":          float64(time.Now().Unix()),
+		"caas_user_id": "user\nx",
+		"sub":          "valid-sub",
+		"caas_org_id":  "org-7",
+		"scopes":       []any{"read"},
+	}
+	uc, err := v.Validate(signTestToken(t, key, kid, claims))
+	if err == nil {
+		t.Fatalf("Validate accepted the token as %q, want a rejection", uc.UserID)
+	}
+	if !errors.Is(err, common.ErrInvalidUserID) {
+		t.Errorf("err = %v, want it to wrap common.ErrInvalidUserID", err)
+	}
+}
+
+// A caas_user_id that is present but not a string is rejected. Treating it as
+// absent would substitute sub for the identity the token actually carries.
+func TestValidator_RejectsNonStringUserClaim(t *testing.T) {
+	key, kid, srv := setupTestJWKS(t)
+	defer srv.Close()
+
+	issuer := "test-issuer"
+	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	for name, val := range map[string]any{
+		"number": float64(42),
+		"bool":   true,
+		"array":  []any{"a"},
+		"object": map[string]any{"id": "a"},
+		"null":   nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			claims := map[string]any{
+				"iss":          issuer,
+				"exp":          float64(time.Now().Add(time.Hour).Unix()),
+				"iat":          float64(time.Now().Unix()),
+				"caas_user_id": val,
+				"sub":          "valid-sub",
+				"caas_org_id":  "org-7",
+				"scopes":       []any{"read"},
+			}
+			uc, err := v.Validate(signTestToken(t, key, kid, claims))
+			if err == nil {
+				t.Fatalf("Validate accepted a %s caas_user_id as %q, want a rejection", name, uc.UserID)
 			}
 		})
 	}
