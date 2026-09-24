@@ -1102,6 +1102,11 @@ func validateBootstrapConfig(cfg *Config) (*Config, error) {
 		if err := common.ValidateTenantID(spi.TenantID(out.Bootstrap.TenantID)); err != nil {
 			return nil, fmt.Errorf("CYODA_BOOTSTRAP_TENANT_ID is not a valid tenant id: %w", err)
 		}
+		// The user id becomes the caas_user_id of every token the bootstrap
+		// client is issued, and the validator rejects one outside this check.
+		if err := common.ValidateUserID(out.Bootstrap.UserID); err != nil {
+			return nil, fmt.Errorf("CYODA_BOOTSTRAP_USER_ID is not a valid user id: %w", err)
+		}
 		return &out, nil
 	case idSet && !secretSet:
 		return nil, fmt.Errorf(
