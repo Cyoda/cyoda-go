@@ -161,25 +161,6 @@ func hasSMEventType(events []map[string]any, wantType, wantState string) bool {
 	return false
 }
 
-// awaitSMEventType polls getSMAuditEvents until an event matching wantType
-// (and, if wantState is non-empty, state too) appears, or fails the test
-// once timeout elapses.
-func awaitSMEventType(t *testing.T, entityID, wantType, wantState string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		events := getSMAuditEvents(t, entityID)
-		if hasSMEventType(events, wantType, wantState) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out after %s waiting for StateMachine event %q (state=%q) on entity %s; got events: %+v",
-				timeout, wantType, wantState, entityID, events)
-		}
-		time.Sleep(scheduledPollInterval)
-	}
-}
-
 // TestE2E_ExplicitFireOfScheduledTransition_ReturnsTransitionNotFound exercises
 // the explicit-fire-of-a-scheduled-transition rejection path end-to-end through
 // the full HTTP stack. The validator accepts the shape-coherent
