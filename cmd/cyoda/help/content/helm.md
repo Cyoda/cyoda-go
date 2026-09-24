@@ -126,9 +126,10 @@ container start, where it stops the binary in jwt mode whenever a bootstrap clie
 configured.
 
 **`bootstrap.userId`** — string — default `admin`
-Bootstrap user ID. Written to ConfigMap as `CYODA_BOOTSTRAP_USER_ID`. Must be 1 to
-255 characters with no control character (U+0000–U+001F, U+007F). `values.schema.json`
-enforces this with a `pattern` and a `maxLength`, so a bad value fails at `helm install`
+Bootstrap user ID. Written to ConfigMap as `CYODA_BOOTSTRAP_USER_ID`. Must pass the
+user-identifier rule in `config.auth`: 1 to 255 characters, with no control character,
+noncharacter or U+FFFD. `values.schema.json` enforces the same rule with a `pattern` and a
+`maxLength` (a unit test keeps the two in step), so a bad value fails at `helm install`
 rather than at container start, where it stops the binary in jwt mode whenever a
 bootstrap client is configured.
 

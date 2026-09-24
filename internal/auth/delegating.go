@@ -80,9 +80,10 @@ func (a *DelegatingAuthenticator) Authenticate(_ context.Context, r *http.Reques
 // logAuthFailure emits exactly one structured slog.Warn record describing the
 // authentication failure. The detail err (if any) is the validator's
 // description of *why* the token failed. It may quote, with %q, the token's
-// iss, aud or alg value (see internal/auth/validator.go and EnsureAlgRS256).
-// It never carries the tenant or user claim: a rejection of either gives only
-// the reason and a position (common.ValidateTenantID, common.ValidateUserID).
+// kid, iss, aud or alg value (see internal/auth/validator.go and
+// EnsureAlgRS256). It never carries the tenant or user claim: a rejection of
+// either gives only the reason and, for a rejected byte or character, its
+// position (common.ValidateTenantID, common.ValidateUserID).
 func logAuthFailure(r *http.Request, reason string, detail error) {
 	attrs := []any{
 		"pkg", "auth",

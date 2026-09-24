@@ -93,21 +93,32 @@ two doors.
 
 ### User identifiers
 
-A user identifier must be 1 to 255 characters (not bytes) and contain no
-control character (U+0000–U+001F, U+007F). Any other character is admitted,
-including non-ASCII, and nothing is normalised. A user id is not a key or a
-path segment, so it has no grammar beyond this.
+A user identifier must be valid UTF-8, 1 to 255 characters (not bytes) long,
+and contain none of these:
 
-The same check applies at every place a user id enters the binary from
-outside it:
+- a control character: U+0000–U+001F and U+007F–U+009F;
+- a noncharacter: U+FDD0–U+FDEF, and U+FFFE and U+FFFF in every plane;
+- U+FFFD, the replacement character.
+
+Any other character is admitted, including non-ASCII, and nothing is
+normalised. A user id is not a key or a path segment, so it has no grammar
+beyond this. The excluded characters are the ones the CloudEvents spec forbids
+in a string attribute — a user id is sent to compute nodes as `authid` — plus
+U+FFFD, which a JSON decoder puts in place of every invalid byte, so that two
+different claims can never name one user.
+
+The same check applies at every place a principal's user id enters the binary
+from outside it:
 
 - **The user claim on an inbound first-party JWT** — `caas_user_id`, or `sub`
-  when `caas_user_id` is absent or empty. A claim outside the check is an
-  ordinary `401`, logged like the tenant claim above: the reason and a
-  character position, never the value. A `caas_user_id` that is present but
-  not a string, or that fails the check, is rejected; it does not fall back
-  to `sub`.
-- **The `sub` of a federated OIDC token.**
+  when `caas_user_id` is absent. A claim outside the check is an ordinary
+  `401`, logged like the tenant claim above: the reason, and for a rejected
+  character its code point and position, never the value. A `caas_user_id`
+  that is present but empty, not a string, or outside the check is rejected;
+  it does not fall back to `sub`.
+- **The `sub` of a federated OIDC token.** The principal's user id is then
+  `oidc:<providerId>:<sub>`, so it can be longer than 255 characters; the
+  limit applies to `sub`.
 - **The `sub` of a token-exchange subject token**, which becomes the issued
   token's user id. A value outside the check is `400 invalid_grant`.
 - **`CYODA_BOOTSTRAP_USER_ID`** (below).

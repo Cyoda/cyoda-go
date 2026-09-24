@@ -101,7 +101,7 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_BOOTSTRAP_CLIENT_ID", Topic: "auth", Type: "string", Default: "", Description: "Bootstrap M2M client ID."},
 	{Name: "CYODA_BOOTSTRAP_CLIENT_SECRET", Topic: "auth", Type: "string", Default: "", Description: "Bootstrap M2M client secret; must be set when CYODA_BOOTSTRAP_CLIENT_ID is set. Supports _FILE suffix."},
 	{Name: "CYODA_BOOTSTRAP_TENANT_ID", Topic: "auth", Type: "string", Default: "default-tenant", Description: "Tenant for the bootstrap client; must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ — in jwt mode with a bootstrap client configured, a value outside it fails startup."},
-	{Name: "CYODA_BOOTSTRAP_USER_ID", Topic: "auth", Type: "string", Default: "admin", Description: "User ID for the bootstrap client; 1 to 255 characters with no control character — in jwt mode with a bootstrap client configured, a value outside it fails startup."},
+	{Name: "CYODA_BOOTSTRAP_USER_ID", Topic: "auth", Type: "string", Default: "admin", Description: "User ID for the bootstrap client; 1 to 255 characters with no control character, noncharacter or U+FFFD — in jwt mode with a bootstrap client configured, a value outside it fails startup."},
 	{Name: "CYODA_BOOTSTRAP_ROLES", Topic: "auth", Type: "csv", Default: "ROLE_ADMIN,ROLE_M2M", Description: "Comma-separated roles granted to the bootstrap client."},
 	{Name: "CYODA_OIDC_REQUIRE_HTTPS", Topic: "auth", Type: "bool", Default: "true", Description: "Reject federated OIDC provider registration when the well-known config URI is not https."},
 	{Name: "CYODA_OIDC_CONNECT_TIMEOUT_MS", Topic: "auth", Type: "int", Default: "5000", Description: "TCP connect timeout in milliseconds for OIDC discovery and JWKS endpoint fetches."},

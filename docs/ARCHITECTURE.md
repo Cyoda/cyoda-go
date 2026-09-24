@@ -229,6 +229,8 @@ Multi-tenancy is intrinsic. Every request context carries a resolved `UserContex
 
 A tenant identifier matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$` — 1 to 100 bytes, the first an ASCII letter or digit, case preserved and significant. `common.ValidateTenantID` is the one definition, and it is applied at the only two places a tenant identifier enters the binary from outside it: the `caas_org_id` claim on an inbound JWT (§7.2), which covers every authenticated HTTP request and every authenticated gRPC method, and `CYODA_BOOTSTRAP_TENANT_ID` at startup (§9). Everything downstream — peer dispatch bodies, scheduler payloads, gossip envelopes, scheduled-task and search-job rows, OIDC provider records, the M2M client table — carries a value already admitted at one of those two doors and does not re-check it. The rule is a Cloud-facing contract: see `docs/cloud-parity/tenant-id-grammar.md`.
 
+A user identifier is valid UTF-8, 1 to 255 characters, with no control character (U+0000–U+001F, U+007F–U+009F), no noncharacter and no U+FFFD; nothing is normalised. `common.ValidateUserID` is the one definition, applied at every place a principal's user id enters from outside: the first-party `caas_user_id` claim (or `sub` when `caas_user_id` is absent), the OIDC `sub`, the token-exchange subject `sub`, and `CYODA_BOOTSTRAP_USER_ID` at startup. The excluded characters are those the CloudEvents spec forbids in a string attribute, since the user id is sent to compute nodes as `authid`, plus U+FFFD, so that invalid input cannot alias a real id. See `docs/cloud-parity/user-id-rule.md`.
+
 ---
 
 ## 2. Storage Architecture
@@ -1664,7 +1666,7 @@ kid := hex.EncodeToString(kidHash[:16])  // first 16 bytes of SHA-256
 
 This is critical for multi-node clusters: all nodes sharing the same RSA private key produce the same KID. Any node can validate tokens issued by any other node without key synchronization.
 
-**OBO (On-Behalf-Of) exchange:** A compute member authenticated via M2M credentials can exchange its token for an OBO token carrying the original user's tenant and identity. This allows CRUD callbacks to carry the correct authorization context.
+**OBO (On-Behalf-Of) exchange:** An M2M client presents, with its own credentials, a subject token signed by a registered trusted key (grant `urn:ietf:params:oauth:grant-type:token-exchange`). The subject's `caas_org_id` must equal the client's tenant, and its `sub` must pass the user-identifier rule (§1). The issued token carries the subject's `sub` as its user id, the subject's roles, and an `act` claim naming the client, so calls made with it are attributed to that user.
 
 **Bootstrap M2M client:** Bootstrap M2M client creation is opt-in. In
 `jwt` mode, `CYODA_BOOTSTRAP_CLIENT_ID` and
@@ -1957,7 +1959,7 @@ These variables apply globally to all tenant-registered OIDC providers. Per-prov
 | `CYODA_BOOTSTRAP_CLIENT_ID` | (none) | M2M client ID to create at startup. Must be set together with `CYODA_BOOTSTRAP_CLIENT_SECRET` or both left empty — half-configured rejected (jwt mode). |
 | `CYODA_BOOTSTRAP_CLIENT_SECRET` (with `_FILE` variant) | (none) | M2M client secret. Required when `CYODA_BOOTSTRAP_CLIENT_ID` is set in jwt mode; ignored in mock mode. |
 | `CYODA_BOOTSTRAP_TENANT_ID` | `default-tenant` | Tenant for bootstrap client. Must match the tenant grammar (§1); a value outside it refuses startup, but only in jwt mode with a bootstrap client configured — mock mode ignores bootstrap entirely, and a jwt deployment that configures no bootstrap client never reads the value, including when it is explicitly empty. |
-| `CYODA_BOOTSTRAP_USER_ID` | `admin` | User ID for bootstrap client |
+| `CYODA_BOOTSTRAP_USER_ID` | `admin` | User ID for bootstrap client. Must pass the user-identifier rule (§1); a value outside it refuses startup in jwt mode with a bootstrap client configured. |
 | `CYODA_BOOTSTRAP_ROLES` | `ROLE_ADMIN,ROLE_M2M` | Comma-separated roles |
 
 ### gRPC
