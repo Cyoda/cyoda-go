@@ -184,16 +184,32 @@ func TestInterceptor_StreamAuthFailure(t *testing.T) {
 	}
 }
 
-// TestInterceptor_UnaryRejectsTenantOutsideGrammar proves gRPC inherits door 1:
-// the interceptor delegates to the same AuthenticationService the HTTP
-// middleware uses, so a claim outside the tenant grammar is Unauthenticated
-// here too, with the same generic message.
-func TestInterceptor_UnaryRejectsTenantOutsideGrammar(t *testing.T) {
+// TestInterceptor_UnaryRejectsClaimOutsideCheck proves gRPC inherits the
+// claim checks: the interceptor delegates to the same AuthenticationService
+// the HTTP middleware uses, so a tenant claim outside the tenant grammar, or a
+// user claim outside the user-id check, is Unauthenticated here too, with the
+// same generic message.
+func TestInterceptor_UnaryRejectsClaimOutsideCheck(t *testing.T) {
+	for name, tc := range map[string]struct{ user, tenant string }{
+		"tenant": {user: "user-1", tenant: "../victim"},
+		"user":   {user: "user\nvictim", tenant: "tenant-1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assertUnaryRejectsClaims(t, tc.user, tc.tenant)
+		})
+	}
+}
+
+// assertUnaryRejectsClaims signs a first-party token carrying user and tenant,
+// both chosen so that the rejected one contains "victim", and asserts the
+// interceptor rejects it without the value reaching the error or a log record.
+func assertUnaryRejectsClaims(t *testing.T, user, tenant string) {
+	t.Helper()
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
-	const kid = "grpc-tenant-test"
+	const kid = "grpc-claim-test"
 	const issuer = "cyoda-grpc-test"
 
 	ks := auth.NewInMemoryKeyStore()
@@ -216,9 +232,9 @@ func TestInterceptor_UnaryRejectsTenantOutsideGrammar(t *testing.T) {
 	now := time.Now()
 	tok, err := auth.Sign(map[string]any{
 		"iss":          issuer,
-		"sub":          "user-1",
-		"caas_user_id": "user-1",
-		"caas_org_id":  "../victim",
+		"sub":          user,
+		"caas_user_id": user,
+		"caas_org_id":  tenant,
 		"iat":          float64(now.Unix()),
 		"exp":          float64(now.Add(time.Hour).Unix()),
 	}, priv, kid)
@@ -230,12 +246,12 @@ func TestInterceptor_UnaryRejectsTenantOutsideGrammar(t *testing.T) {
 		metadata.MD{"authorization": []string{"Bearer " + tok}})
 
 	handler := func(_ context.Context, _ any) (any, error) {
-		t.Fatal("handler must not be called when the tenant claim is rejected")
+		t.Fatal("handler must not be called when a claim is rejected")
 		return nil, nil
 	}
 
 	// Capture the default logger for the duration of the call: the rejected
-	// tenant is attacker-chosen, so it must reach neither the envelope nor a
+	// claim is attacker-chosen, so it must reach neither the envelope nor a
 	// log field.
 	var logBuf bytes.Buffer
 	prevLogger := slog.Default()
@@ -266,9 +282,9 @@ func TestInterceptor_UnaryRejectsTenantOutsideGrammar(t *testing.T) {
 		t.Fatal("no log record captured; the log assertion below would be vacuous")
 	}
 	if strings.Contains(err.Error(), "victim") {
-		t.Errorf("gRPC error echoes the rejected tenant: %v", err)
+		t.Errorf("gRPC error echoes the rejected claim: %v", err)
 	}
 	if strings.Contains(logBuf.String(), "victim") {
-		t.Errorf("a log record echoes the rejected tenant:\n%s", logBuf.String())
+		t.Errorf("a log record echoes the rejected claim:\n%s", logBuf.String())
 	}
 }

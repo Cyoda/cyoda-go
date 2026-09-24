@@ -175,11 +175,11 @@ func TestAuth_ValidCredentialsStillPass(t *testing.T) {
 	}
 }
 
-// mintTokenWithTenant signs a first-party token carrying an arbitrary
-// caas_org_id, so a test can present a claim no legitimate client could
-// obtain. The kid is the one app.NewAuthService derives from the signing key's
-// public part (sha256(SPKI)[:16] hex).
-func mintTokenWithTenant(t *testing.T, tenant string) string {
+// mintFirstPartyToken signs a first-party token carrying an arbitrary user
+// (caas_user_id and sub) and caas_org_id, so a test can present a claim no
+// legitimate client could obtain. The kid is the one app.NewAuthService
+// derives from the signing key's public part (sha256(SPKI)[:16] hex).
+func mintFirstPartyToken(t *testing.T, user, tenant string) string {
 	t.Helper()
 	pubDER, err := x509.MarshalPKIXPublicKey(&e2eSignKey.PublicKey)
 	if err != nil {
@@ -190,9 +190,9 @@ func mintTokenWithTenant(t *testing.T, tenant string) string {
 
 	now := time.Now()
 	tok, err := auth.Sign(map[string]any{
-		"sub":          "e2e-tenant-probe",
+		"sub":          user,
 		"iss":          e2eIssuer,
-		"caas_user_id": "e2e-tenant-probe",
+		"caas_user_id": user,
 		"caas_org_id":  tenant,
 		"user_roles":   []string{"ROLE_ADMIN"},
 		"exp":          now.Add(time.Hour).Unix(),
@@ -219,7 +219,7 @@ func TestAuth_TenantClaimOutsideGrammar_401(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			resp := unauthRequest(t, http.MethodGet, "/api/entity/e2e-auth-probe/1",
-				"Bearer "+mintTokenWithTenant(t, tenant))
+				"Bearer "+mintFirstPartyToken(t, "e2e-tenant-probe", tenant))
 			defer resp.Body.Close()
 			if resp.StatusCode != http.StatusUnauthorized {
 				raw, _ := io.ReadAll(resp.Body)
@@ -248,11 +248,60 @@ func TestAuth_AcceptedTenantShapesStillAuthenticate(t *testing.T) {
 	} {
 		t.Run(tenant, func(t *testing.T) {
 			resp := unauthRequest(t, http.MethodGet, "/api/model/",
-				"Bearer "+mintTokenWithTenant(t, tenant))
+				"Bearer "+mintFirstPartyToken(t, "e2e-tenant-probe", tenant))
 			defer resp.Body.Close()
 			if resp.StatusCode == http.StatusUnauthorized {
 				raw, _ := io.ReadAll(resp.Body)
 				t.Fatalf("tenant %q was rejected — this is a lockout; body: %s", tenant, raw)
+			}
+		})
+	}
+}
+
+// TestAuth_UserClaimOutsideCheck_401: a user claim outside the user-id check
+// is rejected through the full HTTP stack, on a token this server would
+// otherwise accept, and the rejection is indistinguishable from any other bad
+// token.
+func TestAuth_UserClaimOutsideCheck_401(t *testing.T) {
+	for name, user := range map[string]string{
+		"newline":  "user\ninjected",
+		"nul":      "user\x00injected",
+		"too-long": strings.Repeat("u", 256),
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp := unauthRequest(t, http.MethodGet, "/api/entity/e2e-auth-probe/1",
+				"Bearer "+mintFirstPartyToken(t, user, "test-tenant"))
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusUnauthorized {
+				raw, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status=%d, want 401; body: %s", resp.StatusCode, raw)
+			}
+			raw := assertUnauthorizedProblem(t, resp)
+
+			if strings.Contains(string(raw), "injected") || strings.Contains(string(raw), "uuuu") {
+				t.Errorf("response echoes the rejected user id: %s", raw)
+			}
+		})
+	}
+}
+
+// TestAuth_AcceptedUserIDShapesStillAuthenticate is the regression half: the
+// check must not lock out a user id that works today.
+func TestAuth_AcceptedUserIDShapesStillAuthenticate(t *testing.T) {
+	for _, user := range []string{
+		"test-admin",
+		"alice@example.com",
+		"1a2b3c4d-5e6f-4a8b-9c0d-1e2f3a4b5c6d",
+		"用户",
+		strings.Repeat("u", 255),
+	} {
+		t.Run(user, func(t *testing.T) {
+			resp := unauthRequest(t, http.MethodGet, "/api/model/",
+				"Bearer "+mintFirstPartyToken(t, user, "test-tenant"))
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusUnauthorized {
+				raw, _ := io.ReadAll(resp.Body)
+				t.Fatalf("user id %q was rejected — this is a lockout; body: %s", user, raw)
 			}
 		})
 	}
