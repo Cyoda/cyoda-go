@@ -91,6 +91,27 @@ Nothing downstream re-checks it: peer dispatch, scheduled tasks, search jobs
 and stored client records all carry a value already admitted at one of those
 two doors.
 
+### User identifiers
+
+A user identifier must be 1 to 255 characters (not bytes) and contain no
+control character (U+0000–U+001F, U+007F). Any other character is admitted,
+including non-ASCII, and nothing is normalised. A user id is not a key or a
+path segment, so it has no grammar beyond this.
+
+The same check applies at every place a user id enters the binary from
+outside it:
+
+- **The user claim on an inbound first-party JWT** — `caas_user_id`, or `sub`
+  when `caas_user_id` is absent or empty. A claim outside the check is an
+  ordinary `401`, logged like the tenant claim above: the reason and a
+  character position, never the value. A `caas_user_id` that is present but
+  not a string, or that fails the check, is rejected; it does not fall back
+  to `sub`.
+- **The `sub` of a federated OIDC token.**
+- **The `sub` of a token-exchange subject token**, which becomes the issued
+  token's user id. A value outside the check is `400 invalid_grant`.
+- **`CYODA_BOOTSTRAP_USER_ID`** (below).
+
 ### HMAC secret (inter-node dispatch authentication)
 
 - `CYODA_HMAC_SECRET` — hex-encoded HMAC secret for inter-node dispatch auth
@@ -111,7 +132,9 @@ cyoda can provision a machine-to-machine client at startup for automation and CI
   that configures no bootstrap client never reads the value and is unaffected, even when
   it is set to the empty string — and mock mode ignores the whole bootstrap block, so
   the value is not checked there either.
-- `CYODA_BOOTSTRAP_USER_ID` — user ID for the bootstrap client (default: `admin`)
+- `CYODA_BOOTSTRAP_USER_ID` — user ID for the bootstrap client (default: `admin`).
+  Must pass the user-id check above. In jwt mode, when a bootstrap client is configured
+  and this value does not pass, the binary refuses to start.
 - `CYODA_BOOTSTRAP_ROLES` — comma-separated roles granted to the bootstrap client
   (default: `ROLE_ADMIN,ROLE_M2M`)
 

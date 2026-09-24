@@ -77,6 +77,11 @@ bootstrap:
   # non-ASCII here without changing maxLength would let helm install accept
   # a value the binary then rejects.
   tenantId: default-tenant
+  # -- User id for the bootstrap client: 1 to 255 characters, no control
+  # character (U+0000–U+001F, U+007F). values.schema.json enforces it at
+  # install time; the binary re-checks it in jwt mode and refuses to start on
+  # a value outside it whenever clientId is set. Both count characters, not
+  # bytes, so they agree on non-ASCII values.
   userId: admin
   roles: "ROLE_ADMIN,ROLE_M2M"
 

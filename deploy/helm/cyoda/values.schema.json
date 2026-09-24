@@ -71,7 +71,7 @@
         },
         "clientId": {"type": "string"},
         "tenantId": {"type": "string", "minLength": 1, "maxLength": 100, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"},
-        "userId": {"type": "string", "minLength": 1},
+        "userId": {"type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[^\\x00-\\x1F\\x7F]*$"},
         "roles": {"type": "string", "minLength": 1}
       }
     },

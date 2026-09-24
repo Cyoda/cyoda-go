@@ -33,6 +33,24 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   outside the grammar becomes a silent `401` rather than a diagnosable
   rejection) are recorded in `docs/cloud-parity/tenant-id-grammar.md`.
 
+- **A user identifier must be 1 to 255 characters with no control
+  character (U+0000–U+001F, U+007F).** Characters, not bytes; any other
+  character is admitted and nothing is normalised. This is the rule the OIDC
+  `sub` already had, and it now applies at every place a user id enters
+  cyoda-go from outside it, through one check. The first-party
+  `caas_user_id` claim (or `sub` when it is absent or empty) outside the rule
+  is an **ordinary `401`** with the uniform problem detail, and
+  `codes.Unauthenticated` over gRPC; the server log gives the reason and a
+  character position, never the value. A `caas_user_id` that is present but
+  not a string, or that fails the rule, is rejected; it no longer falls back
+  to `sub`. A token-exchange subject token whose `sub` is outside the rule is
+  **`400 invalid_grant`** — before, it was exchanged for a token that every
+  later request rejected. A `CYODA_BOOTSTRAP_USER_ID` outside the rule
+  **refuses to start** in jwt mode when a bootstrap client is configured, and
+  the chart's `bootstrap.userId` fails `helm install`. No new error code. The
+  contract and the Cloud comparison are in
+  `docs/cloud-parity/user-id-rule.md`. (#594, from a contribution in #597.)
+
 - **Every OIDC provider operation answers `400 OIDC_INVALID_TENANT` unless
   the caller's tenant is a UUID in its canonical lowercase form.**
   `GET /oauth/oidc/providers` previously returned an empty `200` to a
