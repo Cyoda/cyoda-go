@@ -154,18 +154,13 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Verify trusted key is active and within validity window.
-	if !trustedKey.Active {
-		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "trusted key is inactive")
-		return
-	}
+	// GetForVerification has already dropped a key past its ValidTo. An
+	// invalidated key is inactive but keeps verifying until that ValidTo — the
+	// grace period the invalidate operation promises — so Active is not
+	// checked here: every path that clears it also sets ValidTo.
 	now := time.Now()
 	if now.Before(trustedKey.ValidFrom) {
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "trusted key not yet valid")
-		return
-	}
-	if trustedKey.ValidTo != nil && now.After(*trustedKey.ValidTo) {
-		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "trusted key expired")
 		return
 	}
 

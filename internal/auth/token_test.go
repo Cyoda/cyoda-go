@@ -610,6 +610,35 @@ func TestTokenHandler_NonPost_405MethodNotAllowed(t *testing.T) {
 	}
 }
 
+// Invalidating with a grace period keeps the key verifying until the grace
+// period ends — the contract of the invalidate operation, and what a rotation
+// with invalidatePrevious relies on to avoid an outage.
+func TestTokenExchangeKeyInGracePeriod(t *testing.T) {
+	env := setupTokenEnv(t)
+	if err := env.trustedKeyStore.Invalidate(spi.TenantID(env.tenantID), env.trustedKID, 3600); err != nil {
+		t.Fatalf("failed to invalidate trusted key: %v", err)
+	}
+
+	subjectToken := signSubjectToken(t, env.trustedKey, env.trustedKID, map[string]any{
+		"sub":         "ext-user-1",
+		"caas_org_id": env.tenantID,
+		"user_roles":  []string{"editor"},
+		"exp":         float64(time.Now().Add(time.Hour).Unix()),
+		"iat":         float64(time.Now().Unix()),
+	})
+	extra := url.Values{}
+	extra.Set("subject_token", subjectToken)
+	extra.Set("subject_token_type", "urn:ietf:params:oauth:token-type:jwt")
+	req := makeTokenRequest("urn:ietf:params:oauth:grant-type:token-exchange",
+		basicAuth(env.clientID, env.clientSecret), extra)
+	rr := httptest.NewRecorder()
+	env.handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for a key in its grace period, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestTokenExchangeInactiveTrustedKey(t *testing.T) {
 	env := setupTokenEnv(t)
 

@@ -82,7 +82,8 @@ Returns the tenant's keys with status (active / invalidated) and validity window
 
 ```bash
 # Stop accepting subject tokens signed with this key, without removing the entry.
-# Optional body: {"gracePeriodSec": 3600} keeps it valid that much longer.
+# Optional body: {"gracePeriodSec": 3600} keeps it verifying for that many
+# seconds more; without it, it stops at once.
 curl -X POST https://cyoda.example.com/api/oauth/keys/trusted/${KEY_ID}/invalidate \
   -H "Authorization: Bearer ${ADMIN_TOKEN}"
 
@@ -120,7 +121,7 @@ curl -X POST https://cyoda.example.com/api/oauth/token \
   -d subject_token="${SIGNED_JWT}"
 ```
 
-cyoda looks up `kid` among the trusted keys **of the M2M client's tenant**, checks that the key is active and within its validity window, verifies the RS256 signature, and checks the claims below. The response carries a cyoda token for the user; use that token on API calls.
+cyoda looks up `kid` among the trusted keys **of the M2M client's tenant**, checks that the key is within its validity window (an invalidated key stays valid until its grace period ends), verifies the RS256 signature, and checks the claims below. The response carries a cyoda token for the user; use that token on API calls.
 
 ## TOKEN
 
@@ -147,7 +148,7 @@ Management endpoints:
 
 Token exchange (OAuth error shape, see `auth.tokens`):
 
-- `400 invalid_grant` — the `kid` is not a trusted key of the client's tenant, or the key is inactive or outside its validity window, the signature does not verify, `iss` is not among the key's `issuers`, a time claim fails, or `sub` breaks the user-identifier rule.
+- `400 invalid_grant` — the `subject_token_type` is not `urn:ietf:params:oauth:token-type:jwt`; the subject token does not parse, is not RS256, or has no `kid`; the `kid` is not a trusted key of the client's tenant, or the key is outside its validity window; the signature does not verify; `iss` is not among the key's `issuers`; a time claim fails; or `sub` is missing or breaks the user-identifier rule.
 - `403 access_denied` — `caas_org_id` is not the client's tenant.
 
 ## SEE ALSO

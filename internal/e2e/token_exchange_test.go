@@ -78,6 +78,39 @@ func exchangeSubject(t *testing.T, priv *rsa.PrivateKey, kid, sub, tenant string
 	return postToken(t, form, "testclient", "testsecret")
 }
 
+// TestToken_TokenExchange_InvalidatedKeyGracePeriod: a key invalidated with a
+// grace period keeps verifying subject tokens until the period ends; one
+// invalidated without a grace period stops at once.
+func TestToken_TokenExchange_InvalidatedKeyGracePeriod(t *testing.T) {
+	invalidate := func(t *testing.T, kid string, graceSec int) {
+		t.Helper()
+		resp := adminRequest(t, "POST", "/oauth/keys/trusted/"+kid+"/invalidate",
+			mustJSON(t, map[string]any{"gracePeriodSec": graceSec}))
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			raw, _ := io.ReadAll(resp.Body)
+			t.Fatalf("invalidate %s: status=%d; body: %s", kid, resp.StatusCode, raw)
+		}
+	}
+
+	t.Run("with-grace", func(t *testing.T) {
+		priv, kid := registerTrustedSigner(t)
+		invalidate(t, kid, 3600)
+		resp := exchangeSubject(t, priv, kid, "ext-user-1", "test-tenant")
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			raw, _ := io.ReadAll(resp.Body)
+			t.Fatalf("status=%d, want 200 inside the grace period; body: %s", resp.StatusCode, raw)
+		}
+	})
+	t.Run("immediate", func(t *testing.T) {
+		priv, kid := registerTrustedSigner(t)
+		invalidate(t, kid, 0)
+		assertOAuthError(t, exchangeSubject(t, priv, kid, "ext-user-1", "test-tenant"),
+			http.StatusBadRequest, "invalid_grant")
+	})
+}
+
 // TestToken_TokenExchange_KeyFromAnotherTenant_400: a trusted key belongs to
 // the tenant that registered it. A client of another tenant cannot exchange a
 // subject token signed with it, even one whose caas_org_id names the client's

@@ -493,6 +493,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   fail-closed behaviour when the trusted-key cache is stale. See
   `docs/cloud-parity/trusted-key-tenant.md`.
 
+- **An invalidated trusted key honours its grace period in token exchange.**
+  Invalidating a trusted key with `gracePeriodSec` — directly, or on rotation
+  with `invalidatePrevious` — marks it inactive and keeps it valid until the
+  period ends, as the invalidate operation promises. The exchange rejected
+  every inactive key at once, so the grace period did nothing and a rotation
+  cut off tokens signed with the old key immediately. A key now verifies until
+  its `validTo`.
+
 - **`cyoda help auth trusted-keys` described a feature cyoda-go does not
   have.** It said a JWT signed with a trusted key could be sent as a bearer
   token on API calls. A trusted key verifies only the subject token of the
