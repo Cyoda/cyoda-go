@@ -206,6 +206,27 @@ func TestInvalidateJwtKeyPair_NegativeGraceRejected(t *testing.T) {
 	}
 }
 
+// Reactivating with a future validFrom would put the key pair outside its own
+// window at once — for the key that is signing now, leaving the audience with
+// no signing key. It is refused, and the key pair is unchanged.
+func TestReactivateJwtKeyPair_FutureValidFrom_Rejected(t *testing.T) {
+	h, ks, _ := newHandler(t)
+	current := mkRSAKeyPair(t, "client")
+	_ = ks.Save(current, auth.RotateOptions{})
+
+	from := time.Now().Add(time.Hour)
+	body, _ := json.Marshal(genapi.ReactivateKeyRequestDto{ValidFrom: &from, ValidTo: from.Add(24 * time.Hour)})
+	w := httptest.NewRecorder()
+	h.ReactivateJwtKeyPair(w, adminReq(t, "POST", "/", body), current.KID)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400; body=%s", w.Code, w.Body.String())
+	}
+	commontest.ExpectErrorCode(t, resultResp(w), "BAD_REQUEST")
+	if got, err := ks.GetActive("client"); err != nil || got.KID != current.KID {
+		t.Errorf("current key changed by a refused request: got=%+v err=%v", got, err)
+	}
+}
+
 func TestReactivateJwtKeyPair_RequiresFreshValidTo(t *testing.T) {
 	h, ks, _ := newHandler(t)
 	past := time.Now().Add(-1 * time.Hour)

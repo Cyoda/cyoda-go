@@ -220,12 +220,20 @@ func (h *Handler) ReactivateJwtKeyPair(w http.ResponseWriter, r *http.Request, k
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validTo required"))
 		return
 	}
-	validFrom := time.Now()
+	now := time.Now()
+	validFrom := now
 	if req.ValidFrom != nil {
 		validFrom = *req.ValidFrom
 	}
+	// A future validFrom would put the key pair outside its own window at
+	// once; for the key signing now, that leaves the audience with no signing
+	// key. Issue a new key pair ahead of time instead.
+	if validFrom.After(now) {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validFrom cannot be in the future"))
+		return
+	}
 	validTo := req.ValidTo
-	if !validTo.After(time.Now()) {
+	if !validTo.After(now) {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validTo must be in the future"))
 		return
 	}

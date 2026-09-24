@@ -21,11 +21,17 @@ would leave the audience without a signing key:
 - `invalidateCurrent: true` together with a `validFrom` in the future;
 - a `validTo` that is not in the future.
 
+`POST /oauth/keys/keypair/{keyId}/reactivate` refuses a `validFrom` in the
+future (`400 BAD_REQUEST`): it would put the key pair outside its own window
+at once. Invalidating the only key pair that can sign is allowed — revocation
+must always work — and leaves the audience without a signing key until a new
+one is issued.
+
 The bootstrap signing key (from configuration) has no window: it lasts as long
 as the configuration supplies it.
 
 ## Cloud action
 
 Confirm that Cloud signs only with a key inside its window, rejects tokens
-whose key is outside it, and refuses the two request shapes above — or record
+whose key is outside it, and refuses the three request shapes above — or record
 where it differs.

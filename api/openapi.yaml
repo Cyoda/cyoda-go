@@ -5500,7 +5500,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/JwtKeyPairResponseDto"
         "400":
-          description: "Bad request — BAD_REQUEST: missing or past validTo, validTo not after validFrom."
+          description: "Bad request — BAD_REQUEST: missing or past validTo, validTo not after validFrom, or validFrom in the future."
           content:
             application/problem+json:
               schema:

@@ -461,7 +461,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   publishes a key pair ahead of its window. Two issue requests that would
   leave the audience without a signing key are now `400 BAD_REQUEST`: a
   future `validFrom` together with `invalidateCurrent`, and a `validTo` that
-  is not in the future (such a key pair could never sign). When two key
+  is not in the future (such a key pair could never sign). Reactivating a
+  key pair with a future `validFrom` is `400` too: it would put the key pair
+  outside its own window at once. Invalidating the last key pair that can
+  sign stays allowed, since revocation must always work. When two key
   pairs share the latest `validFrom`, the one with the greater key id signs,
   instead of an arbitrary one. See `docs/cloud-parity/signing-key-window.md`. The bootstrap signing key no longer has a window: it used to expire
   `CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS` after each node's start, which
