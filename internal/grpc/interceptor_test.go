@@ -200,10 +200,29 @@ func TestInterceptor_UnaryRejectsClaimOutsideCheck(t *testing.T) {
 	}
 }
 
-// assertUnaryRejectsClaims signs a first-party token carrying user and tenant,
-// both chosen so that the rejected one contains "victim", and asserts the
-// interceptor rejects it without the value reaching the error or a log record.
-func assertUnaryRejectsClaims(t *testing.T, user, tenant string) {
+// TestInterceptor_UnaryAcceptsClaimsInsideCheck is the positive control for
+// the test above: the same setup with both claims valid reaches the handler,
+// so a rejection there comes from the claim under test and nothing else.
+func TestInterceptor_UnaryAcceptsClaimsInsideCheck(t *testing.T) {
+	ctx, interceptor := claimTokenCall(t, "user-1", "tenant-1")
+	called := false
+	handler := func(_ context.Context, _ any) (any, error) {
+		called = true
+		return nil, nil
+	}
+	if _, err := interceptor(ctx, "request",
+		&googlegrpc.UnaryServerInfo{FullMethod: "/test.Service/Method"}, handler); err != nil {
+		t.Fatalf("interceptor rejected valid claims: %v", err)
+	}
+	if !called {
+		t.Fatal("handler was not called for valid claims")
+	}
+}
+
+// claimTokenCall builds an auth interceptor over a fresh signing key and an
+// incoming context carrying a first-party token with the given user (as both
+// caas_user_id and sub) and tenant.
+func claimTokenCall(t *testing.T, user, tenant string) (context.Context, googlegrpc.UnaryServerInterceptor) {
 	t.Helper()
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -244,6 +263,15 @@ func assertUnaryRejectsClaims(t *testing.T, user, tenant string) {
 
 	ctx := metadata.NewIncomingContext(context.Background(),
 		metadata.MD{"authorization": []string{"Bearer " + tok}})
+	return ctx, interceptor
+}
+
+// assertUnaryRejectsClaims signs a first-party token carrying user and tenant,
+// both chosen so that the rejected one contains "victim", and asserts the
+// interceptor rejects it without the value reaching the error or a log record.
+func assertUnaryRejectsClaims(t *testing.T, user, tenant string) {
+	t.Helper()
+	ctx, interceptor := claimTokenCall(t, user, tenant)
 
 	handler := func(_ context.Context, _ any) (any, error) {
 		t.Fatal("handler must not be called when a claim is rejected")
@@ -258,7 +286,7 @@ func assertUnaryRejectsClaims(t *testing.T, user, tenant string) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 
-	_, err = interceptor(ctx, "request",
+	_, err := interceptor(ctx, "request",
 		&googlegrpc.UnaryServerInfo{FullMethod: "/test.Service/Method"}, handler)
 	if err == nil {
 		t.Fatal("expected an error")

@@ -42,6 +42,15 @@ func registerTrustedSigner(t *testing.T) (*rsa.PrivateKey, string) {
 		raw, _ := io.ReadAll(resp.Body)
 		t.Fatalf("register trusted key: status=%d, want 200; body: %s", resp.StatusCode, raw)
 	}
+	// The tenant's trusted-key cap is shared by every test in the run.
+	t.Cleanup(func() {
+		del := adminRequest(t, "DELETE", "/oauth/keys/trusted/"+kid, nil)
+		defer del.Body.Close()
+		if del.StatusCode != http.StatusOK {
+			raw, _ := io.ReadAll(del.Body)
+			t.Errorf("delete trusted key %s: status=%d; body: %s", kid, del.StatusCode, raw)
+		}
+	})
 	return priv, kid
 }
 
