@@ -17,11 +17,11 @@ see_also:
 
 ## NAME
 
-auth.tokens — exchange credentials for a JWT at `POST /api/oauth/token`. Covers every supported grant and the canonical JWT claim contract that all cyoda tokens (M2M, OBO, federated OIDC, trusted-key) conform to.
+auth.tokens — exchange credentials for a JWT at `POST /api/oauth/token`. Covers every supported grant and the canonical JWT claim contract that all cyoda tokens (M2M, OBO, federated OIDC) conform to.
 
 ## GOAL
 
-You have a way to prove identity (an M2M `client_id`/`secret`, or a JWT minted by a federated IdP, or a JWT you signed offline) and you want a cyoda-issued (or cyoda-validated) JWT to present on subsequent API calls.
+You have a way to prove identity (an M2M `client_id`/`secret`, a JWT minted by a federated IdP, or — for token exchange — a subject token signed with a trusted key) and you want a cyoda-issued (or cyoda-validated) JWT to present on subsequent API calls.
 
 This is the single home for the JWT claim contract. `auth.oidc` and `auth.trusted-keys` link here for claim shape.
 
@@ -94,6 +94,7 @@ Response shape matches `client_credentials` plus a `issued_token_type` field:
 
 Key constraints:
 
+- The subject token must be signed by a trusted key registered in the M2M client's own tenant (`auth.trusted-keys`). A key registered by another tenant is not found → `400 invalid_grant`.
 - The subject token's `caas_org_id` must match the M2M client's tenant. Tenant mismatch → `403 access_denied`.
 - The subject token's `sub` becomes the issued token's user identifier, so it must pass the user-identifier rule in `config.auth` (1 to 255 characters; no control character, noncharacter or U+FFFD; not beginning with the reserved word `oidc:`). Otherwise → `400 invalid_grant`.
 - The issued OBO token carries `sub` = the subject's `sub`, `user_roles` from the subject token, and an `act` claim `{"sub": "<m2m client_id>"}` identifying the actor.
@@ -101,7 +102,7 @@ Key constraints:
 
 ## TOKEN
 
-**Cyoda-minted tokens** (issued via `client_credentials` or token-exchange/OBO at `/oauth/token`, or via the bootstrap key in `auth.trusted-keys`) carry the following claim shape. **Federated OIDC tokens** (`auth.oidc`) are *not* re-minted; they carry the upstream IdP's claim shape, and tenant + user identity are bound server-side from the registered provider's `OwnerLegalEntityID` — claims like `caas_org_id`, `caas_user_id`, `tid` on a federated token are explicitly ignored to prevent attacker-controlled tenant routing.
+**Cyoda-minted tokens** (issued via `client_credentials` or token-exchange/OBO at `/oauth/token`) carry the following claim shape. **Federated OIDC tokens** (`auth.oidc`) are *not* re-minted; they carry the upstream IdP's claim shape, and tenant + user identity are bound server-side from the registered provider's `OwnerLegalEntityID` — claims like `caas_org_id`, `caas_user_id`, `tid` on a federated token are explicitly ignored to prevent attacker-controlled tenant routing.
 
 Claim shape for cyoda-minted tokens:
 
@@ -117,11 +118,11 @@ Claim shape for cyoda-minted tokens:
 - `caas_tier` (string) — Tier label. cyoda-go: always `"unlimited"`; Cloud distinguishes paid tiers.
 - `act` (object) — **OBO only.** `{"sub": "<m2m client_id>"}` identifying the M2M actor that exchanged the user token. Absent on `client_credentials` tokens.
 
-Cyoda issues tokens signed with `CYODA_JWT_SIGNING_KEY` (RS256). The `kid` header points at the active keypair in the keystore (`/oauth/keys/*`). Federated OIDC tokens are validated against the registered provider's JWKS — never signed by cyoda. Trusted-key tokens are signed by you (offline) with the matching private key for a registered public key.
+Cyoda issues tokens signed with `CYODA_JWT_SIGNING_KEY` (RS256). The `kid` header points at the active keypair in the keystore (`/oauth/keys/*`). Federated OIDC tokens are validated against the registered provider's JWKS — never signed by cyoda. A trusted key only verifies the subject token of a token exchange; it is never checked on an API call.
 
 ## ERRORS
 
-- `errors.UNAUTHORIZED` (`401`) — `Authorization` header missing, token expired, signature invalid, issuer untrusted, or `kid` not in any registered keystore / OIDC JWKS / trusted-key registry.
+- `errors.UNAUTHORIZED` (`401`) — `Authorization` header missing, token expired, signature invalid, issuer untrusted, or `kid` not in cyoda's keystore or a registered OIDC provider's JWKS.
 - `errors.FORBIDDEN` (`403`) — token valid but caller lacks the required role for the operation.
 - `errors.BAD_REQUEST` (`400`) — malformed `grant_type`, missing form fields, invalid `subject_token` shape.
 - The `/oauth/token` endpoint returns OAuth-shaped errors (`{"error": "...", "error_description": "..."}`) per RFC 6749 rather than the generic cyoda error envelope — `invalid_client`, `invalid_grant`, `access_denied`, `server_error`.
@@ -130,6 +131,6 @@ Cyoda issues tokens signed with `CYODA_JWT_SIGNING_KEY` (RS256). The `kid` heade
 
 - `auth.clients` — provision the M2M client used by `client_credentials` and OBO
 - `auth.oidc` — federate an external IdP whose JWTs cyoda will accept directly
-- `auth.trusted-keys` — register a public key so JWTs you sign offline are accepted
+- `auth.trusted-keys` — register a public key whose JWTs can be exchanged for cyoda tokens
 - `config.auth` — `CYODA_JWT_*`, `CYODA_BOOTSTRAP_*`
 - `openapi` — `cyoda help openapi tags` and look for the `IAM` tag

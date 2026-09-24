@@ -6,6 +6,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **The per-tenant trusted-key cap counts every key that can verify.** It
+  counted only active keys, so a key in its grace period after invalidation
+  — which now verifies until its `validTo` — took no slot, and repeated
+  rotations with long grace periods could keep any number of keys verifying.
+  Such a key now keeps its slot until its grace period ends, and
+  reactivating a key is held to the same cap (`400 TRUSTED_KEY_CAP_REACHED`,
+  which reactivation could not return before). Registrations and
+  reactivations that succeeded before can now be refused: to make room,
+  delete an old key or invalidate it with no grace period first.
+
 - **A tenant identifier has a grammar:
   `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`.** 1 to 100 bytes, the first an ASCII
   letter or digit, the rest letters, digits, `.`, `_` and `-`; case is
@@ -480,6 +490,37 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `cyoda help audit`.
 
 ### Fixed
+
+- **Token exchange accepts only a trusted key registered in the exchanging
+  client's own tenant.** The grant found the key that verifies a subject
+  token by `kid` across every tenant, and bound the result to a tenant only
+  through the subject token's own `caas_org_id` claim, which the key holder
+  writes. A holder of a key registered in one tenant, with the credentials of
+  any M2M client of another, could get a token for that other tenant with any
+  user id and roles. The key is now looked up in the client's tenant only; a
+  key from another tenant is `400 invalid_grant` ("unknown trusted key"). The
+  lookup is also keyed instead of scanning every tenant's keys, and keeps the
+  fail-closed behaviour when the trusted-key cache is stale. See
+  `docs/cloud-parity/trusted-key-tenant.md`.
+
+- **An invalidated trusted key honours its grace period in token exchange.**
+  Invalidating a trusted key with `gracePeriodSec` — directly, or on rotation
+  with `invalidatePrevious` — marks it inactive and keeps it valid until the
+  period ends, as the invalidate operation promises. The exchange rejected
+  every inactive key at once, so the grace period did nothing and a rotation
+  cut off tokens signed with the old key immediately. A key now verifies until
+  its `validTo`. A grace period also no longer lengthens a key's window:
+  invalidating a trusted key or a signing key pair, directly or by rotation,
+  sets `validTo` to now plus the grace period or the key's existing `validTo`,
+  whichever is earlier. Before, invalidating an expired or already revoked
+  key with a grace period made it valid again.
+
+- **`cyoda help auth trusted-keys` described a feature cyoda-go does not
+  have.** It said a JWT signed with a trusted key could be sent as a bearer
+  token on API calls. A trusted key verifies only the subject token of the
+  token-exchange grant; the topic, `auth.tokens`, `auth` and the README now
+  say so. The topic's registration and reactivation examples also match the
+  API now (`jwk` and `audience` on registration; `validTo` on reactivation).
 
 - **An answer that arrives and cannot be read ends its callout at once, instead
   of being waited out.** A member's answer whose fields do not have the types

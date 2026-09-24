@@ -34,6 +34,12 @@ func trustedKeyMutationError(err error) *common.AppError {
 	if errors.Is(err, auth.ErrTrustedKeyNotFound) {
 		return common.Operational(http.StatusNotFound, common.ErrCodeTrustedKeyNotFound, "trusted key not found")
 	}
+	// A refusal the store itself classified (the per-tenant cap on
+	// reactivation) keeps its status and code.
+	var appErr *common.AppError
+	if errors.As(err, &appErr) && appErr.Level == common.LevelOperational {
+		return appErr
+	}
 	return common.Internal("trusted-key store mutation failed", err)
 }
 

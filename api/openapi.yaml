@@ -5870,7 +5870,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/TrustedKeyResponseDto"
         "400":
-          description: "Bad request — BAD_REQUEST: invalid keyId format, missing or past validTo, validTo not after validFrom."
+          description: "Bad request — BAD_REQUEST: invalid keyId format, missing or past validTo, validTo not after validFrom; TRUSTED_KEY_CAP_REACHED: reactivating would exceed the per-tenant trusted-key cap."
           content:
             application/problem+json:
               schema:
@@ -10355,7 +10355,8 @@ components:
           type: integer
           format: int64
           description: "Grace period in seconds for invalidating previous keys (only used
-            when invalidatePrevious is true). Default is 0 (immediate
+            when invalidatePrevious is true): each keeps at most this long, and
+            never past its current validTo. Default is 0 (immediate
             invalidation). "
           example: 3600
           minimum: 0
@@ -10370,8 +10371,9 @@ components:
         gracePeriodSec:
           type: integer
           format: int64
-          description: Number of seconds to keep the key valid after invalidation. Default
-            is 0 (immediate invalidation).
+          description: Number of seconds to keep the key valid after invalidation, at
+            most, and never past its current validTo. Default is 0 (immediate
+            invalidation).
           example: 3600
           minimum: 0
           maximum: 31622400
@@ -10473,8 +10475,9 @@ components:
         invalidateGracePeriodSec:
           type: integer
           format: int64
-          description: Number of seconds to keep the old key valid after invalidation.
-            Only applicable when invalidateCurrent is true.
+          description: Number of seconds to keep the old key valid after invalidation,
+            at most, and never past its current validTo. Only applicable when
+            invalidateCurrent is true.
           example: 36000
           minimum: 0
           maximum: 31622400

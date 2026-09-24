@@ -19,7 +19,7 @@ HTTP: `400` `Bad Request`. Retryable: `no`.
 
 ## DESCRIPTION
 
-`POST /oauth/keys/trusted` enforces a per-tenant cap (default 10, configurable via `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT`). The cap counts only currently-valid keys (Active and not past `validTo`). Delete or invalidate older keys, or raise the cap.
+`POST /oauth/keys/trusted` and `POST /oauth/keys/trusted/{keyId}/reactivate` enforce a per-tenant cap (default 10, configurable via `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT`). The cap counts every key that can still verify: an active key, and one in its grace period after invalidation, until its `validTo`. Delete an older key or invalidate it with no grace period, or raise the cap.
 
 ## SEE ALSO
 

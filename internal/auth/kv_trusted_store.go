@@ -455,10 +455,11 @@ func (s *KVTrustedKeyStore) persistWithKey(kvKey string, tk *TrustedKey) error {
 // which makes the endpoint idempotent / retry-safe during key rotation.
 //
 // Cross-tenant KID collision returns 409 KEY_OWNED_BY_DIFFERENT_TENANT.
-// Per-tenant cap (counts only currently-valid keys, excluding the KID being
-// registered so same-KID upserts don't consume a slot) returns
-// 400 TRUSTED_KEY_CAP_REACHED. When opts.Invalidate is true, all other active
-// siblings in the same tenant are marked inactive with a gracePeriod ValidTo.
+// Per-tenant cap (counts every key that can still verify, excluding the KID
+// being registered so same-KID upserts don't consume a slot) returns
+// 400 TRUSTED_KEY_CAP_REACHED. When opts.Invalidate is true, every other key of
+// the tenant whose window is still open is marked inactive with the grace
+// expiry (graceExpiry).
 //
 // Write order: new key FIRST, then siblings. This guarantees that a KV failure
 // mid-sibling-flip never destroys the only active key:
@@ -475,26 +476,11 @@ func (s *KVTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) error {
 		return common.Operational(http.StatusConflict, common.ErrCodeKeyOwnedByDifferentTenant, "key with this keyId belongs to a different tenant")
 	}
 
-	// Per-tenant cap: count only currently-valid keys (excluding the KID being
-	// registered so same-KID upserts don't consume a slot).
-	if s.maxPerTenant > 0 {
-		now := time.Now()
-		count := 0
-		for _, k := range s.keys {
-			if k.TenantID != tk.TenantID || k.KID == tk.KID {
-				continue
-			}
-			if !k.Active {
-				continue
-			}
-			if k.ValidTo != nil && !now.Before(*k.ValidTo) {
-				continue
-			}
-			count++
-		}
-		if count >= s.maxPerTenant {
-			return common.Operational(http.StatusBadRequest, common.ErrCodeTrustedKeyCapReached, "trusted-key cap reached for tenant")
-		}
+	// Per-tenant cap: count every key that can still verify — active, or in
+	// its grace period after invalidation — excluding the KID being
+	// registered, so same-KID upserts don't consume a slot.
+	if capReached(s.keys, tk.TenantID, tk.KID, s.maxPerTenant, time.Now()) {
+		return errTrustedKeyCapReached()
 	}
 
 	// Step 1: persist the new/updated entry to KV FIRST.
@@ -513,17 +499,15 @@ func (s *KVTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) error {
 	// unchanged — operator can retry Register to clean up stragglers.
 	if opts.Invalidate {
 		now := time.Now()
-		expiry := now.Add(time.Duration(opts.GracePeriodSec) * time.Second)
 		var failed []string
 		for _, k := range s.keys {
-			if k.TenantID != tk.TenantID || !k.Active || k.KID == tk.KID {
+			if k.TenantID != tk.TenantID || k.KID == tk.KID || !windowOpen(k.ValidTo, now) {
 				continue
 			}
 			// Clone, mutate, persist to KV.
 			sibling := *k
 			sibling.Active = false
-			e := expiry
-			sibling.ValidTo = &e
+			sibling.ValidTo = graceExpiry(k.ValidTo, now, opts.GracePeriodSec)
 			if err := s.persistWithKey(trustedKeyKey(k.TenantID, k.KID), &sibling); err != nil {
 				failed = append(failed, k.KID)
 				continue
@@ -605,26 +589,22 @@ func (s *KVTrustedKeyStore) List(tenantID spi.TenantID) []*TrustedKey {
 	return result
 }
 
-// ListForVerification returns keys still within their validity window across
-// all tenants. Used by the grant-verification path (token exchange / JWT
-// bearer assertion, see verification.go's getTrustedKeyByKID) — NOT the
-// JWKS endpoint, which is served from KeyStore, not TrustedKeyStore.
-func (s *KVTrustedKeyStore) ListForVerification() []*TrustedKey {
+// GetForVerification implements TrustedKeyStore. It reads the cache only: a
+// key registered on another node is verifiable once gossip or the reconcile
+// loop has brought it here.
+func (s *KVTrustedKeyStore) GetForVerification(tenantID spi.TenantID, kid string) (*TrustedKey, error) {
 	if s.reconcileStale() {
-		// Fail closed: the cache can no longer prove these keys were not
+		// Fail closed: the cache can no longer prove this key was not
 		// revoked. The reconcile loop is already logging at ERROR.
-		return []*TrustedKey{}
+		return nil, fmt.Errorf("%w: %s (trusted-key cache stale)", ErrTrustedKeyNotFound, kid)
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	now := time.Now()
-	out := make([]*TrustedKey, 0, len(s.keys))
-	for _, tk := range s.keys {
-		if tk.ValidTo == nil || now.Before(*tk.ValidTo) {
-			out = append(out, copyTrustedKey(tk))
-		}
+	tk, ok := s.keys[kid]
+	if !ok || tk.TenantID != tenantID || !windowOpen(tk.ValidTo, time.Now()) {
+		return nil, fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
 	}
-	return out
+	return copyTrustedKey(tk), nil
 }
 
 // Delete removes a trusted key by tenant and KID. Returns an error if the key
@@ -645,8 +625,9 @@ func (s *KVTrustedKeyStore) Delete(tenantID spi.TenantID, kid string) error {
 	return nil
 }
 
-// Invalidate marks a trusted key as inactive, sets ValidTo to
-// now+gracePeriodSec, and persists. Returns an error if the key does not
+// Invalidate marks a trusted key as inactive, sets ValidTo to the grace
+// expiry (graceExpiry: now+gracePeriodSec, never later than the key's current
+// ValidTo), and persists. Returns an error if the key does not
 // exist or belongs to a different tenant.
 func (s *KVTrustedKeyStore) Invalidate(tenantID spi.TenantID, kid string, gracePeriodSec int64) error {
 	s.mu.Lock()
@@ -658,8 +639,7 @@ func (s *KVTrustedKeyStore) Invalidate(tenantID spi.TenantID, kid string, graceP
 	// Clone, mutate, persist to KV first (rollback safety).
 	updated := *tk
 	updated.Active = false
-	expiry := time.Now().Add(time.Duration(gracePeriodSec) * time.Second)
-	updated.ValidTo = &expiry
+	updated.ValidTo = graceExpiry(tk.ValidTo, time.Now(), gracePeriodSec)
 	if err := s.persistWithKey(trustedKeyKey(tenantID, kid), &updated); err != nil {
 		return fmt.Errorf("failed to persist invalidation: %w", err)
 	}
@@ -690,6 +670,10 @@ func (s *KVTrustedKeyStore) Reactivate(tenantID spi.TenantID, kid string, validF
 	tk, ok := s.keys[kid]
 	if !ok || tk.TenantID != tenantID {
 		return fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
+	}
+	// A reactivated key verifies again, so it is held to the cap.
+	if capReached(s.keys, tenantID, kid, s.maxPerTenant, time.Now()) {
+		return errTrustedKeyCapReached()
 	}
 	// Clone, mutate, persist to KV first (rollback safety).
 	updated := *tk

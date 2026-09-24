@@ -167,9 +167,9 @@ These environment variables tune the IAM admin endpoints under `/oauth/keys/*` a
   shape returns `404` with error code `FEATURE_DISABLED` and no client is
   created. When `true`, the created M2M client receives both `ROLE_M2M`
   and `ROLE_ADMIN`. Toggling does not affect existing clients. (default: `false`)
-- `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` — per-tenant cap on registered
-  trusted keys. Counts only currently-valid keys (active and not past
-  `validTo`). `0` means unbounded. (default: `10`)
+- `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` — per-tenant cap on trusted keys
+  that can verify. It counts an active key, and one in its grace period after
+  invalidation until its `validTo`. `0` means unbounded. (default: `10`)
 - `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS` — default validity for trusted
   keys when the registration request omits `validTo`. No clamp on
   user-supplied `validTo` values. (default: `365`)

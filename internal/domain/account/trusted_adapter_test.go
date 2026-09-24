@@ -255,6 +255,33 @@ func TestReactivateTrustedKey_ResponseIncludesActiveTrue(t *testing.T) {
 	}
 }
 
+// Reactivating a trusted key at the per-tenant cap is 400
+// TRUSTED_KEY_CAP_REACHED, the same answer registration gives — not a 5xx.
+func TestReactivateTrustedKey_AtCap_400(t *testing.T) {
+	ts := auth.NewInMemoryTrustedKeyStoreWithCap(1)
+	past := time.Now().Add(-1 * time.Hour)
+	future := time.Now().Add(time.Hour)
+	_ = ts.Register(&auth.TrustedKey{
+		KID: "old", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t),
+		Audience: "human", Active: false, ValidFrom: past.Add(-time.Hour), ValidTo: &past,
+	}, auth.RotateOptions{})
+	_ = ts.Register(&auth.TrustedKey{
+		KID: "live", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t),
+		Audience: "human", Active: true, ValidFrom: past, ValidTo: &future,
+	}, auth.RotateOptions{})
+	feats := auth.DefaultIAMFeatures()
+	feats.TrustedKeyRegistrationEnabled = true
+	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, nil, feats)
+
+	body, _ := json.Marshal(genapi.ReactivateKeyRequestDto{ValidTo: time.Now().Add(24 * time.Hour)})
+	w := httptest.NewRecorder()
+	h.ReactivateTrustedKey(w, adminReq(t, "POST", "/", body), "old")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400; body=%s", w.Code, w.Body.String())
+	}
+	commontest.ExpectErrorCode(t, resultResp(w), "TRUSTED_KEY_CAP_REACHED")
+}
+
 // Regression-lock: nil trustedKeyStore (mock IAM mode wiring) must return 501
 // NOT_IMPLEMENTED, never panic. The feature flag is enabled to bypass
 // FEATURE_DISABLED and reach the nil-store guard. All 5 trusted-key handlers

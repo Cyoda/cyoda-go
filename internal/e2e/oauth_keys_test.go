@@ -66,6 +66,18 @@ func mustJSON(t *testing.T, v any) []byte {
 	return b
 }
 
+// deleteTrustedKeyOnCleanup deletes a trusted key the bootstrap tenant
+// registered, when the test ends. The tenant's trusted-key cap is shared by
+// every test in the run, so a test must not leave keys behind. A key already
+// deleted by the test itself is fine.
+func deleteTrustedKeyOnCleanup(t *testing.T, kid string) {
+	t.Helper()
+	t.Cleanup(func() {
+		resp := adminRequest(t, "DELETE", "/oauth/keys/trusted/"+kid, nil)
+		resp.Body.Close()
+	})
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Happy-path round-trips for the 10 /oauth/keys/* operations
 // ─────────────────────────────────────────────────────────────────────────────
@@ -185,6 +197,7 @@ func TestE2E_ReactivateJwtKeyPair_Happy(t *testing.T) {
 
 func TestE2E_RegisterTrustedKey_Happy(t *testing.T) {
 	kid := fmt.Sprintf("e2e-tk-%d", time.Now().UnixNano())
+	deleteTrustedKeyOnCleanup(t, kid)
 	body := mustJSON(t, map[string]any{
 		"keyId":    kid,
 		"jwk":      rsaJWK(t, kid),
@@ -211,6 +224,7 @@ func TestE2E_RegisterTrustedKey_Happy(t *testing.T) {
 func TestE2E_ListTrustedKeys_Happy(t *testing.T) {
 	// Register at least one key so the list is non-empty.
 	kid := fmt.Sprintf("e2e-list-%d", time.Now().UnixNano())
+	deleteTrustedKeyOnCleanup(t, kid)
 	regBody := mustJSON(t, map[string]any{
 		"keyId":    kid,
 		"jwk":      rsaJWK(t, kid),
@@ -288,6 +302,7 @@ func TestE2E_InvalidateTrustedKey_Happy(t *testing.T) {
 
 func TestE2E_ReactivateTrustedKey_Happy(t *testing.T) {
 	kid := fmt.Sprintf("e2e-react-%d", time.Now().UnixNano())
+	deleteTrustedKeyOnCleanup(t, kid)
 	regBody := mustJSON(t, map[string]any{
 		"keyId":    kid,
 		"jwk":      rsaJWK(t, kid),
@@ -524,6 +539,7 @@ func TestE2E_CrossTenant_TrustedKey_409(t *testing.T) {
 	clientBID, clientBSecret := createM2MClient(t, "tenant-b", "user-b", []string{"ROLE_ADMIN", "ROLE_M2M"})
 
 	kid := fmt.Sprintf("e2e-xtenant-%d", time.Now().UnixNano())
+	deleteTrustedKeyOnCleanup(t, kid)
 
 	// Register the key as the bootstrap tenant (tenant A = "test-tenant").
 	bodyA := mustJSON(t, map[string]any{
