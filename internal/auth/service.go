@@ -5,9 +5,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"fmt"
-	"log/slog"
 	"net/http"
-	"time"
 )
 
 // AuthConfig holds configuration for the AuthService.
@@ -35,11 +33,14 @@ type AuthService struct {
 
 // NewAuthService creates a fully wired AuthService from the given config.
 func NewAuthService(config AuthConfig) (*AuthService, error) {
-	// Apply defaults for zero-value IAMFeatures so callers that don't set the
-	// field (e.g. existing tests with no explicit IAMFeatures) still get sane
-	// bootstrap-key behaviour.
-	if config.IAMFeatures.KeypairDefaultValidityDays == 0 {
+	// Apply defaults only for a wholly unset IAMFeatures, so callers that
+	// don't set the field (e.g. tests) still get the default bootstrap
+	// audience and IAM limits, and a caller that sets any field keeps it.
+	if config.IAMFeatures == (IAMFeatures{}) {
 		config.IAMFeatures = DefaultIAMFeatures()
+	}
+	if err := config.IAMFeatures.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid IAM features: %w", err)
 	}
 
 	privateKey, err := ParseRSAPrivateKeyFromPEM([]byte(config.SigningKeyPEM))
@@ -66,9 +67,11 @@ func NewAuthService(config AuthConfig) (*AuthService, error) {
 	kidHash := sha256.Sum256(pubDER)
 	signingKID := hex.EncodeToString(kidHash[:16])
 
-	// Register the signing key as the initial active key pair.
-	now := time.Now().UTC()
-	validTo := now.Add(time.Duration(config.IAMFeatures.KeypairDefaultValidityDays) * 24 * time.Hour)
+	// Register the signing key as the initial active key pair. It lives as
+	// long as the configuration that supplies it, so it has no window: no
+	// ValidTo, and a zero ValidFrom that no clock can be before. A window
+	// counted from node start would differ per node, reset on every restart,
+	// and — once past — stop that node verifying the cluster's tokens.
 	kp := &KeyPair{
 		KID:        signingKID,
 		Audience:   config.IAMFeatures.BootstrapAudience,
@@ -76,18 +79,9 @@ func NewAuthService(config AuthConfig) (*AuthService, error) {
 		PublicKey:  &privateKey.PublicKey,
 		PrivateKey: privateKey,
 		Active:     true,
-		ValidFrom:  now,
-		ValidTo:    &validTo,
 	}
 	if err := keyStore.Save(kp, RotateOptions{}); err != nil {
 		return nil, fmt.Errorf("save bootstrap key: %w", err)
-	}
-	if validTo.Sub(now) < 30*24*time.Hour {
-		slog.Warn("bootstrap signing key expires within 30 days; rotate before expiry",
-			"pkg", "auth",
-			"kid", signingKID,
-			"validTo", validTo.Format(time.RFC3339),
-		)
 	}
 
 	// Build handlers.

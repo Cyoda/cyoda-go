@@ -206,6 +206,27 @@ func TestInvalidateJwtKeyPair_NegativeGraceRejected(t *testing.T) {
 	}
 }
 
+// Reactivating with a future validFrom would put the key pair outside its own
+// window at once — for the key that is signing now, leaving the audience with
+// no signing key. It is refused, and the key pair is unchanged.
+func TestReactivateJwtKeyPair_FutureValidFrom_Rejected(t *testing.T) {
+	h, ks, _ := newHandler(t)
+	current := mkRSAKeyPair(t, "client")
+	_ = ks.Save(current, auth.RotateOptions{})
+
+	from := time.Now().Add(time.Hour)
+	body, _ := json.Marshal(genapi.ReactivateKeyRequestDto{ValidFrom: &from, ValidTo: from.Add(24 * time.Hour)})
+	w := httptest.NewRecorder()
+	h.ReactivateJwtKeyPair(w, adminReq(t, "POST", "/", body), current.KID)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400; body=%s", w.Code, w.Body.String())
+	}
+	commontest.ExpectErrorCode(t, resultResp(w), "BAD_REQUEST")
+	if got, err := ks.GetActive("client"); err != nil || got.KID != current.KID {
+		t.Errorf("current key changed by a refused request: got=%+v err=%v", got, err)
+	}
+}
+
 func TestReactivateJwtKeyPair_RequiresFreshValidTo(t *testing.T) {
 	h, ks, _ := newHandler(t)
 	past := time.Now().Add(-1 * time.Hour)
@@ -383,6 +404,54 @@ func TestInvalidateJwtKeyPair_GracePeriodOverflow_Rejected(t *testing.T) {
 	h.InvalidateJwtKeyPair(w, adminReq(t, "POST", "/", []byte(`{"gracePeriodSec":9999999999}`)), "k")
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d want 400 (overflow guard)", w.Code)
+	}
+}
+
+// A key pair issued ahead of time cannot also invalidate the current one: the
+// current key would stop at once and the new one could not sign until its
+// validFrom, leaving the audience with no signing key in between. The
+// request is refused and nothing changes; issuing ahead of time alone works.
+func TestIssueJwtKeyPair_FutureValidFromWithInvalidateCurrent_Rejected(t *testing.T) {
+	h, ks, _ := newHandler(t)
+	current := mkRSAKeyPair(t, "client")
+	_ = ks.Save(current, auth.RotateOptions{})
+	from := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+
+	body := []byte(fmt.Sprintf(`{"algorithm":"RS256","audience":"client","validFrom":%q,"invalidateCurrent":true}`, from))
+	w := httptest.NewRecorder()
+	h.IssueJwtKeyPair(w, adminReq(t, "POST", "/", body))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400; body=%s", w.Code, w.Body.String())
+	}
+	commontest.ExpectErrorCode(t, resultResp(w), "BAD_REQUEST")
+	if got, err := ks.GetActive("client"); err != nil || got.KID != current.KID {
+		t.Errorf("current key changed by a refused request: got=%+v err=%v", got, err)
+	}
+
+	body = []byte(fmt.Sprintf(`{"algorithm":"RS256","audience":"client","validFrom":%q}`, from))
+	w = httptest.NewRecorder()
+	h.IssueJwtKeyPair(w, adminReq(t, "POST", "/", body))
+	if w.Code != http.StatusOK {
+		t.Fatalf("issue ahead of time without invalidateCurrent: status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// A key pair whose window has already ended could never sign; issuing one is
+// refused, like reactivating one, and nothing changes.
+func TestIssueJwtKeyPair_ValidToInPast_Rejected(t *testing.T) {
+	h, ks, _ := newHandler(t)
+	current := mkRSAKeyPair(t, "client")
+	_ = ks.Save(current, auth.RotateOptions{})
+
+	body := []byte(`{"algorithm":"RS256","audience":"client","validFrom":"2020-01-01T00:00:00Z","validTo":"2020-01-02T00:00:00Z","invalidateCurrent":true}`)
+	w := httptest.NewRecorder()
+	h.IssueJwtKeyPair(w, adminReq(t, "POST", "/", body))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400; body=%s", w.Code, w.Body.String())
+	}
+	commontest.ExpectErrorCode(t, resultResp(w), "BAD_REQUEST")
+	if got, err := ks.GetActive("client"); err != nil || got.KID != current.KID {
+		t.Errorf("current key changed by a refused request: got=%+v err=%v", got, err)
 	}
 }
 

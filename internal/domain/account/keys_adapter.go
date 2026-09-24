@@ -62,6 +62,11 @@ func (h *Handler) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validTo must be > validFrom"))
 		return
 	}
+	// A key pair whose window has already ended could never sign.
+	if !validTo.After(now) {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validTo must be in the future"))
+		return
+	}
 	var grace int64
 	if req.InvalidateGracePeriodSec != nil {
 		grace = *req.InvalidateGracePeriodSec
@@ -78,6 +83,15 @@ func (h *Handler) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 	invalidate := false
 	if req.InvalidateCurrent != nil {
 		invalidate = *req.InvalidateCurrent
+	}
+	// Invalidating the current key would stop it at once, while a key issued
+	// ahead of time cannot sign until its validFrom: the audience would have
+	// no signing key in between. Issue ahead of time without invalidating,
+	// then invalidate the old key once the new one's window has opened.
+	if invalidate && validFrom.After(now) {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+			"invalidateCurrent cannot be combined with a validFrom in the future"))
+		return
 	}
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -206,12 +220,20 @@ func (h *Handler) ReactivateJwtKeyPair(w http.ResponseWriter, r *http.Request, k
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validTo required"))
 		return
 	}
-	validFrom := time.Now()
+	now := time.Now()
+	validFrom := now
 	if req.ValidFrom != nil {
 		validFrom = *req.ValidFrom
 	}
+	// A future validFrom would put the key pair outside its own window at
+	// once; for the key signing now, that leaves the audience with no signing
+	// key. Issue a new key pair ahead of time instead.
+	if validFrom.After(now) {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validFrom cannot be in the future"))
+		return
+	}
 	validTo := req.ValidTo
-	if !validTo.After(time.Now()) {
+	if !validTo.After(now) {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validTo must be in the future"))
 		return
 	}

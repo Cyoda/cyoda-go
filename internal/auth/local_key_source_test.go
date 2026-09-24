@@ -121,3 +121,40 @@ func TestLocalKeySource_RejectsInvalidatedKey(t *testing.T) {
 		t.Fatalf("GetKey after Invalidate: expected errors.Is(err, ErrKeyNotFound), got %v", err)
 	}
 }
+
+// A signing key verifies only inside its window [ValidFrom, ValidTo). An
+// active key past its ValidTo, or not yet at its ValidFrom, is not returned,
+// so tokens it signed stop verifying when its window ends.
+func TestLocalKeySource_RejectsKeyOutsideItsWindow(t *testing.T) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("failed to generate test key: %v", err)
+	}
+	now := time.Now()
+	past, future := now.Add(-time.Hour), now.Add(time.Hour)
+	ks := auth.NewInMemoryKeyStore()
+	for kid, window := range map[string][2]time.Time{
+		"expired":   {now.Add(-2 * time.Hour), past},
+		"not-yet":   {future, future.Add(time.Hour)},
+		"in-window": {past, future},
+	} {
+		vt := window[1]
+		if err := ks.Save(&auth.KeyPair{
+			KID: kid, Audience: "client", Algorithm: "RS256",
+			PublicKey: &priv.PublicKey, PrivateKey: priv,
+			Active: true, ValidFrom: window[0], ValidTo: &vt,
+		}, auth.RotateOptions{}); err != nil {
+			t.Fatalf("save %s: %v", kid, err)
+		}
+	}
+
+	src := auth.NewLocalKeySource(ks)
+	for _, kid := range []string{"expired", "not-yet"} {
+		if _, err := src.GetKey(kid); !errors.Is(err, auth.ErrKeyNotFound) {
+			t.Errorf("GetKey(%s) = %v, want ErrKeyNotFound", kid, err)
+		}
+	}
+	if _, err := src.GetKey("in-window"); err != nil {
+		t.Errorf("GetKey(in-window) = %v, want the key", err)
+	}
+}

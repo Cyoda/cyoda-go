@@ -175,10 +175,14 @@ These environment variables tune the IAM admin endpoints under `/oauth/keys/*` a
   user-supplied `validTo` values. (default: `365`)
 - `CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES` — caps the number of properties
   in a registered JWK to guard against absurdly large payloads. (default: `20`)
-- `CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS` — default validity for both the
-  bootstrap signing key and runtime-issued keypairs via
-  `POST /oauth/keys/keypair`. The startup banner emits a `WARN` if the
-  active bootstrap key expires within 30 days. (default: `365`)
+- `CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS` — default validity of a key pair
+  issued via `POST /oauth/keys/keypair` when the request omits `validTo`. A
+  key pair signs and verifies tokens only inside its window, from
+  `validFrom` to `validTo`: one issued with a future `validFrom` is published
+  in JWKS but not used until then, and once `validTo` passes, tokens it
+  signed are rejected. The bootstrap signing key (`CYODA_JWT_SIGNING_KEY`)
+  has no window: it lasts as long as the configuration that supplies it, and
+  you rotate it by replacing that key. (default: `365`)
 
 ### Auth cache reconciliation
 
@@ -225,19 +229,27 @@ The bootstrap signing key derived from `CYODA_JWT_SIGNING_KEY` (or
 the same PEM (SHA-256 of the public key).
 
 Operators can rotate signing keys at runtime via
-`POST /oauth/keys/keypair` (with `algorithm: RS256` and `audience: client`),
-optionally setting `invalidateCurrent: true` and
-`invalidateGracePeriodSec: N` to overlap the old and new keys.
+`POST /oauth/keys/keypair` (with `algorithm: RS256` and `audience: client`).
+Of the active key pairs inside their window, the one with the latest
+`validFrom` signs new tokens (on a tie, the greater key id). Setting
+`invalidateCurrent: true` also invalidates the current key pair: cyoda stops
+accepting tokens it signed at once, and `invalidateGracePeriodSec: N` only
+keeps it published in JWKS for up to N more seconds (never past its
+`validTo`), for external verifiers that
+cache it. `invalidateCurrent` cannot be combined with a future `validFrom`,
+and `validTo` must be in the future; both are `400`. Reactivating a key pair
+also refuses a future `validFrom`. To schedule a rotation,
+issue the new key pair ahead of time, then invalidate the old one once the
+new window has opened.
 
-v0.8.0 limitations:
+Limitations:
 - Runtime-issued keypairs are held in memory only; they do not survive
   process restart. The bootstrap key survives because its KID is derived
-  deterministically from the PEM input. Persisted signing-key storage is
-  tracked in a v0.8.x follow-up.
-- Bootstrap keys are saved with a finite `validTo` (default 365 days).
-  After expiry the M2M token-issuance path will return
-  `404 KEYPAIR_NOT_FOUND` for `getCurrentJwtKeyPair?audience=client`.
-  Operators should monitor the startup `WARN` and rotate before expiry.
+  deterministically from the PEM input.
+- Runtime-issued keypairs exist only on the node that issued them. In a
+  cluster, a token signed with one is rejected by the other nodes, so do not
+  issue, invalidate or reactivate keypairs through the API in cluster mode
+  until key pairs are shared across nodes.
 
 #### Upgrading from v0.7.x
 

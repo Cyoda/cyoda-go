@@ -30,6 +30,12 @@ type KeyPair struct {
 	ValidTo    *time.Time
 }
 
+// InWindow reports whether now is inside the key pair's window
+// [ValidFrom, ValidTo): the only time it may sign tokens or verify them.
+func (kp *KeyPair) InWindow(now time.Time) bool {
+	return !now.Before(kp.ValidFrom) && (kp.ValidTo == nil || now.Before(*kp.ValidTo))
+}
+
 // TrustedKey holds a trusted external public key.
 type TrustedKey struct {
 	KID       string
@@ -66,6 +72,9 @@ type M2MClient struct {
 type KeyStore interface {
 	Save(kp *KeyPair, opts RotateOptions) error
 	Get(kid string) (*KeyPair, error)
+	// GetActive returns the key pair that signs new tokens for audience: the
+	// active key pair inside its window with the latest ValidFrom, and on a
+	// tie the greater KID.
 	GetActive(audience string) (*KeyPair, error)
 	List() []*KeyPair
 	ListForVerification() []*KeyPair
@@ -174,9 +183,11 @@ func (s *InMemoryKeyStore) Get(kid string) (*KeyPair, error) {
 	return &copied, nil
 }
 
-// GetActive returns the active key pair for the given audience with the latest
-// ValidFrom timestamp. Keys whose ValidTo is in the past are skipped even if
-// Active is still set (lazy expiry). Returns an error if no matching key is found.
+// GetActive returns the key pair that signs new tokens for the audience: of
+// the active key pairs inside their window (InWindow), the one with the latest
+// ValidFrom, and on a tie the one with the greater KID. A key pair issued ahead of time does not sign until its window
+// opens, and one past its ValidTo stops even if Active is still set. Returns
+// an error if no key pair qualifies.
 func (s *InMemoryKeyStore) GetActive(audience string) (*KeyPair, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -186,10 +197,15 @@ func (s *InMemoryKeyStore) GetActive(audience string) (*KeyPair, error) {
 		if kp.Audience != audience || !kp.Active {
 			continue
 		}
-		if kp.ValidTo != nil && !now.Before(*kp.ValidTo) {
+		// Sign only with a key inside its window: not one issued ahead of
+		// time whose ValidFrom has not come, and not one past its ValidTo.
+		if !kp.InWindow(now) {
 			continue
 		}
-		if best == nil || kp.ValidFrom.After(best.ValidFrom) {
+		// Latest ValidFrom wins; on a tie the greater KID, so the choice
+		// never depends on map iteration order.
+		if best == nil || kp.ValidFrom.After(best.ValidFrom) ||
+			(kp.ValidFrom.Equal(best.ValidFrom) && kp.KID > best.KID) {
 			best = kp
 		}
 	}
@@ -212,10 +228,11 @@ func (s *InMemoryKeyStore) List() []*KeyPair {
 	return result
 }
 
-// ListForVerification returns key pairs that are still within their validity
-// window (ValidTo is nil or in the future). This is used to populate the JWKS
-// endpoint during grace periods so recently-rotated keys can still verify
-// tokens issued before the rotation.
+// ListForVerification returns the key pairs to publish in JWKS: every key pair
+// whose ValidTo is nil or in the future — including one issued ahead of its
+// window, so external verifiers can fetch it early, and one in the grace
+// period after invalidation. cyoda's own verification is stricter: it accepts
+// only an active key pair inside its window (see localKeySource.GetKey).
 func (s *InMemoryKeyStore) ListForVerification() []*KeyPair {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

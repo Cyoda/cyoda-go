@@ -129,6 +129,106 @@ func TestE2E_GetCurrentJwtKeyPair_Happy(t *testing.T) {
 	}
 }
 
+// TestE2E_KeyPairIssuedAheadDoesNotSignYet: a key pair issued with a future
+// validFrom is not used to sign until its window opens. Tokens issued now are
+// signed by a key already in its window, and they authenticate.
+func TestE2E_KeyPairIssuedAheadDoesNotSignYet(t *testing.T) {
+	from := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	resp := adminRequest(t, "POST", "/oauth/keys/keypair",
+		mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "client", "validFrom": from}))
+	var issued genapi.JwtKeyPairResponseDto
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("issue: status=%d; body: %s", resp.StatusCode, raw)
+	}
+	if err := json.Unmarshal(raw, &issued); err != nil || issued.KeyId == "" {
+		t.Fatalf("issue: no keyId in %s (err %v)", raw, err)
+	}
+	// Every other test signs with the "client" audience; remove the key.
+	t.Cleanup(func() {
+		del := adminRequest(t, "DELETE", "/oauth/keys/keypair/"+issued.KeyId, nil)
+		del.Body.Close()
+	})
+
+	token := getToken(t, "testclient", "testsecret")
+	header, err := base64.RawURLEncoding.DecodeString(strings.SplitN(token, ".", 2)[0])
+	if err != nil {
+		t.Fatalf("decode token header: %v", err)
+	}
+	var h struct {
+		Kid string `json:"kid"`
+	}
+	if err := json.Unmarshal(header, &h); err != nil {
+		t.Fatalf("parse token header: %v", err)
+	}
+	if h.Kid == issued.KeyId {
+		t.Fatalf("token signed with key %s, whose window opens at %s", h.Kid, from)
+	}
+
+	use := unauthRequest(t, http.MethodGet, "/api/model/", "Bearer "+token)
+	defer use.Body.Close()
+	if use.StatusCode == http.StatusUnauthorized {
+		body, _ := io.ReadAll(use.Body)
+		t.Fatalf("token signed with the current key was rejected; body: %s", body)
+	}
+}
+
+// TestE2E_IssueJwtKeyPair_FutureValidFromWithInvalidateCurrent_400: issuing a
+// key pair ahead of time together with invalidateCurrent would leave the
+// audience with no signing key until the new window opens, so it is refused.
+func TestE2E_IssueJwtKeyPair_FutureValidFromWithInvalidateCurrent_400(t *testing.T) {
+	from := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	resp := adminRequest(t, "POST", "/oauth/keys/keypair", mustJSON(t, map[string]any{
+		"algorithm": "RS256", "audience": "client", "validFrom": from, "invalidateCurrent": true,
+	}))
+	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+
+	// The current key still signs: a token can be issued and used.
+	use := unauthRequest(t, http.MethodGet, "/api/model/", "Bearer "+getToken(t, "testclient", "testsecret"))
+	defer use.Body.Close()
+	if use.StatusCode == http.StatusUnauthorized {
+		body, _ := io.ReadAll(use.Body)
+		t.Fatalf("the refused request disturbed the current key; body: %s", body)
+	}
+}
+
+// TestE2E_IssueJwtKeyPair_ValidToInPast_400: a key pair whose window has
+// already ended could never sign, so issuing one is refused.
+func TestE2E_IssueJwtKeyPair_ValidToInPast_400(t *testing.T) {
+	resp := adminRequest(t, "POST", "/oauth/keys/keypair", mustJSON(t, map[string]any{
+		"algorithm": "RS256", "audience": "client",
+		"validFrom": "2020-01-01T00:00:00Z", "validTo": "2020-01-02T00:00:00Z",
+	}))
+	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+}
+
+// TestE2E_ReactivateJwtKeyPair_FutureValidFrom_400: reactivating the key that
+// signs now with a future validFrom would leave the audience with no signing
+// key, so it is refused, and tokens keep working.
+func TestE2E_ReactivateJwtKeyPair_FutureValidFrom_400(t *testing.T) {
+	cur := adminRequest(t, "GET", "/oauth/keys/keypair/current?audience=client", nil)
+	var current genapi.JwtKeyPairResponseDto
+	raw, _ := io.ReadAll(cur.Body)
+	cur.Body.Close()
+	if cur.StatusCode != http.StatusOK || json.Unmarshal(raw, &current) != nil || current.KeyId == "" {
+		t.Fatalf("current key: status=%d body=%s", cur.StatusCode, raw)
+	}
+
+	from := time.Now().Add(time.Hour).UTC()
+	resp := adminRequest(t, "POST", "/oauth/keys/keypair/"+current.KeyId+"/reactivate", mustJSON(t, map[string]any{
+		"validFrom": from.Format(time.RFC3339), "validTo": from.Add(24 * time.Hour).Format(time.RFC3339),
+	}))
+	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+
+	use := unauthRequest(t, http.MethodGet, "/api/model/", "Bearer "+getToken(t, "testclient", "testsecret"))
+	defer use.Body.Close()
+	if use.StatusCode == http.StatusUnauthorized {
+		body, _ := io.ReadAll(use.Body)
+		t.Fatalf("the refused request disturbed the current key; body: %s", body)
+	}
+}
+
 func TestE2E_DeleteJwtKeyPair_Happy(t *testing.T) {
 	// Issue a keypair to delete.
 	issueBody := mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "client"})

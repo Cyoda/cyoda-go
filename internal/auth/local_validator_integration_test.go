@@ -1,6 +1,8 @@
 package auth_test
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -8,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 )
@@ -77,5 +80,52 @@ func TestIntegration_JWTMode_LocalKeySource_NoHTTPFetch(t *testing.T) {
 	}
 	if uc == nil || uc.UserID != "user-1" {
 		t.Fatalf("unexpected user context: %+v", uc)
+	}
+}
+
+// TestIntegration_TokenStopsVerifyingWhenItsKeyPairWindowEnds: through the
+// validator the server wires, a token signed by a key pair verifies while the
+// key pair is inside its window and is rejected once the window has ended,
+// even though the key pair is still marked active.
+func TestIntegration_TokenStopsVerifyingWhenItsKeyPairWindowEnds(t *testing.T) {
+	svc, err := auth.NewAuthService(auth.AuthConfig{
+		SigningKeyPEM: generateTestPEM(t),
+		Issuer:        "cyoda",
+		ExpirySeconds: 3600,
+	})
+	if err != nil {
+		t.Fatalf("NewAuthService: %v", err)
+	}
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	save := func(validTo time.Time) {
+		t.Helper()
+		if err := svc.KeyStore().Save(&auth.KeyPair{
+			KID: "runtime-kid", Audience: "client", Algorithm: "RS256",
+			PublicKey: &priv.PublicKey, PrivateKey: priv,
+			Active: true, ValidFrom: time.Now().Add(-2 * time.Hour), ValidTo: &validTo,
+		}, auth.RotateOptions{}); err != nil {
+			t.Fatalf("save key pair: %v", err)
+		}
+	}
+	now := time.Now()
+	tok, err := auth.Sign(map[string]any{
+		"iss": "cyoda", "sub": "user-1", "caas_user_id": "user-1", "caas_org_id": "tenant-1",
+		"iat": float64(now.Unix()), "exp": float64(now.Add(time.Hour).Unix()),
+	}, priv, "runtime-kid")
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	validator := auth.NewValidatorFromSource(auth.NewLocalKeySource(svc.KeyStore()), svc.Issuer())
+
+	save(now.Add(time.Hour))
+	if _, err := validator.Validate(tok); err != nil {
+		t.Fatalf("token rejected while its key pair is in its window: %v", err)
+	}
+	save(now.Add(-time.Minute))
+	if _, err := validator.Validate(tok); err == nil {
+		t.Fatal("token accepted after its key pair's window ended")
 	}
 }
