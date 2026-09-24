@@ -481,6 +481,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **Token exchange accepts only a trusted key registered in the exchanging
+  client's own tenant.** The grant found the key that verifies a subject
+  token by `kid` across every tenant, and bound the result to a tenant only
+  through the subject token's own `caas_org_id` claim, which the key holder
+  writes. A holder of a key registered in one tenant, with the credentials of
+  any M2M client of another, could get a token for that other tenant with any
+  user id and roles. The key is now looked up in the client's tenant only; a
+  key from another tenant is `400 invalid_grant` ("unknown trusted key"). The
+  lookup is also keyed instead of scanning every tenant's keys, and keeps the
+  fail-closed behaviour when the trusted-key cache is stale.
+
 - **An answer that arrives and cannot be read ends its callout at once, instead
   of being waited out.** A member's answer whose fields do not have the types
   the schema declares — `"success": "yes"`, a non-boolean `matches` — failed to

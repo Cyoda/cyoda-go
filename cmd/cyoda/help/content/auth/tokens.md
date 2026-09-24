@@ -94,6 +94,7 @@ Response shape matches `client_credentials` plus a `issued_token_type` field:
 
 Key constraints:
 
+- The subject token must be signed by a trusted key registered in the M2M client's own tenant (`auth.trusted-keys`). A key registered by another tenant is not found → `400 invalid_grant`.
 - The subject token's `caas_org_id` must match the M2M client's tenant. Tenant mismatch → `403 access_denied`.
 - The subject token's `sub` becomes the issued token's user identifier, so it must pass the user-identifier rule in `config.auth` (1 to 255 characters; no control character, noncharacter or U+FFFD; not beginning with the reserved word `oidc:`). Otherwise → `400 invalid_grant`.
 - The issued OBO token carries `sub` = the subject's `sub`, `user_roles` from the subject token, and an `act` claim `{"sub": "<m2m client_id>"}` identifying the actor.

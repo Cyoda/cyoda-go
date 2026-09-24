@@ -605,26 +605,22 @@ func (s *KVTrustedKeyStore) List(tenantID spi.TenantID) []*TrustedKey {
 	return result
 }
 
-// ListForVerification returns keys still within their validity window across
-// all tenants. Used by the grant-verification path (token exchange / JWT
-// bearer assertion, see verification.go's getTrustedKeyByKID) — NOT the
-// JWKS endpoint, which is served from KeyStore, not TrustedKeyStore.
-func (s *KVTrustedKeyStore) ListForVerification() []*TrustedKey {
+// GetForVerification implements TrustedKeyStore. It reads the cache only: a
+// key registered on another node is verifiable once gossip or the reconcile
+// loop has brought it here.
+func (s *KVTrustedKeyStore) GetForVerification(tenantID spi.TenantID, kid string) (*TrustedKey, error) {
 	if s.reconcileStale() {
-		// Fail closed: the cache can no longer prove these keys were not
+		// Fail closed: the cache can no longer prove this key was not
 		// revoked. The reconcile loop is already logging at ERROR.
-		return []*TrustedKey{}
+		return nil, fmt.Errorf("%w: %s (trusted-key cache stale)", ErrTrustedKeyNotFound, kid)
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	now := time.Now()
-	out := make([]*TrustedKey, 0, len(s.keys))
-	for _, tk := range s.keys {
-		if tk.ValidTo == nil || now.Before(*tk.ValidTo) {
-			out = append(out, copyTrustedKey(tk))
-		}
+	tk, ok := s.keys[kid]
+	if !ok || tk.TenantID != tenantID || !withinValidTo(tk, time.Now()) {
+		return nil, fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
 	}
-	return out
+	return copyTrustedKey(tk), nil
 }
 
 // Delete removes a trusted key by tenant and KID. Returns an error if the key

@@ -481,6 +481,56 @@ func TestTokenExchangeMissingSubClaim(t *testing.T) {
 	}
 }
 
+// A trusted key belongs to the tenant that registered it. A subject token
+// signed with another tenant's key is refused, even when its caas_org_id names
+// the exchanging client's tenant — the claim is written by the key holder, so
+// it cannot be what binds the key to a tenant.
+func TestTokenExchangeKeyFromAnotherTenant(t *testing.T) {
+	env := setupTokenEnv(t)
+
+	otherKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	const otherKID = "other-tenant-kid"
+	if err := env.trustedKeyStore.Register(&auth.TrustedKey{
+		KID:       otherKID,
+		TenantID:  spi.TenantID("tenant-other"),
+		PublicKey: &otherKey.PublicKey,
+		Audience:  "cyoda-go",
+		Active:    true,
+		ValidFrom: time.Now().Add(-time.Hour),
+	}, auth.RotateOptions{}); err != nil {
+		t.Fatalf("register other tenant's key: %v", err)
+	}
+
+	subjectToken := signSubjectToken(t, otherKey, otherKID, map[string]any{
+		"sub":         "ext-user-1",
+		"caas_org_id": env.tenantID,
+		"user_roles":  []string{"ROLE_ADMIN"},
+		"exp":         float64(time.Now().Add(time.Hour).Unix()),
+		"iat":         float64(time.Now().Unix()),
+	})
+	extra := url.Values{}
+	extra.Set("subject_token", subjectToken)
+	extra.Set("subject_token_type", "urn:ietf:params:oauth:token-type:jwt")
+	req := makeTokenRequest(
+		"urn:ietf:params:oauth:grant-type:token-exchange",
+		basicAuth(env.clientID, env.clientSecret),
+		extra,
+	)
+	rr := httptest.NewRecorder()
+	env.handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for another tenant's key, got %d: %s", rr.Code, rr.Body.String())
+	}
+	resp := decodeResponse(t, rr)
+	if resp["error"] != "invalid_grant" {
+		t.Errorf("expected error invalid_grant, got %v", resp["error"])
+	}
+}
+
 // The exchanged token carries the subject's sub as its user id, so a sub the
 // server would reject on every later request is rejected here, at the grant,
 // rather than minted into a token that can never be used. The response names

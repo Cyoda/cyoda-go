@@ -138,7 +138,17 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	trustedKey, err := getTrustedKeyByKID(h.trustedKeyStore, kid)
+	client, err := h.m2mStore.Get(clientID)
+	if err != nil {
+		writeTokenError(w, http.StatusUnauthorized, "invalid_client", "")
+		return
+	}
+
+	// The key is looked up in the exchanging client's own tenant. A key's
+	// tenant is the tenant that registered it; the subject token's
+	// caas_org_id is written by the key holder and cannot bind a key to a
+	// tenant, so a key registered elsewhere is not found here.
+	trustedKey, err := h.trustedKeyStore.GetForVerification(client.TenantID, kid)
 	if err != nil {
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "unknown trusted key")
 		return
@@ -204,12 +214,8 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 		subRoles = parsed.Claims["roles"]
 	}
 
-	// Tenant boundary check.
-	client, err := h.m2mStore.Get(clientID)
-	if err != nil {
-		writeTokenError(w, http.StatusUnauthorized, "invalid_client", "")
-		return
-	}
+	// Tenant boundary check: the subject must be a principal of the client's
+	// tenant, which is also the tenant of the key that signed it.
 	// Domain-type tenant compared against raw JWT claim string at the security
 	// boundary; subOrgID is the untyped JWT "caas_org_id" claim asserted to string.
 	if string(client.TenantID) != subOrgID {

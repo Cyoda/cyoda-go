@@ -139,14 +139,14 @@ func TestKVTrustedKeyStore_Reconcile_ConvergesAcrossNodes(t *testing.T) {
 	if err := s1.Register(tk, auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if got := s2.ListForVerification(); len(got) != 0 {
-		t.Fatalf("pre-reconcile: node 2 already sees %d keys", len(got))
+	if verifiable(s2, "conv-key") {
+		t.Fatal("pre-reconcile: node 2 already verifies conv-key")
 	}
 	if err := s2.Reconcile(ctx); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if got := s2.ListForVerification(); len(got) != 1 || got[0].KID != "conv-key" {
-		t.Fatalf("post-reconcile: want [conv-key], got %v", got)
+	if !verifiable(s2, "conv-key") {
+		t.Fatal("post-reconcile: conv-key not verifiable on node 2")
 	}
 	if got := s2.List(spi.SystemTenantID); len(got) != 1 {
 		t.Fatalf("List after reconcile: want 1, got %d", len(got))
@@ -160,8 +160,8 @@ func TestKVTrustedKeyStore_Reconcile_ConvergesAcrossNodes(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	// gracePeriod 0 ⇒ ValidTo=now ⇒ excluded from verification listing.
-	if got := s2.ListForVerification(); len(got) != 0 {
-		t.Fatalf("invalidated key still verifiable on node 2: %v", got)
+	if verifiable(s2, "conv-key") {
+		t.Fatal("invalidated key still verifiable on node 2")
 	}
 
 	// Delete on node 1 → gone from node 2 after reconcile (Get included).
@@ -186,8 +186,8 @@ func TestKVTrustedKeyStore_Reconcile_SkipsCorruptRecord(t *testing.T) {
 	if err := s2.Reconcile(ctx); err != nil {
 		t.Fatalf("Reconcile with corrupt record must not fail: %v", err)
 	}
-	if got := s2.ListForVerification(); len(got) != 1 || got[0].KID != "good-key" {
-		t.Fatalf("good key lost during lenient reconcile: %v", got)
+	if !verifiable(s2, "good-key") || verifiable(s2, "corrupt") {
+		t.Fatal("good key lost during lenient reconcile, or corrupt record admitted")
 	}
 }
 
@@ -204,8 +204,8 @@ func TestKVTrustedKeyStore_Reconcile_TransportFailureKeepsState(t *testing.T) {
 	if err := s1.Reconcile(ctx); err == nil {
 		t.Fatal("Reconcile must return the transport error")
 	}
-	if got := s1.ListForVerification(); len(got) != 1 {
-		t.Fatalf("state lost on transport failure: %v", got)
+	if !verifiable(s1, "keep-key") {
+		t.Fatal("state lost on transport failure")
 	}
 }
 
@@ -254,8 +254,8 @@ func TestKVTrustedKeyStore_Reconcile_ConcurrentReconcilesSerialized(t *testing.T
 		}()
 	}
 	wg.Wait()
-	if got := s2.ListForVerification(); len(got) != 1 {
-		t.Fatalf("concurrent reconciles corrupted state: %v", got)
+	if !verifiable(s2, "racer") || len(s2.List(spi.SystemTenantID)) != 1 {
+		t.Fatal("concurrent reconciles corrupted state")
 	}
 }
 
@@ -319,14 +319,14 @@ func TestKVTrustedKeyStore_PingTriggersReconcile(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 	eventually(t, 3*time.Second, func() bool {
-		return len(s2.ListForVerification()) == 1
+		return verifiable(s2, "ping-key")
 	}, "node 2 never saw the registered key after ping")
 
 	if err := s1.Delete(spi.SystemTenantID, "ping-key"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	eventually(t, 3*time.Second, func() bool {
-		return len(s2.ListForVerification()) == 0
+		return !verifiable(s2, "ping-key")
 	}, "node 2 never dropped the deleted key after ping")
 }
 
@@ -359,7 +359,7 @@ func TestKVTrustedKeyStore_ReconcileLoop(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 	eventually(t, 3*time.Second, func() bool {
-		return len(s2.ListForVerification()) == 1
+		return verifiable(s2, "loop-key")
 	}, "loop never converged the peer registration")
 
 	// Cancel, then mutate again: node 2 must NOT converge (loop stopped).
@@ -371,7 +371,7 @@ func TestKVTrustedKeyStore_ReconcileLoop(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	// Use List (unaffected by the staleness breaker introduced later) so this
 	// assertion stays a clean signal of "did reconcile happen" rather than
-	// entangling it with the fail-closed staleness bound on ListForVerification.
+	// entangling it with the fail-closed staleness bound on GetForVerification.
 	if got := s2.List(spi.SystemTenantID); len(got) != 1 {
 		t.Fatalf("loop still reconciling after ctx cancel: %v", got)
 	}
@@ -401,13 +401,13 @@ func TestKVTrustedKeyStore_StalenessBreaker(t *testing.T) {
 
 	// Healthy loop: key verifiable.
 	eventually(t, 2*time.Second, func() bool {
-		return len(s.ListForVerification()) == 1
+		return verifiable(s, "breaker-key")
 	}, "key not verifiable under healthy loop")
 
 	// Kill List. Bound = 10×20ms = 200ms; wait comfortably past it.
 	hkv.setListErr(errors.New("kv outage"))
 	eventually(t, 5*time.Second, func() bool {
-		return len(s.ListForVerification()) == 0
+		return !verifiable(s, "breaker-key")
 	}, "breaker never tripped: enumeration still serves stale keys")
 
 	// Get during the trip: forced read-through still serves KV truth
@@ -419,7 +419,7 @@ func TestKVTrustedKeyStore_StalenessBreaker(t *testing.T) {
 	// Recovery: List heals → breaker resets.
 	hkv.setListErr(nil)
 	eventually(t, 5*time.Second, func() bool {
-		return len(s.ListForVerification()) == 1
+		return verifiable(s, "breaker-key")
 	}, "breaker never recovered after KV healed")
 }
 
@@ -437,8 +437,8 @@ func TestKVTrustedKeyStore_BreakerInertWithoutLoop(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 	time.Sleep(300 * time.Millisecond) // ≫ 10× interval, but no loop running
-	if got := s.ListForVerification(); len(got) != 1 {
-		t.Fatalf("breaker tripped without a reconcile loop: %v", got)
+	if !verifiable(s, "no-loop-key") {
+		t.Fatal("breaker tripped without a reconcile loop")
 	}
 }
 
@@ -508,8 +508,8 @@ func TestKVTrustedKeyStore_Reconcile_RetryBudgetExhausted(t *testing.T) {
 	// consecutiveFailures accounting untouched — the already-known key
 	// still serves (the staleness breaker never tripped from this
 	// contention, which is not a KV failure).
-	if got := s2.ListForVerification(); !hasKID(got, "already-known") {
-		t.Fatalf("breaker must not trip on contention exhaustion; already-known key missing: %v", got)
+	if !verifiable(s2, "already-known") {
+		t.Fatal("breaker must not trip on contention exhaustion; already-known key not verifiable")
 	}
 
 	// A subsequent clean Reconcile (no racing mutation) succeeds and
@@ -546,7 +546,14 @@ func TestKVTrustedKeyStore_PingIgnoresPayload(t *testing.T) {
 	}
 	b.Broadcast("auth.trustedkeys", []byte("\x00garbage\xff of arbitrary peer bytes"))
 	// Nothing to assert beyond absence of panic and continued liveness:
-	if got := s.ListForVerification(); len(got) != 0 {
+	if got := s.List(spi.SystemTenantID); len(got) != 0 {
 		t.Fatalf("unexpected keys: %v", got)
 	}
+}
+
+// verifiable reports whether kid is verifiable for the system tenant, the
+// tenant every key in these tests is registered in.
+func verifiable(s *auth.KVTrustedKeyStore, kid string) bool {
+	_, err := s.GetForVerification(spi.SystemTenantID, kid)
+	return err == nil
 }

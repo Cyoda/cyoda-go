@@ -87,7 +87,12 @@ type TrustedKeyStore interface {
 	Register(tk *TrustedKey, opts RotateOptions) error
 	Get(tenantID spi.TenantID, kid string) (*TrustedKey, error)
 	List(tenantID spi.TenantID) []*TrustedKey
-	ListForVerification() []*TrustedKey
+	// GetForVerification returns the key a subject token names, for the
+	// token-exchange grant. The key is found only in tenantID — the tenant of
+	// the client exchanging the token — and only while within its validity
+	// window; otherwise the error wraps ErrTrustedKeyNotFound. A key's tenant
+	// is the tenant that registered it, never a claim in the token it signs.
+	GetForVerification(tenantID spi.TenantID, kid string) (*TrustedKey, error)
 	Delete(tenantID spi.TenantID, kid string) error
 	Invalidate(tenantID spi.TenantID, kid string, gracePeriodSec int64) error
 	Reactivate(tenantID spi.TenantID, kid string, validFrom, validTo time.Time) error
@@ -385,22 +390,22 @@ func (s *InMemoryTrustedKeyStore) List(tenantID spi.TenantID) []*TrustedKey {
 	return result
 }
 
-// ListForVerification returns keys still within their validity window across
-// all tenants. Used by the grant-verification path (token exchange / JWT
-// bearer assertion, see verification.go's getTrustedKeyByKID) — NOT the
-// JWKS endpoint, which is served from KeyStore, not TrustedKeyStore.
-func (s *InMemoryTrustedKeyStore) ListForVerification() []*TrustedKey {
+// GetForVerification implements TrustedKeyStore.
+func (s *InMemoryTrustedKeyStore) GetForVerification(tenantID spi.TenantID, kid string) (*TrustedKey, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	now := time.Now()
-	out := make([]*TrustedKey, 0, len(s.keys))
-	for _, tk := range s.keys {
-		if tk.ValidTo == nil || now.Before(*tk.ValidTo) {
-			copied := *tk
-			out = append(out, &copied)
-		}
+	tk, ok := s.keys[kid]
+	if !ok || tk.TenantID != tenantID || !withinValidTo(tk, time.Now()) {
+		return nil, fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
 	}
-	return out
+	copied := *tk
+	return &copied, nil
+}
+
+// withinValidTo reports whether tk has not yet passed its ValidTo, the lazy
+// expiry filter the verification path applies.
+func withinValidTo(tk *TrustedKey, now time.Time) bool {
+	return tk.ValidTo == nil || now.Before(*tk.ValidTo)
 }
 
 // Delete removes a trusted key by tenant and KID.

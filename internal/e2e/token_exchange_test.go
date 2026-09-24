@@ -78,6 +78,52 @@ func exchangeSubject(t *testing.T, priv *rsa.PrivateKey, kid, sub, tenant string
 	return postToken(t, form, "testclient", "testsecret")
 }
 
+// TestToken_TokenExchange_KeyFromAnotherTenant_400: a trusted key belongs to
+// the tenant that registered it. A client of another tenant cannot exchange a
+// subject token signed with it, even one whose caas_org_id names the client's
+// own tenant and asks for ROLE_ADMIN.
+func TestToken_TokenExchange_KeyFromAnotherTenant_400(t *testing.T) {
+	priv, kid := registerTrustedSigner(t) // registered in test-tenant
+	otherTenant := fmt.Sprintf("e2e-tx-other-%d", time.Now().UnixNano())
+	clientID, secret := createM2MClient(t, otherTenant, "other-m2m", []string{"ROLE_M2M"})
+
+	now := time.Now()
+	subject, err := auth.Sign(map[string]any{
+		"sub":         "ext-user-1",
+		"caas_org_id": otherTenant,
+		"user_roles":  []string{"ROLE_ADMIN"},
+		"exp":         now.Add(time.Hour).Unix(),
+		"iat":         now.Unix(),
+		"jti":         uuid.NewString(),
+	}, priv, kid)
+	if err != nil {
+		t.Fatalf("sign subject token: %v", err)
+	}
+	form := url.Values{
+		"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
+		"subject_token":      {subject},
+		"subject_token_type": {"urn:ietf:params:oauth:token-type:jwt"},
+	}
+	resp := postToken(t, form, clientID, secret)
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400; body: %s", resp.StatusCode, raw)
+	}
+	var e struct {
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
+	}
+	if err := json.Unmarshal(raw, &e); err != nil {
+		t.Fatalf("decode: %v; body: %s", err, raw)
+	}
+	// The description pins the reason: the key is not found in this client's
+	// tenant, not some other rejection of the same token.
+	if e.Error != "invalid_grant" || e.ErrorDescription != "unknown trusted key" {
+		t.Errorf("got %+v, want invalid_grant / unknown trusted key", e)
+	}
+}
+
 // TestToken_TokenExchange_Accepted: a subject token signed by a registered
 // trusted key, for the client's own tenant, is exchanged for a token that the
 // server then accepts.
