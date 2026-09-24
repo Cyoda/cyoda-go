@@ -162,6 +162,25 @@ func TestE2E_KeyPairIssuedAheadDoesNotSignYet(t *testing.T) {
 	}
 }
 
+// TestE2E_IssueJwtKeyPair_FutureValidFromWithInvalidateCurrent_400: issuing a
+// key pair ahead of time together with invalidateCurrent would leave the
+// audience with no signing key until the new window opens, so it is refused.
+func TestE2E_IssueJwtKeyPair_FutureValidFromWithInvalidateCurrent_400(t *testing.T) {
+	from := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	resp := adminRequest(t, "POST", "/oauth/keys/keypair", mustJSON(t, map[string]any{
+		"algorithm": "RS256", "audience": "client", "validFrom": from, "invalidateCurrent": true,
+	}))
+	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+
+	// The current key still signs: a token can be issued and used.
+	use := unauthRequest(t, http.MethodGet, "/api/model/", "Bearer "+getToken(t, "testclient", "testsecret"))
+	defer use.Body.Close()
+	if use.StatusCode == http.StatusUnauthorized {
+		body, _ := io.ReadAll(use.Body)
+		t.Fatalf("the refused request disturbed the current key; body: %s", body)
+	}
+}
+
 func TestE2E_DeleteJwtKeyPair_Happy(t *testing.T) {
 	// Issue a keypair to delete.
 	issueBody := mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "client"})

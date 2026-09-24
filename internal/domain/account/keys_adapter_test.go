@@ -386,6 +386,35 @@ func TestInvalidateJwtKeyPair_GracePeriodOverflow_Rejected(t *testing.T) {
 	}
 }
 
+// A key pair issued ahead of time cannot also invalidate the current one: the
+// current key would stop at once and the new one could not sign until its
+// validFrom, leaving the audience with no signing key in between. The
+// request is refused and nothing changes; issuing ahead of time alone works.
+func TestIssueJwtKeyPair_FutureValidFromWithInvalidateCurrent_Rejected(t *testing.T) {
+	h, ks, _ := newHandler(t)
+	current := mkRSAKeyPair(t, "client")
+	_ = ks.Save(current, auth.RotateOptions{})
+	from := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+
+	body := []byte(fmt.Sprintf(`{"algorithm":"RS256","audience":"client","validFrom":%q,"invalidateCurrent":true}`, from))
+	w := httptest.NewRecorder()
+	h.IssueJwtKeyPair(w, adminReq(t, "POST", "/", body))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400; body=%s", w.Code, w.Body.String())
+	}
+	commontest.ExpectErrorCode(t, resultResp(w), "BAD_REQUEST")
+	if got, err := ks.GetActive("client"); err != nil || got.KID != current.KID {
+		t.Errorf("current key changed by a refused request: got=%+v err=%v", got, err)
+	}
+
+	body = []byte(fmt.Sprintf(`{"algorithm":"RS256","audience":"client","validFrom":%q}`, from))
+	w = httptest.NewRecorder()
+	h.IssueJwtKeyPair(w, adminReq(t, "POST", "/", body))
+	if w.Code != http.StatusOK {
+		t.Fatalf("issue ahead of time without invalidateCurrent: status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestIssueJwtKeyPair_GracePeriodOverflow_Rejected(t *testing.T) {
 	h, _, _ := newHandler(t)
 	body := []byte(`{"algorithm":"RS256","audience":"client","invalidateCurrent":true,"invalidateGracePeriodSec":9999999999}`)

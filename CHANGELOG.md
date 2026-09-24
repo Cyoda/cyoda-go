@@ -458,9 +458,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `validTo`, and a key pair issued with a future `validFrom` was used to sign
   at once. Tokens are now signed only with a key pair inside its window, and a
   token whose key pair is outside it is an ordinary `401`. JWKS still
-  publishes a key pair ahead of its window. The bootstrap key's window starts
-  when the node starts (`CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS`, default
-  365), so a node running longer needs a new key pair issued before then.
+  publishes a key pair ahead of its window. Issuing a key pair with a future
+  `validFrom` together with `invalidateCurrent` is now `400 BAD_REQUEST`: it
+  would have left the audience with no signing key until the new window
+  opened. The bootstrap signing key no longer has a window: it used to expire
+  `CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS` after each node's start, which
+  differed per node and reset on every restart; it now lasts as long as
+  `CYODA_JWT_SIGNING_KEY` supplies it, and the startup warning about its
+  expiry is gone.
 
 - **An answer that arrives and cannot be read ends its callout at once, instead
   of being waited out.** A member's answer whose fields do not have the types

@@ -5246,7 +5246,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/JwtKeyPairResponseDto"
         "400":
-          description: "Bad request — BAD_REQUEST: malformed body or invalid audience; UNSUPPORTED_ALGORITHM: non-RS256 algorithm requested."
+          description: "Bad request — BAD_REQUEST: malformed body, invalid audience, validTo not after validFrom, invalidateGracePeriodSec out of range, or invalidateCurrent with a validFrom in the future; UNSUPPORTED_ALGORITHM: non-RS256 algorithm requested."
           content:
             application/problem+json:
               schema:
@@ -5405,9 +5405,7 @@ paths:
         Invalidates a specific JWT signing key-pair.
 
         After invalidation, the key will no longer be used for signing new
-        tokens,
-
-        and existing tokens signed with this key pair are no longer accepted by
+        tokens, and existing tokens signed with this key pair are no longer accepted by
         this server, at once. `gracePeriodSec` keeps the public key published in
         JWKS for that long, for verifiers that
         cache it; if it is omitted or zero, the key leaves JWKS at once.

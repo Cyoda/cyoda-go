@@ -95,7 +95,7 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT", Topic: "auth", Type: "int", Default: "10", Description: "Per-tenant cap on registered trusted keys; 0 means unbounded."},
 	{Name: "CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS", Topic: "auth", Type: "int", Default: "365", Description: "Default validity for trusted keys when the registration request omits validTo."},
 	{Name: "CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES", Topic: "auth", Type: "int", Default: "20", Description: "Caps the number of properties in a registered JWK."},
-	{Name: "CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS", Topic: "auth", Type: "int", Default: "365", Description: "Default validity for the bootstrap signing key and runtime-issued keypairs."},
+	{Name: "CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS", Topic: "auth", Type: "int", Default: "365", Description: "Default validity of a keypair issued via POST /oauth/keys/keypair without validTo. The bootstrap signing key has no validity window."},
 	{Name: "CYODA_IAM_M2M_ADMIN_ROLE_ENABLED", Topic: "auth", Type: "bool", Default: "false", Description: "Gates the withAdminRole=true query parameter on POST /clients."},
 	{Name: "CYODA_AUTH_CACHE_RECONCILE_INTERVAL", Topic: "auth", Type: "duration", Default: "1m", Description: "Periodic KV-reconcile interval for the trusted-key and OIDC-provider caches; jittered ±10%; verification fails closed after 10× this without a successful reconcile."},
 	{Name: "CYODA_BOOTSTRAP_CLIENT_ID", Topic: "auth", Type: "string", Default: "", Description: "Bootstrap M2M client ID."},

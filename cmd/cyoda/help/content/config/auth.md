@@ -135,15 +135,14 @@ These environment variables tune the IAM admin endpoints under `/oauth/keys/*` a
   user-supplied `validTo` values. (default: `365`)
 - `CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES` — caps the number of properties
   in a registered JWK to guard against absurdly large payloads. (default: `20`)
-- `CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS` — default validity for both the
-  bootstrap signing key and runtime-issued keypairs via
-  `POST /oauth/keys/keypair`. A key pair signs and verifies tokens only
-  inside its window, from `validFrom` to `validTo`: a key pair issued with a
-  future `validFrom` is published in JWKS but not used until then, and once
-  `validTo` passes, tokens it signed are rejected. The bootstrap key's window
-  starts when the node starts, so a node that runs longer than this value
-  needs a new key pair issued before then. The startup banner emits a `WARN`
-  if the active bootstrap key expires within 30 days. (default: `365`)
+- `CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS` — default validity of a key pair
+  issued via `POST /oauth/keys/keypair` when the request omits `validTo`. A
+  key pair signs and verifies tokens only inside its window, from
+  `validFrom` to `validTo`: one issued with a future `validFrom` is published
+  in JWKS but not used until then, and once `validTo` passes, tokens it
+  signed are rejected. The bootstrap signing key (`CYODA_JWT_SIGNING_KEY`)
+  has no window: it lasts as long as the configuration that supplies it, and
+  you rotate it by replacing that key. (default: `365`)
 
 ### Auth cache reconciliation
 
@@ -199,10 +198,10 @@ v0.8.0 limitations:
   process restart. The bootstrap key survives because its KID is derived
   deterministically from the PEM input. Persisted signing-key storage is
   tracked in a v0.8.x follow-up.
-- Bootstrap keys are saved with a finite `validTo` (default 365 days).
-  After expiry the M2M token-issuance path will return
-  `404 KEYPAIR_NOT_FOUND` for `getCurrentJwtKeyPair?audience=client`.
-  Operators should monitor the startup `WARN` and rotate before expiry.
+- Runtime-issued keypairs exist only on the node that issued them. In a
+  cluster, a token signed with one is rejected by the other nodes, so do not
+  issue, invalidate or reactivate keypairs through the API in cluster mode
+  until key pairs are shared across nodes.
 
 #### Upgrading from v0.7.x
 

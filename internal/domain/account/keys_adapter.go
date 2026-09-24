@@ -79,6 +79,15 @@ func (h *Handler) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 	if req.InvalidateCurrent != nil {
 		invalidate = *req.InvalidateCurrent
 	}
+	// Invalidating the current key would stop it at once, while a key issued
+	// ahead of time cannot sign until its validFrom: the audience would have
+	// no signing key in between. Issue ahead of time without invalidating,
+	// then invalidate the old key once the new one's window has opened.
+	if invalidate && validFrom.After(now) {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+			"invalidateCurrent cannot be combined with a validFrom in the future"))
+		return
+	}
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		common.WriteError(w, r, common.Internal("rsa.GenerateKey", err))
