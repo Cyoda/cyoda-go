@@ -233,8 +233,10 @@ ordinary rules. A safe failure is retried from that committed state.
 This applies at every dispatch site of an unsafe processor under a run guard
 (`engine_processors.go:230, 269, 360, 392`).
 
-**Before dispatch**, unless this run already holds a mark, the engine calls
-`MarkUnsafe(tenant, id, armToken, claimToken)`:
+**Before every unsafe dispatch** the engine calls `MarkUnsafe(tenant, id,
+armToken, claimToken)`, even when this run already holds a mark. For the same
+claim the call is idempotent. It is also the check that stops a superseded run
+from sending more unsafe work.
 
 | Result | Engine |
 |---|---|
@@ -317,16 +319,16 @@ rolled back, so it never waits on the run's own row lock.
   outage, failover, timeout, pool exhaustion, conflict. Each failed attempt is
   logged at WARN, at most once a minute per task.
 - **A refusal** (`ErrStaleClaim`) means the run was superseded.
-- **The node latches** (§6.5) on either of two conditions. Both are logged at
-  ERROR with a ticket, and the task stays RUNNING under the latched owner,
-  visible in the query, the metrics and `/readyz`.
-  - A deterministic rejection by the store: an error that satisfies
-    `errors.Is(err, spi.ErrStoreRejected)`. Every store sets this new SPI
-    marker, and a conformance case covers it. PostgreSQL sets it for SQLSTATE
-    classes 22, 23 and 42.
-  - A write that has failed without a break for `STALE_AFTER` while this
-    pnode's heartbeats succeed. The store is then reachable, so the error is
-    not an outage.
+- **The node latches** (§6.5) only on a deterministic rejection by the store:
+  an error that satisfies `errors.Is(err, spi.ErrStoreRejected)`. This is a new
+  SPI marker. Every store sets it, and a conformance case covers it. PostgreSQL
+  sets it for SQLSTATE classes 22, 23 and 42.
+  - The latch is logged at ERROR with a ticket.
+  - The task stays RUNNING under the latched owner, visible in the query, the
+    metrics and `/readyz`.
+  - Every other error is retried without limit, as above.
+  - Retrying can take a long time under lock waits or pool exhaustion. That
+    shows in the WARN lines and in `cyoda.scheduler.bookkeeping.retries`.
 
 The first matching row applies:
 
@@ -336,7 +338,7 @@ The first matching row applies:
 | `PartialCommit` set by this run | `Fail(STOPPED_AFTER_PARTIAL_COMMIT)` |
 | holds a mark; unsafe work reached a compute node | `Fail(UNSAFE_WORK_NOT_COMPLETED)` |
 | cut by the shutdown drain; no unsafe work reached a compute node | `RecordAttempt{NotCounted, NextAttemptTime: now, ClearOwnMark}` |
-| holds a mark; no unsafe work reached a compute node | `RecordAttempt{Error, ClearOwnMark}` |
+| holds a mark, or its last `MarkUnsafe` failed with an error other than a refusal; no unsafe work reached a compute node | `RecordAttempt{Error, ClearOwnMark}` |
 | any other failure | `RecordAttempt{Error, NextAttemptTime}` |
 
 `RecordAttempt`:
@@ -351,8 +353,10 @@ delay = RETRY_DELAY × 2^(attempts−1), saturating at RETRY_DELAY_MAX
 next  = now + delay;  with timeoutMs: next = min(next, deadline)
 ```
 
-If the deadline has already passed when the outcome is recorded, the owner
-calls `Fail(EXPIRED_AFTER_FAILED_ATTEMPTS)` instead. The WARN log line is
+If the deadline has already passed when a **counted** attempt is recorded, the
+owner calls `Fail(EXPIRED_AFTER_FAILED_ATTEMPTS)` instead. A `NotCounted`
+attempt is always recorded as such, and the next claim decides with §5.1. So a
+first attempt cut by a deploy after its deadline is expired, not FAILED. The WARN log line is
 written after `RecordAttempt` is accepted. A criterion that evaluates to false
 declines the task; that is not a failure.
 
@@ -376,7 +380,6 @@ The first matching row applies:
 | `spi.ErrConflict` | `CONFLICT: a concurrent write changed the entity or its task` — logged at WARN, no ticket |
 | a `*contract.CalloutFailure` | its `Message`: `CODE: detail` when the failure has a code, plain client-safe text when it has none (`internal/contract/callout.go:78-84`); for `MemberFailed`, the compute node's own message |
 | a `*common.AppError` of the Operational level, any status | its `Message` (already `CODE: detail`) |
-
 | anything else | `internal error [ticket: <uuid>]`, with the full error logged at ERROR |
 
 `classifyWorkflowError` is not used for this. Its catch-all carries
@@ -436,7 +439,8 @@ the store.
 
 **Registration.** The loop adds each returned task to its set of live runs
 before it does anything else, including the next `GiveBackIdle`. A task leaves
-the set only after its outcome is accepted or refused. Only the loop goroutine
+the set only after its outcome is accepted or refused, or at shutdown step 5
+if its run has ended without that. Only the loop goroutine
 calls `ClaimDue` and `GiveBackIdle`. If a claim's reply is lost, the tasks it
 claimed are not in the set, so the next `GiveBackIdle` returns them.
 
@@ -454,6 +458,10 @@ uncounted.
   acquire and the statement. So heartbeats start at a fixed interval.
 - **Stale after.** `CYODA_SCHEDULER_STALE_AFTER` defaults to 2 min and is
   validated in §6.3.
+  - It must be the same on every pnode of a cluster: a reclaimer's value
+    meets the owner's watchdog.
+  - During a rolling change of it, fencing still holds, but the watchdog
+    margin is not guaranteed.
 - **Hung runs.** A pnode that keeps heartbeating keeps its tasks, even if a run
   is hung. Liveness is not progress, as in #509.
 - **Cleanup.** The claim loop removes the liveness record of a dead incarnation
@@ -552,6 +560,10 @@ existing permanent latch (`docs/ARCHITECTURE.md:382-393`).
 - **A panicking run** records `Fail(RUN_PANICKED)` with a ticket and is not
   retried. Its state is unverified, and running it again on another pnode
   would spread the problem.
+  - A panicked run is never given back.
+  - If its `Fail` has not landed when the process exits, its task is
+    reclaimed after `STALE_AFTER` as a lost owner, and `MAX_LOST_OWNERS`
+    bounds any repeat.
 - **A latched pnode** stops claiming. Unless the heartbeat itself panicked, it
   keeps heartbeating, so its runs still in progress are not taken over.
 - **A panic in the loop, the heartbeat or the watchdog** latches the node, and
@@ -704,6 +716,7 @@ do for an entity conflict.
 | `cyoda.scheduler.runs.in_progress` | up-down counter | — |
 | `cyoda.scheduler.claims` | counter | `reason`: due, owner_lost |
 | `cyoda.scheduler.heartbeat.failures` | counter | — |
+| `cyoda.scheduler.bookkeeping.retries` | counter | — |
 
 - **Instruments** come from `observability.Meter()` and carry no tenant
   attribute.
@@ -824,7 +837,7 @@ follow from PostgreSQL itself. SQLSTATE 40001 and 40P01 map to `ErrConflict`
 the entity before the task row, while a client write reconciles tasks before it
 saves the entity (`engine.go:365`).
 
-**Scheduler pool (C4).** `CYODA_POSTGRES_SCHEDULER_CONNS` (3) connections,
+**Scheduler pool (C4).** `CYODA_POSTGRES_SCHEDULER_CONNS` (10, sized for `MAX_RUNS` 8 plus the claim loop and async search) connections,
 using READ COMMITTED, with:
 - `statement_timeout` 30 s;
 - `idle_in_transaction_session_timeout` 10 s;
@@ -938,7 +951,7 @@ Both run a single pnode, and both meet the same contract.
 | `CYODA_SCHEDULER_RETRY_DELAY` | 30s | > 0 | new |
 | `CYODA_SCHEDULER_RETRY_DELAY_MAX` | 15m | ≥ retry delay | new |
 | `CYODA_SCHEDULER_SHUTDOWN_DRAIN` | 20s | ≥ 0 | new |
-| `CYODA_POSTGRES_SCHEDULER_CONNS` | 3 | ≥ 2 | new (postgres plugin) |
+| `CYODA_POSTGRES_SCHEDULER_CONNS` | 10 | ≥ 2 | new (postgres plugin) |
 | `CYODA_SCHEDULER_DISTRIBUTION`, `…_COORDINATOR`, `…_REDISPATCH_BACKOFF`, `…_BATCH_SIZE`, `…_EXPIRY_GRACE`, `CYODA_DISPATCH_FORWARD_TIMEOUT` | — | | removed |
 
 Startup fails on an invalid value.
@@ -1068,7 +1081,7 @@ Rules:
 | `lastError` over 1 024 bytes with multi-byte characters and a NUL → cut at a character boundary, stored on every backend | ✓ | ✓ | | | |
 | a bookkeeping write retried through an outage; accepted after recovery | ✓ | ✓ | | | |
 | `spi.ErrStoreRejected` → ERROR with ticket, node latched (every backend sets the marker) | ✓ | ✓ | | | |
-| a write failing for `STALE_AFTER` while heartbeats succeed → node latched | ✓ | | | | |
+| a bookkeeping write blocked by a lock or an exhausted pool is retried without latching | ✓ | | | | |
 | bookkeeping after a self-cancel does not inherit the run's cancellation | ✓ | | | | |
 | `lastError` for a cancelled run and for a conflict: fixed texts, WARN, no ticket | ✓ | | ✓ | | |
 | fire-time CANCEL: transition no longer scheduled; entity with no transaction id | ✓ | | ✓ | ✓ | |
