@@ -481,6 +481,104 @@ func TestTokenExchangeMissingSubClaim(t *testing.T) {
 	}
 }
 
+// A trusted key belongs to the tenant that registered it. A subject token
+// signed with another tenant's key is refused, even when its caas_org_id names
+// the exchanging client's tenant — the claim is written by the key holder, so
+// it cannot be what binds the key to a tenant.
+func TestTokenExchangeKeyFromAnotherTenant(t *testing.T) {
+	env := setupTokenEnv(t)
+
+	otherKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	const otherKID = "other-tenant-kid"
+	if err := env.trustedKeyStore.Register(&auth.TrustedKey{
+		KID:       otherKID,
+		TenantID:  spi.TenantID("tenant-other"),
+		PublicKey: &otherKey.PublicKey,
+		Audience:  "cyoda-go",
+		Active:    true,
+		ValidFrom: time.Now().Add(-time.Hour),
+	}, auth.RotateOptions{}); err != nil {
+		t.Fatalf("register other tenant's key: %v", err)
+	}
+
+	subjectToken := signSubjectToken(t, otherKey, otherKID, map[string]any{
+		"sub":         "ext-user-1",
+		"caas_org_id": env.tenantID,
+		"user_roles":  []string{"ROLE_ADMIN"},
+		"exp":         float64(time.Now().Add(time.Hour).Unix()),
+		"iat":         float64(time.Now().Unix()),
+	})
+	extra := url.Values{}
+	extra.Set("subject_token", subjectToken)
+	extra.Set("subject_token_type", "urn:ietf:params:oauth:token-type:jwt")
+	req := makeTokenRequest(
+		"urn:ietf:params:oauth:grant-type:token-exchange",
+		basicAuth(env.clientID, env.clientSecret),
+		extra,
+	)
+	rr := httptest.NewRecorder()
+	env.handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for another tenant's key, got %d: %s", rr.Code, rr.Body.String())
+	}
+	resp := decodeResponse(t, rr)
+	if resp["error"] != "invalid_grant" || resp["error_description"] != "unknown trusted key" {
+		t.Errorf("got %v / %v, want invalid_grant / unknown trusted key", resp["error"], resp["error_description"])
+	}
+}
+
+// The exchanged token carries the subject's sub as its user id, so a sub the
+// server would reject on every later request is rejected here, at the grant,
+// rather than minted into a token that can never be used. The response names
+// the reason and never repeats the value.
+func TestTokenExchangeInvalidSubClaim(t *testing.T) {
+	env := setupTokenEnv(t)
+
+	for name, sub := range map[string]string{
+		"newline":  "ext\nuser",
+		"nul":      "ext\x00user",
+		"too-long": strings.Repeat("u", 256),
+		"reserved": "oidc:11111111-2222-3333-4444-555555555555:alice",
+	} {
+		t.Run(name, func(t *testing.T) {
+			subjectClaims := map[string]any{
+				"sub":         sub,
+				"caas_org_id": env.tenantID,
+				"user_roles":  []string{"viewer"},
+				"exp":         float64(time.Now().Add(time.Hour).Unix()),
+				"iat":         float64(time.Now().Unix()),
+			}
+			subjectToken := signSubjectToken(t, env.trustedKey, env.trustedKID, subjectClaims)
+
+			extra := url.Values{}
+			extra.Set("subject_token", subjectToken)
+			extra.Set("subject_token_type", "urn:ietf:params:oauth:token-type:jwt")
+			req := makeTokenRequest(
+				"urn:ietf:params:oauth:grant-type:token-exchange",
+				basicAuth(env.clientID, env.clientSecret),
+				extra,
+			)
+			rr := httptest.NewRecorder()
+			env.handler.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for an invalid sub, got %d: %s", rr.Code, rr.Body.String())
+			}
+			resp := decodeResponse(t, rr)
+			if resp["error"] != "invalid_grant" {
+				t.Errorf("expected error invalid_grant, got %v", resp["error"])
+			}
+			if strings.Contains(rr.Body.String(), sub) {
+				t.Errorf("response echoes the rejected sub: %s", rr.Body.String())
+			}
+		})
+	}
+}
+
 func TestTokenUnsupportedGrantType(t *testing.T) {
 	env := setupTokenEnv(t)
 
@@ -509,6 +607,35 @@ func TestTokenHandler_NonPost_405MethodNotAllowed(t *testing.T) {
 	resp := decodeResponse(t, rr)
 	if resp["error"] != "method_not_allowed" {
 		t.Errorf("expected error method_not_allowed, got %v", resp["error"])
+	}
+}
+
+// Invalidating with a grace period keeps the key verifying until the grace
+// period ends — the contract of the invalidate operation, and what a rotation
+// with invalidatePrevious relies on to avoid an outage.
+func TestTokenExchangeKeyInGracePeriod(t *testing.T) {
+	env := setupTokenEnv(t)
+	if err := env.trustedKeyStore.Invalidate(spi.TenantID(env.tenantID), env.trustedKID, 3600); err != nil {
+		t.Fatalf("failed to invalidate trusted key: %v", err)
+	}
+
+	subjectToken := signSubjectToken(t, env.trustedKey, env.trustedKID, map[string]any{
+		"sub":         "ext-user-1",
+		"caas_org_id": env.tenantID,
+		"user_roles":  []string{"editor"},
+		"exp":         float64(time.Now().Add(time.Hour).Unix()),
+		"iat":         float64(time.Now().Unix()),
+	})
+	extra := url.Values{}
+	extra.Set("subject_token", subjectToken)
+	extra.Set("subject_token_type", "urn:ietf:params:oauth:token-type:jwt")
+	req := makeTokenRequest("urn:ietf:params:oauth:grant-type:token-exchange",
+		basicAuth(env.clientID, env.clientSecret), extra)
+	rr := httptest.NewRecorder()
+	env.handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for a key in its grace period, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
 

@@ -66,6 +66,18 @@ func mustJSON(t *testing.T, v any) []byte {
 	return b
 }
 
+// deleteTrustedKeyOnCleanup deletes a trusted key the bootstrap tenant
+// registered, when the test ends. The tenant's trusted-key cap is shared by
+// every test in the run, so a test must not leave keys behind. A key already
+// deleted by the test itself is fine.
+func deleteTrustedKeyOnCleanup(t *testing.T, kid string) {
+	t.Helper()
+	t.Cleanup(func() {
+		resp := adminRequest(t, "DELETE", "/oauth/keys/trusted/"+kid, nil)
+		resp.Body.Close()
+	})
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Happy-path round-trips for the 10 /oauth/keys/* operations
 // ─────────────────────────────────────────────────────────────────────────────
@@ -285,6 +297,7 @@ func TestE2E_ReactivateJwtKeyPair_Happy(t *testing.T) {
 
 func TestE2E_RegisterTrustedKey_Happy(t *testing.T) {
 	kid := fmt.Sprintf("e2e-tk-%d", time.Now().UnixNano())
+	deleteTrustedKeyOnCleanup(t, kid)
 	body := mustJSON(t, map[string]any{
 		"keyId":    kid,
 		"jwk":      rsaJWK(t, kid),
@@ -311,6 +324,7 @@ func TestE2E_RegisterTrustedKey_Happy(t *testing.T) {
 func TestE2E_ListTrustedKeys_Happy(t *testing.T) {
 	// Register at least one key so the list is non-empty.
 	kid := fmt.Sprintf("e2e-list-%d", time.Now().UnixNano())
+	deleteTrustedKeyOnCleanup(t, kid)
 	regBody := mustJSON(t, map[string]any{
 		"keyId":    kid,
 		"jwk":      rsaJWK(t, kid),
@@ -388,6 +402,7 @@ func TestE2E_InvalidateTrustedKey_Happy(t *testing.T) {
 
 func TestE2E_ReactivateTrustedKey_Happy(t *testing.T) {
 	kid := fmt.Sprintf("e2e-react-%d", time.Now().UnixNano())
+	deleteTrustedKeyOnCleanup(t, kid)
 	regBody := mustJSON(t, map[string]any{
 		"keyId":    kid,
 		"jwk":      rsaJWK(t, kid),
@@ -624,6 +639,7 @@ func TestE2E_CrossTenant_TrustedKey_409(t *testing.T) {
 	clientBID, clientBSecret := createM2MClient(t, "tenant-b", "user-b", []string{"ROLE_ADMIN", "ROLE_M2M"})
 
 	kid := fmt.Sprintf("e2e-xtenant-%d", time.Now().UnixNano())
+	deleteTrustedKeyOnCleanup(t, kid)
 
 	// Register the key as the bootstrap tenant (tenant A = "test-tenant").
 	bodyA := mustJSON(t, map[string]any{
@@ -666,13 +682,3 @@ func TestE2E_CrossTenant_TrustedKey_409(t *testing.T) {
 // the server with the flag flipped to false for a single test within the
 // TestMain harness. Adapter-level TestRegisterTrustedKey_FlagDisabled_404
 // covers the invariant at handler level, which is where the flag is enforced.
-
-// NOTE: E2E token-exchange coverage — verifying the token-exchange grant via
-// a trusted key requires signing a subject_token with the private key material
-// that was used to build the registered JWK. The E2E harness does not retain
-// private keys after registration; fabricating a valid signed token in-test
-// would duplicate the signing logic. The token-exchange principal-tenant
-// invariant is asserted at unit level in internal/auth/store_test.go and
-// internal/auth/kv_trusted_store_test.go.
-// TODO(oauth-token-exchange-e2e): add an E2E token-exchange test once the harness supports
-// embedded fixture keys with private-key material retained across calls.

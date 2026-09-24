@@ -24,7 +24,7 @@ Every cyoda API call needs an `Authorization: Bearer <jwt>` header. This page he
 
 - **You have a `client_id`/`secret` you'll manage in cyoda** — use the M2M client + token endpoint. Read `auth.clients` then `auth.tokens`.
 - **You have an existing IdP (Cognito, Keycloak, Auth0, …)** — federate via OIDC. Read `auth.oidc`.
-- **You have a key you sign tokens with yourself, no IdP** — register a trusted key. Read `auth.trusted-keys`.
+- **Your own system signs JWTs for its users, no IdP** — register a trusted key, and have an M2M client exchange those JWTs for cyoda tokens. Read `auth.trusted-keys`.
 - **You have an M2M client acting on behalf of a user** — use the token-exchange grant. Read the OBO section of `auth.tokens`.
 
 **Looking for OBO?** The token-exchange (on-behalf-of) grant is documented as a section of `auth.tokens` — there is no separate `auth.obo` page. Run `cyoda help auth tokens` and read the token-exchange section.

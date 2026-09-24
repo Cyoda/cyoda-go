@@ -714,37 +714,6 @@ func TestSearchSort_Async_Submit_Happy(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Pushdown vs in-memory fallback agreement (isolated, single-backend)
-// ---------------------------------------------------------------------------
-
-// setupSortModelWithAmountAndArray imports a model whose sample schema includes
-// a numeric field "amount", a string field "name", and a string-array field
-// "tags". It locks the model and attaches a trivial two-state workflow.
-//
-// The "tags" array field makes "$.tags[*]" appear in the schema's FieldsMap,
-// which is necessary for the fallback-path test below to pass path validation
-// while still failing ConditionToFilter's stripDollarDot check.
-func setupSortModelWithAmountAndArray(t *testing.T, model string) {
-	t.Helper()
-	importPath := fmt.Sprintf("/api/model/import/JSON/SAMPLE_DATA/%s/1", model)
-	resp := doAuth(t, http.MethodPost, importPath, `{"name":"Sample","amount":0,"tags":["a"]}`)
-	body := readBody(t, resp)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("import model %s: expected 200, got %d: %s", model, resp.StatusCode, body)
-	}
-	lockModelE2E(t, model, 1)
-	status, body := importWorkflowE2E(t, model, 1, `{
-		"importMode": "REPLACE",
-		"workflows": [{"version": "1.1", "name": "sort-wf", "initialState": "NONE", "active": true,
-			"states": {"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
-			           "CREATED": {}}}]
-	}`)
-	if status != http.StatusOK {
-		t.Fatalf("workflow import for %s: expected 200, got %d: %s", model, status, body)
-	}
-}
-
 // TestSearchSort_Async_InvalidSort_Returns400 is the regression guard for the
 // async synchronous-resolution fix: an invalid sort key must return 400
 // INVALID_FIELD_PATH before a job is ever created, not a job ID followed by a

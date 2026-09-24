@@ -759,7 +759,7 @@ func TestDefaultTree_AuthTopics(t *testing.T) {
 			[]string{"## NAME", "## GOAL", "## PREREQUISITES", "## REQUEST FLOW", "## TOKEN", "## ERRORS", "## SEE ALSO"}},
 		{[]string{"auth", "oidc"}, "auth.oidc — federated OIDC providers",
 			[]string{"## NAME", "## GOAL", "## PREREQUISITES", "## REQUEST FLOW", "## TOKEN", "## DIAGNOSTICS", "## ERRORS", "## SEE ALSO"}},
-		{[]string{"auth", "trusted-keys"}, "auth.trusted-keys — register public keys for offline JWT signing",
+		{[]string{"auth", "trusted-keys"}, "auth.trusted-keys — register public keys for token-exchange subject tokens",
 			[]string{"## NAME", "## GOAL", "## PREREQUISITES", "## REQUEST FLOW", "## TOKEN", "## ERRORS", "## SEE ALSO"}},
 	}
 

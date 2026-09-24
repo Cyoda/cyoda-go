@@ -161,25 +161,6 @@ func hasSMEventType(events []map[string]any, wantType, wantState string) bool {
 	return false
 }
 
-// awaitSMEventType polls getSMAuditEvents until an event matching wantType
-// (and, if wantState is non-empty, state too) appears, or fails the test
-// once timeout elapses.
-func awaitSMEventType(t *testing.T, entityID, wantType, wantState string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		events := getSMAuditEvents(t, entityID)
-		if hasSMEventType(events, wantType, wantState) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out after %s waiting for StateMachine event %q (state=%q) on entity %s; got events: %+v",
-				timeout, wantType, wantState, entityID, events)
-		}
-		time.Sleep(scheduledPollInterval)
-	}
-}
-
 // TestE2E_ExplicitFireOfScheduledTransition_ReturnsTransitionNotFound exercises
 // the explicit-fire-of-a-scheduled-transition rejection path end-to-end through
 // the full HTTP stack. The validator accepts the shape-coherent
@@ -285,6 +266,9 @@ func TestE2E_ScheduledTransition_FiresThroughHTTPStack(t *testing.T) {
 	setupModelWithWorkflow(t, model, wf)
 	startTestScheduler(t)
 
+	// The in-process server's engine reads this process's clock, so an instant
+	// taken before the create is at or before the engine's arm instant.
+	beforeCreate := time.Now().Truncate(time.Millisecond)
 	entityID := createEntityE2E(t, model, 1, `{"name":"Test Order","amount":100,"status":"draft"}`)
 
 	// The transition must be ARMED by the create, not fired inline. This is the
@@ -296,17 +280,18 @@ func TestE2E_ScheduledTransition_FiresThroughHTTPStack(t *testing.T) {
 	if len(arms) == 0 {
 		t.Fatalf("expected a SCHEDULED_TRANSITION_ARM audit event after creation (transition must be scheduled, not fired inline); got events: %+v", created)
 	}
-	armedAt := smEventTime(t, arms[0])
 	scheduledFor := smEventScheduledTime(t, arms[0])
 
 	// The delay was actually applied when arming — without this, a regression
 	// that armed for "now" would still satisfy every other assertion here (the
-	// scanner would fire it on its next tick, after scheduledFor). The tolerance
-	// absorbs the gap between the engine's internal arm instant and the audit
-	// event's own stamp, measured at well under a millisecond for this path.
-	if applied := scheduledFor.Sub(armedAt); applied < 150*time.Millisecond {
-		t.Errorf("armed fire time is only %s after the arm event; want ~%dms — the delay was not applied",
-			applied, delayMs)
+	// scanner would fire it on its next tick, after scheduledFor). The fire time
+	// is the arm instant plus the delay, and the arm instant is no earlier than
+	// beforeCreate. The ARM event's own stamp is not a usable reference: it is
+	// taken after the scheduled-task write, which under load lags the arm
+	// instant by tens or hundreds of milliseconds.
+	if min := beforeCreate.Add(time.Duration(delayMs) * time.Millisecond); scheduledFor.Before(min) {
+		t.Errorf("armed fire time %s is before %s, the create's start plus %dms — the delay was not applied",
+			scheduledFor.Format(time.RFC3339Nano), min.Format(time.RFC3339Nano), delayMs)
 	}
 
 	awaitEntityStateE2E(t, entityID, "Closed", scheduledFireTimeout)

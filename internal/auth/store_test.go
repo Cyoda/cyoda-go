@@ -665,6 +665,76 @@ func TestKeyStore_ListForVerification_IncludesGracePeriodKey(t *testing.T) {
 	}
 }
 
+// A grace period keeps a key pair verifiable for at most that long, and never
+// beyond the end of the window it already had: invalidating, directly or by
+// rotation, can only shorten a key pair's life.
+func TestKeyStore_InvalidateNeverExtends(t *testing.T) {
+	s := auth.NewInMemoryKeyStore()
+	priv := testRSAPriv(t)
+	save := func(kid string, validTo time.Time, opts auth.RotateOptions) {
+		t.Helper()
+		vt := validTo
+		if err := s.Save(&auth.KeyPair{
+			KID: kid, Audience: "client", Algorithm: "RS256",
+			PublicKey: &priv.PublicKey, PrivateKey: priv,
+			Active: true, ValidFrom: time.Now().Add(-2 * time.Hour), ValidTo: &vt,
+		}, opts); err != nil {
+			t.Fatalf("save %s: %v", kid, err)
+		}
+	}
+	verifiable := func(kid string) bool {
+		for _, kp := range s.ListForVerification() {
+			if kp.KID == kid {
+				return true
+			}
+		}
+		return false
+	}
+
+	save("expired", time.Now().Add(-time.Minute), auth.RotateOptions{})
+	if err := s.Invalidate("expired", 3600); err != nil {
+		t.Fatalf("invalidate expired: %v", err)
+	}
+	if verifiable("expired") {
+		t.Error("invalidating an expired key pair with a grace period revived it")
+	}
+
+	save("revoked", time.Now().Add(time.Hour), auth.RotateOptions{})
+	if err := s.Invalidate("revoked", 0); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if err := s.Invalidate("revoked", 3600); err != nil {
+		t.Fatalf("invalidate revoked: %v", err)
+	}
+	if verifiable("revoked") {
+		t.Error("a second invalidation with a grace period revived a revoked key pair")
+	}
+
+	end := time.Now().Add(10 * time.Minute)
+	save("short", end, auth.RotateOptions{})
+	if err := s.Invalidate("short", 3600); err != nil {
+		t.Fatalf("invalidate short: %v", err)
+	}
+	if kp, err := s.Get("short"); err != nil || kp.ValidTo == nil || kp.ValidTo.After(end) {
+		t.Errorf("a grace period extended a key pair beyond its window: %+v %v", kp, err)
+	}
+
+	save("old", time.Now().Add(-time.Minute), auth.RotateOptions{})
+	save("new", time.Now().Add(time.Hour), auth.RotateOptions{Invalidate: true, GracePeriodSec: 3600})
+	if verifiable("old") {
+		t.Error("rotation with a grace period revived an expired key pair")
+	}
+
+	save("graced", time.Now().Add(time.Hour), auth.RotateOptions{})
+	if err := s.Invalidate("graced", 3600); err != nil {
+		t.Fatalf("invalidate graced: %v", err)
+	}
+	save("newest", time.Now().Add(time.Hour), auth.RotateOptions{Invalidate: true, GracePeriodSec: 0})
+	if verifiable("graced") {
+		t.Error("rotation with no grace left a key pair in its grace period published")
+	}
+}
+
 func testRSAPriv(t *testing.T) *rsa.PrivateKey {
 	t.Helper()
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)

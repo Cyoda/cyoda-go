@@ -2384,7 +2384,7 @@ type GroupedStatsRequest_Condition struct {
 
 // InvalidateKeyRequestDto defines model for InvalidateKeyRequestDto.
 type InvalidateKeyRequestDto struct {
-	// GracePeriodSec Number of seconds to keep the key valid after invalidation. Default is 0 (immediate invalidation).
+	// GracePeriodSec Number of seconds to keep the key valid after invalidation, at most, and never past its current validTo. Default is 0 (immediate invalidation).
 	GracePeriodSec *int64 `json:"gracePeriodSec,omitempty"`
 }
 
@@ -2397,7 +2397,7 @@ type IssueJwtKeyPairRequestDto struct {
 	// InvalidateCurrent If true, invalidates the currently active key-pair for this audience.
 	InvalidateCurrent *bool `json:"invalidateCurrent,omitempty"`
 
-	// InvalidateGracePeriodSec Number of seconds to keep the old key valid after invalidation. Only applicable when invalidateCurrent is true.
+	// InvalidateGracePeriodSec Number of seconds to keep the old key valid after invalidation, at most, and never past its current validTo. Only applicable when invalidateCurrent is true.
 	InvalidateGracePeriodSec *int64 `json:"invalidateGracePeriodSec,omitempty"`
 
 	// ValidFrom When the key-pair becomes valid. Defaults to current date-time if not specified.
@@ -2662,7 +2662,7 @@ type RegisterOidcProviderRequestDto struct {
 type RegisterTrustedKeyRequestDto struct {
 	Audience RegisterTrustedKeyRequestDtoAudience `json:"audience"`
 
-	// InvalidateGracePeriodSec Grace period in seconds for invalidating previous keys (only used when invalidatePrevious is true). Default is 0 (immediate invalidation).
+	// InvalidateGracePeriodSec Grace period in seconds for invalidating previous keys (only used when invalidatePrevious is true): each keeps at most this long, and never past its current validTo. Default is 0 (immediate invalidation).
 	InvalidateGracePeriodSec *int64 `json:"invalidateGracePeriodSec,omitempty"`
 
 	// InvalidatePrevious If true, invalidates all other keys for the same audience belonging to the caller's tenant. Enables atomic key rotation.

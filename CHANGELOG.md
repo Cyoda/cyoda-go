@@ -6,6 +6,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **The per-tenant trusted-key cap counts every key that can verify.** It
+  counted only active keys, so a key in its grace period after invalidation
+  — which now verifies until its `validTo` — took no slot, and repeated
+  rotations with long grace periods could keep any number of keys verifying.
+  Such a key now keeps its slot until its grace period ends, and
+  reactivating a key is held to the same cap (`400 TRUSTED_KEY_CAP_REACHED`,
+  which reactivation could not return before). Registrations and
+  reactivations that succeeded before can now be refused: to make room,
+  delete an old key or invalidate it with no grace period first.
+
 - **A tenant identifier has a grammar:
   `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`.** 1 to 100 bytes, the first an ASCII
   letter or digit, the rest letters, digits, `.`, `_` and `-`; case is
@@ -32,6 +42,34 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   — Cloud constrains `caas_org_id` nowhere today, so a Cloud-issued token
   outside the grammar becomes a silent `401` rather than a diagnosable
   rejection) are recorded in `docs/cloud-parity/tenant-id-grammar.md`.
+
+- **A user identifier must be valid UTF-8, 1 to 255 characters, with no
+  control character (U+0000–U+001F, U+007F–U+009F), no noncharacter and no
+  U+FFFD.** Characters, not bytes; any other character is admitted and
+  nothing is normalised. The excluded characters are those the CloudEvents
+  spec forbids in a string attribute — the user id is sent to compute nodes
+  as `authid` — plus U+FFFD, which a JSON decoder puts in place of every
+  invalid byte, so two different claims can no longer name one user. The
+  OIDC `sub` had the length limit and the C0/DEL ban already; C1 controls,
+  noncharacters and U+FFFD are new for it too. The rule now applies at every
+  place a principal's user id enters cyoda-go from outside it, through one
+  check. **`oidc:` is a reserved word:** a user id that does not come from
+  the OIDC path — the first-party claim, the token-exchange `sub` and
+  `CYODA_BOOTSTRAP_USER_ID` — must not begin with it, in any case, because
+  the OIDC path builds its user ids as `oidc:<providerId>:<sub>` and a
+  first-party principal could otherwise carry an OIDC principal's user id.
+  The first-party `caas_user_id` claim (or `sub` when `caas_user_id`
+  is absent) outside the rule is an **ordinary `401`** with the uniform
+  problem detail, and `codes.Unauthenticated` over gRPC; the server log gives
+  the reason, never the value. A `caas_user_id` that is present but empty,
+  not a string, or outside the rule is rejected; it no longer falls back to
+  `sub`. A token-exchange subject token whose `sub` is outside the rule is
+  **`400 invalid_grant`** — before, it was exchanged for a token that every
+  later request rejected. A `CYODA_BOOTSTRAP_USER_ID` outside the rule
+  **refuses to start** in jwt mode when a bootstrap client is configured, and
+  the chart's `bootstrap.userId` fails `helm install`. No new error code. The
+  contract and the Cloud comparison are in
+  `docs/cloud-parity/user-id-rule.md`. (#594, from a contribution in #597.)
 
 - **Every OIDC provider operation answers `400 OIDC_INVALID_TENANT` unless
   the caller's tenant is a UUID in its canonical lowercase form.**
@@ -474,6 +512,37 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   differed per node and reset on every restart; it now lasts as long as
   `CYODA_JWT_SIGNING_KEY` supplies it, and the startup warning about its
   expiry is gone.
+
+- **Token exchange accepts only a trusted key registered in the exchanging
+  client's own tenant.** The grant found the key that verifies a subject
+  token by `kid` across every tenant, and bound the result to a tenant only
+  through the subject token's own `caas_org_id` claim, which the key holder
+  writes. A holder of a key registered in one tenant, with the credentials of
+  any M2M client of another, could get a token for that other tenant with any
+  user id and roles. The key is now looked up in the client's tenant only; a
+  key from another tenant is `400 invalid_grant` ("unknown trusted key"). The
+  lookup is also keyed instead of scanning every tenant's keys, and keeps the
+  fail-closed behaviour when the trusted-key cache is stale. See
+  `docs/cloud-parity/trusted-key-tenant.md`.
+
+- **An invalidated trusted key honours its grace period in token exchange.**
+  Invalidating a trusted key with `gracePeriodSec` — directly, or on rotation
+  with `invalidatePrevious` — marks it inactive and keeps it valid until the
+  period ends, as the invalidate operation promises. The exchange rejected
+  every inactive key at once, so the grace period did nothing and a rotation
+  cut off tokens signed with the old key immediately. A key now verifies until
+  its `validTo`. A grace period also no longer lengthens a key's window:
+  invalidating a trusted key or a signing key pair, directly or by rotation,
+  sets `validTo` to now plus the grace period or the key's existing `validTo`,
+  whichever is earlier. Before, invalidating an expired or already revoked
+  key with a grace period made it valid again.
+
+- **`cyoda help auth trusted-keys` described a feature cyoda-go does not
+  have.** It said a JWT signed with a trusted key could be sent as a bearer
+  token on API calls. A trusted key verifies only the subject token of the
+  token-exchange grant; the topic, `auth.tokens`, `auth` and the README now
+  say so. The topic's registration and reactivation examples also match the
+  API now (`jwk` and `audience` on registration; `validTo` on reactivation).
 
 - **An answer that arrives and cannot be read ends its callout at once, instead
   of being waited out.** A member's answer whose fields do not have the types

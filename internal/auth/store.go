@@ -96,7 +96,12 @@ type TrustedKeyStore interface {
 	Register(tk *TrustedKey, opts RotateOptions) error
 	Get(tenantID spi.TenantID, kid string) (*TrustedKey, error)
 	List(tenantID spi.TenantID) []*TrustedKey
-	ListForVerification() []*TrustedKey
+	// GetForVerification returns the key a subject token names, for the
+	// token-exchange grant. The key is found only in tenantID — the tenant of
+	// the client exchanging the token — and only while within its validity
+	// window; otherwise the error wraps ErrTrustedKeyNotFound. A key's tenant
+	// is the tenant that registered it, never a claim in the token it signs.
+	GetForVerification(tenantID spi.TenantID, kid string) (*TrustedKey, error)
 	Delete(tenantID spi.TenantID, kid string) error
 	Invalidate(tenantID spi.TenantID, kid string, gracePeriodSec int64) error
 	Reactivate(tenantID spi.TenantID, kid string, validFrom, validTo time.Time) error
@@ -143,22 +148,21 @@ func NewInMemoryKeyStore() *InMemoryKeyStore {
 	}
 }
 
-// Save stores a key pair. When opts.Invalidate is true, all other active key
-// pairs sharing the same Audience are marked inactive with a ValidTo expiry of
-// now+GracePeriodSec. The new key pair itself is always stored active (it is
-// never self-invalidated). All mutations are performed under a single Lock so
+// Save stores a key pair. When opts.Invalidate is true, every other key pair
+// of the same Audience whose window is still open is marked inactive with a
+// ValidTo of now+GracePeriodSec, never later than the ValidTo it already had.
+// The new key pair itself is always stored active (it is never
+// self-invalidated). All mutations are performed under a single Lock so
 // concurrent rotations cannot leave two active keys for the same audience.
 func (s *InMemoryKeyStore) Save(kp *KeyPair, opts RotateOptions) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if opts.Invalidate {
 		now := time.Now()
-		expiry := now.Add(time.Duration(opts.GracePeriodSec) * time.Second)
 		for _, existing := range s.keys {
-			if existing.Audience == kp.Audience && existing.Active && existing.KID != kp.KID {
+			if existing.Audience == kp.Audience && existing.KID != kp.KID && windowOpen(existing.ValidTo, now) {
 				existing.Active = false
-				e := expiry
-				existing.ValidTo = &e
+				existing.ValidTo = graceExpiry(existing.ValidTo, now, opts.GracePeriodSec)
 			}
 		}
 	}
@@ -255,7 +259,8 @@ func (s *InMemoryKeyStore) Delete(kid string) error {
 }
 
 // Invalidate marks a key pair as inactive and sets its ValidTo to
-// now+gracePeriodSec so grace-period JWKS publishing still includes the key.
+// now+gracePeriodSec, never later than its current ValidTo, so grace-period
+// JWKS publishing still includes the key until then.
 func (s *InMemoryKeyStore) Invalidate(kid string, gracePeriodSec int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -263,9 +268,8 @@ func (s *InMemoryKeyStore) Invalidate(kid string, gracePeriodSec int64) error {
 	if !ok {
 		return fmt.Errorf("key pair not found: %s", kid)
 	}
-	expiry := time.Now().Add(time.Duration(gracePeriodSec) * time.Second)
 	kp.Active = false
-	kp.ValidTo = &expiry
+	kp.ValidTo = graceExpiry(kp.ValidTo, time.Now(), gracePeriodSec)
 	return nil
 }
 
@@ -320,10 +324,10 @@ func NewInMemoryTrustedKeyStoreWithCap(cap int) *InMemoryTrustedKeyStore {
 }
 
 // Register adds or replaces a trusted key. Cross-tenant KID collision returns
-// 409 KEY_OWNED_BY_DIFFERENT_TENANT. Per-tenant cap (counts only
-// currently-valid keys) returns 400 TRUSTED_KEY_CAP_REACHED. When
-// opts.Invalidate is true, all other active siblings in the same tenant
-// partition are marked inactive with a gracePeriod ValidTo. Stores a shallow
+// 409 KEY_OWNED_BY_DIFFERENT_TENANT. Per-tenant cap (counts every key that
+// can still verify) returns 400 TRUSTED_KEY_CAP_REACHED. When
+// opts.Invalidate is true, every other key of the tenant whose window is still
+// open is marked inactive with the grace expiry (graceExpiry). Stores a shallow
 // copy of *tk (ownership-mutability rule 4).
 func (s *InMemoryTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) error {
 	s.mu.Lock()
@@ -334,37 +338,20 @@ func (s *InMemoryTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) e
 		return common.Operational(http.StatusConflict, common.ErrCodeKeyOwnedByDifferentTenant, "key with this keyId belongs to a different tenant")
 	}
 
-	// Per-tenant cap: count only currently-valid keys (excluding the KID being
-	// registered, so same-KID upserts don't consume a slot).
-	if s.maxPerTenant > 0 {
-		now := time.Now()
-		count := 0
-		for _, k := range s.keys {
-			if k.TenantID != tk.TenantID || k.KID == tk.KID {
-				continue
-			}
-			if !k.Active {
-				continue
-			}
-			if k.ValidTo != nil && !now.Before(*k.ValidTo) {
-				continue
-			}
-			count++
-		}
-		if count >= s.maxPerTenant {
-			return common.Operational(http.StatusBadRequest, common.ErrCodeTrustedKeyCapReached, "trusted-key cap reached for tenant")
-		}
+	// Per-tenant cap: count every key that can still verify — active, or in
+	// its grace period after invalidation — excluding the KID being
+	// registered, so same-KID upserts don't consume a slot.
+	if capReached(s.keys, tk.TenantID, tk.KID, s.maxPerTenant, time.Now()) {
+		return errTrustedKeyCapReached()
 	}
 
 	// Atomic sibling invalidation within the same tenant.
 	if opts.Invalidate {
 		now := time.Now()
-		expiry := now.Add(time.Duration(opts.GracePeriodSec) * time.Second)
 		for _, k := range s.keys {
-			if k.TenantID == tk.TenantID && k.Active && k.KID != tk.KID {
+			if k.TenantID == tk.TenantID && k.KID != tk.KID && windowOpen(k.ValidTo, now) {
 				k.Active = false
-				e := expiry
-				k.ValidTo = &e
+				k.ValidTo = graceExpiry(k.ValidTo, now, opts.GracePeriodSec)
 			}
 		}
 	}
@@ -402,22 +389,55 @@ func (s *InMemoryTrustedKeyStore) List(tenantID spi.TenantID) []*TrustedKey {
 	return result
 }
 
-// ListForVerification returns keys still within their validity window across
-// all tenants. Used by the grant-verification path (token exchange / JWT
-// bearer assertion, see verification.go's getTrustedKeyByKID) — NOT the
-// JWKS endpoint, which is served from KeyStore, not TrustedKeyStore.
-func (s *InMemoryTrustedKeyStore) ListForVerification() []*TrustedKey {
+// GetForVerification implements TrustedKeyStore.
+func (s *InMemoryTrustedKeyStore) GetForVerification(tenantID spi.TenantID, kid string) (*TrustedKey, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	now := time.Now()
-	out := make([]*TrustedKey, 0, len(s.keys))
-	for _, tk := range s.keys {
-		if tk.ValidTo == nil || now.Before(*tk.ValidTo) {
-			copied := *tk
-			out = append(out, &copied)
+	tk, ok := s.keys[kid]
+	if !ok || tk.TenantID != tenantID || !windowOpen(tk.ValidTo, time.Now()) {
+		return nil, fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
+	}
+	copied := *tk
+	return &copied, nil
+}
+
+// graceExpiry is the ValidTo an invalidation leaves on a key: now plus the
+// grace period, but never later than the ValidTo the key already has. A grace
+// period keeps a key valid for at most that long; it never lengthens a key's
+// window, and never brings back a key that has already ended.
+func graceExpiry(current *time.Time, now time.Time, gracePeriodSec int64) *time.Time {
+	expiry := now.Add(time.Duration(gracePeriodSec) * time.Second)
+	if current != nil && current.Before(expiry) {
+		expiry = *current
+	}
+	return &expiry
+}
+
+// capReached reports whether tenantID already has max keys that can verify —
+// active, or in a grace period until ValidTo — not counting exceptKID, the key
+// being registered or reactivated. max <= 0 means unbounded.
+func capReached(keys map[string]*TrustedKey, tenantID spi.TenantID, exceptKID string, max int, now time.Time) bool {
+	if max <= 0 {
+		return false
+	}
+	count := 0
+	for _, k := range keys {
+		if k.TenantID == tenantID && k.KID != exceptKID && windowOpen(k.ValidTo, now) {
+			count++
 		}
 	}
-	return out
+	return count >= max
+}
+
+func errTrustedKeyCapReached() error {
+	return common.Operational(http.StatusBadRequest, common.ErrCodeTrustedKeyCapReached, "trusted-key cap reached for tenant")
+}
+
+// windowOpen reports whether a key whose window ends at validTo is still
+// within it: the lazy expiry filter the verification path applies, and the
+// test for which siblings a rotation still has to end.
+func windowOpen(validTo *time.Time, now time.Time) bool {
+	return validTo == nil || now.Before(*validTo)
 }
 
 // Delete removes a trusted key by tenant and KID.
@@ -433,7 +453,8 @@ func (s *InMemoryTrustedKeyStore) Delete(tenantID spi.TenantID, kid string) erro
 }
 
 // Invalidate marks a trusted key as inactive and sets ValidTo to
-// now+gracePeriodSec so grace-period JWKS publishing still includes the key.
+// now+gracePeriodSec, never later than its current ValidTo, so the key keeps
+// verifying token-exchange subject tokens until then.
 func (s *InMemoryTrustedKeyStore) Invalidate(tenantID spi.TenantID, kid string, gracePeriodSec int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -441,9 +462,8 @@ func (s *InMemoryTrustedKeyStore) Invalidate(tenantID spi.TenantID, kid string, 
 	if !ok || tk.TenantID != tenantID {
 		return fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
 	}
-	expiry := time.Now().Add(time.Duration(gracePeriodSec) * time.Second)
 	tk.Active = false
-	tk.ValidTo = &expiry
+	tk.ValidTo = graceExpiry(tk.ValidTo, time.Now(), gracePeriodSec)
 	return nil
 }
 
@@ -464,6 +484,10 @@ func (s *InMemoryTrustedKeyStore) Reactivate(tenantID spi.TenantID, kid string, 
 	}
 	if !validTo.After(validFrom) {
 		return fmt.Errorf("validTo must be after validFrom")
+	}
+	// A reactivated key verifies again, so it is held to the cap.
+	if capReached(s.keys, tenantID, kid, s.maxPerTenant, time.Now()) {
+		return errTrustedKeyCapReached()
 	}
 	tk.Active = true
 	tk.ValidFrom = validFrom

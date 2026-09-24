@@ -360,9 +360,7 @@ func scheduleFunctionJSONWithTimeout(functionName string, timeoutMs int) string 
 		functionName, scheduledFnTag, timeoutMs)
 }
 
-// awaitCallbackSMEventType is awaitSMEventType's callback-harness
-// counterpart (mirrors awaitCallbackEntityState's relationship to
-// awaitEntityStateE2E): polls h's own audit endpoint until an event
+// awaitCallbackSMEventType polls h's own audit endpoint until an event
 // matching wantType (and, if wantState is non-empty, state too) appears, or
 // fails the test once timeout elapses.
 func awaitCallbackSMEventType(t *testing.T, h *callbackHarness, entityID, wantType, wantState string, timeout time.Duration) {
