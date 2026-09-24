@@ -191,8 +191,9 @@ func TestInterceptor_StreamAuthFailure(t *testing.T) {
 // same generic message.
 func TestInterceptor_UnaryRejectsClaimOutsideCheck(t *testing.T) {
 	for name, tc := range map[string]struct{ user, tenant string }{
-		"tenant": {user: "user-1", tenant: "../victim"},
-		"user":   {user: "user\nvictim", tenant: "tenant-1"},
+		"tenant":   {user: "user-1", tenant: "../victim"},
+		"user":     {user: "user\nvictim", tenant: "tenant-1"},
+		"reserved": {user: "oidc:11111111-2222-3333-4444-555555555555:victim", tenant: "tenant-1"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			assertUnaryRejectsClaims(t, tc.user, tc.tenant)

@@ -36,6 +36,22 @@ func TestBuildOIDCUserContext_NamespacedUserID(t *testing.T) {
 	}
 }
 
+// The reserved "oidc:" prefix applies to first-party user ids only. An IdP's
+// sub may begin with it: the id the OIDC path builds is still namespaced by the
+// provider, so it cannot collide with anything.
+func TestBuildOIDCUserContext_SubMayUseReservedPrefix(t *testing.T) {
+	p := provider(nil)
+	for _, sub := range []string{"oidc:x", "OIDC:x"} {
+		uc, err := buildOIDCUserContext(p, map[string]any{"sub": sub}, "roles")
+		if err != nil {
+			t.Fatalf("sub %q rejected: %v", sub, err)
+		}
+		if want := "oidc:11111111-2222-3333-4444-555555555555:" + sub; uc.UserID != want {
+			t.Errorf("UserID = %q, want %q", uc.UserID, want)
+		}
+	}
+}
+
 func TestBuildOIDCUserContext_RolesFromGlobalDefault(t *testing.T) {
 	p := provider(nil)
 	uc, err := buildOIDCUserContext(p, map[string]any{

@@ -102,7 +102,7 @@ and contain none of these:
 
 Any other character is admitted, including non-ASCII, and nothing is
 normalised. A user id is not a key or a path segment, so it has no grammar
-beyond this. The excluded characters are the ones the CloudEvents spec forbids
+beyond this and the reserved word `oidc:` described below. The excluded characters are the ones the CloudEvents spec forbids
 in a string attribute — a user id is sent to compute nodes as `authid` — plus
 U+FFFD, which a JSON decoder puts in place of every invalid byte, so that two
 different claims can never name one user.

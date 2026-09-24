@@ -30,9 +30,10 @@ var ErrInvalidUserID = errors.New("invalid user id")
 //
 // Every door that takes a user id from outside — the first-party JWT claim, the
 // OIDC sub, a token-exchange subject and CYODA_BOOTSTRAP_USER_ID — applies this
-// one rule. A user id is not a key or a path segment, so unlike a tenant id it
-// has no grammar beyond this: any other character is admitted, and nothing is
-// normalised.
+// one rule; every door except the OIDC sub also reserves the "oidc:" prefix
+// (ValidateFirstPartyUserID). A user id is not a key or a path segment, so
+// unlike a tenant id it has no grammar beyond this: any other character is
+// admitted, and nothing is normalised.
 //
 // The returned error NEVER contains id. A rejected user id is attacker-chosen
 // and reaches slog through the auth failure path's detail field. The error
