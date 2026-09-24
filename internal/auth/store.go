@@ -182,7 +182,9 @@ func (s *InMemoryKeyStore) GetActive(audience string) (*KeyPair, error) {
 		if kp.Audience != audience || !kp.Active {
 			continue
 		}
-		if kp.ValidTo != nil && !now.Before(*kp.ValidTo) {
+		// Sign only with a key inside its window: not one issued ahead of
+		// time whose ValidFrom has not come, and not one past its ValidTo.
+		if now.Before(kp.ValidFrom) || (kp.ValidTo != nil && !now.Before(*kp.ValidTo)) {
 			continue
 		}
 		if best == nil || kp.ValidFrom.After(best.ValidFrom) {
