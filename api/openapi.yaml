@@ -12241,7 +12241,7 @@ components:
         or not signed by this cluster is refused 401, one naming another
         tenant's transaction 403, one whose transaction is no longer open 404,
         and one that has expired or whose callout has been handed to another
-        compute member 410. A joined request that passes the join layer's size
+        compute member 410. A joined request that exceeds the join layer's size
         ceilings is refused 413. A joined write whose workflow reaches a
         COMMIT_BEFORE_DISPATCH processor is refused 409
         COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or

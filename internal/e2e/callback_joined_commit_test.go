@@ -37,8 +37,9 @@ import (
 // Covered doors — every entity write a compute node can call back through that
 // runs the workflow engine: HTTP create, create collection, update with a
 // transition, loopback update, PATCH, update collection; gRPC EntityManage
-// create, update (loopback), update with a transition, transition, and
-// EntityManageCollection create. Each with startNewTxOnDispatch false and true.
+// create, update (loopback), update with a transition, patch, transition, and
+// EntityManageCollection create and update. Each with startNewTxOnDispatch
+// false and true.
 
 // joinedCommitShape says where the target workflow's COMMIT_BEFORE_DISPATCH
 // processor sits, which decides how a write reaches it.
@@ -142,6 +143,20 @@ func (h *callbackHarness) joinedManageGRPC(eventType string, body map[string]any
 	return parseTxEnvelope(respCE)
 }
 
+// joinedManageCollectionGRPC sends one EntityManageCollection request of
+// eventType under pass and returns the first frame's envelope.
+func (h *callbackHarness) joinedManageCollectionGRPC(eventType string, body map[string]any, pass string) (txEnvelope, error) {
+	reqCE, err := internalgrpc.NewCloudEvent(eventType, body)
+	if err != nil {
+		return txEnvelope{}, err
+	}
+	stream, err := cyodapb.NewCloudEventsServiceClient(h.apiConn).EntityManageCollection(h.grpcCtx(pass), reqCE)
+	if err != nil {
+		return txEnvelope{}, err
+	}
+	return firstStreamEnvelope(stream)
+}
+
 func mustJSONMap(s string) map[string]any {
 	var m map[string]any
 	if err := json.Unmarshal([]byte(s), &m); err != nil {
@@ -189,6 +204,18 @@ func joinedCommitDoors() []joinedCommitDoor {
 			return grpcJoinedOutcome(h.joinedManageGRPC(internalgrpc.EntityUpdateRequest, map[string]any{
 				"id": "jc-update-transition", "dataFormat": "JSON",
 				"payload": map[string]any{"entityId": tg.id, "transition": "go", "data": mustJSONMap(joinedCommitPayload)},
+			}, rc.token))
+		}},
+		{"grpc-patch", shapeOnLoopback, func(h *callbackHarness, rc *reqCtx, _ string, tg joinedCommitTarget) joinedCommitOutcome {
+			return grpcJoinedOutcome(h.joinedManageGRPC(internalgrpc.EntityPatchRequest, map[string]any{
+				"id": "jc-patch", "patchFormat": "MERGE_PATCH",
+				"payload": map[string]any{"entityId": tg.id, "ifMatch": tg.txID, "patch": map[string]any{"status": "go"}},
+			}, rc.token))
+		}},
+		{"grpc-update-collection", shapeOnManual, func(h *callbackHarness, rc *reqCtx, _ string, tg joinedCommitTarget) joinedCommitOutcome {
+			return grpcJoinedOutcome(h.joinedManageCollectionGRPC(internalgrpc.EntityUpdateCollectionRequest, map[string]any{
+				"id": "jc-update-collection", "dataFormat": "JSON",
+				"payloads": []any{map[string]any{"entityId": tg.id, "transition": "go", "data": mustJSONMap(joinedCommitPayload)}},
 			}, rc.token))
 		}},
 		{"grpc-transition", shapeOnManual, func(h *callbackHarness, rc *reqCtx, _ string, tg joinedCommitTarget) joinedCommitOutcome {
@@ -357,9 +384,33 @@ func TestCallback_CommitBeforeDispatchInJoinedTransaction_OwnerStillCommits(t *t
 					t.Errorf("marker state = %q (http %d); want STORED, committed with T by its owner", st, code)
 				}
 				assertTargetUntouched(t, h, door, target)
+				// What the refused workflow recorded stays in T and is the owner's:
+				// here the owner committed, so the refused processor's failed result
+				// is part of the target's audit trail.
+				if door.shape != shapeOnCreate && !hasRefusedProcessorResult(h.GetSMAuditEvents(t, target.id)) {
+					t.Errorf("target %s has no STATE_PROCESS_RESULT with success=false for the refused COMMIT_BEFORE_DISPATCH processor; the refused workflow's audit events must stay in T", target.id)
+				}
 			})
 		}
 	}
+}
+
+// hasRefusedProcessorResult reports whether events carry the failed result
+// of a COMMIT_BEFORE_DISPATCH processor.
+func hasRefusedProcessorResult(events []map[string]any) bool {
+	for _, ev := range events {
+		if et, _ := ev["eventType"].(string); et != "STATE_PROCESS_RESULT" {
+			continue
+		}
+		data, _ := ev["data"].(map[string]any)
+		if mode, _ := data["mode"].(string); mode != "COMMIT_BEFORE_DISPATCH" {
+			continue
+		}
+		if success, ok := data["success"].(bool); ok && !success {
+			return true
+		}
+	}
+	return false
 }
 
 // joinedCommitOuterWorkflow runs one SYNC processor on the create's automated

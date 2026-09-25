@@ -27,9 +27,9 @@ write is refused:
   The detail names the workflow and the processor. Over gRPC the code is the
   message prefix of the `CLIENT_ERROR` envelope.
 - **Doors:** every entity write a callback can make that runs the workflow
-  engine — create, create collection, update (loopback or transition, PUT or
-  PATCH), update collection — on HTTP and on both gRPC write doors
-  (`EntityManage`, `EntityManageCollection`).
+  engine. On HTTP: create, create collection, update (loopback or transition,
+  PUT or PATCH), update collection. On gRPC: `EntityManage` (create, update,
+  patch, transition) and `EntityManageCollection` (create, update).
 - **Joined transaction afterwards:** open, uncommitted, not rolled back. The
   owner decides its fate.
 - **Batch update isolation:** the refusal is never isolated as a per-item

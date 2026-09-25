@@ -147,8 +147,8 @@ func TestPanickingWrite_ReleasesBufferedState(t *testing.T) {
 	}
 }
 
-// TestJoinedFlows_ErrorPath_DoNotDeadlock is the bounded-timeout guard for the
-// ordinary joined shape, where Release declines to roll anything back. It exists
+// TestJoinedFlows_ErrorPath_DoNotDeadlock is the bounded-timeout guard for a
+// joined call's error path, where Release declines to roll anything back. It exists
 // so a regression in the defer ordering surfaces as a failure with a diagnosis
 // rather than a hung package.
 func TestJoinedFlows_ErrorPath_DoNotDeadlock(t *testing.T) {
