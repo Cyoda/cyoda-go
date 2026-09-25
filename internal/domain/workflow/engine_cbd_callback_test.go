@@ -437,3 +437,83 @@ func TestCBDCallback_OtherTransactionWritesBeforeTXPostBegins_Conflicts(t *testi
 		})
 	}
 }
+
+// Another transaction deletes the anchor after TX_pre committed and before
+// TX_post began, and the callback saves the entity blind in TX_post. The
+// transition conflicts and the entity stays deleted.
+func TestCBDCallback_OtherTransactionDeletesBeforeTXPostBegins_Conflicts(t *testing.T) {
+	var env *cbdCallbackEnv
+	var wrap *beforeNthBeginTxMgr
+	env = newCBDCallbackEnv(t, func(ctx context.Context, entity *spi.Entity, _ string) (*spi.Entity, error) {
+		es, err := env.factory.EntityStore(ctx)
+		if err != nil {
+			return nil, err
+		}
+		blind := &spi.Entity{Meta: entity.Meta, Data: []byte(`{"x":7,"by":"processor"}`)}
+		_, err = es.Save(ctx, blind)
+		return nil, err
+	}, func(tm spi.TransactionManager) spi.TransactionManager {
+		// The engine's first Begin is TX_post's; TX_pre is the test's.
+		wrap = &beforeNthBeginTxMgr{TransactionManager: tm, n: 1}
+		return wrap
+	})
+	wrap.hook = func() error {
+		otherID, otherCtx, err := env.txMgr.Begin(env.ctx)
+		if err != nil {
+			return err
+		}
+		es, err := env.factory.EntityStore(otherCtx)
+		if err != nil {
+			return err
+		}
+		if err := es.Delete(otherCtx, "cbdx-1"); err != nil {
+			return err
+		}
+		return env.txMgr.Commit(env.ctx, otherID)
+	}
+
+	_, entity, result, err := env.transition(t, "cbdx-1")
+	if wrap.err != nil {
+		t.Fatalf("other transaction: %v", wrap.err)
+	}
+	if err == nil {
+		err = finish(env, entity, result)
+	}
+	if !errors.Is(err, spi.ErrConflict) {
+		t.Fatalf("err = %v, want a conflict", err)
+	}
+	if got, found := env.committed(t, "cbdx-1"); found {
+		t.Errorf("committed entity = %+v, want none: the other transaction's delete stands", got)
+	}
+}
+
+// A callback write is adopted even when it stores the committed payload
+// unchanged: the transaction had not written the anchor before the dispatch,
+// so the write is this dispatch's, and it replaces the payload an earlier
+// processor returned.
+func TestProcessorCallback_FirstWriteOfCommittedBytes_IsAdopted(t *testing.T) {
+	var env *cbdCallbackEnv
+	env = newCallbackEnv(t, []spi.ProcessorDefinition{
+		{Type: ProcessorTypeExternalized, Name: "p1", ExecutionMode: ExecutionModeSync},
+		{Type: ProcessorTypeExternalized, Name: "p2", ExecutionMode: ExecutionModeSync},
+	}, func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, _ string) (*spi.Entity, error) {
+		if proc.Name == "p1" {
+			return &spi.Entity{Data: []byte(`{"x":42,"by":"engine"}`)}, nil
+		}
+		es, err := env.factory.EntityStore(ctx)
+		if err != nil {
+			return nil, err
+		}
+		stored, err := es.Get(ctx, entity.Meta.ID)
+		if err != nil {
+			return nil, err
+		}
+		_, err = es.Save(ctx, stored) // the committed bytes, unchanged
+		return nil, err
+	})
+	_, entity, _, err := env.transition(t, "cbf-1")
+	if err != nil {
+		t.Fatalf("ManualTransition: %v", err)
+	}
+	assertData(t, entity.Data, map[string]any{"x": float64(0)})
+}
