@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"testing"
 	"time"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -266,3 +267,18 @@ func NewStoreFactoryWithTMAndAcquireTimeoutForTest(pool *pgxpool.Pool, tm *Trans
 	f.setTransactionManager(tm)
 	return f
 }
+
+// SchedulerPoolForTest returns the factory's scheduler work pool, opening it
+// if needed. Test-only.
+func SchedulerPoolForTest(t testing.TB, f *StoreFactory) *pgxpool.Pool {
+	t.Helper()
+	work, _, err := f.schedulerPools()
+	if err != nil {
+		t.Fatalf("scheduler pools: %v", err)
+	}
+	return work
+}
+
+// CloseSchedulerPoolsForTest closes the scheduler pools a test factory
+// opened. Fixtures that close only the main pool call it. Test-only.
+func CloseSchedulerPoolsForTest(f *StoreFactory) { f.closeSchedulerPools() }

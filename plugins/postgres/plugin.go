@@ -52,9 +52,14 @@ func (p *plugin) NewFactory(
 	}
 
 	factory := newStoreFactory(pool, cfg)
+	if err := factory.openSchedulerPools(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("postgres: %w", err)
+	}
 	factory.initTransactionManager(&defaultUUIDGenerator{})
 	unregister, err := registerPoolMetrics(otel.Meter(meterName), pool)
 	if err != nil {
+		factory.closeSchedulerPools()
 		pool.Close()
 		return nil, fmt.Errorf("postgres: %w", err)
 	}

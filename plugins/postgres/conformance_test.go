@@ -115,6 +115,8 @@ func newConformancePool(t *testing.T) (spi.StoreFactory, *pgxpool.Pool) {
 			// connections will be cleaned up when the process exits.
 		}
 	})
+	// Registered after the main pool's cleanup, so it runs first (LIFO).
+	t.Cleanup(func() { postgres.CloseSchedulerPoolsForTest(factory) })
 
 	// Wrap factory so the harness's factory.Close() is a no-op; actual pool
 	// close is handled by the t.Cleanup above.

@@ -21,6 +21,9 @@ type StoreFactory struct {
 	// StateMachineAuditStore.Record can read it without going through the
 	// TransactionManager (see spi.StateMachineAuditStore).
 	uuids spi.UUIDGenerator
+	// sched holds the scheduler's own pools (scheduler_pool.go), opened on
+	// first use and closed by Close.
+	sched schedulerPools
 }
 
 // ApplyFunc replays an opaque SchemaDelta onto a base schema
@@ -281,6 +284,7 @@ func (f *StoreFactory) Close() error {
 	if f.unregisterMetrics != nil {
 		f.unregisterMetrics()
 	}
+	f.closeSchedulerPools()
 	f.pool.Close()
 	return nil
 }
