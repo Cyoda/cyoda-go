@@ -88,8 +88,8 @@ type App struct {
 	// healthFlag starts true and is latched false by the first recovered
 	// panic at any of the four sites that run engine or store work: the HTTP
 	// recovery middleware, the gRPC recovery interceptors, the async-search
-	// goroutine and the scheduler's dispatch goroutine. Notification-callback
-	// recoveries (member-registry onChange, OIDC broadcast) deliberately do
+	// goroutine and the scheduler's goroutines (its claim loop, heartbeat,
+	// watchdog and runs). Notification-callback recoveries (member-registry onChange, OIDC broadcast) deliberately do
 	// not. Nothing resets it: a node that has panicked has state nothing has
 	// verified. Read by RegisterHealthRoutes (GET /health) and by
 	// ReadinessCheck (/readyz).
@@ -575,15 +575,13 @@ func New(cfg Config) *App {
 	if cfg.OTelEnabled {
 		extProc = observability.NewTracingExternalProcessingService(extProc, observability.Meter())
 	}
-	// schedClock is shared by the engine's scheduled-transition arm/fire math
-	// (reconcileScheduledTasks, FireScheduledTransition) and the scheduler
-	// scan loop below, so both sides of the runtime agree on "now".
+	// schedClock is the pnode clock, shared by the engine's arm and fire math
+	// and the scheduler, so both agree on "now".
 	schedClock := scheduler.NewRealClock()
 	a.workflowEngine = workflow.NewEngine(a.storeFactory, common.NewDefaultUUIDGenerator(), a.transactionManager,
 		workflow.WithExternalProcessing(extProc),
 		workflow.WithMaxStateVisits(cfg.MaxStateVisits),
-		workflow.WithScheduledClock(schedClock.Now),
-		workflow.WithExpiryGrace(cfg.Scheduler.ExpiryGrace))
+		workflow.WithScheduledClock(schedClock.Now))
 
 	// Wire MemberRegistry onChange to gossip tag updates
 	if cfg.Cluster.Enabled {
@@ -599,62 +597,21 @@ func New(cfg Config) *App {
 		})
 	}
 
-	// Scheduled-transition scan loop (Task D4). Constructed and started
-	// unconditionally — cfg.Scheduler.Enabled gates the tick body itself, so
-	// the Service always exists and Shutdown always has something to Stop.
-	schedEngine := cluster.NewSchedulerEngine(a.workflowEngine)
-	var schedulerRPCClient *cluster.SchedulerRPCClient
-	if cfg.Cluster.Enabled {
-		schedulerRPCClient = cluster.NewSchedulerRPCClient(peerAuth, cfg.Cluster.DispatchForwardTimeout)
-		if cfg.Cluster.DispatchAllowLoopback {
-			// Test-only: multi-node E2E fixtures run every node on 127.0.0.1.
-			// Never set in production (SSRF guard stays active by default).
-			schedulerRPCClient = schedulerRPCClient.AllowLoopbackForTesting()
-		}
+	// The scheduler: this node claims due scheduled tasks and runs them
+	// itself. A disabled scheduler starts nothing; Shutdown drains it either way.
+	a.scheduler = scheduler.New(scheduler.Config(cfg.Scheduler), scheduler.Deps{
+		Store:              a.storeFactory,
+		TxManager:          a.transactionManager,
+		Firer:              a.workflowEngine,
+		Clock:              schedClock,
+		HealthFlag:         a.healthFlag,
+		Meter:              observability.Meter(),
+		CalloutDeadlineMax: schedulerCalloutDeadlineMax(cfg),
+	})
+	if err := a.scheduler.Start(context.Background()); err != nil {
+		slog.Error("startup failure", "phase", "scheduler-start", "error", err.Error())
+		os.Exit(1)
 	}
-	clusterExecutor := cluster.NewClusterExecutor(schedEngine, a.selfNodeID, a.nodeRegistry, schedulerRPCClient)
-
-	// Self is forced when cluster mode is off (there are no peers to
-	// distribute to — a.nodeRegistry is a single-member registry.NewLocal
-	// in that case) or when the operator explicitly opted out of
-	// round-robin distribution.
-	var distStrategy scheduler.DistributionStrategy
-	switch {
-	case !cfg.Cluster.Enabled || cfg.Scheduler.Distribution == "self":
-		distStrategy = scheduler.Self{}
-	default:
-		if cfg.Scheduler.Distribution != "round-robin" {
-			slog.Warn("unknown CYODA_SCHEDULER_DISTRIBUTION, defaulting to round-robin",
-				"pkg", "app", "value", cfg.Scheduler.Distribution)
-		}
-		distStrategy = scheduler.NewRoundRobin()
-	}
-
-	var coordStrategy scheduler.CoordinatorStrategy = scheduler.LowestLiveNodeID{}
-	if cfg.Scheduler.Coordinator != "lowest-node-id" {
-		slog.Warn("unknown CYODA_SCHEDULER_COORDINATOR, defaulting to lowest-node-id",
-			"pkg", "app", "value", cfg.Scheduler.Coordinator)
-	}
-
-	a.scheduler = scheduler.NewService(
-		scheduler.Config{
-			Enabled:           cfg.Scheduler.Enabled,
-			ScanInterval:      cfg.Scheduler.ScanInterval,
-			RedispatchBackoff: cfg.Scheduler.RedispatchBackoff,
-			BatchSize:         cfg.Scheduler.BatchSize,
-		},
-		scheduler.Deps{
-			Store:        a.storeFactory,
-			Registry:     a.nodeRegistry,
-			Coordinator:  coordStrategy,
-			Distribution: distStrategy,
-			Clock:        schedClock,
-			Executor:     clusterExecutor,
-			SelfID:       a.selfNodeID,
-			HealthFlag:   a.healthFlag,
-		},
-	)
-	a.scheduler.Start()
 
 	// The join layer: every request that carries a pass runs through it, on
 	// either door — joined, checked under the transaction's lock, and holding
@@ -810,7 +767,6 @@ func New(cfg Config) *App {
 		if cfg.Cluster.Enabled {
 			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth)
 			dispatchHandler.Register(outerMux)
-			cluster.NewSchedulerRPCHandler(schedEngine, peerAuth).Register(outerMux)
 		}
 		a.handler = outerMux
 	} else {
@@ -823,7 +779,6 @@ func New(cfg Config) *App {
 		if cfg.Cluster.Enabled {
 			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth)
 			dispatchHandler.Register(mux)
-			cluster.NewSchedulerRPCHandler(schedEngine, peerAuth).Register(mux)
 		}
 		a.handler = mux
 	}
@@ -939,6 +894,23 @@ func (a *App) ReadinessCheck() error {
 	return nil
 }
 
+// DrainScheduler runs the scheduler's shutdown steps 1-5. The binary calls it
+// on a signal before the servers drain, so runs still in progress keep their
+// compute-node streams and callback routes. Shutdown calls it again; the
+// second call does nothing.
+func (a *App) DrainScheduler(ctx context.Context) {
+	if a.scheduler != nil {
+		a.scheduler.Drain(ctx)
+	}
+}
+
+// schedulerCalloutDeadlineMax is the longest one callout can take: every try
+// at the largest answer limit, the patience and the hand-over allowance.
+func schedulerCalloutDeadlineMax(c Config) time.Duration {
+	return time.Duration(1+c.Callout.FixedNumRetries)*c.Callout.ResponseTimeoutMax +
+		c.Cluster.DispatchWaitTimeout + c.Callout.HandoverAllowance
+}
+
 func (a *App) StoreFactory() spi.StoreFactory             { return a.storeFactory }
 func (a *App) TransactionManager() spi.TransactionManager { return a.transactionManager }
 func (a *App) AuthenticationService() contract.AuthenticationService {
@@ -1045,6 +1017,9 @@ func (a *App) StopGRPC() {
 // followed by Close() (the runServers sequence) close the factory
 // exactly once.
 func (a *App) Shutdown() {
+	// A server failed, or the binary did not drain the scheduler first: the
+	// same steps run here, after the servers stopped.
+	a.DrainScheduler(context.Background())
 	a.stopSearchReaperLoop()
 	if a.searchPool != nil {
 		drainCtx, cancel := context.WithTimeout(context.Background(), searchDrainBudget)
@@ -1057,9 +1032,6 @@ func (a *App) Shutdown() {
 		if n := a.searchService.ReleaseRegisteredJobs(context.Background()); n > 0 {
 			slog.Info("released in-flight async search jobs for reclaim at shutdown", "pkg", "search", "count", n)
 		}
-	}
-	if a.scheduler != nil {
-		a.scheduler.Stop()
 	}
 	if a.nodeRegistry != nil && a.config.Cluster.Enabled {
 		if err := a.nodeRegistry.Deregister(context.Background(), a.config.Cluster.NodeID); err != nil {

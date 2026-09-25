@@ -22,9 +22,6 @@ type Config struct {
 	// DispatchConnectTimeout bounds opening the connection for a hand-over to
 	// another node. A peer that cannot be connected to costs no try.
 	DispatchConnectTimeout time.Duration
-	// DispatchForwardTimeout is the whole-request timeout of the scheduler's
-	// node-to-node RPC client. It does not govern callout hand-overs.
-	DispatchForwardTimeout time.Duration
 	// DispatchAllowLoopback opts the inter-node dispatch HTTP forwarder out of
 	// its loopback-address SSRF guard so multi-node tests can run every node on
 	// 127.0.0.1 and still forward processor/criteria dispatch between them.

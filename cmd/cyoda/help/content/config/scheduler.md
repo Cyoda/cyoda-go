@@ -14,17 +14,22 @@ see_also:
 
 ## NAME
 
-config.scheduler — scan-loop cadence, coordinator/distribution strategy, and expiry-grace env vars for the scheduled-transition runtime.
+config.scheduler — how each node claims and runs scheduled transitions: claim cadence, run limits, liveness, retries and shutdown.
 
 ## DESCRIPTION
 
-- `CYODA_SCHEDULER_ENABLED` (bool, default: `true`) — kill switch for the coordinator scan loop.
-- `CYODA_SCHEDULER_SCAN_INTERVAL` (duration, default: `1s`) — coordinator scan cadence.
-- `CYODA_SCHEDULER_BATCH_SIZE` (int, default: `100`) — max due tasks pulled per scan.
-- `CYODA_SCHEDULER_DISTRIBUTION` (string, default: `round-robin`) — dispatch-target selection strategy: `round-robin` or `self`. Forced to `self` whenever `CYODA_CLUSTER_ENABLED=false`.
-- `CYODA_SCHEDULER_COORDINATOR` (string, default: `lowest-node-id`) — coordinator-election strategy; the member with the lexicographically smallest node ID scans on each tick.
-- `CYODA_SCHEDULER_REDISPATCH_BACKOFF` (duration, default: `30s`) — best-effort re-dispatch throttle window applied to a task once it is picked up, so the same due task isn't immediately re-dispatched on the next scan. It is a throttle, not a lease: a scheduled transition still running after this long is started a second time while the first is in progress. Only one of the two can commit, so the data stays correct, but the transition's processors run twice. One try of a callout that gets no answer already takes an answer limit (`CYODA_CALLOUT_RESPONSE_TIMEOUT_MS`, default `30000`), and a callout may take several; size this value above the longest scheduled transition you expect, or make the processors of scheduled transitions safe to repeat.
-- `CYODA_SCHEDULER_EXPIRY_GRACE` (duration, default: `100ms`) — grace band above a scheduled transition's `timeoutMs` before it is expired instead of fired late; size to at least the maximum expected inter-node clock skew.
+Every node claims due scheduled tasks and runs them itself. A node proves it is alive with a heartbeat; another node takes over its tasks only after `CYODA_SCHEDULER_STALE_AFTER` without one. Startup fails on a value outside its rule.
+
+- `CYODA_SCHEDULER_ENABLED` (bool, default: `true`) — kill switch: a node with `false` claims no scheduled task.
+- `CYODA_SCHEDULER_SCAN_INTERVAL` (duration, default: `1s`) — how often the node claims due tasks. A node also claims at once when a run slot frees after a claim took every slot. Must be `> 0`.
+- `CYODA_SCHEDULER_MAX_RUNS` (int, default: `8`) — most scheduled runs one node holds at once. Must be `>= 1`.
+- `CYODA_SCHEDULER_MAX_RUNS_PER_TENANT` (int, default: `4`) — most runs of one tenant on one node. Must be between `1` and `CYODA_SCHEDULER_MAX_RUNS`.
+- `CYODA_SCHEDULER_HEARTBEAT_INTERVAL` (duration, default: `15s`) — how often a node records that it is alive. Must be `> 0`.
+- `CYODA_SCHEDULER_STALE_AFTER` (duration, default: `2m`) — how long a node may go without a heartbeat before another node takes over its runs. Must be at least `50s + 3 × CYODA_SCHEDULER_HEARTBEAT_INTERVAL`, and the same on every node of a cluster. A node whose heartbeats keep failing cancels its own runs before this time passes.
+- `CYODA_SCHEDULER_MAX_LOST_OWNERS` (int, default: `3`) — a task whose node is lost this many times ends FAILED `OWNER_LOST_REPEATEDLY`. Must be `>= 1`.
+- `CYODA_SCHEDULER_RETRY_DELAY` (duration, default: `30s`) — delay before the first retry of a run that failed without handing unsafe work to a compute node. It doubles on each further failure and never passes the transition's `timeoutMs`. Must be `> 0`.
+- `CYODA_SCHEDULER_RETRY_DELAY_MAX` (duration, default: `15m`) — the retry delay never grows past this. Must be `>= CYODA_SCHEDULER_RETRY_DELAY`.
+- `CYODA_SCHEDULER_SHUTDOWN_DRAIN` (duration, default: `20s`) — on shutdown, how long the node waits for its runs before it cancels them. A run whose unsafe processor callout is in flight is not cancelled. Must be `>= 0`.
 
 ## SEE ALSO
 

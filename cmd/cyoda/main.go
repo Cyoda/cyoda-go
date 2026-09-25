@@ -119,6 +119,10 @@ func main() {
 		slog.Error("dispatch config validation failed", "error", err)
 		os.Exit(1)
 	}
+	if err := app.ValidateScheduler(cfg.Scheduler); err != nil {
+		slog.Error("scheduler config validation failed", "error", err)
+		os.Exit(1)
+	}
 	logCORSMode(cfg.CORS)
 
 	printBanner(cfg)

@@ -17,6 +17,7 @@ func validConfig() Config {
 		GRPC:                       GRPCConfig{KeepAliveInterval: 10, KeepAliveTimeout: 30},
 		Callout:                    validCalloutConfig(),
 		Cluster:                    validDispatchConfig(),
+		Scheduler:                  defaultSchedulerConfig(),
 	}
 }
 
@@ -44,6 +45,7 @@ func TestConfig_Validate(t *testing.T) {
 		{"answer limit above its upper bound", func(c *Config) { c.Callout.ResponseTimeout = 2 * time.Minute }},
 		{"negative patience", func(c *Config) { c.Cluster.DispatchWaitTimeout = -time.Second }},
 		{"zero pass allowance", func(c *Config) { c.Callout.PassAllowance = 0 }},
+		{"stale-after below its minimum", func(c *Config) { c.Scheduler.StaleAfter = 94 * time.Second }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

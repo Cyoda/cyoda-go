@@ -77,7 +77,6 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_PROXY_TIMEOUT", Topic: "cluster", Type: "duration", Default: "30s", Description: "Request proxy timeout."},
 	{Name: "CYODA_DISPATCH_WAIT_TIMEOUT", Topic: "cluster", Type: "duration", Default: "5s", Description: "How long one callout waits, in total, for a compute member with matching tags to exist — on a single node as in a cluster, whatever its retryPolicy. 0 disables waiting. Must not be negative; startup fails otherwise."},
 	{Name: "CYODA_DISPATCH_CONNECT_TIMEOUT", Topic: "cluster", Type: "duration", Default: "2s", Description: "Time allowed to open the connection when a callout is handed over to another node; a node that cannot be connected to costs no try. Must be > 0; startup fails otherwise."},
-	{Name: "CYODA_DISPATCH_FORWARD_TIMEOUT", Topic: "cluster", Type: "duration", Default: "30s", Description: "Whole-request timeout of the node-to-node call that delegates a scheduled transition. Does not govern callout hand-overs. Must be > 0; startup fails otherwise."},
 	{Name: "CYODA_CALLOUT_HANDOVER_ALLOWANCE", Topic: "cluster", Type: "duration", Default: "30s", Description: "What the owning node allows a callout hand-over on top of (tries left x answer limit); also the last term of a callout's overall deadline. Must be > 0; startup fails otherwise."},
 	{Name: "CYODA_CALLOUT_PASS_ALLOWANCE", Topic: "cluster", Type: "duration", Default: "30s", Description: "How long the transaction token given to a compute member outlives its try's answer limit — the margin for routing a callback and for clocks that differ between nodes. Must be > 0; startup fails otherwise."},
 
@@ -128,13 +127,16 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_COMPUTE_HTTP_BASE", Topic: "grpc", Type: "string", Default: "", Description: "HTTP base URL of the cyoda instance a compute node calls back into (compute-client side)."},
 
 	// --- scheduler ---
-	{Name: "CYODA_SCHEDULER_ENABLED", Topic: "scheduler", Type: "bool", Default: "true", Description: "Kill switch for the scheduled-transition coordinator scan loop."},
-	{Name: "CYODA_SCHEDULER_SCAN_INTERVAL", Topic: "scheduler", Type: "duration", Default: "1s", Description: "Coordinator scan cadence."},
-	{Name: "CYODA_SCHEDULER_BATCH_SIZE", Topic: "scheduler", Type: "int", Default: "100", Description: "Max due tasks pulled per scan."},
-	{Name: "CYODA_SCHEDULER_DISTRIBUTION", Topic: "scheduler", Type: "string", Default: "round-robin", Description: "Dispatch-target selection strategy: round-robin or self. Forced to self when CYODA_CLUSTER_ENABLED=false."},
-	{Name: "CYODA_SCHEDULER_COORDINATOR", Topic: "scheduler", Type: "string", Default: "lowest-node-id", Description: "Coordinator-election strategy."},
-	{Name: "CYODA_SCHEDULER_REDISPATCH_BACKOFF", Topic: "scheduler", Type: "duration", Default: "30s", Description: "Best-effort re-dispatch throttle window after a due task is picked up."},
-	{Name: "CYODA_SCHEDULER_EXPIRY_GRACE", Topic: "scheduler", Type: "duration", Default: "100ms", Description: "Grace band above a scheduled transition's timeoutMs before it is expired instead of fired late; size to at least the max inter-node clock skew."},
+	{Name: "CYODA_SCHEDULER_ENABLED", Topic: "scheduler", Type: "bool", Default: "true", Description: "Kill switch: a node with false claims no scheduled task."},
+	{Name: "CYODA_SCHEDULER_SCAN_INTERVAL", Topic: "scheduler", Type: "duration", Default: "1s", Description: "How often a node claims due scheduled tasks. Must be > 0; startup fails otherwise."},
+	{Name: "CYODA_SCHEDULER_MAX_RUNS", Topic: "scheduler", Type: "int", Default: "8", Description: "Most scheduled runs one node holds at once. Must be >= 1; startup fails otherwise."},
+	{Name: "CYODA_SCHEDULER_MAX_RUNS_PER_TENANT", Topic: "scheduler", Type: "int", Default: "4", Description: "Most scheduled runs of one tenant on one node. Must be between 1 and CYODA_SCHEDULER_MAX_RUNS; startup fails otherwise."},
+	{Name: "CYODA_SCHEDULER_HEARTBEAT_INTERVAL", Topic: "scheduler", Type: "duration", Default: "15s", Description: "How often a node records that it is alive. Must be > 0; startup fails otherwise."},
+	{Name: "CYODA_SCHEDULER_STALE_AFTER", Topic: "scheduler", Type: "duration", Default: "2m", Description: "How long a node may go without a heartbeat before another node takes over its scheduled runs. Must be >= 50s + 3 x CYODA_SCHEDULER_HEARTBEAT_INTERVAL and the same on every node; startup fails otherwise."},
+	{Name: "CYODA_SCHEDULER_MAX_LOST_OWNERS", Topic: "scheduler", Type: "int", Default: "3", Description: "A scheduled task whose node is lost this many times ends FAILED OWNER_LOST_REPEATEDLY. Must be >= 1; startup fails otherwise."},
+	{Name: "CYODA_SCHEDULER_RETRY_DELAY", Topic: "scheduler", Type: "duration", Default: "30s", Description: "Delay before the first retry of a scheduled run that failed safely; it doubles on each further failure. Must be > 0; startup fails otherwise."},
+	{Name: "CYODA_SCHEDULER_RETRY_DELAY_MAX", Topic: "scheduler", Type: "duration", Default: "15m", Description: "The retry delay never grows past this. Must be >= CYODA_SCHEDULER_RETRY_DELAY; startup fails otherwise."},
+	{Name: "CYODA_SCHEDULER_SHUTDOWN_DRAIN", Topic: "scheduler", Type: "duration", Default: "20s", Description: "On shutdown, how long a node waits for its scheduled runs before it cancels them; a run with an unsafe processor callout in flight is not cancelled. Must be >= 0; startup fails otherwise."},
 }
 
 // RootConfigVars returns a copy of the root var table.
