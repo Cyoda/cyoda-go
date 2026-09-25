@@ -138,7 +138,7 @@ func tryOnce(d *ProcessorDispatcher, ctx context.Context, member *Member, reques
 	if err != nil {
 		return nil, err
 	}
-	_, failure, ctxErr := d.dispatchCalloutToMember(ctx, member, call, pass)
+	_, failure, _, ctxErr := d.dispatchCalloutToMember(ctx, member, call, pass)
 	switch {
 	case ctxErr != nil:
 		return nil, ctxErr

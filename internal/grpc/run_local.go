@@ -133,7 +133,7 @@ func (d *ProcessorDispatcher) RunLocal(ctx context.Context, call Callout, maxTri
 			res.Attempts = append(res.Attempts, contract.CalloutAttempt{MemberID: member.ID, Kind: contract.Terminal, Cause: "internal error"})
 			break
 		}
-		result, failure, ctxErr := d.dispatchCalloutToMember(ctx, member, call, pass)
+		result, failure, _, ctxErr := d.dispatchCalloutToMember(ctx, member, call, pass)
 		if ctxErr != nil {
 			res.CtxErr = ctxErr
 			return res
