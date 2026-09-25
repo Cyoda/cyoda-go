@@ -989,6 +989,24 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   the one that sorts first in the audit order (normally the last one
   recorded).
 
+- **Workflow import now refuses a `schedule.timeoutMs` below `0` or a
+  `schedule.delayMs` below `1`, matching the minimums `TransitionScheduleDto`
+  already published.** Neither was enforced: a negative `timeoutMs` was
+  accepted outright, and a negative `delayMs` alongside a `function` was
+  accepted and silently ignored — the delayMs/function XOR check reads any
+  non-positive `delayMs` as "absent", so it saw only the function and
+  passed. Both are now rejected at import (`400 VALIDATION_FAILED`), naming
+  the workflow, state, transition and field. Separately, a scheduled task is
+  now refused when it is armed with a fire time — or, when a timeout is
+  set, an expiry — outside the years `0000`-`9999`: `GET /scheduled-tasks`
+  renders both as RFC 3339 timestamps, which cannot represent a year outside
+  that range, and `time.Time.MarshalJSON` would fail after the response's
+  `200` header is already written. A `Schedule` Function result that
+  overflows or falls outside that range fails with the existing
+  `500 SCHEDULE_FUNCTION_INVALID_RESULT`; a static `delayMs`/`timeoutMs`
+  that does the same fails the write instead of arming an unrenderable
+  task.
+
 ## [0.8.4] — 2026-09-09
 
 ### Breaking

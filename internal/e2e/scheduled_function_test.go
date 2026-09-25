@@ -119,6 +119,76 @@ func TestScheduledFunction_Import_DelayMsAndFunctionBothSet_400(t *testing.T) {
 	assertImportRejected(t, status, body, "delayMs and function both set")
 }
 
+// TestScheduledFunction_Import_TimeoutMsNegative_StaticDelay_400,
+// TestScheduledFunction_Import_TimeoutMsNegative_Function_400 and
+// TestScheduledFunction_Import_DelayMsNegativeWithFunction_400 are the E2E
+// twins of internal/domain/workflow's TestValidator_TimeoutMsNegative_Rejected,
+// TestValidator_TimeoutMsNegative_RejectedWithFunctionSchedule and
+// TestValidator_DelayMsNegativeWithFunction_Rejected: api/openapi.yaml's
+// TransitionScheduleDto publishes `timeoutMs: minimum 0` and `delayMs:
+// minimum 1`, and these confirm the full HTTP stack now enforces both at
+// import instead of accepting them silently.
+
+func TestScheduledFunction_Import_TimeoutMsNegative_StaticDelay_400(t *testing.T) {
+	const model = "e2e-schedfn-import-timeoutms-neg-static"
+	wf := `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.1", "name": "schedfn-timeoutms-neg-static-wf", "initialState": "Open", "active": true,
+			"states": {
+				"Open": {"transitions": [{"name": "AutoClose", "next": "Closed", "manual": false,
+					"schedule": {"delayMs": 1000, "timeoutMs": -1}
+				}]},
+				"Closed": {}
+			}
+		}]
+	}`
+	importModelE2E(t, model, 1)
+	lockModelE2E(t, model, 1)
+	status, body := importWorkflowE2E(t, model, 1, wf)
+	assertImportRejected(t, status, body, "negative timeoutMs, static delay")
+}
+
+func TestScheduledFunction_Import_TimeoutMsNegative_Function_400(t *testing.T) {
+	const model = "e2e-schedfn-import-timeoutms-neg-fn"
+	wf := fmt.Sprintf(`{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.3", "name": "schedfn-timeoutms-neg-fn-wf", "initialState": "Open", "active": true,
+			"states": {
+				"Open": {"transitions": [{"name": "AutoClose", "next": "Closed", "manual": false,
+					"schedule": {"function": %s, "timeoutMs": -1}
+				}]},
+				"Closed": {}
+			}
+		}]
+	}`, validScheduleFunctionJSON("calcFire"))
+	importModelE2E(t, model, 1)
+	lockModelE2E(t, model, 1)
+	status, body := importWorkflowE2E(t, model, 1, wf)
+	assertImportRejected(t, status, body, "negative timeoutMs, function schedule")
+}
+
+func TestScheduledFunction_Import_DelayMsNegativeWithFunction_400(t *testing.T) {
+	const model = "e2e-schedfn-import-delayms-neg-fn"
+	wf := fmt.Sprintf(`{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.3", "name": "schedfn-delayms-neg-fn-wf", "initialState": "Open", "active": true,
+			"states": {
+				"Open": {"transitions": [{"name": "AutoClose", "next": "Closed", "manual": false,
+					"schedule": {"delayMs": -1, "function": %s}
+				}]},
+				"Closed": {}
+			}
+		}]
+	}`, validScheduleFunctionJSON("calcFire"))
+	importModelE2E(t, model, 1)
+	lockModelE2E(t, model, 1)
+	status, body := importWorkflowE2E(t, model, 1, wf)
+	assertImportRejected(t, status, body, "negative delayMs alongside function")
+}
+
 func TestScheduledFunction_Import_ManualAndFunction_400(t *testing.T) {
 	const model = "e2e-schedfn-import-manual-and-fn"
 	wf := fmt.Sprintf(`{
