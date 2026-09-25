@@ -86,10 +86,14 @@ func queryFromParams(p genapi.ListScheduledTasksParams) (spi.ScheduledTaskQuery,
 	q := spi.ScheduledTaskQuery{Limit: defaultLimit}
 
 	if p.Status != nil {
+		seen := make(map[spi.ScheduledTaskStatus]bool, len(*p.Status))
 		for _, s := range *p.Status {
 			switch st := spi.ScheduledTaskStatus(s); st {
 			case spi.ScheduledTaskWaiting, spi.ScheduledTaskRunning, spi.ScheduledTaskFailed:
-				q.Statuses = append(q.Statuses, st)
+				if !seen[st] {
+					seen[st] = true
+					q.Statuses = append(q.Statuses, st)
+				}
 			default:
 				return spi.ScheduledTaskQuery{}, badRequest("invalid status parameter: must be WAITING, RUNNING or FAILED")
 			}
@@ -134,7 +138,8 @@ func msTime(ms int64) time.Time { return time.UnixMilli(ms).UTC() }
 
 // toDTO renders one task. Arm and claim tokens, the claim owner, the tenant,
 // the mark and the partial-commit flag are never rendered. Each optional field
-// is present exactly when the published contract says it is.
+// is present exactly when the published contract says it is: lastError is
+// present whenever lastAttemptTime is, even when the stored text is empty.
 func toDTO(t spi.ScheduledTask) (genapi.ScheduledTaskDto, error) {
 	eid, err := uuid.Parse(t.EntityID)
 	if err != nil {
@@ -164,8 +169,8 @@ func toDTO(t spi.ScheduledTask) (genapi.ScheduledTaskDto, error) {
 	if t.LastAttemptTime != nil {
 		last := msTime(*t.LastAttemptTime)
 		d.LastAttemptTime = &last
-	}
-	if t.LastError != "" {
+		// lastError is rendered alongside lastAttemptTime even when the
+		// stored text is empty, so the pair is always present together.
 		msg := t.LastError
 		d.LastError = &msg
 	}

@@ -242,8 +242,11 @@ func TestList_ItemFields(t *testing.T) {
 	failed.LastError = "PROCESSOR_ERROR: boom"
 	failed.FailureReason = spi.FailureUnsafeWorkNotCompleted
 	failed.FailedTime = &failedAt
+	eRetry := uuid.New()
+	retried := base("t-retried", eRetry, spi.ScheduledTaskWaiting)
+	retried.LastAttemptTime = &lastAt // re-armed after a failed attempt whose text was empty
 
-	st := &fakeStore{page: spi.ScheduledTaskPage{Items: []spi.ScheduledTask{waiting, running, failed}}}
+	st := &fakeStore{page: spi.ScheduledTaskPage{Items: []spi.ScheduledTask{waiting, running, failed, retried}}}
 	w := call(t, fakeFactory{store: st}, genapi.ListScheduledTasksParams{})
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d; body: %s", w.Code, w.Body.String())
@@ -261,8 +264,8 @@ func TestList_ItemFields(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(resp.Items) != 3 {
-		t.Fatalf("items = %d, want 3", len(resp.Items))
+	if len(resp.Items) != 4 {
+		t.Fatalf("items = %d, want 4", len(resp.Items))
 	}
 	fields := func(taskID string, e uuid.UUID, status string) map[string]any {
 		return map[string]any{
@@ -287,10 +290,30 @@ func TestList_ItemFields(t *testing.T) {
 	wantF["failureReason"] = "UNSAFE_WORK_NOT_COMPLETED"
 	wantF["failedTime"] = "2023-11-14T22:16:40Z"
 
-	for i, want := range []map[string]any{wantW, wantR, wantF} {
+	wantRetry := fields("t-retried", eRetry, "WAITING")
+	wantRetry["attempts"], wantRetry["lostOwners"] = float64(0), float64(0)
+	wantRetry["nextAttemptTime"] = "2023-11-14T22:13:20.123Z"
+	wantRetry["lastAttemptTime"] = "2023-11-14T22:15:00Z"
+	wantRetry["lastError"] = ""
+
+	for i, want := range []map[string]any{wantW, wantR, wantF, wantRetry} {
 		if !reflect.DeepEqual(resp.Items[i], want) {
 			t.Errorf("item %d =\n  %v\nwant\n  %v", i, resp.Items[i], want)
 		}
+	}
+}
+
+func TestList_DuplicateStatusesDeduplicated(t *testing.T) {
+	st := &fakeStore{}
+	w := call(t, fakeFactory{store: st}, genapi.ListScheduledTasksParams{
+		Status: statuses("WAITING", "WAITING", "FAILED"),
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	want := []spi.ScheduledTaskStatus{spi.ScheduledTaskWaiting, spi.ScheduledTaskFailed}
+	if !reflect.DeepEqual(st.query.Statuses, want) {
+		t.Errorf("statuses = %+v, want %+v", st.query.Statuses, want)
 	}
 }
 
