@@ -183,14 +183,18 @@ Any value other than `"internalized"` (including the empty string, the canonical
 - **Visibility of segment-boundary states.** States on a segment boundary (the pre-callout state of a `COMMIT_BEFORE_DISPATCH` processor) are **publicly observable** to readers between segments. A concurrent transaction's `Get`/`GetPage`/`Iterate`/`Search`/`Count` will see the entity in the pre-callout state, and a second cascade may decide to fire criteria-driven transitions based on that observed state. Workflow authors using `COMMIT_BEFORE_DISPATCH` must treat segment-boundary states as committed states — design state-machine criteria, transition guards, and external monitoring accordingly. If invisibility of an intermediate state is required, model it as a workflow-level `DRAFT` parent state with sub-stages in payload, or do not expose the entity until a designated terminal state.
 - **Attribution handover with `startNewTxOnDispatch=false`.** With no transaction context supplied, the dispatched processor's callback writes are ordinary independent requests — the platform tracks no causal chain for them. Each is attributed to whatever identity it presents (its own service credentials, or an OBO user token it forwards). The dispatch's AuthContext (`authtype`/`authid`/`authclaims`) carries the causal principal so the application can self-attribute if it wants user-level attribution; the platform supplies no separate carrier for this mode.
 - **A write made under a transaction token that reaches one is refused.** A compute member's callback — a request carrying a transaction token — runs in the transaction it joined, and only the operation that began a transaction commits it. A `COMMIT_BEFORE_DISPATCH` processor commits the transaction it runs in, so a callback whose write reaches one is refused with `409` `COMMIT_IN_JOINED_TRANSACTION` at that processor: it is not dispatched, the joined transaction is neither flushed nor committed, and what the workflow did before it stays in the joined transaction for its owner to keep or discard. Both values of `startNewTxOnDispatch` are refused. A compute member that needs such a write from inside a processor makes it as an independent request, without the transaction token. The refusal is deterministic, so a test of the path finds it. Whether a workflow is reached from a callback is decided at run time, not at import, so the import does not reject the combination.
-- **Best-practice: a processor must not save the entity it is processing for.**
+- **A processor changes the entity it runs for in one way only.**
   Processors with TX-callback access (SYNC, ASYNC_SAME_TX, COMMIT_BEFORE_DISPATCH
   with startNewTxOnDispatch=true) can write the cascade-anchor entity via the
-  supplied transaction token, but if they do AND also return mutations for the
-  same entity in their result, the engine's apply-result will overwrite the
-  processor's intra-TX writes (last-writer-wins inside the transaction buffer).
-  Pick one path: let the engine apply the result, OR have the processor write
-  the entity itself and return no mutations for it.
+  supplied transaction token. If the processor then returns no mutations, the
+  engine keeps that write: it takes the written payload, keeps its own state,
+  and the transition still takes effect; later processors see the written
+  payload. If the processor also returns mutations for the same entity, the
+  engine's apply-result overwrites the processor's intra-TX writes
+  (last-writer-wins inside the transaction buffer). Pick one path: let the
+  engine apply the result, OR have the processor write the entity itself and
+  return no mutations for it. A write to the entity by any other transaction
+  makes the transition fail with a conflict.
 
 Import-time validation rejects any `executionMode` value not in the list above (and not empty) with `400 VALIDATION_FAILED`. The empty string continues to default to `SYNC` at engine fire.
 

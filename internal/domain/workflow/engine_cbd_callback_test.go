@@ -13,8 +13,9 @@ import (
 )
 
 // cbdCallbackEnv runs an ordinary (not scheduled) transition S_pre --CALLOUT-->
-// S_post whose one processor is COMMIT_BEFORE_DISPATCH with
-// startNewTxOnDispatch=true, so the processor's callback joins TX_post.
+// S_post with the given processors. newCBDCallbackEnv gives it one
+// COMMIT_BEFORE_DISPATCH processor with startNewTxOnDispatch=true, so the
+// processor's callback joins TX_post.
 type cbdCallbackEnv struct {
 	factory *memory.StoreFactory
 	txMgr   spi.TransactionManager
@@ -27,12 +28,28 @@ type cbdCallbackEnv struct {
 // own transactions use the unwrapped one.
 func newCBDCallbackEnv(t *testing.T, dispatch func(ctx context.Context, entity *spi.Entity, txID string) (*spi.Entity, error), wrapTx ...func(spi.TransactionManager) spi.TransactionManager) *cbdCallbackEnv {
 	t.Helper()
+	return newCallbackEnv(t, []spi.ProcessorDefinition{cbdNewTxProc("cbd-proc")},
+		func(ctx context.Context, entity *spi.Entity, _ spi.ProcessorDefinition, txID string) (*spi.Entity, error) {
+			return dispatch(ctx, entity, txID)
+		}, wrapTx...)
+}
+
+func cbdNewTxProc(name string) spi.ProcessorDefinition {
+	startNewTx := true
+	return spi.ProcessorDefinition{
+		Type: ProcessorTypeExternalized, Name: name, ExecutionMode: ExecutionModeCommitBeforeDispatch,
+		Config: spi.ProcessorConfig{StartNewTxOnDispatch: &startNewTx},
+	}
+}
+
+func newCallbackEnv(t *testing.T, procs []spi.ProcessorDefinition, dispatch func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, txID string) (*spi.Entity, error), wrapTx ...func(spi.TransactionManager) spi.TransactionManager) *cbdCallbackEnv {
+	t.Helper()
 	factory := memory.NewStoreFactory()
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
-	mock := &mockExternalProcessing{dispatchFunc: func(ctx context.Context, entity *spi.Entity, _ spi.ProcessorDefinition, _, _, txID string) (*spi.Entity, error) {
-		return dispatch(ctx, entity, txID)
+	mock := &mockExternalProcessing{dispatchFunc: func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, _, _, txID string) (*spi.Entity, error) {
+		return dispatch(ctx, entity, proc, txID)
 	}}
 	var engineTx spi.TransactionManager = txMgr
 	for _, w := range wrapTx {
@@ -44,34 +61,37 @@ func newCBDCallbackEnv(t *testing.T, dispatch func(ctx context.Context, entity *
 	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{
 		"x": schema.Integer, "by": schema.String,
 	})
-	startNewTx := true
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{{
 		Version: "1.1", Name: "CbdCallbackWF", InitialState: "S_pre", Active: true,
 		States: map[string]spi.StateDefinition{
-			"S_pre": {Transitions: []spi.TransitionDefinition{{Name: "CALLOUT", Next: "S_post",
-				Processors: []spi.ProcessorDefinition{{
-					Type: ProcessorTypeExternalized, Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch,
-					Config: spi.ProcessorConfig{StartNewTxOnDispatch: &startNewTx},
-				}}}}},
+			"S_pre":  {Transitions: []spi.TransitionDefinition{{Name: "CALLOUT", Next: "S_post", Manual: true, Processors: procs}}},
 			"S_post": {},
 		},
 	}})
 	return &cbdCallbackEnv{factory: factory, txMgr: txMgr, engine: engine, ctx: ctx, model: modelRef}
 }
 
-// execute creates entity id through the workflow. It returns TX_pre's id, the
+// transition seeds entity id in S_pre with {"x":0}, then runs the manual
+// transition CALLOUT on it in a new transaction, as the entity service does.
+// It returns the transaction's id (TX_pre when the processor segments), the
 // engine's entity, the engine's result and error.
-func (env *cbdCallbackEnv) execute(t *testing.T, id string) (string, *spi.Entity, *EngineResult, error) {
+func (env *cbdCallbackEnv) transition(t *testing.T, id string) (string, *spi.Entity, *EngineResult, error) {
 	t.Helper()
+	seedFireEntity(t, env.factory, env.ctx, id, env.model, "S_pre", "seed-tx", map[string]any{"x": 0})
 	txID, txCtx, err := env.txMgr.Begin(env.ctx)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
-	entity := &spi.Entity{
-		Meta: spi.EntityMeta{ID: id, TenantID: testTenant, ModelRef: env.model, TransactionID: txID},
-		Data: []byte(`{"x":0}`),
+	es, err := env.factory.EntityStore(txCtx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
 	}
-	result, err := env.engine.Execute(txCtx, entity, "")
+	entity, err := es.Get(txCtx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	entity.Meta.TransactionID = txID
+	result, err := env.engine.ManualTransition(txCtx, entity, "CALLOUT")
 	return txID, entity, result, err
 }
 
@@ -107,55 +127,157 @@ func writeAnchor(ctx context.Context, factory spi.StoreFactory, entity *spi.Enti
 	return err
 }
 
-// A callback that joins TX_post and writes the cascade-anchor entity: the
-// transition succeeds, and the engine's result is the last write, whether or
-// not the processor also returns mutations.
-func TestCBDCallback_WritesAnchor_EngineResultIsLastWrite(t *testing.T) {
+// callbackModes are the processor dispatch sites whose callback joins the
+// transaction the engine continues in.
+func callbackModes() []struct {
+	name string
+	proc func(name string) spi.ProcessorDefinition
+} {
+	mode := func(m string) func(string) spi.ProcessorDefinition {
+		return func(name string) spi.ProcessorDefinition {
+			return spi.ProcessorDefinition{Type: ProcessorTypeExternalized, Name: name, ExecutionMode: m}
+		}
+	}
+	return []struct {
+		name string
+		proc func(name string) spi.ProcessorDefinition
+	}{
+		{"sync", mode(ExecutionModeSync)},
+		{"async_same_tx", mode(ExecutionModeAsyncSameTx)},
+		{"cbd_start_new_tx", cbdNewTxProc},
+	}
+}
+
+var (
+	processorWrote = map[string]any{"x": float64(7), "by": "processor"}
+	engineApplied  = map[string]any{"x": float64(42), "by": "engine"}
+)
+
+// A processor whose callback writes the anchor through the transaction it
+// joined. With no mutations returned, the callback's write is kept and the
+// transition still takes effect. With mutations returned, the engine's result
+// is applied last and overwrites it.
+func TestProcessorCallback_WritesAnchor(t *testing.T) {
 	cases := []struct {
 		name     string
 		returned *spi.Entity
 		wantData map[string]any
 	}{
-		{name: "no mutations returned", returned: nil, wantData: map[string]any{"x": float64(0)}},
-		{name: "mutations returned", returned: &spi.Entity{Data: []byte(`{"x":42,"by":"engine"}`)}, wantData: map[string]any{"x": float64(42), "by": "engine"}},
+		{name: "no mutations returned keeps the callback's write", returned: nil, wantData: processorWrote},
+		{name: "mutations returned overwrite it", returned: &spi.Entity{Data: []byte(`{"x":42,"by":"engine"}`)}, wantData: engineApplied},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var env *cbdCallbackEnv
-			env = newCBDCallbackEnv(t, func(ctx context.Context, entity *spi.Entity, _ string) (*spi.Entity, error) {
-				if err := writeAnchor(ctx, env.factory, entity); err != nil {
-					return nil, err
+	for _, mode := range callbackModes() {
+		for _, tc := range cases {
+			t.Run(mode.name+"/"+tc.name, func(t *testing.T) {
+				var env *cbdCallbackEnv
+				env = newCallbackEnv(t, []spi.ProcessorDefinition{mode.proc("p1")},
+					func(ctx context.Context, entity *spi.Entity, _ spi.ProcessorDefinition, _ string) (*spi.Entity, error) {
+						if err := writeAnchor(ctx, env.factory, entity); err != nil {
+							return nil, err
+						}
+						return tc.returned, nil
+					})
+				_, entity, result, err := env.transition(t, "cbw-1")
+				if err != nil {
+					t.Fatalf("ManualTransition: %v", err)
 				}
-				return tc.returned, nil
+				if err := finish(env, entity, result); err != nil {
+					t.Fatalf("finish: %v", err)
+				}
+				got, found := env.committed(t, "cbw-1")
+				if !found {
+					t.Fatal("entity not found after commit")
+				}
+				if got.Meta.State != "S_post" {
+					t.Errorf("state = %q, want S_post", got.Meta.State)
+				}
+				assertData(t, got.Data, tc.wantData)
 			})
-			_, entity, result, err := env.execute(t, "cbdw-1")
+		}
+	}
+}
+
+// A later processor in the same chain is dispatched with the payload the
+// callback wrote.
+func TestProcessorCallback_WritesAnchor_LaterProcessorSeesIt(t *testing.T) {
+	for _, mode := range callbackModes() {
+		t.Run(mode.name, func(t *testing.T) {
+			var env *cbdCallbackEnv
+			var seen []byte
+			env = newCallbackEnv(t, []spi.ProcessorDefinition{
+				mode.proc("p1"),
+				{Type: ProcessorTypeExternalized, Name: "p2", ExecutionMode: ExecutionModeSync},
+			}, func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, _ string) (*spi.Entity, error) {
+				if proc.Name == "p2" {
+					seen = append([]byte(nil), entity.Data...)
+					return nil, nil
+				}
+				return nil, writeAnchor(ctx, env.factory, entity)
+			})
+			_, entity, result, err := env.transition(t, "cbl-1")
 			if err != nil {
-				t.Fatalf("Execute: %v", err)
+				t.Fatalf("ManualTransition: %v", err)
 			}
-			es, err := env.factory.EntityStore(result.FinalCtx)
-			if err != nil {
-				t.Fatalf("EntityStore: %v", err)
-			}
-			// What the boundary left in TX_post: the engine's result, over
-			// the callback's write.
-			inTx, err := es.Get(result.FinalCtx, "cbdw-1")
-			if err != nil {
-				t.Fatalf("Get in TX_post: %v", err)
-			}
-			assertData(t, inTx.Data, tc.wantData)
+			assertData(t, seen, processorWrote)
 			if err := finish(env, entity, result); err != nil {
 				t.Fatalf("finish: %v", err)
 			}
-			got, found := env.committed(t, "cbdw-1")
-			if !found {
-				t.Fatal("entity not found after commit")
+			got, _ := env.committed(t, "cbl-1")
+			if got == nil || got.Meta.State != "S_post" {
+				t.Fatalf("committed = %+v, want S_post", got)
 			}
-			if got.Meta.State != "S_post" {
-				t.Errorf("state = %q, want S_post", got.Meta.State)
-			}
-			assertData(t, got.Data, tc.wantData)
+			assertData(t, got.Data, processorWrote)
 		})
 	}
+}
+
+// A processor whose callback writes nothing leaves the engine's payload
+// alone, even when the anchor was written earlier in the same transaction by
+// an earlier processor's callback and a later processor then returned
+// mutations the transaction has not stored yet.
+func TestProcessorCallback_NoWrite_KeepsEnginePayload(t *testing.T) {
+	var env *cbdCallbackEnv
+	env = newCallbackEnv(t, []spi.ProcessorDefinition{
+		{Type: ProcessorTypeExternalized, Name: "p1", ExecutionMode: ExecutionModeSync},
+		{Type: ProcessorTypeExternalized, Name: "p2", ExecutionMode: ExecutionModeSync},
+		{Type: ProcessorTypeExternalized, Name: "p3", ExecutionMode: ExecutionModeSync},
+	}, func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, _ string) (*spi.Entity, error) {
+		switch proc.Name {
+		case "p1":
+			return nil, writeAnchor(ctx, env.factory, entity)
+		case "p2":
+			return &spi.Entity{Data: []byte(`{"x":42,"by":"engine"}`)}, nil
+		default:
+			return nil, nil
+		}
+	})
+	_, entity, result, err := env.transition(t, "cbn-1")
+	if err != nil {
+		t.Fatalf("ManualTransition: %v", err)
+	}
+	assertData(t, entity.Data, engineApplied)
+	if err := finish(env, entity, result); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
+// The same without any callback write: the anchor is still the committed
+// version, and the engine keeps the mutations an earlier processor returned.
+func TestProcessorCallback_NoWrite_CommittedAnchor_KeepsEnginePayload(t *testing.T) {
+	env := newCallbackEnv(t, []spi.ProcessorDefinition{
+		{Type: ProcessorTypeExternalized, Name: "p1", ExecutionMode: ExecutionModeSync},
+		{Type: ProcessorTypeExternalized, Name: "p2", ExecutionMode: ExecutionModeSync},
+	}, func(_ context.Context, _ *spi.Entity, proc spi.ProcessorDefinition, _ string) (*spi.Entity, error) {
+		if proc.Name == "p1" {
+			return &spi.Entity{Data: []byte(`{"x":42,"by":"engine"}`)}, nil
+		}
+		return nil, nil
+	})
+	_, entity, _, err := env.transition(t, "cbc-1")
+	if err != nil {
+		t.Fatalf("ManualTransition: %v", err)
+	}
+	assertData(t, entity.Data, engineApplied)
 }
 
 // A callback that deletes the cascade-anchor entity mid-chain still fails the
@@ -169,7 +291,7 @@ func TestCBDCallback_DeletesAnchor_Fails(t *testing.T) {
 		}
 		return nil, es.Delete(ctx, entity.Meta.ID)
 	})
-	txPre, _, _, err := env.execute(t, "cbdd-1")
+	txPre, _, _, err := env.transition(t, "cbdd-1")
 	if !errors.Is(err, spi.ErrConflict) || !errors.Is(err, ErrPostSegmentConflict) {
 		t.Fatalf("Execute: err = %v, want a post-segment conflict", err)
 	}
@@ -216,7 +338,7 @@ func TestCBDCallback_OtherTransactionWrites_Conflicts(t *testing.T) {
 				}
 				return nil, env.txMgr.Commit(env.ctx, otherID)
 			})
-			_, entity, result, err := env.execute(t, "cbdo-1")
+			_, entity, result, err := env.transition(t, "cbdo-1")
 			if err == nil {
 				err = finish(env, entity, result)
 			}
@@ -251,7 +373,7 @@ func assertData(t *testing.T, raw []byte, want map[string]any) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if len(data) != len(want) || data["x"] != want["x"] || data["by"] != want["by"] {
-		t.Errorf("data = %v, want %v: the engine's result is the last write", data, want)
+		t.Errorf("data = %v, want %v", data, want)
 	}
 }
 
@@ -297,7 +419,7 @@ func TestCBDCallback_OtherTransactionWritesBeforeTXPostBegins_Conflicts(t *testi
 				return env.txMgr.Commit(env.ctx, otherID)
 			}
 
-			_, entity, result, err := env.execute(t, "cbdb-1")
+			_, entity, result, err := env.transition(t, "cbdb-1")
 			if wrap.err != nil {
 				t.Fatalf("other transaction: %v", wrap.err)
 			}

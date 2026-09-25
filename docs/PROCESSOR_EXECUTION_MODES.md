@@ -75,7 +75,11 @@ which of the two strings was used.
 4. The gRPC call uses `Config.ResponseTimeoutMs` (default 30000ms) as the
    round-trip deadline.
 5. On a successful response, `entity.Data` is replaced with the processor's
-   returned mutations and the pipeline continues to the next processor.
+   returned mutations and the pipeline continues to the next processor. When
+   the processor returns no mutations and a callback wrote the entity in `T`
+   during the dispatch, `entity.Data` takes that write instead; the engine
+   keeps its own state and metadata, so the transition still takes effect
+   and later processors see the written payload.
 6. On any failure the engine returns `processor X failed: …`, wrapping
    whatever error ended the callout: the member's own `400 WORKFLOW_FAILED`
    when it answered `success:false`, or a retryable `5xx`
@@ -181,7 +185,9 @@ directly (via `txMgr.Join`). The engine independently scopes the entire
 dispatch in a savepoint `S`: if the processor fails, `RollbackToSavepoint(T, S)`
 undoes all callback writes and the pipeline continues; if the processor
 succeeds, `ReleaseSavepoint(T, S)` retains those writes inside `T` (subject
-to `T`'s eventual commit). A savepoint that cannot be created, undone or
+to `T`'s eventual commit). A callback write to the entity the processor runs
+for is the exception: the engine does not adopt it, and its own write of
+that entity later in `T` replaces it. A savepoint that cannot be created, undone or
 released fails the operation instead of continuing the pipeline (a ticketed
 `5xx`); a chain superseded by fencing does not touch its savepoint at all, so
 a replaced compute member's writes never land after it.
@@ -251,15 +257,19 @@ rejects this flag for any other execution mode.
 
 #### `startNewTxOnDispatch = true`
 
-- Engine sequence: `Save → Commit(T_pre) → Begin(T_post) → dispatch with
-  T_post's token in context → CompareAndSave(T_pre) → cascade continues in
-  T_post`.
+- Engine sequence: `Save → Commit(T_pre) → Begin(T_post) → read the
+  anchor in T_post and require T_pre's version → dispatch with T_post's
+  token in context → CompareAndSave → cascade continues in T_post`.
+- The read before the dispatch fixes `T_post`'s snapshot. If another
+  transaction wrote or deleted the anchor after `T_pre` committed, the
+  transition fails with a conflict before the processor is dispatched.
 - The processor's CRUD callbacks join `T_post`. It can read/write other
-  entities transactionally, and the cascade-anchor entity too: when a
-  callback wrote the anchor in `T_post`, the engine compares against
-  `T_post` instead of `T_pre`, so the write does not conflict. A callback
-  that deletes the anchor still fails the transition, and a write by any
-  other transaction still conflicts.
+  entities transactionally, and the cascade-anchor entity too. The
+  `CompareAndSave` compares against `T_post` when a callback wrote the
+  anchor in `T_post`, and against `T_pre` otherwise. When the processor
+  returns no mutations, the callback's write is kept, as in `SYNC`. A
+  callback that deletes the anchor fails the transition, and a write by any
+  other transaction conflicts.
 - **Hazard — last-writer-wins on the cascade-anchor entity.** If the
   processor writes the cascade-anchor entity through its TX-callback AND
   returns mutations for the same entity in its result, the engine's

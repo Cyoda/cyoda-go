@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -390,6 +391,82 @@ func TestCallback_TXPostAnchorReadFails_RunFails(t *testing.T) {
 			}
 			if n := ext.count("p1"); n != 0 {
 				t.Errorf("p1 dispatched %d times, want 0", n)
+			}
+		})
+	}
+}
+
+// nthFailFactory fails the nth EntityStore call (failStoreAt) or the nth
+// EntityStore.Get (failGetAt), counting from 1; 0 fails none.
+type nthFailFactory struct {
+	spi.StoreFactory
+	failStoreAt, failGetAt int
+	stores, gets           *int
+	err                    error
+}
+
+type nthFailEntityStore struct {
+	spi.EntityStore
+	f nthFailFactory
+}
+
+func (f nthFailFactory) EntityStore(ctx context.Context) (spi.EntityStore, error) {
+	*f.stores++
+	if *f.stores == f.failStoreAt {
+		return nil, f.err
+	}
+	es, err := f.StoreFactory.EntityStore(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return nthFailEntityStore{EntityStore: es, f: f}, nil
+}
+
+func (s nthFailEntityStore) Get(ctx context.Context, id string) (*spi.Entity, error) {
+	*s.f.gets++
+	if *s.f.gets == s.f.failGetAt {
+		return nil, s.f.err
+	}
+	return s.EntityStore.Get(ctx, id)
+}
+
+// The reads a SYNC dispatch makes around the callout to observe a callback's
+// write cannot be made: the run fails as an infrastructure failure.
+func TestCallback_SyncObservationFails_RunFails(t *testing.T) {
+	// In a one-hop run with one SYNC processor, the first EntityStore call and
+	// the first Get are the fire's own read; the second of each is the store
+	// and the read before the dispatch; the third Get is the read after it.
+	cases := []struct {
+		name                   string
+		failStoreAt, failGetAt int
+		wantDispatches         int
+		wantText               string
+	}{
+		{"store before dispatch", 2, 0, 0, "before processor dispatch"},
+		{"read before dispatch", 0, 2, 0, "before processor dispatch"},
+		{"read after dispatch", 0, 3, 1, "after processor dispatch"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stores, gets := 0, 0
+			storeErr := errors.New("store unavailable")
+			ext := &scriptedExtProc{}
+			var env *runEnv
+			env = newRunEnvWith(t, ext, func(f spi.StoreFactory) spi.StoreFactory {
+				return nthFailFactory{StoreFactory: f, stores: &stores, gets: &gets, err: storeErr}
+			}, nil)
+			claimed := env.claimed(t, "cbso-e1", oneHopWF("CLOSED", []spi.ProcessorDefinition{safeProc("p1", ExecutionModeSync)}, nil))
+			stores, gets = 0, 0
+			env.engine.factory = nthFailFactory{StoreFactory: env.engine.factory.(nthFailFactory).StoreFactory,
+				failStoreAt: tc.failStoreAt, failGetAt: tc.failGetAt, stores: &stores, gets: &gets, err: storeErr}
+
+			r := runWithin(t, env, claimed)
+			if r.Outcome != OutcomeFailed || !errors.Is(r.Err, storeErr) || !errors.Is(r.Err, ErrProcessorOutputInfra) ||
+				!strings.Contains(r.Err.Error(), tc.wantText) {
+				t.Fatalf("report = %+v, want failed %s, marked infrastructure", r, tc.wantText)
+			}
+			if n := ext.count("p1"); n != tc.wantDispatches {
+				t.Errorf("p1 dispatched %d times, want %d", n, tc.wantDispatches)
 			}
 		})
 	}

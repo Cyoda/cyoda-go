@@ -218,10 +218,26 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 
 // executeSyncProcessor runs a SYNC or ASYNC_SAME_TX processor inline in the
 // caller's transaction. On success the entity's Data is updated with the
-// processor's returned modifications.
+// processor's returned modifications. A processor that returns none may
+// instead have written the entity through a callback that joined the
+// transaction; that write is kept (adoptCallbackWrite).
 func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, desc *modelDescMemo, proc spi.ProcessorDefinition, workflow, transition, txID string) (retErr error) {
 	if e.extProc == nil {
 		return nil
+	}
+	// The anchor as the transaction sees it before the dispatch. Without a
+	// transaction no callback can join one, and there is nothing to observe.
+	tx := spi.GetTransaction(ctx)
+	var es spi.EntityStore
+	var before anchorView
+	if tx != nil {
+		var err error
+		if es, err = e.factory.EntityStore(ctx); err != nil {
+			return fmt.Errorf("failed to get entity store before processor dispatch: %w", errors.Join(ErrProcessorOutputInfra, err))
+		}
+		if before, err = readAnchor(ctx, es, entity.Meta.ID); err != nil {
+			return fmt.Errorf("failed to read entity before processor dispatch: %w", errors.Join(ErrProcessorOutputInfra, err))
+		}
 	}
 	dispatched, err := beforeDispatch(ctx, proc)
 	if err != nil {
@@ -251,6 +267,13 @@ func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, d
 	}
 	if modifiedEntity != nil && modifiedEntity.Data != nil {
 		return e.applyProcessorData(ctx, entity, desc, modifiedEntity.Data)
+	}
+	if tx != nil {
+		after, err := readAnchor(ctx, es, entity.Meta.ID)
+		if err != nil {
+			return fmt.Errorf("failed to re-read entity after processor dispatch: %w", errors.Join(ErrProcessorOutputInfra, err))
+		}
+		adoptCallbackWrite(entity, before, after, tx.ID)
 	}
 	return nil
 }
@@ -465,12 +488,6 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		}
 	}
 
-	if pending != nil {
-		if applyErr := e.applyProcessorData(newCtx, entity, desc, pending); applyErr != nil {
-			return nil, "", applyErr
-		}
-	}
-
 	// Apply the result via CompareAndSave — works in both branches. The
 	// precondition is tPre, unless a callback that joined TX_post wrote the
 	// entity: the engine's result then supersedes that write, as in a
@@ -484,6 +501,17 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 	after, readErr := readAnchor(newCtx, es, entity.Meta.ID)
 	if readErr != nil {
 		return nil, "", fmt.Errorf("commit-before-dispatch: re-read entity before apply: %w", errors.Join(ErrCommitBeforeDispatchInfra, readErr))
+	}
+	if pending != nil {
+		if applyErr := e.applyProcessorData(newCtx, entity, desc, pending); applyErr != nil {
+			return nil, "", applyErr
+		}
+	} else {
+		// TX_post wrote nothing before the dispatch: with startNewTxOnDispatch
+		// its first entity read found the version tPre committed, and without
+		// it no callback could join TX_post at all. So the anchor as read
+		// before the dispatch is one TX_post had not written.
+		adoptCallbackWrite(entity, anchorView{}, after, newTxID)
 	}
 	applyAgainst := tPre
 	if after.writtenBy(newTxID) {

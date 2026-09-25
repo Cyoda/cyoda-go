@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"errors"
 
@@ -33,3 +34,21 @@ func readAnchor(ctx context.Context, es spi.EntityStore, entityID string) (ancho
 
 // writtenBy reports whether the transaction txID wrote the anchor.
 func (v anchorView) writtenBy(txID string) bool { return v.found && v.txID == txID }
+
+// adoptCallbackWrite keeps a write that a processor's callback made to the
+// anchor during one dispatch, in the transaction txID the callback joined,
+// when the processor returned no mutations: the engine's entity takes the
+// written payload and keeps its own state and meta. before and after are the
+// anchor as txID saw it around the dispatch. The dispatch wrote it when txID
+// wrote it afterwards and had not before, or when its payload changed. A
+// write that leaves the stored payload as it was cannot be told from no
+// write, and the engine's payload stands.
+func adoptCallbackWrite(entity *spi.Entity, before, after anchorView, txID string) {
+	if !after.writtenBy(txID) {
+		return
+	}
+	if before.writtenBy(txID) && bytes.Equal(before.data, after.data) {
+		return
+	}
+	entity.Data = after.data
+}
