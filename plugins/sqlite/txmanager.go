@@ -15,11 +15,16 @@ import (
 
 const submitTimeTTL = 1 * time.Hour
 
-// committedTx records a committed transaction in the in-memory log.
+// committedTx records a committed write in the in-memory log. seq orders the
+// log: the conflict check compares it with the sequence number a transaction
+// saw at Begin (txSnapshotSeq), never with a clock reading. Begin reserves its
+// snapshot as the submit-time floor, so under a frozen clock a commit that
+// preceded Begin can carry the same instant as the snapshot; the sequence
+// number still orders them.
 type committedTx struct {
-	id         string
-	submitTime time.Time
-	writeSet   map[string]bool
+	id       string
+	seq      int64
+	writeSet map[string]bool
 }
 
 // submitTimeEntry pairs a committed transaction's submit time with the
@@ -60,9 +65,10 @@ type savepointSnapshot struct {
 // Snapshot Isolation + First-Committer-Wins (SI+FCW). In-memory committedLog
 // tracks conflicts; SQLite is the persistence layer.
 //
-// Commit ordering: acquire the commit gate -> validate SI+FCW -> capture
-// submitTime -> BEGIN IMMEDIATE -> flush -> COMMIT -> append committedLog ->
-// prune -> release the commit gate.
+// Commit ordering: acquire the commit gate -> validate SI+FCW by sequence
+// number -> capture submitTime -> BEGIN IMMEDIATE -> flush -> COMMIT -> append
+// committedLog with the next sequence number -> prune -> release the commit
+// gate.
 type transactionManager struct {
 	factory *StoreFactory
 	uuids   spi.UUIDGenerator
@@ -70,7 +76,7 @@ type transactionManager struct {
 	// for SI+FCW correctness — a mutex in every respect except that a waiter
 	// can be released by its context. See acquireCommitGate.
 	commitGate chan struct{}
-	mu         sync.Mutex // protects active, committedLog, committing, submitTimes, savepoints, txUniqueKeys
+	mu         sync.Mutex // protects active, committedLog, commitSeq, txSnapshotSeq, committing, submitTimes, savepoints, txUniqueKeys
 
 	active         map[string]*spi.TransactionState
 	committedLog   []committedTx
@@ -78,6 +84,13 @@ type transactionManager struct {
 	submitTimes    map[string]submitTimeEntry
 	savepoints     map[string]map[string]savepointSnapshot
 	lastSubmitTime int64 // monotonic submit time in microseconds; bumped and read under mu, by callers holding the commit gate
+
+	// commitSeq counts committed writes; txSnapshotSeq holds its value at
+	// each open transaction's Begin. Both are read and written under mu by
+	// callers holding the commit gate, so every Begin is ordered wholly
+	// before or wholly after every commit.
+	commitSeq     int64
+	txSnapshotSeq map[string]int64 // txID → commitSeq at Begin; removed by forgetLocked
 
 	// txUniqueKeys holds per-entity unique keys captured at Save (buffer) time.
 	// Keys are recorded when an entity is buffered so that flushToSQLite can
@@ -145,6 +158,7 @@ func newTransactionManager(factory *StoreFactory, uuids spi.UUIDGenerator) *tran
 		submitTimes:             make(map[string]submitTimeEntry),
 		savepoints:              make(map[string]map[string]savepointSnapshot),
 		txUniqueKeys:            make(map[string]map[string][]spi.UniqueKey),
+		txSnapshotSeq:           make(map[string]int64),
 		scheduledTaskOps:        make(map[string][]scheduledTaskOp),
 		supersededSaves:         make(map[string]map[string][]*spi.Entity),
 		deletedBufferedEntities: make(map[string]map[string]*spi.Entity),
@@ -403,6 +417,42 @@ func (m *transactionManager) nextSubmitTime() int64 {
 	return nowMicro
 }
 
+// forgetLocked drops every piece of per-transaction state the manager holds
+// for txID. Caller holds mu.
+func (m *transactionManager) forgetLocked(txID string) {
+	delete(m.active, txID)
+	delete(m.committing, txID)
+	delete(m.savepoints, txID)
+	delete(m.txUniqueKeys, txID)
+	delete(m.txSnapshotSeq, txID)
+	delete(m.scheduledTaskOps, txID)
+	delete(m.supersededSaves, txID)
+	delete(m.deletedBufferedEntities, txID)
+}
+
+// pruneCommittedLogLocked drops the log entries no open transaction can
+// conflict with: those at or below the oldest open snapshot's sequence
+// number, or all of them when no transaction is open. Caller holds mu.
+func (m *transactionManager) pruneCommittedLogLocked() {
+	if len(m.active) == 0 {
+		m.committedLog = m.committedLog[:0]
+		return
+	}
+	oldest := int64(-1)
+	for txID := range m.active {
+		if s := m.txSnapshotSeq[txID]; oldest < 0 || s < oldest {
+			oldest = s
+		}
+	}
+	pruned := m.committedLog[:0]
+	for _, c := range m.committedLog {
+		if c.seq > oldest {
+			pruned = append(pruned, c)
+		}
+	}
+	m.committedLog = pruned
+}
+
 // Begin starts a new transaction. It resolves the tenant from the context,
 // generates a unique transaction ID, captures a snapshot time, and returns
 // a new context carrying the TransactionState.
@@ -440,10 +490,12 @@ func (m *transactionManager) Begin(ctx context.Context) (string, context.Context
 	// rows are visible) and a direct write (saveDirectly, the non-tx Delete)
 	// alike. A Begin that read a stamped value without waiting would carry a
 	// SnapshotTime at or after a write whose rows it cannot yet see on
-	// readDB — and Commit's conflict check would then treat that commit as
-	// preceding the snapshot. Waiting here makes "submit_time <=
-	// SnapshotTime" imply "rows visible" on every connection. Lock order
-	// commitGate → mu, the order Commit uses.
+	// readDB. Waiting here makes "submit_time <= SnapshotTime" imply "rows
+	// visible" on every connection. It also makes the sequence number taken
+	// below exact: no commit is between its check and its log entry, so a
+	// commit either precedes this Begin wholly (its seq is at or below the
+	// snapshot's) or follows it wholly. Lock order commitGate → mu, the
+	// order Commit uses.
 	//
 	// The snapshot is then RESERVED as the new floor. Reading the floor is
 	// not enough: with the floor below the clock (a quiet database leaves it
@@ -467,6 +519,7 @@ func (m *transactionManager) Begin(ctx context.Context) (string, context.Context
 		tx.SnapshotTime = time.UnixMicro(nowMicro)
 		m.lastSubmitTime = nowMicro
 		m.active[txID] = tx
+		m.txSnapshotSeq[txID] = m.commitSeq
 		return nil
 	}(); err != nil {
 		return "", ctx, err
@@ -547,28 +600,18 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 	_ = m.acquireCommitGate(context.Background())
 	defer m.releaseCommitGate()
 
-	// 3. Conflict detection: check committed log for overlapping write sets.
-	// Unlike the memory plugin which uses entityMu to serialize CAS checks
-	// against commits, the SQLite plugin uses the commit gate. The SI+FCW check uses
-	// !Before (>=) rather than After (>) for the submit time comparison.
-	// This catches write-write conflicts even when commits happen at the
-	// same clock tick (e.g., frozen TestClock). The memory plugin avoids
-	// this by holding entityMu.Lock during commit, which blocks concurrent
-	// CompareAndSave reads until the commit is visible.
+	// 3. Conflict detection. A transaction conflicts with every commit whose
+	// sequence number is above the one it saw at Begin and whose write set
+	// meets its read or write set.
 	if err := func() error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
+		snapshotSeq := m.txSnapshotSeq[txID]
 		for _, committed := range m.committedLog {
-			if !committed.submitTime.Before(tx.SnapshotTime) {
+			if committed.seq > snapshotSeq {
 				for entityID := range committed.writeSet {
 					if tx.ReadSet[entityID] || tx.WriteSet[entityID] {
-						delete(m.committing, txID)
-						delete(m.active, txID)
-						delete(m.savepoints, txID)
-						delete(m.txUniqueKeys, txID)
-						delete(m.scheduledTaskOps, txID)
-						delete(m.supersededSaves, txID)
-						delete(m.deletedBufferedEntities, txID)
+						m.forgetLocked(txID)
 						return spi.ErrConflict
 					}
 				}
@@ -594,13 +637,7 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 			m.mu.Lock()
 			defer m.mu.Unlock()
 			tx.RolledBack = true
-			delete(m.active, txID)
-			delete(m.committing, txID)
-			delete(m.savepoints, txID)
-			delete(m.txUniqueKeys, txID)
-			delete(m.scheduledTaskOps, txID)
-			delete(m.supersededSaves, txID)
-			delete(m.deletedBufferedEntities, txID)
+			m.forgetLocked(txID)
 		}()
 		// ErrUniqueViolation from claim writes must not be re-classified —
 		// classifyError passes through non-sqlite errors unchanged.
@@ -612,10 +649,11 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 
+		m.commitSeq++
 		m.committedLog = append(m.committedLog, committedTx{
-			id:         txID,
-			submitTime: submitTime,
-			writeSet:   tx.WriteSet,
+			id:       txID,
+			seq:      m.commitSeq,
+			writeSet: tx.WriteSet,
 		})
 		m.submitTimes[txID] = submitTimeEntry{submitTime: submitTime, tenantID: tx.TenantID}
 
@@ -627,32 +665,8 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 			}
 		}
 
-		// Prune: find oldest active transaction's snapshot, remove older entries.
-		delete(m.active, txID)
-		delete(m.committing, txID)
-		delete(m.savepoints, txID)
-		delete(m.txUniqueKeys, txID)
-		delete(m.scheduledTaskOps, txID)
-		delete(m.supersededSaves, txID)
-		delete(m.deletedBufferedEntities, txID)
-		var oldest time.Time
-		for _, activeTx := range m.active {
-			if oldest.IsZero() || activeTx.SnapshotTime.Before(oldest) {
-				oldest = activeTx.SnapshotTime
-			}
-		}
-		if !oldest.IsZero() {
-			pruned := m.committedLog[:0]
-			for _, c := range m.committedLog {
-				if !c.submitTime.Before(oldest) {
-					pruned = append(pruned, c)
-				}
-			}
-			m.committedLog = pruned
-		} else {
-			// No active transactions -- all entries can be pruned.
-			m.committedLog = m.committedLog[:0]
-		}
+		m.forgetLocked(txID)
+		m.pruneCommittedLogLocked()
 	}()
 
 	// Prune old submit_times from SQLite (best-effort).
@@ -955,13 +969,7 @@ func (m *transactionManager) Rollback(ctx context.Context, txID string) error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		tx.RolledBack = true
-		delete(m.active, txID)
-		delete(m.committing, txID)
-		delete(m.savepoints, txID)
-		delete(m.txUniqueKeys, txID)
-		delete(m.scheduledTaskOps, txID)        // discard staged ops unapplied — see field doc
-		delete(m.supersededSaves, txID)         // discard staged superseded values unapplied — see field doc
-		delete(m.deletedBufferedEntities, txID) // discard staged evicted entities unapplied — see field doc
+		m.forgetLocked(txID) // staged ops and side-channel values are discarded unapplied — see the field docs
 	}()
 	return nil
 }
