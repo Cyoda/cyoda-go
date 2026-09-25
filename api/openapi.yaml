@@ -1563,6 +1563,27 @@ paths:
                 instance: /api/entity/2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
                 properties:
                   entityId: 2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
+        "409":
+          description: >-
+            Conflict (`CONFLICT`, retryable). Another write committed first to
+            the entity or to one of its scheduled tasks — the scheduler changes
+            a task when it claims, records, fails or gives it back. The server
+            retries the delete up to 3 times before it answers 409; retry the
+            request. A request that joins an open transaction (`X-Tx-Token`) is
+            not retried on the server.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Conflict
+                status: 409
+                detail: "CONFLICT: transaction conflict — retry"
+                instance: /api/entity/2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
+                properties:
+                  errorCode: CONFLICT
+                  retryable: true
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":

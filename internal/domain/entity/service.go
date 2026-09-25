@@ -638,9 +638,28 @@ func (h *Handler) GetStatisticsForModel(ctx context.Context, entityName string, 
 	}, nil
 }
 
-// DeleteEntity deletes a single entity by ID within a transaction.
-// Returns the deleted entity's metadata for the response.
+// DeleteEntity deletes a single entity by ID, with its scheduled tasks, in
+// one transaction, and returns the deleted entity's metadata for the
+// response. An owned delete that loses a task-row race with the scheduler
+// runs again (common.RetryOnTaskConflict); a joined one does not.
 func (h *Handler) DeleteEntity(ctx context.Context, entityID string) (*deleteEntityResult, error) {
+	var result *deleteEntityResult
+	err := common.RetryOnTaskConflict(ctx, spi.GetTransaction(ctx) == nil, func() error {
+		r, err := h.deleteEntityOnce(ctx, entityID)
+		if err != nil {
+			return err
+		}
+		result = r
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// deleteEntityOnce is one attempt of DeleteEntity, in its own transaction.
+func (h *Handler) deleteEntityOnce(ctx context.Context, entityID string) (*deleteEntityResult, error) {
 	// Begin a fresh tx, or PARTICIPATE in a joined tx already on ctx.
 	scope, err := h.beginScope(ctx)
 	if err != nil {
@@ -680,14 +699,15 @@ func (h *Handler) DeleteEntity(ctx context.Context, entityID string) (*deleteEnt
 		}
 		// Soft delete within transaction.
 		if err := entityStore.Delete(txCtx, entityID); err != nil {
-			return common.Internal("failed to delete entity", err)
+			return deleteWriteError("failed to delete entity", err)
+		}
+		// The entity's scheduled tasks go in the same transaction.
+		if err := h.deleteEntityTasks(txCtx, []string{entityID}); err != nil {
+			return deleteWriteError("failed to delete scheduled tasks", err)
 		}
 		// Commit transaction (no-op when participating in a joined tx).
 		if err := scope.Commit(); err != nil {
-			if errors.Is(err, spi.ErrConflict) {
-				return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
-			}
-			return common.Internal("failed to commit transaction", err)
+			return deleteWriteError("failed to commit transaction", err)
 		}
 		return nil
 	}(); appErr != nil {
@@ -701,6 +721,49 @@ func (h *Handler) DeleteEntity(ctx context.Context, entityID string) (*deleteEnt
 		ModelVersion:  ver,
 		TransactionID: txID,
 	}, nil
+}
+
+// conflictError is the retryable 409 for a first-committer-wins refusal. The
+// refusal stays its cause, so common.RetryOnTaskConflict recognises it.
+func conflictError(err error) *common.AppError {
+	return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").
+		AsRetryable().WithCause(err)
+}
+
+// deleteWriteError classifies a failed write or commit inside a delete's
+// transaction: a first-committer-wins refusal is conflictError, anything
+// else is common.Internal.
+func deleteWriteError(msg string, err error) *common.AppError {
+	if errors.Is(err, spi.ErrConflict) {
+		return conflictError(err)
+	}
+	return common.Internal(msg, err)
+}
+
+// txTenant is the tenant of the transaction on txCtx.
+func txTenant(txCtx context.Context) (spi.TenantID, error) {
+	tx := spi.GetTransaction(txCtx)
+	if tx == nil {
+		return "", errors.New("no transaction on the context")
+	}
+	return tx.TenantID, nil
+}
+
+// deleteEntityTasks removes the scheduled tasks of ids inside the
+// transaction on txCtx. No ids, no call.
+func (h *Handler) deleteEntityTasks(txCtx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	tenant, err := txTenant(txCtx)
+	if err != nil {
+		return err
+	}
+	sts, err := h.factory.ScheduledTaskStore(txCtx)
+	if err != nil {
+		return fmt.Errorf("failed to access scheduled task store: %w", err)
+	}
+	return sts.DeleteForEntities(txCtx, tenant, ids)
 }
 
 type deleteEntityResult struct {
