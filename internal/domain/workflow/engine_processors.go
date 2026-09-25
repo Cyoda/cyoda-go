@@ -548,7 +548,7 @@ func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, 
 	// transaction, not the context (spec §5.2).
 	g := e.runTxs.forTx(txID)
 	if g != nil {
-		if err := g.Store.StampSegment(ctx, g.Ref, g.firedTransitionDone); err != nil {
+		if err := g.Store.StampSegment(ctx, g.Ref, g.firedTransitionDone.Load()); err != nil {
 			if errors.Is(err, spi.ErrStaleClaim) || errors.Is(err, spi.ErrConflict) {
 				return fmt.Errorf("commit-before-dispatch: stamp scheduled task: %w", err)
 			}
@@ -568,8 +568,8 @@ func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, 
 	// (spec §5.3), on the guard of the transaction, so a chain without the
 	// guard on its context is checked too. Not marked infra: it is the run's
 	// cancellation.
-	if g != nil && g.cancelled() {
-		return runCancelled("commit-before-dispatch: segment not committed")
+	if err := commitCheckpoint(g, "commit-before-dispatch: segment not committed"); err != nil {
+		return err
 	}
 	// The commit itself runs shielded via common.ShieldedCommitWithBudget —
 	// WithoutCancel plus e.commitBudget (defaults to common.CommitBudget,
@@ -592,8 +592,8 @@ func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, 
 	}); err != nil {
 		return err
 	}
-	if g != nil && g.firedTransitionDone {
-		g.partialCommitted = true
+	if g != nil && g.firedTransitionDone.Load() {
+		g.partialCommitted.Store(true)
 	}
 	return nil
 }

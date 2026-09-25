@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -35,7 +36,8 @@ type RunGuard struct {
 	// at shutdown steps 3 and 4. nil is allowed and records nothing.
 	Unsafe *UnsafeFlight
 
-	// Run state, written only by the run's own goroutine.
+	// Run state, written only by the run's own goroutine, except the two
+	// segment-commit fields below.
 	markHeld      bool                           // a MarkUnsafe was accepted
 	markErrored   bool                           // a MarkUnsafe failed with a non-refusal error
 	unsafeReached bool                           // unsafe work reached a compute node (spec §5.5)
@@ -43,9 +45,14 @@ type RunGuard struct {
 	// firedTransitionDone is set once the fired transition has changed the
 	// state. Every segment committed after it sets PartialCommit (spec §5.4),
 	// also a cascade that loops back into the source state.
-	firedTransitionDone bool
-	partialCommitted    bool     // a segment stamped with partial committed
-	txIDs               []string // registered in Engine.runTxs; guarded by runTxGuards.mu
+	//
+	// It and partialCommitted are read and written by every segment commit
+	// the registry maps to this run, on whichever goroutine reaches it: they
+	// are atomic, so the stamp does not depend on the COMMIT_BEFORE_DISPATCH
+	// refusal of a joined chain (spec §5.2).
+	firedTransitionDone atomic.Bool
+	partialCommitted    atomic.Bool // a segment stamped with partial committed
+	txIDs               []string    // registered in Engine.runTxs; guarded by runTxGuards.mu
 }
 
 // UnsafeFlight counts a run's unsafe dispatches in flight and remembers when
@@ -187,8 +194,9 @@ func (g *RunGuard) cancelled() bool {
 	}
 }
 
-// runCheckpoint refuses to go on once the run is cancelled. It reads the
-// guard, not ctx: after a COMMIT_BEFORE_DISPATCH commit the run continues on
+// runCheckpoint refuses to go on once the run is cancelled, at a checkpoint
+// inside a segment; a commit uses commitCheckpoint. It reads the guard's
+// Done, not ctx: after a COMMIT_BEFORE_DISPATCH commit the run continues on
 // context.WithoutCancel segments, which never report a cancellation.
 func runCheckpoint(ctx context.Context, where string) error {
 	if g := RunGuardFrom(ctx); g != nil && g.cancelled() {
@@ -346,4 +354,15 @@ func (r *runTxGuards) release(g *RunGuard) {
 	for _, id := range g.txIDs {
 		delete(r.m, id)
 	}
+}
+
+// commitCheckpoint refuses a commit of a cancelled run (spec §5.3). g is the
+// guard the registry maps the committed transaction to: every commit of a run
+// finds its guard by transaction, never from the context. A nil g is a commit
+// outside a scheduled run.
+func commitCheckpoint(g *RunGuard, where string) error {
+	if g != nil && g.cancelled() {
+		return runCancelled(where)
+	}
+	return nil
 }

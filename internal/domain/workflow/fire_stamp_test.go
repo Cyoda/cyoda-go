@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -403,4 +404,96 @@ func TestRunTxs_TXPostInheritsGuard(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The run's final commit finds its guard by the transaction it commits, as
+// the segment commits do: the guard on the context does not decide.
+func TestCommitRun_FindsGuardByTransaction(t *testing.T) {
+	cases := []struct {
+		name          string
+		ctxCancelled  *bool // nil: no guard on the context
+		regCancelled  bool
+		wantCancelled bool
+		wantState     string
+	}{
+		{name: "no guard on the context, registered guard cancelled", regCancelled: true, wantCancelled: true, wantState: "OPEN"},
+		{name: "live guard on the context, registered guard cancelled", ctxCancelled: new(bool), regCancelled: true, wantCancelled: true, wantState: "OPEN"},
+		{name: "cancelled guard on the context, registered guard live", ctxCancelled: func() *bool { b := true; return &b }(), wantState: "CLOSED"},
+	}
+	guard := func(cancelled bool) *RunGuard {
+		done := make(chan struct{})
+		if cancelled {
+			close(done)
+		}
+		return &RunGuard{Done: done}
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newRunEnv(t, &scriptedExtProc{})
+			env.setup(t, "commitrun-e1", oneHopWF("CLOSED", nil, nil))
+			ctx := env.ctx
+			if tc.ctxCancelled != nil {
+				ctx = WithRunGuard(ctx, guard(*tc.ctxCancelled))
+			}
+			txID, txCtx, err := env.txMgr.Begin(ctx)
+			if err != nil {
+				t.Fatalf("Begin: %v", err)
+			}
+			defer env.txMgr.Rollback(env.ctx, txID)
+			g := guard(tc.regCancelled)
+			env.engine.runTxs.register(txID, g)
+			defer env.engine.runTxs.release(g)
+			es, _ := env.factory.EntityStore(txCtx)
+			ent, err := es.Get(txCtx, "commitrun-e1")
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			ent.Meta.State = "CLOSED"
+			if _, err := es.Save(txCtx, ent); err != nil {
+				t.Fatalf("Save: %v", err)
+			}
+
+			err = env.engine.commitRun(txCtx, txID)
+			if got := errors.Is(err, context.Canceled); got != tc.wantCancelled {
+				t.Fatalf("commitRun = %v, want cancelled=%v", err, tc.wantCancelled)
+			}
+			if got := env.state(t, "commitrun-e1"); got != tc.wantState {
+				t.Errorf("entity state = %q, want %q", got, tc.wantState)
+			}
+		})
+	}
+}
+
+// The run state the segment commit reads and writes is safe on its own: two
+// segment commits of one run on different goroutines do not race, whether or
+// not something refused one of them earlier (spec §5.2). Run with -race.
+func TestStamp_RunStateSafeAcrossGoroutines(t *testing.T) {
+	env := newRunEnv(t, &scriptedExtProc{})
+	claimed := env.claimed(t, "race-e1", oneHopWF("CLOSED", nil, nil))
+	run := newTestRun(env.sts, claimed)
+	g := run.guard
+	g.firedTransitionDone.Store(true)
+	defer env.engine.runTxs.release(g)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		txID, txCtx, err := env.txMgr.Begin(env.ctx)
+		if err != nil {
+			t.Fatalf("Begin: %v", err)
+		}
+		env.engine.runTxs.register(txID, g)
+		es, _ := env.factory.EntityStore(txCtx)
+		ent, err := es.Get(txCtx, "race-e1")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// The two stamps conflict with each other; either outcome is fine.
+			_ = env.engine.flushAndCommitSegment(txCtx, ent, txID, "", false)
+			_ = g.partialCommitted.Load()
+		}()
+	}
+	wg.Wait()
 }

@@ -107,7 +107,7 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 // runReport turns the run's result into a report. It runs after the run's
 // open segment was rolled back (fireScheduled's deferred rollback).
 func (e *Engine) runReport(ctx context.Context, g *RunGuard, outcome ScheduledOutcome, err error) RunReport {
-	r := RunReport{MarkHeld: g.markHeld, MarkErrored: g.markErrored, UnsafeReached: g.unsafeReached, PartialCommit: g.partialCommitted}
+	r := RunReport{MarkHeld: g.markHeld, MarkErrored: g.markErrored, UnsafeReached: g.unsafeReached, PartialCommit: g.partialCommitted.Load()}
 	switch {
 	case err == nil:
 		r.Outcome = outcome
@@ -287,7 +287,7 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 		}
 		return "", fireErr
 	}
-	g.firedTransitionDone = true
+	g.firedTransitionDone.Store(true)
 
 	finalCtx, finalTxID, err := e.cascadeAutomated(newCtx, entity, wf, auditStore, newTxID)
 	curCtx, curTxID = finalCtx, finalTxID
@@ -333,8 +333,9 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 // cancellation that arrives while the commit is in flight does not cut it
 // (spec §5.3).
 func (e *Engine) commitRun(ctx context.Context, txID string) error {
-	// Checkpoint before the run's final commit (spec §5.3).
-	if err := runCheckpoint(ctx, "scheduled run not committed"); err != nil {
+	// Checkpoint before the run's final commit (spec §5.3), on the guard of
+	// the transaction, as at every segment commit.
+	if err := commitCheckpoint(e.runTxs.forTx(txID), "scheduled run not committed"); err != nil {
 		return err
 	}
 	return common.ShieldedCommitWithBudget(ctx, e.commitBudget, func(commitCtx context.Context) error {
