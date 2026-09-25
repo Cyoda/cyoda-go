@@ -53,8 +53,9 @@ func TestTasks_C1_TwoTransactionsWritingOneRow_TheSecondCommitConflicts(t *testi
 	}
 }
 
-// RemoveLife of a life replaced after Begin changes nothing, yet the commit
-// fails: the row was written after the transaction began.
+// RemoveLife of the life the snapshot shows is a write even when that life
+// was replaced after Begin, so the commit fails: the row was written after
+// the transaction began.
 func TestTasks_C1_RemoveLifeOfALifeReplacedAfterBeginConflicts(t *testing.T) {
 	fx := newTaskFixture(t)
 	bg := context.Background()

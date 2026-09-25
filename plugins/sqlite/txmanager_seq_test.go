@@ -133,3 +133,52 @@ func TestFCW_ALongOpenTransactionConflictsAfterManyLaterCommits(t *testing.T) {
 		})
 	}
 }
+
+// Pruning never drops an entry a still-open transaction conflicts with,
+// however many commits land after it. The clock is frozen, so only the
+// sequence numbers order the commits. This is the entity-level test memory
+// runs under the same name (TestCommittedLogPruningKeepsAnOpenTransactionsConflict);
+// unlike TestFCW_ALongOpenTransactionConflictsAfterManyLaterCommits above, it
+// drives the transaction manager directly — tx.WriteSet/ReadSet/Buffer — not
+// through EntityStore.
+func TestCommittedLogPruningKeepsAnOpenTransactionsConflict(t *testing.T) {
+	for _, mode := range []string{"write", "read"} {
+		t.Run(mode, func(t *testing.T) {
+			_, tm, ctx := newFrozenTM(t)
+
+			write := func(txCtx context.Context, id string) {
+				tx := spi.GetTransaction(txCtx)
+				tx.WriteSet[id] = true
+				tx.Buffer[id] = &spi.Entity{Meta: spi.EntityMeta{ID: id, TenantID: "tenant-A", ChangeType: "CREATED"}, Data: []byte(`{}`)}
+			}
+			commitOne := func(id string) {
+				t.Helper()
+				txID, txCtx, err := tm.Begin(ctx)
+				if err != nil {
+					t.Fatalf("Begin: %v", err)
+				}
+				write(txCtx, id)
+				if err := tm.Commit(ctx, txID); err != nil {
+					t.Fatalf("Commit of %s: %v", id, err)
+				}
+			}
+
+			longID, longCtx, err := tm.Begin(ctx)
+			if err != nil {
+				t.Fatalf("Begin long: %v", err)
+			}
+			if mode == "write" {
+				write(longCtx, "e1")
+			} else {
+				spi.GetTransaction(longCtx).ReadSet["e1"] = true
+			}
+			commitOne("e1")
+			for i := 0; i < 5; i++ {
+				commitOne("e2")
+			}
+			if err := tm.Commit(ctx, longID); !errors.Is(err, spi.ErrConflict) {
+				t.Fatalf("long Commit = %v, want ErrConflict: e1 was committed after it began", err)
+			}
+		})
+	}
+}
