@@ -179,6 +179,8 @@ type Engine struct {
 	// WithCommitBudget so a test can observe the common.ErrCommitInterrupted
 	// wrap firing for real without waiting out the production budget.
 	commitBudget time.Duration
+	// runTxs maps each transaction a scheduled run began to the run's guard.
+	runTxs runTxGuards
 }
 
 // NewEngine creates a new workflow engine. txMgr is required and must not be

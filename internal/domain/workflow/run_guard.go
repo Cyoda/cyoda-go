@@ -16,7 +16,8 @@ import (
 // scheduler builds it from the task it claimed and attaches it with
 // WithRunGuard before it calls FireScheduledTransition. The engine reads it
 // wherever a run differs from a client request: the re-read at the start of
-// each segment and the task-row writes.
+// each segment and the task-row writes. At a segment boundary it is found by
+// the transaction id, through Engine.runTxs, not from the context.
 //
 // Ref names this claim of this life. Store is the scheduled-task store the
 // guarded calls use; the context each call is given decides whether it joins
@@ -39,6 +40,12 @@ type RunGuard struct {
 	markErrored   bool                           // a MarkUnsafe failed with a non-refusal error
 	unsafeReached bool                           // unsafe work reached a compute node (spec §5.5)
 	failReason    spi.ScheduledTaskFailureReason // the run decided FAILED itself
+	// firedTransitionDone is set once the fired transition has changed the
+	// state. Every segment committed after it sets PartialCommit (spec §5.4),
+	// also a cascade that loops back into the source state.
+	firedTransitionDone bool
+	partialCommitted    bool     // a segment stamped with partial committed
+	txIDs               []string // registered in Engine.runTxs; guarded by runTxGuards.mu
 }
 
 // UnsafeFlight counts a run's unsafe dispatches in flight and remembers when
@@ -148,17 +155,6 @@ func rereadTask(ctx context.Context, g *RunGuard) (*spi.ScheduledTask, error) {
 		return nil, errRunSuperseded
 	}
 	return cur, nil
-}
-
-// rereadSegment is rereadTask for a segment opened after a
-// COMMIT_BEFORE_DISPATCH commit. It does nothing outside a scheduled run.
-func rereadSegment(ctx context.Context) error {
-	g := RunGuardFrom(ctx)
-	if g == nil {
-		return nil
-	}
-	_, err := rereadTask(ctx, g)
-	return err
 }
 
 // removeOwnLife removes this run's task in the transaction on ctx. It does
@@ -310,4 +306,44 @@ func beforeDispatch(ctx context.Context, proc spi.ProcessorDefinition) (dispatch
 			g.unsafeReached = false
 		}
 	}, nil
+}
+
+// runTxGuards maps a transaction id to the guard of the scheduled run that
+// began it. The segment commit reads it by the id of the transaction it
+// commits, so every commit of a run's transaction is stamped and checks the
+// run's cancellation, whichever call chain reaches it (spec §5.2). The zero
+// value is ready for use.
+type runTxGuards struct {
+	mu sync.Mutex
+	m  map[string]*RunGuard
+}
+
+// register records g as the guard of txID.
+func (r *runTxGuards) register(txID string, g *RunGuard) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.m == nil {
+		r.m = make(map[string]*RunGuard)
+	}
+	r.m[txID] = g
+	g.txIDs = append(g.txIDs, txID)
+}
+
+// forTx returns the guard registered for txID, or nil outside a scheduled
+// run.
+func (r *runTxGuards) forTx(txID string) *RunGuard {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.m[txID]
+}
+
+// release drops every transaction id registered for g. The run calls it on
+// every ending, a panic included: a leaked entry would hand a stale guard to
+// a later transaction that reuses the id.
+func (r *runTxGuards) release(g *RunGuard) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, id := range g.txIDs {
+		delete(r.m, id)
+	}
 }

@@ -457,9 +457,9 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		if err != nil {
 			return nil, "", fmt.Errorf("commit-before-dispatch: begin TX_post: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
 		}
-		// First read of the new segment (spec §5.2); the guard above rolls
-		// TX_post back on failure.
-		if err := rereadSegment(newCtx); err != nil {
+		// TX_post takes the run's guard and makes its first read (spec §5.2);
+		// the guard above rolls TX_post back on failure.
+		if err := e.continueRunSegment(newCtx, txID, newTxID); err != nil {
 			return nil, "", err
 		}
 	}
@@ -541,6 +541,20 @@ func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, 
 			return fmt.Errorf("commit-before-dispatch: flush pre-callout state: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
 		}
 	}
+	// A scheduled run stamps its task as the last write of every segment
+	// (spec §5.2). The stamp is fenced; a refused stamp stops the segment from
+	// committing, and the run classifies the refusal with a non-joining
+	// re-read (fire_scheduled.go supersededBy). The guard is found by the
+	// transaction, not the context (spec §5.2).
+	g := e.runTxs.forTx(txID)
+	if g != nil {
+		if err := g.Store.StampSegment(ctx, g.Ref, g.firedTransitionDone); err != nil {
+			if errors.Is(err, spi.ErrStaleClaim) || errors.Is(err, spi.ErrConflict) {
+				return fmt.Errorf("commit-before-dispatch: stamp scheduled task: %w", err)
+			}
+			return fmt.Errorf("commit-before-dispatch: stamp scheduled task: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
+		}
+	}
 	// Spec D2/D3 pre-commit check: an expired/cancelled ctx here means no
 	// segment has committed yet on this path — fail closed so the caller's
 	// rollback produces the "nothing committed" 408 guarantee. Deliberately
@@ -551,9 +565,11 @@ func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, 
 		return fmt.Errorf("commit-before-dispatch: context expired before segment commit: %w", err)
 	}
 	// Checkpoint before each entity-transaction commit of a scheduled run
-	// (spec §5.3). Not marked infra: it is the run's cancellation.
-	if err := runCheckpoint(ctx, "commit-before-dispatch: segment not committed"); err != nil {
-		return err
+	// (spec §5.3), on the guard of the transaction, so a chain without the
+	// guard on its context is checked too. Not marked infra: it is the run's
+	// cancellation.
+	if g != nil && g.cancelled() {
+		return runCancelled("commit-before-dispatch: segment not committed")
 	}
 	// The commit itself runs shielded via common.ShieldedCommitWithBudget —
 	// WithoutCancel plus e.commitBudget (defaults to common.CommitBudget,
@@ -568,12 +584,32 @@ func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, 
 	// seam, even though ErrCommitBeforeDispatchInfra already routes it to a
 	// ticketed 500 here (that existing classification is unaffected — the
 	// marker only disqualifies a would-be 408 reclassification downstream).
-	return common.ShieldedCommitWithBudget(ctx, e.commitBudget, func(commitCtx context.Context) error {
+	if err := common.ShieldedCommitWithBudget(ctx, e.commitBudget, func(commitCtx context.Context) error {
 		if err := e.txMgr.Commit(commitCtx, txID); err != nil {
 			return fmt.Errorf("commit-before-dispatch: commit TX_pre: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	if g != nil && g.firedTransitionDone {
+		g.partialCommitted = true
+	}
+	return nil
+}
+
+// continueRunSegment hands the run guard of the committed transaction
+// prevTxID to the transaction newTxID, which continues the run, and makes the
+// new segment's first read: the task, re-read (spec §5.2). It does nothing
+// outside a scheduled run.
+func (e *Engine) continueRunSegment(ctx context.Context, prevTxID, newTxID string) error {
+	g := e.runTxs.forTx(prevTxID)
+	if g == nil {
+		return nil
+	}
+	e.runTxs.register(newTxID, g)
+	_, err := rereadTask(ctx, g)
+	return err
 }
 
 // commitAndBeginNextSegment is the COMMIT_BEFORE_DISPATCH segment-boundary
@@ -594,10 +630,10 @@ func (e *Engine) commitAndBeginNextSegment(ctx context.Context, entity *spi.Enti
 	if err != nil {
 		return "", nil, fmt.Errorf("commit-before-dispatch: begin TX_post: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
 	}
-	// A scheduled run re-reads its task first in every segment (spec §5.2).
+	// TX_post takes the run's guard and makes its first read (spec §5.2).
 	// On failure TX_post is handed back with the error, so the caller's guard
 	// rolls it back.
-	if err := rereadSegment(newCtx); err != nil {
+	if err := e.continueRunSegment(newCtx, txID, newTxID); err != nil {
 		return newTxID, newCtx, err
 	}
 	return newTxID, newCtx, nil

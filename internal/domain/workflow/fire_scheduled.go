@@ -93,6 +93,9 @@ func preRunDecision(task spi.ScheduledTask, nowMs int64, maxLostOwners int, retr
 // from the returned report (§5.6, §5.7).
 func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.ScheduledTask, maxLostOwners int, retryDelay time.Duration) RunReport {
 	g := RunGuardFrom(ctx)
+	// Releases every transaction the run registered, on every ending,
+	// a panic included.
+	defer e.runTxs.release(g)
 	reason, expire := preRunDecision(task, e.now().UnixMilli(), maxLostOwners, retryDelay)
 	if reason != "" {
 		return RunReport{Outcome: OutcomeFailed, FailReason: reason}
@@ -104,7 +107,7 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 // runReport turns the run's result into a report. It runs after the run's
 // open segment was rolled back (fireScheduled's deferred rollback).
 func (e *Engine) runReport(ctx context.Context, g *RunGuard, outcome ScheduledOutcome, err error) RunReport {
-	r := RunReport{MarkHeld: g.markHeld, MarkErrored: g.markErrored, UnsafeReached: g.unsafeReached}
+	r := RunReport{MarkHeld: g.markHeld, MarkErrored: g.markErrored, UnsafeReached: g.unsafeReached, PartialCommit: g.partialCommitted}
 	switch {
 	case err == nil:
 		r.Outcome = outcome
@@ -152,6 +155,9 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	if err != nil {
 		return "", fmt.Errorf("failed to begin scheduled-fire transaction: %w", err)
 	}
+	// The run's guard belongs to its transactions (spec §5.2): a segment
+	// commit finds it by the transaction id.
+	e.runTxs.register(txID, g)
 	// curCtx/curTxID track the open segment. A COMMIT_BEFORE_DISPATCH
 	// processor commits the entry segment and opens a new one; every exit
 	// that does not commit rolls back the segment open now.
@@ -281,6 +287,7 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 		}
 		return "", fireErr
 	}
+	g.firedTransitionDone = true
 
 	finalCtx, finalTxID, err := e.cascadeAutomated(newCtx, entity, wf, auditStore, newTxID)
 	curCtx, curTxID = finalCtx, finalTxID
