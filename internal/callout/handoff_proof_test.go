@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
@@ -192,4 +194,78 @@ func TestProof_AHandOffInAnEarlierPass_IsNeverUndone(t *testing.T) {
 		t.Errorf("code = %s, want the one attempt's own COMPUTE_MEMBER_DISCONNECTED", got)
 	}
 	assertProof(t, err, false)
+}
+
+// peerNoHandOffFailure is the failure and attempt the real router reads from an
+// authenticated no_handoff answer of a peer that tried a cnode (readAnswer's
+// no_handoff branch with triesUsed > 0).
+func peerNoHandOffFailure() (*contract.CalloutFailure, contract.CalloutAttempt) {
+	appErr := common.Operational(http.StatusServiceUnavailable, common.ErrCodeComputeMemberDisconnected,
+		"compute member disconnected during processor dispatch").AsRetryable()
+	return &contract.CalloutFailure{Kind: contract.NoHandOff, Code: appErr.Code, Message: appErr.Message, Err: appErr},
+		contract.CalloutAttempt{MemberID: "m-on-p-1", Kind: contract.NoHandOff, Cause: appErr.Message}
+}
+
+// --- hand-overs ---
+
+func TestProof_HandOver(t *testing.T) {
+	noHandOff, attempt := peerNoHandOffFailure()
+	memberFailed := &contract.CalloutFailure{Kind: contract.MemberFailed, Message: "declined"}
+	refusal := &contract.CalloutFailure{Kind: contract.Terminal, Message: "the hand-over could not be accepted"}
+	tests := []struct {
+		name       string
+		answer     func(context.Context) dispatch.HandOverAnswer
+		idempotent bool
+		want       bool
+	}{
+		{"not connected", peerNotConnected(), false, true},
+		{"proved impossible before connecting", provedUnhandoverable(), false, true},
+		{"connected, answer lost (no_answer)", losesTheAnswer(1), false, false},
+		{"connected, peer's cnode failed", peerFails(memberFailed, 1, contract.CalloutAttempt{MemberID: "m-on-p-1", Kind: contract.MemberFailed, Cause: "declined"}), false, false},
+		{"connected, peer refused before any try (Terminal)", peerFails(refusal, 0), false, false},
+		{"connected, no_handoff, not repeat-safe", peerFails(noHandOff, 1, attempt), false, true},
+		{"connected, no_handoff, repeat-safe", peerFails(noHandOff, 1, attempt), true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			router := newScriptedRouter("p-1")
+			router.script("p-1", tt.answer)
+			e := newClusterEnv(t, Config{FixedNumRetries: 0, HandoverAllowance: time.Second}, router)
+
+			err := e.dispatchProcessor(userCtx(tenantA), processorDef("x", "", tt.idempotent), testEntity())
+
+			if calls := router.made(); len(calls) != 1 {
+				t.Fatalf("hand-overs = %+v, want one", calls)
+			}
+			assertProof(t, err, tt.want)
+		})
+	}
+}
+
+// The caller goes away while a hand-over is in progress: the hand-over's
+// outcome is recorded before the loop returns.
+func TestProof_CallerGoneDuringAHandOver(t *testing.T) {
+	tests := []struct {
+		name   string
+		answer func(context.Context) dispatch.HandOverAnswer
+		want   bool
+	}{
+		{"the peer was connected to", hangs(), false},
+		{"the connection was still being opened", dialNeverCompletes(), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			router := newScriptedRouter("p-1")
+			router.script("p-1", tt.answer)
+			e := newClusterEnv(t, Config{FixedNumRetries: 3, HandoverAllowance: 30 * time.Second}, router)
+			ctx, cancel := context.WithCancel(userCtx(tenantA))
+			defer cancel()
+			time.AfterFunc(30*time.Millisecond, cancel)
+
+			err := e.dispatchProcessor(ctx, processorDef("x", "", false), testEntity())
+
+			assertClientGone(t, err)
+			assertProof(t, err, tt.want)
+		})
+	}
 }

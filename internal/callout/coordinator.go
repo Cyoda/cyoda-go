@@ -113,9 +113,10 @@ type progress struct {
 	noCnode *contract.CalloutFailure
 	stats   contract.CalloutStats
 	// handedOff is set once the work may have reached a cnode — a local try
-	// whose Member.Send returned nil, or a hand-over that may have made one —
-	// and is never cleared. While it is false the callout's error carries
-	// contract.NoHandOffProof.
+	// whose Member.Send returned nil, or a hand-over that got past
+	// StageNotConnected without an authenticated no_handoff answer to a
+	// callout that is not repeat-safe — and is never cleared. While it is
+	// false the callout's error carries contract.NoHandOffProof.
 	handedOff bool
 }
 
@@ -287,6 +288,11 @@ func (c *Coordinator) askPeers(cctx context.Context, call internalgrpc.Callout, 
 			"requestId", call.RequestID, "peer", peer.NodeID, "triesLeft", p.triesLeft, "major", major)
 		a := c.peers.HandOver(hctx, peer, call, p.triesLeft, major)
 		cancel()
+		// Recorded before anything below may return: a hand-over the caller
+		// walked away from may still have reached a cnode.
+		if mayHaveHandedOff(a, call.RepeatSafe) {
+			p.handedOff = true
+		}
 
 		// The hand-over does not report the owner's own context ending, so the
 		// owner reads it here: the callout's own deadline is not the end of the
@@ -330,6 +336,22 @@ func (c *Coordinator) askPeers(cctx context.Context, call internalgrpc.Callout, 
 // identically for every peer.
 func notAsked(a dispatch.HandOverAnswer) bool {
 	return !a.Connected && (a.Failure == nil || a.Failure.Kind != contract.Terminal)
+}
+
+// mayHaveHandedOff reports whether a hand-over may have put the work on a
+// cnode. Two answers prove it did not. One that is not Connected: the request
+// could not be built or signed, the connection could not be opened, or the
+// peer answered no_handoff having tried no cnode. And an authenticated
+// no_handoff answer to a callout that is not repeat-safe: such a peer stops at
+// its first try that is not NoHandOff (RunLocal, MayTryAnother), so no_handoff
+// says that every try it made failed before its send. A repeat-safe peer may
+// go on past a try that reached a cnode, so its no_handoff proves nothing.
+func mayHaveHandedOff(a dispatch.HandOverAnswer, repeatSafe bool) bool {
+	if !a.Connected {
+		return false
+	}
+	noHandOff := a.Failure != nil && a.Failure.Kind == contract.NoHandOff
+	return !noHandOff || repeatSafe
 }
 
 // nextPeer is the first of peers that was not asked yet in this pass.
