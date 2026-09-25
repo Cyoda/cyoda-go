@@ -11886,9 +11886,11 @@ components:
         lastError:
           type: string
           description: >
-            Present after a failed attempt. Client-safe text — a `CODE:
-            detail` message, a compute node's own message, or `internal
-            error [ticket: <uuid>]`.
+            For a FAILED task, present with the failure's text (pairs with
+            `failedTime`), even when the text is empty. For every other
+            status, present when `lastAttemptTime` is set, paired with it.
+            Client-safe text — a `CODE: detail` message, a compute node's
+            own message, or `internal error [ticket: <uuid>]`.
         failureReason:
           type: string
           description: >

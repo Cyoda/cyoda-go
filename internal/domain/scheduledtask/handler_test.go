@@ -246,7 +246,20 @@ func TestList_ItemFields(t *testing.T) {
 	retried := base("t-retried", eRetry, spi.ScheduledTaskWaiting)
 	retried.LastAttemptTime = &lastAt // re-armed after a failed attempt whose text was empty
 
-	st := &fakeStore{page: spi.ScheduledTaskPage{Items: []spi.ScheduledTask{waiting, running, failed, retried}}}
+	eFailedNoAttempt := uuid.New()
+	failedNoAttempt := base("t-failed-no-attempt", eFailedNoAttempt, spi.ScheduledTaskFailed)
+	failedNoAttempt.LastError = "boom" // FAILED on the first run: never a counted attempt
+	failedNoAttempt.FailureReason = spi.FailureUnsafeWorkNotCompleted
+	failedNoAttempt.FailedTime = &failedAt
+
+	eFailedOldAttempt := uuid.New()
+	failedOldAttempt := base("t-failed-old-attempt", eFailedOldAttempt, spi.ScheduledTaskFailed)
+	failedOldAttempt.LastAttemptTime = &lastAt // an earlier, unrelated counted attempt
+	failedOldAttempt.LastError = "boom"
+	failedOldAttempt.FailureReason = spi.FailureUnsafeWorkNotCompleted
+	failedOldAttempt.FailedTime = &failedAt
+
+	st := &fakeStore{page: spi.ScheduledTaskPage{Items: []spi.ScheduledTask{waiting, running, failed, retried, failedNoAttempt, failedOldAttempt}}}
 	w := call(t, fakeFactory{store: st}, genapi.ListScheduledTasksParams{})
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d; body: %s", w.Code, w.Body.String())
@@ -264,8 +277,8 @@ func TestList_ItemFields(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(resp.Items) != 4 {
-		t.Fatalf("items = %d, want 4", len(resp.Items))
+	if len(resp.Items) != 6 {
+		t.Fatalf("items = %d, want 6", len(resp.Items))
 	}
 	fields := func(taskID string, e uuid.UUID, status string) map[string]any {
 		return map[string]any{
@@ -296,7 +309,21 @@ func TestList_ItemFields(t *testing.T) {
 	wantRetry["lastAttemptTime"] = "2023-11-14T22:15:00Z"
 	wantRetry["lastError"] = ""
 
-	for i, want := range []map[string]any{wantW, wantR, wantF, wantRetry} {
+	wantFailedNoAttempt := fields("t-failed-no-attempt", eFailedNoAttempt, "FAILED")
+	wantFailedNoAttempt["attempts"], wantFailedNoAttempt["lostOwners"] = float64(0), float64(0)
+	wantFailedNoAttempt["lastError"] = "boom"
+	wantFailedNoAttempt["failureReason"] = "UNSAFE_WORK_NOT_COMPLETED"
+	wantFailedNoAttempt["failedTime"] = "2023-11-14T22:16:40Z"
+	// no lastAttemptTime: LastAttemptTime was never set on this task.
+
+	wantFailedOldAttempt := fields("t-failed-old-attempt", eFailedOldAttempt, "FAILED")
+	wantFailedOldAttempt["attempts"], wantFailedOldAttempt["lostOwners"] = float64(0), float64(0)
+	wantFailedOldAttempt["lastAttemptTime"] = "2023-11-14T22:15:00Z"
+	wantFailedOldAttempt["lastError"] = "boom"
+	wantFailedOldAttempt["failureReason"] = "UNSAFE_WORK_NOT_COMPLETED"
+	wantFailedOldAttempt["failedTime"] = "2023-11-14T22:16:40Z"
+
+	for i, want := range []map[string]any{wantW, wantR, wantF, wantRetry, wantFailedNoAttempt, wantFailedOldAttempt} {
 		if !reflect.DeepEqual(resp.Items[i], want) {
 			t.Errorf("item %d =\n  %v\nwant\n  %v", i, resp.Items[i], want)
 		}
