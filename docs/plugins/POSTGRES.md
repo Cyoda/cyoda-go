@@ -112,6 +112,82 @@ Consequences:
 - The `txRegistry` (`sync.RWMutex`-protected `map[string]pgx.Tx`) is
   the single source of truth for active transactions on a node.
 
+## Scheduled tasks and the scheduler pool
+
+Scheduled tasks live in `scheduled_tasks`, keyed by `(tenant_id, id)`. Each
+task has a life (its arm token, drawn on every arm), a status (`WAITING`,
+`RUNNING`, `FAILED`) and, while `RUNNING`, a claim (claim token and owner
+incarnation). Two more tables serve the scheduler: `scheduled_task_marks`,
+keyed by `(tenant_id, task_id, arm_token)`, records that an owner was about
+to hand a life off to a processor that is not safe to repeat; `scheduler_owners`
+holds one liveness record per pnode incarnation, stamped by the database
+clock. CHECK constraints enforce the row's own consistency:
+`scheduled_tasks_status_chk` limits `status` to the three values,
+`scheduled_tasks_claim_chk` requires a claim exactly while `RUNNING`,
+`scheduled_tasks_claim_pair_chk` requires `claim_token` and `claim_owner` to
+be both set or both `NULL`, `scheduled_tasks_failed_chk` requires a failure
+reason exactly while `FAILED`, and `scheduled_tasks_last_error_len_chk` caps
+`last_error` at 1024 bytes — the store rejects a longer one before any
+statement runs. A partial unique index, `scheduled_tasks_one_running_per_entity_uq`
+on `(tenant_id, entity_id) WHERE status = 'RUNNING'`, is the one place the
+database itself enforces "at most one running task per entity".
+
+**Writes in the entity transaction.** Arming, cancelling, removing a fired
+task, the segment stamp and `Fail` write task rows straight into the open
+entity transaction (`REPEATABLE READ`). A task row that another transaction
+changed after the snapshot raises `40001`, mapped to `spi.ErrConflict`;
+`40P01` maps the same way. A row the transaction wrote stays locked until it
+ends.
+
+**The scheduler pool.** Claims, marks, attempt records, give-backs, owner
+records and sweeps never join the caller's transaction. They run on a pool of
+their own, sized by `CYODA_POSTGRES_SCHEDULER_CONNS` connections (default
+`10`, floor `2`), so entity transactions cannot starve them. The async-search
+heartbeat and claim run there too. The scheduler heartbeat has one more
+connection of its own, used only for `ScheduledTaskStore.Heartbeat`. Every
+scheduler connection uses `READ COMMITTED`, `statement_timeout` 30s,
+`idle_in_transaction_session_timeout` 10s and `lock_timeout` 2s — fixed
+ceilings that overwrite whatever the DSN says — and every acquire is bounded
+at 5s. `GET /scheduled-tasks` (`Query`) and every `Get` outside an open
+transaction of the task's own tenant read on the main pool. Both scheduler
+pools report through the existing `cyoda.storage.pool.connections` gauge,
+under `pool="scheduler"` and `pool="heartbeat"` (`pool="main"` is the main
+pool).
+
+**`ClaimDue`** is one transaction on the scheduler pool: rank the due tasks
+(one per entity, each tenant within its limit, tenants taking turns), lock
+them with `FOR UPDATE SKIP LOCKED`, claim them with a conditional `UPDATE`,
+and read their marks while the locks are held. A per-entity PostgreSQL
+advisory lock serialises claimers, so one claim never waits behind another on
+the one-running-per-entity index; a row an open entity transaction holds, or
+that another claimer's advisory lock already covers, is passed over rather
+than waited for, and its turn goes to the next claimable task, a sibling on
+the same entity included. The one exception the claim swallows is a
+concurrent claim of a sibling task racing at `scheduled_tasks_one_running_per_entity_uq`
+itself — the unique-violation, lock-wait or deadlock that index raises when
+two claims reach it at once — which rolls the claim back and claims nothing
+that call. Every other lock wait or deadlock the claim meets is returned as
+`spi.ErrTaskBusy` or `spi.ErrConflict`, not swallowed.
+
+**`MarkUnsafe`** share-locks the task row with `NOWAIT` and inserts the mark.
+A row held by another transaction answers `spi.ErrTaskBusy` at once.
+
+**Errors.** SQLSTATE classes `22`, `23` and `42` carry `spi.ErrStoreRejected`
+in every store of the plugin — the database will refuse the same statement
+again — except the sibling race `ClaimDue` swallows above. A lock wait past
+`lock_timeout` (`55P03`) answers `spi.ErrTaskBusy` for `MarkUnsafe`,
+`RecordAttempt`, and the async-search `Heartbeat` (it stamps `search_jobs`
+and runs on this same scheduler pool); a busy heartbeat tick is treated as
+transient and missed, not a lost claim, and is retried on the next tick.
+`ScheduledTaskStore.Heartbeat` itself is a plain upsert into
+`scheduler_owners` with no row contention to answer busy for.
+
+**Tenant isolation.** Every tenant-facing statement filters on `tenant_id`.
+`ClaimDue`, `GiveBackIdle`, the owner methods and the sweeps are cross-tenant
+and no API reaches them, so none of the three tables is under row-level
+security. The comment in migration `000004` claims every write carried a
+tenant predicate; that was not so, and `000014` records the correction.
+
 ## Data model and schema
 
 The postgres plugin uses a normalized relational schema with JSONB
@@ -232,7 +308,9 @@ application connects as the table owner, and RLS is `ENABLE`d but not
 `FORCE`d — an owner bypasses every policy. The live mechanism is the explicit
 `WHERE tenant_id = $1` predicate every statement carries; the policies are
 staged for a future hardening step, not a second line of defence you can rely
-on now. A tenant-scoping bug in application code **would** leak data.
+on now. A tenant-scoping bug in application code **would** leak data. The
+scheduler's three tables are not under RLS at all; see "Scheduled tasks
+and the scheduler pool".
 
 Making them load-bearing needs three things together, not just one: `FORCE ROW
 LEVEL SECURITY`, a non-owner role, and `app.current_tenant` set on the pool
@@ -254,6 +332,9 @@ would match no row and answer a confident, wrong "not found".
 | `search_jobs` | Async search job metadata | `id` (with `tenant_id` indexed) |
 | `search_job_results` | Entity ID results per job | `(job_id, seq)`, FK to `search_jobs` |
 | `submit_times` | Durable transaction submit instants (1-hour TTL) | `(tenant_id, tx_id)` |
+| `scheduled_tasks` | Scheduled tasks: life, status, claim, attempt record | `(tenant_id, id)` |
+| `scheduled_task_marks` | Unsafe-dispatch marks, one per life | `(tenant_id, task_id, arm_token)` |
+| `scheduler_owners` | Scheduler liveness, one row per pnode incarnation | `owner` |
 
 Workflows live in `kv_store` under a dedicated namespace.
 
@@ -415,6 +496,11 @@ transaction mode beyond the prepared-statement cache.
     audit stamp filters on. A plain `CREATE INDEX` takes `SHARE` on
     `sm_audit_events`, so audit writers — which now includes every
     committing transaction — block for the build; readers never do.
+- **Migration `000014` blocks readers and writers of `scheduled_tasks`** while
+  it runs. It alters the table (a rewrite, for the per-row arm token), backfills
+  it and builds five indexes in one implicit transaction under
+  `ACCESS EXCLUSIVE`. No other table is locked. The table holds one row per
+  armed timer.
 
 ## When to use / when not to use
 

@@ -63,6 +63,15 @@
 // the active tx, discovered via spi.GetTransaction(ctx), is always used
 // when one is present, and the pool is used otherwise.
 //
+// # Scheduler pool
+//
+// The scheduled-task store's never-joining methods, and the async-search
+// heartbeat and claim, run on a pool of their own (CYODA_POSTGRES_SCHEDULER_CONNS)
+// with fixed ceilings: READ COMMITTED, statement_timeout 30s,
+// idle_in_transaction_session_timeout 10s, lock_timeout 2s, and a 5s acquire.
+// The scheduler heartbeat has one more connection of its own. See
+// scheduler_pool.go.
+//
 // Registration:
 //
 //	import _ "github.com/cyoda-platform/cyoda-go/plugins/postgres"
