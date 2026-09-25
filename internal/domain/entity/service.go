@@ -1330,6 +1330,26 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 		}, nil
 	}
 
+	var result *DeleteResult
+	err := common.RetryOnTaskConflict(ctx, spi.GetTransaction(ctx) == nil, func() error {
+		r, err := h.deleteConditionalSingleTx(ctx, ref, cond, pointInTime, verbose)
+		if err != nil {
+			return err
+		}
+		result = r
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// deleteConditionalSingleTx is one attempt of the single-transaction
+// conditional delete: select, delete each matched id, remove the scheduled
+// tasks of the ids actually deleted, commit. Every attempt builds its own
+// result, so a retried attempt never counts an id twice.
+func (h *Handler) deleteConditionalSingleTx(ctx context.Context, ref spi.ModelRef, cond predicate.Condition, pointInTime *time.Time, verbose bool) (*DeleteResult, error) {
 	scope, err := h.beginScope(ctx)
 	if err != nil {
 		return nil, classifyBeginErr(err)
@@ -1345,7 +1365,7 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 	if _, err := modelStore.Get(txCtx, ref); err != nil {
 		if errors.Is(err, spi.ErrNotFound) {
 			return nil, common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound,
-				fmt.Sprintf("cannot find model entityName=%s, version=%s", entityName, modelVersion))
+				fmt.Sprintf("cannot find model entityName=%s, version=%s", ref.EntityName, ref.ModelVersion))
 		}
 		return nil, common.Internal("failed to load model", err)
 	}
@@ -1382,6 +1402,7 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 		IDToError:     map[string]string{},
 		IDs:           []string{},
 	}
+	deleted := make([]string, 0, len(ids))
 
 	// Finalize: gate the per-id deletes + commit against a concurrent joined
 	// callback's buffer write (mirror DeleteAllEntities).
@@ -1402,19 +1423,27 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 				result.IDs = append(result.IDs, id)
 			}
 			if err := entityStore.Delete(txCtx, id); err != nil {
+				// A first-committer-wins refusal is not this id's outcome.
+				// The transaction is spent (PostgreSQL aborts it on 40001),
+				// so the attempt fails and the whole call runs again.
+				if errors.Is(err, spi.ErrConflict) {
+					return conflictError(err)
+				}
 				result.IDToError[id] = perIDDeleteError(id, err)
 				continue
 			}
+			deleted = append(deleted, id)
 			result.RemovedCount++
 		}
+		// The scheduled tasks of the ids actually deleted go in the same
+		// transaction. An id whose delete failed keeps its tasks.
+		if err := h.deleteEntityTasks(txCtx, deleted); err != nil {
+			return deleteWriteError("failed to delete scheduled tasks", err)
+		}
+		// Do NOT roll back after a failed commit — it has already aborted
+		// the tx. Mirrors DeleteAllEntities.
 		if err := scope.Commit(); err != nil {
-			// Do NOT roll back here — a failed commit has already aborted the
-			// tx. Mirrors DeleteAllEntities (service.go), which returns
-			// the AppError directly on this path without an extra rollback.
-			if errors.Is(err, spi.ErrConflict) {
-				return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
-			}
-			return common.Internal("failed to commit transaction", err)
+			return deleteWriteError("failed to commit transaction", err)
 		}
 		return nil
 	}(); appErr != nil {

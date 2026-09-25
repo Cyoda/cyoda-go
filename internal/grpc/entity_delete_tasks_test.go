@@ -214,3 +214,18 @@ func TestRPC_EntityUpdate_TaskRowConflict_ConflictEnvelope(t *testing.T) {
 	}
 	requireConflictEnvelope(t, typed.Success, typed.Error.Code, typed.Error.Message, typed.Error.Retryable)
 }
+
+func TestRPC_EntityDeleteAll_Verbose_RemovesTasks(t *testing.T) {
+	svc, ctx, real, plan := newTaskDeleteEnv(t)
+	id := createPersonRPC(t, svc, ctx)
+
+	if typed := deleteAllRPC(t, svc, ctx, map[string]any{"verbose": true}); !typed.Success {
+		t.Fatalf("delete-all failed: %+v", typed.Error)
+	}
+	if got := plan.Calls(taskconflict.DeleteForEntities); got != 1 {
+		t.Errorf("DeleteForEntities calls = %d, want 1 (verbose takes the single-transaction loop)", got)
+	}
+	if n := personTasks(t, real, ctx, id); n != 0 {
+		t.Errorf("tasks = %d, want 0", n)
+	}
+}

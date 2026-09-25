@@ -3,6 +3,8 @@ package entity
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -383,5 +385,151 @@ func TestDeleteAllEntities_CommitConflictPersists_Retryable409WithCause(t *testi
 	}
 	if !e.exists(t, ids[0]) || !e.exists(t, ids[1]) {
 		t.Error("an entity was removed although every attempt was refused at commit")
+	}
+}
+
+var ageAtLeastOne = []byte(`{"type":"simple","jsonPath":"$.age","operatorType":"GREATER_OR_EQUAL","value":1}`)
+
+// deleteRefusingStore wraps an EntityStore. Delete refuses the next
+// conflicts calls with a first-committer-wins conflict, and always fails
+// for failID with a plain error.
+type deleteRefusingStore struct {
+	spi.EntityStore
+	mu        sync.Mutex
+	conflicts int
+	failID    string
+}
+
+func (s *deleteRefusingStore) takeConflict() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.conflicts == 0 {
+		return false
+	}
+	s.conflicts--
+	return true
+}
+
+func (s *deleteRefusingStore) Delete(ctx context.Context, id string) error {
+	if id == s.failID {
+		return errors.New("entity row unreadable")
+	}
+	if s.takeConflict() {
+		return fmt.Errorf("entity row changed: %w", spi.ErrConflict)
+	}
+	return s.EntityStore.Delete(ctx, id)
+}
+
+func (e *taskEnv) refusingStore(t *testing.T, conflicts int, failID string) {
+	t.Helper()
+	real, err := e.real.EntityStore(e.ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	e.withEntityStore(t, &deleteRefusingStore{EntityStore: real, conflicts: conflicts, failID: failID})
+}
+
+func TestDeleteEntitiesConditional_SingleTx_RemovesOnlyTheDeletedEntitiesTasks(t *testing.T) {
+	e := newTaskEnv(t)
+	ids := seedPersons(t, e.h, e.ctx, 3) // ages 0, 1, 2
+
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 0)
+	if err != nil {
+		t.Fatalf("DeleteEntitiesConditional: %v", err)
+	}
+	if res.RemovedCount != 2 {
+		t.Fatalf("RemovedCount = %d, want 2", res.RemovedCount)
+	}
+	for i, want := range []int{1, 0, 0} {
+		if n := e.tasksOf(t, ids[i]); n != want {
+			t.Errorf("tasks of entity %d = %d, want %d", i, n, want)
+		}
+	}
+}
+
+func TestDeleteEntitiesConditional_SingleTx_FailedIDKeepsItsTasks(t *testing.T) {
+	e := newTaskEnv(t)
+	ids := seedPersons(t, e.h, e.ctx, 3)
+	e.refusingStore(t, 0, ids[2])
+
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 0)
+	if err != nil {
+		t.Fatalf("DeleteEntitiesConditional: %v", err)
+	}
+	if _, failed := res.IDToError[ids[2]]; !failed {
+		t.Fatalf("IDToError = %v, want an entry for %s", res.IDToError, ids[2])
+	}
+	if n := e.tasksOf(t, ids[1]); n != 0 {
+		t.Errorf("tasks of the deleted entity = %d, want 0", n)
+	}
+	if n := e.tasksOf(t, ids[2]); n != 1 {
+		t.Errorf("tasks of the entity whose delete failed = %d, want 1", n)
+	}
+}
+
+func TestDeleteEntitiesConditional_SingleTx_TaskConflict_RetriedWithAFreshResult(t *testing.T) {
+	e := newTaskEnv(t)
+	seedPersons(t, e.h, e.ctx, 3)
+	e.plan.Refuse(taskconflict.DeleteForEntities, 1)
+
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, true, 0)
+	if err != nil {
+		t.Fatalf("DeleteEntitiesConditional: %v", err)
+	}
+	if res.MatchedCount != 2 || res.RemovedCount != 2 || len(res.IDs) != 2 {
+		t.Errorf("Matched=%d Removed=%d IDs=%v, want 2, 2 and two ids: a retry starts a new result",
+			res.MatchedCount, res.RemovedCount, res.IDs)
+	}
+	if got := e.plan.Calls(taskconflict.DeleteForEntities); got != 2 {
+		t.Errorf("DeleteForEntities calls = %d, want 2", got)
+	}
+}
+
+func TestDeleteEntitiesConditional_SingleTx_TaskConflictPersists_Retryable409(t *testing.T) {
+	e := newTaskEnv(t)
+	ids := seedPersons(t, e.h, e.ctx, 2)
+	e.plan.Refuse(taskconflict.DeleteForEntities, 100)
+
+	_, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 0)
+	requireConflict409(t, err)
+	if got, want := e.plan.Calls(taskconflict.DeleteForEntities), 1+common.TaskConflictRetries; got != want {
+		t.Errorf("DeleteForEntities calls = %d, want %d", got, want)
+	}
+	if !e.exists(t, ids[1]) {
+		t.Error("entity removed although every attempt rolled back")
+	}
+}
+
+func TestDeleteEntitiesConditional_SingleTx_Joined_NotRetried(t *testing.T) {
+	e := newTaskEnv(t)
+	seedPersons(t, e.h, e.ctx, 2)
+	e.plan.Refuse(taskconflict.DeleteForEntities, 100)
+	txID, joinedCtx, err := e.txMgr.Begin(e.ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	t.Cleanup(func() { _ = e.txMgr.Rollback(e.ctx, txID) })
+
+	_, err = e.h.DeleteEntitiesConditional(joinedCtx, "Person", "1", ageAtLeastOne, nil, false, 0)
+	requireConflict409(t, err)
+	if got := e.plan.Calls(taskconflict.DeleteForEntities); got != 1 {
+		t.Errorf("DeleteForEntities calls = %d, want 1", got)
+	}
+}
+
+// An entity row changed after the snapshot fails the attempt, as on
+// PostgreSQL, where the 40001 aborts the transaction. It is not one id's
+// outcome, and the retry deletes every matched id.
+func TestDeleteEntitiesConditional_SingleTx_EntityRowConflict_Retried(t *testing.T) {
+	e := newTaskEnv(t)
+	seedPersons(t, e.h, e.ctx, 3)
+	e.refusingStore(t, 1, "")
+
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 0)
+	if err != nil {
+		t.Fatalf("DeleteEntitiesConditional: %v", err)
+	}
+	if res.RemovedCount != 2 || len(res.IDToError) != 0 {
+		t.Errorf("Removed=%d IDToError=%v, want 2 and none", res.RemovedCount, res.IDToError)
 	}
 }

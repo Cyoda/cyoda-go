@@ -268,3 +268,57 @@ func TestScheduledTaskWrites_DeleteAll_PersistentConflict_409(t *testing.T) {
 		t.Errorf("GET after the refused delete-all = %d, want 200", st)
 	}
 }
+
+const amountOver50 = `{"type":"simple","jsonPath":"$.amount","operatorType":"GREATER_THAN","value":50}`
+
+func TestScheduledTaskWrites_ConditionalDelete_RemovesTheDeletedEntitiesTasks(t *testing.T) {
+	const model = "e2e-stw-cond"
+	setupScheduledModel(t, model)
+	kept := createEntityE2E(t, model, 1, `{"name":"Order","amount":10,"status":"draft"}`)
+	gone := createEntityE2E(t, model, 1, schedWritesPayload)
+
+	res := resultOf(doAuthOnceRaw(e2eCtx(t), http.MethodDelete, fmt.Sprintf("/api/entity/%s/1", model), amountOver50))
+	if res.status != http.StatusOK {
+		t.Fatalf("conditional delete: %d %s", res.status, res.body)
+	}
+	if n := taskRows(t, "entity_id = $1", gone); n != 0 {
+		t.Errorf("task rows of the deleted entity = %d, want 0", n)
+	}
+	if n := taskRows(t, "entity_id = $1", kept); n != 1 {
+		t.Errorf("task rows of the kept entity = %d, want 1", n)
+	}
+}
+
+func TestScheduledTaskWrites_ConditionalDelete_RacingOneClaim_SucceedsAfterRetry(t *testing.T) {
+	const model = "e2e-stw-cond-race"
+	setupScheduledModel(t, model)
+	id := createEntityE2E(t, model, 1, schedWritesPayload)
+	hold := holdTaskRows(t, "entity_id = $1", id)
+
+	ctx := e2eCtx(t)
+	done := make(chan httpResult, 1)
+	go func() {
+		done <- resultOf(doAuthOnceRaw(ctx, http.MethodDelete, fmt.Sprintf("/api/entity/%s/1", model), amountOver50))
+	}()
+	hold.awaitBlocked(t)
+	hold.claimAndCommit(t)
+
+	if res := <-done; res.status != http.StatusOK {
+		t.Fatalf("conditional delete racing a claim: %d %s, want 200", res.status, res.body)
+	}
+	if n := taskRows(t, "entity_id = $1", id); n != 0 {
+		t.Errorf("task rows = %d, want 0", n)
+	}
+}
+
+func TestScheduledTaskWrites_ConditionalDelete_PersistentConflict_409(t *testing.T) {
+	const model = "e2e-stw-cond-persist"
+	setupScheduledModel(t, model)
+	id := createEntityE2E(t, model, 1, schedWritesPayload)
+	trig := installConflictTrigger(t, "entity_id", id)
+
+	requireConflictProblem(t, resultOf(doAuthOnceRaw(e2eCtx(t), http.MethodDelete, fmt.Sprintf("/api/entity/%s/1", model), amountOver50)))
+	if got, want := trig.refusals(t), int64(1+common.TaskConflictRetries); got != want {
+		t.Errorf("server attempts = %d, want %d", got, want)
+	}
+}
