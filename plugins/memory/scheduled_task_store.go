@@ -187,7 +187,9 @@ var _ spi.ScheduledTaskStore = (*scheduledTaskStore)(nil)
 //
 // Lock order: tx.OpMu (read) → entityMu → mu, the order Commit uses. Holding
 // tx.OpMu keeps Commit, Rollback and RollbackToSavepoint of this transaction
-// out while plan reads its staged ops.
+// out while plan reads its staged ops. With a transaction, plan runs inside
+// the mu section that appends its ops (see stageTaskWrite), so two joining
+// writes on one transaction are serialised.
 func (s *scheduledTaskStore) write(ctx context.Context, tenant spi.TenantID, plan func(v taskView) ([]scheduledTaskOp, error)) error {
 	tx := spi.GetTransaction(ctx)
 	if tx == nil {
@@ -215,12 +217,9 @@ func (s *scheduledTaskStore) write(ctx context.Context, tenant spi.TenantID, pla
 
 	s.f.entityMu.RLock()
 	defer s.f.entityMu.RUnlock()
-	ops, err := plan(taskView{f: s.f, staged: s.f.txManager.stagedTaskOps(tx.ID)})
-	if err != nil {
-		return err
-	}
-	s.f.txManager.stageTaskOps(tx.ID, ops)
-	return nil
+	return s.f.txManager.stageTaskWrite(tx.ID, func(staged []scheduledTaskOp) ([]scheduledTaskOp, error) {
+		return plan(taskView{f: s.f, staged: staged})
+	})
 }
 
 // ReconcileForEntity arms req.Arm, each as a new life, and removes every
