@@ -25,6 +25,9 @@ func auditTxIndexSize(f *StoreFactory, tenant spi.TenantID) int {
 //
 // The events themselves must survive the prune: it drops the index, not the
 // audit trail.
+//
+// Recorded outside the transaction: an event recorded inside it is staged
+// and indexed only at commit.
 func TestSMAuditTxIndex_PrunedOnCommit(t *testing.T) {
 	factory := NewStoreFactory()
 	defer func() { _ = factory.Close() }()
@@ -55,7 +58,7 @@ func TestSMAuditTxIndex_PrunedOnCommit(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	if err := audit.Record(txCtx, "e-1", spi.StateMachineEvent{
+	if err := audit.Record(ctx, "e-1", spi.StateMachineEvent{
 		EventType: spi.SMEventStarted, EntityID: "e-1",
 		TransactionID: txID, Details: "in tx", Timestamp: sentinel,
 	}); err != nil {
@@ -96,8 +99,8 @@ func TestSMAuditTxIndex_PrunedOnCommit(t *testing.T) {
 }
 
 // TestSMAuditTxIndex_PrunedOnRollback pins the other exit. A rolled-back
-// transaction is never stamped, so its index entry has no reader at all —
-// and Rollback is where every sibling staged map is discarded.
+// transaction's events are never appended, so they are never indexed;
+// nothing of it reaches the trail.
 func TestSMAuditTxIndex_PrunedOnRollback(t *testing.T) {
 	factory := NewStoreFactory()
 	defer func() { _ = factory.Close() }()
@@ -121,8 +124,9 @@ func TestSMAuditTxIndex_PrunedOnRollback(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
-	if got := auditTxIndexSize(factory, tenant); got != 1 {
-		t.Fatalf("before rollback: smAuditTxIndex holds %d transactions, want 1", got)
+	if got := auditTxIndexSize(factory, tenant); got != 0 {
+		t.Fatalf("before rollback: smAuditTxIndex holds %d transactions, want 0 — "+
+			"a staged event is indexed only when its transaction commits", got)
 	}
 
 	if err := tm.Rollback(ctx, txID); err != nil {
@@ -130,21 +134,16 @@ func TestSMAuditTxIndex_PrunedOnRollback(t *testing.T) {
 	}
 
 	if got := auditTxIndexSize(factory, tenant); got != 0 {
-		t.Errorf("after rollback: smAuditTxIndex still holds %d transactions, want 0 — "+
-			"a rolled-back transaction is never stamped, so nothing can ever read them", got)
+		t.Errorf("after rollback: smAuditTxIndex still holds %d transactions, want 0", got)
 	}
 
-	// The event itself is not transactional and keeps the time it was recorded
-	// with: rollback discards the index, not the audit trail.
+	// A rolled-back transaction's staged event is never appended to the
+	// trail at all.
 	events, err := audit.GetEvents(ctx, "e-1")
 	if err != nil {
 		t.Fatalf("GetEvents: %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("expected the recorded event to survive the rollback, got %d events", len(events))
-	}
-	if !events[0].Timestamp.Equal(sentinel) {
-		t.Errorf("rolled-back transaction's event was restamped to %s, want its recorded time %s",
-			events[0].Timestamp, sentinel)
+	if len(events) != 0 {
+		t.Fatalf("after rollback: GetEvents returned %d events, want 0", len(events))
 	}
 }

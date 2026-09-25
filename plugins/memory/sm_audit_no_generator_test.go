@@ -1,6 +1,7 @@
 package memory_test
 
 import (
+	"errors"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -24,8 +25,8 @@ func TestSMAuditStore_Record_NoGenerator(t *testing.T) {
 
 	if err := store.Record(ctx, "entity-1", spi.StateMachineEvent{
 		EventType: spi.SMEventStarted, EntityID: "entity-1", State: "NEW",
-	}); err == nil {
-		t.Fatal("Record with no generator configured: want an error, got nil")
+	}); !errors.Is(err, spi.ErrStoreRejected) {
+		t.Fatalf("Record with no generator configured: err = %v, want ErrStoreRejected", err)
 	}
 
 	events, err := store.GetEvents(ctx, "entity-1")

@@ -46,13 +46,6 @@ func (f *memoryFixture) NewNonAdminTenant(t *testing.T) parity.Tenant {
 	return fixtureutil.MintNonAdminTenantJWT(t, f.keySet)
 }
 
-// IsTxBoundAuditStore implements parity.TxBoundAuditFixture. The memory
-// backend writes audit events via the in-process bus before any
-// entity-update rollback runs, so a rolled-back entity write still
-// leaves its paired STATE_MACHINE_START + TRANSITION_ABORTED events
-// durable in the audit log.
-func (f *memoryFixture) IsTxBoundAuditStore() bool { return false }
-
 // StartComputeClient implements parity.ComputeClientFixture.
 func (f *memoryFixture) StartComputeClient(t *testing.T, spec parity.ComputeClientSpec) parity.ComputeClient {
 	t.Helper()

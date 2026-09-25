@@ -52,13 +52,6 @@ func (f *postgresFixture) NewNonAdminTenant(t *testing.T) parity.Tenant {
 	return fixtureutil.MintNonAdminTenantJWT(t, f.keySet)
 }
 
-// IsTxBoundAuditStore implements parity.TxBoundAuditFixture. The
-// postgres backend writes audit events into the same SQL transaction as
-// the entity writes, so a rolled-back entity-update transaction also
-// discards its paired STATE_MACHINE_START + TRANSITION_ABORTED events.
-// Audit-shape parity scenarios branch on this property.
-func (f *postgresFixture) IsTxBoundAuditStore() bool { return true }
-
 // StartComputeClient implements parity.ComputeClientFixture.
 func (f *postgresFixture) StartComputeClient(t *testing.T, spec parity.ComputeClientSpec) parity.ComputeClient {
 	t.Helper()
