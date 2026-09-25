@@ -112,6 +112,11 @@ type progress struct {
 	// noCnode is what the latest pass that made no try reported.
 	noCnode *contract.CalloutFailure
 	stats   contract.CalloutStats
+	// handedOff is set once the work may have reached a cnode — a local try
+	// whose Member.Send returned nil, or a hand-over that may have made one —
+	// and is never cleared. While it is false the callout's error carries
+	// contract.NoHandOffProof.
+	handedOff bool
 }
 
 // run is the owner's loop. call comes from one of the three builders; run
@@ -119,7 +124,7 @@ type progress struct {
 func (c *Coordinator) run(ctx context.Context, call internalgrpc.Callout) (internalgrpc.CalloutResult, error) {
 	limit, failure := c.local.ResolveAnswerLimit(call.ResponseTimeoutMs)
 	if failure != nil {
-		return internalgrpc.CalloutResult{}, failure
+		return internalgrpc.CalloutResult{}, &contract.NoHandOffProof{Err: failure}
 	}
 	tries := c.triesFor(call.RetryPolicy)
 	// The pairs this chain was admitted under, if it is a callback of an outer
@@ -168,7 +173,16 @@ func (c *Coordinator) run(ctx context.Context, call internalgrpc.Callout) (inter
 			"waitedMs", p.stats.Waited.Milliseconds(), "elapsedMs", time.Since(start).Milliseconds(),
 			"succeeded", err == nil)
 	}
-	return result, err
+	return result, withHandOffProof(err, p.handedOff)
+}
+
+// withHandOffProof marks err with contract.NoHandOffProof when no try of the
+// callout may have handed the work off. A nil err stays nil.
+func withHandOffProof(err error, handedOff bool) error {
+	if err == nil || handedOff {
+		return err
+	}
+	return &contract.NoHandOffProof{Err: err}
 }
 
 // loop makes passes — the local procedure, then one hand-over per peer — until
@@ -187,6 +201,9 @@ func (c *Coordinator) loop(cctx context.Context, call internalgrpc.Callout, numb
 		}
 
 		r := c.local.RunLocal(cctx, call, p.triesLeft)
+		if r.HandedOff {
+			p.handedOff = true
+		}
 		p.triesLeft -= r.TriesUsed
 		p.attempts = append(p.attempts, r.Attempts...)
 		for _, a := range r.Attempts {
