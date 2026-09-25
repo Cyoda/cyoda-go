@@ -1092,22 +1092,30 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	return jobID, nil
 }
 
+// heartbeatFencedOut reports whether a Heartbeat answer ends this
+// executor's claim. A busy row (spi.ErrTaskBusy: the job's own SaveResults
+// chunk holds it) is a missed tick, not a lost claim; staleness is still
+// judged by the store from the unstamped heartbeat_time.
+func heartbeatFencedOut(err error) bool { return err != nil && !errors.Is(err, spi.ErrTaskBusy) }
+
 // startHeartbeat runs the dedicated heartbeat ticker goroutine for a job,
 // from submit time (queued or executing) until jobCtx is done. Every tick it
 // stamps liveness (Heartbeat) and polls GetJob for any terminal status —
 // cross-node cancel and terminal abort in one poll — cancelling jobCtx (and
-// so stopping itself) on either a Heartbeat error (fenced out — a stale
-// claim or an already-terminal job) or an observed non-RUNNING status.
+// so stopping itself) on either a Heartbeat error that fences the job out
+// per heartbeatFencedOut (a stale claim or an already-terminal job) or an
+// observed non-RUNNING status.
 //
-// spi.ErrTaskBusy is the one Heartbeat error that does NOT fence the job
-// out: a store (PostgreSQL, when the row is briefly held FOR UPDATE by this
-// same job's own SaveResults chunk) can answer it for a lock its own
-// executor holds, which is not a claim it has lost. That tick is treated as
-// missed — logged and skipped — and the ticker retries on the next one; the
-// job is a healthy RUNNING job either way, and the stale window this bounds
-// against spans several ticks. Backend-agnostic: memory and sqlite never
-// return it (their Heartbeat never lock-waits), so this branch never fires
-// there.
+// A busy tick (heartbeatFencedOut false but err non-nil: spi.ErrTaskBusy —
+// a store, PostgreSQL, answers it for a lock its own job's SaveResults
+// chunk holds, which is not a claim it has lost) is logged at DEBUG and
+// falls through to the same GetJob poll a successful tick takes: GetJob is
+// a plain read that never waits on the row lock SaveResults holds, so the
+// cross-node cancel / terminal-status check still runs every tick
+// regardless of whether the heartbeat stamp itself landed. Leaving one
+// tick's stamp missed is safe: the store's staleness window spans several
+// ticks. Backend-agnostic: memory and sqlite never return spi.ErrTaskBusy
+// (their Heartbeat never lock-waits), so this branch never fires there.
 func (s *SearchService) startHeartbeat(jobCtx context.Context, cancel context.CancelCauseFunc, jobID string, epoch int64) {
 	interval := s.heartbeatEvery()
 	go func() {
@@ -1118,15 +1126,14 @@ func (s *SearchService) startHeartbeat(jobCtx context.Context, cancel context.Ca
 			case <-jobCtx.Done():
 				return
 			case <-ticker.C:
-				if err := s.searchStore.Heartbeat(jobCtx, jobID, epoch); err != nil {
-					if errors.Is(err, spi.ErrTaskBusy) {
-						slog.Debug("async search heartbeat missed a busy tick; retrying next tick",
-							"pkg", "search", "jobID", jobID, "err", err)
-						continue
-					}
-					slog.Warn("async search heartbeat failed; aborting job", "pkg", "search", "jobID", jobID, "err", err)
+				hbErr := s.searchStore.Heartbeat(jobCtx, jobID, epoch)
+				if heartbeatFencedOut(hbErr) {
+					slog.Warn("async search heartbeat failed; aborting job", "pkg", "search", "jobID", jobID, "err", hbErr)
 					cancel(nil)
 					return
+				}
+				if hbErr != nil {
+					slog.Debug("async search heartbeat missed a busy tick", "pkg", "search", "jobID", jobID, "err", hbErr)
 				}
 				job, err := s.searchStore.GetJob(jobCtx, jobID)
 				if err != nil {
