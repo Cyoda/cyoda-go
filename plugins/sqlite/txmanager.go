@@ -862,6 +862,13 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 				}
 			}
 			if conflict {
+				// Matches the flush-failure branch below: every abort path
+				// leaves RolledBack=true, not just Closed=true, so a later
+				// join on this tx's ctx answers ErrTxRolledBack rather than
+				// the misleading ErrTxAlreadyCommitted. Safe to write
+				// directly here: tx.OpMu.Lock (step 1b) is held for the
+				// whole of Commit.
+				tx.RolledBack = true
 				m.forgetLocked(txID)
 				return spi.ErrConflict
 			}
@@ -1147,13 +1154,32 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 		return fmt.Errorf("record submit time: %w", err)
 	}
 
-	// Audit events recorded inside this transaction are inserted here, in
-	// sqlTx, so they commit or roll back with it. Then every event LABELLED
-	// with this transaction — those, and any recorded outside a transaction
-	// under its id (EmitTransitionAborted labels by a cascade entry's id) —
-	// takes the commit instant, so the audit trail and the version history
-	// cannot drift apart or invert. Served by idx_sm_events_tenant_tx
-	// (migration 000008).
+	// This transaction's own staged events are inserted here, in sqlTx, so
+	// they commit or roll back with it (Record staged them instead of
+	// writing them immediately — see smAuditStore.Record). Each is inserted
+	// under its OWN label (st.event.TransactionID), which is not always
+	// tx.ID: the engine records some events under a cascade entry's
+	// transaction id (EmitTransitionAborted), so a staged event can be
+	// LABELLED with a transaction other than the one it was staged on.
+	//
+	// The UPDATE below then stamps every row — just-inserted or already
+	// committed — LABELLED with tx.ID to the commit instant, so the audit
+	// trail and the version history for THIS commit cannot drift apart or
+	// invert. A staged event labelled with a DIFFERENT transaction is not
+	// touched by it: it keeps the recording-time clock its own recorder
+	// read until ITS labelled transaction commits and stamps it in turn.
+	//
+	// A point-in-time sweep, not a write barrier: an event recorded (staged
+	// or written directly) after this statement runs keeps the clock its
+	// recorder read. It does not arise in the normal path — recordEvent runs
+	// on the goroutine driving the transaction, which is inside Commit here
+	// — but the property is "every event recorded before the commit phase",
+	// not "every event this transaction labels". Memory and postgres have
+	// the identical window.
+	//
+	// Served by idx_sm_events_tenant_tx (migration 000008); 000001's
+	// idx_sm_events_tx cannot serve it, because entity_id sits between the
+	// two columns constrained here (tenant_id, transaction_id).
 	for _, st := range auditEvents {
 		if _, err := sqlTx.ExecContext(ctx, insertAuditEventSQL,
 			tid, st.entityID, st.event.TimeUUID, st.event.TransactionID,

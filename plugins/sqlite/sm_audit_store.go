@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"sort"
 
 	"github.com/google/uuid"
 
@@ -78,15 +77,20 @@ func (s *smAuditStore) stagedFor(ctx context.Context, entityID string, keep func
 	return out
 }
 
-// withStaged merges staged events into committed ones, in timestamp order,
-// as the SQL ORDER BY timestamp would place them.
+// withStaged appends staged events after committed ones, unsorted. A staged
+// event's Timestamp is its recording time — read by whichever process called
+// Record, before its transaction committed; a committed event's timestamp is
+// a commit instant. The two are different clocks, so they are never compared
+// against each other: sorting the combined slice by Timestamp would place a
+// staged event before an already-committed one whenever its recording time
+// happens to read earlier than the committed row's commit instant, which
+// says nothing about which one is actually settled. Appending, not merging,
+// mirrors the memory plugin's GetEvents.
 func withStaged(committed, staged []spi.StateMachineEvent) []spi.StateMachineEvent {
 	if len(staged) == 0 {
 		return committed
 	}
-	out := append(committed, staged...)
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Timestamp.Before(out[j].Timestamp) })
-	return out
+	return append(committed, staged...)
 }
 
 func (s *smAuditStore) GetEvents(ctx context.Context, entityID string) ([]spi.StateMachineEvent, error) {
