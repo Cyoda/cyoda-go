@@ -23,7 +23,8 @@ import (
 // The SPI says which methods join the transaction on ctx; the querier follows:
 //
 //   - q joins it (ctxQuerier): ReconcileForEntity, RemoveLife, StampSegment,
-//     DeleteForEntities, DeleteForModel, Fail, and Get. Task rows are written
+//     DeleteForEntities, DeleteForModel, Fail, and Get when the transaction
+//     is open and of Get's tenant. Task rows are written
 //     straight into the open entity transaction, which runs at REPEATABLE
 //     READ. A task row that another transaction changed after this one's
 //     snapshot raises 40001, which the querier maps to spi.ErrConflict (C1,
@@ -31,7 +32,7 @@ import (
 //     so ClaimDue's and GiveBackIdle's SKIP LOCKED pass it over, MarkUnsafe's
 //     NOWAIT answers ErrTaskBusy, and RecordAttempt answers ErrTaskBusy once
 //     lock_timeout ends its wait (C6).
-//   - query never joins and runs on the main pool: Query.
+//   - query never joins and runs on the main pool: Query, and every other Get.
 //   - sched never joins and runs on the scheduler pool (READ COMMITTED,
 //     lock_timeout 2s): ClaimDue, MarkUnsafe, RecordAttempt, GiveBackIdle,
 //     RetireOwner, SweepOwners, SweepMarks.
@@ -51,9 +52,12 @@ import (
 // (ErrStoreRejected), then the transaction's tenant (ErrTxTenantMismatch),
 // then the fence and busy checks.
 type scheduledTaskStore struct {
-	q         Querier
-	query     Querier
-	pool      *pgxpool.Pool
+	q     Querier
+	query Querier
+	pool  *pgxpool.Pool
+	// txOpen reports whether the transaction manager still holds txID: a
+	// transaction leaves its registry on every Commit and Rollback path.
+	txOpen    func(txID string) bool
 	sched     schedulerQuerier
 	heartbeat schedulerQuerier
 }
@@ -370,11 +374,18 @@ func modelPairs(ctx context.Context, q Querier, tenant spi.TenantID, modelName s
 	return pairs, nil
 }
 
-// Get joins the transaction on ctx when there is one, for reads only: it
-// answers from tenant, whatever the transaction's tenant, and never refuses.
+// Get joins the transaction on ctx only when that transaction is open and its
+// tenant is tenant; then it sees the transaction's staged writes (C2).
+// Otherwise — no transaction, another tenant's, or one that has committed or
+// rolled back — it reads the committed row off any transaction. It answers
+// from tenant and never refuses.
 func (s *scheduledTaskStore) Get(ctx context.Context, tenant spi.TenantID, id string) (*spi.ScheduledTask, bool, error) {
+	q := s.query
+	if tx := spi.GetTransaction(ctx); tx != nil && tx.TenantID == tenant && s.txOpen(tx.ID) {
+		q = s.q
+	}
 	var marked bool
-	t, err := scanTask(s.q.QueryRow(ctx, `SELECT `+taskColumns+`, `+markedColumn+`
+	t, err := scanTask(q.QueryRow(ctx, `SELECT `+taskColumns+`, `+markedColumn+`
 		FROM scheduled_tasks st WHERE st.tenant_id = $1 AND st.id = $2`, string(tenant), id).Scan, &marked)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, false, nil

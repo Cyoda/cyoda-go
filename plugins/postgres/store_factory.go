@@ -279,9 +279,16 @@ func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore
 // scheduledTaskStore for which methods join the transaction on ctx.
 func (f *StoreFactory) ScheduledTaskStore(_ context.Context) (spi.ScheduledTaskStore, error) {
 	return &scheduledTaskStore{
-		q:         f.querier(),
-		query:     unjoinedQuerier{pool: f.pool, acquireTimeout: f.cfg.AcquireTimeout, what: "scheduled task query"},
-		pool:      f.pool,
+		q:     f.querier(),
+		query: unjoinedQuerier{pool: f.pool, acquireTimeout: f.cfg.AcquireTimeout, what: "scheduled task query"},
+		pool:  f.pool,
+		txOpen: func(txID string) bool {
+			if f.tm == nil {
+				return false
+			}
+			_, ok := f.tm.LookupTx(txID)
+			return ok
+		},
 		sched:     f.schedulerQuerier("scheduled task"),
 		heartbeat: f.heartbeatQuerier(),
 	}, nil

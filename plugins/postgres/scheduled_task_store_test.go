@@ -750,3 +750,61 @@ func TestPostgres_ScheduledTaskStore_DeterministicRejectionIsMarked(t *testing.T
 		t.Errorf("task after the rejected write = %+v, want it unchanged", got)
 	}
 }
+
+// Get joins the transaction on ctx only when that transaction is open and of
+// the tenant asked for. Through another tenant's open transaction it reads the
+// committed row, not that transaction's snapshot.
+func TestPostgres_Get_ThroughAnotherTenantsTransactionReadsCommitted(t *testing.T) {
+	f, sts := newTaskStore(t, 5)
+	arm(t, sts, "tenant-A", "e1", "S", taskSpec("tenant-A", "e1", "S", "T", 1000))
+	before := mustGet(t, sts, "tenant-A", "e1:S:T")
+
+	txCtxB, rollback := beginEntityTx(t, f, "tenant-B")
+	defer rollback()
+	if got, found, err := sts.Get(txCtxB, "tenant-A", before.ID); err != nil || !found || got.ArmToken != before.ArmToken {
+		t.Fatalf("first Get through B's transaction: found=%v err=%v", found, err)
+	}
+	arm(t, sts, "tenant-A", "e1", "S", taskSpec("tenant-A", "e1", "S", "T", 2000))
+	current := mustGet(t, sts, "tenant-A", "e1:S:T")
+
+	got, found, err := sts.Get(txCtxB, "tenant-A", before.ID)
+	if err != nil || !found || got.ArmToken != current.ArmToken {
+		t.Errorf("Get through B's transaction after A's re-arm: found=%v err=%v, want A's committed life", found, err)
+	}
+}
+
+// Get through a transaction that has ended — committed or rolled back — reads
+// the committed row and does not fail.
+func TestPostgres_Get_ThroughAnEndedTransactionReadsCommitted(t *testing.T) {
+	f, sts := newTaskStore(t, 5)
+	tm, err := f.TransactionManager(context.Background())
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	for _, end := range []struct {
+		name string
+		end  func(ctx context.Context, txID string) error
+	}{
+		{"committed", func(ctx context.Context, txID string) error { return tm.Commit(ctx, txID) }},
+		{"rolled back", func(ctx context.Context, txID string) error { return tm.Rollback(ctx, txID) }},
+	} {
+		t.Run(end.name, func(t *testing.T) {
+			entity := "e-" + strings.ReplaceAll(end.name, " ", "-")
+			txID, txCtx := postgres.BeginGuardedForTest(t, tm, ctxWithTenant("tenant-A"))
+			if _, err := sts.ReconcileForEntity(txCtx, spi.ReconcileRequest{TenantID: "tenant-A", EntityID: entity,
+				CurrentState: "S", Arm: []spi.ScheduledTask{taskSpec("tenant-A", entity, "S", "T", 1000)}}); err != nil {
+				t.Fatalf("ReconcileForEntity: %v", err)
+			}
+			if err := end.end(txCtx, txID); err != nil {
+				t.Fatalf("end the transaction: %v", err)
+			}
+			id := entity + ":S:T"
+			_, committedFound, _ := sts.Get(context.Background(), "tenant-A", id)
+			got, found, err := sts.Get(txCtx, "tenant-A", id)
+			if err != nil || found != committedFound || (found && got.ID != id) {
+				t.Errorf("Get through the %s transaction: found=%v err=%v, want the committed answer (found=%v)",
+					end.name, found, err, committedFound)
+			}
+		})
+	}
+}
