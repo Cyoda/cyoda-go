@@ -97,6 +97,7 @@ type Service struct {
 	perTenant    map[spi.TenantID]int
 	healthy      bool      // the last heartbeat succeeded in time and the watchdog has not fired since
 	healthySince time.Time // start of the current run of clean heartbeats
+	wdDeadline   time.Time // the last in-time heartbeat's recorded start + W
 	latched      bool
 	draining     bool
 	filled       bool // the last claim took every free slot
@@ -231,11 +232,12 @@ func (s *Service) heartbeatDone(started time.Time, err error) {
 	if !s.healthy {
 		s.healthy, s.healthySince = true, started
 	}
+	s.wdDeadline = started.Add(s.window)
 	select {
 	case <-s.wdArm:
 	default:
 	}
-	s.wdArm <- started.Add(s.window)
+	s.wdArm <- s.wdDeadline
 }
 
 func (s *Service) watchdogLoop() {
@@ -258,7 +260,8 @@ func (s *Service) watchdogLoop() {
 
 // selfCancel runs when W has passed since the last successful heartbeat began:
 // every run in progress is cancelled, and nothing is claimed until a heartbeat
-// succeeds.
+// succeeds. A timer that fires after a later heartbeat moved the deadline on
+// is stale and does nothing; the watchdog re-arms from that heartbeat.
 //
 // It reads no run's Unsafe record. A path that does (the shutdown drain) must
 // close NoNewUnsafe before it reads Unsafe.Since or UnsafeInFlight, in program
@@ -268,6 +271,9 @@ func (s *Service) watchdogLoop() {
 func (s *Service) selfCancel() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if time.Now().Before(s.wdDeadline) {
+		return
+	}
 	s.healthy, s.healthySince = false, time.Time{}
 	n := 0
 	for _, r := range s.runs {

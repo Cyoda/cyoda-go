@@ -447,3 +447,30 @@ func TestService_HeartbeatThatSucceedsAfterItsWindowCountsAsFailed(t *testing.T)
 		t.Error("a heartbeat that succeeded after its window left the pnode claiming")
 	}
 }
+
+// The watchdog's timer and a heartbeat that re-arms it can be ready at the
+// same moment. A timer that fires after a later heartbeat moved the deadline
+// on must not cancel the pnode's runs: the store's stamp of that heartbeat is
+// fresh, so no other pnode can consider this one stale.
+func TestService_WatchdogFiringAfterARearmDoesNotSelfCancel(t *testing.T) {
+	cancelled := make(chan struct{})
+	h := newHarness(t, testConfig(), firerFunc(func(ctx context.Context, _ spi.ScheduledTask, _ int, _ time.Duration) workflow.RunReport {
+		r := failedOnCancel(ctx)
+		close(cancelled)
+		return r
+	}))
+	h.fs.with(func() { h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")} })
+	h.start(t)
+	eventually(t, "the run started", func() bool { return liveRuns(h.svc) == 1 })
+
+	h.svc.heartbeatDone(time.Now(), nil)
+	h.svc.selfCancel()
+	if !h.svc.isHealthy() {
+		t.Error("a stale watchdog timer made the pnode stop claiming")
+	}
+	select {
+	case <-cancelled:
+		t.Fatal("a stale watchdog timer cancelled a run whose pnode had just heartbeated")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
