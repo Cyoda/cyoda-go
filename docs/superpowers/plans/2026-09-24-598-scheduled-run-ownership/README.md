@@ -93,34 +93,10 @@ Executors read the spec sections their task names.
   audit event is `SCHEDULED_TRANSITION_FAIL`. The workflow schema version is
   not bumped.
 
-## Prerequisite: #599 and the invariant I-599
-
-Only task **E-6** (the segment stamp) depends on #599. Everything before it can
-run while #599 is open: waves 1 and 2 and E-1 to E-5.
-
-E-6 does not depend on *how* #599 is fixed. It depends on this guarantee:
-
-> **I-599.** While a scheduled run's transaction is open, only the run's own
-> processor chain can commit it. A compute-node callback that joined the
-> transaction never causes a commit of that transaction, directly or through a
-> `COMMIT_BEFORE_DISPATCH` processor it reaches.
-
-E-6 Step 0 checks the merged #599 against I-599 and sorts it into one of three
-cases:
-- **(a) refused before any flush** → proceed;
-- **(b) the joined chain commits a different transaction** → proceed;
-- **(c) anything else** → stop.
-
-Case (c) needs a spec change, approved by the product owner: the run guard is
-attached to the transaction rather than to the context (E-6 Step 0). E-6 Step
-1b pins I-599 with a test inside a scheduled run.
-
 ## Resuming this work in a new session
 
-This plan was written in one session, and #599 is done in another. To resume:
-
-1. **Read the memory.** `project_598_scheduler_redesign.md` holds the state,
-   the rulings and this checklist.
+1. **Read the memory.** `project_598_scheduler_redesign.md` holds the state
+   and the rulings.
 2. **Where the work is.**
    - Worktree: `.worktrees/598-scheduler-ownership` (inside the main
      checkout).
@@ -128,26 +104,13 @@ This plan was written in one session, and #599 is done in another. To resume:
      (not pushed).
    - Spec: `docs/superpowers/specs/2026-09-24-598-scheduled-run-ownership-design.md`.
    - Plan: this directory.
-   - Research and design brief: `docs/superpowers/research/2026-09-24-598-*`.
-3. **Bring the branch up to date** once #599 is merged into
-   `release/v0.9.0`:
-   ```
-   cd .worktrees/598-scheduler-ownership
-   git fetch origin
-   git rebase origin/release/v0.9.0
-   ```
-   The branch holds only documents, so the rebase is conflict-free.
-4. **Re-check what #599 changed.** It edits
-   `internal/domain/workflow/engine_processors.go` and possibly
-   `internal/domain/entity/service.go`.
-   - Re-check the line numbers that sections E and W cite in those files.
-     Fix any that moved, in the section text, before executing.
-   - Run E-6 Step 0 early, as a desk check, to learn which case (a/b/c)
-     applies before anything is built.
-5. **If #599 changed the engine's `COMMIT_BEFORE_DISPATCH` path in a way the
-   spec does not describe:** update spec §5.2 ("Commits come only from the
-   run") and §14 first, then E-6.
-6. **Start execution:** wave 1 (S, K, Q-1), with the SPI branch cut in
+   - Research, design brief and the retry-policy brief:
+     `docs/superpowers/research/2026-09-2*-598-*`.
+3. **Bring the branch up to date:** `git fetch origin && git rebase
+   origin/release/v0.9.0`. Until execution starts the branch holds only
+   documents. After a rebase, re-check the line numbers that sections E and W
+   cite in files the new commits changed.
+4. **Start execution:** wave 1 (S, K, Q-1), with the SPI branch cut in
    `../../cyoda-go-spi` as S-1 describes.
 
 ## Review Focus
@@ -199,7 +162,7 @@ An arrow means "must land first".
 ```
 wave 1   S (SPI, in ../cyoda-go-spi)  ·  K (callout proof)  ·  Q-1 (OpenAPI + generated types)
 wave 2   BM · BQ · BP  (each needs S; parallel worktrees)
-wave 3   E (needs S, K; E-6 needs #599)  ·  W (needs S, BM/BQ/BP)
+wave 3   E (needs S, K)  ·  W (needs S, BM/BQ/BP)
 wave 4   R (needs E, S, BP pool)  ·  Q-2… (needs S, BM/BQ/BP)
 wave 5   T (needs R, W, Q)  ·  D (needs everything it documents)
 wave 6   SPI PR merged → pin + make repin-plugins · exit checks (spec §15) · make test-full · go vet ./... · make race

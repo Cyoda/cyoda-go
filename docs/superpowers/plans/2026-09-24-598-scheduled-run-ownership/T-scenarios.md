@@ -2821,8 +2821,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 `COMMIT_BEFORE_DISPATCH`, `PartialCommit`, cancellation after TX_pre and the
 four joined-callback rows, column E.
 
-**Depends on:** #599 (a callback that joined a run cannot commit it, spec
-§14), S, BP, E (stamp, `PartialCommit`, checkpoints, re-read), R (bookkeeping,
+**Depends on:** S, BP, E (stamp, `PartialCommit`, checkpoints, re-read), R (bookkeeping,
 shutdown step 3), T-1, T-4 (helpers).
 
 **Files:**

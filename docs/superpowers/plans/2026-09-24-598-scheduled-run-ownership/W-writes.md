@@ -18,24 +18,24 @@ them; BP gives the table columns the e2e helpers touch). W-8 also needs
 ## Facts this stream relies on, read in the code
 
 - Every delete path already opens its transaction through `beginScope`
-  (`internal/domain/entity/txscope.go:55`), which joins a transaction already
-  on the context (`handler.go:100-106`). "Owned" is therefore exactly
+  (`internal/domain/entity/txscope.go:53`), which joins a transaction already
+  on the context (`handler.go:107-113`). "Owned" is therefore exactly
   `spi.GetTransaction(ctx) == nil` before the call.
 - The delete paths and their commit-conflict mapping:
-  - `DeleteEntity` `service.go:656`, commit conflict `:700-702`;
-  - `DeleteAllEntities` `:778`, `:839-841`, also reached from the fast path
-    `:1230-1243`;
-  - `DeleteEntitiesConditional` single-transaction loop `:1245-1336`,
-    `:1324-1326`;
-  - `deleteBatched` `:1440`, each batch in `deleteOneBatch` `:1657`, commit
-    conflict `:1704-1706`, fold into `IDToError` `:1712-1734`.
+  - `DeleteEntity` `service.go:643`, commit conflict `:687-689`;
+  - `DeleteAllEntities` `:765`, `:826-828`, also reached from the fast path
+    `:1217-1230`;
+  - `DeleteEntitiesConditional` single-transaction loop `:1230-1322`,
+    `:1311-1313`;
+  - `deleteBatched` `:1427`, each batch in `deleteOneBatch` `:1644`, commit
+    conflict `:1691-1693`, fold into `IDToError` `:1699-1721`.
   - Today each 409 is built without a cause
     (`common.Operational(...).AsRetryable()`), so `errors.Is(err,
     spi.ErrConflict)` is false on it. The retry needs the cause, so these
     sites switch to one helper that attaches it (`WithCause`,
     `internal/common/errors.go:107`).
 - A per-id `entityStore.Delete` error in the single-transaction loop
-  (`:1317-1320`) and in `deleteOneBatch` (`:1697-1700`) goes into `IDToError`
+  (`:1301-1303`) and in `deleteOneBatch` (`:1684-1687`) goes into `IDToError`
   and the loop continues. On PostgreSQL a 40001 aborts the transaction, so
   every later statement of that attempt fails too. W-5 and W-6 treat a
   conflict there as the attempt's failure, which the retry then handles.
@@ -43,7 +43,7 @@ them; BP gives the table columns the e2e helpers touch). W-8 also needs
   (`internal/common/errors.go:190-192`), but without a cause.
 - The update doors map **any** engine `spi.ErrConflict` to 412
   `ENTITY_MODIFIED` before `classifyWorkflowError` sees it
-  (`service.go:2202-2209` loopback, `:2221-2228` named transition). The
+  (`service.go:2181-2188` loopback, `:2200-2207` named transition). The
   reconcile marks its store error with `ErrScheduledTaskInfra` through
   `errors.Join` (`internal/domain/workflow/arm.go:177-179`), so the conflict
   is still visible. On PostgreSQL a task row changed after the snapshot
@@ -51,10 +51,10 @@ them; BP gives the table columns the e2e helpers touch). W-8 also needs
   update racing a claim answers **412** there and **409** on memory and
   SQLite, where the conflict appears at commit. The collection door does
   worse: with an `IfMatch` it isolates the item as `ENTITY_MODIFIED` and
-  keeps writing into the aborted transaction (`service.go:2580-2593`). W-3
+  keeps writing into the aborted transaction (`service.go:2551-2564`). W-3
   fixes both.
 - `ErrScheduledTaskInfra` reaching `classifyWorkflowError` becomes
-  `common.Internal(...)` (`service.go:2826-2828`), which answers 409 CONFLICT
+  `common.Internal(...)` (`service.go:2789-2791`), which answers 409 CONFLICT
   for a conflict and a ticketed 500 for anything else. W-3 relies on that
   and adds no new branch there.
 - The workflow import saves the workflows outside any transaction
@@ -69,7 +69,7 @@ them; BP gives the table columns the e2e helpers touch). W-8 also needs
   today: `arm.go:119` and `fire_scheduled.go:555`. The import needs it a
   third time. W-7 adds one predicate and uses it at all three sites.
 - The gRPC doors call the same functions: single delete
-  `internal/grpc/entity.go:200`; delete-all `:484`, which passes a nil
+  `internal/grpc/entity.go:200`; delete-all `:501`, which passes a nil
   condition — the fast path without `verbose`, the single-transaction loop
   with it, and `deleteBatched` with `transactionSize`. Errors become
   `CLIENT_ERROR`, a message `CODE: …`, and `retryable` only when true
@@ -356,7 +356,7 @@ retried" (U, E), "gRPC entity doors" (single delete).
 
 **Files:**
 - Create: `internal/testing/taskconflict/taskconflict.go`
-- Modify: `internal/domain/entity/service.go` (`DeleteEntity` `:654-717`; two new helpers next to it)
+- Modify: `internal/domain/entity/service.go` (`DeleteEntity` `:641-704`; two new helpers next to it)
 - Modify: `api/openapi.yaml` (`deleteSingleEntity` responses, after `"404"` at `:1543-1560`)
 - Modify: `cmd/cyoda/help/content/errors/CONFLICT.md`
 - Test: `internal/domain/entity/scheduled_tasks_env_test.go` (new, shared env)
@@ -1374,7 +1374,7 @@ Expected:
 - [ ] **Step 7: Implement**
 
 In `internal/domain/entity/service.go`, replace `DeleteEntity`
-(`:654-717`) with:
+(`:641-704`) with:
 
 ```go
 // DeleteEntity deletes a single entity by ID, with its scheduled tasks, in
@@ -1631,7 +1631,7 @@ update racing a claim → retryable 409" (E isolated); §13 row "gRPC entity
 doors: … 409 on a race". Review Focus 2.
 
 **Files:**
-- Modify: `internal/domain/entity/service.go` (`:2202`, `:2221`, `:2558-2582`)
+- Modify: `internal/domain/entity/service.go` (`:2181`, `:2200`, `:2529-2553`)
 - Test: `internal/domain/entity/service_update_task_conflict_test.go` (new)
 - Test: `internal/grpc/entity_delete_tasks_test.go` (one test added)
 - Test: `internal/e2e/scheduled_task_writes_test.go` (one test added)
@@ -1781,7 +1781,7 @@ Expected:
 
 - [ ] **Step 3: Implement**
 
-`internal/domain/entity/service.go`, loopback branch (`:2202`):
+`internal/domain/entity/service.go`, loopback branch (`:2181`):
 
 ```go
 			// A task-row conflict (the reconcile lost a race with the
@@ -1790,13 +1790,13 @@ Expected:
 			if errors.Is(lbErr, spi.ErrConflict) && !errors.Is(lbErr, wfengine.ErrScheduledTaskInfra) {
 ```
 
-Named-transition branch (`:2221`):
+Named-transition branch (`:2200`):
 
 ```go
 			if errors.Is(mtErr, spi.ErrConflict) && !errors.Is(mtErr, wfengine.ErrScheduledTaskInfra) {
 ```
 
-Collection branch (`:2580-2582`):
+Collection branch (`:2551-2553`):
 
 ```go
 			if item.ifMatch != "" && errors.Is(engineErr, spi.ErrConflict) &&
@@ -1805,9 +1805,9 @@ Collection branch (`:2580-2582`):
 				!errors.Is(engineErr, wfengine.ErrScheduledTaskInfra) {
 ```
 
-In the comment above that branch (`:2558`), change "Two other shapes" to
+In the comment above that branch (`:2529`), change "Two other shapes" to
 "Three other shapes", and add this item after the `ErrCommitBeforeDispatchInfra`
-item (`:2575`):
+item (`:2546`):
 
 ```go
 			//   - ErrScheduledTaskInfra: the reconcile's task-row write lost a
@@ -1851,7 +1851,7 @@ single-transaction delete … persistent conflict → 409" (fast path), and the
 gRPC delete-all door.
 
 **Files:**
-- Modify: `internal/domain/entity/service.go` (`DeleteAllEntities` `:777-856`)
+- Modify: `internal/domain/entity/service.go` (`DeleteAllEntities` `:764-843`)
 - Modify: `api/openapi.yaml` (`deleteEntities` `"409"` `:2208-2234`)
 - Test: `internal/domain/entity/service_delete_tasks_test.go`
 - Test: `internal/grpc/entity_delete_tasks_test.go`
@@ -2137,7 +2137,7 @@ Expected:
 
 - [ ] **Step 3: Implement**
 
-Replace `DeleteAllEntities` (`service.go:777-856`) with:
+Replace `DeleteAllEntities` (`service.go:764-843`) with:
 
 ```go
 // DeleteAllEntities deletes all entities of a model, and all the model's
@@ -2164,8 +2164,8 @@ func (h *Handler) deleteAllEntitiesOnce(ctx context.Context, entityName string, 
 ```
 
 The body of `deleteAllEntitiesOnce` is the old body of `DeleteAllEntities`
-from `ref := spi.ModelRef{` (`:779`) to its end (`:855`), unchanged except
-the finalize block (`:833-846`), which becomes:
+from `ref := spi.ModelRef{` (`:766`) to its end (`:842`), unchanged except
+the finalize block (`:820-833`), which becomes:
 
 ```go
 	if appErr := func() *common.AppError {
@@ -2211,7 +2211,7 @@ func (h *Handler) deleteModelTasks(txCtx context.Context, ref spi.ModelRef) erro
 }
 ```
 
-The fast path (`:1230-1243`) calls `DeleteAllEntities` and needs no change:
+The fast path (`:1217-1230`) calls `DeleteAllEntities` and needs no change:
 the retry sits inside it.
 
 In `api/openapi.yaml`, replace the `deleteEntities` `"409"` block
@@ -2293,7 +2293,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ### Task W-5: the conditional single-transaction delete removes the deleted entities' tasks
 
 **Spec:** §7 entity-delete table row `DeleteEntitiesConditional` single-
-transaction loop (`:1314`) "with the ids actually deleted"; retry table row
+transaction loop (`:1301`) "with the ids actually deleted"; retry table row
 "the conditional single-transaction loop". §13 rows "conditional delete
 removes tasks: single-tx" (U, E), "an owned single-transaction delete …
 retried up to 3 times; a persistent conflict → 409" (loop), "a delete …
@@ -2301,7 +2301,7 @@ racing one claim succeeds" (loop), and the gRPC delete-all door with
 `verbose`.
 
 **Files:**
-- Modify: `internal/domain/entity/service.go` (`DeleteEntitiesConditional` `:1245-1339`)
+- Modify: `internal/domain/entity/service.go` (`DeleteEntitiesConditional` `:1230-1322`)
 - Test: `internal/domain/entity/service_delete_tasks_test.go`
 - Test: `internal/grpc/entity_delete_tasks_test.go`
 - Test: `internal/e2e/scheduled_task_writes_test.go`
@@ -2561,7 +2561,7 @@ Expected:
 - [ ] **Step 3: Implement**
 
 In `DeleteEntitiesConditional`, replace everything from `scope, err :=
-h.beginScope(ctx)` (`:1245`) to the function's end (`:1339`) with:
+h.beginScope(ctx)` (`:1230`) to the function's end (`:1322`) with:
 
 ```go
 	var result *DeleteResult
@@ -2729,7 +2729,7 @@ conflicting batch retried up to 3 times; a persistent conflict reported per
 id, never 409" (U, E), and the gRPC delete-all door with `transactionSize`.
 
 **Files:**
-- Modify: `internal/domain/entity/service.go` (`deleteOneBatch` and its doc comment, `:1643-1737`)
+- Modify: `internal/domain/entity/service.go` (`deleteOneBatch` and its doc comment, `:1630-1724`)
 - Test: `internal/domain/entity/service_delete_tasks_test.go`
 - Test: `internal/grpc/entity_delete_tasks_test.go`
 - Test: `internal/e2e/scheduled_task_writes_test.go`
@@ -2953,7 +2953,7 @@ Expected:
 
 - [ ] **Step 3: Implement**
 
-Replace `deleteOneBatch` and its doc comment (`service.go:1643-1737`) with:
+Replace `deleteOneBatch` and its doc comment (`service.go:1630-1724`) with:
 
 ```go
 // batchAttempt is one run of a batch's transaction.

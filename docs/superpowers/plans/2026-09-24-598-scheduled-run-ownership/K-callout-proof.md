@@ -1164,18 +1164,18 @@ which turns the error into what the client sees.
 | `internal/observability/dispatch_tracing.go:161`, `:179`, `:198` | Returns it as is. `record` puts `err.Error()` on the span (`:106-109`). The text is the same, because `Error()` returns the wrapped error's text. |
 | `internal/domain/workflow/engine_processors.go:230` | Returns it at `:236`. |
 | `internal/domain/workflow/engine_processors.go:269` | Returns it at `:286`, or replaces it with a savepoint error at `:279-285`. |
-| `internal/domain/workflow/engine_processors.go:360` | Returns it at `:362`. |
-| `internal/domain/workflow/engine_processors.go:392` | Returns it at `:395`. |
+| `internal/domain/workflow/engine_processors.go:368` | Returns it at `:370`. |
+| `internal/domain/workflow/engine_processors.go:400` | Returns it at `:403`. |
 | `internal/domain/workflow/engine.go:1023` | Returns it at `:1028`. |
 | `internal/domain/workflow/arm.go:243` | Wraps it with `%w` at `:253`. |
 
 Upstream wraps use `%w`. For example, `engine_processors.go:207` has
 `"processor %s failed: %w"`. The error then reaches these readers:
 
-- `classifyWorkflowError` (`internal/domain/entity/service.go:2795`). It uses
-  `errors.As` for `*common.AppError` (`:2796-2799`) and
-  `*contract.CalloutFailure` (`:2869-2870`). It uses `errors.Is` for every
-  sentinel. It uses `err.Error()` for the 400 text (`:2871`, `:2877`).
+- `classifyWorkflowError` (`internal/domain/entity/service.go:2758`). It uses
+  `errors.As` for `*common.AppError` (`:2759-2762`) and
+  `*contract.CalloutFailure` (`:2832-2833`). It uses `errors.Is` for every
+  sentinel. It uses `err.Error()` for the 400 text (`:2834`, `:2840`).
 - The gRPC door `buildErrorFields` (`internal/grpc/errors.go:42-44`), with
   `errors.As`, and `isClientGoneCancellation` (`:30-32`), with `errors.Is`.
 - `clientGone` (`internal/grpc/txroute_interceptor.go:187-189`) and the HTTP
@@ -1333,7 +1333,7 @@ which streams E, R and T cover.
   cannot be parsed. A nil error stays nil.
 - The error text, `errors.Is` and `errors.As` are unchanged. Stream E reads the
   proof with `contract.ProvesNoHandOff(err)` on the error that the
-  `DispatchProcessor` call returns at `engine_processors.go:230, 269, 360, 392`.
+  `DispatchProcessor` call returns at `engine_processors.go:230, 269, 368, 400`.
   It must read the error before any wrap that could replace it, as
   `:279-285` does. Any other error, including an error from
   `internal/testing/localproc`, counts as handed off.

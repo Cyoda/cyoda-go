@@ -22,8 +22,6 @@ reason", the `lastError` rows and the bookkeeping rows are R's.
 
 ```
 E-1 → E-2 → E-3 → E-4 → E-5 → E-6 → E-7
-                                 │
-                                 └── needs #599 merged into release/v0.9.0 (README "Prerequisite")
 ```
 
 - E needs S (the SPI), BM (the memory store, which every test here runs on) and
@@ -127,7 +125,7 @@ every door goes through it (`engine.go:331, 442, 527`,
 - Create: `internal/domain/workflow/run_guard.go`
 - Modify: `internal/domain/workflow/fire_scheduled.go` (all of `:14-524`; `findFireableTransitionInState` at `:526-561` stays)
 - Modify: `internal/domain/workflow/engine.go` (`:170-179` clock and grace fields, `:192` constructor, `:44-58` `ErrCriterionNotMatched` doc, `:770` and `:775-852` `fireTransition` loses `matched`)
-- Modify: `internal/domain/workflow/engine_processors.go` (`:338-357` and `:401-407` segment re-read; `:526-535` `commitAndBeginNextSegment`)
+- Modify: `internal/domain/workflow/engine_processors.go` (`:346-365` and `:409-415` segment re-read; `:534-543` `commitAndBeginNextSegment`)
 - Create: `internal/domain/workflow/fire_run_helpers_test.go`, `internal/domain/workflow/fire_run_test.go`
 - Modify: `fire_scheduled_test.go`, `fire_scheduled_concurrency_test.go`, `heartbeat_test.go`, `workflow_selection_test.go`, `arm_test.go`, `arm_function_test.go` (same package)
 
@@ -1426,7 +1424,7 @@ func (e *Engine) commitRun(ctx context.Context, txID string) error {
   - `fireTransition` (`:775-852`): drop the `retMatched bool` result and its doc paragraph (`:780-784`); every `return x, y, false, err` / `return newCtx, newTxID, true, nil` loses the bool. Its callers: `engine.go:770` becomes `newCtx, newTxID, err := e.fireTransition(...)`; `fire_scheduled.go` is already written that way above. The only reader of `matched` was the unreachable branch at `fire_scheduled.go:446-452`.
 
 - [ ] **Step 9: `engine_processors.go` — the re-read at every segment start** (spec §5.2).
-  - `commitAndBeginNextSegment` (`:526-535`):
+  - `commitAndBeginNextSegment` (`:534-543`):
 
 ```go
 func (e *Engine) commitAndBeginNextSegment(ctx context.Context, entity *spi.Entity, txID, expectedTxID string, applyIfMatch bool) (newTxID string, newCtx context.Context, err error) {
@@ -1447,9 +1445,9 @@ func (e *Engine) commitAndBeginNextSegment(ctx context.Context, entity *spi.Enti
 }
 ```
 
-  and in its doc comment (`:517-525`) add: "On a failed re-read it returns the new segment with the error; the caller rolls it back."
-  - The `=true` branch comment at `:339-342` ("commitAndBeginNextSegment returns ("", nil, err) on failure …") becomes: "On a failed flush it returns ("", nil, err) and rollbackSegment no-ops; on a failed re-read it returns TX_post, which the guard rolls back."
-  - The `=false` branch, after `:403-407`:
+  and in its doc comment (`:525-533`) add: "On a failed re-read it returns the new segment with the error; the caller rolls it back."
+  - The `=true` branch comment at `:347-350` ("commitAndBeginNextSegment returns ("", nil, err) on failure …") becomes: "On a failed flush it returns ("", nil, err) and rollbackSegment no-ops; on a failed re-read it returns TX_post, which the guard rolls back."
+  - The `=false` branch, after `:411-415`:
 
 ```go
 		newTxID, newCtx, err = e.txMgr.Begin(context.WithoutCancel(ctx))
@@ -1857,7 +1855,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `internal/domain/workflow/run_guard.go`
-- Modify: `internal/domain/workflow/engine_processors.go` (loop top `:122`; dispatch sites `:230, :269, :360, :392`; `flushAndCommitSegment` `:487-509`)
+- Modify: `internal/domain/workflow/engine_processors.go` (loop top `:122`; dispatch sites `:230, :269, :368, :400`; `flushAndCommitSegment` `:495-517`)
 - Modify: `internal/domain/workflow/engine.go` (`cascadeAutomated` `:889-891`; `evaluateCriterion` `:1023`)
 - Modify: `internal/domain/workflow/arm.go` (`armViaFunction` `:243`)
 - Modify: `internal/domain/workflow/fire_scheduled.go` (`commitRun`)
@@ -2077,7 +2075,7 @@ func TestRunCancel_CalloutsAfterCBDSeeTheCancellation(t *testing.T) {
 
 - [ ] **Step 2: Run to verify RED**
 Run: `go test ./internal/domain/workflow/... -run 'TestRunCancel_'`
-Expected: FAIL — `BeforeProcessorDispatch` ("p2 dispatched 1 times"), `AfterTXPre_StopsAtNextStep` ("p2 dispatched 1 times": `engine.go:889` checks a `WithoutCancel` context), `BeforeFinalCommit_NoCommit` ("want failed with a cancellation": the run fires), `BeforeSegmentCommit_NoCommit` ("p2 dispatched 1 times": `engine_processors.go:493` checks a `WithoutCancel` context), and all three `CalloutsAfterCBDSeeTheCancellation` subtests ("did not see the run's cancellation").
+Expected: FAIL — `BeforeProcessorDispatch` ("p2 dispatched 1 times"), `AfterTXPre_StopsAtNextStep` ("p2 dispatched 1 times": `engine.go:889` checks a `WithoutCancel` context), `BeforeFinalCommit_NoCommit` ("want failed with a cancellation": the run fires), `BeforeSegmentCommit_NoCommit` ("p2 dispatched 1 times": `engine_processors.go:501` checks a `WithoutCancel` context), and all three `CalloutsAfterCBDSeeTheCancellation` subtests ("did not see the run's cancellation").
 
 - [ ] **Step 3: Implement.**
   - `run_guard.go`, add:
@@ -2153,8 +2151,8 @@ func runCallCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 	stop()
 ```
 
-  `:269` the same with `_, dispatchErr :=`; `:360` with `runCallCtx(newCtx)`; `:392` with `runCallCtx(dispatchCtx)`.
-  - `flushAndCommitSegment`, after the `ctx.Err()` check (`:493-495`) and before `ShieldedCommitWithBudget`:
+  `:269` the same with `_, dispatchErr :=`; `:368` with `runCallCtx(newCtx)`; `:400` with `runCallCtx(dispatchCtx)`.
+  - `flushAndCommitSegment`, after the `ctx.Err()` check (`:501-503`) and before `ShieldedCommitWithBudget`:
 
 ```go
 	// Checkpoint before each entity-transaction commit of a scheduled run
@@ -2213,7 +2211,7 @@ anti-pattern with an unsafe processor).
 
 **Files:**
 - Modify: `internal/domain/workflow/run_guard.go`
-- Modify: `internal/domain/workflow/engine_processors.go` (`:179`, `:216-242`, `:253-293`, `:359-367`, `:390-399`)
+- Modify: `internal/domain/workflow/engine_processors.go` (`:179`, `:216-242`, `:253-293`, `:367-375`, `:398-407`)
 - Modify: `internal/domain/workflow/fire_scheduled.go` (`runReport`)
 - Create: `internal/domain/workflow/fire_mark_test.go`
 
@@ -2509,7 +2507,7 @@ func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, d
 	defer func() { dispatched(retErr) }()
 ```
 
-    - `=true` branch (`:359-367`):
+    - `=true` branch (`:367-375`):
 
 ```go
 		if e.extProc != nil {
@@ -2530,7 +2528,7 @@ func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, d
 		}
 ```
 
-    - `=false` branch (`:390-393`):
+    - `=false` branch (`:398-401`):
 
 ```go
 		if e.extProc != nil {
@@ -2949,86 +2947,20 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 **Spec:** §5.2 ("Every commit writes the task row"), §5.4, §5.5 (callback
 anti-pattern in a segmented run), §14.
 
-**Prerequisite: the invariant I-599.** This task does not depend on *how* #599
-is fixed. It depends on one guarantee:
-
-> **I-599.** While a scheduled run's transaction is open, only the run's own
-> processor chain can commit it. A compute-node callback that joined the
-> transaction never causes a commit of that transaction, directly or through a
-> `COMMIT_BEFORE_DISPATCH` processor it reaches (today it can:
-> `flushAndCommitSegment` commits whatever transaction the chain runs in,
-> `engine_processors.go:481-486`, called at `:311` and `:349`).
-
-- [ ] **Step 0: Check I-599 against the merged #599.**
-  1. Run: `gh issue view 599 --json state -q .state && git fetch origin && git log --oneline HEAD..origin/release/v0.9.0 | head`.
-     Expected: `CLOSED` and an empty log (this branch contains the release branch).
-     If not: **stop, and tell the lead.**
-  2. Read #599's merged change (`gh issue view 599 --comments`, then the PR it
-     names). Decide which case applies:
-     - **(a) A joined chain that reaches `COMMIT_BEFORE_DISPATCH` is refused**
-       before anything is flushed (the fix the issue asks for). I-599 holds.
-       Go on with Step 1, and add the pinning test in Step 1b.
-     - **(b) The joined chain's `COMMIT_BEFORE_DISPATCH` commits something
-       other than the joined transaction** (for example its own transaction).
-       I-599 still holds, because the run's transaction is not committed.
-       Go on with Step 1 and Step 1b.
-     - **(c) Anything else**: some path still lets a joined callback commit the
-       transaction it joined; the refusal comes only after the flush; or the
-       fix is an import-time rule that leaves a runtime path open. I-599 does
-       not hold. **Stop, and tell the lead.** The fallback, which changes the
-       spec and needs the product owner's approval, is to attach the run guard
-       to the *transaction* rather than to the context. Every commit of a
-       guarded transaction is then stamped and checks the cancellation, from
-       whichever chain it comes. A commit from a chain that is not the run's
-       own counts as `partial = true`, because that chain cannot know whether
-       the fired transition has changed the state yet.
-  3. Rebase the branch on the release branch that contains #599 and re-check
-     the line numbers this task cites in `engine_processors.go`. #599 edits
-     that file.
-
-- [ ] **Step 1b: Pin I-599 inside a scheduled run.** Add the test below to
-  `fire_stamp_test.go`, and adapt the assertion on `err` to the error #599
-  returns in case (a) (in case (b), assert only what follows the `err` check).
-  The scripted processor `p1` joins the run's transaction and, through that
-  join, runs an ordinary workflow on a second entity whose transition has a
-  `COMMIT_BEFORE_DISPATCH` processor. Use the same join-and-run helper as
-  #599's own tests.
-
-```go
-func TestI599_CallbackCannotCommitTheRunsTransaction(t *testing.T) {
-	var env *runEnv
-	var claimed spi.ScheduledTask
-	var callbackErr error
-	ext := &scriptedExtProc{processor: func(_ context.Context, proc spi.ProcessorDefinition, txID string) (*spi.Entity, error) {
-		if proc.Name != "p1" {
-			return nil, nil
-		}
-		callbackErr = env.runJoinedCBDWorkflow(t, txID, "other-e1") // #599's helper, adapted
-		return nil, nil
-	}}
-	env = newRunEnv(t, ext)
-	claimed = env.claimed(t, "i599-e1", oneHopWF("CLOSED", []spi.ProcessorDefinition{safeProc("p1", ExecutionModeSync)}, nil))
-
-	r := env.runReport(t, claimed)
-	if callbackErr == nil {
-		t.Fatalf("the joined chain reached COMMIT_BEFORE_DISPATCH and was not refused (I-599)")
-	}
-	// Whatever the run's outcome, nothing of its transaction may be committed
-	// by the callback: the fired entity is either CLOSED by the run's own
-	// commit, or still OPEN.
-	if got := env.state(t, "i599-e1"); got != "CLOSED" && got != "OPEN" {
-		t.Fatalf("entity state = %q", got)
-	}
-	if r.Outcome == OutcomeFired && env.state(t, "i599-e1") != "CLOSED" {
-		t.Fatalf("fired, but the entity is not CLOSED")
-	}
-}
-```
+**The guard belongs to the transaction (spec §5.2).** The segment commit
+(`flushAndCommitSegment`) finds the run guard from the id of the transaction it
+commits, through a registry on the engine, not from the context. The run
+registers each transaction it begins and releases them all when it ends. A
+compute-node callback that joined the run's transaction cannot reach this
+commit today (`engine_processors.go:312-314` refuses its
+`COMMIT_BEFORE_DISPATCH` first), but the stamp does not depend on that.
+Step 1b pins the lookup directly.
 
 **Files:**
-- Modify: `internal/domain/workflow/run_guard.go`
-- Modify: `internal/domain/workflow/engine_processors.go` (`flushAndCommitSegment`, `:469-515`)
-- Modify: `internal/domain/workflow/fire_scheduled.go` (after `fireTransition`; `runReport`)
+- Modify: `internal/domain/workflow/run_guard.go` (run state; the registry)
+- Modify: `internal/domain/workflow/engine.go` (the `runTxs` field)
+- Modify: `internal/domain/workflow/engine_processors.go` (`flushAndCommitSegment`, `:477-523`; the two `TX_post` begins, `:411` and `:538`)
+- Modify: `internal/domain/workflow/fire_scheduled.go` (the first `Begin`, `:116`; after `fireTransition`; `runReport`)
 - Create: `internal/domain/workflow/fire_stamp_test.go`
 
 **Interfaces:**
@@ -3208,9 +3140,71 @@ func TestStamp_CallbackReArmedInRunTx_StampRefused(t *testing.T) {
 }
 ```
 
+- [ ] **Step 1b: The segment commit finds the guard by transaction.** Add to
+  `fire_stamp_test.go`. The test calls
+  `flushAndCommitSegment` on a context that carries **no** guard, for a
+  transaction registered to one. Add `"github.com/google/uuid"` to the file's imports.
+
+```go
+func TestStamp_CommitFindsGuardByTransaction(t *testing.T) {
+	cases := []struct {
+		name   string
+		guard  func(claimed spi.ScheduledTask) *RunGuard
+		wantIs func(error) bool
+	}{
+		{"stale claim token → stamp refused",
+			func(c spi.ScheduledTask) *RunGuard {
+				return &RunGuard{Ref: spi.TaskRef{TenantID: testTenant, ID: c.ID, ArmToken: c.ArmToken, ClaimToken: uuid.New()}}
+			},
+			func(err error) bool { return errors.Is(err, spi.ErrStaleClaim) }},
+		{"cancelled run → not committed",
+			func(c spi.ScheduledTask) *RunGuard {
+				done := make(chan struct{})
+				close(done)
+				return &RunGuard{Ref: spi.TaskRef{TenantID: testTenant, ID: c.ID, ArmToken: c.ArmToken, ClaimToken: c.Claim.Token}, Done: done}
+			},
+			func(err error) bool { return errors.Is(err, context.Canceled) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newRunEnv(t, &scriptedExtProc{})
+			claimed := env.claimed(t, "bytx-e1", oneHopWF("CLOSED", nil, nil))
+			g := tc.guard(claimed)
+			g.Store = env.sts
+
+			txID, txCtx, err := env.txMgr.Begin(env.ctx) // env.ctx carries no guard
+			if err != nil {
+				t.Fatalf("Begin: %v", err)
+			}
+			defer env.txMgr.Rollback(env.ctx, txID)
+			env.engine.runTxs.register(txID, g)
+			defer env.engine.runTxs.release(g)
+			es, _ := env.factory.EntityStore(txCtx)
+			ent, err := es.Get(txCtx, "bytx-e1")
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			ent.Meta.State = "CLOSED"
+
+			err = env.engine.flushAndCommitSegment(txCtx, ent, txID, "", false)
+			if !tc.wantIs(err) {
+				t.Fatalf("flushAndCommitSegment = %v", err)
+			}
+			if got := env.state(t, "bytx-e1"); got != "OPEN" {
+				t.Errorf("entity state = %q, want OPEN (nothing committed)", got)
+			}
+		})
+	}
+}
+```
+
+  RED: it fails to build (`env.engine.runTxs undefined`). With a stub
+  registry that `flushAndCommitSegment` does not consult, both cases commit
+  the entity as `CLOSED`.
+
 - [ ] **Step 2: Run to verify RED**
 Run: `go test ./internal/domain/workflow/... -run 'TestStamp_'`
-Expected: FAIL — `CascadeStepSegment_SetsPartialCommit` and `CascadeBackInSourceState_SetsPartialCommit` ("want … PartialCommit"), `NextClaimAfterPartialCommit_Failed` (the run fires or fails without the reason; the store never saw a stamp), `ReplacedOwnerSegmentRefused` ("p2 dispatched 1 times"), `CallbackReArmedInRunTx_StampRefused` (outcome superseded: without the stamp TX_pre commits the callback's re-arm and TX_post's re-read then sees the new life). `FiredTransitionSegment_NotPartial_RetriedFromTXPre` passes and guards the fired-transition case.
+Expected: FAIL — `CascadeStepSegment_SetsPartialCommit` and `CascadeBackInSourceState_SetsPartialCommit` ("want … PartialCommit"), `NextClaimAfterPartialCommit_Failed` (the run fires or fails without the reason; the store never saw a stamp), `ReplacedOwnerSegmentRefused` ("p2 dispatched 1 times"), `CallbackReArmedInRunTx_StampRefused` (outcome superseded: without the stamp TX_pre commits the callback's re-arm and TX_post's re-read then sees the new life). `CommitFindsGuardByTransaction` fails to build (`env.engine.runTxs undefined`). `FiredTransitionSegment_NotPartial_RetriedFromTXPre` passes and guards the fired-transition case.
 
 - [ ] **Step 3: Implement.**
   - `run_guard.go`, run state:
@@ -3221,6 +3215,59 @@ Expected: FAIL — `CascadeStepSegment_SetsPartialCommit` and `CascadeBackInSour
 	// also a cascade that loops back into the source state.
 	firedTransitionDone bool
 	partialCommitted    bool
+	txIDs               []string // registered in Engine.runTxs; guarded by runTxGuards.mu
+```
+
+  - `run_guard.go`, the registry (one per `Engine`, field `runTxs runTxGuards`,
+    zero value ready):
+
+```go
+// runTxGuards maps a transaction id to the guard of the scheduled run that
+// began it. The segment commit reads it by the id of the transaction it
+// commits, so every commit of a run's transaction is stamped and checks the
+// run's cancellation, whichever call chain reaches it (spec §5.2).
+type runTxGuards struct {
+	mu sync.Mutex
+	m  map[string]*RunGuard
+}
+
+func (r *runTxGuards) register(txID string, g *RunGuard) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.m == nil {
+		r.m = make(map[string]*RunGuard)
+	}
+	r.m[txID] = g
+	g.txIDs = append(g.txIDs, txID)
+}
+
+func (r *runTxGuards) forTx(txID string) *RunGuard {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.m[txID]
+}
+
+// release drops every transaction id registered for g.
+func (r *runTxGuards) release(g *RunGuard) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, id := range g.txIDs {
+		delete(r.m, id)
+	}
+	g.txIDs = nil
+}
+```
+
+  - Registration. `fire_scheduled.go`, right after the first `Begin` (`:116`)
+    succeeds: `e.runTxs.register(txID, g)`, and
+    `defer e.runTxs.release(g)` at the top of `FireScheduledTransition` once
+    `g` is read. `engine_processors.go`, after each `TX_post` begin succeeds
+    (`:411`, and in `commitAndBeginNextSegment` after `:538`):
+
+```go
+	if g := RunGuardFrom(ctx); g != nil {
+		e.runTxs.register(newTxID, g)
+	}
 ```
 
   - `fire_scheduled.go`, right after the `fireErr` block that follows `e.fireTransition(...)`:
@@ -3230,14 +3277,15 @@ Expected: FAIL — `CascadeStepSegment_SetsPartialCommit` and `CascadeBackInSour
 ```
 
   and `runReport`: add `PartialCommit: g.partialCommitted` to the literal.
-  - `engine_processors.go` `flushAndCommitSegment` (`:469-515`), after the Save/CompareAndSave block and before the `ctx.Err()` check; and after the commit:
+  - `engine_processors.go` `flushAndCommitSegment` (`:477-523`), after the Save/CompareAndSave block and before the `ctx.Err()` check; and after the commit:
 
 ```go
 	// A scheduled run stamps its task as the last write of every segment
 	// (spec §5.2). The stamp is fenced; a refused stamp stops the segment from
 	// committing, and the run classifies the refusal with a non-joining
-	// re-read (fire_scheduled.go supersededBy).
-	g := RunGuardFrom(ctx)
+	// re-read (fire_scheduled.go supersededBy). The guard is found by the
+	// transaction, not the context (spec §5.2).
+	g := e.runTxs.forTx(txID)
 	if g != nil {
 		if err := g.Store.StampSegment(ctx, g.Ref, g.firedTransitionDone); err != nil {
 			if errors.Is(err, spi.ErrStaleClaim) || errors.Is(err, spi.ErrConflict) {
@@ -3249,8 +3297,10 @@ Expected: FAIL — `CascadeStepSegment_SetsPartialCommit` and `CascadeBackInSour
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("commit-before-dispatch: context expired before segment commit: %w", err)
 	}
-	if err := runCheckpoint(ctx, "commit-before-dispatch: segment not committed"); err != nil {
-		return err
+	// Replaces E-3's runCheckpoint(ctx, …) here: the guard comes from the
+	// transaction, so a chain without the guard on its context is checked too.
+	if g != nil && g.cancelled() {
+		return runCancelled("commit-before-dispatch: segment not committed")
 	}
 	if err := common.ShieldedCommitWithBudget(ctx, e.commitBudget, func(commitCtx context.Context) error {
 		if err := e.txMgr.Commit(commitCtx, txID); err != nil {
@@ -3266,7 +3316,7 @@ Expected: FAIL — `CascadeStepSegment_SetsPartialCommit` and `CascadeBackInSour
 	return nil
 ```
 
-  (the existing comments of `:487-508` stay in front of the `ctx.Err()` check and the commit.)
+  (the existing comments of `:495-516` stay in front of the `ctx.Err()` check and the commit.)
 
 - [ ] **Step 4: Run to verify GREEN**
 Run: `go test ./internal/domain/workflow/...`
@@ -3559,7 +3609,6 @@ result.
   `ErrTaskBusy`, the failure reasons.
 - BM: memory store behaviour listed under "Tests: store and fixtures".
 - K: `contract.NoHandOffProof`, `contract.ProvesNoHandOff` (E-5).
-- #599 (E-6).
 
 ## Open points
 

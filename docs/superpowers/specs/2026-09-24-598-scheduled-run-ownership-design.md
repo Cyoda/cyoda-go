@@ -1,6 +1,6 @@
 # #598 — every scheduled run has one owner
 
-Milestone v0.9.0. Prerequisite: #599 (§14).
+Milestone v0.9.0.
 
 - Research: `docs/superpowers/research/2026-09-24-598-scheduler-ownership-research.md`.
 - **[ruling]** marks a product-owner decision.
@@ -9,7 +9,8 @@ Milestone v0.9.0. Prerequisite: #599 (§14).
 ## 1. Summary
 
 - **Ownership.** At most one pnode at a time **claims** a scheduled
-  transition's task, and the claiming pnode runs it.
+  transition's task, and the claiming pnode runs it. That pnode is the task's
+  **owner** (§3). The owner is never the user of the run's transaction.
 - **Fencing.** Every write the owner makes is checked against its claim token.
 - **Liveness.** A pnode proves it is alive with one heartbeat record. Another
   pnode may claim a task only after the owner has stopped heartbeating.
@@ -60,8 +61,10 @@ ruling.
   and starts a new **life**.
 - **Claim**: a pnode takes a task in order to run it. Every claim draws a new
   random **claim token**. Tokens are UUIDs and are never reused.
-- **Owner**: the pnode **incarnation** that holds the claim. An incarnation is a
-  random UUID drawn when the pnode process starts.
+- **Owner**: the pnode **incarnation** that holds the claim and runs the task.
+  An incarnation is a random UUID drawn when the pnode process starts. The
+  owner is a processing node, not the user or principal of the run's
+  transaction.
 - **Run**: one attempt to fire a task, from the claim to its recorded outcome.
 - **Hand-off**: `member.Send` returning nil (`internal/grpc/dispatch.go:133-134,
   189`).
@@ -147,13 +150,28 @@ STALE_AFTER − HEARTBEAT_INTERVAL`.
     and a self-loop re-arms the same id.
   - Every `COMMIT_BEFORE_DISPATCH` segment commit first calls
     `StampSegment(tenant, id, armToken, claimToken, partial)` as its last
-    write (`flushAndCommitSegment`, `engine_processors.go:469-515`). The stamp
+    write (`flushAndCommitSegment`, `engine_processors.go:477-523`). The stamp
     is fenced. A refused stamp stops the segment from committing.
   - Task rows are under first-committer-wins (C1). So a commit whose task was
     reclaimed, re-armed or removed by another transaction since it began fails
     with `spi.ErrConflict`.
-- **Commits come only from the run.** No other code path commits a run's
-  transaction. #599 guarantees this (§14).
+- **The run guard belongs to the transaction.** The run registers its guard
+  (§5.3) against every transaction it begins: the first one, and the new
+  transaction of each `COMMIT_BEFORE_DISPATCH` segment. The engine's segment
+  commit (`flushAndCommitSegment`) finds the guard from the id of the
+  transaction it commits, not from the context. So every commit of a run's
+  transaction checks the run's cancellation and writes the fenced stamp,
+  whichever call chain reaches it. The run removes the registrations when it
+  ends.
+  - The other commit sites need no lookup. The run's own commits in
+    `fire_scheduled.go` are the run's by construction. The entity handler
+    commits only a transaction that its own request began
+    (`commitOwned`, `internal/domain/entity/handler.go:133-140`).
+  - A compute-node callback that joined the run's transaction never reaches
+    the segment commit: the engine refuses its `COMMIT_BEFORE_DISPATCH`
+    processor first, with `409 COMMIT_IN_JOINED_TRANSACTION`
+    (`engine_processors.go:312-314`). The stamp's `partial` flag is therefore
+    always set by the run's own chain (§5.4).
 - **`RemoveLife` removes only the life it names.** It does nothing if this same
   transaction has already replaced or removed the task.
 - **A processor may write its own fired entity** through a joined callback and
@@ -193,7 +211,8 @@ The mark (§5.5) is what protects A2.
 
 - **The run context** derives from the scheduler's run context. The system
   identity is attached to it, as `common.SystemUserContext` builds it.
-- **The run guard** travels on that context. It carries:
+- **The run guard** travels on that context, and is registered against each
+  of the run's transactions (§5.2). It carries:
   - tenant, task id, arm token and claim token;
   - the store;
   - the run's cancellation;
@@ -207,7 +226,7 @@ The mark (§5.5) is what protects A2.
   callout in flight and when the oldest one started.
 - **Callouts see the cancellation.** Every callout of a guarded run carries it:
   - processors, in every segment and in both `COMMIT_BEFORE_DISPATCH` branches
-    (`engine_processors.go:360, 392`);
+    (`engine_processors.go:368, 400`);
   - criteria;
   - the re-arm step's `schedule.function` callouts.
 
@@ -225,7 +244,7 @@ The mark (§5.5) is what protects A2.
 ### 5.4 Partial commit
 
 A `COMMIT_BEFORE_DISPATCH` processor in a cascade step commits the entity in
-that step's state (`engine.go:848`, `engine_processors.go:469-515`). The stamp
+that step's state (`engine.go:848`, `engine_processors.go:477-523`). The stamp
 of that segment sets `PartialCommit`, and so does the stamp of every later
 segment. This covers a cascade that loops back into the source state. A segment
 of the fired transition itself, with the entity still in the source state, does
@@ -241,7 +260,7 @@ ordinary rules. A safe failure is retried from that committed state.
 ### 5.5 The unsafe mark
 
 This applies at every dispatch site of an unsafe processor under a run guard
-(`engine_processors.go:230, 269, 360, 392`).
+(`engine_processors.go:230, 269, 368, 400`).
 
 **Before every unsafe dispatch** the engine calls `MarkUnsafe(tenant, id,
 armToken, claimToken)`, even when this run already holds a mark. For the same
@@ -293,8 +312,8 @@ For this, the callout layer needs these changes:
 with `errors.As`. Every other error is fail-closed. That includes:
 - a savepoint error that replaces the dispatch error
   (`engine_processors.go:279-285`);
-- a failure after a successful dispatch in the same step (`:239, :403, :411,
-  :421`);
+- a failure after a successful dispatch in the same step (`:239, :411, :419,
+  :429`);
 - `internal/testing/localproc`.
 
 **Where the mark lives.** The mark belongs to the life, and every later claim of
@@ -395,7 +414,7 @@ The first matching row applies:
 | anything else | `internal error [ticket: <uuid>]`, with the full error logged at ERROR |
 
 `classifyWorkflowError` is not used for this. Its catch-all carries
-`err.Error()` in a 400 (`internal/domain/entity/service.go:2877`), and the fire
+`err.Error()` in a 400 (`internal/domain/entity/service.go:2840`), and the fire
 path wraps store errors in plain `fmt.Errorf` (`fire_scheduled.go:107, 118,
 168, 234`).
 
@@ -621,9 +640,9 @@ existing permanent latch (`docs/ARCHITECTURE.md:382-393`).
 
   | Path | Removal |
   |---|---|
-  | `Handler.DeleteEntity` (`internal/domain/entity/service.go:656`) | `DeleteForEntities(tenant, [id])` |
-  | `DeleteEntitiesConditional` (`:1205`), single-transaction loop (`:1314`) and `deleteBatched` (`:1440`) | `DeleteForEntities` with the ids actually deleted |
-  | `DeleteAllEntities` (`:778`, also reached from `:1230`) | `DeleteForModel(tenant, model, version, keep = none)` |
+  | `Handler.DeleteEntity` (`internal/domain/entity/service.go:643`) | `DeleteForEntities(tenant, [id])` |
+  | `DeleteEntitiesConditional` (`:1192`), single-transaction loop (`:1301`) and `deleteBatched` (`:1427`) | `DeleteForEntities` with the ids actually deleted |
+  | `DeleteAllEntities` (`:765`, also reached from `:1217`) | `DeleteForModel(tenant, model, version, keep = none)` |
 
   **Server-side retry on a conflict.** On an owned path the store cannot tell a
   task-row conflict from a conflict on the entity itself, so the retry covers
@@ -633,10 +652,10 @@ existing permanent latch (`docs/ARCHITECTURE.md:382-393`).
   | Delete path | Retry |
   |---|---|
   | single delete, delete-all fast path and the conditional single-transaction loop, when the handler owns the transaction | the whole call, up to 3 times; the rollback makes the re-run idempotent, and no audit event is duplicated. A conflict that persists → 409 |
-  | `deleteBatched` | each batch (`deleteOneBatch`), up to 3 times, against its re-checked version baseline. A conflict that persists goes into that batch's `IDToError`, as batch conflicts do today (`service.go:1703-1729`); it never becomes 409 |
-  | any path that joined a transaction already on the context (`beginScope` not owned, `service.go:657, 785, 1241`) | none; the conflict surfaces at the outer transaction's commit |
+  | `deleteBatched` | each batch (`deleteOneBatch`), up to 3 times, against its re-checked version baseline. A conflict that persists goes into that batch's `IDToError`, as batch conflicts do today (`service.go:1690-1716`); it never becomes 409 |
+  | any path that joined a transaction already on the context (`beginScope` not owned, `service.go:645, 772, 1230`) | none; the conflict surfaces at the outer transaction's commit |
 
-  The gRPC doors reach the same functions (`internal/grpc/entity.go:200, 484`).
+  The gRPC doors reach the same functions (`internal/grpc/entity.go:200, 501`).
 - **Client writes carry no claim.** If a client write commits first, the
   owner's next task-row write fails (C1), and the owner is superseded.
 - **A client write can get a retryable 409 when it races the scheduler.** C1
@@ -1235,17 +1254,8 @@ Rules:
 | each new variable: its default and its validation failure | ✓ |
 | each removed variable is no longer read (§15) | ✓ |
 
-## 14. Dependencies and scope
+## 14. Scope
 
-- **#599 lands first, and must establish I-599.** While a scheduled run's
-  transaction is open, only the run's own processor chain can commit it. A
-  compute-node callback that joined the transaction never causes a commit of
-  that transaction, directly or through a `COMMIT_BEFORE_DISPATCH` processor it
-  reaches. Today it can (`engine_processors.go:481-486`).
-  - If #599 does not establish this, the run guard moves from the context to
-    the transaction, so every commit of a guarded transaction is stamped and
-    checks the cancellation. A commit from any other chain then counts as a
-    partial commit.
 - **Out of scope:**
   - an API to retry or dismiss a FAILED task — an entity write does both;
   - notifications — §5.7 names where they publish;

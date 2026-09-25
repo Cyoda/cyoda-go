@@ -100,8 +100,8 @@ A failure leaves one log line at ERROR (`internal/scheduler/executor.go:57`,
 - `ASYNC_NEW_TX` runs under a savepoint of the same transaction, and its own
   failure is not fatal (`:244-294`, `:175-183`). It commits nothing on its own.
 - `COMMIT_BEFORE_DISPATCH` **commits** the work done so far ("TX_pre") before
-  the processor is called, then continues in a new transaction (`:306-443`,
-  `:469-515`). The entity's state name only changes after all processors
+  the processor is called, then continues in a new transaction (`:306-451`,
+  `:477-523`). The entity's state name only changes after all processors
   (`engine.go:831-848`), so after TX_pre the entity is stored with new data
   and a new transaction id, **still in the source state**. The task is not
   touched until the last transaction. If the run fails after TX_pre, the task
