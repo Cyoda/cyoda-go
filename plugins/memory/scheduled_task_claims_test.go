@@ -3,6 +3,8 @@ package memory_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -351,4 +353,50 @@ func TestTasks_ReconcileRemovedListDerivesTheMarkFreshForAStagedRow(t *testing.T
 		t.Fatalf("removed = %+v, want it to include the claimed task %s", removed, c.ID)
 	}
 	fx.rollback(t, taskTenantA, txID)
+}
+
+// Concurrent claimers never leave an entity with two RUNNING tasks.
+func TestTasks_ConcurrentClaimsAreDisjoint(t *testing.T) {
+	fx := newTaskFixture(t)
+	bg := context.Background()
+	for i := 0; i < 20; i++ {
+		arm(t, bg, fx.sts, taskTenantA, fmt.Sprintf("e%02d", i), "T1", "T2")
+	}
+	var mu sync.Mutex
+	seen := make(map[string]int)
+	var wg sync.WaitGroup
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got, err := fx.sts.ClaimDue(bg, spi.ClaimRequest{Owner: uuid.New(), NowMs: 2_000, StaleAfter: time.Minute, Limit: 100, PerTenantLimit: 100})
+			if err != nil {
+				t.Errorf("ClaimDue: %v", err)
+				return
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			for _, c := range got {
+				seen[c.EntityID]++
+			}
+		}()
+	}
+	wg.Wait()
+	if len(seen) != 20 {
+		t.Fatalf("claimed tasks of %d entities, want 20", len(seen))
+	}
+	for e, n := range seen {
+		if n != 1 {
+			t.Fatalf("entity %s got %d claims, want 1", e, n)
+		}
+	}
+}
+
+// Query's Limit < 1 is a deterministic caller error, not merely "an error".
+func TestTasks_QueryRejectsALimitBelowOneAsStoreRejected(t *testing.T) {
+	fx := newTaskFixture(t)
+	_, err := fx.sts.Query(context.Background(), taskTenantA, spi.ScheduledTaskQuery{Limit: 0})
+	if !errors.Is(err, spi.ErrStoreRejected) {
+		t.Fatalf("Query Limit 0: err = %v, want ErrStoreRejected", err)
+	}
 }

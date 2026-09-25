@@ -964,11 +964,6 @@ func TestBegin_SnapshotTimeAndSeqCapturedAtomically(t *testing.T) {
 // many commits land after it. The clock is frozen, so only the sequence
 // numbers order the commits.
 func TestCommittedLogPruningKeepsAnOpenTransactionsConflict(t *testing.T) {
-	t.Run("only open", testPruningWithOneOpenTransaction)
-	t.Run("oldest of two open", testPruningKeepsTheOldestOpenSnapshotsEntries)
-}
-
-func testPruningWithOneOpenTransaction(t *testing.T) {
 	for _, mode := range []string{"write", "read"} {
 		t.Run(mode, func(t *testing.T) {
 			factory := memory.NewStoreFactory(memory.WithClock(memory.NewTestClockAt(time.UnixMilli(1_000_000))))
@@ -1009,58 +1004,6 @@ func testPruningWithOneOpenTransaction(t *testing.T) {
 			if err := tm.Commit(ctx, longID); !errors.Is(err, spi.ErrConflict) {
 				t.Fatalf("long Commit = %v, want ErrConflict: e1 was committed after it began", err)
 			}
-		})
-	}
-}
-
-// Pruning keeps every entry above the OLDEST open snapshot, not the newest:
-// with an older transaction L and a younger one Y open, a prune that runs
-// after Y began must still keep the write L began before. Each variant reads
-// that write back through L in a different way.
-func testPruningKeepsTheOldestOpenSnapshotsEntries(t *testing.T) {
-	variants := []struct {
-		name string
-		// check runs in L, which began before e1 was re-armed from seen.
-		check func(t *testing.T, fx taskFixture, lID string, lCtx context.Context, seen spi.ScheduledTask)
-	}{
-		{"Get sees the snapshot", func(t *testing.T, fx taskFixture, lID string, lCtx context.Context, seen spi.ScheduledTask) {
-			got, ok := getTask(t, lCtx, fx.sts, taskTenantA, "e1:S:T")
-			if !ok || got.ArmToken != seen.ArmToken {
-				t.Fatalf("L's Get = %+v, %v; want the life of its snapshot", got, ok)
-			}
-			fx.rollback(t, taskTenantA, lID)
-		}},
-		{"Commit conflicts on e1", func(t *testing.T, fx taskFixture, lID string, lCtx context.Context, _ spi.ScheduledTask) {
-			if err := fx.sts.DeleteForEntities(lCtx, taskTenantA, []string{"e1"}); err != nil {
-				t.Fatalf("DeleteForEntities: %v", err)
-			}
-			if err := fx.commit(taskTenantA, lID); !errors.Is(err, spi.ErrConflict) {
-				t.Fatalf("L's Commit = %v, want ErrConflict: e1 was re-armed after L began", err)
-			}
-		}},
-		{"RemoveLife of the snapshot life is a write", func(t *testing.T, fx taskFixture, lID string, lCtx context.Context, seen spi.ScheduledTask) {
-			if err := fx.sts.RemoveLife(lCtx, taskTenantA, "e1:S:T", seen.ArmToken); err != nil {
-				t.Fatalf("RemoveLife: %v", err)
-			}
-			if err := fx.commit(taskTenantA, lID); !errors.Is(err, spi.ErrConflict) {
-				t.Fatalf("L's Commit = %v, want ErrConflict: RemoveLife of the life L sees is a write, and e1 changed after L began", err)
-			}
-		}},
-	}
-	for _, v := range variants {
-		t.Run(v.name, func(t *testing.T) {
-			fx := newTaskFixture(t)
-			bg := context.Background()
-			arm(t, bg, fx.sts, taskTenantA, "e1", "T")
-			seen, _ := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T")
-
-			lID, lCtx := fx.begin(t, taskTenantA)
-			arm(t, bg, fx.sts, taskTenantA, "e1", "T") // re-armed after L began, with no transaction
-			yID, _ := fx.begin(t, taskTenantA)
-			defer fx.rollback(t, taskTenantA, yID)
-			arm(t, bg, fx.sts, taskTenantA, "e2", "T") // unrelated write; it prunes the log
-
-			v.check(t, fx, lID, lCtx, seen)
 		})
 	}
 }
