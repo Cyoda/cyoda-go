@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
+
+	"github.com/google/uuid"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
@@ -132,12 +135,16 @@ type StoreFactory struct {
 	uniqueClaims   map[claimKey]string            // claimKey → entityID currently holding it
 	claimsByEntity map[entityTenantKey][]claimKey // (tenant,entityID) → its claimKeys (for release)
 
-	// scheduledTasks holds durable ScheduledTask rows, keyed by ScheduledTask.ID.
-	// Guarded by entityMu (write lock for mutation, read lock for lookup) —
-	// same mutex as entityData/uniqueClaims — so that a transaction's
-	// scheduled-task arm/cancel commits inside the exact same critical
-	// section as the entity buffer flush (see TransactionManager.Commit).
-	scheduledTasks map[string]spi.ScheduledTask
+	// scheduledTasks holds the task rows, keyed by (tenant, id). taskMarks
+	// holds the unsafe marks, at most one per life, each naming the claim that
+	// wrote it. schedulerOwners holds each owner's last heartbeat on the store
+	// clock. All three are guarded by entityMu — the mutex of the entity data —
+	// so a transaction's staged task writes apply in the same critical section
+	// as its entity flush, and every never-joining method is serialised with
+	// every commit.
+	scheduledTasks  map[taskKey]spi.ScheduledTask
+	taskMarks       map[markKey]uuid.UUID
+	schedulerOwners map[uuid.UUID]time.Time
 }
 
 func NewStoreFactory(opts ...Option) *StoreFactory {
@@ -153,20 +160,22 @@ func NewStoreFactory(opts ...Option) *StoreFactory {
 		panic(fmt.Sprintf("failed to open blob root: %v", err))
 	}
 	f := &StoreFactory{
-		clock:          wallClock{},
-		entityData:     make(map[spi.TenantID]map[string][]entityVersion),
-		txIndex:        make(map[spi.TenantID]map[string]map[string]int64),
-		modelData:      make(map[spi.TenantID]map[spi.ModelRef]*spi.ModelDescriptor),
-		kvData:         make(map[spi.TenantID]map[string]map[string][]byte),
-		msgData:        make(map[spi.TenantID]map[string]*messageEntry),
-		wfData:         make(map[spi.TenantID]map[spi.ModelRef][]spi.WorkflowDefinition),
-		smAudit:        make(map[spi.TenantID]map[string][]spi.StateMachineEvent),
-		smAuditTxIndex: make(map[spi.TenantID]map[string][]auditEventRef),
-		blobDir:        blobDir,
-		blobRoot:       blobRoot,
-		uniqueClaims:   make(map[claimKey]string),
-		claimsByEntity: make(map[entityTenantKey][]claimKey),
-		scheduledTasks: make(map[string]spi.ScheduledTask),
+		clock:           wallClock{},
+		entityData:      make(map[spi.TenantID]map[string][]entityVersion),
+		txIndex:         make(map[spi.TenantID]map[string]map[string]int64),
+		modelData:       make(map[spi.TenantID]map[spi.ModelRef]*spi.ModelDescriptor),
+		kvData:          make(map[spi.TenantID]map[string]map[string][]byte),
+		msgData:         make(map[spi.TenantID]map[string]*messageEntry),
+		wfData:          make(map[spi.TenantID]map[spi.ModelRef][]spi.WorkflowDefinition),
+		smAudit:         make(map[spi.TenantID]map[string][]spi.StateMachineEvent),
+		smAuditTxIndex:  make(map[spi.TenantID]map[string][]auditEventRef),
+		blobDir:         blobDir,
+		blobRoot:        blobRoot,
+		uniqueClaims:    make(map[claimKey]string),
+		claimsByEntity:  make(map[entityTenantKey][]claimKey),
+		scheduledTasks:  make(map[taskKey]spi.ScheduledTask),
+		taskMarks:       make(map[markKey]uuid.UUID),
+		schedulerOwners: make(map[uuid.UUID]time.Time),
 	}
 	for _, o := range opts {
 		o(f)
@@ -239,10 +248,9 @@ func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore
 	return f.searchStore, nil
 }
 
-// ScheduledTaskStore returns the durable ScheduledTask store. Unlike the
-// per-tenant stores above, no tenant resolution happens here: ScanDue is
-// cross-tenant and Upsert/Delete/Reconcile carry the tenant on the
-// task/request itself (see spi.StoreFactory.ScheduledTaskStore godoc).
+// ScheduledTaskStore returns the scheduled-task store. No tenant is resolved
+// from ctx: every tenant-facing method takes its tenant as an argument, and
+// ClaimDue, GiveBackIdle and the owner and sweep methods are cross-tenant.
 func (f *StoreFactory) ScheduledTaskStore(_ context.Context) (spi.ScheduledTaskStore, error) {
 	return &scheduledTaskStore{f: f}, nil
 }

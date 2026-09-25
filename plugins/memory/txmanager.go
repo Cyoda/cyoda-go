@@ -51,7 +51,7 @@ type savepointSnapshot struct {
 
 	// scheduledTaskOpsLen is len(TransactionManager.scheduledTaskOps[txID])
 	// at the moment this savepoint was taken. scheduledTaskOps is append-only
-	// (see stageScheduledTaskOp), so — unlike the maps above, which are
+	// (see stageTaskOps), so — unlike the maps above, which are
 	// deep-copied and restored wholesale — RollbackToSavepoint restores it by
 	// truncating back to this recorded length instead of snapshotting it.
 	scheduledTaskOpsLen int
@@ -159,18 +159,10 @@ type TransactionManager struct {
 	// read again.
 	deletedBufferModels map[string]map[string]spi.ModelRef // txID -> entityID -> evicted model
 
-	// scheduledTaskOps holds ScheduledTaskStore ops staged while the
-	// transaction is open (mirrors txUniqueKeys's staging pattern — it
-	// exists because *spi.TransactionState is a shared cyoda-go-spi type
-	// plugins may not add fields to). Applied to factory.scheduledTasks
-	// inside Commit's entityMu critical section, atomically with the entity
-	// buffer flush; discarded, never applied, on Rollback and on every
-	// mid-Commit abort path (FCW conflict, claim violation). Also
-	// savepoint-scoped like tx.Buffer/ReadSet/WriteSet/Deletes: Savepoint
-	// records the current length and RollbackToSavepoint truncates back to
-	// it, so an op staged after a savepoint that is then rolled back is
-	// discarded too, never orphaned from the entity work it must be atomic
-	// with. Protected by mu. Cleaned up after commit or rollback (no leak).
+	// scheduledTaskOps holds the task-row ops staged while the transaction
+	// is open, as post-images (see scheduledTaskOp). Applied by Commit
+	// inside its entityMu section; discarded on Rollback and on every abort
+	// path; truncated by RollbackToSavepoint. Protected by mu.
 	scheduledTaskOps map[string][]scheduledTaskOp // txID → staged ops
 }
 
@@ -275,15 +267,36 @@ func (m *TransactionManager) stageDeletedBufferModel(txID, entityID string, ref 
 	m.deletedBufferModels[txID][entityID] = ref
 }
 
-// stageScheduledTaskOp appends a staged ScheduledTaskStore op for txID.
-// Commit applies the accumulated ops inside its entityMu critical section
-// (atomically with the entity buffer flush); every abort path — FCW
-// conflict, claim violation, and Rollback — discards them unapplied.
+// stagedTaskOps returns a copy of the task-row ops staged for txID, in order.
 // Protected by mu.
-func (m *TransactionManager) stageScheduledTaskOp(txID string, op scheduledTaskOp) {
+func (m *TransactionManager) stagedTaskOps(txID string) []scheduledTaskOp {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.scheduledTaskOps[txID] = append(m.scheduledTaskOps[txID], op)
+	return append([]scheduledTaskOp(nil), m.scheduledTaskOps[txID]...)
+}
+
+// stageTaskOps appends ops to txID's staged task-row ops. Commit applies them
+// in its entityMu section, atomically with the entity flush; every abort
+// path discards them. Protected by mu.
+func (m *TransactionManager) stageTaskOps(txID string, ops []scheduledTaskOp) {
+	if len(ops) == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.scheduledTaskOps[txID] = append(m.scheduledTaskOps[txID], ops...)
+}
+
+// commitTaskWrites applies task-row writes that commit on their own: a
+// never-joining method, or a joining one called without a transaction.
+// Caller holds factory.entityMu for writing; lock order entityMu → mu.
+func (m *TransactionManager) commitTaskWrites(ops []scheduledTaskOp) {
+	if len(ops) == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	applyTaskOps(m.factory.scheduledTasks, ops)
 }
 
 // nextSubmitTime returns the submit time to stamp on a write and records it
@@ -519,7 +532,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 				}
 			}
 			capturedKeys = m.txUniqueKeys[txID]                       // safe: tx.OpMu.Lock() prevents new recordUniqueKeys
-			capturedScheduledTaskOps = m.scheduledTaskOps[txID]       // safe: tx.OpMu.Lock() prevents new stageScheduledTaskOp
+			capturedScheduledTaskOps = m.scheduledTaskOps[txID]       // safe: tx.OpMu.Lock() prevents new stageTaskOps
 			capturedSuperseded = m.supersededSaves[txID]              // safe: tx.OpMu.Lock() prevents new stageSuperseded
 			capturedDeletedBufferModels = m.deletedBufferModels[txID] // safe: tx.OpMu.Lock() prevents new stageDeletedBufferModel
 			return nil
@@ -775,14 +788,11 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			})
 		}
 
-		// 5.5. Apply staged ScheduledTaskStore ops. Still inside the entityMu
-		// critical section acquired at the top of this func — this is what
-		// makes the scheduled-task arm/cancel commit atomically with the
-		// entity write (and, symmetrically, why every abort path above
-		// discards capturedScheduledTaskOps unapplied).
-		for _, op := range capturedScheduledTaskOps {
-			applyScheduledTaskOp(m.factory.scheduledTasks, op)
-		}
+		// 5.5. Apply the staged task-row post-images. Their checks ran when
+		// they were staged, and step 3 proved that no other writer changed
+		// those rows since this transaction began, so nothing is evaluated
+		// here and nothing can fail after the entity flush.
+		applyTaskOps(m.factory.scheduledTasks, capturedScheduledTaskOps)
 
 		// 6. Record in committed log, submit times, and prune.
 		func() {
@@ -1040,7 +1050,7 @@ func (m *TransactionManager) Savepoint(ctx context.Context, txID string) (string
 // replacement. Lock interleaving with m.mu follows Commit's pattern. The
 // scheduledTaskOps truncation happens in the same m.mu section as the
 // snapshot lookup, since that map is m.mu-protected (see
-// stageScheduledTaskOp), not tx.OpMu-protected.
+// stageTaskOps), not tx.OpMu-protected.
 //
 // Tenant isolation: rejects cross-tenant
 // callers — RollbackToSavepoint is destructive on tx-state.
