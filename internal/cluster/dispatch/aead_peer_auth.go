@@ -42,8 +42,7 @@ const (
 
 	// MaxEnvelopeSize caps how much an attacker can force either end to
 	// buffer before the envelope is rejected. Exported because every leg that
-	// reads a peer envelope — callout dispatch and the scheduler RPC alike —
-	// bounds its read by the one ceiling.
+	// reads a peer envelope bounds its read by the one ceiling.
 	//
 	// It is derived so that an entity at the API's own storable limit is always
 	// hand-over-able: below that, an entity the API stores would make a callout

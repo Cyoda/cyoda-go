@@ -21,13 +21,6 @@ import (
 // U+2028 and U+2029 inside a JSON string stay escaped whatever this setting
 // says: encoding/json escapes those two unconditionally. They cost three bytes
 // each and cannot reach the entity's payload, so nothing here depends on them.
-//
-// Exported because the scheduler's peer RPC encodes through it too: one form on
-// the wire, both routes.
-func EncodePeerBody(v any) ([]byte, error) {
-	return encodePeerBody(v)
-}
-
 func encodePeerBody(v any) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)

@@ -14,11 +14,9 @@ import (
 )
 
 // StaleClaimBatch caps how many stale jobs a single ReclaimStaleJobs call
-// claims. Fixed rather than configurable — like scheduler.BatchSize's
-// role for ScanDue, this bounds one reaper tick's work regardless of how
-// large staleAfter's backlog has grown, so a burst of dead jobs cannot turn
-// one tick into an unbounded claim-and-execute loop. Matches
-// CYODA_SCHEDULER_BATCH_SIZE's documented default (100).
+// claims. Fixed rather than configurable: it bounds one reaper tick's work
+// however large staleAfter's backlog has grown, so a burst of dead jobs cannot
+// turn one tick into an unbounded claim-and-execute loop.
 const StaleClaimBatch = 100
 
 // ReclaimStaleJobs claims stale or released RUNNING async-search jobs and

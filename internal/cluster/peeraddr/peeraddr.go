@@ -41,9 +41,8 @@ func RefuseRedirects(_ *http.Request, _ []*http.Request) error { return ErrRedir
 // CYODA_DISPATCH_CONNECT_TIMEOUT's default, because a lookup that precedes a
 // dial belongs with the dial and not with the whole request it serves: a
 // resolver that is down would otherwise hold the handler's goroutine for the
-// resolver's own timeout, retries included. Callers that DO have a figure — the
-// hand-over its connect timeout, the scheduler RPC its whole-call timeout — pass
-// theirs instead.
+// resolver's own timeout, retries included. A caller that has a figure of its
+// own — the hand-over's connect timeout — passes it instead.
 const LookupTimeout = 2 * time.Second
 
 // Validate parses a cluster registry address and rejects addresses pointing
