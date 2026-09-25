@@ -768,6 +768,24 @@ func (h *Handler) deleteEntityTasks(txCtx context.Context, ids []string) error {
 	return sts.DeleteForEntities(txCtx, tenant, ids)
 }
 
+// deleteModelTasks removes every scheduled task of ref inside the
+// transaction on txCtx.
+func (h *Handler) deleteModelTasks(txCtx context.Context, ref spi.ModelRef) error {
+	tenant, err := txTenant(txCtx)
+	if err != nil {
+		return err
+	}
+	version, err := strconv.Atoi(ref.ModelVersion)
+	if err != nil {
+		return fmt.Errorf("failed to parse model version %q: %w", ref.ModelVersion, err)
+	}
+	sts, err := h.factory.ScheduledTaskStore(txCtx)
+	if err != nil {
+		return fmt.Errorf("failed to access scheduled task store: %w", err)
+	}
+	return sts.DeleteForModel(txCtx, tenant, ref.EntityName, version, nil)
+}
+
 type deleteEntityResult struct {
 	EntityID      string
 	ModelName     string
@@ -826,8 +844,27 @@ func (h *Handler) GetChangesMetadata(ctx context.Context, entityID string, point
 	return result, nil
 }
 
-// DeleteAllEntities deletes all entities for a model within a transaction.
+// DeleteAllEntities deletes all entities of a model, and all the model's
+// scheduled tasks, in one transaction. An owned delete that loses a
+// task-row race with the scheduler runs again; a joined one does not.
 func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, modelVersion string) (*DeleteAllResult, error) {
+	var result *DeleteAllResult
+	err := common.RetryOnTaskConflict(ctx, spi.GetTransaction(ctx) == nil, func() error {
+		r, err := h.deleteAllEntitiesOnce(ctx, entityName, modelVersion)
+		if err != nil {
+			return err
+		}
+		result = r
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// deleteAllEntitiesOnce is one attempt of DeleteAllEntities.
+func (h *Handler) deleteAllEntitiesOnce(ctx context.Context, entityName string, modelVersion string) (*DeleteAllResult, error) {
 	ref := spi.ModelRef{
 		EntityName:   entityName,
 		ModelVersion: modelVersion,
@@ -884,14 +921,15 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 			defer h.gate.Acquire(txID)()
 		}
 		if err := entityStore.DeleteAll(txCtx, ref); err != nil {
-			return common.Internal("failed to delete entities", err)
+			return deleteWriteError("failed to delete entities", err)
+		}
+		// Every task of the model goes in the same transaction.
+		if err := h.deleteModelTasks(txCtx, ref); err != nil {
+			return deleteWriteError("failed to delete scheduled tasks", err)
 		}
 		// Commit transaction (no-op when participating in a joined tx).
 		if err := scope.Commit(); err != nil {
-			if errors.Is(err, spi.ErrConflict) {
-				return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
-			}
-			return common.Internal("failed to commit transaction", err)
+			return deleteWriteError("failed to commit transaction", err)
 		}
 		return nil
 	}(); appErr != nil {

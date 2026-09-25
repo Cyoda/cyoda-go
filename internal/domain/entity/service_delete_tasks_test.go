@@ -10,6 +10,119 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/testing/taskconflict"
 )
 
+// armForeignModelTask arms one task of another model in the same tenant, so
+// a test can see that a model-wide removal stays inside its model.
+func armForeignModelTask(t *testing.T, e *taskEnv) {
+	t.Helper()
+	txID, txCtx, err := e.txMgr.Begin(e.ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	sts, err := e.real.ScheduledTaskStore(txCtx)
+	if err != nil {
+		t.Fatalf("ScheduledTaskStore: %v", err)
+	}
+	if _, err := sts.ReconcileForEntity(txCtx, spi.ReconcileRequest{
+		TenantID: taskTenant, EntityID: "foreign-entity", CurrentState: "OPEN",
+		Arm: []spi.ScheduledTask{{
+			ID: "foreign-task", TenantID: taskTenant, Type: spi.ScheduledTaskFireTransition,
+			ScheduledTime: 9_999_999_999_999, EntityID: "foreign-entity",
+			ModelName: "Pet", ModelVersion: 1, Transition: "AutoClose", SourceState: "OPEN",
+		}},
+	}); err != nil {
+		t.Fatalf("ReconcileForEntity: %v", err)
+	}
+	if err := e.txMgr.Commit(txCtx, txID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+}
+
+func TestDeleteAllEntities_RemovesTheModelsTasks(t *testing.T) {
+	e := newTaskEnv(t)
+	seedPersons(t, e.h, e.ctx, 3)
+	armForeignModelTask(t, e)
+	if n := e.modelTasks(t, "Person"); n != 3 {
+		t.Fatalf("Person tasks before = %d, want 3", n)
+	}
+
+	if _, err := e.h.DeleteAllEntities(e.ctx, "Person", "1"); err != nil {
+		t.Fatalf("DeleteAllEntities: %v", err)
+	}
+	if n := e.modelTasks(t, "Person"); n != 0 {
+		t.Errorf("Person tasks = %d, want 0", n)
+	}
+	if n := e.modelTasks(t, "Pet"); n != 1 {
+		t.Errorf("Pet tasks = %d, want 1: another model's tasks stay", n)
+	}
+}
+
+func TestDeleteEntitiesConditional_FastPath_RemovesTheModelsTasks(t *testing.T) {
+	e := newTaskEnv(t)
+	seedPersons(t, e.h, e.ctx, 2)
+
+	if _, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", nil, nil, false, 0); err != nil {
+		t.Fatalf("DeleteEntitiesConditional: %v", err)
+	}
+	if got := e.plan.Calls(taskconflict.DeleteForModel); got != 1 {
+		t.Errorf("DeleteForModel calls = %d, want 1 (the fast path)", got)
+	}
+	if n := e.modelTasks(t, "Person"); n != 0 {
+		t.Errorf("Person tasks = %d, want 0", n)
+	}
+}
+
+func TestDeleteAllEntities_TaskConflict_RetriedThenSucceeds(t *testing.T) {
+	e := newTaskEnv(t)
+	seedPersons(t, e.h, e.ctx, 2)
+	e.plan.Refuse(taskconflict.DeleteForModel, 2)
+
+	res, err := e.h.DeleteAllEntities(e.ctx, "Person", "1")
+	if err != nil {
+		t.Fatalf("DeleteAllEntities: %v", err)
+	}
+	if res.TotalCount != 2 {
+		t.Errorf("TotalCount = %d, want 2 (each attempt counts afresh)", res.TotalCount)
+	}
+	if got := e.plan.Calls(taskconflict.DeleteForModel); got != 3 {
+		t.Errorf("DeleteForModel calls = %d, want 3", got)
+	}
+	if n := e.modelTasks(t, "Person"); n != 0 {
+		t.Errorf("Person tasks = %d, want 0", n)
+	}
+}
+
+func TestDeleteAllEntities_TaskConflictPersists_Retryable409(t *testing.T) {
+	e := newTaskEnv(t)
+	ids := seedPersons(t, e.h, e.ctx, 2)
+	e.plan.Refuse(taskconflict.DeleteForModel, 100)
+
+	_, err := e.h.DeleteAllEntities(e.ctx, "Person", "1")
+	requireConflict409(t, err)
+	if got, want := e.plan.Calls(taskconflict.DeleteForModel), 1+common.TaskConflictRetries; got != want {
+		t.Errorf("DeleteForModel calls = %d, want %d", got, want)
+	}
+	if !e.exists(t, ids[0]) || !e.exists(t, ids[1]) {
+		t.Error("entities removed although every attempt rolled back")
+	}
+}
+
+func TestDeleteAllEntities_Joined_NotRetried(t *testing.T) {
+	e := newTaskEnv(t)
+	seedPersons(t, e.h, e.ctx, 1)
+	e.plan.Refuse(taskconflict.DeleteForModel, 100)
+	txID, joinedCtx, err := e.txMgr.Begin(e.ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	t.Cleanup(func() { _ = e.txMgr.Rollback(e.ctx, txID) })
+
+	_, err = e.h.DeleteAllEntities(joinedCtx, "Person", "1")
+	requireConflict409(t, err)
+	if got := e.plan.Calls(taskconflict.DeleteForModel); got != 1 {
+		t.Errorf("DeleteForModel calls = %d, want 1", got)
+	}
+}
+
 func TestDeleteEntity_RemovesTheEntitysTasks(t *testing.T) {
 	e := newTaskEnv(t)
 	ids := seedPersons(t, e.h, e.ctx, 2)
@@ -185,5 +298,90 @@ func TestDeleteEntity_CommitConflictPersists_Retryable409WithCause(t *testing.T)
 	}
 	if n := e.tasksOf(t, ids[0]); n != 1 {
 		t.Errorf("tasks = %d, want 1", n)
+	}
+}
+
+// racingDeleteAllStore commits a concurrent save of one of the model's
+// entities in its own transaction just before it delegates a DeleteAll. The
+// delete's transaction began before that commit, so memory refuses the
+// delete-all at commit with spi.ErrConflict — the way memory and SQLite
+// report a lost race.
+type racingDeleteAllStore struct {
+	spi.EntityStore
+	t         *testing.T
+	txMgr     spi.TransactionManager
+	base      context.Context
+	raceID    string // id of an entity of the model being deleted
+	races     int    // how many DeleteAlls still race
+	deleteAll int    // how many DeleteAlls ran
+}
+
+func (s *racingDeleteAllStore) DeleteAll(ctx context.Context, ref spi.ModelRef) error {
+	s.deleteAll++
+	if s.races > 0 {
+		s.races--
+		txID, raceCtx, err := s.txMgr.Begin(s.base)
+		if err != nil {
+			s.t.Fatalf("race Begin: %v", err)
+		}
+		ent, err := s.EntityStore.Get(raceCtx, s.raceID)
+		if err != nil {
+			s.t.Fatalf("race Get: %v", err)
+		}
+		if _, err := s.EntityStore.Save(raceCtx, ent); err != nil {
+			s.t.Fatalf("race Save: %v", err)
+		}
+		if err := s.txMgr.Commit(raceCtx, txID); err != nil {
+			s.t.Fatalf("race Commit: %v", err)
+		}
+	}
+	return s.EntityStore.DeleteAll(ctx, ref)
+}
+
+func newRacingDeleteAllStore(t *testing.T, e *taskEnv, raceID string, races int) *racingDeleteAllStore {
+	t.Helper()
+	inner, err := e.real.EntityStore(e.ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	return &racingDeleteAllStore{EntityStore: inner, t: t, txMgr: e.txMgr, base: e.ctx, raceID: raceID, races: races}
+}
+
+func TestDeleteAllEntities_CommitConflict_RetriedThenSucceeds(t *testing.T) {
+	e := newTaskEnv(t)
+	ids := seedPersons(t, e.h, e.ctx, 2)
+	racing := newRacingDeleteAllStore(t, e, ids[0], 1)
+	e.withEntityStore(t, racing)
+
+	if _, err := e.h.DeleteAllEntities(e.ctx, "Person", "1"); err != nil {
+		t.Fatalf("DeleteAllEntities: %v", err)
+	}
+	if racing.deleteAll != 2 {
+		t.Errorf("attempts = %d, want 2 (one refused at commit, then success)", racing.deleteAll)
+	}
+	if e.exists(t, ids[0]) || e.exists(t, ids[1]) {
+		t.Error("an entity still exists after a successful delete-all")
+	}
+	if n := e.modelTasks(t, "Person"); n != 0 {
+		t.Errorf("Person tasks = %d, want 0", n)
+	}
+}
+
+func TestDeleteAllEntities_CommitConflictPersists_Retryable409WithCause(t *testing.T) {
+	e := newTaskEnv(t)
+	ids := seedPersons(t, e.h, e.ctx, 2)
+	racing := newRacingDeleteAllStore(t, e, ids[0], 100)
+	e.withEntityStore(t, racing)
+
+	_, err := e.h.DeleteAllEntities(e.ctx, "Person", "1")
+	requireConflict409(t, err)
+	if !errors.Is(err, spi.ErrConflict) {
+		t.Errorf("err = %v: the 409 does not carry spi.ErrConflict as its cause", err)
+	}
+	if got, want := racing.deleteAll, 1+common.TaskConflictRetries; got != want {
+		t.Errorf("attempts = %d, want %d", got, want)
+	}
+	if !e.exists(t, ids[0]) || !e.exists(t, ids[1]) {
+		t.Error("an entity was removed although every attempt was refused at commit")
 	}
 }

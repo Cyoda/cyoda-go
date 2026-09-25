@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"testing"
@@ -187,5 +188,83 @@ func TestScheduledTaskWrites_DeleteEntity_Joined_NotRetried(t *testing.T) {
 	}
 	if n := taskRows(t, "entity_id = $1 AND status = 'RUNNING'", targetID); n != 1 {
 		t.Errorf("target task rows = %d, want 1 (the test's claim, untouched)", n)
+	}
+}
+
+func TestScheduledTaskWrites_DeleteAll_RemovesModelTasks_OtherTenantKept(t *testing.T) {
+	const model = "e2e-stw-delete-all"
+	setupScheduledModel(t, model)
+	createEntityE2E(t, model, 1, schedWritesPayload)
+	createEntityE2E(t, model, 1, schedWritesPayload)
+
+	// Tenant B: same model name, its own entity and task.
+	bID, bSecret := createM2MClient(t, "tenant-b-stw", "user-b", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	asB := func(method, path, body string) {
+		t.Helper()
+		var raw []byte
+		if body != "" {
+			raw = []byte(body)
+		}
+		resp := adminRequestAs(t, bID, bSecret, method, path, raw)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			b, _ := io.ReadAll(resp.Body)
+			t.Fatalf("tenant B %s %s: %d %s", method, path, resp.StatusCode, b)
+		}
+	}
+	asB(http.MethodPost, fmt.Sprintf("/model/import/JSON/SAMPLE_DATA/%s/1", model), workflowSampleModel)
+	asB(http.MethodPut, fmt.Sprintf("/model/%s/1/lock", model), "")
+	asB(http.MethodPost, fmt.Sprintf("/model/%s/1/workflow/import", model), schedWritesWorkflow)
+	asB(http.MethodPost, fmt.Sprintf("/entity/JSON/%s/1", model), schedWritesPayload)
+
+	if n := taskRows(t, "tenant_id = $1 AND model_name = $2", "test-tenant", model); n != 2 {
+		t.Fatalf("tenant A task rows before = %d, want 2", n)
+	}
+	res := resultOf(doAuthOnceRaw(e2eCtx(t), http.MethodDelete, fmt.Sprintf("/api/entity/%s/1", model), ""))
+	if res.status != http.StatusOK {
+		t.Fatalf("delete-all: %d %s", res.status, res.body)
+	}
+	if n := taskRows(t, "tenant_id = $1 AND model_name = $2", "test-tenant", model); n != 0 {
+		t.Errorf("tenant A task rows = %d, want 0", n)
+	}
+	if n := taskRows(t, "tenant_id = $1 AND model_name = $2", "tenant-b-stw", model); n != 1 {
+		t.Errorf("tenant B task rows = %d, want 1: a delete never reaches another tenant", n)
+	}
+}
+
+func TestScheduledTaskWrites_DeleteAll_RacingOneClaim_SucceedsAfterRetry(t *testing.T) {
+	const model = "e2e-stw-delete-all-race"
+	setupScheduledModel(t, model)
+	createEntityE2E(t, model, 1, schedWritesPayload)
+	hold := holdTaskRows(t, "tenant_id = 'test-tenant' AND model_name = $1", model)
+
+	ctx := e2eCtx(t)
+	done := make(chan httpResult, 1)
+	go func() {
+		done <- resultOf(doAuthOnceRaw(ctx, http.MethodDelete, fmt.Sprintf("/api/entity/%s/1", model), ""))
+	}()
+	hold.awaitBlocked(t)
+	hold.claimAndCommit(t)
+
+	if res := <-done; res.status != http.StatusOK {
+		t.Fatalf("delete-all racing a claim: %d %s, want 200", res.status, res.body)
+	}
+	if n := taskRows(t, "tenant_id = 'test-tenant' AND model_name = $1", model); n != 0 {
+		t.Errorf("task rows = %d, want 0", n)
+	}
+}
+
+func TestScheduledTaskWrites_DeleteAll_PersistentConflict_409(t *testing.T) {
+	const model = "e2e-stw-delete-all-persist"
+	setupScheduledModel(t, model)
+	id := createEntityE2E(t, model, 1, schedWritesPayload)
+	trig := installConflictTrigger(t, "model_name", model)
+
+	requireConflictProblem(t, resultOf(doAuthOnceRaw(e2eCtx(t), http.MethodDelete, fmt.Sprintf("/api/entity/%s/1", model), "")))
+	if got, want := trig.refusals(t), int64(1+common.TaskConflictRetries); got != want {
+		t.Errorf("server attempts = %d, want %d", got, want)
+	}
+	if st := resultOf(doAuthOnceRaw(e2eCtx(t), http.MethodGet, "/api/entity/"+id, "")).status; st != http.StatusOK {
+		t.Errorf("GET after the refused delete-all = %d, want 200", st)
 	}
 }

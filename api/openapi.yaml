@@ -2234,18 +2234,36 @@ paths:
                       entityVersion: 1
         "409":
           description: >-
-            Batched delete did not converge (`DELETE_NOT_CONVERGED`). Only
-            reachable with `transactionSize` set and no `pointInTime`: the
-            delete re-selects matching entities before each batch, and
-            entities matching the condition were created at least as fast as
-            they were removed, so it was stopped at its batch cap. Batches
-            committed before the failure stay deleted. Retryable — stop the
-            concurrent writers, narrow the condition, or retry.
+            Conflict, retryable. `CONFLICT`: another write committed first to
+            a selected entity or to one of its scheduled tasks — the
+            scheduler changes a task when it claims it, stamps a segment of
+            its run, records an attempt, fails it or gives it back. The
+            server retries the delete up to 3 times first; a request that
+            joins an open transaction is not retried on the server. With
+            `transactionSize`, a batch that still conflicts is not a 409: its
+            ids are listed in `idToError` and the other batches run.
+            `DELETE_NOT_CONVERGED`: only with `transactionSize` and no
+            `pointInTime`. The delete re-selects matching entities before
+            each batch, and entities matching the condition were created at
+            least as fast as they were removed, so it was stopped at its
+            batch cap. Batches committed before the failure stay deleted.
+            Stop the concurrent writers, narrow the condition, or retry.
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               examples:
+                Conflict:
+                  description: Conflict
+                  value:
+                    type: about:blank
+                    title: Conflict
+                    status: 409
+                    detail: "CONFLICT: transaction conflict — retry"
+                    instance: /api/entity/my-model/1
+                    properties:
+                      errorCode: CONFLICT
+                      retryable: true
                 Delete Not Converged:
                   description: Delete Not Converged
                   value:

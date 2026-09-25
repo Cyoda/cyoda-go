@@ -150,6 +150,51 @@ func TestRPC_EntityDelete_TaskConflictPersists_ConflictEnvelope(t *testing.T) {
 	}
 }
 
+func deleteAllRPC(t *testing.T, svc *CloudEventsServiceImpl, ctx context.Context, extra map[string]any) events.EntityDeleteAllResponseJson {
+	t.Helper()
+	fields := map[string]any{"id": "del-all", "model": map[string]any{"name": "person", "version": 1}}
+	for k, v := range extra {
+		fields[k] = v
+	}
+	stream := &mockManageStream{ctx: ctx}
+	if err := svc.EntityManageCollection(makeCE(EntityDeleteAllRequest, fields), stream); err != nil {
+		t.Fatalf("EntityManageCollection: %v", err)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("responses = %d, want 1", len(stream.sent))
+	}
+	var typed events.EntityDeleteAllResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	return typed
+}
+
+func TestRPC_EntityDeleteAll_FastPath_RemovesTasks(t *testing.T) {
+	svc, ctx, real, _ := newTaskDeleteEnv(t)
+	id := createPersonRPC(t, svc, ctx)
+
+	if typed := deleteAllRPC(t, svc, ctx, nil); !typed.Success {
+		t.Fatalf("delete-all failed: %+v", typed.Error)
+	}
+	if n := personTasks(t, real, ctx, id); n != 0 {
+		t.Errorf("tasks = %d, want 0", n)
+	}
+}
+
+func TestRPC_EntityDeleteAll_FastPath_TaskConflictPersists_ConflictEnvelope(t *testing.T) {
+	svc, ctx, real, plan := newTaskDeleteEnv(t)
+	id := createPersonRPC(t, svc, ctx)
+	plan.Refuse(taskconflict.DeleteForModel, 100)
+
+	typed := deleteAllRPC(t, svc, ctx, nil)
+	if typed.Error == nil {
+		t.Fatalf("error = nil, want the conflict envelope; success=%v", typed.Success)
+	}
+	requireConflictEnvelope(t, typed.Success, typed.Error.Code, typed.Error.Message, typed.Error.Retryable)
+	if n := personTasks(t, real, ctx, id); n != 1 {
+		t.Errorf("tasks = %d, want 1", n)
+	}
+}
+
 func TestRPC_EntityUpdate_TaskRowConflict_ConflictEnvelope(t *testing.T) {
 	svc, ctx, _, plan := newTaskDeleteEnv(t)
 	id := createPersonRPC(t, svc, ctx)

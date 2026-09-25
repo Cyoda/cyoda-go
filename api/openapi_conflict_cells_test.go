@@ -29,7 +29,7 @@ func TestConflictCells(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSwagger: %v", err)
 	}
-	for _, id := range []string{"deleteSingleEntity"} {
+	for _, id := range []string{"deleteSingleEntity", "deleteEntities"} {
 		t.Run(id, func(t *testing.T) {
 			ref := operationByID(t, doc, id).Responses.Status(409)
 			if ref == nil || ref.Value == nil {
