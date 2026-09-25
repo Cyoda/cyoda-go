@@ -1,6 +1,7 @@
 package memory_test
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -956,5 +957,53 @@ func TestBegin_SnapshotTimeAndSeqCapturedAtomically(t *testing.T) {
 	}
 	if err := <-g2Done; err != nil {
 		t.Fatalf("Commit(B) failed: %v", err)
+	}
+}
+
+// Pruning never drops an entry a still-open transaction conflicts with, however
+// many commits land after it. The clock is frozen, so only the sequence
+// numbers order the commits.
+func TestCommittedLogPruningKeepsAnOpenTransactionsConflict(t *testing.T) {
+	for _, mode := range []string{"write", "read"} {
+		t.Run(mode, func(t *testing.T) {
+			factory := memory.NewStoreFactory(memory.WithClock(memory.NewTestClockAt(time.UnixMilli(1_000_000))))
+			t.Cleanup(func() { _ = factory.Close() })
+			tm := factory.NewTransactionManager(newTestUUIDGenerator())
+			ctx := ctxWithTenant("tenant-A")
+
+			write := func(txCtx context.Context, id string) {
+				tx := spi.GetTransaction(txCtx)
+				tx.WriteSet[id] = true
+				tx.Buffer[id] = &spi.Entity{Meta: spi.EntityMeta{ID: id, TenantID: "tenant-A", ChangeType: "CREATED"}, Data: []byte(`{}`)}
+			}
+			commitOne := func(id string) {
+				t.Helper()
+				txID, txCtx, err := tm.Begin(ctx)
+				if err != nil {
+					t.Fatalf("Begin: %v", err)
+				}
+				write(txCtx, id)
+				if err := tm.Commit(ctx, txID); err != nil {
+					t.Fatalf("Commit of %s: %v", id, err)
+				}
+			}
+
+			longID, longCtx, err := tm.Begin(ctx)
+			if err != nil {
+				t.Fatalf("Begin long: %v", err)
+			}
+			if mode == "write" {
+				write(longCtx, "e1")
+			} else {
+				spi.GetTransaction(longCtx).ReadSet["e1"] = true
+			}
+			commitOne("e1")
+			for i := 0; i < 5; i++ {
+				commitOne("e2")
+			}
+			if err := tm.Commit(ctx, longID); !errors.Is(err, spi.ErrConflict) {
+				t.Fatalf("long Commit = %v, want ErrConflict: e1 was committed after it began", err)
+			}
+		})
 	}
 }

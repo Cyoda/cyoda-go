@@ -74,9 +74,9 @@ func TestTasks_C6_AStaleRefIsStaleNotBusy(t *testing.T) {
 	fx.rollback(t, taskTenantA, txID)
 }
 
-// A touch — RemoveLife of a life that is not the current one — changes
-// nothing and does not make the row busy.
-func TestTasks_C6_ATouchDoesNotMakeARowBusy(t *testing.T) {
+// A RemoveLife of a life that is not the one the transaction sees is no
+// write, so it does not make the row busy.
+func TestTasks_C6_ANoOpRemoveLifeDoesNotMakeARowBusy(t *testing.T) {
 	fx := newTaskFixture(t)
 	arm(t, context.Background(), fx.sts, taskTenantA, "e1", "T")
 
@@ -85,7 +85,7 @@ func TestTasks_C6_ATouchDoesNotMakeARowBusy(t *testing.T) {
 		t.Fatalf("RemoveLife: %v", err)
 	}
 	if got := claimDue(t, fx.sts, uuid.New(), false); len(got) != 1 {
-		t.Fatalf("claimed %d tasks, want 1: a touch is not a change", len(got))
+		t.Fatalf("claimed %d tasks, want 1: a no-op RemoveLife is not a write", len(got))
 	}
 	fx.rollback(t, taskTenantA, txID)
 }
@@ -124,7 +124,7 @@ func TestTasks_C6_AnotherTenantsStagedWriteLeavesThisTenantsRowFree(t *testing.T
 }
 
 // RollbackToSavepoint that drops the only change to a row ends its busy
-// answer; the touch staged before the savepoint does not keep it busy.
+// answer; the no-op RemoveLife made before the savepoint does not keep it busy.
 func TestTasks_C6_RollbackToSavepointFreesTheRow(t *testing.T) {
 	fx := newTaskFixture(t)
 	bg := context.Background()

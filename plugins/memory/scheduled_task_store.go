@@ -24,34 +24,56 @@ type markKey struct {
 }
 
 // scheduledTaskOp is one staged write to a task row: the row as it is after
-// the write, or nil when the write removes it. A touch changes nothing; it
-// only puts the row in the transaction's write set, so that a RemoveLife of a
-// life that was replaced after the transaction began still fails the commit,
-// as it does on PostgreSQL.
+// the write, or nil when the write removes it.
 //
 // Every check a write makes is evaluated when it is staged, against the
-// committed rows and the transaction's earlier ops (see write). Commit only
-// has to prove that no other writer changed those rows since the transaction
-// began, which its conflict check does; it then applies the post-images as
-// they are.
+// transaction's view (see taskView). Commit only has to prove that no other
+// writer changed those rows since the transaction began, which its conflict
+// check does; it then applies the post-images as they are.
 type scheduledTaskOp struct {
 	key   taskKey
 	after *spi.ScheduledTask
-	touch bool
+}
+
+// priorRow is a task row as it was just before a logged write: the row, or
+// ok false when it did not exist. For a transaction that began before the
+// write, the prior row of the earliest such write is the row its snapshot
+// shows (see TransactionManager.taskSnapshotLocked).
+type priorRow struct {
+	row spi.ScheduledTask
+	ok  bool
+}
+
+// priorRows returns, for each row ops write, the row as it is in dst before
+// any of them applies. Caller holds entityMu.
+func priorRows(dst map[taskKey]spi.ScheduledTask, ops []scheduledTaskOp) map[taskKey]priorRow {
+	if len(ops) == 0 {
+		return nil
+	}
+	priors := make(map[taskKey]priorRow, len(ops))
+	for _, op := range ops {
+		if _, done := priors[op.key]; done {
+			continue
+		}
+		t, ok := dst[op.key]
+		if ok {
+			t = copyScheduledTask(t)
+		}
+		priors[op.key] = priorRow{row: t, ok: ok}
+	}
+	return priors
 }
 
 // applyTaskOps applies ops to dst in order. Caller holds entityMu for writing.
 func applyTaskOps(dst map[taskKey]spi.ScheduledTask, ops []scheduledTaskOp) {
 	for _, op := range ops {
-		switch {
-		case op.touch:
-		case op.after == nil:
+		if op.after == nil {
 			delete(dst, op.key)
-		default:
-			row := copyScheduledTask(*op.after)
-			row.UnsafeMarked = false // derived from taskMarks on every read, never stored
-			dst[op.key] = row
+			continue
 		}
+		row := copyScheduledTask(*op.after)
+		row.UnsafeMarked = false // derived from taskMarks on every read, never stored
+		dst[op.key] = row
 	}
 }
 
@@ -108,17 +130,23 @@ func (f *StoreFactory) withMarkLocked(t spi.ScheduledTask) spi.ScheduledTask {
 	return cp
 }
 
-// taskView is the set of task rows one call sees: the committed rows, then
-// staged, in order. Caller holds entityMu.
+// taskView is the set of task rows one call sees: the committed rows; over
+// them, with a transaction, the rows its snapshot shows where a write logged
+// since its Begin changed them (prior); then the transaction's staged ops, in
+// order. Caller holds entityMu, so the committed rows and prior agree.
 type taskView struct {
 	f      *StoreFactory
+	prior  map[taskKey]priorRow
 	staged []scheduledTaskOp
 }
 
 func (v taskView) get(k taskKey) (spi.ScheduledTask, bool) {
 	t, ok := v.f.scheduledTasks[k]
+	if p, seen := v.prior[k]; seen {
+		t, ok = p.row, p.ok
+	}
 	for _, op := range v.staged {
-		if op.key != k || op.touch {
+		if op.key != k {
 			continue
 		}
 		if op.after == nil {
@@ -138,6 +166,11 @@ func (v taskView) get(k taskKey) (spi.ScheduledTask, bool) {
 func (v taskView) where(tenant spi.TenantID, match func(spi.ScheduledTask) bool) []spi.ScheduledTask {
 	keys := make(map[taskKey]bool)
 	for k := range v.f.scheduledTasks {
+		if k.tenant == tenant {
+			keys[k] = true
+		}
+	}
+	for k := range v.prior {
 		if k.tenant == tenant {
 			keys[k] = true
 		}
@@ -182,8 +215,8 @@ var _ spi.ScheduledTaskStore = (*scheduledTaskStore)(nil)
 
 // write runs one joining write. plan sees the rows as this write sees them
 // and returns the ops to apply. With a transaction on ctx the ops are staged
-// on it, and plan's view includes the transaction's earlier ops (C2). Without
-// one, they are applied at once and commit on their own.
+// on it, and plan's view is the transaction's snapshot, then its earlier ops
+// (C1, C2). Without one, they are applied at once and commit on their own.
 //
 // Lock order: tx.OpMu (read) → entityMu → mu, the order Commit uses. Holding
 // tx.OpMu keeps Commit, Rollback and RollbackToSavepoint of this transaction
@@ -217,8 +250,8 @@ func (s *scheduledTaskStore) write(ctx context.Context, tenant spi.TenantID, pla
 
 	s.f.entityMu.RLock()
 	defer s.f.entityMu.RUnlock()
-	return s.f.txManager.stageTaskWrite(tx.ID, func(staged []scheduledTaskOp) ([]scheduledTaskOp, error) {
-		return plan(taskView{f: s.f, staged: staged})
+	return s.f.txManager.stageTaskWrite(tx.ID, func(staged []scheduledTaskOp, prior map[taskKey]priorRow) ([]scheduledTaskOp, error) {
+		return plan(taskView{f: s.f, prior: prior, staged: staged})
 	})
 }
 
@@ -260,15 +293,17 @@ func (s *scheduledTaskStore) ReconcileForEntity(ctx context.Context, req spi.Rec
 	return removed, nil
 }
 
-// RemoveLife removes the task if its current life is armToken. Otherwise it
-// changes nothing, but the row still enters the transaction's write set.
+// RemoveLife removes the task if the life this call sees is armToken: with a
+// transaction, the life its snapshot shows after its own staged ops (see
+// taskView); without one, the current life. Otherwise it is no write: it
+// stages nothing, the row is not busy, and it cannot fail the commit.
 func (s *scheduledTaskStore) RemoveLife(ctx context.Context, tenant spi.TenantID, id string, armToken uuid.UUID) error {
 	k := taskKey{tenant: tenant, id: id}
 	return s.write(ctx, tenant, func(v taskView) ([]scheduledTaskOp, error) {
 		if t, ok := v.get(k); ok && t.ArmToken == armToken {
 			return []scheduledTaskOp{{key: k}}, nil
 		}
-		return []scheduledTaskOp{{key: k, touch: true}}, nil
+		return nil, nil
 	})
 }
 
@@ -328,18 +363,27 @@ func (s *scheduledTaskStore) Fail(ctx context.Context, ref spi.TaskRef, f spi.Fa
 	})
 }
 
-// Get reads one task of tenant. With a transaction on ctx it sees that
-// transaction's staged ops (C2).
+// Get reads one task of tenant. With an open transaction of tenant on ctx it
+// sees the view that transaction's joining writes plan from: its snapshot,
+// then its own staged ops (C2). Otherwise it reads the committed row: a
+// transaction that has ended has no snapshot left, and a transaction of
+// another tenant does not change what Get returns.
 func (s *scheduledTaskStore) Get(ctx context.Context, tenant spi.TenantID, id string) (*spi.ScheduledTask, bool, error) {
-	var staged []scheduledTaskOp
+	var txID string
 	if tx := spi.GetTransaction(ctx); tx != nil {
 		tx.OpMu.RLock()
 		defer tx.OpMu.RUnlock()
-		staged = s.f.txManager.stagedTaskOps(tx.ID)
+		if !tx.Closed && !tx.RolledBack && tx.TenantID == tenant {
+			txID = tx.ID
+		}
 	}
 	s.f.entityMu.RLock()
 	defer s.f.entityMu.RUnlock()
-	t, ok := taskView{f: s.f, staged: staged}.get(taskKey{tenant: tenant, id: id})
+	v := taskView{f: s.f}
+	if txID != "" {
+		v.staged, v.prior = s.f.txManager.taskSnapshot(txID, tenant)
+	}
+	t, ok := v.get(taskKey{tenant: tenant, id: id})
 	if !ok {
 		return nil, false, nil
 	}

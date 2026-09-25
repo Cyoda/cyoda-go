@@ -52,8 +52,9 @@ func TestTasks_C1_TwoTransactionsWritingOneRow_TheSecondCommitConflicts(t *testi
 	}
 }
 
-// RemoveLife of a life replaced after Begin changes nothing, yet the commit
-// fails: the row was written after the transaction began.
+// RemoveLife of the life the snapshot shows is a write even when that life
+// was replaced after Begin, so the commit fails: the row was written after
+// the transaction began.
 func TestTasks_C1_RemoveLifeOfALifeReplacedAfterBeginConflicts(t *testing.T) {
 	fx := newTaskFixture(t)
 	bg := context.Background()
@@ -188,5 +189,135 @@ func TestTasks_AJoiningWriteOnARolledBackTransactionIsRefused(t *testing.T) {
 	}
 	if _, ok := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T"); ok {
 		t.Fatal("a write refused on a rolled-back transaction was applied")
+	}
+}
+
+// rearm arms e1's transition T again, outside any transaction, and returns
+// the new life.
+func rearm(t *testing.T, fx taskFixture) spi.ScheduledTask {
+	t.Helper()
+	arm(t, context.Background(), fx.sts, taskTenantA, "e1", "T")
+	got, ok := getTask(t, context.Background(), fx.sts, taskTenantA, "e1:S:T")
+	if !ok {
+		t.Fatal("the re-armed task is missing")
+	}
+	return got
+}
+
+// A RemoveLife naming a life the snapshot already shows replaced writes
+// nothing, so a later change to the row does not fail the commit.
+func TestTasks_C1_StaleRemoveLifeIsNoWrite(t *testing.T) {
+	fx := newTaskFixture(t)
+	old := rearm(t, fx)
+	rearm(t, fx) // replaced before Begin
+
+	txID, txCtx := fx.begin(t, taskTenantA)
+	if err := fx.sts.RemoveLife(txCtx, taskTenantA, "e1:S:T", old.ArmToken); err != nil {
+		t.Fatalf("RemoveLife: %v", err)
+	}
+	c := claimDue(t, fx.sts, uuid.New(), false) // the row changes after Begin
+	if len(c) != 1 {
+		t.Fatalf("claimed %d tasks, want 1: a no-op RemoveLife does not make the row busy", len(c))
+	}
+	if err := fx.commit(taskTenantA, txID); err != nil {
+		t.Fatalf("Commit = %v, want nil: the no-op wrote nothing", err)
+	}
+	if got, ok := getTask(t, context.Background(), fx.sts, taskTenantA, "e1:S:T"); !ok || got.Claim == nil || got.Claim.Token != c[0].Claim.Token {
+		t.Fatalf("task = %+v, %v; want the claim made after Begin to stand", got, ok)
+	}
+}
+
+// A life armed after Begin is not the life the transaction sees, whether the
+// row held another life at Begin or did not exist: naming it is a no-op.
+func TestTasks_C1_RemoveLifeOfALifeArmedAfterBeginIsNoWrite(t *testing.T) {
+	for _, existed := range []bool{true, false} {
+		fx := newTaskFixture(t)
+		if existed {
+			rearm(t, fx)
+		}
+		txID, txCtx := fx.begin(t, taskTenantA)
+		later := rearm(t, fx)
+		if err := fx.sts.RemoveLife(txCtx, taskTenantA, "e1:S:T", later.ArmToken); err != nil {
+			t.Fatalf("existed=%v: RemoveLife: %v", existed, err)
+		}
+		if err := fx.commit(taskTenantA, txID); err != nil {
+			t.Fatalf("existed=%v: Commit = %v, want nil: the no-op wrote nothing", existed, err)
+		}
+		if got, ok := getTask(t, context.Background(), fx.sts, taskTenantA, "e1:S:T"); !ok || got.ArmToken != later.ArmToken {
+			t.Fatalf("existed=%v: task = %+v, %v; want the life armed after Begin", existed, got, ok)
+		}
+	}
+}
+
+// After two changes since Begin, the life the transaction sees is the one
+// before the first of them, not the one between them.
+func TestTasks_C1_RemoveLifeSeesTheLifeBeforeTheFirstChangeSinceBegin(t *testing.T) {
+	fx := newTaskFixture(t)
+	rearm(t, fx)
+	txID, txCtx := fx.begin(t, taskTenantA)
+	between := rearm(t, fx)
+	last := rearm(t, fx)
+
+	if err := fx.sts.RemoveLife(txCtx, taskTenantA, "e1:S:T", between.ArmToken); err != nil {
+		t.Fatalf("RemoveLife(between): %v", err)
+	}
+	if err := fx.commit(taskTenantA, txID); err != nil {
+		t.Fatalf("Commit = %v, want nil: the life between the two changes was never the one seen", err)
+	}
+	if got, _ := getTask(t, context.Background(), fx.sts, taskTenantA, "e1:S:T"); got.ArmToken != last.ArmToken {
+		t.Fatalf("arm token = %s, want the last life", got.ArmToken)
+	}
+
+	txID, txCtx = fx.begin(t, taskTenantA)
+	rearm(t, fx)
+	if err := fx.sts.RemoveLife(txCtx, taskTenantA, "e1:S:T", last.ArmToken); err != nil {
+		t.Fatalf("RemoveLife(seen): %v", err)
+	}
+	if err := fx.commit(taskTenantA, txID); !errors.Is(err, spi.ErrConflict) {
+		t.Fatalf("Commit = %v, want ErrConflict: the seen life was replaced after Begin", err)
+	}
+}
+
+// A joining Get sees the transaction's snapshot: a life armed after Begin is
+// not visible through it.
+func TestTasks_JoiningGetSeesTheSnapshot(t *testing.T) {
+	fx := newTaskFixture(t)
+	seen := rearm(t, fx)
+	txID, txCtx := fx.begin(t, taskTenantA)
+	rearm(t, fx)
+
+	got, ok := getTask(t, txCtx, fx.sts, taskTenantA, "e1:S:T")
+	if !ok || got.ArmToken != seen.ArmToken {
+		t.Fatalf("joining Get = %+v, %v; want the life of the snapshot", got, ok)
+	}
+	fx.rollback(t, taskTenantA, txID)
+}
+
+// Get with a transaction that has ended, or with a transaction of another
+// tenant, reads the committed row. Another transaction stays open so that
+// the committed log still holds the change.
+func TestTasks_GetWithAnEndedOrForeignTransactionReadsTheCommittedRow(t *testing.T) {
+	fx := newTaskFixture(t)
+	rearm(t, fx)
+	holdID, _ := fx.begin(t, taskTenantA)
+	defer fx.rollback(t, taskTenantA, holdID)
+
+	committedID, committedCtx := fx.begin(t, taskTenantA)
+	rolledBackID, rolledBackCtx := fx.begin(t, taskTenantA)
+	foreignID, foreignCtx := fx.begin(t, taskTenantB)
+	defer fx.rollback(t, taskTenantB, foreignID)
+	if err := fx.commit(taskTenantA, committedID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	fx.rollback(t, taskTenantA, rolledBackID)
+	current := rearm(t, fx)
+
+	for name, ctx := range map[string]context.Context{
+		"committed": committedCtx, "rolled back": rolledBackCtx, "other tenant": foreignCtx,
+	} {
+		got, ok := getTask(t, ctx, fx.sts, taskTenantA, "e1:S:T")
+		if !ok || got.ArmToken != current.ArmToken {
+			t.Fatalf("%s: Get = %+v, %v; want the committed life", name, got, ok)
+		}
 	}
 }
