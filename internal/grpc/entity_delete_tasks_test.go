@@ -195,6 +195,36 @@ func TestRPC_EntityDeleteAll_FastPath_TaskConflictPersists_ConflictEnvelope(t *t
 	}
 }
 
+func TestRPC_EntityDeleteAll_Batched_RemovesTasks(t *testing.T) {
+	svc, ctx, real, _ := newTaskDeleteEnv(t)
+	id := createPersonRPC(t, svc, ctx)
+
+	if typed := deleteAllRPC(t, svc, ctx, map[string]any{"transactionSize": 1}); !typed.Success {
+		t.Fatalf("delete-all failed: %+v", typed.Error)
+	}
+	if n := personTasks(t, real, ctx, id); n != 0 {
+		t.Errorf("tasks = %d, want 0", n)
+	}
+}
+
+func TestRPC_EntityDeleteAll_Batched_TaskConflictPersists_ErrorsByID(t *testing.T) {
+	svc, ctx, real, plan := newTaskDeleteEnv(t)
+	id := createPersonRPC(t, svc, ctx)
+	plan.Refuse(taskconflict.DeleteForEntities, 1000)
+
+	typed := deleteAllRPC(t, svc, ctx, map[string]any{"transactionSize": 1})
+	if !typed.Success {
+		t.Fatalf("success = false (%+v), want true: a batched delete reports a conflict per id", typed.Error)
+	}
+	msg, _ := typed.ErrorsByID[id].(string)
+	if !strings.HasPrefix(msg, common.ErrCodeConflict+":") {
+		t.Errorf("ErrorsByID[%s] = %q, want a CONFLICT entry", id, msg)
+	}
+	if n := personTasks(t, real, ctx, id); n != 1 {
+		t.Errorf("tasks = %d, want 1", n)
+	}
+}
+
 func TestRPC_EntityUpdate_TaskRowConflict_ConflictEnvelope(t *testing.T) {
 	svc, ctx, _, plan := newTaskDeleteEnv(t)
 	id := createPersonRPC(t, svc, ctx)

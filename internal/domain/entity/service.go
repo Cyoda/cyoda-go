@@ -1759,24 +1759,81 @@ func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond pred
 	return result, nil
 }
 
+// batchAttempt is one run of a batch's transaction.
+type batchAttempt struct {
+	// removed are the ids whose delete was staged. They are durable only
+	// when failure is nil.
+	removed []string
+	// idErrors are per-id outcomes that do not fail the batch: a missing
+	// entity, a version changed since resolution, a failed delete.
+	idErrors map[string]string
+	// failure is the batch's own failure — its task removal or its commit —
+	// or nil when the batch committed.
+	failure *common.AppError
+}
+
 // deleteOneBatch deletes one chunk of ≤batchSize targets under its own owned
-// transaction. Every target's CURRENT version is re-read and compared
-// against the baseline captured during deleteBatched's resolution phase
-// (spec D4's version guard); a mismatch, a NotFound, or a Delete failure is
-// folded into result.IDToError for that one id and the chunk continues. Only
-// a failure to begin this chunk's transaction, or to acquire the EntityStore
-// against it, is returned to the caller — deleteBatched treats either as
-// fatal for the whole request, since it can't know whether later chunks
-// would fare any better. A failed commit (e.g. a
-// conflict from the resolution-baseline version check racing a concurrent
-// writer at the storage layer) maps every id this chunk marked
-// pending-removed into IDToError instead of incrementing RemovedCount — the
-// chunk's buffered deletes never became durable, so reporting them as
-// removed would lie about the mutation's outcome.
+// transaction, with the tasks of the ids it deletes (spec D4's version guard
+// applies to each id). A batch that loses a first-committer-wins race runs
+// again, at most common.TaskConflictRetries more times, against the same
+// baselines. Per-id outcomes of the last attempt go into result.IDToError. A
+// batch that still fails puts its message on every id it did not resolve,
+// and adds nothing to RemovedCount — its deletes never became durable. Only a
+// failure to begin the transaction or to reach the entity store is
+// returned; deleteBatched treats that as fatal for the request.
 func (h *Handler) deleteOneBatch(ctx context.Context, chunk []batchTarget, result *DeleteResult) error {
+	var last batchAttempt
+	err := common.RetryOnTaskConflict(ctx, spi.GetTransaction(ctx) == nil, func() error {
+		a, err := h.deleteOneBatchOnce(ctx, chunk)
+		if err != nil {
+			return err
+		}
+		last = a
+		if a.failure != nil && errors.Is(a.failure, spi.ErrConflict) {
+			return a.failure
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, spi.ErrConflict) {
+		return err
+	}
+
+	for id, msg := range last.idErrors {
+		result.IDToError[id] = msg
+	}
+	if last.failure == nil {
+		result.RemovedCount += len(last.removed)
+		return nil
+	}
+	// Operational (4xx-class) failures — a conflict above all — are
+	// client-safe by construction: fold the message as-is. Anything else
+	// gets ONE ticket for the whole batch, its cause logged under it, and
+	// the ticketed client-safe message — never the raw AppError.Message.
+	msg := last.failure.Message
+	if last.failure.Level != common.LevelOperational {
+		cause := error(last.failure)
+		if last.failure.Err != nil {
+			cause = last.failure.Err
+		}
+		msg = mintDeleteTicket("", cause)
+	}
+	for _, t := range chunk {
+		if _, resolved := last.idErrors[t.id]; !resolved {
+			result.IDToError[t.id] = msg
+		}
+	}
+	return nil
+}
+
+// deleteOneBatchOnce is one attempt of a batch. It re-reads each target,
+// deletes it if its version still equals the resolution baseline, removes
+// the tasks of the ids it deleted, and commits.
+func (h *Handler) deleteOneBatchOnce(ctx context.Context, chunk []batchTarget) (batchAttempt, error) {
+	a := batchAttempt{idErrors: map[string]string{}}
+
 	scope, err := h.beginScope(ctx)
 	if err != nil {
-		return classifyBeginErr(err)
+		return a, classifyBeginErr(err)
 	}
 	defer scope.Release()
 
@@ -1784,74 +1841,55 @@ func (h *Handler) deleteOneBatch(ctx context.Context, chunk []batchTarget, resul
 
 	entityStore, err := h.factory.EntityStore(txCtx)
 	if err != nil {
-		return common.Internal("failed to access entity store", err)
+		return a, common.Internal("failed to access entity store", err)
 	}
-
-	pendingRemoved := make([]string, 0, len(chunk))
 
 	// Finalize: gate the per-id deletes + commit against a concurrent joined
 	// callback's buffer write (mirror the single-tx path / DeleteAllEntities).
-	if appErr := func() *common.AppError {
+	a.failure = func() *common.AppError {
 		if owned {
 			defer h.gate.Acquire(txID)()
 		}
 		for _, t := range chunk {
 			// Generic cancellation check at the iteration head (spec D9) —
-			// fails the gated IIFE closed so this chunk's tx rolls back
-			// rather than committing a partial pass through the chunk.
+			// fails the batch closed so its tx rolls back rather than
+			// committing a partial pass through the chunk.
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return classifyError(fmt.Errorf("operation aborted: %w", ctxErr))
 			}
-
 			cur, gErr := entityStore.Get(txCtx, t.id)
 			if gErr != nil {
-				result.IDToError[t.id] = perIDDeleteError(t.id, gErr)
+				if errors.Is(gErr, spi.ErrConflict) {
+					return conflictError(gErr)
+				}
+				a.idErrors[t.id] = perIDDeleteError(t.id, gErr)
 				continue
 			}
 			if cur.Meta.Version != t.baselineVersion {
-				result.IDToError[t.id] = fmt.Sprintf("%s: entity id=%s modified after delete resolution; not deleted",
+				a.idErrors[t.id] = fmt.Sprintf("%s: entity id=%s modified after delete resolution; not deleted",
 					common.ErrCodeEntityModified, t.id)
 				continue
 			}
 			if dErr := entityStore.Delete(txCtx, t.id); dErr != nil {
-				result.IDToError[t.id] = perIDDeleteError(t.id, dErr)
+				// A first-committer-wins refusal fails the batch, which runs
+				// again; it is not this id's outcome.
+				if errors.Is(dErr, spi.ErrConflict) {
+					return conflictError(dErr)
+				}
+				a.idErrors[t.id] = perIDDeleteError(t.id, dErr)
 				continue
 			}
-			pendingRemoved = append(pendingRemoved, t.id)
+			a.removed = append(a.removed, t.id)
+		}
+		if err := h.deleteEntityTasks(txCtx, a.removed); err != nil {
+			return deleteWriteError("failed to delete scheduled tasks", err)
 		}
 		if err := scope.Commit(); err != nil {
-			if errors.Is(err, spi.ErrConflict) {
-				return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
-			}
-			return common.Internal("failed to commit transaction", err)
+			return deleteWriteError("failed to commit transaction", err)
 		}
 		return nil
-	}(); appErr != nil {
-		// Operational (4xx-class) failures — the resolution-baseline conflict
-		// above all — are client-safe by construction, same as
-		// perIDDeleteError's operational branch: fold the message as-is, no
-		// ticket needed. Anything else (Internal/Fatal, e.g. a bare commit
-		// error) gets perIDDeleteError's ticketed treatment: mint ONE ticket
-		// for the whole batch, log the real cause under it, and fold the
-		// ticketed client-safe message — never the raw AppError.Message,
-		// which for an Internal error carries no cause and would otherwise
-		// go out unlogged and uncorrelated.
-		msg := appErr.Message
-		if appErr.Level != common.LevelOperational {
-			cause := error(appErr)
-			if appErr.Err != nil {
-				cause = appErr.Err
-			}
-			msg = mintDeleteTicket("", cause)
-		}
-		for _, id := range pendingRemoved {
-			result.IDToError[id] = msg
-		}
-		return nil
-	}
-
-	result.RemovedCount += len(pendingRemoved)
-	return nil
+	}()
+	return a, nil
 }
 
 // ListEntities pages entities for a model at the store via

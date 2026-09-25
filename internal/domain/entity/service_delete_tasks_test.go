@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -654,6 +655,81 @@ func TestDeleteAllEntities_Joined_HeldGateNotReacquired(t *testing.T) {
 	}
 	if got := e.plan.Calls(taskconflict.DeleteForModel); got != 1 {
 		t.Errorf("DeleteForModel calls = %d, want 1: a joined delete-all is not retried", got)
+	}
+}
+
+func TestDeleteBatched_RemovesEachBatchsTasks(t *testing.T) {
+	e := newTaskEnv(t)
+	ids := seedPersons(t, e.h, e.ctx, 3)
+
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 1)
+	if err != nil {
+		t.Fatalf("DeleteEntitiesConditional: %v", err)
+	}
+	if res.RemovedCount != 2 {
+		t.Fatalf("RemovedCount = %d, want 2", res.RemovedCount)
+	}
+	for i, want := range []int{1, 0, 0} {
+		if n := e.tasksOf(t, ids[i]); n != want {
+			t.Errorf("tasks of entity %d = %d, want %d", i, n, want)
+		}
+	}
+}
+
+func TestDeleteBatched_TaskConflict_BatchRetried(t *testing.T) {
+	e := newTaskEnv(t)
+	seedPersons(t, e.h, e.ctx, 3)
+	e.plan.Refuse(taskconflict.DeleteForEntities, 1)
+
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 1)
+	if err != nil {
+		t.Fatalf("DeleteEntitiesConditional: %v", err)
+	}
+	if res.RemovedCount != 2 || len(res.IDToError) != 0 {
+		t.Errorf("Removed=%d IDToError=%v, want 2 and none", res.RemovedCount, res.IDToError)
+	}
+	if got := e.plan.Calls(taskconflict.DeleteForEntities); got != 3 {
+		t.Errorf("DeleteForEntities calls = %d, want 3 (one refusal, then one per batch)", got)
+	}
+}
+
+func TestDeleteBatched_TaskConflictPersists_ReportedPerIDNever409(t *testing.T) {
+	e := newTaskEnv(t)
+	ids := seedPersons(t, e.h, e.ctx, 3)
+	e.plan.Refuse(taskconflict.DeleteForEntities, 1000)
+
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 1)
+	if err != nil {
+		t.Fatalf("err = %v, want a 200 result with per-id errors", err)
+	}
+	if res.RemovedCount != 0 {
+		t.Errorf("RemovedCount = %d, want 0", res.RemovedCount)
+	}
+	for _, id := range ids[1:] {
+		msg, ok := res.IDToError[id]
+		if !ok || !strings.HasPrefix(msg, common.ErrCodeConflict+":") {
+			t.Errorf("IDToError[%s] = %q, want a CONFLICT entry", id, msg)
+		}
+		if !e.exists(t, id) || e.tasksOf(t, id) != 1 {
+			t.Errorf("entity %s or its task is gone although its batch never committed", id)
+		}
+	}
+	if got, want := e.plan.Calls(taskconflict.DeleteForEntities), 2*(1+common.TaskConflictRetries); got != want {
+		t.Errorf("DeleteForEntities calls = %d, want %d", got, want)
+	}
+}
+
+func TestDeleteBatched_EntityRowConflict_BatchRetried(t *testing.T) {
+	e := newTaskEnv(t)
+	seedPersons(t, e.h, e.ctx, 3)
+	e.refusingStore(t, 1, "")
+
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 2)
+	if err != nil {
+		t.Fatalf("DeleteEntitiesConditional: %v", err)
+	}
+	if res.RemovedCount != 2 || len(res.IDToError) != 0 {
+		t.Errorf("Removed=%d IDToError=%v, want 2 and none", res.RemovedCount, res.IDToError)
 	}
 }
 

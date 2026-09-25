@@ -1,9 +1,11 @@
 package e2e_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -320,5 +322,76 @@ func TestScheduledTaskWrites_ConditionalDelete_PersistentConflict_409(t *testing
 	requireConflictProblem(t, resultOf(doAuthOnceRaw(e2eCtx(t), http.MethodDelete, fmt.Sprintf("/api/entity/%s/1", model), amountOver50)))
 	if got, want := trig.refusals(t), int64(1+common.TaskConflictRetries); got != want {
 		t.Errorf("server attempts = %d, want %d", got, want)
+	}
+}
+
+type batchedDeleteBody struct {
+	DeleteResult struct {
+		IDToError map[string]string `json:"idToError"`
+		Removed   int               `json:"numberOfEntititesRemoved"`
+	} `json:"deleteResult"`
+}
+
+func decodeBatched(t *testing.T, body string) batchedDeleteBody {
+	t.Helper()
+	var b batchedDeleteBody
+	if err := json.Unmarshal([]byte(body), &b); err != nil {
+		t.Fatalf("decode delete result: %v; body: %s", err, body)
+	}
+	return b
+}
+
+func TestScheduledTaskWrites_BatchedDelete_RacingOneClaim_BatchSucceedsAfterRetry(t *testing.T) {
+	const model = "e2e-stw-batched-race"
+	setupScheduledModel(t, model)
+	id := createEntityE2E(t, model, 1, schedWritesPayload)
+	hold := holdTaskRows(t, "entity_id = $1", id)
+
+	ctx := e2eCtx(t)
+	done := make(chan httpResult, 1)
+	go func() {
+		done <- resultOf(doAuthOnceRaw(ctx, http.MethodDelete, fmt.Sprintf("/api/entity/%s/1?transactionSize=1", model), amountOver50))
+	}()
+	hold.awaitBlocked(t)
+	hold.claimAndCommit(t)
+
+	res := <-done
+	if res.status != http.StatusOK {
+		t.Fatalf("batched delete racing a claim: %d %s", res.status, res.body)
+	}
+	if b := decodeBatched(t, res.body); b.DeleteResult.Removed != 1 || len(b.DeleteResult.IDToError) != 0 {
+		t.Errorf("removed=%d idToError=%v, want 1 and none", b.DeleteResult.Removed, b.DeleteResult.IDToError)
+	}
+	if n := taskRows(t, "entity_id = $1", id); n != 0 {
+		t.Errorf("task rows = %d, want 0", n)
+	}
+}
+
+func TestScheduledTaskWrites_BatchedDelete_PersistentConflict_PerIDNot409(t *testing.T) {
+	const model = "e2e-stw-batched-persist"
+	setupScheduledModel(t, model)
+	stuck := createEntityE2E(t, model, 1, schedWritesPayload)
+	free := createEntityE2E(t, model, 1, schedWritesPayload)
+	trig := installConflictTrigger(t, "entity_id", stuck)
+
+	res := resultOf(doAuthOnceRaw(e2eCtx(t), http.MethodDelete, fmt.Sprintf("/api/entity/%s/1?transactionSize=1", model), amountOver50))
+	if res.status != http.StatusOK {
+		t.Fatalf("status = %d, want 200: a batched delete never answers 409 for a batch; body: %s", res.status, res.body)
+	}
+	b := decodeBatched(t, res.body)
+	if msg := b.DeleteResult.IDToError[stuck]; !strings.HasPrefix(msg, common.ErrCodeConflict+":") {
+		t.Errorf("idToError[stuck] = %q, want a CONFLICT entry", msg)
+	}
+	if b.DeleteResult.Removed != 1 {
+		t.Errorf("removed = %d, want 1 (the other batch ran)", b.DeleteResult.Removed)
+	}
+	if got, want := trig.refusals(t), int64(1+common.TaskConflictRetries); got != want {
+		t.Errorf("attempts of the stuck batch = %d, want %d", got, want)
+	}
+	if n := taskRows(t, "entity_id = $1", free); n != 0 {
+		t.Errorf("task rows of the deleted entity = %d, want 0", n)
+	}
+	if n := taskRows(t, "entity_id = $1", stuck); n != 1 {
+		t.Errorf("task rows of the stuck entity = %d, want 1", n)
 	}
 }
