@@ -32,6 +32,8 @@ type fakeStore struct {
 	hbErr          error
 	hbFailNext     int
 	hbBlock        chan struct{} // non-nil: Heartbeat parks until it is closed, whatever its ctx says
+	heartbeatPanic bool          // Heartbeat panics, after it releases the lock
+	claimPanic     bool          // ClaimDue panics
 	heartbeats     int
 	hbFailures     int
 	giveBacks      [][]uuid.UUID
@@ -102,6 +104,9 @@ func (f *fakeStore) ClaimDue(_ context.Context, req spi.ClaimRequest) ([]spi.Sch
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.claimReqs = append(f.claimReqs, req)
+	if f.claimPanic {
+		panic("injected panic in a claim")
+	}
 	n := min(req.Limit, len(f.due))
 	out := make([]spi.ScheduledTask, 0, n)
 	for _, t := range f.due[:n] {
@@ -119,7 +124,7 @@ func (f *fakeStore) ClaimDue(_ context.Context, req spi.ClaimRequest) ([]spi.Sch
 func (f *fakeStore) Heartbeat(context.Context, uuid.UUID) error {
 	f.mu.Lock()
 	f.heartbeats++
-	block, err := f.hbBlock, f.hbErr
+	block, err, boom := f.hbBlock, f.hbErr, f.heartbeatPanic
 	if err == nil && f.hbFailNext > 0 {
 		f.hbFailNext--
 		err = errors.New("heartbeat: connection refused")
@@ -128,6 +133,9 @@ func (f *fakeStore) Heartbeat(context.Context, uuid.UUID) error {
 		f.hbFailures++
 	}
 	f.mu.Unlock()
+	if boom {
+		panic("injected panic in a heartbeat")
+	}
 	if block != nil {
 		<-block
 	}

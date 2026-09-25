@@ -258,6 +258,53 @@ func TestService_StoreRejectionDoesNotCancelTheRunsInProgress(t *testing.T) {
 	eventually(t, "the sibling run released", func() bool { return liveRuns(h.svc) == 1 })
 }
 
+// A panic in the heartbeat goroutine latches the node and cancels the runs;
+// the heartbeat stops, so the runs can be taken over (§6.5).
+func TestService_HeartbeatPanicLatchesCancelsAndStopsTheHeartbeat(t *testing.T) {
+	h := newHarness(t, testConfig(), firerFunc(func(ctx context.Context, _ spi.ScheduledTask, _ int, _ time.Duration) workflow.RunReport {
+		return failedOnCancel(ctx)
+	}))
+	h.fs.with(func() { h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")} })
+	h.start(t)
+	eventually(t, "the run started", func() bool { return liveRuns(h.svc) == 1 })
+	h.fs.with(func() { h.fs.heartbeatPanic = true })
+	eventually(t, "the node latched", func() bool { return !h.flag.Load() })
+	eventually(t, "the run cancelled by the latch", func() bool { return len(h.fs.attemptsRecorded()) == 1 })
+	if a := h.fs.attemptsRecorded()[0]; a.NotCounted || a.Error != cancelledText {
+		t.Errorf("attempt = %+v, want the run cancelled by the latch", a)
+	}
+	beats, claims := h.fs.heartbeatCount(), h.fs.claims()
+	time.Sleep(50 * time.Millisecond)
+	if n := h.fs.heartbeatCount(); n != beats {
+		t.Errorf("%d heartbeats after the heartbeat panicked", n-beats)
+	}
+	if n := h.fs.claims(); n != claims {
+		t.Errorf("%d claims after the latch", n-claims)
+	}
+}
+
+// A panic in the claim loop latches the node and cancels the runs; the
+// heartbeat goes on, so the runs are not taken over while they stop (§6.5).
+func TestService_ClaimLoopPanicLatchesCancelsAndKeepsHeartbeating(t *testing.T) {
+	h := newHarness(t, testConfig(), firerFunc(func(ctx context.Context, _ spi.ScheduledTask, _ int, _ time.Duration) workflow.RunReport {
+		return failedOnCancel(ctx)
+	}))
+	h.fs.with(func() { h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")} })
+	h.start(t)
+	eventually(t, "the run started", func() bool { return liveRuns(h.svc) == 1 })
+	h.fs.with(func() { h.fs.claimPanic = true })
+	eventually(t, "the node latched", func() bool { return !h.flag.Load() })
+	eventually(t, "the run cancelled by the latch", func() bool { return len(h.fs.attemptsRecorded()) == 1 })
+	if a := h.fs.attemptsRecorded()[0]; a.NotCounted || a.Error != cancelledText {
+		t.Errorf("attempt = %+v, want the run cancelled by the latch", a)
+	}
+	beats, claims := h.fs.heartbeatCount(), h.fs.claims()
+	eventually(t, "heartbeats go on after the loop panicked", func() bool { return h.fs.heartbeatCount() > beats+2 })
+	if n := h.fs.claims(); n != claims {
+		t.Errorf("%d claims after the latch", n-claims)
+	}
+}
+
 // A panic in one run's bookkeeping cancels every other run in progress
 // (§6.5: the recovery itself cancels them).
 func TestService_BookkeepingPanicCancelsTheRunsInProgress(t *testing.T) {
