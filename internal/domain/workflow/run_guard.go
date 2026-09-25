@@ -89,8 +89,10 @@ func (f *UnsafeFlight) Since() (time.Time, bool) {
 // UnsafeInFlight reports whether an unsafe processor dispatch of this run is
 // in progress. The scheduler exempts such a run at shutdown step 3 (spec
 // §6.4). A dispatch counts from before its mark until its step's error is
-// known. After NoNewUnsafe is closed the count only falls: beforeDispatch
-// counts first and checks NoNewUnsafe second.
+// known. It is counted before the NoNewUnsafe check: a scheduler that closes
+// NoNewUnsafe and then reads the count cannot miss a dispatch that goes
+// ahead. A dispatch refused by the signal raises the count only until the
+// refusal returns.
 func (g *RunGuard) UnsafeInFlight() bool {
 	_, ok := g.Unsafe.Since()
 	return ok
@@ -254,9 +256,11 @@ func beforeDispatch(ctx context.Context, proc spi.ProcessorDefinition) (dispatch
 	if g == nil || proc.Config.Idempotent {
 		return func(error) {}, nil
 	}
-	// Counted before the NoNewUnsafe check, so that once the signal is seen
-	// the count only falls. Every exit before the hand-over to dispatched,
-	// a refusal or a panic in MarkUnsafe, ends it again.
+	// Counted before the NoNewUnsafe check: a scheduler that closes
+	// NoNewUnsafe and then reads the count cannot miss a dispatch that goes
+	// ahead. A dispatch refused by the signal raises the count only until the
+	// refusal returns. Every exit before the hand-over to dispatched, a
+	// refusal or a panic in MarkUnsafe, ends it again.
 	g.Unsafe.Begin()
 	handedOver := false
 	defer func() {
