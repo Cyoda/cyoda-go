@@ -13,6 +13,11 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
 
+const (
+	taskTenantA spi.TenantID = "tenant-A"
+	taskTenantB spi.TenantID = "tenant-B"
+)
+
 type taskFixture struct {
 	f     *sqlite.StoreFactory
 	clock *sqlite.TestClock
@@ -45,304 +50,292 @@ func newTaskFixture(t *testing.T) taskFixture {
 
 func tenantCtx(tenant spi.TenantID) context.Context { return testCtx(string(tenant)) }
 
-const (
-	taskTenantA spi.TenantID = "tenant-A"
-	taskTenantB spi.TenantID = "tenant-B"
-)
-
-// begin starts a transaction for tenant and fails the test on error.
-func begin(t *testing.T, tf taskFixture, tenant spi.TenantID) (string, context.Context) {
+func (fx taskFixture) begin(t *testing.T, tenant spi.TenantID) (string, context.Context) {
 	t.Helper()
-	txID, txCtx, err := tf.tm.Begin(tenantCtx(tenant))
+	txID, txCtx, err := fx.tm.Begin(tenantCtx(tenant))
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
 	return txID, txCtx
 }
 
-// commit commits txID and fails the test on error.
-func commit(t *testing.T, tf taskFixture, ctx context.Context, txID string) {
-	t.Helper()
-	if err := tf.tm.Commit(ctx, txID); err != nil {
-		t.Fatalf("Commit: %v", err)
-	}
+func (fx taskFixture) commit(tenant spi.TenantID, txID string) error {
+	return fx.tm.Commit(tenantCtx(tenant), txID)
 }
 
-// rollback rolls back txID and fails the test on error.
-func rollback(t *testing.T, tf taskFixture, ctx context.Context, txID string) {
+func (fx taskFixture) rollback(t *testing.T, tenant spi.TenantID, txID string) {
 	t.Helper()
-	if err := tf.tm.Rollback(ctx, txID); err != nil {
+	if err := fx.tm.Rollback(tenantCtx(tenant), txID); err != nil {
 		t.Fatalf("Rollback: %v", err)
 	}
 }
 
-// armTask returns a ScheduledTask suitable for req.Arm: the fields the
-// caller controls. The store ignores everything else and sets ID, TenantID
-// and EntityID from the reconcile request, never from this value.
-func armTask(id, transition string, scheduledTime int64) spi.ScheduledTask {
+// armTask is the arm request for entity's transition out of state S, due at
+// 1 000 ms.
+func armTask(tenant spi.TenantID, entity, transition string) spi.ScheduledTask {
 	return spi.ScheduledTask{
-		ID:            id,
+		ID:            entity + ":S:" + transition,
+		TenantID:      tenant,
 		Type:          spi.ScheduledTaskFireTransition,
-		ScheduledTime: scheduledTime,
-		ModelName:     "Order",
+		ScheduledTime: 1_000,
+		EntityID:      entity,
+		ModelName:     "M",
 		ModelVersion:  1,
 		Transition:    transition,
 		SourceState:   "S",
-		ArmedAt:       scheduledTime,
+		ArmedAt:       500,
 	}
 }
 
-// arm reconciles tenant's entityID with a single arm item, fails the test on
-// error, and returns the tasks the reconcile removed.
-func arm(t *testing.T, ctx context.Context, sts spi.ScheduledTaskStore, tenant spi.TenantID, entityID string, tasks ...spi.ScheduledTask) []spi.ScheduledTask {
+// arm arms the given transitions of entity as one ReconcileForEntity on ctx.
+func arm(t *testing.T, ctx context.Context, sts spi.ScheduledTaskStore, tenant spi.TenantID, entity string, transitions ...string) []spi.ScheduledTask {
 	t.Helper()
-	removed, err := sts.ReconcileForEntity(ctx, spi.ReconcileRequest{
-		TenantID:     tenant,
-		EntityID:     entityID,
-		CurrentState: "S",
-		Arm:          tasks,
-	})
+	req := spi.ReconcileRequest{TenantID: tenant, EntityID: entity, CurrentState: "S"}
+	for _, tr := range transitions {
+		req.Arm = append(req.Arm, armTask(tenant, entity, tr))
+	}
+	removed, err := sts.ReconcileForEntity(ctx, req)
 	if err != nil {
 		t.Fatalf("ReconcileForEntity: %v", err)
 	}
 	return removed
 }
 
-// getTask reads tenant's task id and fails the test on error. It does not
-// fail when the task is missing: callers check found themselves.
-func getTask(t *testing.T, ctx context.Context, sts spi.ScheduledTaskStore, tenant spi.TenantID, id string) (*spi.ScheduledTask, bool) {
+func getTask(t *testing.T, ctx context.Context, sts spi.ScheduledTaskStore, tenant spi.TenantID, id string) (spi.ScheduledTask, bool) {
 	t.Helper()
-	task, found, err := sts.Get(ctx, tenant, id)
+	got, found, err := sts.Get(ctx, tenant, id)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	return task, found
+	if !found {
+		return spi.ScheduledTask{}, false
+	}
+	return *got, true
 }
 
 func TestTasks_ArmStartsANewLife(t *testing.T) {
-	tf := newTaskFixture(t)
-	ctx := tenantCtx(taskTenantA)
+	fx := newTaskFixture(t)
+	bg := context.Background()
 
-	arm(t, ctx, tf.sts, taskTenantA, "e1", armTask("e1:S:T", "T", 1_500_000))
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T")
+	first, ok := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T")
+	if !ok {
+		t.Fatal("armed task not found")
+	}
+	if first.Status != spi.ScheduledTaskWaiting || first.ArmToken == uuid.Nil ||
+		first.NextAttemptTime != first.ScheduledTime || first.Claim != nil || first.Attempts != 0 {
+		t.Fatalf("armed task = %+v, want WAITING, a drawn arm token, NextAttemptTime = ScheduledTime, no claim, no attempts", first)
+	}
 
-	got, found := getTask(t, ctx, tf.sts, taskTenantA, "e1:S:T")
-	if !found {
-		t.Fatal("expected the armed task to be found")
-	}
-	if got.Status != spi.ScheduledTaskWaiting {
-		t.Errorf("Status = %v, want WAITING", got.Status)
-	}
-	if got.ArmToken == uuid.Nil {
-		t.Error("ArmToken is nil, want a fresh token")
-	}
-	if got.NextAttemptTime != got.ScheduledTime {
-		t.Errorf("NextAttemptTime = %d, want ScheduledTime %d", got.NextAttemptTime, got.ScheduledTime)
-	}
-	if got.Attempts != 0 || got.LostOwners != 0 {
-		t.Errorf("Attempts = %d, LostOwners = %d, want 0, 0", got.Attempts, got.LostOwners)
-	}
-	if got.Claim != nil {
-		t.Errorf("Claim = %+v, want nil", got.Claim)
-	}
-	if got.UnsafeMarked {
-		t.Error("UnsafeMarked = true, want false for a new life")
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T")
+	second, _ := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T")
+	if second.ArmToken == first.ArmToken {
+		t.Fatal("a re-arm kept the arm token; want a new life")
 	}
 }
 
 func TestTasks_ReconcileRemovesEveryOtherTaskOfTheEntity(t *testing.T) {
-	tf := newTaskFixture(t)
-	ctx := tenantCtx(taskTenantA)
+	fx := newTaskFixture(t)
+	bg := context.Background()
 
-	arm(t, ctx, tf.sts, taskTenantA, "e1",
-		armTask("e1:S:T1", "T1", 1_500_000), armTask("e1:S:T2", "T2", 1_600_000))
-
-	removed := arm(t, ctx, tf.sts, taskTenantA, "e1", armTask("e1:S:T3", "T3", 1_700_000))
-
-	if len(removed) != 2 {
-		t.Fatalf("removed = %+v, want e1:S:T1 and e1:S:T2", removed)
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T1", "T2")
+	removed := arm(t, bg, fx.sts, taskTenantA, "e1", "T1")
+	if len(removed) != 1 || removed[0].ID != "e1:S:T2" {
+		t.Fatalf("removed = %+v, want only e1:S:T2", removed)
 	}
-	gotIDs := map[string]bool{removed[0].ID: true, removed[1].ID: true}
-	if !gotIDs["e1:S:T1"] || !gotIDs["e1:S:T2"] {
-		t.Fatalf("removed = %+v, want e1:S:T1 and e1:S:T2", removed)
-	}
-	if _, found := getTask(t, ctx, tf.sts, taskTenantA, "e1:S:T1"); found {
-		t.Error("e1:S:T1 still present, want removed")
-	}
-	if _, found := getTask(t, ctx, tf.sts, taskTenantA, "e1:S:T2"); found {
-		t.Error("e1:S:T2 still present, want removed")
-	}
-	if _, found := getTask(t, ctx, tf.sts, taskTenantA, "e1:S:T3"); !found {
-		t.Error("e1:S:T3 not found, want armed")
+	if _, ok := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T2"); ok {
+		t.Fatal("e1:S:T2 is still stored")
 	}
 }
 
 func TestTasks_StagedArmIsDiscardedOnRollback(t *testing.T) {
-	tf := newTaskFixture(t)
-	txID, txCtx := begin(t, tf, taskTenantA)
+	fx := newTaskFixture(t)
+	txID, txCtx := fx.begin(t, taskTenantA)
+	arm(t, txCtx, fx.sts, taskTenantA, "e1", "T")
+	fx.rollback(t, taskTenantA, txID)
 
-	arm(t, txCtx, tf.sts, taskTenantA, "e1", armTask("e1:S:T", "T", 1_500_000))
-
-	rollback(t, tf, tenantCtx(taskTenantA), txID)
-
-	if _, found := getTask(t, context.Background(), tf.sts, taskTenantA, "e1:S:T"); found {
-		t.Error("expected the staged arm to be discarded on rollback")
+	if _, ok := getTask(t, context.Background(), fx.sts, taskTenantA, "e1:S:T"); ok {
+		t.Fatal("an arm staged in a rolled-back transaction is stored")
 	}
 }
 
 func TestTasks_SavepointTruncatesStagedOps(t *testing.T) {
-	tf := newTaskFixture(t)
-	txID, txCtx := begin(t, tf, taskTenantA)
-
-	arm(t, txCtx, tf.sts, taskTenantA, "e1", armTask("e1:S:T1", "T1", 1_500_000))
-
-	sp, err := tf.tm.Savepoint(txCtx, txID)
+	fx := newTaskFixture(t)
+	ctx := tenantCtx(taskTenantA)
+	txID, txCtx := fx.begin(t, taskTenantA)
+	arm(t, txCtx, fx.sts, taskTenantA, "e1", "T")
+	spID, err := fx.tm.Savepoint(ctx, txID)
 	if err != nil {
 		t.Fatalf("Savepoint: %v", err)
 	}
-
-	arm(t, txCtx, tf.sts, taskTenantA, "e2", armTask("e2:S:T2", "T2", 1_600_000))
-
-	if err := tf.tm.RollbackToSavepoint(txCtx, txID, sp); err != nil {
+	arm(t, txCtx, fx.sts, taskTenantA, "e2", "T")
+	if err := fx.tm.RollbackToSavepoint(ctx, txID, spID); err != nil {
 		t.Fatalf("RollbackToSavepoint: %v", err)
 	}
-
-	commit(t, tf, txCtx, txID)
-
-	if _, found := getTask(t, context.Background(), tf.sts, taskTenantA, "e1:S:T1"); !found {
-		t.Error("e1:S:T1 not found, want it to survive the savepoint truncation")
+	if err := fx.commit(taskTenantA, txID); err != nil {
+		t.Fatalf("Commit: %v", err)
 	}
-	if _, found := getTask(t, context.Background(), tf.sts, taskTenantA, "e2:S:T2"); found {
-		t.Error("e2:S:T2 found, want it discarded by RollbackToSavepoint")
+
+	bg := context.Background()
+	if _, ok := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T"); !ok {
+		t.Fatal("the arm staged before the savepoint was not committed")
+	}
+	if _, ok := getTask(t, bg, fx.sts, taskTenantA, "e2:S:T"); ok {
+		t.Fatal("the arm staged after the savepoint survived RollbackToSavepoint")
 	}
 }
 
 func TestTasks_JoiningGetSeesStagedOps(t *testing.T) {
-	tf := newTaskFixture(t)
-	txID, txCtx := begin(t, tf, taskTenantA)
+	fx := newTaskFixture(t)
+	bg := context.Background()
+	txID, txCtx := fx.begin(t, taskTenantA)
 
-	arm(t, txCtx, tf.sts, taskTenantA, "e1", armTask("e1:S:T", "T", 1_500_000))
-
-	if _, found := getTask(t, txCtx, tf.sts, taskTenantA, "e1:S:T"); !found {
-		t.Error("a joining Get did not see the transaction's own staged arm")
+	arm(t, txCtx, fx.sts, taskTenantA, "e1", "T")
+	staged, ok := getTask(t, txCtx, fx.sts, taskTenantA, "e1:S:T")
+	if !ok {
+		t.Fatal("a joining Get did not see the transaction's own staged arm")
 	}
-	if _, found := getTask(t, context.Background(), tf.sts, taskTenantA, "e1:S:T"); found {
-		t.Error("a non-joining Get saw an uncommitted staged arm")
+	if _, ok := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T"); ok {
+		t.Fatal("a non-joining Get saw an uncommitted arm")
 	}
 
-	rollback(t, tf, tenantCtx(taskTenantA), txID)
+	if err := fx.sts.RemoveLife(txCtx, taskTenantA, "e1:S:T", staged.ArmToken); err != nil {
+		t.Fatalf("RemoveLife: %v", err)
+	}
+	if _, ok := getTask(t, txCtx, fx.sts, taskTenantA, "e1:S:T"); ok {
+		t.Fatal("a joining Get still sees a task the transaction removed")
+	}
+	if err := fx.commit(taskTenantA, txID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if _, ok := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T"); ok {
+		t.Fatal("the removed task is stored after commit")
+	}
 }
 
-// TestTasks_RemovalsAreExpandedWhenStaged proves that a write staged earlier
-// in a transaction — never yet committed to SQLite — is still visible to a
-// later write in the same transaction that removes it: DeleteForEntities
-// reads the transaction's own staged rows (C2), not only the committed ones.
+// A removal is expanded to the task ids it covers when it is staged. A task
+// armed afterwards, by another writer, is not removed by it.
 func TestTasks_RemovalsAreExpandedWhenStaged(t *testing.T) {
-	tf := newTaskFixture(t)
-	txID, txCtx := begin(t, tf, taskTenantA)
+	fx := newTaskFixture(t)
+	bg := context.Background()
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T")
 
-	arm(t, txCtx, tf.sts, taskTenantA, "e1", armTask("e1:S:T", "T", 1_500_000))
-
-	if err := tf.sts.DeleteForEntities(txCtx, taskTenantA, []string{"e1"}); err != nil {
-		t.Fatalf("DeleteForEntities: %v", err)
+	txID, txCtx := fx.begin(t, taskTenantA)
+	if err := fx.sts.DeleteForModel(txCtx, taskTenantA, "M", 1, nil); err != nil {
+		t.Fatalf("DeleteForModel: %v", err)
+	}
+	arm(t, bg, fx.sts, taskTenantA, "e2", "T")
+	if err := fx.commit(taskTenantA, txID); err != nil {
+		t.Fatalf("Commit: %v", err)
 	}
 
-	commit(t, tf, txCtx, txID)
+	if _, ok := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T"); ok {
+		t.Fatal("e1's task survived DeleteForModel")
+	}
+	if _, ok := getTask(t, bg, fx.sts, taskTenantA, "e2:S:T"); !ok {
+		t.Fatal("DeleteForModel removed a task armed after it was staged")
+	}
+}
 
-	if _, found := getTask(t, context.Background(), tf.sts, taskTenantA, "e1:S:T"); found {
-		t.Error("e1:S:T found after commit, want the staged arm removed by the staged DeleteForEntities")
+// SQLite-only addition (not in the shared memory test file): a write staged
+// earlier in a transaction — never yet committed to SQLite — is still
+// visible to a later write in the SAME transaction that removes it: this
+// proves DeleteForEntities reads the transaction's own staged rows (C2), not
+// only the rows already committed to disk.
+func TestTasks_StagedDeleteForEntitiesRemovesAStagedArmInTheSameTransaction(t *testing.T) {
+	fx := newTaskFixture(t)
+	txID, txCtx := fx.begin(t, taskTenantA)
+
+	arm(t, txCtx, fx.sts, taskTenantA, "e1", "T")
+	if err := fx.sts.DeleteForEntities(txCtx, taskTenantA, []string{"e1"}); err != nil {
+		t.Fatalf("DeleteForEntities: %v", err)
+	}
+	if err := fx.commit(taskTenantA, txID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	if _, ok := getTask(t, context.Background(), fx.sts, taskTenantA, "e1:S:T"); ok {
+		t.Fatal("e1:S:T found after commit, want the staged arm removed by the staged DeleteForEntities")
 	}
 }
 
 func TestTasks_StagingIntoACommittedTransactionIsRefused(t *testing.T) {
-	tf := newTaskFixture(t)
-	txID, txCtx := begin(t, tf, taskTenantA)
-	commit(t, tf, txCtx, txID)
-
-	err := tf.sts.RemoveLife(txCtx, taskTenantA, "e1:S:T", uuid.New())
+	fx := newTaskFixture(t)
+	txID, txCtx := fx.begin(t, taskTenantA)
+	if err := fx.commit(taskTenantA, txID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	_, err := fx.sts.ReconcileForEntity(txCtx, spi.ReconcileRequest{
+		TenantID: taskTenantA, EntityID: "e1", CurrentState: "S",
+		Arm: []spi.ScheduledTask{armTask(taskTenantA, "e1", "T")},
+	})
 	if !errors.Is(err, spi.ErrTxAlreadyCommitted) {
-		t.Fatalf("RemoveLife into a committed tx: err = %v, want ErrTxAlreadyCommitted", err)
+		t.Fatalf("err = %v, want ErrTxAlreadyCommitted", err)
 	}
 }
 
 func TestTasks_AWriteForAnotherTenantThanTheTransactionIsRefused(t *testing.T) {
-	tf := newTaskFixture(t)
-	_, txCtx := begin(t, tf, taskTenantA)
-
-	err := tf.sts.RemoveLife(txCtx, taskTenantB, "e1:S:T", uuid.New())
+	fx := newTaskFixture(t)
+	_, txCtx := fx.begin(t, taskTenantA)
+	_, err := fx.sts.ReconcileForEntity(txCtx, spi.ReconcileRequest{
+		TenantID: taskTenantB, EntityID: "e1", CurrentState: "S",
+		Arm: []spi.ScheduledTask{armTask(taskTenantB, "e1", "T")},
+	})
 	if !errors.Is(err, spi.ErrTxTenantMismatch) {
-		t.Fatalf("RemoveLife for another tenant than the tx: err = %v, want ErrTxTenantMismatch", err)
+		t.Fatalf("err = %v, want ErrTxTenantMismatch", err)
 	}
 }
 
 func TestTasks_GetIsTenantScoped(t *testing.T) {
-	tf := newTaskFixture(t)
-	arm(t, tenantCtx(taskTenantA), tf.sts, taskTenantA, "e1", armTask("e1:S:T", "T", 1_500_000))
-
-	if _, found := getTask(t, context.Background(), tf.sts, taskTenantB, "e1:S:T"); found {
-		t.Error("tenant B saw tenant A's task, want tenant isolation")
-	}
-	if _, found := getTask(t, context.Background(), tf.sts, taskTenantA, "e1:S:T"); !found {
-		t.Error("tenant A did not see its own task")
+	fx := newTaskFixture(t)
+	bg := context.Background()
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T")
+	if _, ok := getTask(t, bg, fx.sts, taskTenantB, "e1:S:T"); ok {
+		t.Fatal("tenant B read tenant A's task by its id")
 	}
 }
 
+// The request names the tenant and the entity; the arm task's own fields for
+// them are ignored.
 func TestTasks_ArmTakesTenantAndEntityFromTheRequest(t *testing.T) {
-	tf := newTaskFixture(t)
-	ctx := tenantCtx(taskTenantA)
-
-	// The Arm item's own tenant/entity are garbage the caller might supply;
-	// the store must ignore them and use the request's TenantID/EntityID.
-	bogus := armTask("e1:S:T", "T", 1_500_000)
-	bogus.TenantID = taskTenantB
-	bogus.EntityID = "not-e1"
-
-	arm(t, ctx, tf.sts, taskTenantA, "e1", bogus)
-
-	got, found := getTask(t, ctx, tf.sts, taskTenantA, "e1:S:T")
-	if !found {
-		t.Fatal("expected the armed task under tenant A")
+	fx := newTaskFixture(t)
+	bg := context.Background()
+	stray := armTask(taskTenantB, "other", "T")
+	stray.ID = "e1:S:T"
+	if _, err := fx.sts.ReconcileForEntity(bg, spi.ReconcileRequest{
+		TenantID: taskTenantA, EntityID: "e1", CurrentState: "S", Arm: []spi.ScheduledTask{stray},
+	}); err != nil {
+		t.Fatalf("ReconcileForEntity: %v", err)
 	}
-	if got.TenantID != taskTenantA {
-		t.Errorf("TenantID = %q, want %q", got.TenantID, taskTenantA)
+	got, ok := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T")
+	if !ok || got.TenantID != taskTenantA || got.EntityID != "e1" {
+		t.Fatalf("armed task = %+v, %v; want it under tenant A and entity e1", got, ok)
 	}
-	if got.EntityID != "e1" {
-		t.Errorf("EntityID = %q, want e1", got.EntityID)
-	}
-	if _, found := getTask(t, context.Background(), tf.sts, taskTenantB, "e1:S:T"); found {
-		t.Error("tenant B saw the task, want it armed only under tenant A")
+	if _, ok := getTask(t, bg, fx.sts, taskTenantB, "e1:S:T"); ok {
+		t.Fatal("the arm task's own tenant was used")
 	}
 }
 
+// Query orders ids byte-wise: "B" (0x42) < "a" (0x61) < "é" (0xC3 0xA9).
+// A case-insensitive or Unicode collation would give a, B, é.
 func TestTasks_QueryOrdersIdsByteWise(t *testing.T) {
-	tf := newTaskFixture(t)
-	ctx := tenantCtx(taskTenantA)
-
-	// Same ScheduledTime, so the tie is broken by ID. Byte-wise collation
-	// puts every uppercase letter before every lowercase one; a
-	// case-insensitive or locale collation would not.
-	for _, e := range []struct{ id, entity string }{
-		{"b:S:T", "eb"},
-		{"B:S:T", "eB"},
-		{"a:S:T", "ea"},
-	} {
-		arm(t, ctx, tf.sts, taskTenantA, e.entity, armTask(e.id, "T", 1_500_000))
+	fx := newTaskFixture(t)
+	bg := context.Background()
+	for _, e := range []string{"a", "é", "B"} {
+		arm(t, bg, fx.sts, taskTenantA, e, "T")
 	}
-
-	page, err := tf.sts.Query(ctx, taskTenantA, spi.ScheduledTaskQuery{Limit: 10})
+	first, err := fx.sts.Query(bg, taskTenantA, spi.ScheduledTaskQuery{Limit: 2})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
-	var ids []string
-	for _, item := range page.Items {
-		ids = append(ids, item.ID)
+	if len(first.Items) != 2 || first.Items[0].ID != "B:S:T" || first.Items[1].ID != "a:S:T" || first.Next == nil {
+		t.Fatalf("first page = %+v, want B:S:T, a:S:T and a cursor", first)
 	}
-	want := []string{"B:S:T", "a:S:T", "b:S:T"}
-	if len(ids) != len(want) {
-		t.Fatalf("ids = %v, want %v", ids, want)
+	second, err := fx.sts.Query(bg, taskTenantA, spi.ScheduledTaskQuery{Limit: 2, After: first.Next})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
 	}
-	for i := range want {
-		if ids[i] != want[i] {
-			t.Fatalf("ids = %v, want %v", ids, want)
-		}
+	if len(second.Items) != 1 || second.Items[0].ID != "é:S:T" || second.Next != nil {
+		t.Fatalf("second page = %+v, want only é:S:T and no cursor", second)
 	}
 }

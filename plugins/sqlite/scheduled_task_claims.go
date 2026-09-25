@@ -58,7 +58,7 @@ func (s *scheduledTaskStore) SweepOwners(ctx context.Context, deadFor time.Durat
 // claimed while another task of its entity is RUNNING.
 func (s *scheduledTaskStore) ClaimDue(ctx context.Context, req spi.ClaimRequest) ([]spi.ScheduledTask, error) {
 	if req.Limit < 1 || req.PerTenantLimit < 1 {
-		return nil, fmt.Errorf("claim due scheduled tasks: limit and per-tenant limit must be >= 1, got %d and %d", req.Limit, req.PerTenantLimit)
+		return nil, fmt.Errorf("claim due scheduled tasks: limit and per-tenant limit must be >= 1, got %d and %d: %w", req.Limit, req.PerTenantLimit, spi.ErrStoreRejected)
 	}
 	_ = s.tm.acquireCommitGate(context.Background())
 	defer s.tm.releaseCommitGate()
@@ -103,6 +103,14 @@ func (s *scheduledTaskStore) ClaimDue(ctx context.Context, req spi.ClaimRequest)
 	out := make([]spi.ScheduledTask, 0, len(ops))
 	for i, op := range ops {
 		claimed := copyScheduledTask(*op.after)
+		// commitTaskWrites zeroes UnsafeMarked on every op's post-image
+		// (it is never a stored column); re-derive it fresh for the
+		// returned copy, the same way taskView does for a staged row.
+		marked, err := markExists(ctx, s.db, op.key, claimed.ArmToken)
+		if err != nil {
+			return nil, err
+		}
+		claimed.UnsafeMarked = marked
 		// Set on the returned copy only; no column stores it.
 		claimed.ClaimedFromLostOwner = fromLostOwner[i]
 		out = append(out, claimed)

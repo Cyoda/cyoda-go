@@ -6,6 +6,15 @@
 -- The table is rebuilt: the primary key becomes (tenant_id, id), and
 -- redispatch_after and attempt_count go. A pending task is kept as a new
 -- life: WAITING, due at its scheduled time, with a fresh random arm token.
+--
+-- Explicit BEGIN/COMMIT: this file rebuilds scheduled_tasks (create, copy,
+-- drop, rename) and adds two more tables in several statements; run as one
+-- transaction so a failure partway never leaves the rebuild half done. No
+-- PRAGMA or VACUUM appears here, so a transaction is not refused (see
+-- migrate.go's NoTxWrap doc, which is about migrate's own per-file wrapper,
+-- not about SQLite rejecting BEGIN/COMMIT around this file's statements).
+BEGIN;
+
 CREATE TABLE scheduled_tasks_v9 (
     id                TEXT    NOT NULL,
     tenant_id         TEXT    NOT NULL,
@@ -83,3 +92,4 @@ CREATE TABLE scheduler_owners (
     owner        TEXT    NOT NULL PRIMARY KEY,
     heartbeat_at INTEGER NOT NULL
 ) STRICT, WITHOUT ROWID;
+COMMIT;

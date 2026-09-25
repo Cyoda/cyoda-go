@@ -1,3 +1,6 @@
+-- Explicit BEGIN/COMMIT: see the up migration's comment.
+BEGIN;
+
 DROP TABLE IF EXISTS scheduler_owners;
 DROP TABLE IF EXISTS scheduled_task_marks;
 
@@ -32,3 +35,4 @@ ALTER TABLE scheduled_tasks_v8 RENAME TO scheduled_tasks;
 
 CREATE INDEX idx_scheduled_tasks_due ON scheduled_tasks (scheduled_time);
 CREATE INDEX idx_scheduled_tasks_entity ON scheduled_tasks (tenant_id, entity_id);
+COMMIT;

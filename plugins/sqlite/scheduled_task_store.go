@@ -229,6 +229,26 @@ type taskView struct {
 	staged []scheduledTaskOp
 }
 
+// markExists reports whether a mark is on file for id's current life (k,
+// armToken). UnsafeMarked is never a stored column: a committed row's SQL
+// read (selectTaskSQL) already derives it from scheduled_task_marks, but a
+// staged row's post-image was built before this call and cannot know about
+// a mark written since — most concretely, a never-joining MarkUnsafe from
+// outside the transaction, which can land at any point while the
+// transaction is open. So a staged row's UnsafeMarked is always re-derived
+// with this, never trusted from the post-image (matches the memory
+// backend's withMarkLocked, which does the same on every read).
+func markExists(ctx context.Context, q queryer, k taskKey, armToken uuid.UUID) (bool, error) {
+	var marked int64
+	err := q.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM scheduled_task_marks WHERE tenant_id = ? AND task_id = ? AND arm_token = ?)`,
+		string(k.tenant), k.id, armToken.String()).Scan(&marked)
+	if err != nil {
+		return false, fmt.Errorf("failed to read the mark of scheduled task %s: %w", k.id, err)
+	}
+	return marked == 1, nil
+}
+
 func (v taskView) get(k taskKey) (spi.ScheduledTask, bool, error) {
 	var t spi.ScheduledTask
 	found := false
@@ -239,15 +259,23 @@ func (v taskView) get(k taskKey) (spi.ScheduledTask, bool, error) {
 	if len(rows) == 1 {
 		t, found = rows[0], true
 	}
+	staged := false
 	for _, op := range v.staged {
 		if op.key != k || op.touch {
 			continue
 		}
 		if op.after == nil {
-			found = false
+			t, found, staged = spi.ScheduledTask{}, false, false
 			continue
 		}
-		t, found = copyScheduledTask(*op.after), true
+		t, found, staged = copyScheduledTask(*op.after), true, true
+	}
+	if found && staged {
+		marked, err := markExists(v.ctx, v.db, k, t.ArmToken)
+		if err != nil {
+			return spi.ScheduledTask{}, false, err
+		}
+		t.UnsafeMarked = marked
 	}
 	return t, found, nil
 }
@@ -265,15 +293,29 @@ func (v taskView) where(tenant spi.TenantID, filter string, args []any, match fu
 	for _, t := range committed {
 		rows[taskKey{tenant: t.TenantID, id: t.ID}] = t
 	}
+	staged := make(map[taskKey]bool)
 	for _, op := range v.staged {
 		if op.key.tenant != tenant || op.touch {
 			continue
 		}
 		if op.after == nil {
 			delete(rows, op.key)
+			delete(staged, op.key)
 			continue
 		}
 		rows[op.key] = copyScheduledTask(*op.after)
+		staged[op.key] = true
+	}
+	// A staged row's UnsafeMarked is a snapshot from staging time; re-derive
+	// it fresh, the same way get() does (see markExists).
+	for k := range staged {
+		t := rows[k]
+		marked, err := markExists(v.ctx, v.db, k, t.ArmToken)
+		if err != nil {
+			return nil, err
+		}
+		t.UnsafeMarked = marked
+		rows[k] = t
 	}
 	var out []spi.ScheduledTask
 	for _, t := range rows {
@@ -498,7 +540,7 @@ func (s *scheduledTaskStore) Get(ctx context.Context, tenant spi.TenantID, id st
 // never waits for the writer.
 func (s *scheduledTaskStore) Query(ctx context.Context, tenant spi.TenantID, q spi.ScheduledTaskQuery) (spi.ScheduledTaskPage, error) {
 	if q.Limit < 1 {
-		return spi.ScheduledTaskPage{}, fmt.Errorf("query scheduled tasks: limit must be >= 1, got %d", q.Limit)
+		return spi.ScheduledTaskPage{}, fmt.Errorf("query scheduled tasks: limit must be >= 1, got %d: %w", q.Limit, spi.ErrStoreRejected)
 	}
 	var where strings.Builder
 	args := []any{string(tenant)}

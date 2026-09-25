@@ -179,12 +179,26 @@ func (m *transactionManager) stagedTaskOps(txID string) []scheduledTaskOp {
 	return append([]scheduledTaskOp(nil), m.scheduledTaskOps[txID]...)
 }
 
+// zeroStagedMarks clears UnsafeMarked on every op's post-image. UnsafeMarked
+// is never a stored column — every read derives it fresh from
+// scheduled_task_marks (taskView.get/where) — so no staged or committed op
+// may carry a frozen copy of it forward; matches the memory backend, whose
+// applyTaskOps does the same at apply time.
+func zeroStagedMarks(ops []scheduledTaskOp) {
+	for _, op := range ops {
+		if op.after != nil {
+			op.after.UnsafeMarked = false
+		}
+	}
+}
+
 // stageTaskOps appends ops to txID's staged task-row ops. flushToSQLite writes
 // them in the commit's sqlTx; every abort path discards them. Protected by mu.
 func (m *transactionManager) stageTaskOps(txID string, ops []scheduledTaskOp) {
 	if len(ops) == 0 {
 		return
 	}
+	zeroStagedMarks(ops)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.scheduledTaskOps[txID] = append(m.scheduledTaskOps[txID], ops...)
@@ -198,6 +212,7 @@ func (m *transactionManager) commitTaskWrites(ctx context.Context, ops []schedul
 	if len(ops) == 0 && then == nil {
 		return nil
 	}
+	zeroStagedMarks(ops)
 	sqlTx, err := m.factory.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin a scheduled task write: %w", err)

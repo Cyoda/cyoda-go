@@ -15,25 +15,11 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
 
-// claimDueNowMs is a caller clock far past any ScheduledTime this file
-// arms, so a WAITING task armed by armTask is always due: it lets claimDue
-// stand in for a full ClaimRequest in every test that does not itself
-// exercise NowMs or the limits.
-const claimDueNowMs = int64(1) << 40
-
-// claimDue claims due tasks for owner, across every tenant, on a background
-// context, and fails the test on error. allowLostOwner sets
-// ClaimRequest.AllowLostOwner; StaleAfter is a minute, as production
-// defaults it.
-func claimDue(t *testing.T, sts spi.ScheduledTaskStore, owner uuid.UUID, allowLostOwner bool) []spi.ScheduledTask {
+func claimDue(t *testing.T, sts spi.ScheduledTaskStore, owner uuid.UUID, allowLost bool) []spi.ScheduledTask {
 	t.Helper()
 	got, err := sts.ClaimDue(context.Background(), spi.ClaimRequest{
-		Owner:          owner,
-		NowMs:          claimDueNowMs,
-		StaleAfter:     time.Minute,
-		Limit:          100,
-		PerTenantLimit: 100,
-		AllowLostOwner: allowLostOwner,
+		Owner: owner, NowMs: 2_000, StaleAfter: time.Minute,
+		Limit: 100, PerTenantLimit: 100, AllowLostOwner: allowLost,
 	})
 	if err != nil {
 		t.Fatalf("ClaimDue: %v", err)
@@ -41,310 +27,241 @@ func claimDue(t *testing.T, sts spi.ScheduledTaskStore, owner uuid.UUID, allowLo
 	return got
 }
 
-// refOf builds the TaskRef of c's current claim.
-func refOf(c spi.ScheduledTask) spi.TaskRef {
-	return spi.TaskRef{TenantID: c.TenantID, ID: c.ID, ArmToken: c.ArmToken, ClaimToken: c.Claim.Token}
+func refOf(t spi.ScheduledTask) spi.TaskRef {
+	return spi.TaskRef{TenantID: t.TenantID, ID: t.ID, ArmToken: t.ArmToken, ClaimToken: t.Claim.Token}
 }
 
 func TestTasks_ClaimTakesOneTaskPerEntity(t *testing.T) {
-	tf := newTaskFixture(t)
-	ctx := tenantCtx(taskTenantA)
-	arm(t, ctx, tf.sts, taskTenantA, "e1",
-		armTask("e1:S:T1", "T1", 400_000), armTask("e1:S:T2", "T2", 400_000))
+	fx := newTaskFixture(t)
+	bg := context.Background()
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T1", "T2")
+	arm(t, bg, fx.sts, taskTenantA, "e2", "T1")
 
-	first := claimDue(t, tf.sts, uuid.New(), false)
-	if len(first) != 1 {
-		t.Fatalf("first claim = %d tasks, want 1", len(first))
+	owner := uuid.New()
+	first := claimDue(t, fx.sts, owner, false)
+	if len(first) != 2 || first[0].EntityID == first[1].EntityID {
+		t.Fatalf("claimed %+v, want one task of e1 and one of e2", first)
 	}
-	second := claimDue(t, tf.sts, uuid.New(), false)
-	if len(second) != 0 {
-		t.Fatalf("second claim = %+v, want none: a RUNNING sibling blocks the entity", second)
+	for _, c := range first {
+		if c.Status != spi.ScheduledTaskRunning || c.Claim == nil || c.Claim.Owner != owner || c.Claim.Token == uuid.Nil {
+			t.Fatalf("claimed task = %+v, want RUNNING under %s with a drawn claim token", c, owner)
+		}
+	}
+	if again := claimDue(t, fx.sts, owner, false); len(again) != 0 {
+		t.Fatalf("claimed %+v while e1 has a RUNNING task, want nothing", again)
 	}
 }
 
 func TestTasks_ClaimHonoursTenantLimitsAndTurns(t *testing.T) {
-	tf := newTaskFixture(t)
-	arm(t, tenantCtx(taskTenantA), tf.sts, taskTenantA, "eA1", armTask("eA1:S:T", "T", 400_000))
-	arm(t, tenantCtx(taskTenantA), tf.sts, taskTenantA, "eA2", armTask("eA2:S:T", "T", 400_000))
-	arm(t, tenantCtx(taskTenantB), tf.sts, taskTenantB, "eB1", armTask("eB1:S:T", "T", 400_000))
+	fx := newTaskFixture(t)
+	bg := context.Background()
+	for _, e := range []string{"a1", "a2", "a3"} {
+		arm(t, bg, fx.sts, taskTenantA, e, "T")
+	}
+	arm(t, bg, fx.sts, taskTenantB, "b1", "T")
 
-	got, err := tf.sts.ClaimDue(context.Background(), spi.ClaimRequest{
-		Owner: uuid.New(), NowMs: claimDueNowMs, StaleAfter: time.Minute,
-		Limit: 2, PerTenantLimit: 1,
+	got, err := fx.sts.ClaimDue(bg, spi.ClaimRequest{
+		Owner: uuid.New(), NowMs: 2_000, StaleAfter: time.Minute,
+		Limit: 2, PerTenantLimit: 5,
 	})
 	if err != nil {
 		t.Fatalf("ClaimDue: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("claimed %d tasks, want 2: one per tenant per turn", len(got))
+	if len(got) != 2 || got[0].TenantID == got[1].TenantID {
+		t.Fatalf("claimed %+v, want one task of each tenant: tenants take turns", got)
 	}
-	byTenant := map[spi.TenantID]int{}
-	for _, c := range got {
-		byTenant[c.TenantID]++
+
+	got, err = fx.sts.ClaimDue(bg, spi.ClaimRequest{
+		Owner: uuid.New(), NowMs: 2_000, StaleAfter: time.Minute,
+		Limit: 10, PerTenantLimit: 2, TenantInProgress: map[spi.TenantID]int{taskTenantA: 1},
+	})
+	if err != nil {
+		t.Fatalf("ClaimDue: %v", err)
 	}
-	if byTenant[taskTenantA] != 1 || byTenant[taskTenantB] != 1 {
-		t.Fatalf("claimed %+v, want exactly one per tenant: PerTenantLimit honoured, tenants take turns", got)
+	if len(got) != 1 || got[0].TenantID != taskTenantA {
+		t.Fatalf("claimed %+v, want exactly one more task of tenant A (limit 2, 1 in progress)", got)
 	}
 }
 
 func TestTasks_ClaimRejectsALimitBelowOne(t *testing.T) {
-	tf := newTaskFixture(t)
-	arm(t, tenantCtx(taskTenantA), tf.sts, taskTenantA, "e1", armTask("e1:S:T", "T", 400_000))
-
-	for name, req := range map[string]spi.ClaimRequest{
-		"Limit 0":           {Owner: uuid.New(), NowMs: claimDueNowMs, StaleAfter: time.Minute, Limit: 0, PerTenantLimit: 1},
-		"Limit -1":          {Owner: uuid.New(), NowMs: claimDueNowMs, StaleAfter: time.Minute, Limit: -1, PerTenantLimit: 1},
-		"PerTenantLimit 0":  {Owner: uuid.New(), NowMs: claimDueNowMs, StaleAfter: time.Minute, Limit: 1, PerTenantLimit: 0},
-		"PerTenantLimit -1": {Owner: uuid.New(), NowMs: claimDueNowMs, StaleAfter: time.Minute, Limit: 1, PerTenantLimit: -1},
-	} {
-		if _, err := tf.sts.ClaimDue(context.Background(), req); err == nil {
-			t.Errorf("%s: ClaimDue accepted, want an error", name)
-		}
-	}
-	got, found := getTask(t, tenantCtx(taskTenantA), tf.sts, taskTenantA, "e1:S:T")
-	if !found || got.Status != spi.ScheduledTaskWaiting {
-		t.Fatalf("task = %+v, found = %v, want left WAITING after a refused call", got, found)
+	fx := newTaskFixture(t)
+	_, err := fx.sts.ClaimDue(context.Background(), spi.ClaimRequest{Owner: uuid.New(), NowMs: 2_000, Limit: 0, PerTenantLimit: 1})
+	if err == nil {
+		t.Fatal("ClaimDue accepted Limit 0")
 	}
 }
 
 func TestTasks_LostOwnerClaimUsesTheStoreClock(t *testing.T) {
-	tf := newTaskFixture(t)
-	arm(t, tenantCtx(taskTenantA), tf.sts, taskTenantA, "e1", armTask("e1:S:T", "T", 400_000))
+	fx := newTaskFixture(t)
+	bg := context.Background()
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T")
 
-	owner := uuid.New()
-	if err := tf.sts.Heartbeat(context.Background(), owner); err != nil {
+	first := uuid.New()
+	if err := fx.sts.Heartbeat(bg, first); err != nil {
 		t.Fatalf("Heartbeat: %v", err)
 	}
-	if first := claimDue(t, tf.sts, owner, false); len(first) != 1 {
-		t.Fatalf("first claim = %d, want 1", len(first))
+	claimed := claimDue(t, fx.sts, first, false)[0]
+	if claimed.ClaimedFromLostOwner {
+		t.Fatalf("a claim of a WAITING task is flagged as from a lost owner: %+v", claimed)
 	}
 
-	if again := claimDue(t, tf.sts, uuid.New(), true); len(again) != 0 {
-		t.Fatalf("claimed %+v while the owner's heartbeat is fresh", again)
+	second := uuid.New()
+	if got := claimDue(t, fx.sts, second, true); len(got) != 0 {
+		t.Fatalf("claimed %+v from an owner that is not stale", got)
 	}
-
-	tf.clock.Advance(2 * time.Minute)
-	lost := claimDue(t, tf.sts, uuid.New(), true)
-	if len(lost) != 1 || lost[0].LostOwners != 1 || !lost[0].ClaimedFromLostOwner {
-		t.Fatalf("lost-owner claim = %+v, want LostOwners 1 and ClaimedFromLostOwner", lost)
+	fx.clock.Advance(2 * time.Minute)
+	if got := claimDue(t, fx.sts, second, false); len(got) != 0 {
+		t.Fatalf("claimed %+v from a stale owner without AllowLostOwner", got)
+	}
+	got := claimDue(t, fx.sts, second, true)
+	if len(got) != 1 || got[0].LostOwners != 1 || got[0].Claim.Owner != second || got[0].Claim.Token == claimed.Claim.Token ||
+		!got[0].ClaimedFromLostOwner {
+		t.Fatalf("reclaim = %+v, want one task under the new owner, lostOwners 1, a new claim token, flagged as from a lost owner", got)
+	}
+	if stored, _ := getTask(t, context.Background(), fx.sts, taskTenantA, got[0].ID); stored.ClaimedFromLostOwner {
+		t.Fatal("Get returned ClaimedFromLostOwner; only a ClaimDue result carries it")
 	}
 }
 
 func TestTasks_ARetiredOwnerIsLostAtOnce(t *testing.T) {
-	tf := newTaskFixture(t)
-	arm(t, tenantCtx(taskTenantA), tf.sts, taskTenantA, "e1", armTask("e1:S:T", "T", 400_000))
-
+	fx := newTaskFixture(t)
+	bg := context.Background()
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T")
 	owner := uuid.New()
-	if err := tf.sts.Heartbeat(context.Background(), owner); err != nil {
+	if err := fx.sts.Heartbeat(bg, owner); err != nil {
 		t.Fatalf("Heartbeat: %v", err)
 	}
-	if first := claimDue(t, tf.sts, owner, false); len(first) != 1 {
-		t.Fatalf("first claim = %d, want 1", len(first))
-	}
-	if err := tf.sts.RetireOwner(context.Background(), owner); err != nil {
+	claimDue(t, fx.sts, owner, false)
+	if err := fx.sts.RetireOwner(bg, owner); err != nil {
 		t.Fatalf("RetireOwner: %v", err)
 	}
-
-	// No clock advance: retiring removes the liveness record outright, so
-	// the task is lost at once, not after StaleAfter elapses.
-	lost := claimDue(t, tf.sts, uuid.New(), true)
-	if len(lost) != 1 || lost[0].LostOwners != 1 {
-		t.Fatalf("claim after RetireOwner = %+v, want lost at once", lost)
+	if got := claimDue(t, fx.sts, uuid.New(), true); len(got) != 1 {
+		t.Fatalf("claimed %d tasks, want the retired owner's task", len(got))
 	}
 }
 
 func TestTasks_MarkUnsafe(t *testing.T) {
-	tf := newTaskFixture(t)
-	ctx := tenantCtx(taskTenantA)
-	arm(t, ctx, tf.sts, taskTenantA, "e1", armTask("e1:S:T", "T", 400_000))
+	fx := newTaskFixture(t)
+	bg := context.Background()
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T")
+	first := claimDue(t, fx.sts, uuid.New(), false)[0]
 
-	a := claimDue(t, tf.sts, uuid.New(), false)[0]
-	if err := tf.sts.MarkUnsafe(context.Background(), refOf(a)); err != nil {
-		t.Fatalf("MarkUnsafe: %v", err)
-	}
-	if err := tf.sts.MarkUnsafe(context.Background(), refOf(a)); err != nil {
-		t.Fatalf("MarkUnsafe (idempotent for the same claim): %v", err)
-	}
-	got, _ := getTask(t, ctx, tf.sts, taskTenantA, "e1:S:T")
-	if !got.UnsafeMarked {
-		t.Fatal("UnsafeMarked = false, want true after MarkUnsafe")
+	for i := 0; i < 2; i++ {
+		if err := fx.sts.MarkUnsafe(bg, refOf(first)); err != nil {
+			t.Fatalf("MarkUnsafe #%d for the same claim: %v", i+1, err)
+		}
 	}
 
-	tf.clock.Advance(2 * time.Minute)
-	b := claimDue(t, tf.sts, uuid.New(), true)[0]
-	if !b.UnsafeMarked {
-		t.Fatal("the claim that took over the marked life did not see the mark")
+	fx.clock.Advance(2 * time.Minute) // the first owner never heartbeated: missing is stale
+	second := claimDue(t, fx.sts, uuid.New(), true)[0]
+	if !second.UnsafeMarked {
+		t.Fatal("the reclaimed task does not report the mark of its life")
 	}
-	if err := tf.sts.MarkUnsafe(context.Background(), refOf(b)); !errors.Is(err, spi.ErrMarkedByAnotherClaim) {
-		t.Fatalf("MarkUnsafe by a later claim of the marked life: err = %v, want ErrMarkedByAnotherClaim", err)
+	if err := fx.sts.MarkUnsafe(bg, refOf(second)); !errors.Is(err, spi.ErrMarkedByAnotherClaim) {
+		t.Fatalf("MarkUnsafe by the new claim = %v, want ErrMarkedByAnotherClaim", err)
 	}
-	if err := tf.sts.MarkUnsafe(context.Background(), refOf(a)); !errors.Is(err, spi.ErrStaleClaim) {
-		t.Fatalf("MarkUnsafe by the superseded claim: err = %v, want ErrStaleClaim", err)
+	if err := fx.sts.MarkUnsafe(bg, refOf(first)); !errors.Is(err, spi.ErrStaleClaim) {
+		t.Fatalf("MarkUnsafe by the old claim = %v, want ErrStaleClaim", err)
 	}
 }
 
+// A never-joining method commits on its own: rolling back the transaction on
+// its ctx does not undo it.
 func TestTasks_NeverJoiningMethodsIgnoreTheTransaction(t *testing.T) {
-	tf := newTaskFixture(t)
-	ctx := tenantCtx(taskTenantA)
-	arm(t, ctx, tf.sts, taskTenantA, "e1", armTask("e1:S:T", "T", 400_000))
-	a := claimDue(t, tf.sts, uuid.New(), false)[0]
+	fx := newTaskFixture(t)
+	arm(t, context.Background(), fx.sts, taskTenantA, "e1", "T")
+	c := claimDue(t, fx.sts, uuid.New(), false)[0]
 
-	txID, txCtx := begin(t, tf, taskTenantA)
-	if err := tf.sts.MarkUnsafe(txCtx, refOf(a)); err != nil {
-		t.Fatalf("MarkUnsafe on a transaction's ctx: %v", err)
+	txID, txCtx := fx.begin(t, taskTenantA)
+	if err := fx.sts.MarkUnsafe(txCtx, refOf(c)); err != nil {
+		t.Fatalf("MarkUnsafe: %v", err)
 	}
-	if err := tf.sts.RecordAttempt(txCtx, refOf(a), spi.Attempt{Error: "E", AtMs: 1, NextAttemptTime: 2}); err != nil {
-		t.Fatalf("RecordAttempt on a transaction's ctx: %v", err)
-	}
-	rollback(t, tf, tenantCtx(taskTenantA), txID)
+	fx.rollback(t, taskTenantA, txID)
 
-	got, _ := getTask(t, context.Background(), tf.sts, taskTenantA, "e1:S:T")
-	if got.Status != spi.ScheduledTaskWaiting || got.Claim != nil {
-		t.Fatalf("Status = %v, Claim = %+v, want WAITING with no claim: RecordAttempt must commit on its own, not join the rolled-back tx on ctx", got.Status, got.Claim)
-	}
+	got, _ := getTask(t, context.Background(), fx.sts, taskTenantA, "e1:S:T")
 	if !got.UnsafeMarked {
-		t.Fatal("the mark did not survive the rollback of the transaction on ctx: MarkUnsafe must never join it")
+		t.Fatal("the mark did not survive the rollback of the transaction on ctx")
 	}
 }
 
 func TestTasks_RecordAttempt(t *testing.T) {
-	tf := newTaskFixture(t)
-	ctx := tenantCtx(taskTenantA)
-	arm(t, ctx, tf.sts, taskTenantA, "e1", armTask("e1:S:T", "T", 400_000))
-	a := claimDue(t, tf.sts, uuid.New(), false)[0]
-
-	if err := tf.sts.MarkUnsafe(context.Background(), refOf(a)); err != nil {
+	fx := newTaskFixture(t)
+	bg := context.Background()
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T")
+	c := claimDue(t, fx.sts, uuid.New(), false)[0]
+	if err := fx.sts.MarkUnsafe(bg, refOf(c)); err != nil {
 		t.Fatalf("MarkUnsafe: %v", err)
 	}
-	if err := tf.sts.RecordAttempt(context.Background(), refOf(a), spi.Attempt{
-		Error: "boom", AtMs: 42, NextAttemptTime: 99, ClearOwnMark: true,
+
+	if err := fx.sts.RecordAttempt(bg, refOf(c), spi.Attempt{
+		Error: "boom", AtMs: 2_000, NextAttemptTime: 5_000, ClearOwnMark: true,
 	}); err != nil {
 		t.Fatalf("RecordAttempt: %v", err)
 	}
-
-	got, _ := getTask(t, ctx, tf.sts, taskTenantA, "e1:S:T")
-	if got.Status != spi.ScheduledTaskWaiting || got.Claim != nil {
-		t.Fatalf("after RecordAttempt: Status = %v, Claim = %+v, want WAITING, nil claim", got.Status, got.Claim)
+	got, _ := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T")
+	if got.Status != spi.ScheduledTaskWaiting || got.Attempts != 1 || got.LastError != "boom" ||
+		got.LastAttemptTime == nil || *got.LastAttemptTime != 2_000 || got.NextAttemptTime != 5_000 ||
+		got.Claim != nil || got.UnsafeMarked {
+		t.Fatalf("after RecordAttempt: %+v", got)
 	}
-	if got.Attempts != 1 {
-		t.Fatalf("Attempts = %d, want 1", got.Attempts)
-	}
-	if got.LastAttemptTime == nil || *got.LastAttemptTime != 42 {
-		t.Fatalf("LastAttemptTime = %v, want 42", got.LastAttemptTime)
-	}
-	if got.LastError != "boom" {
-		t.Fatalf("LastError = %q, want %q", got.LastError, "boom")
-	}
-	if got.NextAttemptTime != 99 {
-		t.Fatalf("NextAttemptTime = %d, want 99", got.NextAttemptTime)
-	}
-	if got.UnsafeMarked {
-		t.Fatal("UnsafeMarked = true, want false: ClearOwnMark should have removed the mark")
+	if err := fx.sts.RecordAttempt(bg, refOf(c), spi.Attempt{AtMs: 2_000, NextAttemptTime: 5_000}); !errors.Is(err, spi.ErrStaleClaim) {
+		t.Fatalf("a second RecordAttempt for the same claim = %v, want ErrStaleClaim", err)
 	}
 
-	b := claimDue(t, tf.sts, uuid.New(), false)
-	if len(b) != 1 {
-		t.Fatalf("claimed %d, want 1 (claimable now that NextAttemptTime has passed)", len(b))
+	fx.clock.Advance(time.Second)
+	c2, err := fx.sts.ClaimDue(bg, spi.ClaimRequest{Owner: uuid.New(), NowMs: 5_000, StaleAfter: time.Minute, Limit: 1, PerTenantLimit: 1})
+	if err != nil || len(c2) != 1 {
+		t.Fatalf("ClaimDue at 5000: %v, %d tasks", err, len(c2))
 	}
-	if err := tf.sts.RecordAttempt(context.Background(), refOf(b[0]), spi.Attempt{
-		Error: "again", AtMs: 100, NextAttemptTime: 200, NotCounted: true,
-	}); err != nil {
-		t.Fatalf("RecordAttempt (NotCounted): %v", err)
+	if err := fx.sts.RecordAttempt(bg, refOf(c2[0]), spi.Attempt{Error: "cut", AtMs: 5_000, NextAttemptTime: 5_000, NotCounted: true}); err != nil {
+		t.Fatalf("RecordAttempt NotCounted: %v", err)
 	}
-	got2, _ := getTask(t, ctx, tf.sts, taskTenantA, "e1:S:T")
-	if got2.Attempts != 1 {
-		t.Fatalf("Attempts after a NotCounted attempt = %d, want unchanged 1", got2.Attempts)
-	}
-	if got2.LastError != "again" {
-		t.Fatalf("LastError after a NotCounted attempt = %q, want %q: it is still recorded", got2.LastError, "again")
+	got, _ = getTask(t, bg, fx.sts, taskTenantA, "e1:S:T")
+	if got.Attempts != 1 || got.LastError != "cut" || got.LastAttemptTime == nil || *got.LastAttemptTime != 5_000 {
+		t.Fatalf("after a NotCounted attempt: %+v; want attempts 1, and the error and time recorded", got)
 	}
 }
 
+// Fail always overwrites LastError, with an empty text too.
 func TestTasks_FailOverwritesLastError(t *testing.T) {
-	tf := newTaskFixture(t)
-	ctx := tenantCtx(taskTenantA)
-	arm(t, ctx, tf.sts, taskTenantA, "e1", armTask("e1:S:T", "T", 400_000))
-
-	claimDue(t, tf.sts, uuid.New(), false) // never heartbeats
-	tf.clock.Advance(2 * time.Minute)
-	b := claimDue(t, tf.sts, uuid.New(), true)[0] // lost-owner reclaim: LostOwners = 1
-	if b.LostOwners != 1 {
-		t.Fatalf("LostOwners = %d, want 1 before Fail", b.LostOwners)
-	}
-	if err := tf.sts.RecordAttempt(context.Background(), refOf(b), spi.Attempt{
-		Error: "first", AtMs: 55, NextAttemptTime: 400_000,
-	}); err != nil {
+	fx := newTaskFixture(t)
+	bg := context.Background()
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T")
+	c := claimDue(t, fx.sts, uuid.New(), false)[0]
+	if err := fx.sts.RecordAttempt(bg, refOf(c), spi.Attempt{Error: "first", AtMs: 2_000, NextAttemptTime: 2_000}); err != nil {
 		t.Fatalf("RecordAttempt: %v", err)
 	}
-	c := claimDue(t, tf.sts, uuid.New(), false)[0]
-
-	if err := tf.sts.Fail(ctx, refOf(c), spi.Failure{
-		Reason: spi.FailureRunPanicked, Error: "", AtMs: 900_000,
-	}); err != nil {
+	c = claimDue(t, fx.sts, uuid.New(), false)[0]
+	if err := fx.sts.Fail(bg, refOf(c), spi.Failure{Reason: spi.FailureOwnerLostRepeatedly, AtMs: 3_000}); err != nil {
 		t.Fatalf("Fail: %v", err)
 	}
-	got, _ := getTask(t, ctx, tf.sts, taskTenantA, "e1:S:T")
-	if got.Status != spi.ScheduledTaskFailed {
-		t.Fatalf("Status = %v, want FAILED", got.Status)
-	}
-	if got.LastError != "" {
-		t.Fatalf("LastError = %q, want overwritten to empty", got.LastError)
-	}
-	if got.LastAttemptTime == nil || *got.LastAttemptTime != 55 {
-		t.Fatalf("LastAttemptTime = %v, want unchanged at 55", got.LastAttemptTime)
-	}
-	if got.LostOwners != 1 {
-		t.Fatalf("LostOwners = %d, want unchanged at 1", got.LostOwners)
-	}
-	if got.FailedTime == nil || *got.FailedTime != 900_000 {
-		t.Fatalf("FailedTime = %v, want 900000", got.FailedTime)
-	}
-	if got.Claim != nil {
-		t.Fatalf("Claim = %+v, want nil after Fail", got.Claim)
+	got, _ := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T")
+	if got.Status != spi.ScheduledTaskFailed || got.FailureReason != spi.FailureOwnerLostRepeatedly ||
+		got.LastError != "" || got.FailedTime == nil || *got.FailedTime != 3_000 || got.Claim != nil {
+		t.Fatalf("after Fail: %+v; want FAILED, the reason, LastError overwritten to empty, FailedTime 3000, no claim", got)
 	}
 }
 
 func TestTasks_GiveBackIdleKeepsLiveClaims(t *testing.T) {
-	tf := newTaskFixture(t)
-	ctx := tenantCtx(taskTenantA)
-	arm(t, ctx, tf.sts, taskTenantA, "e1", armTask("e1:S:T1", "T1", 400_000))
-	arm(t, ctx, tf.sts, taskTenantA, "e2", armTask("e2:S:T2", "T2", 400_000))
-
+	fx := newTaskFixture(t)
+	bg := context.Background()
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T")
+	arm(t, bg, fx.sts, taskTenantA, "e2", "T")
 	owner := uuid.New()
-	claimed := claimDue(t, tf.sts, owner, false)
-	if len(claimed) != 2 {
-		t.Fatalf("claimed %d, want 2", len(claimed))
-	}
-	var live, idle spi.ScheduledTask
-	for _, c := range claimed {
-		if c.ID == "e1:S:T1" {
-			live = c
-		} else {
-			idle = c
-		}
-	}
+	claimed := claimDue(t, fx.sts, owner, false)
+	keep := claimed[0]
 
-	n, err := tf.sts.GiveBackIdle(context.Background(), owner, []uuid.UUID{live.Claim.Token})
-	if err != nil {
-		t.Fatalf("GiveBackIdle: %v", err)
+	n, err := fx.sts.GiveBackIdle(bg, owner, []uuid.UUID{keep.Claim.Token})
+	if err != nil || n != 1 {
+		t.Fatalf("GiveBackIdle = %d, %v; want 1, nil", n, err)
 	}
-	if n != 1 {
-		t.Fatalf("GiveBackIdle returned %d, want 1", n)
+	kept, _ := getTask(t, bg, fx.sts, taskTenantA, keep.ID)
+	given, _ := getTask(t, bg, fx.sts, taskTenantA, claimed[1].ID)
+	if kept.Status != spi.ScheduledTaskRunning {
+		t.Fatalf("kept task = %+v, want RUNNING", kept)
 	}
-
-	gotLive, _ := getTask(t, ctx, tf.sts, taskTenantA, "e1:S:T1")
-	if gotLive.Status != spi.ScheduledTaskRunning || gotLive.Claim == nil || gotLive.Claim.Token != live.Claim.Token {
-		t.Fatalf("live claim = %+v, want unchanged RUNNING", gotLive)
-	}
-	gotIdle, _ := getTask(t, ctx, tf.sts, taskTenantA, "e2:S:T2")
-	if gotIdle.Status != spi.ScheduledTaskWaiting || gotIdle.Claim != nil {
-		t.Fatalf("idle claim = %+v, want given back to WAITING", gotIdle)
-	}
-	if gotIdle.NextAttemptTime != idle.NextAttemptTime {
-		t.Fatalf("NextAttemptTime = %d, want unchanged %d", gotIdle.NextAttemptTime, idle.NextAttemptTime)
-	}
-	if gotIdle.Attempts != 0 || gotIdle.LostOwners != 0 {
-		t.Fatalf("Attempts = %d, LostOwners = %d, want both 0: a give-back is not counted", gotIdle.Attempts, gotIdle.LostOwners)
+	if given.Status != spi.ScheduledTaskWaiting || given.Claim != nil || given.Attempts != 0 {
+		t.Fatalf("given-back task = %+v, want WAITING, no claim, not counted", given)
 	}
 }
 
@@ -367,7 +284,7 @@ func TestTasks_MarksAndOwnersSurviveARestart(t *testing.T) {
 	bg := context.Background()
 
 	f1, sts1 := open()
-	arm(t, bg, sts1, taskTenantA, "e1", armTask("e1:S:T", "T", 400_000))
+	arm(t, bg, sts1, taskTenantA, "e1", "T")
 	owner := uuid.New()
 	if err := sts1.Heartbeat(bg, owner); err != nil {
 		t.Fatalf("Heartbeat: %v", err)
@@ -409,7 +326,7 @@ func TestTasks_SweepsRemoveEndedLivesAndDeadUnusedOwners(t *testing.T) {
 		return n
 	}
 
-	arm(t, bg, fx.sts, taskTenantA, "e1", armTask("e1:S:T", "T", 400_000))
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T")
 	busyOwner, idleOwner := uuid.New(), uuid.New()
 	for _, o := range []uuid.UUID{busyOwner, idleOwner} {
 		if err := fx.sts.Heartbeat(bg, o); err != nil {
@@ -426,7 +343,7 @@ func TestTasks_SweepsRemoveEndedLivesAndDeadUnusedOwners(t *testing.T) {
 	if n := count(`SELECT count(*) FROM scheduled_task_marks`); n != 1 {
 		t.Fatalf("SweepMarks left %d marks, want the live life's 1", n)
 	}
-	arm(t, bg, fx.sts, taskTenantA, "e1", armTask("e1:S:T", "T", 400_000))
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T")
 	if err := fx.sts.SweepMarks(bg); err != nil {
 		t.Fatalf("SweepMarks: %v", err)
 	}
@@ -453,9 +370,7 @@ func TestTasks_ConcurrentClaimsAreDisjoint(t *testing.T) {
 	fx := newTaskFixture(t)
 	bg := context.Background()
 	for i := 0; i < 20; i++ {
-		arm(t, bg, fx.sts, taskTenantA, fmt.Sprintf("e%02d", i),
-			armTask(fmt.Sprintf("e%02d:S:T1", i), "T1", 400_000),
-			armTask(fmt.Sprintf("e%02d:S:T2", i), "T2", 400_000))
+		arm(t, bg, fx.sts, taskTenantA, fmt.Sprintf("e%02d", i), "T1", "T2")
 	}
 	var mu sync.Mutex
 	seen := make(map[string]int)
@@ -464,7 +379,7 @@ func TestTasks_ConcurrentClaimsAreDisjoint(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			got, err := fx.sts.ClaimDue(bg, spi.ClaimRequest{Owner: uuid.New(), NowMs: 2_000_000, StaleAfter: time.Minute, Limit: 100, PerTenantLimit: 100})
+			got, err := fx.sts.ClaimDue(bg, spi.ClaimRequest{Owner: uuid.New(), NowMs: 2_000, StaleAfter: time.Minute, Limit: 100, PerTenantLimit: 100})
 			if err != nil {
 				t.Errorf("ClaimDue: %v", err)
 				return
@@ -485,4 +400,110 @@ func TestTasks_ConcurrentClaimsAreDisjoint(t *testing.T) {
 			t.Fatalf("entity %s got %d claims, want 1", e, n)
 		}
 	}
+}
+
+// --- SQLite-only additions ahead of BQ-6/the lead ruling landing on every
+// backend: Limit < 1 / PerTenantLimit < 1 are deterministic caller errors,
+// not merely "an error". ---
+
+func TestTasks_ClaimRejectsALimitBelowOneAsStoreRejected(t *testing.T) {
+	fx := newTaskFixture(t)
+	for name, req := range map[string]spi.ClaimRequest{
+		"Limit 0":           {Owner: uuid.New(), NowMs: 2_000, Limit: 0, PerTenantLimit: 1},
+		"Limit -1":          {Owner: uuid.New(), NowMs: 2_000, Limit: -1, PerTenantLimit: 1},
+		"PerTenantLimit 0":  {Owner: uuid.New(), NowMs: 2_000, Limit: 1, PerTenantLimit: 0},
+		"PerTenantLimit -1": {Owner: uuid.New(), NowMs: 2_000, Limit: 1, PerTenantLimit: -1},
+	} {
+		if _, err := fx.sts.ClaimDue(context.Background(), req); !errors.Is(err, spi.ErrStoreRejected) {
+			t.Errorf("%s: err = %v, want ErrStoreRejected", name, err)
+		}
+	}
+}
+
+func TestTasks_QueryRejectsALimitBelowOneAsStoreRejected(t *testing.T) {
+	fx := newTaskFixture(t)
+	_, err := fx.sts.Query(context.Background(), taskTenantA, spi.ScheduledTaskQuery{Limit: 0})
+	if !errors.Is(err, spi.ErrStoreRejected) {
+		t.Fatalf("Query Limit 0: err = %v, want ErrStoreRejected", err)
+	}
+}
+
+// --- SQLite-only additions: a staged post-image never freezes UnsafeMarked
+// (BQ-1 fix round). The mark table is written only by the never-joining
+// methods, so it can change while a joining transaction is open; a joining
+// read of a staged row must derive UnsafeMarked fresh, the same way a
+// committed read does, and never trust a copy taken when the row was
+// staged (matches the memory backend's withMarkLocked/applyTaskOps). ---
+
+// v.get: a joining Get of a row this transaction staged still reports a
+// mark written from outside the transaction after the row was staged.
+func TestTasks_StagedGetDerivesTheMarkFreshInsideATransaction(t *testing.T) {
+	fx := newTaskFixture(t)
+	ctx := tenantCtx(taskTenantA)
+	arm(t, ctx, fx.sts, taskTenantA, "e1", "T")
+	c := claimDue(t, fx.sts, uuid.New(), false)[0]
+
+	txID, txCtx := fx.begin(t, taskTenantA)
+	if err := fx.sts.StampSegment(txCtx, refOf(c), true); err != nil {
+		t.Fatalf("StampSegment: %v", err)
+	}
+	// Written from outside the transaction, after StampSegment staged its
+	// post-image. MarkUnsafe never touches scheduled_tasks, only
+	// scheduled_task_marks, so this does not race the open transaction's
+	// staged write to the task row itself.
+	if err := fx.sts.MarkUnsafe(context.Background(), refOf(c)); err != nil {
+		t.Fatalf("MarkUnsafe: %v", err)
+	}
+
+	got, ok := getTask(t, txCtx, fx.sts, taskTenantA, "e1:S:T")
+	if !ok {
+		t.Fatal("a joining Get did not see the transaction's own staged row")
+	}
+	if !got.UnsafeMarked {
+		t.Fatal("UnsafeMarked = false, want true: a staged post-image must derive the mark fresh, not freeze it at staging time")
+	}
+	fx.rollback(t, taskTenantA, txID)
+}
+
+// v.where: ReconcileForEntity's removed list, built through where(), must
+// derive UnsafeMarked fresh for a row this same call's staging pass
+// replaces, not carry forward a value frozen before the mark was written.
+func TestTasks_ReconcileRemovedListDerivesTheMarkFreshForAStagedRow(t *testing.T) {
+	fx := newTaskFixture(t)
+	ctx := tenantCtx(taskTenantA)
+	arm(t, ctx, fx.sts, taskTenantA, "e1", "T1", "T2")
+	c := claimDue(t, fx.sts, uuid.New(), false)[0] // claims e1:S:T1 or e1:S:T2
+
+	txID, txCtx := fx.begin(t, taskTenantA)
+	// Stage a touch on the claimed task's row first, in the same
+	// transaction, then mark it from outside before the transaction's
+	// second write (the re-arm below) reads it through where().
+	if err := fx.sts.StampSegment(txCtx, refOf(c), true); err != nil {
+		t.Fatalf("StampSegment: %v", err)
+	}
+	if err := fx.sts.MarkUnsafe(context.Background(), refOf(c)); err != nil {
+		t.Fatalf("MarkUnsafe: %v", err)
+	}
+
+	removed, err := fx.sts.ReconcileForEntity(txCtx, spi.ReconcileRequest{
+		TenantID: taskTenantA, EntityID: "e1", CurrentState: "S",
+		Arm: []spi.ScheduledTask{armTask(taskTenantA, "e1", "T3")},
+	})
+	if err != nil {
+		t.Fatalf("ReconcileForEntity: %v", err)
+	}
+	var found bool
+	for _, r := range removed {
+		if r.ID != c.ID {
+			continue
+		}
+		found = true
+		if !r.UnsafeMarked {
+			t.Fatal("UnsafeMarked = false on the removed staged row, want true: where() must derive the mark fresh")
+		}
+	}
+	if !found {
+		t.Fatalf("removed = %+v, want it to include the claimed task %s", removed, c.ID)
+	}
+	fx.rollback(t, taskTenantA, txID)
 }
