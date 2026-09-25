@@ -75,7 +75,11 @@ which of the two strings was used.
 4. The gRPC call uses `Config.ResponseTimeoutMs` (default 30000ms) as the
    round-trip deadline.
 5. On a successful response, `entity.Data` is replaced with the processor's
-   returned mutations and the pipeline continues to the next processor.
+   returned mutations and the pipeline continues to the next processor. When
+   the processor returns no mutations and a callback wrote the entity in `T`
+   during the dispatch, `entity.Data` takes that write instead; the engine
+   keeps its own state and metadata, so the transition still takes effect
+   and later processors see the written payload.
 6. On any failure the engine returns `processor X failed: …`, wrapping
    whatever error ended the callout: the member's own `400 WORKFLOW_FAILED`
    when it answered `success:false`, or a retryable `5xx`
@@ -102,8 +106,11 @@ When a callback arrives carrying the token, the receiving node verifies the
 HMAC and joins the transaction: if `NodeID` equals self, it calls
 `Join(TxRef)` locally; otherwise it forwards the full request to the owning
 node (HTTP: reverse proxy; gRPC: B→A forward). Inside `T` the callback
-sees the cascade's uncommitted writes — including via search (read-your-own-writes);
-other readers do not.
+sees the writes stored in `T` — including via search (read-your-own-writes);
+other readers do not. Mutations that an earlier processor of the cascade
+returned and the engine has not yet saved are not stored in `T`, so a
+callback read does not show them; the processor's request carries the
+current payload.
 
 A callback ack is **provisional** — it is not durable until the owning
 transaction commits. If the processor fails or the engine rolls back `T`,
@@ -181,7 +188,9 @@ directly (via `txMgr.Join`). The engine independently scopes the entire
 dispatch in a savepoint `S`: if the processor fails, `RollbackToSavepoint(T, S)`
 undoes all callback writes and the pipeline continues; if the processor
 succeeds, `ReleaseSavepoint(T, S)` retains those writes inside `T` (subject
-to `T`'s eventual commit). A savepoint that cannot be created, undone or
+to `T`'s eventual commit). A callback write to the entity the processor runs
+for is the exception: the engine does not adopt it, and its own write of
+that entity later in `T` replaces it. A savepoint that cannot be created, undone or
 released fails the operation instead of continuing the pipeline (a ticketed
 `5xx`); a chain superseded by fencing does not touch its savepoint at all, so
 a replaced compute member's writes never land after it.
@@ -251,15 +260,25 @@ rejects this flag for any other execution mode.
 
 #### `startNewTxOnDispatch = true`
 
-- Engine sequence: `Save → Commit(T_pre) → Begin(T_post) → dispatch with
-  T_post's token in context → CompareAndSave(T_pre) → cascade continues in
-  T_post`.
+- Engine sequence: `Save → Commit(T_pre) → Begin(T_post) → read the
+  anchor in T_post and require T_pre's version → dispatch with T_post's
+  token in context → CompareAndSave → cascade continues in T_post`.
+- The read before the dispatch requires `T_pre`'s version: if another
+  transaction wrote or deleted the anchor after `T_pre` committed, the
+  transition fails with a conflict before the processor is dispatched. The
+  read also puts the anchor in `T_post`'s read set, so a later write by
+  another transaction fails at commit.
 - The processor's CRUD callbacks join `T_post`. It can read/write other
-  entities transactionally.
+  entities transactionally, and the cascade-anchor entity too. The
+  `CompareAndSave` compares against `T_post` when a callback wrote the
+  anchor in `T_post`, and against `T_pre` otherwise. When the processor
+  returns no mutations, the callback's write is kept, as in `SYNC`. A
+  callback that deletes the anchor fails the transition, and a write by any
+  other transaction conflicts.
 - **Hazard — last-writer-wins on the cascade-anchor entity.** If the
   processor writes the cascade-anchor entity through its TX-callback AND
   returns mutations for the same entity in its result, the engine's
-  `CompareAndSave(T_pre)` overwrites the processor's intra-TX writes (the
+  `CompareAndSave` overwrites the processor's intra-TX writes (the
   result is applied last). Pick one path: either let the engine apply the
   result, or have the processor write the entity itself and return no
   mutations for it. The same warning applies in `SYNC` /
