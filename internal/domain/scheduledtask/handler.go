@@ -138,8 +138,12 @@ func msTime(ms int64) time.Time { return time.UnixMilli(ms).UTC() }
 
 // toDTO renders one task. Arm and claim tokens, the claim owner, the tenant,
 // the mark and the partial-commit flag are never rendered. Each optional field
-// is present exactly when the published contract says it is: lastError is
-// present whenever lastAttemptTime is, even when the stored text is empty.
+// is present exactly when the published contract says it is: lastError pairs
+// with failedTime for a FAILED task (rendered whenever the status is FAILED,
+// even when the stored text is empty — the SPI's Fail does not touch
+// LastAttemptTime, so gating on it can hide or misdate the failure text) and
+// with lastAttemptTime for every other status (rendered when LastAttemptTime
+// is set, as before).
 func toDTO(t spi.ScheduledTask) (genapi.ScheduledTaskDto, error) {
 	eid, err := uuid.Parse(t.EntityID)
 	if err != nil {
@@ -169,18 +173,26 @@ func toDTO(t spi.ScheduledTask) (genapi.ScheduledTaskDto, error) {
 	if t.LastAttemptTime != nil {
 		last := msTime(*t.LastAttemptTime)
 		d.LastAttemptTime = &last
-		// lastError is rendered alongside lastAttemptTime even when the
-		// stored text is empty, so the pair is always present together.
-		msg := t.LastError
-		d.LastError = &msg
 	}
 	if t.Status == spi.ScheduledTaskFailed {
+		// lastError is this failure's text and pairs with failedTime, not
+		// lastAttemptTime: the SPI's Fail replaces LastError without
+		// touching LastAttemptTime, so gating on that field would hide the
+		// text on a first-run failure and misdate it against an earlier,
+		// unrelated counted attempt. Rendered even when the text is empty.
+		msg := t.LastError
+		d.LastError = &msg
 		reason := string(t.FailureReason)
 		d.FailureReason = &reason
 		if t.FailedTime != nil {
 			failed := msTime(*t.FailedTime)
 			d.FailedTime = &failed
 		}
+	} else if t.LastAttemptTime != nil {
+		// lastError pairs with lastAttemptTime for every other status,
+		// rendered alongside it even when the stored text is empty.
+		msg := t.LastError
+		d.LastError = &msg
 	}
 	if t.ArmedBy.ID != "" {
 		d.ArmedBy = &genapi.ScheduledTaskArmedByDto{Id: t.ArmedBy.ID, Kind: string(t.ArmedBy.Kind)}
