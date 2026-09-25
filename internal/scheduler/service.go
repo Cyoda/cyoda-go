@@ -465,12 +465,21 @@ func (s *Service) loop() {
 	}
 }
 
+// tick gives back idle claims and claims. It does nothing once the service
+// drains: the loop may still take a tick that raced shutdown step 1, and step
+// 5 makes the last give-back.
 func (s *Service) tick() {
-	if !s.isHealthy() {
+	if !s.tickable() {
 		return
 	}
 	s.giveBackIdle()
 	s.claim()
+}
+
+func (s *Service) tickable() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.healthy && !s.draining
 }
 
 // giveBackIdle returns to WAITING, uncounted, every task this incarnation holds
@@ -511,12 +520,12 @@ func (s *Service) claim() {
 		slog.Warn("scheduler claim failed", "pkg", "scheduler", "err", err)
 		return
 	}
-	runs, refused := s.register(tasks, free)
+	runs, giveBack := s.register(tasks, free)
 	for _, r := range runs {
 		s.m.claimed(claimReason(r.task))
 		go s.run(r)
 	}
-	if refused {
+	if giveBack {
 		s.giveBackIdle()
 	}
 }
@@ -552,14 +561,19 @@ func (s *Service) claimRequest() (req spi.ClaimRequest, free int, ok bool) {
 // register adds every claimed task to the set of live runs. The loop calls it
 // before anything else runs on its goroutine, the next give-back included.
 // A claim that returns after the node latched, began to drain, or passed its
-// watchdog deadline is not started: it never ran, so it is refused, and the
-// give-back that follows returns it uncounted. So no run is registered once
-// shutdown step 1 has closed. A heartbeat that merely failed while the claim
-// was in flight refuses nothing: one failed heartbeat never self-cancels.
-func (s *Service) register(tasks []spi.ScheduledTask, free int) (runs []*liveRun, refused bool) {
+// watchdog deadline is not started: it never ran, so it is refused and goes
+// back uncounted. After a latch or the watchdog deadline, giveBack asks the
+// loop to return it at once. During a drain, shutdown step 5 returns it, so
+// no run is registered once step 1 has closed. A heartbeat that merely failed
+// while the claim was in flight refuses nothing: one failed heartbeat never
+// self-cancels.
+func (s *Service) register(tasks []spi.ScheduledTask, free int) (runs []*liveRun, giveBack bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.latched || s.draining || !time.Now().Before(s.wdDeadline) {
+	if s.draining {
+		return nil, false
+	}
+	if s.latched || !time.Now().Before(s.wdDeadline) {
 		return nil, len(tasks) > 0
 	}
 	s.filled = len(tasks) >= free

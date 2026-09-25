@@ -537,12 +537,17 @@ func TestDrain_AClaimInFlightAtStepOneIsGivenBackWithoutRunning(t *testing.T) {
 		t.Fatal("Drain returned while a claim was still in flight")
 	case <-time.After(50 * time.Millisecond):
 	}
+	from := len(h.fs.giveBackCalls())
 	close(block)
 	receive(t, done)
 
 	token := h.fs.claimed()[0]
 	if n := fires.Load(); n != 0 {
 		t.Errorf("%d runs fired for a claim that returned after step 1", n)
+	}
+	// Step 5 returns the refused claim; the loop gives nothing back for it.
+	if n := len(h.fs.giveBackCalls()) - from; n != 1 {
+		t.Errorf("%d give-backs after the claim returned, want only step 5's", n)
 	}
 	if !slices.Contains(h.fs.givenBackTokens(), token) {
 		t.Error("the refused claim was not given back")
