@@ -295,6 +295,29 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 		return "", err
 	}
 
+	finalEntityStore, err := e.factory.EntityStore(finalCtx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get entity store for persist: %w", err)
+	}
+	// A joined callback may have written or deleted the fired entity earlier
+	// in this transaction; the re-read sees both. A write or delete committed
+	// by another transaction is invisible to this transaction's snapshot and
+	// fails at commit instead.
+	current, err := finalEntityStore.Get(finalCtx, entity.Meta.ID)
+	if errors.Is(err, spi.ErrNotFound) {
+		// Deleted in this transaction: the transition did not take effect.
+		// The run removes its life and commits the delete, re-creates
+		// nothing, re-arms nothing and records no FIRE event.
+		if err := removeOwnLife(finalCtx, g); err != nil {
+			return "", err
+		}
+		return OutcomeCancelled, commit(finalTxID)
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to re-read fired entity: %w", err)
+	}
+	writtenHere := current.Meta.TransactionID == finalTxID
+
 	// Order at the end (spec §5.2): the run removes its own life first, then
 	// the re-arm step runs for the final state. A self-loop therefore re-arms
 	// the same id as a new life. A joining read sees the operations staged
@@ -310,16 +333,17 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 		return "", fmt.Errorf("failed to reconcile scheduled tasks after fire: %w", err)
 	}
 
-	finalEntityStore, err := e.factory.EntityStore(finalCtx)
-	if err != nil {
-		return "", fmt.Errorf("failed to get entity store for persist: %w", err)
+	// The precondition of the final persist. A version written earlier in this
+	// transaction is the one the persist supersedes: the engine's result is
+	// the last writer inside the transaction, as for an ordinary transition.
+	// Every segmented run takes this branch, because the segment boundary's
+	// CompareAndSave writes the entity into the segment it opens. Otherwise
+	// the entity is still the committed version read at the start.
+	persistAgainst := expectedTxID
+	if writtenHere {
+		persistAgainst = finalTxID
 	}
-	if finalTxID != txID {
-		// Segmented: the first segment flush already applied the precondition.
-		if _, err := finalEntityStore.Save(finalCtx, entity); err != nil {
-			return "", fmt.Errorf("failed to save fired entity: %w", err)
-		}
-	} else if _, err := finalEntityStore.CompareAndSave(finalCtx, entity, expectedTxID); err != nil {
+	if _, err := finalEntityStore.CompareAndSave(finalCtx, entity, persistAgainst); err != nil {
 		return "", err
 	}
 

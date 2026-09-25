@@ -524,9 +524,9 @@ func TestFireScheduled_AttributesToArmedByUser_IncludingCascade(t *testing.T) {
 
 	advance(delayMs)
 
-	// The real dispatch ctx carries no user identity at all — just the
-	// synthesised system UserContext scheduler.LocalExecutor/the peer RPC
-	// handler build. Attribution must come from the durable row, not ctx.
+	// A scheduled run's context carries no user identity at all: only a
+	// system UserContext synthesised for the task's tenant. Attribution must
+	// come from the durable row, not ctx.
 	dispatchCtx := common.SystemUserContext(testTenant)
 	r := fireDue(t, engine, dispatchCtx, id)
 	if r.Err != nil {
