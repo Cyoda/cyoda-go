@@ -305,6 +305,34 @@ func TestService_ClaimLoopPanicLatchesCancelsAndKeepsHeartbeating(t *testing.T) 
 	}
 }
 
+// A panicked run whose FAILED write is refused as stale is still never given
+// back (§6.5).
+func TestService_PanickedRunKeepsItsClaimWhenItsFailIsRefused(t *testing.T) {
+	tokens := make(chan uuid.UUID, 1)
+	h := newHarness(t, testConfig(), firerFunc(func(_ context.Context, task spi.ScheduledTask, _ int, _ time.Duration) workflow.RunReport {
+		tokens <- task.Claim.Token
+		panic("injected panic in a scheduled run")
+	}))
+	runs := withRunMetrics(t, h)
+	h.fs.with(func() {
+		h.fs.outcomeErrs = []error{fmt.Errorf("fail: %w", spi.ErrStaleClaim)}
+		h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")}
+	})
+	h.start(t)
+	token := receive(t, tokens)
+	eventually(t, "the run ended as superseded", func() bool { return runs()[outcomeSuperseded] == 1 })
+	if n := liveRuns(h.svc); n != 1 {
+		t.Errorf("%d live runs, want the panicked run kept", n)
+	}
+	from := len(h.fs.giveBackCalls())
+	eventually(t, "three more give-backs", func() bool { return len(h.fs.giveBackCalls()) >= from+3 })
+	for i, keep := range h.fs.giveBackCalls()[from:] {
+		if !slices.Contains(keep, token) {
+			t.Fatalf("give-back %d hands back the panicked run's claim", i)
+		}
+	}
+}
+
 // A panic in one run's bookkeeping cancels every other run in progress
 // (§6.5: the recovery itself cancels them).
 func TestService_BookkeepingPanicCancelsTheRunsInProgress(t *testing.T) {
