@@ -8,8 +8,12 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"syscall"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
+	"github.com/moby/moby/client"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
@@ -28,6 +32,12 @@ type pgMultiNode struct {
 	// Exposed via the KillNode method, off the shared MultiNodeFixture
 	// interface — a crash test type-asserts for it.
 	killNode func(i int)
+	// signalNode and awaitNodeExit back SignalNode and AwaitNodeExit (see
+	// fixtureutil.ClusterLaunchResult); off the shared interface, like killNode.
+	signalNode    func(i int, sig syscall.Signal) error
+	awaitNodeExit func(i int, within time.Duration) error
+	// containerID is the PostgreSQL container, for PauseDatabase.
+	containerID string
 	// connStr is the shared Postgres connection string every node uses. Exposed
 	// via the ConnString method so a crash test can open its own read-only pgx
 	// handle and assert on persisted job state (e.g. claim epoch), which is
@@ -89,14 +99,10 @@ func (f *pgMultiNode) ComputeUser(t *testing.T, userID string, roles ...string) 
 }
 
 // NodeLogs returns node idx's captured combined stdout+stderr as a string
-// snapshot. Part of the optional cross-node attribution capability (alongside
-// ComputeUser) the shared multinode attribution scenarios type-assert: it lets
-// the scheduled-fire scenario positively prove a task fired on a PEER node
-// (the peer-RPC fire path emits a distinctive log line) rather than passing
-// vacuously if scheduler distribution ever collapsed to self. Returns "" for
-// an out-of-range index. Not part of the MultiNodeFixture interface — a backend
-// that has not wired attribution simply does not implement it and the scenarios
-// skip (pending).
+// snapshot. It serves the scheduler incarnation lookup (Incarnation) and the
+// scenarios that read a node's log as data. Returns "" for an out-of-range
+// index. Not part of the MultiNodeFixture interface — a scenario type-asserts
+// for it.
 func (f *pgMultiNode) NodeLogs(idx int) string {
 	if idx < 0 || idx >= len(f.nodeLogs) || f.nodeLogs[idx] == nil {
 		return ""
@@ -114,6 +120,52 @@ func (f *pgMultiNode) KillNode(i int) {
 		return
 	}
 	f.killNode(i)
+}
+
+// SignalNode sends sig to node i (SIGTERM, SIGSTOP, SIGCONT). Off the shared
+// interface, like KillNode: a scheduler scenario type-asserts for it.
+func (f *pgMultiNode) SignalNode(i int, sig syscall.Signal) error { return f.signalNode(i, sig) }
+
+// AwaitNodeExit waits up to within for node i to exit.
+func (f *pgMultiNode) AwaitNodeExit(i int, within time.Duration) error {
+	return f.awaitNodeExit(i, within)
+}
+
+// PauseDatabase freezes the PostgreSQL container: every pnode's statements
+// hang until UnpauseDatabase, as in a network partition from the database.
+func (f *pgMultiNode) PauseDatabase(t *testing.T) {
+	t.Helper()
+	dc, err := testcontainers.NewDockerClientWithOpts(context.Background())
+	if err != nil {
+		t.Fatalf("docker client: %v", err)
+	}
+	defer dc.Close()
+	if _, err := dc.ContainerPause(context.Background(), f.containerID, client.ContainerPauseOptions{}); err != nil {
+		t.Fatalf("pause the database container: %v", err)
+	}
+}
+
+// UnpauseDatabase resumes the PostgreSQL container.
+func (f *pgMultiNode) UnpauseDatabase(t *testing.T) {
+	t.Helper()
+	dc, err := testcontainers.NewDockerClientWithOpts(context.Background())
+	if err != nil {
+		t.Fatalf("docker client: %v", err)
+	}
+	defer dc.Close()
+	if _, err := dc.ContainerUnpause(context.Background(), f.containerID, client.ContainerUnpauseOptions{}); err != nil {
+		t.Fatalf("unpause the database container: %v", err)
+	}
+}
+
+// Incarnation returns the scheduler incarnation node i announced at start.
+func (f *pgMultiNode) Incarnation(t *testing.T, i int) uuid.UUID {
+	t.Helper()
+	id, err := fixtureutil.IncarnationFromLog(f.NodeLogs(i))
+	if err != nil {
+		t.Fatalf("node %d: %v", i, err)
+	}
+	return id
 }
 
 // ConnString returns the shared Postgres connection string every node uses, so
@@ -144,6 +196,13 @@ func MustSetupMultiNode(t *testing.T, n int) (multinode.MultiNodeFixture, func()
 // entries are "KEY=value" strings; nil means the default env only.
 func MustSetupMultiNodeWithEnv(t *testing.T, n int, extraEnv []string) (multinode.MultiNodeFixture, func()) {
 	t.Helper()
+	return MustSetupMultiNodeWithOpts(t, n, extraEnv, fixtureutil.LaunchOpts{})
+}
+
+// MustSetupMultiNodeWithOpts is MustSetupMultiNodeWithEnv with launch options
+// for the cluster — e.g. LaunchOpts.NodeEnv, environment for one node only.
+func MustSetupMultiNodeWithOpts(t *testing.T, n int, extraEnv []string, launch fixtureutil.LaunchOpts) (multinode.MultiNodeFixture, func()) {
+	t.Helper()
 	ctx := context.Background()
 
 	// 1. Start PostgreSQL container.
@@ -152,6 +211,10 @@ func MustSetupMultiNodeWithEnv(t *testing.T, n int, extraEnv []string) (multinod
 		tcpostgres.WithUsername("testuser"),
 		tcpostgres.WithPassword("testpass"),
 	}, testpg.HardenedOptions()...)
+	// Up to six pnodes, each with a main pool (25), a scheduler pool (10) and
+	// a heartbeat connection (1), plus the test's own reader: above the
+	// default of 100.
+	opts = append(opts, testcontainers.WithCmdArgs("-c", "max_connections=400"))
 	pgContainer, err := tcpostgres.Run(ctx, "postgres:17-alpine", opts...)
 	if err != nil {
 		t.Fatalf("failed to start postgres container: %v", err)
@@ -184,7 +247,7 @@ func MustSetupMultiNodeWithEnv(t *testing.T, n int, extraEnv []string) (multinod
 		"CYODA_POSTGRES_AUTO_MIGRATE=true",
 	}, fixtureutil.TunedClusterEnv()...)
 	launchEnv = append(launchEnv, extraEnv...)
-	result, processCleanup, err := fixtureutil.LaunchCyodaClusterAndCompute(ks, n, launchEnv)
+	result, processCleanup, err := fixtureutil.LaunchCyodaClusterAndCompute(ks, n, launchEnv, launch)
 	if err != nil {
 		containerCleanup()
 		t.Fatalf("failed to launch cyoda-go cluster: %v", err)
@@ -200,6 +263,9 @@ func MustSetupMultiNodeWithEnv(t *testing.T, n int, extraEnv []string) (multinod
 		keySet:        ks,
 		nodeLogs:      result.NodeLogs,
 		killNode:      result.KillNode,
+		signalNode:    result.SignalNode,
+		awaitNodeExit: result.AwaitNodeExit,
+		containerID:   pgContainer.GetContainerID(),
 		connStr:       connStr,
 		computeBin:    result.ComputeBin,
 		grpcEndpoints: result.GRPCEndpoints,
