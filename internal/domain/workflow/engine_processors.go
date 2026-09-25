@@ -321,7 +321,8 @@ func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc
 // (txID == T_pre) is committed first; the processor is dispatched with no
 // transaction context (default) or with TX_post's token
 // (startNewTxOnDispatch=true); the result is applied via CompareAndSave
-// against T_pre. The caller MUST replace its (ctx, txID) with the returned
+// against T_pre, or against TX_post when a callback wrote the entity in
+// TX_post. The caller MUST replace its (ctx, txID) with the returned
 // (newCtx, newTxID) to continue the cascade in TX_post.
 //
 // Per spec §3, §10.3: in the startNewTxOnDispatch=true branch, processors
@@ -470,12 +471,25 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		}
 	}
 
-	// Apply result via CAS against tPre — works in both branches.
+	// Apply the result via CompareAndSave — works in both branches. The
+	// precondition is tPre, unless a callback that joined TX_post wrote the
+	// entity: the engine's result then supersedes that write, as in a
+	// transaction that never segmented. A delete in TX_post, or a write or
+	// delete by another transaction, leaves the precondition at tPre, and the
+	// CompareAndSave conflicts.
 	es, casErr := e.factory.EntityStore(newCtx)
 	if casErr != nil {
 		return nil, "", fmt.Errorf("commit-before-dispatch: get entity store for CAS: %w", errors.Join(ErrCommitBeforeDispatchInfra, casErr))
 	}
-	if _, saveErr := es.CompareAndSave(newCtx, entity, tPre); saveErr != nil {
+	applyAgainst := tPre
+	writtenHere, readErr := writtenInTx(newCtx, es, entity.Meta.ID, newTxID)
+	if readErr != nil && !errors.Is(readErr, spi.ErrNotFound) {
+		return nil, "", fmt.Errorf("commit-before-dispatch: re-read entity before apply: %w", errors.Join(ErrCommitBeforeDispatchInfra, readErr))
+	}
+	if writtenHere {
+		applyAgainst = newTxID
+	}
+	if _, saveErr := es.CompareAndSave(newCtx, entity, applyAgainst); saveErr != nil {
 		if !clientAttributableStoreErr(saveErr) {
 			// Not a conflict at all — the store failed. Marked infra so the text
 			// takes the sanitized-5xx path instead of the 4xx body below.
@@ -497,6 +511,20 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 
 	segHandedOff = true
 	return newCtx, newTxID, nil
+}
+
+// writtenInTx re-reads entityID inside the transaction txID that ctx carries
+// and reports whether that transaction wrote it: every in-transaction write
+// is stamped with the transaction's id on every backend. A write or delete
+// committed by another transaction is invisible to the snapshot and fails at
+// commit instead. The error wraps spi.ErrNotFound when the entity is absent
+// from this transaction's view.
+func writtenInTx(ctx context.Context, es spi.EntityStore, entityID, txID string) (bool, error) {
+	cur, err := es.Get(ctx, entityID)
+	if err != nil {
+		return false, err
+	}
+	return cur.Meta.TransactionID == txID, nil
 }
 
 // flushAndCommitSegment is the shared primitive for the COMMIT_BEFORE_DISPATCH

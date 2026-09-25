@@ -303,7 +303,7 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	// in this transaction; the re-read sees both. A write or delete committed
 	// by another transaction is invisible to this transaction's snapshot and
 	// fails at commit instead.
-	current, err := finalEntityStore.Get(finalCtx, entity.Meta.ID)
+	writtenHere, err := writtenInTx(finalCtx, finalEntityStore, entity.Meta.ID, finalTxID)
 	if errors.Is(err, spi.ErrNotFound) {
 		// Deleted in this transaction: the transition did not take effect.
 		// The run removes its life and commits the delete, re-creates
@@ -316,7 +316,6 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	if err != nil {
 		return "", fmt.Errorf("failed to re-read fired entity: %w", err)
 	}
-	writtenHere := current.Meta.TransactionID == finalTxID
 
 	// Order at the end (spec §5.2): the run removes its own life first, then
 	// the re-arm step runs for the final state. A self-loop therefore re-arms

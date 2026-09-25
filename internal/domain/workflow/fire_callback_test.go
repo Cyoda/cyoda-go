@@ -58,6 +58,47 @@ func TestCallback_WritesFiredEntity_RunFires(t *testing.T) {
 	}
 }
 
+// The same write from the callback of a COMMIT_BEFORE_DISPATCH processor
+// with startNewTxOnDispatch=true, which joins the segment the boundary opens.
+func TestCallback_WritesFiredEntity_AtSegmentBoundary_RunFires(t *testing.T) {
+	var env *runEnv
+	var claimed spi.ScheduledTask
+	ext := &scriptedExtProc{processor: func(_ context.Context, _ spi.ProcessorDefinition, txID string) (*spi.Entity, error) {
+		jctx, err := env.txMgr.Join(env.ctx, txID)
+		if err != nil {
+			return nil, err
+		}
+		es, err := env.factory.EntityStore(jctx)
+		if err != nil {
+			return nil, err
+		}
+		entity, err := es.Get(jctx, claimed.EntityID)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := es.Save(jctx, entity); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}}
+	env = newRunEnv(t, ext)
+	startNewTx := true
+	p1 := safeProc("p1", ExecutionModeCommitBeforeDispatch)
+	p1.Config.StartNewTxOnDispatch = &startNewTx
+	claimed = env.claimed(t, "cbwseg-e1", oneHopWF("CLOSED", []spi.ProcessorDefinition{p1}, nil))
+
+	r := runWithin(t, env, claimed)
+	if r.Outcome != OutcomeFired || r.Err != nil {
+		t.Fatalf("report = %+v, want fired", r)
+	}
+	if got := env.state(t, "cbwseg-e1"); got != "CLOSED" {
+		t.Errorf("entity state = %q, want CLOSED", got)
+	}
+	if _, found := env.task(t, claimed.ID); found {
+		t.Errorf("the fired task's life is still stored")
+	}
+}
+
 func TestCallback_DeletesFiredEntity_RunCommitsWithoutRecreating(t *testing.T) {
 	var env *runEnv
 	var claimed spi.ScheduledTask
@@ -268,5 +309,32 @@ func TestCallback_FinalReReadFails_RunFails(t *testing.T) {
 	}
 	if _, found := env.task(t, claimed.ID); !found {
 		t.Errorf("the task is gone: nothing of the failed run may commit")
+	}
+}
+
+// A failed re-read at the segment boundary is an infrastructure failure, not
+// taken for a delete or for another transaction's write.
+func TestCallback_BoundaryReReadFails_RunFails(t *testing.T) {
+	armed := false
+	storeErr := errors.New("store unavailable")
+	ext := &scriptedExtProc{processor: func(context.Context, spi.ProcessorDefinition, string) (*spi.Entity, error) {
+		armed = true
+		return nil, nil
+	}}
+	env := newRunEnvWith(t, ext, func(f spi.StoreFactory) spi.StoreFactory {
+		return failingGetFactory{StoreFactory: f, armed: &armed, err: storeErr}
+	}, nil)
+	startNewTx := true
+	p1 := safeProc("p1", ExecutionModeCommitBeforeDispatch)
+	p1.Config.StartNewTxOnDispatch = &startNewTx
+	claimed := env.claimed(t, "cbbr-e1", oneHopWF("CLOSED", []spi.ProcessorDefinition{p1}, nil))
+
+	r := runWithin(t, env, claimed)
+	armed = false
+	if r.Outcome != OutcomeFailed || !errors.Is(r.Err, storeErr) || !errors.Is(r.Err, ErrCommitBeforeDispatchInfra) {
+		t.Fatalf("report = %+v, want failed on the store error, marked infrastructure", r)
+	}
+	if got := env.state(t, "cbbr-e1"); got != "OPEN" {
+		t.Errorf("entity state = %q, want OPEN", got)
 	}
 }

@@ -255,11 +255,15 @@ rejects this flag for any other execution mode.
   T_post's token in context → CompareAndSave(T_pre) → cascade continues in
   T_post`.
 - The processor's CRUD callbacks join `T_post`. It can read/write other
-  entities transactionally.
+  entities transactionally, and the cascade-anchor entity too: when a
+  callback wrote the anchor in `T_post`, the engine compares against
+  `T_post` instead of `T_pre`, so the write does not conflict. A callback
+  that deletes the anchor still fails the transition, and a write by any
+  other transaction still conflicts.
 - **Hazard — last-writer-wins on the cascade-anchor entity.** If the
   processor writes the cascade-anchor entity through its TX-callback AND
   returns mutations for the same entity in its result, the engine's
-  `CompareAndSave(T_pre)` overwrites the processor's intra-TX writes (the
+  `CompareAndSave` overwrites the processor's intra-TX writes (the
   result is applied last). Pick one path: either let the engine apply the
   result, or have the processor write the entity itself and return no
   mutations for it. The same warning applies in `SYNC` /
