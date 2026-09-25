@@ -142,7 +142,7 @@ type ScheduledTaskStore interface {
 
 // errors.go
 var ErrMarkedByAnotherClaim = errors.New("scheduled task: marked by another claim of this life")
-var ErrTaskBusy             = errors.New("scheduled task: row is being written by an open transaction")
+var ErrTaskBusy             = errors.New("row is being written by an open transaction") // also AsyncSearchStore.Heartbeat, ClaimDue
 var ErrStoreRejected        = errors.New("store rejected the write deterministically")
 // ErrStaleClaim (exists) — doc comment widened to both stores.
 // A store wraps a deterministic rejection so that errors.Is(err, ErrStoreRejected) holds.
