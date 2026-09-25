@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"sync"
 	"testing"
+
+	"google.golang.org/grpc"
 
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 )
@@ -156,6 +159,60 @@ func TestHandleCallout_HoldAnswersFromCatalogOnRelease(t *testing.T) {
 	}
 	if again := d.takeHeldWork(); len(again) != 0 {
 		t.Errorf("held work taken twice: %d left", len(again))
+	}
+}
+
+// recordingStream keeps every event sent on it.
+type recordingStream struct {
+	grpc.BidiStreamingClient[cepb.CloudEvent, cepb.CloudEvent]
+	mu   sync.Mutex
+	sent []*cepb.CloudEvent
+}
+
+func (s *recordingStream) Send(ce *cepb.CloudEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sent = append(s.sent, ce)
+	return nil
+}
+
+func (s *recordingStream) events() []*cepb.CloudEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]*cepb.CloudEvent(nil), s.sent...)
+}
+
+// TestRelease_HoldSendsOneAnswerOnTheStream: a hold client sends nothing on
+// receiving work, sends exactly one catalog answer for it on release, and
+// nothing more on a second release.
+func TestRelease_HoldSendsOneAnswerOnTheStream(t *testing.T) {
+	d := newDispatcher("", "", newCatalog(nil, nil), nil, []string{"x"}, behaviourHold, newRecorder())
+	s := &recordingStream{}
+	d.setStream(s)
+	ce, payload := processorRequest(t, "r-1", "noop", "pass-value", "")
+
+	if reply, drop, err := d.handleCallout(context.Background(), ce, payload); err != nil || reply != nil || drop {
+		t.Fatalf("handleCallout = (%v, %t, %v); want a silent, open stream", reply, drop, err)
+	}
+	if n := len(s.events()); n != 0 {
+		t.Fatalf("%d events sent before release; want 0", n)
+	}
+
+	d.release(context.Background())
+	sent := s.events()
+	if len(sent) != 1 {
+		t.Fatalf("%d events sent on release; want 1", len(sent))
+	}
+	if sent[0].Type != ceTypeProcessorResponse {
+		t.Errorf("released event type = %s; want %s", sent[0].Type, ceTypeProcessorResponse)
+	}
+	if body := decodeReply(t, sent[0]); body.RequestID != "r-1" || !body.Success {
+		t.Errorf("released answer = %+v; want requestId r-1, success", body)
+	}
+
+	d.release(context.Background())
+	if n := len(s.events()); n != 1 {
+		t.Errorf("%d events after a second release; want still 1", n)
 	}
 }
 

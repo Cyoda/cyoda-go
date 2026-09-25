@@ -352,7 +352,8 @@ func (d *dispatcher) answer(ctx context.Context, msg *cepb.CloudEvent, payload j
 }
 
 // release makes the late callback for every held callout, records what each
-// door answered, and answers every request a hold client took.
+// door answered, and answers every request a hold client took. Held work
+// exists only once run has recorded the stream, so the stream is set here.
 func (d *dispatcher) release(ctx context.Context) {
 	for _, hc := range d.takeHeld() {
 		d.rec.setCallback(hc.seq, d.lateCallback(ctx, hc))
@@ -362,9 +363,6 @@ func (d *dispatcher) release(ctx context.Context) {
 		reply, err := d.answer(ctx, w.msg, w.payload, w.pass)
 		if err != nil {
 			slog.Error("held request could not be answered", "pkg", "compute-test-client", "error", err)
-			continue
-		}
-		if stream == nil {
 			continue
 		}
 		if err := d.send(stream, reply); err != nil {
