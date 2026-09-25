@@ -129,6 +129,21 @@ func TestMigrations_IndexesOnExistingTablesAreConcurrent(t *testing.T) {
 		// (clause (b) satisfied on its own merits) does not make CONCURRENTLY
 		// available; splitting it out further would change nothing.
 		"000013_sm_audit_tx_index.up.sql": true,
+		// scheduled_tasks' five new indexes, in a file that also alters the
+		// table (drops two columns, adds twelve, backfills one, adds four
+		// CHECK constraints, rekeys it by tenant) and creates two tables. Many statements under one
+		// implicit transaction, so CONCURRENTLY cannot run here (clause (b));
+		// a separate file would not help, because golang-migrate's advisory
+		// lock spans the whole Up() run — the cycle proven for 000008.
+		//
+		// Lock profile, derived for this file: ALTER TABLE takes ACCESS
+		// EXCLUSIVE on scheduled_tasks and holds it until the file commits,
+		// across the table rewrite (the volatile arm_token default), the
+		// backfill, the primary-key rebuild on (tenant_id, id) and the five
+		// index builds. Readers AND writers of
+		// scheduled_tasks wait for that span; no other table is locked. The
+		// table holds one row per armed timer.
+		"000014_scheduled_run_ownership.up.sql": true,
 	}
 
 	for _, v := range checkIndexRules(upMigrations(t), grandfathered) {

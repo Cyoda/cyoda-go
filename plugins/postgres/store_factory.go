@@ -273,13 +273,17 @@ func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore
 	}, nil
 }
 
-// ScheduledTaskStore returns a store backed by the context-resolving
-// querier: unlike the per-tenant accessors above, it does not resolve a
-// tenant here — ScanDue is a cross-tenant read called with a
-// background/tenant-less context, and Upsert/Delete/Reconcile carry the
-// tenant on the task/request itself (see spi.StoreFactory godoc).
+// ScheduledTaskStore returns the scheduled-task store. It resolves no tenant:
+// tenant-facing methods take the tenant as an argument, and ClaimDue,
+// GiveBackIdle, the owner methods and the sweeps are cross-tenant. See
+// scheduledTaskStore for which methods join the transaction on ctx.
 func (f *StoreFactory) ScheduledTaskStore(_ context.Context) (spi.ScheduledTaskStore, error) {
-	return &scheduledTaskStore{q: f.querier()}, nil
+	return &scheduledTaskStore{
+		q:         f.querier(),
+		query:     unjoinedQuerier{pool: f.pool, acquireTimeout: f.cfg.AcquireTimeout, what: "scheduled task query"},
+		sched:     f.schedulerQuerier("scheduled task"),
+		heartbeat: f.heartbeatQuerier(),
+	}, nil
 }
 
 func (f *StoreFactory) Close() error {
