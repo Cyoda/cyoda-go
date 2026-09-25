@@ -113,15 +113,16 @@ type TransactionManager struct {
 	txUniqueKeys map[string]map[string][]spi.UniqueKey // txID → entityID → keys
 
 	// commitSeq is a monotonic counter, incremented exactly once per
-	// successful Commit under mu, used as the FCW conflict-detection and
-	// log-pruning ordering key instead of wall-clock submitTime (see
-	// committedTx.seq's doc comment for why: submitTime can tie under a
-	// coarse or frozen clock even for genuinely causally-ordered commits). txSnapshotSeq
-	// records each active transaction's commitSeq value AT BEGIN — "this
-	// many commits already happened before my snapshot" — so Commit's FCW
-	// check becomes committed.seq > txSnapshotSeq[txID]: a committedTx
-	// whose seq was assigned strictly after my Begin is a real conflict
-	// candidate, with no clock-resolution gap. Both fields protected by mu.
+	// successful Commit under mu, used as the ordering key of the FCW
+	// conflict check and of log pruning instead of wall-clock submitTime
+	// (see committedTx.seq's doc comment for why: submitTime can tie under
+	// a coarse or frozen clock even for genuinely causally-ordered
+	// commits). txSnapshotSeq records each active transaction's commitSeq
+	// value AT BEGIN — "this many commits already happened before my
+	// snapshot" — so Commit's FCW check becomes committed.seq >
+	// txSnapshotSeq[txID]: a committedTx whose seq was assigned strictly
+	// after my Begin is a real conflict candidate, with no clock-resolution
+	// gap. Both fields protected by mu.
 	//
 	// Begin MUST read commitSeq (into txSnapshotSeq) in the SAME mu
 	// critical section where it captures SnapshotTime — see Begin's
