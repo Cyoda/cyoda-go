@@ -505,7 +505,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   operation's transaction stays open for it to commit or roll back; what the
   refused workflow had already done in it — its audit events, and the effects
   of earlier steps — is the calling operation's to keep or discard, as with
-  any failed callback. Both values of `startNewTxOnDispatch` are refused.
+  any failed callback. Both values of `startNewTxOnDispatch` are refused. A
+  compute node that needs such a write makes it as an independent request,
+  without the transaction token.
   See `docs/cloud-parity/commit-in-joined-transaction.md`.
 
 - **A signing key pair signs and verifies only inside its validity window.**

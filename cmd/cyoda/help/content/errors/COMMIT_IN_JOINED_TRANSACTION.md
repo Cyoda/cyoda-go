@@ -27,7 +27,7 @@ A `COMMIT_BEFORE_DISPATCH` processor commits the transaction it runs in before i
 
 What happens to the joined transaction is the calling operation's decision, as with any failed callback: the member reports the failure in its answer, and the operation fails or carries on according to its processor's execution mode.
 
-The message names the workflow and the processor. Not retryable: the same callback reaches the same processor again. Either change the processor's `executionMode` — `SYNC` runs it inside the joined transaction — or make the write outside the callback, without the transaction token, as an operation of its own. Over gRPC the code is the message prefix of the `CLIENT_ERROR` envelope.
+The message names the workflow and the processor. Not retryable: the same callback reaches the same processor again. The fix is in the compute node: make that write as an independent request, without the transaction token, so it runs in a transaction of its own — the `COMMIT_BEFORE_DISPATCH` processor then commits that transaction, as designed — and let the calling processor handle the write's outcome as the business requires. Changing the inner processor's `executionMode` to `SYNC` also removes the refusal, but changes what that workflow promises (its pre-callout state is no longer durable before the callout), so do it only if that promise is not needed. Over gRPC the code is the message prefix of the `CLIENT_ERROR` envelope.
 
 The import does not reject the combination: whether a workflow is reached from a callback is decided at run time.
 

@@ -35,6 +35,9 @@ write is refused:
 - **Batch update isolation:** the refusal is never isolated as a per-item
   precondition failure, even when the item carries an `ifMatch`; the whole
   request fails.
+- **Remedy the error points to:** the compute node makes that write as an
+  independent request, without the transaction token, so the
+  `COMMIT_BEFORE_DISPATCH` processor commits a transaction of its own.
 - **Import:** not rejected. Whether a workflow is reached from a callback is a
   run-time fact.
 
