@@ -432,7 +432,10 @@ func (s *Service) registerLocked(t spi.ScheduledTask) *liveRun {
 	case s.latched:
 		r.reason = latchCancelled
 		cancel()
-	case !s.healthy:
+	case !time.Now().Before(s.wdDeadline):
+		// The watchdog's deadline passed while the claim was in flight.
+		// A heartbeat that merely failed meanwhile does not cancel: one
+		// failed heartbeat never self-cancels.
 		r.reason = selfCancelled
 		cancel()
 	}
