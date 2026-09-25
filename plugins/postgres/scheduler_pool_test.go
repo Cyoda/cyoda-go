@@ -120,6 +120,31 @@ func TestSchedulerPools_AcquireIsBounded(t *testing.T) {
 	}
 }
 
+// Once the scheduler pools are closed, a late call must not reopen them: the
+// lifecycle guarantee must match the main pool, which also refuses to reopen
+// once closed. A heartbeat or an async-search call still in flight at
+// shutdown must fail, not silently dial a fresh connection.
+func TestSchedulerPools_ClosedNeverReopens(t *testing.T) {
+	f := newSchedulerTestFactory(t, ceilingEnv(testDBURL(t), nil))
+	if _, _, err := f.schedulerPools(); err != nil {
+		t.Fatalf("schedulerPools: %v", err)
+	}
+	f.closeSchedulerPools()
+
+	if _, err := f.schedulerQuerier("late call").Exec(context.Background(), `SELECT 1`); err == nil {
+		t.Fatal("schedulerQuerier.Exec succeeded after Close; the scheduler pool was reopened")
+	}
+	if _, err := f.heartbeatQuerier().Exec(context.Background(), `SELECT 1`); err == nil {
+		t.Fatal("heartbeatQuerier.Exec succeeded after Close; the heartbeat pool was reopened")
+	}
+	if _, _, err := f.schedulerPools(); err == nil {
+		t.Fatal("schedulerPools succeeded after Close; the pools were reopened")
+	}
+	if work, heartbeat := f.sched.snapshot(); work != nil || heartbeat != nil {
+		t.Errorf("snapshot after Close = (%v, %v), want (nil, nil)", work, heartbeat)
+	}
+}
+
 // Plugin.NewFactory opens and pings both scheduler pools; Close closes them.
 func TestNewFactory_OpensTheSchedulerPools(t *testing.T) {
 	dsn := testDBURL(t)

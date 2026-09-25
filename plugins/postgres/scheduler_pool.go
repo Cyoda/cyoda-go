@@ -24,7 +24,7 @@ const (
 
 // schedulerPools are the scheduler's own connections, kept apart from the main
 // pool so that entity transactions, however many are open, cannot starve a
-// claim, a heartbeat or a run's bookkeeping (C4).
+// claim, a heartbeat or a run's bookkeeping.
 //
 // work carries every never-joining ScheduledTaskStore method except Query and
 // Heartbeat, and the async-search heartbeat and claim. heartbeat is one
@@ -35,10 +35,20 @@ const (
 // so a test factory that never schedules anything opens nothing, and a factory
 // built without a pool fails only when asked for one. Plugin.NewFactory opens
 // them eagerly, so a deployment that cannot connect them fails at startup.
+//
+// closed is set once closeSchedulerPools has run and is never cleared: once
+// closed, schedulerPools refuses to reopen rather than dialing a fresh pair
+// for a caller still in flight after shutdown (a heartbeat or an async-search
+// call racing Close). Without this, closeSchedulerPools's nil-out of work and
+// heartbeat reads to schedulerPools as "not yet opened", and the next call
+// would build and dial a brand-new pair from f.pool.Config() — leaking
+// connections nothing ever closes, and answering a live pool where the main
+// pool (pgxpool itself) answers a closed one.
 type schedulerPools struct {
 	mu        sync.Mutex
 	work      *pgxpool.Pool
 	heartbeat *pgxpool.Pool
+	closed    bool
 }
 
 // schedulerPoolConfig derives a scheduler pool from the main pool's config.
@@ -61,14 +71,19 @@ func schedulerPoolConfig(base *pgxpool.Config, maxConns int32) *pgxpool.Config {
 }
 
 // schedulerPools returns the two scheduler pools, creating them on first use.
+// Once closeSchedulerPools has run, it refuses to reopen them: see
+// schedulerPools' closed field doc.
 func (f *StoreFactory) schedulerPools() (work, heartbeat *pgxpool.Pool, err error) {
 	f.sched.mu.Lock()
 	defer f.sched.mu.Unlock()
+	if f.sched.closed {
+		return nil, nil, errors.New("failed to open the scheduler pool: already closed")
+	}
 	if f.sched.work != nil {
 		return f.sched.work, f.sched.heartbeat, nil
 	}
 	if f.pool == nil {
-		return nil, nil, errors.New("scheduler pool: the store factory has no connection pool")
+		return nil, nil, errors.New("failed to open the scheduler pool: the store factory has no connection pool")
 	}
 	base := f.pool.Config()
 	work, err = pgxpool.NewWithConfig(context.Background(), schedulerPoolConfig(base, f.cfg.SchedulerConns))
@@ -101,10 +116,13 @@ func (f *StoreFactory) openSchedulerPools(ctx context.Context) error {
 	return nil
 }
 
-// closeSchedulerPools closes whichever scheduler pools are open.
+// closeSchedulerPools closes whichever scheduler pools are open and marks the
+// factory as closed for good: schedulerPools never reopens them after this,
+// matching the main pool's own closed-means-closed lifecycle.
 func (f *StoreFactory) closeSchedulerPools() {
 	f.sched.mu.Lock()
 	defer f.sched.mu.Unlock()
+	f.sched.closed = true
 	if f.sched.work != nil {
 		f.sched.work.Close()
 		f.sched.work = nil
