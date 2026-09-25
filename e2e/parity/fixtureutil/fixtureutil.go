@@ -513,8 +513,102 @@ type LaunchResult struct {
 // LaunchOpts configures optional behavior for LaunchCyodaAndCompute.
 type LaunchOpts struct {
 	// ReadinessTimeout overrides the default health-check timeout for
-	// cyoda-go. Defaults to 30s if zero.
+	// cyoda-go. Defaults to defaultCyodaReadinessTimeout if zero.
 	ReadinessTimeout time.Duration
+	// NodeEnv, when set, returns extra environment for cluster node i. It is
+	// appended after every other variable, so it overrides them (os/exec uses
+	// the last value of a duplicated key). A scenario uses it to turn one
+	// node's scheduler off, or to isolate one node's gossip.
+	NodeEnv func(i int) []string
+}
+
+// NodeProc is one running cyoda-go process launched by LaunchCyodaNode.
+type NodeProc struct {
+	BaseURL      string
+	GRPCEndpoint string
+	// Logs is the process's combined output, also tee'd to os.Stderr. Never
+	// assert on token or secret material read from it (Gate 3).
+	Logs     *SyncBuffer
+	cmd      *exec.Cmd
+	exitedCh chan struct{}
+	killOnce sync.Once
+}
+
+// Kill SIGKILLs the process group and reaps it through the monitor's exit
+// signal (never a second cmd.Wait()). Calling it again is harmless.
+func (p *NodeProc) Kill() {
+	p.killOnce.Do(func() {
+		killProcessGroupNoWait(p.cmd)
+		<-p.exitedCh
+	})
+}
+
+// LaunchCyodaNode starts one cyoda-go process with extraEnv on fresh ports and
+// waits until it is healthy. It starts no compute client. A scenario that
+// restarts a node on the same storage calls it twice with the same env.
+// readiness 0 means the default readiness timeout.
+//
+// The whole launch is retried with fresh ports to self-heal a transient
+// FreePort() TOCTOU collision (see clusterLaunchAttempts), and the health
+// probe races the child's exit (nodeOutcome), so a bind-collision death fails
+// fast instead of stalling the full readiness timeout.
+func LaunchCyodaNode(cyodaBin string, ks *JWTKeySet, extraEnv []string, readiness time.Duration) (*NodeProc, error) {
+	if readiness == 0 {
+		readiness = defaultCyodaReadinessTimeout
+	}
+	var proc *NodeProc
+	err := retryLaunch(clusterLaunchAttempts, func() error {
+		hPort, e := FreePort()
+		if e != nil {
+			return fmt.Errorf("failed to get HTTP port: %w", e)
+		}
+		gPort, e := FreePort()
+		if e != nil {
+			return fmt.Errorf("failed to get gRPC port: %w", e)
+		}
+		// The admin port is picked too: the default (9091) is fixed, so parity
+		// packages running in parallel would collide on one host.
+		aPort, e := FreePort()
+		if e != nil {
+			return fmt.Errorf("failed to get admin port: %w", e)
+		}
+		cmd := exec.Command(cyodaBin)
+		cmd.WaitDelay = 3 * time.Second
+		cmd.Env = append(CyodaEnv(hPort, gPort, ks), extraEnv...)
+		cmd.Env = append(cmd.Env, fmt.Sprintf("CYODA_ADMIN_PORT=%d", aPort))
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		// Output goes to the test runner's stderr (diagnostics for 5xx and
+		// startup failures) and into Logs, so a test can read it as data.
+		logs := &SyncBuffer{}
+		cmd.Stdout = io.MultiWriter(os.Stderr, logs)
+		cmd.Stderr = io.MultiWriter(os.Stderr, logs)
+		if e := cmd.Start(); e != nil {
+			return fmt.Errorf("failed to start cyoda-go: %w", e)
+		}
+		// The single owner of this process's Wait(). exitErr is read only
+		// after exitedCh's close is observed, which happens-after the store.
+		exitedCh := make(chan struct{})
+		var exitErr error
+		go func() {
+			exitErr = cmd.Wait()
+			close(exitedCh)
+		}()
+		url := fmt.Sprintf("http://127.0.0.1:%d", hPort)
+		healthDoneCh := make(chan error, 1)
+		go func() { healthDoneCh <- WaitForHTTPHealth(url+"/api/health", readiness) }()
+		if e := nodeOutcome(0, healthDoneCh, exitedCh, func() error { return exitErr }); e != nil {
+			killProcessGroupNoWait(cmd)
+			<-exitedCh
+			return e
+		}
+		proc = &NodeProc{BaseURL: url, GRPCEndpoint: fmt.Sprintf("127.0.0.1:%d", gPort), Logs: logs, cmd: cmd, exitedCh: exitedCh}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("cyoda launch failed: %w", err)
+	}
+	slog.Info("cyoda-go is ready", "pkg", "fixtureutil", "baseURL", proc.BaseURL)
+	return proc, nil
 }
 
 // LaunchCyodaAndCompute builds the stock cyoda-go binary and the
@@ -552,108 +646,11 @@ func LaunchCyodaAndComputeWithBinaries(cyodaBin, computeBin string, ks *JWTKeySe
 	if len(opts) > 0 {
 		opt = opts[0]
 	}
-	cyodaReadinessTimeout := opt.ReadinessTimeout
-	if cyodaReadinessTimeout == 0 {
-		cyodaReadinessTimeout = defaultCyodaReadinessTimeout
+	node, err := LaunchCyodaNode(cyodaBin, ks, extraEnv, opt.ReadinessTimeout)
+	if err != nil {
+		return nil, nil, err
 	}
-
-	// The launched, healthy cyoda node, published by the retry loop below. A
-	// monitor goroutine owns cyodaCmd.Wait() and signals exit by closing
-	// cyodaExitedCh — teardown reaps via that channel (kill-no-wait), never a
-	// second Wait().
-	var (
-		cyodaCmd      *exec.Cmd
-		cyodaExitedCh chan struct{}
-		grpcPort      int
-		baseURL       string
-	)
-
-	// Retry the whole launch phase (fresh ports each attempt) to self-heal a
-	// transient FreePort() TOCTOU port collision — identical rationale to the
-	// cluster path; see clusterLaunchAttempts. Racing the health probe against
-	// the child's exit (nodeOutcome) makes a bind-collision death fail fast
-	// instead of stalling the full readiness timeout.
-	launchErr := retryLaunch(clusterLaunchAttempts, func() error {
-		hPort, e := FreePort()
-		if e != nil {
-			return fmt.Errorf("failed to get HTTP port: %w", e)
-		}
-		gPort, e := FreePort()
-		if e != nil {
-			return fmt.Errorf("failed to get gRPC port: %w", e)
-		}
-		// Admin port must be picked too — the default (9091) is fixed, so
-		// parity packages running in parallel (memory, postgres, sqlite, …)
-		// collide on a single host and one subprocess logs "bind: address
-		// already in use" while the others succeed. Isolating the admin port
-		// per fixture mirrors HTTP/gRPC isolation.
-		aPort, e := FreePort()
-		if e != nil {
-			return fmt.Errorf("failed to get admin port: %w", e)
-		}
-
-		// Launch cyoda-go. Subprocess stdout/stderr flow to the test runner's
-		// stderr so go test -v surfaces the binary's log output — critical for
-		// diagnosing failures (5xx responses, startup panics, etc.). Without
-		// this, failures report only the HTTP error code with no server-side
-		// context.
-		cmd := exec.Command(cyodaBin)
-		cmd.WaitDelay = 3 * time.Second
-		cmd.Env = append(CyodaEnv(hPort, gPort, ks), extraEnv...)
-		cmd.Env = append(cmd.Env, fmt.Sprintf("CYODA_ADMIN_PORT=%d", aPort))
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		cmd.Stdout = os.Stderr
-		cmd.Stderr = os.Stderr
-
-		if e := cmd.Start(); e != nil {
-			return fmt.Errorf("failed to start cyoda-go: %w", e)
-		}
-		// Single owner of this process's Wait(): publishes the exit via
-		// close(exitedCh) so both the health race and teardown observe it
-		// without a second Wait(). exitErr is read only after exitedCh's close
-		// is observed (nodeOutcome's exit branch), which happens-after the
-		// store — race-free without extra locking.
-		exitedCh := make(chan struct{})
-		var exitErr error
-		go func() {
-			exitErr = cmd.Wait()
-			close(exitedCh)
-		}()
-
-		// Race the health probe against an early process exit. A child that
-		// dies from a failed bind fails fast here instead of hanging the full
-		// readiness timeout.
-		url := fmt.Sprintf("http://127.0.0.1:%d", hPort)
-		healthDoneCh := make(chan error, 1)
-		go func() {
-			healthDoneCh <- WaitForHTTPHealth(url+"/api/health", cyodaReadinessTimeout)
-		}()
-		if e := nodeOutcome(0, healthDoneCh, exitedCh, func() error { return exitErr }); e != nil {
-			killProcessGroupNoWait(cmd)
-			<-exitedCh // reap: block until the monitor's Wait() returns
-			return e
-		}
-
-		// Attempt succeeded — publish for the compute wiring below and cleanup.
-		cyodaCmd = cmd
-		cyodaExitedCh = exitedCh
-		grpcPort = gPort
-		baseURL = url
-		return nil
-	})
-	if launchErr != nil {
-		return nil, nil, fmt.Errorf("cyoda launch failed: %w", launchErr)
-	}
-	slog.Info("cyoda-go is ready", "pkg", "fixtureutil", "baseURL", baseURL)
-
-	// cyoda is reaped by its monitor goroutine, so teardown kills without
-	// waiting and reaps via the exit signal — never KillProcessGroup, which
-	// would double-Wait.
-	killCyoda := func() {
-		killProcessGroupNoWait(cyodaCmd)
-		<-cyodaExitedCh
-	}
-	cleanup := killCyoda
+	cleanup := node.Kill
 
 	// Mint M2M JWT for compute client.
 	m2mToken, err := MintM2MJWT(ks)
@@ -662,10 +659,9 @@ func LaunchCyodaAndComputeWithBinaries(cyodaBin, computeBin string, ks *JWTKeySe
 		return nil, nil, fmt.Errorf("failed to mint M2M JWT: %w", err)
 	}
 
-	grpcEndpoint := fmt.Sprintf("127.0.0.1:%d", grpcPort)
 	// Callbacks target the same single node that dispatched them.
 	compute, err := StartComputeClient(ComputeClientOpts{
-		ComputeBin: computeBin, GRPCEndpoint: grpcEndpoint, HTTPBase: baseURL, Token: m2mToken,
+		ComputeBin: computeBin, GRPCEndpoint: node.GRPCEndpoint, HTTPBase: node.BaseURL, Token: m2mToken,
 	})
 	if err != nil {
 		cleanup()
@@ -675,14 +671,14 @@ func LaunchCyodaAndComputeWithBinaries(cyodaBin, computeBin string, ks *JWTKeySe
 		// The client owns its own Wait; cyoda is reaped by its monitor
 		// goroutine, so it is torn down kill-only + exit-signal wait.
 		compute.Stop()
-		killCyoda()
+		node.Kill()
 	}
 	slog.Info("compute-test-client is ready", "pkg", "fixtureutil", "controlURL", compute.ControlURL())
 
 	return &LaunchResult{
-		BaseURL:      baseURL,
-		GRPCEndpoint: grpcEndpoint,
-		CyodaCmd:     cyodaCmd,
+		BaseURL:      node.BaseURL,
+		GRPCEndpoint: node.GRPCEndpoint,
+		CyodaCmd:     node.cmd,
 		ComputeCmd:   compute.Cmd(),
 		ComputeBin:   computeBin,
 	}, cleanup, nil
@@ -713,10 +709,9 @@ type ClusterLaunchResult struct {
 	// NodeLogs holds one live capture of each node's combined stdout+stderr,
 	// in the same order as BaseURLs. Each node's output is tee'd to os.Stderr
 	// (unchanged diagnostics) AND into its SyncBuffer here, so a test can read
-	// a node's logs as data — e.g. to positively assert that a scheduled task
-	// fired on a specific peer (the peer-RPC fire path emits a distinctive
-	// log line), which is otherwise invisible at the data plane. Never assert
-	// on token/secret material read from here (Gate 3).
+	// a node's logs as data — e.g. the scheduler incarnation the node
+	// announced at start (IncarnationFromLog). Never assert on token/secret
+	// material read from here (Gate 3).
 	NodeLogs []*SyncBuffer
 	// KillNode SIGKILLs node i's process group and reaps it by waiting on that
 	// node's monitor exit signal (the same kill-no-wait + exit-signal reap the
@@ -727,6 +722,13 @@ type ClusterLaunchResult struct {
 	// returned cleanup still tears down whatever remains safely (killing an
 	// already-dead process group is harmless).
 	KillNode func(i int)
+	// SignalNode sends sig to node i's process group without waiting: SIGTERM
+	// for a graceful shutdown, SIGSTOP / SIGCONT to freeze and resume it.
+	SignalNode func(i int, sig syscall.Signal) error
+	// AwaitNodeExit waits up to within for node i's process to exit, reaping
+	// it through the monitor's exit signal. It returns an error if the
+	// process is still running. within 0 checks without waiting.
+	AwaitNodeExit func(i int, within time.Duration) error
 }
 
 // SyncBuffer is a goroutine-safe in-memory log sink. os/exec copies a
@@ -947,12 +949,14 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 				// forwarded processor/criteria dispatch (A→B) between nodes.
 				"CYODA_DISPATCH_ALLOW_LOOPBACK_FOR_TESTING=true",
 			)
+			if opt.NodeEnv != nil {
+				env = append(env, opt.NodeEnv(i)...)
+			}
 			cmd.Env = env
 			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 			// Tee each node's output to os.Stderr (unchanged diagnostics) AND
 			// into a per-node capture buffer so tests can read node logs as
-			// data — the only harness-honest way to positively assert that a
-			// scheduled task fired on a specific peer node (see ClusterLaunchResult.NodeLogs).
+			// data (see ClusterLaunchResult.NodeLogs).
 			logBuf := &SyncBuffer{}
 			attemptLogBufs[i] = logBuf
 			cmd.Stdout = io.MultiWriter(os.Stderr, logBuf)
@@ -1037,6 +1041,39 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 			<-nd.exitedCh // reap: block until the monitor's Wait() returns
 		}
 	}
+	signalNode := func(i int, sig syscall.Signal) error {
+		if i < 0 || i >= len(nodes) || nodes[i] == nil || nodes[i].cmd == nil || nodes[i].cmd.Process == nil {
+			return fmt.Errorf("signal node %d: no such node", i)
+		}
+		pgid, err := syscall.Getpgid(nodes[i].cmd.Process.Pid)
+		if err != nil {
+			return fmt.Errorf("signal node %d: %w", i, err)
+		}
+		if err := syscall.Kill(-pgid, sig); err != nil {
+			return fmt.Errorf("signal node %d with %v: %w", i, sig, err)
+		}
+		return nil
+	}
+	awaitNodeExit := func(i int, within time.Duration) error {
+		if i < 0 || i >= len(nodes) || nodes[i] == nil || nodes[i].exitedCh == nil {
+			return fmt.Errorf("await node %d: no such node", i)
+		}
+		// An exit already observed wins over a zero wait: a select over two
+		// ready channels would pick one at random.
+		select {
+		case <-nodes[i].exitedCh:
+			return nil
+		default:
+		}
+		timer := time.NewTimer(within)
+		defer timer.Stop()
+		select {
+		case <-nodes[i].exitedCh:
+			return nil
+		case <-timer.C:
+			return fmt.Errorf("node %d is still running %s after the wait began", i, within)
+		}
+	}
 	// cleanup for the node phase; compute wiring below replaces it with a
 	// variant that also tears down the compute-test-client.
 	cleanup := func() {
@@ -1092,5 +1129,7 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 		ComputeCmd:    compute.Cmd(),
 		NodeLogs:      nodeLogBufs,
 		KillNode:      killNode,
+		SignalNode:    signalNode,
+		AwaitNodeExit: awaitNodeExit,
 	}, cleanup, nil
 }
