@@ -114,6 +114,7 @@ type Service struct {
 	latched      bool
 	draining     bool
 	filled       bool // the last claim took every free slot
+	active       int  // run goroutines that have not exited
 
 	slotFreed  chan struct{}
 	drainingCh chan struct{} // closed at shutdown step 1, before the drain reads any run's Unsafe record
@@ -124,7 +125,7 @@ type Service struct {
 	wdDone     chan struct{}
 	wdArm      chan time.Time
 	stopBooks  chan struct{} // closed when shutdown stops waiting for outcomes to be recorded
-	runsWG     sync.WaitGroup
+	runsIdle   chan struct{} // closed once the service drains and no run goroutine is left
 
 	startOnce sync.Once
 	startErr  error // the first Start's error, returned by every later call
@@ -151,6 +152,7 @@ func New(cfg Config, deps Deps) *Service {
 		wdDone:         make(chan struct{}),
 		wdArm:          make(chan time.Time, 1),
 		stopBooks:      make(chan struct{}),
+		runsIdle:       make(chan struct{}),
 	}
 }
 
@@ -215,6 +217,9 @@ func (s *Service) drain(ctx context.Context) {
 		// this order makes those reads miss no dispatch that goes ahead.
 		s.draining = true
 		close(s.drainingCh)
+		if s.active == 0 {
+			close(s.runsIdle)
+		}
 		return true
 	}()
 	if !started {
@@ -243,9 +248,17 @@ func (s *Service) drain(ctx context.Context) {
 		slog.Info("scheduler gave back claims at shutdown", "pkg", "scheduler", "count", n)
 	}
 	cancel()
+	// The heartbeat stops even with a run still live: that run's task is
+	// reclaimed after STALE_AFTER. The watchdog goes on until the last run
+	// goroutine exits, so it cancels a live run before another pnode could
+	// consider this owner stale (§6.3).
 	close(s.stopHB)
 	<-s.hbDone
-	<-s.wdDone
+	select {
+	case <-s.runsIdle:
+		<-s.wdDone
+	default:
+	}
 	if len(keep) > 0 {
 		slog.Warn("scheduler stopped with runs still holding their tasks; another node takes them over after CYODA_SCHEDULER_STALE_AFTER",
 			"pkg", "scheduler", "runs", len(keep))
@@ -259,17 +272,12 @@ func (s *Service) drain(ctx context.Context) {
 }
 
 // waitRuns waits up to d for every run goroutine to end, bookkeeping included.
-// No run is registered after step 1, so the WaitGroup only counts down.
+// No run is registered after step 1, so the count only goes down.
 func (s *Service) waitRuns(ctx context.Context, d time.Duration) bool {
-	done := make(chan struct{})
-	go func() {
-		s.runsWG.Wait()
-		close(done)
-	}()
 	timer := time.NewTimer(d)
 	defer timer.Stop()
 	select {
-	case <-done:
+	case <-s.runsIdle:
 		return true
 	case <-timer.C:
 		return false
@@ -382,7 +390,7 @@ func (s *Service) watchdogLoop() {
 	timer.Stop()
 	for {
 		select {
-		case <-s.stopHB:
+		case <-s.runsIdle:
 			timer.Stop()
 			return
 		case at := <-s.wdArm:
@@ -572,7 +580,7 @@ func (s *Service) registerLocked(t spi.ScheduledTask) *liveRun {
 	}
 	s.runs[r.ref.ClaimToken] = r
 	s.perTenant[t.TenantID]++
-	s.runsWG.Add(1)
+	s.active++
 	s.m.runStarted()
 	if !time.Now().Before(s.wdDeadline) {
 		// The watchdog's deadline passed while the claim was in flight.
@@ -609,7 +617,7 @@ func (s *Service) sweep() {
 // recovered by fire; a panic in the bookkeeping is recovered here. Either way
 // the claim is kept and the node latches (§6.5).
 func (s *Service) run(r *liveRun) {
-	defer s.runsWG.Done()
+	defer s.runExited()
 	start := time.Now()
 	defer s.recoverBookkeeping(r, start)
 	ctx, span := observability.Tracer().Start(r.ctx, "scheduler.run")
@@ -647,6 +655,17 @@ func (s *Service) run(r *liveRun) {
 	s.finish(r, bk, err)
 	span.SetAttributes(attribute.String("outcome", outcome))
 	s.m.runEnded(outcome, time.Since(start))
+}
+
+// runExited counts a run goroutine out. The last one to exit once the service
+// drains closes runsIdle.
+func (s *Service) runExited() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.active--
+	if s.draining && s.active == 0 {
+		close(s.runsIdle)
+	}
 }
 
 // recoverBookkeeping recovers a panic in a run's bookkeeping, and latches the

@@ -384,6 +384,83 @@ func assertKeptAtShutdown(t *testing.T, h *harness, token uuid.UUID) {
 	})
 }
 
+// The heartbeat stops at step 5 even with a run still live, so the watchdog
+// must go on: it cancels the run before another pnode could consider this
+// owner stale. It exits once no run is left.
+func TestDrain_TheWatchdogOutlivesTheDrainWhileARunIsLive(t *testing.T) {
+	cancelled := make(chan struct{})
+	h := newHarness(t, drainConfig(), firerFunc(func(ctx context.Context, _ spi.ScheduledTask, _ int, _ time.Duration) workflow.RunReport {
+		g := workflow.RunGuardFrom(ctx)
+		g.Unsafe.Begin()
+		defer g.Unsafe.End()
+		<-ctx.Done()
+		close(cancelled)
+		return workflow.RunReport{Outcome: workflow.OutcomeFailed, Err: fmt.Errorf("run stopped: %w", ctx.Err())}
+	}))
+	h.svc.deps.CalloutDeadlineMax = 50 * time.Millisecond
+	h.svc.window = 300 * time.Millisecond
+	h.fs.with(func() { h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")} })
+	h.start(t)
+	eventually(t, "the run started", func() bool { return liveRuns(h.svc) == 1 })
+
+	h.svc.Drain(context.Background())
+	select {
+	case <-cancelled:
+		t.Fatal("the exempt run was cancelled before Drain returned")
+	default:
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the watchdog did not cancel the run still live after the drain")
+	}
+	select {
+	case <-h.svc.wdDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the watchdog did not exit once no run was left")
+	}
+}
+
+// Drain leaves no goroutine behind when no run is left: the claim loop, the
+// heartbeat and the watchdog have exited when it returns, whether there was
+// never a run or the runs finished within the drain.
+func TestDrain_NoGoroutineOutlivesADrainWithNoRunLeft(t *testing.T) {
+	for name, due := range map[string][]spi.ScheduledTask{
+		"no run":                        nil,
+		"a run that finished in step 2": {dueTask("t1", "task-1")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.ShutdownDrain = 5 * time.Second
+			started := make(chan struct{}, 1)
+			h := newHarness(t, cfg, firerFunc(func(context.Context, spi.ScheduledTask, int, time.Duration) workflow.RunReport {
+				started <- struct{}{}
+				time.Sleep(20 * time.Millisecond)
+				return fired
+			}))
+			h.fs.with(func() { h.fs.due = due })
+			h.start(t)
+			if due != nil {
+				receive(t, started)
+			}
+			begin := time.Now()
+			h.svc.Drain(context.Background())
+			if d := time.Since(begin); d >= cfg.ShutdownDrain {
+				t.Errorf("Drain took %v; it waits for the runs, not for the whole drain", d)
+			}
+			for what, ch := range map[string]chan struct{}{
+				"claim loop": h.svc.loopDone, "heartbeat": h.svc.hbDone, "watchdog": h.svc.wdDone,
+			} {
+				select {
+				case <-ch:
+				default:
+					t.Errorf("the %s is still running after Drain returned", what)
+				}
+			}
+		})
+	}
+}
+
 // A run cancelled by the latch during the drain is recorded as the latch
 // cancelled it: a counted attempt, not an uncounted shutdown cut. Step 3
 // does not relabel it.
