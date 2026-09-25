@@ -113,14 +113,14 @@ a test in the task that owns it.
    W-3 and T-9.
 3. **A workflow whose processor writes the entity being fired, through a
    callback, followed by an unsafe processor.** There is no hang and no
-   repeat, and the failure stays visible. Owner: E-8.
+   repeat, and the failure stays visible. Owner: E-4.
 4. **A pnode that loses the database for longer than `STALE_AFTER` and comes
    back.** It self-cancels, recreates its liveness record, and makes no
    lost-owner claims until one stale period of clean heartbeats has passed.
-   Owners: R-5 and T-6.
+   Owners: R-6 and T-6.
 5. **A rolling deploy while an unsafe processor is in flight.** The callout is
    not cut, no new unsafe dispatch starts, and the task does not end FAILED.
-   Owners: R-7 and T-8.
+   Owners: R-9 and T-8.
 
 ## Sections
 
