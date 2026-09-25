@@ -161,7 +161,7 @@ func (s *scheduledTaskStore) MarkUnsafe(_ context.Context, ref spi.TaskRef) erro
 	if _, err := fenced(taskView{f: s.f}, ref); err != nil {
 		return err
 	}
-	if s.f.txManager.busyTaskKeys()[k] {
+	if s.f.txManager.taskBusy(k) {
 		return fmt.Errorf("scheduled task %s: %w", ref.ID, spi.ErrTaskBusy)
 	}
 	mk := markKey{task: k, arm: ref.ArmToken}
@@ -189,7 +189,7 @@ func (s *scheduledTaskStore) RecordAttempt(_ context.Context, ref spi.TaskRef, a
 	if err != nil {
 		return err
 	}
-	if s.f.txManager.busyTaskKeys()[k] {
+	if s.f.txManager.taskBusy(k) {
 		return fmt.Errorf("scheduled task %s: %w", ref.ID, spi.ErrTaskBusy)
 	}
 	if !a.NotCounted {

@@ -313,6 +313,22 @@ func (m *TransactionManager) busyTaskKeys() map[taskKey]bool {
 	return busy
 }
 
+// taskBusy reports whether an open transaction has staged a change to k, as
+// busyTaskKeys does for one row. It stops at the first change it finds and
+// allocates nothing. Caller holds factory.entityMu; lock order entityMu → mu.
+func (m *TransactionManager) taskBusy(k taskKey) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, ops := range m.scheduledTaskOps {
+		for _, op := range ops {
+			if op.key == k && !op.touch {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // stageTaskWrite stages one joining write on txID. It passes plan the ops
 // staged so far and appends the ops plan returns, in one mu section: two
 // joining writes on the same transaction therefore never plan from the same

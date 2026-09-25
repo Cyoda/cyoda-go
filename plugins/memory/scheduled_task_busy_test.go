@@ -89,3 +89,70 @@ func TestTasks_C6_ATouchDoesNotMakeARowBusy(t *testing.T) {
 	}
 	fx.rollback(t, taskTenantA, txID)
 }
+
+// A row is busy only for the tenant whose transaction staged the change:
+// another tenant's row with the same task id stays claimable and markable.
+func TestTasks_C6_AnotherTenantsStagedWriteLeavesThisTenantsRowFree(t *testing.T) {
+	fx := newTaskFixture(t)
+	bg := context.Background()
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T")
+	arm(t, bg, fx.sts, taskTenantB, "e1", "T")
+	var cA spi.ScheduledTask
+	for _, c := range claimDue(t, fx.sts, uuid.New(), false) {
+		if c.TenantID == taskTenantA {
+			cA = c
+		}
+	}
+	if cA.Claim == nil {
+		t.Fatal("tenant A's task was not claimed")
+	}
+	arm(t, bg, fx.sts, taskTenantA, "e2", "T")
+	arm(t, bg, fx.sts, taskTenantB, "e2", "T")
+
+	txID, txCtx := fx.begin(t, taskTenantB)
+	if err := fx.sts.DeleteForEntities(txCtx, taskTenantB, []string{"e1", "e2"}); err != nil {
+		t.Fatalf("DeleteForEntities: %v", err)
+	}
+	got := claimDue(t, fx.sts, uuid.New(), false)
+	if len(got) != 1 || got[0].TenantID != taskTenantA || got[0].EntityID != "e2" {
+		t.Fatalf("claimed %+v, want only tenant A's e2", got)
+	}
+	if err := fx.sts.MarkUnsafe(bg, refOf(cA)); err != nil {
+		t.Fatalf("MarkUnsafe on tenant A's row = %v, want nil: tenant B's transaction does not make it busy", err)
+	}
+	fx.rollback(t, taskTenantB, txID)
+}
+
+// RollbackToSavepoint that drops the only change to a row ends its busy
+// answer; the touch staged before the savepoint does not keep it busy.
+func TestTasks_C6_RollbackToSavepointFreesTheRow(t *testing.T) {
+	fx := newTaskFixture(t)
+	bg := context.Background()
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T")
+
+	txID, txCtx := fx.begin(t, taskTenantA)
+	if err := fx.sts.RemoveLife(txCtx, taskTenantA, "e1:S:T", uuid.New()); err != nil {
+		t.Fatalf("RemoveLife: %v", err)
+	}
+	sp, err := fx.tm.Savepoint(txCtx, txID)
+	if err != nil {
+		t.Fatalf("Savepoint: %v", err)
+	}
+	if err := fx.sts.DeleteForEntities(txCtx, taskTenantA, []string{"e1"}); err != nil {
+		t.Fatalf("DeleteForEntities: %v", err)
+	}
+	if got := claimDue(t, fx.sts, uuid.New(), false); len(got) != 0 {
+		t.Fatalf("claimed %+v while the transaction had staged its removal", got)
+	}
+	if err := fx.tm.RollbackToSavepoint(txCtx, txID, sp); err != nil {
+		t.Fatalf("RollbackToSavepoint: %v", err)
+	}
+	got := claimDue(t, fx.sts, uuid.New(), false)
+	if len(got) != 1 {
+		t.Fatalf("claimed %d tasks after RollbackToSavepoint, want 1", len(got))
+	}
+	if err := fx.sts.MarkUnsafe(bg, refOf(got[0])); err != nil {
+		t.Fatalf("MarkUnsafe after RollbackToSavepoint = %v, want nil", err)
+	}
+	fx.rollback(t, taskTenantA, txID)
+}
