@@ -351,10 +351,15 @@ fails with `500 SCHEDULE_FUNCTION_INVALID_RESULT` (see that error topic).
   present (`VALIDATION_FAILED`).
 - `schedule` and `manual: true` are mutually exclusive
   (`VALIDATION_FAILED`).
-- Static mode: `delayMs <= 0` is rejected (`VALIDATION_FAILED`);
-  `timeoutMs` need only be `>= 0`.
+- `timeoutMs`, when present, must be `>= 0` (`VALIDATION_FAILED`) —
+  checked whichever mode sets the schedule.
+- Static mode: `delayMs` must be `> 0` (`VALIDATION_FAILED`).
 - Function mode: `name` and `calculationNodesTags` must be non-empty,
-  and `resultKind` must be `"Schedule"` (`VALIDATION_FAILED`).
+  and `resultKind` must be `"Schedule"` (`VALIDATION_FAILED`); a
+  `delayMs` supplied alongside `function` must not be negative
+  (`VALIDATION_FAILED`) even though it has no effect — `function`
+  computes its own fire/expiry time and `delayMs` is otherwise ignored
+  once a function is present.
 
 **Engine behaviour (applies to both timing modes).** A scheduled
 transition is driven by a background scheduler, independently of cascade
