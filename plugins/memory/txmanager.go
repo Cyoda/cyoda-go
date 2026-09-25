@@ -751,6 +751,12 @@ func (m *TransactionManager) Join(ctx context.Context, txID string) (context.Con
 // Commit validates the transaction against the committed log for SI+FCW conflicts,
 // flushes the write buffer and deletes to the entity store, and records the
 // commit in the log.
+//
+// A commit that aborts — on a conflict or a unique-key violation — applies
+// nothing and leaves the transaction rolled back as well as closed, so a
+// later call with its ctx answers spi.ErrTxRolledBack, never
+// spi.ErrTxAlreadyCommitted. Its state is discarded as Rollback discards it,
+// so a Rollback after the abort answers spi.ErrTxNotFound.
 func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 	// 1. Look up the active transaction and mark as committing (TOCTOU guard).
 	uc := spi.GetUserContext(ctx)
@@ -828,6 +834,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 					}
 				}
 				if conflict {
+					tx.RolledBack = true // aborted, not committed: see Commit's doc
 					delete(m.committing, txID)
 					delete(m.active, txID)
 					delete(m.savepoints, txID)
@@ -862,6 +869,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			func() {
 				m.mu.Lock()
 				defer m.mu.Unlock()
+				tx.RolledBack = true // aborted, not committed: see Commit's doc
 				delete(m.committing, txID)
 				delete(m.active, txID)
 				delete(m.savepoints, txID)
