@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
 )
 
 // scheduler_harness_test.go gives a scheduler test a stack of its own on a
@@ -65,18 +66,18 @@ func newSchedDB(t *testing.T) *schedDB {
 }
 
 // schedulerTuning is the scheduler timing every scheduler stack runs with:
-// the parity values (fixtureutil.Tuned*), one try per callout, and 200ms of
-// patience for a compute node.
+// the parity values (fixtureutil.Tuned*), a 1s shutdown drain, one try per
+// callout, and the single-node patience for a compute node.
 func schedulerTuning(cfg *app.Config) {
 	cfg.Scheduler.Enabled = true
-	cfg.Scheduler.ScanInterval = 50 * time.Millisecond
-	cfg.Scheduler.HeartbeatInterval = time.Second
-	cfg.Scheduler.StaleAfter = 53 * time.Second
-	cfg.Scheduler.RetryDelay = time.Second
-	cfg.Scheduler.RetryDelayMax = 4 * time.Second
+	cfg.Scheduler.ScanInterval = fixtureutil.TunedScanInterval
+	cfg.Scheduler.HeartbeatInterval = fixtureutil.TunedHeartbeatInterval
+	cfg.Scheduler.StaleAfter = fixtureutil.TunedStaleAfter
+	cfg.Scheduler.RetryDelay = fixtureutil.TunedRetryDelay
+	cfg.Scheduler.RetryDelayMax = fixtureutil.TunedRetryDelayMax
 	cfg.Scheduler.ShutdownDrain = time.Second
 	cfg.Callout.FixedNumRetries = 0
-	cfg.Cluster.DispatchWaitTimeout = 200 * time.Millisecond
+	cfg.Cluster.DispatchWaitTimeout = fixtureutil.TunedDispatchWaitTimeout
 }
 
 // newSchedulerHarness is a stack with a live scheduler on a database of its
@@ -133,7 +134,8 @@ func (s *schedDB) task(t *testing.T, entityID, transition string) (taskRow, bool
 		SELECT st.id, st.status, COALESCE(st.last_error, ''), COALESCE(st.failure_reason, ''),
 		       st.arm_token::text, COALESCE(st.claim_token::text, ''), COALESCE(st.claim_owner::text, ''),
 		       st.attempts, st.lost_owners, st.partial_commit,
-		       EXISTS (SELECT 1 FROM scheduled_task_marks m WHERE m.task_id = st.id AND m.arm_token = st.arm_token)
+		       EXISTS (SELECT 1 FROM scheduled_task_marks m
+		                WHERE m.tenant_id = st.tenant_id AND m.task_id = st.id AND m.arm_token = st.arm_token)
 		  FROM scheduled_tasks st
 		 WHERE st.tenant_id = $1 AND st.entity_id = $2 AND st.transition = $3`,
 		harnessTenant, entityID, transition,

@@ -1177,6 +1177,11 @@ func newStandaloneApp(t *testing.T, configure func(*app.Config)) *standaloneApp 
 	t.Cleanup(srv.Close)
 	cfg.HTTPPort = srv.Listener.Addr().(*net.TCPAddr).Port
 
+	// No scheduler: this stack is on the shared database, where a claim
+	// (cross-tenant) would take tasks other tests' stacks armed. See
+	// newCalloutHarness.
+	cfg.Scheduler.Enabled = false
+
 	if configure != nil {
 		configure(&cfg)
 	}

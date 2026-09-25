@@ -233,10 +233,11 @@ func newCalloutHarness(t *testing.T, configure func(*app.Config)) *callbackHarne
 	cfg.GRPC.Port = grpcLis.Addr().(*net.TCPAddr).Port
 
 	// No scheduler unless the test asks for one. A claim is cross-tenant, and
-	// every stack but the one a scheduler test builds on a database of its own
-	// (newSchedulerHarness) shares one PostgreSQL database: a scheduler here
-	// would claim, and run through this stack's engine, tasks another test's
-	// stack armed.
+	// the PostgreSQL stacks of this package (this harness, newStandaloneApp,
+	// the TestMain app) share one database; only newSchedulerHarness and
+	// newStackOn give a stack a database of its own. A scheduler on the shared
+	// database would claim, and run through this stack's engine, tasks another
+	// test's stack armed. newStandaloneApp and TestMain turn theirs off too.
 	cfg.Scheduler.Enabled = false
 
 	if configure != nil {
