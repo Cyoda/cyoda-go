@@ -1567,7 +1567,8 @@ paths:
           description: >-
             Conflict (`CONFLICT`, retryable). Another write committed first to
             the entity or to one of its scheduled tasks — the scheduler changes
-            a task when it claims, records, fails or gives it back. The server
+            a task when it claims it, stamps a segment of its run, records an
+            attempt, fails it or gives it back. The server
             retries the delete up to 3 times before it answers 409; retry the
             request. A request that joins an open transaction (`X-Tx-Token`) is
             not retried on the server.

@@ -20,9 +20,10 @@ func operationByID(t *testing.T, doc *openapi3.T, id string) *openapi3.Operation
 	return nil
 }
 
-// TestConflictCells asserts the 409 cells of spec §8.1: each operation that
-// can lose a task-row race declares a 409 problem response, and says it is
-// retryable and what it races.
+// TestConflictCells asserts that each operation that can lose a race with
+// the scheduler over a scheduled-task row declares a 409 problem response,
+// and that its description says the answer is CONFLICT, that it is
+// retryable, and that it races the scheduler.
 func TestConflictCells(t *testing.T) {
 	doc, err := GetSwagger()
 	if err != nil {
