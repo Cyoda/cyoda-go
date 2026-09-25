@@ -57,6 +57,11 @@ func TestValidateScheduler(t *testing.T) {
 	if err := ValidateScheduler(atMin); err != nil {
 		t.Fatalf("STALE_AFTER at its minimum rejected: %v", err)
 	}
+	flatRetry := defaultSchedulerConfig()
+	flatRetry.RetryDelayMax = flatRetry.RetryDelay
+	if err := ValidateScheduler(flatRetry); err != nil {
+		t.Fatalf("RETRY_DELAY_MAX equal to RETRY_DELAY rejected: %v", err)
+	}
 	noDrain := defaultSchedulerConfig()
 	noDrain.ShutdownDrain = 0
 	if err := ValidateScheduler(noDrain); err != nil {
