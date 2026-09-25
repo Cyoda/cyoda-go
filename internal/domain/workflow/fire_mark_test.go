@@ -274,3 +274,26 @@ func TestUnsafeMark_CancelledBeforeMark_NoMarkNoDispatch(t *testing.T) {
 		t.Errorf("p1 dispatched %d times, want 0", n)
 	}
 }
+
+// A savepoint that cannot be created dispatches nothing, so the ASYNC_NEW_TX
+// site writes no mark: the mark comes after the savepoint.
+func TestUnsafeMark_AsyncNewTx_SavepointFails_NoMark(t *testing.T) {
+	ext := &scriptedExtProc{}
+	env := newRunEnvWith(t, ext, nil, func(tm spi.TransactionManager) spi.TransactionManager {
+		return failingSavepoints{TransactionManager: tm, failCreate: errors.New("savepoint refused")}
+	})
+	claimed := env.claimed(t, "sp-e1", oneHopWF("CLOSED",
+		[]spi.ProcessorDefinition{unsafeProc("p1", ExecutionModeAsyncNewTx)}, nil))
+	store := &scriptedMarkStore{ScheduledTaskStore: env.sts}
+
+	r := newTestRun(store, claimed).fire(env.engine, env.ctx, claimed)
+	if r.Outcome != OutcomeFailed || !errors.Is(r.Err, ErrSavepointInfra) || r.MarkHeld {
+		t.Fatalf("report = %+v, want failed on the savepoint without a mark", r)
+	}
+	if n := store.count(); n != 0 {
+		t.Errorf("MarkUnsafe calls = %d, want 0", n)
+	}
+	if n := ext.count("p1"); n != 0 {
+		t.Errorf("p1 dispatched %d times, want 0", n)
+	}
+}
