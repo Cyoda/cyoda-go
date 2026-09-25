@@ -232,6 +232,13 @@ func newCalloutHarness(t *testing.T, configure func(*app.Config)) *callbackHarne
 	}
 	cfg.GRPC.Port = grpcLis.Addr().(*net.TCPAddr).Port
 
+	// No scheduler unless the test asks for one. A claim is cross-tenant, and
+	// every stack but the one a scheduler test builds on a database of its own
+	// (newSchedulerHarness) shares one PostgreSQL database: a scheduler here
+	// would claim, and run through this stack's engine, tasks another test's
+	// stack armed.
+	cfg.Scheduler.Enabled = false
+
 	if configure != nil {
 		configure(&cfg)
 	}
@@ -242,12 +249,11 @@ func newCalloutHarness(t *testing.T, configure func(*app.Config)) *callbackHarne
 
 	go func() { _ = a.GRPCServer().Serve(grpcLis) }()
 	t.Cleanup(func() { _ = a.Close() })
-	// t.Cleanup runs LIFO: this Shutdown (stops the scheduler and TTL/tx
-	// reapers) is registered after Close so it runs BEFORE Close tears down
-	// the store pool. Without it the scheduler's 1s scan loop keeps ticking
-	// against a closed pool and spams ERROR logs for the rest of the test
-	// binary's life (mirrors the app.New/Shutdown/Close ordering used by
-	// cors_e2e_test.go and iam_gated_fixtures_test.go).
+	// t.Cleanup runs LIFO: this Shutdown is registered after Close so it runs
+	// BEFORE Close. Shutdown stops the scheduler, if the test enabled one, and
+	// the TTL/tx reapers before Close tears down the store pool (mirrors the
+	// app.New/Shutdown/Close ordering used by cors_e2e_test.go and
+	// iam_gated_fixtures_test.go).
 	t.Cleanup(a.Shutdown)
 
 	h.grpcAddr = grpcLis.Addr().String()
@@ -265,13 +271,8 @@ func newCalloutHarness(t *testing.T, configure func(*app.Config)) *callbackHarne
 }
 
 // newCallbackHarnessConfigured is newCallbackHarness with an optional cfg
-// mutator applied to app.DefaultConfig() just before app.New — e.g. Task
-// 9.2's expiry-elapsed-before-scan scenario disables this stack's built-in
-// scheduler (cfg.Scheduler.Enabled = false) so it can drive its own
-// bespoke, precisely-timed scheduler.Service instead (mirrors
-// TestE2E_ScheduledTransition_RestartDurability's approach), eliminating
-// the race window a live default-cadence scheduler ticking mid-flight would
-// otherwise create. configure may be nil (identical to newCallbackHarness).
+// mutator applied to app.DefaultConfig() just before app.New. configure may
+// be nil (identical to newCallbackHarness).
 func newCallbackHarnessConfigured(t *testing.T, configure func(*app.Config)) *callbackHarness {
 	t.Helper()
 	h := newCalloutHarness(t, configure)
