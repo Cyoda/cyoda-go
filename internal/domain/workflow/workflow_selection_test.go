@@ -561,16 +561,16 @@ func TestFireScheduled_UnresolvableWorkflowLeavesTaskForRetry(t *testing.T) {
 }
 
 // TestFireScheduled_NeverFiresAManualTransition pins that the scheduler and
-// the arm side agree on what is fireable. reconcileScheduledTasks arms only
-// transitions that carry a Schedule and are neither manual nor disabled; the
-// fire door must apply the same test, or a task that outlives the definition
-// that armed it can drive a MANUAL transition — running its processors and
-// moving the entity with nobody having asked.
+// the arm side agree on what is fireable. Both apply armsOnSchedule; a fire
+// door that matched by name alone would let a task that outlives the
+// definition that armed it drive a MANUAL transition — running its processors
+// and moving the entity with nobody having asked.
 //
-// Reachable through the ordinary API: kind-b-wf arms AutoClose; a write
-// re-binds the entity to kind-a-wf, where the same name is manual. Reconcile
-// does not cancel the task, because it only cancels rows whose SourceState
-// the entity has left — and here it has not moved.
+// Reachable through the ordinary API: kind-b-wf arms AutoClose; the entity is
+// re-bound to kind-a-wf, where the same name is manual. Reconcile removes the
+// task at the entity's next write, but a workflow import that re-binds the
+// entity makes no write to it, and keeps the task because kind-b-wf still
+// arms AutoClose.
 func TestFireScheduled_NeverFiresAManualTransition(t *testing.T) {
 	const armMs = int64(1_700_000_000_000)
 	const delayMs = int64(1000)
