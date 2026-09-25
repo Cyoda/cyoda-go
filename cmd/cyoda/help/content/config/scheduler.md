@@ -7,6 +7,7 @@ see_also:
   - config.cluster
   - config.grpc
   - run
+  - scheduled-tasks
 ---
 
 # config.scheduler
@@ -31,3 +32,4 @@ config.scheduler — scan-loop cadence, coordinator/distribution strategy, and e
 - config.cluster
 - config.grpc
 - run
+- scheduled-tasks
