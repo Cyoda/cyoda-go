@@ -127,6 +127,12 @@ func runCallCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 		return ctx, func() {}
 	}
 	callCtx, cancel := context.WithCancel(ctx)
+	if g.cancelled() {
+		// Already cancelled: the callout must see it from its first
+		// instruction, not once a watcher goroutine has been scheduled.
+		cancel()
+		return callCtx, cancel
+	}
 	go func() {
 		select {
 		case <-g.Done:

@@ -200,3 +200,19 @@ func TestRunCancel_CalloutsAfterCBDSeeTheCancellation(t *testing.T) {
 		})
 	}
 }
+
+// A run cancelled before the callout starts hands the callout a context that
+// is already cancelled, not one that is cancelled a moment later.
+func TestRunCallCtx_AlreadyCancelledRun_ContextCancelledOnReturn(t *testing.T) {
+	done := make(chan struct{})
+	close(done)
+	ctx := WithRunGuard(context.Background(), &RunGuard{Done: done})
+	for i := 0; i < 1000; i++ {
+		callCtx, stop := runCallCtx(ctx)
+		err := callCtx.Err()
+		stop()
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("iteration %d: callCtx.Err() = %v right after runCallCtx, want context.Canceled", i, err)
+		}
+	}
+}
