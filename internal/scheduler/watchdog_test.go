@@ -3,6 +3,8 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -83,27 +85,48 @@ func TestService_OneFailedHeartbeatDuringAClaimDoesNotCancelItsRuns(t *testing.T
 	}
 }
 
-// A claim whose reply arrives after the watchdog fired: its runs are
-// cancelled at once, as self-cancelled.
-func TestService_ClaimReplyAfterTheWatchdogFiredIsSelfCancelled(t *testing.T) {
-	h := newHarness(t, testConfig(), firerFunc(cancelOrFire))
+// A claim whose reply arrives after the watchdog's deadline passed is not
+// started: it never ran, so it is given back at once, uncounted, and no run
+// is counted as self_cancelled for it.
+func TestService_ClaimReplyAfterTheWatchdogFiredIsGivenBackWithoutRunning(t *testing.T) {
+	var fires atomic.Int32
+	h := newHarness(t, testConfig(), firerFunc(func(context.Context, spi.ScheduledTask, int, time.Duration) workflow.RunReport {
+		fires.Add(1)
+		return fired
+	}))
 	outcomes := withRunMetrics(t, h)
 	h.svc.window = 50 * time.Millisecond
+	block := make(chan struct{})
+	h.fs.with(func() {
+		h.fs.claimBlock = block
+		h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")}
+	})
 	h.start(t)
-	eventually(t, "healthy", h.svc.isHealthy)
+	eventually(t, "a claim in flight", func() bool { return len(h.fs.claimed()) == 1 })
 	h.fs.with(func() { h.fs.hbErr = errors.New("heartbeat: connection refused") })
 	eventually(t, "a failed heartbeat", func() bool { return h.fs.heartbeatFailures() >= 1 })
 	time.Sleep(2 * h.svc.window) // past the last in-time heartbeat's deadline
+	from := len(h.fs.giveBackCalls())
+	close(block)
 
-	runs, _ := h.svc.register([]spi.ScheduledTask{claimedTask(h, "t1", "task-1")}, 1)
-	for _, r := range runs {
-		go h.svc.run(r)
+	token := h.fs.claimed()[0]
+	eventually(t, "a give-back after the claim returned", func() bool { return len(h.fs.giveBackCalls()) > from })
+	if keep := h.fs.giveBackCalls()[from]; slices.Contains(keep, token) {
+		t.Errorf("the give-back kept %v; a claim that never ran is given back", keep)
 	}
-	eventually(t, "the run's attempt", func() bool { return len(h.fs.attemptsRecorded()) == 1 })
-	if a := h.fs.attemptsRecorded()[0]; a.NotCounted || a.Error != cancelledText {
-		t.Errorf("attempt = %+v, want a counted attempt with %q", a, cancelledText)
+	time.Sleep(50 * time.Millisecond)
+	if n := fires.Load(); n != 0 {
+		t.Errorf("%d runs fired for a claim that returned after the watchdog's deadline", n)
 	}
-	eventually(t, "the run counted as self_cancelled", func() bool { return outcomes()[outcomeSelfCancelled] == 1 })
+	if a, f := len(h.fs.attemptsRecorded()), len(h.fs.failsRecorded()); a+f != 0 {
+		t.Errorf("a claim that never ran wrote %d attempts and %d failures", a, f)
+	}
+	if n := outcomes()[outcomeSelfCancelled]; n != 0 {
+		t.Errorf("%d runs counted as self_cancelled for a task that never started", n)
+	}
+	if n := liveRuns(h.svc); n != 0 {
+		t.Errorf("%d live runs, want none", n)
+	}
 }
 
 // A hung heartbeat never reports failure; the watchdog alone stops claims.
