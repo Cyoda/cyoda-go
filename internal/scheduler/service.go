@@ -87,6 +87,7 @@ type liveRun struct {
 	// Guarded by Service.mu.
 	reason cancelReason
 	ended  bool // the fire has returned
+	exited bool // the run goroutine has returned, bookkeeping included
 	keep   bool // never given back: the run panicked, or the store rejected its outcome
 }
 
@@ -101,8 +102,11 @@ type Service struct {
 	// stepFourMargin is the part of the step-4 bound past the longest
 	// callout in flight: CommitBudget + 15s.
 	stepFourMargin time.Duration
-	m              *metrics
-	store          spi.ScheduledTaskStore
+	// bookWait bounds step 5's wait for outcome writes under way: one
+	// store-call budget.
+	bookWait time.Duration
+	m        *metrics
+	store    spi.ScheduledTaskStore
 
 	mu           sync.Mutex
 	started      bool
@@ -115,6 +119,7 @@ type Service struct {
 	draining     bool
 	filled       bool // the last claim took every free slot
 	active       int  // run goroutines that have not exited
+	booking      int  // run goroutines whose fire has returned and that have not exited
 
 	slotFreed  chan struct{}
 	drainingCh chan struct{} // closed at shutdown step 1, before the drain reads any run's Unsafe record
@@ -126,6 +131,7 @@ type Service struct {
 	wdArm      chan time.Time
 	stopBooks  chan struct{} // closed when shutdown stops waiting for outcomes to be recorded
 	runsIdle   chan struct{} // closed once the service drains and no run goroutine is left
+	bookLeft   chan struct{} // poked when a run goroutine whose fire has returned exits
 
 	startOnce sync.Once
 	startErr  error // the first Start's error, returned by every later call
@@ -141,6 +147,7 @@ func New(cfg Config, deps Deps) *Service {
 		window:         watchdogWindow(cfg.StaleAfter),
 		sweepEvery:     sweepInterval,
 		stepFourMargin: common.CommitBudget + shutdownTail,
+		bookWait:       storeCallBudget,
 		runs:           make(map[uuid.UUID]*liveRun),
 		perTenant:      make(map[spi.TenantID]int),
 		slotFreed:      make(chan struct{}, 1),
@@ -153,6 +160,7 @@ func New(cfg Config, deps Deps) *Service {
 		wdArm:          make(chan time.Time, 1),
 		stopBooks:      make(chan struct{}),
 		runsIdle:       make(chan struct{}),
+		bookLeft:       make(chan struct{}, 1),
 	}
 }
 
@@ -249,6 +257,10 @@ func (s *Service) drain(ctx context.Context) {
 		s.waitRuns(ctx, s.stepFourBound())
 	}
 	close(s.stopBooks)
+	// A run still writing its outcome holds its task row, and GiveBackIdle
+	// skips a held row. Wait for those writes to end, so that no task is
+	// left RUNNING under an owner that step 5 retires.
+	s.waitBooks(s.bookWait)
 
 	// Step 5: give back the claims whose run ended without a recorded outcome,
 	// stop the heartbeat, and retire the owner if nothing still holds a claim.
@@ -329,14 +341,36 @@ func (s *Service) stepFourBound() time.Duration {
 	return longest + s.stepFourMargin
 }
 
+// waitBooks waits up to d for every run whose fire has returned to leave its
+// bookkeeping. Bookkeeping has been told to stop, so each such run makes at
+// most the write attempt already under way.
+func (s *Service) waitBooks(d time.Duration) {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	for s.inBookkeeping() {
+		select {
+		case <-s.bookLeft:
+		case <-timer.C:
+			return
+		}
+	}
+}
+
+func (s *Service) inBookkeeping() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.booking > 0
+}
+
 // finalKeep releases every run that ended without a recorded outcome and
-// returns the claims that must stay: runs still live, and kept runs.
+// returns the claims that must stay: runs still live or still writing their
+// outcome, and kept runs.
 func (s *Service) finalKeep() []uuid.UUID {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	keep := make([]uuid.UUID, 0, len(s.runs))
 	for token, r := range s.runs {
-		if !r.ended || r.keep {
+		if !r.exited || r.keep {
 			keep = append(keep, token)
 			continue
 		}
@@ -637,7 +671,7 @@ func (s *Service) sweep() {
 // recovered by fire; a panic in the bookkeeping is recovered here. Either way
 // the claim is kept and the node latches (§6.5).
 func (s *Service) run(r *liveRun) {
-	defer s.runExited()
+	defer s.runExited(r)
 	start := time.Now()
 	defer s.recoverBookkeeping(r, start)
 	ctx, span := observability.Tracer().Start(r.ctx, "scheduler.run")
@@ -677,11 +711,20 @@ func (s *Service) run(r *liveRun) {
 	s.m.runEnded(outcome, time.Since(start))
 }
 
-// runExited counts a run goroutine out. The last one to exit once the service
-// drains closes runsIdle.
-func (s *Service) runExited() {
+// runExited counts a run goroutine out, and wakes a drain waiting for runs to
+// leave their bookkeeping. The last one to exit once the service drains
+// closes runsIdle.
+func (s *Service) runExited(r *liveRun) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	r.exited = true
+	if r.ended {
+		s.booking--
+		select {
+		case s.bookLeft <- struct{}{}:
+		default:
+		}
+	}
 	s.active--
 	if s.draining && s.active == 0 {
 		close(s.runsIdle)
@@ -714,6 +757,7 @@ func (s *Service) markEnded(r *liveRun) (cancelReason, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r.ended = true
+	s.booking++
 	return r.reason, s.draining
 }
 

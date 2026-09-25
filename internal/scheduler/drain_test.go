@@ -671,3 +671,66 @@ func TestDrain_AStartAfterADrainDoesNothing(t *testing.T) {
 		t.Errorf("%d heartbeats and %d claims after a Start that followed a Drain", n, c)
 	}
 }
+
+// An outcome write still open at step 5 holds its row, and GiveBackIdle skips
+// a held row. Step 5 waits for it, so the owner is not retired with a task
+// left RUNNING under it: another pnode would count a lost owner.
+func TestDrain_AnOutcomeWriteOpenAtStepFiveLeavesNoTaskUnderARetiredOwner(t *testing.T) {
+	tokens := make(chan uuid.UUID, 1)
+	h := newHarness(t, drainConfig(), firerFunc(func(ctx context.Context, task spi.ScheduledTask, _ int, _ time.Duration) workflow.RunReport {
+		tokens <- task.Claim.Token
+		return failedOnCancel(ctx)
+	}))
+	block := make(chan struct{})
+	h.fs.with(func() {
+		h.fs.outcomeBlock = block
+		h.fs.outcomeErrs = []error{errors.New("record attempt: connection reset")}
+		h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")}
+	})
+	h.start(t)
+	token := receive(t, tokens)
+
+	// Held past step 4 (20ms drain + 100ms margin), then it fails. Step 5
+	// goes on as soon as the write ends, not at the end of its wait.
+	h.svc.bookWait = 10 * time.Second
+	release := time.AfterFunc(400*time.Millisecond, func() { close(block) })
+	t.Cleanup(func() { release.Stop() })
+	begin := time.Now()
+	h.svc.Drain(context.Background())
+	if d := time.Since(begin); d > 5*time.Second {
+		t.Errorf("Drain took %v; step 5 waited out its bound after the write ended", d)
+	}
+	h.fs.with(func() {
+		if h.fs.retired != 1 {
+			t.Errorf("RetireOwner calls = %d, want 1", h.fs.retired)
+		}
+		if len(h.fs.heldAtRetire) != 0 {
+			t.Errorf("the owner retired with %d tasks RUNNING under it", len(h.fs.heldAtRetire))
+		}
+	})
+	if !slices.Contains(h.fs.givenBackTokens(), token) {
+		t.Error("the claim whose outcome write failed was not given back")
+	}
+}
+
+// An outcome write still open when step 5's wait runs out keeps its claim:
+// it is not given back under a held row, and the owner is not retired.
+func TestDrain_AnOutcomeWriteOpenPastTheWaitKeepsItsClaim(t *testing.T) {
+	tokens := make(chan uuid.UUID, 1)
+	h := newHarness(t, drainConfig(), firerFunc(func(ctx context.Context, task spi.ScheduledTask, _ int, _ time.Duration) workflow.RunReport {
+		tokens <- task.Claim.Token
+		return failedOnCancel(ctx)
+	}))
+	h.svc.bookWait = 50 * time.Millisecond
+	block := make(chan struct{})
+	h.fs.with(func() {
+		h.fs.outcomeBlock = block
+		h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")}
+	})
+	h.start(t)
+	t.Cleanup(func() { close(block) })
+	token := receive(t, tokens)
+
+	h.svc.Drain(context.Background())
+	assertKeptAtShutdown(t, h, token)
+}

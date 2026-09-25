@@ -358,6 +358,8 @@ func newHarness(t *testing.T, cfg Config, firer Firer) *harness {
 	svc.window = time.Minute
 	// Step 4 waits CommitBudget + 15s past the longest callout in production.
 	svc.stepFourMargin = 100 * time.Millisecond
+	// Step 5 waits one store-call budget for outcome writes under way.
+	svc.bookWait = time.Second
 	return &harness{svc: svc, fs: fs, flag: flag, mem: mem}
 }
 
