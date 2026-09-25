@@ -17,8 +17,10 @@ import (
 // scheduler builds it from the task it claimed and attaches it with
 // WithRunGuard before it calls FireScheduledTransition. The engine reads it
 // wherever a run differs from a client request: the re-read at the start of
-// each segment and the task-row writes. At a segment boundary it is found by
-// the transaction id, through Engine.runTxs, not from the context.
+// each segment and the task-row writes. Every commit of a run, each segment
+// commit and the final commit (commitRun), finds it by the id of the
+// transaction it commits, through Engine.runTxs, not from the context; so does
+// the first read of each segment after the first.
 //
 // Ref names this claim of this life. Store is the scheduled-task store the
 // guarded calls use; the context each call is given decides whether it joins
@@ -317,9 +319,10 @@ func beforeDispatch(ctx context.Context, proc spi.ProcessorDefinition) (dispatch
 }
 
 // runTxGuards maps a transaction id to the guard of the scheduled run that
-// began it. The segment commit reads it by the id of the transaction it
-// commits, so every commit of a run's transaction is stamped and checks the
-// run's cancellation, whichever call chain reaches it (spec §5.2). The zero
+// began it. Every commit of a run, each segment commit and the final commit
+// (commitRun), reads it by the id of the transaction it commits, so every
+// commit of a run's transaction checks the run's cancellation, and every
+// segment commit is stamped, whichever call chain reaches it (spec §5.2). The zero
 // value is ready for use.
 type runTxGuards struct {
 	mu sync.Mutex

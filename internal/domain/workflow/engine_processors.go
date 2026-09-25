@@ -546,9 +546,13 @@ func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, 
 	// committing, and the run classifies the refusal with a non-joining
 	// re-read (fire_scheduled.go supersededBy). The guard is found by the
 	// transaction, not the context (spec §5.2).
+	// partial is read once: the stamp and PartialCommit below record the same
+	// segment.
 	g := e.runTxs.forTx(txID)
+	partial := false
 	if g != nil {
-		if err := g.Store.StampSegment(ctx, g.Ref, g.firedTransitionDone.Load()); err != nil {
+		partial = g.firedTransitionDone.Load()
+		if err := g.Store.StampSegment(ctx, g.Ref, partial); err != nil {
 			if errors.Is(err, spi.ErrStaleClaim) || errors.Is(err, spi.ErrConflict) {
 				return fmt.Errorf("commit-before-dispatch: stamp scheduled task: %w", err)
 			}
@@ -592,7 +596,7 @@ func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, 
 	}); err != nil {
 		return err
 	}
-	if g != nil && g.firedTransitionDone.Load() {
+	if partial {
 		g.partialCommitted.Store(true)
 	}
 	return nil
