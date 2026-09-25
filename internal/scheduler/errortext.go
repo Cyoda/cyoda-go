@@ -28,9 +28,9 @@ func internalErrorText(ticket uuid.UUID) string {
 }
 
 // recordedError maps a run's failure to lastError, which tenant users can read.
-// The first matching row applies. Only the last row mints a ticket; the caller
-// logs the full error at ERROR under it. The other rows are client-safe text
-// and are logged at WARN.
+// err must be non-nil. The first matching row applies. Only the last row
+// mints a ticket; the caller logs the full error at ERROR under it. The other
+// rows are client-safe text and are logged at WARN.
 func recordedError(err error) (text string, ticket uuid.UUID, warnOnly bool) {
 	if errors.Is(err, context.Canceled) {
 		return cancelledText, uuid.Nil, true
@@ -40,7 +40,15 @@ func recordedError(err error) (text string, ticket uuid.UUID, warnOnly bool) {
 	}
 	var failure *contract.CalloutFailure
 	if errors.As(err, &failure) {
-		return failure.Message, uuid.Nil, true
+		var cause *common.AppError
+		internalCause := errors.As(failure.Err, &cause) && cause.Level != common.LevelOperational
+		if !internalCause {
+			return failure.Message, uuid.Nil, true
+		}
+		// The cause is a LevelInternal or LevelFatal AppError: this pnode's
+		// own failure, not a client-safe verdict from a compute node. Fall
+		// through to the ticket row below, which mints a ticket and lets the
+		// caller log the full cause at ERROR under it.
 	}
 	var appErr *common.AppError
 	if errors.As(err, &appErr) && appErr.Level == common.LevelOperational {

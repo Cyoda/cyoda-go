@@ -74,6 +74,53 @@ func TestRecordedError_AnythingElseIsATicketOnly(t *testing.T) {
 	}
 }
 
+func TestRecordedError_CalloutFailureInternalCauseGetsATicket(t *testing.T) {
+	t.Run("an Internal AppError cause falls through to the ticket row", func(t *testing.T) {
+		internal := common.Internal("failed to mint transaction pass", errors.New("disk full at /var/lib/pg"))
+		err := &contract.CalloutFailure{Kind: contract.NoAnswer, Code: internal.Code, Message: internal.Message, Err: internal}
+
+		text, ticket, warnOnly := recordedError(err)
+		if warnOnly || ticket == uuid.Nil {
+			t.Fatalf("recordedError = (%q, %s, %v), want a ticket and ERROR", text, ticket, warnOnly)
+		}
+		if want := internalErrorText(ticket); text != want {
+			t.Errorf("text = %q, want %q", text, want)
+		}
+	})
+
+	t.Run("a Fatal AppError cause falls through to the ticket row", func(t *testing.T) {
+		fatal := common.Fatal("unrecoverable", errors.New("panic recovered: nil pointer"))
+		err := &contract.CalloutFailure{Kind: contract.Terminal, Code: fatal.Code, Message: fatal.Message, Err: fatal}
+
+		text, ticket, warnOnly := recordedError(err)
+		if warnOnly || ticket == uuid.Nil {
+			t.Fatalf("recordedError = (%q, %s, %v), want a ticket and ERROR", text, ticket, warnOnly)
+		}
+		if want := internalErrorText(ticket); text != want {
+			t.Errorf("text = %q, want %q", text, want)
+		}
+	})
+
+	t.Run("an Operational AppError cause still records its Message", func(t *testing.T) {
+		op := common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed, "the processor output is not an object")
+		err := &contract.CalloutFailure{Kind: contract.NoHandOff, Code: op.Code, Message: op.Message, Err: op}
+
+		text, ticket, warnOnly := recordedError(err)
+		if text != op.Message || !warnOnly || ticket != uuid.Nil {
+			t.Errorf("recordedError = (%q, %s, %v), want (%q, nil ticket, true)", text, ticket, warnOnly, op.Message)
+		}
+	})
+
+	t.Run("a plain code with no cause still records its Message", func(t *testing.T) {
+		err := &contract.CalloutFailure{Kind: contract.MemberFailed, Message: "card declined"}
+
+		text, ticket, warnOnly := recordedError(err)
+		if text != "card declined" || !warnOnly || ticket != uuid.Nil {
+			t.Errorf("recordedError = (%q, %s, %v), want (%q, nil ticket, true)", text, ticket, warnOnly, "card declined")
+		}
+	})
+}
+
 func TestSanitiseErrorText(t *testing.T) {
 	tests := []struct{ name, in, want string }{
 		{"short text is unchanged", "CODE: detail", "CODE: detail"},
