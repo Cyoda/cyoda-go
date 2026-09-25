@@ -72,6 +72,45 @@ func TestStamp_CascadeStepSegment_SetsPartialCommit(t *testing.T) {
 	}
 }
 
+// failFirstCommitTxMgr fails the engine's first Commit and commits nothing.
+type failFirstCommitTxMgr struct {
+	spi.TransactionManager
+	failed bool
+}
+
+func (m *failFirstCommitTxMgr) Commit(ctx context.Context, txID string) error {
+	if !m.failed {
+		m.failed = true
+		return errors.New("commit failed")
+	}
+	return m.TransactionManager.Commit(ctx, txID)
+}
+
+// PartialCommit records a segment that committed, not one that was stamped:
+// a cascade-step segment whose commit fails leaves it false, in the report
+// and in the store.
+func TestStamp_SegmentCommitFails_NoPartialCommit(t *testing.T) {
+	ext := &scriptedExtProc{}
+	env := newRunEnvWith(t, ext, nil, func(tm spi.TransactionManager) spi.TransactionManager {
+		return &failFirstCommitTxMgr{TransactionManager: tm}
+	})
+	claimed := env.claimed(t, "commitfail-e1", cascadePartialWF())
+
+	r, _ := env.run(claimed)
+	if r.Outcome != OutcomeFailed || r.PartialCommit {
+		t.Fatalf("report = %+v, want failed without PartialCommit: the segment did not commit", r)
+	}
+	if got, _ := env.task(t, claimed.ID); got.PartialCommit {
+		t.Errorf("stored task = %+v, want PartialCommit false", got)
+	}
+	if got := env.state(t, "commitfail-e1"); got != "OPEN" {
+		t.Errorf("entity state = %q, want OPEN: nothing committed", got)
+	}
+	if n := ext.count("p1"); n != 0 {
+		t.Errorf("p1 dispatched %d times, want 0", n)
+	}
+}
+
 func TestStamp_NextClaimAfterPartialCommit_Failed(t *testing.T) {
 	ext := &scriptedExtProc{processor: failing("p2")}
 	env := newRunEnv(t, ext)
@@ -481,6 +520,7 @@ func TestStamp_RunStateSafeAcrossGoroutines(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Begin: %v", err)
 		}
+		defer env.txMgr.Rollback(env.ctx, txID)
 		env.engine.runTxs.register(txID, g)
 		es, _ := env.factory.EntityStore(txCtx)
 		ent, err := es.Get(txCtx, "race-e1")
