@@ -41,6 +41,11 @@ type config struct {
 	// is the async-search path's own statement ceiling.
 	MigrateLockTimeout     time.Duration
 	SearchStatementTimeout time.Duration
+
+	// SchedulerConns is the size of the scheduler's own pool (scheduler_pool.go):
+	// claims, run bookkeeping and the async-search heartbeat and claim.
+	// Heartbeat has one more connection of its own on top of it.
+	SchedulerConns int32
 }
 
 // Ceiling defaults. Named here rather than inline so parseConfig,
@@ -54,6 +59,31 @@ const (
 	defaultMigrateLockTimeout     = 5 * time.Minute
 	defaultSearchStatementTimeout = 30 * time.Minute
 )
+
+// defaultSchedulerConns sizes the scheduler pool for the default
+// CYODA_SCHEDULER_MAX_RUNS (8) plus the claim loop and the async-search
+// heartbeat and claim.
+const defaultSchedulerConns int32 = 10
+
+// envSchedulerConns reads CYODA_POSTGRES_SCHEDULER_CONNS. Unlike envInt32, a
+// malformed or too-small value is an error: a scheduler pool the operator did
+// not ask for is not a safe fallback. Two is the floor — one connection for
+// the claim loop and one for a run's bookkeeping.
+func envSchedulerConns(getenv func(string) string) (int32, error) {
+	const key = "CYODA_POSTGRES_SCHEDULER_CONNS"
+	v := getenv(key)
+	if v == "" {
+		return defaultSchedulerConns, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("%s=%q is not a valid connection count: %w", key, v, err)
+	}
+	if n < 2 {
+		return 0, fmt.Errorf("%s=%q must be at least 2", key, v)
+	}
+	return int32(n), nil
+}
 
 // parseConfig reads CYODA_POSTGRES_* env vars via the injected getenv.
 // For CYODA_POSTGRES_URL, the _FILE suffix pattern is supported: if
@@ -90,6 +120,9 @@ func parseConfig(getenv func(string) string) (config, error) {
 		return config{}, err
 	}
 	if cfg.SearchStatementTimeout, _, err = envCeiling(getenv, "CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT", defaultSearchStatementTimeout); err != nil {
+		return config{}, err
+	}
+	if cfg.SchedulerConns, err = envSchedulerConns(getenv); err != nil {
 		return config{}, err
 	}
 	return cfg, nil
@@ -240,6 +273,7 @@ func (d DBConfig) toInternal() config {
 		AcquireTimeout:         defaultAcquireTimeout,
 		MigrateLockTimeout:     defaultMigrateLockTimeout,
 		SearchStatementTimeout: defaultSearchStatementTimeout,
+		SchedulerConns:         defaultSchedulerConns,
 	}
 }
 

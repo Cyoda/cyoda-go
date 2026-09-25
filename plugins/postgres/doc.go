@@ -14,6 +14,7 @@
 //	CYODA_POSTGRES_MIN_CONNS          default 5
 //	CYODA_POSTGRES_MAX_CONN_IDLE_TIME default 5m
 //	CYODA_POSTGRES_AUTO_MIGRATE       default true  (runs embedded SQL migrations at startup)
+//	CYODA_POSTGRES_SCHEDULER_CONNS    default 10    (scheduler's own pool; at least 2)
 //
 // Ceilings, each accepting 0 to disable. All but the acquire timeout are
 // applied server-side; pgxpool.Config has no acquire-timeout field, so that

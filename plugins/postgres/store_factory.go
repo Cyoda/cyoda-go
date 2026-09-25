@@ -65,6 +65,7 @@ func defaultStoreConfig() config {
 		AcquireTimeout:         defaultAcquireTimeout,
 		MigrateLockTimeout:     defaultMigrateLockTimeout,
 		SearchStatementTimeout: defaultSearchStatementTimeout,
+		SchedulerConns:         defaultSchedulerConns,
 	}
 }
 
