@@ -102,8 +102,13 @@ type Service struct {
 	// stepFourMargin is the part of the step-4 bound past the longest
 	// callout in flight: CommitBudget + 15s.
 	stepFourMargin time.Duration
-	// bookWait bounds step 5's wait for outcome writes under way: one
-	// store-call budget.
+	// bookWait bounds the wait for outcome writes under way that follows
+	// step 4: one store-call budget. It is taken out of stepFourMargin, so
+	// step 4 and the wait together stay within the step-4 bound that the
+	// grace period is sized for. A RecordAttempt ends within it. A Fail
+	// commits through ShieldedCommit with its own CommitBudget and can
+	// outlive it; that run's claim is then kept and the owner is not
+	// retired, so the task is reclaimed after STALE_AFTER.
 	bookWait time.Duration
 	m        *metrics
 	store    spi.ScheduledTaskStore
@@ -215,7 +220,7 @@ func (s *Service) start(ctx context.Context) error {
 func (s *Service) Stop() { s.Drain(context.Background()) }
 
 // Drain runs shutdown steps 1-5 (spec §6.4). ctx ends the waits of steps 2
-// and 4 early. Only the first call does anything. A Drain before Start makes
+// and 4, and the wait for outcome writes, early. Only the first call does anything. A Drain before Start makes
 // every later Start do nothing.
 func (s *Service) Drain(ctx context.Context) {
 	s.drainOnce.Do(func() { s.drain(ctx) })
@@ -253,14 +258,15 @@ func (s *Service) drain(ctx context.Context) {
 	if !s.waitRuns(ctx, s.cfg.ShutdownDrain) {
 		// Step 3: cancel every run without an unsafe callout in flight.
 		s.cutRuns()
-		// Step 4: wait for every run to record its outcome.
-		s.waitRuns(ctx, s.stepFourBound())
+		// Step 4: wait for every run to record its outcome. The last
+		// bookWait of the bound is left for the wait below.
+		s.waitRuns(ctx, s.stepFourBound()-s.bookWait)
 	}
 	close(s.stopBooks)
 	// A run still writing its outcome holds its task row, and GiveBackIdle
 	// skips a held row. Wait for those writes to end, so that no task is
 	// left RUNNING under an owner that step 5 retires.
-	s.waitBooks(s.bookWait)
+	s.waitBooks(ctx, s.bookWait)
 
 	// Step 5: give back the claims whose run ended without a recorded outcome,
 	// stop the heartbeat, and retire the owner if nothing still holds a claim.
@@ -343,14 +349,17 @@ func (s *Service) stepFourBound() time.Duration {
 
 // waitBooks waits up to d for every run whose fire has returned to leave its
 // bookkeeping. Bookkeeping has been told to stop, so each such run makes at
-// most the write attempt already under way.
-func (s *Service) waitBooks(d time.Duration) {
+// most the write attempt already under way. ctx ends the wait early; a run
+// still writing then keeps its claim.
+func (s *Service) waitBooks(ctx context.Context, d time.Duration) {
 	timer := time.NewTimer(d)
 	defer timer.Stop()
 	for s.inBookkeeping() {
 		select {
 		case <-s.bookLeft:
 		case <-timer.C:
+			return
+		case <-ctx.Done():
 			return
 		}
 	}

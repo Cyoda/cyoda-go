@@ -692,6 +692,7 @@ func TestDrain_AnOutcomeWriteOpenAtStepFiveLeavesNoTaskUnderARetiredOwner(t *tes
 
 	// Held past step 4 (20ms drain + 100ms margin), then it fails. Step 5
 	// goes on as soon as the write ends, not at the end of its wait.
+	h.svc.stepFourMargin = 10*time.Second + 100*time.Millisecond
 	h.svc.bookWait = 10 * time.Second
 	release := time.AfterFunc(400*time.Millisecond, func() { close(block) })
 	t.Cleanup(func() { release.Stop() })
@@ -733,4 +734,86 @@ func TestDrain_AnOutcomeWriteOpenPastTheWaitKeepsItsClaim(t *testing.T) {
 
 	h.svc.Drain(context.Background())
 	assertKeptAtShutdown(t, h, token)
+}
+
+// The wait for outcome writes comes out of the step-4 margin: step 4 and the
+// wait together stay within the longest callout deadline + CommitBudget + 15s,
+// the bound the grace period is sized for (§6.4).
+func TestDrain_TheOutcomeWriteWaitStaysWithinTheStepFourBound(t *testing.T) {
+	tokens := make(chan uuid.UUID, 1)
+	h := newHarness(t, drainConfig(), firerFunc(func(ctx context.Context, task spi.ScheduledTask, _ int, _ time.Duration) workflow.RunReport {
+		tokens <- task.Claim.Token
+		return failedOnCancel(ctx)
+	}))
+	h.svc.stepFourMargin = time.Second
+	h.svc.bookWait = 800 * time.Millisecond
+	block := make(chan struct{})
+	h.fs.with(func() {
+		h.fs.outcomeBlock = block // held open for the whole drain
+		h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")}
+	})
+	h.start(t)
+	t.Cleanup(func() { close(block) })
+	token := receive(t, tokens)
+
+	begin := time.Now()
+	h.svc.Drain(context.Background())
+	// ShutdownDrain (20ms) + the margin (1s); without the carve-out it is 1.8s.
+	if d := time.Since(begin); d > 1400*time.Millisecond {
+		t.Errorf("Drain took %v; step 4 and the outcome-write wait exceed the step-4 bound", d)
+	}
+	assertKeptAtShutdown(t, h, token)
+}
+
+// Drain's context also ends the wait for outcome writes: the claim of a write
+// still open is kept.
+func TestDrain_ItsContextEndsTheOutcomeWriteWait(t *testing.T) {
+	tokens := make(chan uuid.UUID, 1)
+	h := newHarness(t, drainConfig(), firerFunc(func(ctx context.Context, task spi.ScheduledTask, _ int, _ time.Duration) workflow.RunReport {
+		tokens <- task.Claim.Token
+		return workflow.RunReport{Outcome: workflow.OutcomeFailed, Err: errors.New("boom")}
+	}))
+	h.svc.stepFourMargin = 20 * time.Second
+	h.svc.bookWait = 10 * time.Second
+	block := make(chan struct{})
+	h.fs.with(func() {
+		h.fs.outcomeBlock = block
+		h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")}
+	})
+	h.start(t)
+	t.Cleanup(func() { close(block) })
+	token := receive(t, tokens)
+	eventually(t, "the outcome write is open", func() bool {
+		var open bool
+		h.fs.with(func() { open = h.fs.open[token] })
+		return open
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	begin := time.Now()
+	h.svc.Drain(ctx)
+	if d := time.Since(begin); d > 2*time.Second {
+		t.Errorf("Drain took %v with its context already ended", d)
+	}
+	assertKeptAtShutdown(t, h, token)
+}
+
+// tick gives nothing back once the service drains: step 5 makes the last
+// give-back.
+func TestService_TickDoesNothingOnceDraining(t *testing.T) {
+	h := newHarness(t, testConfig(), reportFirer(fired))
+	h.start(t)
+	eventually(t, "healthy", h.svc.isHealthy)
+	func() {
+		h.svc.mu.Lock()
+		defer h.svc.mu.Unlock()
+		h.svc.draining = true
+	}()
+	time.Sleep(20 * time.Millisecond) // a loop tick already past its check ends
+	from := len(h.fs.giveBackCalls())
+	h.svc.tick()
+	if n := len(h.fs.giveBackCalls()) - from; n != 0 {
+		t.Errorf("%d give-backs from a tick while draining", n)
+	}
 }
