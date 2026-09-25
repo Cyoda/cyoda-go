@@ -325,19 +325,6 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 
 	finalCtx, finalTxID := scope.Ctx(), scope.TxID()
 
-	// A joined callback is a plain single-segment op; the engine must not have
-	// advanced the segment for a participating call. If it did, our gate/commit
-	// reasoning (owner commits finalTxID; callback joined txID) is broken. The
-	// scope has advanced onto the engine-opened segment, so Release returns it —
-	// that segment is nobody else's. The guard must stay AHEAD of the commit:
-	// Commit marks the scope done but no-ops for owned==false, so a
-	// joined+segmented call that reached one would leak the segment past
-	// Release's fail-closed handling.
-	if !owned && finalTxID != txID {
-		return nil, common.Internal("joined callback unexpectedly segmented transaction",
-			fmt.Errorf("entry txID %s advanced to %s on a joined call", txID, finalTxID))
-	}
-
 	// Save entity within the engine's final-segment transaction (goes to
 	// buffer). For non-segmenting cascades finalCtx/finalTxID equal the
 	// handler's input; for segmenting cascades the engine has already
@@ -1992,14 +1979,6 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 			entity.Meta.TransitionForLatestSave = "loopback"
 		}
 
-		// A joined callback is a plain single-segment op; a participating batch
-		// must not segment (the owner, not the callback, owns commit boundaries).
-		// The guard stays AHEAD of the commit — see CreateEntity's site.
-		if !owned && currentTxID != txID {
-			return nil, common.Internal("joined callback unexpectedly segmented transaction",
-				fmt.Errorf("item %d: entry txID %s advanced to %s on a joined call", i, txID, currentTxID))
-		}
-
 		// Finalize this item's Save. For the OWNER, gate each per-item Save so a
 		// callback in-flight from this item's dispatch cannot race the buffer
 		// write; on the joined path the join layer holds the gate for the whole
@@ -2236,14 +2215,6 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	}
 
 	finalCtx, finalTxID := scope.Ctx(), scope.TxID()
-
-	// A joined callback is a plain single-segment op; a participating update
-	// must not segment (the owner owns commit boundaries, not the callback).
-	// The guard stays AHEAD of the commit — see CreateEntity's site.
-	if !owned && finalTxID != txID {
-		return nil, common.Internal("joined callback unexpectedly segmented transaction",
-			fmt.Errorf("entry txID %s advanced to %s on a joined call", txID, finalTxID))
-	}
 
 	finalEntityStore, err := h.factory.EntityStore(finalCtx)
 	if err != nil {
@@ -2616,14 +2587,6 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 		// precondition — apply it via CompareAndSave below. Mirrors the
 		// single-UpdateEntity routing.
 		segmented := engineResult.Segmented
-
-		// A joined callback is a plain single-segment op; a participating batch
-		// must not segment (the owner owns commit boundaries, not the callback).
-		// The guard stays AHEAD of the commit — see CreateEntity's site.
-		if !owned && currentTxID != txID {
-			return nil, common.Internal("joined callback unexpectedly segmented transaction",
-				fmt.Errorf("item %d: entry txID %s advanced to %s on a joined call", i, txID, currentTxID))
-		}
 
 		// Finalize this item's Save. For the OWNER, gate the Save/CompareAndSave
 		// (and the abort-audit buffer write on the isolated-conflict path)

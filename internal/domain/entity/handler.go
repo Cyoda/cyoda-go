@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"net/http"
 	"strconv"
@@ -95,11 +96,17 @@ func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDG
 // Begin — the write lands in the shared buffer for the owner to commit. When
 // there is no joined tx (the normal inbound case) we Begin our own tx and
 // return owned=true. The txCtx returned in the joined case is the caller's ctx
-// unchanged (it already carries the TransactionState); in the owned case it is
-// the Begin-derived context.
+// marked as having joined the transaction (it already carries the
+// TransactionState); in the owned case it is the Begin-derived context.
+//
+// The mark is what the workflow engine reads to refuse a
+// COMMIT_BEFORE_DISPATCH processor on a joined call before the transaction is
+// flushed or committed:
+// a participant never commits, and the handler's commit rule (commitOwned) and
+// the engine's refusal answer that from this one decision.
 func (h *Handler) beginOrJoin(ctx context.Context) (string, context.Context, bool, error) {
 	if tx := spi.GetTransaction(ctx); tx != nil {
-		return tx.ID, ctx, false, nil
+		return tx.ID, wfengine.MarkJoinedTransaction(ctx), false, nil
 	}
 	txID, txCtx, err := h.txMgr.Begin(ctx)
 	return txID, txCtx, true, err
@@ -263,7 +270,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request, format genapi.C
 	// Resolve transactionWindow up-front so an out-of-range value rejects
 	// before we burn any I/O. Mirrors CreateCollection — see the array-body
 	// branch below for where the window is actually applied.
-	window, paramErr := resolveTransactionWindow(params.TransactionWindow)
+	window, paramErr := resolveTransactionWindow(r.Context(), params.TransactionWindow)
 	if paramErr != nil {
 		common.WriteError(w, r, paramErr)
 		return
@@ -642,10 +649,29 @@ const (
 	collectionMaxWindow     = 1000
 )
 
+// wholeRequest is the window of a collection request that must not be split:
+// the chunk loops' end clamps it to the item count, so the request runs as one
+// chunk. start is 0 on the only iteration, so start+window cannot overflow.
+const wholeRequest = math.MaxInt
+
 // resolveTransactionWindow returns the effective window for a collection
 // request. Returns 400 BAD_REQUEST when the client supplies a value
 // outside (0, collectionMaxWindow].
-func resolveTransactionWindow(window *int32) (int, *common.AppError) {
+//
+// A window is a commit after every so many items. A request that joined an
+// open transaction commits nothing — the transaction's owner does — so it has
+// no window: an explicit transactionWindow is refused, as transactionSize and
+// transactionTimeoutMillis are, and without one the request runs as one chunk.
+// Chunked, a failure in a later chunk would answer 200 with chunk results
+// claiming that the earlier chunks were committed.
+func resolveTransactionWindow(ctx context.Context, window *int32) (int, *common.AppError) {
+	if spi.GetTransaction(ctx) != nil {
+		if window != nil {
+			return 0, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+				"transactionWindow is not supported on a request that joins an open transaction")
+		}
+		return wholeRequest, nil
+	}
 	if window == nil {
 		return collectionDefaultWindow, nil
 	}
@@ -737,7 +763,9 @@ type collectionChunkItemErr struct {
 //
 //   - (results, nil) — the full per-chunk result array. May contain an
 //     error element on a later-chunk failure (committed chunks before it
-//     are durable; subsequent chunks are NOT attempted).
+//     are durable; subsequent chunks are NOT attempted). A joined request is
+//     never split (resolveTransactionWindow), so it never gets here with an
+//     error element.
 //   - (nil, appErr)  — the FIRST chunk failed, no durable progress was
 //     made; the caller writes the conventional 4xx error envelope.
 //
@@ -802,7 +830,7 @@ func (h *Handler) runChunkedCreate(ctx context.Context, items []CollectionItem, 
 }
 
 func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request, format genapi.CreateCollectionParamsFormat, params genapi.CreateCollectionParams) {
-	window, paramErr := resolveTransactionWindow(params.TransactionWindow)
+	window, paramErr := resolveTransactionWindow(r.Context(), params.TransactionWindow)
 	if paramErr != nil {
 		common.WriteError(w, r, paramErr)
 		return
@@ -881,7 +909,7 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 		return
 	}
 
-	window, paramErr := resolveTransactionWindow(params.TransactionWindow)
+	window, paramErr := resolveTransactionWindow(r.Context(), params.TransactionWindow)
 	if paramErr != nil {
 		common.WriteError(w, r, paramErr)
 		return

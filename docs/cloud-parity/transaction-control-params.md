@@ -109,7 +109,7 @@ cancellation-aware).
 ### Joined-request rejection
 
 Every transaction-control parameter (`transactionTimeoutMillis`,
-`transactionSize`, search `timeoutMillis`) is rejected with `400 BAD_REQUEST`
+`transactionSize`, `transactionWindow`, search `timeoutMillis`) is rejected with `400 BAD_REQUEST`
 (HTTP) / `CLIENT_ERROR` `BAD_REQUEST: …` (gRPC) when present on a request
 that joins an existing transaction (a tx-token'd request — how a routed
 compute-node callback or a cross-node forwarded request presents at
@@ -119,6 +119,12 @@ would poison a connection it does not own, and a joiner cannot commit per
 batch (`commitOwned` no-ops when the caller does not own the transaction).
 This is a uniform rule with no per-operation carve-outs, on both HTTP and
 gRPC.
+
+A joined collection write is also never split into `transactionWindow`
+chunks when the parameter is absent: it runs as one unit, so a failure in any
+item fails the request. Split, a later chunk's failure would answer `200`
+with chunk results claiming the earlier chunks were committed, when a joiner
+commits nothing and the owner may still commit them.
 
 ## Invariant Cloud must mirror
 

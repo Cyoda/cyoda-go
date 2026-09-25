@@ -29,20 +29,18 @@ import (
 // beginScope deliberately does NOT touch the joined gate: a joined request's
 // gate is the join layer's, taken before the handler ran and released after it
 // returns — hence after Release. The gate is a non-reentrant mutex, so nothing
-// in a joined chain may take the entry transaction's gate again; Release returns
-// early for a joined chain on its entry transaction, and takes the gate only for
-// a segment the engine opened, which is a DIFFERENT txID.
+// in a joined chain may take the transaction's gate again; Release returns
+// before the gate for every joined scope.
+//
+// A joined scope never moves off the transaction it joined: the engine refuses
+// the only step that opens a segment (a COMMIT_BEFORE_DISPATCH processor) on a
+// joined chain, before the transaction is flushed or committed.
 type txScope struct {
 	h *Handler
 
-	// entryTxID is the transaction beginScope returned. It never changes, and
-	// distinguishing it from txID is what lets a joined call release a segment
-	// the engine opened without releasing its owner's transaction.
-	entryTxID string
-
 	// ctx and txID name the segment currently open. Advance moves them when the
-	// engine segments via COMMIT_BEFORE_DISPATCH; Release always targets these,
-	// never entryTxID.
+	// engine segments via COMMIT_BEFORE_DISPATCH, which only an owned scope
+	// does; Release always targets these.
 	ctx  context.Context
 	txID string
 
@@ -57,7 +55,7 @@ func (h *Handler) beginScope(ctx context.Context) (*txScope, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &txScope{h: h, entryTxID: txID, ctx: txCtx, txID: txID, owned: owned}, nil
+	return &txScope{h: h, ctx: txCtx, txID: txID, owned: owned}, nil
 }
 
 func (s *txScope) Ctx() context.Context { return s.ctx }
@@ -108,29 +106,21 @@ func (s *txScope) Commit() error {
 // done or the transaction belongs to somebody else.
 //
 // A joined callback never rolls back its owner's transaction — an error on the
-// joined path surfaces to the owner, which decides its fate. The exception is a
-// segment the engine opened during this call: that one is nobody else's, so it
-// is released regardless of ownership whenever the scope has advanced past its
-// entry txID.
+// joined path surfaces to the owner, which decides its fate.
 func (s *txScope) Release() {
 	if s.done {
 		return
 	}
 	s.done = true
-	if s.txID == "" {
-		return
-	}
-	if !s.owned && s.txID == s.entryTxID {
+	if s.txID == "" || !s.owned {
 		return
 	}
 
 	// Acquire the per-tx gate so the rollback is mutually exclusive with any
 	// joined callback's access to the same transaction handle. No self-deadlock:
 	// every `defer h.gate.Acquire(...)()` site in this package is inside an IIFE,
-	// so the gate is free by outer-defer time — and the one gate a joined chain
-	// still holds here is its ENTRY transaction's, taken by the join layer, while
-	// the early return above means this line is only ever reached for a segment
-	// the engine opened, a different txID.
+	// so the gate is free by outer-defer time, and an owned chain holds no gate
+	// of the join layer's.
 	//
 	// What this does NOT preserve is failed-Save-then-rollback as one atomic
 	// gated section: a joined callback can win the gate in the window between an

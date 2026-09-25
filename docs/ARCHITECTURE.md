@@ -377,7 +377,7 @@ contract.
 
 ### 3.4 What Bounds a Transaction
 
-**Release on every exit path.** An entity write flow opens its transaction through a deferred scope (`txScope`, `internal/domain/entity/txscope.go`) that rolls back the segment currently open unless the flow committed it. One deferred `Release` covers every return, every error branch, and a panic unwinding the stack, so a transaction is never abandoned open with its pooled connection unreturned. A joined callback never rolls back its owner's transaction; a segment the engine opened during the call is released regardless of ownership. The workflow engine carries the same guard for the segments it opens itself, since those are its own until handed back.
+**Release on every exit path.** An entity write flow opens its transaction through a deferred scope (`txScope`, `internal/domain/entity/txscope.go`) that rolls back the segment currently open unless the flow committed it. One deferred `Release` covers every return, every error branch, and a panic unwinding the stack, so a transaction is never abandoned open with its pooled connection unreturned. A joined callback never rolls back its owner's transaction, and never moves off it: the engine refuses a `COMMIT_BEFORE_DISPATCH` processor on a joined chain (`409 COMMIT_IN_JOINED_TRANSACTION`) before the transaction is flushed or committed, so a joined call opens no segment of its own. The workflow engine carries the same guard for the segments it opens itself, since those are its own until handed back.
 
 **Panic containment.** Five recovery sites wrap code that runs the engine or the store on the application's behalf and latch the node unhealthy: the HTTP `Recovery` middleware (outermost on the API server), the gRPC server (unary and stream interceptors), the async-search executor, the search reaper (the snapshot-TTL sweep on `SearchReapInterval` and the stale-job reclaim sweep on the finer `SearchJobHeartbeatInterval` run on two separate tickers, both independently panic-latching), and the scheduler's dispatch goroutine. All five log the value and stack, record a sanitized outcome (a ticket-carrying error on the request doors, a `FAILED` job for async search, a log line for the reaper and for a scheduled fire, the latter with no caller to answer), and mark the node unhealthy. The criterion is what the recovered code was doing, not where it entered from: a panic inside engine or store code leaves state nothing has verified. That is why the scheduler site latches too — `ClusterExecutor.Execute` fires in-process whenever distribution picks this node, so otherwise an identical panicking fire would withdraw the node only when the pick happened to be a peer.
 
@@ -537,11 +537,9 @@ rollback (`internal/domain/entity/txscope.go`), and never holds it across
   suspends it at every dispatch site, which is also what keeps the owner's loop
   free of self-deadlock: `fence.Advance` and the end of a callout take this same
   lock, so a chain that ran a callout while holding it would wait for itself.
-  One case keeps the lock: a `COMMIT_BEFORE_DISPATCH` processor reached inside a
-  callback dispatches without suspending it — its own callout runs on a
-  different transaction, or on none, so nothing deadlocks, but the fence's wait
-  on the enclosing transaction can then wait on a compute member for the length
-  of that callout.
+  A `COMMIT_BEFORE_DISPATCH` processor reached inside a callback never
+  dispatches: it would commit the transaction the callback joined, so it is
+  refused before the transaction is flushed or committed.
 
 **The fence.** Giving up on a compute member does not stop it. Its late
 *answer* is discarded by request correlation (§6.4), but while it works it makes

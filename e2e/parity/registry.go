@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 291 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 292 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -221,6 +221,7 @@ var allTests = []NamedTest{
 	{"CallbackTxJoin_CBDPostJoinsTxPost", RunCallback_CBDPostJoinsTxPost},
 	{"CallbackTxJoin_AsyncNewTxDiscardOnFailure", RunCallback_AsyncNewTxDiscardOnFailure},
 	{"CallbackTxJoin_PITCommittedOnly", RunPITCommittedOnlyInJoinedTx},
+	{"CallbackTxJoin_CommitBeforeDispatchRefused", RunCallbackJoinedCommitBeforeDispatchRefused},
 
 	// Compute-client capability self-tests: a fixture that can start further
 	// compute clients proves it here; one that cannot skips.

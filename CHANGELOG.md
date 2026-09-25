@@ -491,6 +491,40 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **A collection write that joined an open transaction is no longer split
+  into `transactionWindow` chunks.** A compute node's callback made with the
+  transaction token commits nothing — the transaction's owner does — yet a
+  joined collection larger than the window (default 100) was split, and a
+  failure in a later chunk answered `200` with chunk results claiming the
+  earlier chunks were committed. The owner could then commit those items
+  while the compute node read the answer as partial success. A joined
+  collection now runs as one unit, so a failure in any item fails the
+  request, and an explicit `transactionWindow` on a joined request is
+  rejected with `400 BAD_REQUEST`, as `transactionSize` and
+  `transactionTimeoutMillis` already are — also on a single-object create,
+  where it used to be ignored, and on the gRPC collection events
+  (`CLIENT_ERROR` `BAD_REQUEST`), which used to accept and ignore it. See
+  `docs/cloud-parity/transaction-control-params.md`.
+
+- **A compute node's callback never commits the transaction it joined.** A
+  callback runs in the transaction of the operation that called the compute
+  node out. When the callback's write — a create, an update or a transition,
+  one entity or a collection, over HTTP or gRPC — ran a workflow that reached
+  a `COMMIT_BEFORE_DISPATCH` processor, that processor committed the calling
+  operation's transaction part-way through the operation, dispatched itself,
+  and only then was the callback refused with a `500`. The calling operation
+  carried on in a transaction that no longer existed. The write is now refused
+  at that processor, before the transaction is flushed or committed and before
+  the processor is dispatched, with the new `409 COMMIT_IN_JOINED_TRANSACTION`
+  (not retryable), which names the workflow and the processor. The calling
+  operation's transaction stays open for it to commit or roll back; what the
+  refused workflow had already done in it — its audit events, and the effects
+  of earlier steps — is the calling operation's to keep or discard, as with
+  any failed callback. Both values of `startNewTxOnDispatch` are refused. A
+  compute node that needs such a write makes it as an independent request,
+  without the transaction token.
+  See `docs/cloud-parity/commit-in-joined-transaction.md`.
+
 - **A signing key pair signs and verifies only inside its validity window.**
   A key pair still marked active kept verifying bearer tokens after its
   `validTo`, and a key pair issued with a future `validFrom` was used to sign

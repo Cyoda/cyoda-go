@@ -409,6 +409,10 @@ type segmentGuardHarness struct {
 	// test can prove its injection landed where it meant it to.
 	casSites []string
 
+	// saves counts plain Saves — the first-segment flush when no If-Match was
+	// supplied — so a test can prove nothing was flushed.
+	saves int
+
 	// panicOnAuditEvent, when set, makes the audit store panic on that event
 	// type — the cheapest way to blow up in a specific engine frame.
 	panicOnAuditEvent spi.StateMachineEventType
@@ -488,6 +492,11 @@ const (
 	casSiteFirstFlush  = "first-flush"
 	casSiteApplyResult = "apply-result"
 )
+
+func (s *hookedEntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, error) {
+	s.h.saves++
+	return s.EntityStore.Save(ctx, entity)
+}
 
 func (s *hookedEntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, expectedTxID string) (int64, error) {
 	site := casSiteFirstFlush

@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -417,4 +419,41 @@ func TestCatalog_SchedFnResolve(t *testing.T) {
 			t.Fatal("expected an error for an unrecognized schedMode")
 		}
 	})
+}
+
+// TestCatalog_CreateSecondaryRecord_RecordsTheAnswerAndSucceeds: the processor
+// makes a joined create of the secondary and records the callback's status and
+// body into the primary's data, and succeeds whatever the callback answered —
+// so the owner goes on to commit, and a scenario can assert both the refusal
+// and what the owner's commit leaves behind.
+func TestCatalog_CreateSecondaryRecord_RecordsTheAnswerAndSucceeds(t *testing.T) {
+	const refusal = `{"status":409,"properties":{"errorCode":"COMMIT_IN_JOINED_TRANSACTION"}}`
+	var gotToken, gotPath string
+	door := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotToken, gotPath = r.Header.Get("X-Tx-Token"), r.URL.Path
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(refusal))
+	}))
+	defer door.Close()
+
+	cat := newCatalog(nil, nil)
+	proc, ok := cat.callbackProcessor("cb-create-secondary-record")
+	if !ok {
+		t.Fatal("cb-create-secondary-record callback processor not registered")
+	}
+	out, err := proc(context.Background(), &Entity{ID: "ent", Data: []byte(`{"name":"p"}`)},
+		cbConfig{SecondaryModel: "sec", SecondaryVersion: 1, Marker: "m"}, "the-pass", newCallbackClient(door.URL, "bearer"))
+	if err != nil {
+		t.Fatalf("processor must succeed whatever the callback answered: %v", err)
+	}
+	if gotToken != "the-pass" || gotPath != "/api/entity/JSON/sec/1" {
+		t.Fatalf("callback token=%q path=%q; want the pass on a joined create of sec/1", gotToken, gotPath)
+	}
+	var data map[string]any
+	if err := json.Unmarshal(out.Data, &data); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if data["hopStatus"] != float64(http.StatusConflict) || data["hopBody"] != refusal || data["tokenWasEmpty"] != false {
+		t.Fatalf("recorded data = %+v; want hopStatus 409, the body, tokenWasEmpty false", data)
+	}
 }

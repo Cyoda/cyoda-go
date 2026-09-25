@@ -354,6 +354,30 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			return withData(entity, data)
 		},
 
+		// cb-create-secondary-record — issues the same joined create callback as
+		// cb-create-secondary, but records the callback's raw status + body into
+		// the primary's data and succeeds whatever the callback answered. The
+		// owner therefore goes on to commit its transaction, so a scenario can
+		// assert both a refusal of the joined write and what the owner's commit
+		// leaves behind — including across a forwarded cluster hop.
+		"cb-create-secondary-record": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			res, _, _, err := cb.createSecondary(ctx, cfg, token, cfg.Marker)
+			if err != nil {
+				return nil, fmt.Errorf("callback create: %w", err)
+			}
+			data, err := decodeData(entity)
+			if err != nil {
+				return nil, err
+			}
+			data["hopStatus"] = float64(res.Status)
+			data["hopBody"] = res.Body
+			data["tokenWasEmpty"] = token == ""
+			return withData(entity, data)
+		},
+
 		// cb-grpc-create-secondary — like cb-create-secondary but issues the joined
 		// callback over gRPC (EntityManage) instead of HTTP. When the calc request
 		// was forwarded to this member from a remote owner, the tx-token names that
