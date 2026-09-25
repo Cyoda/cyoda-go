@@ -12,21 +12,15 @@ import (
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
 )
 
-// awaitIncarnation polls a node's captured log until its scheduler has
-// announced an incarnation.
+// awaitIncarnation fails the test unless the node announces an incarnation
+// within 30s.
 func awaitIncarnation(t *testing.T, logs func() string) uuid.UUID {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		id, err := fixtureutil.IncarnationFromLog(logs())
-		if err == nil {
-			return id
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no scheduler incarnation announced within 30s: %v", err)
-		}
-		time.Sleep(50 * time.Millisecond)
+	id, err := fixtureutil.AwaitIncarnation(logs, 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
 	}
+	return id
 }
 
 // TestLaunchCyodaNode_RestartsWithANewIncarnation: a node launched on its own

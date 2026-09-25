@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -28,5 +29,24 @@ func IncarnationFromLog(log string) (uuid.UUID, error) {
 		return id, nil
 	default:
 		return uuid.Nil, fmt.Errorf(`%d "scheduler started" lines; want one per process`, len(m))
+	}
+}
+
+// AwaitIncarnation polls logs every 50ms until it announces a scheduler
+// incarnation, and returns the last error once within has passed. The line is
+// written before the node serves HTTP, but the copy of the process's output
+// into the capture buffer runs on its own goroutine, so a read right after the
+// node turns healthy may not hold it yet.
+func AwaitIncarnation(logs func() string, within time.Duration) (uuid.UUID, error) {
+	deadline := time.Now().Add(within)
+	for {
+		id, err := IncarnationFromLog(logs())
+		if err == nil {
+			return id, nil
+		}
+		if time.Now().After(deadline) {
+			return uuid.Nil, fmt.Errorf("no scheduler incarnation within %s: %w", within, err)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

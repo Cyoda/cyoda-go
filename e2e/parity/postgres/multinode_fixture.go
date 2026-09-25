@@ -158,10 +158,11 @@ func (f *pgMultiNode) UnpauseDatabase(t *testing.T) {
 	}
 }
 
-// Incarnation returns the scheduler incarnation node i announced at start.
+// Incarnation returns the scheduler incarnation node i announced at start,
+// polling its captured log for up to 10s.
 func (f *pgMultiNode) Incarnation(t *testing.T, i int) uuid.UUID {
 	t.Helper()
-	id, err := fixtureutil.IncarnationFromLog(f.NodeLogs(i))
+	id, err := fixtureutil.AwaitIncarnation(func() string { return f.NodeLogs(i) }, 10*time.Second)
 	if err != nil {
 		t.Fatalf("node %d: %v", i, err)
 	}
