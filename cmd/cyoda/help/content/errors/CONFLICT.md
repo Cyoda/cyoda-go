@@ -30,7 +30,7 @@ Both are normal outcomes under concurrent load.
 
 How each operation handles a race with the scheduler:
 
-- **Entity delete and workflow import.** The server retries up to 3 times before it answers 409.
+- **Entity delete and workflow import, when the request owns its transaction.** The server retries up to 3 times before it answers 409. A workflow import that answers 409 has already saved its workflows; only the removal of the tasks of transitions no longer scheduled is left.
 - **Batched delete (`transactionSize`).** The whole request does not answer 409 for a task race. A batch that still conflicts lists its ids in `idToError` with this code, and the other batches run.
 - **Request that joined an open transaction (`X-Tx-Token`).** The server does not retry it. The request can answer 409 itself, and the transaction's owner then cannot commit.
 
