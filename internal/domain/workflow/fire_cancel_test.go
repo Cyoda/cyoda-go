@@ -95,8 +95,35 @@ func TestRunCancel_BeforeFinalCommit_NoCommit(t *testing.T) {
 	if got := env.state(t, "final-e1"); got != "OPEN" {
 		t.Errorf("entity state = %q, want OPEN (no commit after the cancellation)", got)
 	}
+	if n := countAuditEvents(t, env.factory, env.ctx, "final-e1", spi.SMEventScheduledTransitionFired); n != 0 {
+		t.Errorf("SCHEDULED_TRANSITION_FIRED events = %d, want 0", n)
+	}
 	if got, _ := env.task(t, claimed.ID); got == nil || got.Claim == nil || got.Claim.Token != claimed.Claim.Token {
 		t.Errorf("task = %+v, want untouched under this claim", got)
+	}
+}
+
+func TestRunCancel_BeforeCascadeStep_CriterionNotDispatched(t *testing.T) {
+	var run *testRun
+	ext := &scriptedExtProc{processor: func(_ context.Context, proc spi.ProcessorDefinition, _ string) (*spi.Entity, error) {
+		if proc.Name == "p1" {
+			run.cancel()
+		}
+		return nil, nil
+	}}
+	env := newRunEnv(t, ext)
+	// The cascade step out of MID has a FUNCTION criterion and no processor,
+	// so only the cascade checkpoint stands between the cancellation and the
+	// criterion callout.
+	claimed := env.claimed(t, "cascade-e1", oneHopWF("MID",
+		[]spi.ProcessorDefinition{safeProc("p1", ExecutionModeCommitBeforeDispatch)},
+		map[string]spi.StateDefinition{"MID": {Transitions: []spi.TransitionDefinition{
+			{Name: "Step", Next: "DONE", Criterion: functionCriterion()}}}}))
+	run = newTestRun(env.sts, claimed)
+
+	assertCancelled(t, run.fire(env.engine, env.ctx, claimed))
+	if n := ext.count("criterion"); n != 0 {
+		t.Errorf("criterion dispatched %d times after the cancellation, want 0", n)
 	}
 }
 
@@ -151,12 +178,28 @@ func TestRunCancel_BeforeSegmentCommit_NoCommit(t *testing.T) {
 
 func TestRunCancel_CalloutsAfterCBDSeeTheCancellation(t *testing.T) {
 	type probe struct{ saw bool }
-	for _, tc := range []struct {
+	type callCase struct {
 		name  string
 		wire  func(ext *scriptedExtProc, run **testRun, p *probe)
 		after spi.StateDefinition
+	}
+	startNewTx := true
+	cbdNewTx := safeProc("p2", ExecutionModeCommitBeforeDispatch)
+	cbdNewTx.Config.StartNewTxOnDispatch = &startNewTx
+	var cases []callCase
+	// One row per processor dispatch site. An ASYNC_NEW_TX error does not
+	// fail the transition; the run still ends cancelled at the next
+	// checkpoint.
+	for _, pc := range []struct {
+		name string
+		proc spi.ProcessorDefinition
 	}{
-		{"processor", func(ext *scriptedExtProc, run **testRun, p *probe) {
+		{"processor_sync", safeProc("p2", ExecutionModeSync)},
+		{"processor_async_new_tx", safeProc("p2", ExecutionModeAsyncNewTx)},
+		{"processor_cbd", safeProc("p2", ExecutionModeCommitBeforeDispatch)},
+		{"processor_cbd_start_new_tx", cbdNewTx},
+	} {
+		cases = append(cases, callCase{pc.name, func(ext *scriptedExtProc, run **testRun, p *probe) {
 			ext.processor = func(ctx context.Context, proc spi.ProcessorDefinition, _ string) (*spi.Entity, error) {
 				if proc.Name != "p2" {
 					return nil, nil
@@ -165,7 +208,9 @@ func TestRunCancel_CalloutsAfterCBDSeeTheCancellation(t *testing.T) {
 				p.saw = sawCancel(ctx)
 				return nil, ctx.Err()
 			}
-		}, autoStep("DONE", safeProc("p2", ExecutionModeSync))},
+		}, autoStep("DONE", pc.proc)})
+	}
+	for _, tc := range append(cases, []callCase{
 		{"criterion", func(ext *scriptedExtProc, run **testRun, p *probe) {
 			ext.criterion = func(ctx context.Context) (bool, string, error) {
 				(*run).cancel()
@@ -181,7 +226,7 @@ func TestRunCancel_CalloutsAfterCBDSeeTheCancellation(t *testing.T) {
 			}
 		}, spi.StateDefinition{Transitions: []spi.TransitionDefinition{{Name: "Tick", Next: "OPEN",
 			Schedule: &spi.TransitionSchedule{Function: &spi.ScheduleFunction{Name: "tick", ResultKind: "Schedule", CalculationNodesTags: "sched"}}}}}},
-	} {
+	}...) {
 		t.Run(tc.name, func(t *testing.T) {
 			var run *testRun
 			p := &probe{}
