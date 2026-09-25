@@ -638,9 +638,30 @@ func (h *Handler) GetStatisticsForModel(ctx context.Context, entityName string, 
 	}, nil
 }
 
-// DeleteEntity deletes a single entity by ID within a transaction.
-// Returns the deleted entity's metadata for the response.
+// DeleteEntity deletes a single entity by ID, with its scheduled tasks, in
+// one transaction, and returns the deleted entity's metadata for the
+// response. An owned delete that fails with spi.ErrConflict — a race lost on
+// the entity or on one of its scheduled tasks, at a statement or at commit —
+// runs again in a new transaction (common.RetryOnTaskConflict); a joined one
+// does not.
 func (h *Handler) DeleteEntity(ctx context.Context, entityID string) (*deleteEntityResult, error) {
+	var result *deleteEntityResult
+	err := common.RetryOnTaskConflict(ctx, spi.GetTransaction(ctx) == nil, func() error {
+		r, err := h.deleteEntityOnce(ctx, entityID)
+		if err != nil {
+			return err
+		}
+		result = r
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// deleteEntityOnce is one attempt of DeleteEntity, in its own transaction.
+func (h *Handler) deleteEntityOnce(ctx context.Context, entityID string) (*deleteEntityResult, error) {
 	// Begin a fresh tx, or PARTICIPATE in a joined tx already on ctx.
 	scope, err := h.beginScope(ctx)
 	if err != nil {
@@ -680,14 +701,15 @@ func (h *Handler) DeleteEntity(ctx context.Context, entityID string) (*deleteEnt
 		}
 		// Soft delete within transaction.
 		if err := entityStore.Delete(txCtx, entityID); err != nil {
-			return common.Internal("failed to delete entity", err)
+			return deleteWriteError("failed to delete entity", err)
+		}
+		// The entity's scheduled tasks go in the same transaction.
+		if err := h.deleteEntityTasks(txCtx, []string{entityID}); err != nil {
+			return deleteWriteError("failed to delete scheduled tasks", err)
 		}
 		// Commit transaction (no-op when participating in a joined tx).
 		if err := scope.Commit(); err != nil {
-			if errors.Is(err, spi.ErrConflict) {
-				return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
-			}
-			return common.Internal("failed to commit transaction", err)
+			return deleteWriteError("failed to commit transaction", err)
 		}
 		return nil
 	}(); appErr != nil {
@@ -701,6 +723,67 @@ func (h *Handler) DeleteEntity(ctx context.Context, entityID string) (*deleteEnt
 		ModelVersion:  ver,
 		TransactionID: txID,
 	}, nil
+}
+
+// conflictError is the retryable 409 for a first-committer-wins refusal. The
+// refusal stays its cause, so common.RetryOnTaskConflict recognises it.
+func conflictError(err error) *common.AppError {
+	return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").
+		AsRetryable().WithCause(err)
+}
+
+// deleteWriteError classifies a failed write or commit inside a delete's
+// transaction: a first-committer-wins refusal is conflictError, anything
+// else is common.Internal.
+func deleteWriteError(msg string, err error) *common.AppError {
+	if errors.Is(err, spi.ErrConflict) {
+		return conflictError(err)
+	}
+	return common.Internal(msg, err)
+}
+
+// txTenant is the tenant of the transaction on txCtx.
+func txTenant(txCtx context.Context) (spi.TenantID, error) {
+	tx := spi.GetTransaction(txCtx)
+	if tx == nil {
+		return "", errors.New("no transaction on the context")
+	}
+	return tx.TenantID, nil
+}
+
+// deleteEntityTasks removes the scheduled tasks of ids inside the
+// transaction on txCtx. No ids, no call.
+func (h *Handler) deleteEntityTasks(txCtx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	tenant, err := txTenant(txCtx)
+	if err != nil {
+		return err
+	}
+	sts, err := h.factory.ScheduledTaskStore(txCtx)
+	if err != nil {
+		return fmt.Errorf("failed to access scheduled task store: %w", err)
+	}
+	return sts.DeleteForEntities(txCtx, tenant, ids)
+}
+
+// deleteModelTasks removes every scheduled task of ref inside the
+// transaction on txCtx.
+func (h *Handler) deleteModelTasks(txCtx context.Context, ref spi.ModelRef) error {
+	tenant, err := txTenant(txCtx)
+	if err != nil {
+		return err
+	}
+	version, err := strconv.Atoi(ref.ModelVersion)
+	if err != nil {
+		return fmt.Errorf("failed to parse model version %q: %w", ref.ModelVersion, err)
+	}
+	sts, err := h.factory.ScheduledTaskStore(txCtx)
+	if err != nil {
+		return fmt.Errorf("failed to access scheduled task store: %w", err)
+	}
+	return sts.DeleteForModel(txCtx, tenant, ref.EntityName, version, nil)
 }
 
 type deleteEntityResult struct {
@@ -761,8 +844,27 @@ func (h *Handler) GetChangesMetadata(ctx context.Context, entityID string, point
 	return result, nil
 }
 
-// DeleteAllEntities deletes all entities for a model within a transaction.
+// DeleteAllEntities deletes all entities of a model, and all the model's
+// scheduled tasks, in one transaction. An owned delete that loses a
+// task-row race with the scheduler runs again; a joined one does not.
 func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, modelVersion string) (*DeleteAllResult, error) {
+	var result *DeleteAllResult
+	err := common.RetryOnTaskConflict(ctx, spi.GetTransaction(ctx) == nil, func() error {
+		r, err := h.deleteAllEntitiesOnce(ctx, entityName, modelVersion)
+		if err != nil {
+			return err
+		}
+		result = r
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// deleteAllEntitiesOnce is one attempt of DeleteAllEntities.
+func (h *Handler) deleteAllEntitiesOnce(ctx context.Context, entityName string, modelVersion string) (*DeleteAllResult, error) {
 	ref := spi.ModelRef{
 		EntityName:   entityName,
 		ModelVersion: modelVersion,
@@ -819,14 +921,15 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 			defer h.gate.Acquire(txID)()
 		}
 		if err := entityStore.DeleteAll(txCtx, ref); err != nil {
-			return common.Internal("failed to delete entities", err)
+			return deleteWriteError("failed to delete entities", err)
+		}
+		// Every task of the model goes in the same transaction.
+		if err := h.deleteModelTasks(txCtx, ref); err != nil {
+			return deleteWriteError("failed to delete scheduled tasks", err)
 		}
 		// Commit transaction (no-op when participating in a joined tx).
 		if err := scope.Commit(); err != nil {
-			if errors.Is(err, spi.ErrConflict) {
-				return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
-			}
-			return common.Internal("failed to commit transaction", err)
+			return deleteWriteError("failed to commit transaction", err)
 		}
 		return nil
 	}(); appErr != nil {
@@ -1227,6 +1330,26 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 		}, nil
 	}
 
+	var result *DeleteResult
+	err := common.RetryOnTaskConflict(ctx, spi.GetTransaction(ctx) == nil, func() error {
+		r, err := h.deleteConditionalSingleTx(ctx, ref, cond, pointInTime, verbose)
+		if err != nil {
+			return err
+		}
+		result = r
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// deleteConditionalSingleTx is one attempt of the single-transaction
+// conditional delete: select, delete each matched id, remove the scheduled
+// tasks of the ids actually deleted, commit. Every attempt builds its own
+// result, so a retried attempt never counts an id twice.
+func (h *Handler) deleteConditionalSingleTx(ctx context.Context, ref spi.ModelRef, cond predicate.Condition, pointInTime *time.Time, verbose bool) (*DeleteResult, error) {
 	scope, err := h.beginScope(ctx)
 	if err != nil {
 		return nil, classifyBeginErr(err)
@@ -1242,7 +1365,7 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 	if _, err := modelStore.Get(txCtx, ref); err != nil {
 		if errors.Is(err, spi.ErrNotFound) {
 			return nil, common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound,
-				fmt.Sprintf("cannot find model entityName=%s, version=%s", entityName, modelVersion))
+				fmt.Sprintf("cannot find model entityName=%s, version=%s", ref.EntityName, ref.ModelVersion))
 		}
 		return nil, common.Internal("failed to load model", err)
 	}
@@ -1279,6 +1402,7 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 		IDToError:     map[string]string{},
 		IDs:           []string{},
 	}
+	deleted := make([]string, 0, len(ids))
 
 	// Finalize: gate the per-id deletes + commit against a concurrent joined
 	// callback's buffer write (mirror DeleteAllEntities).
@@ -1299,19 +1423,27 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 				result.IDs = append(result.IDs, id)
 			}
 			if err := entityStore.Delete(txCtx, id); err != nil {
+				// A first-committer-wins refusal is not this id's outcome.
+				// The transaction is spent (PostgreSQL aborts it on 40001),
+				// so the attempt fails and the whole call runs again.
+				if errors.Is(err, spi.ErrConflict) {
+					return conflictError(err)
+				}
 				result.IDToError[id] = perIDDeleteError(id, err)
 				continue
 			}
+			deleted = append(deleted, id)
 			result.RemovedCount++
 		}
+		// The scheduled tasks of the ids actually deleted go in the same
+		// transaction. An id whose delete failed keeps its tasks.
+		if err := h.deleteEntityTasks(txCtx, deleted); err != nil {
+			return deleteWriteError("failed to delete scheduled tasks", err)
+		}
+		// Do NOT roll back after a failed commit — it has already aborted
+		// the tx. Mirrors DeleteAllEntities.
 		if err := scope.Commit(); err != nil {
-			// Do NOT roll back here — a failed commit has already aborted the
-			// tx. Mirrors DeleteAllEntities (service.go), which returns
-			// the AppError directly on this path without an extra rollback.
-			if errors.Is(err, spi.ErrConflict) {
-				return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
-			}
-			return common.Internal("failed to commit transaction", err)
+			return deleteWriteError("failed to commit transaction", err)
 		}
 		return nil
 	}(); appErr != nil {
@@ -1627,24 +1759,81 @@ func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond pred
 	return result, nil
 }
 
+// batchAttempt is one run of a batch's transaction.
+type batchAttempt struct {
+	// removed are the ids whose delete was staged. They are durable only
+	// when failure is nil.
+	removed []string
+	// idErrors are per-id outcomes that do not fail the batch: a missing
+	// entity, a version changed since resolution, a failed delete.
+	idErrors map[string]string
+	// failure is the batch's own failure — its task removal or its commit —
+	// or nil when the batch committed.
+	failure *common.AppError
+}
+
 // deleteOneBatch deletes one chunk of ≤batchSize targets under its own owned
-// transaction. Every target's CURRENT version is re-read and compared
-// against the baseline captured during deleteBatched's resolution phase
-// (spec D4's version guard); a mismatch, a NotFound, or a Delete failure is
-// folded into result.IDToError for that one id and the chunk continues. Only
-// a failure to begin this chunk's transaction, or to acquire the EntityStore
-// against it, is returned to the caller — deleteBatched treats either as
-// fatal for the whole request, since it can't know whether later chunks
-// would fare any better. A failed commit (e.g. a
-// conflict from the resolution-baseline version check racing a concurrent
-// writer at the storage layer) maps every id this chunk marked
-// pending-removed into IDToError instead of incrementing RemovedCount — the
-// chunk's buffered deletes never became durable, so reporting them as
-// removed would lie about the mutation's outcome.
+// transaction, with the tasks of the ids it deletes (spec D4's version guard
+// applies to each id). A batch that loses a first-committer-wins race runs
+// again, at most common.TaskConflictRetries more times, against the same
+// baselines. Per-id outcomes of the last attempt go into result.IDToError. A
+// batch that still fails puts its message on every id it did not resolve,
+// and adds nothing to RemovedCount — its deletes never became durable. Only a
+// failure to begin the transaction or to reach the entity store is
+// returned; deleteBatched treats that as fatal for the request.
 func (h *Handler) deleteOneBatch(ctx context.Context, chunk []batchTarget, result *DeleteResult) error {
+	var last batchAttempt
+	err := common.RetryOnTaskConflict(ctx, spi.GetTransaction(ctx) == nil, func() error {
+		a, err := h.deleteOneBatchOnce(ctx, chunk)
+		if err != nil {
+			return err
+		}
+		last = a
+		if a.failure != nil && errors.Is(a.failure, spi.ErrConflict) {
+			return a.failure
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, spi.ErrConflict) {
+		return err
+	}
+
+	for id, msg := range last.idErrors {
+		result.IDToError[id] = msg
+	}
+	if last.failure == nil {
+		result.RemovedCount += len(last.removed)
+		return nil
+	}
+	// Operational (4xx-class) failures — a conflict above all — are
+	// client-safe by construction: fold the message as-is. Anything else
+	// gets ONE ticket for the whole batch, its cause logged under it, and
+	// the ticketed client-safe message — never the raw AppError.Message.
+	msg := last.failure.Message
+	if last.failure.Level != common.LevelOperational {
+		cause := error(last.failure)
+		if last.failure.Err != nil {
+			cause = last.failure.Err
+		}
+		msg = mintDeleteTicket("", cause)
+	}
+	for _, t := range chunk {
+		if _, resolved := last.idErrors[t.id]; !resolved {
+			result.IDToError[t.id] = msg
+		}
+	}
+	return nil
+}
+
+// deleteOneBatchOnce is one attempt of a batch. It re-reads each target,
+// deletes it if its version still equals the resolution baseline, removes
+// the tasks of the ids it deleted, and commits.
+func (h *Handler) deleteOneBatchOnce(ctx context.Context, chunk []batchTarget) (batchAttempt, error) {
+	a := batchAttempt{idErrors: map[string]string{}}
+
 	scope, err := h.beginScope(ctx)
 	if err != nil {
-		return classifyBeginErr(err)
+		return a, classifyBeginErr(err)
 	}
 	defer scope.Release()
 
@@ -1652,74 +1841,58 @@ func (h *Handler) deleteOneBatch(ctx context.Context, chunk []batchTarget, resul
 
 	entityStore, err := h.factory.EntityStore(txCtx)
 	if err != nil {
-		return common.Internal("failed to access entity store", err)
+		return a, common.Internal("failed to access entity store", err)
 	}
-
-	pendingRemoved := make([]string, 0, len(chunk))
 
 	// Finalize: gate the per-id deletes + commit against a concurrent joined
 	// callback's buffer write (mirror the single-tx path / DeleteAllEntities).
-	if appErr := func() *common.AppError {
+	a.failure = func() *common.AppError {
 		if owned {
 			defer h.gate.Acquire(txID)()
 		}
 		for _, t := range chunk {
 			// Generic cancellation check at the iteration head (spec D9) —
-			// fails the gated IIFE closed so this chunk's tx rolls back
-			// rather than committing a partial pass through the chunk.
+			// fails the batch closed so its tx rolls back rather than
+			// committing a partial pass through the chunk.
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return classifyError(fmt.Errorf("operation aborted: %w", ctxErr))
 			}
-
+			// entityStore.Get never returns spi.ErrConflict on this path: it is
+			// an unlocked read, and none of the three backends' Get() can
+			// surface a conflict from one (memory/sqlite: not wired to;
+			// postgres: REPEATABLE READ only raises 40001 for a write or a
+			// locking read, which this isn't). A Get failure therefore always
+			// follows the generic per-id path below.
 			cur, gErr := entityStore.Get(txCtx, t.id)
 			if gErr != nil {
-				result.IDToError[t.id] = perIDDeleteError(t.id, gErr)
+				a.idErrors[t.id] = perIDDeleteError(t.id, gErr)
 				continue
 			}
 			if cur.Meta.Version != t.baselineVersion {
-				result.IDToError[t.id] = fmt.Sprintf("%s: entity id=%s modified after delete resolution; not deleted",
+				a.idErrors[t.id] = fmt.Sprintf("%s: entity id=%s modified after delete resolution; not deleted",
 					common.ErrCodeEntityModified, t.id)
 				continue
 			}
 			if dErr := entityStore.Delete(txCtx, t.id); dErr != nil {
-				result.IDToError[t.id] = perIDDeleteError(t.id, dErr)
+				// A first-committer-wins refusal fails the batch, which runs
+				// again; it is not this id's outcome.
+				if errors.Is(dErr, spi.ErrConflict) {
+					return conflictError(dErr)
+				}
+				a.idErrors[t.id] = perIDDeleteError(t.id, dErr)
 				continue
 			}
-			pendingRemoved = append(pendingRemoved, t.id)
+			a.removed = append(a.removed, t.id)
+		}
+		if err := h.deleteEntityTasks(txCtx, a.removed); err != nil {
+			return deleteWriteError("failed to delete scheduled tasks", err)
 		}
 		if err := scope.Commit(); err != nil {
-			if errors.Is(err, spi.ErrConflict) {
-				return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
-			}
-			return common.Internal("failed to commit transaction", err)
+			return deleteWriteError("failed to commit transaction", err)
 		}
 		return nil
-	}(); appErr != nil {
-		// Operational (4xx-class) failures — the resolution-baseline conflict
-		// above all — are client-safe by construction, same as
-		// perIDDeleteError's operational branch: fold the message as-is, no
-		// ticket needed. Anything else (Internal/Fatal, e.g. a bare commit
-		// error) gets perIDDeleteError's ticketed treatment: mint ONE ticket
-		// for the whole batch, log the real cause under it, and fold the
-		// ticketed client-safe message — never the raw AppError.Message,
-		// which for an Internal error carries no cause and would otherwise
-		// go out unlogged and uncorrelated.
-		msg := appErr.Message
-		if appErr.Level != common.LevelOperational {
-			cause := error(appErr)
-			if appErr.Err != nil {
-				cause = appErr.Err
-			}
-			msg = mintDeleteTicket("", cause)
-		}
-		for _, id := range pendingRemoved {
-			result.IDToError[id] = msg
-		}
-		return nil
-	}
-
-	result.RemovedCount += len(pendingRemoved)
-	return nil
+	}()
+	return a, nil
 }
 
 // ListEntities pages entities for a model at the store via
@@ -2178,7 +2351,10 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		res, lbErr := h.engine.LoopbackWithIfMatch(txCtx, updated, input.IfMatch)
 		if lbErr != nil {
 			slog.Error("workflow loopback failed", "error", lbErr.Error(), "entityId", updated.Meta.ID)
-			if errors.Is(lbErr, spi.ErrConflict) {
+			// A task-row conflict (the reconcile lost a race with the
+			// scheduler) is not an entity modification. It keeps its cause
+			// and classifyWorkflowError answers the retryable 409 CONFLICT.
+			if errors.Is(lbErr, spi.ErrConflict) && !errors.Is(lbErr, wfengine.ErrScheduledTaskInfra) {
 				appErr := common.Operational(
 					http.StatusPreconditionFailed,
 					common.ErrCodeEntityModified,
@@ -2197,7 +2373,7 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		res, mtErr := h.engine.ManualTransitionWithIfMatch(txCtx, updated, input.Transition, input.IfMatch)
 		if mtErr != nil {
 			slog.Error("workflow manual transition failed", "error", mtErr.Error(), "entityId", updated.Meta.ID, "transition", input.Transition)
-			if errors.Is(mtErr, spi.ErrConflict) {
+			if errors.Is(mtErr, spi.ErrConflict) && !errors.Is(mtErr, wfengine.ErrScheduledTaskInfra) {
 				appErr := common.Operational(
 					http.StatusPreconditionFailed,
 					common.ErrCodeEntityModified,
@@ -2527,9 +2703,9 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			// audit trail for this item is paired (entry + abort) and lands
 			// alongside successful siblings on commit.
 			//
-			// Two other shapes reach here as spi.ErrConflict and must NOT be
-			// isolated, because in both the transaction this loop would carry
-			// on in is already gone:
+			// Three other shapes reach here as spi.ErrConflict and must NOT be
+			// isolated, because in all of them the transaction this loop
+			// would carry on in is already gone:
 			//
 			//   - ErrPostSegmentConflict: the apply-result CAS, raised after
 			//     TX_pre committed and the dispatch fired. No segment is left
@@ -2546,12 +2722,17 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			//     spi.ErrConflict branch answers a retryable 409 (asserted by
 			//     service_classify_test.go): the segment boundary aborted, so
 			//     a fresh attempt is the right advice.
+			//   - ErrScheduledTaskInfra: the reconcile's task-row write lost a
+			//     race with the scheduler. On PostgreSQL that statement's
+			//     40001 has aborted the transaction. It leaves through
+			//     classifyWorkflowError → common.Internal → a retryable 409.
 			//
 			// Either way, isolating would let every later item write into a
 			// dead transaction and be lost.
 			if item.ifMatch != "" && errors.Is(engineErr, spi.ErrConflict) &&
 				!errors.Is(engineErr, wfengine.ErrPostSegmentConflict) &&
-				!errors.Is(engineErr, wfengine.ErrCommitBeforeDispatchInfra) {
+				!errors.Is(engineErr, wfengine.ErrCommitBeforeDispatchInfra) &&
+				!errors.Is(engineErr, wfengine.ErrScheduledTaskInfra) {
 				slog.Info("collection update item precondition failed",
 					"source", "engine", "entityId", updated.Meta.ID, "itemIndex", i)
 				failed = append(failed, UpdateCollectionItemFailure{
