@@ -413,7 +413,7 @@ The first matching row applies:
 |---|---|
 | a cancellation of the run (shutdown, self-cancel), even when wrapped in a `CalloutFailure` | `CANCELLED: the run was stopped by the scheduler` — logged at WARN, no ticket |
 | `spi.ErrConflict` | `CONFLICT: a concurrent write changed the entity or its task` — logged at WARN, no ticket |
-| a `*contract.CalloutFailure` | its `Message`: `CODE: detail` when the failure has a code, plain client-safe text when it has none (`internal/contract/callout.go:78-84`); for `MemberFailed`, the compute node's own message |
+| a `*contract.CalloutFailure` whose cause is not a `*common.AppError` of the Internal or Fatal level | its `Message`: `CODE: detail` when the failure has a code, plain client-safe text when it has none (`internal/contract/callout.go:78-84`); for `MemberFailed`, the compute node's own message. A failure that wraps an Internal or Fatal `AppError` falls through to the last row, as the HTTP door treats it |
 | a `*common.AppError` of the Operational level, any status | its `Message` (already `CODE: detail`) |
 | anything else | `internal error [ticket: <uuid>]`, with the full error logged at ERROR |
 
