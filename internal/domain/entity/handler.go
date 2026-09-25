@@ -95,11 +95,16 @@ func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDG
 // Begin — the write lands in the shared buffer for the owner to commit. When
 // there is no joined tx (the normal inbound case) we Begin our own tx and
 // return owned=true. The txCtx returned in the joined case is the caller's ctx
-// unchanged (it already carries the TransactionState); in the owned case it is
-// the Begin-derived context.
+// marked as having joined the transaction (it already carries the
+// TransactionState); in the owned case it is the Begin-derived context.
+//
+// The mark is what the workflow engine reads to refuse a
+// COMMIT_BEFORE_DISPATCH processor on a joined call before anything is written:
+// a participant never commits, and the handler's commit rule (commitOwned) and
+// the engine's refusal answer that from this one decision.
 func (h *Handler) beginOrJoin(ctx context.Context) (string, context.Context, bool, error) {
 	if tx := spi.GetTransaction(ctx); tx != nil {
-		return tx.ID, ctx, false, nil
+		return tx.ID, wfengine.WithJoinedTransaction(ctx, tx.ID), false, nil
 	}
 	txID, txCtx, err := h.txMgr.Begin(ctx)
 	return txID, txCtx, true, err

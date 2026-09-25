@@ -99,6 +99,13 @@ const (
 	// request for the life of the callout. Retryable: the queue drains as the
 	// callbacks ahead of it finish.
 	ErrCodeTooManyJoinedRequests = "TOO_MANY_JOINED_REQUESTS"
+	// ErrCodeCommitInJoinedTransaction is returned to a compute node's
+	// callback whose workflow reaches a COMMIT_BEFORE_DISPATCH processor. That
+	// processor commits the transaction it runs in, and a callback's
+	// transaction is the one it joined: only the operation that began it
+	// commits it. Refused before anything is written. Not retryable: the same
+	// callback reaches the same processor again.
+	ErrCodeCommitInJoinedTransaction = "COMMIT_IN_JOINED_TRANSACTION"
 )
 
 const (
@@ -283,6 +290,7 @@ var knownErrorCodes = map[string]struct{}{
 	ErrCodeCalloutFailed:                    {},
 	ErrCodeCalloutSuperseded:                {},
 	ErrCodeClusterNodeNotRegistered:         {},
+	ErrCodeCommitInJoinedTransaction:        {},
 	ErrCodeCompositeKeyUnsupported:          {},
 	ErrCodeComputeMemberDisconnected:        {},
 	ErrCodeConditionTypeMismatch:            {},

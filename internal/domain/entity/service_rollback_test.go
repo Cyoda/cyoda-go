@@ -15,13 +15,10 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/txjoin"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
-	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
@@ -147,104 +144,6 @@ func TestPanickingWrite_ReleasesBufferedState(t *testing.T) {
 				t.Fatalf("committedLog prune floor pinned by an abandoned transaction: length = %d, want 0", got)
 			}
 		})
-	}
-}
-
-// TestJoinedSegmentedFlow_KeepsGateEntryAcrossReleaseAndTakesOnlyTheSegments
-// pins the lock ordering of a joined request that segmented. The join layer
-// holds gate(entry) for the whole request — that is what makes one transaction
-// one user's at a time — so it is still held while Release rolls the segment
-// back, and Release must take gate(segment) only: it returns early for the entry
-// transaction of a joined chain, and the segment is a DIFFERENT txID, so there
-// is no hold-and-wait on the non-reentrant gate.
-//
-// The observation is an event ordering, not a sleep: a competitor for
-// gate(entry) is launched from inside the rollback, and the rollback does not
-// return until that competitor is parked inside txgate.Acquire (gate(entry) held
-// by the join layer: correct) or has acquired (it was free: the join layer would
-// not be serialising the transaction's users at all). The competitor then
-// acquires once the join layer releases, after the handler has returned.
-//
-// The scenario is the joined-segmented can't-happen branch, which is also the
-// only shape where Release rolls anything back on a joined call: the engine's
-// COMMIT_BEFORE_DISPATCH processor commits the entry transaction and opens a
-// segment that belongs to nobody, the handler's guard rejects the call, and the
-// segment must not survive it.
-func TestJoinedSegmentedFlow_KeepsGateEntryAcrossReleaseAndTakesOnlyTheSegments(t *testing.T) {
-	hn := newTrackingHandler(t)
-	hn.registerSegmentingWorkflow(t)
-
-	ownerTxID, _, err := hn.tracker.Begin(hn.ctx)
-	if err != nil {
-		t.Fatalf("owner Begin: %v", err)
-	}
-
-	// The join layer of this transaction, with the callout its pass names in
-	// progress: Run takes gate(entry) and holds it for the whole handler.
-	signer, err := token.NewSigner([]byte("rollback-secret-at-least-32-bytes!"))
-	if err != nil {
-		t.Fatalf("NewSigner: %v", err)
-	}
-	f := fence.New(hn.h.gate)
-	_, endCallout := f.Begin(hn.ctx, "req-1", ownerTxID, nil)
-	defer endCallout()
-	f.Advance("req-1", 1)
-	pass, err := signer.Issue(token.Claims{NodeID: "local", TxRef: ownerTxID,
-		ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-1", Major: 1})
-	if err != nil {
-		t.Fatalf("Issue: %v", err)
-	}
-
-	competitorDone := make(chan struct{})
-	hn.tracker.onRollback = func(txID string) {
-		if txID == ownerTxID {
-			return // not the segment; nothing to observe
-		}
-		hn.tracker.record("rollback-start")
-		started := make(chan struct{})
-		go func() {
-			close(started)
-			release := hn.h.gate.Acquire(ownerTxID)
-			hn.tracker.record("competitor-acquired")
-			release()
-			close(competitorDone)
-		}()
-		<-started
-		waitForGateContention(t, competitorDone)
-	}
-
-	joiner, err := txjoin.NewJoiner(signer, hn.tracker, f, hn.h.gate, 10<<20, 128, nil)
-	if err != nil {
-		t.Fatalf("NewJoiner: %v", err)
-	}
-	var createErr error
-	if err := joiner.Run(hn.ctx, pass, func(ctx context.Context) {
-		_, createErr = hn.h.CreateEntity(ctx, rollbackWidgetInput())
-	}); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if createErr == nil {
-		t.Fatal("a joined call that segmented must be rejected, not committed")
-	}
-	var appErr *common.AppError
-	if !errors.As(createErr, &appErr) || appErr.Status != 500 {
-		t.Fatalf("joined-segmented guard returned %v, want a 500 AppError", createErr)
-	}
-
-	select {
-	case <-competitorDone:
-	case <-time.After(10 * time.Second):
-		t.Fatal("gate(entry) was never freed: the join layer's release did not run")
-	}
-
-	want := []string{"rollback-start", "rollback-end", "competitor-acquired"}
-	if got := hn.tracker.trace(); !slices.Equal(got, want) {
-		t.Fatalf("events = %v, want %v: Release must roll the segment back while the join layer still holds gate(entry)", got, want)
-	}
-	// ...and the segment the guard rejected is gone, which is the behaviour the
-	// guard-plus-scope pairing exists to deliver.
-	if open := hn.tracker.openTxIDs(); len(open) != 0 {
-		t.Fatalf("joined-segmented guard leaked %d transaction(s): %v", len(open), open)
 	}
 }
 
@@ -573,14 +472,12 @@ type trackingTxMgr struct {
 	mu         sync.Mutex
 	begun      []string
 	rolledBack []string
-	events     []string
 
 	// Commit-failure injection — see failCommitOf.
 	commitErr      error
 	failCommitTxID string
 
-	onBegin    func(txID string)
-	onRollback func(txID string)
+	onBegin func(txID string)
 }
 
 // failCommitOf makes the commit of one named transaction fail with err.
@@ -637,28 +534,12 @@ func (m *trackingTxMgr) Begin(ctx context.Context) (string, context.Context, err
 }
 
 func (m *trackingTxMgr) Rollback(ctx context.Context, txID string) error {
-	m.mu.Lock()
-	m.rolledBack = append(m.rolledBack, txID)
-	cb := m.onRollback
-	m.mu.Unlock()
-	if cb != nil {
-		cb(txID)
-	}
-	err := m.TransactionManager.Rollback(ctx, txID)
-	m.record("rollback-end")
-	return err
-}
-
-func (m *trackingTxMgr) record(ev string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.events = append(m.events, ev)
-}
-
-func (m *trackingTxMgr) trace() []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return slices.Clone(m.events)
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.rolledBack = append(m.rolledBack, txID)
+	}()
+	return m.TransactionManager.Rollback(ctx, txID)
 }
 
 // isOpen reports whether the plugin still holds txID active. Join is

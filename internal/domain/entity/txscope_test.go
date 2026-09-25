@@ -82,7 +82,7 @@ func newScopeHandler(m *scopeTxMgr) *Handler {
 // calls were doing by hand.
 func TestTxScope_OwnedRelease_RollsBack(t *testing.T) {
 	m := &scopeTxMgr{}
-	s := &txScope{h: newScopeHandler(m), entryTxID: "tx-1", ctx: context.Background(), txID: "tx-1", owned: true}
+	s := &txScope{h: newScopeHandler(m), ctx: context.Background(), txID: "tx-1", owned: true}
 	s.Release()
 	if len(m.rolledBack) != 1 || m.rolledBack[0] != "tx-1" {
 		t.Fatalf("owned scope did not roll back: %v", m.rolledBack)
@@ -93,24 +93,10 @@ func TestTxScope_OwnedRelease_RollsBack(t *testing.T) {
 // callback must never roll back the transaction its owner will commit.
 func TestTxScope_JoinedRelease_DoesNotRollBackOwnersTx(t *testing.T) {
 	m := &scopeTxMgr{}
-	s := &txScope{h: newScopeHandler(m), entryTxID: "tx-owner", ctx: context.Background(), txID: "tx-owner", owned: false}
+	s := &txScope{h: newScopeHandler(m), ctx: context.Background(), txID: "tx-owner", owned: false}
 	s.Release()
 	if len(m.rolledBack) != 0 {
 		t.Fatalf("joined scope rolled back the owner's transaction: %v", m.rolledBack)
-	}
-}
-
-// TestTxScope_JoinedRelease_RollsBackEngineOpenedSegment is coverage row 8b. A
-// joined call that unexpectedly segments holds a transaction that is nobody
-// else's — the engine opened it during this call. It is a can't-happen branch;
-// fail-closed says handle it anyway.
-func TestTxScope_JoinedRelease_RollsBackEngineOpenedSegment(t *testing.T) {
-	m := &scopeTxMgr{}
-	s := &txScope{h: newScopeHandler(m), entryTxID: "tx-owner", ctx: context.Background(), txID: "tx-owner", owned: false}
-	s.Advance(context.Background(), "tx-post")
-	s.Release()
-	if len(m.rolledBack) != 1 || m.rolledBack[0] != "tx-post" {
-		t.Fatalf("engine-opened segment leaked on a joined call: %v", m.rolledBack)
 	}
 }
 
@@ -139,7 +125,7 @@ func TestTxScope_Advance_IgnoresIncompleteSegment(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := &scopeTxMgr{}
 			entryCtx := context.WithValue(context.Background(), scopeCtxKey{}, "entry")
-			s := &txScope{h: newScopeHandler(m), entryTxID: "tx-1", ctx: entryCtx, txID: "tx-1", owned: true}
+			s := &txScope{h: newScopeHandler(m), ctx: entryCtx, txID: "tx-1", owned: true}
 
 			s.Advance(tc.ctx, tc.txID)
 
@@ -164,7 +150,7 @@ func TestTxScope_Advance_IgnoresIncompleteSegment(t *testing.T) {
 // rollback here would be both meaningless and ungated.
 func TestTxScope_ReleaseWithoutSegment_IsNoOp(t *testing.T) {
 	m := &scopeTxMgr{}
-	s := &txScope{h: newScopeHandler(m), entryTxID: "", ctx: context.Background(), txID: "", owned: true}
+	s := &txScope{h: newScopeHandler(m), ctx: context.Background(), txID: "", owned: true}
 	s.Release()
 	if len(m.rolledBack) != 0 {
 		t.Fatalf("rolled back a scope that names no segment: %d rollback(s) %q", len(m.rolledBack), m.rolledBack)
@@ -194,7 +180,7 @@ func TestTxScope_Release_GateWaitDoesNotConsumeRollbackBudget(t *testing.T) {
 	probeCancel()
 	budget := time.Until(probeDeadline)
 
-	s := &txScope{h: h, entryTxID: "tx-1", ctx: context.Background(), txID: "tx-1", owned: true}
+	s := &txScope{h: h, ctx: context.Background(), txID: "tx-1", owned: true}
 
 	release := h.gate.Acquire("tx-1")
 	done := make(chan struct{})
@@ -234,7 +220,7 @@ func TestTxScope_ReleaseAfterCommit_IsNoOp(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := &scopeTxMgr{commitErr: tc.commitErr}
-			s := &txScope{h: newScopeHandler(m), entryTxID: "tx-1", ctx: context.Background(), txID: "tx-1", owned: true}
+			s := &txScope{h: newScopeHandler(m), ctx: context.Background(), txID: "tx-1", owned: true}
 			_ = s.Commit()
 			s.Release()
 			if len(m.rolledBack) != 0 {
@@ -256,7 +242,7 @@ func TestTxScope_Commit_PreCommitCheckFailsClosed(t *testing.T) {
 	defer cancel()
 	<-ctx.Done() // deadline expires before commit
 
-	s := &txScope{h: h, entryTxID: "tx-1", ctx: ctx, txID: "tx-1", owned: true}
+	s := &txScope{h: h, ctx: ctx, txID: "tx-1", owned: true}
 	err := s.Commit()
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("want DeadlineExceeded from pre-commit check, got %v", err)
@@ -282,7 +268,7 @@ func TestTxScope_Commit_Joined_SkipsPreCommitCheck(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	s := &txScope{h: h, entryTxID: "tx-owner", ctx: ctx, txID: "tx-owner", owned: false}
+	s := &txScope{h: h, ctx: ctx, txID: "tx-owner", owned: false}
 	if err := s.Commit(); err != nil {
 		t.Fatalf("joined Commit must stay a no-op regardless of ctx state, got %v", err)
 	}
@@ -320,7 +306,7 @@ func TestTxScope_Commit_RunsOnShieldedCtx(t *testing.T) {
 		}
 	}
 
-	s := &txScope{h: h, entryTxID: "tx-1", ctx: reqCtx, txID: "tx-1", owned: true}
+	s := &txScope{h: h, ctx: reqCtx, txID: "tx-1", owned: true}
 	if err := s.Commit(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -335,7 +321,7 @@ func TestTxScope_ReleaseOnCancelledContext_StillRollsBack(t *testing.T) {
 	m := &scopeTxMgr{}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	s := &txScope{h: newScopeHandler(m), entryTxID: "tx-1", ctx: ctx, txID: "tx-1", owned: true}
+	s := &txScope{h: newScopeHandler(m), ctx: ctx, txID: "tx-1", owned: true}
 	s.Release()
 	if len(m.rolledBack) != 1 {
 		t.Fatalf("cancelled request abandoned its transaction: %v", m.rolledBack)
@@ -376,7 +362,7 @@ func TestTxScope_Release_HoldsTheGate(t *testing.T) {
 	}}
 	h.txMgr = m
 
-	s := &txScope{h: h, entryTxID: "tx-1", ctx: context.Background(), txID: "tx-1", owned: true}
+	s := &txScope{h: h, ctx: context.Background(), txID: "tx-1", owned: true}
 	s.Release()
 	<-acquired
 

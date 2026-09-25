@@ -491,6 +491,20 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **A compute node's callback never commits the transaction it joined.** A
+  callback runs in the transaction of the operation that called the compute
+  node out. When the callback's write — a create, an update or a transition,
+  one entity or a collection, over HTTP or gRPC — ran a workflow that reached
+  a `COMMIT_BEFORE_DISPATCH` processor, that processor committed the calling
+  operation's transaction part-way through the operation, dispatched itself,
+  and only then was the callback refused with a `500`. The calling operation
+  carried on in a transaction that no longer existed. The write is now refused
+  before anything is written, with the new `409 COMMIT_IN_JOINED_TRANSACTION`
+  (not retryable), which names the workflow and the processor; the processor
+  is not dispatched, and the calling operation's transaction stays open for it
+  to commit or roll back. Both values of `startNewTxOnDispatch` are refused.
+  See `docs/cloud-parity/commit-in-joined-transaction.md`.
+
 - **A signing key pair signs and verifies only inside its validity window.**
   A key pair still marked active kept verifying bearer tokens after its
   `validTo`, and a key pair issued with a future `validFrom` was used to sign

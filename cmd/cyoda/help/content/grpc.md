@@ -14,6 +14,7 @@ see_also:
   - errors.DISPATCH_FORWARD_FAILED
   - errors.CALLOUT_FAILED
   - errors.CALLOUT_SUPERSEDED
+  - errors.COMMIT_IN_JOINED_TRANSACTION
 ---
 
 # grpc
@@ -232,6 +233,7 @@ The compute member protocol allows external processes to serve as workflow proce
 - Expect callbacks of one transaction to run **one after another**. Every callback — a read or a search as much as a write — holds its transaction for the time the server works on it, so two callbacks sent in parallel are served in turn, not at once. The server reads the whole request before it takes the transaction and sends the response after it has let go, so a slow upload or a slow reader holds nothing up; a callback body over 10 MiB is refused with `413` before that happens (HTTP only).
 - Do not queue callbacks without limit on one transaction. Because they are served one at a time, firing many at once buys no speed, and each one waiting holds its whole request in memory until its turn comes. At most `CYODA_CALLOUT_JOINED_MAX_WAITERS` (default 128) may wait; past that a callback is refused with `503` `errors.TOO_MANY_JOINED_REQUESTS`, having touched nothing. It is retryable: back off briefly and send the callback again. A processor that lets the refusal escape fails its callout, and the operation is rolled back.
 - Keep a callback's **answer** under `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES` (default 10 MiB). The answer is held in memory for the same reason the request is: an answer that would pass the ceiling fails the callback with `413` `errors.JOINED_RESPONSE_TOO_LARGE`, naming the ceiling, rather than being cut short — on either door, and on the gRPC one the frames of a chunked collection count together. Not retryable: page a large read — `pageSize` and `pageNumber` on a get-all or a search — instead of asking for everything in one callback.
+- A callback never commits the transaction it joined — only the operation that began it does. A callback write whose workflow reaches a `COMMIT_BEFORE_DISPATCH` processor is refused with `409` `errors.COMMIT_IN_JOINED_TRANSACTION` before anything is written, and the processor is not dispatched. Not retryable: change the processor's `executionMode`, or make the write outside the callback, without the token.
 - A callback is not abandoned by its member's connection dropping, nor by a deadline the member sets on its own callback call — see "API requests made under a transaction token" below for what continues, and what does not.
 
 **Processor dispatch (server → client):**
@@ -555,6 +557,7 @@ Errors a compute member sees on a callback:
 - `errors.TRANSACTION_NOT_FOUND` — `404` — the transaction has ended
 - `errors.TRANSACTION_EXPIRED` — `410` — the token is past its expiry
 - `errors.UNAUTHORIZED` — `401` — the token does not name a callout and a try number at all
+- `errors.COMMIT_IN_JOINED_TRANSACTION` — `409` — the callback's write reached a `COMMIT_BEFORE_DISPATCH` processor
 
 ## EXAMPLES
 
@@ -621,3 +624,4 @@ grpcurl -plaintext \
 - errors.DISPATCH_FORWARD_FAILED
 - errors.CALLOUT_FAILED
 - errors.CALLOUT_SUPERSEDED
+- errors.COMMIT_IN_JOINED_TRANSACTION
