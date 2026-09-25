@@ -28,6 +28,19 @@ func init() {
 // STATE_MACHINE_START and the compensating TRANSITION_ABORTED. Audit events
 // are bound to the transaction on every backend, so the audit log shows no
 // event of the failed call.
+//
+// The 0/0 delta this scenario asserts cannot, by itself, tell a handler that
+// emitted nothing apart from one that emitted the paired entry+abort shape
+// and had it roll back with the transaction — both look identical from
+// outside once the call fails: no new STATE_MACHINE_START, no new
+// TRANSITION_ABORTED. That the compensating event is still actually emitted
+// is pinned at the unit level instead, by reading the transaction before it
+// rolls back (see
+// TestManualTransitionWithIfMatch_CBDCascadeStaleEmitsTransitionAborted in
+// internal/domain/workflow). The name "...AuditEventPaired" is kept even
+// though nothing paired is visible from here after the call fails: it names
+// the audit-trail shape this scenario is the parity guard for, not what a
+// GET against this entity's audit log happens to show after a 412.
 func RunExternalAPI_05_TransitionAbortedAuditEventPaired(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
 	d := driver.NewInProcess(t, fixture)
