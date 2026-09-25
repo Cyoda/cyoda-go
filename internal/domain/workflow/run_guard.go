@@ -178,10 +178,9 @@ func runCancelled(where string) error {
 	return fmt.Errorf("%s: %w", where, errors.Join(errRunCancelled, context.Canceled))
 }
 
+// cancelled reports whether Done is closed. A nil channel is never ready, so
+// a nil Done never cancels.
 func (g *RunGuard) cancelled() bool {
-	if g.Done == nil {
-		return false
-	}
 	select {
 	case <-g.Done:
 		return true
