@@ -294,6 +294,25 @@ func (m *TransactionManager) stagedTaskOps(txID string) []scheduledTaskOp {
 	return append([]scheduledTaskOp(nil), m.scheduledTaskOps[txID]...)
 }
 
+// busyTaskKeys returns the task rows an open transaction has staged a change
+// to. Such a row is not claimable, and MarkUnsafe and RecordAttempt answer
+// spi.ErrTaskBusy for it, until the transaction ends. A touch is not a
+// change. Caller holds factory.entityMu, so no Commit is between reading its
+// ops and applying them; lock order entityMu → mu.
+func (m *TransactionManager) busyTaskKeys() map[taskKey]bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	busy := make(map[taskKey]bool)
+	for _, ops := range m.scheduledTaskOps {
+		for _, op := range ops {
+			if !op.touch {
+				busy[op.key] = true
+			}
+		}
+	}
+	return busy
+}
+
 // stageTaskWrite stages one joining write on txID. It passes plan the ops
 // staged so far and appends the ops plan returns, in one mu section: two
 // joining writes on the same transaction therefore never plan from the same

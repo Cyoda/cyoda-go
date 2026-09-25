@@ -15,6 +15,10 @@ import (
 // mark survives the rollback of the run's transaction. Holding entityMu also
 // serialises MarkUnsafe with ClaimDue (C3) and every one of them with every
 // commit.
+//
+// A row an open transaction has staged a change to is busy: ClaimDue and
+// GiveBackIdle skip it; MarkUnsafe and RecordAttempt answer spi.ErrTaskBusy,
+// which the caller retries.
 
 func (s *scheduledTaskStore) Heartbeat(_ context.Context, owner uuid.UUID) error {
 	s.f.entityMu.Lock()
@@ -71,6 +75,7 @@ func (s *scheduledTaskStore) ClaimDue(_ context.Context, req spi.ClaimRequest) (
 	defer s.f.entityMu.Unlock()
 
 	cutoff := s.f.clock.Now().Add(-req.StaleAfter)
+	busy := s.f.txManager.busyTaskKeys()
 	running := make(map[entityTenantKey]taskKey)
 	for k, t := range s.f.scheduledTasks {
 		if t.Status == spi.ScheduledTaskRunning {
@@ -79,6 +84,9 @@ func (s *scheduledTaskStore) ClaimDue(_ context.Context, req spi.ClaimRequest) (
 	}
 	var cands []spi.ScheduledTask
 	for k, t := range s.f.scheduledTasks {
+		if busy[k] {
+			continue
+		}
 		switch {
 		case t.Status == spi.ScheduledTaskWaiting && t.NextAttemptTime <= req.NowMs:
 		case req.AllowLostOwner && t.Status == spi.ScheduledTaskRunning && s.ownerStaleLocked(t.Claim.Owner, cutoff):
@@ -129,9 +137,10 @@ func (s *scheduledTaskStore) GiveBackIdle(_ context.Context, owner uuid.UUID, ke
 	}
 	s.f.entityMu.Lock()
 	defer s.f.entityMu.Unlock()
+	busy := s.f.txManager.busyTaskKeys()
 	var ops []scheduledTaskOp
 	for k, t := range s.f.scheduledTasks {
-		if t.Status != spi.ScheduledTaskRunning || t.Claim.Owner != owner || kept[t.Claim.Token] {
+		if t.Status != spi.ScheduledTaskRunning || t.Claim.Owner != owner || kept[t.Claim.Token] || busy[k] {
 			continue
 		}
 		back := copyScheduledTask(t)
@@ -151,6 +160,9 @@ func (s *scheduledTaskStore) MarkUnsafe(_ context.Context, ref spi.TaskRef) erro
 	k := taskKey{tenant: ref.TenantID, id: ref.ID}
 	if _, err := fenced(taskView{f: s.f}, ref); err != nil {
 		return err
+	}
+	if s.f.txManager.busyTaskKeys()[k] {
+		return fmt.Errorf("scheduled task %s: %w", ref.ID, spi.ErrTaskBusy)
 	}
 	mk := markKey{task: k, arm: ref.ArmToken}
 	if holder, ok := s.f.taskMarks[mk]; ok {
@@ -173,6 +185,9 @@ func (s *scheduledTaskStore) RecordAttempt(_ context.Context, ref spi.TaskRef, a
 	t, err := fenced(taskView{f: s.f}, ref)
 	if err != nil {
 		return err
+	}
+	if s.f.txManager.busyTaskKeys()[k] {
+		return fmt.Errorf("scheduled task %s: %w", ref.ID, spi.ErrTaskBusy)
 	}
 	if !a.NotCounted {
 		t.Attempts++
