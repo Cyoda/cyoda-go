@@ -2949,14 +2949,81 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 **Spec:** §5.2 ("Every commit writes the task row"), §5.4, §5.5 (callback
 anti-pattern in a segmented run), §14.
 
-**Prerequisite.** #599 must be merged into `release/v0.9.0` and this branch
-rebased on it. A callback that joined a run's transaction could otherwise reach
-a `COMMIT_BEFORE_DISPATCH` processor and commit that transaction at
-`engine_processors.go:510` with no stamp and no cancellation check.
+**Prerequisite: the invariant I-599.** This task does not depend on *how* #599
+is fixed. It depends on one guarantee:
 
-- [ ] **Step 0: Check the prerequisite**
-Run: `gh issue view 599 --json state -q .state && git fetch origin && git log --oneline HEAD..origin/release/v0.9.0 | head`
-Expected: `CLOSED`, and the log is empty (the branch contains the release branch). If the issue is open, or the fix is not on this branch: **stop, and tell the lead.**
+> **I-599.** While a scheduled run's transaction is open, only the run's own
+> processor chain can commit it. A compute-node callback that joined the
+> transaction never causes a commit of that transaction, directly or through a
+> `COMMIT_BEFORE_DISPATCH` processor it reaches (today it can:
+> `flushAndCommitSegment` commits whatever transaction the chain runs in,
+> `engine_processors.go:481-486`, called at `:311` and `:349`).
+
+- [ ] **Step 0: Check I-599 against the merged #599.**
+  1. Run: `gh issue view 599 --json state -q .state && git fetch origin && git log --oneline HEAD..origin/release/v0.9.0 | head`.
+     Expected: `CLOSED` and an empty log (this branch contains the release branch).
+     If not: **stop, and tell the lead.**
+  2. Read #599's merged change (`gh issue view 599 --comments`, then the PR it
+     names). Decide which case applies:
+     - **(a) A joined chain that reaches `COMMIT_BEFORE_DISPATCH` is refused**
+       before anything is flushed (the fix the issue asks for). I-599 holds.
+       Go on with Step 1, and add the pinning test in Step 1b.
+     - **(b) The joined chain's `COMMIT_BEFORE_DISPATCH` commits something
+       other than the joined transaction** (for example its own transaction).
+       I-599 still holds, because the run's transaction is not committed.
+       Go on with Step 1 and Step 1b.
+     - **(c) Anything else**: some path still lets a joined callback commit the
+       transaction it joined; the refusal comes only after the flush; or the
+       fix is an import-time rule that leaves a runtime path open. I-599 does
+       not hold. **Stop, and tell the lead.** The fallback, which changes the
+       spec and needs the product owner's approval, is to attach the run guard
+       to the *transaction* rather than to the context. Every commit of a
+       guarded transaction is then stamped and checks the cancellation, from
+       whichever chain it comes. A commit from a chain that is not the run's
+       own counts as `partial = true`, because that chain cannot know whether
+       the fired transition has changed the state yet.
+  3. Rebase the branch on the release branch that contains #599 and re-check
+     the line numbers this task cites in `engine_processors.go`. #599 edits
+     that file.
+
+- [ ] **Step 1b: Pin I-599 inside a scheduled run.** Add the test below to
+  `fire_stamp_test.go`, and adapt the assertion on `err` to the error #599
+  returns in case (a) (in case (b), assert only what follows the `err` check).
+  The scripted processor `p1` joins the run's transaction and, through that
+  join, runs an ordinary workflow on a second entity whose transition has a
+  `COMMIT_BEFORE_DISPATCH` processor. Use the same join-and-run helper as
+  #599's own tests.
+
+```go
+func TestI599_CallbackCannotCommitTheRunsTransaction(t *testing.T) {
+	var env *runEnv
+	var claimed spi.ScheduledTask
+	var callbackErr error
+	ext := &scriptedExtProc{processor: func(_ context.Context, proc spi.ProcessorDefinition, txID string) (*spi.Entity, error) {
+		if proc.Name != "p1" {
+			return nil, nil
+		}
+		callbackErr = env.runJoinedCBDWorkflow(t, txID, "other-e1") // #599's helper, adapted
+		return nil, nil
+	}}
+	env = newRunEnv(t, ext)
+	claimed = env.claimed(t, "i599-e1", oneHopWF("CLOSED", []spi.ProcessorDefinition{safeProc("p1", ExecutionModeSync)}, nil))
+
+	r := env.runReport(t, claimed)
+	if callbackErr == nil {
+		t.Fatalf("the joined chain reached COMMIT_BEFORE_DISPATCH and was not refused (I-599)")
+	}
+	// Whatever the run's outcome, nothing of its transaction may be committed
+	// by the callback: the fired entity is either CLOSED by the run's own
+	// commit, or still OPEN.
+	if got := env.state(t, "i599-e1"); got != "CLOSED" && got != "OPEN" {
+		t.Fatalf("entity state = %q", got)
+	}
+	if r.Outcome == OutcomeFired && env.state(t, "i599-e1") != "CLOSED" {
+		t.Fatalf("fired, but the entity is not CLOSED")
+	}
+}
+```
 
 **Files:**
 - Modify: `internal/domain/workflow/run_guard.go`

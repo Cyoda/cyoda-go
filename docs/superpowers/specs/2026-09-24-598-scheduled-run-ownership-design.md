@@ -1237,10 +1237,15 @@ Rules:
 
 ## 14. Dependencies and scope
 
-- **#599 lands first.** A callback that joined a run's transaction could
-  otherwise reach a `COMMIT_BEFORE_DISPATCH` processor and commit that
-  transaction (`engine_processors.go:510`). That commit would have no stamp and
-  no cancellation check. #599 refuses it.
+- **#599 lands first, and must establish I-599.** While a scheduled run's
+  transaction is open, only the run's own processor chain can commit it. A
+  compute-node callback that joined the transaction never causes a commit of
+  that transaction, directly or through a `COMMIT_BEFORE_DISPATCH` processor it
+  reaches. Today it can (`engine_processors.go:481-486`).
+  - If #599 does not establish this, the run guard moves from the context to
+    the transaction, so every commit of a guarded transaction is stamped and
+    checks the cancellation. A commit from any other chain then counts as a
+    partial commit.
 - **Out of scope:**
   - an API to retry or dismiss a FAILED task — an entity write does both;
   - notifications — §5.7 names where they publish;
