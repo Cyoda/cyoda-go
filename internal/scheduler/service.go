@@ -56,7 +56,13 @@ const sweepInterval = time.Minute
 // is kept.
 const ownerSweepFactor = 10
 
-var errHeartbeatLate = errors.New("the heartbeat succeeded after its watchdog window")
+// warnEvery rate-limits the WARN line of a retried outcome write, per run.
+const warnEvery = time.Minute
+
+var (
+	errHeartbeatLate      = errors.New("the heartbeat succeeded after its watchdog window")
+	errBookkeepingStopped = errors.New("the scheduler stopped before the outcome was recorded")
+)
 
 type cancelReason int
 
@@ -78,6 +84,7 @@ type liveRun struct {
 	// Guarded by Service.mu.
 	reason cancelReason
 	ended  bool // the fire has returned
+	keep   bool // never given back: the store rejected its outcome
 }
 
 // Service is one pnode's scheduler: a claim loop, a heartbeat goroutine, a
@@ -110,6 +117,7 @@ type Service struct {
 	hbDone     chan struct{}
 	wdDone     chan struct{}
 	wdArm      chan time.Time
+	stopBooks  chan struct{} // closed when shutdown stops waiting for outcomes to be recorded
 	runsWG     sync.WaitGroup
 
 	startOnce sync.Once
@@ -135,6 +143,7 @@ func New(cfg Config, deps Deps) *Service {
 		hbDone:      make(chan struct{}),
 		wdDone:      make(chan struct{}),
 		wdArm:       make(chan time.Time, 1),
+		stopBooks:   make(chan struct{}),
 	}
 }
 
@@ -180,6 +189,7 @@ func (s *Service) Stop() {
 		if !s.isStarted() {
 			return
 		}
+		close(s.stopBooks)
 		close(s.stopLoop)
 		<-s.loopDone
 		close(s.stopHB)
@@ -481,9 +491,10 @@ func (s *Service) run(r *liveRun) {
 	cut := rep.Outcome == workflow.OutcomeFailed && errors.Is(rep.Err, context.Canceled) &&
 		(reason == shutdownCancelled || (reason == notCancelled && draining))
 	var errText string
+	errTicket := uuid.Nil
 	if rep.Err != nil {
 		text, ticket, warnOnly := recordedError(rep.Err)
-		errText = sanitiseErrorText(text)
+		errText, errTicket = sanitiseErrorText(text), ticket
 		if !warnOnly {
 			slog.Error("scheduled run failed with an internal error", "pkg", "scheduler",
 				"taskId", r.task.ID, "tenant", string(r.task.TenantID), "ticket", ticket.String(), "err", rep.Err)
@@ -492,6 +503,7 @@ func (s *Service) run(r *liveRun) {
 	bk := decideBookkeeping(rep, r.task, cut, false, nowMs, s.cfg, errText)
 	outcome := runOutcome(rep, bk, false, reason, cut)
 	err := s.book(r, bk)
+	s.logOutcome(r, bk, err, errTicket, rep.Err)
 	if errors.Is(err, spi.ErrStaleClaim) {
 		outcome = outcomeSuperseded
 	}
@@ -517,26 +529,163 @@ func (s *Service) fire(ctx context.Context, r *liveRun) workflow.RunReport {
 	return s.deps.Firer.FireScheduledTransition(ctx, r.task, s.cfg.MaxLostOwners, s.cfg.RetryDelay)
 }
 
-// book records the outcome with one fenced write that never inherits the
-// run's cancellation.
+// logOutcome writes the §9 line once the outcome is accepted. ticket is the
+// one lastError carries, or nil. runErr is the run's error: when its recorded
+// text is an Operational AppError that keeps its cause out of lastError (a
+// storage outage), the line carries that cause, as the HTTP door's log does.
+func (s *Service) logOutcome(r *liveRun, bk Bookkeeping, err error, ticket uuid.UUID, runErr error) {
+	attrs := []any{"pkg", "scheduler", "taskId", r.task.ID, "tenant", string(r.task.TenantID),
+		"entityId", r.task.EntityID, "transition", r.task.Transition}
+	if cause := operationalCause(runErr); cause != nil {
+		attrs = append(attrs, "cause", cause.Error())
+	}
+	switch {
+	case errors.Is(err, spi.ErrStaleClaim):
+		slog.Debug("scheduled run superseded", "pkg", "scheduler", "taskId", r.task.ID)
+	case err != nil, bk.Kind == NoneKind:
+	case bk.Kind == RecordAttemptKind:
+		slog.Warn("scheduled run failed; the task waits for its next attempt", append(attrs,
+			"counted", !bk.Attempt.NotCounted, "nextAttemptTime", bk.Attempt.NextAttemptTime,
+			"lastError", bk.Attempt.Error)...)
+	case bk.Kind == FailKind:
+		if ticket == uuid.Nil {
+			ticket = uuid.New()
+		}
+		slog.Error("scheduled task FAILED", append(attrs,
+			"reason", string(bk.Failure.Reason), "ticket", ticket.String(), "lastError", bk.Failure.Error)...)
+	}
+}
+
+// operationalCause is the cause an Operational AppError in err's chain keeps
+// out of its client-facing message, or nil.
+func operationalCause(err error) error {
+	var appErr *common.AppError
+	if errors.As(err, &appErr) && appErr.Level == common.LevelOperational {
+		return appErr.Err
+	}
+	return nil
+}
+
+// book records the outcome with a fenced write that never inherits the run's
+// cancellation. Every error is retried, after 1s and then doubling up to the
+// heartbeat interval, until the write is accepted or refused, or until
+// shutdown stops waiting for outcomes. Only a deterministic rejection by the
+// store latches the node; its claim is kept.
 func (s *Service) book(r *liveRun, bk Bookkeeping) error {
 	if bk.Kind == NoneKind {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.ctx), storeCallBudget)
-	defer cancel()
-	return s.writeOutcome(ctx, r, bk)
+	delay := min(time.Second, s.cfg.HeartbeatInterval)
+	var warned time.Time
+	for {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.ctx), storeCallBudget)
+		err := s.writeOutcome(ctx, r, bk)
+		cancel()
+		switch {
+		case err == nil, errors.Is(err, spi.ErrStaleClaim):
+			return err
+		case errors.Is(err, spi.ErrStoreRejected):
+			ticket := uuid.New()
+			slog.Error("the store rejected a scheduled run's outcome; node latched", "pkg", "scheduler",
+				"taskId", r.task.ID, "tenant", string(r.task.TenantID), "ticket", ticket.String(), "err", err)
+			s.keepRun(r)
+			s.latch()
+			return err
+		}
+		s.m.bookkeepingRetried()
+		if time.Since(warned) >= warnEvery {
+			warned = time.Now()
+			slog.Warn("scheduled run outcome not recorded; retrying", "pkg", "scheduler",
+				"taskId", r.task.ID, "tenant", string(r.task.TenantID), "err", err)
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-s.stopBooks:
+			timer.Stop()
+			return errBookkeepingStopped
+		}
+		delay = min(delay*2, s.cfg.HeartbeatInterval)
+	}
+}
+
+func (s *Service) keepRun(r *liveRun) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r.keep = true
 }
 
 func (s *Service) writeOutcome(ctx context.Context, r *liveRun, bk Bookkeeping) error {
 	if bk.Kind == FailKind {
-		return s.store.Fail(ctx, r.ref, bk.Failure)
+		return s.failWithAudit(ctx, r, bk.Failure)
 	}
 	return s.store.RecordAttempt(ctx, r.ref, bk.Attempt)
 }
 
+// failWithAudit writes Fail and the SCHEDULED_TRANSITION_FAIL event in one
+// transaction (§5.7). The event's state is the entity's state in that
+// transaction, or the task's source state when the entity is gone.
+func (s *Service) failWithAudit(ctx context.Context, r *liveRun, f spi.Failure) error {
+	ctx = spi.WithUserContext(ctx, common.SystemUserContextValue(r.task.TenantID))
+	txID, txCtx, err := s.deps.TxManager.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin the transaction that fails a scheduled task: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			rbCtx, cancel := common.RollbackContext(txCtx)
+			defer cancel()
+			_ = s.deps.TxManager.Rollback(rbCtx, txID)
+		}
+	}()
+	if err := s.store.Fail(txCtx, r.ref, f); err != nil {
+		return fmt.Errorf("failed to fail the scheduled task: %w", err)
+	}
+	state := r.task.SourceState
+	entities, err := s.deps.Store.EntityStore(txCtx)
+	if err != nil {
+		return fmt.Errorf("failed to get the entity store: %w", err)
+	}
+	switch entity, err := entities.Get(txCtx, r.task.EntityID); {
+	case err == nil:
+		state = entity.Meta.State
+	case !errors.Is(err, spi.ErrNotFound):
+		return fmt.Errorf("failed to read the entity of a failed scheduled task: %w", err)
+	}
+	audit, err := s.deps.Store.StateMachineAuditStore(txCtx)
+	if err != nil {
+		return fmt.Errorf("failed to get the audit store: %w", err)
+	}
+	if err := audit.Record(txCtx, r.task.EntityID, spi.StateMachineEvent{
+		EventType:     spi.SMEventScheduledTransitionFailed,
+		EntityID:      r.task.EntityID,
+		State:         state,
+		TransactionID: txID,
+		Details:       fmt.Sprintf("Scheduled transition %q failed: %s", r.task.Transition, f.Reason),
+		Data: map[string]any{
+			"transition":  r.task.Transition,
+			"sourceState": r.task.SourceState,
+			"reason":      string(f.Reason),
+			"attempts":    r.task.Attempts,
+			"lostOwners":  r.task.LostOwners,
+		},
+		Timestamp: time.UnixMilli(f.AtMs),
+	}); err != nil {
+		return fmt.Errorf("failed to record the scheduled task's failure: %w", err)
+	}
+	if err := common.ShieldedCommit(txCtx, func(c context.Context) error {
+		return s.deps.TxManager.Commit(c, txID)
+	}); err != nil {
+		return fmt.Errorf("failed to commit the scheduled task's failure: %w", err)
+	}
+	committed = true
+	return nil
+}
+
 // finish releases the claim once its outcome is accepted or refused. A claim
-// whose outcome is not recorded stays in the set.
+// whose outcome is not recorded, because shutdown stopped the retry or the
+// store rejected it, stays in the set.
 func (s *Service) finish(r *liveRun, bk Bookkeeping, bookErr error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
