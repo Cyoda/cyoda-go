@@ -220,7 +220,7 @@ func runServe(cfg app.Config) int {
 		return 1
 	}
 
-	if err := runServers(rootCtx, a, cfg, ls); err != nil {
+	if err := runServers(rootCtx, a, cfg, ls, a.DrainScheduler); err != nil {
 		// runServers has already triggered a.Shutdown / a.Close before
 		// returning; surface the failure as a non-zero exit code.
 		return 1

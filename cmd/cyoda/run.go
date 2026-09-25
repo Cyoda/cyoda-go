@@ -72,16 +72,19 @@ func listenAll(cfg app.Config) (serverListeners, error) {
 
 // runServers serves gRPC, HTTP, and admin on the listeners it is handed and
 // blocks until rootCtx is cancelled (typically by SIGINT/SIGTERM via
-// signal.NotifyContext in runServe). On cancel it drains each server within
-// shutdownDrainBudget, invokes a.Shutdown() to release background goroutines
-// and cluster resources, and a.Close() to release the storage factory + run
-// the gRPC graceful-stop dance with deadline. Every server closes its own
-// listener on the way out, on the serve-failure paths included.
+// signal.NotifyContext in runServe). On cancel it first drains the scheduler
+// through drainScheduler, while every server still serves, and then drains
+// each server within shutdownDrainBudget, invokes a.Shutdown() to release
+// background goroutines and cluster resources, and a.Close() to release the
+// storage factory + run the gRPC graceful-stop dance with deadline. Every
+// server closes its own listener on the way out, on the serve-failure paths
+// included.
 //
-// All three servers are coordinated by an errgroup whose context is the
-// caller-supplied rootCtx; cancellation propagates through all goroutines.
-// A failure in any server (e.g. a fatal Accept error) cancels the group
-// and surfaces as the returned error.
+// All three servers are coordinated by an errgroup whose context is derived
+// from context.Background(), not rootCtx, so a signal does not itself cancel
+// them — the watcher goroutine below drains the scheduler first and only
+// then cancels stopCtx. A failure in any server (e.g. a fatal Accept error)
+// still cancels the group at once and surfaces as the returned error.
 //
 // runServers does not call os.Exit. Its caller, runServe, turns the returned
 // error into an exit status that it returns in turn, so the cleanups it has
@@ -91,8 +94,24 @@ func runServers(
 	a *app.App,
 	cfg app.Config,
 	ls serverListeners,
+	drainScheduler func(context.Context),
 ) error {
-	g, ctx := errgroup.WithContext(rootCtx)
+	g, gctx := errgroup.WithContext(context.Background())
+	// stopCtx ends when the servers must stop. On a signal the scheduler drains
+	// first, while its runs still have the compute-node streams and the
+	// callback routes; then the servers drain. A server that fails stops the
+	// others at once, and a.Shutdown drains the scheduler after them.
+	stopCtx, stopServers := context.WithCancel(gctx)
+	defer stopServers()
+	g.Go(func() error {
+		select {
+		case <-rootCtx.Done():
+			drainScheduler(context.Background())
+			stopServers()
+		case <-gctx.Done():
+		}
+		return nil
+	})
 
 	// gRPC server. Serve does not honour ctx by itself, so a watcher
 	// goroutine triggers GracefulStop on cancel. We graceful-stop here
@@ -117,13 +136,14 @@ func runServers(
 		return fmt.Errorf("grpc serve: %w", err)
 	})
 	g.Go(func() error {
-		<-ctx.Done()
+		<-stopCtx.Done()
 		// Drain gRPC with the same deadline budget as HTTP/admin so total
 		// shutdown is predictable. The drain is gated by a sync.Once on
 		// App so the second invocation in a.Close() is a no-op rather
 		// than re-entering the deadline branch.
 		// Concrete sequence on signal:
-		//   1. ctx.Done fires (signal.NotifyContext)
+		//   1. rootCtx.Done fires (signal.NotifyContext); the scheduler
+		//      drains (a.DrainScheduler); stopCtx is cancelled
 		//   2. http.Shutdown / admin.Shutdown drain in their own goroutines
 		//   3. this watcher graceful-stops gRPC so Serve returns
 		//   4. errgroup.Wait returns
@@ -143,7 +163,7 @@ func runServers(
 		return nil
 	})
 	g.Go(func() error {
-		<-ctx.Done()
+		<-stopCtx.Done()
 		drainCtx, cancel := context.WithTimeout(context.Background(), shutdownDrainBudget)
 		defer cancel()
 		if err := httpServer.Shutdown(drainCtx); err != nil {
@@ -162,7 +182,7 @@ func runServers(
 		return nil
 	})
 	g.Go(func() error {
-		<-ctx.Done()
+		<-stopCtx.Done()
 		drainCtx, cancel := context.WithTimeout(context.Background(), shutdownDrainBudget)
 		defer cancel()
 		if err := adminServer.Shutdown(drainCtx); err != nil {

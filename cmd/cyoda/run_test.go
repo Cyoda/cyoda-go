@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -58,7 +59,7 @@ func TestRunServers_CtxCancelDrainsBothServers(t *testing.T) {
 	rootCtx, cancel := context.WithCancel(context.Background())
 	runDone := make(chan error, 1)
 	go func() {
-		runDone <- runServers(rootCtx, a, cfg, ls)
+		runDone <- runServers(rootCtx, a, cfg, ls, a.DrainScheduler)
 	}()
 
 	// Probe HTTP /health to confirm the server is actually serving on the
@@ -121,7 +122,7 @@ func TestRunServers_ShutdownBeforeGRPCServeIsClean(t *testing.T) {
 
 	runDone := make(chan error, 1)
 	go func() {
-		runDone <- runServers(rootCtx, a, cfg, ls)
+		runDone <- runServers(rootCtx, a, cfg, ls, a.DrainScheduler)
 	}()
 
 	select {
@@ -151,7 +152,7 @@ func TestRunServers_GRPCServeFailureIsReported(t *testing.T) {
 
 	runDone := make(chan error, 1)
 	go func() {
-		runDone <- runServers(context.Background(), a, cfg, ls)
+		runDone <- runServers(context.Background(), a, cfg, ls, a.DrainScheduler)
 	}()
 
 	select {
@@ -259,5 +260,89 @@ func TestListenAll_BindFailureNamesTheListener(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "http listener") {
 		t.Errorf("listenAll error = %q; want it to name the HTTP listener", err)
+	}
+}
+
+// waitHTTPUp polls /health until the HTTP server answers.
+func waitHTTPUp(t *testing.T, httpAddr string) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		resp, err := http.Get(httpAddr + "/health")
+		if err == nil {
+			resp.Body.Close()
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("HTTP server did not come up: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestRunServers_SignalDrainsTheSchedulerBeforeTheServers pins the §6.4
+// order: on a signal the scheduler drains while the servers still serve, so
+// its runs keep the compute-node streams and the callback routes.
+func TestRunServers_SignalDrainsTheSchedulerBeforeTheServers(t *testing.T) {
+	a, cfg, ls := newRunServersFixture(t)
+	httpAddr := "http://" + ls.http.Addr().String()
+	var servedDuringDrain atomic.Bool
+	drained := make(chan struct{})
+	drain := func(context.Context) {
+		defer close(drained)
+		resp, err := http.Get(httpAddr + "/health")
+		if err == nil {
+			resp.Body.Close()
+			servedDuringDrain.Store(resp.StatusCode == http.StatusOK)
+		}
+	}
+
+	rootCtx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan error, 1)
+	go func() { runDone <- runServers(rootCtx, a, cfg, ls, drain) }()
+	waitHTTPUp(t, httpAddr)
+
+	cancel()
+	select {
+	case <-drained:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the scheduler drain never ran on the signal path")
+	}
+	if !servedDuringDrain.Load() {
+		t.Error("HTTP stopped serving before the scheduler finished draining")
+	}
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Errorf("runServers returned error: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("runServers did not return after the drain")
+	}
+	assertListenersClosed(t, ls)
+}
+
+// TestRunServers_ServerFailureDoesNotWaitForTheSchedulerDrain: a failed server
+// stops the others at once; a.Shutdown drains the scheduler after them.
+func TestRunServers_ServerFailureDoesNotWaitForTheSchedulerDrain(t *testing.T) {
+	a, cfg, ls := newRunServersFixture(t)
+	if err := ls.grpc.Close(); err != nil {
+		t.Fatalf("close grpc listener: %v", err)
+	}
+	var drainCalled atomic.Bool
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- runServers(context.Background(), a, cfg, ls, func(context.Context) { drainCalled.Store(true) })
+	}()
+	select {
+	case err := <-runDone:
+		if err == nil || !strings.Contains(err.Error(), "grpc serve:") {
+			t.Errorf("runServers error = %v; want the gRPC serve failure", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("runServers did not return after the gRPC server failed")
+	}
+	if drainCalled.Load() {
+		t.Error("the signal-path drain ran on a server failure; a.Shutdown drains the scheduler there")
 	}
 }
