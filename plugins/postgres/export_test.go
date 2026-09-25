@@ -285,3 +285,10 @@ func SchedulerPoolForTest(t testing.TB, f *StoreFactory) *pgxpool.Pool {
 // CloseSchedulerPoolsForTest closes the scheduler pools a test factory
 // opened. Fixtures that close only the main pool call it. Test-only.
 func CloseSchedulerPoolsForTest(f *StoreFactory) { f.closeSchedulerPools() }
+
+// EntityClaimLockSQLForTest takes, and waits for, the advisory lock a claim
+// takes on the entity ($1 = tenant id, $2 = entity id), so a test can play a
+// claimer that holds an entity without committing.
+func EntityClaimLockSQLForTest() string {
+	return `SELECT pg_advisory_xact_lock(` + entityLockKey("$1::text", "$2::text") + `)`
+}

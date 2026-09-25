@@ -683,3 +683,40 @@ func TestPostgres_ClaimDue_ResultInSelectClaimsOrder(t *testing.T) {
 		t.Errorf("claimed %v, want %v", got, want)
 	}
 }
+
+// Claimers serialise per entity. Another claimer that holds entity e1 — it
+// has locked and claimed e1's T1 and not committed — keeps this claim off e1
+// altogether: the claim does not turn to T1's sibling T2, where it would wait
+// on the one-RUNNING index and lose the whole batch. It claims the unrelated
+// task at once.
+func TestPostgres_ClaimDue_EntityHeldByAnotherClaimerIsSkipped(t *testing.T) {
+	f, sts := newTaskStore(t, 5)
+	arm(t, sts, "tenant-A", "e1", "S",
+		taskSpec("tenant-A", "e1", "S", "T1", 1),
+		taskSpec("tenant-A", "e1", "S", "T2", 2))
+	arm(t, sts, "tenant-A", "z", "S", taskSpec("tenant-A", "z", "S", "T", 3))
+
+	bg := context.Background()
+	rival, err := postgres.PoolForTest(f).Begin(bg)
+	if err != nil {
+		t.Fatalf("begin rival: %v", err)
+	}
+	defer func() { _ = rival.Rollback(bg) }()
+	if _, err := rival.Exec(bg, postgres.EntityClaimLockSQLForTest(), "tenant-A", "e1"); err != nil {
+		t.Fatalf("rival entity lock: %v", err)
+	}
+	if _, err := rival.Exec(bg, `UPDATE scheduled_tasks
+		SET status = 'RUNNING', claim_token = gen_random_uuid(), claim_owner = gen_random_uuid()
+		WHERE tenant_id = 'tenant-A' AND id = 'e1:S:T1'`); err != nil {
+		t.Fatalf("rival claim: %v", err)
+	}
+
+	start := time.Now()
+	claimed, err := sts.ClaimDue(bg, claimRequest(uuid.New()))
+	if err != nil || !slices.Equal(taskIDs(claimed), []string{"z:S:T"}) {
+		t.Fatalf("ClaimDue: claimed=%v err=%v, want z:S:T only", taskIDs(claimed), err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("ClaimDue took %s; it must not wait on the rival", elapsed)
+	}
+}

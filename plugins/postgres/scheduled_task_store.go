@@ -72,7 +72,7 @@ const markedColumn = `EXISTS (SELECT 1 FROM scheduled_task_marks m
 	WHERE m.tenant_id = st.tenant_id AND m.task_id = st.id AND m.arm_token = st.arm_token)`
 
 // scanTask reads taskColumns, then any extra destinations. scan is a pgx.Row's
-// or pgx.Rows' Scan. scheduled_tasks_claim_chk guarantees claim_token and
+// or pgx.Rows' Scan. scheduled_tasks_claim_pair_chk guarantees claim_token and
 // claim_owner are both set or both NULL.
 func scanTask(scan func(dest ...any) error, extra ...any) (spi.ScheduledTask, error) {
 	var (
@@ -455,7 +455,9 @@ const claimableCondition = `(
 //
 //   - candidates: claimableCondition, less any task whose entity has another
 //     RUNNING task, less the (tenant, id) pairs in $8/$9 — rows an earlier
-//     round of this claim found busy or no longer claimable;
+//     round of this claim found busy or no longer claimable — and less every
+//     task of the (tenant, entity) pairs in $10/$11 — entities another
+//     claimer holds;
 //   - one task per entity: the first in (next_attempt_time, id) order;
 //   - within a tenant, turn = the task's place in (next_attempt_time, id)
 //     order; a tenant's turns stop at PerTenantLimit minus its runs in
@@ -474,17 +476,19 @@ const rankClaimsSQL = `WITH candidate AS (
 	                      AND r.status = 'RUNNING' AND r.id <> st.id)
 	   AND NOT EXISTS (SELECT 1 FROM unnest($8::text[], $9::text[]) AS x(tenant_id, id)
 	                    WHERE x.tenant_id = st.tenant_id AND x.id = st.id)
+	   AND NOT EXISTS (SELECT 1 FROM unnest($10::text[], $11::text[]) AS x(tenant_id, entity_id)
+	                    WHERE x.tenant_id = st.tenant_id AND x.entity_id = st.entity_id)
 ), one_per_entity AS (
-	SELECT DISTINCT ON (tenant_id, entity_id) id, tenant_id, next_attempt_time
+	SELECT DISTINCT ON (tenant_id, entity_id) id, tenant_id, entity_id, next_attempt_time
 	  FROM candidate
 	 ORDER BY tenant_id, entity_id, next_attempt_time, id COLLATE "C"
 ), ranked AS (
-	SELECT id, tenant_id,
+	SELECT id, tenant_id, entity_id,
 	       row_number() OVER (PARTITION BY tenant_id ORDER BY next_attempt_time, id COLLATE "C") AS turn,
 	       min(next_attempt_time) OVER (PARTITION BY tenant_id) AS tenant_first
 	  FROM one_per_entity
 )
-SELECT r.tenant_id, r.id
+SELECT r.tenant_id, r.id, r.entity_id
   FROM ranked r
   LEFT JOIN unnest($5::text[], $6::int[]) AS busy(tenant_id, runs) ON busy.tenant_id = r.tenant_id
  WHERE r.turn <= $4::int - COALESCE(busy.runs, 0)
@@ -496,12 +500,33 @@ SELECT r.tenant_id, r.id
 // It returns each locked row's status before the claim: RUNNING means the
 // claim takes the task from a stale or missing owner. The row lock holds that
 // status until claimSQL runs.
-const lockClaimsSQL = `SELECT st.tenant_id, st.id, st.status
+const lockClaimsSQL = `SELECT st.tenant_id, st.id, st.entity_id, st.status
   FROM scheduled_tasks st
   JOIN unnest($4::text[], $5::text[]) AS c(tenant_id, id) ON c.tenant_id = st.tenant_id AND c.id = st.id
  WHERE ` + claimableCondition + `
  ORDER BY st.tenant_id, st.id
  FOR UPDATE OF st SKIP LOCKED`
+
+// entityLockKey is the 64-bit advisory-lock key of an entity, from SQL
+// expressions for its tenant id and entity id. The tenant id is length-prefixed
+// so that no two (tenant, entity) pairs concatenate to the same text. Two
+// different entities can still share a key through a hash collision; the only
+// effect is that one claim call passes over an entity it could have claimed,
+// and the next call takes it.
+func entityLockKey(tenantExpr, entityExpr string) string {
+	return `hashtextextended(length(` + tenantExpr + `)::text || ':' || ` + tenantExpr + ` || ` + entityExpr + `, 0)`
+}
+
+// lockEntitiesSQL takes, without waiting, the advisory lock of each (tenant,
+// entity) in $1/$2 for the rest of the claim's transaction, and returns the
+// ones another claimer holds. Only claims take these locks: claimers serialise
+// per entity, so a claimer never moves on to a sibling of a task another
+// claimer is claiming and waits behind it on the one-RUNNING index. Entity
+// transactions take none, so a row busy under an entity transaction still
+// passes its turn to a sibling on the same entity.
+var lockEntitiesSQL = `SELECT k.tenant_id, k.entity_id
+  FROM unnest($1::text[], $2::text[]) AS k(tenant_id, entity_id)
+ WHERE NOT pg_try_advisory_xact_lock(` + entityLockKey("k.tenant_id", "k.entity_id") + `)`
 
 // claimSQL is ClaimDue's claim. A new statement, so it sees claims other
 // pnodes committed since the ranking; the full condition, including "no other
@@ -529,32 +554,42 @@ const claimedMarksSQL = `SELECT m.tenant_id, m.task_id
     ON m.tenant_id = c.tenant_id AND m.task_id = c.task_id AND m.arm_token = c.arm_token`
 
 // ClaimDue claims due tasks in one READ COMMITTED transaction on the scheduler
-// pool and returns them in spi.SelectClaims order. A claim that loses a race
-// for a sibling task rolls back and claims nothing (see lostClaimRace).
+// pool and returns them in spi.SelectClaims order. A claim that loses the
+// sibling race on the one-RUNNING-task-per-entity index rolls back and claims
+// nothing (siblingRace). Any other failure is returned (claimError).
 func (s *scheduledTaskStore) ClaimDue(ctx context.Context, req spi.ClaimRequest) ([]spi.ScheduledTask, error) {
 	if req.Limit < 1 || req.PerTenantLimit < 1 {
 		return nil, fmt.Errorf("claim scheduled tasks: Limit and PerTenantLimit must be >= 1, got %d and %d: %w",
 			req.Limit, req.PerTenantLimit, spi.ErrStoreRejected)
 	}
 	claimed, err := s.claimDue(ctx, req)
-	if lostClaimRace(err) {
-		slog.Log(ctx, lostClaimRaceLevel(err),
-			"scheduled task claim met a concurrent lock or claim; claiming nothing this call",
+	if siblingRace(err) {
+		slog.Debug("scheduled task claim met a concurrent claim of a sibling task; claiming nothing this call",
 			"pkg", "postgres", "err", err)
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to claim scheduled tasks: %w", err)
+		if isLockNotAvailable(err) || isDeadlock(err) {
+			slog.Warn("scheduled task claim met a lock wait or deadlock outside the one-RUNNING-task-per-entity index",
+				"pkg", "postgres", "err", err)
+		}
+		return nil, fmt.Errorf("failed to claim scheduled tasks: %w", claimError(err))
 	}
 	return claimed, nil
 }
 
-// claimDue ranks, locks, and ranks again until every ranked row is locked. A
-// ranked row the lock skipped — busy under an open transaction, or no longer
-// claimable — is excluded and the ranking runs again, so its turn goes to the
-// next task and the result is spi.SelectClaims over the claimable rows no
-// other transaction holds. Rows locked in an earlier round stay locked. Every
-// round but the last excludes at least one row, so the loop ends.
+// claimDue ranks, locks, and ranks again until every ranked row is locked.
+//
+// Each round locks the newly ranked rows (SKIP LOCKED), then takes the
+// advisory lock of each newly locked row's entity (see lockEntitiesSQL). A
+// ranked row the row lock skipped — busy under an open transaction, or no
+// longer claimable — is excluded, so its turn goes to the next task, a sibling
+// on the same entity included. An entity whose advisory lock another claimer
+// holds is excluded whole, so the claim never waits behind that claimer on the
+// one-RUNNING index. The result is spi.SelectClaims over the claimable rows no
+// other transaction holds, on the entities no other claimer holds. Row and
+// entity locks taken in earlier rounds stay held. Every round but the last
+// excludes at least one row or entity, so the loop ends.
 func (s *scheduledTaskStore) claimDue(ctx context.Context, req spi.ClaimRequest) ([]spi.ScheduledTask, error) {
 	tenants := make([]string, 0, len(req.TenantInProgress))
 	running := make([]int, 0, len(req.TenantInProgress))
@@ -571,35 +606,22 @@ func (s *scheduledTaskStore) claimDue(ctx context.Context, req spi.ClaimRequest)
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	q := classifiedQuerier{inner: tx}
 
-	fromLostOwner := make(map[taskKey]bool) // every row locked so far
-	exclTenants, exclIDs := []string{}, []string{}
-	var chosen []taskKey
+	r := claimRound{
+		fromLostOwner: make(map[taskKey]bool),
+		heldEntities:  make(map[taskKey]bool),
+		excl:          exclusions{rowTenants: []string{}, rowIDs: []string{}, entTenants: []string{}, entIDs: []string{}},
+	}
+	var chosen []rankedTask
 	for {
-		chosen, err = rankClaims(ctx, q, req, stale, tenants, running, exclTenants, exclIDs)
+		chosen, err = rankClaims(ctx, q, req, stale, tenants, running, r.excl)
 		if err != nil {
 			return nil, err
 		}
-		var lockTenants, lockIDs []string
-		for _, k := range chosen {
-			if _, ok := fromLostOwner[k]; !ok {
-				lockTenants, lockIDs = append(lockTenants, k.tenant), append(lockIDs, k.id)
-			}
-		}
-		if len(lockIDs) == 0 {
-			break
-		}
-		if err := lockClaims(ctx, q, req, stale, lockTenants, lockIDs, fromLostOwner); err != nil {
+		excluded, err := r.lock(ctx, q, req, stale, chosen)
+		if err != nil {
 			return nil, err
 		}
-		skipped := false
-		for i, id := range lockIDs {
-			k := taskKey{tenant: lockTenants[i], id: id}
-			if _, ok := fromLostOwner[k]; !ok {
-				exclTenants, exclIDs = append(exclTenants, k.tenant), append(exclIDs, k.id)
-				skipped = true
-			}
-		}
-		if !skipped {
+		if !excluded {
 			break
 		}
 	}
@@ -609,8 +631,8 @@ func (s *scheduledTaskStore) claimDue(ctx context.Context, req spi.ClaimRequest)
 
 	chosenTenants := make([]string, len(chosen))
 	chosenIDs := make([]string, len(chosen))
-	for i, k := range chosen {
-		chosenTenants[i], chosenIDs[i] = k.tenant, k.id
+	for i, c := range chosen {
+		chosenTenants[i], chosenIDs[i] = c.tenant, c.id
 	}
 	rows, err := q.Query(ctx, claimSQL, req.NowMs, req.AllowLostOwner, stale, chosenIDs, req.Owner, chosenTenants)
 	if err != nil {
@@ -623,12 +645,12 @@ func (s *scheduledTaskStore) claimDue(ctx context.Context, req spi.ClaimRequest)
 	byKey := make(map[taskKey]spi.ScheduledTask, len(updated))
 	for _, t := range updated {
 		// Set on the returned copy only; the row never stores it.
-		t.ClaimedFromLostOwner = fromLostOwner[keyOf(t)]
+		t.ClaimedFromLostOwner = r.fromLostOwner[keyOf(t)]
 		byKey[keyOf(t)] = t
 	}
 	claimed := make([]spi.ScheduledTask, 0, len(updated))
-	for _, k := range chosen {
-		if t, ok := byKey[k]; ok {
+	for _, c := range chosen {
+		if t, ok := byKey[c.key()]; ok {
 			claimed = append(claimed, t)
 		}
 	}
@@ -644,43 +666,136 @@ func (s *scheduledTaskStore) claimDue(ctx context.Context, req spi.ClaimRequest)
 	return claimed, nil
 }
 
+// rankedTask is one task rankClaimsSQL chose.
+type rankedTask struct{ tenant, id, entity string }
+
+func (c rankedTask) key() taskKey { return taskKey{tenant: c.tenant, id: c.id} }
+
+// exclusions are the rows and entities later rankings of one claim leave out.
+type exclusions struct{ rowTenants, rowIDs, entTenants, entIDs []string }
+
+// claimRound is what one claim holds across its ranking rounds.
+type claimRound struct {
+	fromLostOwner map[taskKey]bool // every row locked so far; true when it was RUNNING
+	heldEntities  map[taskKey]bool // every entity whose advisory lock this claim holds, keyed (tenant, entity)
+	excl          exclusions
+}
+
+// lock locks the chosen rows not yet locked and their entities not yet held,
+// and reports whether it excluded anything, which means another ranking round
+// is needed.
+func (r *claimRound) lock(ctx context.Context, q Querier, req spi.ClaimRequest, stale int64, chosen []rankedTask) (bool, error) {
+	var lockTenants, lockIDs []string
+	for _, c := range chosen {
+		if _, ok := r.fromLostOwner[c.key()]; !ok {
+			lockTenants, lockIDs = append(lockTenants, c.tenant), append(lockIDs, c.id)
+		}
+	}
+	if len(lockIDs) == 0 {
+		return false, nil
+	}
+	lockedEntities, err := lockClaims(ctx, q, req, stale, lockTenants, lockIDs, r.fromLostOwner)
+	if err != nil {
+		return false, err
+	}
+	excluded := false
+	for i, id := range lockIDs {
+		if _, ok := r.fromLostOwner[taskKey{tenant: lockTenants[i], id: id}]; !ok {
+			r.excl.rowTenants, r.excl.rowIDs = append(r.excl.rowTenants, lockTenants[i]), append(r.excl.rowIDs, id)
+			excluded = true
+		}
+	}
+	var entTenants, entIDs []string
+	for _, e := range lockedEntities {
+		if !r.heldEntities[e] {
+			entTenants, entIDs = append(entTenants, e.tenant), append(entIDs, e.id)
+		}
+	}
+	if len(entIDs) == 0 {
+		return excluded, nil
+	}
+	taken, err := lockEntities(ctx, q, entTenants, entIDs)
+	if err != nil {
+		return false, err
+	}
+	for i, id := range entIDs {
+		e := taskKey{tenant: entTenants[i], id: id}
+		if taken[e] {
+			r.heldEntities[e] = true
+			continue
+		}
+		r.excl.entTenants, r.excl.entIDs = append(r.excl.entTenants, e.tenant), append(r.excl.entIDs, e.id)
+		excluded = true
+	}
+	return excluded, nil
+}
+
 func rankClaims(ctx context.Context, q Querier, req spi.ClaimRequest, stale int64,
-	tenants []string, running []int, exclTenants, exclIDs []string) ([]taskKey, error) {
+	tenants []string, running []int, excl exclusions) ([]rankedTask, error) {
 	rows, err := q.Query(ctx, rankClaimsSQL, req.NowMs, req.AllowLostOwner, stale, req.PerTenantLimit,
-		tenants, running, req.Limit, exclTenants, exclIDs)
+		tenants, running, req.Limit, excl.rowTenants, excl.rowIDs, excl.entTenants, excl.entIDs)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var chosen []taskKey
+	var chosen []rankedTask
 	for rows.Next() {
-		var k taskKey
-		if err := rows.Scan(&k.tenant, &k.id); err != nil {
+		var c rankedTask
+		if err := rows.Scan(&c.tenant, &c.id, &c.entity); err != nil {
 			return nil, err
 		}
-		chosen = append(chosen, k)
+		chosen = append(chosen, c)
 	}
 	return chosen, rows.Err()
 }
 
-// lockClaims locks the rows it can and records each one's pre-claim status in
-// locked (true: RUNNING, taken from a lost owner).
+// lockClaims locks the rows it can, records each one's pre-claim status in
+// locked (true: RUNNING, taken from a lost owner), and returns the distinct
+// (tenant, entity) pairs of the rows it locked.
 func lockClaims(ctx context.Context, q Querier, req spi.ClaimRequest, stale int64,
-	tenants, ids []string, locked map[taskKey]bool) error {
+	tenants, ids []string, locked map[taskKey]bool) ([]taskKey, error) {
 	rows, err := q.Query(ctx, lockClaimsSQL, req.NowMs, req.AllowLostOwner, stale, tenants, ids)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	defer rows.Close()
+	seen := make(map[taskKey]bool)
+	var entities []taskKey
+	for rows.Next() {
+		var k taskKey
+		var entity, status string
+		if err := rows.Scan(&k.tenant, &k.id, &entity, &status); err != nil {
+			return nil, err
+		}
+		locked[k] = status == string(spi.ScheduledTaskRunning)
+		if e := (taskKey{tenant: k.tenant, id: entity}); !seen[e] {
+			seen[e] = true
+			entities = append(entities, e)
+		}
+	}
+	return entities, rows.Err()
+}
+
+// lockEntities tries the advisory lock of each (tenant, entity) and reports
+// which it took.
+func lockEntities(ctx context.Context, q Querier, tenants, entities []string) (map[taskKey]bool, error) {
+	taken := make(map[taskKey]bool, len(entities))
+	for i, e := range entities {
+		taken[taskKey{tenant: tenants[i], id: e}] = true
+	}
+	rows, err := q.Query(ctx, lockEntitiesSQL, tenants, entities)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var k taskKey
-		var status string
-		if err := rows.Scan(&k.tenant, &k.id, &status); err != nil {
-			return err
+		var e taskKey
+		if err := rows.Scan(&e.tenant, &e.id); err != nil {
+			return nil, err
 		}
-		locked[k] = status == string(spi.ScheduledTaskRunning)
+		taken[e] = false
 	}
-	return rows.Err()
+	return taken, rows.Err()
 }
 
 // markClaimed sets UnsafeMarked on each claimed task whose life has a mark.
@@ -707,41 +822,54 @@ func markClaimed(ctx context.Context, q Querier, claimed []spi.ScheduledTask) er
 	return rows.Err()
 }
 
+// runningIndex is the one-RUNNING-task-per-entity index.
+const runningIndex = "scheduled_tasks_one_running_per_entity_uq"
+
 // errClaimStep marks an error raised by claimSQL, the one statement that can
-// wait on another claim's entry in the one-RUNNING-task-per-entity index.
+// wait on another claim's entry in runningIndex.
 var errClaimStep = errors.New("claim statement")
 
 func claimStepError(err error) error {
 	return fmt.Errorf("%w: %w", errClaimStep, err)
 }
 
-// lostClaimRace reports a claim that met a concurrent claim or lock and must
-// roll back and claim nothing: the one-RUNNING-task-per-entity index refused
-// it after the rival committed (23505), a lock wait reached lock_timeout
-// (55P03), or two transactions waited on each other (40P01).
-func lostClaimRace(err error) bool {
+// siblingRace reports the one failure ClaimDue swallows: the claim met a
+// concurrent claim of a sibling task at runningIndex. Either the index refused
+// it once the rival committed (23505 on runningIndex), or claimSQL waited on
+// the rival's index entry until lock_timeout (55P03) or a deadlock (40P01),
+// which PostgreSQL reports with the index named in the error's context
+// ("while inserting index tuple … in relation \"<index>\""). The transaction
+// rolls back; nothing was claimed.
+func siblingRace(err error) bool {
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) {
 		return false
 	}
 	switch pgErr.Code {
-	case pgerrcode.DeadlockDetected, pgerrcode.LockNotAvailable:
-		return true
 	case pgerrcode.UniqueViolation:
-		return pgErr.ConstraintName == "scheduled_tasks_one_running_per_entity_uq"
+		return pgErr.ConstraintName == runningIndex
+	case pgerrcode.LockNotAvailable, pgerrcode.DeadlockDetected:
+		return errors.Is(err, errClaimStep) && strings.Contains(pgErr.Where, `relation "`+runningIndex+`"`)
 	}
 	return false
 }
 
-// lostClaimRaceLevel is the level a lost claim is logged at. Only claimSQL can
-// wait on the one-RUNNING-task-per-entity index, and meeting a sibling's claim
-// there is expected: DEBUG. A lock wait or deadlock anywhere else in the claim
-// is not expected: WARN.
-func lostClaimRaceLevel(err error) slog.Level {
-	if errors.Is(err, errClaimStep) {
-		return slog.LevelDebug
+// claimError classifies a claim failure that is not a sibling race, as the
+// store does elsewhere: a lock wait is ErrTaskBusy, a deadlock ErrConflict.
+// The SQLSTATE stays in the chain.
+func claimError(err error) error {
+	switch {
+	case isLockNotAvailable(err):
+		return fmt.Errorf("%w: %w", spi.ErrTaskBusy, err)
+	case isDeadlock(err) && !errors.Is(err, spi.ErrConflict):
+		return fmt.Errorf("%w: %w", spi.ErrConflict, err)
 	}
-	return slog.LevelWarn
+	return err
+}
+
+func isDeadlock(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == pgerrcode.DeadlockDetected
 }
 
 func isLockNotAvailable(err error) bool {
