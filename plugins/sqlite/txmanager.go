@@ -24,13 +24,24 @@ const submitTimeTTL = 1 * time.Hour
 type committedTx struct {
 	seq      int64
 	writeSet map[string]bool
-	// taskWrites holds the task rows the write changed. It is apart from
-	// writeSet, whose keys are entity ids, so the two checks never mix. A
-	// write that committed on its own (commitTaskWrites) has only taskWrites.
-	taskWrites map[taskKey]bool
+	// taskWrites holds the task rows the write changed, each with the row as
+	// it was just before the write. It is apart from writeSet, whose keys are
+	// entity ids, so the two checks never mix. A write that committed on its
+	// own (commitTaskWrites) has only taskWrites. It is recorded only while
+	// another transaction is open; no one else could read it.
+	taskWrites map[taskKey]priorRow
 }
 
-// taskWriteSet returns the task rows ops write, touches included.
+// priorRow is a task row as it was just before a logged write: the row, or
+// ok false when it did not exist. For a transaction whose snapshot precedes
+// the write, the prior row of the earliest such write is the row its
+// snapshot shows (see taskSnapshot).
+type priorRow struct {
+	row spi.ScheduledTask
+	ok  bool
+}
+
+// taskWriteSet returns the task rows ops write.
 func taskWriteSet(ops []scheduledTaskOp) map[taskKey]bool {
 	if len(ops) == 0 {
 		return nil
@@ -91,11 +102,12 @@ type transactionManager struct {
 	// for SI+FCW correctness — a mutex in every respect except that a waiter
 	// can be released by its context. See acquireCommitGate.
 	commitGate chan struct{}
-	// taskStageMu serialises joining task-row writes: each one reads the
-	// staged ops, plans and appends while holding it (see stageTaskWrite).
-	// Lock order: tx.OpMu (read) → taskStageMu → commit gate → mu.
-	taskStageMu sync.Mutex
-	mu          sync.Mutex // protects active, committedLog, commitSeq, txSnapshotSeq, committing, submitTimes, savepoints, txUniqueKeys
+	// Lock order: tx.OpMu → commit gate → writer connection → mu. A joining
+	// task-row write and a Get in a transaction hold the gate while they read
+	// (see stageTaskWrite), so they can wait behind a whole commit; a flush
+	// takes mu while it holds the writer connection, so nothing may wait for
+	// that connection while holding mu.
+	mu sync.Mutex // protects active, committedLog, commitSeq, txSnapshotSeq, committing, submitTimes, savepoints, txUniqueKeys
 
 	active         map[string]*spi.TransactionState
 	committedLog   []committedTx
@@ -206,29 +218,18 @@ func (m *transactionManager) uniqueKeysFor(txID, entityID string) []spi.UniqueKe
 	return m.txUniqueKeys[txID][entityID]
 }
 
-// stagedTaskOps returns a copy of the task-row ops staged for txID, in order.
-// Protected by mu.
-func (m *transactionManager) stagedTaskOps(txID string) []scheduledTaskOp {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return append([]scheduledTaskOp(nil), m.scheduledTaskOps[txID]...)
-}
-
 // busyTaskKeys returns the task rows an open transaction has staged a change
 // to. Such a row is not claimable, and MarkUnsafe and RecordAttempt answer
-// spi.ErrTaskBusy for it, until the transaction ends (C6). A touch is not a
-// change. Callers hold the commit gate, so no Commit is between reading its
-// ops and writing them. A transaction that stages an op after this call
-// began before the caller's write, so its commit fails (C1).
+// spi.ErrTaskBusy for it, until the transaction ends (C6). Callers hold the
+// commit gate, so no Commit is between reading its ops and writing them, and
+// no joining write stages an op meanwhile (see stageTaskWrite).
 func (m *transactionManager) busyTaskKeys() map[taskKey]bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	busy := make(map[taskKey]bool)
 	for _, ops := range m.scheduledTaskOps {
 		for _, op := range ops {
-			if !op.touch {
-				busy[op.key] = true
-			}
+			busy[op.key] = true
 		}
 	}
 	return busy
@@ -242,7 +243,7 @@ func (m *transactionManager) taskBusy(k taskKey) bool {
 	defer m.mu.Unlock()
 	for _, ops := range m.scheduledTaskOps {
 		for _, op := range ops {
-			if op.key == k && !op.touch {
+			if op.key == k {
 				return true
 			}
 		}
@@ -273,21 +274,20 @@ func zeroStagedMarks(ops []scheduledTaskOp) []scheduledTaskOp {
 }
 
 // stageTaskWrite stages one joining write on txID. It passes plan the ops
-// staged so far and appends the ops plan returns, holding taskStageMu from
-// the read to the append: two joining writes on the same transaction
-// therefore never plan from the same view, and neither post-image overwrites
-// the other. flushToSQLite writes the staged ops in the commit's sqlTx;
-// every abort path discards them.
-//
-// plan reads task rows on db, so it runs outside mu: a Commit's flush holds
-// the single writer connection and then takes mu, and holding mu while
-// waiting for that connection would deadlock with it.
+// staged so far and the prior rows of txID's snapshot (see taskSnapshot), and
+// appends the ops plan returns, holding the commit gate from the read to the
+// append. No write commits meanwhile, so the rows plan reads on db, the prior
+// rows and the staged ops form one view: txID's snapshot, then its own ops.
+// Two joining writes are never planned from the same view, so neither
+// post-image overwrites the other. flushToSQLite writes the staged ops in
+// the commit's sqlTx; every abort path discards them.
 //
 // Caller holds tx.OpMu (read).
-func (m *transactionManager) stageTaskWrite(txID string, plan func(staged []scheduledTaskOp) ([]scheduledTaskOp, error)) error {
-	m.taskStageMu.Lock()
-	defer m.taskStageMu.Unlock()
-	ops, err := plan(m.stagedTaskOps(txID))
+func (m *transactionManager) stageTaskWrite(txID string, tenant spi.TenantID, plan func(staged []scheduledTaskOp, prior map[taskKey]priorRow) ([]scheduledTaskOp, error)) error {
+	_ = m.acquireCommitGate(context.Background())
+	defer m.releaseCommitGate()
+	staged, prior := m.taskSnapshot(txID, tenant)
+	ops, err := plan(staged, prior)
 	if err != nil {
 		return err
 	}
@@ -299,6 +299,87 @@ func (m *transactionManager) stageTaskWrite(txID string, plan func(staged []sche
 	defer m.mu.Unlock()
 	m.scheduledTaskOps[txID] = append(m.scheduledTaskOps[txID], ops...)
 	return nil
+}
+
+// taskSnapshot returns txID's staged ops and, for each of tenant's task rows
+// a write logged after txID's Begin changed, the row as txID's snapshot shows
+// it: the prior row of the earliest such write. A row with no such write
+// shows its committed state. Pruning keeps every entry above an open
+// transaction's snapshot, so none of these is lost while txID is open.
+//
+// Caller holds the commit gate and reads the committed rows under it: every
+// writer holds the gate from its first read to its log entry, so the
+// committed rows and the log agree.
+func (m *transactionManager) taskSnapshot(txID string, tenant spi.TenantID) ([]scheduledTaskOp, map[taskKey]priorRow) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	staged := append([]scheduledTaskOp(nil), m.scheduledTaskOps[txID]...)
+	var prior map[taskKey]priorRow
+	snapshotSeq := m.txSnapshotSeq[txID]
+	for _, committed := range m.committedLog { // in sequence order
+		if committed.seq <= snapshotSeq {
+			continue
+		}
+		for k, p := range committed.taskWrites {
+			if k.tenant != tenant {
+				continue
+			}
+			if _, seen := prior[k]; seen {
+				continue
+			}
+			if prior == nil {
+				prior = make(map[taskKey]priorRow)
+			}
+			prior[k] = p
+		}
+	}
+	return staged, prior
+}
+
+// otherTxOpenLocked reports whether a transaction other than txID is open.
+// Caller holds mu.
+func (m *transactionManager) otherTxOpenLocked(txID string) bool {
+	for id := range m.active {
+		if id != txID {
+			return true
+		}
+	}
+	return false
+}
+
+// taskPriors reads, before a write, the rows ops will change, for the log
+// entry of that write. It returns nil when no transaction but txID is open:
+// the entry is then pruned at once, and a transaction that begins later
+// cannot see it. Caller holds the commit gate, which Begin takes too, so no
+// transaction begins and no other write lands until the entry is logged.
+func (m *transactionManager) taskPriors(ctx context.Context, txID string, ops []scheduledTaskOp) (map[taskKey]priorRow, error) {
+	if len(ops) == 0 {
+		return nil, nil
+	}
+	if !func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return m.otherTxOpenLocked(txID)
+	}() {
+		return nil, nil
+	}
+	priors := make(map[taskKey]priorRow, len(ops))
+	for _, op := range ops {
+		if _, done := priors[op.key]; done {
+			continue
+		}
+		rows, err := readTasks(ctx, m.factory.db, selectTaskSQL+` WHERE t.tenant_id = ? AND t.id = ?`,
+			string(op.key.tenant), op.key.id)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read scheduled task %s: %w", op.key.id, err)
+		}
+		var p priorRow
+		if len(rows) == 1 {
+			p = priorRow{row: rows[0], ok: true}
+		}
+		priors[op.key] = p
+	}
+	return priors, nil
 }
 
 // commitTaskWrites writes task-row ops that commit on their own — a
@@ -314,6 +395,10 @@ func (m *transactionManager) commitTaskWrites(ctx context.Context, ops []schedul
 		return nil
 	}
 	ops = zeroStagedMarks(ops)
+	priors, err := m.taskPriors(ctx, "", ops)
+	if err != nil {
+		return err
+	}
 	sqlTx, err := m.factory.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin a scheduled task write: %w", err)
@@ -332,11 +417,10 @@ func (m *transactionManager) commitTaskWrites(ctx context.Context, ops []schedul
 	if err := sqlTx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit a scheduled task write: %w", err)
 	}
-	keys := taskWriteSet(ops)
-	if len(keys) > 0 {
+	if len(priors) > 0 {
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		m.logTaskWritesLocked(keys)
+		m.logTaskWritesLocked(priors)
 	}
 	return nil
 }
@@ -346,31 +430,10 @@ func (m *transactionManager) commitTaskWrites(ctx context.Context, ops []schedul
 // fails at commit. Caller holds the commit gate — which Begin also takes, so
 // the write and its entry are ordered wholly before or wholly after any
 // Begin — and mu.
-func (m *transactionManager) logTaskWritesLocked(keys map[taskKey]bool) {
+func (m *transactionManager) logTaskWritesLocked(priors map[taskKey]priorRow) {
 	m.commitSeq++
-	m.committedLog = append(m.committedLog, committedTx{seq: m.commitSeq, taskWrites: keys})
+	m.committedLog = append(m.committedLog, committedTx{seq: m.commitSeq, taskWrites: priors})
 	m.pruneCommittedLogLocked()
-}
-
-// taskRowWrittenAfterBegin reports whether a write logged after txID's Begin
-// changed the task row k. It takes the commit gate: every writer holds the
-// gate from its commit to its log entry, so once the gate is taken, every
-// write a read made before this call could see is in the log. Entries above
-// txID's snapshot are never pruned while txID is open.
-//
-// Caller holds tx.OpMu (read) and taskStageMu, and not the commit gate.
-func (m *transactionManager) taskRowWrittenAfterBegin(txID string, k taskKey) bool {
-	_ = m.acquireCommitGate(context.Background())
-	defer m.releaseCommitGate()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	snapshotSeq := m.txSnapshotSeq[txID]
-	for _, committed := range m.committedLog {
-		if committed.seq > snapshotSeq && committed.taskWrites[k] {
-			return true
-		}
-	}
-	return false
 }
 
 // stageSuperseded appends prior — the tx.Buffer value a Save/CompareAndSave
@@ -770,8 +833,14 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 	// shares — see nextSubmitTime.
 	submitTime := time.UnixMicro(m.nextSubmitTime())
 
-	// 5. Flush buffer, deletes, and staged scheduled-task ops to SQLite.
-	if err := m.flushToSQLite(ctx, tx, submitTime, scheduledOps); err != nil {
+	// 5. Read the task rows' prior state for the log entry, then flush
+	// buffer, deletes, and staged scheduled-task ops to SQLite. The commit
+	// gate is held, so nothing changes the rows between the two.
+	priors, err := m.taskPriors(ctx, txID, scheduledOps)
+	if err == nil {
+		err = m.flushToSQLite(ctx, tx, submitTime, scheduledOps)
+	}
+	if err != nil {
 		// On flush failure, clean up the transaction.
 		func() {
 			m.mu.Lock()
@@ -793,7 +862,7 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 		m.committedLog = append(m.committedLog, committedTx{
 			seq:        m.commitSeq,
 			writeSet:   tx.WriteSet,
-			taskWrites: taskWriteSet(scheduledOps),
+			taskWrites: priors,
 		})
 		m.submitTimes[txID] = submitTimeEntry{submitTime: submitTime, tenantID: tx.TenantID}
 

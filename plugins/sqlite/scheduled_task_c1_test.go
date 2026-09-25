@@ -293,3 +293,127 @@ func TestTasks_ConcurrentReconcilesWithNoTransactionAreAtomic(t *testing.T) {
 		}
 	}
 }
+
+// A RemoveLife with no transaction on ctx that names a life the row does not
+// hold is no write: it logs nothing, so a transaction open across it that
+// writes the row commits.
+func TestTasks_C1_ARemoveLifeWithNoTransactionOfAnotherLifeIsNoWrite(t *testing.T) {
+	fx := newTaskFixture(t)
+	bg := context.Background()
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T")
+	c := claimDue(t, fx.sts, uuid.New(), false)[0]
+
+	txID, txCtx := fx.begin(t, taskTenantA)
+	if err := fx.sts.StampSegment(txCtx, refOf(c), true); err != nil {
+		t.Fatalf("StampSegment: %v", err)
+	}
+	if err := fx.sts.RemoveLife(bg, taskTenantA, c.ID, uuid.New()); err != nil {
+		t.Fatalf("RemoveLife: %v", err)
+	}
+	if n := sqlite.CommittedLogLenForTest(fx.f); n != 0 {
+		t.Fatalf("committed log holds %d entries, want 0: the RemoveLife wrote nothing", n)
+	}
+	if err := fx.commit(taskTenantA, txID); err != nil {
+		t.Fatalf("Commit = %v, want nil", err)
+	}
+}
+
+// The snapshot already shows the named life replaced; the row changes again
+// after Begin, before the RemoveLife. The transaction sees the replacing
+// life, not the named one, so the call is no write and the commit succeeds,
+// as on PostgreSQL.
+func TestTasks_C1_ARemoveLifeOfALifeTheSnapshotShowsReplacedIsNoWriteAfterALaterChange(t *testing.T) {
+	fx := newTaskFixture(t)
+	bg := context.Background()
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T")
+	old, _ := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T")
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T") // replaced before Begin
+
+	txID, txCtx := fx.begin(t, taskTenantA)
+	if got := claimDue(t, fx.sts, uuid.New(), false); len(got) != 1 { // changed after Begin
+		t.Fatalf("claimed %d tasks, want 1", len(got))
+	}
+	if err := fx.sts.RemoveLife(txCtx, taskTenantA, "e1:S:T", old.ArmToken); err != nil {
+		t.Fatalf("RemoveLife: %v", err)
+	}
+	if err := fx.commit(taskTenantA, txID); err != nil {
+		t.Fatalf("Commit = %v, want nil: the snapshot never showed the named life", err)
+	}
+	if got, ok := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T"); !ok || got.Status != spi.ScheduledTaskRunning {
+		t.Fatalf("task = %+v, %v; want it still RUNNING", got, ok)
+	}
+}
+
+// A life armed by another writer after Begin is not in the snapshot. A
+// RemoveLife naming it is no write: it removes nothing and the commit
+// succeeds, as on PostgreSQL.
+func TestTasks_C1_ARemoveLifeOfALifeArmedAfterBeginIsNoWrite(t *testing.T) {
+	cases := []struct {
+		name string
+		// before arms the row before Begin, or leaves it missing.
+		before bool
+	}{{"RowReplaced", true}, {"RowCreated", false}}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fx := newTaskFixture(t)
+			bg := context.Background()
+			if c.before {
+				arm(t, bg, fx.sts, taskTenantA, "e1", "T")
+			}
+			txID, txCtx := fx.begin(t, taskTenantA)
+			arm(t, bg, fx.sts, taskTenantA, "e1", "T") // after Begin
+			fresh, _ := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T")
+
+			if err := fx.sts.RemoveLife(txCtx, taskTenantA, "e1:S:T", fresh.ArmToken); err != nil {
+				t.Fatalf("RemoveLife: %v", err)
+			}
+			if err := fx.commit(taskTenantA, txID); err != nil {
+				t.Fatalf("Commit = %v, want nil: the snapshot never showed the named life", err)
+			}
+			if got, ok := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T"); !ok || got.ArmToken != fresh.ArmToken {
+				t.Fatalf("task = %+v, %v; want the life armed after Begin kept", got, ok)
+			}
+		})
+	}
+}
+
+// Every joining write plans from the snapshot. A task the snapshot shows but
+// another writer removed after Begin is still one of the entity's tasks, so
+// a reconcile removes it and the commit fails, as on PostgreSQL.
+func TestTasks_C1_AReconcileSeesATaskRemovedAfterBegin(t *testing.T) {
+	fx := newTaskFixture(t)
+	bg := context.Background()
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T1")
+
+	txID, txCtx := fx.begin(t, taskTenantA)
+	if err := fx.sts.DeleteForEntities(bg, taskTenantA, []string{"e1"}); err != nil {
+		t.Fatalf("DeleteForEntities: %v", err)
+	}
+	removed := arm(t, txCtx, fx.sts, taskTenantA, "e1", "T2")
+	if len(removed) != 1 || removed[0].ID != "e1:S:T1" {
+		t.Fatalf("removed = %+v, want e1:S:T1: the snapshot shows it", removed)
+	}
+	if err := fx.commit(taskTenantA, txID); !errors.Is(err, spi.ErrConflict) {
+		t.Fatalf("Commit = %v, want ErrConflict: e1:S:T1 was removed after Begin", err)
+	}
+}
+
+// Get with a transaction on ctx reads the view its joining writes plan
+// from: the snapshot, then the transaction's own staged ops.
+func TestTasks_GetWithATransactionReadsTheSnapshot(t *testing.T) {
+	fx := newTaskFixture(t)
+	bg := context.Background()
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T")
+	old, _ := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T")
+
+	txID, txCtx := fx.begin(t, taskTenantA)
+	defer fx.rollback(t, taskTenantA, txID)
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T") // after Begin
+	if got, ok := getTask(t, txCtx, fx.sts, taskTenantA, "e1:S:T"); !ok || got.ArmToken != old.ArmToken {
+		t.Fatalf("task = %+v, %v; want the life the snapshot shows", got, ok)
+	}
+	arm(t, txCtx, fx.sts, taskTenantA, "e1", "T") // staged
+	if got, ok := getTask(t, txCtx, fx.sts, taskTenantA, "e1:S:T"); !ok || got.ArmToken == old.ArmToken {
+		t.Fatalf("task = %+v, %v; want the transaction's own staged life", got, ok)
+	}
+}
