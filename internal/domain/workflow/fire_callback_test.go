@@ -93,6 +93,37 @@ func TestCallback_DeletesFiredEntity_RunCommitsWithoutRecreating(t *testing.T) {
 	}
 }
 
+// A self-loop whose callback deletes only the entity: the run itself removes
+// its life, and does not re-arm the transition for an entity that is gone.
+func TestCallback_DeletesFiredEntity_SelfLoop_RemovesLifeWithoutReArm(t *testing.T) {
+	var env *runEnv
+	var claimed spi.ScheduledTask
+	ext := &scriptedExtProc{processor: func(_ context.Context, _ spi.ProcessorDefinition, txID string) (*spi.Entity, error) {
+		jctx, err := env.txMgr.Join(env.ctx, txID)
+		if err != nil {
+			return nil, err
+		}
+		es, err := env.factory.EntityStore(jctx)
+		if err != nil {
+			return nil, err
+		}
+		return nil, es.Delete(jctx, claimed.EntityID)
+	}}
+	env = newRunEnv(t, ext)
+	claimed = env.claimed(t, "cbdl-e1", oneHopWF("OPEN", []spi.ProcessorDefinition{safeProc("p1", ExecutionModeSync)}, nil))
+
+	r := runWithin(t, env, claimed)
+	if r.Outcome != OutcomeCancelled || r.Err != nil {
+		t.Fatalf("report = %+v, want cancelled and committed", r)
+	}
+	if env.exists(t, "cbdl-e1") {
+		t.Errorf("the entity exists: the run re-created an entity its own callback deleted")
+	}
+	if got, found := env.task(t, claimed.ID); found {
+		t.Errorf("task = %+v, want none: the run must remove its life and not re-arm", got)
+	}
+}
+
 // A delete committed by another transaction while the run is open is not the
 // run's own delete: the run's snapshot still sees the entity, and the final
 // persist conflicts. Only the entity is deleted here, not its task, so the
