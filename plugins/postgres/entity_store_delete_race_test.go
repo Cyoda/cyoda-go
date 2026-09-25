@@ -13,15 +13,7 @@ import (
 )
 
 // deleteRacers is the number of concurrent Deletes of the same entity both
-// tests below fire at once. deleteOn reads entities.version before this
-// task's fix takes any lock, so every racer that starts before the first one
-// commits reads the SAME version and computes the SAME next entity_versions
-// row — with enough racers dispatched from a closed start channel, the DB
-// round trip for that first read is slower than the goroutine dispatch skew,
-// so every racer is guaranteed to have read before any of them can possibly
-// have committed (committing requires finishing deleteOn first, which is
-// exactly what the contested INSERT/lock blocks). The outcome is therefore
-// deterministic, not merely probable.
+// tests below fire at once, from a closed start channel.
 const deleteRacers = 8
 
 // warmPool forces the pool to open n physical connections and hand them back
@@ -46,23 +38,23 @@ func warmPool(t *testing.T, pool *pgxpool.Pool, n int) {
 	wg.Wait()
 }
 
-// classifyDeleteRace fails the test if any racer's error is anything other
-// than nil, spi.ErrConflict or spi.ErrNotFound — in particular, it fails if
-// one carries spi.ErrStoreRejected (entity_versions_pkey is a genuine,
-// retryable race, never a deterministic rejection) or an unclassified raw
-// error (the pre-fix defect: a 500 with no SPI meaning at all). Exactly one
-// racer must win.
-func classifyDeleteRace(t *testing.T, results []error) {
+// classifyDeleteRace fails the test unless exactly one racer wins (nil) and
+// every other racer's error satisfies errors.Is(err, wantLoserErr) — in
+// particular, it fails if one instead carries spi.ErrStoreRejected
+// (entity_versions_pkey is a genuine, retryable race, never a deterministic
+// rejection) or any other unclassified error. Each call site names the one
+// loser class its own path produces; neither path may produce the other.
+func classifyDeleteRace(t *testing.T, results []error, wantLoserErr error) {
 	t.Helper()
 	wins := 0
 	for i, err := range results {
 		switch {
 		case err == nil:
 			wins++
-		case errors.Is(err, spi.ErrConflict), errors.Is(err, spi.ErrNotFound):
-			// expected loser outcomes
+		case errors.Is(err, wantLoserErr):
+			// the expected loser outcome
 		default:
-			t.Fatalf("racer %d: unexpected error (want nil, ErrConflict or ErrNotFound): %v", i, err)
+			t.Fatalf("racer %d: unexpected error (want nil or %v): %v", i, wantLoserErr, err)
 		}
 	}
 	if wins != 1 {
@@ -71,17 +63,25 @@ func classifyDeleteRace(t *testing.T, results []error) {
 }
 
 // TestPostgres_DeleteConcurrent_NonTx_OneWinner is the isolated,
-// single-backend reproduction of the entity_versions_pkey race: deleteOn used
-// to read entities.version, then INSERT the computed next entity_versions
-// row, and only THEN take the entities row lock (its own UPDATE) — so two
-// concurrent non-transactional Deletes of the same entity could both compute
-// the same next version and race each other into entity_versions' primary
-// key. Before this task's fix that 23505 reached the caller unclassified;
-// after BP-5's SQLSTATE-class marking (with no exception for it) it would
-// have been mislabelled spi.ErrStoreRejected instead — a deterministic
-// rejection latches the scheduler's owning node, which is wrong for a race
-// any retry clears. Neither may happen: every loser gets spi.ErrConflict or
-// spi.ErrNotFound, and exactly one Delete wins.
+// single-backend regression coverage for the entity_versions_pkey race on the
+// non-transactional Delete path: without deleteOn taking the entities row
+// lock before reading version (see deleteOn's lock-order comment,
+// entity_store.go), two concurrent Deletes of the same entity can compute the
+// same next version and race each other into entity_versions' primary key.
+// A raw 23505 there would be wrapped spi.ErrStoreRejected by the
+// SQLSTATE-class classifier — a deterministic-rejection marker latches the
+// scheduler's owning node, which is wrong for a race any retry clears. Every
+// loser gets spi.ErrNotFound (ReadCommitted re-evaluates AND NOT deleted once
+// granted the lock the winner already released), and exactly one Delete wins.
+//
+// Under READ COMMITTED with no external barrier, whether a run without the
+// fix actually reproduces the race depends on goroutine and connection
+// timing (see warmPool), not a guarantee — this test's RED is probabilistic.
+// TestPostgres_DeleteConcurrent_TxJoined_OneWinner (every racer's REPEATABLE
+// READ snapshot is necessarily taken before any of them can possibly commit)
+// and TestNonTxSaveDeleteConcurrent_NoTornWrite are the deterministic guards
+// for this lock order; this test is corroborating coverage of the actual
+// non-transactional call path.
 func TestPostgres_DeleteConcurrent_NonTx_OneWinner(t *testing.T) {
 	// A pool sized to deleteRacers, warmed below, so every racer's own
 	// internal transaction acquires an already-open connection instead of
@@ -128,7 +128,7 @@ func TestPostgres_DeleteConcurrent_NonTx_OneWinner(t *testing.T) {
 	close(start)
 	wg.Wait()
 
-	classifyDeleteRace(t, results)
+	classifyDeleteRace(t, results, spi.ErrNotFound)
 }
 
 // TestPostgres_DeleteConcurrent_TxJoined_OneWinner is
@@ -209,5 +209,5 @@ func TestPostgres_DeleteConcurrent_TxJoined_OneWinner(t *testing.T) {
 	close(start)
 	wg.Wait()
 
-	classifyDeleteRace(t, results)
+	classifyDeleteRace(t, results, spi.ErrConflict)
 }

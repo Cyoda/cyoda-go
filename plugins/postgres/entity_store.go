@@ -231,15 +231,12 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity) (int64, er
 	// level.
 	//
 	// Lock order vs. deleteOn: this statement takes the entities row lock
-	// BEFORE the entity_versions INSERT below; deleteOn's point-lookup now
-	// takes the SAME lock BEFORE its own entity_versions INSERT too (a fix —
-	// it used to take that lock only at its later UPDATE, after its own
-	// entity_versions INSERT, which raced a concurrent Save and Delete on the
-	// SAME entity into entity_versions_pkey (23505) and could deadlock the
-	// two on top of that). With both statements taking the same lock in the
-	// same order first, a concurrent non-transactional Save and Delete on the
-	// same entity simply serialize on it — the loser blocks (ReadCommitted;
-	// re-evaluates once granted) rather than racing or deadlocking. See
+	// BEFORE the entity_versions INSERT below; deleteOn's point-lookup takes
+	// the SAME lock BEFORE its own entity_versions INSERT too. Both
+	// statements taking the same lock in the same order is what makes a
+	// concurrent non-transactional Save and Delete on the same entity simply
+	// serialize on it — the loser blocks (ReadCommitted; re-evaluates once
+	// granted) rather than racing on entity_versions_pkey or deadlocking. See
 	// TestNonTxSaveDeleteConcurrent_NoTornWrite,
 	// TestPostgres_DeleteConcurrent_NonTx_OneWinner and
 	// TestPostgres_DeleteConcurrent_TxJoined_OneWinner.
@@ -683,14 +680,13 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 	//
 	// Lock order vs. saveOn: FOR UPDATE makes THIS statement take the entities
 	// row lock, before version is read and before the entity_versions INSERT
-	// below — the same order saveOn's upsert uses (see its lock-order note),
-	// not the mirror image this statement used before. Without the lock here,
-	// two concurrent deletes of the same entity could both read the same
-	// version and both compute the same next entity_versions row, racing each
-	// other into entity_versions_pkey (23505) — a genuine, retryable race
-	// that a bare read can never turn into anything else. See
-	// TestPostgres_DeleteConcurrent_NonTx_OneWinner and
-	// TestPostgres_DeleteConcurrent_TxJoined_OneWinner.
+	// below — the same order saveOn's upsert uses (see its lock-order note).
+	// Without the lock here, two concurrent deletes of the same entity could
+	// both read the same version and both compute the same next
+	// entity_versions row, racing each other into entity_versions_pkey
+	// (23505) — a genuine, retryable race that a bare read can never turn
+	// into anything else. See TestPostgres_DeleteConcurrent_NonTx_OneWinner
+	// and TestPostgres_DeleteConcurrent_TxJoined_OneWinner.
 	//
 	// With the lock taken here, a second writer instead waits on THIS
 	// statement: under the ambient-transaction path (REPEATABLE READ), the

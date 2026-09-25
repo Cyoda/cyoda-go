@@ -2,7 +2,6 @@ package postgres_test
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -10,36 +9,30 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
 )
 
-// TestNonTxSaveDeleteConcurrent_NoTornWrite guards against the Save/Delete
-// lock-order inversion this task's atomicity fix once made possible:
-// non-transactional Save took the entities row lock (its own upsert) BEFORE
-// inserting entity_versions, while non-transactional Delete inserted
-// entity_versions BEFORE taking the entities row lock (its own UPDATE) — the
-// mirror image. A concurrent Save and Delete on the SAME entity, each
-// computing the same next version from the row's pre-write state, could wait
-// on each other in a genuine cycle, resolved only by PostgreSQL's deadlock
-// detector (40P01 after deadlock_timeout, ~1s).
+// TestNonTxSaveDeleteConcurrent_NoTornWrite guards the lock order between
+// saveOn and deleteOn: both take the entities row lock first, before reading
+// or writing anything else, in the same statement (saveOn's upsert; deleteOn's
+// point-lookup, FOR UPDATE). A concurrent Save and Delete on the SAME entity
+// therefore have only one lock to contend over — they serialize on it, never
+// wait on each other in a cycle, and never conflict: whichever goes second
+// re-evaluates the row fresh once granted the lock, and neither statement's
+// own effect depends on which one that is (saveOn's upsert does not check
+// deleted; deleteOn's WHERE NOT deleted still holds unless a delete already
+// committed, which self-evidently only the delete could have done). Both
+// therefore always succeed, in either order.
 //
-// deleteOn's point-lookup now takes the entities row lock the same way
-// saveOn's upsert does — first, before any version is read or any
-// entity_versions row computed (see deleteOn's lock-order comment,
-// entity_store.go). Both statements now take the SAME lock in the SAME
-// order, so a concurrent Save and Delete on the same entity have nothing left
-// to form a cycle over: they simply serialize on that one lock. This test
-// keeps proving it, deterministically rather than hoping goroutine timing
-// produces the contention: a manually held FOR UPDATE lock on the entities
-// row queues a real Save and a real Delete behind the SAME lock at the SAME
-// moment (mirroring TestNonTxCompareAndSave_StampsAfterTheLockWait's
+// This test forces the contention deterministically rather than hoping
+// goroutine timing produces it: a manually held FOR UPDATE lock on the
+// entities row queues a real Save and a real Delete behind the SAME lock at
+// the SAME moment (mirroring TestNonTxCompareAndSave_StampsAfterTheLockWait's
 // technique), then releases it and lets PostgreSQL's own lock queue decide
-// which of the two goes first.
-//
-// The outcome from that point on is NOT forced — PostgreSQL's own lock-queue
-// order decides which of the two goes first — so this test asserts the
-// CONSISTENCY property (no torn write) across whichever order that turns out
-// to be, not a specific interleaving. It still tolerates one side coming back
-// spi.ErrConflict, defensively: nothing here asserts that outcome is
-// reachable, but neither is it a wrong answer if some future change makes it
-// one again.
+// which of the two goes first — an outcome this test does not force and does
+// not need to: it asserts CONSISTENCY (both succeed, no torn write) across
+// whichever order that turns out to be, not a specific interleaving.
+// Asserting nil for both, not a tolerance for spi.ErrConflict, is what makes
+// this the regression test for the lock order specifically: with the two
+// statements sharing one lock and one order, an error on either side can only
+// mean that guarantee broke.
 func TestNonTxSaveDeleteConcurrent_NoTornWrite(t *testing.T) {
 	factory := setupEntityTest(t)
 	const tenant spi.TenantID = "tenant-save-delete-lock-order"
@@ -113,15 +106,12 @@ func TestNonTxSaveDeleteConcurrent_NoTornWrite(t *testing.T) {
 	saveErr := <-saveDone
 	deleteErr := <-deleteDone
 
-	// Never anything but a clean success or a classified conflict — any other
-	// error is a real bug this test must not paper over.
+	// Both succeed, always — see the lock-order note above. Any error here
+	// means the two statements no longer share one lock and one order.
 	for name, err := range map[string]error{"Save": saveErr, "Delete": deleteErr} {
-		if err != nil && !errors.Is(err, spi.ErrConflict) {
-			t.Fatalf("%s returned an unexpected error (want nil or spi.ErrConflict): %v", name, err)
+		if err != nil {
+			t.Fatalf("%s returned an unexpected error (want nil): %v", name, err)
 		}
-	}
-	if saveErr != nil && deleteErr != nil {
-		t.Fatalf("both Save and Delete failed — want at most one: save=%v delete=%v", saveErr, deleteErr)
 	}
 
 	// No torn write: entities.version must equal the highest entity_versions
