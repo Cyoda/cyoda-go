@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 // RunGuard travels on the context of one scheduled run (spec §5.3). The
@@ -22,11 +26,85 @@ type RunGuard struct {
 	Ref   spi.TaskRef
 	Store spi.ScheduledTaskStore
 	Done  <-chan struct{}
+	// NoNewUnsafe is closed at shutdown step 1: from then on the run starts
+	// no new unsafe dispatch, and reaching one counts as cut (spec §6.4).
+	// nil means never.
+	NoNewUnsafe <-chan struct{}
+	// Unsafe records each unsafe dispatch in flight; the scheduler reads it
+	// at shutdown steps 3 and 4. nil is allowed and records nothing.
+	Unsafe *UnsafeFlight
 
 	// Run state, written only by the run's own goroutine.
-	markHeld    bool                           // a MarkUnsafe was accepted
-	markErrored bool                           // a MarkUnsafe failed with a non-refusal error
-	failReason  spi.ScheduledTaskFailureReason // the run decided FAILED itself
+	markHeld      bool                           // a MarkUnsafe was accepted
+	markErrored   bool                           // a MarkUnsafe failed with a non-refusal error
+	unsafeReached bool                           // unsafe work reached a compute node (spec §5.5)
+	failReason    spi.ScheduledTaskFailureReason // the run decided FAILED itself
+}
+
+// UnsafeFlight counts a run's unsafe dispatches in flight and remembers when
+// the oldest one started. It is safe for concurrent use: the run writes it,
+// the scheduler reads it. All methods are safe on a nil receiver.
+type UnsafeFlight struct {
+	mu    sync.Mutex
+	n     int
+	since time.Time
+}
+
+// Begin counts one more unsafe dispatch in flight.
+func (f *UnsafeFlight) Begin() {
+	if f == nil {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.n == 0 {
+		f.since = time.Now()
+	}
+	f.n++
+}
+
+// End counts one unsafe dispatch less. It never takes the count below zero.
+func (f *UnsafeFlight) End() {
+	if f == nil {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.n > 0 {
+		f.n--
+	}
+}
+
+// Since returns the start of the oldest unsafe dispatch in flight, and false
+// when none is.
+func (f *UnsafeFlight) Since() (time.Time, bool) {
+	if f == nil {
+		return time.Time{}, false
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.since, f.n > 0
+}
+
+// UnsafeInFlight reports whether an unsafe processor dispatch of this run is
+// in progress. The scheduler exempts such a run at shutdown step 3 (spec
+// §6.4). A dispatch counts from before its mark until its step's error is
+// known. After NoNewUnsafe is closed the count only falls: beforeDispatch
+// counts first and checks NoNewUnsafe second.
+func (g *RunGuard) UnsafeInFlight() bool {
+	_, ok := g.Unsafe.Since()
+	return ok
+}
+
+// noNewUnsafe reports whether NoNewUnsafe is closed. A nil channel is never
+// ready, so a nil NoNewUnsafe never stops a dispatch.
+func (g *RunGuard) noNewUnsafe() bool {
+	select {
+	case <-g.NoNewUnsafe:
+		return true
+	default:
+		return false
+	}
 }
 
 type runGuardKey struct{}
@@ -158,14 +236,17 @@ func notDispatched(proc spi.ProcessorDefinition, cause error) error {
 
 // beforeDispatch applies spec §5.5 before a processor dispatch. Outside a
 // run, and for a processor declared idempotent, it does nothing. Otherwise it
-// checks the run's cancellation and then writes the unsafe mark, even when
-// this run already holds one: for the same claim the call is idempotent, and
-// it is the check that stops a superseded run from sending more unsafe work.
+// counts the dispatch in flight, refuses it once the run is stopped or
+// NoNewUnsafe is closed, and then writes the unsafe mark, even when this run
+// already holds one: for the same claim the call is idempotent, and it is the
+// check that stops a superseded run from sending more unsafe work.
+//
 // The caller dispatches only on a nil error. It then defers dispatched,
 // right after the refusal check, with the error its whole step returns: a
 // failure after the dispatch returned (applying its result, a savepoint, a
 // later segment's begin or re-read) is passed too, and a deferred call still
-// runs when the dispatch panics.
+// runs when the dispatch panics. dispatched ends the in-flight count and
+// applies the reset rule of "unsafe work reached a compute node".
 //
 // Every refusal ends the run, so no later call sees the state a refusal
 // leaves on g.
@@ -174,8 +255,21 @@ func beforeDispatch(ctx context.Context, proc spi.ProcessorDefinition) (dispatch
 	if g == nil || proc.Config.Idempotent {
 		return func(error) {}, nil
 	}
+	// Counted before the NoNewUnsafe check, so that once the signal is seen
+	// the count only falls. Every exit before the hand-over to dispatched,
+	// a refusal or a panic in MarkUnsafe, ends it again.
+	g.Unsafe.Begin()
+	handedOver := false
+	defer func() {
+		if !handedOver {
+			g.Unsafe.End()
+		}
+	}()
 	// A run cut here has handed nothing off: no mark, so the next claim may
 	// run it again.
+	if g.noNewUnsafe() {
+		return nil, notDispatched(proc, runCancelled("unsafe processor not started after the shutdown signal"))
+	}
 	if g.cancelled() {
 		return nil, notDispatched(proc, runCancelled("unsafe processor not marked"))
 	}
@@ -199,5 +293,18 @@ func beforeDispatch(ctx context.Context, proc spi.ProcessorDefinition) (dispatch
 		}
 	}
 	g.markHeld = true
-	return func(error) {}, nil
+	// "Unsafe work reached a compute node" (spec §5.5): set before every
+	// unsafe dispatch, reset only by the NotHandedOff proof on the error the
+	// step ends with, and only if it was false before this dispatch. A
+	// success, a panic (which reaches dispatched as a nil error) and every
+	// error without the proof leave it set.
+	reachedBefore := g.unsafeReached
+	g.unsafeReached = true
+	handedOver = true
+	return func(stepErr error) {
+		g.Unsafe.End()
+		if !reachedBefore && contract.ProvesNoHandOff(stepErr) {
+			g.unsafeReached = false
+		}
+	}, nil
 }

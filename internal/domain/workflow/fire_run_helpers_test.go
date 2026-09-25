@@ -100,9 +100,10 @@ type testRun struct {
 func newTestRun(sts spi.ScheduledTaskStore, task spi.ScheduledTask) *testRun {
 	done := make(chan struct{})
 	return &testRun{done: done, guard: &RunGuard{
-		Ref:   spi.TaskRef{TenantID: task.TenantID, ID: task.ID, ArmToken: task.ArmToken, ClaimToken: task.Claim.Token},
-		Store: sts,
-		Done:  done,
+		Ref:    spi.TaskRef{TenantID: task.TenantID, ID: task.ID, ArmToken: task.ArmToken, ClaimToken: task.Claim.Token},
+		Store:  sts,
+		Done:   done,
+		Unsafe: &UnsafeFlight{},
 	}}
 }
 
