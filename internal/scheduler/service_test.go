@@ -19,9 +19,9 @@ import (
 
 var fired = workflow.RunReport{Outcome: workflow.OutcomeFired}
 
-// Start logs "scheduler started" at INFO with the incarnation, once (README
-// C-R2). The multi-node scenarios map a claim's owner to its pnode by this
-// line; nothing else exposes the mapping. A disabled service logs nothing.
+// Start logs "scheduler started" at INFO with the incarnation, once. The
+// multi-node scenarios map a claim's owner to its pnode by this line; nothing
+// else exposes the mapping. A disabled service logs nothing.
 func TestService_StartLogsItsIncarnation(t *testing.T) {
 	logs := captureLogs(t)
 	h := newHarness(t, testConfig(), reportFirer(fired))
@@ -472,5 +472,25 @@ func TestService_WatchdogFiringAfterARearmDoesNotSelfCancel(t *testing.T) {
 	case <-cancelled:
 		t.Fatal("a stale watchdog timer cancelled a run whose pnode had just heartbeated")
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+type failingFactory struct{ spi.StoreFactory }
+
+func (failingFactory) ScheduledTaskStore(context.Context) (spi.ScheduledTaskStore, error) {
+	return nil, errors.New("store: connection refused")
+}
+
+// A Start that failed keeps failing: a later call reports the first error,
+// never a success for a service that runs nothing.
+func TestService_StartAfterAFailedStartReportsTheFirstError(t *testing.T) {
+	svc := New(testConfig(), Deps{Store: failingFactory{}, Firer: reportFirer(fired), Clock: NewRealClock()})
+	t.Cleanup(svc.Stop)
+	first := svc.Start(context.Background())
+	if first == nil {
+		t.Fatal("Start succeeded without a scheduled task store")
+	}
+	if second := svc.Start(context.Background()); second == nil || second.Error() != first.Error() {
+		t.Errorf("second Start = %v, want the first error %v", second, first)
 	}
 }

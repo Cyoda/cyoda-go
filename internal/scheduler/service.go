@@ -113,6 +113,7 @@ type Service struct {
 	runsWG     sync.WaitGroup
 
 	startOnce sync.Once
+	startErr  error // the first Start's error, returned by every later call
 	stopOnce  sync.Once
 }
 
@@ -139,35 +140,38 @@ func New(cfg Config, deps Deps) *Service {
 
 // Start starts the heartbeat, the watchdog and the claim loop. It returns
 // once the first heartbeat is scheduled. A disabled service starts nothing.
-// Only the first call does anything.
+// Only the first call does anything; every later call returns its error.
 func (s *Service) Start(ctx context.Context) error {
 	if !s.cfg.Enabled {
 		return nil
 	}
-	var err error
 	s.startOnce.Do(func() {
-		var m *metrics
-		if m, err = newMetrics(s.deps.Meter); err != nil {
-			return
-		}
-		var store spi.ScheduledTaskStore
-		if store, err = s.deps.Store.ScheduledTaskStore(ctx); err != nil {
-			err = fmt.Errorf("failed to get the scheduled task store: %w", err)
-			return
-		}
-		func() {
-			s.mu.Lock()
-			defer s.mu.Unlock()
-			s.m, s.store, s.started = m, store, true
-		}()
-		go s.watchdogLoop()
-		go s.heartbeatLoop()
-		go s.loop()
-		// The multi-node scenarios map a claim's owner to its pnode by this
-		// line (README C-R2). The incarnation is an identifier, not a secret.
-		slog.Info("scheduler started", "pkg", "scheduler", "incarnation", s.incarnation.String())
+		s.startErr = s.start(ctx)
 	})
-	return err
+	return s.startErr
+}
+
+func (s *Service) start(ctx context.Context) error {
+	m, err := newMetrics(s.deps.Meter)
+	if err != nil {
+		return err
+	}
+	store, err := s.deps.Store.ScheduledTaskStore(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get the scheduled task store: %w", err)
+	}
+	func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.m, s.store, s.started = m, store, true
+	}()
+	go s.watchdogLoop()
+	go s.heartbeatLoop()
+	go s.loop()
+	// The multi-node scenarios map a claim's owner to its pnode by this
+	// line. The incarnation is an identifier, not a secret.
+	slog.Info("scheduler started", "pkg", "scheduler", "incarnation", s.incarnation.String())
+	return nil
 }
 
 // Stop stops the claim loop, the heartbeat and the watchdog.
