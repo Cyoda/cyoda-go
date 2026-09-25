@@ -2799,7 +2799,7 @@ type ScheduledTaskDto struct {
 	// LastAttemptTime Present after a failed attempt.
 	LastAttemptTime *time.Time `json:"lastAttemptTime,omitempty"`
 
-	// LastError Present after a failed attempt. Client-safe text — a `CODE: detail` message, a compute node's own message, or `internal error [ticket: <uuid>]`.
+	// LastError For a FAILED task, present with the failure's text (pairs with `failedTime`), even when the text is empty. For every other status, present when `lastAttemptTime` is set, paired with it. Client-safe text — a `CODE: detail` message, a compute node's own message, or `internal error [ticket: <uuid>]`.
 	LastError *string `json:"lastError,omitempty"`
 
 	// LostOwners Times the node running the task was lost since the task was last armed.
