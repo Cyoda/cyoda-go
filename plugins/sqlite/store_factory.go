@@ -395,7 +395,7 @@ func (f *StoreFactory) StateMachineAuditStore(ctx context.Context) (spi.StateMac
 	if err != nil {
 		return nil, err
 	}
-	return &smAuditStore{db: f.db, tenantID: tid, uuids: f.uuids}, nil
+	return &smAuditStore{db: f.db, tenantID: tid, uuids: f.uuids, tm: f.tm}, nil
 }
 
 func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore, error) {

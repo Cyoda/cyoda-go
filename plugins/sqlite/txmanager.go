@@ -63,6 +63,15 @@ type submitTimeEntry struct {
 	tenantID   spi.TenantID
 }
 
+// stagedAuditEvent is one audit event recorded inside an open transaction:
+// its id assigned and its JSON document built, so nothing about it can fail
+// at flush but the insert itself.
+type stagedAuditEvent struct {
+	entityID string
+	event    spi.StateMachineEvent
+	doc      []byte
+}
+
 // savepointSnapshot holds a deep copy of transaction state at savepoint time.
 type savepointSnapshot struct {
 	buffer            map[string]*spi.Entity
@@ -77,6 +86,12 @@ type savepointSnapshot struct {
 	// deep-copied and restored wholesale — RollbackToSavepoint restores it by
 	// truncating back to this recorded length instead of snapshotting it.
 	scheduledTaskOpsLen int
+
+	// auditOpsLen is len(transactionManager.auditOps[txID]) at the moment
+	// this savepoint was taken. auditOps is append-only (see
+	// stageAuditEvent), so RollbackToSavepoint restores it the same way as
+	// scheduledTaskOpsLen: by truncating back to this recorded length.
+	auditOpsLen int
 
 	// supersededLens is the per-entityID length of supersededSaves[txID] at
 	// the moment this savepoint was taken, mirroring scheduledTaskOpsLen's
@@ -138,6 +153,13 @@ type transactionManager struct {
 	// every abort path; truncated by RollbackToSavepoint. Protected by mu.
 	scheduledTaskOps map[string][]scheduledTaskOp // txID → staged ops
 
+	// auditOps holds the audit events recorded while the transaction is open,
+	// in order. flushToSQLite inserts them in the commit's sqlTx, before the
+	// commit-instant stamp; Rollback and every abort path drop them;
+	// RollbackToSavepoint truncates them. Protected by mu. PostgreSQL gets the
+	// same behaviour from recording on the transaction's connection.
+	auditOps map[string][]stagedAuditEvent // txID → staged events
+
 	// supersededSaves records, per (txID, entityID), each buffered
 	// *spi.Entity value overwritten by a later same-entity Save/
 	// CompareAndSave within the same open transaction, oldest first.
@@ -193,6 +215,7 @@ func newTransactionManager(factory *StoreFactory, uuids spi.UUIDGenerator) *tran
 		txUniqueKeys:            make(map[string]map[string][]spi.UniqueKey),
 		txSnapshotSeq:           make(map[string]int64),
 		scheduledTaskOps:        make(map[string][]scheduledTaskOp),
+		auditOps:                make(map[string][]stagedAuditEvent),
 		supersededSaves:         make(map[string]map[string][]*spi.Entity),
 		deletedBufferedEntities: make(map[string]map[string]*spi.Entity),
 	}
@@ -216,6 +239,20 @@ func (m *transactionManager) uniqueKeysFor(txID, entityID string) []spi.UniqueKe
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.txUniqueKeys[txID][entityID]
+}
+
+// stageAuditEvent appends ev to txID's staged audit events. Protected by mu.
+func (m *transactionManager) stageAuditEvent(txID string, ev stagedAuditEvent) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.auditOps[txID] = append(m.auditOps[txID], ev)
+}
+
+// stagedAuditEvents returns a copy of txID's staged audit events. Protected by mu.
+func (m *transactionManager) stagedAuditEvents(txID string) []stagedAuditEvent {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]stagedAuditEvent(nil), m.auditOps[txID]...)
 }
 
 // busyTaskKeys returns the task rows an open transaction has staged a change
@@ -616,6 +653,7 @@ func (m *transactionManager) forgetLocked(txID string) {
 	delete(m.txUniqueKeys, txID)
 	delete(m.txSnapshotSeq, txID)
 	delete(m.scheduledTaskOps, txID)
+	delete(m.auditOps, txID)
 	delete(m.supersededSaves, txID)
 	delete(m.deletedBufferedEntities, txID)
 }
@@ -798,10 +836,12 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 	// 1b) blocks every stageTaskWrite, so they are stable for the rest of the
 	// commit.
 	var scheduledOps []scheduledTaskOp
+	var auditEvents []stagedAuditEvent
 	if err := func() error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		scheduledOps = append([]scheduledTaskOp(nil), m.scheduledTaskOps[txID]...)
+		auditEvents = append([]stagedAuditEvent(nil), m.auditOps[txID]...)
 		taskWrites := taskWriteSet(scheduledOps)
 		snapshotSeq := m.txSnapshotSeq[txID]
 		for _, committed := range m.committedLog {
@@ -840,7 +880,7 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 	// gate is held, so nothing changes the rows between the two.
 	priors, err := m.taskPriors(ctx, txID, scheduledOps)
 	if err == nil {
-		err = m.flushToSQLite(ctx, tx, submitTime, scheduledOps)
+		err = m.flushToSQLite(ctx, tx, submitTime, scheduledOps, auditEvents)
 	}
 	if err != nil {
 		// On flush failure, clean up the transaction.
@@ -891,7 +931,7 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 
 // flushToSQLite performs the atomic write of the transaction's buffered
 // entities and deletes to SQLite within a single SQLite transaction.
-func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.TransactionState, submitTime time.Time, scheduledOps []scheduledTaskOp) error {
+func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.TransactionState, submitTime time.Time, scheduledOps []scheduledTaskOp, auditEvents []stagedAuditEvent) error {
 	sqlTx, err := m.factory.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin sqlite tx: %w", err)
@@ -1107,33 +1147,20 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 		return fmt.Errorf("record submit time: %w", err)
 	}
 
-	// Audit events LABELLED with this transaction take the same instant, so
-	// the audit trail and the version history cannot drift apart or invert.
-	//
-	// Record wrote those rows through the audit store's own handle rather than
-	// this sqlTx, and they are visible here for a structural reason rather
-	// than a hopeful one: that handle IS the writer pool, capped at a single
-	// connection (SetMaxOpenConns(1), store_factory.go), so any Record that
-	// preceded this flush ran on this very connection and committed before the
-	// flush's transaction opened. There is no second writer whose uncommitted
-	// insert this UPDATE could fail to see. The restamp itself is inside
-	// sqlTx, so a flush that fails leaves every event on the clock its
-	// recorder read.
-	//
-	// "Labelled with", not "written by" — the engine records some events under
-	// a cascade entry's transaction id (EmitTransitionAborted), and one whose
-	// label names no committing transaction is never stamped.
-	//
-	// A point-in-time sweep, not a write barrier: an event recorded after this
-	// statement runs keeps the clock its recorder read. It does not arise in
-	// the normal path — recordEvent runs on the goroutine driving the
-	// transaction, which is inside Commit here — but the property is "every
-	// event recorded before the commit phase", not "every event this
-	// transaction labels". Memory and postgres have the identical window.
-	//
-	// Served by idx_sm_events_tenant_tx (migration 000008); 000001's
-	// idx_sm_events_tx cannot serve it, because entity_id sits between the two
-	// columns constrained here.
+	// Audit events recorded inside this transaction are inserted here, in
+	// sqlTx, so they commit or roll back with it. Then every event LABELLED
+	// with this transaction — those, and any recorded outside a transaction
+	// under its id (EmitTransitionAborted labels by a cascade entry's id) —
+	// takes the commit instant, so the audit trail and the version history
+	// cannot drift apart or invert. Served by idx_sm_events_tenant_tx
+	// (migration 000008).
+	for _, st := range auditEvents {
+		if _, err := sqlTx.ExecContext(ctx, insertAuditEventSQL,
+			tid, st.entityID, st.event.TimeUUID, st.event.TransactionID,
+			st.event.Timestamp.UnixMicro(), st.doc); err != nil {
+			return fmt.Errorf("record staged audit event %s: %w", st.event.TimeUUID, classifyRejection(err))
+		}
+	}
 	_, err = sqlTx.ExecContext(ctx,
 		"UPDATE sm_audit_events SET timestamp = ? WHERE tenant_id = ? AND transaction_id = ?",
 		submitMicro, tid, tx.ID)
@@ -1327,6 +1354,7 @@ func (m *transactionManager) Savepoint(ctx context.Context, txID string) (string
 		deletes:             delCopy,
 		deleteAttribution:   delAttrCopy,
 		scheduledTaskOpsLen: len(m.scheduledTaskOps[txID]),
+		auditOpsLen:         len(m.auditOps[txID]),
 		supersededLens:      supersededLens,
 	}
 	return spID, nil
@@ -1389,6 +1417,11 @@ func (m *transactionManager) RollbackToSavepoint(ctx context.Context, txID strin
 	// slice bounds would panic.
 	if opsLen := snap.scheduledTaskOpsLen; opsLen < len(m.scheduledTaskOps[txID]) {
 		m.scheduledTaskOps[txID] = m.scheduledTaskOps[txID][:opsLen]
+	}
+
+	// Truncate staged audit events the same way — see auditOpsLen's godoc.
+	if n := snap.auditOpsLen; n < len(m.auditOps[txID]) {
+		m.auditOps[txID] = m.auditOps[txID][:n]
 	}
 
 	// Truncate supersededSaves per entityID back to its recorded length —
