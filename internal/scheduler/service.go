@@ -536,7 +536,7 @@ func (s *Service) recoverBookkeeping(r *liveRun, start time.Time) {
 	slog.Error("scheduled run bookkeeping panicked; node latched", "pkg", "scheduler",
 		"taskId", r.task.ID, "tenant", string(r.task.TenantID), "ticket", ticket.String(),
 		"err", fmt.Errorf("panic: %v", v), "stack", string(debug.Stack()))
-	s.latch()
+	s.latchAndCancel()
 	s.m.runEnded(outcomePanicked, time.Since(start))
 }
 
@@ -564,7 +564,7 @@ func (s *Service) fire(ctx context.Context, r *liveRun) (rep workflow.RunReport,
 			"taskId", r.task.ID, "tenant", string(r.task.TenantID), "ticket", ticket.String(),
 			"err", fmt.Errorf("panic: %v", v), "stack", string(debug.Stack()))
 		s.keepRun(r)
-		s.latch()
+		s.latchAndCancel()
 	}()
 	ctx = spi.WithUserContext(ctx, common.SystemUserContextValue(r.task.TenantID))
 	ctx = workflow.WithRunGuard(ctx, &workflow.RunGuard{
@@ -788,12 +788,13 @@ func (s *Service) recoverLatch(site string) {
 	ticket := uuid.New()
 	slog.Error("panic recovered in the scheduler "+site+"; node latched", "pkg", "scheduler",
 		"ticket", ticket.String(), "err", fmt.Errorf("panic: %v", v), "stack", string(debug.Stack()))
-	s.latch()
+	s.latchAndCancel()
 }
 
-// latch marks the node unhealthy for good and cancels every run in progress.
-// A latched node claims nothing. It keeps heartbeating unless the heartbeat
-// itself panicked, so its runs are not taken over while they stop.
+// latch marks the node unhealthy for good. A latched node claims nothing, and
+// its runs in progress go on: only a panic recovery cancels them
+// (latchAndCancel). It keeps heartbeating unless the heartbeat itself
+// panicked, so its runs are not taken over while they finish.
 func (s *Service) latch() {
 	if s.deps.HealthFlag != nil {
 		s.deps.HealthFlag.Store(false)
@@ -801,6 +802,14 @@ func (s *Service) latch() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.latched = true
+}
+
+// latchAndCancel is the latch of a recovered panic: it latches the node and
+// cancels every run in progress (§6.5).
+func (s *Service) latchAndCancel() {
+	s.latch()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, r := range s.runs {
 		if r.ended {
 			continue

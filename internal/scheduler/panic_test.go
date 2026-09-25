@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -223,5 +224,62 @@ func TestService_APanicInTheLoopHeartbeatOrWatchdogLatchesAndCancels(t *testing.
 	time.Sleep(50 * time.Millisecond)
 	if n := h.fs.claims(); n != claims {
 		t.Errorf("%d claims after the latch", n-claims)
+	}
+}
+
+// A store rejection latches the node but cancels nothing: its runs in
+// progress go on (§5.3, §5.6, §6.5).
+func TestService_StoreRejectionDoesNotCancelTheRunsInProgress(t *testing.T) {
+	sibling := make(chan context.Context, 1)
+	release := make(chan struct{})
+	h := newHarness(t, testConfig(), firerFunc(func(ctx context.Context, task spi.ScheduledTask, _ int, _ time.Duration) workflow.RunReport {
+		if task.ID == "task-sibling" {
+			sibling <- ctx
+			<-release
+			return fired
+		}
+		return safeCallout
+	}))
+	h.fs.with(func() {
+		h.fs.outcomeErrs = []error{fmt.Errorf("record attempt: value too long: %w", spi.ErrStoreRejected)}
+		// The sibling is claimed first, so it is running when the other
+		// run's outcome is rejected.
+		h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-sibling")}
+	})
+	h.start(t)
+	ctx := receive(t, sibling)
+	h.fs.with(func() { h.fs.due = []spi.ScheduledTask{dueTask("t2", "task-rejected")} })
+	eventually(t, "the node latched", func() bool { return !h.flag.Load() })
+	time.Sleep(50 * time.Millisecond)
+	if err := ctx.Err(); err != nil {
+		t.Errorf("the sibling run was cancelled by a store rejection: %v", err)
+	}
+	close(release)
+	eventually(t, "the sibling run released", func() bool { return liveRuns(h.svc) == 1 })
+}
+
+// A panic in one run's bookkeeping cancels every other run in progress
+// (§6.5: the recovery itself cancels them).
+func TestService_BookkeepingPanicCancelsTheRunsInProgress(t *testing.T) {
+	sibling := make(chan context.Context, 1)
+	h := newHarness(t, testConfig(), firerFunc(func(ctx context.Context, task spi.ScheduledTask, _ int, _ time.Duration) workflow.RunReport {
+		if task.ID == "task-sibling" {
+			sibling <- ctx
+			return failedOnCancel(ctx)
+		}
+		return workflow.RunReport{Outcome: workflow.OutcomeFailed, Err: context.DeadlineExceeded}
+	}))
+	h.fs.with(func() { h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-sibling")} })
+	h.start(t)
+	ctx := receive(t, sibling)
+	h.fs.with(func() {
+		h.fs.outcomePanic = true
+		h.fs.due = []spi.ScheduledTask{dueTask("t2", "task-boom")}
+	})
+	eventually(t, "the node latched", func() bool { return !h.flag.Load() })
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the bookkeeping panic did not cancel the sibling run")
 	}
 }
