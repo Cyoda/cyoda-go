@@ -18,6 +18,10 @@ import (
 // reads a task row to decide a write holds the commit gate, which serialises
 // it with every commit, with Begin, and with the others — MarkUnsafe with
 // ClaimDue in particular (C3).
+//
+// A row an open transaction has staged a change to is busy (C6): ClaimDue and
+// GiveBackIdle skip it; MarkUnsafe and RecordAttempt answer spi.ErrTaskBusy,
+// which the caller retries.
 
 func (s *scheduledTaskStore) Heartbeat(ctx context.Context, owner uuid.UUID) error {
 	if _, err := s.db.ExecContext(ctx,
@@ -86,7 +90,14 @@ func (s *scheduledTaskStore) ClaimDue(ctx context.Context, req spi.ClaimRequest)
 
 	// spi.SelectClaims applies the rules every backend shares: one task per
 	// entity, the per-tenant limits, tenants taking turns.
-	chosen := spi.SelectClaims(cands, req)
+	busy := s.tm.busyTaskKeys()
+	free := cands[:0]
+	for _, c := range cands {
+		if !busy[taskKey{tenant: c.TenantID, id: c.ID}] {
+			free = append(free, c)
+		}
+	}
+	chosen := spi.SelectClaims(free, req)
 	ops := make([]scheduledTaskOp, 0, len(chosen))
 	fromLostOwner := make([]bool, 0, len(chosen))
 	for _, c := range chosen {
@@ -120,7 +131,8 @@ func (s *scheduledTaskStore) ClaimDue(ctx context.Context, req spi.ClaimRequest)
 }
 
 // GiveBackIdle returns to WAITING, uncounted, every task RUNNING under owner
-// whose claim token is not in keep.
+// whose claim token is not in keep. A busy row stays as it is and is not
+// counted.
 func (s *scheduledTaskStore) GiveBackIdle(ctx context.Context, owner uuid.UUID, keep []uuid.UUID) (int, error) {
 	kept := make(map[uuid.UUID]bool, len(keep))
 	for _, k := range keep {
@@ -133,9 +145,10 @@ func (s *scheduledTaskStore) GiveBackIdle(ctx context.Context, owner uuid.UUID, 
 	if err != nil {
 		return 0, fmt.Errorf("failed to read an owner's running tasks: %w", err)
 	}
+	busy := s.tm.busyTaskKeys()
 	var ops []scheduledTaskOp
 	for _, t := range running {
-		if kept[t.Claim.Token] {
+		if kept[t.Claim.Token] || busy[taskKey{tenant: t.TenantID, id: t.ID}] {
 			continue
 		}
 		back := copyScheduledTask(t)
@@ -157,6 +170,9 @@ func (s *scheduledTaskStore) MarkUnsafe(ctx context.Context, ref spi.TaskRef) er
 
 	if _, err := fenced(taskView{ctx: ctx, db: s.db}, ref); err != nil {
 		return err
+	}
+	if s.tm.taskBusy(taskKey{tenant: ref.TenantID, id: ref.ID}) {
+		return fmt.Errorf("scheduled task %s: %w", ref.ID, spi.ErrTaskBusy)
 	}
 	var holder string
 	err := s.db.QueryRowContext(ctx,
@@ -189,6 +205,9 @@ func (s *scheduledTaskStore) RecordAttempt(ctx context.Context, ref spi.TaskRef,
 	t, err := fenced(taskView{ctx: ctx, db: s.db}, ref)
 	if err != nil {
 		return err
+	}
+	if s.tm.taskBusy(taskKey{tenant: ref.TenantID, id: ref.ID}) {
+		return fmt.Errorf("scheduled task %s: %w", ref.ID, spi.ErrTaskBusy)
 	}
 	if !a.NotCounted {
 		t.Attempts++

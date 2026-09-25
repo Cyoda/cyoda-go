@@ -214,6 +214,42 @@ func (m *transactionManager) stagedTaskOps(txID string) []scheduledTaskOp {
 	return append([]scheduledTaskOp(nil), m.scheduledTaskOps[txID]...)
 }
 
+// busyTaskKeys returns the task rows an open transaction has staged a change
+// to. Such a row is not claimable, and MarkUnsafe and RecordAttempt answer
+// spi.ErrTaskBusy for it, until the transaction ends (C6). A touch is not a
+// change. Callers hold the commit gate, so no Commit is between reading its
+// ops and writing them. A transaction that stages an op after this call
+// began before the caller's write, so its commit fails (C1).
+func (m *transactionManager) busyTaskKeys() map[taskKey]bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	busy := make(map[taskKey]bool)
+	for _, ops := range m.scheduledTaskOps {
+		for _, op := range ops {
+			if !op.touch {
+				busy[op.key] = true
+			}
+		}
+	}
+	return busy
+}
+
+// taskBusy reports whether an open transaction has staged a change to k, as
+// busyTaskKeys does for one row. It stops at the first change it finds and
+// allocates nothing. Callers hold the commit gate, as for busyTaskKeys.
+func (m *transactionManager) taskBusy(k taskKey) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, ops := range m.scheduledTaskOps {
+		for _, op := range ops {
+			if op.key == k && !op.touch {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // zeroStagedMarks returns a copy of ops whose post-images have UnsafeMarked
 // cleared, leaving the caller's own op.after values untouched. UnsafeMarked
 // is never a stored column — every read derives it fresh from
