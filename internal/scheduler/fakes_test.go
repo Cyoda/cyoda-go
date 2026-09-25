@@ -31,11 +31,17 @@ type fakeStore struct {
 	claimReqs      []spi.ClaimRequest
 	hbErr          error
 	hbFailNext     int
-	hbBlock        chan struct{} // non-nil: Heartbeat parks until it is closed, whatever its ctx says
-	heartbeatPanic bool          // Heartbeat panics, after it releases the lock
-	claimPanic     bool          // ClaimDue panics
-	claimBlock     chan struct{} // non-nil: ClaimDue claims, then parks until it is closed
-	claimedTokens  []uuid.UUID   // every claim token ClaimDue handed out
+	hbBlock        chan struct{}      // non-nil: Heartbeat parks until it is closed, whatever its ctx says
+	heartbeatPanic bool               // Heartbeat panics, after it releases the lock
+	claimPanic     bool               // ClaimDue panics
+	claimBlock     chan struct{}      // non-nil: ClaimDue claims, then parks until it is closed
+	claimedTokens  []uuid.UUID        // every claim token ClaimDue handed out
+	settled        map[uuid.UUID]bool // claims whose outcome write was accepted
+	givenBack      []uuid.UUID        // claims GiveBackIdle returned to WAITING
+	outcomeBlock   chan struct{}      // non-nil: RecordAttempt holds its row open until it is closed
+	open           map[uuid.UUID]bool // claims whose outcome write is open; GiveBackIdle skips them
+	onGiveBack     func()             // called on every GiveBackIdle, outside the lock
+	heldAtRetire   []uuid.UUID        // claims still RUNNING under this owner when RetireOwner ran
 	heartbeats     int
 	hbFailures     int
 	giveBacks      [][]uuid.UUID
@@ -158,17 +164,51 @@ func (f *fakeStore) Heartbeat(context.Context, uuid.UUID) error {
 	return err
 }
 
+// held is every claim ClaimDue handed out that is still RUNNING: no outcome
+// accepted, not given back. Called with f.mu held.
+func (f *fakeStore) held() []uuid.UUID {
+	var out []uuid.UUID
+	for _, t := range f.claimedTokens {
+		if !f.settled[t] && !slices.Contains(f.givenBack, t) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// GiveBackIdle returns every held claim not in keep, and skips a row whose
+// outcome write is open, as the stores do (SKIP LOCKED, busy).
 func (f *fakeStore) GiveBackIdle(_ context.Context, _ uuid.UUID, keep []uuid.UUID) (int, error) {
+	hook, n := func() (func(), int) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.giveBacks = append(f.giveBacks, slices.Clone(keep))
+		n := 0
+		for _, t := range f.held() {
+			if !slices.Contains(keep, t) && !f.open[t] {
+				f.givenBack = append(f.givenBack, t)
+				n++
+			}
+		}
+		return f.onGiveBack, n
+	}()
+	if hook != nil {
+		hook()
+	}
+	return n, nil
+}
+
+func (f *fakeStore) givenBackTokens() []uuid.UUID {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.giveBacks = append(f.giveBacks, slices.Clone(keep))
-	return 0, nil
+	return slices.Clone(f.givenBack)
 }
 
 func (f *fakeStore) RetireOwner(context.Context, uuid.UUID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.retired++
+	f.heldAtRetire = f.held()
 	return f.retireErr
 }
 
@@ -200,22 +240,51 @@ func (f *fakeStore) outcome(ctx context.Context) error {
 	return f.outcomeAlways
 }
 
-func (f *fakeStore) RecordAttempt(ctx context.Context, _ spi.TaskRef, a spi.Attempt) error {
+func (f *fakeStore) RecordAttempt(ctx context.Context, ref spi.TaskRef, a spi.Attempt) error {
+	block := func() chan struct{} {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if f.outcomeBlock != nil {
+			f.setOpen(ref.ClaimToken, true)
+		}
+		return f.outcomeBlock
+	}()
+	if block != nil {
+		<-block
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.setOpen(ref.ClaimToken, false)
 	if err := f.outcome(ctx); err != nil {
 		return err
 	}
 	f.attempts = append(f.attempts, a)
+	f.settle(ref.ClaimToken)
 	return nil
 }
 
-func (f *fakeStore) Fail(ctx context.Context, _ spi.TaskRef, fl spi.Failure) error {
+// setOpen and settle are called with f.mu held.
+func (f *fakeStore) setOpen(token uuid.UUID, open bool) {
+	if f.open == nil {
+		f.open = make(map[uuid.UUID]bool)
+	}
+	f.open[token] = open
+}
+
+func (f *fakeStore) settle(token uuid.UUID) {
+	if f.settled == nil {
+		f.settled = make(map[uuid.UUID]bool)
+	}
+	f.settled[token] = true
+}
+
+func (f *fakeStore) Fail(ctx context.Context, ref spi.TaskRef, fl spi.Failure) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.outcome(ctx); err != nil {
 		return err
 	}
+	f.settle(ref.ClaimToken)
 	f.fails = append(f.fails, fl)
 	f.failInTx = append(f.failInTx, spi.GetTransaction(ctx) != nil)
 	return nil

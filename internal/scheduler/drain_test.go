@@ -147,7 +147,11 @@ func TestDrain_ARunStillLiveAfterStepFourIsNotGivenBack(t *testing.T) {
 	t.Cleanup(func() { close(release) })
 	token := receive(t, tokens)
 
-	h.svc.Drain(context.Background())
+	select {
+	case <-drainAsync(context.Background(), h):
+	case <-time.After(5 * time.Second):
+		t.Fatal("Drain did not return while a run was still live")
+	}
 	keep, ok := h.fs.lastGiveBack()
 	if !ok || !slices.Contains(keep, token) {
 		t.Errorf("the final give-back kept %v; a live run must not be given back", keep)
@@ -527,12 +531,21 @@ func TestDrain_AClaimInFlightAtStepOneIsGivenBackWithoutRunning(t *testing.T) {
 
 	done := drainAsync(context.Background(), h)
 	eventually(t, "the drain began", func() bool { return draining(h.svc) })
+	// Step 1 waits for the claim loop, and so for the claim in flight.
+	select {
+	case <-done:
+		t.Fatal("Drain returned while a claim was still in flight")
+	case <-time.After(50 * time.Millisecond):
+	}
 	close(block)
 	receive(t, done)
 
 	token := h.fs.claimed()[0]
 	if n := fires.Load(); n != 0 {
 		t.Errorf("%d runs fired for a claim that returned after step 1", n)
+	}
+	if !slices.Contains(h.fs.givenBackTokens(), token) {
+		t.Error("the refused claim was not given back")
 	}
 	if a, f := len(h.fs.attemptsRecorded()), len(h.fs.failsRecorded()); a+f != 0 {
 		t.Errorf("a claim that never ran wrote %d attempts and %d failures", a, f)
@@ -585,5 +598,58 @@ func TestService_AClaimInFlightWhenTheNodeLatchesIsGivenBackWithoutRunning(t *te
 	}
 	if n := liveRuns(h.svc); n != 0 {
 		t.Errorf("%d live runs, want none", n)
+	}
+}
+
+// Step 4 lets an outcome write retry: bookkeeping stops only at its end, so
+// a transient error during the drain does not cost the run its outcome.
+func TestDrain_OutcomeWritesRetryUntilTheEndOfStepFour(t *testing.T) {
+	cfg := testConfig()
+	cfg.ShutdownDrain = 2 * time.Second
+	tokens := make(chan uuid.UUID, 1)
+	h := newHarness(t, cfg, firerFunc(func(ctx context.Context, task spi.ScheduledTask, _ int, _ time.Duration) workflow.RunReport {
+		tokens <- task.Claim.Token
+		<-workflow.RunGuardFrom(ctx).NoNewUnsafe
+		return safeFailure
+	}))
+	h.fs.with(func() {
+		h.fs.outcomeErrs = []error{errors.New("record attempt: connection refused")}
+		h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")}
+	})
+	h.start(t)
+	token := receive(t, tokens)
+
+	h.svc.Drain(context.Background())
+	attempts := h.fs.attemptsRecorded()
+	if len(attempts) != 1 || attempts[0].NotCounted {
+		t.Errorf("attempts = %+v, want one counted attempt", attempts)
+	}
+	if slices.Contains(h.fs.givenBackTokens(), token) {
+		t.Error("the claim was given back; its outcome write should have been retried and accepted")
+	}
+}
+
+// Step 5 gives the claims back while the heartbeat still runs; the heartbeat
+// stops only then (§6.4).
+func TestDrain_TheFinalGiveBackComesBeforeTheHeartbeatStops(t *testing.T) {
+	h := newHarness(t, drainConfig(), reportFirer(fired))
+	var afterHeartbeat atomic.Bool
+	h.fs.with(func() {
+		h.fs.onGiveBack = func() {
+			select {
+			case <-h.svc.hbDone:
+				afterHeartbeat.Store(true)
+			default:
+			}
+		}
+	})
+	h.start(t)
+	eventually(t, "a heartbeat", func() bool { return h.fs.heartbeatCount() > 0 })
+	h.svc.Drain(context.Background())
+	if len(h.fs.giveBackCalls()) == 0 {
+		t.Fatal("no give-back at shutdown")
+	}
+	if afterHeartbeat.Load() {
+		t.Error("the final give-back ran after the heartbeat had stopped")
 	}
 }
