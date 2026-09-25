@@ -7204,7 +7204,6 @@ paths:
         Any authenticated user of the tenant may call it; the tenant is the
         token's. HTTP only: there is no gRPC equivalent.
       operationId: listScheduledTasks
-      x-cyoda-status: planned
       parameters:
         - name: status
           in: query

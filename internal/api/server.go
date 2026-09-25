@@ -11,6 +11,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/messaging"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/scheduledtask"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 )
@@ -20,13 +21,14 @@ import (
 type Server struct {
 	*Unimplemented
 
-	Entity    *entity.Handler
-	Model     *model.Handler
-	Workflow  *workflow.Handler
-	Search    *search.Handler
-	Audit     *audit.Handler
-	Messaging *messaging.Handler
-	Account   *account.Handler
+	Entity         *entity.Handler
+	Model          *model.Handler
+	Workflow       *workflow.Handler
+	Search         *search.Handler
+	Audit          *audit.Handler
+	Messaging      *messaging.Handler
+	Account        *account.Handler
+	ScheduledTasks *scheduledtask.Handler
 }
 
 // NewServer returns a Server with the Unimplemented fallback initialised.
@@ -358,6 +360,18 @@ func (s *Server) GetStateMachineFinishedEvent(w http.ResponseWriter, r *http.Req
 		return
 	}
 	s.Unimplemented.GetStateMachineFinishedEvent(w, r, entityId, transactionId, joinParams)
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled task delegation (1 method)
+// ---------------------------------------------------------------------------
+
+func (s *Server) ListScheduledTasks(w http.ResponseWriter, r *http.Request, params genapi.ListScheduledTasksParams) {
+	if s.ScheduledTasks != nil {
+		s.ScheduledTasks.ListScheduledTasks(w, r, params)
+		return
+	}
+	s.Unimplemented.ListScheduledTasks(w, r, params)
 }
 
 // ---------------------------------------------------------------------------
