@@ -330,6 +330,37 @@ func (m *TransactionManager) stagedAuditEvents(txID string) []stagedAuditEvent {
 	return append([]stagedAuditEvent(nil), m.auditOps[txID]...)
 }
 
+// openAuditLabels reports, for each distinct non-empty TransactionID label
+// among staged, whether that label currently names an active transaction —
+// see appendStagedAuditEvents for why this decides whether the label is safe
+// to index. The committing transaction's own id always answers true here:
+// Commit calls this before its step 6 removes txID from m.active.
+//
+// Callers must compute this BEFORE taking smAuditMu: mu is already taken
+// while smAuditMu is held elsewhere in this package (the conflict-abort
+// branch and Commit's step-6 cleanup both call discardAuditTxIndex, which
+// takes smAuditMu, from inside an m.mu section), so smAuditMu taking mu in
+// turn would reverse that into a cycle. Protected by mu.
+func (m *TransactionManager) openAuditLabels(staged []stagedAuditEvent) map[string]bool {
+	if len(staged) == 0 {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	open := make(map[string]bool, len(staged))
+	for _, st := range staged {
+		label := st.event.TransactionID
+		if label == "" {
+			continue
+		}
+		if _, seen := open[label]; seen {
+			continue
+		}
+		_, open[label] = m.active[label]
+	}
+	return open
+}
+
 // busyTaskKeys returns the task rows an open transaction has staged a change
 // to. Such a row is not claimable, and MarkUnsafe and RecordAttempt answer
 // spi.ErrTaskBusy for it, until the transaction ends. A touch is not a
@@ -788,10 +819,13 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 		submitTime := m.nextSubmitTime()
 
 		// Audit events recorded inside this transaction join the trail now,
-		// after the last abort path, and then take the commit instant with
-		// every other event labelled with this transaction — see
-		// stampAuditEventsForTx.
-		m.factory.appendStagedAuditEvents(tid, capturedAudit)
+		// after the last abort path, already stamped with this transaction's
+		// commit instant so no reader can observe one of them appended but
+		// not yet stamped. Every other already-appended event still merely
+		// labelled with this transaction then takes the same instant — see
+		// appendStagedAuditEvents and stampAuditEventsForTx.
+		openLabels := m.openAuditLabels(capturedAudit)
+		m.factory.appendStagedAuditEvents(tid, capturedAudit, submitTime, openLabels)
 		m.factory.stampAuditEventsForTx(tid, txID, submitTime)
 
 		// Pre-release: free claims for all deleted entities BEFORE inserting any
