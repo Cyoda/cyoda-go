@@ -733,6 +733,88 @@ func TestDeleteBatched_EntityRowConflict_BatchRetried(t *testing.T) {
 	}
 }
 
+// A racingDeleteStore-style double (racing the SAME entity row's version)
+// does not cleanly exercise "commit conflict, retried, succeeds" for the
+// batched path: deleteOneBatchOnce re-checks its per-id baseline version on
+// every retry (spec D4), so a race that bumps the target row's own version
+// is legitimately re-reported as ENTITY_MODIFIED on the retry, not folded
+// away by a clean second attempt — see TestDeleteBatched_EntityRowConflict_BatchRetried
+// for that (already-covered) shape. To isolate the commit site itself — a
+// conflict unrelated to the target row's own content, the way a racing
+// scheduler write to an unrelated task row would fail THIS batch's commit
+// without touching the entity's version — this uses failNthCommitTxMgr
+// (service_delete_batched_test.go), the same fault-injection double
+// TestDeleteEntitiesConditional_Batched_FailedBatchContinues already uses,
+// with a spi.ErrConflict-wrapped error instead of a bare one. Commit index 1
+// is deleteBatched's own setup-phase commit (model lookup + selection plan);
+// with exactly one matching id (ageAtLeastOne matches only ids[1] of
+// seedPersons(t, e.h, e.ctx, 2)'s ages 0, 1) there is exactly one batch, so
+// index 2 is its first attempt's commit and index 3 is its retry's.
+func TestDeleteBatched_CommitConflict_RetriedThenSucceeds(t *testing.T) {
+	e := newTaskEnv(t)
+	ids := seedPersons(t, e.h, e.ctx, 2)
+	failMgr := &failNthCommitTxMgr{TransactionManager: e.txMgr, failOn: map[int]error{
+		2: fmt.Errorf("commit refused: %w", spi.ErrConflict),
+	}}
+	e.h = buildDeleteBatchedHandler(t, &taskconflict.Factory{StoreFactory: e.real, Plan: e.plan}, failMgr)
+
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 1)
+	if err != nil {
+		t.Fatalf("DeleteEntitiesConditional: %v", err)
+	}
+	if res.RemovedCount != 1 || len(res.IDToError) != 0 {
+		t.Errorf("Removed=%d IDToError=%v, want 1 and none", res.RemovedCount, res.IDToError)
+	}
+	if failMgr.commits != 3 {
+		t.Errorf("commit attempts = %d, want 3 (setup + one refused batch attempt + a successful retry)", failMgr.commits)
+	}
+	if e.exists(t, ids[1]) {
+		t.Error("entity still exists after a successful delete")
+	}
+	if n := e.tasksOf(t, ids[1]); n != 0 {
+		t.Errorf("tasks = %d, want 0", n)
+	}
+}
+
+// result.IDToError is map[string]string — a plain message, not a wrapped
+// error — so the folded per-id entry cannot itself carry spi.ErrConflict for
+// an errors.Is check the way the *common.AppError deleteOneBatch retries on
+// internally does. What IS observable from outside is the retry count (the
+// batch really did retry TaskConflictRetries times against the persistent
+// refusal, via failMgr.commits — see the RetriedThenSucceeds test above for
+// why this double, not a racingDeleteStore, isolates the commit site) and
+// the folded message (a CONFLICT entry, never a 409 for the whole request).
+func TestDeleteBatched_CommitConflictPersists_ReportedPerIDWithCause(t *testing.T) {
+	e := newTaskEnv(t)
+	ids := seedPersons(t, e.h, e.ctx, 2)
+	conflict := func() error { return fmt.Errorf("commit refused: %w", spi.ErrConflict) }
+	failMgr := &failNthCommitTxMgr{TransactionManager: e.txMgr, failOn: map[int]error{
+		2: conflict(), 3: conflict(), 4: conflict(), 5: conflict(),
+	}}
+	e.h = buildDeleteBatchedHandler(t, &taskconflict.Factory{StoreFactory: e.real, Plan: e.plan}, failMgr)
+
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 1)
+	if err != nil {
+		t.Fatalf("err = %v, want a 200 result with a per-id error", err)
+	}
+	if res.RemovedCount != 0 {
+		t.Errorf("RemovedCount = %d, want 0", res.RemovedCount)
+	}
+	msg, ok := res.IDToError[ids[1]]
+	if !ok || !strings.HasPrefix(msg, common.ErrCodeConflict+":") {
+		t.Errorf("IDToError[%s] = %q, want a CONFLICT entry", ids[1], msg)
+	}
+	if got, want := failMgr.commits, 1+(1+common.TaskConflictRetries); got != want {
+		t.Errorf("commit attempts = %d, want %d (setup + one batch attempt + %d retries)", got, want, common.TaskConflictRetries)
+	}
+	if !e.exists(t, ids[1]) {
+		t.Error("entity removed although every attempt was refused at commit")
+	}
+	if n := e.tasksOf(t, ids[1]); n != 1 {
+		t.Errorf("tasks = %d, want 1", n)
+	}
+}
+
 func TestDeleteEntitiesConditional_SingleTx_Joined_HeldGateNotReacquired(t *testing.T) {
 	e := newTaskEnv(t)
 	seedPersons(t, e.h, e.ctx, 2)
