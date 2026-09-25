@@ -2,8 +2,7 @@
 
 Packages: `internal/common` (the retry), `internal/testing/taskconflict` (new,
 test support), `internal/domain/entity`, `internal/domain/workflow`
-(`handler.go`, a new `import_tasks.go`, one line each in `arm.go` and
-`fire_scheduled.go`), `internal/grpc` (tests only), `internal/e2e` (tests
+(`handler.go`, a new `import_tasks.go`), `internal/grpc` (tests only), `internal/e2e` (tests
 only), `e2e/parity/scheduledtransition` (tests only), `api/openapi.yaml`,
 `cmd/cyoda/help/content/errors/CONFLICT.md`.
 
@@ -67,7 +66,9 @@ them; BP gives the table columns the e2e helpers touch). W-8 also needs
   retry therefore lives in `internal/common` (Open point 1).
 - The arm rule "scheduled, not manual, not disabled" is written out twice
   today: `arm.go:119` and `fire_scheduled.go:555`. The import needs it a
-  third time. W-7 adds one predicate and uses it at all three sites.
+  third time. E-2 adds the one predicate, `armsOnSchedule`, in `arm.go` and
+  uses it at both sites and in `modelHasSchedule`; W-7 calls it (README
+  C-P7).
 - The gRPC doors call the same functions: single delete
   `internal/grpc/entity.go:200`; delete-all `:501`, which passes a nil
   condition — the fast path without `verbose`, the single-transaction loop
@@ -146,8 +147,11 @@ Three methods, each used where it gives a reliable result.
 W-1 ── W-2 ── W-3
         ├──── W-4 ── W-5 ── W-6
         └──── W-7
-W-2…W-7 ── W-8 (also needs Q-2)
+W-2…W-7 ── W-8 (also needs Q-5 and Q-6: after Q-6, README C-P6)
 ```
+
+W-1 … W-6 may run beside E. W-7 runs after E completes (it calls E-2's
+`armsOnSchedule`, README C-P7). W-8 runs after Q-6.
 
 W-2 creates the shared test support (`internal/testing/taskconflict`, the
 entity-package env, the gRPC env, the e2e race helpers). The later tasks
@@ -3143,11 +3147,13 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   - "a delete or import racing one claim succeeds after the server retry"
     (import).
 
+**Order:** after stream E completes (README "Order of work", C-P7). W-7
+calls E-2's `armsOnSchedule` and does not edit `arm.go` or
+`fire_scheduled.go`, which E owns. W-1 … W-6 may run beside E.
+
 **Files:**
 - Create: `internal/domain/workflow/import_tasks.go`
 - Modify: `internal/domain/workflow/handler.go` (after `wfStore.Save`, `:373-376`)
-- Modify: `internal/domain/workflow/arm.go:119`
-- Modify: `internal/domain/workflow/fire_scheduled.go:531-533, :555`
 - Modify: `api/openapi.yaml` (`importEntityModelWorkflow` responses, after `"404"` `:5207-5212`)
 - Test: `internal/domain/workflow/import_tasks_test.go` (new)
 - Test: `api/openapi_conflict_cells_test.go`
@@ -3155,9 +3161,9 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `spi.ScheduledTaskStore.DeleteForModel` with a non-nil `keep`;
-  `common.RetryOnTaskConflict`.
+  `common.RetryOnTaskConflict`; E-2's `armsOnSchedule(tr *spi.TransitionDefinition) bool`,
+  the one arm rule (README C-P7).
 - Produces:
-  - `func armsOnSchedule(tr *spi.TransitionDefinition) bool`: the one arm rule;
   - `func scheduledTransitions(wfs []spi.WorkflowDefinition) func(sourceState, transition string) bool`;
   - `func (h *Handler) removeUnscheduledTasks(ctx context.Context, ref spi.ModelRef, wfs []spi.WorkflowDefinition) *common.AppError`.
 
@@ -3578,17 +3584,10 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
-// armsOnSchedule is the one arm rule: the engine arms a task for a
-// transition that has a schedule and is neither manual nor disabled. Arm
-// (reconcileScheduledTasks), fire (findFireableTransitionInState) and the
-// workflow import's clean-up all use it, so they cannot disagree.
-func armsOnSchedule(tr *spi.TransitionDefinition) bool {
-	return tr.Schedule != nil && !tr.Manual && !tr.Disabled
-}
-
 // scheduledTransitions returns the keep function for DeleteForModel: it
 // keeps a task whose (source state, transition) some workflow of the model
-// arms. Every workflow counts, active or not — a task a workflow could still
+// arms by the one arm rule, armsOnSchedule (arm.go), which modelHasSchedule
+// uses too. Every workflow counts, active or not — a task a workflow could still
 // fire is never removed here; the fire itself cancels one that no selected
 // workflow schedules.
 func scheduledTransitions(wfs []spi.WorkflowDefinition) func(sourceState, transition string) bool {
@@ -3690,26 +3689,6 @@ func (h *Handler) removeUnscheduledTasksOnce(ctx context.Context, name string, v
 	}
 ```
 
-`internal/domain/workflow/arm.go:119`:
-
-```go
-			if !armsOnSchedule(tr) {
-```
-
-`internal/domain/workflow/fire_scheduled.go:555`:
-
-```go
-		if !armsOnSchedule(tr) {
-```
-
-`fire_scheduled.go:531-533`: change the comment's inline expression to the
-predicate's name. The new text reads:
-
-```go
-// The eligibility test is armsOnSchedule, the rule reconcileScheduledTasks
-// arms by. Arm and fire MUST agree: a name match alone would let the
-```
-
 In `api/openapi.yaml`, under `importEntityModelWorkflow` responses, after the
 `"404"` block (`:5207-5212`):
 
@@ -3747,14 +3726,15 @@ Expected:
 
 ```bash
 git add internal/domain/workflow/import_tasks.go internal/domain/workflow/import_tasks_test.go \
-  internal/domain/workflow/handler.go internal/domain/workflow/arm.go internal/domain/workflow/fire_scheduled.go \
+  internal/domain/workflow/handler.go \
   api/openapi.yaml api/openapi_conflict_cells_test.go internal/e2e/scheduled_task_import_test.go
 git commit -m "feat(workflow): import removes the tasks of transitions no longer scheduled
 
 The import saves the workflows, then removes, in its own transaction, the
 model's tasks that no workflow schedules. A conflict with the scheduler is
 retried up to 3 times, then answers a retryable 409; importEntityModelWorkflow
-declares it. Arm, fire and import share one arm rule.
+declares it. The import keeps a task only if its transition arms by
+armsOnSchedule, the rule arm and fire use.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -3775,10 +3755,14 @@ arms a new task for a transition that is scheduled again (§7 "Arm").
 **Files:**
 - Create: `e2e/parity/scheduledtransition/task_writes.go`
 
+**Order:** after Q-6 (README "Order of work", C-P6). The scenarios read
+`GET /scheduled-tasks`, which is wired only at Q-6, through Q-5's parity
+client.
+
 **Interfaces:**
-- Consumes: `GET /api/scheduled-tasks` (Q-2), response
-  `{"items":[{"taskId","entityId","status","sourceState","transition","attempts",…}],"pagination":{…}}`;
-  `entityId`, `limit` and `modelName` + `modelVersion` filters.
+- Consumes: Q-5's `(*client.Client).ListScheduledTasks(t, url.Values) (client.ScheduledTaskPage, error)`
+  and `client.ScheduledTask` (`e2e/parity/client/scheduled_tasks.go`); the
+  `entityId`, `limit` and `modelName` + `modelVersion` filters, wired at Q-6.
 - Produces: five `parity.NamedTest`s registered through `parity.Register`.
 
 TDD note: the behaviour's RED was observed in W-2 … W-7. This task adds the
@@ -3791,9 +3775,7 @@ against a build with the removal taken out.
 package scheduledtransition
 
 import (
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"net/url"
 	"testing"
 
@@ -3839,34 +3821,18 @@ const hourScheduleDropped = `{
 
 const kOver1 = `{"type":"simple","jsonPath":"$.k","operatorType":"GREATER_THAN","value":1}`
 
-type taskItem struct {
-	EntityID   string `json:"entityId"`
-	Status     string `json:"status"`
-	Transition string `json:"transition"`
-	Attempts   int    `json:"attempts"`
-}
-
-// listTasks reads GET /api/scheduled-tasks with query.
-func listTasks(t *testing.T, c *client.Client, query url.Values) []taskItem {
+// listTasks reads GET /api/scheduled-tasks with query, through Q-5's client.
+func listTasks(t *testing.T, c *client.Client, query url.Values) []client.ScheduledTask {
 	t.Helper()
 	query.Set("limit", "1000")
-	status, body, err := c.DoJSONBodyRaw(t, http.MethodGet, "/api/scheduled-tasks?"+query.Encode(), nil)
+	page, err := c.ListScheduledTasks(t, query)
 	if err != nil {
-		t.Fatalf("list scheduled tasks: %v", err)
-	}
-	if status != http.StatusOK {
-		t.Fatalf("list scheduled tasks: %d %s", status, body)
-	}
-	var page struct {
-		Items []taskItem `json:"items"`
-	}
-	if err := json.Unmarshal(body, &page); err != nil {
-		t.Fatalf("decode scheduled tasks: %v; body: %s", err, body)
+		t.Fatalf("ListScheduledTasks: %v", err)
 	}
 	return page.Items
 }
 
-func entityTasks(t *testing.T, c *client.Client, id uuid.UUID) []taskItem {
+func entityTasks(t *testing.T, c *client.Client, id uuid.UUID) []client.ScheduledTask {
 	t.Helper()
 	return listTasks(t, c, url.Values{"entityId": {id.String()}})
 }
@@ -4104,9 +4070,7 @@ Notes on the table:
   (retryable) on every door.
 
 `internal/domain/workflow`:
-- `func armsOnSchedule(tr *spi.TransitionDefinition) bool` is the one arm
-  rule. Stream E's `modelHasSchedule` should use it (Open point 3).
-- `scheduledTransitions(wfs)`;
+- `scheduledTransitions(wfs)`, built on E-2's `armsOnSchedule` (README C-P7);
 - the import answers a retryable 409 when the task removal still conflicts.
 
 e2e helpers (`internal/e2e`, stream T may reuse):
@@ -4152,14 +4116,10 @@ OpenAPI:
    (§7). W passes `nil` and needs `nil` to mean "remove every task of the
    model". Stream S should state that in the method's doc comment and give it
    a `spitest` case.
-3. **One arm rule.** W-7 adds `armsOnSchedule` and uses it at `arm.go:119`
-   and `fire_scheduled.go:555`. Stream E rewrites `fire_scheduled.go` and
-   adds `modelHasSchedule` (V3). Whichever stream lands second keeps the
-   single predicate: E's fire path and `modelHasSchedule` call
-   `armsOnSchedule` instead of spelling the condition again. The import
-   counts inactive workflows as scheduling. `modelHasSchedule` should use
-   the same rule, or the two could disagree about a model whose only
-   schedule is in an inactive workflow.
+3. **Closed (README C-P7).** One arm rule, `armsOnSchedule`, lives in
+   `arm.go` (E-2); arm, fire, `modelHasSchedule` and W-7's import `keep` all
+   use it. W-7 runs after E and edits neither `arm.go` nor
+   `fire_scheduled.go`.
 4. **W-3 relies on `errors.Join(ErrScheduledTaskInfra, err)`** in
    `reconcileScheduledTasks` (`arm.go:177-179`). If E replaces that join,
    E must keep a marker that `errors.Is` can see next to `spi.ErrConflict`.

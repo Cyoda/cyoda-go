@@ -62,7 +62,7 @@ coverage table at the end.
 10. **Tests start PostgreSQL themselves.** `TestMain` starts
     `postgres:17-alpine` through testcontainers unless `CYODA_TEST_DB_URL` is
     set (`main_test.go:29-71`). `TestConformance` runs every `spitest` suite
-    (`conformance_test.go:155-206`); S registers `runScheduledTasks` there, so
+    (`conformance_test.go:155-206`); S registers `runScheduledTasksSuite` there, so
     its cases run as `TestConformance/ScheduledTasks/...`. The PG harness
     sleeps at most 100 ms per `AdvanceClock` (`conformance_test.go:181-183`).
 
@@ -332,7 +332,9 @@ scheduler-pool statement blocked on a task-row lock gives up after
 - Modify: `plugins/postgres/plugin.go` (`NewFactory` `:53-61`)
 - Modify: `plugins/postgres/export_test.go` (append)
 - Modify: `plugins/postgres/conformance_test.go` (`newConformancePool`, after the pool-close cleanup at `:104-117`)
+- Modify: `plugins/postgres/metrics.go` (`registerPoolMetrics` `:15-82`) — Steps 6-10, the `pool` attribute (README C-R6)
 - Test: `plugins/postgres/scheduler_pool_test.go` (new, package `postgres`)
+- Test: `plugins/postgres/metrics_test.go` (`TestRegisterPoolMetrics_ReportsPoolStat` `:23-86`), `internal/e2e/pool_metrics_test.go` (`:25-34`) — Steps 6-10
 
 **Interfaces:**
 - Consumes: `config.SchedulerConns` (BP-1); `pgDurationMillis`, `newAcquireContext`, `classifyAcquireErr` (`ceilings.go:27-29, 100-105, 143-148`); `releasingRows`, `releasingRow`, `acquireFailedRow` (`unjoined_querier.go:152-192`).
@@ -347,6 +349,12 @@ scheduler-pool statement blocked on a task-row lock gives up after
   ```
   Test exports: `SchedulerPoolForTest(t testing.TB, f *StoreFactory) *pgxpool.Pool`,
   `CloseSchedulerPoolsForTest(f *StoreFactory)`.
+- Produces (Steps 6-10): `func registerPoolMetrics(meter metric.Meter, pool *pgxpool.Pool, sched *schedulerPools) (func(), error)`,
+  `func (p *schedulerPools) snapshot() (work, heartbeat *pgxpool.Pool)`; test
+  export `RegisterPoolMetricsForTest(meter metric.Meter, f *StoreFactory) (func(), error)`.
+  The gauge `cyoda.storage.pool.connections` carries `pool` = `main`,
+  `scheduler` or `heartbeat`; the other pool instruments stay the main pool's,
+  unlabelled by pool.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -831,6 +839,248 @@ pool's config, opened on first use, opened eagerly by NewFactory.
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
+- [ ] **Step 6: Write the failing tests for the `pool` attribute (README C-R6)**
+
+The gauge `cyoda.storage.pool.connections` reports every pool of the
+factory, each under `pool` = `main`, `scheduler` or `heartbeat`, so an
+operator can tell a saturated scheduler pool from a saturated main pool.
+
+In `plugins/postgres/metrics_test.go`, replace
+`TestRegisterPoolMetrics_ReportsPoolStat` (`:14-86`, its comment included) with:
+
+```go
+// The callback reports each pool's current state under backend="postgres"
+// and pool="main", "scheduler" or "heartbeat", and unregistering stops it.
+//
+// This lives in the postgres_test package (not postgres) so it can share
+// newTestPool (migrate_test.go) — which carries the pgx v5.9.1
+// HealthCheckPeriod-hang workaround — instead of duplicating pool
+// construction. registerPoolMetrics and meterName are unexported production
+// symbols reached here through the export_test.go idiom the rest of this
+// plugin already uses (RegisterPoolMetricsForTest, MeterNameForTest).
+func TestRegisterPoolMetrics_ReportsPoolStat(t *testing.T) {
+	pool := newTestPool(t)
+	f := postgres.NewStoreFactory(pool)
+	postgres.SchedulerPoolForTest(t, f) // opens the scheduler and heartbeat pools
+	t.Cleanup(func() { postgres.CloseSchedulerPoolsForTest(f) })
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	unregister, err := postgres.RegisterPoolMetricsForTest(mp.Meter(postgres.MeterNameForTest), f)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conn, err := pool.Acquire(context.Background()) // one acquired connection
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]bool{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			found[m.Name] = true
+			if m.Name == "cyoda.storage.pool.connections" {
+				g := m.Data.(metricdata.Gauge[int64])
+				var acquired int64 = -1
+				pools := map[string]bool{}
+				for _, dp := range g.DataPoints {
+					state, _ := dp.Attributes.Value(attribute.Key("state"))
+					backend, _ := dp.Attributes.Value(attribute.Key("backend"))
+					name, _ := dp.Attributes.Value(attribute.Key("pool"))
+					if backend.AsString() != "postgres" {
+						t.Fatalf("data point without backend=postgres: %v", dp.Attributes)
+					}
+					pools[name.AsString()] = true
+					if name.AsString() == "main" && state.AsString() == "acquired" {
+						acquired = dp.Value
+					}
+				}
+				if acquired < 1 {
+					t.Fatalf("acquired connections of the main pool = %d, want >= 1", acquired)
+				}
+				for _, want := range []string{"main", "scheduler", "heartbeat"} {
+					if !pools[want] {
+						t.Errorf("no data point with pool=%s; got pools %v", want, pools)
+					}
+				}
+				if len(pools) != 3 {
+					t.Errorf("pools = %v, want exactly main, scheduler and heartbeat", pools)
+				}
+			}
+		}
+	}
+	for _, want := range []string{
+		"cyoda.storage.pool.connections", "cyoda.storage.pool.max_connections",
+		"cyoda.storage.pool.acquires", "cyoda.storage.pool.empty_acquires",
+		"cyoda.storage.pool.canceled_acquires", "cyoda.storage.pool.acquire_duration",
+		"cyoda.storage.pool.empty_acquire_wait",
+	} {
+		if !found[want] {
+			t.Errorf("instrument %s not reported", want)
+		}
+	}
+
+	unregister()
+	rm = metricdata.ResourceMetrics{}
+	_ = reader.Collect(context.Background(), &rm)
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name == "cyoda.storage.pool.connections" && len(m.Data.(metricdata.Gauge[int64]).DataPoints) > 0 {
+				t.Fatal("callback still reporting after unregister")
+			}
+		}
+	}
+}
+```
+
+In `plugins/postgres/export_test.go`, replace `var RegisterPoolMetricsForTest = registerPoolMetrics`
+(`:253`) with the function below, change the first line of its comment
+(`:246`) to "RegisterPoolMetricsForTest exposes registerPoolMetrics for a
+factory's pools to the external", and add
+`"go.opentelemetry.io/otel/metric"` to the imports:
+
+```go
+func RegisterPoolMetricsForTest(meter metric.Meter, f *StoreFactory) (func(), error) {
+	return registerPoolMetrics(meter, f.pool, &f.sched)
+}
+```
+
+In `internal/e2e/pool_metrics_test.go`, replace the two `connections` lines
+(`:26-27`) with:
+
+```go
+		`cyoda_storage_pool_connections{backend="postgres",pool="main",state="acquired"}`,
+		`cyoda_storage_pool_connections{backend="postgres",pool="main",state="idle"}`,
+		`cyoda_storage_pool_connections{backend="postgres",pool="scheduler",state="idle"}`,
+		`cyoda_storage_pool_connections{backend="postgres",pool="heartbeat",state="idle"}`,
+```
+
+and its comment (`:13-14`) with "Pool statistics are exported on the metrics
+endpoint with the rendered Prometheus names, labelled backend="postgres"; the
+connections gauge also carries the pool: main, scheduler or heartbeat."
+
+- [ ] **Step 7: Run the tests to verify they fail**
+
+```bash
+cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership/plugins/postgres && \
+GOWORK=off go test -run 'TestRegisterPoolMetrics_ReportsPoolStat' .
+```
+
+Expected: build failure — `too many arguments in call to registerPoolMetrics`
+(from `export_test.go`).
+
+```bash
+cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership && make preflight && \
+go test ./internal/e2e/ -run 'TestMetrics_PostgresPoolSeriesAreExported'
+```
+
+This run uses the workspace, so the root module builds against this
+worktree's `plugins/postgres` (the SPI `use` line comes only at BP-4 Step 0).
+Expected: FAIL — `metrics output lacks "cyoda_storage_pool_connections{backend=\"postgres\",pool=\"main\",state=\"acquired\"}"`
+and the three other new lines.
+
+- [ ] **Step 8: Implement**
+
+In `plugins/postgres/scheduler_pool.go`, add after `closeSchedulerPools`:
+
+```go
+// snapshot returns the scheduler pools that are open now; nil for one that is
+// not. The metrics callback reads them at each scrape.
+func (p *schedulerPools) snapshot() (work, heartbeat *pgxpool.Pool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.work, p.heartbeat
+}
+```
+
+In `plugins/postgres/metrics.go`, replace the comment and signature of
+`registerPoolMetrics` (`:15-22`) with:
+
+```go
+// registerPoolMetrics exports pgxpool.Stat on every scrape as observable
+// instruments. Pool saturation is the dominant outage mode of this design;
+// empty_acquire_wait (time callers spent waiting because the pool was
+// empty) is the signal to alarm on. The connections gauge reports each pool
+// under pool="main", "scheduler" or "heartbeat", so a saturated scheduler
+// pool is told apart from a saturated main pool; the other instruments are
+// the main pool's. sched may be nil, and a scheduler pool that is not open
+// is not reported. One factory per process is assumed: two factories would
+// both observe backend="postgres" and the last observation per cycle would
+// win. The returned func unregisters the callback and must run before the
+// pools are closed.
+func registerPoolMetrics(meter metric.Meter, pool *pgxpool.Pool, sched *schedulerPools) (func(), error) {
+```
+
+and replace the attribute block and the callback (`:59-77`) with:
+
+```go
+	backend := attribute.String("backend", "postgres")
+	plain := metric.WithAttributes(backend)
+	observeConnections := func(o metric.Observer, name string, st *pgxpool.Stat) {
+		p := attribute.String("pool", name)
+		o.ObserveInt64(connections, int64(st.AcquiredConns()), metric.WithAttributes(backend, p, attribute.String("state", "acquired")))
+		o.ObserveInt64(connections, int64(st.IdleConns()), metric.WithAttributes(backend, p, attribute.String("state", "idle")))
+		o.ObserveInt64(connections, int64(st.ConstructingConns()), metric.WithAttributes(backend, p, attribute.String("state", "constructing")))
+	}
+
+	reg, err := meter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
+		st := pool.Stat()
+		observeConnections(o, "main", st)
+		if sched != nil {
+			work, heartbeat := sched.snapshot()
+			if work != nil {
+				observeConnections(o, "scheduler", work.Stat())
+			}
+			if heartbeat != nil {
+				observeConnections(o, "heartbeat", heartbeat.Stat())
+			}
+		}
+		o.ObserveInt64(maxConns, int64(st.MaxConns()), plain)
+		o.ObserveInt64(acquires, st.AcquireCount(), plain)
+		o.ObserveInt64(emptyAcquires, st.EmptyAcquireCount(), plain)
+		o.ObserveInt64(canceled, st.CanceledAcquireCount(), plain)
+		o.ObserveFloat64(acquireDuration, st.AcquireDuration().Seconds(), plain)
+		o.ObserveFloat64(emptyWait, st.EmptyAcquireWaitTime().Seconds(), plain)
+		return nil
+	}, connections, maxConns, acquires, emptyAcquires, canceled, acquireDuration, emptyWait)
+```
+
+In `plugins/postgres/plugin.go` (the `NewFactory` body Step 3 wrote), change
+`registerPoolMetrics(otel.Meter(meterName), pool)` to
+`registerPoolMetrics(otel.Meter(meterName), pool, &factory.sched)`. The
+scheduler pools are open by then (`openSchedulerPools` runs first).
+
+- [ ] **Step 9: Run the tests to verify they pass**
+
+```bash
+cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership/plugins/postgres && \
+GOWORK=off go test -run 'TestRegisterPoolMetrics_|TestSchedulerPools_|TestNewFactory_OpensTheSchedulerPools' . && \
+GOWORK=off go vet .
+cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership && \
+go test ./internal/e2e/ -run 'TestMetrics_PostgresPoolSeriesAreExported'
+```
+
+Expected: `ok` for both; vet clean.
+
+- [ ] **Step 10: Commit**
+
+```bash
+cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership && \
+git add plugins/postgres/metrics.go plugins/postgres/metrics_test.go plugins/postgres/scheduler_pool.go \
+  plugins/postgres/plugin.go plugins/postgres/export_test.go internal/e2e/pool_metrics_test.go && \
+git commit -m "feat(postgres): the pool gauge names its pool: main, scheduler, heartbeat
+
+cyoda.storage.pool.connections gains a pool attribute and reports the
+scheduler pool and the heartbeat connection beside the main pool.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
 ---
 
 ### Task BP-3: The async-search heartbeat and claim move to the scheduler pool
@@ -840,7 +1090,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 not starved" (the E cell is stream T's; this is the plugin-level proof).
 
 **Files:**
-- Modify: `plugins/postgres/search_store.go` (struct `:21-43`, `Heartbeat` `:203-225`, `ClaimStale` `:540-608`)
+- Modify: `plugins/postgres/search_store.go` (struct `:21-43`, `Heartbeat` `:203-225`, `ClaimStale` `:543-608`)
 - Modify: `plugins/postgres/store_factory.go` (`poolQuerier` godoc `:166-175`, `AsyncSearchStore` `:258-268`)
 - Modify: `plugins/postgres/unjoined_querier.go` (godoc `:55-59`)
 - Modify: `plugins/postgres/search_store_test.go` (`setupSearchTest` `:15-26`), `plugins/postgres/search_store_fencing_test.go` (fixture ending `:312`)
@@ -935,7 +1185,7 @@ In `Heartbeat`, replace `s.q.Exec(` (`:213`) with `s.sched.Exec(` and
 `s.probeFenced(ctx, s.sched, jobID, tid, epoch, false)`. In `ClaimStale`,
 replace `rows, err := s.q.Query(ctx,` (`:570`) with
 `rows, err := s.sched.Query(ctx,`. Append to the `Heartbeat` godoc
-(`:203-206`) and to the `ClaimStale` godoc (`:540-558`) the line:
+(`:203-206`) and to the `ClaimStale` godoc (`:543-558`) the line:
 
 ```go
 // It runs on the scheduler pool (see the sched field).
@@ -1029,11 +1279,18 @@ for the plugin. It makes the S suite pass on PostgreSQL except the
   `spi.ClaimRequest`, `spi.Attempt`, `spi.Failure`, `spi.ScheduledTaskQuery`,
   `spi.ScheduledTaskCursor`, `spi.ScheduledTaskPage`, the status and reason
   constants, `spi.ErrStaleClaim`, `spi.ErrMarkedByAnotherClaim`,
-  `spi.ErrTaskBusy`, `spi.ErrStoreRejected`; `runScheduledTasks` registered in
-  `spitest.StoreFactoryConformance`.
+  `spi.ErrTaskBusy`, `spi.ErrStoreRejected`, `spi.ErrTxTenantMismatch`,
+  `ScheduledTask.ClaimedFromLostOwner` (README C-S1); `runScheduledTasksSuite`
+  registered in `spitest.StoreFactoryConformance`.
   From BP-2: `schedulerQuerier`, `SchedulerPoolForTest`, `CloseSchedulerPoolsForTest`.
 - Produces: `*scheduledTaskStore` satisfying `spi.ScheduledTaskStore`;
-  `func lostClaimRace(err error) bool`; `func isLockNotAvailable(err error) bool`.
+  `func lostClaimRace(err error) bool`; `func isLockNotAvailable(err error) bool`;
+  `func joinTenant(ctx context.Context, tenant spi.TenantID) error`.
+  `ClaimDue` sets `ClaimedFromLostOwner` on each task it took from a stale or
+  missing owner (README C-S1). Every joining method refuses a tenant that is
+  not the transaction's with `spi.ErrTxTenantMismatch` (README C-S5), as
+  memory and SQLite do. `last_error` carries
+  `CHECK (octet_length(last_error) <= 1024)` (README C-S3).
 
 - [ ] **Step 0: Put S's SPI on the workspace**
 
@@ -1059,6 +1316,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -1164,6 +1422,21 @@ func TestMigration14_ScheduledTaskSchema(t *testing.T) {
 		VALUES ('c', 't', 'fire-transition', 1, 'f', 'M', 1, 'T', 'S', 0, gen_random_uuid(), 'RUNNING', 1)`)
 	if !errors.As(err, &pgErr) || pgErr.Code != pgerrcode.CheckViolation || pgErr.ConstraintName != "scheduled_tasks_claim_chk" {
 		t.Errorf("RUNNING without a claim: err = %v, want scheduled_tasks_claim_chk", err)
+	}
+
+	// last_error holds at most 1 024 bytes, counted in bytes, not characters.
+	withError := `INSERT INTO scheduled_tasks (id, tenant_id, type, scheduled_time, entity_id,
+		model_name, model_version, transition, source_state, armed_at, arm_token, status, next_attempt_time,
+		last_error)
+		VALUES ($1, 't', 'fire-transition', 1, $1, 'M', 1, 'T', 'S', 0, gen_random_uuid(), 'WAITING', 1, $2)`
+	atLimit := strings.Repeat("é", 512) // 1 024 bytes
+	if _, err := pool.Exec(ctx, withError, "g", atLimit); err != nil {
+		t.Errorf("last_error of 1 024 bytes: %v", err)
+	}
+	_, err = pool.Exec(ctx, withError, "h", atLimit+"x")
+	if !errors.As(err, &pgErr) || pgErr.Code != pgerrcode.CheckViolation ||
+		pgErr.ConstraintName != "scheduled_tasks_last_error_len_chk" {
+		t.Errorf("last_error of 1 025 bytes: err = %v, want scheduled_tasks_last_error_len_chk", err)
 	}
 }
 
@@ -1466,6 +1739,50 @@ func TestPostgres_ScheduledTaskStore_TenantFacingMethodsFilterOnTenant(t *testin
 	}
 }
 
+// A joining write whose tenant is not the tenant of the transaction on ctx is
+// refused before any statement runs, as on memory and SQLite: a task row of
+// tenant B never enters tenant A's transaction.
+func TestPostgres_ScheduledTaskStore_JoiningWriteOfAnotherTenantRefused(t *testing.T) {
+	f, sts := newTaskStore(t, 5)
+	arm(t, sts, "tenant-B", "e1", "S", taskSpec("tenant-B", "e1", "S", "T", 1000))
+	claimed := claimAll(t, sts)
+	if len(claimed) != 1 {
+		t.Fatalf("claimed %d tasks, want 1", len(claimed))
+	}
+	b := claimed[0]
+	txCtx, rollback := beginEntityTx(t, f, "tenant-A")
+	defer rollback()
+
+	joining := []struct {
+		name string
+		call func() error
+	}{
+		{"ReconcileForEntity", func() error {
+			_, err := sts.ReconcileForEntity(txCtx, spi.ReconcileRequest{
+				TenantID: "tenant-B", EntityID: "e1", CurrentState: "S",
+				Arm: []spi.ScheduledTask{taskSpec("tenant-B", "e1", "S", "T", 1000)},
+			})
+			return err
+		}},
+		{"RemoveLife", func() error { return sts.RemoveLife(txCtx, "tenant-B", b.ID, b.ArmToken) }},
+		{"StampSegment", func() error { return sts.StampSegment(txCtx, refOf(b), true) }},
+		{"DeleteForEntities", func() error { return sts.DeleteForEntities(txCtx, "tenant-B", []string{"e1"}) }},
+		{"DeleteForModel", func() error { return sts.DeleteForModel(txCtx, "tenant-B", "M", 1, nil) }},
+		{"Fail", func() error {
+			return sts.Fail(txCtx, refOf(b), spi.Failure{Reason: spi.FailureRunPanicked, Error: "x", AtMs: 1})
+		}},
+	}
+	for _, c := range joining {
+		if err := c.call(); !errors.Is(err, spi.ErrTxTenantMismatch) {
+			t.Errorf("%s for tenant-B in tenant-A's transaction: err = %v, want ErrTxTenantMismatch", c.name, err)
+		}
+	}
+	got := mustGet(t, sts, "tenant-B", b.ID)
+	if got.Status != spi.ScheduledTaskRunning || got.Claim == nil || got.Claim.Token != b.Claim.Token || got.PartialCommit {
+		t.Errorf("tenant-B's task was changed through tenant-A's transaction: %+v", got)
+	}
+}
+
 // C1 and C5: a task row that a claim changed after the entity transaction's
 // snapshot fails the transaction's write with ErrConflict, at the statement.
 func TestPostgres_ScheduledTaskStore_RowChangedAfterSnapshotIsErrConflict(t *testing.T) {
@@ -1753,7 +2070,11 @@ ALTER TABLE scheduled_tasks
     ADD CONSTRAINT scheduled_tasks_claim_chk
         CHECK ((status = 'RUNNING') = (claim_token IS NOT NULL AND claim_owner IS NOT NULL)),
     ADD CONSTRAINT scheduled_tasks_failed_chk
-        CHECK ((status = 'FAILED') = (failure_reason <> ''));
+        CHECK ((status = 'FAILED') = (failure_reason <> '')),
+    -- A recorded error text is at most 1 024 bytes on every backend; the
+    -- store refuses a longer one as a deterministic rejection (SQLSTATE 23514).
+    ADD CONSTRAINT scheduled_tasks_last_error_len_chk
+        CHECK (octet_length(last_error) <= 1024);
 
 DROP INDEX IF EXISTS scheduled_tasks_due_idx;
 
@@ -1800,6 +2121,7 @@ DROP INDEX IF EXISTS scheduled_tasks_one_running_per_entity_uq;
 DROP INDEX IF EXISTS scheduled_tasks_running_owner_idx;
 DROP INDEX IF EXISTS scheduled_tasks_waiting_due_idx;
 ALTER TABLE scheduled_tasks
+    DROP CONSTRAINT scheduled_tasks_last_error_len_chk,
     DROP CONSTRAINT scheduled_tasks_failed_chk,
     DROP CONSTRAINT scheduled_tasks_claim_chk,
     DROP CONSTRAINT scheduled_tasks_status_chk,
@@ -1836,7 +2158,7 @@ the `000013` entry (`:132`):
 
 ```go
 		// scheduled_tasks' five new indexes, in a file that also alters the
-		// table (drops two columns, adds twelve, backfills one, adds three
+		// table (drops two columns, adds twelve, backfills one, adds four
 		// CHECK constraints) and creates two tables. Many statements under one
 		// implicit transaction, so CONCURRENTLY cannot run here (clause (b));
 		// a separate file would not help, because golang-migrate's advisory
@@ -1891,7 +2213,8 @@ import (
 //     RetireOwner, SweepOwners, SweepMarks.
 //   - heartbeat never joins and has one connection of its own: Heartbeat.
 //
-// Tenant scoping. Every tenant-facing statement filters on tenant_id. ClaimDue,
+// Tenant scoping. Every tenant-facing statement filters on tenant_id, and every
+// joining method refuses a tenant that is not the transaction's (joinTenant). ClaimDue,
 // GiveBackIdle, the owner methods and the sweeps are cross-tenant; no API
 // reaches them. None of the tables is under row-level security (000014).
 //
@@ -1982,6 +2305,17 @@ func staleClaim(verb, id string) error {
 	return fmt.Errorf("%s scheduled task %s: %w", verb, id, spi.ErrStaleClaim)
 }
 
+// joinTenant refuses a joining write whose tenant is not the tenant of the
+// transaction on ctx, before any statement runs: a task row of tenant B never
+// enters tenant A's transaction. Memory and SQLite refuse the same way.
+// Without a transaction on ctx there is nothing to compare.
+func joinTenant(ctx context.Context, tenant spi.TenantID) error {
+	if tx := spi.GetTransaction(ctx); tx != nil && tx.TenantID != tenant {
+		return fmt.Errorf("scheduledTaskStore: %w (txID=%s)", spi.ErrTxTenantMismatch, tx.ID)
+	}
+	return nil
+}
+
 // armTaskSQL arms one task as a new life: a new arm token, WAITING, due at its
 // scheduled time, every counter and record cleared, no claim. The WHERE keeps
 // a colliding id of another tenant untouched; RETURNING then yields no row.
@@ -2006,6 +2340,9 @@ RETURNING st.id`
 // then removes every other task of the entity and returns those. The tenant
 // and entity come from req, never from the task structs.
 func (s *scheduledTaskStore) ReconcileForEntity(ctx context.Context, req spi.ReconcileRequest) ([]spi.ScheduledTask, error) {
+	if err := joinTenant(ctx, req.TenantID); err != nil {
+		return nil, err
+	}
 	armIDs := make([]string, 0, len(req.Arm))
 	for _, t := range req.Arm {
 		var id string
@@ -2042,6 +2379,9 @@ func (s *scheduledTaskStore) ReconcileForEntity(ctx context.Context, req spi.Rec
 }
 
 func (s *scheduledTaskStore) RemoveLife(ctx context.Context, tenant spi.TenantID, id string, armToken uuid.UUID) error {
+	if err := joinTenant(ctx, tenant); err != nil {
+		return err
+	}
 	if _, err := s.q.Exec(ctx,
 		`DELETE FROM scheduled_tasks WHERE tenant_id = $1 AND id = $2 AND arm_token = $3`,
 		string(tenant), id, armToken); err != nil {
@@ -2053,6 +2393,9 @@ func (s *scheduledTaskStore) RemoveLife(ctx context.Context, tenant spi.TenantID
 // StampSegment always writes the row, partial or not: the write is what puts
 // the segment's commit under first-committer-wins on this row (C1).
 func (s *scheduledTaskStore) StampSegment(ctx context.Context, ref spi.TaskRef, partial bool) error {
+	if err := joinTenant(ctx, ref.TenantID); err != nil {
+		return err
+	}
 	tag, err := s.q.Exec(ctx, `UPDATE scheduled_tasks SET partial_commit = partial_commit OR $5
 		WHERE tenant_id = $1 AND id = $2 AND arm_token = $3 AND claim_token = $4 AND status = 'RUNNING'`,
 		string(ref.TenantID), ref.ID, ref.ArmToken, ref.ClaimToken, partial)
@@ -2066,6 +2409,9 @@ func (s *scheduledTaskStore) StampSegment(ctx context.Context, ref spi.TaskRef, 
 }
 
 func (s *scheduledTaskStore) DeleteForEntities(ctx context.Context, tenant spi.TenantID, entityIDs []string) error {
+	if err := joinTenant(ctx, tenant); err != nil {
+		return err
+	}
 	if len(entityIDs) == 0 {
 		return nil
 	}
@@ -2081,6 +2427,9 @@ func (s *scheduledTaskStore) DeleteForEntities(ctx context.Context, tenant spi.T
 // keep does not retain. A nil keep retains nothing.
 func (s *scheduledTaskStore) DeleteForModel(ctx context.Context, tenant spi.TenantID, modelName string, modelVersion int,
 	keep func(sourceState, transition string) bool) error {
+	if err := joinTenant(ctx, tenant); err != nil {
+		return err
+	}
 	rows, err := s.q.Query(ctx, `SELECT DISTINCT source_state, transition FROM scheduled_tasks
 		WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
 		string(tenant), modelName, modelVersion)
@@ -2201,7 +2550,10 @@ const claimableCondition = `(
 // turns, and a tenant's turns are capped at PerTenantLimit minus its runs in
 // progress ($4, $5, $6). Tenants take turns; within a tenant, due order. The
 // outer SELECT locks the ranked rows in id order, skipping any row another
-// transaction holds (C6), and repeats the claim condition.
+// transaction holds (C6), and repeats the claim condition. It returns each
+// locked row's status before the claim: RUNNING means the claim takes the task
+// from a stale or missing owner (ClaimedFromLostOwner). The row lock holds that
+// status until claimSQL runs.
 const lockClaimableSQL = `WITH due AS (
 	SELECT st.id, st.tenant_id, st.entity_id, st.next_attempt_time
 	  FROM scheduled_tasks st
@@ -2235,7 +2587,7 @@ const lockClaimableSQL = `WITH due AS (
 	 ORDER BY r.turn, r.next_attempt_time, r.id
 	 LIMIT $7
 )
-SELECT st.id
+SELECT st.id, st.status
   FROM scheduled_tasks st
  WHERE st.id IN (SELECT id FROM chosen)
    AND ` + claimableCondition + `
@@ -2300,9 +2652,24 @@ func (s *scheduledTaskStore) claimDue(ctx context.Context, req spi.ClaimRequest)
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	q := classifiedQuerier{inner: tx}
 
-	locked, err := queryIDs(ctx, q, lockClaimableSQL,
+	lockRows, err := q.Query(ctx, lockClaimableSQL,
 		req.NowMs, req.AllowLostOwner, stale, req.PerTenantLimit, tenants, running, req.Limit)
-	if err != nil || len(locked) == 0 {
+	if err != nil {
+		return nil, err
+	}
+	var locked []string
+	fromLostOwner := make(map[string]bool)
+	for lockRows.Next() {
+		var id, status string
+		if err := lockRows.Scan(&id, &status); err != nil {
+			lockRows.Close()
+			return nil, err
+		}
+		locked = append(locked, id)
+		fromLostOwner[id] = status == string(spi.ScheduledTaskRunning)
+	}
+	lockRows.Close()
+	if err := lockRows.Err(); err != nil || len(locked) == 0 {
 		return nil, err
 	}
 	rows, err := q.Query(ctx, claimSQL, req.NowMs, req.AllowLostOwner, stale, locked, req.Owner)
@@ -2312,6 +2679,9 @@ func (s *scheduledTaskStore) claimDue(ctx context.Context, req spi.ClaimRequest)
 	claimed, err := scanTasks(rows)
 	if err != nil || len(claimed) == 0 {
 		return nil, err
+	}
+	for i := range claimed {
+		claimed[i].ClaimedFromLostOwner = fromLostOwner[claimed[i].ID]
 	}
 
 	ids := make([]string, len(claimed))
@@ -2445,6 +2815,9 @@ func (s *scheduledTaskStore) RecordAttempt(ctx context.Context, ref spi.TaskRef,
 // Fail joins the transaction on ctx, so the FAILED status and its audit event
 // commit together (spec §5.7). The mark, if any, stays with the life.
 func (s *scheduledTaskStore) Fail(ctx context.Context, ref spi.TaskRef, f spi.Failure) error {
+	if err := joinTenant(ctx, ref.TenantID); err != nil {
+		return err
+	}
 	tag, err := s.q.Exec(ctx, `UPDATE scheduled_tasks
 		   SET status = 'FAILED', failure_reason = $5, last_error = $6, failed_time = $7,
 		       claim_token = NULL, claim_owner = NULL
@@ -2561,8 +2934,10 @@ cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownersh
 go test -run 'TestConformance/ScheduledTasks' .
 ```
 
-Expected: every subtest passes except the case(s) that assert
-`spi.ErrStoreRejected`, which fail with the raw SQLSTATE class-22/23 error.
+Expected: every subtest passes, `Claim/LostOwnerFlagged` and
+`Tenant/JoiningWriteOtherTenantRefused` included, except the case(s) that
+assert `spi.ErrStoreRejected`, which fail with the raw SQLSTATE class-22/23
+error (the 1 025-byte text meets `scheduled_tasks_last_error_len_chk`, class 23).
 BP-5 turns them green. Any other failure is a defect in this task: fix it
 here.
 
@@ -2571,10 +2946,13 @@ here.
 ```bash
 cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership && \
 git grep -n -e RedispatchAfter -e MarkRedispatch -e AttemptCount -e ScanDue -e redispatch_after \
-  -e attempt_count -e '\.Upsert(ctx, task' -e 'sts\.Delete(' -- plugins/postgres ':!*/migrations/*'
+  -e attempt_count -e '\.Upsert(ctx, task' -e 'sts\.Delete(' -- plugins/postgres ':!*/migrations/*' \
+  ':!*migration*_test.go'
 ```
 
-Expected: no output.
+Expected: no output. The migration tests (`scheduled_task_migration_test.go`)
+must name the old columns to build version-13 rows, so the check excludes
+them, as spec §15 does.
 
 - [ ] **Step 8: Commit**
 
@@ -2591,12 +2969,15 @@ git add plugins/postgres/migrations/000014_scheduled_run_ownership.up.sql \
 git diff --cached --name-only | grep -c go.work; \
 git commit -m "feat(postgres): scheduled tasks are claimed, fenced and marked
 
-Migration 000014: arm/claim tokens, status, retry record, one RUNNING
-task per entity, marks and owner liveness tables. The store implements
+Migration 000014: arm/claim tokens, status, retry record, a 1024-byte
+limit on last_error, one RUNNING task per entity, marks and owner
+liveness tables. The store implements
 the new ScheduledTaskStore: joining writes in the entity transaction,
 never-joining writes on the scheduler pool, ClaimDue in four steps with
 SKIP LOCKED, MarkUnsafe with FOR SHARE NOWAIT. A claim that loses a
-sibling race rolls back and claims nothing.
+sibling race rolls back and claims nothing. A claim from a lost owner is
+flagged on the result; a joining write of another tenant than the
+transaction's is refused.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -2935,6 +3316,10 @@ codes that must not match).
 | a scheduler-pool statement blocked on a task-row lock gives up after `lock_timeout` | `TestSchedulerPools_LockWaitEndsAtLockTimeout` (BP-2), `TestPostgres_ScheduledTaskStore_RowLockWaitEndsAtLockTimeout` (BP-4) |
 | `spi.ErrStoreRejected` (every backend sets the marker) | `TestClassifyError_DeterministicRejectionsCarryErrStoreRejected`, `…DeterministicRejectionIsMarked` (BP-5) + S |
 | `DeleteForModel` in tenant A leaves tenant B's tasks; every tenant-facing method | `TestPostgres_ScheduledTaskStore_TenantFacingMethodsFilterOnTenant` (BP-4) + S |
+| a joining write whose tenant is not the transaction's is refused | `TestPostgres_ScheduledTaskStore_JoiningWriteOfAnotherTenantRefused` (BP-4) + S `Tenant/JoiningWriteOtherTenantRefused` |
+| `lastError` over 1 024 bytes is `ErrStoreRejected` | `TestMigration14_ScheduledTaskSchema` (`scheduled_tasks_last_error_len_chk`, BP-4) + S `ErrorText/StoreRejected` |
+| a lost-owner claim is flagged for `cyoda.scheduler.claims{reason=owner_lost}` | S `Claim/LostOwnerFlagged` (BP-4's `lockClaimableSQL` status) |
+| the pool gauge names its pool (README C-R6) | `TestRegisterPoolMetrics_ReportsPoolStat` (BP-2), `TestMetrics_PostgresPoolSeriesAreExported` (BP-2, e2e) |
 | each new variable: its default and its validation failure (`CYODA_POSTGRES_SCHEDULER_CONNS`) | `TestParseConfig_SchedulerConns*` (BP-1) |
 
 ## Stream interface summary
@@ -2952,6 +3337,11 @@ config.SchedulerConns int32 // CYODA_POSTGRES_SCHEDULER_CONNS; default 10; >= 2;
 type schedulerQuerier struct{ /* … */ }        // never joins; 5s acquire; READ COMMITTED pool
 func (f *StoreFactory) schedulerPools() (work, heartbeat *pgxpool.Pool, err error)
 func lostClaimRace(err error) bool
+func joinTenant(ctx context.Context, tenant spi.TenantID) error
+func registerPoolMetrics(meter metric.Meter, pool *pgxpool.Pool, sched *schedulerPools) (func(), error)
+
+// metrics (README C-R6)
+cyoda.storage.pool.connections{backend="postgres", pool="main"|"scheduler"|"heartbeat", state}
 
 // test exports (export_test.go)
 func SchedulerPoolForTest(t testing.TB, f *StoreFactory) *pgxpool.Pool
@@ -2965,7 +3355,12 @@ Behaviour other streams can rely on (PostgreSQL):
   statement, before the commit.
 - `ClaimDue` returns `nil, nil` when it loses a sibling race; it never
   returns that race as an error. It returns an error for `Limit < 1` or
-  `PerTenantLimit < 1`.
+  `PerTenantLimit < 1`. It sets `ClaimedFromLostOwner` on each task it took
+  from a stale or missing owner (README C-S1).
+- `ReconcileForEntity`, `RemoveLife`, `StampSegment`, `DeleteForEntities`,
+  `DeleteForModel` and `Fail` return `spi.ErrTxTenantMismatch` when their
+  tenant is not the tenant of the transaction on `ctx`, as memory and SQLite do.
+- `last_error` holds at most 1 024 bytes (`scheduled_tasks_last_error_len_chk`).
 - `MarkUnsafe` never waits on a row lock: `spi.ErrTaskBusy` at once.
 - Every other scheduler-pool write waits at most `lock_timeout` (2 s) and then
   returns the raw `55P03`, unmarked; `statement_timeout` (57014) likewise.
@@ -2978,7 +3373,7 @@ Behaviour other streams can rely on (PostgreSQL):
   the `Arm` items; its returned slice excludes `req.Cancel` ids.
 
 **BP consumes:**
-- S: every name in `interfaces.md:7-153`, and `runScheduledTasks` registered
+- S: every name in `interfaces.md:7-153`, and `runScheduledTasksSuite` registered
   in `spitest.StoreFactoryConformance`.
 - R: `CYODA_POSTGRES_SCHEDULER_CONNS` is documented by BP-1 in
   `help/config/database.md`; R's config task must not add a second bullet.
@@ -3009,10 +3404,10 @@ Behaviour other streams can rely on (PostgreSQL):
    sets no limit). A multi-node fixture with several pnodes can reach it. T's
    fixtures should set `CYODA_POSTGRES_SCHEDULER_CONNS=2` or raise
    `max_connections`. For T.
-5. **The scheduler pools are not in the `cyoda.storage.pool.connections`
-   gauge**, which observes the main pool only (`metrics.go:22`). Adding them
-   needs a new attribute on that instrument, which is a telemetry contract
-   decision. Not done in this stream; for the lead.
+5. **Closed (README C-R6).** BP-2 Steps 6-10 report the scheduler and
+   heartbeat pools on `cyoda.storage.pool.connections` with
+   `pool=scheduler|heartbeat`, and the main pool with `pool=main`. D-6
+   documents the attribute.
 6. **Migration 000014 locks `scheduled_tasks` for readers too**, for the
    whole file. It is grandfathered in the index guard with its own lock
    profile. Acceptable because there are no production instances; stated in

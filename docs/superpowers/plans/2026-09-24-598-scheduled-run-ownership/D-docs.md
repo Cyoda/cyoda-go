@@ -1,8 +1,9 @@
 # Stream D — documentation, chart, changelog and cross-repo notes
 
 Spec: `docs/superpowers/specs/2026-09-24-598-scheduled-run-ownership-design.md`.
-D owns the documentation files of §11, all of §12 that no code stream owns, and
-the Gate 4 and Gate 7 obligations. Every sentence about behaviour comes from
+D owns the documentation files of §11 that R-10, BP-1 and BP-6 do not write
+(README C-D1), all of §12 that no code stream owns, and the Gate 4 and Gate 7
+obligations. Every sentence about behaviour comes from
 spec §1–§10. Where a text names an identifier, the task greps for it before the
 commit; if the grep is empty, the sentence is corrected to what the code has.
 
@@ -21,7 +22,7 @@ and `.github/workflows/helm-chart-ci.yml`.
 | `TestContentMarkdownSubsetLinter` (`help_test.go:628`) | no pipe table, no indented (nested) bullet, no blockquote, no HTML block in help content (`renderer/linter.go:30-75`) | `go test ./cmd/cyoda/help/...` |
 | `TestSeeAlsoResolution` (`help_test.go:656`) | every `see_also` entry resolves to a topic — `scheduled-tasks` may be listed only after Q's topic file exists | same |
 | `TestConfig_EnvVarCoverage` (`help_test.go:489`) | every `CYODA_*` in non-test Go source under `cmd`, `app`, `plugins`, `internal` is named in `config.md` or `config/*.md` | same |
-| `TestConfigAll_Complete` (`config_registry_test.go:74`) | every such variable is in the registry (R's and BP's work; D-1/D-2 run it) | same |
+| `TestConfigAll_Complete` (`config_registry_test.go:74`) | every such variable is in the registry (R-10's and BP-1's work; they run it) | same |
 | `TestDefaultTree_ConfigClusterSubtopic` (`help_test.go:927`) | `CYODA_DISPATCH_WAIT_TIMEOUT` stays in `config.cluster` | same |
 | `TestHelpContent_NoIssueIDs`, `TestSource_NoIssueNumbers` | no `#NNN` in help content | same |
 | `TestHelpContent_CrossReferencesUseAWorkingInvocation` | `cyoda help a b`, never `cyoda help a.b`, in help, `README.md`, `api/openapi.yaml`, `api/generated.go` | same |
@@ -59,271 +60,41 @@ README's stream table.
 |---|---|---|
 | `app/config.go`, `cmd/cyoda/help/config_registry.go` | R | — |
 | `plugins/postgres/config.go`, `plugin.go`, `doc.go` | BP | — |
-| `help/config/scheduler.md`, `help/config/cluster.md`, `help/config.md:33`, `README.md:224-236, :251` | **D** | D-1 |
-| `help/config/database.md`, `docs/plugins/POSTGRES.md` | **D** | D-2 |
+| `help/config/scheduler.md`, `help/config/cluster.md`, `help/config.md:33`, `README.md:224-236, :251` | R | R-10 (README C-D1); the `scheduled-tasks` SEE ALSO entry of `config/scheduler.md` is Q-7's |
+| `help/config/database.md`, `docs/plugins/POSTGRES.md` | BP | BP-1 (`config/database.md`), BP-6 (`POSTGRES.md`) (README C-D1) |
 | `help/workflows.md` SCHEDULED TRANSITIONS, `idempotent` (`:202`), the selection paragraph `:478`, `:483`, ERRORS, `see_also` | **D** | D-3 |
 | `idempotent` description in `api/openapi.yaml` (`:10513-10523`), `docs/workflow-schema-versioning.md` "When NOT to bump" | **D** | D-4 |
 | new help topic `scheduled-tasks` and its `topLevelTopicsV061` entry | Q | — |
 | `help/run.md` SHUTDOWN TIMING and SIGNALS; `help/helm.md`; chart templates, values, schema, `Chart.yaml`, chart README; `helm-chart-ci.yml` guard | **D** | D-5 |
 | `help/telemetry.md` | **D** | D-6 |
-| `api/openapi.yaml`: new operation and DTOs, `SCHEDULED_TRANSITION_FAIL` in the audit enum (`:11742`) | Q (Q-1) | — |
+| `api/openapi.yaml`: new operation and DTOs, `SCHEDULED_TRANSITION_FAIL` in the audit `eventType` enum (after `:11762`) | Q (Q-1) | — |
 | `api/openapi.yaml`: 409 on `deleteSingleEntity` and `importEntityModelWorkflow` | W | — |
 | `help/errors/CONFLICT.md` | W | — (D-3 and D-10 point at it) |
 | SPI items (`SMEventScheduledTransitionFailed`, new errors, `ErrStaleClaim` comment, the `TransitionSchedule` sentence) | S | — |
 | `docs/ARCHITECTURE.md` `:94, :230, :382-393, :772, :940, :943, :1359, :1486-1506, :1550-1553, :1992, :2248` | **D** | D-7 |
-| code comment `internal/domain/search/reaper.go:16-22` | **D** | D-7 step 6 |
+| code comment `internal/domain/search/reaper.go:16-21` | R | R-10 (its exit grep needs `CYODA_SCHEDULER_BATCH_SIZE` gone) |
 | `docs/cloud-parity/scheduled-transitions.md` and its README row | **D** | D-8 |
 | `COMPATIBILITY.md`: SPI pin, chart version | **D** | D-9 |
 | `CHANGELOG.md` `### Breaking` and the assembly of `[Unreleased]` | **D** | D-10 (last) |
 | cyoda-go-cassandra#68 comment; CaaS ticket | **D** writes, lead posts | D-11 |
 | migration comment `plugins/postgres/migrations/000004_scheduled_tasks.up.sql:5-14` | BP | — (spec §10.2 "It is corrected") |
 | *Not in §11/§12, false once this lands:* `docs/cloud-parity/tenant-id-grammar.md:70` ("scheduler RPC payloads"); `docs/analysis/failure-modes/2026-06-29-operational-failure-mode-analysis-playbook.md:59` (row F6: round-robin share, `distribution.go`); `docs/CONSISTENCY.md` §1 (says nothing of task rows); `help/run.md:264` SIGNALS; the `[Unreleased]` entries that name `CYODA_DISPATCH_FORWARD_TIMEOUT` and the scheduled-transition forward (`CHANGELOG.md:178-185, :196-200, :265-268, :675-682`) | **D** | D-7, D-5, D-10 |
-| *Wrong today, found on the way:* `COMPATIBILITY.md:35` names the SPI pin `…7a75d2d335ee` while every `go.mod` pins `…8aa2258b26cb`, and names `ErrTxInFlight`, which does not exist (the sentinel is `ErrTxNotCommitted`, SPI `errors.go:115`); `COMPATIBILITY.md:79` "Currently pinned: `cyoda-go-spi v0.8.4`"; `COMPATIBILITY.md:87-117` "SPI work in flight" describes `ErrEntityModelMismatch` as unpushed, and it is pinned (`internal/domain/entity/service.go:2710`) | **D** | D-9 |
-| *Wrong today:* `docs/plugins/POSTGRES.md:246-256` schema table has no `scheduled_tasks` row (the table exists since migration `000004`) | **D** | D-2 |
+| *Wrong today, found on the way:* `COMPATIBILITY.md:35` names the SPI pin `…7a75d2d335ee` while every `go.mod` pins `…8aa2258b26cb`, names `ErrTxInFlight`, which does not exist (the sentinel is `ErrTxNotCommitted`, SPI `errors.go:115`), and states `ProcessorConfig.Idempotent *bool` while SPI `types.go:251` declares `bool`; `COMPATIBILITY.md:79` "Currently pinned: `cyoda-go-spi v0.8.4`"; `COMPATIBILITY.md:87-117` "SPI work in flight" describes `ErrEntityModelMismatch` as unpushed, and it is pinned (`internal/domain/entity/service.go:2710`) | **D** | D-9 |
+| *Wrong today:* `docs/plugins/POSTGRES.md:246-256` schema table has no `scheduled_tasks` row (the table exists since migration `000004`) | BP | BP-6 |
 | *Stale:* `deploy/helm/cyoda/Chart.yaml` `artifacthub.io/changes` describes the `0.7.0` change | **D** | D-5 |
 
 ## Order
 
-- D-1 runs directly after R's config task, and D-2 directly after BP's config
-  task. From those commits until D-1/D-2 land, `TestConfig_EnvVarCoverage`
-  fails; see Open point 1.
 - D-3, D-6 and D-8 wait for E, R, W and Q (Q's `scheduled-tasks.md` exists, for
-  `TestSeeAlsoResolution`).
+  `TestSeeAlsoResolution`). D-6 also waits for BP-2 (the `pool` attribute).
+- D has no settings text: R-10 and BP-1 write it with the settings, BP-6
+  writes `POSTGRES.md` (README C-D1).
 - D-4 waits for Q-1 (same file) and E.
 - D-5 waits for R's `run.go` wiring (the shutdown order it documents).
 - D-7 waits for every code stream.
 - D-9 runs after the wave-6 pin commit and after D-5.
 - D-10 is the last commit of the plan that touches `CHANGELOG.md`.
 - D-11 is text the lead posts after the PR merges.
-
----
-
-### Task D-1: scheduler settings — help topics and README
-
-> **Dropped (README C-D1).** R-10 writes this text; use the text below as R-10's reference if R-10's own wording is missing a point, but do not execute this task.
-
-**Spec:** §6.1–§6.4, §11.
-
-**Needs:** R's config task (`app/config.go`, `cmd/cyoda/help/config_registry.go`,
-`app.SchedulerConfig` fields of `interfaces.md`).
-
-**Files:**
-- Modify: `cmd/cyoda/help/content/config/scheduler.md` (whole file)
-- Modify: `cmd/cyoda/help/content/config.md:33`
-- Modify: `cmd/cyoda/help/content/config/cluster.md:32`
-- Modify: `README.md:224-236`, `:251`
-
-- [ ] **Step 1: Check the names and defaults R registered**
-
-```
-grep -n 'CYODA_SCHEDULER_\|CYODA_DISPATCH_FORWARD' cmd/cyoda/help/config_registry.go
-```
-
-Expected: exactly `ENABLED`, `SCAN_INTERVAL`, `MAX_RUNS`, `MAX_RUNS_PER_TENANT`,
-`HEARTBEAT_INTERVAL`, `STALE_AFTER`, `MAX_LOST_OWNERS`, `RETRY_DELAY`,
-`RETRY_DELAY_MAX`, `SHUTDOWN_DRAIN`, with the defaults of the plan README's
-settings table, and no `CYODA_DISPATCH_FORWARD_TIMEOUT`. If a default differs,
-stop and tell the lead: the text below follows the spec.
-
-- [ ] **Step 2: Replace `config/scheduler.md` whole**
-
-```markdown
----
-topic: config.scheduler
-title: "cyoda scheduled-transition scheduler configuration"
-stability: stable
-see_also:
-  - config
-  - config.database
-  - workflows
-  - scheduled-tasks
-  - run
----
-
-# config.scheduler
-
-## NAME
-
-config.scheduler — claiming, liveness, retry and shutdown settings of the scheduled-transition scheduler.
-
-## DESCRIPTION
-
-Every node claims due scheduled transitions from storage and runs them itself. A claimed task has one owner at a time. A node proves it is alive with a heartbeat, and another node takes over its tasks only after those heartbeats have stopped for `CYODA_SCHEDULER_STALE_AFTER`. What a run does, and when a task ends `FAILED`, is in `cyoda help workflows` (SCHEDULED TRANSITIONS). `cyoda help scheduled-tasks` lists the tasks.
-
-- `CYODA_SCHEDULER_ENABLED` (bool, default: `true`) — run the scheduler on this node. With `false` the node claims and runs no scheduled transition; entity writes still arm them, and a node with the scheduler enabled runs them.
-- `CYODA_SCHEDULER_SCAN_INTERVAL` (duration, default: `1s`) — how often the node claims due tasks. It also claims at once when a run ends and the previous claim had filled every slot. Must be `> 0`.
-- `CYODA_SCHEDULER_MAX_RUNS` (int, default: `8`) — the most scheduled runs in progress on this node at once. Must be `>= 1`.
-- `CYODA_SCHEDULER_MAX_RUNS_PER_TENANT` (int, default: `4`) — the most runs of one tenant on this node at once. Tenants take turns. Must be from `1` to `CYODA_SCHEDULER_MAX_RUNS`.
-- `CYODA_SCHEDULER_HEARTBEAT_INTERVAL` (duration, default: `15s`) — how often the node writes its liveness record. Must be `> 0`.
-- `CYODA_SCHEDULER_STALE_AFTER` (duration, default: `2m`) — how long a node's heartbeats must have stopped before another node may take over its tasks. It is also how long the tasks of a crashed node wait. Must be at least `50s + 3 × CYODA_SCHEDULER_HEARTBEAT_INTERVAL`. Set the same value on every node of a cluster.
-- `CYODA_SCHEDULER_MAX_LOST_OWNERS` (int, default: `3`) — how many times a task may lose its owner, to a node that crashed or stopped heartbeating while it ran the task, before the task ends `FAILED` (`OWNER_LOST_REPEATEDLY`). Must be `>= 1`.
-- `CYODA_SCHEDULER_RETRY_DELAY` (duration, default: `30s`) — the delay before the first retry of a run that failed safely. It doubles on each further failure. Must be `> 0`.
-- `CYODA_SCHEDULER_RETRY_DELAY_MAX` (duration, default: `15m`) — the most the retry delay grows to. Must be `>= CYODA_SCHEDULER_RETRY_DELAY`.
-- `CYODA_SCHEDULER_SHUTDOWN_DRAIN` (duration, default: `20s`) — on shutdown, how long the node waits for its runs in progress before it cancels them. A run whose processor that is not declared `idempotent` is in flight on a compute member is not cancelled. Must be `>= 0`. See `cyoda help run` (SHUTDOWN TIMING).
-
-Startup fails on an invalid value.
-
-**When a node loses its heartbeat.** If the node's own heartbeats keep failing for `CYODA_SCHEDULER_STALE_AFTER` minus 40 seconds, it cancels its runs in progress and claims nothing until a heartbeat succeeds. So no other node takes a task over while its owner can still commit. A node that comes back from a storage outage takes over no other node's tasks until its own heartbeats have succeeded for `CYODA_SCHEDULER_STALE_AFTER` without a gap.
-
-On PostgreSQL the scheduler has a pool of its own, sized by `CYODA_POSTGRES_SCHEDULER_CONNS`; see `cyoda help config database`.
-
-## SEE ALSO
-
-- config
-- config.database
-- workflows
-- scheduled-tasks
-- run
-```
-
-The 40 seconds are spec §6.3's `CommitBudget` (30 s) plus 10 s slack.
-
-- [ ] **Step 3: `config.md:33`**
-
-Replace the line with:
-
-```markdown
-- `config.scheduler` — scheduled-transition claiming, liveness, retries and shutdown drain
-```
-
-- [ ] **Step 4: `config/cluster.md`** — delete the `CYODA_DISPATCH_FORWARD_TIMEOUT`
-bullet (`:32`) whole. Nothing replaces it.
-
-- [ ] **Step 5: `README.md` "Scheduled transitions" (`:224-236`)** — replace the
-section body (heading kept) with:
-
-```markdown
-A workflow transition with a `schedule` fires on its own after a delay. The delay is a static `delayMs`, or a `function` callout that computes the firing time (and an optional expiry) per entity when the transition is armed. Every node claims due transitions and runs them itself, and a task has one owner at a time. A processor that is not declared `idempotent` is never run twice by the scheduler. A failure that is safe to repeat is retried until the transition's `timeoutMs` passes. A task that cannot succeed ends `FAILED`, never moves its entity, and is listed by `GET /api/scheduled-tasks`. See `cyoda help workflows`, `cyoda help scheduled-tasks` and `cyoda help config scheduler`.
-
-| Env var | Default | Effect |
-|---------|---------|--------|
-| `CYODA_SCHEDULER_ENABLED` | `true` | Run the scheduler on this node. |
-| `CYODA_SCHEDULER_SCAN_INTERVAL` | `1s` | How often the node claims due tasks. |
-| `CYODA_SCHEDULER_MAX_RUNS` | `8` | Most runs in progress on this node. |
-| `CYODA_SCHEDULER_MAX_RUNS_PER_TENANT` | `4` | Most runs of one tenant on this node; at most `MAX_RUNS`. |
-| `CYODA_SCHEDULER_HEARTBEAT_INTERVAL` | `15s` | How often the node proves it is alive. |
-| `CYODA_SCHEDULER_STALE_AFTER` | `2m` | How long heartbeats must stop before another node takes the tasks over. At least `50s + 3 × heartbeat`; the same on every node. |
-| `CYODA_SCHEDULER_MAX_LOST_OWNERS` | `3` | Lost owners after which a task ends `FAILED`. |
-| `CYODA_SCHEDULER_RETRY_DELAY` | `30s` | Delay before the first retry; doubles on each failure. |
-| `CYODA_SCHEDULER_RETRY_DELAY_MAX` | `15m` | Upper bound on the retry delay. |
-| `CYODA_SCHEDULER_SHUTDOWN_DRAIN` | `20s` | How long shutdown waits for the runs in progress. |
-| `CYODA_POSTGRES_SCHEDULER_CONNS` | `10` | PostgreSQL only: connections kept for the scheduler and the async-search heartbeat. At least `2`. |
-```
-
-- [ ] **Step 6: `README.md` "Compute-node callouts"** — delete the
-`CYODA_DISPATCH_FORWARD_TIMEOUT` row (`:251`).
-
-- [ ] **Step 7: Verify**
-
-```
-go test ./cmd/cyoda/help/...
-    TestContentMarkdownSubsetLinter, TestSeeAlsoResolution (needs Q's scheduled-tasks.md),
-    TestConfig_EnvVarCoverage, TestConfigAll_Complete, TestDefaultTree_ConfigClusterSubtopic,
-    TestHelpContent_CrossReferencesUseAWorkingInvocation, TestHelpContent_NoIssueIDs → PASS
-go test ./app/ -run TestRootConfigVars_MatchDefaults → PASS
-git grep -n -e CYODA_SCHEDULER_DISTRIBUTION -e CYODA_SCHEDULER_COORDINATOR -e CYODA_SCHEDULER_REDISPATCH_BACKOFF \
-  -e CYODA_SCHEDULER_BATCH_SIZE -e CYODA_SCHEDULER_EXPIRY_GRACE -e CYODA_DISPATCH_FORWARD_TIMEOUT \
-  -- README.md cmd/cyoda/help/content → no output
-grep -n 'scheduled-tasks' api/openapi.yaml | head -1 → the path Q added; if it is not `/scheduled-tasks`, correct the README sentence
-```
-
-If `TestSeeAlsoResolution` fails only on `scheduled-tasks` because Q has not
-landed, drop that entry from `see_also` and SEE ALSO, commit, and add it back in
-D-3.
-
-- [ ] **Step 8: Commit**
-
-```
-git add cmd/cyoda/help/content/config/scheduler.md cmd/cyoda/help/content/config.md \
-        cmd/cyoda/help/content/config/cluster.md README.md
-git commit -m "docs(help): scheduler settings — claiming, liveness, retries, shutdown drain" \
-  -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
-```
-
----
-
-### Task D-2: the scheduler pool — `config/database.md` and `docs/plugins/POSTGRES.md`
-
-> **Dropped (README C-D1).** BP-1 writes `config/database.md` and BP-6 writes `POSTGRES.md`, including the missing `scheduled_tasks` schema row below. Do not execute this task.
-
-**Spec:** §10.2 (scheduler pool, tables), §11.
-
-**Needs:** BP's config task (`CYODA_POSTGRES_SCHEDULER_CONNS` in
-`plugins/postgres/config.go` and `plugin.go`) and BP's migration.
-
-**Files:**
-- Modify: `cmd/cyoda/help/content/config/database.md` — PostgreSQL list, after the `CYODA_POSTGRES_MIN_CONNS` bullet
-- Modify: `docs/plugins/POSTGRES.md` — §Concurrency model (end), schema table (`:246-256`), configuration table (`:316-325`)
-
-- [ ] **Step 1: Check what BP built**
-
-```
-grep -n 'SCHEDULER_CONNS' plugins/postgres/*.go
-grep -n 'statement_timeout\|lock_timeout\|idle_in_transaction' plugins/postgres/*sched*.go plugins/postgres/pool*.go
-ls plugins/postgres/migrations | tail -2
-```
-
-Expected: default `10`, minimum `2`; the scheduler pool sets `statement_timeout`
-30 s, `idle_in_transaction_session_timeout` 10 s, `lock_timeout` 2 s, a 5 s
-acquire timeout; one extra connection for the heartbeat. If any figure differs,
-the text follows the code.
-
-- [ ] **Step 2: `config/database.md`** — insert after the `CYODA_POSTGRES_MIN_CONNS` bullet:
-
-```markdown
-- `CYODA_POSTGRES_SCHEDULER_CONNS` — size of a second pool, apart from `CYODA_POSTGRES_MAX_CONNS`, for the scheduler's claims, heartbeats and outcome writes and for the async-search heartbeat and claim (default: `10`; at least `2`). Entity transactions never use it, so a saturated main pool cannot starve a heartbeat. One more connection is kept for the scheduler heartbeat alone. Its statements run under fixed limits: 30 seconds per statement, 2 seconds per lock wait, 5 seconds to get a connection. Allow `CYODA_POSTGRES_MAX_CONNS + CYODA_POSTGRES_SCHEDULER_CONNS + 1` connections per node in the database's `max_connections`.
-```
-
-- [ ] **Step 3: `POSTGRES.md` configuration table** — add after the
-`CYODA_POSTGRES_MIN_CONNS` row:
-
-```markdown
-| `CYODA_POSTGRES_SCHEDULER_CONNS` | `10` | Size of the scheduler pool, a second `pgxpool.Pool` beside the main one, at `READ COMMITTED`. It serves every scheduled-task method that does not join an entity transaction (except `Query`, which uses the main pool) and the async-search heartbeat and claim. At least `2`. The heartbeat has one further connection of its own. |
-```
-
-- [ ] **Step 4: `POSTGRES.md` §Concurrency model** — add at the end of the section:
-
-```markdown
-**Scheduled tasks.** Task rows written by a joining `ScheduledTaskStore` method
-go straight into the open entity transaction, at `REPEATABLE READ`, so
-first-committer-wins covers them as it covers entities, and a row written by an
-open transaction cannot be claimed until that transaction ends. Every other task
-method runs on the scheduler pool (`CYODA_POSTGRES_SCHEDULER_CONNS`) at
-`READ COMMITTED`, with `statement_timeout` 30 s,
-`idle_in_transaction_session_timeout` 10 s and `lock_timeout` 2 s. `ClaimDue`
-ranks due rows, locks them with `FOR UPDATE SKIP LOCKED` and claims them in one
-transaction; a partial unique index allows one `RUNNING` task per entity.
-`MarkUnsafe` takes a `FOR SHARE NOWAIT` lock on the task row, so a mark and a
-claim of the same task never both succeed. A lock wait that times out
-(`55P03`) is retried by the caller; for `MarkUnsafe` it means the task is busy.
-```
-
-- [ ] **Step 5: `POSTGRES.md` schema table** — add three rows after `search_job_results`:
-
-```markdown
-| `scheduled_tasks` | Scheduled-transition tasks: status, claim, attempts, last error | `id` (with `tenant_id` indexed) |
-| `scheduled_task_marks` | One mark per task life, written before a processor not declared `idempotent` is dispatched | `(task_id, arm_token)` |
-| `scheduler_owners` | Liveness of each node's scheduler, stamped with `now()` | `owner` |
-```
-
-These three tables are outside row-level security; every tenant-facing
-statement carries `tenant_id`. Add that sentence directly under the table.
-
-- [ ] **Step 6: Verify**
-
-```
-go test ./cmd/cyoda/help/...   TestConfig_EnvVarCoverage, TestConfigAll_Complete, TestContentMarkdownSubsetLinter → PASS
-(cd plugins/postgres && go test -run 'Config' ./...)   the plugin's ConfigVars default test → PASS
-grep -n 'scheduled_task_marks\|scheduler_owners' plugins/postgres/migrations/*.up.sql → the BP migration creates both
-```
-
-- [ ] **Step 7: Commit**
-
-```
-git add cmd/cyoda/help/content/config/database.md docs/plugins/POSTGRES.md
-git commit -m "docs(postgres): the scheduler pool and the scheduled-task tables" \
-  -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
-```
 
 ---
 
@@ -418,7 +189,6 @@ errors.CONFLICT
 ```
 
 (front matter entries indented `  - ` as the others; SEE ALSO entries `- `).
-If D-1 dropped `scheduled-tasks` from `config/scheduler.md`, add it back there now.
 
 - [ ] **Step 8: Verify**
 
@@ -435,7 +205,7 @@ go run ./cmd/cyoda help workflows | sed -n '/SCHEDULED TRANSITIONS/,/CRITERIA/p'
 - [ ] **Step 9: Commit**
 
 ```
-git add cmd/cyoda/help/content/workflows.md cmd/cyoda/help/content/config/scheduler.md
+git add cmd/cyoda/help/content/workflows.md
 git commit -m "docs(help): a scheduled run has one owner; FAILED, retries, the 409 and the callback anti-pattern" \
   -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -740,7 +510,8 @@ git commit -m "feat(helm): a 360 s grace period so a node can finish its schedul
 
 **Files:**
 - Modify: `cmd/cyoda/help/content/telemetry.md` — after the cluster membership
-  metrics (`:121-125`), and ATTRIBUTE VOCABULARY (`:150-151`)
+  metrics (`:121-125`), and ATTRIBUTE VOCABULARY (`:150-151`, the `outcome`
+  line, the new `reason` line and the `pool` line of README C-R6)
 
 - [ ] **Step 1: Check R's instruments**
 
@@ -780,6 +551,7 @@ and add after it:
 
 ```markdown
 - `reason` — claim label of `cyoda.scheduler.claims` (`due` or `owner_lost`)
+- `pool` — PostgreSQL pool label of `cyoda.storage.pool.connections`: `main` (entity transactions and `GET /scheduled-tasks`), `scheduler` (the scheduler's claims and outcome writes, and the async-search heartbeat and claim) or `heartbeat` (the scheduler heartbeat's own connection)
 ```
 
 - [ ] **Step 4: Verify**
@@ -788,13 +560,14 @@ and add after it:
 go test ./cmd/cyoda/help/...   TestContentMarkdownSubsetLinter, TestSeeAlsoResolution → PASS
 for m in runs run.duration runs.in_progress claims heartbeat.failures bookkeeping.retries; do
   grep -q "\"cyoda.scheduler.$m\"" internal/scheduler/*.go || echo "missing $m"; done → no output
+grep -rn '"pool"' plugins/postgres/*.go | grep -v _test → the attribute BP-2 added
 ```
 
 - [ ] **Step 5: Commit**
 
 ```
 git add cmd/cyoda/help/content/telemetry.md
-git commit -m "docs(help): the scheduler's six instruments" \
+git commit -m "docs(help): the scheduler's six instruments; the pool label of the pool gauge" \
   -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
@@ -802,7 +575,8 @@ git commit -m "docs(help): the scheduler's six instruments" \
 
 ### Task D-7: `ARCHITECTURE.md` and the other reference documents
 
-**Spec:** §1–§10, §12 (`ARCHITECTURE.md` lines, `reaper.go:18`).
+**Spec:** §1–§10, §12 (`ARCHITECTURE.md` lines). The `reaper.go` comment of
+§12 is R-10's.
 
 **Needs:** every code stream (S, BM, BQ, BP, K, E, R, W, Q).
 
@@ -811,7 +585,6 @@ git commit -m "docs(help): the scheduler's six instruments" \
 - Modify: `docs/CONSISTENCY.md` §1 (end)
 - Modify: `docs/cloud-parity/tenant-id-grammar.md:70`
 - Modify: `docs/analysis/failure-modes/2026-06-29-operational-failure-mode-analysis-playbook.md:59` (row F6)
-- Modify: `internal/domain/search/reaper.go:16-22` (comment only)
 
 `ARCHITECTURE.md` is a reference: present tense, no history. Audit the whole
 document on this touch: after the edits, the `grep` in step 8 must print
@@ -1011,16 +784,6 @@ in the evidence column replace "`internal/scheduler/distribution.go`
 (`RoundRobin.Pick` — no liveness check)" with "`internal/scheduler` (the claim
 loop stops on the latch)".
 
-`internal/domain/search/reaper.go:16-22`, the comment on `StaleClaimBatch`,
-becomes:
-
-```go
-// StaleClaimBatch caps how many stale jobs a single ReclaimStaleJobs call
-// claims. Fixed rather than configurable, it bounds one reaper tick's work
-// regardless of how large staleAfter's backlog has grown, so a burst of dead
-// jobs cannot turn one tick into an unbounded claim-and-execute loop.
-```
-
 - [ ] **Step 7: Check the identifiers §4.8 names**
 
 ```
@@ -1036,8 +799,7 @@ grep -n 'func (e \*Engine) FireScheduledTransition' internal/domain/workflow/*.g
 git grep -n -i -e "scheduler's peer RPC" -e 'scheduler rpc' -e 'scheduler payloads' -e 'round-robin distribution' \
   -e 'ScanDue' -e 'DISPATCH_FORWARD_TIMEOUT' -e 'ClusterExecutor' -e 'distribution.go' \
   -- docs/ARCHITECTURE.md docs/CONSISTENCY.md docs/cloud-parity/tenant-id-grammar.md \
-     docs/analysis/failure-modes/2026-06-29-operational-failure-mode-analysis-playbook.md internal/domain/search/reaper.go → no output
-go build ./internal/domain/search/ && go vet ./internal/domain/search/
+     docs/analysis/failure-modes/2026-06-29-operational-failure-mode-analysis-playbook.md → no output
 ```
 
 Read §4.8 and §3.4 once, top to bottom.
@@ -1046,8 +808,7 @@ Read §4.8 and §3.4 once, top to bottom.
 
 ```
 git add docs/ARCHITECTURE.md docs/CONSISTENCY.md docs/cloud-parity/tenant-id-grammar.md \
-        docs/analysis/failure-modes/2026-06-29-operational-failure-mode-analysis-playbook.md \
-        internal/domain/search/reaper.go
+        docs/analysis/failure-modes/2026-06-29-operational-failure-mode-analysis-playbook.md
 git commit -m "docs(architecture): scheduled transitions — claim, fence, heartbeat, mark; the RPC and the coordinator gone" \
   -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -1423,7 +1184,7 @@ All four lines must show one version. Write it wherever `PIN` appears below.
 - [ ] **Step 2: Replace the `v0.9.0` row** (`:35`) with:
 
 ```markdown
-| **`v0.9.0`** (in progress) | `cyoda-go-spi PIN` | same pseudo-version | Mid-milestone, so a pseudo-version of the SPI's `main` and no tag — the tag comes at the release cut ([`MAINTAINING.md`](./MAINTAINING.md)). **Breaking — `ScheduledTaskStore` is replaced.** Removed: `Upsert`, `ScanDue`, `MarkRedispatch`, `Delete`, and `ScheduledTask.RedispatchAfter` / `AttemptCount`. The store now carries ownership: `ScheduledTask` gains `Status`, `ArmToken`, `NextAttemptTime`, `Attempts`, `LostOwners`, `LastAttemptTime`, `LastError`, `FailureReason`, `FailedTime`, `PartialCommit`, `Claim` and `UnsafeMarked`; the methods are `ReconcileForEntity` (arms each task as a new life and removes every other task of the entity), `RemoveLife`, `StampSegment`, `DeleteForEntities`, `DeleteForModel`, `Get`, `Query`, `ClaimDue`, `Heartbeat`, `RetireOwner`, `SweepOwners`, `GiveBackIdle`, `MarkUnsafe`, `RecordAttempt`, `Fail` and `SweepMarks`. Six clauses bind every backend: first-committer-wins on task rows (C1), a joining read sees its staged writes (C2), a mark and a claim serialise (C3), heartbeats and claims cannot be starved by entity transactions (C4), refusals are `ErrConflict` / `ErrStaleClaim` (C5), and a task row written by an open transaction is not claimable (C6). New errors `ErrMarkedByAnotherClaim` and `ErrTaskBusy`, and the marker `ErrStoreRejected`, which every store wraps around a deterministic rejection. New audit constant `SMEventScheduledTransitionFailed` (`SCHEDULED_TRANSITION_FAIL`). The `spitest` `ScheduledTasks` suite replaces `RunScheduledTaskStoreConformance` and covers every method and clause. Additive since `v0.8.4`: `ProcessorConfig.Idempotent *bool` and `ScheduleFunction.RetryPolicy` (a function-driven schedule omits `delayMs` rather than sending a zero); `ErrTxNotCommitted`, which `GetSubmitTime` wraps for a transaction still in flight; `ErrEntityModelMismatch` — an entity's model reference is immutable, pinned by six `Save` / `CompareAndSave` cases; the state machine event id is the store's (`Audit/EventID`) and an entity version number is never reused (`Entity/GetVersionMetadata/RecreateAfterDelete`). **Every node of a cluster must run the same `cyoda-go` version**: the node-to-node wire changed and is sealed per recipient, and an earlier node fires scheduled tasks without claiming them, so a rolling upgrade across versions is not supported. |
+| **`v0.9.0`** (in progress) | `cyoda-go-spi PIN` | same pseudo-version | Mid-milestone, so a pseudo-version of the SPI's `main` and no tag — the tag comes at the release cut ([`MAINTAINING.md`](./MAINTAINING.md)). **Breaking — `ScheduledTaskStore` is replaced.** Removed: `Upsert`, `ScanDue`, `MarkRedispatch`, `Delete`, and `ScheduledTask.RedispatchAfter` / `AttemptCount`. The store now carries ownership: `ScheduledTask` gains `Status`, `ArmToken`, `NextAttemptTime`, `Attempts`, `LostOwners`, `LastAttemptTime`, `LastError`, `FailureReason`, `FailedTime`, `PartialCommit`, `Claim`, `UnsafeMarked` and the read-only, unserialised `ClaimedFromLostOwner`; the methods are `ReconcileForEntity` (arms each task as a new life and removes every other task of the entity), `RemoveLife`, `StampSegment`, `DeleteForEntities`, `DeleteForModel`, `Get`, `Query`, `ClaimDue`, `Heartbeat`, `RetireOwner`, `SweepOwners`, `GiveBackIdle`, `MarkUnsafe`, `RecordAttempt`, `Fail` and `SweepMarks`. Six clauses bind every backend: first-committer-wins on task rows (C1), a joining read sees its staged writes (C2), a mark and a claim serialise (C3), heartbeats and claims cannot be starved by entity transactions (C4), refusals are `ErrConflict` / `ErrStaleClaim` (C5), and a task row written by an open transaction is not claimable (C6). New errors `ErrMarkedByAnotherClaim` and `ErrTaskBusy`, and the marker `ErrStoreRejected`, which every store wraps around a deterministic rejection. New audit constant `SMEventScheduledTransitionFailed` (`SCHEDULED_TRANSITION_FAIL`). Shared backend helpers `SelectClaims`, `ValidateTaskErrorText`, `ValidateFailureReason`, `ValidateArm` and `MaxTaskErrorBytes`. The `spitest` `ScheduledTasks` suite replaces `RunScheduledTaskStoreConformance` and covers every method and clause; the `Audit` group gains `RolledBackEventNotKept`: an audit event of a rolled-back transaction is not kept. Additive since `v0.8.4`: `ProcessorConfig.Idempotent bool` and `ScheduleFunction.RetryPolicy` (a function-driven schedule omits `delayMs` rather than sending a zero); `ErrTxNotCommitted`, which `GetSubmitTime` wraps for a transaction still in flight; `ErrEntityModelMismatch` — an entity's model reference is immutable, pinned by six `Save` / `CompareAndSave` cases; the state machine event id is the store's (`Audit/EventID`) and an entity version number is never reused (`Entity/GetVersionMetadata/RecreateAfterDelete`). **Every node of a cluster must run the same `cyoda-go` version**: the node-to-node wire changed and is sealed per recipient, and an earlier node fires scheduled tasks without claiming them, so a rolling upgrade across versions is not supported. |
 ```
 
 - [ ] **Step 3: `:79`** — replace "**Currently pinned: `cyoda-go-spi v0.8.4`.**
@@ -1472,6 +1233,7 @@ obligation is the new `ScheduledTaskStore`, its six clauses and the `spitest`
 
 ```
 grep -c 'ErrTxInFlight' COMPATIBILITY.md → 0
+grep -c 'Idempotent \*bool' COMPATIBILITY.md → 0   (the old `:35` row says `*bool`; SPI `types.go:251` declares `bool`)
 grep -n 'SPI work in flight' COMPATIBILITY.md → no output
 grep -n "$(go list -m -f '{{.Version}}' github.com/cyoda-platform/cyoda-go-spi)" COMPATIBILITY.md → the v0.9.0 row
 make check-spi-pin-sync → the four manifests agree
@@ -1708,7 +1470,7 @@ The contract this issue describes is replaced in cyoda-go v0.9.0 (PR, SPI_PR; SP
 
 **Removed:** `Upsert`, `ScanDue`, `MarkRedispatch`, `Delete`, `ScheduledTask.RedispatchAfter`, `ScheduledTask.AttemptCount`.
 
-**New `ScheduledTask` fields:** `Status` (`WAITING` / `RUNNING` / `FAILED`), `ArmToken` (drawn by the store on every arm), `NextAttemptTime`, `Attempts`, `LostOwners`, `LastAttemptTime`, `LastError` (≤ 1 024 bytes, stored as given), `FailureReason`, `FailedTime`, `PartialCommit`, `Claim {Token, Owner}` (RUNNING only), `UnsafeMarked` (read-only).
+**New `ScheduledTask` fields:** `Status` (`WAITING` / `RUNNING` / `FAILED`), `ArmToken` (drawn by the store on every arm), `NextAttemptTime`, `Attempts`, `LostOwners`, `LastAttemptTime`, `LastError` (≤ 1 024 bytes, stored as given), `FailureReason`, `FailedTime`, `PartialCommit`, `Claim {Token, Owner}` (RUNNING only), `UnsafeMarked` (read-only), `ClaimedFromLostOwner` (read-only, not serialised; set only on a `ClaimDue` result that took the task from a stale or missing owner).
 
 **Methods.** "Joins" = part of the entity transaction on `ctx`. "Never joins" = commits on its own, ignoring any transaction on `ctx`. "Fenced" = accepted only with the task's current arm token and claim token, otherwise `ErrStaleClaim`.
 
@@ -1725,6 +1487,8 @@ The contract this issue describes is replaced in cyoda-go v0.9.0 (PR, SPI_PR; SP
 - `Fail(ref, f)` (joins the transaction that also records `SCHEDULED_TRANSITION_FAIL`, fenced): FAILED, claim cleared.
 - `SweepMarks` (never joins): remove the marks of ended lives.
 
+A joining method whose tenant is not the tenant of the transaction on `ctx` returns `spi.ErrTxTenantMismatch` and changes nothing (`Tenant/JoiningWriteOtherTenantRefused`). `spi.SelectClaims` and the `spi.Validate*` helpers hold the claim-choice and input rules if this backend chooses or validates in Go.
+
 **Clauses — each is a `spitest` `ScheduledTasks` case:**
 
 - C1: first-committer-wins covers task rows. A transaction that writes a task row fails with `ErrConflict` if another transaction — joining or not — committed a write to that row after it began.
@@ -1735,6 +1499,8 @@ The contract this issue describes is replaced in cyoda-go v0.9.0 (PR, SPI_PR; SP
 - C6: **a task row written by an open transaction is not claimable until that transaction ends, and `MarkUnsafe` answers `ErrTaskBusy` for it.** This is what stops another node reclaiming a task while its owner's commit is under way; without it, fencing does not hold.
 
 Also: every deterministic rejection by the store (constraint, data, syntax class) must satisfy `errors.Is(err, spi.ErrStoreRejected)`; the scheduler latches the node only on that marker and retries everything else.
+
+**Audit events are bound to the transaction.** An audit event recorded in a transaction that rolls back is not kept (`spitest` `Audit/RolledBackEventNotKept`). Every in-tree backend now behaves so, and the `TxBoundAuditFixture` parity capability is removed: `ExternalAPI_05` (TRANSITION_ABORTED) always asserts that the aborted transition's events are gone after the rollback. This backend's parity run and `spitest` run are red until its audit store keeps no event of a rolled-back transaction.
 
 **Questions for this backend.** C1 and C6 inside the entity transaction under this backend's transaction model; how `ClaimDue`'s one-RUNNING-per-entity rule holds against a concurrent claim on another node; where the mark lives so that it survives the entity transaction's rollback and is seen by the next claim (C3); and the liveness clock (the store's, not the node's). The parity scenarios in `e2e/parity/registry.go` and the `ScheduledTasks` suite reach this backend on its next dependency update. The Cloud-facing statement of the contract is `docs/cloud-parity/scheduled-transitions.md` in cyoda-go.
 ```
@@ -1772,7 +1538,7 @@ any shipped file) and tells Paul both notes are posted.
 
 No §13 row belongs to this stream: documentation carries no scenario. The chart
 guard of D-5 is the one new test D adds. Existing tests that pin what D changes
-are the help guards listed at the top; D-1, D-3, D-5 and D-6 run them.
+are the help guards listed at the top; D-3, D-5 and D-6 run them.
 
 ## Stream interface summary
 
@@ -1793,22 +1559,16 @@ existing, by grep in each task's first step, not by signature:
 - Q: `cmd/cyoda/help/content/scheduled-tasks.md`; the `listScheduledTasks`
   operation at `/scheduled-tasks`; `SCHEDULED_TRANSITION_FAIL` in the audit enum.
 
-D asks two things of other streams:
+D asks one thing of other streams:
 
-- R, BP and W add **no** prose to `README.md`, `ARCHITECTURE.md`,
-  `docs/cloud-parity/*` or `CHANGELOG.md` beyond a one-line fragment; D writes
-  them. R does not edit the comment at `internal/domain/search/reaper.go:16-22`;
-  D-7 does.
-- Q-1 adds `SCHEDULED_TRANSITION_FAIL` to the audit enum (`api/openapi.yaml:11742`)
-  with the new operation, since it regenerates `api` in wave 1.
+- R, BP and W add **no** prose to `ARCHITECTURE.md`, `docs/cloud-parity/*` or
+  `CHANGELOG.md` beyond a one-line fragment, and no prose to `README.md` beyond
+  R-10's scheduler section and rows (README C-D1); D writes the rest.
 
 ## Open points
 
-1. **`TestConfig_EnvVarCoverage` fails between R's config commit and D-1** (and
-   between BP's config commit and D-2): it requires every `CYODA_*` in Go source
-   to be named in `config/*.md`. Either run D-1 and D-2 directly after those
-   commits with no `make test` in between, or fold D-1 steps 2–6 into R's
-   commit and D-2 step 2 into BP's. The lead picks; the text does not change.
+1. **Closed (README C-D1).** R-10 and BP-1 write each setting's help text in
+   the commit that adds the setting, so `TestConfig_EnvVarCoverage` stays green.
 2. **Chart `version:` 0.9.0 now, `appVersion` at the release.** Spec §12 asks for
    a chart version bump. The chart's convention is that `version:` and
    `appVersion:` move together at each binary release (`COMPATIBILITY.md` chart
@@ -1823,21 +1583,12 @@ D asks two things of other streams:
    higher floor (for example 90, the bound with no unsafe callout in flight)
    is possible; it would refuse configurations that are valid for smaller
    settings.
-4. **Audit events of a superseded run on memory and SQLite.** The old
-   cloud-parity §8 accepted a duplicate `SCHEDULED_TRANSITION_FIRE` on these
-   backends under a transient dual coordinator, because their audit store is
-   not transaction-scoped (`plugins/memory/sm_audit_store.go:20-37` appends at
-   `Record`, outside the transaction). The dual coordinator is gone, so D-8
-   drops that section. A run superseded by a client write can still reach
-   `Record` before its commit fails. Whether its events stay visible after the
-   rollback on memory and SQLite is not stated in the spec; if they do, that is
-   a backend divergence from PostgreSQL (a bug, not an accepted edge). The lead
-   asks E and BM to confirm before D-8 lands.
+4. **Closed (README C-P3).** Audit events are bound to the transaction on
+   every in-tree backend (BM-6, BQ-7), so a superseded run's events do not stay
+   visible after its rollback. D-8 states no divergence; D-11 tells Cassandra.
 5. **`docs/analysis/failure-modes/2026-06-29-operational-failure-mode-analysis.md:173`**
    says the round-robin keeps a tainted node's share. It is a dated analysis
    of `release/v0.8.2`, not a living reference, so D leaves it; its playbook
    (living, edited by later PRs) is corrected in D-7.
-6. **README endpoint path.** D-1 and D-8 write `GET /api/scheduled-tasks`
-   (README, with the default context path) and `GET /scheduled-tasks` (help and
-   cloud-parity, as the spec). D-1 step 7 greps Q's operation path and corrects
-   both if Q chose another path.
+6. **Endpoint path.** D-8 writes `GET /scheduled-tasks` (cloud-parity, as the
+   spec). If Q chose another path, D-8 corrects it.

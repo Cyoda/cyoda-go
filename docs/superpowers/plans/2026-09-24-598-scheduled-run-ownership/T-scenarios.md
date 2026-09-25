@@ -8,7 +8,8 @@ rows of "Entity writes and workflow import" (stream W) and of
 "`GET /scheduled-tasks`" (stream Q). U and S cells belong to other streams.
 
 **What RED means here.** T runs in wave 5, after R, W and Q
-(`README.md`, "Order of work"). By then the production code exists, so a
+(`README.md`, "Order of work"); T-1 and T-3 run earlier, after Q-5 and R-10
+and before R-11, and T-2 runs inside R-11 (README C-P5). By then the production code exists, so a
 scenario cannot be red against the branch head. Each task therefore states:
 - **Depends on:** the streams whose code the scenario exercises. Against the
   merge-base (`git merge-base HEAD origin/release/v0.9.0`) with only T-1
@@ -102,12 +103,13 @@ new fields, `interfaces.md` "App config").
 - Modify: `e2e/parity/postgres/multinode_fixture.go`
 - Create: `internal/e2e/scheduler_harness_test.go`
 - Modify: `internal/e2e/callback_harness_test.go` (`newCalloutHarness` :187-266, comments :245-250 and :268-274)
+- Modify: `go.mod`, `go.sum` (staged in Step 8)
 
 **Interfaces:**
 - Consumes (R): `app.SchedulerConfig` fields `Enabled, ScanInterval, MaxRuns,
   MaxRunsPerTenant, HeartbeatInterval, StaleAfter, MaxLostOwners, RetryDelay,
   RetryDelayMax, ShutdownDrain`; the INFO log line `scheduler started` with the
-  attribute `incarnation` (see Open point 1).
+  attribute `incarnation` (R-6, README C-R2).
 - Consumes (BP): tables `scheduled_tasks` (columns of spec §10.2),
   `scheduled_task_marks (task_id, arm_token, claim_token)`,
   `scheduler_owners (owner, heartbeat_at)`; `CYODA_POSTGRES_SCHEDULER_CONNS`.
@@ -838,8 +840,8 @@ import (
 // engine. A database per test makes "the only scheduler that can see this
 // task" true by construction.
 
-// schedTenant is the tenant every harness stack bootstraps.
-const schedTenant = "test-tenant"
+// harnessTenant is the tenant every harness stack bootstraps.
+const harnessTenant = "test-tenant"
 
 // schedDB is one test's database: its URL for the stack, a pool for reads.
 type schedDB struct {
@@ -949,7 +951,7 @@ func (s *schedDB) task(t *testing.T, entityID, transition string) (taskRow, bool
 		       EXISTS (SELECT 1 FROM scheduled_task_marks m WHERE m.task_id = st.id AND m.arm_token = st.arm_token)
 		  FROM scheduled_tasks st
 		 WHERE st.tenant_id = $1 AND st.entity_id = $2 AND st.transition = $3`,
-		schedTenant, entityID, transition,
+		harnessTenant, entityID, transition,
 	).Scan(&r.ID, &r.Status, &r.LastError, &r.FailureReason, &r.ArmToken, &r.ClaimToken, &r.ClaimOwner,
 		&r.Attempts, &r.LostOwners, &r.PartialCommit, &r.Marked)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1088,15 +1090,18 @@ func TestSchedulerHarness_OwnDatabase(t *testing.T) {
 	if r, ok := s.task(t, id, "Fire"); !ok || r.Status != "WAITING" || r.Attempts != 0 {
 		t.Fatalf("task in the harness database = %+v present=%t; want WAITING, attempts 0", r, ok)
 	}
-	if n := queryDB(t, schedTenant, "SELECT count(*) FROM scheduled_tasks WHERE entity_id = $1", id); n != 0 {
+	if n := queryDB(t, harnessTenant, "SELECT count(*) FROM scheduled_tasks WHERE entity_id = $1", id); n != 0 {
 		t.Fatalf("the shared database holds %d rows of this entity; want 0", n)
 	}
 }
 ```
 
 Run: `go test ./internal/e2e/ -run TestSchedulerHarness_OwnDatabase`
-Expected (before R/BP land): FAIL to compile — `cfg.Scheduler.HeartbeatInterval undefined`.
-After R and BP: PASS.
+Expected (before R-10 and BP land): FAIL to compile — `cfg.Scheduler.HeartbeatInterval undefined`.
+T-1 lands after R-10 and before R-11 (README "Order of work", C-P5). Until
+R-11, `internal/e2e` does not compile for another reason (the callers of the
+removed `scheduler.NewService`), so this test's GREEN is observed in R-11
+Step 4. Steps 1–6 are verified here with their own packages' tests.
 
 - [ ] **Step 8: Commit**
 
@@ -1121,6 +1126,11 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ---
 ### Task T-2: rewrite the existing scheduled tests that rely on removed behaviour (V2)
 
+> **Executed inside R-11 (README C-T1, C-P5).** R-11 Step 1 applies this
+> task's Steps 1–4, R-11 Step 4 runs this task's Step 5 (with its teeth), and
+> R-11 Step 6 makes the one commit for both tasks. This task has no commit of
+> its own. T-1, T-3 and Q-5 land before R-11.
+
 **Spec:** §16 V2; §6.6 (removed: coordinator, distribution, scheduler RPC,
 throttle); §5.2 "Removed from the fire path" (grace band, `ArmedBy`
 verify-or-abort).
@@ -1132,9 +1142,9 @@ verify-or-abort).
 
 **Ordering constraint.** The files below stop compiling the moment R or S
 removes those symbols, and `internal/e2e` is outside `make test`'s run
-(`Makefile:122-125`) but inside `go vet ./...`. So this task's edits land **in
-the same commit** as the R task that deletes the old scheduler, or before it
-(Open point 3). It carries its own tests only as the rewritten tests.
+(`Makefile:122-125`) but inside `go vet ./...`. So this task's edits land in
+R-11's commit (README C-T1, C-P5). It carries its own tests only as the
+rewritten tests.
 
 **The list (every existing e2e or parity test that relies on removed behaviour):**
 
@@ -1171,7 +1181,7 @@ unchanged.
 
 **Interfaces:**
 - Consumes (T-1): `newSchedulerHarness`, `newSchedulerCallbackHarness`, `newStackOn`, `schedDB.{task,count,pool}`, `uniq`. (Q-5): `client.ListScheduledTasks`.
-- Produces: `schedEvents(t, h, entityID)` in `internal/e2e/scheduler_harness_test.go`; `taskOf`, `awaitTask` in `e2e/parity/scheduledtransition` (defined in T-3's file; T-2 lands after or with T-3).
+- Produces: `schedEvents(t, h, entityID)` in `internal/e2e/scheduler_harness_test.go`. Consumes `taskOf` from `e2e/parity/scheduledtransition` (defined in T-3's file; T-3 lands before R-11).
 
 - [ ] **Step 1: Rewrite `scheduled_transition_test.go`**
 
@@ -1492,7 +1502,8 @@ starts (`return nil` as the first statement) — `RestartDurability` times out
 in `awaitCallbackEntityState`. Row 7: in E's §5.1 step 4, compare against
 `deadline + RetryDelay` on the first attempt too — the test sees a FIRE.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Commit** — R-11 Step 6 makes this commit, with R-11's files
+  (the list below is part of it; do not commit it separately).
 
 ```bash
 git add internal/e2e/scheduled_transition_test.go internal/e2e/scheduled_function_test.go \
@@ -1525,8 +1536,9 @@ write" (W-writes.md Open point 5 proposes T; see this section's Open point 6);
 lead; Q-query.md Open point 2).
 
 **Depends on:** S, BM, BQ, BP (store), K (the `NotHandedOff` proof), E (fire
-path, mark, endings), R (claim loop, bookkeeping), Q (the query the scenarios
-read), T-1.
+path, mark, endings), R-1…R-10 (claim loop, bookkeeping, wiring), Q-5 (the
+query client the scenarios read), T-1. Lands before R-11, whose T-2 rewrites
+use `taskOf` (README C-P5).
 
 **Files:**
 - Create: `e2e/parity/scheduledtransition/ownership.go`
@@ -2195,7 +2207,7 @@ longer scheduled is removed at the next write".
 - Create: `internal/e2e/scheduled_run_endings_test.go`
 
 **Interfaces:**
-- Consumes (T-1): `newSchedulerHarness`, `schedDB.{task,awaitTask,count,pool}`, `fireOpenToDone`, `schedDoc`, `sProc`, `failEvent`, `uniq`, `schedTenant`; (T-2) `schedEvents`; (#254 harness) `AttachCnode`, `cnodeSpec`, `scriptAlways`, `scriptSequence`, `scriptHold`, `answerOK`, `answerFail`, `answerData`, `answerMatches`, `neverAnswer`, `(c) Received`, `(h) setupModelSampleWithWorkflow`, `workflowSampleWith`, `awaitCallbackEntityState`, `awaitCallbackSMEventType`, `hasSMEventType`, `smEventsOfType`.
+- Consumes (T-1): `newSchedulerHarness`, `schedDB.{task,awaitTask,count,pool}`, `fireOpenToDone`, `schedDoc`, `sProc`, `failEvent`, `uniq`, `harnessTenant`; (T-2) `schedEvents`; (#254 harness) `AttachCnode`, `cnodeSpec`, `scriptAlways`, `scriptSequence`, `scriptHold`, `answerOK`, `answerFail`, `answerData`, `answerMatches`, `neverAnswer`, `(c) Received`, `(h) setupModelSampleWithWorkflow`, `workflowSampleWith`, `awaitCallbackEntityState`, `awaitCallbackSMEventType`, `hasSMEventType`, `smEventsOfType`.
 - Produces: `firstAttempt(t, s, id, transition) taskRow`, `awaitFailed(t, s, id, transition) taskRow`, `receivedFor(recs []receivedCallout, entityID string) int`.
 
 The tests assert against the task row in the test's database (`s.task`),
@@ -2543,7 +2555,7 @@ func TestSchedRun_FireTimeCancel(t *testing.T) {
 		// Legacy data: the API never writes an entity without a transaction id.
 		if _, err := s.pool.Exec(context.Background(),
 			`UPDATE entities SET doc = doc #- '{_meta,transaction_id}' WHERE tenant_id = $1 AND entity_id = $2`,
-			schedTenant, id); err != nil {
+			harnessTenant, id); err != nil {
 			t.Fatalf("strip the transaction id: %v", err)
 		}
 		awaitCallbackSMEventType(t, h, id, "SCHEDULED_TRANSITION_CANCEL", "Open", scheduledFireTimeout)
@@ -3696,7 +3708,7 @@ func injectReclaim(t *testing.T, s *schedDB, entityID string) (token, owner stri
 	tag, err := s.pool.Exec(context.Background(),
 		`UPDATE scheduled_tasks SET claim_token = $2, claim_owner = $3, lost_owners = lost_owners + 1
 		  WHERE tenant_id = $1 AND entity_id = $4 AND status = 'RUNNING'`,
-		schedTenant, token, owner, entityID)
+		harnessTenant, token, owner, entityID)
 	if err != nil || tag.RowsAffected() != 1 {
 		t.Fatalf("inject a reclaim: rows %d, err %v", tag.RowsAffected(), err)
 	}
@@ -4010,7 +4022,7 @@ func TestSchedPool_AsyncSearchReclaimNotStarved(t *testing.T) {
 		INSERT INTO search_jobs (id, tenant_id, status, model_name, model_ver, condition, created_at, heartbeat_time, epoch)
 		VALUES ($1, $2, 'RUNNING', $3, '1', '{"type":"group","operator":"AND","conditions":[]}'::jsonb,
 		        now() - interval '1 hour', now() - interval '1 hour', 1)`,
-		jobID, schedTenant, model); err != nil {
+		jobID, harnessTenant, model); err != nil {
 		t.Fatalf("seed an orphaned job: %v", err)
 	}
 	release := holdMainPool(t, h, 2)
@@ -4019,7 +4031,7 @@ func TestSchedPool_AsyncSearchReclaimNotStarved(t *testing.T) {
 
 	readJob := func() (epoch int64, hb time.Time) {
 		if err := s.pool.QueryRow(context.Background(),
-			`SELECT epoch, heartbeat_time FROM search_jobs WHERE tenant_id = $1 AND id = $2`, schedTenant, jobID).Scan(&epoch, &hb); err != nil {
+			`SELECT epoch, heartbeat_time FROM search_jobs WHERE tenant_id = $1 AND id = $2`, harnessTenant, jobID).Scan(&epoch, &hb); err != nil {
 			t.Fatalf("read the job: %v", err)
 		}
 		return epoch, hb
@@ -5368,9 +5380,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ---
 ## Order and cost
 
-- T-1 first (harness; Steps 1–6 need no other stream). T-2 lands with R's
-  deletion commit (Open point 3). T-3 … T-13 after R, W and Q, in any order;
-  T-6 before T-8, T-10, T-11, T-12 (it creates the M helpers).
+- T-1 and T-3 land after Q-5 and R-10, before R-11 (README "Order of work",
+  C-P5); T-1 Steps 1–6 need no other stream. T-2 is executed inside R-11, in
+  its commit. T-4 … T-13 after R, W and Q, in any order; T-6 before T-8,
+  T-10, T-11, T-12 (it creates the M helpers).
 - Wall time added to `make test` (the parity packages run there,
   `Makefile:108, 122-127`): the five M tests and the SQLite restart are
   `t.Parallel()` and each waits one or two stale periods; together they add
@@ -5494,7 +5507,7 @@ with W-2, W-3; 4 → T-6 with R-5; 5 → T-8 with R-7.
 - R: `app.SchedulerConfig{Enabled, ScanInterval, MaxRuns, MaxRunsPerTenant,
   HeartbeatInterval, StaleAfter, MaxLostOwners, RetryDelay, RetryDelayMax,
   ShutdownDrain}`; the env names of spec §11; the INFO line
-  `scheduler started` with `incarnation=<uuid>` (Open point 1); `App.Shutdown`
+  `scheduler started` with `incarnation=<uuid>` (R-6, README C-R2); `App.Shutdown`
   runs `Drain` and is safe to call twice (Open point 4); the `run.go` signal
   path runs the drain before the servers (V4); `recordedError`'s fixed texts
   `CANCELLED: the run was stopped by the scheduler` and `CONFLICT: a
@@ -5519,21 +5532,15 @@ with W-2, W-3; 4 → T-6 with R-5; 5 → T-8 with R-7.
 
 ## Open points
 
-1. **The incarnation log line.** M tests map a `claim_owner` to its pnode by
-   the INFO line R's scheduler writes at start:
-   `slog.Info("scheduler started", "pkg", "scheduler", "incarnation", id.String())`.
-   Nothing else exposes the mapping (the query never returns owners, §8), and
-   a test hook is not allowed. The incarnation is an identifier, not a
-   credential or a fencing token, so logging it does not break Gate 3. The
-   lead should add the line to `interfaces.md` under the scheduler.
+1. **Closed (README C-R2).** R-6's `Start` logs
+   `slog.Info("scheduler started", "pkg", "scheduler", "incarnation", id.String())`
+   with a unit test (`TestService_StartLogsItsIncarnation`); M tests map a
+   `claim_owner` to its pnode by it.
 2. **Q's parity client is used as is.** T defines no `ListScheduledTasks`.
    T-3 and T-13 therefore land after Q-5.
-3. **T-2 must land with R's deletion commit.** Removing `scheduler.NewService`,
-   `cluster.NewClusterExecutor`, the scheduler RPC and `ScanDue` breaks
-   `internal/e2e` and `e2e/parity/multinode` at compile time. `make test`
-   does not build `internal/e2e` (`Makefile:122-125`), so R's own tier would
-   stay green while `go vet ./...` fails. Proposal: R's deletion task applies
-   T-2's edits in the same commit; T-2's teeth are then checked in T.
+3. **Closed (README C-T1, C-P5).** T-2 is executed inside R-11, in one
+   commit; T-1 and T-3 land before R-11. No scheduler runs on the shared e2e
+   database.
 4. **`App.Shutdown` twice.** The E shutdown tests call `h.app.Shutdown()`, and
    the harness cleanup calls it again (`callback_harness_test.go:251`). R's
    `Stop` is idempotent by binding (`interfaces.md` "Scheduler"); `Shutdown`

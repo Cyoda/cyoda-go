@@ -136,7 +136,7 @@ every door goes through it (`engine.go:331, 442, 527`,
   `ScheduledTaskStore.Get(ctx, tenant, id)`, `RemoveLife`, `ReconcileForEntity`,
   `Query`, `ClaimDue`, `RecordAttempt`; `spi.ClaimRequest`, `spi.Attempt`;
   `spi.ErrStaleClaim`; the five `spi.Failure*` reasons.
-- Produces: `RunGuard{Ref, Store, Done}`, `WithRunGuard`, `runGuardFrom`,
+- Produces: `RunGuard{Ref, Store, Done}`, `WithRunGuard`, `RunGuardFrom`,
   `RunReport`, `OutcomeFired|Declined|Expired|Cancelled|Superseded|Failed`,
   `(*Engine).FireScheduledTransition(ctx, task, maxLostOwners, retryDelay) RunReport`,
   `preRunDecision`. Removes `OutcomeDropped`, `WithExpiryGrace`,
@@ -372,6 +372,23 @@ func (env *runEnv) state(t *testing.T, entityID string) string {
 	return getEntityState(t, env.factory, env.ctx, entityID)
 }
 
+// exists reports whether the entity exists in committed state.
+func (env *runEnv) exists(t *testing.T, entityID string) bool {
+	t.Helper()
+	es, err := env.factory.EntityStore(env.ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	_, err = es.Get(env.ctx, entityID)
+	if errors.Is(err, spi.ErrNotFound) {
+		return false
+	}
+	if err != nil {
+		t.Fatalf("Get entity %s: %v", entityID, err)
+	}
+	return true
+}
+
 // rearm re-arms task as a new life in a transaction of its own that commits,
 // as a client write to the entity does.
 func (env *runEnv) rearm(task spi.ScheduledTask) error {
@@ -468,8 +485,10 @@ func (m *scriptedExtProc) DispatchFunction(ctx context.Context, _ *spi.Entity, _
 	return m.function(ctx)
 }
 
-var functionCriterion = json.RawMessage(`{"type":"function","function":{"name":"crit"}}`)
 ```
+
+The function criterion comes from the package's existing test helper
+`functionCriterion()` (`criterion_regex_test.go:42`); do not declare another.
 
 - [ ] **Step 2: Write the new door tests.** `internal/domain/workflow/fire_run_test.go`:
 
@@ -626,7 +645,7 @@ func TestFireScheduled_CriterionErrorIsASafeFailure(t *testing.T) {
 	env := newRunEnv(t, ext)
 	wf := oneHopWF("CLOSED", nil, nil)
 	st := wf.States["OPEN"]
-	st.Transitions[0].Criterion = functionCriterion
+	st.Transitions[0].Criterion = functionCriterion()
 	wf.States["OPEN"] = st
 	claimed := env.claimed(t, "crit-e1", wf)
 
@@ -1499,19 +1518,69 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 **Spec:** §7 ("Arm", "Cancel", "When reconcile does nothing"), §16 V3.
 
 **Files:**
-- Modify: `internal/domain/workflow/arm.go` (`:32-45` `workflowHasSchedule` deleted; `:66-209` reconcile)
+- Modify: `internal/domain/workflow/arm.go` (`:32-45` `workflowHasSchedule` deleted; new `armsOnSchedule`; `:66-209` reconcile, the arm filter at `:119`)
 - Modify: `internal/domain/workflow/engine.go` (`:331, 365, 442, 461, 527-550, 563, 659-708`)
-- Modify: `internal/domain/workflow/fire_scheduled.go` (the `resolveWorkflow` and `reconcileScheduledTasks` calls)
+- Modify: `internal/domain/workflow/fire_scheduled.go` (the `resolveWorkflow` and `reconcileScheduledTasks` calls; `findFireableTransitionInState`, today `:526-561`, its filter `:555` and comment `:531-533`)
 - Modify: `internal/domain/workflow/transitions.go:61` (unchanged call, `resolveWorkflowForQuery` keeps its signature)
 - Test: `internal/domain/workflow/arm_test.go`
 
 **Interfaces:**
 - Consumes (S/BM): `ReconcileForEntity` removes every task of the entity not in `req.Arm`; an arm resets status, attempts, lost owners, errors, `PartialCommit`, the mark and the claim.
-- Produces: `modelHasSchedule(wfs []spi.WorkflowDefinition) bool`; `resolveWorkflow` returns `(wf, modelScheduled bool, err)`; `reconcileScheduledTasks(ctx, entity, wf, modelScheduled, txID, auditStore, suppressCancelAuditFor)`.
+- Produces: `armsOnSchedule(tr *spi.TransitionDefinition) bool` — the one arm
+  rule, `Schedule != nil && !Manual && !Disabled` (README C-P7); arm
+  (`reconcileScheduledTasks`), fire (`findFireableTransitionInState`), the
+  model-level flag and W-7's import clean-up all use it.
+  `modelHasSchedule(wfs []spi.WorkflowDefinition) bool`; `resolveWorkflow` returns `(wf, modelScheduled bool, err)`; `reconcileScheduledTasks(ctx, entity, wf, modelScheduled, txID, auditStore, suppressCancelAuditFor)`.
 
 - [ ] **Step 1: Write the failing tests** (append to `arm_test.go`):
 
 ```go
+// armsOnSchedule is the one arm rule (README C-P7).
+func TestArmsOnSchedule(t *testing.T) {
+	sched := &spi.TransitionSchedule{DelayMs: 1000}
+	for _, tc := range []struct {
+		name string
+		tr   spi.TransitionDefinition
+		want bool
+	}{
+		{"scheduled", spi.TransitionDefinition{Name: "T", Schedule: sched}, true},
+		{"not scheduled", spi.TransitionDefinition{Name: "T"}, false},
+		{"scheduled but manual", spi.TransitionDefinition{Name: "T", Schedule: sched, Manual: true}, false},
+		{"scheduled but disabled", spi.TransitionDefinition{Name: "T", Schedule: sched, Disabled: true}, false},
+	} {
+		if got := armsOnSchedule(&tc.tr); got != tc.want {
+			t.Errorf("%s: armsOnSchedule = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The model-level flag counts a workflow whether it is active or not, and
+// counts only a transition the arm rule arms: a model whose only scheduled
+// transitions are manual or disabled has no task to reconcile.
+func TestModelHasSchedule_CountsOnlyArmingTransitions(t *testing.T) {
+	sched := &spi.TransitionSchedule{DelayMs: 1000}
+	wf := func(active bool, tr spi.TransitionDefinition) spi.WorkflowDefinition {
+		return spi.WorkflowDefinition{Version: "1.1", Name: "wf", InitialState: "OPEN", Active: active,
+			States: map[string]spi.StateDefinition{"OPEN": {Transitions: []spi.TransitionDefinition{tr}}, "CLOSED": {}}}
+	}
+	for _, tc := range []struct {
+		name string
+		wfs  []spi.WorkflowDefinition
+		want bool
+	}{
+		{"no workflow", nil, false},
+		{"active, arming", []spi.WorkflowDefinition{wf(true, spi.TransitionDefinition{Name: "T", Next: "CLOSED", Schedule: sched})}, true},
+		{"inactive, arming", []spi.WorkflowDefinition{wf(false, spi.TransitionDefinition{Name: "T", Next: "CLOSED", Schedule: sched})}, true},
+		{"manual schedule only", []spi.WorkflowDefinition{wf(true, spi.TransitionDefinition{Name: "T", Next: "CLOSED", Schedule: sched, Manual: true})}, false},
+		{"disabled schedule only", []spi.WorkflowDefinition{wf(true, spi.TransitionDefinition{Name: "T", Next: "CLOSED", Schedule: sched, Disabled: true})}, false},
+		{"no schedule", []spi.WorkflowDefinition{wf(true, spi.TransitionDefinition{Name: "T", Next: "CLOSED"})}, false},
+	} {
+		if got := modelHasSchedule(tc.wfs); got != tc.want {
+			t.Errorf("%s: modelHasSchedule = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 // loopbackInTx runs Loopback on the stored entity in a transaction of its own and commits.
 func loopbackInTx(t *testing.T, engine *Engine, factory spi.StoreFactory, ctx context.Context, entityID string) {
 	t.Helper()
@@ -1726,23 +1795,35 @@ func TestReconcile_ModelFlagNeedsNoExtraWorkflowRead(t *testing.T) {
 
 - [ ] **Step 2: Run to verify RED**
 Run: `go test ./internal/domain/workflow/... -run 'TestReconcile_'`
-Expected: FAIL — `TestReconcile_ModelLevelFlag_RemovesTaskArmedByAnotherWorkflow` ("a task the selected workflow does not arm must be removed at the next write": `arm.go:96` returns early because `kind-b-wf` schedules nothing) and `TestReconcile_LoopbackStateNotInWorkflow_RemovesTasks` (Loopback returns at `engine.go:529-547` without reconciling). The other four pass already (the store does the reset; they guard it).
+Expected: FAIL — build error `undefined: armsOnSchedule` and `undefined:
+modelHasSchedule` (the two new unit tests); with those two tests set aside,
+`TestReconcile_ModelLevelFlag_RemovesTaskArmedByAnotherWorkflow` ("a task the selected workflow does not arm must be removed at the next write": `arm.go:96` returns early because `kind-b-wf` schedules nothing) and `TestReconcile_LoopbackStateNotInWorkflow_RemovesTasks` (Loopback returns at `engine.go:529-547` without reconciling). The other four pass already (the store does the reset; they guard it).
 
 - [ ] **Step 3: Implement.**
   - `arm.go`: delete `workflowHasSchedule` (`:32-45`) and add:
 
 ```go
-// modelHasSchedule reports whether any workflow of the model — active or not,
-// whatever the transition's manual or disabled flag — declares a scheduled
-// transition. When none does, no task of the model's entities can be armed,
-// and a workflow import has already removed the model's tasks (spec §7), so
-// reconcile does nothing. It is computed from the workflows resolveWorkflow
-// already loaded, so a write costs no extra read.
+// armsOnSchedule is the one arm rule: the engine arms a task for a
+// transition that has a schedule and is neither manual nor disabled. Arm
+// (reconcileScheduledTasks), fire (findFireableTransitionInState), the
+// model-level flag (modelHasSchedule) and the workflow import's clean-up all
+// use it, so they cannot disagree.
+func armsOnSchedule(tr *spi.TransitionDefinition) bool {
+	return tr.Schedule != nil && !tr.Manual && !tr.Disabled
+}
+
+// modelHasSchedule reports whether any workflow of the model — active or not —
+// has a transition the arm rule arms (armsOnSchedule). When none does, no task
+// of the model's entities can be armed, and a workflow import has already
+// removed the model's tasks, because its clean-up keeps only the tasks of
+// arming transitions (spec §7); so reconcile does nothing. It is computed
+// from the workflows resolveWorkflow already loaded, so a write costs no
+// extra read.
 func modelHasSchedule(wfs []spi.WorkflowDefinition) bool {
 	for i := range wfs {
 		for _, st := range wfs[i].States {
-			for _, tr := range st.Transitions {
-				if tr.Schedule != nil {
+			for j := range st.Transitions {
+				if armsOnSchedule(&st.Transitions[j]) {
 					return true
 				}
 			}
@@ -1750,6 +1831,19 @@ func modelHasSchedule(wfs []spi.WorkflowDefinition) bool {
 	}
 	return false
 }
+```
+
+  - `arm.go:119`, the arm filter in `reconcileScheduledTasks`: replace
+    `if tr.Schedule == nil || tr.Manual || tr.Disabled {` with
+    `if !armsOnSchedule(tr) {`.
+  - `fire_scheduled.go`, `findFireableTransitionInState` (today `:526-561`;
+    E-1 leaves it unchanged): replace the filter at `:555`,
+    `if tr.Schedule == nil || tr.Manual || tr.Disabled {`, with
+    `if !armsOnSchedule(tr) {`, and the comment lines `:531-533` with:
+
+```go
+// The eligibility test is armsOnSchedule, the rule reconcileScheduledTasks
+// arms by. Arm and fire MUST agree: a name match alone would let the
 ```
 
   - `reconcileScheduledTasks` (`:95-98`): new signature and early return:
@@ -1842,9 +1936,11 @@ git add internal/domain/workflow/arm.go internal/domain/workflow/engine.go \
   internal/domain/workflow/fire_scheduled.go internal/domain/workflow/arm_test.go
 git commit -m "feat(workflow): reconcile removes every task not armed; model-level flag
 
-Reconcile returns early only when no workflow of the model schedules a
-transition, computed from the workflows each write already loads. A
-loopback on a state the selected workflow does not declare reconciles too.
+Reconcile returns early only when no workflow of the model has a
+transition the arm rule arms, computed from the workflows each write
+already loads. A loopback on a state the selected workflow does not
+declare reconciles too. Arm, fire and the model-level flag share one arm
+rule, armsOnSchedule.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -2043,7 +2139,7 @@ func TestRunCancel_CalloutsAfterCBDSeeTheCancellation(t *testing.T) {
 				p.saw = sawCancel(ctx)
 				return false, "", ctx.Err()
 			}
-		}, spi.StateDefinition{Transitions: []spi.TransitionDefinition{{Name: "Step", Next: "DONE", Criterion: functionCriterion}}}},
+		}, spi.StateDefinition{Transitions: []spi.TransitionDefinition{{Name: "Step", Next: "DONE", Criterion: functionCriterion()}}}},
 		{"schedule_function", func(ext *scriptedExtProc, run **testRun, p *probe) {
 			ext.function = func(ctx context.Context) (contract.FunctionResult, error) {
 				(*run).cancel()
@@ -2593,6 +2689,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 **Files:**
 - Modify: `internal/domain/workflow/run_guard.go`
 - Modify: `internal/domain/workflow/fire_scheduled.go` (`runReport`)
+- Modify: `internal/domain/workflow/fire_run_helpers_test.go` (`newTestRun`: the guard gets `Unsafe: &UnsafeFlight{}`)
 - Create: `internal/domain/workflow/fire_reached_test.go`
 
 **Interfaces:**
@@ -2920,8 +3017,23 @@ func beforeDispatch(ctx context.Context, proc spi.ProcessorDefinition) (dispatch
 }
 ```
 
-  Imports gain `sync/atomic` and `github.com/cyoda-platform/cyoda-go/internal/contract`. The dispatch sites of E-4 already pass the step's final error: `executeSyncProcessor` and `executeAsyncNewTx` through their deferred `dispatched(retErr)` (so a savepoint error that replaces the dispatch error, and a failure of `applyProcessorData` after a successful dispatch, reach it without the proof); the two CBD branches with the dispatch error, after which any later failure in the step leaves the fact set.
+  Imports of `run_guard.go` gain `sync`, `time` and `github.com/cyoda-platform/cyoda-go/internal/contract` (the `sync` and `time` of the first bullet). The dispatch sites of E-4 already pass the step's final error: `executeSyncProcessor` and `executeAsyncNewTx` through their deferred `dispatched(retErr)` (so a savepoint error that replaces the dispatch error, and a failure of `applyProcessorData` after a successful dispatch, reach it without the proof); the two CBD branches with the dispatch error, after which any later failure in the step leaves the fact set.
   - `fire_scheduled.go` `runReport`: `r := RunReport{MarkHeld: g.markHeld, MarkErrored: g.markErrored, UnsafeReached: g.unsafeReached}`.
+  - `fire_run_helpers_test.go` `newTestRun`: give the guard an in-flight
+    record, as the scheduler does, so `TestUnsafeReached_InFlightIsVisible`
+    can observe it (a nil `Unsafe` records nothing):
+
+```go
+func newTestRun(sts spi.ScheduledTaskStore, task spi.ScheduledTask) *testRun {
+	done := make(chan struct{})
+	return &testRun{done: done, guard: &RunGuard{
+		Ref:    spi.TaskRef{TenantID: task.TenantID, ID: task.ID, ArmToken: task.ArmToken, ClaimToken: task.Claim.Token},
+		Store:  sts,
+		Done:   done,
+		Unsafe: &UnsafeFlight{},
+	}}
+}
+```
 
 - [ ] **Step 4: Run to verify GREEN**
 Run: `go test ./internal/domain/workflow/...`
@@ -2931,7 +3043,7 @@ Expected: PASS.
 
 ```
 git add internal/domain/workflow/run_guard.go internal/domain/workflow/fire_scheduled.go \
-  internal/domain/workflow/fire_reached_test.go
+  internal/domain/workflow/fire_reached_test.go internal/domain/workflow/fire_run_helpers_test.go
 git commit -m "feat(workflow): track whether unsafe work reached a compute node
 
 The fact is set before each unsafe dispatch and reset only by the
@@ -3487,9 +3599,7 @@ func TestCallback_DeletesFiredEntity_RunCommitsWithoutRecreating(t *testing.T) {
 }
 ```
 
-`env.exists(t, id) bool` is added to the `runEnv` helpers in this step if E-1
-did not add it: a committed-state `EntityStore.Get` that returns `false` on
-`spi.ErrNotFound`.
+`env.exists(t, id) bool` is E-1's `runEnv` helper (`fire_run_helpers_test.go`).
 
 - [ ] **Step 2: Run them to verify they fail**
 Run: `go test ./internal/domain/workflow/... -run 'TestCallback_'`
@@ -3523,7 +3633,7 @@ at `if err := removeOwnLife(finalCtx, g); err != nil {` and ends after the
 	if err := removeOwnLife(finalCtx, g); err != nil {
 		return "", err
 	}
-	if err := e.reconcileScheduledTasks(finalCtx, entity, wf, finalTxID, auditStore, task.ID); err != nil {
+	if err := e.reconcileScheduledTasks(finalCtx, entity, wf, modelScheduled, finalTxID, auditStore, task.ID); err != nil {
 		return "", fmt.Errorf("failed to reconcile scheduled tasks after fire: %w", err)
 	}
 
@@ -3601,6 +3711,7 @@ const OutcomeFired, OutcomeDeclined, OutcomeExpired, OutcomeCancelled, OutcomeSu
 func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.ScheduledTask, maxLostOwners int, retryDelay time.Duration) RunReport
 
 // arm.go
+func armsOnSchedule(tr *spi.TransitionDefinition) bool // the one arm rule (README C-P7); W-7 calls it
 func modelHasSchedule(wfs []spi.WorkflowDefinition) bool
 ```
 
@@ -3652,11 +3763,11 @@ result.
    executor and `app/app.go:586`. It is already broken by S's removals
    (`ScanDue`, `MarkRedispatch`, `Upsert`). E verifies with package-scoped
    tests; `make test` is green only after R.
-6. **`modelHasSchedule` counts every stored workflow, active or not, and every
-   transition with a `Schedule`, manual or disabled included.** It is
-   conservative: it runs reconcile more often, never less. W's
-   `DeleteForModel(keep)` at import should use the same predicate so that a task
-   the import keeps is always reconciled at the next write.
+6. **Closed (README C-P7).** One arm rule, `armsOnSchedule`, in `arm.go`
+   (E-2). `modelHasSchedule` counts every stored workflow, active or not, with
+   a transition the rule arms. W-7's import `keep` uses the same predicate, so
+   a model with no arming transition has no task after its import, and
+   reconcile has nothing to skip.
 7. **Outcome of "entity gone, or moved on".** The spec table gives no outcome
    name; this section uses `OutcomeCancelled` (no audit), so the
    `cyoda.scheduler.runs` counter records it as `cancelled`. Confirm.

@@ -160,11 +160,15 @@ Each section ends with a `## Stream interface summary` and `## Open points`.
 An arrow means "must land first".
 
 ```
-wave 1   S (SPI, in ../cyoda-go-spi)  ·  K (callout proof)  ·  Q-1 (OpenAPI + generated types)
-wave 2   BM · BQ · BP  (each needs S; parallel worktrees)
-wave 3   E (needs S, K)  ·  W (needs S, BM/BQ/BP)
-wave 4   R (needs E, S, BP pool)  ·  Q-2… (needs S, BM/BQ/BP)
-wave 5   T (needs R, W, Q)  ·  D (needs everything it documents)
+wave 1   S (SPI, in ../cyoda-go-spi; S-3a shared helpers)  ·  K (callout proof)
+         ·  Q-1 (OpenAPI + generated types + SCHEDULED_TRANSITION_FAIL in the audit enum)
+wave 2   BM · BQ · BP  (each needs S; parallel worktrees; BM and BQ merge together, C-P3)
+wave 3   E (needs S, K)  ·  W-1…W-6 (need S, BM/BQ/BP; may run beside E)
+         ·  W-7 (after E completes: calls E-2's armsOnSchedule, C-P7)
+wave 4   R-1…R-10 (need E, S, BP pool)  ·  Q-2…Q-7 (need S, BM/BQ/BP)
+         ·  W-8 (after Q-6, C-P6)
+         ·  T-1, T-3 (after Q-5 and R-10)  →  R-11 with T-2 in one commit (C-T1, C-P5)  →  R-12
+wave 5   T-4…T-13 (need R, W, Q)  ·  D (needs everything it documents)
 wave 6   SPI PR merged → pin + make repin-plugins · exit checks (spec §15) · make test-full · go vet ./... · make race
          · fresh-context whole-branch code review · security audit (security-auditor) · PR against release/v0.9.0
 ```
@@ -289,13 +293,86 @@ correction governs. Each item names the tasks it changes.
   `config.md`, `config/cluster.md` and the README scheduler rows. BP-1 owns
   `config/database.md`, and BP-6 owns `docs/plugins/POSTGRES.md`, including the
   missing `scheduled_tasks` row in its schema table.
-  - D-1 and D-2 are dropped; D keeps only what those tasks do not write.
+  - D-1 and D-2 are deleted from D-docs.md; D keeps only what those tasks do
+    not write. `config/scheduler.md` gains `scheduled-tasks` in its SEE ALSO
+    in Q-7, because the topic exists only from Q-7 on.
   - `TestConfig_EnvVarCoverage` stays green because the text lands in the same
     commit as the setting.
 - **C-D2: chart version.** D-5 bumps the chart `version:` with the template
   change. `appVersion` changes at the release cut.
 - **C-X1: exit checks.** They also exclude `COMPATIBILITY.md`, whose release
-  rows are history. Spec §15 is updated.
+  rows are history, and the migration tests (`':!*migration*_test.go'`), which
+  must name the old columns to build rows in the old shape. Spec §15 is
+  updated. BP-4 Step 7, BQ-8 Step 2, R-12 Step 5 and S-9 Step 2 use the same
+  exclusion.
 - **C-E2: a failed re-read.** A failed non-joining re-read in the engine
   reports `OutcomeFailed`. The scheduler's fenced bookkeeping then settles
   superseded against failed.
+
+### Pre-flight corrections (C-P*)
+
+These apply the rulings on the pre-flight scan
+(`.superpowers/sdd/README/preflight-scan.md`). Each is already written into the
+tasks it names.
+
+- **C-P1: `SCHEDULED_TRANSITION_FAIL` in the audit enum.** Q-1 adds it to the
+  `StateMachineAuditEventDto.eventType` enum in `api/openapi.yaml` (after
+  `SCHEDULED_TRANSITION_CANCEL`, `:11762`) with a contract test, and
+  regenerates. Q-1 is wave 1, so every later e2e test reads a FAIL event
+  through the validated audit API. D does not touch the enum.
+- **C-P2: shared backend helpers in the SPI.** S-3a adds
+  `scheduled_task_helpers.go` to the SPI: `SelectClaims` (one task per entity,
+  per-tenant limits, tenants take turns), `ValidateTaskErrorText`,
+  `ValidateFailureReason`, `ValidateArm` and `MaxTaskErrorBytes`, with unit
+  tests. BM-2 and BQ-2 call `SelectClaims`; BM-5 and BQ-6 call the validators.
+  No plugin keeps its own copy.
+- **C-P3: audit events are bound to the transaction on every backend.** BM-6
+  and BQ-7 make memory and SQLite keep no audit event of a rolled-back
+  transaction, as PostgreSQL does. BM-6 therefore deletes the
+  `TxBoundAuditFixture` interface, `IsTxBoundAuditStore` and the three fixture
+  implementations, and the non-TX branch of `ExternalAPI_05`, which then always
+  asserts that nothing is kept. SQLite's run of `ExternalAPI_05` is green only
+  with BQ-7, so BM and BQ merge into the feature branch together before
+  `make test`. S-8 adds `Audit/RolledBackEventNotKept` (C-S4). Cassandra has no
+  implementation of the capability and must meet the same rule; D-11 says so.
+- **C-P4: homes for C-S1, C-S3, C-S4 and C-S5.**
+  - C-S1: S-2 adds `ClaimedFromLostOwner` (`json:"-"`); S-5 adds
+    `Claim/LostOwnerFlagged`; BM-2 and BQ-2 set it on the returned copy;
+    BP-4's `lockClaimableSQL` returns each locked row's pre-claim status and
+    `claimDue` sets the flag from it.
+  - C-S3: BP-4's migration 000014 adds
+    `scheduled_tasks_last_error_len_chk CHECK (octet_length(last_error) <= 1024)`,
+    the down migration drops it, and `TestMigration14_ScheduledTaskSchema`
+    tests it.
+  - C-S4: S-8's `Audit/RolledBackEventNotKept`.
+  - C-S5: S-3's interface doc carries every rule; S-8 adds
+    `Tenant/JoiningWriteOtherTenantRefused`; S-6's `Fail/Fields` asserts
+    `LastAttemptTime` unchanged; BP-4 adds `joinTenant` to its six joining
+    methods, so PostgreSQL refuses a tenant mismatch as memory and SQLite do.
+- **C-P5: R-11 and T-2 are one commit; no scheduler on the shared e2e
+  database.** R-11 Step 1 applies T-2's rewrites; R-11 Steps 2–3 stay; R-11
+  stages the union of both tasks' files in one commit. `startSchedulerFor` is
+  not written: a scheduler on the shared database would claim other tests'
+  tasks. T-1 and T-3 land after Q-5 and R-10 and before R-11; T-1's
+  `TestSchedulerHarness_OwnDatabase` is first green at R-11.
+- **C-P6: W-8 after Q-6.** W-8 reads tasks through Q-5's
+  `client.ListScheduledTasks` and runs after Q-6 wires the endpoint.
+- **C-P7: one arm rule.** `armsOnSchedule(tr) = Schedule != nil && !Manual &&
+  !Disabled`, in `arm.go`, added by E-2. E-2 uses it for the arm filter, for
+  `findFireableTransitionInState` and for `modelHasSchedule` (any workflow,
+  active or not, with a transition it arms). W-7's import `keep` uses it.
+  W-7 calls it and defines nothing in `arm.go` or `fire_scheduled.go`; W-7
+  runs after E completes, and W-1…W-6 may run beside E.
+- **C-P8: the startup log line (C-R2) has a task.** R-6's `Start` logs
+  `slog.Info("scheduler started", "pkg", "scheduler", "incarnation", …)`, with
+  `TestService_StartLogsItsIncarnation`. `syncBuffer` and `captureLogs` move
+  from R-7 to R-6's `fakes_test.go`.
+- **C-P9: the pool attribute (C-R6) has a task.** BP-2 Steps 6–10 add
+  `pool=main|scheduler|heartbeat` to `cyoda.storage.pool.connections` and
+  update `plugins/postgres/metrics_test.go` and
+  `internal/e2e/pool_metrics_test.go`; D-6 documents the attribute.
+- **C-P10: settings and comments have one owner.** R-10 has no test that
+  names the removed settings (the §15 grep guards them). R-10 keeps the
+  `reaper.go` comment; D-7 does not edit it. D-1 and D-2 are deleted (C-D1).
+- **C-P11: `harnessTenant`.** T-1's tenant constant is `harnessTenant`; Q-4's
+  `schedTenant` type keeps its name.

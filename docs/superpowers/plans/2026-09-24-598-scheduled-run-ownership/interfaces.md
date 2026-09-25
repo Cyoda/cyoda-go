@@ -137,6 +137,8 @@ type ScheduledTaskStore interface {
 }
 // Joining methods: ReconcileForEntity, RemoveLife, StampSegment, DeleteForEntities,
 // DeleteForModel, Fail (Get may join). All others never join a transaction on ctx.
+// A joining method whose tenant is not the tenant of the transaction on ctx
+// returns ErrTxTenantMismatch (README C-S5), on every backend.
 
 // errors.go
 var ErrMarkedByAnotherClaim = errors.New("scheduled task: marked by another claim of this life")
@@ -151,6 +153,18 @@ const SMEventScheduledTransitionFailed StateMachineEventType = "SCHEDULED_TRANSI
 // spitest — new suite entry point, registered in spitest.Run like AsyncSearch:
 func runScheduledTasksSuite(t *testing.T, h Harness, tracker *skipTracker) // README C-S2
 // Removed: RunScheduledTaskStoreConformance (root package).
+// spitest Audit group gains RolledBackEventNotKept (README C-S4); the
+// ScheduledTasks group has Claim/LostOwnerFlagged (C-S1) and
+// Tenant/JoiningWriteOtherTenantRefused (C-S5).
+
+// scheduled_task_helpers.go (S-3a, README C-P2) — shared backend helpers;
+// memory (BM-2, BM-5) and SQLite (BQ-2, BQ-6) call them; PostgreSQL meets the
+// same rules in SQL.
+const MaxTaskErrorBytes = 1024
+func SelectClaims(cands []ScheduledTask, req ClaimRequest) []ScheduledTask // one per entity; per-tenant limits; tenants take turns
+func ValidateTaskErrorText(s string) error                                 // > MaxTaskErrorBytes, invalid UTF-8, NUL → ErrStoreRejected
+func ValidateFailureReason(r ScheduledTaskFailureReason) error             // not one of the five → ErrStoreRejected
+func ValidateArm(req ReconcileRequest) error                               // an Arm task without an id → ErrStoreRejected
 ```
 
 ## Callout proof (`internal/contract`, `internal/grpc`, `internal/callout`, stream K)
@@ -159,7 +173,9 @@ func runScheduledTasksSuite(t *testing.T, h Harness, tracker *skipTracker) // RE
 // internal/contract
 // NoHandOffProof is attached only by the callout coordinator, only when no try
 // had member.Send return nil and no hand-over got past StageNotConnected without
-// a no_handoff answer. Absence means "may have been handed off".
+// a no_handoff answer. A peer's no_handoff answer counts as proof only for a
+// callout that is not repeat-safe (README C-K1). The coordinator also attaches
+// it on the criterion parse failure. Absence means "may have been handed off".
 type NoHandOffProof struct{ Err error }
 func (p *NoHandOffProof) Error() string
 func (p *NoHandOffProof) Unwrap() error
@@ -194,7 +210,7 @@ type RunReport struct {
 	UnsafeReached  bool             // the in-memory fact of spec §5.5
 	MarkErrored    bool             // the last MarkUnsafe failed with a non-refusal error
 	PartialCommit  bool             // a stamp with partial=true committed in this run
-	FailReason     spi.ScheduledTaskFailureReason // set when the engine itself decided FAILED before running (§5.1)
+	FailReason     spi.ScheduledTaskFailureReason // set when the engine itself decided FAILED before running (§5.1), or when MarkUnsafe answers ErrMarkedByAnotherClaim
 }
 
 const (
@@ -213,7 +229,12 @@ const (
 // RecordAttempt / Fail — those are the scheduler's (§5.6).
 func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.ScheduledTask, maxLostOwners int, retryDelay time.Duration) RunReport
 
-// Model-level flag (spec §7)
+// The one arm rule (README C-P7), arm.go, added by E-2. Arm, fire, the
+// model-level flag and the workflow import's keep all use it.
+func armsOnSchedule(tr *spi.TransitionDefinition) bool // Schedule != nil && !Manual && !Disabled
+
+// Model-level flag (spec §7): any workflow of the model, active or not, has a
+// transition armsOnSchedule arms.
 func modelHasSchedule(wfs []spi.WorkflowDefinition) bool
 ```
 

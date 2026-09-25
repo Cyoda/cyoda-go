@@ -1275,13 +1275,16 @@ git grep -n -e RedispatchAfter -e RedispatchBackoff -e MarkRedispatch -e Attempt
   -e CYODA_SCHEDULER_DISTRIBUTION -e CYODA_SCHEDULER_COORDINATOR -e CYODA_SCHEDULER_REDISPATCH_BACKOFF \
   -e CYODA_SCHEDULER_BATCH_SIZE -e CYODA_SCHEDULER_EXPIRY_GRACE -e CYODA_DISPATCH_FORWARD_TIMEOUT \
   -e ExpiryGrace -e expiryGrace \
-  -- . ':!*/migrations/*' ':!docs/plans' ':!docs/superpowers' ':!docs/release-notes' ':!CHANGELOG.md' ':!COMPATIBILITY.md'
+  -- . ':!*/migrations/*' ':!*migration*_test.go' ':!docs/plans' ':!docs/superpowers' ':!docs/release-notes' \
+  ':!CHANGELOG.md' ':!COMPATIBILITY.md'
 git grep -n -e '\.Upsert(ctx, task' -e 'sts\.Delete(' -- '*.go'
 ```
 
-Two exclusions:
+Three exclusions:
 - **Migrations.** Applied migrations are immutable and keep the old column
   names.
+- **Migration tests** (`*migration*_test.go`). They build rows in the shape
+  before the migration, so they name the old columns.
 - **`RoundRobin`.** `internal/grpc/selector.go` has its own `RoundRobin`, which
   stays. So the check qualifies it with `scheduler.`.
 

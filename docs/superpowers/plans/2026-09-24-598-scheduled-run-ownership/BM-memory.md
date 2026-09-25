@@ -1032,9 +1032,12 @@ at once, under the store's lock: memory: `entityMu`"; C3.
 **Interfaces:**
 - Consumes: BM-1's `taskKey`, `markKey`, `taskView`, `fenced`,
   `commitTaskWrites`, `withMarkLocked`, `copyScheduledTask`; `spi.ClaimRequest`,
-  `spi.Attempt`, `spi.TaskClaim`, `spi.ErrMarkedByAnotherClaim`.
-- Produces: `selectClaims(cands []spi.ScheduledTask, req spi.ClaimRequest)
-  []spi.ScheduledTask` (package-internal; the same function exists in BQ-2).
+  `spi.Attempt`, `spi.TaskClaim`, `spi.ErrMarkedByAnotherClaim`;
+  `spi.SelectClaims` (S-3a, README C-P2) — the claim choice BQ-2 shares;
+  `ScheduledTask.ClaimedFromLostOwner` (README C-S1).
+- Produces: nothing exported. `ClaimDue` sets `ClaimedFromLostOwner` on each
+  returned task it took from a stale or missing owner, on the returned copy
+  only: the stored row never carries it.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1140,6 +1143,9 @@ func TestTasks_LostOwnerClaimUsesTheStoreClock(t *testing.T) {
 		t.Fatalf("Heartbeat: %v", err)
 	}
 	claimed := claimDue(t, fx.sts, first, false)[0]
+	if claimed.ClaimedFromLostOwner {
+		t.Fatalf("a claim of a WAITING task is flagged as from a lost owner: %+v", claimed)
+	}
 
 	second := uuid.New()
 	if got := claimDue(t, fx.sts, second, true); len(got) != 0 {
@@ -1150,8 +1156,12 @@ func TestTasks_LostOwnerClaimUsesTheStoreClock(t *testing.T) {
 		t.Fatalf("claimed %+v from a stale owner without AllowLostOwner", got)
 	}
 	got := claimDue(t, fx.sts, second, true)
-	if len(got) != 1 || got[0].LostOwners != 1 || got[0].Claim.Owner != second || got[0].Claim.Token == claimed.Claim.Token {
-		t.Fatalf("reclaim = %+v, want one task under the new owner, lostOwners 1, a new claim token", got)
+	if len(got) != 1 || got[0].LostOwners != 1 || got[0].Claim.Owner != second || got[0].Claim.Token == claimed.Claim.Token ||
+		!got[0].ClaimedFromLostOwner {
+		t.Fatalf("reclaim = %+v, want one task under the new owner, lostOwners 1, a new claim token, flagged as from a lost owner", got)
+	}
+	if stored, _ := getTask(t, context.Background(), fx.sts, taskTenantA, got[0].ID); stored.ClaimedFromLostOwner {
+		t.Fatal("Get returned ClaimedFromLostOwner; only a ClaimDue result carries it")
 	}
 }
 
@@ -1396,7 +1406,6 @@ package memory
 import (
 	"context"
 	"fmt"
-	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -1484,79 +1493,32 @@ func (s *scheduledTaskStore) ClaimDue(_ context.Context, req spi.ClaimRequest) (
 		cands = append(cands, t)
 	}
 
-	chosen := selectClaims(cands, req)
+	// spi.SelectClaims (S-3a) applies the rules every backend shares: one
+	// task per entity, the per-tenant limits, tenants taking turns.
+	chosen := spi.SelectClaims(cands, req)
 	ops := make([]scheduledTaskOp, 0, len(chosen))
+	fromLostOwner := make([]bool, 0, len(chosen))
 	for _, c := range chosen {
 		t := copyScheduledTask(c)
-		if t.Status == spi.ScheduledTaskRunning {
+		lost := t.Status == spi.ScheduledTaskRunning
+		if lost {
 			t.LostOwners++
 		}
 		t.Status = spi.ScheduledTaskRunning
 		t.Claim = &spi.TaskClaim{Token: uuid.New(), Owner: req.Owner}
 		ops = append(ops, scheduledTaskOp{key: taskKey{tenant: t.TenantID, id: t.ID}, after: &t})
+		fromLostOwner = append(fromLostOwner, lost)
 	}
 	s.f.txManager.commitTaskWrites(ops)
 
 	out := make([]spi.ScheduledTask, 0, len(ops))
-	for _, op := range ops {
-		out = append(out, s.f.withMarkLocked(*op.after))
+	for i, op := range ops {
+		claimed := s.f.withMarkLocked(*op.after)
+		// Set on the returned copy only; the stored row never carries it.
+		claimed.ClaimedFromLostOwner = fromLostOwner[i]
+		out = append(out, claimed)
 	}
 	return out, nil
-}
-
-// selectClaims picks the tasks one ClaimDue call takes from cands: one per
-// entity, at most PerTenantLimit − TenantInProgress per tenant, at most Limit
-// in all. Within a tenant the order is (NextAttemptTime, ID). Tenants take
-// turns, one task per turn; the tenant with the earliest candidate goes
-// first, ties broken by tenant id.
-func selectClaims(cands []spi.ScheduledTask, req spi.ClaimRequest) []spi.ScheduledTask {
-	sort.Slice(cands, func(i, j int) bool {
-		a, b := cands[i], cands[j]
-		if a.NextAttemptTime != b.NextAttemptTime {
-			return a.NextAttemptTime < b.NextAttemptTime
-		}
-		if a.TenantID != b.TenantID {
-			return a.TenantID < b.TenantID
-		}
-		return a.ID < b.ID
-	})
-	var tenants []spi.TenantID
-	queues := make(map[spi.TenantID][]spi.ScheduledTask)
-	for _, c := range cands {
-		if _, ok := queues[c.TenantID]; !ok {
-			tenants = append(tenants, c.TenantID)
-		}
-		queues[c.TenantID] = append(queues[c.TenantID], c)
-	}
-	quota := make(map[spi.TenantID]int, len(tenants))
-	for _, tn := range tenants {
-		quota[tn] = req.PerTenantLimit - req.TenantInProgress[tn]
-	}
-
-	seen := make(map[entityTenantKey]bool)
-	var out []spi.ScheduledTask
-	for progress := true; progress && len(out) < req.Limit; {
-		progress = false
-		for _, tn := range tenants {
-			if len(out) >= req.Limit {
-				break
-			}
-			for quota[tn] > 0 && len(queues[tn]) > 0 {
-				c := queues[tn][0]
-				queues[tn] = queues[tn][1:]
-				ek := entityTenantKey{tenant: string(tn), id: c.EntityID}
-				if seen[ek] {
-					continue
-				}
-				seen[ek] = true
-				quota[tn]--
-				out = append(out, c)
-				progress = true
-				break
-			}
-		}
-	}
-	return out
 }
 
 // GiveBackIdle returns to WAITING, uncounted, every task RUNNING under owner
@@ -1667,8 +1629,8 @@ cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownersh
 cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership && git add plugins/memory/scheduled_task_claims.go plugins/memory/scheduled_task_claims_test.go plugins/memory/scheduled_task_sweep_internal_test.go && git commit -m "feat(memory): claims, owner liveness, marks and attempts
 
 ClaimDue takes one task per entity, honours the per-tenant limits with
-tenants taking turns, and reclaims from owners stale by the store
-clock. MarkUnsafe, RecordAttempt and GiveBackIdle commit on their own,
+tenants taking turns (spi.SelectClaims), and reclaims from owners stale
+by the store clock, flagging such claims ClaimedFromLostOwner. MarkUnsafe, RecordAttempt and GiveBackIdle commit on their own,
 under entityMu, whatever transaction is on ctx.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
@@ -2221,18 +2183,16 @@ NUL, at most 1 024 bytes); §13 row "`spi.ErrStoreRejected` → … (every backe
 sets the marker)".
 
 **Files:**
-- Create: `plugins/memory/scheduled_task_validate.go`
 - Modify: `plugins/memory/scheduled_task_store.go` (`ReconcileForEntity`, `Fail`)
 - Modify: `plugins/memory/scheduled_task_claims.go` (`RecordAttempt`)
 - Create: `plugins/memory/scheduled_task_rejected_test.go`
 
 **Interfaces:**
-- Consumes: `spi.ErrStoreRejected`, the five `spi.Failure*` reasons.
-- Produces: `rejectErrorText(string) error`,
-  `rejectFailureReason(spi.ScheduledTaskFailureReason) error`,
-  `rejectArm(spi.ReconcileRequest) error`, `maxTaskErrorBytes = 1024`. BQ-6
-  has the same three functions with the same rules. BM-6 marks the audit
-  store's one deterministic failure the same way.
+- Consumes: `spi.ErrStoreRejected`; `spi.ValidateTaskErrorText`,
+  `spi.ValidateFailureReason`, `spi.ValidateArm` (S-3a, README C-P2). BQ-6
+  calls the same three, so the rules exist once. BM-6 marks the audit store's
+  one deterministic failure the same way.
+- Produces: nothing new.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2317,80 +2277,28 @@ ErrStoreRejected`; the later subtests fail with `ErrStaleClaim` or `<nil>`.
 
 - [ ] **Step 3: Write the implementation**
 
-`plugins/memory/scheduled_task_validate.go`:
-
-```go
-package memory
-
-import (
-	"fmt"
-	"strings"
-	"unicode/utf8"
-
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-)
-
-// maxTaskErrorBytes is the most a recorded error text may take, in bytes.
-const maxTaskErrorBytes = 1024
-
-// rejectErrorText refuses an error text that no backend stores as given:
-// PostgreSQL refuses NUL and invalid UTF-8 (SQLSTATE class 22). The message
-// never repeats the text, which may carry anything a compute node sent.
-func rejectErrorText(s string) error {
-	switch {
-	case len(s) > maxTaskErrorBytes:
-		return fmt.Errorf("scheduled task error text is %d bytes, over %d: %w", len(s), maxTaskErrorBytes, spi.ErrStoreRejected)
-	case !utf8.ValidString(s):
-		return fmt.Errorf("scheduled task error text is not valid UTF-8: %w", spi.ErrStoreRejected)
-	case strings.IndexByte(s, 0) >= 0:
-		return fmt.Errorf("scheduled task error text contains NUL: %w", spi.ErrStoreRejected)
-	}
-	return nil
-}
-
-func rejectFailureReason(r spi.ScheduledTaskFailureReason) error {
-	switch r {
-	case spi.FailureUnsafeWorkNotCompleted, spi.FailureOwnerLostRepeatedly,
-		spi.FailureExpiredAfterFailedAttempts, spi.FailureRunPanicked,
-		spi.FailureStoppedAfterPartialCommit:
-		return nil
-	}
-	return fmt.Errorf("scheduled task failure reason is not a known reason: %w", spi.ErrStoreRejected)
-}
-
-// rejectArm refuses an arm task without an id. The tenant and the entity
-// come from the request (see newLife), so the task's own fields for them are
-// not checked.
-func rejectArm(req spi.ReconcileRequest) error {
-	for _, a := range req.Arm {
-		if a.ID == "" {
-			return fmt.Errorf("scheduled task arm for entity %s names a task without an id: %w", req.EntityID, spi.ErrStoreRejected)
-		}
-	}
-	return nil
-}
-```
-
-Add the checks, each before any lock is taken:
+Add the checks, each before any lock is taken. The SPI helpers (S-3a) hold
+the rules; their errors satisfy `errors.Is(err, spi.ErrStoreRejected)` and
+never repeat the rejected text.
 
 - `ReconcileForEntity`, first statement:
   ```go
-  	if err := rejectArm(req); err != nil {
+  	if err := spi.ValidateArm(req); err != nil {
   		return nil, err
   	}
   ```
 - `Fail`, first statements:
   ```go
-  	if err := rejectFailureReason(f.Reason); err != nil {
+  	if err := spi.ValidateFailureReason(f.Reason); err != nil {
   		return err
   	}
-  	if err := rejectErrorText(f.Error); err != nil {
+  	if err := spi.ValidateTaskErrorText(f.Error); err != nil {
   		return err
   	}
   ```
 - `RecordAttempt`, first statement:
   ```go
-  	if err := rejectErrorText(a.Error); err != nil {
+  	if err := spi.ValidateTaskErrorText(a.Error); err != nil {
   		return err
   	}
   ```
@@ -2406,11 +2314,12 @@ Expected: `ok`.
 - [ ] **Step 5: Commit**
 
 ```
-cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership && git add plugins/memory/scheduled_task_validate.go plugins/memory/scheduled_task_store.go plugins/memory/scheduled_task_claims.go plugins/memory/scheduled_task_rejected_test.go && git commit -m "feat(memory): deterministic task-store rejections carry ErrStoreRejected
+cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership && git add plugins/memory/scheduled_task_store.go plugins/memory/scheduled_task_claims.go plugins/memory/scheduled_task_rejected_test.go && git commit -m "feat(memory): deterministic task-store rejections carry ErrStoreRejected
 
 An error text with NUL, invalid UTF-8 or over 1024 bytes, an unknown
 failure reason, and an arm task without an id are refused before
-anything is written. The message never repeats the text.
+anything is written, by the SPI's shared validators. The message never
+repeats the text.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -2456,6 +2365,24 @@ events, as PostgreSQL's does. `Record` without a transaction is unchanged.
   `TestSMAuditTxIndex_PrunedOnRollback` `:98-150`)
 - Modify: `plugins/memory/sm_audit_no_generator_test.go`
 - Create: `plugins/memory/sm_audit_tx_join_test.go`
+- Modify: `e2e/parity/externalapi/transition_aborted_audit.go` (doc comment
+  `:25-48`, the step 3 comment `:115-120`, the branch from `:155` to the end of
+  the function `:209`, `findFirstByType` `:223-232`, `stateMachineEvent`
+  `:234-242`, the data decode in `getStateMachineEvents` `:262-280`)
+- Modify: `e2e/parity/fixture.go` (delete `TxBoundAuditFixture` and
+  `IsTxBoundAuditStore`, `:52-94`)
+- Modify: `e2e/parity/memory/fixture.go` (`:49-54`),
+  `e2e/parity/sqlite/fixture.go` (`:55-60`),
+  `e2e/parity/postgres/fixture.go` (`:55-60`): delete `IsTxBoundAuditStore`
+- Modify: `e2e/parity/criterion_reason.go` (`:17-18` comment)
+
+**Audit rollback is one behaviour on every backend (README C-P3).** After this
+task and BQ-7, memory, SQLite and PostgreSQL all keep no audit event of a
+rolled-back transaction. The `TxBoundAuditFixture` capability and the
+non-TX branch of `ExternalAPI_05` are then unreachable, so this task deletes
+them. `ExternalAPI_05` always asserts that nothing is kept. Its SQLite run is
+red until BQ-7 lands; BM and BQ merge into the feature branch together, and
+`make test` runs after both.
 
 **Interfaces:**
 - Consumes: `spi.StateMachineAuditStore` (unchanged), `spi.ErrStoreRejected`.
@@ -2605,10 +2532,74 @@ after `Rollback` it holds 0; and `GetEvents(ctx, "e-1")` returns **0** events.
 Its comment becomes: "A rolled-back transaction's events are never appended,
 so they are never indexed; nothing of it reaches the trail."
 
+**The parity scenario.** In `e2e/parity/externalapi/transition_aborted_audit.go`,
+replace the function's doc comment (`:25-48`) with:
+
+```go
+// RunExternalAPI_05_TransitionAbortedAuditEventPaired pins the audit trail
+// of a rolled-back update: when a single PUT against an entity fails its
+// ifMatch precondition (stale txID), the update's transaction rolls back,
+// and so do the audit events it recorded — the entry-side
+// STATE_MACHINE_START and the compensating TRANSITION_ABORTED. Audit events
+// are bound to the transaction on every backend, so the audit log shows no
+// event of the failed call.
+```
+
+In the step 3 comment (`:115-120`), replace "which is what makes the TX-bound
+vs non-TX-bound audit asymmetry observable (the bulk endpoint isolates
+per-item failures and commits the chunk regardless of TX-bound semantics, so
+the pairing-after-commit shape is the same on every backend there)" with
+"which is what makes the audit rollback observable (the bulk endpoint
+isolates per-item failures and commits the chunk)".
+
+Replace everything from `// 5. Branch on the fixture's TX-bound-audit capability.`
+(`:155`) to the end of the function (`:209`) with:
+
+```go
+	// 5. The rolled-back update keeps none of its audit events.
+	if deltaStart != 0 {
+		t.Errorf("rolled-back update left %d STATE_MACHINE_START event(s); events=%+v",
+			deltaStart, postEvents)
+	}
+	if deltaAbort != 0 {
+		t.Errorf("rolled-back update left %d TRANSITION_ABORTED event(s); events=%+v",
+			deltaAbort, postEvents)
+	}
+}
+```
+
+Delete `findFirstByType` (`:223-232`). Replace `stateMachineEvent`
+(`:234-242`) and its comment with:
+
+```go
+// stateMachineEvent is the trimmed shape of a StateMachine audit event the
+// scenario counts.
+type stateMachineEvent struct {
+	eventType string
+}
+```
+
+In `getStateMachineEvents`, delete the `if len(sm.Data) > 0 { … }` block
+(`:262-280`) and drop "Decodes the SM event data envelope permissively …"
+from its comment. Remove the `"encoding/json"` import. The registered name
+`ExternalAPI_05_TransitionAbortedAuditEventPaired` stays, so no backend's
+parity registry changes.
+
+In `e2e/parity/fixture.go`, delete `TxBoundAuditFixture`, its comment and
+`IsTxBoundAuditStore` (`:52-94`). In `e2e/parity/memory/fixture.go`
+(`:49-54`), `e2e/parity/sqlite/fixture.go` (`:55-60`) and
+`e2e/parity/postgres/fixture.go` (`:55-60`), delete `IsTxBoundAuditStore` and
+its comment. In `e2e/parity/criterion_reason.go`, replace "A manual-transition
+rejection rolls back and its audit is intentionally not durable (see
+TxBoundAuditFixture) — that shape is out of scope here." (`:16-18`) with "A
+manual-transition rejection rolls back, and its audit events roll back with
+it — that shape is out of scope here."
+
 - [ ] **Step 2: Run the tests and see them fail**
 
 ```
-cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership/plugins/memory && go test ./... -run 'TestAudit_|TestSMAudit'
+cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership/plugins/memory && go test ./... -run 'TestAudit_|TestSMAudit|TestConformance/Audit/RolledBackEventNotKept'
+cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership && make preflight && go test -count=1 ./e2e/parity/memory/ -run 'TestParity/ExternalAPI_05'
 ```
 
 Expected: `ARecordInARolledBackTransactionIsDiscarded` fails with `outside the
@@ -2617,7 +2608,11 @@ transaction before commit: 1 events, want 0`;
 `AnEventThatCannotBeWrittenIsAStoreRejection` with `Record = <nil>`;
 `TestSMAuditStore_Record_NoGenerator` with an error that is not
 `ErrStoreRejected`; the rewritten `TestSMAuditTxIndex_PrunedOnRollback` with
-`holds 1 transactions`.
+`holds 1 transactions`; S's `TestConformance/Audit/RolledBackEventNotKept`
+(README C-S4) with `an event recorded in a rolled-back transaction must not
+be kept`; `TestParity/ExternalAPI_05_TransitionAbortedAuditEventPaired`
+on memory with `rolled-back update left 1 STATE_MACHINE_START event(s)` and
+`left 1 TRANSITION_ABORTED event(s)`.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -2807,10 +2802,25 @@ cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownersh
 Expected: `ok`, including `TestSMAudit_*` (the stamp, id-order, event-id and
 tx-index tests) and `TestAudit_*`.
 
+```
+cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership/plugins/memory && go test ./... -run 'TestConformance/Audit'
+```
+
+Expected: `ok`, `RolledBackEventNotKept` included.
+
+```
+cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership && go build ./e2e/... && go vet ./e2e/parity/... && go test -count=1 ./e2e/parity/memory/ -run 'TestParity/ExternalAPI_05'
+cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership && git grep -n -e TxBoundAuditFixture -e IsTxBoundAuditStore -- e2e
+```
+
+Expected: build and vet clean; the memory parity run `ok`; the grep prints
+nothing. The SQLite run of `ExternalAPI_05` stays red until BQ-7 (README
+C-P3); do not run `make test` on this stream alone.
+
 - [ ] **Step 5: Commit**
 
 ```
-cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership && git add plugins/memory/sm_audit_store.go plugins/memory/txmanager.go plugins/memory/sm_audit_txindex_prune_test.go plugins/memory/sm_audit_no_generator_test.go plugins/memory/sm_audit_tx_join_test.go && git commit -m "fix(memory): audit events recorded in a transaction roll back with it
+cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership && git add plugins/memory/sm_audit_store.go plugins/memory/txmanager.go plugins/memory/sm_audit_txindex_prune_test.go plugins/memory/sm_audit_no_generator_test.go plugins/memory/sm_audit_tx_join_test.go e2e/parity/externalapi/transition_aborted_audit.go e2e/parity/fixture.go e2e/parity/memory/fixture.go e2e/parity/sqlite/fixture.go e2e/parity/postgres/fixture.go e2e/parity/criterion_reason.go && git commit -m "fix(memory): audit events recorded in a transaction roll back with it
 
 PostgreSQL records an audit event on the transaction's connection, so a
 rolled-back transaction leaves no event; memory appended at once and
@@ -2818,6 +2828,10 @@ kept it. Record now stages the event on the transaction on ctx, Commit
 appends it before the commit-instant stamp, and every abort path drops
 it. An event that cannot be written as JSON, and a factory without an
 id generator, are store rejections.
+
+Every in-tree backend now keeps no audit event of a rolled-back
+transaction, so the TxBoundAuditFixture capability and the non-TX branch
+of ExternalAPI_05 are deleted: the scenario always asserts nothing is kept.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -2832,7 +2846,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Verify only; modify whatever the runs below show.
 
 **Interfaces:**
-- Consumes: stream S's `runScheduledTasks`, run through the existing
+- Consumes: stream S's `runScheduledTasksSuite`, run through the existing
   `TestConformance` (`plugins/memory/conformance_test.go:13-20`).
 - Produces: nothing new.
 
@@ -2888,7 +2902,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 | run never conflicts with its own claim under a frozen clock | `TestTasks_C1_ARunDoesNotConflictWithItsOwnClaimUnderAFrozenClock` |
 | `DeleteForModel` in tenant A leaves tenant B's tasks; query tenant isolation | S suite; keys carry the tenant |
 | `GET /scheduled-tasks` rows (store side: pages, filters, byte-wise id order) | `TestTasks_QueryOrdersIdsByteWise`; S suite (`Query`) |
-| `SCHEDULED_TRANSITION_FAIL` written with `Fail` in one transaction; a rolled-back run leaves no audit event | `TestAudit_*` (BM-6) |
+| `SCHEDULED_TRANSITION_FAIL` written with `Fail` in one transaction; a rolled-back run leaves no audit event | `TestAudit_*` (BM-6); S `Audit/RolledBackEventNotKept`; parity `ExternalAPI_05` |
+| a lost-owner claim is flagged (`claims{reason=owner_lost}`) | `TestTasks_LostOwnerClaimUsesTheStoreClock`; S `Claim/LostOwnerFlagged` |
 
 ## Stream interface summary
 
@@ -2926,7 +2941,11 @@ Behaviour other streams rely on:
   covers it: it is neither a refusal nor `ErrStoreRejected`.
 - `ReconcileForEntity`, `DeleteForEntities`, `DeleteForModel`, `RemoveLife`,
   `StampSegment` and `Fail` return `spi.ErrTxTenantMismatch` when the tenant
-  argument is not the tenant of the transaction on `ctx`.
+  argument is not the tenant of the transaction on `ctx`, as SQLite and
+  PostgreSQL do (S `Tenant/JoiningWriteOtherTenantRefused`).
+- `ClaimDue` sets `ClaimedFromLostOwner` on each returned task it took from a
+  stale or missing owner (README C-S1); the claim choice is `spi.SelectClaims`
+  and the input checks are the SPI's validators (README C-P2).
 - A joining `Get` returns the latest committed row plus the transaction's
   staged ops, not the row as of Begin.
 
@@ -2949,40 +2968,27 @@ Behaviour other streams rely on:
    refuses (a constraint, too big, a type mismatch, a bind out of range). BP
    and the S conformance case must agree. Suggest the lead fold this list into
    `interfaces.md`.
-4. **Tenant of the method against tenant of the transaction.** Memory and
-   SQLite refuse a joining write whose tenant argument is not the
-   transaction's tenant, with `spi.ErrTxTenantMismatch`. PostgreSQL gets this
-   for free only if BP adds the same check. Suggest it for `interfaces.md`.
-5. **`RecordAttempt` / `GiveBackIdle` on a busy row.** Memory and SQLite
-   answer `ErrTaskBusy` / skip the row at once. PostgreSQL waits up to
-   `lock_timeout` (2 s) and then errors (55P03), which the caller retries.
-   Both end in a retry; `interfaces.md` should say that `RecordAttempt` may
-   return `ErrTaskBusy` and that it is retryable.
-6. **Claim order.** `selectClaims` orders tenants by their earliest candidate
-   (`NextAttemptTime`, then tenant id) and takes one task per tenant per turn.
-   BQ-2 uses the same function; BP ranks in SQL. The S case for turn-taking
-   must assert only what all three satisfy, or `interfaces.md` should fix this
-   order. A shared pure helper in the SPI would remove the duplicate in BM and
-   BQ; that is the lead's call.
-7. **`Fail` leaves `LastAttemptTime` as it was** and sets `FailedTime` to
-   `Failure.AtMs`. Confirm against the S case and Q's DTO rule
-   (`lastAttemptTime` "after a failed attempt").
+4. **Closed (README C-S5).** Every backend refuses a joining write whose
+   tenant is not the transaction's, with `spi.ErrTxTenantMismatch`; BP-4 adds
+   the check, and S-8's `Tenant/JoiningWriteOtherTenantRefused` holds it.
+5. **Closed (README C-S5).** S-3's interface doc says `RecordAttempt` may
+   return `ErrTaskBusy` and that the caller retries it. PostgreSQL still waits
+   up to `lock_timeout` (2 s) and then errors (55P03); both end in a retry.
+6. **Closed (README C-P2).** The claim choice is `spi.SelectClaims` (S-3a),
+   which BM-2 and BQ-2 call; BP ranks in SQL by the same rules. S-3's
+   interface doc states the rank-major turn order.
+7. **Closed (README C-S5).** `Fail` leaves `LastAttemptTime` unchanged and
+   sets `FailedTime` to `Failure.AtMs`; S-3's doc states it and S-6's
+   `Fail/Fields` asserts it.
 8. **`ReconcileRequest.Cancel` ids are removed only as tasks of the request's
    entity.** The engine only puts that entity's born-expired ids there
    (`internal/domain/workflow/arm.go:127-131`); an id of another entity is
    ignored rather than removed.
-9. **The audit fix (BM-6) is wider than scheduled runs.** Memory and SQLite
-   kept the audit events of every rolled-back transaction; PostgreSQL does
-   not. BM-6 and BQ-7 align them, and change one memory test that pinned the
-   old behaviour (`TestSMAuditTxIndex_PrunedOnRollback`). Two consequences
-   for other streams: an event recorded on `ctx` of a transaction that then
-   aborts — `EmitTransitionAborted` included — is now gone on memory and
-   SQLite as it already is on PostgreSQL; and a test outside the plugins that
-   relied on the leak shows at `make test`. Suggest stream S add an `Audit`
-   conformance case, "an event recorded in a rolled-back transaction is not
-   kept", so the rule is held on every backend, Cassandra included.
-10. **In-transaction audit reads.** Memory returns the committed events and
-    then the transaction's staged ones, in slice order; SQLite and PostgreSQL
-    order by timestamp. That order difference predates this stream (memory
-    has always returned append order) and no caller reads audit inside a
-    transaction today (the only readers are `internal/domain/audit/handler.go:132, 240`).
+9. **Closed (README C-P3, C-S4).** The audit fix (BM-6) is wider than
+   scheduled runs: memory and SQLite kept the audit events of every
+   rolled-back transaction, and PostgreSQL did not. BM-6 and BQ-7 align them;
+   S-8's `Audit/RolledBackEventNotKept` holds the rule on every backend,
+   Cassandra included (D-11), and BM-6 deletes the `TxBoundAuditFixture`
+   branch of `ExternalAPI_05`. An event recorded on `ctx` of a transaction
+   that then aborts — `EmitTransitionAborted` included — is gone on every
+   backend.

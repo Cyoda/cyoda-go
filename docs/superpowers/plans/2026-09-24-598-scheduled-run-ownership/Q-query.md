@@ -80,8 +80,8 @@ Binding names: `interfaces.md` § "Query".
     DelayMs` and `ArmedAt = armMs` (`arm.go:152, 158`). The SPI calls the id
     opaque, so the cursor checks only that it is non-empty.
 13. **Parity.** `allTests` in `e2e/parity/registry.go` is counted by
-    `TestParityScenarioCount` (`e2e/parity/registry_count_test.go:8`, and the
-    header comment at `registry.go:3`). The parity client decodes strictly
+    `TestParityScenarioCount` (`e2e/parity/registry_count_test.go:9`, and the
+    header comment at `registry.go:5`). The parity client decodes strictly
     (`e2e/parity/client/http.go:84-135`, `audit.go:396-420`). Each scenario
     gets a fresh tenant (`e2e/parity/fixture.go:30-34`). The parity servers
     run a scheduler, so parity tasks use an hour-away schedule.
@@ -120,7 +120,9 @@ operator's view no compute node needs, like the audit trail. No
 **Files:**
 - Modify: `api/openapi.yaml` (tag list `:185-315`; new path before
   `/search/async/{entityName}/{modelVersion}:` at `:7111`; new schemas before
-  `EntityAuditEventsResponseDto:` at `:11631`)
+  `EntityAuditEventsResponseDto:` at `:11631`; `SCHEDULED_TRANSITION_FAIL`
+  in the `StateMachineAuditEventDto.eventType` enum after
+  `- SCHEDULED_TRANSITION_CANCEL` at `:11762`)
 - Modify: `api/generated.go` (by `go generate ./api` only)
 - Modify: `internal/api/unimplemented.go` (stub after `:38`)
 - Test: `api/scheduled_tasks_contract_test.go` (new)
@@ -148,6 +150,7 @@ operator's view no compute node needs, like the audit trail. No
       FailureReason *string; FailedTime *time.Time; ArmedBy *ScheduledTaskArmedByDto
   }
   type ScheduledTaskArmedByDto struct { Id string; Kind string }
+  const SCHEDULEDTRANSITIONFAIL StateMachineAuditEventDtoEventType = "SCHEDULED_TRANSITION_FAIL"
   // ServerInterface gains:
   ListScheduledTasks(w http.ResponseWriter, r *http.Request, params ListScheduledTasksParams)
   ```
@@ -365,12 +368,45 @@ func TestScheduledTaskDto_GeneratedTypes(t *testing.T) {
 		Pagination: CursorPaginationInfoDto{HasNext: false},
 	}
 }
+
+// TestStateMachineAuditEventType_HasScheduledTransitionFail pins the audit
+// event a FAILED scheduled task records. Every e2e test that reads it through
+// the validated audit API needs it in the enum.
+func TestStateMachineAuditEventType_HasScheduledTransitionFail(t *testing.T) {
+	doc, err := GetSwagger()
+	if err != nil {
+		t.Fatalf("GetSwagger: %v", err)
+	}
+	sm := doc.Components.Schemas["StateMachineAuditEventDto"]
+	if sm == nil || sm.Value == nil {
+		t.Fatal("StateMachineAuditEventDto is not declared")
+	}
+	var found bool
+	for _, part := range sm.Value.AllOf {
+		et := part.Value.Properties["eventType"]
+		if et == nil {
+			continue
+		}
+		for _, v := range et.Value.Enum {
+			if v == "SCHEDULED_TRANSITION_FAIL" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("StateMachineAuditEventDto.eventType does not list SCHEDULED_TRANSITION_FAIL")
+	}
+	if !SCHEDULEDTRANSITIONFAIL.Valid() {
+		t.Error("generated SCHEDULEDTRANSITIONFAIL is not Valid()")
+	}
+}
 ```
 
 - [ ] **Step 2: Run to verify RED**
 
-Run: `go test ./api/ -run 'TestListScheduledTasks_Contract|TestScheduledTaskDtos_TypedButOpen|TestScheduledTaskDto_GeneratedTypes'`
-Expected: FAIL — build error `undefined: ListScheduledTasksParams`.
+Run: `go test ./api/ -run 'TestListScheduledTasks_Contract|TestScheduledTaskDtos_TypedButOpen|TestScheduledTaskDto_GeneratedTypes|TestStateMachineAuditEventType_HasScheduledTransitionFail'`
+Expected: FAIL — build error `undefined: ListScheduledTasksParams` and
+`undefined: SCHEDULEDTRANSITIONFAIL`.
 
 - [ ] **Step 3: Implement** — `api/openapi.yaml`.
 
@@ -485,6 +521,13 @@ Insert this path immediately before `  /search/async/{entityName}/{modelVersion}
           $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
+```
+
+In the `StateMachineAuditEventDto` schema, add one value to the `eventType`
+enum, after `- SCHEDULED_TRANSITION_CANCEL` (`:11762`):
+
+```yaml
+                - SCHEDULED_TRANSITION_FAIL
 ```
 
 Insert these schemas immediately before `    EntityAuditEventsResponseDto:`:
@@ -646,7 +689,8 @@ git add api/openapi.yaml api/generated.go api/scheduled_tasks_contract_test.go i
 git commit -m "feat(api): declare GET /scheduled-tasks and its typed-but-open DTOs (#598)
 
 The operation is marked x-cyoda-status: planned until its handler is wired.
-HTTP only: no gRPC door, like the audit trail.
+HTTP only: no gRPC door, like the audit trail. The audit eventType enum
+gains SCHEDULED_TRANSITION_FAIL.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -2034,8 +2078,8 @@ another tenant's tasks never returned.
 - Create: `e2e/parity/client/scheduled_tasks.go`
 - Test: `e2e/parity/client/scheduled_tasks_test.go`
 - Create: `e2e/parity/scheduled_tasks_query.go`
-- Modify: `e2e/parity/registry.go` (header count `:3`; entries after `:541`)
-- Modify: `e2e/parity/registry_count_test.go` (`wantParityScenarioCount`, `:8`)
+- Modify: `e2e/parity/registry.go` (header count `:5`; entries after `:542`)
+- Modify: `e2e/parity/registry_count_test.go` (`wantParityScenarioCount`, `:9`)
 
 **Interfaces:**
 - Produces (for stream T and the FAILED-item scenario, see Open point 2):
@@ -2366,8 +2410,8 @@ func RunScheduledTasksQueryTenantIsolation(t *testing.T, fixture BackendFixture)
 	{"ScheduledTasksQueryTenantIsolation", RunScheduledTasksQueryTenantIsolation},
 ```
 
-Raise `wantParityScenarioCount` (`registry_count_test.go:8`) and the number in
-the `registry.go` header comment (`:3`) by 3 from their current values (291 on
+Raise `wantParityScenarioCount` (`registry_count_test.go:9`) and the number in
+the `registry.go` header comment (`:5`) by 3 from their current values (292 on
 the base of this branch; other streams also add entries).
 
 - [ ] **Step 2: Run to verify RED**
@@ -2654,13 +2698,16 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ### Task Q-7: Help topic `scheduled-tasks`; the openapi topic's path count
 
 **Spec:** §12 "New help topic `scheduled-tasks`, shaped like `audit.md`, added
-to `topLevelTopicsV061`". Gate 6: `openapi.md:88` states 83 paths; the spec has
-71 before this stream and 72 after.
+to `topLevelTopicsV061`". Gate 6: `openapi.md:87` states 83 paths; the spec has
+71 before this stream and 72 after. README C-D1: `config/scheduler.md` (R-10's)
+gains `scheduled-tasks` in its SEE ALSO here, because the topic exists only
+from this task on.
 
 **Files:**
 - Create: `cmd/cyoda/help/content/scheduled-tasks.md`
 - Modify: `cmd/cyoda/help/help_test.go` (`topLevelTopicsV061`, `:423-427`)
-- Modify: `cmd/cyoda/help/content/openapi.md` (`:88` count; tag list `:90-99`)
+- Modify: `cmd/cyoda/help/content/openapi.md` (`:87` count; tag list `:89-98`)
+- Modify: `cmd/cyoda/help/content/config/scheduler.md` (front matter `see_also` `:5-9`; SEE ALSO `:28-33`)
 - Test: `cmd/cyoda/help/scheduled_tasks_help_test.go` (new)
 
 **Interfaces:**
@@ -2763,13 +2810,35 @@ func TestOpenAPITopic_PathCountMatchesSpec(t *testing.T) {
 		t.Errorf("openapi topic says %d paths; the spec declares %d", got, doc.Paths.Len())
 	}
 }
+
+// TestSchedulerConfigTopic_SeesScheduledTasks: config.scheduler points the
+// reader at the list of the tasks the scheduler runs.
+func TestSchedulerConfigTopic_SeesScheduledTasks(t *testing.T) {
+	topic := DefaultTree.Find([]string{"config", "scheduler"})
+	if topic == nil {
+		t.Fatal("help topic config.scheduler is missing")
+	}
+	found := false
+	for _, s := range topic.SeeAlso {
+		if s == "scheduled-tasks" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("config.scheduler see_also = %v, want it to list scheduled-tasks", topic.SeeAlso)
+	}
+	if !strings.Contains(string(topic.Body), "- scheduled-tasks") {
+		t.Error("config.scheduler SEE ALSO does not list scheduled-tasks")
+	}
+}
 ```
 
 - [ ] **Step 2: Run to verify RED**
 
-Run: `go test ./cmd/cyoda/help/ -run 'TestAllTopLevelTopicsPresent|TestScheduledTasksTopic_CoversTheContract|TestOpenAPITopic_PathCountMatchesSpec'`
+Run: `go test ./cmd/cyoda/help/ -run 'TestAllTopLevelTopicsPresent|TestScheduledTasksTopic_CoversTheContract|TestOpenAPITopic_PathCountMatchesSpec|TestSchedulerConfigTopic_SeesScheduledTasks'`
 Expected: FAIL — `top-level topic "scheduled-tasks" missing from embedded content`;
-`help topic scheduled-tasks is missing`; `openapi topic says 83 paths; the spec declares 72`.
+`help topic scheduled-tasks is missing`; `openapi topic says 83 paths; the spec declares 72`;
+`config.scheduler see_also = [config config.cluster config.grpc run], want it to list scheduled-tasks`.
 
 - [ ] **Step 3: Implement**
 
@@ -2956,19 +3025,34 @@ Q-1), and add after the `**Entity, Audit**` bullet (`:94`):
 - **Scheduled Tasks** — the tenant's scheduled-transition tasks under `/scheduled-tasks`
 ```
 
+`cmd/cyoda/help/content/config/scheduler.md` — add `scheduled-tasks` as the
+last entry of the front matter `see_also` (after `  - run`, `:9`) and of SEE
+ALSO (after `- run`, `:33`):
+
+```
+  - scheduled-tasks
+```
+
+```
+- scheduled-tasks
+```
+
 - [ ] **Step 4: Run to verify GREEN**
 
 Run: `go test ./cmd/cyoda/help/...`
 Expected: PASS — including `TestAllTopLevelTopicsPresent`,
 `TestSeeAlsoResolution`, `TestContentMarkdownSubsetLinter`,
-`TestHelpContent_NoIssueIDs`, `TestHelpContent_CrossReferencesUseAWorkingInvocation`
-and the two new tests.
+`TestHelpContent_NoIssueIDs`, `TestHelpContent_CrossReferencesUseAWorkingInvocation`,
+`TestRunHelp_NoDuplicateSeeAlso` and the three new tests.
 
 - [ ] **Step 5: Commit**
 
 ```
-git add cmd/cyoda/help/content/scheduled-tasks.md cmd/cyoda/help/content/openapi.md cmd/cyoda/help/help_test.go cmd/cyoda/help/scheduled_tasks_help_test.go
+git add cmd/cyoda/help/content/scheduled-tasks.md cmd/cyoda/help/content/openapi.md cmd/cyoda/help/content/config/scheduler.md \
+  cmd/cyoda/help/help_test.go cmd/cyoda/help/scheduled_tasks_help_test.go
 git commit -m "docs(help): scheduled-tasks topic; openapi topic states the real path count (#598)
+
+config.scheduler lists scheduled-tasks in its SEE ALSO.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -3025,6 +3109,9 @@ type ScheduledTask, ScheduledTaskArmedBy, ScheduledTaskPage
 
 - OpenAPI: `operationId: listScheduledTasks`, path `GET /scheduled-tasks`, tag
   `Scheduled Tasks`; cursor `base64url({"v":1,"t":<ms>,"i":"<task id>"})`.
+- OpenAPI: `SCHEDULED_TRANSITION_FAIL` in the `StateMachineAuditEventDto.eventType`
+  enum (Q-1, wave 1), so every later e2e test can read a FAIL event through
+  the validated audit API.
 - Help topic `scheduled-tasks` (Q-7).
 
 **Q consumes:**
@@ -3045,8 +3132,7 @@ type ScheduledTask, ScheduledTaskArmedBy, ScheduledTaskPage
 - **T:** see Open point 2.
 
 **Shared files (merge by hand, no semantic overlap):** `api/openapi.yaml` and
-`api/generated.go` (W adds 409 cells, D the audit enum value — regenerate after
-merging), `internal/e2e/zzz_errorcode_matrix_test.go`, `e2e/parity/registry.go`
+`api/generated.go` (W adds 409 cells — regenerate after merging), `internal/e2e/zzz_errorcode_matrix_test.go`, `e2e/parity/registry.go`
 and `registry_count_test.go` (each stream adds its own delta),
 `cmd/cyoda/help/help_test.go`, `app/app.go` (R rewires the scheduler around
 `:586-657`; Q adds one line at `:678`).

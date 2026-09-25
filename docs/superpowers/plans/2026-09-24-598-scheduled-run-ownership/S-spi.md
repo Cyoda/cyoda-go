@@ -80,7 +80,7 @@ replaces; locate by that text.
 - Every command runs in `/Users/paul/go-projects/cyoda-light/cyoda-go-spi`
   unless it says otherwise. Each Bash call `cd`s explicitly; git uses `-C`.
 - Stage named paths only. Never `git add -A`.
-- **TDD for a conformance suite.** S-1..S-3 are ordinary RED/GREEN in the SPI.
+- **TDD for a conformance suite.** S-1..S-3 and S-3a are ordinary RED/GREEN in the SPI.
   The `spitest` group (S-4..S-8) is itself test code, and `spitest` has no
   tests of its own (`go test ./spitest/` → `[no test files]`). Inside the SPI,
   each suite task's RED is the build: the registration lines go in first and
@@ -255,7 +255,8 @@ which removes them with the interface that uses them, so every commit builds.
   three constants; `ScheduledTaskFailureReason` and its five constants;
   `TaskClaim`; the `ScheduledTask` life fields `Status`, `ArmToken`,
   `NextAttemptTime`, `Attempts`, `LostOwners`, `LastAttemptTime`, `LastError`,
-  `FailureReason`, `FailedTime`, `PartialCommit`, `Claim`, `UnsafeMarked`;
+  `FailureReason`, `FailedTime`, `PartialCommit`, `Claim`, `UnsafeMarked`,
+  `ClaimedFromLostOwner` (`json:"-"`, README C-S1);
   `TaskRef`, `ClaimRequest`, `Attempt`, `Failure`, `ScheduledTaskCursor`,
   `ScheduledTaskQuery`, `ScheduledTaskPage`;
   `SMEventScheduledTransitionFailed = "SCHEDULED_TRANSITION_FAIL"`.
@@ -270,7 +271,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 )
@@ -336,27 +336,23 @@ func TestScheduledTask_StatusAndReasonValues(t *testing.T) {
 	}
 }
 
-func TestScheduledTask_StoreValueTypes(t *testing.T) {
-	// The value types the ScheduledTaskStore methods take and return. The
-	// zero values are the documented defaults: no filter, no cursor, no
-	// tenant counts.
-	var q ScheduledTaskQuery
-	if q.Statuses != nil || q.ModelName != "" || q.ModelVersion != 0 || q.EntityID != "" || q.After != nil {
-		t.Errorf("zero ScheduledTaskQuery must filter nothing: %+v", q)
+// ClaimedFromLostOwner is read-only and exists only on a ClaimDue result: it is
+// never serialised, so no stored or returned JSON document carries it.
+func TestScheduledTask_ClaimedFromLostOwnerIsNotSerialised(t *testing.T) {
+	b, err := json.Marshal(ScheduledTask{ID: "x", Status: ScheduledTaskRunning, ClaimedFromLostOwner: true})
+	if err != nil {
+		t.Fatal(err)
 	}
-	var p ScheduledTaskPage
-	if p.Items != nil || p.Next != nil {
-		t.Errorf("zero ScheduledTaskPage: %+v", p)
+	if strings.Contains(strings.ToLower(string(b)), "claimedfromlostowner") {
+		t.Fatalf("ClaimedFromLostOwner must not be serialised: %s", b)
 	}
-	req := ClaimRequest{Owner: uuid.New(), NowMs: 1, StaleAfter: time.Minute, Limit: 8, PerTenantLimit: 4,
-		TenantInProgress: map[TenantID]int{"t1": 2}, AllowLostOwner: true}
-	if req.TenantInProgress["t2"] != 0 {
-		t.Error("a tenant missing from TenantInProgress counts as 0")
+	var back ScheduledTask
+	if err := json.Unmarshal([]byte(`{"id":"x","claimedFromLostOwner":true,"ClaimedFromLostOwner":true}`), &back); err != nil {
+		t.Fatal(err)
 	}
-	_ = TaskRef{TenantID: "t1", ID: "x", ArmToken: uuid.New(), ClaimToken: uuid.New()}
-	_ = Attempt{Error: "e", AtMs: 1, NextAttemptTime: 2, NotCounted: true, ClearOwnMark: true}
-	_ = Failure{Reason: FailureRunPanicked, Error: "e", AtMs: 1}
-	_ = ScheduledTaskCursor{ScheduledTime: 1, ID: "x"}
+	if back.ClaimedFromLostOwner {
+		t.Fatal("a JSON document must not set ClaimedFromLostOwner")
+	}
 }
 ```
 
@@ -369,9 +365,15 @@ In `TestScheduledTransitionEventTypes`, after the
 
 - [ ] **Step 2: Run them and see them fail**
 
-Run: `cd /Users/paul/go-projects/cyoda-light/cyoda-go-spi && go test . -run 'TestScheduledTask_LifeFields_RoundTrip|TestScheduledTask_StatusAndReasonValues|TestScheduledTask_StoreValueTypes|TestScheduledTransitionEventTypes'`
+Run: `cd /Users/paul/go-projects/cyoda-light/cyoda-go-spi && go test . -run 'TestScheduledTask_LifeFields_RoundTrip|TestScheduledTask_StatusAndReasonValues|TestScheduledTask_ClaimedFromLostOwnerIsNotSerialised|TestScheduledTransitionEventTypes'`
 Expected: FAIL — build error `unknown field Status in struct literal of type
-ScheduledTask`, `undefined: ScheduledTaskFailed`, `unknown field ArmToken …`.
+ScheduledTask`, `undefined: ScheduledTaskFailed`, `unknown field ArmToken …`,
+`unknown field ClaimedFromLostOwner …`.
+
+The store's value types (`TaskRef`, `ClaimRequest`, `Attempt`, `Failure`,
+`ScheduledTaskCursor`, `ScheduledTaskQuery`, `ScheduledTaskPage`) have no
+behaviour of their own to assert here; S-3's `TestScheduledTaskStore_InterfaceShape`
+fails to build when one changes, and the `spitest` group exercises each.
 
 - [ ] **Step 3: Implement** — `types.go`.
 
@@ -501,6 +503,11 @@ the struct's closing brace, one blank line and then:
 	// UnsafeMarked is read-only: a mark (ScheduledTaskStore.MarkUnsafe)
 	// exists for this life.
 	UnsafeMarked bool `json:"unsafeMarked"`
+	// ClaimedFromLostOwner is read-only and set only on a task returned by
+	// ScheduledTaskStore.ClaimDue: this claim took the task from an owner
+	// whose liveness record was missing or stale. Never stored, never
+	// serialised; every other read returns false.
+	ClaimedFromLostOwner bool `json:"-"`
 ```
 
 Insert after the struct's closing brace (`:397`), before
@@ -608,8 +615,8 @@ Expected: `gofmt -l` prints nothing; PASS.
 git -C /Users/paul/go-projects/cyoda-light/cyoda-go-spi add types.go types_test.go
 git -C /Users/paul/go-projects/cyoda-light/cyoda-go-spi commit -m "feat(scheduled-task): a task has lives — status, claim, attempts, failure reasons
 
-Adds the life fields, TaskClaim, the store's value types and
-SCHEDULED_TRANSITION_FAIL. TransitionSchedule no longer says engines skip
+Adds the life fields, ClaimedFromLostOwner, TaskClaim, the store's value
+types and SCHEDULED_TRANSITION_FAIL. TransitionSchedule no longer says engines skip
 scheduled transitions, and TimeoutMs says what happens after a failed
 attempt.
 
@@ -856,6 +863,10 @@ type ReconcileRequest struct {
 // ones in the TaskRef, in the TaskRef's tenant. Otherwise, or when the
 // task is missing, they return ErrStaleClaim and change nothing.
 //
+// A joining method called with a transaction on ctx whose tenant is not
+// the method's tenant (its tenant argument, req.TenantID or ref.TenantID)
+// is refused with ErrTxTenantMismatch and changes nothing.
+//
 // Clauses every implementation meets:
 //
 //	C1  First-committer-wins covers task rows. A transaction that writes a
@@ -934,9 +945,11 @@ type ScheduledTaskStore interface {
 	// most one task per entity is claimed per call; concurrent callers
 	// obtain disjoint sets and never two tasks of one entity. Per tenant
 	// at most req.PerTenantLimit - req.TenantInProgress[tenant] tasks are
-	// claimed; tenants take turns, and within a tenant tasks are claimed
-	// in NextAttemptTime order. A returned task carries UnsafeMarked as of
-	// the claim (C3). Losing a race to another caller is not an error: the
+	// claimed; tenants take turns — each tenant's first task comes before
+	// any tenant's second — and within a tenant tasks are claimed in
+	// NextAttemptTime order. A returned task carries UnsafeMarked as of
+	// the claim (C3), and ClaimedFromLostOwner when this claim took it from
+	// a stale or missing owner. Losing a race to another caller is not an error: the
 	// call returns what it claimed, possibly nothing. req.Limit < 1 or
 	// req.PerTenantLimit < 1 is a caller error: ClaimDue returns an error
 	// and claims nothing. Never joining.
@@ -969,12 +982,15 @@ type ScheduledTaskStore interface {
 	// LastError and LastAttemptTime (with or without NotCounted), and
 	// clears the claim, fenced. With
 	// a.ClearOwnMark it also removes the mark this claim wrote, in the
-	// same atomic write; a mark another claim wrote stays. Never joining.
+	// same atomic write; a mark another claim wrote stays. It may return
+	// ErrTaskBusy when an open transaction has written the row (C6); the
+	// write did not happen, and the caller retries it. Never joining.
 	RecordAttempt(ctx context.Context, ref TaskRef, a Attempt) error
 
 	// Fail sets the task FAILED with f.Reason, replaces LastError with
 	// f.Error (even when it is empty), records f.AtMs as FailedTime, and
-	// clears the claim, fenced.
+	// clears the claim, fenced. LastAttemptTime, Attempts and LostOwners
+	// are unchanged.
 	// Joining, so the failure commits with its audit event.
 	Fail(ctx context.Context, ref TaskRef, f Failure) error
 
@@ -1054,6 +1070,331 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 (`git rm` already staged the deletion.)
+
+---
+
+### Task S-3a: Shared backend helpers — claim selection and task-write validation
+
+**Spec:** §6.1 (limits, one task per entity, tenants take turns); §5.6
+"Every store sets it" (`ErrStoreRejected`); §5.8 (at most 1 024 bytes, valid
+UTF-8, no NUL). README C-P2.
+
+**Why in the SPI.** The memory and SQLite stores choose their claims in Go
+and validate the same inputs with the same rules. One copy per backend would
+be two copies of production logic that must never differ. The SPI is the
+only module both plugins import, and it already holds shared backend helpers
+(`default_save_all.go`, `filter_match.go`). PostgreSQL ranks its claims in
+SQL and meets the same rules there; it may call the validators, but need not.
+
+**Files:**
+- Create: `scheduled_task_helpers.go`
+- Test: `scheduled_task_helpers_test.go` (package `spi`)
+
+**Interfaces:**
+- Consumes: S-1 `ErrStoreRejected`; S-2 `ScheduledTask`, `ClaimRequest`,
+  `ScheduledTaskFailureReason` and its five constants; S-3 `ReconcileRequest`.
+- Produces:
+  ```go
+  const MaxTaskErrorBytes = 1024
+  func SelectClaims(cands []ScheduledTask, req ClaimRequest) []ScheduledTask
+  func ValidateTaskErrorText(s string) error
+  func ValidateFailureReason(r ScheduledTaskFailureReason) error
+  func ValidateArm(req ReconcileRequest) error
+  ```
+  BM-2 and BQ-2 call `SelectClaims`; BM-5 and BQ-6 call the three validators.
+
+- [ ] **Step 1: Write the failing tests** — `scheduled_task_helpers_test.go`:
+
+```go
+package spi
+
+import (
+	"errors"
+	"strings"
+	"testing"
+)
+
+func cand(tenant TenantID, entity, id string, next int64) ScheduledTask {
+	return ScheduledTask{ID: id, TenantID: tenant, EntityID: entity, NextAttemptTime: next}
+}
+
+func claimIDs(ts []ScheduledTask) []string {
+	out := make([]string, 0, len(ts))
+	for _, t := range ts {
+		out = append(out, t.ID)
+	}
+	return out
+}
+
+func TestSelectClaims_OnePerEntity(t *testing.T) {
+	got := SelectClaims([]ScheduledTask{
+		cand("A", "e1", "e1:S:T2", 20),
+		cand("A", "e1", "e1:S:T1", 10),
+		cand("A", "e2", "e2:S:T", 30),
+	}, ClaimRequest{Limit: 10, PerTenantLimit: 10})
+	if want := "e1:S:T1,e2:S:T"; strings.Join(claimIDs(got), ",") != want {
+		t.Fatalf("claimed %v, want %s: the earliest task of each entity, one per entity", claimIDs(got), want)
+	}
+}
+
+func TestSelectClaims_WithinATenantByNextAttemptTimeThenID(t *testing.T) {
+	got := SelectClaims([]ScheduledTask{
+		cand("A", "e3", "c", 10),
+		cand("A", "e2", "b", 5),
+		cand("A", "e1", "a", 10),
+	}, ClaimRequest{Limit: 10, PerTenantLimit: 10})
+	if want := "b,a,c"; strings.Join(claimIDs(got), ",") != want {
+		t.Fatalf("claimed %v, want %s", claimIDs(got), want)
+	}
+}
+
+// Tenants take turns: each tenant's first task comes before any tenant's
+// second. The tenant with the earliest candidate goes first; ties go to the
+// lower tenant id.
+func TestSelectClaims_TenantsTakeTurns(t *testing.T) {
+	cands := []ScheduledTask{
+		cand("A", "a1", "a1", 1), cand("A", "a2", "a2", 2), cand("A", "a3", "a3", 3),
+		cand("B", "b1", "b1", 5), cand("B", "b2", "b2", 6),
+		cand("C", "c1", "c1", 5),
+	}
+	got := SelectClaims(cands, ClaimRequest{Limit: 5, PerTenantLimit: 10})
+	if want := "a1,b1,c1,a2,b2"; strings.Join(claimIDs(got), ",") != want {
+		t.Fatalf("claimed %v, want %s", claimIDs(got), want)
+	}
+	got = SelectClaims(cands, ClaimRequest{Limit: 2, PerTenantLimit: 10})
+	if want := "a1,b1"; strings.Join(claimIDs(got), ",") != want {
+		t.Fatalf("with Limit 2 claimed %v, want %s", claimIDs(got), want)
+	}
+}
+
+func TestSelectClaims_PerTenantLimitCountsRunsInProgress(t *testing.T) {
+	cands := []ScheduledTask{
+		cand("A", "a1", "a1", 1), cand("A", "a2", "a2", 2), cand("A", "a3", "a3", 3),
+		cand("B", "b1", "b1", 4),
+		cand("C", "c1", "c1", 5),
+	}
+	got := SelectClaims(cands, ClaimRequest{
+		Limit: 10, PerTenantLimit: 2,
+		TenantInProgress: map[TenantID]int{"A": 1, "C": 3},
+	})
+	if want := "a1,b1"; strings.Join(claimIDs(got), ",") != want {
+		t.Fatalf("claimed %v, want %s: A has room for one, B for two, C for none", claimIDs(got), want)
+	}
+}
+
+func TestSelectClaims_NoCandidates(t *testing.T) {
+	if got := SelectClaims(nil, ClaimRequest{Limit: 1, PerTenantLimit: 1}); len(got) != 0 {
+		t.Fatalf("claimed %v from no candidates", claimIDs(got))
+	}
+}
+
+func TestValidateTaskErrorText(t *testing.T) {
+	const secret = "do-not-echo"
+	for name, text := range map[string]string{
+		"empty":                     "",
+		"1 024 bytes, 2-byte runes": strings.Repeat("é", 512),
+	} {
+		if err := ValidateTaskErrorText(text); err != nil {
+			t.Errorf("%s: %v, want nil", name, err)
+		}
+	}
+	for name, text := range map[string]string{
+		"NUL":             secret + "\x00",
+		"invalid UTF-8":   secret + "\xff",
+		"over 1024 bytes": secret + strings.Repeat("x", MaxTaskErrorBytes),
+	} {
+		err := ValidateTaskErrorText(text)
+		if !errors.Is(err, ErrStoreRejected) {
+			t.Errorf("%s: err = %v, want ErrStoreRejected", name, err)
+			continue
+		}
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("%s: the rejection repeats the rejected text: %v", name, err)
+		}
+	}
+}
+
+func TestValidateFailureReason(t *testing.T) {
+	for _, r := range []ScheduledTaskFailureReason{
+		FailureUnsafeWorkNotCompleted, FailureOwnerLostRepeatedly,
+		FailureExpiredAfterFailedAttempts, FailureRunPanicked, FailureStoppedAfterPartialCommit,
+	} {
+		if err := ValidateFailureReason(r); err != nil {
+			t.Errorf("%s: %v, want nil", r, err)
+		}
+	}
+	for _, r := range []ScheduledTaskFailureReason{"", "NOT_A_REASON"} {
+		if err := ValidateFailureReason(r); !errors.Is(err, ErrStoreRejected) {
+			t.Errorf("%q: err = %v, want ErrStoreRejected", r, err)
+		}
+	}
+}
+
+func TestValidateArm(t *testing.T) {
+	ok := ReconcileRequest{TenantID: "A", EntityID: "e1", Arm: []ScheduledTask{{ID: "e1:S:T"}}}
+	if err := ValidateArm(ok); err != nil {
+		t.Fatalf("an arm with ids: %v", err)
+	}
+	if err := ValidateArm(ReconcileRequest{TenantID: "A", EntityID: "e1"}); err != nil {
+		t.Fatalf("an empty arm: %v", err)
+	}
+	noID := ReconcileRequest{TenantID: "A", EntityID: "e1", Arm: []ScheduledTask{{ID: "e1:S:T"}, {}}}
+	if err := ValidateArm(noID); !errors.Is(err, ErrStoreRejected) {
+		t.Fatalf("an arm task without an id: err = %v, want ErrStoreRejected", err)
+	}
+}
+```
+
+- [ ] **Step 2: Run them and see them fail**
+
+Run: `cd /Users/paul/go-projects/cyoda-light/cyoda-go-spi && go test . -run 'TestSelectClaims_|TestValidateTaskErrorText|TestValidateFailureReason|TestValidateArm'`
+Expected: FAIL — build error `undefined: SelectClaims`, `undefined: ValidateTaskErrorText`,
+`undefined: MaxTaskErrorBytes`, `undefined: ValidateFailureReason`, `undefined: ValidateArm`.
+
+- [ ] **Step 3: Implement** — `scheduled_task_helpers.go`:
+
+```go
+package spi
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+	"unicode/utf8"
+)
+
+// Helpers for ScheduledTaskStore implementations. A backend that chooses its
+// claims in Go, or validates its input before it writes, uses these so that
+// every backend applies the same rules. A backend that meets a rule in its
+// query language instead need not call them.
+
+// MaxTaskErrorBytes is the most a recorded scheduled-task error text
+// (Attempt.Error, Failure.Error) may take, in bytes.
+const MaxTaskErrorBytes = 1024
+
+// SelectClaims picks the tasks one ScheduledTaskStore.ClaimDue call takes from
+// cands, the tasks the store found claimable. At most one task per entity; at
+// most req.PerTenantLimit - req.TenantInProgress[tenant] per tenant; at most
+// req.Limit in all. Within a tenant the order is (NextAttemptTime, ID).
+// Tenants take turns, one task per turn, so each tenant's first task comes
+// before any tenant's second; the tenant with the earliest candidate goes
+// first, ties broken by tenant id. SelectClaims sorts cands in place.
+func SelectClaims(cands []ScheduledTask, req ClaimRequest) []ScheduledTask {
+	sort.Slice(cands, func(i, j int) bool {
+		a, b := cands[i], cands[j]
+		if a.NextAttemptTime != b.NextAttemptTime {
+			return a.NextAttemptTime < b.NextAttemptTime
+		}
+		if a.TenantID != b.TenantID {
+			return a.TenantID < b.TenantID
+		}
+		return a.ID < b.ID
+	})
+	var tenants []TenantID
+	queues := make(map[TenantID][]ScheduledTask)
+	for _, c := range cands {
+		if _, ok := queues[c.TenantID]; !ok {
+			tenants = append(tenants, c.TenantID)
+		}
+		queues[c.TenantID] = append(queues[c.TenantID], c)
+	}
+	quota := make(map[TenantID]int, len(tenants))
+	for _, tn := range tenants {
+		quota[tn] = req.PerTenantLimit - req.TenantInProgress[tn]
+	}
+
+	type entityKey struct {
+		tenant TenantID
+		id     string
+	}
+	seen := make(map[entityKey]bool)
+	var out []ScheduledTask
+	for progress := true; progress && len(out) < req.Limit; {
+		progress = false
+		for _, tn := range tenants {
+			if len(out) >= req.Limit {
+				break
+			}
+			for quota[tn] > 0 && len(queues[tn]) > 0 {
+				c := queues[tn][0]
+				queues[tn] = queues[tn][1:]
+				ek := entityKey{tenant: tn, id: c.EntityID}
+				if seen[ek] {
+					continue
+				}
+				seen[ek] = true
+				quota[tn]--
+				out = append(out, c)
+				progress = true
+				break
+			}
+		}
+	}
+	return out
+}
+
+// ValidateTaskErrorText refuses an error text that no backend stores as
+// given: over MaxTaskErrorBytes, not valid UTF-8, or holding a NUL
+// (PostgreSQL refuses the last two with SQLSTATE 22021). The error satisfies
+// errors.Is(err, ErrStoreRejected) and never repeats the text, which may
+// carry anything a compute node sent.
+func ValidateTaskErrorText(s string) error {
+	switch {
+	case len(s) > MaxTaskErrorBytes:
+		return fmt.Errorf("scheduled task error text is %d bytes, over %d: %w", len(s), MaxTaskErrorBytes, ErrStoreRejected)
+	case !utf8.ValidString(s):
+		return fmt.Errorf("scheduled task error text is not valid UTF-8: %w", ErrStoreRejected)
+	case strings.IndexByte(s, 0) >= 0:
+		return fmt.Errorf("scheduled task error text contains NUL: %w", ErrStoreRejected)
+	}
+	return nil
+}
+
+// ValidateFailureReason refuses a reason that is not one of the five
+// ScheduledTaskFailureReason constants, with an error that satisfies
+// errors.Is(err, ErrStoreRejected).
+func ValidateFailureReason(r ScheduledTaskFailureReason) error {
+	switch r {
+	case FailureUnsafeWorkNotCompleted, FailureOwnerLostRepeatedly,
+		FailureExpiredAfterFailedAttempts, FailureRunPanicked,
+		FailureStoppedAfterPartialCommit:
+		return nil
+	}
+	return fmt.Errorf("scheduled task failure reason is not a known reason: %w", ErrStoreRejected)
+}
+
+// ValidateArm refuses a ReconcileRequest whose Arm names a task without an
+// id, with an error that satisfies errors.Is(err, ErrStoreRejected). The
+// tenant and the entity come from the request (see ReconcileRequest.Arm), so
+// an Arm item's own fields for them are not checked.
+func ValidateArm(req ReconcileRequest) error {
+	for _, a := range req.Arm {
+		if a.ID == "" {
+			return fmt.Errorf("scheduled task arm for entity %s names a task without an id: %w", req.EntityID, ErrStoreRejected)
+		}
+	}
+	return nil
+}
+```
+
+- [ ] **Step 4: Run them and see them pass**
+
+Run: `cd /Users/paul/go-projects/cyoda-light/cyoda-go-spi && gofmt -l . && go vet ./... && go test .`
+Expected: `gofmt -l` prints nothing; PASS.
+
+- [ ] **Step 5: Commit**
+
+```
+git -C /Users/paul/go-projects/cyoda-light/cyoda-go-spi add scheduled_task_helpers.go scheduled_task_helpers_test.go
+git -C /Users/paul/go-projects/cyoda-light/cyoda-go-spi commit -m "feat(scheduled-task): shared claim selection and task-write validation
+
+SelectClaims picks one ClaimDue call's tasks: one per entity, per-tenant
+limits, tenants taking turns. ValidateTaskErrorText, ValidateFailureReason
+and ValidateArm refuse what no backend stores, with ErrStoreRejected.
+Backends that choose or validate in Go call them, so the rules exist once.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
 
 ---
 
@@ -1847,7 +2188,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: S-4's fixture.
-- Produces: subtests `Claim/*`, `Liveness/*`, `GiveBack/*`.
+- Produces: subtests `Claim/*` (`Claim/LostOwnerFlagged` included, README
+  C-S1), `Liveness/*`, `GiveBack/*`.
 
 Liveness has no read method. The tests observe it through a lost-owner claim:
 with `StaleAfter` one hour, a task is reclaimable only if its owner's record is
@@ -1875,6 +2217,7 @@ error, not "claim nothing".
 	runSubtest(t, h, tracker, "Claim/RunningNeedsAllowLostOwner", testSTClaimRunningNeedsAllowLostOwner)
 	runSubtest(t, h, tracker, "Claim/FreshOwnerKept", testSTClaimFreshOwnerKept)
 	runSubtest(t, h, tracker, "Claim/StaleOwnerReclaimed", testSTClaimStaleOwnerReclaimed)
+	runSubtest(t, h, tracker, "Claim/LostOwnerFlagged", testSTClaimLostOwnerFlagged)
 	runSubtest(t, h, tracker, "Claim/LostOwnersCounted", testSTClaimLostOwnersCounted)
 	runSubtest(t, h, tracker, "Claim/OnePerEntity", testSTClaimOnePerEntity)
 	runSubtest(t, h, tracker, "Claim/LimitAndOrder", testSTClaimLimitAndOrder)
@@ -1997,6 +2340,22 @@ func testSTClaimStaleOwnerReclaimed(t *testing.T, h Harness) {
 	require.Equal(t, 1, cb.LostOwners)
 	require.Zero(t, cb.Attempts)
 	requireUnchangedClaim(t, cb, f.mustGet(task.ID))
+}
+
+// ClaimedFromLostOwner is set only on a ClaimDue result, and only when that
+// claim took the task from a stale or missing owner (README C-S1): the
+// scheduler counts cyoda.scheduler.claims{reason} from it. A read never
+// carries it.
+func testSTClaimLostOwnerFlagged(t *testing.T, h Harness) {
+	f := newSTFixture(t, h)
+	task := f.armDue()
+	first := f.claimTask(uuid.New(), task.ID) // this owner never heartbeats: missing counts as stale
+	require.False(t, first.ClaimedFromLostOwner, "a claim of a WAITING task is not from a lost owner")
+	require.False(t, f.mustGet(task.ID).ClaimedFromLostOwner, "Get never carries the flag")
+
+	second := f.reclaim(uuid.New(), task.ID)
+	require.True(t, second.ClaimedFromLostOwner, "a lost-owner claim is flagged on the ClaimDue result")
+	require.False(t, f.mustGet(task.ID).ClaimedFromLostOwner, "Get never carries the flag")
 }
 
 // Every lost-owner claim adds one to LostOwners (spec §13 row "owner lost 3
@@ -2727,10 +3086,22 @@ func testSTFailFields(t *testing.T, h Harness) {
 		require.Equal(t, fl.Error, got.LastError)
 		require.NotNil(t, got.FailedTime)
 		require.Equal(t, stNow+7, *got.FailedTime)
+		require.Nil(t, got.LastAttemptTime, "Fail leaves LastAttemptTime unchanged")
 		require.Nil(t, got.Claim)
 		require.Equal(t, c.ArmToken, got.ArmToken)
 		requireAllFencedRefused(t, f.ctx, f.sts, stRef(c), "a claim of a FAILED task")
 	}
+
+	// After a recorded attempt, Fail keeps its LastAttemptTime.
+	task := f.armDue()
+	c := f.claimTask(uuid.New(), task.ID)
+	require.NoError(t, f.sts.RecordAttempt(f.ctx, stRef(c), spi.Attempt{Error: "E1", AtMs: stNow - 3, NextAttemptTime: stNow}))
+	c = f.claimTask(uuid.New(), task.ID)
+	require.NoError(t, f.sts.Fail(f.ctx, stRef(c), spi.Failure{Reason: spi.FailureRunPanicked, Error: "E2", AtMs: stNow + 7}))
+	got := f.mustGet(task.ID)
+	require.NotNil(t, got.LastAttemptTime)
+	require.Equal(t, stNow-3, *got.LastAttemptTime, "Fail leaves LastAttemptTime unchanged")
+	require.Equal(t, 1, got.Attempts, "Fail leaves Attempts unchanged")
 }
 
 // Fail replaces LastError, even with an empty text.
@@ -3353,10 +3724,18 @@ scoping; §13 `GET /scheduled-tasks` S rows.
 **Files:**
 - Modify: `spitest/scheduledtasks.go` (`runScheduledTasksSuite`)
 - Create: `spitest/scheduledtasks_query.go`
+- Modify: `spitest/audit.go` (`runAuditSuite` `:13-20`; one test at the end of the file)
 
 **Interfaces:**
-- Consumes: S-4's fixture.
-- Produces: subtests `Query/*`, `TenantIsolation/EveryMethod`.
+- Consumes: S-4's fixture; the audit suite's `newSMEvent` (`spitest/audit.go:22-30`).
+- Produces: subtests `Query/*`, `TenantIsolation/EveryMethod`,
+  `Tenant/JoiningWriteOtherTenantRefused` (README C-S5), and in the `Audit`
+  group `RolledBackEventNotKept` (README C-S4).
+
+`Audit/RolledBackEventNotKept` binds every backend, Cassandra included: an
+audit event recorded in a transaction that rolls back is not kept. Today only
+PostgreSQL passes it; BM-6 and BQ-7 make memory and SQLite pass it (their
+behavioural RED), and D-11 tells Cassandra.
 
 - [ ] **Step 1: Write the failing registration** — append at the end of
   `runScheduledTasksSuite`, one blank line and:
@@ -3367,12 +3746,22 @@ scoping; §13 `GET /scheduled-tasks` S rows.
 	runSubtest(t, h, tracker, "Query/Filters", testSTQueryFilters)
 	runSubtest(t, h, tracker, "Query/TenantIsolation", testSTQueryTenantIsolation)
 	runSubtest(t, h, tracker, "TenantIsolation/EveryMethod", testSTTenantIsolationEveryMethod)
+	runSubtest(t, h, tracker, "Tenant/JoiningWriteOtherTenantRefused", testSTTenantJoiningWriteOtherTenantRefused)
+```
+
+and in `spitest/audit.go`, append to `runAuditSuite` (after the
+`TenantIsolation` line, `:19`):
+
+```go
+	runSubtest(t, h, tracker, "RolledBackEventNotKept", testAuditRolledBackEventNotKept)
 ```
 
 - [ ] **Step 2: Run it and see it fail**
 
 Run: `cd /Users/paul/go-projects/cyoda-light/cyoda-go-spi && go vet ./spitest/`
-Expected: FAIL — `undefined: testSTQueryPagesInOrder` and the others above.
+Expected: FAIL — `undefined: testSTQueryPagesInOrder` and the others above,
+`undefined: testSTTenantJoiningWriteOtherTenantRefused`,
+`undefined: testAuditRolledBackEventNotKept`.
 
 - [ ] **Step 3: Implement** — create `spitest/scheduledtasks_query.go`:
 
@@ -3543,6 +3932,67 @@ func testSTTenantIsolationEveryMethod(t *testing.T, h Harness) {
 
 	requireUnchangedClaim(t, c, fa.mustGet(c.ID))
 }
+
+// A joining write whose tenant is not the tenant of the transaction on ctx is
+// refused with ErrTxTenantMismatch and changes nothing (README C-S5): a task
+// row of tenant B never enters tenant A's transaction.
+func testSTTenantJoiningWriteOtherTenantRefused(t *testing.T, h Harness) {
+	fb := newSTFixture(t, h)
+	fa := newSTFixture(t, h)
+	fa.model = fb.model
+	c := fb.claimTask(uuid.New(), fb.armDue().ID)
+	_, txCtx := fa.begin() // tenant A's transaction; rolled back first at cleanup
+
+	_, err := fa.sts.ReconcileForEntity(txCtx, spi.ReconcileRequest{
+		TenantID: fb.tenant, EntityID: c.EntityID, CurrentState: "S",
+		Arm: []spi.ScheduledTask{fb.spec(c.EntityID, "S", "T2", stFuture)}})
+	require.ErrorIs(t, err, spi.ErrTxTenantMismatch, "ReconcileForEntity")
+	require.ErrorIs(t, fa.sts.RemoveLife(txCtx, fb.tenant, c.ID, c.ArmToken), spi.ErrTxTenantMismatch, "RemoveLife")
+	require.ErrorIs(t, fa.sts.StampSegment(txCtx, stRef(c), true), spi.ErrTxTenantMismatch, "StampSegment")
+	require.ErrorIs(t, fa.sts.DeleteForEntities(txCtx, fb.tenant, []string{c.EntityID}), spi.ErrTxTenantMismatch, "DeleteForEntities")
+	require.ErrorIs(t, fa.sts.DeleteForModel(txCtx, fb.tenant, fb.model, 1, nil), spi.ErrTxTenantMismatch, "DeleteForModel")
+	require.ErrorIs(t, fa.sts.Fail(txCtx, stRef(c), spi.Failure{Reason: spi.FailureRunPanicked, Error: "E", AtMs: stNow}),
+		spi.ErrTxTenantMismatch, "Fail")
+
+	requireUnchangedClaim(t, c, fb.mustGet(c.ID))
+}
+```
+
+Append to `spitest/audit.go`:
+
+```go
+// testAuditRolledBackEventNotKept pins that audit events are bound to the
+// transaction on every backend: an event recorded in a transaction that
+// rolls back is not kept, and one recorded in a transaction that commits is.
+func testAuditRolledBackEventNotKept(t *testing.T, h Harness) {
+	ctx := tenantContext(h.NewTenant())
+	tm, err := h.Factory.TransactionManager(ctx)
+	require.NoError(t, err)
+	as, err := h.Factory.StateMachineAuditStore(ctx)
+	require.NoError(t, err)
+	entityID := newID()
+
+	txID, txCtx, err := tm.Begin(ctx)
+	require.NoError(t, err)
+	require.NoError(t, as.Record(txCtx, entityID, newSMEvent(txID, "B", "A->B")))
+	require.NoError(t, tm.Rollback(txCtx, txID))
+
+	events, err := as.GetEvents(ctx, entityID)
+	require.NoError(t, err)
+	require.Empty(t, events, "an event recorded in a rolled-back transaction must not be kept")
+	byTx, err := as.GetEventsByTransaction(ctx, entityID, txID)
+	require.NoError(t, err)
+	require.Empty(t, byTx, "an event recorded in a rolled-back transaction must not be kept")
+
+	txID2, txCtx2, err := tm.Begin(ctx)
+	require.NoError(t, err)
+	require.NoError(t, as.Record(txCtx2, entityID, newSMEvent(txID2, "C", "B->C")))
+	require.NoError(t, tm.Commit(txCtx2, txID2))
+	events, err = as.GetEvents(ctx, entityID)
+	require.NoError(t, err)
+	require.Len(t, events, 1, "an event recorded in a committed transaction is kept")
+	require.Equal(t, "C", events[0].State)
+}
 ```
 
 - [ ] **Step 4: Run it and see it pass**
@@ -3553,8 +4003,11 @@ Expected: prints nothing; vet clean.
 - [ ] **Step 5: Commit**
 
 ```
-git -C /Users/paul/go-projects/cyoda-light/cyoda-go-spi add spitest/scheduledtasks.go spitest/scheduledtasks_query.go
+git -C /Users/paul/go-projects/cyoda-light/cyoda-go-spi add spitest/scheduledtasks.go spitest/scheduledtasks_query.go spitest/audit.go
 git -C /Users/paul/go-projects/cyoda-light/cyoda-go-spi commit -m "test(spitest): ScheduledTasks — query pages, filters and tenant isolation
+
+A joining write of another tenant than the transaction's is refused.
+Audit: an event recorded in a rolled-back transaction is not kept.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -3572,7 +4025,7 @@ migration notes).
 - cyoda-go worktree: `go.work` (local, never committed)
 
 **Interfaces:**
-- Consumes: S-1..S-8.
+- Consumes: S-1..S-8 and S-3a.
 - Produces: the stream's hand-off state (see "Stream interface summary").
 
 No test is written: this task changes a changelog and runs checks.
@@ -3624,11 +4077,21 @@ and, under `### Added`, as the first entries:
   fence and `AsyncSearchStore.Release`; its value and message are unchanged.
 - **`SMEventScheduledTransitionFailed` (`SCHEDULED_TRANSITION_FAIL`).** The
   audit event recorded with a task that ends FAILED.
+- **`ScheduledTask.ClaimedFromLostOwner`.** Read-only, not serialised, set
+  only on a `ClaimDue` result that took the task from a stale or missing
+  owner.
+- **Shared scheduled-task helpers for backends.** `SelectClaims` picks one
+  `ClaimDue` call's tasks (one per entity, per-tenant limits, tenants taking
+  turns); `ValidateTaskErrorText`, `ValidateFailureReason` and `ValidateArm`
+  refuse what no backend stores, with `ErrStoreRejected`; `MaxTaskErrorBytes`.
+- **`spitest` `Audit/RolledBackEventNotKept`.** An audit event recorded in a
+  transaction that rolls back is not kept, on every backend.
 - **`spitest` ScheduledTasks group.** Covers every `ScheduledTaskStore`
   method, every refusal and clauses C1, C2, C3, C5 and C6, including a mark
   that survives the rollback of the transaction on ctx, the refusal of every
-  fenced write of a re-armed life, one claim for two due siblings, and a row
-  written by an open transaction that is not claimed.
+  fenced write of a re-armed life, one claim for two due siblings, a row
+  written by an open transaction that is not claimed, a lost-owner claim that
+  is flagged, and a joining write of another tenant that is refused.
 ```
 
 - [ ] **Step 2: Exit checks (spec §15), inside the SPI**
@@ -3640,7 +4103,7 @@ cd /Users/paul/go-projects/cyoda-light/cyoda-go-spi && git grep -n -e Redispatch
   -e CYODA_SCHEDULER_DISTRIBUTION -e CYODA_SCHEDULER_COORDINATOR -e CYODA_SCHEDULER_REDISPATCH_BACKOFF \
   -e CYODA_SCHEDULER_BATCH_SIZE -e CYODA_SCHEDULER_EXPIRY_GRACE -e CYODA_DISPATCH_FORWARD_TIMEOUT \
   -e ExpiryGrace -e expiryGrace \
-  -- . ':!*/migrations/*' ':!docs/plans' ':!docs/superpowers' ':!docs/release-notes' ':!CHANGELOG.md'
+  -- . ':!*/migrations/*' ':!*migration*_test.go' ':!docs/plans' ':!docs/superpowers' ':!docs/release-notes' ':!CHANGELOG.md'
 cd /Users/paul/go-projects/cyoda-light/cyoda-go-spi && git grep -n -e '\.Upsert(ctx, task' -e 'sts\.Delete(' -- '*.go'
 cd /Users/paul/go-projects/cyoda-light/cyoda-go-spi && git grep -n 'RunScheduledTaskStoreConformance' -- '*.go'
 ```
@@ -3703,10 +4166,10 @@ README.
 | 15 | two due siblings: one claim per call | `Claim/OnePerEntity` |
 | 16 | two due siblings, two pnodes at once | `Claim/SiblingsConcurrent` |
 | 17 | contended claim loop: never re-claimed | `Claim/ContendedNoReclaim` |
-| 18 | per-tenant limit and turn-taking | `Claim/PerTenantLimit`, `Claim/TenantsTakeTurns`, `Claim/LimitAndOrder` |
+| 18 | per-tenant limit and turn-taking | `Claim/PerTenantLimit`, `Claim/TenantsTakeTurns`, `Claim/LimitAndOrder`; `TestSelectClaims_*` (S-3a, the helper memory and SQLite share) |
 | 19 | a liveness record swept during a long outage is recreated by the next heartbeat | `Liveness/HeartbeatRecreatesSwept` |
 | 20 | a lost claim reply: the next `GiveBackIdle` returns the claimed tasks | `GiveBack/LostReply` |
-| 21 | owner lost 3 times → FAILED `OWNER_LOST_REPEATEDLY` | `Claim/LostOwnersCounted` |
+| 21 | owner lost 3 times → FAILED `OWNER_LOST_REPEATEDLY` | `Claim/LostOwnersCounted`; `Claim/LostOwnerFlagged` (the `claims{reason=owner_lost}` input) |
 | 22 | every fenced method refuses a stale token | `Fence/StaleTokensRefused`, `Fence/WaitingRefused`, `Fail/Fields` |
 | 23 | after a re-arm, every fenced write of the old life is refused | `Fence/OldLifeRefused`, `Arm/SelfLoopRearmsRunning` |
 | 24 | a reclaimed or re-armed task makes the old run's commit fail (C1) | `C1/ReclaimFailsOldCommit/*`, `C1/RearmFailsOldCommit/*` |
@@ -3733,7 +4196,8 @@ README.
 | 45 | an update racing a claim → 409; a delete or import racing one claim succeeds after the server retry; same on every backend | `C1/ClientWriteAfterClaim/{ReconcileForEntity,DeleteForEntities,DeleteForModel}` |
 | 46 | `GET /scheduled-tasks` 200, no filter, several pages | `Query/PagesInOrder` |
 | 47 | 200, each filter | `Query/Filters` |
-| 48 | another tenant's tasks are never returned, under any filter | `Query/TenantIsolation`, `TenantIsolation/EveryMethod` |
+| 48 | another tenant's tasks are never returned, under any filter | `Query/TenantIsolation`, `TenantIsolation/EveryMethod`, `Tenant/JoiningWriteOtherTenantRefused` |
+| 49 | `SCHEDULED_TRANSITION_FAIL` and `Fail` in one transaction; a rolled-back run leaves no audit event | `Audit/RolledBackEventNotKept`, `Fail/JoinsTransaction` |
 
 Method and refusal coverage, beyond the rows: `Arm/NewLife`,
 `Arm/TenantAndEntityFromRequest`, `Arm/EveryArmIsNewLife`, `Arm/CancelNotReported`, `Arm/JoinsTransaction`,
@@ -3741,7 +4205,7 @@ Method and refusal coverage, beyond the rows: `Arm/NewLife`,
 `Claim/FailedNeverClaimed`, `Claim/RunningNeedsAllowLostOwner`,
 `Claim/FreshOwnerKept`, `Claim/StaleOwnerReclaimed`, `Claim/InvalidLimits`,
 `Mark/AcceptedAndIdempotent`, `Record/Counted`, `Record/NotCounted`,
-`Fail/Fields` (all five reasons), `Fail/OverwritesLastError`,
+`Fail/Fields` (all five reasons; `LastAttemptTime` unchanged), `Fail/OverwritesLastError`,
 `ErrorText/StoreRejected` (the refused write leaves the claim intact).
 
 ## Stream interface summary
@@ -3756,7 +4220,8 @@ spi.ScheduledTaskFailureReason; spi.FailureUnsafeWorkNotCompleted / FailureOwner
     FailureExpiredAfterFailedAttempts / FailureRunPanicked / FailureStoppedAfterPartialCommit
 spi.TaskClaim{Token, Owner uuid.UUID}
 spi.ScheduledTask{…, Status, ArmToken, NextAttemptTime, Attempts, LostOwners, LastAttemptTime,
-    LastError, FailureReason, FailedTime, PartialCommit, Claim, UnsafeMarked}   // RedispatchAfter, AttemptCount gone
+    LastError, FailureReason, FailedTime, PartialCommit, Claim, UnsafeMarked,
+    ClaimedFromLostOwner /* json:"-"; ClaimDue results only */}   // RedispatchAfter, AttemptCount gone
 spi.TaskRef, spi.ClaimRequest, spi.Attempt, spi.Failure,
 spi.ScheduledTaskCursor, spi.ScheduledTaskQuery, spi.ScheduledTaskPage
 spi.SMEventScheduledTransitionFailed = "SCHEDULED_TRANSITION_FAIL"
@@ -3767,6 +4232,13 @@ spi.ReconcileRequest   // fields unchanged; ids in Cancel are removed and not re
 
 // errors.go
 spi.ErrMarkedByAnotherClaim, spi.ErrTaskBusy, spi.ErrStoreRejected   // ErrStaleClaim unchanged
+
+// scheduled_task_helpers.go (S-3a) — BM and BQ call these; BP may
+const spi.MaxTaskErrorBytes = 1024
+func spi.SelectClaims(cands []ScheduledTask, req ClaimRequest) []ScheduledTask
+func spi.ValidateTaskErrorText(s string) error
+func spi.ValidateFailureReason(r ScheduledTaskFailureReason) error
+func spi.ValidateArm(req ReconcileRequest) error
 
 // spitest
 StoreFactoryConformance → t.Run("ScheduledTasks", …)   // runs for every backend that calls it
@@ -3807,7 +4279,19 @@ and the suite enforces (BM, BQ, BP; cyoda-go-cassandra#68):
 - `Query` orders IDs byte-wise; PostgreSQL uses `COLLATE "C"` on the `ORDER
   BY` and on the cursor comparison.
 - `ClaimDue` "tenants take turns" is rank-major: the first task of each tenant
-  before the second of any (`Claim/TenantsTakeTurns`).
+  before the second of any (`Claim/TenantsTakeTurns`). `spi.SelectClaims`
+  implements it for a backend that chooses in Go.
+- `ClaimDue` sets `ClaimedFromLostOwner` on each returned task it took from a
+  stale or missing owner; no other method returns it set
+  (`Claim/LostOwnerFlagged`).
+- A joining method refuses a tenant that is not the tenant of the
+  transaction on `ctx` with `spi.ErrTxTenantMismatch`
+  (`Tenant/JoiningWriteOtherTenantRefused`).
+- `RecordAttempt` may return `ErrTaskBusy` (C6); the caller retries.
+- `Fail` leaves `LastAttemptTime`, `Attempts` and `LostOwners` unchanged
+  (`Fail/Fields`).
+- An audit event recorded in a transaction that rolls back is not kept
+  (`Audit/RolledBackEventNotKept`).
 - `GiveBackIdle` leaves the task claimable at the same `NowMs`.
 - The suite's owners never heartbeat unless a test says so; a missing record
   must count as stale under any `StaleAfter`.
@@ -3827,12 +4311,9 @@ pseudo-version in all four `go.mod`s, runs `make repin-plugins`, drops the
 
 ## Open points
 
-1. **Suite entry-point name.** `interfaces.md` binds
-   `func runScheduledTasks(t *testing.T, h Harness)`. Every existing group is
-   `runXSuite(t, h, tracker)` (`spitest/spitest.go:149-159`), and the tracker
-   is what makes `Harness.Skip` keys work. This section uses
-   `runScheduledTasksSuite(t *testing.T, h Harness, tracker *skipTracker)`.
-   Please fold that into `interfaces.md`.
+1. **Closed (README C-S2).** The entry point is
+   `runScheduledTasksSuite(t *testing.T, h Harness, tracker *skipTracker)`,
+   as `interfaces.md` states.
 2. **"Not implemented" has no SPI sentinel.** The spec says such a backend
    skips. This section uses the standard library's `errors.ErrUnsupported`
    rather than adding an SPI name. Cassandra's current
@@ -3846,8 +4327,9 @@ pseudo-version in all four `go.mod`s, runs `make repin-plugins`, drops the
    subtest for the scheduled-task writes. For the audit write and the commit
    the harness does not allow it — see the S-6 note.) Nothing else rejects deterministically
    on every backend, so the conformance case uses error text that breaks the
-   documented precondition. That makes memory and SQLite validate the text,
-   and needs the PostgreSQL `CHECK` above. The alternative, a harness hook
+   documented precondition. That makes memory and SQLite validate the text
+   (through `spi.ValidateTaskErrorText`, S-3a), and needs the PostgreSQL
+   `CHECK` above (BP-4). The alternative, a harness hook
    that makes a store reject, would be a test seam in each backend.
 4. **`RemoveLife` and C1.** PostgreSQL at REPEATABLE READ raises 40001 for a
    `DELETE … WHERE arm_token = old` when the row changed after the snapshot,

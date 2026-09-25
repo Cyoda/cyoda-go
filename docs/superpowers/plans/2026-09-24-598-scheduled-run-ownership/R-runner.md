@@ -108,8 +108,9 @@ R-1 ── R-2 ── R-3 ── R-4 ── R-5 ── R-6 ── R-7 ── R-8
 ```
 
 R-2, R-3 and R-5 need nothing outside the package. R-4 needs `workflow.RunReport`.
-R-6 needs the E additions named in Open point 2 and the S field named in Open
-point 1.
+R-6 needs the E additions of README C-G1 and the S field of README C-S1.
+R-11 also needs T-1, T-3 and Q-5, which land between R-10 and R-11 (README
+"Order of work", C-P5); R-11 carries T-2's rewrites in its commit.
 
 ---
 
@@ -1064,14 +1065,16 @@ lost 3 times" (`MaxLostOwners` reaches the engine).
 
 **Interfaces:**
 - Consumes:
-  - S: `spi.ScheduledTaskStore` (`ClaimDue`, `Heartbeat`, `GiveBackIdle`, `SweepOwners`, `SweepMarks`, `RecordAttempt`, `Fail`, `RetireOwner`), `spi.ClaimRequest`, `spi.TaskRef`, `spi.TaskClaim`, `spi.ScheduledTaskRunning`, and the requested `ScheduledTask.ClaimedFromLostOwner` (Open point 1).
-  - E: `workflow.RunReport`, `workflow.WithRunGuard`, `workflow.RunGuard{Ref, Store, Done, NoNewUnsafe, Unsafe}`, `workflow.UnsafeFlight`, `workflow.RunGuardFrom` (tests only), `workflow.OutcomeFailed` and the other outcomes (Open point 2).
+  - S: `spi.ScheduledTaskStore` (`ClaimDue`, `Heartbeat`, `GiveBackIdle`, `SweepOwners`, `SweepMarks`, `RecordAttempt`, `Fail`, `RetireOwner`), `spi.ClaimRequest`, `spi.TaskRef`, `spi.TaskClaim`, `spi.ScheduledTaskRunning`, and `ScheduledTask.ClaimedFromLostOwner` (README C-S1).
+  - E: `workflow.RunReport`, `workflow.WithRunGuard`, `workflow.RunGuard{Ref, Store, Done, NoNewUnsafe, Unsafe}`, `workflow.UnsafeFlight`, `workflow.RunGuardFrom` (tests only), `workflow.OutcomeFailed` and the other outcomes (README C-G1).
   - R-2 … R-5.
 - Produces:
   - `type Firer interface{ FireScheduledTransition(ctx context.Context, task spi.ScheduledTask, maxLostOwners int, retryDelay time.Duration) workflow.RunReport }`
   - `type Deps struct{ Store spi.StoreFactory; TxManager spi.TransactionManager; Firer Firer; Clock Clock; HealthFlag *atomic.Bool; Meter metric.Meter; CalloutDeadlineMax time.Duration }`
   - `func New(cfg Config, deps Deps) *Service`, `func (s *Service) Start(ctx context.Context) error`, `func (s *Service) Stop()` (R-9 turns `Stop` into `Drain`)
   - span `scheduler.run` with attribute `outcome`
+  - the INFO log line `scheduler started` with `incarnation=<uuid>`, once per started service (README C-R2)
+  - test helpers `syncBuffer` and `captureLogs(t) *syncBuffer` in `fakes_test.go` (R-7 uses them)
 
 - [ ] **Step 1: Write the test doubles**
 
@@ -1081,9 +1084,11 @@ lost 3 times" (`MaxLostOwners` reaches the engine).
 package scheduler
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -1388,6 +1393,35 @@ func receive[T any](t *testing.T, ch <-chan T) T {
 		return zero
 	}
 }
+
+// syncBuffer is a log sink the service's goroutines may write while a test
+// reads it.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// captureLogs sends the default logger to a JSON buffer until the test ends.
+func captureLogs(t *testing.T) *syncBuffer {
+	t.Helper()
+	buf := &syncBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return buf
+}
 ```
 
 - [ ] **Step 2: Write the failing tests**
@@ -1402,6 +1436,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1414,6 +1449,39 @@ import (
 )
 
 var fired = workflow.RunReport{Outcome: workflow.OutcomeFired}
+
+// Start logs "scheduler started" at INFO with the incarnation, once (README
+// C-R2). The multi-node scenarios map a claim's owner to its pnode by this
+// line; nothing else exposes the mapping. A disabled service logs nothing.
+func TestService_StartLogsItsIncarnation(t *testing.T) {
+	logs := captureLogs(t)
+	h := newHarness(t, testConfig(), reportFirer(fired))
+	h.start(t)
+	if err := h.svc.Start(context.Background()); err != nil {
+		t.Fatalf("second Start: %v", err)
+	}
+	var lines []string
+	for _, l := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(l, `"msg":"scheduler started"`) {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) != 1 {
+		t.Fatalf("%d 'scheduler started' lines, want exactly 1: %v", len(lines), lines)
+	}
+	if !strings.Contains(lines[0], `"level":"INFO"`) ||
+		!strings.Contains(lines[0], `"incarnation":"`+h.svc.incarnation.String()+`"`) {
+		t.Errorf("line = %s, want INFO with incarnation=%s", lines[0], h.svc.incarnation)
+	}
+
+	off := testConfig()
+	off.Enabled = false
+	before := strings.Count(logs.String(), `"msg":"scheduler started"`)
+	newHarness(t, off, reportFirer(fired)).start(t)
+	if after := strings.Count(logs.String(), `"msg":"scheduler started"`); after != before {
+		t.Error("a disabled scheduler logged 'scheduler started'")
+	}
+}
 
 func TestService_DisabledStartsNothing(t *testing.T) {
 	cfg := testConfig()
@@ -1984,6 +2052,9 @@ func (s *Service) Start(ctx context.Context) error {
 		go s.watchdogLoop()
 		go s.heartbeatLoop()
 		go s.loop()
+		// The multi-node scenarios map a claim's owner to its pnode by this
+		// line (README C-R2). The incarnation is an identifier, not a secret.
+		slog.Info("scheduler started", "pkg", "scheduler", "incarnation", s.incarnation.String())
 	})
 	return err
 }
@@ -2438,14 +2509,11 @@ with its reason"; "`lastError` of a non-sentinel store error is 'internal error
 package scheduler
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -2457,31 +2525,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 )
 
-type syncBuffer struct {
-	mu sync.Mutex
-	b  bytes.Buffer
-}
-
-func (s *syncBuffer) Write(p []byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.b.Write(p)
-}
-
-func (s *syncBuffer) String() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.b.String()
-}
-
-func captureLogs(t *testing.T) *syncBuffer {
-	t.Helper()
-	buf := &syncBuffer{}
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-	return buf
-}
+// syncBuffer and captureLogs are R-6's (fakes_test.go).
 
 var safeFailure = workflow.RunReport{Outcome: workflow.OutcomeFailed, Err: errors.New("boom")}
 
@@ -3276,7 +3320,7 @@ func TestDrain_AnUnsafeCalloutInFlightIsNotCut(t *testing.T) {
 	h := newHarness(t, drainConfig(), firerFunc(func(ctx context.Context, _ spi.ScheduledTask, _ int, _ time.Duration) workflow.RunReport {
 		g := workflow.RunGuardFrom(ctx)
 		g.Unsafe.Begin()
-		<-g.Draining
+		<-g.NoNewUnsafe
 		time.Sleep(100 * time.Millisecond) // past step 2's 20ms: step 3 has run
 		cut.Store(ctx.Err() != nil)
 		g.Unsafe.End()
@@ -3297,7 +3341,7 @@ func TestDrain_AnUnsafeCalloutInFlightIsNotCut(t *testing.T) {
 
 func TestDrain_ReachingANewUnsafeDispatchAfterTheSignalCountsAsCut(t *testing.T) {
 	h := newHarness(t, testConfig(), firerFunc(func(ctx context.Context, _ spi.ScheduledTask, _ int, _ time.Duration) workflow.RunReport {
-		<-workflow.RunGuardFrom(ctx).Draining
+		<-workflow.RunGuardFrom(ctx).NoNewUnsafe
 		return workflow.RunReport{Outcome: workflow.OutcomeFailed,
 			Err: fmt.Errorf("unsafe dispatch refused after shutdown began: %w", context.Canceled)}
 	}))
@@ -3728,26 +3772,11 @@ func TestSchedulerCalloutDeadlineMax_AtTheDefaults(t *testing.T) {
 }
 ```
 
-Append to `app/config_registry_binding_test.go`:
+No test in `app` names the six removed settings: a test that spelled them
+would fail the §15 exit check and Step 6 below. The §15 grep is the guard for
+the removed names.
 
-```go
-// TestRootConfigVars_RemovedSchedulerSettingsAreGone pins the settings the
-// claim-based scheduler removed; the §15 exit grep proves no source reads them.
-func TestRootConfigVars_RemovedSchedulerSettingsAreGone(t *testing.T) {
-	removed := []string{
-		"CYODA_SCHEDULER_DISTRIBUTION", "CYODA_SCHEDULER_COORDINATOR", "CYODA_SCHEDULER_REDISPATCH_BACKOFF",
-		"CYODA_SCHEDULER_BATCH_SIZE", "CYODA_SCHEDULER_EXPIRY_GRACE", "CYODA_DISPATCH_FORWARD_TIMEOUT",
-	}
-	for _, v := range help.RootConfigVars() {
-		if slices.Contains(removed, v.Name) {
-			t.Errorf("%s is still registered", v.Name)
-		}
-	}
-}
-```
-(add `"slices"` to its imports).
-
-In the same file's `defaultFor`, replace the scheduler block (`:170-177`) with:
+In `app/config_registry_binding_test.go`'s `defaultFor`, replace the scheduler block (`:170-177`) with:
 ```go
 		// --- scheduler ---
 		"CYODA_SCHEDULER_ENABLED":             strconv.FormatBool(c.Scheduler.Enabled),
@@ -4066,75 +4095,50 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task R-11: Callers in the e2e suites
+### Task R-11: Callers in the e2e suites (with T-2, one commit)
 
-**Spec:** §6.6 ("their tests"), §15.
+**Spec:** §6.6 ("their tests"), §15; README C-T1, C-P5.
 
 TDD waiver: these edits make test code compile against the new service and
-remove a test of a route that no longer exists. The replacement coverage is
-named in Open point 7.
+remove a test of a route that no longer exists. The rewritten tests are
+T-2's; T-2's teeth are checked here (T-2 Step 5).
 
-**Files:**
-- Modify: `internal/e2e/scheduled_transition_test.go` (`:20-65`)
-- Modify: `internal/e2e/scheduled_function_test.go` (`:540-596`)
-- Modify: `internal/e2e/e2e_test.go` (`:158-171`)
-- Modify: `internal/e2e/callback_harness_test.go` (`:265-273`)
-- Modify: `internal/e2e/tx_lifecycle_e2e_test.go` (`:510-737`)
-- Modify: `internal/e2e/callout_handover_lost_test.go` (`:36-42`)
-- Modify: `e2e/parity/multinode/attribution.go` (`:185-270`)
+**Why one commit with T-2.** R-10 removes `scheduler.NewService`, the
+scheduler RPC and `ScanDue`, and `internal/e2e` stops compiling. T-2 rewrites
+every test that relied on them onto T-1's isolated scheduler stacks. A
+scheduler on the shared e2e database would claim other tests' tasks (a claim is
+cross-tenant), so this task starts no scheduler against `testApp`: the tests
+that need a fire run on `newSchedulerHarness` / `newSchedulerCallbackHarness`
+(T-1), each on a database of its own. So `go vet ./...` never sees a broken
+`internal/e2e`, and no stack runs a scheduler on the shared database.
+
+**Needs:** R-10; T-1 (the scheduler stacks, `schedDB`, `uniq`); T-3 (`taskOf`,
+`awaitTask`); Q-5 (`client.ListScheduledTasks`). The Order of work puts T-1 and
+T-3 after Q-5 and before this task.
+
+**Files:** the union of this task's and T-2's:
+- Modify: `internal/e2e/scheduled_transition_test.go`, `internal/e2e/scheduled_function_test.go`,
+  `internal/e2e/scheduled_attribution_test.go`, `internal/e2e/callout_modes_test.go`,
+  `internal/e2e/tx_lifecycle_e2e_test.go` (`:510-737`), `internal/e2e/callout_handover_lost_test.go` (`:36-42`),
+  `internal/e2e/e2e_test.go` (`:158-172`), `internal/e2e/scheduler_harness_test.go` (`schedEvents`)
+- Modify: `e2e/parity/scheduledtransition/scheduledtransition.go`, `e2e/parity/scheduledfunction/scheduledfunction.go`
+- Modify: `e2e/parity/multinode/attribution.go` (`:26-31`, `:61-79`, `:185-275`), `e2e/parity/multinode/attribution_skip_test.go`
+- Modify: `cmd/compute-test-client/catalog.go` (`:283-295` comment)
 
 **Interfaces:**
-- Consumes: R-10 (`scheduler.New`, `Deps`, `App.TransactionManager`, `App.WorkflowEngine`, `App.StoreFactory`).
-- Produces: `func startSchedulerFor(t *testing.T, a *app.App)` in `internal/e2e` (package `e2e_test`).
+- Consumes: R-10 (`scheduler.New`, `Deps`, `app.SchedulerConfig`); T-1
+  (`newSchedulerHarness`, `newSchedulerCallbackHarness`, `newStackOn`,
+  `schedDB.{task,count,pool}`, `uniq`); T-3 (`taskOf`); Q-5
+  (`client.ListScheduledTasks`).
+- Produces: `schedEvents(t, h, entityID)` in `internal/e2e/scheduler_harness_test.go` (T-2).
+  No test starts a scheduler on the shared e2e database.
 
-- [ ] **Step 1: Replace the test scheduler helper**
+- [ ] **Step 1: Apply T-2's rewrites**
 
-`internal/e2e/scheduled_transition_test.go`: replace the `scheduledFireTimeout` comment's reason ("a scan is cross-tenant and node-blind, so exactly one scheduler may scan it") with "a claim is cross-tenant, and testApp's engine knows none of a harness's callouts", and replace `startTestScheduler` (`:35-65`) with:
-
-```go
-// startTestScheduler starts a scheduler of this test's own against testApp and
-// stops it when the test ends. testApp's own scheduler is disabled (see
-// TestMain), so this one claims testApp's tasks.
-func startTestScheduler(t *testing.T) {
-	t.Helper()
-	startSchedulerFor(t, testApp)
-}
-
-// startSchedulerFor starts a scheduler for a, claiming every 100ms, and stops
-// it when the test ends.
-func startSchedulerFor(t *testing.T, a *app.App) {
-	t.Helper()
-	svc := scheduler.New(scheduler.Config{
-		Enabled: true, ScanInterval: 100 * time.Millisecond, MaxRuns: 8, MaxRunsPerTenant: 4,
-		HeartbeatInterval: 15 * time.Second, StaleAfter: 2 * time.Minute, MaxLostOwners: 3,
-		RetryDelay: time.Second, RetryDelayMax: time.Minute, ShutdownDrain: 5 * time.Second,
-	}, scheduler.Deps{
-		Store:              a.StoreFactory(),
-		TxManager:          a.TransactionManager(),
-		Firer:              a.WorkflowEngine(),
-		Clock:              scheduler.NewRealClock(),
-		CalloutDeadlineMax: time.Minute,
-	})
-	if err := svc.Start(context.Background()); err != nil {
-		t.Fatalf("start scheduler: %v", err)
-	}
-	t.Cleanup(svc.Stop)
-}
-```
-
-`internal/e2e/scheduled_function_test.go`: replace `:576-596` (the adapter, the executor, `scheduler.NewService`, `Start`, `defer Stop`) with `startSchedulerFor(t, h.app)`, and in the comment above the test (`:544-549`) replace "only starting a bespoke scheduler.Service (mirrors TestE2E_ScheduledTransition_RestartDurability's fresh-instance pattern)" with "only starting a scheduler of its own (startSchedulerFor)".
-
-`internal/e2e/e2e_test.go:158-171`, the comment above `cfg.Scheduler.Enabled = false`:
-```go
-	// testApp shares this PostgreSQL database with every per-test harness. Its
-	// scheduler would claim their due tasks too — a claim is cross-tenant — and
-	// run them with testApp's own processors, which know none of a harness's
-	// callouts. So testApp claims nothing: tests that need a scheduled fire
-	// against testApp start a scheduler of their own (startTestScheduler in
-	// scheduled_transition_test.go). Plain config, no test hook.
-```
-
-`internal/e2e/callback_harness_test.go:269-272`: "…so it can drive its own bespoke, precisely-timed scheduler.Service instead (mirrors TestE2E_ScheduledTransition_RestartDurability's approach)…" → "…so it can start a scheduler of its own (startSchedulerFor) at the moment it chooses…".
+Apply T-2 Steps 1–4 (every row of T-2's table). Rows 13, 14 and 20 are the same
+edits as Steps 2 and 3 below; make them once, with the text of Steps 2 and 3,
+and T-2's comment for `clusterHMACSecret32`. `testApp` keeps
+`cfg.Scheduler.Enabled = false` with T-2 row 15's comment.
 
 - [ ] **Step 2: Remove the scheduler RPC test**
 
@@ -4156,10 +4160,17 @@ func startSchedulerFor(t *testing.T, a *app.App) {
 Run:
 ```
 go build ./... && go vet ./...
-go test ./internal/e2e/... -run 'TestE2E_ScheduledTransition|TestScheduledFunction'
+make preflight
+go test ./internal/e2e/ -run 'TestE2E_ScheduledTransition|TestScheduledFunction|TestAttribution_Scheduled|TestCalloutModes_ScheduledFire|TestSchedulerHarness_OwnDatabase'
+go test -count=1 ./e2e/parity/memory/ ./e2e/parity/sqlite/ ./e2e/parity/postgres/ -run 'TestParity/Scheduled|TestMultiNode/Attribution_ScheduledFire'
 make test
 ```
-Expected: build and vet clean; the two e2e groups `ok` (Docker required); `make test` green. If a scheduled e2e test fails on a timing that stream E or T changed (grace band removed, retry delay), it is theirs to adapt: report it, do not patch the assertion here.
+Expected: build and vet clean; every listed test `ok` (Docker required),
+T-1's `TestSchedulerHarness_OwnDatabase` included (its GREEN is first
+observable here, when `internal/e2e` compiles again); `make test` green. Then
+T-2 Step 5's grep and its two teeth. If a scheduled e2e test fails on a timing
+that stream E or T changed (grace band removed, retry delay), it is theirs to
+adapt: report it, do not patch the assertion here.
 
 - [ ] **Step 5: Exit check for the e2e suites**
 
@@ -4167,17 +4178,28 @@ Run:
 ```
 git grep -n -e SchedulerRPC -e ClusterExecutor -e dispatch/scheduled-task -e 'scheduler\.NewService' \
   -e NewSchedulerEngine -e LowestLiveNodeID -e 'scheduler\.Self' -e RedispatchBackoff -e peerFireMarker \
+  -e startTestScheduler \
   -- internal/e2e e2e
 ```
 Expected: no output.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Commit (this task and T-2)**
 
 ```
 git add internal/e2e/scheduled_transition_test.go internal/e2e/scheduled_function_test.go \
-  internal/e2e/e2e_test.go internal/e2e/callback_harness_test.go internal/e2e/tx_lifecycle_e2e_test.go \
-  internal/e2e/callout_handover_lost_test.go e2e/parity/multinode/attribution.go
-git commit -m "test(e2e): start the claim-based scheduler in e2e; drop the scheduler RPC test
+  internal/e2e/scheduled_attribution_test.go internal/e2e/callout_modes_test.go \
+  internal/e2e/tx_lifecycle_e2e_test.go internal/e2e/callout_handover_lost_test.go \
+  internal/e2e/e2e_test.go internal/e2e/scheduler_harness_test.go \
+  e2e/parity/scheduledtransition/scheduledtransition.go \
+  e2e/parity/scheduledfunction/scheduledfunction.go \
+  e2e/parity/multinode/attribution.go e2e/parity/multinode/attribution_skip_test.go \
+  cmd/compute-test-client/catalog.go
+git commit -m "test(scheduler): rewrite the scheduled tests for one owner per run; drop the scheduler RPC test
+
+The bespoke scan loops, the grace band, the scheduler RPC and the
+peer-fire log line are gone. Tests that need a fire run on a stack with
+its own scheduler and database; the restart tests restart a real stack.
+No scheduler runs on the shared e2e database.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -4337,7 +4359,7 @@ git grep -n -e RedispatchAfter -e RedispatchBackoff -e MarkRedispatch -e Attempt
   -e CYODA_SCHEDULER_DISTRIBUTION -e CYODA_SCHEDULER_COORDINATOR -e CYODA_SCHEDULER_REDISPATCH_BACKOFF \
   -e CYODA_SCHEDULER_BATCH_SIZE -e CYODA_SCHEDULER_EXPIRY_GRACE -e CYODA_DISPATCH_FORWARD_TIMEOUT \
   -e ExpiryGrace -e expiryGrace \
-  -- . ':!*/migrations/*' ':!docs/plans' ':!docs/superpowers' ':!docs/release-notes' ':!CHANGELOG.md'
+  -- . ':!*/migrations/*' ':!*migration*_test.go' ':!docs/plans' ':!docs/superpowers' ':!docs/release-notes' ':!CHANGELOG.md'
 ```
 Expected: no hit in a file this stream touched. The remaining hits must all be in files other streams own (`docs/ARCHITECTURE.md` `:943, :1992, :2248` for stream D; `COMPATIBILITY.md:37`, Open point 8; the plugins and `internal/domain/workflow` for S/BM/BQ/BP/E if they are not finished). List them in the task report.
 
@@ -4413,7 +4435,7 @@ part is another stream's.
 | a run still live after step 4 is not given back | U | R-9 `TestDrain_ARunStillLiveAfterStepFourIsNotGivenBack` |
 | bookkeeping stops at its shutdown deadline | U | R-9 `TestDrain_BookkeepingStopsAtItsShutdownDeadline` |
 | each new variable: its default and its validation failure | U | R-10 `TestDefaultConfig_Scheduler`, `…SchedulerEnvOverrides`, `TestValidateScheduler`, `TestConfigValidate_RejectsAnInvalidSchedulerSetting` |
-| each removed variable is no longer read | U | R-10 `TestRootConfigVars_RemovedSchedulerSettingsAreGone` and the R-10 / R-12 exit greps |
+| each removed variable is no longer read | — | the R-10 / R-12 exit greps and the spec §15 exit check (no test names the removed settings) |
 
 The E, M, P and S cells of these rows are other streams'.
 
@@ -4425,40 +4447,30 @@ The E, M, P and S cells of these rows are other streams'.
 - `func MinStaleAfter(heartbeat time.Duration) time.Duration`.
 - `decideBookkeeping`, `Bookkeeping`, `BookkeepingKind` (`NoneKind`, `RecordAttemptKind`, `FailKind`), `recordedError`, `sanitiseErrorText` — as in `interfaces.md`.
 - Instruments `cyoda.scheduler.runs`, `.run.duration`, `.runs.in_progress`, `.claims`, `.heartbeat.failures`, `.bookkeeping.retries`; span `scheduler.run` with `outcome`.
-- Log lines for stream T and D: WARN `scheduled run failed; the task waits for its next attempt`; ERROR `scheduled task FAILED` (`reason`, `ticket`); WARN `scheduler heartbeats failed for the whole watchdog window; cancelled every run in progress`.
+- Log lines for stream T and D: INFO `scheduler started` with `incarnation` (R-6, README C-R2); WARN `scheduled run failed; the task waits for its next attempt`; ERROR `scheduled task FAILED` (`reason`, `ticket`); WARN `scheduler heartbeats failed for the whole watchdog window; cancelled every run in progress`.
 - The audit event `SCHEDULED_TRANSITION_FAIL`: `Data{transition, sourceState, reason, attempts, lostOwners}`, `State` = the entity's state in the Fail transaction (the source state when the entity is gone), `TransactionID` = that transaction.
 
 **Produces** (`app`, `cmd/cyoda`):
 - `app.SchedulerConfig` with the ten fields of `scheduler.Config`, in its order; `app.ValidateScheduler`; `(*app.App).DrainScheduler(ctx)`.
 - `runServers(rootCtx, a, cfg, ls, drainScheduler func(context.Context)) error`.
-- `internal/e2e`: `startSchedulerFor(t, a *app.App)`.
+- `internal/e2e`: nothing of R's. R-11 carries T-2's `schedEvents` and starts no scheduler on the shared e2e database (README C-P5).
 
 **Consumes:**
-- S: `ScheduledTaskStore` (`ClaimDue`, `Heartbeat`, `RetireOwner`, `SweepOwners`, `GiveBackIdle`, `RecordAttempt`, `Fail`, `SweepMarks`), `ClaimRequest`, `TaskRef`, `TaskClaim`, `Attempt`, `Failure`, the statuses and reasons, `ErrStaleClaim`, `ErrStoreRejected`, `SMEventScheduledTransitionFailed`; **requested:** `ScheduledTask.ClaimedFromLostOwner bool` (Open point 1).
-- E: `RunReport` and the outcomes, `WithRunGuard`, `*Engine` satisfying `Firer`; **requested:** `RunGuard.Draining`, `RunGuard.Unsafe`, `type UnsafeFlight`, exported `RunGuardFrom` (Open point 2).
+- S: `ScheduledTaskStore` (`ClaimDue`, `Heartbeat`, `RetireOwner`, `SweepOwners`, `GiveBackIdle`, `RecordAttempt`, `Fail`, `SweepMarks`), `ClaimRequest`, `TaskRef`, `TaskClaim`, `Attempt`, `Failure`, the statuses and reasons, `ErrStoreRejected`, `ErrStaleClaim`, `SMEventScheduledTransitionFailed`, `ScheduledTask.ClaimedFromLostOwner` (README C-S1).
+- E: `RunReport` and the outcomes, `WithRunGuard`, `*Engine` satisfying `Firer`, `RunGuard.NoNewUnsafe`, `RunGuard.Unsafe`, `type UnsafeFlight`, exported `RunGuardFrom` (README C-G1).
+- T (for R-11): T-1's scheduler stacks, T-3's `taskOf`; Q-5's `client.ListScheduledTasks`.
 - BP: nothing called directly; the scheduler pool serves the never-joining methods above.
 
 ## Open points
 
-1. **SPI: which claims took a task from a lost owner.** `cyoda.scheduler.claims{reason}` needs to know it per task, and `ClaimDue`'s result does not say. R-6 reads a requested field `ScheduledTask.ClaimedFromLostOwner bool`, set only on a `ClaimDue` result, when this claim took the task from a stale or missing owner. The lead folds it into `interfaces.md`; stream S adds it with a `spitest` case; BM, BQ and BP set it.
+1. **Closed (README C-S1).** `ScheduledTask.ClaimedFromLostOwner` is S-2's
+   field with S-5's `Claim/LostOwnerFlagged` case; BM-2, BQ-2 and BP-4 set it;
+   R-6 reads it for `cyoda.scheduler.claims{reason}`.
 
-2. **E: what the run guard must carry for shutdown.** §6.4 step 3 exempts a run whose unsafe callout is in flight, and from step 1 no run may start a new unsafe dispatch. The service can only learn both through the guard. R uses, and asks E to provide:
-   ```go
-   type RunGuard struct {
-       Ref      spi.TaskRef
-       Store    spi.ScheduledTaskStore
-       Done     <-chan struct{} // the run's cancellation
-       Draining <-chan struct{} // closed at shutdown step 1
-       Unsafe   *UnsafeFlight   // the engine brackets each unsafe dispatch with it
-   }
-   // UnsafeFlight records whether an unsafe processor callout of the run is in flight.
-   type UnsafeFlight struct{ mu sync.Mutex; n int; since time.Time }
-   func (f *UnsafeFlight) Begin()                     // n++; since = now when n goes 0 → 1
-   func (f *UnsafeFlight) End()                       // n--
-   func (f *UnsafeFlight) Since() (time.Time, bool)   // start of the oldest one in flight; false when none
-   func RunGuardFrom(ctx context.Context) *RunGuard   // exported; the scheduler's tests read it
-   ```
-   Engine protocol at each unsafe dispatch site under a guard: `Unsafe.Begin()` first; then if `Draining` is closed, no `MarkUnsafe` and no dispatch, and the run ends `OutcomeFailed` with an error that satisfies `errors.Is(err, context.Canceled)` (the scheduler reads that as "cut"); then the `Done` check, `MarkUnsafe`, the dispatch; `Unsafe.End()` when the dispatch returns. Begin before the `Draining` check closes the window in which step 3 could see nothing in flight while a dispatch is about to start.
+2. **Closed (README C-G1).** The run guard is `RunGuard{Ref, Store, Done,
+   NoNewUnsafe, Unsafe}` with `UnsafeFlight` and the exported `RunGuardFrom`
+   (E-5). R's `Draining` is E's `NoNewUnsafe`; R-9's tests read
+   `g.NoNewUnsafe`.
 
 3. **Spec §5.3 and §6.4 differ on the exempt run.** §5.3 says a run with an unsafe callout in flight "is exempt until that callout ends"; §6.4 says it then "may go on with safe dispatches … and commits, until the step-4 bound". R follows §6.4: step 3 happens once, and an exempt run is never cancelled afterwards; step 4 bounds it, and a run still live then keeps its claim (reclaimed after `STALE_AFTER`). Cancelling it when its callout ends would turn a callout that succeeded into a FAILED task. The lead confirms and aligns §5.3.
 

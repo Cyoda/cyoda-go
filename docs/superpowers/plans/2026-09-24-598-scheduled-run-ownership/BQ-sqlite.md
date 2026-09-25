@@ -1189,8 +1189,11 @@ process restart".
 **Interfaces:**
 - Consumes: BQ-1's view, `fenced`, `readTasks`, `selectTaskSQL`,
   `commitTaskWrites`; the commit gate.
-- Produces: `selectClaims(cands []spi.ScheduledTask, req spi.ClaimRequest)
-  []spi.ScheduledTask` — the same function, byte for byte, as BM-2's.
+- Consumes also: `spi.SelectClaims` (S-3a, README C-P2) — the claim choice
+  BM-2 shares; `ScheduledTask.ClaimedFromLostOwner` (README C-S1).
+- Produces: nothing exported. `ClaimDue` sets `ClaimedFromLostOwner` on each
+  returned task it took from a stale or missing owner, on the returned copy
+  only: the stored row never carries it.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1370,7 +1373,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -1447,84 +1449,33 @@ func (s *scheduledTaskStore) ClaimDue(ctx context.Context, req spi.ClaimRequest)
 		return nil, fmt.Errorf("failed to scan due scheduled tasks: %w", err)
 	}
 
-	chosen := selectClaims(cands, req)
+	// spi.SelectClaims (S-3a) applies the rules every backend shares: one
+	// task per entity, the per-tenant limits, tenants taking turns.
+	chosen := spi.SelectClaims(cands, req)
 	ops := make([]scheduledTaskOp, 0, len(chosen))
+	fromLostOwner := make([]bool, 0, len(chosen))
 	for _, c := range chosen {
 		t := copyScheduledTask(c)
-		if t.Status == spi.ScheduledTaskRunning {
+		lost := t.Status == spi.ScheduledTaskRunning
+		if lost {
 			t.LostOwners++
 		}
 		t.Status = spi.ScheduledTaskRunning
 		t.Claim = &spi.TaskClaim{Token: uuid.New(), Owner: req.Owner}
 		ops = append(ops, scheduledTaskOp{key: taskKey{tenant: t.TenantID, id: t.ID}, after: &t})
+		fromLostOwner = append(fromLostOwner, lost)
 	}
 	if err := s.tm.commitTaskWrites(ctx, ops, nil); err != nil {
 		return nil, err
 	}
 	out := make([]spi.ScheduledTask, 0, len(ops))
-	for _, op := range ops {
-		out = append(out, copyScheduledTask(*op.after))
+	for i, op := range ops {
+		claimed := copyScheduledTask(*op.after)
+		// Set on the returned copy only; no column stores it.
+		claimed.ClaimedFromLostOwner = fromLostOwner[i]
+		out = append(out, claimed)
 	}
 	return out, nil
-}
-
-// selectClaims picks the tasks one ClaimDue call takes from cands: one per
-// entity, at most PerTenantLimit − TenantInProgress per tenant, at most Limit
-// in all. Within a tenant the order is (NextAttemptTime, ID). Tenants take
-// turns, one task per turn; the tenant with the earliest candidate goes
-// first, ties broken by tenant id. The memory plugin has the same function.
-func selectClaims(cands []spi.ScheduledTask, req spi.ClaimRequest) []spi.ScheduledTask {
-	sort.Slice(cands, func(i, j int) bool {
-		a, b := cands[i], cands[j]
-		if a.NextAttemptTime != b.NextAttemptTime {
-			return a.NextAttemptTime < b.NextAttemptTime
-		}
-		if a.TenantID != b.TenantID {
-			return a.TenantID < b.TenantID
-		}
-		return a.ID < b.ID
-	})
-	var tenants []spi.TenantID
-	queues := make(map[spi.TenantID][]spi.ScheduledTask)
-	for _, c := range cands {
-		if _, ok := queues[c.TenantID]; !ok {
-			tenants = append(tenants, c.TenantID)
-		}
-		queues[c.TenantID] = append(queues[c.TenantID], c)
-	}
-	quota := make(map[spi.TenantID]int, len(tenants))
-	for _, tn := range tenants {
-		quota[tn] = req.PerTenantLimit - req.TenantInProgress[tn]
-	}
-
-	type entityKey struct {
-		tenant spi.TenantID
-		id     string
-	}
-	seen := make(map[entityKey]bool)
-	var out []spi.ScheduledTask
-	for progress := true; progress && len(out) < req.Limit; {
-		progress = false
-		for _, tn := range tenants {
-			if len(out) >= req.Limit {
-				break
-			}
-			for quota[tn] > 0 && len(queues[tn]) > 0 {
-				c := queues[tn][0]
-				queues[tn] = queues[tn][1:]
-				ek := entityKey{tenant: tn, id: c.EntityID}
-				if seen[ek] {
-					continue
-				}
-				seen[ek] = true
-				quota[tn]--
-				out = append(out, c)
-				progress = true
-				break
-			}
-		}
-	}
-	return out
 }
 
 // GiveBackIdle returns to WAITING, uncounted, every task RUNNING under owner
@@ -1663,9 +1614,9 @@ cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownersh
 ```
 cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership && git add plugins/sqlite/scheduled_task_claims.go plugins/sqlite/scheduled_task_claims_test.go && git commit -m "feat(sqlite): claims, owner liveness, marks and attempts
 
-ClaimDue scans, chooses and writes its claims in one sqlTx under the
-commit gate: one task per entity, per-tenant limits with turns, lost
-owners by the store clock. Marks and heartbeats are durable, so a
+ClaimDue scans, chooses (spi.SelectClaims) and writes its claims in one
+sqlTx under the commit gate: one task per entity, per-tenant limits with
+turns, lost owners by the store clock, flagged ClaimedFromLostOwner. Marks and heartbeats are durable, so a
 restart with a mark set is never re-run.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
@@ -2193,7 +2144,7 @@ In `plugins/sqlite/scheduled_task_claims.go`:
   			free = append(free, c)
   		}
   	}
-  	chosen := selectClaims(free, req)
+  	chosen := spi.SelectClaims(free, req)
   ```
 - `GiveBackIdle`: add `busy := s.tm.busyTaskKeys()` after the scan and change
   the skip to `if kept[t.Claim.Token] || busy[taskKey{tenant: t.TenantID, id: t.ID}] {`.
@@ -2235,7 +2186,6 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 … (every backend sets the marker)".
 
 **Files:**
-- Create: `plugins/sqlite/scheduled_task_validate.go`
 - Modify: `plugins/sqlite/errors.go` (new `classifyRejection`)
 - Modify: `plugins/sqlite/scheduled_task_store.go` (`applyTaskOp`,
   `ReconcileForEntity`, `Fail`)
@@ -2245,11 +2195,11 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Create: `plugins/sqlite/scheduled_task_rejected_test.go`
 
 **Interfaces:**
-- Consumes: `spi.ErrStoreRejected`; `sqlite3.CONSTRAINT`, `TOOBIG`,
-  `MISMATCH`, `RANGE`.
-- Produces: `rejectErrorText`, `rejectFailureReason`, `rejectArm`,
-  `maxTaskErrorBytes` (same rules as BM-5); `classifyRejection(error) error`,
-  which BQ-7 also uses for the audit insert.
+- Consumes: `spi.ErrStoreRejected`; `spi.ValidateTaskErrorText`,
+  `spi.ValidateFailureReason`, `spi.ValidateArm` (S-3a, README C-P2) — the
+  validators BM-5 calls; `sqlite3.CONSTRAINT`, `TOOBIG`, `MISMATCH`, `RANGE`.
+- Produces: `classifyRejection(error) error`, which BQ-7 also uses for the
+  audit insert.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2303,10 +2253,6 @@ tests, because they share the package.
 
 - [ ] **Step 3: Write the implementation**
 
-`plugins/sqlite/scheduled_task_validate.go`: the file BM-5 writes as
-`plugins/memory/scheduled_task_validate.go`, with `package sqlite` and no
-other change.
-
 Add to `plugins/sqlite/errors.go`:
 
 ```go
@@ -2346,10 +2292,10 @@ In `plugins/sqlite/scheduled_task_store.go`, `applyTaskOp` returns
 In `MarkUnsafe`, wrap the INSERT's error:
 `return fmt.Errorf("failed to mark scheduled task %s: %w", ref.ID, classifyRejection(err))`.
 
-Add the input checks, each as the first statement, exactly as BM-5 Step 3
-does: `rejectArm(req)` in `ReconcileForEntity`; `rejectFailureReason(f.Reason)`
-then `rejectErrorText(f.Error)` in `Fail`; `rejectErrorText(a.Error)` in
-`RecordAttempt`. The input checks refuse at the call on every backend; the
+Add the input checks, each as the first statement, as BM-5 Step 3 does:
+`spi.ValidateArm(req)` in `ReconcileForEntity`; `spi.ValidateFailureReason(f.Reason)`
+then `spi.ValidateTaskErrorText(f.Error)` in `Fail`;
+`spi.ValidateTaskErrorText(a.Error)` in `RecordAttempt`. The input checks refuse at the call on every backend; the
 schema's CHECKs stay as the table's own guarantee, and `classifyRejection`
 marks any violation of them that reaches SQLite.
 
@@ -2364,10 +2310,10 @@ Expected: `ok`.
 - [ ] **Step 5: Commit**
 
 ```
-cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership && git add plugins/sqlite/scheduled_task_validate.go plugins/sqlite/errors.go plugins/sqlite/scheduled_task_store.go plugins/sqlite/scheduled_task_claims.go plugins/sqlite/export_test.go plugins/sqlite/scheduled_task_rejected_test.go && git commit -m "feat(sqlite): deterministic task-store rejections carry ErrStoreRejected
+cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership && git add plugins/sqlite/errors.go plugins/sqlite/scheduled_task_store.go plugins/sqlite/scheduled_task_claims.go plugins/sqlite/export_test.go plugins/sqlite/scheduled_task_rejected_test.go && git commit -m "feat(sqlite): deterministic task-store rejections carry ErrStoreRejected
 
-Input no backend stores is refused at the call, with the same rules as
-memory. A constraint, too-big, mismatch or range error from SQLite on
+Input no backend stores is refused at the call, by the SPI validators
+memory also calls. A constraint, too-big, mismatch or range error from SQLite on
 a task write is marked as a store rejection; other errors pass through
 to be retried.
 
@@ -2428,10 +2374,19 @@ and add `"errors"` to its imports.
 - [ ] **Step 2: Run the tests and see them fail**
 
 ```
-cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership/plugins/sqlite && go test ./... -run 'TestAudit_|TestSMAudit'
+cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership/plugins/sqlite && go test ./... -run 'TestAudit_|TestSMAudit|TestConformance/Audit/RolledBackEventNotKept'
+cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership && make preflight && go test -count=1 ./e2e/parity/sqlite/ -run 'TestParity/ExternalAPI_05'
 ```
 
-Expected: `ARecordInARolledBackTransactionIsDiscarded` fails with `outside the
+The parity run needs BM-6 merged into this worktree (it deletes the non-TX
+branch of `ExternalAPI_05`, README C-P3); without it, skip that line here and
+run it at the merge of BM and BQ.
+
+Expected: S's `TestConformance/Audit/RolledBackEventNotKept` fails with `an
+event recorded in a rolled-back transaction must not be kept`;
+`TestParity/ExternalAPI_05_TransitionAbortedAuditEventPaired` on SQLite fails
+with `rolled-back update left 1 STATE_MACHINE_START event(s)`;
+`ARecordInARolledBackTransactionIsDiscarded` fails with `outside the
 transaction before commit: 1 events, want 0`;
 `ARecordAfterARolledBackSavepointIsDropped` with two events;
 `AnEventThatCannotBeWrittenIsAStoreRejection` with an error that is not
@@ -2613,9 +2568,13 @@ such a factory has no transaction to stage on. In `GetEvents`, return
 
 ```
 cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership/plugins/sqlite && go test ./... -skip 'TestConformance'
+cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership/plugins/sqlite && go test ./... -run 'TestConformance/Audit'
+cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership && go test -count=1 ./e2e/parity/sqlite/ -run 'TestParity/ExternalAPI_05'
 ```
 
-Expected: `ok`, including `TestSMAudit_*` and `TestAudit_*`.
+Expected: `ok` for each, including `TestSMAudit_*`, `TestAudit_*`,
+`Audit/RolledBackEventNotKept` and, with BM-6 merged, `ExternalAPI_05` on
+SQLite.
 
 - [ ] **Step 5: Commit**
 
@@ -2642,7 +2601,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Verify only; modify whatever the runs below show.
 
 **Interfaces:**
-- Consumes: stream S's `runScheduledTasks`, through the existing
+- Consumes: stream S's `runScheduledTasksSuite`, through the existing
   `TestConformance` (`plugins/sqlite/conformance_test.go:12-26`).
 - Produces: nothing new.
 
@@ -2662,11 +2621,12 @@ it is; then rerun.
 Each must print nothing:
 
 ```
-cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership && git grep -n -e RedispatchAfter -e AttemptCount -e ScanDue -e MarkRedispatch -e 'Upsert(' -e ErrUnsupported -e RunScheduledTaskStoreConformance -e redispatch_after -e attempt_count -- plugins/sqlite ':!plugins/sqlite/migrations/*' ':!plugins/sqlite/migration_000009_internal_test.go'
+cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership && git grep -n -e RedispatchAfter -e AttemptCount -e ScanDue -e MarkRedispatch -e 'Upsert(' -e ErrUnsupported -e RunScheduledTaskStoreConformance -e redispatch_after -e attempt_count -- plugins/sqlite ':!plugins/sqlite/migrations/*' ':!*migration*_test.go'
 cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/598-scheduler-ownership && git grep -n -e 'stageScheduledTaskOp' -e 'scheduledTaskOpsFor' -e 'scheduledTaskUpsert' -e 'scheduledTaskDelete' -e 'committed.submitTime' -- plugins/sqlite
 ```
 
-The migration test is excluded because it writes a version-8 row on purpose.
+The migration tests are excluded, as spec §15 excludes them: they write
+version-8 rows on purpose.
 
 - [ ] **Step 3: Commit (only if Step 1 or 2 changed a file)**
 
@@ -2690,7 +2650,7 @@ Every row of BM's table holds here too, through the same test names in
 | a mark survives a process restart (§10.3 durability; the base of the "1" rows) | `TestTasks_MarksAndOwnersSurviveARestart` |
 | `spi.ErrStoreRejected` (every backend sets the marker) | `TestTasks_TheStoreRejectsWhatNoBackendStores`, `TestTasks_SQLiteConstraintErrorsAreStoreRejections`; S suite |
 | a pending task survives the schema change | `TestMigration9_KeepsPendingTasksAsNewLives`, `TestMigration9_Down` |
-| a rolled-back run leaves no audit event (parity with PostgreSQL) | `TestAudit_*` (BQ-7) |
+| a rolled-back run leaves no audit event (parity with PostgreSQL) | `TestAudit_*` (BQ-7); S `Audit/RolledBackEventNotKept`; parity `ExternalAPI_05` |
 
 ## Stream interface summary
 
@@ -2728,8 +2688,8 @@ request, byte-wise id order, and audit events that roll back):
 
 ## Open points
 
-1. **All of BM's open points 1–10 apply here**, with `conformance_test.go:13-25`
-   for point 2.
+1. **BM's open points 1–10 apply here**, with `conformance_test.go:13-25`
+   for point 2; those BM closes (4, 5, 6, 7, 9) are closed here too.
 2. **Rejection set against the schema's CHECKs.** The Go checks (BQ-6) and the
    table's CHECKs cover the same rules for length, reason and status; NUL and
    invalid UTF-8 are Go-only, because SQLite does not validate either in
@@ -2746,7 +2706,7 @@ request, byte-wise id order, and audit events that roll back):
    `classifyRejection` before it exists). An executor who wants to see the
    BM-5 subtests fail on `nil` as well can add the classifier first and rerun
    before adding the input checks.
-6. **The audit fix is BM's open point 9 on SQLite.** No SQLite test pinned the
-   old behaviour. `flushToSQLite`'s comment about events being "visible here
+6. **Closed (README C-P3, C-S4).** The audit fix is BM's closed open point 9
+   on SQLite. No SQLite test pinned the old behaviour. `flushToSQLite`'s comment about events being "visible here
    for a structural reason" (`txmanager.go:853-862`) is replaced in BQ-7,
    because in-transaction events are now inserted by the flush itself.
