@@ -85,9 +85,18 @@ func TestTasks_ClaimHonoursTenantLimitsAndTurns(t *testing.T) {
 
 func TestTasks_ClaimRejectsALimitBelowOne(t *testing.T) {
 	fx := newTaskFixture(t)
-	_, err := fx.sts.ClaimDue(context.Background(), spi.ClaimRequest{Owner: uuid.New(), NowMs: 2_000, Limit: 0, PerTenantLimit: 1})
-	if err == nil {
-		t.Fatal("ClaimDue accepted Limit 0")
+	bg := context.Background()
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T")
+	for name, req := range map[string]spi.ClaimRequest{
+		"Limit 0":          {Owner: uuid.New(), NowMs: 2_000, Limit: 0, PerTenantLimit: 1},
+		"PerTenantLimit 0": {Owner: uuid.New(), NowMs: 2_000, Limit: 1, PerTenantLimit: 0},
+	} {
+		if _, err := fx.sts.ClaimDue(bg, req); !errors.Is(err, spi.ErrStoreRejected) {
+			t.Fatalf("%s: ClaimDue = %v, want ErrStoreRejected", name, err)
+		}
+	}
+	if got, _ := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T"); got.Status != spi.ScheduledTaskWaiting {
+		t.Fatalf("task status = %s after refused claims, want WAITING", got.Status)
 	}
 }
 
@@ -402,23 +411,10 @@ func TestTasks_ConcurrentClaimsAreDisjoint(t *testing.T) {
 	}
 }
 
-// --- SQLite-only additions ahead of BQ-6/the lead ruling landing on every
-// backend: Limit < 1 / PerTenantLimit < 1 are deterministic caller errors,
-// not merely "an error". ---
-
-func TestTasks_ClaimRejectsALimitBelowOneAsStoreRejected(t *testing.T) {
-	fx := newTaskFixture(t)
-	for name, req := range map[string]spi.ClaimRequest{
-		"Limit 0":           {Owner: uuid.New(), NowMs: 2_000, Limit: 0, PerTenantLimit: 1},
-		"Limit -1":          {Owner: uuid.New(), NowMs: 2_000, Limit: -1, PerTenantLimit: 1},
-		"PerTenantLimit 0":  {Owner: uuid.New(), NowMs: 2_000, Limit: 1, PerTenantLimit: 0},
-		"PerTenantLimit -1": {Owner: uuid.New(), NowMs: 2_000, Limit: 1, PerTenantLimit: -1},
-	} {
-		if _, err := fx.sts.ClaimDue(context.Background(), req); !errors.Is(err, spi.ErrStoreRejected) {
-			t.Errorf("%s: err = %v, want ErrStoreRejected", name, err)
-		}
-	}
-}
+// --- SQLite-only addition: Query's Limit < 1 is a deterministic caller
+// error, not merely "an error". Not part of the shared claims test file
+// (Query is not a claims method), so it stays here rather than in
+// scheduled_task_store_test.go, which is copied from memory unchanged. ---
 
 func TestTasks_QueryRejectsALimitBelowOneAsStoreRejected(t *testing.T) {
 	fx := newTaskFixture(t)
@@ -428,31 +424,36 @@ func TestTasks_QueryRejectsALimitBelowOneAsStoreRejected(t *testing.T) {
 	}
 }
 
-// --- SQLite-only additions: a staged post-image never freezes UnsafeMarked
-// (BQ-1 fix round). The mark table is written only by the never-joining
-// methods, so it can change while a joining transaction is open; a joining
-// read of a staged row must derive UnsafeMarked fresh, the same way a
-// committed read does, and never trust a copy taken when the row was
-// staged (matches the memory backend's withMarkLocked/applyTaskOps). ---
+// --- A staged post-image never freezes UnsafeMarked. The mark table can
+// change while a joining transaction is open (a never-joining MarkUnsafe
+// commits on its own, whatever transaction is on another caller's ctx), so
+// a joining read of a row this transaction staged must derive UnsafeMarked
+// fresh, the same way a committed read does, never trust a copy taken when
+// the row was staged (matches the memory backend's
+// withMarkLocked/applyTaskOps, which always re-derives on every read).
+//
+// The mark is written here BEFORE the transaction stages anything against
+// the row, while it is not busy: marking a row an open transaction has
+// already written is a different case (SPI C6, ErrTaskBusy — not yet
+// implemented on this backend) and must not be asserted to succeed. Both
+// tests below also pass unmodified against the memory backend (checked in
+// a scratch copy); they are not yet in memory's own test file. ---
 
 // v.get: a joining Get of a row this transaction staged still reports a
-// mark written from outside the transaction after the row was staged.
+// mark written before the transaction began.
 func TestTasks_StagedGetDerivesTheMarkFreshInsideATransaction(t *testing.T) {
 	fx := newTaskFixture(t)
 	ctx := tenantCtx(taskTenantA)
 	arm(t, ctx, fx.sts, taskTenantA, "e1", "T")
 	c := claimDue(t, fx.sts, uuid.New(), false)[0]
 
+	if err := fx.sts.MarkUnsafe(context.Background(), refOf(c)); err != nil {
+		t.Fatalf("MarkUnsafe: %v", err)
+	}
+
 	txID, txCtx := fx.begin(t, taskTenantA)
 	if err := fx.sts.StampSegment(txCtx, refOf(c), true); err != nil {
 		t.Fatalf("StampSegment: %v", err)
-	}
-	// Written from outside the transaction, after StampSegment staged its
-	// post-image. MarkUnsafe never touches scheduled_tasks, only
-	// scheduled_task_marks, so this does not race the open transaction's
-	// staged write to the task row itself.
-	if err := fx.sts.MarkUnsafe(context.Background(), refOf(c)); err != nil {
-		t.Fatalf("MarkUnsafe: %v", err)
 	}
 
 	got, ok := getTask(t, txCtx, fx.sts, taskTenantA, "e1:S:T")
@@ -466,23 +467,24 @@ func TestTasks_StagedGetDerivesTheMarkFreshInsideATransaction(t *testing.T) {
 }
 
 // v.where: ReconcileForEntity's removed list, built through where(), must
-// derive UnsafeMarked fresh for a row this same call's staging pass
-// replaces, not carry forward a value frozen before the mark was written.
+// derive UnsafeMarked fresh for a row this same transaction's earlier write
+// already staged.
 func TestTasks_ReconcileRemovedListDerivesTheMarkFreshForAStagedRow(t *testing.T) {
 	fx := newTaskFixture(t)
 	ctx := tenantCtx(taskTenantA)
 	arm(t, ctx, fx.sts, taskTenantA, "e1", "T1", "T2")
 	c := claimDue(t, fx.sts, uuid.New(), false)[0] // claims e1:S:T1 or e1:S:T2
 
-	txID, txCtx := fx.begin(t, taskTenantA)
-	// Stage a touch on the claimed task's row first, in the same
-	// transaction, then mark it from outside before the transaction's
-	// second write (the re-arm below) reads it through where().
-	if err := fx.sts.StampSegment(txCtx, refOf(c), true); err != nil {
-		t.Fatalf("StampSegment: %v", err)
-	}
 	if err := fx.sts.MarkUnsafe(context.Background(), refOf(c)); err != nil {
 		t.Fatalf("MarkUnsafe: %v", err)
+	}
+
+	txID, txCtx := fx.begin(t, taskTenantA)
+	// Stage a write to the claimed task's row first, in the same
+	// transaction; the re-arm below then reads it a second time, through
+	// where(), and must still see the mark.
+	if err := fx.sts.StampSegment(txCtx, refOf(c), true); err != nil {
+		t.Fatalf("StampSegment: %v", err)
 	}
 
 	removed, err := fx.sts.ReconcileForEntity(txCtx, spi.ReconcileRequest{

@@ -232,12 +232,14 @@ type taskView struct {
 // markExists reports whether a mark is on file for id's current life (k,
 // armToken). UnsafeMarked is never a stored column: a committed row's SQL
 // read (selectTaskSQL) already derives it from scheduled_task_marks, but a
-// staged row's post-image was built before this call and cannot know about
-// a mark written since — most concretely, a never-joining MarkUnsafe from
-// outside the transaction, which can land at any point while the
-// transaction is open. So a staged row's UnsafeMarked is always re-derived
-// with this, never trusted from the post-image (matches the memory
-// backend's withMarkLocked, which does the same on every read).
+// staged row's post-image was built before this call and cannot reflect a
+// mark written since — for example a never-joining MarkUnsafe that landed
+// before this transaction staged its first write to the row (a MarkUnsafe
+// against a row this transaction has already staged a write to is refused
+// with ErrTaskBusy instead, C6 — not yet implemented on this backend). So a
+// staged row's UnsafeMarked is always re-derived with this, never trusted
+// from the post-image (matches the memory backend's withMarkLocked, which
+// does the same on every read).
 func markExists(ctx context.Context, q queryer, k taskKey, armToken uuid.UUID) (bool, error) {
 	var marked int64
 	err := q.QueryRowContext(ctx,

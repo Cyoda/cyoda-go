@@ -193,17 +193,26 @@ func (m *transactionManager) stagedTaskOps(txID string) []scheduledTaskOp {
 	return append([]scheduledTaskOp(nil), m.scheduledTaskOps[txID]...)
 }
 
-// zeroStagedMarks clears UnsafeMarked on every op's post-image. UnsafeMarked
+// zeroStagedMarks returns a copy of ops whose post-images have UnsafeMarked
+// cleared, leaving the caller's own op.after values untouched. UnsafeMarked
 // is never a stored column — every read derives it fresh from
-// scheduled_task_marks (taskView.get/where) — so no staged or committed op
-// may carry a frozen copy of it forward; matches the memory backend, whose
-// applyTaskOps does the same at apply time.
-func zeroStagedMarks(ops []scheduledTaskOp) {
-	for _, op := range ops {
+// scheduled_task_marks (taskView.get/where) — so what gets staged or
+// committed internally should not carry a frozen copy of it forward
+// (matches the memory backend, whose applyTaskOps does the same at apply
+// time). But a caller that already read the correct value under the commit
+// gate (ClaimDue, from its candidate scan) needs it as it read it, not
+// zeroed out from under its own struct — hence the copy, not a mutation.
+func zeroStagedMarks(ops []scheduledTaskOp) []scheduledTaskOp {
+	out := make([]scheduledTaskOp, len(ops))
+	for i, op := range ops {
 		if op.after != nil {
-			op.after.UnsafeMarked = false
+			cp := *op.after
+			cp.UnsafeMarked = false
+			op.after = &cp
 		}
+		out[i] = op
 	}
+	return out
 }
 
 // stageTaskOps appends ops to txID's staged task-row ops. flushToSQLite writes
@@ -212,7 +221,7 @@ func (m *transactionManager) stageTaskOps(txID string, ops []scheduledTaskOp) {
 	if len(ops) == 0 {
 		return
 	}
-	zeroStagedMarks(ops)
+	ops = zeroStagedMarks(ops)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.scheduledTaskOps[txID] = append(m.scheduledTaskOps[txID], ops...)
@@ -226,7 +235,7 @@ func (m *transactionManager) commitTaskWrites(ctx context.Context, ops []schedul
 	if len(ops) == 0 && then == nil {
 		return nil
 	}
-	zeroStagedMarks(ops)
+	ops = zeroStagedMarks(ops)
 	sqlTx, err := m.factory.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin a scheduled task write: %w", err)

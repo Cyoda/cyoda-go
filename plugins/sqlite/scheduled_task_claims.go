@@ -50,9 +50,12 @@ func (s *scheduledTaskStore) SweepOwners(ctx context.Context, deadFor time.Durat
 	return nil
 }
 
-// ClaimDue claims due tasks for req.Owner, in one sqlTx under the commit
-// gate: scan the candidates, choose, write the claims. A WAITING task is due
-// when its next_attempt_time is at or before req.NowMs (the pnode clock).
+// ClaimDue claims due tasks for req.Owner, under the commit gate: scan the
+// candidates on s.db (a plain read, before any write begins), choose, then
+// write the claims in commitTaskWrites' own sqlTx. It is the commit gate
+// alone — held for the whole call — that makes the scan-then-write
+// atomic, not a single sqlTx spanning both. A WAITING task is due when its
+// next_attempt_time is at or before req.NowMs (the pnode clock).
 // With AllowLostOwner, a RUNNING task whose owner is stale by the store clock
 // is claimable too, and the claim adds 1 to its lost_owners. A task is never
 // claimed while another task of its entity is RUNNING.
@@ -81,8 +84,8 @@ func (s *scheduledTaskStore) ClaimDue(ctx context.Context, req spi.ClaimRequest)
 		return nil, fmt.Errorf("failed to scan due scheduled tasks: %w", err)
 	}
 
-	// spi.SelectClaims (S-3a) applies the rules every backend shares: one
-	// task per entity, the per-tenant limits, tenants taking turns.
+	// spi.SelectClaims applies the rules every backend shares: one task per
+	// entity, the per-tenant limits, tenants taking turns.
 	chosen := spi.SelectClaims(cands, req)
 	ops := make([]scheduledTaskOp, 0, len(chosen))
 	fromLostOwner := make([]bool, 0, len(chosen))
@@ -103,14 +106,12 @@ func (s *scheduledTaskStore) ClaimDue(ctx context.Context, req spi.ClaimRequest)
 	out := make([]spi.ScheduledTask, 0, len(ops))
 	for i, op := range ops {
 		claimed := copyScheduledTask(*op.after)
-		// commitTaskWrites zeroes UnsafeMarked on every op's post-image
-		// (it is never a stored column); re-derive it fresh for the
-		// returned copy, the same way taskView does for a staged row.
-		marked, err := markExists(ctx, s.db, op.key, claimed.ArmToken)
-		if err != nil {
-			return nil, err
-		}
-		claimed.UnsafeMarked = marked
+		// UnsafeMarked as read by the candidate scan above, under the same
+		// commit gate as the claim itself (C3) — not re-read after the
+		// commit: a failure from that read would report an error for
+		// claims that had already committed, hiding a write the caller
+		// never learns about.
+		claimed.UnsafeMarked = chosen[i].UnsafeMarked
 		// Set on the returned copy only; no column stores it.
 		claimed.ClaimedFromLostOwner = fromLostOwner[i]
 		out = append(out, claimed)
