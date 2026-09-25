@@ -232,7 +232,7 @@ The mark (§5.5) is what protects A2.
 
   Cancellation cuts a callout that is in flight
   (`internal/grpc/dispatch.go:270-277`). Transactions still begin with
-  `WithoutCancel` (`:403, 530`).
+  `WithoutCancel` (`:411, 538`).
 - **Checkpoints.** The engine checks the run's cancellation from the guard at
   three points: before each processor dispatch, before each cascade step, and
   before each entity-transaction commit. It does not commit a cancelled run.
@@ -1133,6 +1133,7 @@ Rules:
 | joined callback writes the fired entity, no unsafe processor follows → same outcome as an ordinary transition | ✓ | ✓ | ✓ | | |
 | joined callback writes the fired entity, then an unsafe processor → `ErrTaskBusy`, safe failure, no hang (every backend) | ✓ | ✓ | ✓ | | |
 | joined callback writes the fired entity in a segmented run → stamp refused, re-read classifies | ✓ | ✓ | ✓ | | |
+| a segment commit reached on a context without the run guard is still stamped and cancellation-checked (guard found by transaction id) | ✓ | | | | |
 | joined callback deletes the fired entity → the run commits | ✓ | ✓ | ✓ | | |
 | `SCHEDULED_TRANSITION_FAIL` recorded with its reason | ✓ | | ✓ | ✓ | |
 | panicking run → FAILED `RUN_PANICKED`, node latched, claims stop | ✓ | | | | |

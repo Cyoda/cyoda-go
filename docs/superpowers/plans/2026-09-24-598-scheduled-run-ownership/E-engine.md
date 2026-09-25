@@ -88,6 +88,7 @@ Rows not listed are not the engine's; the owner is named where a row is split.
 | joined callback writes the fired entity, no unsafe processor follows | `TestCallback_WritesFiredEntity_RunFires` (E-7) |
 | joined callback writes the fired entity, then an unsafe processor → `ErrTaskBusy` | `TestCallbackAntiPattern_WritesFiredEntity_ThenUnsafe_TaskBusy` (E-4) |
 | joined callback writes the fired entity in a segmented run → stamp refused, re-read classifies | `TestStamp_CallbackReArmedInRunTx_StampRefused` (E-6) |
+| the segment commit finds the run guard by transaction id, not from the context | `TestStamp_CommitFindsGuardByTransaction` (E-6) |
 | joined callback deletes the fired entity → the run commits | `TestCallback_DeletesFiredEntity_RunCommitsWithoutRecreating` (E-7) |
 | fire-time CANCEL: no longer scheduled; no transaction id | `TestFireScheduled_OrphanedTransitionCancelled`, `TestFireScheduled_UnstampedEntity_Cancelled` (E-1, ported) |
 | owner lost 3 times → FAILED `OWNER_LOST_REPEATEDLY` | `TestPreRunDecision` (E-1) |
@@ -1007,7 +1008,8 @@ import (
 // WithRunGuard before it calls FireScheduledTransition. The engine reads it
 // wherever a run differs from a client request: the re-read at the start of
 // each segment, the task-row writes, the unsafe mark and the cancellation
-// checkpoints.
+// checkpoints. The segment commit finds it through the engine's registry by
+// transaction id instead (E-6, spec §5.2).
 //
 // Ref names this claim of this life. Store is the scheduled-task store the
 // guarded calls use; the context each call is given decides whether it joins
@@ -2944,8 +2946,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ### Task E-6: the segment stamp and `PartialCommit`
 
-**Spec:** §5.2 ("Every commit writes the task row"), §5.4, §5.5 (callback
-anti-pattern in a segmented run), §14.
+**Spec:** §5.2 ("Every commit writes the task row", "The run guard belongs to
+the transaction"), §5.4, §5.5 (callback anti-pattern in a segmented run).
 
 **The guard belongs to the transaction (spec §5.2).** The segment commit
 (`flushAndCommitSegment`) finds the run guard from the id of the transaction it
@@ -2960,7 +2962,7 @@ Step 1b pins the lookup directly.
 - Modify: `internal/domain/workflow/run_guard.go` (run state; the registry)
 - Modify: `internal/domain/workflow/engine.go` (the `runTxs` field)
 - Modify: `internal/domain/workflow/engine_processors.go` (`flushAndCommitSegment`, `:477-523`; the two `TX_post` begins, `:411` and `:538`)
-- Modify: `internal/domain/workflow/fire_scheduled.go` (the first `Begin`, `:116`; after `fireTransition`; `runReport`)
+- Modify: `internal/domain/workflow/fire_scheduled.go` (`fireScheduled` after its `Begin`; `FireScheduledTransition`; after `fireTransition`; `runReport`)
 - Create: `internal/domain/workflow/fire_stamp_test.go`
 
 **Interfaces:**
@@ -3148,22 +3150,32 @@ func TestStamp_CallbackReArmedInRunTx_StampRefused(t *testing.T) {
 ```go
 func TestStamp_CommitFindsGuardByTransaction(t *testing.T) {
 	cases := []struct {
-		name   string
-		guard  func(claimed spi.ScheduledTask) *RunGuard
-		wantIs func(error) bool
+		name          string
+		guard         func(claimed spi.ScheduledTask) *RunGuard
+		registerOther bool // register the guard to a different transaction id
+		wantErr       func(error) bool
+		wantState     string
 	}{
-		{"stale claim token → stamp refused",
-			func(c spi.ScheduledTask) *RunGuard {
+		{name: "stale claim token → stamp refused",
+			guard: func(c spi.ScheduledTask) *RunGuard {
 				return &RunGuard{Ref: spi.TaskRef{TenantID: testTenant, ID: c.ID, ArmToken: c.ArmToken, ClaimToken: uuid.New()}}
 			},
-			func(err error) bool { return errors.Is(err, spi.ErrStaleClaim) }},
-		{"cancelled run → not committed",
-			func(c spi.ScheduledTask) *RunGuard {
+			wantErr: func(err error) bool { return errors.Is(err, spi.ErrStaleClaim) }, wantState: "OPEN"},
+		{name: "cancelled run → not committed",
+			guard: func(c spi.ScheduledTask) *RunGuard {
 				done := make(chan struct{})
 				close(done)
 				return &RunGuard{Ref: spi.TaskRef{TenantID: testTenant, ID: c.ID, ArmToken: c.ArmToken, ClaimToken: c.Claim.Token}, Done: done}
 			},
-			func(err error) bool { return errors.Is(err, context.Canceled) }},
+			wantErr: func(err error) bool { return errors.Is(err, context.Canceled) }, wantState: "OPEN"},
+		{name: "guard of another transaction → this commit is not guarded",
+			guard: func(c spi.ScheduledTask) *RunGuard {
+				done := make(chan struct{})
+				close(done)
+				return &RunGuard{Ref: spi.TaskRef{TenantID: testTenant, ID: c.ID, ArmToken: c.ArmToken, ClaimToken: uuid.New()}, Done: done}
+			},
+			registerOther: true,
+			wantErr:       func(err error) bool { return err == nil }, wantState: "CLOSED"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3177,7 +3189,11 @@ func TestStamp_CommitFindsGuardByTransaction(t *testing.T) {
 				t.Fatalf("Begin: %v", err)
 			}
 			defer env.txMgr.Rollback(env.ctx, txID)
-			env.engine.runTxs.register(txID, g)
+			regID := txID
+			if tc.registerOther {
+				regID = uuid.NewString()
+			}
+			env.engine.runTxs.register(regID, g)
 			defer env.engine.runTxs.release(g)
 			es, _ := env.factory.EntityStore(txCtx)
 			ent, err := es.Get(txCtx, "bytx-e1")
@@ -3187,24 +3203,25 @@ func TestStamp_CommitFindsGuardByTransaction(t *testing.T) {
 			ent.Meta.State = "CLOSED"
 
 			err = env.engine.flushAndCommitSegment(txCtx, ent, txID, "", false)
-			if !tc.wantIs(err) {
+			if !tc.wantErr(err) {
 				t.Fatalf("flushAndCommitSegment = %v", err)
 			}
-			if got := env.state(t, "bytx-e1"); got != "OPEN" {
-				t.Errorf("entity state = %q, want OPEN (nothing committed)", got)
+			if got := env.state(t, "bytx-e1"); got != tc.wantState {
+				t.Errorf("entity state = %q, want %q", got, tc.wantState)
 			}
 		})
 	}
 }
 ```
 
-  RED: it fails to build (`env.engine.runTxs undefined`). With a stub
-  registry that `flushAndCommitSegment` does not consult, both cases commit
-  the entity as `CLOSED`.
+  Then add the registry as a stub so the package builds: in `run_guard.go`,
+  `type runTxGuards struct{}` with `register`, `forTx` (returns nil) and
+  `release` doing nothing, and in `engine.go` the `Engine` field
+  `runTxs runTxGuards`. Step 3 replaces the stub.
 
 - [ ] **Step 2: Run to verify RED**
 Run: `go test ./internal/domain/workflow/... -run 'TestStamp_'`
-Expected: FAIL — `CascadeStepSegment_SetsPartialCommit` and `CascadeBackInSourceState_SetsPartialCommit` ("want … PartialCommit"), `NextClaimAfterPartialCommit_Failed` (the run fires or fails without the reason; the store never saw a stamp), `ReplacedOwnerSegmentRefused` ("p2 dispatched 1 times"), `CallbackReArmedInRunTx_StampRefused` (outcome superseded: without the stamp TX_pre commits the callback's re-arm and TX_post's re-read then sees the new life). `CommitFindsGuardByTransaction` fails to build (`env.engine.runTxs undefined`). `FiredTransitionSegment_NotPartial_RetriedFromTXPre` passes and guards the fired-transition case.
+Expected: FAIL — `CascadeStepSegment_SetsPartialCommit` and `CascadeBackInSourceState_SetsPartialCommit` ("want … PartialCommit"), `NextClaimAfterPartialCommit_Failed` (the run fires or fails without the reason; the store never saw a stamp), `ReplacedOwnerSegmentRefused` ("p2 dispatched 1 times"), `CallbackReArmedInRunTx_StampRefused` (outcome superseded: without the stamp TX_pre commits the callback's re-arm and TX_post's re-read then sees the new life). `CommitFindsGuardByTransaction`: the first two cases commit the entity as `CLOSED` (the stub finds no guard, and E-3's `runCheckpoint(ctx)` sees none on the context); the third passes. `FiredTransitionSegment_NotPartial_RetriedFromTXPre` passes and guards the fired-transition case.
 
 - [ ] **Step 3: Implement.**
   - `run_guard.go`, run state:
@@ -3218,8 +3235,8 @@ Expected: FAIL — `CascadeStepSegment_SetsPartialCommit` and `CascadeBackInSour
 	txIDs               []string // registered in Engine.runTxs; guarded by runTxGuards.mu
 ```
 
-  - `run_guard.go`, the registry (one per `Engine`, field `runTxs runTxGuards`,
-    zero value ready):
+  - `run_guard.go`, the registry, replacing the Step 1b stub (one per
+    `Engine`, field `runTxs runTxGuards`, zero value ready):
 
 ```go
 // runTxGuards maps a transaction id to the guard of the scheduled run that
@@ -3258,14 +3275,16 @@ func (r *runTxGuards) release(g *RunGuard) {
 }
 ```
 
-  - Registration. `fire_scheduled.go`, right after the first `Begin` (`:116`)
+  - Registration. `fireScheduled` (as E-2 left it), right after its `Begin`
     succeeds: `e.runTxs.register(txID, g)`, and
-    `defer e.runTxs.release(g)` at the top of `FireScheduledTransition` once
-    `g` is read. `engine_processors.go`, after each `TX_post` begin succeeds
-    (`:411`, and in `commitAndBeginNextSegment` after `:538`):
+    `defer e.runTxs.release(g)` in `FireScheduledTransition` once `g` is read.
+    `engine_processors.go`, after each `TX_post` begin succeeds (`:411`, and
+    in `commitAndBeginNextSegment` after `:538`). The new transaction inherits
+    the guard of the transaction just committed (`txID` at both sites), not
+    the context's:
 
 ```go
-	if g := RunGuardFrom(ctx); g != nil {
+	if g := e.runTxs.forTx(txID); g != nil {
 		e.runTxs.register(newTxID, g)
 	}
 ```
@@ -3325,7 +3344,8 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```
-git add internal/domain/workflow/run_guard.go internal/domain/workflow/engine_processors.go \
+git add internal/domain/workflow/run_guard.go internal/domain/workflow/engine.go \
+  internal/domain/workflow/engine_processors.go \
   internal/domain/workflow/fire_scheduled.go internal/domain/workflow/fire_stamp_test.go
 git commit -m "feat(workflow): stamp the task as the last write of every run segment
 
