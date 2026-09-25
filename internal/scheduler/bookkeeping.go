@@ -45,7 +45,7 @@ func decideBookkeeping(r workflow.RunReport, task spi.ScheduledTask, cutByShutdo
 		return fail(r.FailReason)
 	case r.PartialCommit:
 		return fail(spi.FailureStoppedAfterPartialCommit)
-	case r.MarkHeld && r.UnsafeReached:
+	case r.UnsafeReached:
 		return fail(spi.FailureUnsafeWorkNotCompleted)
 	case cutByShutdown:
 		return Bookkeeping{Kind: RecordAttemptKind, Attempt: spi.Attempt{

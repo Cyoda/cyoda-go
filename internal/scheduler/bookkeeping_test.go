@@ -37,6 +37,7 @@ func TestDecideBookkeeping(t *testing.T) {
 	uncounted := Bookkeeping{Kind: RecordAttemptKind, Attempt: spi.Attempt{Error: text, AtMs: testNowMs, NextAttemptTime: testNowMs, NotCounted: true, ClearOwnMark: true}}
 	markHeld := func(r *workflow.RunReport) { r.MarkHeld = true }
 	handedOff := func(r *workflow.RunReport) { r.MarkHeld, r.UnsafeReached = true, true }
+	unsafeReachedOnly := func(r *workflow.RunReport) { r.UnsafeReached = true }
 
 	tests := []struct {
 		name     string
@@ -61,8 +62,17 @@ func TestDecideBookkeeping(t *testing.T) {
 		{name: "a partial commit comes before the mark",
 			report: failedReport(func(r *workflow.RunReport) { handedOff(r); r.PartialCommit = true }),
 			task:   bookkeepingTask(0, nil), want: fail(spi.FailureStoppedAfterPartialCommit)},
+		{name: "the engine's FailReason comes before a partial commit",
+			report: failedReport(func(r *workflow.RunReport) {
+				r.FailReason = spi.FailureUnsafeWorkNotCompleted
+				r.PartialCommit = true
+			}),
+			task: bookkeepingTask(0, nil), want: fail(spi.FailureUnsafeWorkNotCompleted)},
 		{name: "unsafe work reached a compute node", report: failedReport(handedOff),
 			task: bookkeepingTask(0, nil), want: fail(spi.FailureUnsafeWorkNotCompleted)},
+		{name: "unsafe work reached a compute node without a held mark",
+			report: failedReport(unsafeReachedOnly),
+			task:   bookkeepingTask(0, nil), want: fail(spi.FailureUnsafeWorkNotCompleted)},
 		{name: "cut by shutdown after unsafe work was handed off", report: failedReport(handedOff),
 			task: bookkeepingTask(0, nil), cut: true, want: fail(spi.FailureUnsafeWorkNotCompleted)},
 		{name: "cut by shutdown, nothing handed off", report: failedReport(markHeld),
@@ -96,6 +106,28 @@ func TestDecideBookkeeping(t *testing.T) {
 			got := decideBookkeeping(tt.report, tt.task, tt.cut, tt.panicked, testNowMs, cfg, text)
 			if got != tt.want {
 				t.Errorf("decideBookkeeping\n got %+v\nwant %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRetryDelay(t *testing.T) {
+	tests := []struct {
+		name     string
+		attempts int
+		base     time.Duration
+		max      time.Duration
+		want     time.Duration
+	}{
+		{name: "a base already past the max is clamped down", attempts: 1, base: 20 * time.Minute, max: 15 * time.Minute, want: 15 * time.Minute},
+		{name: "the first attempt uses the base delay", attempts: 1, base: 30 * time.Second, max: 15 * time.Minute, want: 30 * time.Second},
+		{name: "the delay saturates at the max", attempts: 9, base: 30 * time.Second, max: 15 * time.Minute, want: 15 * time.Minute},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := retryDelay(tt.attempts, tt.base, tt.max)
+			if got != tt.want {
+				t.Errorf("retryDelay(%d, %v, %v) = %v, want %v", tt.attempts, tt.base, tt.max, got, tt.want)
 			}
 		})
 	}
