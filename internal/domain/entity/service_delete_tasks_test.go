@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/taskconflict"
+	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
 
 // armForeignModelTask arms one task of another model in the same tenant, so
@@ -531,5 +533,145 @@ func TestDeleteEntitiesConditional_SingleTx_EntityRowConflict_Retried(t *testing
 	}
 	if res.RemovedCount != 2 || len(res.IDToError) != 0 {
 		t.Errorf("Removed=%d IDToError=%v, want 2 and none", res.RemovedCount, res.IDToError)
+	}
+}
+
+// --- Fix round 1 ---
+
+// racingDeleteStore's race only ever touches the id passed to Delete, so
+// seedPersons(t, e.h, e.ctx, 2) (ages 0, 1) with ageAtLeastOne matches exactly
+// ids[1] — one Delete call per attempt, mirroring TestDeleteEntity_CommitConflict*'s
+// single-id shape.
+func TestDeleteEntitiesConditional_SingleTx_CommitConflict_RetriedThenSucceeds(t *testing.T) {
+	e := newTaskEnv(t)
+	seedPersons(t, e.h, e.ctx, 2)
+	racing := newRacingDeleteStore(t, e, 1)
+	e.withEntityStore(t, racing)
+
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 0)
+	if err != nil {
+		t.Fatalf("DeleteEntitiesConditional: %v", err)
+	}
+	if res.RemovedCount != 1 {
+		t.Errorf("RemovedCount = %d, want 1", res.RemovedCount)
+	}
+	if racing.delete != 2 {
+		t.Errorf("attempts = %d, want 2 (one refused at commit, then success)", racing.delete)
+	}
+}
+
+func TestDeleteEntitiesConditional_SingleTx_CommitConflictPersists_Retryable409WithCause(t *testing.T) {
+	e := newTaskEnv(t)
+	ids := seedPersons(t, e.h, e.ctx, 2)
+	racing := newRacingDeleteStore(t, e, 100)
+	e.withEntityStore(t, racing)
+
+	_, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 0)
+	requireConflict409(t, err)
+	if !errors.Is(err, spi.ErrConflict) {
+		t.Errorf("err = %v: the 409 does not carry spi.ErrConflict as its cause", err)
+	}
+	if got, want := racing.delete, 1+common.TaskConflictRetries; got != want {
+		t.Errorf("attempts = %d, want %d", got, want)
+	}
+	if !e.exists(t, ids[1]) {
+		t.Error("entity removed although every attempt was refused at commit")
+	}
+}
+
+// heldJoinedCtx begins a fresh transaction and takes its gate the way
+// txjoin.Joiner.RunVerified does before it ever calls a routed callback's
+// handler (internal/domain/txjoin/txjoin.go: AcquireCtx, then WithHeld) —
+// so the ctx a test hands the handler here is held exactly as a real joined
+// callback's is, not merely tx-bearing. A once-function whose internal
+// "owned" wrongly read true against such a ctx would try to acquire the same
+// non-reentrant gate a second time and deadlock; a joined ctx built from a
+// bare txMgr.Begin/Join (as the existing *_Joined_NotRetried tests use)
+// never holds the gate, so it cannot catch that.
+func (e *taskEnv) heldJoinedCtx(t *testing.T) (ctx context.Context, txID string, release func()) {
+	t.Helper()
+	txID, joinedCtx, err := e.txMgr.Begin(e.ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	rel, err := e.h.gate.AcquireCtx(joinedCtx, txID, 0)
+	if err != nil {
+		t.Fatalf("AcquireCtx: %v", err)
+	}
+	held, _ := txgate.WithHeld(joinedCtx, e.h.gate, txID, &rel)
+	return held, txID, func() { rel() }
+}
+
+// runWithTimeout runs fn on its own goroutine and fails the test if fn has
+// not returned within timeout, rather than hanging the run — the bounded-
+// timeout pattern TestJoinedFlows_ErrorPath_DoNotDeadlock (service_rollback_test.go)
+// already uses for the same class of gate deadlock.
+func runWithTimeout(t *testing.T, timeout time.Duration, fn func() error) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- fn() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(timeout):
+		t.Fatal("operation did not return within the timeout: a joined call must not try to re-acquire the gate it already holds")
+		return nil // unreachable; t.Fatal stops this goroutine
+	}
+}
+
+func TestDeleteEntity_Joined_HeldGateNotReacquired(t *testing.T) {
+	e := newTaskEnv(t)
+	ids := seedPersons(t, e.h, e.ctx, 1)
+	heldCtx, txID, release := e.heldJoinedCtx(t)
+	t.Cleanup(func() { _ = e.txMgr.Rollback(e.ctx, txID) })
+	defer release()
+
+	err := runWithTimeout(t, 5*time.Second, func() error {
+		_, err := e.h.DeleteEntity(heldCtx, ids[0])
+		return err
+	})
+	if err != nil {
+		t.Fatalf("DeleteEntity under an already-held gate: %v", err)
+	}
+	if got := e.plan.Calls(taskconflict.DeleteForEntities); got != 1 {
+		t.Errorf("DeleteForEntities calls = %d, want 1: a joined delete is not retried", got)
+	}
+}
+
+func TestDeleteAllEntities_Joined_HeldGateNotReacquired(t *testing.T) {
+	e := newTaskEnv(t)
+	seedPersons(t, e.h, e.ctx, 1)
+	heldCtx, txID, release := e.heldJoinedCtx(t)
+	t.Cleanup(func() { _ = e.txMgr.Rollback(e.ctx, txID) })
+	defer release()
+
+	err := runWithTimeout(t, 5*time.Second, func() error {
+		_, err := e.h.DeleteAllEntities(heldCtx, "Person", "1")
+		return err
+	})
+	if err != nil {
+		t.Fatalf("DeleteAllEntities under an already-held gate: %v", err)
+	}
+	if got := e.plan.Calls(taskconflict.DeleteForModel); got != 1 {
+		t.Errorf("DeleteForModel calls = %d, want 1: a joined delete-all is not retried", got)
+	}
+}
+
+func TestDeleteEntitiesConditional_SingleTx_Joined_HeldGateNotReacquired(t *testing.T) {
+	e := newTaskEnv(t)
+	seedPersons(t, e.h, e.ctx, 2)
+	heldCtx, txID, release := e.heldJoinedCtx(t)
+	t.Cleanup(func() { _ = e.txMgr.Rollback(e.ctx, txID) })
+	defer release()
+
+	err := runWithTimeout(t, 5*time.Second, func() error {
+		_, err := e.h.DeleteEntitiesConditional(heldCtx, "Person", "1", ageAtLeastOne, nil, false, 0)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("DeleteEntitiesConditional under an already-held gate: %v", err)
+	}
+	if got := e.plan.Calls(taskconflict.DeleteForEntities); got != 1 {
+		t.Errorf("DeleteForEntities calls = %d, want 1: a joined conditional delete is not retried", got)
 	}
 }
