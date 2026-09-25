@@ -717,7 +717,8 @@ returned.
 | `expiresTime` | date-time | when `timeoutMs` is set |
 | `attempts`, `lostOwners` | integer | always |
 | `nextAttemptTime` | date-time | WAITING |
-| `lastAttemptTime`, `lastError` | date-time, string | after a failed attempt |
+| `lastAttemptTime` | date-time | after a failed attempt |
+| `lastError` | string | FAILED: the failure's text, paired with `failedTime`, even when empty. Otherwise: paired with `lastAttemptTime`, when set. |
 | `failureReason`, `failedTime` | string (open), date-time | FAILED |
 | `armedBy` | `{id, kind}` | when known |
 
