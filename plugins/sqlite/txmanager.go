@@ -86,18 +86,10 @@ type transactionManager struct {
 	// Protected by mu. Cleaned up after commit or rollback.
 	txUniqueKeys map[string]map[string][]spi.UniqueKey // txID → entityID → keys
 
-	// scheduledTaskOps holds ScheduledTaskStore ops staged while the
-	// transaction is open (mirrors txUniqueKeys's staging pattern — it
-	// exists because *spi.TransactionState is a shared cyoda-go-spi type
-	// plugins may not add fields to). Applied inside flushToSQLite's single
-	// sqlTx, after the entity buffer/delete flush, so it commits atomically
-	// with the entity write; discarded, never applied, on Rollback and on
-	// every mid-Commit abort path (FCW conflict, flush error). Also
-	// savepoint-scoped like tx.Buffer/ReadSet/WriteSet/Deletes: Savepoint
-	// records the current length and RollbackToSavepoint truncates back to
-	// it, so an op staged after a savepoint that is then rolled back is
-	// discarded too, never orphaned from the entity work it must be atomic
-	// with. Protected by mu. Cleaned up after commit or rollback (no leak).
+	// scheduledTaskOps holds the task-row ops staged while the transaction
+	// is open, as post-images (see scheduledTaskOp). Written by
+	// flushToSQLite in the commit's sqlTx; discarded on Rollback and on
+	// every abort path; truncated by RollbackToSavepoint. Protected by mu.
 	scheduledTaskOps map[string][]scheduledTaskOp // txID → staged ops
 
 	// supersededSaves records, per (txID, entityID), each buffered
@@ -179,22 +171,52 @@ func (m *transactionManager) uniqueKeysFor(txID, entityID string) []spi.UniqueKe
 	return m.txUniqueKeys[txID][entityID]
 }
 
-// stageScheduledTaskOp appends a staged ScheduledTaskStore op for txID.
-// flushToSQLite applies the accumulated ops inside the same sqlTx as the
-// entity buffer flush (atomically with it); every abort path — FCW
-// conflict, flush error, and Rollback — discards them unapplied.
+// stagedTaskOps returns a copy of the task-row ops staged for txID, in order.
 // Protected by mu.
-func (m *transactionManager) stageScheduledTaskOp(txID string, op scheduledTaskOp) {
+func (m *transactionManager) stagedTaskOps(txID string) []scheduledTaskOp {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.scheduledTaskOps[txID] = append(m.scheduledTaskOps[txID], op)
+	return append([]scheduledTaskOp(nil), m.scheduledTaskOps[txID]...)
 }
 
-// scheduledTaskOpsFor retrieves the ops staged for txID. Protected by mu.
-func (m *transactionManager) scheduledTaskOpsFor(txID string) []scheduledTaskOp {
+// stageTaskOps appends ops to txID's staged task-row ops. flushToSQLite writes
+// them in the commit's sqlTx; every abort path discards them. Protected by mu.
+func (m *transactionManager) stageTaskOps(txID string, ops []scheduledTaskOp) {
+	if len(ops) == 0 {
+		return
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.scheduledTaskOps[txID]
+	m.scheduledTaskOps[txID] = append(m.scheduledTaskOps[txID], ops...)
+}
+
+// commitTaskWrites writes task-row ops that commit on their own — a
+// never-joining method, or a joining one called without a transaction — in
+// one sqlTx of their own. then, when not nil, runs in the same sqlTx after
+// the ops. Caller holds the commit gate.
+func (m *transactionManager) commitTaskWrites(ctx context.Context, ops []scheduledTaskOp, then func(*sql.Tx) error) error {
+	if len(ops) == 0 && then == nil {
+		return nil
+	}
+	sqlTx, err := m.factory.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin a scheduled task write: %w", err)
+	}
+	defer sqlTx.Rollback()
+	for _, op := range ops {
+		if err := applyTaskOp(ctx, sqlTx, op); err != nil {
+			return fmt.Errorf("failed to write scheduled task %s: %w", op.key.id, err)
+		}
+	}
+	if then != nil {
+		if err := then(sqlTx); err != nil {
+			return err
+		}
+	}
+	if err := sqlTx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit a scheduled task write: %w", err)
+	}
+	return nil
 }
 
 // stageSuperseded appends prior — the tx.Buffer value a Save/CompareAndSave
@@ -546,12 +568,9 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 	// shares — see nextSubmitTime.
 	submitTime := time.UnixMicro(m.nextSubmitTime())
 
-	// 4.5. Snapshot staged ScheduledTaskStore ops for this tx. Safe to read
-	// without extending m.mu across the whole flush: tx.OpMu.Lock (held
-	// since step 1b) blocks every stage() call (which requires
-	// tx.OpMu.RLock) from appending more ops for the duration of Commit,
-	// so the slice is stable once captured here.
-	scheduledOps := m.scheduledTaskOpsFor(txID)
+	// 4.5. Snapshot the staged task-row ops. tx.OpMu.Lock (held since step
+	// 1b) blocks every stageTaskOps, so the slice is stable.
+	scheduledOps := m.stagedTaskOps(txID)
 
 	// 5. Flush buffer, deletes, and staged scheduled-task ops to SQLite.
 	if err := m.flushToSQLite(ctx, tx, submitTime, scheduledOps); err != nil {
@@ -882,13 +901,13 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 		return fmt.Errorf("stamp audit events: %w", err)
 	}
 
-	// Apply staged ScheduledTaskStore ops. Still inside sqlTx, which is what
-	// makes the scheduled-task arm/cancel commit atomically with the entity
-	// write above (and, symmetrically, why every early-return in this
-	// function rolls the ops back too via the deferred sqlTx.Rollback()).
+	// Write the staged task-row post-images. Their checks ran when they were
+	// staged, and step 3 proved that no other writer changed those rows since
+	// this transaction began. Still inside sqlTx, so they commit atomically
+	// with the entity write, and every early return rolls them back too.
 	for _, op := range scheduledOps {
-		if err := applyScheduledTaskOp(ctx, sqlTx, op); err != nil {
-			return fmt.Errorf("apply scheduled task op %s: %w", op.id, err)
+		if err := applyTaskOp(ctx, sqlTx, op); err != nil {
+			return fmt.Errorf("apply scheduled task op %s: %w", op.key.id, err)
 		}
 	}
 
