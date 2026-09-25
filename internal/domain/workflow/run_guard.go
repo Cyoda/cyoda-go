@@ -84,3 +84,55 @@ func removeOwnLife(ctx context.Context, g *RunGuard) error {
 	}
 	return nil
 }
+
+// errRunCancelled marks a run stopped by the scheduler (spec §5.3).
+var errRunCancelled = errors.New("scheduled run cancelled")
+
+// runCancelled returns the error of a run stopped at a checkpoint. It
+// satisfies errors.Is(err, context.Canceled), which is what the scheduler's
+// recorded-error allow-list keys on (spec §5.8).
+func runCancelled(where string) error {
+	return fmt.Errorf("%s: %w", where, errors.Join(errRunCancelled, context.Canceled))
+}
+
+func (g *RunGuard) cancelled() bool {
+	if g.Done == nil {
+		return false
+	}
+	select {
+	case <-g.Done:
+		return true
+	default:
+		return false
+	}
+}
+
+// runCheckpoint refuses to go on once the run is cancelled. It reads the
+// guard, not ctx: after a COMMIT_BEFORE_DISPATCH commit the run continues on
+// context.WithoutCancel segments, which never report a cancellation.
+func runCheckpoint(ctx context.Context, where string) error {
+	if g := RunGuardFrom(ctx); g != nil && g.cancelled() {
+		return runCancelled(where)
+	}
+	return nil
+}
+
+// runCallCtx binds a callout to the run's cancellation, including on the
+// WithoutCancel segments after a COMMIT_BEFORE_DISPATCH commit. Outside a run
+// it returns ctx unchanged. The caller must call the returned cancel; it may
+// call it more than once.
+func runCallCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	g := RunGuardFrom(ctx)
+	if g == nil || g.Done == nil {
+		return ctx, func() {}
+	}
+	callCtx, cancel := context.WithCancel(ctx)
+	go func() {
+		select {
+		case <-g.Done:
+			cancel()
+		case <-callCtx.Done():
+		}
+	}()
+	return callCtx, cancel
+}

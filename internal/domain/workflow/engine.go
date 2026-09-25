@@ -900,6 +900,11 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *s
 		if err := currentCtx.Err(); err != nil {
 			return currentCtx, currentTxID, fmt.Errorf("cascade aborted: %w", err)
 		}
+		// Checkpoint before each cascade step (spec §5.3). ctx.Err above is
+		// inert after a segment commit; the guard is not.
+		if err := runCheckpoint(currentCtx, "cascade aborted"); err != nil {
+			return currentCtx, currentTxID, err
+		}
 
 		state := entity.Meta.State
 		stateVisits[state]++
@@ -1031,7 +1036,10 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *cri
 		// one covers a panicking dispatch.
 		resume := txgate.Suspend(cc.ctx)
 		defer resume()
-		matches, reason, err := e.extProc.DispatchCriteria(cc.ctx, entity, criterion, cc.target, cc.workflowName, cc.transitionName, "", cc.txID)
+		callCtx, stop := runCallCtx(cc.ctx)
+		defer stop()
+		matches, reason, err := e.extProc.DispatchCriteria(callCtx, entity, criterion, cc.target, cc.workflowName, cc.transitionName, "", cc.txID)
+		stop()
 		resume()
 		if cerr := fence.Check(cc.ctx); cerr != nil {
 			return false, "", cerr

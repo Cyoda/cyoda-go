@@ -120,6 +120,10 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 	}()
 
 	for _, proc := range processors {
+		// Checkpoint before each processor dispatch (spec §5.3).
+		if err := runCheckpoint(currentCtx, "processor "+proc.Name+" not dispatched"); err != nil {
+			return currentCtx, currentTxID, err
+		}
 		// Execution-location axis. Rejection is fatal and self-contained:
 		// emit the per-processor SMEventStateProcessResult audit row
 		// explicitly (mirroring the post-dispatch emit lower in this loop),
@@ -227,7 +231,10 @@ func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, d
 	// entity so the buffer write below is gated.
 	resume := txgate.Suspend(ctx)
 	defer resume()
-	modifiedEntity, err := e.extProc.DispatchProcessor(ctx, entity, proc, workflow, transition, txID)
+	callCtx, stop := runCallCtx(ctx)
+	defer stop()
+	modifiedEntity, err := e.extProc.DispatchProcessor(callCtx, entity, proc, workflow, transition, txID)
+	stop()
 	resume()
 	if cerr := fence.Check(ctx); cerr != nil {
 		return cerr
@@ -266,7 +273,10 @@ func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc
 	// touching the savepoint again. No-op for the owner / non-joined calls.
 	resume := txgate.Suspend(ctx)
 	defer resume()
-	_, dispatchErr := e.extProc.DispatchProcessor(ctx, entity, proc, workflow, transition, txID)
+	callCtx, stop := runCallCtx(ctx)
+	defer stop()
+	_, dispatchErr := e.extProc.DispatchProcessor(callCtx, entity, proc, workflow, transition, txID)
+	stop()
 	resume()
 	// Before the savepoint is looked at. A chain that was superseded neither
 	// undoes nor releases its savepoint: by now the replacement compute node may
@@ -365,7 +375,10 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		}
 
 		if e.extProc != nil {
-			modified, dispatchErr := e.extProc.DispatchProcessor(newCtx, entity, proc, workflow, transition, newTxID)
+			callCtx, stop := runCallCtx(newCtx)
+			defer stop()
+			modified, dispatchErr := e.extProc.DispatchProcessor(callCtx, entity, proc, workflow, transition, newTxID)
+			stop()
 			if dispatchErr != nil {
 				return nil, "", dispatchErr
 			}
@@ -397,7 +410,10 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		var modified *spi.Entity
 		var dispatchErr error
 		if e.extProc != nil {
-			modified, dispatchErr = e.extProc.DispatchProcessor(dispatchCtx, entity, proc, workflow, transition, "")
+			callCtx, stop := runCallCtx(dispatchCtx)
+			defer stop()
+			modified, dispatchErr = e.extProc.DispatchProcessor(callCtx, entity, proc, workflow, transition, "")
+			stop()
 		}
 		if dispatchErr != nil {
 			return nil, "", dispatchErr
@@ -505,6 +521,11 @@ func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, 
 	// as a ticketed 5xx.
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("commit-before-dispatch: context expired before segment commit: %w", err)
+	}
+	// Checkpoint before each entity-transaction commit of a scheduled run
+	// (spec §5.3). Not marked infra: it is the run's cancellation.
+	if err := runCheckpoint(ctx, "commit-before-dispatch: segment not committed"); err != nil {
+		return err
 	}
 	// The commit itself runs shielded via common.ShieldedCommitWithBudget —
 	// WithoutCancel plus e.commitBudget (defaults to common.CommitBudget,

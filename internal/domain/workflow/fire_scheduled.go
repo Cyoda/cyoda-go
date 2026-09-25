@@ -325,6 +325,10 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 // cancellation that arrives while the commit is in flight does not cut it
 // (spec §5.3).
 func (e *Engine) commitRun(ctx context.Context, txID string) error {
+	// Checkpoint before the run's final commit (spec §5.3).
+	if err := runCheckpoint(ctx, "scheduled run not committed"); err != nil {
+		return err
+	}
 	return common.ShieldedCommitWithBudget(ctx, e.commitBudget, func(commitCtx context.Context) error {
 		if err := e.txMgr.Commit(commitCtx, txID); err != nil {
 			return fmt.Errorf("failed to commit scheduled run: %w", err)

@@ -262,7 +262,10 @@ func (e *Engine) armViaFunction(ctx context.Context, entity *spi.Entity, wf *spi
 
 	resume := txgate.Suspend(ctx)
 	defer resume()
-	res, derr := e.extProc.DispatchFunction(ctx, entity, *tr.Schedule.Function, wf.Name, tr.Name, txID)
+	callCtx, stop := runCallCtx(ctx)
+	defer stop()
+	res, derr := e.extProc.DispatchFunction(callCtx, entity, *tr.Schedule.Function, wf.Name, tr.Name, txID)
+	stop()
 	resume() // BEFORE any tx-buffer write — see doc comment above.
 	if cerr := fence.Check(ctx); cerr != nil {
 		return nil, nil, cerr
