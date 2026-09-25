@@ -937,3 +937,30 @@ func TestReconcile_ModelFlagCountsDefaultWorkflow(t *testing.T) {
 		t.Error("the default workflow's scheduled transition must be armed")
 	}
 }
+
+// When stored workflows exist but none matches the entity, the engine falls
+// back to the default workflow; the model-level flag counts it there too.
+func TestReconcile_ModelFlagCountsDefaultWorkflowWhenNoneMatches(t *testing.T) {
+	const nowMs = int64(1_700_000_000_000)
+	engine, factory := setupEngineWithClock(t, nowMs)
+	engine.defaultWorkflows = []spi.WorkflowDefinition{{
+		Version: "1.1", Name: "default-sched", InitialState: "OPEN", Active: true,
+		States: map[string]spi.StateDefinition{
+			"OPEN":   {Transitions: []spi.TransitionDefinition{{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: 1000}}}},
+			"CLOSED": {},
+		},
+	}}
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "unmatched-order", ModelVersion: "1.0"}
+	setupKindModel(t, factory, ctx, modelRef, []spi.WorkflowDefinition{{
+		Version: "1.1", Name: "kind-a-wf", InitialState: "NEW", Active: true,
+		Criterion: simpleCriterion("$.kind", "EQUALS", "a"),
+		States:    map[string]spi.StateDefinition{"NEW": {}},
+	}})
+
+	executeInTx(t, engine, factory, ctx, makeEntity("unmatched-e1", modelRef, map[string]any{"kind": "b"}))
+
+	if _, found := getTask(t, factory, ctx, taskID(testTenant, "unmatched-e1", "OPEN", "AutoClose")); !found {
+		t.Error("the default workflow's scheduled transition must be armed when no stored workflow matches")
+	}
+}

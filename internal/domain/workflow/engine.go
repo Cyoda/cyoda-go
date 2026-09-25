@@ -659,9 +659,10 @@ func (e *Engine) selectWorkflow(ctx context.Context, workflows []spi.WorkflowDef
 // re-bind an entity to a different definition.
 //
 // It also reports modelScheduled: whether any workflow of the model, active
-// or not, has a transition the arm rule arms (modelHasSchedule). The
-// workflows counted are the ones selection runs over: the stored ones, or the
-// default workflow when none is stored.
+// or not, has a transition the arm rule arms (modelHasSchedule). It counts
+// every workflow the entity can be bound to: the stored ones and the default
+// workflow, which selection falls back to when none is stored or none
+// matches.
 func (e *Engine) resolveWorkflow(ctx context.Context, entity *spi.Entity, auditStore spi.StateMachineAuditStore, txID string) (*spi.WorkflowDefinition, bool, error) {
 	return e.resolveWorkflowWith(ctx, entity, auditStore, txID)
 }
@@ -712,8 +713,10 @@ func (e *Engine) resolveWorkflowWith(ctx context.Context, entity *spi.Entity, au
 		e.logDefaultFallback(ctx, entity, "no_workflows_imported")
 		workflows = e.defaultWorkflows
 	}
-	// Computed on the workflows the entity runs under, after the fallback.
-	modelScheduled := modelHasSchedule(workflows)
+	// Counts every workflow the entity can be bound to: the stored ones and
+	// the default workflow, which selection falls back to when none is stored
+	// or none matches.
+	modelScheduled := modelHasSchedule(workflows) || modelHasSchedule(e.defaultWorkflows)
 
 	wf, err := e.selectWorkflow(ctx, workflows, entity, auditStore, txID)
 	if err != nil {
