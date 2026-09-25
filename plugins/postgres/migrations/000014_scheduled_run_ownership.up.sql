@@ -62,6 +62,8 @@ ALTER TABLE scheduled_tasks
         CHECK (status IN ('WAITING', 'RUNNING', 'FAILED')),
     ADD CONSTRAINT scheduled_tasks_claim_chk
         CHECK ((status = 'RUNNING') = (claim_token IS NOT NULL AND claim_owner IS NOT NULL)),
+    ADD CONSTRAINT scheduled_tasks_claim_pair_chk
+        CHECK ((claim_token IS NULL) = (claim_owner IS NULL)),
     ADD CONSTRAINT scheduled_tasks_failed_chk
         CHECK ((status = 'FAILED') = (failure_reason <> '')),
     -- A recorded error text is at most 1 024 bytes on every backend; the

@@ -111,6 +111,18 @@ func TestMigration14_ScheduledTaskSchema(t *testing.T) {
 		t.Errorf("RUNNING without a claim: err = %v, want scheduled_tasks_claim_chk", err)
 	}
 
+	// A claim token and a claim owner are set together or not at all, in any
+	// status.
+	_, err = pool.Exec(ctx, `INSERT INTO scheduled_tasks (id, tenant_id, type, scheduled_time, entity_id,
+		model_name, model_version, transition, source_state, armed_at, arm_token, status, next_attempt_time,
+		claim_token)
+		VALUES ('d', 't', 'fire-transition', 1, 'k', 'M', 1, 'T', 'S', 0, gen_random_uuid(), 'WAITING', 1,
+		        gen_random_uuid())`)
+	if !errors.As(err, &pgErr) || pgErr.Code != pgerrcode.CheckViolation ||
+		pgErr.ConstraintName != "scheduled_tasks_claim_pair_chk" {
+		t.Errorf("a claim token without an owner: err = %v, want scheduled_tasks_claim_pair_chk", err)
+	}
+
 	// A task is keyed by (tenant, id), as on memory and SQLite: the same id in
 	// another tenant is another task.
 	if _, err := pool.Exec(ctx, `INSERT INTO scheduled_tasks (id, tenant_id, type, scheduled_time, entity_id,

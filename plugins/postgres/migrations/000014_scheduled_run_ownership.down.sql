@@ -15,6 +15,7 @@ ALTER TABLE scheduled_tasks
     ADD CONSTRAINT scheduled_tasks_pkey PRIMARY KEY (id),
     DROP CONSTRAINT scheduled_tasks_last_error_len_chk,
     DROP CONSTRAINT scheduled_tasks_failed_chk,
+    DROP CONSTRAINT scheduled_tasks_claim_pair_chk,
     DROP CONSTRAINT scheduled_tasks_claim_chk,
     DROP CONSTRAINT scheduled_tasks_status_chk,
     DROP COLUMN claim_owner,
