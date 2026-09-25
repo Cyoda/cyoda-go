@@ -74,9 +74,10 @@ func TestCriterionReason_ManualReject_Reason400(t *testing.T) {
 
 // TestCriterionReason_AutomatedReject_Audit verifies that an automated-cascade
 // transition rejected by an external FUNCTION criterion records the reason on
-// the durable TRANSITION_NOT_MATCH_CRITERION state-machine audit event. The
-// automated path commits (the entity settles at a stable state), so the event
-// is durable on a TX-bound backend.
+// the durable TRANSITION_NOT_MATCH_CRITERION state-machine audit event. Audit
+// events are bound to the transaction on every backend, but the automated
+// path commits (the entity settles at a stable state) rather than rolling
+// back, so the event is durable.
 func TestCriterionReason_AutomatedReject_Audit(t *testing.T) {
 	const model = "e2e-critreason-auto"
 	procSvc.RegisterCriteriaReason("min-amount",

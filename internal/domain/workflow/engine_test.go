@@ -3530,8 +3530,12 @@ func TestEngine_ManualCriterionNoMatch_EnrichesError(t *testing.T) {
 		t.Fatalf("expected enriched error, got %v", err)
 	}
 
-	// The rejection also populates the state-machine audit event data (durable
-	// on non-TX-bound backends like memory; rolled back on TX-bound backends).
+	// The rejection also populates the state-machine audit event data. ctx
+	// here carries no transaction (this unit test calls the engine directly,
+	// not through a door that opens one), so Record appends the event
+	// directly regardless of backend. An HTTP-driven manual transition's
+	// rejection rolls back the whole call, and its audit events roll back
+	// with it on every backend — see e2e/parity's criterion_reason.go.
 	// Assert the criterion name is the nested FUNCTION name, mirroring the
 	// automated sibling's data assertions.
 	auditStore, err := factory.StateMachineAuditStore(ctx)

@@ -61,12 +61,13 @@ Two independent surfaces carry the reason — they are not interchangeable:
 
 A manual transition rejected by its criterion performs zero mutation and its
 transaction is rolled back like any other no-op manual attempt — this feature
-does **not** force that rollback to a commit. On a TX-bound audit store
-(Postgres), the `TRANSITION_NOT_MATCH_CRITERION` audit event recorded for a
-*manual* rejection is therefore rolled back with the rest of the transaction
-and is not retrievable via `GET /audit/entity/{id}` afterward. This is by
-design: the manual reason's guaranteed delivery is the 400 response (§2.1),
-not the audit trail.
+does **not** force that rollback to a commit. Audit events are bound to the
+transaction on every backend (memory, sqlite, postgres), so the
+`TRANSITION_NOT_MATCH_CRITERION` audit event recorded for a *manual*
+rejection is rolled back with the rest of the transaction and is not
+retrievable via `GET /audit/entity/{id}` afterward. This is by design: the
+manual reason's guaranteed delivery is the 400 response (§2.1), not the
+audit trail.
 
 The audit `data.reason` **is** durable for the automated cascade and
 workflow-selection (`WORKFLOW_SKIP`) paths, because those evaluations happen

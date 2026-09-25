@@ -2240,13 +2240,14 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 			if _, err := finalEntityStore.CompareAndSave(finalCtx, updated, input.IfMatch); err != nil {
 				if errors.Is(err, spi.ErrConflict) {
 					// Emit the compensating
-					// TRANSITION_ABORTED into the same TX buffer as the
-					// entry-side audit events BEFORE rolling back, so on
-					// stores where audit is TX-bound the abort event rolls
-					// back together with the entry events (audit log
-					// remains empty, consistent), and on stores where audit
-					// is not TX-bound the abort event is preserved as a
-					// pair with the entry events.
+					// TRANSITION_ABORTED into the same transaction as the
+					// entry-side audit events BEFORE rolling back. Audit
+					// events are bound to the transaction on every backend,
+					// so the abort event rolls back together with the entry
+					// events — the audit log shows nothing of the failed
+					// call once the rollback completes, but a reader
+					// through the same transaction sees the paired
+					// entry+abort shape beforehand.
 					h.emitTransitionAborted(finalCtx, updated, txID, input.Transition, input.IfMatch)
 					appErr := common.Operational(
 						http.StatusPreconditionFailed,
@@ -2630,8 +2631,11 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 					// engine for this item (STATE_MACHINE_START / WORKFLOW_FOUND
 					// / TRANSITION_MAKE) have a paired terminal event in the
 					// audit log. Best-effort; routed through the engine's
-					// audit-store handle so it lands in the same TX buffer as
-					// the entry events on stores where audit is TX-bound.
+					// audit-store handle so it lands in the same transaction as
+					// the entry events. This chunk's transaction still commits —
+					// the bulk endpoint isolates per-item failures rather than
+					// rolling back the whole chunk — so both events are kept
+					// together on every backend.
 					h.emitTransitionAborted(currentCtx, updated, currentTxID, item.transition, item.ifMatch)
 					return &UpdateCollectionItemFailure{
 						EntityID:  updated.Meta.ID,
