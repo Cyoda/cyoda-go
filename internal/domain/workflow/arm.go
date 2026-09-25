@@ -40,9 +40,11 @@ func armsOnSchedule(tr *spi.TransitionDefinition) bool {
 
 // modelHasSchedule reports whether any workflow of the model — active or not —
 // has a transition the arm rule arms (armsOnSchedule). When none does, no task
-// of the model's entities can be armed, and a workflow import has already
-// removed the model's tasks, because its clean-up keeps only the tasks of
-// arming transitions; so reconcile does nothing. It is computed from the
+// of the model's entities can be armed, so reconcile does nothing. The
+// workflow import's clean-up removes the tasks of transitions no longer armed.
+// An import can still fail after its workflows are saved (409), and its
+// leftover tasks then stay until the import is retried; the fire door cancels
+// such a task, with an audit event, when it falls due. It is computed from the
 // workflows resolveWorkflow already loaded, so a write costs no extra read.
 func modelHasSchedule(wfs []spi.WorkflowDefinition) bool {
 	for i := range wfs {

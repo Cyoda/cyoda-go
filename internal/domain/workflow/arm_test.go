@@ -744,6 +744,9 @@ func TestReconcile_LoopbackStateNotInWorkflow_RemovesTasks(t *testing.T) {
 	if _, found := getTask(t, factory, ctx, id); found {
 		t.Error("a write to an entity whose state the selected workflow does not declare must remove its tasks")
 	}
+	if n := countAuditEvents(t, factory, ctx, "legacy-e1", spi.SMEventScheduledTransitionCancelled); n != 1 {
+		t.Errorf("SCHEDULED_TRANSITION_CANCEL events = %d, want 1", n)
+	}
 }
 
 func TestReconcile_FailedTaskReArmedAsNewLife(t *testing.T) {
@@ -860,5 +863,77 @@ func TestReconcile_ModelFlagNeedsNoExtraWorkflowRead(t *testing.T) {
 
 	if gets != 1 {
 		t.Errorf("workflow reads per write = %d, want 1", gets)
+	}
+}
+
+// executeInTx creates entity through Execute in a transaction of its own and commits.
+func executeInTx(t *testing.T, engine *Engine, factory spi.StoreFactory, ctx context.Context, entity *spi.Entity) {
+	t.Helper()
+	txMgr, err := factory.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	txID, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	entity.Meta.TransactionID = txID
+	if _, err := engine.Execute(txCtx, entity, ""); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if err := txMgr.Commit(ctx, txID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+}
+
+// The arm filter applies the arm rule: a scheduled transition that is
+// disabled or manual is not armed, even when the model has another
+// transition that is (so reconcile runs).
+func TestReconcile_DisabledScheduledTransitionNotArmed(t *testing.T) {
+	const nowMs = int64(1_700_000_000_000)
+	engine, factory := setupEngineWithClock(t, nowMs)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "disabled-order", ModelVersion: "1.0"}
+	sched := &spi.TransitionSchedule{DelayMs: 1000}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{{
+		Version: "1.1", Name: "wf", InitialState: "OPEN", Active: true,
+		States: map[string]spi.StateDefinition{
+			"OPEN": {Transitions: []spi.TransitionDefinition{
+				{Name: "AutoClose", Next: "CLOSED", Schedule: sched, Disabled: true},
+				{Name: "Escalate", Next: "CLOSED", Schedule: sched, Manual: true},
+			}},
+			"CLOSED": {Transitions: []spi.TransitionDefinition{{Name: "Reopen", Next: "OPEN", Schedule: sched}}},
+		},
+	}})
+
+	executeInTx(t, engine, factory, ctx, makeEntity("disabled-e1", modelRef, map[string]any{}))
+
+	for _, tr := range []string{"AutoClose", "Escalate"} {
+		if _, found := getTask(t, factory, ctx, taskID(testTenant, "disabled-e1", "OPEN", tr)); found {
+			t.Errorf("a task was armed for %s, which the arm rule does not arm", tr)
+		}
+	}
+}
+
+// With no workflow imported, the model-level flag is computed on the
+// workflows the engine runs: the default workflow. A default workflow with a
+// scheduled transition arms it.
+func TestReconcile_ModelFlagCountsDefaultWorkflow(t *testing.T) {
+	const nowMs = int64(1_700_000_000_000)
+	engine, factory := setupEngineWithClock(t, nowMs)
+	engine.defaultWorkflows = []spi.WorkflowDefinition{{
+		Version: "1.1", Name: "default-sched", InitialState: "OPEN", Active: true,
+		States: map[string]spi.StateDefinition{
+			"OPEN":   {Transitions: []spi.TransitionDefinition{{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: 1000}}}},
+			"CLOSED": {},
+		},
+	}}
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "no-wf-order", ModelVersion: "1.0"}
+
+	executeInTx(t, engine, factory, ctx, makeEntity("default-e1", modelRef, map[string]any{}))
+
+	if _, found := getTask(t, factory, ctx, taskID(testTenant, "default-e1", "OPEN", "AutoClose")); !found {
+		t.Error("the default workflow's scheduled transition must be armed")
 	}
 }
