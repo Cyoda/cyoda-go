@@ -377,6 +377,39 @@ func TestTasks_C1_ARemoveLifeOfALifeArmedAfterBeginIsNoWrite(t *testing.T) {
 	}
 }
 
+// After two changes since Begin, the life the transaction sees is the one
+// before the first of them, not the one between them.
+func TestTasks_C1_RemoveLifeSeesTheLifeBeforeTheFirstChangeSinceBegin(t *testing.T) {
+	fx := newTaskFixture(t)
+	bg := context.Background()
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T")
+
+	txID, txCtx := fx.begin(t, taskTenantA)
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T") // between, after Begin
+	between, _ := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T")
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T") // last, after Begin
+	last, _ := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T")
+
+	if err := fx.sts.RemoveLife(txCtx, taskTenantA, "e1:S:T", between.ArmToken); err != nil {
+		t.Fatalf("RemoveLife(between): %v", err)
+	}
+	if err := fx.commit(taskTenantA, txID); err != nil {
+		t.Fatalf("Commit = %v, want nil: the life between the two changes was never the one seen", err)
+	}
+	if got, _ := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T"); got.ArmToken != last.ArmToken {
+		t.Fatalf("arm token = %s, want the last life", got.ArmToken)
+	}
+
+	txID, txCtx = fx.begin(t, taskTenantA)
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T")
+	if err := fx.sts.RemoveLife(txCtx, taskTenantA, "e1:S:T", last.ArmToken); err != nil {
+		t.Fatalf("RemoveLife(seen): %v", err)
+	}
+	if err := fx.commit(taskTenantA, txID); !errors.Is(err, spi.ErrConflict) {
+		t.Fatalf("Commit = %v, want ErrConflict: the seen life was replaced after Begin", err)
+	}
+}
+
 // Every joining write plans from the snapshot. A task the snapshot shows but
 // another writer removed after Begin is still one of the entity's tasks, so
 // a reconcile removes it and the commit fails, as on PostgreSQL.
@@ -470,4 +503,64 @@ func TestTasks_GetWithAnotherTenantsTransactionReadsTheCommittedRow(t *testing.T
 	if got, ok := getTask(t, txCtx, fx.sts, taskTenantA, "e1:S:T"); !ok || got.ArmToken != cur.ArmToken {
 		t.Fatalf("task = %+v, %v; want the committed life", got, ok)
 	}
+}
+
+// pruneKeepsAnOlderOpenTransactionsPriorRow arms e1, begins the older
+// transaction L, re-arms e1 with no transaction (logging its prior life
+// while L is the only open transaction), begins the younger transaction Y
+// and leaves it open, then re-arms an unrelated entity with no transaction
+// to force a prune. Pruning must keep every entry above the OLDEST open
+// snapshot — L's, not Y's — so L's own snapshot is unaffected by a younger
+// transaction opening after it.
+func pruneKeepsAnOlderOpenTransactionsPriorRow(t *testing.T) (fx taskFixture, lID string, lCtx context.Context, old spi.ScheduledTask) {
+	t.Helper()
+	fx = newTaskFixture(t)
+	bg := context.Background()
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T")
+	old, _ = getTask(t, bg, fx.sts, taskTenantA, "e1:S:T")
+
+	lID, lCtx = fx.begin(t, taskTenantA)
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T") // re-arm after L's Begin: logs prior=old
+
+	yID, _ := fx.begin(t, taskTenantA) // younger than L, stays open
+	t.Cleanup(func() { fx.rollback(t, taskTenantA, yID) })
+
+	arm(t, bg, fx.sts, taskTenantA, "e2", "T") // unrelated write with no transaction: forces a prune
+	return fx, lID, lCtx, old
+}
+
+// A prune bounded by the wrong end of the open snapshots — the newest
+// instead of the oldest — would drop the log entry L's snapshot still needs
+// once a younger transaction is also open. These three cases exercise every
+// consumer of that entry: a joining Get, the commit-time conflict check, and
+// RemoveLife's own decision that the snapshot's life is still the one to
+// remove.
+func TestTasks_C1_PruneKeepsAnOlderOpenTransactionsPriorRow(t *testing.T) {
+	t.Run("Get", func(t *testing.T) {
+		fx, _, lCtx, old := pruneKeepsAnOlderOpenTransactionsPriorRow(t)
+		got, ok := getTask(t, lCtx, fx.sts, taskTenantA, "e1:S:T")
+		if !ok || got.ArmToken != old.ArmToken {
+			t.Fatalf("joining Get = %+v, %v; want the life L's snapshot showed (token %s)", got, ok, old.ArmToken)
+		}
+	})
+
+	t.Run("CommitConflicts", func(t *testing.T) {
+		fx, lID, lCtx, old := pruneKeepsAnOlderOpenTransactionsPriorRow(t)
+		if err := fx.sts.RemoveLife(lCtx, taskTenantA, "e1:S:T", old.ArmToken); err != nil {
+			t.Fatalf("RemoveLife: %v", err)
+		}
+		if err := fx.commit(taskTenantA, lID); !errors.Is(err, spi.ErrConflict) {
+			t.Fatalf("Commit = %v, want ErrConflict: e1 was re-armed after L began", err)
+		}
+	})
+
+	t.Run("RemoveLifeIsAWrite", func(t *testing.T) {
+		fx, _, lCtx, old := pruneKeepsAnOlderOpenTransactionsPriorRow(t)
+		if err := fx.sts.RemoveLife(lCtx, taskTenantA, "e1:S:T", old.ArmToken); err != nil {
+			t.Fatalf("RemoveLife: %v", err)
+		}
+		if _, ok := getTask(t, lCtx, fx.sts, taskTenantA, "e1:S:T"); ok {
+			t.Fatal("e1:S:T still visible to L after RemoveLife of the life its snapshot showed; want it staged as a delete")
+		}
+	})
 }
