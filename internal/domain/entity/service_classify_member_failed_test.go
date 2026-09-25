@@ -1,6 +1,7 @@
 package entity
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"testing"
@@ -78,5 +79,35 @@ func TestClassifyWorkflowError_TerminalWithoutCodeStays400NotRetryable(t *testin
 	got := classifyWorkflowError(fmt.Errorf("processor %s failed: %w", "charge", failure))
 	if got.Status != http.StatusBadRequest || got.Code != common.ErrCodeWorkflowFailed || got.Retryable {
 		t.Fatalf("got %d %s retryable=%v, want a non-retryable 400 WORKFLOW_FAILED", got.Status, got.Code, got.Retryable)
+	}
+}
+
+// The owner's callout loop marks some failures with contract.NoHandOffProof.
+// The mark is for the scheduler alone: the client sees exactly what it saw
+// without it — status, code, message and retryable flag — for every kind of
+// callout failure and for the caller's own departure.
+func TestClassifyWorkflowError_NoHandOffProofChangesNothing(t *testing.T) {
+	yes := true
+	noCnode := common.Operational(http.StatusServiceUnavailable, common.ErrCodeNoComputeMemberForTag, "no compute member").AsRetryable()
+	cases := map[string]error{
+		"no compute member": &contract.CalloutFailure{Kind: contract.NoHandOff, Code: noCnode.Code, Message: noCnode.Message,
+			Err: fmt.Errorf("%w: %w", contract.ErrNoMatchingMember, noCnode)},
+		"member failed":           &contract.CalloutFailure{Kind: contract.MemberFailed, Message: "card declined", Retryable: &yes},
+		"terminal without a code": &contract.CalloutFailure{Kind: contract.Terminal, Message: "the workflow's criterion function could not be parsed"},
+		"auth context unavailable": &contract.CalloutFailure{Kind: contract.Terminal, Message: "auth context unavailable for dispatch",
+			Err: fmt.Errorf("failed to attach auth context: %w", contract.ErrAuthContextUnavailable)},
+		"caller gone": common.ClientGone(context.Canceled),
+	}
+	for name, err := range cases {
+		t.Run(name, func(t *testing.T) {
+			wrap := func(e error) error { return fmt.Errorf("processor %s failed: %w", "charge", e) }
+			plain := classifyWorkflowError(wrap(err))
+			proved := classifyWorkflowError(wrap(&contract.NoHandOffProof{Err: err}))
+			if plain.Status != proved.Status || plain.Code != proved.Code || plain.Message != proved.Message || plain.Retryable != proved.Retryable {
+				t.Errorf("with the proof: %d %s %q retryable=%v; without: %d %s %q retryable=%v",
+					proved.Status, proved.Code, proved.Message, proved.Retryable,
+					plain.Status, plain.Code, plain.Message, plain.Retryable)
+			}
+		})
 	}
 }
