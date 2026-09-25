@@ -192,8 +192,8 @@ func (s *Service) start(ctx context.Context) error {
 	return nil
 }
 
-// Stop drains with no outside deadline. App.Shutdown calls it after the
-// servers stop, which is the path when a server failed; after a Drain it does
+// Stop drains with no outside deadline. It is the entry point when a server
+// failed: App.Shutdown calls it after the servers stop. After a Drain it does
 // nothing.
 func (s *Service) Stop() { s.Drain(context.Background()) }
 

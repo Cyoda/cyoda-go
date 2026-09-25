@@ -89,10 +89,10 @@ type App struct {
 	// panic at any of the four sites that run engine or store work: the HTTP
 	// recovery middleware, the gRPC recovery interceptors, the async-search
 	// goroutine and the scheduler's goroutines (its claim loop, heartbeat,
-	// watchdog and runs). Notification-callback recoveries (member-registry onChange, OIDC broadcast) deliberately do
-	// not. Nothing resets it: a node that has panicked has state nothing has
-	// verified. Read by RegisterHealthRoutes (GET /health) and by
-	// ReadinessCheck (/readyz).
+	// watchdog and runs). Notification-callback recoveries (member-registry
+	// onChange, OIDC broadcast) deliberately do not. Nothing resets it: a node
+	// that has panicked has state nothing has verified. Read by
+	// RegisterHealthRoutes (GET /health) and by ReadinessCheck (/readyz).
 	healthFlag *atomic.Bool
 }
 
@@ -896,8 +896,8 @@ func (a *App) ReadinessCheck() error {
 
 // DrainScheduler runs the scheduler's shutdown steps 1-5. The binary calls it
 // on a signal before the servers drain, so runs still in progress keep their
-// compute-node streams and callback routes. Shutdown calls it again; the
-// second call does nothing.
+// compute-node streams and callback routes. Shutdown and Close drain it again;
+// every call after the first does nothing.
 func (a *App) DrainScheduler(ctx context.Context) {
 	if a.scheduler != nil {
 		a.scheduler.Drain(ctx)
@@ -972,6 +972,10 @@ func (a *App) stopSearchReaperLoop() {
 // so operators can see the budget was hit.
 func (a *App) Close() error {
 	slog.Info("shutting down")
+	// Drain the scheduler before anything is torn down, so a Close without
+	// Shutdown does not leave it claiming and heartbeating against a store
+	// that is closing. After Shutdown this does nothing.
+	a.DrainScheduler(context.Background())
 	// Stop the reaper first so a node whose store is closing does not keep
 	// sweeping on the claim ticker against a store being torn down.
 	a.stopSearchReaperLoop()
@@ -1018,8 +1022,11 @@ func (a *App) StopGRPC() {
 // exactly once.
 func (a *App) Shutdown() {
 	// A server failed, or the binary did not drain the scheduler first: the
-	// same steps run here, after the servers stopped.
-	a.DrainScheduler(context.Background())
+	// same steps run here, after the servers stopped, with no outside
+	// deadline. After a DrainScheduler this does nothing.
+	if a.scheduler != nil {
+		a.scheduler.Stop()
+	}
 	a.stopSearchReaperLoop()
 	if a.searchPool != nil {
 		drainCtx, cancel := context.WithTimeout(context.Background(), searchDrainBudget)
