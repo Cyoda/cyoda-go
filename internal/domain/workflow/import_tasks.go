@@ -54,7 +54,10 @@ func scheduledTransitions(wfs []spi.WorkflowDefinition) func(sourceState, transi
 // together with a workflow save that joined the same transaction. Removing
 // them in a transaction of its own could commit the removal while the owner
 // rolls the import back, and lose a timer the model still schedules.
-func (h *Handler) removeUnscheduledTasks(ctx context.Context, name string, version int, wfs []spi.WorkflowDefinition) *common.AppError {
+//
+// tenant is the request's tenant, the one the workflow save used. A joined
+// transaction of another tenant is refused by the store.
+func (h *Handler) removeUnscheduledTasks(ctx context.Context, tenant spi.TenantID, name string, version int, wfs []spi.WorkflowDefinition) *common.AppError {
 	all := make([]spi.WorkflowDefinition, 0, len(wfs)+len(h.engine.defaultWorkflows))
 	all = append(append(all, wfs...), h.engine.defaultWorkflows...)
 	keep := scheduledTransitions(all)
@@ -62,23 +65,27 @@ func (h *Handler) removeUnscheduledTasks(ctx context.Context, name string, versi
 	owned := spi.GetTransaction(ctx) == nil
 	err := common.RetryOnTaskConflict(ctx, owned, func() error {
 		if !owned {
-			return h.deleteUnscheduled(ctx, name, version, keep)
+			return h.deleteUnscheduled(ctx, tenant, name, version, keep)
 		}
-		return h.removeUnscheduledTasksOwned(ctx, name, version, keep)
+		return h.removeUnscheduledTasksOwned(ctx, tenant, name, version, keep)
 	})
 	if err == nil {
 		return nil
 	}
 	if errors.Is(err, spi.ErrConflict) {
-		return common.Operational(http.StatusConflict, common.ErrCodeConflict,
-			"workflows saved, but removing the tasks of transitions no longer scheduled conflicted with the scheduler — retry the import").
-			AsRetryable().WithCause(err)
+		msg := "the workflows are saved, but removing the tasks of transitions no longer scheduled " +
+			"still conflicted with the scheduler after the server's retries — retry the import"
+		if !owned {
+			msg = "removing the tasks of transitions no longer scheduled conflicted with the scheduler " +
+				"in the joined transaction; a request that joins a transaction is not retried on the server"
+		}
+		return common.Operational(http.StatusConflict, common.ErrCodeConflict, msg).AsRetryable().WithCause(err)
 	}
 	return common.Internal("failed to remove scheduled tasks", err)
 }
 
 // removeUnscheduledTasksOwned is one attempt, in a transaction of its own.
-func (h *Handler) removeUnscheduledTasksOwned(ctx context.Context, name string, version int, keep func(string, string) bool) error {
+func (h *Handler) removeUnscheduledTasksOwned(ctx context.Context, tenant spi.TenantID, name string, version int, keep func(string, string) bool) error {
 	txMgr := h.engine.txMgr
 	txID, txCtx, err := txMgr.Begin(ctx)
 	if err != nil {
@@ -96,7 +103,7 @@ func (h *Handler) removeUnscheduledTasksOwned(ctx context.Context, name string, 
 		}
 	}()
 
-	if err := h.deleteUnscheduled(txCtx, name, version, keep); err != nil {
+	if err := h.deleteUnscheduled(txCtx, tenant, name, version, keep); err != nil {
 		return err
 	}
 	// After a commit attempt the transaction is finished, whatever the
@@ -110,18 +117,15 @@ func (h *Handler) removeUnscheduledTasksOwned(ctx context.Context, name string, 
 	return nil
 }
 
-// deleteUnscheduled removes the tasks keep drops, in the transaction on ctx
-// and in that transaction's tenant.
-func (h *Handler) deleteUnscheduled(ctx context.Context, name string, version int, keep func(string, string) bool) error {
-	tx := spi.GetTransaction(ctx)
-	if tx == nil {
-		return errors.New("no transaction on the context")
-	}
+// deleteUnscheduled removes tenant's tasks that keep drops, in the
+// transaction on ctx. The store refuses the call if that transaction belongs
+// to another tenant.
+func (h *Handler) deleteUnscheduled(ctx context.Context, tenant spi.TenantID, name string, version int, keep func(string, string) bool) error {
 	sts, err := h.factory.ScheduledTaskStore(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to access scheduled task store: %w", err)
 	}
-	if err := sts.DeleteForModel(ctx, tx.TenantID, name, version, keep); err != nil {
+	if err := sts.DeleteForModel(ctx, tenant, name, version, keep); err != nil {
 		return fmt.Errorf("failed to remove scheduled tasks: %w", err)
 	}
 	return nil

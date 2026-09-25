@@ -377,7 +377,7 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 
 	// The tasks of transitions that no workflow of the model schedules any
 	// more go now, after the save.
-	if appErr := h.removeUnscheduledTasks(r.Context(), entityName, int(modelVersion), result); appErr != nil {
+	if appErr := h.removeUnscheduledTasks(r.Context(), spi.TenantID(common.TenantFromContext(r.Context())), entityName, int(modelVersion), result); appErr != nil {
 		common.WriteError(w, r, appErr)
 		return
 	}

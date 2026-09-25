@@ -205,12 +205,15 @@ func (e *importTaskEnv) seed(t *testing.T) {
 	e.arm(t, "sched-other", "e-2", "Remind")
 }
 
-func requireRetryableConflict(t *testing.T, rec *httptest.ResponseRecorder) {
+// requireRetryableConflict asserts a retryable 409 CONFLICT and returns its
+// detail.
+func requireRetryableConflict(t *testing.T, rec *httptest.ResponseRecorder) string {
 	t.Helper()
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("import: %d %s, want 409", rec.Code, rec.Body)
 	}
 	var pd struct {
+		Detail     string `json:"detail"`
 		Properties struct {
 			ErrorCode string `json:"errorCode"`
 			Retryable bool   `json:"retryable"`
@@ -221,6 +224,23 @@ func requireRetryableConflict(t *testing.T, rec *httptest.ResponseRecorder) {
 	}
 	if pd.Properties.ErrorCode != common.ErrCodeConflict || !pd.Properties.Retryable {
 		t.Errorf("errorCode=%q retryable=%v, want CONFLICT retryable", pd.Properties.ErrorCode, pd.Properties.Retryable)
+	}
+	return pd.Detail
+}
+
+// requireDetail asserts that detail contains every one of want and none of
+// notWant.
+func requireDetail(t *testing.T, detail string, want, notWant []string) {
+	t.Helper()
+	for _, w := range want {
+		if !strings.Contains(detail, w) {
+			t.Errorf("detail %q does not contain %q", detail, w)
+		}
+	}
+	for _, w := range notWant {
+		if strings.Contains(detail, w) {
+			t.Errorf("detail %q contains %q", detail, w)
+		}
 	}
 }
 
@@ -346,7 +366,8 @@ func TestImport_TaskConflictPersists_409_WorkflowsAlreadySaved_ReimportSucceeds(
 	e.seed(t)
 	e.plan.Refuse(taskconflict.DeleteForModel, 100)
 
-	requireRetryableConflict(t, e.importWorkflows(t, dropRemindImport))
+	requireDetail(t, requireRetryableConflict(t, e.importWorkflows(t, dropRemindImport)),
+		[]string{"workflows are saved", "retry the import"}, []string{"joined"})
 	if got, want := e.plan.Calls(taskconflict.DeleteForModel), 1+common.TaskConflictRetries; got != want {
 		t.Errorf("DeleteForModel calls = %d, want %d", got, want)
 	}
@@ -464,9 +485,67 @@ func TestImport_Joined_ConflictNotRetried_409(t *testing.T) {
 	t.Cleanup(func() { _ = e.txMgr.Rollback(context.Background(), txID) })
 	e.plan.Refuse(taskconflict.DeleteForModel, 100)
 
-	requireRetryableConflict(t, e.importWorkflowsCtx(t, txCtx, dropRemindImport))
+	requireDetail(t, requireRetryableConflict(t, e.importWorkflowsCtx(t, txCtx, dropRemindImport)),
+		[]string{"joined transaction", "not retried"}, []string{"saved"})
 	if got := e.plan.Calls(taskconflict.DeleteForModel); got != 1 {
 		t.Errorf("DeleteForModel calls = %d, want 1: a joined request is not retried", got)
+	}
+}
+
+// The 409 keeps the store's conflict as its cause, for both an owned and a
+// joined request.
+func TestRemoveUnscheduledTasks_ConflictKeepsItsCause(t *testing.T) {
+	for _, joined := range []bool{false, true} {
+		t.Run(fmt.Sprintf("joined=%v", joined), func(t *testing.T) {
+			e := newImportTaskEnv(t)
+			e.seed(t)
+			ctx := e.ctx
+			if joined {
+				txID, txCtx, err := e.txMgr.Begin(e.ctx)
+				if err != nil {
+					t.Fatalf("Begin: %v", err)
+				}
+				t.Cleanup(func() { _ = e.txMgr.Rollback(context.Background(), txID) })
+				ctx = txCtx
+			}
+			e.plan.Refuse(taskconflict.DeleteForModel, 100)
+
+			appErr := e.h.removeUnscheduledTasks(ctx, importTenant, "sched-import", 1, nil)
+			if appErr == nil {
+				t.Fatal("removeUnscheduledTasks = nil, want a conflict")
+			}
+			if appErr.Status != http.StatusConflict || appErr.Code != common.ErrCodeConflict || !appErr.Retryable {
+				t.Errorf("status=%d code=%q retryable=%v, want 409 CONFLICT retryable", appErr.Status, appErr.Code, appErr.Retryable)
+			}
+			if !errors.Is(appErr, spi.ErrConflict) {
+				t.Errorf("errors.Is(%v, spi.ErrConflict) = false, want the cause kept", appErr)
+			}
+		})
+	}
+}
+
+// The removal runs in the request's tenant. Under a transaction of another
+// tenant the store refuses it, and nothing is removed in either tenant.
+func TestRemoveUnscheduledTasks_TenantOtherThanTheTransactions_Refused(t *testing.T) {
+	e := newImportTaskEnv(t)
+	e.seed(t)
+	e.armIn(t, otherTenant, "sched-import", "e-9", "Remind")
+	txID, txCtx, err := e.txMgr.Begin(e.ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	if appErr := e.h.removeUnscheduledTasks(txCtx, otherTenant, "sched-import", 1, nil); appErr == nil {
+		t.Fatal("removeUnscheduledTasks under another tenant's transaction = nil, want a refusal")
+	}
+	if err := e.txMgr.Commit(txCtx, txID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if got := e.transitions(t, "sched-import"); strings.Join(got, ",") != "AutoClose,Remind" {
+		t.Errorf("transaction tenant's tasks = %v, want both", got)
+	}
+	if got := e.transitionsIn(t, otherTenant, "sched-import"); strings.Join(got, ",") != "Remind" {
+		t.Errorf("other tenant's tasks = %v, want [Remind]", got)
 	}
 }
 
