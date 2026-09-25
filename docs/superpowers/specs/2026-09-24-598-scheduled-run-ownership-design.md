@@ -353,7 +353,10 @@ rolled back, so it never waits on the run's own row lock.
   shutdown deadline of §6.4. This covers every infrastructure condition:
   outage, failover, timeout, pool exhaustion, conflict. Each failed attempt is
   logged at WARN, at most once a minute per task.
-- **A refusal** (`ErrStaleClaim`) means the run was superseded.
+- **A refusal** (`ErrStaleClaim`) means the run was superseded. A retry
+  whose earlier attempt committed but lost its reply is also refused; the
+  task already holds the outcome, so the claim is released correctly, and
+  only the run's outcome label and log line say superseded.
 - **The node latches** (§6.5) only on a deterministic rejection by the store:
   an error that satisfies `errors.Is(err, spi.ErrStoreRejected)`. This is a new
   SPI marker. Every store sets it, and a conformance case covers it. PostgreSQL
