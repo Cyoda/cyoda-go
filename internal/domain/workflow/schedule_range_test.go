@@ -27,9 +27,14 @@ func TestAddScheduleMs(t *testing.T) {
 		{"above max rejected", maxScheduleMs + 1, 0, 0, false},
 		{"add lands one past max rejected", maxScheduleMs - 100, 101, 0, false},
 		{"add lands exactly at max accepted", maxScheduleMs - 100, 100, maxScheduleMs, true},
-		{"positive overflow rejected", math.MaxInt64, 1, 0, false},
+		{"positive overflow rejected (caught by the plain range check, not a dedicated branch)", math.MaxInt64, 1, 0, false},
 		{"negative delta still in range", 1_000_000, -500_000, 500_000, true},
-		{"negative delta underflows base", math.MinInt64, -1, 0, false},
+		// Both operands near math.MinInt64: base+delta underflows past
+		// MinInt64 and wraps AROUND to a small positive int64 (100000) that
+		// the plain range check alone would accept — the one case a naive
+		// "just check the range" implementation gets wrong. This is what
+		// the underflow branch exists to catch.
+		{"negative delta underflows and wraps into the valid range", math.MinInt64, math.MinInt64 + 100000, 0, false},
 		{"negative delta pushes below min", 100, -200, 0, false},
 	}
 	for _, c := range cases {

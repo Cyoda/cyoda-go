@@ -26,13 +26,18 @@ const (
 // expireAfterMs) and reconcileScheduledTasks (the static
 // armMs+Schedule.DelayMs, and its own scheduledTime+TimeoutMs) use, so the
 // range constant and the overflow check exist in exactly one place.
+//
+// Only the negative-delta (underflow) case needs an explicit guard. A
+// positive-delta overflow always wraps the sum to a negative number, which
+// the plain range check below already rejects (minScheduleMs is 0), so no
+// separate branch is reachable there. A negative-delta underflow can wrap
+// the sum back UP past base — e.g. two operands both near math.MinInt64 can
+// wrap all the way around to a small positive number that would otherwise
+// read as "in range" — so it is caught before the range check ever sees it.
 func addScheduleMs(base, delta int64) (sum int64, ok bool) {
 	sum = base + delta
-	switch {
-	case delta > 0 && sum < base:
-		return 0, false // overflow
-	case delta < 0 && sum > base:
-		return 0, false // underflow
+	if delta < 0 && sum > base {
+		return 0, false // underflow: wrapped back up past base
 	}
 	return sum, sum >= minScheduleMs && sum <= maxScheduleMs
 }
