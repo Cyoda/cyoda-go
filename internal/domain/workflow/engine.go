@@ -323,7 +323,7 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventStarted, "State machine started", nil)
 
-	selectedWF, err := e.resolveWorkflow(ctx, entity, auditStore, txID)
+	selectedWF, modelScheduled, err := e.resolveWorkflow(ctx, entity, auditStore, txID)
 	if err != nil {
 		return nil, err
 	}
@@ -357,7 +357,7 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 	// settles, using the FINAL ctx/txID — the write joins whatever
 	// transaction currentCtx carries, atomic with the entity write it just
 	// cascaded into.
-	if err := e.reconcileScheduledTasks(currentCtx, entity, selectedWF, currentTxID, auditStore, ""); err != nil {
+	if err := e.reconcileScheduledTasks(currentCtx, entity, selectedWF, modelScheduled, currentTxID, auditStore); err != nil {
 		// Already self-describing, and marked ErrScheduledTaskInfra when the
 		// store is what failed — re-wrapping only doubles the phrase.
 		return nil, err
@@ -434,7 +434,7 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 	// entity's current state is absent from that definition, attemptTransition
 	// below rejects the call — the engine never falls through to another
 	// definition that happens to declare the state.
-	wf, err := e.resolveWorkflow(ctx, entity, auditStore, txID)
+	wf, modelScheduled, err := e.resolveWorkflow(ctx, entity, auditStore, txID)
 	if err != nil {
 		return nil, err
 	}
@@ -453,7 +453,7 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 
 	// Arm/cancel the settled state's scheduled tasks — same FINAL ctx/txID
 	// treatment as Execute, atomic with the entity write.
-	if err := e.reconcileScheduledTasks(currentCtx, entity, wf, currentTxID, auditStore, ""); err != nil {
+	if err := e.reconcileScheduledTasks(currentCtx, entity, wf, modelScheduled, currentTxID, auditStore); err != nil {
 		// Already self-describing, and marked ErrScheduledTaskInfra when the
 		// store is what failed — re-wrapping only doubles the phrase.
 		return nil, err
@@ -519,19 +519,25 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*EngineResul
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventStarted, "Loopback started", nil)
 
-	wf, err := e.resolveWorkflow(ctx, entity, auditStore, txID)
+	wf, modelScheduled, err := e.resolveWorkflow(ctx, entity, auditStore, txID)
 	if err != nil {
 		return nil, err
 	}
 
 	if _, ok := wf.States[entity.Meta.State]; !ok {
 		// Current state not in the SELECTED workflow — stable, nothing to
-		// do. Another definition declaring the state is not a reason to
+		// cascade. Another definition declaring the state is not a reason to
 		// cascade it: the entity is bound to the workflow its criterion
 		// selected.
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventForcedSuccess,
 			fmt.Sprintf("Current state is not declared in the selected workflow %q — nothing to loop back", wf.Name), nil)
+		// Its tasks are still reconciled: nothing can be armed for a state the
+		// selected workflow does not declare, so every task of the entity is
+		// removed.
+		if err := e.reconcileScheduledTasks(ctx, entity, wf, modelScheduled, txID, auditStore); err != nil {
+			return nil, err
+		}
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventFinished, "Loopback finished (state not in workflow)", map[string]any{"success": true})
 		handedOff = true
@@ -555,7 +561,7 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*EngineResul
 
 	// Arm/cancel the settled state's scheduled tasks — same FINAL ctx/txID
 	// treatment as Execute/ManualTransition, atomic with the entity write.
-	if err := e.reconcileScheduledTasks(currentCtx, entity, wf, currentTxID, auditStore, ""); err != nil {
+	if err := e.reconcileScheduledTasks(currentCtx, entity, wf, modelScheduled, currentTxID, auditStore); err != nil {
 		// Already self-describing, and marked ErrScheduledTaskInfra when the
 		// store is what failed — re-wrapping only doubles the phrase.
 		return nil, err
@@ -651,7 +657,13 @@ func (e *Engine) selectWorkflow(ctx context.Context, workflows []spi.WorkflowDef
 // Selection is per call and never cached: the criterion is evaluated against
 // the entity as it is right now, which is what makes a data change able to
 // re-bind an entity to a different definition.
-func (e *Engine) resolveWorkflow(ctx context.Context, entity *spi.Entity, auditStore spi.StateMachineAuditStore, txID string) (*spi.WorkflowDefinition, error) {
+//
+// It also reports modelScheduled: whether any workflow of the model, active
+// or not, has a transition the arm rule arms (modelHasSchedule). It counts
+// every workflow the entity can be bound to: the stored ones and the default
+// workflow, which selection falls back to when none is stored or none
+// matches.
+func (e *Engine) resolveWorkflow(ctx context.Context, entity *spi.Entity, auditStore spi.StateMachineAuditStore, txID string) (*spi.WorkflowDefinition, bool, error) {
 	return e.resolveWorkflowWith(ctx, entity, auditStore, txID)
 }
 
@@ -669,10 +681,11 @@ func (e *Engine) resolveWorkflow(ctx context.Context, entity *spi.Entity, auditS
 // log would leave a read that answered from the default workflow with no
 // signal on any channel at all.
 func (e *Engine) resolveWorkflowForQuery(ctx context.Context, entity *spi.Entity) (*spi.WorkflowDefinition, error) {
-	return e.resolveWorkflowWith(ctx, entity, discardedAuditStore{}, "")
+	wf, _, err := e.resolveWorkflowWith(ctx, entity, discardedAuditStore{}, "")
+	return wf, err
 }
 
-func (e *Engine) resolveWorkflowWith(ctx context.Context, entity *spi.Entity, auditStore spi.StateMachineAuditStore, txID string) (*spi.WorkflowDefinition, error) {
+func (e *Engine) resolveWorkflowWith(ctx context.Context, entity *spi.Entity, auditStore spi.StateMachineAuditStore, txID string) (*spi.WorkflowDefinition, bool, error) {
 	// Store failures are server-side conditions, never attributable to the
 	// caller's input, so they are minted as sanitized 5xx AppErrors here
 	// rather than left as bare errors: callers classify a bare engine error
@@ -682,7 +695,7 @@ func (e *Engine) resolveWorkflowWith(ctx context.Context, entity *spi.Entity, au
 	// (ErrCommitBeforeDispatchInfra, ErrProcessorOutputInfra).
 	wfStore, err := e.factory.WorkflowStore(ctx)
 	if err != nil {
-		return nil, common.Internal("failed to access workflow store", err)
+		return nil, false, common.Internal("failed to access workflow store", err)
 	}
 
 	// Load workflows for model. A "not found" error is treated as empty.
@@ -690,7 +703,7 @@ func (e *Engine) resolveWorkflowWith(ctx context.Context, entity *spi.Entity, au
 	if err != nil && errors.Is(err, spi.ErrNotFound) {
 		workflows = nil
 	} else if err != nil {
-		return nil, common.Internal("failed to load workflows", err)
+		return nil, false, common.Internal("failed to load workflows", err)
 	}
 
 	// No workflows defined → use embedded default. Body warning surfaces to
@@ -700,8 +713,16 @@ func (e *Engine) resolveWorkflowWith(ctx context.Context, entity *spi.Entity, au
 		e.logDefaultFallback(ctx, entity, "no_workflows_imported")
 		workflows = e.defaultWorkflows
 	}
+	// Counts every workflow the entity can be bound to: the stored ones and
+	// the default workflow, which selection falls back to when none is stored
+	// or none matches.
+	modelScheduled := modelHasSchedule(workflows) || modelHasSchedule(e.defaultWorkflows)
 
-	return e.selectWorkflow(ctx, workflows, entity, auditStore, txID)
+	wf, err := e.selectWorkflow(ctx, workflows, entity, auditStore, txID)
+	if err != nil {
+		return nil, false, err
+	}
+	return wf, modelScheduled, nil
 }
 
 // discardedAuditStore is the audit sink used by read-only paths. Workflow

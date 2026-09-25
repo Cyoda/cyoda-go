@@ -1485,7 +1485,7 @@ func TestFireScheduled_GuardCASRace_SafeFailureWithoutTornWrite(t *testing.T) {
 	}
 }
 
-// TestFireScheduled_UnstampedEntity_RefusesBeforeFiring pins the guard on the
+// TestFireScheduled_UnstampedEntity_Cancelled pins the guard on the
 // one engine caller that derives its compare-and-save precondition from
 // stored data rather than a client If-Match. CompareAndSave rejects an empty
 // expectedTxID outright, so an entity whose last committed version carries no

@@ -26,8 +26,9 @@ const (
 	// gone or moved on, the transition is no longer scheduled in the selected
 	// workflow, or the entity has no transaction id to guard the fire.
 	OutcomeCancelled ScheduledOutcome = "cancelled"
-	// OutcomeSuperseded: the task's life or claim changed. The run committed
-	// nothing, and nothing is recorded.
+	// OutcomeSuperseded: the task's life or claim changed. The run's open
+	// transaction did not commit; an earlier COMMIT_BEFORE_DISPATCH segment
+	// of the run may have committed. Nothing is recorded.
 	OutcomeSuperseded ScheduledOutcome = "superseded"
 	// OutcomeFailed: the run did not commit. The scheduler records the
 	// outcome (spec §5.6).
@@ -214,7 +215,7 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	// Selection is criterion-based, as on the client doors: a fire runs the
 	// definition the entity is bound to now. A resolution failure is a safe
 	// failure; it never falls through to another definition.
-	wf, err := e.resolveWorkflow(txCtx, entity, auditStore, txID)
+	wf, modelScheduled, err := e.resolveWorkflow(txCtx, entity, auditStore, txID)
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve workflow for scheduled fire: %w", err)
 	}
@@ -297,7 +298,7 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	if err := removeOwnLife(finalCtx, g); err != nil {
 		return "", err
 	}
-	if err := e.reconcileScheduledTasks(finalCtx, entity, wf, finalTxID, auditStore, task.ID); err != nil {
+	if err := e.reconcileScheduledTasks(finalCtx, entity, wf, modelScheduled, finalTxID, auditStore); err != nil {
 		return "", fmt.Errorf("failed to reconcile scheduled tasks after fire: %w", err)
 	}
 
@@ -338,16 +339,15 @@ func (e *Engine) commitRun(ctx context.Context, txID string) error {
 // or the transition is absent, or if a transition of that name exists but is
 // not scheduler-fireable.
 //
-// The eligibility test is the exact complement of the arm-side filter in
-// reconcileScheduledTasks (`tr.Schedule == nil || tr.Manual || tr.Disabled`
-// → skip). Arm and fire MUST agree: a name match alone would let the
+// The eligibility test is armsOnSchedule, the rule reconcileScheduledTasks
+// arms by. Arm and fire MUST agree: a name match alone would let the
 // scheduler fire a MANUAL transition — running its processors and moving the
 // entity with no client asking for it — whenever the definition holding the
-// name changed under a live task. That is reachable through the ordinary
-// API, because a write that changes the entity's data can re-bind it to a
-// definition where the same name is manual, and a task armed for the
-// entity's CURRENT state is not cancelled by reconcile (which only cancels
-// rows whose SourceState the entity has left).
+// name changed under a live task. Reconcile removes such a task at the
+// entity's next write, but a task can fall due before any write reaches it:
+// a workflow import that changes which definition the entity's criterion
+// selects keeps every task whose transition some definition of the model
+// still arms.
 func findFireableTransitionInState(wf *spi.WorkflowDefinition, state, transitionName string) *spi.TransitionDefinition {
 	if wf == nil {
 		return nil
@@ -361,7 +361,7 @@ func findFireableTransitionInState(wf *spi.WorkflowDefinition, state, transition
 		if tr.Name != transitionName {
 			continue
 		}
-		if tr.Schedule == nil || tr.Manual || tr.Disabled {
+		if !armsOnSchedule(tr) {
 			return nil
 		}
 		return tr

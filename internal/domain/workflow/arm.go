@@ -29,15 +29,30 @@ func taskID(tenantID spi.TenantID, entityID, sourceState, transition string) str
 	return hex.EncodeToString(h[:16])
 }
 
-// workflowHasSchedule reports whether any transition in wf carries a
-// Schedule. reconcileScheduledTasks uses this to skip all ScheduledTaskStore
-// I/O for the (overwhelmingly common) case of a workflow with no scheduled
-// transitions at all.
-func workflowHasSchedule(wf *spi.WorkflowDefinition) bool {
-	for _, st := range wf.States {
-		for _, tr := range st.Transitions {
-			if tr.Schedule != nil {
-				return true
+// armsOnSchedule is the one arm rule: the engine arms a task for a
+// transition that has a schedule and is neither manual nor disabled. Arm
+// (reconcileScheduledTasks), fire (findFireableTransitionInState), the
+// model-level flag (modelHasSchedule) and the workflow import's clean-up all
+// use it, so they cannot disagree.
+func armsOnSchedule(tr *spi.TransitionDefinition) bool {
+	return tr.Schedule != nil && !tr.Manual && !tr.Disabled
+}
+
+// modelHasSchedule reports whether any workflow of the model — active or not —
+// has a transition the arm rule arms (armsOnSchedule). When none does, no task
+// of the model's entities can be armed, so reconcile does nothing. The
+// workflow import's clean-up removes the tasks of transitions no longer armed.
+// An import can still fail after its workflows are saved (409), and its
+// leftover tasks then stay until the import is retried; the fire door cancels
+// such a task, with an audit event, when it falls due. It is computed from the
+// workflows resolveWorkflow already loaded, so a write costs no extra read.
+func modelHasSchedule(wfs []spi.WorkflowDefinition) bool {
+	for i := range wfs {
+		for _, st := range wfs[i].States {
+			for j := range st.Transitions {
+				if armsOnSchedule(&st.Transitions[j]) {
+					return true
+				}
 			}
 		}
 	}
@@ -63,16 +78,18 @@ func workflowHasSchedule(wf *spi.WorkflowDefinition) bool {
 // under a generic ticket would lose the actionable answer.
 var ErrScheduledTaskInfra = errors.New("scheduled task reconciliation failed")
 
-// reconcileScheduledTasks brings the entity's pending ScheduledTask rows in
-// line with its current state: it arms every non-manual, non-disabled
-// scheduled transition out of the CURRENT state, and cancels (deletes) any
-// pending task left over from a state the entity is no longer in. The write
-// is atomic with the entity write because it runs against the same ctx/txID
-// the caller is already inside — the context-resolving, tx-scoped
-// ScheduledTaskStore joins whatever transaction ctx carries.
+// reconcileScheduledTasks brings the entity's ScheduledTask rows in line with
+// its current state: it arms every transition out of the CURRENT state that
+// the arm rule arms (armsOnSchedule), and removes every other task of the
+// entity, in any status: one left over from another state, one whose
+// transition is no longer scheduled, and a FAILED one. The write is atomic
+// with the entity write because it runs against the same ctx/txID the caller
+// is already inside — the context-resolving, tx-scoped ScheduledTaskStore
+// joins whatever transaction ctx carries.
 //
-// No-op (zero store I/O) when the workflow has no scheduled transitions
-// anywhere, so entities on schedule-free workflows pay no cost.
+// No-op (zero store I/O) when no workflow of the entity's model has a
+// scheduled transition (modelScheduled, from modelHasSchedule), so entities
+// of schedule-free models pay no cost.
 //
 // Arm/cancel audit events are recorded best-effort via recordEvent, matching
 // every other audit call site in the engine — a failure to audit must never
@@ -82,18 +99,8 @@ var ErrScheduledTaskInfra = errors.New("scheduled task reconciliation failed")
 // events share the same guaranteed-non-nil store as every other audit event
 // in the call — reconcile no longer re-derives its own and silently skips
 // the audit block on a transient resolution failure.
-//
-// suppressCancelAuditFor, when non-empty, names a ScheduledTask ID whose
-// SourceState-mismatch is NOT a genuine "left behind" cancel: it is the very
-// task FireScheduledTransition just fired, so its SourceState no longer
-// matching the post-cascade CurrentState is expected. ReconcileForEntity
-// still reports (and its own Delete still removes) that task's row like any
-// other cancelled entry — this only suppresses the misleading
-// SCHEDULED_TRANSITION_CANCEL audit event that would otherwise sit alongside
-// its SCHEDULED_TRANSITION_FIRE event. Every non-fire caller
-// (Execute/ManualTransition/Loopback) passes "" — no exclusion.
-func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, txID string, auditStore spi.StateMachineAuditStore, suppressCancelAuditFor string) error {
-	if !workflowHasSchedule(wf) {
+func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, modelScheduled bool, txID string, auditStore spi.StateMachineAuditStore) error {
+	if !modelScheduled {
 		return nil
 	}
 
@@ -108,15 +115,15 @@ func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity
 
 	var arm []spi.ScheduledTask
 	// cancelIDs carries born-expired task IDs into ReconcileRequest.Cancel
-	// — deleted in the same transaction as the entity write (Task 6.1's
-	// store-side Cancel branch) without ever having been armed.
+	// — deleted in the same transaction as the entity write without ever
+	// having been armed.
 	var cancelIDs []string
 	var bornExpired []expiredSchedule
 
 	if stateDef, ok := wf.States[state]; ok {
 		for i := range stateDef.Transitions {
 			tr := &stateDef.Transitions[i]
-			if tr.Schedule == nil || tr.Manual || tr.Disabled {
+			if !armsOnSchedule(tr) {
 				continue
 			}
 			// ModelRef.ModelVersion is the wire/string form ("1.0"); the
@@ -185,19 +192,16 @@ func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity
 			map[string]any{"transition": a.Transition, "sourceState": state, "scheduledTime": a.ScheduledTime})
 	}
 	for _, c := range cancelled {
-		if suppressCancelAuditFor != "" && c.ID == suppressCancelAuditFor {
-			continue
-		}
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, c.SourceState,
 			spi.SMEventScheduledTransitionCancelled,
-			fmt.Sprintf("Scheduled transition %q cancelled (left state %q)", c.Transition, c.SourceState),
+			fmt.Sprintf("Scheduled transition %q of state %q cancelled (not armed for state %q)", c.Transition, c.SourceState, state),
 			map[string]any{"transition": c.Transition, "sourceState": c.SourceState})
 	}
 	// Born-expired Function results are cancelled via req.Cancel above but
 	// deliberately excluded from ReconcileForEntity's returned cancelled
-	// slice (Task 6.1) so they are audited distinctly here as EXPIRE, not
-	// CANCEL — a "left the state" cancel and "never fired, expired on
-	// arrival" are different operational stories.
+	// slice so they are audited distinctly here as EXPIRE, not CANCEL — a
+	// task no longer armed and one that "never fired, expired on arrival"
+	// are different operational stories.
 	for _, be := range bornExpired {
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, state,
 			spi.SMEventScheduledTransitionExpired,
