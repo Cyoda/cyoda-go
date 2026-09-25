@@ -226,6 +226,9 @@ func (s *scheduledTaskStore) write(ctx context.Context, tenant spi.TenantID, pla
 // other task of the entity. It returns the removed tasks, except those named
 // in req.Cancel, which the caller audits on their own.
 func (s *scheduledTaskStore) ReconcileForEntity(ctx context.Context, req spi.ReconcileRequest) ([]spi.ScheduledTask, error) {
+	if err := spi.ValidateArm(req); err != nil {
+		return nil, err
+	}
 	var removed []spi.ScheduledTask
 	err := s.write(ctx, req.TenantID, func(v taskView) ([]scheduledTaskOp, error) {
 		removed = nil
@@ -304,6 +307,12 @@ func (s *scheduledTaskStore) DeleteForModel(ctx context.Context, tenant spi.Tena
 
 // Fail sets the task of ref to FAILED and clears its claim.
 func (s *scheduledTaskStore) Fail(ctx context.Context, ref spi.TaskRef, f spi.Failure) error {
+	if err := spi.ValidateFailureReason(f.Reason); err != nil {
+		return err
+	}
+	if err := spi.ValidateTaskErrorText(f.Error); err != nil {
+		return err
+	}
 	return s.write(ctx, ref.TenantID, func(v taskView) ([]scheduledTaskOp, error) {
 		t, err := fenced(v, ref)
 		if err != nil {
@@ -348,7 +357,7 @@ func afterCursor(t spi.ScheduledTask, c spi.ScheduledTaskCursor) bool {
 // way. It never joins a transaction.
 func (s *scheduledTaskStore) Query(_ context.Context, tenant spi.TenantID, q spi.ScheduledTaskQuery) (spi.ScheduledTaskPage, error) {
 	if q.Limit < 1 {
-		return spi.ScheduledTaskPage{}, fmt.Errorf("query scheduled tasks: limit must be >= 1, got %d", q.Limit)
+		return spi.ScheduledTaskPage{}, fmt.Errorf("query scheduled tasks: limit must be >= 1, got %d: %w", q.Limit, spi.ErrStoreRejected)
 	}
 	statuses := make(map[spi.ScheduledTaskStatus]bool, len(q.Statuses))
 	for _, st := range q.Statuses {

@@ -179,6 +179,9 @@ func (s *scheduledTaskStore) MarkUnsafe(_ context.Context, ref spi.TaskRef) erro
 // attempt recorded. With ClearOwnMark it also removes the mark this claim
 // wrote, in the same critical section.
 func (s *scheduledTaskStore) RecordAttempt(_ context.Context, ref spi.TaskRef, a spi.Attempt) error {
+	if err := spi.ValidateTaskErrorText(a.Error); err != nil {
+		return err
+	}
 	s.f.entityMu.Lock()
 	defer s.f.entityMu.Unlock()
 	k := taskKey{tenant: ref.TenantID, id: ref.ID}
