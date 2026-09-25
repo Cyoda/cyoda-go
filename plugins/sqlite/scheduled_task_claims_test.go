@@ -434,10 +434,8 @@ func TestTasks_QueryRejectsALimitBelowOneAsStoreRejected(t *testing.T) {
 //
 // The mark is written here BEFORE the transaction stages anything against
 // the row, while it is not busy: marking a row an open transaction has
-// already written is a different case (SPI C6, ErrTaskBusy — not yet
-// implemented on this backend) and must not be asserted to succeed. Both
-// tests below also pass unmodified against the memory backend (checked in
-// a scratch copy); they are not yet in memory's own test file. ---
+// already written is a different case (C6, ErrTaskBusy). Both backends run
+// the same two test bodies. ---
 
 // v.get: a joining Get of a row this transaction staged still reports a
 // mark written before the transaction began.
