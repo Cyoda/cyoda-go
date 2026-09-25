@@ -5,12 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
@@ -43,9 +46,14 @@ import (
 // an id in both Arm and Cancel, an unknown failure reason, an error text that
 // is too long, not UTF-8 or holds a NUL — is refused with spi.ErrStoreRejected
 // before any statement runs, by the SPI's shared validators.
+//
+// Refusals come in one order on every backend: input validation
+// (ErrStoreRejected), then the transaction's tenant (ErrTxTenantMismatch),
+// then the fence and busy checks.
 type scheduledTaskStore struct {
 	q         Querier
 	query     Querier
+	pool      *pgxpool.Pool
 	sched     schedulerQuerier
 	heartbeat schedulerQuerier
 }
@@ -155,18 +163,32 @@ ON CONFLICT (tenant_id, id) DO UPDATE SET
 
 // ReconcileForEntity arms req.Arm, each as a new life, removes the entity's
 // tasks named in req.Cancel, then removes every other task of the entity and
-// returns those. The tenant and entity come from req, never from the task
-// structs.
+// returns those, sorted by id byte-wise, each with its life's mark. The tenant
+// and entity come from req, never from the task structs. Without a
+// transaction on ctx it runs in one of its own, so it is all or nothing.
 func (s *scheduledTaskStore) ReconcileForEntity(ctx context.Context, req spi.ReconcileRequest) ([]spi.ScheduledTask, error) {
-	if err := joinTenant(ctx, req.TenantID); err != nil {
-		return nil, err
-	}
 	if err := spi.ValidateArm(req); err != nil {
 		return nil, err
 	}
+	if err := joinTenant(ctx, req.TenantID); err != nil {
+		return nil, err
+	}
+	var removed []spi.ScheduledTask
+	err := s.atomically(ctx, pgx.ReadCommitted, func(q Querier) error {
+		var err error
+		removed, err = reconcile(ctx, q, req)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return removed, nil
+}
+
+func reconcile(ctx context.Context, q Querier, req spi.ReconcileRequest) ([]spi.ScheduledTask, error) {
 	armIDs := make([]string, 0, len(req.Arm))
 	for _, t := range req.Arm {
-		if _, err := s.q.Exec(ctx, armTaskSQL,
+		if _, err := q.Exec(ctx, armTaskSQL,
 			t.ID, string(req.TenantID), string(t.Type), t.ScheduledTime, t.TimeoutMs, req.EntityID,
 			t.ModelName, t.ModelVersion, t.Transition, t.SourceState, t.ArmedAt,
 			t.ArmedBy.ID, string(t.ArmedBy.Kind)); err != nil {
@@ -175,23 +197,57 @@ func (s *scheduledTaskStore) ReconcileForEntity(ctx context.Context, req spi.Rec
 		armIDs = append(armIDs, t.ID)
 	}
 	if len(req.Cancel) > 0 {
-		if _, err := s.q.Exec(ctx,
+		if _, err := q.Exec(ctx,
 			`DELETE FROM scheduled_tasks WHERE tenant_id = $1 AND entity_id = $2 AND id = ANY($3::text[])`,
 			string(req.TenantID), req.EntityID, req.Cancel); err != nil {
 			return nil, fmt.Errorf("failed to cancel scheduled tasks of %s: %w", req.EntityID, err)
 		}
 	}
-	rows, err := s.q.Query(ctx, `DELETE FROM scheduled_tasks st
+	// markedColumn reads the marks as they were before this statement: the
+	// statement removes task rows, never marks.
+	rows, err := q.Query(ctx, `DELETE FROM scheduled_tasks st
 		WHERE st.tenant_id = $1 AND st.entity_id = $2 AND NOT (st.id = ANY($3::text[]))
-		RETURNING `+taskColumns, string(req.TenantID), req.EntityID, armIDs)
+		RETURNING `+taskColumns+`, `+markedColumn, string(req.TenantID), req.EntityID, armIDs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to remove scheduled tasks of %s: %w", req.EntityID, err)
 	}
-	removed, err := scanTasks(rows)
-	if err != nil {
+	defer rows.Close()
+	var removed []spi.ScheduledTask
+	for rows.Next() {
+		var marked bool
+		t, err := scanTask(rows.Scan, &marked)
+		if err != nil {
+			return nil, fmt.Errorf("failed to remove scheduled tasks of %s: %w", req.EntityID, err)
+		}
+		t.UnsafeMarked = marked
+		removed = append(removed, t)
+	}
+	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("failed to remove scheduled tasks of %s: %w", req.EntityID, err)
 	}
+	slices.SortFunc(removed, func(a, b spi.ScheduledTask) int { return strings.Compare(a.ID, b.ID) })
 	return removed, nil
+}
+
+// atomically runs fn in the transaction on ctx, through q, when there is one.
+// Without one it runs fn in a private transaction on the main pool at iso and
+// commits it, so a method of several statements is all or nothing either way.
+func (s *scheduledTaskStore) atomically(ctx context.Context, iso pgx.TxIsoLevel, fn func(q Querier) error) error {
+	if spi.GetTransaction(ctx) != nil {
+		return fn(s.q)
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: iso})
+	if err != nil {
+		return fmt.Errorf("failed to begin a scheduled task write: %w", classifyError(err))
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if err := fn(classifiedQuerier{inner: tx}); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit a scheduled task write: %w", classifyError(err))
+	}
+	return nil
 }
 
 // RemoveLife removes the task if its life is armToken. At REPEATABLE READ a
@@ -244,43 +300,56 @@ func (s *scheduledTaskStore) DeleteForEntities(ctx context.Context, tenant spi.T
 }
 
 // DeleteForModel removes the model's tasks whose (source state, transition)
-// keep does not retain. A nil keep retains nothing. keep runs after the read
-// has finished and before the delete starts, so no statement is open on the
-// connection while it runs.
+// keep does not retain. A nil keep retains nothing, and the removal is one
+// statement. Otherwise the pairs are read, keep runs after the read has
+// finished and before the delete starts, so no statement is open on the
+// connection while it runs, and the delete removes the pairs keep dropped.
+// Without a transaction on ctx the read and the delete run in a private
+// REPEATABLE READ transaction, so the delete sees the rows the read saw.
 func (s *scheduledTaskStore) DeleteForModel(ctx context.Context, tenant spi.TenantID, modelName string, modelVersion int,
 	keep func(sourceState, transition string) bool) error {
 	if err := joinTenant(ctx, tenant); err != nil {
 		return err
 	}
-	pairs, err := s.modelPairs(ctx, tenant, modelName, modelVersion)
-	if err != nil {
-		return err
-	}
-	var states, transitions []string
-	for _, p := range pairs {
-		if keep != nil && keep(p[0], p[1]) {
-			continue
+	if keep == nil {
+		if _, err := s.q.Exec(ctx,
+			`DELETE FROM scheduled_tasks WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
+			string(tenant), modelName, modelVersion); err != nil {
+			return fmt.Errorf("failed to remove scheduled tasks of model %s/%d: %w", modelName, modelVersion, err)
 		}
-		states = append(states, p[0])
-		transitions = append(transitions, p[1])
-	}
-	if len(states) == 0 {
 		return nil
 	}
-	if _, err := s.q.Exec(ctx, `DELETE FROM scheduled_tasks st
-		USING unnest($4::text[], $5::text[]) AS gone(source_state, transition)
-		WHERE st.tenant_id = $1 AND st.model_name = $2 AND st.model_version = $3
-		  AND st.source_state = gone.source_state AND st.transition = gone.transition`,
-		string(tenant), modelName, modelVersion, states, transitions); err != nil {
-		return fmt.Errorf("failed to remove scheduled tasks of model %s/%d: %w", modelName, modelVersion, err)
-	}
-	return nil
+	return s.atomically(ctx, pgx.RepeatableRead, func(q Querier) error {
+		pairs, err := modelPairs(ctx, q, tenant, modelName, modelVersion)
+		if err != nil {
+			return err
+		}
+		var states, transitions []string
+		for _, p := range pairs {
+			if keep(p[0], p[1]) {
+				continue
+			}
+			states = append(states, p[0])
+			transitions = append(transitions, p[1])
+		}
+		if len(states) == 0 {
+			return nil
+		}
+		if _, err := q.Exec(ctx, `DELETE FROM scheduled_tasks st
+			USING unnest($4::text[], $5::text[]) AS gone(source_state, transition)
+			WHERE st.tenant_id = $1 AND st.model_name = $2 AND st.model_version = $3
+			  AND st.source_state = gone.source_state AND st.transition = gone.transition`,
+			string(tenant), modelName, modelVersion, states, transitions); err != nil {
+			return fmt.Errorf("failed to remove scheduled tasks of model %s/%d: %w", modelName, modelVersion, err)
+		}
+		return nil
+	})
 }
 
 // modelPairs returns the distinct (source state, transition) pairs of the
 // model version's tasks.
-func (s *scheduledTaskStore) modelPairs(ctx context.Context, tenant spi.TenantID, modelName string, modelVersion int) ([][2]string, error) {
-	rows, err := s.q.Query(ctx, `SELECT DISTINCT source_state, transition FROM scheduled_tasks
+func modelPairs(ctx context.Context, q Querier, tenant spi.TenantID, modelName string, modelVersion int) ([][2]string, error) {
+	rows, err := q.Query(ctx, `SELECT DISTINCT source_state, transition FROM scheduled_tasks
 		WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
 		string(tenant), modelName, modelVersion)
 	if err != nil {
@@ -381,11 +450,12 @@ const claimableCondition = `(
 	                     WHERE o.owner = st.claim_owner
 	                       AND o.heartbeat_at >= now() - ($3::bigint * interval '1 microsecond'))))`
 
-// lockClaimableSQL is ClaimDue's steps 1 and 2. It ranks the claimable tasks
-// in the order spi.SelectClaims defines, then locks the chosen rows.
+// rankClaimsSQL is ClaimDue's ranking. It returns the tasks one claim takes,
+// in the order spi.SelectClaims defines:
 //
 //   - candidates: claimableCondition, less any task whose entity has another
-//     RUNNING task;
+//     RUNNING task, less the (tenant, id) pairs in $8/$9 — rows an earlier
+//     round of this claim found busy or no longer claimable;
 //   - one task per entity: the first in (next_attempt_time, id) order;
 //   - within a tenant, turn = the task's place in (next_attempt_time, id)
 //     order; a tenant's turns stop at PerTenantLimit minus its runs in
@@ -395,20 +465,15 @@ const claimableCondition = `(
 //   - at most Limit ($7) tasks.
 //
 // Ids and tenant ids compare byte-wise (COLLATE "C"), as Go compares strings.
-// The ranking sits in CTEs because FOR UPDATE cannot share a query level with
-// a window function. The outer SELECT locks the ranked rows, skipping any row
-// another transaction holds (C6) — such a row is not claimable, and its turn
-// goes unused this call — and repeats the claim condition against the row's
-// latest version. It returns each locked row's tenant and its status before
-// the claim: RUNNING means the claim takes the task from a stale or missing
-// owner. The row lock holds that status until claimSQL runs.
-const lockClaimableSQL = `WITH candidate AS (
+const rankClaimsSQL = `WITH candidate AS (
 	SELECT st.id, st.tenant_id, st.entity_id, st.next_attempt_time
 	  FROM scheduled_tasks st
 	 WHERE ` + claimableCondition + `
 	   AND NOT EXISTS (SELECT 1 FROM scheduled_tasks r
 	                    WHERE r.tenant_id = st.tenant_id AND r.entity_id = st.entity_id
 	                      AND r.status = 'RUNNING' AND r.id <> st.id)
+	   AND NOT EXISTS (SELECT 1 FROM unnest($8::text[], $9::text[]) AS x(tenant_id, id)
+	                    WHERE x.tenant_id = st.tenant_id AND x.id = st.id)
 ), one_per_entity AS (
 	SELECT DISTINCT ON (tenant_id, entity_id) id, tenant_id, next_attempt_time
 	  FROM candidate
@@ -418,23 +483,28 @@ const lockClaimableSQL = `WITH candidate AS (
 	       row_number() OVER (PARTITION BY tenant_id ORDER BY next_attempt_time, id COLLATE "C") AS turn,
 	       min(next_attempt_time) OVER (PARTITION BY tenant_id) AS tenant_first
 	  FROM one_per_entity
-), chosen AS (
-	SELECT r.id, r.tenant_id
-	  FROM ranked r
-	  LEFT JOIN unnest($5::text[], $6::int[]) AS busy(tenant_id, runs) ON busy.tenant_id = r.tenant_id
-	 WHERE r.turn <= $4::int - COALESCE(busy.runs, 0)
-	 ORDER BY r.turn, r.tenant_first, r.tenant_id COLLATE "C"
-	 LIMIT $7
 )
-SELECT st.id, st.tenant_id, st.status
+SELECT r.tenant_id, r.id
+  FROM ranked r
+  LEFT JOIN unnest($5::text[], $6::int[]) AS busy(tenant_id, runs) ON busy.tenant_id = r.tenant_id
+ WHERE r.turn <= $4::int - COALESCE(busy.runs, 0)
+ ORDER BY r.turn, r.tenant_first, r.tenant_id COLLATE "C"
+ LIMIT $7`
+
+// lockClaimsSQL locks ranked rows, skipping any row another transaction holds
+// (C6), and repeats the claim condition against each row's latest version.
+// It returns each locked row's status before the claim: RUNNING means the
+// claim takes the task from a stale or missing owner. The row lock holds that
+// status until claimSQL runs.
+const lockClaimsSQL = `SELECT st.tenant_id, st.id, st.status
   FROM scheduled_tasks st
-  JOIN chosen c ON c.tenant_id = st.tenant_id AND c.id = st.id
+  JOIN unnest($4::text[], $5::text[]) AS c(tenant_id, id) ON c.tenant_id = st.tenant_id AND c.id = st.id
  WHERE ` + claimableCondition + `
- ORDER BY st.id
+ ORDER BY st.tenant_id, st.id
  FOR UPDATE OF st SKIP LOCKED`
 
-// claimSQL is ClaimDue's step 3. A new statement, so it sees claims other
-// pnodes committed after step 1; the full condition, including "no other
+// claimSQL is ClaimDue's claim. A new statement, so it sees claims other
+// pnodes committed since the ranking; the full condition, including "no other
 // RUNNING task of the entity", closes that race. A concurrent claim of a
 // sibling that has not committed yet meets this one at the unique index.
 // lost_owners counts the claim only when it takes a RUNNING row.
@@ -443,7 +513,7 @@ const claimSQL = `UPDATE scheduled_tasks st
        claim_token = gen_random_uuid(),
        claim_owner = $5,
        lost_owners = st.lost_owners + CASE WHEN st.status = 'RUNNING' THEN 1 ELSE 0 END
-  FROM unnest($4::text[], $6::text[]) AS c(id, tenant_id)
+  FROM unnest($6::text[], $4::text[]) AS c(tenant_id, id)
  WHERE st.tenant_id = c.tenant_id AND st.id = c.id
    AND ` + claimableCondition + `
    AND NOT EXISTS (SELECT 1 FROM scheduled_tasks r
@@ -451,15 +521,16 @@ const claimSQL = `UPDATE scheduled_tasks st
                       AND r.status = 'RUNNING' AND r.id <> st.id)
 RETURNING ` + taskColumns
 
-// claimedMarksSQL is ClaimDue's step 4, read while the row locks are held (C3).
+// claimedMarksSQL reads the claimed lives' marks while the row locks are held
+// (C3).
 const claimedMarksSQL = `SELECT m.tenant_id, m.task_id
   FROM scheduled_task_marks m
   JOIN unnest($1::text[], $2::text[], $3::uuid[]) AS c(tenant_id, task_id, arm_token)
     ON m.tenant_id = c.tenant_id AND m.task_id = c.task_id AND m.arm_token = c.arm_token`
 
 // ClaimDue claims due tasks in one READ COMMITTED transaction on the scheduler
-// pool. A claim that loses a race for a sibling task rolls back and claims
-// nothing (see lostClaimRace); that is logged at DEBUG, not returned.
+// pool and returns them in spi.SelectClaims order. A claim that loses a race
+// for a sibling task rolls back and claims nothing (see lostClaimRace).
 func (s *scheduledTaskStore) ClaimDue(ctx context.Context, req spi.ClaimRequest) ([]spi.ScheduledTask, error) {
 	if req.Limit < 1 || req.PerTenantLimit < 1 {
 		return nil, fmt.Errorf("claim scheduled tasks: Limit and PerTenantLimit must be >= 1, got %d and %d: %w",
@@ -467,7 +538,8 @@ func (s *scheduledTaskStore) ClaimDue(ctx context.Context, req spi.ClaimRequest)
 	}
 	claimed, err := s.claimDue(ctx, req)
 	if lostClaimRace(err) {
-		slog.Debug("scheduled task claim met a concurrent claim of a sibling task; claiming nothing this call",
+		slog.Log(ctx, lostClaimRaceLevel(err),
+			"scheduled task claim met a concurrent lock or claim; claiming nothing this call",
 			"pkg", "postgres", "err", err)
 		return nil, nil
 	}
@@ -477,6 +549,12 @@ func (s *scheduledTaskStore) ClaimDue(ctx context.Context, req spi.ClaimRequest)
 	return claimed, nil
 }
 
+// claimDue ranks, locks, and ranks again until every ranked row is locked. A
+// ranked row the lock skipped — busy under an open transaction, or no longer
+// claimable — is excluded and the ranking runs again, so its turn goes to the
+// next task and the result is spi.SelectClaims over the claimable rows no
+// other transaction holds. Rows locked in an earlier round stay locked. Every
+// round but the last excludes at least one row, so the loop ends.
 func (s *scheduledTaskStore) claimDue(ctx context.Context, req spi.ClaimRequest) ([]spi.ScheduledTask, error) {
 	tenants := make([]string, 0, len(req.TenantInProgress))
 	running := make([]int, 0, len(req.TenantInProgress))
@@ -493,60 +571,71 @@ func (s *scheduledTaskStore) claimDue(ctx context.Context, req spi.ClaimRequest)
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	q := classifiedQuerier{inner: tx}
 
-	lockRows, err := q.Query(ctx, lockClaimableSQL,
-		req.NowMs, req.AllowLostOwner, stale, req.PerTenantLimit, tenants, running, req.Limit)
-	if err != nil {
-		return nil, err
-	}
-	var lockedIDs, lockedTenants []string
-	fromLostOwner := make(map[taskKey]bool)
-	for lockRows.Next() {
-		var id, tenant, status string
-		if err := lockRows.Scan(&id, &tenant, &status); err != nil {
-			lockRows.Close()
+	fromLostOwner := make(map[taskKey]bool) // every row locked so far
+	exclTenants, exclIDs := []string{}, []string{}
+	var chosen []taskKey
+	for {
+		chosen, err = rankClaims(ctx, q, req, stale, tenants, running, exclTenants, exclIDs)
+		if err != nil {
 			return nil, err
 		}
-		lockedIDs = append(lockedIDs, id)
-		lockedTenants = append(lockedTenants, tenant)
-		fromLostOwner[taskKey{tenant: tenant, id: id}] = status == string(spi.ScheduledTaskRunning)
+		var lockTenants, lockIDs []string
+		for _, k := range chosen {
+			if _, ok := fromLostOwner[k]; !ok {
+				lockTenants, lockIDs = append(lockTenants, k.tenant), append(lockIDs, k.id)
+			}
+		}
+		if len(lockIDs) == 0 {
+			break
+		}
+		if err := lockClaims(ctx, q, req, stale, lockTenants, lockIDs, fromLostOwner); err != nil {
+			return nil, err
+		}
+		skipped := false
+		for i, id := range lockIDs {
+			k := taskKey{tenant: lockTenants[i], id: id}
+			if _, ok := fromLostOwner[k]; !ok {
+				exclTenants, exclIDs = append(exclTenants, k.tenant), append(exclIDs, k.id)
+				skipped = true
+			}
+		}
+		if !skipped {
+			break
+		}
 	}
-	lockRows.Close()
-	if err := lockRows.Err(); err != nil || len(lockedIDs) == 0 {
-		return nil, err
-	}
-	rows, err := q.Query(ctx, claimSQL, req.NowMs, req.AllowLostOwner, stale, lockedIDs, req.Owner, lockedTenants)
-	if err != nil {
-		return nil, err
-	}
-	claimed, err := scanTasks(rows)
-	if err != nil || len(claimed) == 0 {
-		return nil, err
-	}
-	for i := range claimed {
-		// Set on the returned copy only; the row never stores it.
-		claimed[i].ClaimedFromLostOwner = fromLostOwner[keyOf(claimed[i])]
+	if len(chosen) == 0 {
+		return nil, nil
 	}
 
-	tenantIDs := make([]string, len(claimed))
-	ids := make([]string, len(claimed))
-	arms := make([]uuid.UUID, len(claimed))
-	at := make(map[taskKey]int, len(claimed))
-	for i, t := range claimed {
-		tenantIDs[i], ids[i], arms[i], at[keyOf(t)] = string(t.TenantID), t.ID, t.ArmToken, i
+	chosenTenants := make([]string, len(chosen))
+	chosenIDs := make([]string, len(chosen))
+	for i, k := range chosen {
+		chosenTenants[i], chosenIDs[i] = k.tenant, k.id
 	}
-	marked, err := q.Query(ctx, claimedMarksSQL, tenantIDs, ids, arms)
+	rows, err := q.Query(ctx, claimSQL, req.NowMs, req.AllowLostOwner, stale, chosenIDs, req.Owner, chosenTenants)
 	if err != nil {
-		return nil, err
+		return nil, claimStepError(err)
 	}
-	defer marked.Close()
-	for marked.Next() {
-		var k taskKey
-		if err := marked.Scan(&k.tenant, &k.id); err != nil {
-			return nil, err
+	updated, err := scanTasks(rows)
+	if err != nil {
+		return nil, claimStepError(err)
+	}
+	byKey := make(map[taskKey]spi.ScheduledTask, len(updated))
+	for _, t := range updated {
+		// Set on the returned copy only; the row never stores it.
+		t.ClaimedFromLostOwner = fromLostOwner[keyOf(t)]
+		byKey[keyOf(t)] = t
+	}
+	claimed := make([]spi.ScheduledTask, 0, len(updated))
+	for _, k := range chosen {
+		if t, ok := byKey[k]; ok {
+			claimed = append(claimed, t)
 		}
-		claimed[at[k]].UnsafeMarked = true
 	}
-	if err := marked.Err(); err != nil {
+	if len(claimed) == 0 {
+		return nil, nil
+	}
+	if err := markClaimed(ctx, q, claimed); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -555,11 +644,81 @@ func (s *scheduledTaskStore) claimDue(ctx context.Context, req spi.ClaimRequest)
 	return claimed, nil
 }
 
-// lostClaimRace reports a claim that met a concurrent claim of a sibling task
-// of the same entity: the one-RUNNING-task-per-entity index refused it after
-// the rival committed (23505), the rival held its index entry past
-// lock_timeout (55P03), or two claims waited on each other's index entries
-// (40P01). The transaction has rolled back; nothing was claimed.
+func rankClaims(ctx context.Context, q Querier, req spi.ClaimRequest, stale int64,
+	tenants []string, running []int, exclTenants, exclIDs []string) ([]taskKey, error) {
+	rows, err := q.Query(ctx, rankClaimsSQL, req.NowMs, req.AllowLostOwner, stale, req.PerTenantLimit,
+		tenants, running, req.Limit, exclTenants, exclIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var chosen []taskKey
+	for rows.Next() {
+		var k taskKey
+		if err := rows.Scan(&k.tenant, &k.id); err != nil {
+			return nil, err
+		}
+		chosen = append(chosen, k)
+	}
+	return chosen, rows.Err()
+}
+
+// lockClaims locks the rows it can and records each one's pre-claim status in
+// locked (true: RUNNING, taken from a lost owner).
+func lockClaims(ctx context.Context, q Querier, req spi.ClaimRequest, stale int64,
+	tenants, ids []string, locked map[taskKey]bool) error {
+	rows, err := q.Query(ctx, lockClaimsSQL, req.NowMs, req.AllowLostOwner, stale, tenants, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k taskKey
+		var status string
+		if err := rows.Scan(&k.tenant, &k.id, &status); err != nil {
+			return err
+		}
+		locked[k] = status == string(spi.ScheduledTaskRunning)
+	}
+	return rows.Err()
+}
+
+// markClaimed sets UnsafeMarked on each claimed task whose life has a mark.
+func markClaimed(ctx context.Context, q Querier, claimed []spi.ScheduledTask) error {
+	tenantIDs := make([]string, len(claimed))
+	ids := make([]string, len(claimed))
+	arms := make([]uuid.UUID, len(claimed))
+	at := make(map[taskKey]int, len(claimed))
+	for i, t := range claimed {
+		tenantIDs[i], ids[i], arms[i], at[keyOf(t)] = string(t.TenantID), t.ID, t.ArmToken, i
+	}
+	rows, err := q.Query(ctx, claimedMarksSQL, tenantIDs, ids, arms)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k taskKey
+		if err := rows.Scan(&k.tenant, &k.id); err != nil {
+			return err
+		}
+		claimed[at[k]].UnsafeMarked = true
+	}
+	return rows.Err()
+}
+
+// errClaimStep marks an error raised by claimSQL, the one statement that can
+// wait on another claim's entry in the one-RUNNING-task-per-entity index.
+var errClaimStep = errors.New("claim statement")
+
+func claimStepError(err error) error {
+	return fmt.Errorf("%w: %w", errClaimStep, err)
+}
+
+// lostClaimRace reports a claim that met a concurrent claim or lock and must
+// roll back and claim nothing: the one-RUNNING-task-per-entity index refused
+// it after the rival committed (23505), a lock wait reached lock_timeout
+// (55P03), or two transactions waited on each other (40P01).
 func lostClaimRace(err error) bool {
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) {
@@ -572,6 +731,17 @@ func lostClaimRace(err error) bool {
 		return pgErr.ConstraintName == "scheduled_tasks_one_running_per_entity_uq"
 	}
 	return false
+}
+
+// lostClaimRaceLevel is the level a lost claim is logged at. Only claimSQL can
+// wait on the one-RUNNING-task-per-entity index, and meeting a sibling's claim
+// there is expected: DEBUG. A lock wait or deadlock anywhere else in the claim
+// is not expected: WARN.
+func lostClaimRaceLevel(err error) slog.Level {
+	if errors.Is(err, errClaimStep) {
+		return slog.LevelDebug
+	}
+	return slog.LevelWarn
 }
 
 func isLockNotAvailable(err error) bool {
@@ -678,14 +848,14 @@ func (s *scheduledTaskStore) RecordAttempt(ctx context.Context, ref spi.TaskRef,
 // Fail joins the transaction on ctx, so the FAILED status and its audit event
 // commit together. The mark, if any, stays with the life.
 func (s *scheduledTaskStore) Fail(ctx context.Context, ref spi.TaskRef, f spi.Failure) error {
-	if err := joinTenant(ctx, ref.TenantID); err != nil {
-		return err
-	}
 	if err := spi.ValidateFailureReason(f.Reason); err != nil {
 		return fmt.Errorf("fail scheduled task %s: %w", ref.ID, err)
 	}
 	if err := spi.ValidateTaskErrorText(f.Error); err != nil {
 		return fmt.Errorf("fail scheduled task %s: %w", ref.ID, err)
+	}
+	if err := joinTenant(ctx, ref.TenantID); err != nil {
+		return err
 	}
 	tag, err := s.q.Exec(ctx, `UPDATE scheduled_tasks
 		   SET status = 'FAILED', failure_reason = $5, last_error = $6, failed_time = $7,

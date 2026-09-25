@@ -281,6 +281,7 @@ func (f *StoreFactory) ScheduledTaskStore(_ context.Context) (spi.ScheduledTaskS
 	return &scheduledTaskStore{
 		q:         f.querier(),
 		query:     unjoinedQuerier{pool: f.pool, acquireTimeout: f.cfg.AcquireTimeout, what: "scheduled task query"},
+		pool:      f.pool,
 		sched:     f.schedulerQuerier("scheduled task"),
 		heartbeat: f.heartbeatQuerier(),
 	}, nil

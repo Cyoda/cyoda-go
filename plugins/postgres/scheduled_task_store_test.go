@@ -3,6 +3,8 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -443,18 +445,14 @@ func TestPostgres_ClaimDue_TenantOrderHoldsEveryRound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ClaimDue: %v", err)
 	}
-	got := map[string]bool{}
+	var got []string
 	for _, task := range claimed {
-		got[task.ID] = true
+		got = append(got, task.ID)
 	}
-	want := map[string]bool{"a1:S:T": true, "b1:S:T": true, "a2:S:T": true}
-	if len(got) != len(want) {
-		t.Fatalf("claimed %v, want %v", got, want)
-	}
-	for id := range want {
-		if !got[id] {
-			t.Errorf("claimed %v, want %v: tenant-A's second turn comes before tenant-B's", got, want)
-		}
+	// ClaimDue returns its claims in spi.SelectClaims order.
+	want := []string{"a1:S:T", "b1:S:T", "a2:S:T"}
+	if !slices.Equal(got, want) {
+		t.Errorf("claimed %v, want %v: tenant-A's second turn comes before tenant-B's", got, want)
 	}
 }
 
@@ -510,5 +508,178 @@ func TestPostgres_ClaimDue_SameIDInTwoTenantsKeepsItsOwnFlags(t *testing.T) {
 			t.Errorf("%s's task: ClaimedFromLostOwner=%v UnsafeMarked=%v, want %v and %v",
 				task.TenantID, task.ClaimedFromLostOwner, task.UnsafeMarked, lost, lost)
 		}
+	}
+}
+
+// A busy row's turn goes to the next task: the claim equals spi.SelectClaims
+// over the candidates no open transaction holds.
+func TestPostgres_ClaimDue_BusyRowsTurnGoesToTheNextTask(t *testing.T) {
+	f, sts := newTaskStore(t, 5)
+	arm(t, sts, "tenant-A", "a1", "S", taskSpec("tenant-A", "a1", "S", "T", 1))
+	arm(t, sts, "tenant-A", "a2", "S", taskSpec("tenant-A", "a2", "S", "T", 2))
+	arm(t, sts, "tenant-B", "b1", "S", taskSpec("tenant-B", "b1", "S", "T", 3))
+	txCtx, rollback := beginEntityTx(t, f, "tenant-A")
+	defer rollback()
+	if err := sts.DeleteForEntities(txCtx, "tenant-A", []string{"a1"}); err != nil {
+		t.Fatalf("DeleteForEntities: %v", err)
+	}
+
+	req := claimRequest(uuid.New())
+	req.Limit = 1
+	claimed, err := sts.ClaimDue(context.Background(), req)
+	if err != nil || len(claimed) != 1 || claimed[0].ID != "a2:S:T" {
+		t.Fatalf("ClaimDue Limit 1 with a1 busy: claimed=%v err=%v, want a2", taskIDs(claimed), err)
+	}
+	// With a1 busy, tenant-A's earliest free candidate is a2 (2), still ahead
+	// of tenant-B's b1 (3).
+	req.Limit = 2
+	req.Owner = uuid.New()
+	claimed, err = sts.ClaimDue(context.Background(), req)
+	if err != nil || !slices.Equal(taskIDs(claimed), []string{"b1:S:T"}) {
+		t.Fatalf("second ClaimDue: claimed=%v err=%v, want b1 only", taskIDs(claimed), err)
+	}
+}
+
+func taskIDs(tasks []spi.ScheduledTask) []string {
+	out := make([]string, 0, len(tasks))
+	for _, x := range tasks {
+		out = append(out, x.ID)
+	}
+	return out
+}
+
+// Without a transaction on ctx, ReconcileForEntity is still all or nothing:
+// a statement that fails undoes the arms before it.
+func TestPostgres_ReconcileForEntity_WithoutATransactionIsAtomic(t *testing.T) {
+	_, sts := newTaskStore(t, 5)
+	arm(t, sts, "tenant-A", "e1", "S0", taskSpec("tenant-A", "e1", "S0", "T", 1000))
+	before := mustGet(t, sts, "tenant-A", "e1:S0:T")
+	bad := taskSpec("tenant-A", "e1", "S", "T2", 1000)
+	bad.ID = "bad\x00id"
+	_, err := sts.ReconcileForEntity(context.Background(), spi.ReconcileRequest{
+		TenantID: "tenant-A", EntityID: "e1", CurrentState: "S",
+		Arm: []spi.ScheduledTask{taskSpec("tenant-A", "e1", "S", "T", 1000), bad},
+	})
+	if err == nil {
+		t.Fatal("ReconcileForEntity with an id holding a NUL succeeded")
+	}
+	if _, found, err := sts.Get(context.Background(), "tenant-A", "e1:S:T"); err != nil || found {
+		t.Errorf("the first arm of a failed call was kept: found=%v err=%v", found, err)
+	}
+	if got := mustGet(t, sts, "tenant-A", "e1:S0:T"); got.ArmToken != before.ArmToken {
+		t.Errorf("the entity's existing task was changed by a failed call")
+	}
+}
+
+// Without a transaction on ctx, DeleteForModel's delete sees the rows its
+// read saw: a task armed while keep runs is not removed.
+func TestPostgres_DeleteForModel_WithoutATransactionReadAndDeleteAgree(t *testing.T) {
+	f, sts := newTaskStore(t, 5)
+	arm(t, sts, "tenant-A", "e1", "S", taskSpec("tenant-A", "e1", "S", "T", 1000))
+	pool := postgres.PoolForTest(f)
+	inserted := false
+	keep := func(_, _ string) bool {
+		if !inserted {
+			inserted = true
+			if _, err := pool.Exec(context.Background(), `INSERT INTO scheduled_tasks (id, tenant_id, type,
+				scheduled_time, entity_id, model_name, model_version, transition, source_state, armed_at,
+				arm_token, status, next_attempt_time)
+				VALUES ('e2:S:T', 'tenant-A', 'fire-transition', 1000, 'e2', 'M', 1, 'T', 'S', 0,
+				        gen_random_uuid(), 'WAITING', 1000)`); err != nil {
+				t.Errorf("arm while keep runs: %v", err)
+			}
+		}
+		return false
+	}
+	if err := sts.DeleteForModel(context.Background(), "tenant-A", "M", 1, keep); err != nil {
+		t.Fatalf("DeleteForModel: %v", err)
+	}
+	if _, found, _ := sts.Get(context.Background(), "tenant-A", "e1:S:T"); found {
+		t.Error("the task the read saw was not removed")
+	}
+	if _, found, _ := sts.Get(context.Background(), "tenant-A", "e2:S:T"); !found {
+		t.Error("a task armed after the read was removed: the delete saw rows the read did not")
+	}
+}
+
+// A removed task carries its life's mark, as Get does.
+func TestPostgres_ReconcileForEntity_RemovedTaskCarriesItsMark(t *testing.T) {
+	_, sts := newTaskStore(t, 5)
+	arm(t, sts, "tenant-A", "e1", "S", taskSpec("tenant-A", "e1", "S", "T", 1000))
+	c := claimAll(t, sts)[0]
+	if err := sts.MarkUnsafe(context.Background(), refOf(c)); err != nil {
+		t.Fatalf("MarkUnsafe: %v", err)
+	}
+	removed, err := sts.ReconcileForEntity(context.Background(), spi.ReconcileRequest{
+		TenantID: "tenant-A", EntityID: "e1", CurrentState: "S2"})
+	if err != nil || len(removed) != 1 {
+		t.Fatalf("ReconcileForEntity: removed=%d err=%v", len(removed), err)
+	}
+	if !removed[0].UnsafeMarked {
+		t.Error("the removed task lost its mark")
+	}
+}
+
+// Removed tasks come back sorted by id, byte-wise.
+func TestPostgres_ReconcileForEntity_RemovedInIDOrder(t *testing.T) {
+	_, sts := newTaskStore(t, 5)
+	var specs []spi.ScheduledTask
+	for _, id := range []string{"b", "a", "B", "c"} {
+		s := taskSpec("tenant-A", "e1", "S0", "T"+id, 1000)
+		s.ID = id
+		specs = append(specs, s)
+	}
+	arm(t, sts, "tenant-A", "e1", "S0", specs...)
+	removed, err := sts.ReconcileForEntity(context.Background(), spi.ReconcileRequest{
+		TenantID: "tenant-A", EntityID: "e1", CurrentState: "S"})
+	if err != nil {
+		t.Fatalf("ReconcileForEntity: %v", err)
+	}
+	if got, want := taskIDs(removed), []string{"B", "a", "b", "c"}; !slices.Equal(got, want) {
+		t.Errorf("removed = %v, want %v", got, want)
+	}
+}
+
+// Input validation comes before the transaction's tenant check: a call that
+// breaks both is refused as ErrStoreRejected.
+func TestPostgres_ScheduledTaskStore_ValidationBeforeTenantCheck(t *testing.T) {
+	f, sts := newTaskStore(t, 5)
+	txCtx, rollback := beginEntityTx(t, f, "tenant-A")
+	defer rollback()
+	s := taskSpec("tenant-B", "e1", "S", "T", 1000)
+	_, err := sts.ReconcileForEntity(txCtx, spi.ReconcileRequest{
+		TenantID: "tenant-B", EntityID: "e1", CurrentState: "S",
+		Arm: []spi.ScheduledTask{s}, Cancel: []string{s.ID}})
+	if !errors.Is(err, spi.ErrStoreRejected) || errors.Is(err, spi.ErrTxTenantMismatch) {
+		t.Errorf("ReconcileForEntity: err = %v, want ErrStoreRejected only", err)
+	}
+	ref := spi.TaskRef{TenantID: "tenant-B", ID: s.ID, ArmToken: uuid.New(), ClaimToken: uuid.New()}
+	for name, fl := range map[string]spi.Failure{
+		"unknown reason": {Reason: "NOT_A_REASON", Error: "x", AtMs: 1},
+		"long error":     {Reason: spi.FailureRunPanicked, Error: strings.Repeat("x", 1025), AtMs: 1},
+	} {
+		err := sts.Fail(txCtx, ref, fl)
+		if !errors.Is(err, spi.ErrStoreRejected) || errors.Is(err, spi.ErrTxTenantMismatch) {
+			t.Errorf("Fail with %s: err = %v, want ErrStoreRejected only", name, err)
+		}
+	}
+}
+
+// ClaimDue returns its claims in spi.SelectClaims order: tenants take turns,
+// so the order is neither the due order, the id order nor the write order.
+func TestPostgres_ClaimDue_ResultInSelectClaimsOrder(t *testing.T) {
+	_, sts := newTaskStore(t, 5)
+	for _, x := range []struct {
+		tenant spi.TenantID
+		id     string
+		due    int64
+	}{{"tenant-B", "b1", 3}, {"tenant-A", "a2", 2}, {"tenant-A", "a1", 1}} {
+		s := taskSpec(x.tenant, x.id, "S", "T", x.due)
+		s.ID = x.id
+		arm(t, sts, x.tenant, x.id, "S", s)
+	}
+	claimed := claimAll(t, sts)
+	if got, want := taskIDs(claimed), []string{"a1", "b1", "a2"}; !slices.Equal(got, want) {
+		t.Errorf("claimed %v, want %v", got, want)
 	}
 }
