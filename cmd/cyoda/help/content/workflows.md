@@ -193,8 +193,12 @@ Any value other than `"internalized"` (including the empty string, the canonical
   engine's apply-result overwrites the processor's intra-TX writes
   (last-writer-wins inside the transaction buffer). Pick one path: let the
   engine apply the result, OR have the processor write the entity itself and
-  return no mutations for it. A write to the entity by any other transaction
-  makes the transition fail with a conflict.
+  return no mutations for it. A callback read of the entity returns what is
+  stored in the transaction: it does not include mutations an earlier
+  processor of the same cascade returned, which the engine has not yet
+  saved. A processor that writes the entity bases the write on the payload
+  in its request, not on a callback read. A write to the entity by any other
+  transaction makes the transition fail with a conflict.
 
 Import-time validation rejects any `executionMode` value not in the list above (and not empty) with `400 VALIDATION_FAILED`. The empty string continues to default to `SYNC` at engine fire.
 

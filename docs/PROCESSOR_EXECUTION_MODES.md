@@ -106,8 +106,11 @@ When a callback arrives carrying the token, the receiving node verifies the
 HMAC and joins the transaction: if `NodeID` equals self, it calls
 `Join(TxRef)` locally; otherwise it forwards the full request to the owning
 node (HTTP: reverse proxy; gRPC: B→A forward). Inside `T` the callback
-sees the cascade's uncommitted writes — including via search (read-your-own-writes);
-other readers do not.
+sees the writes stored in `T` — including via search (read-your-own-writes);
+other readers do not. Mutations that an earlier processor of the cascade
+returned and the engine has not yet saved are not stored in `T`, so a
+callback read does not show them; the processor's request carries the
+current payload.
 
 A callback ack is **provisional** — it is not durable until the owning
 transaction commits. If the processor fails or the engine rolls back `T`,

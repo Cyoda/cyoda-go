@@ -598,8 +598,11 @@ A short checklist:
    let the engine apply the result, OR have the processor write the
    entity itself and return no mutations for it. In the second case
    the engine keeps the write: it takes the written payload and keeps
-   its own state, so the transition still takes effect. A write to the
-   entity by any other transaction makes the transition fail with a
+   its own state, so the transition still takes effect. A callback read
+   returns what is stored in the transaction, without the mutations an
+   earlier processor returned and the engine has not yet saved, so the
+   processor bases its write on the payload in its request. A write to
+   the entity by any other transaction makes the transition fail with a
    conflict. Cross-link: `cmd/cyoda/help/content/workflows.md` carries
    this rule.
 10. **Batch operations degrade under `COMMIT_BEFORE_DISPATCH`.** Under
