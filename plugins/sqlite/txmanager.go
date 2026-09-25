@@ -22,9 +22,24 @@ const submitTimeTTL = 1 * time.Hour
 // preceded Begin can carry the same instant as the snapshot; the sequence
 // number still orders them.
 type committedTx struct {
-	id       string
 	seq      int64
 	writeSet map[string]bool
+	// taskWrites holds the task rows the write changed. It is apart from
+	// writeSet, whose keys are entity ids, so the two checks never mix. A
+	// write that committed on its own (commitTaskWrites) has only taskWrites.
+	taskWrites map[taskKey]bool
+}
+
+// taskWriteSet returns the task rows ops write, touches included.
+func taskWriteSet(ops []scheduledTaskOp) map[taskKey]bool {
+	if len(ops) == 0 {
+		return nil
+	}
+	set := make(map[taskKey]bool, len(ops))
+	for _, op := range ops {
+		set[op.key] = true
+	}
+	return set
 }
 
 // submitTimeEntry pairs a committed transaction's submit time with the
@@ -47,7 +62,7 @@ type savepointSnapshot struct {
 
 	// scheduledTaskOpsLen is len(transactionManager.scheduledTaskOps[txID]) at
 	// the moment this savepoint was taken. scheduledTaskOps is append-only
-	// (see stageScheduledTaskOp), so — unlike the maps above, which are
+	// (see stageTaskWrite), so — unlike the maps above, which are
 	// deep-copied and restored wholesale — RollbackToSavepoint restores it by
 	// truncating back to this recorded length instead of snapshotting it.
 	scheduledTaskOpsLen int
@@ -76,7 +91,11 @@ type transactionManager struct {
 	// for SI+FCW correctness — a mutex in every respect except that a waiter
 	// can be released by its context. See acquireCommitGate.
 	commitGate chan struct{}
-	mu         sync.Mutex // protects active, committedLog, commitSeq, txSnapshotSeq, committing, submitTimes, savepoints, txUniqueKeys
+	// taskStageMu serialises joining task-row writes: each one reads the
+	// staged ops, plans and appends while holding it (see stageTaskWrite).
+	// Lock order: tx.OpMu (read) → taskStageMu → commit gate → mu.
+	taskStageMu sync.Mutex
+	mu          sync.Mutex // protects active, committedLog, commitSeq, txSnapshotSeq, committing, submitTimes, savepoints, txUniqueKeys
 
 	active         map[string]*spi.TransactionState
 	committedLog   []committedTx
@@ -85,10 +104,12 @@ type transactionManager struct {
 	savepoints     map[string]map[string]savepointSnapshot
 	lastSubmitTime int64 // monotonic submit time in microseconds; bumped and read under mu, by callers holding the commit gate
 
-	// commitSeq counts committed writes; txSnapshotSeq holds its value at
-	// each open transaction's Begin. Both are read and written under mu by
-	// callers holding the commit gate, so every Begin is ordered wholly
-	// before or wholly after every commit.
+	// commitSeq counts committed writes, a transaction's and a task-row
+	// write that commits on its own alike; txSnapshotSeq holds its value at
+	// each open transaction's Begin. Both are advanced and written only by
+	// callers holding the commit gate and mu, so every Begin is ordered
+	// wholly before or wholly after every commit; Rollback removes entries
+	// under mu alone.
 	commitSeq     int64
 	txSnapshotSeq map[string]int64 // txID → commitSeq at Begin; removed by forgetLocked
 
@@ -215,22 +236,43 @@ func zeroStagedMarks(ops []scheduledTaskOp) []scheduledTaskOp {
 	return out
 }
 
-// stageTaskOps appends ops to txID's staged task-row ops. flushToSQLite writes
-// them in the commit's sqlTx; every abort path discards them. Protected by mu.
-func (m *transactionManager) stageTaskOps(txID string, ops []scheduledTaskOp) {
+// stageTaskWrite stages one joining write on txID. It passes plan the ops
+// staged so far and appends the ops plan returns, holding taskStageMu from
+// the read to the append: two joining writes on the same transaction
+// therefore never plan from the same view, and neither post-image overwrites
+// the other. flushToSQLite writes the staged ops in the commit's sqlTx;
+// every abort path discards them.
+//
+// plan reads task rows on db, so it runs outside mu: a Commit's flush holds
+// the single writer connection and then takes mu, and holding mu while
+// waiting for that connection would deadlock with it.
+//
+// Caller holds tx.OpMu (read).
+func (m *transactionManager) stageTaskWrite(txID string, plan func(staged []scheduledTaskOp) ([]scheduledTaskOp, error)) error {
+	m.taskStageMu.Lock()
+	defer m.taskStageMu.Unlock()
+	ops, err := plan(m.stagedTaskOps(txID))
+	if err != nil {
+		return err
+	}
 	if len(ops) == 0 {
-		return
+		return nil
 	}
 	ops = zeroStagedMarks(ops)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.scheduledTaskOps[txID] = append(m.scheduledTaskOps[txID], ops...)
+	return nil
 }
 
 // commitTaskWrites writes task-row ops that commit on their own — a
 // never-joining method, or a joining one called without a transaction — in
-// one sqlTx of their own. then, when not nil, runs in the same sqlTx after
-// the ops. Caller holds the commit gate.
+// one sqlTx of their own, and records them in the committed log, so that a
+// transaction that began before them and writes one of the same rows fails
+// at commit. then, when not nil, runs in the same sqlTx after the ops.
+// Caller holds the commit gate from its first read to the return, so the
+// read, the write and the log entry are ordered wholly before or wholly
+// after any Begin and any other commit.
 func (m *transactionManager) commitTaskWrites(ctx context.Context, ops []scheduledTaskOp, then func(*sql.Tx) error) error {
 	if len(ops) == 0 && then == nil {
 		return nil
@@ -254,7 +296,45 @@ func (m *transactionManager) commitTaskWrites(ctx context.Context, ops []schedul
 	if err := sqlTx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit a scheduled task write: %w", err)
 	}
+	keys := taskWriteSet(ops)
+	if len(keys) > 0 {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.logTaskWritesLocked(keys)
+	}
 	return nil
+}
+
+// logTaskWritesLocked records a task-row write that committed on its own, so
+// that a transaction that began before it and writes one of the same rows
+// fails at commit. Caller holds the commit gate — which Begin also takes, so
+// the write and its entry are ordered wholly before or wholly after any
+// Begin — and mu.
+func (m *transactionManager) logTaskWritesLocked(keys map[taskKey]bool) {
+	m.commitSeq++
+	m.committedLog = append(m.committedLog, committedTx{seq: m.commitSeq, taskWrites: keys})
+	m.pruneCommittedLogLocked()
+}
+
+// taskRowWrittenAfterBegin reports whether a write logged after txID's Begin
+// changed the task row k. It takes the commit gate: every writer holds the
+// gate from its commit to its log entry, so once the gate is taken, every
+// write a read made before this call could see is in the log. Entries above
+// txID's snapshot are never pruned while txID is open.
+//
+// Caller holds tx.OpMu (read) and taskStageMu, and not the commit gate.
+func (m *transactionManager) taskRowWrittenAfterBegin(txID string, k taskKey) bool {
+	_ = m.acquireCommitGate(context.Background())
+	defer m.releaseCommitGate()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	snapshotSeq := m.txSnapshotSeq[txID]
+	for _, committed := range m.committedLog {
+		if committed.seq > snapshotSeq && committed.taskWrites[k] {
+			return true
+		}
+	}
+	return false
 }
 
 // stageSuperseded appends prior — the tx.Buffer value a Save/CompareAndSave
@@ -611,19 +691,38 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 
 	// 3. Conflict detection. A transaction conflicts with every commit whose
 	// sequence number is above the one it saw at Begin and whose write set
-	// meets its read or write set.
+	// meets its read or write set, or whose task writes meet its own. Entity
+	// ids and task rows are checked in two separate loops over two separate
+	// sets. The staged task-row ops are captured here: tx.OpMu.Lock (step
+	// 1b) blocks every stageTaskWrite, so they are stable for the rest of the
+	// commit.
+	var scheduledOps []scheduledTaskOp
 	if err := func() error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
+		scheduledOps = append([]scheduledTaskOp(nil), m.scheduledTaskOps[txID]...)
+		taskWrites := taskWriteSet(scheduledOps)
 		snapshotSeq := m.txSnapshotSeq[txID]
 		for _, committed := range m.committedLog {
-			if committed.seq > snapshotSeq {
-				for entityID := range committed.writeSet {
-					if tx.ReadSet[entityID] || tx.WriteSet[entityID] {
-						m.forgetLocked(txID)
-						return spi.ErrConflict
-					}
+			if committed.seq <= snapshotSeq {
+				continue
+			}
+			conflict := false
+			for entityID := range committed.writeSet {
+				if tx.ReadSet[entityID] || tx.WriteSet[entityID] {
+					conflict = true
+					break
 				}
+			}
+			for k := range committed.taskWrites {
+				if taskWrites[k] {
+					conflict = true
+					break
+				}
+			}
+			if conflict {
+				m.forgetLocked(txID)
+				return spi.ErrConflict
 			}
 		}
 		return nil
@@ -634,10 +733,6 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 	// 4. Capture submit time under the monotonic floor every stamping path
 	// shares — see nextSubmitTime.
 	submitTime := time.UnixMicro(m.nextSubmitTime())
-
-	// 4.5. Snapshot the staged task-row ops. tx.OpMu.Lock (held since step
-	// 1b) blocks every stageTaskOps, so the slice is stable.
-	scheduledOps := m.stagedTaskOps(txID)
 
 	// 5. Flush buffer, deletes, and staged scheduled-task ops to SQLite.
 	if err := m.flushToSQLite(ctx, tx, submitTime, scheduledOps); err != nil {
@@ -660,9 +755,9 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 
 		m.commitSeq++
 		m.committedLog = append(m.committedLog, committedTx{
-			id:       txID,
-			seq:      m.commitSeq,
-			writeSet: tx.WriteSet,
+			seq:        m.commitSeq,
+			writeSet:   tx.WriteSet,
+			taskWrites: taskWriteSet(scheduledOps),
 		})
 		m.submitTimes[txID] = submitTimeEntry{submitTime: submitTime, tenantID: tx.TenantID}
 

@@ -22,7 +22,8 @@ type taskKey struct {
 // scheduledTaskOp is one staged write to a task row: the row as it is after
 // the write, or nil when the write removes it. A touch changes nothing; it
 // only puts the row in the transaction's write set, so that a RemoveLife of a
-// life replaced after the transaction began still fails the commit.
+// life replaced after the transaction began still fails the commit (see
+// RemoveLife).
 //
 // Every check a write makes is evaluated when it is staged (see write). The
 // commit's conflict check proves that no other writer changed those rows
@@ -366,8 +367,12 @@ var _ spi.ScheduledTaskStore = (*scheduledTaskStore)(nil)
 // one they are written at once, under the commit gate, and commit on their own.
 //
 // Holding tx.OpMu (read) keeps Commit, Rollback and RollbackToSavepoint of this
-// transaction out while plan reads its staged ops. plan does I/O on db, so the
-// manager's mu is not held across it.
+// transaction out while plan reads its staged ops. With a transaction, plan
+// runs inside stageTaskWrite, which reads the staged ops, plans and appends
+// under one lock, so two joining writes on one transaction are serialised.
+// Without one, the commit gate is held from plan's first read to the log
+// entry, so the call is atomic with respect to every other writer and to
+// Begin.
 func (s *scheduledTaskStore) write(ctx context.Context, tenant spi.TenantID, plan func(v taskView) ([]scheduledTaskOp, error)) error {
 	tx := spi.GetTransaction(ctx)
 	if tx == nil {
@@ -391,12 +396,9 @@ func (s *scheduledTaskStore) write(ctx context.Context, tenant spi.TenantID, pla
 	if tx.TenantID != tenant {
 		return fmt.Errorf("scheduledTaskStore: %w (txID=%s)", spi.ErrTxTenantMismatch, tx.ID)
 	}
-	ops, err := plan(taskView{ctx: ctx, db: s.db, staged: s.tm.stagedTaskOps(tx.ID)})
-	if err != nil {
-		return err
-	}
-	s.tm.stageTaskOps(tx.ID, ops)
-	return nil
+	return s.tm.stageTaskWrite(tx.ID, func(staged []scheduledTaskOp) ([]scheduledTaskOp, error) {
+		return plan(taskView{ctx: ctx, db: s.db, staged: staged})
+	})
 }
 
 // ReconcileForEntity arms req.Arm, each as a new life, and removes every
@@ -439,10 +441,17 @@ func (s *scheduledTaskStore) ReconcileForEntity(ctx context.Context, req spi.Rec
 	return removed, nil
 }
 
-// RemoveLife removes the task if its current life is armToken. Otherwise it
-// changes nothing, but the row still enters the transaction's write set.
+// RemoveLife removes the task if its current life is armToken. It is a write
+// exactly when armToken is the life the transaction's snapshot shows, after
+// its own staged ops. When the row now shows another life, or none, it
+// changes nothing: if a write logged after Begin changed the row, the named
+// life may have been current at the snapshot, so the row enters the write
+// set (a touch) and the commit fails; otherwise the snapshot already showed
+// the life replaced or missing, and the call is no write at all. With no
+// transaction, only a current life is a write.
 func (s *scheduledTaskStore) RemoveLife(ctx context.Context, tenant spi.TenantID, id string, armToken uuid.UUID) error {
 	k := taskKey{tenant: tenant, id: id}
+	tx := spi.GetTransaction(ctx)
 	return s.write(ctx, tenant, func(v taskView) ([]scheduledTaskOp, error) {
 		t, ok, err := v.get(k)
 		if err != nil {
@@ -451,7 +460,10 @@ func (s *scheduledTaskStore) RemoveLife(ctx context.Context, tenant spi.TenantID
 		if ok && t.ArmToken == armToken {
 			return []scheduledTaskOp{{key: k}}, nil
 		}
-		return []scheduledTaskOp{{key: k, touch: true}}, nil
+		if tx != nil && s.tm.taskRowWrittenAfterBegin(tx.ID, k) {
+			return []scheduledTaskOp{{key: k, touch: true}}, nil
+		}
+		return nil, nil
 	})
 }
 

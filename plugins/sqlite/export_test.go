@@ -82,3 +82,8 @@ func SearchCandidateIDsForTest(f *StoreFactory, ctx context.Context, tenantID sp
 	}
 	return ids, rows.Err()
 }
+
+// CommittedLogLenForTest reports the length of the factory's committed log.
+func CommittedLogLenForTest(f *StoreFactory) int {
+	return f.tm.CommittedLogLen()
+}

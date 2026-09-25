@@ -79,3 +79,57 @@ func TestFCW_OverlappingWritersStillConflictUnderAFrozenClock(t *testing.T) {
 		t.Fatalf("second Commit = %v, want ErrConflict", err)
 	}
 }
+
+// A transaction open across many later commits still conflicts with the one
+// that wrote its entity: pruning drops only entries at or below the oldest
+// open snapshot, never one an open transaction can conflict with.
+func TestFCW_ALongOpenTransactionConflictsAfterManyLaterCommits(t *testing.T) {
+	cases := []struct {
+		name string
+		// touch puts e1 in the long transaction's read or write set.
+		touch func(t *testing.T, f *sqlite.StoreFactory, txCtx context.Context)
+	}{
+		{"WriteSet", func(t *testing.T, f *sqlite.StoreFactory, txCtx context.Context) {
+			es, err := f.EntityStore(txCtx)
+			if err != nil {
+				t.Fatalf("EntityStore: %v", err)
+			}
+			if _, err := es.Save(txCtx, seqEntity("e1")); err != nil {
+				t.Fatalf("Save: %v", err)
+			}
+		}},
+		{"ReadSet", func(t *testing.T, f *sqlite.StoreFactory, txCtx context.Context) {
+			es, err := f.EntityStore(txCtx)
+			if err != nil {
+				t.Fatalf("EntityStore: %v", err)
+			}
+			if _, err := es.Get(txCtx, "e1"); err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f, tm, ctx := newFrozenTM(t)
+			if err := tm.Commit(ctx, beginSave(t, f, tm, ctx, "e1")); err != nil {
+				t.Fatalf("seed Commit: %v", err)
+			}
+			longID, longCtx, err := tm.Begin(ctx)
+			if err != nil {
+				t.Fatalf("Begin: %v", err)
+			}
+			c.touch(t, f, longCtx)
+			if err := tm.Commit(ctx, beginSave(t, f, tm, ctx, "e1")); err != nil {
+				t.Fatalf("Commit of e1: %v", err)
+			}
+			for i := 0; i < 5; i++ {
+				if err := tm.Commit(ctx, beginSave(t, f, tm, ctx, "e2")); err != nil {
+					t.Fatalf("Commit %d of e2: %v", i, err)
+				}
+			}
+			if err := tm.Commit(ctx, longID); !errors.Is(err, spi.ErrConflict) {
+				t.Fatalf("long Commit = %v, want ErrConflict: e1 was committed after it began", err)
+			}
+		})
+	}
+}
