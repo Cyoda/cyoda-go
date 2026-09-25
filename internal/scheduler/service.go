@@ -84,7 +84,7 @@ type liveRun struct {
 	// Guarded by Service.mu.
 	reason cancelReason
 	ended  bool // the fire has returned
-	keep   bool // never given back: the store rejected its outcome
+	keep   bool // never given back: the run panicked, or the store rejected its outcome
 }
 
 // Service is one pnode's scheduler: a claim loop, a heartbeat goroutine, a
@@ -477,22 +477,31 @@ func (s *Service) sweep() {
 
 // --- runs -------------------------------------------------------------------
 
+// run fires one claimed task and records its outcome. A panic in the fire is
+// recovered by fire; a panic in the bookkeeping is recovered here. Either way
+// the claim is kept and the node latches (§6.5).
 func (s *Service) run(r *liveRun) {
 	defer s.runsWG.Done()
 	start := time.Now()
+	defer s.recoverBookkeeping(r, start)
 	ctx, span := observability.Tracer().Start(r.ctx, "scheduler.run")
 	defer span.End()
 
-	rep := s.fire(ctx, r)
+	rep, panicked, panicTicket := s.fire(ctx, r)
 	nowMs := s.deps.Clock.Now().UnixMilli()
 
 	reason, draining := s.markEnded(r)
 
+	// A panicked run has the zero report, which is never cut; decideBookkeeping
+	// and runOutcome match their panic rows first.
 	cut := rep.Outcome == workflow.OutcomeFailed && errors.Is(rep.Err, context.Canceled) &&
 		(reason == shutdownCancelled || (reason == notCancelled && draining))
 	var errText string
 	errTicket := uuid.Nil
-	if rep.Err != nil {
+	switch {
+	case panicked:
+		errText, errTicket = internalErrorText(panicTicket), panicTicket
+	case rep.Err != nil:
 		text, ticket, warnOnly := recordedError(rep.Err)
 		errText, errTicket = sanitiseErrorText(text), ticket
 		if !warnOnly {
@@ -500,8 +509,8 @@ func (s *Service) run(r *liveRun) {
 				"taskId", r.task.ID, "tenant", string(r.task.TenantID), "ticket", ticket.String(), "err", rep.Err)
 		}
 	}
-	bk := decideBookkeeping(rep, r.task, cut, false, nowMs, s.cfg, errText)
-	outcome := runOutcome(rep, bk, false, reason, cut)
+	bk := decideBookkeeping(rep, r.task, cut, panicked, nowMs, s.cfg, errText)
+	outcome := runOutcome(rep, bk, panicked, reason, cut)
 	err := s.book(r, bk)
 	s.logOutcome(r, bk, err, errTicket, rep.Err)
 	if errors.Is(err, spi.ErrStaleClaim) {
@@ -510,6 +519,25 @@ func (s *Service) run(r *liveRun) {
 	s.finish(r, bk, err)
 	span.SetAttributes(attribute.String("outcome", outcome))
 	s.m.runEnded(outcome, time.Since(start))
+}
+
+// recoverBookkeeping recovers a panic in a run's bookkeeping, and latches the
+// node. The outcome is not known to be recorded, so the claim is kept for
+// good: it stays in the live set, because finish, the only place that
+// releases it, did not run. A transaction the panic interrupted is rolled
+// back by its own deferred rollback. Deferred directly, so recover sees the
+// panic.
+func (s *Service) recoverBookkeeping(r *liveRun, start time.Time) {
+	v := recover()
+	if v == nil {
+		return
+	}
+	ticket := uuid.New()
+	slog.Error("scheduled run bookkeeping panicked; node latched", "pkg", "scheduler",
+		"taskId", r.task.ID, "tenant", string(r.task.TenantID), "ticket", ticket.String(),
+		"err", fmt.Errorf("panic: %v", v), "stack", string(debug.Stack()))
+	s.latch()
+	s.m.runEnded(outcomePanicked, time.Since(start))
 }
 
 // markEnded records that r's fire has returned, and reads why it was
@@ -521,12 +549,28 @@ func (s *Service) markEnded(r *liveRun) (cancelReason, bool) {
 	return r.reason, s.draining
 }
 
-func (s *Service) fire(ctx context.Context, r *liveRun) workflow.RunReport {
+// fire runs the task. A panic is recovered here: it is logged at ERROR with
+// the ticket lastError will carry, the claim is kept for good, and the node
+// latches. The panicked run returns no report; its run guard's unsafe record
+// was closed by the engine's own deferred calls as the panic unwound.
+func (s *Service) fire(ctx context.Context, r *liveRun) (rep workflow.RunReport, panicked bool, ticket uuid.UUID) {
+	defer func() {
+		v := recover()
+		if v == nil {
+			return
+		}
+		rep, panicked, ticket = workflow.RunReport{}, true, uuid.New()
+		slog.Error("scheduled run panicked; node latched", "pkg", "scheduler",
+			"taskId", r.task.ID, "tenant", string(r.task.TenantID), "ticket", ticket.String(),
+			"err", fmt.Errorf("panic: %v", v), "stack", string(debug.Stack()))
+		s.keepRun(r)
+		s.latch()
+	}()
 	ctx = spi.WithUserContext(ctx, common.SystemUserContextValue(r.task.TenantID))
 	ctx = workflow.WithRunGuard(ctx, &workflow.RunGuard{
 		Ref: r.ref, Store: s.store, Done: r.ctx.Done(), NoNewUnsafe: s.drainingCh, Unsafe: r.unsafe,
 	})
-	return s.deps.Firer.FireScheduledTransition(ctx, r.task, s.cfg.MaxLostOwners, s.cfg.RetryDelay)
+	return s.deps.Firer.FireScheduledTransition(ctx, r.task, s.cfg.MaxLostOwners, s.cfg.RetryDelay), false, uuid.Nil
 }
 
 // logOutcome writes the §9 line once the outcome is accepted. ticket is the
@@ -685,11 +729,12 @@ func (s *Service) failWithAudit(ctx context.Context, r *liveRun, f spi.Failure) 
 
 // finish releases the claim once its outcome is accepted or refused. A claim
 // whose outcome is not recorded, because shutdown stopped the retry or the
-// store rejected it, stays in the set.
+// store rejected it, stays in the set, and so does a panicked run's claim
+// even once its FAILED write is accepted: it is never given back (§6.5).
 func (s *Service) finish(r *liveRun, bk Bookkeeping, bookErr error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if bk.Kind != NoneKind && bookErr != nil && !errors.Is(bookErr, spi.ErrStaleClaim) {
+	if r.keep || (bk.Kind != NoneKind && bookErr != nil && !errors.Is(bookErr, spi.ErrStaleClaim)) {
 		return
 	}
 	s.releaseLocked(r)
@@ -746,7 +791,9 @@ func (s *Service) recoverLatch(site string) {
 	s.latch()
 }
 
-// latch marks the node unhealthy for good; a latched node claims nothing.
+// latch marks the node unhealthy for good and cancels every run in progress.
+// A latched node claims nothing. It keeps heartbeating unless the heartbeat
+// itself panicked, so its runs are not taken over while they stop.
 func (s *Service) latch() {
 	if s.deps.HealthFlag != nil {
 		s.deps.HealthFlag.Store(false)
@@ -754,4 +801,13 @@ func (s *Service) latch() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.latched = true
+	for _, r := range s.runs {
+		if r.ended {
+			continue
+		}
+		if r.reason == notCancelled {
+			r.reason = latchCancelled
+		}
+		r.cancel()
+	}
 }
