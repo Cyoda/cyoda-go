@@ -161,8 +161,11 @@ func notDispatched(proc spi.ProcessorDefinition, cause error) error {
 // checks the run's cancellation and then writes the unsafe mark, even when
 // this run already holds one: for the same claim the call is idempotent, and
 // it is the check that stops a superseded run from sending more unsafe work.
-// The caller dispatches only on a nil error, and then calls dispatched with
-// the error its step ends with.
+// The caller dispatches only on a nil error. It then defers dispatched,
+// right after the refusal check, with the error its whole step returns: a
+// failure after the dispatch returned (applying its result, a savepoint, a
+// later segment's begin or re-read) is passed too, and a deferred call still
+// runs when the dispatch panics.
 //
 // Every refusal ends the run, so no later call sees the state a refusal
 // leaves on g.

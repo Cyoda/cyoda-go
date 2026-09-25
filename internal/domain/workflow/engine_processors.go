@@ -393,11 +393,13 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 			if mErr != nil {
 				return nil, "", mErr
 			}
+			// err is the step's named result: the error it ends with,
+			// including a failure after the dispatch returned.
+			defer func() { dispatched(err) }()
 			callCtx, stop := runCallCtx(newCtx)
 			defer stop()
 			modified, dispatchErr := e.extProc.DispatchProcessor(callCtx, entity, proc, workflow, transition, newTxID)
 			stop()
-			dispatched(dispatchErr)
 			if dispatchErr != nil {
 				return nil, "", dispatchErr
 			}
@@ -433,11 +435,13 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 			if mErr != nil {
 				return nil, "", mErr
 			}
+			// err is the step's named result: the error it ends with,
+			// including a failure after the dispatch returned.
+			defer func() { dispatched(err) }()
 			callCtx, stop := runCallCtx(dispatchCtx)
 			defer stop()
 			modified, dispatchErr = e.extProc.DispatchProcessor(callCtx, entity, proc, workflow, transition, "")
 			stop()
-			dispatched(dispatchErr)
 		}
 		if dispatchErr != nil {
 			return nil, "", dispatchErr
