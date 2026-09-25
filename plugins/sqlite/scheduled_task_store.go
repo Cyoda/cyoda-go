@@ -544,20 +544,24 @@ func (s *scheduledTaskStore) Fail(ctx context.Context, ref spi.TaskRef, f spi.Fa
 	})
 }
 
-// Get reads one task of tenant. With a transaction on ctx it sees the view
-// that transaction's joining writes plan from: its snapshot, then its own
-// staged ops (C2).
+// Get reads one task of tenant. With an open transaction of tenant on ctx it
+// sees the view that transaction's joining writes plan from: its snapshot,
+// then its own staged ops (C2). Otherwise it reads the committed row: a
+// transaction that has ended has no snapshot left, as on the memory backend,
+// and a transaction of another tenant does not change what Get returns.
 func (s *scheduledTaskStore) Get(ctx context.Context, tenant spi.TenantID, id string) (*spi.ScheduledTask, bool, error) {
 	v := taskView{ctx: ctx, db: s.db}
 	if tx := spi.GetTransaction(ctx); tx != nil {
 		tx.OpMu.RLock()
 		defer tx.OpMu.RUnlock()
-		// The view a joining write plans from (see stageTaskWrite): no write
-		// commits while the gate is held, so the committed row and the
-		// snapshot's prior rows agree.
-		_ = s.tm.acquireCommitGate(context.Background())
-		defer s.tm.releaseCommitGate()
-		v.staged, v.prior = s.tm.taskSnapshot(tx.ID, tenant)
+		if !tx.Closed && !tx.RolledBack && tx.TenantID == tenant {
+			// The view a joining write plans from (see stageTaskWrite): no
+			// write commits while the gate is held, so the committed row and
+			// the snapshot's prior rows agree.
+			_ = s.tm.acquireCommitGate(context.Background())
+			defer s.tm.releaseCommitGate()
+			v.staged, v.prior = s.tm.taskSnapshot(tx.ID, tenant)
+		}
 	}
 	t, ok, err := v.get(taskKey{tenant: tenant, id: id})
 	if err != nil || !ok {

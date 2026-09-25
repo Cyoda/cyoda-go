@@ -417,3 +417,57 @@ func TestTasks_GetWithATransactionReadsTheSnapshot(t *testing.T) {
 		t.Fatalf("task = %+v, %v; want the transaction's own staged life", got, ok)
 	}
 }
+
+// Get with a transaction that has ended reads the committed row, as the
+// memory backend does: the ended transaction has no snapshot left to show.
+// Another transaction stays open so that the log keeps its entries.
+func TestTasks_GetWithAnEndedTransactionReadsTheCommittedRow(t *testing.T) {
+	ends := []struct {
+		name string
+		end  func(t *testing.T, fx taskFixture, txID string)
+	}{
+		{"Committed", func(t *testing.T, fx taskFixture, txID string) {
+			if err := fx.commit(taskTenantA, txID); err != nil {
+				t.Fatalf("Commit: %v", err)
+			}
+		}},
+		{"RolledBack", func(t *testing.T, fx taskFixture, txID string) {
+			fx.rollback(t, taskTenantA, txID)
+		}},
+	}
+	for _, e := range ends {
+		t.Run(e.name, func(t *testing.T) {
+			fx := newTaskFixture(t)
+			bg := context.Background()
+			arm(t, bg, fx.sts, taskTenantA, "e1", "T")
+			holdID, _ := fx.begin(t, taskTenantA)
+			defer fx.rollback(t, taskTenantA, holdID)
+
+			txID, txCtx := fx.begin(t, taskTenantA)
+			arm(t, bg, fx.sts, taskTenantA, "e1", "T") // after Begin
+			cur, _ := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T")
+			e.end(t, fx, txID)
+
+			if got, ok := getTask(t, txCtx, fx.sts, taskTenantA, "e1:S:T"); !ok || got.ArmToken != cur.ArmToken {
+				t.Fatalf("task = %+v, %v; want the committed life", got, ok)
+			}
+		})
+	}
+}
+
+// A transaction of another tenant on ctx does not change what Get returns:
+// neither its snapshot nor its staged ops apply to this tenant's rows.
+func TestTasks_GetWithAnotherTenantsTransactionReadsTheCommittedRow(t *testing.T) {
+	fx := newTaskFixture(t)
+	bg := context.Background()
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T")
+
+	txID, txCtx := fx.begin(t, taskTenantB)
+	defer fx.rollback(t, taskTenantB, txID)
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T") // after tenant B's Begin
+	cur, _ := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T")
+
+	if got, ok := getTask(t, txCtx, fx.sts, taskTenantA, "e1:S:T"); !ok || got.ArmToken != cur.ArmToken {
+		t.Fatalf("task = %+v, %v; want the committed life", got, ok)
+	}
+}

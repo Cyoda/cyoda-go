@@ -307,9 +307,11 @@ func (m *transactionManager) stageTaskWrite(txID string, tenant spi.TenantID, pl
 // shows its committed state. Pruning keeps every entry above an open
 // transaction's snapshot, so none of these is lost while txID is open.
 //
-// Caller holds the commit gate and reads the committed rows under it: every
-// writer holds the gate from its first read to its log entry, so the
-// committed rows and the log agree.
+// Caller holds tx.OpMu (read) and has checked that the transaction is open
+// and of tenant: an ended transaction's snapshot sequence number is gone, and
+// with it the bound on which entries apply. Caller also holds the commit gate
+// and reads the committed rows under it: every writer holds the gate from its
+// first read to its log entry, so the committed rows and the log agree.
 func (m *transactionManager) taskSnapshot(txID string, tenant spi.TenantID) ([]scheduledTaskOp, map[taskKey]priorRow) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
