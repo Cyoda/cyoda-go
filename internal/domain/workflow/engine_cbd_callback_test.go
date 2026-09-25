@@ -23,7 +23,9 @@ type cbdCallbackEnv struct {
 	model   spi.ModelRef
 }
 
-func newCBDCallbackEnv(t *testing.T, dispatch func(ctx context.Context, entity *spi.Entity, txID string) (*spi.Entity, error)) *cbdCallbackEnv {
+// wrapTx, when given, wraps the engine's transaction manager only; the test's
+// own transactions use the unwrapped one.
+func newCBDCallbackEnv(t *testing.T, dispatch func(ctx context.Context, entity *spi.Entity, txID string) (*spi.Entity, error), wrapTx ...func(spi.TransactionManager) spi.TransactionManager) *cbdCallbackEnv {
 	t.Helper()
 	factory := memory.NewStoreFactory()
 	t.Cleanup(func() { factory.Close() })
@@ -32,7 +34,11 @@ func newCBDCallbackEnv(t *testing.T, dispatch func(ctx context.Context, entity *
 	mock := &mockExternalProcessing{dispatchFunc: func(ctx context.Context, entity *spi.Entity, _ spi.ProcessorDefinition, _, _, txID string) (*spi.Entity, error) {
 		return dispatch(ctx, entity, txID)
 	}}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	var engineTx spi.TransactionManager = txMgr
+	for _, w := range wrapTx {
+		engineTx = w(engineTx)
+	}
+	engine := NewEngine(factory, uuids, engineTx, WithExternalProcessing(mock))
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-callback", ModelVersion: "1.0"}
 	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{
@@ -246,5 +252,66 @@ func assertData(t *testing.T, raw []byte, want map[string]any) {
 	}
 	if len(data) != len(want) || data["x"] != want["x"] || data["by"] != want["by"] {
 		t.Errorf("data = %v, want %v: the engine's result is the last write", data, want)
+	}
+}
+
+// Another transaction writes the anchor and commits after TX_pre committed and
+// before TX_post began. The callback reads that write in TX_post and saves
+// over it; the transition must conflict rather than lose the other write.
+func TestCBDCallback_OtherTransactionWritesBeforeTXPostBegins_Conflicts(t *testing.T) {
+	for _, ownWrite := range []bool{false, true} {
+		name := "no callback write"
+		if ownWrite {
+			name = "callback write"
+		}
+		t.Run(name, func(t *testing.T) {
+			var env *cbdCallbackEnv
+			var wrap *beforeNthBeginTxMgr
+			env = newCBDCallbackEnv(t, func(ctx context.Context, entity *spi.Entity, _ string) (*spi.Entity, error) {
+				if ownWrite {
+					return nil, writeAnchor(ctx, env.factory, entity)
+				}
+				return nil, nil
+			}, func(tm spi.TransactionManager) spi.TransactionManager {
+				// The engine's first Begin is TX_post's; TX_pre is the test's.
+				wrap = &beforeNthBeginTxMgr{TransactionManager: tm, n: 1}
+				return wrap
+			})
+			wrap.hook = func() error {
+				otherID, otherCtx, err := env.txMgr.Begin(env.ctx)
+				if err != nil {
+					return err
+				}
+				es, err := env.factory.EntityStore(otherCtx)
+				if err != nil {
+					return err
+				}
+				cur, err := es.Get(otherCtx, "cbdb-1")
+				if err != nil {
+					return err
+				}
+				cur.Data = []byte(`{"x":9,"by":"other"}`)
+				if _, err := es.Save(otherCtx, cur); err != nil {
+					return err
+				}
+				return env.txMgr.Commit(env.ctx, otherID)
+			}
+
+			_, entity, result, err := env.execute(t, "cbdb-1")
+			if wrap.err != nil {
+				t.Fatalf("other transaction: %v", wrap.err)
+			}
+			if err == nil {
+				err = finish(env, entity, result)
+			}
+			if !errors.Is(err, spi.ErrConflict) {
+				t.Fatalf("err = %v, want a conflict", err)
+			}
+			got, _ := env.committed(t, "cbdb-1")
+			if got == nil {
+				t.Fatal("entity gone")
+			}
+			assertData(t, got.Data, map[string]any{"x": float64(9), "by": "other"})
+		})
 	}
 }

@@ -481,12 +481,12 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 	if casErr != nil {
 		return nil, "", fmt.Errorf("commit-before-dispatch: get entity store for CAS: %w", errors.Join(ErrCommitBeforeDispatchInfra, casErr))
 	}
-	applyAgainst := tPre
-	writtenHere, readErr := writtenInTx(newCtx, es, entity.Meta.ID, newTxID)
-	if readErr != nil && !errors.Is(readErr, spi.ErrNotFound) {
+	after, readErr := readAnchor(newCtx, es, entity.Meta.ID)
+	if readErr != nil {
 		return nil, "", fmt.Errorf("commit-before-dispatch: re-read entity before apply: %w", errors.Join(ErrCommitBeforeDispatchInfra, readErr))
 	}
-	if writtenHere {
+	applyAgainst := tPre
+	if after.writtenBy(newTxID) {
 		applyAgainst = newTxID
 	}
 	if _, saveErr := es.CompareAndSave(newCtx, entity, applyAgainst); saveErr != nil {
@@ -511,20 +511,6 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 
 	segHandedOff = true
 	return newCtx, newTxID, nil
-}
-
-// writtenInTx re-reads entityID inside the transaction txID that ctx carries
-// and reports whether that transaction wrote it: every in-transaction write
-// is stamped with the transaction's id on every backend. A write or delete
-// committed by another transaction is invisible to the snapshot and fails at
-// commit instead. The error wraps spi.ErrNotFound when the entity is absent
-// from this transaction's view.
-func writtenInTx(ctx context.Context, es spi.EntityStore, entityID, txID string) (bool, error) {
-	cur, err := es.Get(ctx, entityID)
-	if err != nil {
-		return false, err
-	}
-	return cur.Meta.TransactionID == txID, nil
 }
 
 // flushAndCommitSegment is the shared primitive for the COMMIT_BEFORE_DISPATCH
@@ -668,5 +654,29 @@ func (e *Engine) commitAndBeginNextSegment(ctx context.Context, entity *spi.Enti
 	if err := e.continueRunSegment(newCtx, txID, newTxID); err != nil {
 		return newTxID, newCtx, err
 	}
+	// Before the dispatch, TX_post reads the anchor, which fixes its snapshot,
+	// and requires the version txID committed. A write or delete that another
+	// transaction committed in between is a conflict: the callback, which
+	// joins TX_post, could otherwise read that write and save over it.
+	if err := e.requireAnchorCommittedBy(newCtx, entity.Meta.ID, txID); err != nil {
+		return newTxID, newCtx, err
+	}
 	return newTxID, newCtx, nil
+}
+
+// requireAnchorCommittedBy fails with a post-segment conflict unless the
+// anchor, read in the transaction ctx carries, is the version txID committed.
+func (e *Engine) requireAnchorCommittedBy(ctx context.Context, entityID, txID string) error {
+	es, err := e.factory.EntityStore(ctx)
+	if err != nil {
+		return fmt.Errorf("commit-before-dispatch: get entity store: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
+	}
+	v, err := readAnchor(ctx, es, entityID)
+	if err != nil {
+		return fmt.Errorf("commit-before-dispatch: read entity in TX_post: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
+	}
+	if !v.writtenBy(txID) {
+		return fmt.Errorf("%w: entity %s changed after the committed segment: %w", ErrPostSegmentConflict, entityID, spi.ErrConflict)
+	}
+	return nil
 }

@@ -338,3 +338,59 @@ func TestCallback_BoundaryReReadFails_RunFails(t *testing.T) {
 		t.Errorf("entity state = %q, want OPEN", got)
 	}
 }
+
+// failingStoreFactory fails EntityStore itself once *armed is set.
+type failingStoreFactory struct {
+	spi.StoreFactory
+	armed *bool
+	err   error
+}
+
+func (f failingStoreFactory) EntityStore(ctx context.Context) (spi.EntityStore, error) {
+	if *f.armed {
+		return nil, f.err
+	}
+	return f.StoreFactory.EntityStore(ctx)
+}
+
+// TX_post's read of the anchor before the dispatch cannot be made: the run
+// fails as an infrastructure failure and nothing is dispatched.
+func TestCallback_TXPostAnchorReadFails_RunFails(t *testing.T) {
+	cases := []struct {
+		name string
+		wrap func(f spi.StoreFactory, armed *bool, err error) spi.StoreFactory
+	}{
+		{"read fails", func(f spi.StoreFactory, armed *bool, err error) spi.StoreFactory {
+			return failingGetFactory{StoreFactory: f, armed: armed, err: err}
+		}},
+		{"store unavailable", func(f spi.StoreFactory, armed *bool, err error) spi.StoreFactory {
+			return failingStoreFactory{StoreFactory: f, armed: armed, err: err}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			armed := false
+			storeErr := errors.New("store unavailable")
+			ext := &scriptedExtProc{}
+			env := newRunEnvWith(t, ext, func(f spi.StoreFactory) spi.StoreFactory {
+				return tc.wrap(f, &armed, storeErr)
+			}, func(tm spi.TransactionManager) spi.TransactionManager {
+				// The second Begin is TX_post's, after TX_pre committed.
+				return &beforeNthBeginTxMgr{TransactionManager: tm, n: 2, hook: func() error { armed = true; return nil }}
+			})
+			startNewTx := true
+			p1 := safeProc("p1", ExecutionModeCommitBeforeDispatch)
+			p1.Config.StartNewTxOnDispatch = &startNewTx
+			claimed := env.claimed(t, "cbtp-e1", oneHopWF("CLOSED", []spi.ProcessorDefinition{p1}, nil))
+
+			r := runWithin(t, env, claimed)
+			armed = false
+			if r.Outcome != OutcomeFailed || !errors.Is(r.Err, storeErr) || !errors.Is(r.Err, ErrCommitBeforeDispatchInfra) {
+				t.Fatalf("report = %+v, want failed on the store error, marked infrastructure", r)
+			}
+			if n := ext.count("p1"); n != 0 {
+				t.Errorf("p1 dispatched %d times, want 0", n)
+			}
+		})
+	}
+}
