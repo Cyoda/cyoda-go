@@ -383,8 +383,9 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 			// fires on ANY ctx cancellation, not only our own feature
 			// deadline. Routed through the identical whole-envelope error
 			// path a genuine per-item failure below already takes: earlier
-			// items already committed and are durable, this item and any
-			// after it are never attempted.
+			// items already committed and are durable (unless the request
+			// joined an open transaction, whose owner commits them), this
+			// item and any after it are never attempted.
 			if ctxErr := opCtx.Err(); ctxErr != nil {
 				loopErr := fmt.Errorf("operation aborted: %w", ctxErr)
 				if appErr := common.ClassifyRequestTimeout(opCtx, loopErr, common.ErrCodeTransactionTimeout); appErr != nil {

@@ -3622,6 +3622,11 @@ type CreateCollectionParams struct {
 	// multiple transactional batches committed sequentially. The
 	// response is an array with one element per chunk in commit order;
 	// chunks committed before any later failure remain durable.
+	// A request that joins an open transaction (it carries an
+	// `X-Tx-Token`) commits nothing itself, so it is never split: an
+	// explicit transactionWindow is rejected with 400 BAD_REQUEST, and
+	// without one the collection runs as one unit, so a failure in any
+	// item fails the request.
 	TransactionWindow *int32 `form:"transactionWindow,omitempty" json:"transactionWindow,omitempty"`
 
 	// TransactionTimeoutMillis Maximum time in milliseconds the server may spend before the
@@ -3675,6 +3680,11 @@ type UpdateCollectionParams struct {
 	// multiple transactional batches committed sequentially. The
 	// response is an array with one element per chunk in commit order;
 	// chunks committed before any later failure remain durable.
+	// A request that joins an open transaction (it carries an
+	// `X-Tx-Token`) commits nothing itself, so it is never split: an
+	// explicit transactionWindow is rejected with 400 BAD_REQUEST, and
+	// without one the collection runs as one unit, so a failure in any
+	// item fails the request.
 	TransactionWindow *int32 `form:"transactionWindow,omitempty" json:"transactionWindow,omitempty"`
 
 	// TransactionTimeoutMillis Maximum time in milliseconds the server may spend before the
@@ -3830,6 +3840,11 @@ type CreateParams struct {
 	// sequentially. The response is then an array with one element per
 	// chunk in commit order; chunks committed before any later failure
 	// remain durable.
+	// A request that joins an open transaction (it carries an
+	// `X-Tx-Token`) commits nothing itself, so it is never split: an
+	// explicit transactionWindow is rejected with 400 BAD_REQUEST, and
+	// without one the collection runs as one unit, so a failure in any
+	// item fails the request.
 	TransactionWindow *int32 `form:"transactionWindow,omitempty" json:"transactionWindow,omitempty"`
 
 	// TransactionTimeoutMillis Maximum time in milliseconds the server may spend before the

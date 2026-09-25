@@ -491,6 +491,19 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **A collection write that joined an open transaction is no longer split
+  into `transactionWindow` chunks.** A compute node's callback made with the
+  transaction token commits nothing — the transaction's owner does — yet a
+  joined collection larger than the window (default 100) was split, and a
+  failure in a later chunk answered `200` with chunk results claiming the
+  earlier chunks were committed. The owner could then commit those items
+  while the compute node read the answer as partial success. A joined
+  collection now runs as one unit, so a failure in any item fails the
+  request, and an explicit `transactionWindow` on a joined request is
+  rejected with `400 BAD_REQUEST`, as `transactionSize` and
+  `transactionTimeoutMillis` already are. See
+  `docs/cloud-parity/transaction-control-params.md`.
+
 - **A compute node's callback never commits the transaction it joined.** A
   callback runs in the transaction of the operation that called the compute
   node out. When the callback's write — a create, an update or a transition,
