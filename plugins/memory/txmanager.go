@@ -378,14 +378,14 @@ func (m *TransactionManager) openAuditLabelsLocked(staged []stagedAuditEvent) ma
 // it.
 //
 // Called by Commit inside its entityMu section; entityMu → mu → smAuditMu.
-func (m *TransactionManager) appendStagedAuditEvents(tenant spi.TenantID, staged []stagedAuditEvent, submitTime time.Time) {
+func (m *TransactionManager) appendStagedAuditEvents(tenant spi.TenantID, txID string, staged []stagedAuditEvent, submitTime time.Time) {
 	if len(staged) == 0 {
 		return
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	open := m.openAuditLabelsLocked(staged)
-	m.factory.appendStagedAuditEvents(tenant, staged, submitTime, open)
+	m.factory.appendStagedAuditEvents(tenant, txID, staged, submitTime, open)
 }
 
 // recordUntransactedAuditEvent mints event's id and appends it to the trail
@@ -935,13 +935,14 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 		submitTime := m.nextSubmitTime()
 
 		// Audit events recorded inside this transaction join the trail now,
-		// after the last abort path, already stamped with this transaction's
-		// commit instant so no reader can observe one of them appended but
-		// not yet stamped. Every other already-appended event still merely
-		// labelled with this transaction then takes the same instant — see
+		// after the last abort path; those labelled with this transaction
+		// are already stamped with its commit instant, so no reader can
+		// observe one of them appended but not yet stamped. Every other
+		// already-appended event labelled with this transaction then takes
+		// the same instant — see
 		// appendStagedAuditEvents (this one, on *TransactionManager) and
 		// stampAuditEventsForTx.
-		m.appendStagedAuditEvents(tid, capturedAudit, submitTime)
+		m.appendStagedAuditEvents(tid, txID, capturedAudit, submitTime)
 		m.factory.stampAuditEventsForTx(tid, txID, submitTime)
 
 		// Pre-release: free claims for all deleted entities BEFORE inserting any

@@ -77,12 +77,16 @@ func (f *StoreFactory) appendEventLocked(tenant spi.TenantID, entityID string, c
 	}
 }
 
-// appendStagedAuditEvents appends a committing transaction's staged events,
-// stamped with submitTime — the transaction's own commit instant — before
-// they are appended, so there is no window in which a reader can observe one
-// of them appended but still carrying its pre-commit recording-time
-// timestamp (contrast stampAuditEventsForTx's already-appended events, which
-// necessarily have such a window).
+// appendStagedAuditEvents appends the staged events of the committing
+// transaction txID. Each event labelled txID is stamped with submitTime —
+// txID's commit instant — before it is appended, so there is no window in
+// which a reader can observe one of them appended but still carrying its
+// pre-commit recording-time timestamp (contrast stampAuditEventsForTx's
+// already-appended events, which necessarily have such a window). An event
+// labelled otherwise keeps its recorded time: the commit instant is stamped
+// by label, as the SQL stores stamp it, so an event labelled with another
+// transaction takes that transaction's instant when it commits (see open
+// below), and an unlabelled one is never stamped.
 //
 // open reports, for each distinct non-empty TransactionID label among
 // staged, whether that label names a transaction still active. An event's
@@ -113,7 +117,7 @@ func (f *StoreFactory) appendEventLocked(tenant spi.TenantID, entityID string, c
 // Called by (*TransactionManager).appendStagedAuditEvents, itself called by
 // Commit inside its entityMu section; entityMu → mu → smAuditMu, and
 // smAuditMu is a leaf.
-func (f *StoreFactory) appendStagedAuditEvents(tenant spi.TenantID, staged []stagedAuditEvent, submitTime time.Time, open map[string]bool) {
+func (f *StoreFactory) appendStagedAuditEvents(tenant spi.TenantID, txID string, staged []stagedAuditEvent, submitTime time.Time, open map[string]bool) {
 	if len(staged) == 0 {
 		return
 	}
@@ -121,7 +125,9 @@ func (f *StoreFactory) appendStagedAuditEvents(tenant spi.TenantID, staged []sta
 	defer f.smAuditMu.Unlock()
 	for _, st := range staged {
 		ev := st.event
-		ev.Timestamp = submitTime
+		if ev.TransactionID == txID {
+			ev.Timestamp = submitTime
+		}
 		f.appendEventLocked(tenant, st.entityID, ev, open[ev.TransactionID])
 	}
 }
@@ -208,11 +214,13 @@ func (s *StateMachineAuditStore) GetEventsByTransaction(ctx context.Context, ent
 // names a transaction that later commits, matching what the SQL backends do
 // with the same WHERE.
 //
-// This transaction's own staged events are already stamped with instant by
-// appendStagedAuditEvents, called just before this — restamping them here is
-// an idempotent no-op. What this sweep additionally reaches is an event
-// Record's untransacted branch already appended and indexed under this
-// transaction's label directly (see appendEventLocked): a caller that
+// This transaction's staged events labelled with it are already stamped with
+// instant by appendStagedAuditEvents, called just before this — restamping
+// them here is an idempotent no-op. What this sweep additionally reaches is
+// an event another transaction staged under this transaction's label and
+// committed while this one was open, and an event Record's untransacted
+// branch already appended and indexed under this transaction's label
+// directly (see appendEventLocked): a caller that
 // records without carrying the transaction on ctx, yet labels the event with
 // a txID for correlation, appends and indexes it immediately rather than
 // staging it — Record takes smAuditMu itself in that branch; with a

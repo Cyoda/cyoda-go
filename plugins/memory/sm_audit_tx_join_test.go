@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
@@ -184,5 +185,52 @@ func TestAudit_GetEventsByTransactionSeesStagedEventsInTheTransaction(t *testing
 	}
 	if len(outside) != 0 {
 		t.Fatalf("GetEventsByTransaction(ctx, ..., txID) before commit = %+v, want 0", outside)
+	}
+}
+
+// Commit stamps its instant on the events labelled with the committing
+// transaction only, as the SQL stores do. An event staged in it but labelled
+// with another transaction — a later segment of a split cascade labels its
+// events with the entry transaction — keeps its recorded time until that
+// transaction commits; an unlabelled one keeps it for good.
+func TestAudit_CommitStampsOnlyTheEventsLabelledWithTheCommittingTransaction(t *testing.T) {
+	fx := newTaskFixture(t)
+	ctx := ctxWithTenant(taskTenantA)
+	entryID, _ := fx.begin(t, taskTenantA)
+	segID, segCtx := fx.begin(t, taskTenantA)
+	as := auditStore(t, fx, segCtx)
+	recorded := time.UnixMilli(5).UTC()
+	for _, label := range []string{segID, entryID, ""} {
+		if err := as.Record(segCtx, "e1", spi.StateMachineEvent{
+			EventType: spi.SMEventTransitionMade, TransactionID: label, Details: "label " + label, Timestamp: recorded,
+		}); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+	if err := fx.commit(taskTenantA, segID); err != nil {
+		t.Fatalf("Commit segment: %v", err)
+	}
+	segAt, err := fx.tm.GetSubmitTime(ctx, segID)
+	if err != nil {
+		t.Fatalf("GetSubmitTime: %v", err)
+	}
+	fx.clock.Advance(time.Second)
+	if err := fx.commit(taskTenantA, entryID); err != nil {
+		t.Fatalf("Commit entry: %v", err)
+	}
+	entryAt, err := fx.tm.GetSubmitTime(ctx, entryID)
+	if err != nil {
+		t.Fatalf("GetSubmitTime: %v", err)
+	}
+
+	want := map[string]time.Time{segID: segAt, entryID: entryAt, "": recorded}
+	got := eventsOf(t, as, ctx)
+	if len(got) != 3 {
+		t.Fatalf("got %d events, want 3", len(got))
+	}
+	for _, ev := range got {
+		if !ev.Timestamp.Equal(want[ev.TransactionID]) {
+			t.Fatalf("event labelled %q at %s, want %s", ev.TransactionID, ev.Timestamp, want[ev.TransactionID])
+		}
 	}
 }
