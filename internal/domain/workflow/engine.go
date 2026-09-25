@@ -44,9 +44,10 @@ var ErrTransitionNotFound = errors.New("transition not found")
 // ErrCriterionNotMatched is the sentinel FireScheduledTransition uses to
 // distinguish "the transition's criterion evaluated to false" (Declined —
 // terminal, one-shot, no retry) from every other fireTransition failure
-// (criterion-evaluation error, processor failure — both retried on the next
-// scan). errors.Is(err, ErrCriterionNotMatched) reports true for the error
-// fireTransition returns from either of its criterion-not-matched branches.
+// (criterion-evaluation error, processor failure — a failure the scheduler
+// records and retries). errors.Is(err, ErrCriterionNotMatched) reports true
+// for the error fireTransition returns from either of its
+// criterion-not-matched branches.
 //
 // fireTransition cannot wrap with a plain %w here: attemptTransition's tests
 // assert the criterion-not-matched message byte-for-byte
@@ -168,15 +169,9 @@ type Engine struct {
 	maxStateVisits   int
 	defaultWorkflows []spi.WorkflowDefinition
 	// clock supplies "now" for scheduled-transition arming (reconcileScheduledTasks)
-	// and for FireScheduledTransition's lateness/grace-band math and the
-	// scheduler's scan loop. Defaults to time.Now; overridden via
-	// WithScheduledClock for deterministic tests.
+	// and for FireScheduledTransition's deadline decisions. Defaults to
+	// time.Now; overridden via WithScheduledClock for deterministic tests.
 	clock func() time.Time
-	// expiryGraceMs is the margin (ms) above a scheduled transition's
-	// TimeoutMs that FireScheduledTransition tolerates before expiring a
-	// late task instead of leaving it for the next scan (design §5.5).
-	// Defaults to defaultExpiryGraceMs; overridden via WithExpiryGrace.
-	expiryGraceMs int64
 	// commitBudget bounds flushAndCommitSegment's shielded CBD-segment
 	// commit (common.ShieldedCommitWithBudget). Defaults to
 	// common.CommitBudget (the same 30s production budget
@@ -189,7 +184,7 @@ type Engine struct {
 // NewEngine creates a new workflow engine. txMgr is required and must not be
 // nil: the engine takes savepoints and rolls back segments through it.
 func NewEngine(factory spi.StoreFactory, uuids spi.UUIDGenerator, txMgr spi.TransactionManager, opts ...EngineOption) *Engine {
-	e := &Engine{factory: factory, uuids: uuids, txMgr: txMgr, maxStateVisits: defaultMaxStateVisits, clock: time.Now, expiryGraceMs: defaultExpiryGraceMs, commitBudget: common.CommitBudget}
+	e := &Engine{factory: factory, uuids: uuids, txMgr: txMgr, maxStateVisits: defaultMaxStateVisits, clock: time.Now, commitBudget: common.CommitBudget}
 	for _, opt := range opts {
 		opt(e)
 	}
@@ -224,9 +219,9 @@ func WithMaxStateVisits(n int) EngineOption {
 }
 
 // WithScheduledClock overrides the engine's clock, used for
-// reconcileScheduledTasks' scheduledTime/armedAt computation and, later, by
-// FireScheduledTransition and the scan-loop scheduler. Defaults to
-// time.Now; tests inject a deterministic clock instead.
+// reconcileScheduledTasks' scheduledTime/armedAt computation and
+// FireScheduledTransition's deadline decisions. Defaults to time.Now; tests
+// inject a deterministic clock instead.
 func WithScheduledClock(clock func() time.Time) EngineOption {
 	return func(e *Engine) {
 		if clock != nil {
@@ -767,23 +762,18 @@ func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, wf *
 			transitionName, entity.Meta.State, scheduledReason, ErrTransitionNotFound)
 	}
 
-	newCtx, newTxID, _, err := e.fireTransition(ctx, entity, wf, transition, auditStore, txID)
+	newCtx, newTxID, err := e.fireTransition(ctx, entity, wf, transition, auditStore, txID)
 	return newCtx, newTxID, err
 }
 
 // fireTransition runs the transition *mechanism* for an already-resolved
 // transition: criterion evaluation, processor execution, and the audited
 // state advance. It applies no policy — callers are responsible for
-// rejecting disabled or scheduled transitions before invoking it, so a
-// later scheduled-transition firing path can reuse the mechanism without
-// going through attemptTransition's manual/scheduled reject policy.
-//
-// matched reports whether the transition actually fired (criterion matched
-// and the state advanced). It is false whenever the criterion evaluated to
-// false or processor execution failed; in both cases entity.Meta.State is
-// left unchanged and err carries the same error attemptTransition has
-// always returned in that case.
-func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, transition *spi.TransitionDefinition, auditStore spi.StateMachineAuditStore, txID string) (retCtx context.Context, retTxID string, retMatched bool, retErr error) {
+// rejecting disabled or scheduled transitions before invoking it, so
+// FireScheduledTransition reuses the mechanism without going through
+// attemptTransition's manual/scheduled reject policy. On any error
+// entity.Meta.State is left unchanged.
+func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, transition *spi.TransitionDefinition, auditStore spi.StateMachineAuditStore, txID string) (retCtx context.Context, retTxID string, retErr error) {
 	transitionName := transition.Name
 
 	// Panic-only guard (see rollbackSegment). segCtx/segTxID track the segment
@@ -804,7 +794,7 @@ func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi
 			ctx: ctx, txID: txID, workflowName: wf.Name, transitionName: transitionName, target: "TRANSITION",
 		})
 		if err != nil {
-			return ctx, txID, false, fmt.Errorf("failed to evaluate transition criterion: %w", err)
+			return ctx, txID, fmt.Errorf("failed to evaluate transition criterion: %w", err)
 		}
 		if !matched {
 			external := reason != ""
@@ -821,9 +811,9 @@ func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi
 					"reason":       reason,
 				})
 			if external {
-				return ctx, txID, false, &criterionNotMatchedError{msg: fmt.Sprintf("transition %q criterion not matched: %s", transitionName, reason)}
+				return ctx, txID, &criterionNotMatchedError{msg: fmt.Sprintf("transition %q criterion not matched: %s", transitionName, reason)}
 			}
-			return ctx, txID, false, &criterionNotMatchedError{msg: fmt.Sprintf("transition %q criterion not matched", transitionName)}
+			return ctx, txID, &criterionNotMatchedError{msg: fmt.Sprintf("transition %q criterion not matched", transitionName)}
 		}
 	}
 
@@ -836,7 +826,7 @@ func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi
 		e.recordEvent(auditStore, newCtx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventStateProcessResult, fmt.Sprintf("Processor failed for transition %q: %v", transitionName, err),
 			map[string]any{"success": false})
-		return newCtx, newTxID, false, err
+		return newCtx, newTxID, err
 	}
 
 	// Record transition and move state. The audit event uses the cascade-entry
@@ -847,7 +837,7 @@ func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi
 		fmt.Sprintf("Transition %q: %s → %s", transitionName, entity.Meta.State, transition.Next), nil)
 	entity.Meta.State = transition.Next
 
-	return newCtx, newTxID, true, nil
+	return newCtx, newTxID, nil
 }
 
 // cascadeAutomated loops through automated transitions until a stable state

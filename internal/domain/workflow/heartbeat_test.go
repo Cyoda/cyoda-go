@@ -13,8 +13,8 @@ import (
 // and re-fires hop after hop at runtime, not merely that the importer
 // accepts the cycle shape (`validate_import_test.go:606` only proves that).
 //
-// Drives three hops deterministically via FireScheduledTransition on the
-// task ID read back from the store after each hop, advancing the injected
+// Drives three hops deterministically, each claiming the due task and running
+// it through FireScheduledTransition, advancing the injected
 // steppable clock between hops — matching the idioms in
 // fire_scheduled_test.go (setupEngineWithSteppableClock, seedFireEntity,
 // armTask, getTask, getEntityState, countAuditEvents).
@@ -54,12 +54,12 @@ func TestHeartbeat_UnconditionalScheduledCycleFiresRepeatedly(t *testing.T) {
 	// --- Hop 1: S1 -> S2 ---
 	advance(delayMs)
 	nowMs += delayMs
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: s1ToS2, TenantID: testTenant})
-	if err != nil {
-		t.Fatalf("hop 1 FireScheduledTransition: %v", err)
+	r := fireDue(t, engine, ctx, s1ToS2)
+	if r.Err != nil {
+		t.Fatalf("hop 1 FireScheduledTransition: %v", r.Err)
 	}
-	if outcome != OutcomeFired {
-		t.Fatalf("hop 1 outcome = %v, want Fired", outcome)
+	if r.Outcome != OutcomeFired {
+		t.Fatalf("hop 1 outcome = %v, want Fired", r.Outcome)
 	}
 	if got := getEntityState(t, factory, ctx, "hb-e1"); got != "S2" {
 		t.Fatalf("hop 1 entity state = %q, want S2", got)
@@ -77,12 +77,12 @@ func TestHeartbeat_UnconditionalScheduledCycleFiresRepeatedly(t *testing.T) {
 	// --- Hop 2: S2 -> S1 ---
 	advance(delayMs)
 	nowMs += delayMs
-	outcome, err = engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: s2ToS1, TenantID: testTenant})
-	if err != nil {
-		t.Fatalf("hop 2 FireScheduledTransition: %v", err)
+	r = fireDue(t, engine, ctx, s2ToS1)
+	if r.Err != nil {
+		t.Fatalf("hop 2 FireScheduledTransition: %v", r.Err)
 	}
-	if outcome != OutcomeFired {
-		t.Fatalf("hop 2 outcome = %v, want Fired", outcome)
+	if r.Outcome != OutcomeFired {
+		t.Fatalf("hop 2 outcome = %v, want Fired", r.Outcome)
 	}
 	if got := getEntityState(t, factory, ctx, "hb-e1"); got != "S1" {
 		t.Fatalf("hop 2 entity state = %q, want S1", got)
@@ -100,12 +100,12 @@ func TestHeartbeat_UnconditionalScheduledCycleFiresRepeatedly(t *testing.T) {
 	// single round trip, not just once around the cycle. ---
 	advance(delayMs)
 	nowMs += delayMs
-	outcome, err = engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: s1ToS2, TenantID: testTenant})
-	if err != nil {
-		t.Fatalf("hop 3 FireScheduledTransition: %v", err)
+	r = fireDue(t, engine, ctx, s1ToS2)
+	if r.Err != nil {
+		t.Fatalf("hop 3 FireScheduledTransition: %v", r.Err)
 	}
-	if outcome != OutcomeFired {
-		t.Fatalf("hop 3 outcome = %v, want Fired", outcome)
+	if r.Outcome != OutcomeFired {
+		t.Fatalf("hop 3 outcome = %v, want Fired", r.Outcome)
 	}
 	if got := getEntityState(t, factory, ctx, "hb-e1"); got != "S2" {
 		t.Fatalf("hop 3 entity state = %q, want S2", got)

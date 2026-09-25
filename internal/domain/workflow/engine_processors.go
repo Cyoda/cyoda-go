@@ -345,9 +345,9 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		// apply result in TX_post.
 		newTxID, newCtx, err = e.commitAndBeginNextSegment(ctx, entity, txID, expectedFirstFlushTxID, ifMatchConsumed)
 		// Advance before checking err so the deferred rollback always targets the
-		// segment actually open. commitAndBeginNextSegment returns ("", nil, err)
-		// on failure, so segTxID becomes "" and rollbackSegment no-ops — correct,
-		// since no segment was opened.
+		// segment actually open. On a failed flush it returns ("", nil, err) and
+		// rollbackSegment no-ops; on a failed re-read it returns TX_post, which
+		// the guard rolls back.
 		segCtx, segTxID = newCtx, newTxID
 		if err != nil {
 			// If the engine's first-segment flush rejected
@@ -412,6 +412,11 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		segCtx, segTxID = newCtx, newTxID
 		if err != nil {
 			return nil, "", fmt.Errorf("commit-before-dispatch: begin TX_post: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
+		}
+		// First read of the new segment (spec §5.2); the guard above rolls
+		// TX_post back on failure.
+		if err := rereadSegment(newCtx); err != nil {
+			return nil, "", err
 		}
 	}
 
@@ -530,7 +535,8 @@ func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, 
 // On any failure after TX_pre commits, the segment may already be durable —
 // the caller cannot rollback prior work. Infrastructure failures are wrapped
 // with ErrCommitBeforeDispatchInfra; CAS conflicts bubble through unchanged
-// so the handler can map them to 412.
+// so the handler can map them to 412. On a failed re-read it returns the new
+// segment with the error; the caller rolls it back.
 func (e *Engine) commitAndBeginNextSegment(ctx context.Context, entity *spi.Entity, txID, expectedTxID string, applyIfMatch bool) (newTxID string, newCtx context.Context, err error) {
 	if fcErr := e.flushAndCommitSegment(ctx, entity, txID, expectedTxID, applyIfMatch); fcErr != nil {
 		return "", nil, fcErr
@@ -538,6 +544,12 @@ func (e *Engine) commitAndBeginNextSegment(ctx context.Context, entity *spi.Enti
 	newTxID, newCtx, err = e.txMgr.Begin(context.WithoutCancel(ctx))
 	if err != nil {
 		return "", nil, fmt.Errorf("commit-before-dispatch: begin TX_post: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
+	}
+	// A scheduled run re-reads its task first in every segment (spec §5.2).
+	// On failure TX_post is handed back with the error, so the caller's guard
+	// rolls it back.
+	if err := rereadSegment(newCtx); err != nil {
+		return newTxID, newCtx, err
 	}
 	return newTxID, newCtx, nil
 }

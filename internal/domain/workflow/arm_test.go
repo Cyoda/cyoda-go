@@ -99,7 +99,7 @@ func TestReconcile_ArmsCurrentStateSchedules(t *testing.T) {
 		t.Fatalf("ScheduledTaskStore: %v", err)
 	}
 	wantID := taskID(testTenant, "sched-e1", "OPEN", "AutoClose")
-	task, found, err := sts.Get(ctx, wantID)
+	task, found, err := sts.Get(ctx, testTenant, wantID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestReconcile_LoopbackReArmsNoCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ScheduledTaskStore: %v", err)
 	}
-	firstTask, found, err := sts.Get(ctx, wantID)
+	firstTask, found, err := sts.Get(ctx, testTenant, wantID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestReconcile_LoopbackReArmsNoCancel(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	task, found, err := sts.Get(ctx, wantID)
+	task, found, err := sts.Get(ctx, testTenant, wantID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -323,7 +323,7 @@ func TestReconcile_ArmedByCapturesUserOrigin(t *testing.T) {
 		t.Fatalf("ScheduledTaskStore: %v", err)
 	}
 	wantID := taskID(testTenant, "armedby-user-e1", "OPEN", "AutoClose")
-	task, found, err := sts.Get(ctx, wantID)
+	task, found, err := sts.Get(ctx, testTenant, wantID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -389,7 +389,7 @@ func TestReconcile_ArmedByCapturesChainOriginOverServiceExecutor(t *testing.T) {
 		t.Fatalf("ScheduledTaskStore: %v", err)
 	}
 	wantID := taskID(testTenant, "armedby-chain-e1", "OPEN", "AutoClose")
-	task, found, err := sts.Get(ownerCtx, wantID)
+	task, found, err := sts.Get(ownerCtx, testTenant, wantID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -452,7 +452,7 @@ func TestReconcile_TransitionCancelsOldState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ScheduledTaskStore: %v", err)
 	}
-	if _, found, _ := sts.Get(ctx, openTaskID); !found {
+	if _, found, _ := sts.Get(ctx, testTenant, openTaskID); !found {
 		t.Fatalf("expected task %q armed after entering OPEN", openTaskID)
 	}
 
@@ -469,14 +469,14 @@ func TestReconcile_TransitionCancelsOldState(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	if _, found, err := sts.Get(ctx, openTaskID); err != nil {
+	if _, found, err := sts.Get(ctx, testTenant, openTaskID); err != nil {
 		t.Fatalf("Get(openTaskID): %v", err)
 	} else if found {
 		t.Errorf("expected OPEN's scheduled task %q to be cancelled after leaving the state", openTaskID)
 	}
 
 	reviewTaskID := taskID(testTenant, "cancel-e1", "REVIEW", "AutoExpire")
-	if _, found, err := sts.Get(ctx, reviewTaskID); err != nil {
+	if _, found, err := sts.Get(ctx, testTenant, reviewTaskID); err != nil {
 		t.Fatalf("Get(reviewTaskID): %v", err)
 	} else if !found {
 		t.Errorf("expected REVIEW's scheduled task %q to be armed", reviewTaskID)
