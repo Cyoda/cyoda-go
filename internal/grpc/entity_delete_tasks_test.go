@@ -149,3 +149,23 @@ func TestRPC_EntityDelete_TaskConflictPersists_ConflictEnvelope(t *testing.T) {
 		t.Errorf("tasks = %d, want 1 (every attempt rolled back)", n)
 	}
 }
+
+func TestRPC_EntityUpdate_TaskRowConflict_ConflictEnvelope(t *testing.T) {
+	svc, ctx, _, plan := newTaskDeleteEnv(t)
+	id := createPersonRPC(t, svc, ctx)
+	plan.Refuse(taskconflict.ReconcileForEntity, 1)
+
+	resp, err := svc.EntityManage(ctx, makeCE(EntityUpdateRequest, map[string]any{
+		"id": "upd", "dataFormat": "JSON",
+		"payload": map[string]any{"entityId": id, "data": map[string]any{"name": "Alicia"}},
+	}))
+	if err != nil {
+		t.Fatalf("EntityManage: %v", err)
+	}
+	var typed events.EntityTransactionResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Error == nil {
+		t.Fatalf("error = nil, want the conflict envelope; success=%v", typed.Success)
+	}
+	requireConflictEnvelope(t, typed.Success, typed.Error.Code, typed.Error.Message, typed.Error.Retryable)
+}

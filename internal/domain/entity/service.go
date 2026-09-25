@@ -2243,7 +2243,10 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		res, lbErr := h.engine.LoopbackWithIfMatch(txCtx, updated, input.IfMatch)
 		if lbErr != nil {
 			slog.Error("workflow loopback failed", "error", lbErr.Error(), "entityId", updated.Meta.ID)
-			if errors.Is(lbErr, spi.ErrConflict) {
+			// A task-row conflict (the reconcile lost a race with the
+			// scheduler) is not an entity modification. It keeps its cause
+			// and classifyWorkflowError answers the retryable 409 CONFLICT.
+			if errors.Is(lbErr, spi.ErrConflict) && !errors.Is(lbErr, wfengine.ErrScheduledTaskInfra) {
 				appErr := common.Operational(
 					http.StatusPreconditionFailed,
 					common.ErrCodeEntityModified,
@@ -2262,7 +2265,7 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		res, mtErr := h.engine.ManualTransitionWithIfMatch(txCtx, updated, input.Transition, input.IfMatch)
 		if mtErr != nil {
 			slog.Error("workflow manual transition failed", "error", mtErr.Error(), "entityId", updated.Meta.ID, "transition", input.Transition)
-			if errors.Is(mtErr, spi.ErrConflict) {
+			if errors.Is(mtErr, spi.ErrConflict) && !errors.Is(mtErr, wfengine.ErrScheduledTaskInfra) {
 				appErr := common.Operational(
 					http.StatusPreconditionFailed,
 					common.ErrCodeEntityModified,
@@ -2592,9 +2595,9 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			// audit trail for this item is paired (entry + abort) and lands
 			// alongside successful siblings on commit.
 			//
-			// Two other shapes reach here as spi.ErrConflict and must NOT be
-			// isolated, because in both the transaction this loop would carry
-			// on in is already gone:
+			// Three other shapes reach here as spi.ErrConflict and must NOT be
+			// isolated, because in all of them the transaction this loop
+			// would carry on in is already gone:
 			//
 			//   - ErrPostSegmentConflict: the apply-result CAS, raised after
 			//     TX_pre committed and the dispatch fired. No segment is left
@@ -2611,12 +2614,17 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			//     spi.ErrConflict branch answers a retryable 409 (asserted by
 			//     service_classify_test.go): the segment boundary aborted, so
 			//     a fresh attempt is the right advice.
+			//   - ErrScheduledTaskInfra: the reconcile's task-row write lost a
+			//     race with the scheduler. On PostgreSQL that statement's
+			//     40001 has aborted the transaction. It leaves through
+			//     classifyWorkflowError → common.Internal → a retryable 409.
 			//
 			// Either way, isolating would let every later item write into a
 			// dead transaction and be lost.
 			if item.ifMatch != "" && errors.Is(engineErr, spi.ErrConflict) &&
 				!errors.Is(engineErr, wfengine.ErrPostSegmentConflict) &&
-				!errors.Is(engineErr, wfengine.ErrCommitBeforeDispatchInfra) {
+				!errors.Is(engineErr, wfengine.ErrCommitBeforeDispatchInfra) &&
+				!errors.Is(engineErr, wfengine.ErrScheduledTaskInfra) {
 				slog.Info("collection update item precondition failed",
 					"source", "engine", "entityId", updated.Meta.ID, "itemIndex", i)
 				failed = append(failed, UpdateCollectionItemFailure{

@@ -87,6 +87,33 @@ func TestScheduledTaskWrites_DeleteEntity_PersistentConflict_409(t *testing.T) {
 	}
 }
 
+// An update has no server retry. Racing a claim, it answers 409 CONFLICT,
+// and the retried update re-arms the task as a new life.
+func TestScheduledTaskWrites_UpdateRacingOneClaim_409ThenRetrySucceeds(t *testing.T) {
+	const model = "e2e-stw-update-race"
+	setupScheduledModel(t, model)
+	id := createEntityE2E(t, model, 1, schedWritesPayload)
+	hold := holdTaskRows(t, "entity_id = $1", id)
+
+	ctx := e2eCtx(t)
+	path := "/api/entity/JSON/" + id
+	done := make(chan httpResult, 1)
+	go func() {
+		done <- resultOf(doAuthOnceRaw(ctx, http.MethodPut, path, `{"name":"Order","amount":101,"status":"draft"}`))
+	}()
+	hold.awaitBlocked(t)
+	hold.claimAndCommit(t)
+	requireConflictProblem(t, <-done)
+
+	retry := resultOf(doAuthOnceRaw(ctx, http.MethodPut, path, `{"name":"Order","amount":101,"status":"draft"}`))
+	if retry.status != http.StatusOK {
+		t.Fatalf("retried update: %d %s", retry.status, retry.body)
+	}
+	if n := taskRows(t, "entity_id = $1 AND status = 'WAITING' AND claim_token IS NULL", id); n != 1 {
+		t.Errorf("WAITING unclaimed task rows = %d, want 1 (the retry re-armed the task)", n)
+	}
+}
+
 // A delete that joined another request's transaction is not retried on the
 // server. Its conflict reaches the joined caller, and the owner's
 // transaction does not commit.
