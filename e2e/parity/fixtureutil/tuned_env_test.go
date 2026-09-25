@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cyoda-platform/cyoda-go/app"
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
 )
 
@@ -47,13 +48,16 @@ func TestTunedEnv_PatienceIsShortAndValid(t *testing.T) {
 // 30s commit budget, 10s slack, one heartbeat budget, three intervals), so
 // the tuned value is that floor and no lower.
 func TestTunedEnv_SchedulerTimingIsShortAndValid(t *testing.T) {
+	if fixtureutil.TunedScanInterval != 50*time.Millisecond {
+		t.Errorf("TunedScanInterval = %v; want 50ms", fixtureutil.TunedScanInterval)
+	}
 	for name, env := range map[string][]string{
 		"server":  fixtureutil.TunedServerEnv(),
 		"cluster": fixtureutil.TunedClusterEnv(),
 	} {
 		t.Run(name, func(t *testing.T) {
-			if scan := mustDuration(t, env, "CYODA_SCHEDULER_SCAN_INTERVAL"); scan != 50*time.Millisecond {
-				t.Errorf("scan interval = %v; want 50ms", scan)
+			if scan := mustDuration(t, env, "CYODA_SCHEDULER_SCAN_INTERVAL"); scan != fixtureutil.TunedScanInterval {
+				t.Errorf("scan interval = %v; want TunedScanInterval (%v)", scan, fixtureutil.TunedScanInterval)
 			}
 			hb := mustDuration(t, env, "CYODA_SCHEDULER_HEARTBEAT_INTERVAL")
 			stale := mustDuration(t, env, "CYODA_SCHEDULER_STALE_AFTER")
@@ -71,6 +75,45 @@ func TestTunedEnv_SchedulerTimingIsShortAndValid(t *testing.T) {
 			}
 			if retry <= 0 || retry > time.Second || retryMax < retry || retryMax > 5*time.Second {
 				t.Errorf("retry delay %v / max %v; want a delay within (0, 1s] and a max within [delay, 5s]", retry, retryMax)
+			}
+		})
+	}
+}
+
+// TestTunedEnv_ServerReadsEveryKey sets each tuned variable and reads the
+// config the server would start with. The server's duration parser falls back
+// to the default on a value it cannot parse, so only this shows the keys and
+// values are the ones it reads — and that the scheduler accepts them.
+func TestTunedEnv_ServerReadsEveryKey(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		env      []string
+		dispatch time.Duration
+	}{
+		{"server", fixtureutil.TunedServerEnv(), fixtureutil.TunedDispatchWaitTimeout},
+		{"cluster", fixtureutil.TunedClusterEnv(), fixtureutil.TunedClusterDispatchWaitTimeout},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, kv := range tc.env {
+				k, v, ok := strings.Cut(kv, "=")
+				if !ok {
+					t.Fatalf("malformed env entry %q", kv)
+				}
+				t.Setenv(k, v)
+			}
+			cfg := app.DefaultConfig()
+			sc := cfg.Scheduler
+			if sc.ScanInterval != fixtureutil.TunedScanInterval || sc.HeartbeatInterval != fixtureutil.TunedHeartbeatInterval ||
+				sc.StaleAfter != fixtureutil.TunedStaleAfter || sc.RetryDelay != fixtureutil.TunedRetryDelay ||
+				sc.RetryDelayMax != fixtureutil.TunedRetryDelayMax {
+				t.Errorf("server read scan=%v hb=%v stale=%v retry=%v retryMax=%v; want the Tuned* constants",
+					sc.ScanInterval, sc.HeartbeatInterval, sc.StaleAfter, sc.RetryDelay, sc.RetryDelayMax)
+			}
+			if cfg.Cluster.DispatchWaitTimeout != tc.dispatch {
+				t.Errorf("dispatch wait = %v; want %v", cfg.Cluster.DispatchWaitTimeout, tc.dispatch)
+			}
+			if err := app.ValidateScheduler(sc); err != nil {
+				t.Errorf("the server refuses the tuned scheduler settings: %v", err)
 			}
 		})
 	}
