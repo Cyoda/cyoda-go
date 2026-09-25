@@ -20,7 +20,7 @@
 // armed (a SCHEDULED_TRANSITION_ARM audit event appears), does it fire
 // and land the entity in the expected state, does a state exit cancel it,
 // does a loopback re-arm it without a spurious cancel. Scenarios that
-// need the runtime scan loop to actually pick up a due task use a small
+// need the runtime claim loop to actually pick up a due task use a small
 // Schedule.DelayMs plus generous, bounded polling (the same
 // non-boundary, non-flaky methodology the design doc prescribes for
 // internal/e2e — see its §11 "Time control" note) rather than any exact

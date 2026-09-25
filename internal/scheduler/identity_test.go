@@ -46,7 +46,7 @@ func TestSystemUserContext_HasTenant(t *testing.T) {
 	}
 
 	// Prove the identity is load-bearing, not incidental: Begin rejects a
-	// context with no tenant at all — exactly what the scan loop's own
+	// context with no tenant at all — exactly what the claim loop's own
 	// context.Background() would produce without this helper.
 	if _, _, err := txMgr.Begin(context.Background()); err == nil {
 		t.Error("Begin(context.Background()) should fail with no user context/tenant")

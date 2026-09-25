@@ -46,8 +46,7 @@ func SystemPrincipal() spi.Principal {
 // carrying a synthesised system UserContext scoped to tenant. It exists
 // because TransactionManager.Begin rejects any context whose UserContext
 // has no tenant (plugins/memory/txmanager.go Begin), and a background path
-// — the scheduler's scan loop, the peer RPC handler on the receiving node,
-// the search reaper's per-job write — has no caller-derived UserContext at
+// — the search reaper's per-job write — has no caller-derived UserContext at
 // all: there is no inbound HTTP/gRPC request to inherit one from.
 //
 // Always builds from context.Background(), not a caller-supplied parent, so

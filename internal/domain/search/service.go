@@ -1179,8 +1179,8 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 	// HTTP handler above it to recover it — net/http's per-connection
 	// recover has nothing to do with a pool worker goroutine. Left
 	// unrecovered, it takes the whole process down, the same class of gap
-	// the gRPC and HTTP mux doors had. Mirrors the scheduler's own dispatch
-	// goroutine (internal/scheduler/service.go): log the full panic detail
+	// the gRPC and HTTP mux doors had. Mirrors the scheduler's run
+	// goroutines (internal/scheduler/service.go): log the full panic detail
 	// (value + stack) and record the job FAILED with a non-revealing
 	// message — a job left RUNNING forever after its executor died would be
 	// its own defect (Gate 3: no panic value or stack leaves the log).

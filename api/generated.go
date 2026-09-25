@@ -3135,9 +3135,9 @@ type TransitionDefinitionDto struct {
 	Processors *[]TransitionDefinitionDto_Processors_Item `json:"processors,omitempty"`
 
 	// Schedule Optional scheduling configuration. Presence marks the transition
-	// as scheduled — it fires automatically at a computed time (driven
-	// by a coordinator-only background scan loop) rather than by an API
-	// call or automated cascade. The firing time comes from either a
+	// as scheduled — it fires automatically at a computed time (every
+	// node's claim loop claims due scheduled tasks and runs them) rather
+	// than by an API call or automated cascade. The firing time comes from either a
 	// static `delayMs` or a per-entity `function` callout — see
 	// `TransitionScheduleDto`. Mutually exclusive with `manual=true`.
 	// Explicit fires of a scheduled transition by name return HTTP 400
