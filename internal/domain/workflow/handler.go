@@ -375,6 +375,13 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// The tasks of transitions that no workflow of the model schedules any
+	// more go now, after the save.
+	if appErr := h.removeUnscheduledTasks(r.Context(), entityName, int(modelVersion), result); appErr != nil {
+		common.WriteError(w, r, appErr)
+		return
+	}
+
 	// Audit log on success: workflow configuration is a high-impact, mutable
 	// multi-tenant surface. One INFO line per import names the mode and the
 	// digest of THIS CALL's incoming payload — the audit subject is the
