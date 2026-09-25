@@ -11,8 +11,8 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
 )
 
-// The callback reports the pool's current state under backend="postgres",
-// and unregistering stops it.
+// The callback reports each pool's current state under backend="postgres"
+// and pool="main", "scheduler" or "heartbeat", and unregistering stops it.
 //
 // This lives in the postgres_test package (not postgres) so it can share
 // newTestPool (migrate_test.go) — which carries the pgx v5.9.1
@@ -22,9 +22,12 @@ import (
 // plugin already uses (RegisterPoolMetricsForTest, MeterNameForTest).
 func TestRegisterPoolMetrics_ReportsPoolStat(t *testing.T) {
 	pool := newTestPool(t)
+	f := postgres.NewStoreFactory(pool)
+	postgres.SchedulerPoolForTest(t, f) // opens the scheduler and heartbeat pools
+	t.Cleanup(func() { postgres.CloseSchedulerPoolsForTest(f) })
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	unregister, err := postgres.RegisterPoolMetricsForTest(mp.Meter(postgres.MeterNameForTest), pool)
+	unregister, err := postgres.RegisterPoolMetricsForTest(mp.Meter(postgres.MeterNameForTest), f)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,18 +49,29 @@ func TestRegisterPoolMetrics_ReportsPoolStat(t *testing.T) {
 			if m.Name == "cyoda.storage.pool.connections" {
 				g := m.Data.(metricdata.Gauge[int64])
 				var acquired int64 = -1
+				pools := map[string]bool{}
 				for _, dp := range g.DataPoints {
 					state, _ := dp.Attributes.Value(attribute.Key("state"))
 					backend, _ := dp.Attributes.Value(attribute.Key("backend"))
+					name, _ := dp.Attributes.Value(attribute.Key("pool"))
 					if backend.AsString() != "postgres" {
 						t.Fatalf("data point without backend=postgres: %v", dp.Attributes)
 					}
-					if state.AsString() == "acquired" {
+					pools[name.AsString()] = true
+					if name.AsString() == "main" && state.AsString() == "acquired" {
 						acquired = dp.Value
 					}
 				}
 				if acquired < 1 {
-					t.Fatalf("acquired connections = %d, want >= 1", acquired)
+					t.Fatalf("acquired connections of the main pool = %d, want >= 1", acquired)
+				}
+				for _, want := range []string{"main", "scheduler", "heartbeat"} {
+					if !pools[want] {
+						t.Errorf("no data point with pool=%s; got pools %v", want, pools)
+					}
+				}
+				if len(pools) != 3 {
+					t.Errorf("pools = %v, want exactly main, scheduler and heartbeat", pools)
 				}
 			}
 		}

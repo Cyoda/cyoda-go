@@ -57,7 +57,7 @@ func (p *plugin) NewFactory(
 		return nil, fmt.Errorf("postgres: %w", err)
 	}
 	factory.initTransactionManager(&defaultUUIDGenerator{})
-	unregister, err := registerPoolMetrics(otel.Meter(meterName), pool)
+	unregister, err := registerPoolMetrics(otel.Meter(meterName), pool, &factory.sched)
 	if err != nil {
 		factory.closeSchedulerPools()
 		pool.Close()

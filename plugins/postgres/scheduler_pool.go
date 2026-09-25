@@ -115,6 +115,14 @@ func (f *StoreFactory) closeSchedulerPools() {
 	}
 }
 
+// snapshot returns the scheduler pools that are open now; nil for one that is
+// not. The metrics callback reads them at each scrape.
+func (p *schedulerPools) snapshot() (work, heartbeat *pgxpool.Pool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.work, p.heartbeat
+}
+
 // schedulerQuerier runs a statement on a scheduler pool. It never joins a
 // transaction on ctx. Unlike unjoinedQuerier it bounds every acquire, inside a
 // transaction or not: the scheduler retries a failed write with a backoff, and

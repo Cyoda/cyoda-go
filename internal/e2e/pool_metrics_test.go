@@ -11,7 +11,8 @@ import (
 )
 
 // Pool statistics are exported on the metrics endpoint with the rendered
-// Prometheus names, labelled backend="postgres".
+// Prometheus names, labelled backend="postgres"; the connections gauge also
+// carries the pool: main, scheduler or heartbeat.
 func TestMetrics_PostgresPoolSeriesAreExported(t *testing.T) {
 	srv := httptest.NewServer(observability.MetricsHandler())
 	defer srv.Close()
@@ -23,8 +24,10 @@ func TestMetrics_PostgresPoolSeriesAreExported(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	text := string(body)
 	for _, want := range []string{
-		`cyoda_storage_pool_connections{backend="postgres",state="acquired"}`,
-		`cyoda_storage_pool_connections{backend="postgres",state="idle"}`,
+		`cyoda_storage_pool_connections{backend="postgres",pool="main",state="acquired"}`,
+		`cyoda_storage_pool_connections{backend="postgres",pool="main",state="idle"}`,
+		`cyoda_storage_pool_connections{backend="postgres",pool="scheduler",state="idle"}`,
+		`cyoda_storage_pool_connections{backend="postgres",pool="heartbeat",state="idle"}`,
 		`cyoda_storage_pool_max_connections{backend="postgres"} 5`,
 		`cyoda_storage_pool_acquires_total{backend="postgres"}`,
 		`cyoda_storage_pool_empty_acquires_total{backend="postgres"}`,

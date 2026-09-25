@@ -12,6 +12,7 @@ import (
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/metric"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
@@ -244,14 +245,16 @@ func NewStoreFactoryWithAcquireTimeoutForTest(pool *pgxpool.Pool, d time.Duratio
 	return newStoreFactoryWithConfig(pool, cfg)
 }
 
-// RegisterPoolMetricsForTest exposes registerPoolMetrics to the external
-// postgres_test package. metrics_test.go must live in postgres_test to reuse
-// newTestPool (migrate_test.go), which carries the pgx v5.9.1
-// HealthCheckPeriod-hang workaround around pool.Close — duplicating that
-// workaround for an internal-package test is worse than reaching the
+// RegisterPoolMetricsForTest exposes registerPoolMetrics for a factory's
+// pools to the external postgres_test package. metrics_test.go must live in
+// postgres_test to reuse newTestPool (migrate_test.go), which carries the pgx
+// v5.9.1 HealthCheckPeriod-hang workaround around pool.Close — duplicating
+// that workaround for an internal-package test is worse than reaching the
 // unexported production symbol through this idiom. Test-only; never call
 // from production code.
-var RegisterPoolMetricsForTest = registerPoolMetrics
+func RegisterPoolMetricsForTest(meter metric.Meter, f *StoreFactory) (func(), error) {
+	return registerPoolMetrics(meter, f.pool, &f.sched)
+}
 
 // MeterNameForTest exposes meterName for the same reason.
 const MeterNameForTest = meterName
