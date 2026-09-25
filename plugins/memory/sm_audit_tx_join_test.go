@@ -114,3 +114,75 @@ func TestAudit_AnEventThatCannotBeWrittenIsAStoreRejection(t *testing.T) {
 		t.Fatalf("Record = %v, want ErrStoreRejected", err)
 	}
 }
+
+func TestAudit_RecordOnARolledBackTransactionCtxIsRefused(t *testing.T) {
+	fx := newTaskFixture(t)
+	txID, txCtx := fx.begin(t, taskTenantA)
+	fx.rollback(t, taskTenantA, txID)
+	as := auditStore(t, fx, txCtx)
+	err := as.Record(txCtx, "e1", spi.StateMachineEvent{
+		EventType: spi.SMEventTransitionMade, TransactionID: txID, Timestamp: fx.clock.Now(),
+	})
+	if !errors.Is(err, spi.ErrTxRolledBack) {
+		t.Fatalf("Record on a rolled-back transaction's ctx = %v, want ErrTxRolledBack", err)
+	}
+}
+
+func TestAudit_RecordOnAnAlreadyCommittedTransactionCtxIsRefused(t *testing.T) {
+	fx := newTaskFixture(t)
+	txID, txCtx := fx.begin(t, taskTenantA)
+	if err := fx.commit(taskTenantA, txID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	as := auditStore(t, fx, txCtx)
+	err := as.Record(txCtx, "e1", spi.StateMachineEvent{
+		EventType: spi.SMEventTransitionMade, TransactionID: txID, Timestamp: fx.clock.Now(),
+	})
+	if !errors.Is(err, spi.ErrTxAlreadyCommitted) {
+		t.Fatalf("Record on an already-committed transaction's ctx = %v, want ErrTxAlreadyCommitted", err)
+	}
+}
+
+func TestAudit_RecordWithATransactionOfAnotherTenantIsRefused(t *testing.T) {
+	fx := newTaskFixture(t)
+	_, txCtx := fx.begin(t, taskTenantA)
+	// asB is scoped to a different tenant than the transaction on txCtx.
+	asB := auditStore(t, fx, ctxWithTenant(taskTenantB))
+	err := asB.Record(txCtx, "e1", spi.StateMachineEvent{
+		EventType: spi.SMEventTransitionMade, Timestamp: fx.clock.Now(),
+	})
+	if !errors.Is(err, spi.ErrTxTenantMismatch) {
+		t.Fatalf("Record with a cross-tenant transaction = %v, want ErrTxTenantMismatch", err)
+	}
+}
+
+// A read through the same transaction that recorded the event, via
+// GetEventsByTransaction rather than GetEvents, must also see the staged
+// event before commit and not see it from outside the transaction.
+func TestAudit_GetEventsByTransactionSeesStagedEventsInTheTransaction(t *testing.T) {
+	fx := newTaskFixture(t)
+	ctx := ctxWithTenant(taskTenantA)
+	txID, txCtx := fx.begin(t, taskTenantA)
+	as := auditStore(t, fx, txCtx)
+	if err := as.Record(txCtx, "e1", spi.StateMachineEvent{
+		EventType: spi.SMEventTransitionMade, TransactionID: txID, Details: "in tx", Timestamp: fx.clock.Now(),
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	inTx, err := as.GetEventsByTransaction(txCtx, "e1", txID)
+	if err != nil {
+		t.Fatalf("GetEventsByTransaction (in tx): %v", err)
+	}
+	if len(inTx) != 1 || inTx[0].Details != "in tx" {
+		t.Fatalf("GetEventsByTransaction(txCtx, ..., txID) = %+v, want the one staged event", inTx)
+	}
+
+	outside, err := as.GetEventsByTransaction(ctx, "e1", txID)
+	if err != nil {
+		t.Fatalf("GetEventsByTransaction (outside tx, before commit): %v", err)
+	}
+	if len(outside) != 0 {
+		t.Fatalf("GetEventsByTransaction(ctx, ..., txID) before commit = %+v, want 0", outside)
+	}
+}
