@@ -64,9 +64,9 @@ func (s *scriptedHeartbeatStore) callCount() int {
 // wrapped by store — so the test controls what individual Heartbeat calls
 // answer while everything else (CreateJob, SaveResults, UpdateJobStatus,
 // GetJob) runs for real.
-func newSlowSearchService(t *testing.T, base *memory.StoreFactory, store spi.AsyncSearchStore, perItem, heartbeatEvery time.Duration) (*search.SearchService, *iterableEntityStore) {
+func newSlowSearchService(t *testing.T, ctx context.Context, base *memory.StoreFactory, store spi.AsyncSearchStore, perItem, heartbeatEvery time.Duration) (*search.SearchService, *iterableEntityStore) {
 	t.Helper()
-	realEntityStore, err := base.EntityStore(context.Background())
+	realEntityStore, err := base.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestStartHeartbeat_BusyTickDoesNotCancelTheJob(t *testing.T) {
 		AsyncSearchStore: realAsync,
 		busyOnCalls:      map[int]bool{1: true, 2: true},
 	}
-	svc, _ := newSlowSearchService(t, base, store, 15*time.Millisecond, 20*time.Millisecond)
+	svc, _ := newSlowSearchService(t, ctx, base, store, 15*time.Millisecond, 20*time.Millisecond)
 
 	jobID := submitSlowJob(t, ctx, base, svc, 30)
 	status := pollUntilTerminal(t, svc, ctx, jobID, 5*time.Second)
@@ -150,7 +150,7 @@ func TestStartHeartbeat_StaleClaimStillAbortsTheJob(t *testing.T) {
 		AsyncSearchStore: realAsync,
 		staleOnCalls:     map[int]bool{1: true},
 	}
-	svc, _ := newSlowSearchService(t, base, store, 15*time.Millisecond, 20*time.Millisecond)
+	svc, _ := newSlowSearchService(t, ctx, base, store, 15*time.Millisecond, 20*time.Millisecond)
 
 	jobID := submitSlowJob(t, ctx, base, svc, 30)
 	status := pollUntilTerminal(t, svc, ctx, jobID, 5*time.Second)
