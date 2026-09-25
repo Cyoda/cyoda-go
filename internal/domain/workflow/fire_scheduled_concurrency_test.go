@@ -5,13 +5,13 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // Isolated single-backend concurrency tests (never parity,
 // .claude/rules/test-coverage.md). They assert consistency — one committing
 // run, the other superseded or not claimed, no torn write — not an interleave.
-// Audit-event counts are not asserted: the memory audit store writes outside
-// the transaction.
 
 func TestClaimRace_TwoOwnersOneDueTask_OneRunCommits(t *testing.T) {
 	env := newRunEnv(t, nil)
@@ -55,6 +55,9 @@ func TestClaimRace_TwoOwnersOneDueTask_OneRunCommits(t *testing.T) {
 	}
 	if _, found := env.task(t, armed.ID); found {
 		t.Error("task must be removed once")
+	}
+	if n := countAuditEvents(t, env.factory, env.ctx, "race-e1", spi.SMEventScheduledTransitionFired); n != 1 {
+		t.Errorf("SCHEDULED_TRANSITION_FIRE events = %d, want 1", n)
 	}
 }
 
@@ -117,12 +120,18 @@ func TestClaimRace_StaleOwnerRunVersusReclaim_OneRunCommits(t *testing.T) {
 			if _, found := env.task(t, armed.ID); found {
 				t.Error("task must be removed by the committing run")
 			}
-			want := "CLOSED"
+			want, event, other := "CLOSED", spi.SMEventScheduledTransitionFired, spi.SMEventScheduledTransitionExpired
 			if rA.Outcome == OutcomeExpired {
-				want = "OPEN"
+				want, event, other = "OPEN", spi.SMEventScheduledTransitionExpired, spi.SMEventScheduledTransitionFired
 			}
 			if got := env.state(t, "stale-e1"); got != want {
 				t.Errorf("entity state = %q, want %q", got, want)
+			}
+			if n := countAuditEvents(t, env.factory, env.ctx, "stale-e1", event); n != 1 {
+				t.Errorf("%s events = %d, want 1", event, n)
+			}
+			if n := countAuditEvents(t, env.factory, env.ctx, "stale-e1", other); n != 0 {
+				t.Errorf("%s events = %d, want 0", other, n)
 			}
 		})
 	}

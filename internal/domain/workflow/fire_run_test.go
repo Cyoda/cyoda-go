@@ -335,3 +335,52 @@ func TestScheduledRun_ReArmedDuringCBDDispatch_Superseded(t *testing.T) {
 		t.Errorf("entity state = %q, want OPEN (TX_pre only)", got)
 	}
 }
+
+// beforeNthBeginTxMgr runs hook before the nth Begin of the engine's manager.
+type beforeNthBeginTxMgr struct {
+	spi.TransactionManager
+	n     int
+	hook  func() error
+	count int
+	err   error
+}
+
+func (m *beforeNthBeginTxMgr) Begin(ctx context.Context) (string, context.Context, error) {
+	m.count++
+	if m.count == m.n && m.hook != nil {
+		m.err = m.hook()
+	}
+	return m.TransactionManager.Begin(ctx)
+}
+
+func TestScheduledRun_ReArmedBeforeTXPostBegin_StartNewTx_Superseded(t *testing.T) {
+	var wrap *beforeNthBeginTxMgr
+	env := newRunEnvWith(t, nil, nil, func(tm spi.TransactionManager) spi.TransactionManager {
+		// The second Begin is TX_post's, after TX_pre committed.
+		wrap = &beforeNthBeginTxMgr{TransactionManager: tm, n: 2}
+		return wrap
+	})
+	startNewTx := true
+	p1 := safeProc("p1", ExecutionModeCommitBeforeDispatch)
+	p1.Config.StartNewTxOnDispatch = &startNewTx
+	claimed := env.claimed(t, "seg-new-e1", oneHopWF("CLOSED", []spi.ProcessorDefinition{p1}, nil))
+	wrap.hook = func() error { return env.rearm(claimed) }
+
+	r, _ := env.run(claimed)
+	if wrap.err != nil {
+		t.Fatalf("rearm: %v", wrap.err)
+	}
+	if wrap.count < 2 {
+		t.Fatalf("Begin called %d times, want a TX_post Begin", wrap.count)
+	}
+	if r.Outcome != OutcomeSuperseded {
+		t.Fatalf("report = %+v, want superseded at the re-read of TX_post", r)
+	}
+	if got := env.state(t, "seg-new-e1"); got != "OPEN" {
+		t.Errorf("entity state = %q, want OPEN (TX_pre only)", got)
+	}
+	got, found := env.task(t, claimed.ID)
+	if !found || got.ArmToken == claimed.ArmToken || got.Status != spi.ScheduledTaskWaiting || got.Claim != nil {
+		t.Errorf("task = %+v (found=%v), want the new WAITING life", got, found)
+	}
+}

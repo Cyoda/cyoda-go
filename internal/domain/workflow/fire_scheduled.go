@@ -26,8 +26,9 @@ const (
 	// gone or moved on, the transition is no longer scheduled in the selected
 	// workflow, or the entity has no transaction id to guard the fire.
 	OutcomeCancelled ScheduledOutcome = "cancelled"
-	// OutcomeSuperseded: the task's life or claim changed. The run committed
-	// nothing, and nothing is recorded.
+	// OutcomeSuperseded: the task's life or claim changed. The run's open
+	// transaction did not commit; an earlier COMMIT_BEFORE_DISPATCH segment
+	// of the run may have committed. Nothing is recorded.
 	OutcomeSuperseded ScheduledOutcome = "superseded"
 	// OutcomeFailed: the run did not commit. The scheduler records the
 	// outcome (spec §5.6).
