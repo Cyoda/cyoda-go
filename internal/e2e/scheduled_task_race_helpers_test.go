@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -118,12 +119,32 @@ func (h *taskRowHold) awaitBlocked(t *testing.T) {
 // claimAndCommit changes the held rows as a claim does and commits. The
 // statement waiting on the lock began its snapshot before this commit, so
 // PostgreSQL fails it with 40001.
+//
+// The claim's owner gets a liveness record with a fresh heartbeat, as a live
+// scheduler's has. A RUNNING row whose owner has no record is claimable at
+// once, and a callbackHarness runs a scheduler that would take it. Cleanup
+// removes the record and every row the hold matched.
 func (h *taskRowHold) claimAndCommit(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
+	owner := uuid.New()
+	t.Cleanup(func() {
+		ctx := context.Background()
+		if _, err := dbPool.Exec(ctx, "DELETE FROM scheduled_tasks WHERE "+h.where, h.args...); err != nil {
+			t.Errorf("cleanup task rows: %v", err)
+		}
+		if _, err := dbPool.Exec(ctx, "DELETE FROM scheduler_owners WHERE owner = $1", owner); err != nil {
+			t.Errorf("cleanup scheduler owner: %v", err)
+		}
+	})
 	if _, err := h.tx.Exec(ctx,
-		"UPDATE scheduled_tasks SET status = 'RUNNING', claim_token = gen_random_uuid(), claim_owner = gen_random_uuid() WHERE "+h.where,
-		h.args...); err != nil {
+		"INSERT INTO scheduler_owners (owner, heartbeat_at) VALUES ($1, now())", owner); err != nil {
+		t.Fatalf("insert scheduler owner: %v", err)
+	}
+	ownerArg := fmt.Sprintf("$%d", len(h.args)+1)
+	if _, err := h.tx.Exec(ctx,
+		"UPDATE scheduled_tasks SET status = 'RUNNING', claim_token = gen_random_uuid(), claim_owner = "+ownerArg+" WHERE "+h.where,
+		append(append([]any{}, h.args...), owner)...); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 	if err := h.tx.Commit(ctx); err != nil {
