@@ -104,7 +104,7 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 // runReport turns the run's result into a report. It runs after the run's
 // open segment was rolled back (fireScheduled's deferred rollback).
 func (e *Engine) runReport(ctx context.Context, g *RunGuard, outcome ScheduledOutcome, err error) RunReport {
-	r := RunReport{}
+	r := RunReport{MarkHeld: g.markHeld, MarkErrored: g.markErrored}
 	switch {
 	case err == nil:
 		r.Outcome = outcome
@@ -113,6 +113,7 @@ func (e *Engine) runReport(ctx context.Context, g *RunGuard, outcome ScheduledOu
 	default:
 		r.Outcome = OutcomeFailed
 		r.Err = err
+		r.FailReason = g.failReason
 	}
 	return r
 }

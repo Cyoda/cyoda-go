@@ -22,6 +22,11 @@ type RunGuard struct {
 	Ref   spi.TaskRef
 	Store spi.ScheduledTaskStore
 	Done  <-chan struct{}
+
+	// Run state, written only by the run's own goroutine.
+	markHeld    bool                           // a MarkUnsafe was accepted
+	markErrored bool                           // a MarkUnsafe failed with a non-refusal error
+	failReason  spi.ScheduledTaskFailureReason // the run decided FAILED itself
 }
 
 type runGuardKey struct{}
@@ -141,4 +146,55 @@ func runCallCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 		}
 	}()
 	return callCtx, cancel
+}
+
+// errUnsafeNotDispatched marks every refusal of beforeDispatch. It is fatal
+// in every execution mode, ASYNC_NEW_TX included.
+var errUnsafeNotDispatched = errors.New("unsafe processor not dispatched")
+
+func notDispatched(proc spi.ProcessorDefinition, cause error) error {
+	return fmt.Errorf("processor %s: %w", proc.Name, errors.Join(errUnsafeNotDispatched, cause))
+}
+
+// beforeDispatch applies spec §5.5 before a processor dispatch. Outside a
+// run, and for a processor declared idempotent, it does nothing. Otherwise it
+// checks the run's cancellation and then writes the unsafe mark, even when
+// this run already holds one: for the same claim the call is idempotent, and
+// it is the check that stops a superseded run from sending more unsafe work.
+// The caller dispatches only on a nil error, and then calls dispatched with
+// the error its step ends with.
+//
+// Every refusal ends the run, so no later call sees the state a refusal
+// leaves on g.
+func beforeDispatch(ctx context.Context, proc spi.ProcessorDefinition) (dispatched func(stepErr error), err error) {
+	g := RunGuardFrom(ctx)
+	if g == nil || proc.Config.Idempotent {
+		return func(error) {}, nil
+	}
+	// A run cut here has handed nothing off: no mark, so the next claim may
+	// run it again.
+	if g.cancelled() {
+		return nil, notDispatched(proc, runCancelled("unsafe processor not marked"))
+	}
+	if err := g.Store.MarkUnsafe(ctx, g.Ref); err != nil {
+		switch {
+		case errors.Is(err, spi.ErrStaleClaim):
+			// MarkUnsafe never joins: the refusal is the committed state.
+			return nil, notDispatched(proc, errors.Join(errRunSuperseded, err))
+		case errors.Is(err, spi.ErrMarkedByAnotherClaim):
+			// An earlier claim of this life may have handed the work off.
+			g.failReason = spi.FailureUnsafeWorkNotCompleted
+			return nil, notDispatched(proc, err)
+		case errors.Is(err, spi.ErrTaskBusy):
+			// No write was made: a safe failure.
+			return nil, notDispatched(proc, err)
+		default:
+			// The mark may have landed with its reply lost: the scheduler
+			// clears this claim's mark when it records the attempt.
+			g.markErrored = true
+			return nil, notDispatched(proc, fmt.Errorf("failed to mark the scheduled task: %w", err))
+		}
+	}
+	g.markHeld = true
+	return func(error) {}, nil
 }

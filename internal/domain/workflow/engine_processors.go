@@ -179,8 +179,10 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 		// An ASYNC_NEW_TX processor's own failure is non-fatal: log warning,
 		// continue pipeline. A savepoint that could not be created, undone or
 		// released is not that — the transaction is unusable, so it kills the
-		// pipeline like any other mode's failure.
-		nonFatal := proc.ExecutionMode == ExecutionModeAsyncNewTx && !errors.Is(procErr, ErrSavepointInfra)
+		// pipeline like any other mode's failure. Nor is an unsafe processor
+		// a scheduled run refused to dispatch: the run must end there.
+		nonFatal := proc.ExecutionMode == ExecutionModeAsyncNewTx &&
+			!errors.Is(procErr, ErrSavepointInfra) && !errors.Is(procErr, errUnsafeNotDispatched)
 		if procErr != nil && nonFatal {
 			slog.Warn("ASYNC_NEW_TX processor failed, continuing pipeline",
 				"pkg", "workflow", "processor", proc.Name, "error", procErr)
@@ -217,10 +219,15 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 // executeSyncProcessor runs a SYNC or ASYNC_SAME_TX processor inline in the
 // caller's transaction. On success the entity's Data is updated with the
 // processor's returned modifications.
-func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, desc *modelDescMemo, proc spi.ProcessorDefinition, workflow, transition, txID string) error {
+func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, desc *modelDescMemo, proc spi.ProcessorDefinition, workflow, transition, txID string) (retErr error) {
 	if e.extProc == nil {
 		return nil
 	}
+	dispatched, err := beforeDispatch(ctx, proc)
+	if err != nil {
+		return err
+	}
+	defer func() { dispatched(retErr) }()
 	// Release any per-tx gate this call chain holds across the blocking dispatch
 	// (H3 invariant, generalised to the joined-callback path): the dispatch
 	// touches no local buffer but can re-enter with a descendant joined callback
@@ -257,7 +264,7 @@ func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, d
 // A savepoint that cannot be created, undone or released is marked with
 // ErrSavepointInfra and fails the operation: it says the transaction is
 // unusable, not that the processor misbehaved.
-func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, workflow, transition, txID string) error {
+func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, workflow, transition, txID string) (retErr error) {
 	if e.extProc == nil {
 		return nil
 	}
@@ -266,6 +273,13 @@ func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc
 	if err != nil {
 		return fmt.Errorf("failed to create savepoint: %w", errors.Join(ErrSavepointInfra, err))
 	}
+	// After the savepoint: a savepoint that cannot be created dispatches
+	// nothing, so it needs no mark.
+	dispatched, err := beforeDispatch(ctx, proc)
+	if err != nil {
+		return err
+	}
+	defer func() { dispatched(retErr) }()
 
 	// Release the per-tx gate across the blocking dispatch (H3 invariant). The
 	// savepoint create above and the rollback/release below are buffer ops that
@@ -375,10 +389,15 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		}
 
 		if e.extProc != nil {
+			dispatched, mErr := beforeDispatch(newCtx, proc)
+			if mErr != nil {
+				return nil, "", mErr
+			}
 			callCtx, stop := runCallCtx(newCtx)
 			defer stop()
 			modified, dispatchErr := e.extProc.DispatchProcessor(callCtx, entity, proc, workflow, transition, newTxID)
 			stop()
+			dispatched(dispatchErr)
 			if dispatchErr != nil {
 				return nil, "", dispatchErr
 			}
@@ -410,10 +429,15 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		var modified *spi.Entity
 		var dispatchErr error
 		if e.extProc != nil {
+			dispatched, mErr := beforeDispatch(dispatchCtx, proc)
+			if mErr != nil {
+				return nil, "", mErr
+			}
 			callCtx, stop := runCallCtx(dispatchCtx)
 			defer stop()
 			modified, dispatchErr = e.extProc.DispatchProcessor(callCtx, entity, proc, workflow, transition, "")
 			stop()
+			dispatched(dispatchErr)
 		}
 		if dispatchErr != nil {
 			return nil, "", dispatchErr
