@@ -893,6 +893,9 @@ func verifyTenant(ctx context.Context, txTenantID spi.TenantID, op string, txID 
 //   - statement_timeout (57014) → passed through unmarked, so it lands on the
 //     500-with-a-ticket path. Re-running a statement that just exceeded the
 //     ceiling will exceed it again; calling that retryable would be a lie.
+//
+// SQLSTATE classes 22, 23 and 42 carry spi.ErrStoreRejected: a deterministic
+// rejection, which a retry cannot clear.
 func classifyError(err error) error {
 	if err == nil {
 		return nil
@@ -916,6 +919,9 @@ func classifyError(err error) error {
 // Reports false when no branch matched, so callers can decide for themselves
 // what to make of an error the server never answered.
 func classifySQLState(err error) (error, bool) {
+	if errors.Is(err, spi.ErrStoreRejected) {
+		return err, true // already classified
+	}
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) {
 		return err, false
@@ -938,6 +944,12 @@ func classifySQLState(err error) (error, bool) {
 		slog.Warn("statement cancelled after exceeding the configured ceiling",
 			"pkg", "postgres", "setting", "statement_timeout", "err", err)
 		return err, true
+	case len(pgErr.Code) == 5 && (pgErr.Code[:2] == "22" || pgErr.Code[:2] == "23" || pgErr.Code[:2] == "42"):
+		// Data exception, integrity-constraint violation, syntax or access
+		// rule: the database will refuse the same statement again. The marker
+		// tells a caller that retries by default (the scheduler's bookkeeping)
+		// to stop. The unique_claims_uq case above keeps its own sentinel.
+		return fmt.Errorf("%w: %w", spi.ErrStoreRejected, err), true
 	}
 	return err, false
 }

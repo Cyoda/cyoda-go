@@ -720,3 +720,33 @@ func TestPostgres_ClaimDue_EntityHeldByAnotherClaimerIsSkipped(t *testing.T) {
 		t.Errorf("ClaimDue took %s; it must not wait on the rival", elapsed)
 	}
 }
+
+// A write the database refuses deterministically is marked, so the scheduler
+// latches instead of retrying it forever. The task is left unchanged.
+func TestPostgres_ScheduledTaskStore_DeterministicRejectionIsMarked(t *testing.T) {
+	_, sts := newTaskStore(t, 5)
+	arm(t, sts, "tenant-A", "e1", "S", taskSpec("tenant-A", "e1", "S", "T", 1000))
+	task := claimAll(t, sts)[0]
+
+	// A NUL in a task id is not caught by spi.ValidateArm (it only checks
+	// for an empty id and an Arm/Cancel overlap), so it reaches the database
+	// and comes back as a raw SQLSTATE. Armed for the same entity as the
+	// already-claimed task above, so a store that applied the write despite
+	// the error, or left the transaction partly applied, would show up as a
+	// change to that task.
+	bad := taskSpec("tenant-A", "e1", "S", "T2", 2000)
+	bad.ID = "e1:S:T2\x00"
+	_, err := sts.ReconcileForEntity(context.Background(), spi.ReconcileRequest{
+		TenantID: "tenant-A", EntityID: "e1", CurrentState: "S", Arm: []spi.ScheduledTask{bad},
+	})
+	if !errors.Is(err, spi.ErrStoreRejected) {
+		t.Fatalf("ReconcileForEntity with a NUL in a task id: err = %v, want ErrStoreRejected", err)
+	}
+	if s := sqlState(err); len(s) != 5 || s[:2] != "22" {
+		t.Errorf("SQLSTATE = %q, want class 22", s)
+	}
+	got := mustGet(t, sts, "tenant-A", task.ID)
+	if got.Status != spi.ScheduledTaskRunning || got.Claim == nil || got.Claim.Token != task.Claim.Token {
+		t.Errorf("task after the rejected write = %+v, want it unchanged", got)
+	}
+}
