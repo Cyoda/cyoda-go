@@ -2,10 +2,12 @@ package grpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
@@ -149,6 +151,76 @@ func TestTry_HandedOff_TrueOnEveryReturnAfterTheSend(t *testing.T) {
 			}
 			if !handedOff {
 				t.Errorf("handedOff = false, want true: Member.Send returned nil (failure %v, ctxErr %v)", failure, ctxErr)
+			}
+		})
+	}
+}
+
+// --- the local procedure: HandedOff is sticky across its tries ---
+
+func TestRunLocal_HandedOff(t *testing.T) {
+	badEntity := &spi.Entity{Meta: spi.EntityMeta{ID: "entity-bad", TenantID: testTenantID}, Data: []byte(`not json`)}
+	noHandOff := contract.NoHandOff
+	tests := []struct {
+		name     string
+		want     bool
+		lastKind *contract.CalloutFailureKind
+		setup    func(t *testing.T) (context.Context, *ProcessorDispatcher, Callout)
+	}{
+		{"no cnode", false, nil, func(t *testing.T) (context.Context, *ProcessorDispatcher, Callout) {
+			return testContext(), newTestDispatcher(t, NewMemberRegistry()), processorCall("x", false, 5*time.Second)
+		}},
+		{"every cnode gone before its send", false, nil, func(t *testing.T) (context.Context, *ProcessorDispatcher, Callout) {
+			reg := NewMemberRegistry()
+			attach(t, reg, "m-1", testTenantID, "x", answersAs("m-1"))
+			attach(t, reg, "m-2", testTenantID, "x", answersAs("m-2"))
+			return testContext(), dispatcherGoneOnPick(t, reg, "m-1", "m-2"), processorCall("x", false, 5*time.Second)
+		}},
+		{"the caller went away before the first try", false, nil, func(t *testing.T) (context.Context, *ProcessorDispatcher, Callout) {
+			reg := NewMemberRegistry()
+			attach(t, reg, "m-1", testTenantID, "x", answersAs("m-1"))
+			return alreadyCancelled(), newTestDispatcher(t, reg), processorCall("x", false, 5*time.Second)
+		}},
+		{"the request cannot be built (Terminal before the send)", false, nil, func(t *testing.T) (context.Context, *ProcessorDispatcher, Callout) {
+			reg := NewMemberRegistry()
+			attach(t, reg, "m-1", testTenantID, "x", answersAs("m-1"))
+			processor := spi.ProcessorDefinition{Name: "my-proc", Config: spi.ProcessorConfig{AttachEntity: true, CalculationNodesTags: "x"}}
+			call := armed(NewProcessorCallout(testTenantID, badEntity, processor, "wf1", "t1", "tx-1"), false, 5*time.Second)
+			return testContext(), newTestDispatcher(t, reg), call
+		}},
+		{"a cnode answers", true, nil, func(t *testing.T) (context.Context, *ProcessorDispatcher, Callout) {
+			reg := NewMemberRegistry()
+			attach(t, reg, "m-1", testTenantID, "x", answersAs("m-1"))
+			return testContext(), newTestDispatcher(t, reg), processorCall("x", false, 5*time.Second)
+		}},
+		{"the answer is unreadable (Terminal after the send)", true, nil, func(t *testing.T) (context.Context, *ProcessorDispatcher, Callout) {
+			reg := NewMemberRegistry()
+			attach(t, reg, "m-1", testTenantID, "x", answers(ProcessingResponse{Success: true, Payload: json.RawMessage(`not json`)}))
+			return testContext(), newTestDispatcher(t, reg), processorCall("x", false, 5*time.Second)
+		}},
+		{"the caller goes away after the send", true, nil, func(t *testing.T) (context.Context, *ProcessorDispatcher, Callout) {
+			reg := NewMemberRegistry()
+			ctx, leaves := leavesOnReceipt(t)
+			attach(t, reg, "m-1", testTenantID, "x", leaves)
+			return ctx, newTestDispatcher(t, reg), processorCall("x", false, 5*time.Second)
+		}},
+		{"a try handed off, then a later try failed before its send", true, &noHandOff, func(t *testing.T) (context.Context, *ProcessorDispatcher, Callout) {
+			reg := NewMemberRegistry()
+			attach(t, reg, "m-1", testTenantID, "x", nil) // takes the work, never answers: NoAnswer
+			attach(t, reg, "m-2", testTenantID, "x", answersAs("m-2"))
+			// repeat-safe, so the NoAnswer on m-1 permits m-2, which is gone on pick
+			return testContext(), dispatcherGoneOnPick(t, reg, "m-2"), processorCall("x", true, 50*time.Millisecond)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, d, call := tt.setup(t)
+			res := d.RunLocal(ctx, call, 4)
+			if tt.lastKind != nil && (res.Failure == nil || res.Failure.Kind != *tt.lastKind) {
+				t.Fatalf("last failure = %+v, want kind %v", res.Failure, *tt.lastKind)
+			}
+			if res.HandedOff != tt.want {
+				t.Errorf("HandedOff = %v, want %v (failure %v, ctxErr %v, tries %d)", res.HandedOff, tt.want, res.Failure, res.CtxErr, res.TriesUsed)
 			}
 		})
 	}
