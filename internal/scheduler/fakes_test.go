@@ -34,10 +34,13 @@ type fakeStore struct {
 	hbBlock        chan struct{} // non-nil: Heartbeat parks until it is closed, whatever its ctx says
 	heartbeatPanic bool          // Heartbeat panics, after it releases the lock
 	claimPanic     bool          // ClaimDue panics
+	claimBlock     chan struct{} // non-nil: ClaimDue claims, then parks until it is closed
+	claimedTokens  []uuid.UUID   // every claim token ClaimDue handed out
 	heartbeats     int
 	hbFailures     int
 	giveBacks      [][]uuid.UUID
 	retired        int
+	retireErr      error
 	sweptOwners    []time.Duration
 	sweptMarks     int
 	outcomeErrs    []error // returned in order by RecordAttempt and Fail
@@ -101,24 +104,37 @@ func (f *fakeStore) failsRecorded() []spi.Failure {
 }
 
 func (f *fakeStore) ClaimDue(_ context.Context, req spi.ClaimRequest) ([]spi.ScheduledTask, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.claimReqs = append(f.claimReqs, req)
-	if f.claimPanic {
-		panic("injected panic in a claim")
+	out, block, err := func() ([]spi.ScheduledTask, chan struct{}, error) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.claimReqs = append(f.claimReqs, req)
+		if f.claimPanic {
+			panic("injected panic in a claim")
+		}
+		n := min(req.Limit, len(f.due))
+		out := make([]spi.ScheduledTask, 0, n)
+		for _, t := range f.due[:n] {
+			t.Status = spi.ScheduledTaskRunning
+			t.Claim = &spi.TaskClaim{Token: uuid.New(), Owner: req.Owner}
+			f.claimedTokens = append(f.claimedTokens, t.Claim.Token)
+			out = append(out, t)
+		}
+		f.due = f.due[n:]
+		return out, f.claimBlock, f.claimErr
+	}()
+	if block != nil {
+		<-block
 	}
-	n := min(req.Limit, len(f.due))
-	out := make([]spi.ScheduledTask, 0, n)
-	for _, t := range f.due[:n] {
-		t.Status = spi.ScheduledTaskRunning
-		t.Claim = &spi.TaskClaim{Token: uuid.New(), Owner: req.Owner}
-		out = append(out, t)
-	}
-	f.due = f.due[n:]
-	if f.claimErr != nil {
-		return nil, f.claimErr
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
+}
+
+func (f *fakeStore) claimed() []uuid.UUID {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.claimedTokens)
 }
 
 func (f *fakeStore) Heartbeat(context.Context, uuid.UUID) error {
@@ -153,7 +169,7 @@ func (f *fakeStore) RetireOwner(context.Context, uuid.UUID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.retired++
-	return nil
+	return f.retireErr
 }
 
 func (f *fakeStore) SweepOwners(_ context.Context, deadFor time.Duration) error {
@@ -271,6 +287,8 @@ func newHarness(t *testing.T, cfg Config, firer Firer) *harness {
 	// The test configs use a short STALE_AFTER that no watchdog window could be
 	// derived from; tests that exercise the watchdog set their own.
 	svc.window = time.Minute
+	// Step 4 waits CommitBudget + 15s past the longest callout in production.
+	svc.stepFourMargin = 100 * time.Millisecond
 	return &harness{svc: svc, fs: fs, flag: flag, mem: mem}
 }
 

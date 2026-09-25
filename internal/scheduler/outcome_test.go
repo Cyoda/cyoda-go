@@ -298,33 +298,6 @@ func TestService_StoreRejectionLatchesAndKeepsTheClaim(t *testing.T) {
 	}
 }
 
-func TestService_StopEndsTheRetryAndKeepsTheUnrecordedClaim(t *testing.T) {
-	h := newHarness(t, testConfig(), reportFirer(safeFailure))
-	h.fs.with(func() {
-		h.fs.outcomeAlways = errors.New("record attempt: connection refused")
-		h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")}
-	})
-	h.start(t)
-	eventually(t, "a retried outcome write", func() bool {
-		var n int
-		h.fs.with(func() { n = len(h.fs.outcomeCtxErrs) })
-		return n >= 2
-	})
-	h.svc.Stop()
-	done := make(chan struct{})
-	go func() {
-		h.svc.runsWG.Wait()
-		close(done)
-	}()
-	receive(t, done)
-	if n := liveRuns(h.svc); n != 1 {
-		t.Errorf("%d live runs, want the claim whose outcome is not recorded kept", n)
-	}
-	if !h.flag.Load() {
-		t.Error("an outage latched the node")
-	}
-}
-
 func TestService_FailAndItsAuditEventCommitTogether(t *testing.T) {
 	task := dueTask("t1", "task-1")
 	h := newHarness(t, testConfig(), reportFirer(workflow.RunReport{

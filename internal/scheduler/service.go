@@ -56,6 +56,9 @@ const sweepInterval = time.Minute
 // is kept.
 const ownerSweepFactor = 10
 
+// shutdownTail is the part of the step-4 bound after the commit budget.
+const shutdownTail = 15 * time.Second
+
 // warnEvery rate-limits the WARN line of a retried outcome write, per run.
 const warnEvery = time.Minute
 
@@ -95,8 +98,11 @@ type Service struct {
 	incarnation uuid.UUID
 	window      time.Duration // W
 	sweepEvery  time.Duration
-	m           *metrics
-	store       spi.ScheduledTaskStore
+	// stepFourMargin is the part of the step-4 bound past the longest
+	// callout in flight: CommitBudget + 15s.
+	stepFourMargin time.Duration
+	m              *metrics
+	store          spi.ScheduledTaskStore
 
 	mu           sync.Mutex
 	started      bool
@@ -122,28 +128,29 @@ type Service struct {
 
 	startOnce sync.Once
 	startErr  error // the first Start's error, returned by every later call
-	stopOnce  sync.Once
+	drainOnce sync.Once
 }
 
 // New builds a service. Start begins claiming.
 func New(cfg Config, deps Deps) *Service {
 	return &Service{
-		cfg:         cfg,
-		deps:        deps,
-		incarnation: uuid.New(),
-		window:      watchdogWindow(cfg.StaleAfter),
-		sweepEvery:  sweepInterval,
-		runs:        make(map[uuid.UUID]*liveRun),
-		perTenant:   make(map[spi.TenantID]int),
-		slotFreed:   make(chan struct{}, 1),
-		drainingCh:  make(chan struct{}),
-		stopLoop:    make(chan struct{}),
-		loopDone:    make(chan struct{}),
-		stopHB:      make(chan struct{}),
-		hbDone:      make(chan struct{}),
-		wdDone:      make(chan struct{}),
-		wdArm:       make(chan time.Time, 1),
-		stopBooks:   make(chan struct{}),
+		cfg:            cfg,
+		deps:           deps,
+		incarnation:    uuid.New(),
+		window:         watchdogWindow(cfg.StaleAfter),
+		sweepEvery:     sweepInterval,
+		stepFourMargin: common.CommitBudget + shutdownTail,
+		runs:           make(map[uuid.UUID]*liveRun),
+		perTenant:      make(map[spi.TenantID]int),
+		slotFreed:      make(chan struct{}, 1),
+		drainingCh:     make(chan struct{}),
+		stopLoop:       make(chan struct{}),
+		loopDone:       make(chan struct{}),
+		stopHB:         make(chan struct{}),
+		hbDone:         make(chan struct{}),
+		wdDone:         make(chan struct{}),
+		wdArm:          make(chan time.Time, 1),
+		stopBooks:      make(chan struct{}),
 	}
 }
 
@@ -183,25 +190,139 @@ func (s *Service) start(ctx context.Context) error {
 	return nil
 }
 
-// Stop stops the claim loop, the heartbeat and the watchdog.
-func (s *Service) Stop() {
-	s.stopOnce.Do(func() {
-		if !s.isStarted() {
-			return
-		}
-		close(s.stopBooks)
-		close(s.stopLoop)
-		<-s.loopDone
-		close(s.stopHB)
-		<-s.hbDone
-		<-s.wdDone
-	})
+// Stop drains with no outside deadline. App.Shutdown calls it after the
+// servers stop, which is the path when a server failed; after a Drain it does
+// nothing.
+func (s *Service) Stop() { s.Drain(context.Background()) }
+
+// Drain runs shutdown steps 1-5 (spec §6.4). ctx ends the waits of steps 2
+// and 4 early. Only the first call does anything.
+func (s *Service) Drain(ctx context.Context) {
+	s.drainOnce.Do(func() { s.drain(ctx) })
 }
 
-func (s *Service) isStarted() bool {
+func (s *Service) drain(ctx context.Context) {
+	started := func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if !s.started {
+			return false
+		}
+		// Step 1: stop claiming. From here no run starts a new unsafe
+		// dispatch. NoNewUnsafe closes here, before steps 3 and 4 read any
+		// run's Unsafe record, in program order on this goroutine: the engine
+		// counts an unsafe dispatch before it checks NoNewUnsafe, and only
+		// this order makes those reads miss no dispatch that goes ahead.
+		s.draining = true
+		close(s.drainingCh)
+		return true
+	}()
+	if !started {
+		return
+	}
+	// A loop that panicked has already exited; nothing below needs it.
+	close(s.stopLoop)
+	<-s.loopDone
+
+	// Step 2: wait for the runs while the streams and callback routes are open.
+	if !s.waitRuns(ctx, s.cfg.ShutdownDrain) {
+		// Step 3: cancel every run without an unsafe callout in flight.
+		s.cutRuns()
+		// Step 4: wait for every run to record its outcome.
+		s.waitRuns(ctx, s.stepFourBound())
+	}
+	close(s.stopBooks)
+
+	// Step 5: give back the claims whose run ended without a recorded outcome,
+	// stop the heartbeat, and retire the owner if nothing still holds a claim.
+	keep := s.finalKeep()
+	gctx, cancel := context.WithTimeout(context.Background(), storeCallBudget)
+	if n, err := s.store.GiveBackIdle(gctx, s.incarnation, keep); err != nil {
+		slog.Warn("scheduler could not give back its claims at shutdown", "pkg", "scheduler", "err", err)
+	} else if n > 0 {
+		slog.Info("scheduler gave back claims at shutdown", "pkg", "scheduler", "count", n)
+	}
+	cancel()
+	close(s.stopHB)
+	<-s.hbDone
+	<-s.wdDone
+	if len(keep) > 0 {
+		slog.Warn("scheduler stopped with runs still holding their tasks; another node takes them over after CYODA_SCHEDULER_STALE_AFTER",
+			"pkg", "scheduler", "runs", len(keep))
+		return
+	}
+	rctx, cancel := context.WithTimeout(context.Background(), storeCallBudget)
+	defer cancel()
+	if err := s.store.RetireOwner(rctx, s.incarnation); err != nil {
+		slog.Warn("scheduler could not retire its liveness record", "pkg", "scheduler", "err", err)
+	}
+}
+
+// waitRuns waits up to d for every run goroutine to end, bookkeeping included.
+// No run is registered after step 1, so the WaitGroup only counts down.
+func (s *Service) waitRuns(ctx context.Context, d time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		s.runsWG.Wait()
+		close(done)
+	}()
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// cutRuns is step 3: a run whose unsafe callout is in flight is left alone
+// (spec §6.4). A run already cancelled keeps the reason it was cancelled for.
+// Cancelling a run whose fire has returned changes nothing: its bookkeeping
+// runs without the run's cancellation.
+func (s *Service) cutRuns() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.started
+	for _, r := range s.runs {
+		if _, inFlight := r.unsafe.Since(); inFlight {
+			continue
+		}
+		if r.reason == notCancelled {
+			r.reason = shutdownCancelled
+		}
+		r.cancel()
+	}
+}
+
+// stepFourBound is the longest remaining callout deadline + CommitBudget + 15s.
+func (s *Service) stepFourBound() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var longest time.Duration
+	for _, r := range s.runs {
+		if since, inFlight := r.unsafe.Since(); inFlight {
+			longest = max(longest, s.deps.CalloutDeadlineMax-time.Since(since))
+		}
+	}
+	return longest + s.stepFourMargin
+}
+
+// finalKeep releases every run that ended without a recorded outcome and
+// returns the claims that must stay: runs still live, and kept runs.
+func (s *Service) finalKeep() []uuid.UUID {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	keep := make([]uuid.UUID, 0, len(s.runs))
+	for token, r := range s.runs {
+		if !r.ended || r.keep {
+			keep = append(keep, token)
+			continue
+		}
+		s.releaseLocked(r)
+	}
+	return keep
 }
 
 // --- liveness ---------------------------------------------------------------
