@@ -21,6 +21,11 @@ import (
 //     before T is flushed or committed, and the answer crosses back.
 //   - The processor records the answer and succeeds, so node 1 commits T: the
 //     primary reaches ACTIVE, and the refused secondary is stored nowhere.
+//
+// The COMMIT_BEFORE_DISPATCH processor carries a tag no compute member serves:
+// the refusal comes before any dispatch, so when it holds the tag never
+// matters, and when it does not, the dispatch fails at once instead of waiting
+// on the compute test client, which serves one callout at a time.
 
 func init() {
 	Register(
@@ -40,7 +45,7 @@ func cbRouteCommitBeforeDispatchWorkflow(wfName string) string {
 					"name": "store", "next": "STORED", "manual": false,
 					"processors": []any{map[string]any{
 						"type": "calculator", "name": "noop", "executionMode": "COMMIT_BEFORE_DISPATCH",
-						"config": map[string]any{"attachEntity": true, "calculationNodesTags": computeMemberTag},
+						"config": map[string]any{"attachEntity": true, "calculationNodesTags": "cbjc-fwdhop-no-member-serves-this"},
 					}},
 				}}},
 				"STORED": map[string]any{},

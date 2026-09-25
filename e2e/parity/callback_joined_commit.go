@@ -24,10 +24,19 @@ import (
 //     committed it, the owner's commit would fail.
 //   - The refused secondary is not stored: had its COMMIT_BEFORE_DISPATCH run,
 //     the secondary would have been flushed and committed with T.
+//
+// The COMMIT_BEFORE_DISPATCH processor carries a tag no compute member serves.
+// The refusal comes before any dispatch, so the tag never matters when the
+// refusal holds; when it does not, the segment commits T and the dispatch then
+// fails at once for want of a member — rather than waiting on the compute test
+// client, which serves one callout at a time and is busy with the outer one.
 
 // cbJoinedCommitSample declares exactly the fields cb-create-secondary-record
 // writes back, at zero value.
 const cbJoinedCommitSample = `{"name":"Test","amount":10,"status":"new","tokenWasEmpty":false,"hopStatus":0,"hopBody":""}`
+
+// cbNoMemberTag is served by no compute member (see the file comment).
+const cbNoMemberTag = "cbjc-no-member-serves-this"
 
 // cbCommitBeforeDispatchWorkflow gives the secondary model a
 // COMMIT_BEFORE_DISPATCH processor on its create's automated transition.
@@ -37,7 +46,7 @@ func cbCommitBeforeDispatchWorkflow(wfName string, startNewTx bool) string {
 			"name": "store", "next": "STORED", "manual": false,
 			"processors": []any{map[string]any{
 				"type": "calculator", "name": "noop", "executionMode": "COMMIT_BEFORE_DISPATCH",
-				"config": map[string]any{"attachEntity": true, "calculationNodesTags": "", "startNewTxOnDispatch": startNewTx},
+				"config": map[string]any{"attachEntity": true, "calculationNodesTags": cbNoMemberTag, "startNewTxOnDispatch": startNewTx},
 			}},
 		}}},
 		"STORED": map[string]any{},
