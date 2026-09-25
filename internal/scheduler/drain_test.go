@@ -284,8 +284,6 @@ func TestDrain_ItsContextEndsTheWaitsEarly(t *testing.T) {
 	}
 }
 
-
-
 // After a panic in the claim loop, the loop is gone; step 5's give-back and
 // the retire still run.
 func TestDrain_AfterALoopPanicTheFinalGiveBackStillRuns(t *testing.T) {
@@ -353,7 +351,6 @@ func TestDrain_ARunWhoseOutcomeTheStoreRejectedIsNotGivenBack(t *testing.T) {
 	assertKeptAtShutdown(t, h, token)
 }
 
-
 func assertKeptAtShutdown(t *testing.T, h *harness, token uuid.UUID) {
 	t.Helper()
 	if keep, ok := h.fs.lastGiveBack(); !ok || !slices.Contains(keep, token) {
@@ -365,7 +362,6 @@ func assertKeptAtShutdown(t *testing.T, h *harness, token uuid.UUID) {
 		}
 	})
 }
-
 
 // A run cancelled by the latch during the drain is recorded as the latch
 // cancelled it: a counted attempt, not an uncounted shutdown cut. Step 3
@@ -406,5 +402,90 @@ func TestDrain_ARetireFailureIsLogged(t *testing.T) {
 	lines := logRecords(t, logs.String(), "scheduler could not retire its liveness record")
 	if len(lines) != 1 || lines[0]["level"] != "WARN" {
 		t.Errorf("retire lines = %v, want one WARN", lines)
+	}
+}
+
+func draining(s *Service) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.draining
+}
+
+// A claim in flight when step 1 closes is not started: it never ran, so it
+// goes back uncounted, and no run is registered while the drain waits.
+func TestDrain_AClaimInFlightAtStepOneIsGivenBackWithoutRunning(t *testing.T) {
+	var fires atomic.Int32
+	h := newHarness(t, drainConfig(), firerFunc(func(context.Context, spi.ScheduledTask, int, time.Duration) workflow.RunReport {
+		fires.Add(1)
+		return fired
+	}))
+	block := make(chan struct{})
+	h.fs.with(func() {
+		h.fs.claimBlock = block
+		h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")}
+	})
+	h.start(t)
+	eventually(t, "a claim in flight", func() bool { return len(h.fs.claimed()) == 1 })
+
+	done := drainAsync(context.Background(), h)
+	eventually(t, "the drain began", func() bool { return draining(h.svc) })
+	close(block)
+	receive(t, done)
+
+	token := h.fs.claimed()[0]
+	if n := fires.Load(); n != 0 {
+		t.Errorf("%d runs fired for a claim that returned after step 1", n)
+	}
+	if a, f := len(h.fs.attemptsRecorded()), len(h.fs.failsRecorded()); a+f != 0 {
+		t.Errorf("a claim that never ran wrote %d attempts and %d failures", a, f)
+	}
+	if keep, ok := h.fs.lastGiveBack(); !ok || slices.Contains(keep, token) {
+		t.Errorf("the final give-back kept %v; a claim that never ran is given back", keep)
+	}
+	if n := liveRuns(h.svc); n != 0 {
+		t.Errorf("%d live runs, want none", n)
+	}
+	h.fs.with(func() {
+		if h.fs.retired != 1 {
+			t.Errorf("RetireOwner calls = %d, want 1", h.fs.retired)
+		}
+	})
+}
+
+// A claim in flight when the node latches is not started either: it goes back
+// uncounted at once, also when failing heartbeats stop the ticks that would
+// otherwise give it back.
+func TestService_AClaimInFlightWhenTheNodeLatchesIsGivenBackWithoutRunning(t *testing.T) {
+	var fires atomic.Int32
+	h := newHarness(t, testConfig(), firerFunc(func(context.Context, spi.ScheduledTask, int, time.Duration) workflow.RunReport {
+		fires.Add(1)
+		return fired
+	}))
+	block := make(chan struct{})
+	h.fs.with(func() {
+		h.fs.claimBlock = block
+		h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")}
+	})
+	h.start(t)
+	eventually(t, "a claim in flight", func() bool { return len(h.fs.claimed()) == 1 })
+	h.svc.latch()
+	h.fs.with(func() { h.fs.hbErr = errors.New("heartbeat: connection refused") })
+	eventually(t, "unhealthy", func() bool { return !h.svc.isHealthy() })
+	from := len(h.fs.giveBackCalls())
+	close(block)
+
+	token := h.fs.claimed()[0]
+	eventually(t, "a give-back after the claim returned", func() bool { return len(h.fs.giveBackCalls()) > from })
+	if keep := h.fs.giveBackCalls()[from]; slices.Contains(keep, token) {
+		t.Errorf("the give-back kept %v; a claim that never ran is given back", keep)
+	}
+	if n := fires.Load(); n != 0 {
+		t.Errorf("%d runs fired for a claim that returned after the latch", n)
+	}
+	if a, f := len(h.fs.attemptsRecorded()), len(h.fs.failsRecorded()); a+f != 0 {
+		t.Errorf("a claim that never ran wrote %d attempts and %d failures", a, f)
+	}
+	if n := liveRuns(h.svc); n != 0 {
+		t.Errorf("%d live runs, want none", n)
 	}
 }

@@ -73,7 +73,8 @@ func TestService_OneFailedHeartbeatDuringAClaimDoesNotCancelItsRuns(t *testing.T
 	eventually(t, "a failed heartbeat", func() bool { return h.fs.heartbeatFailures() >= 1 })
 
 	h.svc.heartbeatDone(time.Now(), errors.New("heartbeat: connection refused"))
-	for _, r := range h.svc.register([]spi.ScheduledTask{claimedTask(h, "t1", "task-1")}, 1) {
+	runs, _ := h.svc.register([]spi.ScheduledTask{claimedTask(h, "t1", "task-1")}, 1)
+	for _, r := range runs {
 		go h.svc.run(r)
 	}
 	eventually(t, "the run released", func() bool { return liveRuns(h.svc) == 0 })
@@ -94,7 +95,8 @@ func TestService_ClaimReplyAfterTheWatchdogFiredIsSelfCancelled(t *testing.T) {
 	eventually(t, "a failed heartbeat", func() bool { return h.fs.heartbeatFailures() >= 1 })
 	time.Sleep(2 * h.svc.window) // past the last in-time heartbeat's deadline
 
-	for _, r := range h.svc.register([]spi.ScheduledTask{claimedTask(h, "t1", "task-1")}, 1) {
+	runs, _ := h.svc.register([]spi.ScheduledTask{claimedTask(h, "t1", "task-1")}, 1)
+	for _, r := range runs {
 		go h.svc.run(r)
 	}
 	eventually(t, "the run's attempt", func() bool { return len(h.fs.attemptsRecorded()) == 1 })

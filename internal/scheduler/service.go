@@ -503,9 +503,13 @@ func (s *Service) claim() {
 		slog.Warn("scheduler claim failed", "pkg", "scheduler", "err", err)
 		return
 	}
-	for _, r := range s.register(tasks, free) {
+	runs, refused := s.register(tasks, free)
+	for _, r := range runs {
 		s.m.claimed(claimReason(r.task))
 		go s.run(r)
+	}
+	if refused {
+		s.giveBackIdle()
 	}
 }
 
@@ -539,15 +543,22 @@ func (s *Service) claimRequest() (req spi.ClaimRequest, free int, ok bool) {
 
 // register adds every claimed task to the set of live runs. The loop calls it
 // before anything else runs on its goroutine, the next give-back included.
-func (s *Service) register(tasks []spi.ScheduledTask, free int) []*liveRun {
+// A claim that returns after the node latched or began to drain is not
+// started: it never ran, so it is refused, and the give-back that follows
+// returns it uncounted. So no run is registered once shutdown step 1 has
+// closed.
+func (s *Service) register(tasks []spi.ScheduledTask, free int) (runs []*liveRun, refused bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.latched || s.draining {
+		return nil, len(tasks) > 0
+	}
 	s.filled = len(tasks) >= free
-	runs := make([]*liveRun, 0, len(tasks))
+	runs = make([]*liveRun, 0, len(tasks))
 	for _, t := range tasks {
 		runs = append(runs, s.registerLocked(t))
 	}
-	return runs
+	return runs, false
 }
 
 func (s *Service) registerLocked(t spi.ScheduledTask) *liveRun {
@@ -563,11 +574,7 @@ func (s *Service) registerLocked(t spi.ScheduledTask) *liveRun {
 	s.perTenant[t.TenantID]++
 	s.runsWG.Add(1)
 	s.m.runStarted()
-	switch {
-	case s.latched:
-		r.reason = latchCancelled
-		cancel()
-	case !time.Now().Before(s.wdDeadline):
+	if !time.Now().Before(s.wdDeadline) {
 		// The watchdog's deadline passed while the claim was in flight.
 		// A heartbeat that merely failed meanwhile does not cancel: one
 		// failed heartbeat never self-cancels.
