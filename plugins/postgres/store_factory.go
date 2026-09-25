@@ -175,8 +175,9 @@ func (f *StoreFactory) querier() Querier {
 // Not joining is exactly what makes a submit issued INSIDE a transaction hold
 // two connections at once, so the acquire is bounded on that path — the shared
 // mechanism in unjoinedQuerier, the same one every point-in-time read takes.
-// Outside a transaction (the reaper, the heartbeat, the job goroutine's own
-// writes) it is the plain unbounded pool, unchanged.
+// Outside a transaction (the reaper, the job goroutine's own writes) it is the
+// plain unbounded pool. The heartbeat and the claim are not here: they run on
+// the scheduler pool.
 func (f *StoreFactory) poolQuerier() Querier {
 	return unjoinedQuerier{pool: f.pool, acquireTimeout: f.cfg.AcquireTimeout, what: "async search job"}
 }
@@ -265,6 +266,7 @@ func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore
 	// context.Background() (no tenant). ReapExpired also runs without tenant context.
 	return &asyncSearchStore{
 		q:                      f.poolQuerier(),
+		sched:                  f.schedulerQuerier("async search liveness"),
 		pool:                   f.pool,
 		acquireTimeout:         f.cfg.AcquireTimeout,
 		searchStatementTimeout: f.cfg.SearchStatementTimeout,

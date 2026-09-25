@@ -26,6 +26,12 @@ type asyncSearchStore struct {
 	// transaction bounds its connection acquire — it holds two at once.
 	q Querier
 
+	// sched carries the executor's liveness statements, Heartbeat and
+	// ClaimStale, on the scheduler pool (scheduler_pool.go), so a main pool
+	// exhausted by entity transactions cannot starve them. Like q, it never
+	// joins a transaction on ctx.
+	sched Querier
+
 	// pool is kept for the operations Querier does not carry: SaveResults
 	// opens a per-chunk transaction on it (Begin) and streams the chunk
 	// through it (CopyFrom) so the fence check and the write are atomic.
@@ -204,13 +210,15 @@ func (s *asyncSearchStore) UpdateJobStatus(ctx context.Context, jobID string, ep
 // database's own clock. ClaimStale's staleness comparison uses the same
 // server-side now() — same clock domain, no host/DB skew between the stamp
 // and the read that later judges it stale.
+//
+// It runs on the scheduler pool (see the sched field).
 func (s *asyncSearchStore) Heartbeat(ctx context.Context, jobID string, epoch int64) error {
 	tid, err := s.tenant(ctx)
 	if err != nil {
 		return err
 	}
 
-	tag, err := s.q.Exec(ctx,
+	tag, err := s.sched.Exec(ctx,
 		`UPDATE search_jobs SET heartbeat_time = now()
 		 WHERE id = $1 AND tenant_id = $2 AND epoch = $3
 		   AND status NOT IN ('SUCCESSFUL', 'FAILED', 'CANCELLED')`,
@@ -219,7 +227,7 @@ func (s *asyncSearchStore) Heartbeat(ctx context.Context, jobID string, epoch in
 		return fmt.Errorf("failed to heartbeat search job %s: %w", jobID, err)
 	}
 	if tag.RowsAffected() == 0 {
-		return s.probeFenced(ctx, s.q, jobID, tid, epoch, false)
+		return s.probeFenced(ctx, s.sched, jobID, tid, epoch, false)
 	}
 	return nil
 }
@@ -556,6 +564,8 @@ func (s *asyncSearchStore) ReapExpired(ctx context.Context, ttl time.Duration) (
 // parses. The comparison and the heartbeat stamp both use the database's own
 // now() — the same clock domain, per the Heartbeat doc comment — so a
 // concurrent claim can never race the stamp it is judged against.
+//
+// It runs on the scheduler pool (see the sched field).
 func (s *asyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Duration, limit int) ([]*spi.SearchJob, error) {
 	// "Up to limit jobs" has no meaning below 1. Rejected here rather than
 	// left to the server (which answers a negative LIMIT with a raw
@@ -567,7 +577,7 @@ func (s *asyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 		return nil, fmt.Errorf("claim stale search jobs: limit must be >= 1, got %d", limit)
 	}
 
-	rows, err := s.q.Query(ctx,
+	rows, err := s.sched.Query(ctx,
 		`WITH claimed AS (
 		   SELECT tenant_id, id, released FROM search_jobs
 		   WHERE status = 'RUNNING'

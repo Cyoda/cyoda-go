@@ -56,7 +56,7 @@ import (
 // before. It holds no other connection, so it is not hold-and-wait and there is
 // no deadlock to break; bounding it would convert ordinary contention on a busy
 // server into spurious failures — and the job store's own background traffic
-// (the reaper, the heartbeat, the job goroutine's terminal write) is all on that
+// (the reaper, the job goroutine's terminal write) is all on that
 // path. The gate is the caller's context alone (spi.GetTransaction) rather than
 // whether the transaction is still live: a transaction the manager has already
 // lost holds no connection, but bounding that case too costs nothing and keeps
