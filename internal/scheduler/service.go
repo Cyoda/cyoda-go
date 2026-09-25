@@ -651,10 +651,10 @@ func (s *Service) run(r *liveRun) {
 
 // recoverBookkeeping recovers a panic in a run's bookkeeping, and latches the
 // node. The outcome is not known to be recorded, so the claim is kept for
-// good: it stays in the live set, because finish, the only place that
-// releases it, did not run. A transaction the panic interrupted is rolled
-// back by its own deferred rollback. Deferred directly, so recover sees the
-// panic.
+// good: it stays in the live set, because finish did not run, and it is
+// marked kept, so shutdown step 5 does not give it back either (§6.5). A
+// transaction the panic interrupted is rolled back by its own deferred
+// rollback. Deferred directly, so recover sees the panic.
 func (s *Service) recoverBookkeeping(r *liveRun, start time.Time) {
 	v := recover()
 	if v == nil {
@@ -664,6 +664,7 @@ func (s *Service) recoverBookkeeping(r *liveRun, start time.Time) {
 	slog.Error("scheduled run bookkeeping panicked; node latched", "pkg", "scheduler",
 		"taskId", r.task.ID, "tenant", string(r.task.TenantID), "ticket", ticket.String(),
 		"err", fmt.Errorf("panic: %v", v), "stack", string(debug.Stack()))
+	s.keepRun(r)
 	s.latchAndCancel()
 	s.m.runEnded(outcomePanicked, time.Since(start))
 }

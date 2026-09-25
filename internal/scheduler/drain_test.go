@@ -351,6 +351,27 @@ func TestDrain_ARunWhoseOutcomeTheStoreRejectedIsNotGivenBack(t *testing.T) {
 	assertKeptAtShutdown(t, h, token)
 }
 
+// A run whose bookkeeping panicked is never given back, also at shutdown
+// (§6.5): its outcome is not known to be recorded.
+func TestDrain_ARunWhoseBookkeepingPanickedIsNotGivenBack(t *testing.T) {
+	tokens := make(chan uuid.UUID, 1)
+	h := newHarness(t, drainConfig(), firerFunc(func(_ context.Context, task spi.ScheduledTask, _ int, _ time.Duration) workflow.RunReport {
+		tokens <- task.Claim.Token
+		return safeFailure
+	}))
+	runs := withRunMetrics(t, h)
+	h.fs.with(func() {
+		h.fs.outcomePanic = true
+		h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")}
+	})
+	h.start(t)
+	token := receive(t, tokens)
+	eventually(t, "the run ended as panicked", func() bool { return runs()[outcomePanicked] == 1 })
+
+	h.svc.Drain(context.Background())
+	assertKeptAtShutdown(t, h, token)
+}
+
 func assertKeptAtShutdown(t *testing.T, h *harness, token uuid.UUID) {
 	t.Helper()
 	if keep, ok := h.fs.lastGiveBack(); !ok || !slices.Contains(keep, token) {
