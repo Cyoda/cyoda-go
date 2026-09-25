@@ -162,6 +162,25 @@ is unaffected either way: `delayMs > 0` was already how import distinguishes
 were always equivalent on that path. No `CurrentSchemaVersion` or
 `SupportedSchemaRanges` change.
 
+### `schedule.timeoutMs` / `schedule.delayMs` published minimums enforced at import (v0.9.0)
+
+`schedule.timeoutMs` (published `minimum: 0`) and `schedule.delayMs`
+(published `minimum: 1`) are now rejected at import (`400
+VALIDATION_FAILED`) when they violate those minimums, instead of being
+silently accepted. A negative `timeoutMs` was accepted outright — no check
+existed. A negative `delayMs` alongside a `function` was accepted and
+silently ignored: the delayMs/function XOR check reads any non-positive
+`delayMs` as "absent", so it saw only the function and passed. A negative
+`delayMs` with no `function` was, and remains, already rejected by that same
+XOR check, as the "neither present" shape.
+
+This is the §"When NOT to bump" "bug-fixing a validator that was already
+supposed to reject something" case: both minimums were already published in
+`TransitionScheduleDto`, so no *valid* document's shape changes and the
+accepted-input set only shrinks to match what the schema always said it
+was — the validator was the bug. No `CurrentSchemaVersion` or
+`SupportedSchemaRanges` change.
+
 ## Required commit-/PR-time checks
 
 Before merging a schema bump:

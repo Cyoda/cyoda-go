@@ -69,7 +69,7 @@ func TestReconcile_FunctionAbsoluteFireArms(t *testing.T) {
 		t.Fatalf("ScheduledTaskStore: %v", err)
 	}
 	wantID := taskID(testTenant, "abs-fire-e1", "OPEN", "AutoClose")
-	task, found, err := sts.Get(ctx, wantID)
+	task, found, err := sts.Get(ctx, testTenant, wantID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestReconcile_FunctionRelativeFireArms(t *testing.T) {
 		t.Fatalf("ScheduledTaskStore: %v", err)
 	}
 	wantID := taskID(testTenant, "rel-fire-e1", "OPEN", "AutoClose")
-	task, found, err := sts.Get(ctx, wantID)
+	task, found, err := sts.Get(ctx, testTenant, wantID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestReconcile_FunctionExpiryStoredAsTimeoutMs(t *testing.T) {
 		t.Fatalf("ScheduledTaskStore: %v", err)
 	}
 	wantID := taskID(testTenant, "expiry-e1", "OPEN", "AutoClose")
-	task, found, err := sts.Get(ctx, wantID)
+	task, found, err := sts.Get(ctx, testTenant, wantID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestReconcile_FunctionBornExpiredCancelsAndEmitsExpire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ScheduledTaskStore: %v", err)
 	}
-	if _, found, err := sts.Get(ctx, wantID); err != nil {
+	if _, found, err := sts.Get(ctx, testTenant, wantID); err != nil {
 		t.Fatalf("Get: %v", err)
 	} else if !found {
 		t.Fatalf("expected task %q armed after first Execute", wantID)
@@ -242,7 +242,7 @@ func TestReconcile_FunctionBornExpiredCancelsAndEmitsExpire(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	if _, found, err := sts.Get(ctx, wantID); err != nil {
+	if _, found, err := sts.Get(ctx, testTenant, wantID); err != nil {
 		t.Fatalf("Get: %v", err)
 	} else if found {
 		t.Errorf("expected task %q cancelled (born expired), still present", wantID)
@@ -323,7 +323,7 @@ func TestReconcile_FunctionArmedByIsChainOriginNotFunctionResult(t *testing.T) {
 		t.Fatalf("ScheduledTaskStore: %v", err)
 	}
 	wantID := taskID(testTenant, "armedby-fn-e1", "OPEN", "AutoClose")
-	task, found, err := sts.Get(ownerCtx, wantID)
+	task, found, err := sts.Get(ownerCtx, testTenant, wantID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -372,7 +372,7 @@ func TestReconcile_FunctionDispatchFailureFailsWrite(t *testing.T) {
 		t.Fatalf("ScheduledTaskStore: %v", err)
 	}
 	wantID := taskID(testTenant, "dispatch-fail-e1", "OPEN", "AutoClose")
-	if _, found, err := sts.Get(ctx, wantID); err != nil {
+	if _, found, err := sts.Get(ctx, testTenant, wantID); err != nil {
 		t.Fatalf("Get: %v", err)
 	} else if found {
 		t.Error("dispatch failure must not arm a task")

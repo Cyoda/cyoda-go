@@ -22,6 +22,8 @@ HTTP: `500` `Internal Server Error`. Retryable: `no`.
 
 A `TransitionSchedule.function` callout must return `resultKind: "Schedule"` with a value shaped `{fireAt|fireAfterMs, expireAt?|expireAfterMs?}` — exactly one of `fireAt`/`fireAfterMs`, and at most one of `expireAt`/`expireAfterMs`. This error is raised when the compute node returns a different `resultKind`, or a `Schedule` value that is malformed: missing or duplicate fire/expiry fields, an unknown field, or a non-numeric value.
 
+It is also raised when a resolved fire or expiry time cannot be rendered as a time: a negative `fireAfterMs`/`expireAfterMs`, or a resolved `fireAt`/`fireAfterMs`/`expireAt`/`expireAfterMs` that overflows or falls outside `0`..`253402300799999` ms (the Unix epoch through `9999-12-31T23:59:59.999Z`, the last instant an RFC 3339 timestamp can express).
+
 A `fireAt` in the past is not an error — the transition is armed to fire immediately. Only a resolved expiry at or before the resolved fire time is treated as a distinct outcome (the arm is skipped and any prior scheduling for the transition is cancelled), not as this error.
 
 The failure is in the compute node's implementation, not the caller's request — the entity write that triggered arming is rejected so no state change commits against an unschedulable transition. Fix the Function's response shape; do not retry until it is corrected.

@@ -522,11 +522,13 @@ func TestExecuteUsesCallerTxID(t *testing.T) {
 	}
 
 	// All SM audit events must be findable by the entity-write txID.
-	auditStore, err := factory.StateMachineAuditStore(ctx)
+	// Read through the engine's transaction: it is still open, and its
+	// audit events are visible only inside it until it commits.
+	auditStore, err := factory.StateMachineAuditStore(txCtx)
 	if err != nil {
 		t.Fatalf("StateMachineAuditStore: %v", err)
 	}
-	events, err := auditStore.GetEventsByTransaction(ctx, "txid-e1", txID)
+	events, err := auditStore.GetEventsByTransaction(txCtx, "txid-e1", txID)
 	if err != nil {
 		t.Fatalf("GetEventsByTransaction: %v", err)
 	}
@@ -585,11 +587,13 @@ func TestManualTransitionUsesCallerTxID(t *testing.T) {
 		t.Fatalf("ManualTransition: %v", err)
 	}
 
-	auditStore, err := factory.StateMachineAuditStore(ctx)
+	// Read through the engine's transaction: it is still open, and its
+	// audit events are visible only inside it until it commits.
+	auditStore, err := factory.StateMachineAuditStore(txCtx)
 	if err != nil {
 		t.Fatalf("StateMachineAuditStore: %v", err)
 	}
-	events, err := auditStore.GetEventsByTransaction(ctx, "mt-txid-e1", txID)
+	events, err := auditStore.GetEventsByTransaction(txCtx, "mt-txid-e1", txID)
 	if err != nil {
 		t.Fatalf("GetEventsByTransaction: %v", err)
 	}
@@ -647,11 +651,13 @@ func TestLoopbackUsesCallerTxID(t *testing.T) {
 		t.Fatalf("Loopback: %v", err)
 	}
 
-	auditStore, err := factory.StateMachineAuditStore(ctx)
+	// Read through the engine's transaction: it is still open, and its
+	// audit events are visible only inside it until it commits.
+	auditStore, err := factory.StateMachineAuditStore(txCtx)
 	if err != nil {
 		t.Fatalf("StateMachineAuditStore: %v", err)
 	}
-	events, err := auditStore.GetEventsByTransaction(ctx, "lb-txid-e1", txID)
+	events, err := auditStore.GetEventsByTransaction(txCtx, "lb-txid-e1", txID)
 	if err != nil {
 		t.Fatalf("GetEventsByTransaction: %v", err)
 	}
@@ -2917,7 +2923,8 @@ func TestEngine_CommitBeforeDispatch_AuditEventPlacement(t *testing.T) {
 		Data: []byte(`{"x":1}`),
 	}
 
-	if _, err := engine.Execute(txCtx, entity, ""); err != nil {
+	result, err := engine.Execute(txCtx, entity, "")
+	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
 
@@ -2960,24 +2967,17 @@ func TestEngine_CommitBeforeDispatch_AuditEventPlacement(t *testing.T) {
 	}
 
 	// --- Assertion 4: after the cascade returns, BOTH bracketing events
-	// are present with the cascade-entry txID label. We read via the
-	// engine-discarded txCtx — which still owns its (unstaffed) tx token,
-	// but the in-memory audit store is non-transactional so it sees
-	// everything recorded so far. This is sufficient to assert labelling;
-	// the durable-read variant of this assertion lands once Task 13
-	// commits TX_post end-to-end.
+	// are present with the cascade-entry txID label. SMEventStateProcessResult
+	// is recorded in TX_post, which is still open when Execute returns, so
+	// the read goes through the engine's final context: audit events are
+	// bound to their transaction and visible only inside it until it
+	// commits. SMEventProcessingPaused committed with TX_pre.
 	auditAfter, err := func() ([]spi.StateMachineEvent, error) {
-		rCtx := ctxWithTenant(testTenant)
-		rTxID, rTxCtx, bErr := txMgr.Begin(rCtx)
-		if bErr != nil {
-			return nil, bErr
-		}
-		defer func() { _ = txMgr.Rollback(rTxCtx, rTxID) }()
-		as, asErr := factory.StateMachineAuditStore(rTxCtx)
+		as, asErr := factory.StateMachineAuditStore(result.FinalCtx)
 		if asErr != nil {
 			return nil, asErr
 		}
-		return as.GetEvents(rTxCtx, entity.Meta.ID)
+		return as.GetEvents(result.FinalCtx, entity.Meta.ID)
 	}()
 	if err != nil {
 		t.Fatalf("post-cascade audit read: %v", err)
@@ -3404,11 +3404,13 @@ func TestEngine_AutomatedCriterionNoMatch_RecordsReason(t *testing.T) {
 		t.Errorf("expected entity to stay in CREATED (criterion did not match), got %q", entity.Meta.State)
 	}
 
-	auditStore, err := factory.StateMachineAuditStore(ctx)
+	// Read through the engine's transaction: it is still open, and its
+	// audit events are visible only inside it until it commits.
+	auditStore, err := factory.StateMachineAuditStore(txCtx)
 	if err != nil {
 		t.Fatalf("StateMachineAuditStore: %v", err)
 	}
-	events, err := auditStore.GetEventsByTransaction(ctx, "auto-crit-reason-e1", txID)
+	events, err := auditStore.GetEventsByTransaction(txCtx, "auto-crit-reason-e1", txID)
 	if err != nil {
 		t.Fatalf("GetEventsByTransaction: %v", err)
 	}
@@ -3468,11 +3470,13 @@ func TestEngine_InlineCriterionNoMatch_DefaultsReason(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 
-	auditStore, err := factory.StateMachineAuditStore(ctx)
+	// Read through the engine's transaction: it is still open, and its
+	// audit events are visible only inside it until it commits.
+	auditStore, err := factory.StateMachineAuditStore(txCtx)
 	if err != nil {
 		t.Fatalf("StateMachineAuditStore: %v", err)
 	}
-	events, err := auditStore.GetEventsByTransaction(ctx, "inline-crit-reason-e1", txID)
+	events, err := auditStore.GetEventsByTransaction(txCtx, "inline-crit-reason-e1", txID)
 	if err != nil {
 		t.Fatalf("GetEventsByTransaction: %v", err)
 	}
@@ -3638,11 +3642,13 @@ func TestEngine_WorkflowSkipped_RecordsReason(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 
-	auditStore, err := factory.StateMachineAuditStore(ctx)
+	// Read through the engine's transaction: it is still open, and its
+	// audit events are visible only inside it until it commits.
+	auditStore, err := factory.StateMachineAuditStore(txCtx)
 	if err != nil {
 		t.Fatalf("StateMachineAuditStore: %v", err)
 	}
-	events, err := auditStore.GetEventsByTransaction(ctx, "wf-skip-reason-e1", txID)
+	events, err := auditStore.GetEventsByTransaction(txCtx, "wf-skip-reason-e1", txID)
 	if err != nil {
 		t.Fatalf("GetEventsByTransaction: %v", err)
 	}

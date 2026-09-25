@@ -619,6 +619,16 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 					wf.Name, stateName, tr.Name)
 			}
 			if tr.Schedule != nil {
+				// timeoutMs's published minimum (api/openapi.yaml
+				// TransitionScheduleDto: minimum 0) applies whichever way
+				// the fire time is computed — static delayMs or function —
+				// so it is checked before either path below.
+				if tr.Schedule.TimeoutMs != nil && *tr.Schedule.TimeoutMs < 0 {
+					return fmt.Errorf(
+						"workflow %q state %q transition %q: schedule.timeoutMs must not be negative (got %d)",
+						wf.Name, stateName, tr.Name, *tr.Schedule.TimeoutMs)
+				}
+
 				hasDelay := tr.Schedule.DelayMs > 0
 				hasFn := tr.Schedule.Function != nil
 				// Exactly one of delayMs or function is required — a static
@@ -633,6 +643,19 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 						wf.Name, stateName, tr.Name)
 				}
 				if hasFn {
+					// hasDelay is false for ANY non-positive DelayMs,
+					// including negative — so the XOR check above sees a
+					// negative delayMs alongside a function as "function
+					// only" and passes it without ever looking at the
+					// field's own published minimum (delayMs: minimum 1).
+					// Unused once a function governs timing, but still
+					// client input that must be rejected, not silently
+					// ignored.
+					if tr.Schedule.DelayMs < 0 {
+						return fmt.Errorf(
+							"workflow %q state %q transition %q: schedule.delayMs must not be negative (got %d)",
+							wf.Name, stateName, tr.Name, tr.Schedule.DelayMs)
+					}
 					f := tr.Schedule.Function
 					if f.ResultKind != "Schedule" {
 						return fmt.Errorf(
@@ -649,12 +672,18 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 						return err
 					}
 				}
-				// No separate `else if DelayMs <= 0` branch: once the XOR
-				// check above has passed with hasFn == false, hasDelay must
-				// be true (DelayMs > 0), so a dedicated delayMs<=0 rejection
-				// here would be unreachable. DelayMs <= 0 with no function
-				// is already caught by the XOR check as the "neither
-				// present" shape.
+				// No separate `else if DelayMs <= 0` branch for the
+				// no-function case: once the XOR check above has passed
+				// with hasFn == false, hasDelay must be true (DelayMs > 0),
+				// so a dedicated delayMs<=0 rejection there would be
+				// unreachable — DelayMs <= 0 with no function is already
+				// caught by the XOR check as the "neither present" shape.
+				// That unreachability does NOT extend to the has-function
+				// case: there hasDelay is false whatever DelayMs's sign, so
+				// the XOR check alone lets a negative DelayMs through
+				// silently alongside a valid function — the explicit
+				// `DelayMs < 0` check inside `if hasFn` above exists for
+				// exactly that gap.
 			}
 
 			for _, p := range tr.Processors {
