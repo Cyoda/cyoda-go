@@ -640,8 +640,10 @@ func (h *Handler) GetStatisticsForModel(ctx context.Context, entityName string, 
 
 // DeleteEntity deletes a single entity by ID, with its scheduled tasks, in
 // one transaction, and returns the deleted entity's metadata for the
-// response. An owned delete that loses a task-row race with the scheduler
-// runs again (common.RetryOnTaskConflict); a joined one does not.
+// response. An owned delete that fails with spi.ErrConflict — a race lost on
+// the entity or on one of its scheduled tasks, at a statement or at commit —
+// runs again in a new transaction (common.RetryOnTaskConflict); a joined one
+// does not.
 func (h *Handler) DeleteEntity(ctx context.Context, entityID string) (*deleteEntityResult, error) {
 	var result *deleteEntityResult
 	err := common.RetryOnTaskConflict(ctx, spi.GetTransaction(ctx) == nil, func() error {
