@@ -3382,7 +3382,7 @@ type SearchEntityAuditEventsParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -3400,7 +3400,7 @@ type GetStateMachineFinishedEventParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -3421,7 +3421,7 @@ type GetEntityStatisticsParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -3439,7 +3439,7 @@ type GetEntityStatisticsByStateParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -3457,7 +3457,7 @@ type GetEntityStatisticsByStateForModelParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -3472,7 +3472,7 @@ type GetEntityStatisticsForModelParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -3484,7 +3484,7 @@ type QueryGroupedEntityStatisticsForModelParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -3496,7 +3496,7 @@ type DeleteSingleEntityParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -3514,7 +3514,7 @@ type GetOneEntityParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -3529,7 +3529,7 @@ type GetEntityChangesMetadataParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -3547,7 +3547,7 @@ type GetEntityTransitionsParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -3578,7 +3578,7 @@ type DeleteEntitiesParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -3599,7 +3599,7 @@ type GetAllEntitiesParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -3635,7 +3635,7 @@ type CreateCollectionParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -3688,7 +3688,7 @@ type UpdateCollectionParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -3719,7 +3719,7 @@ type PatchSingleWithLoopbackParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -3747,7 +3747,7 @@ type UpdateSingleWithLoopbackParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -3778,7 +3778,7 @@ type PatchSingleParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -3806,7 +3806,7 @@ type UpdateSingleParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -3843,7 +3843,7 @@ type CreateParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -3874,7 +3874,7 @@ type DeleteMessagesParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -3917,7 +3917,7 @@ type NewMessageParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -3929,7 +3929,7 @@ type DeleteMessageParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -3941,7 +3941,7 @@ type GetMessageParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -4022,7 +4022,7 @@ type FetchEntityTransitionsParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -4045,7 +4045,7 @@ type SubmitAsyncSearchJobParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -4063,7 +4063,7 @@ type GetAsyncSearchResultsParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -4075,7 +4075,7 @@ type CancelAsyncSearchParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -4087,7 +4087,7 @@ type GetAsyncSearchStatusParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
@@ -4122,7 +4122,7 @@ type SearchEntitiesParams struct {
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
-	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before anything is written: only the operation that began a transaction commits it.
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that passes the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
 	//
 	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`

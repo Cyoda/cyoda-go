@@ -17,9 +17,12 @@ commit first). When the workflow a callback's write runs reaches one, the
 write is refused:
 
 - **When:** at the processor, before the segment is flushed, before any
-  commit, and before the processor is dispatched. Processors earlier in the
-  same pipeline have run; their effects are in the joined transaction and are
-  the owner's to keep or discard, as with any failed callback.
+  commit, and before the processor is dispatched. Earlier processors and
+  earlier automated transitions of the same workflow have run — their callouts
+  were sent — and their effects are in the joined transaction, together with
+  the audit events the refused workflow recorded (its start, the processing
+  pause, and a failed result for the refused processor). All of it is the
+  owner's to keep or discard, as with any failed callback.
 - **Answer:** `409`, error code `COMMIT_IN_JOINED_TRANSACTION`, not retryable.
   The detail names the workflow and the processor. Over gRPC the code is the
   message prefix of the `CLIENT_ERROR` envelope.

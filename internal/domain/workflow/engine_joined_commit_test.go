@@ -39,7 +39,7 @@ func TestEngine_JoinedChain_RefusesCommitBeforeDispatch(t *testing.T) {
 			}
 
 			entryTxID, ownerCtx := h.begin(t)
-			joinedCtx := WithJoinedTransaction(ownerCtx, entryTxID)
+			joinedCtx := MarkJoinedTransaction(ownerCtx)
 
 			_, err := h.engine.Execute(joinedCtx, h.entity, "")
 
@@ -90,19 +90,29 @@ func TestEngine_OwnerChain_CommitBeforeDispatchStillSegments(t *testing.T) {
 	}
 }
 
-// TestEngine_JoinedMarker_OtherTransaction_DoesNotRefuse pins the key: a chain
-// marked as having joined a DIFFERENT transaction owns the one it runs in.
-func TestEngine_JoinedMarker_OtherTransaction_DoesNotRefuse(t *testing.T) {
+// TestEngine_JoinedChain_RefusesWhateverTheEntityStamp: the refusal keys on the
+// chain having joined, not on the transaction id the entity's metadata carries.
+// A door that stamped a different id must not switch the refusal off.
+func TestEngine_JoinedChain_RefusesWhateverTheEntityStamp(t *testing.T) {
 	h := newSegmentGuardHarness(t, "memory")
 	h.registerCBDProcessor("segmenter")
-
-	entryTxID, ownerCtx := h.begin(t)
-	ctx := WithJoinedTransaction(ownerCtx, "some-other-transaction")
-	res, err := h.engine.Execute(ctx, h.entity, "")
-	if err != nil {
-		t.Fatalf("chain owning its transaction: %v", err)
+	var committed []string
+	h.txMgr.commit = func(ctx context.Context, txID string) error {
+		committed = append(committed, txID)
+		return h.txMgr.TransactionManager.Commit(ctx, txID)
 	}
-	if res.FinalTxID == entryTxID {
-		t.Fatal("chain owning its transaction did not segment")
+
+	_, ownerCtx := h.begin(t)
+	joinedCtx := MarkJoinedTransaction(ownerCtx)
+	h.entity.Meta.TransactionID = "a-stamp-that-is-not-the-joined-transaction"
+
+	_, err := h.engine.Execute(joinedCtx, h.entity, "")
+
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) || appErr.Code != common.ErrCodeCommitInJoinedTransaction {
+		t.Fatalf("err = %v; want %s", err, common.ErrCodeCommitInJoinedTransaction)
+	}
+	if len(committed) != 0 {
+		t.Fatalf("a joined chain committed %v", committed)
 	}
 }

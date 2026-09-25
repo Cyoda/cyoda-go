@@ -34,7 +34,7 @@ import (
 //
 // A joined scope never moves off the transaction it joined: the engine refuses
 // the only step that opens a segment (a COMMIT_BEFORE_DISPATCH processor) on a
-// joined chain, before anything is written.
+// joined chain, before the transaction is flushed or committed.
 type txScope struct {
 	h *Handler
 

@@ -499,10 +499,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   operation's transaction part-way through the operation, dispatched itself,
   and only then was the callback refused with a `500`. The calling operation
   carried on in a transaction that no longer existed. The write is now refused
-  before anything is written, with the new `409 COMMIT_IN_JOINED_TRANSACTION`
-  (not retryable), which names the workflow and the processor; the processor
-  is not dispatched, and the calling operation's transaction stays open for it
-  to commit or roll back. Both values of `startNewTxOnDispatch` are refused.
+  at that processor, before the transaction is flushed or committed and before
+  the processor is dispatched, with the new `409 COMMIT_IN_JOINED_TRANSACTION`
+  (not retryable), which names the workflow and the processor. The calling
+  operation's transaction stays open for it to commit or roll back; what the
+  refused workflow had already done in it — its audit events, and the effects
+  of earlier steps — is the calling operation's to keep or discard, as with
+  any failed callback. Both values of `startNewTxOnDispatch` are refused.
   See `docs/cloud-parity/commit-in-joined-transaction.md`.
 
 - **A signing key pair signs and verifies only inside its validity window.**

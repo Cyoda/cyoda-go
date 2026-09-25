@@ -304,11 +304,11 @@ func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc
 // must not save the cascade-anchor entity themselves AND also return
 // mutations for it (last-writer-wins inside TX_post's buffer).
 func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.Entity, desc *modelDescMemo, proc spi.ProcessorDefinition, workflow, transition, txID string, auditStore spi.StateMachineAuditStore, entryTxID string) (newCtx context.Context, newTxID string, err error) {
-	// Both variants below commit txID. A chain that joined txID does not own
+	// Both variants below commit txID. A chain that joined its transaction does not own
 	// it, so it is refused here — before the flush, the commit, the dispatch,
 	// and before the single-shot If-Match is consumed. Nothing of the joined
 	// transaction has been touched by this processor; its owner decides its fate.
-	if joinedTransaction(ctx, txID) {
+	if joinedTransaction(ctx) {
 		return nil, "", refuseCommitInJoinedTransaction(workflow, proc.Name)
 	}
 	tPre := txID

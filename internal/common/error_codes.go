@@ -103,7 +103,8 @@ const (
 	// callback whose workflow reaches a COMMIT_BEFORE_DISPATCH processor. That
 	// processor commits the transaction it runs in, and a callback's
 	// transaction is the one it joined: only the operation that began it
-	// commits it. Refused before anything is written. Not retryable: the same
+	// commits it. Refused before that transaction is flushed or committed and
+	// before the processor is dispatched. Not retryable: the same
 	// callback reaches the same processor again.
 	ErrCodeCommitInJoinedTransaction = "COMMIT_IN_JOINED_TRANSACTION"
 )
