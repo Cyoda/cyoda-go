@@ -10,6 +10,9 @@ import (
 // ClassifyErrorForTest exposes classifyError for unit tests.
 var ClassifyErrorForTest = classifyError
 
+// ClassifyRejectionForTest exposes classifyRejection for unit tests.
+var ClassifyRejectionForTest = classifyRejection
+
 // ClassifyClaimErrorForTest exposes classifyClaimError for unit tests
 // verifying the ErrUniqueViolation vs ErrConflict discrimination.
 var ClassifyClaimErrorForTest = classifyClaimError

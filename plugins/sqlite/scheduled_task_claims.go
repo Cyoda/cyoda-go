@@ -190,7 +190,7 @@ func (s *scheduledTaskStore) MarkUnsafe(ctx context.Context, ref spi.TaskRef) er
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO scheduled_task_marks (tenant_id, task_id, arm_token, claim_token) VALUES (?, ?, ?, ?)`,
 		string(ref.TenantID), ref.ID, ref.ArmToken.String(), ref.ClaimToken.String()); err != nil {
-		return fmt.Errorf("failed to mark scheduled task %s: %w", ref.ID, err)
+		return fmt.Errorf("failed to mark scheduled task %s: %w", ref.ID, classifyRejection(err))
 	}
 	return nil
 }
@@ -199,6 +199,9 @@ func (s *scheduledTaskStore) MarkUnsafe(ctx context.Context, ref spi.TaskRef) er
 // attempt recorded. With ClearOwnMark it also removes the mark this claim
 // wrote, in the same sqlTx.
 func (s *scheduledTaskStore) RecordAttempt(ctx context.Context, ref spi.TaskRef, a spi.Attempt) error {
+	if err := spi.ValidateTaskErrorText(a.Error); err != nil {
+		return err
+	}
 	_ = s.tm.acquireCommitGate(context.Background())
 	defer s.tm.releaseCommitGate()
 
