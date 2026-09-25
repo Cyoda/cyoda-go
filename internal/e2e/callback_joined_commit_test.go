@@ -58,8 +58,9 @@ const (
 
 // target is the entity a door acts on, when it acts on an existing one.
 type joinedCommitTarget struct {
-	id   string
-	txID string // the transaction id of its latest version: PATCH's If-Match
+	model string // the target model, for every shape
+	id    string // the existing entity, for shapes other than shapeOnCreate
+	txID  string // the transaction id of its latest version: PATCH's If-Match
 }
 
 // joinedCommitWrite is one door's write, made from inside a callback under the
@@ -221,6 +222,7 @@ func runJoinedCommitCase(t *testing.T, h *callbackHarness, door joinedCommitDoor
 
 	h.SetupModelWithWorkflow(t, marker, secondaryWorkflow)
 	h.SetupModelWithWorkflow(t, targetModel, joinedCommitTargetWorkflow(targetModel, cbdProc, startNewTx, door.shape))
+	target.model = targetModel
 	if door.shape != shapeOnCreate {
 		id, status, body := h.CreateEntity(t, targetModel, 1, joinedCommitPayload)
 		if status != http.StatusOK {
@@ -229,7 +231,7 @@ func runJoinedCommitCase(t *testing.T, h *callbackHarness, door joinedCommitDoor
 		var arr []map[string]any
 		_ = json.Unmarshal([]byte(body), &arr)
 		txID, _ := arr[0]["transactionId"].(string)
-		target = joinedCommitTarget{id: id, txID: txID}
+		target.id, target.txID = id, txID
 	}
 
 	var dispatched atomic.Int32
@@ -293,11 +295,15 @@ func assertJoinedCommitRefused(t *testing.T, o joinedCommitOutcome, cbdProc stri
 	}
 }
 
-// assertTargetUntouched checks an existing target entity is still in its
+// assertTargetUntouched checks the refused write left nothing behind: a create
+// stored no target entity, and an existing target is still in its
 // pre-transition state with its original data.
 func assertTargetUntouched(t *testing.T, h *callbackHarness, door joinedCommitDoor, target joinedCommitTarget) {
 	t.Helper()
 	if door.shape == shapeOnCreate {
+		if n := h.countEntities(t, target.model); n != 0 {
+			t.Errorf("%d target entities stored by a refused create; want none", n)
+		}
 		return
 	}
 	if st, code := h.GetEntityState(t, target.id); code != http.StatusOK || st != "READY" {
