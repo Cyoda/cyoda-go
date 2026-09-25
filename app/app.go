@@ -39,6 +39,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/messaging"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/scheduledtask"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/txjoin"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
@@ -633,6 +634,7 @@ func New(cfg Config) *App {
 	server.Workflow = workflow.New(a.storeFactory, a.workflowEngine, a.config.Callout.ResponseTimeoutMax)
 	server.Search = search.NewHandler(a.searchService).WithMaxSortKeys(a.config.SearchMaxSortKeys)
 	server.Audit = audit.New(a.storeFactory)
+	server.ScheduledTasks = scheduledtask.NewHandler(a.storeFactory)
 	server.Messaging = messaging.New(a.storeFactory, common.NewDefaultUUIDGenerator())
 	var accountKeyStore auth.KeyStore
 	var accountTrustedKeyStore auth.TrustedKeyStore
