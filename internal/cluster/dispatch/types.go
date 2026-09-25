@@ -113,7 +113,7 @@ type DispatchCalloutResponse struct {
 	// []byte for the reason DispatchCalloutRequest.Entity is one — base64 is
 	// what carries opaque bytes through a JSON envelope unrewritten. It is the
 	// answer of one compute member, which arrives over gRPC and is therefore
-	// bounded by that server's receive limit (see MaxEnvelopeSize).
+	// bounded by that server's receive limit (see maxEnvelopeSize).
 	EntityData []byte `json:"entityData,omitempty"`
 
 	// Matches and Reason are populated for a criteria callout response.

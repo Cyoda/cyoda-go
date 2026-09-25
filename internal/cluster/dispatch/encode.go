@@ -6,14 +6,14 @@ import (
 	"fmt"
 )
 
-// EncodePeerBody is how every node-to-node body is encoded, in both directions
-// and on both routes: JSON with HTML escaping OFF.
+// encodePeerBody is how every node-to-node body is encoded, in both directions:
+// JSON with HTML escaping OFF.
 //
 // json.Marshal escapes "<", ">" and "&" wherever they appear — six bytes each.
 // None of that is needed between two of this cluster's own nodes: the body is
 // sealed, not embedded in a web page. Left on, it multiplies a hand-over
 // carrying HTML or XML text by up to six, which the envelope ceiling then
-// refuses (the ceiling is derived without it: see MaxEnvelopeSize). The entity's
+// refuses (the ceiling is derived without it: see maxEnvelopeSize). The entity's
 // own bytes are unaffected either way, being base64 on the wire; what this saves
 // is every other field a tenant's text can reach — a criterion, a function's
 // result, a compute member's message.

@@ -169,12 +169,12 @@ func (f *HTTPForwarder) forward(ctx context.Context, peerNodeID, url string, req
 	if err != nil {
 		return stageErr(StageBeforeConnect, fmt.Errorf("dispatch forward: sign body: %w", err))
 	}
-	if len(wire) > MaxEnvelopeSize {
+	if len(wire) > maxEnvelopeSize {
 		// Provable before connecting, and true of every peer: each reads at
 		// most the ceiling, so these bytes would be truncated and refused
 		// wherever they were sent. Terminal, not a lost answer — a lost answer
 		// would spend a try and be retried identically on the next peer.
-		return stageErr(StageBeforeConnect, fmt.Errorf("dispatch forward: the hand-over is %d bytes sealed and the envelope holds %d", len(wire), MaxEnvelopeSize))
+		return stageErr(StageBeforeConnect, fmt.Errorf("dispatch forward: the hand-over is %d bytes sealed and the envelope holds %d", len(wire), maxEnvelopeSize))
 	}
 	httpReq.Body = io.NopCloser(bytes.NewReader(wire))
 	httpReq.ContentLength = int64(len(wire))
@@ -207,12 +207,12 @@ func (f *HTTPForwarder) forward(ctx context.Context, peerNodeID, url string, req
 	// apart from one at it: the extra byte is the whole of the difference, and
 	// without the check below an oversized answer arrives truncated and is
 	// blamed on the cipher.
-	sealed, err := io.ReadAll(io.LimitReader(httpResp.Body, MaxEnvelopeSize+1))
+	sealed, err := io.ReadAll(io.LimitReader(httpResp.Body, maxEnvelopeSize+1))
 	if err != nil {
 		return stageErr(StageAfterConnect, fmt.Errorf("dispatch forward: read response from %s: %w", url, err))
 	}
-	if len(sealed) > MaxEnvelopeSize {
-		return stageErr(StageAfterConnect, fmt.Errorf("dispatch forward: the answer from %s is too large for the envelope, which holds %d bytes", url, MaxEnvelopeSize))
+	if len(sealed) > maxEnvelopeSize {
+		return stageErr(StageAfterConnect, fmt.Errorf("dispatch forward: the answer from %s is too large for the envelope, which holds %d bytes", url, maxEnvelopeSize))
 	}
 	opened, err := f.auth.OpenResponse(httpResp.Header, binding, sealed)
 	if err != nil {
