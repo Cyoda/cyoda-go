@@ -65,44 +65,59 @@ func TestTasks_TheStoreRejectsWhatNoBackendStores(t *testing.T) {
 	}
 }
 
-// A rejection is checked before anything is staged: a rejected write on an
-// open transaction leaves nothing on it, so the transaction's own view of
-// the task, and the committed state after it commits, are both unchanged.
-func TestTasks_RejectedWriteInTransactionStagesNothing(t *testing.T) {
+// A write refused inside an open transaction stages nothing: the row is not
+// busy, and the transaction commits without a conflict even though the row
+// changes after it began.
+func TestTasks_ARefusedWriteInATransactionStagesNothing(t *testing.T) {
 	fx := newTaskFixture(t)
 	bg := context.Background()
 	arm(t, bg, fx.sts, taskTenantA, "e1", "T")
-	before, _ := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T")
+	c := claimDue(t, fx.sts, uuid.New(), false)[0]
+	stale := refOf(c)
+	stale.ClaimToken = uuid.New()
+	noID := armTask(taskTenantA, "e1", "T")
+	noID.ID = ""
 
 	txID, txCtx := fx.begin(t, taskTenantA)
-	noID := armTask(taskTenantA, "e1", "T2")
-	noID.ID = ""
-	_, err := fx.sts.ReconcileForEntity(txCtx, spi.ReconcileRequest{
-		TenantID: taskTenantA, EntityID: "e1", CurrentState: "S", Arm: []spi.ScheduledTask{noID},
-	})
-	if !errors.Is(err, spi.ErrStoreRejected) {
-		t.Fatalf("err = %v, want ErrStoreRejected", err)
+	refusals := []struct {
+		name string
+		want error
+		call func() error
+	}{
+		{"stale StampSegment", spi.ErrStaleClaim, func() error { return fx.sts.StampSegment(txCtx, stale, true) }},
+		{"stale Fail", spi.ErrStaleClaim, func() error {
+			return fx.sts.Fail(txCtx, stale, spi.Failure{Reason: spi.FailureRunPanicked, Error: "E", AtMs: 2_000})
+		}},
+		{"Fail with an unknown reason", spi.ErrStoreRejected, func() error {
+			return fx.sts.Fail(txCtx, refOf(c), spi.Failure{Reason: "NOT_A_REASON", AtMs: 2_000})
+		}},
+		{"Fail with error text not UTF-8", spi.ErrStoreRejected, func() error {
+			return fx.sts.Fail(txCtx, refOf(c), spi.Failure{Reason: spi.FailureRunPanicked, Error: "\xff", AtMs: 2_000})
+		}},
+		{"arm without an id", spi.ErrStoreRejected, func() error {
+			_, err := fx.sts.ReconcileForEntity(txCtx, spi.ReconcileRequest{TenantID: taskTenantA, EntityID: "e1", CurrentState: "S",
+				Arm: []spi.ScheduledTask{noID}})
+			return err
+		}},
+	}
+	for _, r := range refusals {
+		if err := r.call(); !errors.Is(err, r.want) {
+			t.Fatalf("%s = %v, want %v", r.name, err, r.want)
+		}
 	}
 
-	// The transaction's own view (its snapshot plus its staged ops) still
-	// shows e1's existing task untouched, and never gained the refused arm.
-	staged, ok := getTask(t, txCtx, fx.sts, taskTenantA, "e1:S:T")
-	if !ok || staged.ArmToken != before.ArmToken {
-		t.Fatalf("the transaction's view changed from a rejected write: %+v", staged)
+	if err := fx.sts.MarkUnsafe(bg, refOf(c)); err != nil {
+		t.Fatalf("MarkUnsafe = %v, want nil: a refused write does not make the row busy", err)
 	}
-	if _, ok := getTask(t, txCtx, fx.sts, taskTenantA, "e1:S:T2"); ok {
-		t.Fatalf("the rejected arm was staged despite being refused")
+	if err := fx.sts.RecordAttempt(bg, refOf(c), spi.Attempt{AtMs: 2_000, NextAttemptTime: 3_000}); err != nil {
+		t.Fatalf("RecordAttempt = %v, want nil", err)
 	}
-
 	if err := fx.commit(taskTenantA, txID); err != nil {
-		t.Fatalf("Commit: %v", err)
+		t.Fatalf("Commit = %v, want nil: the refused writes staged nothing", err)
 	}
-	after, _ := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T")
-	if after.ArmToken != before.ArmToken {
-		t.Fatalf("the committed task changed from a rejected write: %+v", after)
-	}
-	if _, ok := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T2"); ok {
-		t.Fatalf("the rejected arm was committed despite being refused")
+	got, _ := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T")
+	if got.Status != spi.ScheduledTaskWaiting || got.PartialCommit || got.ArmToken != c.ArmToken {
+		t.Fatalf("task = %+v, want the recorded attempt and nothing of the refused writes", got)
 	}
 }
 
