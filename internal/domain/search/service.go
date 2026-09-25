@@ -1098,6 +1098,16 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 // cross-node cancel and terminal abort in one poll — cancelling jobCtx (and
 // so stopping itself) on either a Heartbeat error (fenced out — a stale
 // claim or an already-terminal job) or an observed non-RUNNING status.
+//
+// spi.ErrTaskBusy is the one Heartbeat error that does NOT fence the job
+// out: a store (PostgreSQL, when the row is briefly held FOR UPDATE by this
+// same job's own SaveResults chunk) can answer it for a lock its own
+// executor holds, which is not a claim it has lost. That tick is treated as
+// missed — logged and skipped — and the ticker retries on the next one; the
+// job is a healthy RUNNING job either way, and the stale window this bounds
+// against spans several ticks. Backend-agnostic: memory and sqlite never
+// return it (their Heartbeat never lock-waits), so this branch never fires
+// there.
 func (s *SearchService) startHeartbeat(jobCtx context.Context, cancel context.CancelCauseFunc, jobID string, epoch int64) {
 	interval := s.heartbeatEvery()
 	go func() {
@@ -1109,6 +1119,11 @@ func (s *SearchService) startHeartbeat(jobCtx context.Context, cancel context.Ca
 				return
 			case <-ticker.C:
 				if err := s.searchStore.Heartbeat(jobCtx, jobID, epoch); err != nil {
+					if errors.Is(err, spi.ErrTaskBusy) {
+						slog.Debug("async search heartbeat missed a busy tick; retrying next tick",
+							"pkg", "search", "jobID", jobID, "err", err)
+						continue
+					}
 					slog.Warn("async search heartbeat failed; aborting job", "pkg", "search", "jobID", jobID, "err", err)
 					cancel(nil)
 					return

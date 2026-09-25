@@ -130,6 +130,14 @@ func (s *asyncSearchStore) GetJob(ctx context.Context, jobID string) (*spi.Searc
 	return scanSearchJob(row)
 }
 
+// searchJobBusy wraps the 55P03 of Heartbeat's never-joining write meeting a
+// row SaveResults' own chunk transaction holds FOR UPDATE. Same marker and
+// wording convention as scheduledTaskStore's taskBusy; the SQLSTATE stays in
+// the chain.
+func searchJobBusy(jobID string, err error) error {
+	return fmt.Errorf("heartbeat search job %s: %w: %w", jobID, spi.ErrTaskBusy, err)
+}
+
 // probeFenced classifies why a fenced write against jobID did not apply: no
 // row -> spi.ErrNotFound, a terminal status -> spi.ErrAlreadyTerminal,
 // otherwise the epoch does not match -> spi.ErrStaleClaim (these are the only
@@ -211,7 +219,14 @@ func (s *asyncSearchStore) UpdateJobStatus(ctx context.Context, jobID string, ep
 // server-side now() — same clock domain, no host/DB skew between the stamp
 // and the read that later judges it stale.
 //
-// It runs on the scheduler pool (see the sched field).
+// It runs on the scheduler pool (see the sched field). A tick that lands
+// while the job's own SaveResults chunk transaction holds the row FOR
+// UPDATE (search_store.go's probeFenced, forUpdate=true) waits behind it up
+// to the scheduler pool's lock_timeout, then answers spi.ErrTaskBusy rather
+// than the raw 55P03 — the same "row an open transaction holds" outcome
+// scheduledTaskStore's never-joining writes already mark this way (see
+// taskBusy). It is transient and safe to retry on the next tick; the caller
+// must not treat it as a fencing refusal.
 func (s *asyncSearchStore) Heartbeat(ctx context.Context, jobID string, epoch int64) error {
 	tid, err := s.tenant(ctx)
 	if err != nil {
@@ -223,6 +238,9 @@ func (s *asyncSearchStore) Heartbeat(ctx context.Context, jobID string, epoch in
 		 WHERE id = $1 AND tenant_id = $2 AND epoch = $3
 		   AND status NOT IN ('SUCCESSFUL', 'FAILED', 'CANCELLED')`,
 		jobID, string(tid), epoch)
+	if isLockNotAvailable(err) {
+		return searchJobBusy(jobID, err)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to heartbeat search job %s: %w", jobID, err)
 	}
