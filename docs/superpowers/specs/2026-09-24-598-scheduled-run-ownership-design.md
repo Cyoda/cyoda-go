@@ -157,16 +157,20 @@ STALE_AFTER − HEARTBEAT_INTERVAL`.
     with `spi.ErrConflict`.
 - **The run guard belongs to the transaction.** The run registers its guard
   (§5.3) against every transaction it begins: the first one, and the new
-  transaction of each `COMMIT_BEFORE_DISPATCH` segment. The engine's segment
-  commit (`flushAndCommitSegment`) finds the guard from the id of the
-  transaction it commits, not from the context. So every commit of a run's
-  transaction checks the run's cancellation and writes the fenced stamp,
-  whichever call chain reaches it. The run removes the registrations when it
-  ends.
-  - The other commit sites need no lookup. The run's own commits in
-    `fire_scheduled.go` are the run's by construction. The entity handler
-    commits only a transaction that its own request began
-    (`commitOwned`, `internal/domain/entity/handler.go:133-140`).
+  transaction of each `COMMIT_BEFORE_DISPATCH` segment. Every commit of a
+  run — each segment commit (`flushAndCommitSegment`), the re-read at the
+  start of each new segment, and the run's final commit — finds the guard
+  from the id of the transaction it commits, not from the context. So every
+  commit of a run's transaction checks the run's cancellation and writes the
+  fenced stamp, whichever call chain reaches it. The run removes the
+  registrations when it ends, on every ending.
+  - The checks inside a segment (the checkpoints, the unsafe mark, the
+    callout's cancellation) read the guard from the context. They govern the
+    run's own call chain; a compute-node callback that joined the run's
+    transaction is not the run and is not marked or cancelled as the run.
+  - The entity handler commits only a transaction that its own request began
+    (`commitOwned`, `internal/domain/entity/handler.go:133-140`), so it needs
+    no lookup.
   - A compute-node callback that joined the run's transaction never reaches
     the segment commit: the engine refuses its `COMMIT_BEFORE_DISPATCH`
     processor first, with `409 COMMIT_IN_JOINED_TRANSACTION`
