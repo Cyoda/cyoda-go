@@ -231,19 +231,18 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity) (int64, er
 	// level.
 	//
 	// Lock order vs. deleteOn: this statement takes the entities row lock
-	// BEFORE the entity_versions INSERT below; deleteOn's UPDATE takes the
-	// same lock AFTER its own entity_versions INSERT (deleteOn's own comment
-	// carries the other half of this note). A concurrent non-transactional
-	// Save and Delete on the SAME entity can therefore wait on each other in
-	// opposite orders — a cycle autocommit could never produce, since no
-	// autocommit statement holds a lock across a second one. PostgreSQL's
-	// deadlock detector breaks that cycle with 40P01 after deadlock_timeout
-	// (~1s); classifySQLState maps it to spi.ErrConflict, the same
-	// fail-closed, retryable outcome as any other lock conflict here — a new
-	// failure MODE this task's atomicity fix makes possible (holding the
-	// lock for the whole operation, instead of per autocommit statement),
-	// not a new failure OUTCOME. See
-	// TestNonTxSaveDeleteConcurrent_NoTornWrite.
+	// BEFORE the entity_versions INSERT below; deleteOn's point-lookup now
+	// takes the SAME lock BEFORE its own entity_versions INSERT too (a fix —
+	// it used to take that lock only at its later UPDATE, after its own
+	// entity_versions INSERT, which raced a concurrent Save and Delete on the
+	// SAME entity into entity_versions_pkey (23505) and could deadlock the
+	// two on top of that). With both statements taking the same lock in the
+	// same order first, a concurrent non-transactional Save and Delete on the
+	// same entity simply serialize on it — the loser blocks (ReadCommitted;
+	// re-evaluates once granted) rather than racing or deadlocking. See
+	// TestNonTxSaveDeleteConcurrent_NoTornWrite,
+	// TestPostgres_DeleteConcurrent_NonTx_OneWinner and
+	// TestPostgres_DeleteConcurrent_TxJoined_OneWinner.
 	//
 	// We insert a placeholder doc first, then update it below once we know the
 	// version. The (xmax = 0) expression is true for newly inserted rows and
@@ -681,11 +680,33 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 
 	// Get current entity (doc + version + dates) in a single point-lookup on
 	// the PK. Fetching all four avoids a second round-trip.
+	//
+	// Lock order vs. saveOn: FOR UPDATE makes THIS statement take the entities
+	// row lock, before version is read and before the entity_versions INSERT
+	// below — the same order saveOn's upsert uses (see its lock-order note),
+	// not the mirror image this statement used before. Without the lock here,
+	// two concurrent deletes of the same entity could both read the same
+	// version and both compute the same next entity_versions row, racing each
+	// other into entity_versions_pkey (23505) — a genuine, retryable race
+	// that a bare read can never turn into anything else. See
+	// TestPostgres_DeleteConcurrent_NonTx_OneWinner and
+	// TestPostgres_DeleteConcurrent_TxJoined_OneWinner.
+	//
+	// With the lock taken here, a second writer instead waits on THIS
+	// statement: under the ambient-transaction path (REPEATABLE READ), the
+	// loser sees 40001 the instant it is granted a lock a concurrent writer
+	// already committed under, classified to spi.ErrConflict exactly as
+	// saveOn's upsert is; under save's/delete's own non-tx path (ReadCommitted),
+	// the loser instead blocks and, once granted, re-evaluates AND NOT deleted
+	// against the now-committed row — which the winner's delete already
+	// excludes, so it comes back spi.ErrNotFound. Either way it fails before
+	// ever reading a version, so it can never reach the entity_versions
+	// INSERT with a value the winner already claimed.
 	var doc []byte
 	var maxVersion int64
 	var creationDate, lastModified time.Time
 	err := s.q.QueryRow(ctx,
-		`SELECT doc, version, creation_date, last_modified FROM entities WHERE tenant_id = $1 AND entity_id = $2 AND NOT deleted`,
+		`SELECT doc, version, creation_date, last_modified FROM entities WHERE tenant_id = $1 AND entity_id = $2 AND NOT deleted FOR UPDATE`,
 		tid, entityID).Scan(&doc, &maxVersion, &creationDate, &lastModified)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -761,14 +782,10 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 		return fmt.Errorf("failed to marshal delete doc: %w", err)
 	}
 
-	// Insert delete version. Lock order vs. saveOn: THIS statement runs
-	// before deleteOn takes the entities row lock below, while saveOn takes
-	// that lock first and inserts entity_versions second — the mirror
-	// image. See saveOn's lock-order comment (entity_store.go, the entities
-	// upsert) for why a concurrent non-transactional Save and Delete on the
-	// same entity can therefore wait on each other in a genuine cycle, and
-	// why PostgreSQL resolving that with a 40P01 deadlock (→ spi.ErrConflict
-	// via classifySQLState) is the correct, fail-closed outcome.
+	// Insert delete version. The entities row lock is already held — taken by
+	// the point-lookup above, before version was read — so this INSERT's
+	// version number cannot collide with a concurrent delete's: any other
+	// writer of this row is still waiting on that earlier statement.
 	//
 	// creation_date is sourced from the entities row's own creation_date via
 	// a sub-select, exactly as saveOn's version insert does — see that
@@ -786,13 +803,13 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 		return fmt.Errorf("failed to insert delete version: %w", err)
 	}
 
-	// Update entities table to mark deleted — the entities row lock is taken
-	// HERE, after the entity_versions insert above (see that statement's
-	// lock-order comment). last_modified is set to dbNow — the same
-	// provisional value the row already uses — for the same reason the
-	// saveOn upsert's ON CONFLICT DO UPDATE now does: a delete without it
-	// would leave LastModifiedDate frozen at the entity's creation forever,
-	// not merely stale by the transaction's own lifetime.
+	// Update entities table to mark deleted — the row lock this statement
+	// would otherwise take is already held (the point-lookup above).
+	// last_modified is set to dbNow — the same provisional value the row
+	// already uses — for the same reason the saveOn upsert's ON CONFLICT DO
+	// UPDATE now does: a delete without it would leave LastModifiedDate
+	// frozen at the entity's creation forever, not merely stale by the
+	// transaction's own lifetime.
 	_, err = s.q.Exec(ctx,
 		`UPDATE entities SET version = $1, deleted = true, doc = $2, last_modified = $5 WHERE tenant_id = $3 AND entity_id = $4`,
 		nextVersion, deleteDoc, tid, entityID, dbNow)

@@ -26,6 +26,8 @@ func TestSiblingRace(t *testing.T) {
 	}{
 		{"the index refused the claim", &pgconn.PgError{Code: pgerrcode.UniqueViolation,
 			ConstraintName: "scheduled_tasks_one_running_per_entity_uq"}, true},
+		{"the index refused the claim, already run through classifyError", classifyError(&pgconn.PgError{
+			Code: pgerrcode.UniqueViolation, ConstraintName: "scheduled_tasks_one_running_per_entity_uq"}), true},
 		{"the claim waited on the index past lock_timeout",
 			claimStepError(&pgconn.PgError{Code: pgerrcode.LockNotAvailable, Where: indexWait}), true},
 		{"the claim deadlocked on the index",

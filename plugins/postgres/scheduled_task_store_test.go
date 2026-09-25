@@ -733,11 +733,15 @@ func TestPostgres_ScheduledTaskStore_DeterministicRejectionIsMarked(t *testing.T
 	// and comes back as a raw SQLSTATE. Armed for the same entity as the
 	// already-claimed task above, so a store that applied the write despite
 	// the error, or left the transaction partly applied, would show up as a
-	// change to that task.
+	// change to that task. A valid arm goes first in the same Arm list, so
+	// its own successful INSERT — staged before the bad one fails — proves
+	// the whole reconcile rolled back, not merely that the one bad statement
+	// did.
+	good := taskSpec("tenant-A", "e1", "S", "T3", 3000)
 	bad := taskSpec("tenant-A", "e1", "S", "T2", 2000)
 	bad.ID = "e1:S:T2\x00"
 	_, err := sts.ReconcileForEntity(context.Background(), spi.ReconcileRequest{
-		TenantID: "tenant-A", EntityID: "e1", CurrentState: "S", Arm: []spi.ScheduledTask{bad},
+		TenantID: "tenant-A", EntityID: "e1", CurrentState: "S", Arm: []spi.ScheduledTask{good, bad},
 	})
 	if !errors.Is(err, spi.ErrStoreRejected) {
 		t.Fatalf("ReconcileForEntity with a NUL in a task id: err = %v, want ErrStoreRejected", err)
@@ -748,6 +752,9 @@ func TestPostgres_ScheduledTaskStore_DeterministicRejectionIsMarked(t *testing.T
 	got := mustGet(t, sts, "tenant-A", task.ID)
 	if got.Status != spi.ScheduledTaskRunning || got.Claim == nil || got.Claim.Token != task.Claim.Token {
 		t.Errorf("task after the rejected write = %+v, want it unchanged", got)
+	}
+	if _, found, err := sts.Get(context.Background(), "tenant-A", good.ID); err != nil || found {
+		t.Errorf("Get(%s) = found=%v err=%v, want not found — the valid arm before the bad one must not have persisted", good.ID, found, err)
 	}
 }
 

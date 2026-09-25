@@ -10,36 +10,36 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
 )
 
-// TestNonTxSaveDeleteConcurrent_NoTornWrite guards the Save/Delete lock-order
-// inversion this task's atomicity fix made possible: non-transactional Save
-// takes the entities row lock (its own upsert) BEFORE inserting
-// entity_versions, while non-transactional Delete inserts entity_versions
-// BEFORE taking the entities row lock (its own UPDATE) — see the lock-order
-// comments at both sites in entity_store.go (saveOn's entities upsert;
-// deleteOn's entity_versions insert and its entities UPDATE). A concurrent
-// Save and Delete on the SAME entity, each computing the same next version
-// from the row's pre-write state, can wait on each other in a genuine cycle
-// that autocommit statements — which never hold a lock across a second
-// statement — could never produce. PostgreSQL's deadlock detector breaks
-// that cycle with 40P01 after deadlock_timeout (~1s); classifySQLState maps
-// it to spi.ErrConflict, the same fail-closed, retryable outcome as any
-// other lock conflict in this plugin.
+// TestNonTxSaveDeleteConcurrent_NoTornWrite guards against the Save/Delete
+// lock-order inversion this task's atomicity fix once made possible:
+// non-transactional Save took the entities row lock (its own upsert) BEFORE
+// inserting entity_versions, while non-transactional Delete inserted
+// entity_versions BEFORE taking the entities row lock (its own UPDATE) — the
+// mirror image. A concurrent Save and Delete on the SAME entity, each
+// computing the same next version from the row's pre-write state, could wait
+// on each other in a genuine cycle, resolved only by PostgreSQL's deadlock
+// detector (40P01 after deadlock_timeout, ~1s).
 //
-// This test forces genuine contention deterministically rather than hoping
-// goroutine timing produces it: a manually held FOR UPDATE lock on the
-// entities row queues a real Save and a real Delete behind the SAME lock at
-// the SAME moment (mirroring TestNonTxCompareAndSave_StampsAfterTheLockWait's
-// technique), guaranteeing both attempt the entities row lock concurrently
-// and both compute the same next version from the row's pre-release state —
-// exactly what turns "one waits for the other" into a genuine cycle once the
-// manual lock releases and one of the two acquires it.
+// deleteOn's point-lookup now takes the entities row lock the same way
+// saveOn's upsert does — first, before any version is read or any
+// entity_versions row computed (see deleteOn's lock-order comment,
+// entity_store.go). Both statements now take the SAME lock in the SAME
+// order, so a concurrent Save and Delete on the same entity have nothing left
+// to form a cycle over: they simply serialize on that one lock. This test
+// keeps proving it, deterministically rather than hoping goroutine timing
+// produces the contention: a manually held FOR UPDATE lock on the entities
+// row queues a real Save and a real Delete behind the SAME lock at the SAME
+// moment (mirroring TestNonTxCompareAndSave_StampsAfterTheLockWait's
+// technique), then releases it and lets PostgreSQL's own lock queue decide
+// which of the two goes first.
 //
 // The outcome from that point on is NOT forced — PostgreSQL's own lock-queue
-// order decides whether the two interleave into the deadlock or simply
-// serialize cleanly one after the other — so this test asserts the
-// CONSISTENCY property across either outcome (both succeed with no torn
-// write, or exactly one fails with spi.ErrConflict and no torn write), not a
-// specific interleaving.
+// order decides which of the two goes first — so this test asserts the
+// CONSISTENCY property (no torn write) across whichever order that turns out
+// to be, not a specific interleaving. It still tolerates one side coming back
+// spi.ErrConflict, defensively: nothing here asserts that outcome is
+// reachable, but neither is it a wrong answer if some future change makes it
+// one again.
 func TestNonTxSaveDeleteConcurrent_NoTornWrite(t *testing.T) {
 	factory := setupEntityTest(t)
 	const tenant spi.TenantID = "tenant-save-delete-lock-order"
@@ -88,7 +88,7 @@ func TestNonTxSaveDeleteConcurrent_NoTornWrite(t *testing.T) {
 
 	// Wait until BOTH are demonstrably queued on the lock, not just started —
 	// releasing the lock before both actually queued would pass this test
-	// without exercising the cycle at all.
+	// without exercising the contention at all.
 	waitStart := time.Now()
 	for {
 		var blocked int
@@ -126,8 +126,8 @@ func TestNonTxSaveDeleteConcurrent_NoTornWrite(t *testing.T) {
 
 	// No torn write: entities.version must equal the highest entity_versions
 	// row for this entity, and entities.deleted must agree with whether that
-	// top row is a DELETED tombstone — whichever of the two operations
-	// actually won (or both, if they serialized instead of deadlocking).
+	// top row is a DELETED tombstone — whichever of the two operations went
+	// last on the shared lock.
 	var entitiesVersion int64
 	var entitiesDeleted bool
 	if err := pool.QueryRow(ctx,
