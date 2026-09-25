@@ -269,3 +269,86 @@ func TestTasks_GiveBackIdleKeepsLiveClaims(t *testing.T) {
 		t.Fatalf("given-back task = %+v, want WAITING, no claim, not counted", given)
 	}
 }
+
+// --- A staged post-image never freezes UnsafeMarked. The mark table can
+// change while a joining transaction is open (a never-joining MarkUnsafe
+// commits on its own, whatever transaction is on another caller's ctx), so
+// a joining read of a row this transaction staged must derive UnsafeMarked
+// fresh, the same way a committed read does, never trust a copy taken when
+// the row was staged.
+//
+// The mark is written here BEFORE the transaction stages anything against
+// the row, while it is not busy: marking a row an open transaction has
+// already written is a different case (C6, ErrTaskBusy). The SQLite backend
+// runs the same two test bodies. ---
+
+// v.get: a joining Get of a row this transaction staged still reports a
+// mark written before the transaction began.
+func TestTasks_StagedGetDerivesTheMarkFreshInsideATransaction(t *testing.T) {
+	fx := newTaskFixture(t)
+	ctx := tenantCtx(taskTenantA)
+	arm(t, ctx, fx.sts, taskTenantA, "e1", "T")
+	c := claimDue(t, fx.sts, uuid.New(), false)[0]
+
+	if err := fx.sts.MarkUnsafe(context.Background(), refOf(c)); err != nil {
+		t.Fatalf("MarkUnsafe: %v", err)
+	}
+
+	txID, txCtx := fx.begin(t, taskTenantA)
+	if err := fx.sts.StampSegment(txCtx, refOf(c), true); err != nil {
+		t.Fatalf("StampSegment: %v", err)
+	}
+
+	got, ok := getTask(t, txCtx, fx.sts, taskTenantA, "e1:S:T")
+	if !ok {
+		t.Fatal("a joining Get did not see the transaction's own staged row")
+	}
+	if !got.UnsafeMarked {
+		t.Fatal("UnsafeMarked = false, want true: a staged post-image must derive the mark fresh, not freeze it at staging time")
+	}
+	fx.rollback(t, taskTenantA, txID)
+}
+
+// v.where: ReconcileForEntity's removed list, built through where(), must
+// derive UnsafeMarked fresh for a row this same transaction's earlier write
+// already staged.
+func TestTasks_ReconcileRemovedListDerivesTheMarkFreshForAStagedRow(t *testing.T) {
+	fx := newTaskFixture(t)
+	ctx := tenantCtx(taskTenantA)
+	arm(t, ctx, fx.sts, taskTenantA, "e1", "T1", "T2")
+	c := claimDue(t, fx.sts, uuid.New(), false)[0] // claims e1:S:T1 or e1:S:T2
+
+	if err := fx.sts.MarkUnsafe(context.Background(), refOf(c)); err != nil {
+		t.Fatalf("MarkUnsafe: %v", err)
+	}
+
+	txID, txCtx := fx.begin(t, taskTenantA)
+	// Stage a write to the claimed task's row first, in the same
+	// transaction; the re-arm below then reads it a second time, through
+	// where(), and must still see the mark.
+	if err := fx.sts.StampSegment(txCtx, refOf(c), true); err != nil {
+		t.Fatalf("StampSegment: %v", err)
+	}
+
+	removed, err := fx.sts.ReconcileForEntity(txCtx, spi.ReconcileRequest{
+		TenantID: taskTenantA, EntityID: "e1", CurrentState: "S",
+		Arm: []spi.ScheduledTask{armTask(taskTenantA, "e1", "T3")},
+	})
+	if err != nil {
+		t.Fatalf("ReconcileForEntity: %v", err)
+	}
+	var found bool
+	for _, r := range removed {
+		if r.ID != c.ID {
+			continue
+		}
+		found = true
+		if !r.UnsafeMarked {
+			t.Fatal("UnsafeMarked = false on the removed staged row, want true: where() must derive the mark fresh")
+		}
+	}
+	if !found {
+		t.Fatalf("removed = %+v, want it to include the claimed task %s", removed, c.ID)
+	}
+	fx.rollback(t, taskTenantA, txID)
+}
