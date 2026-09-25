@@ -157,7 +157,8 @@ func New(cfg Config, deps Deps) *Service {
 }
 
 // Start starts the heartbeat, the watchdog and the claim loop. It returns
-// once the first heartbeat is scheduled. A disabled service starts nothing.
+// once the first heartbeat is scheduled. A disabled service, or one drained
+// before it started, starts nothing.
 // Only the first call does anything; every later call returns its error.
 func (s *Service) Start(ctx context.Context) error {
 	if !s.cfg.Enabled {
@@ -178,11 +179,19 @@ func (s *Service) start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to get the scheduled task store: %w", err)
 	}
-	func() {
+	started := func() bool {
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		// A Drain that ran first leaves nothing to stop later: start nothing.
+		if s.draining {
+			return false
+		}
 		s.m, s.store, s.started = m, store, true
+		return true
 	}()
+	if !started {
+		return nil
+	}
 	go s.watchdogLoop()
 	go s.heartbeatLoop()
 	go s.loop()
@@ -198,7 +207,8 @@ func (s *Service) start(ctx context.Context) error {
 func (s *Service) Stop() { s.Drain(context.Background()) }
 
 // Drain runs shutdown steps 1-5 (spec §6.4). ctx ends the waits of steps 2
-// and 4 early. Only the first call does anything.
+// and 4 early. Only the first call does anything. A Drain before Start makes
+// every later Start do nothing.
 func (s *Service) Drain(ctx context.Context) {
 	s.drainOnce.Do(func() { s.drain(ctx) })
 }
@@ -208,6 +218,8 @@ func (s *Service) drain(ctx context.Context) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		if !s.started {
+			// A Start after this does nothing.
+			s.draining = true
 			return false
 		}
 		// Step 1: stop claiming. From here no run starts a new unsafe

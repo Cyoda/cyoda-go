@@ -658,3 +658,16 @@ func TestDrain_TheFinalGiveBackComesBeforeTheHeartbeatStops(t *testing.T) {
 		t.Error("the final give-back ran after the heartbeat had stopped")
 	}
 }
+
+// A Drain before Start leaves nothing to stop later: a Start after it does
+// nothing.
+func TestDrain_AStartAfterADrainDoesNothing(t *testing.T) {
+	h := newHarness(t, testConfig(), reportFirer(fired))
+	h.fs.with(func() { h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")} })
+	h.svc.Drain(context.Background())
+	h.start(t)
+	time.Sleep(50 * time.Millisecond)
+	if n, c := h.fs.heartbeatCount(), h.fs.claims(); n+c != 0 {
+		t.Errorf("%d heartbeats and %d claims after a Start that followed a Drain", n, c)
+	}
+}
