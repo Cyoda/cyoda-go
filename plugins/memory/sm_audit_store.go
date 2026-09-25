@@ -46,17 +46,15 @@ func (s *StateMachineAuditStore) Record(ctx context.Context, entityID string, ev
 		return nil
 	}
 
-	s.factory.smAuditMu.Lock()
-	defer s.factory.smAuditMu.Unlock()
-	// Minted under the lock, so id-assignment order and append order are the
-	// same atomic step for events recorded outside a transaction (see
-	// TestSMAudit_ConcurrentRecord_IDOrderMatchesAppendOrder).
-	event.TimeUUID = uuid.UUID(s.factory.uuids.NewTimeUUID()).String()
-	// Recorded and labelled by the same call, with no staging in between, so
-	// the label — when set — always names a live correlation target: always
-	// indexable. See appendStagedAuditEvents for the staged case, where a
-	// label can outlive the transaction it names.
-	s.factory.appendEventLocked(s.tenant, entityID, copyEvent(event), true)
+	// Untransacted: mint the id and append, indexing under the label only
+	// when it currently names an active transaction — a caller can label an
+	// event with a txID purely for correlation (resolveAuditTxID mints one
+	// when the entity carries none) without ctx ever carrying that
+	// transaction, and such a label may never back a real transaction at
+	// all. s.factory.txManager is never nil here: it is set in the same
+	// call as s.factory.uuids (NewTransactionManager), which the guard at
+	// the top of this method already required to be non-nil.
+	s.factory.txManager.recordUntransactedAuditEvent(s.tenant, entityID, copyEvent(event))
 	return nil
 }
 
@@ -101,14 +99,19 @@ func (f *StoreFactory) appendEventLocked(tenant spi.TenantID, entityID string, c
 // finds nothing, the same as on a backend where the label's transaction is
 // already gone.
 //
-// open must be computed by the caller BEFORE this function takes smAuditMu:
-// smAuditMu is documented as a leaf (see discardAuditTxIndex), and mu is
-// already taken while holding smAuditMu elsewhere in this package (the
-// conflict-abort branch and Commit's step-6 cleanup both call
-// discardAuditTxIndex from inside an m.mu section) — this function taking mu
-// itself would reverse that into a cycle.
+// open is computed by the sole caller, (*TransactionManager).appendStagedAuditEvents,
+// under its own mu hold that it keeps across this whole call — see that
+// method for why: computing open and indexing on it must be one atomic step,
+// or a concurrent Rollback of the labelled transaction can land in the gap
+// and leak an index entry nothing will ever prune. This function itself
+// takes only smAuditMu, so the effective order for a staged-events commit is
+// mu → smAuditMu, consistent with this package's other mu → smAuditMu
+// call chains (the conflict-abort branch and Commit's step-6 cleanup, both
+// of which call discardAuditTxIndex — taking smAuditMu — from inside an
+// m.mu section).
 //
-// Called by Commit inside its entityMu section; entityMu → smAuditMu, and
+// Called by (*TransactionManager).appendStagedAuditEvents, itself called by
+// Commit inside its entityMu section; entityMu → mu → smAuditMu, and
 // smAuditMu is a leaf.
 func (f *StoreFactory) appendStagedAuditEvents(tenant spi.TenantID, staged []stagedAuditEvent, submitTime time.Time, open map[string]bool) {
 	if len(staged) == 0 {

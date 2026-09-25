@@ -350,3 +350,111 @@ func TestSMAudit_UniqueViolationAbortDropsStagedEvents(t *testing.T) {
 			got)
 	}
 }
+
+// TestSMAuditTxIndex_StaleLabelDoesNotLeak_RolledBack is
+// TestSMAuditTxIndex_StaleLabelDoesNotLeak's sibling for the other way a
+// labelled transaction can end: TX_pre rolls back (instead of committing)
+// before TX_post — a separate, later transaction whose own staged event is
+// labelled with TX_pre's id — commits. Either way TX_pre's own terminal
+// call is its one and only chance to prune its smAuditTxIndex entry, so
+// TX_post's commit must not recreate one for it.
+func TestSMAuditTxIndex_StaleLabelDoesNotLeak_RolledBack(t *testing.T) {
+	factory := NewStoreFactory()
+	defer func() { _ = factory.Close() }()
+	tm := factory.NewTransactionManager(newTestUUIDGenerator())
+	const tenant spi.TenantID = "tenant-audit-stale-label-rollback"
+	ctx := testCtxWithTenant(tenant)
+
+	audit, err := factory.StateMachineAuditStore(ctx)
+	if err != nil {
+		t.Fatalf("StateMachineAuditStore: %v", err)
+	}
+
+	preTxID, _, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin (pre): %v", err)
+	}
+	if err := tm.Rollback(ctx, preTxID); err != nil {
+		t.Fatalf("Rollback (pre): %v", err)
+	}
+	if got := auditTxIndexSize(factory, tenant); got != 0 {
+		t.Fatalf("after TX_pre rolls back: smAuditTxIndex holds %d transactions, want 0", got)
+	}
+
+	postTxID, postCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin (post): %v", err)
+	}
+	if err := audit.Record(postCtx, "e-1", spi.StateMachineEvent{
+		EventType: spi.SMEventTransitionMade, TransactionID: preTxID, Details: "post, labelled pre",
+	}); err != nil {
+		t.Fatalf("Record (post): %v", err)
+	}
+	if err := tm.Commit(postCtx, postTxID); err != nil {
+		t.Fatalf("Commit (post): %v", err)
+	}
+
+	if got := auditTxIndexSize(factory, tenant); got != 0 {
+		t.Errorf("after TX_post commits, labelled with the already-rolled-back TX_pre: "+
+			"smAuditTxIndex holds %d transactions, want 0", got)
+	}
+}
+
+// TestSMAudit_UntransactedRecordWithLabelThatNeverExisted_DoesNotLeakIndex
+// pins the other source of unbounded smAuditTxIndex growth: Record's
+// untransacted branch (ctx carries no transaction) indexes an event under
+// its TransactionID label whenever one is set. resolveAuditTxID
+// (internal/domain/workflow/engine.go) mints a fresh, random label purely
+// for correlation when the entity it is auditing has no transaction id of
+// its own — a label that will never back a real Begin/Commit/Rollback, so
+// nothing will EVER call stampAuditEventsForTx or discardAuditTxIndex for
+// it. Indexing it anyway leaks one entry per such Record call, for the life
+// of the process — and this is the untransacted engine path
+// (TestEngine_ManualCriterionNoMatch_EnrichesError exercises exactly this
+// shape), not a rare cascade corner case.
+func TestSMAudit_UntransactedRecordWithLabelThatNeverExisted_DoesNotLeakIndex(t *testing.T) {
+	factory := NewStoreFactory()
+	defer func() { _ = factory.Close() }()
+	const tenant spi.TenantID = "tenant-audit-never-a-tx"
+	ctx := testCtxWithTenant(tenant)
+	audit, err := factory.StateMachineAuditStore(ctx)
+	if err != nil {
+		t.Fatalf("StateMachineAuditStore: %v", err)
+	}
+
+	const neverATransaction = "label-that-never-was-a-transaction"
+	if err := audit.Record(ctx, "e-1", spi.StateMachineEvent{
+		EventType: spi.SMEventStarted, TransactionID: neverATransaction, Details: "no tx at all",
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	if got := auditTxIndexSize(factory, tenant); got != 0 {
+		t.Errorf("after recording with a label that never named a transaction: "+
+			"smAuditTxIndex holds %d transactions, want 0 — nothing will ever call "+
+			"stampAuditEventsForTx or discardAuditTxIndex for a label that was never "+
+			"a real transaction", got)
+	}
+
+	// The event itself is still in the trail — only the index entry is
+	// withheld, exactly as with a stale-but-once-real label (see
+	// TestSMAuditTxIndex_StaleLabelDoesNotLeak): GetEvents and
+	// GetEventsByTransaction never consult smAuditTxIndex, so this changes
+	// no reachable query result.
+	events, err := audit.GetEvents(ctx, "e-1")
+	if err != nil {
+		t.Fatalf("GetEvents: %v", err)
+	}
+	if len(events) != 1 || events[0].Details != "no tx at all" {
+		t.Fatalf("GetEvents = %+v, want the one recorded event still present", events)
+	}
+	byTx, err := audit.GetEventsByTransaction(ctx, "e-1", neverATransaction)
+	if err != nil {
+		t.Fatalf("GetEventsByTransaction: %v", err)
+	}
+	if len(byTx) != 1 {
+		t.Fatalf("GetEventsByTransaction(neverATransaction) = %+v, want the one event "+
+			"(the index is only an optimisation for stampAuditEventsForTx; the query itself "+
+			"is a full scan and must still find it)", byTx)
+	}
+}

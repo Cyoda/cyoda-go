@@ -330,23 +330,16 @@ func (m *TransactionManager) stagedAuditEvents(txID string) []stagedAuditEvent {
 	return append([]stagedAuditEvent(nil), m.auditOps[txID]...)
 }
 
-// openAuditLabels reports, for each distinct non-empty TransactionID label
-// among staged, whether that label currently names an active transaction —
-// see appendStagedAuditEvents for why this decides whether the label is safe
-// to index. The committing transaction's own id always answers true here:
-// Commit calls this before its step 6 removes txID from m.active.
-//
-// Callers must compute this BEFORE taking smAuditMu: mu is already taken
-// while smAuditMu is held elsewhere in this package (the conflict-abort
-// branch and Commit's step-6 cleanup both call discardAuditTxIndex, which
-// takes smAuditMu, from inside an m.mu section), so smAuditMu taking mu in
-// turn would reverse that into a cycle. Protected by mu.
-func (m *TransactionManager) openAuditLabels(staged []stagedAuditEvent) map[string]bool {
+// openAuditLabelsLocked reports, for each distinct non-empty TransactionID
+// label among staged, whether that label currently names an active
+// transaction — see appendStagedAuditEvents for why this decides whether
+// the label is safe to index. The committing transaction's own id always
+// answers true here: Commit calls this before its step 6 removes txID from
+// m.active. Caller holds mu.
+func (m *TransactionManager) openAuditLabelsLocked(staged []stagedAuditEvent) map[string]bool {
 	if len(staged) == 0 {
 		return nil
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	open := make(map[string]bool, len(staged))
 	for _, st := range staged {
 		label := st.event.TransactionID
@@ -359,6 +352,106 @@ func (m *TransactionManager) openAuditLabels(staged []stagedAuditEvent) map[stri
 		_, open[label] = m.active[label]
 	}
 	return open
+}
+
+// appendStagedAuditEvents appends txID's staged audit events to the trail,
+// deciding which are safe to index under the SAME mu hold that then
+// performs the append — see StoreFactory.appendStagedAuditEvents for what
+// "safe to index" means and why an unsafe one is still appended, just not
+// indexed.
+//
+// Holding mu across both steps is the fix for a time-of-check race a
+// two-step "compute open, then append" design has: Rollback deletes its
+// transaction from m.active AND calls discardAuditTxIndex — the index
+// entry's one and only pruning trigger — under mu, but not atomically with
+// any other transaction's commit. A label read as open, with mu released
+// before the append/index runs, can have its transaction roll back — and
+// prune its (at that point still-empty) index entry — in the gap; the
+// append then indexes on the stale answer, recreating an entry nothing will
+// ever prune again. Natural goroutine scheduling does not reliably hit this
+// window (empirically: 2000 iterations of a racing Commit/Rollback pair
+// produced zero leaks — the window is a few instructions wide), and it is
+// not a Go data race -race can flag (every individual access is correctly
+// mutex-protected; the bug is in the gap between two separately-locked
+// critical sections, not in either one). Holding one lock across both closes
+// the gap outright: whichever of a concurrent Commit or Rollback reaches mu
+// first now fully determines the other's view. The pre-fix, two-step shape
+// (compute open via a self-locking openAuditLabels, release mu, then append
+// via StoreFactory.appendStagedAuditEvents on the stale answer) was proven
+// vulnerable by driving those two steps apart by hand with a Rollback of
+// the labelled transaction placed in between — reproducible only that way:
+// 2000 iterations of a real racing Commit/Rollback pair (above) never hit
+// the window, and it leaves no trace -race can see either.
+//
+// mu → smAuditMu (StoreFactory.appendStagedAuditEvents takes smAuditMu) is
+// already this package's lock order: the conflict-abort branch and Commit's
+// step-6 cleanup both call discardAuditTxIndex — which takes smAuditMu —
+// from inside an m.mu section. This keeps that order; it does not reverse
+// it.
+//
+// Called by Commit inside its entityMu section; entityMu → mu → smAuditMu.
+func (m *TransactionManager) appendStagedAuditEvents(tenant spi.TenantID, staged []stagedAuditEvent, submitTime time.Time) {
+	if len(staged) == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	open := m.openAuditLabelsLocked(staged)
+	m.factory.appendStagedAuditEvents(tenant, staged, submitTime, open)
+}
+
+// recordUntransactedAuditEvent mints event's id and appends it to the trail
+// directly — not staged, ctx carried no transaction — indexing it under its
+// TransactionID label only when that label currently names an active
+// transaction.
+//
+// smAuditTxIndex exists solely to make the commit-phase stamp
+// (stampAuditEventsForTx) a lookup; nothing else reads it —
+// GetEvents/GetEventsByTransaction always do a full scan of the trail
+// itself, so leaving an event out of the index never changes a query
+// result, only whether the commit-phase sweep can find it in O(1). A label
+// does not always name a transaction that will ever call Commit: a caller
+// can set TransactionID purely for correlation without ctx ever carrying
+// that transaction (resolveAuditTxID, internal/domain/workflow/engine.go,
+// mints a fresh one when the entity it is auditing has none of its own) —
+// such a label will never back a real Begin, so nothing will ever call
+// stampAuditEventsForTx or discardAuditTxIndex for it, and indexing it
+// anyway leaks one entry per call for the life of the process, the same
+// shape as a stale label on a staged event (see
+// StoreFactory.appendStagedAuditEvents) — just reached through Record's
+// untransacted branch instead of through a commit.
+//
+// The open-label check and the indexed append are one mu-then-smAuditMu
+// critical section for the same reason appendStagedAuditEvents holds mu
+// across both of its steps: released and re-acquired separately, a
+// concurrent Commit/Rollback of the labelled transaction could land in the
+// gap and leak an index entry nothing will ever prune.
+//
+// Also mints event.TimeUUID under smAuditMu, preserving the existing
+// atomic mint-then-append contract non-transactional Record has always had
+// (see TestSMAudit_ConcurrentRecord_IDOrderMatchesAppendOrder): the label
+// check adds an outer mu hold, it does not split smAuditMu's own span.
+//
+// mu → smAuditMu is this package's established lock order (see
+// appendStagedAuditEvents).
+func (m *TransactionManager) recordUntransactedAuditEvent(tenant spi.TenantID, entityID string, event spi.StateMachineEvent) {
+	label := event.TransactionID
+	if label == "" {
+		m.factory.smAuditMu.Lock()
+		defer m.factory.smAuditMu.Unlock()
+		event.TimeUUID = uuid.UUID(m.uuids.NewTimeUUID()).String()
+		m.factory.appendEventLocked(tenant, entityID, event, false)
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, open := m.active[label]
+
+	m.factory.smAuditMu.Lock()
+	defer m.factory.smAuditMu.Unlock()
+	event.TimeUUID = uuid.UUID(m.uuids.NewTimeUUID()).String()
+	m.factory.appendEventLocked(tenant, entityID, event, open)
 }
 
 // busyTaskKeys returns the task rows an open transaction has staged a change
@@ -823,9 +916,9 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 		// commit instant so no reader can observe one of them appended but
 		// not yet stamped. Every other already-appended event still merely
 		// labelled with this transaction then takes the same instant — see
-		// appendStagedAuditEvents and stampAuditEventsForTx.
-		openLabels := m.openAuditLabels(capturedAudit)
-		m.factory.appendStagedAuditEvents(tid, capturedAudit, submitTime, openLabels)
+		// appendStagedAuditEvents (this one, on *TransactionManager) and
+		// stampAuditEventsForTx.
+		m.appendStagedAuditEvents(tid, capturedAudit, submitTime)
 		m.factory.stampAuditEventsForTx(tid, txID, submitTime)
 
 		// Pre-release: free claims for all deleted entities BEFORE inserting any
