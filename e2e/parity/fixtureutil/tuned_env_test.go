@@ -21,17 +21,58 @@ func envValue(t *testing.T, env []string, key string) string {
 	return ""
 }
 
+func mustDuration(t *testing.T, env []string, key string) time.Duration {
+	t.Helper()
+	d, err := time.ParseDuration(envValue(t, env, key))
+	if err != nil {
+		t.Fatalf("%s: %v", key, err)
+	}
+	return d
+}
+
 func TestTunedEnv_PatienceIsShortAndValid(t *testing.T) {
-	single, err := time.ParseDuration(envValue(t, fixtureutil.TunedServerEnv(), "CYODA_DISPATCH_WAIT_TIMEOUT"))
-	if err != nil || single <= 0 || single > 500*time.Millisecond {
-		t.Errorf("single-node patience = %v (err %v); want within (0, 500ms]", single, err)
+	single := mustDuration(t, fixtureutil.TunedServerEnv(), "CYODA_DISPATCH_WAIT_TIMEOUT")
+	if single <= 0 || single > 500*time.Millisecond {
+		t.Errorf("single-node patience = %v; want within (0, 500ms]", single)
 	}
-	cluster, err := time.ParseDuration(envValue(t, fixtureutil.TunedClusterEnv(), "CYODA_DISPATCH_WAIT_TIMEOUT"))
-	if err != nil || cluster < time.Second || cluster >= 5*time.Second {
-		t.Errorf("cluster patience = %v (err %v); want within [1s, 5s): room for gossip, below the default", cluster, err)
+	cluster := mustDuration(t, fixtureutil.TunedClusterEnv(), "CYODA_DISPATCH_WAIT_TIMEOUT")
+	if cluster < time.Second || cluster >= 5*time.Second {
+		t.Errorf("cluster patience = %v; want within [1s, 5s): room for gossip, below the default", cluster)
 	}
-	if scan, err := time.ParseDuration(envValue(t, fixtureutil.TunedServerEnv(), "CYODA_SCHEDULER_SCAN_INTERVAL")); err != nil || scan != 50*time.Millisecond {
-		t.Errorf("scan interval = %v (err %v); want 50ms", scan, err)
+}
+
+// TestTunedEnv_SchedulerTimingIsShortAndValid pins the scheduler timing every
+// parity and multi-node fixture runs with. The server refuses to start with a
+// STALE_AFTER below 50s + 3 x HEARTBEAT_INTERVAL (the watchdog margin: a
+// 30s commit budget, 10s slack, one heartbeat budget, three intervals), so
+// the tuned value is that floor and no lower.
+func TestTunedEnv_SchedulerTimingIsShortAndValid(t *testing.T) {
+	for name, env := range map[string][]string{
+		"server":  fixtureutil.TunedServerEnv(),
+		"cluster": fixtureutil.TunedClusterEnv(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if scan := mustDuration(t, env, "CYODA_SCHEDULER_SCAN_INTERVAL"); scan != 50*time.Millisecond {
+				t.Errorf("scan interval = %v; want 50ms", scan)
+			}
+			hb := mustDuration(t, env, "CYODA_SCHEDULER_HEARTBEAT_INTERVAL")
+			stale := mustDuration(t, env, "CYODA_SCHEDULER_STALE_AFTER")
+			retry := mustDuration(t, env, "CYODA_SCHEDULER_RETRY_DELAY")
+			retryMax := mustDuration(t, env, "CYODA_SCHEDULER_RETRY_DELAY_MAX")
+			if hb != fixtureutil.TunedHeartbeatInterval || stale != fixtureutil.TunedStaleAfter ||
+				retry != fixtureutil.TunedRetryDelay || retryMax != fixtureutil.TunedRetryDelayMax {
+				t.Errorf("env and exported constants disagree: hb=%v stale=%v retry=%v retryMax=%v", hb, stale, retry, retryMax)
+			}
+			if hb <= 0 || hb > time.Second {
+				t.Errorf("heartbeat interval = %v; want within (0, 1s]", hb)
+			}
+			if floor := 50*time.Second + 3*hb; stale < floor || stale > floor+5*time.Second {
+				t.Errorf("stale after = %v; want within [%v, %v]: the server's floor, and no slower", stale, floor, floor+5*time.Second)
+			}
+			if retry <= 0 || retry > time.Second || retryMax < retry || retryMax > 5*time.Second {
+				t.Errorf("retry delay %v / max %v; want a delay within (0, 1s] and a max within [delay, 5s]", retry, retryMax)
+			}
+		})
 	}
 }
 
@@ -54,7 +95,11 @@ func TestFixturesTakeTheirTuningFromOnePlace(t *testing.T) {
 		if !strings.Contains(src, tc.call) {
 			t.Errorf("%s does not call %s", tc.file, tc.call)
 		}
-		for _, literal := range []string{"CYODA_SCHEDULER_SCAN_INTERVAL", "CYODA_DISPATCH_WAIT_TIMEOUT"} {
+		for _, literal := range []string{
+			"CYODA_SCHEDULER_SCAN_INTERVAL", "CYODA_DISPATCH_WAIT_TIMEOUT",
+			"CYODA_SCHEDULER_HEARTBEAT_INTERVAL", "CYODA_SCHEDULER_STALE_AFTER",
+			"CYODA_SCHEDULER_RETRY_DELAY",
+		} {
 			if strings.Contains(src, literal) {
 				t.Errorf("%s spells out %s; it belongs in fixtureutil/tuned_env.go only", tc.file, literal)
 			}
