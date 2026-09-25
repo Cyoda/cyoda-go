@@ -32,6 +32,19 @@ func TestResolveSchedule(t *testing.T) {
 		{"both expiry fields", `{"fireAt":2000000,"expireAt":3,"expireAfterMs":4}`, 0, nil, false, "SCHEDULE_FUNCTION_INVALID_RESULT"},
 		{"non-numeric", `{"fireAt":"soon"}`, 0, nil, false, "SCHEDULE_FUNCTION_INVALID_RESULT"},
 		{"unknown field", `{"fireAt":1,"bogus":2}`, 0, nil, false, "SCHEDULE_FUNCTION_INVALID_RESULT"},
+
+		// Range/overflow: every resolved fire/expiry time must render as an
+		// RFC 3339 time.Time (years 0000-9999), so it must land in
+		// [0, 253402300799999] ms without int64 overflow along the way.
+		{"fireAt one past max rejected", `{"fireAt":253402300800000}`, 0, nil, false, "SCHEDULE_FUNCTION_INVALID_RESULT"},
+		{"fireAt at max boundary accepted", `{"fireAt":253402300799999}`, 253402300799999, nil, false, ""},
+		{"fireAt negative rejected", `{"fireAt":-1}`, 0, nil, false, "SCHEDULE_FUNCTION_INVALID_RESULT"},
+		{"fireAfterMs overflows int64 rejected", `{"fireAfterMs":9223372036854775807}`, 0, nil, false, "SCHEDULE_FUNCTION_INVALID_RESULT"},
+		{"fireAfterMs negative rejected", `{"fireAfterMs":-1}`, 0, nil, false, "SCHEDULE_FUNCTION_INVALID_RESULT"},
+		{"expireAfterMs overflows int64 rejected", `{"fireAt":2000000,"expireAfterMs":9223372036854775807}`, 0, nil, false, "SCHEDULE_FUNCTION_INVALID_RESULT"},
+		{"expireAfterMs negative rejected", `{"fireAt":2000000,"expireAfterMs":-1}`, 0, nil, false, "SCHEDULE_FUNCTION_INVALID_RESULT"},
+		{"expireAt out of range rejected", `{"fireAt":2000000,"expireAt":253402300800000}`, 0, nil, false, "SCHEDULE_FUNCTION_INVALID_RESULT"},
+		{"expireAt at max boundary accepted", `{"fireAt":2000000,"expireAt":253402300799999}`, 2000000, ptr(int64(253402300799999 - 2000000)), false, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -60,11 +60,13 @@ func modelHasSchedule(wfs []spi.WorkflowDefinition) bool {
 }
 
 // ErrScheduledTaskInfra marks a server-side failure in the settle-time
-// arm/cancel pass: the scheduled-task store could not be resolved, or its
-// reconcile write failed. Neither is attributable to the caller's input, so
-// callers map it to a sanitized 5xx with a ticket rather than echoing the
-// store's own text — driver wording, table and constraint names, a SQLSTATE —
-// into a 4xx WORKFLOW_FAILED body.
+// arm/cancel pass: the scheduled-task store could not be resolved, its
+// reconcile write failed, or a static Schedule.DelayMs/TimeoutMs (workflow
+// config, not this request's input) produces a fire or expiry time that
+// cannot be rendered — see addScheduleMs. None of these is attributable to
+// the caller's input, so callers map it to a sanitized 5xx with a ticket
+// rather than echoing the store's own text — driver wording, table and
+// constraint names, a SQLSTATE — into a 4xx WORKFLOW_FAILED body.
 //
 // The same treatment, and the same reason, as ErrProcessorOutputInfra,
 // ErrCriterionTypingInfra and ErrCommitBeforeDispatchInfra. It is its own
@@ -147,16 +149,32 @@ func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity
 				continue
 			}
 
+			sched, ok := addScheduleMs(armMs, tr.Schedule.DelayMs)
+			if !ok {
+				// Config, not caller input — DelayMs comes from the imported
+				// workflow, not this request. Fails the arm and rolls back
+				// the write (the caller never commits), in the same error
+				// family as every other settle-time arm/cancel failure
+				// (ErrScheduledTaskInfra), not a 4xx blaming this caller for
+				// a value it did not supply.
+				return fmt.Errorf("scheduled transition %q static delay produces an unrenderable fire time: %w",
+					tr.Name, ErrScheduledTaskInfra)
+			}
+
 			var timeoutMs *int64
 			if tr.Schedule.TimeoutMs != nil {
 				v := *tr.Schedule.TimeoutMs
+				if _, ok := addScheduleMs(sched, v); !ok {
+					return fmt.Errorf("scheduled transition %q static timeout produces an unrenderable expiry time: %w",
+						tr.Name, ErrScheduledTaskInfra)
+				}
 				timeoutMs = &v
 			}
 			arm = append(arm, spi.ScheduledTask{
 				ID:            id,
 				TenantID:      entity.Meta.TenantID,
 				Type:          spi.ScheduledTaskFireTransition,
-				ScheduledTime: armMs + tr.Schedule.DelayMs,
+				ScheduledTime: sched,
 				TimeoutMs:     timeoutMs,
 				EntityID:      entity.Meta.ID,
 				ModelName:     entity.Meta.ModelRef.EntityName,

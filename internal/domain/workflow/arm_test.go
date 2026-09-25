@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -603,6 +604,79 @@ func TestReconcile_StoreFailureIsMarkedInfra(t *testing.T) {
 			}
 			if !errors.Is(err, storeErr) {
 				t.Errorf("error must keep the store cause in the chain for logging; got: %v", err)
+			}
+		})
+	}
+}
+
+// --- Static Schedule.DelayMs producing an unrenderable time must fail the arm ---
+
+// TestReconcile_StaticDelayUnrenderableFailsArm is the static-delay
+// counterpart to resolveSchedule's Function-result range check
+// (schedule_function_test.go): an arm whose armMs+DelayMs, or (when
+// TimeoutMs is set) scheduledTime+TimeoutMs, cannot be rendered as an RFC
+// 3339 time.Time (years 0000-9999) must fail the arm and never reach the
+// store — fail-closed, never a partial commit with the entity moved but no
+// task armed. DelayMs is workflow config, not caller input, so the failure
+// carries ErrScheduledTaskInfra, the same family every other settle-time
+// arm/cancel failure uses (TestReconcile_StoreFailureIsMarkedInfra), rather
+// than a 4xx that would blame the caller of an ordinary write for a value
+// they never supplied.
+func TestReconcile_StaticDelayUnrenderableFailsArm(t *testing.T) {
+	cases := []struct {
+		name      string
+		nowMs     int64
+		delayMs   int64
+		timeoutMs *int64
+	}{
+		{"delay overflows int64", 1, math.MaxInt64, nil},
+		{"delay lands past the max renderable time", 0, maxScheduleMs + 1, nil},
+		{"in-range delay but timeout overflows int64", 0, 1000, ptr(int64(math.MaxInt64))},
+		{"in-range delay but timeout pushes expiry past the max", 0, 1000, ptr(int64(maxScheduleMs))},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			engine, factory := setupEngineWithClock(t, tc.nowMs)
+			ctx := ctxWithTenant(testTenant)
+			modelRef := spi.ModelRef{EntityName: "static-delay-range", ModelVersion: "1.0"}
+			saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{{
+				Version: "1.1", Name: "StaticDelayRangeWF", InitialState: "OPEN", Active: true,
+				States: map[string]spi.StateDefinition{
+					"OPEN": {Transitions: []spi.TransitionDefinition{
+						{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: tc.delayMs, TimeoutMs: tc.timeoutMs}},
+					}},
+					"CLOSED": {},
+				},
+			}})
+
+			txMgr, err := factory.TransactionManager(ctx)
+			if err != nil {
+				t.Fatalf("TransactionManager: %v", err)
+			}
+			txID, txCtx, err := txMgr.Begin(ctx)
+			if err != nil {
+				t.Fatalf("Begin: %v", err)
+			}
+			t.Cleanup(func() { _ = txMgr.Rollback(ctx, txID) })
+
+			entity := makeEntity("static-delay-range-e1", modelRef, map[string]any{})
+			entity.Meta.TransactionID = txID
+
+			_, err = engine.Execute(txCtx, entity, "")
+			if err == nil {
+				t.Fatal("expected an unrenderable static delay/timeout to fail the arm")
+			}
+			if !errors.Is(err, ErrScheduledTaskInfra) {
+				t.Errorf("error must wrap ErrScheduledTaskInfra (fail-closed, same family as every other arm-path failure); got: %v", err)
+			}
+
+			sts, err := factory.ScheduledTaskStore(ctx)
+			if err != nil {
+				t.Fatalf("ScheduledTaskStore: %v", err)
+			}
+			wantID := taskID(testTenant, "static-delay-range-e1", "OPEN", "AutoClose")
+			if _, found, _ := sts.Get(ctx, testTenant, wantID); found {
+				t.Error("a task whose time cannot be rendered must never be armed")
 			}
 		})
 	}
