@@ -651,7 +651,7 @@ const (
 
 // wholeRequest is the window of a collection request that must not be split:
 // the chunk loops' end clamps it to the item count, so the request runs as one
-// chunk.
+// chunk. start is 0 on the only iteration, so start+window cannot overflow.
 const wholeRequest = math.MaxInt
 
 // resolveTransactionWindow returns the effective window for a collection

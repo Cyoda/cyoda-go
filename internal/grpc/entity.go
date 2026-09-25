@@ -300,6 +300,14 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 		}
 		defer cancelTimeout()
 
+		if werr := refuseJoinedTransactionWindow(ctx, req.TransactionWindow); werr != nil {
+			respCE, ceErr := entityTransactionError(ctx, ce.Id, werr)
+			if ceErr != nil {
+				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
+			}
+			return stream.Send(respCE)
+		}
+
 		if len(req.Payloads) == 0 {
 			return status.Errorf(codes.InvalidArgument, "payloads array is empty")
 		}
@@ -365,6 +373,14 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 			return stream.Send(respCE)
 		}
 		defer cancelTimeout()
+
+		if werr := refuseJoinedTransactionWindow(ctx, req.TransactionWindow); werr != nil {
+			respCE, ceErr := entityTransactionError(ctx, ce.Id, werr)
+			if ceErr != nil {
+				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
+			}
+			return stream.Send(respCE)
+		}
 
 		if len(req.Payloads) == 0 {
 			return status.Errorf(codes.InvalidArgument, "payloads array is empty")

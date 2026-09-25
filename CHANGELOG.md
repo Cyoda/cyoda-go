@@ -501,7 +501,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   collection now runs as one unit, so a failure in any item fails the
   request, and an explicit `transactionWindow` on a joined request is
   rejected with `400 BAD_REQUEST`, as `transactionSize` and
-  `transactionTimeoutMillis` already are. See
+  `transactionTimeoutMillis` already are — also on a single-object create,
+  where it used to be ignored, and on the gRPC collection events
+  (`CLIENT_ERROR` `BAD_REQUEST`), which used to accept and ignore it. See
   `docs/cloud-parity/transaction-control-params.md`.
 
 - **A compute node's callback never commits the transaction it joined.** A

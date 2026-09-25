@@ -42,3 +42,18 @@ func resolveEventTimeout(ctx context.Context, millis *int, fieldName string) (co
 	tctx, cancel := common.WithRequestTimeout(ctx, int64(*millis))
 	return tctx, cancel, nil
 }
+
+// refuseJoinedTransactionWindow rejects the transactionWindow of a collection
+// event on a request that joined an open transaction (spi.GetTransaction(ctx)
+// != nil). A window is a commit after every so many items, and a joined
+// request commits nothing — its transaction's owner does — so the field is
+// refused, as transactionTimeoutMs is, rather than accepted and ignored. It
+// mirrors the HTTP collection doors' rule (internal/domain/entity's
+// resolveTransactionWindow).
+func refuseJoinedTransactionWindow(ctx context.Context, window *int) error {
+	if window != nil && spi.GetTransaction(ctx) != nil {
+		return common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+			"transactionWindow is not supported on a request that joins an open transaction")
+	}
+	return nil
+}

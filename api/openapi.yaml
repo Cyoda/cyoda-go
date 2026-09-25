@@ -3412,7 +3412,8 @@ paths:
           description: |
             Maximum number of entities per transactional batch. Applies only
             when the request body is a JSON array; ignored for single-object
-            bodies. Default 100, maximum 1000; values outside (0, 1000] are
+            bodies, except that a joined request rejects it whatever the body
+            (below). Default 100, maximum 1000; values outside (0, 1000] are
             rejected with 400 BAD_REQUEST. Array bodies exceeding the window
             are split into multiple transactional batches committed
             sequentially. The response is then an array with one element per

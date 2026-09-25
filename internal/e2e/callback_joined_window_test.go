@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 )
 
 // callback_joined_window_test.go — a request that joined an open transaction
@@ -161,6 +163,59 @@ func TestCallback_JoinedCollection_NotChunked(t *testing.T) {
 		t.Run(door.name, func(t *testing.T) {
 			res := runJoinedWindowCase(t, h, door, "unchunked-"+door.name, "")
 			assertProblem(t, res.StatusCode, res.Body, http.StatusConflict, "COMMIT_IN_JOINED_TRANSACTION", false)
+		})
+	}
+}
+
+// TestCallback_JoinedCollection_GRPCTransactionWindowRefused: the gRPC
+// collection events carry transactionWindow too; on a joined request it is
+// refused like the HTTP parameter, not accepted and ignored.
+func TestCallback_JoinedCollection_GRPCTransactionWindowRefused(t *testing.T) {
+	h := newCallbackHarness(t)
+	target := "jw-grpc-target"
+	h.SetupModelWithWorkflow(t, target, secondaryWorkflow)
+	existingID := createQuietEntity(t, h, target, joinedCommitPayload)
+
+	for _, tc := range []struct {
+		name      string
+		eventType string
+		body      map[string]any
+	}{
+		{"grpc-create-collection", internalgrpc.EntityCreateCollectionRequest, map[string]any{
+			"id": "jw-create", "dataFormat": "JSON", "transactionWindow": 10,
+			"payloads": []any{map[string]any{"model": map[string]any{"name": target, "version": 1}, "data": mustJSONMap(joinedCommitPayload)}},
+		}},
+		{"grpc-update-collection", internalgrpc.EntityUpdateCollectionRequest, map[string]any{
+			"id": "jw-update", "dataFormat": "JSON", "transactionWindow": 10,
+			"payloads": []any{map[string]any{"entityId": existingID, "data": mustJSONMap(joinedCommitPayload)}},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			outer := "jw-grpc-outer-" + tc.name
+			outerProc := "jw-grpc-outer-proc-" + tc.name
+			answered := make(chan joinedCommitOutcome, 1)
+			h.RegisterProc(outerProc, func(rc *reqCtx) (map[string]any, error) {
+				answered <- grpcJoinedOutcome(h.joinedManageCollectionGRPC(tc.eventType, tc.body, rc.token))
+				return nil, fmt.Errorf("outer processor fails on purpose so the owner rolls its transaction back")
+			})
+			h.SetupModelWithWorkflow(t, outer, joinedCommitOuterWorkflow(outer, outerProc))
+			_, _, _ = h.CreateEntity(t, outer, 1, joinedCommitPayload)
+
+			var o joinedCommitOutcome
+			select {
+			case o = <-answered:
+			case <-time.After(15 * time.Second):
+				t.Fatal("timeout: the outer processor's callback never ran")
+			}
+			if o.err != nil {
+				t.Fatalf("transport error: %v", o.err)
+			}
+			if o.envelopeCode != "CLIENT_ERROR" || o.errorCode != "BAD_REQUEST" {
+				t.Fatalf("envelope %q code %q; want CLIENT_ERROR BAD_REQUEST (%s)", o.envelopeCode, o.errorCode, o.detail)
+			}
+			if !strings.Contains(o.detail, "transactionWindow") || !strings.Contains(o.detail, "joins an open transaction") {
+				t.Errorf("message must name transactionWindow and the joined transaction: %s", o.detail)
+			}
 		})
 	}
 }
