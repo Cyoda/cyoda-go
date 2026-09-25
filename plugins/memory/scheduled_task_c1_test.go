@@ -230,22 +230,24 @@ func TestTasks_C1_StaleRemoveLifeIsNoWrite(t *testing.T) {
 // A life armed after Begin is not the life the transaction sees, whether the
 // row held another life at Begin or did not exist: naming it is a no-op.
 func TestTasks_C1_RemoveLifeOfALifeArmedAfterBeginIsNoWrite(t *testing.T) {
-	for _, existed := range []bool{true, false} {
-		fx := newTaskFixture(t)
-		if existed {
-			rearm(t, fx)
-		}
-		txID, txCtx := fx.begin(t, taskTenantA)
-		later := rearm(t, fx)
-		if err := fx.sts.RemoveLife(txCtx, taskTenantA, "e1:S:T", later.ArmToken); err != nil {
-			t.Fatalf("existed=%v: RemoveLife: %v", existed, err)
-		}
-		if err := fx.commit(taskTenantA, txID); err != nil {
-			t.Fatalf("existed=%v: Commit = %v, want nil: the no-op wrote nothing", existed, err)
-		}
-		if got, ok := getTask(t, context.Background(), fx.sts, taskTenantA, "e1:S:T"); !ok || got.ArmToken != later.ArmToken {
-			t.Fatalf("existed=%v: task = %+v, %v; want the life armed after Begin", existed, got, ok)
-		}
+	for name, existed := range map[string]bool{"row existed at Begin": true, "row missing at Begin": false} {
+		t.Run(name, func(t *testing.T) {
+			fx := newTaskFixture(t)
+			if existed {
+				rearm(t, fx)
+			}
+			txID, txCtx := fx.begin(t, taskTenantA)
+			later := rearm(t, fx)
+			if err := fx.sts.RemoveLife(txCtx, taskTenantA, "e1:S:T", later.ArmToken); err != nil {
+				t.Fatalf("RemoveLife: %v", err)
+			}
+			if err := fx.commit(taskTenantA, txID); err != nil {
+				t.Fatalf("Commit = %v, want nil: the no-op wrote nothing", err)
+			}
+			if got, ok := getTask(t, context.Background(), fx.sts, taskTenantA, "e1:S:T"); !ok || got.ArmToken != later.ArmToken {
+				t.Fatalf("task = %+v, %v; want the life armed after Begin", got, ok)
+			}
+		})
 	}
 }
 

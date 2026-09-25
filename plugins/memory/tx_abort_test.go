@@ -48,6 +48,8 @@ func TestTx_AnAbortedCommitLeavesTheTransactionRolledBack(t *testing.T) {
 			if err != nil {
 				t.Fatalf("EntityStore: %v", err)
 			}
+			arm(t, context.Background(), fx.sts, taskTenantA, "e1", "T")
+			armed, _ := getTask(t, context.Background(), fx.sts, taskTenantA, "e1:S:T")
 			txID, txCtx := fx.begin(t, taskTenantA)
 			a.abort(t, fx, store, txCtx)
 			if err := fx.commit(taskTenantA, txID); !errors.Is(err, a.want) {
@@ -65,8 +67,8 @@ func TestTx_AnAbortedCommitLeavesTheTransactionRolledBack(t *testing.T) {
 			if _, err := store.Save(txCtx, &spi.Entity{Meta: spi.EntityMeta{ID: "e3", ModelRef: ref}, Data: []byte(`{}`)}); !errors.Is(err, spi.ErrTxRolledBack) {
 				t.Fatalf("Save = %v, want ErrTxRolledBack", err)
 			}
-			if _, _, err := fx.sts.Get(txCtx, taskTenantA, "e1:S:T"); err != nil {
-				t.Fatalf("Get = %v, want nil: it reads the committed row", err)
+			if got, ok := getTask(t, txCtx, fx.sts, taskTenantA, "e1:S:T"); !ok || got.ArmToken != armed.ArmToken {
+				t.Fatalf("Get = %+v, %v; want the committed life armed before the abort", got, ok)
 			}
 			if err := fx.tm.Rollback(ctxWithTenant(taskTenantA), txID); !errors.Is(err, spi.ErrTxNotFound) {
 				t.Fatalf("Rollback = %v, want ErrTxNotFound: the abort already discarded the transaction", err)
