@@ -5271,6 +5271,18 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: >-
+            Conflict (`CONFLICT`, retryable). The workflows are saved; removing
+            the tasks of transitions that no workflow of the model schedules any
+            more lost a race with the scheduler, which changes a task when it
+            claims, records, fails or gives it back. The server retries the
+            removal up to 3 times before it answers 409. Retry the import: it
+            saves the same workflows again and removes the tasks.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
