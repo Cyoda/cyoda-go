@@ -65,7 +65,7 @@ func (s *scheduledTaskStore) ownerStaleLocked(owner uuid.UUID, cutoff time.Time)
 // RUNNING.
 func (s *scheduledTaskStore) ClaimDue(_ context.Context, req spi.ClaimRequest) ([]spi.ScheduledTask, error) {
 	if req.Limit < 1 || req.PerTenantLimit < 1 {
-		return nil, fmt.Errorf("claim due scheduled tasks: limit and per-tenant limit must be >= 1, got %d and %d", req.Limit, req.PerTenantLimit)
+		return nil, fmt.Errorf("claim due scheduled tasks: limit and per-tenant limit must be >= 1, got %d and %d: %w", req.Limit, req.PerTenantLimit, spi.ErrStoreRejected)
 	}
 	s.f.entityMu.Lock()
 	defer s.f.entityMu.Unlock()
@@ -91,7 +91,7 @@ func (s *scheduledTaskStore) ClaimDue(_ context.Context, req spi.ClaimRequest) (
 		cands = append(cands, t)
 	}
 
-	// spi.SelectClaims (S-3a) applies the rules every backend shares: one
+	// spi.SelectClaims applies the rules every backend shares: one
 	// task per entity, the per-tenant limits, tenants taking turns.
 	chosen := spi.SelectClaims(cands, req)
 	ops := make([]scheduledTaskOp, 0, len(chosen))

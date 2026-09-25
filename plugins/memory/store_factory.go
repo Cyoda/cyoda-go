@@ -56,9 +56,10 @@ type claimKey struct {
 	signature string
 }
 
-// entityTenantKey qualifies an entity ID by its tenant so that two tenants
-// with the same entity ID do not share a claim entry in claimsByEntity.
-// Guarded by entityMu.
+// entityTenantKey qualifies an entity ID by its tenant, so that two tenants
+// with the same entity ID are never taken for one entity. It keys the claim
+// entries in claimsByEntity, and ClaimDue's set of entities that already
+// have a RUNNING task. Guarded by entityMu.
 type entityTenantKey struct {
 	tenant string
 	id     string

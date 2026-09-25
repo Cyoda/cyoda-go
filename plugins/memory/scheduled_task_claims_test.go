@@ -81,9 +81,18 @@ func TestTasks_ClaimHonoursTenantLimitsAndTurns(t *testing.T) {
 
 func TestTasks_ClaimRejectsALimitBelowOne(t *testing.T) {
 	fx := newTaskFixture(t)
-	_, err := fx.sts.ClaimDue(context.Background(), spi.ClaimRequest{Owner: uuid.New(), NowMs: 2_000, Limit: 0, PerTenantLimit: 1})
-	if err == nil {
-		t.Fatal("ClaimDue accepted Limit 0")
+	bg := context.Background()
+	arm(t, bg, fx.sts, taskTenantA, "e1", "T")
+	for name, req := range map[string]spi.ClaimRequest{
+		"Limit 0":          {Owner: uuid.New(), NowMs: 2_000, Limit: 0, PerTenantLimit: 1},
+		"PerTenantLimit 0": {Owner: uuid.New(), NowMs: 2_000, Limit: 1, PerTenantLimit: 0},
+	} {
+		if _, err := fx.sts.ClaimDue(bg, req); !errors.Is(err, spi.ErrStoreRejected) {
+			t.Fatalf("%s: ClaimDue = %v, want ErrStoreRejected", name, err)
+		}
+	}
+	if got, _ := getTask(t, bg, fx.sts, taskTenantA, "e1:S:T"); got.Status != spi.ScheduledTaskWaiting {
+		t.Fatalf("task status = %s after refused claims, want WAITING", got.Status)
 	}
 }
 
