@@ -168,6 +168,7 @@ func RunScheduledTasksQueryFilters(t *testing.T, fixture BackendFixture) {
 		{"status RUNNING", url.Values{"status": {"RUNNING"}}, nil},
 		{"status FAILED", url.Values{"status": {"FAILED"}}, nil},
 		{"status WAITING or RUNNING", url.Values{"status": {"WAITING", "RUNNING"}}, all},
+		{"status RUNNING or WAITING", url.Values{"status": {"RUNNING", "WAITING"}}, all},
 		{"modelName", url.Values{"modelName": {modelA}}, modelAAll},
 		{"modelName and modelVersion", url.Values{"modelName": {modelA}, "modelVersion": {"2"}}, a2},
 		{"entityId", url.Values{"entityId": {a1[0]}}, a1[:1]},
@@ -228,9 +229,18 @@ func RunScheduledTasksQueryTenantIsolation(t *testing.T, fixture BackendFixture)
 	if pageA.Pagination.NextCursor == "" {
 		t.Fatal("tenant A's first page of one has no nextCursor")
 	}
+	if len(pageA.Items) != 1 {
+		t.Fatalf("tenant A's first page of one has %d items, want 1", len(pageA.Items))
+	}
+	cursorPos := pageA.Items[0]
 	for _, it := range listScheduledTasksPage(t, cB, url.Values{"cursor": {pageA.Pagination.NextCursor}}).Items {
 		if !slices.Contains(bIDs, it.EntityID) {
 			t.Errorf("tenant B, with tenant A's cursor, sees entity %s", it.EntityID)
+		}
+		if it.ScheduledTime.Before(cursorPos.ScheduledTime) ||
+			(it.ScheduledTime.Equal(cursorPos.ScheduledTime) && it.TaskID <= cursorPos.TaskID) {
+			t.Errorf("tenant B, with tenant A's cursor, item %s (%v) does not sort strictly after the cursor position %s (%v)",
+				it.TaskID, it.ScheduledTime, cursorPos.TaskID, cursorPos.ScheduledTime)
 		}
 	}
 }
