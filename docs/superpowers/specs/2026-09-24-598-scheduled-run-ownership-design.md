@@ -155,9 +155,17 @@ STALE_AFTER − HEARTBEAT_INTERVAL`.
 - **Commits come only from the run.** No other code path commits a run's
   transaction. #599 guarantees this (§14).
 - **`RemoveLife` removes only the life it names.** It does nothing if this same
-  transaction has already replaced or removed the task. That happens when a
-  joined callback wrote the fired entity, which is the case the docs advise
-  against (`help/workflows.md:185-192`).
+  transaction has already replaced or removed the task.
+- **A processor may write its own fired entity** through a joined callback and
+  return no mutations (`help/workflows.md:185-192`). Before its final persist,
+  the run re-reads the fired entity inside its transaction.
+  - If this transaction deleted it: the run removes its life, skips the re-arm
+    and the persist, and commits. The outcome is `cancelled`.
+  - If this transaction last wrote it: the run persists with
+    `CompareAndSave(entity, <this transaction's id>)`, so the engine's result
+    is the last write, as in an ordinary transition.
+  - A write by another transaction is not visible under the snapshot and still
+    fails at commit.
 - **Order at the end.** The run removes or re-arms its own task first, then runs
   the re-arm step for the final state (`fire_scheduled.go:470-489`).
 - **Deciding "superseded".** If a run's transaction fails with `ErrStaleClaim`
@@ -192,9 +200,11 @@ The mark (§5.5) is what protects A2.
   - a flag saying the fired transition has changed the state (for
     `PartialCommit`).
 - **When the run is cancelled.** It is cancelled when the pnode cancels itself
-  (§6.3), when a panic latch fires (§6.5), or at shutdown step 3 (§6.4). At
-  shutdown step 3, a run with an unsafe callout in flight is exempt until that
-  callout ends.
+  (§6.3), when a panic latch fires (§6.5), or at shutdown step 3 (§6.4). A run
+  with an unsafe callout in flight at step 3 is not cancelled; §6.4 bounds it.
+- **Shutdown signals on the guard.** The guard also carries a "no new unsafe
+  dispatch" signal, closed at shutdown step 1, and a record of each unsafe
+  callout in flight and when the oldest one started.
 - **Callouts see the cancellation.** Every callout of a guarded run carries it:
   - processors, in every segment and in both `COMMIT_BEFORE_DISPATCH` branches
     (`engine_processors.go:360, 392`);
@@ -261,9 +271,11 @@ and only when both of these hold:
   (`peer_router.go:154-167`), unless the peer's authenticated answer was
   `no_handoff` (`a.Failure.Kind == NoHandOff`, `handover.go:389-391`).
 
-A `no_handoff` answer is safe to trust: when `RepeatSafe` is false, the peer
-stops on any failure other than `NoHandOff` (`run_local.go:147`,
-`handover.go:115, 245`).
+A `no_handoff` answer counts as proof only for a callout that is not
+repeat-safe. For such a callout the peer stops on any failure other than
+`NoHandOff` (`run_local.go:147`, `handover.go:115, 245`). The coordinator's
+exits before any try also carry the proof: `ResolveAnswerLimit` and the
+criterion parse failure (`internal/callout/entry.go:30-32`).
 
 For this, the callout layer needs these changes:
 - `LocalResult` gains a `HandedOff` bit. Every return path after `Send`
@@ -613,7 +625,10 @@ existing permanent latch (`docs/ARCHITECTURE.md:382-393`).
   | `DeleteEntitiesConditional` (`:1205`), single-transaction loop (`:1314`) and `deleteBatched` (`:1440`) | `DeleteForEntities` with the ids actually deleted |
   | `DeleteAllEntities` (`:778`, also reached from `:1230`) | `DeleteForModel(tenant, model, version, keep = none)` |
 
-  **Server-side retry on a task-row conflict (C1):**
+  **Server-side retry on a conflict.** On an owned path the store cannot tell a
+  task-row conflict from a conflict on the entity itself, so the retry covers
+  any `spi.ErrConflict`. A delete that races an ordinary update succeeds on
+  retry, against the entity as it now is.
 
   | Delete path | Retry |
   |---|---|
@@ -647,7 +662,7 @@ tenant comes from the token.
 | Parameter | Type | Rule |
 |---|---|---|
 | `status` | repeatable: `WAITING`, `RUNNING`, `FAILED` | unknown value → 400 |
-| `modelName` | string, 1–256 | |
+| `modelName` | string, 1–256, valid UTF-8, no NUL | otherwise → 400 |
 | `modelVersion` | integer ≥ 1 | only together with `modelName` |
 | `entityId` | UUID | |
 | `cursor` | opaque, ≤ 256 characters | invalid → 400; never echoed |
@@ -685,7 +700,7 @@ returned.
 | Status | Code | When |
 |---|---|---|
 | 200 | — | success, including an empty list |
-| 400 | `BAD_REQUEST` | unknown `status`; `modelVersion` without `modelName`; `modelVersion` not an integer ≥ 1; `entityId` not a UUID; `modelName` empty or too long; `limit` not an integer or outside 1–1000; invalid `cursor` |
+| 400 | `BAD_REQUEST` | unknown `status`; `modelVersion` without `modelName`; `modelVersion` not an integer ≥ 1; `entityId` not a UUID; `modelName` empty, too long, invalid UTF-8 or with NUL; `limit` not an integer or outside 1–1000; invalid `cursor` |
 | 401 | `UNAUTHORIZED` | no token, or an invalid one |
 | 500 | `SERVER_ERROR` | internal failure; generic message and a ticket |
 | 503 | `STORAGE_UNAVAILABLE` | storage unavailable; retryable |
@@ -722,6 +737,7 @@ do for an entity conflict.
   attribute.
 - **Span:** `scheduler.run`, with the outcome.
 - **Logs:**
+  - INFO `scheduler started` with the pnode's `incarnation`, once at start;
   - WARN on each safe failure;
   - ERROR on FAILED, with the reason and a ticket;
   - WARN on self-cancel;
@@ -749,6 +765,7 @@ type ScheduledTask struct {
     PartialCommit        bool
     Claim                *TaskClaim // RUNNING only: {Token, Owner uuid.UUID}
     UnsafeMarked         bool       // read-only: a mark exists for this life
+    ClaimedFromLostOwner bool       // read-only, ClaimDue results only: taken from a stale or missing owner
 }
 ```
 
@@ -797,6 +814,21 @@ type ScheduledTask struct {
   - A fenced refusal is `spi.ErrStaleClaim`.
 - **C6. A task row written by an open transaction is not claimable** until that
   transaction ends. `MarkUnsafe` answers `ErrTaskBusy` for such a row.
+- **C7. Audit events roll back with their transaction** on every backend. An
+  event recorded in a transaction that rolls back is not kept.
+
+**Further rules the conformance suite pins:**
+- `RemoveLife` counts as a C1 write even when it removes nothing.
+- `Query` orders ids byte-wise.
+- In `ClaimDue`, tenants take turns: each tenant's first task comes before any
+  tenant's second.
+- A `Cancel` id is removed and not reported.
+- `GiveBackIdle` leaves the task claimable at once.
+- `Fail` leaves `LastAttemptTime` unchanged and always overwrites `LastError`.
+- `RecordAttempt` may answer `ErrTaskBusy`, and the caller retries.
+- A joining write whose tenant differs from the transaction's is refused.
+- Error text with a NUL, invalid UTF-8 or more than 1 024 bytes is refused with
+  `ErrStoreRejected`. On PostgreSQL a `CHECK` constraint enforces it.
 
 **Conformance.** The cases live in `SPI/spitest`. They cover every method, every
 refusal and every clause, including:
@@ -848,7 +880,9 @@ What runs on it:
 - every never-joining method except `Query`, which uses the main pool;
 - the async-search heartbeat and claim (`plugins/postgres/search_store.go`).
 
-`Heartbeat` has one extra connection of its own. A `lock_not_available` (55P03)
+`Heartbeat` has one extra connection of its own. The existing
+`cyoda.storage.pool.connections` gauge gains a `pool` attribute (`main`,
+`scheduler`, `heartbeat`). A `lock_not_available` (55P03)
 error is retried by the caller with the §5.6 backoff. For `MarkUnsafe` it
 means `ErrTaskBusy`.
 
@@ -930,6 +964,13 @@ Both run a single pnode, and both meet the same contract.
   gives `ErrTaskBusy`.
 - **Marks** are kept apart from task rows. They never append to the committed
   log.
+- **C7.** Audit events are recorded inside the transaction and discarded on
+  rollback.
+- **SQLite's conflict check** orders by a sequence number for entities as well
+  as task rows. With a frozen clock, a submit-time comparison gives false
+  conflicts to entity writes too.
+- **A write staged into a transaction that has already committed** is refused,
+  as entity saves are.
 - **Never-joining methods** apply at once, under the store's lock:
   - memory: `entityMu`;
   - SQLite: the writer connection, with the claim following
@@ -1177,7 +1218,7 @@ Rules:
 | 400 `modelVersion` without `modelName` | ✓ | | ✓ | |
 | 400 `modelVersion` not an integer ≥ 1 | ✓ | | ✓ | |
 | 400 `entityId` not a UUID | | | ✓ | |
-| 400 `modelName` empty or too long | ✓ | | ✓ | |
+| 400 `modelName` empty, too long, invalid UTF-8, or with NUL | ✓ | | ✓ | |
 | 400 `limit` 0, 1001, or not an integer | ✓ | | ✓ | |
 | 400 invalid cursor, value not echoed | ✓ | | ✓ | |
 | 401 no token; 401 invalid token | | | ✓ | |
@@ -1218,7 +1259,7 @@ git grep -n -e RedispatchAfter -e RedispatchBackoff -e MarkRedispatch -e Attempt
   -e CYODA_SCHEDULER_DISTRIBUTION -e CYODA_SCHEDULER_COORDINATOR -e CYODA_SCHEDULER_REDISPATCH_BACKOFF \
   -e CYODA_SCHEDULER_BATCH_SIZE -e CYODA_SCHEDULER_EXPIRY_GRACE -e CYODA_DISPATCH_FORWARD_TIMEOUT \
   -e ExpiryGrace -e expiryGrace \
-  -- . ':!*/migrations/*' ':!docs/plans' ':!docs/superpowers' ':!docs/release-notes' ':!CHANGELOG.md'
+  -- . ':!*/migrations/*' ':!docs/plans' ':!docs/superpowers' ':!docs/release-notes' ':!CHANGELOG.md' ':!COMPATIBILITY.md'
 git grep -n -e '\.Upsert(ctx, task' -e 'sts\.Delete(' -- '*.go'
 ```
 
