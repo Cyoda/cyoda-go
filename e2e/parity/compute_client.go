@@ -18,6 +18,7 @@ const (
 	ComputeBehaviourFailRetryable = "fail-retryable" // answer success=false, retryable=true
 	ComputeBehaviourLateCallback  = "late-callback"  // never answer; call back with the pass on Release
 	ComputeBehaviourDrop          = "drop"           // close the stream on receiving work
+	ComputeBehaviourHold          = "hold"           // take the work; answer it from the catalog on Release
 )
 
 // ComputeClientSpec describes a further compute client for one scenario.
@@ -66,8 +67,9 @@ type ComputeClient interface {
 	// Received returns every calculation request the client has received, in
 	// arrival order. It still works after a "drop" client closed its stream.
 	Received(t *testing.T) []ReceivedCallout
-	// Release tells a late-callback client to make its callbacks now, waits
-	// for them, and returns the record, which then carries their outcomes.
+	// Release tells a late-callback client to make its callbacks now, and a
+	// hold client to answer what it holds; it waits for them and returns the
+	// record, which then carries the late callbacks' outcomes.
 	Release(t *testing.T) []ReceivedCallout
 	// Stop ends the client's process and returns once it is reaped. The server
 	// notices the closed stream a moment later, so a scenario asserting that
