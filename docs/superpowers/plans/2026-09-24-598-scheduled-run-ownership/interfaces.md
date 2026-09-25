@@ -184,7 +184,8 @@ func (f *UnsafeFlight) Begin()
 func (f *UnsafeFlight) End()
 func (f *UnsafeFlight) Since() (time.Time, bool)
 func WithRunGuard(ctx context.Context, g *RunGuard) context.Context
-func runGuardFrom(ctx context.Context) *RunGuard // unexported
+func RunGuardFrom(ctx context.Context) *RunGuard // exported (README C-G1)
+func (g *RunGuard) UnsafeInFlight() bool        // _, ok := g.Unsafe.Since(); ok
 
 type RunReport struct {
 	Outcome        ScheduledOutcome // fired | declined | expired | cancelled | superseded | failed

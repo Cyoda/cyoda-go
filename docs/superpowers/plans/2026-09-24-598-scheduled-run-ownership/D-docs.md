@@ -100,6 +100,8 @@ README's stream table.
 
 ### Task D-1: scheduler settings — help topics and README
 
+> **Dropped (README C-D1).** R-10 writes this text; use the text below as R-10's reference if R-10's own wording is missing a point, but do not execute this task.
+
 **Spec:** §6.1–§6.4, §11.
 
 **Needs:** R's config task (`app/config.go`, `cmd/cyoda/help/config_registry.go`,
@@ -241,6 +243,8 @@ git commit -m "docs(help): scheduler settings — claiming, liveness, retries, s
 ---
 
 ### Task D-2: the scheduler pool — `config/database.md` and `docs/plugins/POSTGRES.md`
+
+> **Dropped (README C-D1).** BP-1 writes `config/database.md` and BP-6 writes `POSTGRES.md`, including the missing `scheduled_tasks` schema row below. Do not execute this task.
 
 **Spec:** §10.2 (scheduler pool, tables), §11.
 

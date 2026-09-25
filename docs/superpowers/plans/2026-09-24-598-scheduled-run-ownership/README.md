@@ -191,9 +191,12 @@ correction governs. Each item names the tasks it changes.
     4. `MarkUnsafe`;
     5. dispatch;
     6. `Unsafe.End()`.
-  - `(*RunGuard).UnsafeInFlight()` and R's `Draining` / `RunGuardFrom` are not
-    used.
-  - `runGuardFrom` stays unexported. R keeps the `*RunGuard` it built.
+  - `(*RunGuard).UnsafeInFlight() bool` stays, as a thin wrapper over
+    `Unsafe.Since()`. E-5 implements `UnsafeFlight` in place of its atomic
+    counter, and brackets every unsafe dispatch with `Begin`/`End`.
+  - The accessor is exported as `workflow.RunGuardFrom(ctx) *RunGuard`,
+    because R's tests read the guard from the context their fake `Firer`
+    receives. R's name `Draining` is `NoNewUnsafe`.
 - **C-S1: `ClaimedFromLostOwner`.** `spi.ScheduledTask` gains
   `ClaimedFromLostOwner bool`. It is read-only and set only on a `ClaimDue`
   result, when that claim took the task from a stale or missing owner.
@@ -270,8 +273,11 @@ correction governs. Each item names the tasks it changes.
     create that state.
 - **C-D1: help text for settings.** R-10 owns `config/scheduler.md`,
   `config.md`, `config/cluster.md` and the README scheduler rows. BP-1 owns
-  `config/database.md`, and BP-6 owns `docs/plugins/POSTGRES.md`. D-1 and D-2
-  are dropped; D keeps only what those tasks do not write.
+  `config/database.md`, and BP-6 owns `docs/plugins/POSTGRES.md`, including the
+  missing `scheduled_tasks` row in its schema table.
+  - D-1 and D-2 are dropped; D keeps only what those tasks do not write.
+  - `TestConfig_EnvVarCoverage` stays green because the text lands in the same
+    commit as the setting.
 - **C-D2: chart version.** D-5 bumps the chart `version:` with the template
   change. `appVersion` changes at the release cut.
 - **C-X1: exit checks.** They also exclude `COMPATIBILITY.md`, whose release

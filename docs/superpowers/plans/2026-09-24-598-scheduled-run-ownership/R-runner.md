@@ -1065,7 +1065,7 @@ lost 3 times" (`MaxLostOwners` reaches the engine).
 **Interfaces:**
 - Consumes:
   - S: `spi.ScheduledTaskStore` (`ClaimDue`, `Heartbeat`, `GiveBackIdle`, `SweepOwners`, `SweepMarks`, `RecordAttempt`, `Fail`, `RetireOwner`), `spi.ClaimRequest`, `spi.TaskRef`, `spi.TaskClaim`, `spi.ScheduledTaskRunning`, and the requested `ScheduledTask.ClaimedFromLostOwner` (Open point 1).
-  - E: `workflow.RunReport`, `workflow.WithRunGuard`, `workflow.RunGuard{Ref, Store, Done, Draining, Unsafe}`, `workflow.UnsafeFlight`, `workflow.RunGuardFrom` (tests only), `workflow.OutcomeFailed` and the other outcomes (Open point 2).
+  - E: `workflow.RunReport`, `workflow.WithRunGuard`, `workflow.RunGuard{Ref, Store, Done, NoNewUnsafe, Unsafe}`, `workflow.UnsafeFlight`, `workflow.RunGuardFrom` (tests only), `workflow.OutcomeFailed` and the other outcomes (Open point 2).
   - R-2 … R-5.
 - Produces:
   - `type Firer interface{ FireScheduledTransition(ctx context.Context, task spi.ScheduledTask, maxLostOwners int, retryDelay time.Duration) workflow.RunReport }`
@@ -1658,7 +1658,7 @@ func TestService_RunsUnderTheSystemIdentityAndItsRunGuard(t *testing.T) {
 	if s.guard.Ref != want {
 		t.Errorf("guard ref = %+v, want %+v", s.guard.Ref, want)
 	}
-	if s.guard.Store == nil || s.guard.Done == nil || s.guard.Draining == nil || s.guard.Unsafe == nil {
+	if s.guard.Store == nil || s.guard.Done == nil || s.guard.NoNewUnsafe == nil || s.guard.Unsafe == nil {
 		t.Errorf("run guard incomplete: %+v", s.guard)
 	}
 	if s.maxLost != cfg.MaxLostOwners || s.retry != cfg.RetryDelay {
@@ -2294,7 +2294,7 @@ func (s *Service) run(r *liveRun) {
 func (s *Service) fire(ctx context.Context, r *liveRun) workflow.RunReport {
 	ctx = spi.WithUserContext(ctx, common.SystemUserContextValue(r.task.TenantID))
 	ctx = workflow.WithRunGuard(ctx, &workflow.RunGuard{
-		Ref: r.ref, Store: s.store, Done: r.ctx.Done(), Draining: s.drainingCh, Unsafe: r.unsafe,
+		Ref: r.ref, Store: s.store, Done: r.ctx.Done(), NoNewUnsafe: s.drainingCh, Unsafe: r.unsafe,
 	})
 	return s.deps.Firer.FireScheduledTransition(ctx, r.task, s.cfg.MaxLostOwners, s.cfg.RetryDelay)
 }
@@ -3062,7 +3062,7 @@ func (s *Service) fire(ctx context.Context, r *liveRun) (rep workflow.RunReport,
 	}()
 	ctx = spi.WithUserContext(ctx, common.SystemUserContextValue(r.task.TenantID))
 	ctx = workflow.WithRunGuard(ctx, &workflow.RunGuard{
-		Ref: r.ref, Store: s.store, Done: r.ctx.Done(), Draining: s.drainingCh, Unsafe: r.unsafe,
+		Ref: r.ref, Store: s.store, Done: r.ctx.Done(), NoNewUnsafe: s.drainingCh, Unsafe: r.unsafe,
 	})
 	return s.deps.Firer.FireScheduledTransition(ctx, r.task, s.cfg.MaxLostOwners, s.cfg.RetryDelay), false, uuid.Nil
 }

@@ -1030,7 +1030,7 @@ func WithRunGuard(ctx context.Context, g *RunGuard) context.Context {
 	return context.WithValue(ctx, runGuardKey{}, g)
 }
 
-func runGuardFrom(ctx context.Context) *RunGuard {
+func RunGuardFrom(ctx context.Context) *RunGuard {
 	g, _ := ctx.Value(runGuardKey{}).(*RunGuard)
 	return g
 }
@@ -1063,7 +1063,7 @@ func rereadTask(ctx context.Context, g *RunGuard) (*spi.ScheduledTask, error) {
 // rereadSegment is rereadTask for a segment opened after a
 // COMMIT_BEFORE_DISPATCH commit. It does nothing outside a scheduled run.
 func rereadSegment(ctx context.Context) error {
-	g := runGuardFrom(ctx)
+	g := RunGuardFrom(ctx)
 	if g == nil {
 		return nil
 	}
@@ -1177,7 +1177,7 @@ func preRunDecision(task spi.ScheduledTask, nowMs int64, maxLostOwners int, retr
 // writes RecordAttempt or Fail: the scheduler records every other outcome
 // from the returned report (§5.6, §5.7).
 func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.ScheduledTask, maxLostOwners int, retryDelay time.Duration) RunReport {
-	g := runGuardFrom(ctx)
+	g := RunGuardFrom(ctx)
 	reason, expire := preRunDecision(task, e.now().UnixMilli(), maxLostOwners, retryDelay)
 	if reason != "" {
 		return RunReport{Outcome: OutcomeFailed, FailReason: reason}
@@ -2109,7 +2109,7 @@ func (g *RunGuard) cancelled() bool {
 // guard, not ctx: after a COMMIT_BEFORE_DISPATCH commit the run continues on
 // context.WithoutCancel segments, which never report a cancellation.
 func runCheckpoint(ctx context.Context, where string) error {
-	if g := runGuardFrom(ctx); g != nil && g.cancelled() {
+	if g := RunGuardFrom(ctx); g != nil && g.cancelled() {
 		return runCancelled(where)
 	}
 	return nil
@@ -2119,7 +2119,7 @@ func runCheckpoint(ctx context.Context, where string) error {
 // WithoutCancel segments after a COMMIT_BEFORE_DISPATCH commit. Outside a run
 // it returns ctx unchanged. The caller must call the returned cancel.
 func runCallCtx(ctx context.Context) (context.Context, context.CancelFunc) {
-	g := runGuardFrom(ctx)
+	g := RunGuardFrom(ctx)
 	if g == nil || g.Done == nil {
 		return ctx, func() {}
 	}
@@ -2447,7 +2447,7 @@ func notDispatched(proc spi.ProcessorDefinition, cause error) error {
 // run from sending more unsafe work. The caller dispatches only on a nil
 // error, and then calls dispatched with the error its step ends with.
 func beforeDispatch(ctx context.Context, proc spi.ProcessorDefinition) (dispatched func(stepErr error), err error) {
-	g := runGuardFrom(ctx)
+	g := RunGuardFrom(ctx)
 	if g == nil || proc.Config.Idempotent {
 		return func(error) {}, nil
 	}
@@ -2597,7 +2597,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes (K): `contract.NoHandOffProof{Err}`, `contract.ProvesNoHandOff(err) bool`.
-- Produces: `RunGuard.NoNewUnsafe <-chan struct{}`, `(*RunGuard).UnsafeInFlight() bool`, `RunReport.UnsafeReached`.
+- Produces: `RunGuard.NoNewUnsafe <-chan struct{}`, `RunGuard.Unsafe *UnsafeFlight` (`Begin`, `End`, `Since`), `(*RunGuard).UnsafeInFlight() bool`, `RunReport.UnsafeReached` (README C-G1).
 
 - [ ] **Step 1: Write the failing tests.** `internal/domain/workflow/fire_reached_test.go`:
 
@@ -2764,9 +2764,9 @@ func TestUnsafeReached_InFlightIsVisible(t *testing.T) {
 	ext := &scriptedExtProc{processor: func(ctx context.Context, proc spi.ProcessorDefinition, _ string) (*spi.Entity, error) {
 		switch proc.Name {
 		case "p1":
-			duringUnsafe = runGuardFrom(ctx).UnsafeInFlight()
+			duringUnsafe = RunGuardFrom(ctx).UnsafeInFlight()
 		case "p2":
-			duringSafe = runGuardFrom(ctx).UnsafeInFlight()
+			duringSafe = RunGuardFrom(ctx).UnsafeInFlight()
 		}
 		return nil, nil
 	}}
@@ -2788,10 +2788,12 @@ func TestUnsafeReached_InFlightIsVisible(t *testing.T) {
 
 - [ ] **Step 2: Run to verify RED**
 Run: `go test ./internal/domain/workflow/... -run 'TestUnsafeReached_|TestUnsafeMark_MarkedTaskIsNeverRerun|TestUnsafeMark_NoNewUnsafe'`
-Expected: FAIL — build errors `run.guard.NoNewUnsafe undefined` and `runGuardFrom(ctx).UnsafeInFlight undefined`; with those two lines stubbed out, `TestUnsafeReached_Fact` fails on every `wantReached=true` row (the field is never set).
+Expected: FAIL — build errors `run.guard.NoNewUnsafe undefined` and `RunGuardFrom(ctx).UnsafeInFlight undefined`; with those two lines stubbed out, `TestUnsafeReached_Fact` fails on every `wantReached=true` row (the field is never set).
 
 - [ ] **Step 3: Implement.**
-  - `run_guard.go`: add to the struct and replace `beforeDispatch`.
+  - `run_guard.go`: add to the struct and replace `beforeDispatch`. Add
+    `"sync"` and `"time"` to the file's imports (E-1 created it with
+    `context`, `errors`, `fmt` and the SPI only).
 
 ```go
 type RunGuard struct {
@@ -2808,8 +2810,52 @@ type RunGuard struct {
 	markErrored   bool
 	unsafeReached bool
 	failReason    spi.ScheduledTaskFailureReason
-	// unsafeInFlight is read by the scheduler at shutdown step 3.
-	unsafeInFlight atomic.Int32
+	// Unsafe records each unsafe dispatch in flight; the scheduler reads it at
+	// shutdown steps 3 and 4 (README C-G1). nil is allowed (tests) and records
+	// nothing.
+	Unsafe *UnsafeFlight
+}
+
+// UnsafeFlight counts the run's unsafe dispatches in flight and remembers when
+// the oldest one started. All methods are safe on a nil receiver.
+type UnsafeFlight struct {
+	mu    sync.Mutex
+	n     int
+	since time.Time
+}
+
+func (f *UnsafeFlight) Begin() {
+	if f == nil {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.n == 0 {
+		f.since = time.Now()
+	}
+	f.n++
+}
+
+func (f *UnsafeFlight) End() {
+	if f == nil {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.n > 0 {
+		f.n--
+	}
+}
+
+// Since returns the start of the oldest unsafe dispatch in flight, and false
+// when none is.
+func (f *UnsafeFlight) Since() (time.Time, bool) {
+	if f == nil {
+		return time.Time{}, false
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.since, f.n > 0
 }
 
 // UnsafeInFlight reports whether an unsafe processor dispatch of this run is
@@ -2817,7 +2863,7 @@ type RunGuard struct {
 // §6.4). A dispatch counts from before its mark until its step's error is
 // known. After NoNewUnsafe is closed the count only falls: beforeDispatch
 // counts first and checks NoNewUnsafe second.
-func (g *RunGuard) UnsafeInFlight() bool { return g.unsafeInFlight.Load() > 0 }
+func (g *RunGuard) UnsafeInFlight() bool { _, ok := g.Unsafe.Since(); return ok }
 
 func (g *RunGuard) noNewUnsafe() bool {
 	if g.NoNewUnsafe == nil {
@@ -2832,17 +2878,17 @@ func (g *RunGuard) noNewUnsafe() bool {
 }
 
 func beforeDispatch(ctx context.Context, proc spi.ProcessorDefinition) (dispatched func(stepErr error), err error) {
-	g := runGuardFrom(ctx)
+	g := RunGuardFrom(ctx)
 	if g == nil || proc.Config.Idempotent {
 		return func(error) {}, nil
 	}
-	g.unsafeInFlight.Add(1)
+	g.Unsafe.Begin()
 	if g.cancelled() || g.noNewUnsafe() {
-		g.unsafeInFlight.Add(-1)
+		g.Unsafe.End()
 		return nil, notDispatched(proc, runCancelled("unsafe dispatch after the run was stopped"))
 	}
 	if err := g.Store.MarkUnsafe(ctx, g.Ref); err != nil {
-		g.unsafeInFlight.Add(-1)
+		g.Unsafe.End()
 		switch {
 		case errors.Is(err, spi.ErrStaleClaim):
 			return nil, notDispatched(proc, errors.Join(errRunSuperseded, err))
@@ -2866,7 +2912,7 @@ func beforeDispatch(ctx context.Context, proc spi.ProcessorDefinition) (dispatch
 	reachedBefore := g.unsafeReached
 	g.unsafeReached = true
 	return func(stepErr error) {
-		g.unsafeInFlight.Add(-1)
+		g.Unsafe.End()
 		if !reachedBefore && contract.ProvesNoHandOff(stepErr) {
 			g.unsafeReached = false
 		}
@@ -3124,7 +3170,7 @@ Expected: FAIL — `CascadeStepSegment_SetsPartialCommit` and `CascadeBackInSour
 	// (spec §5.2). The stamp is fenced; a refused stamp stops the segment from
 	// committing, and the run classifies the refusal with a non-joining
 	// re-read (fire_scheduled.go supersededBy).
-	g := runGuardFrom(ctx)
+	g := RunGuardFrom(ctx)
 	if g != nil {
 		if err := g.Store.StampSegment(ctx, g.Ref, g.firedTransitionDone); err != nil {
 			if errors.Is(err, spi.ErrStaleClaim) || errors.Is(err, spi.ErrConflict) {
@@ -3402,7 +3448,7 @@ type RunGuard struct {
 }
 func WithRunGuard(ctx context.Context, g *RunGuard) context.Context
 func (g *RunGuard) UnsafeInFlight() bool                                    // addition, E-5
-func runGuardFrom(ctx context.Context) *RunGuard
+func RunGuardFrom(ctx context.Context) *RunGuard
 
 // fire_scheduled.go
 type RunReport struct {
