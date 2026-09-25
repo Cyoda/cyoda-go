@@ -260,9 +260,11 @@ rejects this flag for any other execution mode.
 - Engine sequence: `Save → Commit(T_pre) → Begin(T_post) → read the
   anchor in T_post and require T_pre's version → dispatch with T_post's
   token in context → CompareAndSave → cascade continues in T_post`.
-- The read before the dispatch fixes `T_post`'s snapshot. If another
+- The read before the dispatch requires `T_pre`'s version: if another
   transaction wrote or deleted the anchor after `T_pre` committed, the
-  transition fails with a conflict before the processor is dispatched.
+  transition fails with a conflict before the processor is dispatched. The
+  read also puts the anchor in `T_post`'s read set, so a later write by
+  another transaction fails at commit.
 - The processor's CRUD callbacks join `T_post`. It can read/write other
   entities transactionally, and the cascade-anchor entity too. The
   `CompareAndSave` compares against `T_post` when a callback wrote the

@@ -682,10 +682,12 @@ func (e *Engine) commitAndBeginNextSegment(ctx context.Context, entity *spi.Enti
 	if err := e.continueRunSegment(newCtx, txID, newTxID); err != nil {
 		return newTxID, newCtx, err
 	}
-	// Before the dispatch, TX_post reads the anchor, which fixes its snapshot,
-	// and requires the version txID committed. A write or delete that another
-	// transaction committed in between is a conflict: the callback, which
-	// joins TX_post, could otherwise read that write and save over it.
+	// Before the dispatch, TX_post reads the anchor and requires the version
+	// txID committed. A write or delete that another transaction committed in
+	// between is a conflict: the callback, which joins TX_post, could
+	// otherwise read that write and save over it. The read also puts the
+	// anchor in TX_post's read set, so a later write by another transaction
+	// fails at commit.
 	if err := e.requireAnchorCommittedBy(newCtx, entity.Meta.ID, txID); err != nil {
 		return newTxID, newCtx, err
 	}

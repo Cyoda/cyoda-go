@@ -151,10 +151,10 @@ func (g *RunGuard) holds(cur *spi.ScheduledTask) bool {
 	return cur.ArmToken == g.Ref.ArmToken && cur.Claim != nil && cur.Claim.Token == g.Ref.ClaimToken
 }
 
-// rereadTask is the first read of every segment of a run (spec §5.2). On
-// PostgreSQL it also fixes the segment's snapshot before any other statement,
-// so a later change to the task row by another transaction makes this
-// segment's own task-row write conflict (C1).
+// rereadTask is the first read of every segment of a run (spec §5.2). Every
+// backend fixes the segment's snapshot at Begin, so a later change to the
+// task row by another transaction makes this segment's own task-row write
+// conflict (C1).
 func rereadTask(ctx context.Context, g *RunGuard) (*spi.ScheduledTask, error) {
 	cur, found, err := g.Store.Get(ctx, g.Ref.TenantID, g.Ref.ID)
 	if err != nil {
