@@ -171,8 +171,8 @@ func runServe(cfg app.Config) int {
 	// while the SIGINT handler runs the graceful shutdown.
 	signal.Ignore(syscall.SIGPIPE)
 
-	// Graceful shutdown: SIGINT (Ctrl+C) and SIGTERM cancel rootCtx; the
-	// errgroup in runServers picks that up and drains every server.
+	// Graceful shutdown: SIGINT (Ctrl+C) and SIGTERM cancel rootCtx;
+	// runServers then drains the scheduler first, and every server after it.
 	rootCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stopSignals()
 
