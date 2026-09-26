@@ -131,9 +131,11 @@ After it claims a task, the owner checks these in order:
 5. Otherwise the owner runs it.
 
 A pnode crash counts as a lost owner. So a task that was running on a crashed
-pnode, and has a short `timeoutMs`, ends FAILED `EXPIRED_AFTER_FAILED_ATTEMPTS`
-rather than expired. This is certain when `timeoutMs + RETRY_DELAY <
-STALE_AFTER − HEARTBEAT_INTERVAL`.
+pnode is never expired. It ends FAILED `EXPIRED_AFTER_FAILED_ATTEMPTS` once it
+is picked up more than `RETRY_DELAY` past its deadline; otherwise it runs
+again. No bound on `timeoutMs` makes the outcome certain: the crashed pnode
+may have claimed up to one heartbeat budget after its last successful
+heartbeat, and the deadline is checked on the new owner's clock.
 
 ### 5.2 The run's transactions
 
