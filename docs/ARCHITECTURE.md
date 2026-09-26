@@ -645,7 +645,12 @@ and the pipeline continues. A savepoint that cannot be **created, undone or
 released** is not a processor failure — it says the transaction is unusable — so
 it is marked with `workflow.ErrSavepointInfra` and **fails the operation** with a
 ticketed 5xx (an unavailable store keeps its `503 STORAGE_UNAVAILABLE`, which is
-classified first); it is never reported as the processor's own error. A chain the fence refuses after its
+classified first); it is never reported as the processor's own error. Undoing the savepoint does
+not undo a conflict: when a callback's write inside it lost a race against
+another transaction, the transaction lost that race, and its commit fails with a
+retryable `409 CONFLICT` on every backend (PostgreSQL keeps the recorded
+40001/40P01 across `ROLLBACK TO SAVEPOINT` and refuses Commit; memory and sqlite
+detect the conflict at commit). A chain the fence refuses after its
 callout neither undoes nor releases its savepoint: by then the replacement
 member may have written, and undoing a savepoint restores the whole buffer on
 memory and sqlite and everything since on postgres. An abandoned savepoint is
