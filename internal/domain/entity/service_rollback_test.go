@@ -207,9 +207,9 @@ func TestUpdateCollection_PostSegmentConflict_AbortsBatch(t *testing.T) {
 	segID := hn.createEntityIn(t, rollbackSegmentModel, `{"name":"seg"}`)
 	plainID := hn.createEntityIn(t, rollbackModel, `{"name":"before"}`)
 
-	// A CURRENT If-Match: the first-segment flush must accept it so the cascade
-	// reaches the far side of TX_pre's commit, which is where the conflict under
-	// test lives. A stale one would fail earlier and prove nothing.
+	// A CURRENT If-Match: the precondition must hold so the cascade reaches
+	// the far side of TX_pre's commit, which is where the conflict under test
+	// lives. A stale one would fail earlier and prove nothing.
 	current := hn.committedEntity(t, segID).Meta.TransactionID
 	hn.failApplyResultCAS()
 
@@ -267,8 +267,8 @@ func TestUpdateCollection_SegmentCommitConflict_AbortsBatch(t *testing.T) {
 	segID := hn.createEntityIn(t, rollbackSegmentModel, `{"name":"seg"}`)
 	plainID := hn.createEntityIn(t, rollbackModel, `{"name":"before"}`)
 
-	// Current, so the flush's own CompareAndSave accepts it and the failure
-	// under test is the commit that follows — not the precondition.
+	// Current, so the precondition holds and the failure under test is the
+	// commit that follows the first-segment flush.
 	current := hn.committedEntity(t, segID).Meta.TransactionID
 	hn.failSegmentCommit(fmt.Errorf("%w: Commit: read set validation failed", spi.ErrConflict))
 
@@ -304,11 +304,12 @@ func TestUpdateCollection_SegmentCommitConflict_AbortsBatch(t *testing.T) {
 	}
 }
 
-// TestUpdateCollection_FirstFlushConflict_StillIsolates: the precondition failed
-// before TX_pre committed and before any dispatch fired. That item is cleanly
-// isolable and the batch continues — without this, the fix could be "abort on
-// every conflict", which would break per-item isolation entirely.
-func TestUpdateCollection_FirstFlushConflict_StillIsolates(t *testing.T) {
+// TestUpdateCollection_StaleIfMatch_StillIsolates: the precondition failed
+// before the engine ran anything — no segment committed, no dispatch fired.
+// That item is cleanly isolable and the batch continues — without this, the fix
+// could be "abort on every conflict", which would break per-item isolation
+// entirely.
+func TestUpdateCollection_StaleIfMatch_StillIsolates(t *testing.T) {
 	hn := newTrackingHandler(t)
 	dispatched := hn.registerManualSegmentingWorkflow(t, rollbackSegmentModel)
 	touched := hn.registerCountedTouchWorkflow(t, rollbackModel)
@@ -324,7 +325,7 @@ func TestUpdateCollection_FirstFlushConflict_StillIsolates(t *testing.T) {
 		t.Fatalf("a precondition failure raised before any commit must not abort the batch: %v", err)
 	}
 	if n := dispatched.Load(); n != 0 {
-		t.Fatalf("callout fired %d time(s); the flush was supposed to reject the precondition first", n)
+		t.Fatalf("callout fired %d time(s); the precondition was supposed to be rejected first", n)
 	}
 	if len(res.Failed) != 1 || res.Failed[0].ItemIndex != 0 || res.Failed[0].Code != common.ErrCodeEntityModified {
 		t.Fatalf("item 0 was not isolated: %+v", res.Failed)
@@ -584,8 +585,8 @@ type armedFactory struct {
 	spi.StoreFactory
 	armed atomic.Bool
 
-	// casErr, when set, is what the handler's own CompareAndSave returns.
-	casErr error
+	// saveErr, when set, is what the handler's own Save returns.
+	saveErr error
 }
 
 func (f *armedFactory) EntityStore(ctx context.Context) (spi.EntityStore, error) {
@@ -593,41 +594,39 @@ func (f *armedFactory) EntityStore(ctx context.Context) (spi.EntityStore, error)
 		return nil, errArmedEntityStore
 	}
 	es, err := f.StoreFactory.EntityStore(ctx)
-	if err != nil || f.casErr == nil {
+	if err != nil || f.saveErr == nil {
 		return es, err
 	}
-	return &casFailEntityStore{EntityStore: es, err: f.casErr}, nil
+	return &saveFailEntityStore{EntityStore: es, err: f.saveErr}, nil
 }
 
-// casFailEntityStore fails every CompareAndSave with err.
-type casFailEntityStore struct {
+// saveFailEntityStore fails every Save with err.
+type saveFailEntityStore struct {
 	spi.EntityStore
 	err error
 }
 
-func (s *casFailEntityStore) CompareAndSave(context.Context, *spi.Entity, string) (int64, error) {
+func (s *saveFailEntityStore) Save(context.Context, *spi.Entity) (int64, error) {
 	return 0, s.err
 }
 
 // casHookFactory wraps the ENGINE's store factory so a test can fail the
 // CompareAndSave executeCommitBeforeDispatch performs AFTER a
-// COMMIT_BEFORE_DISPATCH segment committed and its callout returned. The handler
-// keeps its own factory, so the injected failure is always the engine's — and
-// arming it from inside the dispatch stub leaves the pre-dispatch first-segment
-// flush, which goes through the same method, untouched.
+// COMMIT_BEFORE_DISPATCH segment committed and its callout returned, or the
+// Save of the first-segment flush before it. The handler keeps its own
+// factory, so the injected failure is always the engine's.
 type casHookFactory struct {
 	spi.StoreFactory
 	armed atomic.Bool
 
-	// onCompareAndSave, when set, is called with the transaction each CAS runs
-	// in. The first CAS a segmenting cascade makes is the first-segment flush,
-	// immediately before that transaction is committed — which is the only place
-	// a test can name TX_pre before it goes.
-	onCompareAndSave func(txID string)
+	// onSave, when set, is called with the transaction each Save runs in. The
+	// first Save a segmenting cascade makes is the first-segment flush,
+	// immediately before that transaction is committed — which is the only
+	// place a test can name TX_pre before it goes.
+	onSave func(txID string)
 
-	// casErr, when set, is what an armed CompareAndSave returns in place of
-	// spi.ErrConflict.
-	casErr error
+	// saveErr, when set, is what every Save returns.
+	saveErr error
 }
 
 func (f *casHookFactory) EntityStore(ctx context.Context) (spi.EntityStore, error) {
@@ -643,16 +642,20 @@ type casHookEntityStore struct {
 	f *casHookFactory
 }
 
-func (s *casHookEntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, expectedTxID string) (int64, error) {
-	if s.f.onCompareAndSave != nil {
+func (s *casHookEntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, error) {
+	if s.f.onSave != nil {
 		if tx := spi.GetTransaction(ctx); tx != nil {
-			s.f.onCompareAndSave(tx.ID)
+			s.f.onSave(tx.ID)
 		}
 	}
+	if s.f.saveErr != nil {
+		return 0, s.f.saveErr
+	}
+	return s.EntityStore.Save(ctx, entity)
+}
+
+func (s *casHookEntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, expectedTxID string) (int64, error) {
 	if s.f.armed.Load() {
-		if s.f.casErr != nil {
-			return 0, s.f.casErr
-		}
 		return 0, spi.ErrConflict
 	}
 	return s.EntityStore.CompareAndSave(ctx, entity, expectedTxID)
@@ -891,9 +894,9 @@ func (hn *rollbackHarness) registerManualSegmentingWorkflow(t *testing.T, ref sp
 }
 
 // failApplyResultCAS makes the engine's apply-result CompareAndSave conflict.
-// Armed from inside the dispatch stub so the first-segment flush — which applies
-// the item's If-Match and commits TX_pre — runs untouched: the conflict this
-// produces is genuinely on the far side of a durable commit.
+// Armed from inside the dispatch stub, after the first-segment flush committed
+// TX_pre: the conflict this produces is genuinely on the far side of a durable
+// commit.
 func (hn *rollbackHarness) failApplyResultCAS() {
 	prev := hn.proc.dispatchProcessor
 	hn.proc.dispatchProcessor = func(ctx context.Context, e *spi.Entity, proc spi.ProcessorDefinition, workflow, transition, txID string) (*spi.Entity, error) {
@@ -906,11 +909,11 @@ func (hn *rollbackHarness) failApplyResultCAS() {
 }
 
 // failSegmentCommit makes TX_pre's own commit fail with err — the segment
-// boundary's Commit, not its CAS. Armed from inside the first-segment flush's
-// CompareAndSave, the call immediately before that commit, so it names exactly
-// the transaction the engine is about to close.
+// boundary's Commit, not its Save. Armed from inside the first-segment flush's
+// Save, the call immediately before that commit, so it names exactly the
+// transaction the engine is about to close.
 func (hn *rollbackHarness) failSegmentCommit(err error) {
-	hn.engineCAS.onCompareAndSave = func(txID string) {
+	hn.engineCAS.onSave = func(txID string) {
 		hn.tracker.failCommitOf(txID, err)
 	}
 }

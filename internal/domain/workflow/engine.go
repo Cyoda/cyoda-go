@@ -379,30 +379,25 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 		},
 		FinalCtx:  currentCtx,
 		FinalTxID: currentTxID,
-		Segmented: currentTxID != txID,
 	}, nil
 }
 
-// ManualTransitionWithIfMatch is the variant of ManualTransition used by
-// callers that supply an If-Match expected-txID (cross-request optimistic
-// concurrency). Per spec §4.1, the expected-txID is applied at the FIRST
-// segment-flush of the cascade — the engine's first EntityStore write inside
-// the cascade — so a stale If-Match aborts before any segment commits or any
-// external dispatch fires.
-//
-// For non-segmenting cascades (no COMMIT_BEFORE_DISPATCH processors) the
-// engine never performs a first-segment flush; ifMatch is left untouched on
-// the context for the handler to apply post-engine via its own CompareAndSave
-// path. The handler distinguishes the two cases via EngineResult.Segmented.
-//
-// If ifMatch is empty this method is identical to ManualTransition.
-func (e *Engine) ManualTransitionWithIfMatch(ctx context.Context, entity *spi.Entity, transitionName, ifMatch string) (*EngineResult, error) {
-	return e.ManualTransition(withIfMatch(ctx, ifMatch), entity, transitionName)
+// ManualTransitionWithIfMatch is ManualTransition under a caller's If-Match.
+// The engine records the transition's start and then checks the
+// precondition, before it selects a workflow or runs any criterion or
+// processor. A mismatch records TRANSITION_ABORTED and fails with
+// spi.ErrConflict (see IfMatch and checkIfMatch).
+func (e *Engine) ManualTransitionWithIfMatch(ctx context.Context, entity *spi.Entity, transitionName string, ifMatch IfMatch) (*EngineResult, error) {
+	return e.manualTransition(ctx, entity, transitionName, ifMatch)
 }
 
 // ManualTransition fires a named transition on an existing entity and cascades
 // any automated transitions from the resulting state.
 func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, transitionName string) (*EngineResult, error) {
+	return e.manualTransition(ctx, entity, transitionName, IfMatch{})
+}
+
+func (e *Engine) manualTransition(ctx context.Context, entity *spi.Entity, transitionName string, ifMatch IfMatch) (*EngineResult, error) {
 	ctx, span := tracer.Start(ctx, "workflow.manual_transition", trace.WithAttributes(
 		observability.AttrEntityID.String(entity.Meta.ID),
 		observability.AttrEntityModel.String(entity.Meta.ModelRef.String()),
@@ -431,6 +426,9 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventStarted, "Manual transition started", nil)
+	if err := e.checkIfMatch(ctx, auditStore, entity, txID, transitionName, ifMatch); err != nil {
+		return nil, err
+	}
 
 	// Select the workflow the entity's criterion binds it to. If the
 	// entity's current state is absent from that definition, attemptTransition
@@ -472,28 +470,23 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 		},
 		FinalCtx:  currentCtx,
 		FinalTxID: currentTxID,
-		Segmented: currentTxID != txID,
 	}, nil
 }
 
-// LoopbackWithIfMatch is the variant of Loopback used by callers that supply
-// an If-Match expected-txID. The engine consumes ifMatch on the FIRST
-// segment-flush of any COMMIT_BEFORE_DISPATCH cascade encountered during the
-// loopback (spec §4.1), so a stale If-Match aborts before any external
-// dispatch fires. For loopback runs that produce no engine-side flush
-// (the common case — no CBD processors), ifMatch is left untouched on the
-// context for the handler to apply post-engine. Callers distinguish via
-// EngineResult.Segmented.
-//
-// If ifMatch is empty this method is identical to Loopback.
-func (e *Engine) LoopbackWithIfMatch(ctx context.Context, entity *spi.Entity, ifMatch string) (*EngineResult, error) {
-	return e.Loopback(withIfMatch(ctx, ifMatch), entity)
+// LoopbackWithIfMatch is Loopback under a caller's If-Match, checked as
+// ManualTransitionWithIfMatch checks it.
+func (e *Engine) LoopbackWithIfMatch(ctx context.Context, entity *spi.Entity, ifMatch IfMatch) (*EngineResult, error) {
+	return e.loopback(ctx, entity, ifMatch)
 }
 
 // Loopback re-evaluates automated transitions from the entity's current state
 // without firing a specific named transition. This is used when entity data is
 // updated and the workflow should re-check conditions from the current state.
 func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*EngineResult, error) {
+	return e.loopback(ctx, entity, IfMatch{})
+}
+
+func (e *Engine) loopback(ctx context.Context, entity *spi.Entity, ifMatch IfMatch) (*EngineResult, error) {
 	ctx, span := tracer.Start(ctx, "workflow.loopback", trace.WithAttributes(
 		observability.AttrEntityID.String(entity.Meta.ID),
 		observability.AttrEntityModel.String(entity.Meta.ModelRef.String()),
@@ -520,6 +513,9 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*EngineResul
 
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventStarted, "Loopback started", nil)
+	if err := e.checkIfMatch(ctx, auditStore, entity, txID, "loopback", ifMatch); err != nil {
+		return nil, err
+	}
 
 	wf, modelScheduled, err := e.resolveWorkflow(ctx, entity, auditStore, txID)
 	if err != nil {
@@ -551,7 +547,6 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*EngineResul
 			},
 			FinalCtx:  ctx,
 			FinalTxID: txID,
-			Segmented: false,
 		}, nil
 	}
 
@@ -580,7 +575,6 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*EngineResul
 		},
 		FinalCtx:  currentCtx,
 		FinalTxID: currentTxID,
-		Segmented: currentTxID != txID,
 	}, nil
 }
 

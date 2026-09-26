@@ -18,38 +18,38 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
-// txAbortedCASFactory, once armed, makes every CompareAndSave fail as a
-// statement in a transaction an earlier conflict already aborted.
-type txAbortedCASFactory struct {
+// txAbortedSaveFactory, once armed, makes every Save fail as a statement in a
+// transaction an earlier conflict already aborted.
+type txAbortedSaveFactory struct {
 	spi.StoreFactory
 	armed bool
 }
 
-func (f *txAbortedCASFactory) EntityStore(ctx context.Context) (spi.EntityStore, error) {
+func (f *txAbortedSaveFactory) EntityStore(ctx context.Context) (spi.EntityStore, error) {
 	es, err := f.StoreFactory.EntityStore(ctx)
 	if err != nil || !f.armed {
 		return es, err
 	}
-	return &txAbortedCASStore{EntityStore: es}, nil
+	return &txAbortedSaveStore{EntityStore: es}, nil
 }
 
-type txAbortedCASStore struct{ spi.EntityStore }
+type txAbortedSaveStore struct{ spi.EntityStore }
 
-func (s *txAbortedCASStore) CompareAndSave(context.Context, *spi.Entity, string) (int64, error) {
-	return 0, fmt.Errorf("compare-and-save: %w", spi.ErrTxAborted)
+func (s *txAbortedSaveStore) Save(context.Context, *spi.Entity) (int64, error) {
+	return 0, fmt.Errorf("save: %w", spi.ErrTxAborted)
 }
 
-// TestRPC_EntityPatch_IfMatchInAbortedTxIsConflict: the gRPC If-Match door
-// answers a compare that met an aborted transaction as the retryable CONFLICT,
-// not ENTITY_MODIFIED — the precondition was never evaluated.
-func TestRPC_EntityPatch_IfMatchInAbortedTxIsConflict(t *testing.T) {
+// TestRPC_EntityPatch_SaveInAbortedTxIsConflict: the gRPC If-Match door
+// answers a save that met an aborted transaction as the retryable CONFLICT,
+// not ENTITY_MODIFIED — the request's precondition held.
+func TestRPC_EntityPatch_SaveInAbortedTxIsConflict(t *testing.T) {
 	svc, ctx := newTestEnv(t)
 	// The entity door rewired onto a store behind the arming wrapper; the
 	// model door keeps the harness's own store, so both see one model.
 	inner := memory.NewStoreFactory(memory.WithApplyFunc(testSchemaApply))
 	inner.NewTransactionManager(common.NewDefaultUUIDGenerator())
 	txMgr := inner.GetTransactionManager()
-	factory := &txAbortedCASFactory{StoreFactory: inner}
+	factory := &txAbortedSaveFactory{StoreFactory: inner}
 	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
 	svc.txMgr = txMgr
 	svc.entityHandler = entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())

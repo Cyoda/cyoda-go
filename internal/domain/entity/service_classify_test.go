@@ -525,8 +525,8 @@ func TestEngineConflictIsTransactionConflict(t *testing.T) {
 			t.Errorf("%v joined with a conflict was read as the caller's precondition", sentinel)
 		}
 	}
-	if engineConflictIsTransactionConflict(fmt.Errorf("apply If-Match: %w", spi.ErrConflict)) {
-		t.Error("an unmarked conflict — the If-Match compare — was read as a transaction conflict")
+	if engineConflictIsTransactionConflict(fmt.Errorf("If-Match precondition failed: %w", spi.ErrConflict)) {
+		t.Error("an unmarked conflict — the If-Match check — was read as a transaction conflict")
 	}
 }
 

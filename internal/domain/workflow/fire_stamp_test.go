@@ -270,7 +270,7 @@ func TestStamp_CommitFindsGuardByTransaction(t *testing.T) {
 			}
 			ent.Meta.State = "CLOSED"
 
-			err = env.engine.flushAndCommitSegment(txCtx, ent, txID, "", false)
+			err = env.engine.flushAndCommitSegment(txCtx, ent, txID)
 			if !tc.wantErr(err) {
 				t.Fatalf("flushAndCommitSegment = %v", err)
 			}
@@ -531,7 +531,7 @@ func TestStamp_RunStateSafeAcrossGoroutines(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			// The two stamps conflict with each other; either outcome is fine.
-			_ = env.engine.flushAndCommitSegment(txCtx, ent, txID, "", false)
+			_ = env.engine.flushAndCommitSegment(txCtx, ent, txID)
 			_ = g.partialCommitted.Load()
 		}()
 	}

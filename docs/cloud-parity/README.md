@@ -20,6 +20,7 @@ Cloud needs to adopt.
 | File | Covers |
 |---|---|
 | `entity-patch.md` | PATCH single-entity contract (RFC 7386 merge patch) |
+| `entity-if-match.md` | Entity `If-Match` on every update door: the version the update starts from, checked once when the transition starts; the update's own later writes keep it; a change after the read is `409` |
 | `openapi-conformance.md` | OpenAPI operation status, live common ground, tolerant-reader obligation, deferred open questions (E6, D2) |
 | `search-sort.md` | Search result sorting — HTTP `sort` grammar, gRPC `orderBy`, canonical ordering semantics |
 | `processor-criteria-annotations.md` | Processor `annotations` + workflow/transition `criterionAnnotations`, well-known renderer keys, schema 1.1 → 1.2 |

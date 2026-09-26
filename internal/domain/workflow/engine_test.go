@@ -2041,7 +2041,7 @@ func TestEngine_CommitAndBeginNextSegment_FlushesAndReopens(t *testing.T) {
 		Data: []byte(`{"x":1}`),
 	}
 
-	newTxID, newCtx, err := engine.commitAndBeginNextSegment(txCtx, entity, txID, "", false)
+	newTxID, newCtx, err := engine.commitAndBeginNextSegment(txCtx, entity, txID)
 	if err != nil {
 		t.Fatalf("commitAndBeginNextSegment: %v", err)
 	}

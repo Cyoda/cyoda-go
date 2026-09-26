@@ -11,18 +11,11 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
-// TestEngineResult_Segmented_FalseOnNonSegmentingCascade asserts that for a
-// Manual transition through a workflow with no COMMIT_BEFORE_DISPATCH
-// processors, EngineResult.Segmented is false. The engine never opened a
-// fresh TX_post; FinalTxID equals the caller's input txID.
-//
-// This is the "Segmented" flag that handlers read to decide whether they
-// own the IfMatch precondition (non-segmenting → handler-side CompareAndSave)
-// versus the engine having consumed it at first-segment flush (segmented
-// → handler does plain Save). Replaces the old `FinalTxID != entryTxID`
-// comparison-vs-entry-txID convention in single UpdateEntity and the
-// UpdateEntityCollection per-item loop.
-func TestEngineResult_Segmented_FalseOnNonSegmentingCascade(t *testing.T) {
+// TestEngineResult_FinalTxID_EntryOnNonSegmentingCascade asserts that for a
+// manual transition through a workflow with no COMMIT_BEFORE_DISPATCH
+// processors the engine opens no fresh TX_post: FinalTxID equals the caller's
+// input txID, and the caller commits it.
+func TestEngineResult_FinalTxID_EntryOnNonSegmentingCascade(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "no-cbd-segmented", ModelVersion: "1.0"}
@@ -55,11 +48,8 @@ func TestEngineResult_Segmented_FalseOnNonSegmentingCascade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ManualTransition: %v", err)
 	}
-	if res.Segmented {
-		t.Errorf("Segmented = true; want false (no CBD processor in pipeline)")
-	}
 	if res.FinalTxID != inputTxID {
-		t.Errorf("FinalTxID = %q, want input txID %q (sanity-check: not segmented)", res.FinalTxID, inputTxID)
+		t.Errorf("FinalTxID = %q, want input txID %q (no CBD processor in pipeline)", res.FinalTxID, inputTxID)
 	}
 
 	// Cleanup: caller commits the (un-segmented) input TX.
@@ -72,12 +62,11 @@ func TestEngineResult_Segmented_FalseOnNonSegmentingCascade(t *testing.T) {
 	}
 }
 
-// TestEngineResult_Segmented_TrueOnCBDCascade asserts that after a cascade
-// containing a COMMIT_BEFORE_DISPATCH processor, EngineResult.Segmented is
-// true. The engine has committed TX_pre and opened TX_post; the handler
-// must NOT re-apply the caller's IfMatch (already consumed at first-segment
-// flush) and must commit TX_post via FinalCtx/FinalTxID.
-func TestEngineResult_Segmented_TrueOnCBDCascade(t *testing.T) {
+// TestEngineResult_FinalTxID_PostSegmentOnCBDCascade asserts that after a
+// cascade containing a COMMIT_BEFORE_DISPATCH processor the engine has
+// committed TX_pre and opened TX_post, which it returns as FinalCtx/FinalTxID
+// for the caller to commit.
+func TestEngineResult_FinalTxID_PostSegmentOnCBDCascade(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
@@ -136,41 +125,12 @@ func TestEngineResult_Segmented_TrueOnCBDCascade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !res.Segmented {
-		t.Errorf("Segmented = false; want true (CBD processor segmented the cascade)")
-	}
 	if res.FinalTxID == cascadeEntryTxID {
-		t.Errorf("FinalTxID = entryTxID = %q; sanity-check: should differ on segmented cascade", cascadeEntryTxID)
+		t.Errorf("FinalTxID = entryTxID = %q; want TX_post (CBD processor segmented the cascade)", cascadeEntryTxID)
 	}
 
 	// Cleanup: handler-style commit of the final TX.
 	if err := txMgr.Commit(res.FinalCtx, res.FinalTxID); err != nil {
 		t.Fatalf("commit FinalTxID: %v", err)
-	}
-}
-
-// TestEngineResult_Segmented_FalseOnLoopbackNoWorkflow asserts that the
-// Loopback fast-path (current state not in any workflow → STATE_NOT_IN_WORKFLOW)
-// reports Segmented=false. The engine performs no work and cannot have segmented.
-func TestEngineResult_Segmented_FalseOnLoopbackNoWorkflow(t *testing.T) {
-	engine, _ := setupEngine(t)
-	ctx := ctxWithTenant(testTenant)
-	modelRef := spi.ModelRef{EntityName: "loopback-no-wf", ModelVersion: "1.0"}
-
-	// No workflow saved for this modelRef, but Loopback uses default WF for
-	// missing models. To force the no-workflow path, use a state that the
-	// default WF doesn't contain.
-	entity := makeEntity("loopback-no-wf-1", modelRef, map[string]any{"x": 1})
-	entity.Meta.State = "ORPHAN_STATE_NOT_IN_DEFAULT_WF"
-
-	res, err := engine.Loopback(ctx, entity)
-	if err != nil {
-		t.Fatalf("Loopback: %v", err)
-	}
-	if res.Segmented {
-		t.Errorf("Segmented = true; want false (loopback fast-path, no engine work)")
-	}
-	if res.StopReason != "STATE_NOT_IN_WORKFLOW" {
-		t.Fatalf("StopReason = %q, want STATE_NOT_IN_WORKFLOW (sanity check)", res.StopReason)
 	}
 }

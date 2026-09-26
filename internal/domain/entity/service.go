@@ -68,7 +68,7 @@ type UpdateEntityInput struct {
 	Format     string
 	Data       json.RawMessage
 	Transition string // optional, empty for loopback
-	IfMatch    string // optional ETag for CAS
+	IfMatch    string // optional: the version the update starts from
 }
 
 // updateOptions tunes the shared update flow. Zero value = plain replace (PUT).
@@ -2342,20 +2342,19 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	// after committing TX_pre); for non-segmenting cascades it equals the
 	// handler's input txID.
 	//
-	// We hand input.IfMatch to the engine via the *WithIfMatch entry-points so
-	// that, when a COMMIT_BEFORE_DISPATCH segment exists, the precondition is
-	// applied at the first-segment flush — strictly BEFORE any external
-	// dispatch fires (spec §4.1). The engine consumes IfMatch only on
-	// segmenting cascades; for non-segmenting cascades the handler still
-	// applies CompareAndSave-with-IfMatch post-engine below.
-	var engineResult *wfengine.EngineResult
+	// If-Match states the version the request starts from: the engine checks
+	// it against existing — E as this transaction read it — before it runs
+	// anything. A later write to E in this transaction (a joined callback's, a
+	// segment's) is the request's own; a write another transaction commits
+	// after the read fails the commit.
+	ifMatch := wfengine.IfMatch{Expected: input.IfMatch, Current: existing.Meta.TransactionID}
 	if input.Transition == "" {
-		res, lbErr := h.engine.LoopbackWithIfMatch(txCtx, updated, input.IfMatch)
+		res, lbErr := h.engine.LoopbackWithIfMatch(txCtx, updated, ifMatch)
 		if lbErr != nil {
 			slog.Error("workflow loopback failed", "error", lbErr.Error(), "entityId", updated.Meta.ID)
 			// An unmarked conflict is a precondition on this request's own
-			// entity: the If-Match compare at the first segment flush, or the
-			// apply-result compare after a committed COMMIT_BEFORE_DISPATCH
+			// entity: the If-Match check at the start of the transition, or
+			// the apply-result compare after a committed COMMIT_BEFORE_DISPATCH
 			// segment (wfengine.ErrPostSegmentConflict). Both answer 412. See
 			// engineConflictIsTransactionConflict for the conflicts that are
 			// not entity modifications; classifyWorkflowError answers them
@@ -2374,9 +2373,8 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		// EngineResult on every error path.
 		scope.Advance(res.FinalCtx, res.FinalTxID)
 		updated.Meta.TransitionForLatestSave = "loopback"
-		engineResult = res
 	} else {
-		res, mtErr := h.engine.ManualTransitionWithIfMatch(txCtx, updated, input.Transition, input.IfMatch)
+		res, mtErr := h.engine.ManualTransitionWithIfMatch(txCtx, updated, input.Transition, ifMatch)
 		if mtErr != nil {
 			slog.Error("workflow manual transition failed", "error", mtErr.Error(), "entityId", updated.Meta.ID, "transition", input.Transition)
 			if errors.Is(mtErr, spi.ErrConflict) && !engineConflictIsTransactionConflict(mtErr) {
@@ -2393,7 +2391,6 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		// EngineResult on every error path.
 		scope.Advance(res.FinalCtx, res.FinalTxID)
 		updated.Meta.TransitionForLatestSave = input.Transition
-		engineResult = res
 	}
 
 	finalCtx, finalTxID := scope.Ctx(), scope.TxID()
@@ -2403,56 +2400,18 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		return nil, common.Internal("failed to access entity store", err)
 	}
 
-	// Distinguish: did the engine segment (and therefore consume IfMatch)?
-	// Segmented is true iff at least one COMMIT_BEFORE_DISPATCH segment
-	// committed; the engine's first-segment flush already applied the
-	// caller's IfMatch. For non-segmenting cascades the handler still owns
-	// the IfMatch precondition.
-	segmented := engineResult.Segmented
-
-	// Finalize: gate the OWNER's Save/CompareAndSave + Commit (and the abort-
-	// audit buffer write on the conflict path) against a concurrent joined
-	// callback's write; on the joined path the join layer holds the gate for the
-	// whole request. The gate is NEVER held across engine.Execute (above).
+	// Finalize: gate the OWNER's Save + Commit against a concurrent joined
+	// callback's write; on the joined path the join layer holds the gate for
+	// the whole request. The gate is NEVER held across engine.Execute (above).
 	if appErr := func() *common.AppError {
 		if owned {
 			defer h.gate.Acquire(finalTxID)()
 		}
-		if input.IfMatch != "" && !segmented {
-			if _, err := finalEntityStore.CompareAndSave(finalCtx, updated, input.IfMatch); err != nil {
-				if appErr := common.TxAbortedConflict(err); appErr != nil {
-					return appErr
-				}
-				if errors.Is(err, spi.ErrConflict) {
-					// Emit the compensating
-					// TRANSITION_ABORTED into the same transaction as the
-					// entry-side audit events BEFORE rolling back. Audit
-					// events are bound to the transaction on every backend,
-					// so the abort event rolls back together with the entry
-					// events — the audit log shows nothing of the failed
-					// call once the rollback completes, but a reader
-					// through the same transaction sees the paired
-					// entry+abort shape beforehand.
-					h.emitTransitionAborted(finalCtx, updated, txID, input.Transition, input.IfMatch)
-					appErr := common.Operational(
-						http.StatusPreconditionFailed,
-						common.ErrCodeEntityModified,
-						"entity has been modified since last read")
-					appErr.Props = map[string]any{"entityId": input.EntityID}
-					return appErr
-				}
-				return classifySaveErr("failed to save entity", input.EntityID, err)
-			}
-		} else {
-			// Plain Save: either no IfMatch was provided, or the engine already
-			// consumed it at first-segment flush (segmented == true). In the
-			// segmented case the row's current TransactionID has advanced through
-			// TX_pre's commit, so a handler-side CAS against input.IfMatch would
-			// fail spuriously — Save lands the post-cascade state in TX_post's
-			// buffer and the segment's own intra-TX guards handle concurrency.
-			if _, err := finalEntityStore.Save(finalCtx, updated); err != nil {
-				return classifySaveErr("failed to save entity", input.EntityID, err)
-			}
+		// A plain Save: the engine checked If-Match when the transition
+		// started, and the engine's entity supersedes any write made to E
+		// earlier in this transaction.
+		if _, err := finalEntityStore.Save(finalCtx, updated); err != nil {
+			return classifySaveErr("failed to save entity", input.EntityID, err)
 		}
 
 		// Commit FinalTxID — the still-open TX after the cascade (no-op when
@@ -2526,13 +2485,13 @@ func (h *Handler) PatchEntity(ctx context.Context, input PatchEntityInput) (*Ent
 //   - Items WITH IfMatch isolate ENTITY_MODIFIED conflicts (spi.ErrConflict)
 //     to a per-chunk Failed slice; the chunk still commits its remaining
 //     successful items. Other per-item failures still roll the chunk back.
-//   - Isolation covers only a conflict raised while the chunk's transaction is
-//     still usable: a handler-side CompareAndSave, or a COMMIT_BEFORE_DISPATCH
-//     first-segment flush, which runs before TX_pre commits and before any
-//     external dispatch. A conflict raised once that transaction is gone —
-//     the post-dispatch apply-result CAS, or TX_pre's own commit failing —
-//     aborts the chunk instead. Both reach here as spi.ErrConflict, so the
-//     conflict alone cannot separate them; the engine's sentinels do.
+//   - Isolation covers only the item's own precondition: the engine checks
+//     If-Match against the entity as the chunk's transaction read it, before
+//     it runs anything for the item. A conflict raised once the transaction
+//     is gone — the post-dispatch apply-result CAS, TX_pre's own commit
+//     failing, a lost write race — aborts the chunk instead. Both reach here
+//     as spi.ErrConflict, so the conflict alone cannot separate them; the
+//     engine's sentinels do.
 //
 // Returning from this function:
 //
@@ -2688,31 +2647,26 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			Data: item.bodyBytes,
 		}
 
-		// Run the engine on the current TX. When the item supplies an
-		// IfMatch precondition we route to the *WithIfMatch entry-points so
-		// that, for COMMIT_BEFORE_DISPATCH cascades, the precondition is
-		// applied at the first-segment flush — strictly BEFORE any external
-		// dispatch fires (spec §4.1). For non-segmenting cascades the
-		// engine leaves IfMatch untouched and the handler's CompareAndSave
-		// below applies it post-engine. Mirrors single UpdateEntity's
-		// routing.
+		// Run the engine on the current TX. The item's If-Match states the
+		// version it starts from: the engine checks it against existing — the
+		// entity as this transaction read it — before it runs anything, as
+		// single UpdateEntity does.
 		var engineResult *wfengine.EngineResult
 		var engineErr error
+		ifMatch := wfengine.IfMatch{Expected: item.ifMatch, Current: existing.Meta.TransactionID}
 		if item.transition == "" {
-			engineResult, engineErr = h.engine.LoopbackWithIfMatch(currentCtx, updated, item.ifMatch)
+			engineResult, engineErr = h.engine.LoopbackWithIfMatch(currentCtx, updated, ifMatch)
 		} else {
-			engineResult, engineErr = h.engine.ManualTransitionWithIfMatch(currentCtx, updated, item.transition, item.ifMatch)
+			engineResult, engineErr = h.engine.ManualTransitionWithIfMatch(currentCtx, updated, item.transition, ifMatch)
 		}
 		if engineErr != nil {
-			// Per-item ENTITY_MODIFIED isolation: the engine's CBD
-			// first-segment flush rejected the IfMatch precondition before
-			// committing TX_pre or firing any external dispatch. The engine
-			// has already emitted a compensating TRANSITION_ABORTED audit
-			// event before returning ErrConflict so the
-			// audit trail for this item is paired (entry + abort) and lands
+			// Per-item ENTITY_MODIFIED isolation: the engine's If-Match check
+			// rejected the item before the engine ran anything. The engine
+			// recorded STATE_MACHINE_START and TRANSITION_ABORTED, so the
+			// item's audit trail is paired (entry + abort) and lands
 			// alongside successful siblings on commit.
 			//
-			// Three other shapes reach here as spi.ErrConflict and must NOT be
+			// Other shapes reach here as spi.ErrConflict and must NOT be
 			// isolated, because in all of them the transaction this loop
 			// would carry on in is already gone:
 			//
@@ -2743,7 +2697,7 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 				!errors.Is(engineErr, wfengine.ErrPostSegmentConflict) &&
 				!engineConflictIsTransactionConflict(engineErr) {
 				slog.Info("collection update item precondition failed",
-					"source", "engine", "entityId", updated.Meta.ID, "itemIndex", i)
+					"entityId", updated.Meta.ID, "itemIndex", i)
 				failed = append(failed, UpdateCollectionItemFailure{
 					EntityID:  updated.Meta.ID,
 					Code:      common.ErrCodeEntityModified,
@@ -2771,84 +2725,26 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			updated.Meta.TransitionForLatestSave = item.transition
 		}
 
-		// Distinguish: did the engine segment (and therefore consume IfMatch)?
-		// Segmented is true iff at least one CBD segment committed; in that
-		// case the engine's first-segment flush already applied this item's
-		// IfMatch. For non-segmenting cascades the handler still owns the
-		// precondition — apply it via CompareAndSave below. Mirrors the
-		// single-UpdateEntity routing.
-		segmented := engineResult.Segmented
-
-		// Finalize this item's Save. For the OWNER, gate the Save/CompareAndSave
-		// (and the abort-audit buffer write on the isolated-conflict path)
-		// against a concurrent joined callback's write; the joined path already
-		// holds the gate for its whole body. Never gated across engine.Execute.
-		// The closure returns (isolatedFailure, appErr): a non-nil isolated
-		// failure means "continue this loop" (per-item ENTITY_MODIFIED isolation),
-		// a non-nil appErr means "abort the batch".
-		isolated, appErr := func() (*UpdateCollectionItemFailure, *common.AppError) {
+		// Finalize this item's Save. For the OWNER, gate the Save against a
+		// concurrent joined callback's write; the joined path already holds
+		// the gate for its whole body. Never gated across engine.Execute.
+		if appErr := func() *common.AppError {
 			if owned {
 				defer h.gate.Acquire(currentTxID)()
 			}
 			// Re-resolve the entity store on the now-current segment context.
 			finalEntityStore, err := h.factory.EntityStore(currentCtx)
 			if err != nil {
-				return nil, common.Internal("failed to access entity store", err)
+				return common.Internal("failed to access entity store", err)
 			}
-
-			// IfMatch routing for the post-engine save:
-			//   - With IfMatch AND non-segmenting cascade: handler owns the
-			//     precondition → CompareAndSave. ErrConflict → isolate to
-			//     `failed` (no chunk rollback).
-			//   - With IfMatch AND segmenting cascade: engine consumed IfMatch
-			//     at first-segment flush; row's transactionId has advanced
-			//     through TX_pre's commit. CompareAndSave against item.IfMatch
-			//     would now fail spuriously — fall back to plain Save.
-			//   - Without IfMatch: plain Save (existing behavior).
-			applyHandlerCAS := item.ifMatch != "" && !segmented
-			var saveErr error
-			if applyHandlerCAS {
-				_, saveErr = finalEntityStore.CompareAndSave(currentCtx, updated, item.ifMatch)
-			} else {
-				_, saveErr = finalEntityStore.Save(currentCtx, updated)
+			// A plain Save: the engine checked the item's If-Match when its
+			// transition started.
+			if _, err := finalEntityStore.Save(currentCtx, updated); err != nil {
+				return classifySaveErr(fmt.Sprintf("item %d: failed to save entity", i), updated.Meta.ID, err)
 			}
-			if saveErr != nil {
-				// The transaction the batch runs in is gone: not this item's
-				// precondition, and not isolable.
-				if appErr := common.TxAbortedConflict(saveErr); appErr != nil {
-					return nil, appErr
-				}
-				if applyHandlerCAS && errors.Is(saveErr, spi.ErrConflict) {
-					slog.Info("collection update item precondition failed",
-						"source", "handler", "entityId", updated.Meta.ID, "itemIndex", i)
-					// Emit a compensating TRANSITION_ABORTED
-					// audit event so the entry-side audit events recorded by the
-					// engine for this item (STATE_MACHINE_START / WORKFLOW_FOUND
-					// / TRANSITION_MAKE) have a paired terminal event in the
-					// audit log. Best-effort; routed through the engine's
-					// audit-store handle so it lands in the same transaction as
-					// the entry events. This chunk's transaction still commits —
-					// the bulk endpoint isolates per-item failures rather than
-					// rolling back the whole chunk — so both events are kept
-					// together on every backend.
-					h.emitTransitionAborted(currentCtx, updated, currentTxID, item.transition, item.ifMatch)
-					return &UpdateCollectionItemFailure{
-						EntityID:  updated.Meta.ID,
-						Code:      common.ErrCodeEntityModified,
-						Message:   "entity has been modified since last read",
-						ItemIndex: i,
-					}, nil
-				}
-				return nil, classifySaveErr(fmt.Sprintf("item %d: failed to save entity", i), updated.Meta.ID, saveErr)
-			}
-			return nil, nil
-		}()
-		if appErr != nil {
+			return nil
+		}(); appErr != nil {
 			return nil, appErr
-		}
-		if isolated != nil {
-			failed = append(failed, *isolated)
-			continue
 		}
 		entityIDs = append(entityIDs, updated.Meta.ID)
 	}
@@ -2893,9 +2789,13 @@ func classifyError(err error) *common.AppError {
 	return common.Internal("unexpected error", err)
 }
 
-// classifySaveErr maps a Save/CompareAndSave storage error to a client-facing
-// AppError where the plugin's sentinel is client-attributable, falling back
-// to internalMsg's sanitized 500 otherwise.
+// classifySaveErr maps a Save storage error to a client-facing AppError where
+// the plugin's sentinel is client-attributable, falling back to internalMsg's
+// sanitized 500 otherwise (common.Internal, which answers a conflict with the
+// retryable 409).
+//
+// spi.ErrTxAborted → the retryable 409 CONFLICT with the cause attached: an
+// earlier conflict aborted the transaction.
 //
 // spi.ErrEntityModelMismatch → 400 ENTITY_MODEL_MISMATCH: the entity's model
 // reference is fixed at creation (spi.EntityMeta.ModelRef's doc comment) and
@@ -2906,6 +2806,11 @@ func classifyError(err error) *common.AppError {
 // entity being saved — so this mapping is defense in depth against a future
 // or internal caller, not a currently reachable client error.
 func classifySaveErr(internalMsg, entityID string, err error) *common.AppError {
+	// An earlier conflict aborted the transaction: the retryable 409, with the
+	// cause kept for the server-side log.
+	if appErr := common.TxAbortedConflict(err); appErr != nil {
+		return appErr
+	}
 	if errors.Is(err, spi.ErrEntityModelMismatch) {
 		appErr := common.Operational(http.StatusBadRequest, common.ErrCodeEntityModelMismatch,
 			"entity's model is fixed at creation; this save specified a different model")
@@ -2916,18 +2821,16 @@ func classifySaveErr(internalMsg, entityID string, err error) *common.AppError {
 }
 
 // engineConflictIsTransactionConflict reports whether an engine error that
-// carries spi.ErrConflict came from one of the engine's own statements rather
-// than from the caller's If-Match precondition: it is also marked with an
-// engine infrastructure sentinel, or it is spi.ErrTxAborted — the engine's
-// If-Match compare met an already-aborted transaction and answered through
-// common.TxAbortedConflict, or a processor that could call back into the
-// transaction failed after the transaction had lost a write race, which the
-// engine reports as spi.ErrTxAborted on every backend (see
-// TransactionManager.LostRace). The engine applies the precondition with a bare
-// CompareAndSave whose conflict it returns unmarked; every other store call
-// it makes marks its failure. A marked conflict means a concurrent writer
-// aborted the transaction — for example a processor's joined callback lost a
-// write race — and the engine's next statement met it. That is a transaction
+// carries spi.ErrConflict came from the engine's own statements rather than
+// from a precondition on the request's own entity. The engine returns two
+// conflicts unmarked: the caller's If-Match, checked when the transition
+// starts, and the apply-result compare after a committed
+// COMMIT_BEFORE_DISPATCH segment (wfengine.ErrPostSegmentConflict). Every other
+// store call it makes marks its failure with an engine infrastructure
+// sentinel, and spi.ErrTxAborted is how the engine reports a transaction that
+// already lost a write race — a statement that met it, or a processor that
+// could call back into the transaction and failed after the race was lost
+// (see TransactionManager.LostRace). A marked conflict is a transaction
 // conflict (retryable 409 CONFLICT), not ENTITY_MODIFIED.
 func engineConflictIsTransactionConflict(err error) bool {
 	return errors.Is(err, spi.ErrTxAborted) ||
@@ -3067,38 +2970,4 @@ func classifyWorkflowError(err error) *common.AppError {
 		return appErr
 	}
 	return common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed, err.Error())
-}
-
-// emitTransitionAborted writes a TRANSITION_ABORTED audit event for a
-// post-engine CompareAndSave conflict on the supplied entity. Routes
-// through the same audit-store handle the engine uses so the abort lands
-// in the same TX buffer as the entry-side audit events emitted earlier in
-// the cascade.
-//
-// transitionName may be "" for loopback updates — kept verbatim in the
-// event payload so downstream consumers can distinguish loopback aborts
-// from named-transition aborts. Best-effort: any failure to load the
-// audit store is logged at DEBUG and swallowed (an audit-emission failure
-// must not break the per-item-isolated commit path).
-func (h *Handler) emitTransitionAborted(
-	ctx context.Context,
-	entity *spi.Entity,
-	cascadeEntryTxID string,
-	transitionName string,
-	expectedTxID string,
-) {
-	auditStore, err := h.factory.StateMachineAuditStore(ctx)
-	if err != nil {
-		slog.Debug("transition-aborted: audit store unavailable",
-			"pkg", "entity", "entityId", entity.Meta.ID, "error", err)
-		return
-	}
-	transitionForAudit := transitionName
-	if transitionForAudit == "" {
-		transitionForAudit = "loopback"
-	}
-	actualTxID := wfengine.LookupActualTxID(ctx, h.factory, entity.Meta.ID)
-	wfengine.EmitTransitionAborted(ctx, auditStore, time.Now,
-		entity.Meta.ID, cascadeEntryTxID, entity.Meta.State,
-		transitionForAudit, expectedTxID, actualTxID)
 }

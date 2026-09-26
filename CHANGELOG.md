@@ -301,6 +301,23 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   those `500`, `400` and `412` answers as final should retry on the `409`. See
   `cyoda help errors CONFLICT` and `cyoda help workflows`.
 
+- **`If-Match` states the version an update starts from, and is checked once,
+  when the update's transition starts.** This holds on `PUT` and `PATCH` of
+  one entity, for each item of a collection `PUT` and for the gRPC
+  `EntityPatchRequest`. The server compares the value with the entity as the
+  update's transaction reads it, before any criterion or processor runs. A
+  write to the entity later in the same transaction no longer fails it: an
+  update whose processor wrote the entity through a callback that joined the
+  transaction answered `412 ENTITY_MODIFIED` on every backend, although
+  nobody else had written the entity; it now succeeds and keeps that write. A
+  change that another transaction commits after the update's read is a lost
+  race and answers the retryable `409 CONFLICT` on every backend, where it
+  could answer `412` before; a collection with such an item now fails whole
+  with `409` instead of listing the item in `failed[]`. A stale `If-Match`
+  now records `STATE_MACHINE_START` and `TRANSITION_ABORTED` and none of the
+  transition's other audit events. See `cyoda help errors ENTITY_MODIFIED`
+  and `docs/cloud-parity/entity-if-match.md`.
+
 - **Scheduler settings are replaced.** No longer read:
   `CYODA_SCHEDULER_DISTRIBUTION`, `CYODA_SCHEDULER_COORDINATOR`,
   `CYODA_SCHEDULER_REDISPATCH_BACKOFF`, `CYODA_SCHEDULER_BATCH_SIZE`,
@@ -644,7 +661,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   under `SYNC`, `ASYNC_SAME_TX` and `COMMIT_BEFORE_DISPATCH` with
   `startNewTxOnDispatch: true`, and for a callout handed to another node, whose
   answer now states that there was no payload. An answer that carries data
-  still replaces the entity's data, the callback's write included. See
+  still replaces the entity's data, the callback's write included. An update
+  that carries `If-Match` keeps the callback's write too (see Breaking). See
   `cyoda help grpc` and `cyoda help workflows`.
 
 - **An async search job could be run twice, or lose its results, when the

@@ -36,9 +36,10 @@ var ErrSavepointInfra = errors.New("savepoint failure")
 // can isolate and skip past: the segment that would have carried the rest of the
 // work is gone, and the caller's cascade cursor was never advanced.
 //
-// A conflict from the FIRST-segment flush is deliberately left unmarked. That one
-// happens before any commit and before any dispatch, so it is cleanly isolable —
-// which is the whole distinction this sentinel exists to draw.
+// The caller's If-Match, checked when the transition starts (checkIfMatch), is
+// deliberately left unmarked. It fails before anything commits or is
+// dispatched, so it is cleanly isolable — which is the whole distinction this
+// sentinel exists to draw.
 //
 // Chained alongside the conflict, never in place of it, so
 // errors.Is(err, spi.ErrConflict) stays true and the single-entity 412 mapping is
@@ -61,12 +62,9 @@ var ErrPostSegmentConflict = errors.New("conflict after a committed segment")
 // the ones that classifier (and common.Internal underneath it) maps to a
 // specific status; anything else has no client-facing meaning to preserve.
 //
-// The list is what keeps the segment-boundary CAS sites honest in BOTH
-// directions: marking an infrastructure failure is required (it is the leak),
-// and marking a caller's stale If-Match is forbidden — UpdateEntityCollection
-// excludes ErrCommitBeforeDispatchInfra from per-item isolation, so a
-// mis-marked precondition failure would abort the whole request and take its
-// successful siblings with it.
+// The list is what keeps the apply-result CAS honest: an infrastructure
+// failure there must be marked (it is the leak), while a conflict keeps the
+// ErrPostSegmentConflict chain its callers read.
 func clientAttributableStoreErr(err error) bool {
 	return errors.Is(err, spi.ErrConflict) ||
 		errors.Is(err, spi.ErrUniqueViolation) ||
@@ -159,7 +157,7 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 		case ExecutionModeCommitBeforeDispatch:
 			var nCtx context.Context
 			var nTxID string
-			nCtx, nTxID, procErr = e.executeCommitBeforeDispatch(currentCtx, entity, desc, proc, workflow, transition, currentTxID, auditStore, txID)
+			nCtx, nTxID, procErr = e.executeCommitBeforeDispatch(currentCtx, entity, desc, proc, workflow, transition, currentTxID)
 			success = procErr == nil
 			if procErr == nil {
 				currentCtx = nCtx
@@ -394,12 +392,11 @@ func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc
 // Per spec §3, §10.3: in the startNewTxOnDispatch=true branch, processors
 // must not save the cascade-anchor entity themselves AND also return
 // mutations for it (last-writer-wins inside TX_post's buffer).
-func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.Entity, desc *modelDescMemo, proc spi.ProcessorDefinition, workflow, transition, txID string, auditStore spi.StateMachineAuditStore, entryTxID string) (newCtx context.Context, newTxID string, err error) {
+func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.Entity, desc *modelDescMemo, proc spi.ProcessorDefinition, workflow, transition, txID string) (newCtx context.Context, newTxID string, err error) {
 	// Both variants below commit txID. A chain that joined its transaction does
-	// not own it, so it is refused here — before the flush, the commit, the
-	// dispatch, and before the single-shot If-Match is consumed. Nothing of the
-	// joined transaction has been touched by this processor; its owner decides
-	// its fate.
+	// not own it, so it is refused here — before the flush, the commit and the
+	// dispatch. Nothing of the joined transaction has been touched by this
+	// processor; its owner decides its fate.
 	if joinedTransaction(ctx) {
 		return nil, "", refuseCommitInJoinedTransaction(workflow, proc.Name)
 	}
@@ -423,35 +420,16 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 	// Read the flag. Nil pointer == default == false.
 	startNewTx := proc.Config.StartNewTxOnDispatch != nil && *proc.Config.StartNewTxOnDispatch
 
-	// Per spec §4.1: a caller-supplied If-Match expected-txID (single-shot,
-	// stashed via ManualTransitionWithIfMatch) is applied to the FIRST
-	// segment-flush of the cascade — i.e. this exact call's pre-dispatch
-	// flush. Consume here so subsequent CBD segments in the same cascade fall
-	// back to the chained-CAS path against the prior segment's commit-stamped
-	// txID.
-	expectedFirstFlushTxID, ifMatchConsumed := consumeIfMatch(ctx)
-
 	if startNewTx {
 		// =true: commit TX_pre, begin TX_post, dispatch with TX_post token,
 		// apply result in TX_post.
-		newTxID, newCtx, err = e.commitAndBeginNextSegment(ctx, entity, txID, expectedFirstFlushTxID, ifMatchConsumed)
+		newTxID, newCtx, err = e.commitAndBeginNextSegment(ctx, entity, txID)
 		// Advance before checking err so the deferred rollback always targets the
 		// segment actually open. On a failed flush it returns ("", nil, err) and
 		// rollbackSegment no-ops; on a failed re-read it returns TX_post, which
 		// the guard rolls back.
 		segCtx, segTxID = newCtx, newTxID
 		if err != nil {
-			// If the engine's first-segment flush rejected
-			// the caller's IfMatch precondition we have already recorded
-			// entry-side audit events (STATE_MACHINE_START, WORKFLOW_FOUND).
-			// Emit a compensating TRANSITION_ABORTED so the audit trail
-			// remains self-consistent. Best-effort — auditStore is the
-			// engine's own handle so this lands in the same TX buffer as the
-			// entry events (rolls back together with them on a chunk-wide
-			// rollback, commits together on per-item-isolated paths).
-			if ifMatchConsumed && errors.Is(err, spi.ErrConflict) && !errors.Is(err, spi.ErrTxAborted) {
-				e.recordAbortForIfMatchConflict(ctx, auditStore, entity, entryTxID, transition, expectedFirstFlushTxID)
-			}
 			return nil, "", err
 		}
 
@@ -482,12 +460,7 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		// helper opens a TX immediately after committing, which would leak
 		// TX_post's token into the dispatch context. Splitting Save+Commit
 		// from Begin keeps both modes clean.
-		if fcErr := e.flushAndCommitSegment(ctx, entity, txID, expectedFirstFlushTxID, ifMatchConsumed); fcErr != nil {
-			// See the matching block in the startNewTx==true branch above
-			// for the rationale.
-			if ifMatchConsumed && errors.Is(fcErr, spi.ErrConflict) && !errors.Is(fcErr, spi.ErrTxAborted) {
-				e.recordAbortForIfMatchConflict(ctx, auditStore, entity, entryTxID, transition, expectedFirstFlushTxID)
-			}
+		if fcErr := e.flushAndCommitSegment(ctx, entity, txID); fcErr != nil {
 			return nil, "", fcErr
 		}
 
@@ -585,50 +558,33 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 }
 
 // flushAndCommitSegment is the shared primitive for the COMMIT_BEFORE_DISPATCH
-// segment boundary's "flush + commit TX_pre" half. It writes the in-memory
-// entity to txID's buffer (CompareAndSave when applyIfMatch is true,
-// plain Save otherwise) and commits txID. The caller decides whether to Begin
-// a new TX afterward (=true uses commitAndBeginNextSegment; =false splits the
-// Begin around the dispatch).
+// segment boundary's "flush + commit TX_pre" half. It saves the in-memory
+// entity in txID and commits txID. The caller decides whether to Begin a new
+// TX afterward (=true uses commitAndBeginNextSegment; =false splits the Begin
+// around the dispatch).
 //
-// When applyIfMatch is true the flush uses CompareAndSave with expectedTxID,
-// applying the caller's If-Match precondition (spec §4.1) before TX_pre
-// commits and before any external dispatch fires. Client-attributable CAS
-// failures (spi.ErrConflict and the unique-key sentinels) bubble unwrapped so
-// the handler maps them to 412 / 409 / 422; the CAS's OTHER failure mode — the
-// store itself — is marked infra like every other one below.
+// The save is a plain one. A caller's If-Match was checked when the transition
+// started (checkIfMatch); a write that another transaction committed since
+// txID read the entity makes the commit fail.
 //
-// Infrastructure failures (EntityStore lookup, CAS store failure, plain Save,
-// Commit) are wrapped with ErrCommitBeforeDispatchInfra so
-// classifyWorkflowError routes them to a sanitized 5xx with ticket UUID
-// instead of leaking internal text via 4xx WORKFLOW_FAILED.
+// Failures (EntityStore lookup, Save, Commit) are wrapped with
+// ErrCommitBeforeDispatchInfra so classifyWorkflowError routes them to a
+// sanitized 5xx with ticket UUID instead of leaking internal text via 4xx
+// WORKFLOW_FAILED — except those common.Internal gives a meaning of their own:
+// a conflict answers a retryable 409, a unique-key clash its own 409.
 //
-// The Save/CompareAndSave above runs on the caller's cancellable ctx — a
+// The Save above runs on the caller's cancellable ctx — a
 // segment that hasn't reached TX_pre's commit yet may still abort there, and
 // that is fail-closed and correct (spec D2). The commit itself is shielded:
 // see the pre-commit check and common.CommitContext below, mirroring
 // txScope.Commit (internal/domain/entity/txscope.go).
-func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, txID, expectedTxID string, applyIfMatch bool) error {
+func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, txID string) error {
 	es, err := e.factory.EntityStore(ctx)
 	if err != nil {
 		return fmt.Errorf("commit-before-dispatch: get entity store: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
 	}
-	if applyIfMatch {
-		if _, err := es.CompareAndSave(ctx, entity, expectedTxID); err != nil {
-			// The compare never ran: an earlier conflict aborted TX_pre.
-			if appErr := common.TxAbortedConflict(err); appErr != nil {
-				return appErr
-			}
-			if clientAttributableStoreErr(err) {
-				return err // ErrConflict / unique-key outcomes bubble unwrapped
-			}
-			return fmt.Errorf("commit-before-dispatch: apply If-Match precondition: %w",
-				errors.Join(ErrCommitBeforeDispatchInfra, err))
-		}
-	} else {
-		if _, err := es.Save(ctx, entity); err != nil {
-			return fmt.Errorf("commit-before-dispatch: flush pre-callout state: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
-		}
+	if _, err := es.Save(ctx, entity); err != nil {
+		return fmt.Errorf("commit-before-dispatch: flush pre-callout state: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
 	}
 	// A scheduled run stamps its task as the last write of every segment
 	// (spec §5.2). The stamp is fenced; a refused stamp stops the segment from
@@ -715,8 +671,8 @@ func (e *Engine) continueRunSegment(ctx context.Context, prevTxID, newTxID strin
 // with ErrCommitBeforeDispatchInfra; CAS conflicts bubble through unchanged
 // so the handler can map them to 412. On a failed re-read it returns the new
 // segment with the error; the caller rolls it back.
-func (e *Engine) commitAndBeginNextSegment(ctx context.Context, entity *spi.Entity, txID, expectedTxID string, applyIfMatch bool) (newTxID string, newCtx context.Context, err error) {
-	if fcErr := e.flushAndCommitSegment(ctx, entity, txID, expectedTxID, applyIfMatch); fcErr != nil {
+func (e *Engine) commitAndBeginNextSegment(ctx context.Context, entity *spi.Entity, txID string) (newTxID string, newCtx context.Context, err error) {
+	if fcErr := e.flushAndCommitSegment(ctx, entity, txID); fcErr != nil {
 		return "", nil, fcErr
 	}
 	newTxID, newCtx, err = e.txMgr.Begin(context.WithoutCancel(ctx))

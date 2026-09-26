@@ -77,8 +77,6 @@ func TestJoinedCallbackConflict_EveryDoorAnswersRetryable409(t *testing.T) {
 		request func(h *callbackHarness, model, eID, eTxID string) (callbackResult, error)
 		// preCreate reports whether the door needs E to exist first.
 		preCreate bool
-		// ifMatch reports whether the request carries E's If-Match.
-		ifMatch bool
 	}{
 		{name: "Create", request: func(h *callbackHarness, model, _, _ string) (callbackResult, error) {
 			return h.callback(http.MethodPost, "/api/entity/JSON/"+model+"/1", `{"name":"e","amount":1,"status":"create"}`, "")
@@ -86,7 +84,7 @@ func TestJoinedCallbackConflict_EveryDoorAnswersRetryable409(t *testing.T) {
 		{name: "Update", preCreate: true, request: func(h *callbackHarness, _, eID, _ string) (callbackResult, error) {
 			return h.callback(http.MethodPut, "/api/entity/JSON/"+eID, loop, "")
 		}},
-		{name: "UpdateWithIfMatch", preCreate: true, ifMatch: true, request: func(h *callbackHarness, _, eID, eTxID string) (callbackResult, error) {
+		{name: "UpdateWithIfMatch", preCreate: true, request: func(h *callbackHarness, _, eID, eTxID string) (callbackResult, error) {
 			return h.putIfMatch("/api/entity/JSON/"+eID, eTxID, loop)
 		}},
 		{name: "ManualTransition", preCreate: true, request: func(h *callbackHarness, _, eID, _ string) (callbackResult, error) {
@@ -97,7 +95,7 @@ func TestJoinedCallbackConflict_EveryDoorAnswersRetryable409(t *testing.T) {
 		{name: "Collection", preCreate: true, request: func(h *callbackHarness, _, eID, _ string) (callbackResult, error) {
 			return h.callback(http.MethodPut, "/api/entity/JSON", collectionUpdateBody(eID, "", loop), "")
 		}},
-		{name: "CollectionWithIfMatch", preCreate: true, ifMatch: true, request: func(h *callbackHarness, _, eID, eTxID string) (callbackResult, error) {
+		{name: "CollectionWithIfMatch", preCreate: true, request: func(h *callbackHarness, _, eID, eTxID string) (callbackResult, error) {
 			return h.callback(http.MethodPut, "/api/entity/JSON", collectionUpdateBody(eID, eTxID, loop), "")
 		}},
 	}
@@ -112,13 +110,11 @@ func TestJoinedCallbackConflict_EveryDoorAnswersRetryable409(t *testing.T) {
 		// thenFails: the processor fails after its joined write, whatever the
 		// write was answered.
 		thenFails bool
-		// ifMatchOnly: the shape needs an If-Match to reach its statement.
-		ifMatchOnly bool
 		// atomic: the request runs in one transaction, so the conflict leaves
 		// nothing committed.
 		atomic bool
 	}{
-		// The handler's save (or If-Match compare).
+		// The handler's save.
 		{name: "AtSave", atomic: true, procs: func() []conflictProc { return []conflictProc{sync(uniq("jcc-p"))} }},
 		// The engine's read of the entity before dispatching a second processor.
 		{name: "InEngine", atomic: true, procs: func() []conflictProc { return []conflictProc{sync(uniq("jcc-p")), sync(uniq("jcc-p"))} }},
@@ -146,17 +142,14 @@ func TestJoinedCallbackConflict_EveryDoorAnswersRetryable409(t *testing.T) {
 		{name: "ThenFailsCommitBeforeDispatch", thenFails: true, procs: func() []conflictProc {
 			return []conflictProc{{name: uniq("jcc-cbd"), mode: "COMMIT_BEFORE_DISPATCH", startNewTx: true}}
 		}},
-		// The engine's If-Match compare at the first COMMIT_BEFORE_DISPATCH
-		// segment flush.
-		{name: "Segmented", ifMatchOnly: true, procs: func() []conflictProc {
+		// The first COMMIT_BEFORE_DISPATCH segment's flush and commit, after
+		// a SYNC processor's joined write lost the race.
+		{name: "Segmented", procs: func() []conflictProc {
 			return []conflictProc{sync(uniq("jcc-p")), {name: uniq("jcc-cbd"), mode: "COMMIT_BEFORE_DISPATCH"}}
 		}},
 	}
 	for _, door := range doors {
 		for _, shape := range shapes {
-			if shape.ifMatchOnly && !door.ifMatch {
-				continue
-			}
 			t.Run(door.name+"/"+shape.name, func(t *testing.T) {
 				h := newCalloutHarness(t, nil)
 				fModel, model, tag := uniq("jcc-f"), uniq("jcc"), uniq("jcc-tag")

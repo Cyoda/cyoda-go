@@ -15,7 +15,7 @@ import (
 // flushAndCommitSegment would commit TX_pre, the commit must not be attempted
 // at all — the segment stays uncommitted so a caller-side rollback produces
 // the spec D2 "nothing committed" guarantee. Routed through
-// ManualTransitionWithIfMatch (attemptTransition/fireTransition), NOT the
+// ManualTransition (attemptTransition/fireTransition), NOT the
 // cascade loop, so this isolates flushAndCommitSegment's own pre-commit check
 // from the separate check added to cascadeAutomated's loop head.
 func TestFlushAndCommitSegment_ExpiredCtxBeforeCommit_FailsClosed(t *testing.T) {
@@ -30,7 +30,7 @@ func TestFlushAndCommitSegment_ExpiredCtxBeforeCommit_FailsClosed(t *testing.T) 
 	defer cancel()
 	<-expiredCtx.Done() // deadline expires before the engine ever runs
 
-	_, err := h.engine.ManualTransitionWithIfMatch(expiredCtx, h.entity, "segment", "")
+	_, err := h.engine.ManualTransition(expiredCtx, h.entity, "segment")
 	if err == nil {
 		t.Fatal("expected the pre-commit ctx check to fail the segment commit")
 	}
@@ -65,7 +65,7 @@ func TestFlushAndCommitSegment_CommitCtxInterrupted_WrapsErrCommitInterrupted(t 
 		return ctx.Err()
 	}
 
-	err := h.fireSegment(t, "")
+	err := h.fireSegment(t)
 	if err == nil {
 		t.Fatal("expected the interrupted commit to fail the segment transition")
 	}
@@ -119,7 +119,7 @@ func TestCascadeAutomated_ExpiredOriginalDeadline_PostCBD_ContinuesToFinalState(
 	if h.entity.Meta.State != "C" {
 		t.Fatalf("cascade did not continue past the CBD segment to the final state: got %q", h.entity.Meta.State)
 	}
-	if res == nil || !res.Segmented {
+	if res == nil || res.FinalTxID == entryTxID {
 		t.Fatalf("test did not segment; it proves nothing: res=%+v", res)
 	}
 	if len(h.segmentTxIDs) == 0 || h.segmentTxIDs[len(h.segmentTxIDs)-1] == entryTxID {

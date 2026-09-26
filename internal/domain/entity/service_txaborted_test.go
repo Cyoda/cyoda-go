@@ -11,10 +11,11 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
-// service_txaborted_test.go — an If-Match compare that meets a transaction an
-// earlier conflict already aborted (spi.ErrTxAborted) never evaluated the
-// precondition. Each of the three compares answers the retryable 409 CONFLICT
-// with the cause attached, never 412 ENTITY_MODIFIED.
+// service_txaborted_test.go — a save that meets a transaction an earlier
+// conflict already aborted (spi.ErrTxAborted) answers the retryable 409
+// CONFLICT with the cause attached, never 412 ENTITY_MODIFIED, on every save
+// an update makes: the handler's, the collection handler's, and the engine's
+// first-segment flush.
 
 // txAbortedErr is what a store returns for a statement in such a transaction.
 var txAbortedErr = fmt.Errorf("%w: a joined write lost first-committer-wins", spi.ErrTxAborted)
@@ -33,13 +34,13 @@ func requireTxAbortedConflict(t *testing.T, err error) {
 	}
 }
 
-// The handler's own If-Match compare, on a non-segmenting update.
-func TestUpdateEntity_HandlerIfMatchInAbortedTx_Is409(t *testing.T) {
+// The handler's own Save, on a non-segmenting update with If-Match.
+func TestUpdateEntity_SaveInAbortedTx_Is409(t *testing.T) {
 	hn := newTrackingHandler(t)
 	hn.registerCountedTouchWorkflow(t, rollbackModel)
 	id := hn.createEntityIn(t, rollbackModel, `{"name":"before"}`)
 	current := hn.committedEntity(t, id).Meta.TransactionID
-	hn.armed.casErr = txAbortedErr
+	hn.armed.saveErr = txAbortedErr
 
 	_, err := hn.h.UpdateEntity(hn.ctx, UpdateEntityInput{
 		EntityID: id, Format: "JSON", Data: json.RawMessage(`{"name":"after"}`),
@@ -48,16 +49,16 @@ func TestUpdateEntity_HandlerIfMatchInAbortedTx_Is409(t *testing.T) {
 	requireTxAbortedConflict(t, err)
 }
 
-// The collection update's handler compare: the item is not isolated as
-// ENTITY_MODIFIED — the transaction later items would run in is gone — and the
-// whole request answers 409.
-func TestUpdateCollection_HandlerIfMatchInAbortedTx_AbortsBatch(t *testing.T) {
+// The collection update's Save: the item is not isolated as ENTITY_MODIFIED —
+// the transaction later items would run in is gone — and the whole request
+// answers 409.
+func TestUpdateCollection_SaveInAbortedTx_AbortsBatch(t *testing.T) {
 	hn := newTrackingHandler(t)
 	touched := hn.registerCountedTouchWorkflow(t, rollbackModel)
 	first := hn.createEntityIn(t, rollbackModel, `{"name":"first"}`)
 	second := hn.createEntityIn(t, rollbackModel, `{"name":"before"}`)
 	current := hn.committedEntity(t, first).Meta.TransactionID
-	hn.armed.casErr = txAbortedErr
+	hn.armed.saveErr = txAbortedErr
 
 	res, err := hn.h.UpdateEntityCollection(hn.ctx, []UpdateCollectionItem{
 		{EntityID: first, Transition: "touch", IfMatch: current, Payload: json.RawMessage(`{"name":"first-updated"}`)},
@@ -75,14 +76,13 @@ func TestUpdateCollection_HandlerIfMatchInAbortedTx_AbortsBatch(t *testing.T) {
 	}
 }
 
-// The engine's first-segment If-Match compare, before any commit or dispatch.
-func TestUpdateEntity_FirstFlushIfMatchInAbortedTx_Is409(t *testing.T) {
+// The engine's first-segment flush, before any commit or dispatch.
+func TestUpdateEntity_FirstFlushInAbortedTx_Is409(t *testing.T) {
 	hn := newTrackingHandler(t)
 	dispatched := hn.registerManualSegmentingWorkflow(t, rollbackSegmentModel)
 	id := hn.createEntityIn(t, rollbackSegmentModel, `{"name":"seg"}`)
 	current := hn.committedEntity(t, id).Meta.TransactionID
-	hn.engineCAS.casErr = txAbortedErr
-	hn.engineCAS.armed.Store(true)
+	hn.engineCAS.saveErr = txAbortedErr
 
 	_, err := hn.h.UpdateEntity(hn.ctx, UpdateEntityInput{
 		EntityID: id, Format: "JSON", Data: json.RawMessage(`{"name":"seg-updated"}`),
@@ -90,6 +90,6 @@ func TestUpdateEntity_FirstFlushIfMatchInAbortedTx_Is409(t *testing.T) {
 	})
 	requireTxAbortedConflict(t, err)
 	if n := dispatched.Load(); n != 0 {
-		t.Fatalf("callout fired %d time(s); the first-segment compare was supposed to stop it", n)
+		t.Fatalf("callout fired %d time(s); the failed flush was supposed to stop it", n)
 	}
 }

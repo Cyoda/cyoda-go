@@ -298,19 +298,22 @@ rejects this flag for any other execution mode.
 
 ### `If-Match` precondition
 
-If the caller supplied an `If-Match: <txID>` header on the API request, the
-engine applies it as a `CompareAndSave` against the supplied txID at the
-**first segment flush** of the cascade — i.e. before `T_pre` commits and
-before the processor is dispatched. This is consumed exactly once
-(`consumeIfMatch` at `engine_processors.go:213`). A mismatch surfaces as
-`spi.ErrConflict` → `412 Precondition Failed`, an audit
-`TRANSITION_ABORTED` event is emitted with
-`{reason: ENTITY_MODIFIED, expectedTxId, actualTxId}`, and `T_pre` is rolled
-back — no segmentation happens, no external dispatch fires.
+If the caller supplied an `If-Match: <txID>` header on the API request, it
+states the version the request starts from. The engine checks it once, when
+the transition starts: against the entity as the request's transaction read
+it, after `STATE_MACHINE_START` and before it selects a workflow, runs a
+criterion or dispatches a processor (`checkIfMatch` in
+`internal/domain/workflow/transition_aborted.go`). A mismatch surfaces as
+`spi.ErrConflict` → `412 Precondition Failed`, an audit `TRANSITION_ABORTED`
+event is recorded with `{reason: ENTITY_MODIFIED, expectedTxId, actualTxId}`,
+and `T_pre` is rolled back — no segment commits, no external dispatch fires.
 
-Subsequent `COMMIT_BEFORE_DISPATCH` segments in the same cascade fall back to
-chained-CAS against the prior segment's commit-stamped txID; no further
-`If-Match` is honoured.
+A write to the entity later in the same transaction — a joined callback's, a
+segment's own — is the request's own and does not break the precondition. The
+first segment flush is a plain save. A write that another transaction commits
+after the request's read fails the commit of `T_pre` (or of the request's
+transaction when nothing segments), and the request answers a retryable
+`409 CONFLICT`.
 
 ### Failure semantics
 
@@ -318,8 +321,9 @@ chained-CAS against the prior segment's commit-stamped txID; no further
 |---|---|
 | Processor's member answers `success:false` | `T_post` rolled back, entity durable in pre-callout state, `400 WORKFLOW_FAILED` with the member's message — or, with `startNewTxOnDispatch`, a retryable `409 CONFLICT` when a callback write in `T_post` had already lost a race |
 | No answer, or the member disconnects | another member is tried only if the processor is `idempotent`; otherwise `T_post` rolled back, `503` with the try's own code |
-| CAS conflict at apply-result boundary | `T_post` rolled back, entity durable in pre-callout state, error bubbles as `409 retryable`, client may retry |
-| `If-Match` mismatch at first-segment flush | `T_pre` rolled back, no dispatch, `412 Precondition Failed`, `TRANSITION_ABORTED` audit event emitted |
+| CAS conflict at apply-result boundary (another transaction changed the entity during the dispatch) | `T_post` rolled back, entity durable in pre-callout state; a single update answers `412 ENTITY_MODIFIED`, a collection update fails whole with `400 WORKFLOW_FAILED`. Not retryable as-is: the callout already fired |
+| `If-Match` mismatch when the transition starts | `T_pre` rolled back, no dispatch, `412 Precondition Failed`, `TRANSITION_ABORTED` audit event recorded |
+| `T_pre`'s commit refused (another transaction committed a change first) | nothing committed, no dispatch, `409 CONFLICT`, retryable |
 | Infrastructure failure (Begin, Commit, EntityStore lookup) | wrapped with `ErrCommitBeforeDispatchInfra`, mapped to sanitized 5xx with ticket UUID — not 4xx (we don't leak driver text) |
 | Engine crash between segments | entity durable in pre-callout state; in-flight cascade is gone; client must retry the same API call to re-fire the cascade from the start |
 
@@ -386,16 +390,18 @@ caller-supplied value there is not honoured.
 `CompareAndSave(entity, expectedTxID)` reads the current row's stamp; on
 mismatch it returns `spi.ErrConflict`. `expectedTxID` must be non-empty — the
 empty string is a caller error, rejected before any read or write — so
-`CompareAndSave` only ever updates an entity that exists. Three places use it,
+`CompareAndSave` only ever updates an entity that exists. Two places use it,
 and each names a txID a prior read found:
 
-- **`If-Match` request header** — handler-side optimistic concurrency for
-  ordinary updates (see `crud.md`).
-- **First-segment flush of `COMMIT_BEFORE_DISPATCH`** — applies the
-  request's `If-Match` precondition before the segment commits.
 - **Apply-result phase of `COMMIT_BEFORE_DISPATCH`** — applies the
   processor's mutations against `T_pre`'s stamped txID, catching concurrent
   writes that happened during the dispatch.
+- **The final persist of a scheduled run** — against the entity's version as
+  the run read it, or the run's own write.
+
+The `If-Match` request header is not a `CompareAndSave`: the engine compares
+it with the version the request's transaction read, when the transition
+starts (see above).
 
 ### Audit events
 
@@ -405,8 +411,9 @@ client-side correlation continuity:
 - `STATE_MACHINE_PROCESSING_PAUSED` once before the processor pipeline begins.
 - `STATE_PROCESS_RESULT` after each processor with `{success: bool, mode:
   string}`. `success:false` is emitted even for `ASYNC_NEW_TX` failures.
-- `TRANSITION_ABORTED` on `If-Match` rejection at first-segment flush, with
-  `{reason: ENTITY_MODIFIED, expectedTxId, actualTxId}`.
+- `TRANSITION_ABORTED` on `If-Match` rejection, right after
+  `STATE_MACHINE_START`, with `{reason: ENTITY_MODIFIED, transitionName,
+  expectedTxId, actualTxId}`.
 
 `STATE_PROCESS_RESULT` deliberately does **not** include the error string —
 engine-wrapped error text (e.g. raw pgx messages) could leak internals to
@@ -425,13 +432,11 @@ A cascade that hits a limit emits `STATE_MACHINE_CANCELLED` and returns
 
 ### Engine return value: `EngineResult`
 
-The engine returns `(FinalCtx, FinalTxID, Segmented bool)`. For
-non-segmenting cascades `FinalTxID` equals the input txID and the caller's
-handler commits it. For segmenting cascades `FinalTxID` is `T_post`'s ID
-(the engine already committed all prior `T_pre`s); the handler commits
-`T_post`. The `Segmented` flag tells the handler whether the engine already
-consumed the request's `If-Match` (it has) or whether the handler should
-apply post-engine CAS itself (only for non-segmenting cascades).
+The engine returns `(FinalCtx, FinalTxID)`. For non-segmenting cascades
+`FinalTxID` equals the input txID and the caller's handler commits it. For
+segmenting cascades `FinalTxID` is `T_post`'s ID (the engine already
+committed all prior `T_pre`s); the handler saves the entity in `T_post` and
+commits it.
 
 ---
 
@@ -589,7 +594,10 @@ currently a labelling-only variant.
 - `classifyWorkflowError` maps engine outputs to HTTP:
   - `ErrCommitBeforeDispatchInfra` → sanitized 5xx with ticket UUID
   - `ErrTransitionNotFound` → 400 `TRANSITION_NOT_FOUND`
-  - `spi.ErrConflict` from CAS → 409 retryable (or 412 if `If-Match`)
+  - the request's `If-Match` mismatch, or the apply-result CAS conflict after
+    a committed segment → 412 `ENTITY_MODIFIED`
+  - any other `spi.ErrConflict` (a refused commit, a lost write race) → 409
+    `CONFLICT`, retryable
   - a processor's `success:false` verdict → 400 `WORKFLOW_FAILED` with the
     member's message, unless a callback write of the processor had already
     lost a race: then 409 `CONFLICT`, retryable
@@ -609,7 +617,7 @@ currently a labelling-only variant.
 | `ASYNC_NEW_TX` | `engine_processors.go:158` |
 | `COMMIT_BEFORE_DISPATCH` | `engine_processors.go:201` |
 | Segment flush + commit | `engine_processors.go:314` |
-| `If-Match` plumbing | `internal/domain/workflow/ifmatch.go` |
+| `If-Match` check | `internal/domain/workflow/transition_aborted.go` |
 | `TRANSITION_ABORTED` audit | `internal/domain/workflow/transition_aborted.go` |
 | gRPC processor dispatch | `internal/grpc/dispatch.go:43` |
 | Tx-token mint + attach to CloudEvent | `internal/grpc/dispatch.go` (token injected before dispatch) |

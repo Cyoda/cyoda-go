@@ -273,9 +273,7 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 			map[string]any{"transition": cur.Transition, "sourceState": cur.SourceState})
 		return OutcomeCancelled, commit(txID)
 	}
-	fireCtx := withIfMatch(txCtx, expectedTxID)
-
-	newCtx, newTxID, fireErr := e.fireTransition(fireCtx, entity, wf, transition, auditStore, txID)
+	newCtx, newTxID, fireErr := e.fireTransition(txCtx, entity, wf, transition, auditStore, txID)
 	curCtx, curTxID = newCtx, newTxID
 	if fireErr != nil {
 		if errors.Is(fireErr, ErrCriterionNotMatched) {
