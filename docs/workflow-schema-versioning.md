@@ -168,9 +168,11 @@ were always equivalent on that path. No `CurrentSchemaVersion` or
 A processor's `config.idempotent`, added in 1.5, now also decides what the
 scheduler does when a scheduled run fails after sending that processor to a
 compute member. With `true` the run is retried. With `false`, the default, the
-task ends `FAILED` (`UNSAFE_WORK_NOT_COMPLETED`) and is not run again. Before,
-the scheduler could start such a run a second time while the first was still in
-progress, whatever the field said.
+task ends `FAILED` (`UNSAFE_WORK_NOT_COMPLETED`) and is not run again — unless
+the processor's callout provably never reached a compute member, in which case
+the run is retried like any other failure. Before, the scheduler could start
+such a run a second time while the first was still in progress, whatever the
+field said.
 
 The field, its type, its default, its validation and its export are unchanged;
 every document 1.5 accepted is accepted and exported byte-identically. What
