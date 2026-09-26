@@ -130,7 +130,7 @@ cyoda-go-spi repository). Summary:
   fires on `tx.Buffer`/etc. The plugin does not detect or recover.
 - **Tenant isolation** (every plugin enforces): every TM lifecycle
   method rejects mismatched-tenant callers (Commit, Rollback, Join,
-  Savepoint, RollbackToSavepoint, ReleaseSavepoint).
+  Savepoint, RollbackToSavepoint, ReleaseSavepoint, LostRace).
 
 Postgres satisfies the OpMu contract trivially because its
 `*spi.TransactionState` carries only `ID` and `TenantID` — the

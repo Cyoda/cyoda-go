@@ -40,10 +40,10 @@ has no documented dispatch semantics yet.
 
 | Mode | Synchrony | Open TX during dispatch | Result mutations applied | Failure | Suitable for |
 |---|---|---|---|---|---|
-| `SYNC` | blocks inline | yes (caller's TX) | yes | fatal — the callout's error (see `cyoda help workflows`), entity stays in source state | fast, in-TX work; standard processor |
+| `SYNC` | blocks inline | yes (caller's TX) | yes | fatal — the callout's error (see `cyoda help workflows`), or a retryable `409 CONFLICT` when a callback write had already lost a race; entity stays in source state | fast, in-TX work; standard processor |
 | `ASYNC_SAME_TX` | blocks inline | yes (caller's TX) | yes | fatal — same as `SYNC` | indistinguishable from `SYNC` today; reserved label |
 | `ASYNC_NEW_TX` | blocks inline | yes (savepoint inside caller's TX) | **no — discarded** | non-fatal for the processor's own failure — warning logged, pipeline continues; a savepoint that cannot be created, undone or released fails the operation instead (ticketed `5xx`), a callback write inside the savepoint that had already lost a race when the savepoint was undone fails it with a retryable `409 CONFLICT` and nothing commits, and a superseded enclosing callout is not swallowed either | fire-and-forget side effects (notifications, audit pings) |
-| `COMMIT_BEFORE_DISPATCH` | blocks inline | **no** — `TX_pre` committed first | yes, via `CompareAndSave` against `T_pre` | fatal — the callout's error (see `cyoda help workflows`), entity durable in pre-callout state | slow external work; connection-pool relief |
+| `COMMIT_BEFORE_DISPATCH` | blocks inline | **no** — `TX_pre` committed first | yes, via `CompareAndSave` against `T_pre` | fatal — the callout's error (see `cyoda help workflows`), or, with `startNewTxOnDispatch`, a retryable `409 CONFLICT` when a callback write in `TX_post` had already lost a race; entity durable in pre-callout state | slow external work; connection-pool relief |
 
 The engine implementation is in
 [`internal/domain/workflow/engine_processors.go`](../internal/domain/workflow/engine_processors.go).
@@ -115,6 +115,14 @@ current payload.
 A callback ack is **provisional** — it is not durable until the owning
 transaction commits. If the processor fails or the engine rolls back `T`,
 all callback writes are rolled back atomically with the rest of the cascade.
+
+A callback write that loses a race — another transaction committed the same
+entity or task row after `T` began — dooms `T`. If the processor then fails,
+for that reason or any other, the operation answers a retryable
+`409 CONFLICT`, not the processor's failure, on every backend: the engine asks
+`TransactionManager.LostRace` after a failed dispatch. PostgreSQL refuses the
+losing write itself; memory and sqlite accept it into the buffer and would
+refuse `T` at commit, and `LostRace` answers the same for both.
 
 When the token is absent (empty `cyodatxtoken`), the callback runs in a
 standalone transaction (`Begin`/`Commit`). This is the normal case for
@@ -308,7 +316,7 @@ chained-CAS against the prior segment's commit-stamped txID; no further
 
 | Failure | Outcome |
 |---|---|
-| Processor's member answers `success:false` | `T_post` rolled back, entity durable in pre-callout state, `400 WORKFLOW_FAILED` with the member's message |
+| Processor's member answers `success:false` | `T_post` rolled back, entity durable in pre-callout state, `400 WORKFLOW_FAILED` with the member's message — or, with `startNewTxOnDispatch`, a retryable `409 CONFLICT` when a callback write in `T_post` had already lost a race |
 | No answer, or the member disconnects | another member is tried only if the processor is `idempotent`; otherwise `T_post` rolled back, `503` with the try's own code |
 | CAS conflict at apply-result boundary | `T_post` rolled back, entity durable in pre-callout state, error bubbles as `409 retryable`, client may retry |
 | `If-Match` mismatch at first-segment flush | `T_pre` rolled back, no dispatch, `412 Precondition Failed`, `TRANSITION_ABORTED` audit event emitted |
@@ -583,7 +591,8 @@ currently a labelling-only variant.
   - `ErrTransitionNotFound` → 400 `TRANSITION_NOT_FOUND`
   - `spi.ErrConflict` from CAS → 409 retryable (or 412 if `If-Match`)
   - a processor's `success:false` verdict → 400 `WORKFLOW_FAILED` with the
-    member's message
+    member's message, unless a callback write of the processor had already
+    lost a race: then 409 `CONFLICT`, retryable
   - a callout that used every try without an answer → a retryable `5xx`
     (`CALLOUT_FAILED`, `COMPUTE_MEMBER_DISCONNECTED`, `DISPATCH_TIMEOUT` or
     `NO_COMPUTE_MEMBER_FOR_TAG`)

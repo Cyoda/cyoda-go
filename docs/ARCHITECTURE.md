@@ -349,6 +349,7 @@ type TransactionManager interface {
     Savepoint(ctx context.Context, txID string) (savepointID string, err error)
     RollbackToSavepoint(ctx context.Context, txID string, savepointID string) error
     ReleaseSavepoint(ctx context.Context, txID string, savepointID string) error
+    LostRace(ctx context.Context, txID string) (bool, error)
 }
 ```
 
@@ -358,6 +359,7 @@ type TransactionManager interface {
 - `Rollback`: Marks transaction rolled back, clears from active map. Waits for in-flight operations via `OpMu`.
 - `GetSubmitTime`: Returns the database timestamp captured at commit. Used for temporal ordering.
 - `Savepoint` / `RollbackToSavepoint` / `ReleaseSavepoint`: nested-savepoint support used by the workflow engine's `ASYNC_NEW_TX` execution mode. The plugin returns a savepoint ID that the caller passes back for rollback or release. Plugins that don't support savepoints may return `common.ErrUnsupported`.
+- `LostRace`: reports whether the transaction has already lost a write race — another transaction committed, after this one's snapshot, an entity or task row this one writes — so that Commit will refuse it. The answer is the same on every backend: PostgreSQL reads the 40001/40P01 it recorded when it refused the losing write; memory and sqlite run the write half of their commit-time check, plus a lost write a savepoint rollback discarded. Read-only and tenant-checked. The workflow engine asks it after a processor that could call back into the transaction fails (§3.8).
 
 **TX boundary ownership.** For most cascades the request handler in `internal/domain/entity/service.go` opens the transaction, calls the engine, and commits when the engine returns — a single `Begin`/`Commit` pair, producing a single `Save`, a single `Commit` and a single `EntityVersion` row. When a transition carries a `COMMIT_BEFORE_DISPATCH` processor (see §5.4), the workflow engine — not the handler — owns the transaction boundaries: the engine flushes the pre-callout entity state via `EntityStore.Save`, commits `TX_pre`, dispatches the processor outside any transaction, opens `TX_post` on the same node, applies the result via `CompareAndSave` (CAS expected = the txID stamped at `TX_pre`'s commit), and commits. Per-segment SPI writes are issued by the engine; the handler hands `txMgr` and the `If-Match` precondition to the engine and lets it own boundaries.
 
@@ -659,6 +661,18 @@ callout neither undoes nor releases its savepoint: by then the replacement
 member may have written, and undoing a savepoint restores the whole buffer on
 memory and sqlite and everything since on postgres. An abandoned savepoint is
 harmless on every backend.
+
+**A processor that fails after its callback lost a race.** When a `SYNC`,
+`ASYNC_SAME_TX` or `COMMIT_BEFORE_DISPATCH` (`startNewTxOnDispatch`) processor
+fails, the engine asks `TransactionManager.LostRace` whether the transaction
+the processor could call back into has already lost a write race. If it has,
+the transaction cannot commit whatever the processor does, so its failure is a
+consequence: the engine answers the conflict (`spi.ErrTxAborted`, a retryable
+`409 CONFLICT` at every door) with the processor's failure attached. PostgreSQL
+has already refused the losing write; memory and sqlite accepted it into the
+buffer, and every read in the transaction still succeeds, so the question goes
+to the transaction manager and not to the store. A dispatch that provably
+reached no compute member made no callback and keeps its own error.
 
 **What is not stopped, and why that is acceptable.** For tries made by another
 node, the earlier compute member stays admitted until the first callback of the
