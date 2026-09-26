@@ -158,15 +158,25 @@ pool).
 (one per entity, each tenant within its limit, tenants taking turns), lock
 them with `FOR UPDATE SKIP LOCKED`, claim them with a conditional `UPDATE`,
 and read their marks while the locks are held. The ranking never reads a
-tenant's whole backlog. It lists the tenants with a `WAITING` task by a loose
-index scan of `scheduled_tasks_waiting_due_idx` (one probe per tenant), and,
-per tenant, reads in `(next_attempt_time, id)` order only the tasks that are
-their entity's earliest claimable task — checked by a probe of
-`scheduled_tasks_waiting_entity_idx` — up to the most turns the claim can give
-that tenant, plus as many lost-owner `RUNNING` tasks. The cut comes after the
+tenant's backlog. The claim first lists its tenants once: a loose index scan
+of `scheduled_tasks_waiting_due_idx` reads each tenant's earliest `WAITING`
+task (one probe per tenant with a `WAITING` task) and keeps the tenants whose
+earliest task is due, plus, for a lost-owner claim, the tenants with a
+`RUNNING` task. Per listed tenant, the ranking reads in
+`(next_attempt_time, id)` order only the tasks that are their entity's
+earliest claimable task, up to the most turns the claim can give that tenant,
+plus as many lost-owner `RUNNING` tasks. Each walked row is checked with
+per-row index probes by `(tenant, entity)` — `scheduled_tasks_waiting_entity_idx`
+and `scheduled_tasks_one_running_per_entity_uq` — written as `LIMIT 1` scalar
+subqueries so no plan turns them into a scan of the tenant's rows, and against
+the claim's exclusions through a hashed `= ANY`. The cut comes after the
 one-per-entity choice, so the result is the one a ranking of every due task
-would give, and a claim costs the same whatever the size of another tenant's
-backlog. A per-entity, transaction-scoped
+would give. A ranking round costs, per listed tenant, the rows it passes
+before that tenant's last turn: its candidates, the busy or excluded rows,
+and the tasks of entities with a `RUNNING` task. A claim ranks again after
+each round that finds busy rows or held entities, about one round per
+per-tenant limit of them. The claim transaction turns JIT off and forces
+custom plans (`set_config(..., true)`). A per-entity, transaction-scoped
 PostgreSQL advisory lock serialises claimers: a claimer takes an entity's lock
 for the rest of its transaction, and a rival claimer of the same entity can
 only take that lock once this one has committed or rolled back — PostgreSQL
