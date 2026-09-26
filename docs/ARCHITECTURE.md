@@ -1554,10 +1554,13 @@ every store reads, per tenant, only the earliest claimable task of each of its
 first *n* entities, *n* being the most turns the claim can give that tenant,
 and chooses from those exactly what it would choose from every due task. Its
 work grows with the number of tenants with a due task (or, for a lost-owner
-claim, a `RUNNING` task), with *n*, with the `RUNNING` tasks, and with the
-busy rows and blocked entities it passes over on the way to each tenant's
-*n*-th candidate, plus one index probe per tenant that has any `WAITING`
-task. Each tick also calls `GiveBackIdle`, which returns to `WAITING`,
+claim, a `RUNNING` task), with *n*, with the `RUNNING` tasks, with the busy
+rows and blocked entities it passes over on the way to each tenant's *n*-th
+candidate, and with the later due tasks of the entities already met on that
+way — at most *n* times the tasks one entity can hold, which is one per
+scheduled transition of its current state — plus one index probe per tenant
+that has any `WAITING` task. It never grows with the number of a tenant's due
+entities. Each tick also calls `GiveBackIdle`, which returns to `WAITING`,
 uncounted, any task this owner holds without a live run. Once a minute, while
 its heartbeats succeed, the loop also removes the liveness records of owners
 silent for 10 × `STALE_AFTER` that no `RUNNING` task references, and the marks

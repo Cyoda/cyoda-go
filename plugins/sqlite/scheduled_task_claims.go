@@ -182,11 +182,12 @@ const claimLostSQL = selectTaskSQL + ` INDEXED BY idx_scheduled_tasks_running_en
 // (claimTenantsSQL); claimWaitingSQL only for a tenant whose earliest WAITING
 // task is due, and claimLostSQL only for a tenant with a RUNNING task. A
 // claimWaitingSQL reads the rows its walk passes before the n-th candidate:
-// the n, the busy rows, the tasks of entities with a RUNNING task, and later
-// tasks of entities already met, each checked by a probe of
-// idx_scheduled_tasks_waiting_entity. A claimLostSQL reads the tenant's
-// RUNNING rows. None grows with a tenant's other due tasks. All of it runs
-// under the commit gate.
+// the n, the busy rows, the tasks of entities with a RUNNING task, and the
+// later due tasks of entities already met — at most n times the tasks one
+// entity can hold, which is one per scheduled transition of its current
+// state, never growing with the number of the tenant's due entities — each
+// checked by a probe of idx_scheduled_tasks_waiting_entity. A claimLostSQL
+// reads the tenant's RUNNING rows. All of it runs under the commit gate.
 func (s *scheduledTaskStore) claimCandidates(ctx context.Context, req spi.ClaimRequest) ([]spi.ScheduledTask, error) {
 	allowLost := 0
 	if req.AllowLostOwner {

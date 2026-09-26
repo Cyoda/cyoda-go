@@ -173,7 +173,10 @@ the claim's exclusions through a hashed `= ANY`. The cut comes after the
 one-per-entity choice, so the result is the one a ranking of every due task
 would give. A ranking round costs, per listed tenant, the rows it passes
 before that tenant's last turn: its candidates, the busy or excluded rows,
-and the tasks of entities with a `RUNNING` task. A claim ranks again after
+the tasks of entities with a `RUNNING` task, and the later due tasks of the
+entities already met — at most *n* times the tasks one entity can hold, which
+is one per scheduled transition of its current state, never growing with the
+number of the tenant's due entities. A claim ranks again after
 each round that finds busy rows or held entities, about one round per
 per-tenant limit of them. The claim transaction turns JIT off and forces
 custom plans (`set_config(..., true)`). A per-entity, transaction-scoped

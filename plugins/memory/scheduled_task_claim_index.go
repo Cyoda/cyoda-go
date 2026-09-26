@@ -188,8 +188,10 @@ func (x *claimIndex) compact(tenant spi.TenantID) {
 // entity's earliest such task, in (NextAttemptTime, ID) order. It pops the
 // entries it passes and pushes the live ones back, so it reads the n
 // candidates plus the entries it passes over: dead ones (dropped for good),
-// busy rows, rows of entities with a RUNNING task, and later rows of entities
-// already taken. rows are the task rows.
+// busy rows, rows of entities with a RUNNING task, and the later due rows of
+// entities already taken — at most n times the tasks one entity can hold,
+// which is one per scheduled transition of its current state, never growing
+// with the number of the tenant's due entities. rows are the task rows.
 func (x *claimIndex) waitingCandidates(rows map[taskKey]spi.ScheduledTask, tenant spi.TenantID, nowMs int64, n int, busy map[taskKey]bool) []spi.ScheduledTask {
 	q := x.waiting[tenant]
 	if q == nil {

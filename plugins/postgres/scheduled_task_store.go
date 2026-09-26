@@ -547,9 +547,12 @@ SELECT st.tenant_id FROM scheduled_tasks st WHERE $2::boolean AND st.status = 'R
 //
 // Cost of one ranking, per tenant in $10: the rows its walk passes before
 // its n-th candidate — the n, the excluded rows, the tasks of excluded
-// entities and of entities with a RUNNING task, and the later tasks of
-// entities already met — each with two index probes and two hash lookups;
-// and, with AllowLostOwner, the tenant's RUNNING rows. A claim ranks once
+// entities and of entities with a RUNNING task, and the later due tasks of
+// entities already met, at most n times the tasks one entity can hold, which
+// is one per scheduled transition of its current state, so never growing
+// with the number of the tenant's due entities — each with two index probes
+// and two hash lookups; and, with AllowLostOwner, the tenant's RUNNING rows.
+// A claim ranks once
 // more after each round that excludes a row or an entity, so the number of
 // rankings grows with the busy rows and held entities it meets, about one
 // round per n of them.
