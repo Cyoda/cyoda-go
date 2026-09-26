@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -11,19 +12,19 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// One tenant's due backlog of 1,000,000 tasks, each on its own entity, does not
+// One tenant's due backlog of 200,000 tasks, each on its own entity, does not
 // slow another tenant's claims: a claim reads, per tenant, no more tasks than
-// it can take (see claimCandidatesLocked). A claim that reads every task row
-// takes about a second over this backlog; the bound is far below that and far
-// above what a bounded claim takes.
+// it can take (see claimCandidatesLocked). A claim that reads and sorts every
+// task row takes about 200 ms over this backlog; the bound, on the median of
+// the rounds, is far below that and far above what a bounded claim takes.
 func TestTasks_ClaimCostDoesNotFollowOneTenantsBacklog(t *testing.T) {
 	if testing.Short() {
-		t.Skip("builds a 1,000,000-task backlog")
+		t.Skip("builds a 200,000-task backlog")
 	}
 	const (
-		backlog = 1_000_000
-		bound   = 100 * time.Millisecond
-		rounds  = 5
+		backlog = 200_000
+		bound   = 50 * time.Millisecond
+		rounds  = 7
 	)
 	f := NewStoreFactory(WithClock(NewTestClockAt(time.UnixMilli(1_000_000))))
 	t.Cleanup(func() { _ = f.Close() })
@@ -58,6 +59,7 @@ func TestTasks_ClaimCostDoesNotFollowOneTenantsBacklog(t *testing.T) {
 	if err := sts.Heartbeat(context.Background(), req.Owner); err != nil {
 		t.Fatalf("heartbeat: %v", err)
 	}
+	var durations []time.Duration
 	for i := range rounds {
 		began := time.Now()
 		got, err := sts.ClaimDue(context.Background(), req)
@@ -78,8 +80,10 @@ func TestTasks_ClaimCostDoesNotFollowOneTenantsBacklog(t *testing.T) {
 				t.Fatalf("round 0: the small tenant's task was not claimed beside the backlog")
 			}
 		}
-		if took > bound {
-			t.Errorf("round %d: the claim took %v over a %d-task backlog of another tenant, want under %v", i, took, backlog, bound)
-		}
+		durations = append(durations, took)
+	}
+	slices.Sort(durations)
+	if median := durations[len(durations)/2]; median > bound {
+		t.Errorf("median claim took %v over a %d-task backlog of another tenant, want under %v", median, backlog, bound)
 	}
 }

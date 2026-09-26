@@ -2,6 +2,7 @@ package memory
 
 import (
 	"container/heap"
+	"fmt"
 	"slices"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -103,6 +104,63 @@ func (x *claimIndex) update(k taskKey, before spi.ScheduledTask, hadBefore bool,
 		byEntity[after.EntityID] = k
 	}
 	x.compact(k.tenant)
+}
+
+// checkOneRunning panics when applying ops to rows would leave two RUNNING
+// tasks on one entity. Only ClaimDue makes a task RUNNING, and it never claims
+// a task beside a RUNNING sibling; the other backends enforce the rule with a
+// unique index, which refuses the write. Here a write that breaks it is a
+// defect, and a claim index that kept one of the two rows would silently lose
+// the other, so the write is refused whole, before any of it applies.
+func (x *claimIndex) checkOneRunning(rows map[taskKey]spi.ScheduledTask, ops []scheduledTaskOp) {
+	type entityKey struct {
+		tenant spi.TenantID
+		entity string
+	}
+	var overlay map[entityKey]*taskKey // entity → its RUNNING row after the ops so far; nil: none
+	current := make(map[taskKey]*spi.ScheduledTask)
+	rowOf := func(k taskKey) (spi.ScheduledTask, bool) {
+		if t, ok := current[k]; ok {
+			if t == nil {
+				return spi.ScheduledTask{}, false
+			}
+			return *t, true
+		}
+		t, ok := rows[k]
+		return t, ok
+	}
+	runningOf := func(e entityKey) (taskKey, bool) {
+		if r, ok := overlay[e]; ok {
+			if r == nil {
+				return taskKey{}, false
+			}
+			return *r, true
+		}
+		r, ok := x.running[e.tenant][e.entity]
+		return r, ok
+	}
+	for _, op := range ops {
+		if overlay == nil {
+			overlay = make(map[entityKey]*taskKey)
+		}
+		if before, ok := rowOf(op.key); ok && before.Status == spi.ScheduledTaskRunning {
+			e := entityKey{tenant: op.key.tenant, entity: before.EntityID}
+			if r, ok := runningOf(e); ok && r == op.key {
+				overlay[e] = nil
+			}
+		}
+		current[op.key] = op.after
+		if op.after == nil || op.after.Status != spi.ScheduledTaskRunning {
+			continue
+		}
+		e := entityKey{tenant: op.key.tenant, entity: op.after.EntityID}
+		if r, ok := runningOf(e); ok && r != op.key {
+			panic(fmt.Sprintf("scheduled tasks: one RUNNING task per entity: task %s of tenant %s would be RUNNING beside task %s",
+				op.key.id, op.key.tenant, r.id))
+		}
+		k := op.key
+		overlay[e] = &k
+	}
 }
 
 // compact rebuilds tenant's heap from its live entries once dead ones

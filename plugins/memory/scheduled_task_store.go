@@ -65,8 +65,11 @@ func priorRows(dst map[taskKey]spi.ScheduledTask, ops []scheduledTaskOp) map[tas
 }
 
 // applyTaskOps applies ops to dst in order, and keeps idx, dst's claim index,
-// in step. Caller holds entityMu for writing.
+// in step. It panics, before it writes anything, when ops would leave two
+// RUNNING tasks on one entity (see claimIndex.checkOneRunning). Caller holds
+// entityMu for writing.
 func applyTaskOps(dst map[taskKey]spi.ScheduledTask, idx *claimIndex, ops []scheduledTaskOp) {
+	idx.checkOneRunning(dst, ops)
 	for _, op := range ops {
 		before, had := dst[op.key]
 		if op.after == nil {
