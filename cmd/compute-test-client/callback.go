@@ -636,6 +636,44 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			return withData(entity, data)
 		},
 
+		// cb-update-target — reads, through a joined callback, the entity whose
+		// id rides on the primary's data as targetId, and writes its data back
+		// unchanged through a joined update. The write is a new version of the
+		// target in T, so a change another client committed to the target after
+		// T began makes T lose first-committer-wins. The callback's own answer
+		// is not this processor's verdict: it answers success with the primary
+		// unchanged, and the transaction's owner meets the conflict.
+		"cb-update-target": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			data, err := decodeData(entity)
+			if err != nil {
+				return nil, err
+			}
+			targetID, _ := data["targetId"].(string)
+			if targetID == "" {
+				return nil, fmt.Errorf("cb-update-target: entity data has no targetId")
+			}
+			got, err := cb.getEntity(ctx, targetID, token)
+			if err != nil {
+				return nil, fmt.Errorf("callback read: %w", err)
+			}
+			if got.Status != http.StatusOK {
+				return nil, fmt.Errorf("callback read status=%d body=%s", got.Status, got.Body)
+			}
+			var env struct {
+				Data json.RawMessage `json:"data"`
+			}
+			if err := json.Unmarshal([]byte(got.Body), &env); err != nil || len(env.Data) == 0 {
+				return nil, fmt.Errorf("callback read: no entity data in %s", got.Body)
+			}
+			if _, err := cb.do(ctx, http.MethodPut, "/api/entity/JSON/"+targetID, string(env.Data), token, ""); err != nil {
+				return nil, fmt.Errorf("callback update: %w", err)
+			}
+			return entity, nil
+		},
+
 		// cb-ifmatch-update — creates a secondary inside T, then issues a
 		// loopback update with If-Match set to the create's in-T transactionId.
 		"cb-ifmatch-update": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
