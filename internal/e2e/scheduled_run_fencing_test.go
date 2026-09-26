@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -322,6 +323,63 @@ func TestSchedPool_HeartbeatNotStarvedByMainPool(t *testing.T) {
 	before := maxHeartbeat(t, s)
 	awaitDBCondition(t, 5*time.Second, "the heartbeat advancing 2s with the main pool exhausted",
 		func() bool { return maxHeartbeat(t, s).Sub(before) >= 2*time.Second })
+}
+
+// TestSchedPool_AsyncSearchReclaimNotStarved: an async-search job whose owner
+// is gone is reclaimed, and then heartbeated, on the scheduler pool while every
+// main-pool connection is held (§10.2). The heartbeat keeps the claim live for
+// several stale windows, so the job is not reclaimed a second time.
+func TestSchedPool_AsyncSearchReclaimNotStarved(t *testing.T) {
+	h, s := newSchedulerHarness(t, func(cfg *app.Config) {
+		t.Setenv("CYODA_POSTGRES_MAX_CONNS", "2")
+		cfg.SearchJobHeartbeatInterval = 250 * time.Millisecond
+		cfg.SearchJobStaleAfter = time.Second
+	})
+	model := uniq("pool-search")
+	h.SetupModelWithWorkflow(t, model, schedDoc("pool-search-wf", map[string]any{"Open": map[string]any{}}))
+	createOpen(t, h, model, workflowSampleModel)
+	probe := poolProbe(t, h)
+
+	// A job as CreateJob writes it (a point in time and search options, both
+	// read back on re-execution) whose owner stopped heartbeating an hour ago.
+	jobID := uuid.NewString()
+	pit := time.Now().Add(time.Minute).UTC()
+	opts, err := json.Marshal(struct {
+		Limit       int       `json:"limit"`
+		PointInTime time.Time `json:"pointInTime"`
+	}{Limit: 0, PointInTime: pit})
+	if err != nil {
+		t.Fatalf("marshal search opts: %v", err)
+	}
+	if _, err := s.pool.Exec(context.Background(), `
+		INSERT INTO search_jobs (id, tenant_id, status, model_name, model_ver, condition, point_in_time, search_opts,
+		                         result_count, error, created_at, heartbeat_time, calc_ms, epoch)
+		VALUES ($1, $2, 'RUNNING', $3, '1', '{"type":"group","operator":"AND","conditions":[]}'::jsonb, $4, $5,
+		        0, '', now() - interval '1 hour', now() - interval '1 hour', 0, 1)`,
+		jobID, harnessTenant, model, pit, opts); err != nil {
+		t.Fatalf("seed an orphaned job: %v", err)
+	}
+	release := holdMainPool(t, h, 2)
+	defer release()
+	requirePoolExhausted(t, h, probe)
+
+	readJob := func() (epoch int64, hb time.Time) {
+		if err := s.pool.QueryRow(context.Background(),
+			`SELECT epoch, heartbeat_time FROM search_jobs WHERE tenant_id = $1 AND id = $2`, harnessTenant, jobID).Scan(&epoch, &hb); err != nil {
+			t.Fatalf("read the job: %v", err)
+		}
+		return epoch, hb
+	}
+	awaitDBCondition(t, 10*time.Second, "the reclaim", func() bool { e, _ := readJob(); return e >= 2 })
+	claimed, first := readJob()
+
+	// Three stale windows of heartbeats (one every 250ms) within five seconds:
+	// a heartbeat that stamps once and then waits on the main pool fails here.
+	awaitDBCondition(t, 5*time.Second, "the reclaimed job's heartbeat advancing 3s with the main pool exhausted",
+		func() bool { _, hb := readJob(); return hb.Sub(first) >= 3*time.Second })
+	if epoch, _ := readJob(); epoch != claimed {
+		t.Fatalf("the job was reclaimed again (epoch %d, claimed at %d): its heartbeat did not keep the claim live", epoch, claimed)
+	}
 }
 
 // TestSchedPool_LockTimeoutOnTaskRowLock: another entity's transaction holds
