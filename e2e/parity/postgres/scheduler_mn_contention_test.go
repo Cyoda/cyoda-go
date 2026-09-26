@@ -33,16 +33,17 @@ type contentionTenant struct {
 // 200ms; tenant 0's are unsafe, tenant 1's idempotent. Each pnode runs at most
 // two tasks, two per tenant.
 //
-// The pnodes are frozen (SIGSTOP) from before the first task is due until
-// after the last one is, and resumed together, so every claim loop starts
-// against the whole due set at once.
+// The pnodes are frozen (SIGSTOP) from just before the first task is due
+// until just after the last one is, and resumed together, so every claim loop
+// starts against the whole due set at once.
 //
 // Asserted, as invariants rather than an interleave:
 //   - no entity ever has two RUNNING tasks;
 //   - each task is claimed once, by one pnode: the watcher never sees a task
-//     under two claim tokens, and each entity's processor is sent exactly
-//     once — for an idempotent processor no mark stands between a second
-//     claim and a second send;
+//     under two claim tokens (unless a pnode gave back a claim whose reply it
+//     lost, and the processor was still sent once), and each entity's
+//     processor is sent exactly once — for an idempotent processor no mark
+//     stands between a second claim and a second send;
 //   - each entity fires exactly once, down one of its two transitions;
 //   - the sibling that did not fire is removed with SCHEDULED_TRANSITION_CANCEL
 //     when the entity leaves Open; no task is left, none FAILED;
@@ -64,7 +65,9 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 	s := newSchedMN(t, nodes, fixtureutil.LaunchOpts{NodeEnv: func(i int) []string {
 		if i == isolated {
 			// No seeds: it joins nobody. Its own secret: the others' joins to
-			// it fail, so it is never merged into their cluster either.
+			// it fail, so it is never merged into their cluster either. The
+			// secret also keys transaction tokens and peer dispatch; this
+			// scenario uses neither across pnodes.
 			return []string{"CYODA_SEED_NODES=", "CYODA_HMAC_SECRET=" + hex.EncodeToString(secret)}
 		}
 		return nil
@@ -139,18 +142,31 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 		}
 	}
 	createdTo := time.Now()
-	if margin := 2 * time.Second; createdTo.Add(margin).After(createdFrom.Add(delayMs * time.Millisecond)) {
-		t.Fatalf("creating the entities took %s; the freeze must begin %s before the first task is due", createdTo.Sub(createdFrom), margin)
-	}
 
-	// Freeze every pnode until every task is due, then resume them together.
+	// Freeze every pnode only around the due instants: from 500ms before the
+	// first task is due until 300ms after the last one is, then resume them
+	// together. A frozen pnode neither heartbeats nor ends its idle scheduler
+	// transactions, so the freeze stays well inside the watchdog window
+	// (13s under the tuned settings) and the scheduler pool's
+	// idle_in_transaction_session_timeout (10s).
+	const delay = delayMs * time.Millisecond
+	stopAt := createdFrom.Add(delay - 500*time.Millisecond)
+	resumeAt := createdTo.Add(delay + 300*time.Millisecond)
+	if freeze := resumeAt.Sub(stopAt); freeze > 8*time.Second {
+		t.Fatalf("creating the entities took %s, so the pnodes would be frozen for %s; the freeze must stay under 8s", createdTo.Sub(createdFrom), freeze)
+	}
+	t.Cleanup(func() {
+		for i := 0; i < nodes; i++ {
+			_ = s.pg.SignalNode(i, syscall.SIGCONT)
+		}
+	})
+	time.Sleep(time.Until(stopAt)) // wait for the freeze instant, not an assertion
 	for i := 0; i < nodes; i++ {
 		if err := s.pg.SignalNode(i, syscall.SIGSTOP); err != nil {
 			t.Fatalf("SIGSTOP pnode %d: %v", i, err)
 		}
 	}
-	time.Sleep(time.Until(createdTo.Add(delayMs*time.Millisecond + time.Second))) // wait for due times, not an assertion
-	resumeAt := time.Now()
+	time.Sleep(time.Until(resumeAt)) // wait for every due time, not an assertion
 
 	// Watch the table while the tasks run. Only the watcher writes its maps;
 	// they are read after wg.Wait(). No processor answers before 200ms
@@ -162,13 +178,14 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 	owners := map[string]int{}             // claim_owner -> RUNNING rows seen
 	firstClaim := map[string][]string{}    // claim_owner -> tenants of its first claim
 	claims := map[string]map[string]bool{} // tenant/task -> claim tokens seen
+	taskEntity := map[string]string{}      // tenant/task -> entity id
 	doubles := 0
 	stop := make(chan struct{})
+	var stopOnce sync.Once
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		ctx := context.Background()
 		for {
 			select {
 			case <-stop:
@@ -176,9 +193,11 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 			case <-time.After(20 * time.Millisecond):
 			}
 			startedAt := time.Now()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			rows, err := s.db.Query(ctx, `SELECT claim_owner::text, claim_token::text, tenant_id, entity_id, id FROM scheduled_tasks
 				WHERE tenant_id = ANY($1) AND status = 'RUNNING'`, tenantIDs)
 			if err != nil {
+				cancel()
 				continue
 			}
 			perEntity := map[string]int{}
@@ -191,10 +210,12 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 						claims[tn+"/"+id] = map[string]bool{}
 					}
 					claims[tn+"/"+id][tok] = true
+					taskEntity[tn+"/"+id] = e
 					perOwner[o] = append(perOwner[o], tn)
 				}
 			}
 			rows.Close()
+			cancel()
 			for _, n := range perEntity {
 				if n > 1 {
 					doubles++
@@ -208,6 +229,11 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 			}
 		}
 	}()
+	halt := func() {
+		stopOnce.Do(func() { close(stop) })
+		wg.Wait()
+	}
+	t.Cleanup(halt)
 	for i := 0; i < nodes; i++ {
 		if err := s.pg.SignalNode(i, syscall.SIGCONT); err != nil {
 			t.Fatalf("SIGCONT pnode %d: %v", i, err)
@@ -225,14 +251,32 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 		}
 		return true
 	})
-	close(stop)
-	wg.Wait()
+	halt()
+
+	// Requests each entity's processor received, over every client.
+	sent := map[string]int{}
+	for _, ct := range tenants {
+		for _, cl := range ct.clients {
+			for _, r := range cl.Received(t) {
+				sent[r.EntityID]++
+			}
+		}
+	}
+	gaveBack := false
+	for i := 0; i < nodes; i++ {
+		if strings.Contains(s.pg.NodeLogs(i), `msg="scheduler gave back claims that had no run"`) {
+			gaveBack = true
+		}
+	}
 
 	if doubles != 0 {
 		t.Errorf("an entity had two RUNNING tasks %d times", doubles)
 	}
+	// A second token is allowed only for a claim whose reply was lost and
+	// which was given back before any run: then the processor was still sent
+	// once.
 	for task, toks := range claims {
-		if len(toks) > 1 {
+		if len(toks) > 1 && !(gaveBack && sent[taskEntity[task]] == 1) {
 			t.Errorf("task %s was claimed %d times; each task is claimed once, by one pnode", task, len(toks))
 		}
 	}
@@ -265,12 +309,8 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 
 	for _, ct := range tenants {
 		for _, id := range ct.ids {
-			sent := 0
-			for _, cl := range ct.clients {
-				sent += mnReceived(t, cl, id)
-			}
-			if sent != 1 {
-				t.Errorf("entity %s: processor sent %d times; want 1", id, sent)
+			if n := sent[id.String()]; n != 1 {
+				t.Errorf("entity %s: processor sent %d times; want 1", id, n)
 			}
 			if n := mnCountEvents(t, ct.c, id, "SCHEDULED_TRANSITION_FIRE"); n != 1 {
 				t.Errorf("entity %s: %d fires; want 1", id, n)
