@@ -321,8 +321,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   race and answers the retryable `409 CONFLICT` on every backend, where it
   could answer `412` before; a collection with such an item now fails whole
   with `409` instead of listing the item in `failed[]`. A stale `If-Match`
-  now records `STATE_MACHINE_START` and `TRANSITION_ABORTED` and none of the
-  transition's other audit events. See `cyoda help errors ENTITY_MODIFIED`
+  on a collection item now keeps `STATE_MACHINE_START` and
+  `TRANSITION_ABORTED` in the audit log and none of the transition's other
+  audit events; on the single-update doors the transaction rolls back and
+  keeps no event, as before. See `cyoda help errors ENTITY_MODIFIED`
   and `docs/cloud-parity/entity-if-match.md`.
 
 - **Scheduler settings are replaced.** No longer read:
