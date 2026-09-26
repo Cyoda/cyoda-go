@@ -46,6 +46,7 @@ Document the choice (dual-shape vs retirement, with rationale) in the per-versio
 - Bug-fixing a validator that was already supposed to reject something — i.e., the rejection was always documented and the validator was the bug. Add a test, ship the fix; no schema bump. (Borderline cases: if a validator was widely-relied-upon-via-its-absence, treat as a tightening release per §above.)
 - Bug-fixing an exporter that emitted a wire shape the published schema already forbade — i.e., the schema was already correct and the serialiser was the bug. No accepted-input set moves and no document's documented shape changes; only the serialisation defect goes away. Add a test, ship the fix; no schema bump.
 - Internal refactoring of the engine, store, or audit shape. The wire contract is unchanged.
+- Widening what the engine does with a value of a field the DTO already carries, when the field's shape, default, validation and export stay the same. The version contract scopes what an import accepts and what an export emits, not every runtime consequence of a value.
 
 ### Malformed-regex criteria rejected at import (v0.8.3)
 
@@ -161,6 +162,23 @@ is unaffected either way: `delayMs > 0` was already how import distinguishes
 "static delay present" from "absent", so an absent key and an explicit `0`
 were always equivalent on that path. No `CurrentSchemaVersion` or
 `SupportedSchemaRanges` change.
+
+### `idempotent` also governs scheduled runs (v0.9.0)
+
+A processor's `config.idempotent`, added in 1.5, now also decides what the
+scheduler does when a scheduled run fails after sending that processor to a
+compute member. With `true` the run is retried. With `false`, the default, the
+task ends `FAILED` (`UNSAFE_WORK_NOT_COMPLETED`) and is not run again. Before,
+the scheduler could start such a run a second time while the first was still in
+progress, whatever the field said.
+
+The field, its type, its default, its validation and its export are unchanged;
+every document 1.5 accepted is accepted and exported byte-identically. What
+changes is what the engine does with a value it already read — the §"When NOT to
+bump" "widening what the engine does with a value" case. The declaration's own
+text already said "running this again is safe", which is the property the
+scheduler now relies on. No `CurrentSchemaVersion` or `SupportedSchemaRanges`
+change.
 
 ### `schedule.timeoutMs` / `schedule.delayMs` published minimums enforced at import (v0.9.0)
 
