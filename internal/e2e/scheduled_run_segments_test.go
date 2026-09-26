@@ -275,6 +275,9 @@ func TestSchedRun_JoinedCallbackThenUnsafe_TaskBusySafeFailure(t *testing.T) {
 	if r.Status != "WAITING" || r.Attempts != 1 || r.Marked || r.FailureReason != "" {
 		t.Errorf("after ErrTaskBusy: %+v; want WAITING, attempts 1, no mark", r)
 	}
+	if want := "CONFLICT: the task is being written by another transaction"; r.LastError != want {
+		t.Errorf("lastError = %q; want %q, a conflict without a ticket", r.LastError, want)
+	}
 	f := s.awaitTask(t, id, "Fire", 20*time.Second, "FAILED", func(r taskRow, ok bool) bool { return ok && r.Status == "FAILED" })
 	if f.FailureReason != "EXPIRED_AFTER_FAILED_ATTEMPTS" || f.Attempts < 2 {
 		t.Errorf("ending = %+v; want EXPIRED_AFTER_FAILED_ATTEMPTS after counted attempts", f)

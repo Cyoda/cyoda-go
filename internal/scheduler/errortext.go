@@ -19,6 +19,7 @@ const maxErrorTextBytes = 1024
 const (
 	cancelledText = "CANCELLED: the run was stopped by the scheduler"
 	conflictText  = "CONFLICT: a concurrent write changed the entity or its task"
+	taskBusyText  = "CONFLICT: the task is being written by another transaction"
 )
 
 // internalErrorText is what a tenant user sees for a failure whose detail is
@@ -37,6 +38,9 @@ func recordedError(err error) (text string, ticket uuid.UUID, warnOnly bool) {
 	}
 	if errors.Is(err, spi.ErrConflict) {
 		return conflictText, uuid.Nil, true
+	}
+	if errors.Is(err, spi.ErrTaskBusy) {
+		return taskBusyText, uuid.Nil, true
 	}
 	var failure *contract.CalloutFailure
 	if errors.As(err, &failure) {
