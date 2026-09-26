@@ -108,7 +108,7 @@ whenever the Postgres storage plugin is active — and always on, regardless of
 guards against, so it does not wait on OTLP push. Every data point carries a `backend`
 attribute (`postgres`):
 
-- `cyoda.storage.pool.connections` — `Int64ObservableGauge` — pool connections by state; labeled by `backend` and `state` (`acquired`, `idle`, `constructing`)
+- `cyoda.storage.pool.connections` — `Int64ObservableGauge` — pool connections by state; labeled by `backend`, `pool` and `state` (`acquired`, `idle`, `constructing`)
 - `cyoda.storage.pool.max_connections` — `Int64ObservableGauge` — configured maximum pool size; labeled by `backend`
 - `cyoda.storage.pool.acquires` — `Int64ObservableCounter` — successful connection acquires; labeled by `backend`
 - `cyoda.storage.pool.empty_acquires` — `Int64ObservableCounter` — acquires that found the pool empty and had to wait; labeled by `backend`
@@ -161,7 +161,7 @@ Cyoda-specific span attribute keys defined in `internal/observability/attrs.go`:
 - `type` — callout kind label for the `cyoda.dispatch.*` and `cyoda.callout.*` metrics (`processor`, `criteria` or `function`)
 - `outcome` — outcome label of `cyoda.callout.tries`, `cyoda.callout.handovers`, `cyoda.callout.superseded`, `cyoda.scheduler.runs` and `cyoda.scheduler.run.duration`; a closed set for each
 - `reason` — claim label of `cyoda.scheduler.claims` (`due` or `owner_lost`)
-- `pool` — PostgreSQL pool label of `cyoda.storage.pool.connections`: `main` (entity transactions and `GET /scheduled-tasks`), `scheduler` (the scheduler's claims and outcome writes, and the async-search heartbeat and claim) or `heartbeat` (the scheduler heartbeat's own connection)
+- `pool` — PostgreSQL pool label of `cyoda.storage.pool.connections`: `main` (entity transactions and `GET /scheduled-tasks`), `scheduler` (the scheduler's claims and its retry writes (`RecordAttempt`), and the async-search heartbeat and claim; a FAILED outcome commits with its audit event on the main pool) or `heartbeat` (the scheduler heartbeat's own connection)
 - `callout.tries` — number of tries a callout made, on its span
 - `callout.handover` — boolean; `true` when the callout was handed over to another cluster node at least once
 - `callout.waited_ms` — milliseconds the callout waited for a compute member to exist
