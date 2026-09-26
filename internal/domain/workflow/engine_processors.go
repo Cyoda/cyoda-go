@@ -268,7 +268,7 @@ func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, d
 		return cerr
 	}
 	if err != nil {
-		return e.conflictOverDispatchFailure(ctx, entity.Meta.ID, proc, err)
+		return e.conflictOverDispatchFailure(ctx, proc, err)
 	}
 	if modifiedEntity != nil && modifiedEntity.Data != nil {
 		return e.applyProcessorData(ctx, entity, desc, modifiedEntity.Data)
@@ -287,28 +287,29 @@ func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, d
 // processor could call back into the transaction ctx carries (SYNC,
 // ASYNC_SAME_TX, and COMMIT_BEFORE_DISPATCH with startNewTxOnDispatch).
 //
-// A processor that checks its own joined callback fails when that callback's
-// write lost a race. On a backend whose engine aborts the transaction on the
-// conflict, the failure is then only a consequence: the conflict is what
-// happened, and the transaction could not have committed anyway. A backend
-// that detects conflicts at commit accepts the same write and reports the
-// conflict when the caller commits. So the transaction is probed with the
-// anchor re-read: spi.ErrTxAborted means the conflict wins, and the returned
-// error is that conflict, with the processor's failure attached as context.
-// Any other probe outcome keeps the processor's failure as it is.
+// A processor whose joined callback wrote an entity or task row that another
+// transaction had already committed has lost first-committer-wins for the
+// transaction. The transaction cannot commit, whatever the processor does next,
+// so a failure of the processor is then only a consequence: the conflict is
+// what happened. The engine asks the transaction manager
+// (spi.TransactionManager.LostRace), which answers the same on every backend —
+// whether the backend refused the losing write or accepted it and would refuse
+// the transaction only at commit. When the transaction has lost, the returned
+// error is spi.ErrTxAborted — the conflict that happened earlier than this
+// failure, which every door answers as a retryable 409 CONFLICT — with the
+// processor's failure attached as context. Otherwise, and when the manager
+// cannot answer, the processor's failure is returned as it is; the operation
+// fails either way.
 //
 // A dispatch that provably reached no compute node made no callback, and is
 // returned untouched.
-func (e *Engine) conflictOverDispatchFailure(ctx context.Context, entityID string, proc spi.ProcessorDefinition, dispatchErr error) error {
-	if spi.GetTransaction(ctx) == nil || contract.ProvesNoHandOff(dispatchErr) {
+func (e *Engine) conflictOverDispatchFailure(ctx context.Context, proc spi.ProcessorDefinition, dispatchErr error) error {
+	tx := spi.GetTransaction(ctx)
+	if tx == nil || contract.ProvesNoHandOff(dispatchErr) {
 		return dispatchErr
 	}
-	es, err := e.factory.EntityStore(ctx)
-	if err != nil {
-		return dispatchErr
-	}
-	if _, probeErr := readAnchor(ctx, es, entityID); errors.Is(probeErr, spi.ErrTxAborted) {
-		return fmt.Errorf("%w (processor %s failed after it: %w)", probeErr, proc.Name, dispatchErr)
+	if lost, err := e.txMgr.LostRace(ctx, tx.ID); err == nil && lost {
+		return fmt.Errorf("%w: the transaction lost a write race (processor %s failed after it: %w)", spi.ErrTxAborted, proc.Name, dispatchErr)
 	}
 	return dispatchErr
 }
@@ -319,11 +320,12 @@ func (e *Engine) conflictOverDispatchFailure(ctx context.Context, entityID strin
 // savepoint is rolled back and the error is returned; on success the savepoint
 // is released.
 //
-// A failed dispatch needs no probe of the transaction (see
-// conflictOverDispatchFailure): a callback write inside the savepoint that
-// had lost a race by the time the savepoint is rolled back stays lost, and
-// the transaction's Commit refuses it with the conflict on every backend —
-// the RollbackToSavepoint contract, pinned by the spitest Savepoint cases.
+// A failed dispatch needs no LostRace question (see
+// conflictOverDispatchFailure): the processor's failure does not fail the
+// operation, and a callback write inside the savepoint that had lost a race by
+// the time the savepoint is rolled back stays lost, so the transaction's Commit
+// refuses it with the conflict on every backend — the RollbackToSavepoint
+// contract, pinned by the spitest Savepoint cases.
 //
 // A savepoint that cannot be created, undone or released is marked with
 // ErrSavepointInfra and fails the operation: it says the transaction is
@@ -466,7 +468,7 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 			modified, dispatchErr := e.extProc.DispatchProcessor(callCtx, entity, proc, workflow, transition, newTxID)
 			stop()
 			if dispatchErr != nil {
-				return nil, "", e.conflictOverDispatchFailure(newCtx, entity.Meta.ID, proc, dispatchErr)
+				return nil, "", e.conflictOverDispatchFailure(newCtx, proc, dispatchErr)
 			}
 			if modified != nil && modified.Data != nil {
 				pending = modified.Data

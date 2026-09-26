@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -93,50 +92,47 @@ func TestRPC_EntityPatch_IfMatchInAbortedTxIsConflict(t *testing.T) {
 	}
 }
 
-// txAbortedGetFactory, once armed, makes every Get in a transaction fail as a
-// statement in a transaction an earlier conflict already aborted — the state a
-// joined callback that lost its write race leaves behind on a backend that
-// aborts the whole transaction.
-type txAbortedGetFactory struct {
-	spi.StoreFactory
-	armed atomic.Bool
-}
-
-func (f *txAbortedGetFactory) EntityStore(ctx context.Context) (spi.EntityStore, error) {
-	es, err := f.StoreFactory.EntityStore(ctx)
-	if err != nil {
-		return es, err
-	}
-	return &txAbortedGetStore{EntityStore: es, armed: &f.armed}, nil
-}
-
-type txAbortedGetStore struct {
-	spi.EntityStore
-	armed *atomic.Bool
-}
-
-func (s *txAbortedGetStore) Get(ctx context.Context, id string) (*spi.Entity, error) {
-	if s.armed.Load() && spi.GetTransaction(ctx) != nil {
-		return nil, fmt.Errorf("get: %w", spi.ErrTxAborted)
-	}
-	return s.EntityStore.Get(ctx, id)
-}
-
 // TestRPC_EntityCreate_ProcessorFailedAfterLostRaceIsConflict: a processor
-// whose joined write lost a race fails, and the transaction it ran in is
-// aborted. The gRPC door answers the retryable CONFLICT the engine's probe of
-// the transaction finds, not the processor's failure. The store turns aborted
-// only inside the processor, so nothing before the dispatch sees it.
+// writes an entity through its joined transaction after a rival committed that
+// entity, then fails. The transaction has lost the race — on memory the write
+// was only buffered, and every read in the transaction still succeeds — so the
+// gRPC door answers the retryable CONFLICT, not the processor's failure.
 func TestRPC_EntityCreate_ProcessorFailedAfterLostRaceIsConflict(t *testing.T) {
 	svc, ctx := newTestEnv(t)
 	inner := memory.NewStoreFactory(memory.WithApplyFunc(testSchemaApply))
 	inner.NewTransactionManager(common.NewDefaultUUIDGenerator())
 	txMgr := inner.GetTransactionManager()
-	factory := &txAbortedGetFactory{StoreFactory: inner}
+	factory := spi.StoreFactory(inner)
 	lp := localproc.New()
-	lp.RegisterProcessor("loses-race", func(context.Context, *spi.Entity, spi.ProcessorDefinition) (*spi.Entity, error) {
-		factory.armed.Store(true)
-		return nil, errors.New("the joined write was refused")
+	target := func(v string) *spi.Entity {
+		return &spi.Entity{
+			Meta: spi.EntityMeta{ID: "race-target", ModelRef: spi.ModelRef{EntityName: "racer", ModelVersion: "1"}, State: "DONE"},
+			Data: []byte(fmt.Sprintf(`{"name":%q,"amount":2}`, v)),
+		}
+	}
+	lp.RegisterProcessor("loses-race", func(pctx context.Context, _ *spi.Entity, _ spi.ProcessorDefinition) (*spi.Entity, error) {
+		rivalID, rivalCtx, err := txMgr.Begin(ctx)
+		if err != nil {
+			return nil, err
+		}
+		rivalES, err := inner.EntityStore(rivalCtx)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := rivalES.Save(rivalCtx, target("rival")); err != nil {
+			return nil, err
+		}
+		if err := txMgr.Commit(rivalCtx, rivalID); err != nil {
+			return nil, err
+		}
+		es, err := inner.EntityStore(pctx)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := es.Save(pctx, target("mine")); err != nil {
+			return nil, err
+		}
+		return nil, errors.New("the processor failed after its joined write")
 	})
 	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, workflow.WithExternalProcessing(lp))
 	svc.txMgr = txMgr
