@@ -440,10 +440,12 @@ contract from the engine's point of view.
   buffer; `Commit` performs SI+FCW validation against the committed log and
   flushes the buffer under `factory.entityMu.Lock`.
 - Savepoints are deep-copy snapshots of the buffer/readSet/writeSet/deletes
-  maps. `RollbackToSavepoint` restores by wholesale assignment. Before it
-  does, it checks the writes it discards against the committed log: when
-  another transaction committed one of those entities after the snapshot, the
-  transaction is marked and `Commit` refuses it with `spi.ErrConflict`.
+  maps. `RollbackToSavepoint` restores by wholesale assignment and cuts the
+  staged scheduled-task writes back to the savepoint. Before it does, it
+  checks the writes it discards against the committed log: when another
+  transaction committed one of those entities or task rows after the
+  snapshot, the transaction is marked and `Commit` refuses it with
+  `spi.ErrConflict`.
 - `CompareAndSave` checks the committed store (not the buffer) for the txID
   stamp under read locks for TOCTOU safety.
 - `COMMIT_BEFORE_DISPATCH`'s `Commit(T_pre)` is a synchronous flush; nothing
@@ -458,8 +460,9 @@ contract from the engine's point of view.
 - Savepoints are app-layer snapshots, **not** real SQLite SAVEPOINTs —
   SQLite's native rollback would not restore the application-layer
   readSet/writeSet, breaking SI+FCW validation. `RollbackToSavepoint` marks a
-  transaction whose discarded write another transaction had already committed,
-  and `Commit` refuses it with `spi.ErrConflict`, as on memory.
+  transaction whose discarded write, to an entity or a scheduled-task row,
+  another transaction had already committed, and `Commit` refuses it with
+  `spi.ErrConflict`, as on memory.
 - `COMMIT_BEFORE_DISPATCH`'s benefit on SQLite is modest (no connection pool
   to relieve) but valid for clean transaction-boundary audit semantics.
 

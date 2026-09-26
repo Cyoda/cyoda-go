@@ -651,10 +651,10 @@ against another transaction, the transaction lost that race, and its commit
 fails with a retryable `409 CONFLICT` on every backend. PostgreSQL keeps the
 40001/40P01 it recorded at the write across `ROLLBACK TO SAVEPOINT` and refuses
 Commit. Memory and sqlite record, at the rollback, that another transaction
-committed a discarded write's entity after the snapshot, and refuse Commit with
-`spi.ErrConflict`. A commit to that entity after the rollback raced no write of
-the transaction and does not conflict; discarded reads are dropped on all
-three. A chain the fence refuses after its
+committed a discarded write's entity or scheduled-task row after the snapshot,
+and refuse Commit with `spi.ErrConflict`. A commit to that entity or task row
+after the rollback raced no write of the transaction and does not conflict;
+discarded reads are dropped on all three. A chain the fence refuses after its
 callout neither undoes nor releases its savepoint: by then the replacement
 member may have written, and undoing a savepoint restores the whole buffer on
 memory and sqlite and everything since on postgres. An abandoned savepoint is
