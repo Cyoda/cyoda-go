@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cyoda-platform/cyoda-go/app"
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
 )
 
@@ -176,24 +177,46 @@ func TestSchedRun_IdempotentFailureRetried(t *testing.T) {
 	awaitDBCondition(t, scheduledFireTimeout, "a second send", func() bool { return len(cn.Received()) >= 2 })
 }
 
-// TestSchedRun_LateAfterFailedAttemptsFails: timeoutMs 1500, an idempotent
+// TestSchedRun_LateAfterFailedAttemptsFails: timeoutMs 9000, an idempotent
 // processor that always fails: FAILED EXPIRED_AFTER_FAILED_ATTEMPTS (§5.1
 // step 4, §5.6), with its audit event; the entity stays.
 func TestSchedRun_LateAfterFailedAttemptsFails(t *testing.T) {
-	h, s := newSchedulerHarness(t, nil)
+	// retryDelay is overridden well above the shared harness default (1s):
+	// the margin that keeps attempts at exactly 2 (see below) scales with
+	// retryDelay, and needs several seconds of slack, not a few hundred
+	// milliseconds, to survive CI load.
+	const retryDelay = 4 * time.Second
+	h, s := newSchedulerHarness(t, func(cfg *app.Config) {
+		cfg.Scheduler.RetryDelay = retryDelay
+		cfg.Scheduler.RetryDelayMax = 5 * retryDelay // comfortably above 2*retryDelay: the doubling below isn't clipped early
+	})
 	model, tag := uniq("sr-late"), uniq("sr-late-tag")
 	h.AttachCnode(t, cnodeSpec{name: "p", tags: []string{tag}, script: scriptAlways(answerFail("late boom"))})
-	h.SetupModelWithWorkflow(t, model, fireOpenToDone("sr-late-wf", 100, 1500, sProc("p", "SYNC", tag, true)))
+	h.SetupModelWithWorkflow(t, model, fireOpenToDone("sr-late-wf", 100, 9000, sProc("p", "SYNC", tag, true)))
 	id := createOpen(t, h, model, workflowSampleModel)
 
 	r := s.awaitTask(t, id, "Fire", 20*time.Second, "FAILED", func(r taskRow, ok bool) bool { return ok && r.Status == "FAILED" })
-	// The deadline (ScheduledTime + timeoutMs = arm+100+1500 = arm+1600) sits
-	// between the first retry's delay (base 1s, landing at arm+1100, counted)
-	// and the second's (base*2 = 2s, but decideBookkeeping caps next at the
-	// deadline itself, so the second retry is scheduled at arm+1600 and
-	// counted too); the third check runs at or after arm+1600 and always
-	// finds nowMs past the deadline, so it fails without a further count.
-	// The scenario's own numbers fix attempts at exactly 2.
+	// The deadline (ScheduledTime + timeoutMs = arm+100ms+9s ≈ arm+9.1s) sits
+	// strictly inside (retryDelay, 3*retryDelay) = (4s, 12s): the first
+	// retry lands at ~arm+4.1s (counted, attempts=1); decideBookkeeping then
+	// caps the second retry's next-attempt-time at the deadline itself
+	// (bookkeeping.go:54-60, since deadline < nowMs+2*retryDelay there), so
+	// it is scheduled at exactly arm+9.1s and also counted (attempts=2); the
+	// third check — whenever the scheduler gets to it — always finds nowMs
+	// past that deadline and fails without a further count
+	// (bookkeeping.go:57-58). fire_scheduled.go's own preRunDecision is a
+	// separate, looser backstop (deadline + retryDelay, fire_scheduled.go:73-79)
+	// that never fires first here, since its bound (arm+13.1s) sits well
+	// beyond decideBookkeeping's.
+	//
+	// This gives two margins, each ~4s (retryDelay) wide: between the first
+	// counted attempt (~arm+4.1s) and the deadline (~arm+9.1s) — the window
+	// in which the first attempt's own round trip plus the second's (scan,
+	// dispatch, record) must complete for the second attempt to be counted
+	// rather than rejected as already-expired — and between the deadline and
+	// 3*retryDelay (~arm+12.1s) — the window protecting the third attempt's
+	// rejection from firing too early. Both are assumed to comfortably
+	// absorb CI load. The scenario's own numbers fix attempts at exactly 2.
 	if r.FailureReason != "EXPIRED_AFTER_FAILED_ATTEMPTS" || r.Attempts != 2 || r.ClaimToken != "" {
 		t.Errorf("failed task = %+v; want EXPIRED_AFTER_FAILED_ATTEMPTS, attempts 2, no claim", r)
 	}
