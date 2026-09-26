@@ -118,9 +118,11 @@ header parameter on the thirty entity, search, message, audit and platform-api
 operations a callback may reach, and each of those declares the statuses the
 join layer answers with — `401`, `403`, `404`, `410` and `413`. A client
 generated from the document can therefore make a callback and read its refusal
-without extra hand-written code. The entity-model and workflow operations do
-not declare it, because changing a model or a workflow from inside a callout is
-not supported.
+without extra hand-written code. The entity-model and workflow operations that
+change a model or its workflows do not declare it: model and workflow
+administration never runs inside a transaction, and each of them refuses a
+request carrying the header with `400 MODEL_ADMIN_IN_JOINED_TRANSACTION` before
+the token is verified (see `cyoda help errors MODEL_ADMIN_IN_JOINED_TRANSACTION`).
 
 The receiving node verifies the token's HMAC and routes the callback to the
 transaction-owning node (same proxy mechanism as `TRANSACTION ROUTING` above).

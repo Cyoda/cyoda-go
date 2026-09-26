@@ -6,6 +6,26 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **Model and workflow administration never runs inside a transaction.** A
+  request carrying a transaction token — the `X-Tx-Token` header a compute
+  member echoes on a callback — was joined to that transaction on every
+  route, so a processor could import a workflow, or import, lock, unlock,
+  delete, change the level of or set the unique keys of a model, inside the
+  running transition's transaction; over gRPC, `entityModelManage` ignored
+  the `tx-token` metadata and ran the change in a transaction of its own.
+  Each of those requests is now refused when it carries a token, with the
+  new `400 MODEL_ADMIN_IN_JOINED_TRANSACTION` (not retryable): on HTTP in
+  the join layer, before the token is verified, so no transaction lock is
+  taken and nothing is read or written; on gRPC in the request's own
+  response envelope. The read-only model and workflow operations are
+  unaffected, and every entity operation still joins. A workflow import
+  therefore always owns its transaction: the joined-import case — its
+  removal of unscheduled tasks running unretried in the owner's transaction
+  — is gone from the import's `409 CONFLICT`. A compute member that needs to
+  administer a model makes the request without the token. See
+  `cyoda help errors MODEL_ADMIN_IN_JOINED_TRANSACTION` and
+  `docs/cloud-parity/model-administration-not-joined.md`.
+
 - **Workflow import refuses a `schedule.delayMs` sent beside a
   `schedule.function`, whatever its value.** `TransitionScheduleDto`
   publishes `delayMs` as `minimum: 1` and mutually exclusive with
