@@ -41,6 +41,9 @@ func TestSchedulerMN_DatabaseOutageLongerThanStaleAfter(t *testing.T) {
 	}
 	survivor := 1 - owner
 	survivorInc := s.pg.Incarnation(t, survivor).String()
+	// RUNNING is written at the claim, before the dispatch: kill O only once
+	// its run has sent the processor.
+	mnAwait(t, 10*time.Second, "T1's processor sent by its owner", func() bool { return mnReceived(t, stall, t1) == 1 })
 	s.pg.KillNode(owner)
 
 	// T2 can only be claimed by the survivor now.
@@ -50,6 +53,7 @@ func TestSchedulerMN_DatabaseOutageLongerThanStaleAfter(t *testing.T) {
 	if r2.ClaimOwner != survivorInc {
 		t.Fatalf("T2 is held by %q; want the survivor %q", r2.ClaimOwner, survivorInc)
 	}
+	mnAwait(t, 10*time.Second, "T2's processor sent by the survivor", func() bool { return mnReceived(t, stall, t2) == 1 })
 
 	s.pg.PauseDatabase(t)
 	time.Sleep(fixtureutil.TunedStaleAfter + 5*time.Second)
@@ -96,5 +100,8 @@ func TestSchedulerMN_DatabaseOutageLongerThanStaleAfter(t *testing.T) {
 	if r1.Status != "RUNNING" {
 		t.Errorf("T1 = %+v; want RUNNING under the survivor", r1)
 	}
-	mnAwait(t, 10*time.Second, "T1's processor sent again", func() bool { return mnReceived(t, stall, t1) == 2 })
+	mnAwait(t, 10*time.Second, "T1's processor sent again", func() bool { return mnReceived(t, stall, t1) >= 2 })
+	if n := mnReceived(t, stall, t1); n != 2 {
+		t.Errorf("T1's processor was sent %d times; want once by each owner", n)
+	}
 }
