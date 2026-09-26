@@ -74,12 +74,11 @@ type App struct {
 	selfNodeID         string
 	nodeRegistry       contract.NodeRegistry
 	scheduler          *scheduler.Service
-	stopSearchReaper   chan struct{}
-	// searchReaperDone is closed by the reaper goroutine when it exits, so
-	// stopSearchReaperLoop can await a clean stop. stopSearchReaperOnce makes
-	// the close idempotent — both Shutdown and Close signal the loop.
-	searchReaperDone     chan struct{}
-	stopSearchReaperOnce sync.Once
+	// stopSearchReapers stops the async-search sweeps and waits for them
+	// (startSearchReapers). stopSearchReapersOnce makes it idempotent — both
+	// Shutdown and Close call it.
+	stopSearchReapers     func()
+	stopSearchReapersOnce sync.Once
 	// searchPool is the bounded worker pool async-search submissions run
 	// on, sized from cfg.SearchAsync. Shutdown drains it (bounded by
 	// searchDrainBudget) before aborting whatever async jobs are still
@@ -479,34 +478,7 @@ func New(cfg Config) *App {
 		WithAsyncMaxPerTenant(cfg.SearchAsync.MaxPerTenant).
 		WithHeartbeat(cfg.SearchJobHeartbeatInterval)
 
-	// Search reapers (use stopSearchReaper/searchReaperDone for graceful
-	// shutdown). Two cadences: the snapshot-TTL sweep on SearchReapInterval,
-	// and the stale-job reclaim sweep on the finer SearchJobHeartbeatInterval,
-	// plus one reclaim sweep at startup.
-	a.stopSearchReaper = make(chan struct{})
-	a.searchReaperDone = make(chan struct{})
-	go func() {
-		defer close(a.searchReaperDone)
-		// Startup sweep: a restarted node reclaims its own released jobs and
-		// any already-stale jobs the moment it can execute, not after the
-		// first interval.
-		reclaimStaleTick(context.Background(), a.searchService, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, a.healthFlag)
-
-		snapTicker := time.NewTicker(cfg.SearchReapInterval)
-		defer snapTicker.Stop()
-		claimTicker := time.NewTicker(cfg.SearchJobHeartbeatInterval)
-		defer claimTicker.Stop()
-		for {
-			select {
-			case <-snapTicker.C:
-				reapExpiredSnapshotsTick(context.Background(), searchStore, cfg.SearchSnapshotTTL, a.healthFlag)
-			case <-claimTicker.C:
-				reclaimStaleTick(context.Background(), a.searchService, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, a.healthFlag)
-			case <-a.stopSearchReaper:
-				return
-			}
-		}
-	}()
+	a.stopSearchReapers = startSearchReapers(&cfg, a.searchService, searchStore, a.healthFlag)
 
 	a.auditService = skeleton.NewAuditService()
 	a.clusterService = internalgrpc.NewClusterService(a.memberRegistry)
@@ -831,6 +803,41 @@ func latchOnPanic(healthFlag *atomic.Bool, site string) {
 	}
 }
 
+// startSearchReapers starts the async-search sweeps and returns the func that
+// stops them and waits for them to exit. Two cadences: the snapshot-TTL sweep
+// on SearchReapInterval, and the stale-job reclaim sweep on the finer
+// SearchJobHeartbeatInterval, plus one reclaim sweep at startup.
+func startSearchReapers(cfg *Config, svc *search.SearchService, store spi.AsyncSearchStore, healthFlag *atomic.Bool) (stop func()) {
+	stopCh := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Startup sweep: a restarted node reclaims its own released jobs and
+		// any already-stale jobs the moment it can execute, not after the
+		// first interval.
+		reclaimStaleTick(context.Background(), svc, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, healthFlag)
+
+		snapTicker := time.NewTicker(cfg.SearchReapInterval)
+		defer snapTicker.Stop()
+		claimTicker := time.NewTicker(cfg.SearchJobHeartbeatInterval)
+		defer claimTicker.Stop()
+		for {
+			select {
+			case <-snapTicker.C:
+				reapExpiredSnapshotsTick(context.Background(), store, cfg.SearchSnapshotTTL, healthFlag)
+			case <-claimTicker.C:
+				reclaimStaleTick(context.Background(), svc, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, healthFlag)
+			case <-stopCh:
+				return
+			}
+		}
+	}()
+	return func() {
+		close(stopCh)
+		<-done
+	}
+}
+
 // reapExpiredSnapshotsTick deletes terminal jobs past the snapshot TTL. Runs
 // on SearchReapInterval. Panic-latches health like the other engine-work sites.
 func reapExpiredSnapshotsTick(ctx context.Context, store spi.AsyncSearchStore, snapshotTTL time.Duration, healthFlag *atomic.Bool) {
@@ -949,16 +956,14 @@ const gRPCGracefulStopBudget = 10 * time.Second
 // does not itself abort them; this budget is what actually bounds the wait.
 const searchDrainBudget = 5 * time.Second
 
-// stopSearchReaperLoop signals the reaper goroutine and waits for it to exit.
-// Idempotent: safe to call from both Shutdown and Close (sync.Once guards the
-// close; the done-channel wait is a no-op once the goroutine has already
-// returned).
+// stopSearchReaperLoop stops the async-search sweeps and waits for them to
+// exit. Idempotent: safe to call from both Shutdown and Close (sync.Once runs
+// the stop once, and a second caller waits for it to finish).
 func (a *App) stopSearchReaperLoop() {
-	if a.stopSearchReaper == nil {
+	if a.stopSearchReapers == nil {
 		return
 	}
-	a.stopSearchReaperOnce.Do(func() { close(a.stopSearchReaper) })
-	<-a.searchReaperDone
+	a.stopSearchReapersOnce.Do(a.stopSearchReapers)
 }
 
 // Close performs graceful shutdown of all backend resources.
