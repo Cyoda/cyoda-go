@@ -433,6 +433,7 @@ func TestCommitAfterStatementTimeout_IsNotAConflict(t *testing.T) {
 	if !isStatementTimeout(stmtErr) {
 		t.Fatalf("the statement did not fail with 57014, so this scenario proves nothing: %v", stmtErr)
 	}
+	requireNoLostRace(t, fx.tm, ctx, txID, "a transaction the statement ceiling aborted lost no race")
 
 	commitErr := fx.tm.Commit(ctx, txID)
 	if commitErr == nil {
@@ -448,6 +449,17 @@ func TestCommitAfterStatementTimeout_IsNotAConflict(t *testing.T) {
 	}
 	if hasStorageUnavailableMarker(commitErr) {
 		t.Fatal("reported as a transient storage outage, which is the same lie in another shape")
+	}
+}
+
+// requireNoLostRace asserts LostRace answers (false, nil): a ceiling abort is
+// not a lost write race, and the transaction's failure must not be reported as
+// a conflict.
+func requireNoLostRace(t *testing.T, tm *TransactionManager, ctx context.Context, txID, msg string) {
+	t.Helper()
+	lost, err := tm.LostRace(ctx, txID)
+	if err != nil || lost {
+		t.Fatalf("LostRace = (%v, %v), want (false, nil): %s", lost, err, msg)
 	}
 }
 
@@ -486,6 +498,7 @@ func TestCommitAfterSavepointRollback_StillReportsAConflict(t *testing.T) {
 	if err := fx.tm.RollbackToSavepoint(ctx, txID, spID); err != nil {
 		t.Fatalf("rollback to savepoint: %v", err)
 	}
+	requireNoLostRace(t, fx.tm, ctx, txID, "a savepoint rollback that clears a ceiling leaves no lost race")
 	var one int
 	if err := fx.q.QueryRow(txCtx, "SELECT 1").Scan(&one); err != nil {
 		t.Fatalf("the transaction did not recover from the savepoint rollback: %v", err)
