@@ -370,9 +370,13 @@ func TestPostgres_ScheduledTaskHeartbeat_HasItsOwnConnection(t *testing.T) {
 	}
 }
 
-// V5: a claim that loses a race for a sibling task rolls back and claims
-// nothing, within lock_timeout, whether the rival commits or stalls.
-func TestPostgres_ClaimDue_LosingASiblingRaceClaimsNothing(t *testing.T) {
+// Claimers serialise per entity on an advisory lock, so two ClaimDue calls
+// never meet at the one-RUNNING-task-per-entity index. The only way a claim
+// meets a rival there is a fault that writes a sibling RUNNING outside
+// ClaimDue, bypassing the advisory lock — simulated here with a raw update.
+// ClaimDue fails closed: it returns an error instead of claiming, within
+// lock_timeout, whether the rival commits or stalls.
+func TestPostgres_ClaimDue_MeetingARivalAtTheRunningIndexFailsClosed(t *testing.T) {
 	cases := []struct {
 		name       string
 		rivalHolds time.Duration
@@ -413,17 +417,15 @@ func TestPostgres_ClaimDue_LosingASiblingRaceClaimsNothing(t *testing.T) {
 			if err := <-rivalDone; err != nil {
 				t.Fatalf("rival commit: %v", err)
 			}
-			if claimErr != nil {
-				t.Fatalf("ClaimDue lost the race and returned an error: %v", claimErr)
-			}
-			if len(claimed) != 0 {
-				t.Fatalf("ClaimDue claimed %d tasks, want none", len(claimed))
+			if claimErr == nil {
+				t.Fatalf("ClaimDue met the rival at the index and claimed %v, want a fail-closed error",
+					taskIDs(claimed))
 			}
 			if elapsed > tc.within {
 				t.Errorf("ClaimDue took %s, want under %s", elapsed, tc.within)
 			}
 			if got := mustGet(t, sts, "tenant-A", "e1:S:T2"); got.Status != spi.ScheduledTaskWaiting || got.Claim != nil {
-				t.Errorf("T2 after the lost race = %+v, want WAITING and unclaimed", got)
+				t.Errorf("T2 after the failed claim = %+v, want WAITING and unclaimed", got)
 			}
 		})
 	}
