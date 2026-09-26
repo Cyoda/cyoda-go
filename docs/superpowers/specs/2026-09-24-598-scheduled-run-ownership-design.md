@@ -940,8 +940,13 @@ means `ErrTaskBusy`.
    other pnodes committed after step 1. It is what closes that race.
 4. **Read the marks** of the claimed rows, while the row locks are held (C3).
 
-A unique violation or a 40P01 means another pnode claimed a sibling. The
-transaction rolls back and claims nothing this tick. It is logged at DEBUG.
+Step 2 also takes, without waiting, a transaction-scoped advisory lock on the
+entity of each locked row. An entity whose lock another claimer holds is
+excluded, and the ranking runs again. Claimers therefore serialise per entity.
+A claimer gets an entity's lock only after the rival's commit is visible, so
+step 3's `NOT EXISTS` passes over an entity whose sibling was just claimed.
+A claim never meets a sibling claim at the one-RUNNING index. Any error of the
+claim is returned; the transaction rolls back and claims nothing.
 
 **`MarkUnsafe`** is one transaction:
 1. `SELECT … FROM scheduled_tasks WHERE id, tenant_id, arm_token, claim_token
