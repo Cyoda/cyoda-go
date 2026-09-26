@@ -1857,14 +1857,16 @@ func (h *Handler) deleteOneBatchOnce(ctx context.Context, chunk []batchTarget) (
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return classifyError(fmt.Errorf("operation aborted: %w", ctxErr))
 			}
-			// entityStore.Get never returns spi.ErrConflict on this path: it is
-			// an unlocked read, and none of the three backends' Get() can
-			// surface a conflict from one (memory/sqlite: not wired to;
-			// postgres: REPEATABLE READ only raises 40001 for a write or a
-			// locking read, which this isn't). A Get failure therefore always
-			// follows the generic per-id path below.
+			// The read itself never conflicts, but on PostgreSQL it can meet a
+			// transaction an earlier conflict already aborted (spi.ErrTxAborted,
+			// which is spi.ErrConflict). That fails the attempt like a
+			// conflicting delete does — the batch runs again — rather than
+			// being filed as this id's fault.
 			cur, gErr := entityStore.Get(txCtx, t.id)
 			if gErr != nil {
+				if errors.Is(gErr, spi.ErrConflict) {
+					return conflictError(gErr)
+				}
 				a.idErrors[t.id] = perIDDeleteError(t.id, gErr)
 				continue
 			}
