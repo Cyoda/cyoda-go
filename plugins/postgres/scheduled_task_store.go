@@ -531,18 +531,27 @@ func entityLockKey(tenantExpr, entityExpr string) string {
 // lockEntitiesSQL takes, without waiting, the advisory lock of each (tenant,
 // entity) in $1/$2 for the rest of the claim's transaction, and returns the
 // ones another claimer holds. Only claims take these locks: claimers serialise
-// per entity, so a claimer never moves on to a sibling of a task another
-// claimer is claiming and waits behind it on the one-RUNNING index. Entity
-// transactions take none, so a row busy under an entity transaction still
-// passes its turn to a sibling on the same entity.
+// per entity, so a claimer whose ranking chose a task can only reach claimSQL
+// on it once any rival claimer of the same entity has committed or rolled
+// back — the rival holds the entity's lock until its transaction ends, and
+// PostgreSQL makes that transaction's commit visible before it releases the
+// lock. Entity transactions take none, so a row busy under an entity
+// transaction still passes its turn to a sibling on the same entity.
 var lockEntitiesSQL = `SELECT k.tenant_id, k.entity_id
   FROM unnest($1::text[], $2::text[]) AS k(tenant_id, entity_id)
  WHERE NOT pg_try_advisory_xact_lock(` + entityLockKey("k.tenant_id", "k.entity_id") + `)`
 
-// claimSQL is ClaimDue's claim. A new statement, so it sees claims other
-// pnodes committed since the ranking; the full condition, including "no other
-// RUNNING task of the entity", closes that race. A concurrent claim of a
-// sibling that has not committed yet meets this one at the unique index.
+// claimSQL is ClaimDue's claim. Every row it names is locked by this
+// transaction, so the row's own columns are as lockClaimsSQL saw them.
+// Claimers serialise per entity on the advisory lock lockEntitiesSQL takes, so
+// no rival claimer can be mid-claim on the same entity here. It is a new
+// statement, so it sees what other transactions committed since the ranking:
+//   - a sibling claim committed after the ranking: the NOT EXISTS passes over
+//     that entity, whose sibling this claim's ranking chose before the rival's
+//     commit made it RUNNING;
+//   - a heartbeat of a RUNNING row's owner: that owner is live again and keeps
+//     its task.
+//
 // lost_owners counts the claim only when it takes a RUNNING row.
 const claimSQL = `UPDATE scheduled_tasks st
    SET status      = 'RUNNING',
@@ -565,23 +574,23 @@ const claimedMarksSQL = `SELECT m.tenant_id, m.task_id
     ON m.tenant_id = c.tenant_id AND m.task_id = c.task_id AND m.arm_token = c.arm_token`
 
 // ClaimDue claims due tasks in one READ COMMITTED transaction on the scheduler
-// pool and returns them in spi.SelectClaims order. A claim that loses the
-// sibling race on the one-RUNNING-task-per-entity index rolls back and claims
-// nothing (siblingRace). Any other failure is returned (claimError).
+// pool and returns them in spi.SelectClaims order. Claimers serialise per
+// entity on the advisory lock lockEntitiesSQL takes, so a claim never meets a
+// rival claimer's write to a sibling task; any failure is returned
+// (claimError).
 func (s *scheduledTaskStore) ClaimDue(ctx context.Context, req spi.ClaimRequest) ([]spi.ScheduledTask, error) {
 	if req.Limit < 1 || req.PerTenantLimit < 1 {
 		return nil, fmt.Errorf("claim scheduled tasks: Limit and PerTenantLimit must be >= 1, got %d and %d: %w",
 			req.Limit, req.PerTenantLimit, spi.ErrStoreRejected)
 	}
 	claimed, err := s.claimDue(ctx, req)
-	if siblingRace(err) {
-		slog.Debug("scheduled task claim met a concurrent claim of a sibling task; claiming nothing this call",
-			"pkg", "postgres", "err", err)
-		return nil, nil
-	}
 	if err != nil {
-		if isLockNotAvailable(err) || isDeadlock(err) {
-			slog.Warn("scheduled task claim met a lock wait or deadlock outside the one-RUNNING-task-per-entity index",
+		switch {
+		case isLockNotAvailable(err) || isDeadlock(err):
+			slog.Warn("scheduled task claim met a lock wait or deadlock",
+				"pkg", "postgres", "err", err)
+		case isRunningIndexViolation(err):
+			slog.Error("scheduled task claim violated the one-RUNNING-task-per-entity invariant",
 				"pkg", "postgres", "err", err)
 		}
 		return nil, fmt.Errorf("failed to claim scheduled tasks: %w", claimError(err))
@@ -647,11 +656,11 @@ func (s *scheduledTaskStore) claimDue(ctx context.Context, req spi.ClaimRequest)
 	}
 	rows, err := q.Query(ctx, claimSQL, req.NowMs, req.AllowLostOwner, stale, chosenIDs, req.Owner, chosenTenants)
 	if err != nil {
-		return nil, claimStepError(err)
+		return nil, err
 	}
 	updated, err := scanTasks(rows)
 	if err != nil {
-		return nil, claimStepError(err)
+		return nil, err
 	}
 	byKey := make(map[taskKey]spi.ScheduledTask, len(updated))
 	for _, t := range updated {
@@ -833,41 +842,9 @@ func markClaimed(ctx context.Context, q Querier, claimed []spi.ScheduledTask) er
 	return rows.Err()
 }
 
-// runningIndex is the one-RUNNING-task-per-entity index.
-const runningIndex = "scheduled_tasks_one_running_per_entity_uq"
-
-// errClaimStep marks an error raised by claimSQL, the one statement that can
-// wait on another claim's entry in runningIndex.
-var errClaimStep = errors.New("claim statement")
-
-func claimStepError(err error) error {
-	return fmt.Errorf("%w: %w", errClaimStep, err)
-}
-
-// siblingRace reports the one failure ClaimDue swallows: the claim met a
-// concurrent claim of a sibling task at runningIndex. Either the index refused
-// it once the rival committed (23505 on runningIndex), or claimSQL waited on
-// the rival's index entry until lock_timeout (55P03) or a deadlock (40P01),
-// which PostgreSQL reports with the index named in the error's context
-// ("while inserting index tuple … in relation \"<index>\""). The transaction
-// rolls back; nothing was claimed.
-func siblingRace(err error) bool {
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) {
-		return false
-	}
-	switch pgErr.Code {
-	case pgerrcode.UniqueViolation:
-		return pgErr.ConstraintName == runningIndex
-	case pgerrcode.LockNotAvailable, pgerrcode.DeadlockDetected:
-		return errors.Is(err, errClaimStep) && strings.Contains(pgErr.Where, `relation "`+runningIndex+`"`)
-	}
-	return false
-}
-
-// claimError classifies a claim failure that is not a sibling race, as the
-// store does elsewhere: a lock wait is ErrTaskBusy, a deadlock ErrConflict.
-// The SQLSTATE stays in the chain.
+// claimError classifies a claim failure the way the store does elsewhere: a
+// lock wait is ErrTaskBusy, a deadlock ErrConflict. The SQLSTATE stays in the
+// chain.
 func claimError(err error) error {
 	switch {
 	case isLockNotAvailable(err):
@@ -886,6 +863,20 @@ func isDeadlock(err error) bool {
 func isLockNotAvailable(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == pgerrcode.LockNotAvailable
+}
+
+// oneRunningPerEntityIndex is the partial unique index that enforces at most
+// one RUNNING task per entity — see lockEntitiesSQL for why a claim is never
+// meant to meet it.
+const oneRunningPerEntityIndex = "scheduled_tasks_one_running_per_entity_uq"
+
+// isRunningIndexViolation reports whether err is a unique violation of
+// oneRunningPerEntityIndex: two tasks of the same entity RUNNING at once,
+// which the per-entity advisory lock exists to make impossible.
+func isRunningIndexViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == pgerrcode.UniqueViolation &&
+		pgErr.ConstraintName == oneRunningPerEntityIndex
 }
 
 // MarkUnsafe records, before an unsafe dispatch, that this claim of this life

@@ -370,16 +370,26 @@ func TestPostgres_ScheduledTaskHeartbeat_HasItsOwnConnection(t *testing.T) {
 	}
 }
 
-// V5: a claim that loses a race for a sibling task rolls back and claims
-// nothing, within lock_timeout, whether the rival commits or stalls.
-func TestPostgres_ClaimDue_LosingASiblingRaceClaimsNothing(t *testing.T) {
+// Claimers serialise per entity on an advisory lock, so two ClaimDue calls
+// never meet at the one-RUNNING-task-per-entity index. The only way a claim
+// meets a rival there is a fault that writes a sibling RUNNING outside
+// ClaimDue, bypassing the advisory lock — simulated here with a raw update.
+// ClaimDue fails closed: it returns an error instead of claiming, within
+// lock_timeout, whether the rival commits or stalls.
+func TestPostgres_ClaimDue_MeetingARivalAtTheRunningIndexFailsClosed(t *testing.T) {
 	cases := []struct {
 		name       string
 		rivalHolds time.Duration
 		within     time.Duration
+		// wantLog is a fragment ClaimDue's own log line for this outcome must
+		// contain: the unique violation (invariant broken) logs at Error, a
+		// lock-timeout wait logs at Warn — see ClaimDue.
+		wantLog string
 	}{
-		{"rival commits while the claim waits", 300 * time.Millisecond, 1500 * time.Millisecond},
-		{"rival outlasts lock_timeout", 4 * time.Second, 3500 * time.Millisecond},
+		{"rival commits while the claim waits", 300 * time.Millisecond, 1500 * time.Millisecond,
+			"one-RUNNING-task-per-entity invariant"},
+		{"rival outlasts lock_timeout", 4 * time.Second, 3500 * time.Millisecond,
+			"lock wait or deadlock"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -407,25 +417,110 @@ func TestPostgres_ClaimDue_LosingASiblingRaceClaimsNothing(t *testing.T) {
 				rivalDone <- rival.Commit(context.Background())
 			}()
 
-			start := time.Now()
-			claimed, claimErr := sts.ClaimDue(bg, claimRequest(uuid.New()))
-			elapsed := time.Since(start)
+			var claimed []spi.ScheduledTask
+			var claimErr error
+			var elapsed time.Duration
+			logged := postgres.CaptureSlogForTest(t, func() {
+				start := time.Now()
+				claimed, claimErr = sts.ClaimDue(bg, claimRequest(uuid.New()))
+				elapsed = time.Since(start)
+			})
 			if err := <-rivalDone; err != nil {
 				t.Fatalf("rival commit: %v", err)
 			}
-			if claimErr != nil {
-				t.Fatalf("ClaimDue lost the race and returned an error: %v", claimErr)
-			}
-			if len(claimed) != 0 {
-				t.Fatalf("ClaimDue claimed %d tasks, want none", len(claimed))
+			if claimErr == nil {
+				t.Fatalf("ClaimDue met the rival at the index and claimed %v, want a fail-closed error",
+					taskIDs(claimed))
 			}
 			if elapsed > tc.within {
 				t.Errorf("ClaimDue took %s, want under %s", elapsed, tc.within)
 			}
+			if !strings.Contains(logged, tc.wantLog) {
+				t.Errorf("ClaimDue logged %q, want it to mention %q", logged, tc.wantLog)
+			}
 			if got := mustGet(t, sts, "tenant-A", "e1:S:T2"); got.Status != spi.ScheduledTaskWaiting || got.Claim != nil {
-				t.Errorf("T2 after the lost race = %+v, want WAITING and unclaimed", got)
+				t.Errorf("T2 after the failed claim = %+v, want WAITING and unclaimed", got)
 			}
 		})
+	}
+}
+
+// A sibling claim committed between the ranking and the lock passes over that
+// entity alone. The claim ranks T2 of e1 and T3 of e2, then waits at the lock
+// statement behind a table lock. Meanwhile a rival sets e1's T1 RUNNING and
+// commits. lockClaimsSQL has no sibling check, so it locks T2 as well as T3.
+// claimSQL's NOT EXISTS then leaves out T2, and the claim takes T3. Without
+// that check, the UPDATE of T2 meets T1 at the one-RUNNING index and the
+// whole claim rolls back.
+func TestPostgres_ClaimDue_SiblingClaimedAfterRankingSkipsOnlyThatEntity(t *testing.T) {
+	f, sts := newTaskStore(t, 5)
+	bg := context.Background()
+	// T2 is due before T1, so the claim ranks T2 for e1.
+	arm(t, sts, "tenant-A", "e1", "S",
+		taskSpec("tenant-A", "e1", "S", "T1", 1000),
+		taskSpec("tenant-A", "e1", "S", "T2", 500))
+	arm(t, sts, "tenant-A", "e2", "S", taskSpec("tenant-A", "e2", "S", "T3", 700))
+
+	// EXCLUSIVE admits the ranking's plain read (ACCESS SHARE) and blocks the
+	// lock statement's FOR UPDATE (ROW SHARE).
+	side, err := postgres.PoolForTest(f).Begin(bg)
+	if err != nil {
+		t.Fatalf("begin side transaction: %v", err)
+	}
+	defer func() { _ = side.Rollback(bg) }()
+	if _, err := side.Exec(bg, `LOCK TABLE scheduled_tasks IN EXCLUSIVE MODE`); err != nil {
+		t.Fatalf("lock table: %v", err)
+	}
+
+	type result struct {
+		claimed []spi.ScheduledTask
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		claimed, err := sts.ClaimDue(bg, claimRequest(uuid.New()))
+		done <- result{claimed, err}
+	}()
+
+	// The scheduler pool's lock_timeout is 2s: the rival must commit well
+	// within it once the claim waits.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var waiting bool
+		if err := postgres.PoolForTest(f).QueryRow(bg, `SELECT EXISTS (
+			SELECT 1 FROM pg_stat_activity
+			 WHERE wait_event_type = 'Lock' AND query LIKE '%FOR UPDATE OF st SKIP LOCKED%')`).Scan(&waiting); err != nil {
+			t.Fatalf("read pg_stat_activity: %v", err)
+		}
+		if waiting {
+			break
+		}
+		select {
+		case r := <-done:
+			t.Fatalf("ClaimDue returned before it waited at the lock statement: claimed=%v err=%v", taskIDs(r.claimed), r.err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("ClaimDue never waited at the lock statement")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if _, err := side.Exec(bg, `UPDATE scheduled_tasks
+		SET status = 'RUNNING', claim_token = gen_random_uuid(), claim_owner = gen_random_uuid()
+		WHERE tenant_id = 'tenant-A' AND id = 'e1:S:T1'`); err != nil {
+		t.Fatalf("rival claim of T1: %v", err)
+	}
+	if err := side.Commit(bg); err != nil {
+		t.Fatalf("commit side transaction: %v", err)
+	}
+
+	r := <-done
+	if r.err != nil || !slices.Equal(taskIDs(r.claimed), []string{"e2:S:T3"}) {
+		t.Fatalf("ClaimDue: claimed=%v err=%v, want [e2:S:T3]", taskIDs(r.claimed), r.err)
+	}
+	if got := mustGet(t, sts, "tenant-A", "e1:S:T2"); got.Status != spi.ScheduledTaskWaiting || got.Claim != nil {
+		t.Errorf("T2 = %+v, want WAITING and unclaimed", got)
 	}
 }
 

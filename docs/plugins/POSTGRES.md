@@ -157,29 +157,32 @@ pool).
 **`ClaimDue`** is one transaction on the scheduler pool: rank the due tasks
 (one per entity, each tenant within its limit, tenants taking turns), lock
 them with `FOR UPDATE SKIP LOCKED`, claim them with a conditional `UPDATE`,
-and read their marks while the locks are held. A per-entity PostgreSQL
-advisory lock serialises claimers, so one claim never waits behind another on
-the one-running-per-entity index; a row an open entity transaction holds, or
-that another claimer's advisory lock already covers, is passed over rather
-than waited for, and its turn goes to the next claimable task, a sibling on
-the same entity included. The one exception the claim swallows is a
-concurrent claim of a sibling task racing at `scheduled_tasks_one_running_per_entity_uq`
-itself — the unique-violation, lock-wait or deadlock that index raises when
-two claims reach it at once — which rolls the claim back and claims nothing
-that call. Every other lock wait or deadlock the claim meets is returned as
-`spi.ErrTaskBusy` or `spi.ErrConflict`, not swallowed.
+and read their marks while the locks are held. A per-entity, transaction-scoped
+PostgreSQL advisory lock serialises claimers: a claimer takes an entity's lock
+for the rest of its transaction, and a rival claimer of the same entity can
+only take that lock once this one has committed or rolled back — PostgreSQL
+makes a commit visible before it releases the lock. So a claim's own `UPDATE`
+sees, for every entity it holds, either no sibling `RUNNING` or a sibling whose
+commit is already visible; its `NOT EXISTS` check passes over that entity
+either way, and a claim never meets a sibling claim at
+`scheduled_tasks_one_running_per_entity_uq`. A row an open entity transaction
+holds, or that another claimer's advisory lock already covers, is passed over
+rather than waited for, and its turn goes to the next claimable task, a
+sibling on the same entity included. Any claim error — including a unique
+violation at that index, which would mean the invariant above was somehow
+broken — is returned and the claim rolls back: a lock wait is
+`spi.ErrTaskBusy`, a deadlock `spi.ErrConflict`, nothing is swallowed.
 
 **`MarkUnsafe`** share-locks the task row with `NOWAIT` and inserts the mark.
 A row held by another transaction answers `spi.ErrTaskBusy` at once.
 
 **Errors.** SQLSTATE classes `22`, `23` and `42` carry `spi.ErrStoreRejected`
 in every store of the plugin — the database will refuse the same statement
-again — except the sibling race `ClaimDue` swallows above. A lock wait past
-`lock_timeout` (`55P03`) answers `spi.ErrTaskBusy` for `MarkUnsafe`,
-`RecordAttempt`, and the async-search `Heartbeat` (it stamps `search_jobs`
-and runs on this same scheduler pool); a busy heartbeat tick is treated as
-transient and missed, not a lost claim, and is retried on the next tick.
-`ScheduledTaskStore.Heartbeat` itself is a plain upsert into
+again. A lock wait past `lock_timeout` (`55P03`) answers `spi.ErrTaskBusy`
+for `MarkUnsafe`, `RecordAttempt`, and the async-search `Heartbeat` (it
+stamps `search_jobs` and runs on this same scheduler pool); a busy heartbeat
+tick is treated as transient and missed, not a lost claim, and is retried on
+the next tick. `ScheduledTaskStore.Heartbeat` itself is a plain upsert into
 `scheduler_owners` with no row contention to answer busy for.
 
 **Tenant isolation.** Every tenant-facing statement filters on `tenant_id`.
