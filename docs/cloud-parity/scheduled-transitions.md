@@ -377,6 +377,9 @@ handed off (`UNSAFE_WORK_NOT_COMPLETED`).
 - A store that rejects an outcome write as invalid latches the node: it reports
   unhealthy, claims nothing more and keeps that run's claim, and its other runs
   go on.
+- A latched node, whatever latched it, claims no scheduled task; its runs in
+  progress go on unless the panic was inside the scheduler, and it keeps
+  heartbeating unless the heartbeat itself panicked.
 - A panic while a run's outcome is being recorded records no `RUN_PANICKED`.
   The node latches and keeps the claim, so the task stays `RUNNING` while the
   latched node keeps heartbeating.

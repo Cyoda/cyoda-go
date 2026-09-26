@@ -276,6 +276,8 @@ Both probes are served on `CYODA_ADMIN_PORT` (default `9091`) at `CYODA_ADMIN_BI
 - `GET /livez` — liveness probe. Returns `200 OK` with body `ok` when the admin server is accepting connections. No business logic check is performed, so a node that has recovered a panic still passes it. Nothing restarts such a node: it stops receiving new client connections through the Service, keeps handling established ones and any work peers forward to it, and waits for an operator to replace it.
 - `GET /readyz` — readiness probe. Returns `200 OK` with body `ready`. Returns `503` permanently once the node has recovered a panic — its state is then unverified, so it stops receiving client traffic. The reason is in the server log; the response body stays generic. The admin listener only starts after storage is open and migrations have run, so during startup the probe is refused rather than answered `503`.
 
+A latched node, whatever latched it, claims no scheduled task; its runs in progress go on unless the panic was inside the scheduler, and it keeps heartbeating unless the heartbeat itself panicked.
+
 The `cyoda health` subcommand calls `/readyz` on the admin port with a 2-second HTTP client timeout and exits 0 on `200 OK`, 1 otherwise. This is the implementation behind Docker's `HEALTHCHECK: CMD /cyoda health` and is valid as a readiness check for any init system.
 
 **Admin bind address in container environments:** set `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` to make health probes reachable from outside the container. The Kubernetes Helm chart sets this value in its ConfigMap. Without it, `/livez` and `/readyz` are inaccessible from the kubelet or Docker healthcheck daemon.

@@ -189,7 +189,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   treats an answer it cannot authenticate as lost, and an older node cannot read
   what this one sends. Stop the cluster to upgrade it; there is no rolling
   upgrade across this change. A node of an earlier version also fires scheduled
-  tasks without claiming them, so in a mixed cluster a task can run twice. See `docs/cloud-parity/callout-failover.md`.
+  tasks without claiming them, so in a mixed cluster a task can run twice. See
+  `docs/cloud-parity/callout-failover.md` and
+  `docs/cloud-parity/scheduled-transitions.md`.
 
 - **A node whose identity does not fit the cluster's membership metadata refuses
   to start.** The metadata carries `CYODA_NODE_ID`, `CYODA_NODE_ADDR` and
@@ -254,9 +256,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 - **One scheduled transition of an entity runs at a time.** While one of an
   entity's scheduled transitions is running, its others are not claimed; they
-  run after it ends. On PostgreSQL, claims of one entity are serialised by a
-  transaction-scoped advisory lock, so two nodes claiming at the same instant
-  cannot each take one of the entity's tasks. See `cyoda help workflows`.
+  run after it ends. See `cyoda help workflows` and `docs/plugins/POSTGRES.md`.
 
 - **Entity writes, deletes and workflow imports remove scheduled tasks, and can
   answer a retryable `409 CONFLICT` when they race the scheduler.** A write that
@@ -272,7 +272,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   operations can now answer `409` and declare it:
   `DELETE /entity/{entityId}` and
   `POST /model/{entityName}/{modelVersion}/workflow/import`; repeating the same
-  import completes it. See `cyoda help errors CONFLICT` and
+  import completes it. The conditional and delete-all
+  `DELETE /entity/{entityName}/{modelVersion}` can now answer `CONFLICT` under
+  its existing `409`, which before was only `DELETE_NOT_CONVERGED`. See
+  `cyoda help errors CONFLICT` and
   `docs/cloud-parity/scheduled-transitions.md`.
 
 - **A write race lost inside a transaction answers a retryable `409 CONFLICT`,
@@ -292,6 +295,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   joined callback's write had lost a race; they now answer the same `409`. The
   engine asks the new required SPI method `TransactionManager.LostRace` after a
   failed dispatch, and keeps the processor's failure attached to the error.
+  Needs the matching cyoda-go-spi release: new `ScheduledTaskStore` contract,
+  `TransactionManager.LostRace`, fenced `AsyncSearchStore.ClearResults`,
+  `ErrTaskBusy`/`ErrStaleClaim`/`ErrMarkedByAnotherClaim` (`ErrStaleClaim`
+  existed; the scheduled-task store and `ClearResults` now return it too).
   Rolling back an `ASYNC_NEW_TX` processor's savepoint no longer
   forgets a race that a write inside it had already lost, to an entity or to a
   scheduled task's row: the transaction fails with the same `409`, even when
@@ -649,7 +656,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   a panic anywhere — in an HTTP or gRPC request, in async search or in the
   scheduler itself — now claims nothing. Its runs in progress go on unless the
   panic was inside the scheduler, and it keeps heartbeating so they are not
-  taken over while they may still commit. See `cyoda help run`.
+  taken over while they may still commit. See `cyoda help run` and
+  `docs/cloud-parity/scheduled-transitions.md`.
 
 - **A write a processor made through its own callback is kept when the
   processor answers with no payload.** The documented way for a processor to
@@ -675,7 +683,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   main pool; the writes the sweep owes jobs it will not run go to a separate
   pass, and snapshot expiry has a goroutine of its own. Clearing a job's
   results is fenced by the claim it was made under, like its heartbeat and its
-  release: a late clear from a node that has lost the job deletes nothing. See
+  release, on every backend and whether or not the pool is busy: a late clear
+  from a node that has lost the job deletes nothing. See
   `cyoda help config database` and `docs/plugins/POSTGRES.md`.
 
 - **A collection write that joined an open transaction is no longer split
