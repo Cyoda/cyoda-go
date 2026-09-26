@@ -38,6 +38,13 @@ the `COMMIT_BEFORE_DISPATCH` execution mode, which deliberately splits a
 single cascade into multiple transactions and exposes intermediate
 segment-boundary states to concurrent readers.
 
+**Scheduled-task rows are covered too.** A transaction that writes a task row —
+an entity write re-arming or removing its entity's tasks, a delete, a scheduled
+run's own commit — fails with `ErrConflict` if another transaction committed a
+write to that row after it began. This is what fences a scheduled run's commits
+against a reclaim or a re-arm, and why a client write can get `409` when it
+races the scheduler. See [ARCHITECTURE.md §4.8](ARCHITECTURE.md#48-scheduled-transitions).
+
 ## 1a. When a write is dated
 
 **Every backend dates a transaction's writes at the instant that
