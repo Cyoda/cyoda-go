@@ -102,7 +102,6 @@ func TestRPC_EntityCreate_ProcessorFailedAfterLostRaceIsConflict(t *testing.T) {
 	inner := memory.NewStoreFactory(memory.WithApplyFunc(testSchemaApply))
 	inner.NewTransactionManager(common.NewDefaultUUIDGenerator())
 	txMgr := inner.GetTransactionManager()
-	factory := spi.StoreFactory(inner)
 	lp := localproc.New()
 	target := func(v string) *spi.Entity {
 		return &spi.Entity{
@@ -134,9 +133,9 @@ func TestRPC_EntityCreate_ProcessorFailedAfterLostRaceIsConflict(t *testing.T) {
 		}
 		return nil, errors.New("the processor failed after its joined write")
 	})
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, workflow.WithExternalProcessing(lp))
+	engine := workflow.NewEngine(inner, common.NewDefaultUUIDGenerator(), txMgr, workflow.WithExternalProcessing(lp))
 	svc.txMgr = txMgr
-	svc.entityHandler = entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	svc.entityHandler = entity.New(inner, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
 	svc.modelHandler = model.New(inner)
 	importAndLockModel(t, svc, ctx, "racer", "1", map[string]any{"name": "A", "amount": 1})
 

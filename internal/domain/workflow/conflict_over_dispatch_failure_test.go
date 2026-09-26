@@ -89,9 +89,9 @@ func lostRaceTx(t *testing.T) (*Engine, spi.TransactionManager, context.Context)
 	return engine, txMgr, txCtx
 }
 
-// TestConflictOverDispatchFailure_LostRaceIsConflictOnEveryBackend: a
-// processor fails inside a transaction that has lost a write race on a backend
-// that detects conflicts at commit. Every read still succeeds there, yet the
+// TestConflictOverDispatchFailure_BufferedLostRaceIsConflict: a processor
+// fails inside a transaction that has lost a write race on memory, a backend
+// that buffers the losing write and detects the conflict at commit. Every read still succeeds there, yet the
 // transaction cannot commit: the answer is the conflict (spi.ErrTxAborted, so
 // every door answers a retryable 409), with the processor's failure attached.
 func TestConflictOverDispatchFailure_LostRaceIsConflictOnEveryBackend(t *testing.T) {
