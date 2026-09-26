@@ -20,7 +20,7 @@ import (
 // backend notices the loss differs — PostgreSQL at the joined write, memory and
 // sqlite at the commit — and the answer must not. cb-race-target-thenfail makes
 // the same lost write and then fails regardless of the joined write's answer.
-// Under SYNC and COMMIT_BEFORE_DISPATCH its failure is a consequence of the
+// Under SYNC, ASYNC_SAME_TX and COMMIT_BEFORE_DISPATCH its failure is a consequence of the
 // lost race, so the update answers the conflict, not the failure. Under
 // ASYNC_NEW_TX the savepoint rollback discards the write: the transaction
 // still lost the race, and the update still answers 409 with nothing
@@ -49,6 +49,7 @@ var cbRaceModes = []struct {
 }{
 	{name: "SYNC", proc: cbProc("cb-race-target-strict", "SYNC", "", nil)},
 	{name: "SYNC_ThenFails", proc: cbProc("cb-race-target-thenfail", "SYNC", "", nil)},
+	{name: "ASYNC_SAME_TX_ThenFails", proc: cbProc("cb-race-target-thenfail", "ASYNC_SAME_TX", "", nil)},
 	{name: "ASYNC_NEW_TX", proc: cbProc("cb-race-target-strict", "ASYNC_NEW_TX", "", nil)},
 	{name: "ASYNC_NEW_TX_ThenFails", proc: cbProc("cb-race-target-thenfail", "ASYNC_NEW_TX", "", nil)},
 	{name: "COMMIT_BEFORE_DISPATCH", segmented: true,
