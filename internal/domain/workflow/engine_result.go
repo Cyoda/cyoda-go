@@ -25,7 +25,7 @@ type EngineResult struct {
 	// FinalCtx is wrapped via `context.WithoutCancel` — callers issuing
 	// follow-on operations are decoupled from the original context's
 	// cancellation. This is intentional: the engine has committed the TX
-	// and downstream cleanup (CompareAndSave + Commit) must complete even
+	// and downstream cleanup (Save + Commit) must complete even
 	// if the caller's request was cancelled mid-dispatch.
 	FinalCtx context.Context
 	// FinalTxID is the still-open TX at engine return — the caller's input

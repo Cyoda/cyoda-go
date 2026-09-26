@@ -1209,7 +1209,9 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 	// writing them immediately — see smAuditStore.Record). Each is inserted
 	// under its OWN label (st.event.TransactionID), which is not always
 	// tx.ID: the engine records some events under a cascade entry's
-	// transaction id (EmitTransitionAborted), so a staged event can be
+	// transaction id (a segmented scheduled run records
+	// SCHEDULED_TRANSITION_FIRE under its entry transaction's id in its last
+	// segment, fire_scheduled.go), so a staged event can be
 	// LABELLED with a transaction other than the one it was staged on.
 	//
 	// The UPDATE below then stamps every row — just-inserted or already

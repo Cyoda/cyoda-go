@@ -413,10 +413,10 @@ func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx,
 	//
 	// "Labelled with", not "written by", and the difference is real rather
 	// than pedantic: the engine records some events under a transaction id
-	// that is not the one recording them — EmitTransitionAborted carries the
-	// CASCADE ENTRY's id (internal/domain/workflow, reached both from the
-	// engine after a segment flush has already failed and from the entity
-	// service with its own clock and possibly no ambient transaction). Such an
+	// that is not the one recording them — a segmented scheduled run records
+	// SCHEDULED_TRANSITION_FIRE under its ENTRY transaction's id in its last
+	// segment (internal/domain/workflow/fire_scheduled.go), as a
+	// COMMIT_BEFORE_DISPATCH cascade records its later events. Such an
 	// event is matched here if its label happens to name a transaction that
 	// later commits, and is otherwise never stamped at all: it keeps the
 	// recording process's clock while being ordered, and now reported, from

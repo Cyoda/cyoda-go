@@ -228,6 +228,34 @@ func TestCBD_ApplyResultConflict_CarriesPostSegmentMarker(t *testing.T) {
 
 // --- Segment-boundary CAS failures that are NOT the caller's business ---
 
+// TestCBD_FirstFlushStoreFailure_IsMarkedInfra — the first-segment flush's
+// Save fails in the store itself: a cancelled statement, a missing relation, a
+// saturated pool. That text carries driver wording and a SQLSTATE, and an
+// unmarked engine error lands on the entity service's catch-all, which mints a
+// 400 WORKFLOW_FAILED whose detail is the text verbatim. Marked infra, it takes
+// the sanitized-5xx-with-a-ticket path instead (classifyWorkflowError), and
+// nothing is dispatched.
+func TestCBD_FirstFlushStoreFailure_IsMarkedInfra(t *testing.T) {
+	h := newSegmentGuardHarness(t, "memory")
+	h.registerCBDProcessor("segmenter")
+	storeErr := errors.New("ERROR: canceling statement due to statement timeout (SQLSTATE 57014)")
+	h.flushSaveErr = storeErr
+
+	err := h.fireSegment(t)
+	if err == nil {
+		t.Fatal("expected the flush store failure to surface")
+	}
+	if h.dispatched {
+		t.Fatal("the callout fired; the failure did not land on the first-segment flush")
+	}
+	if !errors.Is(err, ErrCommitBeforeDispatchInfra) {
+		t.Errorf("store failure not marked infra; its text would reach a 400 body: %v", err)
+	}
+	if !errors.Is(err, storeErr) {
+		t.Errorf("store cause dropped from the chain, so the server-side log loses it: %v", err)
+	}
+}
+
 // TestCBD_ApplyResultStoreFailure_IsMarkedInfra — the apply-result CAS chains
 // ErrPostSegmentConflict, whose text reaches a 4xx body verbatim — so a raw
 // store error there must be marked infra, or it leaks.
@@ -311,6 +339,10 @@ type segmentGuardHarness struct {
 	// fail; the pre-dispatch flush goes through the same two entry points.
 	entityStoreErr error
 	casErr         error
+
+	// flushSaveErr fails every Save made before the CBD callout — the
+	// first-segment flush, which runs before TX_pre commits.
+	flushSaveErr error
 
 	// dispatched records whether the CBD callout has fired. A CompareAndSave
 	// after it is the apply-result CAS; the cascade makes none before it.
@@ -405,6 +437,9 @@ const (
 
 func (s *hookedEntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, error) {
 	s.h.saves++
+	if !s.h.dispatched && s.h.flushSaveErr != nil {
+		return 0, s.h.flushSaveErr
+	}
 	return s.EntityStore.Save(ctx, entity)
 }
 

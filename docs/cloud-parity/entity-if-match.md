@@ -61,9 +61,22 @@ update fails whole with `400 WORKFLOW_FAILED`. The committed segment stays.
 
 ## Tests
 
-- Parity: `e2e/parity/ifmatch_callback_self_write.go`
-  (`IfMatch_OwnEntityCallbackWrite`) — a callback's write kept under `SYNC`,
-  `ASYNC_SAME_TX` and before a `COMMIT_BEFORE_DISPATCH` segment; a stale
-  `If-Match` is `412`; a callback write that loses a race is `409`.
-- E2E (PostgreSQL): `internal/e2e/ifmatch_callback_self_write_test.go` — every
-  door above, HTTP and gRPC; a change after the read is `409`.
+- Parity (memory, SQLite, PostgreSQL): `e2e/parity/ifmatch_callback_self_write.go`
+  (`IfMatch_OwnEntityCallbackWrite`) — the loopback `PUT` door: a callback's
+  write kept under `SYNC`, `ASYNC_SAME_TX` and before a `COMMIT_BEFORE_DISPATCH`
+  segment; a stale `If-Match` is `412`; a callback write that loses a race is
+  `409`.
+- E2E (PostgreSQL): `internal/e2e/ifmatch_callback_self_write_test.go`, on every
+  door above (`PUT` loopback, `PUT` with a transition, `PATCH`, collection `PUT`,
+  gRPC `EntityPatchRequest`):
+  - `TestIfMatch_OwnEntityCallbackWriteIsKept` — rule 3 under `SYNC`,
+    `ASYNC_SAME_TX` and before a `COMMIT_BEFORE_DISPATCH` segment;
+  - `TestIfMatch_ChangeAfterReadIs409` — rule 4, the rival committing before
+    the final save or before the first segment's flush and commit;
+  - `TestIfMatch_StaleIs412` — rule 2, with no processor dispatched.
+  - `TestIfMatch_StaleLoopbackPut412` — rule 2 on the loopback `PUT`, on the
+    server the OpenAPI conformance validator records.
+- Unit: `internal/domain/workflow/engine_ifmatch_test.go` and
+  `engine_transition_aborted_test.go` — the check runs before any dispatch,
+  its conflict carries no transaction-conflict marker, and the audit holds
+  exactly `STATE_MACHINE_START` then `TRANSITION_ABORTED`.

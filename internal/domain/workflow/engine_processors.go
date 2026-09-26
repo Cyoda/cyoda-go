@@ -667,10 +667,10 @@ func (e *Engine) continueRunSegment(ctx context.Context, prevTxID, newTxID strin
 // caller continues the cascade in (newCtx, newTxID).
 //
 // On any failure after TX_pre commits, the segment may already be durable —
-// the caller cannot rollback prior work. Infrastructure failures are wrapped
-// with ErrCommitBeforeDispatchInfra; CAS conflicts bubble through unchanged
-// so the handler can map them to 412. On a failed re-read it returns the new
-// segment with the error; the caller rolls it back.
+// the caller cannot rollback prior work. Flush and commit failures are marked
+// ErrCommitBeforeDispatchInfra; a conflict among them answers the retryable
+// 409. On a failed re-read it returns the new segment with the error; the
+// caller rolls it back.
 func (e *Engine) commitAndBeginNextSegment(ctx context.Context, entity *spi.Entity, txID string) (newTxID string, newCtx context.Context, err error) {
 	if fcErr := e.flushAndCommitSegment(ctx, entity, txID); fcErr != nil {
 		return "", nil, fcErr

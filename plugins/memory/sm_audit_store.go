@@ -210,7 +210,9 @@ func (s *StateMachineAuditStore) GetEventsByTransaction(ctx context.Context, ent
 //
 // "Labelled with", not "written by": the engine records some events under a
 // cascade entry's transaction id rather than the recording transaction's
-// (EmitTransitionAborted). Such an event is stamped here only if its label
+// (a segmented scheduled run records SCHEDULED_TRANSITION_FIRE under its
+// entry transaction's id in its last segment, fire_scheduled.go). Such an
+// event is stamped here only if its label
 // names a transaction that later commits, matching what the SQL backends do
 // with the same WHERE.
 //
