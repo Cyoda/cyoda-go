@@ -18,7 +18,10 @@ import (
 // cb-race-target-strict writes its target outside the transaction first, then
 // again inside it, and fails when the joined write is refused. Where each
 // backend notices the loss differs — PostgreSQL at the joined write, memory and
-// sqlite at the commit — and the answer must not.
+// sqlite at the commit — and the answer must not. cb-race-target-thenfail makes
+// the same lost write and then fails regardless, so under ASYNC_NEW_TX the
+// savepoint rollback discards the write: the transaction still lost the race,
+// and the update still answers 409 with nothing committed.
 
 func init() {
 	Register(
@@ -32,7 +35,8 @@ const (
 )
 
 // cbRaceModes are the execution modes whose dispatch carries a transaction a
-// callback can join, each with the processor entry that runs cb-race-target-strict.
+// callback can join, each with the processor entry that runs cb-race-target-strict,
+// and ASYNC_NEW_TX once more with cb-race-target-thenfail.
 var cbRaceModes = []struct {
 	name string
 	proc map[string]any
@@ -42,6 +46,7 @@ var cbRaceModes = []struct {
 }{
 	{name: "SYNC", proc: cbProc("cb-race-target-strict", "SYNC", "", nil)},
 	{name: "ASYNC_NEW_TX", proc: cbProc("cb-race-target-strict", "ASYNC_NEW_TX", "", nil)},
+	{name: "ASYNC_NEW_TX_ThenFails", proc: cbProc("cb-race-target-thenfail", "ASYNC_NEW_TX", "", nil)},
 	{name: "COMMIT_BEFORE_DISPATCH", segmented: true,
 		proc: cbProc("cb-race-target-strict", "COMMIT_BEFORE_DISPATCH", "", map[string]any{"startNewTxOnDispatch": true})},
 }
@@ -85,13 +90,13 @@ func runLostWriteRace(t *testing.T, c *client.Client, target, primary string, wi
 	if err != nil {
 		t.Fatalf("CreateEntity primary: %v", err)
 	}
+	before, err := c.GetEntity(t, eID)
+	if err != nil {
+		t.Fatalf("GetEntity: %v", err)
+	}
 	ifMatch := ""
 	if withIfMatch {
-		e, err := c.GetEntity(t, eID)
-		if err != nil {
-			t.Fatalf("GetEntity: %v", err)
-		}
-		ifMatch = e.Meta.TransactionID
+		ifMatch = before.Meta.TransactionID
 	}
 
 	body := fmt.Sprintf(`{"k":1,"flavor":"go","targetId":%q}`, fID)
@@ -115,7 +120,11 @@ func runLostWriteRace(t *testing.T, c *client.Client, target, primary string, wi
 	if e.Meta.State == "DONE" {
 		t.Fatal("the primary reached DONE; the conflicted transition must not complete")
 	}
-	if !segmented && e.Meta.State != "OPEN" {
-		t.Fatalf("the primary is in %q; the conflicted update must leave it OPEN", e.Meta.State)
+	if segmented {
+		return
+	}
+	if e.Meta.State != "OPEN" || e.Meta.TransactionID != before.Meta.TransactionID || e.Data["flavor"] != "one" {
+		t.Fatalf("the primary is %q at transaction %s with flavor %v; the conflicted update must leave it unchanged (OPEN at %s, flavor one)",
+			e.Meta.State, e.Meta.TransactionID, e.Data["flavor"], before.Meta.TransactionID)
 	}
 }
