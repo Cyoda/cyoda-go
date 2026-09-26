@@ -2918,9 +2918,12 @@ func classifySaveErr(internalMsg, entityID string, err error) *common.AppError {
 // engineConflictIsTransactionConflict reports whether an engine error that
 // carries spi.ErrConflict came from one of the engine's own statements rather
 // than from the caller's If-Match precondition: it is also marked with an
-// engine infrastructure sentinel, or it is spi.ErrTxAborted (the engine's
+// engine infrastructure sentinel, or it is spi.ErrTxAborted — the engine's
 // If-Match compare met an already-aborted transaction and answered through
-// common.TxAbortedConflict). The engine applies the precondition with a bare
+// common.TxAbortedConflict, or a processor that could call back into the
+// transaction failed after the transaction had lost a write race, which the
+// engine reports as spi.ErrTxAborted on every backend (see
+// TransactionManager.LostRace). The engine applies the precondition with a bare
 // CompareAndSave whose conflict it returns unmarked; every other store call
 // it makes marks its failure. A marked conflict means a concurrent writer
 // aborted the transaction — for example a processor's joined callback lost a
@@ -2938,7 +2941,8 @@ func engineConflictIsTransactionConflict(err error) bool {
 // classifyWorkflowError maps a workflow-engine error to the appropriate HTTP
 // error code:
 //
-//   - spi.ErrTxAborted (an earlier conflict aborted the transaction) →
+//   - spi.ErrTxAborted (an earlier conflict aborted the transaction, or a
+//     processor failed after the transaction lost a write race) →
 //     retryable 409 CONFLICT with the cause, first, so no wrapping of it can
 //     reach a branch below.
 //   - An already-classified *common.AppError (matched via errors.As, so it is

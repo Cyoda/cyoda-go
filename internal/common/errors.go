@@ -166,9 +166,12 @@ func StorageUnavailable(err error) *AppError {
 	return nil
 }
 
-// TxAbortedConflict answers a statement refused because an earlier conflict
-// aborted its transaction (spi.ErrTxAborted): a retryable 409 CONFLICT with
-// err attached as the cause. It returns nil for any other error.
+// TxAbortedConflict answers an error that is a consequence of an earlier
+// conflict in its transaction (spi.ErrTxAborted): a retryable 409 CONFLICT with
+// err attached as the cause. It returns nil for any other error. A backend
+// that aborts the transaction on a conflict returns spi.ErrTxAborted for a
+// statement it refuses afterwards; the workflow engine returns it, on every
+// backend, for a processor that failed after the transaction lost a write race.
 //
 // An If-Match compare-and-save that meets such a transaction never evaluated
 // the precondition, so it must not be answered as 412 ENTITY_MODIFIED. Every
