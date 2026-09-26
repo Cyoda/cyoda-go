@@ -51,6 +51,7 @@ func TestSchedulerMN_ShutdownDrain(t *testing.T) {
 		}
 	}
 	signalAt := time.Now()
+	t.Logf("owners signalled: %v", owners)
 
 	// T1: cut, recorded uncounted, claimed at once elsewhere.
 	again := s.awaitTask(t, t1, "Fire", 20*time.Second, "T1 claimed by a survivor",
@@ -73,8 +74,8 @@ func TestSchedulerMN_ShutdownDrain(t *testing.T) {
 	if err := s.pg.AwaitNodeExit(owner2, time.Until(signalAt.Add(4*time.Second))); err == nil {
 		t.Fatalf("T2's owner (node %d) exited with an unsafe callout in flight", owner2)
 	}
-	if r, _ := s.task(t, t2, "Fire"); r.Status == "FAILED" {
-		t.Fatalf("T2 was cut: %+v", r)
+	if r, ok := s.task(t, t2, "Fire"); !ok || r.Status == "FAILED" {
+		t.Fatalf("T2 was cut or is missing (found=%v): %+v", ok, r)
 	}
 	hold.Release(t)
 	mnAwait(t, 30*time.Second, "T2 fired", func() bool {
