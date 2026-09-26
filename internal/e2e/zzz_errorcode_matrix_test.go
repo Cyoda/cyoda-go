@@ -131,6 +131,13 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 		{Status: 428, Code: "PRECONDITION_REQUIRED"},  // If-Match header absent
 		{Status: 501, Code: "NOT_IMPLEMENTED"},        // application/json-patch+json not yet implemented
 	},
+	// GET /scheduled-tasks. 401 and 500 are cross-cutting (below). The 503 is
+	// produced on a private torn-connection harness that is not behind the
+	// conformance validator (TestScheduledTasks_TornConnection_503), so it is
+	// not a cell here.
+	"listScheduledTasks": {
+		{Status: 400, Code: "BAD_REQUEST"}, // TestScheduledTasks_InvalidParameters_400
+	},
 }
 
 func hasTriple(observed []openapivalidator.ErrorTriple, op string, c codeCell) bool {
