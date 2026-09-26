@@ -248,7 +248,11 @@ func holdMainPool(t *testing.T, h *callbackHarness, n int) func() {
 	rel := closeOnce(release)
 	t.Cleanup(rel)
 	h.AttachCnode(t, cnodeSpec{name: "holder", tags: []string{tag}, script: func(ctx context.Context, _ receivedCallout, _ *reqCtx) cnodeReply {
-		gotWork <- struct{}{}
+		select {
+		case gotWork <- struct{}{}:
+		case <-ctx.Done():
+			return neverAnswer()
+		}
 		select {
 		case <-release:
 		case <-ctx.Done():
@@ -285,16 +289,16 @@ func poolProbe(t *testing.T, h *callbackHarness) string {
 }
 
 // requirePoolExhausted proves the main pool has no free connection: a create
-// of the probe model does not succeed within a second.
+// of the probe model gets no answer within a second. An exhausted pool answers
+// only after its acquire timeout (10s by default), so any answer within that
+// second — a success, or a refusal for another reason — fails the test.
 func requirePoolExhausted(t *testing.T, h *callbackHarness, probeModel string) {
 	t.Helper()
 	done := make(chan createEntityResult, 1)
 	go func() { done <- h.CreateEntityRaw(probeModel, 1, workflowSampleModel) }()
 	select {
 	case res := <-done:
-		if res.status == http.StatusOK {
-			t.Fatalf("a create succeeded while the main pool should be exhausted")
-		}
+		t.Fatalf("the probe create answered %d within a second: the main pool is not exhausted", res.status)
 	case <-time.After(time.Second):
 	}
 }
@@ -400,7 +404,11 @@ func TestSchedPool_LockTimeoutOnTaskRowLock(t *testing.T) {
 		if runCalls.Add(1) > 1 {
 			return neverAnswer()
 		}
-		gotWork <- struct{}{}
+		select {
+		case gotWork <- struct{}{}:
+		case <-ctx.Done():
+			return neverAnswer()
+		}
 		select {
 		case <-release:
 		case <-ctx.Done():
