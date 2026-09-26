@@ -1535,3 +1535,52 @@ func (m *TransactionManager) ReleaseSavepoint(ctx context.Context, txID string, 
 	delete(txSavepoints, savepointID)
 	return nil
 }
+
+// LostRace reports whether the transaction has already lost a write race: a
+// transaction that committed after its snapshot wrote an entity in its write
+// set or a task row in its staged task-row ops, or a RollbackToSavepoint
+// discarded a write that had already lost (lostDiscardedWrite). It is the
+// write half of Commit's check, and changes nothing.
+//
+// Locking discipline: reads tx.WriteSet under tx.OpMu.RLock, as Savepoint
+// does, and the log and staged ops under mu, taken after tx.OpMu as Commit
+// takes them.
+//
+// Tenant isolation: rejects callers whose UserContext tenant does not match
+// the transaction's tenant, before it reads anything of the transaction.
+func (m *TransactionManager) LostRace(ctx context.Context, txID string) (bool, error) {
+	uc := spi.GetUserContext(ctx)
+	var tx *spi.TransactionState
+	var ok bool
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		tx, ok = m.active[txID]
+	}()
+	if !ok {
+		return false, fmt.Errorf("LostRace: %w (txID=%s)", spi.ErrTxNotFound, txID)
+	}
+	if uc == nil || uc.Tenant.ID != tx.TenantID {
+		return false, fmt.Errorf("LostRace: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
+	}
+
+	tx.OpMu.RLock()
+	defer tx.OpMu.RUnlock()
+	if tx.RolledBack {
+		return false, fmt.Errorf("LostRace: %w (txID=%s)", spi.ErrTxRolledBack, txID)
+	}
+	if tx.Closed {
+		return false, fmt.Errorf("LostRace: %w (txID=%s)", spi.ErrTxAlreadyCommitted, txID)
+	}
+	written := make([]string, 0, len(tx.WriteSet))
+	for id := range tx.WriteSet {
+		written = append(written, id)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.lostDiscardedWrite[txID] {
+		return true, nil
+	}
+	return m.committedSinceSnapshotLocked(txID, written, taskWriteSet(m.scheduledTaskOps[txID])), nil
+}

@@ -2298,6 +2298,10 @@ func (m *countingTxManager) ReleaseSavepoint(ctx context.Context, txID string, s
 	return m.inner.ReleaseSavepoint(ctx, txID, savepointID)
 }
 
+func (m *countingTxManager) LostRace(ctx context.Context, txID string) (bool, error) {
+	return m.inner.LostRace(ctx, txID)
+}
+
 // TestEngine_SingleSegment_NoEngineCommit is a regression bound: a cascade
 // with NO COMMIT_BEFORE_DISPATCH processors must NOT trigger any engine-
 // side Begin/Commit. The handler-driven single-Begin/single-Commit
