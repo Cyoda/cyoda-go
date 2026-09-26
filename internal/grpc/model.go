@@ -13,6 +13,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
@@ -43,6 +44,16 @@ func (s *CloudEventsServiceImpl) EntityModelManage(ctx context.Context, ce *cepb
 
 	slog.Debug("CloudEvent received", "pkg", "grpc", "rpc", "entityModelManage", "type", eventType, "ceId", ce.Id, "payload", logging.PayloadPreview(payload, 200))
 
+	// Model and workflow administration never runs inside a transaction. A
+	// request that carries a transaction token and would change a model is
+	// refused here, before its payload is read and before anything is
+	// written; the token itself is not consulted. The read-only requests are
+	// not administration and pass. (This RPC is not tx-routed, so the token
+	// joins nothing here either way; see txRouteInterceptor.)
+	if envelope, changesState := modelAdministration[eventType]; changesState && proxy.ExtractGRPCToken(ctx) != "" {
+		return envelope(ctx, ce.Id, common.ModelAdminInJoinedTransaction())
+	}
+
 	switch eventType {
 	case EntityModelImportRequest:
 		return s.handleModelImport(ctx, ce.Id, eventType, payload)
@@ -60,6 +71,16 @@ func (s *CloudEventsServiceImpl) EntityModelManage(ctx context.Context, ce *cepb
 		slog.Warn("unsupported event type", "pkg", "grpc", "rpc", "entityModelManage", "type", eventType)
 		return nil, status.Errorf(codes.InvalidArgument, "unsupported model event type: %s", eventType)
 	}
+}
+
+// modelAdministration is every EntityModelManage request that changes a model
+// or its workflows, with the error envelope its refusal is rendered in. A
+// request type absent here is read-only.
+var modelAdministration = map[string]envelopeFn{
+	EntityModelImportRequest:        modelImportError,
+	EntityModelTransitionRequest:    modelTransitionError,
+	EntityModelDeleteRequest:        modelDeleteError,
+	EntityModelSetUniqueKeysRequest: modelSetUniqueKeysError,
 }
 
 func (s *CloudEventsServiceImpl) handleModelImport(ctx context.Context, ceID string, eventType string, payload json.RawMessage) (*cepb.CloudEvent, error) {

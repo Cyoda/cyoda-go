@@ -81,7 +81,7 @@ func TestHTTPProxy_NoToken_ServesLocally(t *testing.T) {
 	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
 	reg := newFakeRegistry(contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true})
 
-	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true)
+	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true, "")
 	handler := mw(localHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
@@ -105,7 +105,7 @@ func TestHTTPProxy_TokenForSelf_ServesLocally(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true)
+	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true, "")
 	handler := mw(localHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
@@ -140,7 +140,7 @@ func TestHTTPProxy_TokenForOtherNode_Proxies(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true)
+	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true, "")
 	handler := mw(localHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
@@ -168,7 +168,7 @@ func TestHTTPProxy_TokenForDeadNode_Returns503(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true)
+	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true, "")
 	handler := mw(localHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
@@ -191,7 +191,7 @@ func TestHTTPProxy_ExpiredToken_Returns410(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true)
+	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true, "")
 	handler := mw(localHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
@@ -218,7 +218,7 @@ func TestHTTPProxy_TamperedToken_Returns401(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mw := proxy.HTTPRouting(signer1, reg, "node-1", 5*time.Second, true)
+	mw := proxy.HTTPRouting(signer1, reg, "node-1", 5*time.Second, true, "")
 	handler := mw(localHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
@@ -266,7 +266,7 @@ func TestHTTPProxy_RoundTrip_SingleACAO(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true)
+	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true, "")
 	handler := mw(localHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
@@ -306,7 +306,7 @@ func TestHTTPProxy_SSRFGuard_RejectsLoopback(t *testing.T) {
 	}
 
 	// allowLoopback=false — production posture.
-	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, false)
+	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, false, "")
 	handler := mw(localHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
@@ -342,7 +342,7 @@ func TestHTTPProxy_SSRFGuard_AllowsLoopbackWhenPermitted(t *testing.T) {
 	}
 
 	// allowLoopback=true — test-fixture posture.
-	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true)
+	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true, "")
 	handler := mw(localHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
@@ -386,7 +386,7 @@ func TestProxy_PreservesQueryString(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true)
+	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true, "")
 	handler := mw(localHandler())
 
 	const rawQuery = "transactionTimeoutMillis=5000&transactionSize=2&x=%20y"
@@ -428,7 +428,7 @@ func TestHTTPProxy_UpstreamHangupMidBody_DoesNotLatchHealth(t *testing.T) {
 	}
 	healthFlag := &atomic.Bool{}
 	healthFlag.Store(true)
-	h := middleware.Recovery(healthFlag)(proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true)(localHandler()))
+	h := middleware.Recovery(healthFlag)(proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true, "")(localHandler()))
 	srv := httptest.NewServer(h) // a real server, so the re-raised sentinel reaches net/http
 	defer srv.Close()
 
@@ -441,5 +441,72 @@ func TestHTTPProxy_UpstreamHangupMidBody_DoesNotLatchHealth(t *testing.T) {
 	}
 	if !healthFlag.Load() {
 		t.Fatal("a proxied client hang-up latched the node unhealthy")
+	}
+}
+
+// Model and workflow administration never runs inside a transaction, and the
+// refusal comes before this layer verifies or forwards anything: a request for
+// an administration route that carries a token is answered 400
+// MODEL_ADMIN_IN_JOINED_TRANSACTION here — tampered, valid for this node, or
+// valid for a peer alike — and is neither served locally nor proxied. The
+// layer sits above the context-path strip, so it matches with the context
+// path applied.
+func TestHTTPProxy_Administration_RefusedBeforeVerifyOrProxy(t *testing.T) {
+	remoteHits := 0
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		remoteHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer remote.Close()
+	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
+	other := mustNewSigner([]byte("other-secret-key-at-least-32-bytes"))
+	reg := newFakeRegistry(contract.NodeInfo{NodeID: "node-2", Addr: remote.URL, Alive: true})
+	claims := func(node string) token.Claims {
+		return token.Claims{NodeID: node, TxRef: "tx-adm", ExpiresAt: time.Now().Add(5 * time.Minute).Unix(), Callout: "req-adm", Major: 1}
+	}
+	selfTok, _ := signer.Issue(claims("node-1"))
+	peerTok, _ := signer.Issue(claims("node-2"))
+	tamperedTok, _ := other.Issue(claims("node-1"))
+
+	for _, tc := range []struct{ name, tok string }{
+		{"tampered", tamperedTok}, {"valid-for-self", selfTok}, {"valid-for-peer", peerTok},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			localHits := 0
+			local := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { localHits++; w.WriteHeader(http.StatusOK) })
+			handler := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true, "/api")(local)
+
+			req := httptest.NewRequest(http.MethodPut, "/api/model/order/1/lock", nil)
+			req.Header.Set(proxy.TxTokenHeader, tc.tok)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"errorCode":"MODEL_ADMIN_IN_JOINED_TRANSACTION"`) {
+				t.Fatalf("status=%d body=%s; want 400 MODEL_ADMIN_IN_JOINED_TRANSACTION", rec.Code, rec.Body.String())
+			}
+			if localHits != 0 || remoteHits != 0 {
+				t.Fatalf("local=%d remote=%d handler hits; want none", localHits, remoteHits)
+			}
+
+			// The same token on an entity route is routed as before: served
+			// locally or proxied, verified first.
+			req = httptest.NewRequest(http.MethodPut, "/api/entity/JSON/order/1", nil)
+			req.Header.Set(proxy.TxTokenHeader, tc.tok)
+			rec = httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			switch tc.name {
+			case "tampered":
+				if rec.Code != http.StatusUnauthorized {
+					t.Fatalf("entity route, tampered: status=%d, want 401", rec.Code)
+				}
+			case "valid-for-self":
+				if localHits != 1 {
+					t.Fatalf("entity route, self: local hits=%d, want 1", localHits)
+				}
+			case "valid-for-peer":
+				if remoteHits != 1 {
+					t.Fatalf("entity route, peer: remote hits=%d, want 1", remoteHits)
+				}
+			}
+		})
 	}
 }

@@ -761,7 +761,7 @@ func New(cfg Config) *App {
 	// transaction token for another node is forwarded before auth runs here
 	// (auth is applied on the owning node).
 	if cfg.Cluster.Enabled {
-		a.handler = proxy.HTTPRouting(a.tokenSigner, a.nodeRegistry, cfg.Cluster.NodeID, cfg.Cluster.ProxyTimeout, cfg.Cluster.DispatchAllowLoopback)(a.handler)
+		a.handler = proxy.HTTPRouting(a.tokenSigner, a.nodeRegistry, cfg.Cluster.NodeID, cfg.Cluster.ProxyTimeout, cfg.Cluster.DispatchAllowLoopback, contextPath)(a.handler)
 	}
 
 	// CORS sits outside cluster routing so preflights short-circuit at the

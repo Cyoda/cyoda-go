@@ -42,44 +42,31 @@ func scheduledTransitions(wfs []spi.WorkflowDefinition) func(sourceState, transi
 // the workflows are saved, so a failed removal never loses a timer that is
 // still scheduled.
 //
-// When this request owns its transaction, the removal runs in a transaction
-// of its own. One that loses a task-row race with the scheduler runs again,
-// at most common.TaskConflictRetries more times; one that still conflicts is
-// a retryable 409, and a retried import saves the same workflows and removes
-// again. The tasks left behind until then are cancelled by the fire door if
-// they fall due first.
+// The removal runs in a transaction of its own: an import always owns its
+// transaction, since model and workflow administration never runs inside a
+// joined one (the join layer refuses a workflow import that carries a
+// transaction token). One that loses a task-row race with the scheduler runs
+// again, at most common.TaskConflictRetries more times; one that still
+// conflicts is a retryable 409, and a retried import saves the same workflows
+// and removes again. The tasks left behind until then are cancelled by the
+// fire door if they fall due first.
 //
-// When the request joined a transaction (a routed callback), the removal runs
-// in that transaction, once, and does not commit: the owner's commit decides,
-// together with a workflow save that joined the same transaction. Removing
-// them in a transaction of its own could commit the removal while the owner
-// rolls the import back, and lose a timer the model still schedules.
-//
-// tenant is the request's tenant, the one the workflow save used. A joined
-// transaction of another tenant is refused by the store.
+// tenant is the request's tenant, the one the workflow save used.
 func (h *Handler) removeUnscheduledTasks(ctx context.Context, tenant spi.TenantID, name string, version int, wfs []spi.WorkflowDefinition) *common.AppError {
 	all := make([]spi.WorkflowDefinition, 0, len(wfs)+len(h.engine.defaultWorkflows))
 	all = append(append(all, wfs...), h.engine.defaultWorkflows...)
 	keep := scheduledTransitions(all)
 
-	owned := spi.GetTransaction(ctx) == nil
-	err := common.RetryOnTaskConflict(ctx, owned, func() error {
-		if !owned {
-			return h.deleteUnscheduled(ctx, tenant, name, version, keep)
-		}
+	err := common.RetryOnTaskConflict(ctx, true, func() error {
 		return h.removeUnscheduledTasksOwned(ctx, tenant, name, version, keep)
 	})
 	if err == nil {
 		return nil
 	}
 	if errors.Is(err, spi.ErrConflict) {
-		msg := "the workflows are saved, but removing the tasks of transitions no longer scheduled " +
-			"still conflicted with the scheduler after the server's retries — retry the import"
-		if !owned {
-			msg = "removing the tasks of transitions no longer scheduled conflicted with the scheduler " +
-				"in the joined transaction; a request that joins a transaction is not retried on the server"
-		}
-		return common.Operational(http.StatusConflict, common.ErrCodeConflict, msg).AsRetryable().WithCause(err)
+		return common.Operational(http.StatusConflict, common.ErrCodeConflict,
+			"the workflows are saved, but removing the tasks of transitions no longer scheduled "+
+				"still conflicted with the scheduler after the server's retries — retry the import").AsRetryable().WithCause(err)
 	}
 	return common.Internal("failed to remove scheduled tasks", err)
 }
@@ -118,8 +105,7 @@ func (h *Handler) removeUnscheduledTasksOwned(ctx context.Context, tenant spi.Te
 }
 
 // deleteUnscheduled removes tenant's tasks that keep drops, in the
-// transaction on ctx. The store refuses the call if that transaction belongs
-// to another tenant.
+// transaction on ctx.
 func (h *Handler) deleteUnscheduled(ctx context.Context, tenant spi.TenantID, name string, version int, keep func(string, string) bool) error {
 	sts, err := h.factory.ScheduledTaskStore(ctx)
 	if err != nil {

@@ -10,6 +10,7 @@ see_also:
   - errors.MODEL_ALREADY_LOCKED
   - errors.MODEL_ALREADY_UNLOCKED
   - errors.MODEL_HAS_ENTITIES
+  - errors.MODEL_ADMIN_IN_JOINED_TRANSACTION
   - errors.INVALID_CHANGE_LEVEL
   - errors.VALIDATION_FAILED
   - errors.UNIQUE_VIOLATION
@@ -74,6 +75,8 @@ A larger whole number can still force a change: `9007199254740993` needs sixteen
 This applies to both paths that establish a model's field set: sample-data import, and the `changeLevel`-driven schema extension an entity write performs. Strict validation (a model with no `changeLevel`, and PATCH) does not establish fields, so the rule does not apply there. A model that already carries a non-conforming field is not migrated and there is no compatibility path: rename the key in the source data and re-establish the model.
 
 ## ENDPOINTS
+
+Model administration never runs inside a transaction. The operations below that change a model — import, delete, change level, lock, unlock, unique keys, and the workflow import of `cyoda help workflows` — refuse a request that carries a transaction token (`X-Tx-Token`, or the `tx-token` gRPC metadata a compute member echoes on a callback) with `400 MODEL_ADMIN_IN_JOINED_TRANSACTION`, before the token is verified and before anything is read or written. The read-only operations — list, export, validate — are not administration and take a token like any other request. A processor that needs to administer a model makes the request without the token. See `cyoda help errors MODEL_ADMIN_IN_JOINED_TRANSACTION`.
 
 **GET /api/model/**
 
@@ -340,6 +343,7 @@ Entity ingestion here includes data returned by a workflow processor, not just d
 - `errors.MODEL_ALREADY_LOCKED` — `409` — re-import, relock, or delete attempted on a model already in `LOCKED` state
 - `errors.MODEL_ALREADY_UNLOCKED` — `409` — unlock attempted on a model already in `UNLOCKED` state
 - `errors.MODEL_HAS_ENTITIES` — `409` — unlock or delete blocked because entities of the model exist (`entityCount` in `properties`)
+- `errors.MODEL_ADMIN_IN_JOINED_TRANSACTION` — `400` — a model-changing operation carries a transaction token; model and workflow administration never runs inside a transaction
 - `errors.INVALID_CHANGE_LEVEL` — `400` — `POST /model/{name}/{version}/changeLevel/{changeLevel}` supplied a value that is not one of `ARRAY_LENGTH`, `ARRAY_ELEMENTS`, `TYPE`, `STRUCTURAL` (`entityName`, `entityVersion`, `suppliedValue`, `validValues` in `properties`)
 - `errors.VALIDATION_FAILED` — `400` — workflow import validation failed (static analysis); sample data that is neither a document nor a collection of documents; a field name that is not addressable
 - `errors.BAD_REQUEST` — `400` — unsupported converter, or a malformed body

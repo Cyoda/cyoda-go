@@ -186,17 +186,12 @@ func (e *importTaskEnv) transitions(t *testing.T, model string) []string {
 	return e.transitionsIn(t, importTenant, model)
 }
 
-func (e *importTaskEnv) importWorkflowsCtx(t *testing.T, ctx context.Context, body string) *httptest.ResponseRecorder {
+func (e *importTaskEnv) importWorkflows(t *testing.T, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/model/sched-import/1/workflow/import", strings.NewReader(body)).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodPost, "/model/sched-import/1/workflow/import", strings.NewReader(body)).WithContext(e.ctx)
 	rec := httptest.NewRecorder()
 	e.h.ImportEntityModelWorkflow(rec, req, "sched-import", 1)
 	return rec
-}
-
-func (e *importTaskEnv) importWorkflows(t *testing.T, body string) *httptest.ResponseRecorder {
-	t.Helper()
-	return e.importWorkflowsCtx(t, e.ctx, body)
 }
 
 func (e *importTaskEnv) seed(t *testing.T) {
@@ -435,117 +430,21 @@ func TestImport_TaskStoreFailure_500NotRetried(t *testing.T) {
 	}
 }
 
-// An import that joined a transaction (a routed callback) removes the tasks
-// in that transaction and neither commits nor retries it: the owner's commit
-// decides. On a backend whose workflow save joins the transaction too, the
-// save and the removal then commit or roll back together.
-func TestImport_Joined_RemovesInTheOwnersTransaction(t *testing.T) {
-	for _, commit := range []bool{true, false} {
-		t.Run(fmt.Sprintf("ownerCommits=%v", commit), func(t *testing.T) {
-			e := newImportTaskEnv(t)
-			e.seed(t)
-			txID, txCtx, err := e.txMgr.Begin(e.ctx)
-			if err != nil {
-				t.Fatalf("Begin: %v", err)
-			}
-
-			if rec := e.importWorkflowsCtx(t, txCtx, dropRemindImport); rec.Code != http.StatusOK {
-				t.Fatalf("import: %d %s", rec.Code, rec.Body)
-			}
-			if got := e.commits.count(); got != 0 {
-				t.Errorf("commits = %d, want 0: the owner commits", got)
-			}
-			if got := e.transitions(t, "sched-import"); strings.Join(got, ",") != "AutoClose,Remind" {
-				t.Errorf("committed tasks before the owner's commit = %v, want both", got)
-			}
-
-			want := "AutoClose,Remind"
-			if commit {
-				if err := e.txMgr.Commit(txCtx, txID); err != nil {
-					t.Fatalf("owner Commit: %v", err)
-				}
-				want = "AutoClose"
-			} else if err := e.txMgr.Rollback(txCtx, txID); err != nil {
-				t.Fatalf("owner Rollback: %v", err)
-			}
-			if got := e.transitions(t, "sched-import"); strings.Join(got, ",") != want {
-				t.Errorf("tasks = %v, want [%s]", got, want)
-			}
-		})
-	}
-}
-
-func TestImport_Joined_ConflictNotRetried_409(t *testing.T) {
+// The 409 keeps the store's conflict as its cause.
+func TestRemoveUnscheduledTasks_ConflictKeepsItsCause(t *testing.T) {
 	e := newImportTaskEnv(t)
 	e.seed(t)
-	txID, txCtx, err := e.txMgr.Begin(e.ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	t.Cleanup(func() { _ = e.txMgr.Rollback(context.Background(), txID) })
 	e.plan.Refuse(taskconflict.DeleteForModel, 100)
 
-	requireDetail(t, requireRetryableConflict(t, e.importWorkflowsCtx(t, txCtx, dropRemindImport)),
-		[]string{"joined transaction", "not retried"}, []string{"saved"})
-	if got := e.plan.Calls(taskconflict.DeleteForModel); got != 1 {
-		t.Errorf("DeleteForModel calls = %d, want 1: a joined request is not retried", got)
+	appErr := e.h.removeUnscheduledTasks(e.ctx, importTenant, "sched-import", 1, nil)
+	if appErr == nil {
+		t.Fatal("removeUnscheduledTasks = nil, want a conflict")
 	}
-}
-
-// The 409 keeps the store's conflict as its cause, for both an owned and a
-// joined request.
-func TestRemoveUnscheduledTasks_ConflictKeepsItsCause(t *testing.T) {
-	for _, joined := range []bool{false, true} {
-		t.Run(fmt.Sprintf("joined=%v", joined), func(t *testing.T) {
-			e := newImportTaskEnv(t)
-			e.seed(t)
-			ctx := e.ctx
-			if joined {
-				txID, txCtx, err := e.txMgr.Begin(e.ctx)
-				if err != nil {
-					t.Fatalf("Begin: %v", err)
-				}
-				t.Cleanup(func() { _ = e.txMgr.Rollback(context.Background(), txID) })
-				ctx = txCtx
-			}
-			e.plan.Refuse(taskconflict.DeleteForModel, 100)
-
-			appErr := e.h.removeUnscheduledTasks(ctx, importTenant, "sched-import", 1, nil)
-			if appErr == nil {
-				t.Fatal("removeUnscheduledTasks = nil, want a conflict")
-			}
-			if appErr.Status != http.StatusConflict || appErr.Code != common.ErrCodeConflict || !appErr.Retryable {
-				t.Errorf("status=%d code=%q retryable=%v, want 409 CONFLICT retryable", appErr.Status, appErr.Code, appErr.Retryable)
-			}
-			if !errors.Is(appErr, spi.ErrConflict) {
-				t.Errorf("errors.Is(%v, spi.ErrConflict) = false, want the cause kept", appErr)
-			}
-		})
+	if appErr.Status != http.StatusConflict || appErr.Code != common.ErrCodeConflict || !appErr.Retryable {
+		t.Errorf("status=%d code=%q retryable=%v, want 409 CONFLICT retryable", appErr.Status, appErr.Code, appErr.Retryable)
 	}
-}
-
-// The removal runs in the request's tenant. Under a transaction of another
-// tenant the store refuses it, and nothing is removed in either tenant.
-func TestRemoveUnscheduledTasks_TenantOtherThanTheTransactions_Refused(t *testing.T) {
-	e := newImportTaskEnv(t)
-	e.seed(t)
-	e.armIn(t, otherTenant, "sched-import", "e-9", "Remind")
-	txID, txCtx, err := e.txMgr.Begin(e.ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-
-	if appErr := e.h.removeUnscheduledTasks(txCtx, otherTenant, "sched-import", 1, nil); appErr == nil {
-		t.Fatal("removeUnscheduledTasks under another tenant's transaction = nil, want a refusal")
-	}
-	if err := e.txMgr.Commit(txCtx, txID); err != nil {
-		t.Fatalf("Commit: %v", err)
-	}
-	if got := e.transitions(t, "sched-import"); strings.Join(got, ",") != "AutoClose,Remind" {
-		t.Errorf("transaction tenant's tasks = %v, want both", got)
-	}
-	if got := e.transitionsIn(t, otherTenant, "sched-import"); strings.Join(got, ",") != "Remind" {
-		t.Errorf("other tenant's tasks = %v, want [Remind]", got)
+	if !errors.Is(appErr, spi.ErrConflict) {
+		t.Errorf("errors.Is(%v, spi.ErrConflict) = false, want the cause kept", appErr)
 	}
 }
 

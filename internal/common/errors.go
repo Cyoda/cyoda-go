@@ -140,6 +140,18 @@ func Operational(status int, code string, message string) *AppError {
 	}
 }
 
+// ModelAdminInJoinedTransaction is the refusal a request that carries a
+// transaction token meets on a model or workflow administration operation.
+// Model and workflow administration never runs inside a transaction: the
+// request is refused before the token is verified and before anything is
+// read, joined or written. The HTTP and gRPC doors answer with this one
+// error, so the message is written once.
+func ModelAdminInJoinedTransaction() *AppError {
+	return Operational(http.StatusBadRequest, ErrCodeModelAdminInJoinedTransaction,
+		"model and workflow administration cannot run inside a transaction: "+
+			"the request carries a transaction token; make it without the token, as an independent request")
+}
+
 // StorageUnavailable returns a retryable 503 AppError when err carries the
 // storage layer's transient-unavailability marker, and nil when it does not.
 //

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/cyoda-platform/cyoda-go/internal/adminroute"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/txjoin"
@@ -26,6 +27,11 @@ const maxJoinedBodySize = 10 * 1024 * 1024
 // inside txMgr.Join.
 //
 // If the X-Tx-Token header is absent the request passes through unchanged.
+// Model and workflow administration never runs inside a transaction: a request
+// for one of those routes (adminroute) that carries the header is refused 400
+// MODEL_ADMIN_IN_JOINED_TRANSACTION first, before the pass is verified, so no
+// transaction lock is taken and nothing is read or written. This middleware
+// sits below the context-path strip, so it asks with no context path.
 // Otherwise the pass itself is verified first, and the transaction's queue is
 // asked whether it has room — both before a byte of the body is read, so a
 // forged or expired pass and a callback past the queue's cap each cost no
@@ -43,6 +49,10 @@ func TxJoin(j *txjoin.Joiner) func(http.Handler) http.Handler {
 			tok := r.Header.Get(proxy.TxTokenHeader)
 			if tok == "" {
 				next.ServeHTTP(w, r)
+				return
+			}
+			if adminroute.IsAdministration(r, "") {
+				common.WriteError(w, r, common.ModelAdminInJoinedTransaction())
 				return
 			}
 			pass, err := j.Verify(tok)

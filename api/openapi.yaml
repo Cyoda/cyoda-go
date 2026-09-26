@@ -4492,6 +4492,7 @@ paths:
             Bad request. Possible causes:
             - `BAD_REQUEST` — unsupported import converter (`JSON_SCHEMA` or `SIMPLE_VIEW`); only `SAMPLE_DATA` is accepted.
             - `BAD_REQUEST` — malformed or unparseable sample data in the request body.
+            - `MODEL_ADMIN_IN_JOINED_TRANSACTION` — the request carries an `X-Tx-Token`: model and workflow administration never runs inside a transaction; refused before the token is verified, so make the request without it.
           content:
             application/problem+json:
               schema:
@@ -4650,6 +4651,21 @@ paths:
                       version: 1
                     message: model nobel-prize:1 deleted
                     modelId: cee334fa-c0ac-11f0-ba79-ae468cd3ed16
+        "400":
+          description: "Bad request — MODEL_ADMIN_IN_JOINED_TRANSACTION — the request carries an X-Tx-Token: model and workflow administration never runs inside a transaction; refused before the token is verified, so make the request without it."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: "MODEL_ADMIN_IN_JOINED_TRANSACTION: model and workflow administration cannot run inside a transaction: the request carries a transaction token; make it without the token, as an independent request"
+                instance: /api/model/nobel-prize/2
+                properties:
+                  errorCode: MODEL_ADMIN_IN_JOINED_TRANSACTION
+                  retryable: false
         "404":
           description: Entity model not found
           content:
@@ -4783,6 +4799,7 @@ paths:
             Bad request. Possible codes:
             - `INVALID_CHANGE_LEVEL` — the supplied `changeLevel` path segment is not one of
               the accepted enum values (`ARRAY_LENGTH`, `ARRAY_ELEMENTS`, `TYPE`, `STRUCTURAL`).
+            - `MODEL_ADMIN_IN_JOINED_TRANSACTION` — the request carries an `X-Tx-Token`: model and workflow administration never runs inside a transaction; refused before the token is verified, so make the request without it.
           content:
             application/problem+json:
               schema:
@@ -4884,6 +4901,21 @@ paths:
                       version: 1
                     message: Model nobel-prize:1 locked
                     modelId: cee334fa-c0ac-11f0-ba79-ae468cd3ed16
+        "400":
+          description: "Bad request — MODEL_ADMIN_IN_JOINED_TRANSACTION — the request carries an X-Tx-Token: model and workflow administration never runs inside a transaction; refused before the token is verified, so make the request without it."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: "MODEL_ADMIN_IN_JOINED_TRANSACTION: model and workflow administration cannot run inside a transaction: the request carries a transaction token; make it without the token, as an independent request"
+                instance: /api/model/nobel-prize/2/lock
+                properties:
+                  errorCode: MODEL_ADMIN_IN_JOINED_TRANSACTION
+                  retryable: false
         "404":
           description: Entity model not found
           content:
@@ -4985,6 +5017,21 @@ paths:
                       version: 1
                     message: Model nobel-prize:1 unlocked
                     modelId: cee334fa-c0ac-11f0-ba79-ae468cd3ed16
+        "400":
+          description: "Bad request — MODEL_ADMIN_IN_JOINED_TRANSACTION — the request carries an X-Tx-Token: model and workflow administration never runs inside a transaction; refused before the token is verified, so make the request without it."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: "MODEL_ADMIN_IN_JOINED_TRANSACTION: model and workflow administration cannot run inside a transaction: the request carries a transaction token; make it without the token, as an independent request"
+                instance: /api/model/nobel-prize/2/unlock
+                properties:
+                  errorCode: MODEL_ADMIN_IN_JOINED_TRANSACTION
+                  retryable: false
         "404":
           description: Entity model not found
           content:
@@ -5105,7 +5152,7 @@ paths:
                     message: unique keys set on model nobel-prize:1
                     modelId: cee334fa-c0ac-11f0-ba79-ae468cd3ed16
         "400":
-          description: "Bad request — BAD_REQUEST: malformed or unparseable request body."
+          description: "Bad request — BAD_REQUEST: malformed or unparseable request body; MODEL_ADMIN_IN_JOINED_TRANSACTION — the request carries an X-Tx-Token: model and workflow administration never runs inside a transaction; refused before the token is verified, so make the request without it."
           content:
             application/problem+json:
               schema:
@@ -5260,7 +5307,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/WorkflowImportSuccessDto"
         "400":
-          description: "Bad request — BAD_REQUEST: malformed JSON or unknown importMode; VALIDATION_FAILED: structural validation failed (empty name, unknown state ref, invalid executionMode, etc.); WORKFLOW_SCHEMA_VERSION_UNSUPPORTED: workflow declares an unsupported schema version."
+          description: "Bad request — BAD_REQUEST: malformed JSON or unknown importMode; VALIDATION_FAILED: structural validation failed (empty name, unknown state ref, invalid executionMode, etc.); WORKFLOW_SCHEMA_VERSION_UNSUPPORTED: workflow declares an unsupported schema version; MODEL_ADMIN_IN_JOINED_TRANSACTION — the request carries an X-Tx-Token: model and workflow administration never runs inside a transaction; refused before the token is verified, so make the request without it."
           content:
             application/problem+json:
               schema:
@@ -5277,13 +5324,9 @@ paths:
             that no workflow of the model schedules any more lost a race with
             the scheduler, which changes a task when it claims it, stamps a
             segment of its run, records an attempt, fails it or gives it back.
-            When the request owns its transaction, the workflows are saved and
-            the server retries the removal up to 3 times before it answers 409;
-            retry the import: it saves the same workflows again and removes the
-            tasks. A request that joins an open transaction (`X-Tx-Token`) is
-            not retried on the server; its removal and, where the backend saves
-            workflows in that transaction, its save are part of that
-            transaction, which the conflict keeps from committing.
+            The workflows are saved and the server retries the removal up to 3
+            times before it answers 409; retry the import: it saves the same
+            workflows again and removes the tasks.
           content:
             application/problem+json:
               schema:
