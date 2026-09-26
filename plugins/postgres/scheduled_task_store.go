@@ -539,10 +539,15 @@ var lockEntitiesSQL = `SELECT k.tenant_id, k.entity_id
   FROM unnest($1::text[], $2::text[]) AS k(tenant_id, entity_id)
  WHERE NOT pg_try_advisory_xact_lock(` + entityLockKey("k.tenant_id", "k.entity_id") + `)`
 
-// claimSQL is ClaimDue's claim. A new statement, so it sees claims other
-// pnodes committed since the ranking; the full condition, including "no other
-// RUNNING task of the entity", closes that race. A concurrent claim of a
-// sibling that has not committed yet meets this one at the unique index.
+// claimSQL is ClaimDue's claim. Every row it names is locked by this
+// transaction, so the row's own columns are as lockClaimsSQL saw them. It is
+// a new statement, so it sees what other transactions committed since:
+//   - a sibling claim committed after the ranking: the NOT EXISTS passes over
+//     that entity alone; without it the UPDATE meets the claim at runningIndex
+//     and the whole claim rolls back;
+//   - a heartbeat of a RUNNING row's owner: that owner is live again and keeps
+//     its task.
+//
 // lost_owners counts the claim only when it takes a RUNNING row.
 const claimSQL = `UPDATE scheduled_tasks st
    SET status      = 'RUNNING',

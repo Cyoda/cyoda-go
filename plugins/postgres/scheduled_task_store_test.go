@@ -429,6 +429,85 @@ func TestPostgres_ClaimDue_LosingASiblingRaceClaimsNothing(t *testing.T) {
 	}
 }
 
+// A sibling claim committed between the ranking and the lock passes over that
+// entity alone. The claim ranks T2 of e1 and T3 of e2, then waits at the lock
+// statement behind a table lock. Meanwhile a rival sets e1's T1 RUNNING and
+// commits. lockClaimsSQL has no sibling check, so it locks T2 as well as T3.
+// claimSQL's NOT EXISTS then leaves out T2, and the claim takes T3. Without
+// that check, the UPDATE of T2 meets T1 at the one-RUNNING index and the
+// whole claim rolls back.
+func TestPostgres_ClaimDue_SiblingClaimedAfterRankingSkipsOnlyThatEntity(t *testing.T) {
+	f, sts := newTaskStore(t, 5)
+	bg := context.Background()
+	// T2 is due before T1, so the claim ranks T2 for e1.
+	arm(t, sts, "tenant-A", "e1", "S",
+		taskSpec("tenant-A", "e1", "S", "T1", 1000),
+		taskSpec("tenant-A", "e1", "S", "T2", 500))
+	arm(t, sts, "tenant-A", "e2", "S", taskSpec("tenant-A", "e2", "S", "T3", 700))
+
+	// EXCLUSIVE admits the ranking's plain read (ACCESS SHARE) and blocks the
+	// lock statement's FOR UPDATE (ROW SHARE).
+	side, err := postgres.PoolForTest(f).Begin(bg)
+	if err != nil {
+		t.Fatalf("begin side transaction: %v", err)
+	}
+	defer func() { _ = side.Rollback(bg) }()
+	if _, err := side.Exec(bg, `LOCK TABLE scheduled_tasks IN EXCLUSIVE MODE`); err != nil {
+		t.Fatalf("lock table: %v", err)
+	}
+
+	type result struct {
+		claimed []spi.ScheduledTask
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		claimed, err := sts.ClaimDue(bg, claimRequest(uuid.New()))
+		done <- result{claimed, err}
+	}()
+
+	// The scheduler pool's lock_timeout is 2s: the rival must commit well
+	// within it once the claim waits.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var waiting bool
+		if err := postgres.PoolForTest(f).QueryRow(bg, `SELECT EXISTS (
+			SELECT 1 FROM pg_stat_activity
+			 WHERE wait_event_type = 'Lock' AND query LIKE '%FOR UPDATE OF st SKIP LOCKED%')`).Scan(&waiting); err != nil {
+			t.Fatalf("read pg_stat_activity: %v", err)
+		}
+		if waiting {
+			break
+		}
+		select {
+		case r := <-done:
+			t.Fatalf("ClaimDue returned before it waited at the lock statement: claimed=%v err=%v", taskIDs(r.claimed), r.err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("ClaimDue never waited at the lock statement")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if _, err := side.Exec(bg, `UPDATE scheduled_tasks
+		SET status = 'RUNNING', claim_token = gen_random_uuid(), claim_owner = gen_random_uuid()
+		WHERE tenant_id = 'tenant-A' AND id = 'e1:S:T1'`); err != nil {
+		t.Fatalf("rival claim of T1: %v", err)
+	}
+	if err := side.Commit(bg); err != nil {
+		t.Fatalf("commit side transaction: %v", err)
+	}
+
+	r := <-done
+	if r.err != nil || !slices.Equal(taskIDs(r.claimed), []string{"e2:S:T3"}) {
+		t.Fatalf("ClaimDue: claimed=%v err=%v, want [e2:S:T3]", taskIDs(r.claimed), r.err)
+	}
+	if got := mustGet(t, sts, "tenant-A", "e1:S:T2"); got.Status != spi.ScheduledTaskWaiting || got.Claim != nil {
+		t.Errorf("T2 = %+v, want WAITING and unclaimed", got)
+	}
+}
+
 // Tenants keep their order in every round, as spi.SelectClaims orders them:
 // the tenant with the earliest candidate goes first in round two as well,
 // even when another tenant's second task is due before its own.
