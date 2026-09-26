@@ -464,7 +464,7 @@ func TestWorkflowProc_UpdateWithCBD_DurablyCommitsPostCascadeState(t *testing.T)
 
 // TestWorkflowProc_UpdateWithCBD_StaleIfMatchAbortsBeforeDispatch is the e2e
 // counterpart to engine_ifmatch_test.go's
-// TestManualTransitionWithIfMatch_CBDCascadeStaleAbortsBeforeDispatch.
+// TestIfMatch_StaleAbortsBeforeAnything.
 //
 // Spec §4.1 "strictly-earlier-enforcement": when an UpdateEntity carries an
 // If-Match precondition and the cascade contains a COMMIT_BEFORE_DISPATCH

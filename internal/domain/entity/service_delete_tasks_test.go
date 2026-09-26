@@ -50,7 +50,7 @@ func TestDeleteAllEntities_RemovesTheModelsTasks(t *testing.T) {
 		t.Fatalf("Person tasks before = %d, want 3", n)
 	}
 
-	if _, err := e.h.DeleteAllEntities(e.ctx, "Person", "1"); err != nil {
+	if _, err := e.h.DeleteAllEntities(e.ctx, "Person", 1); err != nil {
 		t.Fatalf("DeleteAllEntities: %v", err)
 	}
 	if n := e.modelTasks(t, "Person"); n != 0 {
@@ -65,7 +65,7 @@ func TestDeleteEntitiesConditional_FastPath_RemovesTheModelsTasks(t *testing.T) 
 	e := newTaskEnv(t)
 	seedPersons(t, e.h, e.ctx, 2)
 
-	if _, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", nil, nil, false, 0); err != nil {
+	if _, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, nil, nil, false, 0); err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
 	if got := e.plan.Calls(taskconflict.DeleteForModel); got != 1 {
@@ -81,7 +81,7 @@ func TestDeleteAllEntities_TaskConflict_RetriedThenSucceeds(t *testing.T) {
 	seedPersons(t, e.h, e.ctx, 2)
 	e.plan.Refuse(taskconflict.DeleteForModel, 2)
 
-	res, err := e.h.DeleteAllEntities(e.ctx, "Person", "1")
+	res, err := e.h.DeleteAllEntities(e.ctx, "Person", 1)
 	if err != nil {
 		t.Fatalf("DeleteAllEntities: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestDeleteAllEntities_TaskConflictPersists_Retryable409(t *testing.T) {
 	ids := seedPersons(t, e.h, e.ctx, 2)
 	e.plan.Refuse(taskconflict.DeleteForModel, 100)
 
-	_, err := e.h.DeleteAllEntities(e.ctx, "Person", "1")
+	_, err := e.h.DeleteAllEntities(e.ctx, "Person", 1)
 	requireConflict409(t, err)
 	if got, want := e.plan.Calls(taskconflict.DeleteForModel), 1+common.TaskConflictRetries; got != want {
 		t.Errorf("DeleteForModel calls = %d, want %d", got, want)
@@ -121,7 +121,7 @@ func TestDeleteAllEntities_Joined_NotRetried(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = e.txMgr.Rollback(e.ctx, txID) })
 
-	_, err = e.h.DeleteAllEntities(joinedCtx, "Person", "1")
+	_, err = e.h.DeleteAllEntities(joinedCtx, "Person", 1)
 	requireConflict409(t, err)
 	if got := e.plan.Calls(taskconflict.DeleteForModel); got != 1 {
 		t.Errorf("DeleteForModel calls = %d, want 1", got)
@@ -358,7 +358,7 @@ func TestDeleteAllEntities_CommitConflict_RetriedThenSucceeds(t *testing.T) {
 	racing := newRacingDeleteAllStore(t, e, ids[0], 1)
 	e.withEntityStore(t, racing)
 
-	if _, err := e.h.DeleteAllEntities(e.ctx, "Person", "1"); err != nil {
+	if _, err := e.h.DeleteAllEntities(e.ctx, "Person", 1); err != nil {
 		t.Fatalf("DeleteAllEntities: %v", err)
 	}
 	if racing.deleteAll != 2 {
@@ -378,7 +378,7 @@ func TestDeleteAllEntities_CommitConflictPersists_Retryable409WithCause(t *testi
 	racing := newRacingDeleteAllStore(t, e, ids[0], 100)
 	e.withEntityStore(t, racing)
 
-	_, err := e.h.DeleteAllEntities(e.ctx, "Person", "1")
+	_, err := e.h.DeleteAllEntities(e.ctx, "Person", 1)
 	requireConflict409(t, err)
 	if !errors.Is(err, spi.ErrConflict) {
 		t.Errorf("err = %v: the 409 does not carry spi.ErrConflict as its cause", err)
@@ -436,7 +436,7 @@ func TestDeleteEntitiesConditional_SingleTx_RemovesOnlyTheDeletedEntitiesTasks(t
 	e := newTaskEnv(t)
 	ids := seedPersons(t, e.h, e.ctx, 3) // ages 0, 1, 2
 
-	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 0)
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, 0)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -455,7 +455,7 @@ func TestDeleteEntitiesConditional_SingleTx_FailedIDKeepsItsTasks(t *testing.T) 
 	ids := seedPersons(t, e.h, e.ctx, 3)
 	e.refusingStore(t, 0, ids[2])
 
-	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 0)
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, 0)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -475,7 +475,7 @@ func TestDeleteEntitiesConditional_SingleTx_TaskConflict_RetriedWithAFreshResult
 	seedPersons(t, e.h, e.ctx, 3)
 	e.plan.Refuse(taskconflict.DeleteForEntities, 1)
 
-	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, true, 0)
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, true, 0)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -493,7 +493,7 @@ func TestDeleteEntitiesConditional_SingleTx_TaskConflictPersists_Retryable409(t 
 	ids := seedPersons(t, e.h, e.ctx, 2)
 	e.plan.Refuse(taskconflict.DeleteForEntities, 100)
 
-	_, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 0)
+	_, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, 0)
 	requireConflict409(t, err)
 	if got, want := e.plan.Calls(taskconflict.DeleteForEntities), 1+common.TaskConflictRetries; got != want {
 		t.Errorf("DeleteForEntities calls = %d, want %d", got, want)
@@ -513,7 +513,7 @@ func TestDeleteEntitiesConditional_SingleTx_Joined_NotRetried(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = e.txMgr.Rollback(e.ctx, txID) })
 
-	_, err = e.h.DeleteEntitiesConditional(joinedCtx, "Person", "1", ageAtLeastOne, nil, false, 0)
+	_, err = e.h.DeleteEntitiesConditional(joinedCtx, "Person", 1, ageAtLeastOne, nil, false, 0)
 	requireConflict409(t, err)
 	if got := e.plan.Calls(taskconflict.DeleteForEntities); got != 1 {
 		t.Errorf("DeleteForEntities calls = %d, want 1", got)
@@ -528,7 +528,7 @@ func TestDeleteEntitiesConditional_SingleTx_EntityRowConflict_Retried(t *testing
 	seedPersons(t, e.h, e.ctx, 3)
 	e.refusingStore(t, 1, "")
 
-	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 0)
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, 0)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -549,7 +549,7 @@ func TestDeleteEntitiesConditional_SingleTx_CommitConflict_RetriedThenSucceeds(t
 	racing := newRacingDeleteStore(t, e, 1)
 	e.withEntityStore(t, racing)
 
-	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 0)
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, 0)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -567,7 +567,7 @@ func TestDeleteEntitiesConditional_SingleTx_CommitConflictPersists_Retryable409W
 	racing := newRacingDeleteStore(t, e, 100)
 	e.withEntityStore(t, racing)
 
-	_, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 0)
+	_, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, 0)
 	requireConflict409(t, err)
 	if !errors.Is(err, spi.ErrConflict) {
 		t.Errorf("err = %v: the 409 does not carry spi.ErrConflict as its cause", err)
@@ -647,7 +647,7 @@ func TestDeleteAllEntities_Joined_HeldGateNotReacquired(t *testing.T) {
 	defer release()
 
 	err := runWithTimeout(t, 5*time.Second, func() error {
-		_, err := e.h.DeleteAllEntities(heldCtx, "Person", "1")
+		_, err := e.h.DeleteAllEntities(heldCtx, "Person", 1)
 		return err
 	})
 	if err != nil {
@@ -662,7 +662,7 @@ func TestDeleteBatched_RemovesEachBatchsTasks(t *testing.T) {
 	e := newTaskEnv(t)
 	ids := seedPersons(t, e.h, e.ctx, 3)
 
-	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 1)
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, 1)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -681,7 +681,7 @@ func TestDeleteBatched_TaskConflict_BatchRetried(t *testing.T) {
 	seedPersons(t, e.h, e.ctx, 3)
 	e.plan.Refuse(taskconflict.DeleteForEntities, 1)
 
-	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 1)
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, 1)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -698,7 +698,7 @@ func TestDeleteBatched_TaskConflictPersists_ReportedPerIDNever409(t *testing.T) 
 	ids := seedPersons(t, e.h, e.ctx, 3)
 	e.plan.Refuse(taskconflict.DeleteForEntities, 1000)
 
-	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 1)
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, 1)
 	if err != nil {
 		t.Fatalf("err = %v, want a 200 result with per-id errors", err)
 	}
@@ -724,7 +724,7 @@ func TestDeleteBatched_EntityRowConflict_BatchRetried(t *testing.T) {
 	seedPersons(t, e.h, e.ctx, 3)
 	e.refusingStore(t, 1, "")
 
-	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 2)
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, 2)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -758,7 +758,7 @@ func TestDeleteBatched_CommitConflict_RetriedThenSucceeds(t *testing.T) {
 	}}
 	e.h = buildDeleteBatchedHandler(t, &taskconflict.Factory{StoreFactory: e.real, Plan: e.plan}, failMgr)
 
-	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 1)
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, 1)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -793,7 +793,7 @@ func TestDeleteBatched_CommitConflictPersists_ReportedPerIDWithCause(t *testing.
 	}}
 	e.h = buildDeleteBatchedHandler(t, &taskconflict.Factory{StoreFactory: e.real, Plan: e.plan}, failMgr)
 
-	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 1)
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, 1)
 	if err != nil {
 		t.Fatalf("err = %v, want a 200 result with a per-id error", err)
 	}
@@ -823,7 +823,7 @@ func TestDeleteEntitiesConditional_SingleTx_Joined_HeldGateNotReacquired(t *test
 	defer release()
 
 	err := runWithTimeout(t, 5*time.Second, func() error {
-		_, err := e.h.DeleteEntitiesConditional(heldCtx, "Person", "1", ageAtLeastOne, nil, false, 0)
+		_, err := e.h.DeleteEntitiesConditional(heldCtx, "Person", 1, ageAtLeastOne, nil, false, 0)
 		return err
 	})
 	if err != nil {
@@ -860,7 +860,7 @@ func TestDeleteBatched_GetConflict_FailsTheAttempt(t *testing.T) {
 	store := &getAbortedStore{EntityStore: real}
 	e.withEntityStore(t, store)
 
-	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 1)
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, 1)
 	if err != nil {
 		t.Fatalf("err = %v, want a 200 result with a per-id error", err)
 	}
@@ -876,5 +876,39 @@ func TestDeleteBatched_GetConflict_FailsTheAttempt(t *testing.T) {
 	}
 	if !e.exists(t, ids[1]) {
 		t.Error("entity removed although every attempt conflicted")
+	}
+}
+
+// TestDeleteTasks_TenantIsTheRequestsNotTheTransactions pins where a
+// delete's task removal takes its tenant from: the request's authenticated
+// tenant, handed to the store, which refuses a transaction of another
+// tenant. Taking it from the transaction instead would make that check
+// compare the transaction with itself, and a request joined to another
+// tenant's transaction would remove that tenant's tasks.
+func TestDeleteTasks_TenantIsTheRequestsNotTheTransactions(t *testing.T) {
+	e := newTaskEnv(t)
+	ids := seedPersons(t, e.h, e.ctx, 1)
+
+	txID, txCtx, err := e.txMgr.Begin(e.ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	t.Cleanup(func() { _ = e.txMgr.Rollback(e.ctx, txID) })
+	otherTenant := spi.WithUserContext(context.Background(), &spi.UserContext{
+		UserID: "other-user", Tenant: spi.Tenant{ID: "other-tenant"}, Roles: []string{"user"},
+	})
+	mixed := spi.WithTransaction(otherTenant, spi.GetTransaction(txCtx))
+
+	if err := e.h.deleteEntityTasks(mixed, ids); !errors.Is(err, spi.ErrTxTenantMismatch) {
+		t.Errorf("deleteEntityTasks: err = %v, want ErrTxTenantMismatch", err)
+	}
+	if err := e.h.deleteModelTasks(mixed, "Person", 1); !errors.Is(err, spi.ErrTxTenantMismatch) {
+		t.Errorf("deleteModelTasks: err = %v, want ErrTxTenantMismatch", err)
+	}
+	if err := e.txMgr.Commit(txCtx, txID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if n := e.tasksOf(t, ids[0]); n != 1 {
+		t.Errorf("tasks of %s = %d, want 1: another tenant's request removed them", ids[0], n)
 	}
 }

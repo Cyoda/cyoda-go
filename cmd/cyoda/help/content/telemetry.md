@@ -106,7 +106,8 @@ Postgres connection-pool metrics (`cyoda_storage_pool_*`) are Postgres-only — 
 whenever the Postgres storage plugin is active — and always on, regardless of
 `CYODA_OTEL_ENABLED`: pool saturation is the dominant outage mode this instrumentation
 guards against, so it does not wait on OTLP push. Every data point carries a `backend`
-attribute (`postgres`):
+attribute (`postgres`). Only `cyoda.storage.pool.connections` covers every pool,
+labeled by `pool`; every other instrument below covers the main pool only:
 
 - `cyoda.storage.pool.connections` — `Int64ObservableGauge` — pool connections by state; labeled by `backend`, `pool` and `state` (`acquired`, `idle`, `constructing`)
 - `cyoda.storage.pool.max_connections` — `Int64ObservableGauge` — configured maximum pool size; labeled by `backend`

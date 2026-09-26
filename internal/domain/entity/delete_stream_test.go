@@ -180,7 +180,7 @@ func TestDeleteEntitiesConditional_SingleTx_StreamsSelection(t *testing.T) {
 	decoyIDs := seedKind(t, h, ctx, ref, decoys, "keep")
 
 	cond := []byte(`{"type":"simple","jsonPath":"$.kind","operatorType":"EQUALS","value":"drop"}`)
-	result, err := h.DeleteEntitiesConditional(ctx, ref.EntityName, ref.ModelVersion, cond, nil, false, 0)
+	result, err := h.DeleteEntitiesConditional(ctx, ref.EntityName, 1, cond, nil, false, 0)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestDeleteBatched_StreamsSelectionInCycles(t *testing.T) {
 	beginsBefore := rtm.beginCount()
 
 	cond := []byte(`{"type":"simple","jsonPath":"$.kind","operatorType":"EQUALS","value":"drop"}`)
-	result, err := h.DeleteEntitiesConditional(ctx, ref.EntityName, ref.ModelVersion, cond, nil, false, batchSize)
+	result, err := h.DeleteEntitiesConditional(ctx, ref.EntityName, 1, cond, nil, false, batchSize)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestDeleteAllEntities_StreamsSelection(t *testing.T) {
 	const n = 250
 	ids := seedKind(t, h, ctx, ref, n, "whatever")
 
-	result, err := h.DeleteAllEntities(ctx, ref.EntityName, ref.ModelVersion)
+	result, err := h.DeleteAllEntities(ctx, ref.EntityName, 1)
 	if err != nil {
 		t.Fatalf("DeleteAllEntities: %v", err)
 	}
@@ -347,7 +347,7 @@ func TestDeleteEntitiesConditional_SingleTx_WildcardPathConditionStreams(t *test
 		]
 	}`)
 
-	result, err := h.DeleteEntitiesConditional(ctx, ref.EntityName, ref.ModelVersion, cond, nil, false, 0)
+	result, err := h.DeleteEntitiesConditional(ctx, ref.EntityName, 1, cond, nil, false, 0)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}

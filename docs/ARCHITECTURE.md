@@ -1370,7 +1370,11 @@ Neither the heartbeat nor the claim loop waits on a statement that shares the
 store's main pool with entity transactions. PostgreSQL runs `Heartbeat` and
 `ClaimStale` on its scheduler pool, apart from the main pool.
 The heartbeat sends only the fenced `Heartbeat` stamp, whose refusal also
-carries a cancel from any node (the job is terminal). The claim loop claims,
+carries a cancel from any node (the job is terminal). Only such a fencing
+refusal — the job is terminal, claimed at a newer epoch, or gone — ends the
+job. Any other heartbeat error is a missed tick: the job keeps running, its
+later writes are still epoch-fenced, and if the stamps keep failing another
+node claims it once it goes stale. The claim loop claims,
 then starts every job it will run — heartbeat and enqueue — and sends no
 main-pool statement. Three kinds of statement do wait on the main pool, and
 none of them on the claim loop's goroutine:
@@ -2502,7 +2506,7 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 
 | Parameter | Default | Hard Limit | Notes |
 |-----------|---------|------------|-------|
-| PG connections per node | 25 | Configurable, bounded by PG `max_connections` | Each in-flight transaction holds one connection. |
+| PG connections per node | 36: 25 main + 10 scheduler + 1 heartbeat | Configurable (`CYODA_POSTGRES_MAX_CONNS`, `CYODA_POSTGRES_SCHEDULER_CONNS`; the heartbeat pool is fixed at 1), bounded by PG `max_connections` | Each in-flight transaction holds one main-pool connection. |
 | Gossip metadata size | ~100–150 bytes per node | memberlist `MetaMaxSize` = 512 bytes | Identity and a list version only; tenants and tags travel by reliable message and are unbounded. A node whose identity does not fit refuses to start. Alert on `cyoda.cluster.tags.lists_outstanding` staying non-zero. |
 | Search snapshot TTL | 1 hour | Configurable | Snapshots older than TTL are reaped. Increase for long-running batch workflows. |
 | Transaction lifetime | 5 minutes idle | Configurable | Enforced by PostgreSQL via `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`. The callout deadline must fit under it (§4.3). |

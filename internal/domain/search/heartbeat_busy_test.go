@@ -3,9 +3,9 @@ package search_test
 // Coverage for the startHeartbeat busy-tick policy: a Heartbeat tick that
 // meets a lock its own job's SaveResults holds is a distinct, transient
 // outcome (spi.ErrTaskBusy) — startHeartbeat must treat it as a missed tick
-// and retry on the next one, not abort a healthy job. Only a fencing
-// refusal (spi.ErrStaleClaim) or another non-transient error still aborts
-// it.
+// and retry on the next one, not abort a healthy job. Any other error that
+// is not a fencing refusal (a dropped connection, a timeout) is a missed tick
+// too. Only a fencing refusal — stale claim, terminal, not found — aborts it.
 
 import (
 	"context"
@@ -34,12 +34,14 @@ func (s *slowIterator) Next() bool {
 }
 
 // scriptedHeartbeatStore serves a real store's Heartbeat except on the calls
-// named in busyOnCalls (1-indexed) or staleOnCalls (1-indexed), which answer
-// a marked-busy or a stale-claim error instead without touching the store.
+// named in busyOnCalls, transientOnCalls or staleOnCalls (1-indexed), which
+// answer a marked-busy, a plain transport or a stale-claim error instead
+// without touching the store.
 type scriptedHeartbeatStore struct {
 	spi.AsyncSearchStore
-	busyOnCalls  map[int]bool
-	staleOnCalls map[int]bool
+	busyOnCalls      map[int]bool
+	transientOnCalls map[int]bool
+	staleOnCalls     map[int]bool
 
 	calls int32
 }
@@ -48,6 +50,9 @@ func (s *scriptedHeartbeatStore) Heartbeat(ctx context.Context, jobID string, ep
 	n := int(atomic.AddInt32(&s.calls, 1))
 	if s.busyOnCalls[n] {
 		return fmt.Errorf("heartbeat search job %s: %w: row locked", jobID, spi.ErrTaskBusy)
+	}
+	if s.transientOnCalls[n] {
+		return fmt.Errorf("heartbeat search job %s: read tcp 10.0.0.1:5432: connection reset by peer", jobID)
 	}
 	if s.staleOnCalls[n] {
 		return fmt.Errorf("heartbeat search job %s: %w", jobID, spi.ErrStaleClaim)
@@ -132,6 +137,36 @@ func TestStartHeartbeat_BusyTickDoesNotCancelTheJob(t *testing.T) {
 	}
 	if got := store.callCount(); got < 3 {
 		t.Fatalf("Heartbeat was called %d times, want at least 3 — the ticker must keep retrying past the busy ticks, not stop after them", got)
+	}
+}
+
+// An error that is not a fencing refusal must not cancel a healthy job
+// either: the claim is not lost, every later write of the job is still
+// epoch-fenced, and if the stamps keep failing another node takes the job
+// over once the store's staleness window passes.
+func TestStartHeartbeat_TransientErrorDoesNotCancelTheJob(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+	ctx := tenantCtx("tenant-heartbeat-transient")
+
+	realAsync, err := base.AsyncSearchStore(context.Background())
+	if err != nil {
+		t.Fatalf("AsyncSearchStore: %v", err)
+	}
+	store := &scriptedHeartbeatStore{
+		AsyncSearchStore: realAsync,
+		transientOnCalls: map[int]bool{1: true, 2: true},
+	}
+	svc, _ := newSlowSearchService(t, ctx, base, store, 15*time.Millisecond, 20*time.Millisecond)
+
+	jobID := submitSlowJob(t, ctx, base, svc, 30)
+	status := pollUntilTerminal(t, svc, ctx, jobID, 5*time.Second)
+
+	if status.Status != "SUCCESSFUL" {
+		t.Fatalf("status = %q, want SUCCESSFUL — a transient heartbeat error aborted a healthy job", status.Status)
+	}
+	if got := store.callCount(); got < 3 {
+		t.Fatalf("Heartbeat was called %d times, want at least 3 — the ticker must keep stamping past the failed ticks", got)
 	}
 }
 

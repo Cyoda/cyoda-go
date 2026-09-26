@@ -281,7 +281,7 @@ func TestDeleteEntitiesConditional_Batched_HappyPath(t *testing.T) {
 
 	beginsBefore := rtm.beginCount()
 
-	result, err := h.DeleteEntitiesConditional(ctx, "Person", "1", batchDeleteAgeGEZero, nil, false, 2)
+	result, err := h.DeleteEntitiesConditional(ctx, "Person", 1, batchDeleteAgeGEZero, nil, false, 2)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestDeleteEntitiesConditional_Batched_VersionGuard(t *testing.T) {
 
 	hDelete := buildDeleteBatchedHandler(t, spyFactory, realTxMgr)
 
-	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", "1", batchDeleteAgeGEZero, nil, false, 2)
+	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", 1, batchDeleteAgeGEZero, nil, false, 2)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -392,7 +392,7 @@ func TestDeleteEntitiesConditional_Batched_FailedBatchContinues(t *testing.T) {
 	failMgr := &failNthCommitTxMgr{TransactionManager: realTxMgr, failOn: map[int]error{2: errors.New("commit boom")}}
 	hDelete := buildDeleteBatchedHandler(t, realFactory, failMgr)
 
-	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", "1", batchDeleteAgeGEZero, nil, false, 2)
+	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", 1, batchDeleteAgeGEZero, nil, false, 2)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -447,7 +447,7 @@ func TestDeleteEntitiesConditional_Batched_FailedBatchIsTicketed(t *testing.T) {
 	failMgr := &failNthCommitTxMgr{TransactionManager: realTxMgr, failOn: map[int]error{2: errors.New(cause)}}
 	hDelete := buildDeleteBatchedHandler(t, realFactory, failMgr)
 
-	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", "1", batchDeleteAgeGEZero, nil, false, 2)
+	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", 1, batchDeleteAgeGEZero, nil, false, 2)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -525,7 +525,7 @@ func TestDeleteEntitiesConditional_Batched_DeleteAllPath(t *testing.T) {
 	h := buildDeleteBatchedHandler(t, spyFactory, txMgr)
 	ids := seedPersons(t, h, ctx, 5)
 
-	result, err := h.DeleteEntitiesConditional(ctx, "Person", "1", nil, nil, false, 2)
+	result, err := h.DeleteEntitiesConditional(ctx, "Person", 1, nil, nil, false, 2)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -573,7 +573,7 @@ func TestDeleteEntitiesConditional_NoBatchSize_Unchanged(t *testing.T) {
 
 	beginsBefore := rtm.beginCount()
 
-	result, err := h.DeleteEntitiesConditional(ctx, "Person", "1", nil, nil, false, 0)
+	result, err := h.DeleteEntitiesConditional(ctx, "Person", 1, nil, nil, false, 0)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -629,7 +629,7 @@ func TestDeleteEntitiesConditional_Batched_PointInTime_SinglePassSelection(t *te
 
 	hDelete := buildDeleteBatchedHandler(t, spyFactory, mustTxMgr(t, realFactory))
 
-	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", "1", batchDeleteAgeGEZero, &pit, false, 3)
+	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", 1, batchDeleteAgeGEZero, &pit, false, 3)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -693,7 +693,7 @@ func TestDeleteEntitiesConditional_Batched_PointInTime_VersionGuard(t *testing.T
 
 	hDelete := buildDeleteBatchedHandler(t, spyFactory, realTxMgr)
 
-	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", "1", batchDeleteAgeGEZero, &pit, false, 2)
+	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", 1, batchDeleteAgeGEZero, &pit, false, 2)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}

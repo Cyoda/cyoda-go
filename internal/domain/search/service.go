@@ -358,8 +358,9 @@ func (s *SearchService) WithAsyncMaxPerTenant(n int) *SearchService {
 }
 
 // WithHeartbeat sets the interval the async executor stamps job liveness on
-// (spi.AsyncSearchStore.Heartbeat) and polls for cross-node cancel/terminal
-// status, starting at submit time. interval <= 0 restores the built-in
+// (spi.AsyncSearchStore.Heartbeat), starting at submit time. The stamp's
+// fencing refusal is also how the executor learns of a cross-node cancel or
+// a lost claim. interval <= 0 restores the built-in
 // default (defaultHeartbeatInterval) via heartbeatEvery(). Returns the
 // receiver for chaining after NewSearchService.
 func (s *SearchService) WithHeartbeat(interval time.Duration) *SearchService {
@@ -1100,12 +1101,6 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	return jobID, nil
 }
 
-// heartbeatFencedOut reports whether a Heartbeat answer ends this
-// executor's claim. A busy row (spi.ErrTaskBusy: the job's own SaveResults
-// chunk holds it) is a missed tick, not a lost claim; staleness is still
-// judged by the store from the unstamped heartbeat_time.
-func heartbeatFencedOut(err error) bool { return err != nil && !errors.Is(err, spi.ErrTaskBusy) }
-
 // startHeartbeat runs the dedicated heartbeat ticker goroutine for a job,
 // from submit time (queued or executing) until jobCtx is done. Every tick it
 // stamps liveness (Heartbeat) and nothing else. The stamp is fenced by the
@@ -1113,21 +1108,23 @@ func heartbeatFencedOut(err error) bool { return err != nil && !errors.Is(err, s
 // (ErrAlreadyTerminal), was reclaimed at a newer epoch (ErrStaleClaim) or is
 // gone (ErrNotFound). So a cancel written by any node, a completion, and a
 // lost claim all end the job here in one statement, and jobCtx is cancelled
-// on any refusal per heartbeatFencedOut.
+// on any such fencing refusal (fencedRefusal).
 //
 // The tick issues no other store statement. A backend may run Heartbeat on a
 // pool of its own so that a main pool exhausted by entity transactions cannot
 // starve liveness; a second, main-pool statement in this loop would undo that.
 //
-// A busy tick (heartbeatFencedOut false but err non-nil: spi.ErrTaskBusy —
-// a store, PostgreSQL, answers it for a lock its own job's SaveResults
-// chunk holds, which is not a claim it has lost) is logged at DEBUG and
-// retried on the next tick. Leaving one tick's stamp missed is safe: the
-// store's staleness window spans several ticks, and each SaveResults chunk is
-// itself fenced against a terminal status, so a cancel that lands meanwhile
-// still stops the executor. Backend-agnostic: memory and sqlite never return
-// spi.ErrTaskBusy (their Heartbeat never lock-waits), so this branch never
-// fires there.
+// Any other error is a missed tick, not a lost claim, and the job keeps
+// running; the next tick stamps again. A busy tick (spi.ErrTaskBusy — a
+// store, PostgreSQL, answers it for a lock its own job's SaveResults chunk
+// holds) is expected and logged at DEBUG; any other error (a dropped
+// connection, a timeout) is logged at WARN. Leaving stamps missed is safe:
+// every later write of the job — each SaveResults chunk and the terminal
+// status — is fenced against its epoch and a terminal status, so a cancel
+// or a reclaim that lands meanwhile still stops the executor; and if the
+// stamps keep failing, the store's staleness window passes and another node
+// takes the job over at a newer epoch. memory and sqlite never return
+// spi.ErrTaskBusy (their Heartbeat never lock-waits).
 func (s *SearchService) startHeartbeat(jobCtx context.Context, cancel context.CancelCauseFunc, jobID string, epoch int64) {
 	interval := s.heartbeatEvery()
 	go func() {
@@ -1146,12 +1143,14 @@ func (s *SearchService) startHeartbeat(jobCtx context.Context, cancel context.Ca
 					slog.Debug("async search job is terminal; stopping its executor", "pkg", "search", "jobID", jobID)
 					cancel(nil)
 					return
-				case heartbeatFencedOut(hbErr):
-					slog.Warn("async search heartbeat failed; aborting job", "pkg", "search", "jobID", jobID, "err", hbErr)
+				case fencedRefusal(hbErr):
+					slog.Warn("async search heartbeat refused: the job is no longer this node's claim; aborting it", "pkg", "search", "jobID", jobID, "err", hbErr)
 					cancel(nil)
 					return
-				case hbErr != nil:
+				case errors.Is(hbErr, spi.ErrTaskBusy):
 					slog.Debug("async search heartbeat missed a busy tick", "pkg", "search", "jobID", jobID, "err", hbErr)
+				case hbErr != nil:
+					slog.Warn("async search heartbeat missed a tick; the job keeps running", "pkg", "search", "jobID", jobID, "err", hbErr)
 				}
 			}
 		}
@@ -1379,8 +1378,8 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 
 	// context.WithoutCancel, exactly as the panic path above: the switch has
 	// just established that jobCtx was live, but the heartbeat goroutine
-	// cancels it from a different goroutine — a fenced-out Heartbeat or a
-	// poll that observes a terminal status — and a cancel landing in the
+	// cancels it from a different goroutine — on a Heartbeat that the store
+	// refuses as terminal, stale or gone — and a cancel landing in the
 	// window between that check and this call would abort the write and
 	// leave a finished job RUNNING until the stale-job reaper failed it. The
 	// UserContext (and so the tenant scope) is preserved.
@@ -1404,7 +1403,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 // definition, so no caller wants it cancellable. Two of the call sites are
 // reached only after `jobCtx.Err() != nil` evaluated false, which makes them a
 // TOCTOU — the heartbeat goroutine cancels jobCtx from another goroutine (a
-// fenced-out Heartbeat, or a poll that observes a terminal status), and a
+// Heartbeat that the store refuses as terminal, stale or gone), and a
 // cancel landing between the check and the write aborts it, leaving a finished
 // job RUNNING until the stale-job reaper fails it with a generic message
 // instead of the real reason recorded here. Stripping cancellation keeps the

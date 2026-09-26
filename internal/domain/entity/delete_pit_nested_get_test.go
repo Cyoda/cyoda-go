@@ -103,7 +103,7 @@ func TestDeleteEntitiesConditional_Batched_PointInTime_NoGetInsideOpenIterator(t
 
 	hDelete := buildDeleteBatchedHandler(t, guardFactory, mustTxMgr(t, realFactory))
 
-	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", "1", batchDeleteAgeGEZero, &pit, false, 3)
+	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", 1, batchDeleteAgeGEZero, &pit, false, 3)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestResolveBatchTargetsOnePass_PerIDGetFailureIsolated(t *testing.T) {
 	guardFactory := &nestedGetGuardFactory{StoreFactory: realFactory, store: guard}
 	hDelete := buildDeleteBatchedHandler(t, guardFactory, mustTxMgr(t, realFactory))
 
-	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", "1", batchDeleteAgeGEZero, &pit, true, 2)
+	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", 1, batchDeleteAgeGEZero, &pit, true, 2)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}

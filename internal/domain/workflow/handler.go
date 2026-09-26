@@ -96,20 +96,29 @@ type importRequest struct {
 	Workflows   []workflowImportDef `json:"workflows"`
 }
 
-// attachEntityProbe captures the raw-JSON presence of an omitted attachEntity
-// per transition, for both callout shapes that carry one:
-// schedule.function.attachEntity and each processors[].config.attachEntity.
-// The OpenAPI DTOs document these as "Defaults to true", but the SPI decodes
-// them into plain bool fields, which — decoded straight from the request body
-// as workflowImportDef.States does for the whole state graph — collapse
-// "omitted" and "explicit false" to the same zero value. This probe is a
-// second, non-strict decode of the same request body that declares only the
-// field paths needed to recover the distinction; every other field is ignored.
-type attachEntityProbe struct {
+// presenceProbe records which fields the request body actually sent, where
+// the strict decode into SPI types cannot tell. The SPI decodes
+// attachEntity into plain bool fields and schedule.delayMs into a plain
+// int64, so "omitted" and "explicit zero value" collapse to the same Go
+// value. The probe is a second, non-strict decode of the same request body
+// that declares only the field paths needed to recover the distinction;
+// every other field is ignored. It serves two rules:
+//   - an omitted attachEntity defaults to true (the OpenAPI DTOs document
+//     "Defaults to true"), for schedule.function.attachEntity and each
+//     processors[].config.attachEntity — see applyAttachEntityDefaults;
+//   - schedule.delayMs sent in any form beside schedule.function is
+//     refused — see checkDelayBesideFunction.
+type presenceProbe struct {
 	Workflows []struct {
+		Name   string `json:"name"`
 		States map[string]struct {
 			Transitions []struct {
+				Name     string `json:"name"`
 				Schedule *struct {
+					// DelayMs is raw so that an explicit JSON null counts
+					// as sent: encoding/json hands null to a RawMessage
+					// rather than leaving it nil.
+					DelayMs  json.RawMessage `json:"delayMs"`
 					Function *struct {
 						AttachEntity *bool `json:"attachEntity"`
 					} `json:"function"`
@@ -124,6 +133,27 @@ type attachEntityProbe struct {
 	} `json:"workflows"`
 }
 
+// checkDelayBesideFunction refuses a schedule that sends delayMs in any
+// form — 0, null, or any number — beside a function. api/openapi.yaml's
+// TransitionScheduleDto publishes delayMs as minimum 1 and mutually
+// exclusive with function. The structural validator sees delayMs as the
+// SPI's plain int64, so a sent 0 or null reads as omitted there; this
+// check reads the raw request instead.
+func checkDelayBesideFunction(probe presenceProbe) error {
+	for _, wf := range probe.Workflows {
+		for stateName, state := range wf.States {
+			for _, tr := range state.Transitions {
+				if tr.Schedule != nil && tr.Schedule.Function != nil && tr.Schedule.DelayMs != nil {
+					return fmt.Errorf(
+						"workflow %q state %q transition %q: schedule.delayMs and schedule.function are mutually exclusive; omit delayMs when function is set",
+						wf.Name, stateName, tr.Name)
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // applyAttachEntityDefaults defaults an omitted attachEntity to true for every
 // callout in every transition — schedule.function.attachEntity and each
 // processors[].config.attachEntity — using probe (decoded from the same raw
@@ -132,7 +162,7 @@ type attachEntityProbe struct {
 // array in the same order); states are matched by map key; transitions and
 // processors within a state are index-aligned (both decoded from the same JSON
 // arrays).
-func applyAttachEntityDefaults(workflows []workflowImportDef, probe attachEntityProbe) {
+func applyAttachEntityDefaults(workflows []workflowImportDef, probe presenceProbe) {
 	for i, w := range workflows {
 		if i >= len(probe.Workflows) {
 			continue
@@ -204,16 +234,15 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Second, non-strict decode of the same bytes to recover the
-	// "attachEntity omitted" signal the strict decode above collapsed into
-	// the SPI's plain-bool AttachEntity zero value (both on
-	// ScheduleFunction and ProcessorConfig). data was already proven valid
-	// JSON matching this shape by the strict decode, so this unmarshal
-	// cannot fail on a well-formed request; ignoring a defensive error here
-	// just leaves every attachEntity un-defaulted, which is the safe
-	// fallback.
-	var probe attachEntityProbe
-	_ = json.Unmarshal(data, &probe)
+	// Second, non-strict decode of the same bytes to recover the presence
+	// signals the strict decode above collapsed into the SPI's zero values
+	// (see presenceProbe). data was already proven valid JSON matching
+	// this shape by the strict decode, so this unmarshal cannot fail.
+	var probe presenceProbe
+	if err := json.Unmarshal(data, &probe); err != nil {
+		common.WriteError(w, r, common.Internal("failed to re-decode workflow import request", err))
+		return
+	}
 	applyAttachEntityDefaults(req.Workflows, probe)
 
 	mode := strings.ToUpper(req.ImportMode)
@@ -324,6 +353,12 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	// the merged result below, preserving pre-v0.8.0 semantics for those
 	// specific invariants.
 	if err := validateImportRequest(incoming); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
+		return
+	}
+	// The structural validator above sees delayMs only as the SPI's int64;
+	// the raw request says whether it was sent at all beside a function.
+	if err := checkDelayBesideFunction(probe); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
 		return
 	}

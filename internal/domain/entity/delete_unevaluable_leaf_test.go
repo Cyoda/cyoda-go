@@ -59,7 +59,7 @@ func saveBareLeafModelEntity(t *testing.T, ctx context.Context, factory *memory.
 	}
 }
 
-func newBareLeafDeleteFixture(t *testing.T) (h *entity.Handler, ctx context.Context, entityName, modelVersion string) {
+func newBareLeafDeleteFixture(t *testing.T) (h *entity.Handler, ctx context.Context, entityName string, modelVersion int) {
 	t.Helper()
 	base := memory.NewStoreFactory()
 	t.Cleanup(func() { base.Close() })
@@ -74,7 +74,7 @@ func newBareLeafDeleteFixture(t *testing.T) (h *entity.Handler, ctx context.Cont
 	}
 	h = entity.New(base, txMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New())
 
-	return h, ctx, ref.EntityName, ref.ModelVersion
+	return h, ctx, ref.EntityName, 1
 }
 
 // TestDeleteEntitiesConditional_UnevaluableLeaf_SingleTx_MapsTo400 is the

@@ -188,11 +188,18 @@ change.
 (published `minimum: 1`) are now rejected at import (`400
 VALIDATION_FAILED`) when they violate those minimums, instead of being
 silently accepted. A negative `timeoutMs` was accepted outright — no check
-existed. A negative `delayMs` alongside a `function` was accepted and
-silently ignored: the delayMs/function XOR check reads any non-positive
-`delayMs` as "absent", so it saw only the function and passed. A negative
-`delayMs` with no `function` was, and remains, already rejected by that same
-XOR check, as the "neither present" shape.
+existed. A `delayMs` of `0`, `null` or a negative number alongside a
+`function` was accepted and silently ignored: the delayMs/function XOR check
+reads any non-positive `delayMs` as "absent", so it saw only the function
+and passed. `delayMs` is published as mutually exclusive with `function`, so
+any `delayMs` sent beside a `function` is now rejected, whatever its value;
+the import reads the raw request to see a `0` or `null` that the decoded
+integer cannot show. A non-positive `delayMs` with no `function` was, and
+remains, already rejected by that same XOR check, as the "neither present"
+shape.
+
+A pre-v0.9.0 export that carries `delayMs: 0` beside a `function` no longer
+imports. Remove the `delayMs` field and import again.
 
 This is the §"When NOT to bump" "bug-fixing a validator that was already
 supposed to reject something" case: both minimums were already published in

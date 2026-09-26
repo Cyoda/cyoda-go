@@ -1067,12 +1067,12 @@ func driveDeleteFailure(_ *testing.T, hn *rollbackHarness) error {
 }
 
 func driveDeleteAllFailure(_ *testing.T, hn *rollbackHarness) error {
-	_, err := hn.h.DeleteAllEntities(hn.ctx, rollbackModel.EntityName, rollbackModel.ModelVersion)
+	_, err := hn.h.DeleteAllEntities(hn.ctx, rollbackModel.EntityName, 1)
 	return err
 }
 
 func driveDeleteConditionalFailure(_ *testing.T, hn *rollbackHarness) error {
-	_, err := hn.h.DeleteEntitiesConditional(hn.ctx, rollbackModel.EntityName, rollbackModel.ModelVersion,
+	_, err := hn.h.DeleteEntitiesConditional(hn.ctx, rollbackModel.EntityName, 1,
 		rollbackCondition, nil, false, 0)
 	return err
 }

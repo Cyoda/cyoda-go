@@ -29,7 +29,7 @@ func TestDeleteEntitiesConditional_Unconditional_PointInTime_SparesLaterCreates(
 	time.Sleep(2 * time.Millisecond)
 	after := seedPersons(t, h, ctx, 2)
 
-	res, err := h.DeleteEntitiesConditional(ctx, "Person", "1", nil, &pit, true, 0)
+	res, err := h.DeleteEntitiesConditional(ctx, "Person", 1, nil, &pit, true, 0)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestDeleteEntitiesConditional_Unconditional_PointInTime_AlreadyGoneIDInIDTo
 		t.Fatalf("DeleteEntity: %v", err)
 	}
 
-	res, err := h.DeleteEntitiesConditional(ctx, "Person", "1", nil, &pit, true, 0)
+	res, err := h.DeleteEntitiesConditional(ctx, "Person", 1, nil, &pit, true, 0)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestDeleteEntitiesConditional_Unconditional_Verbose_ListsAttemptedIDs(t *te
 	h := buildDeleteBatchedHandler(t, factory, mustTxMgr(t, factory))
 	ids := seedPersons(t, h, ctx, 3)
 
-	res, err := h.DeleteEntitiesConditional(ctx, "Person", "1", nil, nil, true, 0)
+	res, err := h.DeleteEntitiesConditional(ctx, "Person", 1, nil, nil, true, 0)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestDeleteEntitiesConditional_Unconditional_Plain_ReturnsEmptyIDs(t *testin
 	h := buildDeleteBatchedHandler(t, factory, mustTxMgr(t, factory))
 	seedPersons(t, h, ctx, 2)
 
-	res, err := h.DeleteEntitiesConditional(ctx, "Person", "1", nil, nil, false, 0)
+	res, err := h.DeleteEntitiesConditional(ctx, "Person", 1, nil, nil, false, 0)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestDeleteEntitiesConditional_Joined_PointInTime_SparesBufferedEntities(t *
 	time.Sleep(2 * time.Millisecond)
 	pit := time.Now()
 
-	res, err := h.DeleteEntitiesConditional(joinedCtx, "Widget", "1", nil, &pit, true, 0)
+	res, err := h.DeleteEntitiesConditional(joinedCtx, "Widget", 1, nil, &pit, true, 0)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional (joined, pointInTime): %v", err)
 	}
@@ -181,7 +181,7 @@ func TestDeleteEntitiesConditional_Joined_NoInstant_DeletesBufferedEntities(t *t
 	}
 	bufferedID := created.EntityIDs[0]
 
-	if _, err := h.DeleteEntitiesConditional(joinedCtx, "Widget", "1", nil, nil, false, 0); err != nil {
+	if _, err := h.DeleteEntitiesConditional(joinedCtx, "Widget", 1, nil, nil, false, 0); err != nil {
 		t.Fatalf("DeleteEntitiesConditional (joined, fast path): %v", err)
 	}
 	if err := txMgr.Commit(ownerCtx, ownerTxID); err != nil {

@@ -321,8 +321,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   race and answers the retryable `409 CONFLICT` on every backend, where it
   could answer `412` before; a collection with such an item now fails whole
   with `409` instead of listing the item in `failed[]`. A stale `If-Match`
-  now records `STATE_MACHINE_START` and `TRANSITION_ABORTED` and none of the
-  transition's other audit events. See `cyoda help errors ENTITY_MODIFIED`
+  on a collection item now keeps `STATE_MACHINE_START` and
+  `TRANSITION_ABORTED` in the audit log and none of the transition's other
+  audit events; on the single-update doors the transaction rolls back and
+  keeps no event, as before. See `cyoda help errors ENTITY_MODIFIED`
   and `docs/cloud-parity/entity-if-match.md`.
 
 - **Scheduler settings are replaced.** No longer read:
@@ -1195,6 +1197,18 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   non-positive `delayMs` as "absent", so it saw only the function and
   passed. Both are now rejected at import (`400 VALIDATION_FAILED`), naming
   the workflow, state, transition and field. See `cyoda help workflows`.
+
+- **Workflow import refuses a `schedule.delayMs` sent beside a
+  `schedule.function`, whatever its value.** `TransitionScheduleDto`
+  publishes `delayMs` as `minimum: 1` and mutually exclusive with
+  `function`, but import accepted `"delayMs": 0` and `"delayMs": null`
+  beside a function and ignored them: the decoded delay is a plain integer,
+  so a sent `0` or `null` looked the same as an omitted field. Import now
+  reads the raw request and answers `400 VALIDATION_FAILED`, naming the
+  workflow, state and transition. A pre-v0.9.0 export that carries
+  `"delayMs": 0` beside a `function` no longer imports; remove the field.
+  No workflow schema version change: this fixes the validator to reject
+  what the schema already rejected. See `cyoda help workflows`.
 
 ## [0.8.4] — 2026-09-09
 

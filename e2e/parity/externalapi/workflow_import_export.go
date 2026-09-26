@@ -467,6 +467,10 @@ func RunExternalAPI_08_07_ScheduledTransitionRoundtrip(t *testing.T, fixture par
 //     schedule.function is required" in the detail. delayMs=0 is falsy
 //     under the delayMs/function XOR (hasDelay := DelayMs > 0), so this
 //     is the "neither present" shape, not a dedicated delayMs<=0 message.
+//  3. schedule.delayMs:0 beside schedule.function — HTTP 400 +
+//     VALIDATION_FAILED with "schedule.delayMs and schedule.function are
+//     mutually exclusive" in the detail. The decoded delay reads 0 as
+//     omitted; import refuses it from the raw request.
 func RunExternalAPI_08_08_ScheduledTransitionRejects(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
 	d := driver.NewInProcess(t, fixture)
@@ -521,6 +525,30 @@ func RunExternalAPI_08_08_ScheduledTransitionRejects(t *testing.T, fixture parit
 	})
 	if detail := rfc9457Detail(body); !strings.Contains(detail, "exactly one of schedule.delayMs or schedule.function is required") {
 		t.Errorf("zero-delay: expected detail substring 'exactly one of schedule.delayMs or schedule.function is required'; got %q (body=%s)", detail, string(body))
+	}
+
+	// Sub-case 3: delayMs:0 beside a function.
+	zeroDelayWithFunction := `{"workflows":[{
+		"version":"1.3","name":"Zero Delay Function Schedule",
+		"initialState":"start","active":true,
+		"states":{
+			"start":{"transitions":[{
+				"name":"BadZeroDelayFn","next":"end","manual":false,
+				"schedule":{"delayMs":0,"function":{"name":"calcFire","resultKind":"Schedule","calculationNodesTags":"sched"}}
+			}]},
+			"end":{"transitions":[]}
+		}
+	}]}`
+	status, body, err = d.ImportWorkflowRaw("wfSchedRej", 1, zeroDelayWithFunction)
+	if err != nil {
+		t.Fatalf("ImportWorkflowRaw (zero delay beside function): %v", err)
+	}
+	errorcontract.Match(t, status, body, errorcontract.ExpectedError{
+		HTTPStatus: http.StatusBadRequest,
+		ErrorCode:  "VALIDATION_FAILED",
+	})
+	if detail := rfc9457Detail(body); !strings.Contains(detail, "schedule.delayMs and schedule.function are mutually exclusive") {
+		t.Errorf("zero-delay beside function: expected detail substring 'schedule.delayMs and schedule.function are mutually exclusive'; got %q (body=%s)", detail, string(body))
 	}
 }
 

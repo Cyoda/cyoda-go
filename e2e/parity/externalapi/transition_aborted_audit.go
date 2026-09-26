@@ -36,7 +36,7 @@ func init() {
 // TRANSITION_ABORTED. That the compensating event is still actually emitted
 // is pinned at the unit level instead, by reading the transaction before it
 // rolls back (see
-// TestManualTransitionWithIfMatch_CBDCascadeStaleEmitsTransitionAborted in
+// TestManualTransitionWithIfMatch_StaleEmitsTransitionAborted in
 // internal/domain/workflow). The name "...AuditEventPaired" is kept even
 // though nothing paired is visible from here after the call fails: it names
 // the audit-trail shape this scenario is the parity guard for, not what a
