@@ -529,3 +529,17 @@ func TestEngineConflictIsTransactionConflict(t *testing.T) {
 		t.Error("an unmarked conflict — the If-Match compare — was read as a transaction conflict")
 	}
 }
+
+// TestClassifyWorkflowError_TxAbortedIs409: a bare spi.ErrTxAborted reaching
+// the classifier is a retryable 409 CONFLICT with its cause, never the
+// catch-all 400 WORKFLOW_FAILED.
+func TestClassifyWorkflowError_TxAbortedIs409(t *testing.T) {
+	err := fmt.Errorf("processor p failed: %w", spi.ErrTxAborted)
+	got := classifyWorkflowError(err)
+	if got.Status != http.StatusConflict || got.Code != common.ErrCodeConflict || !got.Retryable {
+		t.Fatalf("classified as %d %s retryable=%v, want a retryable 409 %s", got.Status, got.Code, got.Retryable, common.ErrCodeConflict)
+	}
+	if !errors.Is(got, spi.ErrTxAborted) {
+		t.Fatal("the cause is not attached")
+	}
+}

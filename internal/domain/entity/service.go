@@ -2938,6 +2938,9 @@ func engineConflictIsTransactionConflict(err error) bool {
 // classifyWorkflowError maps a workflow-engine error to the appropriate HTTP
 // error code:
 //
+//   - spi.ErrTxAborted (an earlier conflict aborted the transaction) →
+//     retryable 409 CONFLICT with the cause, first, so no wrapping of it can
+//     reach a branch below.
 //   - An already-classified *common.AppError (matched via errors.As, so it is
 //     found even several layers deep behind %w-wrapping) passes through
 //     unchanged — the minted status/code/retryable flags are authoritative.
@@ -2975,6 +2978,9 @@ func engineConflictIsTransactionConflict(err error) bool {
 //     conflicts already mapped upstream, and a Terminal callout failure that
 //     carries no code of its own) → 400 WORKFLOW_FAILED.
 func classifyWorkflowError(err error) *common.AppError {
+	if a := common.TxAbortedConflict(err); a != nil {
+		return a
+	}
 	var appErr *common.AppError
 	if errors.As(err, &appErr) {
 		return appErr
