@@ -62,24 +62,6 @@ func receivedFor(recs []receivedCallout, entityID string) int {
 	return n
 }
 
-// createOpen creates one entity of model and asserts 200.
-func createOpen(t *testing.T, h *callbackHarness, model, payload string) string {
-	t.Helper()
-	id, status, body := h.CreateEntity(t, model, 1, payload)
-	if status != http.StatusOK {
-		t.Fatalf("create: %d %s", status, body)
-	}
-	return id
-}
-
-// requireState asserts the entity's state.
-func requireState(t *testing.T, h *callbackHarness, id, want string) {
-	t.Helper()
-	if st, _ := h.GetEntityState(t, id); st != want {
-		t.Errorf("state = %q; want %q", st, want)
-	}
-}
-
 // TestSchedRun_NoComputeNodeThenFires: an unsafe processor whose tag has no
 // cnode. MarkUnsafe writes a mark, the dispatch returns the NotHandedOff
 // proof, and RecordAttempt{ClearOwnMark} removes the mark in the same write:

@@ -16,34 +16,6 @@ import (
 // scheduler, and the callback anti-pattern (a joined callback that writes the
 // entity being fired), through the full stack on PostgreSQL.
 
-// holdScript signals gotWork on the first callout and holds it until release
-// is closed; later callouts are answered at once.
-func holdScript(gotWork chan<- struct{}, release <-chan struct{}) cnodeScript {
-	var calls atomic.Int32
-	return func(ctx context.Context, _ receivedCallout, _ *reqCtx) cnodeReply {
-		if calls.Add(1) > 1 {
-			return answerOK()
-		}
-		gotWork <- struct{}{}
-		select {
-		case <-release:
-		case <-ctx.Done():
-			return neverAnswer()
-		}
-		return answerOK()
-	}
-}
-
-// mustTask reads the entity's Fire task and fails the test if there is none.
-func mustTask(t *testing.T, s *schedDB, id string) taskRow {
-	t.Helper()
-	r, ok := s.task(t, id, "Fire")
-	if !ok {
-		t.Fatalf("no task for %s", id)
-	}
-	return r
-}
-
 // entityTxID returns the transaction id the stored entity carries.
 func entityTxID(t *testing.T, h *callbackHarness, id string) string {
 	t.Helper()
