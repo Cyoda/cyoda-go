@@ -184,9 +184,9 @@ func TestE2E_ExplicitFireOfScheduledTransition_ReturnsTransitionNotFound(t *test
 	}
 }
 
-// TestE2E_ScheduledTransition_FiresThroughHTTPStack proves the real scan
-// loop fires a no-criterion scheduled transition end-to-end through the
-// full HTTP stack (design §5.1/§5.2): create lands the entity in a state
+// TestE2E_ScheduledTransition_FiresThroughHTTPStack proves the scheduler
+// fires a no-criterion scheduled transition end-to-end through the full HTTP
+// stack (design §5.1/§5.2): create lands the entity in a state
 // with a scheduled transition, the scheduler of this test's own stack
 // claims it from real Postgres, fires it, and the entity advances. The
 // 200ms delay is small; the 15s poll bound is generous (§11 "Time control":
@@ -213,11 +213,25 @@ func TestE2E_ScheduledTransition_FiresThroughHTTPStack(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("create: %d %s", status, body)
 	}
-	arms := smEventsOfType(schedEvents(t, h, entityID), "SCHEDULED_TRANSITION_ARM")
+
+	// The transition must be ARMED by the create, not fired inline. This is the
+	// load-independent form of "the entity rests in Open after creation": it
+	// asserts the scheduling decision itself rather than racing the 200ms delay
+	// against a state-read round-trip.
+	created := schedEvents(t, h, entityID)
+	arms := smEventsOfType(created, "SCHEDULED_TRANSITION_ARM")
 	if len(arms) == 0 {
-		t.Fatalf("expected a SCHEDULED_TRANSITION_ARM audit event after creation (transition must be scheduled, not fired inline)")
+		t.Fatalf("expected a SCHEDULED_TRANSITION_ARM audit event after creation (transition must be scheduled, not fired inline); got events: %+v", created)
 	}
 	scheduledFor := smEventScheduledTime(t, arms[0])
+
+	// The delay was actually applied when arming — without this, a regression
+	// that armed for "now" would still satisfy every other assertion here (the
+	// scheduler would claim it on its next tick, after scheduledFor). The fire
+	// time is the arm instant plus the delay, and the arm instant is no earlier
+	// than beforeCreate. The ARM event's own stamp is not a usable reference: it
+	// is taken after the scheduled-task write, which under load lags the arm
+	// instant by tens or hundreds of milliseconds.
 	if min := beforeCreate.Add(delayMs * time.Millisecond); scheduledFor.Before(min) {
 		t.Errorf("armed fire time %s is before %s, the create's start plus %dms — the delay was not applied",
 			scheduledFor.Format(time.RFC3339Nano), min.Format(time.RFC3339Nano), delayMs)

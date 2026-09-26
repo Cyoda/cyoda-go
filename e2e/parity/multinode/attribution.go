@@ -269,7 +269,7 @@ func RunAttribution_CalloutAuthType(t *testing.T, fixture MultiNodeFixture) {
 
 // attrScheduledWorkflow: NONE -> (init) -> Open -> (AutoClose, scheduled) ->
 // Closed. Creating an entity arms AutoClose with ArmedBy = the creating origin;
-// the scan loop fires it after delayMs.
+// a node's scheduler claims and fires it after delayMs.
 const attrScheduledWorkflow = `{
 	"importMode": "REPLACE",
 	"workflows": [{

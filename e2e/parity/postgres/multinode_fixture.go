@@ -99,10 +99,11 @@ func (f *pgMultiNode) ComputeUser(t *testing.T, userID string, roles ...string) 
 }
 
 // NodeLogs returns node idx's captured combined stdout+stderr as a string
-// snapshot. It serves the scheduler incarnation lookup (Incarnation) and the
-// scenarios that read a node's log as data. Returns "" for an out-of-range
-// index. Not part of the MultiNodeFixture interface — a scenario type-asserts
-// for it.
+// snapshot. Its callers are Incarnation, which reads the scheduler's start
+// line from it, and TestMultiNodeFixture_ControlSurface
+// (multinode_control_test.go), which proves a node with the scheduler off
+// announces no incarnation. Returns "" for an out-of-range index. Not part of
+// the MultiNodeFixture interface.
 func (f *pgMultiNode) NodeLogs(idx int) string {
 	if idx < 0 || idx >= len(f.nodeLogs) || f.nodeLogs[idx] == nil {
 		return ""
@@ -112,7 +113,7 @@ func (f *pgMultiNode) NodeLogs(idx int) string {
 
 // KillNode SIGKILLs node i's process group and reaps it. Part of the optional
 // crash-testing capability — NOT on the shared MultiNodeFixture interface (a
-// crash test type-asserts for it, like NodeLogs/ComputeUser), since the crash
+// crash test type-asserts for it, like ComputeUser), since the crash
 // scenario is postgres-first and the shared scenario registry must not gain a
 // kill. Killing is permanent for the fixture's life; the node is not restarted.
 func (f *pgMultiNode) KillNode(i int) {

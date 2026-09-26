@@ -78,9 +78,6 @@ func newSaturatedPoolHarness(t *testing.T) *holdHarness {
 		// In-process dispatch, so the criterion below runs on the SERVER's
 		// request goroutine with the transaction open.
 		cfg.ExternalProcessing = svc
-		// The scan loop would queue behind the held connection for the whole
-		// test and log acquire failures unrelated to what is under test.
-		cfg.Scheduler.Enabled = false
 	})
 
 	hh := &holdHarness{
@@ -247,9 +244,6 @@ func newReclaimedTxHarness(t *testing.T) (*callbackHarness, string) {
 		// happens inside app.New — i.e. after this mutator runs.
 		t.Setenv("CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT", idleCeilingLimit.String())
 		cfg.ExternalProcessing = svc
-		// The scan loop would keep tripping the same ceiling in the background
-		// and log failures unrelated to what is under test.
-		cfg.Scheduler.Enabled = false
 	})
 
 	model := storageCeilingModel(t, "idle-ceiling")
@@ -320,7 +314,6 @@ func newStatementCeilingHarness(t *testing.T) (*callbackHarness, string, string)
 	t.Helper()
 	h := newCallbackHarnessConfigured(t, func(cfg *app.Config) {
 		t.Setenv("CYODA_POSTGRES_STATEMENT_TIMEOUT", stmtCeilingLimit.String())
-		cfg.Scheduler.Enabled = false
 	})
 	model := storageCeilingModel(t, "stmt-ceiling")
 	h.setupModelSampleWithWorkflow(t, model, storageCeilingSample, workflowV1)
@@ -461,9 +454,6 @@ func newScheduledReArmCeilingHarness(t *testing.T) (*callbackHarness, string, st
 	t.Helper()
 	h := newCallbackHarnessConfigured(t, func(cfg *app.Config) {
 		t.Setenv("CYODA_POSTGRES_STATEMENT_TIMEOUT", stmtCeilingLimit.String())
-		// Otherwise the scan loop fires (or contends on) the very task these
-		// scenarios lock.
-		cfg.Scheduler.Enabled = false
 	})
 	model := storageCeilingModel(t, "sched-rearm-ceiling")
 	h.setupModelSampleWithWorkflow(t, model, storageCeilingSample, scheduledCeilingWF(model+"-wf"))
@@ -768,9 +758,6 @@ func newSearchCeilingHarness(t *testing.T) (*callbackHarness, string) {
 		// Read by the postgres plugin's own getenv at factory-open time, which
 		// happens inside app.New — i.e. after this mutator runs.
 		t.Setenv("CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT", searchCeilingLimit)
-		// The scan loop would queue behind the single connection for the whole
-		// test and log acquire failures unrelated to what is under test.
-		cfg.Scheduler.Enabled = false
 	})
 	model := storageCeilingModel(t, "search-ceiling")
 	h.setupModelSampleWithWorkflow(t, model, storageCeilingSample, workflowV1)

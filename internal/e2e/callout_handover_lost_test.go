@@ -337,9 +337,6 @@ func newLostHandOverHarness(t *testing.T, nodeID string, seeds []string) *callba
 	t.Helper()
 	return newCalloutHarness(t, func(cfg *app.Config) {
 		calloutTuning(3, 0)(cfg)
-		// Nothing of this file is scheduled; a scan loop would be the one other
-		// thing that talks to a peer.
-		cfg.Scheduler.Enabled = false
 		cfg.Cluster.Enabled = true
 		cfg.Cluster.NodeID = nodeID
 		cfg.Cluster.NodeAddr = fmt.Sprintf("http://127.0.0.1:%d", cfg.HTTPPort)
