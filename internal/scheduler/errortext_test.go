@@ -143,7 +143,7 @@ func TestSanitiseErrorText(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("sanitiseErrorText: got %d bytes %q, want %d bytes", len(got), got, len(tt.want))
 			}
-			if len(got) > maxErrorTextBytes || !utf8.ValidString(got) || strings.ContainsRune(got, 0) {
+			if len(got) > spi.MaxTaskErrorBytes || !utf8.ValidString(got) || strings.ContainsRune(got, 0) {
 				t.Errorf("result is not storable: %d bytes, valid=%v", len(got), utf8.ValidString(got))
 			}
 		})

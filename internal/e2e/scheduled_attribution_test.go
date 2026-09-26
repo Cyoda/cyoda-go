@@ -32,7 +32,7 @@ import (
 // RegisterFunction / scheduleFunctionWorkflowJSON (scheduled_function_test.go).
 
 // firedSchedExecKind/firedSchedExecID are the executor identity every
-// scheduled fire records (fire_scheduled.go's systemPrincipal).
+// scheduled fire records (common.SystemPrincipal).
 const (
 	firedSchedExecKind = "system"
 	firedSchedExecID   = "system"

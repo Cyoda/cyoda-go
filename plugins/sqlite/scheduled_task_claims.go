@@ -64,8 +64,8 @@ func (s *scheduledTaskStore) SweepOwners(ctx context.Context, deadFor time.Durat
 // is claimable too, and the claim adds 1 to its lost_owners. A task is never
 // claimed while another task of its entity is RUNNING.
 func (s *scheduledTaskStore) ClaimDue(ctx context.Context, req spi.ClaimRequest) ([]spi.ScheduledTask, error) {
-	if req.Limit < 1 || req.PerTenantLimit < 1 {
-		return nil, fmt.Errorf("claim due scheduled tasks: limit and per-tenant limit must be >= 1, got %d and %d: %w", req.Limit, req.PerTenantLimit, spi.ErrStoreRejected)
+	if err := spi.ValidateClaimRequest(req); err != nil {
+		return nil, err
 	}
 	_ = s.tm.acquireCommitGate(context.Background())
 	defer s.tm.releaseCommitGate()

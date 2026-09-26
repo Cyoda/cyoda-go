@@ -47,14 +47,6 @@ type RunReport struct {
 	FailReason    spi.ScheduledTaskFailureReason // the engine decided FAILED itself
 }
 
-// firePrincipalSystemID identifies the platform system principal the fire
-// path executes as and attributes legacy (zero-ArmedBy) rows to. The same
-// identity as common.SystemPrincipal(), defined here because
-// internal/domain/workflow must not import internal/scheduler.
-const firePrincipalSystemID = "system"
-
-var systemPrincipal = spi.Principal{ID: firePrincipalSystemID, Kind: spi.PrincipalSystem}
-
 // preRunDecision applies the checks the owner makes on the claimed record
 // before it runs (spec §5.1), in order. It returns a failure reason, or
 // expire=true for a first attempt past its deadline, or neither.
@@ -247,11 +239,11 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	// the arming principal (system for legacy rows), executed by the system.
 	armed := cur.ArmedBy
 	if armed == (spi.Principal{}) {
-		armed = systemPrincipal
+		armed = common.SystemPrincipal()
 	}
 	entity.Meta.ChangeUser = armed.ID
 	entity.Meta.ChangeUserKind = armed.Kind
-	entity.Meta.ChangeExecutor = systemPrincipal
+	entity.Meta.ChangeExecutor = common.SystemPrincipal()
 
 	// expectedTxID is the entity's last committed transaction id as read in
 	// this transaction: the precondition of the final persist.

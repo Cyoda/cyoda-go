@@ -17,6 +17,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 )
@@ -135,7 +136,7 @@ func (f *flakyTx) snapshot() (begun, committed, rolledBack []string) {
 // failEvents reads the SCHEDULED_TRANSITION_FAIL events of an entity.
 func failEvents(t *testing.T, h *harness, tenant spi.TenantID, entityID string) []spi.StateMachineEvent {
 	t.Helper()
-	ctx := common.SystemUserContext(tenant)
+	ctx := commontest.SystemUserContext(tenant)
 	audit, err := h.mem.StateMachineAuditStore(ctx)
 	if err != nil {
 		t.Fatalf("audit store: %v", err)
@@ -321,7 +322,7 @@ func TestService_FailAndItsAuditEventCommitTogether(t *testing.T) {
 	}
 	eventually(t, "the run released", func() bool { return liveRuns(h.svc) == 0 })
 
-	ctx := common.SystemUserContext("t1")
+	ctx := commontest.SystemUserContext("t1")
 	audit, err := h.mem.StateMachineAuditStore(ctx)
 	if err != nil {
 		t.Fatalf("audit store: %v", err)
@@ -448,7 +449,7 @@ func TestService_FailEventCarriesTheEntityStateAndTheTaskCounters(t *testing.T) 
 	h := newHarness(t, testConfig(), reportFirer(unsafeFailure))
 	h.svc.deps.Clock = fixedClock{at: at}
 
-	ctx := common.SystemUserContext(task.TenantID)
+	ctx := commontest.SystemUserContext(task.TenantID)
 	entities, err := h.mem.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("entity store: %v", err)

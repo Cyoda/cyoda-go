@@ -55,7 +55,7 @@ const hourScheduleDropped = `{
 
 const kOver1 = `{"type":"simple","jsonPath":"$.k","operatorType":"GREATER_THAN","value":1}`
 
-// listTasks reads GET /api/scheduled-tasks with query, through Q-5's client.
+// listTasks reads GET /api/scheduled-tasks with query, through the parity client.
 func listTasks(t *testing.T, c *client.Client, query url.Values) []client.ScheduledTask {
 	t.Helper()
 	query.Set("limit", "1000")

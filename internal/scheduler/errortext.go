@@ -13,9 +13,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
-// maxErrorTextBytes bounds lastError. Every backend stores the same text.
-const maxErrorTextBytes = 1024
-
 const (
 	cancelledText = "CANCELLED: the run was stopped by the scheduler"
 	conflictText  = "CONFLICT: a concurrent write changed the entity or its task"
@@ -64,14 +61,14 @@ func recordedError(err error) (text string, ticket uuid.UUID, warnOnly bool) {
 
 // sanitiseErrorText makes text storable on every backend: NUL and invalid
 // UTF-8 become U+FFFD, and the text is cut at a character boundary to at most
-// maxErrorTextBytes.
+// spi.MaxTaskErrorBytes.
 func sanitiseErrorText(s string) string {
 	s = strings.ReplaceAll(s, "\x00", "�")
 	s = strings.ToValidUTF8(s, "�")
-	if len(s) <= maxErrorTextBytes {
+	if len(s) <= spi.MaxTaskErrorBytes {
 		return s
 	}
-	cut := maxErrorTextBytes
+	cut := spi.MaxTaskErrorBytes
 	for cut > 0 && !utf8.RuneStart(s[cut]) {
 		cut--
 	}

@@ -400,8 +400,8 @@ func afterCursor(t spi.ScheduledTask, c spi.ScheduledTaskCursor) bool {
 // collation and PostgreSQL's COLLATE "C" do, so every backend pages the same
 // way. It never joins a transaction.
 func (s *scheduledTaskStore) Query(_ context.Context, tenant spi.TenantID, q spi.ScheduledTaskQuery) (spi.ScheduledTaskPage, error) {
-	if q.Limit < 1 {
-		return spi.ScheduledTaskPage{}, fmt.Errorf("query scheduled tasks: limit must be >= 1, got %d: %w", q.Limit, spi.ErrStoreRejected)
+	if err := spi.ValidateScheduledTaskQuery(q); err != nil {
+		return spi.ScheduledTaskPage{}, err
 	}
 	statuses := make(map[spi.ScheduledTaskStatus]bool, len(q.Statuses))
 	for _, st := range q.Statuses {

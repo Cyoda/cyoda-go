@@ -400,9 +400,8 @@ func (s *scheduledTaskStore) Get(ctx context.Context, tenant spi.TenantID, id st
 // Query pages the tenant's tasks in (scheduled_time, id) order, ids compared
 // byte-wise. It reads one row past the page to know whether another follows.
 func (s *scheduledTaskStore) Query(ctx context.Context, tenant spi.TenantID, q spi.ScheduledTaskQuery) (spi.ScheduledTaskPage, error) {
-	if q.Limit < 1 {
-		return spi.ScheduledTaskPage{}, fmt.Errorf("query scheduled tasks: Limit must be >= 1, got %d: %w",
-			q.Limit, spi.ErrStoreRejected)
+	if err := spi.ValidateScheduledTaskQuery(q); err != nil {
+		return spi.ScheduledTaskPage{}, err
 	}
 	statuses := make([]string, 0, len(q.Statuses))
 	for _, st := range q.Statuses {
@@ -579,9 +578,8 @@ const claimedMarksSQL = `SELECT m.tenant_id, m.task_id
 // rival claimer's write to a sibling task; any failure is returned
 // (claimError).
 func (s *scheduledTaskStore) ClaimDue(ctx context.Context, req spi.ClaimRequest) ([]spi.ScheduledTask, error) {
-	if req.Limit < 1 || req.PerTenantLimit < 1 {
-		return nil, fmt.Errorf("claim scheduled tasks: Limit and PerTenantLimit must be >= 1, got %d and %d: %w",
-			req.Limit, req.PerTenantLimit, spi.ErrStoreRejected)
+	if err := spi.ValidateClaimRequest(req); err != nil {
+		return nil, err
 	}
 	claimed, err := s.claimDue(ctx, req)
 	if err != nil {

@@ -162,9 +162,9 @@ func TestUnsafeReached_InFlightIsVisible(t *testing.T) {
 	ext := &scriptedExtProc{processor: func(ctx context.Context, proc spi.ProcessorDefinition, _ string) (*spi.Entity, error) {
 		switch proc.Name {
 		case "p1":
-			duringUnsafe = RunGuardFrom(ctx).UnsafeInFlight()
+			duringUnsafe = unsafeInFlight(RunGuardFrom(ctx))
 		case "p2":
-			duringSafe = RunGuardFrom(ctx).UnsafeInFlight()
+			duringSafe = unsafeInFlight(RunGuardFrom(ctx))
 		}
 		return nil, nil
 	}}
@@ -177,9 +177,9 @@ func TestUnsafeReached_InFlightIsVisible(t *testing.T) {
 	if r.Outcome != OutcomeFired {
 		t.Fatalf("report = %+v, want fired", r)
 	}
-	if !duringUnsafe || duringSafe || run.guard.UnsafeInFlight() {
+	if !duringUnsafe || duringSafe || unsafeInFlight(run.guard) {
 		t.Errorf("in flight: during unsafe=%v, during safe=%v, after=%v; want true, false, false",
-			duringUnsafe, duringSafe, run.guard.UnsafeInFlight())
+			duringUnsafe, duringSafe, unsafeInFlight(run.guard))
 	}
 }
 
@@ -201,7 +201,7 @@ func TestUnsafeReached_EverySite(t *testing.T) {
 			t.Run(site.name+"/"+tc.name, func(t *testing.T) {
 				var during bool
 				ext := &scriptedExtProc{processor: func(ctx context.Context, _ spi.ProcessorDefinition, _ string) (*spi.Entity, error) {
-					during = RunGuardFrom(ctx).UnsafeInFlight()
+					during = unsafeInFlight(RunGuardFrom(ctx))
 					return nil, tc.err
 				}}
 				env := newRunEnv(t, ext)
@@ -211,8 +211,8 @@ func TestUnsafeReached_EverySite(t *testing.T) {
 				if !r.MarkHeld || r.UnsafeReached != tc.wantReached {
 					t.Fatalf("report = %+v, want markHeld and unsafeReached=%v", r, tc.wantReached)
 				}
-				if !during || run.guard.UnsafeInFlight() {
-					t.Errorf("in flight: during=%v, after=%v; want true, false", during, run.guard.UnsafeInFlight())
+				if !during || unsafeInFlight(run.guard) {
+					t.Errorf("in flight: during=%v, after=%v; want true, false", during, unsafeInFlight(run.guard))
 				}
 			})
 		}
@@ -236,9 +236,9 @@ func TestUnsafeReached_EverySite_PanicLeavesFactSet(t *testing.T) {
 			if recovered := firePanics(env, run, claimed); recovered == nil {
 				t.Fatal("the dispatch panic did not propagate")
 			}
-			if !run.guard.markHeld || !run.guard.unsafeReached || run.guard.UnsafeInFlight() {
+			if !run.guard.markHeld || !run.guard.unsafeReached || unsafeInFlight(run.guard) {
 				t.Errorf("after the panic: markHeld=%v unsafeReached=%v inFlight=%v; want true, true, false",
-					run.guard.markHeld, run.guard.unsafeReached, run.guard.UnsafeInFlight())
+					run.guard.markHeld, run.guard.unsafeReached, unsafeInFlight(run.guard))
 			}
 		})
 	}
@@ -259,7 +259,7 @@ type panickingMarkStore struct {
 }
 
 func (s *panickingMarkStore) MarkUnsafe(ctx context.Context, _ spi.TaskRef) error {
-	s.inFlight = RunGuardFrom(ctx).UnsafeInFlight()
+	s.inFlight = unsafeInFlight(RunGuardFrom(ctx))
 	panic("MarkUnsafe panicked")
 }
 
@@ -280,9 +280,9 @@ func TestUnsafeInFlight_EverySite_CountsFromBeforeTheMark_PanicInMark(t *testing
 			if !store.inFlight {
 				t.Error("the dispatch was not in flight during its mark")
 			}
-			if run.guard.UnsafeInFlight() || run.guard.unsafeReached {
+			if unsafeInFlight(run.guard) || run.guard.unsafeReached {
 				t.Errorf("after the panic: inFlight=%v unsafeReached=%v; want false, false",
-					run.guard.UnsafeInFlight(), run.guard.unsafeReached)
+					unsafeInFlight(run.guard), run.guard.unsafeReached)
 			}
 			if n := ext.count("p1"); n != 0 {
 				t.Errorf("p1 dispatched %d times, want 0", n)
@@ -307,8 +307,8 @@ func TestUnsafeMark_EverySite_NoNewUnsafe_CountsAsCut(t *testing.T) {
 
 			r := run.fire(env.engine, env.ctx, claimed)
 			assertCancelled(t, r)
-			if r.UnsafeReached || r.MarkHeld || run.guard.UnsafeInFlight() {
-				t.Errorf("report = %+v, inFlight=%v; want nothing reached, no mark, nothing in flight", r, run.guard.UnsafeInFlight())
+			if r.UnsafeReached || r.MarkHeld || unsafeInFlight(run.guard) {
+				t.Errorf("report = %+v, inFlight=%v; want nothing reached, no mark, nothing in flight", r, unsafeInFlight(run.guard))
 			}
 			if ext.count("p1") != 0 || store.count() != 0 {
 				t.Errorf("dispatches=%d marks=%d, want 0, 0", ext.count("p1"), store.count())
@@ -327,8 +327,8 @@ func TestUnsafeInFlight_EverySite_RefusedMarkLeavesNothingInFlight(t *testing.T)
 			run := newTestRun(store, claimed)
 
 			r := run.fire(env.engine, env.ctx, claimed)
-			if r.Outcome != OutcomeFailed || r.UnsafeReached || run.guard.UnsafeInFlight() {
-				t.Errorf("report = %+v, inFlight=%v; want failed, nothing reached, nothing in flight", r, run.guard.UnsafeInFlight())
+			if r.Outcome != OutcomeFailed || r.UnsafeReached || unsafeInFlight(run.guard) {
+				t.Errorf("report = %+v, inFlight=%v; want failed, nothing reached, nothing in flight", r, unsafeInFlight(run.guard))
 			}
 		})
 	}
@@ -393,4 +393,11 @@ func TestUnsafeFlight_ConcurrentBeginEnd(t *testing.T) {
 	if _, ok := f.Since(); ok {
 		t.Error("balanced Begins and Ends left a dispatch in flight")
 	}
+}
+
+// unsafeInFlight reports whether g's Unsafe record counts a dispatch in
+// progress: the read the scheduler's shutdown drain makes.
+func unsafeInFlight(g *RunGuard) bool {
+	_, ok := g.Unsafe.Since()
+	return ok
 }

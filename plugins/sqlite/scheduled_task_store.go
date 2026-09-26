@@ -576,8 +576,8 @@ func (s *scheduledTaskStore) Get(ctx context.Context, tenant spi.TenantID, id st
 // pages the same way. It never joins a transaction and reads on readDB, so it
 // never waits for the writer.
 func (s *scheduledTaskStore) Query(ctx context.Context, tenant spi.TenantID, q spi.ScheduledTaskQuery) (spi.ScheduledTaskPage, error) {
-	if q.Limit < 1 {
-		return spi.ScheduledTaskPage{}, fmt.Errorf("query scheduled tasks: limit must be >= 1, got %d: %w", q.Limit, spi.ErrStoreRejected)
+	if err := spi.ValidateScheduledTaskQuery(q); err != nil {
+		return spi.ScheduledTaskPage{}, err
 	}
 	var where strings.Builder
 	args := []any{string(tenant)}

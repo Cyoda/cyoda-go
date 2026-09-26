@@ -462,10 +462,10 @@ func (s *Service) watchdogLoop() {
 // is stale and does nothing; the watchdog re-arms from that heartbeat.
 //
 // It reads no run's Unsafe record. A path that does (the shutdown drain) must
-// close NoNewUnsafe before it reads Unsafe.Since or UnsafeInFlight, in program
-// order on its own goroutine: the engine counts an unsafe dispatch before it
-// checks NoNewUnsafe, and only that order makes the read miss no dispatch that
-// goes ahead.
+// close NoNewUnsafe before it reads Unsafe.Since, in program order on its own
+// goroutine: the engine counts an unsafe dispatch before it checks
+// NoNewUnsafe, and only that order makes the read miss no dispatch that goes
+// ahead.
 func (s *Service) selfCancel() {
 	s.mu.Lock()
 	defer s.mu.Unlock()

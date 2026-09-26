@@ -9,6 +9,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -527,7 +528,7 @@ func TestFireScheduled_AttributesToArmedByUser_IncludingCascade(t *testing.T) {
 	// A scheduled run's context carries no user identity at all: only a
 	// system UserContext synthesised for the task's tenant. Attribution must
 	// come from the durable row, not ctx.
-	dispatchCtx := common.SystemUserContext(testTenant)
+	dispatchCtx := commontest.SystemUserContext(testTenant)
 	r := fireDue(t, engine, dispatchCtx, id)
 	if r.Err != nil {
 		t.Fatalf("FireScheduledTransition: %v", r.Err)
@@ -1187,8 +1188,8 @@ func TestFireScheduled_CBDIntermediateFlush_AttributesToArmingPrincipal_NotPrior
 	if intermediate.AttributedKind != armingUser.Kind {
 		t.Errorf("intermediate version AttributedKind = %v, want %v", intermediate.AttributedKind, armingUser.Kind)
 	}
-	if intermediate.Executor != systemPrincipal {
-		t.Errorf("intermediate version Executor = %+v, want %+v (system: the scheduler performs the fire, not the arming principal)", intermediate.Executor, systemPrincipal)
+	if intermediate.Executor != common.SystemPrincipal() {
+		t.Errorf("intermediate version Executor = %+v, want %+v (system: the scheduler performs the fire, not the arming principal)", intermediate.Executor, common.SystemPrincipal())
 	}
 	if intermediate.User == priorCommitter.ID {
 		t.Error("intermediate version must never carry the stale prior-committer attribution")
@@ -1210,10 +1211,10 @@ func TestFireScheduled_CBDIntermediateFlush_AttributesToArmingPrincipal_NotPrior
 	if got := postDispatchEntity.Entity.Meta.State; got != "OPEN" {
 		t.Fatalf("post-dispatch apply version state = %q, want OPEN (Meta.State advances to Next only after this write, in fireTransition)", got)
 	}
-	if postDispatchApply.User != armingUser.ID || postDispatchApply.AttributedKind != armingUser.Kind || postDispatchApply.Executor != systemPrincipal {
+	if postDispatchApply.User != armingUser.ID || postDispatchApply.AttributedKind != armingUser.Kind || postDispatchApply.Executor != common.SystemPrincipal() {
 		t.Errorf("post-dispatch apply version attribution = {%q %v %+v}, want {%q %v %+v} — this write must not carry the stale prior-committer attribution either",
 			postDispatchApply.User, postDispatchApply.AttributedKind, postDispatchApply.Executor,
-			armingUser.ID, armingUser.Kind, systemPrincipal)
+			armingUser.ID, armingUser.Kind, common.SystemPrincipal())
 	}
 
 	// The terminal version is simply the entity's current state — no
@@ -1228,10 +1229,10 @@ func TestFireScheduled_CBDIntermediateFlush_AttributesToArmingPrincipal_NotPrior
 		t.Fatalf("terminal version state = %q, want MID", terminalEntity.Meta.State)
 	}
 	terminal := versionMetas[3]
-	if terminal.User != armingUser.ID || terminal.AttributedKind != armingUser.Kind || terminal.Executor != systemPrincipal {
+	if terminal.User != armingUser.ID || terminal.AttributedKind != armingUser.Kind || terminal.Executor != common.SystemPrincipal() {
 		t.Errorf("terminal version attribution = {%q %v %+v}, want {%q %v %+v}",
 			terminal.User, terminal.AttributedKind, terminal.Executor,
-			armingUser.ID, armingUser.Kind, systemPrincipal)
+			armingUser.ID, armingUser.Kind, common.SystemPrincipal())
 	}
 }
 
@@ -1340,7 +1341,7 @@ func TestFireScheduled_SiblingEntityWrite_AttributesToArmingUser_ViaAmbientOrigi
 	// Dispatch ctx carries no user identity at all, exactly like the real
 	// scheduler dispatch (common.SystemUserContext) — attribution must
 	// come entirely from the ambient origin seeded from the durable row.
-	dispatchCtx := common.SystemUserContext(testTenant)
+	dispatchCtx := commontest.SystemUserContext(testTenant)
 	r := fireDue(t, engine, dispatchCtx, id)
 	if r.Err != nil {
 		t.Fatalf("FireScheduledTransition: %v", r.Err)

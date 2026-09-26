@@ -102,18 +102,6 @@ func (f *UnsafeFlight) Since() (time.Time, bool) {
 	return f.since, f.n > 0
 }
 
-// UnsafeInFlight reports whether an unsafe processor dispatch of this run is
-// in progress. The scheduler exempts such a run at shutdown step 3 (spec
-// §6.4). A dispatch counts from before its mark until its step's error is
-// known. It is counted before the NoNewUnsafe check: a scheduler that closes
-// NoNewUnsafe and then reads the count cannot miss a dispatch that goes
-// ahead. A dispatch refused by the signal raises the count only until the
-// refusal returns.
-func (g *RunGuard) UnsafeInFlight() bool {
-	_, ok := g.Unsafe.Since()
-	return ok
-}
-
 // noNewUnsafe reports whether NoNewUnsafe is closed. A nil channel is never
 // ready, so a nil NoNewUnsafe never stops a dispatch.
 func (g *RunGuard) noNewUnsafe() bool {

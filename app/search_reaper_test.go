@@ -10,6 +10,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -138,7 +139,7 @@ func createReapTestJob(t *testing.T, store spi.AsyncSearchStore, id string, crea
 		SearchOpts: opts,
 		CreateTime: time.Now().Add(-createdAgo),
 	}
-	if err := store.CreateJob(common.SystemUserContext("tenant-reap"), job); err != nil {
+	if err := store.CreateJob(commontest.SystemUserContext("tenant-reap"), job); err != nil {
 		t.Fatalf("CreateJob(%s): %v", id, err)
 	}
 }
@@ -173,7 +174,7 @@ func awaitEpoch(t *testing.T, store spi.AsyncSearchStore, id string, want int64,
 	deadline := time.Now().Add(within)
 	var epoch int64
 	for time.Now().Before(deadline) {
-		job, err := store.GetJob(common.SystemUserContext("tenant-reap"), id)
+		job, err := store.GetJob(commontest.SystemUserContext("tenant-reap"), id)
 		if err != nil {
 			t.Fatalf("GetJob(%s): %v", id, err)
 		}
@@ -221,7 +222,7 @@ func TestSearchReapers_BlockedReapDoesNotStopClaims(t *testing.T) {
 		t.Fatal("no snapshot reap started within 2s")
 	}
 	createReapTestJob(t, base, "job-released", 0)
-	if err := base.Release(common.SystemUserContext("tenant-reap"), "job-released", 1); err != nil {
+	if err := base.Release(commontest.SystemUserContext("tenant-reap"), "job-released", 1); err != nil {
 		t.Fatalf("Release: %v", err)
 	}
 	awaitEpoch(t, base, "job-released", 2, 2*time.Second, "the claim of a released job while a snapshot reap is blocked")
@@ -300,7 +301,7 @@ func TestSearchReapers_StopEndsAndAwaitsBlockedSecondPass(t *testing.T) {
 	if !store.ended.Load() {
 		t.Fatal("stop returned while the second pass's write was still in flight")
 	}
-	job, err := base.GetJob(common.SystemUserContext("tenant-reap"), "job-capped")
+	job, err := base.GetJob(commontest.SystemUserContext("tenant-reap"), "job-capped")
 	if err != nil {
 		t.Fatalf("GetJob: %v", err)
 	}
