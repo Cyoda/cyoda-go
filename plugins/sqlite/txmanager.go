@@ -198,6 +198,17 @@ type transactionManager struct {
 	// entry here is simply never read again. Cleaned up after commit or
 	// rollback (no leak).
 	deletedBufferedEntities map[string]map[string]*spi.Entity // txID -> entityID -> evicted entity
+
+	// lostDiscardedWrite marks a transaction that a RollbackToSavepoint made
+	// discard a write which had already lost first-committer-wins: another
+	// transaction committed that entity after this one's snapshot and before
+	// the rollback. The rollback restores the write set from the snapshot,
+	// so Commit's log check can no longer see the write; the mark makes
+	// Commit refuse the transaction with spi.ErrConflict, as PostgreSQL
+	// refuses one whose write failed with 40001 inside a rolled-back
+	// savepoint. It survives every later RollbackToSavepoint. Protected by
+	// mu; removed by forgetLocked.
+	lostDiscardedWrite map[string]bool
 }
 
 // Verify interface compliance at compile time.
@@ -218,6 +229,7 @@ func newTransactionManager(factory *StoreFactory, uuids spi.UUIDGenerator) *tran
 		auditOps:                make(map[string][]stagedAuditEvent),
 		supersededSaves:         make(map[string]map[string][]*spi.Entity),
 		deletedBufferedEntities: make(map[string]map[string]*spi.Entity),
+		lostDiscardedWrite:      make(map[string]bool),
 	}
 }
 
@@ -656,6 +668,27 @@ func (m *transactionManager) forgetLocked(txID string) {
 	delete(m.auditOps, txID)
 	delete(m.supersededSaves, txID)
 	delete(m.deletedBufferedEntities, txID)
+	delete(m.lostDiscardedWrite, txID)
+}
+
+// committedSinceSnapshotLocked reports whether a transaction that committed
+// after txID's snapshot wrote one of ids. Caller holds mu.
+func (m *transactionManager) committedSinceSnapshotLocked(txID string, ids []string) bool {
+	if len(ids) == 0 {
+		return false
+	}
+	snapshotSeq := m.txSnapshotSeq[txID]
+	for _, committed := range m.committedLog {
+		if committed.seq <= snapshotSeq {
+			continue
+		}
+		for _, id := range ids {
+			if committed.writeSet[id] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // pruneCommittedLogLocked drops the log entries no open transaction can
@@ -848,11 +881,16 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 		auditEvents = append([]stagedAuditEvent(nil), m.auditOps[txID]...)
 		taskWrites := taskWriteSet(scheduledOps)
 		snapshotSeq := m.txSnapshotSeq[txID]
+		// A write a savepoint rollback discarded after it had lost is a
+		// conflict too — see lostDiscardedWrite.
+		conflict := m.lostDiscardedWrite[txID]
 		for _, committed := range m.committedLog {
+			if conflict {
+				break
+			}
 			if committed.seq <= snapshotSeq {
 				continue
 			}
-			conflict := false
 			for entityID := range committed.writeSet {
 				if tx.ReadSet[entityID] || tx.WriteSet[entityID] {
 					conflict = true
@@ -865,17 +903,17 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 					break
 				}
 			}
-			if conflict {
-				// Matches the flush-failure branch below: every abort path
-				// leaves RolledBack=true, not just Closed=true, so a later
-				// join on this tx's ctx answers ErrTxRolledBack rather than
-				// the misleading ErrTxAlreadyCommitted. Safe to write
-				// directly here: tx.OpMu.Lock (step 1b) is held for the
-				// whole of Commit.
-				tx.RolledBack = true
-				m.forgetLocked(txID)
-				return spi.ErrConflict
-			}
+		}
+		if conflict {
+			// Matches the flush-failure branch below: every abort path
+			// leaves RolledBack=true, not just Closed=true, so a later
+			// join on this tx's ctx answers ErrTxRolledBack rather than
+			// the misleading ErrTxAlreadyCommitted. Safe to write
+			// directly here: tx.OpMu.Lock (step 1b) is held for the
+			// whole of Commit.
+			tx.RolledBack = true
+			m.forgetLocked(txID)
+			return spi.ErrConflict
 		}
 		return nil
 	}(); err != nil {
@@ -1444,6 +1482,22 @@ func (m *transactionManager) RollbackToSavepoint(ctx context.Context, txID strin
 	snap, ok := txSavepoints[savepointID]
 	if !ok {
 		return fmt.Errorf("RollbackToSavepoint: %w (txID=%s, savepointID=%s)", spi.ErrSavepointNotFound, txID, savepointID)
+	}
+
+	// A write the rollback discards stops being a write, but if another
+	// transaction already committed its entity after this one's snapshot,
+	// the transaction has lost that race and Commit must refuse it — see
+	// lostDiscardedWrite. A commit to that entity after the rollback does
+	// not race any write of this transaction and is not recorded. Read-set
+	// entries the rollback discards are dropped, as PostgreSQL drops them.
+	var discarded []string
+	for id := range tx.WriteSet {
+		if !snap.writeSet[id] {
+			discarded = append(discarded, id)
+		}
+	}
+	if m.committedSinceSnapshotLocked(txID, discarded) {
+		m.lostDiscardedWrite[txID] = true
 	}
 
 	tx.Buffer = snap.buffer
