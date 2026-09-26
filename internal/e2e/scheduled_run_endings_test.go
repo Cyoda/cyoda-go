@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cyoda-platform/cyoda-go/app"
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
 )
 
@@ -49,17 +50,6 @@ func awaitSchedulerLiveFor(t *testing.T, h *callbackHarness, d time.Duration) {
 	h.SetupModelWithWorkflow(t, model, fireOpenToDone("sr-sentinel-wf", d.Milliseconds(), 0))
 	id := createOpen(t, h, model, workflowSampleModel)
 	awaitCallbackEntityState(t, h, id, "Done", d+scheduledFireTimeout)
-}
-
-// receivedFor counts the callouts in recs that carry entityID.
-func receivedFor(recs []receivedCallout, entityID string) int {
-	n := 0
-	for _, r := range recs {
-		if r.EntityID == entityID {
-			n++
-		}
-	}
-	return n
 }
 
 // TestSchedRun_NoComputeNodeThenFires: an unsafe processor whose tag has no
@@ -187,19 +177,48 @@ func TestSchedRun_IdempotentFailureRetried(t *testing.T) {
 	awaitDBCondition(t, scheduledFireTimeout, "a second send", func() bool { return len(cn.Received()) >= 2 })
 }
 
-// TestSchedRun_LateAfterFailedAttemptsFails: timeoutMs 1500, an idempotent
+// TestSchedRun_LateAfterFailedAttemptsFails: timeoutMs 9000, an idempotent
 // processor that always fails: FAILED EXPIRED_AFTER_FAILED_ATTEMPTS (§5.1
 // step 4, §5.6), with its audit event; the entity stays.
 func TestSchedRun_LateAfterFailedAttemptsFails(t *testing.T) {
-	h, s := newSchedulerHarness(t, nil)
+	// retryDelay is overridden well above the shared harness default (1s):
+	// the margin that keeps attempts at exactly 2 (see below) scales with
+	// retryDelay, and needs several seconds of slack, not a few hundred
+	// milliseconds, to survive CI load.
+	const retryDelay = 4 * time.Second
+	h, s := newSchedulerHarness(t, func(cfg *app.Config) {
+		cfg.Scheduler.RetryDelay = retryDelay
+		cfg.Scheduler.RetryDelayMax = 5 * retryDelay // comfortably above 2*retryDelay: the doubling below isn't clipped early
+	})
 	model, tag := uniq("sr-late"), uniq("sr-late-tag")
 	h.AttachCnode(t, cnodeSpec{name: "p", tags: []string{tag}, script: scriptAlways(answerFail("late boom"))})
-	h.SetupModelWithWorkflow(t, model, fireOpenToDone("sr-late-wf", 100, 1500, sProc("p", "SYNC", tag, true)))
+	h.SetupModelWithWorkflow(t, model, fireOpenToDone("sr-late-wf", 100, 9000, sProc("p", "SYNC", tag, true)))
 	id := createOpen(t, h, model, workflowSampleModel)
 
 	r := s.awaitTask(t, id, "Fire", 20*time.Second, "FAILED", func(r taskRow, ok bool) bool { return ok && r.Status == "FAILED" })
-	if r.FailureReason != "EXPIRED_AFTER_FAILED_ATTEMPTS" || r.Attempts < 1 || r.ClaimToken != "" {
-		t.Errorf("failed task = %+v; want EXPIRED_AFTER_FAILED_ATTEMPTS, attempts >= 1, no claim", r)
+	// The deadline (ScheduledTime + timeoutMs = arm+100ms+9s ≈ arm+9.1s) sits
+	// strictly inside (retryDelay, 3*retryDelay) = (4s, 12s): the first
+	// retry lands at ~arm+4.1s (counted, attempts=1); decideBookkeeping then
+	// caps the second retry's next-attempt-time at the deadline itself
+	// (bookkeeping.go:54-60, since deadline < nowMs+2*retryDelay there), so
+	// it is scheduled at exactly arm+9.1s and also counted (attempts=2); the
+	// third check — whenever the scheduler gets to it — always finds nowMs
+	// past that deadline and fails without a further count
+	// (bookkeeping.go:57-58). fire_scheduled.go's own preRunDecision is a
+	// separate, looser backstop (deadline + retryDelay, fire_scheduled.go:73-79)
+	// that never fires first here, since its bound (arm+13.1s) sits well
+	// beyond decideBookkeeping's.
+	//
+	// This gives two margins, each ~4s (retryDelay) wide: between the first
+	// counted attempt (~arm+4.1s) and the deadline (~arm+9.1s) — the window
+	// in which the first attempt's own round trip plus the second's (scan,
+	// dispatch, record) must complete for the second attempt to be counted
+	// rather than rejected as already-expired — and between the deadline and
+	// 3*retryDelay (~arm+12.1s) — the window protecting the third attempt's
+	// rejection from firing too early. Both are assumed to comfortably
+	// absorb CI load. The scenario's own numbers fix attempts at exactly 2.
+	if r.FailureReason != "EXPIRED_AFTER_FAILED_ATTEMPTS" || r.Attempts != 2 || r.ClaimToken != "" {
+		t.Errorf("failed task = %+v; want EXPIRED_AFTER_FAILED_ATTEMPTS, attempts 2, no claim", r)
 	}
 	if data := failEvent(t, h, id); data["reason"] != "EXPIRED_AFTER_FAILED_ATTEMPTS" {
 		t.Errorf("SCHEDULED_TRANSITION_FAIL data = %v", data)
@@ -336,10 +355,11 @@ func TestSchedRun_FireTimeCancel(t *testing.T) {
 		h.SetupModelWithWorkflow(t, model, fireOpenToDone("sr-notx-wf", 1500, 0))
 		id := createOpen(t, h, model, workflowSampleModel)
 		// Legacy data: the API never writes an entity without a transaction id.
-		if _, err := s.pool.Exec(context.Background(),
+		tag, err := s.pool.Exec(context.Background(),
 			`UPDATE entities SET doc = doc #- '{_meta,transaction_id}' WHERE tenant_id = $1 AND entity_id = $2`,
-			harnessTenant, id); err != nil {
-			t.Fatalf("strip the transaction id: %v", err)
+			harnessTenant, id)
+		if err != nil || tag.RowsAffected() != 1 {
+			t.Fatalf("strip the transaction id: %d rows (err %v); want exactly 1", tag.RowsAffected(), err)
 		}
 		awaitCallbackSMEventType(t, h, id, "SCHEDULED_TRANSITION_CANCEL", "Open", scheduledFireTimeout)
 		s.awaitTask(t, id, "Fire", scheduledFireTimeout, "removal", func(_ taskRow, ok bool) bool { return !ok })
@@ -420,11 +440,19 @@ func TestSchedRun_LastErrorText(t *testing.T) {
 
 		<-gotWork
 		// The run's transaction is the only one open in this database while
-		// its processor is held.
+		// its processor is held. state_change < 200ms excludes a session that
+		// only just went idle in transaction (e.g. one still settling its own
+		// bookkeeping), so the poll below waits for a stable set before the
+		// kill picks its victim, and never terminates the wrong session.
+		const victims = `SELECT pid FROM pg_stat_activity
+			 WHERE datname = current_database() AND state = 'idle in transaction'
+			   AND pid <> pg_backend_pid() AND state_change < now() - interval '200 milliseconds'`
+		awaitDBCondition(t, scheduledFireTimeout, "exactly one settled idle-in-transaction backend", func() bool {
+			return s.count(t, `SELECT count(*) FROM (`+victims+`) v`) == 1
+		})
 		var n int
-		if err := s.pool.QueryRow(context.Background(), `
-			SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity
-			 WHERE datname = current_database() AND state = 'idle in transaction' AND pid <> pg_backend_pid()`,
+		if err := s.pool.QueryRow(context.Background(),
+			`SELECT count(pg_terminate_backend(pid)) FROM (`+victims+`) v`,
 		).Scan(&n); err != nil || n != 1 {
 			t.Fatalf("terminated %d backends (err %v); want exactly the run's", n, err)
 		}
