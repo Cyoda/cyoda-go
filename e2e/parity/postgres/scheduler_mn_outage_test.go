@@ -22,6 +22,8 @@ import (
 //   - O is stale when the database returns, but S makes no lost-owner claim
 //     until its own heartbeats have run clean for a whole STALE_AFTER (§6.1):
 //     T1 keeps O's claim until then, and is claimed with lostOwners 1 after.
+//   - T1's processor is idempotent, so no mark is set and the reclaiming owner
+//     may send it again (§5.5).
 func TestSchedulerMN_DatabaseOutageLongerThanStaleAfter(t *testing.T) {
 	t.Parallel()
 	const host = 2
@@ -86,6 +88,9 @@ func TestSchedulerMN_DatabaseOutageLongerThanStaleAfter(t *testing.T) {
 	})
 
 	// T1: no lost-owner claim before a whole stale period of clean heartbeats.
+	// The clean window may start up to one heartbeat budget (1 s) before
+	// resumeAt, because a heartbeat already in flight completes on unpause;
+	// 3 s covers that plus the unpause latency.
 	gate := resumeAt.Add(fixtureutil.TunedStaleAfter - 3*time.Second)
 	for time.Now().Before(gate) {
 		r, ok := s.task(t, t1, "Fire")
@@ -99,6 +104,9 @@ func TestSchedulerMN_DatabaseOutageLongerThanStaleAfter(t *testing.T) {
 		func(r mnTask, ok bool) bool { return ok && r.ClaimOwner == survivorInc && r.LostOwners == 1 })
 	if r1.Status != "RUNNING" {
 		t.Errorf("T1 = %+v; want RUNNING under the survivor", r1)
+	}
+	if r1.Marked {
+		t.Errorf("T1 carries a mark; its processor is idempotent and must never be marked")
 	}
 	mnAwait(t, 10*time.Second, "T1's processor sent again", func() bool { return mnReceived(t, stall, t1) >= 2 })
 	if n := mnReceived(t, stall, t1); n != 2 {
