@@ -131,9 +131,11 @@ After it claims a task, the owner checks these in order:
 5. Otherwise the owner runs it.
 
 A pnode crash counts as a lost owner. So a task that was running on a crashed
-pnode, and has a short `timeoutMs`, ends FAILED `EXPIRED_AFTER_FAILED_ATTEMPTS`
-rather than expired. This is certain when `timeoutMs + RETRY_DELAY <
-STALE_AFTER − HEARTBEAT_INTERVAL`.
+pnode is never expired. It ends FAILED `EXPIRED_AFTER_FAILED_ATTEMPTS` once it
+is picked up more than `RETRY_DELAY` past its deadline; otherwise it runs
+again. No bound on `timeoutMs` makes the outcome certain: the crashed pnode
+may have claimed up to one heartbeat budget after its last successful
+heartbeat, and the deadline is checked on the new owner's clock.
 
 ### 5.2 The run's transactions
 
@@ -353,7 +355,10 @@ rolled back, so it never waits on the run's own row lock.
   shutdown deadline of §6.4. This covers every infrastructure condition:
   outage, failover, timeout, pool exhaustion, conflict. Each failed attempt is
   logged at WARN, at most once a minute per task.
-- **A refusal** (`ErrStaleClaim`) means the run was superseded.
+- **A refusal** (`ErrStaleClaim`) means the run was superseded. A retry
+  whose earlier attempt committed but lost its reply is also refused; the
+  task already holds the outcome, so the claim is released correctly, and
+  only the run's outcome label and log line say superseded.
 - **The node latches** (§6.5) only on a deterministic rejection by the store:
   an error that satisfies `errors.Is(err, spi.ErrStoreRejected)`. This is a new
   SPI marker. Every store sets it, and a conformance case covers it. PostgreSQL
@@ -413,7 +418,8 @@ The first matching row applies:
 |---|---|
 | a cancellation of the run (shutdown, self-cancel), even when wrapped in a `CalloutFailure` | `CANCELLED: the run was stopped by the scheduler` — logged at WARN, no ticket |
 | `spi.ErrConflict` | `CONFLICT: a concurrent write changed the entity or its task` — logged at WARN, no ticket |
-| a `*contract.CalloutFailure` | its `Message`: `CODE: detail` when the failure has a code, plain client-safe text when it has none (`internal/contract/callout.go:78-84`); for `MemberFailed`, the compute node's own message |
+| `spi.ErrTaskBusy` | `CONFLICT: the task is being written by another transaction` — logged at WARN, no ticket |
+| a `*contract.CalloutFailure` whose cause is not a `*common.AppError` of the Internal or Fatal level | its `Message`: `CODE: detail` when the failure has a code, plain client-safe text when it has none (`internal/contract/callout.go:78-84`); for `MemberFailed`, the compute node's own message. A failure that wraps an Internal or Fatal `AppError` falls through to the last row, as the HTTP door treats it |
 | a `*common.AppError` of the Operational level, any status | its `Message` (already `CODE: detail`) |
 | anything else | `internal error [ticket: <uuid>]`, with the full error logged at ERROR |
 
@@ -568,24 +574,32 @@ When a server fails, the same sequence runs from `a.Shutdown()` after the
 servers stop.
 
 **Grace period.**
-- A pnode with no unsafe callout in flight exits within about 20 + 30 + 15 s,
-  plus the existing tail of about 25 s (`help/run.md:287`).
+- The drain's parts, at the defaults: step 1 waits for the claim loop's
+  store call in flight (up to 10 s); step 2 is `CYODA_SCHEDULER_SHUTDOWN_DRAIN`
+  (20 s); step 4 waits up to the callout deadline's remainder plus
+  CommitBudget (30 s) plus a 15 s tail, whose last 10 s are the wait for
+  outcome writes under way; step 5 makes up to three store calls (the final
+  give-back, the heartbeat in flight, the owner's retirement) at 10 s each.
+  After the scheduler come the server drains, the search drain and the
+  telemetry flush, about 25 s.
 - An unsafe callout can only be in flight if it started before step 1, because
-  no new unsafe dispatch starts after the signal. A pnode with one in flight
-  can take up to:
+  no new unsafe dispatch starts after the signal. The worst case is:
 
   ```
-  callout deadline + CommitBudget + 15 s + 25 s
-  callout deadline = (1 + CYODA_RETRY_FIXED_NUM_RETRIES) × answer limit
+  max(CYODA_SCHEDULER_SHUTDOWN_DRAIN + 10 s, callout deadline) + 100 s
+  callout deadline = (1 + CYODA_RETRY_FIXED_NUM_RETRIES) × CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS
                      + CYODA_DISPATCH_WAIT_TIMEOUT + CYODA_CALLOUT_HANDOVER_ALLOWANCE
+  100 s = CommitBudget 30 + step-4 tail 15 + step 5 30 + after the scheduler 25
   ```
 
-  At the defaults that is 155 + 70 = 225 s. At the maximum answer limit
-  (`CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`) it is 275 + 70 = 345 s.
-- The Helm chart sets `terminationGracePeriodSeconds: 360`. `help/run.md` and
-  the chart README give the formula, so an operator who raises those settings
-  can raise the grace period too. The step-2 drain overlaps the callout
-  deadline and adds nothing to the bound.
+  The callout deadline uses the maximum answer limit, because step 4's timer
+  runs from it whatever limit a callout used. At the defaults that is
+  275 + 100 = 375 s; with no unsafe callout in flight it is 30 + 100 = 130 s.
+- The Helm chart sets `terminationGracePeriodSeconds: 390`, which leaves 15 s
+  for the steps with no time limit (the cluster leave, the release of search
+  jobs, the storage close). `help/run.md` and the chart README give the
+  formula, so an operator who raises those settings can raise the grace period
+  too.
 
 ### 6.5 Panics
 
@@ -714,7 +728,8 @@ returned.
 | `expiresTime` | date-time | when `timeoutMs` is set |
 | `attempts`, `lostOwners` | integer | always |
 | `nextAttemptTime` | date-time | WAITING |
-| `lastAttemptTime`, `lastError` | date-time, string | after a failed attempt |
+| `lastAttemptTime` | date-time | after a failed attempt |
+| `lastError` | string | FAILED: the failure's text, paired with `failedTime`, even when empty. Otherwise: paired with `lastAttemptTime`, when set. |
 | `failureReason`, `failedTime` | string (open), date-time | FAILED |
 | `armedBy` | `{id, kind}` | when known |
 
@@ -925,8 +940,13 @@ means `ErrTaskBusy`.
    other pnodes committed after step 1. It is what closes that race.
 4. **Read the marks** of the claimed rows, while the row locks are held (C3).
 
-A unique violation or a 40P01 means another pnode claimed a sibling. The
-transaction rolls back and claims nothing this tick. It is logged at DEBUG.
+Step 2 also takes, without waiting, a transaction-scoped advisory lock on the
+entity of each locked row. An entity whose lock another claimer holds is
+excluded, and the ranking runs again. Claimers therefore serialise per entity.
+A claimer gets an entity's lock only after the rival's commit is visible, so
+step 3's `NOT EXISTS` passes over an entity whose sibling was just claimed.
+A claim never meets a sibling claim at the one-RUNNING index. Any error of the
+claim is returned; the transaction rolls back and claims nothing.
 
 **`MarkUnsafe`** is one transaction:
 1. `SELECT … FROM scheduled_tasks WHERE id, tenant_id, arm_token, claim_token
