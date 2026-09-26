@@ -20,12 +20,46 @@ import (
 // The join layer must never refuse a body a handler would take.
 const maxJoinedBodySize = 10 * 1024 * 1024
 
+// administration matches every state-changing model and workflow
+// administration route: import, delete, change level, lock, unlock, unique
+// keys and workflow import. The read-only model and workflow routes — list,
+// export, validate, workflow export — are not administration and are absent.
+// The patterns are the API document's paths as the router sees them, after any
+// context path has been stripped.
+var administration = func() *http.ServeMux {
+	mux := http.NewServeMux()
+	for _, route := range []string{
+		"POST /model/import/{dataFormat}/{converter}/{entityName}/{modelVersion}",
+		"DELETE /model/{entityName}/{modelVersion}",
+		"POST /model/{entityName}/{modelVersion}/changeLevel/{changeLevel}",
+		"PUT /model/{entityName}/{modelVersion}/lock",
+		"PUT /model/{entityName}/{modelVersion}/unlock",
+		"PUT /model/{entityName}/{modelVersion}/unique-keys",
+		"POST /model/{entityName}/{modelVersion}/workflow/import",
+	} {
+		mux.Handle(route, http.NotFoundHandler())
+	}
+	return mux
+}()
+
+// isAdministration reports whether r asks for model or workflow
+// administration. ServeMux.Handler returns an empty pattern for a request no
+// registered route matches, a method mismatch included.
+func isAdministration(r *http.Request) bool {
+	_, pattern := administration.Handler(r)
+	return pattern != ""
+}
+
 // TxJoin returns middleware that runs a request carrying a transaction routing
 // token as a joined request of that transaction. It must run AFTER auth
 // middleware so that the UserContext is available for tenant isolation checks
 // inside txMgr.Join.
 //
 // If the X-Tx-Token header is absent the request passes through unchanged.
+// Model and workflow administration never runs inside a transaction: a request
+// for one of those routes that carries the header is refused 400
+// MODEL_ADMIN_IN_JOINED_TRANSACTION first, before the pass is verified, so no
+// transaction lock is taken and nothing is read or written.
 // Otherwise the pass itself is verified first, and the transaction's queue is
 // asked whether it has room — both before a byte of the body is read, so a
 // forged or expired pass and a callback past the queue's cap each cost no
@@ -43,6 +77,10 @@ func TxJoin(j *txjoin.Joiner) func(http.Handler) http.Handler {
 			tok := r.Header.Get(proxy.TxTokenHeader)
 			if tok == "" {
 				next.ServeHTTP(w, r)
+				return
+			}
+			if isAdministration(r) {
+				common.WriteError(w, r, common.ModelAdminInJoinedTransaction())
 				return
 			}
 			pass, err := j.Verify(tok)

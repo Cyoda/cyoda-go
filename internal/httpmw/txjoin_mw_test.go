@@ -719,3 +719,88 @@ func waitForCapacity(t *testing.T, gate *txgate.Registry, txID string, maxWaiter
 	}
 	t.Fatalf("timed out waiting for %d callers to queue for %s", maxWaiters, txID)
 }
+
+// administrationRoutes is every state-changing model and workflow
+// administration route, with a method and path a client sends.
+var administrationRoutes = []struct{ method, path string }{
+	{http.MethodPost, "/model/import/JSON/SAMPLE_DATA/order/1"},
+	{http.MethodDelete, "/model/order/1"},
+	{http.MethodPost, "/model/order/1/changeLevel/STRUCTURAL"},
+	{http.MethodPut, "/model/order/1/lock"},
+	{http.MethodPut, "/model/order/1/unlock"},
+	{http.MethodPut, "/model/order/1/unique-keys"},
+	{http.MethodPost, "/model/order/1/workflow/import"},
+}
+
+// Model and workflow administration never runs inside a transaction: a
+// request for one of those routes that carries a transaction token is refused
+// 400 MODEL_ADMIN_IN_JOINED_TRANSACTION before the token is verified — so
+// before any transaction lock is taken — and the handler never runs. The
+// token here is tampered: were it verified first, the answer would be 401.
+func TestTxJoin_Administration_RefusedBeforeVerify(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	s2, _ := token.NewSigner([]byte("different-secret-key-at-least-32b!"))
+	tok, _ := s2.Issue(token.Claims{NodeID: "local", TxRef: "tx-adm", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-adm", Major: 1})
+	for _, route := range administrationRoutes {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("handler must not run") })
+			req := withUserCtx(httptest.NewRequest(route.method, route.path, strings.NewReader(`{}`)))
+			req.Header.Set(proxy.TxTokenHeader, tok)
+			rec := httptest.NewRecorder()
+			TxJoin(noCalloutJoiner(t, s, fakeJoinTM{}))(next).ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d; want 400: %s", rec.Code, rec.Body.String())
+			}
+			props := problemProps(t, rec)
+			if props.ErrorCode != "MODEL_ADMIN_IN_JOINED_TRANSACTION" || props.Retryable {
+				t.Fatalf("problem = %+v", props)
+			}
+			if !strings.Contains(rec.Body.String(), "cannot run inside a transaction") {
+				t.Fatalf("body = %s; want the reason", rec.Body.String())
+			}
+		})
+	}
+}
+
+// The same routes without a token pass through to the handler, and the
+// read-only model and workflow routes join a transaction like any other
+// request: the refusal is keyed to the route, not to the /model prefix.
+func TestTxJoin_Administration_NoTokenPassesAndReadsJoin(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	for _, route := range administrationRoutes {
+		ran := false
+		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { ran = true; w.WriteHeader(200) })
+		req := httptest.NewRequest(route.method, route.path, strings.NewReader(`{}`))
+		rec := httptest.NewRecorder()
+		TxJoin(noCalloutJoiner(t, s, fakeJoinTM{}))(next).ServeHTTP(rec, req)
+		if !ran || rec.Code != http.StatusOK {
+			t.Fatalf("%s %s without a token: ran=%v status=%d; want the handler to run", route.method, route.path, ran, rec.Code)
+		}
+	}
+
+	f, gate, claims := liveFence(t, "req-read", "tx-read")
+	tok, _ := s.Issue(claims)
+	for _, route := range []struct{ method, path string }{
+		{http.MethodGet, "/model/"},
+		{http.MethodGet, "/model/export/SIMPLE_VIEW/order/1"},
+		{http.MethodPost, "/model/validate/order/1"},
+		{http.MethodGet, "/model/order/1/workflow/export"},
+		{http.MethodGet, "/model/order/1/lock"}, // a method no route registers: not administration
+		{http.MethodPost, "/entity/JSON/order/1"},
+	} {
+		var sawTx string
+		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if tx := spi.GetTransaction(r.Context()); tx != nil {
+				sawTx = tx.ID
+			}
+			w.WriteHeader(200)
+		})
+		req := withUserCtx(httptest.NewRequest(route.method, route.path, strings.NewReader(`{}`)))
+		req.Header.Set(proxy.TxTokenHeader, tok)
+		rec := httptest.NewRecorder()
+		TxJoin(joinerOver(t, s, fakeJoinTM{}, f, gate))(next).ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || sawTx != "tx-read" {
+			t.Fatalf("%s %s with a token: status=%d joined=%q; want 200 joined to tx-read", route.method, route.path, rec.Code, sawTx)
+		}
+	}
+}

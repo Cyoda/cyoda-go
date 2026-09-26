@@ -107,6 +107,14 @@ const (
 	// before the processor is dispatched. Not retryable: the same
 	// callback reaches the same processor again.
 	ErrCodeCommitInJoinedTransaction = "COMMIT_IN_JOINED_TRANSACTION"
+	// ErrCodeModelAdminInJoinedTransaction is returned to a request that
+	// carries a transaction token and would change a model or its workflows:
+	// import, lock, unlock, change level, unique keys, delete, workflow
+	// import. Model and workflow administration never runs inside a
+	// transaction, so the request is refused before the token is verified,
+	// before any transaction lock is taken and before anything is read or
+	// written. Not retryable: make the request without the token.
+	ErrCodeModelAdminInJoinedTransaction = "MODEL_ADMIN_IN_JOINED_TRANSACTION"
 )
 
 const (
@@ -292,6 +300,7 @@ var knownErrorCodes = map[string]struct{}{
 	ErrCodeCalloutSuperseded:                {},
 	ErrCodeClusterNodeNotRegistered:         {},
 	ErrCodeCommitInJoinedTransaction:        {},
+	ErrCodeModelAdminInJoinedTransaction:    {},
 	ErrCodeCompositeKeyUnsupported:          {},
 	ErrCodeComputeMemberDisconnected:        {},
 	ErrCodeConditionTypeMismatch:            {},
