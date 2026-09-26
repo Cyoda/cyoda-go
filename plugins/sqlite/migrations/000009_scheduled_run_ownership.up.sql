@@ -66,8 +66,11 @@ FROM scheduled_tasks;
 DROP TABLE scheduled_tasks;
 ALTER TABLE scheduled_tasks_v9 RENAME TO scheduled_tasks;
 
--- ClaimDue: due WAITING rows, and RUNNING rows by owner.
-CREATE INDEX idx_scheduled_tasks_waiting ON scheduled_tasks (next_attempt_time) WHERE status = 'WAITING';
+-- ClaimDue: the tenants with a WAITING row (a loose scan) and each one's due
+-- WAITING rows in claim order; an entity's WAITING rows in claim order; and
+-- RUNNING rows by owner.
+CREATE INDEX idx_scheduled_tasks_waiting ON scheduled_tasks (tenant_id, next_attempt_time, id) WHERE status = 'WAITING';
+CREATE INDEX idx_scheduled_tasks_waiting_entity ON scheduled_tasks (tenant_id, entity_id, next_attempt_time, id) WHERE status = 'WAITING';
 CREATE INDEX idx_scheduled_tasks_owner ON scheduled_tasks (claim_owner) WHERE status = 'RUNNING';
 -- At most one RUNNING task per entity.
 CREATE UNIQUE INDEX idx_scheduled_tasks_running_entity ON scheduled_tasks (tenant_id, entity_id) WHERE status = 'RUNNING';

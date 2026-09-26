@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -54,15 +55,16 @@ func (s *scheduledTaskStore) SweepOwners(ctx context.Context, deadFor time.Durat
 	return nil
 }
 
-// ClaimDue claims due tasks for req.Owner, under the commit gate: scan the
-// candidates on s.db (a plain read, before any write begins), choose, then
+// ClaimDue claims due tasks for req.Owner, under the commit gate: read the
+// candidates on s.db (plain reads, before any write begins), choose, then
 // write the claims in commitTaskWrites' own sqlTx. It is the commit gate
-// alone — held for the whole call — that makes the scan-then-write
-// atomic, not a single sqlTx spanning both. A WAITING task is due when its
+// alone — held for the whole call — that makes the read-then-write atomic,
+// not a single sqlTx spanning both. A WAITING task is due when its
 // next_attempt_time is at or before req.NowMs (the pnode clock).
 // With AllowLostOwner, a RUNNING task whose owner is stale by the store clock
 // is claimable too, and the claim adds 1 to its lost_owners. A task is never
-// claimed while another task of its entity is RUNNING.
+// claimed while another task of its entity is RUNNING, and a row an open
+// transaction has staged a change to is not a candidate (C6).
 func (s *scheduledTaskStore) ClaimDue(ctx context.Context, req spi.ClaimRequest) ([]spi.ScheduledTask, error) {
 	if err := spi.ValidateClaimRequest(req); err != nil {
 		return nil, err
@@ -70,20 +72,7 @@ func (s *scheduledTaskStore) ClaimDue(ctx context.Context, req spi.ClaimRequest)
 	_ = s.tm.acquireCommitGate(context.Background())
 	defer s.tm.releaseCommitGate()
 
-	allowLost := 0
-	if req.AllowLostOwner {
-		allowLost = 1
-	}
-	cands, err := readTasks(ctx, s.db, selectTaskSQL+`
-		WHERE ((t.status = 'WAITING' AND t.next_attempt_time <= ?)
-		    OR (? = 1 AND t.status = 'RUNNING' AND NOT EXISTS (
-		          SELECT 1 FROM scheduler_owners o
-		          WHERE o.owner = t.claim_owner AND o.heartbeat_at >= ?)))
-		  AND NOT EXISTS (
-		          SELECT 1 FROM scheduled_tasks r
-		          WHERE r.tenant_id = t.tenant_id AND r.entity_id = t.entity_id
-		            AND r.status = 'RUNNING' AND r.id <> t.id)`,
-		req.NowMs, allowLost, s.clock.Now().Add(-req.StaleAfter).UnixMicro())
+	cands, err := s.claimCandidates(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to scan due scheduled tasks: %w", err)
 	}
@@ -97,7 +86,7 @@ func (s *scheduledTaskStore) ClaimDue(ctx context.Context, req spi.ClaimRequest)
 			free = append(free, c)
 		}
 	}
-	chosen := spi.SelectClaims(free, req)
+	chosen := spi.SelectClaims(cands, req)
 	ops := make([]scheduledTaskOp, 0, len(chosen))
 	fromLostOwner := make([]bool, 0, len(chosen))
 	for _, c := range chosen {
@@ -128,6 +117,133 @@ func (s *scheduledTaskStore) ClaimDue(ctx context.Context, req spi.ClaimRequest)
 		out = append(out, claimed)
 	}
 	return out, nil
+}
+
+// claimTenantsSQL lists the tenants that hold a WAITING task, one index probe
+// each (a loose scan of idx_scheduled_tasks_waiting), and, when the argument
+// is 1 (AllowLostOwner), those that hold a RUNNING task.
+const claimTenantsSQL = `WITH RECURSIVE waiting_tenant(tenant_id) AS (
+	SELECT (SELECT st.tenant_id FROM scheduled_tasks st
+	         WHERE st.status = 'WAITING'
+	         ORDER BY st.tenant_id, st.next_attempt_time LIMIT 1)
+	UNION ALL
+	SELECT (SELECT st.tenant_id FROM scheduled_tasks st
+	         WHERE st.status = 'WAITING' AND st.tenant_id > w.tenant_id
+	         ORDER BY st.tenant_id, st.next_attempt_time LIMIT 1)
+	  FROM waiting_tenant w
+	 WHERE w.tenant_id IS NOT NULL
+)
+SELECT tenant_id FROM waiting_tenant WHERE tenant_id IS NOT NULL
+UNION
+SELECT tenant_id FROM scheduled_tasks WHERE ? = 1 AND status = 'RUNNING'`
+
+// claimWaitingSQL returns one tenant's first due WAITING candidates, one per
+// entity: a task whose entity has no RUNNING task, that is not busy, and that
+// no earlier WAITING task of its entity precedes unless that task is busy.
+// Arguments: tenant, NowMs, the tenant's busy task ids (a JSON array), limit.
+const claimWaitingSQL = selectTaskSQL + `
+	WHERE t.tenant_id = ?1 AND t.status = 'WAITING' AND t.next_attempt_time <= ?2
+	  AND NOT EXISTS (SELECT 1 FROM scheduled_tasks r
+	                   WHERE r.tenant_id = t.tenant_id AND r.entity_id = t.entity_id
+	                     AND r.status = 'RUNNING')
+	  AND t.id NOT IN (SELECT value FROM json_each(?3))
+	  AND NOT EXISTS (SELECT 1 FROM scheduled_tasks e
+	                   WHERE e.tenant_id = t.tenant_id AND e.entity_id = t.entity_id
+	                     AND e.status = 'WAITING'
+	                     AND (e.next_attempt_time, e.id) < (t.next_attempt_time, t.id)
+	                     AND e.id NOT IN (SELECT value FROM json_each(?3)))
+	ORDER BY t.next_attempt_time, t.id
+	LIMIT ?4`
+
+// claimLostSQL returns one tenant's first RUNNING tasks whose owner is stale.
+// scheduled_tasks has at most one RUNNING task per entity, and an entity with
+// one has no WAITING candidate, so these are one per entity too. It reads the
+// tenant's RUNNING tasks through their partial index, never the tenant's
+// WAITING backlog. Arguments: tenant, the stale cutoff in microseconds, the
+// tenant's busy task ids (a JSON array), limit.
+const claimLostSQL = selectTaskSQL + ` INDEXED BY idx_scheduled_tasks_running_entity
+	WHERE t.tenant_id = ?1 AND t.status = 'RUNNING'
+	  AND NOT EXISTS (SELECT 1 FROM scheduler_owners o
+	                   WHERE o.owner = t.claim_owner AND o.heartbeat_at >= ?2)
+	  AND t.id NOT IN (SELECT value FROM json_each(?3))
+	ORDER BY t.next_attempt_time, t.id
+	LIMIT ?4`
+
+// claimCandidates reads the candidates spi.SelectClaims needs, and no more.
+// SelectClaims gives a tenant at most n = min(PerTenantLimit minus its runs in
+// progress, Limit) turns, each to a different entity's first candidate in
+// (next_attempt_time, id) order. So, per tenant, it is enough to read the
+// first n WAITING tasks that are their entity's first candidate
+// (claimWaitingSQL) and the first n lost-owner RUNNING tasks (claimLostSQL):
+// the two name different entities, and the tenant's first n candidates lie
+// within them. SelectClaims over this set chooses exactly what it would over
+// every candidate, since its tenant order depends on each tenant's first
+// candidate only, which the set keeps.
+//
+// The cost is one index probe per tenant with a WAITING task, plus, per tenant
+// with a quota, the rows its walk passes before its n-th candidate: the n, the
+// tasks of entities with a RUNNING task, the busy rows, and later tasks of
+// entities already met, each checked by a probe of
+// idx_scheduled_tasks_waiting_entity. None grows with a tenant's backlog.
+func (s *scheduledTaskStore) claimCandidates(ctx context.Context, req spi.ClaimRequest) ([]spi.ScheduledTask, error) {
+	allowLost := 0
+	if req.AllowLostOwner {
+		allowLost = 1
+	}
+	rows, err := s.db.QueryContext(ctx, claimTenantsSQL, allowLost)
+	if err != nil {
+		return nil, err
+	}
+	var tenants []spi.TenantID
+	for rows.Next() {
+		var tn string
+		if err := rows.Scan(&tn); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		tenants = append(tenants, spi.TenantID(tn))
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	busyIDs := make(map[spi.TenantID][]string)
+	for k := range s.tm.busyTaskKeys() {
+		busyIDs[k.tenant] = append(busyIDs[k.tenant], k.id)
+	}
+	staleCutoff := s.clock.Now().Add(-req.StaleAfter).UnixMicro()
+	var cands []spi.ScheduledTask
+	for _, tn := range tenants {
+		n := min(req.PerTenantLimit-req.TenantInProgress[tn], req.Limit)
+		if n <= 0 {
+			continue
+		}
+		ids := busyIDs[tn]
+		if ids == nil {
+			ids = []string{}
+		}
+		busy, err := json.Marshal(ids)
+		if err != nil {
+			return nil, err
+		}
+		waiting, err := readTasks(ctx, s.db, claimWaitingSQL, string(tn), req.NowMs, string(busy), n)
+		if err != nil {
+			return nil, err
+		}
+		cands = append(cands, waiting...)
+		if !req.AllowLostOwner {
+			continue
+		}
+		lost, err := readTasks(ctx, s.db, claimLostSQL, string(tn), staleCutoff, string(busy), n)
+		if err != nil {
+			return nil, err
+		}
+		cands = append(cands, lost...)
+	}
+	return cands, nil
 }
 
 // GiveBackIdle returns to WAITING, uncounted, every task RUNNING under owner
