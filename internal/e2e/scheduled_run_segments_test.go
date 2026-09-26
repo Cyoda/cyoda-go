@@ -48,10 +48,14 @@ func TestSchedRun_CBDOnFiredTransitionRetriedFromTXPre(t *testing.T) {
 	h.SetupModelWithWorkflow(t, model, fireOpenToDone("sg-txpre-wf", 100, 0,
 		sProc("p1", "COMMIT_BEFORE_DISPATCH", tagA, true), sProc("p2", "SYNC", tagB, true)))
 	id := createOpen(t, h, model, workflowSampleModel)
+	createdTx := entityTxID(t, h, id)
 
 	r := firstAttempt(t, s, id, "Fire")
 	if r.Status != "WAITING" || r.PartialCommit || r.FailureReason != "" || r.LastError != "once" {
 		t.Fatalf("after the first attempt: %+v; want WAITING, no PartialCommit (the fired transition's own segment), \"once\"", r)
+	}
+	if tx := entityTxID(t, h, id); tx == createdTx {
+		t.Errorf("entity still carries the create's transaction %s; TX_pre did not commit", tx)
 	}
 	awaitCallbackEntityState(t, h, id, "Done", scheduledFireTimeout)
 	if na, nb := len(a.Received()), len(b.Received()); na != 2 || nb != 2 {
