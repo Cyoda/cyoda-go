@@ -50,6 +50,9 @@ func TestStatementAfterSerializationFailure_IsAConflict(t *testing.T) {
 	if !errors.Is(err, spi.ErrConflict) {
 		t.Fatalf("the losing write is not a conflict, so this scenario proves nothing: %v", err)
 	}
+	if errors.Is(err, spi.ErrTxAborted) {
+		t.Fatalf("the losing write is the conflict itself, not a statement after one: %v", err)
+	}
 
 	assertLaterStatementIsConflict(t, fx, txCtx)
 
@@ -130,10 +133,81 @@ func TestStatementAfterNonConflictAbort_IsNotAConflict(t *testing.T) {
 	}
 }
 
-// TestStatementAfterRolledBackConflict_IsNotAConflict: ROLLBACK TO SAVEPOINT
-// makes the transaction usable again, so a conflict undone that way must not
-// colour a later, unrelated abort.
-func TestStatementAfterRolledBackConflict_IsNotAConflict(t *testing.T) {
+// TestConflictSurvivesSavepointRollback: a conflict anywhere in the
+// transaction is a conflict of the transaction. ROLLBACK TO SAVEPOINT makes the
+// session usable again, and later statements run, but the write that lost the
+// race is gone and the transaction cannot commit as the caller meant it. Commit
+// must refuse it with the recorded conflict and write nothing — the answer a
+// backend that detects the conflict at commit gives for the same work.
+func TestConflictSurvivesSavepointRollback(t *testing.T) {
+	fx := newStatementCeilingFixture(t, 0)
+	ctx := classifyTestCtx()
+	// Commit stamps the entity tables, so a transaction here can only commit
+	// on a migrated schema — which the control below proves it does.
+	if err := runMigrations(ctx, fx.pool, defaultMigrateLockTimeout); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	table := fmt.Sprintf("abort_cause_sp_%s", uuid.NewString()[:8])
+	if _, err := fx.pool.Exec(ctx, "CREATE TABLE "+table+" (id int PRIMARY KEY)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	t.Cleanup(func() { _, _ = fx.pool.Exec(context.Background(), "DROP TABLE IF EXISTS "+table) })
+	count := func(id int) int {
+		t.Helper()
+		var n int
+		if err := fx.pool.QueryRow(ctx, "SELECT count(*) FROM "+table+" WHERE id = $1", id).Scan(&n); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		return n
+	}
+
+	// run: savepoint, the failing statement, rollback to the savepoint, a
+	// write of id, then Commit.
+	run := func(id int, failing string) error {
+		t.Helper()
+		txID, txCtx := beginGuarded(t, fx.tm, ctx)
+		spID, err := fx.tm.Savepoint(ctx, txID)
+		if err != nil {
+			t.Fatalf("savepoint: %v", err)
+		}
+		if _, err := fx.q.Exec(txCtx, failing); err == nil {
+			t.Fatalf("%q succeeded", failing)
+		}
+		if err := fx.tm.RollbackToSavepoint(ctx, txID, spID); err != nil {
+			t.Fatalf("rollback to savepoint: %v", err)
+		}
+		// The session is usable again.
+		if _, err := fx.q.Exec(txCtx, "INSERT INTO "+table+" VALUES ($1)", id); err != nil {
+			t.Fatalf("the transaction did not recover from the savepoint rollback: %v", err)
+		}
+		return fx.tm.Commit(ctx, txID)
+	}
+
+	// Control: an abort that is not a conflict is undone by the rollback, and
+	// the transaction commits.
+	if err := run(1, "SELECT 1/0"); err != nil {
+		t.Fatalf("control: a transaction whose non-conflict abort was rolled back did not commit: %v", err)
+	}
+	if count(1) != 1 {
+		t.Fatal("control: the committed row is missing")
+	}
+
+	err := run(2, "DO $$ BEGIN RAISE EXCEPTION 'conflict' USING ERRCODE = '40001'; END $$")
+	requireConflictCause(t, err, pgerrcode.SerializationFailure)
+	if n := count(2); n != 0 {
+		t.Fatalf("a transaction that lost a race committed %d row(s) after a savepoint rollback", n)
+	}
+}
+
+// TestStatementAfterRolledBackConflict_IsTxAborted: after a savepoint rollback
+// kept a conflict, a statement fails with its own error (a division by zero),
+// which is reported as that error, not as a conflict. The statements the
+// database refuses after it report spi.ErrTxAborted with the refusing 25P02 in
+// the chain: the conflict is the transaction's fate, because Commit refuses
+// the transaction with the kept 40001 whatever aborted it next, not the
+// immediate cause of the refusal.
+func TestStatementAfterRolledBackConflict_IsTxAborted(t *testing.T) {
 	fx := newStatementCeilingFixture(t, 0)
 	ctx := classifyTestCtx()
 	txID, txCtx := beginGuarded(t, fx.tm, ctx)
@@ -152,30 +226,25 @@ func TestStatementAfterRolledBackConflict_IsNotAConflict(t *testing.T) {
 	var n int
 	if err := fx.q.QueryRow(txCtx, "SELECT 1/0").Scan(&n); err == nil {
 		t.Fatal("division by zero succeeded")
+	} else if errors.Is(err, spi.ErrConflict) {
+		t.Fatalf("the division by zero is reported as a conflict: %v", err)
 	}
-	err = fx.q.QueryRow(txCtx, "SELECT 1").Scan(&n)
-	if err == nil {
-		t.Fatal("a statement succeeded on an aborted transaction")
-	}
-	if errors.Is(err, spi.ErrConflict) {
-		t.Fatalf("a conflict the savepoint rollback undid was reported for a later abort: %v", err)
-	}
+	assertLaterStatementIsConflict(t, fx, txCtx)
+	requireConflictCause(t, fx.tm.Commit(ctx, txID), pgerrcode.SerializationFailure)
 }
 
 // assertLaterStatementIsConflict runs a statement of each querier shape on the
-// aborted transaction and requires every one to report spi.ErrConflict.
+// aborted transaction and requires every one to report spi.ErrTxAborted —
+// which is also spi.ErrConflict — with the refusing 25P02 still in the chain.
 func assertLaterStatementIsConflict(t *testing.T, fx *abortFixture, txCtx context.Context) {
 	t.Helper()
 	stmtCtx, cancel := context.WithTimeout(txCtx, 10*time.Second)
 	defer cancel()
 
 	var one int
-	if err := fx.q.QueryRow(stmtCtx, "SELECT 1").Scan(&one); !errors.Is(err, spi.ErrConflict) {
-		t.Errorf("QueryRow after the conflict: %v, want spi.ErrConflict", err)
-	}
-	if _, err := fx.q.Exec(stmtCtx, "SELECT 1"); !errors.Is(err, spi.ErrConflict) {
-		t.Errorf("Exec after the conflict: %v, want spi.ErrConflict", err)
-	}
+	requireTxAborted(t, "QueryRow", fx.q.QueryRow(stmtCtx, "SELECT 1").Scan(&one))
+	_, err := fx.q.Exec(stmtCtx, "SELECT 1")
+	requireTxAborted(t, "Exec", err)
 	rows, err := fx.q.Query(stmtCtx, "SELECT 1")
 	if err == nil {
 		for rows.Next() {
@@ -183,7 +252,41 @@ func assertLaterStatementIsConflict(t *testing.T, fx *abortFixture, txCtx contex
 		err = rows.Err()
 		rows.Close()
 	}
-	if !errors.Is(err, spi.ErrConflict) {
-		t.Errorf("Query after the conflict: %v, want spi.ErrConflict", err)
+	requireTxAborted(t, "Query", err)
+}
+
+func requireTxAborted(t *testing.T, op string, err error) {
+	t.Helper()
+	if !errors.Is(err, spi.ErrTxAborted) || !errors.Is(err, spi.ErrConflict) {
+		t.Errorf("%s after the conflict: %v, want spi.ErrTxAborted and spi.ErrConflict", op, err)
+		return
 	}
+	if !hasPgCode(err, pgerrcode.InFailedSQLTransaction) {
+		t.Errorf("%s after the conflict: the 25P02 is not in the chain: %v", op, err)
+	}
+}
+
+// hasPgCode reports whether any PgError in err's tree carries code.
+func hasPgCode(err error, code string) bool {
+	if err == nil {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if pe, ok := err.(*pgconn.PgError); ok {
+		pgErr = pe
+	}
+	if pgErr != nil && pgErr.Code == code {
+		return true
+	}
+	switch u := err.(type) {
+	case interface{ Unwrap() []error }:
+		for _, e := range u.Unwrap() {
+			if hasPgCode(e, code) {
+				return true
+			}
+		}
+	case interface{ Unwrap() error }:
+		return hasPgCode(u.Unwrap(), code)
+	}
+	return false
 }

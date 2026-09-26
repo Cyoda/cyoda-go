@@ -341,8 +341,9 @@ func TestUpdateCollection_FirstFlushConflict_StillIsolates(t *testing.T) {
 }
 
 // TestUpdateEntity_PostSegmentConflict_Still412 pins what the marker must NOT
-// change. A single-entity update has no later items to lose, so it maps every
-// engine conflict — either side of the commit — to 412 ENTITY_MODIFIED. That
+// change. A single-entity update has no later items to lose, and a conflict on
+// either side of the commit is a precondition on its own entity, so it answers
+// 412 ENTITY_MODIFIED. That
 // mapping reads errors.Is(err, spi.ErrConflict), which only survives because the
 // marker is joined to the conflict rather than wrapping it away.
 func TestUpdateEntity_PostSegmentConflict_Still412(t *testing.T) {
@@ -582,13 +583,30 @@ func (m *trackingTxMgr) wasRolledBack(txID string) bool {
 type armedFactory struct {
 	spi.StoreFactory
 	armed atomic.Bool
+
+	// casErr, when set, is what the handler's own CompareAndSave returns.
+	casErr error
 }
 
 func (f *armedFactory) EntityStore(ctx context.Context) (spi.EntityStore, error) {
 	if f.armed.Load() {
 		return nil, errArmedEntityStore
 	}
-	return f.StoreFactory.EntityStore(ctx)
+	es, err := f.StoreFactory.EntityStore(ctx)
+	if err != nil || f.casErr == nil {
+		return es, err
+	}
+	return &casFailEntityStore{EntityStore: es, err: f.casErr}, nil
+}
+
+// casFailEntityStore fails every CompareAndSave with err.
+type casFailEntityStore struct {
+	spi.EntityStore
+	err error
+}
+
+func (s *casFailEntityStore) CompareAndSave(context.Context, *spi.Entity, string) (int64, error) {
+	return 0, s.err
 }
 
 // casHookFactory wraps the ENGINE's store factory so a test can fail the
@@ -606,6 +624,10 @@ type casHookFactory struct {
 	// immediately before that transaction is committed — which is the only place
 	// a test can name TX_pre before it goes.
 	onCompareAndSave func(txID string)
+
+	// casErr, when set, is what an armed CompareAndSave returns in place of
+	// spi.ErrConflict.
+	casErr error
 }
 
 func (f *casHookFactory) EntityStore(ctx context.Context) (spi.EntityStore, error) {
@@ -628,6 +650,9 @@ func (s *casHookEntityStore) CompareAndSave(ctx context.Context, entity *spi.Ent
 		}
 	}
 	if s.f.armed.Load() {
+		if s.f.casErr != nil {
+			return 0, s.f.casErr
+		}
 		return 0, spi.ErrConflict
 	}
 	return s.EntityStore.CompareAndSave(ctx, entity, expectedTxID)

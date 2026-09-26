@@ -67,8 +67,10 @@ func newTxState(tenantID spi.TenantID) *txState {
 // kinds of cause and reads them back.
 //
 // First writer wins: the first failure is the one that aborted the transaction,
-// and everything after it is a consequence. RestoreSavepoint clears the record,
-// because a savepoint rollback makes the transaction usable again.
+// and everything after it is a consequence. RestoreSavepoint clears a ceiling,
+// because a savepoint rollback makes the transaction usable again. It keeps a
+// conflict: a conflict anywhere in the transaction is a conflict of the
+// transaction, and Commit refuses it.
 func (s *txState) RecordAbort(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -207,11 +209,18 @@ func (s *txState) HasSavepoint(id string) bool {
 // PushSavepoint(id) and trims any savepoints pushed after id. The named
 // savepoint itself remains (mirroring postgres ROLLBACK TO SAVEPOINT).
 //
-// It also discards any recorded abort cause. ROLLBACK TO SAVEPOINT is legal in
-// an aborted transaction and returns it to a working state, so the reason it was
-// aborted is no longer true — and a cause left behind here would be reported by
-// Commit in place of whatever aborted the transaction NEXT, downgrading a
-// retryable conflict to a plain 500.
+// ROLLBACK TO SAVEPOINT is legal in an aborted transaction and returns it to a
+// working state. What it does to a recorded abort cause depends on the cause:
+//
+//   - A ceiling is discarded. The cancelled statement is undone and the
+//     transaction may still commit; a ceiling left behind here would be reported
+//     by Commit in place of whatever aborted the transaction NEXT, downgrading a
+//     retryable conflict to a plain 500.
+//   - A conflict (40001/40P01) is kept. A concurrent writer won against this
+//     transaction, and undoing the losing statement does not make the rest of
+//     the transaction's work valid: a conflict anywhere in the transaction is a
+//     conflict of the transaction. Commit refuses it with this cause, which is
+//     the answer a backend that detects the conflict at commit gives.
 //
 // This is the only path back from aborted to usable. Every other route either
 // cannot run on an aborted transaction (SAVEPOINT and RELEASE SAVEPOINT both
@@ -240,7 +249,9 @@ func (s *txState) RestoreSavepoint(id string) error {
 		s.writeSet[k] = v
 	}
 	s.savepoints = s.savepoints[:idx+1]
-	s.abortCause = nil
+	if !isConcurrentWriterAbort(s.abortCause) {
+		s.abortCause = nil
+	}
 	return nil
 }
 

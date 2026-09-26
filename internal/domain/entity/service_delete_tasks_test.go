@@ -833,3 +833,48 @@ func TestDeleteEntitiesConditional_SingleTx_Joined_HeldGateNotReacquired(t *test
 		t.Errorf("DeleteForEntities calls = %d, want 1: a joined conditional delete is not retried", got)
 	}
 }
+
+// getAbortedStore answers every Get with a statement refused because an
+// earlier conflict aborted the transaction — what PostgreSQL returns for a
+// batch whose transaction lost first-committer-wins before the re-read.
+type getAbortedStore struct {
+	spi.EntityStore
+	gets int
+}
+
+func (s *getAbortedStore) Get(context.Context, string) (*spi.Entity, error) {
+	s.gets++
+	return nil, fmt.Errorf("failed to get entity: %w", spi.ErrTxAborted)
+}
+
+// A conflict on the batch's re-read fails the batch's attempt, as one on its
+// delete does: the attempt is retried, and a batch that still conflicts is
+// reported per id as CONFLICT — not as an unexplained per-id fault.
+func TestDeleteBatched_GetConflict_FailsTheAttempt(t *testing.T) {
+	e := newTaskEnv(t)
+	ids := seedPersons(t, e.h, e.ctx, 2)
+	real, err := e.real.EntityStore(e.ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	store := &getAbortedStore{EntityStore: real}
+	e.withEntityStore(t, store)
+
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", "1", ageAtLeastOne, nil, false, 1)
+	if err != nil {
+		t.Fatalf("err = %v, want a 200 result with a per-id error", err)
+	}
+	if res.RemovedCount != 0 {
+		t.Errorf("RemovedCount = %d, want 0", res.RemovedCount)
+	}
+	msg, ok := res.IDToError[ids[1]]
+	if !ok || !strings.HasPrefix(msg, common.ErrCodeConflict+":") {
+		t.Errorf("IDToError[%s] = %q, want a CONFLICT entry", ids[1], msg)
+	}
+	if want := 1 + common.TaskConflictRetries; store.gets != want {
+		t.Errorf("Get calls = %d, want %d (one per attempt: the conflict is retried)", store.gets, want)
+	}
+	if !e.exists(t, ids[1]) {
+		t.Error("entity removed although every attempt conflicted")
+	}
+}

@@ -8,6 +8,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
@@ -41,7 +42,11 @@ var ErrSavepointInfra = errors.New("savepoint failure")
 //
 // Chained alongside the conflict, never in place of it, so
 // errors.Is(err, spi.ErrConflict) stays true and the single-entity 412 mapping is
-// unaffected.
+// unaffected. That 412 is right: the apply-result CAS is a precondition on the
+// request's own entity at the segment boundary — the version TX_pre committed,
+// or TX_post's own write — and another writer changed that entity. It never
+// meets an already-aborted TX_post: the anchor re-read before it would fail
+// first, marked ErrCommitBeforeDispatchInfra.
 var ErrPostSegmentConflict = errors.New("conflict after a committed segment")
 
 // clientAttributableStoreErr reports whether a store error is an outcome the
@@ -263,7 +268,7 @@ func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, d
 		return cerr
 	}
 	if err != nil {
-		return err
+		return e.conflictOverDispatchFailure(ctx, entity.Meta.ID, proc, err)
 	}
 	if modifiedEntity != nil && modifiedEntity.Data != nil {
 		return e.applyProcessorData(ctx, entity, desc, modifiedEntity.Data)
@@ -278,11 +283,47 @@ func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, d
 	return nil
 }
 
+// conflictOverDispatchFailure decides what a failed dispatch means when the
+// processor could call back into the transaction ctx carries (SYNC,
+// ASYNC_SAME_TX, and COMMIT_BEFORE_DISPATCH with startNewTxOnDispatch).
+//
+// A processor that checks its own joined callback fails when that callback's
+// write lost a race. On a backend whose engine aborts the transaction on the
+// conflict, the failure is then only a consequence: the conflict is what
+// happened, and the transaction could not have committed anyway. A backend
+// that detects conflicts at commit accepts the same write and reports the
+// conflict when the caller commits. So the transaction is probed with the
+// anchor re-read: spi.ErrTxAborted means the conflict wins, and the returned
+// error is that conflict, with the processor's failure attached as context.
+// Any other probe outcome keeps the processor's failure as it is.
+//
+// A dispatch that provably reached no compute node made no callback, and is
+// returned untouched.
+func (e *Engine) conflictOverDispatchFailure(ctx context.Context, entityID string, proc spi.ProcessorDefinition, dispatchErr error) error {
+	if spi.GetTransaction(ctx) == nil || contract.ProvesNoHandOff(dispatchErr) {
+		return dispatchErr
+	}
+	es, err := e.factory.EntityStore(ctx)
+	if err != nil {
+		return dispatchErr
+	}
+	if _, probeErr := readAnchor(ctx, es, entityID); errors.Is(probeErr, spi.ErrTxAborted) {
+		return fmt.Errorf("%w (processor %s failed after it: %w)", probeErr, proc.Name, dispatchErr)
+	}
+	return dispatchErr
+}
+
 // executeAsyncNewTx runs an ASYNC_NEW_TX processor within a savepoint. The
 // processor's returned entity modifications are intentionally discarded —
 // ASYNC_NEW_TX processors perform side-effects only. On dispatch failure the
 // savepoint is rolled back and the error is returned; on success the savepoint
 // is released.
+//
+// A failed dispatch needs no probe of the transaction (see
+// conflictOverDispatchFailure): a callback write inside the savepoint that
+// had lost a race by the time the savepoint is rolled back stays lost, and
+// the transaction's Commit refuses it with the conflict on every backend —
+// the RollbackToSavepoint contract, pinned by the spitest Savepoint cases.
 //
 // A savepoint that cannot be created, undone or released is marked with
 // ErrSavepointInfra and fails the operation: it says the transaction is
@@ -406,7 +447,7 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 			// engine's own handle so this lands in the same TX buffer as the
 			// entry events (rolls back together with them on a chunk-wide
 			// rollback, commits together on per-item-isolated paths).
-			if ifMatchConsumed && errors.Is(err, spi.ErrConflict) {
+			if ifMatchConsumed && errors.Is(err, spi.ErrConflict) && !errors.Is(err, spi.ErrTxAborted) {
 				e.recordAbortForIfMatchConflict(ctx, auditStore, entity, entryTxID, transition, expectedFirstFlushTxID)
 			}
 			return nil, "", err
@@ -425,7 +466,7 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 			modified, dispatchErr := e.extProc.DispatchProcessor(callCtx, entity, proc, workflow, transition, newTxID)
 			stop()
 			if dispatchErr != nil {
-				return nil, "", dispatchErr
+				return nil, "", e.conflictOverDispatchFailure(newCtx, entity.Meta.ID, proc, dispatchErr)
 			}
 			if modified != nil && modified.Data != nil {
 				pending = modified.Data
@@ -442,7 +483,7 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		if fcErr := e.flushAndCommitSegment(ctx, entity, txID, expectedFirstFlushTxID, ifMatchConsumed); fcErr != nil {
 			// See the matching block in the startNewTx==true branch above
 			// for the rationale.
-			if ifMatchConsumed && errors.Is(fcErr, spi.ErrConflict) {
+			if ifMatchConsumed && errors.Is(fcErr, spi.ErrConflict) && !errors.Is(fcErr, spi.ErrTxAborted) {
 				e.recordAbortForIfMatchConflict(ctx, auditStore, entity, entryTxID, transition, expectedFirstFlushTxID)
 			}
 			return nil, "", fcErr
@@ -572,6 +613,10 @@ func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, 
 	}
 	if applyIfMatch {
 		if _, err := es.CompareAndSave(ctx, entity, expectedTxID); err != nil {
+			// The compare never ran: an earlier conflict aborted TX_pre.
+			if appErr := common.TxAbortedConflict(err); appErr != nil {
+				return appErr
+			}
 			if clientAttributableStoreErr(err) {
 				return err // ErrConflict / unique-key outcomes bubble unwrapped
 			}

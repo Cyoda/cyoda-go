@@ -1857,14 +1857,16 @@ func (h *Handler) deleteOneBatchOnce(ctx context.Context, chunk []batchTarget) (
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return classifyError(fmt.Errorf("operation aborted: %w", ctxErr))
 			}
-			// entityStore.Get never returns spi.ErrConflict on this path: it is
-			// an unlocked read, and none of the three backends' Get() can
-			// surface a conflict from one (memory/sqlite: not wired to;
-			// postgres: REPEATABLE READ only raises 40001 for a write or a
-			// locking read, which this isn't). A Get failure therefore always
-			// follows the generic per-id path below.
+			// The read itself never conflicts, but on PostgreSQL it can meet a
+			// transaction an earlier conflict already aborted (spi.ErrTxAborted,
+			// which is spi.ErrConflict). That fails the attempt like a
+			// conflicting delete does — the batch runs again — rather than
+			// being filed as this id's fault.
 			cur, gErr := entityStore.Get(txCtx, t.id)
 			if gErr != nil {
+				if errors.Is(gErr, spi.ErrConflict) {
+					return conflictError(gErr)
+				}
 				a.idErrors[t.id] = perIDDeleteError(t.id, gErr)
 				continue
 			}
@@ -2351,10 +2353,14 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		res, lbErr := h.engine.LoopbackWithIfMatch(txCtx, updated, input.IfMatch)
 		if lbErr != nil {
 			slog.Error("workflow loopback failed", "error", lbErr.Error(), "entityId", updated.Meta.ID)
-			// A task-row conflict (the reconcile lost a race with the
-			// scheduler) is not an entity modification. It keeps its cause
-			// and classifyWorkflowError answers the retryable 409 CONFLICT.
-			if errors.Is(lbErr, spi.ErrConflict) && !errors.Is(lbErr, wfengine.ErrScheduledTaskInfra) {
+			// An unmarked conflict is a precondition on this request's own
+			// entity: the If-Match compare at the first segment flush, or the
+			// apply-result compare after a committed COMMIT_BEFORE_DISPATCH
+			// segment (wfengine.ErrPostSegmentConflict). Both answer 412. See
+			// engineConflictIsTransactionConflict for the conflicts that are
+			// not entity modifications; classifyWorkflowError answers them
+			// with the retryable 409 CONFLICT.
+			if errors.Is(lbErr, spi.ErrConflict) && !engineConflictIsTransactionConflict(lbErr) {
 				appErr := common.Operational(
 					http.StatusPreconditionFailed,
 					common.ErrCodeEntityModified,
@@ -2373,7 +2379,7 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		res, mtErr := h.engine.ManualTransitionWithIfMatch(txCtx, updated, input.Transition, input.IfMatch)
 		if mtErr != nil {
 			slog.Error("workflow manual transition failed", "error", mtErr.Error(), "entityId", updated.Meta.ID, "transition", input.Transition)
-			if errors.Is(mtErr, spi.ErrConflict) && !errors.Is(mtErr, wfengine.ErrScheduledTaskInfra) {
+			if errors.Is(mtErr, spi.ErrConflict) && !engineConflictIsTransactionConflict(mtErr) {
 				appErr := common.Operational(
 					http.StatusPreconditionFailed,
 					common.ErrCodeEntityModified,
@@ -2414,6 +2420,9 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		}
 		if input.IfMatch != "" && !segmented {
 			if _, err := finalEntityStore.CompareAndSave(finalCtx, updated, input.IfMatch); err != nil {
+				if appErr := common.TxAbortedConflict(err); appErr != nil {
+					return appErr
+				}
 				if errors.Is(err, spi.ErrConflict) {
 					// Emit the compensating
 					// TRANSITION_ABORTED into the same transaction as the
@@ -2722,17 +2731,17 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			//     spi.ErrConflict branch answers a retryable 409 (asserted by
 			//     service_classify_test.go): the segment boundary aborted, so
 			//     a fresh attempt is the right advice.
-			//   - ErrScheduledTaskInfra: the reconcile's task-row write lost a
-			//     race with the scheduler. On PostgreSQL that statement's
-			//     40001 has aborted the transaction. It leaves through
-			//     classifyWorkflowError → common.Internal → a retryable 409.
+			//   - The other engine infrastructure markers
+			//     (engineConflictIsTransactionConflict): a statement of the
+			//     engine's own met a transaction a concurrent writer had
+			//     already aborted. It leaves through classifyWorkflowError →
+			//     common.Internal → a retryable 409.
 			//
 			// Either way, isolating would let every later item write into a
 			// dead transaction and be lost.
 			if item.ifMatch != "" && errors.Is(engineErr, spi.ErrConflict) &&
 				!errors.Is(engineErr, wfengine.ErrPostSegmentConflict) &&
-				!errors.Is(engineErr, wfengine.ErrCommitBeforeDispatchInfra) &&
-				!errors.Is(engineErr, wfengine.ErrScheduledTaskInfra) {
+				!engineConflictIsTransactionConflict(engineErr) {
 				slog.Info("collection update item precondition failed",
 					"source", "engine", "entityId", updated.Meta.ID, "itemIndex", i)
 				failed = append(failed, UpdateCollectionItemFailure{
@@ -2804,6 +2813,11 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 				_, saveErr = finalEntityStore.Save(currentCtx, updated)
 			}
 			if saveErr != nil {
+				// The transaction the batch runs in is gone: not this item's
+				// precondition, and not isolable.
+				if appErr := common.TxAbortedConflict(saveErr); appErr != nil {
+					return nil, appErr
+				}
 				if applyHandlerCAS && errors.Is(saveErr, spi.ErrConflict) {
 					slog.Info("collection update item precondition failed",
 						"source", "handler", "entityId", updated.Meta.ID, "itemIndex", i)
@@ -2901,9 +2915,32 @@ func classifySaveErr(internalMsg, entityID string, err error) *common.AppError {
 	return common.Internal(internalMsg, err)
 }
 
+// engineConflictIsTransactionConflict reports whether an engine error that
+// carries spi.ErrConflict came from one of the engine's own statements rather
+// than from the caller's If-Match precondition: it is also marked with an
+// engine infrastructure sentinel, or it is spi.ErrTxAborted (the engine's
+// If-Match compare met an already-aborted transaction and answered through
+// common.TxAbortedConflict). The engine applies the precondition with a bare
+// CompareAndSave whose conflict it returns unmarked; every other store call
+// it makes marks its failure. A marked conflict means a concurrent writer
+// aborted the transaction — for example a processor's joined callback lost a
+// write race — and the engine's next statement met it. That is a transaction
+// conflict (retryable 409 CONFLICT), not ENTITY_MODIFIED.
+func engineConflictIsTransactionConflict(err error) bool {
+	return errors.Is(err, spi.ErrTxAborted) ||
+		errors.Is(err, wfengine.ErrScheduledTaskInfra) ||
+		errors.Is(err, wfengine.ErrProcessorOutputInfra) ||
+		errors.Is(err, wfengine.ErrSavepointInfra) ||
+		errors.Is(err, wfengine.ErrCommitBeforeDispatchInfra) ||
+		errors.Is(err, wfengine.ErrCriterionTypingInfra)
+}
+
 // classifyWorkflowError maps a workflow-engine error to the appropriate HTTP
 // error code:
 //
+//   - spi.ErrTxAborted (an earlier conflict aborted the transaction) →
+//     retryable 409 CONFLICT with the cause, first, so no wrapping of it can
+//     reach a branch below.
 //   - An already-classified *common.AppError (matched via errors.As, so it is
 //     found even several layers deep behind %w-wrapping) passes through
 //     unchanged — the minted status/code/retryable flags are authoritative.
@@ -2941,6 +2978,9 @@ func classifySaveErr(internalMsg, entityID string, err error) *common.AppError {
 //     conflicts already mapped upstream, and a Terminal callout failure that
 //     carries no code of its own) → 400 WORKFLOW_FAILED.
 func classifyWorkflowError(err error) *common.AppError {
+	if a := common.TxAbortedConflict(err); a != nil {
+		return a
+	}
 	var appErr *common.AppError
 	if errors.As(err, &appErr) {
 		return appErr

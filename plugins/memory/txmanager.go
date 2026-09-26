@@ -201,6 +201,17 @@ type TransactionManager struct {
 	// RollbackToSavepoint truncates them. Protected by mu. PostgreSQL gets the
 	// same behaviour from recording on the transaction's connection.
 	auditOps map[string][]stagedAuditEvent // txID → staged events
+
+	// lostDiscardedWrite marks a transaction that a RollbackToSavepoint made
+	// discard a write which had already lost first-committer-wins: another
+	// transaction committed that entity after this one's snapshot and before
+	// the rollback. The rollback restores the write set from the snapshot,
+	// so Commit's log check can no longer see the write; the mark makes
+	// Commit refuse the transaction with spi.ErrConflict, as PostgreSQL
+	// refuses one whose write failed with 40001 inside a rolled-back
+	// savepoint. It survives every later RollbackToSavepoint. Protected by
+	// mu.
+	lostDiscardedWrite map[string]bool
 }
 
 // Verify interface compliance at compile time.
@@ -226,6 +237,7 @@ func (f *StoreFactory) NewTransactionManager(uuids spi.UUIDGenerator) *Transacti
 		deletedBufferModels: make(map[string]map[string]spi.ModelRef),
 		scheduledTaskOps:    make(map[string][]scheduledTaskOp),
 		auditOps:            make(map[string][]stagedAuditEvent),
+		lostDiscardedWrite:  make(map[string]bool),
 		lastSubmitTime:      floor,
 	}
 	f.txManager = tm
@@ -570,6 +582,41 @@ func (m *TransactionManager) taskSnapshotLocked(txID string) map[taskKey]priorRo
 	return prior
 }
 
+// forgetLocked drops every piece of per-transaction state the manager holds
+// for txID. Caller holds mu.
+func (m *TransactionManager) forgetLocked(txID string) {
+	delete(m.active, txID)
+	delete(m.committing, txID)
+	delete(m.savepoints, txID)
+	delete(m.txUniqueKeys, txID)
+	delete(m.txSnapshotSeq, txID)
+	delete(m.supersededSaves, txID)
+	delete(m.deletedBufferModels, txID)
+	delete(m.scheduledTaskOps, txID)
+	delete(m.auditOps, txID)
+	delete(m.lostDiscardedWrite, txID)
+}
+
+// committedSinceSnapshotLocked reports whether a transaction that committed
+// after txID's snapshot wrote one of ids. Caller holds mu.
+func (m *TransactionManager) committedSinceSnapshotLocked(txID string, ids []string) bool {
+	if len(ids) == 0 {
+		return false
+	}
+	snapshotSeq := m.txSnapshotSeq[txID]
+	for _, committed := range m.committedLog {
+		if committed.seq <= snapshotSeq {
+			continue
+		}
+		for _, id := range ids {
+			if committed.writeSet[id] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // pruneCommittedLogLocked drops the log entries no open transaction can
 // conflict with: those at or below the oldest open snapshot's sequence
 // number, or all of them when no transaction is open. Caller holds mu.
@@ -815,13 +862,18 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			// frozen clock even for genuinely causally-ordered commits.
 			// Entity ids and task rows are checked in two separate loops
 			// over two separate sets.
+			// A write a savepoint rollback discarded after it had lost is a
+			// conflict too — see lostDiscardedWrite.
 			snapshotSeq := m.txSnapshotSeq[txID]
 			taskWrites := taskWriteSet(m.scheduledTaskOps[txID])
+			conflict := m.lostDiscardedWrite[txID]
 			for _, committed := range m.committedLog {
+				if conflict {
+					break
+				}
 				if committed.seq <= snapshotSeq {
 					continue
 				}
-				conflict := false
 				for entityID := range committed.writeSet {
 					if tx.ReadSet[entityID] || tx.WriteSet[entityID] {
 						conflict = true
@@ -834,20 +886,12 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 						break
 					}
 				}
-				if conflict {
-					tx.RolledBack = true // aborted, not committed: see Commit's doc
-					delete(m.committing, txID)
-					delete(m.active, txID)
-					delete(m.savepoints, txID)
-					delete(m.txUniqueKeys, txID)
-					delete(m.txSnapshotSeq, txID)
-					delete(m.supersededSaves, txID)
-					delete(m.deletedBufferModels, txID)
-					delete(m.scheduledTaskOps, txID)
-					delete(m.auditOps, txID)
-					m.factory.discardAuditTxIndex(tid, txID)
-					return spi.ErrConflict
-				}
+			}
+			if conflict {
+				tx.RolledBack = true // aborted, not committed: see Commit's doc
+				m.forgetLocked(txID)
+				m.factory.discardAuditTxIndex(tid, txID)
+				return spi.ErrConflict
 			}
 			capturedKeys = m.txUniqueKeys[txID]                       // safe: tx.OpMu.Lock() prevents new recordUniqueKeys
 			capturedScheduledTaskOps = m.scheduledTaskOps[txID]       // safe: tx.OpMu.Lock() prevents new stageTaskWrite
@@ -871,15 +915,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 				m.mu.Lock()
 				defer m.mu.Unlock()
 				tx.RolledBack = true // aborted, not committed: see Commit's doc
-				delete(m.committing, txID)
-				delete(m.active, txID)
-				delete(m.savepoints, txID)
-				delete(m.txUniqueKeys, txID)
-				delete(m.txSnapshotSeq, txID)
-				delete(m.supersededSaves, txID)
-				delete(m.deletedBufferModels, txID)
-				delete(m.scheduledTaskOps, txID)
-				delete(m.auditOps, txID)
+				m.forgetLocked(txID)
 			}()
 			m.factory.discardAuditTxIndex(tid, txID)
 			return err
@@ -1145,15 +1181,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			}
 
 			// Drop this transaction's state, then prune the log.
-			delete(m.active, txID)
-			delete(m.committing, txID)
-			delete(m.savepoints, txID)
-			delete(m.txUniqueKeys, txID)
-			delete(m.txSnapshotSeq, txID)
-			delete(m.supersededSaves, txID)
-			delete(m.deletedBufferModels, txID)
-			delete(m.scheduledTaskOps, txID)
-			delete(m.auditOps, txID)
+			m.forgetLocked(txID)
 			// The commit-phase stamp above is smAuditTxIndex's only reader and
 			// has already run, so this transaction's entries are dead.
 			m.factory.discardAuditTxIndex(tid, txID)
@@ -1198,15 +1226,7 @@ func (m *TransactionManager) Rollback(ctx context.Context, txID string) error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		tx.RolledBack = true
-		delete(m.active, txID)
-		delete(m.committing, txID)
-		delete(m.savepoints, txID)
-		delete(m.txUniqueKeys, txID)
-		delete(m.txSnapshotSeq, txID)
-		delete(m.supersededSaves, txID)     // discard staged superseded values unapplied — see field doc
-		delete(m.deletedBufferModels, txID) // discard staged evicted models unapplied — see field doc
-		delete(m.scheduledTaskOps, txID)    // discard staged ops unapplied — see field doc
-		delete(m.auditOps, txID)            // discard staged audit events unapplied — see field doc
+		m.forgetLocked(txID) // staged values, models, task ops and audit events are discarded unapplied
 	}()
 	// A rolled-back transaction is never stamped, so its audit-event index
 	// entries have no reader at all — see discardAuditTxIndex.
@@ -1404,6 +1424,22 @@ func (m *TransactionManager) RollbackToSavepoint(ctx context.Context, txID strin
 	snap, ok := txSavepoints[savepointID]
 	if !ok {
 		return fmt.Errorf("RollbackToSavepoint: %w (txID=%s, savepointID=%s)", spi.ErrSavepointNotFound, txID, savepointID)
+	}
+
+	// A write the rollback discards stops being a write, but if another
+	// transaction already committed its entity after this one's snapshot,
+	// the transaction has lost that race and Commit must refuse it — see
+	// lostDiscardedWrite. A commit to that entity after the rollback does
+	// not race any write of this transaction and is not recorded. Read-set
+	// entries the rollback discards are dropped, as PostgreSQL drops them.
+	var discarded []string
+	for id := range tx.WriteSet {
+		if !snap.writeSet[id] {
+			discarded = append(discarded, id)
+		}
+	}
+	if m.committedSinceSnapshotLocked(txID, discarded) {
+		m.lostDiscardedWrite[txID] = true
 	}
 
 	tx.Buffer = snap.buffer

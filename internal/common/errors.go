@@ -166,6 +166,20 @@ func StorageUnavailable(err error) *AppError {
 	return nil
 }
 
+// TxAbortedConflict answers a statement refused because an earlier conflict
+// aborted its transaction (spi.ErrTxAborted): a retryable 409 CONFLICT with
+// err attached as the cause. It returns nil for any other error.
+//
+// An If-Match compare-and-save that meets such a transaction never evaluated
+// the precondition, so it must not be answered as 412 ENTITY_MODIFIED. Every
+// compare that maps a conflict to 412 asks this first.
+func TxAbortedConflict(err error) *AppError {
+	if err == nil || !errors.Is(err, spi.ErrTxAborted) {
+		return nil
+	}
+	return Operational(http.StatusConflict, ErrCodeConflict, "transaction conflict — retry").AsRetryable().WithCause(err)
+}
+
 // Internal creates a 500 error with internal detail from the wrapped error.
 //
 // If the wrapped error is (or wraps) spi.ErrConflict, the result is routed to

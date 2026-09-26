@@ -217,6 +217,90 @@ func (c *callbackClient) conditionalDelete(ctx context.Context, model string, ve
 	return c.do(ctx, http.MethodDelete, path, condition, txToken, "")
 }
 
+// targetOf returns the targetId carried on the entity's data.
+func targetOf(entity *Entity) (string, error) {
+	data, err := decodeData(entity)
+	if err != nil {
+		return "", err
+	}
+	targetID, _ := data["targetId"].(string)
+	if targetID == "" {
+		return "", fmt.Errorf("entity data has no targetId")
+	}
+	return targetID, nil
+}
+
+// writeBack reads entityID and writes its data back unchanged, both through
+// txToken's transaction when it is non-empty, and returns the write's HTTP
+// status. A write that could not be made at all is an error.
+func (c *callbackClient) writeBack(ctx context.Context, entityID, txToken string) (int, error) {
+	got, err := c.getEntity(ctx, entityID, txToken)
+	if err != nil {
+		return 0, fmt.Errorf("callback read: %w", err)
+	}
+	if got.Status != http.StatusOK {
+		return 0, fmt.Errorf("callback read status=%d body=%s", got.Status, got.Body)
+	}
+	var env struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(got.Body), &env); err != nil || len(env.Data) == 0 {
+		return 0, fmt.Errorf("callback read: no entity data in %s", got.Body)
+	}
+	res, err := c.do(ctx, http.MethodPut, "/api/entity/JSON/"+entityID, string(env.Data), txToken, "")
+	if err != nil {
+		return 0, fmt.Errorf("callback update: %w", err)
+	}
+	return res.Status, nil
+}
+
+// targetVerdict is how a cb-*-target processor answers after its joined write.
+type targetVerdict int
+
+const (
+	// verdictSucceed answers success with the primary unchanged, whatever the
+	// joined write was answered.
+	verdictSucceed targetVerdict = iota
+	// verdictStrict fails when the joined write is not answered 200, as a
+	// processor checking its own callback would.
+	verdictStrict
+	// verdictFail ignores the joined write's answer and always fails.
+	verdictFail
+)
+
+// targetWriter builds the cb-*-target processors. rival makes a write of the
+// target outside T first; verdict is how the processor answers after the
+// joined write.
+func targetWriter(rival bool, verdict targetVerdict) callbackProcessorFunc {
+	return func(ctx context.Context, entity *Entity, _ cbConfig, token string, cb *callbackClient) (*Entity, error) {
+		if cb == nil {
+			return nil, fmt.Errorf("callback client unavailable: CYODA_COMPUTE_HTTP_BASE not set")
+		}
+		targetID, err := targetOf(entity)
+		if err != nil {
+			return nil, err
+		}
+		if rival {
+			if _, err := cb.writeBack(ctx, targetID, ""); err != nil {
+				return nil, fmt.Errorf("rival write: %w", err)
+			}
+		}
+		status, err := cb.writeBack(ctx, targetID, token)
+		if err != nil {
+			return nil, err
+		}
+		switch verdict {
+		case verdictStrict:
+			if status != http.StatusOK {
+				return nil, fmt.Errorf("joined write of %s answered %d", targetID, status)
+			}
+		case verdictFail:
+			return nil, fmt.Errorf("processor fails after the joined write of %s", targetID)
+		}
+		return entity, nil
+	}
+}
+
 // parseCreateResponse extracts the first entity id and transactionId from a
 // create/update response body: [{"transactionId":"...","entityIds":["uuid"]}].
 func parseCreateResponse(body string) (entityID, txID string) {
@@ -635,6 +719,34 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			data["tokenWasEmpty"] = token == ""
 			return withData(entity, data)
 		},
+
+		// cb-update-target — reads, through a joined callback, the entity whose
+		// id rides on the primary's data as targetId, and writes its data back
+		// unchanged through a joined update. The write is a new version of the
+		// target in T, so a change another client committed to the target after
+		// T began makes T lose first-committer-wins. The callback's own answer
+		// is not this processor's verdict: it answers success with the primary
+		// unchanged, and the transaction's owner meets the conflict.
+		"cb-update-target": targetWriter(false, verdictSucceed),
+		// cb-update-target-strict — cb-update-target that fails, as a real
+		// processor checking its own callback would, when the joined write is
+		// not answered 200.
+		"cb-update-target-strict": targetWriter(false, verdictStrict),
+
+		// cb-race-target — cb-update-target with the rival write made by this
+		// processor itself: it first writes the target back OUTSIDE T (no
+		// token), which commits a new version after T began, and then does the
+		// joined write. T therefore loses first-committer-wins on the target
+		// with no second client and nothing running at the same time.
+		"cb-race-target": targetWriter(true, verdictSucceed),
+		// cb-race-target-strict — cb-race-target that fails when the joined
+		// write is not answered 200.
+		"cb-race-target-strict": targetWriter(true, verdictStrict),
+		// cb-race-target-thenfail — cb-race-target that ignores the joined
+		// write's answer and then fails. Under ASYNC_NEW_TX the failure rolls
+		// back the processor's savepoint, which discards the joined write
+		// after it lost the race.
+		"cb-race-target-thenfail": targetWriter(true, verdictFail),
 
 		// cb-ifmatch-update — creates a secondary inside T, then issues a
 		// loopback update with If-Match set to the create's in-T transactionId.
