@@ -144,6 +144,7 @@ type StoreFactory struct {
 	// as its entity flush, and every never-joining method is serialised with
 	// every commit.
 	scheduledTasks  map[taskKey]spi.ScheduledTask
+	taskClaimIndex  *claimIndex // scheduledTasks' claim index, kept by applyTaskOps
 	taskMarks       map[markKey]uuid.UUID
 	schedulerOwners map[uuid.UUID]time.Time
 }
@@ -175,6 +176,7 @@ func NewStoreFactory(opts ...Option) *StoreFactory {
 		uniqueClaims:    make(map[claimKey]string),
 		claimsByEntity:  make(map[entityTenantKey][]claimKey),
 		scheduledTasks:  make(map[taskKey]spi.ScheduledTask),
+		taskClaimIndex:  newClaimIndex(),
 		taskMarks:       make(map[markKey]uuid.UUID),
 		schedulerOwners: make(map[uuid.UUID]time.Time),
 	}

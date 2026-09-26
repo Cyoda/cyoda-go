@@ -1,0 +1,119 @@
+package memory
+
+import (
+	"fmt"
+	"math/rand/v2"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+)
+
+// allCandidatesLocked is the claim candidate set read from every task row: the
+// set spi.SelectClaims is defined over.
+func allCandidatesLocked(f *StoreFactory, req spi.ClaimRequest) []spi.ScheduledTask {
+	cutoff := f.clock.Now().Add(-req.StaleAfter)
+	running := make(map[entityTenantKey]taskKey)
+	for k, t := range f.scheduledTasks {
+		if t.Status == spi.ScheduledTaskRunning {
+			running[entityTenantKey{tenant: string(k.tenant), id: t.EntityID}] = k
+		}
+	}
+	var cands []spi.ScheduledTask
+	for k, t := range f.scheduledTasks {
+		switch {
+		case t.Status == spi.ScheduledTaskWaiting && t.NextAttemptTime <= req.NowMs:
+		case req.AllowLostOwner && t.Status == spi.ScheduledTaskRunning:
+			if beat, ok := f.schedulerOwners[t.Claim.Owner]; ok && !beat.Before(cutoff) {
+				continue
+			}
+		default:
+			continue
+		}
+		if r, ok := running[entityTenantKey{tenant: string(k.tenant), id: t.EntityID}]; ok && r != k {
+			continue
+		}
+		cands = append(cands, t)
+	}
+	return cands
+}
+
+// The claim index gives the same claims as a read of every row, over random
+// writes: arms, re-arms that move NextAttemptTime, claims by a live or a lost
+// owner, give-backs, failures and deletes, and random limits.
+func TestClaimIndex_MatchesEveryRowRead(t *testing.T) {
+	rng := rand.New(rand.NewPCG(1, 2))
+	f := NewStoreFactory(WithClock(NewTestClockAt(time.UnixMilli(1_000_000))))
+	t.Cleanup(func() { _ = f.Close() })
+	sts := &scheduledTaskStore{f: f}
+	live, lost := uuid.New(), uuid.New()
+	f.schedulerOwners[live] = f.clock.Now()
+
+	tenants := []spi.TenantID{"t-a", "t-b", "t-c"}
+	for step := range 4000 {
+		k := taskKey{tenant: tenants[rng.IntN(len(tenants))], id: fmt.Sprintf("task-%02d", rng.IntN(60))}
+		row := spi.ScheduledTask{
+			ID: k.id, TenantID: k.tenant, Type: spi.ScheduledTaskFireTransition,
+			EntityID: fmt.Sprintf("e-%d", rng.IntN(15)), ModelName: "M", ModelVersion: 1,
+			Transition: "T", SourceState: "S", ArmToken: uuid.New(),
+			Status: spi.ScheduledTaskWaiting, NextAttemptTime: int64(rng.IntN(100)),
+		}
+		if old, ok := f.scheduledTasks[k]; ok {
+			row.EntityID = old.EntityID // a task keeps its entity
+		}
+		op := scheduledTaskOp{key: k, after: &row}
+		switch r := rng.IntN(10); {
+		case r < 1:
+			op.after = nil
+		case r < 3:
+			owner := live
+			if rng.IntN(2) == 0 {
+				owner = lost
+			}
+			if _, ok := f.taskClaimIndex.running[k.tenant][row.EntityID]; ok {
+				break // one RUNNING task per entity
+			}
+			row.Status = spi.ScheduledTaskRunning
+			row.Claim = &spi.TaskClaim{Token: uuid.New(), Owner: owner}
+		case r < 4:
+			row.Status = spi.ScheduledTaskFailed
+			row.FailureReason = spi.FailureRunPanicked
+		}
+		if old, ok := f.scheduledTasks[k]; ok && old.Status == spi.ScheduledTaskRunning &&
+			row.Status == spi.ScheduledTaskRunning && op.after != nil {
+			row.Claim = old.Claim
+		}
+		func() {
+			f.entityMu.Lock()
+			defer f.entityMu.Unlock()
+			f.txManager.commitTaskWrites([]scheduledTaskOp{op})
+		}()
+
+		if step%20 != 0 {
+			continue
+		}
+		req := spi.ClaimRequest{Owner: uuid.New(), NowMs: int64(rng.IntN(110)), StaleAfter: time.Minute,
+			Limit: 1 + rng.IntN(12), PerTenantLimit: 1 + rng.IntN(6), AllowLostOwner: rng.IntN(2) == 0,
+			TenantInProgress: map[spi.TenantID]int{tenants[rng.IntN(len(tenants))]: rng.IntN(4)}}
+		var got, want []spi.ScheduledTask
+		func() {
+			f.entityMu.Lock()
+			defer f.entityMu.Unlock()
+			got = spi.SelectClaims(sts.claimCandidatesLocked(req), req)
+			want = spi.SelectClaims(allCandidatesLocked(f, req), req)
+		}()
+		if gk, wk := claimKeys(got), claimKeys(want); fmt.Sprint(gk) != fmt.Sprint(wk) {
+			t.Fatalf("step %d, request %+v: index chose %v, every-row read chose %v", step, req, gk, wk)
+		}
+	}
+}
+
+func claimKeys(tasks []spi.ScheduledTask) []string {
+	out := make([]string, len(tasks))
+	for i, x := range tasks {
+		out[i] = string(x.TenantID) + "/" + x.ID
+	}
+	return out
+}

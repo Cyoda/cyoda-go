@@ -64,16 +64,20 @@ func priorRows(dst map[taskKey]spi.ScheduledTask, ops []scheduledTaskOp) map[tas
 	return priors
 }
 
-// applyTaskOps applies ops to dst in order. Caller holds entityMu for writing.
-func applyTaskOps(dst map[taskKey]spi.ScheduledTask, ops []scheduledTaskOp) {
+// applyTaskOps applies ops to dst in order, and keeps idx, dst's claim index,
+// in step. Caller holds entityMu for writing.
+func applyTaskOps(dst map[taskKey]spi.ScheduledTask, idx *claimIndex, ops []scheduledTaskOp) {
 	for _, op := range ops {
+		before, had := dst[op.key]
 		if op.after == nil {
 			delete(dst, op.key)
+			idx.update(op.key, before, had, nil)
 			continue
 		}
 		row := copyScheduledTask(*op.after)
 		row.UnsafeMarked = false // derived from taskMarks on every read, never stored
 		dst[op.key] = row
+		idx.update(op.key, before, had, &row)
 	}
 }
 

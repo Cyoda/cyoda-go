@@ -531,7 +531,7 @@ func (m *TransactionManager) commitTaskWrites(ops []scheduledTaskOp) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	priors := priorRows(m.factory.scheduledTasks, ops)
-	applyTaskOps(m.factory.scheduledTasks, ops)
+	applyTaskOps(m.factory.scheduledTasks, m.factory.taskClaimIndex, ops)
 	m.commitSeq++
 	m.committedLog = append(m.committedLog, committedTx{seq: m.commitSeq, taskWrites: priors})
 	m.pruneCommittedLogLocked()
@@ -1164,7 +1164,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 		// go into this commit's log entry, for the snapshots of the
 		// transactions still open.
 		taskPriors := priorRows(m.factory.scheduledTasks, capturedScheduledTaskOps)
-		applyTaskOps(m.factory.scheduledTasks, capturedScheduledTaskOps)
+		applyTaskOps(m.factory.scheduledTasks, m.factory.taskClaimIndex, capturedScheduledTaskOps)
 
 		// 6. Record in committed log, submit times, and prune.
 		func() {

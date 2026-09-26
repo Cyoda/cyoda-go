@@ -41,9 +41,9 @@ func (s *scheduledTaskStore) SweepOwners(_ context.Context, deadFor time.Duratio
 	defer s.f.entityMu.Unlock()
 	cutoff := s.f.clock.Now().Add(-deadFor)
 	referenced := make(map[uuid.UUID]bool)
-	for _, t := range s.f.scheduledTasks {
-		if t.Status == spi.ScheduledTaskRunning {
-			referenced[t.Claim.Owner] = true
+	for _, byEntity := range s.f.taskClaimIndex.running {
+		for _, k := range byEntity {
+			referenced[s.f.scheduledTasks[k].Claim.Owner] = true
 		}
 	}
 	for owner, beat := range s.f.schedulerOwners {
@@ -74,30 +74,7 @@ func (s *scheduledTaskStore) ClaimDue(_ context.Context, req spi.ClaimRequest) (
 	s.f.entityMu.Lock()
 	defer s.f.entityMu.Unlock()
 
-	cutoff := s.f.clock.Now().Add(-req.StaleAfter)
-	busy := s.f.txManager.busyTaskKeys()
-	running := make(map[entityTenantKey]taskKey)
-	for k, t := range s.f.scheduledTasks {
-		if t.Status == spi.ScheduledTaskRunning {
-			running[entityTenantKey{tenant: string(k.tenant), id: t.EntityID}] = k
-		}
-	}
-	var cands []spi.ScheduledTask
-	for k, t := range s.f.scheduledTasks {
-		if busy[k] {
-			continue
-		}
-		switch {
-		case t.Status == spi.ScheduledTaskWaiting && t.NextAttemptTime <= req.NowMs:
-		case req.AllowLostOwner && t.Status == spi.ScheduledTaskRunning && s.ownerStaleLocked(t.Claim.Owner, cutoff):
-		default:
-			continue
-		}
-		if r, ok := running[entityTenantKey{tenant: string(k.tenant), id: t.EntityID}]; ok && r != k {
-			continue
-		}
-		cands = append(cands, t)
-	}
+	cands := s.claimCandidatesLocked(req)
 
 	// spi.SelectClaims applies the rules every backend shares: one
 	// task per entity, the per-tenant limits, tenants taking turns.
@@ -139,14 +116,17 @@ func (s *scheduledTaskStore) GiveBackIdle(_ context.Context, owner uuid.UUID, ke
 	defer s.f.entityMu.Unlock()
 	busy := s.f.txManager.busyTaskKeys()
 	var ops []scheduledTaskOp
-	for k, t := range s.f.scheduledTasks {
-		if t.Status != spi.ScheduledTaskRunning || t.Claim.Owner != owner || kept[t.Claim.Token] || busy[k] {
-			continue
+	for _, byEntity := range s.f.taskClaimIndex.running {
+		for _, k := range byEntity {
+			t := s.f.scheduledTasks[k]
+			if t.Claim.Owner != owner || kept[t.Claim.Token] || busy[k] {
+				continue
+			}
+			back := copyScheduledTask(t)
+			back.Status = spi.ScheduledTaskWaiting
+			back.Claim = nil
+			ops = append(ops, scheduledTaskOp{key: k, after: &back})
 		}
-		back := copyScheduledTask(t)
-		back.Status = spi.ScheduledTaskWaiting
-		back.Claim = nil
-		ops = append(ops, scheduledTaskOp{key: k, after: &back})
 	}
 	s.f.txManager.commitTaskWrites(ops)
 	return len(ops), nil
@@ -222,4 +202,44 @@ func (s *scheduledTaskStore) SweepMarks(_ context.Context) error {
 		}
 	}
 	return nil
+}
+
+// claimCandidatesLocked returns the candidates spi.SelectClaims needs, and no
+// more. SelectClaims gives a tenant at most n = min(PerTenantLimit minus its
+// runs in progress, Limit) turns, each to a different entity's first
+// candidate in (NextAttemptTime, ID) order, and orders tenants by their first
+// candidate. So per tenant it reads, from the claim index, the first n WAITING
+// tasks that are their entity's first candidate and the first n lost-owner
+// RUNNING tasks: the two name different entities, since an entity with a
+// RUNNING task has no WAITING candidate and has one RUNNING task at most, and
+// the tenant's first n candidates lie within them. SelectClaims over that set
+// chooses exactly what it would over every candidate. A claim reads, per
+// tenant, what claimIndex.waitingCandidates and lostCandidates say, never a
+// tenant's whole backlog. Caller holds entityMu.
+func (s *scheduledTaskStore) claimCandidatesLocked(req spi.ClaimRequest) []spi.ScheduledTask {
+	idx := s.f.taskClaimIndex
+	cutoff := s.f.clock.Now().Add(-req.StaleAfter)
+	lost := func(t spi.ScheduledTask) bool { return s.ownerStaleLocked(t.Claim.Owner, cutoff) }
+	busy := s.f.txManager.busyTaskKeys()
+	tenants := make(map[spi.TenantID]bool, len(idx.waiting)+len(idx.running))
+	for tn := range idx.waiting {
+		tenants[tn] = true
+	}
+	if req.AllowLostOwner {
+		for tn := range idx.running {
+			tenants[tn] = true
+		}
+	}
+	var cands []spi.ScheduledTask
+	for tn := range tenants {
+		n := min(req.PerTenantLimit-req.TenantInProgress[tn], req.Limit)
+		if n <= 0 {
+			continue
+		}
+		cands = append(cands, idx.waitingCandidates(s.f.scheduledTasks, tn, req.NowMs, n, busy)...)
+		if req.AllowLostOwner {
+			cands = append(cands, idx.lostCandidates(s.f.scheduledTasks, tn, n, busy, lost)...)
+		}
+	}
+	return cands
 }
