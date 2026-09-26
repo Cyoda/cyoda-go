@@ -8,8 +8,12 @@ package search_test
 // too. Only a fencing refusal — stale claim, terminal, not found — aborts it.
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -42,6 +46,9 @@ type scriptedHeartbeatStore struct {
 	busyOnCalls      map[int]bool
 	transientOnCalls map[int]bool
 	staleOnCalls     map[int]bool
+	// blockOnCalls hold the call until ctx is done and answer ctx's error,
+	// as a statement cut off by its context does.
+	blockOnCalls map[int]bool
 
 	calls int32
 }
@@ -50,6 +57,10 @@ func (s *scriptedHeartbeatStore) Heartbeat(ctx context.Context, jobID string, ep
 	n := int(atomic.AddInt32(&s.calls, 1))
 	if s.busyOnCalls[n] {
 		return fmt.Errorf("heartbeat search job %s: %w: row locked", jobID, spi.ErrTaskBusy)
+	}
+	if s.blockOnCalls[n] {
+		<-ctx.Done()
+		return fmt.Errorf("heartbeat search job %s: %w", jobID, ctx.Err())
 	}
 	if s.transientOnCalls[n] {
 		return fmt.Errorf("heartbeat search job %s: read tcp 10.0.0.1:5432: connection reset by peer", jobID)
@@ -168,6 +179,63 @@ func TestStartHeartbeat_TransientErrorDoesNotCancelTheJob(t *testing.T) {
 	if got := store.callCount(); got < 3 {
 		t.Fatalf("Heartbeat was called %d times, want at least 3 — the ticker must keep stamping past the failed ticks", got)
 	}
+}
+
+// A heartbeat cut off because the job ended is no missed tick: when jobCtx
+// is done, the ticker returns without the WARN a failed stamp gets.
+func TestStartHeartbeat_EndedJobLogsNoMissedTick(t *testing.T) {
+	var buf syncBuffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prev)
+
+	base := memory.NewStoreFactory()
+	defer base.Close()
+	ctx := tenantCtx("tenant-heartbeat-ended")
+
+	realAsync, err := base.AsyncSearchStore(context.Background())
+	if err != nil {
+		t.Fatalf("AsyncSearchStore: %v", err)
+	}
+	store := &scriptedHeartbeatStore{
+		AsyncSearchStore: realAsync,
+		blockOnCalls:     map[int]bool{1: true},
+	}
+	svc, _ := newSlowSearchService(t, ctx, base, store, 5*time.Millisecond, 20*time.Millisecond)
+
+	jobID := submitSlowJob(t, ctx, base, svc, 10)
+	status := pollUntilTerminal(t, svc, ctx, jobID, 5*time.Second)
+	if status.Status != "SUCCESSFUL" {
+		t.Fatalf("status = %q, want SUCCESSFUL", status.Status)
+	}
+	// The blocked stamp returns once the ended job cancels jobCtx; give the
+	// ticker goroutine time to log, if it were going to.
+	deadline := time.Now().Add(2 * time.Second)
+	for store.callCount() < 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if out := buf.String(); strings.Contains(out, "missed a tick") {
+		t.Fatalf("an ended job logged a missed heartbeat tick:\n%s", out)
+	}
+}
+
+// syncBuffer is a bytes.Buffer safe for the logger and the test to share.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // A stale-claim answer is a genuine fencing refusal, not a missed tick, and
