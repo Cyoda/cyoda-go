@@ -226,9 +226,19 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	if len(readIDs) > 0 {
 		current, err := tm.validateInChunks(ctx, pgxTx, state.tenantID, readIDs, 0)
 		if err != nil {
+			// The validation query is the first statement Commit issues, so on
+			// an aborted transaction it is the one that meets the 25P02.
+			if aborted, ok := abortedCommitError(state, err); ok {
+				tm.cleanupTx(txID)
+				_ = pgxTx.Rollback(context.Background())
+				return aborted
+			}
+			// Classify while the transaction is still registered, so the
+			// classifier sees its bookkeeping.
+			classified := tm.classifyTxError(txID, fmt.Errorf("Commit: validate: %w", err))
 			tm.cleanupTx(txID)
 			_ = pgxTx.Rollback(context.Background())
-			return tm.classifyTxError(txID, fmt.Errorf("Commit: validate: %w", err))
+			return classified
 		}
 		if verr := state.ValidateReadSet(current); verr != nil {
 			tm.cleanupTx(txID)
@@ -241,31 +251,19 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	// transaction wrote, immediately before COMMIT.
 	//
 	// If the transaction is already in an aborted state (e.g. an earlier Exec
-	// returned 40001 and left the tx aborted), the first statement of the
-	// stamp will fail with SQLSTATE 25P02 (in_failed_sql_transaction). In that
-	// case we rollback and surface ErrConflict, since the abort was most
-	// likely caused by a serialization failure — the same classification the
-	// bare timestamp probe this replaced already had.
+	// returned 40001 and left the tx aborted) and had no read set to validate,
+	// the first statement of the stamp fails with SQLSTATE 25P02
+	// (in_failed_sql_transaction), which abortedCommitError reads.
 	submitTime, tsErr := tm.stampCommitInstant(ctx, pgxTx, state.tenantID, txID)
 	if tsErr != nil {
 		tm.cleanupTx(txID)
-		// Only classify as ErrConflict when the probe fails specifically because
-		// the transaction is already in an aborted state (SQLSTATE 25P02:
-		// in_failed_sql_transaction). Any other error (context cancellation,
-		// network failure, etc.) is returned as-is so callers are not misled
-		// into treating a transient infrastructure error as a retryable conflict.
-		var pgErr *pgconn.PgError
-		if errors.As(tsErr, &pgErr) && pgErr.Code == pgerrcode.InFailedSQLTransaction {
+		// Only a 25P02 is read as an aborted transaction. Any other error
+		// (context cancellation, network failure, etc.) is classified below so
+		// callers are not misled into treating a transient infrastructure error
+		// as a retryable conflict.
+		if aborted, ok := abortedCommitError(state, tsErr); ok {
 			_ = pgxTx.Rollback(context.Background())
-			// 25P02 says only "something earlier in this transaction failed".
-			// When that something was a ceiling or a concurrent writer,
-			// classifyTxError recorded it. Reporting the real cause is what
-			// keeps a cancelled statement off the retryable-conflict path — a
-			// retry would cancel again — and a recorded conflict stays one.
-			if cause := state.AbortCause(); cause != nil {
-				return fmt.Errorf("Commit: transaction aborted: %w", cause)
-			}
-			return fmt.Errorf("%w: Commit: transaction aborted: %w", spi.ErrConflict, tsErr)
+			return aborted
 		}
 		// For non-25P02 errors: roll back with a fresh context so we don't leak
 		// the connection, then classify before returning. classifyError only
@@ -987,6 +985,24 @@ func (tm *TransactionManager) classifyTxError(txID string, err error) error {
 		}
 	}
 	return classified
+}
+
+// abortedCommitError reads a Commit statement's 25P02 in_failed_sql_transaction,
+// reporting false for any other error.
+//
+// 25P02 says only "something earlier in this transaction failed". When that
+// something was a ceiling or a concurrent writer, classifyTxError recorded it,
+// and Commit reports the recorded cause: that keeps a cancelled statement off
+// the retryable-conflict path — a retry would cancel again — and keeps a
+// conflict a conflict. With nothing recorded, the abort is read as a conflict.
+func abortedCommitError(state *txState, err error) (error, bool) {
+	if !isInFailedTx(err) {
+		return nil, false
+	}
+	if cause := state.AbortCause(); cause != nil {
+		return fmt.Errorf("Commit: transaction aborted: %w", cause), true
+	}
+	return fmt.Errorf("%w: Commit: transaction aborted: %w", spi.ErrConflict, err), true
 }
 
 // isConcurrentWriterAbort reports whether err is PostgreSQL aborting the

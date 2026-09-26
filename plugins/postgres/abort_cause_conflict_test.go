@@ -9,6 +9,8 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/google/uuid"
+	"github.com/jackc/pgerrcode"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // A serialization failure aborts the whole transaction. PostgreSQL answers
@@ -52,8 +54,41 @@ func TestStatementAfterSerializationFailure_IsAConflict(t *testing.T) {
 	assertLaterStatementIsConflict(t, fx, txCtx)
 
 	commitErr := fx.tm.Commit(ctx, txID)
-	if !errors.Is(commitErr, spi.ErrConflict) {
-		t.Fatalf("commit after a serialization failure lost its conflict mapping: %v", commitErr)
+	requireConflictCause(t, commitErr, pgerrcode.SerializationFailure)
+}
+
+// TestCommitWithReadSetAfterSerializationFailure_IsAConflict: a transaction
+// that read an entity validates its read set before anything else at Commit,
+// so the validation query is the first statement to meet the abort. It must
+// report the conflict that caused it, as the stamp step does.
+func TestCommitWithReadSetAfterSerializationFailure_IsAConflict(t *testing.T) {
+	fx := newStatementCeilingFixture(t, 0)
+	ctx := classifyTestCtx()
+	txID, txCtx := beginGuarded(t, fx.tm, ctx)
+
+	state, ok := fx.tm.lookupTxState(txID)
+	if !ok {
+		t.Fatal("no txState for the transaction just begun")
+	}
+	state.RecordRead(uuid.NewString(), 1)
+
+	if _, err := fx.q.Exec(txCtx, "DO $$ BEGIN RAISE EXCEPTION 'conflict' USING ERRCODE = '40001'; END $$"); !errors.Is(err, spi.ErrConflict) {
+		t.Fatalf("40001 is not a conflict, so this scenario proves nothing: %v", err)
+	}
+
+	requireConflictCause(t, fx.tm.Commit(ctx, txID), pgerrcode.SerializationFailure)
+}
+
+// requireConflictCause asserts err is spi.ErrConflict and names the SQLSTATE
+// that aborted the transaction, not only the 25P02 that followed it.
+func requireConflictCause(t *testing.T, err error, code string) {
+	t.Helper()
+	if !errors.Is(err, spi.ErrConflict) {
+		t.Fatalf("commit after the conflict lost its conflict mapping: %v", err)
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != code {
+		t.Fatalf("commit error does not carry the %s that aborted the transaction: %v", code, err)
 	}
 }
 
