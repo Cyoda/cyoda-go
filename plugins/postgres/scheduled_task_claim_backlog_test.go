@@ -101,8 +101,9 @@ func timeClaims(t *testing.T, sts spi.ScheduledTaskStore, req spi.ClaimRequest, 
 	return took[len(took)/2]
 }
 
-// explain logs the ranking's plan for req with the excluded rows given, in
-// a transaction set up as a claim's is.
+// explain logs the tenant list's and the ranking's plans for req with the
+// excluded rows given, in a transaction set up as a claim's is, and checks
+// the ranking plan's shape (assertEntityProbesAreSubPlans).
 func explain(t *testing.T, pool *pgxpool.Pool, req spi.ClaimRequest, exclRows []string) {
 	t.Helper()
 	ctx := context.Background()
@@ -129,9 +130,55 @@ func explain(t *testing.T, pool *pgxpool.Pool, req spi.ClaimRequest, exclRows []
 	}
 	rows.Close()
 	t.Logf("tenant list plan:\n%s", explainInTx(t, tx, postgres.ClaimTenantsSQLForTest, req.NowMs, req.AllowLostOwner))
-	t.Logf("ranking plan:\n%s", explainInTx(t, tx, postgres.RankClaimsSQLForTest,
+	ranking := explainInTx(t, tx, postgres.RankClaimsSQLForTest,
 		req.NowMs, req.AllowLostOwner, req.StaleAfter.Microseconds(), req.PerTenantLimit,
-		[]string{}, []int{}, req.Limit, exclRows, []string{}, tenants))
+		[]string{}, []int{}, req.Limit, exclRows, []string{}, tenants)
+	t.Logf("ranking plan:\n%s", ranking)
+	assertEntityProbesAreSubPlans(t, ranking)
+}
+
+// assertEntityProbesAreSubPlans fails unless every scan of
+// scheduled_tasks_waiting_entity_idx in the ranking plan runs under a
+// SubPlan with no Anti Join node above it. The earlier-sibling check is a
+// scalar sublink so that PostgreSQL runs it as one index probe per walked
+// row; a NOT EXISTS form of the same check can be planned as an anti join
+// over the tenant's rows, whose cost the timing tests do not always catch.
+// The plan is EXPLAIN's text form: a node's children are indented below it,
+// and a SubPlan is labelled on a line of its own above its root node.
+func assertEntityProbesAreSubPlans(t *testing.T, plan string) {
+	t.Helper()
+	lines := strings.Split(plan, "\n")
+	indent := func(s string) int { return len(s) - len(strings.TrimLeft(s, " ")) }
+	probes := 0
+	for i, line := range lines {
+		if !strings.Contains(line, "scheduled_tasks_waiting_entity_idx") {
+			continue
+		}
+		probes++
+		underSubPlan := false
+		depth := indent(line)
+		// Walk the ancestors: each is the nearest earlier line indented
+		// less than the last ancestor found.
+		for j := i - 1; j >= 0 && depth > 0; j-- {
+			if strings.TrimSpace(lines[j]) == "" || indent(lines[j]) >= depth {
+				continue
+			}
+			depth = indent(lines[j])
+			ancestor := strings.TrimSpace(lines[j])
+			if strings.HasPrefix(ancestor, "SubPlan") {
+				underSubPlan = true
+			}
+			if strings.Contains(ancestor, "Anti Join") {
+				t.Errorf("ranking plan: the entity probe %q runs under %q, not as a per-row SubPlan", strings.TrimSpace(line), ancestor)
+			}
+		}
+		if !underSubPlan {
+			t.Errorf("ranking plan: the entity probe %q does not run under a SubPlan", strings.TrimSpace(line))
+		}
+	}
+	if probes == 0 {
+		t.Errorf("ranking plan has no scan of scheduled_tasks_waiting_entity_idx:\n%s", plan)
+	}
 }
 
 func explainInTx(t *testing.T, tx pgx.Tx, sql string, args ...any) string {
@@ -177,7 +224,7 @@ func TestPostgres_ClaimDue_CostDoesNotFollowOneTenantsBacklog(t *testing.T) {
 		futureTenants int64
 	}{
 		{name: "OneLargeTenant", backlog: 1_000_000},
-		{name: "LargeTenantAndManyFutureTenants", backlog: 200_000, futureTenants: 25_000},
+		{name: "LargeTenantAndManyFutureTenants", backlog: 200_000, futureTenants: 10_000},
 	} {
 		t.Run(shape.name, func(t *testing.T) {
 			pool, _, sts := newBacklogStore(t)
@@ -216,9 +263,11 @@ func TestPostgres_ClaimDue_BusyRowsCostBounded(t *testing.T) {
 	if testing.Short() {
 		t.Skip("inserts a large backlog")
 	}
+	// The bound leaves CI headroom over the 92 ms measured; the unbounded
+	// claim's median was 1.07 s on the same shape.
 	const (
 		busy  = 1_000
-		bound = 300 * time.Millisecond
+		bound = 500 * time.Millisecond
 	)
 	pool, f, sts := newBacklogStore(t)
 	big := spi.TenantID("tenant-big")

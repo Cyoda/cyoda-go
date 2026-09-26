@@ -528,8 +528,11 @@ SELECT st.tenant_id FROM scheduled_tasks st WHERE $2::boolean AND st.status = 'R
 //     cut of n rows before the collapse could spend turns on one entity's
 //     later tasks and leave the quota unfilled. The two entity checks are
 //     scalar subqueries with LIMIT 1, which PostgreSQL runs per walked row as
-//     an index probe by (tenant, entity) and never turns into a join over the
-//     tenant's rows, whatever the statistics;
+//     an index probe by (tenant, entity). That guarantee comes from the
+//     form, a scalar sublink, which the planner never pulls up into a join,
+//     not from the statistics: the same check as a NOT EXISTS can be planned
+//     as an anti join over the tenant's rows. The claim timing tests assert
+//     the plan shape (assertEntityProbesAreSubPlans);
 //   - the lost-owner branch takes the tenant's first n claimable RUNNING
 //     tasks. An entity with a RUNNING task has no WAITING candidate, and
 //     scheduled_tasks_one_running_per_entity_uq allows one RUNNING task per
