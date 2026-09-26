@@ -41,7 +41,9 @@ const StaleClaimBatch = 100
 // FAILED write, the FAILED write for an undecodable job, the queue-full
 // Release) go to the second pass: one goroutine per node that sends them
 // under ctx. A sweep that finds the second pass in flight hands its writes to
-// it and returns; none is dropped while ctx lives. Every owed write is fenced
+// it and returns. While ctx lives, no owed write is dropped unsent: one left
+// over by a pass that panicked stays owed, and the next sweep starts a pass
+// that sends it. Every owed write is fenced
 // by the claimed epoch, so one that is never sent loses nothing: its job
 // stays RUNNING, goes stale, and is claimed again. Once ctx ends, the second
 // pass sends nothing more and returns; WaitReclaimSecondPass awaits it.
@@ -102,14 +104,19 @@ type owedKey struct {
 // run. It reports whether it failed the job at the attempt cap.
 type owedWrite func(ctx context.Context) bool
 
+// keyedWrite is an owed write with the job it is owed to.
+type keyedWrite struct {
+	key   owedKey
+	write owedWrite
+}
+
 // handOverOwed gives owed to the second pass, and starts it under ctx unless
-// one is already in flight. A job owed a write by an earlier sweep and claimed
-// again since has only its latest claim's write kept: the earlier one is at a
-// superseded epoch, which the store would refuse.
+// one is already in flight or nothing is owed at all. A sweep that owes
+// nothing itself still starts a pass for writes a panicked pass left owed. A
+// job owed a write by an earlier sweep and claimed again since has only its
+// latest claim's write kept: the earlier one is at a superseded epoch, which
+// the store would refuse.
 func (s *SearchService) handOverOwed(ctx context.Context, owed map[owedKey]owedWrite) {
-	if len(owed) == 0 {
-		return
-	}
 	start := func() bool {
 		s.secondPassMu.Lock()
 		defer s.secondPassMu.Unlock()
@@ -119,7 +126,7 @@ func (s *SearchService) handOverOwed(ctx context.Context, owed map[owedKey]owedW
 		for k, w := range owed {
 			s.owed[k] = w
 		}
-		if s.secondPassDone != nil {
+		if len(s.owed) == 0 || s.secondPassDone != nil {
 			return false
 		}
 		s.secondPassDone = make(chan struct{})
@@ -133,7 +140,7 @@ func (s *SearchService) handOverOwed(ctx context.Context, owed map[owedKey]owedW
 // takeOwed hands the second pass everything owed so far. With nothing owed it
 // ends the pass, in the same lock hold, so a sweep's hand-over either lands
 // before the pass ends or starts a new one.
-func (s *SearchService) takeOwed() []owedWrite {
+func (s *SearchService) takeOwed() []keyedWrite {
 	s.secondPassMu.Lock()
 	defer s.secondPassMu.Unlock()
 	if len(s.owed) == 0 {
@@ -141,27 +148,37 @@ func (s *SearchService) takeOwed() []owedWrite {
 		s.secondPassDone = nil
 		return nil
 	}
-	writes := make([]owedWrite, 0, len(s.owed))
-	for _, w := range s.owed {
-		writes = append(writes, w)
+	writes := make([]keyedWrite, 0, len(s.owed))
+	for k, w := range s.owed {
+		writes = append(writes, keyedWrite{key: k, write: w})
 	}
 	clear(s.owed)
 	return writes
 }
 
-// endSecondPassAfterPanic ends the pass without sending what is still owed.
-// The next sweep's hand-over starts a new pass that sends it.
-func (s *SearchService) endSecondPassAfterPanic() {
+// endSecondPassAfterPanic ends the pass and puts the writes of its batch it
+// had not sent back among those owed, unless a newer claim of the same job has
+// been owed a write meanwhile. The next sweep's hand-over starts a new pass
+// that sends them.
+func (s *SearchService) endSecondPassAfterPanic(unsent []keyedWrite) {
 	s.secondPassMu.Lock()
 	defer s.secondPassMu.Unlock()
+	for _, w := range unsent {
+		if _, newer := s.owed[w.key]; !newer {
+			s.owed[w.key] = w.write
+		}
+	}
 	close(s.secondPassDone)
 	s.secondPassDone = nil
 }
 
 // runSecondPass sends the owed writes until none is left. Once ctx ends it
 // sends nothing more: the jobs whose writes it drops stay RUNNING at their
-// claimed epoch and are claimed again once stale.
+// claimed epoch and are claimed again once stale. A write that panics is not
+// retried, and its job goes the same way; the writes after it in the batch
+// stay owed.
 func (s *SearchService) runSecondPass(ctx context.Context) {
+	var unsent []keyedWrite // the current batch's writes not yet sent
 	defer func() {
 		if rec := recover(); rec != nil {
 			slog.Error("panic recovered in the reclaim sweep's second pass", "pkg", "search",
@@ -170,7 +187,7 @@ func (s *SearchService) runSecondPass(ctx context.Context) {
 			if s.healthFlag != nil {
 				s.healthFlag.Store(false)
 			}
-			s.endSecondPassAfterPanic()
+			s.endSecondPassAfterPanic(unsent)
 		}
 	}()
 	for {
@@ -179,15 +196,17 @@ func (s *SearchService) runSecondPass(ctx context.Context) {
 			return
 		}
 		failed, dropped := 0, 0
-		for _, write := range writes {
+		for i, w := range writes {
+			unsent = writes[i+1:]
 			if ctx.Err() != nil {
 				dropped++
 				continue
 			}
-			if write(ctx) {
+			if w.write(ctx) {
 				failed++
 			}
 		}
+		unsent = nil
 		if failed > 0 {
 			slog.Warn("failed async search jobs past the attempt cap", "pkg", "search", "count", failed)
 		}
@@ -221,6 +240,13 @@ func owedWriteFailed(ctx context.Context, level slog.Level, msg string, job *spi
 	slog.Log(ctx, level, msg, "pkg", "search", "jobID", job.ID, "err", err)
 }
 
+// fencedRefusal reports whether a store refused a job write because the job is
+// no longer the caller's claim to write: taken at a newer epoch, terminal, or
+// gone. An ordinary outcome for a reclaimed job, not a fault.
+func fencedRefusal(err error) bool {
+	return errors.Is(err, spi.ErrStaleClaim) || errors.Is(err, spi.ErrAlreadyTerminal) || errors.Is(err, spi.ErrNotFound)
+}
+
 // ownerCtx is ctx carrying the job's tenant as the system principal.
 func ownerCtx(ctx context.Context, job *spi.SearchJob) context.Context {
 	return spi.WithUserContext(ctx, common.SystemUserContextValue(job.TenantID))
@@ -230,8 +256,8 @@ func ownerCtx(ctx context.Context, job *spi.SearchJob) context.Context {
 // at its claimed epoch, and reports whether the write landed.
 func (s *SearchService) failAttemptsExhausted(ctx context.Context, job *spi.SearchJob) bool {
 	if werr := s.searchStore.UpdateJobStatus(ownerCtx(ctx, job), job.ID, job.Epoch, "FAILED", 0, jobAttemptsExhausted, time.Now(), 0); werr != nil {
-		if errors.Is(werr, spi.ErrAlreadyTerminal) || errors.Is(werr, spi.ErrStaleClaim) {
-			slog.Warn("attempt-cap fail lost the race; job already settled", "pkg", "search", "jobID", job.ID, "err", werr)
+		if fencedRefusal(werr) {
+			slog.Debug("capped job is no longer this claim's to fail", "pkg", "search", "jobID", job.ID, "err", werr)
 			return false
 		}
 		owedWriteFailed(ctx, slog.LevelError, "failed to fail crash-looping search job", job, werr)
@@ -263,7 +289,12 @@ func (s *SearchService) reenqueueClaimed(job *spi.SearchJob) (started bool, unru
 		// condition: fail it at the claimed epoch rather than loop on it.
 		slog.Error("failed to decode claimed search job; failing", "pkg", "search", "jobID", job.ID, "err", decErr)
 		return false, func(ctx context.Context) {
-			if werr := s.searchStore.UpdateJobStatus(ownerCtx(ctx, job), job.ID, job.Epoch, "FAILED", 0, jobFailureFallback, time.Now(), 0); werr != nil {
+			werr := s.searchStore.UpdateJobStatus(ownerCtx(ctx, job), job.ID, job.Epoch, "FAILED", 0, jobFailureFallback, time.Now(), 0)
+			switch {
+			case werr == nil:
+			case fencedRefusal(werr):
+				slog.Debug("undecodable job is no longer this claim's to fail", "pkg", "search", "jobID", job.ID, "err", werr)
+			default:
 				owedWriteFailed(ctx, slog.LevelError, "failed to fail undecodable claimed job", job, werr)
 			}
 		}
@@ -355,7 +386,7 @@ func (s *SearchService) releaseUnrun(ctx context.Context, job *spi.SearchJob) {
 	rerr := s.searchStore.Release(ownerCtx(ctx, job), job.ID, job.Epoch)
 	switch {
 	case rerr == nil:
-	case errors.Is(rerr, spi.ErrStaleClaim), errors.Is(rerr, spi.ErrAlreadyTerminal), errors.Is(rerr, spi.ErrNotFound):
+	case fencedRefusal(rerr):
 		slog.Debug("reclaimed job that did not run is no longer this epoch's", "pkg", "search", "jobID", job.ID, "err", rerr)
 	default:
 		owedWriteFailed(ctx, slog.LevelWarn, "failed to release reclaimed job that did not run", job, rerr)

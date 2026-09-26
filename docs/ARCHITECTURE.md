@@ -1353,7 +1353,8 @@ then starts every job it will run — heartbeat and enqueue — and sends no
 main-pool statement. Three kinds of statement do wait on the main pool, and
 none of them on the claim loop's goroutine:
 
-- A re-run job's `ClearResults` runs on its worker, under its heartbeat.
+- A re-run job's `ClearResults`, and the fenced `Release` when that clear
+  fails, run on its worker. The clear runs under the job's heartbeat.
 - The writes a sweep owes jobs it claimed but will not run — the attempt-cap
   `FAILED` write, the `FAILED` write for an undecodable job, and the
   queue-full `Release` — go to the second pass. This is one goroutine per
