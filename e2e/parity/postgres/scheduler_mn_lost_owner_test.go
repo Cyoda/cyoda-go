@@ -37,6 +37,11 @@ type lostSubject struct {
 // UNSAFE_WORK_NOT_COMPLETED and its processor was sent exactly once; C is
 // FAILED EXPIRED_AFTER_FAILED_ATTEMPTS; D is FAILED STOPPED_AFTER_PARTIAL_COMMIT;
 // A runs again and fires.
+//
+// B's "sent once" has two independent guards: the pre-run mark check and
+// MarkUnsafe's ErrMarkedByAnotherClaim. Each is pinned on its own by the
+// workflow unit tests (TestPreRunDecision, TestUnsafeMark_Results); this test
+// fails only when both are removed.
 func TestSchedulerMN_LostOwners(t *testing.T) {
 	t.Parallel()
 	const host = 5
