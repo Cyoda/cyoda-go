@@ -155,20 +155,12 @@ func TestMain(m *testing.M) {
 	cfg.SearchJobHeartbeatInterval = time.Hour
 	cfg.SearchJobStaleAfter = 4 * time.Hour
 
-	// The package-global testApp's scheduler would scan the SAME
-	// scheduled_tasks rows every per-test harness's own Postgres-backed App
-	// writes into (ScanDue is deliberately cross-tenant and node-blind, and
-	// no per-test harness gossips with this one, so each independently
-	// believes itself the sole coordinator). Whichever scanner sees a due row
-	// first throttles every other scanner — this one included — from
-	// retrying it for its own RedispatchBackoff, so a private harness's
-	// tighter settings cannot help once this scheduler has already won that
-	// race and failed the fire (its ExternalProcessingService, procSvc, has
-	// no callback registered for a private harness's processor names). Only
-	// one scheduler may scan this database: this one does not. Tests that
-	// need a scheduled fire against testApp start their own bespoke
-	// scheduler.Service (see startTestScheduler in scheduled_transition_test.go).
-	// Plain config, no test hook.
+	// No scheduler on the package-global testApp. A claim is cross-tenant,
+	// and this database is shared by every per-test stack; a scheduler here
+	// would claim tasks those stacks armed and run them through testApp's
+	// engine, whose processors (procSvc) are not theirs. Tests that need a
+	// fire build a stack with a scheduler on a database of their own
+	// (newSchedulerHarness). Plain config, no test hook.
 	cfg.Scheduler.Enabled = false
 
 	// In-process processor/criteria service for workflow E2E tests.

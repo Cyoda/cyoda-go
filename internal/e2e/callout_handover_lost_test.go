@@ -37,8 +37,7 @@ import (
 // dispatchCalloutPathForTest mirrors the route
 // internal/cluster/dispatch/handler.go registers for a hand-over ("POST
 // /internal/dispatch/callout"). Duplicated rather than exported across the
-// package boundary for a one-line route string — the precedent
-// schedulerTaskPathForTest (tx_lifecycle_e2e_test.go) sets.
+// package boundary for a one-line route string.
 const dispatchCalloutPathForTest = "/internal/dispatch/callout"
 
 // forwardFailedDetail is the whole client-visible text of a lost hand-over,

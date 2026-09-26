@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
-	"github.com/cyoda-platform/cyoda-go/app"
 )
 
 // callout_modes_test.go covers spec §8.1's processor-mode table (whether a
@@ -109,13 +107,9 @@ func TestCalloutModes_CommitBeforeDispatch(t *testing.T) {
 // TestCalloutModes_ScheduledFire: the processor of a scheduled transition is
 // tried on the next cnode like any other, under one request id.
 func TestCalloutModes_ScheduledFire(t *testing.T) {
-	// testApp's own scheduler is disabled (internal/e2e/e2e_test.go's
-	// TestMain), so this harness's own scan of its own stack is the only
-	// scanner that can ever see this fire's due row.
-	h := newCalloutHarness(t, func(cfg *app.Config) {
-		calloutTuning(3, 100*time.Millisecond)(cfg)
-		cfg.Scheduler.ScanInterval = 50 * time.Millisecond
-	})
+	// A stack of its own with a live scheduler on a database of its own; three
+	// retries after the first try, 100ms of patience.
+	h, _ := newSchedulerHarness(t, calloutTuning(3, 100*time.Millisecond))
 	suffix := uuid.NewString()
 	tag, model := "s5-sched-"+suffix, "s5-model-sched-"+suffix
 	first := h.AttachCnode(t, cnodeSpec{name: "first", tags: []string{tag}, script: scriptAlways(neverAnswer())})

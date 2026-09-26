@@ -16,21 +16,20 @@ import (
 //
 // A scheduled transition is armed by whoever's causal origin was in effect at
 // arm time (spi.ResolveOrigin -> ScheduledTask.ArmedBy, arm.go), and fired
-// later by the platform scheduler. FireScheduledTransition
-// (internal/domain/workflow/fire_scheduled.go) stamps the fired anchor
-// version's attributed principal from the durable ArmedBy (re-verified
-// unchanged under the re-read guard) and its EXECUTOR as the system principal
-// {id:"system", kind:"system"} — never the literal string "scheduler". These
-// tests drive real timers (short DelayMs / fireAfterMs) through the full
-// HTTP+gRPC stack via the callback harness, wait for the real scan loop to
-// fire, and assert the recorded {attributed, executor} pair on
-// GET /entity/{id}/changes.
+// later by the platform scheduler. The claimed task carries ArmedBy, and
+// FireScheduledTransition stamps the fired anchor's attributed principal from
+// it and its EXECUTOR as the system principal {id:"system", kind:"system"} —
+// never the literal string "scheduler". These tests drive real timers (short
+// DelayMs / fireAfterMs) through the full HTTP+gRPC stack on a stack with a
+// live scheduler and a database of its own (newSchedulerCallbackHarness), wait
+// for the scheduler to fire, and assert the recorded {attributed, executor}
+// pair on GET /entity/{id}/changes.
 //
-// Reused helpers: newCallbackHarness / mintUserToken / createEntityAs /
-// getChanges / findChangeByType / assertAttribution (attribution_test.go),
-// awaitCallbackEntityState (scheduled_function_test.go), queryDB / dbPool
-// (helpers_test.go / e2e_test.go), RegisterFunction / scheduleFunctionWorkflowJSON
-// (scheduled_function_test.go).
+// Reused helpers: mintUserToken / createEntityAs / getChanges /
+// findChangeByType / assertAttribution (attribution_test.go),
+// newSchedulerCallbackHarness / schedDB (scheduler_harness_test.go),
+// newCallbackHarness (callback_harness_test.go), awaitCallbackEntityState /
+// RegisterFunction / scheduleFunctionWorkflowJSON (scheduled_function_test.go).
 
 // firedSchedExecKind/firedSchedExecID are the executor identity every
 // scheduled fire records (fire_scheduled.go's systemPrincipal).
@@ -77,7 +76,7 @@ func assertNoSchedulerString(t *testing.T, h *callbackHarness, entityID string) 
 // user), executed by the system principal {system,system}. No version anywhere
 // in the entity's history may record the literal "scheduler".
 func TestAttribution_ScheduledUserArmed(t *testing.T) {
-	h := newCallbackHarness(t)
+	h, _ := newSchedulerCallbackHarness(t, nil)
 
 	const model = "attr-sched-user-armed"
 	wf := `{
@@ -113,7 +112,7 @@ func TestAttribution_ScheduledUserArmed(t *testing.T) {
 // the create and both fired anchors — is alice-rooted; the executor of each
 // fire is the system principal.
 func TestAttribution_ScheduledChain(t *testing.T) {
-	h := newCallbackHarness(t)
+	h, _ := newSchedulerCallbackHarness(t, nil)
 
 	const model = "attr-sched-chain"
 	wf := `{
@@ -172,7 +171,7 @@ func TestAttribution_ScheduledChain(t *testing.T) {
 // (ArmedBy) — DIFFERENT from bob, the previous version's writer — proving the
 // fire re-stamps rather than inheriting the loaded entity's stale meta.
 func TestAttribution_ScheduledAnchorStamped(t *testing.T) {
-	h := newCallbackHarness(t)
+	h, _ := newSchedulerCallbackHarness(t, nil)
 
 	const primary = "attr-sched-stamp-primary"
 	const secondary = "attr-sched-stamp-secondary"
@@ -246,7 +245,7 @@ func TestAttribution_ScheduledArmedBySpoofIgnored(t *testing.T) {
 	// the model so a locked model doesn't reject it outright) → the fired
 	// anchor attributes to alice, the true arming principal, not the spoof.
 	t.Run("SaveBodyArmedBySpoofed", func(t *testing.T) {
-		h := newCallbackHarness(t)
+		h, _ := newSchedulerCallbackHarness(t, nil)
 		const model = "attr-sched-spoof-body"
 
 		// Declare armedBy as ordinary DATA so the spoof is accepted-but-ignored
@@ -324,7 +323,7 @@ func TestAttribution_ScheduledArmedBySpoofIgnored(t *testing.T) {
 	// attributed to (arm.go's armViaFunction: ArmedBy = ResolveOrigin(ctx),
 	// never the Function result).
 	t.Run("ValidFunctionResultArmsTrueOrigin", func(t *testing.T) {
-		h := newCallbackHarness(t)
+		h, s := newSchedulerCallbackHarness(t, nil)
 		const model = "attr-sched-spoof-fn-valid"
 
 		h.RegisterFunction("calcTiming", func(rc *reqCtx) (string, map[string]any, error) {
@@ -343,7 +342,7 @@ func TestAttribution_ScheduledArmedBySpoofIgnored(t *testing.T) {
 		// The armed row's principal is the platform-resolved origin (alice),
 		// sourced from ctx, not from the compute-node-controlled result.
 		var armedID, armedKind string
-		if err := dbPool.QueryRow(context.Background(),
+		if err := s.pool.QueryRow(context.Background(),
 			`SELECT armed_by_id, armed_by_kind FROM scheduled_tasks WHERE entity_id=$1`, xID,
 		).Scan(&armedID, &armedKind); err != nil {
 			t.Fatalf("inspect scheduled_task for %s: %v", xID, err)

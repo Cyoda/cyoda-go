@@ -283,13 +283,10 @@ func newCatalog(cb *callbackClient, gcb *grpcCallbackClient) *catalog {
 			//   - "expiryElapsed": fireAt = now - offsetMs (default 5000ms)
 			//                     and expireAt = fireAt + expireOffsetMs
 			//                     (default 110ms) — a VALID (non-born-expired)
-			//                     arm whose lateness already exceeds
-			//                     timeoutMs+grace at arm time, so the very
-			//                     first scan expires it deterministically
-			//                     regardless of scan cadence (no need to
-			//                     race a live scheduler against a real-time
-			//                     sleep, unlike internal/e2e's bespoke-clock
-			//                     variant of this scenario).
+			//                     arm whose deadline has already passed at
+			//                     arm time, so the very first claim expires
+			//                     it deterministically regardless of scan
+			//                     cadence.
 			"sched-fn-resolve": func(ctx context.Context, entity *Entity, config json.RawMessage) (string, map[string]any, error) {
 				var data funcSchedData
 				if err := json.Unmarshal(entity.Data, &data); err != nil {

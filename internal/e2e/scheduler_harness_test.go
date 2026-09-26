@@ -246,6 +246,25 @@ func scriptHoldFirst(release <-chan struct{}) cnodeScript {
 	}
 }
 
+// schedEvents returns up to 500 StateMachine events of the entity on h's
+// stack, newest first — enough for a write-heavy history (the endpoint's
+// default page is 20).
+func schedEvents(t *testing.T, h *callbackHarness, entityID string) []map[string]any {
+	t.Helper()
+	resp := h.DoAuth(t, http.MethodGet, "/api/audit/entity/"+entityID+"?eventType=StateMachine&limit=500", "", "")
+	body := h.readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("audit GET %s: %d %s", entityID, resp.StatusCode, body)
+	}
+	var r struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(body), &r); err != nil {
+		t.Fatalf("decode audit page: %v (body %s)", err, body)
+	}
+	return r.Items
+}
+
 // failEvent returns the data of the entity's SCHEDULED_TRANSITION_FAIL event.
 func failEvent(t *testing.T, h *callbackHarness, entityID string) map[string]any {
 	t.Helper()
