@@ -18,8 +18,10 @@ operation of their own and never as a step of a running transition.
   `entityModelManage` with `EntityModelImportRequest`,
   `EntityModelTransitionRequest`, `EntityModelDeleteRequest` or
   `EntityModelSetUniqueKeysRequest`.
-- **When:** first. On HTTP the join layer answers before the token is verified,
-  so no transaction lock is taken, the body is not read and nothing is written;
+- **When:** first. On HTTP the node that receives the request answers before
+  the token is verified — in a cluster its routing layer, on a single node its
+  join layer — so no transaction lock is taken, the body is not read and
+  nothing is written;
   a forged or expired token on one of these routes gets this answer, not `401`
   or `410`. On gRPC the handler answers before the payload is read. The
   transaction the token names is untouched either way.
