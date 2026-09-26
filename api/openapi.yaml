@@ -12591,8 +12591,12 @@ components:
         Transaction routing token. A processor, criterion or function callout
         receives one with its request (gRPC metadata key `tx-token`, CloudEvent
         extension attribute `cyodatxtoken`); echoing it here runs this request
-        inside the open transaction the token names, so the request sees that
-        transaction's uncommitted writes and its own writes commit with it.
+        inside the open transaction the token names, so the request sees what
+        that transaction has saved so far and its own writes commit with it.
+        The entity the callout runs for is saved only when its chain of
+        transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until
+        then a read of it returns its last saved version, and the callout's own
+        request carries the current one (see `cyoda help workflows`).
 
 
         Optional. A request without the header opens its own transaction, as

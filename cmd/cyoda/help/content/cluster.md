@@ -128,7 +128,7 @@ node (see `cyoda help errors MODEL_ADMIN_IN_JOINED_TRANSACTION`).
 The receiving node verifies the token's HMAC and routes the callback to the
 transaction-owning node (same proxy mechanism as `TRANSACTION ROUTING` above).
 Without the echo the callback runs in a standalone transaction and cannot see
-the cascade's uncommitted writes. Callback acks are provisional until the
+what the cascade's transaction has saved so far. Callback acks are provisional until the
 owning transaction commits.
 
 The owner admits a callback only while the token's callout is in progress and the token belongs to the member that currently has the work. A callback from a member that was replaced, or whose callout has ended, is refused with `410 CALLOUT_SUPERSEDED` while the transaction is open, and with `404 TRANSACTION_NOT_FOUND` afterwards. Before the owner gives the work to the next member, and before the workflow carries on after a callout, it waits for any callback still in progress on the transaction to finish. Callbacks of one transaction are served one at a time.

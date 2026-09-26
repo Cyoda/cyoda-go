@@ -199,12 +199,24 @@ Any value other than `"internalized"` (including the empty string, the canonical
   engine's apply-result overwrites the processor's intra-TX writes
   (last-writer-wins inside the transaction buffer). Pick one path: let the
   engine apply the result, OR have the processor write the entity itself and
-  return no mutations for it. A callback read of the entity returns what is
-  stored in the transaction: it does not include mutations an earlier
-  processor of the same cascade returned, which the engine has not yet
-  saved. A processor that writes the entity bases the write on the payload
-  in its request, not on a callback read. A write to the entity by any other
-  transaction makes the transition fail with a conflict.
+  return no mutations for it. A processor that writes the entity bases the
+  write on the payload in its request, not on a callback read (see the next
+  item). A write to the entity by any other transaction makes the transition
+  fail with a conflict.
+- **What a callback read of the entity returns.** A callback that reads or
+  searches under the transaction token sees what the transaction has saved,
+  and nothing else. While a request runs, the engine keeps the entity it is
+  working on in memory. It saves that entity to the transaction only when the
+  whole chain of transitions has run, and before each
+  `COMMIT_BEFORE_DISPATCH` processor. Until then a callback read of that
+  entity returns the last saved version. On an update, that is the entity as
+  it was before the request: without the data the request sent, without the
+  state changes of the transitions so far, and without the changes earlier
+  processors returned. On a create, the entity is not found. After a
+  `COMMIT_BEFORE_DISPATCH` processor, it is the entity as saved there. The
+  payload in a processor's or criterion's request is the current entity.
+  Other entities that the transaction has already saved — for example,
+  through an earlier callback — are returned as saved.
 
 Import-time validation rejects any `executionMode` value not in the list above (and not empty) with `400 VALIDATION_FAILED`. The empty string continues to default to `SYNC` at engine fire.
 

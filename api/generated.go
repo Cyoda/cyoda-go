@@ -3476,7 +3476,7 @@ type SearchEntityAuditEventsParams struct {
 	// Limit Maximum number of audit events to return per page
 	Limit *string `form:"limit,omitempty" json:"limit,omitempty"`
 
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -3494,7 +3494,7 @@ type SearchEntityAuditEventsParamsSeverity string
 
 // GetStateMachineFinishedEventParams defines parameters for GetStateMachineFinishedEvent.
 type GetStateMachineFinishedEventParams struct {
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -3515,7 +3515,7 @@ type GetEntityStatisticsParams struct {
 	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -3533,7 +3533,7 @@ type GetEntityStatisticsByStateParams struct {
 	// States Optional list of states for which to calculate statistics. If not provided, statistics will be calculated for all current workflow states
 	States *[]string `form:"states,omitempty" json:"states,omitempty"`
 
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -3551,7 +3551,7 @@ type GetEntityStatisticsByStateForModelParams struct {
 	// States Optional list of states for which to calculate statistics. If not provided, statistics will be calculated for all current workflow states
 	States *[]string `form:"states,omitempty" json:"states,omitempty"`
 
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -3566,7 +3566,7 @@ type GetEntityStatisticsForModelParams struct {
 	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -3578,7 +3578,7 @@ type GetEntityStatisticsForModelParams struct {
 
 // QueryGroupedEntityStatisticsForModelParams defines parameters for QueryGroupedEntityStatisticsForModel.
 type QueryGroupedEntityStatisticsForModelParams struct {
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -3590,7 +3590,7 @@ type QueryGroupedEntityStatisticsForModelParams struct {
 
 // DeleteSingleEntityParams defines parameters for DeleteSingleEntity.
 type DeleteSingleEntityParams struct {
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -3608,7 +3608,7 @@ type GetOneEntityParams struct {
 	// TransactionId Load the entity as it was at the end of the specified transaction with the given transactionId
 	TransactionId *openapi_types.UUID `form:"transactionId,omitempty" json:"transactionId,omitempty"`
 
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -3623,7 +3623,7 @@ type GetEntityChangesMetadataParams struct {
 	// PointInTime The point-in-time for loading the entity changes, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -3641,7 +3641,7 @@ type GetEntityTransitionsParams struct {
 	// TransactionId Evaluate available transitions as of the submit time of this transaction. Mutually exclusive with pointInTime. The transaction must belong to the caller's tenant; an unknown or foreign transaction ID is rejected with 400.
 	TransactionId *openapi_types.UUID `form:"transactionId,omitempty" json:"transactionId,omitempty"`
 
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -3672,7 +3672,7 @@ type DeleteEntitiesParams struct {
 	// When false, only statistics are returned.
 	Verbose *bool `form:"verbose,omitempty" json:"verbose,omitempty"`
 
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -3693,7 +3693,7 @@ type GetAllEntitiesParams struct {
 	// PointInTime The point-in-time for loading the entities, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -3734,7 +3734,7 @@ type CreateCollectionParams struct {
 	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
 
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -3792,7 +3792,7 @@ type UpdateCollectionParams struct {
 	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
 
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -3823,7 +3823,7 @@ type PatchSingleWithLoopbackParams struct {
 	// IfMatch transactionId from the last read, or "*" for unconditional. Absent returns 428.
 	IfMatch *string `json:"If-Match,omitempty"`
 
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -3851,7 +3851,7 @@ type UpdateSingleWithLoopbackParams struct {
 	// IfMatch Transaction ID of the entity version the client last read. If the entity has been modified since, returns 412 Precondition Failed.
 	IfMatch *string `json:"If-Match,omitempty"`
 
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -3882,7 +3882,7 @@ type PatchSingleParams struct {
 	// IfMatch transactionId from the last read, or "*" for unconditional. Absent returns 428.
 	IfMatch *string `json:"If-Match,omitempty"`
 
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -3910,7 +3910,7 @@ type UpdateSingleParams struct {
 	// IfMatch Transaction ID of the entity version the client last read. If the entity has been modified since, returns 412 Precondition Failed.
 	IfMatch *string `json:"If-Match,omitempty"`
 
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -3953,7 +3953,7 @@ type CreateParams struct {
 	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
 
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -3984,7 +3984,7 @@ type DeleteMessagesParams struct {
 	// single call.
 	TransactionSize *int32 `form:"transactionSize,omitempty" json:"transactionSize,omitempty"`
 
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -4027,7 +4027,7 @@ type NewMessageParams struct {
 	// XCorrelationID Correlation ID for message tracking
 	XCorrelationID *string `json:"X-Correlation-ID,omitempty"`
 
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -4039,7 +4039,7 @@ type NewMessageParams struct {
 
 // DeleteMessageParams defines parameters for DeleteMessage.
 type DeleteMessageParams struct {
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -4051,7 +4051,7 @@ type DeleteMessageParams struct {
 
 // GetMessageParams defines parameters for GetMessage.
 type GetMessageParams struct {
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -4132,7 +4132,7 @@ type FetchEntityTransitionsParams struct {
 	// EntityId The unique identifier (UUID) of the entity
 	EntityId openapi_types.UUID `form:"entityId" json:"entityId"`
 
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -4179,7 +4179,7 @@ type SubmitAsyncSearchJobParams struct {
 	// Sort Repeatable sort key. Grammar: [@]path[:asc|desc], direction defaults to asc. A bare path sorts by a scalar entity-data field; a leading '@' selects a meta field (state, creationDate, lastUpdateTime, transitionForLatestSave, transactionId, id). Repetition order is sort precedence; entity id is the final tiebreaker. Absent/null values sort last.
 	Sort *[]string `form:"sort,omitempty" json:"sort,omitempty"`
 
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -4197,7 +4197,7 @@ type GetAsyncSearchResultsParams struct {
 	// PageNumber Zero-based page number
 	PageNumber *string `form:"pageNumber,omitempty" json:"pageNumber,omitempty"`
 
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -4209,7 +4209,7 @@ type GetAsyncSearchResultsParams struct {
 
 // CancelAsyncSearchParams defines parameters for CancelAsyncSearch.
 type CancelAsyncSearchParams struct {
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -4221,7 +4221,7 @@ type CancelAsyncSearchParams struct {
 
 // GetAsyncSearchStatusParams defines parameters for GetAsyncSearchStatus.
 type GetAsyncSearchStatusParams struct {
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//
@@ -4256,7 +4256,7 @@ type SearchEntitiesParams struct {
 	// Not supported on requests joining an open transaction (400).
 	TimeoutMillis *int64 `form:"timeoutMillis,omitempty" json:"timeoutMillis,omitempty"`
 
-	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees that transaction's uncommitted writes and its own writes commit with it.
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
 	//
 	// Optional. A request without the header opens its own transaction, as any other client request does.
 	//

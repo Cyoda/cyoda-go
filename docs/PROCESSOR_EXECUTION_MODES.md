@@ -107,10 +107,11 @@ HMAC and joins the transaction: if `NodeID` equals self, it calls
 `Join(TxRef)` locally; otherwise it forwards the full request to the owning
 node (HTTP: reverse proxy; gRPC: B→A forward). Inside `T` the callback
 sees the writes stored in `T` — including via search (read-your-own-writes);
-other readers do not. Mutations that an earlier processor of the cascade
-returned and the engine has not yet saved are not stored in `T`, so a
-callback read does not show them; the processor's request carries the
-current payload.
+other readers do not. The engine saves the cascade's entity to `T` only when
+the cascade ends and before each `COMMIT_BEFORE_DISPATCH` processor, so until
+then a callback read of it returns the last saved version (on a create: not
+found); the processor's request carries the current payload. See
+`cyoda help workflows`, "What a callback read of the entity returns".
 
 A callback ack is **provisional** — it is not durable until the owning
 transaction commits. If the processor fails or the engine rolls back `T`,
