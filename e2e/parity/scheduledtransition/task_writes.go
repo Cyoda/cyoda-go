@@ -190,18 +190,26 @@ func RunScheduledTask_DeleteAllRemovesModelTasks(t *testing.T, fixture parity.Ba
 // tasks for it (design §13, "a workflow import that drops schedules
 // removes the model's tasks"), and that restoring the schedule by a later
 // import does not itself arm a task — only a subsequent write in the state
-// does (design §7 "Arm").
+// does (design §7 "Arm"). Another model's task, in the same tenant, must
+// survive the import: the removal is scoped to the imported model, not to
+// every model the tenant owns.
 func RunScheduledTask_ImportDropRemovesTasksAndRestoreReArms(t *testing.T, fixture parity.BackendFixture) {
 	c := client.NewClient(fixture.BaseURL(), fixture.NewTenant(t).Token)
 	const model = "task-writes-import"
+	const other = "task-writes-import-other"
 	setupModelWithWorkflow(t, c, model, 1, `{"k":1}`, hourSchedule)
+	setupModelWithWorkflow(t, c, other, 1, `{"k":1}`, hourSchedule)
 	ids := seedK(t, c, model, 1)
+	seedK(t, c, other, 1)
 
 	if err := c.ImportWorkflow(t, model, 1, hourScheduleDropped); err != nil {
 		t.Fatalf("ImportWorkflow (drop): %v", err)
 	}
 	if n := len(entityTasks(t, c, ids[0])); n != 0 {
 		t.Fatalf("tasks after the drop = %d, want 0", n)
+	}
+	if n := modelTaskCount(t, c, other); n != 1 {
+		t.Errorf("tasks of %s = %d, want 1: an import scoped to %s must not touch another model's tasks", other, n, model)
 	}
 
 	if err := c.ImportWorkflow(t, model, 1, hourSchedule); err != nil {
