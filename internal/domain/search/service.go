@@ -1147,6 +1147,10 @@ func (s *SearchService) startHeartbeat(jobCtx context.Context, cancel context.Ca
 					slog.Warn("async search heartbeat refused: the job is no longer this node's claim; aborting it", "pkg", "search", "jobID", jobID, "err", hbErr)
 					cancel(nil)
 					return
+				case jobCtx.Err() != nil:
+					// The job ended (or was released) while the stamp was in
+					// flight; its cut-off statement is no missed tick.
+					return
 				case errors.Is(hbErr, spi.ErrTaskBusy):
 					slog.Debug("async search heartbeat missed a busy tick", "pkg", "search", "jobID", jobID, "err", hbErr)
 				case hbErr != nil:

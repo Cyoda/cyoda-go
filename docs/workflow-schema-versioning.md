@@ -157,11 +157,10 @@ This is the §"When NOT to bump" "the serialiser was the bug" case, the exact
 analogue of the v0.8.3 malformed-regex entry above: the schema never allowed
 `delayMs: 0`, so no *valid* document's shape changes and the accepted-input
 set is unchanged — only what a function-driven schedule serialises to at
-export changes, from a document the schema rejects to one it accepts. Import
-is unaffected either way: `delayMs > 0` was already how import distinguishes
-"static delay present" from "absent", so an absent key and an explicit `0`
-were always equivalent on that path. No `CurrentSchemaVersion` or
-`SupportedSchemaRanges` change.
+export changes, from a document the schema rejects to one it accepts. No
+`CurrentSchemaVersion` or `SupportedSchemaRanges` change. Import no longer
+treats an explicit `0` beside a `function` as an absent key: the same release
+refuses it, as a tightening recorded under 1.5 below.
 
 ### `idempotent` also governs scheduled runs (v0.9.0)
 
@@ -188,20 +187,15 @@ change.
 (published `minimum: 1`) are now rejected at import (`400
 VALIDATION_FAILED`) when they violate those minimums, instead of being
 silently accepted. A negative `timeoutMs` was accepted outright — no check
-existed. A `delayMs` of `0`, `null` or a negative number alongside a
-`function` was accepted and silently ignored: the delayMs/function XOR check
-reads any non-positive `delayMs` as "absent", so it saw only the function
-and passed. `delayMs` is published as mutually exclusive with `function`, so
-any `delayMs` sent beside a `function` is now rejected, whatever its value;
-the import reads the raw request to see a `0` or `null` that the decoded
-integer cannot show. A non-positive `delayMs` with no `function` was, and
-remains, already rejected by that same XOR check, as the "neither present"
-shape.
+existed. A negative `delayMs` alongside a `function` was accepted and
+silently ignored: the delayMs/function XOR check reads any non-positive
+`delayMs` as "absent", so it saw only the function and passed. A
+non-positive `delayMs` with no `function` was, and remains, already rejected
+by that same XOR check, as the "neither present" shape. A `delayMs` of `0`
+or `null` beside a `function` is refused too, but that one is a tightening,
+not a bug fix — see 1.5 below.
 
-A pre-v0.9.0 export that carries `delayMs: 0` beside a `function` no longer
-imports. Remove the `delayMs` field and import again.
-
-This is the §"When NOT to bump" "bug-fixing a validator that was already
+For the negative values this is the §"When NOT to bump" "bug-fixing a validator that was already
 supposed to reject something" case: both minimums were already published in
 `TransitionScheduleDto`, so no *valid* document's shape changes and the
 accepted-input set only shrinks to match what the schema always said it
@@ -238,7 +232,7 @@ field exports without them.
 `SupportedSchemaRanges` widens in place to
 `{Major: 1, MinMinor: 1, MaxMinor: 5}`.
 
-**Two tightenings taken in the same MINOR.** Unlike the v0.8.4 entries under
+**Three tightenings taken in the same MINOR.** Unlike the v0.8.4 entries under
 "When NOT to bump", these are not bug fixes to a validator that was always
 meant to reject — the inputs below imported and *worked* — so they are recorded
 here, under the rubric of §"Tightening releases":
@@ -261,18 +255,29 @@ here, under the rubric of §"Tightening releases":
    the operation fails as "storage unavailable" instead of as a callout
    failure. The bound is a server setting, so whether a given payload imports
    depends on the deployment; the error names the setting and the bound.
+3. **A `schedule.delayMs` beside a `schedule.function` is refused whatever
+   its value**, `0` and `null` included (`400 VALIDATION_FAILED`). The
+   published schema always gave `delayMs` `minimum: 1` and made it mutually
+   exclusive with `function`, but import read a `0` or `null` there as an
+   absent key and ignored it. The v0.8.3 and v0.8.4 exporters wrote
+   `"delayMs": 0` beside every `function` (see "Exported schedule omits
+   `delayMs` when function-driven" above), so their exports relied on that
+   and no longer import unchanged: remove the `delayMs` field and import
+   again. The import reads the raw request, since the decoded integer cannot
+   tell a sent `0` or `null` from an absent key.
 
 **Why dual-shape and not retirement.** Rubric point 2 asks whether an older
-payload "happens to import only by coincidence". It does not: the two rules
+payload "happens to import only by coincidence". It does not: the first two rules
 touch two optional fields, the error names the offending workflow, state,
 transition and callout, and there are no deployments of either tier whose
 stored workflows could be affected. Retiring 1.1–1.4 would turn 298 fixtures
 and every client's existing files into `WORKFLOW_SCHEMA_VERSION_UNSUPPORTED`
-to guard two fields. Both rules apply to an import under **any** schema
-version, 1.1 through 1.5 alike — they are validation-layer rules, not
-DTO-shape ones.
+to guard a few fields. The third rule touches only exports of v0.8.3 and
+v0.8.4, and its error names the field to remove. All three rules apply to an
+import under **any** schema version, 1.1 through 1.5 alike — they are
+validation-layer rules, not DTO-shape ones.
 
-Neither rule is retroactive: a workflow already stored is not re-checked at
+No rule is retroactive: a workflow already stored is not re-checked at
 import of another. A stored `responseTimeoutMs` above a bound that was lowered
 later is not clamped; its callout fails, naming the setting.
 

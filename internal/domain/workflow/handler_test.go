@@ -1957,3 +1957,34 @@ func TestImport_ScheduleDelayMsBesideFunction_Rejected(t *testing.T) {
 		})
 	}
 }
+
+// TestImport_TrailingCloserAfterBody_400 pins the trailing-data fence for a
+// closing delimiter after the request object. json.Decoder.More reports
+// false before `}` and `]`, so such a body passed a More-based fence; it
+// must answer 400 BAD_REQUEST like any other trailing data.
+func TestImport_TrailingCloserAfterBody_400(t *testing.T) {
+	const valid = `{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"wf","initialState":"NEW","states":{"NEW":{"transitions":[]}}}]}`
+	for _, suffix := range []string{"}", "]", "}}", " ]", "{}", "x"} {
+		t.Run(suffix, func(t *testing.T) {
+			srv := newTestServer(t)
+			importModel(t, srv.URL, "Order", 1)
+			resp := doWorkflowImport(t, srv.URL, "Order", 1, valid+suffix)
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(b), "BAD_REQUEST") ||
+				!strings.Contains(string(b), "trailing data after request object") {
+				t.Fatalf("suffix %q: expected 400 BAD_REQUEST trailing data, got %d: %s", suffix, resp.StatusCode, b)
+			}
+		})
+	}
+	t.Run("trailing whitespace is accepted", func(t *testing.T) {
+		srv := newTestServer(t)
+		importModel(t, srv.URL, "Order", 1)
+		resp := doWorkflowImport(t, srv.URL, "Order", 1, valid+" \n\t")
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", resp.StatusCode, b)
+		}
+	})
+}

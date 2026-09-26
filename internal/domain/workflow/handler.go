@@ -220,8 +220,10 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	//
 	// Decode consumes exactly one JSON value, so anything after the first
 	// object's closing brace is silently ignored unless we explicitly
-	// check. dec.More() fences that trailing-garbage case — same class of
-	// "client got the shape wrong" failure as an unknown field.
+	// check. Reading one more token fences that trailing-garbage case —
+	// same class of "client got the shape wrong" failure as an unknown
+	// field. Only io.EOF (nothing but whitespace left) passes; dec.More()
+	// would not do, as it reports false before a stray `}` or `]`.
 	var req importRequest
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -229,7 +231,7 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("invalid JSON: %v", err)))
 		return
 	}
-	if dec.More() {
+	if _, err := dec.Token(); err != io.EOF {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON: trailing data after request object"))
 		return
 	}
