@@ -166,31 +166,68 @@ func (s *SearchService) reenqueueClaimed(job *spi.SearchJob) (started bool, unru
 // was taken from this node, or settled, is refused and deletes nothing, so a
 // late clear cannot wipe the rows the current owner saved.
 //
-// A job whose context ended before the clear (released, superseded, or
-// refused by its heartbeat), or whose clear failed or was refused, does not
-// run: the job is released (uncounted, and fenced like the clear) so a peer or
-// the next sweep retries it. It is never run over unknown residue (fail
-// closed).
+// A job that does not run is deregistered, and is never run over unknown
+// residue (fail closed). Whether it is also released depends on why:
+//   - The clear failed: released (uncounted, fenced like the clear), so a
+//     peer or the next sweep retries it.
+//   - The clear was refused (taken by a newer epoch, terminal, or gone):
+//     nothing is this node's to hand back, so no release.
+//   - The job's context ended first: the cause owns the next step. A shutdown
+//     release (errJobReleased) has already released it, and a self-reclaim
+//     (errJobSuperseded) holds it at a newer epoch, so neither is released
+//     again. Any other end — a refused heartbeat, an in-process cancel — gets
+//     the fenced release, which the store refuses if the job is no longer
+//     this epoch's.
 func (s *SearchService) clearReclaimedResults(jobCtx context.Context, cancel context.CancelCauseFunc, handle *asyncJobHandle, job *spi.SearchJob) bool {
-	cerr := jobCtx.Err()
-	if cerr == nil {
-		cerr = s.searchStore.ClearResults(jobCtx, job.ID, job.Epoch)
+	if jobCtx.Err() == nil {
+		cerr := s.searchStore.ClearResults(jobCtx, job.ID, job.Epoch)
 		switch {
 		case cerr == nil:
 			return true
-		case errors.Is(cerr, spi.ErrStaleClaim), errors.Is(cerr, spi.ErrAlreadyTerminal):
-			slog.Warn("reclaimed job was taken or settled before it ran", "pkg", "search", "jobID", job.ID, "err", cerr)
-		default:
+		case errors.Is(cerr, spi.ErrAlreadyTerminal):
+			slog.Debug("reclaimed job was settled before it ran", "pkg", "search", "jobID", job.ID)
+			s.dropReclaim(cancel, handle, job)
+			return false
+		case errors.Is(cerr, spi.ErrStaleClaim), errors.Is(cerr, spi.ErrNotFound):
+			slog.Warn("reclaimed job was taken or removed before it ran", "pkg", "search", "jobID", job.ID, "err", cerr)
+			s.dropReclaim(cancel, handle, job)
+			return false
+		case jobCtx.Err() == nil:
 			slog.Error("failed to clear results before reclaim; releasing", "pkg", "search", "jobID", job.ID, "err", cerr)
+			s.dropReclaim(cancel, handle, job)
+			s.releaseUnrun(job)
+			return false
 		}
 	}
-	cancel(nil)
-	s.deregisterJobHandle(job.ID, handle)
-	tenantCtx := common.SystemUserContext(job.TenantID)
-	if rerr := s.searchStore.Release(tenantCtx, job.ID, job.Epoch); rerr != nil {
-		slog.Warn("failed to release reclaimed job that did not run", "pkg", "search", "jobID", job.ID, "err", rerr)
+	cause := context.Cause(jobCtx)
+	slog.Debug("reclaimed job ended before it ran", "pkg", "search", "jobID", job.ID, "cause", cause)
+	s.dropReclaim(cancel, handle, job)
+	if !errors.Is(cause, errJobReleased) && !errors.Is(cause, errJobSuperseded) {
+		s.releaseUnrun(job)
 	}
 	return false
+}
+
+// dropReclaim ends a reclaimed job that will not run on this node: it stops
+// the heartbeat and removes this handle's registration.
+func (s *SearchService) dropReclaim(cancel context.CancelCauseFunc, handle *asyncJobHandle, job *spi.SearchJob) {
+	cancel(nil)
+	s.deregisterJobHandle(job.ID, handle)
+}
+
+// releaseUnrun hands a reclaimed job that did not run back for the next claim,
+// uncounted and fenced by its claimed epoch. A refusal means the job is no
+// longer this epoch's to hand back — an ordinary outcome, not a fault.
+func (s *SearchService) releaseUnrun(job *spi.SearchJob) {
+	tenantCtx := common.SystemUserContext(job.TenantID)
+	rerr := s.searchStore.Release(tenantCtx, job.ID, job.Epoch)
+	switch {
+	case rerr == nil:
+	case errors.Is(rerr, spi.ErrStaleClaim), errors.Is(rerr, spi.ErrAlreadyTerminal), errors.Is(rerr, spi.ErrNotFound):
+		slog.Debug("reclaimed job that did not run is no longer this epoch's", "pkg", "search", "jobID", job.ID, "err", rerr)
+	default:
+		slog.Warn("failed to release reclaimed job that did not run", "pkg", "search", "jobID", job.ID, "err", rerr)
+	}
 }
 
 // decodeStoredJob reconstructs the condition and search options SubmitAsync
