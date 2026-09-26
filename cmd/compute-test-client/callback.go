@@ -217,6 +217,43 @@ func (c *callbackClient) conditionalDelete(ctx context.Context, model string, ve
 	return c.do(ctx, http.MethodDelete, path, condition, txToken, "")
 }
 
+// targetOf returns the targetId carried on the entity's data.
+func targetOf(entity *Entity) (string, error) {
+	data, err := decodeData(entity)
+	if err != nil {
+		return "", err
+	}
+	targetID, _ := data["targetId"].(string)
+	if targetID == "" {
+		return "", fmt.Errorf("entity data has no targetId")
+	}
+	return targetID, nil
+}
+
+// writeBack reads entityID and writes its data back unchanged, both through
+// txToken's transaction when it is non-empty. The write's own answer is not
+// checked: a lost race is the transaction owner's to report. A write that
+// could not be made at all is an error.
+func (c *callbackClient) writeBack(ctx context.Context, entityID, txToken string) error {
+	got, err := c.getEntity(ctx, entityID, txToken)
+	if err != nil {
+		return fmt.Errorf("callback read: %w", err)
+	}
+	if got.Status != http.StatusOK {
+		return fmt.Errorf("callback read status=%d body=%s", got.Status, got.Body)
+	}
+	var env struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(got.Body), &env); err != nil || len(env.Data) == 0 {
+		return fmt.Errorf("callback read: no entity data in %s", got.Body)
+	}
+	if _, err := c.do(ctx, http.MethodPut, "/api/entity/JSON/"+entityID, string(env.Data), txToken, ""); err != nil {
+		return fmt.Errorf("callback update: %w", err)
+	}
+	return nil
+}
+
 // parseCreateResponse extracts the first entity id and transactionId from a
 // create/update response body: [{"transactionId":"...","entityIds":["uuid"]}].
 func parseCreateResponse(body string) (entityID, txID string) {
@@ -647,29 +684,34 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			if err := requireCB(cb); err != nil {
 				return nil, err
 			}
-			data, err := decodeData(entity)
+			targetID, err := targetOf(entity)
 			if err != nil {
 				return nil, err
 			}
-			targetID, _ := data["targetId"].(string)
-			if targetID == "" {
-				return nil, fmt.Errorf("cb-update-target: entity data has no targetId")
+			if err := cb.writeBack(ctx, targetID, token); err != nil {
+				return nil, err
 			}
-			got, err := cb.getEntity(ctx, targetID, token)
+			return entity, nil
+		},
+
+		// cb-race-target — cb-update-target with the rival write made by this
+		// processor itself: it first writes the target back OUTSIDE T (no
+		// token), which commits a new version after T began, and then does the
+		// joined write. T therefore loses first-committer-wins on the target
+		// with no second client and nothing running at the same time.
+		"cb-race-target": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			targetID, err := targetOf(entity)
 			if err != nil {
-				return nil, fmt.Errorf("callback read: %w", err)
+				return nil, err
 			}
-			if got.Status != http.StatusOK {
-				return nil, fmt.Errorf("callback read status=%d body=%s", got.Status, got.Body)
+			if err := cb.writeBack(ctx, targetID, ""); err != nil {
+				return nil, fmt.Errorf("rival write: %w", err)
 			}
-			var env struct {
-				Data json.RawMessage `json:"data"`
-			}
-			if err := json.Unmarshal([]byte(got.Body), &env); err != nil || len(env.Data) == 0 {
-				return nil, fmt.Errorf("callback read: no entity data in %s", got.Body)
-			}
-			if _, err := cb.do(ctx, http.MethodPut, "/api/entity/JSON/"+targetID, string(env.Data), token, ""); err != nil {
-				return nil, fmt.Errorf("callback update: %w", err)
+			if err := cb.writeBack(ctx, targetID, token); err != nil {
+				return nil, err
 			}
 			return entity, nil
 		},
