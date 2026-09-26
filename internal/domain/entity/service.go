@@ -2351,10 +2351,10 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		res, lbErr := h.engine.LoopbackWithIfMatch(txCtx, updated, input.IfMatch)
 		if lbErr != nil {
 			slog.Error("workflow loopback failed", "error", lbErr.Error(), "entityId", updated.Meta.ID)
-			// A task-row conflict (the reconcile lost a race with the
-			// scheduler) is not an entity modification. It keeps its cause
-			// and classifyWorkflowError answers the retryable 409 CONFLICT.
-			if errors.Is(lbErr, spi.ErrConflict) && !errors.Is(lbErr, wfengine.ErrScheduledTaskInfra) {
+			// See engineConflictIsTransactionConflict for the conflicts that
+			// are not entity modifications; classifyWorkflowError answers them
+			// with the retryable 409 CONFLICT.
+			if errors.Is(lbErr, spi.ErrConflict) && !engineConflictIsTransactionConflict(lbErr) {
 				appErr := common.Operational(
 					http.StatusPreconditionFailed,
 					common.ErrCodeEntityModified,
@@ -2373,7 +2373,7 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		res, mtErr := h.engine.ManualTransitionWithIfMatch(txCtx, updated, input.Transition, input.IfMatch)
 		if mtErr != nil {
 			slog.Error("workflow manual transition failed", "error", mtErr.Error(), "entityId", updated.Meta.ID, "transition", input.Transition)
-			if errors.Is(mtErr, spi.ErrConflict) && !errors.Is(mtErr, wfengine.ErrScheduledTaskInfra) {
+			if errors.Is(mtErr, spi.ErrConflict) && !engineConflictIsTransactionConflict(mtErr) {
 				appErr := common.Operational(
 					http.StatusPreconditionFailed,
 					common.ErrCodeEntityModified,
@@ -2722,17 +2722,17 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			//     spi.ErrConflict branch answers a retryable 409 (asserted by
 			//     service_classify_test.go): the segment boundary aborted, so
 			//     a fresh attempt is the right advice.
-			//   - ErrScheduledTaskInfra: the reconcile's task-row write lost a
-			//     race with the scheduler. On PostgreSQL that statement's
-			//     40001 has aborted the transaction. It leaves through
-			//     classifyWorkflowError → common.Internal → a retryable 409.
+			//   - The other engine infrastructure markers
+			//     (engineConflictIsTransactionConflict): a statement of the
+			//     engine's own met a transaction a concurrent writer had
+			//     already aborted. It leaves through classifyWorkflowError →
+			//     common.Internal → a retryable 409.
 			//
 			// Either way, isolating would let every later item write into a
 			// dead transaction and be lost.
 			if item.ifMatch != "" && errors.Is(engineErr, spi.ErrConflict) &&
 				!errors.Is(engineErr, wfengine.ErrPostSegmentConflict) &&
-				!errors.Is(engineErr, wfengine.ErrCommitBeforeDispatchInfra) &&
-				!errors.Is(engineErr, wfengine.ErrScheduledTaskInfra) {
+				!engineConflictIsTransactionConflict(engineErr) {
 				slog.Info("collection update item precondition failed",
 					"source", "engine", "entityId", updated.Meta.ID, "itemIndex", i)
 				failed = append(failed, UpdateCollectionItemFailure{
@@ -2899,6 +2899,23 @@ func classifySaveErr(internalMsg, entityID string, err error) *common.AppError {
 		return appErr
 	}
 	return common.Internal(internalMsg, err)
+}
+
+// engineConflictIsTransactionConflict reports whether an engine error that
+// carries spi.ErrConflict came from one of the engine's own statements rather
+// than from the caller's If-Match precondition: it is also marked with an
+// engine infrastructure sentinel. The engine applies the precondition with a
+// bare CompareAndSave whose conflict it returns unmarked; every other store
+// call it makes marks its failure. A marked conflict means a concurrent writer
+// aborted the transaction — for example a processor's joined callback lost a
+// write race — and the engine's next statement met it. That is a transaction
+// conflict (retryable 409 CONFLICT), not ENTITY_MODIFIED.
+func engineConflictIsTransactionConflict(err error) bool {
+	return errors.Is(err, wfengine.ErrScheduledTaskInfra) ||
+		errors.Is(err, wfengine.ErrProcessorOutputInfra) ||
+		errors.Is(err, wfengine.ErrSavepointInfra) ||
+		errors.Is(err, wfengine.ErrCommitBeforeDispatchInfra) ||
+		errors.Is(err, wfengine.ErrCriterionTypingInfra)
 }
 
 // classifyWorkflowError maps a workflow-engine error to the appropriate HTTP

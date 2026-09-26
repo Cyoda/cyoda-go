@@ -506,3 +506,25 @@ func captureEntitySlog(t *testing.T) *bytes.Buffer {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 	return &buf
 }
+
+// TestEngineConflictIsTransactionConflict: a conflict the engine marks as its
+// own statement's failure is a transaction conflict, never the caller's
+// If-Match precondition; an unmarked one is the precondition.
+func TestEngineConflictIsTransactionConflict(t *testing.T) {
+	marked := []error{
+		wfengine.ErrScheduledTaskInfra,
+		wfengine.ErrProcessorOutputInfra,
+		wfengine.ErrSavepointInfra,
+		wfengine.ErrCommitBeforeDispatchInfra,
+		wfengine.ErrCriterionTypingInfra,
+	}
+	for _, sentinel := range marked {
+		err := fmt.Errorf("processor p failed: %w", errors.Join(sentinel, spi.ErrConflict))
+		if !engineConflictIsTransactionConflict(err) {
+			t.Errorf("%v joined with a conflict was read as the caller's precondition", sentinel)
+		}
+	}
+	if engineConflictIsTransactionConflict(fmt.Errorf("apply If-Match: %w", spi.ErrConflict)) {
+		t.Error("an unmarked conflict — the If-Match compare — was read as a transaction conflict")
+	}
+}
