@@ -288,8 +288,10 @@ func (s *clearResultsErrorStore) ClearResults(ctx context.Context, jobID string)
 
 // (e) a ClearResults failure during reclaim must leave the job RUNNING and
 // RELEASED — never FAILED (the job itself may be fine; only its prior-epoch
-// partial results couldn't be cleared) and never silently re-enqueued over
-// unknown residue (fail closed). "Released" is asserted indirectly: a
+// partial results couldn't be cleared) and never run over unknown residue
+// (fail closed). The clear runs on the worker, under the job's heartbeat, so
+// the sweep counts the job as re-enqueued and the release follows on the
+// worker. "Released" is asserted indirectly: a
 // subsequent ClaimStale with a long staleAfter re-takes the job immediately,
 // which only a released (or genuinely stale) job would allow — and
 // StaleClaims must not be bumped a second time by that re-take, proving the
@@ -320,21 +322,27 @@ func TestReclaimStaleJobs_ClearResultsErrorReleases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReclaimStaleJobs: %v", err)
 	}
-	if reenq != 0 || failed != 0 {
-		t.Fatalf("ReclaimStaleJobs = (reenqueued %d, failed %d), want (0, 0) when ClearResults errors", reenq, failed)
+	if reenq != 1 || failed != 0 {
+		t.Fatalf("ReclaimStaleJobs = (reenqueued %d, failed %d), want (1, 0): the clear runs on the worker", reenq, failed)
 	}
 
-	got, err := store.GetJob(tenantCtx("tenant-a"), "job-clear-err")
-	if err != nil {
-		t.Fatalf("GetJob: %v", err)
-	}
-	if got.Status != "RUNNING" {
-		t.Fatalf("job status after a ClearResults error = %q, want RUNNING (never FAILED, never silently dropped)", got.Status)
-	}
-
-	claimed, err := base.ClaimStale(context.Background(), time.Hour, 10)
-	if err != nil {
-		t.Fatalf("ClaimStale: %v", err)
+	// The worker's release is what makes the job eligible again at once.
+	var claimed []*spi.SearchJob
+	deadline := time.Now().Add(2 * time.Second)
+	for len(claimed) == 0 && time.Now().Before(deadline) {
+		got, err := store.GetJob(tenantCtx("tenant-a"), "job-clear-err")
+		if err != nil {
+			t.Fatalf("GetJob: %v", err)
+		}
+		if got.Status != "RUNNING" {
+			t.Fatalf("job status after a ClearResults error = %q, want RUNNING (never FAILED, never silently dropped)", got.Status)
+		}
+		if claimed, err = base.ClaimStale(context.Background(), time.Hour, 10); err != nil {
+			t.Fatalf("ClaimStale: %v", err)
+		}
+		if len(claimed) == 0 {
+			time.Sleep(5 * time.Millisecond)
+		}
 	}
 	if len(claimed) != 1 || claimed[0].ID != "job-clear-err" {
 		t.Fatalf("ClaimStale(staleAfter=1h) after a ClearResults-error release = %v, want [job-clear-err] (a released job is eligible regardless of staleAfter)", claimed)

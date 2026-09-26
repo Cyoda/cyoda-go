@@ -77,17 +77,6 @@ func (s *SearchService) ReclaimStaleJobs(ctx context.Context, staleAfter time.Du
 			continue
 		}
 
-		// Clear the prior epoch's partial rows before re-running. On failure,
-		// release (uncounted) so a peer or the next sweep retries — never
-		// enqueue over unknown residue (fail closed).
-		if cerr := s.searchStore.ClearResults(tenantCtx, job.ID); cerr != nil {
-			slog.Error("failed to clear results before reclaim; releasing", "pkg", "search", "jobID", job.ID, "err", cerr)
-			if rerr := s.searchStore.Release(tenantCtx, job.ID, job.Epoch); rerr != nil {
-				slog.Error("failed to release after ClearResults error", "pkg", "search", "jobID", job.ID, "err", rerr)
-			}
-			continue
-		}
-
 		if s.reenqueueClaimed(job) {
 			reenqueued++
 		}
@@ -96,9 +85,12 @@ func (s *SearchService) ReclaimStaleJobs(ctx context.Context, staleAfter time.Du
 }
 
 // reenqueueClaimed re-runs a claimed job on this node at its claimed epoch.
-// Returns true if the job entered the pool. On any failure it either fails the
+// Returns true if the job entered the pool. The heartbeat starts here, before
+// any main-pool statement of the job's; the prior epoch's results are cleared
+// on the worker (clearReclaimedResults). On any failure it either fails the
 // job (a genuine defect — an undecodable stored job) or releases it (transient
-// — queue full), never leaves it silently RUNNING with no executor.
+// — queue full, or a failed clear), never leaves it silently RUNNING with no
+// executor.
 func (s *SearchService) reenqueueClaimed(job *spi.SearchJob) bool {
 	uc := common.SystemUserContextValue(job.TenantID) // *spi.UserContext for the job's tenant
 	baseCtx := spi.WithUserContext(context.Background(), uc)
@@ -123,6 +115,9 @@ func (s *SearchService) reenqueueClaimed(job *spi.SearchJob) bool {
 	s.startHeartbeat(jobCtx, cancel, job.ID, job.Epoch)
 
 	submitErr := s.asyncPool().Submit(func() {
+		if !s.clearReclaimedResults(jobCtx, cancel, handle, job) {
+			return
+		}
 		s.runAsyncJob(jobCtx, cancel, handle, job.ID, job.Epoch, job.ModelRef, cond, opts, orderBy)
 	})
 	if submitErr != nil {
@@ -136,6 +131,34 @@ func (s *SearchService) reenqueueClaimed(job *spi.SearchJob) bool {
 		return false
 	}
 	return true
+}
+
+// clearReclaimedResults deletes the prior epoch's partial results before a
+// reclaimed job re-runs, and reports whether the job may run. It runs on the
+// worker, under the heartbeat reenqueueClaimed has already started: the clear
+// shares the store's main pool with entity transactions, and neither the
+// reclaim sweep nor the job's liveness may wait on that pool.
+//
+// A job whose context ended before the clear (released, superseded, or
+// refused by its heartbeat), or whose clear failed, does not run: the job is
+// released (uncounted) so a peer or the next sweep retries it. It is never run
+// over unknown residue (fail closed).
+func (s *SearchService) clearReclaimedResults(jobCtx context.Context, cancel context.CancelCauseFunc, handle *asyncJobHandle, job *spi.SearchJob) bool {
+	cerr := jobCtx.Err()
+	if cerr == nil {
+		cerr = s.searchStore.ClearResults(jobCtx, job.ID)
+		if cerr == nil {
+			return true
+		}
+		slog.Error("failed to clear results before reclaim; releasing", "pkg", "search", "jobID", job.ID, "err", cerr)
+	}
+	cancel(nil)
+	s.deregisterJobHandle(job.ID, handle)
+	tenantCtx := common.SystemUserContext(job.TenantID)
+	if rerr := s.searchStore.Release(tenantCtx, job.ID, job.Epoch); rerr != nil {
+		slog.Warn("failed to release reclaimed job that did not run", "pkg", "search", "jobID", job.ID, "err", rerr)
+	}
+	return false
 }
 
 // decodeStoredJob reconstructs the condition and search options SubmitAsync
