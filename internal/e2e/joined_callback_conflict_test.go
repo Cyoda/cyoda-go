@@ -12,16 +12,22 @@ import (
 	"time"
 )
 
-// joined_callback_conflict_test.go — a SYNC processor's joined callback
-// updates a second entity F that a concurrent client committed a change to
+// joined_callback_conflict_test.go — a processor's joined callback (SYNC,
+// ASYNC_NEW_TX, or COMMIT_BEFORE_DISPATCH on its new transaction) updates a
+// second entity F that a concurrent client committed a change to
 // after the request's transaction began. The callback's write loses first-
 // committer-wins, which is a transaction conflict: every door that ran the
 // processor answers a retryable 409 CONFLICT. 412 ENTITY_MODIFIED belongs to
 // the request's own If-Match precondition only, and that precondition holds
 // here: nobody else wrote E.
 
-// conflictProc is one processor of the doors' workflow.
-type conflictProc struct{ name, mode string }
+// conflictProc is one processor of the doors' workflow. startNewTx sets
+// startNewTxOnDispatch, which gives a COMMIT_BEFORE_DISPATCH dispatch the new
+// transaction's token.
+type conflictProc struct {
+	name, mode string
+	startNewTx bool
+}
 
 // conflictDoorWorkflow runs procs, in order, on three paths: at create when
 // status is "create", on a loopback update when status is "loop", and on the
@@ -30,7 +36,8 @@ func conflictDoorWorkflow(name, tag string, procs ...conflictProc) string {
 	list := make([]string, len(procs))
 	for i, proc := range procs {
 		list[i] = fmt.Sprintf(`{"type": "calculator", "name": %q, "executionMode": %q,
-			"config": {"attachEntity": true, "calculationNodesTags": %q, "responseTimeoutMs": 60000}}`, proc.name, proc.mode, tag)
+			"config": {"attachEntity": true, "calculationNodesTags": %q, "responseTimeoutMs": 60000, "startNewTxOnDispatch": %t}}`,
+			proc.name, proc.mode, tag, proc.startNewTx)
 	}
 	p := `"processors": [` + strings.Join(list, ",") + `]`
 	when := func(status string) string {
@@ -94,7 +101,7 @@ func TestJoinedCallbackConflict_EveryDoorAnswersRetryable409(t *testing.T) {
 			return h.callback(http.MethodPut, "/api/entity/JSON", collectionUpdateBody(eID, eTxID, loop), "")
 		}},
 	}
-	sync := func(name string) conflictProc { return conflictProc{name, "SYNC"} }
+	sync := func(name string) conflictProc { return conflictProc{name: name, mode: "SYNC"} }
 	// Where the aborted transaction is first noticed.
 	shapes := []struct {
 		name string
@@ -112,10 +119,22 @@ func TestJoinedCallbackConflict_EveryDoorAnswersRetryable409(t *testing.T) {
 		// The processor checks its callback's answer and fails: the engine's
 		// probe of the transaction.
 		{name: "StrictProcessor", strict: true, procs: func() []conflictProc { return []conflictProc{sync(uniq("jcc-p"))} }},
+		// The same, dispatched with the token of the transaction that
+		// COMMIT_BEFORE_DISPATCH opens after its commit: the engine's probe of
+		// that transaction.
+		{name: "StrictCommitBeforeDispatch", strict: true, procs: func() []conflictProc {
+			return []conflictProc{{name: uniq("jcc-cbd"), mode: "COMMIT_BEFORE_DISPATCH", startNewTx: true}}
+		}},
+		// The same, inside ASYNC_NEW_TX's savepoint: the processor's failure
+		// is not fatal and the savepoint is rolled back, and the conflict
+		// still refuses the commit.
+		{name: "StrictAsyncNewTx", strict: true, procs: func() []conflictProc {
+			return []conflictProc{{name: uniq("jcc-ant"), mode: "ASYNC_NEW_TX"}}
+		}},
 		// The engine's If-Match compare at the first COMMIT_BEFORE_DISPATCH
 		// segment flush.
 		{name: "Segmented", ifMatchOnly: true, procs: func() []conflictProc {
-			return []conflictProc{sync(uniq("jcc-p")), {uniq("jcc-cbd"), "COMMIT_BEFORE_DISPATCH"}}
+			return []conflictProc{sync(uniq("jcc-p")), {name: uniq("jcc-cbd"), mode: "COMMIT_BEFORE_DISPATCH"}}
 		}},
 	}
 	for _, door := range doors {
