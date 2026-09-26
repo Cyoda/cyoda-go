@@ -200,10 +200,13 @@ func TestConflictSurvivesSavepointRollback(t *testing.T) {
 	}
 }
 
-// TestStatementAfterRolledBackConflict_IsTxAborted: the conflict a savepoint
-// rollback kept also explains a later abort. The transaction cannot commit
-// whatever aborted it next, so a statement refused after that is refused
-// because of the conflict.
+// TestStatementAfterRolledBackConflict_IsTxAborted: after a savepoint rollback
+// kept a conflict, a statement fails with its own error (a division by zero),
+// which is reported as that error, not as a conflict. The statements the
+// database refuses after it report spi.ErrTxAborted with the refusing 25P02 in
+// the chain: the conflict is the transaction's fate, because Commit refuses
+// the transaction with the kept 40001 whatever aborted it next, not the
+// immediate cause of the refusal.
 func TestStatementAfterRolledBackConflict_IsTxAborted(t *testing.T) {
 	fx := newStatementCeilingFixture(t, 0)
 	ctx := classifyTestCtx()
@@ -223,6 +226,8 @@ func TestStatementAfterRolledBackConflict_IsTxAborted(t *testing.T) {
 	var n int
 	if err := fx.q.QueryRow(txCtx, "SELECT 1/0").Scan(&n); err == nil {
 		t.Fatal("division by zero succeeded")
+	} else if errors.Is(err, spi.ErrConflict) {
+		t.Fatalf("the division by zero is reported as a conflict: %v", err)
 	}
 	assertLaterStatementIsConflict(t, fx, txCtx)
 	requireConflictCause(t, fx.tm.Commit(ctx, txID), pgerrcode.SerializationFailure)
