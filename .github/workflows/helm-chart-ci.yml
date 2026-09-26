@@ -68,7 +68,7 @@ jobs:
 
       - name: helm template — pods get the shutdown grace period
         run: |
-          grep -q "terminationGracePeriodSeconds: 360" /tmp/default.yaml
+          grep -qE '^\s+terminationGracePeriodSeconds: 390$' /tmp/default.yaml
 
       - name: helm template — schema rejects a zero grace period
         run: |

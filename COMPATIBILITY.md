@@ -179,7 +179,8 @@ above, each with the issue tracking it.
 
 | Chart `version:` | Chart `appVersion:` | Default binary | Notes |
 |---|---|---|---|
-| `0.8.4` | `0.8.4` | `cyoda-go v0.8.4` | **Current.** Chart tag `cyoda-0.8.4`. |
+| **`0.9.0`** (in progress) | `0.8.4` | `cyoda-go v0.8.4` | Adds `terminationGracePeriodSeconds` (default `390`) so a node can drain its scheduled runs before Kubernetes kills the pod; adds `values.schema.json` validation for `bootstrap.tenantId` and `bootstrap.userId` (pattern, maxLength, and the `oidc:` exclusion on `userId`), matching the binary's own rule. Mid-milestone, so no chart tag yet — cut at the release. |
+| `0.8.4` | `0.8.4` | `cyoda-go v0.8.4` | Chart tag `cyoda-0.8.4`. |
 | `0.8.3` | `0.8.3` | `cyoda-go v0.8.3` | Chart tag `cyoda-0.8.3`. |
 | `0.8.2` | `0.8.2` | `cyoda-go v0.8.2` | Chart tag `cyoda-0.8.2`. |
 | `0.8.1` | `0.8.1` | `cyoda-go v0.8.1` | Chart tag `cyoda-0.8.1`. From this release the chart `version:` and `appVersion:` move together at each binary release, so the decoupling described below is the convention rather than current practice. |

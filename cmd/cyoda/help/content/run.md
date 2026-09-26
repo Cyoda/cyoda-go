@@ -286,7 +286,7 @@ On the first signal the scheduler stops first, while compute members and their c
 
 1. It stops claiming scheduled transitions. From here on no run sends a new processor that is not declared `idempotent`.
 2. It waits up to `CYODA_SCHEDULER_SHUTDOWN_DRAIN` (default `20s`) for the runs in progress.
-3. It cancels the runs still going, except a run whose processor that is not `idempotent` is in flight on a compute member. That callout may finish or reach its own deadline, and the run may then carry on with safe steps and commit.
+3. It cancels the runs still going, except a run with a processor in flight that is not declared `idempotent`. That callout may finish or reach its own deadline, and the run may then carry on with safe steps and commit.
 4. It waits for every run to record its outcome: at most the longest remaining callout deadline plus 45 seconds.
 5. It hands back the tasks whose runs ended without an outcome, and stops its heartbeat.
 
@@ -294,16 +294,16 @@ A run cut at step 3 that had sent nothing unsafe is claimed again at once, by an
 
 The server drains follow. Their graceful shutdown deadline is **10 seconds**, applied separately to the HTTP server, the admin server and the gRPC server; the three drain concurrently, so the server drains take about 10 seconds in total, not 30. The value is not configurable. A gRPC drain that outlives its deadline is cut off with a hard stop.
 
-Three steps follow the server drains, in order: `app.Shutdown()` gives in-flight async search jobs up to 5 seconds to finish before releasing them for another node to reclaim, and takes the node out of the cluster; `app.Close()` releases backend resources (database connection pools), with no timeout of its own; and the telemetry flush gets up to 10 seconds. Everything after the scheduler therefore takes about 25 seconds at worst, plus the cluster leave and the storage close. An idle node exits in well under a second.
+Three steps follow the server drains, in order: `app.Shutdown()` gives in-flight async search jobs up to 5 seconds to finish, then releases whatever is still registered for reclaim by another node (no time limit of its own), and takes the node out of the cluster (no time limit of its own); `app.Close()` releases backend resources (database connection pools), with no timeout of its own; and the telemetry flush gets up to 10 seconds. Everything time-bounded after the scheduler therefore takes about 25 seconds at worst, plus the job release, the cluster leave and the storage close, none of which carries its own deadline. An idle node exits in well under a second.
 
-The worst case from signal to exit:
+The worst case from signal to exit is `max(CYODA_SCHEDULER_SHUTDOWN_DRAIN + 10, callout deadline) + 100` seconds. The extra 10 seconds is step 1's wait for the claim loop's own store call in flight. The callout deadline is `(1 + CYODA_RETRY_FIXED_NUM_RETRIES) × CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS + CYODA_DISPATCH_WAIT_TIMEOUT + CYODA_CALLOUT_HANDOVER_ALLOWANCE`.
 
-- With no processor that is not `idempotent` in flight: `CYODA_SCHEDULER_SHUTDOWN_DRAIN` + 70 seconds — 90 s at the defaults.
-- With one in flight: max(`CYODA_SCHEDULER_SHUTDOWN_DRAIN`, callout deadline) + 70 seconds. The callout deadline is `(1 + CYODA_RETRY_FIXED_NUM_RETRIES) × answer limit + CYODA_DISPATCH_WAIT_TIMEOUT + CYODA_CALLOUT_HANDOVER_ALLOWANCE`: 225 s in all at the defaults, and 345 s when the answer limit is `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` (default `60000`).
+- With no processor with a non-idempotent callout in flight, the callout deadline does not apply: `CYODA_SCHEDULER_SHUTDOWN_DRAIN` + 110 seconds — 130 s at the defaults.
+- With one in flight: the callout deadline is 275 s at the defaults (`4 × 60s + 5s + 30s`), so the total is 375 s.
 
-The 70 seconds are the 30-second commit budget, 15 seconds of slack and the 25 seconds above.
+The 100 seconds are the 30-second commit budget; 15 seconds after the commit budget, the last 10 of them for outcome writes under way; 30 seconds for step 5's three store calls (giving back claims, the heartbeat still in flight, and retiring the owner); and the 25 seconds above.
 
-In Kubernetes, the pod `terminationGracePeriodSeconds` must cover the worst case, or the kubelet sends `SIGKILL` before the node has recorded its runs' outcomes; another node then takes those tasks over after `CYODA_SCHEDULER_STALE_AFTER`, as lost owners. The Helm chart sets `360`. Raise it when you raise the tries, the answer limit, the wait or the hand-over allowance (see `cyoda help helm`).
+In Kubernetes, the pod `terminationGracePeriodSeconds` must cover the worst case, or the kubelet sends `SIGKILL` before the node has recorded its runs' outcomes; another node then takes those tasks over after `CYODA_SCHEDULER_STALE_AFTER`, as lost owners. The Helm chart sets `390`. Raise it when you raise the drain, the tries, the answer limit, the wait or the hand-over allowance (see `cyoda help helm`).
 
 ## PORT LAYOUT
 

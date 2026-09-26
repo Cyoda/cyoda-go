@@ -21,4 +21,5 @@ maintainers:
     url: https://github.com/cyoda
 annotations:
   artifacthub.io/changes: |
-    - terminationGracePeriodSeconds defaults to 360, so a node can finish its scheduled runs before it is killed
+    - terminationGracePeriodSeconds defaults to 390, so a node can finish its scheduled runs before it is killed
+    - bootstrap.tenantId and bootstrap.userId are validated by values.schema.json (pattern, maxLength, and the oidc: exclusion on userId), matching the binary's own rule
