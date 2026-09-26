@@ -89,7 +89,9 @@ CREATE TABLE IF NOT EXISTS messages (
 -- search_jobs: async search job metadata
 -- PK is composite (tenant_id, id) so the same job ID may be reused across
 -- tenants (the conformance harness uses fixed IDs like "j1" in fresh tenants).
--- condition and point_in_time are nullable — they are optional on spi.SearchJob.
+-- condition is nullable: CreateJob writes NULL for an empty spi.SearchJob.Condition.
+-- point_in_time is NOT NULL since 000015; it was declared nullable here on the
+-- mistaken note that it was optional on spi.SearchJob, which it never was.
 CREATE TABLE IF NOT EXISTS search_jobs (
     id            TEXT        NOT NULL,
     tenant_id     TEXT        NOT NULL,

@@ -548,6 +548,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Changed
 
+- **PostgreSQL migration `000015` and SQLite `000010`: `search_jobs.point_in_time`
+  is `NOT NULL`.** Every search job has a point in time and the stores have
+  always written one; the column was declared nullable on a mistaken note that
+  it was optional. The database now refuses a row without it. SQLite rebuilds
+  the table for the change, inside the migration's transaction; the SQLite
+  store also stops mapping a zero `PointInTime` to `NULL` and persists the
+  instant as PostgreSQL always has.
+
 - **A client that goes away mid-request is logged at DEBUG, with no ticket** —
   on HTTP (`common.WriteError`) and in gRPC (`buildErrorFields`), the two
   funnels every error response and envelope goes through. Nothing was wrong

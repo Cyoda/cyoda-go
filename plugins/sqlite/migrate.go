@@ -25,8 +25,8 @@ func runMigrations(ctx context.Context, db *sql.DB) error {
 		// NoTxWrap disables golang-migrate's own per-file transaction
 		// wrapper (Run -> executeQuery vs executeQueryNoTx in its sqlite
 		// driver). A migration file that needs atomicity supplies its own
-		// explicit BEGIN/COMMIT instead (000009 does, to make its
-		// multi-statement scheduled_tasks rebuild atomic); with NoTxWrap
+		// explicit BEGIN/COMMIT instead (000009 and 000010 do, to make
+		// their multi-statement table rebuilds atomic); with NoTxWrap
 		// false, golang-migrate's wrapper would nest a second BEGIN inside
 		// that one, and SQLite refuses a transaction started within an
 		// already-open transaction.

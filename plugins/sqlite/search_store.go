@@ -43,12 +43,6 @@ func (s *asyncSearchStore) CreateJob(ctx context.Context, job *spi.SearchJob) er
 		return err
 	}
 
-	var pitMicro *int64
-	if !job.PointInTime.IsZero() {
-		v := job.PointInTime.UnixMicro()
-		pitMicro = &v
-	}
-
 	var finishMicro *int64
 	if job.FinishTime != nil {
 		v := job.FinishTime.UnixMicro()
@@ -65,7 +59,7 @@ func (s *asyncSearchStore) CreateJob(ctx context.Context, job *spi.SearchJob) er
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(tid), job.ID, job.Status,
 		job.ModelRef.EntityName, job.ModelRef.ModelVersion,
-		nullableBlob(job.Condition), pitMicro,
+		nullableBlob(job.Condition), job.PointInTime.UnixMicro(),
 		nullableBlob(job.SearchOpts), job.ResultCount,
 		job.Error, job.CreateTime.UnixMicro(), finishMicro, job.CalcTimeMs)
 	if err != nil {
@@ -590,8 +584,8 @@ func scanSearchJob(row *sql.Row) (*spi.SearchJob, error) {
 	var job spi.SearchJob
 	var modelName, modelVer string
 	var condition, searchOpts []byte
-	var pitMicro, finishMicro, heartbeatMicro sql.NullInt64
-	var createMicro, calcTimeMs, epoch, staleClaims int64
+	var finishMicro, heartbeatMicro sql.NullInt64
+	var pitMicro, createMicro, calcTimeMs, epoch, staleClaims int64
 
 	err := row.Scan(
 		&job.ID, &job.TenantID, &job.Status,
@@ -610,14 +604,12 @@ func scanSearchJob(row *sql.Row) (*spi.SearchJob, error) {
 	job.ModelRef = spi.ModelRef{EntityName: modelName, ModelVersion: modelVer}
 	job.Condition = condition
 	job.SearchOpts = searchOpts
+	job.PointInTime = time.UnixMicro(pitMicro)
 	job.CreateTime = time.UnixMicro(createMicro)
 	job.CalcTimeMs = calcTimeMs
 	job.Epoch = epoch
 	job.StaleClaims = staleClaims
 
-	if pitMicro.Valid {
-		job.PointInTime = time.UnixMicro(pitMicro.Int64)
-	}
 	if finishMicro.Valid {
 		ft := time.UnixMicro(finishMicro.Int64)
 		job.FinishTime = &ft
