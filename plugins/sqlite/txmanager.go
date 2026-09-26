@@ -201,13 +201,14 @@ type transactionManager struct {
 
 	// lostDiscardedWrite marks a transaction that a RollbackToSavepoint made
 	// discard a write which had already lost first-committer-wins: another
-	// transaction committed that entity after this one's snapshot and before
-	// the rollback. The rollback restores the write set from the snapshot,
-	// so Commit's log check can no longer see the write; the mark makes
-	// Commit refuse the transaction with spi.ErrConflict, as PostgreSQL
-	// refuses one whose write failed with 40001 inside a rolled-back
-	// savepoint. It survives every later RollbackToSavepoint. Protected by
-	// mu; removed by forgetLocked.
+	// transaction committed that entity or task row after this one's
+	// snapshot and before the rollback. The rollback restores the write set
+	// and cuts the staged task-row ops back to the savepoint, so Commit's
+	// log check can no longer see the write; the mark makes Commit refuse
+	// the transaction with spi.ErrConflict, as PostgreSQL refuses one whose
+	// write failed with 40001 inside a rolled-back savepoint. It survives
+	// every later RollbackToSavepoint. Protected by mu; removed by
+	// forgetLocked.
 	lostDiscardedWrite map[string]bool
 }
 
@@ -672,9 +673,11 @@ func (m *transactionManager) forgetLocked(txID string) {
 }
 
 // committedSinceSnapshotLocked reports whether a transaction that committed
-// after txID's snapshot wrote one of ids. Caller holds mu.
-func (m *transactionManager) committedSinceSnapshotLocked(txID string, ids []string) bool {
-	if len(ids) == 0 {
+// after txID's snapshot wrote one of the entity ids or one of the task rows.
+// The task rows are compared by taskKey, tenant included, as Commit compares
+// them. Caller holds mu.
+func (m *transactionManager) committedSinceSnapshotLocked(txID string, ids []string, tasks map[taskKey]bool) bool {
+	if len(ids) == 0 && len(tasks) == 0 {
 		return false
 	}
 	snapshotSeq := m.txSnapshotSeq[txID]
@@ -684,6 +687,11 @@ func (m *transactionManager) committedSinceSnapshotLocked(txID string, ids []str
 		}
 		for _, id := range ids {
 			if committed.writeSet[id] {
+				return true
+			}
+		}
+		for k := range committed.taskWrites {
+			if tasks[k] {
 				return true
 			}
 		}
@@ -1485,18 +1493,24 @@ func (m *transactionManager) RollbackToSavepoint(ctx context.Context, txID strin
 	}
 
 	// A write the rollback discards stops being a write, but if another
-	// transaction already committed its entity after this one's snapshot,
-	// the transaction has lost that race and Commit must refuse it — see
-	// lostDiscardedWrite. A commit to that entity after the rollback does
-	// not race any write of this transaction and is not recorded. Read-set
-	// entries the rollback discards are dropped, as PostgreSQL drops them.
+	// transaction already committed its entity or task row after this one's
+	// snapshot, the transaction has lost that race and Commit must refuse
+	// it — see lostDiscardedWrite. The discarded task-row writes are the
+	// staged ops past the savepoint's scheduledTaskOpsLen. A commit to that
+	// entity or task row after the rollback does not race any write of this
+	// transaction and is not recorded. Read-set entries the rollback
+	// discards are dropped, as PostgreSQL drops them.
 	var discarded []string
 	for id := range tx.WriteSet {
 		if !snap.writeSet[id] {
 			discarded = append(discarded, id)
 		}
 	}
-	if m.committedSinceSnapshotLocked(txID, discarded) {
+	var discardedTasks map[taskKey]bool
+	if opsLen := snap.scheduledTaskOpsLen; opsLen < len(m.scheduledTaskOps[txID]) {
+		discardedTasks = taskWriteSet(m.scheduledTaskOps[txID][opsLen:])
+	}
+	if m.committedSinceSnapshotLocked(txID, discarded, discardedTasks) {
 		m.lostDiscardedWrite[txID] = true
 	}
 
