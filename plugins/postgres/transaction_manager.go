@@ -186,9 +186,10 @@ func (tm *TransactionManager) acquireContext(ctx context.Context) (context.Conte
 }
 
 // Commit commits the transaction and records its submit time.
-// Returns spi.ErrConflict on serialization failure (PostgreSQL error 40001)
-// or when the application-layer first-committer-wins validation detects a
-// stale read or write set.
+// Returns spi.ErrConflict on serialization failure (PostgreSQL error 40001),
+// including one a savepoint rollback has since undone, or when the
+// application-layer first-committer-wins validation detects a stale read or
+// write set.
 //
 // Tenant isolation: rejects callers whose UserContext
 // tenant does not match the transaction's tenant. RLS protects data-path
@@ -208,6 +209,15 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	}
 	if err := verifyTenant(ctx, state.tenantID, "Commit", txID); err != nil {
 		return err
+	}
+
+	// A concurrent writer won against this transaction. A savepoint rollback
+	// may have made the session usable again (see txState.RestoreSavepoint),
+	// but the transaction lost the race and must not commit.
+	if cause := state.AbortCause(); isConcurrentWriterAbort(cause) {
+		tm.cleanupTx(txID)
+		_ = pgxTx.Rollback(context.Background())
+		return fmt.Errorf("Commit: transaction aborted: %w", cause)
 	}
 
 	// --- First-committer-wins validation (read-set) ---

@@ -133,10 +133,78 @@ func TestStatementAfterNonConflictAbort_IsNotAConflict(t *testing.T) {
 	}
 }
 
-// TestStatementAfterRolledBackConflict_IsNotAConflict: ROLLBACK TO SAVEPOINT
-// makes the transaction usable again, so a conflict undone that way must not
-// colour a later, unrelated abort.
-func TestStatementAfterRolledBackConflict_IsNotAConflict(t *testing.T) {
+// TestConflictSurvivesSavepointRollback: a conflict anywhere in the
+// transaction is a conflict of the transaction. ROLLBACK TO SAVEPOINT makes the
+// session usable again, and later statements run, but the write that lost the
+// race is gone and the transaction cannot commit as the caller meant it. Commit
+// must refuse it with the recorded conflict and write nothing — the answer a
+// backend that detects the conflict at commit gives for the same work.
+func TestConflictSurvivesSavepointRollback(t *testing.T) {
+	fx := newStatementCeilingFixture(t, 0)
+	ctx := classifyTestCtx()
+	// Commit stamps the entity tables, so a transaction here can only commit
+	// on a migrated schema — which the control below proves it does.
+	if err := runMigrations(ctx, fx.pool, defaultMigrateLockTimeout); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	table := fmt.Sprintf("abort_cause_sp_%s", uuid.NewString()[:8])
+	if _, err := fx.pool.Exec(ctx, "CREATE TABLE "+table+" (id int PRIMARY KEY)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	t.Cleanup(func() { _, _ = fx.pool.Exec(context.Background(), "DROP TABLE IF EXISTS "+table) })
+	count := func(id int) int {
+		t.Helper()
+		var n int
+		if err := fx.pool.QueryRow(ctx, "SELECT count(*) FROM "+table+" WHERE id = $1", id).Scan(&n); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		return n
+	}
+
+	// run: savepoint, the failing statement, rollback to the savepoint, a
+	// write of id, then Commit.
+	run := func(id int, failing string) error {
+		t.Helper()
+		txID, txCtx := beginGuarded(t, fx.tm, ctx)
+		spID, err := fx.tm.Savepoint(ctx, txID)
+		if err != nil {
+			t.Fatalf("savepoint: %v", err)
+		}
+		if _, err := fx.q.Exec(txCtx, failing); err == nil {
+			t.Fatalf("%q succeeded", failing)
+		}
+		if err := fx.tm.RollbackToSavepoint(ctx, txID, spID); err != nil {
+			t.Fatalf("rollback to savepoint: %v", err)
+		}
+		// The session is usable again.
+		if _, err := fx.q.Exec(txCtx, "INSERT INTO "+table+" VALUES ($1)", id); err != nil {
+			t.Fatalf("the transaction did not recover from the savepoint rollback: %v", err)
+		}
+		return fx.tm.Commit(ctx, txID)
+	}
+
+	// Control: an abort that is not a conflict is undone by the rollback, and
+	// the transaction commits.
+	if err := run(1, "SELECT 1/0"); err != nil {
+		t.Fatalf("control: a transaction whose non-conflict abort was rolled back did not commit: %v", err)
+	}
+	if count(1) != 1 {
+		t.Fatal("control: the committed row is missing")
+	}
+
+	err := run(2, "DO $$ BEGIN RAISE EXCEPTION 'conflict' USING ERRCODE = '40001'; END $$")
+	requireConflictCause(t, err, pgerrcode.SerializationFailure)
+	if n := count(2); n != 0 {
+		t.Fatalf("a transaction that lost a race committed %d row(s) after a savepoint rollback", n)
+	}
+}
+
+// TestStatementAfterRolledBackConflict_IsTxAborted: the conflict a savepoint
+// rollback kept also explains a later abort. The transaction cannot commit
+// whatever aborted it next, so a statement refused after that is refused
+// because of the conflict.
+func TestStatementAfterRolledBackConflict_IsTxAborted(t *testing.T) {
 	fx := newStatementCeilingFixture(t, 0)
 	ctx := classifyTestCtx()
 	txID, txCtx := beginGuarded(t, fx.tm, ctx)
@@ -156,13 +224,8 @@ func TestStatementAfterRolledBackConflict_IsNotAConflict(t *testing.T) {
 	if err := fx.q.QueryRow(txCtx, "SELECT 1/0").Scan(&n); err == nil {
 		t.Fatal("division by zero succeeded")
 	}
-	err = fx.q.QueryRow(txCtx, "SELECT 1").Scan(&n)
-	if err == nil {
-		t.Fatal("a statement succeeded on an aborted transaction")
-	}
-	if errors.Is(err, spi.ErrConflict) {
-		t.Fatalf("a conflict the savepoint rollback undid was reported for a later abort: %v", err)
-	}
+	assertLaterStatementIsConflict(t, fx, txCtx)
+	requireConflictCause(t, fx.tm.Commit(ctx, txID), pgerrcode.SerializationFailure)
 }
 
 // assertLaterStatementIsConflict runs a statement of each querier shape on the

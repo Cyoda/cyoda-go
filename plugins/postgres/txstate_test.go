@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/jackc/pgerrcode"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // TestNewTxState_ZeroValue verifies that a freshly constructed txState has
@@ -297,16 +299,16 @@ func TestReleaseSavepoint_Unknown(t *testing.T) {
 	}
 }
 
-// TestRestoreSavepoint_ClearsTheAbortCause — a savepoint rollback is what makes
-// an aborted PostgreSQL transaction usable again, so it also has to discard the
-// reason it was aborted.
+// TestRestoreSavepoint_ClearsACeilingCause — a savepoint rollback is what makes
+// an aborted PostgreSQL transaction usable again, so it also has to discard a
+// ceiling that aborted it.
 //
 // Left set, a ceiling recorded inside the savepoint outlives the rollback that
 // undid it, and the NEXT abort — a genuine serialization failure, say — is
 // reported as that stale ceiling instead of as the conflict it is. Commit reads
 // AbortCause unconditionally, so the retryable 409 a concurrent committer earns
 // would silently become a 500.
-func TestRestoreSavepoint_ClearsTheAbortCause(t *testing.T) {
+func TestRestoreSavepoint_ClearsACeilingCause(t *testing.T) {
 	s := newTxState("tenant-1")
 	s.PushSavepoint("sp-1")
 
@@ -337,5 +339,23 @@ func TestRestoreSavepoint_LeavesALaterAbortRecordable(t *testing.T) {
 	s.RecordAbort(errors.New("second"))
 	if cause := s.AbortCause(); cause == nil || cause.Error() != "second" {
 		t.Fatalf("AbortCause = %v, want the abort raised after the restore", cause)
+	}
+}
+
+// TestRestoreSavepoint_KeepsAConflictCause — a concurrent writer that won
+// against the transaction is not undone by rolling back the losing statement:
+// a conflict anywhere in the transaction is a conflict of the transaction, and
+// Commit reads the kept cause to refuse it.
+func TestRestoreSavepoint_KeepsAConflictCause(t *testing.T) {
+	s := newTxState("tenant-1")
+	s.PushSavepoint("sp-1")
+	conflict := &pgconn.PgError{Code: pgerrcode.SerializationFailure}
+	s.RecordAbort(conflict)
+
+	if err := s.RestoreSavepoint("sp-1"); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if cause := s.AbortCause(); !errors.Is(cause, conflict) {
+		t.Fatalf("AbortCause = %v, want the conflict kept across the savepoint rollback", cause)
 	}
 }
