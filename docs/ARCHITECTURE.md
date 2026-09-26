@@ -388,7 +388,7 @@ Nothing resets the flag: it latches on the first panic recovered in engine or st
 What the flag actually stops, and what it does not:
 
 - **Stops:** new client connections arriving through the Kubernetes Service. The chart's readiness probe (5s period, 3 failures) drops the pod from the Service endpoints in ~10-15s, and both the Gateway `HTTPRoute` and the `Ingress` route through that Service.
-- **Does not stop:** peer-forwarded work. The chart always enables cluster mode, and peers address each other through the gossip registry, not the Service — tx-affinity proxying and callout hand-overs keep reaching the node. The scheduler stops claiming only when it latches the flag itself — on a panic in one of its goroutines, or on a store's rejection of a run's outcome — and it keeps heartbeating then, so its tasks are not taken over while its runs end and record their outcomes (§4.8). A latch from any other recovery site does not reach the scheduler: it goes on claiming and running due tasks. Established connections — a compute node holding a gRPC stream, for instance — are not closed either.
+- **Does not stop:** peer-forwarded work. The chart always enables cluster mode, and peers address each other through the gossip registry, not the Service — tx-affinity proxying and callout hand-overs keep reaching the node. The node's own scheduler stops claiming when the flag latches, whichever site latched it, but keeps heartbeating, so the runs it has in progress are not taken over while they may still commit. Only a panic recovered inside the scheduler also cancels those runs (§4.8). Established connections — a compute node holding a gRPC stream, for instance — are not closed either.
 - **Does not restart it.** `/livez` is unconditional and does not read the flag, deliberately: a deterministic panic (a poisoned entity, a bad workflow definition) would otherwise recur on the next request and turn a restart into a loop. Replacing a drained node is an operator action.
 
 `/readyz` fails for two independent reasons — storage not initialised, or a recovered panic — and reports which in the server-side log while answering the probe generically.
@@ -1524,8 +1524,8 @@ claim token are the ones given; otherwise it returns `spi.ErrStaleClaim`.
 `ClaimDue` with a limit of `CYODA_SCHEDULER_MAX_RUNS` minus the runs in
 progress and a per-tenant limit of `CYODA_SCHEDULER_MAX_RUNS_PER_TENANT`; it
 also claims at once when a run frees a slot after a claim that filled every
-slot. It claims only while its last heartbeat succeeded in time, and never after
-the scheduler itself has latched the node or once it has begun to drain. A
+slot. It claims only while its last heartbeat succeeded in time, and never once
+the node is latched, by any recovery site (§3.4), or has begun to drain. A
 claimable task is `WAITING` and due, or — only once the node's own heartbeats
 have run without a gap for `STALE_AFTER` — `RUNNING` under an owner whose
 liveness record is missing or older than `STALE_AFTER` by the store clock (a
