@@ -6,6 +6,19 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **Workflow import refuses a `schedule.delayMs` sent beside a
+  `schedule.function`, whatever its value.** `TransitionScheduleDto`
+  publishes `delayMs` as `minimum: 1` and mutually exclusive with
+  `function`, but import accepted `"delayMs": 0` and `"delayMs": null`
+  beside a function and ignored them: the decoded delay is a plain integer,
+  so a sent `0` or `null` looked the same as an omitted field. Import now
+  reads the raw request and answers `400 VALIDATION_FAILED`, naming the
+  workflow, state and transition. The v0.8.3 and v0.8.4 exporters wrote
+  `"delayMs": 0` beside every `function`, so their exports no longer import
+  unchanged: remove the `delayMs` field and import again. Recorded as a
+  tightening of schema 1.5 in `docs/workflow-schema-versioning.md`; no
+  workflow schema version change. See `cyoda help workflows`.
+
 - **The per-tenant trusted-key cap counts every key that can verify.** It
   counted only active keys, so a key in its grace period after invalidation
   — which now verifies until its `validTo` — took no slot, and repeated
@@ -947,8 +960,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   static delay at all — still emitted a meaningless zero delay alongside
   `function`, violating the published schema's `minimum: 1` and its
   documented mutual exclusion between `delayMs` and `function`. The key is
-  now omitted when there is no static delay. Import is unchanged: an absent
-  delay together with a function was always the accepted form.
+  now omitted when there is no static delay. Import now refuses the old
+  export's `"delayMs": 0` beside a function; see **Breaking** above.
 
 - **A point-in-time read costs what the model costs, not what the history
   costs (PostgreSQL).** The point-in-time base query resolved the latest
@@ -1197,18 +1210,6 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   non-positive `delayMs` as "absent", so it saw only the function and
   passed. Both are now rejected at import (`400 VALIDATION_FAILED`), naming
   the workflow, state, transition and field. See `cyoda help workflows`.
-
-- **Workflow import refuses a `schedule.delayMs` sent beside a
-  `schedule.function`, whatever its value.** `TransitionScheduleDto`
-  publishes `delayMs` as `minimum: 1` and mutually exclusive with
-  `function`, but import accepted `"delayMs": 0` and `"delayMs": null`
-  beside a function and ignored them: the decoded delay is a plain integer,
-  so a sent `0` or `null` looked the same as an omitted field. Import now
-  reads the raw request and answers `400 VALIDATION_FAILED`, naming the
-  workflow, state and transition. A pre-v0.9.0 export that carries
-  `"delayMs": 0` beside a `function` no longer imports; remove the field.
-  No workflow schema version change: this fixes the validator to reject
-  what the schema already rejected. See `cyoda help workflows`.
 
 ## [0.8.4] — 2026-09-09
 
