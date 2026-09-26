@@ -452,6 +452,47 @@ func TestSchedRun_LastErrorText(t *testing.T) {
 			t.Errorf("lastError = %q; want exactly \"internal error [ticket: <uuid>]\"", r.LastError)
 		}
 	})
+	t.Run("Conflict", func(t *testing.T) {
+		// A joined callback of the run updates a second entity F; the test
+		// updated F after the run's snapshot, so the run's write of F loses
+		// first-committer-wins. The run's task is untouched, so the re-read
+		// classifies an ordinary failure (§5.2) with the fixed CONFLICT text.
+		h, s := newSchedulerHarness(t, nil)
+		fModel, model, tag := uniq("sr-cf-f"), uniq("sr-cf"), uniq("sr-cf-tag")
+		h.SetupModelWithWorkflow(t, fModel, schedDoc("sr-cf-f-wf", map[string]any{"Open": map[string]any{}}))
+		fID := createOpen(t, h, fModel, workflowSampleModel)
+
+		gotWork, release := make(chan struct{}, 1), make(chan struct{})
+		rel := closeOnce(release)
+		t.Cleanup(rel)
+		var calls atomic.Int32
+		h.AttachCnode(t, cnodeSpec{name: "p", tags: []string{tag}, script: func(ctx context.Context, _ receivedCallout, rc *reqCtx) cnodeReply {
+			if calls.Add(1) > 1 {
+				return answerOK()
+			}
+			gotWork <- struct{}{}
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return neverAnswer()
+			}
+			_, _ = rc.UpdateEntity(fID, `{"name":"Test Order","amount":2,"status":"draft"}`)
+			return answerOK()
+		}})
+		h.SetupModelWithWorkflow(t, model, fireOpenToDone("sr-cf-wf", 100, 0, sProc("p", "SYNC", tag, true)))
+		id := createOpen(t, h, model, workflowSampleModel)
+
+		<-gotWork
+		resp := h.DoAuth(t, http.MethodPut, "/api/entity/JSON/"+fID, `{"name":"Test Order","amount":1,"status":"draft"}`, "")
+		if body := h.readBody(t, resp); resp.StatusCode != http.StatusOK {
+			t.Fatalf("client update of F: %d %s", resp.StatusCode, body)
+		}
+		rel()
+		r := firstAttempt(t, s, id, "Fire")
+		if r.LastError != "CONFLICT: a concurrent write changed the entity or its task" {
+			t.Errorf("lastError = %q; want the fixed CONFLICT text", r.LastError)
+		}
+	})
 }
 
 // TestSchedRun_FailedTaskUnderEntityWrites: the two ways an entity write ends
