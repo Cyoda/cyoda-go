@@ -512,6 +512,7 @@ func captureEntitySlog(t *testing.T) *bytes.Buffer {
 // If-Match precondition; an unmarked one is the precondition.
 func TestEngineConflictIsTransactionConflict(t *testing.T) {
 	marked := []error{
+		spi.ErrTxAborted,
 		wfengine.ErrScheduledTaskInfra,
 		wfengine.ErrProcessorOutputInfra,
 		wfengine.ErrSavepointInfra,

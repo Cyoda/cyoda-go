@@ -54,8 +54,6 @@ func TestJoinedCallbackConflict_EveryDoorAnswersRetryable409(t *testing.T) {
 		request func(h *callbackHarness, model, eID, eTxID string) (callbackResult, error)
 		// preCreate reports whether the door needs E to exist first.
 		preCreate bool
-		// engineOnly limits the door to the InEngine shape.
-		engineOnly bool
 	}{
 		{name: "Create", request: func(h *callbackHarness, model, _, _ string) (callbackResult, error) {
 			return h.callback(http.MethodPost, "/api/entity/JSON/"+model+"/1", `{"name":"e","amount":1,"status":"create"}`, "")
@@ -64,11 +62,8 @@ func TestJoinedCallbackConflict_EveryDoorAnswersRetryable409(t *testing.T) {
 			return h.callback(http.MethodPut, "/api/entity/JSON/"+eID, `{"name":"e","amount":1,"status":"loop"}`, "")
 		}},
 		// The request's own precondition holds: nobody wrote E. The conflict
-		// is the callback's, so it is not ENTITY_MODIFIED either. Only the
-		// engine shape: at the handler's save the If-Match compare is the
-		// statement that meets the aborted transaction, and a store conflict
-		// there does not say whether the precondition failed.
-		{name: "UpdateWithIfMatch", preCreate: true, engineOnly: true, request: func(h *callbackHarness, _, eID, eTxID string) (callbackResult, error) {
+		// is the callback's, so it is not ENTITY_MODIFIED either.
+		{name: "UpdateWithIfMatch", preCreate: true, request: func(h *callbackHarness, _, eID, eTxID string) (callbackResult, error) {
 			return h.putIfMatch("/api/entity/JSON/"+eID, eTxID, `{"name":"e","amount":1,"status":"loop"}`)
 		}},
 		{name: "ManualTransition", preCreate: true, request: func(h *callbackHarness, _, eID, _ string) (callbackResult, error) {
@@ -84,9 +79,6 @@ func TestJoinedCallbackConflict_EveryDoorAnswersRetryable409(t *testing.T) {
 	}{{"AtSave", 1}, {"InEngine", 2}}
 	for _, door := range doors {
 		for _, shape := range shapes {
-			if door.engineOnly && shape.procs == 1 {
-				continue
-			}
 			t.Run(door.name+"/"+shape.name, func(t *testing.T) {
 				h := newCalloutHarness(t, nil)
 				fModel, model, tag := uniq("jcc-f"), uniq("jcc"), uniq("jcc-tag")

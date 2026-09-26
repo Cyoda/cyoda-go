@@ -406,7 +406,7 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 			// engine's own handle so this lands in the same TX buffer as the
 			// entry events (rolls back together with them on a chunk-wide
 			// rollback, commits together on per-item-isolated paths).
-			if ifMatchConsumed && errors.Is(err, spi.ErrConflict) {
+			if ifMatchConsumed && errors.Is(err, spi.ErrConflict) && !errors.Is(err, spi.ErrTxAborted) {
 				e.recordAbortForIfMatchConflict(ctx, auditStore, entity, entryTxID, transition, expectedFirstFlushTxID)
 			}
 			return nil, "", err
@@ -442,7 +442,7 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		if fcErr := e.flushAndCommitSegment(ctx, entity, txID, expectedFirstFlushTxID, ifMatchConsumed); fcErr != nil {
 			// See the matching block in the startNewTx==true branch above
 			// for the rationale.
-			if ifMatchConsumed && errors.Is(fcErr, spi.ErrConflict) {
+			if ifMatchConsumed && errors.Is(fcErr, spi.ErrConflict) && !errors.Is(fcErr, spi.ErrTxAborted) {
 				e.recordAbortForIfMatchConflict(ctx, auditStore, entity, entryTxID, transition, expectedFirstFlushTxID)
 			}
 			return nil, "", fcErr
@@ -572,6 +572,10 @@ func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, 
 	}
 	if applyIfMatch {
 		if _, err := es.CompareAndSave(ctx, entity, expectedTxID); err != nil {
+			// The compare never ran: an earlier conflict aborted TX_pre.
+			if appErr := common.TxAbortedConflict(err); appErr != nil {
+				return appErr
+			}
 			if clientAttributableStoreErr(err) {
 				return err // ErrConflict / unique-key outcomes bubble unwrapped
 			}

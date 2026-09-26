@@ -2414,6 +2414,9 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		}
 		if input.IfMatch != "" && !segmented {
 			if _, err := finalEntityStore.CompareAndSave(finalCtx, updated, input.IfMatch); err != nil {
+				if appErr := common.TxAbortedConflict(err); appErr != nil {
+					return appErr
+				}
 				if errors.Is(err, spi.ErrConflict) {
 					// Emit the compensating
 					// TRANSITION_ABORTED into the same transaction as the
@@ -2804,6 +2807,11 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 				_, saveErr = finalEntityStore.Save(currentCtx, updated)
 			}
 			if saveErr != nil {
+				// The transaction the batch runs in is gone: not this item's
+				// precondition, and not isolable.
+				if appErr := common.TxAbortedConflict(saveErr); appErr != nil {
+					return nil, appErr
+				}
 				if applyHandlerCAS && errors.Is(saveErr, spi.ErrConflict) {
 					slog.Info("collection update item precondition failed",
 						"source", "handler", "entityId", updated.Meta.ID, "itemIndex", i)
@@ -2904,14 +2912,17 @@ func classifySaveErr(internalMsg, entityID string, err error) *common.AppError {
 // engineConflictIsTransactionConflict reports whether an engine error that
 // carries spi.ErrConflict came from one of the engine's own statements rather
 // than from the caller's If-Match precondition: it is also marked with an
-// engine infrastructure sentinel. The engine applies the precondition with a
-// bare CompareAndSave whose conflict it returns unmarked; every other store
-// call it makes marks its failure. A marked conflict means a concurrent writer
+// engine infrastructure sentinel, or it is spi.ErrTxAborted (the engine's
+// If-Match compare met an already-aborted transaction and answered through
+// common.TxAbortedConflict). The engine applies the precondition with a bare
+// CompareAndSave whose conflict it returns unmarked; every other store call
+// it makes marks its failure. A marked conflict means a concurrent writer
 // aborted the transaction — for example a processor's joined callback lost a
 // write race — and the engine's next statement met it. That is a transaction
 // conflict (retryable 409 CONFLICT), not ENTITY_MODIFIED.
 func engineConflictIsTransactionConflict(err error) bool {
-	return errors.Is(err, wfengine.ErrScheduledTaskInfra) ||
+	return errors.Is(err, spi.ErrTxAborted) ||
+		errors.Is(err, wfengine.ErrScheduledTaskInfra) ||
 		errors.Is(err, wfengine.ErrProcessorOutputInfra) ||
 		errors.Is(err, wfengine.ErrSavepointInfra) ||
 		errors.Is(err, wfengine.ErrCommitBeforeDispatchInfra) ||
