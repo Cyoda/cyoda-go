@@ -1,7 +1,6 @@
 package postgres
 
 import (
-	"context"
 	"syscall"
 	"testing"
 	"time"
@@ -112,16 +111,4 @@ func TestSchedulerMN_FrozenOwnerSendsNoUnsafe(t *testing.T) {
 	if n := mnCountEvents(t, c, id, "SCHEDULED_TRANSITION_FAIL"); n != 0 {
 		t.Errorf("%d SCHEDULED_TRANSITION_FAIL events; want 0", n)
 	}
-}
-
-// heartbeatAt reads owner's last heartbeat, stamped with the store's clock.
-func (s *schedMN) heartbeatAt(t *testing.T, owner string) time.Time {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	var at time.Time
-	if err := s.db.QueryRow(ctx, `SELECT heartbeat_at FROM scheduler_owners WHERE owner = $1::uuid`, owner).Scan(&at); err != nil {
-		t.Fatalf("read heartbeat of %s: %v", owner, err)
-	}
-	return at
 }
