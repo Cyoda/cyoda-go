@@ -111,14 +111,17 @@ func TestJoinedCallbackConflict_EveryDoorAnswersRetryable409(t *testing.T) {
 		strict bool
 		// ifMatchOnly: the shape needs an If-Match to reach its statement.
 		ifMatchOnly bool
+		// atomic: the request runs in one transaction, so the conflict leaves
+		// nothing committed.
+		atomic bool
 	}{
 		// The handler's save (or If-Match compare).
-		{name: "AtSave", procs: func() []conflictProc { return []conflictProc{sync(uniq("jcc-p"))} }},
+		{name: "AtSave", atomic: true, procs: func() []conflictProc { return []conflictProc{sync(uniq("jcc-p"))} }},
 		// The engine's read of the entity before dispatching a second processor.
-		{name: "InEngine", procs: func() []conflictProc { return []conflictProc{sync(uniq("jcc-p")), sync(uniq("jcc-p"))} }},
+		{name: "InEngine", atomic: true, procs: func() []conflictProc { return []conflictProc{sync(uniq("jcc-p")), sync(uniq("jcc-p"))} }},
 		// The processor checks its callback's answer and fails: the engine's
 		// probe of the transaction.
-		{name: "StrictProcessor", strict: true, procs: func() []conflictProc { return []conflictProc{sync(uniq("jcc-p"))} }},
+		{name: "StrictProcessor", atomic: true, strict: true, procs: func() []conflictProc { return []conflictProc{sync(uniq("jcc-p"))} }},
 		// The same, dispatched with the token of the transaction that
 		// COMMIT_BEFORE_DISPATCH opens after its commit: the engine's probe of
 		// that transaction.
@@ -128,7 +131,7 @@ func TestJoinedCallbackConflict_EveryDoorAnswersRetryable409(t *testing.T) {
 		// The same, inside ASYNC_NEW_TX's savepoint: the processor's failure
 		// is not fatal and the savepoint is rolled back, and the conflict
 		// still refuses the commit.
-		{name: "StrictAsyncNewTx", strict: true, procs: func() []conflictProc {
+		{name: "StrictAsyncNewTx", atomic: true, strict: true, procs: func() []conflictProc {
 			return []conflictProc{{name: uniq("jcc-ant"), mode: "ASYNC_NEW_TX"}}
 		}},
 		// The engine's If-Match compare at the first COMMIT_BEFORE_DISPATCH
@@ -211,8 +214,45 @@ func TestJoinedCallbackConflict_EveryDoorAnswersRetryable409(t *testing.T) {
 					t.Fatalf("answered %d %s retryable=%v; want a retryable 409 CONFLICT: %s",
 						out.status, out.errorCode, out.retryable, out.detail)
 				}
+				if shape.atomic {
+					requireNothingCommitted(t, h, model, eID, eTxID, fID)
+				}
 			})
 		}
+	}
+}
+
+// requireNothingCommitted asserts that a conflicted request committed none of
+// its work: E is still OPEN at the version eTxID names (or, when the request
+// created E, the model has no entity), and F holds the concurrent client's
+// write, not the callback's.
+func requireNothingCommitted(t *testing.T, h *callbackHarness, model, eID, eTxID, fID string) {
+	t.Helper()
+	if eID == "" {
+		resp := h.DoAuth(t, http.MethodGet, "/api/entity/"+model+"/1", "", "")
+		body := h.readBody(t, resp)
+		var list []any
+		if resp.StatusCode != http.StatusOK || json.Unmarshal([]byte(body), &list) != nil || len(list) != 0 {
+			t.Fatalf("the conflicted create committed an entity: %d %s", resp.StatusCode, body)
+		}
+	} else {
+		resp := h.DoAuth(t, http.MethodGet, "/api/entity/"+eID, "", "")
+		body := h.readBody(t, resp)
+		var env struct {
+			Meta struct {
+				State         string `json:"state"`
+				TransactionID string `json:"transactionId"`
+			} `json:"meta"`
+		}
+		if resp.StatusCode != http.StatusOK || json.Unmarshal([]byte(body), &env) != nil {
+			t.Fatalf("read E: %d %s", resp.StatusCode, body)
+		}
+		if env.Meta.State != "OPEN" || env.Meta.TransactionID != eTxID {
+			t.Fatalf("E is %s at %s; the conflicted request must leave it OPEN at %s", env.Meta.State, env.Meta.TransactionID, eTxID)
+		}
+	}
+	if amount := h.GetEntityData(t, fID)["amount"]; amount != float64(1) {
+		t.Fatalf("F has amount %v; the callback's write (2) must not commit over the client's (1)", amount)
 	}
 }
 
