@@ -570,6 +570,20 @@ func (m *TransactionManager) taskSnapshotLocked(txID string) map[taskKey]priorRo
 	return prior
 }
 
+// forgetLocked drops every piece of per-transaction state the manager holds
+// for txID. Caller holds mu.
+func (m *TransactionManager) forgetLocked(txID string) {
+	delete(m.active, txID)
+	delete(m.committing, txID)
+	delete(m.savepoints, txID)
+	delete(m.txUniqueKeys, txID)
+	delete(m.txSnapshotSeq, txID)
+	delete(m.supersededSaves, txID)
+	delete(m.deletedBufferModels, txID)
+	delete(m.scheduledTaskOps, txID)
+	delete(m.auditOps, txID)
+}
+
 // pruneCommittedLogLocked drops the log entries no open transaction can
 // conflict with: those at or below the oldest open snapshot's sequence
 // number, or all of them when no transaction is open. Caller holds mu.
@@ -836,15 +850,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 				}
 				if conflict {
 					tx.RolledBack = true // aborted, not committed: see Commit's doc
-					delete(m.committing, txID)
-					delete(m.active, txID)
-					delete(m.savepoints, txID)
-					delete(m.txUniqueKeys, txID)
-					delete(m.txSnapshotSeq, txID)
-					delete(m.supersededSaves, txID)
-					delete(m.deletedBufferModels, txID)
-					delete(m.scheduledTaskOps, txID)
-					delete(m.auditOps, txID)
+					m.forgetLocked(txID)
 					m.factory.discardAuditTxIndex(tid, txID)
 					return spi.ErrConflict
 				}
@@ -871,15 +877,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 				m.mu.Lock()
 				defer m.mu.Unlock()
 				tx.RolledBack = true // aborted, not committed: see Commit's doc
-				delete(m.committing, txID)
-				delete(m.active, txID)
-				delete(m.savepoints, txID)
-				delete(m.txUniqueKeys, txID)
-				delete(m.txSnapshotSeq, txID)
-				delete(m.supersededSaves, txID)
-				delete(m.deletedBufferModels, txID)
-				delete(m.scheduledTaskOps, txID)
-				delete(m.auditOps, txID)
+				m.forgetLocked(txID)
 			}()
 			m.factory.discardAuditTxIndex(tid, txID)
 			return err
@@ -1145,15 +1143,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			}
 
 			// Drop this transaction's state, then prune the log.
-			delete(m.active, txID)
-			delete(m.committing, txID)
-			delete(m.savepoints, txID)
-			delete(m.txUniqueKeys, txID)
-			delete(m.txSnapshotSeq, txID)
-			delete(m.supersededSaves, txID)
-			delete(m.deletedBufferModels, txID)
-			delete(m.scheduledTaskOps, txID)
-			delete(m.auditOps, txID)
+			m.forgetLocked(txID)
 			// The commit-phase stamp above is smAuditTxIndex's only reader and
 			// has already run, so this transaction's entries are dead.
 			m.factory.discardAuditTxIndex(tid, txID)
@@ -1198,15 +1188,7 @@ func (m *TransactionManager) Rollback(ctx context.Context, txID string) error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		tx.RolledBack = true
-		delete(m.active, txID)
-		delete(m.committing, txID)
-		delete(m.savepoints, txID)
-		delete(m.txUniqueKeys, txID)
-		delete(m.txSnapshotSeq, txID)
-		delete(m.supersededSaves, txID)     // discard staged superseded values unapplied — see field doc
-		delete(m.deletedBufferModels, txID) // discard staged evicted models unapplied — see field doc
-		delete(m.scheduledTaskOps, txID)    // discard staged ops unapplied — see field doc
-		delete(m.auditOps, txID)            // discard staged audit events unapplied — see field doc
+		m.forgetLocked(txID) // staged values, models, task ops and audit events are discarded unapplied
 	}()
 	// A rolled-back transaction is never stamped, so its audit-event index
 	// entries have no reader at all — see discardAuditTxIndex.
