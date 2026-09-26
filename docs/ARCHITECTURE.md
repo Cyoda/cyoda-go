@@ -1561,9 +1561,9 @@ watchdog arms a timer at `W = STALE_AFTER − CommitBudget (30 s) − 10 s slack
 from the moment before each successful heartbeat acquired its connection; a
 heartbeat that returns after `W` counts as failed. When the timer fires the node
 cancels every run and claims nothing until a heartbeat succeeds. Every commit of
-a run checks that cancellation first, and a commit under way holds its task-row lock, which
-a claim skips (C6); so no other node can reclaim a task while its owner still
-commits. `STALE_AFTER ≥ CommitBudget (30 s) + 10 s slack + 10 s heartbeat budget
+a run checks that cancellation first, and a commit under way holds its task-row
+lock, which a claim skips (C6); so no other node can reclaim a task while its
+owner still commits. `STALE_AFTER ≥ CommitBudget (30 s) + 10 s slack + 10 s heartbeat budget
 + 3 × HEARTBEAT_INTERVAL`, that is `50 s + 3 × HEARTBEAT_INTERVAL`, keeps one
 slow or failed heartbeat from self-cancelling. A node that heartbeats keeps its
 tasks even when a run hangs; liveness is not progress. A latched node keeps
