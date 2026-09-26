@@ -58,40 +58,61 @@ func (s *SearchService) ReclaimStaleJobs(ctx context.Context, staleAfter time.Du
 		return 0, 0, fmt.Errorf("failed to claim stale search jobs: %w", err)
 	}
 
+	// Two passes. The first starts every job this node will run — register,
+	// heartbeat, enqueue — and issues no main-pool statement. The second
+	// writes the outcome of each job it will not run. Those writes share the
+	// store's main pool with entity transactions, so a blocked one must not
+	// delay the heartbeat of a runnable job later in the batch.
 	reenqueued, failed := 0, 0
+	var settle []func() bool // reports whether the job was failed
 	for _, job := range jobs {
-		tenantCtx := common.SystemUserContext(job.TenantID)
-
 		// Attempt cap: bound on executor losses, not on graceful handoffs.
 		if int64(maxAttempts) <= job.StaleClaims {
-			if werr := s.searchStore.UpdateJobStatus(tenantCtx, job.ID, job.Epoch, "FAILED", 0, jobAttemptsExhausted, time.Now(), 0); werr != nil {
-				if errors.Is(werr, spi.ErrAlreadyTerminal) || errors.Is(werr, spi.ErrStaleClaim) {
-					slog.Warn("attempt-cap fail lost the race; job already settled", "pkg", "search", "jobID", job.ID, "err", werr)
-					continue
-				}
-				slog.Error("failed to fail crash-looping search job", "pkg", "search", "jobID", job.ID, "err", werr)
-				continue
-			}
-			slog.Warn("async search job abandoned after repeated executor loss", "pkg", "search", "jobID", job.ID, "epoch", job.Epoch, "staleClaims", job.StaleClaims)
-			failed++
+			settle = append(settle, func() bool { return s.failAttemptsExhausted(job) })
 			continue
 		}
-
-		if s.reenqueueClaimed(job) {
+		started, unrun := s.reenqueueClaimed(job)
+		if started {
 			reenqueued++
+			continue
+		}
+		settle = append(settle, func() bool { unrun(); return false })
+	}
+	for _, write := range settle {
+		if write() {
+			failed++
 		}
 	}
 	return reenqueued, failed, nil
 }
 
-// reenqueueClaimed re-runs a claimed job on this node at its claimed epoch.
-// Returns true if the job entered the pool. The heartbeat starts here, before
-// any main-pool statement of the job's; the prior epoch's results are cleared
-// on the worker (clearReclaimedResults). On any failure it either fails the
-// job (a genuine defect — an undecodable stored job) or releases it (transient
-// — queue full, or a failed clear), never leaves it silently RUNNING with no
-// executor.
-func (s *SearchService) reenqueueClaimed(job *spi.SearchJob) bool {
+// failAttemptsExhausted fails a claimed job that has reached the attempt cap,
+// at its claimed epoch, and reports whether the write landed.
+func (s *SearchService) failAttemptsExhausted(job *spi.SearchJob) bool {
+	tenantCtx := common.SystemUserContext(job.TenantID)
+	if werr := s.searchStore.UpdateJobStatus(tenantCtx, job.ID, job.Epoch, "FAILED", 0, jobAttemptsExhausted, time.Now(), 0); werr != nil {
+		if errors.Is(werr, spi.ErrAlreadyTerminal) || errors.Is(werr, spi.ErrStaleClaim) {
+			slog.Warn("attempt-cap fail lost the race; job already settled", "pkg", "search", "jobID", job.ID, "err", werr)
+			return false
+		}
+		slog.Error("failed to fail crash-looping search job", "pkg", "search", "jobID", job.ID, "err", werr)
+		return false
+	}
+	slog.Warn("async search job abandoned after repeated executor loss", "pkg", "search", "jobID", job.ID, "epoch", job.Epoch, "staleClaims", job.StaleClaims)
+	return true
+}
+
+// reenqueueClaimed re-runs a claimed job on this node at its claimed epoch,
+// and issues no main-pool statement itself. It reports whether the job entered
+// the pool. The heartbeat starts here; the prior epoch's results are cleared
+// on the worker (clearReclaimedResults).
+//
+// A job that did not enter the pool comes back with unrun, the write that
+// settles it, for the caller to send once every runnable job of the batch has
+// started: it fails the job (a genuine defect — an undecodable stored job) or
+// releases it (transient — queue full). A job is never left silently RUNNING
+// with no executor.
+func (s *SearchService) reenqueueClaimed(job *spi.SearchJob) (started bool, unrun func()) {
 	uc := common.SystemUserContextValue(job.TenantID) // *spi.UserContext for the job's tenant
 	baseCtx := spi.WithUserContext(context.Background(), uc)
 	if scoper, ok := s.searchStore.(asyncScanScoper); ok {
@@ -104,10 +125,11 @@ func (s *SearchService) reenqueueClaimed(job *spi.SearchJob) bool {
 		// A stored job that cannot be decoded is a defect, not a runtime
 		// condition: fail it at the claimed epoch rather than loop on it.
 		slog.Error("failed to decode claimed search job; failing", "pkg", "search", "jobID", job.ID, "err", decErr)
-		if werr := s.searchStore.UpdateJobStatus(tenantCtx, job.ID, job.Epoch, "FAILED", 0, jobFailureFallback, time.Now(), 0); werr != nil {
-			slog.Error("failed to fail undecodable claimed job", "pkg", "search", "jobID", job.ID, "err", werr)
+		return false, func() {
+			if werr := s.searchStore.UpdateJobStatus(tenantCtx, job.ID, job.Epoch, "FAILED", 0, jobFailureFallback, time.Now(), 0); werr != nil {
+				slog.Error("failed to fail undecodable claimed job", "pkg", "search", "jobID", job.ID, "err", werr)
+			}
 		}
-		return false
 	}
 
 	jobCtx, cancel := context.WithCancelCause(baseCtx)
@@ -125,12 +147,13 @@ func (s *SearchService) reenqueueClaimed(job *spi.SearchJob) bool {
 		s.deregisterJobHandle(job.ID, handle)
 		// Release (uncounted) so a peer with capacity, or this node's next
 		// sweep, takes it without waiting for staleness.
-		if rerr := s.searchStore.Release(tenantCtx, job.ID, job.Epoch); rerr != nil {
-			slog.Warn("failed to release reclaimed job after queue-full", "pkg", "search", "jobID", job.ID, "err", rerr)
+		return false, func() {
+			if rerr := s.searchStore.Release(tenantCtx, job.ID, job.Epoch); rerr != nil {
+				slog.Warn("failed to release reclaimed job after queue-full", "pkg", "search", "jobID", job.ID, "err", rerr)
+			}
 		}
-		return false
 	}
-	return true
+	return true, nil
 }
 
 // clearReclaimedResults deletes the prior epoch's partial results before a

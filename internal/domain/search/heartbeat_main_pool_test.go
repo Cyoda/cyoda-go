@@ -10,6 +10,8 @@ package search_test
 import (
 	"context"
 	"iter"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -259,5 +261,108 @@ func TestStartHeartbeat_CancelFromAnotherNodeStopsTheHeartbeat(t *testing.T) {
 	}
 	if status := pollUntilTerminal(t, svc, ctx, jobID, 5*time.Second); status.Status != "CANCELLED" {
 		t.Fatalf("status = %q, want CANCELLED", status.Status)
+	}
+}
+
+// orderedClaimStore answers ClaimStale in job-ID order, so a test fixes which
+// job of a batch the sweep meets first. It hands back the job named
+// undecodable with search options that do not decode, and counts the
+// Heartbeat calls for the job named watch.
+type orderedClaimStore struct {
+	*mainPoolBlockedStore
+	undecodable string
+	watch       string
+	watchBeats  atomic.Int32
+}
+
+func (s *orderedClaimStore) ClaimStale(ctx context.Context, staleAfter time.Duration, limit int) ([]*spi.SearchJob, error) {
+	jobs, err := s.mainPoolBlockedStore.ClaimStale(ctx, staleAfter, limit)
+	slices.SortFunc(jobs, func(a, b *spi.SearchJob) int { return strings.Compare(a.ID, b.ID) })
+	for _, j := range jobs {
+		if j.ID == s.undecodable {
+			j.SearchOpts = []byte("not json")
+		}
+	}
+	return jobs, err
+}
+
+func (s *orderedClaimStore) Heartbeat(ctx context.Context, jobID string, epoch int64) error {
+	if jobID == s.watch {
+		s.watchBeats.Add(1)
+	}
+	return s.mainPoolBlockedStore.Heartbeat(ctx, jobID, epoch)
+}
+
+// The sweep starts every job it can run before it writes anything for a job it
+// will not run. Here a capped job and an undecodable one come first in the
+// batch, and their FAILED writes wait on an exhausted main pool; the runnable
+// job after them is heartbeated all the same.
+func TestReclaimStaleJobs_BlockedWriteForUnrunJob_DoesNotDelayRunnableJob(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { factory.Close() })
+	base, err := factory.AsyncSearchStore(context.Background())
+	if err != nil {
+		t.Fatalf("AsyncSearchStore: %v", err)
+	}
+	store := &orderedClaimStore{mainPoolBlockedStore: newMainPoolBlockedStore(base), watch: "c-runnable"}
+
+	ctx := tenantCtx("tenant-a")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveModelWithFields(t, ctx, factory, ref, map[string]schema.DataType{"name": schema.String})
+	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
+
+	// Stale: the claim counts, and with maxAttempts 1 the job is at its cap.
+	createStaleReclaimJob(t, base, "tenant-a", "a-capped", ref, cond, time.Now())
+	// Released, so the claim does not count: an undecodable job, and a
+	// runnable one.
+	createRunningReclaimJobAt(t, base, "tenant-a", "b-undecodable", ref, cond, time.Now(), time.Now())
+	createRunningReclaimJobAt(t, base, "tenant-a", "c-runnable", ref, cond, time.Now(), time.Now())
+	for _, id := range []string{"b-undecodable", "c-runnable"} {
+		if err := base.Release(ctx, id, 1); err != nil {
+			t.Fatalf("Release(%s): %v", id, err)
+		}
+	}
+	store.undecodable = "b-undecodable"
+
+	pool := search.NewWorkerPool(2, 8)
+	t.Cleanup(func() { pool.Drain(context.Background()) })
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store).
+		WithAsyncPool(pool).
+		WithHeartbeat(20 * time.Millisecond)
+	t.Cleanup(store.release) // runs before the pool drains
+
+	store.blocked.Store(true)
+	type sweep struct {
+		reenqueued, failed int
+		err                error
+	}
+	done := make(chan sweep, 1)
+	go func() {
+		r, f, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 1)
+		done <- sweep{r, f, err}
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for store.watchBeats.Load() < 3 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := store.watchBeats.Load(); got < 3 {
+		t.Fatalf("the runnable job got %d heartbeats within 2s, want at least 3: a blocked write for a job the sweep will not run delayed it", got)
+	}
+
+	store.release()
+	select {
+	case got := <-done:
+		if got.err != nil || got.reenqueued != 1 || got.failed != 1 {
+			t.Fatalf("ReclaimStaleJobs = (reenqueued %d, failed %d, err %v), want (1, 1, nil)", got.reenqueued, got.failed, got.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ReclaimStaleJobs did not return after the main pool was released")
+	}
+	for id, want := range map[string]string{"a-capped": "FAILED", "b-undecodable": "FAILED", "c-runnable": "SUCCESSFUL"} {
+		if status := pollUntilTerminal(t, svc, ctx, id, 5*time.Second); status.Status != want {
+			t.Errorf("%s status = %q, want %s", id, status.Status, want)
+		}
 	}
 }
