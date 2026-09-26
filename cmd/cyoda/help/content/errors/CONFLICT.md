@@ -28,6 +28,12 @@ When a write commits, the server checks that nothing it wrote was changed by ano
 
 Both are normal outcomes under concurrent load.
 
+A race can also be lost before the commit, while the request is still running. The answer is still 409 — never a `500`, a `400 WORKFLOW_FAILED` or a `412 ENTITY_MODIFIED`:
+
+- **A processor's callback write.** A processor's joined callback writes the entity and loses the race. When the processor then fails because its callback was refused, the lost race is the answer, not the processor's failure. Under `ASYNC_NEW_TX` the race stays lost when the processor fails and its savepoint is undone: the request answers 409 and nothing commits.
+- **A transaction already aborted (PostgreSQL).** On PostgreSQL the statement that loses the race aborts the transaction, and every later statement in it is refused. Those refusals are the same lost race, and answer 409.
+- **`If-Match`.** `412 ENTITY_MODIFIED` answers only the request's own precondition: the entity is no longer at the version the request names. When the transaction had already lost a race before the compare ran, the precondition was never evaluated, and the answer is 409.
+
 How each operation handles a race with the scheduler:
 
 - **Entity delete and workflow import, when the request owns its transaction.** The server retries up to 3 times before it answers 409. A workflow import that answers 409 has already saved its workflows; only the removal of the tasks of transitions no longer scheduled is left.

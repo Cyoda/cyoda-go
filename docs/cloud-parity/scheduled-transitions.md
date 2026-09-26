@@ -265,10 +265,11 @@ failure's text, present even when empty. On every other status it pairs with
 returned.
 
 `lastError` is at most 1 024 bytes of valid UTF-8 with no NUL, from an
-allow-list: a compute member's own message, a coded client-safe message, two
-fixed texts for a cancelled run and a conflict with a concurrent write, or
-`internal error [ticket: <uuid>]`. A conflict records the conflict text on
-every backend.
+allow-list: a compute member's own message, a coded client-safe message, three
+fixed texts — a cancelled run, a conflict with a concurrent write, and a task
+row held by another open transaction — or `internal error [ticket: <uuid>]`. A
+conflict records the conflict text on every backend, and a busy task row the
+busy-row text; both are retried.
 
 | Status | Code | When |
 |---|---|---|
