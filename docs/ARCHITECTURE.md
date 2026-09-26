@@ -1344,11 +1344,24 @@ does not match the job's current epoch with `spi.ErrStaleClaim`, so a deposed
 executor that later recovers cannot corrupt a result set another node has
 since taken over — a late `ClearResults` from it deletes nothing.
 
-Neither the heartbeat nor the reclaim sweep waits on a statement that shares
-the store's main pool with entity transactions. The heartbeat sends only the
-fenced `Heartbeat` stamp, whose refusal also carries a cancel from any node
-(the job is terminal). The sweep starts every job it will run — heartbeat and
-enqueue — before it sends any write for a job it will not run.
+Neither the heartbeat nor the claim loop waits on a statement that shares the
+store's main pool with entity transactions. PostgreSQL runs `Heartbeat` and
+`ClaimStale` on its scheduler pool, apart from the main pool.
+The heartbeat sends only the fenced `Heartbeat` stamp, whose refusal also
+carries a cancel from any node (the job is terminal). The claim loop claims,
+then starts every job it will run — heartbeat and enqueue — and sends no
+main-pool statement. Three kinds of statement do wait on the main pool, and
+none of them on the claim loop's goroutine:
+
+- A re-run job's `ClearResults` runs on its worker, under its heartbeat.
+- The writes a sweep owes jobs it claimed but will not run — the attempt-cap
+  `FAILED` write, the `FAILED` write for an undecodable job, and the
+  queue-full `Release` — go to the second pass. This is one goroutine per
+  node. A sweep that finds it in flight hands its writes over and returns.
+  Every one of these writes is fenced by the claimed epoch. So a write that
+  is never sent, because the node stops, or that fails, loses nothing: the
+  job stays `RUNNING`, goes stale, and is claimed again.
+- The snapshot-TTL `ReapExpired` runs on a goroutine of its own.
 
 Re-execution is bounded: `SearchJob.StaleClaims` counts only staleness
 claims (never a graceful `Release`), and once it reaches
@@ -1365,10 +1378,11 @@ stale before its first ticker fire, rather than waiting a full interval.
 `ClaimStale` and `ReapExpired` are cross-tenant, called with a tenant-less
 context (precedent: `ScheduledTaskStore.ClaimDue`); the reaper's follow-up
 writes reconstruct a per-job tenant context from the claimed job's own
-`TenantID`. A claim the node cannot honour — no free capacity in its worker
-pool, or a `ClearResults` failure or refusal — releases the job again (uncounted
-against the attempt cap) rather than enqueuing over unknown partial
-residue, so a claim never silently drops the job on the floor.
+`TenantID`. A claim the node cannot honour — no room in its worker pool's
+queue, or a `ClearResults` failure — releases the job again (uncounted
+against the attempt cap) rather than running over unknown residue. A refused
+clear leaves the job to its current owner. A claim never silently drops the
+job on the floor.
 
 **Bounded worker pool.** `POST /api/search/async/{entityName}/{modelVersion}`
 submits to a fixed-size worker pool (`internal/domain/search.WorkerPool`)
