@@ -566,7 +566,10 @@ On a signal, the scheduler runs these steps **before** the servers drain
 5. As the loop's last act, `GiveBackIdle(owner, keep = live claim tokens)` hands
    back the claims whose run ended without a recorded outcome. A run still live
    is not given back: its task is reclaimed after `STALE_AFTER`, as a lost
-   owner. The heartbeat goroutine then stops and has fully exited before
+   owner. A task row busy under an entity transaction at the final give-back
+   (`GiveBackIdle` leaves a busy row, C6) stays RUNNING under the retired
+   owner, and is reclaimed as a lost owner if that transaction rolls back.
+   The heartbeat goroutine then stops and has fully exited before
    `RetireOwner` runs, and `RetireOwner` runs only if no run is live.
 6. The server drains start.
 
