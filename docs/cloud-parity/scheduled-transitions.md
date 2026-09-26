@@ -67,8 +67,8 @@ nor `disabled`. Arm, fire and import clean-up use this one rule.
 Deleting an entity — one entity, by condition, or all entities of a model —
 removes its tasks in the same transaction, with no audit event. A workflow
 import saves the workflows first. Then it removes the model's tasks whose
-(source state, transition) no workflow of the model, and not the default
-workflow, schedules any more. It does this in a transaction of its own; a
+(source state, transition) neither a workflow of the model nor the default
+workflow schedules any more. It does this in a transaction of its own; a
 conflict with the scheduler is retried 3 times on the server, and then the
 import answers a retryable `409`. A repeated import completes it. An import
 that joins a caller's transaction removes the tasks in that transaction, once,
@@ -155,7 +155,8 @@ no hand-off happened lets the run clear the mark and retry.
 
 A processor declared `idempotent: true` is not marked; its failures are retried
 (§6). Criteria and functions are repeat-safe by rule and are not marked; one
-whose callbacks trigger an unsafe processor is unsupported.
+whose callbacks trigger an unsafe processor is unsupported. cyoda-go does not
+detect this; that processor can run twice (§16, open item 4).
 
 A run that committed a `COMMIT_BEFORE_DISPATCH` segment after the fired
 transition changed the entity's state, and then stopped, ends `FAILED`
@@ -170,13 +171,22 @@ failure after it is retried from there.
 A compute member's callback during a run joins the run's transaction, as it
 joins a client request's.
 
-- A callback read sees what is stored in that transaction. It does not see the
-  mutations an earlier processor returned and the engine has not yet saved: a
-  processor bases its own write on the payload of its request.
-- A processor that writes the fired entity through its callback and returns no
-  mutations keeps its write. A processor that returns mutations overrides the
+- A callback read sees what is stored in that transaction. Today it does not
+  see the mutations an earlier processor returned and the engine has not yet
+  saved, so a processor bases its own write on the payload of its request.
+  This behaviour is under decision (§16, open item 2).
+- Processors with transaction-callback access — `SYNC`, `ASYNC_SAME_TX`, and
+  `COMMIT_BEFORE_DISPATCH` with `startNewTxOnDispatch: true` — can write the
+  fired entity through a callback. If such a processor returns no mutations,
+  the engine keeps that write. A processor that returns mutations overrides the
   callback's write. A callback write that leaves the stored payload unchanged
-  cannot be told from no write, so the engine's payload stands.
+  cannot be told from no write, so the engine's payload stands. Under
+  `ASYNC_NEW_TX` the engine's payload stands.
+- A callback that writes the fired entity also holds the task. When a
+  processor that is not `idempotent`, or a `COMMIT_BEFORE_DISPATCH` step,
+  follows in the same run, the run cannot mark or commit the task, so the
+  attempt fails safely — and every retry fails the same way. The run never
+  hangs and never repeats unsafe work.
 - A callback that deletes the fired entity ends the run as follows: the delete
   commits, the task is removed, nothing is re-created or re-armed, and no
   `SCHEDULED_TRANSITION_FIRE` is recorded.
@@ -195,12 +205,17 @@ The rule depends on the task's history:
 A node crash counts as a lost owner, so a task that was running on a crashed
 node is never expired: it runs, or ends `FAILED`, by the rows above.
 
-At shutdown a node stops claiming and waits `SHUTDOWN_DRAIN` (cyoda-go
-default 20 s) for its runs. Then it cancels every run that has no unsafe
-callout in flight; a run with one in flight is left to finish. A run cut this
-way, having sent nothing unsafe, is not counted as an attempt and is due again
-at once; its last error is the cancelled-run text (§11). The next claim
-decides with the table.
+At shutdown a node stops claiming, and from then on none of its runs begins a
+new unsafe dispatch. It waits `SHUTDOWN_DRAIN` (cyoda-go default 20 s) for its
+runs, then cuts every other run and hands back the ones that sent nothing
+unsafe and made no partial commit: the attempt is not counted, the task is due
+again at once, and its last error is the cancelled-run text (§11). A cut run
+that already sent unsafe work or partially committed ends `FAILED`
+(`UNSAFE_WORK_NOT_COMPLETED` or `STOPPED_AFTER_PARTIAL_COMMIT`) instead. A run
+with a non-idempotent processor callout in flight is not cut, and is allowed
+to finish. If a run has not ended by the time the shutdown wait runs out, the
+node stops with its claim still held, and another node takes the task over
+after `STALE_AFTER`. The next claim decides with the table.
 
 ## 10. `FAILED`
 
@@ -216,7 +231,9 @@ decides with the table.
 kept, and it is visible: in `GET /scheduled-tasks` (§11), in the metrics, in
 the log at ERROR with a ticket, and as a `SCHEDULED_TRANSITION_FAIL` audit
 event on the entity carrying `{transition, sourceState, reason, attempts,
-lostOwners}`, written in the same transaction as the status. It ends when the
+lostOwners}`, written in the same transaction as the status. When the reply to
+the `FAILED` write is lost, its retry is refused as superseded and logged at
+DEBUG instead of ERROR; the status and the audit event are still stored. It ends when the
 entity is written in the source state (a new life), leaves the state (removed,
 `SCHEDULED_TRANSITION_CANCEL`), stops being scheduled by the workflows (removed
 at the next write, with `SCHEDULED_TRANSITION_CANCEL`, or at the next import,
@@ -271,11 +288,11 @@ removes a task row the scheduler wrote after the write began gets a retryable
 
 | Endpoint | Status | When |
 |---|---|---|
-| `deleteSingleEntity` | `409 CONFLICT` (retryable) | the conflict persists after 3 server-side retries — **new cell** |
+| `deleteSingleEntity` | `409 CONFLICT` (retryable) | the conflict persists after 3 server-side retries |
 | `deleteEntities` (conditional, one transaction; delete-all) | `409 CONFLICT` (retryable) | the same |
 | `deleteEntities` (batched) | `200` | a persistent conflict is reported per entity in the batch result |
 | `updateSingle`, `updateSingleWithLoopback`, `updateCollection` | `409 CONFLICT` (retryable) | no server-side retry |
-| `importEntityModelWorkflow` | `409 CONFLICT` (retryable) | the task removal conflicts after 3 retries — **new cell** |
+| `importEntityModelWorkflow` | `409 CONFLICT` (retryable) | the task removal conflicts after 3 retries |
 
 A delete or import that joins a transaction the caller already holds is not
 retried on the server; the conflict is the transaction owner's to handle. The
@@ -290,11 +307,11 @@ conflict.
 | Fired | `SCHEDULED_TRANSITION_FIRE` + `TRANSITION_MAKE` |
 | Declined | `TRANSITION_NOT_MATCH_CRITERION` |
 | Expired | `SCHEDULED_TRANSITION_EXPIRE` |
-| Removed while pending by a write or at the fire (entity left the state, or the workflow no longer schedules it) | `SCHEDULED_TRANSITION_CANCEL` |
+| Removed by a write (the entity left the state, or the selected workflow does not schedule it), or at the fire when the selected workflow no longer schedules it, or when the entity carries no transaction id (logged at ERROR) | `SCHEDULED_TRANSITION_CANCEL` |
 | Removed by a workflow import | none |
-| Ended `FAILED` | `SCHEDULED_TRANSITION_FAIL` — **new** |
+| Ended `FAILED` | `SCHEDULED_TRANSITION_FAIL` |
 | Safe failure | none; the task's attempts and last error record it |
-| Superseded run, entity gone or moved on, entity deleted by a callback in the run | none |
+| Superseded run; at the fire, entity gone or moved on; entity deleted by a callback in the run | none |
 | Entity deleted | none |
 
 A task that comes due while the selected workflow no longer schedules it is
@@ -321,9 +338,10 @@ An unreachable or silent compute member fails the write with the retryable
 fails it with `400 WORKFLOW_FAILED`.
 
 On the fire path, the cascade can end in a state with its own `function`-timed
-schedule. If that arm's callout fails, the run fails and nothing commits: the
-task is retried (§6), unless an unsafe processor of the run may have been
-handed off (§7).
+schedule. If that arm's callout fails, the open transaction rolls back; the
+task is retried (§6), unless a step already committed
+(`STOPPED_AFTER_PARTIAL_COMMIT`, §7) or an unsafe processor may have been
+handed off (`UNSAFE_WORK_NOT_COMPLETED`).
 
 ## 15. How cyoda-go meets §3 and §7
 
@@ -347,9 +365,14 @@ handed off (§7).
 - The owner retries an outcome write until the store accepts or refuses it. A
   retry whose earlier try landed with its reply lost is refused as stale: the
   stored outcome is the one the first try wrote, and the run is counted and
-  logged as superseded.
-- A store that rejects an outcome write as invalid latches the node: it claims
-  nothing more and keeps that run's claim, and its other runs go on.
+  logged as superseded. The retry also stops when shutdown stops waiting for
+  outcomes: the claim is kept, and the task is taken over after `STALE_AFTER`.
+- A store that rejects an outcome write as invalid latches the node: it reports
+  unhealthy, claims nothing more and keeps that run's claim, and its other runs
+  go on.
+- A panic while a run's outcome is being recorded records no `RUN_PANICKED`.
+  The node latches and keeps the claim, so the task stays `RUNNING` while the
+  latched node keeps heartbeating.
 - Backend coverage: the scheduled-transition and scheduled-function parity
   scenarios run on memory, SQLite and PostgreSQL. The commercial Cassandra
   backend imports only the `externalapi` parity package, so none of those
@@ -362,7 +385,8 @@ The visible contract to match:
 1. One owner per run and the lost-owner rule of §3, however Cloud implements
    ownership.
 2. §6 and §7: safe failures retried with a doubling delay until the deadline;
-   an unsafe processor never repeated after a possible hand-off.
+   an unsafe processor never repeated after a possible hand-off, except one
+   reached from inside a criterion's or function's callback (§7).
    `idempotent` means the same on a scheduled run as on any callout.
 3. §9's lateness table, decided by the task's one owner.
 4. The `FAILED` status, its five reasons, and **[ruling]** that it never moves
@@ -370,10 +394,11 @@ The visible contract to match:
 5. §2: an arm is a new life that clears a `FAILED` status; a write removes every
    task not in its arm set; deletes and imports remove tasks.
 6. §1's import minimums and arm-time range.
-7. §8: a callback read sees what is stored, and a callback write the processor
-   does not override is kept.
+7. §8: in the modes it names, a callback write to the fired entity that the
+   processor does not override is kept; a callback write followed by an unsafe
+   processor or a `COMMIT_BEFORE_DISPATCH` step fails every attempt safely.
 8. `GET /scheduled-tasks` as §11 states it.
-9. The two new `409` cells of §12.
+9. The `409` cells of §12.
 10. One `RUNNING` task per entity.
 
 Where Cloud's storage cannot make a task-row write part of the entity
@@ -381,19 +406,24 @@ transaction, it needs another way to stop a superseded owner from committing
 (§3, second point) and another durable place for the mark (§7). Those are
 Cloud's to design; the visible contract above is what must match.
 
-Open in cyoda-go. These are not settled, and Cloud should not build on either
-answer yet:
+Open in cyoda-go. These are not settled, and Cloud should not build on any of
+these answers yet:
 
 1. **Workflow save inside a joined transaction.** On PostgreSQL a workflow
    save that joins a caller's transaction commits or rolls back with it; on
    memory and SQLite it applies at once. The SPI does not say which is right.
    The task removal of §2 is correct under either.
-2. **The engine's unsaved payload and callbacks.** §8's first point holds
-   today: a callback does not see the mutations an earlier processor returned.
-   Whether the engine should make them visible to a joined callback is open.
+2. **The engine's unsaved payload and callbacks.** §8's first point is today's
+   behaviour: a callback does not see the mutations an earlier processor
+   returned. Whether the engine should make them visible to a joined callback
+   is under decision.
 3. **An unguarded scheduled self-loop.** The import's loop check counts a
    scheduled transition as automated, so a scheduled transition back to its
    own state with no criterion is refused with `400 VALIDATION_FAILED`
    ("infinite loop detected"), although the cascade never follows a scheduled
    transition. A criterion on the transition, or `allowCycles: true` on the
    import, passes the check.
+4. **An unsafe processor inside a criterion's or function's callback.** Such a
+   processor is not detected, so it can run twice (§7). Enforcing the rule —
+   refusing it through the run's guard found by transaction id — is under
+   decision.

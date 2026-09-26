@@ -343,8 +343,9 @@ object giving the fire time and, optionally, an expiry:
 
 - **Fire time** (required) — exactly one of `fireAt` (absolute,
   epoch-ms) or `fireAfterMs` (relative to arm time). A past `fireAt` (or
-  non-positive `fireAfterMs`) is not an error — the transition is due
-  immediately.
+  a `fireAfterMs` of 0) is not an error — the transition is due
+  immediately. A negative `fireAfterMs` or `expireAfterMs` fails the write
+  with `500 SCHEDULE_FUNCTION_INVALID_RESULT`.
 - **Expiry** (optional) — at most one of `expireAt` (absolute) or
   `expireAfterMs` (relative to the *resolved fire time*, not arm time).
   Both absent means no expiry (equivalent to an absent `timeoutMs`). A
