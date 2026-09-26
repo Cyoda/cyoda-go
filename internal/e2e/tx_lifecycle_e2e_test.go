@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"strconv"
@@ -33,6 +34,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda-platform/cyoda-go/internal/admin"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
 )
 
@@ -223,6 +225,32 @@ func TestE2E_PanicInOwnedWrite_ReturnsConnection(t *testing.T) {
 	_, status, body := h.CreateEntity(t, "txlife-panicky", 1, txLifeSample)
 	if status != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500 with a ticket; body: %s", status, body)
+	}
+
+	// Coverage row 7b, through the production path: a real HTTP request onto
+	// the assembled app handler, the handler-wide middleware.Recovery wrap,
+	// the app's own health flag, ReadinessCheck, and the real admin handler.
+	// Serving and being ready are different questions — the node answers
+	// requests (below) and is no longer ready to be sent new ones (here),
+	// because its state is unverified.
+	if err := h.app.ReadinessCheck(); err == nil {
+		t.Error("ReadinessCheck() = nil after a recovered panic — the node keeps taking client traffic with unverified state")
+	}
+	adminH := admin.NewHandler(admin.Options{Readiness: h.app.ReadinessCheck})
+	rec := httptest.NewRecorder()
+	adminH.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("/readyz = %d after a recovered panic, want 503", rec.Code)
+	}
+	// Gate 3: the probe body stays generic.
+	if body := rec.Body.String(); strings.Contains(body, "panic") || strings.Contains(body, "injected") {
+		t.Errorf("/readyz body leaked internal state: %q", body)
+	}
+	// /livez is deliberately untouched: the node drains, it is not restarted.
+	rec = httptest.NewRecorder()
+	adminH.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/livez", nil))
+	if rec.Code != http.StatusOK {
+		t.Errorf("/livez = %d after a recovered panic, want 200 — liveness must not turn a deterministic panic into a restart loop", rec.Code)
 	}
 
 	waitFor(t, 15*time.Second, "connection returned to the pool",
