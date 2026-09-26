@@ -910,6 +910,13 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			return err
 		}
 
+		// 3.1. Refuse the commit whole, before any of it is written, when
+		// its task ops would leave two RUNNING tasks on one entity. The
+		// rows and the claim index are stable under entityMu, so this is
+		// the same check step 5.5's applyTaskOps runs; it runs here so that
+		// a refused commit flushes no entity version and logs nothing.
+		m.factory.taskClaimIndex.checkOneRunning(m.factory.scheduledTasks, capturedScheduledTaskOps)
+
 		// 3.5. Validate composite unique-key claims inside the entityMu critical section.
 		//
 		// Deterministic order: sort buffered entity IDs so that any intra-batch
@@ -1158,11 +1165,12 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 		}
 
 		// 5.5. Apply the staged task-row post-images. Their checks ran when
-		// they were staged, and step 3 proved that no other writer changed
-		// those rows since this transaction began, so nothing is evaluated
-		// here and nothing can fail after the entity flush. The prior rows
-		// go into this commit's log entry, for the snapshots of the
-		// transactions still open.
+		// they were staged, step 3 proved that no other writer changed
+		// those rows since this transaction began, and step 3.1 ran the
+		// one-RUNNING-per-entity check that applyTaskOps repeats, so it
+		// cannot fail here, after the entity flush. The prior rows go into
+		// this commit's log entry, for the snapshots of the transactions
+		// still open.
 		taskPriors := priorRows(m.factory.scheduledTasks, capturedScheduledTaskOps)
 		applyTaskOps(m.factory.scheduledTasks, m.factory.taskClaimIndex, capturedScheduledTaskOps)
 

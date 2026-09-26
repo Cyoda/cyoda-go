@@ -176,3 +176,69 @@ func TestClaimIndex_SecondRunningRowOfAnEntityPanics(t *testing.T) {
 	}()
 	commit(running("task-2"))
 }
+
+// A Commit whose staged task ops would put a second RUNNING row on an entity
+// is refused before it writes anything: no entity version, no committed-log
+// entry, no task row, and entityMu released.
+func TestCommit_ASecondRunningRowIsRefusedBeforeAnyWrite(t *testing.T) {
+	f := NewStoreFactory(WithClock(NewTestClockAt(time.UnixMilli(1_000_000))))
+	t.Cleanup(func() { _ = f.Close() })
+	tm := f.NewTransactionManager(newTestUUIDGenerator())
+	running := func(id string) scheduledTaskOp {
+		return scheduledTaskOp{key: taskKey{tenant: "t-a", id: id}, after: &spi.ScheduledTask{
+			ID: id, TenantID: "t-a", Type: spi.ScheduledTaskFireTransition, EntityID: "e-1",
+			ModelName: "M", ModelVersion: 1, Transition: "T", SourceState: "S", ArmToken: uuid.New(),
+			Status: spi.ScheduledTaskRunning, Claim: &spi.TaskClaim{Token: uuid.New(), Owner: uuid.New()},
+		}}
+	}
+	func() {
+		f.entityMu.Lock()
+		defer f.entityMu.Unlock()
+		tm.commitTaskWrites([]scheduledTaskOp{running("task-1")})
+	}()
+
+	ctx := testCtxWithTenant("t-a")
+	txID, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	tx := spi.GetTransaction(txCtx)
+	tx.WriteSet["entity-E"] = true
+	tx.Buffer["entity-E"] = &spi.Entity{Meta: spi.EntityMeta{ID: "entity-E", TenantID: "t-a", ChangeType: "CREATED"}, Data: []byte(`{}`)}
+	logBefore, seqBefore := func() (int, int64) {
+		tm.mu.Lock()
+		defer tm.mu.Unlock()
+		tm.scheduledTaskOps[txID] = []scheduledTaskOp{running("task-2")}
+		return len(tm.committedLog), tm.commitSeq
+	}()
+
+	func() {
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Fatal("a commit with a second RUNNING row of entity e-1 was accepted")
+			}
+			if msg := fmt.Sprint(r); !strings.Contains(msg, "one RUNNING task per entity") {
+				t.Fatalf("panic %q does not name the broken rule", msg)
+			}
+		}()
+		_ = tm.Commit(ctx, txID)
+	}()
+
+	if !f.entityMu.TryLock() {
+		t.Fatal("entityMu is still held after the refused commit")
+	}
+	f.entityMu.Unlock()
+	if n := len(f.entityData["t-a"]["entity-E"]); n != 0 {
+		t.Fatalf("the refused commit applied %d entity version(s)", n)
+	}
+	if _, ok := f.scheduledTasks[taskKey{tenant: "t-a", id: "task-2"}]; ok {
+		t.Fatal("the refused commit applied its task row")
+	}
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if len(tm.committedLog) != logBefore || tm.commitSeq != seqBefore {
+		t.Fatalf("the refused commit was logged: %d entries, seq %d; want %d, %d",
+			len(tm.committedLog), tm.commitSeq, logBefore, seqBefore)
+	}
+}

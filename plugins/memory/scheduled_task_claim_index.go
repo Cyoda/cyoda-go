@@ -111,14 +111,17 @@ func (x *claimIndex) update(k taskKey, before spi.ScheduledTask, hadBefore bool,
 // a task beside a RUNNING sibling; the other backends enforce the rule with a
 // unique index, which refuses the write. Here a write that breaks it is a
 // defect, and a claim index that kept one of the two rows would silently lose
-// the other, so the write is refused whole, before any of it applies.
+// the other, so the write is refused whole, before any of it applies:
+// applyTaskOps runs it before its first write, and Commit runs it (step 3.1)
+// before it flushes any entity version, so a refused commit leaves no torn
+// write behind.
 func (x *claimIndex) checkOneRunning(rows map[taskKey]spi.ScheduledTask, ops []scheduledTaskOp) {
 	type entityKey struct {
 		tenant spi.TenantID
 		entity string
 	}
-	var overlay map[entityKey]*taskKey // entity → its RUNNING row after the ops so far; nil: none
-	current := make(map[taskKey]*spi.ScheduledTask)
+	overlay := make(map[entityKey]*taskKey, len(ops)) // entity → its RUNNING row after the ops so far; nil: none
+	current := make(map[taskKey]*spi.ScheduledTask, len(ops))
 	rowOf := func(k taskKey) (spi.ScheduledTask, bool) {
 		if t, ok := current[k]; ok {
 			if t == nil {
@@ -140,9 +143,6 @@ func (x *claimIndex) checkOneRunning(rows map[taskKey]spi.ScheduledTask, ops []s
 		return r, ok
 	}
 	for _, op := range ops {
-		if overlay == nil {
-			overlay = make(map[entityKey]*taskKey)
-		}
 		if before, ok := rowOf(op.key); ok && before.Status == spi.ScheduledTaskRunning {
 			e := entityKey{tenant: op.key.tenant, entity: before.EntityID}
 			if r, ok := runningOf(e); ok && r == op.key {
