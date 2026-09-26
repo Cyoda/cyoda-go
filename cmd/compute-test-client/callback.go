@@ -638,6 +638,31 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 
 		// cb-ifmatch-update — creates a secondary inside T, then issues a
 		// loopback update with If-Match set to the create's in-T transactionId.
+		// cb-write-self — writes its own entity through a joined update (its
+		// data with status set to cfg.Marker) and answers with no data, so the
+		// engine keeps that write rather than applying a payload over it.
+		"cb-write-self": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			data, err := decodeData(entity)
+			if err != nil {
+				return nil, err
+			}
+			data["status"] = cfg.Marker
+			body, err := json.Marshal(data)
+			if err != nil {
+				return nil, err
+			}
+			res, err := cb.do(ctx, http.MethodPut, "/api/entity/JSON/"+entity.ID, string(body), token, "")
+			if err != nil {
+				return nil, fmt.Errorf("callback write: %w", err)
+			}
+			if res.Status != http.StatusOK {
+				return nil, fmt.Errorf("callback write status=%d body=%s", res.Status, res.Body)
+			}
+			return &Entity{ID: entity.ID, State: entity.State}, nil
+		},
 		"cb-ifmatch-update": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
 			if err := requireCB(cb); err != nil {
 				return nil, err

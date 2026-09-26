@@ -249,6 +249,62 @@ func awaitStatus(t *testing.T, ch <-chan int, what string) int {
 	}
 }
 
+// TestSchedRun_JoinedCallbackWritesFiredEntity_OrdinaryOutcome: with no unsafe
+// processor after it, the anti-pattern ends exactly as the same processor on
+// an ordinary automated transition of a stored entity does: both commit, and
+// a processor that wrote its entity through the joined callback and returned
+// no data keeps that write.
+func TestSchedRun_JoinedCallbackWritesFiredEntity_OrdinaryOutcome(t *testing.T) {
+	h, s := newSchedulerHarness(t, nil)
+	tag := uniq("sg-jw")
+	ordinaryCB, scheduledCB := make(chan int, 1), make(chan int, 1)
+	h.AttachCnode(t, cnodeSpec{name: "ordinary", tags: []string{tag + "-o"}, script: joinedWriteScript(ordinaryCB)})
+	h.AttachCnode(t, cnodeSpec{name: "scheduled", tags: []string{tag + "-s"}, script: joinedWriteScript(scheduledCB)})
+
+	// Ordinary: a client's manual Start moves the stored entity to Mid, and
+	// the cascade runs Mid -[Go, automated]-> Done with the processor.
+	ordModel := uniq("sg-jw-ord")
+	h.SetupModelWithWorkflow(t, ordModel, schedDoc("sg-jw-ord-wf", map[string]any{
+		"Open": map[string]any{"transitions": []any{map[string]any{"name": "Start", "next": "Mid", "manual": true}}},
+		"Mid": map[string]any{"transitions": []any{map[string]any{"name": "Go", "next": "Done", "manual": false,
+			"processors": []any{sProc("p1", "SYNC", tag+"-o", true)}}}},
+		"Done": map[string]any{},
+	}))
+	ordID := createOpen(t, h, ordModel, workflowSampleModel)
+	resp := h.DoAuth(t, http.MethodPut, "/api/entity/JSON/"+ordID+"/Start", workflowSampleModel, "")
+	if body := h.readBody(t, resp); resp.StatusCode != http.StatusOK {
+		t.Fatalf("the ordinary transition: %d %s; want 200", resp.StatusCode, body)
+	}
+	if st := awaitStatus(t, ordinaryCB, "ordinary"); st != http.StatusOK {
+		t.Fatalf("the ordinary joined write answered %d", st)
+	}
+	requireState(t, h, ordID, "Done")
+	if amount, _ := h.GetEntityData(t, ordID)["amount"].(float64); amount != 7 {
+		t.Errorf("ordinary: amount = %v; want 7, the callback's write", amount)
+	}
+
+	// Scheduled: the same processor on the fired transition.
+	model := uniq("sg-jw-sched")
+	h.SetupModelWithWorkflow(t, model, fireOpenToDone("sg-jw-wf", 100, 0, sProc("p1", "SYNC", tag+"-s", true)))
+	id := createOpen(t, h, model, workflowSampleModel)
+	if st := awaitStatus(t, scheduledCB, "scheduled"); st != http.StatusOK {
+		t.Fatalf("the scheduled joined write answered %d", st)
+	}
+
+	awaitCallbackEntityState(t, h, id, "Done", scheduledFireTimeout)
+	if amount, _ := h.GetEntityData(t, id)["amount"].(float64); amount != 7 {
+		t.Errorf("scheduled: amount = %v; want 7, the callback's write, as on the ordinary transition", amount)
+	}
+	s.awaitTask(t, id, "Fire", scheduledFireTimeout, "removal", func(_ taskRow, ok bool) bool { return !ok })
+	evs := schedEvents(t, h, id)
+	if hasSMEventType(evs, "SCHEDULED_TRANSITION_FAIL", "") {
+		t.Error("an idempotent run recorded a failure")
+	}
+	if n := len(smEventsOfType(evs, "SCHEDULED_TRANSITION_FIRE")); n != 1 {
+		t.Errorf("%d SCHEDULED_TRANSITION_FIRE events; want 1", n)
+	}
+}
+
 // TestSchedRun_JoinedCallbackThenUnsafe_TaskBusySafeFailure: the joined
 // callback's write holds the task row in the run's transaction, so the
 // MarkUnsafe before the unsafe processor gets ErrTaskBusy: no dispatch, a

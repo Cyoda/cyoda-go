@@ -674,6 +674,9 @@ type cnodeReply struct {
 	// boolean at all, so the answer does not decode into the shape its event
 	// type promises. Assembled as a map for the same reason as nullSuccess.
 	badSuccess bool // replyOK
+	// nullData answers a processor with `"payload": {"data": null}`: a
+	// payload whose data is null, which says the same as no payload.
+	nullData bool // replyOK, processor
 }
 
 // answerOK answers success: a processor leaves the entity unchanged, a
@@ -720,6 +723,10 @@ func neverAnswer() cnodeReply { return cnodeReply{kind: replySilent} }
 // closeStream closes the cnode's stream on receiving the work, without answering.
 func closeStream() cnodeReply { return cnodeReply{kind: replyCloseStream} }
 
+// answerNullData answers a processor with success and a payload whose data is
+// null.
+func answerNullData() cnodeReply { return cnodeReply{kind: replyOK, nullData: true} }
+
 // answerMalformedPayload answers success=true with a payload that is a JSON
 // string, not an object: the one failure a cnode can cause that would fail
 // identically on any other cnode.
@@ -758,7 +765,10 @@ func (r cnodeReply) cloudEvent(req calcRequest) (*cepb.CloudEvent, error) {
 		body["resultKind"] = r.resultKind
 		body["result"] = r.result
 	default:
-		if r.data != nil {
+		switch {
+		case r.nullData:
+			body["payload"] = map[string]any{"data": nil}
+		case r.data != nil:
 			body["payload"] = map[string]any{"data": r.data}
 		}
 	}
