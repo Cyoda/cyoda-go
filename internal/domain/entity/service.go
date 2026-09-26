@@ -742,48 +742,29 @@ func deleteWriteError(msg string, err error) *common.AppError {
 	return common.Internal(msg, err)
 }
 
-// txTenant is the tenant of the transaction on txCtx.
-func txTenant(txCtx context.Context) (spi.TenantID, error) {
-	tx := spi.GetTransaction(txCtx)
-	if tx == nil {
-		return "", errors.New("no transaction on the context")
-	}
-	return tx.TenantID, nil
-}
-
 // deleteEntityTasks removes the scheduled tasks of ids inside the
-// transaction on txCtx. No ids, no call.
+// transaction on txCtx. No ids, no call. The tenant is the request's
+// authenticated one, never the transaction's: the store refuses a
+// transaction of another tenant.
 func (h *Handler) deleteEntityTasks(txCtx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	tenant, err := txTenant(txCtx)
-	if err != nil {
-		return err
-	}
 	sts, err := h.factory.ScheduledTaskStore(txCtx)
 	if err != nil {
 		return fmt.Errorf("failed to access scheduled task store: %w", err)
 	}
-	return sts.DeleteForEntities(txCtx, tenant, ids)
+	return sts.DeleteForEntities(txCtx, spi.TenantID(common.TenantFromContext(txCtx)), ids)
 }
 
-// deleteModelTasks removes every scheduled task of ref inside the
-// transaction on txCtx.
-func (h *Handler) deleteModelTasks(txCtx context.Context, ref spi.ModelRef) error {
-	tenant, err := txTenant(txCtx)
-	if err != nil {
-		return err
-	}
-	version, err := strconv.Atoi(ref.ModelVersion)
-	if err != nil {
-		return fmt.Errorf("failed to parse model version %q: %w", ref.ModelVersion, err)
-	}
+// deleteModelTasks removes every scheduled task of the model inside the
+// transaction on txCtx, for the request's tenant as deleteEntityTasks does.
+func (h *Handler) deleteModelTasks(txCtx context.Context, modelName string, modelVersion int) error {
 	sts, err := h.factory.ScheduledTaskStore(txCtx)
 	if err != nil {
 		return fmt.Errorf("failed to access scheduled task store: %w", err)
 	}
-	return sts.DeleteForModel(txCtx, tenant, ref.EntityName, version, nil)
+	return sts.DeleteForModel(txCtx, spi.TenantID(common.TenantFromContext(txCtx)), modelName, modelVersion, nil)
 }
 
 type deleteEntityResult struct {
@@ -845,9 +826,11 @@ func (h *Handler) GetChangesMetadata(ctx context.Context, entityID string, point
 }
 
 // DeleteAllEntities deletes all entities of a model, and all the model's
-// scheduled tasks, in one transaction. An owned delete that loses a
-// task-row race with the scheduler runs again; a joined one does not.
-func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, modelVersion string) (*DeleteAllResult, error) {
+// scheduled tasks, in one transaction. An owned delete that fails with
+// spi.ErrConflict — a race lost on an entity or on a scheduled task, at a
+// statement or at commit — runs again in a new transaction
+// (common.RetryOnTaskConflict); a joined one does not.
+func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, modelVersion int) (*DeleteAllResult, error) {
 	var result *DeleteAllResult
 	err := common.RetryOnTaskConflict(ctx, spi.GetTransaction(ctx) == nil, func() error {
 		r, err := h.deleteAllEntitiesOnce(ctx, entityName, modelVersion)
@@ -864,10 +847,10 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 }
 
 // deleteAllEntitiesOnce is one attempt of DeleteAllEntities.
-func (h *Handler) deleteAllEntitiesOnce(ctx context.Context, entityName string, modelVersion string) (*DeleteAllResult, error) {
+func (h *Handler) deleteAllEntitiesOnce(ctx context.Context, entityName string, modelVersion int) (*DeleteAllResult, error) {
 	ref := spi.ModelRef{
 		EntityName:   entityName,
-		ModelVersion: modelVersion,
+		ModelVersion: strconv.Itoa(modelVersion),
 	}
 
 	// Begin a fresh tx, or PARTICIPATE in a joined tx already on ctx.
@@ -895,7 +878,7 @@ func (h *Handler) deleteAllEntitiesOnce(ctx context.Context, entityName string, 
 	if _, err := modelStore.Get(txCtx, ref); err != nil {
 		if errors.Is(err, spi.ErrNotFound) {
 			return nil, common.Operational(404, common.ErrCodeModelNotFound,
-				fmt.Sprintf("cannot find model entityName=%s, version=%s", entityName, modelVersion))
+				fmt.Sprintf("cannot find model entityName=%s, version=%d", entityName, modelVersion))
 		}
 		return nil, common.Internal("failed to load model", err)
 	}
@@ -924,7 +907,7 @@ func (h *Handler) deleteAllEntitiesOnce(ctx context.Context, entityName string, 
 			return deleteWriteError("failed to delete entities", err)
 		}
 		// Every task of the model goes in the same transaction.
-		if err := h.deleteModelTasks(txCtx, ref); err != nil {
+		if err := h.deleteModelTasks(txCtx, entityName, modelVersion); err != nil {
 			return deleteWriteError("failed to delete scheduled tasks", err)
 		}
 		// Commit transaction (no-op when participating in a joined tx).
@@ -1292,8 +1275,8 @@ func selectDeleteIDs(ctx context.Context, entityStore spi.EntityStore, ref spi.M
 // silently deleting a version the caller never saw. The handler rejects
 // batchSize>0 on a joined request (spec D7), so deleteBatched never has to
 // reconcile "batched" with "participating in someone else's tx".
-func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, modelVersion string, condBody []byte, pointInTime *time.Time, verbose bool, batchSize int) (*DeleteResult, error) {
-	ref := spi.ModelRef{EntityName: entityName, ModelVersion: modelVersion}
+func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName string, modelVersion int, condBody []byte, pointInTime *time.Time, verbose bool, batchSize int) (*DeleteResult, error) {
+	ref := spi.ModelRef{EntityName: entityName, ModelVersion: strconv.Itoa(modelVersion)}
 
 	// Parse the condition (if any) BEFORE opening a tx — a parse error is a
 	// 400 that must not start a transaction. Empty/whitespace body ⇒ delete-all.

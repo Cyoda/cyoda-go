@@ -72,7 +72,7 @@ func TestDeleteEntitiesConditional_SingleTx_IteratorCloseErrorFailsDelete(t *tes
 	seedKind(t, h, ctx, ref, 3, "drop")
 
 	cond := []byte(`{"type":"simple","jsonPath":"$.kind","operatorType":"EQUALS","value":"drop"}`)
-	_, err = h.DeleteEntitiesConditional(ctx, ref.EntityName, ref.ModelVersion, cond, nil, false, 0)
+	_, err = h.DeleteEntitiesConditional(ctx, ref.EntityName, 1, cond, nil, false, 0)
 	if err == nil {
 		t.Fatal("expected DeleteEntitiesConditional to fail when the selection iterator's Close() errors, even with Err()==nil — a silent Close() error must not report a partial selection as a complete success")
 	}
@@ -92,7 +92,7 @@ func TestDeleteEntitiesConditional_Batched_IteratorCloseErrorFailsDelete(t *test
 	seedKind(t, h, ctx, ref, 3, "drop")
 
 	cond := []byte(`{"type":"simple","jsonPath":"$.kind","operatorType":"EQUALS","value":"drop"}`)
-	_, err = h.DeleteEntitiesConditional(ctx, ref.EntityName, ref.ModelVersion, cond, nil, false, 1)
+	_, err = h.DeleteEntitiesConditional(ctx, ref.EntityName, 1, cond, nil, false, 1)
 	if err == nil {
 		t.Fatal("expected batched DeleteEntitiesConditional to fail when the streamed selection iterator's Close() errors, even with Err()==nil")
 	}

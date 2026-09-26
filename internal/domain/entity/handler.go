@@ -567,7 +567,7 @@ func (h *Handler) DeleteEntities(w http.ResponseWriter, r *http.Request, entityN
 	}
 
 	verbose := params.Verbose != nil && *params.Verbose
-	result, err := h.DeleteEntitiesConditional(r.Context(), entityName, fmt.Sprintf("%d", modelVersion), condBody, params.PointInTime, verbose, batchSize)
+	result, err := h.DeleteEntitiesConditional(r.Context(), entityName, int(modelVersion), condBody, params.PointInTime, verbose, batchSize)
 	if err != nil {
 		if errors.Is(err, ErrInvalidCondition) {
 			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, err.Error()))

@@ -560,7 +560,7 @@ func TestDeleteAllEntities_EmptyModel_ReturnsZeroCount(t *testing.T) {
 		t.Fatalf("ModelStore.Save: %v", err)
 	}
 
-	result, err := h.DeleteAllEntities(ctx, "EmptyModel", "1")
+	result, err := h.DeleteAllEntities(ctx, "EmptyModel", 1)
 	if err != nil {
 		t.Fatalf("DeleteAllEntities on empty model: expected no error, got %v", err)
 	}
@@ -678,7 +678,7 @@ var _ = strconv.Itoa // ensure strconv is not flagged as unused
 // Iterate drain rather than through SearchService.Search, so a
 // classified-4xx-forwarding test needs a selection-validation failure (an
 // unknown field path) rather than a stubbed Searcher failure.
-func newDeleteFixtureWithSchema(t *testing.T) (h *entity.Handler, ctx context.Context, entityName, modelVersion string) {
+func newDeleteFixtureWithSchema(t *testing.T) (h *entity.Handler, ctx context.Context, entityName string, modelVersion int) {
 	t.Helper()
 	base := memory.NewStoreFactory()
 	t.Cleanup(func() { base.Close() })
@@ -707,7 +707,7 @@ func newDeleteFixtureWithSchema(t *testing.T) (h *entity.Handler, ctx context.Co
 	}
 	h = entity.New(base, txMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New())
 
-	return h, ctx, ref.EntityName, ref.ModelVersion
+	return h, ctx, ref.EntityName, 1
 }
 
 // TestDeleteEntitiesConditional_ForwardsSelection4xx verifies that a

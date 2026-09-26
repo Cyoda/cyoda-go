@@ -102,7 +102,7 @@ func TestDeleteEntitiesConditional_Batched_Streamed_NonConvergenceFailsClosed(t 
 	deadlineCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	result, err := h.DeleteEntitiesConditional(deadlineCtx, "Person", "1", nil, nil, false, 2)
+	result, err := h.DeleteEntitiesConditional(deadlineCtx, "Person", 1, nil, nil, false, 2)
 	if err == nil {
 		t.Fatalf("DeleteEntitiesConditional returned a result (%+v) for a delete that never converged; "+
 			"a partial pass reported as a complete one is the substituted answer the correctness rule forbids", result)
@@ -153,7 +153,7 @@ func TestDeleteEntitiesConditional_Batched_Streamed_ConvergingDeleteIsUnbounded(
 
 	h.maxDeleteCycles = 12
 
-	result, err := h.DeleteEntitiesConditional(ctx, "Person", "1", batchDeleteAgeGEZero, nil, false, 1)
+	result, err := h.DeleteEntitiesConditional(ctx, "Person", 1, batchDeleteAgeGEZero, nil, false, 1)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
