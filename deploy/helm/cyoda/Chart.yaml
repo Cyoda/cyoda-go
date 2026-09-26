@@ -6,7 +6,7 @@ description: |
   Postgres, fronted by Gateway API (default) or a still-maintained Ingress
   controller (transitional).
 type: application
-version: 0.8.4
+version: 0.9.0
 appVersion: "0.8.4" # bump-chart-appversion.yml syncs this to the binary
 kubeVersion: ">=1.31.0"
 keywords:
@@ -21,4 +21,5 @@ maintainers:
     url: https://github.com/cyoda
 annotations:
   artifacthub.io/changes: |
-    - Optional separate migration DSN (migrate.postgres) for the two-role DB model
+    - terminationGracePeriodSeconds defaults to 390, so a node can finish its scheduled runs before it is killed
+    - bootstrap.tenantId and bootstrap.userId are validated by values.schema.json (pattern, maxLength, and the oidc: exclusion on userId), matching the binary's own rule

@@ -47,7 +47,7 @@ helm install cyoda ./deploy/helm/cyoda \
 
 cyoda-go is a single-process, multi-tenant REST and gRPC API server. It starts in serving mode when invoked with no subcommand. All configuration is via environment variables with a `CYODA_` prefix. The binary, Docker image, and Helm chart run the same binary; only the environment configuration differs across run modes.
 
-The process binds three TCP listeners before it serves on any of them: gRPC (default port 9090), the REST API (default port 8080), and an admin server (default port 9091). A port that cannot be bound stops the process with exit status `1` and a `listen failed` log naming the listener, before a single request is served. The admin server hosts health probes and the Prometheus metrics endpoint. On receiving `SIGINT` or `SIGTERM`, the server drains in-flight HTTP, admin and gRPC requests within a 10-second deadline each, then closes the storage backend and exits.
+The process binds three TCP listeners before it serves on any of them: gRPC (default port 9090), the REST API (default port 8080), and an admin server (default port 9091). A port that cannot be bound stops the process with exit status `1` and a `listen failed` log naming the listener, before a single request is served. The admin server hosts health probes and the Prometheus metrics endpoint. On receiving `SIGINT` or `SIGTERM`, the scheduler drains its runs first, then the HTTP, admin and gRPC servers drain in-flight requests within a 10-second deadline each, then the storage backend is closed and the process exits. See SHUTDOWN TIMING.
 
 No systemd unit files ship in the repository. Process supervision (systemd, runit, s6, etc.) is the operator's responsibility when running the binary directly outside of Docker or Kubernetes.
 
@@ -261,7 +261,7 @@ CYODA_PROFILES=postgres,otel ./scripts/dev/run-local.sh
 
 ## SIGNALS
 
-- `SIGINT` (Ctrl+C) — triggers graceful shutdown. HTTP and admin servers drain in-flight requests within a 10-second deadline. The storage backend is closed. The process exits with code 0.
+- `SIGINT` (Ctrl+C) — triggers graceful shutdown. The scheduler drains its runs first; then the HTTP, admin and gRPC servers drain in-flight requests within a 10-second deadline, and the storage backend is closed. The process exits with code 0. See SHUTDOWN TIMING.
 - `SIGTERM` — same behavior as `SIGINT`. Kubernetes sends `SIGTERM` when a pod is evicted or deleted.
 - `SIGPIPE` — ignored. When the binary is piped through `tee` (e.g. `./bin/cyoda | tee log`) and Ctrl+C kills `tee` first, the broken pipe would cause the binary to exit immediately before the `SIGINT` handler runs. Ignoring `SIGPIPE` lets the write fail silently while the graceful shutdown proceeds. (Source: `cmd/cyoda/main.go`, `signal.Ignore(syscall.SIGPIPE)`.)
 
@@ -282,11 +282,28 @@ The `cyoda health` subcommand calls `/readyz` on the admin port with a 2-second 
 
 ## SHUTDOWN TIMING
 
-The graceful shutdown deadline is **10 seconds**, applied separately to the HTTP server, the admin server and the gRPC server; the three drain concurrently, so the server drains take about 10 seconds in total, not 30. The value is not configurable. A gRPC drain that outlives its deadline is cut off with a hard stop.
+On the first signal the scheduler stops first, while compute members and their callbacks can still reach the node:
 
-Three steps follow the server drains, in order: `app.Shutdown()` gives in-flight async search jobs up to 5 seconds to finish before releasing them for another node to reclaim, stops the scheduler, and takes the node out of the cluster; `app.Close()` releases backend resources (database connection pools), with no timeout of its own; and the telemetry flush gets up to 10 seconds. The worst case from signal to exit is therefore about 25 seconds plus the cluster leave and the storage close. An idle node exits in well under a second.
+1. It stops claiming scheduled transitions. From here on no run sends a new processor that is not declared `idempotent`.
+2. It waits up to `CYODA_SCHEDULER_SHUTDOWN_DRAIN` (default `20s`) for the runs in progress.
+3. It cancels the runs still going, except a run with a processor in flight that is not declared `idempotent`. That callout may finish or reach its own deadline, and the run may then carry on with safe steps and commit.
+4. It waits for every run to record its outcome: at most the longest remaining callout deadline plus 45 seconds.
+5. It hands back the tasks whose runs ended without an outcome, and stops its heartbeat.
 
-In Kubernetes, the pod `terminationGracePeriodSeconds` (default 30s) must cover that worst case, or the kubelet sends `SIGKILL` before the node has finished releasing its work.
+A run cut at step 3 that had sent nothing unsafe is claimed again at once, by any node, and the attempt is not counted. When a server fails instead, the same steps run after the servers have stopped.
+
+The server drains follow. Their graceful shutdown deadline is **10 seconds**, applied separately to the HTTP server, the admin server and the gRPC server; the three drain concurrently, so the server drains take about 10 seconds in total, not 30. The value is not configurable. A gRPC drain that outlives its deadline is cut off with a hard stop.
+
+Three steps follow the server drains, in order: `app.Shutdown()` gives in-flight async search jobs up to 5 seconds to finish, then releases whatever is still registered for reclaim by another node (no time limit of its own), and takes the node out of the cluster (no time limit of its own); `app.Close()` releases backend resources (database connection pools), with no timeout of its own; and the telemetry flush gets up to 10 seconds. Everything time-bounded after the scheduler therefore takes about 25 seconds at worst, plus the job release, the cluster leave and the storage close, none of which carries its own deadline. An idle node exits in well under a second.
+
+The worst case from signal to exit is `max(CYODA_SCHEDULER_SHUTDOWN_DRAIN + 10, callout deadline) + 100` seconds. The extra 10 seconds is step 1's wait for the claim loop's own store call in flight. The callout deadline is `(1 + CYODA_RETRY_FIXED_NUM_RETRIES) × CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS + CYODA_DISPATCH_WAIT_TIMEOUT + CYODA_CALLOUT_HANDOVER_ALLOWANCE`.
+
+- With no processor with a non-idempotent callout in flight, the callout deadline does not apply: `CYODA_SCHEDULER_SHUTDOWN_DRAIN` + 110 seconds — 130 s at the defaults.
+- With one in flight: the callout deadline is 275 s at the defaults (`4 × 60s + 5s + 30s`), so the total is 375 s.
+
+The 100 seconds are the 30-second commit budget; 15 seconds after the commit budget, the last 10 of them for outcome writes under way; 30 seconds for step 5's three store calls (giving back claims, the heartbeat still in flight, and retiring the owner); and the 25 seconds above.
+
+In Kubernetes, the pod `terminationGracePeriodSeconds` must cover the worst case, or the kubelet sends `SIGKILL` before the node has recorded its runs' outcomes; another node then takes those tasks over after `CYODA_SCHEDULER_STALE_AFTER`, as lost owners. The Helm chart sets `390`. Raise it when you raise the drain, the tries, the answer limit, the wait or the hand-over allowance (see `cyoda help helm`).
 
 ## PORT LAYOUT
 

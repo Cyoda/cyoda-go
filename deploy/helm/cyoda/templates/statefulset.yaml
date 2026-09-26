@@ -35,6 +35,7 @@ spec:
     spec:
       serviceAccountName: {{ include "cyoda.serviceAccountName" . }}
       automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ required "terminationGracePeriodSeconds is required" .Values.terminationGracePeriodSeconds }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

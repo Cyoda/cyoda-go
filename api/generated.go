@@ -2242,9 +2242,15 @@ type ExternalizedProcessorConfigDto struct {
 	// again is safe — for cyoda and for every system the processor
 	// touches. When true, the work may be given to another compute
 	// member after a member that received it went silent or dropped
-	// its connection. When false (the default) it is not, because the
-	// first member may have acted. Criteria and functions are always
-	// treated as safe to repeat and carry no such field.
+	// its connection, and a scheduled transition whose run failed
+	// after this processor was sent is retried. When false (the
+	// default), a scheduled run whose processor may have reached a
+	// compute member ends FAILED with the reason
+	// UNSAFE_WORK_NOT_COMPLETED and is not run again, because a
+	// member may have acted; if the processor's callout provably
+	// never reached a compute member, the run is retried like any
+	// other failure. Criteria and functions are always treated as
+	// safe to repeat and carry no such field.
 	Idempotent *bool `json:"idempotent,omitempty"`
 
 	// ResponseTimeoutMs How long to wait for the compute member's answer, in milliseconds.
