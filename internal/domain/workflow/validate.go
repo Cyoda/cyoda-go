@@ -636,7 +636,10 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 				// per entity. Both-present and neither-present are rejected
 				// alike; the mutual-exclusion is not expressible in the
 				// OpenAPI schema (see TransitionScheduleDto), so it is
-				// enforced here.
+				// enforced here. A delayMs sent as 0 or null beside a
+				// function is invisible at this layer (the SPI's int64
+				// reads it as omitted); the import handler refuses that
+				// shape from the raw request (checkDelayBesideFunction).
 				if hasDelay == hasFn {
 					return fmt.Errorf(
 						"workflow %q state %q transition %q: exactly one of schedule.delayMs or schedule.function is required",

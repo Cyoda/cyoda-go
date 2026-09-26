@@ -20,7 +20,7 @@ import (
 //
 // Mirrors ImportEntityModelWorkflow's own mechanism (handler.go): decode
 // the SAME raw JSON bytes twice — once strictly into []workflowImportDef,
-// once loosely into attachEntityProbe — rather than hand-building the
+// once loosely into presenceProbe — rather than hand-building the
 // probe's unexported anonymous-struct literals, so the test input is
 // guaranteed aligned the same way production input is.
 func TestApplyAttachEntityDefaults_HeterogeneousTransitions(t *testing.T) {
@@ -122,7 +122,7 @@ func TestApplyAttachEntityDefaults_HeterogeneousTransitions(t *testing.T) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		t.Fatalf("decode importRequest: %v", err)
 	}
-	var probe attachEntityProbe
+	var probe presenceProbe
 	if err := json.Unmarshal(raw, &probe); err != nil {
 		t.Fatalf("decode probe: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestApplyAttachEntityDefaults_Processors(t *testing.T) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		t.Fatalf("decode importRequest: %v", err)
 	}
-	var probe attachEntityProbe
+	var probe presenceProbe
 	if err := json.Unmarshal(raw, &probe); err != nil {
 		t.Fatalf("decode probe: %v", err)
 	}

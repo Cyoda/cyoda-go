@@ -1196,6 +1196,18 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   passed. Both are now rejected at import (`400 VALIDATION_FAILED`), naming
   the workflow, state, transition and field. See `cyoda help workflows`.
 
+- **Workflow import refuses a `schedule.delayMs` sent beside a
+  `schedule.function`, whatever its value.** `TransitionScheduleDto`
+  publishes `delayMs` as `minimum: 1` and mutually exclusive with
+  `function`, but import accepted `"delayMs": 0` and `"delayMs": null`
+  beside a function and ignored them: the decoded delay is a plain integer,
+  so a sent `0` or `null` looked the same as an omitted field. Import now
+  reads the raw request and answers `400 VALIDATION_FAILED`, naming the
+  workflow, state and transition. A pre-v0.9.0 export that carries
+  `"delayMs": 0` beside a `function` no longer imports; remove the field.
+  No workflow schema version change: this fixes the validator to reject
+  what the schema already rejected. See `cyoda help workflows`.
+
 ## [0.8.4] — 2026-09-09
 
 ### Breaking

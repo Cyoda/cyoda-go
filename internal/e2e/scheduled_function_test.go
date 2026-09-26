@@ -183,6 +183,37 @@ func TestScheduledFunction_Import_DelayMsNegativeWithFunction_400(t *testing.T) 
 	assertImportRejected(t, status, body, "negative delayMs alongside function")
 }
 
+// TestScheduledFunction_Import_DelayMsZeroOrNullWithFunction_400: delayMs is
+// published as minimum 1 and mutually exclusive with function, so a delayMs
+// sent beside a function is refused even as 0 or null — values the decoded
+// int64 cannot tell apart from an omitted field.
+func TestScheduledFunction_Import_DelayMsZeroOrNullWithFunction_400(t *testing.T) {
+	for _, tc := range []struct{ name, delayMs string }{{"zero", "0"}, {"null", "null"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := "e2e-schedfn-import-delayms-" + tc.name + "-fn"
+			wf := fmt.Sprintf(`{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.3", "name": "schedfn-delayms-%s-fn-wf", "initialState": "Open", "active": true,
+			"states": {
+				"Open": {"transitions": [{"name": "AutoClose", "next": "Closed", "manual": false,
+					"schedule": {"delayMs": %s, "function": %s}
+				}]},
+				"Closed": {}
+			}
+		}]
+	}`, tc.name, tc.delayMs, validScheduleFunctionJSON("calcFire"))
+			importModelE2E(t, model, 1)
+			lockModelE2E(t, model, 1)
+			status, body := importWorkflowE2E(t, model, 1, wf)
+			assertImportRejected(t, status, body, "delayMs "+tc.delayMs+" alongside function")
+			if !strings.Contains(body, "schedule.delayMs and schedule.function are mutually exclusive") {
+				t.Errorf("detail must name the rule, got: %s", body)
+			}
+		})
+	}
+}
+
 func TestScheduledFunction_Import_ManualAndFunction_400(t *testing.T) {
 	const model = "e2e-schedfn-import-manual-and-fn"
 	wf := fmt.Sprintf(`{
