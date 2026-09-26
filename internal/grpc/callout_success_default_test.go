@@ -123,15 +123,14 @@ func TestHandleResponses_SuccessKeepsItsThreeStates(t *testing.T) {
 // failure. An answer that cannot be read is still refused, whether or not the
 // flag was there to read — the default resolves the flag, not the payload.
 func TestDispatchProcessor_SuccessDefaultsToTrue(t *testing.T) {
-	const unchanged = `{"foo":"bar"}`
 	for name, tc := range map[string]struct {
 		body     string // the member's response, with %q for the request id
-		wantData string // the entity's data after the callout
+		wantData string // the entity's data after the callout; empty for no entity
 		wantKind contract.CalloutFailureKind
 		wantMsg  string
 	}{
 		"omitted, nothing else said": {
-			body: `{"requestId":%q}`, wantData: unchanged,
+			body: `{"requestId":%q}`, // no payload: no entity
 		},
 		"omitted, with data": {
 			body: `{"requestId":%q,"payload":{"data":{"foo":"changed"}}}`, wantData: `{"foo":"changed"}`,
@@ -179,8 +178,14 @@ func TestDispatchProcessor_SuccessDefaultsToTrue(t *testing.T) {
 			if err != nil {
 				t.Fatalf("the member answered without a `success` key and the callout failed: %v", err)
 			}
-			if string(entity.Data) != tc.wantData {
-				t.Errorf("entity data = %s; want %s", entity.Data, tc.wantData)
+			if tc.wantData == "" {
+				if entity != nil {
+					t.Errorf("entity data = %s; want no entity for an answer with no payload", entity.Data)
+				}
+				return
+			}
+			if entity == nil || string(entity.Data) != tc.wantData {
+				t.Errorf("entity = %+v; want data %s", entity, tc.wantData)
 			}
 		})
 	}
@@ -205,8 +210,8 @@ func TestDispatchProcessor_ErrorObjectAloneIsNotAFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an answer carrying only an `error` object failed the callout: %v", err)
 	}
-	if string(entity.Data) != `{"foo":"bar"}` {
-		t.Errorf("entity data = %s; want the entity unchanged", entity.Data)
+	if entity != nil {
+		t.Errorf("entity data = %s; want no entity: the answer had no payload", entity.Data)
 	}
 	diag := common.GetDiagnostics(ctx)
 	if got := diag.GetErrors(); len(got) != 0 {

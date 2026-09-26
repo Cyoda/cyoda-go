@@ -80,7 +80,7 @@ type DispatchCalloutRequest struct {
 // DispatchCalloutResponse is the answer to a hand-over. Outcome says what
 // became of the callout; the result union mirrors DispatchCalloutRequest's Kind
 // and is set when Outcome is "ok":
-//   - Kind == "processor": EntityData.
+//   - Kind == "processor": EntityData, or NoPayload.
 //   - Kind == "criteria": Matches and Reason.
 //   - Kind == "function": Result and ResultKind.
 //
@@ -115,6 +115,11 @@ type DispatchCalloutResponse struct {
 	// answer of one compute member, which arrives over gRPC and is therefore
 	// bounded by that server's receive limit (see maxEnvelopeSize).
 	EntityData []byte `json:"entityData,omitempty"`
+	// NoPayload is set for a processor callout response when the compute
+	// member answered with no payload: the owner then has no entity data to
+	// apply, and keeps any write the processor made through a joined
+	// callback. It and EntityData are never both set.
+	NoPayload bool `json:"noPayload,omitempty"`
 
 	// Matches and Reason are populated for a criteria callout response.
 	Matches *bool  `json:"matches,omitempty"`

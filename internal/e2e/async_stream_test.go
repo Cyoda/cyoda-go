@@ -46,7 +46,7 @@ package e2e_test
 //     owner-is-gone shape (a RUNNING row with no executor behind it,
 //     created_at backdated past SearchJobStaleAfter, real entities seeded
 //     behind its model) and asserts app.New's wired reaper ticker (app.go's
-//     stopSearchReaper loop calling ReclaimStaleJobs) CLAIMS, ClearResults,
+//     startSearchReapers claim loop calling ReclaimStaleJobs) CLAIMS, ClearResults,
 //     re-enqueues, and completes it SUCCESSFUL with the direct-search result
 //     count — a crashed node's job is now finished, not failed;
 //     TestE2E_AsyncSearch_AttemptCap_Fails (this file) — a job whose
@@ -723,7 +723,7 @@ func reaperFastCadence(cfg *app.Config) {
 }
 
 // TestE2E_AsyncSearch_OrphanReExecuted pins app.New's wired reaper ticker
-// (app.go's stopSearchReaper loop calling search.ReclaimStaleJobs) as a
+// (app.go's startSearchReapers claim loop calling search.ReclaimStaleJobs) as a
 // genuinely running e2e path: an orphaned job is now CLAIMED and RE-EXECUTED
 // to SUCCESSFUL, not failed.
 //

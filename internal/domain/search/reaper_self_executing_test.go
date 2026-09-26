@@ -59,11 +59,11 @@ func TestReclaimStaleJobs_SelfExecutingStore_NeverClaimsOrWrites(t *testing.T) {
 	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store).
 		WithAsyncPool(pool)
 
-	reenq, failed, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, search.StaleClaimBatch)
+	reenq, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, search.StaleClaimBatch)
 	if err != nil {
 		t.Fatalf("ReclaimStaleJobs: %v", err)
 	}
-	if reenq != 0 || failed != 0 {
-		t.Fatalf("ReclaimStaleJobs = (reenqueued %d, failed %d), want (0, 0) for a self-executing store", reenq, failed)
+	if reenq != 0 {
+		t.Fatalf("ReclaimStaleJobs re-enqueued %d, want 0 for a self-executing store", reenq)
 	}
 }

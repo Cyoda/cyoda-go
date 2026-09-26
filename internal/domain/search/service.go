@@ -245,6 +245,14 @@ type SearchService struct {
 	// registry (not derived by scanning it) so the cap check is O(1) under
 	// the same lock that makes check-then-register atomic.
 	tenantInFlight map[spi.TenantID]int
+
+	// secondPassMu guards owed and secondPassDone: the writes the reclaim
+	// sweep owes jobs it claimed but will not run, and the one goroutine per
+	// node that sends them (see ReclaimStaleJobs). secondPassDone is non-nil
+	// while that goroutine runs, and closed when it returns.
+	secondPassMu   sync.Mutex
+	owed           map[owedKey]owedWrite
+	secondPassDone chan struct{}
 }
 
 // asyncJobHandle is what the cancel registry keeps per in-flight (queued or
@@ -535,7 +543,7 @@ func tenantOf(uc *spi.UserContext) spi.TenantID {
 // when the job is not registered here — not yet started on this node,
 // already finished, or owned by a different node in the cluster. Used by
 // CancelAsync for an immediate in-process abort that does not wait for the
-// next heartbeat poll to observe the store's CANCELLED write.
+// next heartbeat to be refused by the store's CANCELLED write.
 func (s *SearchService) CancelRunning(jobID string) bool {
 	// IIFE so the lock is released via defer before entry.cancel() runs —
 	// cancel() must not be called while holding registryMu, since it can
@@ -1100,22 +1108,26 @@ func heartbeatFencedOut(err error) bool { return err != nil && !errors.Is(err, s
 
 // startHeartbeat runs the dedicated heartbeat ticker goroutine for a job,
 // from submit time (queued or executing) until jobCtx is done. Every tick it
-// stamps liveness (Heartbeat) and polls GetJob for any terminal status —
-// cross-node cancel and terminal abort in one poll — cancelling jobCtx (and
-// so stopping itself) on either a Heartbeat error that fences the job out
-// per heartbeatFencedOut (a stale claim or an already-terminal job) or an
-// observed non-RUNNING status.
+// stamps liveness (Heartbeat) and nothing else. The stamp is fenced by the
+// store (spi.AsyncSearchStore.Heartbeat): it refuses a job that is terminal
+// (ErrAlreadyTerminal), was reclaimed at a newer epoch (ErrStaleClaim) or is
+// gone (ErrNotFound). So a cancel written by any node, a completion, and a
+// lost claim all end the job here in one statement, and jobCtx is cancelled
+// on any refusal per heartbeatFencedOut.
+//
+// The tick issues no other store statement. A backend may run Heartbeat on a
+// pool of its own so that a main pool exhausted by entity transactions cannot
+// starve liveness; a second, main-pool statement in this loop would undo that.
 //
 // A busy tick (heartbeatFencedOut false but err non-nil: spi.ErrTaskBusy —
 // a store, PostgreSQL, answers it for a lock its own job's SaveResults
 // chunk holds, which is not a claim it has lost) is logged at DEBUG and
-// falls through to the same GetJob poll a successful tick takes: GetJob is
-// a plain read that never waits on the row lock SaveResults holds, so the
-// cross-node cancel / terminal-status check still runs every tick
-// regardless of whether the heartbeat stamp itself landed. Leaving one
-// tick's stamp missed is safe: the store's staleness window spans several
-// ticks. Backend-agnostic: memory and sqlite never return spi.ErrTaskBusy
-// (their Heartbeat never lock-waits), so this branch never fires there.
+// retried on the next tick. Leaving one tick's stamp missed is safe: the
+// store's staleness window spans several ticks, and each SaveResults chunk is
+// itself fenced against a terminal status, so a cancel that lands meanwhile
+// still stops the executor. Backend-agnostic: memory and sqlite never return
+// spi.ErrTaskBusy (their Heartbeat never lock-waits), so this branch never
+// fires there.
 func (s *SearchService) startHeartbeat(jobCtx context.Context, cancel context.CancelCauseFunc, jobID string, epoch int64) {
 	interval := s.heartbeatEvery()
 	go func() {
@@ -1127,22 +1139,19 @@ func (s *SearchService) startHeartbeat(jobCtx context.Context, cancel context.Ca
 				return
 			case <-ticker.C:
 				hbErr := s.searchStore.Heartbeat(jobCtx, jobID, epoch)
-				if heartbeatFencedOut(hbErr) {
+				switch {
+				case errors.Is(hbErr, spi.ErrAlreadyTerminal):
+					// Cancelled (by any node) or otherwise settled: an
+					// ordinary end, not a fault.
+					slog.Debug("async search job is terminal; stopping its executor", "pkg", "search", "jobID", jobID)
+					cancel(nil)
+					return
+				case heartbeatFencedOut(hbErr):
 					slog.Warn("async search heartbeat failed; aborting job", "pkg", "search", "jobID", jobID, "err", hbErr)
 					cancel(nil)
 					return
-				}
-				if hbErr != nil {
+				case hbErr != nil:
 					slog.Debug("async search heartbeat missed a busy tick", "pkg", "search", "jobID", jobID, "err", hbErr)
-				}
-				job, err := s.searchStore.GetJob(jobCtx, jobID)
-				if err != nil {
-					slog.Warn("async search heartbeat status poll failed", "pkg", "search", "jobID", jobID, "err", err)
-					continue
-				}
-				if job.Status != "RUNNING" {
-					cancel(nil)
-					return
 				}
 			}
 		}
@@ -1338,9 +1347,9 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 
 	switch {
 	case jobCtx.Err() != nil:
-		// Cancelled — in-process CancelRunning, a cross-node cancel or
-		// terminal status the heartbeat poll observed, or a heartbeat
-		// fencing failure. context.WithoutCancel so the recovery READ below
+		// Cancelled — in-process CancelRunning, or a heartbeat the store
+		// refused (a cross-node cancel or other terminal status, a lost
+		// claim). context.WithoutCancel so the recovery READ below
 		// is not itself aborted by the same cancellation (the write that
 		// follows strips cancellation on its own).
 		recoveryCtx := context.WithoutCancel(jobCtx)
@@ -1532,10 +1541,10 @@ func (s *SearchService) CancelAsync(ctx context.Context, jobID string) (CancelRe
 
 	// Best-effort in-process abort: if this node happens to be running (or
 	// still has queued) the job, stop it immediately rather than waiting up
-	// to one heartbeat interval for its own poll to observe the CANCELLED
-	// write above. A cross-node cancel (the job runs on a different node)
-	// still lands — that node's own heartbeat poll picks up the terminal
-	// status within one interval.
+	// to one heartbeat interval for the store to refuse its next stamp. A
+	// cross-node cancel (the job runs on a different node) still lands — the
+	// store refuses that node's next heartbeat as already terminal within
+	// one interval.
 	s.CancelRunning(jobID)
 
 	return CancelResult{Cancelled: true, CurrentStatus: "CANCELLED"}, nil

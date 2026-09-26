@@ -31,12 +31,13 @@ func TestComputeClientScenarioSkipsWithoutCapability(t *testing.T) {
 // skip — not fail — on a cluster fixture that cannot start compute clients.
 func TestCalloutHandOverScenariosSkipAndAreRegistered(t *testing.T) {
 	scenarios := map[string]func(*testing.T, MultiNodeFixture){
-		"Callout_HandOverSucceeds":                 RunCallout_HandOverSucceeds,
-		"Callout_HandOverTwoTriesInOneExchange":    RunCallout_HandOverTwoTriesInOneExchange,
-		"Callout_HandOverCarriesMessageAndVerdict": RunCallout_HandOverCarriesMessageAndVerdict,
-		"Callout_TwoTenantsShareATag":              RunCallout_TwoTenantsShareATag,
-		"Callout_PassFromAnotherPnode":             RunCallout_PassFromAnotherPnode,
-		"Callout_MinorAbsorbedAcrossHandOvers":     RunCallout_MinorAbsorbedAcrossHandOvers,
+		"Callout_HandOverSucceeds":                    RunCallout_HandOverSucceeds,
+		"Callout_HandOverTwoTriesInOneExchange":       RunCallout_HandOverTwoTriesInOneExchange,
+		"Callout_HandOverCarriesMessageAndVerdict":    RunCallout_HandOverCarriesMessageAndVerdict,
+		"Callout_TwoTenantsShareATag":                 RunCallout_TwoTenantsShareATag,
+		"Callout_HandOverNoPayloadKeepsCallbackWrite": RunCallout_HandOverNoPayloadKeepsCallbackWrite,
+		"Callout_PassFromAnotherPnode":                RunCallout_PassFromAnotherPnode,
+		"Callout_MinorAbsorbedAcrossHandOvers":        RunCallout_MinorAbsorbedAcrossHandOvers,
 	}
 	registered := map[string]bool{}
 	for _, nt := range AllTests() {

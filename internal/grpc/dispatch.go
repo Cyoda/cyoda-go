@@ -453,10 +453,15 @@ func boundCriterionReason(s string) string {
 	return string(r[:MaxCriterionReasonRunes]) + "…"
 }
 
-// applyProcessorResponse extracts updated entity data from the response payload.
+// applyProcessorResponse extracts updated entity data from the response
+// payload. A response with no payload, or a payload whose data is absent or
+// null, returns no entity: the processor sent nothing to apply. It is never
+// read as the entity it was dispatched with, because the engine then keeps a
+// write the processor made through a joined callback instead of applying its
+// own payload again.
 func applyProcessorResponse(entity *spi.Entity, resp *ProcessingResponse) (*spi.Entity, error) {
 	if resp.Payload == nil {
-		return entity, nil
+		return nil, nil
 	}
 
 	var envelope struct {
@@ -465,8 +470,10 @@ func applyProcessorResponse(entity *spi.Entity, resp *ProcessingResponse) (*spi.
 	if err := json.Unmarshal(resp.Payload, &envelope); err != nil {
 		return nil, fmt.Errorf("%w: %w", errProcessorPayload, err)
 	}
-	if envelope.Data == nil {
-		return entity, nil
+	// A null data is no data: encoding/json hands a RawMessage the literal
+	// null rather than leaving it nil.
+	if envelope.Data == nil || string(envelope.Data) == "null" {
+		return nil, nil
 	}
 
 	updated := &spi.Entity{

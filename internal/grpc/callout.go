@@ -40,7 +40,7 @@ func (k CalloutKind) String() string {
 // CalloutResult is what a cnode answered; the field for the callout's kind is
 // set.
 type CalloutResult struct {
-	Entity   *spi.Entity             // processor
+	Entity   *spi.Entity             // processor; nil when it answered with no payload
 	Matches  bool                    // criterion
 	Reason   string                  // criterion
 	Function contract.FunctionResult // function

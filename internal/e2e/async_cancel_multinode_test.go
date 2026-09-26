@@ -93,12 +93,12 @@ func TestE2E_AsyncSearch_CancelMidFlight(t *testing.T) {
 // blocks), cancels via node B — a wholly separate app.App + SearchService
 // sharing the same Postgres job table, so B's in-process cancel registry
 // has no entry for the job — and asserts A's OWN executor observes the
-// cross-node cancellation via its own heartbeat poll and actually unblocks
+// cross-node cancellation through its own heartbeat and actually unblocks
 // its in-flight Iterate call, not merely that a status read reflects the
 // shared row (any node would show that identically). The engine's cancel
-// registry is process-local, so the cross-node path IS the executor's
-// status-poll; allow up to ~2x the heartbeat interval before asserting
-// abort.
+// registry is process-local, so the cross-node path IS the store refusing
+// the executor's heartbeat as already terminal; allow up to ~2x the
+// heartbeat interval before asserting abort.
 func TestE2E_AsyncSearch_CrossNodeCancel(t *testing.T) {
 	const heartbeat = 300 * time.Millisecond
 	backend, gate := newBlockingIterateBackend(t)
@@ -147,13 +147,13 @@ func TestE2E_AsyncSearch_CrossNodeCancel(t *testing.T) {
 		t.Fatalf("cancel via B: %d %s", cancelResp.StatusCode, cancelBody)
 	}
 
-	// A's own heartbeat poll must observe the CANCELLED row and cancel the
-	// job's ctx, which is what actually unblocks the gate — proof the
-	// abort reached A's executor, not just the shared store.
+	// The store must refuse A's next heartbeat against the CANCELLED row,
+	// which cancels the job's ctx and unblocks the gate — proof the abort
+	// reached A's executor, not just the shared store.
 	select {
 	case <-resumed:
 	case <-time.After(4 * heartbeat):
-		t.Fatal("A's executor did not abort its blocked scan via its own heartbeat poll within the budget")
+		t.Fatal("A's executor did not abort its blocked scan via its own heartbeat within the budget")
 	}
 
 	if status := hA.waitForAsyncTerminal(t, jobID, 5*time.Second); status != "CANCELLED" {

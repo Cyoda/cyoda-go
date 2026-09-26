@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -455,5 +456,49 @@ func TestCatalog_CreateSecondaryRecord_RecordsTheAnswerAndSucceeds(t *testing.T)
 	}
 	if data["hopStatus"] != float64(http.StatusConflict) || data["hopBody"] != refusal || data["tokenWasEmpty"] != false {
 		t.Fatalf("recorded data = %+v; want hopStatus 409, the body, tokenWasEmpty false", data)
+	}
+}
+
+// TestCatalog_WriteSelf_WritesThroughTheCallbackAndReturnsNoData: the
+// processor writes its own entity through a joined update — its data with
+// status set to the marker — and answers with no data, so the engine keeps
+// that write.
+func TestCatalog_WriteSelf_WritesThroughTheCallbackAndReturnsNoData(t *testing.T) {
+	var gotToken, gotMethod, gotPath, gotBody string
+	door := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotToken, gotMethod, gotPath, gotBody = r.Header.Get("X-Tx-Token"), r.Method, r.URL.Path, string(b)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer door.Close()
+
+	cat := newCatalog(nil, nil)
+	proc, ok := cat.callbackProcessor("cb-write-self")
+	if !ok {
+		t.Fatal("cb-write-self callback processor not registered")
+	}
+	out, err := proc(context.Background(), &Entity{ID: "ent", Data: []byte(`{"name":"p","status":"new"}`)},
+		cbConfig{Marker: "written"}, "the-pass", newCallbackClient(door.URL, "bearer"))
+	if err != nil {
+		t.Fatalf("processor: %v", err)
+	}
+	if gotToken != "the-pass" || gotMethod != http.MethodPut || gotPath != "/api/entity/JSON/ent" {
+		t.Fatalf("callback token=%q %s %s; want the pass on a joined update of ent", gotToken, gotMethod, gotPath)
+	}
+	var data map[string]any
+	if err := json.Unmarshal([]byte(gotBody), &data); err != nil || data["status"] != "written" || data["name"] != "p" {
+		t.Fatalf("written body = %s; want the entity's data with status set to the marker", gotBody)
+	}
+	if out == nil || out.Data != nil {
+		t.Fatalf("result = %+v; want an entity with no data", out)
+	}
+
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+	}))
+	defer failing.Close()
+	if _, err := proc(context.Background(), &Entity{ID: "ent", Data: []byte(`{}`)},
+		cbConfig{Marker: "written"}, "the-pass", newCallbackClient(failing.URL, "bearer")); err == nil {
+		t.Fatal("a refused write must fail the processor")
 	}
 }

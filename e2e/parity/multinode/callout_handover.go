@@ -29,6 +29,7 @@ func init() {
 		NamedTest{Name: "Callout_HandOverTwoTriesInOneExchange", Fn: RunCallout_HandOverTwoTriesInOneExchange},
 		NamedTest{Name: "Callout_HandOverCarriesMessageAndVerdict", Fn: RunCallout_HandOverCarriesMessageAndVerdict},
 		NamedTest{Name: "Callout_TwoTenantsShareATag", Fn: RunCallout_TwoTenantsShareATag},
+		NamedTest{Name: "Callout_HandOverNoPayloadKeepsCallbackWrite", Fn: RunCallout_HandOverNoPayloadKeepsCallbackWrite},
 	)
 }
 
@@ -276,5 +277,53 @@ func RunCallout_TwoTenantsShareATag(t *testing.T, fixture MultiNodeFixture) {
 	}
 	if len(x1.Received(t))+len(x2.Received(t)) > 4 {
 		t.Errorf("tenant X's compute nodes received more requests than tenant X's tries allow")
+	}
+}
+
+// RunCallout_HandOverNoPayloadKeepsCallbackWrite: the owner has no compute node
+// for the tag, so the processor is handed over to the other pnode. The
+// processor writes its own entity through the joined callback, which is routed
+// back to the owner, and answers with no data. "No data" survives the hop: the
+// owner keeps the callback's write and does not apply the payload it
+// dispatched with over it.
+func RunCallout_HandOverNoPayloadKeepsCallbackWrite(t *testing.T, fixture MultiNodeFixture) {
+	urls := mnRequire(t, fixture, 2)
+	tenant := fixture.NewTenant(t)
+	owner := client.NewClient(urls[0], tenant.Token)
+	const model, tag, marker = "mn-ho-nopayload", "mn-ho-nopayload", "written-by-callback"
+
+	mnWarmUp(t, fixture, owner, tenant, 1, "mn-ho-nopayload-w", tag)
+	ctx, _ := json.Marshal(map[string]any{"marker": marker})
+	wf, _ := json.Marshal(map[string]any{
+		"importMode": "REPLACE",
+		"workflows": []any{map[string]any{
+			"version": "1.5", "name": "mn-ho-nopayload-wf", "initialState": "NONE", "active": true,
+			"states": map[string]any{
+				"NONE": map[string]any{"transitions": []any{map[string]any{"name": "init", "next": "OPEN", "manual": false}}},
+				"OPEN": map[string]any{"transitions": []any{map[string]any{"name": "Start", "next": "MID", "manual": true}}},
+				"MID": map[string]any{"transitions": []any{map[string]any{"name": "Go", "next": "DONE", "manual": false,
+					"processors": []any{mnProc("cb-write-self", "SYNC", tag, string(ctx), nil)}}}},
+				"DONE": map[string]any{},
+			},
+		}},
+	})
+	cbRouteSetupModel(t, owner, model, cbRouteSampleNoWriteback, string(wf))
+
+	id, err := owner.CreateEntity(t, model, 1, mnSample)
+	if err != nil {
+		t.Fatalf("create through the owner: %v", err)
+	}
+	if err := owner.UpdateEntity(t, id, "Start", mnSample); err != nil {
+		t.Fatalf("the transition through the owner: %v", err)
+	}
+	got, err := owner.GetEntity(t, id)
+	if err != nil {
+		t.Fatalf("read the entity: %v", err)
+	}
+	if got.Meta.State != "DONE" {
+		t.Errorf("state = %q; want DONE", got.Meta.State)
+	}
+	if got.Data["status"] != marker {
+		t.Errorf("status = %v; want %q, the callback's write", got.Data["status"], marker)
 	}
 }

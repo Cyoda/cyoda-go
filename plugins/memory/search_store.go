@@ -423,9 +423,11 @@ func (s *AsyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 	return claimed, nil
 }
 
-// ClearResults deletes the job's persisted result IDs. Idempotent: a
-// missing job is a no-op, matching the interface contract.
-func (s *AsyncSearchStore) ClearResults(ctx context.Context, jobID string) error {
+// ClearResults deletes the job's persisted result IDs, fenced like the write
+// methods (missing/terminal/epoch): a refused clear deletes nothing. The
+// fence and the delete run under one lock hold. Idempotent at the current
+// epoch.
+func (s *AsyncSearchStore) ClearResults(ctx context.Context, jobID string, epoch int64) error {
 	tid, err := s.resolveTenant(ctx)
 	if err != nil {
 		return err
@@ -434,10 +436,9 @@ func (s *AsyncSearchStore) ClearResults(ctx context.Context, jobID string) error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	entry, err := s.findEntryLocked(tid, jobID)
+	entry, err := s.guardWrite(tid, jobID, epoch)
 	if err != nil {
-		// Unknown job: idempotent no-op, not an error.
-		return nil
+		return err
 	}
 	entry.entityIDs = nil
 	return nil

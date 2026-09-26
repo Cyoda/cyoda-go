@@ -367,6 +367,7 @@ func TestDispatchCalloutResponse_WireNames(t *testing.T) {
 		ErrorStatus:     503,
 		ErrorRetryable:  true,
 		EntityData:      []byte(`x`),
+		NoPayload:       true,
 		Matches:         &yes,
 		Reason:          "big",
 		Result:          json.RawMessage(`{"fireAfterMs":1}`),
@@ -388,6 +389,7 @@ func TestDispatchCalloutResponse_WireNames(t *testing.T) {
 		`"errorStatus":503`,
 		`"errorRetryable":true`,
 		`"entityData":"eA=="`,
+		`"noPayload":true`,
 		`"matches":true`,
 		`"reason":"big"`,
 		`"result":{"fireAfterMs":1}`,
@@ -408,7 +410,7 @@ func TestDispatchCalloutResponse_WireNames(t *testing.T) {
 		len(got.Attempts) != 1 || got.Attempts[0] != resp.Attempts[0] ||
 		got.MemberError != resp.MemberError || got.MemberRetryable == nil || !*got.MemberRetryable ||
 		got.ErrorCode != resp.ErrorCode || got.ErrorStatus != resp.ErrorStatus || !got.ErrorRetryable ||
-		string(got.EntityData) != "x" || got.Matches == nil || !*got.Matches || got.Reason != resp.Reason ||
+		string(got.EntityData) != "x" || !got.NoPayload || got.Matches == nil || !*got.Matches || got.Reason != resp.Reason ||
 		string(got.Result) != string(resp.Result) || got.ResultKind != resp.ResultKind ||
 		len(got.Warnings) != 1 || len(got.Errors) != 1 {
 		t.Errorf("round trip lost fields: %+v", got)

@@ -32,8 +32,8 @@ type txState struct {
 	readSet    map[string]int64
 	writeSet   map[string]int64
 	savepoints []savepointEntry
-	// abortCause is the ceiling error that aborted this transaction
-	// server-side, when one did. See RecordAbort.
+	// abortCause is the error that aborted this transaction server-side,
+	// when it was a ceiling or a concurrent writer. See RecordAbort.
 	abortCause error
 }
 
@@ -61,6 +61,11 @@ func newTxState(tenantID spi.TenantID) *txState {
 // statement cancelled by statement_timeout would be cancelled again, so the
 // retry is a promise that cannot be kept.
 //
+// The same holds in the other direction for a statement issued after the abort:
+// its 25P02 is a conflict when a concurrent writer caused the abort
+// (40001/40P01), and nothing else about it says so. classifyTxError records both
+// kinds of cause and reads them back.
+//
 // First writer wins: the first failure is the one that aborted the transaction,
 // and everything after it is a consequence. RestoreSavepoint clears the record,
 // because a savepoint rollback makes the transaction usable again.
@@ -74,7 +79,8 @@ func (s *txState) RecordAbort(err error) {
 
 // AbortCause returns the error recorded by RecordAbort, or nil when nothing
 // recorded one — in which case Commit has no better information than 25P02 and
-// keeps its existing conflict mapping.
+// keeps its existing conflict mapping, and a later statement's 25P02 is
+// returned unmapped.
 func (s *txState) AbortCause() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

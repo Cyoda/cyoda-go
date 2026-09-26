@@ -56,10 +56,18 @@ func TestNewProcessorCallout(t *testing.T) {
 		t.Error("attachEntity=true must attach the payload")
 	}
 
-	// the mapper keeps today's three cases
-	same, err := call.mapResponse(&ProcessingResponse{Success: true})
-	if err != nil || same.Entity != entity {
-		t.Errorf("no payload: got (%v, %v), want the entity unchanged", same.Entity, err)
+	// No payload, or a payload with no data, is "no payload": no entity, so
+	// the engine keeps a write the processor made through a joined callback
+	// instead of applying the payload it dispatched with.
+	for name, resp := range map[string]*ProcessingResponse{
+		"no payload":           {Success: true},
+		"a payload, no data":   {Success: true, Payload: json.RawMessage(`{"other":1}`)},
+		"a payload, null data": {Success: true, Payload: json.RawMessage(`{"data":null}`)},
+	} {
+		none, err := call.mapResponse(resp)
+		if err != nil || none.Entity != nil {
+			t.Errorf("%s: got (%+v, %v), want no entity", name, none.Entity, err)
+		}
 	}
 	updated, err := call.mapResponse(&ProcessingResponse{Success: true, Payload: json.RawMessage(`{"data":{"foo":"new"}}`)})
 	if err != nil || string(updated.Entity.Data) != `{"foo":"new"}` || updated.Entity.Meta.ID != entity.Meta.ID {
