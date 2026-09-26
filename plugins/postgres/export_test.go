@@ -300,4 +300,10 @@ var CaptureSlogForTest = captureSlog
 
 // RankClaimsSQLForTest is ClaimDue's ranking, for a test that explains its
 // plan.
-const RankClaimsSQLForTest = rankClaimsSQL
+var RankClaimsSQLForTest = rankClaimsSQL
+
+// ClaimTenantsSQLForTest is the claim's tenant list.
+const ClaimTenantsSQLForTest = claimTenantsSQL
+
+// PairKeyForTest is pairKey.
+var PairKeyForTest = pairKey
