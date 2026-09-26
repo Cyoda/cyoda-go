@@ -79,13 +79,6 @@ func (s *scheduledTaskStore) ClaimDue(ctx context.Context, req spi.ClaimRequest)
 
 	// spi.SelectClaims applies the rules every backend shares: one task per
 	// entity, the per-tenant limits, tenants taking turns.
-	busy := s.tm.busyTaskKeys()
-	free := cands[:0]
-	for _, c := range cands {
-		if !busy[taskKey{tenant: c.TenantID, id: c.ID}] {
-			free = append(free, c)
-		}
-	}
 	chosen := spi.SelectClaims(cands, req)
 	ops := make([]scheduledTaskOp, 0, len(chosen))
 	fromLostOwner := make([]bool, 0, len(chosen))
@@ -119,23 +112,28 @@ func (s *scheduledTaskStore) ClaimDue(ctx context.Context, req spi.ClaimRequest)
 	return out, nil
 }
 
-// claimTenantsSQL lists the tenants that hold a WAITING task, one index probe
-// each (a loose scan of idx_scheduled_tasks_waiting), and, when the argument
-// is 1 (AllowLostOwner), those that hold a RUNNING task.
-const claimTenantsSQL = `WITH RECURSIVE waiting_tenant(tenant_id) AS (
-	SELECT (SELECT st.tenant_id FROM scheduled_tasks st
-	         WHERE st.status = 'WAITING'
-	         ORDER BY st.tenant_id, st.next_attempt_time LIMIT 1)
+// claimTenantsSQL lists the tenants one claim reads, with, for each, whether
+// to read its WAITING tasks and whether to read its RUNNING ones:
+//   - the tenants whose earliest WAITING task is due at ?1, found by a loose
+//     scan of idx_scheduled_tasks_waiting that reads each tenant's first index
+//     entry and nothing more (one probe per tenant with a WAITING task);
+//   - when ?2 is 1 (AllowLostOwner), the tenants with a RUNNING task, read
+//     through idx_scheduled_tasks_running_entity.
+const claimTenantsSQL = `WITH RECURSIVE waiting_tenant(tenant_id, first_at) AS (
+	SELECT tenant_id, next_attempt_time FROM (
+		SELECT st.tenant_id, st.next_attempt_time FROM scheduled_tasks st
+		 WHERE st.status = 'WAITING'
+		 ORDER BY st.tenant_id, st.next_attempt_time LIMIT 1)
 	UNION ALL
-	SELECT (SELECT st.tenant_id FROM scheduled_tasks st
-	         WHERE st.status = 'WAITING' AND st.tenant_id > w.tenant_id
-	         ORDER BY st.tenant_id, st.next_attempt_time LIMIT 1)
-	  FROM waiting_tenant w
-	 WHERE w.tenant_id IS NOT NULL
+	SELECT st.tenant_id, st.next_attempt_time
+	  FROM waiting_tenant w, scheduled_tasks st
+	 WHERE st.rowid = (SELECT s2.rowid FROM scheduled_tasks s2
+	                    WHERE s2.status = 'WAITING' AND s2.tenant_id > w.tenant_id
+	                    ORDER BY s2.tenant_id, s2.next_attempt_time LIMIT 1)
 )
-SELECT tenant_id FROM waiting_tenant WHERE tenant_id IS NOT NULL
-UNION
-SELECT tenant_id FROM scheduled_tasks WHERE ? = 1 AND status = 'RUNNING'`
+SELECT tenant_id, 1, 0 FROM waiting_tenant WHERE first_at <= ?1
+UNION ALL
+SELECT DISTINCT tenant_id, 0, 1 FROM scheduled_tasks WHERE ?2 = 1 AND status = 'RUNNING'`
 
 // claimWaitingSQL returns one tenant's first due WAITING candidates, one per
 // entity: a task whose entity has no RUNNING task, that is not busy, and that
@@ -180,28 +178,41 @@ const claimLostSQL = selectTaskSQL + ` INDEXED BY idx_scheduled_tasks_running_en
 // every candidate, since its tenant order depends on each tenant's first
 // candidate only, which the set keeps.
 //
-// The cost is one index probe per tenant with a WAITING task, plus, per tenant
-// with a quota, the rows its walk passes before its n-th candidate: the n, the
-// tasks of entities with a RUNNING task, the busy rows, and later tasks of
-// entities already met, each checked by a probe of
-// idx_scheduled_tasks_waiting_entity. None grows with a tenant's backlog.
+// The cost is one index probe per tenant with a WAITING task
+// (claimTenantsSQL); claimWaitingSQL only for a tenant whose earliest WAITING
+// task is due, and claimLostSQL only for a tenant with a RUNNING task. A
+// claimWaitingSQL reads the rows its walk passes before the n-th candidate:
+// the n, the busy rows, the tasks of entities with a RUNNING task, and later
+// tasks of entities already met, each checked by a probe of
+// idx_scheduled_tasks_waiting_entity. A claimLostSQL reads the tenant's
+// RUNNING rows. None grows with a tenant's other due tasks. All of it runs
+// under the commit gate.
 func (s *scheduledTaskStore) claimCandidates(ctx context.Context, req spi.ClaimRequest) ([]spi.ScheduledTask, error) {
 	allowLost := 0
 	if req.AllowLostOwner {
 		allowLost = 1
 	}
-	rows, err := s.db.QueryContext(ctx, claimTenantsSQL, allowLost)
+	rows, err := s.db.QueryContext(ctx, claimTenantsSQL, req.NowMs, allowLost)
 	if err != nil {
 		return nil, err
 	}
+	type reads struct{ waiting, running bool }
 	var tenants []spi.TenantID
+	read := make(map[spi.TenantID]*reads)
 	for rows.Next() {
 		var tn string
-		if err := rows.Scan(&tn); err != nil {
+		var waiting, running bool
+		if err := rows.Scan(&tn, &waiting, &running); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
-		tenants = append(tenants, spi.TenantID(tn))
+		r, ok := read[spi.TenantID(tn)]
+		if !ok {
+			r = &reads{}
+			read[spi.TenantID(tn)] = r
+			tenants = append(tenants, spi.TenantID(tn))
+		}
+		r.waiting, r.running = r.waiting || waiting, r.running || running
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
@@ -229,19 +240,20 @@ func (s *scheduledTaskStore) claimCandidates(ctx context.Context, req spi.ClaimR
 		if err != nil {
 			return nil, err
 		}
-		waiting, err := readTasks(ctx, s.db, claimWaitingSQL, string(tn), req.NowMs, string(busy), n)
-		if err != nil {
-			return nil, err
+		if read[tn].waiting {
+			waiting, err := readTasks(ctx, s.db, claimWaitingSQL, string(tn), req.NowMs, string(busy), n)
+			if err != nil {
+				return nil, err
+			}
+			cands = append(cands, waiting...)
 		}
-		cands = append(cands, waiting...)
-		if !req.AllowLostOwner {
-			continue
+		if read[tn].running {
+			lost, err := readTasks(ctx, s.db, claimLostSQL, string(tn), staleCutoff, string(busy), n)
+			if err != nil {
+				return nil, err
+			}
+			cands = append(cands, lost...)
 		}
-		lost, err := readTasks(ctx, s.db, claimLostSQL, string(tn), staleCutoff, string(busy), n)
-		if err != nil {
-			return nil, err
-		}
-		cands = append(cands, lost...)
 	}
 	return cands, nil
 }
