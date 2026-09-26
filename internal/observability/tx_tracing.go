@@ -147,6 +147,12 @@ func (t *TracingTransactionManager) ReleaseSavepoint(ctx context.Context, txID s
 	return err
 }
 
+// LostRace asks the wrapped manager whether the transaction has already lost a
+// write race. It is a read-only question and is not traced.
+func (t *TracingTransactionManager) LostRace(ctx context.Context, txID string) (bool, error) {
+	return t.inner.LostRace(ctx, txID)
+}
+
 // isConflict reports whether err is a transaction serialization conflict.
 func isConflict(err error) bool {
 	return errors.Is(err, spi.ErrConflict)

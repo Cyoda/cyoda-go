@@ -887,6 +887,10 @@ func (t *txLeakTracker) ReleaseSavepoint(ctx context.Context, txID string, savep
 	return t.inner.ReleaseSavepoint(ctx, txID, savepointID)
 }
 
+func (t *txLeakTracker) LostRace(ctx context.Context, txID string) (bool, error) {
+	return t.inner.LostRace(ctx, txID)
+}
+
 // setupEngineForCBDFire builds an engine wired to a leak-tracking tx manager
 // and the given mock external-processing dispatcher, with a steppable clock
 // starting at initialMs. maxStateVisits, when > 0, overrides the engine's

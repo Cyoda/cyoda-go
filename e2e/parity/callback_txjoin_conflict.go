@@ -19,9 +19,12 @@ import (
 // again inside it, and fails when the joined write is refused. Where each
 // backend notices the loss differs — PostgreSQL at the joined write, memory and
 // sqlite at the commit — and the answer must not. cb-race-target-thenfail makes
-// the same lost write and then fails regardless, so under ASYNC_NEW_TX the
-// savepoint rollback discards the write: the transaction still lost the race,
-// and the update still answers 409 with nothing committed.
+// the same lost write and then fails regardless of the joined write's answer.
+// Under SYNC, ASYNC_SAME_TX and COMMIT_BEFORE_DISPATCH its failure is a consequence of the
+// lost race, so the update answers the conflict, not the failure. Under
+// ASYNC_NEW_TX the savepoint rollback discards the write: the transaction
+// still lost the race, and the update still answers 409 with nothing
+// committed.
 
 func init() {
 	Register(
@@ -36,7 +39,7 @@ const (
 
 // cbRaceModes are the execution modes whose dispatch carries a transaction a
 // callback can join, each with the processor entry that runs cb-race-target-strict,
-// and ASYNC_NEW_TX once more with cb-race-target-thenfail.
+// and each once more with cb-race-target-thenfail.
 var cbRaceModes = []struct {
 	name string
 	proc map[string]any
@@ -45,10 +48,14 @@ var cbRaceModes = []struct {
 	segmented bool
 }{
 	{name: "SYNC", proc: cbProc("cb-race-target-strict", "SYNC", "", nil)},
+	{name: "SYNC_ThenFails", proc: cbProc("cb-race-target-thenfail", "SYNC", "", nil)},
+	{name: "ASYNC_SAME_TX_ThenFails", proc: cbProc("cb-race-target-thenfail", "ASYNC_SAME_TX", "", nil)},
 	{name: "ASYNC_NEW_TX", proc: cbProc("cb-race-target-strict", "ASYNC_NEW_TX", "", nil)},
 	{name: "ASYNC_NEW_TX_ThenFails", proc: cbProc("cb-race-target-thenfail", "ASYNC_NEW_TX", "", nil)},
 	{name: "COMMIT_BEFORE_DISPATCH", segmented: true,
 		proc: cbProc("cb-race-target-strict", "COMMIT_BEFORE_DISPATCH", "", map[string]any{"startNewTxOnDispatch": true})},
+	{name: "COMMIT_BEFORE_DISPATCH_ThenFails", segmented: true,
+		proc: cbProc("cb-race-target-thenfail", "COMMIT_BEFORE_DISPATCH", "", map[string]any{"startNewTxOnDispatch": true})},
 }
 
 func RunCallbackTxJoin_LostWriteRaceIs409(t *testing.T, fixture BackendFixture) {

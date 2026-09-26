@@ -253,7 +253,7 @@ Import-time validation rejects any `executionMode` value not in the list above (
 - **`COMMIT_BEFORE_DISPATCH`, `startNewTxOnDispatch: true`.** The operation fails. cyoda's state: `TX_pre` **stays committed**; `TX_post` is rolled back. Not clean for a re-run.
 - **`COMMIT_BEFORE_DISPATCH`, `startNewTxOnDispatch: false`.** The operation fails. cyoda's state: `TX_pre` stays committed; the member's callbacks were transactions of their own and stand.
 
-The error a client sees: no member within the wait → `503 NO_COMPUTE_MEMBER_FOR_TAG`; a single failed try → that try's own code (`503 DISPATCH_TIMEOUT`, `503 COMPUTE_MEMBER_DISCONNECTED`, `503 DISPATCH_FORWARD_FAILED`); several failed tries → `503 CALLOUT_FAILED`, listing them; a member that answered `success: false` → `400 WORKFLOW_FAILED` carrying the member's own message, `retryable: true` when the member said so.
+The error a client sees: no member within the wait → `503 NO_COMPUTE_MEMBER_FOR_TAG`; a single failed try → that try's own code (`503 DISPATCH_TIMEOUT`, `503 COMPUTE_MEMBER_DISCONNECTED`, `503 DISPATCH_FORWARD_FAILED`); several failed tries → `503 CALLOUT_FAILED`, listing them; a member that answered `success: false` → `400 WORKFLOW_FAILED` carrying the member's own message, `retryable: true` when the member said so. One exception holds in every mode whose callbacks join the transaction: when a callback's write had already lost a race against another transaction, the failure is a consequence of that race, and the operation answers a retryable `409 CONFLICT` instead.
 
 ## SCHEDULED TRANSITIONS
 

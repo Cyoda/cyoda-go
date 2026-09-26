@@ -851,6 +851,29 @@ func (tm *TransactionManager) ReleaseSavepoint(ctx context.Context, txID string,
 	return nil
 }
 
+// LostRace reports whether the transaction has already lost a write race.
+// PostgreSQL refuses the losing write itself — 40001 when a concurrent
+// committer changed the row, 40P01 for a deadlock victim — and classifyTxError
+// records that as the transaction's abort cause, which a rollback to a
+// savepoint keeps (see txState.RestoreSavepoint). So the answer is whether the
+// recorded cause is a concurrent writer. It issues no statement, so it answers
+// on the aborted transaction, and it changes nothing.
+//
+// Tenant isolation: rejects mismatched-tenant callers.
+func (tm *TransactionManager) LostRace(ctx context.Context, txID string) (bool, error) {
+	if _, ok := tm.registry.Lookup(txID); !ok {
+		return false, fmt.Errorf("LostRace: %w (txID=%s)", spi.ErrTxNotFound, txID)
+	}
+	state, ok := tm.lookupTxState(txID)
+	if !ok {
+		return false, fmt.Errorf("LostRace: %w (txID=%s)", spi.ErrTxNotFound, txID)
+	}
+	if err := verifyTenant(ctx, state.tenantID, "LostRace", txID); err != nil {
+		return false, err
+	}
+	return isConcurrentWriterAbort(state.AbortCause()), nil
+}
+
 // lookupTenant returns the tenant recorded for a transaction, or false if
 // the txID is not active. Used by Rollback / Join where a txState lookup
 // is not otherwise needed.
