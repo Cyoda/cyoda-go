@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"encoding/json"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -102,5 +104,207 @@ func TestReapExpiredSnapshotsTick_HealthyStoreLeavesHealthAlone(t *testing.T) {
 
 	if !health.Load() {
 		t.Error("healthFlag = false after an uneventful snapshot reaper tick")
+	}
+}
+
+// reaperTestConfig sweeps fast: the snapshot reap every 10ms, the claim every
+// 20ms.
+func reaperTestConfig() *Config {
+	return &Config{
+		SearchReapInterval:         10 * time.Millisecond,
+		SearchSnapshotTTL:          time.Hour,
+		SearchJobHeartbeatInterval: 20 * time.Millisecond,
+		SearchJobStaleAfter:        5 * time.Minute,
+		SearchJobMaxAttempts:       1,
+	}
+}
+
+// createReapTestJob persists a RUNNING job that decodes and re-runs, created
+// createdAgo in the past.
+func createReapTestJob(t *testing.T, store spi.AsyncSearchStore, id string, createdAgo time.Duration) {
+	t.Helper()
+	opts, err := json.Marshal(struct {
+		Limit int `json:"limit"`
+	}{Limit: 10})
+	if err != nil {
+		t.Fatalf("marshal opts: %v", err)
+	}
+	job := &spi.SearchJob{
+		ID:         id,
+		TenantID:   "tenant-reap",
+		Status:     "RUNNING",
+		ModelRef:   spi.ModelRef{EntityName: "person", ModelVersion: "1"},
+		Condition:  []byte(`{"type":"group","operator":"AND","conditions":[]}`),
+		SearchOpts: opts,
+		CreateTime: time.Now().Add(-createdAgo),
+	}
+	if err := store.CreateJob(common.SystemUserContext("tenant-reap"), job); err != nil {
+		t.Fatalf("CreateJob(%s): %v", id, err)
+	}
+}
+
+// blockedReapStore blocks every ReapExpired, as a DELETE waiting on an
+// exhausted main pool does, until its context ends or the test lets it go.
+type blockedReapStore struct {
+	spi.AsyncSearchStore
+	reaping  chan struct{}
+	letGo    chan struct{}
+	letGoOne sync.Once
+}
+
+func (s *blockedReapStore) release() { s.letGoOne.Do(func() { close(s.letGo) }) }
+
+func (s *blockedReapStore) ReapExpired(ctx context.Context, ttl time.Duration) (int, error) {
+	select {
+	case s.reaping <- struct{}{}:
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case <-s.letGo:
+		return 0, nil
+	}
+}
+
+// awaitEpoch waits until the job's epoch reaches want.
+func awaitEpoch(t *testing.T, store spi.AsyncSearchStore, id string, want int64, within time.Duration, what string) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	var epoch int64
+	for time.Now().Before(deadline) {
+		job, err := store.GetJob(common.SystemUserContext("tenant-reap"), id)
+		if err != nil {
+			t.Fatalf("GetJob(%s): %v", id, err)
+		}
+		if epoch = job.Epoch; epoch >= want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("%s: epoch %d within %s, want %d", what, epoch, within, want)
+}
+
+// stopWithin calls stop and fails the test if it does not return in time.
+func stopWithin(t *testing.T, stop func(), within time.Duration, what string) {
+	t.Helper()
+	stopped := make(chan struct{})
+	go func() { stop(); close(stopped) }()
+	select {
+	case <-stopped:
+	case <-time.After(within):
+		t.Fatalf("%s did not return within %s", what, within)
+	}
+}
+
+// A snapshot reap blocked on the main pool does not stop the claim: a job
+// released while the reap waits is still claimed.
+func TestSearchReapers_BlockedReapDoesNotStopClaims(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	base, err := factory.AsyncSearchStore(context.Background())
+	if err != nil {
+		t.Fatalf("AsyncSearchStore: %v", err)
+	}
+	store := &blockedReapStore{AsyncSearchStore: base, reaping: make(chan struct{}, 1), letGo: make(chan struct{})}
+	svc := newReclaimService(t, factory, store)
+	health := &atomic.Bool{}
+	health.Store(true)
+
+	stop := startSearchReapers(reaperTestConfig(), svc, store, health)
+	t.Cleanup(stop)
+	t.Cleanup(store.release) // runs before stop
+
+	select {
+	case <-store.reaping:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no snapshot reap started within 2s")
+	}
+	createReapTestJob(t, base, "job-released", 0)
+	if err := base.Release(common.SystemUserContext("tenant-reap"), "job-released", 1); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	awaitEpoch(t, base, "job-released", 2, 2*time.Second, "the claim of a released job while a snapshot reap is blocked")
+}
+
+// Stopping the sweeps ends a snapshot reap blocked on the main pool.
+func TestSearchReapers_StopEndsBlockedReap(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	base, err := factory.AsyncSearchStore(context.Background())
+	if err != nil {
+		t.Fatalf("AsyncSearchStore: %v", err)
+	}
+	store := &blockedReapStore{AsyncSearchStore: base, reaping: make(chan struct{}, 1), letGo: make(chan struct{})}
+	t.Cleanup(store.release)
+	svc := newReclaimService(t, factory, store)
+	health := &atomic.Bool{}
+	health.Store(true)
+
+	stop := startSearchReapers(reaperTestConfig(), svc, store, health)
+	select {
+	case <-store.reaping:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no snapshot reap started within 2s")
+	}
+	stopWithin(t, stop, 2*time.Second, "stopping the sweeps with a snapshot reap blocked")
+}
+
+// blockedFailStore blocks every FAILED write, as one waiting on an exhausted
+// main pool does, until its context ends. ended is set once such a write has
+// returned.
+type blockedFailStore struct {
+	spi.AsyncSearchStore
+	failing chan struct{}
+	ended   atomic.Bool
+}
+
+func (s *blockedFailStore) UpdateJobStatus(ctx context.Context, jobID string, epoch int64, status string, resultCount int, errMsg string, finishTime time.Time, calcTimeMs int64) error {
+	if status != "FAILED" {
+		return s.AsyncSearchStore.UpdateJobStatus(ctx, jobID, epoch, status, resultCount, errMsg, finishTime, calcTimeMs)
+	}
+	select {
+	case s.failing <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	s.ended.Store(true)
+	return ctx.Err()
+}
+
+// Stopping the sweeps ends the second pass's blocked write and waits for it:
+// when stop returns, no write the sweeps started is still in flight. The job
+// it did not fail stays RUNNING at its claimed epoch, to be claimed again.
+func TestSearchReapers_StopEndsAndAwaitsBlockedSecondPass(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	base, err := factory.AsyncSearchStore(context.Background())
+	if err != nil {
+		t.Fatalf("AsyncSearchStore: %v", err)
+	}
+	store := &blockedFailStore{AsyncSearchStore: base, failing: make(chan struct{}, 1)}
+	svc := newReclaimService(t, factory, store)
+	health := &atomic.Bool{}
+	health.Store(true)
+
+	// Stale, and at its cap on the first claim (maxAttempts 1).
+	createReapTestJob(t, base, "job-capped", time.Hour)
+	stop := startSearchReapers(reaperTestConfig(), svc, store, health)
+	select {
+	case <-store.failing:
+	case <-time.After(2 * time.Second):
+		stop()
+		t.Fatal("the capped job's FAILED write was not sent within 2s")
+	}
+	stopWithin(t, stop, 2*time.Second, "stopping the sweeps with a second-pass write blocked")
+	if !store.ended.Load() {
+		t.Fatal("stop returned while the second pass's write was still in flight")
+	}
+	job, err := base.GetJob(common.SystemUserContext("tenant-reap"), "job-capped")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if job.Status != "RUNNING" || job.Epoch != 2 {
+		t.Fatalf("job = (%s, epoch %d), want (RUNNING, epoch 2)", job.Status, job.Epoch)
 	}
 }

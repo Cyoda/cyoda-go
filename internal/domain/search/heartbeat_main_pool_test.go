@@ -170,18 +170,18 @@ func TestReclaimStaleJobs_MainPoolExhausted_SweepReturnsAndJobIsHeartbeated(t *t
 
 	store.blocked.Store(true)
 	type sweep struct {
-		reenqueued, failed int
-		err                error
+		reenqueued int
+		err        error
 	}
 	done := make(chan sweep, 1)
 	go func() {
-		r, f, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5)
-		done <- sweep{r, f, err}
+		r, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5)
+		done <- sweep{r, err}
 	}()
 	select {
 	case got := <-done:
-		if got.err != nil || got.reenqueued != 1 || got.failed != 0 {
-			t.Fatalf("ReclaimStaleJobs = (reenqueued %d, failed %d, err %v), want (1, 0, nil)", got.reenqueued, got.failed, got.err)
+		if got.err != nil || got.reenqueued != 1 {
+			t.Fatalf("ReclaimStaleJobs = (reenqueued %d, err %v), want (1, nil)", got.reenqueued, got.err)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("ReclaimStaleJobs did not return within 2s with the main pool exhausted: the sweep waits on a main-pool statement")
@@ -334,13 +334,13 @@ func TestReclaimStaleJobs_BlockedWriteForUnrunJob_DoesNotDelayRunnableJob(t *tes
 
 	store.blocked.Store(true)
 	type sweep struct {
-		reenqueued, failed int
-		err                error
+		reenqueued int
+		err        error
 	}
 	done := make(chan sweep, 1)
 	go func() {
-		r, f, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 1)
-		done <- sweep{r, f, err}
+		r, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 1)
+		done <- sweep{r, err}
 	}()
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -354,13 +354,124 @@ func TestReclaimStaleJobs_BlockedWriteForUnrunJob_DoesNotDelayRunnableJob(t *tes
 	store.release()
 	select {
 	case got := <-done:
-		if got.err != nil || got.reenqueued != 1 || got.failed != 1 {
-			t.Fatalf("ReclaimStaleJobs = (reenqueued %d, failed %d, err %v), want (1, 1, nil)", got.reenqueued, got.failed, got.err)
+		if got.err != nil || got.reenqueued != 1 {
+			t.Fatalf("ReclaimStaleJobs = (reenqueued %d, err %v), want (1, nil)", got.reenqueued, got.err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("ReclaimStaleJobs did not return after the main pool was released")
 	}
 	for id, want := range map[string]string{"a-capped": "FAILED", "b-undecodable": "FAILED", "c-runnable": "SUCCESSFUL"} {
+		if status := pollUntilTerminal(t, svc, ctx, id, 5*time.Second); status.Status != want {
+			t.Errorf("%s status = %q, want %s", id, status.Status, want)
+		}
+	}
+}
+
+// secondPassStore counts the second-pass FAILED writes waiting on the main
+// pool right now.
+type secondPassStore struct {
+	*orderedClaimStore
+	waiting atomic.Int32
+}
+
+func (s *secondPassStore) UpdateJobStatus(ctx context.Context, jobID string, epoch int64, status string, resultCount int, errMsg string, finishTime time.Time, calcTimeMs int64) error {
+	if status == "FAILED" {
+		s.waiting.Add(1)
+		defer s.waiting.Add(-1)
+	}
+	return s.orderedClaimStore.UpdateJobStatus(ctx, jobID, epoch, status, resultCount, errMsg, finishTime, calcTimeMs)
+}
+
+// awaitCount waits until get() reaches want.
+func awaitCount(t *testing.T, get func() int32, want int32, within time.Duration, what string) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		if get() >= want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("%s: %d within %s, want at least %d", what, get(), within, want)
+}
+
+// The claim loop never waits on the main pool. A sweep's FAILED write for a
+// capped job blocks on an exhausted pool; the sweep returns all the same, and
+// a later sweep still claims a newly claimable job and starts its heartbeat.
+// The later sweep's own owed write joins the one second pass in flight rather
+// than starting another, and nothing owed is lost once the pool frees.
+func TestReclaimStaleJobs_BlockedSecondPass_LaterSweepStillClaims(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { factory.Close() })
+	base, err := factory.AsyncSearchStore(context.Background())
+	if err != nil {
+		t.Fatalf("AsyncSearchStore: %v", err)
+	}
+	store := &secondPassStore{orderedClaimStore: &orderedClaimStore{mainPoolBlockedStore: newMainPoolBlockedStore(base), watch: "c-runnable"}}
+
+	ctx := tenantCtx("tenant-a")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveModelWithFields(t, ctx, factory, ref, map[string]schema.DataType{"name": schema.String})
+	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
+
+	pool := search.NewWorkerPool(2, 8)
+	t.Cleanup(func() { pool.Drain(context.Background()) })
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store).
+		WithAsyncPool(pool).
+		WithHeartbeat(20 * time.Millisecond)
+	t.Cleanup(store.release) // runs before the pool drains
+
+	sweep := func(what string) int {
+		t.Helper()
+		type result struct {
+			reenqueued int
+			err        error
+		}
+		done := make(chan result, 1)
+		go func() {
+			r, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 1)
+			done <- result{r, err}
+		}()
+		select {
+		case got := <-done:
+			if got.err != nil {
+				t.Fatalf("%s: ReclaimStaleJobs: %v", what, got.err)
+			}
+			return got.reenqueued
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s did not return within 2s with a second-pass write blocked on the main pool", what)
+			return 0
+		}
+	}
+
+	// Stale, so the claim counts: with maxAttempts 1 the job is at its cap.
+	createStaleReclaimJob(t, base, "tenant-a", "a-capped", ref, cond, time.Now())
+	store.blocked.Store(true)
+	if got := sweep("the first sweep"); got != 0 {
+		t.Fatalf("the first sweep re-enqueued %d, want 0", got)
+	}
+	awaitCount(t, store.waiting.Load, 1, 2*time.Second, "the capped job's FAILED write waiting on the main pool")
+
+	createStaleReclaimJob(t, base, "tenant-a", "b-capped", ref, cond, time.Now())
+	createRunningReclaimJobAt(t, base, "tenant-a", "c-runnable", ref, cond, time.Now(), time.Now())
+	if err := base.Release(ctx, "c-runnable", 1); err != nil {
+		t.Fatalf("Release(c-runnable): %v", err)
+	}
+	if got := sweep("the later sweep"); got != 1 {
+		t.Fatalf("the later sweep re-enqueued %d, want 1 (c-runnable)", got)
+	}
+	awaitCount(t, store.watchBeats.Load, 3, 2*time.Second, "heartbeats of the job the later sweep claimed")
+
+	// One second pass per node: the later sweep's owed write waits its turn
+	// in the pass already in flight.
+	time.Sleep(100 * time.Millisecond)
+	if got := store.waiting.Load(); got != 1 {
+		t.Fatalf("second-pass writes waiting on the main pool = %d, want 1: more than one second pass is in flight", got)
+	}
+
+	store.release()
+	for id, want := range map[string]string{"a-capped": "FAILED", "b-capped": "FAILED", "c-runnable": "SUCCESSFUL"} {
 		if status := pollUntilTerminal(t, svc, ctx, id, 5*time.Second); status.Status != want {
 			t.Errorf("%s status = %q, want %s", id, status.Status, want)
 		}

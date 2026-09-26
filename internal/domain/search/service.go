@@ -245,6 +245,14 @@ type SearchService struct {
 	// registry (not derived by scanning it) so the cap check is O(1) under
 	// the same lock that makes check-then-register atomic.
 	tenantInFlight map[spi.TenantID]int
+
+	// secondPassMu guards owed and secondPassDone: the writes the reclaim
+	// sweep owes jobs it claimed but will not run, and the one goroutine per
+	// node that sends them (see ReclaimStaleJobs). secondPassDone is non-nil
+	// while that goroutine runs, and closed when it returns.
+	secondPassMu   sync.Mutex
+	owed           map[owedKey]owedWrite
+	secondPassDone chan struct{}
 }
 
 // asyncJobHandle is what the cancel registry keeps per in-flight (queued or

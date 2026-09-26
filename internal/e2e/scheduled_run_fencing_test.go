@@ -344,8 +344,31 @@ func TestSchedPool_AsyncSearchReclaimNotStarved(t *testing.T) {
 	createOpen(t, h, model, workflowSampleModel)
 	probe := poolProbe(t, h)
 
-	// A job as CreateJob writes it (a point in time and search options, both
-	// read back on re-execution) whose owner stopped heartbeating an hour ago.
+	jobID := seedOrphanSearchJob(t, s, model, false)
+	release := holdMainPool(t, h, 2)
+	defer release()
+	requirePoolExhausted(t, h, probe)
+
+	readJob := func() (epoch int64, hb time.Time) { e, _, hb := readSearchJob(t, s, jobID); return e, hb }
+	awaitDBCondition(t, 10*time.Second, "the reclaim", func() bool { e, _ := readJob(); return e >= 2 })
+	claimed, first := readJob()
+
+	// Three stale windows of heartbeats (one every 250ms) within five seconds:
+	// a heartbeat that stamps once and then waits on the main pool fails here.
+	awaitDBCondition(t, 5*time.Second, "the reclaimed job's heartbeat advancing 3s with the main pool exhausted",
+		func() bool { _, hb := readJob(); return hb.Sub(first) >= 3*time.Second })
+	if epoch, _ := readJob(); epoch != claimed {
+		t.Fatalf("the job was reclaimed again (epoch %d, claimed at %d): its heartbeat did not keep the claim live", epoch, claimed)
+	}
+}
+
+// seedOrphanSearchJob writes a job as CreateJob writes it (a point in time and
+// search options, both read back on re-execution) whose owner stopped
+// heartbeating an hour ago. A released job's claim is not counted as an
+// executor loss. It is written on the test's own pool, so it lands while the
+// server's main pool is exhausted.
+func seedOrphanSearchJob(t *testing.T, s *schedDB, model string, released bool) string {
+	t.Helper()
 	jobID := uuid.NewString()
 	pit := time.Now().Add(time.Minute).UTC()
 	opts, err := json.Marshal(struct {
@@ -357,33 +380,70 @@ func TestSchedPool_AsyncSearchReclaimNotStarved(t *testing.T) {
 	}
 	if _, err := s.pool.Exec(context.Background(), `
 		INSERT INTO search_jobs (id, tenant_id, status, model_name, model_ver, condition, point_in_time, search_opts,
-		                         result_count, error, created_at, heartbeat_time, calc_ms, epoch)
+		                         result_count, error, created_at, heartbeat_time, calc_ms, epoch, released)
 		VALUES ($1, $2, 'RUNNING', $3, '1', '{"type":"group","operator":"AND","conditions":[]}'::jsonb, $4, $5,
-		        0, '', now() - interval '1 hour', now() - interval '1 hour', 0, 1)`,
-		jobID, harnessTenant, model, pit, opts); err != nil {
+		        0, '', now() - interval '1 hour', now() - interval '1 hour', 0, 1, $6)`,
+		jobID, harnessTenant, model, pit, opts, released); err != nil {
 		t.Fatalf("seed an orphaned job: %v", err)
 	}
+	return jobID
+}
+
+// readSearchJob reads a job's epoch, status and heartbeat on the test's pool.
+func readSearchJob(t *testing.T, s *schedDB, jobID string) (epoch int64, status string, hb time.Time) {
+	t.Helper()
+	if err := s.pool.QueryRow(context.Background(),
+		`SELECT epoch, status, heartbeat_time FROM search_jobs WHERE tenant_id = $1 AND id = $2`, harnessTenant, jobID).Scan(&epoch, &status, &hb); err != nil {
+		t.Fatalf("read the job: %v", err)
+	}
+	return epoch, status, hb
+}
+
+// TestSchedPool_AsyncSearchClaimNotStalledByOwedWrites: with every main-pool
+// connection held, the claim loop keeps claiming. A snapshot reap (every
+// 100ms) waits on the main pool, and so does the FAILED write owed to a job
+// claimed at its attempt cap; neither stops a later sweep from claiming an
+// orphaned job and heartbeating it. Once the pool frees, the owed write lands.
+func TestSchedPool_AsyncSearchClaimNotStalledByOwedWrites(t *testing.T) {
+	h, s := newSchedulerHarness(t, func(cfg *app.Config) {
+		t.Setenv("CYODA_POSTGRES_MAX_CONNS", "2")
+		cfg.SearchJobHeartbeatInterval = 250 * time.Millisecond
+		cfg.SearchJobStaleAfter = time.Second
+		cfg.SearchJobMaxAttempts = 1
+		cfg.SearchReapInterval = 100 * time.Millisecond
+	})
+	model := uniq("pool-owed")
+	h.SetupModelWithWorkflow(t, model, schedDoc("pool-owed-wf", map[string]any{"Open": map[string]any{}}))
+	createOpen(t, h, model, workflowSampleModel)
+	probe := poolProbe(t, h)
+
 	release := holdMainPool(t, h, 2)
 	defer release()
 	requirePoolExhausted(t, h, probe)
 
-	readJob := func() (epoch int64, hb time.Time) {
-		if err := s.pool.QueryRow(context.Background(),
-			`SELECT epoch, heartbeat_time FROM search_jobs WHERE tenant_id = $1 AND id = $2`, harnessTenant, jobID).Scan(&epoch, &hb); err != nil {
-			t.Fatalf("read the job: %v", err)
-		}
-		return epoch, hb
+	// Stale, so the claim counts: with maxAttempts 1 it is at its cap.
+	capped := seedOrphanSearchJob(t, s, model, false)
+	awaitDBCondition(t, 10*time.Second, "the capped job's claim", func() bool { e, _, _ := readSearchJob(t, s, capped); return e >= 2 })
+	if _, status, _ := readSearchJob(t, s, capped); status != "RUNNING" {
+		t.Fatalf("the capped job is %s with the main pool exhausted, want RUNNING: its FAILED write must wait on the pool", status)
 	}
-	awaitDBCondition(t, 10*time.Second, "the reclaim", func() bool { e, _ := readJob(); return e >= 2 })
-	claimed, first := readJob()
 
-	// Three stale windows of heartbeats (one every 250ms) within five seconds:
-	// a heartbeat that stamps once and then waits on the main pool fails here.
-	awaitDBCondition(t, 5*time.Second, "the reclaimed job's heartbeat advancing 3s with the main pool exhausted",
-		func() bool { _, hb := readJob(); return hb.Sub(first) >= 3*time.Second })
-	if epoch, _ := readJob(); epoch != claimed {
-		t.Fatalf("the job was reclaimed again (epoch %d, claimed at %d): its heartbeat did not keep the claim live", epoch, claimed)
+	// A sweep after the one whose write waits claims the next orphan, and
+	// the heartbeat keeps it live for several stale windows. It was released,
+	// so its claim does not count and it runs.
+	orphan := seedOrphanSearchJob(t, s, model, true)
+	awaitDBCondition(t, 5*time.Second, "the next orphan's claim while an owed write and a reap wait on the main pool",
+		func() bool { e, _, _ := readSearchJob(t, s, orphan); return e >= 2 })
+	claimed, _, first := readSearchJob(t, s, orphan)
+	awaitDBCondition(t, 5*time.Second, "the next orphan's heartbeat advancing 3s with the main pool exhausted",
+		func() bool { _, _, hb := readSearchJob(t, s, orphan); return hb.Sub(first) >= 3*time.Second })
+	if epoch, _, _ := readSearchJob(t, s, orphan); epoch != claimed {
+		t.Fatalf("the orphan was reclaimed again (epoch %d, claimed at %d): its heartbeat did not keep the claim live", epoch, claimed)
 	}
+
+	release()
+	awaitDBCondition(t, 15*time.Second, "the capped job's owed FAILED write once the pool frees",
+		func() bool { _, status, _ := readSearchJob(t, s, capped); return status == "FAILED" })
 }
 
 // TestSchedPool_LockTimeoutOnTaskRowLock: another entity's transaction holds

@@ -804,37 +804,53 @@ func latchOnPanic(healthFlag *atomic.Bool, site string) {
 }
 
 // startSearchReapers starts the async-search sweeps and returns the func that
-// stops them and waits for them to exit. Two cadences: the snapshot-TTL sweep
-// on SearchReapInterval, and the stale-job reclaim sweep on the finer
-// SearchJobHeartbeatInterval, plus one reclaim sweep at startup.
+// stops them and waits for them to exit. Each sweep has a goroutine of its
+// own, so neither waits on the other:
+//   - the snapshot-TTL reap, on SearchReapInterval. Its DELETE shares the
+//     store's main pool with entity transactions and may wait on it.
+//   - the stale-job claim, on the finer SearchJobHeartbeatInterval, plus one
+//     sweep at startup. It never waits on the main pool; the writes it owes
+//     jobs it will not run go to the service's second pass
+//     (search.SearchService.ReclaimStaleJobs).
+//
+// Both run under one context, which stop cancels: a statement still waiting
+// for a connection gives up, and the second pass sends nothing more. stop then
+// waits for both goroutines and for the second pass.
 func startSearchReapers(cfg *Config, svc *search.SearchService, store spi.AsyncSearchStore, healthFlag *atomic.Bool) (stop func()) {
-	stopCh := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		// Startup sweep: a restarted node reclaims its own released jobs and
-		// any already-stale jobs the moment it can execute, not after the
-		// first interval.
-		reclaimStaleTick(context.Background(), svc, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, healthFlag)
-
-		snapTicker := time.NewTicker(cfg.SearchReapInterval)
-		defer snapTicker.Stop()
-		claimTicker := time.NewTicker(cfg.SearchJobHeartbeatInterval)
-		defer claimTicker.Stop()
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		ticker := time.NewTicker(cfg.SearchReapInterval)
+		defer ticker.Stop()
 		for {
 			select {
-			case <-snapTicker.C:
-				reapExpiredSnapshotsTick(context.Background(), store, cfg.SearchSnapshotTTL, healthFlag)
-			case <-claimTicker.C:
-				reclaimStaleTick(context.Background(), svc, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, healthFlag)
-			case <-stopCh:
+			case <-ticker.C:
+				reapExpiredSnapshotsTick(ctx, store, cfg.SearchSnapshotTTL, healthFlag)
+			case <-ctx.Done():
 				return
 			}
 		}
-	}()
+	})
+	wg.Go(func() {
+		// Startup sweep: a restarted node reclaims its own released jobs and
+		// any already-stale jobs the moment it can execute, not after the
+		// first interval.
+		reclaimStaleTick(ctx, svc, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, healthFlag)
+		ticker := time.NewTicker(cfg.SearchJobHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				reclaimStaleTick(ctx, svc, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, healthFlag)
+			case <-ctx.Done():
+				return
+			}
+		}
+	})
 	return func() {
-		close(stopCh)
-		<-done
+		cancel()
+		wg.Wait()
+		svc.WaitReclaimSecondPass()
 	}
 }
 
@@ -844,6 +860,9 @@ func reapExpiredSnapshotsTick(ctx context.Context, store spi.AsyncSearchStore, s
 	defer latchOnPanic(healthFlag, "search snapshot reaper")
 	reaped, err := store.ReapExpired(ctx, snapshotTTL)
 	if err != nil {
+		if ctx.Err() != nil {
+			return // the sweeps are stopping
+		}
 		slog.Error("search snapshot reaper error", "pkg", "search", "err", err)
 	} else if reaped > 0 {
 		slog.Info("reaped expired search snapshots", "pkg", "search", "count", reaped)
@@ -851,20 +870,21 @@ func reapExpiredSnapshotsTick(ctx context.Context, store spi.AsyncSearchStore, s
 }
 
 // reclaimStaleTick claims stale/released RUNNING jobs and re-executes them on
-// this node (or fails those past the attempt cap). Runs on the heartbeat
-// interval — a finer cadence than the snapshot reap — plus once at startup.
+// this node; the second pass fails those past the attempt cap. Runs on the
+// heartbeat interval — a finer cadence than the snapshot reap — plus once at
+// startup.
 func reclaimStaleTick(ctx context.Context, svc *search.SearchService, staleAfter time.Duration, maxAttempts int, healthFlag *atomic.Bool) {
 	defer latchOnPanic(healthFlag, "search stale-job reaper")
-	reenqueued, failed, err := svc.ReclaimStaleJobs(ctx, staleAfter, maxAttempts)
+	reenqueued, err := svc.ReclaimStaleJobs(ctx, staleAfter, maxAttempts)
 	if err != nil {
+		if ctx.Err() != nil {
+			return // the sweeps are stopping
+		}
 		slog.Error("stale search job reclaim error", "pkg", "search", "err", err)
 		return
 	}
 	if reenqueued > 0 {
 		slog.Info("re-enqueued stale async search jobs", "pkg", "search", "count", reenqueued)
-	}
-	if failed > 0 {
-		slog.Warn("failed async search jobs past the attempt cap", "pkg", "search", "count", failed)
 	}
 }
 

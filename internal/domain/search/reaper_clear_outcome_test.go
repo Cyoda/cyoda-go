@@ -61,7 +61,7 @@ func TestReclaimStaleJobs_RefusedClearSendsNoRelease(t *testing.T) {
 				WithAsyncPool(pool).
 				WithHeartbeat(time.Hour)
 
-			if reenq, _, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5); err != nil || reenq != 1 {
+			if reenq, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5); err != nil || reenq != 1 {
 				t.Fatalf("ReclaimStaleJobs = (reenqueued %d, err %v), want (1, nil)", reenq, err)
 			}
 			pool.Drain(context.Background()) // the worker has finished
@@ -104,7 +104,7 @@ func TestReclaimStaleJobs_ReleasedBeforeWorkerRunsSendsNoClear(t *testing.T) {
 		WithAsyncPool(pool).
 		WithHeartbeat(time.Hour)
 
-	if reenq, _, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5); err != nil || reenq != 1 {
+	if reenq, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5); err != nil || reenq != 1 {
 		t.Fatalf("ReclaimStaleJobs = (reenqueued %d, err %v), want (1, nil)", reenq, err)
 	}
 	if n := svc.ReleaseRegisteredJobs(context.Background()); n != 1 {

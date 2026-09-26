@@ -95,12 +95,12 @@ func TestReclaimStaleJobs_ReenqueuesStaleJobToSuccessful(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
 	createStaleReclaimJob(t, store, "tenant-a", "job-stale", ref, cond, time.Now())
 
-	reenq, failed, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5)
+	reenq, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5)
 	if err != nil {
 		t.Fatalf("ReclaimStaleJobs: %v", err)
 	}
-	if reenq != 1 || failed != 0 {
-		t.Fatalf("ReclaimStaleJobs = (reenqueued %d, failed %d), want (1, 0)", reenq, failed)
+	if reenq != 1 {
+		t.Fatalf("ReclaimStaleJobs re-enqueued %d, want 1", reenq)
 	}
 
 	status := pollUntilTerminal(t, svc, ctx, "job-stale", 5*time.Second)
@@ -127,14 +127,16 @@ func TestReclaimStaleJobs_AttemptCapFailsJob(t *testing.T) {
 
 	// maxAttempts=1: this first staleness claim bumps StaleClaims to 1, which
 	// meets the cap, so the job is abandoned (FAILED) rather than re-run.
-	reenq, failed, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 1)
+	reenq, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 1)
 	if err != nil {
 		t.Fatalf("ReclaimStaleJobs: %v", err)
 	}
-	if reenq != 0 || failed != 1 {
-		t.Fatalf("ReclaimStaleJobs = (reenqueued %d, failed %d), want (0, 1)", reenq, failed)
+	if reenq != 0 {
+		t.Fatalf("ReclaimStaleJobs re-enqueued %d, want 0", reenq)
 	}
 
+	// The FAILED write is the sweep's second pass, sent off the sweep.
+	pollUntilTerminal(t, svc, tenantCtx("tenant-a"), "job-cap", 5*time.Second)
 	got, err := store.GetJob(tenantCtx("tenant-a"), "job-cap")
 	if err != nil {
 		t.Fatalf("GetJob: %v", err)
@@ -202,12 +204,12 @@ func TestReclaimStaleJobs_ReleaseThenClaimDoesNotCount(t *testing.T) {
 		t.Fatalf("Release: %v", err)
 	}
 
-	reenq, failed, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5)
+	reenq, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5)
 	if err != nil {
 		t.Fatalf("ReclaimStaleJobs: %v", err)
 	}
-	if reenq != 1 || failed != 0 {
-		t.Fatalf("ReclaimStaleJobs = (reenqueued %d, failed %d), want (1, 0) for a released (not stale) job", reenq, failed)
+	if reenq != 1 {
+		t.Fatalf("ReclaimStaleJobs re-enqueued %d, want 1 for a released (not stale) job", reenq)
 	}
 
 	status := pollUntilTerminal(t, svc, ctx, "job-released", 5*time.Second)
@@ -268,12 +270,12 @@ func TestReclaimStaleJobs_ZeroHeadroomClaimsNothing(t *testing.T) {
 		t.Fatalf("registry size = %d, want %d (== pool.Cap(), saturated)", got, pool.Cap())
 	}
 
-	reenq, failed, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5)
+	reenq, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5)
 	if err != nil {
 		t.Fatalf("ReclaimStaleJobs: %v", err)
 	}
-	if reenq != 0 || failed != 0 {
-		t.Fatalf("ReclaimStaleJobs = (reenqueued %d, failed %d), want (0, 0) with zero headroom", reenq, failed)
+	if reenq != 0 {
+		t.Fatalf("ReclaimStaleJobs re-enqueued %d, want 0 with zero headroom", reenq)
 	}
 }
 
@@ -320,12 +322,12 @@ func TestReclaimStaleJobs_ClearResultsErrorReleases(t *testing.T) {
 	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store).
 		WithAsyncPool(pool)
 
-	reenq, failed, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5)
+	reenq, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5)
 	if err != nil {
 		t.Fatalf("ReclaimStaleJobs: %v", err)
 	}
-	if reenq != 1 || failed != 0 {
-		t.Fatalf("ReclaimStaleJobs = (reenqueued %d, failed %d), want (1, 0): the clear runs on the worker", reenq, failed)
+	if reenq != 1 {
+		t.Fatalf("ReclaimStaleJobs re-enqueued %d, want 1: the clear runs on the worker", reenq)
 	}
 
 	// The worker's release is what makes the job eligible again at once.
@@ -453,7 +455,7 @@ func TestReclaimStaleJobs_LateClearFromLostOwnerDeletesNothing(t *testing.T) {
 		WithHeartbeat(20 * time.Millisecond)
 	t.Cleanup(letThrough) // runs before the pool drains
 
-	if reenq, _, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5); err != nil || reenq != 1 {
+	if reenq, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5); err != nil || reenq != 1 {
 		t.Fatalf("ReclaimStaleJobs = (reenqueued %d, err %v), want (1, nil)", reenq, err)
 	}
 	select {
