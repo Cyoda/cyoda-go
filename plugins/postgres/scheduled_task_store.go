@@ -585,8 +585,12 @@ func (s *scheduledTaskStore) ClaimDue(ctx context.Context, req spi.ClaimRequest)
 	}
 	claimed, err := s.claimDue(ctx, req)
 	if err != nil {
-		if isLockNotAvailable(err) || isDeadlock(err) {
+		switch {
+		case isLockNotAvailable(err) || isDeadlock(err):
 			slog.Warn("scheduled task claim met a lock wait or deadlock",
+				"pkg", "postgres", "err", err)
+		case isRunningIndexViolation(err):
+			slog.Error("scheduled task claim violated the one-RUNNING-task-per-entity invariant",
 				"pkg", "postgres", "err", err)
 		}
 		return nil, fmt.Errorf("failed to claim scheduled tasks: %w", claimError(err))
@@ -859,6 +863,20 @@ func isDeadlock(err error) bool {
 func isLockNotAvailable(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == pgerrcode.LockNotAvailable
+}
+
+// oneRunningPerEntityIndex is the partial unique index that enforces at most
+// one RUNNING task per entity — see lockEntitiesSQL for why a claim is never
+// meant to meet it.
+const oneRunningPerEntityIndex = "scheduled_tasks_one_running_per_entity_uq"
+
+// isRunningIndexViolation reports whether err is a unique violation of
+// oneRunningPerEntityIndex: two tasks of the same entity RUNNING at once,
+// which the per-entity advisory lock exists to make impossible.
+func isRunningIndexViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == pgerrcode.UniqueViolation &&
+		pgErr.ConstraintName == oneRunningPerEntityIndex
 }
 
 // MarkUnsafe records, before an unsafe dispatch, that this claim of this life

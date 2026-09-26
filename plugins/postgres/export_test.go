@@ -292,3 +292,8 @@ func CloseSchedulerPoolsForTest(f *StoreFactory) { f.closeSchedulerPools() }
 func EntityClaimLockSQLForTest() string {
 	return `SELECT pg_advisory_xact_lock(` + entityLockKey("$1::text", "$2::text") + `)`
 }
+
+// CaptureSlogForTest exposes captureSlog (ceilings_test.go) to the external
+// postgres_test package, so a test can assert a specific log line without a
+// capturing hook in production code.
+var CaptureSlogForTest = captureSlog

@@ -381,9 +381,15 @@ func TestPostgres_ClaimDue_MeetingARivalAtTheRunningIndexFailsClosed(t *testing.
 		name       string
 		rivalHolds time.Duration
 		within     time.Duration
+		// wantLog is a fragment ClaimDue's own log line for this outcome must
+		// contain: the unique violation (invariant broken) logs at Error, a
+		// lock-timeout wait logs at Warn — see ClaimDue.
+		wantLog string
 	}{
-		{"rival commits while the claim waits", 300 * time.Millisecond, 1500 * time.Millisecond},
-		{"rival outlasts lock_timeout", 4 * time.Second, 3500 * time.Millisecond},
+		{"rival commits while the claim waits", 300 * time.Millisecond, 1500 * time.Millisecond,
+			"one-RUNNING-task-per-entity invariant"},
+		{"rival outlasts lock_timeout", 4 * time.Second, 3500 * time.Millisecond,
+			"lock wait or deadlock"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -411,9 +417,14 @@ func TestPostgres_ClaimDue_MeetingARivalAtTheRunningIndexFailsClosed(t *testing.
 				rivalDone <- rival.Commit(context.Background())
 			}()
 
-			start := time.Now()
-			claimed, claimErr := sts.ClaimDue(bg, claimRequest(uuid.New()))
-			elapsed := time.Since(start)
+			var claimed []spi.ScheduledTask
+			var claimErr error
+			var elapsed time.Duration
+			logged := postgres.CaptureSlogForTest(t, func() {
+				start := time.Now()
+				claimed, claimErr = sts.ClaimDue(bg, claimRequest(uuid.New()))
+				elapsed = time.Since(start)
+			})
 			if err := <-rivalDone; err != nil {
 				t.Fatalf("rival commit: %v", err)
 			}
@@ -423,6 +434,9 @@ func TestPostgres_ClaimDue_MeetingARivalAtTheRunningIndexFailsClosed(t *testing.
 			}
 			if elapsed > tc.within {
 				t.Errorf("ClaimDue took %s, want under %s", elapsed, tc.within)
+			}
+			if !strings.Contains(logged, tc.wantLog) {
+				t.Errorf("ClaimDue logged %q, want it to mention %q", logged, tc.wantLog)
 			}
 			if got := mustGet(t, sts, "tenant-A", "e1:S:T2"); got.Status != spi.ScheduledTaskWaiting || got.Claim != nil {
 				t.Errorf("T2 after the failed claim = %+v, want WAITING and unclaimed", got)
