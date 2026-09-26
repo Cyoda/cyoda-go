@@ -18,7 +18,7 @@ CREATE TABLE scheduled_tasks (
     PRIMARY KEY (id)
 ) STRICT;
 
--- ScanDue is cross-tenant and orders by scheduled_time.
+-- ClaimDue is cross-tenant and orders by scheduled_time.
 CREATE INDEX idx_scheduled_tasks_due
     ON scheduled_tasks (scheduled_time);
 
