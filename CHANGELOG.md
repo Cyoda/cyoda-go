@@ -286,7 +286,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   now the retryable `409 CONFLICT` — after a failed processor the engine probes
   the transaction to tell the two apart — and so it is inside an `ASYNC_NEW_TX`
   processor. `412` is kept for a request whose own `If-Match` precondition does
-  not hold. Rolling back an `ASYNC_NEW_TX` processor's savepoint no longer
+  not hold. Memory and SQLite, which find a lost race only at commit, answered
+  `400 WORKFLOW_FAILED` when a `SYNC`, `ASYNC_SAME_TX` or
+  `COMMIT_BEFORE_DISPATCH` (`startNewTxOnDispatch`) processor failed after its
+  joined callback's write had lost a race; they now answer the same `409`. The
+  engine asks the new required SPI method `TransactionManager.LostRace` after a
+  failed dispatch, and keeps the processor's failure attached to the error.
+  Rolling back an `ASYNC_NEW_TX` processor's savepoint no longer
   forgets a race that a write inside it had already lost, to an entity or to a
   scheduled task's row: the transaction fails with the same `409`, even when
   the processor then failed and its savepoint was rolled back, where before it
