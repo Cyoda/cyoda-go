@@ -23,7 +23,7 @@ Every node claims due scheduled tasks and runs them itself. A node proves it is 
 - `CYODA_SCHEDULER_ENABLED` (bool, default: `true`) — kill switch: a node with `false` claims no scheduled task.
 - `CYODA_SCHEDULER_SCAN_INTERVAL` (duration, default: `1s`) — how often the node claims due tasks. A node also claims at once when a run slot frees after a claim took every slot. Must be `> 0`.
 - `CYODA_SCHEDULER_MAX_RUNS` (int, default: `8`) — most scheduled runs one node holds at once. Must be `>= 1`.
-- `CYODA_SCHEDULER_MAX_RUNS_PER_TENANT` (int, default: `4`) — most runs of one tenant on one node. Must be between `1` and `CYODA_SCHEDULER_MAX_RUNS`.
+- `CYODA_SCHEDULER_MAX_RUNS_PER_TENANT` (int, default: `4`) — most runs of one tenant on one node. The limit is per node: in a cluster of N nodes, one tenant can hold up to N times this many runs. Must be between `1` and `CYODA_SCHEDULER_MAX_RUNS`.
 - `CYODA_SCHEDULER_HEARTBEAT_INTERVAL` (duration, default: `15s`) — how often a node records that it is alive. Must be `> 0`.
 - `CYODA_SCHEDULER_STALE_AFTER` (duration, default: `2m`) — how long a node may go without a heartbeat before another node takes over its runs. Must be at least `50s + 3 × CYODA_SCHEDULER_HEARTBEAT_INTERVAL`, and the same on every node of a cluster. A node whose heartbeats keep failing cancels its own runs before this time passes.
 - `CYODA_SCHEDULER_MAX_LOST_OWNERS` (int, default: `3`) — a task whose node is lost this many times ends FAILED `OWNER_LOST_REPEATEDLY`. Must be `>= 1`.

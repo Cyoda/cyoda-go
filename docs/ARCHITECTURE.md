@@ -1548,7 +1548,12 @@ claimable task is `WAITING` and due, or — only once the node's own heartbeats
 have run without a gap for `STALE_AFTER` — `RUNNING` under an owner whose
 liveness record is missing or older than `STALE_AFTER` by the store clock (a
 *lost owner*; `lostOwners` goes up by one). One task per entity is `RUNNING` at
-a time. Each tick also calls `GiveBackIdle`, which returns to `WAITING`,
+a time. The per-tenant limit is per node: across a cluster a tenant holds up
+to that many runs on each node. A claim's cost follows the number of tenants
+with work and the per-tenant limit, not the size of any tenant's backlog:
+every store reads, per tenant, only the earliest claimable task of each of its
+first *n* entities, *n* being the most turns the claim can give that tenant,
+and chooses from those exactly what it would choose from every due task. Each tick also calls `GiveBackIdle`, which returns to `WAITING`,
 uncounted, any task this owner holds without a live run. Once a minute, while
 its heartbeats succeed, the loop also removes the liveness records of owners
 silent for 10 × `STALE_AFTER` that no `RUNNING` task references, and the marks

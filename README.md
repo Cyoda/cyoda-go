@@ -230,7 +230,7 @@ A workflow transition with a `schedule` fires automatically after a delay. The d
 | `CYODA_SCHEDULER_ENABLED` | `true` | Kill switch: a node with `false` claims no scheduled task. |
 | `CYODA_SCHEDULER_SCAN_INTERVAL` | `1s` | How often a node claims due tasks. |
 | `CYODA_SCHEDULER_MAX_RUNS` | `8` | Most scheduled runs one node holds at once. |
-| `CYODA_SCHEDULER_MAX_RUNS_PER_TENANT` | `4` | Most runs of one tenant on one node; at most `CYODA_SCHEDULER_MAX_RUNS`. |
+| `CYODA_SCHEDULER_MAX_RUNS_PER_TENANT` | `4` | Most runs of one tenant on one node (per node, not per cluster); at most `CYODA_SCHEDULER_MAX_RUNS`. |
 | `CYODA_SCHEDULER_HEARTBEAT_INTERVAL` | `15s` | How often a node records that it is alive. |
 | `CYODA_SCHEDULER_STALE_AFTER` | `2m` | Time without a heartbeat before another node takes over a node's runs; at least `50s + 3 × heartbeat`, the same on every node. |
 | `CYODA_SCHEDULER_MAX_LOST_OWNERS` | `3` | A task whose node is lost this many times ends FAILED. |
