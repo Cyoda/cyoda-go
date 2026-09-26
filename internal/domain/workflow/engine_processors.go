@@ -41,7 +41,11 @@ var ErrSavepointInfra = errors.New("savepoint failure")
 //
 // Chained alongside the conflict, never in place of it, so
 // errors.Is(err, spi.ErrConflict) stays true and the single-entity 412 mapping is
-// unaffected.
+// unaffected. That 412 is right: the apply-result CAS is a precondition on the
+// request's own entity at the segment boundary — the version TX_pre committed,
+// or TX_post's own write — and another writer changed that entity. It never
+// meets an already-aborted TX_post: the anchor re-read before it would fail
+// first, marked ErrCommitBeforeDispatchInfra.
 var ErrPostSegmentConflict = errors.New("conflict after a committed segment")
 
 // clientAttributableStoreErr reports whether a store error is an outcome the

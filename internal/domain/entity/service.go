@@ -2353,8 +2353,12 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		res, lbErr := h.engine.LoopbackWithIfMatch(txCtx, updated, input.IfMatch)
 		if lbErr != nil {
 			slog.Error("workflow loopback failed", "error", lbErr.Error(), "entityId", updated.Meta.ID)
-			// See engineConflictIsTransactionConflict for the conflicts that
-			// are not entity modifications; classifyWorkflowError answers them
+			// An unmarked conflict is a precondition on this request's own
+			// entity: the If-Match compare at the first segment flush, or the
+			// apply-result compare after a committed COMMIT_BEFORE_DISPATCH
+			// segment (wfengine.ErrPostSegmentConflict). Both answer 412. See
+			// engineConflictIsTransactionConflict for the conflicts that are
+			// not entity modifications; classifyWorkflowError answers them
 			// with the retryable 409 CONFLICT.
 			if errors.Is(lbErr, spi.ErrConflict) && !engineConflictIsTransactionConflict(lbErr) {
 				appErr := common.Operational(

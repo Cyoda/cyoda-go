@@ -341,8 +341,9 @@ func TestUpdateCollection_FirstFlushConflict_StillIsolates(t *testing.T) {
 }
 
 // TestUpdateEntity_PostSegmentConflict_Still412 pins what the marker must NOT
-// change. A single-entity update has no later items to lose, so it maps every
-// engine conflict — either side of the commit — to 412 ENTITY_MODIFIED. That
+// change. A single-entity update has no later items to lose, and a conflict on
+// either side of the commit is a precondition on its own entity, so it answers
+// 412 ENTITY_MODIFIED. That
 // mapping reads errors.Is(err, spi.ErrConflict), which only survives because the
 // marker is joined to the conflict rather than wrapping it away.
 func TestUpdateEntity_PostSegmentConflict_Still412(t *testing.T) {
