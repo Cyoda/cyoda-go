@@ -175,13 +175,15 @@ joins a client request's.
   see the mutations an earlier processor returned and the engine has not yet
   saved, so a processor bases its own write on the payload of its request.
   This behaviour is under decision (§16, open item 2).
-- Processors with transaction-callback access — `SYNC`, `ASYNC_SAME_TX`, and
-  `COMMIT_BEFORE_DISPATCH` with `startNewTxOnDispatch: true` — can write the
-  fired entity through a callback. If such a processor returns no mutations,
-  the engine keeps that write. A processor that returns mutations overrides the
-  callback's write. A callback write that leaves the stored payload unchanged
-  cannot be told from no write, so the engine's payload stands. Under
-  `ASYNC_NEW_TX` the engine's payload stands.
+- A processor can write the fired entity through a callback. The engine keeps
+  a callback's write only under `SYNC`, `ASYNC_SAME_TX`, and
+  `COMMIT_BEFORE_DISPATCH` with `startNewTxOnDispatch: true`; under
+  `ASYNC_NEW_TX` a callback can write, but the engine's payload overwrites it.
+  In the modes that keep it, the write is kept when the processor returns no
+  mutations; a processor that returns mutations overrides it. When the
+  transaction had already written the entity before the dispatch, a callback
+  write that leaves the stored payload unchanged cannot be told from no write,
+  and the engine's payload stands.
 - A callback that writes the fired entity also holds the task. When a
   processor that is not `idempotent`, or a `COMMIT_BEFORE_DISPATCH` step,
   follows in the same run, the run cannot mark or commit the task, so the
@@ -233,7 +235,7 @@ the log at ERROR with a ticket, and as a `SCHEDULED_TRANSITION_FAIL` audit
 event on the entity carrying `{transition, sourceState, reason, attempts,
 lostOwners}`, written in the same transaction as the status. When the reply to
 the `FAILED` write is lost, its retry is refused as superseded and logged at
-DEBUG instead of ERROR; the status and the audit event are still stored. It ends when the
+DEBUG instead of ERROR, and counts as superseded in the metrics; the status and the audit event are still stored. It ends when the
 entity is written in the source state (a new life), leaves the state (removed,
 `SCHEDULED_TRANSITION_CANCEL`), stops being scheduled by the workflows (removed
 at the next write, with `SCHEDULED_TRANSITION_CANCEL`, or at the next import,
@@ -339,8 +341,8 @@ fails it with `400 WORKFLOW_FAILED`.
 
 On the fire path, the cascade can end in a state with its own `function`-timed
 schedule. If that arm's callout fails, the open transaction rolls back; the
-task is retried (§6), unless a step already committed
-(`STOPPED_AFTER_PARTIAL_COMMIT`, §7) or an unsafe processor may have been
+task is retried (§6), unless the run already made a partial commit (§7,
+`STOPPED_AFTER_PARTIAL_COMMIT`) or an unsafe processor may have been
 handed off (`UNSAFE_WORK_NOT_COMPLETED`).
 
 ## 15. How cyoda-go meets §3 and §7
@@ -366,7 +368,11 @@ handed off (`UNSAFE_WORK_NOT_COMPLETED`).
   retry whose earlier try landed with its reply lost is refused as stale: the
   stored outcome is the one the first try wrote, and the run is counted and
   logged as superseded. The retry also stops when shutdown stops waiting for
-  outcomes: the claim is kept, and the task is taken over after `STALE_AFTER`.
+  outcomes. The node then gives the task back to `WAITING` without a counted
+  attempt. Its mark and partial-commit flag stay, so a later claim that finds
+  either one ends the task `FAILED`. Only a run whose outcome write is still
+  under way when the wait ends keeps its claim; another node takes that task
+  over after `STALE_AFTER`.
 - A store that rejects an outcome write as invalid latches the node: it reports
   unhealthy, claims nothing more and keeps that run's claim, and its other runs
   go on.
@@ -386,7 +392,7 @@ The visible contract to match:
    ownership.
 2. §6 and §7: safe failures retried with a doubling delay until the deadline;
    an unsafe processor never repeated after a possible hand-off, except one
-   reached from inside a criterion's or function's callback (§7).
+   reached from inside a criterion's or function's callback (§7, open item 4).
    `idempotent` means the same on a scheduled run as on any callout.
 3. §9's lateness table, decided by the task's one owner.
 4. The `FAILED` status, its five reasons, and **[ruling]** that it never moves
