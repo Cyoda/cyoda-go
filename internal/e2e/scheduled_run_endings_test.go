@@ -51,17 +51,6 @@ func awaitSchedulerLiveFor(t *testing.T, h *callbackHarness, d time.Duration) {
 	awaitCallbackEntityState(t, h, id, "Done", d+scheduledFireTimeout)
 }
 
-// receivedFor counts the callouts in recs that carry entityID.
-func receivedFor(recs []receivedCallout, entityID string) int {
-	n := 0
-	for _, r := range recs {
-		if r.EntityID == entityID {
-			n++
-		}
-	}
-	return n
-}
-
 // TestSchedRun_NoComputeNodeThenFires: an unsafe processor whose tag has no
 // cnode. MarkUnsafe writes a mark, the dispatch returns the NotHandedOff
 // proof, and RecordAttempt{ClearOwnMark} removes the mark in the same write:
@@ -198,8 +187,15 @@ func TestSchedRun_LateAfterFailedAttemptsFails(t *testing.T) {
 	id := createOpen(t, h, model, workflowSampleModel)
 
 	r := s.awaitTask(t, id, "Fire", 20*time.Second, "FAILED", func(r taskRow, ok bool) bool { return ok && r.Status == "FAILED" })
-	if r.FailureReason != "EXPIRED_AFTER_FAILED_ATTEMPTS" || r.Attempts < 1 || r.ClaimToken != "" {
-		t.Errorf("failed task = %+v; want EXPIRED_AFTER_FAILED_ATTEMPTS, attempts >= 1, no claim", r)
+	// The deadline (ScheduledTime + timeoutMs = arm+100+1500 = arm+1600) sits
+	// between the first retry's delay (base 1s, landing at arm+1100, counted)
+	// and the second's (base*2 = 2s, but decideBookkeeping caps next at the
+	// deadline itself, so the second retry is scheduled at arm+1600 and
+	// counted too); the third check runs at or after arm+1600 and always
+	// finds nowMs past the deadline, so it fails without a further count.
+	// The scenario's own numbers fix attempts at exactly 2.
+	if r.FailureReason != "EXPIRED_AFTER_FAILED_ATTEMPTS" || r.Attempts != 2 || r.ClaimToken != "" {
+		t.Errorf("failed task = %+v; want EXPIRED_AFTER_FAILED_ATTEMPTS, attempts 2, no claim", r)
 	}
 	if data := failEvent(t, h, id); data["reason"] != "EXPIRED_AFTER_FAILED_ATTEMPTS" {
 		t.Errorf("SCHEDULED_TRANSITION_FAIL data = %v", data)
@@ -336,10 +332,11 @@ func TestSchedRun_FireTimeCancel(t *testing.T) {
 		h.SetupModelWithWorkflow(t, model, fireOpenToDone("sr-notx-wf", 1500, 0))
 		id := createOpen(t, h, model, workflowSampleModel)
 		// Legacy data: the API never writes an entity without a transaction id.
-		if _, err := s.pool.Exec(context.Background(),
+		tag, err := s.pool.Exec(context.Background(),
 			`UPDATE entities SET doc = doc #- '{_meta,transaction_id}' WHERE tenant_id = $1 AND entity_id = $2`,
-			harnessTenant, id); err != nil {
-			t.Fatalf("strip the transaction id: %v", err)
+			harnessTenant, id)
+		if err != nil || tag.RowsAffected() != 1 {
+			t.Fatalf("strip the transaction id: %d rows (err %v); want exactly 1", tag.RowsAffected(), err)
 		}
 		awaitCallbackSMEventType(t, h, id, "SCHEDULED_TRANSITION_CANCEL", "Open", scheduledFireTimeout)
 		s.awaitTask(t, id, "Fire", scheduledFireTimeout, "removal", func(_ taskRow, ok bool) bool { return !ok })
@@ -420,11 +417,19 @@ func TestSchedRun_LastErrorText(t *testing.T) {
 
 		<-gotWork
 		// The run's transaction is the only one open in this database while
-		// its processor is held.
+		// its processor is held. state_change < 200ms excludes a session that
+		// only just went idle in transaction (e.g. one still settling its own
+		// bookkeeping), so the poll below waits for a stable set before the
+		// kill picks its victim, and never terminates the wrong session.
+		const victims = `SELECT pid FROM pg_stat_activity
+			 WHERE datname = current_database() AND state = 'idle in transaction'
+			   AND pid <> pg_backend_pid() AND state_change < now() - interval '200 milliseconds'`
+		awaitDBCondition(t, scheduledFireTimeout, "exactly one settled idle-in-transaction backend", func() bool {
+			return s.count(t, `SELECT count(*) FROM (`+victims+`) v`) == 1
+		})
 		var n int
-		if err := s.pool.QueryRow(context.Background(), `
-			SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity
-			 WHERE datname = current_database() AND state = 'idle in transaction' AND pid <> pg_backend_pid()`,
+		if err := s.pool.QueryRow(context.Background(),
+			`SELECT count(pg_terminate_backend(pid)) FROM (`+victims+`) v`,
 		).Scan(&n); err != nil || n != 1 {
 			t.Fatalf("terminated %d backends (err %v); want exactly the run's", n, err)
 		}
