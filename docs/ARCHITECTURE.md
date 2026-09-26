@@ -1370,7 +1370,11 @@ Neither the heartbeat nor the claim loop waits on a statement that shares the
 store's main pool with entity transactions. PostgreSQL runs `Heartbeat` and
 `ClaimStale` on its scheduler pool, apart from the main pool.
 The heartbeat sends only the fenced `Heartbeat` stamp, whose refusal also
-carries a cancel from any node (the job is terminal). The claim loop claims,
+carries a cancel from any node (the job is terminal). Only such a fencing
+refusal — the job is terminal, claimed at a newer epoch, or gone — ends the
+job. Any other heartbeat error is a missed tick: the job keeps running, its
+later writes are still epoch-fenced, and if the stamps keep failing another
+node claims it once it goes stale. The claim loop claims,
 then starts every job it will run — heartbeat and enqueue — and sends no
 main-pool statement. Three kinds of statement do wait on the main pool, and
 none of them on the claim loop's goroutine:
