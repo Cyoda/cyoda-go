@@ -449,16 +449,20 @@ func (s *scheduledTaskStore) Query(ctx context.Context, tenant spi.TenantID, q s
 	return page, nil
 }
 
+// ownerLostCondition holds when the owner of the RUNNING row st has no
+// liveness record, or one older than StaleAfter ($3, in microseconds) by the
+// database clock.
+const ownerLostCondition = `NOT EXISTS (SELECT 1 FROM scheduler_owners o
+	                     WHERE o.owner = st.claim_owner
+	                       AND o.heartbeat_at >= now() - ($3::bigint * interval '1 microsecond'))`
+
 // claimableCondition is the row's own claim condition, on alias st, with
 // $1 = NowMs, $2 = AllowLostOwner, $3 = StaleAfter in microseconds. A RUNNING
-// row qualifies, whatever its next_attempt_time, when its owner's liveness
-// record is missing or older than StaleAfter by the database clock.
+// row qualifies, whatever its next_attempt_time, when its owner is lost
+// (ownerLostCondition).
 const claimableCondition = `(
 	(st.status = 'WAITING' AND st.next_attempt_time <= $1)
-	OR ($2::boolean AND st.status = 'RUNNING'
-	    AND NOT EXISTS (SELECT 1 FROM scheduler_owners o
-	                     WHERE o.owner = st.claim_owner
-	                       AND o.heartbeat_at >= now() - ($3::bigint * interval '1 microsecond'))))`
+	OR ($2::boolean AND st.status = 'RUNNING' AND ` + ownerLostCondition + `))`
 
 // rankClaimsSQL is ClaimDue's ranking. It returns the tasks one claim takes,
 // in the order spi.SelectClaims defines:
@@ -470,38 +474,114 @@ const claimableCondition = `(
 //     claimer holds;
 //   - one task per entity: the first in (next_attempt_time, id) order;
 //   - within a tenant, turn = the task's place in (next_attempt_time, id)
-//     order; a tenant's turns stop at PerTenantLimit minus its runs in
-//     progress ($4, $5, $6);
+//     order; a tenant's turns stop at its quota, PerTenantLimit minus its
+//     runs in progress ($4, $5, $6);
 //   - tenants take turns, one task per turn: turn first, then the tenant with
 //     the earliest candidate, ties broken by tenant id;
 //   - at most Limit ($7) tasks.
 //
+// Bounded work. The ranking reads, per tenant, only the tasks that can hold
+// one of its first n turns, n = min(quota, Limit); it never reads a tenant's
+// whole due backlog. The result is the same as ranking every candidate:
+//
+//   - tenant enumerates the tenants that hold a WAITING task, one index probe
+//     each (a loose scan of scheduled_tasks_waiting_due_idx), and, with
+//     AllowLostOwner, those that hold a RUNNING task;
+//   - per tenant, the WAITING branch walks the tenant's due WAITING tasks in
+//     (next_attempt_time, id) order and keeps a task only when it is its
+//     entity's candidate: no RUNNING task on the entity, neither it nor its
+//     entity excluded, and no earlier WAITING task of the entity that is not
+//     itself excluded. Each kept task is a different entity's first
+//     candidate, met in turn order, so the first n kept are exactly the
+//     tenant's turns 1..n. The cut is taken after the one-per-entity
+//     collapse, never before it: a cut of n rows before the collapse could
+//     spend turns on one entity's later tasks and leave the quota unfilled;
+//   - the lost-owner branch takes the tenant's first n claimable RUNNING
+//     tasks. An entity with a RUNNING task has no WAITING candidate, and
+//     scheduled_tasks_one_running_per_entity_uq allows one RUNNING task per
+//     entity, so the two branches name different entities and their union is
+//     one task per entity; turns 1..n of the union lie within the first n of
+//     each branch;
+//   - tenant_first is each tenant's turn 1, which the cut keeps; a turn above
+//     Limit never survives the final LIMIT, since the tenant's turns 1..Limit
+//     precede it.
+//
+// So a claim reads, per tenant with a WAITING task, one probe plus the rows
+// the walk passes before its n-th kept task: the n kept, the tasks of
+// entities with a RUNNING task or excluded, the excluded rows, and the later
+// tasks of entities already met — each checked by a probe of
+// scheduled_tasks_waiting_entity_idx. None of these grows with the tenant's
+// backlog: RUNNING tasks are bounded by the runs in progress, exclusions by
+// this claim's rounds, and an entity's tasks by its state's scheduled
+// transitions.
+//
 // Ids and tenant ids compare byte-wise (COLLATE "C"), as Go compares strings.
-const rankClaimsSQL = `WITH candidate AS (
-	SELECT st.id, st.tenant_id, st.entity_id, st.next_attempt_time
-	  FROM scheduled_tasks st
-	 WHERE ` + claimableCondition + `
-	   AND NOT EXISTS (SELECT 1 FROM scheduled_tasks r
-	                    WHERE r.tenant_id = st.tenant_id AND r.entity_id = st.entity_id
-	                      AND r.status = 'RUNNING' AND r.id <> st.id)
-	   AND NOT EXISTS (SELECT 1 FROM unnest($8::text[], $9::text[]) AS x(tenant_id, id)
-	                    WHERE x.tenant_id = st.tenant_id AND x.id = st.id)
-	   AND NOT EXISTS (SELECT 1 FROM unnest($10::text[], $11::text[]) AS x(tenant_id, entity_id)
-	                    WHERE x.tenant_id = st.tenant_id AND x.entity_id = st.entity_id)
-), one_per_entity AS (
-	SELECT DISTINCT ON (tenant_id, entity_id) id, tenant_id, entity_id, next_attempt_time
-	  FROM candidate
-	 ORDER BY tenant_id, entity_id, next_attempt_time, id COLLATE "C"
+// The loose scan orders tenant ids by the database collation; it only lists
+// them.
+const rankClaimsSQL = `WITH RECURSIVE waiting_tenant AS (
+	(SELECT st.tenant_id FROM scheduled_tasks st
+	  WHERE st.status = 'WAITING'
+	  ORDER BY st.tenant_id, st.next_attempt_time LIMIT 1)
+	UNION ALL
+	SELECT (SELECT st.tenant_id FROM scheduled_tasks st
+	         WHERE st.status = 'WAITING' AND st.tenant_id > w.tenant_id
+	         ORDER BY st.tenant_id, st.next_attempt_time LIMIT 1)
+	  FROM waiting_tenant w
+	 WHERE w.tenant_id IS NOT NULL
+), tenant AS (
+	SELECT tenant_id FROM waiting_tenant WHERE tenant_id IS NOT NULL
+	UNION
+	SELECT st.tenant_id FROM scheduled_tasks st WHERE $2::boolean AND st.status = 'RUNNING'
+), quota AS (
+	SELECT t.tenant_id, LEAST($4::int - COALESCE(busy.runs, 0), $7::int) AS n
+	  FROM tenant t
+	  LEFT JOIN unnest($5::text[], $6::int[]) AS busy(tenant_id, runs) ON busy.tenant_id = t.tenant_id
+), candidate AS (
+	SELECT c.id, c.tenant_id, c.entity_id, c.next_attempt_time
+	  FROM quota q
+	 CROSS JOIN LATERAL (
+		(SELECT st.id, st.tenant_id, st.entity_id, st.next_attempt_time
+		   FROM scheduled_tasks st
+		  WHERE st.tenant_id = q.tenant_id
+		    AND st.status = 'WAITING' AND st.next_attempt_time <= $1
+		    AND NOT EXISTS (SELECT 1 FROM scheduled_tasks r
+		                     WHERE r.tenant_id = st.tenant_id AND r.entity_id = st.entity_id
+		                       AND r.status = 'RUNNING')
+		    AND NOT EXISTS (SELECT 1 FROM unnest($8::text[], $9::text[]) AS x(tenant_id, id)
+		                     WHERE x.tenant_id = st.tenant_id AND x.id = st.id)
+		    AND NOT EXISTS (SELECT 1 FROM unnest($10::text[], $11::text[]) AS x(tenant_id, entity_id)
+		                     WHERE x.tenant_id = st.tenant_id AND x.entity_id = st.entity_id)
+		    AND NOT EXISTS (SELECT 1 FROM scheduled_tasks e
+		                     WHERE e.tenant_id = st.tenant_id AND e.entity_id = st.entity_id
+		                       AND e.status = 'WAITING'
+		                       AND (e.next_attempt_time, e.id COLLATE "C") < (st.next_attempt_time, st.id COLLATE "C")
+		                       AND NOT EXISTS (SELECT 1 FROM unnest($8::text[], $9::text[]) AS x(tenant_id, id)
+		                                        WHERE x.tenant_id = e.tenant_id AND x.id = e.id))
+		  ORDER BY st.next_attempt_time, st.id COLLATE "C"
+		  LIMIT LEAST($4::int, $7::int))
+		UNION ALL
+		(SELECT st.id, st.tenant_id, st.entity_id, st.next_attempt_time
+		   FROM scheduled_tasks st
+		  WHERE $2::boolean AND st.tenant_id = q.tenant_id AND st.status = 'RUNNING'
+		    AND ` + ownerLostCondition + `
+		    AND NOT EXISTS (SELECT 1 FROM unnest($8::text[], $9::text[]) AS x(tenant_id, id)
+		                     WHERE x.tenant_id = st.tenant_id AND x.id = st.id)
+		    AND NOT EXISTS (SELECT 1 FROM unnest($10::text[], $11::text[]) AS x(tenant_id, entity_id)
+		                     WHERE x.tenant_id = st.tenant_id AND x.entity_id = st.entity_id)
+		  ORDER BY st.next_attempt_time, st.id COLLATE "C"
+		  LIMIT LEAST($4::int, $7::int))
+	 ) c
+	 WHERE q.n > 0
 ), ranked AS (
 	SELECT id, tenant_id, entity_id,
 	       row_number() OVER (PARTITION BY tenant_id ORDER BY next_attempt_time, id COLLATE "C") AS turn,
 	       min(next_attempt_time) OVER (PARTITION BY tenant_id) AS tenant_first
-	  FROM one_per_entity
+	  FROM candidate
 )
 SELECT r.tenant_id, r.id, r.entity_id
   FROM ranked r
-  LEFT JOIN unnest($5::text[], $6::int[]) AS busy(tenant_id, runs) ON busy.tenant_id = r.tenant_id
- WHERE r.turn <= $4::int - COALESCE(busy.runs, 0)
+  JOIN quota q ON q.tenant_id = r.tenant_id
+ WHERE r.turn <= q.n
  ORDER BY r.turn, r.tenant_first, r.tenant_id COLLATE "C"
  LIMIT $7`
 
@@ -520,9 +600,11 @@ const lockClaimsSQL = `SELECT st.tenant_id, st.id, st.entity_id, st.status
 // entityLockKey is the 64-bit advisory-lock key of an entity, from SQL
 // expressions for its tenant id and entity id. The tenant id is length-prefixed
 // so that no two (tenant, entity) pairs concatenate to the same text. Two
-// different entities can still share a key through a hash collision; the only
-// effect is that one claim call passes over an entity it could have claimed,
-// and the next call takes it.
+// (tenant, entity) pairs, of one tenant or of two, can still share a key
+// through a 64-bit hash collision. The only effect is that one claim round
+// skips that entity and a later call takes it: the lock is tried without
+// waiting, so no one blocks, and the key carries no data, so nothing is
+// exposed.
 func entityLockKey(tenantExpr, entityExpr string) string {
 	return `hashtextextended(length(` + tenantExpr + `)::text || ':' || ` + tenantExpr + ` || ` + entityExpr + `, 0)`
 }

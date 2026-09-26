@@ -73,7 +73,7 @@ func TestMigration14_ScheduledTaskSchema(t *testing.T) {
 
 	idx := stringSet(t, pool, `SELECT indexname FROM pg_indexes
 		WHERE schemaname = 'public' AND tablename = 'scheduled_tasks'`)
-	for _, i := range []string{"scheduled_tasks_waiting_due_idx", "scheduled_tasks_running_owner_idx",
+	for _, i := range []string{"scheduled_tasks_waiting_due_idx", "scheduled_tasks_waiting_entity_idx", "scheduled_tasks_running_owner_idx",
 		"scheduled_tasks_one_running_per_entity_uq", "scheduled_tasks_query_idx",
 		"scheduled_tasks_model_idx", "scheduled_tasks_entity_idx"} {
 		if !idx[i] {

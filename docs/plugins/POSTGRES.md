@@ -157,7 +157,16 @@ pool).
 **`ClaimDue`** is one transaction on the scheduler pool: rank the due tasks
 (one per entity, each tenant within its limit, tenants taking turns), lock
 them with `FOR UPDATE SKIP LOCKED`, claim them with a conditional `UPDATE`,
-and read their marks while the locks are held. A per-entity, transaction-scoped
+and read their marks while the locks are held. The ranking never reads a
+tenant's whole backlog. It lists the tenants with a `WAITING` task by a loose
+index scan of `scheduled_tasks_waiting_due_idx` (one probe per tenant), and,
+per tenant, reads in `(next_attempt_time, id)` order only the tasks that are
+their entity's earliest claimable task — checked by a probe of
+`scheduled_tasks_waiting_entity_idx` — up to the most turns the claim can give
+that tenant, plus as many lost-owner `RUNNING` tasks. The cut comes after the
+one-per-entity choice, so the result is the one a ranking of every due task
+would give, and a claim costs the same whatever the size of another tenant's
+backlog. A per-entity, transaction-scoped
 PostgreSQL advisory lock serialises claimers: a claimer takes an entity's lock
 for the rest of its transaction, and a rival claimer of the same entity can
 only take that lock once this one has committed or rolled back — PostgreSQL

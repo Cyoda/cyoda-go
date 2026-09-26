@@ -28,7 +28,7 @@
 -- Lock profile. ALTER TABLE takes ACCESS EXCLUSIVE on scheduled_tasks, and the
 -- whole file runs as one implicit transaction, so readers and writers of
 -- scheduled_tasks wait until the file commits: across the rewrite, the
--- backfill, the primary-key rebuild and the five index builds. No other table
+-- backfill, the primary-key rebuild and the six index builds. No other table
 -- is locked. CONCURRENTLY
 -- cannot run here (many statements), and a separate file would not help:
 -- golang-migrate's advisory lock spans the whole Up() run (see 000013).
@@ -73,10 +73,14 @@ ALTER TABLE scheduled_tasks
 
 DROP INDEX IF EXISTS scheduled_tasks_due_idx;
 
--- ClaimDue: due WAITING tasks; RUNNING tasks by owner; at most one RUNNING
--- task per entity, against concurrent claimers too.
+-- ClaimDue: the tenants with a WAITING task (a loose scan) and each one's due
+-- WAITING tasks in claim order; an entity's WAITING tasks in claim order;
+-- RUNNING tasks by owner; at most one RUNNING task per entity, against
+-- concurrent claimers too. Ids compare byte-wise.
 CREATE INDEX scheduled_tasks_waiting_due_idx
-    ON scheduled_tasks (next_attempt_time) WHERE status = 'WAITING';
+    ON scheduled_tasks (tenant_id, next_attempt_time, id COLLATE "C") WHERE status = 'WAITING';
+CREATE INDEX scheduled_tasks_waiting_entity_idx
+    ON scheduled_tasks (tenant_id, entity_id, next_attempt_time, id COLLATE "C") WHERE status = 'WAITING';
 CREATE INDEX scheduled_tasks_running_owner_idx
     ON scheduled_tasks (claim_owner) WHERE status = 'RUNNING';
 CREATE UNIQUE INDEX scheduled_tasks_one_running_per_entity_uq

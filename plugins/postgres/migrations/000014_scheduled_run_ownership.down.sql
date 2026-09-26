@@ -10,6 +10,7 @@ DROP INDEX IF EXISTS scheduled_tasks_query_idx;
 DROP INDEX IF EXISTS scheduled_tasks_one_running_per_entity_uq;
 DROP INDEX IF EXISTS scheduled_tasks_running_owner_idx;
 DROP INDEX IF EXISTS scheduled_tasks_waiting_due_idx;
+DROP INDEX IF EXISTS scheduled_tasks_waiting_entity_idx;
 ALTER TABLE scheduled_tasks
     DROP CONSTRAINT scheduled_tasks_pkey,
     ADD CONSTRAINT scheduled_tasks_pkey PRIMARY KEY (id),

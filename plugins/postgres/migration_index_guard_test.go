@@ -129,7 +129,7 @@ func TestMigrations_IndexesOnExistingTablesAreConcurrent(t *testing.T) {
 		// (clause (b) satisfied on its own merits) does not make CONCURRENTLY
 		// available; splitting it out further would change nothing.
 		"000013_sm_audit_tx_index.up.sql": true,
-		// scheduled_tasks' five new indexes, in a file that also alters the
+		// scheduled_tasks' six new indexes, in a file that also alters the
 		// table (drops two columns, adds twelve, backfills one, adds five
 		// CHECK constraints, rekeys it by tenant) and creates two tables. Many statements under one
 		// implicit transaction, so CONCURRENTLY cannot run here (clause (b));
@@ -139,7 +139,7 @@ func TestMigrations_IndexesOnExistingTablesAreConcurrent(t *testing.T) {
 		// Lock profile, derived for this file: ALTER TABLE takes ACCESS
 		// EXCLUSIVE on scheduled_tasks and holds it until the file commits,
 		// across the table rewrite (the volatile arm_token default), the
-		// backfill, the primary-key rebuild on (tenant_id, id) and the five
+		// backfill, the primary-key rebuild on (tenant_id, id) and the six
 		// index builds. Readers AND writers of
 		// scheduled_tasks wait for that span; no other table is locked. The
 		// table holds one row per armed timer.

@@ -297,3 +297,7 @@ func EntityClaimLockSQLForTest() string {
 // postgres_test package, so a test can assert a specific log line without a
 // capturing hook in production code.
 var CaptureSlogForTest = captureSlog
+
+// RankClaimsSQLForTest is ClaimDue's ranking, for a test that explains its
+// plan.
+const RankClaimsSQLForTest = rankClaimsSQL
