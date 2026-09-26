@@ -571,24 +571,32 @@ When a server fails, the same sequence runs from `a.Shutdown()` after the
 servers stop.
 
 **Grace period.**
-- A pnode with no unsafe callout in flight exits within about 20 + 30 + 15 s,
-  plus the existing tail of about 25 s (`help/run.md:287`).
+- The drain's parts, at the defaults: step 1 waits for the claim loop's
+  store call in flight (up to 10 s); step 2 is `CYODA_SCHEDULER_SHUTDOWN_DRAIN`
+  (20 s); step 4 waits up to the callout deadline's remainder plus
+  CommitBudget (30 s) plus a 15 s tail, whose last 10 s are the wait for
+  outcome writes under way; step 5 makes up to three store calls (the final
+  give-back, the heartbeat in flight, the owner's retirement) at 10 s each.
+  After the scheduler come the server drains, the search drain and the
+  telemetry flush, about 25 s.
 - An unsafe callout can only be in flight if it started before step 1, because
-  no new unsafe dispatch starts after the signal. A pnode with one in flight
-  can take up to:
+  no new unsafe dispatch starts after the signal. The worst case is:
 
   ```
-  callout deadline + CommitBudget + 15 s + 25 s
-  callout deadline = (1 + CYODA_RETRY_FIXED_NUM_RETRIES) × answer limit
+  max(CYODA_SCHEDULER_SHUTDOWN_DRAIN + 10 s, callout deadline) + 100 s
+  callout deadline = (1 + CYODA_RETRY_FIXED_NUM_RETRIES) × CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS
                      + CYODA_DISPATCH_WAIT_TIMEOUT + CYODA_CALLOUT_HANDOVER_ALLOWANCE
+  100 s = CommitBudget 30 + step-4 tail 15 + step 5 30 + after the scheduler 25
   ```
 
-  At the defaults that is 155 + 70 = 225 s. At the maximum answer limit
-  (`CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`) it is 275 + 70 = 345 s.
-- The Helm chart sets `terminationGracePeriodSeconds: 360`. `help/run.md` and
-  the chart README give the formula, so an operator who raises those settings
-  can raise the grace period too. The step-2 drain overlaps the callout
-  deadline and adds nothing to the bound.
+  The callout deadline uses the maximum answer limit, because step 4's timer
+  runs from it whatever limit a callout used. At the defaults that is
+  275 + 100 = 375 s; with no unsafe callout in flight it is 30 + 100 = 130 s.
+- The Helm chart sets `terminationGracePeriodSeconds: 390`, which leaves 15 s
+  for the steps with no time limit (the cluster leave, the release of search
+  jobs, the storage close). `help/run.md` and the chart README give the
+  formula, so an operator who raises those settings can raise the grace period
+  too.
 
 ### 6.5 Panics
 
