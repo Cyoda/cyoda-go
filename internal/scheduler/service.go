@@ -590,7 +590,7 @@ func (s *Service) claim() {
 func (s *Service) claimRequest() (req spi.ClaimRequest, free int, ok bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.healthy || s.latched || s.draining {
+	if !s.healthy || s.latchedLocked() || s.draining {
 		return spi.ClaimRequest{}, 0, false
 	}
 	free = s.cfg.MaxRuns - len(s.runs)
@@ -628,7 +628,7 @@ func (s *Service) register(tasks []spi.ScheduledTask, free int) (runs []*liveRun
 	if s.draining {
 		return nil, false
 	}
-	if s.latched || !time.Now().Before(s.wdDeadline) {
+	if s.latchedLocked() || !time.Now().Before(s.wdDeadline) {
 		return nil, len(tasks) > 0
 	}
 	s.filled = len(tasks) >= free
@@ -1010,6 +1010,17 @@ func (s *Service) recoverLatch(site string) {
 	slog.Error("panic recovered in the scheduler "+site+"; node latched", "pkg", "scheduler",
 		"ticket", ticket.String(), "err", fmt.Errorf("panic: %v", v), "stack", string(debug.Stack()))
 	s.latchAndCancel()
+}
+
+// latchedLocked reports whether the node is latched: either the scheduler's
+// own s.latched, set by a panic recovered inside the scheduler, or the
+// process-wide Deps.HealthFlag a panic recovered elsewhere in the process (the
+// HTTP Recovery middleware, the gRPC server, the search reaper) has set
+// false. One helper for both so the claim gate and register cannot drift
+// apart on which sources count. The caller holds s.mu; HealthFlag is read
+// without it, since it is its own atomic.
+func (s *Service) latchedLocked() bool {
+	return s.latched || (s.deps.HealthFlag != nil && !s.deps.HealthFlag.Load())
 }
 
 // latch marks the node unhealthy for good. A latched node claims nothing, and
