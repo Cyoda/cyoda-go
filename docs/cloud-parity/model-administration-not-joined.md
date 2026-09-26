@@ -31,7 +31,15 @@ operation of their own and never as a step of a running transition.
 - **Not refused:** the read-only model and workflow operations — list, export,
   validate, workflow export; `EntityModelExportRequest` and
   `EntityModelGetAllRequest` — and every entity operation, which joins as
-  before.
+  before. An entity write under a model with a change level may extend the
+  model's schema inside the joined transaction: that is the entity
+  operation's side effect, bound to the entity's commit, and it is not
+  refused.
+- **Every node, every mode:** in a cluster the refusal is made by the node
+  that receives the request, before it verifies the token or forwards the
+  request to the transaction's owner, so it is the same answer on every node
+  — a forged, expired or peer-owned token included — and no request for
+  administration is ever proxied.
 - **Consequence for workflow import:** it always owns its transaction. Its
   removal of the tasks no workflow schedules any more runs in a transaction of
   its own and is retried on a scheduler race; the joined form of that `409

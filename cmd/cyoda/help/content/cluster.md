@@ -122,7 +122,8 @@ without extra hand-written code. The entity-model and workflow operations that
 change a model or its workflows do not declare it: model and workflow
 administration never runs inside a transaction, and each of them refuses a
 request carrying the header with `400 MODEL_ADMIN_IN_JOINED_TRANSACTION` before
-the token is verified (see `cyoda help errors MODEL_ADMIN_IN_JOINED_TRANSACTION`).
+the token is verified and before the request would be routed to the owning
+node (see `cyoda help errors MODEL_ADMIN_IN_JOINED_TRANSACTION`).
 
 The receiving node verifies the token's HMAC and routes the callback to the
 transaction-owning node (same proxy mechanism as `TRANSACTION ROUTING` above).

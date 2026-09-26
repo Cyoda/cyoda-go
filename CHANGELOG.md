@@ -14,10 +14,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   running transition's transaction; over gRPC, `entityModelManage` ignored
   the `tx-token` metadata and ran the change in a transaction of its own.
   Each of those requests is now refused when it carries a token, with the
-  new `400 MODEL_ADMIN_IN_JOINED_TRANSACTION` (not retryable): on HTTP in
-  the join layer, before the token is verified, so no transaction lock is
-  taken and nothing is read or written; on gRPC in the request's own
-  response envelope. The read-only model and workflow operations are
+  new `400 MODEL_ADMIN_IN_JOINED_TRANSACTION` (not retryable): on HTTP by
+  the node that receives the request, before the token is verified — so in
+  a cluster before the request would be routed to the transaction's owner,
+  and in the join layer before any transaction lock is taken — and nothing
+  is read or written; on gRPC in the request's own response envelope. The read-only model and workflow operations are
   unaffected, and every entity operation still joins. A workflow import
   therefore always owns its transaction: the joined-import case — its
   removal of unscheduled tasks running unretried in the owner's transaction

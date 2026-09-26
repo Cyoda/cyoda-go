@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cyoda-platform/cyoda-go/internal/adminroute"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/peeraddr"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -24,10 +25,18 @@ const TxTokenHeader = "X-Tx-Token"
 // token targeting the local node, are served locally. Requests targeting a
 // remote node are reverse-proxied transparently.
 //
+// Model and workflow administration never runs inside a transaction: a request
+// for one of those routes (adminroute) that carries a token is refused 400
+// MODEL_ADMIN_IN_JOINED_TRANSACTION before the token is verified and before
+// anything is forwarded, so the answer is the same on every node, whatever the
+// token. This layer sits above the context-path strip, so it matches with
+// contextPath applied (the configured context path with no trailing slash, ""
+// when there is none).
+//
 // allowLoopback gates the peer-address SSRF guard on the proxy path, matching
 // the same flag on the dispatch forwarder. Set true only in test fixtures that
 // run cluster nodes on 127.0.0.1; keep false in production.
-func HTTPRouting(signer *token.Signer, registry contract.NodeRegistry, selfNodeID string, proxyTimeout time.Duration, allowLoopback bool) func(http.Handler) http.Handler {
+func HTTPRouting(signer *token.Signer, registry contract.NodeRegistry, selfNodeID string, proxyTimeout time.Duration, allowLoopback bool, contextPath string) func(http.Handler) http.Handler {
 	// Shared transport reused across all proxied requests.
 	transport := &http.Transport{
 		ResponseHeaderTimeout: proxyTimeout,
@@ -41,6 +50,10 @@ func HTTPRouting(signer *token.Signer, registry contract.NodeRegistry, selfNodeI
 			tok := r.Header.Get(TxTokenHeader)
 			if tok == "" {
 				next.ServeHTTP(w, r)
+				return
+			}
+			if adminroute.IsAdministration(r, contextPath) {
+				common.WriteError(w, r, common.ModelAdminInJoinedTransaction())
 				return
 			}
 

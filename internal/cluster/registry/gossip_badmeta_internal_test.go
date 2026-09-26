@@ -49,7 +49,7 @@ func TestGossipRegistry_UnparseableMetadata_NotAlive_HTTP503(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := proxy.HTTPRouting(signer, r, "badmeta-1", 5*time.Second, true)(
+	handler := proxy.HTTPRouting(signer, r, "badmeta-1", 5*time.Second, true, "")(
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 	req := httptest.NewRequest(http.MethodGet, "/api/entity/1", nil)
 	req.Header.Set(proxy.TxTokenHeader, tok)
