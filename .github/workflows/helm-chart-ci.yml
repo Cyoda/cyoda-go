@@ -66,6 +66,32 @@ jobs:
             -skip HTTPRoute,GRPCRoute,ServiceMonitor \
             /tmp/default.yaml
 
+      - name: helm template — pods get the shutdown grace period
+        run: |
+          grep -q "terminationGracePeriodSeconds: 360" /tmp/default.yaml
+
+      - name: helm template — schema rejects a zero grace period
+        run: |
+          set +e
+          output=$(helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set monitoring.metricsBearer.existingSecret=test-metrics-bearer \
+            --set gateway.parentRefs[0].name=test-gw \
+            --set gateway.http.hostnames[0]=cyoda.example.com \
+            --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com \
+            --set terminationGracePeriodSeconds=0 \
+            2>&1)
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ] || ! echo "$output" | grep -q "/terminationGracePeriodSeconds"; then
+            echo "FAIL: expected schema rejection of terminationGracePeriodSeconds=0; got:"
+            echo "$output"
+            exit 1
+          fi
+          echo "PASS: schema rejected a zero grace period."
+
       - name: helm template — ingress mode
         run: |
           helm template cyoda deploy/helm/cyoda \

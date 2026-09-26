@@ -272,6 +272,9 @@ Tolerations for the StatefulSet pod spec.
 **`affinity`** — map — default `{}`
 Affinity rules for the StatefulSet pod spec.
 
+**`terminationGracePeriodSeconds`** — integer — default `360`
+Seconds Kubernetes waits after `SIGTERM` before it kills a pod. It must cover the node's worst-case shutdown, `max(CYODA_SCHEDULER_SHUTDOWN_DRAIN, callout deadline) + 70` seconds, which is 345 s at the binary's defaults with the maximum answer limit. Raise it when you raise `CYODA_RETRY_FIXED_NUM_RETRIES`, `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`, `CYODA_DISPATCH_WAIT_TIMEOUT` or `CYODA_CALLOUT_HANDOVER_ALLOWANCE`. Must be `>= 1`. See `cyoda help run` (SHUTDOWN TIMING).
+
 **`nameOverride`** — string — default `""`
 Override the chart name component of generated resource names.
 
@@ -284,7 +287,7 @@ The chart renders the following Kubernetes objects. Conditional objects note the
 
 **Always rendered:**
 
-- `StatefulSet` (`apps/v1`) — the cyoda workload. `podManagementPolicy: Parallel`. `updateStrategy: RollingUpdate`. No `volumeClaimTemplates` (cyoda is stateless vs. PostgreSQL). Mounts a projected Secret volume at `/etc/cyoda/secrets` (mode `0400`) and an `emptyDir` at `/tmp`. Runs as UID/GID 65532, non-root, `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`, all capabilities dropped, `seccompProfile: RuntimeDefault`.
+- `StatefulSet` (`apps/v1`) — the cyoda workload. `podManagementPolicy: Parallel`. `updateStrategy: RollingUpdate`. `terminationGracePeriodSeconds` from values (default `360`). No `volumeClaimTemplates` (cyoda is stateless vs. PostgreSQL). Mounts a projected Secret volume at `/etc/cyoda/secrets` (mode `0400`) and an `emptyDir` at `/tmp`. Runs as UID/GID 65532, non-root, `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`, all capabilities dropped, `seccompProfile: RuntimeDefault`.
 - `Service` (`v1`) — ClusterIP Service exposing ports `8080` (http), `9090` (grpc), `9091` (metrics).
 - `Service` (headless, `v1`) — `clusterIP: None`, `publishNotReadyAddresses: true`. Exposes port `7946` TCP and UDP for gossip (memberlist). Used as the `serviceName` for the StatefulSet.
 - `ConfigMap` (`v1`) — non-sensitive env vars loaded via `envFrom`. Contains: `CYODA_HTTP_PORT`, `CYODA_GRPC_PORT`, `CYODA_ADMIN_PORT`, `CYODA_ADMIN_BIND_ADDRESS`, `CYODA_METRICS_REQUIRE_AUTH`, `CYODA_IAM_MODE`, `CYODA_REQUIRE_JWT`, `CYODA_STORAGE_BACKEND`, `CYODA_POSTGRES_AUTO_MIGRATE`, `CYODA_CLUSTER_ENABLED`, `CYODA_SEED_NODES`, `CYODA_LOG_LEVEL`, `CYODA_JWT_ISSUER`, `CYODA_JWT_EXPIRY_SECONDS`, `CYODA_BOOTSTRAP_TENANT_ID`, `CYODA_BOOTSTRAP_USER_ID`, `CYODA_BOOTSTRAP_ROLES`, and `CYODA_BOOTSTRAP_CLIENT_ID` (when `bootstrap.clientId` is set). Is a Helm pre-install/pre-upgrade hook with weight `-10`.

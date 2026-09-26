@@ -205,5 +205,19 @@ nodeSelector: {}
 tolerations: []
 affinity: {}
 
+# -- Seconds Kubernetes waits after SIGTERM before it kills a cyoda pod.
+# A node first drains its scheduled runs. A run whose processor that is not
+# declared idempotent is in flight on a compute member is allowed to finish,
+# which can take a whole callout deadline. The worst case is
+#   max(CYODA_SCHEDULER_SHUTDOWN_DRAIN, callout deadline) + 70s
+# where
+#   callout deadline = (1 + CYODA_RETRY_FIXED_NUM_RETRIES)
+#                        × CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS
+#                      + CYODA_DISPATCH_WAIT_TIMEOUT
+#                      + CYODA_CALLOUT_HANDOVER_ALLOWANCE
+# At the binary's defaults: max(20s, 4 × 60s + 5s + 30s) + 70s = 345s.
+# Raise this when you raise any of those settings. See `cyoda help run`.
+terminationGracePeriodSeconds: 360
+
 nameOverride: ""
 fullnameOverride: ""
