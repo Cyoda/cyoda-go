@@ -109,6 +109,9 @@ func TestJoinedCallbackConflict_EveryDoorAnswersRetryable409(t *testing.T) {
 		procs func() []conflictProc
 		// strict: the processor fails when its joined write is not answered 200.
 		strict bool
+		// thenFails: the processor fails after its joined write, whatever the
+		// write was answered.
+		thenFails bool
 		// ifMatchOnly: the shape needs an If-Match to reach its statement.
 		ifMatchOnly bool
 		// atomic: the request runs in one transaction, so the conflict leaves
@@ -119,12 +122,12 @@ func TestJoinedCallbackConflict_EveryDoorAnswersRetryable409(t *testing.T) {
 		{name: "AtSave", atomic: true, procs: func() []conflictProc { return []conflictProc{sync(uniq("jcc-p"))} }},
 		// The engine's read of the entity before dispatching a second processor.
 		{name: "InEngine", atomic: true, procs: func() []conflictProc { return []conflictProc{sync(uniq("jcc-p")), sync(uniq("jcc-p"))} }},
-		// The processor checks its callback's answer and fails: the engine's
-		// probe of the transaction.
+		// The processor checks its callback's answer and fails: the engine
+		// asks the transaction manager whether the transaction lost a race.
 		{name: "StrictProcessor", atomic: true, strict: true, procs: func() []conflictProc { return []conflictProc{sync(uniq("jcc-p"))} }},
 		// The same, dispatched with the token of the transaction that
-		// COMMIT_BEFORE_DISPATCH opens after its commit: the engine's probe of
-		// that transaction.
+		// COMMIT_BEFORE_DISPATCH opens after its commit: the engine's question
+		// about that transaction.
 		{name: "StrictCommitBeforeDispatch", strict: true, procs: func() []conflictProc {
 			return []conflictProc{{name: uniq("jcc-cbd"), mode: "COMMIT_BEFORE_DISPATCH", startNewTx: true}}
 		}},
@@ -133,6 +136,15 @@ func TestJoinedCallbackConflict_EveryDoorAnswersRetryable409(t *testing.T) {
 		// still refuses the commit.
 		{name: "StrictAsyncNewTx", atomic: true, strict: true, procs: func() []conflictProc {
 			return []conflictProc{{name: uniq("jcc-ant"), mode: "ASYNC_NEW_TX"}}
+		}},
+		// The processor fails after its joined write whatever the answer: the
+		// failure is a consequence of the lost race, and the engine's question
+		// to the transaction manager answers the conflict.
+		{name: "ThenFailsProcessor", atomic: true, thenFails: true, procs: func() []conflictProc { return []conflictProc{sync(uniq("jcc-p"))} }},
+		// The same in the transaction COMMIT_BEFORE_DISPATCH opens after its
+		// commit.
+		{name: "ThenFailsCommitBeforeDispatch", thenFails: true, procs: func() []conflictProc {
+			return []conflictProc{{name: uniq("jcc-cbd"), mode: "COMMIT_BEFORE_DISPATCH", startNewTx: true}}
 		}},
 		// The engine's If-Match compare at the first COMMIT_BEFORE_DISPATCH
 		// segment flush.
@@ -172,6 +184,9 @@ func TestJoinedCallbackConflict_EveryDoorAnswersRetryable409(t *testing.T) {
 					}
 					if shape.strict && (err != nil || res.StatusCode != http.StatusOK) {
 						return answerFail("the joined write of F was refused")
+					}
+					if shape.thenFails {
+						return answerFail("the processor fails after its joined write")
 					}
 					return answerOK()
 				}})
