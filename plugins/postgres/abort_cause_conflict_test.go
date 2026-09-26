@@ -50,6 +50,9 @@ func TestStatementAfterSerializationFailure_IsAConflict(t *testing.T) {
 	if !errors.Is(err, spi.ErrConflict) {
 		t.Fatalf("the losing write is not a conflict, so this scenario proves nothing: %v", err)
 	}
+	if errors.Is(err, spi.ErrTxAborted) {
+		t.Fatalf("the losing write is the conflict itself, not a statement after one: %v", err)
+	}
 
 	assertLaterStatementIsConflict(t, fx, txCtx)
 
@@ -163,19 +166,17 @@ func TestStatementAfterRolledBackConflict_IsNotAConflict(t *testing.T) {
 }
 
 // assertLaterStatementIsConflict runs a statement of each querier shape on the
-// aborted transaction and requires every one to report spi.ErrConflict.
+// aborted transaction and requires every one to report spi.ErrTxAborted —
+// which is also spi.ErrConflict — with the refusing 25P02 still in the chain.
 func assertLaterStatementIsConflict(t *testing.T, fx *abortFixture, txCtx context.Context) {
 	t.Helper()
 	stmtCtx, cancel := context.WithTimeout(txCtx, 10*time.Second)
 	defer cancel()
 
 	var one int
-	if err := fx.q.QueryRow(stmtCtx, "SELECT 1").Scan(&one); !errors.Is(err, spi.ErrConflict) {
-		t.Errorf("QueryRow after the conflict: %v, want spi.ErrConflict", err)
-	}
-	if _, err := fx.q.Exec(stmtCtx, "SELECT 1"); !errors.Is(err, spi.ErrConflict) {
-		t.Errorf("Exec after the conflict: %v, want spi.ErrConflict", err)
-	}
+	requireTxAborted(t, "QueryRow", fx.q.QueryRow(stmtCtx, "SELECT 1").Scan(&one))
+	_, err := fx.q.Exec(stmtCtx, "SELECT 1")
+	requireTxAborted(t, "Exec", err)
 	rows, err := fx.q.Query(stmtCtx, "SELECT 1")
 	if err == nil {
 		for rows.Next() {
@@ -183,7 +184,41 @@ func assertLaterStatementIsConflict(t *testing.T, fx *abortFixture, txCtx contex
 		err = rows.Err()
 		rows.Close()
 	}
-	if !errors.Is(err, spi.ErrConflict) {
-		t.Errorf("Query after the conflict: %v, want spi.ErrConflict", err)
+	requireTxAborted(t, "Query", err)
+}
+
+func requireTxAborted(t *testing.T, op string, err error) {
+	t.Helper()
+	if !errors.Is(err, spi.ErrTxAborted) || !errors.Is(err, spi.ErrConflict) {
+		t.Errorf("%s after the conflict: %v, want spi.ErrTxAborted and spi.ErrConflict", op, err)
+		return
 	}
+	if !hasPgCode(err, pgerrcode.InFailedSQLTransaction) {
+		t.Errorf("%s after the conflict: the 25P02 is not in the chain: %v", op, err)
+	}
+}
+
+// hasPgCode reports whether any PgError in err's tree carries code.
+func hasPgCode(err error, code string) bool {
+	if err == nil {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if pe, ok := err.(*pgconn.PgError); ok {
+		pgErr = pe
+	}
+	if pgErr != nil && pgErr.Code == code {
+		return true
+	}
+	switch u := err.(type) {
+	case interface{ Unwrap() []error }:
+		for _, e := range u.Unwrap() {
+			if hasPgCode(e, code) {
+				return true
+			}
+		}
+	case interface{ Unwrap() error }:
+		return hasPgCode(u.Unwrap(), code)
+	}
+	return false
 }

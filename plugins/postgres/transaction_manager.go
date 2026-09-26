@@ -965,7 +965,8 @@ func classifySQLState(err error) (error, bool) {
 // The record is what lets that answer be read correctly: a ceiling stays a
 // ceiling at Commit rather than becoming a retryable conflict, and a statement
 // issued after a concurrent writer won — by Commit or by any caller that keeps
-// going — is reported as the conflict it is, not as an unclassified fault.
+// going — is reported as spi.ErrTxAborted (a conflict that is not about the
+// statement itself), not as an unclassified fault.
 func (tm *TransactionManager) classifyTxError(txID string, err error) error {
 	classified := classifyError(err)
 	if isIdleInTxAbort(classified) {
@@ -981,7 +982,7 @@ func (tm *TransactionManager) classifyTxError(txID string, err error) error {
 		state.RecordAbort(classified)
 	case isInFailedTx(classified):
 		if cause := state.AbortCause(); isConcurrentWriterAbort(cause) {
-			return fmt.Errorf("transaction aborted: %w; this statement: %w", cause, classified)
+			return fmt.Errorf("%w: %w; this statement: %w", spi.ErrTxAborted, cause, classified)
 		}
 	}
 	return classified
