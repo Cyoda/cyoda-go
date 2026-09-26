@@ -115,11 +115,11 @@ func (s *mainPoolBlockedStore) Cancel(ctx context.Context, jobID string, finishT
 	return s.AsyncSearchStore.Cancel(ctx, jobID, finishTime)
 }
 
-func (s *mainPoolBlockedStore) ClearResults(ctx context.Context, jobID string) error {
+func (s *mainPoolBlockedStore) ClearResults(ctx context.Context, jobID string, epoch int64) error {
 	if err := s.mainPool(ctx); err != nil {
 		return err
 	}
-	return s.AsyncSearchStore.ClearResults(ctx, jobID)
+	return s.AsyncSearchStore.ClearResults(ctx, jobID, epoch)
 }
 
 func (s *mainPoolBlockedStore) Release(ctx context.Context, jobID string, epoch int64) error {

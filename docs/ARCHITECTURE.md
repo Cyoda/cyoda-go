@@ -1292,7 +1292,8 @@ type AsyncSearchStore interface {
     ReapExpired(ctx, ttl time.Duration) (int, error)
     Heartbeat(ctx, jobID string, epoch int64) error
     ClaimStale(ctx, staleAfter time.Duration, limit int) ([]*SearchJob, error)
-    ClearResults(ctx, jobID string) error
+    ClearResults(ctx, jobID string, epoch int64) error
+    Release(ctx, jobID string, epoch int64) error
 }
 ```
 
@@ -1331,15 +1332,23 @@ heartbeat and let the reaper seize a healthy job. A background reaper
 `RUNNING` job that is either stale (heartbeat silent for
 `CYODA_SEARCH_JOB_STALE_AFTER`) or `released` via `ClaimStale` — which
 atomically bumps the job's `Epoch` so concurrent claimers obtain disjoint
-jobs — clears the prior epoch's partial results (`ClearResults`), and
-re-executes the job on this node at the claimed epoch, as-at its
+jobs — starts the job's heartbeat, clears the prior epoch's partial results
+(`ClearResults`) on the worker under that heartbeat, and re-executes the job
+on this node at the claimed epoch, as-at its
 originally stored `PointInTime`, so a crashed node's async job completes
 `SUCCESSFUL` on a live node rather than staying `RUNNING` forever or being
-failed outright. Every executor-side write (`Heartbeat`, `SaveResults`, the
-terminal `UpdateJobStatus`) carries the epoch the executor was started or
-claimed with; a store refuses a write whose epoch does not match the job's
-current epoch with `spi.ErrStaleClaim`, so a deposed executor that later
-recovers cannot corrupt a result set another node has since taken over.
+failed outright. Every executor-side write (`Heartbeat`, `ClearResults`,
+`SaveResults`, `Release`, the terminal `UpdateJobStatus`) carries the epoch
+the executor was started or claimed with; a store refuses a write whose epoch
+does not match the job's current epoch with `spi.ErrStaleClaim`, so a deposed
+executor that later recovers cannot corrupt a result set another node has
+since taken over — a late `ClearResults` from it deletes nothing.
+
+Neither the heartbeat nor the reclaim sweep waits on a statement that shares
+the store's main pool with entity transactions. The heartbeat sends only the
+fenced `Heartbeat` stamp, whose refusal also carries a cancel from any node
+(the job is terminal). The sweep starts every job it will run — heartbeat and
+enqueue — before it sends any write for a job it will not run.
 
 Re-execution is bounded: `SearchJob.StaleClaims` counts only staleness
 claims (never a graceful `Release`), and once it reaches
@@ -1354,10 +1363,10 @@ ticker — finer than the snapshot-TTL cadence — plus once at process
 startup, so a node that restarts picks up anything left `released` or gone
 stale before its first ticker fire, rather than waiting a full interval.
 `ClaimStale` and `ReapExpired` are cross-tenant, called with a tenant-less
-context (precedent: `ScheduledTaskStore.ScanDue`); the reaper's follow-up
+context (precedent: `ScheduledTaskStore.ClaimDue`); the reaper's follow-up
 writes reconstruct a per-job tenant context from the claimed job's own
 `TenantID`. A claim the node cannot honour — no free capacity in its worker
-pool, or a `ClearResults` failure — releases the job again (uncounted
+pool, or a `ClearResults` failure or refusal — releases the job again (uncounted
 against the attempt cap) rather than enqueuing over unknown partial
 residue, so a claim never silently drops the job on the floor.
 

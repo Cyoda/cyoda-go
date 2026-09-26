@@ -162,18 +162,27 @@ func (s *SearchService) reenqueueClaimed(job *spi.SearchJob) (started bool, unru
 // shares the store's main pool with entity transactions, and neither the
 // reclaim sweep nor the job's liveness may wait on that pool.
 //
+// The clear is fenced by the claimed epoch: a clear that lands after the job
+// was taken from this node, or settled, is refused and deletes nothing, so a
+// late clear cannot wipe the rows the current owner saved.
+//
 // A job whose context ended before the clear (released, superseded, or
-// refused by its heartbeat), or whose clear failed, does not run: the job is
-// released (uncounted) so a peer or the next sweep retries it. It is never run
-// over unknown residue (fail closed).
+// refused by its heartbeat), or whose clear failed or was refused, does not
+// run: the job is released (uncounted, and fenced like the clear) so a peer or
+// the next sweep retries it. It is never run over unknown residue (fail
+// closed).
 func (s *SearchService) clearReclaimedResults(jobCtx context.Context, cancel context.CancelCauseFunc, handle *asyncJobHandle, job *spi.SearchJob) bool {
 	cerr := jobCtx.Err()
 	if cerr == nil {
-		cerr = s.searchStore.ClearResults(jobCtx, job.ID)
-		if cerr == nil {
+		cerr = s.searchStore.ClearResults(jobCtx, job.ID, job.Epoch)
+		switch {
+		case cerr == nil:
 			return true
+		case errors.Is(cerr, spi.ErrStaleClaim), errors.Is(cerr, spi.ErrAlreadyTerminal):
+			slog.Warn("reclaimed job was taken or settled before it ran", "pkg", "search", "jobID", job.ID, "err", cerr)
+		default:
+			slog.Error("failed to clear results before reclaim; releasing", "pkg", "search", "jobID", job.ID, "err", cerr)
 		}
-		slog.Error("failed to clear results before reclaim; releasing", "pkg", "search", "jobID", job.ID, "err", cerr)
 	}
 	cancel(nil)
 	s.deregisterJobHandle(job.ID, handle)

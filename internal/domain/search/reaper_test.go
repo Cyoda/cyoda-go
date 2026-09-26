@@ -16,6 +16,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -282,7 +284,7 @@ type clearResultsErrorStore struct {
 	spi.AsyncSearchStore
 }
 
-func (s *clearResultsErrorStore) ClearResults(ctx context.Context, jobID string) error {
+func (s *clearResultsErrorStore) ClearResults(ctx context.Context, jobID string, epoch int64) error {
 	return fmt.Errorf("clearResultsErrorStore: simulated ClearResults failure for %s", jobID)
 }
 
@@ -403,5 +405,89 @@ func TestReclaimStaleJobs_SelfReclaimReplacesHandle(t *testing.T) {
 	svc.DeregisterJobHandleForTest("job-self", newHandle)
 	if got := svc.RegisteredJobCountForTest(); got != 0 {
 		t.Fatalf("registry size after deregistering the new (current) handle = %d, want 0", got)
+	}
+}
+
+// inFlightClearStore holds every ClearResults at the store's door until the
+// test lets it through, whatever happens to the caller's context meanwhile —
+// as a statement already sent to the database is not recalled by a cancel.
+type inFlightClearStore struct {
+	spi.AsyncSearchStore
+	entered chan struct{}
+	proceed chan struct{}
+	result  chan error
+}
+
+func (s *inFlightClearStore) ClearResults(ctx context.Context, jobID string, epoch int64) error {
+	s.entered <- struct{}{}
+	<-s.proceed
+	err := s.AsyncSearchStore.ClearResults(context.WithoutCancel(ctx), jobID, epoch)
+	s.result <- err
+	return err
+}
+
+// (g) a clear from an owner that lost the job lands after the new owner saved
+// its results. The store refuses it at the old epoch, and the new owner's rows
+// survive.
+func TestReclaimStaleJobs_LateClearFromLostOwnerDeletesNothing(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { factory.Close() })
+	base, err := factory.AsyncSearchStore(context.Background())
+	if err != nil {
+		t.Fatalf("AsyncSearchStore: %v", err)
+	}
+	store := &inFlightClearStore{AsyncSearchStore: base,
+		entered: make(chan struct{}, 1), proceed: make(chan struct{}), result: make(chan error, 1)}
+	var proceedOnce sync.Once
+	letThrough := func() { proceedOnce.Do(func() { close(store.proceed) }) }
+
+	ctx := tenantCtx("tenant-a")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
+	createStaleReclaimJob(t, base, "tenant-a", "job-late-clear", ref, cond, time.Now())
+
+	pool := search.NewWorkerPool(2, 8)
+	t.Cleanup(func() { pool.Drain(context.Background()) })
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store).
+		WithAsyncPool(pool).
+		WithHeartbeat(20 * time.Millisecond)
+	t.Cleanup(letThrough) // runs before the pool drains
+
+	if reenq, _, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5); err != nil || reenq != 1 {
+		t.Fatalf("ReclaimStaleJobs = (reenqueued %d, err %v), want (1, nil)", reenq, err)
+	}
+	select {
+	case <-store.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the reclaimed job's clear was never sent")
+	}
+
+	// Another node takes the job (epoch 3) and saves its results while this
+	// node's clear, at epoch 2, is still in flight.
+	time.Sleep(5 * time.Millisecond)
+	claimed, err := base.ClaimStale(context.Background(), time.Nanosecond, 10)
+	if err != nil || len(claimed) != 1 || claimed[0].Epoch != 3 {
+		t.Fatalf("the other node's claim = %v (err %v), want the job at epoch 3", claimed, err)
+	}
+	saved := []string{"n1", "n2", "n3"}
+	if err := base.SaveResults(ctx, "job-late-clear", 3, slices.Values(saved)); err != nil {
+		t.Fatalf("the new owner's SaveResults: %v", err)
+	}
+
+	letThrough()
+	select {
+	case cerr := <-store.result:
+		if !errors.Is(cerr, spi.ErrStaleClaim) {
+			t.Errorf("the late clear answered %v, want ErrStaleClaim", cerr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the late clear never completed")
+	}
+	_, total, err := base.GetResultIDs(ctx, "job-late-clear", 0, 10)
+	if err != nil {
+		t.Fatalf("GetResultIDs: %v", err)
+	}
+	if total != len(saved) {
+		t.Fatalf("the new owner's results = %d rows after the late clear, want %d: a clear from the lost owner deleted them", total, len(saved))
 	}
 }

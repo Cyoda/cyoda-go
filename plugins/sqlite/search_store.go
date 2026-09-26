@@ -495,16 +495,32 @@ func (s *asyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 	return claimed, nil
 }
 
-func (s *asyncSearchStore) ClearResults(ctx context.Context, jobID string) error {
+// ClearResults deletes the job's persisted result IDs, fenced like
+// SaveResults: the no-op fenced UPDATE and the DELETE share one transaction,
+// so a claim or terminal write cannot land between the fence and the delete.
+// A refused clear deletes nothing. Idempotent at the current epoch.
+func (s *asyncSearchStore) ClearResults(ctx context.Context, jobID string, epoch int64) error {
 	tid, err := s.tenant(ctx)
 	if err != nil {
 		return err
 	}
 
-	if _, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin tx for clearing results of job %s: %w", jobID, err)
+	}
+	defer tx.Rollback()
+
+	if err := fencedUpdate(ctx, tx, tid, jobID, epoch, "epoch = epoch"); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM search_job_results WHERE tenant_id = ? AND job_id = ?`,
 		string(tid), jobID); err != nil {
 		return fmt.Errorf("failed to clear results for job %s: %w", jobID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit clearing results of job %s: %w", jobID, err)
 	}
 	return nil
 }

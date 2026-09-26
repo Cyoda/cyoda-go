@@ -459,18 +459,46 @@ func (s *asyncSearchStore) GetResultIDs(ctx context.Context, jobID string, offse
 	return ids, total, nil
 }
 
-// ClearResults deletes the job's persisted result IDs. Idempotent — deleting
-// zero rows is not an error.
-func (s *asyncSearchStore) ClearResults(ctx context.Context, jobID string) error {
+// clearResultsQuery fences and deletes in ONE statement. The fence CTE locks
+// the job row FOR UPDATE, so a concurrent ClaimStale or terminal write waits
+// for this statement, and one that committed first is re-read under the lock
+// (READ COMMITTED re-evaluates a locked row against its latest version). The
+// DELETE applies only when the locked row is at the caller's epoch and not
+// terminal. The statement answers the locked row's status and epoch — no row
+// means no job — which ClearResults classifies exactly as probeFenced does.
+const clearResultsQuery = `
+WITH fence AS (
+    SELECT status, epoch FROM search_jobs WHERE id = $1 AND tenant_id = $2 FOR UPDATE
+), cleared AS (
+    DELETE FROM search_job_results r USING fence
+    WHERE r.job_id = $1 AND r.tenant_id = $2
+      AND fence.epoch = $3 AND fence.status NOT IN ('SUCCESSFUL', 'FAILED', 'CANCELLED')
+)
+SELECT status, epoch FROM fence`
+
+// ClearResults deletes the job's persisted result IDs, fenced by epoch like
+// Heartbeat and Release; see clearResultsQuery for why the fence and the
+// delete are one statement. A refused clear deletes nothing. Idempotent at the
+// current epoch — deleting zero rows is not an error.
+func (s *asyncSearchStore) ClearResults(ctx context.Context, jobID string, epoch int64) error {
 	tid, err := s.tenant(ctx)
 	if err != nil {
 		return err
 	}
-	_, err = s.q.Exec(ctx,
-		`DELETE FROM search_job_results WHERE job_id = $1 AND tenant_id = $2`,
-		jobID, string(tid))
+	var status string
+	var actualEpoch int64
+	err = s.q.QueryRow(ctx, clearResultsQuery, jobID, string(tid), epoch).Scan(&status, &actualEpoch)
 	if err != nil {
+		if err == pgx.ErrNoRows {
+			return fmt.Errorf("search job %q not found: %w", jobID, spi.ErrNotFound)
+		}
 		return fmt.Errorf("failed to clear results for job %s: %w", jobID, err)
+	}
+	if isTerminalSearchStatus(status) {
+		return fmt.Errorf("search job %q is terminal: %w", jobID, spi.ErrAlreadyTerminal)
+	}
+	if actualEpoch != epoch {
+		return fmt.Errorf("search job %q epoch mismatch (have %d, want %d): %w", jobID, actualEpoch, epoch, spi.ErrStaleClaim)
 	}
 	return nil
 }
