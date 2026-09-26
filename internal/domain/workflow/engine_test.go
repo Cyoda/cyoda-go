@@ -1620,7 +1620,7 @@ func (m *mockExternalProcessing) DispatchProcessor(ctx context.Context, entity *
 	if m.dispatchFunc != nil {
 		return m.dispatchFunc(ctx, entity, proc, wf, tr, txID)
 	}
-	return entity, nil
+	return nil, nil
 }
 
 func (m *mockExternalProcessing) DispatchCriteria(_ context.Context, _ *spi.Entity, _ json.RawMessage, _, _, _, _, _ string) (bool, string, error) {

@@ -32,7 +32,7 @@ func (d *reportingDispatcher) fill(ctx context.Context) {
 
 func (d *reportingDispatcher) DispatchProcessor(ctx context.Context, entity *spi.Entity, _ spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
 	d.fill(ctx)
-	return entity, nil
+	return nil, nil
 }
 
 func (d *reportingDispatcher) DispatchCriteria(ctx context.Context, _ *spi.Entity, _ json.RawMessage, _, _, _, _, _ string) (bool, string, error) {

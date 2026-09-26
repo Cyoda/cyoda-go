@@ -21,8 +21,8 @@ type lockProbingCriteria struct {
 	duringFree bool
 }
 
-func (p *lockProbingCriteria) DispatchProcessor(_ context.Context, e *spi.Entity, _ spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
-	return e, nil
+func (p *lockProbingCriteria) DispatchProcessor(_ context.Context, _ *spi.Entity, _ spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
+	return nil, nil
 }
 func (p *lockProbingCriteria) DispatchCriteria(context.Context, *spi.Entity, json.RawMessage, string, string, string, string, string) (bool, string, error) {
 	p.duringFree = p.free()

@@ -29,8 +29,8 @@ import (
 // raised by a codec below the dispatcher).
 type panickingFunctionProc struct{}
 
-func (panickingFunctionProc) DispatchProcessor(_ context.Context, entity *spi.Entity, _ spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
-	return entity, nil
+func (panickingFunctionProc) DispatchProcessor(_ context.Context, _ *spi.Entity, _ spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
+	return nil, nil
 }
 
 func (panickingFunctionProc) DispatchCriteria(_ context.Context, _ *spi.Entity, _ json.RawMessage, _, _, _, _, _ string) (bool, string, error) {
