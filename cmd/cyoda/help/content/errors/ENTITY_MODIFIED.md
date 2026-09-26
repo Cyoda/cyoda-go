@@ -25,6 +25,8 @@ When an entity update request carries an `If-Match` header, the server requires 
 
 The `entityId` property in the problem-detail body identifies the conflicting entity.
 
+This code answers only the request's own precondition. When the request's transaction had already lost a race before the `If-Match` compare ran — for example a processor's callback write lost it, and on PostgreSQL the transaction is then aborted — the precondition was never evaluated, and the answer is a retryable `409 CONFLICT` instead (see `errors.CONFLICT`).
+
 Not retryable in the protocol sense — replaying the same payload with the same `If-Match` value will fail again.
 
 ## RECOVERY
