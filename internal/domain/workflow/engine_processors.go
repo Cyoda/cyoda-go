@@ -320,9 +320,10 @@ func (e *Engine) conflictOverDispatchFailure(ctx context.Context, entityID strin
 // is released.
 //
 // A failed dispatch needs no probe of the transaction (see
-// conflictOverDispatchFailure): a callback write that lost a race inside the
-// savepoint is not undone by the rollback, and the transaction's Commit
-// refuses it with the conflict on every backend.
+// conflictOverDispatchFailure): a callback write inside the savepoint that
+// had lost a race by the time the savepoint is rolled back stays lost, and
+// the transaction's Commit refuses it with the conflict on every backend —
+// the RollbackToSavepoint contract, pinned by the spitest Savepoint cases.
 //
 // A savepoint that cannot be created, undone or released is marked with
 // ErrSavepointInfra and fails the operation: it says the transaction is

@@ -42,7 +42,7 @@ has no documented dispatch semantics yet.
 |---|---|---|---|---|---|
 | `SYNC` | blocks inline | yes (caller's TX) | yes | fatal — the callout's error (see `cyoda help workflows`), entity stays in source state | fast, in-TX work; standard processor |
 | `ASYNC_SAME_TX` | blocks inline | yes (caller's TX) | yes | fatal — same as `SYNC` | indistinguishable from `SYNC` today; reserved label |
-| `ASYNC_NEW_TX` | blocks inline | yes (savepoint inside caller's TX) | **no — discarded** | non-fatal for the processor's own failure — warning logged, pipeline continues; a savepoint that cannot be created, undone or released fails the operation instead (ticketed `5xx`), a callback write inside the savepoint that lost a race fails it with a retryable `409 CONFLICT`, and a superseded enclosing callout is not swallowed either | fire-and-forget side effects (notifications, audit pings) |
+| `ASYNC_NEW_TX` | blocks inline | yes (savepoint inside caller's TX) | **no — discarded** | non-fatal for the processor's own failure — warning logged, pipeline continues; a savepoint that cannot be created, undone or released fails the operation instead (ticketed `5xx`), a callback write inside the savepoint that had already lost a race when the savepoint was undone fails it with a retryable `409 CONFLICT` and nothing commits, and a superseded enclosing callout is not swallowed either | fire-and-forget side effects (notifications, audit pings) |
 | `COMMIT_BEFORE_DISPATCH` | blocks inline | **no** — `TX_pre` committed first | yes, via `CompareAndSave` against `T_pre` | fatal — the callout's error (see `cyoda help workflows`), entity durable in pre-callout state | slow external work; connection-pool relief |
 
 The engine implementation is in
@@ -160,8 +160,11 @@ non-fatal. The engine code is `executeAsyncNewTx` at
    made via gRPC callbacks; a warning is logged at WARN level; **the pipeline
    continues** to the next processor. A savepoint that cannot be created,
    undone or released is not a processor failure: it fails the operation with
-   a ticketed `5xx` and nothing commits. A replaced compute member is shut out
-   before the savepoint is undone, so none of its writes lands after it.
+   a ticketed `5xx` and nothing commits. A callback write that had already
+   lost a race against another transaction stays lost after the rollback: the
+   operation fails with a retryable `409 CONFLICT` and nothing commits. A
+   replaced compute member is shut out before the savepoint is undone, so none
+   of its writes lands after it.
 4. On success: `ReleaseSavepoint(T, S)` discards the savepoint marker.
 
 ### Why mutations are discarded
@@ -186,7 +189,8 @@ The engine sends a tx-token to the compute node (same mechanism as `SYNC` —
 see §2 Transaction-bound callbacks). Callbacks that echo the token join `T`
 directly (via `txMgr.Join`). The engine independently scopes the entire
 dispatch in a savepoint `S`: if the processor fails, `RollbackToSavepoint(T, S)`
-undoes all callback writes and the pipeline continues; if the processor
+undoes all callback writes and the pipeline continues, unless one of them had
+already lost a race, which fails the operation with a retryable `409 CONFLICT`; if the processor
 succeeds, `ReleaseSavepoint(T, S)` retains those writes inside `T` (subject
 to `T`'s eventual commit). A callback write to the entity the processor runs
 for is the exception: the engine does not adopt it, and its own write of
@@ -436,7 +440,10 @@ contract from the engine's point of view.
   buffer; `Commit` performs SI+FCW validation against the committed log and
   flushes the buffer under `factory.entityMu.Lock`.
 - Savepoints are deep-copy snapshots of the buffer/readSet/writeSet/deletes
-  maps. `RollbackToSavepoint` restores by wholesale assignment.
+  maps. `RollbackToSavepoint` restores by wholesale assignment. Before it
+  does, it checks the writes it discards against the committed log: when
+  another transaction committed one of those entities after the snapshot, the
+  transaction is marked and `Commit` refuses it with `spi.ErrConflict`.
 - `CompareAndSave` checks the committed store (not the buffer) for the txID
   stamp under read locks for TOCTOU safety.
 - `COMMIT_BEFORE_DISPATCH`'s `Commit(T_pre)` is a synchronous flush; nothing
@@ -450,7 +457,9 @@ contract from the engine's point of view.
   monotonic submit time in `submit_times`, and commits the SQLite TX.
 - Savepoints are app-layer snapshots, **not** real SQLite SAVEPOINTs —
   SQLite's native rollback would not restore the application-layer
-  readSet/writeSet, breaking SI+FCW validation.
+  readSet/writeSet, breaking SI+FCW validation. `RollbackToSavepoint` marks a
+  transaction whose discarded write another transaction had already committed,
+  and `Commit` refuses it with `spi.ErrConflict`, as on memory.
 - `COMMIT_BEFORE_DISPATCH`'s benefit on SQLite is modest (no connection pool
   to relieve) but valid for clean transaction-boundary audit semantics.
 
@@ -464,7 +473,9 @@ contract from the engine's point of view.
   `spi.ErrConflict`.
 - Savepoints are **real** `SAVEPOINT` / `ROLLBACK TO` / `RELEASE` SQL,
   paired with an app-layer stack of readSet/writeSet snapshots so the
-  isolation-validation state matches the database state.
+  isolation-validation state matches the database state. A `40001`/`40P01`
+  recorded inside a savepoint survives `ROLLBACK TO`, and `Commit` refuses the
+  transaction with it.
 - `COMMIT_BEFORE_DISPATCH`'s primary win is here: long external work no
   longer holds a pooled connection. The design (see
   [`docs/superpowers/specs/2026-05-04-issue-27-commit-before-dispatch-design.md`](superpowers/specs/2026-05-04-issue-27-commit-before-dispatch-design.md))

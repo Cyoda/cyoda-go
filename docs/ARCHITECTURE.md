@@ -646,11 +646,15 @@ released** is not a processor failure — it says the transaction is unusable �
 it is marked with `workflow.ErrSavepointInfra` and **fails the operation** with a
 ticketed 5xx (an unavailable store keeps its `503 STORAGE_UNAVAILABLE`, which is
 classified first); it is never reported as the processor's own error. Undoing the savepoint does
-not undo a conflict: when a callback's write inside it lost a race against
-another transaction, the transaction lost that race, and its commit fails with a
-retryable `409 CONFLICT` on every backend (PostgreSQL keeps the recorded
-40001/40P01 across `ROLLBACK TO SAVEPOINT` and refuses Commit; memory and sqlite
-detect the conflict at commit). A chain the fence refuses after its
+not undo a conflict: when a callback's write inside it had already lost a race
+against another transaction, the transaction lost that race, and its commit
+fails with a retryable `409 CONFLICT` on every backend. PostgreSQL keeps the
+40001/40P01 it recorded at the write across `ROLLBACK TO SAVEPOINT` and refuses
+Commit. Memory and sqlite record, at the rollback, that another transaction
+committed a discarded write's entity after the snapshot, and refuse Commit with
+`spi.ErrConflict`. A commit to that entity after the rollback raced no write of
+the transaction and does not conflict; discarded reads are dropped on all
+three. A chain the fence refuses after its
 callout neither undoes nor releases its savepoint: by then the replacement
 member may have written, and undoing a savepoint restores the whole buffer on
 memory and sqlite and everything since on postgres. An abandoned savepoint is
@@ -1527,7 +1531,7 @@ Processors are dispatched via the `ExternalProcessingService` SPI, implemented b
 |------|----------|
 | `SYNC` | Processor executes within the current transaction. Entity data is updated in-place before the next transition. |
 | `ASYNC_SAME_TX` | Executes inline in the caller's transaction, exactly as `SYNC` does. CRUD callbacks are routed back to the transaction owner. The `ASYNC` label is preserved for Cyoda Cloud configuration compatibility; execution in cyoda-go is not asynchronous. |
-| `ASYNC_NEW_TX` | Processor executes sequentially within a SAVEPOINT of the parent transaction. Fire-and-forget error semantics: the processor's own failure rolls back the SAVEPOINT only, the parent pipeline continues, and nothing reaches the client — not even the member's `retryable` verdict. A savepoint that cannot be created, undone or released is **not** a processor failure: the transaction is unusable, so the operation fails with a ticketed 5xx (§3.8). Entity mutations returned by the processor are discarded. Parent rollback discards all ASYNC_NEW_TX work. The `ASYNC` label is preserved for Cyoda Cloud configuration compatibility — execution is sequential in cyoda-go. |
+| `ASYNC_NEW_TX` | Processor executes sequentially within a SAVEPOINT of the parent transaction. Fire-and-forget error semantics: the processor's own failure rolls back the SAVEPOINT only, the parent pipeline continues, and nothing reaches the client — not even the member's `retryable` verdict. The exception is a callback write inside the SAVEPOINT that had already lost a race: the rollback does not undo that, and the operation fails with a retryable `409 CONFLICT` (§3.8). A savepoint that cannot be created, undone or released is **not** a processor failure: the transaction is unusable, so the operation fails with a ticketed 5xx (§3.8). Entity mutations returned by the processor are discarded. Parent rollback discards all ASYNC_NEW_TX work. The `ASYNC` label is preserved for Cyoda Cloud configuration compatibility — execution is sequential in cyoda-go. |
 | `COMMIT_BEFORE_DISPATCH` | Engine splits the cascade into two transactions around this processor. `TX_pre` flushes the pre-callout entity state and commits **before** the processor is dispatched, releasing the storage connection during the external compute window. The processor runs outside any transaction. When the processor returns, the engine opens `TX_post` on the same node, reapplies the result via `CompareAndSave` (CAS expects the txID stamped at `TX_pre`'s commit), runs subsequent SYNC processors and cascade transitions inline, then commits. CAS conflict at the boundary surfaces `ErrConflict` → `409 retryable`; entity remains durable in the pre-callout state, no engine-side retry, no automatic compensation. Companion field `startNewTxOnDispatch: bool` (default `false`, sibling on the same processor object, validator rejects `true` for any other mode) controls whether a fresh transaction context is supplied to the dispatched call for processor-side CRUD on entities other than the cascade-anchor. **Audit-trail placement**: `SMEventProcessingPaused` is recorded in `TX_pre` and durably committed at the segment boundary; `SMEventStateProcessResult` is recorded in `TX_post`. The mode has no event types of its own. See [docs/CONSISTENCY.md](CONSISTENCY.md) §10 for visibility caveats and idempotency requirements. |
 
 ### 5.5 Audit Trail
