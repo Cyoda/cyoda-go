@@ -11,6 +11,7 @@ import (
 
 	"github.com/cyoda-platform/cyoda-go/e2e/parity"
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
 )
 
 // ownership.go — the endings of a scheduled run on every backend (spec §4):
@@ -172,13 +173,11 @@ func (oc ownCase) create(t *testing.T, model, wf string) uuid.UUID {
 	if err != nil {
 		t.Fatalf("CreateEntity: %v", err)
 	}
-	return id
-}
-
-// deleteOnCleanup removes an entity whose task keeps retrying, so it does
-// not run for the rest of the shared server's life.
-func (oc ownCase) deleteOnCleanup(t *testing.T, id uuid.UUID) {
+	// Delete the entity when the scenario ends, however it ends (a skip or a
+	// failure included), so a task that keeps retrying does not run for the
+	// rest of the shared server's life.
 	t.Cleanup(func() { _ = oc.c.DeleteEntity(t, id) })
+	return id
 }
 
 // RunScheduledTransition_NoComputeNodeThenFires: an unsafe processor whose tag
@@ -189,6 +188,9 @@ func (oc ownCase) deleteOnCleanup(t *testing.T, id uuid.UUID) {
 // FAILED UNSAFE_WORK_NOT_COMPLETED (§5.1 step 1) — the fire is the proof it
 // was cleared.
 func RunScheduledTransition_NoComputeNodeThenFires(t *testing.T, fixture parity.BackendFixture) {
+	if _, ok := fixture.(parity.ComputeClientFixture); !ok {
+		t.Skip("fixture cannot start further compute clients; scenario pending on this backend")
+	}
 	oc := newOwnCase(t, fixture)
 	id := oc.create(t, "st-own-nocn", ownWorkflow("st-own-nocn-wf", fireToDone(100, 0, ownProc("noop", oc.tag, false))))
 
@@ -234,7 +236,6 @@ func RunScheduledTransition_SelfLoopReArmsNewLife(t *testing.T, fixture parity.B
 			"criterion": map[string]any{"type": "simple", "jsonPath": "$.k", "operatorType": "EQUALS", "value": 1},
 		}}},
 	}))
-	oc.deleteOnCleanup(t, id)
 
 	armed := taskOf(t, oc.c, id, "Tick")
 	if armed == nil {
@@ -277,7 +278,6 @@ func RunScheduledTransition_CriterionErrorRetried(t *testing.T, fixture parity.B
 		"Done": map[string]any{},
 	}
 	id := oc.create(t, "st-own-crit", ownWorkflow("st-own-crit-wf", states))
-	oc.deleteOnCleanup(t, id)
 
 	first := awaitTask(t, oc.c, id, "Fire", fireTimeout, "a recorded attempt",
 		func(tk *client.ScheduledTask) bool { return tk != nil && tk.Attempts >= 1 })
@@ -299,7 +299,6 @@ func RunScheduledTransition_IdempotentFailureRetried(t *testing.T, fixture parit
 	oc := newOwnCase(t, fixture)
 	cc := oc.start(t, fixture, oc.tag, parity.ComputeBehaviourFail)
 	id := oc.create(t, "st-own-idem", ownWorkflow("st-own-idem-wf", fireToDone(100, 0, ownProc("noop", oc.tag, true))))
-	oc.deleteOnCleanup(t, id)
 
 	first := awaitTask(t, oc.c, id, "Fire", fireTimeout, "a recorded attempt",
 		func(tk *client.ScheduledTask) bool { return tk != nil && tk.Attempts >= 1 })
@@ -336,6 +335,17 @@ func RunScheduledTransition_LateAfterFailedAttemptsFails(t *testing.T, fixture p
 	if failed.FailureReason != "EXPIRED_AFTER_FAILED_ATTEMPTS" || failed.Attempts < 1 || failed.FailedTime == nil {
 		t.Errorf("failed task = %+v; want EXPIRED_AFTER_FAILED_ATTEMPTS, attempts >= 1, failedTime set", *failed)
 	}
+	if failed.ExpiresTime == nil {
+		t.Errorf("expiresTime missing; a task with timeoutMs shows it")
+	}
+	// The failure's text is the last run's error. The counted attempts before
+	// it set lastAttemptTime, and Fail leaves it as it was.
+	if !strings.Contains(failed.LastError, "scripted failure: fail") {
+		t.Errorf("lastError = %q; want the compute node's own message", failed.LastError)
+	}
+	if failed.LastAttemptTime == nil {
+		t.Errorf("lastAttemptTime missing; the counted attempts set it")
+	}
 	if data := failEventData(t, oc.c, id); data["reason"] != "EXPIRED_AFTER_FAILED_ATTEMPTS" {
 		t.Errorf("%s data = %v; want reason EXPIRED_AFTER_FAILED_ATTEMPTS", eventFailed, data)
 	}
@@ -355,7 +365,7 @@ func RunScheduledTransition_UnsafeFailureFails(t *testing.T, fixture parity.Back
 	id := oc.create(t, "st-own-unsafe", ownWorkflow("st-own-unsafe-wf", fireToDone(100, 0, ownProc("noop", oc.tag, false))))
 
 	// The FAILED item as GET /scheduled-tasks shows it (§8): status, reason,
-	// times and attempts. Fail does not count an attempt (§10.1: only
+	// the failure's text paired with failedTime, and attempts. Fail does not count an attempt (§10.1: only
 	// RecordAttempt adds 1), and this was the first run: attempts 0.
 	failed := awaitTask(t, oc.c, id, "Fire", fireTimeout, "FAILED",
 		func(tk *client.ScheduledTask) bool { return tk != nil && tk.Status == "FAILED" })
@@ -371,11 +381,14 @@ func RunScheduledTransition_UnsafeFailureFails(t *testing.T, fixture parity.Back
 	if failed.NextAttemptTime != nil {
 		t.Errorf("nextAttemptTime = %v; a FAILED item has none (§8: WAITING only)", failed.NextAttemptTime)
 	}
-	// lastAttemptTime and lastError show "after a failed attempt" (§8). Fail
-	// counts no attempt and leaves lastAttemptTime as it was, so a task that
-	// fails on its first run shows neither.
-	if failed.LastAttemptTime != nil || failed.LastError != "" {
-		t.Errorf("lastAttemptTime %v, lastError %q; a FAILED first run shows neither (§8)", failed.LastAttemptTime, failed.LastError)
+	// For a FAILED task lastError is the failure's own text and pairs with
+	// failedTime (§8). Fail counts no attempt and leaves lastAttemptTime as it
+	// was, so this first-run failure shows none.
+	if !strings.Contains(failed.LastError, "scripted failure: fail") {
+		t.Errorf("lastError = %q; want the compute node's own message", failed.LastError)
+	}
+	if failed.LastAttemptTime != nil {
+		t.Errorf("lastAttemptTime = %v; a first-run failure counted no attempt", failed.LastAttemptTime)
 	}
 	data := failEventData(t, oc.c, id)
 	if data["transition"] != "Fire" || data["sourceState"] != "Open" || data["reason"] != "UNSAFE_WORK_NOT_COMPLETED" {
@@ -387,7 +400,7 @@ func RunScheduledTransition_UnsafeFailureFails(t *testing.T, fixture parity.Back
 
 	// Never re-run: three retry delays later the compute node still has one
 	// request, and the task is still FAILED.
-	time.Sleep(3 * time.Second)
+	time.Sleep(3 * fixtureutil.TunedRetryDelay)
 	if n := receivedFor(t, cc, id); n != 1 {
 		t.Errorf("the unsafe processor was sent %d times; want exactly 1", n)
 	}
@@ -416,7 +429,7 @@ func RunScheduledTransition_LaterStepFailsAfterUnsafeHandOff(t *testing.T, fixtu
 	if failed.FailureReason != "UNSAFE_WORK_NOT_COMPLETED" {
 		t.Errorf("failureReason = %q; want UNSAFE_WORK_NOT_COMPLETED", failed.FailureReason)
 	}
-	time.Sleep(3 * time.Second)
+	time.Sleep(3 * fixtureutil.TunedRetryDelay)
 	if a, b := receivedFor(t, unsafe, id), receivedFor(t, failing, id); a != 1 || b != 1 {
 		t.Errorf("requests: unsafe %d, failing %d; want 1 and 1", a, b)
 	}
@@ -438,7 +451,7 @@ func RunScheduledTransition_FireTimeCancelNotScheduled(t *testing.T, fixture par
 		wf := func(name, flavor string, scheduled bool) map[string]any {
 			fire := map[string]any{"name": "Fire", "next": "Done", "manual": !scheduled}
 			if scheduled {
-				fire["schedule"] = map[string]any{"delayMs": 2500}
+				fire["schedule"] = map[string]any{"delayMs": 5000}
 			}
 			return map[string]any{
 				"version": "1.5", "name": name, "initialState": "Open", "active": true,
@@ -503,7 +516,6 @@ func failOnce(t *testing.T, fixture parity.BackendFixture, model string) (ownCas
 // life sends its processor again instead of failing on the old life's mark.
 func RunScheduledTransition_FailedTaskReArmedByUpdate(t *testing.T, fixture parity.BackendFixture) {
 	oc, cc, id, failed := failOnce(t, fixture, "st-own-rearm")
-	oc.deleteOnCleanup(t, id)
 
 	if err := oc.c.UpdateEntityData(t, id, `{"k":2,"flavor":"one"}`); err != nil {
 		t.Fatalf("update in the source state: %v", err)
