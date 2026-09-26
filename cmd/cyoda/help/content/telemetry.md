@@ -124,6 +124,17 @@ regardless of `CYODA_OTEL_ENABLED`:
 - `cyoda.cluster.tags.send_failures` — `Int64Counter` — reliable tag-list messages to a peer that failed to send; labeled by `msg` (`list`, `request`). A failed send is repaired by the peer fetching the list; a steady rate points at a peer that gossip reaches and TCP does not.
 - `cyoda.cluster.tags.lists_outstanding` — `Int64ObservableGauge` — alive peers whose announced tag list this node does not hold yet. Briefly non-zero after a join or a compute node attaching; alarm when it stays non-zero, because callouts are not handed to a peer whose tags are unknown.
 
+Scheduler metrics are exposed on every node that runs the scheduler (`CYODA_SCHEDULER_ENABLED=true`), regardless of `CYODA_OTEL_ENABLED`:
+
+- `cyoda.scheduler.runs` — `Int64Counter` — scheduled runs that ended; labeled by `outcome`: `fired`, `declined`, `expired`, `cancelled`, `attempt_failed` (a safe failure, to be retried), `failed` (the task ended `FAILED`), `superseded` (an entity write or another claim replaced the run), `self_cancelled` (the node's own heartbeats failed), `shutdown_cancelled`, `panicked`. Alarm on `failed` and `panicked`
+- `cyoda.scheduler.run.duration` — `Float64Histogram`, unit `s` — duration of one run, from claim to recorded outcome; labeled by `outcome`
+- `cyoda.scheduler.runs.in_progress` — `Int64UpDownCounter` — runs in progress on this node; at most `CYODA_SCHEDULER_MAX_RUNS`
+- `cyoda.scheduler.claims` — `Int64Counter` — tasks claimed; labeled by `reason`: `due`, or `owner_lost` (taken over from a node whose heartbeats stopped). A steady `owner_lost` rate points at nodes that crash or lose the database
+- `cyoda.scheduler.heartbeat.failures` — `Int64Counter` — heartbeats that failed. Failures that last make the node cancel its runs (`self_cancelled`)
+- `cyoda.scheduler.bookkeeping.retries` — `Int64Counter` — retried writes of a run's outcome. A rising count means the database is refusing or blocking them; each retry is also logged at WARN
+
+No `cyoda.scheduler.*` metric carries a tenant, a task, an entity or a node id. Each run has a `scheduler.run` span carrying its outcome. The tasks behind a `failed` count are listed by `GET /scheduled-tasks?status=FAILED` (see `cyoda help scheduled-tasks`).
+
 **Logs**
 
 cyoda-go uses `log/slog` for structured logging. OTel log emission (OTLP log exporter) is not currently wired. Logs are written to stderr only.
@@ -148,7 +159,9 @@ Cyoda-specific span attribute keys defined in `internal/observability/attrs.go`:
 - `criterion.target` — criteria target type (`TRANSITION`, `WORKFLOW`)
 - `criteria.matches` — boolean result of a criteria evaluation
 - `type` — callout kind label for the `cyoda.dispatch.*` and `cyoda.callout.*` metrics (`processor`, `criteria` or `function`)
-- `outcome` — outcome label of `cyoda.callout.tries`, `cyoda.callout.handovers` and `cyoda.callout.superseded`; a closed set for each
+- `outcome` — outcome label of `cyoda.callout.tries`, `cyoda.callout.handovers`, `cyoda.callout.superseded`, `cyoda.scheduler.runs` and `cyoda.scheduler.run.duration`; a closed set for each
+- `reason` — claim label of `cyoda.scheduler.claims` (`due` or `owner_lost`)
+- `pool` — PostgreSQL pool label of `cyoda.storage.pool.connections`: `main` (entity transactions and `GET /scheduled-tasks`), `scheduler` (the scheduler's claims and outcome writes, and the async-search heartbeat and claim) or `heartbeat` (the scheduler heartbeat's own connection)
 - `callout.tries` — number of tries a callout made, on its span
 - `callout.handover` — boolean; `true` when the callout was handed over to another cluster node at least once
 - `callout.waited_ms` — milliseconds the callout waited for a compute member to exist
