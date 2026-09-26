@@ -319,6 +319,11 @@ func (e *Engine) conflictOverDispatchFailure(ctx context.Context, entityID strin
 // savepoint is rolled back and the error is returned; on success the savepoint
 // is released.
 //
+// A failed dispatch needs no probe of the transaction (see
+// conflictOverDispatchFailure): a callback write that lost a race inside the
+// savepoint is not undone by the rollback, and the transaction's Commit
+// refuses it with the conflict on every backend.
+//
 // A savepoint that cannot be created, undone or released is marked with
 // ErrSavepointInfra and fails the operation: it says the transaction is
 // unusable, not that the processor misbehaved.
