@@ -17,16 +17,20 @@ import (
 // after the request's transaction began. The callback's write loses first-
 // committer-wins, which is a transaction conflict: every door that ran the
 // processor answers a retryable 409 CONFLICT. 412 ENTITY_MODIFIED belongs to
-// the request's own ifMatch precondition only, and none is sent here.
+// the request's own If-Match precondition only, and that precondition holds
+// here: nobody else wrote E.
 
-// conflictDoorWorkflow runs the SYNC processors procs, in order, on three
-// paths: at create when status is "create", on a loopback update when status
-// is "loop", and on the manual transition "go". Any other status rests in OPEN.
-func conflictDoorWorkflow(name, tag string, procs ...string) string {
+// conflictProc is one processor of the doors' workflow.
+type conflictProc struct{ name, mode string }
+
+// conflictDoorWorkflow runs procs, in order, on three paths: at create when
+// status is "create", on a loopback update when status is "loop", and on the
+// manual transition "go". Any other status rests in OPEN.
+func conflictDoorWorkflow(name, tag string, procs ...conflictProc) string {
 	list := make([]string, len(procs))
 	for i, proc := range procs {
-		list[i] = fmt.Sprintf(`{"type": "calculator", "name": %q, "executionMode": "SYNC",
-			"config": {"attachEntity": true, "calculationNodesTags": %q, "responseTimeoutMs": 60000}}`, proc, tag)
+		list[i] = fmt.Sprintf(`{"type": "calculator", "name": %q, "executionMode": %q,
+			"config": {"attachEntity": true, "calculationNodesTags": %q, "responseTimeoutMs": 60000}}`, proc.name, proc.mode, tag)
 	}
 	p := `"processors": [` + strings.Join(list, ",") + `]`
 	when := func(status string) string {
@@ -47,45 +51,81 @@ func conflictDoorWorkflow(name, tag string, procs ...string) string {
 	}`, name+"-wf", when("create"), p, when("loop"), p, p)
 }
 
+// collectionUpdateBody is a PUT /entity/JSON body updating id with payload,
+// carrying ifMatch when it is non-empty.
+func collectionUpdateBody(id, ifMatch, payload string) string {
+	item := map[string]any{"id": id, "payload": payload}
+	if ifMatch != "" {
+		item["ifMatch"] = ifMatch
+	}
+	b, _ := json.Marshal([]any{item})
+	return string(b)
+}
+
 func TestJoinedCallbackConflict_EveryDoorAnswersRetryable409(t *testing.T) {
+	const loop = `{"name":"e","amount":1,"status":"loop"}`
 	doors := []struct {
 		name string
 		// request makes the client call that runs the processor.
 		request func(h *callbackHarness, model, eID, eTxID string) (callbackResult, error)
 		// preCreate reports whether the door needs E to exist first.
 		preCreate bool
+		// ifMatch reports whether the request carries E's If-Match.
+		ifMatch bool
 	}{
 		{name: "Create", request: func(h *callbackHarness, model, _, _ string) (callbackResult, error) {
 			return h.callback(http.MethodPost, "/api/entity/JSON/"+model+"/1", `{"name":"e","amount":1,"status":"create"}`, "")
 		}},
 		{name: "Update", preCreate: true, request: func(h *callbackHarness, _, eID, _ string) (callbackResult, error) {
-			return h.callback(http.MethodPut, "/api/entity/JSON/"+eID, `{"name":"e","amount":1,"status":"loop"}`, "")
+			return h.callback(http.MethodPut, "/api/entity/JSON/"+eID, loop, "")
 		}},
-		// The request's own precondition holds: nobody wrote E. The conflict
-		// is the callback's, so it is not ENTITY_MODIFIED either.
-		{name: "UpdateWithIfMatch", preCreate: true, request: func(h *callbackHarness, _, eID, eTxID string) (callbackResult, error) {
-			return h.putIfMatch("/api/entity/JSON/"+eID, eTxID, `{"name":"e","amount":1,"status":"loop"}`)
+		{name: "UpdateWithIfMatch", preCreate: true, ifMatch: true, request: func(h *callbackHarness, _, eID, eTxID string) (callbackResult, error) {
+			return h.putIfMatch("/api/entity/JSON/"+eID, eTxID, loop)
 		}},
 		{name: "ManualTransition", preCreate: true, request: func(h *callbackHarness, _, eID, _ string) (callbackResult, error) {
 			return h.callback(http.MethodPut, "/api/entity/JSON/"+eID+"/go", `{"name":"e","amount":1,"status":"draft"}`, "")
 		}},
+		// The whole request answers 409: its transaction is gone, so no item
+		// is isolated.
+		{name: "Collection", preCreate: true, request: func(h *callbackHarness, _, eID, _ string) (callbackResult, error) {
+			return h.callback(http.MethodPut, "/api/entity/JSON", collectionUpdateBody(eID, "", loop), "")
+		}},
+		{name: "CollectionWithIfMatch", preCreate: true, ifMatch: true, request: func(h *callbackHarness, _, eID, eTxID string) (callbackResult, error) {
+			return h.callback(http.MethodPut, "/api/entity/JSON", collectionUpdateBody(eID, eTxID, loop), "")
+		}},
 	}
-	// Where the aborted transaction is first noticed: with one processor, at
-	// the handler's save; with a second, when the engine reads the entity
-	// before dispatching it.
+	sync := func(name string) conflictProc { return conflictProc{name, "SYNC"} }
+	// Where the aborted transaction is first noticed.
 	shapes := []struct {
-		name  string
-		procs int
-	}{{"AtSave", 1}, {"InEngine", 2}}
+		name string
+		// procs builds the pipeline; the first processor makes the joined write.
+		procs func() []conflictProc
+		// strict: the processor fails when its joined write is not answered 200.
+		strict bool
+		// ifMatchOnly: the shape needs an If-Match to reach its statement.
+		ifMatchOnly bool
+	}{
+		// The handler's save (or If-Match compare).
+		{name: "AtSave", procs: func() []conflictProc { return []conflictProc{sync(uniq("jcc-p"))} }},
+		// The engine's read of the entity before dispatching a second processor.
+		{name: "InEngine", procs: func() []conflictProc { return []conflictProc{sync(uniq("jcc-p")), sync(uniq("jcc-p"))} }},
+		// The processor checks its callback's answer and fails: the engine's
+		// probe of the transaction.
+		{name: "StrictProcessor", strict: true, procs: func() []conflictProc { return []conflictProc{sync(uniq("jcc-p"))} }},
+		// The engine's If-Match compare at the first COMMIT_BEFORE_DISPATCH
+		// segment flush.
+		{name: "Segmented", ifMatchOnly: true, procs: func() []conflictProc {
+			return []conflictProc{sync(uniq("jcc-p")), {uniq("jcc-cbd"), "COMMIT_BEFORE_DISPATCH"}}
+		}},
+	}
 	for _, door := range doors {
 		for _, shape := range shapes {
+			if shape.ifMatchOnly && !door.ifMatch {
+				continue
+			}
 			t.Run(door.name+"/"+shape.name, func(t *testing.T) {
 				h := newCalloutHarness(t, nil)
 				fModel, model, tag := uniq("jcc-f"), uniq("jcc"), uniq("jcc-tag")
-				procs := make([]string, shape.procs)
-				for i := range procs {
-					procs[i] = uniq("jcc-p")
-				}
 				h.SetupModelWithWorkflow(t, fModel, conflictDoorWorkflow(fModel, uniq("jcc-unused-tag")))
 				fID := createOpen(t, h, fModel, workflowSampleModel)
 
@@ -108,9 +148,12 @@ func TestJoinedCallbackConflict_EveryDoorAnswersRetryable409(t *testing.T) {
 					if err == nil {
 						callbackStatus <- res.StatusCode
 					}
+					if shape.strict && (err != nil || res.StatusCode != http.StatusOK) {
+						return answerFail("the joined write of F was refused")
+					}
 					return answerOK()
 				}})
-				h.SetupModelWithWorkflow(t, model, conflictDoorWorkflow(model, tag, procs...))
+				h.SetupModelWithWorkflow(t, model, conflictDoorWorkflow(model, tag, shape.procs()...))
 
 				var eID, eTxID string
 				if door.preCreate {

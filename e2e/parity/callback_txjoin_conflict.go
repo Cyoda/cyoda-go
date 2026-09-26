@@ -45,7 +45,7 @@ func RunCallbackTxJoin_LostWriteRaceIs409(t *testing.T, fixture BackendFixture) 
 		"OPEN": map[string]any{"transitions": []any{map[string]any{
 			"name": "go", "next": "DONE", "manual": false,
 			"criterion":  map[string]any{"type": "simple", "jsonPath": "$.flavor", "operatorType": "EQUALS", "value": "go"},
-			"processors": []any{cbProc("cb-race-target", "SYNC", "", nil)},
+			"processors": []any{cbProc("cb-race-target-strict", "SYNC", "", nil)},
 		}}},
 		"DONE": map[string]any{},
 	}))

@@ -231,27 +231,56 @@ func targetOf(entity *Entity) (string, error) {
 }
 
 // writeBack reads entityID and writes its data back unchanged, both through
-// txToken's transaction when it is non-empty. The write's own answer is not
-// checked: a lost race is the transaction owner's to report. A write that
-// could not be made at all is an error.
-func (c *callbackClient) writeBack(ctx context.Context, entityID, txToken string) error {
+// txToken's transaction when it is non-empty, and returns the write's HTTP
+// status. A write that could not be made at all is an error.
+func (c *callbackClient) writeBack(ctx context.Context, entityID, txToken string) (int, error) {
 	got, err := c.getEntity(ctx, entityID, txToken)
 	if err != nil {
-		return fmt.Errorf("callback read: %w", err)
+		return 0, fmt.Errorf("callback read: %w", err)
 	}
 	if got.Status != http.StatusOK {
-		return fmt.Errorf("callback read status=%d body=%s", got.Status, got.Body)
+		return 0, fmt.Errorf("callback read status=%d body=%s", got.Status, got.Body)
 	}
 	var env struct {
 		Data json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(got.Body), &env); err != nil || len(env.Data) == 0 {
-		return fmt.Errorf("callback read: no entity data in %s", got.Body)
+		return 0, fmt.Errorf("callback read: no entity data in %s", got.Body)
 	}
-	if _, err := c.do(ctx, http.MethodPut, "/api/entity/JSON/"+entityID, string(env.Data), txToken, ""); err != nil {
-		return fmt.Errorf("callback update: %w", err)
+	res, err := c.do(ctx, http.MethodPut, "/api/entity/JSON/"+entityID, string(env.Data), txToken, "")
+	if err != nil {
+		return 0, fmt.Errorf("callback update: %w", err)
 	}
-	return nil
+	return res.Status, nil
+}
+
+// targetWriter builds the cb-*-target processors. rival makes a write of the
+// target outside T first; strict fails the processor when the joined write is
+// not answered 200. Without strict the joined write's answer is not the
+// processor's verdict: it answers success with the primary unchanged.
+func targetWriter(rival, strict bool) callbackProcessorFunc {
+	return func(ctx context.Context, entity *Entity, _ cbConfig, token string, cb *callbackClient) (*Entity, error) {
+		if cb == nil {
+			return nil, fmt.Errorf("callback client unavailable: CYODA_COMPUTE_HTTP_BASE not set")
+		}
+		targetID, err := targetOf(entity)
+		if err != nil {
+			return nil, err
+		}
+		if rival {
+			if _, err := cb.writeBack(ctx, targetID, ""); err != nil {
+				return nil, fmt.Errorf("rival write: %w", err)
+			}
+		}
+		status, err := cb.writeBack(ctx, targetID, token)
+		if err != nil {
+			return nil, err
+		}
+		if strict && status != http.StatusOK {
+			return nil, fmt.Errorf("joined write of %s answered %d", targetID, status)
+		}
+		return entity, nil
+	}
 }
 
 // parseCreateResponse extracts the first entity id and transactionId from a
@@ -680,41 +709,21 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 		// T began makes T lose first-committer-wins. The callback's own answer
 		// is not this processor's verdict: it answers success with the primary
 		// unchanged, and the transaction's owner meets the conflict.
-		"cb-update-target": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
-			if err := requireCB(cb); err != nil {
-				return nil, err
-			}
-			targetID, err := targetOf(entity)
-			if err != nil {
-				return nil, err
-			}
-			if err := cb.writeBack(ctx, targetID, token); err != nil {
-				return nil, err
-			}
-			return entity, nil
-		},
+		"cb-update-target": targetWriter(false, false),
+		// cb-update-target-strict — cb-update-target that fails, as a real
+		// processor checking its own callback would, when the joined write is
+		// not answered 200.
+		"cb-update-target-strict": targetWriter(false, true),
 
 		// cb-race-target — cb-update-target with the rival write made by this
 		// processor itself: it first writes the target back OUTSIDE T (no
 		// token), which commits a new version after T began, and then does the
 		// joined write. T therefore loses first-committer-wins on the target
 		// with no second client and nothing running at the same time.
-		"cb-race-target": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
-			if err := requireCB(cb); err != nil {
-				return nil, err
-			}
-			targetID, err := targetOf(entity)
-			if err != nil {
-				return nil, err
-			}
-			if err := cb.writeBack(ctx, targetID, ""); err != nil {
-				return nil, fmt.Errorf("rival write: %w", err)
-			}
-			if err := cb.writeBack(ctx, targetID, token); err != nil {
-				return nil, err
-			}
-			return entity, nil
-		},
+		"cb-race-target": targetWriter(true, false),
+		// cb-race-target-strict — cb-race-target that fails when the joined
+		// write is not answered 200.
+		"cb-race-target-strict": targetWriter(true, true),
 
 		// cb-ifmatch-update — creates a secondary inside T, then issues a
 		// loopback update with If-Match set to the create's in-T transactionId.

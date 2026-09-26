@@ -8,6 +8,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
@@ -267,7 +268,7 @@ func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, d
 		return cerr
 	}
 	if err != nil {
-		return err
+		return e.conflictOverDispatchFailure(ctx, entity.Meta.ID, proc, err)
 	}
 	if modifiedEntity != nil && modifiedEntity.Data != nil {
 		return e.applyProcessorData(ctx, entity, desc, modifiedEntity.Data)
@@ -280,6 +281,36 @@ func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, d
 		adoptCallbackWrite(entity, before, after, tx.ID)
 	}
 	return nil
+}
+
+// conflictOverDispatchFailure decides what a failed dispatch means when the
+// processor could call back into the transaction ctx carries (SYNC,
+// ASYNC_SAME_TX, and COMMIT_BEFORE_DISPATCH with startNewTxOnDispatch).
+//
+// A processor that checks its own joined callback fails when that callback's
+// write lost a race. On a backend whose engine aborts the transaction on the
+// conflict, the failure is then only a consequence: the conflict is what
+// happened, and the transaction could not have committed anyway. A backend
+// that detects conflicts at commit accepts the same write and reports the
+// conflict when the caller commits. So the transaction is probed with the
+// anchor re-read: spi.ErrTxAborted means the conflict wins, and the returned
+// error is that conflict, with the processor's failure attached as context.
+// Any other probe outcome keeps the processor's failure as it is.
+//
+// A dispatch that provably reached no compute node made no callback, and is
+// returned untouched.
+func (e *Engine) conflictOverDispatchFailure(ctx context.Context, entityID string, proc spi.ProcessorDefinition, dispatchErr error) error {
+	if spi.GetTransaction(ctx) == nil || contract.ProvesNoHandOff(dispatchErr) {
+		return dispatchErr
+	}
+	es, err := e.factory.EntityStore(ctx)
+	if err != nil {
+		return dispatchErr
+	}
+	if _, probeErr := readAnchor(ctx, es, entityID); errors.Is(probeErr, spi.ErrTxAborted) {
+		return fmt.Errorf("%w (processor %s failed after it: %w)", probeErr, proc.Name, dispatchErr)
+	}
+	return dispatchErr
 }
 
 // executeAsyncNewTx runs an ASYNC_NEW_TX processor within a savepoint. The
@@ -429,7 +460,7 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 			modified, dispatchErr := e.extProc.DispatchProcessor(callCtx, entity, proc, workflow, transition, newTxID)
 			stop()
 			if dispatchErr != nil {
-				return nil, "", dispatchErr
+				return nil, "", e.conflictOverDispatchFailure(newCtx, entity.Meta.ID, proc, dispatchErr)
 			}
 			if modified != nil && modified.Data != nil {
 				pending = modified.Data
