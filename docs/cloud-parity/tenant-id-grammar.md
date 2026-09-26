@@ -69,9 +69,9 @@ grammar is checked at exactly those two:
 
 Everywhere else — peer dispatch bodies, gossip envelopes, scheduled-task rows,
 search-job rows, OIDC provider records, the stored M2M client table — carries a
-value this cluster already admitted at one of those two doors. Re-checking there would guard against a corrupted store or a
-compromised peer, a threat model in which tenant-id spelling is not what saves
-you.
+value this cluster already admitted at one of those two doors. Re-checking there
+would guard against a corrupted store or a compromised peer, a threat model in
+which tenant-id spelling is not what saves you.
 
 One operator-facing tenant value is covered by a test rather than by the check:
 `cfg.IAM.MockTenantID` becomes the tenant of every request in the non-JWT IAM
