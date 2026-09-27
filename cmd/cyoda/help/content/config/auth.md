@@ -315,8 +315,10 @@ never share one KID, so the record is refused as undecodable.
   bootstrap-signed admin token does not verify on this node.
 - Authenticate with a token signed by an active issued key pair, or an admin
   from a federated OIDC provider.
-- Then call `DELETE`, or replace `CYODA_JWT_SIGNING_KEY`. A new key changes
+- Then replace `CYODA_JWT_SIGNING_KEY`, or call `DELETE`. A new key changes
   the bootstrap key id, and the record then decodes normally.
+- Warning: `DELETE` at this id permanently deletes the bootstrap key (see
+  above).
 
 **No signer.** The bootstrap key has no active state for the audience, and no
 issued key pair is active either.

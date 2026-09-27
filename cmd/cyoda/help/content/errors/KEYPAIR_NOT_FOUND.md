@@ -35,7 +35,8 @@ Also returned when the keyId names:
 - Another bootstrap key's state record, for example its revocation record.
   Only a node configured with that bootstrap key can change it.
 - A record that cannot be decoded, on invalidate or reactivate. Delete it
-  instead.
+  instead. At this node's bootstrap key id, a delete permanently deletes the
+  bootstrap key.
 
 Verify the keyId, or check the bootstrap-key audience configuration via `CYODA_JWT_BOOTSTRAP_AUDIENCE`.
 
