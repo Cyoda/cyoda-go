@@ -56,6 +56,10 @@ type LocalResult struct {
 	TriesUsed int
 	// Attempts is one entry per failed try, in order.
 	Attempts []contract.CalloutAttempt
+	// HandedOff is true when any try of this run had Member.Send return nil:
+	// the work may have reached a cnode, whatever the run then produced. It is
+	// never cleared by a later try.
+	HandedOff bool
 }
 
 // OK reports whether a cnode answered.
@@ -133,7 +137,10 @@ func (d *ProcessorDispatcher) RunLocal(ctx context.Context, call Callout, maxTri
 			res.Attempts = append(res.Attempts, contract.CalloutAttempt{MemberID: member.ID, Kind: contract.Terminal, Cause: "internal error"})
 			break
 		}
-		result, failure, ctxErr := d.dispatchCalloutToMember(ctx, member, call, pass)
+		result, failure, handedOff, ctxErr := d.dispatchCalloutToMember(ctx, member, call, pass)
+		if handedOff {
+			res.HandedOff = true
+		}
 		if ctxErr != nil {
 			res.CtxErr = ctxErr
 			return res

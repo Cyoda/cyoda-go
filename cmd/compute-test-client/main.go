@@ -8,15 +8,16 @@
 // endpoint via the CYODA_COMPUTE_GRPC_ENDPOINT environment variable.
 //
 // A separate local HTTP endpoint (/healthz for readiness; /record and
-// /release for a scenario to read what the client received and to trigger a
-// late-callback client's callbacks) on an ephemeral port (printed to
+// /release for a scenario to read what the client received, to trigger a
+// late-callback client's callbacks, and to make a hold client answer what it
+// holds) on an ephemeral port (printed to
 // stdout at startup) lets the fixture's readiness probe confirm the
 // compute client is connected and ready before running scenarios.
 //
 // Two optional variables let a fixture start further clients for one
 // scenario: CYODA_TEST_COMPUTE_TAGS (comma-separated join tags) and
 // CYODA_TEST_COMPUTE_BEHAVIOUR (stall, fail, fail-retryable, late-callback,
-// drop). Unset, the client joins as `compute-test-client` and serves its
+// drop, hold). Unset, the client joins as `compute-test-client` and serves its
 // catalog.
 package main
 

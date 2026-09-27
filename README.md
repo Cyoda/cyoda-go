@@ -223,17 +223,20 @@ Grammar: `[@]path[:asc|desc]` — a bare dotted path sorts by a scalar entity-da
 
 ## Scheduled transitions
 
-A workflow transition with a `schedule` fires automatically after a delay, driven by a coordinator-only scan loop rather than a manual trigger. The delay can be a static `delayMs`, or a `function` callout computing the firing time (and optional expiry) per entity at arm time — mutually exclusive with `delayMs`. See `cyoda help config scheduler` for the full topic.
+A workflow transition with a `schedule` fires automatically after a delay. The delay can be a static `delayMs`, or a `function` callout computing the firing time (and optional expiry) per entity at arm time — mutually exclusive with `delayMs`. Every node claims due scheduled tasks and runs them itself. See `cyoda help config scheduler` for the full topic.
 
 | Env var | Default | Effect |
 |---------|---------|--------|
-| `CYODA_SCHEDULER_ENABLED` | `true` | Kill switch for the scan loop. |
-| `CYODA_SCHEDULER_SCAN_INTERVAL` | `1s` | Coordinator scan cadence. |
-| `CYODA_SCHEDULER_BATCH_SIZE` | `100` | Max due tasks pulled per scan. |
-| `CYODA_SCHEDULER_DISTRIBUTION` | `round-robin` | Dispatch-target strategy: `round-robin` or `self`. Forced to `self` when `CYODA_CLUSTER_ENABLED=false`. |
-| `CYODA_SCHEDULER_COORDINATOR` | `lowest-node-id` | Coordinator-election strategy. |
-| `CYODA_SCHEDULER_REDISPATCH_BACKOFF` | `30s` | Best-effort re-dispatch throttle window after a due task is picked up. |
-| `CYODA_SCHEDULER_EXPIRY_GRACE` | `100ms` | Grace band above a transition's `timeoutMs` before it expires instead of firing late; size to at least the max inter-node clock skew. |
+| `CYODA_SCHEDULER_ENABLED` | `true` | Kill switch: a node with `false` claims no scheduled task. |
+| `CYODA_SCHEDULER_SCAN_INTERVAL` | `1s` | How often a node claims due tasks. |
+| `CYODA_SCHEDULER_MAX_RUNS` | `8` | Most scheduled runs one node holds at once. |
+| `CYODA_SCHEDULER_MAX_RUNS_PER_TENANT` | `4` | Most runs of one tenant on one node (per node, not per cluster); at most `CYODA_SCHEDULER_MAX_RUNS`. |
+| `CYODA_SCHEDULER_HEARTBEAT_INTERVAL` | `15s` | How often a node records that it is alive. |
+| `CYODA_SCHEDULER_STALE_AFTER` | `2m` | Time without a heartbeat before another node takes over a node's runs; at least `50s + 3 × heartbeat`, the same on every node. |
+| `CYODA_SCHEDULER_MAX_LOST_OWNERS` | `3` | A task whose node is lost this many times ends FAILED. |
+| `CYODA_SCHEDULER_RETRY_DELAY` | `30s` | Delay before the first retry of a safe failure; doubles on each further one. |
+| `CYODA_SCHEDULER_RETRY_DELAY_MAX` | `15m` | The retry delay never grows past this. |
+| `CYODA_SCHEDULER_SHUTDOWN_DRAIN` | `20s` | On shutdown, how long a node waits for its runs before it cancels them. |
 
 ## Compute-node callouts
 
@@ -248,7 +251,6 @@ A processor, criterion or function request to a compute member is a *callout*.
 | `CYODA_DISPATCH_CONNECT_TIMEOUT` | `2s` | Time allowed to open the connection when a callout is handed over to another node. |
 | `CYODA_CALLOUT_HANDOVER_ALLOWANCE` | `30s` | What the owning node allows a hand-over on top of `tries left × answer limit`. |
 | `CYODA_CALLOUT_PASS_ALLOWANCE` | `30s` | How long a compute member's transaction token outlives its try's answer limit. |
-| `CYODA_DISPATCH_FORWARD_TIMEOUT` | `30s` | Whole-request timeout of the node-to-node call delegating a scheduled transition. |
 | `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES` | `10485760` | Ceiling on the answer to a compute member's callback, held in memory while the transaction is. A larger answer fails with `413 JOINED_RESPONSE_TOO_LARGE`. |
 | `CYODA_CALLOUT_JOINED_MAX_WAITERS` | `128` | How many of a compute member's callbacks may queue for one transaction. Past the cap: `503 TOO_MANY_JOINED_REQUESTS`, retryable. |
 

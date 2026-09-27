@@ -139,6 +139,12 @@ func buildEntityPayload(entity *spi.Entity) *events.DataPayloadJson {
 //     as its cause), the try is classified as a CalloutFailure instead — NoAnswer
 //     after the hand-off, NoHandOff before it — and ctx.Err() is not returned.
 //
+// Beside them, handedOff reports whether Member.Send returned nil: true on
+// every return after the hand-off, whatever the try then produced — an answer,
+// a failure, or the caller's context ending — and false on every return
+// before it. It is the one fact about the try that the owner's proof of no
+// hand-off is built from.
+//
 // One deadline — the answer limit — bounds the hand-off and the wait together,
 // so a cnode that is attached but not taking data costs up to one answer limit
 // before it is classified NoHandOff.
@@ -146,13 +152,13 @@ func buildEntityPayload(entity *spi.Entity) *events.DataPayloadJson {
 // The callout kind and name flow into client-facing diagnostics (warnings and
 // errors surface in the gRPC warnings array and the HTTP body — see
 // .claude/rules/error-handling.md) and into server logs.
-func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, member *Member, call Callout, pass string) (CalloutResult, *contract.CalloutFailure, error) {
+func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, member *Member, call Callout, pass string) (CalloutResult, *contract.CalloutFailure, bool, error) {
 	label, name, requestID := call.Kind.String(), call.Name, call.RequestID
 	limitMs := call.AnswerLimit.Milliseconds()
 
 	ce, err := NewCloudEvent(call.eventType, call.buildRequest(requestID))
 	if err != nil {
-		return CalloutResult{}, terminalFailure(fmt.Errorf("failed to build %s cloud event: %w", label, err), member.ID, requestID), nil
+		return CalloutResult{}, terminalFailure(fmt.Errorf("failed to build %s cloud event: %w", label, err), member.ID, requestID), false, nil
 	}
 	if err := AttachAuthContext(ctx, ce); err != nil {
 		// The cause names the principal; the client-safe Message does not.
@@ -160,7 +166,7 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 			Kind:    contract.Terminal,
 			Message: "auth context unavailable for dispatch",
 			Err:     fmt.Errorf("failed to attach auth context to %s cloud event: %w", label, err),
-		}, nil
+		}, false, nil
 	}
 	AttachTxToken(ce, pass)
 
@@ -178,7 +184,7 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 	ch, err := member.TrackRequest(requestID)
 	if err != nil {
 		slog.Warn("member gone before dispatch", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
-		return CalloutResult{}, appFailure(contract.NoHandOff, disconnectedErr(label)), nil
+		return CalloutResult{}, appFailure(contract.NoHandOff, disconnectedErr(label)), false, nil
 	}
 	// Every exit that does not consume the response must clear the tracking
 	// entry, or a late reply finds a dangling channel and the map entry leaks.
@@ -190,18 +196,18 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 		switch {
 		case errors.Is(err, ErrMemberEvicted):
 			slog.Error("member evicted while enqueueing dispatch", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
-			return CalloutResult{}, appFailure(contract.NoHandOff, disconnectedErr(label)), nil
+			return CalloutResult{}, appFailure(contract.NoHandOff, disconnectedErr(label)), false, nil
 		case ctx.Err() != nil:
 			if calloutDeadlinePassed(ctx) {
 				slog.Error("dispatch cut off by the callout deadline", "pkg", "grpc", "phase", "enqueue", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
 				return CalloutResult{}, appFailure(contract.NoHandOff, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchTimeout,
-					fmt.Sprintf("%s dispatch cut off at the callout deadline: member not draining", label)).AsRetryable()), nil
+					fmt.Sprintf("%s dispatch cut off at the callout deadline: member not draining", label)).AsRetryable()), false, nil
 			}
-			return CalloutResult{}, nil, ctx.Err()
+			return CalloutResult{}, nil, false, ctx.Err()
 		default:
 			slog.Error("dispatch timeout", "pkg", "grpc", "phase", "enqueue", "memberId", member.ID, "label", label, "name", name, "requestId", requestID, "timeout", call.AnswerLimit)
 			return CalloutResult{}, appFailure(contract.NoHandOff, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchTimeout,
-				fmt.Sprintf("%s dispatch timed out after %dms: member not draining", label, limitMs)).AsRetryable()), nil
+				fmt.Sprintf("%s dispatch timed out after %dms: member not draining", label, limitMs)).AsRetryable()), false, nil
 		}
 	}
 
@@ -225,11 +231,11 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 		if resp.Unreadable != "" {
 			return CalloutResult{}, memberResponseUnreadable(
 				unreadableAnswerError{resp.Unreadable}, resp.Unreadable,
-				label, name, member.ID, requestID), nil
+				label, name, member.ID, requestID), true, nil
 		}
 		if resp.Disconnected {
 			slog.Error("member disconnected mid-dispatch", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
-			return CalloutResult{}, appFailure(contract.NoAnswer, disconnectedErr(label)), nil
+			return CalloutResult{}, appFailure(contract.NoAnswer, disconnectedErr(label)), true, nil
 		}
 		// mapResponse reads what the answer says it did, which only an answer
 		// reporting success has said. A member reporting a failure owes no
@@ -238,7 +244,7 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 		if resp.Success {
 			var err error
 			if result, err = call.mapResponse(resp); err != nil {
-				return CalloutResult{}, memberResponseUnreadable(err, mapResponseReason(err), label, name, member.ID, requestID), nil
+				return CalloutResult{}, memberResponseUnreadable(err, mapResponseReason(err), label, name, member.ID, requestID), true, nil
 			}
 		}
 		// The answer could be read, so its warnings are the member's own and
@@ -263,22 +269,22 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 				failure.Message = boundMemberText(resp.Error)
 				common.AddError(ctx, fmt.Sprintf("%s %s: %s", label, name, failure.Message))
 			}
-			return CalloutResult{}, failure, nil
+			return CalloutResult{}, failure, true, nil
 		}
 		slog.Debug("dispatch completed", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
-		return result, nil, nil
+		return result, nil, true, nil
 	case <-callCtx.Done():
 		if ctx.Err() != nil {
 			if calloutDeadlinePassed(ctx) {
 				slog.Error("dispatch cut off by the callout deadline", "pkg", "grpc", "phase", "response", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
 				return CalloutResult{}, appFailure(contract.NoAnswer, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchTimeout,
-					fmt.Sprintf("%s dispatch cut off at the callout deadline: no response", label)).AsRetryable()), nil
+					fmt.Sprintf("%s dispatch cut off at the callout deadline: no response", label)).AsRetryable()), true, nil
 			}
-			return CalloutResult{}, nil, ctx.Err()
+			return CalloutResult{}, nil, true, ctx.Err()
 		}
 		slog.Error("dispatch timeout", "pkg", "grpc", "phase", "response", "memberId", member.ID, "label", label, "name", name, "requestId", requestID, "timeout", call.AnswerLimit)
 		return CalloutResult{}, appFailure(contract.NoAnswer, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchTimeout,
-			fmt.Sprintf("%s dispatch timed out after %dms: no response", label, limitMs)).AsRetryable()), nil
+			fmt.Sprintf("%s dispatch timed out after %dms: no response", label, limitMs)).AsRetryable()), true, nil
 	}
 }
 
@@ -447,10 +453,15 @@ func boundCriterionReason(s string) string {
 	return string(r[:MaxCriterionReasonRunes]) + "…"
 }
 
-// applyProcessorResponse extracts updated entity data from the response payload.
+// applyProcessorResponse extracts updated entity data from the response
+// payload. A response with no payload, or a payload whose data is absent or
+// null, returns no entity: the processor sent nothing to apply. It is never
+// read as the entity it was dispatched with, because the engine then keeps a
+// write the processor made through a joined callback instead of applying its
+// own payload again.
 func applyProcessorResponse(entity *spi.Entity, resp *ProcessingResponse) (*spi.Entity, error) {
 	if resp.Payload == nil {
-		return entity, nil
+		return nil, nil
 	}
 
 	var envelope struct {
@@ -459,8 +470,10 @@ func applyProcessorResponse(entity *spi.Entity, resp *ProcessingResponse) (*spi.
 	if err := json.Unmarshal(resp.Payload, &envelope); err != nil {
 		return nil, fmt.Errorf("%w: %w", errProcessorPayload, err)
 	}
-	if envelope.Data == nil {
-		return entity, nil
+	// A null data is no data: encoding/json hands a RawMessage the literal
+	// null rather than leaving it nil.
+	if envelope.Data == nil || string(envelope.Data) == "null" {
+		return nil, nil
 	}
 
 	updated := &spi.Entity{

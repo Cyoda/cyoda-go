@@ -15,11 +15,42 @@ import (
 
 const submitTimeTTL = 1 * time.Hour
 
-// committedTx records a committed transaction in the in-memory log.
+// committedTx records a committed write in the in-memory log. seq orders the
+// log: the conflict check compares it with the sequence number a transaction
+// saw at Begin (txSnapshotSeq), never with a clock reading. Begin reserves its
+// snapshot as the submit-time floor, so under a frozen clock a commit that
+// preceded Begin can carry the same instant as the snapshot; the sequence
+// number still orders them.
 type committedTx struct {
-	id         string
-	submitTime time.Time
-	writeSet   map[string]bool
+	seq      int64
+	writeSet map[string]bool
+	// taskWrites holds the task rows the write changed, each with the row as
+	// it was just before the write. It is apart from writeSet, whose keys are
+	// entity ids, so the two checks never mix. A write that committed on its
+	// own (commitTaskWrites) has only taskWrites. It is recorded only while
+	// another transaction is open; no one else could read it.
+	taskWrites map[taskKey]priorRow
+}
+
+// priorRow is a task row as it was just before a logged write: the row, or
+// ok false when it did not exist. For a transaction whose snapshot precedes
+// the write, the prior row of the earliest such write is the row its
+// snapshot shows (see taskSnapshot).
+type priorRow struct {
+	row spi.ScheduledTask
+	ok  bool
+}
+
+// taskWriteSet returns the task rows ops write.
+func taskWriteSet(ops []scheduledTaskOp) map[taskKey]bool {
+	if len(ops) == 0 {
+		return nil
+	}
+	set := make(map[taskKey]bool, len(ops))
+	for _, op := range ops {
+		set[op.key] = true
+	}
+	return set
 }
 
 // submitTimeEntry pairs a committed transaction's submit time with the
@@ -32,6 +63,15 @@ type submitTimeEntry struct {
 	tenantID   spi.TenantID
 }
 
+// stagedAuditEvent is one audit event recorded inside an open transaction:
+// its id assigned and its JSON document built, so nothing about it can fail
+// at flush but the insert itself.
+type stagedAuditEvent struct {
+	entityID string
+	event    spi.StateMachineEvent
+	doc      []byte
+}
+
 // savepointSnapshot holds a deep copy of transaction state at savepoint time.
 type savepointSnapshot struct {
 	buffer            map[string]*spi.Entity
@@ -42,10 +82,16 @@ type savepointSnapshot struct {
 
 	// scheduledTaskOpsLen is len(transactionManager.scheduledTaskOps[txID]) at
 	// the moment this savepoint was taken. scheduledTaskOps is append-only
-	// (see stageScheduledTaskOp), so — unlike the maps above, which are
+	// (see stageTaskWrite), so — unlike the maps above, which are
 	// deep-copied and restored wholesale — RollbackToSavepoint restores it by
 	// truncating back to this recorded length instead of snapshotting it.
 	scheduledTaskOpsLen int
+
+	// auditOpsLen is len(transactionManager.auditOps[txID]) at the moment
+	// this savepoint was taken. auditOps is append-only (see
+	// stageAuditEvent), so RollbackToSavepoint restores it the same way as
+	// scheduledTaskOpsLen: by truncating back to this recorded length.
+	auditOpsLen int
 
 	// supersededLens is the per-entityID length of supersededSaves[txID] at
 	// the moment this savepoint was taken, mirroring scheduledTaskOpsLen's
@@ -60,9 +106,10 @@ type savepointSnapshot struct {
 // Snapshot Isolation + First-Committer-Wins (SI+FCW). In-memory committedLog
 // tracks conflicts; SQLite is the persistence layer.
 //
-// Commit ordering: acquire the commit gate -> validate SI+FCW -> capture
-// submitTime -> BEGIN IMMEDIATE -> flush -> COMMIT -> append committedLog ->
-// prune -> release the commit gate.
+// Commit ordering: acquire the commit gate -> validate SI+FCW by sequence
+// number -> capture submitTime -> BEGIN IMMEDIATE -> flush -> COMMIT -> append
+// committedLog with the next sequence number -> prune -> release the commit
+// gate.
 type transactionManager struct {
 	factory *StoreFactory
 	uuids   spi.UUIDGenerator
@@ -70,7 +117,12 @@ type transactionManager struct {
 	// for SI+FCW correctness — a mutex in every respect except that a waiter
 	// can be released by its context. See acquireCommitGate.
 	commitGate chan struct{}
-	mu         sync.Mutex // protects active, committedLog, committing, submitTimes, savepoints, txUniqueKeys
+	// Lock order: tx.OpMu → commit gate → writer connection → mu. A joining
+	// task-row write and a Get in a transaction hold the gate while they read
+	// (see stageTaskWrite), so they can wait behind a whole commit; a flush
+	// takes mu while it holds the writer connection, so nothing may wait for
+	// that connection while holding mu.
+	mu sync.Mutex // protects active, committedLog, commitSeq, txSnapshotSeq, committing, submitTimes, savepoints, txUniqueKeys
 
 	active         map[string]*spi.TransactionState
 	committedLog   []committedTx
@@ -79,6 +131,15 @@ type transactionManager struct {
 	savepoints     map[string]map[string]savepointSnapshot
 	lastSubmitTime int64 // monotonic submit time in microseconds; bumped and read under mu, by callers holding the commit gate
 
+	// commitSeq counts committed writes, a transaction's and a task-row
+	// write that commits on its own alike; txSnapshotSeq holds its value at
+	// each open transaction's Begin. Both are advanced and written only by
+	// callers holding the commit gate and mu, so every Begin is ordered
+	// wholly before or wholly after every commit; Rollback removes entries
+	// under mu alone.
+	commitSeq     int64
+	txSnapshotSeq map[string]int64 // txID → commitSeq at Begin; removed by forgetLocked
+
 	// txUniqueKeys holds per-entity unique keys captured at Save (buffer) time.
 	// Keys are recorded when an entity is buffered so that flushToSQLite can
 	// apply the correct keys per entity even in a mixed-model batch where each
@@ -86,19 +147,18 @@ type transactionManager struct {
 	// Protected by mu. Cleaned up after commit or rollback.
 	txUniqueKeys map[string]map[string][]spi.UniqueKey // txID → entityID → keys
 
-	// scheduledTaskOps holds ScheduledTaskStore ops staged while the
-	// transaction is open (mirrors txUniqueKeys's staging pattern — it
-	// exists because *spi.TransactionState is a shared cyoda-go-spi type
-	// plugins may not add fields to). Applied inside flushToSQLite's single
-	// sqlTx, after the entity buffer/delete flush, so it commits atomically
-	// with the entity write; discarded, never applied, on Rollback and on
-	// every mid-Commit abort path (FCW conflict, flush error). Also
-	// savepoint-scoped like tx.Buffer/ReadSet/WriteSet/Deletes: Savepoint
-	// records the current length and RollbackToSavepoint truncates back to
-	// it, so an op staged after a savepoint that is then rolled back is
-	// discarded too, never orphaned from the entity work it must be atomic
-	// with. Protected by mu. Cleaned up after commit or rollback (no leak).
+	// scheduledTaskOps holds the task-row ops staged while the transaction
+	// is open, as post-images (see scheduledTaskOp). Written by
+	// flushToSQLite in the commit's sqlTx; discarded on Rollback and on
+	// every abort path; truncated by RollbackToSavepoint. Protected by mu.
 	scheduledTaskOps map[string][]scheduledTaskOp // txID → staged ops
+
+	// auditOps holds the audit events recorded while the transaction is open,
+	// in order. flushToSQLite inserts them in the commit's sqlTx, before the
+	// commit-instant stamp; Rollback and every abort path drop them;
+	// RollbackToSavepoint truncates them. Protected by mu. PostgreSQL gets the
+	// same behaviour from recording on the transaction's connection.
+	auditOps map[string][]stagedAuditEvent // txID → staged events
 
 	// supersededSaves records, per (txID, entityID), each buffered
 	// *spi.Entity value overwritten by a later same-entity Save/
@@ -138,6 +198,18 @@ type transactionManager struct {
 	// entry here is simply never read again. Cleaned up after commit or
 	// rollback (no leak).
 	deletedBufferedEntities map[string]map[string]*spi.Entity // txID -> entityID -> evicted entity
+
+	// lostDiscardedWrite marks a transaction that a RollbackToSavepoint made
+	// discard a write which had already lost first-committer-wins: another
+	// transaction committed that entity or task row after this one's
+	// snapshot and before the rollback. The rollback restores the write set
+	// and cuts the staged task-row ops back to the savepoint, so Commit's
+	// log check can no longer see the write; the mark makes Commit refuse
+	// the transaction with spi.ErrConflict, as PostgreSQL refuses one whose
+	// write failed with 40001 inside a rolled-back savepoint. It survives
+	// every later RollbackToSavepoint. Protected by mu; removed by
+	// forgetLocked.
+	lostDiscardedWrite map[string]bool
 }
 
 // Verify interface compliance at compile time.
@@ -153,9 +225,12 @@ func newTransactionManager(factory *StoreFactory, uuids spi.UUIDGenerator) *tran
 		submitTimes:             make(map[string]submitTimeEntry),
 		savepoints:              make(map[string]map[string]savepointSnapshot),
 		txUniqueKeys:            make(map[string]map[string][]spi.UniqueKey),
+		txSnapshotSeq:           make(map[string]int64),
 		scheduledTaskOps:        make(map[string][]scheduledTaskOp),
+		auditOps:                make(map[string][]stagedAuditEvent),
 		supersededSaves:         make(map[string]map[string][]*spi.Entity),
 		deletedBufferedEntities: make(map[string]map[string]*spi.Entity),
+		lostDiscardedWrite:      make(map[string]bool),
 	}
 }
 
@@ -179,22 +254,238 @@ func (m *transactionManager) uniqueKeysFor(txID, entityID string) []spi.UniqueKe
 	return m.txUniqueKeys[txID][entityID]
 }
 
-// stageScheduledTaskOp appends a staged ScheduledTaskStore op for txID.
-// flushToSQLite applies the accumulated ops inside the same sqlTx as the
-// entity buffer flush (atomically with it); every abort path — FCW
-// conflict, flush error, and Rollback — discards them unapplied.
-// Protected by mu.
-func (m *transactionManager) stageScheduledTaskOp(txID string, op scheduledTaskOp) {
+// stageAuditEvent appends ev to txID's staged audit events. Protected by mu.
+func (m *transactionManager) stageAuditEvent(txID string, ev stagedAuditEvent) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.scheduledTaskOps[txID] = append(m.scheduledTaskOps[txID], op)
+	m.auditOps[txID] = append(m.auditOps[txID], ev)
 }
 
-// scheduledTaskOpsFor retrieves the ops staged for txID. Protected by mu.
-func (m *transactionManager) scheduledTaskOpsFor(txID string) []scheduledTaskOp {
+// stagedAuditEvents returns a copy of txID's staged audit events. Protected by mu.
+func (m *transactionManager) stagedAuditEvents(txID string) []stagedAuditEvent {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.scheduledTaskOps[txID]
+	return append([]stagedAuditEvent(nil), m.auditOps[txID]...)
+}
+
+// busyTaskKeys returns the task rows an open transaction has staged a change
+// to. Such a row is not claimable, and MarkUnsafe and RecordAttempt answer
+// spi.ErrTaskBusy for it, until the transaction ends (C6). Callers hold the
+// commit gate, so no Commit is between reading its ops and writing them, and
+// no joining write stages an op meanwhile (see stageTaskWrite).
+func (m *transactionManager) busyTaskKeys() map[taskKey]bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	busy := make(map[taskKey]bool)
+	for _, ops := range m.scheduledTaskOps {
+		for _, op := range ops {
+			busy[op.key] = true
+		}
+	}
+	return busy
+}
+
+// taskBusy reports whether an open transaction has staged a change to k, as
+// busyTaskKeys does for one row. It stops at the first change it finds and
+// allocates nothing. Callers hold the commit gate, as for busyTaskKeys.
+func (m *transactionManager) taskBusy(k taskKey) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, ops := range m.scheduledTaskOps {
+		for _, op := range ops {
+			if op.key == k {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// zeroStagedMarks returns a copy of ops whose post-images have UnsafeMarked
+// cleared, leaving the caller's own op.after values untouched. UnsafeMarked
+// is never a stored column — every read derives it fresh from
+// scheduled_task_marks (taskView.get/where) — so what gets staged or
+// committed internally should not carry a frozen copy of it forward
+// (matches the memory backend, whose applyTaskOps does the same at apply
+// time). But a caller that already read the correct value under the commit
+// gate (ClaimDue, from its candidate scan) needs it as it read it, not
+// zeroed out from under its own struct — hence the copy, not a mutation.
+func zeroStagedMarks(ops []scheduledTaskOp) []scheduledTaskOp {
+	out := make([]scheduledTaskOp, len(ops))
+	for i, op := range ops {
+		if op.after != nil {
+			cp := *op.after
+			cp.UnsafeMarked = false
+			op.after = &cp
+		}
+		out[i] = op
+	}
+	return out
+}
+
+// stageTaskWrite stages one joining write on txID. It passes plan the ops
+// staged so far and the prior rows of txID's snapshot (see taskSnapshot), and
+// appends the ops plan returns, holding the commit gate from the read to the
+// append. No write commits meanwhile, so the rows plan reads on db, the prior
+// rows and the staged ops form one view: txID's snapshot, then its own ops.
+// Two joining writes are never planned from the same view, so neither
+// post-image overwrites the other. flushToSQLite writes the staged ops in
+// the commit's sqlTx; every abort path discards them.
+//
+// Caller holds tx.OpMu (read).
+func (m *transactionManager) stageTaskWrite(txID string, tenant spi.TenantID, plan func(staged []scheduledTaskOp, prior map[taskKey]priorRow) ([]scheduledTaskOp, error)) error {
+	_ = m.acquireCommitGate(context.Background())
+	defer m.releaseCommitGate()
+	staged, prior := m.taskSnapshot(txID, tenant)
+	ops, err := plan(staged, prior)
+	if err != nil {
+		return err
+	}
+	if len(ops) == 0 {
+		return nil
+	}
+	ops = zeroStagedMarks(ops)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.scheduledTaskOps[txID] = append(m.scheduledTaskOps[txID], ops...)
+	return nil
+}
+
+// taskSnapshot returns txID's staged ops and, for each of tenant's task rows
+// a write logged after txID's Begin changed, the row as txID's snapshot shows
+// it: the prior row of the earliest such write. A row with no such write
+// shows its committed state. Pruning keeps every entry above an open
+// transaction's snapshot, so none of these is lost while txID is open.
+//
+// Caller holds tx.OpMu (read) and has checked that the transaction is open
+// and of tenant: an ended transaction's snapshot sequence number is gone, and
+// with it the bound on which entries apply. Caller also holds the commit gate
+// and reads the committed rows under it: every writer holds the gate from its
+// first read to its log entry, so the committed rows and the log agree.
+func (m *transactionManager) taskSnapshot(txID string, tenant spi.TenantID) ([]scheduledTaskOp, map[taskKey]priorRow) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	staged := append([]scheduledTaskOp(nil), m.scheduledTaskOps[txID]...)
+	var prior map[taskKey]priorRow
+	snapshotSeq := m.txSnapshotSeq[txID]
+	for _, committed := range m.committedLog { // in sequence order
+		if committed.seq <= snapshotSeq {
+			continue
+		}
+		for k, p := range committed.taskWrites {
+			if k.tenant != tenant {
+				continue
+			}
+			if _, seen := prior[k]; seen {
+				continue
+			}
+			if prior == nil {
+				prior = make(map[taskKey]priorRow)
+			}
+			prior[k] = p
+		}
+	}
+	return staged, prior
+}
+
+// otherTxOpenLocked reports whether a transaction other than txID is open.
+// Caller holds mu.
+func (m *transactionManager) otherTxOpenLocked(txID string) bool {
+	for id := range m.active {
+		if id != txID {
+			return true
+		}
+	}
+	return false
+}
+
+// taskPriors reads, before a write, the rows ops will change, for the log
+// entry of that write. It returns nil when no transaction but txID is open:
+// the entry is then pruned at once, and a transaction that begins later
+// cannot see it. Caller holds the commit gate, which Begin takes too, so no
+// transaction begins and no other write lands until the entry is logged.
+func (m *transactionManager) taskPriors(ctx context.Context, txID string, ops []scheduledTaskOp) (map[taskKey]priorRow, error) {
+	if len(ops) == 0 {
+		return nil, nil
+	}
+	if !func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return m.otherTxOpenLocked(txID)
+	}() {
+		return nil, nil
+	}
+	priors := make(map[taskKey]priorRow, len(ops))
+	for _, op := range ops {
+		if _, done := priors[op.key]; done {
+			continue
+		}
+		rows, err := readTasks(ctx, m.factory.db, selectTaskSQL+` WHERE t.tenant_id = ? AND t.id = ?`,
+			string(op.key.tenant), op.key.id)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read scheduled task %s: %w", op.key.id, err)
+		}
+		var p priorRow
+		if len(rows) == 1 {
+			p = priorRow{row: rows[0], ok: true}
+		}
+		priors[op.key] = p
+	}
+	return priors, nil
+}
+
+// commitTaskWrites writes task-row ops that commit on their own — a
+// never-joining method, or a joining one called without a transaction — in
+// one sqlTx of their own, and records them in the committed log, so that a
+// transaction that began before them and writes one of the same rows fails
+// at commit. then, when not nil, runs in the same sqlTx after the ops.
+// Caller holds the commit gate from its first read to the return, so the
+// read, the write and the log entry are ordered wholly before or wholly
+// after any Begin and any other commit.
+func (m *transactionManager) commitTaskWrites(ctx context.Context, ops []scheduledTaskOp, then func(*sql.Tx) error) error {
+	if len(ops) == 0 && then == nil {
+		return nil
+	}
+	ops = zeroStagedMarks(ops)
+	priors, err := m.taskPriors(ctx, "", ops)
+	if err != nil {
+		return err
+	}
+	sqlTx, err := m.factory.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin a scheduled task write: %w", err)
+	}
+	defer sqlTx.Rollback()
+	for _, op := range ops {
+		if err := applyTaskOp(ctx, sqlTx, op); err != nil {
+			return fmt.Errorf("failed to write scheduled task %s: %w", op.key.id, err)
+		}
+	}
+	if then != nil {
+		if err := then(sqlTx); err != nil {
+			return err
+		}
+	}
+	if err := sqlTx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit a scheduled task write: %w", err)
+	}
+	if len(priors) > 0 {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.logTaskWritesLocked(priors)
+	}
+	return nil
+}
+
+// logTaskWritesLocked records a task-row write that committed on its own, so
+// that a transaction that began before it and writes one of the same rows
+// fails at commit. Caller holds the commit gate — which Begin also takes, so
+// the write and its entry are ordered wholly before or wholly after any
+// Begin — and mu.
+func (m *transactionManager) logTaskWritesLocked(priors map[taskKey]priorRow) {
+	m.commitSeq++
+	m.committedLog = append(m.committedLog, committedTx{seq: m.commitSeq, taskWrites: priors})
+	m.pruneCommittedLogLocked()
 }
 
 // stageSuperseded appends prior — the tx.Buffer value a Save/CompareAndSave
@@ -366,6 +657,71 @@ func (m *transactionManager) nextSubmitTime() int64 {
 	return nowMicro
 }
 
+// forgetLocked drops every piece of per-transaction state the manager holds
+// for txID. Caller holds mu.
+func (m *transactionManager) forgetLocked(txID string) {
+	delete(m.active, txID)
+	delete(m.committing, txID)
+	delete(m.savepoints, txID)
+	delete(m.txUniqueKeys, txID)
+	delete(m.txSnapshotSeq, txID)
+	delete(m.scheduledTaskOps, txID)
+	delete(m.auditOps, txID)
+	delete(m.supersededSaves, txID)
+	delete(m.deletedBufferedEntities, txID)
+	delete(m.lostDiscardedWrite, txID)
+}
+
+// committedSinceSnapshotLocked reports whether a transaction that committed
+// after txID's snapshot wrote one of the entity ids or one of the task rows.
+// The task rows are compared by taskKey, tenant included, as Commit compares
+// them. Caller holds mu.
+func (m *transactionManager) committedSinceSnapshotLocked(txID string, ids []string, tasks map[taskKey]bool) bool {
+	if len(ids) == 0 && len(tasks) == 0 {
+		return false
+	}
+	snapshotSeq := m.txSnapshotSeq[txID]
+	for _, committed := range m.committedLog {
+		if committed.seq <= snapshotSeq {
+			continue
+		}
+		for _, id := range ids {
+			if committed.writeSet[id] {
+				return true
+			}
+		}
+		for k := range committed.taskWrites {
+			if tasks[k] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// pruneCommittedLogLocked drops the log entries no open transaction can
+// conflict with: those at or below the oldest open snapshot's sequence
+// number, or all of them when no transaction is open. Caller holds mu.
+func (m *transactionManager) pruneCommittedLogLocked() {
+	if len(m.active) == 0 {
+		m.committedLog = m.committedLog[:0]
+		return
+	}
+	oldest := int64(-1)
+	for txID := range m.active {
+		if s := m.txSnapshotSeq[txID]; oldest < 0 || s < oldest {
+			oldest = s
+		}
+	}
+	pruned := m.committedLog[:0]
+	for _, c := range m.committedLog {
+		if c.seq > oldest {
+			pruned = append(pruned, c)
+		}
+	}
+	m.committedLog = pruned
+}
+
 // Begin starts a new transaction. It resolves the tenant from the context,
 // generates a unique transaction ID, captures a snapshot time, and returns
 // a new context carrying the TransactionState.
@@ -403,10 +759,12 @@ func (m *transactionManager) Begin(ctx context.Context) (string, context.Context
 	// rows are visible) and a direct write (saveDirectly, the non-tx Delete)
 	// alike. A Begin that read a stamped value without waiting would carry a
 	// SnapshotTime at or after a write whose rows it cannot yet see on
-	// readDB — and Commit's conflict check would then treat that commit as
-	// preceding the snapshot. Waiting here makes "submit_time <=
-	// SnapshotTime" imply "rows visible" on every connection. Lock order
-	// commitGate → mu, the order Commit uses.
+	// readDB. Waiting here makes "submit_time <= SnapshotTime" imply "rows
+	// visible" on every connection. It also makes the sequence number taken
+	// below exact: no commit is between its check and its log entry, so a
+	// commit either precedes this Begin wholly (its seq is at or below the
+	// snapshot's) or follows it wholly. Lock order commitGate → mu, the
+	// order Commit uses.
 	//
 	// The snapshot is then RESERVED as the new floor. Reading the floor is
 	// not enough: with the floor below the clock (a quiet database leaves it
@@ -430,6 +788,7 @@ func (m *transactionManager) Begin(ctx context.Context) (string, context.Context
 		tx.SnapshotTime = time.UnixMicro(nowMicro)
 		m.lastSubmitTime = nowMicro
 		m.active[txID] = tx
+		m.txSnapshotSeq[txID] = m.commitSeq
 		return nil
 	}(); err != nil {
 		return "", ctx, err
@@ -478,22 +837,26 @@ func (m *transactionManager) Join(ctx context.Context, txID string) (context.Con
 func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 	// 1. Look up the active transaction and mark as committing (TOCTOU guard).
 	uc := spi.GetUserContext(ctx)
-	m.mu.Lock()
-	tx, ok := m.active[txID]
-	if !ok {
-		m.mu.Unlock()
-		return fmt.Errorf("Commit: %w (txID=%s)", spi.ErrTxNotFound, txID)
+	var tx *spi.TransactionState
+	if err := func() error {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		var ok bool
+		tx, ok = m.active[txID]
+		if !ok {
+			return fmt.Errorf("Commit: %w (txID=%s)", spi.ErrTxNotFound, txID)
+		}
+		if uc == nil || uc.Tenant.ID != tx.TenantID {
+			return fmt.Errorf("Commit: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
+		}
+		if m.committing[txID] {
+			return fmt.Errorf("Commit: %w (txID=%s)", spi.ErrTxCommitInProgress, txID)
+		}
+		m.committing[txID] = true
+		return nil
+	}(); err != nil {
+		return err
 	}
-	if uc == nil || uc.Tenant.ID != tx.TenantID {
-		m.mu.Unlock()
-		return fmt.Errorf("Commit: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
-	}
-	if m.committing[txID] {
-		m.mu.Unlock()
-		return fmt.Errorf("Commit: %w (txID=%s)", spi.ErrTxCommitInProgress, txID)
-	}
-	m.committing[txID] = true
-	m.mu.Unlock()
 
 	// 1b. Acquire transaction operation write lock -- waits for in-flight operations.
 	tx.OpMu.Lock()
@@ -510,32 +873,55 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 	_ = m.acquireCommitGate(context.Background())
 	defer m.releaseCommitGate()
 
-	// 3. Conflict detection: check committed log for overlapping write sets.
-	// Unlike the memory plugin which uses entityMu to serialize CAS checks
-	// against commits, the SQLite plugin uses the commit gate. The SI+FCW check uses
-	// !Before (>=) rather than After (>) for the submit time comparison.
-	// This catches write-write conflicts even when commits happen at the
-	// same clock tick (e.g., frozen TestClock). The memory plugin avoids
-	// this by holding entityMu.Lock during commit, which blocks concurrent
-	// CompareAndSave reads until the commit is visible.
+	// 3. Conflict detection. A transaction conflicts with every commit whose
+	// sequence number is above the one it saw at Begin and whose write set
+	// meets its read or write set, or whose task writes meet its own. Entity
+	// ids and task rows are checked in two separate loops over two separate
+	// sets. The staged task-row ops are captured here: tx.OpMu.Lock (step
+	// 1b) blocks every stageTaskWrite, so they are stable for the rest of the
+	// commit.
+	var scheduledOps []scheduledTaskOp
+	var auditEvents []stagedAuditEvent
 	if err := func() error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
+		scheduledOps = append([]scheduledTaskOp(nil), m.scheduledTaskOps[txID]...)
+		auditEvents = append([]stagedAuditEvent(nil), m.auditOps[txID]...)
+		taskWrites := taskWriteSet(scheduledOps)
+		snapshotSeq := m.txSnapshotSeq[txID]
+		// A write a savepoint rollback discarded after it had lost is a
+		// conflict too — see lostDiscardedWrite.
+		conflict := m.lostDiscardedWrite[txID]
 		for _, committed := range m.committedLog {
-			if !committed.submitTime.Before(tx.SnapshotTime) {
-				for entityID := range committed.writeSet {
-					if tx.ReadSet[entityID] || tx.WriteSet[entityID] {
-						delete(m.committing, txID)
-						delete(m.active, txID)
-						delete(m.savepoints, txID)
-						delete(m.txUniqueKeys, txID)
-						delete(m.scheduledTaskOps, txID)
-						delete(m.supersededSaves, txID)
-						delete(m.deletedBufferedEntities, txID)
-						return spi.ErrConflict
-					}
+			if conflict {
+				break
+			}
+			if committed.seq <= snapshotSeq {
+				continue
+			}
+			for entityID := range committed.writeSet {
+				if tx.ReadSet[entityID] || tx.WriteSet[entityID] {
+					conflict = true
+					break
 				}
 			}
+			for k := range committed.taskWrites {
+				if taskWrites[k] {
+					conflict = true
+					break
+				}
+			}
+		}
+		if conflict {
+			// Matches the flush-failure branch below: every abort path
+			// leaves RolledBack=true, not just Closed=true, so a later
+			// join on this tx's ctx answers ErrTxRolledBack rather than
+			// the misleading ErrTxAlreadyCommitted. Safe to write
+			// directly here: tx.OpMu.Lock (step 1b) is held for the
+			// whole of Commit.
+			tx.RolledBack = true
+			m.forgetLocked(txID)
+			return spi.ErrConflict
 		}
 		return nil
 	}(); err != nil {
@@ -546,27 +932,20 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 	// shares — see nextSubmitTime.
 	submitTime := time.UnixMicro(m.nextSubmitTime())
 
-	// 4.5. Snapshot staged ScheduledTaskStore ops for this tx. Safe to read
-	// without extending m.mu across the whole flush: tx.OpMu.Lock (held
-	// since step 1b) blocks every stage() call (which requires
-	// tx.OpMu.RLock) from appending more ops for the duration of Commit,
-	// so the slice is stable once captured here.
-	scheduledOps := m.scheduledTaskOpsFor(txID)
-
-	// 5. Flush buffer, deletes, and staged scheduled-task ops to SQLite.
-	if err := m.flushToSQLite(ctx, tx, submitTime, scheduledOps); err != nil {
+	// 5. Read the task rows' prior state for the log entry, then flush
+	// buffer, deletes, and staged scheduled-task ops to SQLite. The commit
+	// gate is held, so nothing changes the rows between the two.
+	priors, err := m.taskPriors(ctx, txID, scheduledOps)
+	if err == nil {
+		err = m.flushToSQLite(ctx, tx, submitTime, scheduledOps, auditEvents)
+	}
+	if err != nil {
 		// On flush failure, clean up the transaction.
 		func() {
 			m.mu.Lock()
 			defer m.mu.Unlock()
 			tx.RolledBack = true
-			delete(m.active, txID)
-			delete(m.committing, txID)
-			delete(m.savepoints, txID)
-			delete(m.txUniqueKeys, txID)
-			delete(m.scheduledTaskOps, txID)
-			delete(m.supersededSaves, txID)
-			delete(m.deletedBufferedEntities, txID)
+			m.forgetLocked(txID)
 		}()
 		// ErrUniqueViolation from claim writes must not be re-classified —
 		// classifyError passes through non-sqlite errors unchanged.
@@ -578,10 +957,11 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 
+		m.commitSeq++
 		m.committedLog = append(m.committedLog, committedTx{
-			id:         txID,
-			submitTime: submitTime,
+			seq:        m.commitSeq,
 			writeSet:   tx.WriteSet,
+			taskWrites: priors,
 		})
 		m.submitTimes[txID] = submitTimeEntry{submitTime: submitTime, tenantID: tx.TenantID}
 
@@ -593,32 +973,8 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 			}
 		}
 
-		// Prune: find oldest active transaction's snapshot, remove older entries.
-		delete(m.active, txID)
-		delete(m.committing, txID)
-		delete(m.savepoints, txID)
-		delete(m.txUniqueKeys, txID)
-		delete(m.scheduledTaskOps, txID)
-		delete(m.supersededSaves, txID)
-		delete(m.deletedBufferedEntities, txID)
-		var oldest time.Time
-		for _, activeTx := range m.active {
-			if oldest.IsZero() || activeTx.SnapshotTime.Before(oldest) {
-				oldest = activeTx.SnapshotTime
-			}
-		}
-		if !oldest.IsZero() {
-			pruned := m.committedLog[:0]
-			for _, c := range m.committedLog {
-				if !c.submitTime.Before(oldest) {
-					pruned = append(pruned, c)
-				}
-			}
-			m.committedLog = pruned
-		} else {
-			// No active transactions -- all entries can be pruned.
-			m.committedLog = m.committedLog[:0]
-		}
+		m.forgetLocked(txID)
+		m.pruneCommittedLogLocked()
 	}()
 
 	// Prune old submit_times from SQLite (best-effort).
@@ -632,7 +988,7 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 
 // flushToSQLite performs the atomic write of the transaction's buffered
 // entities and deletes to SQLite within a single SQLite transaction.
-func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.TransactionState, submitTime time.Time, scheduledOps []scheduledTaskOp) error {
+func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.TransactionState, submitTime time.Time, scheduledOps []scheduledTaskOp, auditEvents []stagedAuditEvent) error {
 	sqlTx, err := m.factory.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin sqlite tx: %w", err)
@@ -848,33 +1204,41 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 		return fmt.Errorf("record submit time: %w", err)
 	}
 
-	// Audit events LABELLED with this transaction take the same instant, so
-	// the audit trail and the version history cannot drift apart or invert.
+	// This transaction's own staged events are inserted here, in sqlTx, so
+	// they commit or roll back with it (Record staged them instead of
+	// writing them immediately — see smAuditStore.Record). Each is inserted
+	// under its OWN label (st.event.TransactionID), which is not always
+	// tx.ID: the engine records some events under a cascade entry's
+	// transaction id (a segmented scheduled run records
+	// SCHEDULED_TRANSITION_FIRE under its entry transaction's id in its last
+	// segment, fire_scheduled.go), so a staged event can be
+	// LABELLED with a transaction other than the one it was staged on.
 	//
-	// Record wrote those rows through the audit store's own handle rather than
-	// this sqlTx, and they are visible here for a structural reason rather
-	// than a hopeful one: that handle IS the writer pool, capped at a single
-	// connection (SetMaxOpenConns(1), store_factory.go), so any Record that
-	// preceded this flush ran on this very connection and committed before the
-	// flush's transaction opened. There is no second writer whose uncommitted
-	// insert this UPDATE could fail to see. The restamp itself is inside
-	// sqlTx, so a flush that fails leaves every event on the clock its
-	// recorder read.
+	// The UPDATE below then stamps every row — just-inserted or already
+	// committed — LABELLED with tx.ID to the commit instant, so the audit
+	// trail and the version history for THIS commit cannot drift apart or
+	// invert. A staged event labelled with a DIFFERENT transaction is not
+	// touched by it: it keeps the recording-time clock its own recorder
+	// read until ITS labelled transaction commits and stamps it in turn.
 	//
-	// "Labelled with", not "written by" — the engine records some events under
-	// a cascade entry's transaction id (EmitTransitionAborted), and one whose
-	// label names no committing transaction is never stamped.
-	//
-	// A point-in-time sweep, not a write barrier: an event recorded after this
-	// statement runs keeps the clock its recorder read. It does not arise in
-	// the normal path — recordEvent runs on the goroutine driving the
-	// transaction, which is inside Commit here — but the property is "every
-	// event recorded before the commit phase", not "every event this
-	// transaction labels". Memory and postgres have the identical window.
+	// A point-in-time sweep, not a write barrier: an event recorded (staged
+	// or written directly) after this statement runs keeps the clock its
+	// recorder read. It does not arise in the normal path — recordEvent runs
+	// on the goroutine driving the transaction, which is inside Commit here
+	// — but the property is "every event recorded before the commit phase",
+	// not "every event this transaction labels". Memory and postgres have
+	// the identical window.
 	//
 	// Served by idx_sm_events_tenant_tx (migration 000008); 000001's
-	// idx_sm_events_tx cannot serve it, because entity_id sits between the two
-	// columns constrained here.
+	// idx_sm_events_tx cannot serve it, because entity_id sits between the
+	// two columns constrained here (tenant_id, transaction_id).
+	for _, st := range auditEvents {
+		if _, err := sqlTx.ExecContext(ctx, insertAuditEventSQL,
+			tid, st.entityID, st.event.TimeUUID, st.event.TransactionID,
+			st.event.Timestamp.UnixMicro(), st.doc); err != nil {
+			return fmt.Errorf("record staged audit event %s: %w", st.event.TimeUUID, classifyRejection(err))
+		}
+	}
 	_, err = sqlTx.ExecContext(ctx,
 		"UPDATE sm_audit_events SET timestamp = ? WHERE tenant_id = ? AND transaction_id = ?",
 		submitMicro, tid, tx.ID)
@@ -882,13 +1246,13 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 		return fmt.Errorf("stamp audit events: %w", err)
 	}
 
-	// Apply staged ScheduledTaskStore ops. Still inside sqlTx, which is what
-	// makes the scheduled-task arm/cancel commit atomically with the entity
-	// write above (and, symmetrically, why every early-return in this
-	// function rolls the ops back too via the deferred sqlTx.Rollback()).
+	// Write the staged task-row post-images. Their checks ran when they were
+	// staged, and step 3 proved that no other writer changed those rows since
+	// this transaction began. Still inside sqlTx, so they commit atomically
+	// with the entity write, and every early return rolls them back too.
 	for _, op := range scheduledOps {
-		if err := applyScheduledTaskOp(ctx, sqlTx, op); err != nil {
-			return fmt.Errorf("apply scheduled task op %s: %w", op.id, err)
+		if err := applyTaskOp(ctx, sqlTx, op); err != nil {
+			return fmt.Errorf("apply scheduled task op %s: %w", op.key.id, err)
 		}
 	}
 
@@ -898,17 +1262,22 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 // Rollback discards an active transaction without committing any changes.
 func (m *transactionManager) Rollback(ctx context.Context, txID string) error {
 	uc := spi.GetUserContext(ctx)
-	m.mu.Lock()
-	tx, ok := m.active[txID]
-	if !ok {
-		m.mu.Unlock()
-		return fmt.Errorf("Rollback: %w (txID=%s)", spi.ErrTxNotFound, txID)
+	var tx *spi.TransactionState
+	if err := func() error {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		var ok bool
+		tx, ok = m.active[txID]
+		if !ok {
+			return fmt.Errorf("Rollback: %w (txID=%s)", spi.ErrTxNotFound, txID)
+		}
+		if uc == nil || uc.Tenant.ID != tx.TenantID {
+			return fmt.Errorf("Rollback: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
+		}
+		return nil
+	}(); err != nil {
+		return err
 	}
-	if uc == nil || uc.Tenant.ID != tx.TenantID {
-		m.mu.Unlock()
-		return fmt.Errorf("Rollback: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
-	}
-	m.mu.Unlock()
 
 	// Acquire transaction operation write lock -- waits for in-flight operations.
 	tx.OpMu.Lock()
@@ -921,13 +1290,7 @@ func (m *transactionManager) Rollback(ctx context.Context, txID string) error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		tx.RolledBack = true
-		delete(m.active, txID)
-		delete(m.committing, txID)
-		delete(m.savepoints, txID)
-		delete(m.txUniqueKeys, txID)
-		delete(m.scheduledTaskOps, txID)        // discard staged ops unapplied — see field doc
-		delete(m.supersededSaves, txID)         // discard staged superseded values unapplied — see field doc
-		delete(m.deletedBufferedEntities, txID) // discard staged evicted entities unapplied — see field doc
+		m.forgetLocked(txID) // staged ops and side-channel values are discarded unapplied — see the field docs
 	}()
 	return nil
 }
@@ -1010,9 +1373,13 @@ func (m *transactionManager) CommittedLogLen() int {
 // pattern. RollbackToSavepoint therefore also leaves txUniqueKeys untouched.
 func (m *transactionManager) Savepoint(ctx context.Context, txID string) (string, error) {
 	uc := spi.GetUserContext(ctx)
-	m.mu.Lock()
-	tx, ok := m.active[txID]
-	m.mu.Unlock()
+	var tx *spi.TransactionState
+	var ok bool
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		tx, ok = m.active[txID]
+	}()
 	if !ok {
 		return "", fmt.Errorf("Savepoint: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
@@ -1074,6 +1441,7 @@ func (m *transactionManager) Savepoint(ctx context.Context, txID string) (string
 		deletes:             delCopy,
 		deleteAttribution:   delAttrCopy,
 		scheduledTaskOpsLen: len(m.scheduledTaskOps[txID]),
+		auditOpsLen:         len(m.auditOps[txID]),
 		supersededLens:      supersededLens,
 	}
 	return spID, nil
@@ -1090,9 +1458,13 @@ func (m *transactionManager) Savepoint(ctx context.Context, txID string) (string
 // is destructive on tx-state.
 func (m *transactionManager) RollbackToSavepoint(ctx context.Context, txID string, savepointID string) error {
 	uc := spi.GetUserContext(ctx)
-	m.mu.Lock()
-	tx, ok := m.active[txID]
-	m.mu.Unlock()
+	var tx *spi.TransactionState
+	var ok bool
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		tx, ok = m.active[txID]
+	}()
 	if !ok {
 		return fmt.Errorf("RollbackToSavepoint: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
@@ -1122,6 +1494,28 @@ func (m *transactionManager) RollbackToSavepoint(ctx context.Context, txID strin
 		return fmt.Errorf("RollbackToSavepoint: %w (txID=%s, savepointID=%s)", spi.ErrSavepointNotFound, txID, savepointID)
 	}
 
+	// A write the rollback discards stops being a write, but if another
+	// transaction already committed its entity or task row after this one's
+	// snapshot, the transaction has lost that race and Commit must refuse
+	// it — see lostDiscardedWrite. The discarded task-row writes are the
+	// staged ops past the savepoint's scheduledTaskOpsLen. A commit to that
+	// entity or task row after the rollback does not race any write of this
+	// transaction and is not recorded. Read-set entries the rollback
+	// discards are dropped, as PostgreSQL drops them.
+	var discarded []string
+	for id := range tx.WriteSet {
+		if !snap.writeSet[id] {
+			discarded = append(discarded, id)
+		}
+	}
+	var discardedTasks map[taskKey]bool
+	if opsLen := snap.scheduledTaskOpsLen; opsLen < len(m.scheduledTaskOps[txID]) {
+		discardedTasks = taskWriteSet(m.scheduledTaskOps[txID][opsLen:])
+	}
+	if m.committedSinceSnapshotLocked(txID, discarded, discardedTasks) {
+		m.lostDiscardedWrite[txID] = true
+	}
+
 	tx.Buffer = snap.buffer
 	tx.ReadSet = snap.readSet
 	tx.WriteSet = snap.writeSet
@@ -1136,6 +1530,11 @@ func (m *transactionManager) RollbackToSavepoint(ctx context.Context, txID strin
 	// slice bounds would panic.
 	if opsLen := snap.scheduledTaskOpsLen; opsLen < len(m.scheduledTaskOps[txID]) {
 		m.scheduledTaskOps[txID] = m.scheduledTaskOps[txID][:opsLen]
+	}
+
+	// Truncate staged audit events the same way — see auditOpsLen's godoc.
+	if n := snap.auditOpsLen; n < len(m.auditOps[txID]) {
+		m.auditOps[txID] = m.auditOps[txID][:n]
 	}
 
 	// Truncate supersededSaves per entityID back to its recorded length —
@@ -1190,4 +1589,53 @@ func (m *transactionManager) ReleaseSavepoint(ctx context.Context, txID string, 
 
 	delete(txSavepoints, savepointID)
 	return nil
+}
+
+// LostRace reports whether the transaction has already lost a write race: a
+// transaction that committed after its snapshot wrote an entity in its write
+// set or a task row in its staged task-row ops, or a RollbackToSavepoint
+// discarded a write that had already lost (lostDiscardedWrite). It is the
+// write half of Commit's check, and changes nothing.
+//
+// Locking discipline: reads tx.WriteSet under tx.OpMu.RLock, as Savepoint
+// does, and the log and staged ops under mu, taken after tx.OpMu as Commit
+// takes them.
+//
+// Tenant isolation: rejects callers whose UserContext tenant does not match
+// the transaction's tenant, before it reads anything of the transaction.
+func (m *transactionManager) LostRace(ctx context.Context, txID string) (bool, error) {
+	uc := spi.GetUserContext(ctx)
+	var tx *spi.TransactionState
+	var ok bool
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		tx, ok = m.active[txID]
+	}()
+	if !ok {
+		return false, fmt.Errorf("LostRace: %w (txID=%s)", spi.ErrTxNotFound, txID)
+	}
+	if uc == nil || uc.Tenant.ID != tx.TenantID {
+		return false, fmt.Errorf("LostRace: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
+	}
+
+	tx.OpMu.RLock()
+	defer tx.OpMu.RUnlock()
+	if tx.RolledBack {
+		return false, fmt.Errorf("LostRace: %w (txID=%s)", spi.ErrTxRolledBack, txID)
+	}
+	if tx.Closed {
+		return false, fmt.Errorf("LostRace: %w (txID=%s)", spi.ErrTxAlreadyCommitted, txID)
+	}
+	written := make([]string, 0, len(tx.WriteSet))
+	for id := range tx.WriteSet {
+		written = append(written, id)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.lostDiscardedWrite[txID] {
+		return true, nil
+	}
+	return m.committedSinceSnapshotLocked(txID, written, taskWriteSet(m.scheduledTaskOps[txID])), nil
 }

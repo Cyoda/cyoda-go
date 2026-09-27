@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 
@@ -12,264 +11,184 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
-// TestManualTransitionWithIfMatch_NoSegmentingCascade verifies that without
-// any COMMIT_BEFORE_DISPATCH processor in the cascade, the engine never
-// consumes the If-Match expected-txID — the slot remains for the handler to
-// apply post-engine via its own CompareAndSave path.
-//
-// Behaviour mirrors ManualTransition exactly: returns FinalTxID == input txID,
-// FinalCtx carries the same TX, no engine-side flush happens.
-func TestManualTransitionWithIfMatch_NoSegmentingCascade(t *testing.T) {
+// ifMatchFixture is one memory backend with an entity seeded in S_pre, whose
+// manual transition "go" runs procs. seedTxID is the version an If-Match names.
+type ifMatchFixture struct {
+	factory  spi.StoreFactory
+	txMgr    spi.TransactionManager
+	engine   *Engine
+	ctx      context.Context
+	modelRef spi.ModelRef
+	id       string
+	seedTxID string
+}
+
+func newIfMatchFixture(t *testing.T, name string, dispatch func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition) (*spi.Entity, error), procs ...spi.ProcessorDefinition) *ifMatchFixture {
+	t.Helper()
 	factory := memory.NewStoreFactory()
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, txMgr)
-
-	ctx := ctxWithTenant(testTenant)
-	modelRef := spi.ModelRef{EntityName: "ifmatch-no-cbd", ModelVersion: "1.0"}
-
-	wf := spi.WorkflowDefinition{
-		Version: "1.1", Name: "IfMatchNoCbdWF", InitialState: "PENDING", Active: true,
-		States: map[string]spi.StateDefinition{
-			"PENDING":  {Transitions: []spi.TransitionDefinition{{Name: "approve", Next: "APPROVED", Manual: true}}},
-			"APPROVED": {},
+	mock := &mockExternalProcessing{
+		dispatchFunc: func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
+			return dispatch(ctx, entity, proc)
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
-
-	// Seed the entity in PENDING via TX1.
-	seedTxID, seedCtx, err := txMgr.Begin(ctx)
+	f := &ifMatchFixture{
+		factory: factory, txMgr: txMgr, ctx: ctxWithTenant(testTenant),
+		engine:   NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock)),
+		modelRef: spi.ModelRef{EntityName: name, ModelVersion: "1.0"},
+		id:       name + "-1",
+	}
+	registerModelFields(t, f.ctx, factory, f.modelRef, map[string]schema.DataType{"x": schema.Integer})
+	saveWorkflow(t, factory, f.ctx, f.modelRef, []spi.WorkflowDefinition{{
+		Version: "1.1", Name: name + "-wf", InitialState: "S_pre", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S_pre":  {Transitions: []spi.TransitionDefinition{{Name: "go", Next: "S_post", Manual: true, Processors: procs}}},
+			"S_post": {},
+		},
+	}})
+	seedTxID, seedCtx, err := txMgr.Begin(f.ctx)
 	if err != nil {
 		t.Fatalf("seed Begin: %v", err)
 	}
 	es, _ := factory.EntityStore(seedCtx)
-	entity := &spi.Entity{
-		Meta: spi.EntityMeta{
-			ID: "ifmatch-no-cbd-1", TenantID: testTenant,
-			ModelRef: modelRef, State: "PENDING", TransactionID: seedTxID,
-		},
-		Data: []byte(`{"x":1}`),
-	}
-	if _, err := es.Save(seedCtx, entity); err != nil {
+	if _, err := es.Save(seedCtx, f.entity(seedTxID)); err != nil {
 		t.Fatalf("seed Save: %v", err)
 	}
 	if err := txMgr.Commit(seedCtx, seedTxID); err != nil {
 		t.Fatalf("seed Commit: %v", err)
 	}
+	f.seedTxID = seedTxID
+	return f
+}
 
-	// Cascade-entry transaction (TX2) — handler-owned in the real flow.
-	txID, txCtx, err := txMgr.Begin(ctx)
+// entity is the engine's entity for a request in the transaction txID.
+func (f *ifMatchFixture) entity(txID string) *spi.Entity {
+	return &spi.Entity{
+		Meta: spi.EntityMeta{ID: f.id, TenantID: testTenant, ModelRef: f.modelRef, State: "S_pre", TransactionID: txID},
+		Data: []byte(`{"x":1}`),
+	}
+}
+
+func (f *ifMatchFixture) stored(t *testing.T) *spi.Entity {
+	t.Helper()
+	es, _ := f.factory.EntityStore(f.ctx)
+	e, err := es.Get(f.ctx, f.id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	return e
+}
+
+var cbdProc = spi.ProcessorDefinition{Type: ProcessorTypeExternalized, Name: "cbd", ExecutionMode: ExecutionModeCommitBeforeDispatch}
+
+// TestIfMatch_OwnWriteBeforeSegmentKeepsThePrecondition — If-Match states the
+// version the request starts from. A SYNC processor writes the entity in the
+// request's own transaction (as a joined callback does) before a
+// COMMIT_BEFORE_DISPATCH segment commits: the write is the request's own, so
+// the precondition still holds and the cascade completes with that write.
+func TestIfMatch_OwnWriteBeforeSegmentKeepsThePrecondition(t *testing.T) {
+	var f *ifMatchFixture
+	f = newIfMatchFixture(t, "ifmatch-own-write", func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition) (*spi.Entity, error) {
+		if proc.Name != "writer" {
+			return nil, nil
+		}
+		es, err := f.factory.EntityStore(ctx)
+		if err != nil {
+			return nil, err
+		}
+		own := *entity
+		own.Data = []byte(`{"x":2}`)
+		if _, err := es.Save(ctx, &own); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}, spi.ProcessorDefinition{Type: ProcessorTypeExternalized, Name: "writer", ExecutionMode: ExecutionModeSync}, cbdProc)
+
+	txID, txCtx, err := f.txMgr.Begin(f.ctx)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
-	defer func() { _ = txMgr.Rollback(txCtx, txID) }()
-
-	entity.Meta.TransactionID = txID
-
-	// Pass an arbitrary IfMatch value — the engine should NOT consume it
-	// because the cascade has no CBD segments.
-	res, err := engine.ManualTransitionWithIfMatch(txCtx, entity, "approve", "should-not-be-consumed")
+	entity := f.entity(txID)
+	res, err := f.engine.ManualTransitionWithIfMatch(txCtx, entity, "go", IfMatch{Expected: f.seedTxID, Current: f.seedTxID})
 	if err != nil {
 		t.Fatalf("ManualTransitionWithIfMatch: %v", err)
 	}
-	if res.FinalTxID != txID {
-		t.Errorf("FinalTxID = %q; want input txID %q (engine should not segment)", res.FinalTxID, txID)
+	if res.FinalTxID == txID || entity.Meta.State != "S_post" {
+		t.Fatalf("FinalTxID=%s state=%q; want a segmented cascade ending in S_post", res.FinalTxID, entity.Meta.State)
 	}
-	if entity.Meta.State != "APPROVED" {
-		t.Errorf("state = %q; want APPROVED", entity.Meta.State)
+	es, _ := f.factory.EntityStore(res.FinalCtx)
+	if _, err := es.Save(res.FinalCtx, entity); err != nil {
+		t.Fatalf("final Save: %v", err)
 	}
-
-	// The slot must still hold the expected — i.e. NOT consumed.
-	got, ok := consumeIfMatch(res.FinalCtx)
-	if !ok || got != "should-not-be-consumed" {
-		t.Errorf("expected IfMatch slot to be untouched on non-CBD cascade, got (%q,%v)", got, ok)
+	if err := f.txMgr.Commit(res.FinalCtx, res.FinalTxID); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if got := f.stored(t); got.Meta.State != "S_post" || string(got.Data) != `{"x":2}` {
+		t.Fatalf("stored %s %s; want S_post with the processor's write", got.Meta.State, got.Data)
 	}
 }
 
-// TestManualTransitionWithIfMatch_CBDCascadeMatching verifies that with a
-// CBD cascade and a matching IfMatch (the entity's current TransactionID),
-// the engine commits TX_pre via CompareAndSave (not Save) and the cascade
-// completes successfully. The IfMatch slot is consumed by the engine.
-func TestManualTransitionWithIfMatch_CBDCascadeMatching(t *testing.T) {
-	factory := memory.NewStoreFactory()
-	t.Cleanup(func() { factory.Close() })
-	uuids := common.NewTestUUIDGenerator()
-	txMgr := factory.NewTransactionManager(uuids)
+// TestIfMatch_StaleAbortsBeforeAnything — a stale If-Match fails the request
+// before the engine selects a workflow or dispatches anything, with a conflict
+// that carries none of the markers a transaction conflict carries: it is the
+// request's own precondition, which a batching caller isolates to its item.
+func TestIfMatch_StaleAbortsBeforeAnything(t *testing.T) {
+	for _, door := range []string{"ManualTransition", "Loopback"} {
+		t.Run(door, func(t *testing.T) {
+			dispatched := false
+			f := newIfMatchFixture(t, "ifmatch-stale-"+door, func(context.Context, *spi.Entity, spi.ProcessorDefinition) (*spi.Entity, error) {
+				dispatched = true
+				return nil, nil
+			}, cbdProc)
+			txID, txCtx, err := f.txMgr.Begin(f.ctx)
+			if err != nil {
+				t.Fatalf("Begin: %v", err)
+			}
+			defer func() { _ = f.txMgr.Rollback(f.ctx, txID) }()
 
-	mock := &mockExternalProcessing{
-		dispatchFunc: func(ctx context.Context, entity *spi.Entity, _ spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
-			modified, _ := json.Marshal(map[string]any{"enriched": true})
-			return &spi.Entity{Data: modified}, nil
-		},
+			stale := IfMatch{Expected: "tx-that-never-existed", Current: f.seedTxID}
+			if door == "Loopback" {
+				_, err = f.engine.LoopbackWithIfMatch(txCtx, f.entity(txID), stale)
+			} else {
+				_, err = f.engine.ManualTransitionWithIfMatch(txCtx, f.entity(txID), "go", stale)
+			}
+			if !errors.Is(err, spi.ErrConflict) {
+				t.Fatalf("err = %v; want spi.ErrConflict", err)
+			}
+			for _, marker := range []error{spi.ErrTxAborted, ErrPostSegmentConflict, ErrCommitBeforeDispatchInfra} {
+				if errors.Is(err, marker) {
+					t.Errorf("the precondition failure carries %v; a batching caller could not isolate it", marker)
+				}
+			}
+			if dispatched {
+				t.Error("a processor was dispatched despite the stale If-Match")
+			}
+			if got := f.stored(t); got.Meta.TransactionID != f.seedTxID {
+				t.Errorf("the entity is at %s; want it untouched at %s", got.Meta.TransactionID, f.seedTxID)
+			}
+		})
 	}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+}
 
-	ctx := ctxWithTenant(testTenant)
-	modelRef := spi.ModelRef{EntityName: "ifmatch-cbd-match", ModelVersion: "1.0"}
-
-	// The processor's returned data passes the same model checks a client
-	// write does, so the model must declare the entity's own field (`x`) and
-	// every field cbd-proc writes (`enriched`). Zero values declare the type
-	// without asserting a value; the model stays strict (no ChangeLevel), so a
-	// processor writing an undeclared field still fails.
-	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{
-		"x":        schema.Integer,
-		"enriched": schema.Boolean,
+// TestIfMatch_Matching_RunsTheTransition — an If-Match naming the version the
+// request starts from lets the transition run as it would without one.
+func TestIfMatch_Matching_RunsTheTransition(t *testing.T) {
+	f := newIfMatchFixture(t, "ifmatch-match", func(context.Context, *spi.Entity, spi.ProcessorDefinition) (*spi.Entity, error) {
+		return nil, nil
 	})
-
-	wf := spi.WorkflowDefinition{
-		Version: "1.1", Name: "IfMatchCbdWF", InitialState: "S_pre", Active: true,
-		States: map[string]spi.StateDefinition{
-			"S_pre": {Transitions: []spi.TransitionDefinition{
-				{Name: "go", Next: "S_post", Manual: true,
-					Processors: []spi.ProcessorDefinition{
-						{Type: ProcessorTypeExternalized, Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
-					}},
-			}},
-			"S_post": {},
-		},
-	}
-	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
-
-	// Seed in S_pre via TX0; capture its committed txID as the matching IfMatch.
-	seedTxID, seedCtx, err := txMgr.Begin(ctx)
+	txID, txCtx, err := f.txMgr.Begin(f.ctx)
 	if err != nil {
-		t.Fatalf("seed Begin: %v", err)
+		t.Fatalf("Begin: %v", err)
 	}
-	es, _ := factory.EntityStore(seedCtx)
-	if _, err := es.Save(seedCtx, &spi.Entity{
-		Meta: spi.EntityMeta{
-			ID: "ifmatch-cbd-1", TenantID: testTenant,
-			ModelRef: modelRef, State: "S_pre", TransactionID: seedTxID,
-		},
-		Data: []byte(`{"x":1}`),
-	}); err != nil {
-		t.Fatalf("seed Save: %v", err)
-	}
-	if err := txMgr.Commit(seedCtx, seedTxID); err != nil {
-		t.Fatalf("seed Commit: %v", err)
-	}
-
-	// Cascade-entry transaction (TX_pre).
-	cTxID, cCtx, err := txMgr.Begin(ctx)
+	defer func() { _ = f.txMgr.Rollback(f.ctx, txID) }()
+	entity := f.entity(txID)
+	res, err := f.engine.ManualTransitionWithIfMatch(txCtx, entity, "go", IfMatch{Expected: f.seedTxID, Current: f.seedTxID})
 	if err != nil {
-		t.Fatalf("cascade Begin: %v", err)
+		t.Fatalf("ManualTransitionWithIfMatch: %v", err)
 	}
-
-	entity := &spi.Entity{
-		Meta: spi.EntityMeta{
-			ID: "ifmatch-cbd-1", TenantID: testTenant,
-			ModelRef: modelRef, State: "S_pre", TransactionID: cTxID,
-		},
-		Data: []byte(`{"x":1}`),
+	if res.FinalTxID != txID || entity.Meta.State != "S_post" {
+		t.Fatalf("FinalTxID=%s state=%q; want %s and S_post", res.FinalTxID, entity.Meta.State, txID)
 	}
-
-	// IfMatch = seed's committed txID. The engine's first-segment flush is
-	// CompareAndSave(entity, expected=seedTxID) — must succeed.
-	res, err := engine.ManualTransitionWithIfMatch(cCtx, entity, "go", seedTxID)
-	if err != nil {
-		t.Fatalf("ManualTransitionWithIfMatch (matching): %v", err)
-	}
-	if res.FinalTxID == cTxID {
-		t.Errorf("FinalTxID == cascade-entry %q; expected post-segment txID", cTxID)
-	}
-	if entity.Meta.State != "S_post" {
-		t.Errorf("state = %q; want S_post", entity.Meta.State)
-	}
-
-	// Slot consumed.
-	if got, ok := consumeIfMatch(res.FinalCtx); ok {
-		t.Errorf("expected IfMatch slot to be consumed, found %q", got)
-	}
-
-	// Commit final TX (Task-13 handler responsibility).
-	if err := txMgr.Commit(res.FinalCtx, res.FinalTxID); err != nil {
-		t.Fatalf("commit FinalTxID: %v", err)
-	}
-}
-
-// TestManualTransitionWithIfMatch_CBDCascadeStaleAbortsBeforeDispatch
-// verifies the spec §4.1 "strictly-earlier-enforcement" guarantee for
-// cascades containing COMMIT_BEFORE_DISPATCH processors: a stale If-Match
-// must short-circuit the cascade BEFORE the external processor is dispatched.
-//
-// The fake dispatch records whether it was called; the test asserts it was
-// NOT called when the IfMatch is stale.
-func TestManualTransitionWithIfMatch_CBDCascadeStaleAbortsBeforeDispatch(t *testing.T) {
-	factory := memory.NewStoreFactory()
-	t.Cleanup(func() { factory.Close() })
-	uuids := common.NewTestUUIDGenerator()
-	txMgr := factory.NewTransactionManager(uuids)
-
-	dispatched := false
-	mock := &mockExternalProcessing{
-		dispatchFunc: func(ctx context.Context, entity *spi.Entity, _ spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
-			dispatched = true
-			return entity, nil
-		},
-	}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
-
-	ctx := ctxWithTenant(testTenant)
-	modelRef := spi.ModelRef{EntityName: "ifmatch-cbd-stale", ModelVersion: "1.0"}
-
-	wf := spi.WorkflowDefinition{
-		Version: "1.1", Name: "IfMatchStaleWF", InitialState: "S_pre", Active: true,
-		States: map[string]spi.StateDefinition{
-			"S_pre": {Transitions: []spi.TransitionDefinition{
-				{Name: "go", Next: "S_post", Manual: true,
-					Processors: []spi.ProcessorDefinition{
-						{Type: ProcessorTypeExternalized, Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
-					}},
-			}},
-			"S_post": {},
-		},
-	}
-	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
-
-	seedTxID, seedCtx, err := txMgr.Begin(ctx)
-	if err != nil {
-		t.Fatalf("seed Begin: %v", err)
-	}
-	es, _ := factory.EntityStore(seedCtx)
-	if _, err := es.Save(seedCtx, &spi.Entity{
-		Meta: spi.EntityMeta{
-			ID: "ifmatch-cbd-stale-1", TenantID: testTenant,
-			ModelRef: modelRef, State: "S_pre", TransactionID: seedTxID,
-		},
-		Data: []byte(`{"x":1}`),
-	}); err != nil {
-		t.Fatalf("seed Save: %v", err)
-	}
-	if err := txMgr.Commit(seedCtx, seedTxID); err != nil {
-		t.Fatalf("seed Commit: %v", err)
-	}
-
-	cTxID, cCtx, err := txMgr.Begin(ctx)
-	if err != nil {
-		t.Fatalf("cascade Begin: %v", err)
-	}
-
-	entity := &spi.Entity{
-		Meta: spi.EntityMeta{
-			ID: "ifmatch-cbd-stale-1", TenantID: testTenant,
-			ModelRef: modelRef, State: "S_pre", TransactionID: cTxID,
-		},
-		Data: []byte(`{"x":1}`),
-	}
-
-	// Stale IfMatch — must surface ErrConflict and NOT dispatch.
-	_, err = engine.ManualTransitionWithIfMatch(cCtx, entity, "go", "tx-that-never-existed")
-	if err == nil {
-		t.Fatalf("expected error on stale IfMatch, got nil")
-	}
-	if !errors.Is(err, spi.ErrConflict) {
-		t.Fatalf("expected errors.Is(err, spi.ErrConflict); got %v", err)
-	}
-	if dispatched {
-		t.Errorf("dispatch fired despite stale IfMatch — spec §4.1 strictly-earlier-enforcement violated")
-	}
-
-	_ = txMgr.Rollback(cCtx, cTxID)
 }

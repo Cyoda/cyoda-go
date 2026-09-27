@@ -395,19 +395,18 @@ func (f *StoreFactory) StateMachineAuditStore(ctx context.Context) (spi.StateMac
 	if err != nil {
 		return nil, err
 	}
-	return &smAuditStore{db: f.db, tenantID: tid, uuids: f.uuids}, nil
+	return &smAuditStore{db: f.db, tenantID: tid, uuids: f.uuids, tm: f.tm}, nil
 }
 
 func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore, error) {
 	return &asyncSearchStore{db: f.db, readDB: f.readDB, clock: f.clock}, nil
 }
 
-// ScheduledTaskStore returns the durable ScheduledTask store. Unlike the
-// per-tenant accessors above, it does not resolve a tenant from ctx: ScanDue
-// is cross-tenant by design and Upsert/Delete/Reconcile carry the tenant on
-// the task/request itself (see spi.ScheduledTaskStore godoc).
+// ScheduledTaskStore returns the scheduled-task store. No tenant is resolved
+// from ctx: every tenant-facing method takes its tenant as an argument, and
+// ClaimDue, GiveBackIdle and the owner and sweep methods are cross-tenant.
 func (f *StoreFactory) ScheduledTaskStore(_ context.Context) (spi.ScheduledTaskStore, error) {
-	return &scheduledTaskStore{db: f.db, tm: f.tm}, nil
+	return &scheduledTaskStore{db: f.db, readDB: f.readDB, tm: f.tm, clock: f.clock}, nil
 }
 
 // TransactionManager implements spi.StoreFactory.

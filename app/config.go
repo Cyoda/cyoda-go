@@ -14,6 +14,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
 )
 
 type Config struct {
@@ -84,8 +85,8 @@ type Config struct {
 	// (Release then reclaim) does not count. CYODA_SEARCH_JOB_MAX_ATTEMPTS,
 	// default 3, minimum 1; 1 disables re-execution (a job is failed on its first executor loss).
 	SearchJobMaxAttempts int
-	// Scheduler configures the coordinator-only scan loop that fires due
-	// ScheduledTasks (scheduled-transition runtime). See SchedulerConfig.
+	// Scheduler configures how this node claims and runs due scheduled
+	// tasks. See SchedulerConfig.
 	Scheduler SchedulerConfig
 	// Callout frames one compute-node callout: how many tries it gets and how
 	// long a pnode waits for one cnode's answer. See CalloutConfig.
@@ -150,35 +151,32 @@ type SearchAsyncConfig struct {
 	MaxPerTenant int
 }
 
-// SchedulerConfig controls the scheduled-transition scan loop: cadence,
-// coordinator/distribution strategy selection, redispatch throttling, and
-// the engine's expiry grace band. See design doc §9 and
-// docs/superpowers/plans/2026-07-16-scheduled-transition-runtime.md Task D4.
+// SchedulerConfig controls the scheduler: how often a node claims due
+// scheduled tasks, how many runs it holds, how it proves itself alive, how it
+// retries and how it drains. Same fields, names and order as
+// scheduler.Config, which it converts to.
 type SchedulerConfig struct {
-	// Enabled is the kill switch for the scan loop. CYODA_SCHEDULER_ENABLED,
-	// default true.
+	// Enabled: CYODA_SCHEDULER_ENABLED, default true.
 	Enabled bool
-	// ScanInterval is the coordinator's scan cadence.
-	// CYODA_SCHEDULER_SCAN_INTERVAL, default 1s.
+	// ScanInterval: CYODA_SCHEDULER_SCAN_INTERVAL, default 1s, > 0.
 	ScanInterval time.Duration
-	// BatchSize caps how many due tasks a single scan pulls from the store.
-	// CYODA_SCHEDULER_BATCH_SIZE, default 100.
-	BatchSize int
-	// Distribution selects the dispatch-target strategy: "round-robin" or
-	// "self". CYODA_SCHEDULER_DISTRIBUTION, default "round-robin".
-	Distribution string
-	// Coordinator selects the coordinator-election strategy.
-	// CYODA_SCHEDULER_COORDINATOR, default "lowest-node-id".
-	Coordinator string
-	// RedispatchBackoff is the best-effort re-dispatch throttle window
-	// applied after a due task is picked up. CYODA_SCHEDULER_REDISPATCH_BACKOFF,
-	// default 30s.
-	RedispatchBackoff time.Duration
-	// ExpiryGrace is the margin above a scheduled transition's timeoutMs
-	// that the engine tolerates before expiring a late task instead of
-	// firing it. Size to at least the max inter-node clock skew.
-	// CYODA_SCHEDULER_EXPIRY_GRACE, default 100ms.
-	ExpiryGrace time.Duration
+	// MaxRuns: CYODA_SCHEDULER_MAX_RUNS, default 8, >= 1.
+	MaxRuns int
+	// MaxRunsPerTenant: CYODA_SCHEDULER_MAX_RUNS_PER_TENANT, default 4, 1..MaxRuns.
+	MaxRunsPerTenant int
+	// HeartbeatInterval: CYODA_SCHEDULER_HEARTBEAT_INTERVAL, default 15s, > 0.
+	HeartbeatInterval time.Duration
+	// StaleAfter: CYODA_SCHEDULER_STALE_AFTER, default 2m,
+	// >= scheduler.MinStaleAfter(HeartbeatInterval). The same on every node.
+	StaleAfter time.Duration
+	// MaxLostOwners: CYODA_SCHEDULER_MAX_LOST_OWNERS, default 3, >= 1.
+	MaxLostOwners int
+	// RetryDelay: CYODA_SCHEDULER_RETRY_DELAY, default 30s, > 0.
+	RetryDelay time.Duration
+	// RetryDelayMax: CYODA_SCHEDULER_RETRY_DELAY_MAX, default 15m, >= RetryDelay.
+	RetryDelayMax time.Duration
+	// ShutdownDrain: CYODA_SCHEDULER_SHUTDOWN_DRAIN, default 20s, >= 0.
+	ShutdownDrain time.Duration
 }
 
 // CalloutConfig holds the server-side settings of a compute-node callout
@@ -465,7 +463,6 @@ func DefaultConfig() Config {
 			HMACSecret:             hmacSecret,
 			DispatchWaitTimeout:    envDuration("CYODA_DISPATCH_WAIT_TIMEOUT", 5*time.Second),
 			DispatchConnectTimeout: envDuration("CYODA_DISPATCH_CONNECT_TIMEOUT", 2*time.Second),
-			DispatchForwardTimeout: envDuration("CYODA_DISPATCH_FORWARD_TIMEOUT", 30*time.Second),
 			// Test-only: allow the dispatch HTTP forwarder to target loopback peers.
 			// Multi-node E2E fixtures run every node on 127.0.0.1; production leaves
 			// this false so the SSRF guard stays active.
@@ -473,12 +470,15 @@ func DefaultConfig() Config {
 		},
 		Scheduler: SchedulerConfig{
 			Enabled:           envBool("CYODA_SCHEDULER_ENABLED", true),
-			ScanInterval:      envDuration("CYODA_SCHEDULER_SCAN_INTERVAL", 1*time.Second),
-			BatchSize:         envInt("CYODA_SCHEDULER_BATCH_SIZE", 100),
-			Distribution:      envString("CYODA_SCHEDULER_DISTRIBUTION", "round-robin"),
-			Coordinator:       envString("CYODA_SCHEDULER_COORDINATOR", "lowest-node-id"),
-			RedispatchBackoff: envDuration("CYODA_SCHEDULER_REDISPATCH_BACKOFF", 30*time.Second),
-			ExpiryGrace:       envDuration("CYODA_SCHEDULER_EXPIRY_GRACE", 100*time.Millisecond),
+			ScanInterval:      envDuration("CYODA_SCHEDULER_SCAN_INTERVAL", time.Second),
+			MaxRuns:           envInt("CYODA_SCHEDULER_MAX_RUNS", 8),
+			MaxRunsPerTenant:  envInt("CYODA_SCHEDULER_MAX_RUNS_PER_TENANT", 4),
+			HeartbeatInterval: envDuration("CYODA_SCHEDULER_HEARTBEAT_INTERVAL", 15*time.Second),
+			StaleAfter:        envDuration("CYODA_SCHEDULER_STALE_AFTER", 2*time.Minute),
+			MaxLostOwners:     envInt("CYODA_SCHEDULER_MAX_LOST_OWNERS", 3),
+			RetryDelay:        envDuration("CYODA_SCHEDULER_RETRY_DELAY", 30*time.Second),
+			RetryDelayMax:     envDuration("CYODA_SCHEDULER_RETRY_DELAY_MAX", 15*time.Minute),
+			ShutdownDrain:     envDuration("CYODA_SCHEDULER_SHUTDOWN_DRAIN", 20*time.Second),
 		},
 		Callout: CalloutConfig{
 			FixedNumRetries:        envInt("CYODA_RETRY_FIXED_NUM_RETRIES", 3),
@@ -799,6 +799,9 @@ func (c Config) Validate() error {
 	if err := ValidateDispatch(c.Cluster); err != nil {
 		return err
 	}
+	if err := ValidateScheduler(c.Scheduler); err != nil {
+		return err
+	}
 	return ValidateHTTP(c.HTTP)
 }
 
@@ -931,8 +934,8 @@ func ValidateCallout(c CalloutConfig) error {
 }
 
 // ValidateDispatch rejects dispatch durations that cannot be honoured. The
-// patience may be zero (waiting disabled) but not negative; the connect and
-// forward timeouts bound network calls and must be positive. They are checked
+// patience may be zero (waiting disabled) but not negative; the connect
+// timeout bounds a network call and must be positive. They are checked
 // whether or not clustering is enabled: a value that would fail the moment
 // clustering is switched on is a configuration error today.
 func ValidateDispatch(c cluster.Config) error {
@@ -942,8 +945,43 @@ func ValidateDispatch(c cluster.Config) error {
 	if c.DispatchConnectTimeout <= 0 {
 		return fmt.Errorf("CYODA_DISPATCH_CONNECT_TIMEOUT must be > 0, got %s", c.DispatchConnectTimeout)
 	}
-	if c.DispatchForwardTimeout <= 0 {
-		return fmt.Errorf("CYODA_DISPATCH_FORWARD_TIMEOUT must be > 0, got %s", c.DispatchForwardTimeout)
+	return nil
+}
+
+// ValidateScheduler rejects scheduler settings no scheduler could run under.
+// Config is a QA'd artefact: an out-of-range value is a startup error, not a
+// clamp. STALE_AFTER must leave the watchdog room for one slow or failed
+// heartbeat, so it grows with the heartbeat interval.
+func ValidateScheduler(c SchedulerConfig) error {
+	if c.ScanInterval <= 0 {
+		return fmt.Errorf("CYODA_SCHEDULER_SCAN_INTERVAL must be > 0, got %s", c.ScanInterval)
+	}
+	if c.MaxRuns < 1 {
+		return fmt.Errorf("CYODA_SCHEDULER_MAX_RUNS must be >= 1, got %d", c.MaxRuns)
+	}
+	if c.MaxRunsPerTenant < 1 || c.MaxRunsPerTenant > c.MaxRuns {
+		return fmt.Errorf("CYODA_SCHEDULER_MAX_RUNS_PER_TENANT must be between 1 and CYODA_SCHEDULER_MAX_RUNS (%d), got %d",
+			c.MaxRuns, c.MaxRunsPerTenant)
+	}
+	if c.HeartbeatInterval <= 0 {
+		return fmt.Errorf("CYODA_SCHEDULER_HEARTBEAT_INTERVAL must be > 0, got %s", c.HeartbeatInterval)
+	}
+	if minStale := scheduler.MinStaleAfter(c.HeartbeatInterval); c.StaleAfter < minStale {
+		return fmt.Errorf("CYODA_SCHEDULER_STALE_AFTER must be >= 50s + 3 x CYODA_SCHEDULER_HEARTBEAT_INTERVAL (%s, given interval=%s), got %s",
+			minStale, c.HeartbeatInterval, c.StaleAfter)
+	}
+	if c.MaxLostOwners < 1 {
+		return fmt.Errorf("CYODA_SCHEDULER_MAX_LOST_OWNERS must be >= 1, got %d", c.MaxLostOwners)
+	}
+	if c.RetryDelay <= 0 {
+		return fmt.Errorf("CYODA_SCHEDULER_RETRY_DELAY must be > 0, got %s", c.RetryDelay)
+	}
+	if c.RetryDelayMax < c.RetryDelay {
+		return fmt.Errorf("CYODA_SCHEDULER_RETRY_DELAY_MAX must be >= CYODA_SCHEDULER_RETRY_DELAY (%s), got %s",
+			c.RetryDelay, c.RetryDelayMax)
+	}
+	if c.ShutdownDrain < 0 {
+		return fmt.Errorf("CYODA_SCHEDULER_SHUTDOWN_DRAIN must be >= 0, got %s", c.ShutdownDrain)
 	}
 	return nil
 }

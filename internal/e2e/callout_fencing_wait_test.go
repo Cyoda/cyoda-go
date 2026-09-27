@@ -44,8 +44,8 @@ const (
 // the joined request has reached the database.
 //
 // Matching on table name and wait_event_type alone is not enough: this
-// package's shared stack runs its own background loops (the scheduler scan,
-// the reaper) that routinely touch entities/messages too and can themselves
+// package's shared stack runs its own background loop (the reaper) that
+// routinely touches entities/messages too and can itself
 // be waiting on an unrelated lock at the same moment, which would let the
 // check succeed before the joined request under test has even reached the
 // database. Naming the victim row's id in the query text would rule that out

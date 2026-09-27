@@ -21,6 +21,9 @@ type StoreFactory struct {
 	// StateMachineAuditStore.Record can read it without going through the
 	// TransactionManager (see spi.StateMachineAuditStore).
 	uuids spi.UUIDGenerator
+	// sched holds the scheduler's own pools (scheduler_pool.go), opened on
+	// first use and closed by Close.
+	sched schedulerPools
 }
 
 // ApplyFunc replays an opaque SchemaDelta onto a base schema
@@ -65,6 +68,7 @@ func defaultStoreConfig() config {
 		AcquireTimeout:         defaultAcquireTimeout,
 		MigrateLockTimeout:     defaultMigrateLockTimeout,
 		SearchStatementTimeout: defaultSearchStatementTimeout,
+		SchedulerConns:         defaultSchedulerConns,
 	}
 }
 
@@ -171,8 +175,9 @@ func (f *StoreFactory) querier() Querier {
 // Not joining is exactly what makes a submit issued INSIDE a transaction hold
 // two connections at once, so the acquire is bounded on that path — the shared
 // mechanism in unjoinedQuerier, the same one every point-in-time read takes.
-// Outside a transaction (the reaper, the heartbeat, the job goroutine's own
-// writes) it is the plain unbounded pool, unchanged.
+// Outside a transaction (the reaper, the job goroutine's own writes) it is the
+// plain unbounded pool. The heartbeat and the claim are not here: they run on
+// the scheduler pool.
 func (f *StoreFactory) poolQuerier() Querier {
 	return unjoinedQuerier{pool: f.pool, acquireTimeout: f.cfg.AcquireTimeout, what: "async search job"}
 }
@@ -261,25 +266,39 @@ func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore
 	// context.Background() (no tenant). ReapExpired also runs without tenant context.
 	return &asyncSearchStore{
 		q:                      f.poolQuerier(),
+		sched:                  f.schedulerQuerier("async search liveness"),
 		pool:                   f.pool,
 		acquireTimeout:         f.cfg.AcquireTimeout,
 		searchStatementTimeout: f.cfg.SearchStatementTimeout,
 	}, nil
 }
 
-// ScheduledTaskStore returns a store backed by the context-resolving
-// querier: unlike the per-tenant accessors above, it does not resolve a
-// tenant here — ScanDue is a cross-tenant read called with a
-// background/tenant-less context, and Upsert/Delete/Reconcile carry the
-// tenant on the task/request itself (see spi.StoreFactory godoc).
+// ScheduledTaskStore returns the scheduled-task store. It resolves no tenant:
+// tenant-facing methods take the tenant as an argument, and ClaimDue,
+// GiveBackIdle, the owner methods and the sweeps are cross-tenant. See
+// scheduledTaskStore for which methods join the transaction on ctx.
 func (f *StoreFactory) ScheduledTaskStore(_ context.Context) (spi.ScheduledTaskStore, error) {
-	return &scheduledTaskStore{q: f.querier()}, nil
+	return &scheduledTaskStore{
+		q:     f.querier(),
+		query: unjoinedQuerier{pool: f.pool, acquireTimeout: f.cfg.AcquireTimeout, what: "scheduled task query"},
+		pool:  f.pool,
+		txOpen: func(txID string) bool {
+			if f.tm == nil {
+				return false
+			}
+			_, ok := f.tm.LookupTx(txID)
+			return ok
+		},
+		sched:     f.schedulerQuerier("scheduled task"),
+		heartbeat: f.heartbeatQuerier(),
+	}, nil
 }
 
 func (f *StoreFactory) Close() error {
 	if f.unregisterMetrics != nil {
 		f.unregisterMetrics()
 	}
+	f.closeSchedulerPools()
 	f.pool.Close()
 	return nil
 }

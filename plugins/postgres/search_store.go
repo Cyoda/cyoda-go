@@ -26,6 +26,12 @@ type asyncSearchStore struct {
 	// transaction bounds its connection acquire — it holds two at once.
 	q Querier
 
+	// sched carries the executor's liveness statements, Heartbeat and
+	// ClaimStale, on the scheduler pool (scheduler_pool.go), so a main pool
+	// exhausted by entity transactions cannot starve them. Like q, it never
+	// joins a transaction on ctx.
+	sched Querier
+
 	// pool is kept for the operations Querier does not carry: SaveResults
 	// opens a per-chunk transaction on it (Begin) and streams the chunk
 	// through it (CopyFrom) so the fence check and the write are atomic.
@@ -124,6 +130,14 @@ func (s *asyncSearchStore) GetJob(ctx context.Context, jobID string) (*spi.Searc
 	return scanSearchJob(row)
 }
 
+// searchJobBusy wraps the 55P03 of Heartbeat's never-joining write meeting a
+// row SaveResults' own chunk transaction holds FOR UPDATE. Same marker and
+// wording convention as scheduledTaskStore's taskBusy; the SQLSTATE stays in
+// the chain.
+func searchJobBusy(jobID string, err error) error {
+	return fmt.Errorf("heartbeat search job %s: %w: %w", jobID, spi.ErrTaskBusy, err)
+}
+
 // probeFenced classifies why a fenced write against jobID did not apply: no
 // row -> spi.ErrNotFound, a terminal status -> spi.ErrAlreadyTerminal,
 // otherwise the epoch does not match -> spi.ErrStaleClaim (these are the only
@@ -204,22 +218,34 @@ func (s *asyncSearchStore) UpdateJobStatus(ctx context.Context, jobID string, ep
 // database's own clock. ClaimStale's staleness comparison uses the same
 // server-side now() — same clock domain, no host/DB skew between the stamp
 // and the read that later judges it stale.
+//
+// It runs on the scheduler pool (see the sched field). A tick that lands
+// while the job's own SaveResults chunk transaction holds the row FOR
+// UPDATE (search_store.go's probeFenced, forUpdate=true) waits behind it up
+// to the scheduler pool's lock_timeout, then answers spi.ErrTaskBusy rather
+// than the raw 55P03 — the same "row an open transaction holds" outcome
+// scheduledTaskStore's never-joining writes already mark this way (see
+// taskBusy). It is transient and safe to retry on the next tick; the caller
+// must not treat it as a fencing refusal.
 func (s *asyncSearchStore) Heartbeat(ctx context.Context, jobID string, epoch int64) error {
 	tid, err := s.tenant(ctx)
 	if err != nil {
 		return err
 	}
 
-	tag, err := s.q.Exec(ctx,
+	tag, err := s.sched.Exec(ctx,
 		`UPDATE search_jobs SET heartbeat_time = now()
 		 WHERE id = $1 AND tenant_id = $2 AND epoch = $3
 		   AND status NOT IN ('SUCCESSFUL', 'FAILED', 'CANCELLED')`,
 		jobID, string(tid), epoch)
+	if isLockNotAvailable(err) {
+		return searchJobBusy(jobID, err)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to heartbeat search job %s: %w", jobID, err)
 	}
 	if tag.RowsAffected() == 0 {
-		return s.probeFenced(ctx, s.q, jobID, tid, epoch, false)
+		return s.probeFenced(ctx, s.sched, jobID, tid, epoch, false)
 	}
 	return nil
 }
@@ -433,18 +459,46 @@ func (s *asyncSearchStore) GetResultIDs(ctx context.Context, jobID string, offse
 	return ids, total, nil
 }
 
-// ClearResults deletes the job's persisted result IDs. Idempotent — deleting
-// zero rows is not an error.
-func (s *asyncSearchStore) ClearResults(ctx context.Context, jobID string) error {
+// clearResultsQuery fences and deletes in ONE statement. The fence CTE locks
+// the job row FOR UPDATE, so a concurrent ClaimStale or terminal write waits
+// for this statement, and one that committed first is re-read under the lock
+// (READ COMMITTED re-evaluates a locked row against its latest version). The
+// DELETE applies only when the locked row is at the caller's epoch and not
+// terminal. The statement answers the locked row's status and epoch — no row
+// means no job — which ClearResults classifies exactly as probeFenced does.
+const clearResultsQuery = `
+WITH fence AS (
+    SELECT status, epoch FROM search_jobs WHERE id = $1 AND tenant_id = $2 FOR UPDATE
+), cleared AS (
+    DELETE FROM search_job_results r USING fence
+    WHERE r.job_id = $1 AND r.tenant_id = $2
+      AND fence.epoch = $3 AND fence.status NOT IN ('SUCCESSFUL', 'FAILED', 'CANCELLED')
+)
+SELECT status, epoch FROM fence`
+
+// ClearResults deletes the job's persisted result IDs, fenced by epoch like
+// Heartbeat and Release; see clearResultsQuery for why the fence and the
+// delete are one statement. A refused clear deletes nothing. Idempotent at the
+// current epoch — deleting zero rows is not an error.
+func (s *asyncSearchStore) ClearResults(ctx context.Context, jobID string, epoch int64) error {
 	tid, err := s.tenant(ctx)
 	if err != nil {
 		return err
 	}
-	_, err = s.q.Exec(ctx,
-		`DELETE FROM search_job_results WHERE job_id = $1 AND tenant_id = $2`,
-		jobID, string(tid))
+	var status string
+	var actualEpoch int64
+	err = s.q.QueryRow(ctx, clearResultsQuery, jobID, string(tid), epoch).Scan(&status, &actualEpoch)
 	if err != nil {
+		if err == pgx.ErrNoRows {
+			return fmt.Errorf("search job %q not found: %w", jobID, spi.ErrNotFound)
+		}
 		return fmt.Errorf("failed to clear results for job %s: %w", jobID, err)
+	}
+	if isTerminalSearchStatus(status) {
+		return fmt.Errorf("search job %q is terminal: %w", jobID, spi.ErrAlreadyTerminal)
+	}
+	if actualEpoch != epoch {
+		return fmt.Errorf("search job %q epoch mismatch (have %d, want %d): %w", jobID, actualEpoch, epoch, spi.ErrStaleClaim)
 	}
 	return nil
 }
@@ -556,6 +610,8 @@ func (s *asyncSearchStore) ReapExpired(ctx context.Context, ttl time.Duration) (
 // parses. The comparison and the heartbeat stamp both use the database's own
 // now() — the same clock domain, per the Heartbeat doc comment — so a
 // concurrent claim can never race the stamp it is judged against.
+//
+// It runs on the scheduler pool (see the sched field).
 func (s *asyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Duration, limit int) ([]*spi.SearchJob, error) {
 	// "Up to limit jobs" has no meaning below 1. Rejected here rather than
 	// left to the server (which answers a negative LIMIT with a raw
@@ -567,7 +623,7 @@ func (s *asyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 		return nil, fmt.Errorf("claim stale search jobs: limit must be >= 1, got %d", limit)
 	}
 
-	rows, err := s.q.Query(ctx,
+	rows, err := s.sched.Query(ctx,
 		`WITH claimed AS (
 		   SELECT tenant_id, id, released FROM search_jobs
 		   WHERE status = 'RUNNING'

@@ -14,6 +14,7 @@
 //	CYODA_POSTGRES_MIN_CONNS          default 5
 //	CYODA_POSTGRES_MAX_CONN_IDLE_TIME default 5m
 //	CYODA_POSTGRES_AUTO_MIGRATE       default true  (runs embedded SQL migrations at startup)
+//	CYODA_POSTGRES_SCHEDULER_CONNS    default 10    (scheduler's own pool; at least 2)
 //
 // Ceilings, each accepting 0 to disable. All but the acquire timeout are
 // applied server-side; pgxpool.Config has no acquire-timeout field, so that
@@ -61,6 +62,15 @@
 // the underlying pgx.Tx on every call from the passed-in context — so
 // the active tx, discovered via spi.GetTransaction(ctx), is always used
 // when one is present, and the pool is used otherwise.
+//
+// # Scheduler pool
+//
+// The scheduled-task store's never-joining methods, and the async-search
+// heartbeat and claim, run on a pool of their own (CYODA_POSTGRES_SCHEDULER_CONNS)
+// with fixed ceilings: READ COMMITTED, statement_timeout 30s,
+// idle_in_transaction_session_timeout 10s, lock_timeout 2s, and a 5s acquire.
+// The scheduler heartbeat has one more connection of its own. See
+// scheduler_pool.go.
 //
 // Registration:
 //

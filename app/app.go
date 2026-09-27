@@ -39,6 +39,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/messaging"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/scheduledtask"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/txjoin"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
@@ -73,12 +74,11 @@ type App struct {
 	selfNodeID         string
 	nodeRegistry       contract.NodeRegistry
 	scheduler          *scheduler.Service
-	stopSearchReaper   chan struct{}
-	// searchReaperDone is closed by the reaper goroutine when it exits, so
-	// stopSearchReaperLoop can await a clean stop. stopSearchReaperOnce makes
-	// the close idempotent — both Shutdown and Close signal the loop.
-	searchReaperDone     chan struct{}
-	stopSearchReaperOnce sync.Once
+	// stopSearchReapers stops the async-search sweeps and waits for them
+	// (startSearchReapers). stopSearchReapersOnce makes it idempotent — both
+	// Shutdown and Close call it.
+	stopSearchReapers     func()
+	stopSearchReapersOnce sync.Once
 	// searchPool is the bounded worker pool async-search submissions run
 	// on, sized from cfg.SearchAsync. Shutdown drains it (bounded by
 	// searchDrainBudget) before aborting whatever async jobs are still
@@ -88,11 +88,11 @@ type App struct {
 	// healthFlag starts true and is latched false by the first recovered
 	// panic at any of the four sites that run engine or store work: the HTTP
 	// recovery middleware, the gRPC recovery interceptors, the async-search
-	// goroutine and the scheduler's dispatch goroutine. Notification-callback
-	// recoveries (member-registry onChange, OIDC broadcast) deliberately do
-	// not. Nothing resets it: a node that has panicked has state nothing has
-	// verified. Read by RegisterHealthRoutes (GET /health) and by
-	// ReadinessCheck (/readyz).
+	// goroutine and the scheduler's goroutines (its claim loop, heartbeat,
+	// watchdog and runs). Notification-callback recoveries (member-registry
+	// onChange, OIDC broadcast) deliberately do not. Nothing resets it: a node
+	// that has panicked has state nothing has verified. Read by
+	// RegisterHealthRoutes (GET /health) and by ReadinessCheck (/readyz).
 	healthFlag *atomic.Bool
 }
 
@@ -478,34 +478,7 @@ func New(cfg Config) *App {
 		WithAsyncMaxPerTenant(cfg.SearchAsync.MaxPerTenant).
 		WithHeartbeat(cfg.SearchJobHeartbeatInterval)
 
-	// Search reapers (use stopSearchReaper/searchReaperDone for graceful
-	// shutdown). Two cadences: the snapshot-TTL sweep on SearchReapInterval,
-	// and the stale-job reclaim sweep on the finer SearchJobHeartbeatInterval,
-	// plus one reclaim sweep at startup.
-	a.stopSearchReaper = make(chan struct{})
-	a.searchReaperDone = make(chan struct{})
-	go func() {
-		defer close(a.searchReaperDone)
-		// Startup sweep: a restarted node reclaims its own released jobs and
-		// any already-stale jobs the moment it can execute, not after the
-		// first interval.
-		reclaimStaleTick(context.Background(), a.searchService, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, a.healthFlag)
-
-		snapTicker := time.NewTicker(cfg.SearchReapInterval)
-		defer snapTicker.Stop()
-		claimTicker := time.NewTicker(cfg.SearchJobHeartbeatInterval)
-		defer claimTicker.Stop()
-		for {
-			select {
-			case <-snapTicker.C:
-				reapExpiredSnapshotsTick(context.Background(), searchStore, cfg.SearchSnapshotTTL, a.healthFlag)
-			case <-claimTicker.C:
-				reclaimStaleTick(context.Background(), a.searchService, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, a.healthFlag)
-			case <-a.stopSearchReaper:
-				return
-			}
-		}
-	}()
+	a.stopSearchReapers = startSearchReapers(&cfg, a.searchService, searchStore, a.healthFlag)
 
 	a.auditService = skeleton.NewAuditService()
 	a.clusterService = internalgrpc.NewClusterService(a.memberRegistry)
@@ -575,15 +548,13 @@ func New(cfg Config) *App {
 	if cfg.OTelEnabled {
 		extProc = observability.NewTracingExternalProcessingService(extProc, observability.Meter())
 	}
-	// schedClock is shared by the engine's scheduled-transition arm/fire math
-	// (reconcileScheduledTasks, FireScheduledTransition) and the scheduler
-	// scan loop below, so both sides of the runtime agree on "now".
+	// schedClock is the pnode clock, shared by the engine's arm and fire math
+	// and the scheduler, so both agree on "now".
 	schedClock := scheduler.NewRealClock()
 	a.workflowEngine = workflow.NewEngine(a.storeFactory, common.NewDefaultUUIDGenerator(), a.transactionManager,
 		workflow.WithExternalProcessing(extProc),
 		workflow.WithMaxStateVisits(cfg.MaxStateVisits),
-		workflow.WithScheduledClock(schedClock.Now),
-		workflow.WithExpiryGrace(cfg.Scheduler.ExpiryGrace))
+		workflow.WithScheduledClock(schedClock.Now))
 
 	// Wire MemberRegistry onChange to gossip tag updates
 	if cfg.Cluster.Enabled {
@@ -599,62 +570,21 @@ func New(cfg Config) *App {
 		})
 	}
 
-	// Scheduled-transition scan loop (Task D4). Constructed and started
-	// unconditionally — cfg.Scheduler.Enabled gates the tick body itself, so
-	// the Service always exists and Shutdown always has something to Stop.
-	schedEngine := cluster.NewSchedulerEngine(a.workflowEngine)
-	var schedulerRPCClient *cluster.SchedulerRPCClient
-	if cfg.Cluster.Enabled {
-		schedulerRPCClient = cluster.NewSchedulerRPCClient(peerAuth, cfg.Cluster.DispatchForwardTimeout)
-		if cfg.Cluster.DispatchAllowLoopback {
-			// Test-only: multi-node E2E fixtures run every node on 127.0.0.1.
-			// Never set in production (SSRF guard stays active by default).
-			schedulerRPCClient = schedulerRPCClient.AllowLoopbackForTesting()
-		}
+	// The scheduler: this node claims due scheduled tasks and runs them
+	// itself. A disabled scheduler starts nothing; Shutdown drains it either way.
+	a.scheduler = scheduler.New(scheduler.Config(cfg.Scheduler), scheduler.Deps{
+		Store:              a.storeFactory,
+		TxManager:          a.transactionManager,
+		Firer:              a.workflowEngine,
+		Clock:              schedClock,
+		HealthFlag:         a.healthFlag,
+		Meter:              observability.Meter(),
+		CalloutDeadlineMax: schedulerCalloutDeadlineMax(cfg),
+	})
+	if err := a.scheduler.Start(context.Background()); err != nil {
+		slog.Error("startup failure", "phase", "scheduler-start", "error", err.Error())
+		os.Exit(1)
 	}
-	clusterExecutor := cluster.NewClusterExecutor(schedEngine, a.selfNodeID, a.nodeRegistry, schedulerRPCClient)
-
-	// Self is forced when cluster mode is off (there are no peers to
-	// distribute to — a.nodeRegistry is a single-member registry.NewLocal
-	// in that case) or when the operator explicitly opted out of
-	// round-robin distribution.
-	var distStrategy scheduler.DistributionStrategy
-	switch {
-	case !cfg.Cluster.Enabled || cfg.Scheduler.Distribution == "self":
-		distStrategy = scheduler.Self{}
-	default:
-		if cfg.Scheduler.Distribution != "round-robin" {
-			slog.Warn("unknown CYODA_SCHEDULER_DISTRIBUTION, defaulting to round-robin",
-				"pkg", "app", "value", cfg.Scheduler.Distribution)
-		}
-		distStrategy = scheduler.NewRoundRobin()
-	}
-
-	var coordStrategy scheduler.CoordinatorStrategy = scheduler.LowestLiveNodeID{}
-	if cfg.Scheduler.Coordinator != "lowest-node-id" {
-		slog.Warn("unknown CYODA_SCHEDULER_COORDINATOR, defaulting to lowest-node-id",
-			"pkg", "app", "value", cfg.Scheduler.Coordinator)
-	}
-
-	a.scheduler = scheduler.NewService(
-		scheduler.Config{
-			Enabled:           cfg.Scheduler.Enabled,
-			ScanInterval:      cfg.Scheduler.ScanInterval,
-			RedispatchBackoff: cfg.Scheduler.RedispatchBackoff,
-			BatchSize:         cfg.Scheduler.BatchSize,
-		},
-		scheduler.Deps{
-			Store:        a.storeFactory,
-			Registry:     a.nodeRegistry,
-			Coordinator:  coordStrategy,
-			Distribution: distStrategy,
-			Clock:        schedClock,
-			Executor:     clusterExecutor,
-			SelfID:       a.selfNodeID,
-			HealthFlag:   a.healthFlag,
-		},
-	)
-	a.scheduler.Start()
 
 	// The join layer: every request that carries a pass runs through it, on
 	// either door — joined, checked under the transaction's lock, and holding
@@ -676,6 +606,7 @@ func New(cfg Config) *App {
 	server.Workflow = workflow.New(a.storeFactory, a.workflowEngine, a.config.Callout.ResponseTimeoutMax)
 	server.Search = search.NewHandler(a.searchService).WithMaxSortKeys(a.config.SearchMaxSortKeys)
 	server.Audit = audit.New(a.storeFactory)
+	server.ScheduledTasks = scheduledtask.NewHandler(a.storeFactory)
 	server.Messaging = messaging.New(a.storeFactory, common.NewDefaultUUIDGenerator())
 	var accountKeyStore auth.KeyStore
 	var accountTrustedKeyStore auth.TrustedKeyStore
@@ -810,7 +741,6 @@ func New(cfg Config) *App {
 		if cfg.Cluster.Enabled {
 			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth)
 			dispatchHandler.Register(outerMux)
-			cluster.NewSchedulerRPCHandler(schedEngine, peerAuth).Register(outerMux)
 		}
 		a.handler = outerMux
 	} else {
@@ -823,7 +753,6 @@ func New(cfg Config) *App {
 		if cfg.Cluster.Enabled {
 			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth)
 			dispatchHandler.Register(mux)
-			cluster.NewSchedulerRPCHandler(schedEngine, peerAuth).Register(mux)
 		}
 		a.handler = mux
 	}
@@ -832,7 +761,7 @@ func New(cfg Config) *App {
 	// transaction token for another node is forwarded before auth runs here
 	// (auth is applied on the owning node).
 	if cfg.Cluster.Enabled {
-		a.handler = proxy.HTTPRouting(a.tokenSigner, a.nodeRegistry, cfg.Cluster.NodeID, cfg.Cluster.ProxyTimeout, cfg.Cluster.DispatchAllowLoopback)(a.handler)
+		a.handler = proxy.HTTPRouting(a.tokenSigner, a.nodeRegistry, cfg.Cluster.NodeID, cfg.Cluster.ProxyTimeout, cfg.Cluster.DispatchAllowLoopback, contextPath)(a.handler)
 	}
 
 	// CORS sits outside cluster routing so preflights short-circuit at the
@@ -874,12 +803,66 @@ func latchOnPanic(healthFlag *atomic.Bool, site string) {
 	}
 }
 
+// startSearchReapers starts the async-search sweeps and returns the func that
+// stops them and waits for them to exit. Each sweep has a goroutine of its
+// own, so neither waits on the other:
+//   - the snapshot-TTL reap, on SearchReapInterval. Its DELETE shares the
+//     store's main pool with entity transactions and may wait on it.
+//   - the stale-job claim, on the finer SearchJobHeartbeatInterval, plus one
+//     sweep at startup. It never waits on the main pool; the writes it owes
+//     jobs it will not run go to the service's second pass
+//     (search.SearchService.ReclaimStaleJobs).
+//
+// Both run under one context, which stop cancels: a statement still waiting
+// for a connection gives up, and the second pass sends nothing more. stop then
+// waits for both goroutines and for the second pass.
+func startSearchReapers(cfg *Config, svc *search.SearchService, store spi.AsyncSearchStore, healthFlag *atomic.Bool) (stop func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		ticker := time.NewTicker(cfg.SearchReapInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				reapExpiredSnapshotsTick(ctx, store, cfg.SearchSnapshotTTL, healthFlag)
+			case <-ctx.Done():
+				return
+			}
+		}
+	})
+	wg.Go(func() {
+		// Startup sweep: a restarted node reclaims its own released jobs and
+		// any already-stale jobs the moment it can execute, not after the
+		// first interval.
+		reclaimStaleTick(ctx, svc, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, healthFlag)
+		ticker := time.NewTicker(cfg.SearchJobHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				reclaimStaleTick(ctx, svc, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, healthFlag)
+			case <-ctx.Done():
+				return
+			}
+		}
+	})
+	return func() {
+		cancel()
+		wg.Wait()
+		svc.WaitReclaimSecondPass()
+	}
+}
+
 // reapExpiredSnapshotsTick deletes terminal jobs past the snapshot TTL. Runs
 // on SearchReapInterval. Panic-latches health like the other engine-work sites.
 func reapExpiredSnapshotsTick(ctx context.Context, store spi.AsyncSearchStore, snapshotTTL time.Duration, healthFlag *atomic.Bool) {
 	defer latchOnPanic(healthFlag, "search snapshot reaper")
 	reaped, err := store.ReapExpired(ctx, snapshotTTL)
 	if err != nil {
+		if ctx.Err() != nil {
+			return // the sweeps are stopping
+		}
 		slog.Error("search snapshot reaper error", "pkg", "search", "err", err)
 	} else if reaped > 0 {
 		slog.Info("reaped expired search snapshots", "pkg", "search", "count", reaped)
@@ -887,20 +870,21 @@ func reapExpiredSnapshotsTick(ctx context.Context, store spi.AsyncSearchStore, s
 }
 
 // reclaimStaleTick claims stale/released RUNNING jobs and re-executes them on
-// this node (or fails those past the attempt cap). Runs on the heartbeat
-// interval — a finer cadence than the snapshot reap — plus once at startup.
+// this node; the second pass fails those past the attempt cap. Runs on the
+// heartbeat interval — a finer cadence than the snapshot reap — plus once at
+// startup.
 func reclaimStaleTick(ctx context.Context, svc *search.SearchService, staleAfter time.Duration, maxAttempts int, healthFlag *atomic.Bool) {
 	defer latchOnPanic(healthFlag, "search stale-job reaper")
-	reenqueued, failed, err := svc.ReclaimStaleJobs(ctx, staleAfter, maxAttempts)
+	reenqueued, err := svc.ReclaimStaleJobs(ctx, staleAfter, maxAttempts)
 	if err != nil {
+		if ctx.Err() != nil {
+			return // the sweeps are stopping
+		}
 		slog.Error("stale search job reclaim error", "pkg", "search", "err", err)
 		return
 	}
 	if reenqueued > 0 {
 		slog.Info("re-enqueued stale async search jobs", "pkg", "search", "count", reenqueued)
-	}
-	if failed > 0 {
-		slog.Warn("failed async search jobs past the attempt cap", "pkg", "search", "count", failed)
 	}
 }
 
@@ -939,6 +923,23 @@ func (a *App) ReadinessCheck() error {
 	return nil
 }
 
+// DrainScheduler runs the scheduler's shutdown steps 1-5. The binary calls it
+// on a signal before the servers drain, so runs still in progress keep their
+// compute-node streams and callback routes. Shutdown and Close drain it again;
+// every call after the first does nothing.
+func (a *App) DrainScheduler(ctx context.Context) {
+	if a.scheduler != nil {
+		a.scheduler.Drain(ctx)
+	}
+}
+
+// schedulerCalloutDeadlineMax is the longest one callout can take: every try
+// at the largest answer limit, the patience and the hand-over allowance.
+func schedulerCalloutDeadlineMax(c Config) time.Duration {
+	return time.Duration(1+c.Callout.FixedNumRetries)*c.Callout.ResponseTimeoutMax +
+		c.Cluster.DispatchWaitTimeout + c.Callout.HandoverAllowance
+}
+
 func (a *App) StoreFactory() spi.StoreFactory             { return a.storeFactory }
 func (a *App) TransactionManager() spi.TransactionManager { return a.transactionManager }
 func (a *App) AuthenticationService() contract.AuthenticationService {
@@ -975,16 +976,14 @@ const gRPCGracefulStopBudget = 10 * time.Second
 // does not itself abort them; this budget is what actually bounds the wait.
 const searchDrainBudget = 5 * time.Second
 
-// stopSearchReaperLoop signals the reaper goroutine and waits for it to exit.
-// Idempotent: safe to call from both Shutdown and Close (sync.Once guards the
-// close; the done-channel wait is a no-op once the goroutine has already
-// returned).
+// stopSearchReaperLoop stops the async-search sweeps and waits for them to
+// exit. Idempotent: safe to call from both Shutdown and Close (sync.Once runs
+// the stop once, and a second caller waits for it to finish).
 func (a *App) stopSearchReaperLoop() {
-	if a.stopSearchReaper == nil {
+	if a.stopSearchReapers == nil {
 		return
 	}
-	a.stopSearchReaperOnce.Do(func() { close(a.stopSearchReaper) })
-	<-a.searchReaperDone
+	a.stopSearchReapersOnce.Do(a.stopSearchReapers)
 }
 
 // Close performs graceful shutdown of all backend resources.
@@ -1000,6 +999,10 @@ func (a *App) stopSearchReaperLoop() {
 // so operators can see the budget was hit.
 func (a *App) Close() error {
 	slog.Info("shutting down")
+	// Drain the scheduler before anything is torn down, so a Close without
+	// Shutdown does not leave it claiming and heartbeating against a store
+	// that is closing. After Shutdown this does nothing.
+	a.DrainScheduler(context.Background())
 	// Stop the reaper first so a node whose store is closing does not keep
 	// sweeping on the claim ticker against a store being torn down.
 	a.stopSearchReaperLoop()
@@ -1045,6 +1048,12 @@ func (a *App) StopGRPC() {
 // followed by Close() (the runServers sequence) close the factory
 // exactly once.
 func (a *App) Shutdown() {
+	// A server failed, or the binary did not drain the scheduler first: the
+	// same steps run here, after the servers stopped, with no outside
+	// deadline. After a DrainScheduler this does nothing.
+	if a.scheduler != nil {
+		a.scheduler.Stop()
+	}
 	a.stopSearchReaperLoop()
 	if a.searchPool != nil {
 		drainCtx, cancel := context.WithTimeout(context.Background(), searchDrainBudget)
@@ -1057,9 +1066,6 @@ func (a *App) Shutdown() {
 		if n := a.searchService.ReleaseRegisteredJobs(context.Background()); n > 0 {
 			slog.Info("released in-flight async search jobs for reclaim at shutdown", "pkg", "search", "count", n)
 		}
-	}
-	if a.scheduler != nil {
-		a.scheduler.Stop()
 	}
 	if a.nodeRegistry != nil && a.config.Cluster.Enabled {
 		if err := a.nodeRegistry.Deregister(context.Background(), a.config.Cluster.NodeID); err != nil {

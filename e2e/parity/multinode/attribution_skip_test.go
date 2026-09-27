@@ -27,7 +27,7 @@ var _ MultiNodeFixture = stubNoAttrFixture{}
 // when the fixture does not implement AttributionCapable. This is the guarantee
 // the out-of-tree commercial backend relies on: it consumes the shared registry
 // and must see these as visible-but-pending, not as hard failures, until it
-// wires ComputeUser/NodeLogs.
+// wires ComputeUser.
 func TestAttributionScenariosSkipWithoutCapability(t *testing.T) {
 	scenarios := []struct {
 		name string

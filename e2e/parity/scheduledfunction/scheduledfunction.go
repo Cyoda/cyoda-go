@@ -27,13 +27,14 @@
 // ExpiryElapsedExpiresNoFire scenario in particular cannot rely on pausing
 // the scheduler (internal/e2e's TestScheduledFunction_ExpiryElapsedBeforeScan_ExpiresNoFire
 // approach) — instead it arms with an ALREADY-past absolute fireAt/expireAt
-// pair whose lateness already exceeds timeoutMs+grace at arm time, so the
-// very first scan (whatever its cadence) sees an expired task deterministically.
+// pair, so the deadline (scheduledTime + timeoutMs) has passed at arm time
+// and the very first claim, whatever its cadence, finds it late.
 // See "sched-fn-resolve"'s expiryElapsed case for the arithmetic.
 package scheduledfunction
 
 import (
 	"fmt"
+	"net/url"
 	"testing"
 	"time"
 
@@ -396,13 +397,12 @@ func RunScheduledFunction_PastFireAtFiresPromptly(t *testing.T, fixture parity.B
 }
 
 // RunScheduledFunction_ExpiryElapsedExpiresNoFire verifies the settled-
-// interval "expiry elapsed before any scanner ever reads the row" path
-// (design §5.5's grace-band gate): "sched-fn-resolve" in expiryElapsed mode
-// returns a VALID (not born-expired: expiry > fire time) arm whose fireAt
-// and expireAt are both already deep in the past at arm time, so lateness
-// already exceeds timeoutMs+grace before the very first scan — the task
-// resolves Expired and never Fired, deterministically regardless of scan
-// cadence (see the package doc comment and catalog.go's expiryElapsed case
+// interval "expiry elapsed before any scanner ever reads the row" path:
+// "sched-fn-resolve" in expiryElapsed mode returns a VALID (not born-expired:
+// expiry > fire time) arm whose fireAt and expireAt are both already deep in
+// the past at arm time, so the deadline (scheduledTime + timeoutMs) has
+// passed before the very first claim — the task resolves Expired, is removed
+// and never Fired, deterministically regardless of scan cadence (see the package doc comment and catalog.go's expiryElapsed case
 // for why no scheduler-pausing trick is needed here).
 func RunScheduledFunction_ExpiryElapsedExpiresNoFire(t *testing.T, fixture parity.BackendFixture) {
 	tenant := fixture.ComputeTenant(t)
@@ -415,8 +415,7 @@ func RunScheduledFunction_ExpiryElapsedExpiresNoFire(t *testing.T, fixture parit
 
 	// expiryElapsed mode resolves fireAt = now-5000ms, expireAt = fireAt+110ms
 	// (see catalog.go) — a valid, non-born-expired arm (expiry > fire time)
-	// whose lateness (~5000ms) already vastly exceeds timeoutMs(110ms)+grace(100ms)
-	// at arm time.
+	// whose lateness (~5000ms) already exceeds timeoutMs (110ms) at arm time.
 	entityID, err := c.CreateEntity(t, modelName, modelVersion, entityJSON("expiryElapsed", 5000, 110))
 	if err != nil {
 		t.Fatalf("CreateEntity: %v", err)
@@ -434,7 +433,15 @@ func RunScheduledFunction_ExpiryElapsedExpiresNoFire(t *testing.T, fixture parit
 
 	events := stateMachineEvents(t, c, entityID)
 	if hasStateMachineEvent(events, eventFired, "") {
-		t.Errorf("expected no %s event — lateness already exceeded timeout+grace before any scanner ran; got events: %+v", eventFired, events)
+		t.Errorf("expected no %s event — the deadline had passed before the first claim; got events: %+v", eventFired, events)
+	}
+
+	page, err := c.ListScheduledTasks(t, url.Values{"entityId": {entityID.String()}})
+	if err != nil {
+		t.Fatalf("ListScheduledTasks: %v", err)
+	}
+	if len(page.Items) != 0 {
+		t.Errorf("an expired task is still listed: %+v; it is removed", page.Items)
 	}
 }
 

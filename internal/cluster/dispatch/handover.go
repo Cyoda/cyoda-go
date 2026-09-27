@@ -281,6 +281,8 @@ func responseFromLocal(call internalgrpc.Callout, res internalgrpc.LocalResult, 
 		case internalgrpc.ProcessorCallout:
 			if res.Result.Entity != nil {
 				resp.EntityData = res.Result.Entity.Data
+			} else {
+				resp.NoPayload = true
 			}
 		case internalgrpc.CriteriaCallout:
 			matches := res.Result.Matches
@@ -359,15 +361,19 @@ func readAnswer(call internalgrpc.Callout, resp *DispatchCalloutResponse, triesL
 		result := internalgrpc.CalloutResult{}
 		switch call.Kind {
 		case internalgrpc.ProcessorCallout:
-			// responseFromLocal always sends the entity on the ok path: the
-			// local procedure's result carries it, and a processor that
-			// changed nothing returns the one it was given. No entity is a
-			// malformed answer, and reading it as an empty one would have the
-			// owner commit an entity with no data.
-			if len(resp.EntityData) == 0 {
+			// responseFromLocal sends exactly one of the two on the ok path:
+			// the entity data the processor answered with, or NoPayload when
+			// it answered with none. Neither, or both, is a malformed answer;
+			// reading a missing entity as an empty one would have the owner
+			// commit an entity with no data.
+			switch {
+			case resp.NoPayload && len(resp.EntityData) == 0:
+				// No entity: the processor sent nothing to apply.
+			case !resp.NoPayload && len(resp.EntityData) != 0:
+				result.Entity = &spi.Entity{Meta: call.Source.Entity.Meta, Data: resp.EntityData}
+			default:
 				return lostAnswer()
 			}
-			result.Entity = &spi.Entity{Meta: call.Source.Entity.Meta, Data: resp.EntityData}
 		case internalgrpc.CriteriaCallout:
 			// matches is always on the wire from a genuine peer. A missing
 			// verdict must not be read as "does not match": that is an

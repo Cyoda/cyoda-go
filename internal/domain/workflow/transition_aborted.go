@@ -3,145 +3,64 @@ package workflow
 import (
 	"context"
 	"fmt"
-	"log/slog"
-	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// SMEventTransitionAborted is the compensating audit event emitted when an
-// in-flight transition is aborted by a stale ifMatch precondition.
-//
-// Whenever the engine has already recorded entry-side audit events (e.g.
-// STATE_MACHINE_START, WORKFLOW_FOUND) for a transition that is then
-// short-circuited by a CompareAndSave conflict — at the engine's
-// COMMIT_BEFORE_DISPATCH first-segment flush, or at the handler's
-// post-engine save — we emit this event so the audit trail remains
-// self-consistent (no orphaned start without a matching finish or abort).
+// SMEventTransitionAborted is the audit event the engine records when a
+// caller's If-Match rejects a transition it has started. It pairs the
+// STATE_MACHINE_START recorded just before it, so the audit trail holds no
+// start without a matching finish or abort.
 //
 // The event's Data payload carries:
 //
 //	{
-//	  "reason":         "ENTITY_MODIFIED",   // why the abort fired
+//	  "reason":         "ENTITY_MODIFIED",   // why the transition aborted
 //	  "transitionName": "<name>",            // the transition that aborted
-//	  "expectedTxId":   "<supplied-txid>",   // caller's stale ifMatch value
-//	  "actualTxId":     "<row-current-txid>",// entity row's actual txID
+//	  "expectedTxId":   "<supplied-txid>",   // the caller's If-Match
+//	  "actualTxId":     "<entity-txid>",     // the version the request starts from
 //	}
 //
 // This is a cyoda-go local extension to the spi.StateMachineEventType
-// open-string taxonomy. The cyoda-go-spi module is consumed as a versioned
-// external dependency (no replace), so the constant is defined here today;
-// it can migrate upstream into spi.SMEventTransitionAborted on the next
-// SPI release without breaking either side (the audit handler already
-// emits eventType as a raw string).
+// open-string taxonomy; the audit handler emits eventType as a raw string.
 const SMEventTransitionAborted spi.StateMachineEventType = "TRANSITION_ABORTED"
 
-// TransitionAbortedReasonEntityModified is the only reason today — a stale
-// ifMatch precondition. Carved out as a constant so future reasons (e.g.
-// processor-cancellation, criterion-aborted) can be added without
-// stringly-typed drift across emission sites. Exported so handler-side
-// emitters in internal/domain/entity can reuse the same constant.
+// TransitionAbortedReasonEntityModified is the only reason today: a stale
+// If-Match.
 const TransitionAbortedReasonEntityModified = "ENTITY_MODIFIED"
 
-// EmitTransitionAborted writes a TRANSITION_ABORTED audit event into
-// auditStore for the given entity, attributing the abort to a stale ifMatch
-// precondition. Best effort — audit failures must not break the workflow or
-// handler execution path. actualTxID is the entity row's current
-// transactionId at the moment the conflict was detected; if the storage
-// layer cannot supply it the caller passes "".
+// IfMatch is a caller's If-Match precondition. It states the version the
+// request starts from. Expected is the caller's value; Current is the
+// transaction id of the entity as the request's transaction read it before the
+// engine ran. An empty Expected is no precondition.
 //
-// Used by both the engine (CBD first-segment-flush conflict) and the entity
-// handler (post-engine CompareAndSave conflict on non-segmenting cascades).
-//
-// now supplies the event's Timestamp. The engine passes its own clock so audit
-// times stay comparable with the scheduled-transition timings computed from it;
-// callers without an injectable clock pass time.Now. A nil now defaults to
-// time.Now.
-//
-// This records an audit row, and LookupActualTxID beside it reads the entity
-// store, without consulting the fence — deliberately, because a chain the fence
-// has refused cannot reach either. Both call sites run only on an
-// spi.ErrConflict from a CompareAndSave: the engine's COMMIT_BEFORE_DISPATCH
-// first-segment flush, which happens before that processor's dispatch, and the
-// handler's post-engine save, which a refused chain never reaches because the
-// engine returns the refusal first. Neither window contains a callout, so the
-// chain holds the transaction's lock across it, and the owner's wait takes that
-// same lock before it hands the work on — the fencing number cannot rise
-// underneath a chain that is already there. A guard here would be an
-// unreachable branch.
-func EmitTransitionAborted(
-	ctx context.Context,
-	auditStore spi.StateMachineAuditStore,
-	now func() time.Time,
-	entityID, cascadeEntryTxID, state, transitionName, expectedTxID, actualTxID string,
-) {
-	if auditStore == nil {
-		return
-	}
-	if now == nil {
-		now = time.Now
-	}
-	data := map[string]any{
-		"reason":         TransitionAbortedReasonEntityModified,
-		"transitionName": transitionName,
-		"expectedTxId":   expectedTxID,
-		"actualTxId":     actualTxID,
-	}
-	event := spi.StateMachineEvent{
-		EventType:     SMEventTransitionAborted,
-		EntityID:      entityID,
-		State:         state,
-		TransactionID: cascadeEntryTxID,
-		Details:       fmt.Sprintf("Transition %q aborted: entity has been modified since last read", transitionName),
-		Data:          data,
-		Timestamp:     now(),
-	}
-	if err := auditStore.Record(ctx, entityID, event); err != nil {
-		slog.Debug("transition-aborted audit emission failed",
-			"pkg", "workflow", "entityId", entityID, "error", err)
-	}
+// The engine checks it once, at the start of the transition, and never again:
+// a write to the entity later in the same transaction — a joined callback's,
+// or a COMMIT_BEFORE_DISPATCH segment's — is the request's own and does not
+// break it. A write another transaction commits after the request's read is
+// not the precondition's business: the transaction's commit refuses it, as it
+// refuses every such race.
+type IfMatch struct {
+	Expected string
+	Current  string
 }
 
-// LookupActualTxID best-effort fetches the entity row's current
-// transactionId via the supplied factory. Returns "" on any error — the
-// abort event still carries the rest of its payload and downstream
-// consumers can fall back to the expectedTxId mismatch as the conflict
-// signal. Detaches from any in-flight TX via WithTransaction(nil) so the
-// read goes against the most recently committed snapshot rather than the
-// rolled-back / about-to-rollback in-flight TX.
-func LookupActualTxID(ctx context.Context, factory spi.StoreFactory, entityID string) string {
-	if factory == nil {
-		return ""
+// checkIfMatch records TRANSITION_ABORTED and fails with spi.ErrConflict when
+// the caller's If-Match does not name the version the request starts from. The
+// conflict is unmarked: it is the request's own precondition, which a batching
+// caller isolates to its item.
+func (e *Engine) checkIfMatch(ctx context.Context, auditStore spi.StateMachineAuditStore, entity *spi.Entity, txID, transitionName string, p IfMatch) error {
+	if p.Expected == "" || p.Expected == p.Current {
+		return nil
 	}
-	readCtx := spi.WithTransaction(context.WithoutCancel(ctx), nil)
-	es, err := factory.EntityStore(readCtx)
-	if err != nil {
-		slog.Debug("transition-aborted: entity-store lookup failed",
-			"pkg", "workflow", "entityId", entityID, "error", err)
-		return ""
-	}
-	row, err := es.Get(readCtx, entityID)
-	if err != nil || row == nil {
-		slog.Debug("transition-aborted: entity Get failed",
-			"pkg", "workflow", "entityId", entityID, "error", err)
-		return ""
-	}
-	return row.Meta.TransactionID
-}
-
-// recordAbortForIfMatchConflict is the engine-internal helper invoked at the
-// CBD first-segment-flush boundary when CompareAndSave rejected the
-// caller-supplied IfMatch precondition.
-func (e *Engine) recordAbortForIfMatchConflict(
-	ctx context.Context,
-	auditStore spi.StateMachineAuditStore,
-	entity *spi.Entity,
-	cascadeEntryTxID string,
-	transitionName string,
-	expectedTxID string,
-) {
-	actualTxID := LookupActualTxID(ctx, e.factory, entity.Meta.ID)
-	EmitTransitionAborted(ctx, auditStore, e.now,
-		entity.Meta.ID, cascadeEntryTxID, entity.Meta.State,
-		transitionName, expectedTxID, actualTxID)
+	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
+		SMEventTransitionAborted,
+		fmt.Sprintf("Transition %q aborted: entity has been modified since last read", transitionName),
+		map[string]any{
+			"reason":         TransitionAbortedReasonEntityModified,
+			"transitionName": transitionName,
+			"expectedTxId":   p.Expected,
+			"actualTxId":     p.Current,
+		})
+	return fmt.Errorf("entity %s: If-Match precondition failed: %w", entity.Meta.ID, spi.ErrConflict)
 }

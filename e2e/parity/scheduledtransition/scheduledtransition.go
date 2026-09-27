@@ -12,15 +12,15 @@
 // no in-process engine or clock to inject — WithScheduledClock (used by
 // internal/domain/workflow's unit tests) is not reachable from here, and
 // never will be for any backend under this harness, including memory.
-// Exact scheduledTime/lateness arithmetic and grace-band boundaries are
-// therefore Unit-only (see internal/domain/workflow/arm_test.go and
-// fire_scheduled_test.go) — never asserted here.
+// Exact scheduledTime, lateness, retry-delay and deadline arithmetic is
+// therefore Unit-only (internal/domain/workflow and internal/scheduler unit
+// tests) — never asserted here.
 //
 // What IS asserted here is OBSERVABLE, coarse behavior: does a task get
 // armed (a SCHEDULED_TRANSITION_ARM audit event appears), does it fire
 // and land the entity in the expected state, does a state exit cancel it,
 // does a loopback re-arm it without a spurious cancel. Scenarios that
-// need the runtime scan loop to actually pick up a due task use a small
+// need the runtime claim loop to actually pick up a due task use a small
 // Schedule.DelayMs plus generous, bounded polling (the same
 // non-boundary, non-flaky methodology the design doc prescribes for
 // internal/e2e — see its §11 "Time control" note) rather than any exact
@@ -260,6 +260,9 @@ func RunScheduledTransition_FiresOnTime(t *testing.T, fixture parity.BackendFixt
 	if !hasStateMachineEvent(events, eventFired, "CLOSED") {
 		t.Errorf("expected a %s audit event with state CLOSED; got events: %+v", eventFired, events)
 	}
+	if task := taskOf(t, c, entityID, "AutoClose"); task != nil {
+		t.Errorf("the fired task is still listed: %+v; a fired task is removed", *task)
+	}
 }
 
 // RunScheduledTransition_DeclineCriterionFalse verifies that a scheduled
@@ -306,6 +309,9 @@ func RunScheduledTransition_DeclineCriterionFalse(t *testing.T, fixture parity.B
 	events := stateMachineEvents(t, c, entityID)
 	if hasStateMachineEvent(events, eventFired, "") {
 		t.Errorf("expected no %s event on a declined scheduled transition; got events: %+v", eventFired, events)
+	}
+	if task := taskOf(t, c, entityID, "AutoClose"); task != nil {
+		t.Errorf("the declined task is still listed: %+v; a declined task is removed", *task)
 	}
 }
 

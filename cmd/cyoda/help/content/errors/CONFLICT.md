@@ -1,6 +1,6 @@
 ---
 topic: errors.CONFLICT
-title: "CONFLICT — optimistic concurrency conflict"
+title: "CONFLICT — another write committed first"
 stability: stable
 see_also:
   - errors
@@ -13,7 +13,7 @@ see_also:
 
 ## NAME
 
-CONFLICT — an optimistic concurrency check failed because the entity was modified concurrently.
+CONFLICT — the write lost a race: another transaction committed a change to the same entity, or to one of its scheduled tasks, after this write began.
 
 ## SYNOPSIS
 
@@ -21,9 +21,28 @@ HTTP: `409` `Conflict`. Retryable: `yes`.
 
 ## DESCRIPTION
 
-The server detected that the entity was modified by another writer between the time it was read and the time the current write was committed. Normal outcome under concurrent load.
+When a write commits, the server checks that nothing it wrote was changed by another transaction that committed after it began. Two kinds of change are checked:
 
-Retryable. The full read-modify-write cycle must be repeated using the current entity state; replaying the original write without re-fetching produces stale data.
+- **The entity.** Another client or a workflow changed the entity first.
+- **A scheduled task of the entity.** The scheduler changed one of the entity's scheduled tasks first. The scheduler changes a task when it claims it, stamps a segment of its run, records an attempt, marks it failed, or gives it back. A write that arms or cancels the entity's scheduled transitions writes those tasks, and so can race the scheduler.
+
+Both are normal outcomes under concurrent load.
+
+A race can also be lost before the commit, while the request is still running. The answer is still 409 — never a `500`, a `400 WORKFLOW_FAILED` or a `412 ENTITY_MODIFIED`:
+
+- **A processor's callback write.** A processor's joined callback writes an entity — the request's own entity or another one — or a scheduled task, and loses the race. The request answers 409, with or without `If-Match`. When the processor then fails, for any reason, the lost race is the answer, not the processor's failure. This holds for `SYNC`, `ASYNC_SAME_TX`, `ASYNC_NEW_TX` and `COMMIT_BEFORE_DISPATCH` with `startNewTxOnDispatch`, on every storage backend. Under `ASYNC_NEW_TX` the race stays lost when its savepoint is undone: the request answers 409 and the request's transaction does not commit.
+- **A transaction already aborted (PostgreSQL).** On PostgreSQL the statement that loses the race aborts the transaction, and every later statement in it is refused. Those refusals are the same lost race, and answer 409.
+- **`If-Match`.** `If-Match` states the version the request starts from, and the server checks it once, when the request's transition starts. `412 ENTITY_MODIFIED` answers only that check: the entity was already at another version when the request read it. A write to the entity later in the same transaction, such as a joined callback's, is the request's own and does not break it. A change that another transaction commits after the request's read is a lost race, and answers 409. The one exception is described in `errors.ENTITY_MODIFIED`: a change made during the callout of a `COMMIT_BEFORE_DISPATCH` processor, after the request's first segment committed.
+
+How each operation handles a race with the scheduler:
+
+- **Entity delete, when the request owns its transaction, and workflow import, which always does.** The server retries up to 3 times before it answers 409. A workflow import that answers 409 has already saved its workflows; only the removal of the tasks of transitions no longer scheduled is left.
+- **Batched delete (`transactionSize`).** The whole request does not answer 409 for a task race. A batch that still conflicts lists its ids in `idToError` with this code, and the other batches run.
+- **Entity write that joined an open transaction (`X-Tx-Token`).** The server does not retry it. The request can answer 409 itself, and the transaction's owner then cannot commit. A workflow import never joins one: it is refused with `400 MODEL_ADMIN_IN_JOINED_TRANSACTION` if it carries the token.
+
+Retry the whole read-modify-write cycle with the current entity state. Replaying the original write without re-reading produces stale data. A retried workflow import saves the same workflows again and then removes the tasks.
+
+On the gRPC entity operations this error is `code` `CLIENT_ERROR`, with a message that starts with `CONFLICT:` and `retryable` true.
 
 ## SEE ALSO
 

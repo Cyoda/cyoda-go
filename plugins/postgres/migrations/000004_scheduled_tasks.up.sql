@@ -3,10 +3,10 @@
 -- runtime and future ScheduledTask variants (see spi.ScheduledTaskStore).
 --
 -- Deliberately NOT enrolled in row-level security, unlike every other
--- tenant table in this schema: ScanDue is a trusted, cross-tenant system
--- read driving the scheduler's due-task scan loop, invoked outside any
+-- tenant table in this schema: ClaimDue is a trusted, cross-tenant system
+-- read driving the scheduler's due-task claim loop, invoked outside any
 -- per-tenant request context (no app.current_tenant GUC set). Adding a
--- tenant_isolation policy here would silently zero out ScanDue's result
+-- tenant_isolation policy here would silently zero out ClaimDue's result
 -- set once RLS enforcement is strengthened (FORCE + non-owner role) for
 -- the rest of the schema. Upsert/Delete/ReconcileForEntity remain
 -- tenant-safe via application-level tenant_id predicates, matching the

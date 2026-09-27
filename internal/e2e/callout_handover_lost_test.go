@@ -37,8 +37,7 @@ import (
 // dispatchCalloutPathForTest mirrors the route
 // internal/cluster/dispatch/handler.go registers for a hand-over ("POST
 // /internal/dispatch/callout"). Duplicated rather than exported across the
-// package boundary for a one-line route string — the precedent
-// schedulerTaskPathForTest (tx_lifecycle_e2e_test.go) sets.
+// package boundary for a one-line route string.
 const dispatchCalloutPathForTest = "/internal/dispatch/callout"
 
 // forwardFailedDetail is the whole client-visible text of a lost hand-over,
@@ -338,9 +337,6 @@ func newLostHandOverHarness(t *testing.T, nodeID string, seeds []string) *callba
 	t.Helper()
 	return newCalloutHarness(t, func(cfg *app.Config) {
 		calloutTuning(3, 0)(cfg)
-		// Nothing of this file is scheduled; a scan loop would be the one other
-		// thing that talks to a peer.
-		cfg.Scheduler.Enabled = false
 		cfg.Cluster.Enabled = true
 		cfg.Cluster.NodeID = nodeID
 		cfg.Cluster.NodeAddr = fmt.Sprintf("http://127.0.0.1:%d", cfg.HTTPPort)

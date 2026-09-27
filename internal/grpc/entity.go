@@ -498,7 +498,7 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 			}
 		}
 
-		delRes, err := s.entityHandler.DeleteEntitiesConditional(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version), nil, req.PointInTime, req.Verbose, size)
+		delRes, err := s.entityHandler.DeleteEntitiesConditional(ctx, req.Model.Name, int(req.Model.Version), nil, req.PointInTime, req.Verbose, size)
 		if err != nil {
 			slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManageCollection", "type", eventType, "ceId", ce.Id, "error", err.Error())
 			respCE, ceErr := entityDeleteAllError(ctx, ce.Id, err)

@@ -166,7 +166,7 @@ func (h *DispatchHandler) writeSealed(w http.ResponseWriter, binding ResponseBin
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	if len(wire) > MaxEnvelopeSize {
+	if len(wire) > maxEnvelopeSize {
 		// The owner reads at most the ceiling, so writing these bytes would
 		// send it a truncated answer while this node recorded that it had
 		// answered. A status instead: the owner reads the lost answer it is,
@@ -175,7 +175,7 @@ func (h *DispatchHandler) writeSealed(w http.ResponseWriter, binding ResponseBin
 		// other peer-written field, so it is bounded before it is logged.
 		slog.Error("the answer to a hand-over does not fit the envelope and was not sent",
 			"pkg", "dispatch", "requestId", boundLine(requestID), "outcome", v.Outcome,
-			"sealedBytes", len(wire), "maxBytes", MaxEnvelopeSize)
+			"sealedBytes", len(wire), "maxBytes", maxEnvelopeSize)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

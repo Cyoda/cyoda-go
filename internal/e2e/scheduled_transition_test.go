@@ -8,81 +8,24 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster"
-	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
+	"github.com/cyoda-platform/cyoda-go/app"
 )
 
-// --- Polling / audit helpers (running-backend e2e — Task E2, design §11 "E"
-// column). Mirrors the awaitEntityState/awaitStateMachineEvent idiom already
-// established in e2e/parity/scheduledtransition/scheduledtransition.go:
-// small Schedule.DelayMs plus generous, bounded polling — never a bare
-// time.Sleep as the sole detector of a positive outcome (wall-clock e2e
-// timing is this repo's leading source of CI flakes).
+// --- Polling / audit helpers (running-backend e2e).
+//
+// Every test here that needs a fire builds a stack with a live scheduler on a
+// database of its own (newSchedulerHarness): a claim is cross-tenant, so a
+// scheduler on the shared database would run other tests' tasks. A small
+// Schedule.DelayMs plus generous, bounded polling — never a bare time.Sleep as
+// the sole detector of a positive outcome.
 
-// scheduledFireTimeout bounds every poll loop in this file. The package-level
-// testApp's own scheduler is disabled (internal/e2e/e2e_test.go's TestMain:
-// several harnesses share this Postgres, and a scan is cross-tenant and
-// node-blind, so exactly one scheduler may scan it), so every test in this
-// file that needs a fire starts its own bespoke scheduler.Service via
-// startTestScheduler — a 100ms scan cadence — and this timeout is sized
-// generously above that plus slow-CI overhead, so a real bug — not scan
-// cadence — trips it.
+// scheduledFireTimeout bounds every poll loop that waits for a fire. The
+// scheduler stacks claim every 50ms (schedulerTuning); the bound is sized for
+// slow CI, so a real bug — not the scan cadence — trips it.
 const scheduledFireTimeout = 15 * time.Second
 
 // scheduledPollInterval is the sleep between polls.
 const scheduledPollInterval = 75 * time.Millisecond
-
-// startTestScheduler starts a bespoke scheduler.Service against testApp's own
-// already-exported collaborators (StoreFactory, NodeRegistry, WorkflowEngine)
-// and registers t.Cleanup(Stop). testApp's own scheduler is disabled (see
-// scheduledFireTimeout above), so this is the one scanner a test in this file
-// that needs a scheduled fire relies on. A 100ms scan cadence and a 5s
-// redispatch backoff keep it fast; the shape is the one
-// TestE2E_ScheduledTransition_RestartDurability originated, generalised for
-// every caller that needs a fire rather than duplicated per test.
-func startTestScheduler(t *testing.T) {
-	t.Helper()
-	schedEngine := cluster.NewSchedulerEngine(testApp.WorkflowEngine())
-	executor := cluster.NewClusterExecutor(schedEngine, "local", testApp.NodeRegistry(), nil)
-	svc := scheduler.NewService(
-		scheduler.Config{
-			Enabled:           true,
-			ScanInterval:      100 * time.Millisecond,
-			RedispatchBackoff: 5 * time.Second,
-			BatchSize:         100,
-		},
-		scheduler.Deps{
-			Store:        testApp.StoreFactory(),
-			Registry:     testApp.NodeRegistry(),
-			Coordinator:  scheduler.LowestLiveNodeID{},
-			Distribution: scheduler.Self{},
-			Clock:        scheduler.NewRealClock(),
-			Executor:     executor,
-			SelfID:       "local",
-		},
-	)
-	svc.Start()
-	t.Cleanup(svc.Stop)
-}
-
-// awaitEntityStateE2E polls getEntityState until it equals wantState, or
-// fails the test once timeout elapses.
-func awaitEntityStateE2E(t *testing.T, entityID, wantState string, timeout time.Duration) string {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	var last string
-	for {
-		last = getEntityState(t, entityID)
-		if last == wantState {
-			return last
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out after %s waiting for entity %s to reach state %q; last observed state %q",
-				timeout, entityID, wantState, last)
-		}
-		time.Sleep(scheduledPollInterval)
-	}
-}
 
 // Scheduled-transition assertions read their timings from the SERVER's audit
 // trail, never from elapsed wall-clock on the test side.
@@ -241,19 +184,18 @@ func TestE2E_ExplicitFireOfScheduledTransition_ReturnsTransitionNotFound(t *test
 	}
 }
 
-// TestE2E_ScheduledTransition_FiresThroughHTTPStack proves the real scan
-// loop fires a no-criterion scheduled transition end-to-end through the
-// full HTTP stack (design §5.1/§5.2): create lands the entity in a state
-// with a scheduled transition, a scheduler.Service of this test's own
-// (testApp's own scheduler is disabled — see scheduledFireTimeout) scans
-// real Postgres, fires it, and the entity advances. The 200ms delay is
-// small; the 15s poll bound is generous (§11 "Time control": e2e covers
-// coarse happy-path firing, never exact thresholds).
+// TestE2E_ScheduledTransition_FiresThroughHTTPStack proves the scheduler
+// fires a no-criterion scheduled transition end-to-end through the full HTTP
+// stack (design §5.1/§5.2): create lands the entity in a state
+// with a scheduled transition, the scheduler of this test's own stack
+// claims it from real Postgres, fires it, and the entity advances. The
+// 200ms delay is small; the 15s poll bound is generous (§11 "Time control":
+// e2e covers coarse happy-path firing, never exact thresholds).
 func TestE2E_ScheduledTransition_FiresThroughHTTPStack(t *testing.T) {
-	const model = "e2e-scheduled-fires-http"
 	const delayMs = 200
-
-	wf := `{
+	h, s := newSchedulerHarness(t, nil)
+	model := uniq("e2e-scheduled-fires-http")
+	h.SetupModelWithWorkflow(t, model, `{
 		"importMode": "REPLACE",
 		"workflows": [{
 			"version": "1.1", "name": "sched-fires-wf", "initialState": "Open", "active": true,
@@ -262,20 +204,21 @@ func TestE2E_ScheduledTransition_FiresThroughHTTPStack(t *testing.T) {
 				"Closed": {}
 			}
 		}]
-	}`
-	setupModelWithWorkflow(t, model, wf)
-	startTestScheduler(t)
+	}`)
 
 	// The in-process server's engine reads this process's clock, so an instant
 	// taken before the create is at or before the engine's arm instant.
 	beforeCreate := time.Now().Truncate(time.Millisecond)
-	entityID := createEntityE2E(t, model, 1, `{"name":"Test Order","amount":100,"status":"draft"}`)
+	entityID, status, body := h.CreateEntity(t, model, 1, workflowSampleModel)
+	if status != http.StatusOK {
+		t.Fatalf("create: %d %s", status, body)
+	}
 
 	// The transition must be ARMED by the create, not fired inline. This is the
 	// load-independent form of "the entity rests in Open after creation": it
 	// asserts the scheduling decision itself rather than racing the 200ms delay
 	// against a state-read round-trip.
-	created := getSMAuditEventsWithLimit(t, entityID, 500)
+	created := schedEvents(t, h, entityID)
 	arms := smEventsOfType(created, "SCHEDULED_TRANSITION_ARM")
 	if len(arms) == 0 {
 		t.Fatalf("expected a SCHEDULED_TRANSITION_ARM audit event after creation (transition must be scheduled, not fired inline); got events: %+v", created)
@@ -284,29 +227,28 @@ func TestE2E_ScheduledTransition_FiresThroughHTTPStack(t *testing.T) {
 
 	// The delay was actually applied when arming — without this, a regression
 	// that armed for "now" would still satisfy every other assertion here (the
-	// scanner would fire it on its next tick, after scheduledFor). The fire time
-	// is the arm instant plus the delay, and the arm instant is no earlier than
-	// beforeCreate. The ARM event's own stamp is not a usable reference: it is
-	// taken after the scheduled-task write, which under load lags the arm
+	// scheduler would claim it on its next tick, after scheduledFor). The fire
+	// time is the arm instant plus the delay, and the arm instant is no earlier
+	// than beforeCreate. The ARM event's own stamp is not a usable reference: it
+	// is taken after the scheduled-task write, which under load lags the arm
 	// instant by tens or hundreds of milliseconds.
-	if min := beforeCreate.Add(time.Duration(delayMs) * time.Millisecond); scheduledFor.Before(min) {
+	if min := beforeCreate.Add(delayMs * time.Millisecond); scheduledFor.Before(min) {
 		t.Errorf("armed fire time %s is before %s, the create's start plus %dms — the delay was not applied",
 			scheduledFor.Format(time.RFC3339Nano), min.Format(time.RFC3339Nano), delayMs)
 	}
 
-	awaitEntityStateE2E(t, entityID, "Closed", scheduledFireTimeout)
+	awaitCallbackEntityState(t, h, entityID, "Closed", scheduledFireTimeout)
 
-	events := getSMAuditEvents(t, entityID)
-	if !hasSMEventType(events, "SCHEDULED_TRANSITION_FIRE", "Closed") {
-		t.Fatalf("expected a SCHEDULED_TRANSITION_FIRE audit event with state Closed; got events: %+v", events)
-	}
-
-	// The delay was honoured: the fire did not precede the armed fire time.
-	// Both instants come from the engine's own clock, so this is exact.
+	events := schedEvents(t, h, entityID)
 	fires := smEventsOfType(events, "SCHEDULED_TRANSITION_FIRE")
+	if len(fires) != 1 || !hasSMEventType(events, "SCHEDULED_TRANSITION_FIRE", "Closed") {
+		t.Fatalf("want exactly one SCHEDULED_TRANSITION_FIRE with state Closed; got events: %+v", events)
+	}
 	if firedAt := smEventTime(t, fires[0]); firedAt.Before(scheduledFor) {
-		t.Errorf("scheduled transition fired at %s, before its armed fire time %s — the %dms delay was not honoured",
-			firedAt.Format(time.RFC3339Nano), scheduledFor.Format(time.RFC3339Nano), delayMs)
+		t.Errorf("fired at %s, before its armed fire time %s", firedAt.Format(time.RFC3339Nano), scheduledFor.Format(time.RFC3339Nano))
+	}
+	if r, ok := s.task(t, entityID, "AutoClose"); ok {
+		t.Errorf("the fired task is still stored: %+v; spec §4 removes it", r)
 	}
 }
 
@@ -327,11 +269,12 @@ func TestE2E_ScheduledTransition_FiresThroughHTTPStack(t *testing.T) {
 // in force — is verified from the ARM events before the "did not fire"
 // assertion is trusted.
 func TestE2E_ScheduledTransition_LoopbackDefersTimer(t *testing.T) {
-	const model = "e2e-scheduled-loopback-defers"
 	const delayMs = 3000
 	const writes = 10
 	const cadence = 400 * time.Millisecond // busy window 4s > 3s delay
 
+	h, _ := newSchedulerHarness(t, nil)
+	model := uniq("e2e-scheduled-loopback-defers")
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
@@ -342,10 +285,12 @@ func TestE2E_ScheduledTransition_LoopbackDefersTimer(t *testing.T) {
 			}
 		}]
 	}`
-	setupModelWithWorkflow(t, model, wf)
-	startTestScheduler(t)
+	h.SetupModelWithWorkflow(t, model, wf)
 
-	entityID := createEntityE2E(t, model, 1, `{"name":"Test Order","amount":0,"status":"draft"}`)
+	entityID, status, body := h.CreateEntity(t, model, 1, `{"name":"Test Order","amount":0,"status":"draft"}`)
+	if status != http.StatusOK {
+		t.Fatalf("create: %d %s", status, body)
+	}
 
 	// Keep the entity busy with same-state, data-only loopback writes for a
 	// window that exceeds the delay. Each write re-arms the task further out,
@@ -354,8 +299,8 @@ func TestE2E_ScheduledTransition_LoopbackDefersTimer(t *testing.T) {
 	for i := 1; i <= writes; i++ {
 		time.Sleep(cadence)
 		payload := fmt.Sprintf(`{"name":"Test Order","amount":%d,"status":"draft"}`, i)
-		resp := doAuth(t, http.MethodPut, loopbackPath, payload)
-		body := readBody(t, resp)
+		resp := h.DoAuth(t, http.MethodPut, loopbackPath, payload, "")
+		body := h.readBody(t, resp)
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("loopback update #%d: expected 200, got %d: %s", i, resp.StatusCode, body)
 		}
@@ -364,7 +309,7 @@ func TestE2E_ScheduledTransition_LoopbackDefersTimer(t *testing.T) {
 	// Fetch the WHOLE history: each loopback write emits several StateMachine
 	// events, so the endpoint's default 20-item page would truncate the older
 	// ARM events and hide the first arm this test reasons about.
-	events := getSMAuditEventsWithLimit(t, entityID, 500)
+	events := schedEvents(t, h, entityID)
 	arms := smEventsOfType(events, "SCHEDULED_TRANSITION_ARM")
 
 	// The busy window must have outlasted the FIRST armed fire time, or the
@@ -395,42 +340,27 @@ func TestE2E_ScheduledTransition_LoopbackDefersTimer(t *testing.T) {
 	if hasSMEventType(events, "SCHEDULED_TRANSITION_FIRE", "") {
 		t.Errorf("expected no SCHEDULED_TRANSITION_FIRE event while the entity was kept busy; got events: %+v", events)
 	}
-	if s := getEntityState(t, entityID); s != "Open" {
+	if s, _ := h.GetEntityState(t, entityID); s != "Open" {
 		t.Errorf("expected entity to still be in Open while the timer kept getting deferred; got %q", s)
 	}
 
 	// Now stop updating and let the last-armed timer run out. Bounded,
 	// generous poll — not a bare sleep — detects the eventual fire.
-	awaitEntityStateE2E(t, entityID, "Closed", scheduledFireTimeout)
+	awaitCallbackEntityState(t, h, entityID, "Closed", scheduledFireTimeout)
 
-	events = getSMAuditEvents(t, entityID)
+	events = schedEvents(t, h, entityID)
 	if !hasSMEventType(events, "SCHEDULED_TRANSITION_FIRE", "Closed") {
 		t.Errorf("expected a SCHEDULED_TRANSITION_FIRE audit event with state Closed once the entity settled; got events: %+v", events)
 	}
 }
 
-// TestE2E_ScheduledTransition_RestartDurability exercises the strongest
-// durable-survival variant available in this shared-harness package.
-// testApp's own scheduler is disabled (see scheduledFireTimeout), so this
-// test:
-//  1. Arms a task via the shared production HTTP stack, then reads the
-//     scheduled_tasks row directly out of Postgres (design §5.1: the arm is
-//     atomic with the entity write) — proving the pending task is durable,
-//     persisted storage, not in-memory scheduler state, well before the
-//     delay elapses.
-//  2. Starts a brand-new scheduler.Service via startTestScheduler — zero
-//     prior state, wired only to the app's already-exported collaborators —
-//     the same shape a freshly restarted process's scheduler would take,
-//     reading only from the durable store (internal/scheduler's Deps godoc:
-//     "the scan loop calls factory.ScheduledTaskStore... fresh on each
-//     tick" — no cached in-memory task state to lose across restarts by
-//     design).
-//  3. Bounded-polls for the entity to reach the fired state and asserts the
-//     FIRE audit event.
+// TestE2E_ScheduledTransition_RestartDurability: a task armed by one pnode
+// process survives that process and is fired by the next one on the same
+// storage.
 func TestE2E_ScheduledTransition_RestartDurability(t *testing.T) {
-	const model = "e2e-scheduled-restart-durability"
-
-	wf := `{
+	first, s := newSchedulerHarness(t, func(cfg *app.Config) { cfg.Scheduler.Enabled = false })
+	model := uniq("e2e-scheduled-restart-durability")
+	first.SetupModelWithWorkflow(t, model, `{
 		"importMode": "REPLACE",
 		"workflows": [{
 			"version": "1.1", "name": "sched-restart-wf", "initialState": "Open", "active": true,
@@ -439,30 +369,25 @@ func TestE2E_ScheduledTransition_RestartDurability(t *testing.T) {
 				"Closed": {}
 			}
 		}]
-	}`
-	setupModelWithWorkflow(t, model, wf)
-
-	entityID := createEntityE2E(t, model, 1, `{"name":"Test Order","amount":100,"status":"draft"}`)
-
-	// 1: The armed task must already be durably persisted in Postgres, well
-	// before the 800ms delay elapses — proof it does not depend on any
-	// scheduler process's in-memory state.
-	rows := queryDB(t, "test-tenant",
-		"SELECT count(*) FROM scheduled_tasks WHERE entity_id = $1 AND source_state = $2 AND transition = $3",
-		entityID, "Open", "AutoClose")
-	if rows != 1 {
-		t.Fatalf("expected exactly one durably-persisted scheduled_tasks row for entity %s (source_state=Open, transition=AutoClose); found %d", entityID, rows)
+	}`)
+	entityID, status, body := first.CreateEntity(t, model, 1, workflowSampleModel)
+	if status != http.StatusOK {
+		t.Fatalf("create: %d %s", status, body)
+	}
+	if r, ok := s.task(t, entityID, "AutoClose"); !ok || r.Status != "WAITING" {
+		t.Fatalf("armed task = %+v present=%t; want a stored WAITING task before any scheduler ran", r, ok)
 	}
 
-	// 2: A brand-new scheduler.Service — the closest available proxy for "a
-	// freshly restarted process's scheduler" in this shared-app harness.
-	startTestScheduler(t)
+	// The first process goes away: its scheduler never ran, nothing of the
+	// task lives in its memory.
+	first.app.Shutdown()
+	if err := first.app.Close(); err != nil {
+		t.Fatalf("close the first stack: %v", err)
+	}
 
-	// 3: The durably-persisted task must still be discoverable and fireable.
-	awaitEntityStateE2E(t, entityID, "Closed", scheduledFireTimeout)
-
-	events := getSMAuditEvents(t, entityID)
-	if !hasSMEventType(events, "SCHEDULED_TRANSITION_FIRE", "Closed") {
-		t.Errorf("expected a SCHEDULED_TRANSITION_FIRE audit event with state Closed after the simulated-restart scheduler ran; got events: %+v", events)
+	second := newStackOn(t, s, nil)
+	awaitCallbackEntityState(t, second, entityID, "Closed", scheduledFireTimeout)
+	if !hasSMEventType(schedEvents(t, second, entityID), "SCHEDULED_TRANSITION_FIRE", "Closed") {
+		t.Error("the restarted stack fired the task without a SCHEDULED_TRANSITION_FIRE event")
 	}
 }

@@ -14,10 +14,10 @@ import (
 //
 // The transition is AUTOMATED (not manual): automated cascade commits its
 // transaction, so the audit event is durable. A manual-transition rejection
-// rolls back and its audit is intentionally not durable (see
-// TxBoundAuditFixture) — that shape is out of scope here. The criterion is
-// inline ("simple") rather than a FUNCTION criterion so this scenario needs
-// no compute node, and uses fixture.NewTenant rather than ComputeTenant.
+// rolls back, and its audit events roll back with it — that shape is out of
+// scope here. The criterion is inline ("simple") rather than a FUNCTION
+// criterion so this scenario needs no compute node, and uses
+// fixture.NewTenant rather than ComputeTenant.
 func RunCriterionReasonInlineDefault(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)

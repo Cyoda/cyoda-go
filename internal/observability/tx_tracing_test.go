@@ -16,6 +16,9 @@ type fakeTxManager struct {
 	commitCalled   bool
 	rollbackCalled bool
 	rollbackErr    error
+	lostRaceTxID   string
+	lostRace       bool
+	lostRaceErr    error
 }
 
 func (f *fakeTxManager) Begin(ctx context.Context) (string, context.Context, error) {
@@ -44,6 +47,30 @@ func (f *fakeTxManager) RollbackToSavepoint(ctx context.Context, txID string, sa
 }
 func (f *fakeTxManager) ReleaseSavepoint(ctx context.Context, txID string, savepointID string) error {
 	return nil
+}
+func (f *fakeTxManager) LostRace(ctx context.Context, txID string) (bool, error) {
+	f.lostRaceTxID = txID
+	return f.lostRace, f.lostRaceErr
+}
+
+// LostRace is answered by the wrapped manager, answer and error unchanged.
+func TestTracingTxManager_LostRaceDelegates(t *testing.T) {
+	shutdown, _ := observability.Init(context.Background(), "test", "node-test", true)
+	defer shutdown(context.Background())
+
+	inner := &fakeTxManager{lostRace: true}
+	traced := observability.NewTracingTransactionManager(inner, observability.Meter())
+	lost, err := traced.LostRace(context.Background(), "tx-9")
+	if err != nil || !lost || inner.lostRaceTxID != "tx-9" {
+		t.Fatalf("LostRace = (%v, %v), inner asked about %q; want (true, nil) for tx-9", lost, err, inner.lostRaceTxID)
+	}
+
+	wantErr := errors.New("tenant mismatch")
+	inner = &fakeTxManager{lostRaceErr: wantErr}
+	traced = observability.NewTracingTransactionManager(inner, observability.Meter())
+	if _, err := traced.LostRace(context.Background(), "tx-9"); !errors.Is(err, wantErr) {
+		t.Fatalf("LostRace error = %v, want %v", err, wantErr)
+	}
 }
 
 func TestTracingTxManager_DelegatesToInner(t *testing.T) {

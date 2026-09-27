@@ -37,6 +37,10 @@ func (u *Unimplemented) GetStateMachineFinishedEvent(w http.ResponseWriter, r *h
 	u.stub(w, r)
 }
 
+func (u *Unimplemented) ListScheduledTasks(w http.ResponseWriter, r *http.Request, params genapi.ListScheduledTasksParams) {
+	u.stub(w, r)
+}
+
 func (u *Unimplemented) ListTechnicalUsers(w http.ResponseWriter, r *http.Request) {
 	u.stub(w, r)
 }

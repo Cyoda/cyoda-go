@@ -309,7 +309,9 @@ func setupSearchTestWithTracer(t *testing.T, tracer pgx.QueryTracer) (*postgres.
 		t.Fatalf("migration failed: %v", err)
 	}
 	t.Cleanup(func() { _ = postgres.DropSchemaForTest(pool) })
-	return postgres.NewStoreFactory(pool), pool
+	f := postgres.NewStoreFactory(pool)
+	t.Cleanup(func() { postgres.CloseSchedulerPoolsForTest(f) })
+	return f, pool
 }
 
 // ---------------------------------------------------------------------------

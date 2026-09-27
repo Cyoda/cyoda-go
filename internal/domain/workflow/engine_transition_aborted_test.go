@@ -10,19 +10,20 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
-// TestManualTransitionWithIfMatch_CBDCascadeStaleEmitsTransitionAborted is the
-// Compensating-audit contract: when the engine's CBD first-segment
-// flush detects a stale IfMatch and aborts via ErrConflict, it MUST emit a
-// compensating TRANSITION_ABORTED audit event so downstream consumers see a
-// paired entry+abort sequence and can correlate the failure cleanly.
+// TestManualTransitionWithIfMatch_StaleEmitsTransitionAborted is the audit
+// contract of a stale If-Match: the engine records STATE_MACHINE_START, checks
+// the precondition, and records TRANSITION_ABORTED before it fails with
+// ErrConflict, so a reader inside the same transaction sees the paired
+// entry+abort sequence and nothing else — with reason=ENTITY_MODIFIED, the
+// supplied (stale) txID as expectedTxId, and the version the request starts
+// from as actualTxId.
 //
-// Without this event the audit log on memory/sqlite (audit emission is not
-// TX-bound) leaves orphan STATE_MACHINE_START / WORKFLOW_FOUND events with no
-// matching FINISH and no accompanying entity-version change. The post-fix
-// shape is: STATE_MACHINE_START + WORKFLOW_FOUND + TRANSITION_ABORTED with
-// reason=ENTITY_MODIFIED, and the abort event references the supplied
-// (stale) txID as expectedTxId and the entity's actual txID as actualTxId.
-func TestManualTransitionWithIfMatch_CBDCascadeStaleEmitsTransitionAborted(t *testing.T) {
+// Audit events are bound to the transaction on every backend: once the
+// transaction rolls back, every event it recorded — entry and compensating
+// abort alike — is gone. So this test reads the events THROUGH cCtx (the
+// aborted transaction) before rolling it back, asserts the paired shape and
+// payload there, then rolls back and asserts nothing of it survives.
+func TestManualTransitionWithIfMatch_StaleEmitsTransitionAborted(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
@@ -85,7 +86,7 @@ func TestManualTransitionWithIfMatch_CBDCascadeStaleEmitsTransitionAborted(t *te
 	}
 
 	const stale = "tx-that-never-existed"
-	_, err = engine.ManualTransitionWithIfMatch(cCtx, entity, "go", stale)
+	_, err = engine.ManualTransitionWithIfMatch(cCtx, entity, "go", IfMatch{Expected: stale, Current: seedTxID})
 	if err == nil {
 		t.Fatalf("expected error on stale IfMatch, got nil")
 	}
@@ -93,38 +94,28 @@ func TestManualTransitionWithIfMatch_CBDCascadeStaleEmitsTransitionAborted(t *te
 		t.Fatalf("expected errors.Is(err, spi.ErrConflict); got %v", err)
 	}
 
-	_ = txMgr.Rollback(cCtx, cTxID)
-
 	auditStore, err := factory.StateMachineAuditStore(ctx)
 	if err != nil {
 		t.Fatalf("StateMachineAuditStore: %v", err)
 	}
-	events, err := auditStore.GetEvents(ctx, "ifmatch-aborted-1")
+
+	// Read THROUGH the aborted transaction, before it rolls back: the store
+	// stages events recorded on cCtx and makes them visible to a read on the
+	// same transaction, so this is where the paired entry+abort shape and
+	// the abort payload are observable.
+	events, err := auditStore.GetEvents(cCtx, "ifmatch-aborted-1")
 	if err != nil {
-		t.Fatalf("GetEvents: %v", err)
+		t.Fatalf("GetEvents (in tx): %v", err)
 	}
 
-	var sawStart, sawAbort bool
-	var abortEv spi.StateMachineEvent
-	for _, ev := range events {
-		switch ev.EventType {
-		case spi.SMEventStarted:
-			sawStart = true
-		case SMEventTransitionAborted:
-			sawAbort = true
-			abortEv = ev
-		}
+	if len(events) != 2 || events[0].EventType != spi.SMEventStarted || events[1].EventType != SMEventTransitionAborted {
+		t.Fatalf("events = %v; want exactly STATE_MACHINE_START then TRANSITION_ABORTED", events)
 	}
-	if !sawStart {
-		t.Errorf("expected STATE_MACHINE_START before abort; got events: %v", events)
-	}
-	if !sawAbort {
-		t.Fatalf("expected TRANSITION_ABORTED event after stale-ifMatch abort; got events: %v", events)
-	}
+	abortEv := events[1]
 
 	// The abort event's data MUST carry reason=ENTITY_MODIFIED, the supplied
 	// (stale) txID as expectedTxId, and the entity's actual txID as actualTxId
-	// (here the seedTxID is the row's current transactionId).
+	// (here seedTxID, the version the request starts from).
 	if reason, _ := abortEv.Data["reason"].(string); reason != "ENTITY_MODIFIED" {
 		t.Errorf("abort event reason = %q; want ENTITY_MODIFIED", reason)
 	}
@@ -136,5 +127,18 @@ func TestManualTransitionWithIfMatch_CBDCascadeStaleEmitsTransitionAborted(t *te
 	}
 	if abortEv.Data["transitionName"] != "go" {
 		t.Errorf("abort event transitionName = %v; want \"go\"", abortEv.Data["transitionName"])
+	}
+
+	// Audit events are bound to the transaction on every backend: once it
+	// rolls back, both the entry events and the compensating abort event are
+	// gone, on every backend equally.
+	_ = txMgr.Rollback(cCtx, cTxID)
+
+	postEvents, err := auditStore.GetEvents(ctx, "ifmatch-aborted-1")
+	if err != nil {
+		t.Fatalf("GetEvents (post-rollback): %v", err)
+	}
+	if len(postEvents) != 0 {
+		t.Errorf("rolled-back cascade left %d audit event(s); want 0: %+v", len(postEvents), postEvents)
 	}
 }

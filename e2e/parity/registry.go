@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 292 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 297 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -540,6 +540,12 @@ var allTests = []NamedTest{
 	// tie-break — set+pairwise-key assertions, no cross-engine sequence
 	// compare (see async_ordering.go's doc comment).
 	{"AsyncOrderingRespected", RunAsyncOrderingRespected},
+
+	// GET /scheduled-tasks: paging, filters and tenant isolation of the
+	// scheduled-task query.
+	{"ScheduledTasksQueryPaging", RunScheduledTasksQueryPaging},
+	{"ScheduledTasksQueryFilters", RunScheduledTasksQueryFilters},
+	{"ScheduledTasksQueryTenantIsolation", RunScheduledTasksQueryTenantIsolation},
 }
 
 // Register appends additional NamedTests to the canonical list at init time.

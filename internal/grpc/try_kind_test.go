@@ -16,7 +16,7 @@ import (
 
 // kindOf runs one try and returns what it produced.
 func kindOf(d *ProcessorDispatcher, ctx context.Context, member *Member, call Callout) (*contract.CalloutFailure, error) {
-	_, failure, ctxErr := d.dispatchCalloutToMember(ctx, member, call, "")
+	_, failure, _, ctxErr := d.dispatchCalloutToMember(ctx, member, call, "")
 	return failure, ctxErr
 }
 

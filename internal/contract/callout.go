@@ -100,3 +100,25 @@ func (f *CalloutFailure) Error() string {
 }
 
 func (f *CalloutFailure) Unwrap() error { return f.Err }
+
+// NoHandOffProof marks a callout error that proves the work never reached a
+// compute node. No try had Member.Send return nil. No hand-over to a peer got
+// past connecting, unless the peer's authenticated answer was no_handoff to a
+// callout that is not repeat-safe. Only the owner's callout loop attaches it.
+// Its absence proves nothing: an error without it may have followed a
+// hand-off.
+//
+// It changes nothing a reader of the error sees: Error is the wrapped error's
+// text, and Unwrap exposes it to errors.Is and errors.As.
+type NoHandOffProof struct{ Err error }
+
+func (p *NoHandOffProof) Error() string { return p.Err.Error() }
+
+func (p *NoHandOffProof) Unwrap() error { return p.Err }
+
+// ProvesNoHandOff reports whether err carries a NoHandOffProof anywhere on its
+// chain.
+func ProvesNoHandOff(err error) bool {
+	var proof *NoHandOffProof
+	return errors.As(err, &proof)
+}

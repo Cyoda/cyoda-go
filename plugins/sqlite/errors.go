@@ -65,3 +65,22 @@ func classifyError(err error) error {
 
 	return err
 }
+
+// classifyRejection marks a deterministic SQLite rejection of a write — a
+// constraint, a value too big, a type mismatch, a bind out of range — with
+// spi.ErrStoreRejected: retrying it cannot succeed, and the scheduler latches
+// the node on it. Every other error (BUSY, I/O, a closed database, a
+// cancelled context) passes through unchanged and is retried. The original
+// error stays in the chain. Used on every scheduled-task write and on every
+// audit-event insert.
+func classifyRejection(err error) error {
+	if err == nil {
+		return nil
+	}
+	for _, code := range []sqlite3.ErrorCode{sqlite3.CONSTRAINT, sqlite3.TOOBIG, sqlite3.MISMATCH, sqlite3.RANGE} {
+		if errors.Is(err, code) {
+			return fmt.Errorf("%w: %w", spi.ErrStoreRejected, err)
+		}
+	}
+	return err
+}

@@ -119,7 +119,6 @@ func defaultFor(c app.Config) map[string]string {
 		"CYODA_PROXY_TIMEOUT":            renderDuration(c.Cluster.ProxyTimeout),
 		"CYODA_DISPATCH_WAIT_TIMEOUT":    renderDuration(c.Cluster.DispatchWaitTimeout),
 		"CYODA_DISPATCH_CONNECT_TIMEOUT": renderDuration(c.Cluster.DispatchConnectTimeout),
-		"CYODA_DISPATCH_FORWARD_TIMEOUT": renderDuration(c.Cluster.DispatchForwardTimeout),
 		"CYODA_KEEPALIVE_INTERVAL":       strconv.Itoa(c.GRPC.KeepAliveInterval),
 		"CYODA_KEEPALIVE_TIMEOUT":        strconv.Itoa(c.GRPC.KeepAliveTimeout),
 
@@ -167,13 +166,16 @@ func defaultFor(c app.Config) map[string]string {
 		"CYODA_CALLOUT_PASS_ALLOWANCE":            renderDuration(c.Callout.PassAllowance),
 
 		// --- scheduler ---
-		"CYODA_SCHEDULER_ENABLED":            strconv.FormatBool(c.Scheduler.Enabled),
-		"CYODA_SCHEDULER_SCAN_INTERVAL":      renderDuration(c.Scheduler.ScanInterval),
-		"CYODA_SCHEDULER_BATCH_SIZE":         strconv.Itoa(c.Scheduler.BatchSize),
-		"CYODA_SCHEDULER_DISTRIBUTION":       c.Scheduler.Distribution,
-		"CYODA_SCHEDULER_COORDINATOR":        c.Scheduler.Coordinator,
-		"CYODA_SCHEDULER_REDISPATCH_BACKOFF": renderDuration(c.Scheduler.RedispatchBackoff),
-		"CYODA_SCHEDULER_EXPIRY_GRACE":       renderDuration(c.Scheduler.ExpiryGrace),
+		"CYODA_SCHEDULER_ENABLED":             strconv.FormatBool(c.Scheduler.Enabled),
+		"CYODA_SCHEDULER_SCAN_INTERVAL":       renderDuration(c.Scheduler.ScanInterval),
+		"CYODA_SCHEDULER_MAX_RUNS":            strconv.Itoa(c.Scheduler.MaxRuns),
+		"CYODA_SCHEDULER_MAX_RUNS_PER_TENANT": strconv.Itoa(c.Scheduler.MaxRunsPerTenant),
+		"CYODA_SCHEDULER_HEARTBEAT_INTERVAL":  renderDuration(c.Scheduler.HeartbeatInterval),
+		"CYODA_SCHEDULER_STALE_AFTER":         renderDuration(c.Scheduler.StaleAfter),
+		"CYODA_SCHEDULER_MAX_LOST_OWNERS":     strconv.Itoa(c.Scheduler.MaxLostOwners),
+		"CYODA_SCHEDULER_RETRY_DELAY":         renderDuration(c.Scheduler.RetryDelay),
+		"CYODA_SCHEDULER_RETRY_DELAY_MAX":     renderDuration(c.Scheduler.RetryDelayMax),
+		"CYODA_SCHEDULER_SHUTDOWN_DRAIN":      renderDuration(c.Scheduler.ShutdownDrain),
 	}
 }
 

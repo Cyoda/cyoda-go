@@ -49,9 +49,20 @@ type dispatcher struct {
 	sendMu sync.Mutex
 
 	// held are the callouts a late-callback client took and has not yet
-	// called back for.
-	heldMu sync.Mutex
-	held   []heldCallout
+	// called back for. heldWork is the work a hold client took and answers on
+	// release; stream is where those answers go. All three are guarded by
+	// heldMu.
+	heldMu   sync.Mutex
+	held     []heldCallout
+	heldWork []heldWork
+	stream   grpc.BidiStreamingClient[cepb.CloudEvent, cepb.CloudEvent]
+}
+
+// heldWork is one request a hold client took and has not answered yet.
+type heldWork struct {
+	msg     *cepb.CloudEvent
+	payload json.RawMessage
+	pass    string
 }
 
 // heldCallout is a callout whose pass is kept, in memory only, for a late callback.
@@ -87,6 +98,36 @@ func (d *dispatcher) takeHeld() []heldCallout {
 	held := d.held
 	d.held = nil
 	return held
+}
+
+// holdWork keeps one request a hold client took, to answer on release.
+func (d *dispatcher) holdWork(w heldWork) {
+	d.heldMu.Lock()
+	defer d.heldMu.Unlock()
+	d.heldWork = append(d.heldWork, w)
+}
+
+// takeHeldWork returns the held work and forgets it.
+func (d *dispatcher) takeHeldWork() []heldWork {
+	d.heldMu.Lock()
+	defer d.heldMu.Unlock()
+	work := d.heldWork
+	d.heldWork = nil
+	return work
+}
+
+// setStream records the stream released answers are sent on.
+func (d *dispatcher) setStream(stream grpc.BidiStreamingClient[cepb.CloudEvent, cepb.CloudEvent]) {
+	d.heldMu.Lock()
+	defer d.heldMu.Unlock()
+	d.stream = stream
+}
+
+// currentStream returns the stream released answers are sent on, nil before run.
+func (d *dispatcher) currentStream() grpc.BidiStreamingClient[cepb.CloudEvent, cepb.CloudEvent] {
+	d.heldMu.Lock()
+	defer d.heldMu.Unlock()
+	return d.stream
 }
 
 // joinPayload is the join event's payload.
@@ -163,6 +204,7 @@ func (d *dispatcher) connect(ctx context.Context) (grpc.BidiStreamingClient[cepb
 func (d *dispatcher) run(ctx context.Context, stream grpc.BidiStreamingClient[cepb.CloudEvent, cepb.CloudEvent]) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	d.setStream(stream)
 
 	// Start keep-alive goroutine.
 	go d.keepAliveLoop(ctx, stream)
@@ -268,6 +310,9 @@ func (d *dispatcher) handleCallout(ctx context.Context, msg *cepb.CloudEvent, pa
 		hc.cfg = cfg
 		d.hold(hc)
 		return nil, false, nil
+	case behaviourHold:
+		d.holdWork(heldWork{msg: msg, payload: payload, pass: pass})
+		return nil, false, nil
 	case behaviourFail, behaviourFailRetryable:
 		var verdict *bool
 		if d.behaviour == behaviourFailRetryable {
@@ -288,26 +333,43 @@ func (d *dispatcher) handleCallout(ctx context.Context, msg *cepb.CloudEvent, pa
 		return reply, false, err
 	}
 
-	var reply *cepb.CloudEvent
-	var err error
-	switch msg.Type {
-	case ceTypeCriteriaRequest:
-		reply, err = d.handleCriteriaRequest(ctx, payload, pass)
-	case ceTypeFunctionRequest:
-		reply, err = d.handleFunctionRequest(ctx, payload, pass)
-	default:
-		// authtype carries the executor's principal kind; processors see it as
-		// Entity.AuthType.
-		reply, err = d.handleProcessorRequest(ctx, payload, pass, authTypeFromCloudEvent(msg))
-	}
+	reply, err := d.answer(ctx, msg, payload, pass)
 	return reply, false, err
 }
 
-// release makes the late callback for every held callout and records what
-// each door answered.
+// answer serves one request from the catalog.
+func (d *dispatcher) answer(ctx context.Context, msg *cepb.CloudEvent, payload json.RawMessage, pass string) (*cepb.CloudEvent, error) {
+	switch msg.Type {
+	case ceTypeCriteriaRequest:
+		return d.handleCriteriaRequest(ctx, payload, pass)
+	case ceTypeFunctionRequest:
+		return d.handleFunctionRequest(ctx, payload, pass)
+	default:
+		// authtype carries the executor's principal kind; processors see it as
+		// Entity.AuthType.
+		return d.handleProcessorRequest(ctx, payload, pass, authTypeFromCloudEvent(msg))
+	}
+}
+
+// release makes the late callback for every held callout, records what each
+// door answered, and answers every request a hold client took. Held work
+// exists only once run has recorded the stream, so the stream is set here.
 func (d *dispatcher) release(ctx context.Context) {
 	for _, hc := range d.takeHeld() {
 		d.rec.setCallback(hc.seq, d.lateCallback(ctx, hc))
+	}
+	stream := d.currentStream()
+	for _, w := range d.takeHeldWork() {
+		reply, err := d.answer(ctx, w.msg, w.payload, w.pass)
+		if err != nil {
+			slog.Error("held request could not be answered", "pkg", "compute-test-client", "error", err)
+			continue
+		}
+		if err := d.send(stream, reply); err != nil {
+			// The pnode this client was attached to may be gone; the record
+			// of what was received is what a scenario reads.
+			slog.Warn("held answer not delivered", "pkg", "compute-test-client", "error", err)
+		}
 	}
 }
 

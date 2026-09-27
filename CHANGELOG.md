@@ -6,6 +6,40 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **Model and workflow administration never runs inside a transaction.** A
+  request carrying a transaction token — the `X-Tx-Token` header a compute
+  member echoes on a callback — was joined to that transaction on every
+  route, so a processor could import a workflow, or import, lock, unlock,
+  delete, change the level of or set the unique keys of a model, inside the
+  running transition's transaction; over gRPC, `entityModelManage` ignored
+  the `tx-token` metadata and ran the change in a transaction of its own.
+  Each of those requests is now refused when it carries a token, with the
+  new `400 MODEL_ADMIN_IN_JOINED_TRANSACTION` (not retryable): on HTTP by
+  the node that receives the request, before the token is verified — so in
+  a cluster before the request would be routed to the transaction's owner,
+  and in the join layer before any transaction lock is taken — and nothing
+  is read or written; on gRPC in the request's own response envelope. The read-only model and workflow operations are
+  unaffected, and every entity operation still joins. A workflow import
+  therefore always owns its transaction: the joined-import case — its
+  removal of unscheduled tasks running unretried in the owner's transaction
+  — is gone from the import's `409 CONFLICT`. A compute member that needs to
+  administer a model makes the request without the token. See
+  `cyoda help errors MODEL_ADMIN_IN_JOINED_TRANSACTION` and
+  `docs/cloud-parity/model-administration-not-joined.md`.
+
+- **Workflow import refuses a `schedule.delayMs` sent beside a
+  `schedule.function`, whatever its value.** `TransitionScheduleDto`
+  publishes `delayMs` as `minimum: 1` and mutually exclusive with
+  `function`, but import accepted `"delayMs": 0` and `"delayMs": null`
+  beside a function and ignored them: the decoded delay is a plain integer,
+  so a sent `0` or `null` looked the same as an omitted field. Import now
+  reads the raw request and answers `400 VALIDATION_FAILED`, naming the
+  workflow, state and transition. The v0.8.3 and v0.8.4 exporters wrote
+  `"delayMs": 0` beside every `function`, so their exports no longer import
+  unchanged: remove the `delayMs` field and import again. Recorded as a
+  tightening of schema 1.5 in `docs/workflow-schema-versioning.md`; no
+  workflow schema version change. See `cyoda help workflows`.
+
 - **The per-tenant trusted-key cap counts every key that can verify.** It
   counted only active keys, so a key in its grace period after invalidation
   — which now verifies until its `validTo` — took no slot, and repeated
@@ -175,15 +209,6 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   still given up for the length of any callout the callback itself makes.
   See `docs/cloud-parity/callout-failover.md`.
 
-- **`CYODA_DISPATCH_FORWARD_TIMEOUT` no longer governs handing a callout to
-  another node.** Opening the connection is bounded by the new
-  `CYODA_DISPATCH_CONNECT_TIMEOUT` (default `2s`); the wait for the answer
-  follows from the callout's tries left and answer limit plus
-  `CYODA_CALLOUT_HANDOVER_ALLOWANCE`. A value set to bound a hand-over bounds
-  nothing now — the allowance is the setting that does. The variable keeps its
-  name and meaning for the node-to-node call that delegates a scheduled
-  transition.
-
 - **Every node of a cluster must run this version, and every node needs its own
   `CYODA_NODE_ID`.** The message by which one node hands a callout to another
   changed: requests are bound to their direction and to the id of the node they
@@ -193,13 +218,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   names itself — so a hand-over opens only on the node it was meant for, and two
   nodes sharing one id would open each other's. The entity's payload travels
   base64-encoded, byte for byte in both directions, so that what a compute member
-  is handed and what the platform persists are the bytes the store holds. The node-to-node call that
-  delegates a scheduled transition travels in the same envelope and changed with
-  it. A mixed-version cluster can therefore neither hand a callout over nor
-  forward a scheduled transition: a node of this version treats an answer it
-  cannot authenticate as lost, and an older node cannot read what this one
-  sends. Stop the cluster to upgrade it; there is no rolling upgrade across this
-  change. See `docs/cloud-parity/callout-failover.md`.
+  is handed and what the platform persists are the bytes the store holds. A
+  mixed-version cluster cannot hand a callout over: a node of this version
+  treats an answer it cannot authenticate as lost, and an older node cannot read
+  what this one sends. Stop the cluster to upgrade it; there is no rolling
+  upgrade across this change. A node of an earlier version also fires scheduled
+  tasks without claiming them, so in a mixed cluster a task can run twice. See
+  `docs/cloud-parity/callout-failover.md` and
+  `docs/cloud-parity/scheduled-transitions.md`.
 
 - **A node whose identity does not fit the cluster's membership metadata refuses
   to start.** The metadata carries `CYODA_NODE_ID`, `CYODA_NODE_ADDR` and
@@ -226,6 +252,144 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   read as offset 0, restarting the walk from the first page. There are no
   production instances, so no cursor issued before this change needs to
   keep working. See `cyoda help audit`.
+
+- **Every scheduled run has one owner, and the scheduler never runs a processor
+  twice unless it is declared `idempotent`.** Every node claims due scheduled
+  transitions from storage and runs them itself. A claimed task has one owner at
+  a time, every write of the run is checked against that claim, and another node
+  takes a task over only after the owner's heartbeats have stopped for
+  `CYODA_SCHEDULER_STALE_AFTER` (default `2m`). Before, one node scanned and
+  handed tasks round robin to its peers, and a task still running after 30
+  seconds was started a second time, so its processors could run twice. Now,
+  before a processor that is not declared `idempotent` is sent to a compute
+  member, the owner marks the task; if that processor may have reached a member
+  and the run does not commit, the task ends `FAILED` and is not run again. A
+  run that failed with nothing unsafe handed off is retried, with a delay that
+  doubles from `CYODA_SCHEDULER_RETRY_DELAY` (`30s`) up to
+  `CYODA_SCHEDULER_RETRY_DELAY_MAX` (`15m`), until the transition's `timeoutMs`
+  passes, or without end when it has none. **A scheduled processor that is safe
+  to repeat must now declare `idempotent: true` to be retried.** See
+  `cyoda help workflows` and `docs/cloud-parity/scheduled-transitions.md`.
+
+- **A scheduled task can end `FAILED`, and a failed task never moves its
+  entity.** The reasons are `UNSAFE_WORK_NOT_COMPLETED`,
+  `STOPPED_AFTER_PARTIAL_COMMIT`, `EXPIRED_AFTER_FAILED_ATTEMPTS`,
+  `OWNER_LOST_REPEATEDLY` (after `CYODA_SCHEDULER_MAX_LOST_OWNERS`, default `3`)
+  and `RUN_PANICKED`. A `FAILED` task is kept, listed by the new
+  `GET /scheduled-tasks` (see Added), counted in `cyoda.scheduler.runs`, logged
+  at ERROR with a ticket, and recorded on the entity as the new audit event
+  `SCHEDULED_TRANSITION_FAIL`. An entity write in the source state arms it
+  afresh; leaving the state, a workflow import that stops scheduling it, or
+  deleting the entity removes it. Lateness changes with it: a task picked up
+  after its deadline on its first attempt is still expired
+  (`SCHEDULED_TRANSITION_EXPIRE`), but one that had already failed or lost an
+  owner now ends `FAILED` (`EXPIRED_AFTER_FAILED_ATTEMPTS`) instead of being
+  dropped, and the grace band above `timeoutMs` is gone. A client that reads the
+  audit event type must accept the new value. See
+  `docs/cloud-parity/scheduled-transitions.md`.
+
+- **One scheduled transition of an entity runs at a time.** While one of an
+  entity's scheduled transitions is running, its others are not claimed; they
+  run after it ends. See `cyoda help workflows` and `docs/plugins/POSTGRES.md`.
+
+- **Entity writes, deletes and workflow imports remove scheduled tasks, and can
+  answer a retryable `409 CONFLICT` when they race the scheduler.** A write that
+  re-binds an entity to a workflow that does not schedule a pending transition
+  now removes the task at the write, recorded as `SCHEDULED_TRANSITION_CANCEL`;
+  before, the task stayed until it came due. Deleting entities removes their
+  tasks in the same transaction, and a workflow import removes the model's tasks
+  that no workflow schedules any more. When the scheduler has written one of
+  those task rows after the client's write began, the write fails with a
+  retryable `409 CONFLICT` — the answer a write racing the fire itself already
+  got. Deletes and imports retry on the server three times first; a batched
+  conditional delete reports the conflict per entity instead of `409`. Two
+  operations can now answer `409` and declare it:
+  `DELETE /entity/{entityId}` and
+  `POST /model/{entityName}/{modelVersion}/workflow/import`; repeating the same
+  import completes it. The conditional and delete-all
+  `DELETE /entity/{entityName}/{modelVersion}` can now answer `CONFLICT` under
+  its existing `409`, which before was only `DELETE_NOT_CONVERGED`. See
+  `cyoda help errors CONFLICT` and
+  `docs/cloud-parity/scheduled-transitions.md`.
+
+- **A write race lost inside a transaction answers a retryable `409 CONFLICT`,
+  whatever the transaction did after it, on every backend.** On PostgreSQL a
+  statement that loses a write race (serialization failure or deadlock) aborts
+  the transaction, and every later statement in it is refused. Those later
+  refusals were read as faults of their own: a ticketed `500`; a
+  `400 WORKFLOW_FAILED` when a processor's joined callback had lost the race and
+  the processor then failed on it; or `412 ENTITY_MODIFIED` when the statement
+  that met the aborted transaction was the engine's `If-Match` compare. Each is
+  now the retryable `409 CONFLICT` — after a failed processor the engine probes
+  the transaction to tell the two apart — and so it is inside an `ASYNC_NEW_TX`
+  processor. `412` is kept for a request whose own `If-Match` precondition does
+  not hold. Memory and SQLite, which find a lost race only at commit, answered
+  `400 WORKFLOW_FAILED` when a `SYNC`, `ASYNC_SAME_TX` or
+  `COMMIT_BEFORE_DISPATCH` (`startNewTxOnDispatch`) processor failed after its
+  joined callback's write had lost a race; they now answer the same `409`. The
+  engine asks the new required SPI method `TransactionManager.LostRace` after a
+  failed dispatch, and keeps the processor's failure attached to the error.
+  Needs the matching cyoda-go-spi release: new `ScheduledTaskStore` contract,
+  `TransactionManager.LostRace`, fenced `AsyncSearchStore.ClearResults`,
+  `ErrTaskBusy`/`ErrStaleClaim`/`ErrMarkedByAnotherClaim` (`ErrStaleClaim`
+  existed; the scheduled-task store and `ClearResults` now return it too).
+  Rolling back an `ASYNC_NEW_TX` processor's savepoint no longer
+  forgets a race that a write inside it had already lost, to an entity or to a
+  scheduled task's row: the transaction fails with the same `409`, even when
+  the processor then failed and its savepoint was rolled back, where before it
+  committed — on PostgreSQL, memory and SQLite alike. A write that another
+  transaction commits after the rollback does not conflict. A client that took
+  those `500`, `400` and `412` answers as final should retry on the `409`. See
+  `cyoda help errors CONFLICT` and `cyoda help workflows`.
+
+- **`If-Match` states the version an update starts from, and is checked once,
+  when the update's transition starts.** This holds on `PUT` and `PATCH` of
+  one entity, for each item of a collection `PUT` and for the gRPC
+  `EntityPatchRequest`. The server compares the value with the entity as the
+  update's transaction reads it, before any criterion or processor runs. A
+  write to the entity later in the same transaction no longer fails it: an
+  update whose processor wrote the entity through a callback that joined the
+  transaction answered `412 ENTITY_MODIFIED` on every backend, although
+  nobody else had written the entity; it now succeeds and keeps that write. A
+  change that another transaction commits after the update's read is a lost
+  race and answers the retryable `409 CONFLICT` on every backend, where it
+  could answer `412` before; a collection with such an item now fails whole
+  with `409` instead of listing the item in `failed[]`. A stale `If-Match`
+  on a collection item now keeps `STATE_MACHINE_START` and
+  `TRANSITION_ABORTED` in the audit log and none of the transition's other
+  audit events; on the single-update doors the transaction rolls back and
+  keeps no event, as before. See `cyoda help errors ENTITY_MODIFIED`
+  and `docs/cloud-parity/entity-if-match.md`.
+
+- **Scheduler settings are replaced.** No longer read:
+  `CYODA_SCHEDULER_DISTRIBUTION`, `CYODA_SCHEDULER_COORDINATOR`,
+  `CYODA_SCHEDULER_REDISPATCH_BACKOFF`, `CYODA_SCHEDULER_BATCH_SIZE`,
+  `CYODA_SCHEDULER_EXPIRY_GRACE` and `CYODA_DISPATCH_FORWARD_TIMEOUT` (the
+  node-to-node call that delegated a scheduled transition is gone). New:
+  `CYODA_SCHEDULER_MAX_RUNS` (`8`), `CYODA_SCHEDULER_MAX_RUNS_PER_TENANT` (`4`),
+  `CYODA_SCHEDULER_HEARTBEAT_INTERVAL` (`15s`), `CYODA_SCHEDULER_STALE_AFTER`
+  (`2m`, at least `50s + 3 ×` the heartbeat interval, the same on every node),
+  `CYODA_SCHEDULER_MAX_LOST_OWNERS` (`3`), `CYODA_SCHEDULER_RETRY_DELAY`
+  (`30s`), `CYODA_SCHEDULER_RETRY_DELAY_MAX` (`15m`),
+  `CYODA_SCHEDULER_SHUTDOWN_DRAIN` (`20s`) and, on PostgreSQL,
+  `CYODA_POSTGRES_SCHEDULER_CONNS` (`10`, at least `2`) — a second pool, so a
+  node uses up to eleven more connections. `CYODA_SCHEDULER_SCAN_INTERVAL` must
+  now be `> 0`. An invalid value fails startup. See
+  `cyoda help config scheduler`.
+
+- **A node can take more than six minutes to shut down, and the Helm chart
+  gives it 390 seconds.** On a signal the scheduler drains its runs before the
+  servers drain, and a run with a processor in flight that is not declared
+  `idempotent` is allowed to finish rather than be cut and end `FAILED`. The
+  worst case from signal to exit is
+  `max(CYODA_SCHEDULER_SHUTDOWN_DRAIN + 10s, callout deadline) + 100s`, where
+  the callout deadline is `(1 + CYODA_RETRY_FIXED_NUM_RETRIES) ×
+  CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS + CYODA_DISPATCH_WAIT_TIMEOUT +
+  CYODA_CALLOUT_HANDOVER_ALLOWANCE` — 375 s at the defaults, and 130 s when no
+  such processor is in flight. The chart (`0.9.0`) sets
+  `terminationGracePeriodSeconds: 390`, where Kubernetes' default is 30. Raise
+  it when you raise those settings. See `cyoda help run` and
+  `cyoda help helm`.
 
 ### Added
 
@@ -262,9 +426,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `CYODA_DISPATCH_CONNECT_TIMEOUT` (default `2s`),
   `CYODA_CALLOUT_HANDOVER_ALLOWANCE` (default `30s`) and
   `CYODA_CALLOUT_PASS_ALLOWANCE` (default `30s`). Out-of-range values are
-  startup errors. `CYODA_DISPATCH_WAIT_TIMEOUT` and
-  `CYODA_DISPATCH_FORWARD_TIMEOUT` are validated for the first time (negative,
-  respectively non-positive, values now fail startup). See
+  startup errors. `CYODA_DISPATCH_WAIT_TIMEOUT` is validated for the first time
+  (a negative value now fails startup). See
   `cyoda help config grpc` and `cyoda help config cluster`.
 
 - **Workflow schema 1.5.** `idempotent` (boolean, default false) on a
@@ -280,6 +443,31 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `cyoda.cluster.tags.lists_outstanding`; and the span attributes
   `callout.tries`, `callout.handover` and `callout.waited_ms`. None of them
   carries a tenant, a callout, a member or a node. See `cyoda help telemetry`.
+
+- **`GET /scheduled-tasks` lists the tenant's scheduled tasks.** Filters:
+  `status` (repeatable: `WAITING`, `RUNNING`, `FAILED`), `modelName` with an
+  optional `modelVersion`, and `entityId`; ordered by scheduled time, paged by
+  an opaque `cursor` with `limit` 1–1000 (default 20). Each item gives the
+  task's status, times, attempts, lost owners, last error and, for a `FAILED`
+  task, its reason. Any authenticated user of the tenant may call it; there is
+  no gRPC counterpart. The last error is client-safe text: a run that lost a
+  write race reads `CONFLICT: a concurrent write changed the entity or its
+  task`, and one that found its task row held by another transaction reads
+  `CONFLICT: the task is being written by another transaction` — a retried
+  conflict, not an internal error with a ticket. A task is not armed with a
+  fire time, or an expiry, outside the years `0000`–`9999`, which an RFC 3339
+  timestamp cannot carry: a `Schedule` Function result that overflows or
+  falls outside that range fails with the existing
+  `500 SCHEDULE_FUNCTION_INVALID_RESULT`, and a static `delayMs` or
+  `timeoutMs` that does the same fails the write. See
+  `cyoda help scheduled-tasks`.
+
+- **Six scheduler instruments.** `cyoda.scheduler.runs` and
+  `cyoda.scheduler.run.duration` (by `outcome`),
+  `cyoda.scheduler.runs.in_progress`, `cyoda.scheduler.claims` (by `reason`:
+  `due`, `owner_lost`), `cyoda.scheduler.heartbeat.failures` and
+  `cyoda.scheduler.bookkeeping.retries`; and a `scheduler.run` span. None
+  carries a tenant. See `cyoda help telemetry`.
 
 - **`ENTITY_MODEL_MISMATCH` (`400`).** An entity's model reference — its
   model name and version — is fixed at creation and never changes for the
@@ -380,6 +568,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   be told apart. See `cyoda help audit`.
 
 ### Changed
+
+- **PostgreSQL migration `000015` and SQLite `000010`: `search_jobs.point_in_time`
+  is `NOT NULL`.** Every search job has a point in time and the stores have
+  always written one; the column was declared nullable on a mistaken note that
+  it was optional. The database now refuses a row without it. SQLite rebuilds
+  the table for the change, inside the migration's transaction; the SQLite
+  store also stops mapping a zero `PointInTime` to `NULL` and persists the
+  instant as PostgreSQL always has.
 
 - **A client that goes away mid-request is logged at DEBUG, with no ticket** —
   on HTTP (`common.WriteError`) and in gRPC (`buildErrorFields`), the two
@@ -490,6 +686,50 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `cyoda help audit`.
 
 ### Fixed
+
+- **A scheduled transition could run twice at the same time.** A task still
+  running after `CYODA_SCHEDULER_REDISPATCH_BACKOFF` (30 s) was dispatched again,
+  to the same or another node, while the first run went on. Only one run could
+  commit, but both ran their processors, and a slow callout alone takes 30 s. A
+  task now has one owner, and another node takes it over only once the owner
+  has stopped heartbeating (see Breaking).
+
+- **A node that had recovered a panic kept its share of scheduled work.** The
+  round-robin distribution did not read node health, so a node taken out of the
+  Service by `/readyz` still received its share of every scan. A node latched by
+  a panic anywhere — in an HTTP or gRPC request, in async search or in the
+  scheduler itself — now claims nothing. Its runs in progress go on unless the
+  panic was inside the scheduler, and it keeps heartbeating so they are not
+  taken over while they may still commit. See `cyoda help run` and
+  `docs/cloud-parity/scheduled-transitions.md`.
+
+- **A write a processor made through its own callback is kept when the
+  processor answers with no payload.** The documented way for a processor to
+  change its entity itself — write it through a joined callback and return no
+  mutations — did not work: the engine went on with the entity as it had
+  dispatched it and saved that over the callback's write. An answer with no
+  `payload` now leaves the entity as the callback left it, and so does
+  `{"data": null}`, which is no data rather than a null payload. This holds
+  under `SYNC`, `ASYNC_SAME_TX` and `COMMIT_BEFORE_DISPATCH` with
+  `startNewTxOnDispatch: true`, and for a callout handed to another node, whose
+  answer now states that there was no payload. An answer that carries data
+  still replaces the entity's data, the callback's write included. An update
+  that carries `If-Match` keeps the callback's write too (see Breaking). See
+  `cyoda help grpc` and `cyoda help workflows`.
+
+- **An async search job could be run twice, or lose its results, when the
+  PostgreSQL main pool was busy.** A job's heartbeat and the claim of a stale
+  job waited for a connection of the pool that entity transactions use, so a
+  busy pool made a healthy job look stale and another node took it over while
+  it still ran; the sweep that claims stale jobs could itself wait on that pool
+  behind the snapshot-expiry reap. Heartbeats and stale-job claims now run on
+  the scheduler pool (`CYODA_POSTGRES_SCHEDULER_CONNS`) and never wait on the
+  main pool; the writes the sweep owes jobs it will not run go to a separate
+  pass, and snapshot expiry has a goroutine of its own. Clearing a job's
+  results is fenced by the claim it was made under, like its heartbeat and its
+  release, on every backend and whether or not the pool is busy: a late clear
+  from a node that has lost the job deletes nothing. See
+  `cyoda help config database` and `docs/plugins/POSTGRES.md`.
 
 - **A collection write that joined an open transaction is no longer split
   into `transactionWindow` chunks.** A compute node's callback made with the
@@ -684,7 +924,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   as the processor's own, non-fatal failure, silently skipping it. Each now
   fails the operation with a ticketed `5xx`, and the PostgreSQL plugin's
   savepoint errors are classified like its other statements instead of reaching
-  a `400` body raw.
+  a `400` body raw. A write race lost inside the savepoint is the retryable
+  `409 CONFLICT` of the Breaking entry, not a savepoint failure.
 
 - **A callout whose transaction token could not be minted was sent without
   one**, so the compute member's callbacks would have run outside the
@@ -707,14 +948,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   from a hand-crafted peer body. The owner reports a ticketed `500`.
 
 - **A node's answer to another node's call could be replaced by anyone on the
-  network path.** Neither the answer to a handed-over callout nor the answer to
-  the call that delegates a scheduled transition was authenticated, so speaking
+  network path.** The answer to a handed-over callout was not authenticated, nor
+  was the answer to the call that delegated a scheduled transition, so speaking
   for the answering node took no cluster key: a forged success silenced the
   `peer forward failed` warning while the transition never fired on that peer —
   the task itself was not lost, a later scan redispatched it, but nothing said
-  so. Both answers are sealed for the one request they answer (see Breaking),
-  and an answer that cannot be opened is a lost answer. Calls between nodes
-  follow no redirect.
+  so. A hand-over's answer is sealed for the one request it answers (see
+  Breaking), and the scheduled-transition call no longer exists; an answer
+  that cannot be opened is a lost answer. Calls between nodes follow no
+  redirect.
 
 - **A node's own internal error text no longer reaches a client in a callout
   failure.** A request the node could not build, and a member's answer it could
@@ -747,8 +989,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   static delay at all — still emitted a meaningless zero delay alongside
   `function`, violating the published schema's `minimum: 1` and its
   documented mutual exclusion between `delayMs` and `function`. The key is
-  now omitted when there is no static delay. Import is unchanged: an absent
-  delay together with a function was always the accepted form.
+  now omitted when there is no static delay. Import now refuses the old
+  export's `"delayMs": 0` beside a function; see **Breaking** above.
 
 - **A point-in-time read costs what the model costs, not what the history
   costs (PostgreSQL).** The point-in-time base query resolved the latest
@@ -988,6 +1230,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   returned whichever one the store happened to list first. It now returns
   the one that sorts first in the audit order (normally the last one
   recorded).
+
+- **Workflow import now refuses a `schedule.timeoutMs` below `0` or a
+  `schedule.delayMs` below `1`, matching the minimums `TransitionScheduleDto`
+  already published.** Neither was enforced: a negative `timeoutMs` was
+  accepted outright, and a negative `delayMs` alongside a `function` was
+  accepted and silently ignored — the delayMs/function XOR check reads any
+  non-positive `delayMs` as "absent", so it saw only the function and
+  passed. Both are now rejected at import (`400 VALIDATION_FAILED`), naming
+  the workflow, state, transition and field. See `cyoda help workflows`.
 
 ## [0.8.4] — 2026-09-09
 

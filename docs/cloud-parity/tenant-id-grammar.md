@@ -67,12 +67,11 @@ grammar is checked at exactly those two:
 | The `caas_org_id` JWT claim | Every authenticated HTTP request and every authenticated gRPC method — gRPC delegates to the same authenticator | `401`, the uniform RFC 9457 problem detail |
 | `CYODA_BOOTSTRAP_TENANT_ID` | Process startup, **only** when a bootstrap client is configured | Non-zero exit |
 
-Everywhere else — peer dispatch bodies, scheduler RPC payloads, gossip
-envelopes, scheduled-task rows, search-job rows, OIDC provider records, the
-stored M2M client table — carries a value this cluster already admitted at one
-of those two doors. Re-checking there would guard against a corrupted store or a
-compromised peer, a threat model in which tenant-id spelling is not what saves
-you.
+Everywhere else — peer dispatch bodies, gossip envelopes, scheduled-task rows,
+search-job rows, OIDC provider records, the stored M2M client table — carries a
+value this cluster already admitted at one of those two doors. Re-checking there
+would guard against a corrupted store or a compromised peer, a threat model in
+which tenant-id spelling is not what saves you.
 
 One operator-facing tenant value is covered by a test rather than by the check:
 `cfg.IAM.MockTenantID` becomes the tenant of every request in the non-JWT IAM

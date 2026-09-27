@@ -68,7 +68,7 @@ type UpdateEntityInput struct {
 	Format     string
 	Data       json.RawMessage
 	Transition string // optional, empty for loopback
-	IfMatch    string // optional ETag for CAS
+	IfMatch    string // optional: the version the update starts from
 }
 
 // updateOptions tunes the shared update flow. Zero value = plain replace (PUT).
@@ -638,9 +638,30 @@ func (h *Handler) GetStatisticsForModel(ctx context.Context, entityName string, 
 	}, nil
 }
 
-// DeleteEntity deletes a single entity by ID within a transaction.
-// Returns the deleted entity's metadata for the response.
+// DeleteEntity deletes a single entity by ID, with its scheduled tasks, in
+// one transaction, and returns the deleted entity's metadata for the
+// response. An owned delete that fails with spi.ErrConflict — a race lost on
+// the entity or on one of its scheduled tasks, at a statement or at commit —
+// runs again in a new transaction (common.RetryOnTaskConflict); a joined one
+// does not.
 func (h *Handler) DeleteEntity(ctx context.Context, entityID string) (*deleteEntityResult, error) {
+	var result *deleteEntityResult
+	err := common.RetryOnTaskConflict(ctx, spi.GetTransaction(ctx) == nil, func() error {
+		r, err := h.deleteEntityOnce(ctx, entityID)
+		if err != nil {
+			return err
+		}
+		result = r
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// deleteEntityOnce is one attempt of DeleteEntity, in its own transaction.
+func (h *Handler) deleteEntityOnce(ctx context.Context, entityID string) (*deleteEntityResult, error) {
 	// Begin a fresh tx, or PARTICIPATE in a joined tx already on ctx.
 	scope, err := h.beginScope(ctx)
 	if err != nil {
@@ -680,14 +701,15 @@ func (h *Handler) DeleteEntity(ctx context.Context, entityID string) (*deleteEnt
 		}
 		// Soft delete within transaction.
 		if err := entityStore.Delete(txCtx, entityID); err != nil {
-			return common.Internal("failed to delete entity", err)
+			return deleteWriteError("failed to delete entity", err)
+		}
+		// The entity's scheduled tasks go in the same transaction.
+		if err := h.deleteEntityTasks(txCtx, []string{entityID}); err != nil {
+			return deleteWriteError("failed to delete scheduled tasks", err)
 		}
 		// Commit transaction (no-op when participating in a joined tx).
 		if err := scope.Commit(); err != nil {
-			if errors.Is(err, spi.ErrConflict) {
-				return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
-			}
-			return common.Internal("failed to commit transaction", err)
+			return deleteWriteError("failed to commit transaction", err)
 		}
 		return nil
 	}(); appErr != nil {
@@ -701,6 +723,48 @@ func (h *Handler) DeleteEntity(ctx context.Context, entityID string) (*deleteEnt
 		ModelVersion:  ver,
 		TransactionID: txID,
 	}, nil
+}
+
+// conflictError is the retryable 409 for a first-committer-wins refusal. The
+// refusal stays its cause, so common.RetryOnTaskConflict recognises it.
+func conflictError(err error) *common.AppError {
+	return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").
+		AsRetryable().WithCause(err)
+}
+
+// deleteWriteError classifies a failed write or commit inside a delete's
+// transaction: a first-committer-wins refusal is conflictError, anything
+// else is common.Internal.
+func deleteWriteError(msg string, err error) *common.AppError {
+	if errors.Is(err, spi.ErrConflict) {
+		return conflictError(err)
+	}
+	return common.Internal(msg, err)
+}
+
+// deleteEntityTasks removes the scheduled tasks of ids inside the
+// transaction on txCtx. No ids, no call. The tenant is the request's
+// authenticated one, never the transaction's: the store refuses a
+// transaction of another tenant.
+func (h *Handler) deleteEntityTasks(txCtx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	sts, err := h.factory.ScheduledTaskStore(txCtx)
+	if err != nil {
+		return fmt.Errorf("failed to access scheduled task store: %w", err)
+	}
+	return sts.DeleteForEntities(txCtx, spi.TenantID(common.TenantFromContext(txCtx)), ids)
+}
+
+// deleteModelTasks removes every scheduled task of the model inside the
+// transaction on txCtx, for the request's tenant as deleteEntityTasks does.
+func (h *Handler) deleteModelTasks(txCtx context.Context, modelName string, modelVersion int) error {
+	sts, err := h.factory.ScheduledTaskStore(txCtx)
+	if err != nil {
+		return fmt.Errorf("failed to access scheduled task store: %w", err)
+	}
+	return sts.DeleteForModel(txCtx, spi.TenantID(common.TenantFromContext(txCtx)), modelName, modelVersion, nil)
 }
 
 type deleteEntityResult struct {
@@ -761,11 +825,32 @@ func (h *Handler) GetChangesMetadata(ctx context.Context, entityID string, point
 	return result, nil
 }
 
-// DeleteAllEntities deletes all entities for a model within a transaction.
-func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, modelVersion string) (*DeleteAllResult, error) {
+// DeleteAllEntities deletes all entities of a model, and all the model's
+// scheduled tasks, in one transaction. An owned delete that fails with
+// spi.ErrConflict — a race lost on an entity or on a scheduled task, at a
+// statement or at commit — runs again in a new transaction
+// (common.RetryOnTaskConflict); a joined one does not.
+func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, modelVersion int) (*DeleteAllResult, error) {
+	var result *DeleteAllResult
+	err := common.RetryOnTaskConflict(ctx, spi.GetTransaction(ctx) == nil, func() error {
+		r, err := h.deleteAllEntitiesOnce(ctx, entityName, modelVersion)
+		if err != nil {
+			return err
+		}
+		result = r
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// deleteAllEntitiesOnce is one attempt of DeleteAllEntities.
+func (h *Handler) deleteAllEntitiesOnce(ctx context.Context, entityName string, modelVersion int) (*DeleteAllResult, error) {
 	ref := spi.ModelRef{
 		EntityName:   entityName,
-		ModelVersion: modelVersion,
+		ModelVersion: strconv.Itoa(modelVersion),
 	}
 
 	// Begin a fresh tx, or PARTICIPATE in a joined tx already on ctx.
@@ -793,7 +878,7 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 	if _, err := modelStore.Get(txCtx, ref); err != nil {
 		if errors.Is(err, spi.ErrNotFound) {
 			return nil, common.Operational(404, common.ErrCodeModelNotFound,
-				fmt.Sprintf("cannot find model entityName=%s, version=%s", entityName, modelVersion))
+				fmt.Sprintf("cannot find model entityName=%s, version=%d", entityName, modelVersion))
 		}
 		return nil, common.Internal("failed to load model", err)
 	}
@@ -819,14 +904,15 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 			defer h.gate.Acquire(txID)()
 		}
 		if err := entityStore.DeleteAll(txCtx, ref); err != nil {
-			return common.Internal("failed to delete entities", err)
+			return deleteWriteError("failed to delete entities", err)
+		}
+		// Every task of the model goes in the same transaction.
+		if err := h.deleteModelTasks(txCtx, entityName, modelVersion); err != nil {
+			return deleteWriteError("failed to delete scheduled tasks", err)
 		}
 		// Commit transaction (no-op when participating in a joined tx).
 		if err := scope.Commit(); err != nil {
-			if errors.Is(err, spi.ErrConflict) {
-				return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
-			}
-			return common.Internal("failed to commit transaction", err)
+			return deleteWriteError("failed to commit transaction", err)
 		}
 		return nil
 	}(); appErr != nil {
@@ -1189,8 +1275,8 @@ func selectDeleteIDs(ctx context.Context, entityStore spi.EntityStore, ref spi.M
 // silently deleting a version the caller never saw. The handler rejects
 // batchSize>0 on a joined request (spec D7), so deleteBatched never has to
 // reconcile "batched" with "participating in someone else's tx".
-func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, modelVersion string, condBody []byte, pointInTime *time.Time, verbose bool, batchSize int) (*DeleteResult, error) {
-	ref := spi.ModelRef{EntityName: entityName, ModelVersion: modelVersion}
+func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName string, modelVersion int, condBody []byte, pointInTime *time.Time, verbose bool, batchSize int) (*DeleteResult, error) {
+	ref := spi.ModelRef{EntityName: entityName, ModelVersion: strconv.Itoa(modelVersion)}
 
 	// Parse the condition (if any) BEFORE opening a tx — a parse error is a
 	// 400 that must not start a transaction. Empty/whitespace body ⇒ delete-all.
@@ -1227,6 +1313,26 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 		}, nil
 	}
 
+	var result *DeleteResult
+	err := common.RetryOnTaskConflict(ctx, spi.GetTransaction(ctx) == nil, func() error {
+		r, err := h.deleteConditionalSingleTx(ctx, ref, cond, pointInTime, verbose)
+		if err != nil {
+			return err
+		}
+		result = r
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// deleteConditionalSingleTx is one attempt of the single-transaction
+// conditional delete: select, delete each matched id, remove the scheduled
+// tasks of the ids actually deleted, commit. Every attempt builds its own
+// result, so a retried attempt never counts an id twice.
+func (h *Handler) deleteConditionalSingleTx(ctx context.Context, ref spi.ModelRef, cond predicate.Condition, pointInTime *time.Time, verbose bool) (*DeleteResult, error) {
 	scope, err := h.beginScope(ctx)
 	if err != nil {
 		return nil, classifyBeginErr(err)
@@ -1242,7 +1348,7 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 	if _, err := modelStore.Get(txCtx, ref); err != nil {
 		if errors.Is(err, spi.ErrNotFound) {
 			return nil, common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound,
-				fmt.Sprintf("cannot find model entityName=%s, version=%s", entityName, modelVersion))
+				fmt.Sprintf("cannot find model entityName=%s, version=%s", ref.EntityName, ref.ModelVersion))
 		}
 		return nil, common.Internal("failed to load model", err)
 	}
@@ -1279,6 +1385,7 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 		IDToError:     map[string]string{},
 		IDs:           []string{},
 	}
+	deleted := make([]string, 0, len(ids))
 
 	// Finalize: gate the per-id deletes + commit against a concurrent joined
 	// callback's buffer write (mirror DeleteAllEntities).
@@ -1299,19 +1406,27 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 				result.IDs = append(result.IDs, id)
 			}
 			if err := entityStore.Delete(txCtx, id); err != nil {
+				// A first-committer-wins refusal is not this id's outcome.
+				// The transaction is spent (PostgreSQL aborts it on 40001),
+				// so the attempt fails and the whole call runs again.
+				if errors.Is(err, spi.ErrConflict) {
+					return conflictError(err)
+				}
 				result.IDToError[id] = perIDDeleteError(id, err)
 				continue
 			}
+			deleted = append(deleted, id)
 			result.RemovedCount++
 		}
+		// The scheduled tasks of the ids actually deleted go in the same
+		// transaction. An id whose delete failed keeps its tasks.
+		if err := h.deleteEntityTasks(txCtx, deleted); err != nil {
+			return deleteWriteError("failed to delete scheduled tasks", err)
+		}
+		// Do NOT roll back after a failed commit — it has already aborted
+		// the tx. Mirrors DeleteAllEntities.
 		if err := scope.Commit(); err != nil {
-			// Do NOT roll back here — a failed commit has already aborted the
-			// tx. Mirrors DeleteAllEntities (service.go), which returns
-			// the AppError directly on this path without an extra rollback.
-			if errors.Is(err, spi.ErrConflict) {
-				return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
-			}
-			return common.Internal("failed to commit transaction", err)
+			return deleteWriteError("failed to commit transaction", err)
 		}
 		return nil
 	}(); appErr != nil {
@@ -1627,24 +1742,81 @@ func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond pred
 	return result, nil
 }
 
+// batchAttempt is one run of a batch's transaction.
+type batchAttempt struct {
+	// removed are the ids whose delete was staged. They are durable only
+	// when failure is nil.
+	removed []string
+	// idErrors are per-id outcomes that do not fail the batch: a missing
+	// entity, a version changed since resolution, a failed delete.
+	idErrors map[string]string
+	// failure is the batch's own failure — its task removal or its commit —
+	// or nil when the batch committed.
+	failure *common.AppError
+}
+
 // deleteOneBatch deletes one chunk of ≤batchSize targets under its own owned
-// transaction. Every target's CURRENT version is re-read and compared
-// against the baseline captured during deleteBatched's resolution phase
-// (spec D4's version guard); a mismatch, a NotFound, or a Delete failure is
-// folded into result.IDToError for that one id and the chunk continues. Only
-// a failure to begin this chunk's transaction, or to acquire the EntityStore
-// against it, is returned to the caller — deleteBatched treats either as
-// fatal for the whole request, since it can't know whether later chunks
-// would fare any better. A failed commit (e.g. a
-// conflict from the resolution-baseline version check racing a concurrent
-// writer at the storage layer) maps every id this chunk marked
-// pending-removed into IDToError instead of incrementing RemovedCount — the
-// chunk's buffered deletes never became durable, so reporting them as
-// removed would lie about the mutation's outcome.
+// transaction, with the tasks of the ids it deletes (spec D4's version guard
+// applies to each id). A batch that loses a first-committer-wins race runs
+// again, at most common.TaskConflictRetries more times, against the same
+// baselines. Per-id outcomes of the last attempt go into result.IDToError. A
+// batch that still fails puts its message on every id it did not resolve,
+// and adds nothing to RemovedCount — its deletes never became durable. Only a
+// failure to begin the transaction or to reach the entity store is
+// returned; deleteBatched treats that as fatal for the request.
 func (h *Handler) deleteOneBatch(ctx context.Context, chunk []batchTarget, result *DeleteResult) error {
+	var last batchAttempt
+	err := common.RetryOnTaskConflict(ctx, spi.GetTransaction(ctx) == nil, func() error {
+		a, err := h.deleteOneBatchOnce(ctx, chunk)
+		if err != nil {
+			return err
+		}
+		last = a
+		if a.failure != nil && errors.Is(a.failure, spi.ErrConflict) {
+			return a.failure
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, spi.ErrConflict) {
+		return err
+	}
+
+	for id, msg := range last.idErrors {
+		result.IDToError[id] = msg
+	}
+	if last.failure == nil {
+		result.RemovedCount += len(last.removed)
+		return nil
+	}
+	// Operational (4xx-class) failures — a conflict above all — are
+	// client-safe by construction: fold the message as-is. Anything else
+	// gets ONE ticket for the whole batch, its cause logged under it, and
+	// the ticketed client-safe message — never the raw AppError.Message.
+	msg := last.failure.Message
+	if last.failure.Level != common.LevelOperational {
+		cause := error(last.failure)
+		if last.failure.Err != nil {
+			cause = last.failure.Err
+		}
+		msg = mintDeleteTicket("", cause)
+	}
+	for _, t := range chunk {
+		if _, resolved := last.idErrors[t.id]; !resolved {
+			result.IDToError[t.id] = msg
+		}
+	}
+	return nil
+}
+
+// deleteOneBatchOnce is one attempt of a batch. It re-reads each target,
+// deletes it if its version still equals the resolution baseline, removes
+// the tasks of the ids it deleted, and commits.
+func (h *Handler) deleteOneBatchOnce(ctx context.Context, chunk []batchTarget) (batchAttempt, error) {
+	a := batchAttempt{idErrors: map[string]string{}}
+
 	scope, err := h.beginScope(ctx)
 	if err != nil {
-		return classifyBeginErr(err)
+		return a, classifyBeginErr(err)
 	}
 	defer scope.Release()
 
@@ -1652,74 +1824,60 @@ func (h *Handler) deleteOneBatch(ctx context.Context, chunk []batchTarget, resul
 
 	entityStore, err := h.factory.EntityStore(txCtx)
 	if err != nil {
-		return common.Internal("failed to access entity store", err)
+		return a, common.Internal("failed to access entity store", err)
 	}
-
-	pendingRemoved := make([]string, 0, len(chunk))
 
 	// Finalize: gate the per-id deletes + commit against a concurrent joined
 	// callback's buffer write (mirror the single-tx path / DeleteAllEntities).
-	if appErr := func() *common.AppError {
+	a.failure = func() *common.AppError {
 		if owned {
 			defer h.gate.Acquire(txID)()
 		}
 		for _, t := range chunk {
 			// Generic cancellation check at the iteration head (spec D9) —
-			// fails the gated IIFE closed so this chunk's tx rolls back
-			// rather than committing a partial pass through the chunk.
+			// fails the batch closed so its tx rolls back rather than
+			// committing a partial pass through the chunk.
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return classifyError(fmt.Errorf("operation aborted: %w", ctxErr))
 			}
-
+			// The read itself never conflicts, but on PostgreSQL it can meet a
+			// transaction an earlier conflict already aborted (spi.ErrTxAborted,
+			// which is spi.ErrConflict). That fails the attempt like a
+			// conflicting delete does — the batch runs again — rather than
+			// being filed as this id's fault.
 			cur, gErr := entityStore.Get(txCtx, t.id)
 			if gErr != nil {
-				result.IDToError[t.id] = perIDDeleteError(t.id, gErr)
+				if errors.Is(gErr, spi.ErrConflict) {
+					return conflictError(gErr)
+				}
+				a.idErrors[t.id] = perIDDeleteError(t.id, gErr)
 				continue
 			}
 			if cur.Meta.Version != t.baselineVersion {
-				result.IDToError[t.id] = fmt.Sprintf("%s: entity id=%s modified after delete resolution; not deleted",
+				a.idErrors[t.id] = fmt.Sprintf("%s: entity id=%s modified after delete resolution; not deleted",
 					common.ErrCodeEntityModified, t.id)
 				continue
 			}
 			if dErr := entityStore.Delete(txCtx, t.id); dErr != nil {
-				result.IDToError[t.id] = perIDDeleteError(t.id, dErr)
+				// A first-committer-wins refusal fails the batch, which runs
+				// again; it is not this id's outcome.
+				if errors.Is(dErr, spi.ErrConflict) {
+					return conflictError(dErr)
+				}
+				a.idErrors[t.id] = perIDDeleteError(t.id, dErr)
 				continue
 			}
-			pendingRemoved = append(pendingRemoved, t.id)
+			a.removed = append(a.removed, t.id)
+		}
+		if err := h.deleteEntityTasks(txCtx, a.removed); err != nil {
+			return deleteWriteError("failed to delete scheduled tasks", err)
 		}
 		if err := scope.Commit(); err != nil {
-			if errors.Is(err, spi.ErrConflict) {
-				return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
-			}
-			return common.Internal("failed to commit transaction", err)
+			return deleteWriteError("failed to commit transaction", err)
 		}
 		return nil
-	}(); appErr != nil {
-		// Operational (4xx-class) failures — the resolution-baseline conflict
-		// above all — are client-safe by construction, same as
-		// perIDDeleteError's operational branch: fold the message as-is, no
-		// ticket needed. Anything else (Internal/Fatal, e.g. a bare commit
-		// error) gets perIDDeleteError's ticketed treatment: mint ONE ticket
-		// for the whole batch, log the real cause under it, and fold the
-		// ticketed client-safe message — never the raw AppError.Message,
-		// which for an Internal error carries no cause and would otherwise
-		// go out unlogged and uncorrelated.
-		msg := appErr.Message
-		if appErr.Level != common.LevelOperational {
-			cause := error(appErr)
-			if appErr.Err != nil {
-				cause = appErr.Err
-			}
-			msg = mintDeleteTicket("", cause)
-		}
-		for _, id := range pendingRemoved {
-			result.IDToError[id] = msg
-		}
-		return nil
-	}
-
-	result.RemovedCount += len(pendingRemoved)
-	return nil
+	}()
+	return a, nil
 }
 
 // ListEntities pages entities for a model at the store via
@@ -2167,18 +2325,24 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	// after committing TX_pre); for non-segmenting cascades it equals the
 	// handler's input txID.
 	//
-	// We hand input.IfMatch to the engine via the *WithIfMatch entry-points so
-	// that, when a COMMIT_BEFORE_DISPATCH segment exists, the precondition is
-	// applied at the first-segment flush — strictly BEFORE any external
-	// dispatch fires (spec §4.1). The engine consumes IfMatch only on
-	// segmenting cascades; for non-segmenting cascades the handler still
-	// applies CompareAndSave-with-IfMatch post-engine below.
-	var engineResult *wfengine.EngineResult
+	// If-Match states the version the request starts from: the engine checks
+	// it against existing — E as this transaction read it — before it runs
+	// anything. A later write to E in this transaction (a joined callback's, a
+	// segment's) is the request's own; a write another transaction commits
+	// after the read fails the commit.
+	ifMatch := wfengine.IfMatch{Expected: input.IfMatch, Current: existing.Meta.TransactionID}
 	if input.Transition == "" {
-		res, lbErr := h.engine.LoopbackWithIfMatch(txCtx, updated, input.IfMatch)
+		res, lbErr := h.engine.LoopbackWithIfMatch(txCtx, updated, ifMatch)
 		if lbErr != nil {
 			slog.Error("workflow loopback failed", "error", lbErr.Error(), "entityId", updated.Meta.ID)
-			if errors.Is(lbErr, spi.ErrConflict) {
+			// An unmarked conflict is a precondition on this request's own
+			// entity: the If-Match check at the start of the transition, or
+			// the apply-result compare after a committed COMMIT_BEFORE_DISPATCH
+			// segment (wfengine.ErrPostSegmentConflict). Both answer 412. See
+			// engineConflictIsTransactionConflict for the conflicts that are
+			// not entity modifications; classifyWorkflowError answers them
+			// with the retryable 409 CONFLICT.
+			if errors.Is(lbErr, spi.ErrConflict) && !engineConflictIsTransactionConflict(lbErr) {
 				appErr := common.Operational(
 					http.StatusPreconditionFailed,
 					common.ErrCodeEntityModified,
@@ -2192,12 +2356,11 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		// EngineResult on every error path.
 		scope.Advance(res.FinalCtx, res.FinalTxID)
 		updated.Meta.TransitionForLatestSave = "loopback"
-		engineResult = res
 	} else {
-		res, mtErr := h.engine.ManualTransitionWithIfMatch(txCtx, updated, input.Transition, input.IfMatch)
+		res, mtErr := h.engine.ManualTransitionWithIfMatch(txCtx, updated, input.Transition, ifMatch)
 		if mtErr != nil {
 			slog.Error("workflow manual transition failed", "error", mtErr.Error(), "entityId", updated.Meta.ID, "transition", input.Transition)
-			if errors.Is(mtErr, spi.ErrConflict) {
+			if errors.Is(mtErr, spi.ErrConflict) && !engineConflictIsTransactionConflict(mtErr) {
 				appErr := common.Operational(
 					http.StatusPreconditionFailed,
 					common.ErrCodeEntityModified,
@@ -2211,7 +2374,6 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		// EngineResult on every error path.
 		scope.Advance(res.FinalCtx, res.FinalTxID)
 		updated.Meta.TransitionForLatestSave = input.Transition
-		engineResult = res
 	}
 
 	finalCtx, finalTxID := scope.Ctx(), scope.TxID()
@@ -2221,52 +2383,18 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		return nil, common.Internal("failed to access entity store", err)
 	}
 
-	// Distinguish: did the engine segment (and therefore consume IfMatch)?
-	// Segmented is true iff at least one COMMIT_BEFORE_DISPATCH segment
-	// committed; the engine's first-segment flush already applied the
-	// caller's IfMatch. For non-segmenting cascades the handler still owns
-	// the IfMatch precondition.
-	segmented := engineResult.Segmented
-
-	// Finalize: gate the OWNER's Save/CompareAndSave + Commit (and the abort-
-	// audit buffer write on the conflict path) against a concurrent joined
-	// callback's write; on the joined path the join layer holds the gate for the
-	// whole request. The gate is NEVER held across engine.Execute (above).
+	// Finalize: gate the OWNER's Save + Commit against a concurrent joined
+	// callback's write; on the joined path the join layer holds the gate for
+	// the whole request. The gate is NEVER held across engine.Execute (above).
 	if appErr := func() *common.AppError {
 		if owned {
 			defer h.gate.Acquire(finalTxID)()
 		}
-		if input.IfMatch != "" && !segmented {
-			if _, err := finalEntityStore.CompareAndSave(finalCtx, updated, input.IfMatch); err != nil {
-				if errors.Is(err, spi.ErrConflict) {
-					// Emit the compensating
-					// TRANSITION_ABORTED into the same TX buffer as the
-					// entry-side audit events BEFORE rolling back, so on
-					// stores where audit is TX-bound the abort event rolls
-					// back together with the entry events (audit log
-					// remains empty, consistent), and on stores where audit
-					// is not TX-bound the abort event is preserved as a
-					// pair with the entry events.
-					h.emitTransitionAborted(finalCtx, updated, txID, input.Transition, input.IfMatch)
-					appErr := common.Operational(
-						http.StatusPreconditionFailed,
-						common.ErrCodeEntityModified,
-						"entity has been modified since last read")
-					appErr.Props = map[string]any{"entityId": input.EntityID}
-					return appErr
-				}
-				return classifySaveErr("failed to save entity", input.EntityID, err)
-			}
-		} else {
-			// Plain Save: either no IfMatch was provided, or the engine already
-			// consumed it at first-segment flush (segmented == true). In the
-			// segmented case the row's current TransactionID has advanced through
-			// TX_pre's commit, so a handler-side CAS against input.IfMatch would
-			// fail spuriously — Save lands the post-cascade state in TX_post's
-			// buffer and the segment's own intra-TX guards handle concurrency.
-			if _, err := finalEntityStore.Save(finalCtx, updated); err != nil {
-				return classifySaveErr("failed to save entity", input.EntityID, err)
-			}
+		// A plain Save: the engine checked If-Match when the transition
+		// started, and the engine's entity supersedes any write made to E
+		// earlier in this transaction.
+		if _, err := finalEntityStore.Save(finalCtx, updated); err != nil {
+			return classifySaveErr("failed to save entity", input.EntityID, err)
 		}
 
 		// Commit FinalTxID — the still-open TX after the cascade (no-op when
@@ -2340,13 +2468,13 @@ func (h *Handler) PatchEntity(ctx context.Context, input PatchEntityInput) (*Ent
 //   - Items WITH IfMatch isolate ENTITY_MODIFIED conflicts (spi.ErrConflict)
 //     to a per-chunk Failed slice; the chunk still commits its remaining
 //     successful items. Other per-item failures still roll the chunk back.
-//   - Isolation covers only a conflict raised while the chunk's transaction is
-//     still usable: a handler-side CompareAndSave, or a COMMIT_BEFORE_DISPATCH
-//     first-segment flush, which runs before TX_pre commits and before any
-//     external dispatch. A conflict raised once that transaction is gone —
-//     the post-dispatch apply-result CAS, or TX_pre's own commit failing —
-//     aborts the chunk instead. Both reach here as spi.ErrConflict, so the
-//     conflict alone cannot separate them; the engine's sentinels do.
+//   - Isolation covers only the item's own precondition: the engine checks
+//     If-Match against the entity as the chunk's transaction read it, before
+//     it runs anything for the item. A conflict raised once the transaction
+//     is gone — the post-dispatch apply-result CAS, TX_pre's own commit
+//     failing, a lost write race — aborts the chunk instead. Both reach here
+//     as spi.ErrConflict, so the conflict alone cannot separate them; the
+//     engine's sentinels do.
 //
 // Returning from this function:
 //
@@ -2502,33 +2630,28 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			Data: item.bodyBytes,
 		}
 
-		// Run the engine on the current TX. When the item supplies an
-		// IfMatch precondition we route to the *WithIfMatch entry-points so
-		// that, for COMMIT_BEFORE_DISPATCH cascades, the precondition is
-		// applied at the first-segment flush — strictly BEFORE any external
-		// dispatch fires (spec §4.1). For non-segmenting cascades the
-		// engine leaves IfMatch untouched and the handler's CompareAndSave
-		// below applies it post-engine. Mirrors single UpdateEntity's
-		// routing.
+		// Run the engine on the current TX. The item's If-Match states the
+		// version it starts from: the engine checks it against existing — the
+		// entity as this transaction read it — before it runs anything, as
+		// single UpdateEntity does.
 		var engineResult *wfengine.EngineResult
 		var engineErr error
+		ifMatch := wfengine.IfMatch{Expected: item.ifMatch, Current: existing.Meta.TransactionID}
 		if item.transition == "" {
-			engineResult, engineErr = h.engine.LoopbackWithIfMatch(currentCtx, updated, item.ifMatch)
+			engineResult, engineErr = h.engine.LoopbackWithIfMatch(currentCtx, updated, ifMatch)
 		} else {
-			engineResult, engineErr = h.engine.ManualTransitionWithIfMatch(currentCtx, updated, item.transition, item.ifMatch)
+			engineResult, engineErr = h.engine.ManualTransitionWithIfMatch(currentCtx, updated, item.transition, ifMatch)
 		}
 		if engineErr != nil {
-			// Per-item ENTITY_MODIFIED isolation: the engine's CBD
-			// first-segment flush rejected the IfMatch precondition before
-			// committing TX_pre or firing any external dispatch. The engine
-			// has already emitted a compensating TRANSITION_ABORTED audit
-			// event before returning ErrConflict so the
-			// audit trail for this item is paired (entry + abort) and lands
+			// Per-item ENTITY_MODIFIED isolation: the engine's If-Match check
+			// rejected the item before the engine ran anything. The engine
+			// recorded STATE_MACHINE_START and TRANSITION_ABORTED, so the
+			// item's audit trail is paired (entry + abort) and lands
 			// alongside successful siblings on commit.
 			//
-			// Two other shapes reach here as spi.ErrConflict and must NOT be
-			// isolated, because in both the transaction this loop would carry
-			// on in is already gone:
+			// Other shapes reach here as spi.ErrConflict and must NOT be
+			// isolated, because in all of them the transaction this loop
+			// would carry on in is already gone:
 			//
 			//   - ErrPostSegmentConflict: the apply-result CAS, raised after
 			//     TX_pre committed and the dispatch fired. No segment is left
@@ -2545,14 +2668,19 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			//     spi.ErrConflict branch answers a retryable 409 (asserted by
 			//     service_classify_test.go): the segment boundary aborted, so
 			//     a fresh attempt is the right advice.
+			//   - The other engine infrastructure markers
+			//     (engineConflictIsTransactionConflict): a statement of the
+			//     engine's own met a transaction a concurrent writer had
+			//     already aborted. It leaves through classifyWorkflowError →
+			//     common.Internal → a retryable 409.
 			//
 			// Either way, isolating would let every later item write into a
 			// dead transaction and be lost.
 			if item.ifMatch != "" && errors.Is(engineErr, spi.ErrConflict) &&
 				!errors.Is(engineErr, wfengine.ErrPostSegmentConflict) &&
-				!errors.Is(engineErr, wfengine.ErrCommitBeforeDispatchInfra) {
+				!engineConflictIsTransactionConflict(engineErr) {
 				slog.Info("collection update item precondition failed",
-					"source", "engine", "entityId", updated.Meta.ID, "itemIndex", i)
+					"entityId", updated.Meta.ID, "itemIndex", i)
 				failed = append(failed, UpdateCollectionItemFailure{
 					EntityID:  updated.Meta.ID,
 					Code:      common.ErrCodeEntityModified,
@@ -2580,76 +2708,26 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			updated.Meta.TransitionForLatestSave = item.transition
 		}
 
-		// Distinguish: did the engine segment (and therefore consume IfMatch)?
-		// Segmented is true iff at least one CBD segment committed; in that
-		// case the engine's first-segment flush already applied this item's
-		// IfMatch. For non-segmenting cascades the handler still owns the
-		// precondition — apply it via CompareAndSave below. Mirrors the
-		// single-UpdateEntity routing.
-		segmented := engineResult.Segmented
-
-		// Finalize this item's Save. For the OWNER, gate the Save/CompareAndSave
-		// (and the abort-audit buffer write on the isolated-conflict path)
-		// against a concurrent joined callback's write; the joined path already
-		// holds the gate for its whole body. Never gated across engine.Execute.
-		// The closure returns (isolatedFailure, appErr): a non-nil isolated
-		// failure means "continue this loop" (per-item ENTITY_MODIFIED isolation),
-		// a non-nil appErr means "abort the batch".
-		isolated, appErr := func() (*UpdateCollectionItemFailure, *common.AppError) {
+		// Finalize this item's Save. For the OWNER, gate the Save against a
+		// concurrent joined callback's write; the joined path already holds
+		// the gate for its whole body. Never gated across engine.Execute.
+		if appErr := func() *common.AppError {
 			if owned {
 				defer h.gate.Acquire(currentTxID)()
 			}
 			// Re-resolve the entity store on the now-current segment context.
 			finalEntityStore, err := h.factory.EntityStore(currentCtx)
 			if err != nil {
-				return nil, common.Internal("failed to access entity store", err)
+				return common.Internal("failed to access entity store", err)
 			}
-
-			// IfMatch routing for the post-engine save:
-			//   - With IfMatch AND non-segmenting cascade: handler owns the
-			//     precondition → CompareAndSave. ErrConflict → isolate to
-			//     `failed` (no chunk rollback).
-			//   - With IfMatch AND segmenting cascade: engine consumed IfMatch
-			//     at first-segment flush; row's transactionId has advanced
-			//     through TX_pre's commit. CompareAndSave against item.IfMatch
-			//     would now fail spuriously — fall back to plain Save.
-			//   - Without IfMatch: plain Save (existing behavior).
-			applyHandlerCAS := item.ifMatch != "" && !segmented
-			var saveErr error
-			if applyHandlerCAS {
-				_, saveErr = finalEntityStore.CompareAndSave(currentCtx, updated, item.ifMatch)
-			} else {
-				_, saveErr = finalEntityStore.Save(currentCtx, updated)
+			// A plain Save: the engine checked the item's If-Match when its
+			// transition started.
+			if _, err := finalEntityStore.Save(currentCtx, updated); err != nil {
+				return classifySaveErr(fmt.Sprintf("item %d: failed to save entity", i), updated.Meta.ID, err)
 			}
-			if saveErr != nil {
-				if applyHandlerCAS && errors.Is(saveErr, spi.ErrConflict) {
-					slog.Info("collection update item precondition failed",
-						"source", "handler", "entityId", updated.Meta.ID, "itemIndex", i)
-					// Emit a compensating TRANSITION_ABORTED
-					// audit event so the entry-side audit events recorded by the
-					// engine for this item (STATE_MACHINE_START / WORKFLOW_FOUND
-					// / TRANSITION_MAKE) have a paired terminal event in the
-					// audit log. Best-effort; routed through the engine's
-					// audit-store handle so it lands in the same TX buffer as
-					// the entry events on stores where audit is TX-bound.
-					h.emitTransitionAborted(currentCtx, updated, currentTxID, item.transition, item.ifMatch)
-					return &UpdateCollectionItemFailure{
-						EntityID:  updated.Meta.ID,
-						Code:      common.ErrCodeEntityModified,
-						Message:   "entity has been modified since last read",
-						ItemIndex: i,
-					}, nil
-				}
-				return nil, classifySaveErr(fmt.Sprintf("item %d: failed to save entity", i), updated.Meta.ID, saveErr)
-			}
-			return nil, nil
-		}()
-		if appErr != nil {
+			return nil
+		}(); appErr != nil {
 			return nil, appErr
-		}
-		if isolated != nil {
-			failed = append(failed, *isolated)
-			continue
 		}
 		entityIDs = append(entityIDs, updated.Meta.ID)
 	}
@@ -2694,9 +2772,13 @@ func classifyError(err error) *common.AppError {
 	return common.Internal("unexpected error", err)
 }
 
-// classifySaveErr maps a Save/CompareAndSave storage error to a client-facing
-// AppError where the plugin's sentinel is client-attributable, falling back
-// to internalMsg's sanitized 500 otherwise.
+// classifySaveErr maps a Save storage error to a client-facing AppError where
+// the plugin's sentinel is client-attributable, falling back to internalMsg's
+// sanitized 500 otherwise (common.Internal, which answers a conflict with the
+// retryable 409).
+//
+// spi.ErrTxAborted → the retryable 409 CONFLICT with the cause attached: an
+// earlier conflict aborted the transaction.
 //
 // spi.ErrEntityModelMismatch → 400 ENTITY_MODEL_MISMATCH: the entity's model
 // reference is fixed at creation (spi.EntityMeta.ModelRef's doc comment) and
@@ -2707,6 +2789,11 @@ func classifyError(err error) *common.AppError {
 // entity being saved — so this mapping is defense in depth against a future
 // or internal caller, not a currently reachable client error.
 func classifySaveErr(internalMsg, entityID string, err error) *common.AppError {
+	// An earlier conflict aborted the transaction: the retryable 409, with the
+	// cause kept for the server-side log.
+	if appErr := common.TxAbortedConflict(err); appErr != nil {
+		return appErr
+	}
 	if errors.Is(err, spi.ErrEntityModelMismatch) {
 		appErr := common.Operational(http.StatusBadRequest, common.ErrCodeEntityModelMismatch,
 			"entity's model is fixed at creation; this save specified a different model")
@@ -2716,9 +2803,34 @@ func classifySaveErr(internalMsg, entityID string, err error) *common.AppError {
 	return common.Internal(internalMsg, err)
 }
 
+// engineConflictIsTransactionConflict reports whether an engine error that
+// carries spi.ErrConflict came from the engine's own statements rather than
+// from a precondition on the request's own entity. The engine returns two
+// conflicts unmarked: the caller's If-Match, checked when the transition
+// starts, and the apply-result compare after a committed
+// COMMIT_BEFORE_DISPATCH segment (wfengine.ErrPostSegmentConflict). Every other
+// store call it makes marks its failure with an engine infrastructure
+// sentinel, and spi.ErrTxAborted is how the engine reports a transaction that
+// already lost a write race — a statement that met it, or a processor that
+// could call back into the transaction and failed after the race was lost
+// (see TransactionManager.LostRace). A marked conflict is a transaction
+// conflict (retryable 409 CONFLICT), not ENTITY_MODIFIED.
+func engineConflictIsTransactionConflict(err error) bool {
+	return errors.Is(err, spi.ErrTxAborted) ||
+		errors.Is(err, wfengine.ErrScheduledTaskInfra) ||
+		errors.Is(err, wfengine.ErrProcessorOutputInfra) ||
+		errors.Is(err, wfengine.ErrSavepointInfra) ||
+		errors.Is(err, wfengine.ErrCommitBeforeDispatchInfra) ||
+		errors.Is(err, wfengine.ErrCriterionTypingInfra)
+}
+
 // classifyWorkflowError maps a workflow-engine error to the appropriate HTTP
 // error code:
 //
+//   - spi.ErrTxAborted (an earlier conflict aborted the transaction, or a
+//     processor failed after the transaction lost a write race) →
+//     retryable 409 CONFLICT with the cause, first, so no wrapping of it can
+//     reach a branch below.
 //   - An already-classified *common.AppError (matched via errors.As, so it is
 //     found even several layers deep behind %w-wrapping) passes through
 //     unchanged — the minted status/code/retryable flags are authoritative.
@@ -2756,6 +2868,9 @@ func classifySaveErr(internalMsg, entityID string, err error) *common.AppError {
 //     conflicts already mapped upstream, and a Terminal callout failure that
 //     carries no code of its own) → 400 WORKFLOW_FAILED.
 func classifyWorkflowError(err error) *common.AppError {
+	if a := common.TxAbortedConflict(err); a != nil {
+		return a
+	}
 	var appErr *common.AppError
 	if errors.As(err, &appErr) {
 		return appErr
@@ -2838,38 +2953,4 @@ func classifyWorkflowError(err error) *common.AppError {
 		return appErr
 	}
 	return common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed, err.Error())
-}
-
-// emitTransitionAborted writes a TRANSITION_ABORTED audit event for a
-// post-engine CompareAndSave conflict on the supplied entity. Routes
-// through the same audit-store handle the engine uses so the abort lands
-// in the same TX buffer as the entry-side audit events emitted earlier in
-// the cascade.
-//
-// transitionName may be "" for loopback updates — kept verbatim in the
-// event payload so downstream consumers can distinguish loopback aborts
-// from named-transition aborts. Best-effort: any failure to load the
-// audit store is logged at DEBUG and swallowed (an audit-emission failure
-// must not break the per-item-isolated commit path).
-func (h *Handler) emitTransitionAborted(
-	ctx context.Context,
-	entity *spi.Entity,
-	cascadeEntryTxID string,
-	transitionName string,
-	expectedTxID string,
-) {
-	auditStore, err := h.factory.StateMachineAuditStore(ctx)
-	if err != nil {
-		slog.Debug("transition-aborted: audit store unavailable",
-			"pkg", "entity", "entityId", entity.Meta.ID, "error", err)
-		return
-	}
-	transitionForAudit := transitionName
-	if transitionForAudit == "" {
-		transitionForAudit = "loopback"
-	}
-	actualTxID := wfengine.LookupActualTxID(ctx, h.factory, entity.Meta.ID)
-	wfengine.EmitTransitionAborted(ctx, auditStore, time.Now,
-		entity.Meta.ID, cascadeEntryTxID, entity.Meta.State,
-		transitionForAudit, expectedTxID, actualTxID)
 }

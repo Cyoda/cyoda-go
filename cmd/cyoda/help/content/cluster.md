@@ -118,14 +118,17 @@ header parameter on the thirty entity, search, message, audit and platform-api
 operations a callback may reach, and each of those declares the statuses the
 join layer answers with — `401`, `403`, `404`, `410` and `413`. A client
 generated from the document can therefore make a callback and read its refusal
-without extra hand-written code. The entity-model and workflow operations do
-not declare it, because changing a model or a workflow from inside a callout is
-not supported.
+without extra hand-written code. The entity-model and workflow operations that
+change a model or its workflows do not declare it: model and workflow
+administration never runs inside a transaction, and each of them refuses a
+request carrying the header with `400 MODEL_ADMIN_IN_JOINED_TRANSACTION` before
+the token is verified and before the request would be routed to the owning
+node (see `cyoda help errors MODEL_ADMIN_IN_JOINED_TRANSACTION`).
 
 The receiving node verifies the token's HMAC and routes the callback to the
 transaction-owning node (same proxy mechanism as `TRANSACTION ROUTING` above).
 Without the echo the callback runs in a standalone transaction and cannot see
-the cascade's uncommitted writes. Callback acks are provisional until the
+what the cascade's transaction has saved so far. Callback acks are provisional until the
 owning transaction commits.
 
 The owner admits a callback only while the token's callout is in progress and the token belongs to the member that currently has the work. A callback from a member that was replaced, or whose callout has ended, is refused with `410 CALLOUT_SUPERSEDED` while the transaction is open, and with `404 TRANSACTION_NOT_FOUND` afterwards. Before the owner gives the work to the next member, and before the workflow carries on after a callout, it waits for any callback still in progress on the transaction to finish. Callbacks of one transaction are served one at a time.

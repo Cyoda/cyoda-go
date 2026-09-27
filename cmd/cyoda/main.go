@@ -119,6 +119,10 @@ func main() {
 		slog.Error("dispatch config validation failed", "error", err)
 		os.Exit(1)
 	}
+	if err := app.ValidateScheduler(cfg.Scheduler); err != nil {
+		slog.Error("scheduler config validation failed", "error", err)
+		os.Exit(1)
+	}
 	logCORSMode(cfg.CORS)
 
 	printBanner(cfg)
@@ -167,8 +171,8 @@ func runServe(cfg app.Config) int {
 	// while the SIGINT handler runs the graceful shutdown.
 	signal.Ignore(syscall.SIGPIPE)
 
-	// Graceful shutdown: SIGINT (Ctrl+C) and SIGTERM cancel rootCtx; the
-	// errgroup in runServers picks that up and drains every server.
+	// Graceful shutdown: SIGINT (Ctrl+C) and SIGTERM cancel rootCtx;
+	// runServers then drains the scheduler first, and every server after it.
 	rootCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stopSignals()
 
@@ -216,7 +220,7 @@ func runServe(cfg app.Config) int {
 		return 1
 	}
 
-	if err := runServers(rootCtx, a, cfg, ls); err != nil {
+	if err := runServers(rootCtx, a, cfg, ls, a.DrainScheduler); err != nil {
 		// runServers has already triggered a.Shutdown / a.Close before
 		// returning; surface the failure as a non-zero exit code.
 		return 1

@@ -40,10 +40,10 @@ has no documented dispatch semantics yet.
 
 | Mode | Synchrony | Open TX during dispatch | Result mutations applied | Failure | Suitable for |
 |---|---|---|---|---|---|
-| `SYNC` | blocks inline | yes (caller's TX) | yes | fatal — the callout's error (see `cyoda help workflows`), entity stays in source state | fast, in-TX work; standard processor |
+| `SYNC` | blocks inline | yes (caller's TX) | yes | fatal — the callout's error (see `cyoda help workflows`), or a retryable `409 CONFLICT` when a callback write had already lost a race; entity stays in source state | fast, in-TX work; standard processor |
 | `ASYNC_SAME_TX` | blocks inline | yes (caller's TX) | yes | fatal — same as `SYNC` | indistinguishable from `SYNC` today; reserved label |
-| `ASYNC_NEW_TX` | blocks inline | yes (savepoint inside caller's TX) | **no — discarded** | non-fatal for the processor's own failure — warning logged, pipeline continues; a savepoint that cannot be created, undone or released fails the operation instead (ticketed `5xx`), and a superseded enclosing callout is not swallowed either | fire-and-forget side effects (notifications, audit pings) |
-| `COMMIT_BEFORE_DISPATCH` | blocks inline | **no** — `TX_pre` committed first | yes, via `CompareAndSave` against `T_pre` | fatal — the callout's error (see `cyoda help workflows`), entity durable in pre-callout state | slow external work; connection-pool relief |
+| `ASYNC_NEW_TX` | blocks inline | yes (savepoint inside caller's TX) | **no — discarded** | non-fatal for the processor's own failure — warning logged, pipeline continues; a savepoint that cannot be created, undone or released fails the operation instead (ticketed `5xx`), a callback write inside the savepoint that had already lost a race when the savepoint was undone fails it with a retryable `409 CONFLICT` and nothing commits, and a superseded enclosing callout is not swallowed either | fire-and-forget side effects (notifications, audit pings) |
+| `COMMIT_BEFORE_DISPATCH` | blocks inline | **no** — `TX_pre` committed first | yes, via `CompareAndSave` against `T_pre` | fatal — the callout's error (see `cyoda help workflows`), or, with `startNewTxOnDispatch`, a retryable `409 CONFLICT` when a callback write in `TX_post` had already lost a race; entity durable in pre-callout state | slow external work; connection-pool relief |
 
 The engine implementation is in
 [`internal/domain/workflow/engine_processors.go`](../internal/domain/workflow/engine_processors.go).
@@ -75,7 +75,11 @@ which of the two strings was used.
 4. The gRPC call uses `Config.ResponseTimeoutMs` (default 30000ms) as the
    round-trip deadline.
 5. On a successful response, `entity.Data` is replaced with the processor's
-   returned mutations and the pipeline continues to the next processor.
+   returned mutations and the pipeline continues to the next processor. When
+   the processor returns no mutations and a callback wrote the entity in `T`
+   during the dispatch, `entity.Data` takes that write instead; the engine
+   keeps its own state and metadata, so the transition still takes effect
+   and later processors see the written payload.
 6. On any failure the engine returns `processor X failed: …`, wrapping
    whatever error ended the callout: the member's own `400 WORKFLOW_FAILED`
    when it answered `success:false`, or a retryable `5xx`
@@ -102,12 +106,24 @@ When a callback arrives carrying the token, the receiving node verifies the
 HMAC and joins the transaction: if `NodeID` equals self, it calls
 `Join(TxRef)` locally; otherwise it forwards the full request to the owning
 node (HTTP: reverse proxy; gRPC: B→A forward). Inside `T` the callback
-sees the cascade's uncommitted writes — including via search (read-your-own-writes);
-other readers do not.
+sees the writes stored in `T` — including via search (read-your-own-writes);
+other readers do not. The engine saves the cascade's entity to `T` only when
+the cascade ends and before each `COMMIT_BEFORE_DISPATCH` processor, so until
+then a callback read of it returns the last saved version (on a create: not
+found); the processor's request carries the current payload. See
+`cyoda help workflows`, "What a callback read of the entity returns".
 
 A callback ack is **provisional** — it is not durable until the owning
 transaction commits. If the processor fails or the engine rolls back `T`,
 all callback writes are rolled back atomically with the rest of the cascade.
+
+A callback write that loses a race — another transaction committed the same
+entity or task row after `T` began — dooms `T`. If the processor then fails,
+for that reason or any other, the operation answers a retryable
+`409 CONFLICT`, not the processor's failure, on every backend: the engine asks
+`TransactionManager.LostRace` after a failed dispatch. PostgreSQL refuses the
+losing write itself; memory and sqlite accept it into the buffer and would
+refuse `T` at commit, and `LostRace` answers the same for both.
 
 When the token is absent (empty `cyodatxtoken`), the callback runs in a
 standalone transaction (`Begin`/`Commit`). This is the normal case for
@@ -153,8 +169,11 @@ non-fatal. The engine code is `executeAsyncNewTx` at
    made via gRPC callbacks; a warning is logged at WARN level; **the pipeline
    continues** to the next processor. A savepoint that cannot be created,
    undone or released is not a processor failure: it fails the operation with
-   a ticketed `5xx` and nothing commits. A replaced compute member is shut out
-   before the savepoint is undone, so none of its writes lands after it.
+   a ticketed `5xx` and nothing commits. A callback write that had already
+   lost a race against another transaction stays lost after the rollback: the
+   operation fails with a retryable `409 CONFLICT` and nothing commits. A
+   replaced compute member is shut out before the savepoint is undone, so none
+   of its writes lands after it.
 4. On success: `ReleaseSavepoint(T, S)` discards the savepoint marker.
 
 ### Why mutations are discarded
@@ -179,9 +198,12 @@ The engine sends a tx-token to the compute node (same mechanism as `SYNC` —
 see §2 Transaction-bound callbacks). Callbacks that echo the token join `T`
 directly (via `txMgr.Join`). The engine independently scopes the entire
 dispatch in a savepoint `S`: if the processor fails, `RollbackToSavepoint(T, S)`
-undoes all callback writes and the pipeline continues; if the processor
+undoes all callback writes and the pipeline continues, unless one of them had
+already lost a race, which fails the operation with a retryable `409 CONFLICT`; if the processor
 succeeds, `ReleaseSavepoint(T, S)` retains those writes inside `T` (subject
-to `T`'s eventual commit). A savepoint that cannot be created, undone or
+to `T`'s eventual commit). A callback write to the entity the processor runs
+for is the exception: the engine does not adopt it, and its own write of
+that entity later in `T` replaces it. A savepoint that cannot be created, undone or
 released fails the operation instead of continuing the pipeline (a ticketed
 `5xx`); a chain superseded by fencing does not touch its savepoint at all, so
 a replaced compute member's writes never land after it.
@@ -251,15 +273,25 @@ rejects this flag for any other execution mode.
 
 #### `startNewTxOnDispatch = true`
 
-- Engine sequence: `Save → Commit(T_pre) → Begin(T_post) → dispatch with
-  T_post's token in context → CompareAndSave(T_pre) → cascade continues in
-  T_post`.
+- Engine sequence: `Save → Commit(T_pre) → Begin(T_post) → read the
+  anchor in T_post and require T_pre's version → dispatch with T_post's
+  token in context → CompareAndSave → cascade continues in T_post`.
+- The read before the dispatch requires `T_pre`'s version: if another
+  transaction wrote or deleted the anchor after `T_pre` committed, the
+  transition fails with a conflict before the processor is dispatched. The
+  read also puts the anchor in `T_post`'s read set, so a later write by
+  another transaction fails at commit.
 - The processor's CRUD callbacks join `T_post`. It can read/write other
-  entities transactionally.
+  entities transactionally, and the cascade-anchor entity too. The
+  `CompareAndSave` compares against `T_post` when a callback wrote the
+  anchor in `T_post`, and against `T_pre` otherwise. When the processor
+  returns no mutations, the callback's write is kept, as in `SYNC`. A
+  callback that deletes the anchor fails the transition, and a write by any
+  other transaction conflicts.
 - **Hazard — last-writer-wins on the cascade-anchor entity.** If the
   processor writes the cascade-anchor entity through its TX-callback AND
   returns mutations for the same entity in its result, the engine's
-  `CompareAndSave(T_pre)` overwrites the processor's intra-TX writes (the
+  `CompareAndSave` overwrites the processor's intra-TX writes (the
   result is applied last). Pick one path: either let the engine apply the
   result, or have the processor write the entity itself and return no
   mutations for it. The same warning applies in `SYNC` /
@@ -267,28 +299,32 @@ rejects this flag for any other execution mode.
 
 ### `If-Match` precondition
 
-If the caller supplied an `If-Match: <txID>` header on the API request, the
-engine applies it as a `CompareAndSave` against the supplied txID at the
-**first segment flush** of the cascade — i.e. before `T_pre` commits and
-before the processor is dispatched. This is consumed exactly once
-(`consumeIfMatch` at `engine_processors.go:213`). A mismatch surfaces as
-`spi.ErrConflict` → `412 Precondition Failed`, an audit
-`TRANSITION_ABORTED` event is emitted with
-`{reason: ENTITY_MODIFIED, expectedTxId, actualTxId}`, and `T_pre` is rolled
-back — no segmentation happens, no external dispatch fires.
+If the caller supplied an `If-Match: <txID>` header on the API request, it
+states the version the request starts from. The engine checks it once, when
+the transition starts: against the entity as the request's transaction read
+it, after `STATE_MACHINE_START` and before it selects a workflow, runs a
+criterion or dispatches a processor (`checkIfMatch` in
+`internal/domain/workflow/transition_aborted.go`). A mismatch surfaces as
+`spi.ErrConflict` → `412 Precondition Failed`, an audit `TRANSITION_ABORTED`
+event is recorded with `{reason: ENTITY_MODIFIED, expectedTxId, actualTxId}`,
+and `T_pre` is rolled back — no segment commits, no external dispatch fires.
 
-Subsequent `COMMIT_BEFORE_DISPATCH` segments in the same cascade fall back to
-chained-CAS against the prior segment's commit-stamped txID; no further
-`If-Match` is honoured.
+A write to the entity later in the same transaction — a joined callback's, a
+segment's own — is the request's own and does not break the precondition. The
+first segment flush is a plain save. A write that another transaction commits
+after the request's read fails the commit of `T_pre` (or of the request's
+transaction when nothing segments), and the request answers a retryable
+`409 CONFLICT`.
 
 ### Failure semantics
 
 | Failure | Outcome |
 |---|---|
-| Processor's member answers `success:false` | `T_post` rolled back, entity durable in pre-callout state, `400 WORKFLOW_FAILED` with the member's message |
+| Processor's member answers `success:false` | `T_post` rolled back, entity durable in pre-callout state, `400 WORKFLOW_FAILED` with the member's message — or, with `startNewTxOnDispatch`, a retryable `409 CONFLICT` when a callback write in `T_post` had already lost a race |
 | No answer, or the member disconnects | another member is tried only if the processor is `idempotent`; otherwise `T_post` rolled back, `503` with the try's own code |
-| CAS conflict at apply-result boundary | `T_post` rolled back, entity durable in pre-callout state, error bubbles as `409 retryable`, client may retry |
-| `If-Match` mismatch at first-segment flush | `T_pre` rolled back, no dispatch, `412 Precondition Failed`, `TRANSITION_ABORTED` audit event emitted |
+| CAS conflict at apply-result boundary (another transaction changed the entity during the dispatch) | `T_post` rolled back, entity durable in pre-callout state; a single update answers `412 ENTITY_MODIFIED`, a collection update fails whole with `400 WORKFLOW_FAILED`. Not retryable as-is: the callout already fired |
+| `If-Match` mismatch when the transition starts | `T_pre` rolled back, no dispatch, `412 Precondition Failed`, `TRANSITION_ABORTED` audit event recorded |
+| `T_pre`'s commit refused (another transaction committed a change first) | nothing committed, no dispatch, `409 CONFLICT`, retryable |
 | Infrastructure failure (Begin, Commit, EntityStore lookup) | wrapped with `ErrCommitBeforeDispatchInfra`, mapped to sanitized 5xx with ticket UUID — not 4xx (we don't leak driver text) |
 | Engine crash between segments | entity durable in pre-callout state; in-flight cascade is gone; client must retry the same API call to re-fire the cascade from the start |
 
@@ -355,16 +391,18 @@ caller-supplied value there is not honoured.
 `CompareAndSave(entity, expectedTxID)` reads the current row's stamp; on
 mismatch it returns `spi.ErrConflict`. `expectedTxID` must be non-empty — the
 empty string is a caller error, rejected before any read or write — so
-`CompareAndSave` only ever updates an entity that exists. Three places use it,
+`CompareAndSave` only ever updates an entity that exists. Two places use it,
 and each names a txID a prior read found:
 
-- **`If-Match` request header** — handler-side optimistic concurrency for
-  ordinary updates (see `crud.md`).
-- **First-segment flush of `COMMIT_BEFORE_DISPATCH`** — applies the
-  request's `If-Match` precondition before the segment commits.
 - **Apply-result phase of `COMMIT_BEFORE_DISPATCH`** — applies the
   processor's mutations against `T_pre`'s stamped txID, catching concurrent
   writes that happened during the dispatch.
+- **The final persist of a scheduled run** — against the entity's version as
+  the run read it, or the run's own write.
+
+The `If-Match` request header is not a `CompareAndSave`: the engine compares
+it with the version the request's transaction read, when the transition
+starts (see above).
 
 ### Audit events
 
@@ -374,8 +412,9 @@ client-side correlation continuity:
 - `STATE_MACHINE_PROCESSING_PAUSED` once before the processor pipeline begins.
 - `STATE_PROCESS_RESULT` after each processor with `{success: bool, mode:
   string}`. `success:false` is emitted even for `ASYNC_NEW_TX` failures.
-- `TRANSITION_ABORTED` on `If-Match` rejection at first-segment flush, with
-  `{reason: ENTITY_MODIFIED, expectedTxId, actualTxId}`.
+- `TRANSITION_ABORTED` on `If-Match` rejection, right after
+  `STATE_MACHINE_START`, with `{reason: ENTITY_MODIFIED, transitionName,
+  expectedTxId, actualTxId}`.
 
 `STATE_PROCESS_RESULT` deliberately does **not** include the error string —
 engine-wrapped error text (e.g. raw pgx messages) could leak internals to
@@ -394,13 +433,11 @@ A cascade that hits a limit emits `STATE_MACHINE_CANCELLED` and returns
 
 ### Engine return value: `EngineResult`
 
-The engine returns `(FinalCtx, FinalTxID, Segmented bool)`. For
-non-segmenting cascades `FinalTxID` equals the input txID and the caller's
-handler commits it. For segmenting cascades `FinalTxID` is `T_post`'s ID
-(the engine already committed all prior `T_pre`s); the handler commits
-`T_post`. The `Segmented` flag tells the handler whether the engine already
-consumed the request's `If-Match` (it has) or whether the handler should
-apply post-engine CAS itself (only for non-segmenting cascades).
+The engine returns `(FinalCtx, FinalTxID)`. For non-segmenting cascades
+`FinalTxID` equals the input txID and the caller's handler commits it. For
+segmenting cascades `FinalTxID` is `T_post`'s ID (the engine already
+committed all prior `T_pre`s); the handler saves the entity in `T_post` and
+commits it.
 
 ---
 
@@ -417,7 +454,12 @@ contract from the engine's point of view.
   buffer; `Commit` performs SI+FCW validation against the committed log and
   flushes the buffer under `factory.entityMu.Lock`.
 - Savepoints are deep-copy snapshots of the buffer/readSet/writeSet/deletes
-  maps. `RollbackToSavepoint` restores by wholesale assignment.
+  maps. `RollbackToSavepoint` restores by wholesale assignment and cuts the
+  staged scheduled-task writes back to the savepoint. Before it does, it
+  checks the writes it discards against the committed log: when another
+  transaction committed one of those entities or task rows after the
+  snapshot, the transaction is marked and `Commit` refuses it with
+  `spi.ErrConflict`.
 - `CompareAndSave` checks the committed store (not the buffer) for the txID
   stamp under read locks for TOCTOU safety.
 - `COMMIT_BEFORE_DISPATCH`'s `Commit(T_pre)` is a synchronous flush; nothing
@@ -431,7 +473,10 @@ contract from the engine's point of view.
   monotonic submit time in `submit_times`, and commits the SQLite TX.
 - Savepoints are app-layer snapshots, **not** real SQLite SAVEPOINTs —
   SQLite's native rollback would not restore the application-layer
-  readSet/writeSet, breaking SI+FCW validation.
+  readSet/writeSet, breaking SI+FCW validation. `RollbackToSavepoint` marks a
+  transaction whose discarded write, to an entity or a scheduled-task row,
+  another transaction had already committed, and `Commit` refuses it with
+  `spi.ErrConflict`, as on memory.
 - `COMMIT_BEFORE_DISPATCH`'s benefit on SQLite is modest (no connection pool
   to relieve) but valid for clean transaction-boundary audit semantics.
 
@@ -445,7 +490,9 @@ contract from the engine's point of view.
   `spi.ErrConflict`.
 - Savepoints are **real** `SAVEPOINT` / `ROLLBACK TO` / `RELEASE` SQL,
   paired with an app-layer stack of readSet/writeSet snapshots so the
-  isolation-validation state matches the database state.
+  isolation-validation state matches the database state. A `40001`/`40P01`
+  recorded inside a savepoint survives `ROLLBACK TO`, and `Commit` refuses the
+  transaction with it.
 - `COMMIT_BEFORE_DISPATCH`'s primary win is here: long external work no
   longer holds a pooled connection. The design (see
   [`docs/superpowers/specs/2026-05-04-issue-27-commit-before-dispatch-design.md`](superpowers/specs/2026-05-04-issue-27-commit-before-dispatch-design.md))
@@ -548,9 +595,13 @@ currently a labelling-only variant.
 - `classifyWorkflowError` maps engine outputs to HTTP:
   - `ErrCommitBeforeDispatchInfra` → sanitized 5xx with ticket UUID
   - `ErrTransitionNotFound` → 400 `TRANSITION_NOT_FOUND`
-  - `spi.ErrConflict` from CAS → 409 retryable (or 412 if `If-Match`)
+  - the request's `If-Match` mismatch, or the apply-result CAS conflict after
+    a committed segment → 412 `ENTITY_MODIFIED`
+  - any other `spi.ErrConflict` (a refused commit, a lost write race) → 409
+    `CONFLICT`, retryable
   - a processor's `success:false` verdict → 400 `WORKFLOW_FAILED` with the
-    member's message
+    member's message, unless a callback write of the processor had already
+    lost a race: then 409 `CONFLICT`, retryable
   - a callout that used every try without an answer → a retryable `5xx`
     (`CALLOUT_FAILED`, `COMPUTE_MEMBER_DISCONNECTED`, `DISPATCH_TIMEOUT` or
     `NO_COMPUTE_MEMBER_FOR_TAG`)
@@ -567,7 +618,7 @@ currently a labelling-only variant.
 | `ASYNC_NEW_TX` | `engine_processors.go:158` |
 | `COMMIT_BEFORE_DISPATCH` | `engine_processors.go:201` |
 | Segment flush + commit | `engine_processors.go:314` |
-| `If-Match` plumbing | `internal/domain/workflow/ifmatch.go` |
+| `If-Match` check | `internal/domain/workflow/transition_aborted.go` |
 | `TRANSITION_ABORTED` audit | `internal/domain/workflow/transition_aborted.go` |
 | gRPC processor dispatch | `internal/grpc/dispatch.go:43` |
 | Tx-token mint + attach to CloudEvent | `internal/grpc/dispatch.go` (token injected before dispatch) |

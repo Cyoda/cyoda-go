@@ -138,7 +138,7 @@ func tryOnce(d *ProcessorDispatcher, ctx context.Context, member *Member, reques
 	if err != nil {
 		return nil, err
 	}
-	_, failure, ctxErr := d.dispatchCalloutToMember(ctx, member, call, pass)
+	_, failure, _, ctxErr := d.dispatchCalloutToMember(ctx, member, call, pass)
 	switch {
 	case ctxErr != nil:
 		return nil, ctxErr
@@ -394,9 +394,9 @@ func TestDispatchProcessor_NoAttachEntity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// With no payload in response, original entity is returned.
-	if result != entity {
-		t.Error("expected original entity when response has no payload")
+	// No payload in the response: no entity, never the one dispatched.
+	if result != nil {
+		t.Errorf("result = %+v; want nil when the response has no payload", result)
 	}
 }
 

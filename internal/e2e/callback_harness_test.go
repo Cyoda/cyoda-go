@@ -232,6 +232,14 @@ func newCalloutHarness(t *testing.T, configure func(*app.Config)) *callbackHarne
 	}
 	cfg.GRPC.Port = grpcLis.Addr().(*net.TCPAddr).Port
 
+	// No scheduler unless the test asks for one. A claim is cross-tenant, and
+	// the PostgreSQL stacks of this package (this harness, newStandaloneApp,
+	// the TestMain app) share one database; only newSchedulerHarness and
+	// newStackOn give a stack a database of its own. A scheduler on the shared
+	// database would claim, and run through this stack's engine, tasks another
+	// test's stack armed. newStandaloneApp and TestMain turn theirs off too.
+	cfg.Scheduler.Enabled = false
+
 	if configure != nil {
 		configure(&cfg)
 	}
@@ -242,12 +250,11 @@ func newCalloutHarness(t *testing.T, configure func(*app.Config)) *callbackHarne
 
 	go func() { _ = a.GRPCServer().Serve(grpcLis) }()
 	t.Cleanup(func() { _ = a.Close() })
-	// t.Cleanup runs LIFO: this Shutdown (stops the scheduler and TTL/tx
-	// reapers) is registered after Close so it runs BEFORE Close tears down
-	// the store pool. Without it the scheduler's 1s scan loop keeps ticking
-	// against a closed pool and spams ERROR logs for the rest of the test
-	// binary's life (mirrors the app.New/Shutdown/Close ordering used by
-	// cors_e2e_test.go and iam_gated_fixtures_test.go).
+	// t.Cleanup runs LIFO: this Shutdown is registered after Close so it runs
+	// BEFORE Close. Shutdown stops the scheduler, if the test enabled one, and
+	// the TTL/tx reapers before Close tears down the store pool (mirrors the
+	// app.New/Shutdown/Close ordering used by cors_e2e_test.go and
+	// iam_gated_fixtures_test.go).
 	t.Cleanup(a.Shutdown)
 
 	h.grpcAddr = grpcLis.Addr().String()
@@ -265,13 +272,8 @@ func newCalloutHarness(t *testing.T, configure func(*app.Config)) *callbackHarne
 }
 
 // newCallbackHarnessConfigured is newCallbackHarness with an optional cfg
-// mutator applied to app.DefaultConfig() just before app.New — e.g. Task
-// 9.2's expiry-elapsed-before-scan scenario disables this stack's built-in
-// scheduler (cfg.Scheduler.Enabled = false) so it can drive its own
-// bespoke, precisely-timed scheduler.Service instead (mirrors
-// TestE2E_ScheduledTransition_RestartDurability's approach), eliminating
-// the race window a live default-cadence scheduler ticking mid-flight would
-// otherwise create. configure may be nil (identical to newCallbackHarness).
+// mutator applied to app.DefaultConfig() just before app.New. configure may
+// be nil (identical to newCallbackHarness).
 func newCallbackHarnessConfigured(t *testing.T, configure func(*app.Config)) *callbackHarness {
 	t.Helper()
 	h := newCalloutHarness(t, configure)
@@ -672,6 +674,9 @@ type cnodeReply struct {
 	// boolean at all, so the answer does not decode into the shape its event
 	// type promises. Assembled as a map for the same reason as nullSuccess.
 	badSuccess bool // replyOK
+	// nullData answers a processor with `"payload": {"data": null}`: a
+	// payload whose data is null, which says the same as no payload.
+	nullData bool // replyOK, processor
 }
 
 // answerOK answers success: a processor leaves the entity unchanged, a
@@ -718,6 +723,10 @@ func neverAnswer() cnodeReply { return cnodeReply{kind: replySilent} }
 // closeStream closes the cnode's stream on receiving the work, without answering.
 func closeStream() cnodeReply { return cnodeReply{kind: replyCloseStream} }
 
+// answerNullData answers a processor with success and a payload whose data is
+// null.
+func answerNullData() cnodeReply { return cnodeReply{kind: replyOK, nullData: true} }
+
 // answerMalformedPayload answers success=true with a payload that is a JSON
 // string, not an object: the one failure a cnode can cause that would fail
 // identically on any other cnode.
@@ -756,7 +765,10 @@ func (r cnodeReply) cloudEvent(req calcRequest) (*cepb.CloudEvent, error) {
 		body["resultKind"] = r.resultKind
 		body["result"] = r.result
 	default:
-		if r.data != nil {
+		switch {
+		case r.nullData:
+			body["payload"] = map[string]any{"data": nil}
+		case r.data != nil:
 			body["payload"] = map[string]any{"data": r.data}
 		}
 	}

@@ -59,6 +59,11 @@ type FunctionResult struct {
 // ExternalProcessingService dispatches processor execution and criteria evaluation
 // to external calculation nodes.
 type ExternalProcessingService interface {
+	// DispatchProcessor runs a processor on an external node. It returns the
+	// entity data the processor answered with, or a nil entity when the
+	// processor answered with no payload — never the entity it was given.
+	// A nil entity leaves the entity as it is in the transaction, including a
+	// write the processor made to it through a joined callback.
 	DispatchProcessor(ctx context.Context, entity *spi.Entity, processor spi.ProcessorDefinition, workflowName string, transitionName string, txID string) (*spi.Entity, error)
 	// DispatchCriteria evaluates a FUNCTION criterion on an external node.
 	// reason carries the compute node's explanation for the result (empty

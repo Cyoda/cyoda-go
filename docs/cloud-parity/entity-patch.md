@@ -130,8 +130,9 @@ for structural symmetry with the PUT routes; only `JSON` is accepted for PATCH.
 ### 409 vs 412
 
 **412** is the *up-front* conditional rejection: the caller's `If-Match`
-transactionId no longer matches the stored one at the point of the conditional
-save. The stored entity moved before the merge began.
+transactionId does not match the entity as the request's transaction read it,
+when the request's transition started. The stored entity moved before the
+merge began. See `entity-if-match.md`.
 
 **409** is the *commit-time* read-set conflict: the transaction manager detects
 that a concurrent writer touched the base entity after the in-transaction

@@ -140,6 +140,18 @@ func Operational(status int, code string, message string) *AppError {
 	}
 }
 
+// ModelAdminInJoinedTransaction is the refusal a request that carries a
+// transaction token meets on a model or workflow administration operation.
+// Model and workflow administration never runs inside a transaction: the
+// request is refused before the token is verified and before anything is
+// read, joined or written. The HTTP and gRPC doors answer with this one
+// error, so the message is written once.
+func ModelAdminInJoinedTransaction() *AppError {
+	return Operational(http.StatusBadRequest, ErrCodeModelAdminInJoinedTransaction,
+		"model and workflow administration cannot run inside a transaction: "+
+			"the request carries a transaction token; make it without the token, as an independent request")
+}
+
 // StorageUnavailable returns a retryable 503 AppError when err carries the
 // storage layer's transient-unavailability marker, and nil when it does not.
 //
@@ -164,6 +176,23 @@ func StorageUnavailable(err error) *AppError {
 		).AsRetryable().WithCause(err)
 	}
 	return nil
+}
+
+// TxAbortedConflict answers an error that is a consequence of an earlier
+// conflict in its transaction (spi.ErrTxAborted): a retryable 409 CONFLICT with
+// err attached as the cause. It returns nil for any other error. A backend
+// that aborts the transaction on a conflict returns spi.ErrTxAborted for a
+// statement it refuses afterwards; the workflow engine returns it, on every
+// backend, for a processor that failed after the transaction lost a write race.
+//
+// An If-Match compare-and-save that meets such a transaction never evaluated
+// the precondition, so it must not be answered as 412 ENTITY_MODIFIED. Every
+// compare that maps a conflict to 412 asks this first.
+func TxAbortedConflict(err error) *AppError {
+	if err == nil || !errors.Is(err, spi.ErrTxAborted) {
+		return nil
+	}
+	return Operational(http.StatusConflict, ErrCodeConflict, "transaction conflict — retry").AsRetryable().WithCause(err)
 }
 
 // Internal creates a 500 error with internal detail from the wrapped error.

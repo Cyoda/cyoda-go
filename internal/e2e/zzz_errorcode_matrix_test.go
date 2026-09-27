@@ -106,6 +106,7 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 		{Status: 400, Code: "BAD_REQUEST"},        // unparseable body, or a payload carrying U+0000 (TestEntity_NulInPayload_400)
 		{Status: 400, Code: "WORKFLOW_FAILED"},    // engine rejected the loopback — e.g. an unevaluable workflow selection criterion (TestWorkflowSelection_UnevaluableCriterionFailsClosedOnEveryDoor)
 		{Status: 409, Code: "UNIQUE_VIOLATION"},   // TestUniqueKeys_UpdateMovesKey
+		{Status: 412, Code: "ENTITY_MODIFIED"},    // TestIfMatch_StaleLoopbackPut412
 		{Status: 422, Code: "INVALID_UNIQUE_KEY"}, // TestUniqueKeys_LoopbackUpdatePartialKey
 		// 409 CONFLICT is exempt (universalCrossCuttingCodes)
 	},
@@ -130,6 +131,13 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 		{Status: 422, Code: "INVALID_UNIQUE_KEY"},     // TestUniqueKeys_PatchNullsKeyField
 		{Status: 428, Code: "PRECONDITION_REQUIRED"},  // If-Match header absent
 		{Status: 501, Code: "NOT_IMPLEMENTED"},        // application/json-patch+json not yet implemented
+	},
+	// GET /scheduled-tasks. 401 and 500 are cross-cutting (below). The 503 is
+	// produced on a private torn-connection harness that is not behind the
+	// conformance validator (TestScheduledTasks_TornConnection_503), so it is
+	// not a cell here.
+	"listScheduledTasks": {
+		{Status: 400, Code: "BAD_REQUEST"}, // TestScheduledTasks_InvalidParameters_400
 	},
 }
 

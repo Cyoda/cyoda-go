@@ -24,10 +24,16 @@ import (
 //     existing row for the transition and recording an EXPIRE audit event.
 //   - Otherwise timeoutMs is the gap between expiry and fire time (nil when
 //     no expiry was supplied — never expires).
+//   - The resolved fire time, and the resolved expiry when present, must
+//     each land in [minScheduleMs, maxScheduleMs] (see addScheduleMs) —
+//     the range a time.Time can render as RFC 3339 — computed without
+//     int64 overflow; a negative fireAfterMs/expireAfterMs is rejected the
+//     same way, before any arithmetic.
 //
 // A structurally invalid result (wrong field combination, non-numeric
-// value, or an unknown field) returns a *common.AppError classified 500 —
-// the failure is in the compute node's response, not the caller's request.
+// value, an unknown field, or a fire/expiry time outside the renderable
+// range) returns a *common.AppError classified 500 — the failure is in the
+// compute node's response, not the caller's request.
 func resolveSchedule(raw json.RawMessage, armMs int64) (scheduledTime int64, timeoutMs *int64, bornExpired bool, err error) {
 	var s struct {
 		FireAt        *int64 `json:"fireAt"`
@@ -49,17 +55,38 @@ func resolveSchedule(raw json.RawMessage, armMs int64) (scheduledTime int64, tim
 
 	var sched int64
 	if s.FireAt != nil {
-		sched = *s.FireAt
+		v, ok := addScheduleMs(*s.FireAt, 0)
+		if !ok {
+			return 0, nil, false, invalidScheduleResult("fireAt is outside the renderable range")
+		}
+		sched = v
 	} else {
-		sched = armMs + *s.FireAfterMs
+		if *s.FireAfterMs < 0 {
+			return 0, nil, false, invalidScheduleResult("fireAfterMs must not be negative")
+		}
+		v, ok := addScheduleMs(armMs, *s.FireAfterMs)
+		if !ok {
+			return 0, nil, false, invalidScheduleResult("fireAfterMs produces an unrenderable fire time")
+		}
+		sched = v
 	}
 
 	var expiry *int64
 	switch {
 	case s.ExpireAt != nil:
-		expiry = s.ExpireAt
+		v, ok := addScheduleMs(*s.ExpireAt, 0)
+		if !ok {
+			return 0, nil, false, invalidScheduleResult("expireAt is outside the renderable range")
+		}
+		expiry = &v
 	case s.ExpireAfterMs != nil:
-		v := sched + *s.ExpireAfterMs
+		if *s.ExpireAfterMs < 0 {
+			return 0, nil, false, invalidScheduleResult("expireAfterMs must not be negative")
+		}
+		v, ok := addScheduleMs(sched, *s.ExpireAfterMs)
+		if !ok {
+			return 0, nil, false, invalidScheduleResult("expireAfterMs produces an unrenderable expiry time")
+		}
 		expiry = &v
 	}
 

@@ -719,6 +719,105 @@ func TestValidator_FunctionMissingCalculationNodesTags_Rejected(t *testing.T) {
 	}
 }
 
+// --- Schedule.TimeoutMs / Schedule.DelayMs published minimums -------------
+//
+// api/openapi.yaml's TransitionScheduleDto declares `timeoutMs` minimum 0
+// and `delayMs` minimum 1, but neither bound was enforced server-side:
+//   - A negative timeoutMs was accepted outright (no check existed at all).
+//   - A negative delayMs alongside a function was accepted and silently
+//     ignored: hasDelay := DelayMs > 0 reads it as "delayMs absent", so the
+//     delayMs/function XOR check sees only the function and passes.
+// A negative delayMs with NO function was, and remains, already rejected —
+// by the XOR check itself, as the "neither present" shape (see
+// TestValidator_DelayMsNegative_Rejected above) — so that path needs no
+// new branch.
+
+func TestValidator_TimeoutMsNegative_Rejected(t *testing.T) {
+	tm := int64(-1)
+	wf := spi.WorkflowDefinition{
+		Version:      "1",
+		Name:         "test",
+		InitialState: "S1",
+		Active:       true,
+		States: map[string]spi.StateDefinition{
+			"S1": {
+				Transitions: []spi.TransitionDefinition{
+					{Name: "T1", Next: "S1", Manual: false, Schedule: &spi.TransitionSchedule{DelayMs: 1000, TimeoutMs: &tm}},
+				},
+			},
+		},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil {
+		t.Fatal("expected a negative schedule.timeoutMs to be rejected, got nil")
+	}
+	if !strings.Contains(err.Error(), "schedule.timeoutMs must not be negative") {
+		t.Errorf("error must name the timeoutMs rule, got: %v", err)
+	}
+	for _, want := range []string{`"test"`, `"S1"`, `"T1"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must name the offending workflow/state/transition (%s), got: %v", want, err)
+		}
+	}
+}
+
+func TestValidator_TimeoutMsNegative_RejectedWithFunctionSchedule(t *testing.T) {
+	tm := int64(-1)
+	sch := validFunctionSchedule()
+	sch.TimeoutMs = &tm
+	wf := spi.WorkflowDefinition{
+		Version:      "1",
+		Name:         "test",
+		InitialState: "S1",
+		Active:       true,
+		States: map[string]spi.StateDefinition{
+			"S1": {
+				Transitions: []spi.TransitionDefinition{
+					{Name: "T1", Next: "S1", Manual: false, Schedule: sch},
+				},
+			},
+		},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil || !strings.Contains(err.Error(), "schedule.timeoutMs must not be negative") {
+		t.Errorf("expected timeoutMs error on a function schedule too, got: %v", err)
+	}
+}
+
+// TestValidator_DelayMsNegativeWithFunction_Rejected is the bug the XOR
+// check alone misses: hasDelay is false for ANY non-positive DelayMs
+// (including negative), so a negative delayMs alongside a function reads
+// as "function-only" and passed silently before this fix.
+func TestValidator_DelayMsNegativeWithFunction_Rejected(t *testing.T) {
+	sch := validFunctionSchedule()
+	sch.DelayMs = -1
+	wf := spi.WorkflowDefinition{
+		Version:      "1",
+		Name:         "test",
+		InitialState: "S1",
+		Active:       true,
+		States: map[string]spi.StateDefinition{
+			"S1": {
+				Transitions: []spi.TransitionDefinition{
+					{Name: "T1", Next: "S1", Manual: false, Schedule: sch},
+				},
+			},
+		},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil {
+		t.Fatal("expected a negative schedule.delayMs alongside a function to be rejected, got nil")
+	}
+	if !strings.Contains(err.Error(), "schedule.delayMs must not be negative") {
+		t.Errorf("error must name the delayMs rule, got: %v", err)
+	}
+	for _, want := range []string{`"test"`, `"S1"`, `"T1"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must name the offending workflow/state/transition (%s), got: %v", want, err)
+		}
+	}
+}
+
 // --- allowCycles bypass behaviour ----------------------------------------
 
 // cyclicWorkflow builds S1 -automated, no criterion-> S2 -automated, no

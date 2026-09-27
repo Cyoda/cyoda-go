@@ -2,602 +2,495 @@ package scheduler
 
 import (
 	"context"
-	"sync"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 )
 
-// --- fakes ---
+var fired = workflow.RunReport{Outcome: workflow.OutcomeFired}
 
-// fakeClock is a Clock whose Now() is fixed until the test explicitly
-// advances it, so scan-loop tests are deterministic instead of depending on
-// wall-clock ticker firings.
-type fakeClock struct {
-	mu  sync.Mutex
-	now time.Time
-}
-
-func newFakeClock(now time.Time) *fakeClock {
-	return &fakeClock{now: now}
-}
-
-func (c *fakeClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-// set updates the fake clock's current time, letting a test advance "now"
-// deterministically between ticks (e.g. to cross a RedispatchBackoff window)
-// without any wall-clock sleeping.
-func (c *fakeClock) set(now time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = now
-}
-
-// fakeRegistry returns a fixed member list.
-type fakeRegistry struct {
-	members []contract.NodeInfo
-}
-
-func (r *fakeRegistry) Register(_ context.Context, _ string, _ string) error { return nil }
-func (r *fakeRegistry) Lookup(_ context.Context, _ string) (string, bool, error) {
-	return "", false, nil
-}
-func (r *fakeRegistry) List(_ context.Context) ([]contract.NodeInfo, error) {
-	return r.members, nil
-}
-func (r *fakeRegistry) Deregister(_ context.Context, _ string) error { return nil }
-func (r *fakeRegistry) Changed() <-chan struct{}                     { return nil }
-
-// capturingExecutor records every (task, target) pair passed to Execute.
-// Since tick() now dispatches Execute from its own goroutine, Execute may be
-// called concurrently, so the recorded slices are mutex-guarded, and calls
-// are additionally signalled on a buffered channel so tests can
-// deterministically wait for N dispatches instead of guessing with
-// time.Sleep.
-type capturingExecutor struct {
-	mu      sync.Mutex
-	tasks   []spi.ScheduledTask
-	targets []string
-	notify  chan struct{}
-}
-
-func newCapturingExecutor() *capturingExecutor {
-	return &capturingExecutor{notify: make(chan struct{}, 256)}
-}
-
-func (e *capturingExecutor) Execute(_ context.Context, task spi.ScheduledTask, target string) {
-	e.mu.Lock()
-	e.tasks = append(e.tasks, task)
-	e.targets = append(e.targets, target)
-	e.mu.Unlock()
-	e.notify <- struct{}{}
-}
-
-func (e *capturingExecutor) seen() []spi.ScheduledTask {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	out := make([]spi.ScheduledTask, len(e.tasks))
-	copy(out, e.tasks)
-	return out
-}
-
-func (e *capturingExecutor) seenTargets() []string {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	out := make([]string, len(e.targets))
-	copy(out, e.targets)
-	return out
-}
-
-// waitForDispatches blocks until n Execute calls have been observed (via the
-// notify channel), failing the test if that doesn't happen within timeout.
-// This replaces sleep-and-hope polling: since dispatch now happens on
-// goroutines spawned by tick(), tests must synchronize on the dispatch
-// actually having occurred rather than assuming tick() returning means
-// Execute has run.
-func (e *capturingExecutor) waitForDispatches(t *testing.T, n int, timeout time.Duration) {
-	t.Helper()
-	deadline := time.After(timeout)
-	for i := 0; i < n; i++ {
-		select {
-		case <-e.notify:
-		case <-deadline:
-			t.Fatalf("timed out waiting for dispatch %d/%d", i+1, n)
+// Start logs "scheduler started" at INFO with the incarnation, once. The
+// multi-node scenarios map a claim's owner to its pnode by this line; nothing
+// else exposes the mapping. A disabled service logs nothing.
+func TestService_StartLogsItsIncarnation(t *testing.T) {
+	logs := captureLogs(t)
+	h := newHarness(t, testConfig(), reportFirer(fired))
+	h.start(t)
+	if err := h.svc.Start(context.Background()); err != nil {
+		t.Fatalf("second Start: %v", err)
+	}
+	var lines []string
+	for _, l := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(l, `"msg":"scheduler started"`) {
+			lines = append(lines, l)
 		}
 	}
-}
+	if len(lines) != 1 {
+		t.Fatalf("%d 'scheduler started' lines, want exactly 1: %v", len(lines), lines)
+	}
+	if !strings.Contains(lines[0], `"level":"INFO"`) ||
+		!strings.Contains(lines[0], `"incarnation":"`+h.svc.incarnation.String()+`"`) {
+		t.Errorf("line = %s, want INFO with incarnation=%s", lines[0], h.svc.incarnation)
+	}
 
-// blockingExecutor is an Executor whose Execute blocks until the test signals
-// unblock, and records each call's arrival on started before blocking. Used
-// to prove tick() does not wait for Execute to finish.
-type blockingExecutor struct {
-	started chan struct{}
-	unblock chan struct{}
-	mu      sync.Mutex
-	tasks   []spi.ScheduledTask
-	targets []string
-}
-
-func newBlockingExecutor() *blockingExecutor {
-	return &blockingExecutor{
-		started: make(chan struct{}, 256),
-		unblock: make(chan struct{}),
+	off := testConfig()
+	off.Enabled = false
+	before := strings.Count(logs.String(), `"msg":"scheduler started"`)
+	newHarness(t, off, reportFirer(fired)).start(t)
+	if after := strings.Count(logs.String(), `"msg":"scheduler started"`); after != before {
+		t.Error("a disabled scheduler logged 'scheduler started'")
 	}
 }
 
-func (e *blockingExecutor) Execute(_ context.Context, task spi.ScheduledTask, target string) {
-	e.mu.Lock()
-	e.tasks = append(e.tasks, task)
-	e.targets = append(e.targets, target)
-	e.mu.Unlock()
-	e.started <- struct{}{}
-	<-e.unblock
-}
-
-func (e *blockingExecutor) seen() []spi.ScheduledTask {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	out := make([]spi.ScheduledTask, len(e.tasks))
-	copy(out, e.tasks)
-	return out
-}
-
-// countingRegistry wraps fakeRegistry and counts List calls, so tests can
-// infer how many ticks a running scan loop has performed without depending
-// on wall-clock sleeps to line up with dispatch outcomes.
-type countingRegistry struct {
-	fakeRegistry
-	calls *int32
-}
-
-func (r *countingRegistry) List(ctx context.Context) ([]contract.NodeInfo, error) {
-	atomic.AddInt32(r.calls, 1)
-	return r.fakeRegistry.List(ctx)
-}
-
-// --- test helpers ---
-
-func armTestTask(t *testing.T, factory spi.StoreFactory, id string, scheduledTime int64) {
-	t.Helper()
-	ctx := context.Background()
-	sts, err := factory.ScheduledTaskStore(ctx)
-	if err != nil {
-		t.Fatalf("ScheduledTaskStore: %v", err)
-	}
-	task := spi.ScheduledTask{
-		ID:            id,
-		TenantID:      "tenant-1",
-		Type:          spi.ScheduledTaskFireTransition,
-		ScheduledTime: scheduledTime,
-		EntityID:      "entity-1",
-		ModelName:     "TestModel",
-		ModelVersion:  1,
-		Transition:    "auto-close",
-		SourceState:   "OPEN",
-	}
-	if err := sts.Upsert(ctx, task); err != nil {
-		t.Fatalf("Upsert task %s: %v", id, err)
-	}
-}
-
-// --- tests ---
-
-func TestService_ScansAndDispatchesDueTasks(t *testing.T) {
-	factory := memory.NewStoreFactory()
-	clock := newFakeClock(time.UnixMilli(10_000))
-
-	armTestTask(t, factory, "due-task", 9_000)     // due: scheduledTime <= now
-	armTestTask(t, factory, "future-task", 20_000) // not due yet
-
-	exec := newCapturingExecutor()
-	svc := NewService(Config{
-		Enabled:           true,
-		ScanInterval:      time.Hour, // irrelevant — test calls tick() directly
-		RedispatchBackoff: 5 * time.Minute,
-		BatchSize:         10,
-	}, Deps{
-		Store:        factory,
-		Registry:     &fakeRegistry{members: []contract.NodeInfo{{NodeID: "n1"}}},
-		Coordinator:  LowestLiveNodeID{},
-		Distribution: Self{},
-		Clock:        clock,
-		Executor:     exec,
-		SelfID:       "n1",
-	})
-
-	svc.tick()
-	// tick() only hands due tasks off to goroutines; wait for the dispatch to
-	// actually land before asserting on it.
-	exec.waitForDispatches(t, 1, 2*time.Second)
-
-	seen := exec.seen()
-	if len(seen) != 1 {
-		t.Fatalf("expected 1 dispatched task, got %d: %+v", len(seen), seen)
-	}
-	if seen[0].ID != "due-task" {
-		t.Errorf("expected due-task dispatched, got %s", seen[0].ID)
-	}
-
-	targets := exec.seenTargets()
-	if len(targets) != 1 || targets[0] != "n1" {
-		t.Errorf("expected Execute to receive the Distribution.Pick target %q, got %+v", "n1", targets)
-	}
-
-	// MarkRedispatch should have pushed due-task's RedispatchAfter into the
-	// future, so a second tick at the same clock reading must not re-dispatch it.
-	// Nothing is dispatched on this tick, so no async goroutine is spawned —
-	// exec.seen() is stable to read immediately.
-	svc.tick()
-
-	seen = exec.seen()
-	if len(seen) != 1 {
-		t.Fatalf("expected still only 1 dispatched task after second tick (redispatch throttle), got %d: %+v", len(seen), seen)
-	}
-}
-
-func TestService_NonCoordinatorDoesNothing(t *testing.T) {
-	factory := memory.NewStoreFactory()
-	clock := newFakeClock(time.UnixMilli(10_000))
-
-	armTestTask(t, factory, "due-task", 9_000)
-
-	exec := newCapturingExecutor()
-	svc := NewService(Config{
-		Enabled:           true,
-		ScanInterval:      time.Hour,
-		RedispatchBackoff: 5 * time.Minute,
-		BatchSize:         10,
-	}, Deps{
-		Store:    factory,
-		Registry: &fakeRegistry{members: []contract.NodeInfo{{NodeID: "n1"}, {NodeID: "n2"}}},
-		// selfID "n2" is not the min of {n1, n2} → not coordinator.
-		Coordinator:  LowestLiveNodeID{},
-		Distribution: Self{},
-		Clock:        clock,
-		Executor:     exec,
-		SelfID:       "n2",
-	})
-
-	svc.tick()
-
-	if seen := exec.seen(); len(seen) != 0 {
-		t.Fatalf("non-coordinator should not dispatch, got %+v", seen)
-	}
-}
-
-func TestService_DisabledDoesNothing(t *testing.T) {
-	factory := memory.NewStoreFactory()
-	clock := newFakeClock(time.UnixMilli(10_000))
-
-	armTestTask(t, factory, "due-task", 9_000)
-
-	exec := newCapturingExecutor()
-	svc := NewService(Config{
-		Enabled:           false,
-		ScanInterval:      time.Hour,
-		RedispatchBackoff: 5 * time.Minute,
-		BatchSize:         10,
-	}, Deps{
-		Store:        factory,
-		Registry:     &fakeRegistry{members: []contract.NodeInfo{{NodeID: "n1"}}},
-		Coordinator:  LowestLiveNodeID{},
-		Distribution: Self{},
-		Clock:        clock,
-		Executor:     exec,
-		SelfID:       "n1",
-	})
-
-	svc.tick()
-
-	if seen := exec.seen(); len(seen) != 0 {
-		t.Fatalf("disabled service should not dispatch, got %+v", seen)
-	}
-}
-
-func TestService_StartStop(t *testing.T) {
-	factory := memory.NewStoreFactory()
-	svc := NewService(Config{
-		Enabled:           true,
-		ScanInterval:      time.Millisecond,
-		RedispatchBackoff: time.Minute,
-		BatchSize:         10,
-	}, Deps{
-		Store:        factory,
-		Registry:     &fakeRegistry{members: []contract.NodeInfo{{NodeID: "n1"}}},
-		Coordinator:  LowestLiveNodeID{},
-		Distribution: Self{},
-		Clock:        NewRealClock(),
-		Executor:     newCapturingExecutor(),
-		SelfID:       "n1",
-	})
-
-	svc.Start()
-	time.Sleep(5 * time.Millisecond)
-	svc.Stop()
-	// Stop must be idempotent/safe to call more than once.
-	svc.Stop()
-}
-
-// TestService_SlowExecuteDoesNotBlockTick proves the Important finding #2
-// fix structurally: tick() must hand every due task off to Execute and
-// return without waiting for any of them to finish, even when Execute blocks
-// indefinitely (e.g. a slow local processor run or a slow peer RPC).
-func TestService_SlowExecuteDoesNotBlockTick(t *testing.T) {
-	factory := memory.NewStoreFactory()
-	clock := newFakeClock(time.UnixMilli(10_000))
-
-	armTestTask(t, factory, "due-task-1", 9_000)
-	armTestTask(t, factory, "due-task-2", 9_500)
-
-	exec := newBlockingExecutor()
-	svc := NewService(Config{
-		Enabled:           true,
-		ScanInterval:      time.Hour,
-		RedispatchBackoff: 5 * time.Minute,
-		BatchSize:         10,
-	}, Deps{
-		Store:        factory,
-		Registry:     &fakeRegistry{members: []contract.NodeInfo{{NodeID: "n1"}}},
-		Coordinator:  LowestLiveNodeID{},
-		Distribution: Self{},
-		Clock:        clock,
-		Executor:     exec,
-		SelfID:       "n1",
-	})
-
-	tickDone := make(chan struct{})
-	go func() {
-		svc.tick()
-		close(tickDone)
-	}()
-
-	// tick() must return well before either blocked Execute call is
-	// unblocked — that's the whole claim under test.
-	select {
-	case <-tickDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("tick() did not return promptly — a slow Execute is blocking the scan loop")
-	}
-
-	// Both dispatches must have been handed off (Execute entered and is
-	// blocked on e.unblock) even though tick() already returned.
-	for i := 0; i < 2; i++ {
-		select {
-		case <-exec.started:
-		case <-time.After(2 * time.Second):
-			t.Fatalf("timed out waiting for dispatch %d/2 to start after tick() returned", i+1)
-		}
-	}
-
-	if got := len(exec.seen()); got != 2 {
-		t.Fatalf("expected both due tasks dispatched, got %d: %+v", got, exec.seen())
-	}
-
-	// Drain: unblock both Execute calls so the test doesn't leak goroutines.
-	close(exec.unblock)
-}
-
-// TestService_StartIsIdempotent guards against a second Start() call
-// spawning a duplicate scan-loop goroutine, which would double the tick (and
-// therefore dispatch) rate. It counts Registry.List calls — made exactly
-// once per tick — over a short fixed window and asserts the count stays
-// within a single loop's expected range.
-func TestService_StartIsIdempotent(t *testing.T) {
-	factory := memory.NewStoreFactory()
-
-	var listCalls int32
-	registry := &countingRegistry{
-		fakeRegistry: fakeRegistry{members: []contract.NodeInfo{{NodeID: "n1"}}},
-		calls:        &listCalls,
-	}
-
-	svc := NewService(Config{
-		Enabled:           true,
-		ScanInterval:      2 * time.Millisecond,
-		RedispatchBackoff: time.Minute,
-		BatchSize:         10,
-	}, Deps{
-		Store:        factory,
-		Registry:     registry,
-		Coordinator:  LowestLiveNodeID{},
-		Distribution: Self{},
-		Clock:        NewRealClock(),
-		Executor:     newCapturingExecutor(),
-		SelfID:       "n1",
-	})
-
-	svc.Start()
-	svc.Start() // must be a no-op: only the first Start may spawn a loop
-	svc.Start()
-
+func TestService_DisabledStartsNothing(t *testing.T) {
+	cfg := testConfig()
+	cfg.Enabled = false
+	h := newHarness(t, cfg, reportFirer(fired))
+	h.fs.with(func() { h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")} })
+	h.start(t)
 	time.Sleep(50 * time.Millisecond)
-	svc.Stop()
-
-	got := atomic.LoadInt32(&listCalls)
-	if got == 0 {
-		t.Fatal("expected at least one tick to have run in 50ms at a 2ms interval")
-	}
-	// A single 2ms-interval loop produces roughly 25 ticks in 50ms. Three
-	// unguarded concurrent loops would produce roughly 3x that (~75). 60 sits
-	// well clear of the single-loop case (generous margin for a loaded CI
-	// runner) while still catching a duplicate-loop regression.
-	const maxSingleLoopTicks = 60
-	if got > maxSingleLoopTicks {
-		t.Fatalf("Registry.List called %d times in ~50ms at a 2ms interval after 3 Start() calls — looks like more than one scan loop is running (want <= %d)", got, maxSingleLoopTicks)
+	if n, c := h.fs.heartbeatCount(), h.fs.claims(); n != 0 || c != 0 {
+		t.Errorf("a disabled scheduler touched the store: %d heartbeats, %d claims", n, c)
 	}
 }
 
-// TestService_DeadWorkerRedispatchAfterBackoffElapses proves the
-// at-least-once failover property end-to-end (design §6.1/§6.3): a task
-// dispatched to a "dead worker" — one that records the dispatch but never
-// resolves the task (never fires it, never deletes the row, exactly what a
-// worker that crashes mid-flight leaves behind) — is NOT re-dispatched while
-// MarkRedispatch's throttle window is still open, but IS re-dispatched once
-// the clock passes redispatchAfter. That re-dispatch is the property under
-// test: a task a dead worker never completed is not lost, it is retried once
-// its backoff lapses.
-//
-// capturingExecutor (already used by TestService_ScansAndDispatchesDueTasks)
-// stands in for the dead worker unmodified: its Execute only records the
-// call, it never touches the store, so the task row survives exactly as a
-// crashed worker would leave it.
-func TestService_DeadWorkerRedispatchAfterBackoffElapses(t *testing.T) {
-	factory := memory.NewStoreFactory()
-	const start = int64(10_000)
-	const backoff = 5 * time.Minute
-	clock := newFakeClock(time.UnixMilli(start))
+func TestService_StartIsIdempotent(t *testing.T) {
+	cfg := testConfig()
+	cfg.HeartbeatInterval = 20 * time.Millisecond
+	h := newHarness(t, cfg, reportFirer(fired))
+	h.start(t)
+	if err := h.svc.Start(context.Background()); err != nil {
+		t.Fatalf("second Start: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	// One heartbeat goroutine makes at most 11 calls in 200ms; two would make about 20.
+	if n := h.fs.heartbeatCount(); n > 14 {
+		t.Errorf("%d heartbeats in 200ms at a 20ms interval: a second Start started a second heartbeat goroutine", n)
+	}
+}
 
-	armTestTask(t, factory, "dead-worker-task", 9_000) // due
+func TestService_NoClaimBeforeTheFirstHeartbeat(t *testing.T) {
+	h := newHarness(t, testConfig(), reportFirer(fired))
+	h.fs.with(func() {
+		h.fs.hbErr = errors.New("heartbeat: connection refused")
+		h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")}
+	})
+	h.start(t)
+	eventually(t, "three failed heartbeats", func() bool { return h.fs.heartbeatFailures() >= 3 })
+	if n := h.fs.claims(); n != 0 {
+		t.Fatalf("%d claims before any heartbeat succeeded", n)
+	}
+	if n := len(h.fs.giveBackCalls()); n != 0 {
+		t.Fatalf("%d give-backs before any heartbeat succeeded", n)
+	}
+	h.fs.with(func() { h.fs.hbErr = nil })
+	eventually(t, "a claim once a heartbeat succeeds", func() bool { return h.fs.claims() > 0 })
+}
 
-	exec := newCapturingExecutor()
-	svc := NewService(Config{
-		Enabled:           true,
-		ScanInterval:      time.Hour, // irrelevant — test calls tick() directly
-		RedispatchBackoff: backoff,
-		BatchSize:         10,
-	}, Deps{
-		Store:        factory,
-		Registry:     &fakeRegistry{members: []contract.NodeInfo{{NodeID: "n1"}}},
-		Coordinator:  LowestLiveNodeID{},
-		Distribution: Self{},
-		Clock:        clock,
-		Executor:     exec,
-		SelfID:       "n1",
+func TestService_ClaimRequestCarriesOwnerLimitsAndTenantCounts(t *testing.T) {
+	cfg := testConfig()
+	cfg.MaxRuns, cfg.MaxRunsPerTenant = 3, 2
+	release := make(chan struct{})
+	h := newHarness(t, cfg, firerFunc(func(context.Context, spi.ScheduledTask, int, time.Duration) workflow.RunReport {
+		<-release
+		return fired
+	}))
+	h.fs.with(func() { h.fs.due = []spi.ScheduledTask{dueTask("tenant-a", "task-1")} })
+	testStart := time.Now().UnixMilli()
+	h.start(t)
+	t.Cleanup(func() { close(release) })
+	eventually(t, "a claim made while the run is in progress", func() bool { return h.fs.claims() >= 2 })
+
+	var req spi.ClaimRequest
+	h.fs.with(func() { req = h.fs.claimReqs[len(h.fs.claimReqs)-1] })
+	if req.Owner != h.svc.incarnation {
+		t.Error("the claim does not name this incarnation as its owner")
+	}
+	if req.Limit != 2 || req.PerTenantLimit != 2 || req.TenantInProgress["tenant-a"] != 1 {
+		t.Errorf("Limit=%d PerTenantLimit=%d TenantInProgress=%v, want 2, 2 and tenant-a:1",
+			req.Limit, req.PerTenantLimit, req.TenantInProgress)
+	}
+	if req.StaleAfter != cfg.StaleAfter {
+		t.Errorf("StaleAfter = %s, want %s", req.StaleAfter, cfg.StaleAfter)
+	}
+	if req.NowMs < testStart || req.NowMs > time.Now().UnixMilli() {
+		t.Errorf("NowMs = %d, want the pnode clock", req.NowMs)
+	}
+}
+
+func TestService_LostOwnerClaimsWaitForAFullStalePeriodOfCleanHeartbeats(t *testing.T) {
+	cfg := testConfig()
+	cfg.StaleAfter = 300 * time.Millisecond
+	h := newHarness(t, cfg, reportFirer(fired))
+	h.start(t)
+	eventually(t, "a claim", func() bool { return h.fs.claims() > 0 })
+	h.fs.with(func() {
+		if h.fs.claimReqs[0].AllowLostOwner {
+			t.Error("the first claim after start allowed lost-owner claims")
+		}
+	})
+	eventually(t, "lost-owner claims after STALE_AFTER of clean heartbeats", func() bool {
+		var allow bool
+		h.fs.with(func() { allow = h.fs.claimReqs[len(h.fs.claimReqs)-1].AllowLostOwner })
+		return allow
 	})
 
-	// tick 1: the due task is dispatched to the dead worker.
-	svc.tick()
-	exec.waitForDispatches(t, 1, 2*time.Second)
-	if seen := exec.seen(); len(seen) != 1 || seen[0].ID != "dead-worker-task" {
-		t.Fatalf("expected dead-worker-task dispatched once, got %+v", seen)
-	}
-
-	// The task row is still present — the dead worker never resolved it.
-	sts, err := factory.ScheduledTaskStore(context.Background())
-	if err != nil {
-		t.Fatalf("ScheduledTaskStore: %v", err)
-	}
-	if _, found, err := sts.Get(context.Background(), "dead-worker-task"); err != nil || !found {
-		t.Fatalf("expected task row still present after dead-worker dispatch, found=%v err=%v", found, err)
-	}
-
-	// tick 2: clock is unchanged (still inside the backoff window) —
-	// MarkRedispatch's throttle must hold, so no re-dispatch.
-	svc.tick()
-	if seen := exec.seen(); len(seen) != 1 {
-		t.Fatalf("expected still only 1 dispatch inside the backoff window, got %d: %+v", len(seen), seen)
-	}
-
-	// Advance the clock past redispatchAfter (start + backoff) — the
-	// failover window has lapsed.
-	clock.set(time.UnixMilli(start).Add(backoff + time.Millisecond))
-
-	// tick 3: the dead worker's task is picked up again.
-	svc.tick()
-	exec.waitForDispatches(t, 1, 2*time.Second)
-
-	seen := exec.seen()
-	if len(seen) != 2 {
-		t.Fatalf("expected the dead worker's task re-dispatched once backoff elapsed, got %d dispatches: %+v", len(seen), seen)
-	}
-	if seen[1].ID != "dead-worker-task" {
-		t.Errorf("re-dispatched task ID = %q, want dead-worker-task", seen[1].ID)
-	}
+	h.fs.with(func() { h.fs.hbErr = errors.New("heartbeat: connection refused") })
+	eventually(t, "two failed heartbeats", func() bool { return h.fs.heartbeatFailures() >= 2 })
+	idx := h.fs.claims()
+	h.fs.with(func() { h.fs.hbErr = nil })
+	eventually(t, "a claim after the outage", func() bool { return h.fs.claims() > idx })
+	h.fs.with(func() {
+		if h.fs.claimReqs[idx].AllowLostOwner {
+			t.Error("the first claim after an outage allowed lost-owner claims")
+		}
+	})
 }
 
-// panickingExecutor panics on Execute, signalling first so the test can wait
-// for the dispatch goroutine to have entered (and therefore left, via its
-// recover) before asserting.
-type panickingExecutor struct{ entered chan struct{} }
-
-func (e *panickingExecutor) Execute(context.Context, spi.ScheduledTask, string) {
-	close(e.entered)
-	panic("injected panic in scheduled-task dispatch")
-}
-
-// TestService_DispatchPanicMarksNodeUnhealthy holds the scan-loop dispatch
-// goroutine to the same contract as the request doors and the async-search
-// goroutine. It matters more than it looks: ClusterExecutor.Execute fires
-// in-process when Distribution picks this node, so without the latch the same
-// panicking scheduled fire takes the node out of service when round-robin
-// picks a peer (it arrives over the HTTP door, which recovers and latches) and
-// leaves it serving when round-robin picks self. Whether a node withdraws
-// would depend on which node Pick happened to choose.
-func TestService_DispatchPanicMarksNodeUnhealthy(t *testing.T) {
-	factory := memory.NewStoreFactory()
-	clock := newFakeClock(time.UnixMilli(10_000))
-	armTestTask(t, factory, "boom-task", 9_000)
-
-	healthFlag := &atomic.Bool{}
-	healthFlag.Store(true)
-
-	exec := &panickingExecutor{entered: make(chan struct{})}
-	svc := NewService(Config{
-		Enabled: true, ScanInterval: time.Hour, RedispatchBackoff: 5 * time.Minute, BatchSize: 10,
-	}, Deps{
-		Store:        factory,
-		Registry:     &fakeRegistry{members: []contract.NodeInfo{{NodeID: "n1"}}},
-		Coordinator:  LowestLiveNodeID{},
-		Distribution: Self{},
-		Clock:        clock,
-		Executor:     exec,
-		SelfID:       "n1",
-		HealthFlag:   healthFlag,
+func TestService_AtMostMaxRunsAndAFreedSlotClaimsAtOnce(t *testing.T) {
+	cfg := testConfig()
+	cfg.MaxRuns = 2
+	cfg.ScanInterval = time.Second
+	release := map[string]chan struct{}{"task-1": make(chan struct{}), "task-2": make(chan struct{}), "task-3": make(chan struct{})}
+	var running, most atomic.Int32
+	started := make(chan string, 3)
+	h := newHarness(t, cfg, firerFunc(func(_ context.Context, task spi.ScheduledTask, _ int, _ time.Duration) workflow.RunReport {
+		n := running.Add(1)
+		for m := most.Load(); n > m && !most.CompareAndSwap(m, n); m = most.Load() {
+		}
+		started <- task.ID
+		<-release[task.ID]
+		running.Add(-1)
+		return fired
+	}))
+	h.fs.with(func() {
+		h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1"), dueTask("t2", "task-2"), dueTask("t3", "task-3")}
+	})
+	h.start(t)
+	t.Cleanup(func() {
+		for _, ch := range release {
+			select {
+			case <-ch:
+			default:
+				close(ch)
+			}
+		}
 	})
 
-	svc.tick()
+	first := receive(t, started)
+	receive(t, started)
+	h.fs.with(func() {
+		if got := h.fs.claimReqs[0].Limit; got != 2 {
+			t.Errorf("first claim Limit = %d, want MAX_RUNS 2", got)
+		}
+	})
+	freed := time.Now()
+	close(release[first])
+	if third := receive(t, started); third != "task-3" {
+		t.Errorf("third run = %s, want task-3", third)
+	}
+	if d := time.Since(freed); d > 500*time.Millisecond {
+		t.Errorf("the freed slot was claimed %s after it freed; want at once, not at the next 1s tick", d)
+	}
+	if m := most.Load(); m > 2 {
+		t.Errorf("%d runs at once, want at most MAX_RUNS 2", m)
+	}
+}
+
+func TestService_GiveBackIdleKeepsEveryLiveRun(t *testing.T) {
+	release := make(chan struct{})
+	tokens := make(chan uuid.UUID, 1)
+	h := newHarness(t, testConfig(), firerFunc(func(_ context.Context, task spi.ScheduledTask, _ int, _ time.Duration) workflow.RunReport {
+		tokens <- task.Claim.Token
+		<-release
+		return fired
+	}))
+	h.fs.with(func() { h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")} })
+	h.start(t)
+	token := receive(t, tokens)
+	eventually(t, "a give-back that keeps the live run", func() bool {
+		keep, ok := h.fs.lastGiveBack()
+		return ok && slices.Contains(keep, token)
+	})
+	close(release)
+	eventually(t, "a give-back that no longer keeps the finished run", func() bool {
+		keep, ok := h.fs.lastGiveBack()
+		return ok && !slices.Contains(keep, token)
+	})
+}
+
+func TestService_LostClaimReplyIsGivenBack(t *testing.T) {
+	h := newHarness(t, testConfig(), firerFunc(func(context.Context, spi.ScheduledTask, int, time.Duration) workflow.RunReport {
+		t.Error("a task whose claim reply was lost was run")
+		return fired
+	}))
+	h.fs.with(func() {
+		h.fs.claimErr = errors.New("claim: connection reset after commit")
+		h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")}
+	})
+	h.start(t)
+	eventually(t, "the failed claim", func() bool { return h.fs.claims() >= 1 })
+	calls := len(h.fs.giveBackCalls())
+	eventually(t, "a later give-back", func() bool { return len(h.fs.giveBackCalls()) > calls })
+	for _, keep := range h.fs.giveBackCalls()[calls:] {
+		if len(keep) != 0 {
+			t.Errorf("a give-back kept %v; nothing is live, so the lost claim must be given back", keep)
+		}
+	}
+}
+
+func TestService_SweepsDeadOwnersAndEndedMarks(t *testing.T) {
+	cfg := testConfig()
+	h := newHarness(t, cfg, reportFirer(fired))
+	h.svc.sweepEvery = 20 * time.Millisecond
+	h.start(t)
+	eventually(t, "an owner sweep and a mark sweep", func() bool {
+		var owners, marks int
+		h.fs.with(func() { owners, marks = len(h.fs.sweptOwners), h.fs.sweptMarks })
+		return owners > 0 && marks > 0
+	})
+	h.fs.with(func() {
+		if got := h.fs.sweptOwners[0]; got != 10*cfg.StaleAfter {
+			t.Errorf("SweepOwners(%s), want 10 x STALE_AFTER = %s", got, 10*cfg.StaleAfter)
+		}
+	})
+}
+
+func TestService_RunsUnderTheSystemIdentityAndItsRunGuard(t *testing.T) {
+	cfg := testConfig()
+	type seen struct {
+		uc      *spi.UserContext
+		guard   *workflow.RunGuard
+		task    spi.ScheduledTask
+		maxLost int
+		retry   time.Duration
+	}
+	got := make(chan seen, 1)
+	h := newHarness(t, cfg, firerFunc(func(ctx context.Context, task spi.ScheduledTask, maxLost int, retry time.Duration) workflow.RunReport {
+		got <- seen{spi.GetUserContext(ctx), workflow.RunGuardFrom(ctx), task, maxLost, retry}
+		return fired
+	}))
+	task := dueTask("tenant-x", "task-1")
+	h.fs.with(func() { h.fs.due = []spi.ScheduledTask{task} })
+	h.start(t)
+	s := receive(t, got)
+
+	if s.uc == nil || s.uc.Kind != spi.PrincipalSystem || s.uc.Tenant.ID != "tenant-x" {
+		t.Errorf("run identity = %+v, want the system principal of tenant-x", s.uc)
+	}
+	if s.guard == nil {
+		t.Fatal("no run guard on the run's context")
+	}
+	want := spi.TaskRef{TenantID: "tenant-x", ID: "task-1", ArmToken: task.ArmToken, ClaimToken: s.task.Claim.Token}
+	if s.guard.Ref != want {
+		t.Errorf("guard ref = %+v, want %+v", s.guard.Ref, want)
+	}
+	if s.guard.Store == nil || s.guard.Done == nil || s.guard.NoNewUnsafe == nil || s.guard.Unsafe == nil {
+		t.Errorf("run guard incomplete: %+v", s.guard)
+	}
+	if s.maxLost != cfg.MaxLostOwners || s.retry != cfg.RetryDelay {
+		t.Errorf("engine got maxLostOwners=%d retryDelay=%s, want %d and %s", s.maxLost, s.retry, cfg.MaxLostOwners, cfg.RetryDelay)
+	}
+}
+
+func TestService_CommittedOutcomesRecordNothing(t *testing.T) {
+	for _, outcome := range []workflow.ScheduledOutcome{
+		workflow.OutcomeFired, workflow.OutcomeDeclined, workflow.OutcomeExpired,
+		workflow.OutcomeCancelled, workflow.OutcomeSuperseded,
+	} {
+		t.Run(string(outcome), func(t *testing.T) {
+			h := newHarness(t, testConfig(), reportFirer(workflow.RunReport{Outcome: outcome}))
+			h.fs.with(func() { h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")} })
+			h.start(t)
+			eventually(t, "the run claimed and released", func() bool { return h.fs.claims() > 0 && liveRuns(h.svc) == 0 })
+			time.Sleep(20 * time.Millisecond)
+			if a, f := len(h.fs.attemptsRecorded()), len(h.fs.failsRecorded()); a+f != 0 {
+				t.Errorf("a %s run wrote %d attempts and %d failures", outcome, a, f)
+			}
+			if !h.flag.Load() {
+				t.Error("a normal run latched the node")
+			}
+		})
+	}
+}
+
+func TestService_FailedRunRecordsAnAttempt(t *testing.T) {
+	cfg := testConfig()
+	h := newHarness(t, cfg, reportFirer(workflow.RunReport{Outcome: workflow.OutcomeFailed,
+		Err: fmt.Errorf("criterion failed: %w", &contract.CalloutFailure{Kind: contract.MemberFailed, Message: "card declined"})}))
+	h.fs.with(func() { h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")} })
+	before := time.Now().UnixMilli()
+	h.start(t)
+	eventually(t, "one recorded attempt", func() bool { return len(h.fs.attemptsRecorded()) == 1 })
+	a := h.fs.attemptsRecorded()[0]
+	if a.Error != "card declined" || a.NotCounted || a.ClearOwnMark {
+		t.Errorf("attempt = %+v, want a counted attempt with the compute node's text", a)
+	}
+	if lo, hi := before+cfg.RetryDelay.Milliseconds(), time.Now().UnixMilli()+cfg.RetryDelay.Milliseconds(); a.NextAttemptTime < lo || a.NextAttemptTime > hi {
+		t.Errorf("NextAttemptTime = %d, want now + RETRY_DELAY", a.NextAttemptTime)
+	}
+	eventually(t, "the run released", func() bool { return liveRuns(h.svc) == 0 })
+}
+
+func TestService_EngineDecidedFailureFailsTheTask(t *testing.T) {
+	h := newHarness(t, testConfig(), reportFirer(workflow.RunReport{Outcome: workflow.OutcomeFailed, FailReason: spi.FailureOwnerLostRepeatedly}))
+	h.fs.with(func() { h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")} })
+	h.start(t)
+	eventually(t, "the task failed", func() bool { return len(h.fs.failsRecorded()) == 1 })
+	if got := h.fs.failsRecorded()[0].Reason; got != spi.FailureOwnerLostRepeatedly {
+		t.Errorf("reason = %s, want OWNER_LOST_REPEATEDLY", got)
+	}
+}
+
+func TestService_RefusedOutcomeMeansSuperseded(t *testing.T) {
+	h := newHarness(t, testConfig(), reportFirer(workflow.RunReport{Outcome: workflow.OutcomeFailed, Err: errors.New("boom")}))
+	h.fs.with(func() {
+		h.fs.outcomeErrs = []error{fmt.Errorf("record attempt: %w", spi.ErrStaleClaim)}
+		h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")}
+	})
+	h.start(t)
+	eventually(t, "the run released", func() bool { return h.fs.claims() > 0 && liveRuns(h.svc) == 0 })
+	time.Sleep(20 * time.Millisecond)
+	h.fs.with(func() {
+		if n := len(h.fs.outcomeCtxErrs); n != 1 {
+			t.Errorf("%d outcome writes, want exactly one: a refusal is final", n)
+		}
+	})
+}
+
+func TestService_FailingHeartbeatsSelfCancelAtTheWindow(t *testing.T) {
+	h := newHarness(t, testConfig(), firerFunc(func(ctx context.Context, _ spi.ScheduledTask, _ int, _ time.Duration) workflow.RunReport {
+		return failedOnCancel(ctx)
+	}))
+	h.svc.window = 150 * time.Millisecond
+	h.fs.with(func() { h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")} })
+	h.start(t)
+	eventually(t, "the run started", func() bool { return liveRuns(h.svc) == 1 })
+	h.fs.with(func() { h.fs.hbErr = errors.New("heartbeat: connection refused") })
+
+	eventually(t, "the self-cancelled run's attempt", func() bool { return len(h.fs.attemptsRecorded()) == 1 })
+	a := h.fs.attemptsRecorded()[0]
+	if a.NotCounted || a.Error != cancelledText {
+		t.Errorf("attempt = %+v, want a counted attempt with %q", a, cancelledText)
+	}
+	h.fs.with(func() {
+		if err := h.fs.outcomeCtxErrs[0]; err != nil {
+			t.Errorf("the outcome write inherited the run's cancellation: %v", err)
+		}
+	})
+
+	idle := h.fs.claims()
+	time.Sleep(50 * time.Millisecond)
+	if n := h.fs.claims(); n != idle {
+		t.Errorf("%d claims while heartbeats were failing", n-idle)
+	}
+	h.fs.with(func() { h.fs.hbErr = nil })
+	eventually(t, "claims resume after a heartbeat succeeds", func() bool { return h.fs.claims() > idle })
+}
+
+func TestService_OneFailedHeartbeatDoesNotSelfCancel(t *testing.T) {
+	cancelled := make(chan struct{})
+	h := newHarness(t, testConfig(), firerFunc(func(ctx context.Context, _ spi.ScheduledTask, _ int, _ time.Duration) workflow.RunReport {
+		r := failedOnCancel(ctx)
+		close(cancelled)
+		return r
+	}))
+	h.svc.window = 100 * time.Millisecond // ten heartbeat intervals
+	h.fs.with(func() { h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")} })
+	h.start(t)
+	eventually(t, "the run started", func() bool { return liveRuns(h.svc) == 1 })
+	h.fs.with(func() { h.fs.hbFailNext = 1 })
+	eventually(t, "the one failed heartbeat", func() bool { return h.fs.heartbeatFailures() == 1 })
 	select {
-	case <-exec.entered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("dispatch goroutine never ran")
-	}
-
-	deadline := time.Now().Add(2 * time.Second)
-	for healthFlag.Load() && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if healthFlag.Load() {
-		t.Fatal("health flag still true after a recovered panic in the dispatch goroutine — the node keeps taking traffic with unverified state")
+	case <-cancelled:
+		t.Fatal("one failed heartbeat cancelled the pnode's runs")
+	case <-time.After(300 * time.Millisecond):
 	}
 }
 
-// TestService_NormalDispatchLeavesNodeHealthy is the other direction: a task
-// that fires without panicking must not touch the flag. Without it, a latch
-// placed outside the recover block would still pass the test above.
-func TestService_NormalDispatchLeavesNodeHealthy(t *testing.T) {
-	factory := memory.NewStoreFactory()
-	clock := newFakeClock(time.UnixMilli(10_000))
-	armTestTask(t, factory, "ok-task", 9_000)
+func TestService_HungHeartbeatDoesNotStopTheWatchdog(t *testing.T) {
+	h := newHarness(t, testConfig(), firerFunc(func(ctx context.Context, _ spi.ScheduledTask, _ int, _ time.Duration) workflow.RunReport {
+		return failedOnCancel(ctx)
+	}))
+	h.svc.window = 100 * time.Millisecond
+	h.fs.with(func() { h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")} })
+	h.start(t)
+	eventually(t, "the run started", func() bool { return liveRuns(h.svc) == 1 })
+	hang := make(chan struct{})
+	t.Cleanup(func() { close(hang) })
+	h.fs.with(func() { h.fs.hbBlock = hang })
+	eventually(t, "the run cancelled while the heartbeat hangs", func() bool { return len(h.fs.attemptsRecorded()) == 1 })
+}
 
-	healthFlag := &atomic.Bool{}
-	healthFlag.Store(true)
+func TestService_HeartbeatThatSucceedsAfterItsWindowCountsAsFailed(t *testing.T) {
+	h := newHarness(t, testConfig(), reportFirer(fired))
+	h.start(t)
+	eventually(t, "healthy", h.svc.isHealthy)
+	hang := make(chan struct{})
+	t.Cleanup(func() { close(hang) })
+	h.fs.with(func() { h.fs.hbBlock = hang })
+	beats := h.fs.heartbeatCount()
+	eventually(t, "the heartbeat goroutine parked", func() bool { return h.fs.heartbeatCount() > beats })
 
-	exec := newCapturingExecutor()
-	svc := NewService(Config{
-		Enabled: true, ScanInterval: time.Hour, RedispatchBackoff: 5 * time.Minute, BatchSize: 10,
-	}, Deps{
-		Store:        factory,
-		Registry:     &fakeRegistry{members: []contract.NodeInfo{{NodeID: "n1"}}},
-		Coordinator:  LowestLiveNodeID{},
-		Distribution: Self{},
-		Clock:        clock,
-		Executor:     exec,
-		SelfID:       "n1",
-		HealthFlag:   healthFlag,
-	})
+	h.svc.heartbeatDone(time.Now().Add(-2*h.svc.window), nil)
+	if h.svc.isHealthy() {
+		t.Error("a heartbeat that succeeded after its window left the pnode claiming")
+	}
+}
 
-	svc.tick()
-	exec.waitForDispatches(t, 1, 2*time.Second)
+// The watchdog's timer and a heartbeat that re-arms it can be ready at the
+// same moment. A timer that fires after a later heartbeat moved the deadline
+// on must not cancel the pnode's runs: the store's stamp of that heartbeat is
+// fresh, so no other pnode can consider this one stale.
+func TestService_WatchdogFiringAfterARearmDoesNotSelfCancel(t *testing.T) {
+	cancelled := make(chan struct{})
+	h := newHarness(t, testConfig(), firerFunc(func(ctx context.Context, _ spi.ScheduledTask, _ int, _ time.Duration) workflow.RunReport {
+		r := failedOnCancel(ctx)
+		close(cancelled)
+		return r
+	}))
+	h.fs.with(func() { h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")} })
+	h.start(t)
+	eventually(t, "the run started", func() bool { return liveRuns(h.svc) == 1 })
 
-	if !healthFlag.Load() {
-		t.Fatal("health flag went false after a normal dispatch — the node took itself out of service for nothing")
+	h.svc.heartbeatDone(time.Now(), nil)
+	h.svc.selfCancel()
+	if !h.svc.isHealthy() {
+		t.Error("a stale watchdog timer made the pnode stop claiming")
+	}
+	select {
+	case <-cancelled:
+		t.Fatal("a stale watchdog timer cancelled a run whose pnode had just heartbeated")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+type failingFactory struct{ spi.StoreFactory }
+
+func (failingFactory) ScheduledTaskStore(context.Context) (spi.ScheduledTaskStore, error) {
+	return nil, errors.New("store: connection refused")
+}
+
+// A Start that failed keeps failing: a later call reports the first error,
+// never a success for a service that runs nothing.
+func TestService_StartAfterAFailedStartReportsTheFirstError(t *testing.T) {
+	svc := New(testConfig(), Deps{Store: failingFactory{}, Firer: reportFirer(fired), Clock: NewRealClock()})
+	t.Cleanup(svc.Stop)
+	first := svc.Start(context.Background())
+	if first == nil {
+		t.Fatal("Start succeeded without a scheduled task store")
+	}
+	if second := svc.Start(context.Background()); second == nil || second.Error() != first.Error() {
+		t.Errorf("second Start = %v, want the first error %v", second, first)
 	}
 }

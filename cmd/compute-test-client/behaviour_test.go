@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"sync"
 	"testing"
+
+	"google.golang.org/grpc"
 
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 )
@@ -27,7 +30,7 @@ func TestParseTags(t *testing.T) {
 }
 
 func TestParseBehaviour(t *testing.T) {
-	for _, ok := range []string{"", "stall", "fail", "fail-retryable", "late-callback", "drop", " drop "} {
+	for _, ok := range []string{"", "stall", "fail", "fail-retryable", "late-callback", "drop", "hold", " drop "} {
 		if _, err := parseBehaviour(ok); err != nil {
 			t.Errorf("parseBehaviour(%q): %v", ok, err)
 		}
@@ -86,6 +89,7 @@ func TestHandleCallout_Behaviours(t *testing.T) {
 		{"fail-retryable", behaviourFailRetryable, true, false, false, &yes, 0},
 		{"late-callback", behaviourLateCallback, false, false, false, nil, 1},
 		{"drop", behaviourDrop, false, true, false, nil, 0},
+		{"hold", behaviourHold, false, false, false, nil, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -129,6 +133,86 @@ func TestHandleCallout_Behaviours(t *testing.T) {
 				t.Errorf("held callouts = %d; want %d", held, tc.wantHeld)
 			}
 		})
+	}
+}
+
+// TestHandleCallout_HoldAnswersFromCatalogOnRelease: a hold client records the
+// work, stays silent, and on release answers it as the catalog would.
+func TestHandleCallout_HoldAnswersFromCatalogOnRelease(t *testing.T) {
+	d := newDispatcher("", "", newCatalog(nil, nil), nil, []string{"x"}, behaviourHold, newRecorder())
+	ce, payload := processorRequest(t, "r-1", "noop", "pass-value", "")
+
+	reply, drop, err := d.handleCallout(context.Background(), ce, payload)
+	if err != nil || reply != nil || drop {
+		t.Fatalf("handleCallout = (%v, %t, %v); want a silent, open stream", reply, drop, err)
+	}
+	work := d.takeHeldWork()
+	if len(work) != 1 {
+		t.Fatalf("held work = %d; want 1", len(work))
+	}
+	answer, err := d.answer(context.Background(), work[0].msg, work[0].payload, work[0].pass)
+	if err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if body := decodeReply(t, answer); body.RequestID != "r-1" || !body.Success {
+		t.Errorf("released answer = %+v; want requestId r-1, success", body)
+	}
+	if again := d.takeHeldWork(); len(again) != 0 {
+		t.Errorf("held work taken twice: %d left", len(again))
+	}
+}
+
+// recordingStream keeps every event sent on it.
+type recordingStream struct {
+	grpc.BidiStreamingClient[cepb.CloudEvent, cepb.CloudEvent]
+	mu   sync.Mutex
+	sent []*cepb.CloudEvent
+}
+
+func (s *recordingStream) Send(ce *cepb.CloudEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sent = append(s.sent, ce)
+	return nil
+}
+
+func (s *recordingStream) events() []*cepb.CloudEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]*cepb.CloudEvent(nil), s.sent...)
+}
+
+// TestRelease_HoldSendsOneAnswerOnTheStream: a hold client sends nothing on
+// receiving work, sends exactly one catalog answer for it on release, and
+// nothing more on a second release.
+func TestRelease_HoldSendsOneAnswerOnTheStream(t *testing.T) {
+	d := newDispatcher("", "", newCatalog(nil, nil), nil, []string{"x"}, behaviourHold, newRecorder())
+	s := &recordingStream{}
+	d.setStream(s)
+	ce, payload := processorRequest(t, "r-1", "noop", "pass-value", "")
+
+	if reply, drop, err := d.handleCallout(context.Background(), ce, payload); err != nil || reply != nil || drop {
+		t.Fatalf("handleCallout = (%v, %t, %v); want a silent, open stream", reply, drop, err)
+	}
+	if n := len(s.events()); n != 0 {
+		t.Fatalf("%d events sent before release; want 0", n)
+	}
+
+	d.release(context.Background())
+	sent := s.events()
+	if len(sent) != 1 {
+		t.Fatalf("%d events sent on release; want 1", len(sent))
+	}
+	if sent[0].Type != ceTypeProcessorResponse {
+		t.Errorf("released event type = %s; want %s", sent[0].Type, ceTypeProcessorResponse)
+	}
+	if body := decodeReply(t, sent[0]); body.RequestID != "r-1" || !body.Success {
+		t.Errorf("released answer = %+v; want requestId r-1, success", body)
+	}
+
+	d.release(context.Background())
+	if n := len(s.events()); n != 1 {
+		t.Errorf("%d events after a second release; want still 1", n)
 	}
 }
 

@@ -22,7 +22,9 @@ func setupSearchTest(t *testing.T) *postgres.StoreFactory {
 		t.Fatalf("migration failed: %v", err)
 	}
 	t.Cleanup(func() { _ = postgres.DropSchemaForTest(pool) })
-	return postgres.NewStoreFactory(pool)
+	f := postgres.NewStoreFactory(pool)
+	t.Cleanup(func() { postgres.CloseSchedulerPoolsForTest(f) })
+	return f
 }
 
 func getSearchStore(t *testing.T, factory *postgres.StoreFactory, tid spi.TenantID) spi.AsyncSearchStore {

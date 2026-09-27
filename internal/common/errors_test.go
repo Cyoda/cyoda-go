@@ -737,3 +737,20 @@ func TestWriteError_FeatureDeadlineTimeout_Untouched(t *testing.T) {
 		t.Errorf("a DeadlineExceeded cause must still mint a ticket: %s", buf.String())
 	}
 }
+
+func TestTxAbortedConflict(t *testing.T) {
+	cause := fmt.Errorf("store: %w", spi.ErrTxAborted)
+	appErr := common.TxAbortedConflict(cause)
+	if appErr == nil || appErr.Status != http.StatusConflict || appErr.Code != common.ErrCodeConflict || !appErr.Retryable {
+		t.Fatalf("common.TxAbortedConflict(%v) = %+v, want a retryable 409 %s", cause, appErr, common.ErrCodeConflict)
+	}
+	if !errors.Is(appErr, spi.ErrTxAborted) {
+		t.Fatal("the cause is not attached")
+	}
+	if got := common.TxAbortedConflict(fmt.Errorf("cas: %w", spi.ErrConflict)); got != nil {
+		t.Fatalf("a plain conflict — a precondition that was evaluated — was answered %+v", got)
+	}
+	if got := common.TxAbortedConflict(nil); got != nil {
+		t.Fatalf("nil was answered %+v", got)
+	}
+}

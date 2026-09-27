@@ -4,7 +4,7 @@ go 1.26.7
 
 require (
 	github.com/charmbracelet/glamour v1.0.0
-	github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20260923200233-8aa2258b26cb
+	github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20260927003224-1b0c3780762e
 	github.com/getkin/kin-openapi v0.149.0
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/google/uuid v1.6.0
@@ -13,6 +13,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/maypok86/otter/v2 v2.3.0
 	github.com/moby/moby/api v1.56.0
+	github.com/moby/moby/client v0.5.0
 	github.com/muesli/termenv v0.16.0
 	github.com/oapi-codegen/runtime v1.7.0
 	github.com/prometheus/client_golang v1.24.1
@@ -58,7 +59,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.17 // indirect
 	github.com/microcosm-cc/bluemonday v1.0.27 // indirect
-	github.com/moby/moby/client v0.5.0 // indirect
 	github.com/muesli/reflow v0.3.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/ncruces/go-sqlite3 v0.35.4 // indirect
@@ -100,9 +100,9 @@ require (
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/containerd/platforms v0.2.1 // indirect
 	github.com/cpuguy83/dockercfg v0.3.2 // indirect
-	github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.5-0.20260923200349-1fbf6a794215
-	github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.5-0.20260923200349-1fbf6a794215
-	github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.5-0.20260923200349-1fbf6a794215
+	github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.5-0.20260927003300-5deca7a127e4
+	github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.5-0.20260927003300-5deca7a127e4
+	github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.5-0.20260927003300-5deca7a127e4
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/go-connections v0.7.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect

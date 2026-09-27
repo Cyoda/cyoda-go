@@ -17,14 +17,15 @@ const (
 	behaviourFailRetryable behaviour = "fail-retryable" // answer success=false, retryable=true
 	behaviourLateCallback  behaviour = "late-callback"  // never answer; call back with the pass when told to
 	behaviourDrop          behaviour = "drop"           // close the stream on receiving work
+	behaviourHold          behaviour = "hold"           // take the work; answer it from the catalog on release
 )
 
 func parseBehaviour(s string) (behaviour, error) {
 	switch b := behaviour(strings.TrimSpace(s)); b {
-	case behaviourCatalog, behaviourStall, behaviourFail, behaviourFailRetryable, behaviourLateCallback, behaviourDrop:
+	case behaviourCatalog, behaviourStall, behaviourFail, behaviourFailRetryable, behaviourLateCallback, behaviourDrop, behaviourHold:
 		return b, nil
 	default:
-		return "", fmt.Errorf("unknown behaviour %q (want stall, fail, fail-retryable, late-callback, drop, or unset)", s)
+		return "", fmt.Errorf("unknown behaviour %q (want stall, fail, fail-retryable, late-callback, drop, hold, or unset)", s)
 	}
 }
 

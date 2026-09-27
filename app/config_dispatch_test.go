@@ -12,21 +12,17 @@ func validDispatchConfig() cluster.Config {
 	return cluster.Config{
 		DispatchWaitTimeout:    5 * time.Second,
 		DispatchConnectTimeout: 2 * time.Second,
-		DispatchForwardTimeout: 30 * time.Second,
 	}
 }
 
 func TestDefaultConfig_DispatchDurations(t *testing.T) {
-	unsetEnv(t, "CYODA_DISPATCH_WAIT_TIMEOUT", "CYODA_DISPATCH_CONNECT_TIMEOUT", "CYODA_DISPATCH_FORWARD_TIMEOUT")
+	unsetEnv(t, "CYODA_DISPATCH_WAIT_TIMEOUT", "CYODA_DISPATCH_CONNECT_TIMEOUT")
 	got := DefaultConfig().Cluster
 	if got.DispatchWaitTimeout != 5*time.Second {
 		t.Errorf("default DispatchWaitTimeout = %s, want 5s", got.DispatchWaitTimeout)
 	}
 	if got.DispatchConnectTimeout != 2*time.Second {
 		t.Errorf("default DispatchConnectTimeout = %s, want 2s", got.DispatchConnectTimeout)
-	}
-	if got.DispatchForwardTimeout != 30*time.Second {
-		t.Errorf("default DispatchForwardTimeout = %s, want 30s", got.DispatchForwardTimeout)
 	}
 	t.Setenv("CYODA_DISPATCH_CONNECT_TIMEOUT", "500ms")
 	if got := DefaultConfig().Cluster.DispatchConnectTimeout; got != 500*time.Millisecond {
@@ -57,8 +53,6 @@ func TestValidateDispatch(t *testing.T) {
 		{"negative patience", func(c *cluster.Config) { c.DispatchWaitTimeout = -time.Second }, "CYODA_DISPATCH_WAIT_TIMEOUT"},
 		{"zero connect timeout", func(c *cluster.Config) { c.DispatchConnectTimeout = 0 }, "CYODA_DISPATCH_CONNECT_TIMEOUT"},
 		{"negative connect timeout", func(c *cluster.Config) { c.DispatchConnectTimeout = -time.Second }, "CYODA_DISPATCH_CONNECT_TIMEOUT"},
-		{"zero forward timeout", func(c *cluster.Config) { c.DispatchForwardTimeout = 0 }, "CYODA_DISPATCH_FORWARD_TIMEOUT"},
-		{"negative forward timeout", func(c *cluster.Config) { c.DispatchForwardTimeout = -time.Second }, "CYODA_DISPATCH_FORWARD_TIMEOUT"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

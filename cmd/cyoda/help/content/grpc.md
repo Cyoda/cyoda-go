@@ -15,6 +15,7 @@ see_also:
   - errors.CALLOUT_FAILED
   - errors.CALLOUT_SUPERSEDED
   - errors.COMMIT_IN_JOINED_TRANSACTION
+  - errors.MODEL_ADMIN_IN_JOINED_TRANSACTION
 ---
 
 # grpc
@@ -82,7 +83,7 @@ service CloudEventsService {
 
 **startStreaming** — bidirectional streaming RPC for compute member lifecycle. Requires `ROLE_M2M`. First message must be `CalculationMemberJoinEvent`. Server sends processor and criteria requests; client sends responses and keep-alive acknowledgments.
 
-**entityModelManage** — unary RPC for entity model operations. Accepts: `EntityModelImportRequest`, `EntityModelExportRequest`, `EntityModelTransitionRequest`, `EntityModelDeleteRequest`, `EntityModelGetAllRequest`.
+**entityModelManage** — unary RPC for entity model operations. Accepts: `EntityModelImportRequest`, `EntityModelExportRequest`, `EntityModelTransitionRequest`, `EntityModelDeleteRequest`, `EntityModelGetAllRequest`, `EntityModelSetUniqueKeysRequest`. It is not a transaction-routed RPC: a `tx-token` metadata value joins nothing here. A request that changes a model — import, transition, delete, set unique keys — and carries one is refused in its own response envelope with `errors.MODEL_ADMIN_IN_JOINED_TRANSACTION`, before anything is read or written; the read-only export and get-all pass.
 
 **entityManage** — unary RPC for single-entity operations. Accepts: `EntityCreateRequest`, `EntityUpdateRequest`, `EntityDeleteRequest`, `EntityDeleteAllRequest`, `EntityTransitionRequest`.
 
@@ -234,6 +235,7 @@ The compute member protocol allows external processes to serve as workflow proce
 - Do not queue callbacks without limit on one transaction. Because they are served one at a time, firing many at once buys no speed, and each one waiting holds its whole request in memory until its turn comes. At most `CYODA_CALLOUT_JOINED_MAX_WAITERS` (default 128) may wait; past that a callback is refused with `503` `errors.TOO_MANY_JOINED_REQUESTS`, having touched nothing. It is retryable: back off briefly and send the callback again. A processor that lets the refusal escape fails its callout, and the operation is rolled back.
 - Keep a callback's **answer** under `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES` (default 10 MiB). The answer is held in memory for the same reason the request is: an answer that would pass the ceiling fails the callback with `413` `errors.JOINED_RESPONSE_TOO_LARGE`, naming the ceiling, rather than being cut short — on either door, and on the gRPC one the frames of a chunked collection count together. Not retryable: page a large read — `pageSize` and `pageNumber` on a get-all or a search — instead of asking for everything in one callback.
 - A callback never commits the transaction it joined — only the operation that began it does. A callback write whose workflow reaches a `COMMIT_BEFORE_DISPATCH` processor is refused with `409` `errors.COMMIT_IN_JOINED_TRANSACTION` at that processor: it is not dispatched, and the joined transaction is neither flushed nor committed. What the workflow did before it stays in the joined transaction, for the calling operation to keep or discard. Not retryable: make that write as an independent request, without the token, and handle its outcome in the processor.
+- A callback never administers a model or its workflows. A request carrying the token that would import, delete, lock, unlock, change the level of or set the unique keys of a model, or import a workflow — on either door — is refused with `400` `errors.MODEL_ADMIN_IN_JOINED_TRANSACTION` before the token is verified and before anything is read or written; the transaction is untouched. Not retryable: make that request as an independent request, without the token.
 - A callback is not abandoned by its member's connection dropping, nor by a deadline the member sets on its own callback call — see "API requests made under a transaction token" below for what continues, and what does not.
 
 **Processor dispatch (server → client):**
@@ -330,7 +332,7 @@ The smallest successful answer is
 changed nothing, and the workflow should carry on. There is no shape that means
 "I did nothing and something is wrong" — that is `success: false`.
 
-When `success=false`, no other member is tried. The client's operation fails with `400 WORKFLOW_FAILED` carrying `error.message`, and `error.retryable: true` is passed on as the client's `retryable: true` — it tells the client that running the whole operation again may succeed; it does not make the server try another member. (An `ASYNC_NEW_TX` processor is the exception: its failure is logged and the operation continues.) When `payload.data` is non-null, the engine replaces the entity's data with the returned value before continuing the workflow; when `payload` is absent, or its `data` is null, the entity is left as it was and the transition continues.
+When `success=false`, no other member is tried. The client's operation fails with `400 WORKFLOW_FAILED` carrying `error.message`, and `error.retryable: true` is passed on as the client's `retryable: true` — it tells the client that running the whole operation again may succeed; it does not make the server try another member. (An `ASYNC_NEW_TX` processor is the exception: its failure is logged and the operation continues.) When `payload.data` is non-null, the engine replaces the entity's data with the returned value before continuing the workflow; when `payload` is absent, or its `data` is null, the entity is left as it is in the transaction — including a write the processor made through its own joined callback (see `cyoda help workflows`) — and the transition continues.
 
 Returned data is subject to the same checks as an HTTP client write: it must be storable, and it must satisfy the model's schema. A processor may introduce a field the model does not declare only where the model's `changeLevel` would allow a client to — otherwise the transition fails with `WORKFLOW_FAILED` and rolls back. The engine holds no privilege here: whatever it stores, the API must be able to accept back.
 
@@ -558,6 +560,7 @@ Errors a compute member sees on a callback:
 - `errors.TRANSACTION_EXPIRED` — `410` — the token is past its expiry
 - `errors.UNAUTHORIZED` — `401` — the token does not name a callout and a try number at all
 - `errors.COMMIT_IN_JOINED_TRANSACTION` — `409` — the callback's write reached a `COMMIT_BEFORE_DISPATCH` processor
+- `errors.MODEL_ADMIN_IN_JOINED_TRANSACTION` — `400` — the callback asked to change a model or its workflows
 
 ## EXAMPLES
 
@@ -625,3 +628,4 @@ grpcurl -plaintext \
 - errors.CALLOUT_FAILED
 - errors.CALLOUT_SUPERSEDED
 - errors.COMMIT_IN_JOINED_TRANSACTION
+- errors.MODEL_ADMIN_IN_JOINED_TRANSACTION

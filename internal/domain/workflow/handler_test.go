@@ -1906,3 +1906,85 @@ func TestImportExport_CalloutFields_RoundTrip(t *testing.T) {
 		t.Errorf("schedule.function.retryPolicy lost on round-trip; raw: %s", raw)
 	}
 }
+
+// TestImport_ScheduleDelayMsBesideFunction_Rejected pins the published
+// TransitionScheduleDto contract (api/openapi.yaml): delayMs has minimum 1
+// and is mutually exclusive with function. The SPI decodes delayMs into a
+// plain int64, so a `delayMs: 0` or `delayMs: null` beside a function reads
+// the same as an omitted one to the structural validator; the import must
+// still refuse it, because the client sent a value the schema forbids.
+func TestImport_ScheduleDelayMsBesideFunction_Rejected(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		delayMs string
+	}{
+		{"zero", "0"},
+		{"null", "null"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newTestServer(t)
+			importModel(t, srv.URL, "Order", 1)
+
+			body := `{
+				"importMode": "REPLACE",
+				"workflows": [{
+					"version": "1.1",
+					"name": "fn-schedule-flow",
+					"initialState": "NEW",
+					"states": {
+						"NEW": {"transitions": [{
+							"name": "AUTO_CLOSE", "next": "CLOSED", "manual": false,
+							"schedule": {
+								"delayMs": ` + tc.delayMs + `,
+								"function": {"name": "computeNextFireTime", "resultKind": "Schedule", "calculationNodesTags": "billing"}
+							}
+						}]},
+						"CLOSED": {"transitions": []}
+					}
+				}]
+			}`
+			resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", resp.StatusCode, b)
+			}
+			for _, want := range []string{"VALIDATION_FAILED", "schedule.delayMs and schedule.function are mutually exclusive", "fn-schedule-flow", "NEW", "AUTO_CLOSE"} {
+				if !strings.Contains(string(b), want) {
+					t.Errorf("response must contain %q, got: %s", want, b)
+				}
+			}
+		})
+	}
+}
+
+// TestImport_TrailingCloserAfterBody_400 pins the trailing-data fence for a
+// closing delimiter after the request object. json.Decoder.More reports
+// false before `}` and `]`, so such a body passed a More-based fence; it
+// must answer 400 BAD_REQUEST like any other trailing data.
+func TestImport_TrailingCloserAfterBody_400(t *testing.T) {
+	const valid = `{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"wf","initialState":"NEW","states":{"NEW":{"transitions":[]}}}]}`
+	for _, suffix := range []string{"}", "]", "}}", " ]", "{}", "x"} {
+		t.Run(suffix, func(t *testing.T) {
+			srv := newTestServer(t)
+			importModel(t, srv.URL, "Order", 1)
+			resp := doWorkflowImport(t, srv.URL, "Order", 1, valid+suffix)
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(b), "BAD_REQUEST") ||
+				!strings.Contains(string(b), "trailing data after request object") {
+				t.Fatalf("suffix %q: expected 400 BAD_REQUEST trailing data, got %d: %s", suffix, resp.StatusCode, b)
+			}
+		})
+	}
+	t.Run("trailing whitespace is accepted", func(t *testing.T) {
+		srv := newTestServer(t)
+		importModel(t, srv.URL, "Order", 1)
+		resp := doWorkflowImport(t, srv.URL, "Order", 1, valid+" \n\t")
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", resp.StatusCode, b)
+		}
+	})
+}

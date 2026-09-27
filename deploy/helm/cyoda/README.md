@@ -156,6 +156,26 @@ helm upgrade cyoda cyoda/cyoda -n cyoda \
 No mode flip needed — cluster mode is always on; at replicas=1 it runs
 as a "cluster of one".
 
+### Shutdown grace period
+
+The chart sets `terminationGracePeriodSeconds: 390`. On `SIGTERM` a node first
+drains its scheduled runs, and a run with a processor in flight that is not
+declared `idempotent` is allowed to finish. The worst case from `SIGTERM` to
+exit is
+
+```
+max(CYODA_SCHEDULER_SHUTDOWN_DRAIN + 10s, callout deadline) + 100s
+callout deadline = (1 + CYODA_RETRY_FIXED_NUM_RETRIES) × CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS
+                   + CYODA_DISPATCH_WAIT_TIMEOUT + CYODA_CALLOUT_HANDOVER_ALLOWANCE
+```
+
+— 375 s at the binary's defaults. If you raise `CYODA_SCHEDULER_SHUTDOWN_DRAIN`
+or any of those callout settings through `extraEnv`, raise
+`terminationGracePeriodSeconds` to match. A pod killed before it has recorded
+its runs' outcomes leaves its tasks to another node, which takes them over
+after `CYODA_SCHEDULER_STALE_AFTER` (default `2m`). See `cyoda help run`
+(SHUTDOWN TIMING).
+
 ## Using with GitOps (Argo CD)
 
 The chart auto-generates the HMAC Secret via Helm's `lookup` function

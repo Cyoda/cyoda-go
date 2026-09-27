@@ -205,13 +205,13 @@ func TestExecuteCommitBeforeDispatch_EveryFailurePathRollsBack(t *testing.T) {
 // TestCBD_ApplyResultConflict_CarriesPostSegmentMarker: the apply-result CAS runs
 // after TX_pre committed and after the dispatch fired, so a conflict there is not
 // something a caller can isolate and retry past. The marker is how the caller
-// tells it apart from a first-segment-flush precondition failure, which is.
+// tells it apart from an If-Match precondition failure, which is.
 func TestCBD_ApplyResultConflict_CarriesPostSegmentMarker(t *testing.T) {
 	h := newSegmentGuardHarness(t, "memory")
 	h.registerCBDProcessor("segmenter")
 	h.failCompareAndSave() // the apply-result CAS, post-commit
 
-	err := h.fireSegment(t, "")
+	err := h.fireSegment(t)
 	if err == nil {
 		t.Fatal("expected the apply-result CAS conflict to surface")
 	}
@@ -226,60 +226,27 @@ func TestCBD_ApplyResultConflict_CarriesPostSegmentMarker(t *testing.T) {
 	}
 }
 
-// TestCBD_FirstFlushConflict_HasNoPostSegmentMarker guards the other side. This
-// one IS isolable and must stay that way.
-func TestCBD_FirstFlushConflict_HasNoPostSegmentMarker(t *testing.T) {
-	h := newSegmentGuardHarness(t, "memory")
-	h.registerCBDProcessor("segmenter")
-	h.failFirstFlushCAS(spi.ErrConflict) // flushAndCommitSegment, pre-commit
-
-	err := h.fireSegment(t, staleIfMatchTxID)
-	if err == nil {
-		t.Fatal("expected the first-segment flush conflict to surface")
-	}
-	if got := h.casSites; len(got) != 1 || got[0] != casSiteFirstFlush {
-		t.Fatalf("injection did not land on the first-segment flush: sites = %v", got)
-	}
-	if h.dispatched {
-		t.Fatal("the flush conflict was raised after the dispatch fired; the case proves nothing")
-	}
-	if !errors.Is(err, spi.ErrConflict) {
-		t.Fatalf("lost the conflict sentinel: %v", err)
-	}
-	if errors.Is(err, ErrPostSegmentConflict) {
-		t.Fatal("pre-commit precondition failure wrongly marked post-segment; the batch would abort instead of isolating the item")
-	}
-	// The infra marker is the OTHER thing UpdateEntityCollection excludes from
-	// per-item isolation (service.go's engineErr branch). Marking a precondition
-	// failure with it would turn an isolable ENTITY_MODIFIED item into a
-	// request-wide failure that takes its successful siblings with it.
-	if errors.Is(err, ErrCommitBeforeDispatchInfra) {
-		t.Fatal("a caller's stale If-Match was marked as infrastructure; the batch would abort instead of isolating the item")
-	}
-}
-
 // --- Segment-boundary CAS failures that are NOT the caller's business ---
 
 // TestCBD_FirstFlushStoreFailure_IsMarkedInfra — the first-segment flush's
-// CompareAndSave fails for two very different reasons. One is the caller's
-// stale If-Match (above). The other is the store itself: a cancelled statement,
-// a missing relation, a saturated pool. Those carry driver wording and a
-// SQLSTATE, and an unmarked engine error lands on the entity service's
-// catch-all, which mints a 400 WORKFLOW_FAILED whose detail is that text
-// verbatim. Mark them so they take the sanitized-5xx-with-a-ticket path the
-// engine's other infrastructure failures already take.
+// Save fails in the store itself: a cancelled statement, a missing relation, a
+// saturated pool. That text carries driver wording and a SQLSTATE, and an
+// unmarked engine error lands on the entity service's catch-all, which mints a
+// 400 WORKFLOW_FAILED whose detail is the text verbatim. Marked infra, it takes
+// the sanitized-5xx-with-a-ticket path instead (classifyWorkflowError), and
+// nothing is dispatched.
 func TestCBD_FirstFlushStoreFailure_IsMarkedInfra(t *testing.T) {
 	h := newSegmentGuardHarness(t, "memory")
 	h.registerCBDProcessor("segmenter")
 	storeErr := errors.New("ERROR: canceling statement due to statement timeout (SQLSTATE 57014)")
-	h.failFirstFlushCAS(storeErr)
+	h.flushSaveErr = storeErr
 
-	err := h.fireSegment(t, staleIfMatchTxID)
+	err := h.fireSegment(t)
 	if err == nil {
 		t.Fatal("expected the flush store failure to surface")
 	}
-	if got := h.casSites; len(got) != 1 || got[0] != casSiteFirstFlush {
-		t.Fatalf("injection did not land on the first-segment flush: sites = %v", got)
+	if h.dispatched {
+		t.Fatal("the callout fired; the failure did not land on the first-segment flush")
 	}
 	if !errors.Is(err, ErrCommitBeforeDispatchInfra) {
 		t.Errorf("store failure not marked infra; its text would reach a 400 body: %v", err)
@@ -289,38 +256,16 @@ func TestCBD_FirstFlushStoreFailure_IsMarkedInfra(t *testing.T) {
 	}
 }
 
-// TestCBD_FirstFlushUniqueViolation_StaysDomainAttributable — a composite
-// unique-key clash raised by the same CompareAndSave IS the caller's business
-// and has its own 409 mapping. Marking it as infrastructure would bury a
-// precise, actionable answer under a generic ticket.
-func TestCBD_FirstFlushUniqueViolation_StaysDomainAttributable(t *testing.T) {
-	h := newSegmentGuardHarness(t, "memory")
-	h.registerCBDProcessor("segmenter")
-	h.failFirstFlushCAS(fmt.Errorf("claim key: %w", spi.ErrUniqueViolation))
-
-	err := h.fireSegment(t, staleIfMatchTxID)
-	if err == nil {
-		t.Fatal("expected the unique-key violation to surface")
-	}
-	if !errors.Is(err, spi.ErrUniqueViolation) {
-		t.Fatalf("lost the unique-violation sentinel: %v", err)
-	}
-	if errors.Is(err, ErrCommitBeforeDispatchInfra) {
-		t.Errorf("a unique-key violation was marked as infrastructure: %v", err)
-	}
-}
-
-// TestCBD_ApplyResultStoreFailure_IsMarkedInfra is the same split on the far
-// side of the callout. The apply-result CAS chains ErrPostSegmentConflict, whose
-// text reaches a 4xx body verbatim — so a raw store error there leaks exactly as
-// the flush's does.
+// TestCBD_ApplyResultStoreFailure_IsMarkedInfra — the apply-result CAS chains
+// ErrPostSegmentConflict, whose text reaches a 4xx body verbatim — so a raw
+// store error there must be marked infra, or it leaks.
 func TestCBD_ApplyResultStoreFailure_IsMarkedInfra(t *testing.T) {
 	h := newSegmentGuardHarness(t, "memory")
 	h.registerCBDProcessor("segmenter")
 	storeErr := errors.New("ERROR: relation \"entities\" does not exist (SQLSTATE 42P01)")
 	h.failCompareAndSaveWith(storeErr)
 
-	err := h.fireSegment(t, "")
+	err := h.fireSegment(t)
 	if err == nil {
 		t.Fatal("expected the apply-result store failure to surface")
 	}
@@ -395,22 +340,20 @@ type segmentGuardHarness struct {
 	entityStoreErr error
 	casErr         error
 
-	// flushCASErr fails the OTHER CompareAndSave a segmenting cascade makes —
-	// flushAndCommitSegment's, which runs before TX_pre commits. Armed up front
-	// rather than from the dispatch stub, because the flush happens first.
-	flushCASErr error
+	// flushSaveErr fails every Save made before the CBD callout — the
+	// first-segment flush, which runs before TX_pre commits.
+	flushSaveErr error
 
-	// dispatched records whether the CBD callout has fired. It is what separates
-	// the two CAS sites: everything before it is the first-segment flush,
-	// everything after it is the apply-result CAS.
+	// dispatched records whether the CBD callout has fired. A CompareAndSave
+	// after it is the apply-result CAS; the cascade makes none before it.
 	dispatched bool
 
 	// casSites labels, in order, which site each CompareAndSave came from, so a
 	// test can prove its injection landed where it meant it to.
 	casSites []string
 
-	// saves counts plain Saves — the first-segment flush when no If-Match was
-	// supplied — so a test can prove nothing was flushed.
+	// saves counts plain Saves — the first-segment flush among them — so a
+	// test can prove nothing was flushed.
 	saves int
 
 	// panicOnAuditEvent, when set, makes the audit store panic on that event
@@ -484,29 +427,28 @@ type hookedEntityStore struct {
 	h *segmentGuardHarness
 }
 
-// The two CompareAndSave sites a COMMIT_BEFORE_DISPATCH cascade reaches. They
-// sit on opposite sides of the callout, which is exactly why one is isolable and
-// the other is not: the flush runs before TX_pre commits, the apply-result CAS
-// after it committed and the dispatch fired.
+// The labels of a CompareAndSave by where it falls against the callout. A
+// COMMIT_BEFORE_DISPATCH cascade makes one, the apply-result CAS, after TX_pre
+// committed and the dispatch fired; the first-segment flush is a plain Save.
 const (
-	casSiteFirstFlush  = "first-flush"
-	casSiteApplyResult = "apply-result"
+	casSiteBeforeDispatch = "before-dispatch"
+	casSiteApplyResult    = "apply-result"
 )
 
 func (s *hookedEntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, error) {
 	s.h.saves++
+	if !s.h.dispatched && s.h.flushSaveErr != nil {
+		return 0, s.h.flushSaveErr
+	}
 	return s.EntityStore.Save(ctx, entity)
 }
 
 func (s *hookedEntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, expectedTxID string) (int64, error) {
-	site := casSiteFirstFlush
+	site := casSiteBeforeDispatch
 	if s.h.dispatched {
 		site = casSiteApplyResult
 	}
 	s.h.casSites = append(s.h.casSites, site)
-	if site == casSiteFirstFlush && s.h.flushCASErr != nil {
-		return 0, s.h.flushCASErr
-	}
 	if site == casSiteApplyResult && s.h.casErr != nil {
 		return 0, s.h.casErr
 	}
@@ -682,28 +624,15 @@ func (h *segmentGuardHarness) failCompareAndSaveWith(failure error) {
 	}
 }
 
-// failFirstFlushCAS fails flushAndCommitSegment's CompareAndSave — the other
-// site, reached before TX_pre commits and before anything is dispatched. That
-// flush is only a CompareAndSave when the caller supplied an If-Match (spec
-// §4.1), so fireSegment must be handed a non-empty one for this to land.
-func (h *segmentGuardHarness) failFirstFlushCAS(failure error) {
-	h.flushCASErr = failure
-}
-
-// staleIfMatchTxID is an expected-txID no entity in these tests carries.
-const staleIfMatchTxID = "00000000-0000-4000-8000-000000000042"
-
-// fireSegment drives the segmenting cascade through ManualTransitionWithIfMatch —
-// the entry point UpdateEntityCollection uses — so the two conflict-shape tests
-// differ only in WHERE the CAS fails. A non-empty ifMatch turns the first-segment
-// flush into a CompareAndSave; with "" it stays a plain Save and the apply-result
-// CAS is the cascade's only one.
-func (h *segmentGuardHarness) fireSegment(t *testing.T, ifMatch string) error {
+// fireSegment drives the segmenting cascade through ManualTransition. The
+// first-segment flush is a plain Save, so the apply-result CAS is the
+// cascade's only one.
+func (h *segmentGuardHarness) fireSegment(t *testing.T) error {
 	t.Helper()
 	h.makeSegmentTransitionManual()
 	_, entryCtx := h.begin(t)
 	h.entity.Meta.State = "A"
-	_, err := h.engine.ManualTransitionWithIfMatch(entryCtx, h.entity, "segment", ifMatch)
+	_, err := h.engine.ManualTransition(entryCtx, h.entity, "segment")
 	return err
 }
 

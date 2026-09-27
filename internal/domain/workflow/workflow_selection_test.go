@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
@@ -282,23 +284,23 @@ func TestFireScheduled_ResolvesWorkflowByCriterion(t *testing.T) {
 	})
 	advance(delayMs)
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
-	if err != nil {
-		t.Fatalf("FireScheduledTransition: %v", err)
+	r := fireDue(t, engine, ctx, id)
+	if r.Err != nil {
+		t.Fatalf("FireScheduledTransition: %v", r.Err)
 	}
-	if outcome != OutcomeFired {
-		t.Fatalf("outcome = %v, want Fired", outcome)
+	if r.Outcome != OutcomeFired {
+		t.Fatalf("outcome = %v, want Fired", r.Outcome)
 	}
 	if got := getEntityState(t, factory, ctx, "fire-select-b"); got != "B_CLOSED" {
 		t.Errorf("entity state = %q, want B_CLOSED (kind-b-wf selected by criterion)", got)
 	}
 }
 
-// TestFireScheduled_TransitionAbsentFromSelectedWorkflow_Dropped asserts the
-// scheduler door drops (and self-heals) a task whose transition is not in
+// TestFireScheduled_TransitionAbsentFromSelectedWorkflow_Cancelled asserts the
+// scheduler door cancels (and removes) a task whose transition is not in
 // the criterion-selected workflow, instead of firing another definition's
 // same-named transition.
-func TestFireScheduled_TransitionAbsentFromSelectedWorkflow_Dropped(t *testing.T) {
+func TestFireScheduled_TransitionAbsentFromSelectedWorkflow_Cancelled(t *testing.T) {
 	const armMs = int64(1_700_000_000_000)
 	const delayMs = int64(1000)
 	engine, factory, advance := setupEngineWithSteppableClock(t, armMs)
@@ -335,18 +337,18 @@ func TestFireScheduled_TransitionAbsentFromSelectedWorkflow_Dropped(t *testing.T
 	})
 	advance(delayMs)
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
-	if err != nil {
-		t.Fatalf("FireScheduledTransition: %v", err)
+	r := fireDue(t, engine, ctx, id)
+	if r.Err != nil {
+		t.Fatalf("FireScheduledTransition: %v", r.Err)
 	}
-	if outcome != OutcomeDropped {
-		t.Fatalf("outcome = %v, want Dropped", outcome)
+	if r.Outcome != OutcomeCancelled {
+		t.Fatalf("outcome = %v, want Cancelled", r.Outcome)
 	}
 	if got := getEntityState(t, factory, ctx, "fire-orphan-a"); got != "OPEN" {
 		t.Errorf("entity state = %q, want OPEN (kind-b-wf's AutoClose must not fire)", got)
 	}
 	if _, found := getTask(t, factory, ctx, id); found {
-		t.Error("expected the obsolete task to be deleted (self-heal)")
+		t.Error("expected the obsolete task to be removed (cancelled)")
 	}
 }
 
@@ -482,12 +484,11 @@ func fnCriterionWorkflow(transitionName string, delayMs int64) spi.WorkflowDefin
 }
 
 // TestFireScheduled_ExpiresEvenWhenWorkflowCannotBeResolved pins the ordering
-// of the grace-band gate against workflow resolution. Expiry is a pure
-// function of the durable row and the clock, so a task past
-// TimeoutMs+grace must expire even while its workflow criterion cannot be
-// evaluated. Resolving first made such a task unexpirable and
-// unreclaimable — re-dispatched by the coordinator every backoff interval
-// for as long as the compute member stayed down.
+// of the expiry decision against workflow resolution. Expiry is a pure
+// function of the claimed record and the clock, so a task late on its first
+// attempt must expire even while its workflow criterion cannot be evaluated.
+// Resolving first would make such a task unexpirable for as long as the
+// compute member stayed down.
 func TestFireScheduled_ExpiresEvenWhenWorkflowCannotBeResolved(t *testing.T) {
 	const armMs = int64(1_700_000_000_000)
 	const delayMs = int64(1000)
@@ -507,15 +508,15 @@ func TestFireScheduled_ExpiresEvenWhenWorkflowCannotBeResolved(t *testing.T) {
 		ModelName: modelRef.EntityName, Transition: "AutoClose", SourceState: "OPEN", ArmedAt: armMs,
 	})
 
-	// Well past TimeoutMs + the expiry grace band.
-	advance(delayMs + timeoutMs + defaultExpiryGraceMs + 1000)
+	// Past the deadline on the first attempt.
+	advance(delayMs + timeoutMs + 1)
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
-	if err != nil {
-		t.Fatalf("FireScheduledTransition: %v", err)
+	r := fireDue(t, engine, ctx, id)
+	if r.Err != nil {
+		t.Fatalf("FireScheduledTransition: %v", r.Err)
 	}
-	if outcome != OutcomeExpired {
-		t.Fatalf("outcome = %v, want Expired — expiry must not depend on resolving the workflow", outcome)
+	if r.Outcome != OutcomeExpired {
+		t.Fatalf("outcome = %v, want Expired — expiry must not depend on resolving the workflow", r.Outcome)
 	}
 	if _, found := getTask(t, factory, ctx, id); found {
 		t.Error("expected the expired task to be deleted; an unresolvable workflow must not make it immortal")
@@ -524,8 +525,8 @@ func TestFireScheduled_ExpiresEvenWhenWorkflowCannotBeResolved(t *testing.T) {
 
 // TestFireScheduled_UnresolvableWorkflowLeavesTaskForRetry is the companion:
 // before expiry is due, an unresolvable workflow must NOT fire and must NOT
-// consume the task — it is left in place for the next scan (fail closed,
-// then retry).
+// consume the task — the run fails and leaves it in place for the scheduler
+// to record and retry (fail closed).
 func TestFireScheduled_UnresolvableWorkflowLeavesTaskForRetry(t *testing.T) {
 	const armMs = int64(1_700_000_000_000)
 	const delayMs = int64(1000)
@@ -544,32 +545,32 @@ func TestFireScheduled_UnresolvableWorkflowLeavesTaskForRetry(t *testing.T) {
 	})
 	advance(delayMs)
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
-	if err == nil {
+	r := fireDue(t, engine, ctx, id)
+	if r.Err == nil {
 		t.Fatal("expected the resolution failure to be surfaced")
 	}
-	if outcome != OutcomeDropped {
-		t.Errorf("outcome = %v, want Dropped", outcome)
+	if r.Outcome != OutcomeFailed {
+		t.Errorf("outcome = %v, want Failed", r.Outcome)
 	}
 	if got := getEntityState(t, factory, ctx, "fire-retry-1"); got != "OPEN" {
 		t.Errorf("entity state = %q, want OPEN (nothing may fire)", got)
 	}
 	if _, found := getTask(t, factory, ctx, id); !found {
-		t.Error("expected the task to survive for the next scan")
+		t.Error("expected the task to survive for a retry")
 	}
 }
 
 // TestFireScheduled_NeverFiresAManualTransition pins that the scheduler and
-// the arm side agree on what is fireable. reconcileScheduledTasks arms only
-// transitions that carry a Schedule and are neither manual nor disabled; the
-// fire door must apply the same test, or a task that outlives the definition
-// that armed it can drive a MANUAL transition — running its processors and
-// moving the entity with nobody having asked.
+// the arm side agree on what is fireable. Both apply armsOnSchedule; a fire
+// door that matched by name alone would let a task that outlives the
+// definition that armed it drive a MANUAL transition — running its processors
+// and moving the entity with nobody having asked.
 //
-// Reachable through the ordinary API: kind-b-wf arms AutoClose; a write
-// re-binds the entity to kind-a-wf, where the same name is manual. Reconcile
-// does not cancel the task, because it only cancels rows whose SourceState
-// the entity has left — and here it has not moved.
+// Reachable through the ordinary API: kind-b-wf arms AutoClose; the entity is
+// re-bound to kind-a-wf, where the same name is manual. Reconcile removes the
+// task at the entity's next write, but a workflow import that re-binds the
+// entity makes no write to it, and keeps the task because kind-b-wf still
+// arms AutoClose.
 func TestFireScheduled_NeverFiresAManualTransition(t *testing.T) {
 	const armMs = int64(1_700_000_000_000)
 	const delayMs = int64(1000)
@@ -608,18 +609,18 @@ func TestFireScheduled_NeverFiresAManualTransition(t *testing.T) {
 	})
 	advance(delayMs)
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
-	if err != nil {
-		t.Fatalf("FireScheduledTransition: %v", err)
+	r := fireDue(t, engine, ctx, id)
+	if r.Err != nil {
+		t.Fatalf("FireScheduledTransition: %v", r.Err)
 	}
-	if outcome != OutcomeDropped {
-		t.Fatalf("outcome = %v, want Dropped", outcome)
+	if r.Outcome != OutcomeCancelled {
+		t.Fatalf("outcome = %v, want Cancelled", r.Outcome)
 	}
 	if got := getEntityState(t, factory, ctx, "fire-manual-1"); got != "OPEN" {
 		t.Errorf("entity state = %q, want OPEN — the scheduler fired a manual transition", got)
 	}
 	if _, found := getTask(t, factory, ctx, id); found {
-		t.Error("expected the obsolete task to be deleted (self-heal)")
+		t.Error("expected the obsolete task to be removed (cancelled)")
 	}
 }
 
@@ -661,8 +662,8 @@ func TestFireScheduled_ObsoleteTaskDiscardIsAudited(t *testing.T) {
 	})
 	advance(delayMs)
 
-	if _, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant}); err != nil {
-		t.Fatalf("FireScheduledTransition: %v", err)
+	if r := fireDue(t, engine, ctx, id); r.Err != nil {
+		t.Fatalf("FireScheduledTransition: %v", r.Err)
 	}
 	if n := countAuditEvents(t, factory, ctx, "fire-obsolete-1", spi.SMEventScheduledTransitionCancelled); n != 1 {
 		t.Errorf("SCHEDULED_TRANSITION_CANCEL events = %d, want 1 (the discarded timer must be attributable)", n)
@@ -709,8 +710,8 @@ func TestFireScheduled_SilentGuardsRecordNoSelectionEvents(t *testing.T) {
 	})
 	advance(delayMs)
 
-	if _, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant}); err != nil {
-		t.Fatalf("FireScheduledTransition: %v", err)
+	if r := fireDue(t, engine, ctx, id); r.Err != nil {
+		t.Fatalf("FireScheduledTransition: %v", r.Err)
 	}
 	for _, et := range []spi.StateMachineEventType{spi.SMEventWorkflowSkipped, spi.SMEventWorkflowFound} {
 		if n := countAuditEvents(t, factory, ctx, "fire-silent-1", et); n != 0 {
@@ -827,16 +828,16 @@ func TestEvaluateCriterion_TypingFailureIsMarkedInfra(t *testing.T) {
 
 // --- Guard-path store failures must not be swallowed ---
 
-// failingDeleteTaskStore delegates everything except Delete, which always
-// fails. Models a store error on the self-heal paths that resolve a task by
-// removing its row.
+// failingDeleteTaskStore delegates everything except RemoveLife, which always
+// fails. Models a store error on the paths that end a run by removing its
+// task.
 type failingDeleteTaskStore struct {
 	spi.ScheduledTaskStore
 	err error
 }
 
-func (s *failingDeleteTaskStore) Delete(context.Context, string) (bool, error) {
-	return false, s.err
+func (s *failingDeleteTaskStore) RemoveLife(context.Context, spi.TenantID, string, uuid.UUID) error {
+	return s.err
 }
 
 type failingDeleteTaskFactory struct {
@@ -852,12 +853,11 @@ func (f *failingDeleteTaskFactory) ScheduledTaskStore(ctx context.Context) (spi.
 	return &failingDeleteTaskStore{ScheduledTaskStore: real, err: f.err}, nil
 }
 
-// TestFireScheduled_EntityMovedOnDeleteFailureIsSurfaced asserts the
-// entity-moved-on guard does not commit after a failed delete. Swallowing
+// TestFireScheduled_EntityMovedOnRemoveFailureIsSurfaced asserts the
+// entity-moved-on ending does not commit after a failed removal. Swallowing
 // the error and committing anyway would report the task resolved while its
-// row is still live, so the coordinator re-dispatches it on every scan
-// forever.
-func TestFireScheduled_EntityMovedOnDeleteFailureIsSurfaced(t *testing.T) {
+// row is still live.
+func TestFireScheduled_EntityMovedOnRemoveFailureIsSurfaced(t *testing.T) {
 	const armMs = int64(1_700_000_000_000)
 	const delayMs = int64(1000)
 	realFactory := memory.NewStoreFactory()
@@ -891,15 +891,15 @@ func TestFireScheduled_EntityMovedOnDeleteFailureIsSurfaced(t *testing.T) {
 	})
 	advance(delayMs)
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
-	if err == nil {
+	r := fireDue(t, engine, ctx, id)
+	if r.Err == nil {
 		t.Fatal("expected the delete failure to be surfaced, not swallowed before a commit")
 	}
-	if !errors.Is(err, deleteErr) {
-		t.Errorf("error must carry the store cause; got: %v", err)
+	if !errors.Is(r.Err, deleteErr) {
+		t.Errorf("error must carry the store cause; got: %v", r.Err)
 	}
-	if outcome != OutcomeDropped {
-		t.Errorf("outcome = %v, want Dropped", outcome)
+	if r.Outcome != OutcomeFailed {
+		t.Errorf("outcome = %v, want Failed", r.Outcome)
 	}
 }
 

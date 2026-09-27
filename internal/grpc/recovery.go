@@ -27,10 +27,11 @@ import (
 //
 // What that achieves, precisely: new client connections arriving through the
 // Kubernetes Service stop, because the pod leaves its endpoints. It does not
-// stop peer-forwarded work — the chart always runs cluster mode, peers address
-// each other through the gossip registry rather than the Service, and the
-// scheduler's round-robin does not read node liveness — and it does not close
-// established connections. The node is not restarted either: /livez stays
+// stop peer-forwarded work — the chart always runs cluster mode, and peers
+// address each other through the gossip registry rather than the Service —
+// and it does not close established connections. The node's own scheduler
+// stops claiming when the flag latches but keeps heartbeating, so its runs in
+// progress are not taken over. The node is not restarted either: /livez stays
 // unconditional so a deterministic panic does not become a restart loop.
 // Draining is the automatic part; replacing the node is the operator's.
 func UnaryRecoveryInterceptor(healthFlag *atomic.Bool) googlegrpc.UnaryServerInterceptor {

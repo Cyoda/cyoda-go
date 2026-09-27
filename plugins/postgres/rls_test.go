@@ -46,16 +46,16 @@ func TestRLS_PoliciesExist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to enumerate tenant-scoped tables: %v", err)
 	}
-	// One table is deliberately not enrolled, and it is not an oversight to
-	// close: ScanDue is a trusted cross-tenant system read, so scoping
-	// scheduled_tasks to a single tenant would break the scheduler the moment
-	// enforcement is strengthened (FORCE + a non-owner role) — which is the
-	// F7 decision, pinned from the opposite side by
-	// TestPostgres_ScheduledTasksTable_NotRLSEnrolled. The two tests must
-	// agree; adding an entry here without revisiting that one will simply
-	// swap which of them fails.
+	// Two tables are deliberately not enrolled: scheduled_tasks and
+	// scheduled_task_marks are read and written by ClaimDue, GiveBackIdle and
+	// the sweeps, which are cross-tenant and run with no tenant set, so scoping
+	// them to one tenant would break the scheduler the moment enforcement is
+	// strengthened (FORCE + a non-owner role).
+	// TestPostgres_ScheduledTaskTables_NotRLSEnrolled pins them from the other
+	// side; the two tests must agree.
 	exempt := map[string]string{
-		"scheduled_tasks": "ScanDue is a trusted cross-tenant system read (F7)",
+		"scheduled_tasks":      "the scheduler's claim and sweeps are cross-tenant",
+		"scheduled_task_marks": "the scheduler's claim and sweeps are cross-tenant",
 	}
 
 	var tables []string

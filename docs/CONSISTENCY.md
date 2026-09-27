@@ -38,6 +38,14 @@ the `COMMIT_BEFORE_DISPATCH` execution mode, which deliberately splits a
 single cascade into multiple transactions and exposes intermediate
 segment-boundary states to concurrent readers.
 
+**The contract covers scheduled-task rows too; the `spitest` `ScheduledTasks`
+suite pins it.** A transaction that writes a task row —
+an entity write re-arming or removing its entity's tasks, a delete, a scheduled
+run's own commit — fails with `ErrConflict` if another transaction committed a
+write to that row after it began. This is what fences a scheduled run's commits
+against a reclaim or a re-arm, and why a client write can get `409` when it
+races the scheduler. See [ARCHITECTURE.md §4.8](ARCHITECTURE.md#48-scheduled-transitions).
+
 ## 1a. When a write is dated
 
 **Every backend dates a transaction's writes at the instant that
@@ -593,12 +601,18 @@ A short checklist:
    `startNewTxOnDispatch=true`) must not save the entity it is
    processing for via the supplied transaction token **and** also
    return mutations for that same entity in its result. The engine's
-   apply-result will overwrite the processor's intra-TX writes
+   apply-result overwrites the processor's intra-TX writes
    (last-writer-wins inside the transaction buffer). Pick one path:
    let the engine apply the result, OR have the processor write the
-   entity itself and return no mutations for it. Cross-link:
-   `cmd/cyoda/help/content/workflows.md` carries this best-practice
-   verbatim.
+   entity itself and return no mutations for it. In the second case
+   the engine keeps the write: it takes the written payload and keeps
+   its own state, so the transition still takes effect. A callback read
+   returns what is stored in the transaction, without the mutations an
+   earlier processor returned and the engine has not yet saved, so the
+   processor bases its write on the payload in its request. A write to
+   the entity by any other transaction makes the transition fail with a
+   conflict. Cross-link: `cmd/cyoda/help/content/workflows.md` carries
+   this rule.
 10. **Batch operations degrade under `COMMIT_BEFORE_DISPATCH`.** Under
     `UpdateEntityCollection` (or any all-or-nothing batch) where at
     least one item triggers a cascade segmented by

@@ -296,6 +296,13 @@ func TestResponseFromLocal(t *testing.T) {
 					t.Errorf("%+v", r)
 				}
 			}},
+		{"processor ok, no payload", "processor",
+			internalgrpc.LocalResult{TriesUsed: 1},
+			func(t *testing.T, r DispatchCalloutResponse) {
+				if r.Outcome != OutcomeOK || !r.NoPayload || r.EntityData != nil {
+					t.Errorf("%+v; want ok, NoPayload and no entity data", r)
+				}
+			}},
 		{"criteria ok", "criteria",
 			internalgrpc.LocalResult{TriesUsed: 1, Result: internalgrpc.CalloutResult{Matches: true, Reason: "big"}},
 			func(t *testing.T, r DispatchCalloutResponse) {
@@ -409,6 +416,12 @@ func TestReadAnswer_OK(t *testing.T) {
 			t.Errorf("Warnings = %v", a.Warnings)
 		}
 	})
+	t.Run("processor, no payload", func(t *testing.T) {
+		a := readAnswer(ownerCallout(t, "processor"), &DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1), NoPayload: true}, 3)
+		if !a.Connected || a.Failure != nil || a.Result == nil || a.Result.Entity != nil {
+			t.Errorf("%+v; want an ok result with no entity", a)
+		}
+	})
 	t.Run("criteria", func(t *testing.T) {
 		a := readAnswer(ownerCallout(t, "criteria"), &DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1), Matches: &yes, Reason: "big"}, 3)
 		if a.Failure != nil || !a.Result.Matches || a.Result.Reason != "big" {
@@ -427,6 +440,26 @@ func TestReadAnswer_OK(t *testing.T) {
 // sends the entity and the criterion's verdict. Reading the absence as an
 // empty entity or as "does not match" would put an invented value where the
 // cnode's answer belongs.
+// A processor's "no payload" survives the hop: what the answering pnode
+// writes, the owner reads back as no entity — never as an empty one, and
+// never as the entity it handed over.
+func TestNoPayload_RoundTrip(t *testing.T) {
+	call := ownerCallout(t, "processor")
+	resp := responseFromLocal(call, internalgrpc.LocalResult{TriesUsed: 1}, nil, nil)
+	raw, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var wire DispatchCalloutResponse
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	a := readAnswer(call, &wire, 3)
+	if a.Failure != nil || a.Result == nil || a.Result.Entity != nil {
+		t.Errorf("%+v; want an ok result with no entity", a)
+	}
+}
+
 func TestReadAnswer_OKWithNoResultIsNotBelieved(t *testing.T) {
 	tests := []struct {
 		name string
@@ -435,6 +468,7 @@ func TestReadAnswer_OKWithNoResultIsNotBelieved(t *testing.T) {
 	}{
 		{"processor, no entity data", "processor", DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1)}},
 		{"processor, empty entity data", "processor", DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1), EntityData: []byte{}}},
+		{"processor, no payload and entity data", "processor", DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1), NoPayload: true, EntityData: []byte(`{"out":1}`)}},
 		{"criteria, no verdict", "criteria", DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1), Reason: "big"}},
 	}
 	for _, tt := range tests {

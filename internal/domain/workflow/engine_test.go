@@ -522,11 +522,13 @@ func TestExecuteUsesCallerTxID(t *testing.T) {
 	}
 
 	// All SM audit events must be findable by the entity-write txID.
-	auditStore, err := factory.StateMachineAuditStore(ctx)
+	// Read through the engine's transaction: it is still open, and its
+	// audit events are visible only inside it until it commits.
+	auditStore, err := factory.StateMachineAuditStore(txCtx)
 	if err != nil {
 		t.Fatalf("StateMachineAuditStore: %v", err)
 	}
-	events, err := auditStore.GetEventsByTransaction(ctx, "txid-e1", txID)
+	events, err := auditStore.GetEventsByTransaction(txCtx, "txid-e1", txID)
 	if err != nil {
 		t.Fatalf("GetEventsByTransaction: %v", err)
 	}
@@ -585,11 +587,13 @@ func TestManualTransitionUsesCallerTxID(t *testing.T) {
 		t.Fatalf("ManualTransition: %v", err)
 	}
 
-	auditStore, err := factory.StateMachineAuditStore(ctx)
+	// Read through the engine's transaction: it is still open, and its
+	// audit events are visible only inside it until it commits.
+	auditStore, err := factory.StateMachineAuditStore(txCtx)
 	if err != nil {
 		t.Fatalf("StateMachineAuditStore: %v", err)
 	}
-	events, err := auditStore.GetEventsByTransaction(ctx, "mt-txid-e1", txID)
+	events, err := auditStore.GetEventsByTransaction(txCtx, "mt-txid-e1", txID)
 	if err != nil {
 		t.Fatalf("GetEventsByTransaction: %v", err)
 	}
@@ -647,11 +651,13 @@ func TestLoopbackUsesCallerTxID(t *testing.T) {
 		t.Fatalf("Loopback: %v", err)
 	}
 
-	auditStore, err := factory.StateMachineAuditStore(ctx)
+	// Read through the engine's transaction: it is still open, and its
+	// audit events are visible only inside it until it commits.
+	auditStore, err := factory.StateMachineAuditStore(txCtx)
 	if err != nil {
 		t.Fatalf("StateMachineAuditStore: %v", err)
 	}
-	events, err := auditStore.GetEventsByTransaction(ctx, "lb-txid-e1", txID)
+	events, err := auditStore.GetEventsByTransaction(txCtx, "lb-txid-e1", txID)
 	if err != nil {
 		t.Fatalf("GetEventsByTransaction: %v", err)
 	}
@@ -1614,7 +1620,7 @@ func (m *mockExternalProcessing) DispatchProcessor(ctx context.Context, entity *
 	if m.dispatchFunc != nil {
 		return m.dispatchFunc(ctx, entity, proc, wf, tr, txID)
 	}
-	return entity, nil
+	return nil, nil
 }
 
 func (m *mockExternalProcessing) DispatchCriteria(_ context.Context, _ *spi.Entity, _ json.RawMessage, _, _, _, _, _ string) (bool, string, error) {
@@ -2035,7 +2041,7 @@ func TestEngine_CommitAndBeginNextSegment_FlushesAndReopens(t *testing.T) {
 		Data: []byte(`{"x":1}`),
 	}
 
-	newTxID, newCtx, err := engine.commitAndBeginNextSegment(txCtx, entity, txID, "", false)
+	newTxID, newCtx, err := engine.commitAndBeginNextSegment(txCtx, entity, txID)
 	if err != nil {
 		t.Fatalf("commitAndBeginNextSegment: %v", err)
 	}
@@ -2290,6 +2296,10 @@ func (m *countingTxManager) RollbackToSavepoint(ctx context.Context, txID string
 
 func (m *countingTxManager) ReleaseSavepoint(ctx context.Context, txID string, savepointID string) error {
 	return m.inner.ReleaseSavepoint(ctx, txID, savepointID)
+}
+
+func (m *countingTxManager) LostRace(ctx context.Context, txID string) (bool, error) {
+	return m.inner.LostRace(ctx, txID)
 }
 
 // TestEngine_SingleSegment_NoEngineCommit is a regression bound: a cascade
@@ -2704,119 +2714,6 @@ func TestEngine_CommitBeforeDispatch_TrueBranch_HappyPath(t *testing.T) {
 	// once the handler commits the engine's final TX_post.
 }
 
-// TestEngine_CommitBeforeDispatch_TrueBranch_DoubleWriteConflicts pins the
-// outcome when a startNewTxOnDispatch=true processor writes the
-// cascade-anchor entity itself AND returns mutations for it.
-//
-// Per spec §10.3 this pattern is forbidden by existing best-practice across
-// SYNC, ASYNC_SAME_TX and COMMIT_BEFORE_DISPATCH (true). The engine applies
-// its result with a CAS against TX_pre's transaction ID, and a write
-// compares against its own transaction's view: the processor's intra-TX_post
-// write has already superseded that ID, so the CAS conflicts. The violation
-// is refused rather than resolved last-writer-wins.
-//
-// This is the answer on every backend. Postgres has always given it — its
-// CAS reads the transaction's own connection, so the processor's uncommitted
-// row is visible — and memory and sqlite now do too.
-//
-// Asserts the error from Execute, NOT durable state: TX_post is rolled back
-// by the segment guard on this path.
-func TestEngine_CommitBeforeDispatch_TrueBranch_DoubleWriteConflicts(t *testing.T) {
-	factory := memory.NewStoreFactory()
-	t.Cleanup(func() { factory.Close() })
-	uuids := common.NewTestUUIDGenerator()
-	txMgr := factory.NewTransactionManager(uuids)
-
-	mock := &mockExternalProcessing{
-		dispatchFunc: func(ctx context.Context, entity *spi.Entity, _ spi.ProcessorDefinition, _, _, txID string) (*spi.Entity, error) {
-			// VIOLATION: processor writes the cascade-anchor entity it is
-			// being dispatched FOR, via TX_post's token in ctx.
-			es, esErr := factory.EntityStore(ctx)
-			if esErr != nil {
-				return nil, fmt.Errorf("processor EntityStore: %w", esErr)
-			}
-			processorWrite := &spi.Entity{
-				Meta: spi.EntityMeta{
-					ID:            entity.Meta.ID,
-					TenantID:      entity.Meta.TenantID,
-					ModelRef:      entity.Meta.ModelRef,
-					State:         entity.Meta.State,
-					TransactionID: txID,
-				},
-				Data: []byte(`{"processor_wrote":true}`),
-			}
-			if _, sErr := es.Save(ctx, processorWrite); sErr != nil {
-				return nil, fmt.Errorf("processor double-write: %w", sErr)
-			}
-
-			// AND ALSO returns conflicting mutations for the same entity.
-			return &spi.Entity{Data: []byte(`{"engine_applied":true}`)}, nil
-		},
-	}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
-
-	ctx := ctxWithTenant(testTenant)
-	modelRef := spi.ModelRef{EntityName: "cbd-true-lww", ModelVersion: "1.0"}
-
-	// The processor writes the anchor twice — once directly through the store
-	// (`processor_wrote`) and once as its returned mutation
-	// (`engine_applied`), the latter going through the same model checks a
-	// client write does. Declare both, plus the entity's own `x`, so the LWW
-	// ordering is what this test observes.
-	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{
-		"x":               schema.Integer,
-		"processor_wrote": schema.Boolean,
-		"engine_applied":  schema.Boolean,
-	})
-
-	tt := true
-	wf := spi.WorkflowDefinition{
-		Version: "1.1", Name: "CbdTrueLWWWF", InitialState: "S_pre", Active: true,
-		States: map[string]spi.StateDefinition{
-			"S_pre": {Transitions: []spi.TransitionDefinition{
-				{Name: "CALLOUT", Next: "S_post", Manual: false,
-					Processors: []spi.ProcessorDefinition{
-						{
-							Type:          ProcessorTypeExternalized,
-							Name:          "cbd-proc",
-							ExecutionMode: ExecutionModeCommitBeforeDispatch,
-							Config:        spi.ProcessorConfig{StartNewTxOnDispatch: &tt},
-						},
-					}},
-			}},
-			"S_post": {},
-		},
-	}
-	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
-
-	// Cascade-entry transaction (TX_pre).
-	txID, txCtx, err := txMgr.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-
-	entity := &spi.Entity{
-		Meta: spi.EntityMeta{
-			ID:            "cbd-true-lww-1",
-			TenantID:      testTenant,
-			ModelRef:      modelRef,
-			State:         "",
-			TransactionID: txID,
-		},
-		Data: []byte(`{"x":0}`),
-	}
-
-	_, err = engine.Execute(txCtx, entity, "")
-	if !errors.Is(err, spi.ErrConflict) {
-		t.Fatalf("Execute: err = %v, want a conflict — the processor's intra-TX_post write supersedes the ID the apply-result CAS compares against", err)
-	}
-	// The conflict landed past TX_pre's commit, so a batching caller must not
-	// try to isolate this item into the transaction it would continue in.
-	if !errors.Is(err, ErrPostSegmentConflict) {
-		t.Errorf("Execute: err = %v, want it to carry ErrPostSegmentConflict", err)
-	}
-}
-
 // TestEngine_CommitBeforeDispatch_AuditEventPlacement pins down spec §8's
 // audit-event labelling decision for COMMIT_BEFORE_DISPATCH:
 //
@@ -2917,7 +2814,8 @@ func TestEngine_CommitBeforeDispatch_AuditEventPlacement(t *testing.T) {
 		Data: []byte(`{"x":1}`),
 	}
 
-	if _, err := engine.Execute(txCtx, entity, ""); err != nil {
+	result, err := engine.Execute(txCtx, entity, "")
+	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
 
@@ -2960,24 +2858,17 @@ func TestEngine_CommitBeforeDispatch_AuditEventPlacement(t *testing.T) {
 	}
 
 	// --- Assertion 4: after the cascade returns, BOTH bracketing events
-	// are present with the cascade-entry txID label. We read via the
-	// engine-discarded txCtx — which still owns its (unstaffed) tx token,
-	// but the in-memory audit store is non-transactional so it sees
-	// everything recorded so far. This is sufficient to assert labelling;
-	// the durable-read variant of this assertion lands once Task 13
-	// commits TX_post end-to-end.
+	// are present with the cascade-entry txID label. SMEventStateProcessResult
+	// is recorded in TX_post, which is still open when Execute returns, so
+	// the read goes through the engine's final context: audit events are
+	// bound to their transaction and visible only inside it until it
+	// commits. SMEventProcessingPaused committed with TX_pre.
 	auditAfter, err := func() ([]spi.StateMachineEvent, error) {
-		rCtx := ctxWithTenant(testTenant)
-		rTxID, rTxCtx, bErr := txMgr.Begin(rCtx)
-		if bErr != nil {
-			return nil, bErr
-		}
-		defer func() { _ = txMgr.Rollback(rTxCtx, rTxID) }()
-		as, asErr := factory.StateMachineAuditStore(rTxCtx)
+		as, asErr := factory.StateMachineAuditStore(result.FinalCtx)
 		if asErr != nil {
 			return nil, asErr
 		}
-		return as.GetEvents(rTxCtx, entity.Meta.ID)
+		return as.GetEvents(result.FinalCtx, entity.Meta.ID)
 	}()
 	if err != nil {
 		t.Fatalf("post-cascade audit read: %v", err)
@@ -3404,11 +3295,13 @@ func TestEngine_AutomatedCriterionNoMatch_RecordsReason(t *testing.T) {
 		t.Errorf("expected entity to stay in CREATED (criterion did not match), got %q", entity.Meta.State)
 	}
 
-	auditStore, err := factory.StateMachineAuditStore(ctx)
+	// Read through the engine's transaction: it is still open, and its
+	// audit events are visible only inside it until it commits.
+	auditStore, err := factory.StateMachineAuditStore(txCtx)
 	if err != nil {
 		t.Fatalf("StateMachineAuditStore: %v", err)
 	}
-	events, err := auditStore.GetEventsByTransaction(ctx, "auto-crit-reason-e1", txID)
+	events, err := auditStore.GetEventsByTransaction(txCtx, "auto-crit-reason-e1", txID)
 	if err != nil {
 		t.Fatalf("GetEventsByTransaction: %v", err)
 	}
@@ -3468,11 +3361,13 @@ func TestEngine_InlineCriterionNoMatch_DefaultsReason(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 
-	auditStore, err := factory.StateMachineAuditStore(ctx)
+	// Read through the engine's transaction: it is still open, and its
+	// audit events are visible only inside it until it commits.
+	auditStore, err := factory.StateMachineAuditStore(txCtx)
 	if err != nil {
 		t.Fatalf("StateMachineAuditStore: %v", err)
 	}
-	events, err := auditStore.GetEventsByTransaction(ctx, "inline-crit-reason-e1", txID)
+	events, err := auditStore.GetEventsByTransaction(txCtx, "inline-crit-reason-e1", txID)
 	if err != nil {
 		t.Fatalf("GetEventsByTransaction: %v", err)
 	}
@@ -3530,8 +3425,12 @@ func TestEngine_ManualCriterionNoMatch_EnrichesError(t *testing.T) {
 		t.Fatalf("expected enriched error, got %v", err)
 	}
 
-	// The rejection also populates the state-machine audit event data (durable
-	// on non-TX-bound backends like memory; rolled back on TX-bound backends).
+	// The rejection also populates the state-machine audit event data. ctx
+	// here carries no transaction (this unit test calls the engine directly,
+	// not through a door that opens one), so Record appends the event
+	// directly regardless of backend. An HTTP-driven manual transition's
+	// rejection rolls back the whole call, and its audit events roll back
+	// with it on every backend — see e2e/parity's criterion_reason.go.
 	// Assert the criterion name is the nested FUNCTION name, mirroring the
 	// automated sibling's data assertions.
 	auditStore, err := factory.StateMachineAuditStore(ctx)
@@ -3634,11 +3533,13 @@ func TestEngine_WorkflowSkipped_RecordsReason(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 
-	auditStore, err := factory.StateMachineAuditStore(ctx)
+	// Read through the engine's transaction: it is still open, and its
+	// audit events are visible only inside it until it commits.
+	auditStore, err := factory.StateMachineAuditStore(txCtx)
 	if err != nil {
 		t.Fatalf("StateMachineAuditStore: %v", err)
 	}
-	events, err := auditStore.GetEventsByTransaction(ctx, "wf-skip-reason-e1", txID)
+	events, err := auditStore.GetEventsByTransaction(txCtx, "wf-skip-reason-e1", txID)
 	if err != nil {
 		t.Fatalf("GetEventsByTransaction: %v", err)
 	}

@@ -644,8 +644,8 @@ func TestUpdateCollection_IfMatch_AbsentRegression(t *testing.T) {
 // The mirror image of Test 5, and the reason a batch cannot treat every
 // spi.ErrConflict from the engine as an isolable precondition failure.
 //
-// Here the ifMatch is CURRENT, so the first-segment flush accepts it, TX_pre
-// commits, and the callout fires. The callout then commits an out-of-band write
+// Here the ifMatch is CURRENT, so the precondition holds, TX_pre commits, and
+// the callout fires. The callout then commits an out-of-band write
 // to the same entity, so the engine's apply-result CompareAndSave — which runs
 // against TX_pre and only after the dispatch returns — conflicts. By that point
 // the segment is durable and the external effect has happened: there is nothing

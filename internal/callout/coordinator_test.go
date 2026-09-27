@@ -9,6 +9,7 @@ import (
 
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
@@ -351,14 +352,14 @@ func TestOwner_CalloutFromAScheduledFire_FollowsTheSameRules(t *testing.T) {
 	e.attach(t, "m-1", tenantA, "x", detaches())
 	e.attach(t, "m-2", tenantA, "x", answers("m-2"))
 
-	by, err := e.dispatchFunction(common.SystemUserContext(tenantA), "x", "")
+	by, err := e.dispatchFunction(commontest.SystemUserContext(tenantA), "x", "")
 	if err != nil || by != "m-2" {
 		t.Fatalf("answered by %q, err %v; want m-2", by, err)
 	}
 
 	e.attach(t, "m-3", tenantA, "x", nil)
 	e.attach(t, "m-4", tenantA, "x", nil)
-	_, err = e.owner.DispatchProcessor(common.SystemUserContext(tenantA), testEntity(), processorDef("x", "", false), "wf1", "t1", "tx-1")
+	_, err = e.owner.DispatchProcessor(commontest.SystemUserContext(tenantA), testEntity(), processorDef("x", "", false), "wf1", "t1", "tx-1")
 	if got := appErrOf(t, err).Code; got != common.ErrCodeDispatchTimeout {
 		t.Errorf("code = %s, want a processor that is not idempotent to stop at its first NoAnswer", got)
 	}

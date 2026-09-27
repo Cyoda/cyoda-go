@@ -2,7 +2,7 @@ package scheduler
 
 import "time"
 
-// Clock abstracts wall-clock time so the scan loop (and its tests) can
+// Clock abstracts wall-clock time so the claim loop (and its tests) can
 // inject a deterministic source instead of depending on time.Now directly.
 type Clock interface {
 	Now() time.Time

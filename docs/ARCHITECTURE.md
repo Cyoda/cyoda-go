@@ -91,7 +91,7 @@ internal/
                           its whole handling
   fence/                  Which compute member holds a callout's work; refuses
                           the rest
-  scheduler/              Scheduled-transition dispatch loop
+  scheduler/              Scheduled-transition claim loop, heartbeat and watchdog (§4.8)
   domain/
     entity/               Entity CRUD, state machine integration, transaction scope
     model/                Model descriptors, import/export, locking
@@ -227,7 +227,7 @@ Plugin authors never implement these — they are internal to the cyoda-go appli
 
 Multi-tenancy is intrinsic. Every request context carries a resolved `UserContext` with `TenantID`. All stores, across all plugins, partition by tenant.
 
-A tenant identifier matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$` — 1 to 100 bytes, the first an ASCII letter or digit, case preserved and significant. `common.ValidateTenantID` is the one definition, and it is applied at the only two places a tenant identifier enters the binary from outside it: the `caas_org_id` claim on an inbound JWT (§7.2), which covers every authenticated HTTP request and every authenticated gRPC method, and `CYODA_BOOTSTRAP_TENANT_ID` at startup (§9). Everything downstream — peer dispatch bodies, scheduler payloads, gossip envelopes, scheduled-task and search-job rows, OIDC provider records, the M2M client table — carries a value already admitted at one of those two doors and does not re-check it. The rule is a Cloud-facing contract: see `docs/cloud-parity/tenant-id-grammar.md`.
+A tenant identifier matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$` — 1 to 100 bytes, the first an ASCII letter or digit, case preserved and significant. `common.ValidateTenantID` is the one definition, and it is applied at the only two places a tenant identifier enters the binary from outside it: the `caas_org_id` claim on an inbound JWT (§7.2), which covers every authenticated HTTP request and every authenticated gRPC method, and `CYODA_BOOTSTRAP_TENANT_ID` at startup (§9). Everything downstream — peer dispatch bodies, gossip envelopes, scheduled-task and search-job rows, OIDC provider records, the M2M client table — carries a value already admitted at one of those two doors and does not re-check it. The rule is a Cloud-facing contract: see `docs/cloud-parity/tenant-id-grammar.md`.
 
 A user identifier is valid UTF-8, 1 to 255 characters, with no control character (U+0000–U+001F, U+007F–U+009F), no noncharacter and no U+FFFD; nothing is normalised. `common.ValidateUserID` is the one definition, applied at every place a principal's user id enters from outside: the first-party `caas_user_id` claim (or `sub` when `caas_user_id` is absent), the OIDC `sub`, the token-exchange subject `sub`, and `CYODA_BOOTSTRAP_USER_ID` at startup. The excluded characters are those the CloudEvents spec forbids in a string attribute, since the user id is sent to compute nodes as `authid`, plus U+FFFD, so that invalid input cannot alias a real id. The OIDC path builds its user ids as `oidc:<providerId>:<sub>`, so `oidc:` is a reserved word: `common.ValidateFirstPartyUserID` rejects it, in any case, at every other door. See `docs/cloud-parity/user-id-rule.md`.
 
@@ -349,6 +349,7 @@ type TransactionManager interface {
     Savepoint(ctx context.Context, txID string) (savepointID string, err error)
     RollbackToSavepoint(ctx context.Context, txID string, savepointID string) error
     ReleaseSavepoint(ctx context.Context, txID string, savepointID string) error
+    LostRace(ctx context.Context, txID string) (bool, error)
 }
 ```
 
@@ -358,6 +359,7 @@ type TransactionManager interface {
 - `Rollback`: Marks transaction rolled back, clears from active map. Waits for in-flight operations via `OpMu`.
 - `GetSubmitTime`: Returns the database timestamp captured at commit. Used for temporal ordering.
 - `Savepoint` / `RollbackToSavepoint` / `ReleaseSavepoint`: nested-savepoint support used by the workflow engine's `ASYNC_NEW_TX` execution mode. The plugin returns a savepoint ID that the caller passes back for rollback or release. Plugins that don't support savepoints may return `common.ErrUnsupported`.
+- `LostRace`: reports whether the transaction has already lost a write race — another transaction committed, after this one's snapshot, an entity or task row this one writes — so that Commit will refuse it. The answer is the same on every backend: PostgreSQL reads the 40001/40P01 it recorded when it refused the losing write; memory and sqlite run the write half of their commit-time check, plus a lost write a savepoint rollback discarded. Read-only and tenant-checked. The workflow engine asks it after a processor that could call back into the transaction fails (§3.8).
 
 **TX boundary ownership.** For most cascades the request handler in `internal/domain/entity/service.go` opens the transaction, calls the engine, and commits when the engine returns — a single `Begin`/`Commit` pair, producing a single `Save`, a single `Commit` and a single `EntityVersion` row. When a transition carries a `COMMIT_BEFORE_DISPATCH` processor (see §5.4), the workflow engine — not the handler — owns the transaction boundaries: the engine flushes the pre-callout entity state via `EntityStore.Save`, commits `TX_pre`, dispatches the processor outside any transaction, opens `TX_post` on the same node, applies the result via `CompareAndSave` (CAS expected = the txID stamped at `TX_pre`'s commit), and commits. Per-segment SPI writes are issued by the engine; the handler hands `txMgr` and the `If-Match` precondition to the engine and lets it own boundaries.
 
@@ -379,7 +381,7 @@ contract.
 
 **Release on every exit path.** An entity write flow opens its transaction through a deferred scope (`txScope`, `internal/domain/entity/txscope.go`) that rolls back the segment currently open unless the flow committed it. One deferred `Release` covers every return, every error branch, and a panic unwinding the stack, so a transaction is never abandoned open with its pooled connection unreturned. A joined callback never rolls back its owner's transaction, and never moves off it: the engine refuses a `COMMIT_BEFORE_DISPATCH` processor on a joined chain (`409 COMMIT_IN_JOINED_TRANSACTION`) before the transaction is flushed or committed, so a joined call opens no segment of its own. The workflow engine carries the same guard for the segments it opens itself, since those are its own until handed back.
 
-**Panic containment.** Five recovery sites wrap code that runs the engine or the store on the application's behalf and latch the node unhealthy: the HTTP `Recovery` middleware (outermost on the API server), the gRPC server (unary and stream interceptors), the async-search executor, the search reaper (the snapshot-TTL sweep on `SearchReapInterval` and the stale-job reclaim sweep on the finer `SearchJobHeartbeatInterval` run on two separate tickers, both independently panic-latching), and the scheduler's dispatch goroutine. All five log the value and stack, record a sanitized outcome (a ticket-carrying error on the request doors, a `FAILED` job for async search, a log line for the reaper and for a scheduled fire, the latter with no caller to answer), and mark the node unhealthy. The criterion is what the recovered code was doing, not where it entered from: a panic inside engine or store code leaves state nothing has verified. That is why the scheduler site latches too — `ClusterExecutor.Execute` fires in-process whenever distribution picks this node, so otherwise an identical panicking fire would withdraw the node only when the pick happened to be a peer.
+**Panic containment.** Five recovery sites wrap code that runs the engine or the store on the application's behalf and latch the node unhealthy: the HTTP `Recovery` middleware (outermost on the API server), the gRPC server (unary and stream interceptors), the async-search executor, the search reaper (the snapshot-TTL sweep on `SearchReapInterval` and the stale-job reclaim sweep on the finer `SearchJobHeartbeatInterval` run on two separate tickers, both independently panic-latching), and the scheduler's goroutines — the claim loop, each run, the heartbeat and the watchdog. All five log the value and stack, record a sanitized outcome (a ticket-carrying error on the request doors, a `FAILED` job for async search, a log line for the reaper and for the scheduler's claim loop, heartbeat and watchdog — which also cancel every scheduled run in progress — and a task ended FAILED with `RUN_PANICKED` for a scheduled run, which has no caller to answer), and mark the node unhealthy. The criterion is what the recovered code was doing, not where it entered from: a panic inside engine or store code leaves state nothing has verified. A scheduled run is engine work like any request, so its panic latches the node too, and its task is not given back: running it again on another node would spread the problem. It ends FAILED `RUN_PANICKED`; if that record has not landed when the process exits, or the panic was in recording the run's outcome, which records nothing, the task stays `RUNNING` under this owner, another node reclaims it after `CYODA_SCHEDULER_STALE_AFTER` as a lost owner, and `CYODA_SCHEDULER_MAX_LOST_OWNERS` bounds any repeat (§4.8).
 
 Further recovery sites deliberately do **not** latch, because they wrap probes, notification callbacks or per-connection framing rather than domain work: the admin listener, which runs the same `Recovery` middleware with no health flag (`cmd/cyoda/adminserver.go`) so a panic in `/livez`, `/readyz` or a `/metrics` scrape still answers a ticket-carrying 500 without withdrawing the node; the member-registry `onChange` fan-out (`internal/grpc/members.go`); the OIDC broadcast handler with its dispatch goroutines (`internal/auth/oidc/broadcast.go`, which counts panics on its own metric); and each per-member gRPC stream's three per-connection goroutines — the writer (`Member.writeLoop`), the receive goroutine (`receiveLoop`) and the keep-alive loop (`keepAliveLoop`), all in `internal/grpc/streaming.go` and `members.go` — which recover with a ticket-carrying status and evict just that member rather than latching the node, since each wraps only that member's own framing or liveness bookkeeping, not domain work. None of these sites holds a transaction, and all self-heal: the admin surface on the next probe, the fan-out and broadcast handler on the next event, the three per-member goroutines by the client reconnecting as a fresh member.
 
@@ -388,7 +390,7 @@ Nothing resets the flag: it latches on the first panic recovered in engine or st
 What the flag actually stops, and what it does not:
 
 - **Stops:** new client connections arriving through the Kubernetes Service. The chart's readiness probe (5s period, 3 failures) drops the pod from the Service endpoints in ~10-15s, and both the Gateway `HTTPRoute` and the `Ingress` route through that Service.
-- **Does not stop:** peer-forwarded work. The chart always enables cluster mode, and peers address each other through the gossip registry, not the Service — tx-affinity proxying, cluster dispatch and the peer scheduler RPC all keep reaching the node, and the scheduler's round-robin distribution does not read node liveness, so it retains its share of every scan. Established connections — a compute node holding a gRPC stream, for instance — are not closed either.
+- **Does not stop:** peer-forwarded work. The chart always enables cluster mode, and peers address each other through the gossip registry, not the Service — tx-affinity proxying and callout hand-overs keep reaching the node. The node's own scheduler stops claiming when the flag latches, whichever site latched it, but keeps heartbeating unless the heartbeat itself panicked, so the runs it has in progress are not taken over while they may still commit. Only a panic recovered inside the scheduler also cancels those runs (§4.8). Established connections — a compute node holding a gRPC stream, for instance — are not closed either.
 - **Does not restart it.** `/livez` is unconditional and does not read the flag, deliberately: a deterministic panic (a poisoned entity, a bad workflow definition) would otherwise recur on the next request and turn a restart into a loop. Replacing a drained node is an operator action.
 
 `/readyz` fails for two independent reasons — storage not initialised, or a recovered panic — and reports which in the server-side log while answering the probe generically.
@@ -411,7 +413,7 @@ How an abort surfaces depends on whether retrying could plausibly work:
 - **Statement ceiling exceeded → `500` with a ticket, not retryable.** A statement cancelled by `CYODA_POSTGRES_STATEMENT_TIMEOUT`. Re-running work that just exceeded its ceiling will exceed it again, so advertising a retry would be a lie.
 - **Async scan ceiling exceeded → recorded on the job, never an HTTP status.** A scan cancelled by `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` fails the job it belongs to: the job goes `FAILED` with a fixed message, and `GetJob` serves that back verbatim. No ticket is minted, because there is no response to attach one to.
 
-In all three cases the server log names the setting that fired, which is what turns an otherwise unexplained failure into a diagnosable one. See `cyoda help errors STORAGE_UNAVAILABLE` for the caller-facing statement of the retryable/non-retryable split.
+In all three cases the server log names the setting that fired, which is what turns an otherwise unexplained failure into a diagnosable one. See `cmd/cyoda/help/content/errors/STORAGE_UNAVAILABLE.md` for the caller-facing statement of the retryable/non-retryable split.
 
 **Callout timeouts must fit under the idle ceiling.** A `SYNC` or `ASYNC_SAME_TX` callout holds its transaction's connection idle for its whole duration — and that duration is the callout's deadline, not one try's answer limit: the owner may try several compute members, and several nodes, under one deadline (§4.3). So the arithmetic that has to fit under `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` is `tries × answer limit + patience + hand-over allowance`, which is 155s at the defaults and 275s with the answer limit at its configured upper bound. `responseTimeoutMs` is bounded at import by `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` but not against the idle ceiling, and the two are set independently: a deployment that raises the retry count or the allowances past the ceiling gets a transaction PostgreSQL aborts mid-callout, and the caller sees `503 STORAGE_UNAVAILABLE`. `COMMIT_BEFORE_DISPATCH` (§5.4) removes the constraint for a given processor by committing before the callout and holding no connection across it.
 
@@ -645,11 +647,32 @@ and the pipeline continues. A savepoint that cannot be **created, undone or
 released** is not a processor failure — it says the transaction is unusable — so
 it is marked with `workflow.ErrSavepointInfra` and **fails the operation** with a
 ticketed 5xx (an unavailable store keeps its `503 STORAGE_UNAVAILABLE`, which is
-classified first); it is never reported as the processor's own error. A chain the fence refuses after its
+classified first); it is never reported as the processor's own error. Undoing the savepoint does
+not undo a conflict: when a callback's write inside it had already lost a race
+against another transaction, the transaction lost that race, and its commit
+fails with a retryable `409 CONFLICT` on every backend. PostgreSQL keeps the
+40001/40P01 it recorded at the write across `ROLLBACK TO SAVEPOINT` and refuses
+Commit. Memory and sqlite record, at the rollback, that another transaction
+committed a discarded write's entity or scheduled-task row after the snapshot,
+and refuse Commit with `spi.ErrConflict`. A commit to that entity or task row
+after the rollback raced no write of the transaction and does not conflict;
+discarded reads are dropped on all three. A chain the fence refuses after its
 callout neither undoes nor releases its savepoint: by then the replacement
 member may have written, and undoing a savepoint restores the whole buffer on
 memory and sqlite and everything since on postgres. An abandoned savepoint is
 harmless on every backend.
+
+**A processor that fails after its callback lost a race.** When a `SYNC`,
+`ASYNC_SAME_TX` or `COMMIT_BEFORE_DISPATCH` (`startNewTxOnDispatch`) processor
+fails, the engine asks `TransactionManager.LostRace` whether the transaction
+the processor could call back into has already lost a write race. If it has,
+the transaction cannot commit whatever the processor does, so its failure is a
+consequence: the engine answers the conflict (`spi.ErrTxAborted`, a retryable
+`409 CONFLICT` at every door) with the processor's failure attached. PostgreSQL
+has already refused the losing write; memory and sqlite accepted it into the
+buffer, and every read in the transaction still succeeds, so the question goes
+to the transaction manager and not to the store. A dispatch that provably
+reached no compute member made no callback and keeps its own error.
 
 **What is not stopped, and why that is acceptable.** For tries made by another
 node, the earlier compute member stays admitted until the first callback of the
@@ -767,10 +790,10 @@ genuine one. The recipient is never on the wire: the sender names the node whose
 address it looked up, the receiver names itself, and the envelope opens only
 where the two agree. A bounded, TTL-evicted nonce cache rejects replayed
 requests within the 30s skew window; answers do not enter it, being bound to a
-request nonce their receiver chose. The scheduler's peer RPC signs its requests
-and answers the same way. Both bodies are JSON encoded with HTML escaping off,
-and the entity's payload travels base64 so that it is neither compacted nor
-rewritten (§the internal dispatch endpoint).
+request nonce their receiver chose. The hand-over's request and answer bodies
+are JSON encoded with HTML escaping off, and the entity's payload travels base64
+so that it is neither compacted nor rewritten (§4.3, the internal dispatch
+endpoint).
 
 What the seal binds is a request to one recipient, one endpoint, one timestamp
 and one nonce, and an answer to one request. What it does not bind is a node's
@@ -935,10 +958,9 @@ SSRF guard makes runs under the connect timeout too, inside the hand-over's own
 context.
 
 No client that talks to another node uses a proxy or follows a redirect — the
-hand-over transport, the scheduler's peer RPC, the HTTP reverse proxy and the
+hand-over transport, the HTTP reverse proxy and the
 pooled gRPC client alike. Both would send a request to an address the peer
 address guard never validated, which is the pivot that guard exists to close.
-`CYODA_DISPATCH_FORWARD_TIMEOUT` bounds the scheduler's peer RPC only.
 
 **How the owner reads an answer.** Only a decoded, authenticated answer whose
 outcome is `no_handoff` with no try used means nothing reached a compute member;
@@ -1292,7 +1314,8 @@ type AsyncSearchStore interface {
     ReapExpired(ctx, ttl time.Duration) (int, error)
     Heartbeat(ctx, jobID string, epoch int64) error
     ClaimStale(ctx, staleAfter time.Duration, limit int) ([]*SearchJob, error)
-    ClearResults(ctx, jobID string) error
+    ClearResults(ctx, jobID string, epoch int64) error
+    Release(ctx, jobID string, epoch int64) error
 }
 ```
 
@@ -1331,15 +1354,41 @@ heartbeat and let the reaper seize a healthy job. A background reaper
 `RUNNING` job that is either stale (heartbeat silent for
 `CYODA_SEARCH_JOB_STALE_AFTER`) or `released` via `ClaimStale` — which
 atomically bumps the job's `Epoch` so concurrent claimers obtain disjoint
-jobs — clears the prior epoch's partial results (`ClearResults`), and
-re-executes the job on this node at the claimed epoch, as-at its
+jobs — starts the job's heartbeat, clears the prior epoch's partial results
+(`ClearResults`) on the worker under that heartbeat, and re-executes the job
+on this node at the claimed epoch, as-at its
 originally stored `PointInTime`, so a crashed node's async job completes
 `SUCCESSFUL` on a live node rather than staying `RUNNING` forever or being
-failed outright. Every executor-side write (`Heartbeat`, `SaveResults`, the
-terminal `UpdateJobStatus`) carries the epoch the executor was started or
-claimed with; a store refuses a write whose epoch does not match the job's
-current epoch with `spi.ErrStaleClaim`, so a deposed executor that later
-recovers cannot corrupt a result set another node has since taken over.
+failed outright. Every executor-side write (`Heartbeat`, `ClearResults`,
+`SaveResults`, `Release`, the terminal `UpdateJobStatus`) carries the epoch
+the executor was started or claimed with; a store refuses a write whose epoch
+does not match the job's current epoch with `spi.ErrStaleClaim`, so a deposed
+executor that later recovers cannot corrupt a result set another node has
+since taken over — a late `ClearResults` from it deletes nothing.
+
+Neither the heartbeat nor the claim loop waits on a statement that shares the
+store's main pool with entity transactions. PostgreSQL runs `Heartbeat` and
+`ClaimStale` on its scheduler pool, apart from the main pool.
+The heartbeat sends only the fenced `Heartbeat` stamp, whose refusal also
+carries a cancel from any node (the job is terminal). Only such a fencing
+refusal — the job is terminal, claimed at a newer epoch, or gone — ends the
+job. Any other heartbeat error is a missed tick: the job keeps running, its
+later writes are still epoch-fenced, and if the stamps keep failing another
+node claims it once it goes stale. The claim loop claims,
+then starts every job it will run — heartbeat and enqueue — and sends no
+main-pool statement. Three kinds of statement do wait on the main pool, and
+none of them on the claim loop's goroutine:
+
+- A re-run job's `ClearResults`, and the fenced `Release` when that clear
+  fails, run on its worker. The clear runs under the job's heartbeat.
+- The writes a sweep owes jobs it claimed but will not run — the attempt-cap
+  `FAILED` write, the `FAILED` write for an undecodable job, and the
+  queue-full `Release` — go to the second pass. This is one goroutine per
+  node. A sweep that finds it in flight hands its writes over and returns.
+  Every one of these writes is fenced by the claimed epoch. So a write that
+  is never sent, because the node stops, or that fails, loses nothing: the
+  job stays `RUNNING`, goes stale, and is claimed again.
+- The snapshot-TTL `ReapExpired` runs on a goroutine of its own.
 
 Re-execution is bounded: `SearchJob.StaleClaims` counts only staleness
 claims (never a graceful `Release`), and once it reaches
@@ -1354,12 +1403,14 @@ ticker — finer than the snapshot-TTL cadence — plus once at process
 startup, so a node that restarts picks up anything left `released` or gone
 stale before its first ticker fire, rather than waiting a full interval.
 `ClaimStale` and `ReapExpired` are cross-tenant, called with a tenant-less
-context (precedent: `ScheduledTaskStore.ScanDue`); the reaper's follow-up
+context (as are `ScheduledTaskStore.ClaimDue` and the scheduler's owner
+methods); the reaper's follow-up
 writes reconstruct a per-job tenant context from the claimed job's own
-`TenantID`. A claim the node cannot honour — no free capacity in its worker
-pool, or a `ClearResults` failure — releases the job again (uncounted
-against the attempt cap) rather than enqueuing over unknown partial
-residue, so a claim never silently drops the job on the floor.
+`TenantID`. A claim the node cannot honour — no room in its worker pool's
+queue, or a `ClearResults` failure — releases the job again (uncounted
+against the attempt cap) rather than running over unknown residue. A refused
+clear leaves the job to its current owner. A claim never silently drops the
+job on the floor.
 
 **Bounded worker pool.** `POST /api/search/async/{entityName}/{modelVersion}`
 submits to a fixed-size worker pool (`internal/domain/search.WorkerPool`)
@@ -1473,6 +1524,162 @@ Both reads push their filtering into the store where possible: postgres and
 sqlite match `GetVersionByTransaction` in SQL over the entity's own
 versions; memory maintains a per-entity transaction index.
 
+### 4.8 Scheduled Transitions
+
+A scheduled transition is stored as a task in `ScheduledTaskStore`
+(`cyoda-go-spi`). `internal/scheduler` runs one claim loop per node, with a
+heartbeat goroutine and a watchdog. No node assigns work to another: every node
+claims due tasks and runs them itself, so the node that decides is the node that
+runs, and no node reads a cluster view to schedule.
+
+**Terms.** Every write that arms a task draws a new random *arm token* and
+starts a new *life*. Every claim draws a new random *claim token*. The *owner* is
+the node incarnation — a UUID drawn when the process starts — that holds the
+claim. A *fenced* store call is accepted only if the task's current arm token and
+claim token are the ones given; otherwise it returns `spi.ErrStaleClaim`.
+
+**Claiming.** Every `CYODA_SCHEDULER_SCAN_INTERVAL` the loop calls
+`ClaimDue` with a limit of `CYODA_SCHEDULER_MAX_RUNS` minus the runs in
+progress and a per-tenant limit of `CYODA_SCHEDULER_MAX_RUNS_PER_TENANT`; it
+also claims at once when a run frees a slot after a claim that filled every
+slot. It claims only while its last heartbeat succeeded in time, and never once
+the node is latched, by any recovery site (§3.4), or has begun to drain. A
+claimable task is `WAITING` and due, or — only once the node's own heartbeats
+have run without a gap for `STALE_AFTER` — `RUNNING` under an owner whose
+liveness record is missing or older than `STALE_AFTER` by the store clock (a
+*lost owner*; `lostOwners` goes up by one). One task per entity is `RUNNING` at
+a time. The per-tenant limit is per node: across a cluster a tenant holds up
+to that many runs on each node. A claim never reads a tenant's backlog:
+every store reads, per tenant, only the earliest claimable task of each of its
+first *n* entities, *n* being the most turns the claim can give that tenant,
+and chooses from those exactly what it would choose from every due task. Its
+work grows with the number of tenants with a due task (or, for a lost-owner
+claim, a `RUNNING` task), with *n*, with the `RUNNING` tasks, with the busy
+rows and blocked entities it passes over on the way to each tenant's *n*-th
+candidate, and with the later due tasks of the entities already met on that
+way — at most *n* times the tasks one entity can hold, which is one per
+scheduled transition of its current state — plus one index probe per tenant
+that has any `WAITING` task. It never grows with the number of a tenant's due
+entities. Each tick also calls `GiveBackIdle`, which returns to `WAITING`,
+uncounted, any task this owner holds without a live run. Once a minute, while
+its heartbeats succeed, the loop also removes the liveness records of owners
+silent for 10 × `STALE_AFTER` that no `RUNNING` task references, and the marks
+of ended lives.
+
+**Before the run** the engine checks the claimed record. A mark (below), a
+partial commit, or `CYODA_SCHEDULER_MAX_LOST_OWNERS` lost owners end the task
+`FAILED`. With `timeoutMs` set, a first attempt past `scheduledTime +
+timeoutMs` is expired and removed; a later attempt more than
+`CYODA_SCHEDULER_RETRY_DELAY` past it ends `FAILED`.
+
+**Fencing.** A run re-reads its task at the start of every segment and ends
+`superseded` if the life or the claim changed. Every commit of a run writes the
+task row — the final removal or re-arm, or `StampSegment` before a
+`COMMIT_BEFORE_DISPATCH` segment commit — and task rows are under
+first-committer-wins on every backend (C1). A commit whose task was reclaimed,
+re-armed or removed since it began therefore fails with `spi.ErrConflict`. No
+claim check is needed inside the entity transaction. A segment committed after
+the fired transition changed the state stamps the task as a partial commit; a
+run that stops after one ends `FAILED` (`STOPPED_AFTER_PARTIAL_COMMIT`). A
+compute member's callback that joins the run's transaction is not the run: it
+is neither marked nor cancelled as the run, and a `COMMIT_BEFORE_DISPATCH`
+processor it reaches is refused (§3.4, §3.8).
+
+**Liveness and the watchdog.** `Heartbeat` upserts the owner's liveness record,
+stamped by the store clock, every `CYODA_SCHEDULER_HEARTBEAT_INTERVAL`. The
+watchdog arms a timer at `W = STALE_AFTER − CommitBudget (30 s) − 10 s slack`
+from the moment before each successful heartbeat acquired its connection; a
+heartbeat that returns after `W` counts as failed. When the timer fires the node
+cancels every run and claims nothing until a heartbeat succeeds. Every commit of
+a run checks that cancellation first, and a commit under way holds its task-row
+lock, which a claim skips (C6); so no other node can reclaim a task while its
+owner still commits. `STALE_AFTER ≥ CommitBudget (30 s) + 10 s slack + 10 s heartbeat budget
++ 3 × HEARTBEAT_INTERVAL`, that is `50 s + 3 × HEARTBEAT_INTERVAL`, keeps one
+slow or failed heartbeat from self-cancelling. A node that heartbeats keeps its
+tasks even when a run hangs; liveness is not progress. A latched node keeps
+heartbeating unless the heartbeat itself panicked; a panic in the claim loop,
+the heartbeat or the watchdog latches the node and cancels every run in
+progress, and once the heartbeat has stopped other nodes reclaim its tasks
+after `STALE_AFTER`.
+
+**The unsafe mark.** Before every dispatch of a processor whose
+`config.idempotent` is not true, the engine calls `MarkUnsafe`, which never
+joins the run's transaction and so survives its rollback. The run also keeps in
+memory whether unsafe work may have reached a compute member; only the callout
+layer's no-hand-off proof (`contract.NoHandOffProof`) clears it. If the run does
+not commit and unsafe work may have reached a member, or a later claim finds
+the mark, the task ends `FAILED` (`UNSAFE_WORK_NOT_COMPLETED`). When
+`MarkUnsafe` answers `spi.ErrTaskBusy` — another open transaction has written
+the task row — the processor is not dispatched and the run is a safe failure,
+recorded as `CONFLICT: the task is being written by another transaction`.
+Criteria and functions are repeat-safe by rule and are not marked.
+
+**Outcomes.** A committed run removes its task (fired, declined, expired,
+cancelled) or re-arms it. Otherwise the scheduler records the outcome with a
+fenced write on `context.WithoutCancel`, retried with backoff until it is
+accepted or refused, or until shutdown stops waiting: `RecordAttempt` for a safe
+failure (back to `WAITING`, next attempt after `RETRY_DELAY × 2^(attempts−1)`,
+capped by `RETRY_DELAY_MAX` and the deadline; past the deadline the task ends
+`FAILED` instead), or `Fail` with its reason and the `SCHEDULED_TRANSITION_FAIL`
+audit event in one transaction. The five `FAILED` reasons are
+`UNSAFE_WORK_NOT_COMPLETED`, `OWNER_LOST_REPEATEDLY`,
+`EXPIRED_AFTER_FAILED_ATTEMPTS`, `RUN_PANICKED` and
+`STOPPED_AFTER_PARTIAL_COMMIT`. A `FAILED` task is kept, is never claimed, and
+never moves the entity. A deterministic store rejection (`spi.ErrStoreRejected`)
+of an outcome write latches the node without cancelling its other runs, and the
+task stays `RUNNING` under this owner; every other error is retried. A run that
+panics latches the node, cancels every run in progress, is never given back,
+and ends `FAILED` (`RUN_PANICKED`). A panic while recording a run's outcome
+latches the node the same way but records nothing. In that case, and when the
+`RUN_PANICKED` record has not landed before the process exits, the task stays
+`RUNNING` under this owner; another node reclaims it after `STALE_AFTER` as a
+lost owner, and `MAX_LOST_OWNERS` bounds any repeat. `lastError` is visible to
+tenant users (`GET /scheduled-tasks`) and passes an allow-list; anything outside
+it is recorded as `internal error [ticket: …]`.
+
+**Entity writes.** `ReconcileForEntity` arms the new arm set, each task as a new
+life, and removes every other task of the entity in the write's transaction.
+Entity deletes remove the entity's tasks in the same transaction; a workflow
+import removes the model's tasks that no workflow schedules, after saving the
+workflows. A client write that conflicts with the scheduler on a task row gets
+a retryable `409`; a delete or an import that owns its transaction retries on
+the server first, up to three more times. A processor of a run may write the
+fired entity through a joined callback and answer with no data
+(`{"data":null}`): as in any transition, under `SYNC`, `ASYNC_SAME_TX` and
+`COMMIT_BEFORE_DISPATCH` with `startNewTxOnDispatch`, the engine then takes the
+written payload, keeps its own state, and persists over that write
+(`cmd/cyoda/help/content/workflows.md`).
+
+**Shutdown.** Before the servers drain the scheduler stops claiming, waits
+`CYODA_SCHEDULER_SHUTDOWN_DRAIN`, cancels the runs still going except one whose
+unsafe callout is in flight, waits for outcomes, gives back what ended without
+one, stops the heartbeat and, when no run still holds a claim, retires the
+owner. From the signal on, no run starts a new unsafe dispatch. When a server
+fails, the same sequence runs after the servers stop. The chart's
+`terminationGracePeriodSeconds` (390) covers the worst case at the defaults; see
+SHUTDOWN TIMING in `cmd/cyoda/help/content/run.md` for the bound.
+
+**Storage clauses** every backend meets: C1 first-committer-wins on task rows;
+C2 a joining read sees the transaction's staged writes; C3 a mark and a claim
+of one task serialise; C4 heartbeats and claims have connections entity
+transactions cannot starve; C5 refusals are recognisable (`ErrConflict`,
+`ErrStaleClaim`); C6 a task row written by an open transaction is not
+claimable, and `MarkUnsafe` answers `ErrTaskBusy` for it. The `ScheduledTasks`
+suite of `spitest` pins C1–C3, C5 and C6; the PostgreSQL plugin's tests pin C4.
+PostgreSQL meets C1 and C6 through `REPEATABLE READ` and row locks, serialises
+claimers per entity with a transaction-scoped advisory lock, and meets C4
+through its scheduler pool (`CYODA_POSTGRES_SCHEDULER_CONNS`, shared with the
+async-search heartbeat and claim of §4.6) and one more connection for the
+heartbeat; memory and SQLite meet C1 and C6 through task-row keys in their
+commit-time conflict check. Memory and SQLite serve a single node — memory
+holds its state in the process, and SQLite holds an exclusive lock on its
+file — so their claims never meet another node's. SQLite keeps marks and owner
+liveness in the database file: a restart with a mark set ends the task
+`FAILED`, and it is never run again.
+[docs/plugins/POSTGRES.md](plugins/POSTGRES.md) has the claim's statements.
+
+The Cloud-facing contract is `docs/cloud-parity/scheduled-transitions.md`.
+
 ---
 
 ## 5. Workflow Engine
@@ -1501,7 +1708,7 @@ Entry points into the engine, each taking a `context.Context` first. The first t
 1. **`Execute(ctx, entity, transitionName)`** -- Entity creation. Selects matching workflow, sets initial state, optionally fires a named transition, cascades automated transitions.
 2. **`ManualTransition(ctx, entity, transitionName)`** -- Fires a named transition on an existing entity, then cascades. `ManualTransitionWithIfMatch` adds an optimistic-concurrency precondition.
 3. **`Loopback(ctx, entity)`** -- Re-evaluates automated transitions from the current state without firing a specific transition. Used when entity data is updated by a processor callback and the workflow should re-check conditions. `LoopbackWithIfMatch` is the precondition-carrying form.
-4. **`FireScheduledTransition(ctx, task)`** -- Fires a scheduled transition when its timer comes due, driven by the scheduler. Returns a `ScheduledOutcome` rather than an `*EngineResult`, since the caller is the scheduler and not a request handler.
+4. **`FireScheduledTransition(ctx, task, maxLostOwners, retryDelay)`** -- Runs one claimed scheduled task (§4.8). Returns a `RunReport` rather than an `*EngineResult`: the caller is the scheduler, which records the outcome.
 
 `GetAvailableTransitions` / `GetAvailableTransitionsForEntity` are read-only queries over the same model.
 
@@ -1522,12 +1729,12 @@ Processors are dispatched via the `ExternalProcessingService` SPI, implemented b
 |------|----------|
 | `SYNC` | Processor executes within the current transaction. Entity data is updated in-place before the next transition. |
 | `ASYNC_SAME_TX` | Executes inline in the caller's transaction, exactly as `SYNC` does. CRUD callbacks are routed back to the transaction owner. The `ASYNC` label is preserved for Cyoda Cloud configuration compatibility; execution in cyoda-go is not asynchronous. |
-| `ASYNC_NEW_TX` | Processor executes sequentially within a SAVEPOINT of the parent transaction. Fire-and-forget error semantics: the processor's own failure rolls back the SAVEPOINT only, the parent pipeline continues, and nothing reaches the client — not even the member's `retryable` verdict. A savepoint that cannot be created, undone or released is **not** a processor failure: the transaction is unusable, so the operation fails with a ticketed 5xx (§3.8). Entity mutations returned by the processor are discarded. Parent rollback discards all ASYNC_NEW_TX work. The `ASYNC` label is preserved for Cyoda Cloud configuration compatibility — execution is sequential in cyoda-go. |
-| `COMMIT_BEFORE_DISPATCH` | Engine splits the cascade into two transactions around this processor. `TX_pre` flushes the pre-callout entity state and commits **before** the processor is dispatched, releasing the storage connection during the external compute window. The processor runs outside any transaction. When the processor returns, the engine opens `TX_post` on the same node, reapplies the result via `CompareAndSave` (CAS expects the txID stamped at `TX_pre`'s commit), runs subsequent SYNC processors and cascade transitions inline, then commits. CAS conflict at the boundary surfaces `ErrConflict` → `409 retryable`; entity remains durable in the pre-callout state, no engine-side retry, no automatic compensation. Companion field `startNewTxOnDispatch: bool` (default `false`, sibling on the same processor object, validator rejects `true` for any other mode) controls whether a fresh transaction context is supplied to the dispatched call for processor-side CRUD on entities other than the cascade-anchor. **Audit-trail placement**: `SMEventProcessingPaused` is recorded in `TX_pre` and durably committed at the segment boundary; `SMEventStateProcessResult` is recorded in `TX_post`. The mode has no event types of its own. See [docs/CONSISTENCY.md](CONSISTENCY.md) §10 for visibility caveats and idempotency requirements. |
+| `ASYNC_NEW_TX` | Processor executes sequentially within a SAVEPOINT of the parent transaction. Fire-and-forget error semantics: the processor's own failure rolls back the SAVEPOINT only, the parent pipeline continues, and nothing reaches the client — not even the member's `retryable` verdict. The exception is a callback write inside the SAVEPOINT that had already lost a race: the rollback does not undo that, and the operation fails with a retryable `409 CONFLICT` (§3.8). A savepoint that cannot be created, undone or released is **not** a processor failure: the transaction is unusable, so the operation fails with a ticketed 5xx (§3.8). Entity mutations returned by the processor are discarded. Parent rollback discards all ASYNC_NEW_TX work. The `ASYNC` label is preserved for Cyoda Cloud configuration compatibility — execution is sequential in cyoda-go. |
+| `COMMIT_BEFORE_DISPATCH` | Engine splits the cascade into two transactions around this processor. `TX_pre` flushes the pre-callout entity state and commits **before** the processor is dispatched, releasing the storage connection during the external compute window. The processor runs outside any transaction. When the processor returns, the engine opens `TX_post` on the same node, reapplies the result via `CompareAndSave` (CAS expects the txID stamped at `TX_pre`'s commit), runs subsequent SYNC processors and cascade transitions inline, then commits. A CAS conflict at the boundary — another transaction changed the entity during the dispatch — answers `412 ENTITY_MODIFIED` on a single update and fails a collection update whole with `400 WORKFLOW_FAILED`; the entity remains durable in the pre-callout state, no engine-side retry, no automatic compensation. Companion field `startNewTxOnDispatch: bool` (default `false`, sibling on the same processor object, validator rejects `true` for any other mode) controls whether a fresh transaction context is supplied to the dispatched call for processor-side CRUD on entities other than the cascade-anchor. **Audit-trail placement**: `SMEventProcessingPaused` is recorded in `TX_pre` and durably committed at the segment boundary; `SMEventStateProcessResult` is recorded in `TX_post`. The mode has no event types of its own. See [docs/CONSISTENCY.md](CONSISTENCY.md) §10 for visibility caveats and idempotency requirements. |
 
 ### 5.5 Audit Trail
 
-The engine records state machine events to `StateMachineAuditStore` throughout execution. 18 event types:
+The engine records state machine events to `StateMachineAuditStore` throughout execution. 19 event types:
 
 | Event Type | Constant | Meaning |
 |------------|----------|---------|
@@ -1548,7 +1755,8 @@ The engine records state machine events to `StateMachineAuditStore` throughout e
 | `SCHEDULED_TRANSITION_ARM` | `SMEventScheduledTransitionArmed` | Scheduled transition armed on state entry |
 | `SCHEDULED_TRANSITION_FIRE` | `SMEventScheduledTransitionFired` | Scheduled transition fired at its due time |
 | `SCHEDULED_TRANSITION_EXPIRE` | `SMEventScheduledTransitionExpired` | Scheduled transition passed its expiry unfired |
-| `SCHEDULED_TRANSITION_CANCEL` | `SMEventScheduledTransitionCancelled` | Scheduled transition cancelled before firing |
+| `SCHEDULED_TRANSITION_CANCEL` | `SMEventScheduledTransitionCancelled` | Scheduled task removed without firing: the entity left the state, the selected workflow no longer schedules the transition, or the entity has no transaction id to guard the fire |
+| `SCHEDULED_TRANSITION_FAIL` | `SMEventScheduledTransitionFailed` | Scheduled task ended FAILED; kept, and never moves the entity |
 
 **Segment-boundary placement for `COMMIT_BEFORE_DISPATCH`** (§5.4): when the engine segments a cascade around a `COMMIT_BEFORE_DISPATCH` processor, `SMEventProcessingPaused` is recorded in `TX_pre` (and durably committed at the segment boundary, surviving an engine crash before the dispatch returns) and `SMEventStateProcessResult` is recorded in `TX_post`. **No event spans both transactions, and the mode has no event types of its own.** Audit consumers can detect a stranded mid-cascade entity by the presence of `SMEventProcessingPaused` without a matching `SMEventStateProcessResult` for the same dispatch.
 
@@ -1900,6 +2108,7 @@ Advertised via `DescribablePlugin.ConfigVars()`; rendered in the binary's `--hel
 | `CYODA_POSTGRES_URL` (with `_FILE` variant) | (none, **required**) | PostgreSQL connection string |
 | `CYODA_POSTGRES_MAX_CONNS` | `25` | Maximum pool connections |
 | `CYODA_POSTGRES_MIN_CONNS` | `5` | Minimum pool connections |
+| `CYODA_POSTGRES_SCHEDULER_CONNS` | `10` | Scheduler pool: scheduled-task claims, marks, give-backs and recorded attempts, and the async-search heartbeat and claim; at least `2`. The scheduler heartbeat has one more connection of its own (§4.8) |
 | `CYODA_POSTGRES_MAX_CONN_IDLE_TIME` | `5m` | Max idle time before connection is closed |
 | `CYODA_POSTGRES_AUTO_MIGRATE` | `true` | Run embedded SQL migrations at startup |
 | `CYODA_POSTGRES_STATEMENT_TIMEOUT` | `5m` | Maximum run time for a single SQL statement; `0` disables |
@@ -1987,7 +2196,23 @@ These variables apply globally to all tenant-registered OIDC providers. Per-prov
 | `CYODA_DISPATCH_CONNECT_TIMEOUT` | `2s` | Time allowed to open the connection when a callout is handed over to another node; a node that cannot be connected to costs no try. Must be `> 0`; startup fails otherwise. |
 | `CYODA_CALLOUT_HANDOVER_ALLOWANCE` | `30s` | What the owning node allows a callout hand-over on top of `tries left × answer limit`; also the last term of a callout's overall deadline. Must be `> 0`; startup fails otherwise. |
 | `CYODA_CALLOUT_PASS_ALLOWANCE` | `30s` | How long the transaction token given to a compute member outlives its try's answer limit. Must be `> 0`; startup fails otherwise. |
-| `CYODA_DISPATCH_FORWARD_TIMEOUT` | `30s` | Whole-request timeout of the node-to-node call that delegates a scheduled transition. Does not govern callout hand-overs. Must be `> 0`; startup fails otherwise. |
+
+### Scheduler
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CYODA_SCHEDULER_ENABLED` | `true` | Run the claim loop on this node |
+| `CYODA_SCHEDULER_SCAN_INTERVAL` | `1s` | Claim cadence; `> 0` |
+| `CYODA_SCHEDULER_MAX_RUNS` | `8` | Runs in progress per node; `>= 1` |
+| `CYODA_SCHEDULER_MAX_RUNS_PER_TENANT` | `4` | Runs of one tenant per node; `1..MAX_RUNS` |
+| `CYODA_SCHEDULER_HEARTBEAT_INTERVAL` | `15s` | Liveness write cadence; `> 0` |
+| `CYODA_SCHEDULER_STALE_AFTER` | `2m` | Heartbeat silence before a lost-owner claim; `>= 50s + 3 × heartbeat`; the same on every node |
+| `CYODA_SCHEDULER_MAX_LOST_OWNERS` | `3` | Lost owners before FAILED `OWNER_LOST_REPEATEDLY`; `>= 1` |
+| `CYODA_SCHEDULER_RETRY_DELAY` | `30s` | First retry delay, doubling; `> 0` |
+| `CYODA_SCHEDULER_RETRY_DELAY_MAX` | `15m` | Retry delay cap; `>= RETRY_DELAY` |
+| `CYODA_SCHEDULER_SHUTDOWN_DRAIN` | `20s` | Shutdown wait for runs in progress; `>= 0` |
+
+Startup fails on an invalid value.
 
 ### Search
 
@@ -2074,6 +2299,8 @@ OpenTelemetry is integrated end-to-end. The OTel SDK is initialised in `internal
 **Transaction manager decorator:** `TracingTransactionManager` wraps the underlying transaction manager and adds spans (`tx.begin`, `tx.commit`, `tx.rollback`, `tx.savepoint`, `tx.rollback_to_savepoint`, `tx.release_savepoint`) plus metrics (`cyoda.tx.duration`, `cyoda.tx.active`, `cyoda.tx.conflicts`). This decorator is active when `CYODA_OTEL_ENABLED=true`.
 
 **Workflow and dispatch:** spans for `workflow.execute`, `workflow.manual_transition`, `workflow.loopback`, `workflow.cascade`; `dispatch.processor`, `dispatch.criteria` and `dispatch.function` with `cyoda.dispatch.duration`, `cyoda.dispatch.count`, `cyoda.callout.tries` and `cyoda.callout.wait.duration` metrics. These are active when `CYODA_OTEL_ENABLED=true`. Two more `cyoda.callout.*` counters are registered elsewhere and are exposed regardless of it: `cyoda.callout.handovers` on the peer router, in cluster mode, and `cyoda.callout.superseded` where a compute member's callback joins its transaction. The `cmd/cyoda/help/content/telemetry.md` help topic is the full reference.
+
+**Scheduler:** `cyoda.scheduler.runs` and `cyoda.scheduler.run.duration` (by `outcome`), `cyoda.scheduler.runs.in_progress`, `cyoda.scheduler.claims` (by `reason`), `cyoda.scheduler.heartbeat.failures` and `cyoda.scheduler.bookkeeping.retries`, from `observability.Meter()` and so exposed at `/metrics` on every node that runs the scheduler, regardless of `CYODA_OTEL_ENABLED`; a `scheduler.run` span per run. No tenant attribute. The `cmd/cyoda/help/content/telemetry.md` help topic lists the `outcome` and `reason` values.
 
 **Plugin-level instrumentation:** plugins are free to add their own
 spans and metrics under a plugin-specific namespace. The `memory`
@@ -2243,12 +2470,12 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 | **Connection hold time** | Duration of entire flow chain (BEGIN → workflow → compute dispatch → callbacks → COMMIT) | Each in-flight transaction consumes one PG connection for its full lifetime. With 25 connections per node and 10 nodes, the cluster supports ~250 concurrent transactions. |
 | **Proxy timeout** | Default 30s (configurable) | Cross-node proxy hops for CRUD callbacks must complete within this window. |
 | **Callout deadline** | tries × answer limit + patience + hand-over allowance; 155s at the defaults | Fixed when the callout starts. No try or hand-over begins after it and one in progress is cut off at it, so the *time* a callout can take is bounded even though a lost hand-over answer can make the number of tries exceed the setting (§4.3). |
-| **Hand-over answer wait** | tries left × answer limit + `CYODA_CALLOUT_HANDOVER_ALLOWANCE`, never past the callout deadline | The owner's wait for a peer's sealed answer. `CYODA_DISPATCH_CONNECT_TIMEOUT` (2s) bounds opening the connection only; `CYODA_DISPATCH_FORWARD_TIMEOUT` (30s) bounds the scheduler's peer RPC, not this. |
+| **Hand-over answer wait** | tries left × answer limit + `CYODA_CALLOUT_HANDOVER_ALLOWANCE`, never past the callout deadline | The owner's wait for a peer's sealed answer. `CYODA_DISPATCH_CONNECT_TIMEOUT` (2s) bounds opening the connection only. |
 | **Compute member response timeout** | Per-callout `responseTimeoutMs` (default `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS`, 30s) | The answer limit of one try: a member that does not answer within it ends that try, and whether another member is tried depends on the failure kind (§4.3). Bounded at import by `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` (60s), but not against the idle-in-transaction ceiling — a callout deadline above it means PostgreSQL aborts the transaction first (§3.4). |
 
 **Expected bottleneck:** The dominant limit is long-running compute phases holding PG connections. A processor that runs for N seconds holds one connection for at least N seconds, so a node's concurrent-transaction ceiling is its pool size and its throughput is that ceiling divided by processor duration.
 
-**Mitigation: `COMMIT_BEFORE_DISPATCH`.** This is the **primary connection-pool-pressure mitigation** for slow processors (§5.4). The engine splits the cascade into two transactions around the processor: `TX_pre` flushes the pre-callout entity state and commits **before** dispatch, releasing the PG connection for the duration of the external compute. The processor runs outside any transaction. `TX_post` opens on the same node when the processor returns, reapplies the result via `CompareAndSave`, and commits. The PG connection hold time collapses from "full cascade duration" to "`TX_pre.Commit` time + `TX_post` apply-result time", which is independent of processor wall-clock — so throughput stops scaling inversely with processor duration. Trade-offs: cascade atomicity is broken at the segment boundary (entity becomes publicly observable in pre-callout state; engine cannot rollback if `TX_post` aborts); processor must be idempotent (retries re-dispatch); CAS conflict at segment continuation surfaces as `409 retryable`. See `docs/CONSISTENCY.md` §10 for the full author-facing contract. `ASYNC_NEW_TX` (savepoint mode) does **not** relieve connection-pool pressure — it still holds the parent connection through the processor; it only changes failure semantics (savepoint rollback vs. cascade abort). For slow external work, prefer `COMMIT_BEFORE_DISPATCH`.
+**Mitigation: `COMMIT_BEFORE_DISPATCH`.** This is the **primary connection-pool-pressure mitigation** for slow processors (§5.4). The engine splits the cascade into two transactions around the processor: `TX_pre` flushes the pre-callout entity state and commits **before** dispatch, releasing the PG connection for the duration of the external compute. The processor runs outside any transaction. `TX_post` opens on the same node when the processor returns, reapplies the result via `CompareAndSave`, and commits. The PG connection hold time collapses from "full cascade duration" to "`TX_pre.Commit` time + `TX_post` apply-result time", which is independent of processor wall-clock — so throughput stops scaling inversely with processor duration. Trade-offs: cascade atomicity is broken at the segment boundary (entity becomes publicly observable in pre-callout state; engine cannot rollback if `TX_post` aborts); processor must be idempotent (retries re-dispatch); a CAS conflict at segment continuation answers `412 ENTITY_MODIFIED` (a collection update: `400 WORKFLOW_FAILED`). See `docs/CONSISTENCY.md` §10 for the full author-facing contract. `ASYNC_NEW_TX` (savepoint mode) does **not** relieve connection-pool pressure — it still holds the parent connection through the processor; it only changes failure semantics (savepoint rollback vs. cascade abort). For slow external work, prefer `COMMIT_BEFORE_DISPATCH`.
 
 ### 14.3 Data Volume Limits
 
@@ -2265,6 +2492,7 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 | Scenario | Behavior | Recovery |
 |----------|----------|----------|
 | **Node crash** | PG rolls back all open transactions on that node. Gossip detects failure within seconds. Other nodes see `TRANSACTION_NODE_UNAVAILABLE` for in-flight tokens. | Automatic. Clients retry with new transactions on surviving nodes. No data loss (uncommitted work was never durable). |
+| **Node crash with scheduled runs in progress** | Its tasks stay `RUNNING` under the dead owner. A task whose unsafe processor may have been dispatched carries a mark. | Automatic after `CYODA_SCHEDULER_STALE_AFTER`: another node claims the tasks as lost owners. A marked task ends FAILED `UNSAFE_WORK_NOT_COMPLETED`, and one that committed part of its cascade ends FAILED `STOPPED_AFTER_PARTIAL_COMMIT`; the others run again, until `CYODA_SCHEDULER_MAX_LOST_OWNERS` losses or their `timeoutMs` end them FAILED. |
 | **Node network partition (from cluster)** | Partitioned node continues operating if it can reach PG. Other nodes cannot proxy to it. Transactions owned by the partitioned node continue normally if PG link is up. | Gossip re-merges when partition heals. Outstanding tokens for the partitioned node fail on other nodes. |
 | **Node partition from PostgreSQL** | PG kills the connection after TCP timeout. All open transactions on that node are rolled back by PG. Node detects dead connection on next PG operation. | Node must reconnect to PG. All in-flight work is lost (rolled back). Clients get errors and retry. |
 | **PostgreSQL failure** | All nodes lose write capability simultaneously. No new transactions can begin. Existing transactions cannot commit. | Requires PG recovery (HA failover, restart). Cyoda-Go nodes reconnect automatically via pgx pool. |
@@ -2290,12 +2518,13 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 
 | Parameter | Default | Hard Limit | Notes |
 |-----------|---------|------------|-------|
-| PG connections per node | 25 | Configurable, bounded by PG `max_connections` | Each in-flight transaction holds one connection. |
+| PG connections per node | 36: 25 main + 10 scheduler + 1 heartbeat | Configurable (`CYODA_POSTGRES_MAX_CONNS`, `CYODA_POSTGRES_SCHEDULER_CONNS`; the heartbeat pool is fixed at 1), bounded by PG `max_connections` | Each in-flight transaction holds one main-pool connection. |
 | Gossip metadata size | ~100–150 bytes per node | memberlist `MetaMaxSize` = 512 bytes | Identity and a list version only; tenants and tags travel by reliable message and are unbounded. A node whose identity does not fit refuses to start. Alert on `cyoda.cluster.tags.lists_outstanding` staying non-zero. |
 | Search snapshot TTL | 1 hour | Configurable | Snapshots older than TTL are reaped. Increase for long-running batch workflows. |
 | Transaction lifetime | 5 minutes idle | Configurable | Enforced by PostgreSQL via `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`. The callout deadline must fit under it (§4.3). |
 | Max cascade depth | 100 | Hardcoded | Total cascade steps across all states in one engine invocation. |
 | Max state visits per workflow | 10 | Configurable | Prevents infinite loops in workflow cascading. Increase for deeply nested state machines. |
+| Scheduled runs per node | 8 (4 per tenant) | Configurable | `CYODA_SCHEDULER_MAX_RUNS`, `CYODA_SCHEDULER_MAX_RUNS_PER_TENANT`. On PostgreSQL each run in progress may hold one main-pool connection for its entity transaction. |
 | HTTP body limit | 10 MB | Hardcoded in entity handler | Increase requires code change. |
 | gRPC keep-alive interval | 10 seconds | Configurable | Shorter intervals detect compute member failure faster but increase network overhead. |
 | Dispatch wait timeout | 5 seconds | Configurable | One allowance in total per callout: how long a callout waits for a compute member with matching tags to exist, on a single node as in a cluster. Event-driven — a signal wakes the wait the moment a member appears, no polling. `0` disables waiting. |

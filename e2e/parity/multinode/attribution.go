@@ -3,7 +3,6 @@ package multinode
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -23,12 +22,9 @@ import (
 //     node writes a secondary into the joined tx → attributed to the
 //     originating USER, executed by the member's SERVICE identity — IDENTICAL
 //     to the same-node cascade (the Join-origin-repopulation path).
-//  2. Scheduled fire: tasks armed on the cluster by a USER, round-robin fired
-//     across all members (peer RPC) → each attributed to the user (durable
-//     ArmedBy read on the firing node inside FireScheduledTransition), executed
-//     by the system. Positively asserts at least one task fired on a PEER
-//     (non-coordinator) node via that node's captured logs, so the scenario
-//     cannot pass vacuously if scheduler distribution ever collapsed to self.
+//  2. Scheduled fire: tasks armed on the cluster by a USER; whichever pnode
+//     claims each, the claimed task carries ArmedBy, so every fired change
+//     attributes to the arming user, executed by the system.
 //  3. Callout authtype: a peer-dispatched (A→B forwarded) processor receives
 //     the executor's TRUE principal kind in its AuthContext authtype (Task 7),
 //     without which the re-dispatch would fail closed with authtype "".
@@ -71,11 +67,6 @@ type AttributionCapable interface {
 	// the compute-test-client's tenant — a human origin whose cascades still
 	// dispatch to the registered gRPC member.
 	ComputeUser(t *testing.T, userID string, roles ...string) parity.Tenant
-	// NodeLogs returns node idx's captured combined stdout+stderr as a snapshot,
-	// so a scenario can positively assert that a scheduled task fired on a peer
-	// node (the peer-RPC fire path emits a distinctive log line). "" for an
-	// out-of-range index. Never assert on token/secret material read here (Gate 3).
-	NodeLogs(idx int) string
 }
 
 // attrServiceID is the executor principal id of every member callback — the
@@ -185,14 +176,10 @@ func attrDriveCascade(t *testing.T, c *client.Client, primary string) uuid.UUID 
 
 // --- Scenario 2: cross-node scheduled fire attribution -----------------------
 
-// RunAttribution_ScheduledFire arms several tasks as a USER, waits for the
-// coordinator's round-robin to fire them across all members, and asserts every
-// fired change attributes to the arming user (executed by the system). It then
-// POSITIVELY asserts that at least one task fired on a PEER (non-coordinator)
-// node, read from that node's captured logs — the peer-RPC fire path
-// (SchedulerRPCHandler) emits a distinctive line only on a node that received a
-// delegated fire. Without this assertion the scenario would pass vacuously if
-// scheduler distribution ever collapsed to firing everything on the coordinator.
+// RunAttribution_ScheduledFire arms several tasks as a USER through node 1,
+// waits for them to fire, and asserts every fired change attributes to the
+// arming user (executed by the system). Whichever node claims a task runs it
+// and reads ArmedBy from the claimed record.
 func RunAttribution_ScheduledFire(t *testing.T, fixture MultiNodeFixture) {
 	t.Helper()
 	ac := attrRequireCapable(t, fixture)
@@ -202,21 +189,6 @@ func RunAttribution_ScheduledFire(t *testing.T, fixture MultiNodeFixture) {
 	}
 	admin := fixture.ComputeTenant(t)
 
-	// Raise every node to debug so the peer-RPC fire path's (Debug-level)
-	// resolved line is captured for the peer-fire assertion below; restore
-	// info afterwards so unrelated scenarios stay quiet. Uses the compute-tenant
-	// admin token (ROLE_ADMIN required by the admin route).
-	for _, url := range urls {
-		if err := client.NewClient(url, admin.Token).SetLogLevel(t, "debug"); err != nil {
-			t.Fatalf("raise log level to debug on %s: %v", url, err)
-		}
-	}
-	defer func() {
-		for _, url := range urls {
-			_ = client.NewClient(url, admin.Token).SetLogLevel(t, "info")
-		}
-	}()
-
 	const model = "attr-mn-sched"
 	cbRouteSetupModel(t, client.NewClient(urls[0], admin.Token), model,
 		`{"name":"x","amount":1,"status":"new"}`, attrScheduledWorkflow)
@@ -224,12 +196,8 @@ func RunAttribution_ScheduledFire(t *testing.T, fixture MultiNodeFixture) {
 	const userID = "cluster-bob"
 	user := ac.ComputeUser(t, userID, "ROLE_USER")
 
-	// Arm several tasks via node 1. The coordinator (lowest node id = node 0)
-	// scans and round-robins each due task across all members, so some fire on
-	// a PEER via SchedulerRPC. Whichever node fires, the durable ArmedBy (the
-	// user) — re-read on the firing node inside FireScheduledTransition — must
-	// drive the attribution. Arm enough that round-robin provably reaches every
-	// member.
+	// Arm several tasks through node 1. Any node may claim and run them; the
+	// durable ArmedBy (the user) drives the attribution wherever the task runs.
 	const n = 9
 	ids := make([]uuid.UUID, 0, n)
 	cArm := client.NewClient(urls[1%len(urls)], user.Token)
@@ -249,24 +217,6 @@ func RunAttribution_ScheduledFire(t *testing.T, fixture MultiNodeFixture) {
 		// contrast, is executed by the user. Select by executor kind.
 		fireChange := attrFindChangeByExecutorKind(t, cRead, id, "system")
 		attrAssert(t, fmt.Sprintf("scheduled fire #%d", i), fireChange, userID, "user", "system", "")
-	}
-
-	// Positive peer-execution assertion (anti-vacuity). The coordinator is
-	// node-0 (lowest id); it fires its own share locally and delegates the rest
-	// to peers over the peer-authenticated scheduler RPC. Only a node that
-	// RECEIVED a delegated fire emits peerFireMarker, so its presence in any
-	// non-coordinator node's log is unambiguous proof the cross-node peer-RPC
-	// fire path executed — not a same-node collapse.
-	const peerFireMarker = "scheduled task peer fire resolved"
-	firedPeers := make([]int, 0, len(urls))
-	for idx := 1; idx < len(urls); idx++ {
-		if strings.Contains(ac.NodeLogs(idx), peerFireMarker) {
-			firedPeers = append(firedPeers, idx)
-		}
-	}
-	if len(firedPeers) == 0 {
-		t.Errorf("no scheduled task observably fired on a peer (non-coordinator) node: expected at least one of nodes 1..%d to log %q; scheduler distribution may have collapsed to the coordinator",
-			len(urls)-1, peerFireMarker)
 	}
 }
 
@@ -319,7 +269,7 @@ func RunAttribution_CalloutAuthType(t *testing.T, fixture MultiNodeFixture) {
 
 // attrScheduledWorkflow: NONE -> (init) -> Open -> (AutoClose, scheduled) ->
 // Closed. Creating an entity arms AutoClose with ArmedBy = the creating origin;
-// the scan loop fires it after delayMs.
+// a node's scheduler claims and fires it after delayMs.
 const attrScheduledWorkflow = `{
 	"importMode": "REPLACE",
 	"workflows": [{

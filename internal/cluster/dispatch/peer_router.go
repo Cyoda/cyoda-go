@@ -29,7 +29,7 @@ const (
 	// maxPeerDiagnostics bounds how many of an answering pnode's diagnostic
 	// entries this pnode relays. A sealed answer proves only that some holder
 	// of the cluster key wrote it, and its warnings, errors and attempts go on
-	// to the client: an envelope may carry MaxEnvelopeSize of them, and one
+	// to the client: an envelope may carry maxEnvelopeSize of them, and one
 	// pnode does not fill another's request diagnostics without a bound. The
 	// bound is well above what a genuine answer holds — one entry per try.
 	maxPeerDiagnostics = 32

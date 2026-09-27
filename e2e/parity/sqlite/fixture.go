@@ -52,13 +52,6 @@ func (f *sqliteFixture) NewNonAdminTenant(t *testing.T) parity.Tenant {
 	return fixtureutil.MintNonAdminTenantJWT(t, f.keySet)
 }
 
-// IsTxBoundAuditStore implements parity.TxBoundAuditFixture. The sqlite
-// backend writes audit events outside the entity-write transaction (via
-// the same in-process bus as the memory backend), so a rolled-back
-// entity write still leaves its paired STATE_MACHINE_START +
-// TRANSITION_ABORTED events durable.
-func (f *sqliteFixture) IsTxBoundAuditStore() bool { return false }
-
 // StartComputeClient implements parity.ComputeClientFixture.
 func (f *sqliteFixture) StartComputeClient(t *testing.T, spec parity.ComputeClientSpec) parity.ComputeClient {
 	t.Helper()

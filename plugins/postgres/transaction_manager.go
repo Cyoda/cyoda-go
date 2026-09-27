@@ -186,9 +186,10 @@ func (tm *TransactionManager) acquireContext(ctx context.Context) (context.Conte
 }
 
 // Commit commits the transaction and records its submit time.
-// Returns spi.ErrConflict on serialization failure (PostgreSQL error 40001)
-// or when the application-layer first-committer-wins validation detects a
-// stale read or write set.
+// Returns spi.ErrConflict on serialization failure (PostgreSQL error 40001),
+// including one a savepoint rollback has since undone, or when the
+// application-layer first-committer-wins validation detects a stale read or
+// write set.
 //
 // Tenant isolation: rejects callers whose UserContext
 // tenant does not match the transaction's tenant. RLS protects data-path
@@ -210,6 +211,15 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		return err
 	}
 
+	// A concurrent writer won against this transaction. A savepoint rollback
+	// may have made the session usable again (see txState.RestoreSavepoint),
+	// but the transaction lost the race and must not commit.
+	if cause := state.AbortCause(); isConcurrentWriterAbort(cause) {
+		tm.cleanupTx(txID)
+		_ = pgxTx.Rollback(context.Background())
+		return fmt.Errorf("Commit: transaction aborted: %w", cause)
+	}
+
 	// --- First-committer-wins validation (read-set) ---
 	// Re-read the current committed versions of all entities we read in this tx
 	// and compare against the captured readSet. A version mismatch or missing row
@@ -226,9 +236,19 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	if len(readIDs) > 0 {
 		current, err := tm.validateInChunks(ctx, pgxTx, state.tenantID, readIDs, 0)
 		if err != nil {
+			// The validation query is the first statement Commit issues, so on
+			// an aborted transaction it is the one that meets the 25P02.
+			if aborted, ok := abortedCommitError(state, err); ok {
+				tm.cleanupTx(txID)
+				_ = pgxTx.Rollback(context.Background())
+				return aborted
+			}
+			// Classify while the transaction is still registered, so the
+			// classifier sees its bookkeeping.
+			classified := tm.classifyTxError(txID, fmt.Errorf("Commit: validate: %w", err))
 			tm.cleanupTx(txID)
 			_ = pgxTx.Rollback(context.Background())
-			return tm.classifyTxError(txID, fmt.Errorf("Commit: validate: %w", err))
+			return classified
 		}
 		if verr := state.ValidateReadSet(current); verr != nil {
 			tm.cleanupTx(txID)
@@ -241,30 +261,19 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	// transaction wrote, immediately before COMMIT.
 	//
 	// If the transaction is already in an aborted state (e.g. an earlier Exec
-	// returned 40001 and left the tx aborted), the first statement of the
-	// stamp will fail with SQLSTATE 25P02 (in_failed_sql_transaction). In that
-	// case we rollback and surface ErrConflict, since the abort was most
-	// likely caused by a serialization failure — the same classification the
-	// bare timestamp probe this replaced already had.
+	// returned 40001 and left the tx aborted) and had no read set to validate,
+	// the first statement of the stamp fails with SQLSTATE 25P02
+	// (in_failed_sql_transaction), which abortedCommitError reads.
 	submitTime, tsErr := tm.stampCommitInstant(ctx, pgxTx, state.tenantID, txID)
 	if tsErr != nil {
 		tm.cleanupTx(txID)
-		// Only classify as ErrConflict when the probe fails specifically because
-		// the transaction is already in an aborted state (SQLSTATE 25P02:
-		// in_failed_sql_transaction). Any other error (context cancellation,
-		// network failure, etc.) is returned as-is so callers are not misled
-		// into treating a transient infrastructure error as a retryable conflict.
-		var pgErr *pgconn.PgError
-		if errors.As(tsErr, &pgErr) && pgErr.Code == pgerrcode.InFailedSQLTransaction {
+		// Only a 25P02 is read as an aborted transaction. Any other error
+		// (context cancellation, network failure, etc.) is classified below so
+		// callers are not misled into treating a transient infrastructure error
+		// as a retryable conflict.
+		if aborted, ok := abortedCommitError(state, tsErr); ok {
 			_ = pgxTx.Rollback(context.Background())
-			// 25P02 says only "something earlier in this transaction failed".
-			// When that something was a ceiling, classifyTxError recorded it,
-			// and reporting the real cause is what keeps a cancelled statement
-			// off the retryable-conflict path — a retry would cancel again.
-			if cause := state.AbortCause(); cause != nil {
-				return fmt.Errorf("Commit: transaction aborted: %w", cause)
-			}
-			return fmt.Errorf("%w: Commit: transaction aborted: %w", spi.ErrConflict, tsErr)
+			return aborted
 		}
 		// For non-25P02 errors: roll back with a fresh context so we don't leak
 		// the connection, then classify before returning. classifyError only
@@ -404,10 +413,10 @@ func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx,
 	//
 	// "Labelled with", not "written by", and the difference is real rather
 	// than pedantic: the engine records some events under a transaction id
-	// that is not the one recording them — EmitTransitionAborted carries the
-	// CASCADE ENTRY's id (internal/domain/workflow, reached both from the
-	// engine after a segment flush has already failed and from the entity
-	// service with its own clock and possibly no ambient transaction). Such an
+	// that is not the one recording them — a segmented scheduled run records
+	// SCHEDULED_TRANSITION_FIRE under its ENTRY transaction's id in its last
+	// segment (internal/domain/workflow/fire_scheduled.go), as a
+	// COMMIT_BEFORE_DISPATCH cascade records its later events. Such an
 	// event is matched here if its label happens to name a transaction that
 	// later commits, and is otherwise never stamped at all: it keeps the
 	// recording process's clock while being ordered, and now reported, from
@@ -842,6 +851,29 @@ func (tm *TransactionManager) ReleaseSavepoint(ctx context.Context, txID string,
 	return nil
 }
 
+// LostRace reports whether the transaction has already lost a write race.
+// PostgreSQL refuses the losing write itself — 40001 when a concurrent
+// committer changed the row, 40P01 for a deadlock victim — and classifyTxError
+// records that as the transaction's abort cause, which a rollback to a
+// savepoint keeps (see txState.RestoreSavepoint). So the answer is whether the
+// recorded cause is a concurrent writer. It issues no statement, so it answers
+// on the aborted transaction, and it changes nothing.
+//
+// Tenant isolation: rejects mismatched-tenant callers.
+func (tm *TransactionManager) LostRace(ctx context.Context, txID string) (bool, error) {
+	if _, ok := tm.registry.Lookup(txID); !ok {
+		return false, fmt.Errorf("LostRace: %w (txID=%s)", spi.ErrTxNotFound, txID)
+	}
+	state, ok := tm.lookupTxState(txID)
+	if !ok {
+		return false, fmt.Errorf("LostRace: %w (txID=%s)", spi.ErrTxNotFound, txID)
+	}
+	if err := verifyTenant(ctx, state.tenantID, "LostRace", txID); err != nil {
+		return false, err
+	}
+	return isConcurrentWriterAbort(state.AbortCause()), nil
+}
+
 // lookupTenant returns the tenant recorded for a transaction, or false if
 // the txID is not active. Used by Rollback / Join where a txState lookup
 // is not otherwise needed.
@@ -893,6 +925,9 @@ func verifyTenant(ctx context.Context, txTenantID spi.TenantID, op string, txID 
 //   - statement_timeout (57014) → passed through unmarked, so it lands on the
 //     500-with-a-ticket path. Re-running a statement that just exceeded the
 //     ceiling will exceed it again; calling that retryable would be a lie.
+//
+// SQLSTATE classes 22, 23 and 42 carry spi.ErrStoreRejected: a deterministic
+// rejection, which a retry cannot clear.
 func classifyError(err error) error {
 	if err == nil {
 		return nil
@@ -916,6 +951,9 @@ func classifyError(err error) error {
 // Reports false when no branch matched, so callers can decide for themselves
 // what to make of an error the server never answered.
 func classifySQLState(err error) (error, bool) {
+	if errors.Is(err, spi.ErrStoreRejected) {
+		return err, true // already classified
+	}
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) {
 		return err, false
@@ -938,6 +976,12 @@ func classifySQLState(err error) (error, bool) {
 		slog.Warn("statement cancelled after exceeding the configured ceiling",
 			"pkg", "postgres", "setting", "statement_timeout", "err", err)
 		return err, true
+	case len(pgErr.Code) == 5 && (pgErr.Code[:2] == "22" || pgErr.Code[:2] == "23" || pgErr.Code[:2] == "42"):
+		// Data exception, integrity-constraint violation, syntax or access
+		// rule: the database will refuse the same statement again. The marker
+		// tells a caller that retries by default (the scheduler's bookkeeping)
+		// to stop. The unique_claims_uq case above keeps its own sentinel.
+		return fmt.Errorf("%w: %w", spi.ErrStoreRejected, err), true
 	}
 	return err, false
 }
@@ -947,22 +991,68 @@ func classifySQLState(err error) (error, bool) {
 // server-side and Commit/Rollback will never run to tidy up after it — so the
 // pgx handle and the per-transaction bookkeeping are reclaimed here instead.
 //
-// It also records a cancelled statement on the txState. PostgreSQL answers every
-// later statement in an aborted transaction — Commit's own probe included — with
-// 25P02, which says only "something earlier failed"; without this the commit
-// would report the ceiling as a retryable conflict.
+// It also records on the txState what aborted the transaction, when that is a
+// cancelled statement or a concurrent writer (serialization failure, deadlock).
+// PostgreSQL answers every later statement in an aborted transaction — Commit's
+// own probe included — with 25P02, which says only "something earlier failed".
+// The record is what lets that answer be read correctly: a ceiling stays a
+// ceiling at Commit rather than becoming a retryable conflict, and a statement
+// issued after a concurrent writer won — by Commit or by any caller that keeps
+// going — is reported as spi.ErrTxAborted (a conflict that is not about the
+// statement itself), not as an unclassified fault.
 func (tm *TransactionManager) classifyTxError(txID string, err error) error {
 	classified := classifyError(err)
 	if isIdleInTxAbort(classified) {
 		tm.discardTx(txID)
 		return classified
 	}
-	if isStatementTimeout(classified) {
-		if state, ok := tm.lookupTxState(txID); ok {
-			state.RecordAbort(classified)
+	state, ok := tm.lookupTxState(txID)
+	if !ok {
+		return classified
+	}
+	switch {
+	case isStatementTimeout(classified), isConcurrentWriterAbort(classified):
+		state.RecordAbort(classified)
+	case isInFailedTx(classified):
+		if cause := state.AbortCause(); isConcurrentWriterAbort(cause) {
+			return fmt.Errorf("%w: %w; this statement: %w", spi.ErrTxAborted, cause, classified)
 		}
 	}
 	return classified
+}
+
+// abortedCommitError reads a Commit statement's 25P02 in_failed_sql_transaction,
+// reporting false for any other error.
+//
+// 25P02 says only "something earlier in this transaction failed". When that
+// something was a ceiling or a concurrent writer, classifyTxError recorded it,
+// and Commit reports the recorded cause: that keeps a cancelled statement off
+// the retryable-conflict path — a retry would cancel again — and keeps a
+// conflict a conflict. With nothing recorded, the abort is read as a conflict.
+func abortedCommitError(state *txState, err error) (error, bool) {
+	if !isInFailedTx(err) {
+		return nil, false
+	}
+	if cause := state.AbortCause(); cause != nil {
+		return fmt.Errorf("Commit: transaction aborted: %w", cause), true
+	}
+	return fmt.Errorf("%w: Commit: transaction aborted: %w", spi.ErrConflict, err), true
+}
+
+// isConcurrentWriterAbort reports whether err is PostgreSQL aborting the
+// transaction because a concurrent writer won: serialization_failure (40001) or
+// deadlock_detected (40P01). classifyError maps both to spi.ErrConflict.
+func isConcurrentWriterAbort(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) &&
+		(pgErr.Code == pgerrcode.SerializationFailure || pgErr.Code == pgerrcode.DeadlockDetected)
+}
+
+// isInFailedTx reports whether err is 25P02 in_failed_sql_transaction: the
+// statement was refused because an earlier one aborted the transaction.
+func isInFailedTx(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == pgerrcode.InFailedSQLTransaction
 }
 
 // classifyCommitError classifies a failure of the COMMIT itself, where a torn

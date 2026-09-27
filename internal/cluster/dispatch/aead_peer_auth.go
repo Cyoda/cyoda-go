@@ -40,10 +40,9 @@ const (
 	// field names, and the envelope's own 28 bytes of nonce and tag.
 	envelopeHeadroom = 512 * 1024
 
-	// MaxEnvelopeSize caps how much an attacker can force either end to
-	// buffer before the envelope is rejected. Exported because every leg that
-	// reads a peer envelope — callout dispatch and the scheduler RPC alike —
-	// bounds its read by the one ceiling.
+	// maxEnvelopeSize caps how much an attacker can force either end to
+	// buffer before the envelope is rejected. Every leg that reads a peer
+	// envelope bounds its read by this one ceiling.
 	//
 	// It is derived so that an entity at the API's own storable limit is always
 	// hand-over-able: below that, an entity the API stores would make a callout
@@ -62,7 +61,7 @@ const (
 	// base64'd. That is a dependency on the gRPC server's limit, not a
 	// coincidence: raising it past three quarters of this ceiling would make a
 	// member's largest answer unable to travel back.
-	MaxEnvelopeSize = entityOnWire + envelopeHeadroom
+	maxEnvelopeSize = entityOnWire + envelopeHeadroom
 
 	// nonceCacheCapacity is the replay-cache ceiling — see nonceCache.
 	nonceCacheCapacity = 100_000
@@ -238,7 +237,7 @@ func (a *AEADPeerAuth) Verify(r *http.Request) ([]byte, PeerIdentity, ResponseBi
 		return nil, PeerIdentity{}, none, fmt.Errorf("timestamp outside skew window: %v > %v", diff, a.skew)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, MaxEnvelopeSize))
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxEnvelopeSize))
 	if err != nil {
 		return nil, PeerIdentity{}, none, fmt.Errorf("failed to read body: %w", err)
 	}

@@ -61,6 +61,7 @@ Used when `CYODA_STORAGE_BACKEND=postgres`.
 - `CYODA_POSTGRES_MIN_CONNS` — minimum pool connections (default: `5`)
 - `CYODA_POSTGRES_MAX_CONN_IDLE_TIME` — max idle time before closing a connection (default: `5m`)
 - `CYODA_POSTGRES_AUTO_MIGRATE` — run embedded SQL migrations on startup (default: `true`)
+- `CYODA_POSTGRES_SCHEDULER_CONNS` — connections in the scheduler's own pool, kept apart from the main pool so that entity transactions cannot starve scheduled-task claims, run bookkeeping, or the async-search heartbeat and claim. The scheduler heartbeat opens one more connection of its own. At least `2`; a smaller or malformed value fails startup (default: `10`)
 
 The prefix `CYODA_POSTGRES_` is used to namespace all PostgreSQL configuration variables.
 

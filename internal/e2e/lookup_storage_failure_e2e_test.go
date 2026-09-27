@@ -53,9 +53,6 @@ const lookupFailureCycles = 3
 func newLookupFailureHarness(t *testing.T) *callbackHarness {
 	t.Helper()
 	return newTinyPoolHarnessConfigured(t, 1, func(cfg *app.Config) {
-		// The scan loop would reconnect the pool between the kill and the probe
-		// request, and log acquire failures unrelated to what is under test.
-		cfg.Scheduler.Enabled = false
 		cfg.IAM.TrustedKeyRegistrationEnabled = true
 	})
 }

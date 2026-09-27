@@ -225,6 +225,8 @@ tags:
       users/service accounts)
   - name: Entity, Audit
     description: APIs for searching and retrieving entity audit events.
+  - name: Scheduled Tasks
+    description: The tenant's scheduled-transition tasks — waiting, running and failed.
   - name: Entity model
     description: "
 
@@ -1561,6 +1563,28 @@ paths:
                 instance: /api/entity/2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
                 properties:
                   entityId: 2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
+        "409":
+          description: >-
+            Conflict (`CONFLICT`, retryable). Another write committed first to
+            the entity or to one of its scheduled tasks — the scheduler changes
+            a task when it claims it, stamps a segment of its run, records an
+            attempt, fails it or gives it back. The server
+            retries the delete up to 3 times before it answers 409; retry the
+            request. A request that joins an open transaction (`X-Tx-Token`) is
+            not retried on the server.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Conflict
+                status: 409
+                detail: "CONFLICT: transaction conflict — retry"
+                instance: /api/entity/2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
+                properties:
+                  errorCode: CONFLICT
+                  retryable: true
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -2210,18 +2234,36 @@ paths:
                       entityVersion: 1
         "409":
           description: >-
-            Batched delete did not converge (`DELETE_NOT_CONVERGED`). Only
-            reachable with `transactionSize` set and no `pointInTime`: the
-            delete re-selects matching entities before each batch, and
-            entities matching the condition were created at least as fast as
-            they were removed, so it was stopped at its batch cap. Batches
-            committed before the failure stay deleted. Retryable — stop the
-            concurrent writers, narrow the condition, or retry.
+            Conflict, retryable. `CONFLICT`: another write committed first to
+            a selected entity or to one of its scheduled tasks — the
+            scheduler changes a task when it claims it, stamps a segment of
+            its run, records an attempt, fails it or gives it back. The
+            server retries the delete up to 3 times first; a request that
+            joins an open transaction is not retried on the server. With
+            `transactionSize`, a batch that still conflicts is not a 409: its
+            ids are listed in `idToError` and the other batches run.
+            `DELETE_NOT_CONVERGED`: only with `transactionSize` and no
+            `pointInTime`. The delete re-selects matching entities before
+            each batch, and entities matching the condition were created at
+            least as fast as they were removed, so it was stopped at its
+            batch cap. Batches committed before the failure stay deleted.
+            Stop the concurrent writers, narrow the condition, or retry.
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               examples:
+                Conflict:
+                  description: Conflict
+                  value:
+                    type: about:blank
+                    title: Conflict
+                    status: 409
+                    detail: "CONFLICT: transaction conflict — retry"
+                    instance: /api/entity/my-model/1
+                    properties:
+                      errorCode: CONFLICT
+                      retryable: true
                 Delete Not Converged:
                   description: Delete Not Converged
                   value:
@@ -4450,6 +4492,7 @@ paths:
             Bad request. Possible causes:
             - `BAD_REQUEST` — unsupported import converter (`JSON_SCHEMA` or `SIMPLE_VIEW`); only `SAMPLE_DATA` is accepted.
             - `BAD_REQUEST` — malformed or unparseable sample data in the request body.
+            - `MODEL_ADMIN_IN_JOINED_TRANSACTION` — the request carries an `X-Tx-Token`: model and workflow administration never runs inside a transaction; refused before the token is verified, so make the request without it.
           content:
             application/problem+json:
               schema:
@@ -4608,6 +4651,21 @@ paths:
                       version: 1
                     message: model nobel-prize:1 deleted
                     modelId: cee334fa-c0ac-11f0-ba79-ae468cd3ed16
+        "400":
+          description: "Bad request — MODEL_ADMIN_IN_JOINED_TRANSACTION — the request carries an X-Tx-Token: model and workflow administration never runs inside a transaction; refused before the token is verified, so make the request without it."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: "MODEL_ADMIN_IN_JOINED_TRANSACTION: model and workflow administration cannot run inside a transaction: the request carries a transaction token; make it without the token, as an independent request"
+                instance: /api/model/nobel-prize/2
+                properties:
+                  errorCode: MODEL_ADMIN_IN_JOINED_TRANSACTION
+                  retryable: false
         "404":
           description: Entity model not found
           content:
@@ -4741,6 +4799,7 @@ paths:
             Bad request. Possible codes:
             - `INVALID_CHANGE_LEVEL` — the supplied `changeLevel` path segment is not one of
               the accepted enum values (`ARRAY_LENGTH`, `ARRAY_ELEMENTS`, `TYPE`, `STRUCTURAL`).
+            - `MODEL_ADMIN_IN_JOINED_TRANSACTION` — the request carries an `X-Tx-Token`: model and workflow administration never runs inside a transaction; refused before the token is verified, so make the request without it.
           content:
             application/problem+json:
               schema:
@@ -4842,6 +4901,21 @@ paths:
                       version: 1
                     message: Model nobel-prize:1 locked
                     modelId: cee334fa-c0ac-11f0-ba79-ae468cd3ed16
+        "400":
+          description: "Bad request — MODEL_ADMIN_IN_JOINED_TRANSACTION — the request carries an X-Tx-Token: model and workflow administration never runs inside a transaction; refused before the token is verified, so make the request without it."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: "MODEL_ADMIN_IN_JOINED_TRANSACTION: model and workflow administration cannot run inside a transaction: the request carries a transaction token; make it without the token, as an independent request"
+                instance: /api/model/nobel-prize/2/lock
+                properties:
+                  errorCode: MODEL_ADMIN_IN_JOINED_TRANSACTION
+                  retryable: false
         "404":
           description: Entity model not found
           content:
@@ -4943,6 +5017,21 @@ paths:
                       version: 1
                     message: Model nobel-prize:1 unlocked
                     modelId: cee334fa-c0ac-11f0-ba79-ae468cd3ed16
+        "400":
+          description: "Bad request — MODEL_ADMIN_IN_JOINED_TRANSACTION — the request carries an X-Tx-Token: model and workflow administration never runs inside a transaction; refused before the token is verified, so make the request without it."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: "MODEL_ADMIN_IN_JOINED_TRANSACTION: model and workflow administration cannot run inside a transaction: the request carries a transaction token; make it without the token, as an independent request"
+                instance: /api/model/nobel-prize/2/unlock
+                properties:
+                  errorCode: MODEL_ADMIN_IN_JOINED_TRANSACTION
+                  retryable: false
         "404":
           description: Entity model not found
           content:
@@ -5063,7 +5152,7 @@ paths:
                     message: unique keys set on model nobel-prize:1
                     modelId: cee334fa-c0ac-11f0-ba79-ae468cd3ed16
         "400":
-          description: "Bad request — BAD_REQUEST: malformed or unparseable request body."
+          description: "Bad request — BAD_REQUEST: malformed or unparseable request body; MODEL_ADMIN_IN_JOINED_TRANSACTION — the request carries an X-Tx-Token: model and workflow administration never runs inside a transaction; refused before the token is verified, so make the request without it."
           content:
             application/problem+json:
               schema:
@@ -5218,13 +5307,26 @@ paths:
               schema:
                 $ref: "#/components/schemas/WorkflowImportSuccessDto"
         "400":
-          description: "Bad request — BAD_REQUEST: malformed JSON or unknown importMode; VALIDATION_FAILED: structural validation failed (empty name, unknown state ref, invalid executionMode, etc.); WORKFLOW_SCHEMA_VERSION_UNSUPPORTED: workflow declares an unsupported schema version."
+          description: "Bad request — BAD_REQUEST: malformed JSON or unknown importMode; VALIDATION_FAILED: structural validation failed (empty name, unknown state ref, invalid executionMode, etc.); WORKFLOW_SCHEMA_VERSION_UNSUPPORTED: workflow declares an unsupported schema version; MODEL_ADMIN_IN_JOINED_TRANSACTION — the request carries an X-Tx-Token: model and workflow administration never runs inside a transaction; refused before the token is verified, so make the request without it."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: "Not found — MODEL_NOT_FOUND: target entity model does not exist."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: >-
+            Conflict (`CONFLICT`, retryable). Removing the tasks of transitions
+            that no workflow of the model schedules any more lost a race with
+            the scheduler, which changes a task when it claims it, stamps a
+            segment of its run, records an attempt, fails it or gives it back.
+            The workflows are saved and the server retries the removal up to 3
+            times before it answers 409; retry the import: it saves the same
+            workflows again and removes the tasks.
           content:
             application/problem+json:
               schema:
@@ -7127,6 +7229,106 @@ paths:
                 instance: /api/platform-api/entity/fetch/transitions
         default:
           $ref: '#/components/responses/InternalServerError'
+  /scheduled-tasks:
+    get:
+      tags:
+        - Scheduled Tasks
+      summary: List the tenant's scheduled tasks
+      description: >
+        Lists the scheduled-transition tasks of the caller's tenant that still
+        exist: WAITING, RUNNING and FAILED. A task that fired, was declined,
+        expired or was cancelled is removed; its outcome is in the entity's
+        audit trail.
+
+
+        Results are sorted by `scheduledTime`, then `taskId`, ascending, and
+        paged with an opaque cursor. Filters combine with AND. An unknown
+        model or entity, or one of another tenant, returns an empty list.
+        Any authenticated user of the tenant may call it; the tenant is the
+        token's. HTTP only: there is no gRPC equivalent.
+      operationId: listScheduledTasks
+      parameters:
+        - name: status
+          in: query
+          description: Return tasks in any of these statuses. Repeat the
+            parameter for several. Any other value is rejected with 400.
+          required: false
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              type: string
+              enum:
+                - WAITING
+                - RUNNING
+                - FAILED
+        - name: modelName
+          in: query
+          description: Return tasks of entities of this model.
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 256
+        - name: modelVersion
+          in: query
+          description: Return tasks of entities of this model version. Only
+            together with `modelName`; alone it is rejected with 400.
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+        - name: entityId
+          in: query
+          description: Return the tasks of this entity.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: cursor
+          in: query
+          description: "Position to continue from: pass `nextCursor` from the
+            previous response. Opaque. A cursor that cannot be read is
+            rejected with 400, and its value is not echoed. Omit for the
+            first page."
+          required: false
+          schema:
+            type: string
+            maxLength: 256
+        - name: limit
+          in: query
+          description: Maximum number of tasks per page, 1 to 1000. A value
+            outside the range is rejected with 400, not clamped.
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 1000
+            default: 20
+      responses:
+        "200":
+          description: One page of tasks, possibly empty.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScheduledTaskPageDto"
+        "400":
+          description: Bad Request - Invalid parameters; `properties.errorCode` is BAD_REQUEST
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
+      security:
+        - bearerAuth: []
   /search/async/{entityName}/{modelVersion}:
     post:
       tags:
@@ -9361,8 +9563,12 @@ components:
         Per-item ENTITY_MODIFIED conflicts surface inside the `200`
         response body via the `failed[]` array, not as a `4xx` envelope.
         Inspect `failed[]` to detect them. The `4xx` envelope is reserved
-        for chunk-wide infrastructure failures (malformed JSON, missing
-        entity, validation failure, non-conflict engine error).
+        for chunk-wide failures: malformed JSON, missing entity, validation
+        failure, a non-conflict engine error, and a transaction conflict
+        (`409 CONFLICT`, retryable) — another transaction committed a
+        change to an item's entity after the chunk read it, or a processor's
+        joined callback lost a write race. A conflict is never isolated to
+        its item.
 
         `entityIds` contains UUID strings (server is source of truth — the
         server emits []string, not []object).
@@ -10537,9 +10743,15 @@ components:
             again is safe — for cyoda and for every system the processor
             touches. When true, the work may be given to another compute
             member after a member that received it went silent or dropped
-            its connection. When false (the default) it is not, because the
-            first member may have acted. Criteria and functions are always
-            treated as safe to repeat and carry no such field.
+            its connection, and a scheduled transition whose run failed
+            after this processor was sent is retried. When false (the
+            default), a scheduled run whose processor may have reached a
+            compute member ends FAILED with the reason
+            UNSAFE_WORK_NOT_COMPLETED and is not run again, because a
+            member may have acted; if the processor's callout provably
+            never reached a compute member, the run is retried like any
+            other failure. Criteria and functions are always treated as
+            safe to repeat and carry no such field.
         context:
           type: string
           description: |
@@ -10690,9 +10902,9 @@ components:
           $ref: "#/components/schemas/TransitionScheduleDto"
           description: |
             Optional scheduling configuration. Presence marks the transition
-            as scheduled — it fires automatically at a computed time (driven
-            by a coordinator-only background scan loop) rather than by an API
-            call or automated cascade. The firing time comes from either a
+            as scheduled — it fires automatically at a computed time (every
+            node's claim loop claims due scheduled tasks and runs them) rather
+            than by an API call or automated cascade. The firing time comes from either a
             static `delayMs` or a per-entity `function` callout — see
             `TransitionScheduleDto`. Mutually exclusive with `manual=true`.
             Explicit fires of a scheduled transition by name return HTTP 400
@@ -11647,6 +11859,136 @@ components:
           description: Opaque position of the last event on this page. Absent when hasNext is false.
       required:
         - hasNext
+    ScheduledTaskPageDto:
+      type: object
+      properties:
+        items:
+          type: array
+          description: The tasks on this page, in (`scheduledTime`, `taskId`) order.
+          items:
+            $ref: "#/components/schemas/ScheduledTaskDto"
+        pagination:
+          $ref: "#/components/schemas/CursorPaginationInfoDto"
+      required:
+        - items
+        - pagination
+    ScheduledTaskDto:
+      type: object
+      description: >
+        One scheduled transition's task: fire `transition` of the entity at
+        `scheduledTime`. Claim tokens, arm tokens and node identities are
+        never returned.
+      properties:
+        taskId:
+          type: string
+          description: Opaque, stable identifier. The same (entity, source
+            state, transition) keeps the same id when it is armed again.
+        entityId:
+          type: string
+          format: uuid
+        modelName:
+          type: string
+        modelVersion:
+          type: integer
+          format: int32
+        sourceState:
+          type: string
+          description: The state the entity must be in for the transition to fire.
+        transition:
+          type: string
+        status:
+          type: string
+          description: >
+            Open value set; accept values not listed here. Known values:
+            WAITING — due at `nextAttemptTime`; RUNNING — a node has claimed
+            it and is running it; FAILED — it will not run again and never
+            moves the entity (see `failureReason`). A write to the entity in
+            `sourceState` arms it again; the entity leaving `sourceState`
+            removes it.
+        scheduledTime:
+          type: string
+          format: date-time
+          description: When the transition is due.
+        armedTime:
+          type: string
+          format: date-time
+          description: When the task was last armed.
+        expiresTime:
+          type: string
+          format: date-time
+          description: Present when the transition's schedule sets `timeoutMs`
+            — `scheduledTime` plus `timeoutMs`.
+        attempts:
+          type: integer
+          format: int32
+          description: Failed attempts recorded since the task was last armed.
+        lostOwners:
+          type: integer
+          format: int32
+          description: Times the node running the task was lost since the task
+            was last armed.
+        nextAttemptTime:
+          type: string
+          format: date-time
+          description: Present when `status` is WAITING — the earliest time
+            the next attempt may start.
+        lastAttemptTime:
+          type: string
+          format: date-time
+          description: Present after a failed attempt.
+        lastError:
+          type: string
+          description: >
+            For a FAILED task, present with the failure's text (pairs with
+            `failedTime`), even when the text is empty. For every other
+            status, present when `lastAttemptTime` is set, paired with it.
+            Client-safe text — a `CODE: detail` message, a compute node's
+            own message, or `internal error [ticket: <uuid>]`.
+        failureReason:
+          type: string
+          description: >
+            Present when `status` is FAILED. Open value set; accept values
+            not listed here. Known values:
+            UNSAFE_WORK_NOT_COMPLETED — a processor not declared `idempotent`
+            was handed to a compute node and the run did not commit, so it is
+            not repeated;
+            OWNER_LOST_REPEATEDLY — the node running the task was lost too
+            many times;
+            EXPIRED_AFTER_FAILED_ATTEMPTS — `expiresTime` passed after a
+            failed attempt or a lost node;
+            RUN_PANICKED — the run failed with an internal error;
+            STOPPED_AFTER_PARTIAL_COMMIT — the run committed the entity into
+            another state and then stopped.
+        failedTime:
+          type: string
+          format: date-time
+          description: Present when `status` is FAILED.
+        armedBy:
+          $ref: "#/components/schemas/ScheduledTaskArmedByDto"
+      required:
+        - taskId
+        - entityId
+        - modelName
+        - modelVersion
+        - sourceState
+        - transition
+        - status
+        - scheduledTime
+        - armedTime
+        - attempts
+        - lostOwners
+    ScheduledTaskArmedByDto:
+      type: object
+      description: The principal whose write armed the task. Present when known.
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          description: Open value set. Known values are user, service and system.
+      required:
+        - id
+        - kind
     EntityAuditEventsResponseDto:
       type: object
       properties:
@@ -11760,6 +12102,7 @@ components:
                 - SCHEDULED_TRANSITION_FIRE
                 - SCHEDULED_TRANSITION_EXPIRE
                 - SCHEDULED_TRANSITION_CANCEL
+                - SCHEDULED_TRANSITION_FAIL
             data:
               type: object
               nullable: true
@@ -12248,8 +12591,12 @@ components:
         Transaction routing token. A processor, criterion or function callout
         receives one with its request (gRPC metadata key `tx-token`, CloudEvent
         extension attribute `cyodatxtoken`); echoing it here runs this request
-        inside the open transaction the token names, so the request sees that
-        transaction's uncommitted writes and its own writes commit with it.
+        inside the open transaction the token names, so the request sees what
+        that transaction has saved so far and its own writes commit with it.
+        The entity the callout runs for is saved only when its chain of
+        transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until
+        then a read of it returns its last saved version, and the callout's own
+        request carries the current one (see `cyoda help workflows`).
 
 
         Optional. A request without the header opens its own transaction, as

@@ -28,7 +28,8 @@ func (c *Coordinator) DispatchCriteria(ctx context.Context, entity *spi.Entity, 
 	uc := spi.MustGetUserContext(ctx)
 	call, failure := internalgrpc.NewCriteriaCallout(uc.Tenant.ID, entity, criterion, target, workflowName, transitionName, processorName, txID)
 	if failure != nil {
-		return false, "", failure
+		// Refused before any try: nothing was handed off.
+		return false, "", &contract.NoHandOffProof{Err: failure}
 	}
 	res, err := c.run(ctx, call)
 	if err != nil {
