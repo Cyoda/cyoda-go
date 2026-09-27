@@ -517,9 +517,3 @@ func copyTrustedKey(tk *TrustedKey) *TrustedKey {
 	}
 	return &copied
 }
-
-// TrustedKeyKVKeyForTesting exposes trustedKeyKey for cross-package tests
-// that need to predict KV keys (e.g. for injection mocks).
-func TrustedKeyKVKeyForTesting(tenantID spi.TenantID, kid string) string {
-	return trustedKeyKey(tenantID, kid)
-}

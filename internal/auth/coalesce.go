@@ -60,10 +60,3 @@ func (c *coalescingRunner) Trigger(run func()) {
 		}
 	}()
 }
-
-// busy is a test-only inspector.
-func (c *coalescingRunner) busy() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.running
-}
