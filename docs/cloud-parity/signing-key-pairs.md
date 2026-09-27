@@ -38,20 +38,33 @@ across a restart, and when its issuing bootstrap key is replaced.
   `DELETE`/`invalidate`/`reactivate` on a retired key pair's own KID answer
   `404 KEYPAIR_NOT_FOUND` directly. A retired key pair becomes usable again
   only if the bootstrap key that owns it is restored.
+- **A broken key pair is manageable, not stuck.** Unlike a retired one,
+  `invalidate`, `reactivate` and `delete` all answer `200` for a broken key
+  pair — by KID, the admin API treats it like any owned key pair, whether or
+  not its vault can actually open it. Only `current` (and token issuance) can
+  fail on it, and only if it wins signer selection for its audience:
+  `current` then answers `500`, not `404`. Across every lifecycle endpoint,
+  `404` is reserved for a KID that is genuinely absent, retired, a foreign
+  bootstrap-state record, or (at this node's own bootstrap key id
+  specifically) already deleted.
 - **A storage-unavailable failure is 503, never a stale or wrong answer** —
-  but which operations can produce it, and why, differs by endpoint. `issue`,
-  `invalidate`, `reactivate` and `delete` read the store directly on every
+  but which operations can even reach one differs by endpoint. `current` and
+  `GET /.well-known/jwks.json` read only the node's own copy and never call
+  the store at all; a stale copy (no successful reconcile for 10 reconcile
+  intervals) is their only route to `503 STORAGE_UNAVAILABLE` (JWKS: with
+  `Retry-After`) — neither can answer it for any other reason, because
+  neither makes a live store call that could fail that way. Token issuance
+  refuses a stale copy the same node-copy-only way, but always as a plain
+  `500 server_error` on `/oauth/token` — that endpoint's OAuth-shaped error
+  body never distinguishes a storage cause with `503`. `invalidate`,
+  `reactivate` and `delete` read one record from the store directly on every
   call and never consult the node's own copy, so they never fail merely
-  because that copy is stale; they can still answer `503
-  STORAGE_UNAVAILABLE` if the store call itself reports the backend
-  unavailable. `current` and `GET /.well-known/jwks.json` read the node's
-  copy and do check its staleness (no successful reconcile for 10 reconcile
-  intervals): a stale copy answers `503 STORAGE_UNAVAILABLE` there too (JWKS:
-  with `Retry-After`), on top of the same direct-store-unavailable case.
-  Token issuance also refuses a stale copy, but always as a plain `500
-  server_error` on `/oauth/token` — that endpoint's OAuth-shaped error body
-  never distinguishes a storage cause with `503`. None of these cases is ever
-  downgraded to a `404` or to an empty/partial answer.
+  because that copy is stale; they answer `503 STORAGE_UNAVAILABLE` only when
+  the store call itself reports the backend unavailable. `issue` behaves the
+  same way when it rotates a sibling, but a plain issue (no
+  `invalidateCurrent`) reads nothing from the store at all before writing the
+  new record, so only the write itself can produce a `503` there. None of
+  these cases is ever downgraded to a `404` or to an empty/partial answer.
 - **At-rest sealing is an implementation property, not part of the contract.**
   cyoda-go seals an issued key pair's private key at rest (AES-256-GCM under a
   key derived from the bootstrap key's RSA primes) so a copy of the store
@@ -77,8 +90,10 @@ Confirm, or record where Cloud differs:
    forward as still-usable — if Cloud has no notion of "retiring" a key pair
    because it does not store the configured key, record that as the
    difference rather than as a gap.
-4. A retired, deleted-bootstrap or otherwise unusable key pair answers `404`
-   on every lifecycle endpoint, never a stale `200`.
+4. A retired, foreign-bootstrap-state or already-deleted-bootstrap key pair
+   answers `404` on every lifecycle endpoint, never a stale `200`; a key pair
+   that merely cannot be opened (broken) still answers `200` there and fails
+   only where it would actually be used to sign.
 5. A storage or availability failure on a key-pair endpoint or JWKS answers a
    retryable `5xx`, never a `404` and never an empty or partial JWKS set.
 

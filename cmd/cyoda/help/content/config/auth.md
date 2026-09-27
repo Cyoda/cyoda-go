@@ -252,9 +252,9 @@ new window has opened.
   memory backend). The node that takes the call applies the change before
   answering; other nodes apply it when the change message arrives (normally
   under a second), at the latest after up to 1.1× the reconcile interval (66 s
-  by default — the periodic re-read timer is jittered ±10%); a node that
-  cannot read its database keeps its last copy until it is stale (10
-  intervals), then refuses all keys.
+  by default — the periodic re-read timer is jittered ±10%), plus however
+  long that re-read itself takes; a node that cannot read its database keeps
+  its last copy until it is stale (10 intervals), then refuses all keys.
 - **Rotating without refusals in a cluster.** Issue the new key pair with
   `validFrom` a few seconds ahead, then invalidate the old one once the new
   window has opened; a token signed with a brand-new key can otherwise be
@@ -271,22 +271,43 @@ new window has opened.
 - **Deleting the bootstrap key is permanent** for that key: it cannot be
   reactivated; replacing `CYODA_JWT_SIGNING_KEY` starts a fresh bootstrap key
   with no stored state — it does not undelete the old one.
-- **If `/oauth/token` answers 500 because the selected key pair is broken**
-  (owned but cannot be opened, or of an unrecognised vault kind; the log
-  names it): invalidate it with an unexpired admin token or an admin from a
-  federated OIDC provider, or replace `CYODA_JWT_SIGNING_KEY` — either retires
-  it so a working key signs instead.
+- **If `/oauth/token` answers 500 because the selected key pair is broken,**
+  the fix depends on why. Broken because its vault kind is unrecognised: that
+  check runs before the ownership check, so it stays broken whatever
+  `CYODA_JWT_SIGNING_KEY` is set to — invalidate it or `DELETE` it. Broken
+  because it is owned by the currently configured bootstrap key but cannot be
+  opened: replacing `CYODA_JWT_SIGNING_KEY` also fixes this, since it changes
+  what "owned" means and the record becomes retired (inert) instead of broken
+  (blocking); invalidating or deleting it works too. Use an unexpired admin
+  token or an admin from a federated OIDC provider; the log names the KID and
+  the reason.
 - **If `/oauth/token` answers 500 because a stored record cannot be decoded
-  at all:** it blocks signing for every audience, `invalidate` answers `404`
-  for it (it is not a key pair the API recognises), and replacing
-  `CYODA_JWT_SIGNING_KEY` does not help (the decode failure has nothing to do
-  with which key owns it). Recovery is `DELETE /oauth/keys/keypair/{kid}` —
-  an ERROR log names the KV key — which replaces the record with a deleted
+  at all:** it blocks signing for every audience, not only the audience of
+  the record that cannot be decoded. `invalidate`/`reactivate` answer `404`
+  for it (it is not a key pair the API recognises). For a genuinely malformed
+  record, replacing `CYODA_JWT_SIGNING_KEY` does not help — the decode
+  failure has nothing to do with which key owns it. One case does depend on
+  the configured key: an issued record stored at whatever this node
+  currently derives as its own bootstrap key id is refused as undecodable
+  too, because two keys can never share one KID; replacing
+  `CYODA_JWT_SIGNING_KEY` changes which KID that is, so the same record may
+  then decode normally under the new key. Recovery, with an unexpired admin
+  token or an admin from a federated OIDC provider: `DELETE
+  /oauth/keys/keypair/{kid}` — an ERROR log names the KV key. At this node's
+  own bootstrap key id, `DELETE` permanently deletes the bootstrap key (see
+  above); at any other id it replaces the record with an inert, deleted
   bootstrap-state record.
 - **If `/oauth/token` answers 500 with no signer** because the bootstrap key
-  was invalidated or deleted and no issued key pair is active for the
-  audience: reactivate the bootstrap key, or issue a new key pair, using an
-  unexpired admin token or an admin from a federated OIDC provider.
+  has no active state for the audience and no issued key pair is active
+  either: with the default `client` bootstrap audience and no other key
+  pairs, this also means no first-party token verifies at all, so an admin
+  token minted earlier does not help — it was signed by the same key that no
+  longer signs or verifies. Recovery needs an admin from a federated OIDC
+  provider, whose tokens do not depend on cyoda's own signing key: reactivate
+  the bootstrap key if it was only invalidated (a deleted bootstrap key
+  cannot be reactivated — see above), or issue a new key pair either way; or
+  replace `CYODA_JWT_SIGNING_KEY`, which starts a fresh, active bootstrap key
+  with no stored state.
 - **No exportable signing key:** a KMS-backed key vault for issued key pairs,
   with the bootstrap key deleted once an issued key signs, is supported by the
   design; no KMS vault ships yet.

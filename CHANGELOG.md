@@ -18,12 +18,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `invalidate`, `reactivate` and `delete` — mapped every failure of the
   underlying store call to `404` before; `POST /oauth/keys/keypair` already
   answered `500` for a store or key-generation failure. All five now answer
-  `500` with a ticket for an ordinary store or vault failure, or `503
-  STORAGE_UNAVAILABLE` when storage is marked unavailable, or (`current` and
-  JWKS only, since the other three read the store directly rather than the
-  node's own copy) when that copy has gone stale; `404` is reserved for a key
-  pair that is genuinely not found, retired, a foreign bootstrap record or a
-  deleted bootstrap key. `POST /oauth/token`'s existing `500 server_error`
+  `500` with a ticket for an ordinary store or vault failure. `issue`,
+  `invalidate`, `reactivate` and `delete` each read or write the store
+  directly and answer `503 STORAGE_UNAVAILABLE` when the store itself reports
+  it unavailable; `current` and JWKS never touch the store on this path at
+  all — their own node copy going stale is the only thing that makes them
+  answer `503 STORAGE_UNAVAILABLE` (JWKS: with `Retry-After`). `404` is
+  reserved for a key pair that is genuinely not found, retired, a foreign
+  bootstrap record or a deleted bootstrap key — a broken (unopenable) one
+  still answers `200` on `invalidate`/`reactivate`/`delete` and fails only on
+  `current`, `500` not `404`, if it wins signer selection. `POST
+  /oauth/token`'s existing `500 server_error`
   gains new causes: a broken selected key pair, any undecodable record (which
   blocks signing for every audience, not only the one it would have signed
   for), or a stale store. A restart no longer restores a revoked bootstrap

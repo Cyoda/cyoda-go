@@ -155,15 +155,18 @@ rolled-back savepoint still fails `Commit` with `ErrConflict`), the fenced
 engine aborts a transaction on conflict. cyoda-go-cassandra#68 tracks the store.
 Also for `v0.9.0`: signing key pairs are now stored and shared by the cluster
 in the SYSTEM-tenant KV store the same way trusted keys already were. Both
-stores' node copies — on every node's initial load, on every periodic
-re-read, and on a multi-record admin write (a key-pair rotation, a
-trusted-key registration that invalidates a predecessor) — are built from a
-KV `List` of the namespace. `cyoda-go-cassandra` must include its fix for
-`List` returning a partial result on a per-key read failure to run this
-version: today a missing sibling in a rotation's read would stay active, and
-a missing bootstrap-state record in *any* reconcile — not only a rotation's —
-would reset that node's view of the bootstrap key to its default (active, no
-window). cyoda-go-cassandra#102 tracks the bug; cyoda-go-cassandra PR #103 fixes it.
+stores' node copies are rebuilt in full from a KV `List` of the namespace on
+every node's initial load and on every periodic re-read. A multi-record admin
+write (a key-pair rotation, a trusted-key registration that invalidates a
+predecessor) also calls `List`, but only to decide which sibling records to
+end — the write then patches just the records it touched into the node copy,
+never a full rebuild. `cyoda-go-cassandra` must include its fix for `List`
+returning a partial result on a per-key read failure to run this version:
+today a missing sibling in a rotation's `List` read would stay active, and a
+missing bootstrap-state record in *any* reconcile's `List` read — not only a
+rotation's — would reset that node's view of the bootstrap key to its default
+(active, no window). cyoda-go-cassandra#102 tracks the bug; cyoda-go-cassandra
+PR #103 fixes it.
 
 ## Helm chart × binary
 

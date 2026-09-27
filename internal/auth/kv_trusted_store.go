@@ -209,9 +209,12 @@ func (s *KVTrustedKeyStore) storedKey(ctx context.Context, tenantID spi.TenantID
 // The decision (cap, collision, which siblings to flip) is made on state read
 // straight from the store, never the node's copy, so a rotation always sees a
 // sibling registered on another node that this node has not yet reconciled.
-// All writes go through writeAll: if any of them fails, every write already
-// applied — including the failing one — is restored, so a failed rotation
-// never leaves the new key committed with a stale or half-flipped sibling.
+// All writes go through writeAll: if any of them fails, it tries to restore
+// every write already applied, including the failing one; a restore that
+// itself fails is logged at ERROR with the keys left changed, and a crash
+// between writes (rather than a reported failure) can still leave the new
+// key committed alongside a stale or half-flipped sibling, for the admin to
+// repeat.
 func (s *KVTrustedKeyStore) Register(ctx context.Context, tk *TrustedKey, opts RotateOptions) error {
 	return s.rep.mutate(func() (func(map[string]*TrustedKey), bool, error) {
 		entries, stored, err := s.storedKeys(ctx)
@@ -384,7 +387,8 @@ func (s *KVTrustedKeyStore) Reactivate(ctx context.Context, tenantID spi.TenantI
 
 // update changes one stored key, reading ground truth from the store (never
 // the node copy) before applying change, and writing the result back through
-// writeAll so a failed write is fully undone. needAll also lists the whole
+// writeAll, which tries to undo a failed write (see Register's doc comment
+// for what that guarantees and does not). needAll also lists the whole
 // namespace first, for change functions (the cap check) that need it.
 func (s *KVTrustedKeyStore) update(ctx context.Context, tenantID spi.TenantID, kid string,
 	change func(tk *TrustedKey, stored map[string]*TrustedKey) error, needAll bool) error {
