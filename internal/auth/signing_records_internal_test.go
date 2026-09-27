@@ -73,25 +73,37 @@ func TestClassify_SignerOpenedOnceWhileSealedUnchanged(t *testing.T) {
 	}
 }
 
-// The sealed bytes changing (a legitimate rotation onto the same KID, or a
-// value the classifier must treat as new) must force a fresh Open, never
-// reuse the previous signer. If the cache's sealed-bytes comparison were
-// ever removed, this test fails.
+// The sealed bytes changing, with every other bound field (KID, audience,
+// algorithm, owner, SPKI) held identical, must force a fresh Open rather than
+// reuse the cached signer: a warm cache entry for the untampered record must
+// not paper over sealed bytes that no longer decrypt. If the fingerprint
+// dropped the sealed bytes, the second classify would still hit the cache
+// and wrongly report owned.
 func TestClassify_SignerReopensWhenSealedChanges(t *testing.T) {
 	c, v := testClassifier(t)
-	e1 := c.classify(context.Background(), "k1", issuedRecord(t, v, "k1", "client"))
-	if e1.class != classOwned {
-		t.Fatalf("setup: class = %v, want owned", e1.class)
+	good := issuedRecord(t, v, "k1", "client")
+	if e := c.classify(context.Background(), "k1", good); e.class != classOwned {
+		t.Fatalf("setup: %+v", e)
 	}
-	e2 := c.classify(context.Background(), "k1", issuedRecord(t, v, "k1", "client"))
-	if e2.class != classOwned {
-		t.Fatalf("class = %v, want owned", e2.class)
+
+	var r signingRecord
+	if err := json.Unmarshal(good, &r); err != nil {
+		t.Fatal(err)
 	}
-	if n := v.opens.Load(); n != 2 {
-		t.Fatalf("opened %d times, want 2 (new sealed bytes must reopen)", n)
+	s, err := base64.StdEncoding.DecodeString(r.Vault.Sealed)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if e1.pair.PublicKey.Equal(e2.pair.PublicKey) {
-		t.Fatal("classify returned the same public key for a record whose sealed bytes changed")
+	s[len(s)-1] ^= 1
+	r.Vault.Sealed = base64.StdEncoding.EncodeToString(s)
+	b, err := encodeSigningRecord(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	e := c.classify(context.Background(), "k1", b)
+	if e.class != classBroken || !strings.Contains(e.reason, "decryption") {
+		t.Fatalf("tampered sealed after cache fill: class=%v reason=%q, want broken/decryption", e.class, e.reason)
 	}
 }
 
