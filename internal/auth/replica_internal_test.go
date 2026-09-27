@@ -278,6 +278,46 @@ func TestReplica_MutateWithoutApplyRefreshesOwnCopy(t *testing.T) {
 	}
 }
 
+// A peer change that this node re-reads while its own admin change is between
+// the store write and the copy apply must not stay overwritten by that apply:
+// the node converges back to the store on its own.
+func TestReplica_MutateOverlappingReReadConverges(t *testing.T) {
+	ctx := replicaSystemCtx()
+	kv := newReplicaKV(t)
+	r := newStringReplica(t, kv, nil)
+	err := r.mutate(func() (func(map[string]string), bool, error) {
+		if err := kv.Put(ctx, "ns", "k", []byte("A")); err != nil {
+			return nil, false, err
+		}
+		// A peer deletes k, and this node re-reads the store on its gossip.
+		if err := kv.Delete(ctx, "ns", "k"); err != nil {
+			return nil, true, err
+		}
+		reread := make(chan error)
+		go func() { reread <- r.Reconcile(ctx) }()
+		if err := <-reread; err != nil {
+			return nil, true, err
+		}
+		if _, ok := snapshot(r)["k"]; ok {
+			return nil, true, errors.New("re-read did not remove k")
+		}
+		return func(m map[string]string) { m["k"] = "A" }, true, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, ok := snapshot(r)["k"]; !ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("copy kept the overwritten value; it never converged to the store")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // A re-read that overlaps a local change is discarded and retried. The hook
 // fires only after the underlying List has already returned its (stale)
 // snapshot, so the first attempt's fresh copy genuinely lacks "local" — the

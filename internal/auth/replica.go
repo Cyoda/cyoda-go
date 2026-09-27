@@ -273,19 +273,29 @@ func (r *kvReplica[R]) broadcast() {
 // wrote the store. The copy lock is held only while apply runs. A change
 // message goes out whenever the store was written, even if fn then failed,
 // so peers re-read what is actually stored.
+//
+// A re-read or single-record load can land while fn runs, after fn wrote the
+// store: a peer's newer change then reaches the copy first, and apply writes
+// this node's older value over it. Every other generation bump is excluded by
+// the admin mutex, so a generation that moved by more than apply's own bump
+// shows the overlap, and a re-read is scheduled to converge to the store.
 func (r *kvReplica[R]) mutate(fn func() (apply func(recs map[string]R), wrote bool, err error)) error {
 	r.adminMu.Lock()
 	defer r.adminMu.Unlock()
+	g0 := r.gen.Load()
 	apply, wrote, err := fn()
 	if apply != nil {
-		func() {
+		overlapped := func() bool {
 			r.mu.Lock()
 			defer r.mu.Unlock()
 			apply(r.recs)
-			r.gen.Add(1)
+			return r.gen.Add(1) != g0+1
 		}()
 		if r.cfg.afterChange != nil {
 			r.read(r.cfg.afterChange)
+		}
+		if overlapped {
+			r.ping.Trigger(r.reconcileOnce)
 		}
 	} else if wrote {
 		// The store was written but fn had no direct patch for the copy
