@@ -550,6 +550,9 @@ var allTests = []NamedTest{
 	// Signing key-pair lifecycle: issue, current, JWKS, invalidate,
 	// reactivate, delete — the same lifecycle now round-trips through
 	// each plugin's shared KV store rather than a per-node in-memory one.
+	// Signing key pairs are server-global, not tenant-scoped: other
+	// scenarios must not issue human-audience key pairs or rotate/invalidate
+	// client keys on the shared server; use their own cluster/stack for that.
 	{"SigningKeyPairLifecycle", RunSigningKeyPairLifecycle},
 }
 
