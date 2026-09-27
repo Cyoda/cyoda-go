@@ -464,3 +464,49 @@ func TestListTrustedKeys_403_NonAdmin(t *testing.T) {
 		t.Errorf("status=%d want 403", w.Code)
 	}
 }
+
+func TestRegisterTrustedKey_UnstorableTime_400(t *testing.T) {
+	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	jwk, _ := json.Marshal(rsaJWK(t, "k1"))
+	for _, c := range []struct{ name, window, field string }{
+		{"validTo year 10000", `"validTo":"` + year10000JSON + `"`, "validTo"},
+		{"validFrom year -1", `"validFrom":"` + yearMinusJSON + `","validTo":"` + future + `"`, "validFrom"},
+		{"default validTo year 10000", `"validFrom":"` + lastDayJSON + `"`, "validTo"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ts := newTestTrustedStore(t)
+			feats := auth.DefaultIAMFeatures()
+			feats.TrustedKeyRegistrationEnabled = true
+			h := account.New(nil, nil, newTestKeyStore(t), ts, nil, feats)
+			body := `{"keyId":"k1","audience":"human","jwk":` + string(jwk) + `,` + c.window + `}`
+			w := httptest.NewRecorder()
+			h.RegisterTrustedKey(w, adminReq(t, "POST", "/oauth/keys/trusted", []byte(body)))
+			expectOutOfRange(t, w, c.field)
+			if got := ts.List(spi.TenantID("t1")); len(got) != 0 {
+				t.Fatalf("%d keys registered", len(got))
+			}
+		})
+	}
+}
+
+func TestReactivateTrustedKey_UnstorableTime_400(t *testing.T) {
+	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	for _, c := range []struct{ name, body, field string }{
+		{"validTo year 10000", `{"validTo":"` + year10000JSON + `"}`, "validTo"},
+		{"validFrom year -1", `{"validFrom":"` + yearMinusJSON + `","validTo":"` + future + `"}`, "validFrom"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ts := newTestTrustedStore(t)
+			tk := &auth.TrustedKey{KID: "k", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t), Audience: "human", Active: true, ValidFrom: time.Now(), JWK: map[string]any{"kty": "RSA", "kid": "k"}}
+			if err := ts.Register(context.Background(), tk, auth.RotateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			feats := auth.DefaultIAMFeatures()
+			feats.TrustedKeyRegistrationEnabled = true
+			h := account.New(nil, nil, newTestKeyStore(t), ts, nil, feats)
+			w := httptest.NewRecorder()
+			h.ReactivateTrustedKey(w, adminReq(t, "POST", "/", []byte(c.body)), "k")
+			expectOutOfRange(t, w, c.field)
+		})
+	}
+}

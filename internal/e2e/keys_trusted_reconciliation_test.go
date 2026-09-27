@@ -27,6 +27,10 @@ func TestKeys_IssueNonRS256_400UnsupportedAlgorithm(t *testing.T) {
 	assertProblemJSON(t, resp, http.StatusBadRequest, "UNSUPPORTED_ALGORITHM")
 }
 
+// unknownKeyPairID is a well-formed key-pair id (32 lowercase hex) that no
+// store issues or derives.
+const unknownKeyPairID = "00000000000000000000000000000000"
+
 // ─────────────────────────────────────────────────────────────────────────────
 // invalidateJwtKeyPair error surface
 // ─────────────────────────────────────────────────────────────────────────────
@@ -236,4 +240,69 @@ func TestTrusted_Reactivate_UnknownId_404(t *testing.T) {
 	})
 	resp := adminRequest(t, "POST", "/oauth/keys/trusted/valid-but-nonexistent/reactivate", body)
 	assertProblemJSON(t, resp, http.StatusNotFound, "TRUSTED_KEY_NOT_FOUND")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Timestamps a key record cannot hold
+// ─────────────────────────────────────────────────────────────────────────────
+
+// year10000 is a timestamp Go reads whose UTC form is in year 10000: a key
+// record holding it could never be read back.
+const year10000 = "9999-12-31T23:59:59-05:00"
+
+// TestKeys_IssueKeyPair_ValidToOutOfRange_400 verifies that a validTo whose
+// UTC year is outside 1..9999 returns 400 BAD_REQUEST.
+func TestKeys_IssueKeyPair_ValidToOutOfRange_400(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+	resp := adminRequest(t, "POST", "/oauth/keys/keypair", mustJSON(t, map[string]any{
+		"algorithm": "RS256",
+		"audience":  "human",
+		"validTo":   year10000,
+	}))
+	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+}
+
+// TestKeys_ReactivateKeyPair_ValidToOutOfRange_400: the range check runs
+// before the key-store lookup, so a well-formed unknown keyId triggers it.
+func TestKeys_ReactivateKeyPair_ValidToOutOfRange_400(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+	resp := adminRequest(t, "POST", "/oauth/keys/keypair/"+unknownKeyPairID+"/reactivate", mustJSON(t, map[string]any{
+		"validTo": year10000,
+	}))
+	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+}
+
+// TestTrusted_Register_ValidToOutOfRange_400 verifies that registering a
+// trusted key with a validTo whose UTC year is outside 1..9999 returns 400
+// BAD_REQUEST and stores nothing.
+func TestTrusted_Register_ValidToOutOfRange_400(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+	kid := fmt.Sprintf("e2e-far-%d", time.Now().UnixNano())
+	resp := adminRequest(t, "POST", "/oauth/keys/trusted", mustJSON(t, map[string]any{
+		"keyId":    kid,
+		"jwk":      rsaJWK(t, kid),
+		"audience": "human",
+		"validTo":  year10000,
+	}))
+	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+	del := adminRequest(t, "DELETE", "/oauth/keys/trusted/"+kid, nil)
+	assertProblemJSON(t, del, http.StatusNotFound, "TRUSTED_KEY_NOT_FOUND")
+}
+
+// TestTrusted_Reactivate_ValidToOutOfRange_400: the range check runs before
+// the key-store lookup, so a well-formed unknown keyId triggers it.
+func TestTrusted_Reactivate_ValidToOutOfRange_400(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+	resp := adminRequest(t, "POST", "/oauth/keys/trusted/valid-but-nonexistent/reactivate", mustJSON(t, map[string]any{
+		"validTo": year10000,
+	}))
+	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
 }

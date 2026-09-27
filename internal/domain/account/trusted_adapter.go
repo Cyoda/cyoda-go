@@ -89,6 +89,9 @@ func (h *Handler) RegisterTrustedKey(w http.ResponseWriter, r *http.Request) {
 	if req.ValidTo != nil {
 		validTo = *req.ValidTo
 	}
+	if !storableWindow(w, r, validFrom, validTo) {
+		return
+	}
 	if !validTo.After(validFrom) {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validTo must be > validFrom"))
 		return
@@ -291,6 +294,9 @@ func (h *Handler) ReactivateTrustedKey(w http.ResponseWriter, r *http.Request, k
 		validFrom = *req.ValidFrom
 	}
 	validTo := req.ValidTo
+	if !storableWindow(w, r, validFrom, validTo) {
+		return
+	}
 	if !validTo.After(time.Now()) {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validTo must be in the future"))
 		return

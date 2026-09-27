@@ -553,3 +553,58 @@ func TestInvalidateJwtKeyPair_GracePeriodAtCapBoundary(t *testing.T) {
 		t.Errorf("one-over-cap: status=%d want 400", w.Code)
 	}
 }
+
+// Offset timestamps Go reads but whose UTC year is outside 1..9999: a record
+// holding them could never be read back.
+const (
+	year10000JSON = "9999-12-31T23:59:59-05:00"
+	yearMinusJSON = "0000-01-01T00:00:00+05:00"
+	lastDayJSON   = "9999-12-31T00:00:00Z" // default validTo from here is in year 10000
+)
+
+// expectOutOfRange asserts a 400 BAD_REQUEST naming field as out of range.
+func expectOutOfRange(t *testing.T, w *httptest.ResponseRecorder, field string) {
+	t.Helper()
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400; body=%s", w.Code, w.Body.String())
+	}
+	if !contains(w.Body.String(), field+" out of range") {
+		t.Fatalf("body %s does not name %s out of range", w.Body.String(), field)
+	}
+	commontest.ExpectErrorCode(t, w.Result(), "BAD_REQUEST")
+}
+
+func TestIssueJwtKeyPair_UnstorableTime_400(t *testing.T) {
+	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	for _, c := range []struct{ name, body, field string }{
+		{"validTo year 10000", `{"algorithm":"RS256","audience":"client","validTo":"` + year10000JSON + `"}`, "validTo"},
+		{"validFrom year -1", `{"algorithm":"RS256","audience":"client","validFrom":"` + yearMinusJSON + `","validTo":"` + future + `"}`, "validFrom"},
+		{"default validTo year 10000", `{"algorithm":"RS256","audience":"client","validFrom":"` + lastDayJSON + `"}`, "validTo"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, ks, _ := newHandler(t)
+			w := httptest.NewRecorder()
+			h.IssueJwtKeyPair(w, adminReq(t, "POST", "/oauth/keys/keypair", []byte(c.body)))
+			expectOutOfRange(t, w, c.field)
+			if all, err := ks.Published(); err != nil || len(all) != 1 {
+				t.Fatalf("published = %d (%v), want only the bootstrap key", len(all), err)
+			}
+		})
+	}
+}
+
+func TestReactivateJwtKeyPair_UnstorableTime_400(t *testing.T) {
+	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	for _, c := range []struct{ name, body, field string }{
+		{"validTo year 10000", `{"validTo":"` + year10000JSON + `"}`, "validTo"},
+		{"validFrom year -1", `{"validFrom":"` + yearMinusJSON + `","validTo":"` + future + `"}`, "validFrom"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, ks, _ := newHandler(t)
+			kp := issueCurrent(t, ks, "client")
+			w := httptest.NewRecorder()
+			h.ReactivateJwtKeyPair(w, adminReq(t, "POST", "/", []byte(c.body)), kp.KID)
+			expectOutOfRange(t, w, c.field)
+		})
+	}
+}

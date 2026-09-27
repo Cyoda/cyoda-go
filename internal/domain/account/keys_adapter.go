@@ -56,6 +56,9 @@ func (h *Handler) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 	if req.ValidTo != nil {
 		validTo = *req.ValidTo
 	}
+	if !storableWindow(w, r, validFrom, validTo) {
+		return
+	}
 	if !validTo.After(validFrom) {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validTo must be > validFrom"))
 		return
@@ -104,6 +107,23 @@ func (h *Handler) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 }
 
 func isValidKeyPairAudience(s string) bool { return s == "human" || s == "client" }
+
+// storableWindow writes 400 BAD_REQUEST and returns false if the key store
+// could not hold validFrom or validTo (auth.StorableTime): a UTC year outside
+// 1..9999, which an offset timestamp such as 9999-12-31T23:59:59-05:00 reaches.
+func storableWindow(w http.ResponseWriter, r *http.Request, validFrom, validTo time.Time) bool {
+	for _, f := range []struct {
+		name string
+		t    time.Time
+	}{{"validFrom", validFrom}, {"validTo", validTo}} {
+		if !auth.StorableTime(f.t) {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+				f.name+" out of range: its UTC year must be between 1 and 9999"))
+			return false
+		}
+	}
+	return true
+}
 
 // keyPairError: not found keeps 404 KEYPAIR_NOT_FOUND; every other failure
 // goes through common.Internal (500 with a ticket, or 503 when storage is
@@ -223,6 +243,9 @@ func (h *Handler) ReactivateJwtKeyPair(w http.ResponseWriter, r *http.Request, k
 	validFrom := now
 	if req.ValidFrom != nil {
 		validFrom = *req.ValidFrom
+	}
+	if !storableWindow(w, r, validFrom, req.ValidTo) {
+		return
 	}
 	// A future validFrom would put the key pair outside its own window at
 	// once; for the key signing now, that leaves the audience with no signing
