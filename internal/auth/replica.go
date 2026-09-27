@@ -51,7 +51,10 @@ type replicaConfig[R any] struct {
 	interval    time.Duration
 	broadcaster spi.ClusterBroadcaster
 	metrics     ReconcileMetrics
-	// afterChange runs after every swap or apply, with no lock held.
+	// afterChange runs after every swap or apply, once the copy lock has
+	// been released. It must not call mutate or Reconcile on this replica:
+	// mutate holds adminMu and Reconcile holds reconcileMu across the whole
+	// call including this callback, so either would deadlock against itself.
 	afterChange func()
 }
 
@@ -228,6 +231,9 @@ func (r *kvReplica[R]) Start(ctx context.Context) bool {
 	if !r.loopStarted.CompareAndSwap(false, true) {
 		return false
 	}
+	// A gap between construction and Start must not count toward staleness:
+	// the loop's own clock starts now, not at construction time.
+	r.stampOK()
 	go func() {
 		for {
 			timer := time.NewTimer(jitteredInterval(r.cfg.interval))
@@ -274,6 +280,14 @@ func (r *kvReplica[R]) mutate(fn func() (apply func(recs map[string]R), wrote bo
 		if r.cfg.afterChange != nil {
 			r.cfg.afterChange()
 		}
+	} else if wrote {
+		// The store was written but fn had no direct patch for the copy
+		// (a compensation, or another ambiguous partial write). Gossip never
+		// delivers this node's own broadcast back to itself, so without a
+		// local re-read this node would keep serving the old copy until the
+		// periodic loop next runs. Trigger is non-blocking: it runs on its
+		// own goroutine and never holds adminMu.
+		r.ping.Trigger(r.reconcileOnce)
 	}
 	if wrote {
 		r.broadcast()
@@ -319,21 +333,26 @@ func (r *kvReplica[R]) loadOne(ctx context.Context, kvKey string) (R, bool, erro
 	return zero, false, errReconcileContention
 }
 
-// writeAll applies writes in order. If one fails it restores every write
-// already applied, newest first, and returns the error. Restores run on a
-// context the caller cannot cancel; a restore that fails is logged at ERROR
-// with every key left changed.
+// writeAll applies writes in order. If one fails it restores that write
+// itself plus every write already applied before it, newest first, and
+// returns the error. The failing write can itself have partially or fully
+// committed before reporting failure (e.g. a timeout) — restoring it too is
+// what makes this correct: a prev-restore is idempotent and a delete of an
+// absent key already tolerates ErrNotFound, so restoring a write that never
+// actually landed costs nothing. Restores run on a context the caller cannot
+// cancel; a restore that fails is logged at ERROR with every key left
+// changed.
 func (r *kvReplica[R]) writeAll(ctx context.Context, writes []kvWrite) error {
 	for i, w := range writes {
 		if err := r.put(ctx, w.key, w.value); err != nil {
 			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.cfg.interval)
-			defer cancel()
 			var stuck []string
-			for j := i - 1; j >= 0; j-- {
+			for j := i; j >= 0; j-- {
 				if rerr := r.put(rctx, writes[j].key, writes[j].prev); rerr != nil {
 					stuck = append(stuck, writes[j].key)
 				}
 			}
+			cancel()
 			if len(stuck) > 0 {
 				slog.Error(r.cfg.name+" multi-record write failed and could not be fully undone",
 					"pkg", "auth", "keysLeftChanged", stuck)

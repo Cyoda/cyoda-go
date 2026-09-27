@@ -160,7 +160,129 @@ func TestReplica_WriteAllRestoresOnFailure(t *testing.T) {
 	}
 }
 
-// A re-read that overlaps a local change is discarded and retried.
+// A fake Put that commits the write and then reports failure (e.g. a timeout
+// after the store actually applied it).
+type applyThenFailKV struct {
+	spi.KeyValueStore
+	failKey string
+}
+
+func (a *applyThenFailKV) Put(ctx context.Context, ns, key string, v []byte) error {
+	if err := a.KeyValueStore.Put(ctx, ns, key, v); err != nil {
+		return err
+	}
+	if key == a.failKey {
+		return fmt.Errorf("injected failure after commit")
+	}
+	return nil
+}
+
+// A Put/Delete that fails a write purely because ctx is already done — used
+// to prove writeAll's restore pass runs on a context the caller cannot
+// cancel, not the caller's own (possibly already-cancelled) context.
+type ctxAwareKV struct {
+	spi.KeyValueStore
+	failKey string
+	cancel  func()
+}
+
+func (c *ctxAwareKV) Put(ctx context.Context, ns, key string, v []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if key == c.failKey {
+		c.cancel()
+		return fmt.Errorf("injected failure")
+	}
+	return c.KeyValueStore.Put(ctx, ns, key, v)
+}
+
+func (c *ctxAwareKV) Delete(ctx context.Context, ns, key string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return c.KeyValueStore.Delete(ctx, ns, key)
+}
+
+// A write that fails after already committing must still be restored itself,
+// not just the writes before it: the store, not the return value, is ground
+// truth for what landed.
+func TestReplica_WriteAllRestoresTheFailedWriteItself(t *testing.T) {
+	ctx := replicaSystemCtx()
+	base := newReplicaKV(t)
+	_ = base.Put(ctx, "ns", "old", []byte("before"))
+	kv := &applyThenFailKV{KeyValueStore: base, failKey: "second"}
+	r := newStringReplica(t, kv, nil)
+	err := r.writeAll(ctx, []kvWrite{
+		{key: "old", value: []byte("after"), prev: []byte("before")},
+		{key: "second", value: []byte("x")},
+	})
+	if err == nil {
+		t.Fatal("expected the injected failure")
+	}
+	if v, _ := base.Get(ctx, "ns", "old"); string(v) != "before" {
+		t.Fatalf("old key = %q, want restored", v)
+	}
+	if _, err := base.Get(ctx, "ns", "second"); !errors.Is(err, spi.ErrNotFound) {
+		t.Fatalf("second key not removed even though its own Put committed before the injected failure: %v", err)
+	}
+}
+
+// A caller whose context is cancelled exactly when the failing write happens
+// (e.g. a request deadline) must still see every prior write restored: the
+// restore pass runs on context.WithoutCancel, not the caller's context.
+func TestReplica_WriteAllRestoresDespiteCallerCancellation(t *testing.T) {
+	assertCtx := replicaSystemCtx()
+	base := newReplicaKV(t)
+	_ = base.Put(assertCtx, "ns", "old", []byte("before"))
+	writeCtx, cancel := context.WithCancel(assertCtx)
+	kv := &ctxAwareKV{KeyValueStore: base, failKey: "third", cancel: cancel}
+	r := newStringReplica(t, kv, nil)
+	err := r.writeAll(writeCtx, []kvWrite{
+		{key: "old", value: []byte("after"), prev: []byte("before")},
+		{key: "third", value: []byte("x")},
+	})
+	if err == nil {
+		t.Fatal("expected the injected failure")
+	}
+	if writeCtx.Err() == nil {
+		t.Fatal("test setup bug: writeCtx should be cancelled by the failing write")
+	}
+	if v, _ := base.Get(assertCtx, "ns", "old"); string(v) != "before" {
+		t.Fatalf("old key = %q, want restored despite the caller context being cancelled", v)
+	}
+}
+
+// The originating node never receives its own gossip broadcast back. When an
+// admin change writes the store but cannot describe a direct patch to the
+// copy (a compensation, or another ambiguous partial write), the node must
+// still converge to what is actually stored, on its own, without a caller
+// explicitly re-running Reconcile.
+func TestReplica_MutateWithoutApplyRefreshesOwnCopy(t *testing.T) {
+	ctx := replicaSystemCtx()
+	kv := newReplicaKV(t)
+	r := newStringReplica(t, kv, nil)
+	err := r.mutate(func() (func(map[string]string), bool, error) {
+		_ = kv.Put(ctx, "ns", "x", []byte("1"))
+		return nil, true, errors.New("ambiguous write")
+	})
+	if err == nil {
+		t.Fatal("expected the injected failure")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for snapshot(r)["x"] != "1" {
+		if time.Now().After(deadline) {
+			t.Fatal("origin node never re-read its own write")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A re-read that overlaps a local change is discarded and retried. The hook
+// fires only after the underlying List has already returned its (stale)
+// snapshot, so the first attempt's fresh copy genuinely lacks "local" — the
+// generation guard is the only thing that stops that stale snapshot from
+// overwriting the change the mutate just committed.
 func TestReplica_ReconcileYieldsToLocalChange(t *testing.T) {
 	ctx := replicaSystemCtx()
 	kv := &listHookKV{KeyValueStore: newReplicaKV(t)}
@@ -169,8 +291,10 @@ func TestReplica_ReconcileYieldsToLocalChange(t *testing.T) {
 	kv.onList = func() {
 		once.Do(func() {
 			_ = r.mutate(func() (func(map[string]string), bool, error) {
-				_ = kv.KeyValueStore.Put(ctx, "ns", "local", []byte("v"))
-				return func(m map[string]string) { m["local"] = "v" }, false, nil
+				if err := kv.KeyValueStore.Put(ctx, "ns", "local", []byte("v")); err != nil {
+					return nil, false, err
+				}
+				return func(m map[string]string) { m["local"] = "v" }, true, nil
 			})
 		})
 	}
@@ -189,11 +313,16 @@ type listHookKV struct {
 	onGet  func()
 }
 
+// List fetches first and runs the hook after, so a hook that mutates the
+// store lands strictly after this call's own snapshot was taken — the
+// snapshot returned to the caller is the stale one, same as a real race
+// between an in-flight List and a concurrent local write.
 func (h *listHookKV) List(ctx context.Context, ns string) (map[string][]byte, error) {
+	v, err := h.KeyValueStore.List(ctx, ns)
 	if h.onList != nil {
 		h.onList()
 	}
-	return h.KeyValueStore.List(ctx, ns)
+	return v, err
 }
 
 func (h *listHookKV) Get(ctx context.Context, ns, key string) ([]byte, error) {
@@ -252,10 +381,14 @@ func TestReplica_PingTriggersReRead(t *testing.T) {
 func TestReplica_StaleOnlyAfterLoopStartsAndBound(t *testing.T) {
 	kv := &failingListKV{KeyValueStore: newReplicaKV(t)}
 	r := newStringReplica(t, kv, nil)
+	kv.fail.Store(true)
+	// Longer than stalenessMultiplier(10) x the 50ms interval: a naive
+	// "has the bound elapsed" check would already call this stale, even
+	// though the reconcile loop was never started.
+	time.Sleep(700 * time.Millisecond)
 	if r.Stale() {
 		t.Fatal("stale before the loop started")
 	}
-	kv.fail.Store(true)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	r.Start(ctx)
