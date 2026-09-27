@@ -5,11 +5,9 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
-	"math/rand/v2"
 	"net/http"
 	"strings"
 	"sync"
@@ -27,11 +25,6 @@ const trustedKeysNamespace = "trusted-keys"
 // arbitrary peer-controlled bytes; the ping's only information is that it
 // arrived.
 const topicTrustedKeys = "auth.trustedkeys"
-
-// defaultReconcileInterval mirrors the config default; the store falls back
-// to it when no interval option is supplied (tests, callers predating the
-// reconcile loop).
-const defaultReconcileInterval = 60 * time.Second
 
 // defaultMaxTrustedKeys caps the number of trusted keys a store will accept by
 // default per tenant. Trusted keys are an admin-managed registry — a 100-key
@@ -214,26 +207,6 @@ func (s *KVTrustedKeyStore) loadAll() error {
 	return nil
 }
 
-// maxReconcileAttempts bounds the generation-guard retry inside Reconcile.
-// Only continuous mutation churn (which itself proves KV is reachable)
-// can exhaust it.
-const maxReconcileAttempts = 5
-
-// stalenessMultiplier × reconcileInterval is the fail-closed bound: once
-// the reconcile loop is running, an enumeration cache older than this stops
-// serving — an unbounded-stale answer on the verification path would be
-// wrong-but-available.
-const stalenessMultiplier = 10
-
-// errorEscalationThreshold is the consecutive-failure count from which
-// reconcile failures log at ERROR instead of WARN.
-const errorEscalationThreshold = 3
-
-// errReconcileContention marks a reconcile that gave up because mutations
-// kept landing mid-rebuild. It is not a KV failure: callers must not count
-// it toward staleness accounting.
-var errReconcileContention = errors.New("trusted-key reconcile: retry budget exhausted under concurrent mutation")
-
 // buildTrustedKeyMap deserializes a KV List result into a fresh cache map.
 // Legacy un-tenanted entries are skipped (pre-tenant-scoping layout). When
 // strict, the first undeserializable record fails the build (construction
@@ -403,12 +376,6 @@ func (s *KVTrustedKeyStore) reconcileStale() bool {
 		return false
 	}
 	return s.reconcileAge() > stalenessMultiplier*s.reconcileInterval
-}
-
-// jitteredInterval returns d × [0.9, 1.1) — the model-cache herd-avoidance
-// convention.
-func jitteredInterval(d time.Duration) time.Duration {
-	return time.Duration(float64(d) * (0.9 + 0.2*rand.Float64()))
 }
 
 // broadcastChanged publishes the payload-free change ping. No-op without a

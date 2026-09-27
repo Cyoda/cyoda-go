@@ -27,15 +27,17 @@ type otelReconcileMetrics struct {
 	stalenessSeconds    metric.Float64Gauge
 }
 
-// NewOTelReconcileMetrics builds the OTel-backed ReconcileMetrics for the
-// trusted-key cache.
-func NewOTelReconcileMetrics(meter metric.Meter) (ReconcileMetrics, error) {
+// NewOTelReconcileMetrics builds the OTel-backed ReconcileMetrics for a
+// replicated KV component, publishing gauges under
+// "<prefix>.reconcile_consecutive_failures" and
+// "<prefix>.reconcile_staleness_seconds".
+func NewOTelReconcileMetrics(meter metric.Meter, prefix string) (ReconcileMetrics, error) {
 	m := &otelReconcileMetrics{}
 	var err error
-	if m.consecutiveFailures, err = meter.Int64Gauge("auth.trustedkeys.reconcile_consecutive_failures"); err != nil {
+	if m.consecutiveFailures, err = meter.Int64Gauge(prefix + ".reconcile_consecutive_failures"); err != nil {
 		return nil, err
 	}
-	if m.stalenessSeconds, err = meter.Float64Gauge("auth.trustedkeys.reconcile_staleness_seconds"); err != nil {
+	if m.stalenessSeconds, err = meter.Float64Gauge(prefix + ".reconcile_staleness_seconds"); err != nil {
 		return nil, err
 	}
 	return m, nil

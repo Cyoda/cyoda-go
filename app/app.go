@@ -282,7 +282,7 @@ func New(cfg Config) *App {
 				"error", err.Error())
 			os.Exit(1)
 		}
-		authReconcileMetrics, err := auth.NewOTelReconcileMetrics(observability.Meter())
+		authReconcileMetrics, err := auth.NewOTelReconcileMetrics(observability.Meter(), "auth.trustedkeys")
 		if err != nil {
 			slog.Error("startup failure", "phase", "auth-reconcile-metrics-init", "error", err.Error())
 			os.Exit(1)
