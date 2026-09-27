@@ -61,18 +61,18 @@ func snapshot(r *kvReplica[string]) map[string]string {
 	return out
 }
 
-func TestReplica_LoadSkipsAndFailsStrict(t *testing.T) {
+// The initial load treats an undecodable record as a re-read does: it is left
+// out of the copy (so the key it held is refused), never a reason to fail the
+// load, and never counted as a skip.
+func TestReplica_LoadSkipsUndecodable(t *testing.T) {
 	ctx := replicaSystemCtx()
 	kv := newReplicaKV(t)
 	_ = kv.Put(ctx, "ns", "a", []byte("1"))
 	_ = kv.Put(ctx, "ns", "s", []byte("skip"))
+	_ = kv.Put(ctx, "ns", "b", []byte("bad"))
 	r := newStringReplica(t, kv, nil)
 	if got := snapshot(r); got["a"] != "1" || len(got) != 1 || r.skippedAtLoad != 1 {
 		t.Fatalf("copy = %v skipped = %d", got, r.skippedAtLoad)
-	}
-	_ = kv.Put(ctx, "ns", "b", []byte("bad"))
-	if _, err := newKVReplica(ctx, kv, replicaConfig[string]{name: "test", namespace: "ns", decode: stringDecode}); err == nil {
-		t.Fatal("initial load must fail on an undecodable record")
 	}
 }
 

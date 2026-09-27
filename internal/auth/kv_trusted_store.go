@@ -174,7 +174,12 @@ func (s *KVTrustedKeyStore) storedKeys(ctx context.Context) (map[string][]byte, 
 	return entries, keys, nil
 }
 
-// storedKey reads one key of tenantID from the store.
+// errTrustedKeyUndecodable marks a stored record of the caller's tenant that
+// does not decode.
+var errTrustedKeyUndecodable = errors.New("stored trusted-key record does not decode")
+
+// storedKey reads one key of tenantID from the store. A record that does not
+// decode returns its bytes with an error wrapping errTrustedKeyUndecodable.
 func (s *KVTrustedKeyStore) storedKey(ctx context.Context, tenantID spi.TenantID, kid string) ([]byte, *TrustedKey, error) {
 	data, err := s.kv.Get(ctx, trustedKeysNamespace, trustedKeyKey(tenantID, kid))
 	if errors.Is(err, spi.ErrNotFound) {
@@ -185,7 +190,7 @@ func (s *KVTrustedKeyStore) storedKey(ctx context.Context, tenantID spi.TenantID
 	}
 	tk, err := deserializeTrustedKey(data)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to decode trusted key: %w", err)
+		return data, nil, fmt.Errorf("%w: %w", errTrustedKeyUndecodable, err)
 	}
 	if tk.TenantID != tenantID {
 		return nil, nil, fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
@@ -330,17 +335,24 @@ func (s *KVTrustedKeyStore) GetForVerification(tenantID spi.TenantID, kid string
 
 // Delete removes a trusted key by tenant and KID. The store, not the node
 // copy, decides whether the key exists: a node that has not yet reconciled a
-// peer's delete must not resurrect the key by reporting it present.
+// peer's delete must not resurrect the key by reporting it present. A record
+// that does not decode is deleted too: its KV key carries the tenant, so the
+// delete stays within tenantID. The copy loses kid only if it holds that
+// tenant's key there.
 func (s *KVTrustedKeyStore) Delete(ctx context.Context, tenantID spi.TenantID, kid string) error {
 	return s.rep.mutate(func() (func(map[string]*TrustedKey), bool, error) {
 		data, _, err := s.storedKey(ctx, tenantID, kid)
-		if err != nil {
+		if err != nil && !errors.Is(err, errTrustedKeyUndecodable) {
 			return nil, false, err
 		}
 		if err := s.rep.writeAll(ctx, []kvWrite{{key: trustedKeyKey(tenantID, kid), prev: data}}); err != nil {
 			return nil, true, err
 		}
-		return func(m map[string]*TrustedKey) { delete(m, kid) }, true, nil
+		return func(m map[string]*TrustedKey) {
+			if tk, ok := m[kid]; ok && tk.TenantID == tenantID {
+				delete(m, kid)
+			}
+		}, true, nil
 	})
 }
 
@@ -388,7 +400,9 @@ func (s *KVTrustedKeyStore) Reactivate(ctx context.Context, tenantID spi.TenantI
 // the node copy) before applying change, and writing the result back through
 // writeAll, which tries to undo a failed write (see Register's doc comment
 // for what that guarantees and does not). needAll also lists the whole
-// namespace first, for change functions (the cap check) that need it.
+// namespace first, for change functions (the cap check) that need it. A
+// record that does not decode cannot be changed: that is a store error (a
+// 5xx), not not-found; Delete removes such a record.
 func (s *KVTrustedKeyStore) update(ctx context.Context, tenantID spi.TenantID, kid string,
 	change func(tk *TrustedKey, stored map[string]*TrustedKey) error, needAll bool) error {
 	return s.rep.mutate(func() (func(map[string]*TrustedKey), bool, error) {

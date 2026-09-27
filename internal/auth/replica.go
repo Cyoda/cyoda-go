@@ -45,8 +45,9 @@ type replicaConfig[R any] struct {
 	namespace string
 	topic     string
 	// decode turns one entry into the copy's key and record. ok=false skips
-	// the entry (counted at load); err skips it with an ERROR on a re-read and
-	// fails the initial load.
+	// the entry (counted at load); err leaves it out of the copy with an ERROR,
+	// on the initial load as on a re-read: the key it held is refused (fail
+	// closed), and one bad record never stops a node starting.
 	decode      func(kvKey string, data []byte) (copyKey string, rec R, ok bool, err error)
 	interval    time.Duration
 	broadcaster spi.ClusterBroadcaster
@@ -102,11 +103,7 @@ func newKVReplica[R any](ctx context.Context, kv spi.KeyValueStore, cfg replicaC
 	if err != nil {
 		return nil, fmt.Errorf("failed to load %s records: %w", cfg.name, err)
 	}
-	recs, skipped, err := r.build(entries, true)
-	if err != nil {
-		return nil, err
-	}
-	r.recs, r.skippedAtLoad = recs, skipped
+	r.recs, r.skippedAtLoad = r.build(entries)
 	r.stampOK()
 	if cfg.broadcaster != nil {
 		cfg.broadcaster.Subscribe(cfg.topic, r.handlePing)
@@ -114,16 +111,13 @@ func newKVReplica[R any](ctx context.Context, kv spi.KeyValueStore, cfg replicaC
 	return r, nil
 }
 
-func (r *kvReplica[R]) build(entries map[string][]byte, strict bool) (map[string]R, int, error) {
+func (r *kvReplica[R]) build(entries map[string][]byte) (map[string]R, int) {
 	recs := make(map[string]R, len(entries))
 	skipped := 0
 	for kvKey, data := range entries {
 		k, rec, ok, err := r.cfg.decode(kvKey, data)
 		if err != nil {
-			if strict {
-				return nil, 0, fmt.Errorf("failed to decode %s record %q: %w", r.cfg.name, kvKey, err)
-			}
-			slog.Error(r.cfg.name+" reconcile: skipping undeserializable record",
+			slog.Error(r.cfg.name+" record does not decode; its key is refused until the record is fixed or deleted",
 				"pkg", "auth", "kvKey", kvKey, "error", err.Error())
 			continue
 		}
@@ -133,7 +127,7 @@ func (r *kvReplica[R]) build(entries map[string][]byte, strict bool) (map[string
 		}
 		recs[k] = rec
 	}
-	return recs, skipped, nil
+	return recs, skipped
 }
 
 // read runs fn with the copy under the read lock. fn must not keep the map.
@@ -175,7 +169,7 @@ func (r *kvReplica[R]) Reconcile(ctx context.Context) error {
 			}
 			return fmt.Errorf("failed to list %s records: %w", r.cfg.name, err)
 		}
-		fresh, _, _ := r.build(entries, false)
+		fresh, _ := r.build(entries)
 		swapped := func() bool {
 			r.mu.Lock()
 			defer r.mu.Unlock()

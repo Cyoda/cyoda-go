@@ -7,6 +7,8 @@ import (
 	"crypto/rsa"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -262,5 +264,78 @@ func TestKVTrustedKeyStore_RefusesUnstorableTime(t *testing.T) {
 	sameRecords(t, before, trustedRecords(t, kv))
 	if _, err := auth.NewKVTrustedKeyStore(ctx, kv); err != nil {
 		t.Fatalf("restart: %v", err)
+	}
+}
+
+// seedUndecodable stores a registered key "good" and an undecodable record
+// "bad", both of tenant t.
+func seedUndecodable(t *testing.T) (spi.KeyValueStore, spi.TenantID) {
+	t.Helper()
+	ctx := systemCtx()
+	kv := mustNewMemoryKV(t, ctx)
+	seed, err := auth.NewKVTrustedKeyStore(ctx, kv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tID := spi.TenantID("t")
+	if err := seed.Register(ctx, newTrustedKey(t, tID, "good", time.Now()), auth.RotateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := kv.Put(ctx, "trusted-keys", auth.TrustedKeyKVKeyForTesting(tID, "bad"), []byte("{")); err != nil {
+		t.Fatal(err)
+	}
+	return kv, tID
+}
+
+// An undecodable record never stops a node starting: it is skipped with an
+// ERROR, as on a re-read, and only that key is refused (fail closed).
+func TestKVTrustedKeyStore_StartupSkipsUndecodable(t *testing.T) {
+	kv, tID := seedUndecodable(t)
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+	s, err := auth.NewKVTrustedKeyStore(systemCtx(), kv)
+	if err != nil {
+		t.Fatalf("startup failed on an undecodable record: %v", err)
+	}
+	if !strings.Contains(buf.String(), "level=ERROR") || !strings.Contains(buf.String(), "t:bad") {
+		t.Fatalf("no ERROR naming the record: %s", buf.String())
+	}
+	if _, err := s.GetForVerification(tID, "good"); err != nil {
+		t.Fatalf("good key not loaded: %v", err)
+	}
+	if _, err := s.GetForVerification(tID, "bad"); !errors.Is(err, auth.ErrTrustedKeyNotFound) {
+		t.Fatalf("undecodable key: err = %v, want ErrTrustedKeyNotFound", err)
+	}
+}
+
+// The admin can delete an undecodable record: its KV key carries the tenant,
+// so the delete stays in the caller's tenant. Invalidate and reactivate must
+// rewrite the record and keep failing, but not as not-found.
+func TestKVTrustedKeyStore_DeleteUndecodable(t *testing.T) {
+	kv, tID := seedUndecodable(t)
+	ctx := systemCtx()
+	s, err := auth.NewKVTrustedKeyStore(ctx, kv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Invalidate(ctx, tID, "bad", 0); err == nil || errors.Is(err, auth.ErrTrustedKeyNotFound) {
+		t.Fatalf("invalidate: err = %v, want a store error", err)
+	}
+	if err := s.Reactivate(ctx, tID, "bad", time.Now(), time.Now().Add(time.Hour)); err == nil || errors.Is(err, auth.ErrTrustedKeyNotFound) {
+		t.Fatalf("reactivate: err = %v, want a store error", err)
+	}
+	if err := s.Delete(ctx, "other", "bad"); !errors.Is(err, auth.ErrTrustedKeyNotFound) {
+		t.Fatalf("delete from another tenant: err = %v, want ErrTrustedKeyNotFound", err)
+	}
+	if err := s.Delete(ctx, tID, "bad"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := kv.Get(ctx, "trusted-keys", auth.TrustedKeyKVKeyForTesting(tID, "bad")); !errors.Is(err, spi.ErrNotFound) {
+		t.Fatalf("record still stored: %v", err)
+	}
+	if _, err := s.GetForVerification(tID, "good"); err != nil {
+		t.Fatalf("good key lost: %v", err)
 	}
 }
