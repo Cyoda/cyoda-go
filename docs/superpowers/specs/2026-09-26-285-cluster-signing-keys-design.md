@@ -317,7 +317,11 @@ This fixes, for trusted keys too:
 Two admin writes to the **same** record on two nodes at the same moment remain
 last-writer-wins (the KV store has no conditional write, R§5): a reactivate that
 read the record before a concurrent delete can write it back. Admin-only, rare,
-documented.
+documented. Likewise, two tenants registering the same trusted-key KID on two
+nodes at the same moment can both pass the cross-tenant check; the node copy,
+keyed by bare KID, then holds one of them until the next re-read, and a change
+to one can drop the other from that copy. The effect is a refused key, never
+cross-tenant verification (verification re-checks the tenant).
 
 The trusted-key verification path stays node-copy-only
 (`kv_trusted_store.go:592-608`).
