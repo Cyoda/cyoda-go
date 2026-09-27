@@ -1,4 +1,4 @@
-.PHONY: dev-up dev-down dev-reset dev-ps dev-logs dev-run dev-test build test test-root test-full preflight race clean docker-build docker-push todos check-spi-pin-sync check-codegen check-gofmt repin-plugins
+.PHONY: dev-up dev-down dev-reset dev-ps dev-logs dev-run dev-test build test test-root test-root-packages test-full preflight race clean docker-build docker-push todos check-spi-pin-sync check-codegen check-gofmt repin-plugins
 
 # Recipes need pipefail: a `go test | testreport` pipeline must fail on the
 # LEFT side too, or a compile error in the test binary reports as success.
@@ -126,18 +126,21 @@ test: preflight        ## Iteration tier: unit + cross-backend parity (~115s col
 	@echo "==> cross-backend parity (uncached — the fixture builds the server outside the cache's view)"
 	@go test -json -count=1 -timeout 20m $(PARITY_ARGS) | go run ./scripts/testreport -must-run '$(PARITY_SUITES)'
 
-# test-root is test-full's root-module half, split out so CI can run exactly
-# it: CI runs the plugin submodules in steps of their own (each needs its own
-# working directory, and the postgres one needs the job's database service),
-# so it must not also run test-full's plugin loop. Splitting keeps the parity
-# package list stated once, here, rather than hand-copied into the workflow —
-# where it silently drifts and a suite drops out of -must-run unnoticed.
-test-root: preflight   ## test-full's root-module half (CI runs this; plugin submodules are separate steps)
+# test-root is test-full's root-module half: every root package, internal/e2e
+# included, then the parity suites. CI runs its first half alone
+# (test-root-packages): the parity suites run in CI's race job instead, under
+# `make race`, which checks everything a plain parity run checks. The plugin
+# submodules are CI's plugins job. Keeping the package and parity lists here,
+# once, stops them drifting in the workflow, where a suite could drop out of
+# -must-run unnoticed.
+test-root: test-root-packages   ## test-full's root-module half: root packages (internal/e2e included), then parity
+	@echo "==> cross-backend parity (uncached — the fixture builds the server outside the cache's view)"
+	@go test -json -count=1 -timeout 30m $(PARITY_ARGS) | go run ./scripts/testreport -must-run '$(PARITY_SUITES)'
+
+test-root-packages: preflight   ## Root packages including internal/e2e, without the parity suites (CI's test job)
 	@echo "==> root module, including internal/e2e"
 	@pkgs=$$(go list ./... | grep -Ev '^($(PARITY_EXCLUDE))$$'); \
 	go test -json -timeout 30m $$pkgs | go run ./scripts/testreport -must-run 'internal/e2e'
-	@echo "==> cross-backend parity (uncached — the fixture builds the server outside the cache's view)"
-	@go test -json -count=1 -timeout 30m $(PARITY_ARGS) | go run ./scripts/testreport -must-run '$(PARITY_SUITES)'
 
 test-full: test-root   ## End-of-deliverable: everything, root + every plugin submodule (~15 min)
 	@rpt=$$(mktemp -t testreport); go build -o "$$rpt" ./scripts/testreport; \
