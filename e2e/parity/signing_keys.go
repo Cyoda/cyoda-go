@@ -30,7 +30,7 @@ func RunSigningKeyPairLifecycle(t *testing.T, fixture BackendFixture) {
 		Active bool   `json:"active"`
 	}
 	_ = json.Unmarshal(body, &kp)
-	t.Cleanup(func() { _, _, _ = c.DeleteKeyPairRaw(t, kp.KeyId) })
+	c.DeleteKeyPairOnCleanup(t, kp.KeyId)
 
 	if code, body, _ := c.CurrentKeyPairRaw(t, "human"); code != http.StatusOK || !jsonHasKID(body, kp.KeyId) {
 		t.Fatalf("current: %d %s", code, body)
