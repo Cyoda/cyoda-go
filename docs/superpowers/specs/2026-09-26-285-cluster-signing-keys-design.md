@@ -585,7 +585,7 @@ Other documents:
   `docs/cloud-parity/signing-key-pairs.md`: key pairs shared and persisted,
   bootstrap revocation persisted, retire-on-replacement, 404 for retired, 503 on
   the endpoints and JWKS. At-rest sealing is an implementation property, not part
-  of the contract (Cloud stores PKCS#8 unencrypted, R§8). Matching CaaS ticket.
+  of the contract (Cloud passes PKCS#8 through an encryption hook whose default encryptor is a no-op and none is wired, so it is stored unencrypted in practice, R§8). Matching CaaS ticket.
 - `COMPATIBILITY.md`: the cassandra plugin must include the #102 fix to run this
   version.
 - `CHANGELOG.md` — `### Breaking`: key-pair store failures answer 500/503, not 404;
