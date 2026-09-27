@@ -33,6 +33,16 @@ func newKID() (string, error) {
 
 func notFound(kid string) error { return fmt.Errorf("%w: %s", ErrKeyPairNotFound, kid) }
 
+// postWriteContext bounds the classification of a record whose write already
+// committed: immune to the caller's cancellation (a request cancelled in its
+// last moment must not mark the change broken in the copy), but not
+// unbounded either, so a genuinely wedged classification (e.g. a vault
+// callout that never returns) still gives up — the same restore-context
+// pattern replica.go's writeAll uses to bound a compensating write.
+func (s *KVKeyStore) postWriteContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), s.rep.cfg.interval)
+}
+
 // Issue creates a key pair and, with Invalidate, ends every sibling of its
 // audience (spec §5.7). The new record is written before the siblings; if a
 // sibling write fails, every write is undone.
@@ -70,9 +80,9 @@ func (s *KVKeyStore) Issue(ctx context.Context, req IssueRequest) (*KeyPair, err
 		if err := s.rep.writeAll(ctx, writes); err != nil {
 			return nil, true, err
 		}
-		// The writes already committed; a request cancelled in this last
-		// moment must not mark the just-written records broken in the copy.
-		entries := s.classifyWrites(context.WithoutCancel(ctx), writes)
+		pctx, cancel := s.postWriteContext(ctx)
+		entries := s.classifyWrites(pctx, writes)
+		cancel()
 		p := entries[kid].pair
 		issued = &p
 		return func(recs map[string]*signingEntry) {
@@ -202,9 +212,9 @@ func (s *KVKeyStore) updateState(ctx context.Context, kid string, change func(r 
 		if err := s.rep.writeAll(ctx, []kvWrite{{key: kid, value: data, prev: prev}}); err != nil {
 			return nil, true, err
 		}
-		// The write already committed; a request cancelled in this last
-		// moment must not mark the change broken in the copy.
-		e := s.cls.classify(context.WithoutCancel(ctx), kid, data)
+		pctx, cancel := s.postWriteContext(ctx)
+		e := s.cls.classify(pctx, kid, data)
+		cancel()
 		p := e.pair
 		if kid == s.boot.kid {
 			p.Audience, p.PublicKey = s.boot.audience, s.boot.public
@@ -248,9 +258,7 @@ func deletedBootstrapRecord(kid string) signingRecord {
 }
 
 // writeRecord encodes rec, writes it in place of prev, and folds the change
-// into the copy. The post-write classification runs on a context immune to
-// the caller's cancellation: the write already committed, and a request
-// cancelled in the last moment must not mark the change broken in the copy.
+// into the copy.
 func (s *KVKeyStore) writeRecord(ctx context.Context, kid string, prev []byte, rec signingRecord) (func(map[string]*signingEntry), bool, error) {
 	enc, err := encodeSigningRecord(rec)
 	if err != nil {
@@ -259,7 +267,9 @@ func (s *KVKeyStore) writeRecord(ctx context.Context, kid string, prev []byte, r
 	if err := s.rep.writeAll(ctx, []kvWrite{{key: kid, value: enc, prev: prev}}); err != nil {
 		return nil, true, err
 	}
-	e := s.cls.classify(context.WithoutCancel(ctx), kid, enc)
+	pctx, cancel := s.postWriteContext(ctx)
+	e := s.cls.classify(pctx, kid, enc)
+	cancel()
 	return func(recs map[string]*signingEntry) { recs[kid] = e }, true, nil
 }
 

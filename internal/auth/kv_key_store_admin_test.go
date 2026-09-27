@@ -214,16 +214,27 @@ func TestKVKeyStore_RotationLeavesOtherAudienceBootstrap(t *testing.T) {
 	}
 }
 
-type failPutKV struct {
+// commitThenFailKV commits the Put to the underlying store and only then
+// reports failure — the case writeAll's own doc names ("the failing write
+// can itself have partially or fully committed before reporting failure").
+// A KV that rejects the write before it ever lands (failPutKV, the earlier
+// shape of this test) makes "restore the bootstrap key to absent" vacuous:
+// deleting a key that was never written is a no-op regardless of whether the
+// restore loop is even correct. Only a KV that actually commits first can
+// prove the restore loop undoes real, already-stored state.
+type commitThenFailKV struct {
 	spi.KeyValueStore
 	failKey string
 }
 
-func (f *failPutKV) Put(ctx context.Context, ns, key string, v []byte) error {
-	if key == f.failKey {
-		return errors.New("injected failure")
+func (f *commitThenFailKV) Put(ctx context.Context, ns, key string, v []byte) error {
+	if err := f.KeyValueStore.Put(ctx, ns, key, v); err != nil {
+		return err
 	}
-	return f.KeyValueStore.Put(ctx, ns, key, v)
+	if key == f.failKey {
+		return errors.New("injected failure after commit")
+	}
+	return nil
 }
 
 // Two siblings are ended by this rotation: the old client key (an existing
@@ -233,7 +244,8 @@ func (f *failPutKV) Put(ctx context.Context, ns, key string, v []byte) error {
 // restore must both put the old key's original bytes back (a write that had
 // already landed) and remove the bootstrap sibling's record entirely (a
 // write that took it from absent to written and must go back to absent, not
-// to some placeholder value).
+// to some placeholder value) — and that removal must undo a write that
+// genuinely committed, not one commitThenFailKV merely rejected up front.
 func TestKVKeyStore_RotationCompensatesOnSiblingFailure(t *testing.T) {
 	ctx := systemCtx()
 	mem := mustNewMemoryKV(t, ctx)
@@ -248,7 +260,7 @@ func TestKVKeyStore_RotationCompensatesOnSiblingFailure(t *testing.T) {
 	bc := newFakeBroadcaster()
 	var pings int
 	bc.Subscribe("auth.signingkeys", func([]byte) { pings++ })
-	s, _ := auth.NewKVKeyStore(ctx, &failPutKV{KeyValueStore: mem, failKey: bootKID},
+	s, _ := auth.NewKVKeyStore(ctx, &commitThenFailKV{KeyValueStore: mem, failKey: bootKID},
 		auth.KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client", Broadcaster: bc})
 	now := time.Now()
 	_, err := s.Issue(ctx, auth.IssueRequest{Audience: "client", ValidFrom: now, ValidTo: now.Add(time.Hour), Invalidate: true})
@@ -263,7 +275,7 @@ func TestKVKeyStore_RotationCompensatesOnSiblingFailure(t *testing.T) {
 		t.Fatal("sibling changed by a failed rotation")
 	}
 	if _, err := mem.Get(ctx, "signing-keys", bootKID); !errors.Is(err, spi.ErrNotFound) {
-		t.Fatal("bootstrap sibling left behind (absent state not restored) by a failed rotation")
+		t.Fatal("bootstrap sibling left behind: its committed write was not restored to absent")
 	}
 	if pings == 0 {
 		t.Fatal("no change message after a failed rotation that wrote the store")
@@ -424,11 +436,18 @@ func TestKVKeyStore_RotationEndingBootstrapWarns(t *testing.T) {
 }
 
 // Invalidating an issued key (not the bootstrap key) never logs the
-// bootstrap-revocation WARN, however many owned pairs exist.
+// bootstrap-revocation WARN. The bootstrap key is revoked FIRST, before the
+// log capture starts: logRevokedBootstrap's own "is the bootstrap key
+// actually revoked" check would otherwise suppress the WARN regardless of
+// whether Invalidate's own `kid == s.boot.kid` guard is even present, making
+// the assertion pass for the wrong reason.
 func TestKVKeyStore_IssuedKeyInvalidateNeverWarns(t *testing.T) {
 	ctx := systemCtx()
 	s := newKeyStore(t, mustNewMemoryKV(t, ctx), newBootstrap(t), "client")
 	kp := issue(t, s, "client", false)
+	if err := s.Invalidate(ctx, s.BootstrapKID(), 0); err != nil {
+		t.Fatal(err)
+	}
 	var buf bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
