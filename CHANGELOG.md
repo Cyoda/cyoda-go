@@ -6,26 +6,32 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
-- **Signing key pairs are shared and persisted by the cluster; the store's own
-  failures answer `500`/`503`, not `404`.** JWT signing key pairs
-  (`/oauth/keys/keypair*`) and the bootstrap key's invalidate/reactivate/delete
-  state now live in the SYSTEM-tenant KV store, converge across every node the
-  same way trusted keys already do, and survive a restart on a persistent
-  backend (not on the memory backend). First-party token verification now
-  depends on that store: a node that cannot read it for 10 reconcile intervals
-  fails closed, refusing every key (`401` on verification, `503` with
-  `Retry-After` on JWKS) instead of serving a stale answer. Every one of the
-  five key-pair endpoints answered `404` for any failure before; now a store
-  or vault failure answers `500` with a ticket, or `503 STORAGE_UNAVAILABLE`
-  when storage is marked unavailable or the node's copy is stale, and `404` is
-  reserved for a key pair that is genuinely not found, retired, a foreign
-  bootstrap record or a deleted bootstrap key. `POST /oauth/token`'s existing
-  `500 server_error` gains the same new causes: a broken or undecodable
-  selected key pair, or a stale store. A restart no longer restores a revoked
-  bootstrap key: invalidating, reactivating or deleting it through the API is
-  now durable, and deleting it is permanent for that key until
-  `CYODA_JWT_SIGNING_KEY` is replaced. Replacing `CYODA_JWT_SIGNING_KEY` now
-  retires every key pair the old key owned — they
+- **Signing key pairs are shared and persisted by the cluster.** JWT signing
+  key pairs (`/oauth/keys/keypair*`) and the bootstrap key's
+  invalidate/reactivate/delete state now live in the SYSTEM-tenant KV store,
+  converge across every node the same way trusted keys already do, and
+  survive a restart on a persistent backend (not on the memory backend).
+  First-party token verification now depends on that store: a node that
+  cannot read it for 10 reconcile intervals fails closed, refusing every key
+  (`401` on verification, `503` with `Retry-After` on JWKS) instead of
+  serving a stale answer. Four of the five key-pair endpoints — `current`,
+  `invalidate`, `reactivate` and `delete` — mapped every failure of the
+  underlying store call to `404` before; `POST /oauth/keys/keypair` already
+  answered `500` for a store or key-generation failure. All five now answer
+  `500` with a ticket for an ordinary store or vault failure, or `503
+  STORAGE_UNAVAILABLE` when storage is marked unavailable, or (`current` and
+  JWKS only, since the other three read the store directly rather than the
+  node's own copy) when that copy has gone stale; `404` is reserved for a key
+  pair that is genuinely not found, retired, a foreign bootstrap record or a
+  deleted bootstrap key. `POST /oauth/token`'s existing `500 server_error`
+  gains new causes: a broken selected key pair, any undecodable record (which
+  blocks signing for every audience, not only the one it would have signed
+  for), or a stale store. A restart no longer restores a revoked bootstrap
+  key: invalidating, reactivating or deleting it through the API is now
+  durable. Deleting it is permanent for that key — replacing
+  `CYODA_JWT_SIGNING_KEY` afterwards starts a fresh bootstrap key with no
+  stored state; it does not undelete the old one. Replacing
+  `CYODA_JWT_SIGNING_KEY` also retires every key pair the old key owned — they
   stop signing, verifying and appearing in JWKS — because a private key is
   sealed at rest under a key derived from the bootstrap key, so a key pair
   issued under a replaced bootstrap key can no longer be opened; restoring the
@@ -719,16 +725,25 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   shared and persisted across the cluster the same way trusted keys already
   were (see Breaking).
 
-- **A trusted-key admin write could act on a stale copy, leave a rotation half
-  applied, or block verification.** An invalidate or reactivate read the
-  node's cache rather than the store, so a node that had not yet received an
-  earlier delete could write the deleted record back; a rotation that
-  invalidated a predecessor could miss a sibling issued on another node; and
-  an admin write held the cache's lock across the KV call, so a slow write
-  blocked every token verification on that node. Admin writes (for both
-  trusted keys and signing key pairs) now take a store-specific mutex, read
-  the current records from KV directly, and apply the result to the node copy
-  only after the KV write succeeds — hot-path verification never waits on KV.
+- **A trusted-key admin write could act on a stale copy, miss a rotation's
+  sibling, leave a failed rotation with nothing rolled back, or block
+  verification.** An invalidate or reactivate read the node's cache rather
+  than the store, so a node that had not yet received an earlier delete could
+  write the deleted record back. A rotation (`invalidatePrevious`) listed
+  siblings from the node's own cache too, so it could miss one issued on
+  another node; and it was best-effort — if a sibling write failed partway
+  through, whatever had already been written stayed as it was, with nothing
+  undone. An admin write also held the cache's lock across the KV call, so a
+  slow write blocked every token verification on that node. Admin writes (for
+  both trusted keys and signing key pairs) now take a store-specific mutex,
+  list and read the current records from KV directly rather than the node's
+  cache, and apply the result to the node copy only after the KV write
+  succeeds — hot-path verification never waits on KV. A multi-record write
+  that fails partway now tries to restore every record it already wrote; this
+  is still not a full guarantee — a restore that itself fails is logged at
+  ERROR naming the records left changed, and a crash between writes (rather
+  than a reported error) can still leave the new record active alongside old
+  siblings, for the admin to repeat.
 
 - **A scheduled transition could run twice at the same time.** A task still
   running after `CYODA_SCHEDULER_REDISPATCH_BACKOFF` (30 s) was dispatched again,

@@ -17,38 +17,52 @@ across a restart, and when its issuing bootstrap key is replaced.
 - **The bootstrap key's revocation is persisted too.** Invalidating,
   reactivating or deleting the bootstrap signing key
   (`CYODA_JWT_SIGNING_KEY`) through the API is stored and cluster-wide, and it
-  survives a restart — a restart no longer restores a revoked bootstrap key.
-  Deleting it is terminal for that key: no API call reactivates a deleted
-  bootstrap key. Recovery is replacing `CYODA_JWT_SIGNING_KEY`, which mints a
-  fresh KID with no stored state.
+  survives a restart. Deleting it is terminal for that key: no API call
+  reactivates a deleted bootstrap key, and replacing
+  `CYODA_JWT_SIGNING_KEY` afterwards mints a fresh KID with no stored
+  state — the old, deleted key stays deleted.
 - **Replacing the bootstrap key retires every key pair it owned.** A key pair
-  is sealed under the bootstrap key active when it was issued. Once
-  `CYODA_JWT_SIGNING_KEY` is replaced, those key pairs stop signing, verifying
-  and appearing in JWKS — this is the deliberate response to the bootstrap
-  key's PEM being exposed, not a side effect to work around. Restoring the old
-  bootstrap key brings them back. **No Cloud equivalent**: Cloud's configured
-  signing key is not stored, so it has nothing to retire when it is replaced.
-- **A retired key pair answers 404, not 200 with stale data.**
-  `DELETE`/`invalidate`/`reactivate` on a retired key pair, and `current` when
-  the selected key pair would be one, all answer `404 KEYPAIR_NOT_FOUND`; a
-  retired key pair is excluded from JWKS and from signer selection. It becomes
-  usable again only if the bootstrap key that owns it is restored.
-- **A storage failure is 503, never a stale or wrong answer.** All five
-  `/oauth/keys/keypair*` endpoints and `GET /.well-known/jwks.json` answer
-  `503 STORAGE_UNAVAILABLE` (JWKS: with `Retry-After`) when the node cannot
-  reach its storage, or when its copy of the store has gone stale (no
-  successful reconcile for 10 reconcile intervals). This is retryable and is
-  never downgraded to a `404` or to an empty/partial answer: an unavailable
-  store fails the request rather than serving a guess.
+  is sealed under the bootstrap key configured at the time it was issued.
+  Once `CYODA_JWT_SIGNING_KEY` is replaced, those key pairs stop signing,
+  verifying and appearing in JWKS — this is the deliberate response to the
+  bootstrap key's PEM being exposed, not a side effect to work around.
+  Restoring the old bootstrap key brings them back. **No Cloud equivalent**:
+  Cloud's configured signing key is not stored, so it has nothing to retire
+  when it is replaced.
+- **A retired key pair answers 404, not 200 with stale data.** A retired key
+  pair is never a candidate for signing, verification or JWKS — it is not
+  merely excluded after being selected, it is never considered. `current`
+  and token issuance therefore either return a different, usable key pair for
+  the audience or answer as if none exists (`current`: `404
+  KEYPAIR_NOT_FOUND`) if every key pair for that audience is retired.
+  `DELETE`/`invalidate`/`reactivate` on a retired key pair's own KID answer
+  `404 KEYPAIR_NOT_FOUND` directly. A retired key pair becomes usable again
+  only if the bootstrap key that owns it is restored.
+- **A storage-unavailable failure is 503, never a stale or wrong answer** —
+  but which operations can produce it, and why, differs by endpoint. `issue`,
+  `invalidate`, `reactivate` and `delete` read the store directly on every
+  call and never consult the node's own copy, so they never fail merely
+  because that copy is stale; they can still answer `503
+  STORAGE_UNAVAILABLE` if the store call itself reports the backend
+  unavailable. `current` and `GET /.well-known/jwks.json` read the node's
+  copy and do check its staleness (no successful reconcile for 10 reconcile
+  intervals): a stale copy answers `503 STORAGE_UNAVAILABLE` there too (JWKS:
+  with `Retry-After`), on top of the same direct-store-unavailable case.
+  Token issuance also refuses a stale copy, but always as a plain `500
+  server_error` on `/oauth/token` — that endpoint's OAuth-shaped error body
+  never distinguishes a storage cause with `503`. None of these cases is ever
+  downgraded to a `404` or to an empty/partial answer.
 - **At-rest sealing is an implementation property, not part of the contract.**
   cyoda-go seals an issued key pair's private key at rest (AES-256-GCM under a
   key derived from the bootstrap key's RSA primes) so a copy of the store
   alone — a backup, a replica, a read-only injection — does not expose private
-  key material. Cloud stores the PKCS#8 form of an issued key pair
-  unencrypted. What both tiers owe callers is identical (a private key that
-  never leaves the server in a signing or verification response, and a key
-  pair's lifecycle behaving as above); how it is protected at rest is each
-  tier's own storage decision, not something Cloud must match.
+  key material. Cloud passes the PKCS#8 bytes through a pluggable encryption
+  hook whose default encryptor returns its input unchanged, and no encryptor
+  is wired, so in practice an issued key pair is stored unencrypted there.
+  What both tiers owe callers is identical (a private key that never leaves
+  the server in a signing or verification response, and a key pair's
+  lifecycle behaving as above); how — or whether — it is protected at rest is
+  each tier's own storage decision, not something Cloud must match.
 
 ## Cloud action
 

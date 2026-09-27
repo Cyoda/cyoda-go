@@ -118,7 +118,7 @@ Claim shape for cyoda-minted tokens:
 - `caas_tier` (string) — Tier label. cyoda-go: always `"unlimited"`; Cloud distinguishes paid tiers.
 - `act` (object) — **OBO only.** `{"sub": "<m2m client_id>"}` identifying the M2M actor that exchanged the user token. Absent on `client_credentials` tokens.
 
-Cyoda issues tokens signed with `CYODA_JWT_SIGNING_KEY` (RS256). The `kid` header points at the signing key pair, shared by every node of the cluster (`/oauth/keys/*`). Federated OIDC tokens are validated against the registered provider's JWKS — never signed by cyoda. A trusted key only verifies the subject token of a token exchange; it is never checked on an API call.
+Cyoda issues tokens signed by the selected signing key (RS256): the bootstrap key from `CYODA_JWT_SIGNING_KEY`, or an issued key pair if one is active for the audience and wins selection. The `kid` header points at that signing key pair, shared by every node of the cluster (`/oauth/keys/*`). Federated OIDC tokens are validated against the registered provider's JWKS — never signed by cyoda. A trusted key only verifies the subject token of a token exchange; it is never checked on an API call.
 
 ## ERRORS
 

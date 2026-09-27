@@ -251,7 +251,8 @@ new window has opened.
   state, are stored and apply on every node; they survive restarts (not on the
   memory backend). The node that takes the call applies the change before
   answering; other nodes apply it when the change message arrives (normally
-  under a second), at the latest after one reconcile interval; a node that
+  under a second), at the latest after up to 1.1× the reconcile interval (66 s
+  by default — the periodic re-read timer is jittered ±10%); a node that
   cannot read its database keeps its last copy until it is stale (10
   intervals), then refuses all keys.
 - **Rotating without refusals in a cluster.** Issue the new key pair with
@@ -268,10 +269,24 @@ new window has opened.
   key through the API does not protect stored key pairs: the key still
   decrypts them.
 - **Deleting the bootstrap key is permanent** for that key: it cannot be
-  reactivated; replace `CYODA_JWT_SIGNING_KEY` to recover.
-- **If `/oauth/token` answers 500** because the selected key pair cannot be
-  used (the log names it): invalidate it with an unexpired admin token or an
-  admin from a federated OIDC provider, or replace `CYODA_JWT_SIGNING_KEY`.
+  reactivated; replacing `CYODA_JWT_SIGNING_KEY` starts a fresh bootstrap key
+  with no stored state — it does not undelete the old one.
+- **If `/oauth/token` answers 500 because the selected key pair is broken**
+  (owned but cannot be opened, or of an unrecognised vault kind; the log
+  names it): invalidate it with an unexpired admin token or an admin from a
+  federated OIDC provider, or replace `CYODA_JWT_SIGNING_KEY` — either retires
+  it so a working key signs instead.
+- **If `/oauth/token` answers 500 because a stored record cannot be decoded
+  at all:** it blocks signing for every audience, `invalidate` answers `404`
+  for it (it is not a key pair the API recognises), and replacing
+  `CYODA_JWT_SIGNING_KEY` does not help (the decode failure has nothing to do
+  with which key owns it). Recovery is `DELETE /oauth/keys/keypair/{kid}` —
+  an ERROR log names the KV key — which replaces the record with a deleted
+  bootstrap-state record.
+- **If `/oauth/token` answers 500 with no signer** because the bootstrap key
+  was invalidated or deleted and no issued key pair is active for the
+  audience: reactivate the bootstrap key, or issue a new key pair, using an
+  unexpired admin token or an admin from a federated OIDC provider.
 - **No exportable signing key:** a KMS-backed key vault for issued key pairs,
   with the bootstrap key deleted once an issued key signs, is supported by the
   design; no KMS vault ships yet.

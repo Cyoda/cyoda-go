@@ -153,14 +153,17 @@ did —
 rolled-back savepoint still fails `Commit` with `ErrConflict`), the fenced
 `AsyncSearchStore.ClearResults(ctx, jobID, epoch)`, and `ErrTxAborted` if its
 engine aborts a transaction on conflict. cyoda-go-cassandra#68 tracks the store.
-Also for `v0.9.0`: signing key pairs and trusted keys are now stored and
-shared by the cluster in the SYSTEM-tenant KV store, and a multi-record admin
-write (a key-pair rotation, a trusted-key registration that invalidates a
-predecessor) reads the current records with a KV `List` before deciding.
-`cyoda-go-cassandra` must include its fix for `List` returning a partial
-result on a per-key read failure to run this version — today a missing
-sibling in that read would stay active after a rotation, and a missing
-bootstrap-state record would put the bootstrap key back to its default state.
+Also for `v0.9.0`: signing key pairs are now stored and shared by the cluster
+in the SYSTEM-tenant KV store the same way trusted keys already were. Both
+stores' node copies — on every node's initial load, on every periodic
+re-read, and on a multi-record admin write (a key-pair rotation, a
+trusted-key registration that invalidates a predecessor) — are built from a
+KV `List` of the namespace. `cyoda-go-cassandra` must include its fix for
+`List` returning a partial result on a per-key read failure to run this
+version: today a missing sibling in a rotation's read would stay active, and
+a missing bootstrap-state record in *any* reconcile — not only a rotation's —
+would reset that node's view of the bootstrap key to its default (active, no
+window). cyoda-go-cassandra#102 tracks the bug; cyoda-go-cassandra PR #103 fixes it.
 
 ## Helm chart × binary
 
